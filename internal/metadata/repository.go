@@ -47,4 +47,12 @@ type Repository interface {
 	// CheckExportAccess verifies if a client can access an export
 	// Returns an AccessDecision with details about the authorization
 	CheckExportAccess(exportPath string, clientAddr string, authFlavor uint32) (*AccessDecision, error)
+
+	// GetMountsByClient returns all active mounts for a specific client
+	// Used by UMNTALL to determine what will be removed
+	GetMountsByClient(clientAddr string) ([]MountEntry, error)
+
+	// RemoveAllMounts removes all mount records for a specific client
+	// Used by UMNTALL to clean up all mounts in one operation
+	RemoveAllMounts(clientAddr string) error
 }

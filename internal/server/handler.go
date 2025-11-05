@@ -117,7 +117,7 @@ type MountHandler interface {
 
 	// UmntAll removes all mount entries for the calling client.
 	// RFC 1813 Appendix I
-	UmntAll(repository metadata.Repository) (*mount.UmntAllResponse, error)
+	UmntAll(repository metadata.Repository, req *mount.UmountAllRequest, ctx *mount.UmountAllContext) (*mount.UmountAllResponse, error)
 
 	// Export returns a list of all exported file systems.
 	// RFC 1813 Appendix I

@@ -468,3 +468,39 @@ func (r *MemoryRepository) AddFileToDirectory(parentHandle metadata.FileHandle, 
 
 	return fileHandle, nil
 }
+
+// GetMountsByClient returns all active mounts for a specific client
+func (r *MemoryRepository) GetMountsByClient(clientAddr string) ([]metadata.MountEntry, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	result := make([]metadata.MountEntry, 0)
+	for key, mount := range r.mounts {
+		if key.clientAddr == clientAddr {
+			result = append(result, *mount)
+		}
+	}
+
+	return result, nil
+}
+
+// RemoveAllMounts removes all mount records for a specific client
+func (r *MemoryRepository) RemoveAllMounts(clientAddr string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Find all mount keys for this client
+	keysToDelete := make([]mountKey, 0)
+	for key := range r.mounts {
+		if key.clientAddr == clientAddr {
+			keysToDelete = append(keysToDelete, key)
+		}
+	}
+
+	// Delete all found mounts
+	for _, key := range keysToDelete {
+		delete(r.mounts, key)
+	}
+
+	return nil
+}

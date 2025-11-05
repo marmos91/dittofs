@@ -31,7 +31,7 @@ type rpcRequest interface {
 		*mount.MountRequest |
 		*mount.UmountRequest |
 		*mount.DumpRequest |
-		*mount.UmntAllRequest |
+		*mount.UmountAllRequest |
 		*mount.ExportRequest
 }
 
@@ -60,7 +60,7 @@ type rpcResponse interface {
 		*mount.MountResponse |
 		*mount.UmountResponse |
 		*mount.DumpResponse |
-		*mount.UmntAllResponse |
+		*mount.UmountAllResponse |
 		*mount.ExportResponse
 	Encode() ([]byte, error)
 }

@@ -214,6 +214,7 @@ server := nfsServer.New("2049", postgresRepo, s3Repo)
 | NULL | ✅ |
 | MNT | ✅ |
 | UMNT | ✅ |
+| UMNTALL | ✅ |
 | DUMP | ✅ |
 | EXPORT | ✅ |
 

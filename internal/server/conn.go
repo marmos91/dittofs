@@ -465,6 +465,23 @@ func (c *conn) handleMountProcedure(call *rpc.RPCCallMessage, data []byte) ([]by
 			},
 		)
 
+	case mount.MountProcUmntAll:
+		ctx := &mount.UmountAllContext{
+			ClientAddr: c.conn.RemoteAddr().String(),
+		}
+
+		return handleRequest(
+			data,
+			mount.DecodeUmountAllRequest,
+			func(req *mount.UmountAllRequest) (*mount.UmountAllResponse, error) {
+				return handler.UmntAll(repo, req, ctx)
+			},
+			mount.MountErrIO,
+			func(status uint32) *mount.UmountAllResponse {
+				return &mount.UmountAllResponse{}
+			},
+		)
+
 	default:
 		logger.Debug("Unknown Mount procedure: %d", call.Procedure)
 		return []byte{}, nil
