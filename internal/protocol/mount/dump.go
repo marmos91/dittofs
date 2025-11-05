@@ -50,12 +50,6 @@ type DumpEntry struct {
 	Directory string
 }
 
-// MountEntry represents a single mount entry
-type MountEntry struct {
-	Hostname string // Client hostname
-	Dir      string // Mounted directory path
-}
-
 // DumpContext contains the context information needed to process a dump request.
 // This includes client identification for access control.
 type DumpContext struct {

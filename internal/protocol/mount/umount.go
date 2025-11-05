@@ -139,6 +139,12 @@ func DecodeUmountRequest(data []byte) (*UmountRequest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal umount request: %w", err)
 	}
+
+	// Validate the path
+	if err := ValidateExportPath(req.DirPath); err != nil {
+		return nil, fmt.Errorf("invalid export path: %w", err)
+	}
+
 	return req, nil
 }
 
