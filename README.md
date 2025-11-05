@@ -1,85 +1,104 @@
 # DittoFS
 
-A lightweight, pure Go implementation of an NFS version 3 server that decouples metadata management from data content storage. DittoFS provides a standards-compliant NFS interface while allowing flexible, pluggable backends for both metadata and content repositories.
+> **Experimental** - Not yet production ready
 
-## Overview
+A pure Go implementation of an NFSv3 server that eliminates the need for FUSE and kernel-level permissions while providing complete flexibility in how you store metadata and content.
 
-DittoFS implements the NFSv3 protocol (RFC 1813) and Mount protocol, enabling any system to provide NFS-compatible file access. Unlike traditional NFS servers that couple metadata and data storage, DittoFS cleanly separates concerns through abstract repository interfaces, making it ideal for distributed storage systems, cloud architectures, and custom storage backends.
+## The Problem with Traditional NFS
 
-### Key Design Principle
+Traditional NFS implementations require:
 
-**Decouple Metadata from Content**: DittoFS separates file metadata (attributes, directory structure, permissions) from actual file data, allowing you to:
+- **High-level system permissions** (kernel-level access)
+- **FUSE for virtualization**, adding a layer of abstraction
+- **Tight coupling** between metadata and content storage
 
-- Store metadata in one system (database, distributed store, in-memory cache)
-- Store content in another system (object storage, distributed filesystem, custom backend)
-- Swap implementations without changing core protocol logic
+This results in:
 
-## Features
+- Limited deployment flexibility
+- Performance overhead from double abstraction (FUSE + NFS)
+- Complex permission management
+- Difficult customization
 
-- **NFSv3 Protocol Support**: Complete implementation of core NFSv3 operations (RFC 1813)
-- **Mount Protocol**: Full mount/unmount capability for standard NFS client operations
-- **Pluggable Architecture**:
-  - Abstract `Repository` interface for custom metadata backends
-  - Abstract `ContentRepository` interface for custom data storage
-- **In-Memory Repository**: Built-in metadata storage for testing and development
-- **Filesystem Content Storage**: Default file-based content backend
-- **Structured Logging**: Configurable log levels (DEBUG, INFO, WARN, ERROR)
-- **Pure Go**: No C dependencies, cross-platform compilation
+## The DittoFS Solution
 
-## Architecture
+DittoFS is a userspace NFS server that completely decouples metadata from content storage:
 
 ```
-dittofs/
-├── cmd/dittofs/                          # CLI entry point
-├── internal/
-│   ├── logger/                        # Structured logging utilities
-│   ├── metadata/                      # Metadata domain model
-│   │   ├── file.go                    # File attributes and types
-│   │   ├── export.go                  # Export configuration
-│   │   ├── repository.go              # Repository interface
-│   │   └── persistence/
-│   │       └── memory.go              # In-memory implementation
-│   ├── content/                       # Content storage abstraction
-│   │   ├── repository.go              # Repository interface
-│   │   └── fs.go                      # Filesystem backend
-│   ├── protocol/                      # Protocol implementations
-│   │   ├── rpc/                       # RPC layer (RFC 5531)
-│   │   ├── mount/                     # Mount protocol (RFC 1813 Appendix I)
-│   │   └── nfs/                       # NFS protocol (RFC 1813)
-│   └── server/                        # NFS server core
-│       ├── server.go                  # TCP listener and routing
-│       ├── conn.go                    # Connection handler
-│       ├── handler.go                 # Handler interfaces
-│       └── utils.go                   # Generic RPC utilities
-└── go.mod                             # Go module definition
+┌─────────────┐
+│ NFS Clients │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────────┐
+│  DittoFS (NFSv3)    │
+│  Pure Go Server     │
+└─────┬──────────┬────┘
+      │          │
+      ▼          ▼
+┌──────────┐  ┌──────────┐
+│ Metadata │  │ Content  │
+│  Store   │  │  Store   │
+└──────────┘  └──────────┘
+   Redis        S3
+   Postgres     Dropbox
+   In-Memory    Custom
+```
+
+### Key Benefits
+
+1. **No Special Permissions**: Runs entirely in userspace - no FUSE, no kernel modules
+2. **Maximum Flexibility**: Mix and match any metadata backend with any content backend
+3. **Better Performance**: Single abstraction layer, optimized I/O paths
+4. **Easy Integration**: Pure Go means easy embedding in existing applications
+5. **Cloud Native**: Perfect for distributed systems and cloud architectures
+
+## Use Cases
+
+### Cloud Storage Gateway
+
+```
+Metadata → PostgreSQL (fast queries, ACID)
+Content  → S3 (scalable, durable)
+```
+
+### High-Performance Cache
+
+```
+Metadata → Redis (in-memory speed)
+Content  → Local SSD + S3 tiering
+```
+
+### Multi-Region Storage
+
+```
+Metadata → Global distributed database
+Content  → Regional object storage
+```
+
+### Development & Testing
+
+```
+Metadata → In-Memory
+Content  → In-Memory or local filesystem
 ```
 
 ## Quick Start
 
-### Prerequisites
-
-- Go 1.25 or later
-
-### Build
+### Installation
 
 ```bash
 go build -o dittofs cmd/dittofs/main.go
 ```
 
-### Run
+### Run Server
 
 ```bash
-# Default configuration (port 2049, INFO logging)
+# Default configuration
 ./dittofs
 
-# Custom port with debug logging
-./dittofs -port 2050 -log-level debug
-
-# Custom content storage path
-./dittofs -content-path /mnt/nfs-data
+# Custom configuration
+./dittofs -port 2049 -log-level DEBUG -content-path /var/lib/dittofs
 ```
-
-The server will create an export at `/export` with sample files in the `images/` directory.
 
 ### Mount from Client
 
@@ -87,276 +106,196 @@ The server will create an export at `/export` with sample files in the `images/`
 # Linux
 sudo mount -t nfs -o nfsvers=3,tcp localhost:/export /mnt/nfs
 
-# macOS (with resvport option)
+# macOS
 sudo mount -t nfs -o nfsvers=3,tcp,resvport localhost:/export /mnt/nfs
-
-# Verify mount
-ls /mnt/nfs
 ```
 
-### Unmount
+## Architecture
 
-```bash
-sudo umount /mnt/nfs
-```
+DittoFS separates concerns through clean interfaces:
 
-## Configuration
+### Metadata Repository
 
-### Environment Variables
+Handles file attributes, directory structure, permissions:
 
-- `LOG_LEVEL`: Set logging level (DEBUG, INFO, WARN, ERROR). Default: INFO
+- File metadata (size, timestamps, permissions)
+- Directory hierarchy
+- File handles
+- Export configuration
 
-### Command-Line Flags
+### Content Repository
 
-- `-port string`: Server port. Default: 2049
-- `-log-level string`: Logging level (DEBUG, INFO, WARN, ERROR). Default: INFO
-- `-content-path string`: Path to store file content. Default: /tmp/dittofs-content
+Handles actual file data:
 
-### Example
+- Read operations
+- Write operations (coming soon)
+- Content addressing
+- Size queries
 
-```bash
-LOG_LEVEL=DEBUG ./dittofs -port 2050 -content-path /var/lib/dittofs-content
-```
-
-## Protocol Implementation Status
-
-### Mount Protocol (RFC 1813 Appendix I)
-
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| NULL | ✅ Implemented | Connectivity test |
-| MNT | ✅ Implemented | Mount export and get root handle |
-| DUMP | ❌ Not Implemented | List mounts |
-| UMNT | ✅ Implemented | Unmount (basic) |
-| UMNTALL | ❌ Not Implemented | Unmount all |
-| EXPORT | ❌ Not Implemented | List exports |
-
-### NFS Protocol (RFC 1813)
-
-| Procedure | Status | Notes |
-|-----------|--------|-------|
-| NULL | ✅ Implemented | Connectivity test |
-| GETATTR | ✅ Implemented | Get file attributes |
-| SETATTR | ✅ Implemented | Set file attributes with WCC |
-| LOOKUP | ✅ Implemented | Lookup filename in directory |
-| ACCESS | ✅ Implemented | Check access permissions |
-| READLINK | ❌ Not Implemented | Read symbolic link |
-| READ | ✅ Implemented | Read file data |
-| WRITE | ❌ Not Implemented | Write file data |
-| CREATE | ❌ Not Implemented | Create regular file |
-| MKDIR | ❌ Not Implemented | Create directory |
-| SYMLINK | ❌ Not Implemented | Create symbolic link |
-| MKNOD | ❌ Not Implemented | Create special device |
-| REMOVE | ❌ Not Implemented | Delete file |
-| RMDIR | ❌ Not Implemented | Delete directory |
-| RENAME | ❌ Not Implemented | Rename file/directory |
-| LINK | ❌ Not Implemented | Create hard link |
-| READDIR | ✅ Implemented | List directory entries |
-| READDIRPLUS | ✅ Implemented | List with attributes |
-| FSSTAT | ✅ Implemented | Filesystem statistics |
-| FSINFO | ✅ Implemented | Filesystem information |
-| PATHCONF | ✅ Implemented | POSIX information |
-| COMMIT | ❌ Not Implemented | Commit to stable storage |
-
-## Development
-
-### Creating a Custom Metadata Repository
-
-Implement the `metadata.Repository` interface to create a custom metadata backend:
+### Example: Custom Backend
 
 ```go
-package main
-
-import (
-    "github.com/marmos91/dittofs/internal/metadata"
-)
-
-type MyRepository struct {
-    // Your implementation
+// Implement your metadata backend
+type PostgresRepository struct {
+    db *sql.DB
 }
 
-func (r *MyRepository) GetFile(handle metadata.FileHandle) (*metadata.FileAttr, error) {
-    // Your implementation
+func (r *PostgresRepository) GetFile(handle FileHandle) (*FileAttr, error) {
+    // Query PostgreSQL
 }
 
-func (r *MyRepository) CreateFile(handle metadata.FileHandle, attr *metadata.FileAttr) error {
-    // Your implementation
+// Implement your content backend
+type S3ContentRepository struct {
+    client *s3.Client
 }
 
-// ... implement other interface methods
+func (r *S3ContentRepository) ReadContent(id ContentID) (io.ReadCloser, error) {
+    // Read from S3
+}
+
+// Use them together
+server := nfsServer.New("2049", postgresRepo, s3Repo)
 ```
 
-Then use it with the server:
+## Current Status
 
-```go
-repo := &MyRepository{}
-contentRepo, _ := content.NewFSContentRepository("/tmp/content")
-server := nfsServer.New("2049", repo, contentRepo)
-server.Serve(context.Background())
-```
+### ✅ Implemented
 
-### Creating a Custom Content Repository
+- NFSv3 core read operations (GETATTR, LOOKUP, READ, READDIR, etc.)
+- NFSv3 core write operations (WRITE, LINK, MKNOD, SYMLINK, etc.)
+- Mount protocol (MNT, UMNT)
+- In-memory metadata repository
+- Filesystem content repository
+- TCP transport
+- Configurable logging
 
-Implement the `content.Repository` interface for custom content storage:
+### 🚧 Roadmap
 
-```go
-package main
+**Phase 1: Hardening** (Current Focus)
 
-import (
-    "github.com/marmos91/dittofs/internal/content"
-    "io"
-)
+- [ ] Code refactoring and optimization
+- [ ] Memory leak prevention
+- [ ] Error handling improvements
+- [ ] Connection pool management
 
-type MyContentRepository struct {
-    // Your implementation
-}
+**Phase 2: Testing**
 
-func (r *MyContentRepository) ReadContent(id content.ContentID) (io.ReadCloser, error) {
-    // Read from your backend
-}
+- [ ] E2E test suite
+- [ ] Protocol compliance tests
+- [ ] Performance benchmarks
+- [ ] Load testing
 
-func (r *MyContentRepository) GetContentSize(id content.ContentID) (uint64, error) {
-    // Get size from your backend
-}
+**Phase 3: Production Backends**
 
-func (r *MyContentRepository) ContentExists(id content.ContentID) (bool, error) {
-    // Check existence in your backend
-}
-```
+- [ ] S3-compatible content repository
+- [ ] Redis metadata repository
+- [ ] PostgreSQL metadata repository
+- [ ] Tiered storage support
 
-### Adding a New NFS Procedure
+**Phase 4: Protocol Extensions**
 
-1. Define procedure constant in `internal/protocol/nfs/constants.go`
-2. Create request/response types in the appropriate file (e.g., `internal/protocol/nfs/write.go`)
-3. Add decoder and encoder methods to the response struct
-4. Implement the handler method in `internal/protocol/nfs/nfs.go` or a separate file
-5. Add routing in `internal/server/conn.go` handleNFSProcedure() method
-6. Add interface method to `NFSHandler` in `internal/server/handler.go`
+- [ ] UDP transport support
+- [ ] SMB/CIFS protocol support
+- [ ] NFSv4 support
 
-Example structure:
+**Phase 5: Operations**
 
-```go
-// constants.go
-const NFSProcWrite = 7
+- [ ] Prometheus metrics
+- [ ] OpenTelemetry tracing
+- [ ] Health checks
+- [ ] Graceful shutdown
 
-// write.go
-type WriteRequest struct {
-    Handle []byte
-    Offset uint64
-    Count  uint32
-    Data   []byte
-}
+## Protocol Implementation
 
-type WriteResponse struct {
-    Status uint32
-    // ... response fields
-}
+### Mount Protocol
 
-func DecodeWriteRequest(data []byte) (*WriteRequest, error) {
-    // Your implementation
-}
+| Procedure | Status |
+|-----------|--------|
+| NULL | ✅ |
+| MNT | ✅ |
+| UMNT | ✅ |
+| DUMP | ✅ |
+| EXPORT | ✅ |
 
-func (resp *WriteResponse) Encode() ([]byte, error) {
-    // Your implementation
-}
+### NFS Protocol (Read Operations)
 
-// nfs.go
-func (h *DefaultNFSHandler) Write(repo metadata.Repository, req *WriteRequest) (*WriteResponse, error) {
-    // Your implementation
-}
-```
+| Procedure | Status |
+|-----------|--------|
+| NULL | ✅ |
+| GETATTR | ✅ |
+| SETATTR | ✅ |
+| LOOKUP | ✅ |
+| ACCESS | ✅ |
+| READ | ✅ |
+| READDIR | ✅ |
+| READDIRPLUS | ✅ |
+| FSSTAT | ✅ |
+| FSINFO | ✅ |
+| PATHCONF | ✅ |
 
-## Repository Interfaces
+### NFS Protocol (Write Operations)
 
-### metadata.Repository
+| Procedure | Status |
+|-----------|--------|
+| WRITE | ✅ |
+| CREATE | ✅ |
+| MKDIR | ✅ |
+| REMOVE | ✅ |
+| RMDIR | ✅ |
+| RENAME | ✅ |
+| LINK | ✅ |
+| SYMLINK | ✅ |
 
-The metadata repository manages file attributes, directory structure, and export configuration:
+## Performance Characteristics
 
-```go
-type Repository interface {
-    // Export operations
-    AddExport(path string, options ExportOptions, rootAttr *FileAttr) error
-    GetExports() ([]Export, error)
-    FindExport(path string) (*Export, error)
-    DeleteExport(path string) error
-    GetRootHandle(exportPath string) (FileHandle, error)
+- **Single abstraction layer**: No FUSE overhead
+- **Goroutine-per-connection**: Scales with Go's lightweight concurrency
+- **Streaming I/O**: Efficient large file handling
+- **Pluggable caching**: Implement your own caching strategy
 
-    // File operations
-    CreateFile(handle FileHandle, attr *FileAttr) error
-    GetFile(handle FileHandle) (*FileAttr, error)
-    UpdateFile(handle FileHandle, attr *FileAttr) error
-    DeleteFile(handle FileHandle) error
+## Why Pure Go?
 
-    // Directory hierarchy
-    SetParent(child FileHandle, parent FileHandle) error
-    GetParent(child FileHandle) (FileHandle, error)
-    AddChild(parent FileHandle, name string, child FileHandle) error
-    GetChild(parent FileHandle, name string) (FileHandle, error)
-    GetChildren(parent FileHandle) (map[string]FileHandle, error)
-    DeleteChild(parent FileHandle, name string) error
-}
-```
+- ✅ **Easy deployment**: Single binary, no dependencies
+- ✅ **Cross-platform**: Linux, macOS, Windows
+- ✅ **Easy integration**: Embed in existing Go applications
+- ✅ **Modern concurrency**: Goroutines and channels
+- ✅ **Memory safe**: No C/C++ vulnerabilities
 
-### content.Repository
+## Comparison
 
-The content repository manages actual file data:
-
-```go
-type Repository interface {
-    // ReadContent returns a reader for the content identified by the given ID
-    ReadContent(id ContentID) (io.ReadCloser, error)
-
-    // GetContentSize returns the size of the content in bytes
-    GetContentSize(id ContentID) (uint64, error)
-
-    // ContentExists checks if content with the given ID exists
-    ContentExists(id ContentID) (bool, error)
-}
-```
-
-## Use Cases
-
-- **Distributed Storage Gateway**: Use DittoFS as an NFS interface to a distributed storage backend
-- **Cloud Storage Bridge**: Connect NFS clients to object storage (S3, GCS, etc.)
-- **Testing & Development**: Use in-memory backends for rapid development
-- **Custom Tiering**: Implement different storage backends for hot/warm/cold data
-- **Multi-tenant NFS**: Create custom repositories that isolate tenants
-- **Metadata Acceleration**: Separate metadata cache from primary content storage
-
-## Performance Considerations
-
-- **Metadata Repository**: In-memory implementation suitable for development; for production, implement a high-performance backend (cache layer, database, etc.)
-- **Content Storage**: Filesystem backend works for small-scale deployments; consider object storage for distributed scenarios
-- **Connection Handling**: Each NFS connection runs in its own goroutine
-- **Read Operations**: File reads leverage Go's efficient I/O with support for seekable content repositories
-
-## References
-
-- [RFC 1813](https://tools.ietf.org/html/rfc1813) - NFS Version 3 Protocol Specification
-- [RFC 5531](https://tools.ietf.org/html/rfc5531) - RPC: Remote Procedure Call Protocol Specification Version 2
-- [RFC 1833](https://tools.ietf.org/html/rfc1833) - Binding Protocols for ONC RPC Version 2
-
-## License
-
-See LICENSE file for details.
+| Feature | Traditional NFS + FUSE | DittoFS |
+|---------|----------------------|---------|
+| Permissions | Kernel-level required | Userspace |
+| Abstraction layers | 2 (FUSE + NFS) | 1 (NFS only) |
+| Metadata backend | Filesystem only | Pluggable |
+| Content backend | Filesystem only | Pluggable |
+| Language | C/C++ | Pure Go |
+| Deployment | Complex | Single binary |
 
 ## Contributing
 
-Contributions are welcome! Please ensure:
+DittoFS is in active development. Contributions are welcome!
 
-- Code follows Go conventions and includes appropriate error handling
-- New procedures include both RFC references and protocol documentation
-- Tests cover new functionality
-- Documentation is updated for significant changes
+Areas needing attention:
 
-## Future Roadmap
+- Additional repository backends
+- Performance optimization
+- Test coverage
+- Documentation
 
-- [ ] Implement WRITE procedure
-- [ ] Implement CREATE/MKDIR procedures
-- [ ] Implement REMOVE/RMDIR procedures
-- [ ] Add DUMP and EXPORT to Mount protocol
-- [ ] Support for symbolic links
-- [ ] UDP support in addition to TCP
-- [ ] Performance optimizations (connection pooling, caching strategies)
-- [ ] Comprehensive test suite
-- [ ] Metrics and observability
+## References
+
+- [RFC 1813](https://tools.ietf.org/html/rfc1813) - NFS Version 3 Protocol
+- [RFC 5531](https://tools.ietf.org/html/rfc5531) - RPC Protocol
+
+## License
+
+MIT License - See LICENSE file
+
+## Disclaimer
+
+⚠️ **DittoFS is experimental software**. Do not use in production environments without thorough testing. The API may change without notice.
+
+---
+
+Built with ❤️ in Go
