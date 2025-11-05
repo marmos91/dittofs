@@ -450,11 +450,14 @@ func (c *conn) handleMountProcedure(call *rpc.RPCCallMessage, data []byte) ([]by
 		)
 
 	case mount.MountProcUmnt:
+		ctx := &mount.UmountContext{
+			ClientAddr: c.conn.RemoteAddr().String(),
+		}
 		return handleRequest(
 			data,
 			mount.DecodeUmountRequest,
 			func(req *mount.UmountRequest) (*mount.UmountResponse, error) {
-				return handler.Umnt(repo, req)
+				return handler.Umnt(repo, req, ctx)
 			},
 			mount.MountErrIO,
 			func(status uint32) *mount.UmountResponse {

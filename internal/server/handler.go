@@ -113,7 +113,7 @@ type MountHandler interface {
 
 	// Umnt removes a mount entry from the mount list.
 	// RFC 1813 Appendix I
-	Umnt(repository metadata.Repository, req *mount.UmountRequest) (*mount.UmountResponse, error)
+	Umnt(repository metadata.Repository, req *mount.UmountRequest, ctx *mount.UmountContext) (*mount.UmountResponse, error)
 
 	// UmntAll removes all mount entries for the calling client.
 	// RFC 1813 Appendix I
