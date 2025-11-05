@@ -1,14 +1,14 @@
-# DNFS - Dynamic NFS
+# DittoFS
 
-A lightweight, pure Go implementation of an NFS version 3 server that decouples metadata management from data content storage. DNFS provides a standards-compliant NFS interface while allowing flexible, pluggable backends for both metadata and content repositories.
+A lightweight, pure Go implementation of an NFS version 3 server that decouples metadata management from data content storage. DittoFS provides a standards-compliant NFS interface while allowing flexible, pluggable backends for both metadata and content repositories.
 
 ## Overview
 
-DNFS implements the NFSv3 protocol (RFC 1813) and Mount protocol, enabling any system to provide NFS-compatible file access. Unlike traditional NFS servers that couple metadata and data storage, DNFS cleanly separates concerns through abstract repository interfaces, making it ideal for distributed storage systems, cloud architectures, and custom storage backends.
+DittoFS implements the NFSv3 protocol (RFC 1813) and Mount protocol, enabling any system to provide NFS-compatible file access. Unlike traditional NFS servers that couple metadata and data storage, DittoFS cleanly separates concerns through abstract repository interfaces, making it ideal for distributed storage systems, cloud architectures, and custom storage backends.
 
 ### Key Design Principle
 
-**Decouple Metadata from Content**: DNFS separates file metadata (attributes, directory structure, permissions) from actual file data, allowing you to:
+**Decouple Metadata from Content**: DittoFS separates file metadata (attributes, directory structure, permissions) from actual file data, allowing you to:
 
 - Store metadata in one system (database, distributed store, in-memory cache)
 - Store content in another system (object storage, distributed filesystem, custom backend)
@@ -29,8 +29,8 @@ DNFS implements the NFSv3 protocol (RFC 1813) and Mount protocol, enabling any s
 ## Architecture
 
 ```
-dnfs/
-├── cmd/dnfs/                          # CLI entry point
+dittofs/
+├── cmd/dittofs/                          # CLI entry point
 ├── internal/
 │   ├── logger/                        # Structured logging utilities
 │   ├── metadata/                      # Metadata domain model
@@ -63,20 +63,20 @@ dnfs/
 ### Build
 
 ```bash
-go build -o dnfs cmd/dnfs/main.go
+go build -o dittofs cmd/dittofs/main.go
 ```
 
 ### Run
 
 ```bash
 # Default configuration (port 2049, INFO logging)
-./dnfs
+./dittofs
 
 # Custom port with debug logging
-./dnfs -port 2050 -log-level debug
+./dittofs -port 2050 -log-level debug
 
 # Custom content storage path
-./dnfs -content-path /mnt/nfs-data
+./dittofs -content-path /mnt/nfs-data
 ```
 
 The server will create an export at `/export` with sample files in the `images/` directory.
@@ -110,12 +110,12 @@ sudo umount /mnt/nfs
 
 - `-port string`: Server port. Default: 2049
 - `-log-level string`: Logging level (DEBUG, INFO, WARN, ERROR). Default: INFO
-- `-content-path string`: Path to store file content. Default: /tmp/dnfs-content
+- `-content-path string`: Path to store file content. Default: /tmp/dittofs-content
 
 ### Example
 
 ```bash
-LOG_LEVEL=DEBUG ./dnfs -port 2050 -content-path /var/lib/dnfs-content
+LOG_LEVEL=DEBUG ./dittofs -port 2050 -content-path /var/lib/dittofs-content
 ```
 
 ## Protocol Implementation Status
@@ -168,7 +168,7 @@ Implement the `metadata.Repository` interface to create a custom metadata backen
 package main
 
 import (
-    "github.com/cubbit/dnfs/internal/metadata"
+    "github.com/marmos91/dittofs/internal/metadata"
 )
 
 type MyRepository struct {
@@ -203,7 +203,7 @@ Implement the `content.Repository` interface for custom content storage:
 package main
 
 import (
-    "github.com/cubbit/dnfs/internal/content"
+    "github.com/marmos91/dittofs/internal/content"
     "io"
 )
 
@@ -316,7 +316,7 @@ type Repository interface {
 
 ## Use Cases
 
-- **Distributed Storage Gateway**: Use DNFS as an NFS interface to a distributed storage backend
+- **Distributed Storage Gateway**: Use DittoFS as an NFS interface to a distributed storage backend
 - **Cloud Storage Bridge**: Connect NFS clients to object storage (S3, GCS, etc.)
 - **Testing & Development**: Use in-memory backends for rapid development
 - **Custom Tiering**: Implement different storage backends for hot/warm/cold data

@@ -5,8 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/cubbit/dnfs/internal/logger"
-	"github.com/cubbit/dnfs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/metadata"
 )
 
 // FsInfoRequest represents a FSINFO request

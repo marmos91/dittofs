@@ -3,7 +3,7 @@ package metadata
 import (
 	"time"
 
-	"github.com/cubbit/dnfs/internal/content"
+	"github.com/marmos91/dittofs/internal/content"
 )
 
 // FileHandle represents a unique identifier for a file or directory

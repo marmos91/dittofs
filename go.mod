@@ -1,4 +1,4 @@
-module github.com/cubbit/dnfs
+module github.com/marmos91/dittofs
 
 go 1.25
 

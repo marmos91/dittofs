@@ -1,6 +1,6 @@
 package nfs
 
-import "github.com/cubbit/dnfs/internal/metadata"
+import "github.com/marmos91/dittofs/internal/metadata"
 
 // Helper to convert metadata.FileAttr to NFS FileAttr
 func MetadataToNFSAttr(mdAttr *metadata.FileAttr, fileid uint64) *FileAttr {

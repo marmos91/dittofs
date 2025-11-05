@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cubbit/dnfs/internal/logger"
-	"github.com/cubbit/dnfs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/metadata"
 )
 
 // SetAttrRequest represents a SETATTR request

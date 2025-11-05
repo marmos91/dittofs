@@ -7,7 +7,7 @@ import (
 	"maps"
 	"sync"
 
-	"github.com/cubbit/dnfs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/metadata"
 )
 
 // MemoryRepository implements Repository using in-memory storage

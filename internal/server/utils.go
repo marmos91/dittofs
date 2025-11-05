@@ -1,9 +1,9 @@
 package server
 
 import (
-	"github.com/cubbit/dnfs/internal/logger"
-	"github.com/cubbit/dnfs/internal/protocol/mount"
-	"github.com/cubbit/dnfs/internal/protocol/nfs"
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/mount"
+	"github.com/marmos91/dittofs/internal/protocol/nfs"
 )
 
 type rpcRequest interface {

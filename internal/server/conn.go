@@ -7,10 +7,10 @@ import (
 	"io"
 	"net"
 
-	"github.com/cubbit/dnfs/internal/logger"
-	"github.com/cubbit/dnfs/internal/protocol/mount"
-	"github.com/cubbit/dnfs/internal/protocol/nfs"
-	"github.com/cubbit/dnfs/internal/protocol/rpc"
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/mount"
+	"github.com/marmos91/dittofs/internal/protocol/nfs"
+	"github.com/marmos91/dittofs/internal/protocol/rpc"
 )
 
 type conn struct {

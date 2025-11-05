@@ -10,11 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cubbit/dnfs/internal/content"
-	"github.com/cubbit/dnfs/internal/logger"
-	"github.com/cubbit/dnfs/internal/metadata"
-	"github.com/cubbit/dnfs/internal/metadata/persistence"
-	nfsServer "github.com/cubbit/dnfs/internal/server"
+	"github.com/marmos91/dittofs/internal/content"
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/metadata/persistence"
+	nfsServer "github.com/marmos91/dittofs/internal/server"
 )
 
 func createInitialStructure(repo *persistence.MemoryRepository, contentRepo *content.FSContentRepository, rootHandle metadata.FileHandle) error {
@@ -78,7 +78,7 @@ func createInitialStructure(repo *persistence.MemoryRepository, contentRepo *con
 		name    string
 		content string
 	}{
-		{"readme.txt", "This is a README file.\nWelcome to DNFS!\n"},
+		{"readme.txt", "This is a README file.\nWelcome to dittofs!\n"},
 		{"notes.txt", "Some notes about this NFS server.\nIt's pretty cool!\n"},
 	}
 
@@ -113,13 +113,13 @@ func createInitialStructure(repo *persistence.MemoryRepository, contentRepo *con
 func main() {
 	port := flag.String("port", "2049", "Port to listen on")
 	logLevel := flag.String("log-level", "INFO", "Log level (DEBUG, INFO, WARN, ERROR)")
-	contentPath := flag.String("content-path", "/tmp/dnfs-content", "Path to store file content")
+	contentPath := flag.String("content-path", "/tmp/dittofs-content", "Path to store file content")
 	flag.Parse()
 
 	// Configure logger
 	logger.SetLevel(*logLevel)
 
-	fmt.Println("DNFS - Distributed NFS Server")
+	fmt.Println("DittoFS - Dynamic NFS Server")
 	logger.Info("Log level set to: %s", *logLevel)
 	logger.Info("Content storage path: %s", *contentPath)
 

@@ -1,10 +1,10 @@
 package server
 
 import (
-	"github.com/cubbit/dnfs/internal/content"
-	"github.com/cubbit/dnfs/internal/metadata"
-	"github.com/cubbit/dnfs/internal/protocol/mount"
-	"github.com/cubbit/dnfs/internal/protocol/nfs"
+	"github.com/marmos91/dittofs/internal/content"
+	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/mount"
+	"github.com/marmos91/dittofs/internal/protocol/nfs"
 )
 
 type NFSHandler interface {

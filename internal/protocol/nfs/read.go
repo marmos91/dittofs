@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/cubbit/dnfs/internal/content"
-	"github.com/cubbit/dnfs/internal/logger"
-	"github.com/cubbit/dnfs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/content"
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/metadata"
 )
 
 // ReadRequest represents a READ request
