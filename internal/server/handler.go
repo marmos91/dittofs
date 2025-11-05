@@ -44,10 +44,10 @@ type NFSHandler interface {
 	// RFC 1813 Section 3.3.8
 	Create(content content.Repository, repository metadata.Repository, req *nfs.CreateRequest) (*nfs.CreateResponse, error)
 
-	// // Mkdir creates a directory.
-	// // RFC 1813 Section 3.3.9
-	// Mkdir(repository metadata.Repository, data []byte) ([]byte, error)
-	//
+	// Mkdir creates a directory.
+	// RFC 1813 Section 3.3.9
+	Mkdir(repository metadata.Repository, req *nfs.MkdirRequest) (*nfs.MkdirResponse, error)
+
 	// // Symlink creates a symbolic link.
 	// // RFC 1813 Section 3.3.10
 	// Symlink(repository metadata.Repository, data []byte) ([]byte, error)
@@ -60,17 +60,17 @@ type NFSHandler interface {
 	// RFC 1813 Section 3.3.12
 	Remove(repository metadata.Repository, req *nfs.RemoveRequest) (*nfs.RemoveResponse, error)
 
-	// // RmDir removes a directory.
-	// // RFC 1813 Section 3.3.13
-	// RmDir(repository metadata.Repository, data []byte) ([]byte, error)
+	// RmDir removes a directory.
+	// RFC 1813 Section 3.3.13
+	Rmdir(repository metadata.Repository, req *nfs.RmdirRequest) (*nfs.RmdirResponse, error)
 
 	// Rename renames a file or directory.
 	// RFC 1813 Section 3.3.14
 	Rename(repository metadata.Repository, req *nfs.RenameRequest) (*nfs.RenameResponse, error)
 
-	// // Link creates a hard link to a file.
-	// // RFC 1813 Section 3.3.15
-	// Link(repository metadata.Repository, data []byte) ([]byte, error)
+	// Link creates a hard link to a file.
+	// RFC 1813 Section 3.3.15
+	Link(repository metadata.Repository, req *nfs.LinkRequest) (*nfs.LinkResponse, error)
 
 	// ReadDir reads entries from a directory.
 	// RFC 1813 Section 3.3.16

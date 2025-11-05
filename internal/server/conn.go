@@ -214,8 +214,18 @@ func (c *conn) handleNFSProcedure(procedure uint32, data []byte) ([]byte, error)
 				return &nfs.CreateResponse{Status: status}
 			},
 		)
-		// case NFSProcMkdir:
-		// 	return handler.Mkdir(repo, data)
+	case nfs.NFSProcMkdir:
+		return handleRequest(
+			data,
+			nfs.DecodeMkdirRequest,
+			func(req *nfs.MkdirRequest) (*nfs.MkdirResponse, error) {
+				return handler.Mkdir(repo, req)
+			},
+			nfs.NFS3ErrIO,
+			func(status uint32) *nfs.MkdirResponse {
+				return &nfs.MkdirResponse{Status: status}
+			},
+		)
 		// case NFSProcSymlink:
 		// 	return handler.Symlink(repo, data)
 		// case NFSProcMknod:
@@ -232,8 +242,18 @@ func (c *conn) handleNFSProcedure(procedure uint32, data []byte) ([]byte, error)
 				return &nfs.RemoveResponse{Status: status}
 			},
 		)
-		// case NFSProcRmdir:
-		// 	return handler.RmDir(repo, data)
+	case nfs.NFSProcRmdir:
+		return handleRequest(
+			data,
+			nfs.DecodeRmdirRequest,
+			func(req *nfs.RmdirRequest) (*nfs.RmdirResponse, error) {
+				return handler.Rmdir(repo, req)
+			},
+			nfs.NFS3ErrIO,
+			func(status uint32) *nfs.RmdirResponse {
+				return &nfs.RmdirResponse{Status: status}
+			},
+		)
 	case nfs.NFSProcRename:
 		return handleRequest(
 			data,
@@ -246,8 +266,18 @@ func (c *conn) handleNFSProcedure(procedure uint32, data []byte) ([]byte, error)
 				return &nfs.RenameResponse{Status: status}
 			},
 		)
-		// case NFSProcLink:
-		// 	return handler.Link(repo, data)
+	case nfs.NFSProcLink:
+		return handleRequest(
+			data,
+			nfs.DecodeLinkRequest,
+			func(req *nfs.LinkRequest) (*nfs.LinkResponse, error) {
+				return handler.Link(repo, req)
+			},
+			nfs.NFS3ErrIO,
+			func(status uint32) *nfs.LinkResponse {
+				return &nfs.LinkResponse{Status: status}
+			},
+		)
 	case nfs.NFSProcReadDir:
 		return handleRequest(
 			data,

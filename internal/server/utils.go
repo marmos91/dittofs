@@ -21,6 +21,9 @@ type rpcRequest interface {
 		*nfs.CreateRequest |
 		*nfs.RenameRequest |
 		*nfs.RemoveRequest |
+		*nfs.MkdirRequest |
+		*nfs.RmdirRequest |
+		*nfs.LinkRequest |
 		*mount.MountRequest |
 		*mount.UmountRequest
 }
@@ -40,6 +43,9 @@ type rpcResponse interface {
 		*nfs.CreateResponse |
 		*nfs.RenameResponse |
 		*nfs.RemoveResponse |
+		*nfs.MkdirResponse |
+		*nfs.RmdirResponse |
+		*nfs.LinkResponse |
 		*mount.MountResponse |
 		*mount.UmountResponse
 	Encode() ([]byte, error)
