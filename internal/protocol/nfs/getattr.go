@@ -20,28 +20,6 @@ type GetAttrResponse struct {
 	Attr   *FileAttr // only present if Status == NFS3OK
 }
 
-// FileAttr represents NFS file attributes
-type FileAttr struct {
-	Type   uint32
-	Mode   uint32
-	Nlink  uint32
-	UID    uint32
-	GID    uint32
-	Size   uint64
-	Used   uint64
-	Rdev   [2]uint32
-	Fsid   uint64
-	Fileid uint64
-	Atime  TimeVal
-	Mtime  TimeVal
-	Ctime  TimeVal
-}
-
-type TimeVal struct {
-	Seconds  uint32
-	Nseconds uint32
-}
-
 // GetAttr returns the attributes for a file system object.
 // RFC 1813 Section 3.3.1
 func (h *DefaultNFSHandler) GetAttr(repository metadata.Repository, req *GetAttrRequest) (*GetAttrResponse, error) {

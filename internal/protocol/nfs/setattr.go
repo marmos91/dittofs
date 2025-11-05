@@ -46,13 +46,6 @@ type SetAttrResponse struct {
 	AttrAfter  *FileAttr // Post-op attributes (optional)
 }
 
-// WccAttr contains weak cache consistency attributes
-type WccAttr struct {
-	Size  uint64
-	Mtime TimeVal
-	Ctime TimeVal
-}
-
 // SetAttr sets the attributes for a file system object.
 // RFC 1813 Section 3.3.2
 func (h *DefaultNFSHandler) SetAttr(repository metadata.Repository, req *SetAttrRequest) (*SetAttrResponse, error) {
