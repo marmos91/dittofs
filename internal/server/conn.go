@@ -220,12 +220,32 @@ func (c *conn) handleNFSProcedure(procedure uint32, data []byte) ([]byte, error)
 		// 	return handler.Symlink(repo, data)
 		// case NFSProcMknod:
 		// 	return handler.MkNod(repo, data)
-		// case NFSProcRemove:
-		// 	return handler.Remove(repo, data)
+	case nfs.NFSProcRemove:
+		return handleRequest(
+			data,
+			nfs.DecodeRemoveRequest,
+			func(req *nfs.RemoveRequest) (*nfs.RemoveResponse, error) {
+				return handler.Remove(repo, req)
+			},
+			nfs.NFS3ErrIO,
+			func(status uint32) *nfs.RemoveResponse {
+				return &nfs.RemoveResponse{Status: status}
+			},
+		)
 		// case NFSProcRmdir:
 		// 	return handler.RmDir(repo, data)
-		// case NFSProcRename:
-		// 	return handler.Rename(repo, data)
+	case nfs.NFSProcRename:
+		return handleRequest(
+			data,
+			nfs.DecodeRenameRequest,
+			func(req *nfs.RenameRequest) (*nfs.RenameResponse, error) {
+				return handler.Rename(repo, req)
+			},
+			nfs.NFS3ErrIO,
+			func(status uint32) *nfs.RenameResponse {
+				return &nfs.RenameResponse{Status: status}
+			},
+		)
 		// case NFSProcLink:
 		// 	return handler.Link(repo, data)
 	case nfs.NFSProcReadDir:

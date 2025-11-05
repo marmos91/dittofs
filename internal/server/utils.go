@@ -19,6 +19,8 @@ type rpcRequest interface {
 		*nfs.SetAttrRequest |
 		*nfs.WriteRequest |
 		*nfs.CreateRequest |
+		*nfs.RenameRequest |
+		*nfs.RemoveRequest |
 		*mount.MountRequest |
 		*mount.UmountRequest
 }
@@ -36,6 +38,8 @@ type rpcResponse interface {
 		*nfs.SetAttrResponse |
 		*nfs.WriteResponse |
 		*nfs.CreateResponse |
+		*nfs.RenameResponse |
+		*nfs.RemoveResponse |
 		*mount.MountResponse |
 		*mount.UmountResponse
 	Encode() ([]byte, error)

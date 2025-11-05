@@ -55,19 +55,19 @@ type NFSHandler interface {
 	// // MkNod creates a special device file.
 	// // RFC 1813 Section 3.3.11
 	// MkNod(repository metadata.Repository, data []byte) ([]byte, error)
-	//
-	// // Remove removes a file.
-	// // RFC 1813 Section 3.3.12
-	// Remove(repository metadata.Repository, data []byte) ([]byte, error)
-	//
+
+	// Remove removes a file.
+	// RFC 1813 Section 3.3.12
+	Remove(repository metadata.Repository, req *nfs.RemoveRequest) (*nfs.RemoveResponse, error)
+
 	// // RmDir removes a directory.
 	// // RFC 1813 Section 3.3.13
 	// RmDir(repository metadata.Repository, data []byte) ([]byte, error)
-	//
-	// // Rename renames a file or directory.
-	// // RFC 1813 Section 3.3.14
-	// Rename(repository metadata.Repository, data []byte) ([]byte, error)
-	//
+
+	// Rename renames a file or directory.
+	// RFC 1813 Section 3.3.14
+	Rename(repository metadata.Repository, req *nfs.RenameRequest) (*nfs.RenameResponse, error)
+
 	// // Link creates a hard link to a file.
 	// // RFC 1813 Section 3.3.15
 	// Link(repository metadata.Repository, data []byte) ([]byte, error)
