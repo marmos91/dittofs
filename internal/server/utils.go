@@ -17,6 +17,8 @@ type rpcRequest interface {
 		*nfs.ReadDirPlusRequest |
 		*nfs.ReadRequest |
 		*nfs.SetAttrRequest |
+		*nfs.WriteRequest |
+		*nfs.CreateRequest |
 		*mount.MountRequest |
 		*mount.UmountRequest
 }
@@ -32,6 +34,8 @@ type rpcResponse interface {
 		*nfs.ReadDirPlusResponse |
 		*nfs.ReadResponse |
 		*nfs.SetAttrResponse |
+		*nfs.WriteResponse |
+		*nfs.CreateResponse |
 		*mount.MountResponse |
 		*mount.UmountResponse
 	Encode() ([]byte, error)

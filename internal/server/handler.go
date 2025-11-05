@@ -36,15 +36,14 @@ type NFSHandler interface {
 	// RFC 1813 Section 3.3.6
 	Read(content content.Repository, repository metadata.Repository, req *nfs.ReadRequest) (*nfs.ReadResponse, error)
 
-	//
-	// // Write writes data to a file.
-	// // RFC 1813 Section 3.3.7
-	// Write(repository metadata.Repository, data []byte) ([]byte, error)
-	//
-	// // Create creates a regular file.
-	// // RFC 1813 Section 3.3.8
-	// Create(repository metadata.Repository, data []byte) ([]byte, error)
-	//
+	// Write writes data to a file.
+	// RFC 1813 Section 3.3.7
+	Write(content content.Repository, repository metadata.Repository, req *nfs.WriteRequest) (*nfs.WriteResponse, error)
+
+	// Create creates a regular file.
+	// RFC 1813 Section 3.3.8
+	Create(content content.Repository, repository metadata.Repository, req *nfs.CreateRequest) (*nfs.CreateResponse, error)
+
 	// // Mkdir creates a directory.
 	// // RFC 1813 Section 3.3.9
 	// Mkdir(repository metadata.Repository, data []byte) ([]byte, error)

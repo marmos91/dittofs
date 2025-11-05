@@ -85,3 +85,30 @@ func (r *FSContentRepository) WriteContent(id ContentID, content []byte) error {
 
 	return nil
 }
+
+// WriteAt writes data at the specified offset
+// Implements WriteRepository interface
+func (r *FSContentRepository) WriteAt(id ContentID, data []byte, offset int64) error {
+	filePath := r.getFilePath(id)
+
+	// Open file for read/write, create if doesn't exist
+	file, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open file for writing: %w", err)
+	}
+	defer file.Close()
+
+	// Seek to offset
+	_, err = file.Seek(offset, io.SeekStart)
+	if err != nil {
+		return fmt.Errorf("failed to seek to offset: %w", err)
+	}
+
+	// Write data
+	_, err = file.Write(data)
+	if err != nil {
+		return fmt.Errorf("failed to write data: %w", err)
+	}
+
+	return nil
+}

@@ -19,6 +19,14 @@ type Repository interface {
 	ContentExists(id ContentID) (bool, error)
 }
 
+type WriteRepository interface {
+	Repository
+
+	// WriteAt writes data at the specified offset
+	// If the file doesn't exist, it will be created
+	WriteAt(id ContentID, data []byte, offset int64) error
+}
+
 // SeekableContentRepository is an optional extended interface
 // for repositories that support random access reads
 type SeekableContentRepository interface {

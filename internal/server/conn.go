@@ -190,10 +190,30 @@ func (c *conn) handleNFSProcedure(procedure uint32, data []byte) ([]byte, error)
 				return &nfs.ReadResponse{Status: status}
 			},
 		)
-		// case NFSProcWrite:
-		// 	return handler.Write(repo, data)
-		// case NFSProcCreate:
-		// 	return handler.Create(repo, data)
+	case nfs.NFSProcWrite:
+		return handleRequest(
+			data,
+			nfs.DecodeWriteRequest,
+			func(req *nfs.WriteRequest) (*nfs.WriteResponse, error) {
+				return handler.Write(contentRepo, repo, req)
+			},
+			nfs.NFS3ErrIO,
+			func(status uint32) *nfs.WriteResponse {
+				return &nfs.WriteResponse{Status: status}
+			},
+		)
+	case nfs.NFSProcCreate:
+		return handleRequest(
+			data,
+			nfs.DecodeCreateRequest,
+			func(req *nfs.CreateRequest) (*nfs.CreateResponse, error) {
+				return handler.Create(contentRepo, repo, req)
+			},
+			nfs.NFS3ErrIO,
+			func(status uint32) *nfs.CreateResponse {
+				return &nfs.CreateResponse{Status: status}
+			},
+		)
 		// case NFSProcMkdir:
 		// 	return handler.Mkdir(repo, data)
 		// case NFSProcSymlink:
