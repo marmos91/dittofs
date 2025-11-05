@@ -12,206 +12,157 @@ import (
 	"github.com/marmos91/dittofs/internal/metadata"
 )
 
-// Create modes (RFC 1813 Section 3.3.8)
-const (
-	CreateUnchecked = 0 // Create file or truncate if exists
-	CreateGuarded   = 1 // Create only if file doesn't exist
-	CreateExclusive = 2 // Create exclusively with verifier
-)
-
-// CreateRequest represents a CREATE request
+// CreateRequest represents an NFS CREATE request (RFC 1813 Section 3.3.8).
+// The CREATE procedure creates a new regular file.
 type CreateRequest struct {
+	// DirHandle is the file handle of the parent directory
 	DirHandle []byte
-	Filename  string
-	Mode      uint32    // Create mode (unchecked/guarded/exclusive)
-	Attr      *SetAttrs // Attributes to set
-	Verf      uint64    // Verifier for exclusive create
+
+	// Filename is the name of the file to create
+	Filename string
+
+	// Mode specifies the creation mode (unchecked/guarded/exclusive)
+	Mode uint32
+
+	// Attr contains optional attributes to set on the new file
+	Attr *SetAttrs
+
+	// Verf is the verifier for exclusive create mode
+	Verf uint64
 }
 
-// CreateResponse represents a CREATE response
+// CreateResponse represents an NFS CREATE response (RFC 1813 Section 3.3.8).
 type CreateResponse struct {
-	Status     uint32
-	FileHandle []byte    // Handle of created file (optional)
-	Attr       *FileAttr // Post-op attributes of file (optional)
-	DirBefore  *WccAttr  // Pre-op dir attributes (optional)
-	DirAfter   *FileAttr // Post-op dir attributes (optional)
+	// Status is the NFS status code
+	Status uint32
+
+	// FileHandle is the handle of the created file (only if Status == NFS3OK)
+	FileHandle []byte
+
+	// Attr contains post-operation attributes of the created file
+	Attr *FileAttr
+
+	// DirBefore contains pre-operation weak cache consistency data for the directory
+	DirBefore *WccAttr
+
+	// DirAfter contains post-operation attributes for the directory
+	DirAfter *FileAttr
 }
 
-// Create creates a regular file.
-// RFC 1813 Section 3.3.8
-func (h *DefaultNFSHandler) Create(contentRepo content.Repository, metadataRepo metadata.Repository, req *CreateRequest) (*CreateResponse, error) {
+// Create creates a regular file in the specified directory.
+//
+// This implements the NFS CREATE procedure as defined in RFC 1813 Section 3.3.8.
+// The procedure supports three creation modes:
+//
+//   - UNCHECKED: Creates a file or truncates if it exists
+//   - GUARDED: Creates a file only if it doesn't exist
+//   - EXCLUSIVE: Creates a file with a verifier for idempotency
+//
+// Authentication: This layer performs no authentication. Auth checks should be
+// performed by the caller based on the authenticated RPC credentials.
+//
+// Error Handling:
+//   - Returns NFS3ErrNoEnt if the parent directory doesn't exist
+//   - Returns NFS3ErrNotDir if DirHandle is not a directory
+//   - Returns NFS3ErrExist if file exists in GUARDED or EXCLUSIVE mode
+//   - Returns NFS3ErrIO for metadata or content repository errors
+//   - Returns NFS3ErrInval for invalid filenames or attributes
+func (h *DefaultNFSHandler) Create(
+	contentRepo content.Repository,
+	metadataRepo metadata.Repository,
+	req *CreateRequest,
+) (*CreateResponse, error) {
 	logger.Debug("CREATE file '%s' in directory %x, mode=%d", req.Filename, req.DirHandle, req.Mode)
 
-	// Get directory attributes
+	// Validate request
+	if err := validateCreateRequest(req); err != nil {
+		logger.Warn("Invalid CREATE request: %v", err)
+		return &CreateResponse{Status: NFS3ErrInval}, nil
+	}
+
+	// Get and validate parent directory
 	dirAttr, err := metadataRepo.GetFile(metadata.FileHandle(req.DirHandle))
 	if err != nil {
-		logger.Warn("Directory not found: %v", err)
+		logger.Warn("Parent directory not found: %v", err)
 		return &CreateResponse{Status: NFS3ErrNoEnt}, nil
 	}
 
-	// Verify it's a directory
 	if dirAttr.Type != metadata.FileTypeDirectory {
-		logger.Warn("Handle is not a directory")
+		logger.Warn("Parent handle %x is not a directory", req.DirHandle)
 		return &CreateResponse{Status: NFS3ErrNotDir}, nil
 	}
 
-	// Store pre-op dir attributes for WCC
-	dirWccAttr := &WccAttr{
-		Size: dirAttr.Size,
-		Mtime: TimeVal{
-			Seconds:  uint32(dirAttr.Mtime.Unix()),
-			Nseconds: uint32(dirAttr.Mtime.Nanosecond()),
-		},
-		Ctime: TimeVal{
-			Seconds:  uint32(dirAttr.Ctime.Unix()),
-			Nseconds: uint32(dirAttr.Ctime.Nanosecond()),
-		},
-	}
+	// Capture pre-operation directory attributes for WCC
+	dirWccAttr := captureWccAttr(dirAttr)
 
 	// Check if file already exists
 	existingHandle, err := metadataRepo.GetChild(metadata.FileHandle(req.DirHandle), req.Filename)
 	fileExists := (err == nil)
 
-	// Handle different create modes
+	// Handle creation based on mode
+	var fileHandle metadata.FileHandle
+	var fileAttr *metadata.FileAttr
+
 	switch req.Mode {
 	case CreateGuarded:
 		if fileExists {
-			logger.Debug("File already exists (guarded create)")
+			logger.Debug("File '%s' already exists (guarded create)", req.Filename)
 			return &CreateResponse{Status: NFS3ErrExist}, nil
 		}
+		fileHandle, fileAttr, err = createNewFile(metadataRepo, req)
+
 	case CreateExclusive:
 		if fileExists {
-			// Check verifier - if it matches, return success (idempotent)
-			// For simplicity, we'll just return exist error
-			logger.Debug("File already exists (exclusive create)")
+			// RFC 1813: Should check verifier for idempotency
+			// TODO: Implement verifier checking
+			logger.Debug("File '%s' already exists (exclusive create)", req.Filename)
 			return &CreateResponse{Status: NFS3ErrExist}, nil
 		}
+		fileHandle, fileAttr, err = createNewFile(metadataRepo, req)
+
 	case CreateUnchecked:
-		// If file exists, truncate it
 		if fileExists {
-			logger.Debug("File exists, truncating (unchecked create)")
-			existingAttr, _ := metadataRepo.GetFile(existingHandle)
-			if existingAttr != nil {
-				existingAttr.Size = 0
-				existingAttr.Mtime = time.Now()
-				existingAttr.Ctime = time.Now()
+			fileHandle = existingHandle
+			fileAttr, err = truncateExistingFile(contentRepo, metadataRepo, existingHandle, req)
+		} else {
+			fileHandle, fileAttr, err = createNewFile(metadataRepo, req)
+		}
 
-				// Apply any new attributes from request
-				if req.Attr != nil {
-					if req.Attr.SetMode {
-						existingAttr.Mode = req.Attr.Mode
-					}
-					if req.Attr.SetUID {
-						existingAttr.UID = req.Attr.UID
-					}
-					if req.Attr.SetGID {
-						existingAttr.GID = req.Attr.GID
-					}
-				}
+	default:
+		logger.Warn("Invalid create mode: %d", req.Mode)
+		return &CreateResponse{Status: NFS3ErrInval}, nil
+	}
 
-				metadataRepo.UpdateFile(existingHandle, existingAttr)
+	if err != nil {
+		logger.Error("Failed to create file '%s': %v", req.Filename, err)
+		return &CreateResponse{Status: NFS3ErrIO}, nil
+	}
 
-				// Truncate content if it exists
-				if existingAttr.ContentID != "" {
-					if writeRepo, ok := contentRepo.(content.WriteRepository); ok {
-						writeRepo.WriteAt(existingAttr.ContentID, []byte{}, 0)
-					}
-				}
-
-				// Generate file ID
-				fileid := binary.BigEndian.Uint64(existingHandle[:8])
-				nfsAttr := MetadataToNFSAttr(existingAttr, fileid)
-
-				// Update directory mtime
-				dirAttr.Mtime = time.Now()
-				dirAttr.Ctime = time.Now()
-				metadataRepo.UpdateFile(metadata.FileHandle(req.DirHandle), dirAttr)
-
-				dirFileid := binary.BigEndian.Uint64(req.DirHandle[:8])
-				nfsDirAttr := MetadataToNFSAttr(dirAttr, dirFileid)
-
-				logger.Info("CREATE successful (truncated existing): '%s'", req.Filename)
-				return &CreateResponse{
-					Status:     NFS3OK,
-					FileHandle: existingHandle,
-					Attr:       nfsAttr,
-					DirBefore:  dirWccAttr,
-					DirAfter:   nfsDirAttr,
-				}, nil
-			}
+	// Link file to parent directory (if new file)
+	if !fileExists || req.Mode != CreateUnchecked {
+		if err := linkFileToParent(metadataRepo, fileHandle, metadata.FileHandle(req.DirHandle), req.Filename); err != nil {
+			logger.Error("Failed to link file to parent: %v", err)
+			// Cleanup the created file
+			metadataRepo.DeleteFile(fileHandle)
+			return &CreateResponse{Status: NFS3ErrIO}, nil
 		}
 	}
 
-	// Create new file
+	// Update parent directory timestamps
 	now := time.Now()
-	fileAttr := &metadata.FileAttr{
-		Type:      metadata.FileTypeRegular,
-		Mode:      0644, // Default mode
-		UID:       0,
-		GID:       0,
-		Size:      0,
-		Atime:     now,
-		Mtime:     now,
-		Ctime:     now,
-		ContentID: "", // Will be set on first write
+	dirAttr.Mtime = now
+	dirAttr.Ctime = now
+	if err := metadataRepo.UpdateFile(metadata.FileHandle(req.DirHandle), dirAttr); err != nil {
+		logger.Warn("Failed to update directory timestamps: %v", err)
+		// Non-fatal, continue
 	}
 
-	// Apply attributes from request
-	if req.Attr != nil {
-		if req.Attr.SetMode {
-			fileAttr.Mode = req.Attr.Mode
-		}
-		if req.Attr.SetUID {
-			fileAttr.UID = req.Attr.UID
-		}
-		if req.Attr.SetGID {
-			fileAttr.GID = req.Attr.GID
-		}
-		if req.Attr.SetSize {
-			fileAttr.Size = req.Attr.Size
-		}
-	}
+	// Convert to NFS attributes
+	fileID := extractFileID(fileHandle)
+	nfsAttr := MetadataToNFSAttr(fileAttr, fileID)
 
-	// Generate a new file handle
-	// We'll use a hash similar to how MemoryRepository does it
-	handleData := fmt.Sprintf("%s-%s-%d", req.DirHandle, req.Filename, time.Now().UnixNano())
-	hash := sha256.Sum256([]byte(handleData))
-	fileHandle := metadata.FileHandle(hash[:])
-
-	// Create the file in the metadata repository
-	if err := metadataRepo.CreateFile(fileHandle, fileAttr); err != nil {
-		logger.Error("Failed to create file metadata: %v", err)
-		return &CreateResponse{Status: NFS3ErrIO}, nil
-	}
-
-	// Add as child to parent directory
-	if err := metadataRepo.AddChild(metadata.FileHandle(req.DirHandle), req.Filename, fileHandle); err != nil {
-		logger.Error("Failed to add child to directory: %v", err)
-		// Clean up the file we just created
-		metadataRepo.DeleteFile(fileHandle)
-		return &CreateResponse{Status: NFS3ErrIO}, nil
-	}
-
-	// Set parent relationship
-	if err := metadataRepo.SetParent(fileHandle, metadata.FileHandle(req.DirHandle)); err != nil {
-		logger.Error("Failed to set parent: %v", err)
-		// Clean up
-		metadataRepo.DeleteChild(metadata.FileHandle(req.DirHandle), req.Filename)
-		metadataRepo.DeleteFile(fileHandle)
-		return &CreateResponse{Status: NFS3ErrIO}, nil
-	}
-
-	// Generate file ID
-	fileid := binary.BigEndian.Uint64(fileHandle[:8])
-	nfsAttr := MetadataToNFSAttr(fileAttr, fileid)
-
-	// Update directory mtime
-	dirAttr.Mtime = time.Now()
-	dirAttr.Ctime = time.Now()
-	metadataRepo.UpdateFile(metadata.FileHandle(req.DirHandle), dirAttr)
-
-	dirFileid := binary.BigEndian.Uint64(req.DirHandle[:8])
-	nfsDirAttr := MetadataToNFSAttr(dirAttr, dirFileid)
+	dirID := extractFileID(metadata.FileHandle(req.DirHandle))
+	nfsDirAttr := MetadataToNFSAttr(dirAttr, dirID)
 
 	logger.Info("CREATE successful: '%s' -> handle %x", req.Filename, fileHandle)
 
@@ -224,169 +175,208 @@ func (h *DefaultNFSHandler) Create(contentRepo content.Repository, metadataRepo 
 	}, nil
 }
 
+// DecodeCreateRequest decodes an XDR-encoded CREATE request.
+//
+// The request format (RFC 1813 Section 3.3.8):
+//
+//	struct CREATE3args {
+//	    diropargs3   where;
+//	    createhow3   how;
+//	};
+//
+// Returns an error if the request cannot be decoded.
 func DecodeCreateRequest(data []byte) (*CreateRequest, error) {
 	if len(data) < 4 {
-		return nil, fmt.Errorf("data too short")
+		return nil, fmt.Errorf("data too short: %d bytes", len(data))
 	}
 
 	reader := bytes.NewReader(data)
 
-	// Read directory handle length
-	var handleLen uint32
-	if err := binary.Read(reader, binary.BigEndian, &handleLen); err != nil {
-		return nil, fmt.Errorf("read handle length: %w", err)
+	// Decode directory handle (opaque data)
+	dirHandle, err := decodeOpaque(reader)
+	if err != nil {
+		return nil, fmt.Errorf("decode directory handle: %w", err)
 	}
 
-	// Read directory handle
-	dirHandle := make([]byte, handleLen)
-	if err := binary.Read(reader, binary.BigEndian, &dirHandle); err != nil {
-		return nil, fmt.Errorf("read handle: %w", err)
+	// Decode filename (string)
+	filename, err := decodeString(reader)
+	if err != nil {
+		return nil, fmt.Errorf("decode filename: %w", err)
 	}
 
-	// Skip padding
-	padding := (4 - (handleLen % 4)) % 4
-	for i := uint32(0); i < padding; i++ {
-		reader.ReadByte()
-	}
-
-	// Read filename length
-	var filenameLen uint32
-	if err := binary.Read(reader, binary.BigEndian, &filenameLen); err != nil {
-		return nil, fmt.Errorf("read filename length: %w", err)
-	}
-
-	// Read filename
-	filenameBytes := make([]byte, filenameLen)
-	if err := binary.Read(reader, binary.BigEndian, &filenameBytes); err != nil {
-		return nil, fmt.Errorf("read filename: %w", err)
-	}
-
-	// Skip padding
-	padding = (4 - (filenameLen % 4)) % 4
-	for i := uint32(0); i < padding; i++ {
-		reader.ReadByte()
-	}
-
-	// Read create mode
+	// Decode create mode
 	var mode uint32
 	if err := binary.Read(reader, binary.BigEndian, &mode); err != nil {
-		return nil, fmt.Errorf("read mode: %w", err)
+		return nil, fmt.Errorf("decode mode: %w", err)
 	}
 
 	req := &CreateRequest{
 		DirHandle: dirHandle,
-		Filename:  string(filenameBytes),
+		Filename:  filename,
 		Mode:      mode,
 	}
 
-	// Read attributes based on mode
-	if mode == CreateExclusive {
-		// Read verifier
+	// Decode mode-specific data
+	switch mode {
+	case CreateExclusive:
+		// Decode verifier (8 bytes)
 		var verf uint64
 		if err := binary.Read(reader, binary.BigEndian, &verf); err != nil {
-			return nil, fmt.Errorf("read verifier: %w", err)
+			return nil, fmt.Errorf("decode verifier: %w", err)
 		}
 		req.Verf = verf
-	} else {
-		// Read set attributes (similar to SETATTR)
-		attr := &SetAttrs{}
 
-		// Mode
-		var setMode uint32
-		if err := binary.Read(reader, binary.BigEndian, &setMode); err != nil {
-			return nil, fmt.Errorf("read set_mode: %w", err)
+	case CreateUnchecked, CreateGuarded:
+		// Decode sattr3 (set attributes)
+		attr, err := decodeSetAttrs(reader)
+		if err != nil {
+			return nil, fmt.Errorf("decode attributes: %w", err)
 		}
-		attr.SetMode = (setMode == 1)
-		if attr.SetMode {
-			if err := binary.Read(reader, binary.BigEndian, &attr.Mode); err != nil {
-				return nil, fmt.Errorf("read mode: %w", err)
-			}
-		}
-
-		// UID
-		var setUID uint32
-		if err := binary.Read(reader, binary.BigEndian, &setUID); err != nil {
-			return nil, fmt.Errorf("read set_uid: %w", err)
-		}
-		attr.SetUID = (setUID == 1)
-		if attr.SetUID {
-			if err := binary.Read(reader, binary.BigEndian, &attr.UID); err != nil {
-				return nil, fmt.Errorf("read uid: %w", err)
-			}
-		}
-
-		// GID
-		var setGID uint32
-		if err := binary.Read(reader, binary.BigEndian, &setGID); err != nil {
-			return nil, fmt.Errorf("read set_gid: %w", err)
-		}
-		attr.SetGID = (setGID == 1)
-		if attr.SetGID {
-			if err := binary.Read(reader, binary.BigEndian, &attr.GID); err != nil {
-				return nil, fmt.Errorf("read gid: %w", err)
-			}
-		}
-
-		// Size
-		var setSize uint32
-		if err := binary.Read(reader, binary.BigEndian, &setSize); err != nil {
-			return nil, fmt.Errorf("read set_size: %w", err)
-		}
-		attr.SetSize = (setSize == 1)
-		if attr.SetSize {
-			if err := binary.Read(reader, binary.BigEndian, &attr.Size); err != nil {
-				return nil, fmt.Errorf("read size: %w", err)
-			}
-		}
-
-		// Atime
-		var setAtime uint32
-		if err := binary.Read(reader, binary.BigEndian, &setAtime); err != nil {
-			return nil, fmt.Errorf("read set_atime: %w", err)
-		}
-		if setAtime == 1 {
-			attr.SetAtime = true
-			if err := binary.Read(reader, binary.BigEndian, &attr.Atime.Seconds); err != nil {
-				return nil, fmt.Errorf("read atime seconds: %w", err)
-			}
-			if err := binary.Read(reader, binary.BigEndian, &attr.Atime.Nseconds); err != nil {
-				return nil, fmt.Errorf("read atime nseconds: %w", err)
-			}
-		} else if setAtime == 2 {
-			attr.SetAtime = true
-			now := time.Now()
-			attr.Atime = TimeVal{
-				Seconds:  uint32(now.Unix()),
-				Nseconds: uint32(now.Nanosecond()),
-			}
-		}
-
-		// Mtime
-		var setMtime uint32
-		if err := binary.Read(reader, binary.BigEndian, &setMtime); err != nil {
-			return nil, fmt.Errorf("read set_mtime: %w", err)
-		}
-		if setMtime == 1 {
-			attr.SetMtime = true
-			if err := binary.Read(reader, binary.BigEndian, &attr.Mtime.Seconds); err != nil {
-				return nil, fmt.Errorf("read mtime seconds: %w", err)
-			}
-			if err := binary.Read(reader, binary.BigEndian, &attr.Mtime.Nseconds); err != nil {
-				return nil, fmt.Errorf("read mtime nseconds: %w", err)
-			}
-		} else if setMtime == 2 {
-			attr.SetMtime = true
-			now := time.Now()
-			attr.Mtime = TimeVal{
-				Seconds:  uint32(now.Unix()),
-				Nseconds: uint32(now.Nanosecond()),
-			}
-		}
-
 		req.Attr = attr
+
+	default:
+		return nil, fmt.Errorf("invalid create mode: %d", mode)
 	}
 
 	return req, nil
+}
+
+// validateCreateRequest validates the CREATE request parameters.
+func validateCreateRequest(req *CreateRequest) error {
+	if len(req.DirHandle) == 0 {
+		return fmt.Errorf("empty directory handle")
+	}
+
+	if req.Filename == "" {
+		return fmt.Errorf("empty filename")
+	}
+
+	if len(req.Filename) > 255 {
+		return fmt.Errorf("filename too long: %d bytes", len(req.Filename))
+	}
+
+	// Check for invalid characters (basic check)
+	if bytes.ContainsAny([]byte(req.Filename), "/\x00") {
+		return fmt.Errorf("filename contains invalid characters")
+	}
+
+	if req.Mode > CreateExclusive {
+		return fmt.Errorf("invalid create mode: %d", req.Mode)
+	}
+
+	return nil
+}
+
+// createNewFile creates a new file with the requested attributes.
+func createNewFile(
+	metadataRepo metadata.Repository,
+	req *CreateRequest,
+) (metadata.FileHandle, *metadata.FileAttr, error) {
+	now := time.Now()
+
+	// Initialize file attributes with defaults
+	fileAttr := &metadata.FileAttr{
+		Type:      metadata.FileTypeRegular,
+		Mode:      0644, // Default: rw-r--r--
+		UID:       0,
+		GID:       0,
+		Size:      0,
+		Atime:     now,
+		Mtime:     now,
+		Ctime:     now,
+		ContentID: "", // Will be set on first write
+	}
+
+	// Apply requested attributes
+	applySetAttrs(fileAttr, req.Attr)
+
+	// Generate file handle
+	fileHandle := generateFileHandle(req.DirHandle, req.Filename, now)
+
+	// Create file in metadata repository
+	if err := metadataRepo.CreateFile(fileHandle, fileAttr); err != nil {
+		return nil, nil, fmt.Errorf("create file metadata: %w", err)
+	}
+
+	return fileHandle, fileAttr, nil
+}
+
+// truncateExistingFile truncates an existing file to the specified size and updates its attributes.
+// If targetSize is not provided or req.Attr.SetSize is true, uses the size from req.Attr.
+// Otherwise truncates to 0 (empty file).
+func truncateExistingFile(
+	contentRepo content.Repository,
+	metadataRepo metadata.Repository,
+	fileHandle metadata.FileHandle,
+	req *CreateRequest,
+) (*metadata.FileAttr, error) {
+	// Get current attributes
+	fileAttr, err := metadataRepo.GetFile(fileHandle)
+	if err != nil {
+		return nil, fmt.Errorf("get file attributes: %w", err)
+	}
+
+	now := time.Now()
+
+	// Determine target size
+	targetSize := uint64(0) // Default: truncate to empty
+	if req.Attr != nil && req.Attr.SetSize {
+		targetSize = req.Attr.Size
+	}
+
+	// Update file metadata
+	fileAttr.Size = targetSize
+	fileAttr.Mtime = now
+	fileAttr.Ctime = now
+
+	// Apply other requested attributes (mode, uid, gid, times)
+	applySetAttrs(fileAttr, req.Attr)
+
+	// Update metadata
+	if err := metadataRepo.UpdateFile(fileHandle, fileAttr); err != nil {
+		return nil, fmt.Errorf("update file metadata: %w", err)
+	}
+
+	// Truncate content if it exists
+	if fileAttr.ContentID != "" {
+		if writeRepo, ok := contentRepo.(content.WriteRepository); ok {
+			if err := writeRepo.Truncate(fileAttr.ContentID, targetSize); err != nil {
+				logger.Warn("Failed to truncate content to %d bytes: %v", targetSize, err)
+				// Non-fatal, metadata is already updated
+			}
+		}
+	}
+
+	return fileAttr, nil
+}
+
+// linkFileToParent links a file to its parent directory.
+func linkFileToParent(
+	metadataRepo metadata.Repository,
+	fileHandle metadata.FileHandle,
+	parentHandle metadata.FileHandle,
+	filename string,
+) error {
+	// Add as child to parent directory
+	if err := metadataRepo.AddChild(parentHandle, filename, fileHandle); err != nil {
+		return fmt.Errorf("add child: %w", err)
+	}
+
+	// Set parent relationship
+	if err := metadataRepo.SetParent(fileHandle, parentHandle); err != nil {
+		// Cleanup child link
+		metadataRepo.DeleteChild(parentHandle, filename)
+		return fmt.Errorf("set parent: %w", err)
+	}
+
+	return nil
+}
+
+// generateFileHandle creates a deterministic file handle.
+func generateFileHandle(parentHandle []byte, filename string, timestamp time.Time) metadata.FileHandle {
+	data := fmt.Sprintf("%x-%s-%d", parentHandle, filename, timestamp.UnixNano())
+	hash := sha256.Sum256([]byte(data))
+	return metadata.FileHandle(hash[:])
 }
 
 func (resp *CreateResponse) Encode() ([]byte, error) {
