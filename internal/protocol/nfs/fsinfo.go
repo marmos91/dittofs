@@ -25,6 +25,9 @@ type FsInfoRequest struct {
 	// Handle is the file handle for a filesystem object.
 	// Typically this is the root handle obtained from the MOUNT protocol,
 	// but can be any valid file handle within the filesystem.
+	//
+	// The handle is treated as opaque by the protocol layer and validated
+	// by the repository implementation.
 	Handle []byte
 }
 
@@ -42,6 +45,7 @@ type FsInfoResponse struct {
 	//   - NFS3OK (0): Success
 	//   - NFS3ErrNoEnt (2): File handle not found
 	//   - NFS3ErrStale (70): Stale file handle
+	//   - NFS3ErrBadHandle (10001): Malformed file handle
 	//   - NFS3ErrIO (5): I/O error
 	Status uint32
 
@@ -109,6 +113,14 @@ type FsInfoContext struct {
 	// ClientAddr is the network address of the client making the request.
 	// Format: "IP:port" (e.g., "192.168.1.100:1234")
 	ClientAddr string
+
+	// AuthFlavor is the authentication method used by the client
+	// This field is available for future authentication enhancements.
+	// Common values:
+	//   - 0: AUTH_NULL (no authentication)
+	//   - 1: AUTH_UNIX (Unix-style authentication)
+	// Currently not enforced for FSINFO as it's typically an unauthenticated operation.
+	AuthFlavor uint32
 }
 
 // FsInfo handles the FSINFO procedure, which returns static information about
@@ -116,10 +128,11 @@ type FsInfoContext struct {
 //
 // The FSINFO procedure provides clients with essential information for optimizing
 // their operations:
-//  1. Verify the file handle exists and is valid
-//  2. Retrieve filesystem capabilities from the repository
-//  3. Retrieve file attributes for cache consistency
-//  4. Return comprehensive filesystem information
+//  1. Validate the file handle format and length
+//  2. Verify the file handle exists via repository
+//  3. Retrieve filesystem capabilities from the repository
+//  4. Retrieve file attributes for cache consistency
+//  5. Return comprehensive filesystem information
 //
 // Design principles:
 //   - Protocol layer handles only XDR encoding/decoding and validation
@@ -155,36 +168,64 @@ type FsInfoContext struct {
 //	}
 //	resp, err := handler.FsInfo(repository, req, ctx)
 //	if err != nil {
-//	    // Internal server error
+//	    // Internal server error occurred
+//	    return nil, err
 //	}
 //	if resp.Status == NFS3OK {
-//	    // Use resp.Rtmax, resp.Wtmax, etc. to optimize I/O
+//	    // Success - use resp.Rtmax, resp.Wtmax, etc. to optimize I/O
 //	}
 func (h *DefaultNFSHandler) FsInfo(repository metadata.Repository, req *FsInfoRequest, ctx *FsInfoContext) (*FsInfoResponse, error) {
-	logger.Debug("FSINFO request: handle=%x client=%s", req.Handle, ctx.ClientAddr)
+	logger.Debug("FSINFO request: handle=%x client=%s auth=%d",
+		req.Handle, ctx.ClientAddr, ctx.AuthFlavor)
 
-	// Verify the file handle exists and is valid
+	// Validate file handle before using it
+	if err := validateFileHandle(req.Handle); err != nil {
+		logger.Debug("FSINFO failed: invalid handle: %v", err)
+		return &FsInfoResponse{Status: NFS3ErrBadHandle}, nil
+	}
+
+	// Verify the file handle exists and is valid in the repository
+	// The repository is responsible for validating handle format and existence
 	attr, err := repository.GetFile(metadata.FileHandle(req.Handle))
 	if err != nil {
-		logger.Debug("FSINFO failed: handle not found: %v", err)
+		logger.Debug("FSINFO failed: handle=%x client=%s error=%v",
+			req.Handle, ctx.ClientAddr, err)
 		return &FsInfoResponse{Status: NFS3ErrNoEnt}, nil
 	}
 
 	// Retrieve filesystem capabilities from the repository
+	// All business logic about filesystem limits is handled by the repository
 	fsInfo, err := repository.GetFSInfo(metadata.FileHandle(req.Handle))
 	if err != nil {
-		logger.Error("FSINFO failed: error retrieving fsinfo: %v", err)
+		logger.Error("FSINFO failed: handle=%x client=%s error=failed to retrieve fsinfo: %v",
+			req.Handle, ctx.ClientAddr, err)
+		return &FsInfoResponse{Status: NFS3ErrIO}, nil
+	}
+
+	// Defensive check: ensure repository returned valid fsInfo
+	if fsInfo == nil {
+		logger.Error("FSINFO failed: handle=%x client=%s error=repository returned nil fsInfo",
+			req.Handle, ctx.ClientAddr)
 		return &FsInfoResponse{Status: NFS3ErrIO}, nil
 	}
 
 	// Generate file ID from handle for attributes
-	fileid := binary.BigEndian.Uint64(req.Handle[:8])
+	// This is a protocol-layer concern for creating the NFS attribute structure
+	fileid, err := extractFileIDFromHandle(req.Handle)
+	if err != nil {
+		logger.Error("FSINFO failed: handle=%x client=%s error=failed to extract file ID: %v",
+			req.Handle, ctx.ClientAddr, err)
+		return &FsInfoResponse{Status: NFS3ErrBadHandle}, nil
+	}
+
+	// Convert metadata attributes to NFS wire format
 	nfsAttr := MetadataToNFSAttr(attr, fileid)
 
 	logger.Info("FSINFO successful: client=%s rtmax=%d wtmax=%d maxfilesize=%d properties=0x%x",
 		ctx.ClientAddr, fsInfo.RtMax, fsInfo.WtMax, fsInfo.MaxFileSize, fsInfo.Properties)
 
 	// Build response with data from repository
+	// All fields are populated from the repository's FSInfo structure
 	return &FsInfoResponse{
 		Status:      NFS3OK,
 		Attr:        nfsAttr,
@@ -224,12 +265,14 @@ func (h *DefaultNFSHandler) FsInfo(repository metadata.Repository, req *FsInfoRe
 //	data := []byte{...} // XDR-encoded FSINFO request from network
 //	req, err := DecodeFsInfoRequest(data)
 //	if err != nil {
-//	    // Handle decode error
+//	    // Handle decode error - send error reply to client
+//	    return nil, err
 //	}
-//	// Use req.Handle
+//	// Use req.Handle in FSINFO procedure
 func DecodeFsInfoRequest(data []byte) (*FsInfoRequest, error) {
+	// Validate minimum data length for handle length field
 	if len(data) < 4 {
-		return nil, fmt.Errorf("data too short: need at least 4 bytes, got %d", len(data))
+		return nil, fmt.Errorf("data too short: need at least 4 bytes for handle length, got %d", len(data))
 	}
 
 	reader := bytes.NewReader(data)
@@ -240,20 +283,26 @@ func DecodeFsInfoRequest(data []byte) (*FsInfoRequest, error) {
 		return nil, fmt.Errorf("failed to read handle length: %w", err)
 	}
 
-	// Validate handle length (NFS v3 handles are typically <= 64 bytes)
+	// Validate handle length (NFS v3 handles are typically <= 64 bytes per RFC 1813)
 	if handleLen > 64 {
 		return nil, fmt.Errorf("invalid handle length: %d (max 64)", handleLen)
 	}
 
+	// Prevent zero-length handles which would cause issues downstream
+	if handleLen == 0 {
+		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
+	}
+
 	// Ensure we have enough data for the handle
+	// 4 bytes for length + handleLen bytes for data
 	if len(data) < int(4+handleLen) {
-		return nil, fmt.Errorf("data too short for handle: need %d bytes, got %d", 4+handleLen, len(data))
+		return nil, fmt.Errorf("data too short for handle: need %d bytes total, got %d", 4+handleLen, len(data))
 	}
 
 	// Read handle data
 	handle := make([]byte, handleLen)
 	if err := binary.Read(reader, binary.BigEndian, &handle); err != nil {
-		return nil, fmt.Errorf("failed to read handle: %w", err)
+		return nil, fmt.Errorf("failed to read handle data: %w", err)
 	}
 
 	return &FsInfoRequest{Handle: handle}, nil
@@ -296,17 +345,19 @@ func DecodeFsInfoRequest(data []byte) (*FsInfoRequest, error) {
 //	data, err := resp.Encode()
 //	if err != nil {
 //	    // Handle encoding error
+//	    return nil, err
 //	}
-//	// Send 'data' to client
+//	// Send 'data' to client over network
 func (resp *FsInfoResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
-	// Write status code (4 bytes)
+	// Write status code (4 bytes, big-endian)
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
 		return nil, fmt.Errorf("failed to write status: %w", err)
 	}
 
 	// If status is not OK, only return the status code
+	// Per RFC 1813, error responses contain only the status
 	if resp.Status != NFS3OK {
 		return buf.Bytes(), nil
 	}
@@ -317,7 +368,7 @@ func (resp *FsInfoResponse) Encode() ([]byte, error) {
 		if err := binary.Write(&buf, binary.BigEndian, uint32(1)); err != nil {
 			return nil, fmt.Errorf("failed to write attr present flag: %w", err)
 		}
-		// Encode file attributes
+		// Encode file attributes using helper function
 		if err := encodeFileAttr(&buf, resp.Attr); err != nil {
 			return nil, fmt.Errorf("failed to encode attributes: %w", err)
 		}
@@ -328,7 +379,8 @@ func (resp *FsInfoResponse) Encode() ([]byte, error) {
 		}
 	}
 
-	// Write filesystem information fields
+	// Write filesystem information fields in RFC-specified order
+	// Using a slice of structs for cleaner error handling and maintainability
 	fields := []struct {
 		name  string
 		value interface{}
@@ -346,6 +398,7 @@ func (resp *FsInfoResponse) Encode() ([]byte, error) {
 		{"properties", resp.Properties},
 	}
 
+	// Write each field in sequence
 	for _, field := range fields {
 		if err := binary.Write(&buf, binary.BigEndian, field.value); err != nil {
 			return nil, fmt.Errorf("failed to write %s: %w", field.name, err)
@@ -353,4 +406,62 @@ func (resp *FsInfoResponse) Encode() ([]byte, error) {
 	}
 
 	return buf.Bytes(), nil
+}
+
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
+// validateFileHandle performs basic validation on a file handle.
+// This includes checking for nil, empty, and excessively long handles.
+//
+// Returns nil if the handle is valid, error otherwise.
+func validateFileHandle(handle []byte) error {
+	if handle == nil {
+		return fmt.Errorf("handle is nil")
+	}
+
+	if len(handle) == 0 {
+		return fmt.Errorf("handle is empty")
+	}
+
+	// NFS v3 handles should not exceed 64 bytes per RFC 1813
+	if len(handle) > 64 {
+		return fmt.Errorf("handle too long: %d bytes (max 64)", len(handle))
+	}
+
+	// Handle must be at least 8 bytes to extract a file ID
+	// This is a protocol-specific requirement for the file ID extraction
+	if len(handle) < 8 {
+		return fmt.Errorf("handle too short: %d bytes (min 8 for file ID)", len(handle))
+	}
+
+	return nil
+}
+
+// extractFileIDFromHandle extracts a file ID from a file handle.
+// The file ID is derived from the first 8 bytes of the handle.
+//
+// This is a protocol-layer utility used to generate NFS file IDs
+// from opaque file handles. The repository defines the handle format,
+// but the protocol layer needs to extract identifiers for wire protocol.
+//
+// Parameters:
+//   - handle: The file handle (must be at least 8 bytes)
+//
+// Returns:
+//   - uint64: The extracted file ID
+//   - error: If the handle is too short or invalid
+func extractFileIDFromHandle(handle []byte) (uint64, error) {
+	// Validate handle length
+	// This check is defensive; validateFileHandle should have already caught this
+	if len(handle) < 8 {
+		return 0, fmt.Errorf("handle too short for file ID extraction: %d bytes (need 8)", len(handle))
+	}
+
+	// Extract the first 8 bytes as a big-endian uint64
+	// This matches the NFS convention of using the handle's prefix as an identifier
+	fileid := binary.BigEndian.Uint64(handle[:8])
+
+	return fileid, nil
 }

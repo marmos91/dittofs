@@ -119,6 +119,9 @@ const (
 	// NFS3ErrStale - Stale file handle
 	NFS3ErrStale = 70
 
+	// NFS3ErrBadHandle - Illegal NFS file handle
+	NFS3ErrBadHandle = 10001
+
 	// NFS3ErrNotSync - Update synchronization mismatch
 	NFS3ErrNotSync = 10002
 

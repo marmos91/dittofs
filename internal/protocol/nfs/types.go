@@ -260,45 +260,6 @@ type DirEntryPlus struct {
 	Handle []byte
 }
 
-// ============================================================================
-// File System Information
-// ============================================================================
-
-// FSInfo contains static filesystem information (returned by FSINFO).
-// This describes the capabilities and limits of the NFS server.
-type FSInfo struct {
-	// RtMax is the maximum size of a READ request
-	RtMax uint32
-
-	// RtPref is the preferred size of a READ request
-	RtPref uint32
-
-	// RtMult is the suggested multiple for READ request sizes
-	RtMult uint32
-
-	// WtMax is the maximum size of a WRITE request
-	WtMax uint32
-
-	// WtPref is the preferred size of a WRITE request
-	WtPref uint32
-
-	// WtMult is the suggested multiple for WRITE request sizes
-	WtMult uint32
-
-	// DtPref is the preferred size of a READDIR request
-	DtPref uint32
-
-	// MaxFileSize is the maximum file size supported
-	MaxFileSize uint64
-
-	// TimeDelta is the server's time resolution
-	TimeDelta TimeVal
-
-	// Properties is a bitmask of filesystem properties
-	// See FSF* constants (FSFLink, FSFSymlink, etc.)
-	Properties uint32
-}
-
 // FSStat contains dynamic filesystem statistics (returned by FSSTAT).
 // This describes the current state and capacity of the filesystem.
 type FSStat struct {
