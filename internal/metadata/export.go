@@ -41,15 +41,32 @@ type AccessDecision struct {
 	ReadOnly    bool     // If true, client can only read
 }
 
+// AuthContext contains authentication credentials for access control checks
+// This is extracted from the RPC authentication layer and passed to the repository
+type AuthContext struct {
+	// AuthFlavor is the authentication method used
+	// 0 = AUTH_NULL, 1 = AUTH_UNIX, etc.
+	AuthFlavor uint32
+
+	// UID is the authenticated user ID (only for AUTH_UNIX)
+	UID *uint32
+
+	// GID is the authenticated group ID (only for AUTH_UNIX)
+	GID *uint32
+
+	// GIDs is a list of supplementary group IDs (only for AUTH_UNIX)
+	GIDs []uint32
+
+	// ClientAddr is the network address of the client
+	// Format: "IP:port" or just "IP"
+	ClientAddr string
+}
+
 // Common error types for export operations
 type ExportError struct {
 	Code    ExportErrorCode
 	Message string
 	Export  string
-}
-
-func (e *ExportError) Error() string {
-	return e.Message
 }
 
 type ExportErrorCode int

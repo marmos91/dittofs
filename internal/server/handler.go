@@ -26,7 +26,7 @@ type NFSHandler interface {
 
 	// Access checks access permissions for a file system object.
 	// RFC 1813 Section 3.3.4
-	Access(repository metadata.Repository, req *nfs.AccessRequest) (*nfs.AccessResponse, error)
+	Access(repository metadata.Repository, req *nfs.AccessRequest, ctx *nfs.AccessContext) (*nfs.AccessResponse, error)
 
 	// ReadLink reads the data associated with a symbolic link.
 	// RFC 1813 Section 3.3.5
@@ -42,7 +42,7 @@ type NFSHandler interface {
 
 	// Create creates a regular file.
 	// RFC 1813 Section 3.3.8
-	Create(content content.Repository, repository metadata.Repository, req *nfs.CreateRequest) (*nfs.CreateResponse, error)
+	Create(content content.Repository, repository metadata.Repository, req *nfs.CreateRequest, ctx *nfs.CreateContext) (*nfs.CreateResponse, error)
 
 	// Mkdir creates a directory.
 	// RFC 1813 Section 3.3.9

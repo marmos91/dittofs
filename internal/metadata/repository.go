@@ -48,6 +48,20 @@ type Repository interface {
 	// Returns an AccessDecision with details about the authorization
 	CheckExportAccess(exportPath string, clientAddr string, authFlavor uint32) (*AccessDecision, error)
 
+	// CheckAccess verifies if a client has the requested access permissions on a file.
+	// It performs Unix-style permission checking based on file ownership, mode bits,
+	// and client credentials.
+	//
+	// Parameters:
+	//   - handle: The file handle to check permissions for
+	//   - requested: Bitmap of requested permissions (AccessRead, AccessModify, etc.)
+	//   - ctx: Authentication context with client credentials
+	//
+	// Returns:
+	//   - uint32: Bitmap of granted permissions (subset of requested)
+	//   - error: Returns error only for internal failures; denied access returns 0 permissions
+	CheckAccess(handle FileHandle, requested uint32, ctx *AccessCheckContext) (uint32, error)
+
 	// GetMountsByClient returns all active mounts for a specific client
 	// Used by UMNTALL to determine what will be removed
 	GetMountsByClient(clientAddr string) ([]MountEntry, error)

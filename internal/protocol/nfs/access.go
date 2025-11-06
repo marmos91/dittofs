@@ -4,55 +4,272 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"net"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
 )
 
-// AccessRequest represents an ACCESS request
+// ============================================================================
+// Request and Response Structures
+// ============================================================================
+
+// AccessRequest represents an ACCESS request from an NFS client.
+// The client wants to verify if it has specific permissions on a file or directory.
+//
+// This structure is decoded from XDR-encoded data received over the network.
+//
+// RFC 1813 Section 3.3.4 specifies the ACCESS procedure as:
+//
+//	ACCESS3res NFSPROC3_ACCESS(ACCESS3args) = 4;
+//
+// The ACCESS procedure is used by clients to check permissions before
+// attempting operations, avoiding the overhead of failed operations.
 type AccessRequest struct {
+	// Handle is the file handle of the object to check permissions for.
+	// Must be a valid file handle obtained from MOUNT or LOOKUP.
+	// Maximum length is 64 bytes per RFC 1813.
 	Handle []byte
-	Access uint32 // Bitmap of desired access permissions
+
+	// Access is a bitmap of requested access permissions.
+	// The client specifies which permissions it wants to check using the
+	// Access* constants (AccessRead, AccessLookup, AccessModify, etc.).
+	// Multiple permissions can be combined with bitwise OR.
+	// Example: AccessRead | AccessExecute checks for read and execute.
+	Access uint32
 }
 
-// AccessResponse represents an ACCESS response
+// AccessResponse represents the response to an ACCESS request.
+// It contains the status of the check and, if successful, which permissions
+// were granted and optional post-operation attributes.
+//
+// The response is encoded in XDR format before being sent back to the client.
 type AccessResponse struct {
+	// Status indicates the result of the access check.
+	// Common values:
+	//   - NFS3OK (0): Success - check Access field for granted permissions
+	//   - NFS3ErrNoEnt (2): File handle not found
+	//   - NFS3ErrIO (5): I/O error
+	//   - NFS3ErrAcces (13): Permission denied (rare - usually returns with Access=0)
+	//   - NFS3ErrStale (70): Stale file handle
+	//   - NFS3ErrBadHandle (10001): Invalid file handle
 	Status uint32
-	Attr   *FileAttr // Post-op attributes (optional)
-	Access uint32    // Bitmap of granted access permissions
+
+	// Attr contains the post-operation attributes for the file handle.
+	// This is optional and may be nil.
+	// Including attributes helps clients maintain cache consistency.
+	Attr *FileAttr
+
+	// Access is a bitmap of granted access permissions.
+	// Only present when Status == NFS3OK.
+	// This is a subset (or equal to) the requested permissions.
+	// A bit set to 1 means that permission is granted.
+	// A bit set to 0 means that permission is denied or unknown.
+	// The client should check each bit individually.
+	Access uint32
 }
+
+// AccessContext contains the context information needed to process an ACCESS request.
+// This includes client identification and authentication details for permission checks.
+type AccessContext struct {
+	// ClientAddr is the network address of the client making the request.
+	// Format: "IP:port" (e.g., "192.168.1.100:1234")
+	ClientAddr string
+
+	// AuthFlavor is the authentication method used by the client.
+	// Common values:
+	//   - 0: AUTH_NULL (no authentication)
+	//   - 1: AUTH_UNIX (Unix UID/GID authentication)
+	AuthFlavor uint32
+
+	// UID is the authenticated user ID (from AUTH_UNIX).
+	// Used for permission checking against file ownership and mode bits.
+	// Only valid when AuthFlavor == AUTH_UNIX.
+	UID *uint32
+
+	// GID is the authenticated group ID (from AUTH_UNIX).
+	// Used for permission checking against file group ownership and mode bits.
+	// Only valid when AuthFlavor == AUTH_UNIX.
+	GID *uint32
+
+	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
+	// Used for checking if user belongs to file's group.
+	// Only valid when AuthFlavor == AUTH_UNIX.
+	GIDs []uint32
+}
+
+// ============================================================================
+// Protocol Handler
+// ============================================================================
 
 // Access checks access permissions for a file system object.
-// RFC 1813 Section 3.3.4
-func (h *DefaultNFSHandler) Access(repository metadata.Repository, req *AccessRequest) (*AccessResponse, error) {
-	logger.Debug("ACCESS for handle: %x, requested access: 0x%x", req.Handle, req.Access)
+//
+// This implements the NFS ACCESS procedure as defined in RFC 1813 Section 3.3.4.
+//
+// **Purpose:**
+//
+// ACCESS allows clients to check permissions efficiently before attempting
+// operations. This is more efficient than trying an operation and handling errors.
+// It's particularly useful for implementing UI elements (graying out unavailable
+// actions) and for optimizing batch operations.
+//
+// **Process:**
+//
+//  1. Validate request parameters (handle format and length)
+//  2. Extract client IP and authentication credentials from context
+//  3. Verify file handle exists via repository.GetFile()
+//  4. Delegate permission checking to repository.CheckAccess()
+//  5. Retrieve file attributes for cache consistency
+//  6. Return granted permissions bitmap to client
+//
+// **Design Principles:**
+//
+//   - Protocol layer handles only XDR encoding/decoding and validation
+//   - All business logic (permission checking) is delegated to repository
+//   - File handle validation is performed by repository.GetFile()
+//   - Comprehensive logging at INFO level for operations, DEBUG for details
+//
+// **Authentication:**
+//
+// The context contains authentication credentials from the RPC layer.
+// The protocol layer extracts and passes these to the repository, which
+// implements the actual permission checking logic based on:
+//   - File ownership (UID/GID)
+//   - File mode bits (rwx permissions)
+//   - ACLs or other access control mechanisms (implementation-specific)
+//
+// **Permission Bitmap:**
+//
+// The Access field uses these bits (can be combined with bitwise OR):
+//   - AccessRead (0x0001): Read file data or list directory
+//   - AccessLookup (0x0002): Look up names in directory
+//   - AccessModify (0x0004): Modify file data
+//   - AccessExtend (0x0008): Extend file (write beyond EOF)
+//   - AccessDelete (0x0010): Delete file or directory
+//   - AccessExecute (0x0020): Execute file or search directory
+//
+// **Error Handling:**
+//
+// Protocol-level errors return appropriate NFS status codes.
+// The procedure rarely returns errors - instead, it returns success
+// with Access=0 (no permissions granted) when access would be denied.
+//
+// Repository errors are mapped to NFS status codes:
+//   - File not found → NFS3ErrNoEnt
+//   - Permission denied → NFS3OK with Access=0 (or NFS3ErrAcces)
+//   - I/O error → NFS3ErrIO
+//
+// **Security Considerations:**
+//
+//   - Handle validation prevents malformed requests
+//   - Repository layer enforces actual access control
+//   - Client context enables audit logging
+//   - No sensitive information leaked in error messages
+//
+// **Parameters:**
+//   - repository: The metadata repository for file access and permission checks
+//   - req: The access request containing handle and requested permissions
+//   - ctx: Context with client address and authentication credentials
+//
+// **Returns:**
+//   - *AccessResponse: Response with status and granted permissions (if successful)
+//   - error: Returns error only for catastrophic internal failures; protocol-level
+//     errors are indicated via the response Status field
+//
+// **RFC 1813 Section 3.3.4: ACCESS Procedure**
+//
+// Example:
+//
+//	handler := &DefaultNFSHandler{}
+//	req := &AccessRequest{
+//	    Handle: fileHandle,
+//	    Access: AccessRead | AccessExecute,
+//	}
+//	ctx := &AccessContext{
+//	    ClientAddr: "192.168.1.100:1234",
+//	    AuthFlavor: 1, // AUTH_UNIX
+//	    UID:        &uid,
+//	    GID:        &gid,
+//	}
+//	resp, err := handler.Access(repository, req, ctx)
+//	if err != nil {
+//	    // Internal server error
+//	}
+//	if resp.Status == NFS3OK {
+//	    if resp.Access & AccessRead != 0 {
+//	        // Client has read permission
+//	    }
+//	}
+func (h *DefaultNFSHandler) Access(
+	repository metadata.Repository,
+	req *AccessRequest,
+	ctx *AccessContext,
+) (*AccessResponse, error) {
+	// Extract client IP for logging
+	clientIP := extractClientIP(ctx.ClientAddr)
 
-	// Get file attributes
-	attr, err := repository.GetFile(metadata.FileHandle(req.Handle))
-	if err != nil {
-		logger.Warn("File not found: %v", err)
-		return &AccessResponse{Status: NFS3ErrNoEnt}, nil
+	logger.Info("ACCESS: handle=%x requested=0x%x client=%s auth=%d",
+		req.Handle, req.Access, clientIP, ctx.AuthFlavor)
+
+	// ========================================================================
+	// Step 1: Validate request parameters
+	// ========================================================================
+
+	if err := validateAccessRequest(req); err != nil {
+		logger.Warn("ACCESS validation failed: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
+		return &AccessResponse{Status: err.nfsStatus}, nil
 	}
 
-	// Generate file ID
-	fileid := binary.BigEndian.Uint64(req.Handle[:8])
+	// ========================================================================
+	// Step 2: Verify file handle exists and is valid
+	// ========================================================================
+
+	fileHandle := metadata.FileHandle(req.Handle)
+	attr, err := repository.GetFile(fileHandle)
+	if err != nil {
+		logger.Debug("ACCESS failed: handle not found: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
+		return &AccessResponse{Status: NFS3ErrStale}, nil
+	}
+
+	// ========================================================================
+	// Step 3: Check permissions via repository
+	// ========================================================================
+	// The repository implements the actual permission checking logic based on:
+	// - File ownership (attr.UID, attr.GID)
+	// - File mode bits (attr.Mode)
+	// - Client credentials (ctx.UID, ctx.GID, ctx.GIDs)
+	// - ACLs or other access control mechanisms (implementation-specific)
+
+	// Build access check context for the repository
+	accessCtx := &metadata.AccessCheckContext{
+		AuthFlavor: ctx.AuthFlavor,
+		UID:        ctx.UID,
+		GID:        ctx.GID,
+		GIDs:       ctx.GIDs,
+	}
+
+	grantedAccess, err := repository.CheckAccess(fileHandle, req.Access, accessCtx)
+	if err != nil {
+		logger.Error("ACCESS failed: permission check error: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
+		return &AccessResponse{Status: NFS3ErrIO}, nil
+	}
+
+	// ========================================================================
+	// Step 4: Build response with granted permissions and attributes
+	// ========================================================================
+
+	// Generate file ID from handle for NFS attributes
+	fileid := extractFileID(fileHandle)
 	nfsAttr := MetadataToNFSAttr(attr, fileid)
 
-	// For simplicity, grant all requested permissions
-	// In a real implementation, you would check user/group/permissions
-	grantedAccess := req.Access
+	logger.Info("ACCESS successful: handle=%x granted=0x%x requested=0x%x client=%s",
+		req.Handle, grantedAccess, req.Access, clientIP)
 
-	// If it's a directory, ensure lookup, modify, extend and delete are granted
-	if attr.Type == metadata.FileTypeDirectory {
-		grantedAccess |= AccessLookup | AccessModify | AccessExtend | AccessDelete
-	}
-
-	// If it's a regular file, ensure read, modify, and extend are granted
-	if attr.Type == metadata.FileTypeRegular {
-		grantedAccess |= AccessRead | AccessModify | AccessExtend
-	}
-
-	logger.Debug("ACCESS granted: 0x%x (requested: 0x%x)", grantedAccess, req.Access)
+	logger.Debug("ACCESS details: type=%d mode=%o uid=%d gid=%d client_uid=%v client_gid=%v",
+		attr.Type, attr.Mode, attr.UID, attr.GID, ctx.UID, ctx.GID)
 
 	return &AccessResponse{
 		Status: NFS3OK,
@@ -61,35 +278,148 @@ func (h *DefaultNFSHandler) Access(repository metadata.Repository, req *AccessRe
 	}, nil
 }
 
+// ============================================================================
+// Request Validation
+// ============================================================================
+
+// accessValidationError represents an ACCESS request validation error.
+type accessValidationError struct {
+	message   string
+	nfsStatus uint32
+}
+
+func (e *accessValidationError) Error() string {
+	return e.message
+}
+
+// validateAccessRequest validates ACCESS request parameters.
+//
+// Checks performed:
+//   - File handle is not nil or empty
+//   - File handle length is within RFC 1813 limits (max 64 bytes)
+//   - File handle is long enough for file ID extraction (min 8 bytes)
+//   - Access bitmap is valid (only uses defined bits)
+//
+// Returns:
+//   - nil if valid
+//   - *accessValidationError with NFS status if invalid
+func validateAccessRequest(req *AccessRequest) *accessValidationError {
+	// Validate file handle
+	if req.Handle == nil || len(req.Handle) == 0 {
+		return &accessValidationError{
+			message:   "file handle is empty",
+			nfsStatus: NFS3ErrBadHandle,
+		}
+	}
+
+	// RFC 1813 specifies maximum handle size of 64 bytes
+	if len(req.Handle) > 64 {
+		return &accessValidationError{
+			message:   fmt.Sprintf("file handle too long: %d bytes (max 64)", len(req.Handle)),
+			nfsStatus: NFS3ErrBadHandle,
+		}
+	}
+
+	// Handle must be at least 8 bytes for file ID extraction
+	if len(req.Handle) < 8 {
+		return &accessValidationError{
+			message:   fmt.Sprintf("file handle too short: %d bytes (min 8)", len(req.Handle)),
+			nfsStatus: NFS3ErrBadHandle,
+		}
+	}
+
+	// Validate access bitmap - only defined bits should be set
+	// Valid bits: AccessRead | AccessLookup | AccessModify | AccessExtend | AccessDelete | AccessExecute
+	validBits := uint32(0x003F) // Bits 0-5
+	if req.Access&^validBits != 0 {
+		return &accessValidationError{
+			message:   fmt.Sprintf("invalid access bitmap: 0x%x (invalid bits set)", req.Access),
+			nfsStatus: NFS3ErrInval,
+		}
+	}
+
+	return nil
+}
+
+// ============================================================================
+// XDR Decoding
+// ============================================================================
+
+// DecodeAccessRequest decodes an ACCESS request from XDR-encoded bytes.
+//
+// The decoding follows RFC 1813 Section 3.3.4 specifications:
+//  1. File handle length (4 bytes, big-endian uint32)
+//  2. File handle data (variable length, up to 64 bytes)
+//  3. Padding to 4-byte boundary (0-3 bytes)
+//  4. Access bitmap (4 bytes, big-endian uint32)
+//
+// XDR encoding uses big-endian byte order and aligns data to 4-byte boundaries.
+//
+// Parameters:
+//   - data: XDR-encoded bytes containing the ACCESS request
+//
+// Returns:
+//   - *AccessRequest: The decoded request containing handle and access bitmap
+//   - error: Any error encountered during decoding (malformed data, invalid length)
+//
+// Example:
+//
+//	data := []byte{...} // XDR-encoded ACCESS request from network
+//	req, err := DecodeAccessRequest(data)
+//	if err != nil {
+//	    // Handle decode error - send error reply to client
+//	    return nil, err
+//	}
+//	// Use req.Handle and req.Access in ACCESS procedure
 func DecodeAccessRequest(data []byte) (*AccessRequest, error) {
+	// Validate minimum data length for handle length field
 	if len(data) < 4 {
-		return nil, fmt.Errorf("data too short")
+		return nil, fmt.Errorf("data too short: need at least 4 bytes for handle length, got %d", len(data))
 	}
 
 	reader := bytes.NewReader(data)
 
-	// Read handle length
+	// Read handle length (4 bytes, big-endian)
 	var handleLen uint32
 	if err := binary.Read(reader, binary.BigEndian, &handleLen); err != nil {
-		return nil, fmt.Errorf("read handle length: %w", err)
+		return nil, fmt.Errorf("failed to read handle length: %w", err)
 	}
 
-	// Read handle
+	// Validate handle length (NFS v3 handles are typically <= 64 bytes per RFC 1813)
+	if handleLen > 64 {
+		return nil, fmt.Errorf("invalid handle length: %d (max 64)", handleLen)
+	}
+
+	// Prevent zero-length handles
+	if handleLen == 0 {
+		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
+	}
+
+	// Ensure we have enough data for the handle
+	// 4 bytes for length + handleLen bytes for data + up to 3 bytes padding + 4 bytes for access
+	minRequired := 4 + handleLen
+	if uint32(len(data)) < minRequired {
+		return nil, fmt.Errorf("data too short for handle: need at least %d bytes, got %d", minRequired, len(data))
+	}
+
+	// Read handle data
 	handle := make([]byte, handleLen)
 	if err := binary.Read(reader, binary.BigEndian, &handle); err != nil {
-		return nil, fmt.Errorf("read handle: %w", err)
+		return nil, fmt.Errorf("failed to read handle data: %w", err)
 	}
 
-	// Skip padding
+	// Skip padding to 4-byte boundary
 	padding := (4 - (handleLen % 4)) % 4
-	for range padding {
-		reader.ReadByte()
+	for i := uint32(0); i < padding; i++ {
+		if _, err := reader.ReadByte(); err != nil {
+			return nil, fmt.Errorf("failed to read padding byte %d: %w", i, err)
+		}
 	}
 
-	// Read access bitmap
+	// Read access bitmap (4 bytes, big-endian)
 	var access uint32
 	if err := binary.Read(reader, binary.BigEndian, &access); err != nil {
-		return nil, fmt.Errorf("read access: %w", err)
+		return nil, fmt.Errorf("failed to read access bitmap: %w", err)
 	}
 
 	return &AccessRequest{
@@ -98,36 +428,78 @@ func DecodeAccessRequest(data []byte) (*AccessRequest, error) {
 	}, nil
 }
 
+// ============================================================================
+// XDR Encoding
+// ============================================================================
+
+// Encode serializes the AccessResponse into XDR-encoded bytes suitable for
+// transmission over the network.
+//
+// The encoding follows RFC 1813 Section 3.3.4 specifications:
+//  1. Status code (4 bytes, big-endian uint32)
+//  2. If status == NFS3OK:
+//     a. Post-op attributes (present flag + attributes if present)
+//     b. Access bitmap (4 bytes, granted permissions)
+//  3. If status != NFS3OK:
+//     a. Post-op attributes (present flag + attributes if present)
+//     b. No access bitmap
+//
+// XDR encoding requires all data to be in big-endian format and aligned
+// to 4-byte boundaries.
+//
+// Returns:
+//   - []byte: The XDR-encoded response ready to send to the client
+//   - error: Any error encountered during encoding
+//
+// Example:
+//
+//	resp := &AccessResponse{
+//	    Status: NFS3OK,
+//	    Attr:   fileAttr,
+//	    Access: AccessRead | AccessLookup,
+//	}
+//	data, err := resp.Encode()
+//	if err != nil {
+//	    // Handle encoding error
+//	    return nil, err
+//	}
+//	// Send 'data' to client over network
 func (resp *AccessResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
-	// Write status
+	// Write status code (4 bytes, big-endian)
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
-		return nil, fmt.Errorf("write status: %w", err)
+		return nil, fmt.Errorf("failed to write status: %w", err)
 	}
 
-	// If status is not OK, return just the status
+	// Write post-op attributes (present flag + attributes if present)
+	// These are included for both success and failure cases to help
+	// clients maintain cache consistency
+	if resp.Attr != nil {
+		// attributes_follow = TRUE (1)
+		if err := binary.Write(&buf, binary.BigEndian, uint32(1)); err != nil {
+			return nil, fmt.Errorf("failed to write attr present flag: %w", err)
+		}
+		// Encode file attributes using helper function
+		if err := encodeFileAttr(&buf, resp.Attr); err != nil {
+			return nil, fmt.Errorf("failed to encode attributes: %w", err)
+		}
+	} else {
+		// attributes_follow = FALSE (0)
+		if err := binary.Write(&buf, binary.BigEndian, uint32(0)); err != nil {
+			return nil, fmt.Errorf("failed to write attr absent flag: %w", err)
+		}
+	}
+
+	// If status is not OK, we're done - no access bitmap on error
 	if resp.Status != NFS3OK {
 		return buf.Bytes(), nil
 	}
 
-	// Write post-op attributes
-	if resp.Attr != nil {
-		if err := binary.Write(&buf, binary.BigEndian, uint32(1)); err != nil {
-			return nil, err
-		}
-		if err := encodeFileAttr(&buf, resp.Attr); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := binary.Write(&buf, binary.BigEndian, uint32(0)); err != nil {
-			return nil, err
-		}
-	}
-
-	// Write granted access
+	// Write granted access bitmap (4 bytes, big-endian)
+	// This indicates which of the requested permissions were granted
 	if err := binary.Write(&buf, binary.BigEndian, resp.Access); err != nil {
-		return nil, fmt.Errorf("write access: %w", err)
+		return nil, fmt.Errorf("failed to write access bitmap: %w", err)
 	}
 
 	return buf.Bytes(), nil

@@ -608,3 +608,127 @@ func (r *MemoryRepository) GetFSStats(handle metadata.FileHandle) (*metadata.FSS
 		Invarsec:   0,                         // Filesystem can change at any time
 	}, nil
 }
+
+// CheckAccess performs Unix-style permission checking for file access.
+// This implements the access control logic for the ACCESS NFS procedure.
+//
+// The check follows standard Unix permission semantics:
+//  1. If AUTH_NULL, grant minimal permissions (read-only for world-readable files)
+//  2. If owner (UID matches), check owner permission bits
+//  3. If group member (GID or supplementary GID matches), check group bits
+//  4. Otherwise, check other permission bits
+//
+// Returns a bitmap of granted permissions (subset of requested).
+func (r *MemoryRepository) CheckAccess(handle FileHandle, requested uint32, ctx *AccessCheckContext) (uint32, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Get file attributes
+	key := handleToKey(handle)
+	attr, exists := r.files[key]
+	if !exists {
+		return 0, fmt.Errorf("file not found")
+	}
+
+	granted := uint32(0)
+
+	// For AUTH_NULL, grant very limited permissions
+	if ctx.AuthFlavor == 0 || ctx.UID == nil {
+		// Only grant read/lookup if world-readable
+		if attr.Mode&0004 != 0 { // Other read
+			if requested&0x0001 != 0 { // AccessRead
+				granted |= 0x0001
+			}
+		}
+		if attr.Type == FileTypeDirectory && attr.Mode&0001 != 0 { // Other execute (search)
+			if requested&0x0002 != 0 { // AccessLookup
+				granted |= 0x0002
+			}
+		}
+		return granted, nil
+	}
+
+	uid := *ctx.UID
+	gid := *ctx.GID
+
+	// Determine which permission bits apply
+	var permBits uint32
+
+	if uid == attr.UID {
+		// Owner permissions (bits 6-8)
+		permBits = (attr.Mode >> 6) & 0x7
+	} else if gid == attr.GID || containsGID(ctx.GIDs, attr.GID) {
+		// Group permissions (bits 3-5)
+		permBits = (attr.Mode >> 3) & 0x7
+	} else {
+		// Other permissions (bits 0-2)
+		permBits = attr.Mode & 0x7
+	}
+
+	// Map Unix permission bits to NFS access bits
+	// permBits: rwx = 0x4 (read), 0x2 (write), 0x1 (execute)
+
+	hasRead := (permBits & 0x4) != 0
+	hasWrite := (permBits & 0x2) != 0
+	hasExecute := (permBits & 0x1) != 0
+
+	// For directories
+	if attr.Type == FileTypeDirectory {
+		if hasRead && (requested&0x0001 != 0) { // AccessRead
+			granted |= 0x0001 // Can list directory
+		}
+		if hasExecute && (requested&0x0002 != 0) { // AccessLookup
+			granted |= 0x0002 // Can search/lookup in directory
+		}
+		if hasWrite {
+			if requested&0x0004 != 0 { // AccessModify
+				granted |= 0x0004 // Can modify directory entries
+			}
+			if requested&0x0008 != 0 { // AccessExtend
+				granted |= 0x0008 // Can add entries
+			}
+			if requested&0x0010 != 0 { // AccessDelete
+				granted |= 0x0010 // Can delete entries
+			}
+		}
+		if hasExecute && (requested&0x0020 != 0) { // AccessExecute
+			granted |= 0x0020 // Can traverse directory
+		}
+	} else {
+		// For regular files and other types
+		if hasRead && (requested&0x0001 != 0) { // AccessRead
+			granted |= 0x0001 // Can read file
+		}
+		if hasWrite {
+			if requested&0x0004 != 0 { // AccessModify
+				granted |= 0x0004 // Can modify file
+			}
+			if requested&0x0008 != 0 { // AccessExtend
+				granted |= 0x0008 // Can extend file
+			}
+		}
+		if hasExecute && (requested&0x0020 != 0) { // AccessExecute
+			granted |= 0x0020 // Can execute file
+		}
+
+		// Delete permission requires write access to parent directory
+		// We can't check that here without parent context, so we grant it
+		// if the user has write permission on the file itself
+		// The actual delete operation will do proper parent directory checks
+		if hasWrite && (requested&0x0010 != 0) { // AccessDelete
+			granted |= 0x0010
+		}
+	}
+
+	return granted, nil
+}
+
+// Helper function to check if a GID is in a list
+func containsGID(gids []uint32, target uint32) bool {
+	for _, gid := range gids {
+		if gid == target {
+			return true
+		}
+	}
+	return false
+}
