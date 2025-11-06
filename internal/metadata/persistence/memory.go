@@ -523,6 +523,32 @@ func (r *MemoryRepository) GetServerConfig() (metadata.ServerConfig, error) {
 	return r.serverConfig, nil
 }
 
+// GetFSInfo returns the static filesystem information and capabilities
+func (r *MemoryRepository) GetFSInfo(handle metadata.FileHandle) (*metadata.FSInfo, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Return filesystem information
+	// These are reasonable defaults that can be customized via ServerConfig in the future
+	return &metadata.FSInfo{
+		RtMax:       65536,     // 64KB max read
+		RtPref:      32768,     // 32KB preferred read
+		RtMult:      4096,      // 4KB read multiple
+		WtMax:       65536,     // 64KB max write
+		WtPref:      32768,     // 32KB preferred write
+		WtMult:      4096,      // 4KB write multiple
+		DtPref:      8192,      // 8KB preferred readdir
+		MaxFileSize: 1<<63 - 1, // Max file size (practically unlimited)
+		TimeDelta: metadata.TimeDelta{
+			Seconds:  0,
+			Nseconds: 1, // 1 nanosecond time granularity
+		},
+		// Properties: hard links, symlinks, homogeneous PATHCONF, can set time
+		// These correspond to FSFLink | FSFSymlink | FSFHomogeneous | FSFCanSetTime
+		Properties: 0x0001 | 0x0002 | 0x0008 | 0x0010,
+	}, nil
+}
+
 // CheckDumpAccess verifies if a client can call the DUMP procedure
 func (r *MemoryRepository) CheckDumpAccess(clientAddr string) error {
 	r.mu.RLock()

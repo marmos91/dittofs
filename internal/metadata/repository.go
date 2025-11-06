@@ -66,4 +66,9 @@ type Repository interface {
 	// CheckDumpAccess verifies if a client can call the DUMP procedure
 	// Returns error if access is denied, nil if allowed
 	CheckDumpAccess(clientAddr string) error
+
+	// GetFSInfo returns the static filesystem information and capabilities
+	// This is used by the FSINFO NFS procedure to inform clients about
+	// server limits and preferences (max transfer sizes, properties, etc.)
+	GetFSInfo(handle FileHandle) (*FSInfo, error)
 }

@@ -366,7 +366,11 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			data,
 			nfs.DecodeFsInfoRequest,
 			func(req *nfs.FsInfoRequest) (*nfs.FsInfoResponse, error) {
-				return handler.FsInfo(repo, req)
+				ctx := &nfs.FsInfoContext{
+					ClientAddr: c.conn.RemoteAddr().String(),
+					AuthFlavor: authFlavor,
+				}
+				return handler.FsInfo(repo, req, ctx)
 			},
 			nfs.NFS3ErrIO,
 			func(status uint32) *nfs.FsInfoResponse {

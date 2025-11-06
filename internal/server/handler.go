@@ -86,7 +86,7 @@ type NFSHandler interface {
 
 	// FsInfo returns static information about a file system.
 	// RFC 1813 Section 3.3.19
-	FsInfo(repository metadata.Repository, req *nfs.FsInfoRequest) (*nfs.FsInfoResponse, error)
+	FsInfo(repository metadata.Repository, req *nfs.FsInfoRequest, ctx *nfs.FsInfoContext) (*nfs.FsInfoResponse, error)
 
 	// PathConf returns POSIX information about a file system object.
 	// RFC 1813 Section 3.3.20
