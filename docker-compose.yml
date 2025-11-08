@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  dittofs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dittofs
+    ports:
+      - "2049:2049"
+    volumes:
+      - dittofs-data:/data
+    environment:
+      - LOG_LEVEL=DEBUG
+      - PORT=2049
+      - CONTENT_PATH=/data/content
+    restart: unless-stopped
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+
+volumes:
+  dittofs-data:
+    driver: local
