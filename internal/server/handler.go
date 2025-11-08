@@ -30,7 +30,7 @@ type NFSHandler interface {
 
 	// ReadLink reads the data associated with a symbolic link.
 	// RFC 1813 Section 3.3.5
-	ReadLink(repository metadata.Repository, req *nfs.ReadLinkRequest) (*nfs.ReadLinkResponse, error)
+	ReadLink(repository metadata.Repository, req *nfs.ReadLinkRequest, ctx *nfs.ReadLinkContext) (*nfs.ReadLinkResponse, error)
 
 	// Read reads data from a file.
 	// RFC 1813 Section 3.3.6
