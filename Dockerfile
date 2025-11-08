@@ -53,9 +53,6 @@ VOLUME ["/data"]
 
 # Health check
 # Note: This is basic - in production you'd want a proper health endpoint
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["/dittofs", "-help"] || exit 1
-
 # Run the server
 ENTRYPOINT ["/dittofs"]
 CMD []
