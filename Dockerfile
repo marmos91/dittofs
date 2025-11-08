@@ -58,4 +58,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 
 # Run the server
 ENTRYPOINT ["/dittofs"]
-CMD ["-port", "2049", "-log-level", "INFO", "-content-path", "/data/content"]
+CMD []
