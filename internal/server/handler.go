@@ -34,7 +34,7 @@ type NFSHandler interface {
 
 	// Read reads data from a file.
 	// RFC 1813 Section 3.3.6
-	Read(content content.Repository, repository metadata.Repository, req *nfs.ReadRequest) (*nfs.ReadResponse, error)
+	Read(content content.Repository, repository metadata.Repository, req *nfs.ReadRequest, ctx *nfs.ReadContext) (*nfs.ReadResponse, error)
 
 	// Write writes data to a file.
 	// RFC 1813 Section 3.3.7

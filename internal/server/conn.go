@@ -256,11 +256,16 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			},
 		)
 	case nfs.NFSProcRead:
+		readCtx := &nfs.ReadContext{
+			ClientAddr: c.conn.RemoteAddr().String(),
+			AuthFlavor: authFlavor,
+		}
+
 		return handleRequest(
 			data,
 			nfs.DecodeReadRequest,
 			func(req *nfs.ReadRequest) (*nfs.ReadResponse, error) {
-				return handler.Read(contentRepo, repo, req)
+				return handler.Read(contentRepo, repo, req, readCtx)
 			},
 			nfs.NFS3ErrIO,
 			func(status uint32) *nfs.ReadResponse {
