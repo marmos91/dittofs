@@ -22,7 +22,7 @@ type NFSHandler interface {
 
 	// Lookup searches a directory for a specific name and returns its file handle.
 	// RFC 1813 Section 3.3.3
-	Lookup(repository metadata.Repository, req *nfs.LookupRequest) (*nfs.LookupResponse, error)
+	Lookup(repository metadata.Repository, req *nfs.LookupRequest, ctx *nfs.LookupContext) (*nfs.LookupResponse, error)
 
 	// Access checks access permissions for a file system object.
 	// RFC 1813 Section 3.3.4
