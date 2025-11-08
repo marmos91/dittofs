@@ -470,9 +470,27 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			},
 		)
 	case nfs.NFSProcReadDir:
+		// Extract authentication from RPC call
+		var uid, gid *uint32
+		var gids []uint32
+
+		if authFlavor == rpc.AuthUnix {
+			authBody := call.GetAuthBody()
+			if len(authBody) > 0 {
+				if unixAuth, err := rpc.ParseUnixAuth(authBody); err == nil {
+					uid = &unixAuth.UID
+					gid = &unixAuth.GID
+					gids = unixAuth.GIDs
+				}
+			}
+		}
+
 		readDirCtx := &nfs.ReadDirContext{
 			ClientAddr: c.conn.RemoteAddr().String(),
 			AuthFlavor: authFlavor,
+			UID:        uid,
+			GID:        gid,
+			GIDs:       gids,
 		}
 
 		return handleRequest(
