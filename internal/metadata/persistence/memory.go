@@ -1354,6 +1354,12 @@ func (r *MemoryRepository) ReadDir(dirHandle metadata.FileHandle, cookie uint64,
 	entries := make([]metadata.DirEntry, 0)
 	currentCookie := uint64(1)
 
+	// Track estimated size as we add entries
+	// XDR encoding overhead: 4 bytes (value_follows) + 8 bytes (fileid) +
+	// 4 bytes (name length) + name bytes + padding + 8 bytes (cookie)
+	// = 24 bytes + name length + padding (up to 3 bytes)
+	estimatedSize := uint32(0)
+
 	// Extract directory file ID for "." entry
 	dirFileid := extractFileIDFromHandle(dirHandle)
 
@@ -1362,11 +1368,17 @@ func (r *MemoryRepository) ReadDir(dirHandle metadata.FileHandle, cookie uint64,
 	// ========================================================================
 
 	if cookie == 0 {
-		entries = append(entries, metadata.DirEntry{
+		entry := metadata.DirEntry{
 			Fileid: dirFileid,
 			Name:   ".",
 			Cookie: currentCookie,
-		})
+		}
+		entries = append(entries, entry)
+
+		// Calculate size for this entry
+		nameLen := len(entry.Name)
+		padding := (4 - (nameLen % 4)) % 4
+		estimatedSize += 24 + uint32(nameLen) + uint32(padding)
 	}
 	currentCookie++
 
@@ -1381,11 +1393,17 @@ func (r *MemoryRepository) ReadDir(dirHandle metadata.FileHandle, cookie uint64,
 			parentFileid = extractFileIDFromHandle(parentHandle)
 		}
 
-		entries = append(entries, metadata.DirEntry{
+		entry := metadata.DirEntry{
 			Fileid: parentFileid,
 			Name:   "..",
 			Cookie: currentCookie,
-		})
+		}
+		entries = append(entries, entry)
+
+		// Calculate size for this entry
+		nameLen := len(entry.Name)
+		padding := (4 - (nameLen % 4)) % 4
+		estimatedSize += 24 + uint32(nameLen) + uint32(padding)
 	}
 	currentCookie++
 
@@ -1416,28 +1434,33 @@ func (r *MemoryRepository) ReadDir(dirHandle metadata.FileHandle, cookie uint64,
 				continue
 			}
 
+			// Calculate size for this entry before adding
+			nameLen := len(name)
+			padding := (4 - (nameLen % 4)) % 4
+			entrySize := 24 + uint32(nameLen) + uint32(padding)
+
+			// Check if adding this entry would exceed the count limit
+			// Reserve some space for the response overhead (status, attrs, verifier, eof)
+			// Approximate: 200 bytes for response overhead
+			const responseOverhead = 200
+			if estimatedSize+entrySize+responseOverhead > count {
+				// We've reached the count limit, but we haven't seen all entries
+				// Return what we have so far (EOF = false)
+				return entries, false, nil
+			}
+
 			// Extract file ID from handle
 			fileid := extractFileIDFromHandle(handle)
 
-			entries = append(entries, metadata.DirEntry{
+			entry := metadata.DirEntry{
 				Fileid: fileid,
 				Name:   name,
 				Cookie: currentCookie,
-			})
+			}
+			entries = append(entries, entry)
+			estimatedSize += entrySize
 
 			currentCookie++
-
-			// Check if we've exceeded the count limit
-			// Estimate: ~32 bytes per entry on average (overhead + name)
-			estimatedSize := len(entries) * 32
-			for _, e := range entries {
-				estimatedSize += len(e.Name)
-			}
-
-			if uint32(estimatedSize) >= count {
-				// We've reached the count limit, but we haven't seen all entries
-				return entries, false, nil
-			}
 		}
 	}
 
