@@ -256,9 +256,26 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			},
 		)
 	case nfs.NFSProcRead:
+		var uid, gid *uint32
+		var gids []uint32
+
+		if authFlavor == rpc.AuthUnix {
+			authBody := call.GetAuthBody()
+			if len(authBody) > 0 {
+				if unixAuth, err := rpc.ParseUnixAuth(authBody); err == nil {
+					uid = &unixAuth.UID
+					gid = &unixAuth.GID
+					gids = unixAuth.GIDs
+				}
+			}
+		}
+
 		readCtx := &nfs.ReadContext{
 			ClientAddr: c.conn.RemoteAddr().String(),
 			AuthFlavor: authFlavor,
+			UID:        uid,
+			GID:        gid,
+			GIDs:       gids,
 		}
 
 		return handleRequest(
