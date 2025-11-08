@@ -1354,11 +1354,16 @@ func (r *MemoryRepository) ReadDir(dirHandle metadata.FileHandle, cookie uint64,
 	entries := make([]metadata.DirEntry, 0)
 	currentCookie := uint64(1)
 
-	// Track estimated size as we add entries
-	// XDR encoding overhead: 4 bytes (value_follows) + 8 bytes (fileid) +
-	// 4 bytes (name length) + name bytes + padding + 8 bytes (cookie)
-	// = 24 bytes + name length + padding (up to 3 bytes)
+	// Track estimated size incrementally as we add entries
+	// XDR encoding overhead per entry:
+	//   4 bytes (value_follows) + 8 bytes (fileid) +
+	//   4 bytes (name length) + name bytes + padding (0-3 bytes) + 8 bytes (cookie)
+	//   = 24 bytes + name length + padding
 	estimatedSize := uint32(0)
+
+	// Reserve space for response overhead (status, attrs, verifier, eof, end marker)
+	const responseOverhead = 200
+	estimatedSize += responseOverhead
 
 	// Extract directory file ID for "." entry
 	dirFileid := extractFileIDFromHandle(dirHandle)
@@ -1373,12 +1378,14 @@ func (r *MemoryRepository) ReadDir(dirHandle metadata.FileHandle, cookie uint64,
 			Name:   ".",
 			Cookie: currentCookie,
 		}
-		entries = append(entries, entry)
 
 		// Calculate size for this entry
 		nameLen := len(entry.Name)
 		padding := (4 - (nameLen % 4)) % 4
-		estimatedSize += 24 + uint32(nameLen) + uint32(padding)
+		entrySize := 24 + uint32(nameLen) + uint32(padding)
+
+		entries = append(entries, entry)
+		estimatedSize += entrySize
 	}
 	currentCookie++
 
@@ -1398,12 +1405,14 @@ func (r *MemoryRepository) ReadDir(dirHandle metadata.FileHandle, cookie uint64,
 			Name:   "..",
 			Cookie: currentCookie,
 		}
-		entries = append(entries, entry)
 
 		// Calculate size for this entry
 		nameLen := len(entry.Name)
 		padding := (4 - (nameLen % 4)) % 4
-		estimatedSize += 24 + uint32(nameLen) + uint32(padding)
+		entrySize := 24 + uint32(nameLen) + uint32(padding)
+
+		entries = append(entries, entry)
+		estimatedSize += entrySize
 	}
 	currentCookie++
 
@@ -1421,8 +1430,8 @@ func (r *MemoryRepository) ReadDir(dirHandle metadata.FileHandle, cookie uint64,
 			names = append(names, name)
 		}
 
-		// Sort for stable ordering
-		sortStrings(names)
+		// Sort for stable ordering (O(n log n) with optimized quicksort)
+		slices.Sort(names)
 
 		// Iterate through children, skipping entries before cookie
 		for _, name := range names {
@@ -1434,17 +1443,14 @@ func (r *MemoryRepository) ReadDir(dirHandle metadata.FileHandle, cookie uint64,
 				continue
 			}
 
-			// Calculate size for this entry before adding
+			// Calculate size for this entry BEFORE adding it
 			nameLen := len(name)
 			padding := (4 - (nameLen % 4)) % 4
 			entrySize := 24 + uint32(nameLen) + uint32(padding)
 
 			// Check if adding this entry would exceed the count limit
-			// Reserve some space for the response overhead (status, attrs, verifier, eof)
-			// Approximate: 200 bytes for response overhead
-			const responseOverhead = 200
-			if estimatedSize+entrySize+responseOverhead > count {
-				// We've reached the count limit, but we haven't seen all entries
+			if estimatedSize+entrySize > count {
+				// We've reached the count limit, but haven't seen all entries
 				// Return what we have so far (EOF = false)
 				return entries, false, nil
 			}
@@ -1457,6 +1463,8 @@ func (r *MemoryRepository) ReadDir(dirHandle metadata.FileHandle, cookie uint64,
 				Name:   name,
 				Cookie: currentCookie,
 			}
+
+			// Add entry and increment size (O(1) operation)
 			entries = append(entries, entry)
 			estimatedSize += entrySize
 
@@ -1468,7 +1476,7 @@ func (r *MemoryRepository) ReadDir(dirHandle metadata.FileHandle, cookie uint64,
 	// Step 4: Return results with EOF flag
 	// ========================================================================
 
-	// We've returned all entries
+	// We've returned all entries - EOF = true
 	return entries, true, nil
 }
 
