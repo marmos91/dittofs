@@ -173,10 +173,16 @@ func (h *DefaultMountHandler) Mount(repository metadata.Repository, req *MountRe
 		return &MountResponse{Status: MountErrAccess}, nil
 	}
 
-	// Log squashing information if credentials were modified
-	if authCtx.UID != nil && uid != nil && *authCtx.UID != *uid {
-		logger.Info("Mount: credentials squashed for path=%s client=%s original_uid=%d effective_uid=%d",
-			req.DirPath, clientIP, *uid, *authCtx.UID)
+	// Log squashing information if credentials were modified (UID or GID)
+	if (authCtx.UID != nil && uid != nil && *authCtx.UID != *uid) ||
+	   (authCtx.GID != nil && gid != nil && *authCtx.GID != *gid) {
+		logger.Info("Mount: credentials squashed for path=%s client=%s original_uid=%d effective_uid=%d original_gid=%d effective_gid=%d",
+			req.DirPath, clientIP, 
+			func() uint32 { if uid != nil { return *uid } else { return 0 } }(),
+			func() uint32 { if authCtx.UID != nil { return *authCtx.UID } else { return 0 } }(),
+			func() uint32 { if gid != nil { return *gid } else { return 0 } }(),
+			func() uint32 { if authCtx.GID != nil { return *authCtx.GID } else { return 0 } }(),
+		)
 	}
 
 	handleBytes, err := repository.GetRootHandle(req.DirPath)
