@@ -33,14 +33,19 @@ func ApplySquashing(
 	gids []uint32,
 ) (effectiveUID *uint32, effectiveGID *uint32, effectiveGIDs []uint32) {
 	// Determine anonymous UID/GID (use configured values or defaults)
-	anonUID := opts.AnonUID
-	if anonUID == 0 {
+	var anonUID uint32
+
+	if opts.AnonUID == nil {
 		anonUID = DefaultAnonUID
+	} else {
+		anonUID = *opts.AnonUID
 	}
 
-	anonGID := opts.AnonGID
-	if anonGID == 0 {
+	var anonGID uint32
+	if opts.AnonGID == nil {
 		anonGID = DefaultAnonGID
+	} else {
+		anonGID = *opts.AnonGID
 	}
 
 	// AUTH_NULL always gets anonymous credentials
