@@ -160,12 +160,15 @@ func main() {
 		ContentID: "", // Root directory has no content
 	}
 
+	anonUID := uint32(metadata.DefaultAnonUID)
+	anonGID := uint32(metadata.DefaultAnonGID)
+
 	if err := metadataRepo.AddExport("/export", metadata.ExportOptions{
 		ReadOnly:  false,
 		Async:     true,
 		AllSquash: true,
-		AnonUID:   65534, // nobody
-		AnonGID:   65534, // nogroup
+		AnonUID:   &anonUID, // nobody
+		AnonGID:   &anonGID, // nogroup
 	}, rootAttr); err != nil {
 		log.Fatalf("Failed to add export: %v", err)
 	}
@@ -175,8 +178,8 @@ func main() {
 		ReadOnly:           false,
 		Async:              true,
 		AllSquash:          true,
-		AnonUID:            65534, // nobody
-		AnonGID:            65534, // nogroup
+		AnonUID:            &anonUID, // nobody
+		AnonGID:            &anonGID, // nogroup
 		AllowedClients:     []string{"192.168.1.0/24"},
 		DeniedClients:      []string{"192.168.1.50", "::1"},
 		RequireAuth:        false,

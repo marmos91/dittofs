@@ -26,15 +26,15 @@ type ExportOptions struct {
 	// When true, all AUTH_UNIX credentials are replaced with AnonUID/AnonGID.
 	AllSquash bool
 
-	// AnonUID is the UID to use for anonymous access when AllSquash is enabled.
+	// AnonUID is the UID to use for anonymous access when AllSquash, RootSquash (for UID 0), or AUTH_NULL requests are enabled.
 	// Default: 65534 (nobody)
-	// Only used when AllSquash is true or for AUTH_NULL requests.
-	AnonUID uint32
+	// Used when AllSquash is true, when RootSquash is true and the client UID is 0, or for AUTH_NULL requests.
+	AnonUID *uint32
 
-	// AnonGID is the GID to use for anonymous access when AllSquash is enabled.
+	// AnonGID is the GID to use for anonymous access when AllSquash, RootSquash (for GID 0), or AUTH_NULL requests are enabled.
 	// Default: 65534 (nogroup)
-	// Only used when AllSquash is true or for AUTH_NULL requests.
-	AnonGID uint32
+	// Used when AllSquash is true, when RootSquash is true and the client GID is 0, or for AUTH_NULL requests.
+	AnonGID *uint32
 
 	// RootSquash maps root (UID 0) to the anonymous user (anonuid/anongid)
 	// This is a security feature to prevent root on NFS clients from having
