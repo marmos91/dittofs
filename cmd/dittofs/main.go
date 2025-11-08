@@ -24,8 +24,8 @@ func createInitialStructure(repo *persistence.MemoryRepository, contentRepo *con
 	imagesAttr := &metadata.FileAttr{
 		Type:      metadata.FileTypeDirectory,
 		Mode:      0755,
-		UID:       0,
-		GID:       0,
+		UID:       501,
+		GID:       20,
 		Size:      4096,
 		Atime:     now,
 		Mtime:     now,
@@ -59,8 +59,8 @@ func createInitialStructure(repo *persistence.MemoryRepository, contentRepo *con
 		fileAttr := &metadata.FileAttr{
 			Type:      metadata.FileTypeRegular,
 			Mode:      0644,
-			UID:       0,
-			GID:       0,
+			UID:       501,
+			GID:       20,
 			Size:      uint64(len(img.content)),
 			Atime:     now,
 			Mtime:     now,
@@ -93,8 +93,8 @@ func createInitialStructure(repo *persistence.MemoryRepository, contentRepo *con
 		fileAttr := &metadata.FileAttr{
 			Type:      metadata.FileTypeRegular,
 			Mode:      0644,
-			UID:       0,
-			GID:       0,
+			UID:       501,
+			GID:       20,
 			Size:      uint64(len(txt.content)),
 			Atime:     now,
 			Mtime:     now,
@@ -151,8 +151,8 @@ func main() {
 	rootAttr := &metadata.FileAttr{
 		Type:      metadata.FileTypeDirectory,
 		Mode:      0755,
-		UID:       0,
-		GID:       0,
+		UID:       501,
+		GID:       20,
 		Size:      4096,
 		Atime:     now,
 		Mtime:     now,
