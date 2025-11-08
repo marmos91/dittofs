@@ -43,10 +43,20 @@ type Repository interface {
 	// IsClientMounted checks if a specific client has an active mount
 	IsClientMounted(exportPath string, clientAddr string) (bool, error)
 
-	// Access control operations
-	// CheckExportAccess verifies if a client can access an export
-	// Returns an AccessDecision with details about the authorization
-	CheckExportAccess(exportPath string, clientAddr string, authFlavor uint32) (*AccessDecision, error)
+	// CheckExportAccess verifies if a client can access an export and returns effective credentials.
+	// Returns an AccessDecision with details about the authorization and an AuthContext with
+	// the effective UID/GID after applying squashing rules (AllSquash, RootSquash).
+	//
+	// The returned AuthContext should be used for all subsequent permission checks to ensure
+	// consistent application of squashing rules throughout the mount session.
+	CheckExportAccess(
+		exportPath string,
+		clientAddr string,
+		authFlavor uint32,
+		uid *uint32,
+		gid *uint32,
+		gids []uint32,
+	) (*AccessDecision, *AuthContext, error)
 
 	// CheckAccess verifies if a client has the requested access permissions on a file.
 	// It performs Unix-style permission checking based on file ownership, mode bits,

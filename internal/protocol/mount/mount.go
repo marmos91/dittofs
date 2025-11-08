@@ -127,17 +127,32 @@ func (h *DefaultMountHandler) Mount(repository metadata.Repository, req *MountRe
 		clientIP = ctx.ClientAddr
 	}
 
-	// Log authentication details
+	// Extract credentials from context
+	var uid, gid *uint32
+	var gids []uint32
+
 	if ctx.AuthFlavor == rpc.AuthUnix && ctx.UnixAuth != nil {
+		uid = &ctx.UnixAuth.UID
+		gid = &ctx.UnixAuth.GID
+		gids = ctx.UnixAuth.GIDs
+
 		logger.Info("Mount request: path=%s client=%s auth=UNIX uid=%d gid=%d machine=%s",
-			req.DirPath, clientIP, ctx.UnixAuth.UID, ctx.UnixAuth.GID, ctx.UnixAuth.MachineName)
+			req.DirPath, clientIP, *uid, *gid, ctx.UnixAuth.MachineName)
 	} else {
 		logger.Info("Mount request: path=%s client=%s auth=%s",
 			req.DirPath, clientIP, authFlavorName(ctx.AuthFlavor))
 	}
 
-	// Rest of the method remains the same...
-	accessDecision, err := repository.CheckExportAccess(req.DirPath, clientIP, ctx.AuthFlavor)
+	// Check export access and apply squashing
+	// The repository will apply AllSquash/RootSquash and return effective credentials
+	accessDecision, authCtx, err := repository.CheckExportAccess(
+		req.DirPath,
+		clientIP,
+		ctx.AuthFlavor,
+		uid,
+		gid,
+		gids,
+	)
 	if err != nil {
 		if exportErr, ok := err.(*metadata.ExportError); ok {
 			logger.Warn("Mount denied: path=%s client=%s reason=%s",
@@ -158,21 +173,29 @@ func (h *DefaultMountHandler) Mount(repository metadata.Repository, req *MountRe
 		return &MountResponse{Status: MountErrAccess}, nil
 	}
 
+	// Log squashing information if credentials were modified
+	if authCtx.UID != nil && uid != nil && *authCtx.UID != *uid {
+		logger.Info("Mount: credentials squashed for path=%s client=%s original_uid=%d effective_uid=%d",
+			req.DirPath, clientIP, *uid, *authCtx.UID)
+	}
+
 	handleBytes, err := repository.GetRootHandle(req.DirPath)
 	if err != nil {
 		logger.Error("Failed to get root handle: path=%s error=%v", req.DirPath, err)
 		return &MountResponse{Status: MountErrServerFault}, nil
 	}
 
-	var uid, gid *uint32
+	// Record mount with ORIGINAL credentials (before squashing)
+	// This preserves audit trail of who actually mounted
+	var recordUID, recordGID *uint32
 	machineName := ""
 	if ctx.UnixAuth != nil {
-		uid = &ctx.UnixAuth.UID
-		gid = &ctx.UnixAuth.GID
+		recordUID = &ctx.UnixAuth.UID
+		recordGID = &ctx.UnixAuth.GID
 		machineName = ctx.UnixAuth.MachineName
 	}
 
-	if err := repository.RecordMount(req.DirPath, clientIP, ctx.AuthFlavor, machineName, uid, gid); err != nil {
+	if err := repository.RecordMount(req.DirPath, clientIP, ctx.AuthFlavor, machineName, recordUID, recordGID); err != nil {
 		logger.Warn("Failed to record mount: path=%s client=%s error=%v",
 			req.DirPath, clientIP, err)
 	}

@@ -82,15 +82,35 @@ func (r *MemoryRepository) IsClientMounted(exportPath string, clientAddr string)
 	return exists, nil
 }
 
-// CheckExportAccess verifies if a client can access an export
-func (r *MemoryRepository) CheckExportAccess(exportPath string, clientAddr string, authFlavor uint32) (*metadata.AccessDecision, error) {
+// CheckExportAccess verifies if a client can access an export and applies squashing rules.
+//
+// This method:
+//  1. Verifies the export exists
+//  2. Checks authentication requirements
+//  3. Validates allowed/denied client lists
+//  4. Applies UID/GID squashing rules (AllSquash, RootSquash)
+//  5. Returns access decision with effective credentials
+//
+// The returned AccessDecision contains the final determination of whether
+// access should be granted and which authentication flavors are allowed.
+//
+// Squashing is applied here (at mount time) so that all subsequent operations
+// use the squashed credentials consistently.
+func (r *MemoryRepository) CheckExportAccess(
+	exportPath string,
+	clientAddr string,
+	authFlavor uint32,
+	uid *uint32,
+	gid *uint32,
+	gids []uint32,
+) (*metadata.AccessDecision, *metadata.AuthContext, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	// Check if export exists
 	ed, exists := r.exports[exportPath]
 	if !exists {
-		return nil, &metadata.ExportError{
+		return nil, nil, &metadata.ExportError{
 			Code:    metadata.ExportErrNotFound,
 			Message: fmt.Sprintf("export not found: %s", exportPath),
 			Export:  exportPath,
@@ -101,7 +121,7 @@ func (r *MemoryRepository) CheckExportAccess(exportPath string, clientAddr strin
 
 	// Check authentication requirements
 	if opts.RequireAuth && authFlavor == 0 {
-		return nil, &metadata.ExportError{
+		return nil, nil, &metadata.ExportError{
 			Code:    metadata.ExportErrAuthRequired,
 			Message: "authentication required for this export",
 			Export:  exportPath,
@@ -112,7 +132,7 @@ func (r *MemoryRepository) CheckExportAccess(exportPath string, clientAddr strin
 	if len(opts.AllowedAuthFlavors) > 0 {
 		allowed := slices.Contains(opts.AllowedAuthFlavors, authFlavor)
 		if !allowed {
-			return nil, &metadata.ExportError{
+			return nil, nil, &metadata.ExportError{
 				Code:    metadata.ExportErrAuthRequired,
 				Message: fmt.Sprintf("authentication flavor %d not allowed", authFlavor),
 				Export:  exportPath,
@@ -124,7 +144,7 @@ func (r *MemoryRepository) CheckExportAccess(exportPath string, clientAddr strin
 	if len(opts.DeniedClients) > 0 {
 		for _, denied := range opts.DeniedClients {
 			if matchesIPPattern(clientAddr, denied) {
-				return nil, &metadata.ExportError{
+				return nil, nil, &metadata.ExportError{
 					Code:    metadata.ExportErrAccessDenied,
 					Message: fmt.Sprintf("client %s is explicitly denied", clientAddr),
 					Export:  exportPath,
@@ -143,7 +163,7 @@ func (r *MemoryRepository) CheckExportAccess(exportPath string, clientAddr strin
 			}
 		}
 		if !allowed {
-			return nil, &metadata.ExportError{
+			return nil, nil, &metadata.ExportError{
 				Code:    metadata.ExportErrAccessDenied,
 				Message: fmt.Sprintf("client %s not in allowed list", clientAddr),
 				Export:  exportPath,
@@ -158,13 +178,33 @@ func (r *MemoryRepository) CheckExportAccess(exportPath string, clientAddr strin
 		allowedAuth = []uint32{0, 1}
 	}
 
+	// Apply squashing rules to get effective credentials
+	effectiveUID, effectiveGID, effectiveGIDs := metadata.ApplySquashing(
+		&opts,
+		authFlavor,
+		uid,
+		gid,
+		gids,
+	)
+
+	// Build authentication context with effective (squashed) credentials
+	authCtx := &metadata.AuthContext{
+		AuthFlavor: authFlavor,
+		UID:        effectiveUID,
+		GID:        effectiveGID,
+		GIDs:       effectiveGIDs,
+		ClientAddr: clientAddr,
+	}
+
 	// Access granted
-	return &metadata.AccessDecision{
+	decision := &metadata.AccessDecision{
 		Allowed:     true,
 		Reason:      "access granted",
 		AllowedAuth: allowedAuth,
 		ReadOnly:    opts.ReadOnly,
-	}, nil
+	}
+
+	return decision, authCtx, nil
 }
 
 // matchesIPPattern checks if an IP matches a pattern (IP address or CIDR)
