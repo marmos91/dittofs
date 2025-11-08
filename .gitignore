@@ -27,6 +27,25 @@ go.work.sum
 # env file
 .env
 
-# Editor/IDE
-# .idea/
-# .vscode/
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# Build artifacts
+dittofs
+
+# Temporary files
+tmp/
+temp/
+/tmp/dittofs-content/
+
+# OS
+.DS_Store
+Thumbs.db
