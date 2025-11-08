@@ -349,11 +349,9 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	// ========================================================================
 	// Step 3: Get directory children from repository
 	// ========================================================================
-	// The repository handles all business logic:
-	// - Checking read permission on the directory
-	// - Retrieving all children
-	// - Applying access control filters
-	// - Building "." and ".." entries
+	// The repository only retrieves the children of the directory.
+	// This protocol layer is responsible for building the "." and ".." entries (see lines 388-438).
+	// Access control filtering, if required, would also need to be implemented in this layer.
 
 	children, err := repository.GetChildren(dirHandle)
 	if err != nil {
