@@ -1,0 +1,195 @@
+# Contributing to DittoFS
+
+Thank you for your interest in contributing to DittoFS! This document provides guidelines and instructions for contributing to the project.
+
+## Table of Contents
+
+- [Code of Conduct](#code-of-conduct)
+- [Getting Started](#getting-started)
+- [Development Setup](#development-setup)
+- [How to Contribute](#how-to-contribute)
+- [Coding Standards](#coding-standards)
+- [Testing](#testing)
+- [Pull Request Process](#pull-request-process)
+- [Project Architecture](#project-architecture)
+
+## Code of Conduct
+
+This project adheres to a code of conduct that all contributors are expected to follow:
+
+- Be respectful and inclusive
+- Focus on constructive feedback
+- Accept responsibility and apologize for mistakes
+- Prioritize what's best for the community
+
+## Getting Started
+
+DittoFS is an NFSv3 server implementation in pure Go. Before contributing, familiarize yourself with:
+
+- [RFC 1813 - NFS Version 3 Protocol](https://tools.ietf.org/html/rfc1813)
+- [RFC 5531 - RPC Protocol](https://tools.ietf.org/html/rfc5531)
+- The project's [README.md](README.md)
+
+## Development Setup
+
+### Prerequisites
+
+- Go 1.25 or higher
+- Git
+- Linux or macOS (for NFS client testing)
+
+### Clone and Build
+
+```bash
+# Clone the repository
+git clone https://github.com/marmos91/dittofs.git
+cd dittofs
+
+# Install dependencies
+go mod download
+
+# Build the project
+go build -o dittofs cmd/dittofs/main.go
+
+# Run tests
+go test ./...
+
+# Run the server
+./dittofs -port 2049 -log-level DEBUG
+```
+
+### Mount for Testing
+
+```bash
+# Linux
+sudo mount -t nfs -o nfsvers=3,tcp localhost:/export /mnt/test
+
+# macOS
+sudo mount -t nfs -o nfsvers=3,tcp,resvport localhost:/export /mnt/test
+```
+
+## How to Contribute
+
+### Reporting Bugs
+
+Use the [bug report template](.github/issue_template.md) and include:
+
+- Clear description of the issue
+- Steps to reproduce
+- Expected vs. actual behavior
+- Environment details (OS, Go version, NFS client)
+- Relevant logs with `-log-level DEBUG`
+
+### Suggesting Features
+
+Open an issue with:
+
+- Use case description
+- Proposed solution
+- Alternative approaches considered
+- Impact on existing functionality
+
+### Code Contributions
+
+1. **Fork the repository**
+2. **Create a feature branch**: `git checkout -b feature/my-feature`
+3. **Make your changes** following our coding standards
+4. **Write/update tests** for your changes
+5. **Run tests**: `go test ./...`
+6. **Commit with clear messages**: Follow [Conventional Commits](https://www.conventionalcommits.org/)
+7. **Push to your fork**: `git push origin feature/my-feature`
+8. **Open a Pull Request** using the [PR template](.github/pull_request_template.md)
+
+## Coding Standards
+
+### Go Style
+
+- Follow [Effective Go](https://golang.org/doc/effective_go.html)
+- Use `gofmt` for formatting: `go fmt ./...`
+- Use `go vet` for static analysis: `go vet ./...`
+- Run linters: `golangci-lint run` (if available)
+
+### Key Principles
+
+1. **Separation of Concerns**
+   - Protocol files (`internal/protocol/nfs/*.go`) handle ONLY XDR encoding/decoding and wiring
+   - Business logic belongs in repository implementations
+   - Keep functions focused and single-purpose
+
+2. **Documentation**
+   - All exported functions/types must have godoc comments
+   - NFS procedures must reference RFC 1813 sections
+   - Complex logic should include inline comments explaining the "why"
+
+3. **Error Handling**
+   - Return proper NFS error codes (see `internal/metadata/errors.go`)
+   - Include context in error messages
+   - Log errors appropriately (DEBUG for expected errors, ERROR for unexpected)
+
+4. **Authentication Context**
+   - Thread authentication context through all operations
+   - Use `AuthContext` struct for client credentials
+   - Support multi-user scenarios
+
+```
+
+## Testing
+
+### Running Tests
+
+```bash
+# Run all tests
+go test ./...
+
+# Run tests with coverage
+go test -cover ./...
+
+# Run tests with race detection
+go test -race ./...
+
+# Run specific package tests
+go test ./internal/metadata/persistence/
+```
+
+## Pull Request Process
+
+1. **Ensure CI passes** - All tests and checks must pass
+2. **Update documentation** - README, godocs, inline comments
+3. **Describe changes** - Use the PR template completely
+4. **Request review** - Tag relevant maintainers
+5. **Address feedback** - Respond to all review comments
+6. **Squash commits** - Keep history clean (if requested)
+
+### PR Checklist
+
+- [ ] Code follows project style guidelines
+- [ ] All tests pass locally
+- [ ] New tests added for new functionality
+- [ ] Documentation updated (README, godocs)
+- [ ] No breaking changes (or clearly documented)
+- [ ] Commit messages follow Conventional Commits
+- [ ] PR template filled out completely
+
+## Areas Needing Contribution
+
+- **Backend Implementations**: S3, PostgreSQL, Redis repositories
+- **Protocol Extensions**: NFSv4 support, SMB/CIFS
+- **Operational Tools**: Metrics, tracing, health checks
+- **Documentation**: Tutorials, architecture guides
+- **Testing**: E2E tests, load tests, compliance tests
+
+## Getting Help
+
+- Open an issue for questions
+- Check existing issues and PRs
+- Review the [README.md](README.md) and inline documentation
+
+## Recognition
+
+Contributors will be recognized in:
+
+- Project README
+- Release notes
+- GitHub contributors page
+
+Thank you for making DittoFS better! 🎉
