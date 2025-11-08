@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	"net"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/content"
@@ -605,19 +604,6 @@ func validateCreateRequest(req *CreateRequest) *createValidationError {
 	}
 
 	return nil
-}
-
-// ============================================================================
-// Utility Functions
-// ============================================================================
-
-// extractClientIP extracts the IP address from a client address string.
-func extractClientIP(clientAddr string) string {
-	ip, _, err := net.SplitHostPort(clientAddr)
-	if err != nil {
-		return clientAddr
-	}
-	return ip
 }
 
 // createModeName returns a human-readable name for a creation mode.

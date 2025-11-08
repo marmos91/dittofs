@@ -1489,19 +1489,64 @@ func extractFileIDFromHandle(handle metadata.FileHandle) uint64 {
 	return binary.BigEndian.Uint64(handle[:8])
 }
 
-// sortStrings performs an in-place sort of a string slice.
-// This provides stable ordering for directory entries.
-func sortStrings(slice []string) {
-	// Simple insertion sort - good enough for most directories
-	for i := 1; i < len(slice); i++ {
-		key := slice[i]
-		j := i - 1
-		for j >= 0 && slice[j] > key {
-			slice[j+1] = slice[j]
-			j--
+// ReadSymlink reads the target path of a symbolic link with access control.
+func (r *MemoryRepository) ReadSymlink(handle metadata.FileHandle, ctx *metadata.AuthContext) (string, *metadata.FileAttr, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Get file attributes
+	key := handleToKey(handle)
+	attr, exists := r.files[key]
+	if !exists {
+		return "", nil, &metadata.ExportError{
+			Code:    metadata.ExportErrNotFound,
+			Message: "symbolic link not found",
 		}
-		slice[j+1] = key
 	}
+
+	// Verify it's a symbolic link
+	if attr.Type != metadata.FileTypeSymlink {
+		return "", nil, &metadata.ExportError{
+			Code:    metadata.ExportErrServerFault,
+			Message: "not a symbolic link",
+		}
+	}
+
+	// Check read permission (if auth context provided)
+	if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil {
+		uid := *ctx.UID
+		gid := *ctx.GID
+
+		var hasRead bool
+
+		// Owner permissions
+		if uid == attr.UID {
+			hasRead = (attr.Mode & 0400) != 0 // Owner read bit
+		} else if gid == attr.GID || containsGID(ctx.GIDs, attr.GID) {
+			// Group permissions
+			hasRead = (attr.Mode & 0040) != 0 // Group read bit
+		} else {
+			// Other permissions
+			hasRead = (attr.Mode & 0004) != 0 // Other read bit
+		}
+
+		if !hasRead {
+			return "", nil, &metadata.ExportError{
+				Code:    metadata.ExportErrAccessDenied,
+				Message: "read permission denied on symbolic link",
+			}
+		}
+	}
+
+	// Get symlink target
+	if attr.SymlinkTarget == "" {
+		return "", nil, &metadata.ExportError{
+			Code:    metadata.ExportErrServerFault,
+			Message: "symbolic link has no target",
+		}
+	}
+
+	return attr.SymlinkTarget, attr, nil
 }
 
 // Helper function to check if a GID is in a list
