@@ -70,7 +70,7 @@ type NFSHandler interface {
 
 	// Link creates a hard link to a file.
 	// RFC 1813 Section 3.3.15
-	Link(repository metadata.Repository, req *nfs.LinkRequest) (*nfs.LinkResponse, error)
+	Link(repository metadata.Repository, req *nfs.LinkRequest, ctx *nfs.LinkContext) (*nfs.LinkResponse, error)
 
 	// ReadDir reads entries from a directory.
 	// RFC 1813 Section 3.3.16

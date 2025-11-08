@@ -609,6 +609,130 @@ func (r *MemoryRepository) GetFSStats(handle metadata.FileHandle) (*metadata.FSS
 	}, nil
 }
 
+// CreateLink creates a hard link to an existing file.
+//
+// This implementation:
+//  1. Verifies the file and directory exist
+//  2. Checks write access to the directory (if auth context provided)
+//  3. Verifies the name doesn't already exist
+//  4. Adds the new directory entry pointing to the same file handle
+//  5. Updates directory modification time
+//
+// Note: This implementation doesn't increment nlink as we're using
+// a handle-based system where multiple directory entries can reference
+// the same handle without tracking a separate link count.
+func (r *MemoryRepository) CreateLink(dirHandle metadata.FileHandle, name string, fileHandle metadata.FileHandle, ctx *metadata.AuthContext) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// ========================================================================
+	// Step 1: Verify file exists
+	// ========================================================================
+
+	fileKey := handleToKey(fileHandle)
+	fileAttr, exists := r.files[fileKey]
+	if !exists {
+		return &metadata.ExportError{
+			Code:    metadata.ExportErrNotFound,
+			Message: "source file not found",
+		}
+	}
+
+	// ========================================================================
+	// Step 2: Verify directory exists
+	// ========================================================================
+
+	dirKey := handleToKey(dirHandle)
+	dirAttr, exists := r.files[dirKey]
+	if !exists {
+		return &metadata.ExportError{
+			Code:    metadata.ExportErrNotFound,
+			Message: "target directory not found",
+		}
+	}
+
+	// Verify target is a directory
+	if dirAttr.Type != metadata.FileTypeDirectory {
+		return &metadata.ExportError{
+			Code:    metadata.ExportErrServerFault,
+			Message: "target is not a directory",
+		}
+	}
+
+	// ========================================================================
+	// Step 3: Check write access to directory (if auth context provided)
+	// ========================================================================
+
+	if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil {
+		// Check if user has write permission on the directory
+		uid := *ctx.UID
+		gid := *ctx.GID
+
+		var hasWrite bool
+
+		// Owner permissions
+		if uid == dirAttr.UID {
+			hasWrite = (dirAttr.Mode & 0200) != 0 // Owner write bit
+		} else if gid == dirAttr.GID || containsGID(ctx.GIDs, dirAttr.GID) {
+			// Group permissions
+			hasWrite = (dirAttr.Mode & 0020) != 0 // Group write bit
+		} else {
+			// Other permissions
+			hasWrite = (dirAttr.Mode & 0002) != 0 // Other write bit
+		}
+
+		if !hasWrite {
+			return &metadata.ExportError{
+				Code:    metadata.ExportErrAccessDenied,
+				Message: "write permission denied on target directory",
+			}
+		}
+	}
+
+	// ========================================================================
+	// Step 4: Verify name doesn't already exist
+	// ========================================================================
+
+	if r.children[dirKey] == nil {
+		r.children[dirKey] = make(map[string]metadata.FileHandle)
+	}
+
+	if _, exists := r.children[dirKey][name]; exists {
+		return &metadata.ExportError{
+			Code:    metadata.ExportErrServerFault,
+			Message: fmt.Sprintf("name already exists: %s", name),
+		}
+	}
+
+	// ========================================================================
+	// Step 5: Create the link
+	// ========================================================================
+
+	// Add the directory entry pointing to the existing file handle
+	r.children[dirKey][name] = fileHandle
+
+	// ========================================================================
+	// Step 6: Update directory modification time
+	// ========================================================================
+
+	dirAttr.Mtime = time.Now()
+	dirAttr.Ctime = time.Now()
+	r.files[dirKey] = dirAttr
+
+	// ========================================================================
+	// Step 7: Update file change time (metadata changed)
+	// ========================================================================
+
+	fileAttr.Ctime = time.Now()
+	r.files[fileKey] = fileAttr
+
+	// Note: In a real implementation with link counting, you would also
+	// increment fileAttr.Nlink here. However, in this handle-based system,
+	// the link count is computed dynamically when needed.
+
+	return nil
+}
+
 // CheckAccess performs Unix-style permission checking for file access.
 // This implements the access control logic for the ACCESS NFS procedure.
 //

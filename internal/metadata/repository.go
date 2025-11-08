@@ -90,4 +90,22 @@ type Repository interface {
 	// This is used by the FSSTAT NFS procedure to inform clients about
 	// current filesystem capacity, usage, and available space/inodes
 	GetFSStats(handle FileHandle) (*FSStat, error)
+
+	// CreateLink creates a hard link to an existing file.
+	//
+	// This adds a new directory entry that references the same file data.
+	// The file's link count (nlink) should be incremented.
+	//
+	// Parameters:
+	//   - dirHandle: Target directory where the link will be created
+	//   - name: Name for the new link
+	//   - fileHandle: File to link to
+	//   - ctx: Authentication context for access control
+	//
+	// Returns error if:
+	//   - Access denied (no write permission on directory)
+	//   - Name already exists in directory
+	//   - Cross-filesystem link attempted (implementation-specific)
+	//   - fileHandle or dirHandle is invalid
+	CreateLink(dirHandle FileHandle, name string, fileHandle FileHandle, ctx *AuthContext) error
 }

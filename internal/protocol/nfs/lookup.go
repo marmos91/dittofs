@@ -104,7 +104,7 @@ func DecodeLookupRequest(data []byte) (*LookupRequest, error) {
 		if err := reader.UnreadByte(); err == nil {
 			reader.ReadByte()
 		}
-		for i := uint32(0); i < padding; i++ {
+		for range padding {
 			reader.ReadByte()
 		}
 	}
@@ -162,7 +162,7 @@ func (resp *LookupResponse) Encode() ([]byte, error) {
 
 	// Add padding to 4-byte boundary
 	padding := (4 - (handleLen % 4)) % 4
-	for i := uint32(0); i < padding; i++ {
+	for range padding {
 		buf.WriteByte(0)
 	}
 

@@ -360,11 +360,34 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			},
 		)
 	case nfs.NFSProcLink:
+		// Extract authentication from RPC call
+		var uid, gid *uint32
+		var gids []uint32
+
+		if authFlavor == rpc.AuthUnix {
+			authBody := call.GetAuthBody()
+			if len(authBody) > 0 {
+				if unixAuth, err := rpc.ParseUnixAuth(authBody); err == nil {
+					uid = &unixAuth.UID
+					gid = &unixAuth.GID
+					gids = unixAuth.GIDs
+				}
+			}
+		}
+
+		// Create context with client information and auth
+		linkCtx := &nfs.LinkContext{
+			ClientAddr: c.conn.RemoteAddr().String(),
+			AuthFlavor: authFlavor,
+			UID:        uid,
+			GID:        gid,
+			GIDs:       gids,
+		}
 		return handleRequest(
 			data,
 			nfs.DecodeLinkRequest,
 			func(req *nfs.LinkRequest) (*nfs.LinkResponse, error) {
-				return handler.Link(repo, req)
+				return handler.Link(repo, req, linkCtx)
 			},
 			nfs.NFS3ErrIO,
 			func(status uint32) *nfs.LinkResponse {
