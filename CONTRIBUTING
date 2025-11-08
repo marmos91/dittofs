@@ -131,7 +131,6 @@ Open an issue with:
    - Use `AuthContext` struct for client credentials
    - Support multi-user scenarios
 
-```
 
 ## Testing
 
