@@ -154,4 +154,42 @@ type Repository interface {
 	// This is used by the PATHCONF NFS procedure to inform clients about
 	// filesystem properties and limitations (filename lengths, link limits, etc.)
 	GetPathConf(handle FileHandle) (*PathConf, error)
+
+	// CreateSpecialFile creates a special file (device, socket, or FIFO).
+	//
+	// This method is responsible for:
+	//  1. Checking write permission on the parent directory
+	//  2. Checking privilege requirements (device creation often requires root)
+	//  3. Verifying the name doesn't already exist
+	//  4. Building complete file attributes with defaults
+	//  5. Storing device numbers (for block/char devices)
+	//  6. Creating the special file metadata
+	//  7. Linking it to the parent directory
+	//  8. Setting up the parent-child relationship
+	//  9. Updating parent directory timestamps
+	//
+	// Parameters:
+	//   - parentHandle: Handle of the parent directory
+	//   - name: Name for the new special file
+	//   - attr: Partial attributes (type, mode, uid, gid) - may have defaults
+	//   - majorDevice: Major device number (for block/char devices, 0 otherwise)
+	//   - minorDevice: Minor device number (for block/char devices, 0 otherwise)
+	//   - ctx: Authentication context for access control
+	//
+	// Returns:
+	//   - FileHandle: Handle of the newly created special file
+	//   - error: Returns error if:
+	//     * Access denied (no write permission on parent or insufficient privileges)
+	//     * Name already exists
+	//     * Parent is not a directory
+	//     * Invalid file type
+	//     * I/O error
+	//
+	// The implementation should:
+	//   - Complete the attr structure with size (0), timestamps, etc.
+	//   - Check that the caller has write permission on the parent directory
+	//   - For device files, check that the caller has sufficient privileges (typically root)
+	//   - Store device numbers appropriately (implementation-specific)
+	//   - Ensure the special file has proper default attributes if not specified
+	CreateSpecialFile(parentHandle FileHandle, name string, attr *FileAttr, majorDevice uint32, minorDevice uint32, ctx *AuthContext) (FileHandle, error)
 }

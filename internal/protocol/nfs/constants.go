@@ -235,3 +235,40 @@ const (
 	// If the file exists and the verifier matches, the operation succeeds (idempotent).
 	CreateExclusive = 2
 )
+
+// ============================================================================
+// Special File Type Constants (for MKNOD)
+// ============================================================================
+
+// Device types for MKNOD (RFC 1813 Section 3.3.11)
+// These identify the type of special file to create.
+const (
+	// NF3REG indicates a regular file (invalid for MKNOD - use CREATE instead)
+	NF3REG = 1
+
+	// NF3DIR indicates a directory (invalid for MKNOD - use MKDIR instead)
+	NF3DIR = 2
+
+	// NF3BLK indicates a block special device file
+	// Block devices perform I/O in fixed-size blocks (e.g., disks, partitions)
+	// Examples: /dev/sda, /dev/loop0
+	NF3BLK = 3
+
+	// NF3CHR indicates a character special device file
+	// Character devices perform I/O one byte at a time (e.g., terminals, serial ports)
+	// Examples: /dev/tty, /dev/null, /dev/random
+	NF3CHR = 4
+
+	// NF3LNK indicates a symbolic link (invalid for MKNOD - use SYMLINK instead)
+	NF3LNK = 5
+
+	// NF3SOCK indicates a Unix domain socket
+	// Sockets are used for inter-process communication
+	// Examples: /var/run/docker.sock, /tmp/X11-unix/X0
+	NF3SOCK = 6
+
+	// NF3FIFO indicates a named pipe (FIFO - First In, First Out)
+	// FIFOs are used for inter-process communication with streaming data
+	// Examples: /tmp/mypipe
+	NF3FIFO = 7
+)

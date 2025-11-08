@@ -1059,6 +1059,203 @@ func (r *MemoryRepository) GetPathConf(handle metadata.FileHandle) (*metadata.Pa
 	}, nil
 }
 
+// CreateSpecialFile creates a special file (device, socket, or FIFO).
+//
+// This implementation:
+//  1. Verifies the parent directory exists and is a directory
+//  2. Checks write permission on the parent directory (if auth context provided)
+//  3. Checks privilege requirements for device creation (root-only)
+//  4. Verifies the name doesn't already exist
+//  5. Completes file attributes with defaults (size=0, timestamps)
+//  6. Creates the special file metadata
+//  7. Stores device numbers in implementation-specific manner
+//  8. Links it to the parent directory
+//  9. Updates parent directory timestamps
+//
+// Parameters:
+//   - parentHandle: Handle of the parent directory
+//   - name: Name for the new special file
+//   - attr: Partial attributes (type, mode, uid, gid) from protocol layer
+//   - majorDevice: Major device number (for block/char devices, 0 otherwise)
+//   - minorDevice: Minor device number (for block/char devices, 0 otherwise)
+//   - ctx: Authentication context for access control
+//
+// Returns:
+//   - FileHandle: Handle of the newly created special file
+//   - error: Returns error if access denied, name exists, or I/O error
+func (r *MemoryRepository) CreateSpecialFile(
+	parentHandle metadata.FileHandle,
+	name string,
+	attr *metadata.FileAttr,
+	majorDevice uint32,
+	minorDevice uint32,
+	ctx *metadata.AuthContext,
+) (metadata.FileHandle, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// ========================================================================
+	// Step 1: Verify parent directory exists
+	// ========================================================================
+
+	parentKey := handleToKey(parentHandle)
+	parentAttr, exists := r.files[parentKey]
+	if !exists {
+		return nil, &metadata.ExportError{
+			Code:    metadata.ExportErrNotFound,
+			Message: "parent directory not found",
+		}
+	}
+
+	// Verify parent is a directory
+	if parentAttr.Type != metadata.FileTypeDirectory {
+		return nil, &metadata.ExportError{
+			Code:    metadata.ExportErrServerFault,
+			Message: "parent is not a directory",
+		}
+	}
+
+	// ========================================================================
+	// Step 2: Check write access to parent directory (if auth context provided)
+	// ========================================================================
+
+	if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil {
+		// Check if user has write permission on the parent directory
+		uid := *ctx.UID
+		gid := *ctx.GID
+
+		var hasWrite bool
+
+		// Owner permissions
+		if uid == parentAttr.UID {
+			hasWrite = (parentAttr.Mode & 0200) != 0 // Owner write bit
+		} else if gid == parentAttr.GID || containsGID(ctx.GIDs, parentAttr.GID) {
+			// Group permissions
+			hasWrite = (parentAttr.Mode & 0020) != 0 // Group write bit
+		} else {
+			// Other permissions
+			hasWrite = (parentAttr.Mode & 0002) != 0 // Other write bit
+		}
+
+		if !hasWrite {
+			return nil, &metadata.ExportError{
+				Code:    metadata.ExportErrAccessDenied,
+				Message: "write permission denied on parent directory",
+			}
+		}
+	}
+
+	// ========================================================================
+	// Step 3: Check privilege requirements for device creation
+	// ========================================================================
+	// Device files (character and block devices) typically require root
+	// privileges to create. This is a security measure to prevent
+	// unauthorized hardware access.
+
+	if attr.Type == metadata.FileTypeChar || attr.Type == metadata.FileTypeBlock {
+		// Check if user has sufficient privileges (root or CAP_MKNOD)
+		if ctx != nil && ctx.UID != nil && *ctx.UID != 0 {
+			// Non-root user attempting to create a device file
+			return nil, &metadata.ExportError{
+				Code:    metadata.ExportErrAccessDenied,
+				Message: "device file creation requires root privileges",
+			}
+		}
+	}
+
+	// ========================================================================
+	// Step 4: Verify name doesn't already exist
+	// ========================================================================
+
+	if r.children[parentKey] == nil {
+		r.children[parentKey] = make(map[string]metadata.FileHandle)
+	}
+
+	if _, exists := r.children[parentKey][name]; exists {
+		return nil, &metadata.ExportError{
+			Code:    metadata.ExportErrServerFault,
+			Message: fmt.Sprintf("file already exists: %s", name),
+		}
+	}
+
+	// ========================================================================
+	// Step 5: Complete file attributes with defaults
+	// ========================================================================
+
+	now := time.Now()
+
+	// Start with the attributes provided by the protocol layer
+	completeAttr := &metadata.FileAttr{
+		Type: attr.Type, // FileTypeChar, FileTypeBlock, FileTypeSocket, or FileTypeFifo
+		Mode: attr.Mode, // From protocol layer (or default)
+		UID:  attr.UID,  // From protocol layer (or authenticated user)
+		GID:  attr.GID,  // From protocol layer (or authenticated group)
+
+		// Server-assigned attributes
+		Size:      0, // Special files have no content
+		Atime:     now,
+		Mtime:     now,
+		Ctime:     now,
+		ContentID: "", // Special files don't have content blobs
+	}
+
+	// Apply default mode if not specified
+	if completeAttr.Mode == 0 {
+		completeAttr.Mode = 0644 // Default: rw-r--r--
+	}
+
+	// ========================================================================
+	// Step 6: Store device numbers (implementation-specific)
+	// ========================================================================
+	// In this in-memory implementation, we'll store device numbers in the
+	// SymlinkTarget field as a formatted string. In a real implementation,
+	// you would store this in a proper device-specific field.
+	//
+	// Note: This is a demonstration of how to handle device numbers.
+	// A production implementation should use a proper storage mechanism.
+
+	if attr.Type == metadata.FileTypeChar || attr.Type == metadata.FileTypeBlock {
+		// Store device numbers as a string in the format "major:minor"
+		// This is just for demonstration - a real implementation would
+		// store these properly in the filesystem metadata
+		completeAttr.SymlinkTarget = fmt.Sprintf("device:%d:%d", majorDevice, minorDevice)
+	}
+
+	// ========================================================================
+	// Step 7: Generate unique file handle
+	// ========================================================================
+
+	fileHandle := r.generateFileHandle(name)
+
+	// ========================================================================
+	// Step 8: Create special file metadata
+	// ========================================================================
+
+	fileKey := handleToKey(fileHandle)
+	r.files[fileKey] = completeAttr
+
+	// ========================================================================
+	// Step 9: Link special file to parent
+	// ========================================================================
+
+	r.children[parentKey][name] = fileHandle
+
+	// Set parent relationship
+	r.parents[fileKey] = parentHandle
+
+	// ========================================================================
+	// Step 10: Update parent directory timestamps
+	// ========================================================================
+	// The parent directory's mtime and ctime should be updated when a child
+	// is added, as this modifies the directory's contents.
+
+	parentAttr.Mtime = now
+	parentAttr.Ctime = now
+	r.files[parentKey] = parentAttr
+
+	return fileHandle, nil
+}
+
 // Helper function to check if a GID is in a list
 func containsGID(gids []uint32, target uint32) bool {
 	return slices.Contains(gids, target)

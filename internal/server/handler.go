@@ -54,7 +54,7 @@ type NFSHandler interface {
 
 	// MkNod creates a special device file.
 	// RFC 1813 Section 3.3.11
-	Mknod(repository metadata.Repository, req *nfs.MknodRequest) (*nfs.MknodResponse, error)
+	Mknod(repository metadata.Repository, req *nfs.MknodRequest, ctx *nfs.MknodContext) (*nfs.MknodResponse, error)
 
 	// Remove removes a file.
 	// RFC 1813 Section 3.3.12

@@ -382,11 +382,16 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			},
 		)
 	case nfs.NFSProcMknod:
+		mkNodCtx := &nfs.MknodContext{
+			ClientAddr: c.conn.RemoteAddr().String(),
+			AuthFlavor: authFlavor,
+		}
+
 		return handleRequest(
 			data,
 			nfs.DecodeMknodRequest,
 			func(req *nfs.MknodRequest) (*nfs.MknodResponse, error) {
-				return handler.Mknod(repo, req)
+				return handler.Mknod(repo, req, mkNodCtx)
 			},
 			nfs.NFS3ErrIO,
 			func(status uint32) *nfs.MknodResponse {
