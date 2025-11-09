@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"strings"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
@@ -399,7 +400,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 	}
 
 	// Check for null bytes (string terminator, invalid in filenames)
-	if bytes.ContainsAny([]byte(req.Filename), "\x00") {
+	if strings.ContainsAny(req.Filename, "\x00") {
 		return &removeValidationError{
 			message:   "filename contains null byte",
 			nfsStatus: NFS3ErrInval,
@@ -407,7 +408,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 	}
 
 	// Check for path separators (prevents directory traversal attacks)
-	if bytes.ContainsAny([]byte(req.Filename), "/") {
+	if strings.ContainsAny(req.Filename, "/") {
 		return &removeValidationError{
 			message:   "filename contains path separator",
 			nfsStatus: NFS3ErrInval,
@@ -495,7 +496,7 @@ func DecodeRemoveRequest(data []byte) (*RemoveRequest, error) {
 
 	// Skip padding to 4-byte boundary
 	padding := (4 - (handleLen % 4)) % 4
-	for i := range padding {
+	for i := uint32(0); i < padding; i++ {
 		if _, err := reader.ReadByte(); err != nil {
 			return nil, fmt.Errorf("failed to read handle padding byte %d: %w", i, err)
 		}

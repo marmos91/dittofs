@@ -266,37 +266,6 @@ type Repository interface {
 	//     * File is a directory (use RemoveDirectory instead)
 	//     * Parent is not a directory
 	//     * I/O error
-	ReadSymlink(handle FileHandle, ctx *AuthContext) (string, *FileAttr, error)
-
-	// Add to internal/metadata/repository.go
-	// Add to internal/metadata/repository.go
-
-	// RemoveFile removes a file (not a directory) from a directory.
-
-	// RemoveFile removes a file (not a directory) from a directory.
-	// ReadSymlink reads the target path of a symbolic link.
-	//
-	// This method is responsible for:
-	//  1. Verifying the handle is a valid symbolic link
-	//  2. Checking read permission on the symlink
-	//  3. Retrieving the symlink target path
-	//  4. Returning symlink attributes for cache consistency
-	//
-	// Parameters:
-	//   - handle: File handle of the symbolic link
-	//   - ctx: Authentication context for access control
-	//
-	// Returns:
-	//   - string: The symlink target path
-	//   - *FileAttr: Symlink attributes
-	//   - error: Returns error if:
-	//     * Handle not found
-	//     * Handle is not a symlink
-	//     * Access denied (no read permission)
-	//     * Target path is missing or empty
-	//     * I/O error
-	ReadSymlink(handle FileHandle, ctx *AuthContext) (string, *FileAttr, error)
-	ReadSymlink(handle FileHandle, ctx *AuthContext) (string, *FileAttr, error)
 	RemoveFile(parentHandle FileHandle, filename string, ctx *AuthContext) (*FileAttr, error)
 
 	// ReadSymlink reads the target path of a symbolic link.

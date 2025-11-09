@@ -517,25 +517,6 @@ func extractClientIP(clientAddr string) string {
 	return ip
 }
 
-// mapRepositoryErrorToNFSStatus maps repository errors to NFS status codes.
-func mapRepositoryErrorToNFSStatus(err error, clientIP string, operation string) uint32 {
-	if err == nil {
-		return NFS3OK
-// mapRepositoryErrorToNFSStatus maps repository errors to NFS status codes.
-func mapRepositoryErrorToNFSStatus(err error, clientIP string, operation string) uint32 {
-	if err == nil {
-		return NFS3OK
-// extractClientIP extracts the IP address from a client address string.
-// Format: "IP:port" → "IP"
-func extractClientIP(clientAddr string) string {
-	ip, _, err := net.SplitHostPort(clientAddr)
-	if err != nil {
-		// If parsing fails, return the original address
-		return clientAddr
-	}
-	return ip
-}
-
 func mapRepositoryErrorToNFSStatus(err error, clientIP string, operation string) uint32 {
 	if err == nil {
 		return NFS3OK
