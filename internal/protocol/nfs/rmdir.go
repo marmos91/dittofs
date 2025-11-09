@@ -306,7 +306,7 @@ func (h *DefaultNFSHandler) Rmdir(
 		ClientAddr: clientIP,
 	}
 
-	// Delegate to repository - this will be implemented in the next step
+	// Delegate to repository for directory removal
 	err = repository.RemoveDirectory(parentHandle, req.Name, authCtx)
 	if err != nil {
 		logger.Error("RMDIR failed: repository error: name='%s' client=%s error=%v",
