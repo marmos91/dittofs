@@ -1486,13 +1486,170 @@ func (r *MemoryRepository) ReadDir(dirHandle metadata.FileHandle, cookie uint64,
 	return entries, true, nil
 }
 
-// extractFileIDFromHandle extracts a file ID from a handle.
-// Uses the first 8 bytes as the file ID.
-func extractFileIDFromHandle(handle metadata.FileHandle) uint64 {
-	if len(handle) < 8 {
-		return 0
+// RemoveDirectory removes an empty directory from a parent directory.
+//
+// This implementation:
+//  1. Verifies the directory exists as a child of the parent
+//  2. Retrieves the directory handle from parent's children
+//  3. Verifies the target is actually a directory
+//  4. Checks the directory is empty (no children except "." and "..")
+//  5. Checks write permission on the parent directory (if auth context provided)
+//  6. Removes the directory entry from the parent
+//  7. Deletes the directory metadata and children map
+//  8. Removes parent relationship
+//  9. Updates parent directory timestamps
+//
+// Parameters:
+//   - parentHandle: Handle of the parent directory
+//   - name: Name of the directory to remove
+//   - ctx: Authentication context for access control
+//
+// Returns error if:
+//   - Access denied (no write permission on parent)
+//   - Directory not found
+//   - Target is not a directory
+//   - Directory is not empty
+//   - Parent is not a directory
+//   - I/O error
+func (r *MemoryRepository) RemoveDirectory(parentHandle metadata.FileHandle, name string, ctx *metadata.AuthContext) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// ========================================================================
+	// Step 1: Verify parent directory exists
+	// ========================================================================
+
+	parentKey := handleToKey(parentHandle)
+	parentAttr, exists := r.files[parentKey]
+	if !exists {
+		return &metadata.ExportError{
+			Code:    metadata.ExportErrNotFound,
+			Message: "parent directory not found",
+		}
 	}
-	return binary.BigEndian.Uint64(handle[:8])
+
+	// Verify parent is a directory
+	if parentAttr.Type != metadata.FileTypeDirectory {
+		return &metadata.ExportError{
+			Code:    metadata.ExportErrServerFault,
+			Message: "parent is not a directory",
+		}
+	}
+
+	// ========================================================================
+	// Step 2: Verify directory exists as a child of parent
+	// ========================================================================
+
+	if r.children[parentKey] == nil {
+		return &metadata.ExportError{
+			Code:    metadata.ExportErrNotFound,
+			Message: fmt.Sprintf("directory not found: %s", name),
+		}
+	}
+
+	dirHandle, exists := r.children[parentKey][name]
+	if !exists {
+		return &metadata.ExportError{
+			Code:    metadata.ExportErrNotFound,
+			Message: fmt.Sprintf("directory not found: %s", name),
+		}
+	}
+
+	// ========================================================================
+	// Step 3: Verify target is actually a directory
+	// ========================================================================
+
+	dirKey := handleToKey(dirHandle)
+	dirAttr, exists := r.files[dirKey]
+	if !exists {
+		return &metadata.ExportError{
+			Code:    metadata.ExportErrNotFound,
+			Message: "directory metadata not found",
+		}
+	}
+
+	if dirAttr.Type != metadata.FileTypeDirectory {
+		return &metadata.ExportError{
+			Code:    metadata.ExportErrServerFault,
+			Message: "not a directory",
+		}
+	}
+
+	// ========================================================================
+	// Step 4: Check if directory is empty
+	// ========================================================================
+	// A directory is empty if it has no children (the "." and ".." entries
+	// are virtual and not stored in the children map)
+
+	dirChildren := r.children[dirKey]
+	if len(dirChildren) > 0 {
+		return &metadata.ExportError{
+			Code:    metadata.ExportErrServerFault,
+			Message: fmt.Sprintf("directory not empty: contains %d entries", len(dirChildren)),
+		}
+	}
+
+	// ========================================================================
+	// Step 5: Check write permission on parent directory (if auth context provided)
+	// ========================================================================
+
+	if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil {
+		// Check if user has write permission on the parent directory
+		uid := *ctx.UID
+		gid := *ctx.GID
+
+		var hasWrite bool
+
+		// Owner permissions
+		if uid == parentAttr.UID {
+			hasWrite = (parentAttr.Mode & 0200) != 0 // Owner write bit
+		} else if gid == parentAttr.GID || containsGID(ctx.GIDs, parentAttr.GID) {
+			// Group permissions
+			hasWrite = (parentAttr.Mode & 0020) != 0 // Group write bit
+		} else {
+			// Other permissions
+			hasWrite = (parentAttr.Mode & 0002) != 0 // Other write bit
+		}
+
+		if !hasWrite {
+			return &metadata.ExportError{
+				Code:    metadata.ExportErrAccessDenied,
+				Message: "write permission denied on parent directory",
+			}
+		}
+	}
+
+	// ========================================================================
+	// Step 6: Remove directory entry from parent
+	// ========================================================================
+
+	delete(r.children[parentKey], name)
+
+	// ========================================================================
+	// Step 7: Delete directory metadata and children map
+	// ========================================================================
+
+	delete(r.files, dirKey)
+	delete(r.children, dirKey)
+
+	// ========================================================================
+	// Step 8: Remove parent relationship
+	// ========================================================================
+
+	delete(r.parents, dirKey)
+
+	// ========================================================================
+	// Step 9: Update parent directory timestamps
+	// ========================================================================
+	// The parent directory's mtime and ctime should be updated when a child
+	// is removed, as this modifies the directory's contents.
+
+	now := time.Now()
+	parentAttr.Mtime = now
+	parentAttr.Ctime = now
+	r.files[parentKey] = parentAttr
+
+	return nil
 }
 
 // RemoveFile removes a file (not a directory) from a directory.
@@ -1698,6 +1855,15 @@ func (r *MemoryRepository) ReadSymlink(handle metadata.FileHandle, ctx *metadata
 	}
 
 	return attr.SymlinkTarget, attr, nil
+}
+
+// extractFileIDFromHandle extracts a file ID from a handle.
+// Uses the first 8 bytes as the file ID.
+func extractFileIDFromHandle(handle metadata.FileHandle) uint64 {
+	if len(handle) < 8 {
+		return 0
+	}
+	return binary.BigEndian.Uint64(handle[:8])
 }
 
 // Helper function to check if a GID is in a list

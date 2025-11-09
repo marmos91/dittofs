@@ -62,7 +62,7 @@ type NFSHandler interface {
 
 	// RmDir removes a directory.
 	// RFC 1813 Section 3.3.13
-	Rmdir(repository metadata.Repository, req *nfs.RmdirRequest) (*nfs.RmdirResponse, error)
+	Rmdir(repository metadata.Repository, req *nfs.RmdirRequest, ctx *nfs.RmdirContext) (*nfs.RmdirResponse, error)
 
 	// Rename renames a file or directory.
 	// RFC 1813 Section 3.3.14
