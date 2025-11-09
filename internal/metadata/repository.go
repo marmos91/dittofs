@@ -27,6 +27,24 @@ type Repository interface {
 	CreateFile(handle FileHandle, attr *FileAttr) error
 	GetFile(handle FileHandle) (*FileAttr, error)
 	UpdateFile(handle FileHandle, attr *FileAttr) error
+	// DeleteFile deletes file metadata by handle.
+	//
+	// WARNING: This is a low-level operation that bypasses all safety checks.
+	// It does NOT:
+	//   - Check permissions
+	//   - Remove the file from its parent directory
+	//   - Update parent directory timestamps
+	//   - Verify the file can be safely deleted
+	//
+	// In most cases, you should use RemoveFile instead, which performs
+	// proper validation and cleanup.
+	//
+	// This method should only be used for:
+	//   - Internal cleanup operations
+	//   - Orphaned handle garbage collection
+	//   - Operations that have already performed all necessary checks
+	//
+	// Returns error if the handle doesn't exist.
 	DeleteFile(handle FileHandle) error
 
 	// Directory hierarchy operations
@@ -248,4 +266,30 @@ type Repository interface {
 	//     * Target path is missing or empty
 	//     * I/O error
 	ReadSymlink(handle FileHandle, ctx *AuthContext) (string, *FileAttr, error)
+
+	// Add to internal/metadata/repository.go
+
+	// RemoveFile removes a file (not a directory) from a directory.
+	//
+	// This method is responsible for:
+	//  1. Verifying the file exists and is not a directory
+	//  2. Checking write permission on the parent directory
+	//  3. Removing the file from the directory
+	//  4. Deleting the file metadata
+	//  5. Updating parent directory timestamps
+	//
+	// Parameters:
+	//   - parentHandle: Handle of the parent directory
+	//   - filename: Name of the file to remove
+	//   - ctx: Authentication context for access control
+	//
+	// Returns:
+	//   - *FileAttr: The attributes of the removed file (for response)
+	//   - error: Returns error if:
+	//     * Access denied (no write permission on parent)
+	//     * File not found
+	//     * File is a directory (use RemoveDirectory instead)
+	//     * Parent is not a directory
+	//     * I/O error
+	RemoveFile(parentHandle FileHandle, filename string, ctx *AuthContext) (*FileAttr, error)
 }

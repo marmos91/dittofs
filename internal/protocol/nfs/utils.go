@@ -8,6 +8,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
 )
 
@@ -514,4 +515,45 @@ func extractClientIP(clientAddr string) string {
 		return clientAddr
 	}
 	return ip
+}
+
+// mapRepositoryErrorToNFSStatus maps repository errors to NFS status codes.
+func mapRepositoryErrorToNFSStatus(err error, clientIP string, operation string) uint32 {
+	if err == nil {
+		return NFS3OK
+	}
+
+	// Check if it's an ExportError
+	if exportErr, ok := err.(*metadata.ExportError); ok {
+		switch exportErr.Code {
+		case metadata.ExportErrNotFound:
+			logger.Warn("%s failed: %s client=%s", operation, exportErr.Message, clientIP)
+			return NFS3ErrNoEnt
+
+		case metadata.ExportErrAccessDenied:
+			logger.Warn("%s failed: %s client=%s", operation, exportErr.Message, clientIP)
+			return NFS3ErrAcces
+
+		case metadata.ExportErrServerFault:
+			// Check specific messages for more precise status codes
+			if exportErr.Message == "parent is not a directory" {
+				logger.Warn("%s failed: parent not a directory client=%s", operation, clientIP)
+				return NFS3ErrNotDir
+			}
+			if exportErr.Message == "cannot remove directory with REMOVE (use RMDIR)" {
+				logger.Warn("%s failed: attempted to remove directory client=%s", operation, clientIP)
+				return NFS3ErrIsDir
+			}
+			logger.Error("%s failed: %s client=%s", operation, exportErr.Message, clientIP)
+			return NFS3ErrIO
+
+		default:
+			logger.Error("%s failed: unknown export error: %s client=%s", operation, exportErr.Message, clientIP)
+			return NFS3ErrIO
+		}
+	}
+
+	// Generic error
+	logger.Error("%s failed: %v client=%s", operation, err, clientIP)
+	return NFS3ErrIO
 }

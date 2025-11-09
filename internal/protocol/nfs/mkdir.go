@@ -363,7 +363,7 @@ func (h *DefaultNFSHandler) Mkdir(
 		wccAfter := MetadataToNFSAttr(parentAttr, dirID)
 
 		// Map repository errors to NFS status codes
-		status := mapRepositoryErrorToNFSStatus(err)
+		status := mapRepositoryErrorToNFSStatus(err, clientIP, "mkdir")
 
 		return &MkdirResponse{
 			Status:    status,
