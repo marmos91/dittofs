@@ -66,7 +66,7 @@ type NFSHandler interface {
 
 	// Rename renames a file or directory.
 	// RFC 1813 Section 3.3.14
-	Rename(repository metadata.Repository, req *nfs.RenameRequest) (*nfs.RenameResponse, error)
+	Rename(repository metadata.Repository, req *nfs.RenameRequest, ctx *nfs.RenameContext) (*nfs.RenameResponse, error)
 
 	// Link creates a hard link to a file.
 	// RFC 1813 Section 3.3.15

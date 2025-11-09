@@ -315,4 +315,59 @@ type Repository interface {
 	//   - Parent is not a directory
 	//   - I/O error
 	RemoveDirectory(parentHandle FileHandle, name string, ctx *AuthContext) error
+
+	// RenameFile renames or moves a file from one directory to another.
+	//
+	// This method implements support for the RENAME NFS procedure (RFC 1813 section 3.3.14).
+	// RENAME is used to change a file's name within the same directory, move a file
+	// to a different directory, or atomically replace an existing file.
+	//
+	// Atomicity:
+	// The implementation should strive for atomicity by validating all preconditions
+	// before making any changes and performing operations in a way that minimizes
+	// the window for failure. In a production implementation with persistent storage,
+	// you would use proper transaction semantics or a write-ahead log.
+	//
+	// Replacement Semantics:
+	// When the destination name already exists:
+	//  - File over file: Allowed (atomic replacement)
+	//  - Directory over empty directory: Allowed
+	//  - Directory over non-empty directory: Not allowed (return error)
+	//  - File over directory: Not allowed (return error)
+	//  - Directory over file: Not allowed (return error)
+	//
+	// This method is responsible for:
+	//  1. Verifying source directory exists and is a directory
+	//  2. Verifying destination directory exists and is a directory
+	//  3. Checking write permission on source directory (to remove entry)
+	//  4. Checking write permission on destination directory (to add entry)
+	//  5. Verifying source file/directory exists
+	//  6. Handling no-op case (same directory, same name)
+	//  7. Checking if destination exists and validating replacement rules
+	//  8. Removing destination if replacement is allowed
+	//  9. Performing the rename (remove from source, add to destination)
+	//  10. Updating parent relationships for cross-directory moves
+	//  11. Updating timestamps (ctime for source, mtime+ctime for directories)
+	//
+	// Parameters:
+	//   - fromDirHandle: Source directory handle
+	//   - fromName: Current name of the file/directory
+	//   - toDirHandle: Destination directory handle
+	//   - toName: New name for the file/directory
+	//   - ctx: Authentication context for access control
+	//
+	// Returns error if:
+	//   - Source file/directory not found
+	//   - Source or destination directory not found or not a directory
+	//   - Access denied (no write permission on either directory)
+	//   - Destination is a non-empty directory when replacing
+	//   - Type mismatch (file vs directory) when replacing
+	//   - I/O error
+	//
+	// Special Cases:
+	//   - Same directory, same name: Returns nil (no-op success)
+	//   - Same directory, different name: Simple rename
+	//   - Different directory: Move with potential rename
+	//   - Over existing file: Atomic replacement
+	RenameFile(fromDirHandle FileHandle, fromName string, toDirHandle FileHandle, toName string, ctx *AuthContext) error
 }
