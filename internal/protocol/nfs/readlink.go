@@ -541,7 +541,9 @@ func (resp *ReadLinkResponse) Encode() ([]byte, error) {
 	// Add padding to 4-byte boundary (XDR alignment requirement)
 	padding := (4 - (targetLen % 4)) % 4
 	for i := uint32(0); i < padding; i++ {
-		buf.WriteByte(0)
+		if err := buf.WriteByte(0); err != nil {
+			return nil, fmt.Errorf("failed to write target padding byte %d: %w", i, err)
+		}
 	}
 
 	logger.Debug("Encoded READLINK response: %d bytes target_len=%d", buf.Len(), targetLen)
