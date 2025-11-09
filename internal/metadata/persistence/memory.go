@@ -1518,6 +1518,7 @@ func sortStrings(slice []string) {
 			slice[j+1] = slice[j]
 			j--
 // Add to internal/metadata/persistence/memory.go
+// Add to internal/metadata/persistence/memory.go
 
 // RemoveFile removes a file (not a directory) from a directory.
 //
@@ -1611,7 +1612,7 @@ func (r *MemoryRepository) RemoveFile(parentHandle metadata.FileHandle, filename
 	// Step 2: Check write permission on parent directory (if auth context provided)
 	// ========================================================================
 
-	if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil {
+	if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil && ctx.GID != nil {
 		// Check if user has write permission on the parent directory
 		uid := *ctx.UID
 		gid := *ctx.GID

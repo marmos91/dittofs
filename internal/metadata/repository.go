@@ -268,6 +268,7 @@ type Repository interface {
 	ReadSymlink(handle FileHandle, ctx *AuthContext) (string, *FileAttr, error)
 
 	// Add to internal/metadata/repository.go
+	// Add to internal/metadata/repository.go
 
 	// RemoveFile removes a file (not a directory) from a directory.
 	//
