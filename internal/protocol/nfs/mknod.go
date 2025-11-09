@@ -410,7 +410,7 @@ func (h *DefaultNFSHandler) Mknod(
 		wccAfter := MetadataToNFSAttr(parentAttr, dirID)
 
 		// Map repository errors to NFS status codes
-		status := mapRepositoryErrorToNFSStatus(err)
+		status := mapRepositoryErrorToNFSStatus(err, clientIP, "mknod")
 
 		return &MknodResponse{
 			Status:        status,

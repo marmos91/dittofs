@@ -384,6 +384,12 @@ func (r *MemoryRepository) UpdateFile(handle metadata.FileHandle, attr *metadata
 	return nil
 }
 
+// DeleteFile deletes file metadata by handle.
+//
+// This is a low-level operation that only removes the file's metadata entry.
+// It does NOT remove the file from directory listings or update parent timestamps.
+//
+// Prefer using RemoveFile for standard file deletion operations.
 func (r *MemoryRepository) DeleteFile(handle metadata.FileHandle) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1501,6 +1507,51 @@ func (r *MemoryRepository) ReadSymlink(handle metadata.FileHandle, ctx *metadata
 		return "", nil, &metadata.ExportError{
 			Code:    metadata.ExportErrNotFound,
 			Message: "symbolic link not found",
+// sortStrings performs an in-place sort of a string slice.
+// This provides stable ordering for directory entries.
+func sortStrings(slice []string) {
+	// Simple insertion sort - good enough for most directories
+	for i := 1; i < len(slice); i++ {
+		key := slice[i]
+		j := i - 1
+		for j >= 0 && slice[j] > key {
+			slice[j+1] = slice[j]
+			j--
+// Add to internal/metadata/persistence/memory.go
+
+// RemoveFile removes a file (not a directory) from a directory.
+//
+// This implementation:
+//  1. Verifies the parent directory exists and is a directory
+//  2. Checks write permission on the parent directory (if auth context provided)
+//  3. Verifies the file exists in the directory
+//  4. Checks that the file is not a directory
+//  5. Removes the file from the parent directory
+//  6. Deletes the file metadata
+//  7. Updates parent directory timestamps
+//
+// Parameters:
+//   - parentHandle: Handle of the parent directory
+//   - filename: Name of the file to remove
+//   - ctx: Authentication context for access control
+//
+// Returns:
+//   - *FileAttr: The attributes of the removed file (for logging/response)
+//   - error: Returns error with appropriate ExportError codes
+func (r *MemoryRepository) RemoveFile(parentHandle metadata.FileHandle, filename string, ctx *metadata.AuthContext) (*metadata.FileAttr, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// ========================================================================
+	// Step 1: Verify parent directory exists
+	// ========================================================================
+
+	parentKey := handleToKey(parentHandle)
+	parentAttr, exists := r.files[parentKey]
+	if !exists {
+		return nil, &metadata.ExportError{
+			Code:    metadata.ExportErrNotFound,
+			Message: "parent directory not found",
 		}
 	}
 
@@ -1547,6 +1598,114 @@ func (r *MemoryRepository) ReadSymlink(handle metadata.FileHandle, ctx *metadata
 	}
 
 	return attr.SymlinkTarget, attr, nil
+
+	// Verify parent is a directory
+	if parentAttr.Type != metadata.FileTypeDirectory {
+		return nil, &metadata.ExportError{
+			Code:    metadata.ExportErrServerFault,
+			Message: "parent is not a directory",
+		}
+	}
+
+	// ========================================================================
+	// Step 2: Check write permission on parent directory (if auth context provided)
+	// ========================================================================
+
+	if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil {
+		// Check if user has write permission on the parent directory
+		uid := *ctx.UID
+		gid := *ctx.GID
+
+		var hasWrite bool
+
+		// Owner permissions
+		if uid == parentAttr.UID {
+			hasWrite = (parentAttr.Mode & 0200) != 0 // Owner write bit
+		} else if gid == parentAttr.GID || containsGID(ctx.GIDs, parentAttr.GID) {
+			// Group permissions
+			hasWrite = (parentAttr.Mode & 0020) != 0 // Group write bit
+		} else {
+			// Other permissions
+			hasWrite = (parentAttr.Mode & 0002) != 0 // Other write bit
+		}
+
+		if !hasWrite {
+			return nil, &metadata.ExportError{
+				Code:    metadata.ExportErrAccessDenied,
+				Message: "write permission denied on parent directory",
+			}
+		}
+	}
+
+	// ========================================================================
+	// Step 3: Verify file exists in directory
+	// ========================================================================
+
+	if r.children[parentKey] == nil {
+		return nil, &metadata.ExportError{
+			Code:    metadata.ExportErrNotFound,
+			Message: fmt.Sprintf("file not found: %s", filename),
+		}
+	}
+
+	fileHandle, exists := r.children[parentKey][filename]
+	if !exists {
+		return nil, &metadata.ExportError{
+			Code:    metadata.ExportErrNotFound,
+			Message: fmt.Sprintf("file not found: %s", filename),
+		}
+	}
+
+	// ========================================================================
+	// Step 4: Get file attributes and verify it's not a directory
+	// ========================================================================
+
+	fileKey := handleToKey(fileHandle)
+	fileAttr, exists := r.files[fileKey]
+	if !exists {
+		return nil, &metadata.ExportError{
+			Code:    metadata.ExportErrServerFault,
+			Message: "file handle exists but attributes missing",
+		}
+	}
+
+	// Don't allow removing directories with REMOVE (use RMDIR instead)
+	if fileAttr.Type == metadata.FileTypeDirectory {
+		return nil, &metadata.ExportError{
+			Code:    metadata.ExportErrServerFault,
+			Message: "cannot remove directory with REMOVE (use RMDIR)",
+		}
+	}
+
+	// ========================================================================
+	// Step 5: Remove file from parent directory
+	// ========================================================================
+
+	delete(r.children[parentKey], filename)
+
+	// Remove parent relationship
+	delete(r.parents, fileKey)
+
+	// ========================================================================
+	// Step 6: Delete file metadata
+	// ========================================================================
+
+	delete(r.files, fileKey)
+
+	// ========================================================================
+	// Step 7: Update parent directory timestamps
+	// ========================================================================
+
+	now := time.Now()
+	parentAttr.Mtime = now
+	parentAttr.Ctime = now
+	r.files[parentKey] = parentAttr
+
+	// Return a copy of the file attributes for the response
+	// (we make a copy since we just deleted the original)
+	removedFileAttr := *fileAttr
+
+	return &removedFileAttr, nil
 }
 
 // Helper function to check if a GID is in a list

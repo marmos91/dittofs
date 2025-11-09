@@ -9,112 +9,526 @@ import (
 	"github.com/marmos91/dittofs/internal/metadata"
 )
 
-// RemoveRequest represents a REMOVE request
+// ============================================================================
+// Request and Response Structures
+// ============================================================================
+
+// RemoveRequest represents a REMOVE request from an NFS client.
+// The client provides a directory handle and filename to delete.
+//
+// This structure is decoded from XDR-encoded data received over the network.
+//
+// RFC 1813 Section 3.3.12 specifies the REMOVE procedure as:
+//
+//	REMOVE3res NFSPROC3_REMOVE(REMOVE3args) = 12;
+//
+// The REMOVE procedure deletes a file from a directory. It cannot be used
+// to remove directories (use RMDIR for that). The operation is atomic from
+// the client's perspective.
 type RemoveRequest struct {
+	// DirHandle is the file handle of the parent directory containing the file.
+	// Must be a valid directory handle obtained from MOUNT or LOOKUP.
+	// Maximum length is 64 bytes per RFC 1813.
 	DirHandle []byte
-	Filename  string
+
+	// Filename is the name of the file to remove from the directory.
+	// Must follow NFS naming conventions:
+	//   - Cannot be empty, ".", or ".."
+	//   - Maximum length is 255 bytes per NFS specification
+	//   - Should not contain null bytes or path separators (/)
+	Filename string
 }
 
-// RemoveResponse represents a REMOVE response
+// RemoveResponse represents the response to a REMOVE request.
+// It contains the status of the operation and WCC (Weak Cache Consistency)
+// data for the parent directory.
+//
+// The response is encoded in XDR format before being sent back to the client.
 type RemoveResponse struct {
-	Status  uint32
-	DirAttr *WccAttr // Pre-op and post-op attributes (optional)
+	// Status indicates the result of the remove operation.
+	// Common values:
+	//   - NFS3OK (0): Success
+	//   - NFS3ErrNoEnt (2): File or directory not found
+	//   - NFS3ErrNotDir (20): DirHandle is not a directory
+	//   - NFS3ErrIsDir (21): Attempted to remove a directory (use RMDIR)
+	//   - NFS3ErrAcces (13): Permission denied
+	//   - NFS3ErrIO (5): I/O error
+	//   - NFS3ErrStale (70): Stale file handle
+	//   - NFS3ErrBadHandle (10001): Invalid file handle
+	//   - NFS3ErrNameTooLong (63): Filename too long
+	Status uint32
+
+	// DirWccBefore contains pre-operation attributes of the parent directory.
+	// Used for weak cache consistency to help clients detect changes.
+	// May be nil if attributes could not be captured.
+	DirWccBefore *WccAttr
+
+	// DirWccAfter contains post-operation attributes of the parent directory.
+	// Used for weak cache consistency to provide updated directory state.
+	// May be nil on error, but should be present on success.
+	DirWccAfter *FileAttr
 }
+
+// RemoveContext contains the context information needed to process a REMOVE request.
+// This includes client identification and authentication details for access control.
+type RemoveContext struct {
+	// ClientAddr is the network address of the client making the request.
+	// Format: "IP:port" (e.g., "192.168.1.100:1234")
+	ClientAddr string
+
+	// AuthFlavor is the authentication method used by the client.
+	// Common values:
+	//   - 0: AUTH_NULL (no authentication)
+	//   - 1: AUTH_UNIX (Unix UID/GID authentication)
+	AuthFlavor uint32
+
+	// UID is the authenticated user ID (from AUTH_UNIX).
+	// Used for access control checks by the repository.
+	// Only valid when AuthFlavor == AUTH_UNIX.
+	UID *uint32
+
+	// GID is the authenticated group ID (from AUTH_UNIX).
+	// Used for access control checks by the repository.
+	// Only valid when AuthFlavor == AUTH_UNIX.
+	GID *uint32
+
+	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
+	// Used for checking if user belongs to file's group.
+	// Only valid when AuthFlavor == AUTH_UNIX.
+	GIDs []uint32
+}
+
+// ============================================================================
+// Protocol Handler
+// ============================================================================
 
 // Remove deletes a file from a directory.
-// RFC 1813 Section 3.3.12
-func (h *DefaultNFSHandler) Remove(repository metadata.Repository, req *RemoveRequest) (*RemoveResponse, error) {
-	logger.Debug("REMOVE file '%s' from directory %x", req.Filename, req.DirHandle)
+//
+// This implements the NFS REMOVE procedure as defined in RFC 1813 Section 3.3.12.
+//
+// **Purpose:**
+//
+// REMOVE deletes a regular file (not a directory) from a parent directory.
+// It is one of the fundamental file system operations. Common use cases:
+//   - Deleting temporary files
+//   - Removing old or unused files
+//   - Cleaning up workspace
+//
+// **Process:**
+//
+//  1. Validate request parameters (handle format, filename syntax)
+//  2. Extract client IP and authentication credentials from context
+//  3. Verify parent directory exists and is a directory (via repository)
+//  4. Capture pre-operation directory state (for WCC)
+//  5. Delegate file removal to repository.RemoveFile()
+//  6. Return updated directory WCC data
+//
+// **Design Principles:**
+//
+//   - Protocol layer handles only XDR encoding/decoding and validation
+//   - All business logic (deletion, validation, access control) delegated to repository
+//   - File handle validation performed by repository.GetFile()
+//   - Comprehensive logging at INFO level for operations, DEBUG for details
+//
+// **Authentication:**
+//
+// The context contains authentication credentials from the RPC layer.
+// The protocol layer passes these to the repository, which can implement:
+//   - Write permission checking on the parent directory
+//   - Access control based on UID/GID
+//   - Ownership verification (can only delete own files, or root can delete any)
+//
+// **REMOVE vs RMDIR:**
+//
+// REMOVE is for files only:
+//   - Regular files: Success
+//   - Directories: Returns NFS3ErrIsDir (must use RMDIR)
+//   - Symbolic links: Success (removes the link, not the target)
+//   - Special files: Success (device files, sockets, FIFOs)
+//
+// **Atomicity:**
+//
+// From the client's perspective, REMOVE is atomic. Either:
+//   - The file is completely removed (success)
+//   - The file remains unchanged (failure)
+//
+// There should be no intermediate state visible to clients.
+//
+// **Error Handling:**
+//
+// Protocol-level errors return appropriate NFS status codes.
+// Repository errors are mapped to NFS status codes:
+//   - Directory not found → NFS3ErrNoEnt
+//   - Not a directory → NFS3ErrNotDir
+//   - File not found → NFS3ErrNoEnt
+//   - File is directory → NFS3ErrIsDir
+//   - Permission denied → NFS3ErrAcces
+//   - I/O error → NFS3ErrIO
+//
+// **Weak Cache Consistency (WCC):**
+//
+// WCC data helps NFS clients maintain cache coherency:
+//  1. Capture directory attributes before the operation (WccBefore)
+//  2. Perform the file removal
+//  3. Capture directory attributes after the operation (WccAfter)
+//
+// Clients use this to:
+//   - Detect if directory changed during the operation
+//   - Update their cached directory attributes
+//   - Invalidate stale cached data
+//
+// **Security Considerations:**
+//
+//   - Handle validation prevents malformed requests
+//   - Repository enforces write permission on parent directory
+//   - Filename validation prevents directory traversal attacks
+//   - Client context enables audit logging
+//   - Cannot delete directories (prevents accidental data loss)
+//
+// **Parameters:**
+//   - repository: The metadata repository for file and directory operations
+//   - req: The remove request containing directory handle and filename
+//   - ctx: Context with client address and authentication credentials
+//
+// **Returns:**
+//   - *RemoveResponse: Response with status and directory WCC data
+//   - error: Returns error only for catastrophic internal failures; protocol-level
+//     errors are indicated via the response Status field
+//
+// **RFC 1813 Section 3.3.12: REMOVE Procedure**
+//
+// Example:
+//
+//	handler := &DefaultNFSHandler{}
+//	req := &RemoveRequest{
+//	    DirHandle: dirHandle,
+//	    Filename:  "oldfile.txt",
+//	}
+//	ctx := &RemoveContext{
+//	    ClientAddr: "192.168.1.100:1234",
+//	    AuthFlavor: 1, // AUTH_UNIX
+//	    UID:        &uid,
+//	    GID:        &gid,
+//	}
+//	resp, err := handler.Remove(repository, req, ctx)
+//	if err != nil {
+//	    // Internal server error
+//	}
+//	if resp.Status == NFS3OK {
+//	    // File removed successfully
+//	}
+func (h *DefaultNFSHandler) Remove(
+	repository metadata.Repository,
+	req *RemoveRequest,
+	ctx *RemoveContext,
+) (*RemoveResponse, error) {
+	// Extract client IP for logging
+	clientIP := extractClientIP(ctx.ClientAddr)
 
-	// Get directory attributes
-	dirAttr, err := repository.GetFile(metadata.FileHandle(req.DirHandle))
+	logger.Info("REMOVE: file='%s' dir=%x client=%s auth=%d",
+		req.Filename, req.DirHandle, clientIP, ctx.AuthFlavor)
+
+	// ========================================================================
+	// Step 1: Validate request parameters
+	// ========================================================================
+
+	if err := validateRemoveRequest(req); err != nil {
+		logger.Warn("REMOVE validation failed: file='%s' client=%s error=%v",
+			req.Filename, clientIP, err)
+		return &RemoveResponse{Status: err.nfsStatus}, nil
+	}
+
+	// ========================================================================
+	// Step 2: Capture pre-operation directory attributes for WCC
+	// ========================================================================
+
+	dirHandle := metadata.FileHandle(req.DirHandle)
+	dirAttr, err := repository.GetFile(dirHandle)
 	if err != nil {
-		logger.Warn("Directory not found: %v", err)
+		logger.Warn("REMOVE failed: directory not found: dir=%x client=%s error=%v",
+			req.DirHandle, clientIP, err)
 		return &RemoveResponse{Status: NFS3ErrNoEnt}, nil
 	}
 
-	// Verify it's a directory
-	if dirAttr.Type != metadata.FileTypeDirectory {
-		logger.Warn("Handle is not a directory")
-		return &RemoveResponse{Status: NFS3ErrNotDir}, nil
+	// Capture pre-operation attributes for WCC data
+	wccBefore := captureWccAttr(dirAttr)
+
+	// ========================================================================
+	// Step 3: Build authentication context
+	// ========================================================================
+
+	authCtx := &metadata.AuthContext{
+		AuthFlavor: ctx.AuthFlavor,
+		UID:        ctx.UID,
+		GID:        ctx.GID,
+		GIDs:       ctx.GIDs,
+		ClientAddr: clientIP,
 	}
 
-	// Get the file handle
-	fileHandle, err := repository.GetChild(metadata.FileHandle(req.DirHandle), req.Filename)
+	// ========================================================================
+	// Step 4: Remove file via repository
+	// ========================================================================
+	// The repository handles:
+	// - Verifying parent is a directory
+	// - Verifying the file exists
+	// - Checking it's not a directory (must use RMDIR for directories)
+	// - Verifying write permission on the parent directory
+	// - Removing the file from the directory
+	// - Deleting the file metadata
+	// - Updating parent directory timestamps
+
+	removedFileAttr, err := repository.RemoveFile(dirHandle, req.Filename, authCtx)
 	if err != nil {
-		logger.Debug("File '%s' not found: %v", req.Filename, err)
-		return &RemoveResponse{Status: NFS3ErrNoEnt}, nil
+		// Map repository errors to NFS status codes
+		nfsStatus := mapRepositoryErrorToNFSStatus(err, clientIP, "REMOVE")
+
+		// Get updated directory attributes for WCC data (best effort)
+		var wccAfter *FileAttr
+		if dirAttr, err := repository.GetFile(dirHandle); err == nil {
+			dirID := extractFileID(dirHandle)
+			wccAfter = MetadataToNFSAttr(dirAttr, dirID)
+		}
+
+		return &RemoveResponse{
+			Status:       nfsStatus,
+			DirWccBefore: wccBefore,
+			DirWccAfter:  wccAfter,
+		}, nil
 	}
 
-	// Get file attributes to check if it's a directory
-	fileAttr, err := repository.GetFile(fileHandle)
+	// ========================================================================
+	// Step 5: Build success response with updated directory attributes
+	// ========================================================================
+
+	// Get updated directory attributes for WCC data
+	dirAttr, err = repository.GetFile(dirHandle)
 	if err != nil {
-		logger.Error("File handle exists but attributes not found: %v", err)
-		return &RemoveResponse{Status: NFS3ErrIO}, nil
+		logger.Warn("REMOVE: file removed but cannot get updated directory attributes: dir=%x error=%v",
+			req.DirHandle, err)
+		// Continue with nil WccAfter rather than failing the entire operation
 	}
 
-	// Don't allow removing directories with REMOVE (use RMDIR instead)
-	if fileAttr.Type == metadata.FileTypeDirectory {
-		logger.Warn("Attempted to remove a directory with REMOVE")
-		return &RemoveResponse{Status: NFS3ErrIsDir}, nil
+	var wccAfter *FileAttr
+	if dirAttr != nil {
+		dirID := extractFileID(dirHandle)
+		wccAfter = MetadataToNFSAttr(dirAttr, dirID)
 	}
 
-	// Remove from directory
-	if err := repository.DeleteChild(metadata.FileHandle(req.DirHandle), req.Filename); err != nil {
-		logger.Error("Failed to remove child: %v", err)
-		return &RemoveResponse{Status: NFS3ErrIO}, nil
-	}
+	logger.Info("REMOVE successful: file='%s' dir=%x client=%s",
+		req.Filename, req.DirHandle, clientIP)
 
-	// Delete the file metadata
-	if err := repository.DeleteFile(fileHandle); err != nil {
-		logger.Error("Failed to delete file: %v", err)
-		// File is already removed from directory, but metadata cleanup failed
-		// Continue anyway as the file is effectively removed
-	}
-
-	logger.Info("REMOVE successful: '%s'", req.Filename)
+	logger.Debug("REMOVE details: file_type=%d file_size=%d",
+		removedFileAttr.Type, removedFileAttr.Size)
 
 	return &RemoveResponse{
-		Status: NFS3OK,
+		Status:       NFS3OK,
+		DirWccBefore: wccBefore,
+		DirWccAfter:  wccAfter,
 	}, nil
 }
 
+// ============================================================================
+// Request Validation
+// ============================================================================
+
+// removeValidationError represents a REMOVE request validation error.
+type removeValidationError struct {
+	message   string
+	nfsStatus uint32
+}
+
+func (e *removeValidationError) Error() string {
+	return e.message
+}
+
+// validateRemoveRequest validates REMOVE request parameters.
+//
+// Checks performed:
+//   - Parent directory handle is not empty and within limits
+//   - Filename is valid (not empty, not "." or "..", length, characters)
+//
+// Returns:
+//   - nil if valid
+//   - *removeValidationError with NFS status if invalid
+func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
+	// Validate parent directory handle
+	if len(req.DirHandle) == 0 {
+		return &removeValidationError{
+			message:   "empty parent directory handle",
+			nfsStatus: NFS3ErrBadHandle,
+		}
+	}
+
+	if len(req.DirHandle) > 64 {
+		return &removeValidationError{
+			message:   fmt.Sprintf("parent handle too long: %d bytes (max 64)", len(req.DirHandle)),
+			nfsStatus: NFS3ErrBadHandle,
+		}
+	}
+
+	// Handle must be at least 8 bytes for file ID extraction
+	if len(req.DirHandle) < 8 {
+		return &removeValidationError{
+			message:   fmt.Sprintf("parent handle too short: %d bytes (min 8)", len(req.DirHandle)),
+			nfsStatus: NFS3ErrBadHandle,
+		}
+	}
+
+	// Validate filename
+	if req.Filename == "" {
+		return &removeValidationError{
+			message:   "empty filename",
+			nfsStatus: NFS3ErrInval,
+		}
+	}
+
+	// Check for reserved names
+	if req.Filename == "." || req.Filename == ".." {
+		return &removeValidationError{
+			message:   fmt.Sprintf("cannot remove '%s'", req.Filename),
+			nfsStatus: NFS3ErrInval,
+		}
+	}
+
+	// Check filename length (NFS limit is typically 255 bytes)
+	if len(req.Filename) > 255 {
+		return &removeValidationError{
+			message:   fmt.Sprintf("filename too long: %d bytes (max 255)", len(req.Filename)),
+			nfsStatus: NFS3ErrNameTooLong,
+		}
+	}
+
+	// Check for null bytes (string terminator, invalid in filenames)
+	if bytes.ContainsAny([]byte(req.Filename), "\x00") {
+		return &removeValidationError{
+			message:   "filename contains null byte",
+			nfsStatus: NFS3ErrInval,
+		}
+	}
+
+	// Check for path separators (prevents directory traversal attacks)
+	if bytes.ContainsAny([]byte(req.Filename), "/") {
+		return &removeValidationError{
+			message:   "filename contains path separator",
+			nfsStatus: NFS3ErrInval,
+		}
+	}
+
+	// Check for control characters (including tab, newline, etc.)
+	for i, r := range req.Filename {
+		if r < 0x20 || r == 0x7F {
+			return &removeValidationError{
+				message:   fmt.Sprintf("filename contains control character at position %d", i),
+				nfsStatus: NFS3ErrInval,
+			}
+		}
+	}
+
+	return nil
+}
+
+// ============================================================================
+// XDR Decoding
+// ============================================================================
+
+// DecodeRemoveRequest decodes a REMOVE request from XDR-encoded bytes.
+//
+// The decoding follows RFC 1813 Section 3.3.12 specifications:
+//  1. Directory handle length (4 bytes, big-endian uint32)
+//  2. Directory handle data (variable length, up to 64 bytes)
+//  3. Padding to 4-byte boundary (0-3 bytes)
+//  4. Filename length (4 bytes, big-endian uint32)
+//  5. Filename data (variable length, up to 255 bytes)
+//  6. Padding to 4-byte boundary (0-3 bytes)
+//
+// XDR encoding uses big-endian byte order and aligns data to 4-byte boundaries.
+//
+// Parameters:
+//   - data: XDR-encoded bytes containing the REMOVE request
+//
+// Returns:
+//   - *RemoveRequest: The decoded request containing directory handle and filename
+//   - error: Any error encountered during decoding (malformed data, invalid length)
+//
+// Example:
+//
+//	data := []byte{...} // XDR-encoded REMOVE request from network
+//	req, err := DecodeRemoveRequest(data)
+//	if err != nil {
+//	    // Handle decode error - send error reply to client
+//	    return nil, err
+//	}
+//	// Use req.DirHandle and req.Filename in REMOVE procedure
 func DecodeRemoveRequest(data []byte) (*RemoveRequest, error) {
-	if len(data) < 4 {
-		return nil, fmt.Errorf("data too short")
+	// Validate minimum data length
+	if len(data) < 8 {
+		return nil, fmt.Errorf("data too short: need at least 8 bytes, got %d", len(data))
 	}
 
 	reader := bytes.NewReader(data)
 
-	// Read directory handle length
+	// ========================================================================
+	// Decode directory handle
+	// ========================================================================
+
+	// Read directory handle length (4 bytes, big-endian)
 	var handleLen uint32
 	if err := binary.Read(reader, binary.BigEndian, &handleLen); err != nil {
-		return nil, fmt.Errorf("read handle length: %w", err)
+		return nil, fmt.Errorf("failed to read handle length: %w", err)
+	}
+
+	// Validate handle length (NFS v3 handles are typically <= 64 bytes per RFC 1813)
+	if handleLen > 64 {
+		return nil, fmt.Errorf("invalid handle length: %d (max 64)", handleLen)
+	}
+
+	// Prevent zero-length handles
+	if handleLen == 0 {
+		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
 	}
 
 	// Read directory handle
 	dirHandle := make([]byte, handleLen)
 	if err := binary.Read(reader, binary.BigEndian, &dirHandle); err != nil {
-		return nil, fmt.Errorf("read handle: %w", err)
+		return nil, fmt.Errorf("failed to read handle data: %w", err)
 	}
 
-	// Skip padding
+	// Skip padding to 4-byte boundary
 	padding := (4 - (handleLen % 4)) % 4
-	for i := uint32(0); i < padding; i++ {
-		reader.ReadByte()
+	for i := range padding {
+		if _, err := reader.ReadByte(); err != nil {
+			return nil, fmt.Errorf("failed to read handle padding byte %d: %w", i, err)
+		}
 	}
 
-	// Read filename length
+	// ========================================================================
+	// Decode filename
+	// ========================================================================
+
+	// Read filename length (4 bytes, big-endian)
 	var filenameLen uint32
 	if err := binary.Read(reader, binary.BigEndian, &filenameLen); err != nil {
-		return nil, fmt.Errorf("read filename length: %w", err)
+		return nil, fmt.Errorf("failed to read filename length: %w", err)
+	}
+
+	// Validate filename length (NFS limit is typically 255 bytes)
+	if filenameLen > 255 {
+		return nil, fmt.Errorf("invalid filename length: %d (max 255)", filenameLen)
+	}
+
+	// Prevent zero-length filenames
+	if filenameLen == 0 {
+		return nil, fmt.Errorf("invalid filename length: 0 (must be > 0)")
 	}
 
 	// Read filename
 	filenameBytes := make([]byte, filenameLen)
 	if err := binary.Read(reader, binary.BigEndian, &filenameBytes); err != nil {
-		return nil, fmt.Errorf("read filename: %w", err)
+		return nil, fmt.Errorf("failed to read filename data: %w", err)
 	}
+
+	logger.Debug("Decoded REMOVE request: handle_len=%d filename='%s'",
+		handleLen, string(filenameBytes))
 
 	return &RemoveRequest{
 		DirHandle: dirHandle,
@@ -122,23 +536,60 @@ func DecodeRemoveRequest(data []byte) (*RemoveRequest, error) {
 	}, nil
 }
 
+// ============================================================================
+// XDR Encoding
+// ============================================================================
+
+// Encode serializes the RemoveResponse into XDR-encoded bytes suitable for
+// transmission over the network.
+//
+// The encoding follows RFC 1813 Section 3.3.12 specifications:
+//  1. Status code (4 bytes, big-endian uint32)
+//  2. Directory WCC data (always present):
+//     a. Pre-op attributes (present flag + attributes if present)
+//     b. Post-op attributes (present flag + attributes if present)
+//
+// XDR encoding requires all data to be in big-endian format and aligned
+// to 4-byte boundaries.
+//
+// Returns:
+//   - []byte: The XDR-encoded response ready to send to the client
+//   - error: Any error encountered during encoding
+//
+// Example:
+//
+//	resp := &RemoveResponse{
+//	    Status:       NFS3OK,
+//	    DirWccBefore: wccBefore,
+//	    DirWccAfter:  wccAfter,
+//	}
+//	data, err := resp.Encode()
+//	if err != nil {
+//	    // Handle encoding error
+//	    return nil, err
+//	}
+//	// Send 'data' to client over network
 func (resp *RemoveResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
-	// Write status
+	// ========================================================================
+	// Write status code
+	// ========================================================================
+
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
-		return nil, fmt.Errorf("write status: %w", err)
+		return nil, fmt.Errorf("failed to write status: %w", err)
 	}
 
-	// Write WCC data (pre-op and post-op attributes - optional, we'll skip for now)
-	// Pre-op attributes
-	if err := binary.Write(&buf, binary.BigEndian, uint32(0)); err != nil {
-		return nil, err
-	}
-	// Post-op attributes
-	if err := binary.Write(&buf, binary.BigEndian, uint32(0)); err != nil {
-		return nil, err
+	// ========================================================================
+	// Write directory WCC data (both success and failure cases)
+	// ========================================================================
+	// WCC (Weak Cache Consistency) data helps clients maintain cache coherency
+	// by providing before-and-after snapshots of the parent directory.
+
+	if err := encodeWccData(&buf, resp.DirWccBefore, resp.DirWccAfter); err != nil {
+		return nil, fmt.Errorf("failed to encode directory wcc data: %w", err)
 	}
 
+	logger.Debug("Encoded REMOVE response: %d bytes status=%d", buf.Len(), resp.Status)
 	return buf.Bytes(), nil
 }

@@ -327,7 +327,7 @@ func (h *DefaultNFSHandler) Link(
 		dirWccAfter := MetadataToNFSAttr(dirAttr, dirID)
 
 		// Map repository errors to NFS status codes
-		status := mapRepositoryErrorToNFSStatus(err)
+		status := mapRepositoryErrorToNFSStatus(err, clientIP, "link")
 
 		return &LinkResponse{
 			Status:       status,
@@ -602,27 +602,4 @@ func (resp *LinkResponse) Encode() ([]byte, error) {
 
 	logger.Debug("Encoded LINK response: %d bytes status=%d", buf.Len(), resp.Status)
 	return buf.Bytes(), nil
-}
-
-// ============================================================================
-// Utility Functions
-// ============================================================================
-
-// mapRepositoryErrorToNFSStatus maps repository errors to NFS status codes.
-// This provides a consistent error mapping across the codebase.
-func mapRepositoryErrorToNFSStatus(err error) uint32 {
-	// Check for specific error types from repository
-	if exportErr, ok := err.(*metadata.ExportError); ok {
-		switch exportErr.Code {
-		case metadata.ExportErrAccessDenied:
-			return NFS3ErrAcces
-		case metadata.ExportErrNotFound:
-			return NFS3ErrNoEnt
-		default:
-			return NFS3ErrIO
-		}
-	}
-
-	// Default to I/O error for unknown errors
-	return NFS3ErrIO
 }

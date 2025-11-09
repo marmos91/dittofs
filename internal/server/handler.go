@@ -58,7 +58,7 @@ type NFSHandler interface {
 
 	// Remove removes a file.
 	// RFC 1813 Section 3.3.12
-	Remove(repository metadata.Repository, req *nfs.RemoveRequest) (*nfs.RemoveResponse, error)
+	Remove(repository metadata.Repository, req *nfs.RemoveRequest, ctx *nfs.RemoveContext) (*nfs.RemoveResponse, error)
 
 	// RmDir removes a directory.
 	// RFC 1813 Section 3.3.13
