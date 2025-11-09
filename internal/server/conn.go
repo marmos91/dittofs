@@ -459,11 +459,35 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			},
 		)
 	case nfs.NFSProcRmdir:
+		// Extract authentication from RPC call
+		var uid, gid *uint32
+		var gids []uint32
+
+		if authFlavor == rpc.AuthUnix {
+			authBody := call.GetAuthBody()
+			if len(authBody) > 0 {
+				if unixAuth, err := rpc.ParseUnixAuth(authBody); err == nil {
+					uid = &unixAuth.UID
+					gid = &unixAuth.GID
+					gids = unixAuth.GIDs
+				}
+			}
+		}
+
+		// Create context with client information and auth
+		rmDirCtx := &nfs.RmdirContext{
+			ClientAddr: c.conn.RemoteAddr().String(),
+			AuthFlavor: authFlavor,
+			UID:        uid,
+			GID:        gid,
+			GIDs:       gids,
+		}
+
 		return handleRequest(
 			data,
 			nfs.DecodeRmdirRequest,
 			func(req *nfs.RmdirRequest) (*nfs.RmdirResponse, error) {
-				return handler.Rmdir(repo, req)
+				return handler.Rmdir(repo, req, rmDirCtx)
 			},
 			nfs.NFS3ErrIO,
 			func(status uint32) *nfs.RmdirResponse {

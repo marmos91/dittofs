@@ -290,4 +290,29 @@ type Repository interface {
 	//     * Target path is missing or empty
 	//     * I/O error
 	ReadSymlink(handle FileHandle, ctx *AuthContext) (string, *FileAttr, error)
+
+	// RemoveDirectory removes an empty directory from a parent directory.
+	//
+	// This method is responsible for:
+	//  1. Verifying the directory exists as a child of the parent
+	//  2. Verifying the target is actually a directory
+	//  3. Checking the directory is empty (no entries except "." and "..")
+	//  4. Checking write permission on the parent directory
+	//  5. Removing the directory entry from the parent
+	//  6. Deleting the directory metadata
+	//  7. Updating parent directory timestamps
+	//
+	// Parameters:
+	//   - parentHandle: Handle of the parent directory
+	//   - name: Name of the directory to remove
+	//   - ctx: Authentication context for access control
+	//
+	// Returns error if:
+	//   - Access denied (no write permission on parent)
+	//   - Directory not found
+	//   - Target is not a directory
+	//   - Directory is not empty
+	//   - Parent is not a directory
+	//   - I/O error
+	RemoveDirectory(parentHandle FileHandle, name string, ctx *AuthContext) error
 }
