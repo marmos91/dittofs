@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"net"
+	"strings"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
@@ -362,23 +362,23 @@ func mapReadLinkErrorToNFSStatus(err error) uint32 {
 	// Check error message for common patterns
 	errMsg := err.Error()
 
-	if contains(errMsg, "not found") {
+	if strings.Contains(errMsg, "not found") {
 		return NFS3ErrNoEnt
 	}
 
-	if contains(errMsg, "not a symlink") || contains(errMsg, "not symbolic link") {
+	if strings.Contains(errMsg, "not a symlink") || strings.Contains(errMsg, "not symbolic link") {
 		return NFS3ErrInval
 	}
 
-	if contains(errMsg, "permission denied") || contains(errMsg, "access denied") {
+	if strings.Contains(errMsg, "permission denied") || strings.Contains(errMsg, "access denied") {
 		return NFS3ErrAcces
 	}
 
-	if contains(errMsg, "stale") {
+	if strings.Contains(errMsg, "stale") {
 		return NFS3ErrStale
 	}
 
-	if contains(errMsg, "no target") || contains(errMsg, "empty target") {
+	if strings.Contains(errMsg, "no target") || strings.Contains(errMsg, "empty target") {
 		return NFS3ErrIO
 	}
 
@@ -548,34 +548,4 @@ func (resp *ReadLinkResponse) Encode() ([]byte, error) {
 
 	logger.Debug("Encoded READLINK response: %d bytes target_len=%d", buf.Len(), targetLen)
 	return buf.Bytes(), nil
-}
-
-// ============================================================================
-// Utility Functions
-// ============================================================================
-
-// extractClientIP extracts the IP address from a client address string.
-// Format: "IP:port" → "IP"
-func extractClientIP(clientAddr string) string {
-	ip, _, err := net.SplitHostPort(clientAddr)
-	if err != nil {
-		// If parsing fails, return the original address
-		return clientAddr
-	}
-	return ip
-}
-
-// contains checks if a string contains a substring (case-insensitive helper).
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || findSubstring(s, substr))
-}
-
-// findSubstring performs a simple substring search.
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"net"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/metadata"
@@ -502,4 +503,15 @@ func convertSetAttrsToMetadata(fileType metadata.FileType, setAttrs *SetAttrs, a
 	// based on implementation requirements
 
 	return attr
+}
+
+// extractClientIP extracts the IP address from a client address string.
+// Format: "IP:port" → "IP"
+func extractClientIP(clientAddr string) string {
+	ip, _, err := net.SplitHostPort(clientAddr)
+	if err != nil {
+		// If parsing fails, return the original address
+		return clientAddr
+	}
+	return ip
 }
