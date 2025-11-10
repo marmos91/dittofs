@@ -1,5 +1,66 @@
 package types
 
+// TimeVal represents an NFS timestamp (nfstime3 in RFC 1813 Section 2.5.2).
+// NFS uses seconds and nanoseconds since the UNIX epoch (Jan 1, 1970 00:00:00 UTC).
+//
+// Usage:
+//
+//   - Converting from Go time.Time:
+//     tv := TimeVal{
+//     Seconds:  uint32(t.Unix()),
+//     Nseconds: uint32(t.Nanosecond()),
+//     }
+//
+//   - Converting to Go time.Time:
+//     t := time.Unix(int64(tv.Seconds), int64(tv.Nseconds))
+type TimeVal struct {
+	// Seconds is the number of seconds since UNIX epoch
+	Seconds uint32
+
+	// Nseconds is the nanoseconds component (0-999999999)
+	Nseconds uint32
+}
+
+// ============================================================================
+// Weak Cache Consistency (WCC) Data
+// ============================================================================
+
+// WccAttr represents pre-operation weak cache consistency attributes
+// (pre_op_attr in RFC 1813 Section 2.6).
+//
+// WCC data helps NFS clients detect if a file changed between operations
+// and maintain cache consistency. The server captures file attributes before
+// an operation (pre-op) and returns them alongside the post-op attributes.
+//
+// Usage:
+//
+//   - Capture before modifying a file:
+//     wccAttr := captureWccAttr(fileAttr)
+//
+//   - Client uses this to detect concurrent modifications
+//
+//   - If pre-op attributes match client's cached attributes, cache is valid
+//
+//   - If they differ, cache must be invalidated
+//
+// Example:
+//
+//	Client has cached attributes with mtime=T1
+//	Server captures pre-op with mtime=T1 (matches)
+//	Server performs operation, mtime becomes T2
+//	Server returns WCC: before={mtime=T1}, after={mtime=T2}
+//	Client sees pre-op matches cache, so updates cache to T2
+type WccAttr struct {
+	// Size is the file size in bytes before the operation
+	Size uint64
+
+	// Mtime is the modification time before the operation
+	Mtime TimeVal
+
+	// Ctime is the change time before the operation
+	Ctime TimeVal
+}
+
 // ============================================================================
 // NFS Protocol Types - RFC 1813 Wire Format Structures
 // ============================================================================
@@ -73,7 +134,7 @@ type TimeVal struct {
 // Usage:
 //
 //   - Capture before modifying a file:
-//     wccAttr := xdr.CaptureWccAttr(fileAttr)
+//     wccAttr := captureWccAttr(fileAttr)
 //
 //   - Client uses this to detect concurrent modifications
 //

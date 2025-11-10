@@ -1,5 +1,7 @@
 package metadata
 
+import "time"
+
 // DirEntry represents a directory entry returned by ReadDir.
 type DirEntry struct {
 	// Fileid is the unique file identifier
@@ -432,4 +434,46 @@ type Repository interface {
 	//   - Store the target path in attr.SymlinkTarget
 	//   - Ensure the symlink has proper default attributes if not specified
 	CreateSymlink(parentHandle FileHandle, name string, target string, attr *FileAttr, ctx *AuthContext) (FileHandle, error)
+
+	// WriteFile updates file metadata for a write operation.
+	//
+	// This method handles the metadata aspects of file writes:
+	//   - Permission validation (owner/group/other write bits)
+	//   - File size updates (extension if newSize > current size)
+	//   - Timestamp updates (mtime always, ctime if size changed)
+	//   - Content ID generation if needed
+	//
+	// Pre-Operation Attributes:
+	// The method returns the file's size and timestamps BEFORE any modifications.
+	// The protocol layer uses these for WCC (Weak Cache Consistency) data to help
+	// clients detect concurrent modifications.
+	//
+	// Design Philosophy:
+	// This method does NOT perform actual data writing. The protocol handler
+	// is responsible for coordinating between metadata and content repositories:
+	//  1. Call WriteFile to check permissions and capture pre-op attributes
+	//  2. Write data via content repository using the ContentID from attributes
+	//  3. Pre-op attributes and updated attributes are ready for response
+	//
+	// Parameters:
+	//   - handle: File handle to update
+	//   - newSize: File size after write (offset + length of data)
+	//   - ctx: Authentication context for permission checking
+	//
+	// Returns:
+	//   - *FileAttr: Updated file attributes (includes ContentID for writing)
+	//   - uint64: Pre-operation file size
+	//   - time.Time: Pre-operation modification time
+	//   - time.Time: Pre-operation change time
+	//   - error: ExportError if operation fails
+	//
+	// Example usage:
+	//
+	//	newSize := offset + uint64(len(data))
+	//	attr, preSize, preMtime, preCtime, err := repo.WriteFile(handle, newSize, authCtx)
+	//	if err != nil {
+	//	    return err
+	//	}
+	//	err = contentRepo.WriteAt(attr.ContentID, data, offset)
+	WriteFile(handle FileHandle, newSize uint64, ctx *AuthContext) (*FileAttr, uint64, time.Time, time.Time, error)
 }

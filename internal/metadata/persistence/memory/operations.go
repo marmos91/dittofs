@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/content"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
 )
@@ -1971,4 +1972,190 @@ func (r *MemoryRepository) CreateSymlink(
 	r.files[parentKey] = parentAttr
 
 	return symlinkHandle, nil
+}
+
+// WriteFile updates file metadata after a write operation.
+//
+// This implements the metadata management for the WRITE NFS procedure
+// (RFC 1813 section 3.3.7). It handles permission checking, size updates,
+// and timestamp management, but does NOT perform the actual data write.
+//
+// Design:
+// The caller (protocol handler) is responsible for:
+//  1. Calling this method to capture WCC data and check permissions
+//  2. Writing data via the content repository
+//  3. Calling this method again to update size and timestamps (or using UpdateFile)
+//
+// This separation ensures that:
+//   - Metadata repository doesn't depend on content repository
+//   - Each repository handles only its own domain
+//   - Caller controls the operation flow and error handling
+//
+// Permission Check Flow:
+// Write permission requires one of:
+//   - Owner with write bit (mode & 0200)
+//   - Group member with write bit (mode & 0020)
+//   - Other with write bit (mode & 0002)
+//   - AUTH_NULL requires world-writable (mode & 0002)
+//
+// Size Extension:
+// When newSize > current size:
+//   - File is extended to newSize
+//   - Bytes between old EOF and write offset are implicitly zero (sparse)
+//   - Change time (ctime) is updated in addition to mtime
+//
+// Timestamp Updates:
+// Per POSIX and NFS semantics:
+//   - mtime (modification time): Always updated on write
+//   - ctime (change time): Updated when size changes
+//   - atime (access time): Not updated on write
+//
+// Weak Cache Consistency (WCC):
+// The returned WccAttr contains attributes before any modifications.
+// This allows clients to detect concurrent changes by comparing with
+// their cached values.
+//
+// Parameters:
+//   - handle: File handle to update
+//   - newSize: File size after write (offset + data length)
+//   - ctx: Authentication context for permission checking
+//
+// Returns:
+//   - *FileAttr: Updated file attributes after the operation
+//   - *WccAttr: Pre-operation attributes for cache consistency
+//   - error: Returns ExportError with specific code if operation fails:
+//   - ExportErrNotFound: File doesn't exist
+//   - ExportErrAccessDenied: No write permission
+//   - ExportErrServerFault: Not a regular file
+//
+// Example usage in protocol handler:
+//
+//	// Get WCC data and check permissions
+//	attr, wccAttr, err := repo.WriteFile(handle, offset+dataLen, ctx)
+//	if err != nil {
+//	    return errorResponse(err)
+//	}
+//
+//	// Write actual data
+//	err = contentRepo.WriteAt(attr.ContentID, data, offset)
+//	if err != nil {
+//	    return errorResponse(err)
+//	}
+//
+//	// Attributes are already updated by WriteFile
+//	return successResponse(attr, wccAttr)
+func (r *MemoryRepository) WriteFile(
+	handle metadata.FileHandle,
+	newSize uint64,
+	ctx *metadata.AuthContext,
+) (*metadata.FileAttr, uint64, time.Time, time.Time, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// ========================================================================
+	// Step 1: Verify file exists
+	// ========================================================================
+
+	key := handleToKey(handle)
+	attr, exists := r.files[key]
+	if !exists {
+		return nil, 0, time.Time{}, time.Time{}, &metadata.ExportError{
+			Code:    metadata.ExportErrNotFound,
+			Message: "file not found",
+		}
+	}
+
+	// ========================================================================
+	// Step 2: Verify it's a regular file
+	// ========================================================================
+
+	if attr.Type != metadata.FileTypeRegular {
+		return nil, 0, time.Time{}, time.Time{}, &metadata.ExportError{
+			Code:    metadata.ExportErrServerFault,
+			Message: fmt.Sprintf("not a regular file: type=%d", attr.Type),
+		}
+	}
+
+	// ========================================================================
+	// Step 3: Capture pre-operation attributes
+	// ========================================================================
+
+	preSize := attr.Size
+	preMtime := attr.Mtime
+	preCtime := attr.Ctime
+
+	// ========================================================================
+	// Step 4: Check write permission (if auth context provided)
+	// ========================================================================
+
+	if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil {
+		uid := *ctx.UID
+		gid := *ctx.GID
+
+		var hasWrite bool
+
+		// Owner permissions
+		if uid == attr.UID {
+			hasWrite = (attr.Mode & 0200) != 0
+		} else if gid == attr.GID || containsGID(ctx.GIDs, attr.GID) {
+			hasWrite = (attr.Mode & 0020) != 0
+		} else {
+			hasWrite = (attr.Mode & 0002) != 0
+		}
+
+		if !hasWrite {
+			return nil, preSize, preMtime, preCtime, &metadata.ExportError{
+				Code:    metadata.ExportErrAccessDenied,
+				Message: "write permission denied",
+			}
+		}
+	} else if ctx != nil && ctx.AuthFlavor == 0 {
+		// AUTH_NULL: only grant write if world-writable
+		if attr.Mode&0002 == 0 {
+			return nil, preSize, preMtime, preCtime, &metadata.ExportError{
+				Code:    metadata.ExportErrAccessDenied,
+				Message: "write permission denied (AUTH_NULL requires world-writable)",
+			}
+		}
+	}
+
+	// ========================================================================
+	// Step 5: Ensure file has a content ID
+	// ========================================================================
+
+	if attr.ContentID == "" {
+		attr.ContentID = content.ContentID(fmt.Sprintf("file-%s", key[:16]))
+	}
+
+	// ========================================================================
+	// Step 6: Update file size if needed
+	// ========================================================================
+
+	sizeChanged := false
+	if newSize > attr.Size {
+		attr.Size = newSize
+		sizeChanged = true
+	}
+
+	// ========================================================================
+	// Step 7: Update file timestamps
+	// ========================================================================
+
+	now := time.Now()
+	attr.Mtime = now
+
+	if sizeChanged {
+		attr.Ctime = now
+	}
+
+	// ========================================================================
+	// Step 8: Save updated attributes
+	// ========================================================================
+
+	r.files[key] = attr
+
+	// Return a copy of the attributes
+	attrCopy := *attr
+
+	return &attrCopy, preSize, preMtime, preCtime, nil
 }

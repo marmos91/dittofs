@@ -38,7 +38,7 @@ type NFSHandler interface {
 
 	// Write writes data to a file.
 	// RFC 1813 Section 3.3.7
-	Write(content content.Repository, repository metadata.Repository, req *nfs.WriteRequest) (*nfs.WriteResponse, error)
+	Write(content content.Repository, repository metadata.Repository, req *nfs.WriteRequest, ctx *nfs.WriteContext) (*nfs.WriteResponse, error)
 
 	// Create creates a regular file.
 	// RFC 1813 Section 3.3.8

@@ -343,7 +343,7 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			data,
 			nfs.DecodeWriteRequest,
 			func(req *nfs.WriteRequest) (*nfs.WriteResponse, error) {
-				return handler.Write(contentRepo, repo, req)
+				return handler.Write(contentRepo, repo, req, writeCtx)
 			},
 			types.NFS3ErrIO,
 			func(status uint32) *nfs.WriteResponse {
