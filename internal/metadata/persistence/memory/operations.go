@@ -181,8 +181,11 @@ func (r *MemoryRepository) SetFileAttributes(
 		if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil {
 			var hasWrite bool
 
-			// Owner permissions
-			if uid == fileAttr.UID {
+			// Root user bypasses permission checks
+			if uid == 0 {
+				hasWrite = true
+			} else if uid == fileAttr.UID {
+				// Owner permissions
 				hasWrite = (fileAttr.Mode & 0200) != 0 // Owner write bit
 			} else if gid == fileAttr.GID || containsGID(ctx.GIDs, fileAttr.GID) {
 				// Group permissions
