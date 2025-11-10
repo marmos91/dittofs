@@ -46,7 +46,7 @@ type MkdirRequest struct {
 	//   - GID: Owner group ID
 	// Other fields (size, times) are ignored and set by the server.
 	// If not specified, the server applies defaults (typically 0755, uid=0, gid=0).
-	Attr SetAttrs
+	Attr metadata.SetAttrs
 }
 
 // MkdirResponse represents the response to a MKDIR request.

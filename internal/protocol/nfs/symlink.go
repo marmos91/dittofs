@@ -23,7 +23,7 @@ type SymlinkRequest struct {
 	Target string
 
 	// Attr contains attributes for the new symbolic link
-	Attr SetAttrs
+	Attr metadata.SetAttrs
 }
 
 // SymlinkResponse represents an NFS SYMLINK response (RFC 1813 Section 3.3.10).

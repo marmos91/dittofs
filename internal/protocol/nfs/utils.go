@@ -74,7 +74,7 @@ func extractFileID(handle metadata.FileHandle) uint64 {
 
 // applySetAttrs applies set attributes to file metadata.
 // Only applies attributes that are explicitly set in the request.
-func applySetAttrs(fileAttr *metadata.FileAttr, setAttrs *SetAttrs) {
+func applySetAttrs(fileAttr *metadata.FileAttr, setAttrs *metadata.SetAttrs) {
 	if setAttrs == nil {
 		return
 	}
@@ -155,8 +155,8 @@ func decodeString(reader io.Reader) (string, error) {
 //	    set_atime   atime;
 //	    set_mtime   mtime;
 //	};
-func decodeSetAttrs(reader io.Reader) (*SetAttrs, error) {
-	attr := &SetAttrs{}
+func decodeSetAttrs(reader io.Reader) (*metadata.SetAttrs, error) {
+	attr := &metadata.SetAttrs{}
 
 	// Decode mode
 	var setMode uint32
@@ -456,7 +456,7 @@ func encodeFileAttr(buf *bytes.Buffer, attr *FileAttr) error {
 // Returns:
 //   - *metadata.FileAttr: Partial attributes for repository (type, mode, uid, gid)
 //     The repository will complete the attributes with timestamps and other fields.
-func convertSetAttrsToMetadata(fileType metadata.FileType, setAttrs *SetAttrs, authCtx *metadata.AuthContext) *metadata.FileAttr {
+func convertSetAttrsToMetadata(fileType metadata.FileType, setAttrs *metadata.SetAttrs, authCtx *metadata.AuthContext) *metadata.FileAttr {
 	attr := &metadata.FileAttr{
 		Type: fileType,
 	}

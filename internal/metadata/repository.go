@@ -370,4 +370,27 @@ type Repository interface {
 	//   - Different directory: Move with potential rename
 	//   - Over existing file: Atomic replacement
 	RenameFile(fromDirHandle FileHandle, fromName string, toDirHandle FileHandle, toName string, ctx *AuthContext) error
+
+	// SetFileAttributes updates file attributes with access control.
+	//
+	// This method is responsible for:
+	//  1. Checking ownership (for chown/chmod)
+	//  2. Checking write permission (for size/time changes)
+	//  3. Validating attribute values
+	//  4. Coordinating with content repository for size changes
+	//  5. Updating ctime automatically
+	//  6. Ensuring atomicity of updates
+	//
+	// Parameters:
+	//   - handle: The file handle to update
+	//   - attrs: The attributes to set (only Set* = true are modified)
+	//   - ctx: Authentication context for access control
+	//
+	// Returns error if:
+	//   - Access denied (no permission)
+	//   - Not owner (for chown/chmod)
+	//   - Invalid attribute values
+	//   - Read-only filesystem
+	//   - I/O error
+	SetFileAttributes(handle FileHandle, attrs *SetAttrs, ctx *AuthContext) error
 }

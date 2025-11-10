@@ -58,7 +58,7 @@ type MknodRequest struct {
 	//   - UID: Owner user ID
 	//   - GID: Owner group ID
 	// Other fields (size, times) are ignored and set by the server.
-	Attr SetAttrs
+	Attr metadata.SetAttrs
 
 	// Spec contains device-specific data (only for block/char devices).
 	// For NF3CHR and NF3BLK:

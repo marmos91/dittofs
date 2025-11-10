@@ -18,7 +18,7 @@ type NFSHandler interface {
 
 	// SetAttr sets the attributes for a file system object.
 	// RFC 1813 Section 3.3.2
-	SetAttr(repository metadata.Repository, req *nfs.SetAttrRequest) (*nfs.SetAttrResponse, error)
+	SetAttr(repository metadata.Repository, req *nfs.SetAttrRequest, ctx *nfs.SetAttrContext) (*nfs.SetAttrResponse, error)
 
 	// Lookup searches a directory for a specific name and returns its file handle.
 	// RFC 1813 Section 3.3.3

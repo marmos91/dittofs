@@ -1,7 +1,5 @@
 package nfs
 
-import "time"
-
 // ============================================================================
 // NFS File Attributes
 // ============================================================================
@@ -137,93 +135,6 @@ type WccAttr struct {
 }
 
 // ============================================================================
-// Set Attributes (for SETATTR, CREATE, MKDIR, etc.)
-// ============================================================================
-
-// SetAttrs represents attributes to set on a file (sattr3 in RFC 1813 Section 2.5.3).
-//
-// This structure is used by operations that create or modify files to specify
-// which attributes should be set. Each attribute has a corresponding Set* flag
-// that indicates whether that attribute should be modified.
-//
-// If a Set* flag is false, the corresponding attribute value is ignored and
-// the server should not modify that attribute.
-//
-// Usage Examples:
-//
-//   - Set only file permissions:
-//     attrs := &SetAttrs{
-//     Mode:    0644,
-//     SetMode: true,
-//     }
-//
-//   - Set owner and group:
-//     attrs := &SetAttrs{
-//     UID:    1000,
-//     SetUID: true,
-//     GID:    1000,
-//     SetGID: true,
-//     }
-//
-//   - Truncate file to zero:
-//     attrs := &SetAttrs{
-//     Size:    0,
-//     SetSize: true,
-//     }
-//
-//   - Set modification time to now:
-//     attrs := &SetAttrs{
-//     Mtime:    time.Now(),
-//     SetMtime: true,
-//     }
-//
-// Time Semantics:
-//   - For Atime and Mtime, the SetA* flags can be set with three meanings:
-//     1. Don't set time (Set* = false)
-//     2. Set to server's current time (Set* = true, time = time.Now())
-//     3. Set to specific time (Set* = true, time = specific value)
-//
-// This structure is used by:
-//   - CREATE: Set initial file attributes
-//   - MKDIR: Set initial directory attributes
-//   - SETATTR: Modify existing file attributes
-//   - SYMLINK: Set symlink attributes
-type SetAttrs struct {
-	// Mode is the file permission bits (e.g., 0644, 0755)
-	// Only applied if SetMode is true
-	Mode    uint32
-	SetMode bool
-
-	// UID is the user ID of the file owner
-	// Only applied if SetUID is true
-	UID    uint32
-	SetUID bool
-
-	// GID is the group ID of the file owner
-	// Only applied if SetGID is true
-	GID    uint32
-	SetGID bool
-
-	// Size is the file size in bytes
-	// Only applied if SetSize is true
-	// Used for truncating or extending files
-	Size    uint64
-	SetSize bool
-
-	// Atime is the access time
-	// Only applied if SetAtime is true
-	// Can be set to time.Now() for "set to server time"
-	Atime    time.Time
-	SetAtime bool
-
-	// Mtime is the modification time
-	// Only applied if SetMtime is true
-	// Can be set to time.Now() for "set to server time"
-	Mtime    time.Time
-	SetMtime bool
-}
-
-// ============================================================================
 // Directory Entry Structures
 // ============================================================================
 
@@ -286,4 +197,23 @@ type FSStat struct {
 	// expected to change. A value of 0 means the filesystem is expected to
 	// change at any time.
 	Invarsec uint32
+}
+
+// TimeGuard is used for conditional updates based on ctime.
+// If Check is true and the server's current ctime doesn't match Time,
+// the operation fails with NFS3ErrNotSync.
+//
+// This implements optimistic concurrency control to prevent lost updates
+// when multiple clients modify the same file concurrently.
+type TimeGuard struct {
+	// Check indicates whether to perform guard checking.
+	// If false, the update proceeds unconditionally.
+	// If true, the update only proceeds if the file's current ctime
+	// matches the Time field.
+	Check bool
+
+	// Time is the expected ctime value (change time).
+	// Only used when Check is true.
+	// Format: seconds since Unix epoch + nanoseconds
+	Time TimeVal
 }

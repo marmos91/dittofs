@@ -45,7 +45,7 @@ type CreateRequest struct {
 
 	// Attr contains optional attributes to set on the new file.
 	// Only mode, uid, gid are meaningful for CREATE.
-	Attr *SetAttrs
+	Attr *metadata.SetAttrs
 
 	// Verf is the creation verifier for EXCLUSIVE mode (8 bytes).
 	// Only used when Mode == CreateExclusive.

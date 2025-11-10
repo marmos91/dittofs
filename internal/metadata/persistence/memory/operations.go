@@ -5,8 +5,302 @@ import (
 	"slices"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
 )
+
+// SetFileAttributes updates file attributes with access control.
+//
+// This implements support for the SETATTR NFS procedure (RFC 1813 section 3.3.2).
+// It handles selective attribute updates based on the Set* flags in the attrs
+// parameter, with proper permission checking and validation.
+//
+// Permission Requirements:
+//   - Mode changes: Only owner or root
+//   - UID/GID changes: Only root (or owner for GID if in supplementary groups)
+//   - Size changes: Write permission required
+//   - Time changes: Write permission or owner
+//
+// The method automatically updates ctime (change time) whenever any attribute
+// is modified, as required by RFC 1813.
+//
+// Size Changes:
+// Size modifications require coordination with the content repository:
+//   - Truncation (new < old): Remove trailing content
+//   - Extension (new > old): Pad with zeros
+//   - Zero: Delete all content
+//
+// Note: In this in-memory implementation, content coordination is not yet
+// implemented. A production implementation would delegate to a content
+// repository for actual data truncation/extension.
+//
+// Parameters:
+//   - handle: The file handle to update
+//   - attrs: The attributes to set (only Set* = true are modified)
+//   - ctx: Authentication context for access control
+//
+// Returns error if:
+//   - File not found
+//   - Access denied (insufficient permissions)
+//   - Not owner (for ownership/permission changes)
+//   - Invalid attribute values (e.g., negative size)
+//   - Attempting to set size on directory or special file
+//   - I/O error
+func (r *MemoryRepository) SetFileAttributes(
+	handle metadata.FileHandle,
+	attrs *metadata.SetAttrs,
+	ctx *metadata.AuthContext,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// ========================================================================
+	// Step 1: Verify file exists and get current attributes
+	// ========================================================================
+
+	key := handleToKey(handle)
+	fileAttr, exists := r.files[key]
+	if !exists {
+		return &metadata.ExportError{
+			Code:    metadata.ExportErrNotFound,
+			Message: "file not found",
+		}
+	}
+
+	// Track if any attributes were modified (for ctime update)
+	modified := false
+
+	// ========================================================================
+	// Step 2: Check permissions and apply attribute updates
+	// ========================================================================
+
+	// Get effective UID/GID for permission checks
+	var uid, gid uint32
+	if ctx != nil && ctx.UID != nil && ctx.GID != nil {
+		uid = *ctx.UID
+		gid = *ctx.GID
+	}
+
+	// ------------------------------------------------------------------------
+	// Mode (permissions) - only owner or root can change
+	// ------------------------------------------------------------------------
+
+	if attrs.SetMode {
+		// Check if user is owner or root
+		if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil {
+			if uid != 0 && uid != fileAttr.UID {
+				return &metadata.ExportError{
+					Code:    metadata.ExportErrAccessDenied,
+					Message: "only owner or root can change permissions",
+				}
+			}
+		}
+
+		// Validate mode value (only use lower 12 bits)
+		if attrs.Mode > 0o7777 {
+			return &metadata.ExportError{
+				Code:    metadata.ExportErrServerFault,
+				Message: fmt.Sprintf("invalid mode value: 0%o (max 0o7777)", attrs.Mode),
+			}
+		}
+
+		fileAttr.Mode = attrs.Mode
+		modified = true
+
+		logger.Debug("SetFileAttributes: mode changed to 0%o", attrs.Mode)
+	}
+
+	// ------------------------------------------------------------------------
+	// UID (owner) - only root can change ownership
+	// ------------------------------------------------------------------------
+
+	if attrs.SetUID {
+		// Only root can change file ownership
+		if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil {
+			if uid != 0 {
+				return &metadata.ExportError{
+					Code:    metadata.ExportErrAccessDenied,
+					Message: "only root can change file ownership",
+				}
+			}
+		}
+
+		fileAttr.UID = attrs.UID
+		modified = true
+
+		logger.Debug("SetFileAttributes: uid changed to %d", attrs.UID)
+	}
+
+	// ------------------------------------------------------------------------
+	// GID (group) - only root or owner (if in target group) can change
+	// ------------------------------------------------------------------------
+
+	if attrs.SetGID {
+		// Check if user can change group
+		if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil {
+			if uid != 0 { // Root can always change
+				// Owner can change if they're in the target group
+				if uid != fileAttr.UID {
+					return &metadata.ExportError{
+						Code:    metadata.ExportErrAccessDenied,
+						Message: "only root or owner can change group",
+					}
+				}
+
+				// Check if user is in the target group
+				inGroup := gid == attrs.GID || containsGID(ctx.GIDs, attrs.GID)
+				if !inGroup {
+					return &metadata.ExportError{
+						Code:    metadata.ExportErrAccessDenied,
+						Message: "user not in target group",
+					}
+				}
+			}
+		}
+
+		fileAttr.GID = attrs.GID
+		modified = true
+
+		logger.Debug("SetFileAttributes: gid changed to %d", attrs.GID)
+	}
+
+	// ------------------------------------------------------------------------
+	// Size - write permission required, only valid for regular files
+	// ------------------------------------------------------------------------
+
+	if attrs.SetSize {
+		// Verify this is a regular file
+		if fileAttr.Type != metadata.FileTypeRegular {
+			return &metadata.ExportError{
+				Code:    metadata.ExportErrServerFault,
+				Message: fmt.Sprintf("cannot set size on non-regular file (type=%d)", fileAttr.Type),
+			}
+		}
+
+		// Check write permission
+		if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil {
+			var hasWrite bool
+
+			// Owner permissions
+			if uid == fileAttr.UID {
+				hasWrite = (fileAttr.Mode & 0200) != 0 // Owner write bit
+			} else if gid == fileAttr.GID || containsGID(ctx.GIDs, fileAttr.GID) {
+				// Group permissions
+				hasWrite = (fileAttr.Mode & 0020) != 0 // Group write bit
+			} else {
+				// Other permissions
+				hasWrite = (fileAttr.Mode & 0002) != 0 // Other write bit
+			}
+
+			if !hasWrite {
+				return &metadata.ExportError{
+					Code:    metadata.ExportErrAccessDenied,
+					Message: "write permission denied for size change",
+				}
+			}
+		}
+
+		// Update size
+		// TODO: In a production implementation, coordinate with content repository
+		// to actually truncate or extend the file content:
+		//   - If attrs.Size < fileAttr.Size: Truncate content
+		//   - If attrs.Size > fileAttr.Size: Extend with zeros
+		//   - If attrs.Size == 0: Delete all content
+		oldSize := fileAttr.Size
+		fileAttr.Size = attrs.Size
+		modified = true
+
+		logger.Debug("SetFileAttributes: size changed from %d to %d", oldSize, attrs.Size)
+
+		// Update mtime when size changes (POSIX semantics)
+		fileAttr.Mtime = time.Now()
+	}
+
+	// ------------------------------------------------------------------------
+	// Atime (access time) - owner or write permission required
+	// ------------------------------------------------------------------------
+
+	if attrs.SetAtime {
+		// Check if user can set atime
+		// Owner can always set, or write permission is required
+		if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil {
+			if uid != fileAttr.UID {
+				// Not owner, check write permission
+				var hasWrite bool
+
+				if gid == fileAttr.GID || containsGID(ctx.GIDs, fileAttr.GID) {
+					hasWrite = (fileAttr.Mode & 0020) != 0 // Group write bit
+				} else {
+					hasWrite = (fileAttr.Mode & 0002) != 0 // Other write bit
+				}
+
+				if !hasWrite {
+					return &metadata.ExportError{
+						Code:    metadata.ExportErrAccessDenied,
+						Message: "insufficient permission to set atime",
+					}
+				}
+			}
+		}
+
+		fileAttr.Atime = attrs.Atime
+		modified = true
+
+		logger.Debug("SetFileAttributes: atime changed to %v", attrs.Atime)
+	}
+
+	// ------------------------------------------------------------------------
+	// Mtime (modification time) - owner or write permission required
+	// ------------------------------------------------------------------------
+
+	if attrs.SetMtime {
+		// Check if user can set mtime
+		// Owner can always set, or write permission is required
+		if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil {
+			if uid != fileAttr.UID {
+				// Not owner, check write permission
+				var hasWrite bool
+
+				if gid == fileAttr.GID || containsGID(ctx.GIDs, fileAttr.GID) {
+					hasWrite = (fileAttr.Mode & 0020) != 0 // Group write bit
+				} else {
+					hasWrite = (fileAttr.Mode & 0002) != 0 // Other write bit
+				}
+
+				if !hasWrite {
+					return &metadata.ExportError{
+						Code:    metadata.ExportErrAccessDenied,
+						Message: "insufficient permission to set mtime",
+					}
+				}
+			}
+		}
+
+		fileAttr.Mtime = attrs.Mtime
+		modified = true
+
+		logger.Debug("SetFileAttributes: mtime changed to %v", attrs.Mtime)
+	}
+
+	// ========================================================================
+	// Step 3: Update ctime if any attributes were modified
+	// ========================================================================
+	// Per RFC 1813, ctime (change time) is automatically updated by the
+	// server whenever any file metadata changes. Clients cannot set it.
+
+	if modified {
+		fileAttr.Ctime = time.Now()
+		logger.Debug("SetFileAttributes: ctime updated to %v", fileAttr.Ctime)
+	}
+
+	// ========================================================================
+	// Step 4: Save updated attributes
+	// ========================================================================
+
+	r.files[key] = fileAttr
+
+	return nil
+}
 
 // CreateLink creates a hard link to an existing file.
 //
