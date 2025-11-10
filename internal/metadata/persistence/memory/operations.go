@@ -1910,7 +1910,7 @@ func (r *MemoryRepository) CreateSymlink(
 
 	if _, exists := r.children[parentKey][name]; exists {
 		return nil, &metadata.ExportError{
-			Code:    metadata.ExportErrServerFault,
+			Code:    metadata.ExportErrExists,
 			Message: fmt.Sprintf("file already exists: %s", name),
 		}
 	}
