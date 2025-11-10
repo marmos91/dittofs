@@ -2,6 +2,7 @@ package mount
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -23,6 +24,10 @@ import (
 //   - groups: A list of client groups/hosts allowed to mount (optional)
 type ExportRequest struct {
 	// Empty struct - EXPORT takes no parameters
+}
+
+type ExportContext struct {
+	Context context.Context
 }
 
 // ExportResponse represents the response to an EXPORT request.

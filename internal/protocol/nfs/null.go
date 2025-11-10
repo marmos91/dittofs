@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"bytes"
+	"context"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
@@ -48,6 +49,8 @@ type NullResponse struct {
 //   - Security auditing (detecting port scans, etc.)
 //   - Rate limiting and abuse detection
 type NullContext struct {
+	Context context.Context
+
 	// ClientAddr is the network address of the client making the request.
 	// Format: "IP:port" (e.g., "192.168.1.100:1234")
 	ClientAddr string

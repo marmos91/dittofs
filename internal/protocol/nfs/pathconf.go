@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -100,6 +101,8 @@ type PathConfResponse struct {
 // PathConfContext contains the context information needed to process a PATHCONF request.
 // This includes client identification and authentication details.
 type PathConfContext struct {
+	Context context.Context
+
 	// ClientAddr is the network address of the client making the request.
 	// Format: "IP:port" (e.g., "192.168.1.100:1234")
 	ClientAddr string

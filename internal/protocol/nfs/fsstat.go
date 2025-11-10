@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -90,6 +91,8 @@ type FsStatResponse struct {
 // This includes client identification and authentication details for access control
 // and auditing purposes.
 type FsStatContext struct {
+	Context context.Context
+
 	// ClientAddr is the network address of the client making the request.
 	// Format: "IP:port" (e.g., "192.168.1.100:1234")
 	ClientAddr string

@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -56,6 +57,8 @@ type GetAttrResponse struct {
 // GetAttrContext contains the context information needed to process a GETATTR request.
 // This includes client identification for auditing purposes.
 type GetAttrContext struct {
+	Context context.Context
+
 	// ClientAddr is the network address of the client making the request.
 	// Format: "IP:port" (e.g., "192.168.1.100:1234")
 	ClientAddr string

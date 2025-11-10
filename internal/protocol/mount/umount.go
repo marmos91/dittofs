@@ -2,6 +2,7 @@ package mount
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 
@@ -43,6 +44,7 @@ type UmountResponse struct {
 // UmountContext contains the context information needed to process an unmount request.
 // This includes client identification for removing the correct mount record.
 type UmountContext struct {
+	Context context.Context
 	// ClientAddr is the network address of the client making the request
 	// Format: "IP:port" (e.g., "192.168.1.100:1234")
 	ClientAddr string

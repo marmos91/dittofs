@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -90,6 +91,8 @@ type CreateResponse struct {
 //   - Audit logging
 //   - Default ownership assignment
 type CreateContext struct {
+	Context context.Context
+
 	// ClientAddr is the network address of the client making the request.
 	// Format: "IP:port" (e.g., "192.168.1.100:1234")
 	ClientAddr string

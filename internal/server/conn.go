@@ -65,7 +65,7 @@ func (c *conn) serve(ctx context.Context) {
 		}
 
 		startTime := time.Now()
-		err := c.handleRequest()
+		err := c.handleRequest(ctx)
 		duration := time.Since(startTime)
 
 		if err != nil {
@@ -93,7 +93,7 @@ func (c *conn) serve(ctx context.Context) {
 	}
 }
 
-func (c *conn) handleRequest() error {
+func (c *conn) handleRequest(ctx context.Context) error {
 	// Apply read timeout if configured
 	if c.server.config.ReadTimeout > 0 {
 		deadline := time.Now().Add(c.server.config.ReadTimeout)
@@ -143,7 +143,7 @@ func (c *conn) handleRequest() error {
 	}
 
 	// Handle the call
-	return c.handleRPCCall(call, procedureData)
+	return c.handleRPCCall(ctx, call, procedureData)
 }
 
 func (c *conn) readFragmentHeader() (*fragmentHeader, error) {
@@ -175,7 +175,7 @@ func (c *conn) readRPCMessage(length uint32) ([]byte, error) {
 	return message, nil
 }
 
-func (c *conn) handleRPCCall(call *rpc.RPCCallMessage, procedureData []byte) error {
+func (c *conn) handleRPCCall(ctx context.Context, call *rpc.RPCCallMessage, procedureData []byte) error {
 	startTime := time.Now()
 	var replyData []byte
 	var err error
@@ -189,10 +189,10 @@ func (c *conn) handleRPCCall(call *rpc.RPCCallMessage, procedureData []byte) err
 	switch call.Program {
 	case rpc.ProgramNFS:
 		isNFS = true
-		replyData, err = c.handleNFSProcedure(call, procedureData, clientAddr)
+		replyData, err = c.handleNFSProcedure(ctx, call, procedureData, clientAddr)
 	case rpc.ProgramMount:
 		isNFS = false
-		replyData, err = c.handleMountProcedure(call, procedureData, clientAddr)
+		replyData, err = c.handleMountProcedure(ctx, call, procedureData, clientAddr)
 	default:
 		logger.Debug("Unknown program: %d", call.Program)
 		return nil
@@ -211,7 +211,7 @@ func (c *conn) handleRPCCall(call *rpc.RPCCallMessage, procedureData []byte) err
 	return c.sendReply(call.XID, replyData)
 }
 
-func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
+func (c *conn) handleNFSProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
 	// Look up procedure in dispatch table
 	procInfo, ok := nfsDispatchTable[call.Procedure]
 	if !ok {
@@ -220,7 +220,7 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte, clientA
 	}
 
 	// Extract authentication context
-	authCtx := extractAuthContext(call, clientAddr, procInfo.Name)
+	authCtx := extractAuthContext(ctx, call, clientAddr, procInfo.Name)
 
 	// Log procedure with auth info
 	if authCtx.UID != nil {
@@ -241,7 +241,7 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte, clientA
 	)
 }
 
-func (c *conn) handleMountProcedure(call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
+func (c *conn) handleMountProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
 	// Look up procedure in dispatch table
 	procInfo, ok := mountDispatchTable[call.Procedure]
 	if !ok {
@@ -250,7 +250,7 @@ func (c *conn) handleMountProcedure(call *rpc.RPCCallMessage, data []byte, clien
 	}
 
 	// Extract authentication context
-	authCtx := extractAuthContext(call, clientAddr, procInfo.Name)
+	authCtx := extractAuthContext(ctx, call, clientAddr, procInfo.Name)
 
 	// Log procedure with auth info
 	if authCtx.UID != nil {

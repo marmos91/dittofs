@@ -1,6 +1,7 @@
 package mount
 
 import (
+	"context"
 	"net"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -33,6 +34,7 @@ type UmountAllResponse struct {
 // UmountAllContext contains the context information needed to process an unmount-all request.
 // Since UMNTALL removes all mounts for a specific client, only the client address is needed.
 type UmountAllContext struct {
+	Context context.Context
 	// ClientAddr is the network address of the client making the request
 	// Format: "IP:port" (e.g., "192.168.1.100:1234")
 	// The IP portion is used to identify all mounts belonging to this client

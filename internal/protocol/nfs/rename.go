@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"strings"
@@ -92,6 +93,8 @@ type RenameResponse struct {
 // RenameContext contains the context information needed to process a RENAME request.
 // This includes client identification and authentication details for access control.
 type RenameContext struct {
+	Context context.Context
+
 	// ClientAddr is the network address of the client making the request.
 	// Format: "IP:port" (e.g., "192.168.1.100:1234")
 	ClientAddr string

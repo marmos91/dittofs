@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+
 	"github.com/marmos91/dittofs/internal/content"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
@@ -22,6 +24,9 @@ import (
 // and parsed Unix credentials when available. Procedures can use this to make
 // authorization decisions.
 type AuthContext struct {
+	// Context is the Go context for cancellation and timeout control
+	Context context.Context
+
 	// ClientAddr is the remote address of the client connection
 	ClientAddr string
 
@@ -47,28 +52,30 @@ type AuthContext struct {
 // how to handle unauthenticated requests.
 //
 // Parameters:
+//   - ctx: The Go context for cancellation and timeout control
 //   - call: The RPC call message containing authentication data
 //   - clientAddr: The remote address of the client connection
 //   - procedure: Name of the procedure (for logging purposes)
 //
 // Returns:
 //   - AuthContext with extracted authentication information
-func extractAuthContext(call *rpc.RPCCallMessage, clientAddr string, procedure string) *AuthContext {
-	ctx := &AuthContext{
+func extractAuthContext(ctx context.Context, call *rpc.RPCCallMessage, clientAddr string, procedure string) *AuthContext {
+	authCtx := &AuthContext{
+		Context:    ctx,
 		ClientAddr: clientAddr,
 		AuthFlavor: call.GetAuthFlavor(),
 	}
 
 	// Only attempt to parse Unix credentials if AUTH_UNIX is specified
-	if ctx.AuthFlavor != rpc.AuthUnix {
-		return ctx
+	if authCtx.AuthFlavor != rpc.AuthUnix {
+		return authCtx
 	}
 
 	// Get auth body
 	authBody := call.GetAuthBody()
 	if len(authBody) == 0 {
 		logger.Warn("%s: AUTH_UNIX specified but auth body is empty", procedure)
-		return ctx
+		return authCtx
 	}
 
 	// Parse Unix auth credentials
@@ -77,18 +84,18 @@ func extractAuthContext(call *rpc.RPCCallMessage, clientAddr string, procedure s
 		// Log the parsing failure - this is unexpected and may indicate
 		// a protocol issue or malicious client
 		logger.Warn("%s: Failed to parse AUTH_UNIX credentials: %v", procedure, err)
-		return ctx
+		return authCtx
 	}
 
 	// Log successful auth parsing at debug level
 	logger.Debug("%s: Parsed Unix auth: uid=%d gid=%d ngids=%d",
 		procedure, unixAuth.UID, unixAuth.GID, len(unixAuth.GIDs))
 
-	ctx.UID = &unixAuth.UID
-	ctx.GID = &unixAuth.GID
-	ctx.GIDs = unixAuth.GIDs
+	authCtx.UID = &unixAuth.UID
+	authCtx.GID = &unixAuth.GID
+	authCtx.GIDs = unixAuth.GIDs
 
-	return ctx
+	return authCtx
 }
 
 // ============================================================================
@@ -278,6 +285,7 @@ func initNFSDispatchTable() {
 
 func handleNFSNull(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.NullContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -300,6 +308,7 @@ func handleNFSNull(handler NFSHandler, repo metadata.Repository, content content
 
 func handleNFSGetAttr(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.GetAttrContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 	}
@@ -319,6 +328,7 @@ func handleNFSGetAttr(handler NFSHandler, repo metadata.Repository, content cont
 
 func handleNFSSetAttr(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.SetAttrContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -341,6 +351,7 @@ func handleNFSSetAttr(handler NFSHandler, repo metadata.Repository, content cont
 
 func handleNFSLookup(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.LookupContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -363,6 +374,7 @@ func handleNFSLookup(handler NFSHandler, repo metadata.Repository, content conte
 
 func handleNFSAccess(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.AccessContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -385,6 +397,7 @@ func handleNFSAccess(handler NFSHandler, repo metadata.Repository, content conte
 
 func handleNFSReadLink(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.ReadLinkContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -407,6 +420,7 @@ func handleNFSReadLink(handler NFSHandler, repo metadata.Repository, content con
 
 func handleNFSRead(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.ReadContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -429,6 +443,7 @@ func handleNFSRead(handler NFSHandler, repo metadata.Repository, content content
 
 func handleNFSWrite(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.WriteContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -451,6 +466,7 @@ func handleNFSWrite(handler NFSHandler, repo metadata.Repository, content conten
 
 func handleNFSCreate(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.CreateContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -472,6 +488,7 @@ func handleNFSCreate(handler NFSHandler, repo metadata.Repository, content conte
 
 func handleNFSMkdir(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.MkdirContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -494,6 +511,7 @@ func handleNFSMkdir(handler NFSHandler, repo metadata.Repository, content conten
 
 func handleNFSSymlink(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.SymlinkContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -516,6 +534,7 @@ func handleNFSSymlink(handler NFSHandler, repo metadata.Repository, content cont
 
 func handleNFSMknod(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.MknodContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 	}
@@ -535,6 +554,7 @@ func handleNFSMknod(handler NFSHandler, repo metadata.Repository, content conten
 
 func handleNFSRemove(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.RemoveContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -557,6 +577,7 @@ func handleNFSRemove(handler NFSHandler, repo metadata.Repository, content conte
 
 func handleNFSRmdir(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.RmdirContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -579,6 +600,7 @@ func handleNFSRmdir(handler NFSHandler, repo metadata.Repository, content conten
 
 func handleNFSRename(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.RenameContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -601,6 +623,7 @@ func handleNFSRename(handler NFSHandler, repo metadata.Repository, content conte
 
 func handleNFSLink(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.LinkContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -623,6 +646,7 @@ func handleNFSLink(handler NFSHandler, repo metadata.Repository, content content
 
 func handleNFSReadDir(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.ReadDirContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -645,6 +669,7 @@ func handleNFSReadDir(handler NFSHandler, repo metadata.Repository, content cont
 
 func handleNFSReadDirPlus(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.ReadDirPlusContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -667,6 +692,7 @@ func handleNFSReadDirPlus(handler NFSHandler, repo metadata.Repository, content 
 
 func handleNFSFsStat(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.FsStatContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 	}
@@ -686,6 +712,7 @@ func handleNFSFsStat(handler NFSHandler, repo metadata.Repository, content conte
 
 func handleNFSFsInfo(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.FsInfoContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 	}
@@ -705,6 +732,7 @@ func handleNFSFsInfo(handler NFSHandler, repo metadata.Repository, content conte
 
 func handleNFSPathConf(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.PathConfContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 	}
@@ -724,6 +752,7 @@ func handleNFSPathConf(handler NFSHandler, repo metadata.Repository, content con
 
 func handleNFSCommit(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &nfs.CommitContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UID:        authCtx.UID,
@@ -803,6 +832,7 @@ func handleMountMnt(handler MountHandler, repo metadata.Repository, data []byte,
 	}
 
 	ctx := &mount.MountContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 		AuthFlavor: authCtx.AuthFlavor,
 		UnixAuth:   unixAuth,
@@ -823,6 +853,7 @@ func handleMountMnt(handler MountHandler, repo metadata.Repository, data []byte,
 
 func handleMountDump(handler MountHandler, repo metadata.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &mount.DumpContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 	}
 
@@ -841,6 +872,7 @@ func handleMountDump(handler MountHandler, repo metadata.Repository, data []byte
 
 func handleMountUmnt(handler MountHandler, repo metadata.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &mount.UmountContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 	}
 
@@ -859,6 +891,7 @@ func handleMountUmnt(handler MountHandler, repo metadata.Repository, data []byte
 
 func handleMountUmntAll(handler MountHandler, repo metadata.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
 	ctx := &mount.UmountAllContext{
+		Context:    authCtx.Context,
 		ClientAddr: authCtx.ClientAddr,
 	}
 
@@ -888,3 +921,4 @@ func handleMountExport(handler MountHandler, repo metadata.Repository, data []by
 		},
 	)
 }
+

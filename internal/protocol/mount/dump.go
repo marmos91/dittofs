@@ -2,6 +2,7 @@ package mount
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -53,6 +54,7 @@ type DumpEntry struct {
 // DumpContext contains the context information needed to process a dump request.
 // This includes client identification for access control.
 type DumpContext struct {
+	Context context.Context
 	// ClientAddr is the network address of the client making the request
 	// Format: "IP:port" (e.g., "192.168.1.100:1234")
 	ClientAddr string

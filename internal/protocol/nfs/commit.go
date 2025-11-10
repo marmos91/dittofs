@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -85,6 +86,8 @@ type CommitResponse struct {
 // CommitContext contains the context information needed to process a COMMIT request.
 // This includes client identification and authentication details.
 type CommitContext struct {
+	Context context.Context
+
 	// ClientAddr is the network address of the client making the request.
 	// Format: "IP:port" (e.g., "192.168.1.100:1234")
 	ClientAddr string
