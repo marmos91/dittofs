@@ -416,8 +416,13 @@ func (h *DefaultNFSHandler) SetAttr(
 
 	logger.Info("SETATTR successful: handle=%x client=%s", req.Handle, clientIP)
 
-	logger.Debug("SETATTR details: old_size=%d new_size=%d old_mode=%o new_mode=%o",
-		currentAttr.Size, updatedAttr.Size, currentAttr.Mode, updatedAttr.Mode)
+	if updatedAttr != nil {
+		logger.Debug("SETATTR details: old_size=%d new_size=%d old_mode=%o new_mode=%o",
+			currentAttr.Size, updatedAttr.Size, currentAttr.Mode, updatedAttr.Mode)
+	} else {
+		logger.Debug("SETATTR details: old_size=%d new_size=unknown old_mode=%o new_mode=unknown",
+			currentAttr.Size, currentAttr.Mode)
+	}
 
 	return &SetAttrResponse{
 		Status:     NFS3OK,
