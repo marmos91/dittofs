@@ -7,6 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // ============================================================================
@@ -50,29 +52,29 @@ type LinkRequest struct {
 type LinkResponse struct {
 	// Status indicates the result of the link operation.
 	// Common values:
-	//   - NFS3OK (0): Success
-	//   - NFS3ErrNoEnt (2): Source file or target directory not found
+	//   - types.NFS3OK (0): Success
+	//   - types.NFS3ErrNoEnt (2): Source file or target directory not found
 	//   - NFS3ErrExist (17): Name already exists in target directory
-	//   - NFS3ErrNotDir (20): DirHandle is not a directory
-	//   - NFS3ErrIsDir (21): Attempted to link a directory
+	//   - types.NFS3ErrNotDir (20): DirHandle is not a directory
+	//   - types.NFS3ErrIsDir (21): Attempted to link a directory
 	//   - NFS3ErrInval (22): Invalid argument
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3ErrIO (5): I/O error
 	//   - NFS3ErrStale (70): Stale file handle
-	//   - NFS3ErrBadHandle (10001): Invalid file handle
+	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
 	Status uint32
 
 	// FileAttr contains post-operation attributes of the linked file.
-	// Only present when Status == NFS3OK or for cache consistency on errors.
+	// Only present when Status == types.NFS3OK or for cache consistency on errors.
 	// The nlink count will be incremented to reflect the new hard link.
-	FileAttr *FileAttr
+	FileAttr *types.NFSFileAttr
 
 	// DirWccBefore contains pre-operation attributes of the target directory.
 	// Used for weak cache consistency to help clients detect changes.
-	DirWccBefore *WccAttr
+	DirWccBefore *types.WccAttr
 
 	// DirWccAfter contains post-operation attributes of the target directory.
 	// Used for weak cache consistency. Present for both success and failure.
-	DirWccAfter *FileAttr
+	DirWccAfter *types.NFSFileAttr
 }
 
 // LinkContext contains the context information needed to process a LINK request.
@@ -158,13 +160,13 @@ type LinkContext struct {
 //
 // Protocol-level errors return appropriate NFS status codes.
 // Repository errors are mapped to NFS status codes:
-//   - Source not found → NFS3ErrNoEnt
-//   - Target directory not found → NFS3ErrNoEnt
+//   - Source not found → types.NFS3ErrNoEnt
+//   - Target directory not found → types.NFS3ErrNoEnt
 //   - Name already exists → NFS3ErrExist
-//   - Source is directory → NFS3ErrIsDir
-//   - Target not directory → NFS3ErrNotDir
+//   - Source is directory → types.NFS3ErrIsDir
+//   - Target not directory → types.NFS3ErrNotDir
 //   - Access denied → NFS3ErrAcces
-//   - I/O error → NFS3ErrIO
+//   - I/O error → types.NFS3ErrIO
 //
 // **Security Considerations:**
 //
@@ -203,7 +205,7 @@ type LinkContext struct {
 //	if err != nil {
 //	    // Internal server error
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    // Hard link created successfully
 //	}
 func (h *DefaultNFSHandler) Link(
@@ -212,7 +214,7 @@ func (h *DefaultNFSHandler) Link(
 	ctx *LinkContext,
 ) (*LinkResponse, error) {
 	// Extract client IP for logging
-	clientIP := extractClientIP(ctx.ClientAddr)
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
 	logger.Info("LINK: file=%x to '%s' in dir=%x client=%s auth=%d",
 		req.FileHandle, req.Name, req.DirHandle, clientIP, ctx.AuthFlavor)
@@ -236,14 +238,14 @@ func (h *DefaultNFSHandler) Link(
 	if err != nil {
 		logger.Warn("LINK failed: source file not found: file=%x client=%s error=%v",
 			req.FileHandle, clientIP, err)
-		return &LinkResponse{Status: NFS3ErrNoEnt}, nil
+		return &LinkResponse{Status: types.NFS3ErrNoEnt}, nil
 	}
 
 	// Hard links to directories are not allowed (prevents filesystem cycles)
 	if fileAttr.Type == metadata.FileTypeDirectory {
 		logger.Warn("LINK failed: cannot link directory: file=%x client=%s",
 			req.FileHandle, clientIP)
-		return &LinkResponse{Status: NFS3ErrIsDir}, nil
+		return &LinkResponse{Status: types.NFS3ErrIsDir}, nil
 	}
 
 	// ========================================================================
@@ -255,11 +257,11 @@ func (h *DefaultNFSHandler) Link(
 	if err != nil {
 		logger.Warn("LINK failed: target directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &LinkResponse{Status: NFS3ErrNoEnt}, nil
+		return &LinkResponse{Status: types.NFS3ErrNoEnt}, nil
 	}
 
 	// Capture pre-operation directory attributes for WCC
-	dirWccBefore := captureWccAttr(dirAttr)
+	dirWccBefore := xdr.CaptureWccAttr(dirAttr)
 
 	// Verify target is a directory
 	if dirAttr.Type != metadata.FileTypeDirectory {
@@ -267,11 +269,11 @@ func (h *DefaultNFSHandler) Link(
 			req.DirHandle, dirAttr.Type, clientIP)
 
 		// Get current directory state for WCC
-		dirID := extractFileID(dirHandle)
-		dirWccAfter := MetadataToNFSAttr(dirAttr, dirID)
+		dirID := xdr.ExtractFileID(dirHandle)
+		dirWccAfter := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &LinkResponse{
-			Status:       NFS3ErrNotDir,
+			Status:       types.NFS3ErrNotDir,
 			DirWccBefore: dirWccBefore,
 			DirWccAfter:  dirWccAfter,
 		}, nil
@@ -288,11 +290,11 @@ func (h *DefaultNFSHandler) Link(
 
 		// Get updated directory attributes for WCC
 		dirAttr, _ = repository.GetFile(dirHandle)
-		dirID := extractFileID(dirHandle)
-		dirWccAfter := MetadataToNFSAttr(dirAttr, dirID)
+		dirID := xdr.ExtractFileID(dirHandle)
+		dirWccAfter := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &LinkResponse{
-			Status:       NFS3ErrExist,
+			Status:       types.NFS3ErrExist,
 			DirWccBefore: dirWccBefore,
 			DirWccAfter:  dirWccAfter,
 		}, nil
@@ -323,11 +325,11 @@ func (h *DefaultNFSHandler) Link(
 
 		// Get updated directory attributes for WCC
 		dirAttr, _ = repository.GetFile(dirHandle)
-		dirID := extractFileID(dirHandle)
-		dirWccAfter := MetadataToNFSAttr(dirAttr, dirID)
+		dirID := xdr.ExtractFileID(dirHandle)
+		dirWccAfter := xdr.MetadataToNFS(dirAttr, dirID)
 
 		// Map repository errors to NFS status codes
-		status := mapRepositoryErrorToNFSStatus(err, clientIP, "link")
+		status := xdr.MapRepositoryErrorToNFSStatus(err, clientIP, "link")
 
 		return &LinkResponse{
 			Status:       status,
@@ -348,19 +350,19 @@ func (h *DefaultNFSHandler) Link(
 		// Continue with cached attributes
 	}
 
-	fileID := extractFileID(fileHandle)
-	nfsFileAttr := MetadataToNFSAttr(fileAttr, fileID)
+	fileID := xdr.ExtractFileID(fileHandle)
+	nfsFileAttr := xdr.MetadataToNFS(fileAttr, fileID)
 
 	// Get updated directory attributes
 	dirAttr, _ = repository.GetFile(dirHandle)
-	dirID := extractFileID(dirHandle)
-	nfsDirAttr := MetadataToNFSAttr(dirAttr, dirID)
+	dirID := xdr.ExtractFileID(dirHandle)
+	nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 	logger.Info("LINK successful: name='%s' file=%x nlink=%d client=%s",
 		req.Name, req.FileHandle, nfsFileAttr.Nlink, clientIP)
 
 	return &LinkResponse{
-		Status:       NFS3OK,
+		Status:       types.NFS3OK,
 		FileAttr:     nfsFileAttr,
 		DirWccBefore: dirWccBefore,
 		DirWccAfter:  nfsDirAttr,
@@ -396,14 +398,14 @@ func validateLinkRequest(req *LinkRequest) *linkValidationError {
 	if len(req.FileHandle) == 0 {
 		return &linkValidationError{
 			message:   "empty source file handle",
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.FileHandle) > 64 {
 		return &linkValidationError{
 			message:   fmt.Sprintf("source file handle too long: %d bytes (max 64)", len(req.FileHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -411,14 +413,14 @@ func validateLinkRequest(req *LinkRequest) *linkValidationError {
 	if len(req.DirHandle) == 0 {
 		return &linkValidationError{
 			message:   "empty directory handle",
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.DirHandle) > 64 {
 		return &linkValidationError{
 			message:   fmt.Sprintf("directory handle too long: %d bytes (max 64)", len(req.DirHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -426,14 +428,14 @@ func validateLinkRequest(req *LinkRequest) *linkValidationError {
 	if req.Name == "" {
 		return &linkValidationError{
 			message:   "empty link name",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
 	if len(req.Name) > 255 {
 		return &linkValidationError{
 			message:   fmt.Sprintf("link name too long: %d bytes (max 255)", len(req.Name)),
-			nfsStatus: NFS3ErrNameTooLong,
+			nfsStatus: types.NFS3ErrNameTooLong,
 		}
 	}
 
@@ -441,7 +443,7 @@ func validateLinkRequest(req *LinkRequest) *linkValidationError {
 	if bytes.ContainsAny([]byte(req.Name), "/\x00") {
 		return &linkValidationError{
 			message:   "link name contains invalid characters (null or path separator)",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -449,7 +451,7 @@ func validateLinkRequest(req *LinkRequest) *linkValidationError {
 	if req.Name == "." || req.Name == ".." {
 		return &linkValidationError{
 			message:   fmt.Sprintf("link name cannot be '%s'", req.Name),
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -503,7 +505,7 @@ func DecodeLinkRequest(data []byte) (*LinkRequest, error) {
 	// Decode source file handle
 	// ========================================================================
 
-	fileHandle, err := decodeOpaque(reader)
+	fileHandle, err := xdr.DecodeOpaque(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode file handle: %w", err)
 	}
@@ -512,7 +514,7 @@ func DecodeLinkRequest(data []byte) (*LinkRequest, error) {
 	// Decode target directory handle
 	// ========================================================================
 
-	dirHandle, err := decodeOpaque(reader)
+	dirHandle, err := xdr.DecodeOpaque(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode directory handle: %w", err)
 	}
@@ -521,7 +523,7 @@ func DecodeLinkRequest(data []byte) (*LinkRequest, error) {
 	// Decode link name
 	// ========================================================================
 
-	name, err := decodeString(reader)
+	name, err := xdr.DecodeString(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode name: %w", err)
 	}
@@ -558,7 +560,7 @@ func DecodeLinkRequest(data []byte) (*LinkRequest, error) {
 // Example:
 //
 //	resp := &LinkResponse{
-//	    Status:       NFS3OK,
+//	    Status:       types.NFS3OK,
 //	    FileAttr:     fileAttr,
 //	    DirWccBefore: wccBefore,
 //	    DirWccAfter:  wccAfter,
@@ -586,7 +588,7 @@ func (resp *LinkResponse) Encode() ([]byte, error) {
 	// Present for both success and failure cases to help clients
 	// maintain cache consistency
 
-	if err := encodeOptionalFileAttr(&buf, resp.FileAttr); err != nil {
+	if err := xdr.EncodeOptionalFileAttr(&buf, resp.FileAttr); err != nil {
 		return nil, fmt.Errorf("encode file attributes: %w", err)
 	}
 
@@ -596,7 +598,7 @@ func (resp *LinkResponse) Encode() ([]byte, error) {
 	// Weak cache consistency data helps clients detect if the directory
 	// changed during the operation
 
-	if err := encodeWccData(&buf, resp.DirWccBefore, resp.DirWccAfter); err != nil {
+	if err := xdr.EncodeWccData(&buf, resp.DirWccBefore, resp.DirWccAfter); err != nil {
 		return nil, fmt.Errorf("encode directory wcc data: %w", err)
 	}
 

@@ -10,7 +10,7 @@ import (
 // Error Mapping - Repository Errors → NFS Status Codes
 // ============================================================================
 
-// mapRepositoryErrorToNFSStatus maps repository errors to NFS status codes.
+// MapRepositoryErrorToNFSStatus maps repository errors to NFS status codes.
 //
 // Per RFC 1813 Section 2.2 (nfsstat3):
 // NFS procedures return status codes indicating success or specific failure
@@ -18,13 +18,13 @@ import (
 // appropriate NFS status codes for client consumption.
 //
 // Error Mapping:
-//   - ExportErrNotFound → NFS3ErrNoEnt (ENOENT: No such file or directory)
+//   - ExportErrNotFound → types.NFS3ErrNoEnt (ENOENT: No such file or directory)
 //   - ExportErrAccessDenied → NFS3ErrAcces (EACCES: Permission denied)
-//   - ExportErrServerFault → NFS3ErrIO or more specific (depends on message)
-//   - "parent is not a directory" → NFS3ErrNotDir (ENOTDIR)
-//   - "cannot remove directory with REMOVE" → NFS3ErrIsDir (EISDIR)
-//   - other → NFS3ErrIO (EIO: I/O error)
-//   - Unknown errors → NFS3ErrIO (generic I/O error)
+//   - ExportErrServerFault → types.NFS3ErrIO or more specific (depends on message)
+//   - "parent is not a directory" → types.NFS3ErrNotDir (ENOTDIR)
+//   - "cannot remove directory with REMOVE" → types.NFS3ErrIsDir (EISDIR)
+//   - other → types.NFS3ErrIO (EIO: I/O error)
+//   - Unknown errors → types.NFS3ErrIO (generic I/O error)
 //
 // This function also handles audit logging at appropriate levels:
 //   - Client errors (NotFound, AccessDenied): logged as warnings

@@ -7,6 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // ============================================================================
@@ -64,13 +66,13 @@ type ReadDirPlusRequest struct {
 type ReadDirPlusResponse struct {
 	// Status indicates the result of the readdirplus operation.
 	// Common values:
-	//   - NFS3OK (0): Success
-	//   - NFS3ErrNoEnt (2): Directory not found
-	//   - NFS3ErrNotDir (20): Handle is not a directory
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3OK (0): Success
+	//   - types.NFS3ErrNoEnt (2): Directory not found
+	//   - types.NFS3ErrNotDir (20): Handle is not a directory
+	//   - types.NFS3ErrIO (5): I/O error
 	//   - NFS3ErrAcces (13): Permission denied
 	//   - NFS3ErrStale (70): Stale directory handle
-	//   - NFS3ErrBadHandle (10001): Invalid directory handle
+	//   - types.NFS3ErrBadHandle (10001): Invalid directory handle
 	//   - NFS3ErrBadCookie (10003): Invalid cookie or cookieverf
 	//   - NFS3ErrTooSmall (10005): MaxCount too small for entry
 	Status uint32
@@ -78,7 +80,7 @@ type ReadDirPlusResponse struct {
 	// DirAttr contains post-operation attributes of the directory.
 	// Optional, may be nil.
 	// Helps clients maintain cache consistency for the directory itself.
-	DirAttr *FileAttr
+	DirAttr *types.NFSFileAttr
 
 	// CookieVerf is the directory verifier.
 	// Must be included in subsequent requests to detect modifications.
@@ -118,7 +120,7 @@ type DirPlusEntry struct {
 	// Attr contains the file attributes for this entry.
 	// May be nil if attributes could not be retrieved.
 	// Includes type, permissions, size, timestamps, etc.
-	Attr *FileAttr
+	Attr *types.NFSFileAttr
 
 	// FileHandle is the file handle for this entry.
 	// May be nil if the handle could not be generated.
@@ -234,11 +236,11 @@ type ReadDirPlusContext struct {
 //
 // Protocol-level errors return appropriate NFS status codes.
 // Repository errors are mapped to NFS status codes:
-//   - Directory not found → NFS3ErrNoEnt
-//   - Not a directory → NFS3ErrNotDir
+//   - Directory not found → types.NFS3ErrNoEnt
+//   - Not a directory → types.NFS3ErrNotDir
 //   - Invalid cookie → NFS3ErrBadCookie
 //   - Permission denied → NFS3ErrAcces
-//   - I/O error → NFS3ErrIO
+//   - I/O error → types.NFS3ErrIO
 //
 // **Performance Considerations:**
 //
@@ -289,7 +291,7 @@ type ReadDirPlusContext struct {
 //	if err != nil {
 //	    // Internal server error
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    // Process resp.Entries
 //	    for _, entry := range resp.Entries {
 //	        // Use entry.Name, entry.Attr, entry.FileHandle
@@ -304,7 +306,7 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	ctx *ReadDirPlusContext,
 ) (*ReadDirPlusResponse, error) {
 	// Extract client IP for logging
-	clientIP := extractClientIP(ctx.ClientAddr)
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
 	logger.Info("READDIRPLUS: dir=%x cookie=%d dircount=%d maxcount=%d client=%s auth=%d",
 		req.DirHandle, req.Cookie, req.DirCount, req.MaxCount, clientIP, ctx.AuthFlavor)
@@ -328,7 +330,7 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	if err != nil {
 		logger.Warn("READDIRPLUS failed: directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &ReadDirPlusResponse{Status: NFS3ErrNoEnt}, nil
+		return &ReadDirPlusResponse{Status: types.NFS3ErrNoEnt}, nil
 	}
 
 	// Verify handle is actually a directory
@@ -337,11 +339,11 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 			req.DirHandle, dirAttr.Type, clientIP)
 
 		// Include directory attributes even on error for cache consistency
-		dirID := extractFileID(dirHandle)
-		nfsDirAttr := MetadataToNFSAttr(dirAttr, dirID)
+		dirID := xdr.ExtractFileID(dirHandle)
+		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &ReadDirPlusResponse{
-			Status:  NFS3ErrNotDir,
+			Status:  types.NFS3ErrNotDir,
 			DirAttr: nfsDirAttr,
 		}, nil
 	}
@@ -358,11 +360,11 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 		logger.Error("READDIRPLUS failed: error retrieving children: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
 
-		dirID := extractFileID(dirHandle)
-		nfsDirAttr := MetadataToNFSAttr(dirAttr, dirID)
+		dirID := xdr.ExtractFileID(dirHandle)
+		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &ReadDirPlusResponse{
-			Status:  NFS3ErrIO,
+			Status:  types.NFS3ErrIO,
 			DirAttr: nfsDirAttr,
 		}, nil
 	}
@@ -372,8 +374,8 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	// ========================================================================
 
 	// Generate directory file ID for attributes
-	dirID := extractFileID(dirHandle)
-	nfsDirAttr := MetadataToNFSAttr(dirAttr, dirID)
+	dirID := xdr.ExtractFileID(dirHandle)
+	nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 	// Build entries list with special entries and children
 	entries := make([]*DirPlusEntry, 0)
@@ -410,11 +412,11 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 		ph, err := repository.GetParent(dirHandle)
 		if err == nil {
 			parentHandle = ph
-			parentFileid = extractFileID(ph)
+			parentFileid = xdr.ExtractFileID(ph)
 
 			// Get parent attributes
 			if pAttr, err := repository.GetFile(ph); err == nil {
-				parentAttr = MetadataToNFSAttr(pAttr, parentFileid)
+				parentAttr = xdr.MetadataToNFS(pAttr, parentFileid)
 			} else {
 				logger.Warn("READDIRPLUS: parent handle exists but attributes missing: parent=%x error=%v",
 					ph, err)
@@ -448,12 +450,12 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 		}
 
 		// Generate file ID for this entry
-		childID := extractFileID(childHandle)
+		childID := xdr.ExtractFileID(childHandle)
 
 		// Get attributes for this entry
-		var entryAttr *FileAttr
+		var entryAttr *types.NFSFileAttr
 		if attr, err := repository.GetFile(childHandle); err == nil {
-			entryAttr = MetadataToNFSAttr(attr, childID)
+			entryAttr = xdr.MetadataToNFS(attr, childID)
 		} else {
 			logger.Warn("READDIRPLUS: child handle exists but attributes missing: name='%s' handle=%x error=%v",
 				name, childHandle, err)
@@ -486,7 +488,7 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 		dirID, len(children), req.Cookie, cookie-1)
 
 	return &ReadDirPlusResponse{
-		Status:     NFS3OK,
+		Status:     types.NFS3OK,
 		DirAttr:    nfsDirAttr,
 		CookieVerf: 0, // We don't implement cookie verification yet
 		Entries:    entries,
@@ -525,7 +527,7 @@ func validateReadDirPlusRequest(req *ReadDirPlusRequest) *readDirPlusValidationE
 	if len(req.DirHandle) == 0 {
 		return &readDirPlusValidationError{
 			message:   "empty directory handle",
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -533,7 +535,7 @@ func validateReadDirPlusRequest(req *ReadDirPlusRequest) *readDirPlusValidationE
 	if len(req.DirHandle) > 64 {
 		return &readDirPlusValidationError{
 			message:   fmt.Sprintf("directory handle too long: %d bytes (max 64)", len(req.DirHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -541,7 +543,7 @@ func validateReadDirPlusRequest(req *ReadDirPlusRequest) *readDirPlusValidationE
 	if len(req.DirHandle) < 8 {
 		return &readDirPlusValidationError{
 			message:   fmt.Sprintf("directory handle too short: %d bytes (min 8)", len(req.DirHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -549,7 +551,7 @@ func validateReadDirPlusRequest(req *ReadDirPlusRequest) *readDirPlusValidationE
 	if req.DirCount == 0 {
 		return &readDirPlusValidationError{
 			message:   "dircount cannot be zero",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -557,14 +559,14 @@ func validateReadDirPlusRequest(req *ReadDirPlusRequest) *readDirPlusValidationE
 	if req.MaxCount == 0 {
 		return &readDirPlusValidationError{
 			message:   "maxcount cannot be zero",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
 	if req.MaxCount < req.DirCount {
 		return &readDirPlusValidationError{
 			message:   fmt.Sprintf("maxcount (%d) must be >= dircount (%d)", req.MaxCount, req.DirCount),
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -573,7 +575,7 @@ func validateReadDirPlusRequest(req *ReadDirPlusRequest) *readDirPlusValidationE
 	if req.MaxCount > maxReasonableSize {
 		return &readDirPlusValidationError{
 			message:   fmt.Sprintf("maxcount too large: %d bytes (max %d)", req.MaxCount, maxReasonableSize),
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -713,7 +715,7 @@ func DecodeReadDirPlusRequest(data []byte) (*ReadDirPlusRequest, error) {
 // The encoding follows RFC 1813 Section 3.3.17 specifications:
 //  1. Status code (4 bytes, big-endian uint32)
 //  2. Post-op directory attributes (present flag + attributes if present)
-//  3. If status == NFS3OK:
+//  3. If status == types.NFS3OK:
 //     a. Cookie verifier (8 bytes)
 //     b. Entry list:
 //     - For each entry:
@@ -725,7 +727,7 @@ func DecodeReadDirPlusRequest(data []byte) (*ReadDirPlusRequest, error) {
 //     * name_handle (present flag + handle if present)
 //     - End marker: value_follows flag (0)
 //     c. EOF flag (4 bytes, 0 or 1)
-//  4. If status != NFS3OK:
+//  4. If status != types.NFS3OK:
 //     a. No additional data beyond directory attributes
 //
 // XDR encoding requires all data to be in big-endian format and aligned
@@ -738,7 +740,7 @@ func DecodeReadDirPlusRequest(data []byte) (*ReadDirPlusRequest, error) {
 // Example:
 //
 //	resp := &ReadDirPlusResponse{
-//	    Status:     NFS3OK,
+//	    Status:     types.NFS3OK,
 //	    DirAttr:    dirAttr,
 //	    CookieVerf: 0,
 //	    Entries:    entries,
@@ -765,7 +767,7 @@ func (resp *ReadDirPlusResponse) Encode() ([]byte, error) {
 	// Write post-op directory attributes (both success and failure cases)
 	// ========================================================================
 
-	if err := encodeOptionalFileAttr(&buf, resp.DirAttr); err != nil {
+	if err := xdr.EncodeOptionalFileAttr(&buf, resp.DirAttr); err != nil {
 		return nil, fmt.Errorf("failed to encode directory attributes: %w", err)
 	}
 
@@ -773,7 +775,7 @@ func (resp *ReadDirPlusResponse) Encode() ([]byte, error) {
 	// Error case: Return early (no entries)
 	// ========================================================================
 
-	if resp.Status != NFS3OK {
+	if resp.Status != types.NFS3OK {
 		logger.Debug("Encoding READDIRPLUS error response: status=%d", resp.Status)
 		return buf.Bytes(), nil
 	}
@@ -825,12 +827,12 @@ func (resp *ReadDirPlusResponse) Encode() ([]byte, error) {
 		}
 
 		// Write name_attributes (post-op attributes - optional)
-		if err := encodeOptionalFileAttr(&buf, entry.Attr); err != nil {
+		if err := xdr.EncodeOptionalFileAttr(&buf, entry.Attr); err != nil {
 			return nil, fmt.Errorf("failed to encode attributes for entry '%s': %w", entry.Name, err)
 		}
 
 		// Write name_handle (post-op file handle - optional)
-		if err := encodeOptionalOpaque(&buf, entry.FileHandle); err != nil {
+		if err := xdr.EncodeOptionalOpaque(&buf, entry.FileHandle); err != nil {
 			return nil, fmt.Errorf("failed to encode handle for entry '%s': %w", entry.Name, err)
 		}
 	}

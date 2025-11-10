@@ -138,7 +138,7 @@ const (
 )
 
 // File type constants as defined in RFC 1813 Section 2.5.5.
-// These values are used in FileAttr.Type to indicate the type of filesystem object.
+// These values are used in metadata.FileAttr.Type to indicate the type of filesystem object.
 const (
 	// FileTypeRegular indicates a regular file
 	FileTypeRegular = 1

@@ -48,21 +48,21 @@ type AccessRequest struct {
 type AccessResponse struct {
 	// Status indicates the result of the access check.
 	// Common values:
-	//   - NFS3OK (0): Success - check Access field for granted permissions
-	//   - NFS3ErrNoEnt (2): File handle not found
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3OK (0): Success - check Access field for granted permissions
+	//   - types.NFS3ErrNoEnt (2): File handle not found
+	//   - types.NFS3ErrIO (5): I/O error
 	//   - NFS3ErrAcces (13): Permission denied (rare - usually returns with Access=0)
 	//   - NFS3ErrStale (70): Stale file handle
-	//   - NFS3ErrBadHandle (10001): Invalid file handle
+	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
 	Status uint32
 
 	// Attr contains the post-operation attributes for the file handle.
 	// This is optional and may be nil.
 	// Including attributes helps clients maintain cache consistency.
-	Attr *types.FileAttr
+	Attr *types.NFSFileAttr
 
 	// Access is a bitmap of granted access permissions.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	// This is a subset (or equal to) the requested permissions.
 	// A bit set to 1 means that permission is granted.
 	// A bit set to 0 means that permission is denied or unknown.
@@ -156,9 +156,9 @@ type AccessContext struct {
 // with Access=0 (no permissions granted) when access would be denied.
 //
 // Repository errors are mapped to NFS status codes:
-//   - File not found → NFS3ErrNoEnt
-//   - Permission denied → NFS3OK with Access=0 (or NFS3ErrAcces)
-//   - I/O error → NFS3ErrIO
+//   - File not found → types.NFS3ErrNoEnt
+//   - Permission denied → types.NFS3OK with Access=0 (or NFS3ErrAcces)
+//   - I/O error → types.NFS3ErrIO
 //
 // **Security Considerations:**
 //
@@ -196,7 +196,7 @@ type AccessContext struct {
 //	if err != nil {
 //	    // Internal server error
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    if resp.Access & AccessRead != 0 {
 //	        // Client has read permission
 //	    }
@@ -264,7 +264,7 @@ func (h *DefaultNFSHandler) Access(
 
 	// Generate file ID from handle for NFS attributes
 	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFSAttr(attr, fileid)
+	nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 	logger.Info("ACCESS successful: handle=%x granted=0x%x requested=0x%x client=%s",
 		req.Handle, grantedAccess, req.Access, clientIP)
@@ -438,10 +438,10 @@ func DecodeAccessRequest(data []byte) (*AccessRequest, error) {
 //
 // The encoding follows RFC 1813 Section 3.3.4 specifications:
 //  1. Status code (4 bytes, big-endian uint32)
-//  2. If status == NFS3OK:
+//  2. If status == types.NFS3OK:
 //     a. Post-op attributes (present flag + attributes if present)
 //     b. Access bitmap (4 bytes, granted permissions)
-//  3. If status != NFS3OK:
+//  3. If status != types.NFS3OK:
 //     a. Post-op attributes (present flag + attributes if present)
 //     b. No access bitmap
 //
@@ -455,7 +455,7 @@ func DecodeAccessRequest(data []byte) (*AccessRequest, error) {
 // Example:
 //
 //	resp := &AccessResponse{
-//	    Status: NFS3OK,
+//	    Status: types.NFS3OK,
 //	    Attr:   fileAttr,
 //	    Access: AccessRead | AccessLookup,
 //	}

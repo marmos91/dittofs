@@ -21,9 +21,9 @@ type CommitRequest struct {
 // CommitResponse represents a COMMIT response
 type CommitResponse struct {
 	Status        uint32
-	AttrBefore    *types.WccAttr  // Pre-op attributes (optional)
-	AttrAfter     *types.FileAttr // Post-op attributes (optional)
-	WriteVerifier uint64          // Write verifier (for detecting server reboots)
+	AttrBefore    *types.WccAttr     // Pre-op attributes (optional)
+	AttrAfter     *types.NFSFileAttr // Post-op attributes (optional)
+	WriteVerifier uint64             // Write verifier (for detecting server reboots)
 }
 
 // Commit commits cached data on the server to stable storage.
@@ -53,7 +53,7 @@ func (h *DefaultNFSHandler) Commit(repository metadata.Repository, req *CommitRe
 
 	// Generate file ID
 	fileid := binary.BigEndian.Uint64(req.Handle[:8])
-	nfsAttr := xdr.MetadataToNFSAttr(attr, fileid)
+	nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 	// In our simple implementation, we don't have write caching,
 	// so COMMIT is essentially a no-op that always succeeds.

@@ -58,21 +58,21 @@ type CreateRequest struct {
 type CreateResponse struct {
 	// Status indicates the result of the create operation.
 	// Common values:
-	//   - NFS3OK (0): Success
+	//   - types.NFS3OK (0): Success
 	//   - NFS3ErrExist (17): File exists (GUARDED/EXCLUSIVE)
-	//   - NFS3ErrNoEnt (2): Parent directory not found
-	//   - NFS3ErrNotDir (20): Parent handle is not a directory
+	//   - types.NFS3ErrNoEnt (2): Parent directory not found
+	//   - types.NFS3ErrNotDir (20): Parent handle is not a directory
 	//   - NFS3ErrInval (22): Invalid argument
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3ErrIO (5): I/O error
 	Status uint32
 
 	// FileHandle is the handle of the newly created file.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	FileHandle []byte
 
 	// Attr contains post-operation attributes of the created file.
-	// Only present when Status == NFS3OK.
-	Attr *types.FileAttr
+	// Only present when Status == types.NFS3OK.
+	Attr *types.NFSFileAttr
 
 	// DirBefore contains pre-operation attributes of the parent directory.
 	// Used for weak cache consistency.
@@ -80,7 +80,7 @@ type CreateResponse struct {
 
 	// DirAfter contains post-operation attributes of the parent directory.
 	// Used for weak cache consistency.
-	DirAfter *types.FileAttr
+	DirAfter *types.NFSFileAttr
 }
 
 // CreateContext contains the context information for processing a CREATE request.
@@ -149,9 +149,9 @@ type CreateContext struct {
 // Protocol-level errors return appropriate NFS status codes.
 // Repository errors are mapped to NFS status codes:
 //   - Access denied → NFS3ErrAcces
-//   - Not found → NFS3ErrNoEnt
+//   - Not found → types.NFS3ErrNoEnt
 //   - Already exists → NFS3ErrExist
-//   - I/O error → NFS3ErrIO
+//   - I/O error → types.NFS3ErrIO
 //
 // **Parameters:**
 //   - contentRepo: Content repository for file data operations
@@ -208,7 +208,7 @@ func (h *DefaultNFSHandler) Create(
 
 		// Get current parent state for WCC
 		dirID := xdr.ExtractFileID(parentHandle)
-		dirWccAfter := xdr.MetadataToNFSAttr(parentAttr, dirID)
+		dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
 		return &CreateResponse{
 			Status:    types.NFS3ErrNotDir,
@@ -241,7 +241,7 @@ func (h *DefaultNFSHandler) Create(
 			// Get current parent state for WCC
 			parentAttr, _ = metadataRepo.GetFile(parentHandle)
 			dirID := xdr.ExtractFileID(parentHandle)
-			dirWccAfter := xdr.MetadataToNFSAttr(parentAttr, dirID)
+			dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
 			return &CreateResponse{
 				Status:    types.NFS3ErrExist,
@@ -263,7 +263,7 @@ func (h *DefaultNFSHandler) Create(
 
 			parentAttr, _ = metadataRepo.GetFile(parentHandle)
 			dirID := xdr.ExtractFileID(parentHandle)
-			dirWccAfter := xdr.MetadataToNFSAttr(parentAttr, dirID)
+			dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
 			return &CreateResponse{
 				Status:    types.NFS3ErrExist,
@@ -292,7 +292,7 @@ func (h *DefaultNFSHandler) Create(
 
 		parentAttr, _ = metadataRepo.GetFile(parentHandle)
 		dirID := xdr.ExtractFileID(parentHandle)
-		dirWccAfter := xdr.MetadataToNFSAttr(parentAttr, dirID)
+		dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
 		return &CreateResponse{
 			Status:    types.NFS3ErrInval,
@@ -311,7 +311,7 @@ func (h *DefaultNFSHandler) Create(
 
 		parentAttr, _ = metadataRepo.GetFile(parentHandle)
 		dirID := xdr.ExtractFileID(parentHandle)
-		dirWccAfter := xdr.MetadataToNFSAttr(parentAttr, dirID)
+		dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
 		return &CreateResponse{
 			Status:    types.NFS3ErrIO,
@@ -326,12 +326,12 @@ func (h *DefaultNFSHandler) Create(
 
 	// Convert metadata to NFS attributes
 	fileID := xdr.ExtractFileID(fileHandle)
-	nfsFileAttr := xdr.MetadataToNFSAttr(fileAttr, fileID)
+	nfsFileAttr := xdr.MetadataToNFS(fileAttr, fileID)
 
 	// Get updated parent directory attributes
 	parentAttr, _ = metadataRepo.GetFile(parentHandle)
 	dirID := xdr.ExtractFileID(parentHandle)
-	nfsDirAttr := xdr.MetadataToNFSAttr(parentAttr, dirID)
+	nfsDirAttr := xdr.MetadataToNFS(parentAttr, dirID)
 
 	logger.Info("CREATE successful: file='%s' handle=%x mode=%o size=%d client=%s",
 		req.Filename, fileHandle, fileAttr.Mode, fileAttr.Size, clientIP)

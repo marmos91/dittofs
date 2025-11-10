@@ -7,6 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // FsInfoRequest represents an FSINFO request from an NFS client.
@@ -42,63 +44,63 @@ type FsInfoRequest struct {
 type FsInfoResponse struct {
 	// Status indicates the result of the fsinfo operation.
 	// Common values:
-	//   - NFS3OK (0): Success
-	//   - NFS3ErrNoEnt (2): File handle not found
+	//   - types.NFS3OK (0): Success
+	//   - types.NFS3ErrNoEnt (2): File handle not found
 	//   - NFS3ErrStale (70): Stale file handle
-	//   - NFS3ErrBadHandle (10001): Malformed file handle
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3ErrBadHandle (10001): Malformed file handle
+	//   - types.NFS3ErrIO (5): I/O error
 	Status uint32
 
 	// Attr contains the post-operation attributes of the file system object.
-	// Present when Status == NFS3OK. May be nil if attributes are unavailable.
+	// Present when Status == types.NFS3OK. May be nil if attributes are unavailable.
 	// These attributes help clients maintain cache consistency.
-	Attr *FileAttr
+	Attr *types.NFSFileAttr
 
 	// Rtmax is the maximum size in bytes of a READ request.
-	// Clients should not exceed this value. Only present when Status == NFS3OK.
+	// Clients should not exceed this value. Only present when Status == types.NFS3OK.
 	Rtmax uint32
 
 	// Rtpref is the preferred size in bytes of a READ request.
 	// Using this size typically provides optimal performance.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	Rtpref uint32
 
 	// Rtmult is the suggested multiple for READ request sizes.
 	// READ sizes should ideally be multiples of this value for best performance.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	Rtmult uint32
 
 	// Wtmax is the maximum size in bytes of a WRITE request.
-	// Clients should not exceed this value. Only present when Status == NFS3OK.
+	// Clients should not exceed this value. Only present when Status == types.NFS3OK.
 	Wtmax uint32
 
 	// Wtpref is the preferred size in bytes of a WRITE request.
 	// Using this size typically provides optimal performance.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	Wtpref uint32
 
 	// Wtmult is the suggested multiple for WRITE request sizes.
 	// WRITE sizes should ideally be multiples of this value for best performance.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	Wtmult uint32
 
 	// Dtpref is the preferred size in bytes of a READDIR request.
 	// Using this size typically provides optimal performance for directory reads.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	Dtpref uint32
 
 	// Maxfilesize is the maximum file size in bytes supported by the server.
 	// Attempts to create or extend files beyond this size will fail.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	Maxfilesize uint64
 
 	// TimeDelta represents the server's time resolution (granularity).
 	// This indicates the smallest time difference the server can reliably distinguish.
-	// Only present when Status == NFS3OK.
-	TimeDelta TimeVal
+	// Only present when Status == types.NFS3OK.
+	TimeDelta types.TimeVal
 
 	// Properties is a bitmask of filesystem properties indicating supported features.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	// Common flags (can be combined with bitwise OR):
 	//   - FSFLink (0x0001): Hard links are supported
 	//   - FSFSymlink (0x0002): Symbolic links are supported
@@ -171,7 +173,7 @@ type FsInfoContext struct {
 //	    // Internal server error occurred
 //	    return nil, err
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    // Success - use resp.Rtmax, resp.Wtmax, etc. to optimize I/O
 //	}
 func (h *DefaultNFSHandler) FsInfo(repository metadata.Repository, req *FsInfoRequest, ctx *FsInfoContext) (*FsInfoResponse, error) {
@@ -181,7 +183,7 @@ func (h *DefaultNFSHandler) FsInfo(repository metadata.Repository, req *FsInfoRe
 	// Validate file handle before using it
 	if err := validateFileHandle(req.Handle); err != nil {
 		logger.Debug("FSINFO failed: invalid handle: %v", err)
-		return &FsInfoResponse{Status: NFS3ErrBadHandle}, nil
+		return &FsInfoResponse{Status: types.NFS3ErrBadHandle}, nil
 	}
 
 	// Verify the file handle exists and is valid in the repository
@@ -190,7 +192,7 @@ func (h *DefaultNFSHandler) FsInfo(repository metadata.Repository, req *FsInfoRe
 	if err != nil {
 		logger.Debug("FSINFO failed: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, err)
-		return &FsInfoResponse{Status: NFS3ErrNoEnt}, nil
+		return &FsInfoResponse{Status: types.NFS3ErrNoEnt}, nil
 	}
 
 	// Retrieve filesystem capabilities from the repository
@@ -199,27 +201,27 @@ func (h *DefaultNFSHandler) FsInfo(repository metadata.Repository, req *FsInfoRe
 	if err != nil {
 		logger.Error("FSINFO failed: handle=%x client=%s error=failed to retrieve fsinfo: %v",
 			req.Handle, ctx.ClientAddr, err)
-		return &FsInfoResponse{Status: NFS3ErrIO}, nil
+		return &FsInfoResponse{Status: types.NFS3ErrIO}, nil
 	}
 
 	// Defensive check: ensure repository returned valid fsInfo
 	if fsInfo == nil {
 		logger.Error("FSINFO failed: handle=%x client=%s error=repository returned nil fsInfo",
 			req.Handle, ctx.ClientAddr)
-		return &FsInfoResponse{Status: NFS3ErrIO}, nil
+		return &FsInfoResponse{Status: types.NFS3ErrIO}, nil
 	}
 
 	// Generate file ID from handle for attributes
 	// This is a protocol-layer concern for creating the NFS attribute structure
-	fileid, err := extractFileIDFromHandle(req.Handle)
+	fileid, err := ExtractFileIDFromHandle(req.Handle)
 	if err != nil {
 		logger.Error("FSINFO failed: handle=%x client=%s error=failed to extract file ID: %v",
 			req.Handle, ctx.ClientAddr, err)
-		return &FsInfoResponse{Status: NFS3ErrBadHandle}, nil
+		return &FsInfoResponse{Status: types.NFS3ErrBadHandle}, nil
 	}
 
 	// Convert metadata attributes to NFS wire format
-	nfsAttr := MetadataToNFSAttr(attr, fileid)
+	nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 	logger.Info("FSINFO successful: client=%s rtmax=%d wtmax=%d maxfilesize=%d properties=0x%x",
 		ctx.ClientAddr, fsInfo.RtMax, fsInfo.WtMax, fsInfo.MaxFileSize, fsInfo.Properties)
@@ -227,7 +229,7 @@ func (h *DefaultNFSHandler) FsInfo(repository metadata.Repository, req *FsInfoRe
 	// Build response with data from repository
 	// All fields are populated from the repository's FSInfo structure
 	return &FsInfoResponse{
-		Status:      NFS3OK,
+		Status:      types.NFS3OK,
 		Attr:        nfsAttr,
 		Rtmax:       fsInfo.RtMax,
 		Rtpref:      fsInfo.RtPref,
@@ -237,7 +239,7 @@ func (h *DefaultNFSHandler) FsInfo(repository metadata.Repository, req *FsInfoRe
 		Wtmult:      fsInfo.WtMult,
 		Dtpref:      fsInfo.DtPref,
 		Maxfilesize: fsInfo.MaxFileSize,
-		TimeDelta: TimeVal{
+		TimeDelta: types.TimeVal{
 			Seconds:  fsInfo.TimeDelta.Seconds,
 			Nseconds: fsInfo.TimeDelta.Nseconds,
 		},
@@ -313,7 +315,7 @@ func DecodeFsInfoRequest(data []byte) (*FsInfoRequest, error) {
 //
 // The encoding follows RFC 1813 Section 3.3.19 specifications:
 //  1. Status code (4 bytes)
-//  2. If status == NFS3OK:
+//  2. If status == types.NFS3OK:
 //     a. Post-op attributes (present flag + attributes if present)
 //     b. rtmax (4 bytes)
 //     c. rtpref (4 bytes)
@@ -336,7 +338,7 @@ func DecodeFsInfoRequest(data []byte) (*FsInfoRequest, error) {
 // Example:
 //
 //	resp := &FsInfoResponse{
-//	    Status:      NFS3OK,
+//	    Status:      types.NFS3OK,
 //	    Rtmax:       65536,
 //	    Wtmax:       65536,
 //	    Maxfilesize: 1<<63 - 1,
@@ -358,7 +360,7 @@ func (resp *FsInfoResponse) Encode() ([]byte, error) {
 
 	// If status is not OK, only return the status code
 	// Per RFC 1813, error responses contain only the status
-	if resp.Status != NFS3OK {
+	if resp.Status != types.NFS3OK {
 		return buf.Bytes(), nil
 	}
 
@@ -369,7 +371,7 @@ func (resp *FsInfoResponse) Encode() ([]byte, error) {
 			return nil, fmt.Errorf("failed to write attr present flag: %w", err)
 		}
 		// Encode file attributes using helper function
-		if err := encodeFileAttr(&buf, resp.Attr); err != nil {
+		if err := xdr.EncodeFileAttr(&buf, resp.Attr); err != nil {
 			return nil, fmt.Errorf("failed to encode attributes: %w", err)
 		}
 	} else {
@@ -439,7 +441,7 @@ func validateFileHandle(handle []byte) error {
 	return nil
 }
 
-// extractFileIDFromHandle extracts a file ID from a file handle.
+// ExtractFileIDFromHandle extracts a file ID from a file handle.
 // The file ID is derived from the first 8 bytes of the handle.
 //
 // This is a protocol-layer utility used to generate NFS file IDs
@@ -452,7 +454,7 @@ func validateFileHandle(handle []byte) error {
 // Returns:
 //   - uint64: The extracted file ID
 //   - error: If the handle is too short or invalid
-func extractFileIDFromHandle(handle []byte) (uint64, error) {
+func ExtractFileIDFromHandle(handle []byte) (uint64, error) {
 	// Validate handle length
 	// This check is defensive; validateFileHandle should have already caught this
 	if len(handle) < 8 {

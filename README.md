@@ -140,7 +140,7 @@ type PostgresRepository struct {
     db *sql.DB
 }
 
-func (r *PostgresRepository) GetFile(handle FileHandle) (*FileAttr, error) {
+func (r *PostgresRepository) GetFile(handle FileHandle) (*types.NFSFileAttr, error) {
     // Query PostgreSQL
 }
 

@@ -97,26 +97,26 @@ type DeviceSpec struct {
 type MknodResponse struct {
 	// Status indicates the result of the mknod operation.
 	// Common values:
-	//   - NFS3OK (0): Success
+	//   - types.NFS3OK (0): Success
 	//   - NFS3ErrExist (17): File already exists
-	//   - NFS3ErrNoEnt (2): Parent directory not found
-	//   - NFS3ErrNotDir (20): Parent handle is not a directory
+	//   - types.NFS3ErrNoEnt (2): Parent directory not found
+	//   - types.NFS3ErrNotDir (20): Parent handle is not a directory
 	//   - NFS3ErrAcces (13): Permission denied
 	//   - NFS3ErrInval (22): Invalid file type or argument
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3ErrIO (5): I/O error
 	//   - NFS3ErrNameTooLong (63): Name too long
-	//   - NFS3ErrBadHandle (10001): Invalid file handle
+	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
 	Status uint32
 
 	// FileHandle is the handle of the newly created special file.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	// The handle can be used in subsequent NFS operations.
 	FileHandle []byte
 
 	// Attr contains the attributes of the newly created special file.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	// Includes mode, ownership, timestamps, etc.
-	Attr *types.FileAttr
+	Attr *types.NFSFileAttr
 
 	// DirAttrBefore contains pre-operation attributes of the parent directory.
 	// Used for weak cache consistency. May be nil.
@@ -124,7 +124,7 @@ type MknodResponse struct {
 
 	// DirAttrAfter contains post-operation attributes of the parent directory.
 	// Used for weak cache consistency. May be nil on error.
-	DirAttrAfter *types.FileAttr
+	DirAttrAfter *types.NFSFileAttr
 }
 
 // MknodContext contains the context information needed to process a MKNOD request.
@@ -239,14 +239,14 @@ type MknodContext struct {
 //
 // Protocol-level errors return appropriate NFS status codes.
 // Repository errors are mapped to NFS status codes:
-//   - Parent not found → NFS3ErrNoEnt
-//   - Parent not directory → NFS3ErrNotDir
+//   - Parent not found → types.NFS3ErrNoEnt
+//   - Parent not directory → types.NFS3ErrNotDir
 //   - Name already exists → NFS3ErrExist
 //   - Invalid type → NFS3ErrInval
 //   - Invalid name → NFS3ErrInval
 //   - Name too long → NFS3ErrNameTooLong
 //   - Permission denied → NFS3ErrAcces
-//   - I/O error → NFS3ErrIO
+//   - I/O error → types.NFS3ErrIO
 //
 // **Weak Cache Consistency (WCC):**
 //
@@ -290,7 +290,7 @@ type MknodContext struct {
 //	if err != nil {
 //	    // Internal server error
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    // Special file created successfully, use resp.FileHandle
 //	}
 func (h *DefaultNFSHandler) Mknod(
@@ -336,7 +336,7 @@ func (h *DefaultNFSHandler) Mknod(
 
 		// Get current parent state for WCC
 		dirID := xdr.ExtractFileID(parentHandle)
-		wccAfter := xdr.MetadataToNFSAttr(parentAttr, dirID)
+		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
 		return &MknodResponse{
 			Status:        types.NFS3ErrNotDir,
@@ -358,7 +358,7 @@ func (h *DefaultNFSHandler) Mknod(
 		// Get updated parent attributes for WCC data
 		parentAttr, _ = repository.GetFile(parentHandle)
 		dirID := xdr.ExtractFileID(parentHandle)
-		wccAfter := xdr.MetadataToNFSAttr(parentAttr, dirID)
+		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
 		return &MknodResponse{
 			Status:        types.NFS3ErrExist,
@@ -409,7 +409,7 @@ func (h *DefaultNFSHandler) Mknod(
 		// Get updated parent attributes for WCC data
 		parentAttr, _ = repository.GetFile(parentHandle)
 		dirID := xdr.ExtractFileID(parentHandle)
-		wccAfter := xdr.MetadataToNFSAttr(parentAttr, dirID)
+		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
 		// Map repository errors to NFS status codes
 		status := xdr.MapRepositoryErrorToNFSStatus(err, clientIP, "mknod")
@@ -436,12 +436,12 @@ func (h *DefaultNFSHandler) Mknod(
 
 	// Generate file ID from handle for NFS attributes
 	fileid := xdr.ExtractFileID(newHandle)
-	nfsAttr := xdr.MetadataToNFSAttr(newFileAttr, fileid)
+	nfsAttr := xdr.MetadataToNFS(newFileAttr, fileid)
 
 	// Get updated parent attributes for WCC data
 	parentAttr, _ = repository.GetFile(parentHandle)
 	parentFileid := xdr.ExtractFileID(parentHandle)
-	wccAfter := xdr.MetadataToNFSAttr(parentAttr, parentFileid)
+	wccAfter := xdr.MetadataToNFS(parentAttr, parentFileid)
 
 	logger.Info("MKNOD successful: name='%s' type=%s handle=%x mode=%o major=%d minor=%d client=%s",
 		req.Name, specialFileTypeName(req.Type), newHandle, newFileAttr.Mode,
@@ -807,7 +807,7 @@ func DecodeMknodRequest(data []byte) (*MknodRequest, error) {
 // Example:
 //
 //	resp := &MknodResponse{
-//	    Status:        NFS3OK,
+//	    Status:        types.NFS3OK,
 //	    FileHandle:    newFileHandle,
 //	    Attr:          fileAttr,
 //	    DirAttrBefore: wccBefore,

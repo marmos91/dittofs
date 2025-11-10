@@ -7,6 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // ============================================================================
@@ -48,7 +50,7 @@ type SetAttrRequest struct {
 	//   - Server checks if ctime has changed
 	//   - If unchanged: Apply updates (success)
 	//   - If changed: Reject updates (NFS3ErrNotSync)
-	Guard TimeGuard
+	Guard types.TimeGuard
 }
 
 // SetAttrResponse represents the response to a SETATTR request.
@@ -59,27 +61,27 @@ type SetAttrRequest struct {
 type SetAttrResponse struct {
 	// Status indicates the result of the setattr operation.
 	// Common values:
-	//   - NFS3OK (0): Success
+	//   - types.NFS3OK (0): Success
 	//   - NFS3ErrPerm (1): Not owner (for ownership changes)
-	//   - NFS3ErrNoEnt (2): File not found
+	//   - types.NFS3ErrNoEnt (2): File not found
 	//   - NFS3ErrAcces (13): Permission denied
 	//   - NFS3ErrRoFs (30): Read-only file system
-	//   - NFS3ErrNotSync (10002): Guard check failed
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3ErrNotSync (10002): Guard check failed
+	//   - types.NFS3ErrIO (5): I/O error
 	//   - NFS3ErrStale (70): Stale file handle
-	//   - NFS3ErrBadHandle (10001): Invalid file handle
+	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
 	//   - NFS3ErrInval (22): Invalid argument (e.g., invalid size)
 	Status uint32
 
 	// AttrBefore contains pre-operation weak cache consistency data.
 	// Used for cache consistency to help clients detect changes.
 	// May be nil if attributes could not be captured.
-	AttrBefore *WccAttr
+	AttrBefore *types.WccAttr
 
 	// AttrAfter contains post-operation attributes of the object.
 	// Used for cache consistency to provide updated object state.
 	// May be nil on error, but should be present on success.
-	AttrAfter *FileAttr
+	AttrAfter *types.NFSFileAttr
 }
 
 // SetAttrContext contains the context information needed to process a SETATTR request.
@@ -208,13 +210,13 @@ type SetAttrContext struct {
 //
 // Protocol-level errors return appropriate NFS status codes.
 // Repository errors are mapped to NFS status codes:
-//   - File not found → NFS3ErrNoEnt
-//   - Guard check failed → NFS3ErrNotSync
+//   - File not found → types.NFS3ErrNoEnt
+//   - Guard check failed → types.NFS3ErrNotSync
 //   - Permission denied → NFS3ErrAcces
 //   - Not owner → NFS3ErrPerm
 //   - Read-only filesystem → NFS3ErrRoFs
 //   - Invalid size → NFS3ErrInval
-//   - I/O error → NFS3ErrIO
+//   - I/O error → types.NFS3ErrIO
 //
 // **Weak Cache Consistency (WCC):**
 //
@@ -271,7 +273,7 @@ type SetAttrContext struct {
 //	if err != nil {
 //	    // Internal server error
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    // Attributes updated successfully
 //	}
 func (h *DefaultNFSHandler) SetAttr(
@@ -280,7 +282,7 @@ func (h *DefaultNFSHandler) SetAttr(
 	ctx *SetAttrContext,
 ) (*SetAttrResponse, error) {
 	// Extract client IP for logging
-	clientIP := extractClientIP(ctx.ClientAddr)
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
 	logger.Info("SETATTR: handle=%x guard=%v client=%s auth=%d",
 		req.Handle, req.Guard.Check, clientIP, ctx.AuthFlavor)
@@ -304,11 +306,11 @@ func (h *DefaultNFSHandler) SetAttr(
 	if err != nil {
 		logger.Warn("SETATTR failed: file not found: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &SetAttrResponse{Status: NFS3ErrNoEnt}, nil
+		return &SetAttrResponse{Status: types.NFS3ErrNoEnt}, nil
 	}
 
 	// Capture pre-operation attributes for WCC data
-	wccBefore := captureWccAttr(currentAttr)
+	wccBefore := xdr.CaptureWccAttr(currentAttr)
 
 	// ========================================================================
 	// Step 3: Check guard condition if specified
@@ -319,7 +321,7 @@ func (h *DefaultNFSHandler) SetAttr(
 	// operation should be rejected to prevent lost updates.
 
 	if req.Guard.Check {
-		currentCtime := timeToTimeVal(currentAttr.Ctime)
+		currentCtime := xdr.TimeToTimeVal(currentAttr.Ctime)
 
 		// Compare ctime from guard with current ctime
 		if currentCtime.Seconds != req.Guard.Time.Seconds ||
@@ -331,14 +333,14 @@ func (h *DefaultNFSHandler) SetAttr(
 				clientIP)
 
 			// Get updated attributes for WCC data (best effort)
-			var wccAfter *FileAttr
+			var wccAfter *types.NFSFileAttr
 			if attr, err := repository.GetFile(fileHandle); err == nil {
-				fileID := extractFileID(fileHandle)
-				wccAfter = MetadataToNFSAttr(attr, fileID)
+				fileID := xdr.ExtractFileID(fileHandle)
+				wccAfter = xdr.MetadataToNFS(attr, fileID)
 			}
 
 			return &SetAttrResponse{
-				Status:     NFS3ErrNotSync,
+				Status:     types.NFS3ErrNotSync,
 				AttrBefore: wccBefore,
 				AttrAfter:  wccAfter,
 			}, nil
@@ -380,14 +382,14 @@ func (h *DefaultNFSHandler) SetAttr(
 			req.Handle, clientIP, err)
 
 		// Get updated attributes for WCC data (best effort)
-		var wccAfter *FileAttr
+		var wccAfter *types.NFSFileAttr
 		if attr, getErr := repository.GetFile(fileHandle); getErr == nil {
-			fileID := extractFileID(fileHandle)
-			wccAfter = MetadataToNFSAttr(attr, fileID)
+			fileID := xdr.ExtractFileID(fileHandle)
+			wccAfter = xdr.MetadataToNFS(attr, fileID)
 		}
 
 		// Map repository errors to NFS status codes
-		status := mapRepositoryErrorToNFSStatus(err, clientIP, "SETATTR")
+		status := xdr.MapRepositoryErrorToNFSStatus(err, clientIP, "SETATTR")
 
 		return &SetAttrResponse{
 			Status:     status,
@@ -408,10 +410,10 @@ func (h *DefaultNFSHandler) SetAttr(
 		// Continue with nil WccAfter rather than failing the entire operation
 	}
 
-	var wccAfter *FileAttr
+	var wccAfter *types.NFSFileAttr
 	if updatedAttr != nil {
-		fileID := extractFileID(fileHandle)
-		wccAfter = MetadataToNFSAttr(updatedAttr, fileID)
+		fileID := xdr.ExtractFileID(fileHandle)
+		wccAfter = xdr.MetadataToNFS(updatedAttr, fileID)
 	}
 
 	logger.Info("SETATTR successful: handle=%x client=%s", req.Handle, clientIP)
@@ -425,7 +427,7 @@ func (h *DefaultNFSHandler) SetAttr(
 	}
 
 	return &SetAttrResponse{
-		Status:     NFS3OK,
+		Status:     types.NFS3OK,
 		AttrBefore: wccBefore,
 		AttrAfter:  wccAfter,
 	}, nil
@@ -461,14 +463,14 @@ func validateSetAttrRequest(req *SetAttrRequest) *setAttrValidationError {
 	if len(req.Handle) == 0 {
 		return &setAttrValidationError{
 			message:   "empty file handle",
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.Handle) > 64 {
 		return &setAttrValidationError{
 			message:   fmt.Sprintf("file handle too long: %d bytes (max 64)", len(req.Handle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -476,7 +478,7 @@ func validateSetAttrRequest(req *SetAttrRequest) *setAttrValidationError {
 	if len(req.Handle) < 8 {
 		return &setAttrValidationError{
 			message:   fmt.Sprintf("file handle too short: %d bytes (min 8)", len(req.Handle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -485,7 +487,7 @@ func validateSetAttrRequest(req *SetAttrRequest) *setAttrValidationError {
 		!req.NewAttr.SetSize && !req.NewAttr.SetAtime && !req.NewAttr.SetMtime {
 		return &setAttrValidationError{
 			message:   "no attributes specified for update",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -496,7 +498,7 @@ func validateSetAttrRequest(req *SetAttrRequest) *setAttrValidationError {
 		if req.NewAttr.Mode > 0o7777 {
 			return &setAttrValidationError{
 				message:   fmt.Sprintf("invalid mode value: 0%o (max 0o7777)", req.NewAttr.Mode),
-				nfsStatus: NFS3ErrInval,
+				nfsStatus: types.NFS3ErrInval,
 			}
 		}
 	}
@@ -558,7 +560,7 @@ func DecodeSetAttrRequest(data []byte) (*SetAttrRequest, error) {
 	// Decode file handle
 	// ========================================================================
 
-	handle, err := decodeOpaque(reader)
+	handle, err := xdr.DecodeOpaque(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode handle: %w", err)
 	}
@@ -567,7 +569,7 @@ func DecodeSetAttrRequest(data []byte) (*SetAttrRequest, error) {
 	// Decode new attributes (sattr3)
 	// ========================================================================
 
-	newAttr, err := decodeSetAttrs(reader)
+	newAttr, err := xdr.DecodeSetAttrs(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode attributes: %w", err)
 	}
@@ -576,7 +578,7 @@ func DecodeSetAttrRequest(data []byte) (*SetAttrRequest, error) {
 	// Decode guard (sattrguard3)
 	// ========================================================================
 
-	guard := TimeGuard{}
+	guard := types.TimeGuard{}
 
 	// Read guard check flag (4 bytes, 0 or 1)
 	var guardCheck uint32
@@ -639,7 +641,7 @@ func DecodeSetAttrRequest(data []byte) (*SetAttrRequest, error) {
 // Example:
 //
 //	resp := &SetAttrResponse{
-//	    Status:     NFS3OK,
+//	    Status:     types.NFS3OK,
 //	    AttrBefore: wccBefore,
 //	    AttrAfter:  wccAfter,
 //	}
@@ -666,7 +668,7 @@ func (resp *SetAttrResponse) Encode() ([]byte, error) {
 	// WCC (Weak Cache Consistency) data helps clients maintain cache coherency
 	// by providing before-and-after snapshots of the file.
 
-	if err := encodeWccData(&buf, resp.AttrBefore, resp.AttrAfter); err != nil {
+	if err := xdr.EncodeWccData(&buf, resp.AttrBefore, resp.AttrAfter); err != nil {
 		return nil, fmt.Errorf("encode wcc data: %w", err)
 	}
 

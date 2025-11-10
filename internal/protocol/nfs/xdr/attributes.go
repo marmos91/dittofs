@@ -5,7 +5,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 )
 
-// MetadataToNFSAttr converts internal file metadata to NFS fattr3 format.
+// MetadataToNFS converts internal file metadata to NFS fattr3 format.
 //
 // Per RFC 1813 Section 2.3.1 (fattr3):
 // The fattr3 structure contains the attributes of a file; "attributes"
@@ -23,14 +23,14 @@ import (
 //   - fileid: Unique file identifier (extracted from file handle)
 //
 // Returns:
-//   - *FileAttr: NFS protocol file attributes ready for encoding
+//   - *types.NFSFileAttr: NFS protocol file attributes ready for encoding
 //
 // Note: Fsid is set to 0 (single filesystem); Rdev is zeroed (not used for
 // regular files/directories). Production implementations may extend these.
-func MetadataToNFSAttr(mdAttr *metadata.FileAttr, fileid uint64) *types.FileAttr {
+func MetadataToNFS(mdAttr *metadata.FileAttr, fileid uint64) *types.NFSFileAttr {
 	if mdAttr == nil {
 		// Defensive: should not happen, but return safe defaults
-		return &types.FileAttr{
+		return &types.NFSFileAttr{
 			Type:   uint32(metadata.FileTypeRegular),
 			Mode:   0644,
 			Nlink:  1,
@@ -47,7 +47,7 @@ func MetadataToNFSAttr(mdAttr *metadata.FileAttr, fileid uint64) *types.FileAttr
 		}
 	}
 
-	return &types.FileAttr{
+	return &types.NFSFileAttr{
 		Type:  uint32(mdAttr.Type),
 		Mode:  mdAttr.Mode,
 		Nlink: 1, // Simplified: real implementation should track hard links
@@ -213,7 +213,7 @@ func ApplySetAttrs(fileAttr *metadata.FileAttr, setAttrs *metadata.SetAttrs) {
 // Weak Cache Consistency (WCC) Support
 // ============================================================================
 
-// captureWccAttr captures pre-operation attributes for WCC data.
+// CaptureWccAttr captures pre-operation attributes for WCC data.
 //
 // Per RFC 1813 Section 1.4.7 (Weak Cache Consistency):
 // WCC provides clients with before and after attributes for operations that
@@ -229,7 +229,7 @@ func ApplySetAttrs(fileAttr *metadata.FileAttr, setAttrs *metadata.SetAttrs) {
 //   - attr: Current file attributes (before modification)
 //
 // Returns:
-//   - *WccAttr: Pre-operation attributes or nil if attr is nil
+//   - *types.WccAttr: Pre-operation attributes or nil if attr is nil
 func CaptureWccAttr(attr *metadata.FileAttr) *types.WccAttr {
 	if attr == nil {
 		return nil

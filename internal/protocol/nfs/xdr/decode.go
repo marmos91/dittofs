@@ -12,7 +12,7 @@ import (
 // XDR Decoding Helpers - Wire Format → Go Structures
 // ============================================================================
 
-// decodeOpaque decodes XDR variable-length opaque data.
+// DecodeOpaque decodes XDR variable-length opaque data.
 //
 // Per RFC 4506 Section 4.10 (Variable-Length Opaque Data):
 // Format: [length:uint32][data:length bytes][padding:0-3 bytes]
@@ -60,7 +60,7 @@ func DecodeOpaque(reader io.Reader) ([]byte, error) {
 	return data, nil
 }
 
-// decodeString decodes XDR variable-length string.
+// DecodeString decodes XDR variable-length string.
 //
 // Per RFC 4506 Section 4.11 (String):
 // Strings use the same encoding as opaque data but are interpreted as UTF-8.
@@ -80,7 +80,7 @@ func DecodeString(reader io.Reader) (string, error) {
 	return string(data), nil
 }
 
-// decodeSetAttrs decodes NFS sattr3 (set attributes) structure from XDR.
+// xdr.DecodeSetAttrs decodes NFS sattr3 (set attributes) structure from XDR.
 //
 // Per RFC 1813 Section 2.5.3 (sattr3):
 //

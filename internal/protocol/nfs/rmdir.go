@@ -8,6 +8,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // ============================================================================
@@ -50,14 +52,14 @@ type RmdirRequest struct {
 type RmdirResponse struct {
 	// Status indicates the result of the rmdir operation.
 	// Common values:
-	//   - NFS3OK (0): Success - directory removed
-	//   - NFS3ErrNoEnt (2): Directory or parent not found
-	//   - NFS3ErrNotDir (20): Parent handle or target is not a directory
+	//   - types.NFS3OK (0): Success - directory removed
+	//   - types.NFS3ErrNoEnt (2): Directory or parent not found
+	//   - types.NFS3ErrNotDir (20): Parent handle or target is not a directory
 	//   - NFS3ErrNotEmpty (66): Directory is not empty
 	//   - NFS3ErrAcces (13): Permission denied
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3ErrIO (5): I/O error
 	//   - NFS3ErrStale (70): Stale file handle
-	//   - NFS3ErrBadHandle (10001): Invalid file handle
+	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
 	//   - NFS3ErrInval (22): Invalid argument (bad name)
 	//   - NFS3ErrNameTooLong (63): Name too long
 	Status uint32
@@ -65,12 +67,12 @@ type RmdirResponse struct {
 	// DirWccBefore contains pre-operation attributes of the parent directory.
 	// Used for weak cache consistency to help clients detect if the parent
 	// directory changed during the operation. May be nil.
-	DirWccBefore *WccAttr
+	DirWccBefore *types.WccAttr
 
 	// DirWccAfter contains post-operation attributes of the parent directory.
 	// Used for weak cache consistency to provide the updated parent state.
 	// May be nil on error, but should be present on success.
-	DirWccAfter *FileAttr
+	DirWccAfter *types.NFSFileAttr
 }
 
 // RmdirContext contains the context information needed to process a RMDIR request.
@@ -170,15 +172,15 @@ type RmdirContext struct {
 //
 // Protocol-level errors return appropriate NFS status codes.
 // Repository errors are mapped to NFS status codes:
-//   - Parent not found → NFS3ErrNoEnt
-//   - Parent not directory → NFS3ErrNotDir
-//   - Directory not found → NFS3ErrNoEnt
-//   - Target not directory → NFS3ErrNotDir
+//   - Parent not found → types.NFS3ErrNoEnt
+//   - Parent not directory → types.NFS3ErrNotDir
+//   - Directory not found → types.NFS3ErrNoEnt
+//   - Target not directory → types.NFS3ErrNotDir
 //   - Directory not empty → NFS3ErrNotEmpty
 //   - Invalid name → NFS3ErrInval
 //   - Name too long → NFS3ErrNameTooLong
 //   - Permission denied → NFS3ErrAcces
-//   - I/O error → NFS3ErrIO
+//   - I/O error → types.NFS3ErrIO
 //
 // **Weak Cache Consistency (WCC):**
 //
@@ -230,7 +232,7 @@ type RmdirContext struct {
 //	if err != nil {
 //	    // Internal server error
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    // Directory removed successfully
 //	}
 func (h *DefaultNFSHandler) Rmdir(
@@ -239,7 +241,7 @@ func (h *DefaultNFSHandler) Rmdir(
 	ctx *RmdirContext,
 ) (*RmdirResponse, error) {
 	// Extract client IP for logging
-	clientIP := extractClientIP(ctx.ClientAddr)
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
 	logger.Info("RMDIR: name='%s' dir=%x client=%s auth=%d",
 		req.Name, req.DirHandle, clientIP, ctx.AuthFlavor)
@@ -263,11 +265,11 @@ func (h *DefaultNFSHandler) Rmdir(
 	if err != nil {
 		logger.Warn("RMDIR failed: parent not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &RmdirResponse{Status: NFS3ErrNoEnt}, nil
+		return &RmdirResponse{Status: types.NFS3ErrNoEnt}, nil
 	}
 
 	// Capture pre-operation attributes for WCC data
-	wccBefore := captureWccAttr(parentAttr)
+	wccBefore := xdr.CaptureWccAttr(parentAttr)
 
 	// Verify parent is actually a directory
 	if parentAttr.Type != metadata.FileTypeDirectory {
@@ -275,11 +277,11 @@ func (h *DefaultNFSHandler) Rmdir(
 			req.DirHandle, parentAttr.Type, clientIP)
 
 		// Get current parent state for WCC
-		dirID := extractFileID(parentHandle)
-		wccAfter := MetadataToNFSAttr(parentAttr, dirID)
+		dirID := xdr.ExtractFileID(parentHandle)
+		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
 		return &RmdirResponse{
-			Status:       NFS3ErrNotDir,
+			Status:       types.NFS3ErrNotDir,
 			DirWccBefore: wccBefore,
 			DirWccAfter:  wccAfter,
 		}, nil
@@ -314,8 +316,8 @@ func (h *DefaultNFSHandler) Rmdir(
 
 		// Get updated parent attributes for WCC data
 		parentAttr, _ = repository.GetFile(parentHandle)
-		dirID := extractFileID(parentHandle)
-		wccAfter := MetadataToNFSAttr(parentAttr, dirID)
+		dirID := xdr.ExtractFileID(parentHandle)
+		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
 		// Map repository errors to NFS status codes
 		status := mapRmdirErrorToNFSStatus(err)
@@ -333,8 +335,8 @@ func (h *DefaultNFSHandler) Rmdir(
 
 	// Get updated parent directory attributes
 	parentAttr, _ = repository.GetFile(parentHandle)
-	dirID := extractFileID(parentHandle)
-	wccAfter := MetadataToNFSAttr(parentAttr, dirID)
+	dirID := xdr.ExtractFileID(parentHandle)
+	wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
 	logger.Info("RMDIR successful: name='%s' dir=%x client=%s",
 		req.Name, req.DirHandle, clientIP)
@@ -342,7 +344,7 @@ func (h *DefaultNFSHandler) Rmdir(
 	logger.Debug("RMDIR details: parent_id=%d", dirID)
 
 	return &RmdirResponse{
-		Status:       NFS3OK,
+		Status:       types.NFS3OK,
 		DirWccBefore: wccBefore,
 		DirWccAfter:  wccAfter,
 	}, nil
@@ -376,14 +378,14 @@ func validateRmdirRequest(req *RmdirRequest) *rmdirValidationError {
 	if len(req.DirHandle) == 0 {
 		return &rmdirValidationError{
 			message:   "empty parent directory handle",
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.DirHandle) > 64 {
 		return &rmdirValidationError{
 			message:   fmt.Sprintf("parent handle too long: %d bytes (max 64)", len(req.DirHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -391,7 +393,7 @@ func validateRmdirRequest(req *RmdirRequest) *rmdirValidationError {
 	if len(req.DirHandle) < 8 {
 		return &rmdirValidationError{
 			message:   fmt.Sprintf("parent handle too short: %d bytes (min 8)", len(req.DirHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -399,7 +401,7 @@ func validateRmdirRequest(req *RmdirRequest) *rmdirValidationError {
 	if req.Name == "" {
 		return &rmdirValidationError{
 			message:   "empty directory name",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -407,7 +409,7 @@ func validateRmdirRequest(req *RmdirRequest) *rmdirValidationError {
 	if req.Name == "." || req.Name == ".." {
 		return &rmdirValidationError{
 			message:   fmt.Sprintf("directory name cannot be '%s'", req.Name),
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -415,7 +417,7 @@ func validateRmdirRequest(req *RmdirRequest) *rmdirValidationError {
 	if len(req.Name) > 255 {
 		return &rmdirValidationError{
 			message:   fmt.Sprintf("directory name too long: %d bytes (max 255)", len(req.Name)),
-			nfsStatus: NFS3ErrNameTooLong,
+			nfsStatus: types.NFS3ErrNameTooLong,
 		}
 	}
 
@@ -423,7 +425,7 @@ func validateRmdirRequest(req *RmdirRequest) *rmdirValidationError {
 	if strings.ContainsAny(req.Name, "\x00") {
 		return &rmdirValidationError{
 			message:   "directory name contains null byte",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -431,7 +433,7 @@ func validateRmdirRequest(req *RmdirRequest) *rmdirValidationError {
 	if strings.ContainsAny(req.Name, "/") {
 		return &rmdirValidationError{
 			message:   "directory name contains path separator",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -441,7 +443,7 @@ func validateRmdirRequest(req *RmdirRequest) *rmdirValidationError {
 		if r < 0x20 || r == 0x7F {
 			return &rmdirValidationError{
 				message:   fmt.Sprintf("directory name contains control character at position %d", i),
-				nfsStatus: NFS3ErrInval,
+				nfsStatus: types.NFS3ErrInval,
 			}
 		}
 	}
@@ -497,7 +499,7 @@ func DecodeRmdirRequest(data []byte) (*RmdirRequest, error) {
 	// Decode parent directory handle
 	// ========================================================================
 
-	handle, err := decodeOpaque(reader)
+	handle, err := xdr.DecodeOpaque(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode directory handle: %w", err)
 	}
@@ -506,7 +508,7 @@ func DecodeRmdirRequest(data []byte) (*RmdirRequest, error) {
 	// Decode directory name
 	// ========================================================================
 
-	name, err := decodeString(reader)
+	name, err := xdr.DecodeString(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode directory name: %w", err)
 	}
@@ -553,7 +555,7 @@ func DecodeRmdirRequest(data []byte) (*RmdirRequest, error) {
 // Example:
 //
 //	resp := &RmdirResponse{
-//	    Status:       NFS3OK,
+//	    Status:       types.NFS3OK,
 //	    DirWccBefore: wccBefore,
 //	    DirWccAfter:  wccAfter,
 //	}
@@ -580,7 +582,7 @@ func (resp *RmdirResponse) Encode() ([]byte, error) {
 
 	// WCC (Weak Cache Consistency) data helps clients maintain cache coherency
 	// by providing before-and-after snapshots of the parent directory.
-	if err := encodeWccData(&buf, resp.DirWccBefore, resp.DirWccAfter); err != nil {
+	if err := xdr.EncodeWccData(&buf, resp.DirWccBefore, resp.DirWccAfter); err != nil {
 		return nil, fmt.Errorf("encode directory wcc data: %w", err)
 	}
 
@@ -599,11 +601,11 @@ func mapRmdirErrorToNFSStatus(err error) uint32 {
 	if exportErr, ok := err.(*metadata.ExportError); ok {
 		switch exportErr.Code {
 		case metadata.ExportErrAccessDenied:
-			return NFS3ErrAcces
+			return types.NFS3ErrAcces
 		case metadata.ExportErrNotFound:
-			return NFS3ErrNoEnt
+			return types.NFS3ErrNoEnt
 		default:
-			return NFS3ErrIO
+			return types.NFS3ErrIO
 		}
 	}
 
@@ -613,14 +615,14 @@ func mapRmdirErrorToNFSStatus(err error) uint32 {
 	// Directory not empty
 	if bytes.Contains([]byte(errMsg), []byte("not empty")) ||
 		bytes.Contains([]byte(errMsg), []byte("has children")) {
-		return NFS3ErrNotEmpty
+		return types.NFS3ErrNotEmpty
 	}
 
 	// Not a directory
 	if bytes.Contains([]byte(errMsg), []byte("not a directory")) {
-		return NFS3ErrNotDir
+		return types.NFS3ErrNotDir
 	}
 
 	// Default to I/O error for unknown errors
-	return NFS3ErrIO
+	return types.NFS3ErrIO
 }

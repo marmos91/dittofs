@@ -7,6 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // ============================================================================
@@ -38,17 +40,17 @@ type GetAttrRequest struct {
 type GetAttrResponse struct {
 	// Status indicates the result of the getattr operation.
 	// Common values:
-	//   - NFS3OK (0): Success
-	//   - NFS3ErrNoEnt (2): File handle not found
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3OK (0): Success
+	//   - types.NFS3ErrNoEnt (2): File handle not found
+	//   - types.NFS3ErrIO (5): I/O error
 	//   - NFS3ErrStale (70): Stale file handle
-	//   - NFS3ErrBadHandle (10001): Invalid file handle
+	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
 	Status uint32
 
 	// Attr contains the file attributes.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	// Includes file type, permissions, ownership, size, timestamps, etc.
-	Attr *FileAttr
+	Attr *types.NFSFileAttr
 }
 
 // GetAttrContext contains the context information needed to process a GETATTR request.
@@ -109,10 +111,10 @@ type GetAttrContext struct {
 //
 // Protocol-level errors return appropriate NFS status codes.
 // Repository errors are mapped to NFS status codes:
-//   - File not found → NFS3ErrNoEnt
+//   - File not found → types.NFS3ErrNoEnt
 //   - Stale handle → NFS3ErrStale
-//   - I/O error → NFS3ErrIO
-//   - Invalid handle → NFS3ErrBadHandle
+//   - I/O error → types.NFS3ErrIO
+//   - Invalid handle → types.NFS3ErrBadHandle
 //
 // **Security Considerations:**
 //
@@ -145,7 +147,7 @@ type GetAttrContext struct {
 //	if err != nil {
 //	    // Internal server error
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    // Use resp.Attr for file information
 //	}
 func (h *DefaultNFSHandler) GetAttr(
@@ -154,7 +156,7 @@ func (h *DefaultNFSHandler) GetAttr(
 	ctx *GetAttrContext,
 ) (*GetAttrResponse, error) {
 	// Extract client IP for logging
-	clientIP := extractClientIP(ctx.ClientAddr)
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
 	logger.Info("GETATTR: handle=%x client=%s auth=%d",
 		req.Handle, clientIP, ctx.AuthFlavor)
@@ -178,7 +180,7 @@ func (h *DefaultNFSHandler) GetAttr(
 	if err != nil {
 		logger.Debug("GETATTR failed: handle not found: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &GetAttrResponse{Status: NFS3ErrStale}, nil
+		return &GetAttrResponse{Status: types.NFS3ErrStale}, nil
 	}
 
 	// ========================================================================
@@ -187,8 +189,8 @@ func (h *DefaultNFSHandler) GetAttr(
 	// The file ID is extracted from the handle for NFS protocol purposes.
 	// This is a protocol-layer concern for creating the wire format.
 
-	fileid := extractFileID(fileHandle)
-	nfsAttr := MetadataToNFSAttr(attr, fileid)
+	fileid := xdr.ExtractFileID(fileHandle)
+	nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 	logger.Info("GETATTR successful: handle=%x type=%d mode=%o size=%d client=%s",
 		req.Handle, nfsAttr.Type, nfsAttr.Mode, nfsAttr.Size, clientIP)
@@ -197,7 +199,7 @@ func (h *DefaultNFSHandler) GetAttr(
 		fileid, nfsAttr.UID, nfsAttr.GID, nfsAttr.Mtime.Seconds, nfsAttr.Mtime.Nseconds)
 
 	return &GetAttrResponse{
-		Status: NFS3OK,
+		Status: types.NFS3OK,
 		Attr:   nfsAttr,
 	}, nil
 }
@@ -231,7 +233,7 @@ func validateGetAttrRequest(req *GetAttrRequest) *getAttrValidationError {
 	if len(req.Handle) == 0 {
 		return &getAttrValidationError{
 			message:   "file handle is empty",
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -239,7 +241,7 @@ func validateGetAttrRequest(req *GetAttrRequest) *getAttrValidationError {
 	if len(req.Handle) > 64 {
 		return &getAttrValidationError{
 			message:   fmt.Sprintf("file handle too long: %d bytes (max 64)", len(req.Handle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -248,7 +250,7 @@ func validateGetAttrRequest(req *GetAttrRequest) *getAttrValidationError {
 	if len(req.Handle) < 8 {
 		return &getAttrValidationError{
 			message:   fmt.Sprintf("file handle too short: %d bytes (min 8)", len(req.Handle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -334,9 +336,9 @@ func DecodeGetAttrRequest(data []byte) (*GetAttrRequest, error) {
 //
 // The encoding follows RFC 1813 Section 3.3.1 specifications:
 //  1. Status code (4 bytes, big-endian uint32)
-//  2. If status == NFS3OK:
+//  2. If status == types.NFS3OK:
 //     a. File attributes (fattr3 structure)
-//  3. If status != NFS3OK:
+//  3. If status != types.NFS3OK:
 //     a. No additional data
 //
 // XDR encoding requires all data to be in big-endian format and aligned
@@ -349,7 +351,7 @@ func DecodeGetAttrRequest(data []byte) (*GetAttrRequest, error) {
 // Example:
 //
 //	resp := &GetAttrResponse{
-//	    Status: NFS3OK,
+//	    Status: types.NFS3OK,
 //	    Attr:   fileAttr,
 //	}
 //	data, err := resp.Encode()
@@ -368,14 +370,14 @@ func (resp *GetAttrResponse) Encode() ([]byte, error) {
 
 	// If status is not OK, return just the status (no attributes)
 	// Per RFC 1813, error responses contain only the status code
-	if resp.Status != NFS3OK {
+	if resp.Status != types.NFS3OK {
 		logger.Debug("Encoding GETATTR error response: status=%d", resp.Status)
 		return buf.Bytes(), nil
 	}
 
 	// Write file attributes using helper function
 	// This encodes the complete fattr3 structure as defined in RFC 1813
-	if err := encodeFileAttr(&buf, resp.Attr); err != nil {
+	if err := xdr.EncodeFileAttr(&buf, resp.Attr); err != nil {
 		return nil, fmt.Errorf("failed to encode file attributes: %w", err)
 	}
 

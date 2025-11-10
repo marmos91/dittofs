@@ -7,6 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // ============================================================================
@@ -49,30 +51,30 @@ type LookupRequest struct {
 type LookupResponse struct {
 	// Status indicates the result of the lookup operation.
 	// Common values:
-	//   - NFS3OK (0): Success - file found
-	//   - NFS3ErrNoEnt (2): File not found in directory
-	//   - NFS3ErrNotDir (20): DirHandle is not a directory
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3OK (0): Success - file found
+	//   - types.NFS3ErrNoEnt (2): File not found in directory
+	//   - types.NFS3ErrNotDir (20): DirHandle is not a directory
+	//   - types.NFS3ErrIO (5): I/O error
 	//   - NFS3ErrAcces (13): Permission denied
 	//   - NFS3ErrStale (70): Stale directory handle
-	//   - NFS3ErrBadHandle (10001): Invalid directory handle
+	//   - types.NFS3ErrBadHandle (10001): Invalid directory handle
 	//   - NFS3ErrNameTooLong (63): Filename exceeds limits
 	Status uint32
 
 	// FileHandle is the handle of the found file or directory.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	// This handle can be used in subsequent NFS operations.
 	FileHandle []byte
 
 	// Attr contains the attributes of the found file or directory.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	// Includes type, permissions, size, timestamps, etc.
-	Attr *FileAttr
+	Attr *types.NFSFileAttr
 
 	// DirAttr contains post-operation attributes of the directory.
 	// Optional, may be nil even on success.
 	// Helps clients maintain cache consistency for the directory.
-	DirAttr *FileAttr
+	DirAttr *types.NFSFileAttr
 }
 
 // LookupContext contains the context information needed to process a LOOKUP request.
@@ -163,11 +165,11 @@ type LookupContext struct {
 //
 // Protocol-level errors return appropriate NFS status codes.
 // Repository errors are mapped to NFS status codes:
-//   - Directory not found → NFS3ErrNoEnt
-//   - Not a directory → NFS3ErrNotDir
-//   - Child not found → NFS3ErrNoEnt
+//   - Directory not found → types.NFS3ErrNoEnt
+//   - Not a directory → types.NFS3ErrNotDir
+//   - Child not found → types.NFS3ErrNoEnt
 //   - Access denied → NFS3ErrAcces
-//   - I/O error → NFS3ErrIO
+//   - I/O error → types.NFS3ErrIO
 //
 // **Performance Considerations:**
 //
@@ -213,7 +215,7 @@ type LookupContext struct {
 //	if err != nil {
 //	    // Internal server error
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    // Use resp.FileHandle for subsequent operations
 //	}
 func (h *DefaultNFSHandler) Lookup(
@@ -222,7 +224,7 @@ func (h *DefaultNFSHandler) Lookup(
 	ctx *LookupContext,
 ) (*LookupResponse, error) {
 	// Extract client IP for logging
-	clientIP := extractClientIP(ctx.ClientAddr)
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
 	logger.Info("LOOKUP: file='%s' dir=%x client=%s auth=%d",
 		req.Filename, req.DirHandle, clientIP, ctx.AuthFlavor)
@@ -246,7 +248,7 @@ func (h *DefaultNFSHandler) Lookup(
 	if err != nil {
 		logger.Warn("LOOKUP failed: directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &LookupResponse{Status: NFS3ErrNoEnt}, nil
+		return &LookupResponse{Status: types.NFS3ErrNoEnt}, nil
 	}
 
 	// Verify parent is actually a directory
@@ -255,11 +257,11 @@ func (h *DefaultNFSHandler) Lookup(
 			req.DirHandle, dirAttr.Type, clientIP)
 
 		// Include directory attributes even on error for cache consistency
-		dirID := extractFileID(dirHandle)
-		nfsDirAttr := MetadataToNFSAttr(dirAttr, dirID)
+		dirID := xdr.ExtractFileID(dirHandle)
+		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &LookupResponse{
-			Status:  NFS3ErrNotDir,
+			Status:  types.NFS3ErrNotDir,
 			DirAttr: nfsDirAttr,
 		}, nil
 	}
@@ -278,11 +280,11 @@ func (h *DefaultNFSHandler) Lookup(
 			req.Filename, req.DirHandle, clientIP, err)
 
 		// Include directory post-op attributes for cache consistency
-		dirID := extractFileID(dirHandle)
-		nfsDirAttr := MetadataToNFSAttr(dirAttr, dirID)
+		dirID := xdr.ExtractFileID(dirHandle)
+		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &LookupResponse{
-			Status:  NFS3ErrNoEnt,
+			Status:  types.NFS3ErrNoEnt,
 			DirAttr: nfsDirAttr,
 		}, nil
 	}
@@ -298,11 +300,11 @@ func (h *DefaultNFSHandler) Lookup(
 
 		// This is an internal consistency error - handle exists but no attributes
 		// Include directory post-op attributes for cache consistency
-		dirID := extractFileID(dirHandle)
-		nfsDirAttr := MetadataToNFSAttr(dirAttr, dirID)
+		dirID := xdr.ExtractFileID(dirHandle)
+		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &LookupResponse{
-			Status:  NFS3ErrIO,
+			Status:  types.NFS3ErrIO,
 			DirAttr: nfsDirAttr,
 		}, nil
 	}
@@ -312,11 +314,11 @@ func (h *DefaultNFSHandler) Lookup(
 	// ========================================================================
 
 	// Generate file IDs from handles for NFS attributes
-	childID := extractFileID(childHandle)
-	nfsChildAttr := MetadataToNFSAttr(childAttr, childID)
+	childID := xdr.ExtractFileID(childHandle)
+	nfsChildAttr := xdr.MetadataToNFS(childAttr, childID)
 
-	dirID := extractFileID(dirHandle)
-	nfsDirAttr := MetadataToNFSAttr(dirAttr, dirID)
+	dirID := xdr.ExtractFileID(dirHandle)
+	nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 	logger.Info("LOOKUP successful: file='%s' handle=%x type=%d size=%d client=%s",
 		req.Filename, childHandle, childAttr.Type, childAttr.Size, clientIP)
@@ -325,7 +327,7 @@ func (h *DefaultNFSHandler) Lookup(
 		childID, childAttr.Mode, dirID)
 
 	return &LookupResponse{
-		Status:     NFS3OK,
+		Status:     types.NFS3OK,
 		FileHandle: childHandle,
 		Attr:       nfsChildAttr,
 		DirAttr:    nfsDirAttr,
@@ -365,7 +367,7 @@ func validateLookupRequest(req *LookupRequest) *lookupValidationError {
 	if len(req.DirHandle) == 0 {
 		return &lookupValidationError{
 			message:   "empty directory handle",
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -373,7 +375,7 @@ func validateLookupRequest(req *LookupRequest) *lookupValidationError {
 	if len(req.DirHandle) > 64 {
 		return &lookupValidationError{
 			message:   fmt.Sprintf("directory handle too long: %d bytes (max 64)", len(req.DirHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -381,7 +383,7 @@ func validateLookupRequest(req *LookupRequest) *lookupValidationError {
 	if len(req.DirHandle) < 8 {
 		return &lookupValidationError{
 			message:   fmt.Sprintf("directory handle too short: %d bytes (min 8)", len(req.DirHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -389,7 +391,7 @@ func validateLookupRequest(req *LookupRequest) *lookupValidationError {
 	if req.Filename == "" {
 		return &lookupValidationError{
 			message:   "empty filename",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -397,7 +399,7 @@ func validateLookupRequest(req *LookupRequest) *lookupValidationError {
 	if len(req.Filename) > 255 {
 		return &lookupValidationError{
 			message:   fmt.Sprintf("filename too long: %d bytes (max 255)", len(req.Filename)),
-			nfsStatus: NFS3ErrNameTooLong,
+			nfsStatus: types.NFS3ErrNameTooLong,
 		}
 	}
 
@@ -405,7 +407,7 @@ func validateLookupRequest(req *LookupRequest) *lookupValidationError {
 	if bytes.ContainsAny([]byte(req.Filename), "\x00") {
 		return &lookupValidationError{
 			message:   "filename contains null byte",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -414,7 +416,7 @@ func validateLookupRequest(req *LookupRequest) *lookupValidationError {
 	if bytes.ContainsAny([]byte(req.Filename), "/") {
 		return &lookupValidationError{
 			message:   "filename contains path separator",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -543,11 +545,11 @@ func DecodeLookupRequest(data []byte) (*LookupRequest, error) {
 //
 // The encoding follows RFC 1813 Section 3.3.3 specifications:
 //  1. Status code (4 bytes, big-endian uint32)
-//  2. If status == NFS3OK:
+//  2. If status == types.NFS3OK:
 //     a. File handle (opaque: length + data + padding)
 //     b. Object attributes (present flag + attributes if present)
 //     c. Directory post-op attributes (present flag + attributes if present)
-//  3. If status != NFS3OK:
+//  3. If status != types.NFS3OK:
 //     a. Directory post-op attributes (present flag + attributes if present)
 //
 // XDR encoding requires all data to be in big-endian format and aligned
@@ -560,7 +562,7 @@ func DecodeLookupRequest(data []byte) (*LookupRequest, error) {
 // Example:
 //
 //	resp := &LookupResponse{
-//	    Status:     NFS3OK,
+//	    Status:     types.NFS3OK,
 //	    FileHandle: fileHandle,
 //	    Attr:       fileAttr,
 //	    DirAttr:    dirAttr,
@@ -586,11 +588,11 @@ func (resp *LookupResponse) Encode() ([]byte, error) {
 	// Error case: Return status + optional directory attributes
 	// ========================================================================
 
-	if resp.Status != NFS3OK {
+	if resp.Status != types.NFS3OK {
 		logger.Debug("Encoding LOOKUP error response: status=%d", resp.Status)
 
 		// Write post-op directory attributes (optional)
-		if err := encodeOptionalFileAttr(&buf, resp.DirAttr); err != nil {
+		if err := xdr.EncodeOptionalFileAttr(&buf, resp.DirAttr); err != nil {
 			return nil, fmt.Errorf("failed to encode directory attributes: %w", err)
 		}
 
@@ -626,12 +628,12 @@ func (resp *LookupResponse) Encode() ([]byte, error) {
 	}
 
 	// Encode file attributes using helper function
-	if err := encodeFileAttr(&buf, resp.Attr); err != nil {
+	if err := xdr.EncodeFileAttr(&buf, resp.Attr); err != nil {
 		return nil, fmt.Errorf("failed to encode file attributes: %w", err)
 	}
 
 	// Write post-op directory attributes (optional)
-	if err := encodeOptionalFileAttr(&buf, resp.DirAttr); err != nil {
+	if err := xdr.EncodeOptionalFileAttr(&buf, resp.DirAttr); err != nil {
 		return nil, fmt.Errorf("failed to encode directory attributes: %w", err)
 	}
 

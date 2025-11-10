@@ -29,14 +29,14 @@ func timeValToTime(seconds, nseconds uint32) time.Time {
 	return time.Unix(int64(seconds), int64(nseconds))
 }
 
-// timeToTimeVal converts Go time.Time to NFS time (nfstime3).
+// TimeToTimeVal converts Go time.Time to NFS time (nfstime3).
 //
 // Parameters:
 //   - t: Go time to convert
 //
 // Returns:
 //   - TimeVal: NFS time representation (seconds + nanoseconds)
-func timeToTimeVal(t time.Time) types.TimeVal {
+func TimeToTimeVal(t time.Time) types.TimeVal {
 	return types.TimeVal{
 		Seconds:  uint32(t.Unix()),
 		Nseconds: uint32(t.Nanosecond()),

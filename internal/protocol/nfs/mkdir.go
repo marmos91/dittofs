@@ -7,6 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // ============================================================================
@@ -60,37 +62,37 @@ type MkdirRequest struct {
 type MkdirResponse struct {
 	// Status indicates the result of the mkdir operation.
 	// Common values:
-	//   - NFS3OK (0): Success
+	//   - types.NFS3OK (0): Success
 	//   - NFS3ErrExist (17): Directory already exists
-	//   - NFS3ErrNoEnt (2): Parent directory not found
-	//   - NFS3ErrNotDir (20): Parent handle is not a directory
+	//   - types.NFS3ErrNoEnt (2): Parent directory not found
+	//   - types.NFS3ErrNotDir (20): Parent handle is not a directory
 	//   - NFS3ErrAcces (13): Permission denied
 	//   - NFS3ErrNoSpc (28): No space left on device
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3ErrIO (5): I/O error
 	//   - NFS3ErrInval (22): Invalid argument (e.g., bad name)
 	//   - NFS3ErrNameTooLong (63): Directory name too long
-	//   - NFS3ErrBadHandle (10001): Invalid file handle
+	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
 	Status uint32
 
 	// Handle is the file handle of the newly created directory.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	// The handle can be used in subsequent NFS operations to access the directory.
 	Handle []byte
 
 	// Attr contains the attributes of the newly created directory.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	// Includes mode, ownership, timestamps, etc.
-	Attr *FileAttr
+	Attr *types.NFSFileAttr
 
 	// WccBefore contains pre-operation attributes of the parent directory.
 	// Used for weak cache consistency to help clients detect if the parent
 	// directory changed during the operation. May be nil.
-	WccBefore *WccAttr
+	WccBefore *types.WccAttr
 
 	// WccAfter contains post-operation attributes of the parent directory.
 	// Used for weak cache consistency to provide the updated parent state.
 	// May be nil on error, but should be present on success.
-	WccAfter *FileAttr
+	WccAfter *types.NFSFileAttr
 }
 
 // MkdirContext contains the context information needed to process a MKDIR request.
@@ -192,14 +194,14 @@ type MkdirContext struct {
 //
 // Protocol-level errors return appropriate NFS status codes.
 // Repository errors are mapped to NFS status codes:
-//   - Parent not found → NFS3ErrNoEnt
-//   - Parent not directory → NFS3ErrNotDir
+//   - Parent not found → types.NFS3ErrNoEnt
+//   - Parent not directory → types.NFS3ErrNotDir
 //   - Name already exists → NFS3ErrExist
 //   - Invalid name → NFS3ErrInval
 //   - Name too long → NFS3ErrNameTooLong
 //   - Permission denied → NFS3ErrAcces
 //   - No space → NFS3ErrNoSpc
-//   - I/O error → NFS3ErrIO
+//   - I/O error → types.NFS3ErrIO
 //
 // **Weak Cache Consistency (WCC):**
 //
@@ -253,7 +255,7 @@ type MkdirContext struct {
 //	if err != nil {
 //	    // Internal server error
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    // Directory created successfully, use resp.Handle
 //	}
 func (h *DefaultNFSHandler) Mkdir(
@@ -262,7 +264,7 @@ func (h *DefaultNFSHandler) Mkdir(
 	ctx *MkdirContext,
 ) (*MkdirResponse, error) {
 	// Extract client IP for logging
-	clientIP := extractClientIP(ctx.ClientAddr)
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
 	logger.Info("MKDIR: name='%s' dir=%x mode=%o client=%s auth=%d",
 		req.Name, req.DirHandle, req.Attr.Mode, clientIP, ctx.AuthFlavor)
@@ -286,11 +288,11 @@ func (h *DefaultNFSHandler) Mkdir(
 	if err != nil {
 		logger.Warn("MKDIR failed: parent not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &MkdirResponse{Status: NFS3ErrNoEnt}, nil
+		return &MkdirResponse{Status: types.NFS3ErrNoEnt}, nil
 	}
 
 	// Capture pre-operation attributes for WCC data
-	wccBefore := captureWccAttr(parentAttr)
+	wccBefore := xdr.CaptureWccAttr(parentAttr)
 
 	// Verify parent is actually a directory
 	if parentAttr.Type != metadata.FileTypeDirectory {
@@ -298,11 +300,11 @@ func (h *DefaultNFSHandler) Mkdir(
 			req.DirHandle, parentAttr.Type, clientIP)
 
 		// Get current parent state for WCC
-		dirID := extractFileID(parentHandle)
-		wccAfter := MetadataToNFSAttr(parentAttr, dirID)
+		dirID := xdr.ExtractFileID(parentHandle)
+		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
 		return &MkdirResponse{
-			Status:    NFS3ErrNotDir,
+			Status:    types.NFS3ErrNotDir,
 			WccBefore: wccBefore,
 			WccAfter:  wccAfter,
 		}, nil
@@ -320,11 +322,11 @@ func (h *DefaultNFSHandler) Mkdir(
 
 		// Get updated parent attributes for WCC data
 		parentAttr, _ = repository.GetFile(parentHandle)
-		dirID := extractFileID(parentHandle)
-		wccAfter := MetadataToNFSAttr(parentAttr, dirID)
+		dirID := xdr.ExtractFileID(parentHandle)
+		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
 		return &MkdirResponse{
-			Status:    NFS3ErrExist,
+			Status:    types.NFS3ErrExist,
 			WccBefore: wccBefore,
 			WccAfter:  wccAfter,
 		}, nil
@@ -350,7 +352,7 @@ func (h *DefaultNFSHandler) Mkdir(
 	}
 
 	// Convert SetAttrs to metadata format for repository
-	dirAttr := convertSetAttrsToMetadata(metadata.FileTypeDirectory, &req.Attr, authCtx)
+	dirAttr := xdr.ConvertSetAttrsToMetadata(metadata.FileTypeDirectory, &req.Attr, authCtx)
 
 	newHandle, err := repository.CreateDirectory(parentHandle, req.Name, dirAttr, authCtx)
 	if err != nil {
@@ -359,11 +361,11 @@ func (h *DefaultNFSHandler) Mkdir(
 
 		// Get updated parent attributes for WCC data
 		parentAttr, _ = repository.GetFile(parentHandle)
-		dirID := extractFileID(parentHandle)
-		wccAfter := MetadataToNFSAttr(parentAttr, dirID)
+		dirID := xdr.ExtractFileID(parentHandle)
+		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
 		// Map repository errors to NFS status codes
-		status := mapRepositoryErrorToNFSStatus(err, clientIP, "mkdir")
+		status := xdr.MapRepositoryErrorToNFSStatus(err, clientIP, "mkdir")
 
 		return &MkdirResponse{
 			Status:    status,
@@ -382,17 +384,17 @@ func (h *DefaultNFSHandler) Mkdir(
 		logger.Error("MKDIR: failed to get new directory attributes: handle=%x error=%v",
 			newHandle, err)
 		// This shouldn't happen, but handle gracefully
-		return &MkdirResponse{Status: NFS3ErrIO}, nil
+		return &MkdirResponse{Status: types.NFS3ErrIO}, nil
 	}
 
 	// Generate file ID from handle for NFS attributes
-	fileid := extractFileID(newHandle)
-	nfsAttr := MetadataToNFSAttr(newDirAttr, fileid)
+	fileid := xdr.ExtractFileID(newHandle)
+	nfsAttr := xdr.MetadataToNFS(newDirAttr, fileid)
 
 	// Get updated parent attributes for WCC data
 	parentAttr, _ = repository.GetFile(parentHandle)
-	parentFileid := extractFileID(parentHandle)
-	wccAfter := MetadataToNFSAttr(parentAttr, parentFileid)
+	parentFileid := xdr.ExtractFileID(parentHandle)
+	wccAfter := xdr.MetadataToNFS(parentAttr, parentFileid)
 
 	logger.Info("MKDIR successful: name='%s' handle=%x mode=%o size=%d client=%s",
 		req.Name, newHandle, newDirAttr.Mode, newDirAttr.Size, clientIP)
@@ -401,7 +403,7 @@ func (h *DefaultNFSHandler) Mkdir(
 		fileid, newDirAttr.UID, newDirAttr.GID, parentFileid)
 
 	return &MkdirResponse{
-		Status:    NFS3OK,
+		Status:    types.NFS3OK,
 		Handle:    newHandle,
 		Attr:      nfsAttr,
 		WccBefore: wccBefore,
@@ -437,14 +439,14 @@ func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
 	if len(req.DirHandle) == 0 {
 		return &mkdirValidationError{
 			message:   "empty parent directory handle",
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.DirHandle) > 64 {
 		return &mkdirValidationError{
 			message:   fmt.Sprintf("parent handle too long: %d bytes (max 64)", len(req.DirHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -452,7 +454,7 @@ func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
 	if len(req.DirHandle) < 8 {
 		return &mkdirValidationError{
 			message:   fmt.Sprintf("parent handle too short: %d bytes (min 8)", len(req.DirHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -460,7 +462,7 @@ func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
 	if req.Name == "" {
 		return &mkdirValidationError{
 			message:   "empty directory name",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -468,7 +470,7 @@ func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
 	if req.Name == "." || req.Name == ".." {
 		return &mkdirValidationError{
 			message:   fmt.Sprintf("directory name cannot be '%s'", req.Name),
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -476,7 +478,7 @@ func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
 	if len(req.Name) > 255 {
 		return &mkdirValidationError{
 			message:   fmt.Sprintf("directory name too long: %d bytes (max 255)", len(req.Name)),
-			nfsStatus: NFS3ErrNameTooLong,
+			nfsStatus: types.NFS3ErrNameTooLong,
 		}
 	}
 
@@ -484,7 +486,7 @@ func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
 	if bytes.ContainsAny([]byte(req.Name), "\x00") {
 		return &mkdirValidationError{
 			message:   "directory name contains null byte",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -492,7 +494,7 @@ func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
 	if bytes.ContainsAny([]byte(req.Name), "/") {
 		return &mkdirValidationError{
 			message:   "directory name contains path separator",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -502,7 +504,7 @@ func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
 		if r < 0x20 || r == 0x7F {
 			return &mkdirValidationError{
 				message:   fmt.Sprintf("directory name contains control character at position %d", i),
-				nfsStatus: NFS3ErrInval,
+				nfsStatus: types.NFS3ErrInval,
 			}
 		}
 	}
@@ -561,7 +563,7 @@ func DecodeMkdirRequest(data []byte) (*MkdirRequest, error) {
 	// Decode parent directory handle
 	// ========================================================================
 
-	handle, err := decodeOpaque(reader)
+	handle, err := xdr.DecodeOpaque(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode handle: %w", err)
 	}
@@ -571,7 +573,7 @@ func DecodeMkdirRequest(data []byte) (*MkdirRequest, error) {
 	// Decode directory name
 	// ========================================================================
 
-	name, err := decodeString(reader)
+	name, err := xdr.DecodeString(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode name: %w", err)
 	}
@@ -581,7 +583,7 @@ func DecodeMkdirRequest(data []byte) (*MkdirRequest, error) {
 	// Decode sattr3 attributes structure
 	// ========================================================================
 
-	attr, err := decodeSetAttrs(reader)
+	attr, err := xdr.DecodeSetAttrs(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode attributes: %w", err)
 	}
@@ -635,7 +637,7 @@ func DecodeMkdirRequest(data []byte) (*MkdirRequest, error) {
 // Example:
 //
 //	resp := &MkdirResponse{
-//	    Status:    NFS3OK,
+//	    Status:    types.NFS3OK,
 //	    Handle:    newDirHandle,
 //	    Attr:      dirAttr,
 //	    WccBefore: wccBefore,
@@ -662,14 +664,14 @@ func (resp *MkdirResponse) Encode() ([]byte, error) {
 	// Success case: Write handle and attributes
 	// ========================================================================
 
-	if resp.Status == NFS3OK {
+	if resp.Status == types.NFS3OK {
 		// Write new directory handle (post_op_fh3 - optional)
-		if err := encodeOptionalOpaque(&buf, resp.Handle); err != nil {
+		if err := xdr.EncodeOptionalOpaque(&buf, resp.Handle); err != nil {
 			return nil, fmt.Errorf("encode handle: %w", err)
 		}
 
 		// Write new directory attributes (post_op_attr - optional)
-		if err := encodeOptionalFileAttr(&buf, resp.Attr); err != nil {
+		if err := xdr.EncodeOptionalFileAttr(&buf, resp.Attr); err != nil {
 			return nil, fmt.Errorf("encode attributes: %w", err)
 		}
 	}
@@ -680,7 +682,7 @@ func (resp *MkdirResponse) Encode() ([]byte, error) {
 
 	// WCC (Weak Cache Consistency) data helps clients maintain cache coherency
 	// by providing before-and-after snapshots of the parent directory.
-	if err := encodeWccData(&buf, resp.WccBefore, resp.WccAfter); err != nil {
+	if err := xdr.EncodeWccData(&buf, resp.WccBefore, resp.WccAfter); err != nil {
 		return nil, fmt.Errorf("encode wcc data: %w", err)
 	}
 

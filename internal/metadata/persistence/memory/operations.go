@@ -1085,7 +1085,7 @@ func (r *MemoryRepository) ReadDir(dirHandle metadata.FileHandle, cookie uint64,
 //   - ctx: Authentication context for access control
 //
 // Returns:
-//   - *FileAttr: The attributes of the removed file (for response)
+//   - *metadata.FileAttr: The attributes of the removed file (for response)
 //   - error: Returns error if:
 //   - Access denied (no write permission on parent)
 //   - File not found
@@ -1418,7 +1418,7 @@ func (r *MemoryRepository) RemoveDirectory(parentHandle metadata.FileHandle, nam
 //
 // Returns:
 //   - string: The symlink target path
-//   - *FileAttr: Symlink attributes (for cache consistency)
+//   - *metadata.FileAttr: Symlink attributes (for cache consistency)
 //   - error: Returns error if:
 //   - Handle not found
 //   - Handle is not a symlink

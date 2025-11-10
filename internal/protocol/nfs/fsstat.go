@@ -7,6 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // ============================================================================
@@ -37,50 +39,50 @@ type FsStatRequest struct {
 type FsStatResponse struct {
 	// Status indicates the result of the filesystem stat operation.
 	// Common values:
-	//   - NFS3OK (0): Success
-	//   - NFS3ErrNoEnt (2): File handle not found
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3OK (0): Success
+	//   - types.NFS3ErrNoEnt (2): File handle not found
+	//   - types.NFS3ErrIO (5): I/O error
 	//   - NFS3ErrAcces (13): Permission denied
 	//   - NFS3ErrStale (70): Stale file handle
-	//   - NFS3ErrBadHandle (10001): Invalid file handle
+	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
 	//   - NFS3ErrServerFault (10006): Internal server error
 	Status uint32
 
 	// Attr contains the post-operation attributes for the file handle.
-	// This is optional and may be nil if Status != NFS3OK.
+	// This is optional and may be nil if Status != types.NFS3OK.
 	// Including attributes helps clients maintain cache consistency.
-	Attr *FileAttr
+	Attr *types.NFSFileAttr
 
 	// Tbytes is the total size of the filesystem in bytes.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	Tbytes uint64
 
 	// Fbytes is the free space available in bytes.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	Fbytes uint64
 
 	// Abytes is the free space available to non-privileged users in bytes.
 	// This may be less than Fbytes if space is reserved for root/admin.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	Abytes uint64
 
 	// Tfiles is the total number of file slots (inodes) in the filesystem.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	Tfiles uint64
 
 	// Ffiles is the number of free file slots available.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	Ffiles uint64
 
 	// Afiles is the number of file slots available to non-privileged users.
 	// This may be less than Ffiles if slots are reserved for root/admin.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	Afiles uint64
 
 	// Invarsec is the number of seconds for which the filesystem is not
 	// expected to change. A value of 0 means the filesystem is expected to
 	// change at any time. This helps clients optimize stat operations.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	Invarsec uint32
 }
 
@@ -155,7 +157,7 @@ type FsStatContext struct {
 //	if err != nil {
 //	    // Internal server error
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    // Use resp.Tbytes, resp.Fbytes, etc. for filesystem stats
 //	}
 func (h *DefaultNFSHandler) FsStat(repository metadata.Repository, req *FsStatRequest, ctx *FsStatContext) (*FsStatResponse, error) {
@@ -164,38 +166,38 @@ func (h *DefaultNFSHandler) FsStat(repository metadata.Repository, req *FsStatRe
 	// Validate file handle
 	if len(req.Handle) == 0 {
 		logger.Warn("FSSTAT failed: empty file handle from client=%s", ctx.ClientAddr)
-		return &FsStatResponse{Status: NFS3ErrBadHandle}, nil
+		return &FsStatResponse{Status: types.NFS3ErrBadHandle}, nil
 	}
 
 	// RFC 1813 specifies maximum handle size of 64 bytes
 	if len(req.Handle) > 64 {
 		logger.Warn("FSSTAT failed: oversized handle (%d bytes) from client=%s", len(req.Handle), ctx.ClientAddr)
-		return &FsStatResponse{Status: NFS3ErrBadHandle}, nil
+		return &FsStatResponse{Status: types.NFS3ErrBadHandle}, nil
 	}
 
 	// Validate handle length for file ID extraction (need at least 8 bytes)
 	if len(req.Handle) < 8 {
 		logger.Warn("FSSTAT failed: undersized handle (%d bytes) from client=%s", len(req.Handle), ctx.ClientAddr)
-		return &FsStatResponse{Status: NFS3ErrBadHandle}, nil
+		return &FsStatResponse{Status: types.NFS3ErrBadHandle}, nil
 	}
 
 	// Verify the file handle exists and is valid
 	attr, err := repository.GetFile(metadata.FileHandle(req.Handle))
 	if err != nil {
 		logger.Debug("FSSTAT failed: handle not found: %v client=%s", err, ctx.ClientAddr)
-		return &FsStatResponse{Status: NFS3ErrStale}, nil
+		return &FsStatResponse{Status: types.NFS3ErrStale}, nil
 	}
 
 	// Retrieve filesystem statistics from the repository
 	fsStats, err := repository.GetFSStats(metadata.FileHandle(req.Handle))
 	if err != nil {
 		logger.Error("FSSTAT failed: error retrieving statistics: %v client=%s", err, ctx.ClientAddr)
-		return &FsStatResponse{Status: NFS3ErrIO}, nil
+		return &FsStatResponse{Status: types.NFS3ErrIO}, nil
 	}
 
 	// Generate file ID from handle for attributes
 	fileid := binary.BigEndian.Uint64(req.Handle[:8])
-	nfsAttr := MetadataToNFSAttr(attr, fileid)
+	nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 	logger.Info("FSSTAT successful: client=%s total=%d free=%d avail=%d tfiles=%d ffiles=%d afiles=%d",
 		ctx.ClientAddr, fsStats.TotalBytes, fsStats.FreeBytes, fsStats.AvailBytes,
@@ -203,7 +205,7 @@ func (h *DefaultNFSHandler) FsStat(repository metadata.Repository, req *FsStatRe
 
 	// Build response with data from repository
 	return &FsStatResponse{
-		Status:   NFS3OK,
+		Status:   types.NFS3OK,
 		Attr:     nfsAttr,
 		Tbytes:   fsStats.TotalBytes,
 		Fbytes:   fsStats.FreeBytes,
@@ -277,8 +279,8 @@ func DecodeFsStatRequest(data []byte) (*FsStatRequest, error) {
 //
 // The encoding follows RFC 1813 Section 3.3.18 specifications:
 //  1. Status (4 bytes, big-endian uint32)
-//  2. Post-op attributes (optional, present flag + attributes if Status == NFS3OK)
-//  3. Filesystem statistics (only if Status == NFS3OK):
+//  2. Post-op attributes (optional, present flag + attributes if Status == types.NFS3OK)
+//  3. Filesystem statistics (only if Status == types.NFS3OK):
 //     - Total bytes (8 bytes)
 //     - Free bytes (8 bytes)
 //     - Available bytes (8 bytes)
@@ -296,7 +298,7 @@ func DecodeFsStatRequest(data []byte) (*FsStatRequest, error) {
 // Errors returned:
 //   - "write status": Failed to write the status field
 //   - "write *": Failed to write various fields
-//   - "encode file attributes": Failed to encode the FileAttr structure
+//   - "encode file attributes": Failed to encode the metadata.FileAttr structure
 func (resp *FsStatResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
@@ -306,7 +308,7 @@ func (resp *FsStatResponse) Encode() ([]byte, error) {
 	}
 
 	// If status is not OK, return early with just the status
-	if resp.Status != NFS3OK {
+	if resp.Status != types.NFS3OK {
 		logger.Debug("Encoding FSSTAT error response: status=%d", resp.Status)
 		return buf.Bytes(), nil
 	}
@@ -317,7 +319,7 @@ func (resp *FsStatResponse) Encode() ([]byte, error) {
 		if err := binary.Write(&buf, binary.BigEndian, uint32(1)); err != nil {
 			return nil, fmt.Errorf("write attr present flag: %w", err)
 		}
-		if err := encodeFileAttr(&buf, resp.Attr); err != nil {
+		if err := xdr.EncodeFileAttr(&buf, resp.Attr); err != nil {
 			return nil, fmt.Errorf("encode file attributes: %w", err)
 		}
 	} else {

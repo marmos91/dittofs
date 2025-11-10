@@ -1,66 +1,31 @@
 package types
 
 // ============================================================================
-// NFS File Attributes
+// NFS Protocol Types - RFC 1813 Wire Format Structures
 // ============================================================================
-
-// FileAttr represents NFS file attributes (fattr3 in RFC 1813 Section 2.5.5).
-// These attributes describe the metadata of a file or directory in the NFS filesystem.
 //
-// This structure is returned by most NFS operations to provide clients with
-// up-to-date information about file state.
+// These types represent the exact wire format for NFSv3 protocol as defined
+// in RFC 1813. They are separate from internal metadata types to maintain
+// clean separation between protocol layer and business logic layer.
+
+// NFSFileAttr represents the NFS fattr3 structure per RFC 1813 Section 2.3.1.
 //
-// Usage:
-//   - Read operations: GETATTR, LOOKUP, READ, READDIR_PLUS
-//   - Write operations: CREATE, MKDIR, SETATTR, WRITE (post-op attributes)
-//   - All operations that modify files include post-op attributes
-type FileAttr struct {
-	// Type indicates the file type (regular, directory, symlink, etc.)
-	// See FileType* constants below
-	Type uint32
-
-	// Mode contains the UNIX permission bits (e.g., 0644, 0755)
-	// Format: standard UNIX file mode (rwxrwxrwx)
-	Mode uint32
-
-	// Nlink is the number of hard links to this file
-	Nlink uint32
-
-	// UID is the user ID of the file owner
-	UID uint32
-
-	// GID is the group ID of the file owner
-	GID uint32
-
-	// Size is the file size in bytes
-	// For directories, this is implementation-dependent
-	Size uint64
-
-	// Used is the actual disk space used in bytes
-	// May differ from Size due to sparse files or block allocation
-	Used uint64
-
-	// Rdev contains the device number for special files (block/char devices)
-	// Format: major/minor device numbers
-	Rdev SpecData
-
-	// Fsid is the filesystem identifier
-	// Used to identify which filesystem the file resides on
-	Fsid uint64
-
-	// Fileid is the unique file identifier within the filesystem
-	// Similar to UNIX inode number
-	Fileid uint64
-
-	// Atime is the time of last access
-	Atime TimeVal
-
-	// Mtime is the time of last modification
-	Mtime TimeVal
-
-	// Ctime is the time of last attribute change
-	// Updated when file data OR metadata changes
-	Ctime TimeVal
+// This structure contains the complete set of file attributes as transmitted
+// over the wire in NFS protocol messages.
+type NFSFileAttr struct {
+	Type   uint32   // File type (NF3REG, NF3DIR, etc.)
+	Mode   uint32   // Unix permission bits
+	Nlink  uint32   // Number of hard links
+	UID    uint32   // Owner user ID
+	GID    uint32   // Owner group ID
+	Size   uint64   // File size in bytes
+	Used   uint64   // Disk space used in bytes
+	Rdev   SpecData // Device number for special files
+	Fsid   uint64   // Filesystem identifier
+	Fileid uint64   // File identifier (inode number)
+	Atime  TimeVal  // Last access time
+	Mtime  TimeVal  // Last modification time
+	Ctime  TimeVal  // Last metadata change time
 }
 
 // SpecData represents device numbers for special files (RFC 1813 Section 2.5.5).
@@ -108,7 +73,7 @@ type TimeVal struct {
 // Usage:
 //
 //   - Capture before modifying a file:
-//     wccAttr := captureWccAttr(fileAttr)
+//     wccAttr := xdr.CaptureWccAttr(fileAttr)
 //
 //   - Client uses this to detect concurrent modifications
 //
@@ -165,7 +130,7 @@ type DirEntryPlus struct {
 	Cookie uint64
 
 	// Attr contains the file attributes (may be nil)
-	Attr *FileAttr
+	Attr *NFSFileAttr
 
 	// Handle is the file handle (may be nil)
 	Handle []byte
@@ -201,7 +166,7 @@ type FSStat struct {
 
 // TimeGuard is used for conditional updates based on ctime.
 // If Check is true and the server's current ctime doesn't match Time,
-// the operation fails with NFS3ErrNotSync.
+// the operation fails with types.NFS3ErrNotSync.
 //
 // This implements optimistic concurrency control to prevent lost updates
 // when multiple clients modify the same file concurrently.

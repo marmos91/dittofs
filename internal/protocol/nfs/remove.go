@@ -8,6 +8,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // ============================================================================
@@ -48,26 +50,26 @@ type RemoveRequest struct {
 type RemoveResponse struct {
 	// Status indicates the result of the remove operation.
 	// Common values:
-	//   - NFS3OK (0): Success
-	//   - NFS3ErrNoEnt (2): File or directory not found
-	//   - NFS3ErrNotDir (20): DirHandle is not a directory
-	//   - NFS3ErrIsDir (21): Attempted to remove a directory (use RMDIR)
+	//   - types.NFS3OK (0): Success
+	//   - types.NFS3ErrNoEnt (2): File or directory not found
+	//   - types.NFS3ErrNotDir (20): DirHandle is not a directory
+	//   - types.NFS3ErrIsDir (21): Attempted to remove a directory (use RMDIR)
 	//   - NFS3ErrAcces (13): Permission denied
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3ErrIO (5): I/O error
 	//   - NFS3ErrStale (70): Stale file handle
-	//   - NFS3ErrBadHandle (10001): Invalid file handle
+	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
 	//   - NFS3ErrNameTooLong (63): Filename too long
 	Status uint32
 
 	// DirWccBefore contains pre-operation attributes of the parent directory.
 	// Used for weak cache consistency to help clients detect changes.
 	// May be nil if attributes could not be captured.
-	DirWccBefore *WccAttr
+	DirWccBefore *types.WccAttr
 
 	// DirWccAfter contains post-operation attributes of the parent directory.
 	// Used for weak cache consistency to provide updated directory state.
 	// May be nil on error, but should be present on success.
-	DirWccAfter *FileAttr
+	DirWccAfter *types.NFSFileAttr
 }
 
 // RemoveContext contains the context information needed to process a REMOVE request.
@@ -143,7 +145,7 @@ type RemoveContext struct {
 //
 // REMOVE is for files only:
 //   - Regular files: Success
-//   - Directories: Returns NFS3ErrIsDir (must use RMDIR)
+//   - Directories: Returns types.NFS3ErrIsDir (must use RMDIR)
 //   - Symbolic links: Success (removes the link, not the target)
 //   - Special files: Success (device files, sockets, FIFOs)
 //
@@ -159,12 +161,12 @@ type RemoveContext struct {
 //
 // Protocol-level errors return appropriate NFS status codes.
 // Repository errors are mapped to NFS status codes:
-//   - Directory not found → NFS3ErrNoEnt
-//   - Not a directory → NFS3ErrNotDir
-//   - File not found → NFS3ErrNoEnt
-//   - File is directory → NFS3ErrIsDir
+//   - Directory not found → types.NFS3ErrNoEnt
+//   - Not a directory → types.NFS3ErrNotDir
+//   - File not found → types.NFS3ErrNoEnt
+//   - File is directory → types.NFS3ErrIsDir
 //   - Permission denied → NFS3ErrAcces
-//   - I/O error → NFS3ErrIO
+//   - I/O error → types.NFS3ErrIO
 //
 // **Weak Cache Consistency (WCC):**
 //
@@ -215,7 +217,7 @@ type RemoveContext struct {
 //	if err != nil {
 //	    // Internal server error
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    // File removed successfully
 //	}
 func (h *DefaultNFSHandler) Remove(
@@ -224,7 +226,7 @@ func (h *DefaultNFSHandler) Remove(
 	ctx *RemoveContext,
 ) (*RemoveResponse, error) {
 	// Extract client IP for logging
-	clientIP := extractClientIP(ctx.ClientAddr)
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
 	logger.Info("REMOVE: file='%s' dir=%x client=%s auth=%d",
 		req.Filename, req.DirHandle, clientIP, ctx.AuthFlavor)
@@ -248,11 +250,11 @@ func (h *DefaultNFSHandler) Remove(
 	if err != nil {
 		logger.Warn("REMOVE failed: directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &RemoveResponse{Status: NFS3ErrNoEnt}, nil
+		return &RemoveResponse{Status: types.NFS3ErrNoEnt}, nil
 	}
 
 	// Capture pre-operation attributes for WCC data
-	wccBefore := captureWccAttr(dirAttr)
+	wccBefore := xdr.CaptureWccAttr(dirAttr)
 
 	// ========================================================================
 	// Step 3: Build authentication context
@@ -281,13 +283,13 @@ func (h *DefaultNFSHandler) Remove(
 	removedFileAttr, err := repository.RemoveFile(dirHandle, req.Filename, authCtx)
 	if err != nil {
 		// Map repository errors to NFS status codes
-		nfsStatus := mapRepositoryErrorToNFSStatus(err, clientIP, "REMOVE")
+		nfsStatus := xdr.MapRepositoryErrorToNFSStatus(err, clientIP, "REMOVE")
 
 		// Get updated directory attributes for WCC data (best effort)
-		var wccAfter *FileAttr
+		var wccAfter *types.NFSFileAttr
 		if dirAttr, err := repository.GetFile(dirHandle); err == nil {
-			dirID := extractFileID(dirHandle)
-			wccAfter = MetadataToNFSAttr(dirAttr, dirID)
+			dirID := xdr.ExtractFileID(dirHandle)
+			wccAfter = xdr.MetadataToNFS(dirAttr, dirID)
 		}
 
 		return &RemoveResponse{
@@ -309,10 +311,10 @@ func (h *DefaultNFSHandler) Remove(
 		// Continue with nil WccAfter rather than failing the entire operation
 	}
 
-	var wccAfter *FileAttr
+	var wccAfter *types.NFSFileAttr
 	if dirAttr != nil {
-		dirID := extractFileID(dirHandle)
-		wccAfter = MetadataToNFSAttr(dirAttr, dirID)
+		dirID := xdr.ExtractFileID(dirHandle)
+		wccAfter = xdr.MetadataToNFS(dirAttr, dirID)
 	}
 
 	logger.Info("REMOVE successful: file='%s' dir=%x client=%s",
@@ -322,7 +324,7 @@ func (h *DefaultNFSHandler) Remove(
 		removedFileAttr.Type, removedFileAttr.Size)
 
 	return &RemoveResponse{
-		Status:       NFS3OK,
+		Status:       types.NFS3OK,
 		DirWccBefore: wccBefore,
 		DirWccAfter:  wccAfter,
 	}, nil
@@ -356,14 +358,14 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 	if len(req.DirHandle) == 0 {
 		return &removeValidationError{
 			message:   "empty parent directory handle",
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.DirHandle) > 64 {
 		return &removeValidationError{
 			message:   fmt.Sprintf("parent handle too long: %d bytes (max 64)", len(req.DirHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -371,7 +373,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 	if len(req.DirHandle) < 8 {
 		return &removeValidationError{
 			message:   fmt.Sprintf("parent handle too short: %d bytes (min 8)", len(req.DirHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -379,7 +381,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 	if req.Filename == "" {
 		return &removeValidationError{
 			message:   "empty filename",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -387,7 +389,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 	if req.Filename == "." || req.Filename == ".." {
 		return &removeValidationError{
 			message:   fmt.Sprintf("cannot remove '%s'", req.Filename),
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -395,7 +397,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 	if len(req.Filename) > 255 {
 		return &removeValidationError{
 			message:   fmt.Sprintf("filename too long: %d bytes (max 255)", len(req.Filename)),
-			nfsStatus: NFS3ErrNameTooLong,
+			nfsStatus: types.NFS3ErrNameTooLong,
 		}
 	}
 
@@ -403,7 +405,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 	if strings.ContainsAny(req.Filename, "\x00") {
 		return &removeValidationError{
 			message:   "filename contains null byte",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -411,7 +413,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 	if strings.ContainsAny(req.Filename, "/") {
 		return &removeValidationError{
 			message:   "filename contains path separator",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -420,7 +422,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 		if r < 0x20 || r == 0x7F {
 			return &removeValidationError{
 				message:   fmt.Sprintf("filename contains control character at position %d", i),
-				nfsStatus: NFS3ErrInval,
+				nfsStatus: types.NFS3ErrInval,
 			}
 		}
 	}
@@ -560,7 +562,7 @@ func DecodeRemoveRequest(data []byte) (*RemoveRequest, error) {
 // Example:
 //
 //	resp := &RemoveResponse{
-//	    Status:       NFS3OK,
+//	    Status:       types.NFS3OK,
 //	    DirWccBefore: wccBefore,
 //	    DirWccAfter:  wccAfter,
 //	}
@@ -587,7 +589,7 @@ func (resp *RemoveResponse) Encode() ([]byte, error) {
 	// WCC (Weak Cache Consistency) data helps clients maintain cache coherency
 	// by providing before-and-after snapshots of the parent directory.
 
-	if err := encodeWccData(&buf, resp.DirWccBefore, resp.DirWccAfter); err != nil {
+	if err := xdr.EncodeWccData(&buf, resp.DirWccBefore, resp.DirWccAfter); err != nil {
 		return nil, fmt.Errorf("failed to encode directory wcc data: %w", err)
 	}
 

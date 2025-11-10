@@ -9,6 +9,8 @@ import (
 	"github.com/marmos91/dittofs/internal/content"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // Write stability levels (RFC 1813 Section 3.3.7)
@@ -30,11 +32,11 @@ type WriteRequest struct {
 // WriteResponse represents a WRITE response
 type WriteResponse struct {
 	Status     uint32
-	AttrBefore *WccAttr  // Pre-op attributes (optional)
-	AttrAfter  *FileAttr // Post-op attributes (optional)
-	Count      uint32    // Number of bytes written
-	Committed  uint32    // How data was committed
-	Verf       uint64    // Write verifier
+	AttrBefore *types.WccAttr     // Pre-op attributes (optional)
+	AttrAfter  *types.NFSFileAttr // Post-op attributes (optional)
+	Count      uint32             // Number of bytes written
+	Committed  uint32             // How data was committed
+	Verf       uint64             // Write verifier
 }
 
 // Write writes data to a file.
@@ -47,23 +49,23 @@ func (h *DefaultNFSHandler) Write(contentRepo content.Repository, metadataRepo m
 	attr, err := metadataRepo.GetFile(metadata.FileHandle(req.Handle))
 	if err != nil {
 		logger.Warn("File not found: %v", err)
-		return &WriteResponse{Status: NFS3ErrNoEnt}, nil
+		return &WriteResponse{Status: types.NFS3ErrNoEnt}, nil
 	}
 
 	// Verify it's a regular file
 	if attr.Type != metadata.FileTypeRegular {
 		logger.Warn("Handle is not a regular file")
-		return &WriteResponse{Status: NFS3ErrIsDir}, nil
+		return &WriteResponse{Status: types.NFS3ErrIsDir}, nil
 	}
 
 	// Store pre-op attributes for WCC
-	wccAttr := &WccAttr{
+	wccAttr := &types.WccAttr{
 		Size: attr.Size,
-		Mtime: TimeVal{
+		Mtime: types.TimeVal{
 			Seconds:  uint32(attr.Mtime.Unix()),
 			Nseconds: uint32(attr.Mtime.Nanosecond()),
 		},
-		Ctime: TimeVal{
+		Ctime: types.TimeVal{
 			Seconds:  uint32(attr.Ctime.Unix()),
 			Nseconds: uint32(attr.Ctime.Nanosecond()),
 		},
@@ -73,7 +75,7 @@ func (h *DefaultNFSHandler) Write(contentRepo content.Repository, metadataRepo m
 	writeRepo, ok := contentRepo.(content.WriteRepository)
 	if !ok {
 		logger.Error("Content repository does not support writing")
-		return &WriteResponse{Status: NFS3ErrRofs}, nil
+		return &WriteResponse{Status: types.NFS3ErrRofs}, nil
 	}
 
 	// If no ContentID exists, create one
@@ -85,7 +87,7 @@ func (h *DefaultNFSHandler) Write(contentRepo content.Repository, metadataRepo m
 	err = writeRepo.WriteAt(attr.ContentID, req.Data, int64(req.Offset))
 	if err != nil {
 		logger.Error("Failed to write content: %v", err)
-		return &WriteResponse{Status: NFS3ErrIO}, nil
+		return &WriteResponse{Status: types.NFS3ErrIO}, nil
 	}
 
 	// Update file size if needed
@@ -101,17 +103,17 @@ func (h *DefaultNFSHandler) Write(contentRepo content.Repository, metadataRepo m
 	// Save updated attributes
 	if err := metadataRepo.UpdateFile(metadata.FileHandle(req.Handle), attr); err != nil {
 		logger.Error("Failed to update file metadata: %v", err)
-		return &WriteResponse{Status: NFS3ErrIO}, nil
+		return &WriteResponse{Status: types.NFS3ErrIO}, nil
 	}
 
 	// Generate file ID
 	fileid := binary.BigEndian.Uint64(req.Handle[:8])
-	nfsAttr := MetadataToNFSAttr(attr, fileid)
+	nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 	logger.Info("WRITE successful: wrote %d bytes at offset %d", len(req.Data), req.Offset)
 
 	return &WriteResponse{
-		Status:     NFS3OK,
+		Status:     types.NFS3OK,
 		AttrBefore: wccAttr,
 		AttrAfter:  nfsAttr,
 		Count:      uint32(len(req.Data)),
@@ -225,7 +227,7 @@ func (resp *WriteResponse) Encode() ([]byte, error) {
 		if err := binary.Write(&buf, binary.BigEndian, uint32(1)); err != nil {
 			return nil, err
 		}
-		if err := encodeFileAttr(&buf, resp.AttrAfter); err != nil {
+		if err := xdr.EncodeFileAttr(&buf, resp.AttrAfter); err != nil {
 			return nil, err
 		}
 	} else {
@@ -234,7 +236,7 @@ func (resp *WriteResponse) Encode() ([]byte, error) {
 		}
 	}
 
-	if resp.Status != NFS3OK {
+	if resp.Status != types.NFS3OK {
 		return buf.Bytes(), nil
 	}
 

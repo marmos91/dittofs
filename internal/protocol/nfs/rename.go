@@ -8,6 +8,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // ============================================================================
@@ -57,34 +59,34 @@ type RenameRequest struct {
 type RenameResponse struct {
 	// Status indicates the result of the rename operation.
 	// Common values:
-	//   - NFS3OK (0): Success
-	//   - NFS3ErrNoEnt (2): Source file or directory not found
-	//   - NFS3ErrNotDir (20): From or To handle is not a directory
+	//   - types.NFS3OK (0): Success
+	//   - types.NFS3ErrNoEnt (2): Source file or directory not found
+	//   - types.NFS3ErrNotDir (20): From or To handle is not a directory
 	//   - NFS3ErrInval (22): Invalid argument (e.g., renaming to "." or "..")
 	//   - NFS3ErrExist (17): Destination exists and cannot be replaced
 	//   - NFS3ErrNotEmpty (66): Attempt to rename directory over non-empty directory
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3ErrIO (5): I/O error
 	//   - NFS3ErrAcces (13): Permission denied
 	//   - NFS3ErrXDev (18): Cross-device rename attempted (not supported)
 	//   - NFS3ErrStale (70): Stale file handle
-	//   - NFS3ErrBadHandle (10001): Invalid file handle
+	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
 	Status uint32
 
 	// FromDirWccBefore contains pre-operation attributes of the source directory.
 	// Used for weak cache consistency.
-	FromDirWccBefore *WccAttr
+	FromDirWccBefore *types.WccAttr
 
 	// FromDirWccAfter contains post-operation attributes of the source directory.
 	// Used for weak cache consistency.
-	FromDirWccAfter *FileAttr
+	FromDirWccAfter *types.NFSFileAttr
 
 	// ToDirWccBefore contains pre-operation attributes of the destination directory.
 	// Used for weak cache consistency.
-	ToDirWccBefore *WccAttr
+	ToDirWccBefore *types.WccAttr
 
 	// ToDirWccAfter contains post-operation attributes of the destination directory.
 	// Used for weak cache consistency.
-	ToDirWccAfter *FileAttr
+	ToDirWccAfter *types.NFSFileAttr
 }
 
 // RenameContext contains the context information needed to process a RENAME request.
@@ -176,8 +178,8 @@ type RenameContext struct {
 //   - Renaming to same name in same directory: Success (no-op)
 //   - Renaming over existing file: Replaces atomically if allowed
 //   - Renaming over existing directory: Only if empty (RFC 1813 requirement)
-//   - Renaming directory over file: Not allowed (NFS3ErrExist or NFS3ErrNotDir)
-//   - Renaming file over directory: Not allowed (NFS3ErrExist or NFS3ErrIsDir)
+//   - Renaming directory over file: Not allowed (NFS3ErrExist or types.NFS3ErrNotDir)
+//   - Renaming file over directory: Not allowed (NFS3ErrExist or types.NFS3ErrIsDir)
 //   - Renaming "." or "..": Not allowed (NFS3ErrInval)
 //   - Cross-filesystem rename: May not be supported (NFS3ErrXDev)
 //
@@ -185,13 +187,13 @@ type RenameContext struct {
 //
 // Protocol-level errors return appropriate NFS status codes.
 // Repository errors are mapped to NFS status codes:
-//   - Source not found → NFS3ErrNoEnt
-//   - Source/dest not directory → NFS3ErrNotDir
+//   - Source not found → types.NFS3ErrNoEnt
+//   - Source/dest not directory → types.NFS3ErrNotDir
 //   - Invalid names → NFS3ErrInval
 //   - Permission denied → NFS3ErrAcces
 //   - Cross-device → NFS3ErrXDev
 //   - Destination is non-empty directory → NFS3ErrNotEmpty
-//   - I/O error → NFS3ErrIO
+//   - I/O error → types.NFS3ErrIO
 //
 // **Weak Cache Consistency (WCC):**
 //
@@ -243,7 +245,7 @@ type RenameContext struct {
 //	if err != nil {
 //	    // Internal server error
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    // Rename successful
 //	}
 func (h *DefaultNFSHandler) Rename(
@@ -252,7 +254,7 @@ func (h *DefaultNFSHandler) Rename(
 	ctx *RenameContext,
 ) (*RenameResponse, error) {
 	// Extract client IP for logging
-	clientIP := extractClientIP(ctx.ClientAddr)
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
 	logger.Info("RENAME: from='%s' in dir=%x to='%s' in dir=%x client=%s auth=%d",
 		req.FromName, req.FromDirHandle, req.ToName, req.ToDirHandle, clientIP, ctx.AuthFlavor)
@@ -276,22 +278,22 @@ func (h *DefaultNFSHandler) Rename(
 	if err != nil {
 		logger.Warn("RENAME failed: source directory not found: dir=%x client=%s error=%v",
 			req.FromDirHandle, clientIP, err)
-		return &RenameResponse{Status: NFS3ErrNoEnt}, nil
+		return &RenameResponse{Status: types.NFS3ErrNoEnt}, nil
 	}
 
 	// Capture pre-operation attributes for source directory
-	fromDirWccBefore := captureWccAttr(fromDirAttr)
+	fromDirWccBefore := xdr.CaptureWccAttr(fromDirAttr)
 
 	// Verify source is a directory
 	if fromDirAttr.Type != metadata.FileTypeDirectory {
 		logger.Warn("RENAME failed: source handle not a directory: dir=%x type=%d client=%s",
 			req.FromDirHandle, fromDirAttr.Type, clientIP)
 
-		fromDirID := extractFileID(fromDirHandle)
-		fromDirWccAfter := MetadataToNFSAttr(fromDirAttr, fromDirID)
+		fromDirID := xdr.ExtractFileID(fromDirHandle)
+		fromDirWccAfter := xdr.MetadataToNFS(fromDirAttr, fromDirID)
 
 		return &RenameResponse{
-			Status:           NFS3ErrNotDir,
+			Status:           types.NFS3ErrNotDir,
 			FromDirWccBefore: fromDirWccBefore,
 			FromDirWccAfter:  fromDirWccAfter,
 		}, nil
@@ -308,32 +310,32 @@ func (h *DefaultNFSHandler) Rename(
 			req.ToDirHandle, clientIP, err)
 
 		// Return WCC for source directory
-		fromDirID := extractFileID(fromDirHandle)
-		fromDirWccAfter := MetadataToNFSAttr(fromDirAttr, fromDirID)
+		fromDirID := xdr.ExtractFileID(fromDirHandle)
+		fromDirWccAfter := xdr.MetadataToNFS(fromDirAttr, fromDirID)
 
 		return &RenameResponse{
-			Status:           NFS3ErrNoEnt,
+			Status:           types.NFS3ErrNoEnt,
 			FromDirWccBefore: fromDirWccBefore,
 			FromDirWccAfter:  fromDirWccAfter,
 		}, nil
 	}
 
 	// Capture pre-operation attributes for destination directory
-	toDirWccBefore := captureWccAttr(toDirAttr)
+	toDirWccBefore := xdr.CaptureWccAttr(toDirAttr)
 
 	// Verify destination is a directory
 	if toDirAttr.Type != metadata.FileTypeDirectory {
 		logger.Warn("RENAME failed: destination handle not a directory: dir=%x type=%d client=%s",
 			req.ToDirHandle, toDirAttr.Type, clientIP)
 
-		fromDirID := extractFileID(fromDirHandle)
-		fromDirWccAfter := MetadataToNFSAttr(fromDirAttr, fromDirID)
+		fromDirID := xdr.ExtractFileID(fromDirHandle)
+		fromDirWccAfter := xdr.MetadataToNFS(fromDirAttr, fromDirID)
 
-		toDirID := extractFileID(toDirHandle)
-		toDirWccAfter := MetadataToNFSAttr(toDirAttr, toDirID)
+		toDirID := xdr.ExtractFileID(toDirHandle)
+		toDirWccAfter := xdr.MetadataToNFS(toDirAttr, toDirID)
 
 		return &RenameResponse{
-			Status:           NFS3ErrNotDir,
+			Status:           types.NFS3ErrNotDir,
 			FromDirWccBefore: fromDirWccBefore,
 			FromDirWccAfter:  fromDirWccAfter,
 			ToDirWccBefore:   toDirWccBefore,
@@ -368,20 +370,20 @@ func (h *DefaultNFSHandler) Rename(
 			req.FromName, req.ToName, clientIP, err)
 
 		// Get updated directory attributes for WCC data
-		var fromDirWccAfter *FileAttr
+		var fromDirWccAfter *types.NFSFileAttr
 		if updatedFromDirAttr, getErr := repository.GetFile(fromDirHandle); getErr == nil {
-			fromDirID := extractFileID(fromDirHandle)
-			fromDirWccAfter = MetadataToNFSAttr(updatedFromDirAttr, fromDirID)
+			fromDirID := xdr.ExtractFileID(fromDirHandle)
+			fromDirWccAfter = xdr.MetadataToNFS(updatedFromDirAttr, fromDirID)
 		}
 
-		var toDirWccAfter *FileAttr
+		var toDirWccAfter *types.NFSFileAttr
 		if updatedToDirAttr, getErr := repository.GetFile(toDirHandle); getErr == nil {
-			toDirID := extractFileID(toDirHandle)
-			toDirWccAfter = MetadataToNFSAttr(updatedToDirAttr, toDirID)
+			toDirID := xdr.ExtractFileID(toDirHandle)
+			toDirWccAfter = xdr.MetadataToNFS(updatedToDirAttr, toDirID)
 		}
 
 		// Map repository errors to NFS status codes
-		status := mapRepositoryErrorToNFSStatus(err, clientIP, "rename")
+		status := xdr.MapRepositoryErrorToNFSStatus(err, clientIP, "rename")
 
 		return &RenameResponse{
 			Status:           status,
@@ -397,38 +399,38 @@ func (h *DefaultNFSHandler) Rename(
 	// ========================================================================
 
 	// Get updated source directory attributes
-	var fromDirWccAfter *FileAttr
+	var fromDirWccAfter *types.NFSFileAttr
 	if updatedFromDirAttr, getErr := repository.GetFile(fromDirHandle); getErr != nil {
 		logger.Warn("RENAME: successful but cannot get updated source directory attributes: dir=%x error=%v",
 			req.FromDirHandle, getErr)
 		// fromDirWccAfter will be nil
 	} else {
-		fromDirID := extractFileID(fromDirHandle)
-		fromDirWccAfter = MetadataToNFSAttr(updatedFromDirAttr, fromDirID)
+		fromDirID := xdr.ExtractFileID(fromDirHandle)
+		fromDirWccAfter = xdr.MetadataToNFS(updatedFromDirAttr, fromDirID)
 	}
 
 	// Get updated destination directory attributes
-	var toDirWccAfter *FileAttr
+	var toDirWccAfter *types.NFSFileAttr
 	if updatedToDirAttr, getErr := repository.GetFile(toDirHandle); getErr != nil {
 		logger.Warn("RENAME: successful but cannot get updated destination directory attributes: dir=%x error=%v",
 			req.ToDirHandle, getErr)
 		// toDirWccAfter will be nil
 	} else {
-		toDirID := extractFileID(toDirHandle)
-		toDirWccAfter = MetadataToNFSAttr(updatedToDirAttr, toDirID)
+		toDirID := xdr.ExtractFileID(toDirHandle)
+		toDirWccAfter = xdr.MetadataToNFS(updatedToDirAttr, toDirID)
 	}
 
 	logger.Info("RENAME successful: from='%s' to='%s' client=%s",
 		req.FromName, req.ToName, clientIP)
 
 	// Extract IDs for debug logging
-	fromDirID := extractFileID(fromDirHandle)
-	toDirID := extractFileID(toDirHandle)
+	fromDirID := xdr.ExtractFileID(fromDirHandle)
+	toDirID := xdr.ExtractFileID(toDirHandle)
 	logger.Debug("RENAME details: from_dir=%d to_dir=%d same_dir=%v",
 		fromDirID, toDirID, bytes.Equal(req.FromDirHandle, req.ToDirHandle))
 
 	return &RenameResponse{
-		Status:           NFS3OK,
+		Status:           types.NFS3OK,
 		FromDirWccBefore: fromDirWccBefore,
 		FromDirWccAfter:  fromDirWccAfter,
 		ToDirWccBefore:   toDirWccBefore,
@@ -466,14 +468,14 @@ func validateRenameRequest(req *RenameRequest) *renameValidationError {
 	if len(req.FromDirHandle) == 0 {
 		return &renameValidationError{
 			message:   "empty source directory handle",
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.FromDirHandle) > 64 {
 		return &renameValidationError{
 			message:   fmt.Sprintf("source directory handle too long: %d bytes (max 64)", len(req.FromDirHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -481,14 +483,14 @@ func validateRenameRequest(req *RenameRequest) *renameValidationError {
 	if len(req.ToDirHandle) == 0 {
 		return &renameValidationError{
 			message:   "empty destination directory handle",
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.ToDirHandle) > 64 {
 		return &renameValidationError{
 			message:   fmt.Sprintf("destination directory handle too long: %d bytes (max 64)", len(req.ToDirHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -496,14 +498,14 @@ func validateRenameRequest(req *RenameRequest) *renameValidationError {
 	if req.FromName == "" {
 		return &renameValidationError{
 			message:   "empty source name",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
 	if len(req.FromName) > 255 {
 		return &renameValidationError{
 			message:   fmt.Sprintf("source name too long: %d bytes (max 255)", len(req.FromName)),
-			nfsStatus: NFS3ErrNameTooLong,
+			nfsStatus: types.NFS3ErrNameTooLong,
 		}
 	}
 
@@ -511,7 +513,7 @@ func validateRenameRequest(req *RenameRequest) *renameValidationError {
 	if req.FromName == "." || req.FromName == ".." {
 		return &renameValidationError{
 			message:   fmt.Sprintf("cannot rename '%s'", req.FromName),
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -519,7 +521,7 @@ func validateRenameRequest(req *RenameRequest) *renameValidationError {
 	if strings.ContainsAny(req.FromName, "/\x00") {
 		return &renameValidationError{
 			message:   "source name contains invalid characters (null or path separator)",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -527,14 +529,14 @@ func validateRenameRequest(req *RenameRequest) *renameValidationError {
 	if req.ToName == "" {
 		return &renameValidationError{
 			message:   "empty destination name",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
 	if len(req.ToName) > 255 {
 		return &renameValidationError{
 			message:   fmt.Sprintf("destination name too long: %d bytes (max 255)", len(req.ToName)),
-			nfsStatus: NFS3ErrNameTooLong,
+			nfsStatus: types.NFS3ErrNameTooLong,
 		}
 	}
 
@@ -542,7 +544,7 @@ func validateRenameRequest(req *RenameRequest) *renameValidationError {
 	if req.ToName == "." || req.ToName == ".." {
 		return &renameValidationError{
 			message:   fmt.Sprintf("cannot rename to '%s'", req.ToName),
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -550,7 +552,7 @@ func validateRenameRequest(req *RenameRequest) *renameValidationError {
 	if strings.ContainsAny(req.ToName, "/\x00") {
 		return &renameValidationError{
 			message:   "destination name contains invalid characters (null or path separator)",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -607,7 +609,7 @@ func DecodeRenameRequest(data []byte) (*RenameRequest, error) {
 	// Decode source directory handle
 	// ========================================================================
 
-	fromDirHandle, err := decodeOpaque(reader)
+	fromDirHandle, err := xdr.DecodeOpaque(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode source directory handle: %w", err)
 	}
@@ -616,7 +618,7 @@ func DecodeRenameRequest(data []byte) (*RenameRequest, error) {
 	// Decode source name
 	// ========================================================================
 
-	fromName, err := decodeString(reader)
+	fromName, err := xdr.DecodeString(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode source name: %w", err)
 	}
@@ -625,7 +627,7 @@ func DecodeRenameRequest(data []byte) (*RenameRequest, error) {
 	// Decode destination directory handle
 	// ========================================================================
 
-	toDirHandle, err := decodeOpaque(reader)
+	toDirHandle, err := xdr.DecodeOpaque(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode destination directory handle: %w", err)
 	}
@@ -634,7 +636,7 @@ func DecodeRenameRequest(data []byte) (*RenameRequest, error) {
 	// Decode destination name
 	// ========================================================================
 
-	toName, err := decodeString(reader)
+	toName, err := xdr.DecodeString(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode destination name: %w", err)
 	}
@@ -675,7 +677,7 @@ func DecodeRenameRequest(data []byte) (*RenameRequest, error) {
 // Example:
 //
 //	resp := &RenameResponse{
-//	    Status:           NFS3OK,
+//	    Status:           types.NFS3OK,
 //	    FromDirWccBefore: fromWccBefore,
 //	    FromDirWccAfter:  fromWccAfter,
 //	    ToDirWccBefore:   toWccBefore,
@@ -702,7 +704,7 @@ func (resp *RenameResponse) Encode() ([]byte, error) {
 	// Write WCC data for source directory (both success and failure)
 	// ========================================================================
 
-	if err := encodeWccData(&buf, resp.FromDirWccBefore, resp.FromDirWccAfter); err != nil {
+	if err := xdr.EncodeWccData(&buf, resp.FromDirWccBefore, resp.FromDirWccAfter); err != nil {
 		return nil, fmt.Errorf("encode source directory wcc data: %w", err)
 	}
 
@@ -710,7 +712,7 @@ func (resp *RenameResponse) Encode() ([]byte, error) {
 	// Write WCC data for destination directory (both success and failure)
 	// ========================================================================
 
-	if err := encodeWccData(&buf, resp.ToDirWccBefore, resp.ToDirWccAfter); err != nil {
+	if err := xdr.EncodeWccData(&buf, resp.ToDirWccBefore, resp.ToDirWccAfter); err != nil {
 		return nil, fmt.Errorf("encode destination directory wcc data: %w", err)
 	}
 

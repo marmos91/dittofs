@@ -8,6 +8,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // ============================================================================
@@ -43,21 +45,21 @@ type ReadLinkRequest struct {
 type ReadLinkResponse struct {
 	// Status indicates the result of the readlink operation.
 	// Common values:
-	//   - NFS3OK (0): Success - target path returned
-	//   - NFS3ErrNoEnt (2): Symlink not found
-	//   - NFS3ErrIO (5): I/O error reading symlink
+	//   - types.NFS3OK (0): Success - target path returned
+	//   - types.NFS3ErrNoEnt (2): Symlink not found
+	//   - types.NFS3ErrIO (5): I/O error reading symlink
 	//   - NFS3ErrInval (22): Handle is not a symbolic link
 	//   - NFS3ErrStale (70): Stale file handle
-	//   - NFS3ErrBadHandle (10001): Invalid file handle
+	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
 	Status uint32
 
 	// Attr contains the post-operation attributes of the symbolic link.
 	// Optional, may be nil. These attributes help clients maintain cache
 	// consistency for the symlink itself (not the target).
-	Attr *FileAttr
+	Attr *types.NFSFileAttr
 
 	// Target is the symbolic link target path.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	// This is the path string stored in the symlink file.
 	// May be absolute (/usr/bin/python) or relative (../lib/file.so).
 	// Maximum length is 1024 bytes per POSIX PATH_MAX.
@@ -162,11 +164,11 @@ type ReadLinkContext struct {
 //
 // Protocol-level errors return appropriate NFS status codes.
 // Repository errors are mapped to NFS status codes:
-//   - Symlink not found → NFS3ErrNoEnt
+//   - Symlink not found → types.NFS3ErrNoEnt
 //   - Not a symlink → NFS3ErrInval
-//   - Target path missing → NFS3ErrIO
+//   - Target path missing → types.NFS3ErrIO
 //   - Access denied → NFS3ErrAcces
-//   - I/O error → NFS3ErrIO
+//   - I/O error → types.NFS3ErrIO
 //
 // **Performance Considerations:**
 //
@@ -209,7 +211,7 @@ type ReadLinkContext struct {
 //	if err != nil {
 //	    // Internal server error
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    // Use resp.Target for symlink resolution
 //	}
 func (h *DefaultNFSHandler) ReadLink(
@@ -218,7 +220,7 @@ func (h *DefaultNFSHandler) ReadLink(
 	ctx *ReadLinkContext,
 ) (*ReadLinkResponse, error) {
 	// Extract client IP for logging
-	clientIP := extractClientIP(ctx.ClientAddr)
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
 	logger.Info("READLINK: handle=%x client=%s auth=%d",
 		req.Handle, clientIP, ctx.AuthFlavor)
@@ -272,8 +274,8 @@ func (h *DefaultNFSHandler) ReadLink(
 	// Step 4: Generate file attributes for cache consistency
 	// ========================================================================
 
-	fileid := extractFileID(fileHandle)
-	nfsAttr := MetadataToNFSAttr(attr, fileid)
+	fileid := xdr.ExtractFileID(fileHandle)
+	nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 	logger.Info("READLINK successful: handle=%x target='%s' target_len=%d client=%s",
 		req.Handle, target, len(target), clientIP)
@@ -282,7 +284,7 @@ func (h *DefaultNFSHandler) ReadLink(
 		fileid, attr.Mode, attr.UID, attr.GID, attr.Size)
 
 	return &ReadLinkResponse{
-		Status: NFS3OK,
+		Status: types.NFS3OK,
 		Attr:   nfsAttr,
 		Target: target,
 	}, nil
@@ -317,7 +319,7 @@ func validateReadLinkRequest(req *ReadLinkRequest) *readLinkValidationError {
 	if len(req.Handle) == 0 {
 		return &readLinkValidationError{
 			message:   "file handle is empty",
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -325,7 +327,7 @@ func validateReadLinkRequest(req *ReadLinkRequest) *readLinkValidationError {
 	if len(req.Handle) > 64 {
 		return &readLinkValidationError{
 			message:   fmt.Sprintf("file handle too long: %d bytes (max 64)", len(req.Handle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -333,7 +335,7 @@ func validateReadLinkRequest(req *ReadLinkRequest) *readLinkValidationError {
 	if len(req.Handle) < 8 {
 		return &readLinkValidationError{
 			message:   fmt.Sprintf("file handle too short: %d bytes (min 8)", len(req.Handle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -351,11 +353,11 @@ func mapReadLinkErrorToNFSStatus(err error) uint32 {
 	if exportErr, ok := err.(*metadata.ExportError); ok {
 		switch exportErr.Code {
 		case metadata.ExportErrNotFound:
-			return NFS3ErrNoEnt
+			return types.NFS3ErrNoEnt
 		case metadata.ExportErrAccessDenied:
-			return NFS3ErrAcces
+			return types.NFS3ErrAcces
 		default:
-			return NFS3ErrIO
+			return types.NFS3ErrIO
 		}
 	}
 
@@ -363,27 +365,27 @@ func mapReadLinkErrorToNFSStatus(err error) uint32 {
 	errMsg := err.Error()
 
 	if strings.Contains(errMsg, "not found") {
-		return NFS3ErrNoEnt
+		return types.NFS3ErrNoEnt
 	}
 
 	if strings.Contains(errMsg, "not a symlink") || strings.Contains(errMsg, "not symbolic link") {
-		return NFS3ErrInval
+		return types.NFS3ErrInval
 	}
 
 	if strings.Contains(errMsg, "permission denied") || strings.Contains(errMsg, "access denied") {
-		return NFS3ErrAcces
+		return types.NFS3ErrAcces
 	}
 
 	if strings.Contains(errMsg, "stale") {
-		return NFS3ErrStale
+		return types.NFS3ErrStale
 	}
 
 	if strings.Contains(errMsg, "no target") || strings.Contains(errMsg, "empty target") {
-		return NFS3ErrIO
+		return types.NFS3ErrIO
 	}
 
 	// Default to I/O error for unknown errors
-	return NFS3ErrIO
+	return types.NFS3ErrIO
 }
 
 // ============================================================================
@@ -464,10 +466,10 @@ func DecodeReadLinkRequest(data []byte) (*ReadLinkRequest, error) {
 //
 // The encoding follows RFC 1813 Section 3.3.5 specifications:
 //  1. Status code (4 bytes, big-endian uint32)
-//  2. If status == NFS3OK:
+//  2. If status == types.NFS3OK:
 //     a. Post-op symlink attributes (present flag + attributes if present)
 //     b. Target path (length + string data + padding)
-//  3. If status != NFS3OK:
+//  3. If status != types.NFS3OK:
 //     a. Post-op symlink attributes (present flag + attributes if present)
 //     b. No target path
 //
@@ -481,7 +483,7 @@ func DecodeReadLinkRequest(data []byte) (*ReadLinkRequest, error) {
 // Example:
 //
 //	resp := &ReadLinkResponse{
-//	    Status: NFS3OK,
+//	    Status: types.NFS3OK,
 //	    Attr:   symlinkAttr,
 //	    Target: "/usr/bin/python3",
 //	}
@@ -508,7 +510,7 @@ func (resp *ReadLinkResponse) Encode() ([]byte, error) {
 	// Including attributes on error helps clients maintain cache consistency
 	// for the symlink itself, even when reading the target fails
 
-	if err := encodeOptionalFileAttr(&buf, resp.Attr); err != nil {
+	if err := xdr.EncodeOptionalFileAttr(&buf, resp.Attr); err != nil {
 		return nil, fmt.Errorf("failed to encode attributes: %w", err)
 	}
 
@@ -516,7 +518,7 @@ func (resp *ReadLinkResponse) Encode() ([]byte, error) {
 	// Error case: Return without target path
 	// ========================================================================
 
-	if resp.Status != NFS3OK {
+	if resp.Status != types.NFS3OK {
 		logger.Debug("Encoding READLINK error response: status=%d", resp.Status)
 		return buf.Bytes(), nil
 	}

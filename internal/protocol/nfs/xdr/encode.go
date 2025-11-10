@@ -12,7 +12,7 @@ import (
 // XDR Encoding Helpers - Go Structures → Wire Format
 // ============================================================================
 
-// encodeOptionalOpaque encodes optional XDR opaque data.
+// EncodeOptionalOpaque encodes optional XDR opaque data.
 //
 // Per RFC 1813 Section 2.4 (Optional Data):
 // Format: [present:uint32] if present=1: [length:uint32][data][padding]
@@ -60,7 +60,7 @@ func EncodeOptionalOpaque(buf *bytes.Buffer, data []byte) error {
 	return nil
 }
 
-// encodeOptionalFileAttr encodes optional types.file attributes.
+// EncodeOptionalFileAttr encodes optional NFS file attributes.
 //
 // Per RFC 1813 Section 2.4 (post_op_attr):
 // Format: [present:uint32] if present=1: [fattr3]
@@ -71,7 +71,7 @@ func EncodeOptionalOpaque(buf *bytes.Buffer, data []byte) error {
 //
 // Returns:
 //   - error: Encoding error
-func EncodeOptionalFileAttr(buf *bytes.Buffer, attr *types.FileAttr) error {
+func EncodeOptionalFileAttr(buf *bytes.Buffer, attr *types.NFSFileAttr) error {
 	if attr == nil {
 		// Not present: write 0
 		return binary.Write(buf, binary.BigEndian, uint32(0))
@@ -86,7 +86,7 @@ func EncodeOptionalFileAttr(buf *bytes.Buffer, attr *types.FileAttr) error {
 	return EncodeFileAttr(buf, attr)
 }
 
-// encodeWccData encodes weak cache consistency data.
+// EncodeWccData encodes weak cache consistency data.
 //
 // Per RFC 1813 Section 2.6 (wcc_data):
 //
@@ -109,14 +109,14 @@ func EncodeOptionalFileAttr(buf *bytes.Buffer, attr *types.FileAttr) error {
 //
 // Returns:
 //   - error: Encoding error
-func EncodeWccData(buf *bytes.Buffer, before *types.WccAttr, after *types.FileAttr) error {
+func EncodeWccData(buf *bytes.Buffer, before *types.WccAttr, after *types.NFSFileAttr) error {
 	// Encode pre-op attributes (wcc_attr)
 	if before != nil {
 		// Present
 		if err := binary.Write(buf, binary.BigEndian, uint32(1)); err != nil {
 			return fmt.Errorf("write before present: %w", err)
 		}
-		if err := EncodeWccAttr(buf, before); err != nil {
+		if err := encodeWccAttr(buf, before); err != nil {
 			return fmt.Errorf("encode before attributes: %w", err)
 		}
 	} else {
@@ -140,8 +140,8 @@ func EncodeWccData(buf *bytes.Buffer, before *types.WccAttr, after *types.FileAt
 //
 //	struct wcc_attr {
 //	    size3   size;   // File size (uint64)
-//	    types.ime3 mtime; // Modification time
-//	    types.ime3 ctime; // Change time
+//	    nfstime3 mtime; // Modification time
+//	    nfstime3 ctime; // Change time
 //	};
 //
 // This is a subset of fattr3 containing only the fields clients need
@@ -153,7 +153,7 @@ func EncodeWccData(buf *bytes.Buffer, before *types.WccAttr, after *types.FileAt
 //
 // Returns:
 //   - error: Encoding error
-func EncodeWccAttr(buf *bytes.Buffer, attr *types.WccAttr) error {
+func encodeWccAttr(buf *bytes.Buffer, attr *types.WccAttr) error {
 	if attr == nil {
 		// Defensive: caller should have checked, but handle gracefully
 		return fmt.Errorf("wcc_attr is nil")
@@ -164,7 +164,7 @@ func EncodeWccAttr(buf *bytes.Buffer, attr *types.WccAttr) error {
 		return fmt.Errorf("write size: %w", err)
 	}
 
-	// Write mtime (types.ime3: seconds + nseconds)
+	// Write mtime (nfstime3: seconds + nseconds)
 	if err := binary.Write(buf, binary.BigEndian, attr.Mtime.Seconds); err != nil {
 		return fmt.Errorf("write mtime seconds: %w", err)
 	}
@@ -172,7 +172,7 @@ func EncodeWccAttr(buf *bytes.Buffer, attr *types.WccAttr) error {
 		return fmt.Errorf("write mtime nseconds: %w", err)
 	}
 
-	// Write ctime (types.ime3: seconds + nseconds)
+	// Write ctime (nfstime3: seconds + nseconds)
 	if err := binary.Write(buf, binary.BigEndian, attr.Ctime.Seconds); err != nil {
 		return fmt.Errorf("write ctime seconds: %w", err)
 	}
@@ -183,7 +183,7 @@ func EncodeWccAttr(buf *bytes.Buffer, attr *types.WccAttr) error {
 	return nil
 }
 
-// encodeFileAttr encodes types.file attributes (fattr3).
+// EncodeFileAttr encodes NFS file attributes (fattr3).
 //
 // Per RFC 1813 Section 2.3.1 (fattr3):
 // The fattr3 structure contains all attributes of a file.
@@ -199,9 +199,9 @@ func EncodeWccAttr(buf *bytes.Buffer, attr *types.WccAttr) error {
 //   - rdev (specdata3): device number for special files
 //   - fsid (uint64): filesystem identifier
 //   - fileid (uint64): file identifier (inode number)
-//   - atime (types.ime3): last access time
-//   - mtime (types.ime3): last modification time
-//   - ctime (types.ime3): last metadata change time
+//   - atime (nfstime3): last access time
+//   - mtime (nfstime3): last modification time
+//   - ctime (nfstime3): last metadata change time
 //
 // Parameters:
 //   - buf: Output buffer for encoded data
@@ -209,7 +209,7 @@ func EncodeWccAttr(buf *bytes.Buffer, attr *types.WccAttr) error {
 //
 // Returns:
 //   - error: Encoding error
-func EncodeFileAttr(buf *bytes.Buffer, attr *types.FileAttr) error {
+func EncodeFileAttr(buf *bytes.Buffer, attr *types.NFSFileAttr) error {
 	if attr == nil {
 		return fmt.Errorf("file attributes are nil")
 	}
@@ -246,7 +246,7 @@ func EncodeFileAttr(buf *bytes.Buffer, attr *types.FileAttr) error {
 		return fmt.Errorf("write fileid: %w", err)
 	}
 
-	// Write atime (types.ime3)
+	// Write atime (nfstime3)
 	if err := binary.Write(buf, binary.BigEndian, attr.Atime.Seconds); err != nil {
 		return fmt.Errorf("write atime seconds: %w", err)
 	}
@@ -254,7 +254,7 @@ func EncodeFileAttr(buf *bytes.Buffer, attr *types.FileAttr) error {
 		return fmt.Errorf("write atime nseconds: %w", err)
 	}
 
-	// Write mtime (types.ime3)
+	// Write mtime (nfstime3)
 	if err := binary.Write(buf, binary.BigEndian, attr.Mtime.Seconds); err != nil {
 		return fmt.Errorf("write mtime seconds: %w", err)
 	}
@@ -262,7 +262,7 @@ func EncodeFileAttr(buf *bytes.Buffer, attr *types.FileAttr) error {
 		return fmt.Errorf("write mtime nseconds: %w", err)
 	}
 
-	// Write ctime (types.ime3)
+	// Write ctime (nfstime3)
 	if err := binary.Write(buf, binary.BigEndian, attr.Ctime.Seconds); err != nil {
 		return fmt.Errorf("write ctime seconds: %w", err)
 	}

@@ -7,6 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // ============================================================================
@@ -44,51 +46,51 @@ type PathConfRequest struct {
 type PathConfResponse struct {
 	// Status indicates the result of the pathconf operation.
 	// Common values:
-	//   - NFS3OK (0): Success
-	//   - NFS3ErrNoEnt (2): File handle not found
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3OK (0): Success
+	//   - types.NFS3ErrNoEnt (2): File handle not found
+	//   - types.NFS3ErrIO (5): I/O error
 	//   - NFS3ErrStale (70): Stale file handle
-	//   - NFS3ErrBadHandle (10001): Invalid file handle
+	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
 	Status uint32
 
 	// Attr contains post-operation attributes of the file system object.
-	// Present when Status == NFS3OK. May be nil if attributes are unavailable.
+	// Present when Status == types.NFS3OK. May be nil if attributes are unavailable.
 	// These attributes help clients maintain cache consistency.
-	Attr *FileAttr
+	Attr *types.NFSFileAttr
 
 	// Linkmax is the maximum number of hard links to a file.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	// Typical value: 32767 or higher for modern filesystems.
 	Linkmax uint32
 
 	// NameMax is the maximum length of a filename component in bytes.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	// Typical value: 255 bytes for most modern filesystems.
 	NameMax uint32
 
 	// NoTrunc indicates whether the server rejects names longer than NameMax.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	//   - true: Server rejects long names (returns NFS3ErrNameTooLong)
 	//   - false: Server silently truncates long names
 	// Modern servers typically set this to true.
 	NoTrunc bool
 
 	// ChownRestricted indicates if chown is restricted to the superuser.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	//   - true: Only root/superuser can change file ownership
 	//   - false: File owner can give away ownership
 	// POSIX-compliant systems typically set this to true for security.
 	ChownRestricted bool
 
 	// CaseInsensitive indicates if filename comparisons are case-insensitive.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	//   - true: "File.txt" and "file.txt" refer to the same file
 	//   - false: Filenames are case-sensitive (POSIX standard)
 	// Unix/Linux systems typically set this to false.
 	CaseInsensitive bool
 
 	// CasePreserving indicates if the filesystem preserves filename case.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	//   - true: Filenames maintain their original case
 	//   - false: Case information may be lost
 	// Most modern filesystems set this to true.
@@ -197,7 +199,7 @@ type PathConfContext struct {
 //	    // Internal server error occurred
 //	    return nil, err
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    // Success - use resp.Linkmax, resp.NameMax, etc.
 //	}
 func (h *DefaultNFSHandler) PathConf(repository metadata.Repository, req *PathConfRequest, ctx *PathConfContext) (*PathConfResponse, error) {
@@ -210,7 +212,7 @@ func (h *DefaultNFSHandler) PathConf(repository metadata.Repository, req *PathCo
 
 	if err := validateFileHandle(req.Handle); err != nil {
 		logger.Debug("PATHCONF failed: invalid handle: %v", err)
-		return &PathConfResponse{Status: NFS3ErrBadHandle}, nil
+		return &PathConfResponse{Status: types.NFS3ErrBadHandle}, nil
 	}
 
 	// ========================================================================
@@ -221,7 +223,7 @@ func (h *DefaultNFSHandler) PathConf(repository metadata.Repository, req *PathCo
 	if err != nil {
 		logger.Debug("PATHCONF failed: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, err)
-		return &PathConfResponse{Status: NFS3ErrNoEnt}, nil
+		return &PathConfResponse{Status: types.NFS3ErrNoEnt}, nil
 	}
 
 	// ========================================================================
@@ -233,29 +235,29 @@ func (h *DefaultNFSHandler) PathConf(repository metadata.Repository, req *PathCo
 	if err != nil {
 		logger.Error("PATHCONF failed: handle=%x client=%s error=failed to retrieve pathconf: %v",
 			req.Handle, ctx.ClientAddr, err)
-		return &PathConfResponse{Status: NFS3ErrIO}, nil
+		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
 	}
 
 	// Defensive check: ensure repository returned valid pathConf
 	if pathConf == nil {
 		logger.Error("PATHCONF failed: handle=%x client=%s error=repository returned nil pathconf",
 			req.Handle, ctx.ClientAddr)
-		return &PathConfResponse{Status: NFS3ErrIO}, nil
+		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
 	}
 
 	// ========================================================================
 	// Step 4: Generate file attributes for cache consistency
 	// ========================================================================
 
-	fileid, err := extractFileIDFromHandle(req.Handle)
+	fileid, err := ExtractFileIDFromHandle(req.Handle)
 	if err != nil {
 		logger.Error("PATHCONF failed: handle=%x client=%s error=failed to extract file ID: %v",
 			req.Handle, ctx.ClientAddr, err)
-		return &PathConfResponse{Status: NFS3ErrBadHandle}, nil
+		return &PathConfResponse{Status: types.NFS3ErrBadHandle}, nil
 	}
 
 	// Convert metadata attributes to NFS wire format
-	nfsAttr := MetadataToNFSAttr(attr, fileid)
+	nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 	logger.Info("PATHCONF successful: client=%s handle=%x", ctx.ClientAddr, req.Handle)
 	logger.Debug("PATHCONF properties: linkmax=%d namemax=%d no_trunc=%v chown_restricted=%v case_insensitive=%v case_preserving=%v",
@@ -267,7 +269,7 @@ func (h *DefaultNFSHandler) PathConf(repository metadata.Repository, req *PathCo
 	// ========================================================================
 
 	return &PathConfResponse{
-		Status:          NFS3OK,
+		Status:          types.NFS3OK,
 		Attr:            nfsAttr,
 		Linkmax:         pathConf.Linkmax,
 		NameMax:         pathConf.NameMax,
@@ -357,7 +359,7 @@ func DecodePathConfRequest(data []byte) (*PathConfRequest, error) {
 //
 // The encoding follows RFC 1813 Section 3.3.20 specifications:
 //  1. Status code (4 bytes, big-endian uint32)
-//  2. If status == NFS3OK:
+//  2. If status == types.NFS3OK:
 //     a. Post-op attributes (present flag + attributes if present)
 //     b. linkmax (4 bytes, big-endian uint32)
 //     c. name_max (4 bytes, big-endian uint32)
@@ -365,7 +367,7 @@ func DecodePathConfRequest(data []byte) (*PathConfRequest, error) {
 //     e. chown_restricted (4 bytes, big-endian bool as uint32)
 //     f. case_insensitive (4 bytes, big-endian bool as uint32)
 //     g. case_preserving (4 bytes, big-endian bool as uint32)
-//  3. If status != NFS3OK:
+//  3. If status != types.NFS3OK:
 //     a. Post-op attributes (present flag + attributes if present)
 //
 // XDR encoding requires all data to be in big-endian format and aligned
@@ -378,7 +380,7 @@ func DecodePathConfRequest(data []byte) (*PathConfRequest, error) {
 // Example:
 //
 //	resp := &PathConfResponse{
-//	    Status:          NFS3OK,
+//	    Status:          types.NFS3OK,
 //	    Attr:            fileAttr,
 //	    Linkmax:         32767,
 //	    NameMax:         255,
@@ -408,7 +410,7 @@ func (resp *PathConfResponse) Encode() ([]byte, error) {
 	// Write post-op attributes (both success and error cases)
 	// ========================================================================
 
-	if err := encodeOptionalFileAttr(&buf, resp.Attr); err != nil {
+	if err := xdr.EncodeOptionalFileAttr(&buf, resp.Attr); err != nil {
 		return nil, fmt.Errorf("failed to encode attributes: %w", err)
 	}
 
@@ -416,7 +418,7 @@ func (resp *PathConfResponse) Encode() ([]byte, error) {
 	// If status is not OK, return early (no PATHCONF data on error)
 	// ========================================================================
 
-	if resp.Status != NFS3OK {
+	if resp.Status != types.NFS3OK {
 		logger.Debug("Encoding PATHCONF error response: status=%d", resp.Status)
 		return buf.Bytes(), nil
 	}

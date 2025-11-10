@@ -8,6 +8,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // ============================================================================
@@ -62,37 +64,37 @@ type SymlinkRequest struct {
 type SymlinkResponse struct {
 	// Status indicates the result of the symlink creation.
 	// Common values:
-	//   - NFS3OK (0): Success - symlink created
-	//   - NFS3ErrNoEnt (2): Parent directory not found
-	//   - NFS3ErrNotDir (20): DirHandle is not a directory
+	//   - types.NFS3OK (0): Success - symlink created
+	//   - types.NFS3ErrNoEnt (2): Parent directory not found
+	//   - types.NFS3ErrNotDir (20): DirHandle is not a directory
 	//   - NFS3ErrExist (17): A file with the same name already exists
 	//   - NFS3ErrAcces (13): Permission denied
-	//   - NFS3ErrIO (5): I/O error
+	//   - types.NFS3ErrIO (5): I/O error
 	//   - NFS3ErrStale (70): Stale file handle
-	//   - NFS3ErrBadHandle (10001): Invalid file handle
+	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
 	//   - NFS3ErrNameTooLong (63): Name or target path too long
 	//   - NFS3ErrNoSpc (28): No space left on device
 	Status uint32
 
 	// FileHandle is the file handle of the newly created symlink.
-	// Only present when Status == NFS3OK.
+	// Only present when Status == types.NFS3OK.
 	// Clients can use this handle for subsequent operations (GETATTR, READLINK, etc.).
 	FileHandle []byte
 
 	// Attr contains post-operation attributes of the newly created symlink.
 	// Optional, may be nil. Includes type (symlink), permissions, owner, size, etc.
-	// Only present when Status == NFS3OK.
-	Attr *FileAttr
+	// Only present when Status == types.NFS3OK.
+	Attr *types.NFSFileAttr
 
 	// DirAttrBefore contains pre-operation attributes of the parent directory.
 	// Used for weak cache consistency to help clients detect changes.
 	// May be nil if attributes could not be captured.
-	DirAttrBefore *WccAttr
+	DirAttrBefore *types.WccAttr
 
 	// DirAttrAfter contains post-operation attributes of the parent directory.
 	// Used for weak cache consistency to provide updated directory state.
 	// Should be present for both success and failure cases when possible.
-	DirAttrAfter *FileAttr
+	DirAttrAfter *types.NFSFileAttr
 }
 
 // SymlinkContext contains the context information needed to process a SYMLINK request.
@@ -203,12 +205,12 @@ type SymlinkContext struct {
 //
 // Protocol-level errors return appropriate NFS status codes.
 // Repository errors are mapped to NFS status codes:
-//   - Directory not found → NFS3ErrNoEnt
-//   - Not a directory → NFS3ErrNotDir
+//   - Directory not found → types.NFS3ErrNoEnt
+//   - Not a directory → types.NFS3ErrNotDir
 //   - Name already exists → NFS3ErrExist
 //   - Permission denied → NFS3ErrAcces
 //   - No space left → NFS3ErrNoSpc
-//   - I/O error → NFS3ErrIO
+//   - I/O error → types.NFS3ErrIO
 //
 // **Weak Cache Consistency (WCC):**
 //
@@ -270,7 +272,7 @@ type SymlinkContext struct {
 //	if err != nil {
 //	    // Internal server error
 //	}
-//	if resp.Status == NFS3OK {
+//	if resp.Status == types.NFS3OK {
 //	    // Symlink created successfully
 //	    // Use resp.FileHandle for subsequent operations
 //	}
@@ -280,7 +282,7 @@ func (h *DefaultNFSHandler) Symlink(
 	ctx *SymlinkContext,
 ) (*SymlinkResponse, error) {
 	// Extract client IP for logging
-	clientIP := extractClientIP(ctx.ClientAddr)
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
 	logger.Info("SYMLINK: name='%s' target='%s' dir=%x client=%s auth=%d",
 		req.Name, req.Target, req.DirHandle, clientIP, ctx.AuthFlavor)
@@ -304,11 +306,11 @@ func (h *DefaultNFSHandler) Symlink(
 	if err != nil {
 		logger.Warn("SYMLINK failed: directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &SymlinkResponse{Status: NFS3ErrNoEnt}, nil
+		return &SymlinkResponse{Status: types.NFS3ErrNoEnt}, nil
 	}
 
 	// Capture pre-operation attributes for WCC data
-	wccBefore := captureWccAttr(dirAttr)
+	wccBefore := xdr.CaptureWccAttr(dirAttr)
 
 	// Verify parent is a directory
 	if dirAttr.Type != metadata.FileTypeDirectory {
@@ -316,11 +318,11 @@ func (h *DefaultNFSHandler) Symlink(
 			req.DirHandle, dirAttr.Type, clientIP)
 
 		// Include directory attributes even on error for cache consistency
-		dirID := extractFileID(dirHandle)
-		nfsDirAttr := MetadataToNFSAttr(dirAttr, dirID)
+		dirID := xdr.ExtractFileID(dirHandle)
+		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &SymlinkResponse{
-			Status:        NFS3ErrNotDir,
+			Status:        types.NFS3ErrNotDir,
 			DirAttrBefore: wccBefore,
 			DirAttrAfter:  nfsDirAttr,
 		}, nil
@@ -353,7 +355,7 @@ func (h *DefaultNFSHandler) Symlink(
 	// - Size (length of target path)
 	// - Target path (stored in SymlinkTarget field)
 
-	symlinkAttr := convertSetAttrsToMetadata(metadata.FileTypeSymlink, &req.Attr, authCtx)
+	symlinkAttr := xdr.ConvertSetAttrsToMetadata(metadata.FileTypeSymlink, &req.Attr, authCtx)
 
 	// ========================================================================
 	// Step 5: Create symlink via repository
@@ -372,14 +374,14 @@ func (h *DefaultNFSHandler) Symlink(
 			req.Name, req.Target, clientIP, err)
 
 		// Get updated directory attributes for WCC data (best effort)
-		var wccAfter *FileAttr
+		var wccAfter *types.NFSFileAttr
 		if updatedDirAttr, getErr := repository.GetFile(dirHandle); getErr == nil {
-			dirID := extractFileID(dirHandle)
-			wccAfter = MetadataToNFSAttr(updatedDirAttr, dirID)
+			dirID := xdr.ExtractFileID(dirHandle)
+			wccAfter = xdr.MetadataToNFS(updatedDirAttr, dirID)
 		}
 
 		// Map repository errors to NFS status codes
-		status := mapRepositoryErrorToNFSStatus(err, clientIP, "SYMLINK")
+		status := xdr.MapRepositoryErrorToNFSStatus(err, clientIP, "SYMLINK")
 
 		return &SymlinkResponse{
 			Status:        status,
@@ -398,15 +400,15 @@ func (h *DefaultNFSHandler) Symlink(
 			symlinkHandle, err)
 
 		// Get updated directory attributes for WCC data
-		var wccAfter *FileAttr
+		var wccAfter *types.NFSFileAttr
 		if updatedDirAttr, getErr := repository.GetFile(dirHandle); getErr == nil {
-			dirID := extractFileID(dirHandle)
-			wccAfter = MetadataToNFSAttr(updatedDirAttr, dirID)
+			dirID := xdr.ExtractFileID(dirHandle)
+			wccAfter = xdr.MetadataToNFS(updatedDirAttr, dirID)
 		}
 
 		// Return success with nil symlink attributes
 		return &SymlinkResponse{
-			Status:        NFS3OK,
+			Status:        types.NFS3OK,
 			FileHandle:    symlinkHandle,
 			Attr:          nil,
 			DirAttrBefore: wccBefore,
@@ -419,8 +421,8 @@ func (h *DefaultNFSHandler) Symlink(
 	// ========================================================================
 
 	// Generate symlink attributes for response
-	symlinkID := extractFileID(symlinkHandle)
-	nfsSymlinkAttr := MetadataToNFSAttr(symlinkAttr, symlinkID)
+	symlinkID := xdr.ExtractFileID(symlinkHandle)
+	nfsSymlinkAttr := xdr.MetadataToNFS(symlinkAttr, symlinkID)
 
 	// Get updated directory attributes for WCC data
 	updatedDirAttr, err := repository.GetFile(dirHandle)
@@ -430,10 +432,10 @@ func (h *DefaultNFSHandler) Symlink(
 		// Continue with nil WccAfter rather than failing
 	}
 
-	var wccAfter *FileAttr
+	var wccAfter *types.NFSFileAttr
 	if updatedDirAttr != nil {
-		dirID := extractFileID(dirHandle)
-		wccAfter = MetadataToNFSAttr(updatedDirAttr, dirID)
+		dirID := xdr.ExtractFileID(dirHandle)
+		wccAfter = xdr.MetadataToNFS(updatedDirAttr, dirID)
 	}
 
 	logger.Info("SYMLINK successful: name='%s' target='%s' dir=%x handle=%x client=%s",
@@ -444,7 +446,7 @@ func (h *DefaultNFSHandler) Symlink(
 		symlinkAttr.Size, len(req.Target))
 
 	return &SymlinkResponse{
-		Status:        NFS3OK,
+		Status:        types.NFS3OK,
 		FileHandle:    symlinkHandle,
 		Attr:          nfsSymlinkAttr,
 		DirAttrBefore: wccBefore,
@@ -481,14 +483,14 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 	if len(req.DirHandle) == 0 {
 		return &symlinkValidationError{
 			message:   "empty parent directory handle",
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.DirHandle) > 64 {
 		return &symlinkValidationError{
 			message:   fmt.Sprintf("parent handle too long: %d bytes (max 64)", len(req.DirHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -496,7 +498,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 	if len(req.DirHandle) < 8 {
 		return &symlinkValidationError{
 			message:   fmt.Sprintf("parent handle too short: %d bytes (min 8)", len(req.DirHandle)),
-			nfsStatus: NFS3ErrBadHandle,
+			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
@@ -504,7 +506,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 	if req.Name == "" {
 		return &symlinkValidationError{
 			message:   "empty symlink name",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -512,7 +514,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 	if req.Name == "." || req.Name == ".." {
 		return &symlinkValidationError{
 			message:   fmt.Sprintf("cannot create symlink named '%s'", req.Name),
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -520,7 +522,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 	if len(req.Name) > 255 {
 		return &symlinkValidationError{
 			message:   fmt.Sprintf("symlink name too long: %d bytes (max 255)", len(req.Name)),
-			nfsStatus: NFS3ErrNameTooLong,
+			nfsStatus: types.NFS3ErrNameTooLong,
 		}
 	}
 
@@ -528,7 +530,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 	if strings.ContainsAny(req.Name, "\x00") {
 		return &symlinkValidationError{
 			message:   "symlink name contains null byte",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -536,7 +538,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 	if strings.ContainsAny(req.Name, "/") {
 		return &symlinkValidationError{
 			message:   "symlink name contains path separator",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -545,7 +547,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 		if r < 0x20 || r == 0x7F {
 			return &symlinkValidationError{
 				message:   fmt.Sprintf("symlink name contains control character at position %d", i),
-				nfsStatus: NFS3ErrInval,
+				nfsStatus: types.NFS3ErrInval,
 			}
 		}
 	}
@@ -554,7 +556,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 	if req.Target == "" {
 		return &symlinkValidationError{
 			message:   "empty target path",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -563,7 +565,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 	if len(req.Target) > 4096 {
 		return &symlinkValidationError{
 			message:   fmt.Sprintf("target path too long: %d bytes (max 4096)", len(req.Target)),
-			nfsStatus: NFS3ErrNameTooLong,
+			nfsStatus: types.NFS3ErrNameTooLong,
 		}
 	}
 
@@ -571,7 +573,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 	if strings.ContainsAny(req.Target, "\x00") {
 		return &symlinkValidationError{
 			message:   "target path contains null byte",
-			nfsStatus: NFS3ErrInval,
+			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
@@ -626,7 +628,7 @@ func DecodeSymlinkRequest(data []byte) (*SymlinkRequest, error) {
 	// Decode directory handle
 	// ========================================================================
 
-	dirHandle, err := decodeOpaque(reader)
+	dirHandle, err := xdr.DecodeOpaque(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode directory handle: %w", err)
 	}
@@ -635,7 +637,7 @@ func DecodeSymlinkRequest(data []byte) (*SymlinkRequest, error) {
 	// Decode symlink name
 	// ========================================================================
 
-	name, err := decodeString(reader)
+	name, err := xdr.DecodeString(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode symlink name: %w", err)
 	}
@@ -644,7 +646,7 @@ func DecodeSymlinkRequest(data []byte) (*SymlinkRequest, error) {
 	// Decode symlink attributes
 	// ========================================================================
 
-	attr, err := decodeSetAttrs(reader)
+	attr, err := xdr.DecodeSetAttrs(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode attributes: %w", err)
 	}
@@ -653,7 +655,7 @@ func DecodeSymlinkRequest(data []byte) (*SymlinkRequest, error) {
 	// Decode target path
 	// ========================================================================
 
-	target, err := decodeString(reader)
+	target, err := xdr.DecodeString(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode target path: %w", err)
 	}
@@ -678,7 +680,7 @@ func DecodeSymlinkRequest(data []byte) (*SymlinkRequest, error) {
 //
 // The encoding follows RFC 1813 Section 3.3.10 specifications:
 //  1. Status code (4 bytes, big-endian uint32)
-//  2. If status == NFS3OK:
+//  2. If status == types.NFS3OK:
 //     a. Post-op file handle (present flag + handle if present)
 //     b. Post-op symlink attributes (present flag + attributes if present)
 //  3. Directory WCC data (always present):
@@ -695,7 +697,7 @@ func DecodeSymlinkRequest(data []byte) (*SymlinkRequest, error) {
 // Example:
 //
 //	resp := &SymlinkResponse{
-//	    Status:        NFS3OK,
+//	    Status:        types.NFS3OK,
 //	    FileHandle:    symlinkHandle,
 //	    Attr:          symlinkAttr,
 //	    DirAttrBefore: wccBefore,
@@ -722,14 +724,14 @@ func (resp *SymlinkResponse) Encode() ([]byte, error) {
 	// Success case: Write symlink handle and attributes
 	// ========================================================================
 
-	if resp.Status == NFS3OK {
+	if resp.Status == types.NFS3OK {
 		// Write post-op file handle (optional)
-		if err := encodeOptionalOpaque(&buf, resp.FileHandle); err != nil {
+		if err := xdr.EncodeOptionalOpaque(&buf, resp.FileHandle); err != nil {
 			return nil, fmt.Errorf("encode file handle: %w", err)
 		}
 
 		// Write post-op symlink attributes (optional)
-		if err := encodeOptionalFileAttr(&buf, resp.Attr); err != nil {
+		if err := xdr.EncodeOptionalFileAttr(&buf, resp.Attr); err != nil {
 			return nil, fmt.Errorf("encode symlink attributes: %w", err)
 		}
 	}
@@ -740,7 +742,7 @@ func (resp *SymlinkResponse) Encode() ([]byte, error) {
 	// WCC (Weak Cache Consistency) data helps clients maintain cache coherency
 	// by providing before-and-after snapshots of the parent directory.
 
-	if err := encodeWccData(&buf, resp.DirAttrBefore, resp.DirAttrAfter); err != nil {
+	if err := xdr.EncodeWccData(&buf, resp.DirAttrBefore, resp.DirAttrAfter); err != nil {
 		return nil, fmt.Errorf("encode directory wcc data: %w", err)
 	}
 

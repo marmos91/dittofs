@@ -53,7 +53,7 @@ func (r *MemoryRepository) CreateFile(handle metadata.FileHandle, attr *metadata
 //   - handle: The file handle to look up
 //
 // Returns:
-//   - *FileAttr: The file attributes
+//   - *metadata.FileAttr: The file attributes
 //   - error: Returns error if file not found
 func (r *MemoryRepository) GetFile(handle metadata.FileHandle) (*metadata.FileAttr, error) {
 	r.mu.RLock()

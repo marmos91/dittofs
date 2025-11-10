@@ -10,6 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/mount"
 	"github.com/marmos91/dittofs/internal/protocol/nfs"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/rpc"
 )
 
@@ -142,9 +143,9 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 	}
 
 	switch call.Procedure {
-	case nfs.NFSProcNull:
+	case types.NFSProcNull:
 		return handler.Null(repo)
-	case nfs.NFSProcGetAttr:
+	case types.NFSProcGetAttr:
 		getAttrCtx := &nfs.GetAttrContext{
 			ClientAddr: c.conn.RemoteAddr().String(),
 			AuthFlavor: authFlavor,
@@ -155,12 +156,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.GetAttrRequest) (*nfs.GetAttrResponse, error) {
 				return handler.GetAttr(repo, req, getAttrCtx)
 			},
-			nfs.NFS3ErrAcces,
+			types.NFS3ErrAcces,
 			func(status uint32) *nfs.GetAttrResponse {
 				return &nfs.GetAttrResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcSetAttr:
+	case types.NFSProcSetAttr:
 		// Extract authentication from RPC call
 		var uid, gid *uint32
 		var gids []uint32
@@ -191,12 +192,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.SetAttrRequest) (*nfs.SetAttrResponse, error) {
 				return handler.SetAttr(repo, req, setAttrCtx)
 			},
-			nfs.NFS3ErrAcces,
+			types.NFS3ErrAcces,
 			func(status uint32) *nfs.SetAttrResponse {
 				return &nfs.SetAttrResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcLookup:
+	case types.NFSProcLookup:
 		// Extract authentication from RPC call
 		var uid, gid *uint32
 		var gids []uint32
@@ -227,12 +228,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.LookupRequest) (*nfs.LookupResponse, error) {
 				return handler.Lookup(repo, req, lookupCtx)
 			},
-			nfs.NFS3ErrAcces,
+			types.NFS3ErrAcces,
 			func(status uint32) *nfs.LookupResponse {
 				return &nfs.LookupResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcAccess:
+	case types.NFSProcAccess:
 		var uid, gid *uint32
 		var gids []uint32
 
@@ -262,12 +263,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.AccessRequest) (*nfs.AccessResponse, error) {
 				return handler.Access(repo, req, accessCtx)
 			},
-			nfs.NFS3ErrAcces,
+			types.NFS3ErrAcces,
 			func(status uint32) *nfs.AccessResponse {
 				return &nfs.AccessResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcReadLink:
+	case types.NFSProcReadLink:
 		// Extract authentication from RPC call
 		var uid, gid *uint32
 		var gids []uint32
@@ -298,12 +299,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.ReadLinkRequest) (*nfs.ReadLinkResponse, error) {
 				return handler.ReadLink(repo, req, readLinkCtx)
 			},
-			nfs.NFS3ErrIO,
+			types.NFS3ErrIO,
 			func(status uint32) *nfs.ReadLinkResponse {
 				return &nfs.ReadLinkResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcRead:
+	case types.NFSProcRead:
 		var uid, gid *uint32
 		var gids []uint32
 
@@ -332,24 +333,24 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.ReadRequest) (*nfs.ReadResponse, error) {
 				return handler.Read(contentRepo, repo, req, readCtx)
 			},
-			nfs.NFS3ErrIO,
+			types.NFS3ErrIO,
 			func(status uint32) *nfs.ReadResponse {
 				return &nfs.ReadResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcWrite:
+	case types.NFSProcWrite:
 		return handleRequest(
 			data,
 			nfs.DecodeWriteRequest,
 			func(req *nfs.WriteRequest) (*nfs.WriteResponse, error) {
 				return handler.Write(contentRepo, repo, req)
 			},
-			nfs.NFS3ErrIO,
+			types.NFS3ErrIO,
 			func(status uint32) *nfs.WriteResponse {
 				return &nfs.WriteResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcCreate:
+	case types.NFSProcCreate:
 		// Extract authentication from RPC call
 		var uid, gid *uint32
 		if authFlavor == rpc.AuthUnix {
@@ -376,12 +377,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.CreateRequest) (*nfs.CreateResponse, error) {
 				return handler.Create(contentRepo, repo, req, createCtx)
 			},
-			nfs.NFS3ErrIO,
+			types.NFS3ErrIO,
 			func(status uint32) *nfs.CreateResponse {
 				return &nfs.CreateResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcMkdir:
+	case types.NFSProcMkdir:
 		// Extract authentication from RPC call
 		var uid, gid *uint32
 		var gids []uint32
@@ -412,12 +413,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.MkdirRequest) (*nfs.MkdirResponse, error) {
 				return handler.Mkdir(repo, req, mkdirContext)
 			},
-			nfs.NFS3ErrIO,
+			types.NFS3ErrIO,
 			func(status uint32) *nfs.MkdirResponse {
 				return &nfs.MkdirResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcSymlink:
+	case types.NFSProcSymlink:
 		// Extract authentication from RPC call
 		var uid, gid *uint32
 		var gids []uint32
@@ -448,12 +449,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.SymlinkRequest) (*nfs.SymlinkResponse, error) {
 				return handler.Symlink(repo, req, symlinkCtx)
 			},
-			nfs.NFS3ErrIO,
+			types.NFS3ErrIO,
 			func(status uint32) *nfs.SymlinkResponse {
 				return &nfs.SymlinkResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcMknod:
+	case types.NFSProcMknod:
 		mkNodCtx := &nfs.MknodContext{
 			ClientAddr: c.conn.RemoteAddr().String(),
 			AuthFlavor: authFlavor,
@@ -465,12 +466,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.MknodRequest) (*nfs.MknodResponse, error) {
 				return handler.Mknod(repo, req, mkNodCtx)
 			},
-			nfs.NFS3ErrIO,
+			types.NFS3ErrIO,
 			func(status uint32) *nfs.MknodResponse {
 				return &nfs.MknodResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcRemove:
+	case types.NFSProcRemove:
 		// Extract authentication from RPC call
 		var uid, gid *uint32
 		var gids []uint32
@@ -501,12 +502,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.RemoveRequest) (*nfs.RemoveResponse, error) {
 				return handler.Remove(repo, req, removeContext)
 			},
-			nfs.NFS3ErrIO,
+			types.NFS3ErrIO,
 			func(status uint32) *nfs.RemoveResponse {
 				return &nfs.RemoveResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcRmdir:
+	case types.NFSProcRmdir:
 		// Extract authentication from RPC call
 		var uid, gid *uint32
 		var gids []uint32
@@ -537,12 +538,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.RmdirRequest) (*nfs.RmdirResponse, error) {
 				return handler.Rmdir(repo, req, rmDirCtx)
 			},
-			nfs.NFS3ErrIO,
+			types.NFS3ErrIO,
 			func(status uint32) *nfs.RmdirResponse {
 				return &nfs.RmdirResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcRename:
+	case types.NFSProcRename:
 		// Extract authentication from RPC call
 		var uid, gid *uint32
 		var gids []uint32
@@ -573,12 +574,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.RenameRequest) (*nfs.RenameResponse, error) {
 				return handler.Rename(repo, req, renameCtx)
 			},
-			nfs.NFS3ErrIO,
+			types.NFS3ErrIO,
 			func(status uint32) *nfs.RenameResponse {
 				return &nfs.RenameResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcLink:
+	case types.NFSProcLink:
 		// Extract authentication from RPC call
 		var uid, gid *uint32
 		var gids []uint32
@@ -608,12 +609,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.LinkRequest) (*nfs.LinkResponse, error) {
 				return handler.Link(repo, req, linkCtx)
 			},
-			nfs.NFS3ErrIO,
+			types.NFS3ErrIO,
 			func(status uint32) *nfs.LinkResponse {
 				return &nfs.LinkResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcReadDir:
+	case types.NFSProcReadDir:
 		// Extract authentication from RPC call
 		var uid, gid *uint32
 		var gids []uint32
@@ -643,12 +644,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.ReadDirRequest) (*nfs.ReadDirResponse, error) {
 				return handler.ReadDir(repo, req, readDirCtx)
 			},
-			nfs.NFS3ErrAcces,
+			types.NFS3ErrAcces,
 			func(status uint32) *nfs.ReadDirResponse {
 				return &nfs.ReadDirResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcReadDirPlus:
+	case types.NFSProcReadDirPlus:
 		// Extract authentication from RPC call
 		var uid, gid *uint32
 		var gids []uint32
@@ -679,12 +680,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.ReadDirPlusRequest) (*nfs.ReadDirPlusResponse, error) {
 				return handler.ReadDirPlus(repo, req, readDirPlusCtx)
 			},
-			nfs.NFS3ErrAcces,
+			types.NFS3ErrAcces,
 			func(status uint32) *nfs.ReadDirPlusResponse {
 				return &nfs.ReadDirPlusResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcFsStat:
+	case types.NFSProcFsStat:
 		ctx := &nfs.FsStatContext{
 			ClientAddr: c.conn.RemoteAddr().String(),
 			AuthFlavor: authFlavor,
@@ -695,12 +696,12 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.FsStatRequest) (*nfs.FsStatResponse, error) {
 				return handler.FsStat(repo, req, ctx)
 			},
-			nfs.NFS3ErrIO,
+			types.NFS3ErrIO,
 			func(status uint32) *nfs.FsStatResponse {
 				return &nfs.FsStatResponse{Status: status}
 			},
 		)
-	case nfs.NFSProcFsInfo:
+	case types.NFSProcFsInfo:
 		return handleRequest(
 			data,
 			nfs.DecodeFsInfoRequest,
@@ -711,13 +712,13 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 				}
 				return handler.FsInfo(repo, req, ctx)
 			},
-			nfs.NFS3ErrIO,
+			types.NFS3ErrIO,
 			func(status uint32) *nfs.FsInfoResponse {
 				return &nfs.FsInfoResponse{Status: status}
 			},
 		)
 
-	case nfs.NFSProcPathConf:
+	case types.NFSProcPathConf:
 		pathConfCtx := &nfs.PathConfContext{
 			ClientAddr: c.conn.RemoteAddr().String(),
 			AuthFlavor: authFlavor,
@@ -729,20 +730,20 @@ func (c *conn) handleNFSProcedure(call *rpc.RPCCallMessage, data []byte) ([]byte
 			func(req *nfs.PathConfRequest) (*nfs.PathConfResponse, error) {
 				return handler.PathConf(repo, req, pathConfCtx)
 			},
-			nfs.NFS3ErrIO,
+			types.NFS3ErrIO,
 			func(status uint32) *nfs.PathConfResponse {
 				return &nfs.PathConfResponse{Status: status}
 			},
 		)
 
-	case nfs.NFSProcCommit:
+	case types.NFSProcCommit:
 		return handleRequest(
 			data,
 			nfs.DecodeCommitRequest,
 			func(req *nfs.CommitRequest) (*nfs.CommitResponse, error) {
 				return handler.Commit(repo, req)
 			},
-			nfs.NFS3ErrIO,
+			types.NFS3ErrIO,
 			func(status uint32) *nfs.CommitResponse {
 				return &nfs.CommitResponse{Status: status}
 			},
