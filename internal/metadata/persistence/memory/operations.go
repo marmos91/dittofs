@@ -1974,7 +1974,7 @@ func (r *MemoryRepository) CreateSymlink(
 	return symlinkHandle, nil
 }
 
-// WriteFile updates file metadata after a write operation.
+// WriteFile updates file metadata for a write operation (typically called before the actual data write).
 //
 // This implements the metadata management for the WRITE NFS procedure
 // (RFC 1813 section 3.3.7). It handles permission checking, size updates,
@@ -1982,10 +1982,10 @@ func (r *MemoryRepository) CreateSymlink(
 //
 // Design:
 // The caller (protocol handler) is responsible for:
-//  1. Calling this method to capture WCC data and check permissions
+//  1. Calling this method to capture WCC data, check permissions, and update size and timestamps
 //  2. Writing data via the content repository
-//  3. Calling this method again to update size and timestamps (or using UpdateFile)
 //
+// WriteFile handles both WCC capture and metadata updates (size and timestamps) in a single call.
 // This separation ensures that:
 //   - Metadata repository doesn't depend on content repository
 //   - Each repository handles only its own domain
@@ -1993,10 +1993,11 @@ func (r *MemoryRepository) CreateSymlink(
 //
 // Permission Check Flow:
 // Write permission requires one of:
+//   - Root user (UID 0): Always granted (bypasses permission checks)
 //   - Owner with write bit (mode & 0200)
 //   - Group member with write bit (mode & 0020)
 //   - Other with write bit (mode & 0002)
-//   - AUTH_NULL requires world-writable (mode & 0002)
+//   - AUTH_NULL: Requires world-writable (mode & 0002)
 //
 // Size Extension:
 // When newSize > current size:
@@ -2011,9 +2012,9 @@ func (r *MemoryRepository) CreateSymlink(
 //   - atime (access time): Not updated on write
 //
 // Weak Cache Consistency (WCC):
-// The returned WccAttr contains attributes before any modifications.
-// This allows clients to detect concurrent changes by comparing with
-// their cached values.
+// The method returns pre-operation attributes (size, mtime, ctime) before any
+// modifications. This allows clients to detect concurrent changes by comparing
+// with their cached values.
 //
 // Parameters:
 //   - handle: File handle to update
@@ -2022,7 +2023,9 @@ func (r *MemoryRepository) CreateSymlink(
 //
 // Returns:
 //   - *FileAttr: Updated file attributes after the operation
-//   - *WccAttr: Pre-operation attributes for cache consistency
+//   - uint64: Pre-operation file size (for WCC data)
+//   - time.Time: Pre-operation modification time (mtime, for WCC data)
+//   - time.Time: Pre-operation change time (ctime, for WCC data)
 //   - error: Returns ExportError with specific code if operation fails:
 //   - ExportErrNotFound: File doesn't exist
 //   - ExportErrAccessDenied: No write permission
@@ -2030,20 +2033,20 @@ func (r *MemoryRepository) CreateSymlink(
 //
 // Example usage in protocol handler:
 //
-//	// Get WCC data and check permissions
-//	attr, wccAttr, err := repo.WriteFile(handle, offset+dataLen, ctx)
+//	// Get WCC data, check permissions, and update metadata
+//	attr, preSize, preMtime, preCtime, err := repo.WriteFile(handle, offset+dataLen, ctx)
 //	if err != nil {
 //	    return errorResponse(err)
 //	}
 //
-//	// Write actual data
+//	// Write actual data to content repository
 //	err = contentRepo.WriteAt(attr.ContentID, data, offset)
 //	if err != nil {
 //	    return errorResponse(err)
 //	}
 //
-//	// Attributes are already updated by WriteFile
-//	return successResponse(attr, wccAttr)
+//	// Return success with post-op attributes and WCC data
+//	return successResponse(attr, preSize, preMtime, preCtime)
 func (r *MemoryRepository) WriteFile(
 	handle metadata.FileHandle,
 	newSize uint64,
@@ -2087,16 +2090,19 @@ func (r *MemoryRepository) WriteFile(
 	// ========================================================================
 	// Step 4: Check write permission (if auth context provided)
 	// ========================================================================
-
+	if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil && ctx.GID != nil {
 	if ctx != nil && ctx.AuthFlavor != 0 && ctx.UID != nil {
-		uid := *ctx.UID
-		gid := *ctx.GID
+		var gid int
+		if ctx.GID != nil {
+			gid = *ctx.GID
+		}
 
 		var hasWrite bool
 
 		// Owner permissions
 		if uid == attr.UID {
 			hasWrite = (attr.Mode & 0200) != 0
+		} else if (ctx.GID != nil && gid == attr.GID) || containsGID(ctx.GIDs, attr.GID) {
 		} else if gid == attr.GID || containsGID(ctx.GIDs, attr.GID) {
 			hasWrite = (attr.Mode & 0020) != 0
 		} else {

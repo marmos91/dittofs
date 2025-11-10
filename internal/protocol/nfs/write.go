@@ -541,10 +541,10 @@ func validateWriteRequest(req *WriteRequest) *writeValidationError {
 //	// Use req.Handle, req.Offset, req.Data in WRITE procedure
 func DecodeWriteRequest(data []byte) (*WriteRequest, error) {
 	// Validate minimum data length
-	// 4 bytes (handle length) + 8 bytes (offset) + 4 bytes (count) +
-	// 4 bytes (stable) + 4 bytes (data length) = 24 bytes minimum
-	if len(data) < 24 {
-		return nil, fmt.Errorf("data too short: need at least 24 bytes, got %d", len(data))
+	// 4 bytes (handle length) + 8 bytes (minimum handle) + 8 bytes (offset) +
+	// 4 bytes (count) + 4 bytes (stable) + 4 bytes (data length) = 32 bytes minimum
+	if len(data) < 32 {
+		return nil, fmt.Errorf("data too short: need at least 32 bytes, got %d", len(data))
 	}
 
 	reader := bytes.NewReader(data)
@@ -620,8 +620,8 @@ func DecodeWriteRequest(data []byte) (*WriteRequest, error) {
 	}
 
 	// Validate data length is reasonable
-	if dataLen > 1024*1024*1024 { // 1GB max
-		return nil, fmt.Errorf("data length too large: %d bytes (max 1GB)", dataLen)
+	if dataLen > maxWriteSize { // maxWriteSize limit
+		return nil, fmt.Errorf("data length too large: %d bytes (max %d)", dataLen, maxWriteSize)
 	}
 
 	// Read data bytes
