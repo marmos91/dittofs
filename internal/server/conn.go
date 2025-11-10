@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/mount"
@@ -24,30 +25,89 @@ type fragmentHeader struct {
 	Length uint32
 }
 
+// serve handles all RPC requests for this connection.
+// It implements panic recovery to prevent a single misbehaving connection
+// from crashing the entire server.
+//
+// The connection is automatically closed when:
+// - The context is cancelled (server shutdown)
+// - An idle timeout occurs
+// - A read or write timeout occurs
+// - An unrecoverable error occurs
+// - The client closes the connection
 func (c *conn) serve(ctx context.Context) {
-	defer c.conn.Close()
-	logger.Debug("New connection from %s", c.conn.RemoteAddr().String())
+	defer func() {
+		// Panic recovery - prevents a single connection from crashing the server
+		if r := recover(); r != nil {
+			logger.Error("Panic in connection handler from %s: %v",
+				c.conn.RemoteAddr().String(), r)
+		}
+		c.conn.Close()
+	}()
+
+	clientAddr := c.conn.RemoteAddr().String()
+	logger.Debug("New connection from %s", clientAddr)
+
+	// Set initial idle timeout
+	if c.server.config.IdleTimeout > 0 {
+		if err := c.conn.SetDeadline(time.Now().Add(c.server.config.IdleTimeout)); err != nil {
+			logger.Warn("Failed to set deadline for %s: %v", clientAddr, err)
+		}
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
+			logger.Debug("Connection from %s closed due to context cancellation", clientAddr)
+			return
+		case <-c.server.shutdown:
+			logger.Debug("Connection from %s closed due to server shutdown", clientAddr)
 			return
 		default:
-			if err := c.handleRequest(); err != nil {
-				if err != io.EOF {
-					logger.Debug("Error handling request: %v", err)
-				}
-				return
+		}
+
+		err := c.handleRequest()
+		if err != nil {
+			if err == io.EOF {
+				logger.Debug("Connection from %s closed by client", clientAddr)
+			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				logger.Debug("Connection from %s timed out: %v", clientAddr, err)
+			} else {
+				logger.Debug("Error handling request from %s: %v", clientAddr, err)
+			}
+			return
+		}
+
+		// Reset idle timeout after successful request
+		if c.server.config.IdleTimeout > 0 {
+			if err := c.conn.SetDeadline(time.Now().Add(c.server.config.IdleTimeout)); err != nil {
+				logger.Warn("Failed to reset deadline for %s: %v", clientAddr, err)
 			}
 		}
 	}
 }
 
 func (c *conn) handleRequest() error {
+	// Apply read timeout if configured
+	if c.server.config.ReadTimeout > 0 {
+		deadline := time.Now().Add(c.server.config.ReadTimeout)
+		if err := c.conn.SetReadDeadline(deadline); err != nil {
+			return fmt.Errorf("set read deadline: %w", err)
+		}
+	}
+
 	// Read fragment header
 	header, err := c.readFragmentHeader()
 	if err != nil {
 		return err
+	}
+
+	// Validate fragment size to prevent memory exhaustion
+	const maxFragmentSize = 1 << 20 // 1MB - NFS messages are typically much smaller
+	if header.Length > maxFragmentSize {
+		logger.Warn("Fragment size %d exceeds maximum %d from %s",
+			header.Length, maxFragmentSize, c.conn.RemoteAddr().String())
+		return fmt.Errorf("fragment too large: %d bytes", header.Length)
 	}
 
 	// Read RPC message
@@ -751,6 +811,13 @@ func (c *conn) handleMountProcedure(call *rpc.RPCCallMessage, data []byte) ([]by
 }
 
 func (c *conn) sendReply(xid uint32, data []byte) error {
+	if c.server.config.WriteTimeout > 0 {
+		deadline := time.Now().Add(c.server.config.WriteTimeout)
+		if err := c.conn.SetWriteDeadline(deadline); err != nil {
+			return fmt.Errorf("set write deadline: %w", err)
+		}
+	}
+
 	reply, err := rpc.MakeSuccessReply(xid, data)
 	if err != nil {
 		return fmt.Errorf("make reply: %w", err)
@@ -761,6 +828,6 @@ func (c *conn) sendReply(xid uint32, data []byte) error {
 		return fmt.Errorf("write reply: %w", err)
 	}
 
-	logger.Debug("Sent reply for XID=0x%x", xid)
+	logger.Debug("Sent reply for XID=0x%x (%d bytes)", xid, len(reply))
 	return nil
 }
