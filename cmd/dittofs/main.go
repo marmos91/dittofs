@@ -111,10 +111,21 @@ func createInitialStructure(repo *memory.MemoryRepository, contentRepo *content.
 }
 
 func main() {
+	// Server configuration flags
 	port := flag.String("port", "2049", "Port to listen on")
 	logLevel := flag.String("log-level", "INFO", "Log level (DEBUG, INFO, WARN, ERROR)")
 	contentPath := flag.String("content-path", "/tmp/dittofs-content", "Path to store file content")
+
+	// Connection limit flags
+	maxConnections := flag.Int("max-connections", 0, "Maximum concurrent connections (0 = unlimited)")
+	readTimeout := flag.Duration("read-timeout", 30*time.Second, "Read timeout for RPC requests")
+	writeTimeout := flag.Duration("write-timeout", 30*time.Second, "Write timeout for RPC responses")
+	idleTimeout := flag.Duration("idle-timeout", 5*time.Minute, "Idle timeout between requests")
+	shutdownTimeout := flag.Duration("shutdown-timeout", 30*time.Second, "Graceful shutdown timeout")
+
+	// Repository configuration flags
 	dumpRestricted := flag.Bool("dump-restricted", false, "Restrict DUMP to localhost only")
+
 	flag.Parse()
 
 	// Configure logger
@@ -132,17 +143,17 @@ func main() {
 
 	metadataRepo := memory.NewMemoryRepository()
 
-	// Configure server-wide settings
-	serverConfig := metadata.ServerConfig{}
+	// Configure metadata repository settings
+	repoConfig := metadata.ServerConfig{}
 	if *dumpRestricted {
 		// Restrict DUMP to localhost only
-		serverConfig.DumpAllowedClients = []string{"127.0.0.1", "::1"}
+		repoConfig.DumpAllowedClients = []string{"127.0.0.1", "::1"}
 		logger.Info("DUMP access restricted to localhost")
 	} else {
 		logger.Info("DUMP access unrestricted (default)")
 	}
 
-	if err := metadataRepo.SetServerConfig(serverConfig); err != nil {
+	if err := metadataRepo.SetServerConfig(repoConfig); err != nil {
 		log.Fatalf("Failed to set server config: %v", err)
 	}
 
@@ -163,6 +174,7 @@ func main() {
 	anonUID := uint32(metadata.DefaultAnonUID)
 	anonGID := uint32(metadata.DefaultAnonGID)
 
+	// Add primary export
 	if err := metadataRepo.AddExport("/export", metadata.ExportOptions{
 		ReadOnly:  false,
 		Async:     true,
@@ -172,9 +184,10 @@ func main() {
 	}, rootAttr); err != nil {
 		log.Fatalf("Failed to add export: %v", err)
 	}
-	logger.Info("Export added: /export")
+	logger.Info("Export added: /export (read-write, all_squash)")
 
-	metadataRepo.AddExport("/nolocalhost", metadata.ExportOptions{
+	// Add restricted export example
+	if err := metadataRepo.AddExport("/nolocalhost", metadata.ExportOptions{
 		ReadOnly:           false,
 		Async:              true,
 		AllSquash:          true,
@@ -184,11 +197,12 @@ func main() {
 		DeniedClients:      []string{"192.168.1.50", "::1"},
 		RequireAuth:        false,
 		AllowedAuthFlavors: []uint32{0, 1}, // AUTH_NULL, AUTH_UNIX
-	}, rootAttr)
+	}, rootAttr); err != nil {
+		log.Fatalf("Failed to add restricted export: %v", err)
+	}
+	logger.Info("Export added: /nolocalhost (network restricted)")
 
-	logger.Info("Export added: /nolocalhost")
-
-	// Get root handle
+	// Get root handle for initial structure creation
 	rootHandle, err := metadataRepo.GetRootHandle("/export")
 	if err != nil {
 		log.Fatalf("Failed to get root handle: %v", err)
@@ -198,25 +212,80 @@ func main() {
 	if err := createInitialStructure(metadataRepo, contentRepo, rootHandle); err != nil {
 		log.Fatalf("Failed to create initial structure: %v", err)
 	}
+	logger.Info("Initial file structure created")
 
-	srv := nfsServer.New(*port, metadataRepo, contentRepo)
+	// Add to flags section:
+	metricsInterval := flag.Duration("metrics-interval", 5*time.Minute, "Interval for logging metrics (0 to disable)")
 
+	// Update server configuration section:
+	serverConfig := nfsServer.ServerConfig{
+		Port:               *port,
+		MaxConnections:     *maxConnections,
+		ReadTimeout:        *readTimeout,
+		WriteTimeout:       *writeTimeout,
+		IdleTimeout:        *idleTimeout,
+		ShutdownTimeout:    *shutdownTimeout,
+		MetricsLogInterval: *metricsInterval,
+	}
+
+	// Log server configuration
+	logger.Info("Server configuration:")
+	logger.Info("  Port: %s", serverConfig.Port)
+	if serverConfig.MaxConnections > 0 {
+		logger.Info("  Max connections: %d", serverConfig.MaxConnections)
+	} else {
+		logger.Info("  Max connections: unlimited")
+	}
+	logger.Info("  Read timeout: %v", serverConfig.ReadTimeout)
+	logger.Info("  Write timeout: %v", serverConfig.WriteTimeout)
+	logger.Info("  Idle timeout: %v", serverConfig.IdleTimeout)
+	logger.Info("  Shutdown timeout: %v", serverConfig.ShutdownTimeout)
+	logger.Info("  Metrics interval: %v", serverConfig.MetricsLogInterval)
+	logger.Info("  Metrics interval: %v", serverConfig.MetricsLogInterval)
+	if serverConfig.MetricsLogInterval == 0 {
+		logger.Info("  (metrics logging disabled)")
+	}
+
+	if serverConfig.MetricsLogInterval == 0 {
+		logger.Info("  (metrics logging disabled)")
+	}
+
+	// Create NFS server with configuration
+	srv := nfsServer.New(serverConfig, metadataRepo, contentRepo)
+
+	// Create cancellable context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Start server in background
+	serverDone := make(chan error, 1)
 	go func() {
-		if err := srv.Serve(ctx); err != nil {
-			logger.Error("Server error: %v", err)
-			os.Exit(1)
-		}
+		serverDone <- srv.Serve(ctx)
 	}()
 
-	// Wait for interrupt signal
+	// Wait for interrupt signal or server error
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	logger.Info("Server is running. Press Ctrl+C to stop.")
-	<-sigChan
+	logger.Info("Server is running on port %s. Press Ctrl+C to stop.", *port)
 
-	logger.Info("Shutting down server...")
+	select {
+	case <-sigChan:
+		logger.Info("Shutdown signal received, initiating graceful shutdown...")
+		cancel() // Cancel context to initiate shutdown
+
+		// Wait for server to shut down gracefully
+		if err := <-serverDone; err != nil {
+			logger.Error("Server shutdown error: %v", err)
+			os.Exit(1)
+		}
+		logger.Info("Server stopped gracefully")
+
+	case err := <-serverDone:
+		if err != nil {
+			logger.Error("Server error: %v", err)
+			os.Exit(1)
+		}
+		logger.Info("Server stopped")
+	}
 }

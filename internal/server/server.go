@@ -43,17 +43,23 @@ type ServerConfig struct {
 	// to complete during graceful shutdown.
 	// Default: 30s
 	ShutdownTimeout time.Duration
+
+	// MetricsLogInterval is the interval at which to log server metrics.
+	// Set to 0 to disable periodic metrics logging.
+	// Default: 5 minutes
+	MetricsLogInterval time.Duration
 }
 
 // DefaultServerConfig returns a ServerConfig with sensible production defaults.
 func DefaultServerConfig(port string) ServerConfig {
 	return ServerConfig{
-		Port:            port,
-		MaxConnections:  0, // unlimited
-		ReadTimeout:     30 * time.Second,
-		WriteTimeout:    30 * time.Second,
-		IdleTimeout:     5 * time.Minute,
-		ShutdownTimeout: 30 * time.Second,
+		Port:               port,
+		MaxConnections:     0,
+		ReadTimeout:        30 * time.Second,
+		WriteTimeout:       30 * time.Second,
+		IdleTimeout:        5 * time.Minute,
+		ShutdownTimeout:    30 * time.Second,
+		MetricsLogInterval: 5 * time.Minute, // Log metrics every 5 minutes
 	}
 }
 
@@ -82,6 +88,9 @@ type NFSServer struct {
 	// Connection limiting
 	connCount     atomic.Int32
 	connSemaphore chan struct{} // Semaphore for connection limiting
+
+	// Metrics and monitoring
+	metrics *ServerMetrics
 }
 
 // New creates a new NFSServer with the specified configuration.
@@ -100,6 +109,7 @@ func New(config ServerConfig, repository metadata.Repository, content content.Re
 		content:       content,
 		shutdown:      make(chan struct{}),
 		connSemaphore: connSemaphore,
+		metrics:       newServerMetrics(), // Initialize metrics
 	}
 }
 
@@ -132,6 +142,12 @@ func (s *NFSServer) GetActiveConnections() int32 {
 	return s.connCount.Load()
 }
 
+// GetMetrics returns a snapshot of current server metrics.
+// This is safe to call concurrently and returns a point-in-time view.
+func (s *NFSServer) GetMetrics() *MetricsSnapshot {
+	return s.metrics.Snapshot()
+}
+
 // Serve starts the NFS server and blocks until the context is cancelled
 // or an unrecoverable error occurs.
 //
@@ -151,6 +167,9 @@ func (s *NFSServer) Serve(ctx context.Context) error {
 	logger.Info("NFS server started on port %s", s.config.Port)
 	logger.Debug("Server config: max_connections=%d read_timeout=%v write_timeout=%v idle_timeout=%v",
 		s.config.MaxConnections, s.config.ReadTimeout, s.config.WriteTimeout, s.config.IdleTimeout)
+
+	// Start periodic metrics logging
+	s.startMetricsLogger(ctx, s.config.MetricsLogInterval)
 
 	// Handle context cancellation
 	go func() {
@@ -193,6 +212,9 @@ func (s *NFSServer) Serve(ctx context.Context) error {
 			}
 		}
 
+		// Record successful connection
+		s.metrics.RecordConnection()
+
 		// Track connection for graceful shutdown
 		s.activeConns.Add(1)
 		s.connCount.Add(1)
@@ -200,6 +222,7 @@ func (s *NFSServer) Serve(ctx context.Context) error {
 		conn := s.newConn(tcpConn)
 		go func() {
 			defer func() {
+				s.metrics.RecordConnectionClosed()
 				s.activeConns.Done()
 				s.connCount.Add(-1)
 				if s.connSemaphore != nil {
@@ -241,10 +264,14 @@ func (s *NFSServer) gracefulShutdown() error {
 	select {
 	case <-done:
 		logger.Info("All connections closed gracefully")
+		// Log final metrics before shutdown
+		s.metrics.LogSnapshot()
 		return nil
 	case <-time.After(s.config.ShutdownTimeout):
 		remaining := s.connCount.Load()
 		logger.Warn("Shutdown timeout exceeded, %d connections still active", remaining)
+		// Log final metrics even on timeout
+		s.metrics.LogSnapshot()
 		return fmt.Errorf("shutdown timeout exceeded with %d active connections", remaining)
 	}
 }

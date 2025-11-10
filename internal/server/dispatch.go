@@ -1,0 +1,890 @@
+package server
+
+import (
+	"github.com/marmos91/dittofs/internal/content"
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/mount"
+	"github.com/marmos91/dittofs/internal/protocol/nfs"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/rpc"
+)
+
+// ============================================================================
+// Authentication Context Creation
+// ============================================================================
+
+// AuthContext holds the common authentication information extracted from
+// an RPC call. This provides a unified view of authentication data that
+// is passed to all NFS and Mount procedures.
+//
+// The context includes both the raw authentication flavor (AUTH_UNIX, AUTH_NULL)
+// and parsed Unix credentials when available. Procedures can use this to make
+// authorization decisions.
+type AuthContext struct {
+	// ClientAddr is the remote address of the client connection
+	ClientAddr string
+
+	// AuthFlavor indicates the RPC authentication type (AUTH_UNIX, AUTH_NULL, etc.)
+	AuthFlavor uint32
+
+	// Unix credentials (nil if not AUTH_UNIX or parsing failed)
+	UID  *uint32  // User ID
+	GID  *uint32  // Primary group ID
+	GIDs []uint32 // Supplementary group IDs
+}
+
+// extractAuthContext creates an AuthContext from an RPC call message.
+// This centralizes authentication extraction logic and ensures consistent
+// handling across all procedures.
+//
+// For AUTH_UNIX credentials, this parses the Unix auth body and extracts
+// the UID, GID, and supplementary GIDs. For other auth flavors (like AUTH_NULL),
+// the Unix credential fields are left as nil.
+//
+// Parsing failures are logged but do not cause the procedure to fail -
+// the procedure receives a context with nil credentials and can decide
+// how to handle unauthenticated requests.
+//
+// Parameters:
+//   - call: The RPC call message containing authentication data
+//   - clientAddr: The remote address of the client connection
+//   - procedure: Name of the procedure (for logging purposes)
+//
+// Returns:
+//   - AuthContext with extracted authentication information
+func extractAuthContext(call *rpc.RPCCallMessage, clientAddr string, procedure string) *AuthContext {
+	ctx := &AuthContext{
+		ClientAddr: clientAddr,
+		AuthFlavor: call.GetAuthFlavor(),
+	}
+
+	// Only attempt to parse Unix credentials if AUTH_UNIX is specified
+	if ctx.AuthFlavor != rpc.AuthUnix {
+		return ctx
+	}
+
+	// Get auth body
+	authBody := call.GetAuthBody()
+	if len(authBody) == 0 {
+		logger.Warn("%s: AUTH_UNIX specified but auth body is empty", procedure)
+		return ctx
+	}
+
+	// Parse Unix auth credentials
+	unixAuth, err := rpc.ParseUnixAuth(authBody)
+	if err != nil {
+		// Log the parsing failure - this is unexpected and may indicate
+		// a protocol issue or malicious client
+		logger.Warn("%s: Failed to parse AUTH_UNIX credentials: %v", procedure, err)
+		return ctx
+	}
+
+	// Log successful auth parsing at debug level
+	logger.Debug("%s: Parsed Unix auth: uid=%d gid=%d ngids=%d",
+		procedure, unixAuth.UID, unixAuth.GID, len(unixAuth.GIDs))
+
+	ctx.UID = &unixAuth.UID
+	ctx.GID = &unixAuth.GID
+	ctx.GIDs = unixAuth.GIDs
+
+	return ctx
+}
+
+// ============================================================================
+// Procedure Dispatch Tables
+// ============================================================================
+
+// nfsProcedureHandler defines the signature for NFS procedure handlers.
+// Each handler receives the necessary repositories, request data, and
+// authentication context, and returns encoded response data or an error.
+type nfsProcedureHandler func(
+	handler NFSHandler,
+	repo metadata.Repository,
+	content content.Repository,
+	data []byte,
+	authCtx *AuthContext,
+) ([]byte, error)
+
+// nfsProcedureInfo contains metadata about an NFS procedure for dispatch.
+type nfsProcedureInfo struct {
+	// Name is the procedure name for logging (e.g., "NULL", "GETATTR")
+	Name string
+
+	// Handler is the function that processes this procedure
+	Handler nfsProcedureHandler
+
+	// NeedsAuth indicates whether this procedure requires authentication.
+	// If true and AUTH_UNIX parsing fails, the procedure may still execute
+	// but with nil credentials.
+	NeedsAuth bool
+}
+
+// nfsDispatchTable maps NFS procedure numbers to their handlers.
+// This replaces the large switch statement in handleNFSProcedure.
+//
+// The table is initialized once at package init time for efficiency.
+// Each entry contains the procedure name, handler function, and metadata
+// about authentication requirements.
+var nfsDispatchTable map[uint32]*nfsProcedureInfo
+
+// mountProcedureHandler defines the signature for Mount procedure handlers.
+type mountProcedureHandler func(
+	handler MountHandler,
+	repo metadata.Repository,
+	data []byte,
+	authCtx *AuthContext,
+) ([]byte, error)
+
+// mountProcedureInfo contains metadata about a Mount procedure for dispatch.
+type mountProcedureInfo struct {
+	Name      string
+	Handler   mountProcedureHandler
+	NeedsAuth bool
+}
+
+// mountDispatchTable maps Mount procedure numbers to their handlers.
+var mountDispatchTable map[uint32]*mountProcedureInfo
+
+// init initializes the procedure dispatch tables.
+// This is called once at package initialization time.
+func init() {
+	initNFSDispatchTable()
+	initMountDispatchTable()
+}
+
+// ============================================================================
+// NFS Dispatch Table Initialization
+// ============================================================================
+
+func initNFSDispatchTable() {
+	nfsDispatchTable = map[uint32]*nfsProcedureInfo{
+		types.NFSProcNull: {
+			Name:      "NULL",
+			Handler:   handleNFSNull,
+			NeedsAuth: false,
+		},
+		types.NFSProcGetAttr: {
+			Name:      "GETATTR",
+			Handler:   handleNFSGetAttr,
+			NeedsAuth: false,
+		},
+		types.NFSProcSetAttr: {
+			Name:      "SETATTR",
+			Handler:   handleNFSSetAttr,
+			NeedsAuth: true,
+		},
+		types.NFSProcLookup: {
+			Name:      "LOOKUP",
+			Handler:   handleNFSLookup,
+			NeedsAuth: true,
+		},
+		types.NFSProcAccess: {
+			Name:      "ACCESS",
+			Handler:   handleNFSAccess,
+			NeedsAuth: true,
+		},
+		types.NFSProcReadLink: {
+			Name:      "READLINK",
+			Handler:   handleNFSReadLink,
+			NeedsAuth: true,
+		},
+		types.NFSProcRead: {
+			Name:      "READ",
+			Handler:   handleNFSRead,
+			NeedsAuth: true,
+		},
+		types.NFSProcWrite: {
+			Name:      "WRITE",
+			Handler:   handleNFSWrite,
+			NeedsAuth: true,
+		},
+		types.NFSProcCreate: {
+			Name:      "CREATE",
+			Handler:   handleNFSCreate,
+			NeedsAuth: true,
+		},
+		types.NFSProcMkdir: {
+			Name:      "MKDIR",
+			Handler:   handleNFSMkdir,
+			NeedsAuth: true,
+		},
+		types.NFSProcSymlink: {
+			Name:      "SYMLINK",
+			Handler:   handleNFSSymlink,
+			NeedsAuth: true,
+		},
+		types.NFSProcMknod: {
+			Name:      "MKNOD",
+			Handler:   handleNFSMknod,
+			NeedsAuth: false,
+		},
+		types.NFSProcRemove: {
+			Name:      "REMOVE",
+			Handler:   handleNFSRemove,
+			NeedsAuth: true,
+		},
+		types.NFSProcRmdir: {
+			Name:      "RMDIR",
+			Handler:   handleNFSRmdir,
+			NeedsAuth: true,
+		},
+		types.NFSProcRename: {
+			Name:      "RENAME",
+			Handler:   handleNFSRename,
+			NeedsAuth: true,
+		},
+		types.NFSProcLink: {
+			Name:      "LINK",
+			Handler:   handleNFSLink,
+			NeedsAuth: true,
+		},
+		types.NFSProcReadDir: {
+			Name:      "READDIR",
+			Handler:   handleNFSReadDir,
+			NeedsAuth: true,
+		},
+		types.NFSProcReadDirPlus: {
+			Name:      "READDIRPLUS",
+			Handler:   handleNFSReadDirPlus,
+			NeedsAuth: true,
+		},
+		types.NFSProcFsStat: {
+			Name:      "FSSTAT",
+			Handler:   handleNFSFsStat,
+			NeedsAuth: false,
+		},
+		types.NFSProcFsInfo: {
+			Name:      "FSINFO",
+			Handler:   handleNFSFsInfo,
+			NeedsAuth: false,
+		},
+		types.NFSProcPathConf: {
+			Name:      "PATHCONF",
+			Handler:   handleNFSPathConf,
+			NeedsAuth: false,
+		},
+		types.NFSProcCommit: {
+			Name:      "COMMIT",
+			Handler:   handleNFSCommit,
+			NeedsAuth: true,
+		},
+	}
+}
+
+// ============================================================================
+// NFS Procedure Handlers
+// ============================================================================
+
+func handleNFSNull(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.NullContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeNullRequest,
+		func(req *nfs.NullRequest) (*nfs.NullResponse, error) {
+			return handler.Null(repo, req, ctx)
+		},
+		types.NFS3ErrAcces,
+		func(status uint32) *nfs.NullResponse {
+			return &nfs.NullResponse{}
+		},
+	)
+}
+
+func handleNFSGetAttr(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.GetAttrContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeGetAttrRequest,
+		func(req *nfs.GetAttrRequest) (*nfs.GetAttrResponse, error) {
+			return handler.GetAttr(repo, req, ctx)
+		},
+		types.NFS3ErrAcces,
+		func(status uint32) *nfs.GetAttrResponse {
+			return &nfs.GetAttrResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSSetAttr(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.SetAttrContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeSetAttrRequest,
+		func(req *nfs.SetAttrRequest) (*nfs.SetAttrResponse, error) {
+			return handler.SetAttr(repo, req, ctx)
+		},
+		types.NFS3ErrAcces,
+		func(status uint32) *nfs.SetAttrResponse {
+			return &nfs.SetAttrResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSLookup(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.LookupContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeLookupRequest,
+		func(req *nfs.LookupRequest) (*nfs.LookupResponse, error) {
+			return handler.Lookup(repo, req, ctx)
+		},
+		types.NFS3ErrAcces,
+		func(status uint32) *nfs.LookupResponse {
+			return &nfs.LookupResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSAccess(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.AccessContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeAccessRequest,
+		func(req *nfs.AccessRequest) (*nfs.AccessResponse, error) {
+			return handler.Access(repo, req, ctx)
+		},
+		types.NFS3ErrAcces,
+		func(status uint32) *nfs.AccessResponse {
+			return &nfs.AccessResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSReadLink(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.ReadLinkContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeReadLinkRequest,
+		func(req *nfs.ReadLinkRequest) (*nfs.ReadLinkResponse, error) {
+			return handler.ReadLink(repo, req, ctx)
+		},
+		types.NFS3ErrIO,
+		func(status uint32) *nfs.ReadLinkResponse {
+			return &nfs.ReadLinkResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSRead(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.ReadContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeReadRequest,
+		func(req *nfs.ReadRequest) (*nfs.ReadResponse, error) {
+			return handler.Read(content, repo, req, ctx)
+		},
+		types.NFS3ErrIO,
+		func(status uint32) *nfs.ReadResponse {
+			return &nfs.ReadResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSWrite(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.WriteContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeWriteRequest,
+		func(req *nfs.WriteRequest) (*nfs.WriteResponse, error) {
+			return handler.Write(content, repo, req, ctx)
+		},
+		types.NFS3ErrIO,
+		func(status uint32) *nfs.WriteResponse {
+			return &nfs.WriteResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSCreate(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.CreateContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeCreateRequest,
+		func(req *nfs.CreateRequest) (*nfs.CreateResponse, error) {
+			return handler.Create(content, repo, req, ctx)
+		},
+		types.NFS3ErrIO,
+		func(status uint32) *nfs.CreateResponse {
+			return &nfs.CreateResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSMkdir(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.MkdirContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeMkdirRequest,
+		func(req *nfs.MkdirRequest) (*nfs.MkdirResponse, error) {
+			return handler.Mkdir(repo, req, ctx)
+		},
+		types.NFS3ErrIO,
+		func(status uint32) *nfs.MkdirResponse {
+			return &nfs.MkdirResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSSymlink(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.SymlinkContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeSymlinkRequest,
+		func(req *nfs.SymlinkRequest) (*nfs.SymlinkResponse, error) {
+			return handler.Symlink(repo, req, ctx)
+		},
+		types.NFS3ErrIO,
+		func(status uint32) *nfs.SymlinkResponse {
+			return &nfs.SymlinkResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSMknod(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.MknodContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeMknodRequest,
+		func(req *nfs.MknodRequest) (*nfs.MknodResponse, error) {
+			return handler.Mknod(repo, req, ctx)
+		},
+		types.NFS3ErrIO,
+		func(status uint32) *nfs.MknodResponse {
+			return &nfs.MknodResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSRemove(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.RemoveContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeRemoveRequest,
+		func(req *nfs.RemoveRequest) (*nfs.RemoveResponse, error) {
+			return handler.Remove(repo, req, ctx)
+		},
+		types.NFS3ErrIO,
+		func(status uint32) *nfs.RemoveResponse {
+			return &nfs.RemoveResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSRmdir(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.RmdirContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeRmdirRequest,
+		func(req *nfs.RmdirRequest) (*nfs.RmdirResponse, error) {
+			return handler.Rmdir(repo, req, ctx)
+		},
+		types.NFS3ErrIO,
+		func(status uint32) *nfs.RmdirResponse {
+			return &nfs.RmdirResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSRename(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.RenameContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeRenameRequest,
+		func(req *nfs.RenameRequest) (*nfs.RenameResponse, error) {
+			return handler.Rename(repo, req, ctx)
+		},
+		types.NFS3ErrIO,
+		func(status uint32) *nfs.RenameResponse {
+			return &nfs.RenameResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSLink(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.LinkContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeLinkRequest,
+		func(req *nfs.LinkRequest) (*nfs.LinkResponse, error) {
+			return handler.Link(repo, req, ctx)
+		},
+		types.NFS3ErrIO,
+		func(status uint32) *nfs.LinkResponse {
+			return &nfs.LinkResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSReadDir(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.ReadDirContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeReadDirRequest,
+		func(req *nfs.ReadDirRequest) (*nfs.ReadDirResponse, error) {
+			return handler.ReadDir(repo, req, ctx)
+		},
+		types.NFS3ErrAcces,
+		func(status uint32) *nfs.ReadDirResponse {
+			return &nfs.ReadDirResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSReadDirPlus(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.ReadDirPlusContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeReadDirPlusRequest,
+		func(req *nfs.ReadDirPlusRequest) (*nfs.ReadDirPlusResponse, error) {
+			return handler.ReadDirPlus(repo, req, ctx)
+		},
+		types.NFS3ErrAcces,
+		func(status uint32) *nfs.ReadDirPlusResponse {
+			return &nfs.ReadDirPlusResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSFsStat(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.FsStatContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeFsStatRequest,
+		func(req *nfs.FsStatRequest) (*nfs.FsStatResponse, error) {
+			return handler.FsStat(repo, req, ctx)
+		},
+		types.NFS3ErrIO,
+		func(status uint32) *nfs.FsStatResponse {
+			return &nfs.FsStatResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSFsInfo(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.FsInfoContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeFsInfoRequest,
+		func(req *nfs.FsInfoRequest) (*nfs.FsInfoResponse, error) {
+			return handler.FsInfo(repo, req, ctx)
+		},
+		types.NFS3ErrIO,
+		func(status uint32) *nfs.FsInfoResponse {
+			return &nfs.FsInfoResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSPathConf(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.PathConfContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodePathConfRequest,
+		func(req *nfs.PathConfRequest) (*nfs.PathConfResponse, error) {
+			return handler.PathConf(repo, req, ctx)
+		},
+		types.NFS3ErrIO,
+		func(status uint32) *nfs.PathConfResponse {
+			return &nfs.PathConfResponse{Status: status}
+		},
+	)
+}
+
+func handleNFSCommit(handler NFSHandler, repo metadata.Repository, content content.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &nfs.CommitContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UID:        authCtx.UID,
+		GID:        authCtx.GID,
+		GIDs:       authCtx.GIDs,
+	}
+
+	return handleRequest(
+		data,
+		nfs.DecodeCommitRequest,
+		func(req *nfs.CommitRequest) (*nfs.CommitResponse, error) {
+			return handler.Commit(repo, req, ctx)
+		},
+		types.NFS3ErrIO,
+		func(status uint32) *nfs.CommitResponse {
+			return &nfs.CommitResponse{Status: status}
+		},
+	)
+}
+
+// ============================================================================
+// Mount Dispatch Table Initialization
+// ============================================================================
+
+func initMountDispatchTable() {
+	mountDispatchTable = map[uint32]*mountProcedureInfo{
+		mount.MountProcNull: {
+			Name:      "NULL",
+			Handler:   handleMountNull,
+			NeedsAuth: false,
+		},
+		mount.MountProcMnt: {
+			Name:      "MNT",
+			Handler:   handleMountMnt,
+			NeedsAuth: true,
+		},
+		mount.MountProcDump: {
+			Name:      "DUMP",
+			Handler:   handleMountDump,
+			NeedsAuth: false,
+		},
+		mount.MountProcUmnt: {
+			Name:      "UMNT",
+			Handler:   handleMountUmnt,
+			NeedsAuth: false,
+		},
+		mount.MountProcUmntAll: {
+			Name:      "UMNTALL",
+			Handler:   handleMountUmntAll,
+			NeedsAuth: false,
+		},
+		mount.MountProcExport: {
+			Name:      "EXPORT",
+			Handler:   handleMountExport,
+			NeedsAuth: false,
+		},
+	}
+}
+
+// ============================================================================
+// Mount Procedure Handlers
+// ============================================================================
+
+func handleMountNull(handler MountHandler, repo metadata.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	return handler.MountNull(repo)
+}
+
+func handleMountMnt(handler MountHandler, repo metadata.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	// Create mount context with Unix auth if available
+	var unixAuth *rpc.UnixAuth
+	if authCtx.UID != nil && authCtx.GID != nil {
+		unixAuth = &rpc.UnixAuth{
+			UID:  *authCtx.UID,
+			GID:  *authCtx.GID,
+			GIDs: authCtx.GIDs,
+		}
+	}
+
+	ctx := &mount.MountContext{
+		ClientAddr: authCtx.ClientAddr,
+		AuthFlavor: authCtx.AuthFlavor,
+		UnixAuth:   unixAuth,
+	}
+
+	return handleRequest(
+		data,
+		mount.DecodeMountRequest,
+		func(req *mount.MountRequest) (*mount.MountResponse, error) {
+			return handler.Mount(repo, req, ctx)
+		},
+		mount.MountErrIO,
+		func(status uint32) *mount.MountResponse {
+			return &mount.MountResponse{Status: status}
+		},
+	)
+}
+
+func handleMountDump(handler MountHandler, repo metadata.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &mount.DumpContext{
+		ClientAddr: authCtx.ClientAddr,
+	}
+
+	return handleRequest(
+		data,
+		mount.DecodeDumpRequest,
+		func(req *mount.DumpRequest) (*mount.DumpResponse, error) {
+			return handler.Dump(repo, req, ctx)
+		},
+		mount.MountErrIO,
+		func(status uint32) *mount.DumpResponse {
+			return &mount.DumpResponse{Entries: []mount.DumpEntry{}}
+		},
+	)
+}
+
+func handleMountUmnt(handler MountHandler, repo metadata.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &mount.UmountContext{
+		ClientAddr: authCtx.ClientAddr,
+	}
+
+	return handleRequest(
+		data,
+		mount.DecodeUmountRequest,
+		func(req *mount.UmountRequest) (*mount.UmountResponse, error) {
+			return handler.Umnt(repo, req, ctx)
+		},
+		mount.MountErrIO,
+		func(status uint32) *mount.UmountResponse {
+			return &mount.UmountResponse{}
+		},
+	)
+}
+
+func handleMountUmntAll(handler MountHandler, repo metadata.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	ctx := &mount.UmountAllContext{
+		ClientAddr: authCtx.ClientAddr,
+	}
+
+	return handleRequest(
+		data,
+		mount.DecodeUmountAllRequest,
+		func(req *mount.UmountAllRequest) (*mount.UmountAllResponse, error) {
+			return handler.UmntAll(repo, req, ctx)
+		},
+		mount.MountErrIO,
+		func(status uint32) *mount.UmountAllResponse {
+			return &mount.UmountAllResponse{}
+		},
+	)
+}
+
+func handleMountExport(handler MountHandler, repo metadata.Repository, data []byte, authCtx *AuthContext) ([]byte, error) {
+	return handleRequest(
+		data,
+		mount.DecodeExportRequest,
+		func(req *mount.ExportRequest) (*mount.ExportResponse, error) {
+			return handler.Export(repo, req)
+		},
+		mount.MountErrIO,
+		func(status uint32) *mount.ExportResponse {
+			return &mount.ExportResponse{Entries: []mount.ExportEntry{}}
+		},
+	)
+}
