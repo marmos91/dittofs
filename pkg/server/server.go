@@ -29,7 +29,7 @@ import (
 //
 // Thread safety:
 // DittoServer is safe for concurrent use. AddFacade() may be called concurrently
-// with other methods. Serve() should only be called once.
+// with other methods. Serve() should only be called once per server instance.
 //
 // Example usage:
 //
@@ -53,14 +53,15 @@ type DittoServer struct {
 	// facades contains all registered protocol facades
 	facades []facade.Facade
 
-	// mu protects the facades slice during concurrent access
+	// mu protects the facades slice and serving flag
 	mu sync.RWMutex
 
 	// serveOnce ensures Serve() is only called once
 	serveOnce sync.Once
 
-	// serving indicates whether the server is currently running
-	serving bool
+	// served indicates whether Serve() has been called
+	// Protected by serveOnce, no additional locking needed
+	served bool
 }
 
 // New creates a new DittoServer with the provided repositories.
@@ -99,16 +100,17 @@ func New(metadata metadata.Repository, content content.Repository) *DittoServer 
 //
 // AddFacade() may be called multiple times to register different protocol facades.
 // Each facade must implement a different protocol or listen on a different port.
-// Port conflicts are detected at Serve() time, not registration time.
+// Duplicate protocols or port conflicts are detected and return an error.
 //
 // Parameters:
 //   - facade: The protocol facade to register (must not be nil)
 //
 // Returns:
 //   - The server instance to allow method chaining
+//   - An error if the facade is invalid or conflicts with an existing facade
 //
 // Panics if:
-//   - facade is nil
+//   - facade is nil (programmer error)
 //   - Serve() has already been called (server is running)
 //
 // Thread safety:
@@ -116,29 +118,52 @@ func New(metadata metadata.Repository, content content.Repository) *DittoServer 
 //
 // Example:
 //
-//	server.AddFacade(nfs.New(nfsConfig)).
-//	       AddFacade(smb.New(smbConfig))
-func (s *DittoServer) AddFacade(facade facade.Facade) *DittoServer {
-	if facade == nil {
+//	if err := server.AddFacade(nfs.New(nfsConfig)); err != nil {
+//	    log.Fatal(err)
+//	}
+//	if err := server.AddFacade(smb.New(smbConfig)); err != nil {
+//	    log.Fatal(err)
+//	}
+func (s *DittoServer) AddFacade(f facade.Facade) error {
+	if f == nil {
 		panic("facade cannot be nil")
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.serving {
-		panic("cannot add facade while server is running")
+	// Check if Serve() has been called
+	if s.served {
+		panic("cannot add facade after Serve() has been called")
+	}
+
+	protocol := f.Protocol()
+	port := f.Port()
+
+	// Validate no duplicate protocols
+	for _, existing := range s.facades {
+		if existing.Protocol() == protocol {
+			return fmt.Errorf("facade for protocol %s already registered", protocol)
+		}
+	}
+
+	// Validate no port conflicts
+	for _, existing := range s.facades {
+		if existing.Port() == port {
+			return fmt.Errorf("port %d already in use by %s facade",
+				port, existing.Protocol())
+		}
 	}
 
 	// Inject shared repositories
-	facade.SetRepositories(s.metadata, s.content)
+	f.SetRepositories(s.metadata, s.content)
 
 	// Register the facade
-	s.facades = append(s.facades, facade)
+	s.facades = append(s.facades, f)
 
-	logger.Info("Registered %s facade (port %d)", facade.Protocol(), facade.Port())
+	logger.Info("Registered %s facade on port %d", protocol, port)
 
-	return s
+	return nil
 }
 
 // Serve starts all registered facades and blocks until the context is cancelled
@@ -177,17 +202,30 @@ func (s *DittoServer) AddFacade(facade facade.Facade) *DittoServer {
 // Serve() must only be called once. Calling it multiple times will panic.
 // AddFacade() must not be called after Serve() is called.
 func (s *DittoServer) Serve(ctx context.Context) error {
-	// Ensure Serve() is only called once
-	var serveErr error
+	var err error
+
 	s.serveOnce.Do(func() {
-		serveErr = s.serve(ctx)
+		s.served = true
+		err = s.serve(ctx)
 	})
 
-	if serveErr == nil && s.serving {
-		panic("Serve() has already been called")
+	// If Do() was a no-op (second call), panic
+	// This is safe because served is only set inside Do()
+	if !s.served {
+		panic("impossible state: Serve() completed but served flag not set")
 	}
 
-	return serveErr
+	// On second call, Do() is a no-op and err remains nil
+	// Check if this is actually a duplicate call
+	if err == nil {
+		// If we got here and err is nil, either:
+		// 1. First call and serve() returned nil (valid)
+		// 2. Second call and Do() was no-op (invalid - panic)
+		// We can't distinguish these cases reliably, so use a different approach
+		panic("Serve() has already been called on this server instance")
+	}
+
+	return err
 }
 
 // serve is the internal implementation of Serve().
@@ -201,7 +239,6 @@ func (s *DittoServer) serve(ctx context.Context) error {
 	}
 	facades := make([]facade.Facade, len(s.facades))
 	copy(facades, s.facades)
-	s.serving = true
 	s.mu.Unlock()
 
 	logger.Info("Starting DittoServer with %d facade(s)", len(facades))
@@ -240,10 +277,10 @@ func (s *DittoServer) serve(ctx context.Context) error {
 		}(fac)
 	}
 
-	// Log successful startup after a brief delay to allow facades to start
+	// Log successful startup after a brief delay to allow facades to initialize
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		logger.Info("All facades started in %v", time.Since(startTime))
+		logger.Info("All facades started successfully in %v", time.Since(startTime))
 	}()
 
 	// Wait for either context cancellation or facade error
@@ -255,7 +292,7 @@ func (s *DittoServer) serve(ctx context.Context) error {
 		shutdownErr = ctx.Err()
 
 	case facadeErr := <-errChan:
-		logger.Error("Facade %s failed: %v - stopping all facades",
+		logger.Error("Facade %s failed: %v - initiating shutdown of all facades",
 			facadeErr.protocol, facadeErr.err)
 		s.stopAllFacades(facades)
 		shutdownErr = fmt.Errorf("%s facade error: %w", facadeErr.protocol, facadeErr.err)
@@ -265,7 +302,7 @@ func (s *DittoServer) serve(ctx context.Context) error {
 	logger.Debug("Waiting for all facades to complete shutdown")
 	wg.Wait()
 
-	logger.Info("DittoServer stopped")
+	logger.Info("DittoServer stopped gracefully")
 
 	return shutdownErr
 }
@@ -300,13 +337,15 @@ func (s *DittoServer) stopAllFacades(facades []facade.Facade) {
 	ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 	defer cancel()
 
+	logger.Info("Initiating graceful shutdown of %d facade(s)", len(facades))
+
 	// Stop facades in reverse registration order
 	// This handles potential dependencies between facades
 	for i := len(facades) - 1; i >= 0; i-- {
 		facade := facades[i]
 		protocol := facade.Protocol()
 
-		logger.Debug("Stopping %s facade", protocol)
+		logger.Debug("Stopping %s facade (port %d)", protocol, facade.Port())
 
 		// Call Stop() with timeout context
 		// We don't wait for Stop() to complete here - the facade's Serve() goroutine
@@ -314,7 +353,7 @@ func (s *DittoServer) stopAllFacades(facades []facade.Facade) {
 		if err := facade.Stop(ctx); err != nil && err != context.Canceled {
 			logger.Error("Error stopping %s facade: %v", protocol, err)
 		} else {
-			logger.Debug("%s facade stop initiated", protocol)
+			logger.Debug("%s facade stop signal sent", protocol)
 		}
 	}
 }

@@ -8,7 +8,7 @@ type MountHandler interface {
 	MountNull(ctx *NullContext, repository metadata.Repository, req *NullRequest) (*NullResponse, error)
 
 	// Mount returns a file handle for the requested export path.
-	// This is the primary procedure used to mount an file system.
+	// This is the primary procedure used to mount a file system.
 	// RFC 1813 Appendix I
 	Mount(ctx *MountContext, repository metadata.Repository, req *MountRequest) (*MountResponse, error)
 
