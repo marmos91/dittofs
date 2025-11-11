@@ -70,7 +70,7 @@ func NewFSContentRepository(ctx context.Context, basePath string) (*FSContentRep
 //
 // Returns:
 //   - string: Full filesystem path for the content
-func (r *FSContentRepository) getFilePath(ctx context.Context, id ContentID) string {
+func (r *FSContentRepository) getFilePath(_ context.Context, id ContentID) string {
 	return filepath.Join(r.basePath, string(id))
 }
 
@@ -252,10 +252,7 @@ func (r *FSContentRepository) WriteContent(ctx context.Context, id ContentID, co
 			return err
 		}
 
-		end := offset + chunkSize
-		if end > len(content) {
-			end = len(content)
-		}
+		end := min(offset+chunkSize, len(content))
 
 		if _, err := file.Write(content[offset:end]); err != nil {
 			return fmt.Errorf("failed to write content chunk: %w", err)
@@ -337,10 +334,7 @@ func (r *FSContentRepository) WriteAt(ctx context.Context, id ContentID, data []
 			return err
 		}
 
-		end := offset + chunkSize
-		if end > len(data) {
-			end = len(data)
-		}
+		end := min(offset+chunkSize, len(data))
 
 		if _, err := file.Write(data[offset:end]); err != nil {
 			return fmt.Errorf("failed to write data chunk: %w", err)

@@ -141,14 +141,15 @@ func (p *bufferPool) Put(buf []byte) {
 	switch capacity {
 	case smallBufferSize:
 		// Reset length to full capacity for next use
-		buf = buf[:cap(buf)]
-		p.small.Put(&buf)
+		// Create a new slice variable to avoid taking address of modified parameter
+		fullBuf := buf[:cap(buf)]
+		p.small.Put(&fullBuf)
 	case mediumBufferSize:
-		buf = buf[:cap(buf)]
-		p.medium.Put(&buf)
+		fullBuf := buf[:cap(buf)]
+		p.medium.Put(&fullBuf)
 	case largeBufferSize:
-		buf = buf[:cap(buf)]
-		p.large.Put(&buf)
+		fullBuf := buf[:cap(buf)]
+		p.large.Put(&fullBuf)
 	default:
 		// Don't pool oversized or undersized buffers
 		// They will be garbage collected normally

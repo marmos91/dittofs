@@ -399,6 +399,7 @@ func (h *DefaultNFSHandler) Write(
 
 	updatedAttr, preSize, preMtime, preCtime, err := metadataRepo.WriteFile(
 		&metadata.AuthContext{
+			Context:    ctx.Context,
 			AuthFlavor: ctx.AuthFlavor,
 			UID:        ctx.UID,
 			GID:        ctx.GID,
