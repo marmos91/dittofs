@@ -26,7 +26,12 @@ type ExportRequest struct {
 	// Empty struct - EXPORT takes no parameters
 }
 
+// ExportContext contains the context information needed to process an export request.
+// This includes cancellation handling for the request lifecycle.
 type ExportContext struct {
+	// Context carries cancellation signals and deadlines
+	// The Export handler checks this context to abort operations if the client
+	// disconnects or the request times out
 	Context context.Context
 }
 
@@ -61,11 +66,17 @@ type ExportEntry struct {
 // currently exported (available for mounting) by the NFS server.
 //
 // The export process:
-//  1. Query the repository for all configured exports
-//  2. Convert repository export entries to EXPORT response format
-//  3. Optionally include client restrictions as groups
-//  4. Log the operation with count of returned exports
-//  5. Return the list of exports to the client
+//  1. Check if the context has been cancelled (early exit if client disconnected)
+//  2. Query the repository for all configured exports
+//  3. Convert repository export entries to EXPORT response format
+//  4. Optionally include client restrictions as groups
+//  5. Log the operation with count of returned exports
+//  6. Return the list of exports to the client
+//
+// Context cancellation:
+//   - The handler respects context cancellation at key I/O points
+//   - If the client disconnects or the request times out, the operation aborts
+//   - Cancellation is checked before expensive repository operations
 //
 // Use cases for EXPORT:
 //   - Clients discovering available NFS exports before mounting
@@ -87,43 +98,66 @@ type ExportEntry struct {
 //   - For now, EXPORT is unrestricted per RFC 1813 convention
 //
 // Parameters:
+//   - ctx: Context with cancellation and timeout information
 //   - repository: The metadata repository containing export configurations
 //   - req: Empty request struct (EXPORT takes no parameters)
 //
 // Returns:
 //   - *ExportResponse: List of all configured exports
-//   - error: Returns error only for internal server failures
-//     (export list is always returned, even if empty)
+//   - error: Returns error for context cancellation or internal server failures
+//     (export list is always returned, even if empty, unless cancelled)
 //
 // RFC 1813 Appendix I: EXPORT Procedure
 //
 // Example:
 //
 //	handler := &DefaultMountHandler{}
+//	ctx := &ExportContext{Context: context.Background()}
 //	req := &ExportRequest{}
-//	resp, err := handler.Export(repository, req)
+//	resp, err := handler.Export(ctx, repository, req)
 //	if err != nil {
-//	    // handle internal error
-//	}
-//	fmt.Printf("Available exports: %d\n", len(resp.Entries))
-//	for _, entry := range resp.Entries {
-//	    fmt.Printf("  %s\n", entry.Directory)
-//	    if len(entry.Groups) > 0 {
-//	        fmt.Printf("    Restricted to: %v\n", entry.Groups)
+//	    if errors.Is(err, context.Canceled) {
+//	        // client disconnected
 //	    } else {
-//	        fmt.Printf("    Available to all clients\n")
+//	        // internal error
 //	    }
 //	}
+//	fmt.Printf("Available exports: %d\n", len(resp.Entries))
 func (h *DefaultMountHandler) Export(
 	ctx *ExportContext,
 	repository metadata.Repository,
 	req *ExportRequest,
 ) (*ExportResponse, error) {
+	// Check for cancellation before starting any work
+	// This handles the case where the client disconnects before we begin processing
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("Export request cancelled before processing: error=%v", ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+	}
+
 	logger.Info("Export request: listing all available exports")
 
+	// Check for cancellation before the potentially expensive export list retrieval
+	// This is especially important if there are many exports configured
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("Export request cancelled during processing: error=%v", ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+	}
+
 	// Get all configured exports from the repository
+	// The repository should also respect context cancellation internally
 	exports, err := repository.GetExports(ctx.Context)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("Export request cancelled while retrieving exports: error=%v", ctx.Context.Err())
+			return nil, ctx.Context.Err()
+		}
+
 		logger.Error("Failed to get exports: error=%v", err)
 		return nil, fmt.Errorf("failed to retrieve exports: %w", err)
 	}

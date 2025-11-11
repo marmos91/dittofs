@@ -36,7 +36,8 @@ type NullResponse struct {
 }
 
 // NullContext contains the context information for a NULL request.
-// This includes client identification for logging and monitoring purposes.
+// This includes client identification for logging and monitoring purposes,
+// as well as cancellation handling.
 //
 // While NULL doesn't perform operations requiring authentication, we maintain
 // the context structure for:
@@ -44,7 +45,12 @@ type NullResponse struct {
 //   - Connection monitoring and metrics
 //   - Security auditing (detecting port scans, etc.)
 //   - Rate limiting and abuse detection
+//   - Graceful handling of client disconnections
 type NullContext struct {
+	// Context carries cancellation signals and deadlines
+	// The NULL handler checks this context to abort if the client disconnects
+	// Note: Per RFC 1813, NULL should be extremely fast, so cancellation
+	// checks are minimal to maintain low latency
 	Context context.Context
 
 	// ClientAddr is the network address of the client making the request.
@@ -71,13 +77,79 @@ type NullContext struct {
 	GIDs []uint32
 }
 
-// MountNull does nothing. This is used to test connectivity.
-// RFC 1813 Appendix I
+// MountNull handles the NULL procedure, which is a no-op used to test connectivity.
+//
+// The NULL procedure is the simplest NFS operation and serves multiple purposes:
+//   - Connectivity testing: Verifies the server is reachable and responding
+//   - RPC validation: Confirms the RPC protocol layer is working correctly
+//   - Keep-alive: Maintains network connections and NAT mappings
+//   - Version verification: Confirms NFSv3 protocol support
+//
+// Per RFC 1813, NULL must always succeed and return immediately, regardless of
+// server state. This makes it ideal for health checks and monitoring.
+//
+// The operation flow:
+//  1. Check for context cancellation (client disconnected before processing)
+//  2. Log the NULL request for monitoring purposes
+//  3. Optionally verify repository health (non-fatal if it fails)
+//  4. Return success (empty response)
+//
+// Context cancellation:
+//   - Single check at the beginning to respect client disconnection
+//   - No additional checks needed - NULL is extremely fast
+//   - If cancelled, returns error immediately (per standard Go patterns)
+//   - Note: Per RFC 1813, NULL should succeed even if backend has issues
+//
+// Important characteristics:
+//   - Must be extremely fast (typically < 1ms)
+//   - Must always succeed per RFC 1813
+//   - No authentication required
+//   - No data validation needed
+//   - Safe to call repeatedly (idempotent)
+//   - Does not modify server state
+//
+// Parameters:
+//   - ctx: Context with cancellation and client information
+//   - repository: The metadata repository (used for optional health check)
+//   - req: Empty request structure (NULL takes no parameters)
+//
+// Returns:
+//   - *NullResponse: Empty response structure (always on success)
+//   - error: Only returns error if context was cancelled before processing
+//
+// RFC 1813 Appendix I: NULL Procedure
+//
+// Example:
+//
+//	handler := &DefaultMountHandler{}
+//	ctx := &NullContext{
+//	    Context: context.Background(),
+//	    ClientAddr: "192.168.1.100:1234",
+//	}
+//	req := &NullRequest{}
+//	resp, err := handler.MountNull(ctx, repository, req)
+//	if err != nil {
+//	    if errors.Is(err, context.Canceled) {
+//	        // Client disconnected before we could respond
+//	    }
+//	}
+//	// resp is always non-nil on success (empty response)
 func (h *DefaultMountHandler) MountNull(
 	ctx *NullContext,
 	repository metadata.Repository,
 	req *NullRequest,
 ) (*NullResponse, error) {
+	// Check for cancellation before starting
+	// This is the only cancellation check for NULL since the operation is so fast
+	// Per RFC 1813, NULL should be extremely lightweight, so we minimize overhead
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("NULL: request cancelled before processing: client=%s error=%v",
+			ctx.ClientAddr, ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+	}
+
 	// Extract client IP for logging
 	clientIP := ctx.ClientAddr
 	if idx := len(clientIP) - 1; idx >= 0 {
@@ -98,6 +170,13 @@ func (h *DefaultMountHandler) MountNull(
 	// We can optionally ping the repository to verify backend health.
 	// However, per RFC 1813, NULL must always succeed regardless of
 	// repository state, so we log any issues but don't fail the request.
+	//
+	// We don't check for cancellation here because:
+	// 1. Healthcheck should be very fast (typically < 1ms)
+	// 2. NULL must succeed per RFC even if backend has issues
+	// 3. We already checked cancellation at the beginning
+	//
+	// The repository's Healthcheck should respect context internally if needed
 
 	if err := repository.Healthcheck(ctx.Context); err != nil {
 		// Log repository health issue but don't fail NULL request

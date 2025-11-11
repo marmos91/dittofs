@@ -42,9 +42,15 @@ type UmountResponse struct {
 }
 
 // UmountContext contains the context information needed to process an unmount request.
-// This includes client identification for removing the correct mount record.
+// This includes client identification for removing the correct mount record and
+// cancellation handling.
 type UmountContext struct {
+	// Context carries cancellation signals and deadlines
+	// The Umnt handler checks this context to handle client disconnection
+	// Note: Even if cancelled, we may complete the unmount to maintain
+	// mount tracking consistency
 	Context context.Context
+
 	// ClientAddr is the network address of the client making the request
 	// Format: "IP:port" (e.g., "192.168.1.100:1234")
 	ClientAddr string
@@ -54,16 +60,25 @@ type UmountContext struct {
 // they are done using a previously mounted filesystem.
 //
 // The unmount process:
-//  1. Extract the client IP address from the network context
-//  2. Remove the mount record from the repository's tracking
-//  3. Log the unmount operation for audit purposes
-//  4. Always return success (RFC 1813 specifies void return)
+//  1. Check for context cancellation (early exit if client disconnected)
+//  2. Extract the client IP address from the network context
+//  3. Remove the mount record from the repository's tracking
+//  4. Log the unmount operation for audit purposes
+//  5. Always return success (RFC 1813 specifies void return)
+//
+// Context cancellation:
+//   - Single check at the beginning to respect client disconnection
+//   - No check after RemoveMount to ensure cleanup completes
+//   - If cancelled early, returns immediately with error
+//   - If RemoveMount is in progress when cancelled, we let it complete
+//     to maintain mount tracking consistency
 //
 // Important notes:
-//   - UMNT always succeeds, even if the mount doesn't exist
+//   - UMNT always succeeds per RFC 1813, even if the mount doesn't exist
 //   - The actual unmounting happens on the client side
 //   - Server-side tracking is informational only (used by DUMP)
 //   - No error status codes are defined for UMNT in the protocol
+//   - RemoveMount failure is logged but doesn't fail the UMNT request
 //
 // The mount tracking serves several purposes:
 //   - Provides data for the DUMP procedure (list active mounts)
@@ -72,13 +87,14 @@ type UmountContext struct {
 //   - Can be used for graceful server shutdown (notify mounted clients)
 //
 // Parameters:
+//   - ctx: Context with cancellation and client information
 //   - repository: The metadata repository that tracks active mounts
 //   - req: The unmount request containing the directory path to unmount
-//   - ctx: Context information including client address
 //
 // Returns:
 //   - *UmountResponse: Empty response (void)
-//   - error: Always returns nil; unmount cannot fail per RFC 1813
+//   - error: Returns error only if context was cancelled before processing;
+//     otherwise always returns nil per RFC 1813
 //
 // RFC 1813 Appendix I: UMNT Procedure
 //
@@ -86,16 +102,31 @@ type UmountContext struct {
 //
 //	handler := &DefaultMountHandler{}
 //	req := &UmountRequest{DirPath: "/export"}
-//	ctx := &UmountContext{ClientAddr: "192.168.1.100:1234"}
-//	resp, err := handler.Umnt(repository, req, ctx)
-//	// Response is always success
+//	ctx := &UmountContext{
+//	    Context: context.Background(),
+//	    ClientAddr: "192.168.1.100:1234",
+//	}
+//	resp, err := handler.Umnt(ctx, repository, req)
+//	if err != nil {
+//	    if errors.Is(err, context.Canceled) {
+//	        // Client disconnected before unmount could be processed
+//	    }
+//	}
+//	// Response is always success unless cancelled early
 func (h *DefaultMountHandler) Umnt(
 	ctx *UmountContext,
 	repository metadata.Repository,
 	req *UmountRequest,
 ) (*UmountResponse, error) {
+	// Check for cancellation before starting
+	// This is the only cancellation check for UMNT since:
+	// 1. The operation is very fast (simple database delete)
+	// 2. We want to complete cleanup once started to maintain consistency
+	// 3. Per RFC 1813, UMNT always succeeds and should be quick
 	select {
 	case <-ctx.Context.Done():
+		logger.Debug("Unmount request cancelled before processing: path=%s client=%s error=%v",
+			req.DirPath, ctx.ClientAddr, ctx.Context.Err())
 		return &UmountResponse{}, ctx.Context.Err()
 	default:
 	}
@@ -112,17 +143,36 @@ func (h *DefaultMountHandler) Umnt(
 	// Remove the mount record from tracking
 	// Note: We don't check for errors because UMNT always succeeds per RFC 1813
 	// Even if the mount doesn't exist, we acknowledge the unmount
+	//
+	// We don't check for cancellation here because:
+	// 1. RemoveMount should be very fast (typically < 1ms)
+	// 2. We want to complete the cleanup to maintain tracking consistency
+	// 3. The client has already decided to unmount, so we should honor that
+	// 4. Leaving stale mount records would pollute the DUMP output
+	//
+	// The repository should respect context internally if needed
 	err = repository.RemoveMount(ctx.Context, req.DirPath, clientIP)
 	if err != nil {
-		// Log the error but still return success
-		// The mount tracking is informational - the client has already unmounted
-		logger.Warn("Failed to remove mount record: path=%s client=%s error=%v",
-			req.DirPath, clientIP, err)
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			// Context was cancelled during RemoveMount
+			// We still return success per RFC 1813 (UMNT always succeeds)
+			// but log that the mount record may not have been removed
+			logger.Warn("Unmount cancelled during mount record removal: path=%s client=%s error=%v (mount record may be stale)",
+				req.DirPath, clientIP, ctx.Context.Err())
+		} else {
+			// Log the error but still return success
+			// The mount tracking is informational - the client has already unmounted
+			logger.Warn("Failed to remove mount record: path=%s client=%s error=%v",
+				req.DirPath, clientIP, err)
+		}
 	} else {
 		logger.Info("Unmount successful: path=%s client=%s", req.DirPath, clientIP)
 	}
 
-	// UMNT always returns void/success
+	// UMNT always returns void/success per RFC 1813
+	// Even if RemoveMount failed or was cancelled, we return success
+	// because the client-side unmount has already occurred
 	return &UmountResponse{}, nil
 }
 

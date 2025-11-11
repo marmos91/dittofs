@@ -32,9 +32,15 @@ type UmountAllResponse struct {
 }
 
 // UmountAllContext contains the context information needed to process an unmount-all request.
-// Since UMNTALL removes all mounts for a specific client, only the client address is needed.
+// Since UMNTALL removes all mounts for a specific client, only the client address is needed,
+// along with cancellation handling.
 type UmountAllContext struct {
+	// Context carries cancellation signals and deadlines
+	// The UmntAll handler checks this context to handle client disconnection
+	// Note: We prioritize completing cleanup once started to maintain
+	// mount tracking consistency
 	Context context.Context
+
 	// ClientAddr is the network address of the client making the request
 	// Format: "IP:port" (e.g., "192.168.1.100:1234")
 	// The IP portion is used to identify all mounts belonging to this client
@@ -45,11 +51,19 @@ type UmountAllContext struct {
 // to remove all of their mount entries in a single operation.
 //
 // The unmount-all process:
-//  1. Extract the client IP address from the network context
-//  2. Query the repository for all mounts from this client
-//  3. Remove all mount records for this client across all exports
-//  4. Log the operation with count of removed mounts
-//  5. Always return success (RFC 1813 specifies void return)
+//  1. Check for context cancellation (early exit if client disconnected)
+//  2. Extract the client IP address from the network context
+//  3. Query the repository for all mounts from this client (for logging)
+//  4. Check for cancellation before the destructive operation
+//  5. Remove all mount records for this client across all exports
+//  6. Log the operation with count of removed mounts
+//  7. Always return success (RFC 1813 specifies void return)
+//
+// Context cancellation:
+//   - Check at the beginning to respect client disconnection
+//   - Check before RemoveAllMounts to avoid starting destructive operation
+//   - Once RemoveAllMounts starts, let it complete to ensure consistency
+//   - If cancelled during RemoveAllMounts, we still return success per RFC
 //
 // Use cases for UMNTALL:
 //   - Client is shutting down and wants to clean up all mounts
@@ -58,20 +72,22 @@ type UmountAllContext struct {
 //   - Client reboot/restart scenarios
 //
 // Important notes:
-//   - UMNTALL always succeeds, even if no mounts exist
+//   - UMNTALL always succeeds per RFC 1813, even if no mounts exist
 //   - The actual unmounting happens on the client side
 //   - Server-side tracking is informational only
 //   - No error status codes are defined for UMNTALL in the protocol
 //   - This is more efficient than calling UMNT for each mount individually
+//   - GetMountsByClient is optional (for logging) - failure is non-fatal
 //
 // Parameters:
+//   - ctx: Context with cancellation and client information
 //   - repository: The metadata repository that tracks active mounts
 //   - req: Empty request struct (UMNTALL takes no parameters)
-//   - ctx: Context information including client address
 //
 // Returns:
 //   - *UmountAllResponse: Empty response (void)
-//   - error: Always returns nil; unmount-all cannot fail per RFC 1813
+//   - error: Returns error only if context was cancelled before cleanup;
+//     otherwise always returns nil per RFC 1813
 //
 // RFC 1813 Appendix I: UMNTALL Procedure
 //
@@ -79,16 +95,28 @@ type UmountAllContext struct {
 //
 //	handler := &DefaultMountHandler{}
 //	req := &UmountAllRequest{}
-//	ctx := &UmountAllContext{ClientAddr: "192.168.1.100:1234"}
-//	resp, err := handler.UmntAll(repository, req, ctx)
-//	// Response is always success
+//	ctx := &UmountAllContext{
+//	    Context: context.Background(),
+//	    ClientAddr: "192.168.1.100:1234",
+//	}
+//	resp, err := handler.UmntAll(ctx, repository, req)
+//	if err != nil {
+//	    if errors.Is(err, context.Canceled) {
+//	        // Client disconnected before unmount-all could complete
+//	    }
+//	}
+//	// Response is always success unless cancelled early
 func (h *DefaultMountHandler) UmntAll(
 	ctx *UmountAllContext,
 	repository metadata.Repository,
 	req *UmountAllRequest,
 ) (*UmountAllResponse, error) {
+	// Check for cancellation before starting any work
+	// This handles the case where the client disconnects before we begin processing
 	select {
 	case <-ctx.Context.Done():
+		logger.Debug("Unmount-all request cancelled before processing: client=%s error=%v",
+			ctx.ClientAddr, ctx.Context.Err())
 		return &UmountAllResponse{}, ctx.Context.Err()
 	default:
 	}
@@ -103,8 +131,17 @@ func (h *DefaultMountHandler) UmntAll(
 	logger.Info("Unmount-all request: client=%s", clientIP)
 
 	// Get all mounts for this client to count them before removal
+	// This is optional (for logging purposes) - if it fails, we continue anyway
+	// The repository should respect context cancellation internally
 	mounts, err := repository.GetMountsByClient(ctx.Context, clientIP)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("Unmount-all cancelled while getting mount list: client=%s error=%v",
+				clientIP, ctx.Context.Err())
+			return &UmountAllResponse{}, ctx.Context.Err()
+		}
+
 		// Log the error but continue - we'll try to remove anyway
 		logger.Warn("Failed to get mounts for client: client=%s error=%v", clientIP, err)
 		mounts = []metadata.MountEntry{} // Empty list
@@ -116,19 +153,48 @@ func (h *DefaultMountHandler) UmntAll(
 		return &UmountAllResponse{}, nil
 	}
 
+	// Check for cancellation before the destructive RemoveAllMounts operation
+	// This is important because once we start removing, we want to complete
+	// the operation to avoid leaving partial/inconsistent mount records
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("Unmount-all cancelled before removing mounts: client=%s count=%d error=%v",
+			clientIP, mountCount, ctx.Context.Err())
+		return &UmountAllResponse{}, ctx.Context.Err()
+	default:
+	}
+
 	// Remove all mounts for this client
+	// We don't check for cancellation after this point because:
+	// 1. We want to complete the cleanup to maintain consistency
+	// 2. The operation should be relatively fast (batch delete)
+	// 3. Partial removal would leave inconsistent mount tracking
+	// 4. The client has already decided to unmount everything
+	//
+	// The repository should respect context internally if needed
 	err = repository.RemoveAllMounts(ctx.Context, clientIP)
 	if err != nil {
-		// Log the error but still return success per RFC 1813
-		// The mount tracking is informational - the client has already unmounted
-		logger.Warn("Failed to remove mount records: client=%s count=%d error=%v",
-			clientIP, mountCount, err)
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			// Context was cancelled during RemoveAllMounts
+			// We still return success per RFC 1813 (UMNTALL always succeeds)
+			// but log that some mount records may not have been removed
+			logger.Warn("Unmount-all cancelled during mount record removal: client=%s count=%d error=%v (mount records may be partially removed)",
+				clientIP, mountCount, ctx.Context.Err())
+		} else {
+			// Log the error but still return success per RFC 1813
+			// The mount tracking is informational - the client has already unmounted
+			logger.Warn("Failed to remove mount records: client=%s count=%d error=%v",
+				clientIP, mountCount, err)
+		}
 	} else {
 		logger.Info("Unmount-all successful: client=%s removed=%d mounts",
 			clientIP, mountCount)
 	}
 
-	// UMNTALL always returns void/success
+	// UMNTALL always returns void/success per RFC 1813
+	// Even if RemoveAllMounts failed or was cancelled, we return success
+	// because the client-side unmount has already occurred
 	return &UmountAllResponse{}, nil
 }
 

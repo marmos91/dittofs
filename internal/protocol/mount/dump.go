@@ -52,9 +52,13 @@ type DumpEntry struct {
 }
 
 // DumpContext contains the context information needed to process a dump request.
-// This includes client identification for access control.
+// This includes client identification for access control and cancellation handling.
 type DumpContext struct {
+	// Context carries cancellation signals and deadlines
+	// The Dump handler checks this context to abort operations if the client
+	// disconnects or the request times out
 	Context context.Context
+
 	// ClientAddr is the network address of the client making the request
 	// Format: "IP:port" (e.g., "192.168.1.100:1234")
 	ClientAddr string
@@ -64,10 +68,16 @@ type DumpContext struct {
 // currently mounted by NFS clients.
 //
 // The dump process:
-//  1. Query the repository for all active mount entries
-//  2. Convert repository mount entries to DUMP response format
-//  3. Log the operation with count of returned mounts
-//  4. Return the list of mounts to the client
+//  1. Check if the context has been cancelled (early exit if client disconnected)
+//  2. Query the repository for all active mount entries
+//  3. Convert repository mount entries to DUMP response format
+//  4. Log the operation with count of returned mounts
+//  5. Return the list of mounts to the client
+//
+// Context cancellation:
+//   - The handler respects context cancellation at key I/O points
+//   - If the client disconnects or the request times out, the operation aborts
+//   - Cancellation is checked before expensive repository operations
 //
 // Use cases for DUMP:
 //   - Administrative monitoring of active NFS clients
@@ -92,29 +102,41 @@ type DumpContext struct {
 //	This can be implemented by adding access control in the repository.
 //
 // Parameters:
+//   - ctx: Context with cancellation and timeout information
 //   - repository: The metadata repository that tracks active mounts
 //   - req: Empty request struct (DUMP takes no parameters)
 //
 // Returns:
 //   - *DumpResponse: List of all active mount entries
-//   - error: Returns error only for internal server failures
-//     (mount list is always returned, even if empty)
+//   - error: Returns error for context cancellation or internal server failures
+//     (mount list is always returned, even if empty, unless cancelled)
 //
 // RFC 1813 Appendix I: DUMP Procedure
 //
 // Example:
 //
 //	handler := &DefaultMountHandler{}
+//	ctx := &DumpContext{Context: context.Background(), ClientAddr: "192.168.1.100:1234"}
 //	req := &DumpRequest{}
-//	resp, err := handler.Dump(repository, req)
+//	resp, err := handler.Dump(ctx, repository, req)
 //	if err != nil {
-//	    // handle internal error
+//	    if errors.Is(err, context.Canceled) {
+//	        // client disconnected
+//	    } else {
+//	        // internal error
+//	    }
 //	}
 //	fmt.Printf("Active mounts: %d\n", len(resp.Entries))
-//	for _, entry := range resp.Entries {
-//	    fmt.Printf("  %s mounted %s\n", entry.Hostname, entry.Directory)
-//	}
 func (h *DefaultMountHandler) Dump(ctx *DumpContext, repository metadata.Repository, req *DumpRequest) (*DumpResponse, error) {
+	// Check for cancellation before starting any work
+	// This handles the case where the client disconnects before we begin processing
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("Dump request cancelled before processing: client=%s error=%v", ctx.ClientAddr, ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+	}
+
 	// Extract client IP from address (remove port)
 	clientIP, _, err := net.SplitHostPort(ctx.ClientAddr)
 	if err != nil {
@@ -139,10 +161,26 @@ func (h *DefaultMountHandler) Dump(ctx *DumpContext, repository metadata.Reposit
 		return nil, fmt.Errorf("failed to check dump access: %w", err)
 	}
 
+	// Check for cancellation before the potentially expensive mount list retrieval
+	// This is especially important if there are many mounts on the server
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("Dump request cancelled during processing: client=%s error=%v", clientIP, ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+	}
+
 	// Get all active mounts from the repository
+	// The repository should also respect context cancellation internally
 	mounts, err := repository.GetMounts(ctx.Context, "")
 	if err != nil {
-		logger.Error("Failed to get mounts: error=%v", err)
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("Dump request cancelled while retrieving mounts: client=%s error=%v", clientIP, ctx.Context.Err())
+			return nil, ctx.Context.Err()
+		}
+
+		logger.Error("Failed to get mounts: client=%s error=%v", clientIP, err)
 		return nil, fmt.Errorf("failed to retrieve mounts: %w", err)
 	}
 

@@ -61,9 +61,13 @@ type MountResponse struct {
 }
 
 // MountContext contains the context information needed to process a mount request.
-// This includes client identification and authentication details.
+// This includes client identification, authentication details, and cancellation handling.
 type MountContext struct {
+	// Context carries cancellation signals and deadlines
+	// The Mount handler checks this context to abort operations if the client
+	// disconnects or the request times out
 	Context context.Context
+
 	// ClientAddr is the network address of the client making the request
 	// Format: "IP:port" (e.g., "192.168.1.100:1234")
 	ClientAddr string
@@ -81,12 +85,20 @@ type MountContext struct {
 // used by NFS clients to obtain a file handle for an exported filesystem.
 //
 // The mount process follows these steps:
-//  1. Extract client IP address from the network context
-//  2. Perform access control checks via the repository
-//  3. Validate authentication requirements
-//  4. Retrieve the root file handle for the export
-//  5. Record the mount in the repository for tracking
-//  6. Return the handle with appropriate authentication flavors
+//  1. Check for context cancellation (early exit if client disconnected)
+//  2. Extract client IP address from the network context
+//  3. Extract and log authentication credentials
+//  4. Perform access control checks via the repository (most expensive operation)
+//  5. Validate authentication requirements
+//  6. Retrieve the root file handle for the export
+//  7. Record the mount in the repository for tracking
+//  8. Return the handle with appropriate authentication flavors
+//
+// Context cancellation:
+//   - The handler respects context cancellation at key I/O and computation points
+//   - If the client disconnects or the request times out, the operation aborts
+//   - Returns MountErrServerFault status with context.Canceled error for cancellation
+//   - Cancellation is checked before and after expensive operations
 //
 // Security considerations:
 //   - Validates client IP against export access control lists
@@ -95,14 +107,14 @@ type MountContext struct {
 //   - Returns detailed error codes for troubleshooting
 //
 // Parameters:
+//   - ctx: Context information including cancellation, client address, and auth flavor
 //   - repository: The metadata repository containing export configurations
 //   - req: The mount request containing the directory path to mount
-//   - ctx: Context information including client address and auth flavor
 //
 // Returns:
 //   - *MountResponse: The mount response with status and file handle (if successful)
-//   - error: Returns error only for internal server failures; protocol-level
-//     errors are indicated via the response Status field
+//   - error: Returns error for context cancellation or internal server failures;
+//     protocol-level errors are indicated via the response Status field
 //
 // RFC 1813 Appendix I: MOUNT Procedure
 //
@@ -111,12 +123,17 @@ type MountContext struct {
 //	handler := &DefaultMountHandler{}
 //	req := &MountRequest{DirPath: "/export"}
 //	ctx := &MountContext{
+//	    Context: context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 0, // AUTH_NULL
 //	}
-//	resp, err := handler.Mount(repository, req, ctx)
+//	resp, err := handler.Mount(ctx, repository, req)
 //	if err != nil {
-//	    // Internal server error
+//	    if errors.Is(err, context.Canceled) {
+//	        // Client disconnected
+//	    } else {
+//	        // Internal server error
+//	    }
 //	}
 //	if resp.Status == MountOK {
 //	    // Use resp.FileHandle for NFS operations
@@ -126,11 +143,16 @@ func (h *DefaultMountHandler) Mount(
 	repository metadata.Repository,
 	req *MountRequest,
 ) (*MountResponse, error) {
+	// Check for cancellation before starting any work
+	// This handles the case where the client disconnects before we begin processing
 	select {
 	case <-ctx.Context.Done():
+		logger.Debug("Mount request cancelled before processing: path=%s client=%s error=%v",
+			req.DirPath, ctx.ClientAddr, ctx.Context.Err())
 		return &MountResponse{Status: MountErrServerFault}, ctx.Context.Err()
 	default:
 	}
+
 	// Extract client IP from address (remove port)
 	clientIP, _, err := net.SplitHostPort(ctx.ClientAddr)
 	if err != nil {
@@ -154,8 +176,19 @@ func (h *DefaultMountHandler) Mount(
 			req.DirPath, clientIP, authFlavorName(ctx.AuthFlavor))
 	}
 
+	// Check for cancellation before the potentially expensive access control check
+	// Access control may involve complex ACL evaluation and credential squashing
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("Mount request cancelled before access check: path=%s client=%s error=%v",
+			req.DirPath, clientIP, ctx.Context.Err())
+		return &MountResponse{Status: MountErrServerFault}, ctx.Context.Err()
+	default:
+	}
+
 	// Check export access and apply squashing
 	// The repository will apply AllSquash/RootSquash and return effective credentials
+	// This operation should also respect context cancellation internally
 	accessDecision, authCtx, err := repository.CheckExportAccess(
 		ctx.Context,
 		req.DirPath,
@@ -166,6 +199,13 @@ func (h *DefaultMountHandler) Mount(
 		gids,
 	)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("Mount request cancelled during access check: path=%s client=%s error=%v",
+				req.DirPath, clientIP, ctx.Context.Err())
+			return &MountResponse{Status: MountErrServerFault}, ctx.Context.Err()
+		}
+
 		if exportErr, ok := err.(*metadata.ExportError); ok {
 			logger.Warn("Mount denied: path=%s client=%s reason=%s",
 				req.DirPath, clientIP, exportErr.Message)
@@ -221,9 +261,28 @@ func (h *DefaultMountHandler) Mount(
 		)
 	}
 
+	// Check for cancellation before retrieving the root handle
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("Mount request cancelled before root handle retrieval: path=%s client=%s error=%v",
+			req.DirPath, clientIP, ctx.Context.Err())
+		return &MountResponse{Status: MountErrServerFault}, ctx.Context.Err()
+	default:
+	}
+
+	// Get the root file handle for the export
+	// The repository should also respect context cancellation internally
 	handleBytes, err := repository.GetRootHandle(ctx.Context, req.DirPath)
 	if err != nil {
-		logger.Error("Failed to get root handle: path=%s error=%v", req.DirPath, err)
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("Mount request cancelled during root handle retrieval: path=%s client=%s error=%v",
+				req.DirPath, clientIP, ctx.Context.Err())
+			return &MountResponse{Status: MountErrServerFault}, ctx.Context.Err()
+		}
+
+		logger.Error("Failed to get root handle: path=%s client=%s error=%v",
+			req.DirPath, clientIP, err)
 		return &MountResponse{Status: MountErrServerFault}, nil
 	}
 
@@ -237,9 +296,20 @@ func (h *DefaultMountHandler) Mount(
 		machineName = ctx.UnixAuth.MachineName
 	}
 
+	// Record the mount (non-fatal if it fails, but we log the error)
+	// We don't check for cancellation here because recording is quick
+	// and provides valuable audit information
 	if err := repository.RecordMount(ctx.Context, req.DirPath, clientIP, ctx.AuthFlavor, machineName, recordUID, recordGID); err != nil {
-		logger.Warn("Failed to record mount: path=%s client=%s error=%v",
-			req.DirPath, clientIP, err)
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("Mount request cancelled during mount recording: path=%s client=%s error=%v",
+				req.DirPath, clientIP, ctx.Context.Err())
+			// We already have the handle, so we can still return success
+			// The mount record is best-effort for audit purposes
+		} else {
+			logger.Warn("Failed to record mount: path=%s client=%s error=%v",
+				req.DirPath, clientIP, err)
+		}
 	}
 
 	authFlavors := make([]int32, len(accessDecision.AllowedAuth))
@@ -355,7 +425,7 @@ func (resp *MountResponse) Encode() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// converts repository export errors to Mount protocol status codes
+// mapExportErrorToMountStatus converts repository export errors to Mount protocol status codes
 func mapExportErrorToMountStatus(code metadata.ExportErrorCode) uint32 {
 	switch code {
 	case metadata.ExportErrNotFound:
