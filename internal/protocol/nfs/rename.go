@@ -91,8 +91,12 @@ type RenameResponse struct {
 }
 
 // RenameContext contains the context information needed to process a RENAME request.
-// This includes client identification and authentication details for access control.
+// This includes client identification, authentication details, and cancellation handling
+// for access control.
 type RenameContext struct {
+	// Context carries cancellation signals and deadlines
+	// The Rename handler checks this context to abort operations if the client
+	// disconnects or the request times out
 	Context context.Context
 
 	// ClientAddr is the network address of the client making the request.
@@ -143,12 +147,26 @@ type RenameContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handles, names)
-//  2. Extract client IP and authentication credentials from context
-//  3. Verify source and destination directories exist and are valid
-//  4. Capture pre-operation WCC data for both directories
-//  5. Delegate rename operation to repository.RenameFile()
-//  6. Return updated WCC data for both directories
+//  1. Check for context cancellation (early exit if client disconnected)
+//  2. Validate request parameters (handles, names)
+//  3. Extract client IP and authentication credentials from context
+//  4. Verify source directory exists and is valid
+//  5. Capture pre-operation WCC data for source directory
+//  6. Check for cancellation before destination lookup
+//  7. Verify destination directory exists and is valid
+//  8. Capture pre-operation WCC data for destination directory
+//  9. Check for cancellation before atomic rename operation
+//  10. Delegate rename operation to repository.RenameFile()
+//  11. Return updated WCC data for both directories
+//
+// **Context cancellation:**
+//
+//   - Checks at the beginning to respect client disconnection
+//   - Checks after source directory lookup
+//   - Checks after destination directory lookup (before atomic rename)
+//   - No check during RenameFile to maintain atomicity
+//   - Returns NFS3ErrIO status with context error for cancellation
+//   - Always includes WCC data for both directories for cache consistency
 //
 // **Design Principles:**
 //
@@ -197,6 +215,7 @@ type RenameContext struct {
 //   - Cross-device → NFS3ErrXDev
 //   - Destination is non-empty directory → NFS3ErrNotEmpty
 //   - I/O error → types.NFS3ErrIO
+//   - Context cancelled → types.NFS3ErrIO with error return
 //
 // **Weak Cache Consistency (WCC):**
 //
@@ -218,14 +237,14 @@ type RenameContext struct {
 //   - Client context enables audit logging
 //
 // **Parameters:**
+//   - ctx: Context with cancellation, client address and authentication credentials
 //   - repository: The metadata repository for file operations
 //   - req: The rename request containing source and destination info
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *RenameResponse: Response with status and WCC data
-//   - error: Returns error only for catastrophic internal failures; protocol-level
-//     errors are indicated via the response Status field
+//   - error: Returns error for context cancellation or catastrophic internal failures;
+//     protocol-level errors are indicated via the response Status field
 //
 // **RFC 1813 Section 3.3.14: RENAME Procedure**
 //
@@ -239,14 +258,19 @@ type RenameContext struct {
 //	    ToName:        "newname.txt",
 //	}
 //	ctx := &RenameContext{
+//	    Context: context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Rename(repository, req, ctx)
+//	resp, err := handler.Rename(ctx, repository, req)
 //	if err != nil {
-//	    // Internal server error
+//	    if errors.Is(err, context.Canceled) {
+//	        // Client disconnected
+//	    } else {
+//	        // Internal server error
+//	    }
 //	}
 //	if resp.Status == types.NFS3OK {
 //	    // Rename successful
@@ -256,6 +280,16 @@ func (h *DefaultNFSHandler) Rename(
 	repository metadata.Repository,
 	req *RenameRequest,
 ) (*RenameResponse, error) {
+	// Check for cancellation before starting any work
+	// This handles the case where the client disconnects before we begin processing
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("RENAME cancelled before processing: from='%s' to='%s' client=%s error=%v",
+			req.FromName, req.ToName, ctx.ClientAddr, ctx.Context.Err())
+		return &RenameResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+	default:
+	}
+
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
@@ -279,6 +313,13 @@ func (h *DefaultNFSHandler) Rename(
 	fromDirHandle := metadata.FileHandle(req.FromDirHandle)
 	fromDirAttr, err := repository.GetFile(ctx.Context, fromDirHandle)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("RENAME cancelled during source directory lookup: from='%s' to='%s' client=%s error=%v",
+				req.FromName, req.ToName, clientIP, ctx.Context.Err())
+			return &RenameResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		}
+
 		logger.Warn("RENAME failed: source directory not found: dir=%x client=%s error=%v",
 			req.FromDirHandle, clientIP, err)
 		return &RenameResponse{Status: types.NFS3ErrNoEnt}, nil
@@ -302,6 +343,23 @@ func (h *DefaultNFSHandler) Rename(
 		}, nil
 	}
 
+	// Check for cancellation before destination directory lookup
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("RENAME cancelled before destination lookup: from='%s' to='%s' client=%s error=%v",
+			req.FromName, req.ToName, clientIP, ctx.Context.Err())
+
+		fromDirID := xdr.ExtractFileID(fromDirHandle)
+		fromDirWccAfter := xdr.MetadataToNFS(fromDirAttr, fromDirID)
+
+		return &RenameResponse{
+			Status:           types.NFS3ErrIO,
+			FromDirWccBefore: fromDirWccBefore,
+			FromDirWccAfter:  fromDirWccAfter,
+		}, ctx.Context.Err()
+	default:
+	}
+
 	// ========================================================================
 	// Step 3: Verify destination directory exists and is valid
 	// ========================================================================
@@ -309,6 +367,22 @@ func (h *DefaultNFSHandler) Rename(
 	toDirHandle := metadata.FileHandle(req.ToDirHandle)
 	toDirAttr, err := repository.GetFile(ctx.Context, toDirHandle)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("RENAME cancelled during destination directory lookup: from='%s' to='%s' client=%s error=%v",
+				req.FromName, req.ToName, clientIP, ctx.Context.Err())
+
+			// Return WCC for source directory
+			fromDirID := xdr.ExtractFileID(fromDirHandle)
+			fromDirWccAfter := xdr.MetadataToNFS(fromDirAttr, fromDirID)
+
+			return &RenameResponse{
+				Status:           types.NFS3ErrIO,
+				FromDirWccBefore: fromDirWccBefore,
+				FromDirWccAfter:  fromDirWccAfter,
+			}, ctx.Context.Err()
+		}
+
 		logger.Warn("RENAME failed: destination directory not found: dir=%x client=%s error=%v",
 			req.ToDirHandle, clientIP, err)
 
@@ -346,6 +420,30 @@ func (h *DefaultNFSHandler) Rename(
 		}, nil
 	}
 
+	// Check for cancellation before the atomic rename operation
+	// This is the most critical check - we don't want to start the rename
+	// if the client has already disconnected
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("RENAME cancelled before rename operation: from='%s' to='%s' client=%s error=%v",
+			req.FromName, req.ToName, clientIP, ctx.Context.Err())
+
+		fromDirID := xdr.ExtractFileID(fromDirHandle)
+		fromDirWccAfter := xdr.MetadataToNFS(fromDirAttr, fromDirID)
+
+		toDirID := xdr.ExtractFileID(toDirHandle)
+		toDirWccAfter := xdr.MetadataToNFS(toDirAttr, toDirID)
+
+		return &RenameResponse{
+			Status:           types.NFS3ErrIO,
+			FromDirWccBefore: fromDirWccBefore,
+			FromDirWccAfter:  fromDirWccAfter,
+			ToDirWccBefore:   toDirWccBefore,
+			ToDirWccAfter:    toDirWccAfter,
+		}, ctx.Context.Err()
+	default:
+	}
+
 	// ========================================================================
 	// Step 4: Perform rename via repository
 	// ========================================================================
@@ -357,6 +455,9 @@ func (h *DefaultNFSHandler) Rename(
 	// - Updating parent relationships
 	// - Updating directory timestamps
 	// - Ensuring atomicity or proper rollback
+	//
+	// We don't check for cancellation inside RenameFile to maintain atomicity.
+	// The repository should respect context internally for its operations.
 
 	// Build authentication context for repository
 	authCtx := &metadata.AuthContext{
@@ -369,6 +470,33 @@ func (h *DefaultNFSHandler) Rename(
 
 	err = repository.RenameFile(authCtx, fromDirHandle, req.FromName, toDirHandle, req.ToName)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("RENAME cancelled during rename operation: from='%s' to='%s' client=%s error=%v",
+				req.FromName, req.ToName, clientIP, ctx.Context.Err())
+
+			// Get updated directory attributes for WCC data (best effort)
+			var fromDirWccAfter *types.NFSFileAttr
+			if updatedFromDirAttr, getErr := repository.GetFile(ctx.Context, fromDirHandle); getErr == nil {
+				fromDirID := xdr.ExtractFileID(fromDirHandle)
+				fromDirWccAfter = xdr.MetadataToNFS(updatedFromDirAttr, fromDirID)
+			}
+
+			var toDirWccAfter *types.NFSFileAttr
+			if updatedToDirAttr, getErr := repository.GetFile(ctx.Context, toDirHandle); getErr == nil {
+				toDirID := xdr.ExtractFileID(toDirHandle)
+				toDirWccAfter = xdr.MetadataToNFS(updatedToDirAttr, toDirID)
+			}
+
+			return &RenameResponse{
+				Status:           types.NFS3ErrIO,
+				FromDirWccBefore: fromDirWccBefore,
+				FromDirWccAfter:  fromDirWccAfter,
+				ToDirWccBefore:   toDirWccBefore,
+				ToDirWccAfter:    toDirWccAfter,
+			}, ctx.Context.Err()
+		}
+
 		logger.Error("RENAME failed: repository error: from='%s' to='%s' client=%s error=%v",
 			req.FromName, req.ToName, clientIP, err)
 

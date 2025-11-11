@@ -183,12 +183,14 @@ type ReadDirPlusContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handle, counts, cookie)
-//  2. Extract client IP and authentication credentials from context
-//  3. Verify directory handle exists and is a directory (via repository)
-//  4. Verify cookie and cookieverf are valid
-//  5. Delegate directory listing to repository with authentication context
-//  6. Return entries with attributes and handles
+//  1. Check for context cancellation before starting
+//  2. Validate request parameters (handle, counts, cookie)
+//  3. Extract client IP and authentication credentials from context
+//  4. Verify directory handle exists and is a directory (via repository)
+//  5. Get directory children from repository
+//  6. Build special entries ("." and "..") with cancellation checks
+//  7. Process each child entry with periodic cancellation checks
+//  8. Return entries with attributes and handles
 //
 // **Design Principles:**
 //
@@ -196,6 +198,8 @@ type ReadDirPlusContext struct {
 //   - All business logic (directory listing, access control) delegated to repository
 //   - File handle validation performed by repository.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
+//   - Respects context cancellation for graceful shutdown and timeouts
+//   - Periodic cancellation checks during entry processing for large directories
 //
 // **Authentication:**
 //
@@ -244,6 +248,7 @@ type ReadDirPlusContext struct {
 //   - Invalid cookie → NFS3ErrBadCookie
 //   - Permission denied → NFS3ErrAcces
 //   - I/O error → types.NFS3ErrIO
+//   - Context cancelled → types.NFS3ErrIO
 //
 // **Performance Considerations:**
 //
@@ -251,9 +256,22 @@ type ReadDirPlusContext struct {
 //   - Must retrieve attributes for all entries
 //   - Must generate file handles for all entries
 //   - May require additional I/O operations
+//   - Can be expensive for large directories
 //
 // However, it eliminates multiple round trips, improving overall performance
 // for operations that need file attributes (like 'ls -l').
+//
+// **Context Cancellation:**
+//
+// This operation respects context cancellation:
+//   - Checks at operation start before any work
+//   - Checks before each repository call (GetFile, GetChildren)
+//   - Checks periodically during entry processing (every 50 entries)
+//   - Returns types.NFS3ErrIO on cancellation with DirAttr when available
+//
+// For large directories with hundreds of entries, periodic cancellation checks
+// during processing ensure responsiveness to client disconnects and server
+// shutdown without adding significant overhead.
 //
 // **Security Considerations:**
 //
@@ -263,9 +281,9 @@ type ReadDirPlusContext struct {
 //   - Client context enables audit logging
 //
 // **Parameters:**
+//   - ctx: Context with cancellation, client address and authentication credentials
 //   - repository: The metadata repository for directory and file operations
 //   - req: The readdirplus request containing directory handle and parameters
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *ReadDirPlusResponse: Response with status and directory entries (if successful)
@@ -285,12 +303,13 @@ type ReadDirPlusContext struct {
 //	    MaxCount:   65536,
 //	}
 //	ctx := &ReadDirPlusContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.ReadDirPlus(repository, req, ctx)
+//	resp, err := handler.ReadDirPlus(ctx, repository, req)
 //	if err != nil {
 //	    // Internal server error
 //	}
@@ -315,7 +334,19 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 		req.DirHandle, req.Cookie, req.DirCount, req.MaxCount, clientIP, ctx.AuthFlavor)
 
 	// ========================================================================
-	// Step 1: Validate request parameters
+	// Step 1: Check for context cancellation before starting work
+	// ========================================================================
+
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("READDIRPLUS cancelled: dir=%x client=%s error=%v",
+			req.DirHandle, clientIP, ctx.Context.Err())
+		return &ReadDirPlusResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
+
+	// ========================================================================
+	// Step 2: Validate request parameters
 	// ========================================================================
 
 	if err := validateReadDirPlusRequest(req); err != nil {
@@ -325,8 +356,17 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	}
 
 	// ========================================================================
-	// Step 2: Verify directory handle exists and is valid
+	// Step 3: Verify directory handle exists and is valid
 	// ========================================================================
+
+	// Check context before repository call
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("READDIRPLUS cancelled before GetFile: dir=%x client=%s error=%v",
+			req.DirHandle, clientIP, ctx.Context.Err())
+		return &ReadDirPlusResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 	dirAttr, err := repository.GetFile(ctx.Context, dirHandle)
@@ -352,11 +392,27 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	}
 
 	// ========================================================================
-	// Step 3: Get directory children from repository
+	// Step 4: Get directory children from repository
 	// ========================================================================
 	// The repository only retrieves the children of the directory.
-	// This protocol layer is responsible for building the "." and ".." entries (see lines 388-438).
+	// This protocol layer is responsible for building the "." and ".." entries.
 	// Access control filtering, if required, would also need to be implemented in this layer.
+
+	// Check context before repository call
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("READDIRPLUS cancelled before GetChildren: dir=%x client=%s error=%v",
+			req.DirHandle, clientIP, ctx.Context.Err())
+
+		dirID := xdr.ExtractFileID(dirHandle)
+		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+
+		return &ReadDirPlusResponse{
+			Status:  types.NFS3ErrIO,
+			DirAttr: nfsDirAttr,
+		}, nil
+	default:
+	}
 
 	children, err := repository.GetChildren(ctx.Context, dirHandle)
 	if err != nil {
@@ -373,7 +429,7 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	}
 
 	// ========================================================================
-	// Step 4: Build response with directory entries
+	// Step 5: Build response with directory entries
 	// ========================================================================
 
 	// Generate directory file ID for attributes
@@ -406,6 +462,19 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	// ========================================================================
 
 	if req.Cookie <= 1 {
+		// Check context periodically (before parent lookup)
+		select {
+		case <-ctx.Context.Done():
+			logger.Warn("READDIRPLUS cancelled during parent lookup: dir=%x client=%s error=%v",
+				req.DirHandle, clientIP, ctx.Context.Err())
+
+			return &ReadDirPlusResponse{
+				Status:  types.NFS3ErrIO,
+				DirAttr: nfsDirAttr,
+			}, nil
+		default:
+		}
+
 		// Get parent handle and attributes
 		parentFileid := dirID
 		parentHandle := req.DirHandle
@@ -445,7 +514,25 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	// ========================================================================
 
 	entriesAdded := 0
+	entriesProcessed := 0
+
 	for name, childHandle := range children {
+		// Check context periodically (every 50 entries) for large directories
+		if entriesProcessed%50 == 0 {
+			select {
+			case <-ctx.Context.Done():
+				logger.Warn("READDIRPLUS cancelled during entry processing: dir=%x processed=%d client=%s error=%v",
+					req.DirHandle, entriesProcessed, clientIP, ctx.Context.Err())
+
+				return &ReadDirPlusResponse{
+					Status:  types.NFS3ErrIO,
+					DirAttr: nfsDirAttr,
+				}, nil
+			default:
+			}
+		}
+		entriesProcessed++
+
 		// Skip entries before the requested cookie
 		if cookie <= req.Cookie {
 			cookie++
@@ -481,7 +568,7 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	}
 
 	// ========================================================================
-	// Step 5: Build success response
+	// Step 6: Build success response
 	// ========================================================================
 
 	logger.Info("READDIRPLUS successful: dir=%x entries=%d (special=2 regular=%d) eof=true client=%s",

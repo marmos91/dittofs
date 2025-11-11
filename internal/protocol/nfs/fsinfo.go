@@ -133,16 +133,18 @@ type FsInfoContext struct {
 //
 // The FSINFO procedure provides clients with essential information for optimizing
 // their operations:
-//  1. Validate the file handle format and length
-//  2. Verify the file handle exists via repository
-//  3. Retrieve filesystem capabilities from the repository
-//  4. Retrieve file attributes for cache consistency
-//  5. Return comprehensive filesystem information
+//  1. Check for context cancellation early
+//  2. Validate the file handle format and length
+//  3. Verify the file handle exists via repository
+//  4. Retrieve filesystem capabilities from the repository
+//  5. Retrieve file attributes for cache consistency
+//  6. Return comprehensive filesystem information
 //
 // Design principles:
 //   - Protocol layer handles only XDR encoding/decoding and validation
 //   - All business logic (filesystem limits, capabilities) is delegated to repository
 //   - File handle validation is performed by repository.GetFile()
+//   - Context cancellation is checked at strategic points
 //   - Comprehensive logging at DEBUG level for troubleshooting
 //
 // Per RFC 1813 Section 3.3.19:
@@ -152,14 +154,14 @@ type FsInfoContext struct {
 //	object specified by fsroot."
 //
 // Parameters:
+//   - ctx: Context information including cancellation, client address and auth flavor
 //   - repository: The metadata repository containing filesystem configuration
 //   - req: The FSINFO request containing the file handle
-//   - ctx: Context information including client address and auth flavor
 //
 // Returns:
 //   - *FsInfoResponse: The response with filesystem information (if successful)
-//   - error: Returns error only for internal server failures; protocol-level
-//     errors are indicated via the response Status field
+//   - error: Returns error only for internal server failures or context cancellation;
+//     protocol-level errors are indicated via the response Status field
 //
 // RFC 1813 Section 3.3.19: FSINFO Procedure
 //
@@ -168,12 +170,13 @@ type FsInfoContext struct {
 //	handler := &DefaultNFSHandler{}
 //	req := &FsInfoRequest{Handle: rootHandle}
 //	ctx := &FsInfoContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	}
-//	resp, err := handler.FsInfo(repository, req, ctx)
+//	resp, err := handler.FsInfo(ctx, repository, req)
 //	if err != nil {
-//	    // Internal server error occurred
+//	    // Internal server error or context cancellation occurred
 //	    return nil, err
 //	}
 //	if resp.Status == types.NFS3OK {
@@ -187,10 +190,31 @@ func (h *DefaultNFSHandler) FsInfo(
 	logger.Debug("FSINFO request: handle=%x client=%s auth=%d",
 		req.Handle, ctx.ClientAddr, ctx.AuthFlavor)
 
+	// Check for context cancellation before starting any work
+	// FSINFO is lightweight, but we respect cancellation to prevent
+	// wasting resources on abandoned requests
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("FSINFO cancelled: handle=%x client=%s error=%v",
+			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+	}
+
 	// Validate file handle before using it
 	if err := validateFileHandle(req.Handle); err != nil {
 		logger.Debug("FSINFO failed: invalid handle: %v", err)
 		return &FsInfoResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check for cancellation before repository call
+	// Repository operations might involve I/O or locks
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("FSINFO cancelled before GetFile: handle=%x client=%s error=%v",
+			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
 	}
 
 	// Verify the file handle exists and is valid in the repository
@@ -204,6 +228,8 @@ func (h *DefaultNFSHandler) FsInfo(
 
 	// Retrieve filesystem capabilities from the repository
 	// All business logic about filesystem limits is handled by the repository
+	// Note: We don't check cancellation here since GetFSInfo is typically
+	// a fast in-memory operation returning static configuration
 	fsInfo, err := repository.GetFSInfo(ctx.Context, metadata.FileHandle(req.Handle))
 	if err != nil {
 		logger.Error("FSINFO failed: handle=%x client=%s error=failed to retrieve fsinfo: %v",

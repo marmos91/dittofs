@@ -95,9 +95,10 @@ type NullContext struct {
 //
 // **Process:**
 //
-//  1. Log the NULL request with client information
-//  2. Optionally delegate to repository for health check validation
-//  3. Return empty success response
+//  1. Check for context cancellation (client disconnect, timeout)
+//  2. Log the NULL request with client information
+//  3. Optionally delegate to repository for health check validation
+//  4. Return empty success response
 //
 // **Design Principles:**
 //
@@ -105,6 +106,7 @@ type NullContext struct {
 //   - Repository can implement health checks (storage availability, resource limits)
 //   - Consistent logging pattern with other procedures
 //   - Zero overhead - should be extremely fast
+//   - Respects context cancellation for client disconnects
 //
 // **Use Cases:**
 //
@@ -130,6 +132,18 @@ type NullContext struct {
 //   - No locking or synchronization
 //   - Immediate return with empty response
 //   - Should complete in microseconds
+//   - Context check adds negligible overhead (~nanoseconds)
+//
+// **Context Cancellation:**
+//
+// While NULL is extremely fast, we still respect context cancellation:
+//   - Client disconnects before response is sent
+//   - Timeout from load balancer health checks
+//   - Server shutdown in progress
+//   - Network connection failures
+//
+// If context is cancelled, we return immediately without completing the health check.
+// This prevents wasted resources on already-abandoned requests.
 //
 // **Security Considerations:**
 //
@@ -142,27 +156,29 @@ type NullContext struct {
 // **Error Handling:**
 //
 // NULL cannot fail under normal circumstances. Even if the repository
-// is unavailable, NULL should succeed. The only failure mode is
-// catastrophic (e.g., unable to allocate memory for response).
+// is unavailable, NULL should succeed. Failure modes:
+//   - Context cancelled (client disconnect/timeout) - returns context.Canceled
+//   - Catastrophic internal error (extremely rare) - returns error
 //
 // **Repository Interaction:**
 //
 // While NULL doesn't require repository access, we can optionally:
-//   - Call repository.Healtcheck() to verify backend health
+//   - Call repository.Healthcheck() to verify backend health
 //   - Return success even if repository check fails (NULL must always succeed)
 //   - Log repository health for monitoring purposes
+//   - Pass context through for cancellation support
 //
 // This allows NULL to serve as a basic health check endpoint while maintaining
-// RFC 1813 compliance (NULL always succeeds).
+// RFC 1813 compliance (NULL always succeeds unless cancelled).
 //
 // **Parameters:**
+//   - ctx: Context with client address, authentication, and cancellation support
 //   - repository: The metadata repository (may be used for health checks)
 //   - req: The NULL request (empty structure)
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
-//   - *NullResponse: Empty response structure (always succeeds)
-//   - error: Returns error only for catastrophic internal failures
+//   - *NullResponse: Empty response structure (always succeeds unless cancelled)
+//   - error: Returns error for context cancellation or catastrophic internal failures
 //
 // **RFC 1813 Appendix I: NULL Procedure**
 //
@@ -176,10 +192,15 @@ type NullContext struct {
 //	handler := &DefaultNFSHandler{}
 //	req := &NullRequest{}
 //	ctx := &NullContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 0, // AUTH_NULL
 //	}
-//	resp, err := handler.Null(repository, req, ctx)
+//	resp, err := handler.Null(ctx, repository, req)
+//	if err == context.Canceled {
+//	    // Client disconnected before response sent
+//	    return nil, err
+//	}
 //	if err != nil {
 //	    // This should never happen - NULL always succeeds
 //	    log.Fatal("NULL procedure failed:", err)
@@ -190,6 +211,22 @@ func (h *DefaultNFSHandler) Null(
 	repository metadata.Repository,
 	req *NullRequest,
 ) (*NullResponse, error) {
+	// ========================================================================
+	// Context Cancellation Check
+	// ========================================================================
+	// Check if the client has disconnected or the request has timed out.
+	// While NULL is extremely fast, we should still respect cancellation to
+	// avoid wasting resources on abandoned requests (e.g., during server shutdown,
+	// load balancer health check timeouts, or client disconnects).
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("NULL: request cancelled: client=%s error=%v",
+			ctx.ClientAddr, ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+		// Context not cancelled, continue processing
+	}
+
 	// Extract client IP for logging
 	clientIP := ctx.ClientAddr
 	if idx := len(clientIP) - 1; idx >= 0 {
@@ -210,9 +247,19 @@ func (h *DefaultNFSHandler) Null(
 	// We can optionally ping the repository to verify backend health.
 	// However, per RFC 1813, NULL must always succeed regardless of
 	// repository state, so we log any issues but don't fail the request.
+	//
+	// The context is passed through to allow the health check to be cancelled
+	// if the client disconnects while we're checking backend health.
 
 	if err := repository.Healthcheck(ctx.Context); err != nil {
+		// Check if the error is due to context cancellation
+		if err == context.Canceled || err == context.DeadlineExceeded {
+			logger.Debug("NULL: health check cancelled: client=%s", clientIP)
+			return nil, err
+		}
+
 		// Log repository health issue but don't fail NULL request
+		// (only context cancellation should cause NULL to fail)
 		logger.Debug("NULL: repository health check failed (non-fatal): client=%s error=%v",
 			clientIP, err)
 		// Continue and return success anyway - NULL must always succeed

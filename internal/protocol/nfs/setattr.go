@@ -142,18 +142,20 @@ type SetAttrContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handle format)
-//  2. Extract client IP and authentication credentials from context
-//  3. Verify file handle exists (via repository)
-//  4. Check guard condition if specified (optimistic concurrency control)
-//  5. Delegate attribute updates to repository.SetFileAttributes()
-//  6. Return updated WCC data
+//  1. Check for context cancellation (client disconnect, timeout)
+//  2. Validate request parameters (handle format)
+//  3. Extract client IP and authentication credentials from context
+//  4. Verify file handle exists (via repository)
+//  5. Check guard condition if specified (optimistic concurrency control)
+//  6. Delegate attribute updates to repository.SetFileAttributes()
+//  7. Return updated WCC data
 //
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
 //   - All business logic (attribute modification, validation, access control) delegated to repository
 //   - File handle validation performed by repository.GetFile()
+//   - Context cancellation respected throughout the operation
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
 // **Authentication:**
@@ -198,6 +200,8 @@ type SetAttrContext struct {
 //   - Zero size: Delete all content
 //
 // The metadata repository delegates content operations to the content repository.
+// Size changes can be time-consuming for large files, so context cancellation
+// is particularly important.
 //
 // **Timestamp Semantics:**
 //
@@ -208,6 +212,23 @@ type SetAttrContext struct {
 //
 // Ctime (change time) is automatically updated by the server and cannot
 // be set by the client - it's a server-managed metadata field.
+//
+// **Context Cancellation:**
+//
+// SETATTR can involve multiple operations (metadata update, content truncation).
+// Context cancellation is checked at key points:
+//   - Before starting the operation (client disconnect detection)
+//   - During metadata lookup (before and after guard check)
+//   - Repository operations respect context (passed through in AuthContext)
+//
+// Cancellation scenarios include:
+//   - Client disconnects before completion
+//   - Client timeout expires (especially for large truncations)
+//   - Server shutdown initiated
+//   - Network connection lost
+//
+// Size changes (truncation/extension) can be particularly time-consuming
+// for large files, making cancellation support critical.
 //
 // **Error Handling:**
 //
@@ -220,6 +241,7 @@ type SetAttrContext struct {
 //   - Read-only filesystem → NFS3ErrRoFs
 //   - Invalid size → NFS3ErrInval
 //   - I/O error → types.NFS3ErrIO
+//   - Context cancelled → returns context error (client disconnect)
 //
 // **Weak Cache Consistency (WCC):**
 //
@@ -242,16 +264,17 @@ type SetAttrContext struct {
 //   - Size/time changes require write permission
 //   - Guard prevents lost updates in concurrent scenarios
 //   - Client context enables audit logging
+//   - Cancellation prevents resource exhaustion
 //
 // **Parameters:**
+//   - ctx: Context with client address, authentication, and cancellation support
 //   - repository: The metadata repository for file operations
 //   - req: The setattr request containing handle and new attributes
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *SetAttrResponse: Response with status and WCC data
-//   - error: Returns error only for catastrophic internal failures; protocol-level
-//     errors are indicated via the response Status field
+//   - error: Returns error for context cancellation or catastrophic internal failures;
+//     protocol-level errors are indicated via the response Status field
 //
 // **RFC 1813 Section 3.3.2: SETATTR Procedure**
 //
@@ -267,12 +290,17 @@ type SetAttrContext struct {
 //	    Guard: TimeGuard{Check: false}, // No guard
 //	}
 //	ctx := &SetAttrContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.SetAttr(repository, req, ctx)
+//	resp, err := handler.SetAttr(ctx, repository, req)
+//	if err == context.Canceled {
+//	    // Client disconnected during setattr
+//	    return nil, err
+//	}
 //	if err != nil {
 //	    // Internal server error
 //	}
@@ -284,6 +312,21 @@ func (h *DefaultNFSHandler) SetAttr(
 	repository metadata.Repository,
 	req *SetAttrRequest,
 ) (*SetAttrResponse, error) {
+	// ========================================================================
+	// Context Cancellation Check - Entry Point
+	// ========================================================================
+	// Check if the client has disconnected or the request has timed out
+	// before we start any operations. This is especially important for
+	// SETATTR operations that may involve expensive content truncation.
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("SETATTR: request cancelled at entry: handle=%x client=%s error=%v",
+			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+		// Context not cancelled, continue processing
+	}
+
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
@@ -307,6 +350,13 @@ func (h *DefaultNFSHandler) SetAttr(
 	fileHandle := metadata.FileHandle(req.Handle)
 	currentAttr, err := repository.GetFile(ctx.Context, fileHandle)
 	if err != nil {
+		// Check if error is due to context cancellation
+		if err == context.Canceled || err == context.DeadlineExceeded {
+			logger.Debug("SETATTR: metadata lookup cancelled: handle=%x client=%s",
+				req.Handle, clientIP)
+			return nil, err
+		}
+
 		logger.Warn("SETATTR failed: file not found: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
 		return &SetAttrResponse{Status: types.NFS3ErrNoEnt}, nil
@@ -314,6 +364,19 @@ func (h *DefaultNFSHandler) SetAttr(
 
 	// Capture pre-operation attributes for WCC data
 	wccBefore := xdr.CaptureWccAttr(currentAttr)
+
+	// ========================================================================
+	// Context Cancellation Check - After Metadata Lookup
+	// ========================================================================
+	// Check again after metadata lookup, before guard check and attribute update
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("SETATTR: request cancelled after metadata lookup: handle=%x client=%s",
+			req.Handle, clientIP)
+		return nil, ctx.Context.Err()
+	default:
+		// Context not cancelled, continue processing
+	}
 
 	// ========================================================================
 	// Step 3: Check guard condition if specified
@@ -358,6 +421,7 @@ func (h *DefaultNFSHandler) SetAttr(
 	// ========================================================================
 
 	authCtx := &metadata.AuthContext{
+		Context:    ctx.Context, // Pass context through for cancellation
 		AuthFlavor: ctx.AuthFlavor,
 		UID:        ctx.UID,
 		GID:        ctx.GID,
@@ -375,12 +439,20 @@ func (h *DefaultNFSHandler) SetAttr(
 	// - Coordinating with content repository for size changes
 	// - Updating ctime automatically
 	// - Ensuring atomicity of updates
+	// - Respecting context cancellation (especially for size changes)
 
 	// Log which attributes are being set (for debugging)
 	logSetAttrRequest(req, clientIP)
 
 	err = repository.SetFileAttributes(authCtx, fileHandle, &req.NewAttr)
 	if err != nil {
+		// Check if error is due to context cancellation
+		if err == context.Canceled || err == context.DeadlineExceeded {
+			logger.Debug("SETATTR: repository operation cancelled: handle=%x client=%s",
+				req.Handle, clientIP)
+			return nil, err
+		}
+
 		logger.Error("SETATTR failed: repository error: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
 
@@ -408,6 +480,13 @@ func (h *DefaultNFSHandler) SetAttr(
 	// Get updated file attributes for WCC data
 	updatedAttr, err := repository.GetFile(ctx.Context, fileHandle)
 	if err != nil {
+		// Check if error is due to context cancellation
+		if err == context.Canceled || err == context.DeadlineExceeded {
+			logger.Debug("SETATTR: final attribute lookup cancelled: handle=%x client=%s",
+				req.Handle, clientIP)
+			return nil, err
+		}
+
 		logger.Warn("SETATTR: attributes updated but cannot get new attributes: handle=%x error=%v",
 			req.Handle, err)
 		// Continue with nil WccAfter rather than failing the entire operation

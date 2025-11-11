@@ -118,17 +118,19 @@ type ReadLinkContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handle format and length)
-//  2. Extract client IP and authentication credentials from context
-//  3. Delegate symlink reading to repository.ReadSymlink()
-//  4. Retrieve symlink attributes for cache consistency
-//  5. Return target path to client
+//  1. Check for context cancellation (client disconnect, timeout)
+//  2. Validate request parameters (handle format and length)
+//  3. Extract client IP and authentication credentials from context
+//  4. Delegate symlink reading to repository.ReadSymlink()
+//  5. Retrieve symlink attributes for cache consistency
+//  6. Return target path to client
 //
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
 //   - All business logic (symlink reading, access control) delegated to repository
 //   - File handle validation performed by repository
+//   - Context cancellation respected for client disconnect scenarios
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
 // **Authentication:**
@@ -163,6 +165,19 @@ type ReadLinkContext struct {
 //   - Detecting and preventing symlink loops
 //   - Following symlink chains to the final target
 //
+// **Context Cancellation:**
+//
+// READLINK is a lightweight metadata operation that typically completes quickly.
+// However, context cancellation is still checked at key points:
+//   - Before starting the operation (client disconnect detection)
+//   - Repository operations respect context (passed through)
+//
+// Cancellation scenarios include:
+//   - Client disconnects before receiving response
+//   - Client timeout expires
+//   - Server shutdown initiated
+//   - Network connection lost
+//
 // **Error Handling:**
 //
 // Protocol-level errors return appropriate NFS status codes.
@@ -172,6 +187,7 @@ type ReadLinkContext struct {
 //   - Target path missing → types.NFS3ErrIO
 //   - Access denied → NFS3ErrAcces
 //   - I/O error → types.NFS3ErrIO
+//   - Context cancelled → returns context error (client disconnect)
 //
 // **Performance Considerations:**
 //
@@ -179,6 +195,7 @@ type ReadLinkContext struct {
 //   - Symlink targets should be cached by clients when possible
 //   - Repository should efficiently retrieve symlink targets
 //   - Post-op attributes help clients maintain cache consistency
+//   - Context check adds negligible overhead (nanoseconds)
 //
 // **Security Considerations:**
 //
@@ -187,16 +204,17 @@ type ReadLinkContext struct {
 //   - Target path should not be interpreted or validated by server
 //   - Client context enables audit logging
 //   - No validation of target path content (may contain special characters)
+//   - Cancellation prevents resource exhaustion
 //
 // **Parameters:**
+//   - ctx: Context with client address, authentication, and cancellation support
 //   - repository: The metadata repository for symlink operations
 //   - req: The readlink request containing the symlink handle
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *ReadLinkResponse: Response with status and target path (if successful)
-//   - error: Returns error only for catastrophic internal failures; protocol-level
-//     errors are indicated via the response Status field
+//   - error: Returns error for context cancellation or catastrophic internal failures;
+//     protocol-level errors are indicated via the response Status field
 //
 // **RFC 1813 Section 3.3.5: READLINK Procedure**
 //
@@ -205,12 +223,17 @@ type ReadLinkContext struct {
 //	handler := &DefaultNFSHandler{}
 //	req := &ReadLinkRequest{Handle: symlinkHandle}
 //	ctx := &ReadLinkContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.ReadLink(repository, req, ctx)
+//	resp, err := handler.ReadLink(ctx, repository, req)
+//	if err == context.Canceled {
+//	    // Client disconnected during readlink
+//	    return nil, err
+//	}
 //	if err != nil {
 //	    // Internal server error
 //	}
@@ -222,6 +245,21 @@ func (h *DefaultNFSHandler) ReadLink(
 	repository metadata.Repository,
 	req *ReadLinkRequest,
 ) (*ReadLinkResponse, error) {
+	// ========================================================================
+	// Context Cancellation Check - Entry Point
+	// ========================================================================
+	// Check if the client has disconnected or the request has timed out
+	// before we start processing. While READLINK is fast, we should still
+	// respect cancellation to avoid wasted work on abandoned requests.
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("READLINK: request cancelled at entry: handle=%x client=%s error=%v",
+			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+		// Context not cancelled, continue processing
+	}
+
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
@@ -245,6 +283,7 @@ func (h *DefaultNFSHandler) ReadLink(
 	// on the symbolic link (read permission checking)
 
 	authCtx := &metadata.AuthContext{
+		Context:    ctx.Context, // Pass context through for cancellation
 		AuthFlavor: ctx.AuthFlavor,
 		UID:        ctx.UID,
 		GID:        ctx.GID,
@@ -260,10 +299,18 @@ func (h *DefaultNFSHandler) ReadLink(
 	// - Checking read permission on the symlink
 	// - Retrieving the target path
 	// - Handling any I/O errors
+	// - Respecting context cancellation
 
 	fileHandle := metadata.FileHandle(req.Handle)
 	target, attr, err := repository.ReadSymlink(authCtx, fileHandle)
 	if err != nil {
+		// Check if error is due to context cancellation
+		if err == context.Canceled || err == context.DeadlineExceeded {
+			logger.Debug("READLINK: repository operation cancelled: handle=%x client=%s",
+				req.Handle, clientIP)
+			return nil, err
+		}
+
 		logger.Warn("READLINK failed: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
 

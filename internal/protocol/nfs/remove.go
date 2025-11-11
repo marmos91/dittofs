@@ -74,8 +74,12 @@ type RemoveResponse struct {
 }
 
 // RemoveContext contains the context information needed to process a REMOVE request.
-// This includes client identification and authentication details for access control.
+// This includes client identification, authentication details, and cancellation handling
+// for access control.
 type RemoveContext struct {
+	// Context carries cancellation signals and deadlines
+	// The Remove handler checks this context to abort operations if the client
+	// disconnects or the request times out
 	Context context.Context
 
 	// ClientAddr is the network address of the client making the request.
@@ -122,12 +126,22 @@ type RemoveContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handle format, filename syntax)
-//  2. Extract client IP and authentication credentials from context
-//  3. Verify parent directory exists and is a directory (via repository)
-//  4. Capture pre-operation directory state (for WCC)
-//  5. Delegate file removal to repository.RemoveFile()
-//  6. Return updated directory WCC data
+//  1. Check for context cancellation (early exit if client disconnected)
+//  2. Validate request parameters (handle format, filename syntax)
+//  3. Extract client IP and authentication credentials from context
+//  4. Verify parent directory exists (via repository)
+//  5. Capture pre-operation directory state (for WCC)
+//  6. Check for cancellation before remove operation
+//  7. Delegate file removal to repository.RemoveFile()
+//  8. Return updated directory WCC data
+//
+// **Context cancellation:**
+//
+//   - Checks at the beginning to respect client disconnection
+//   - Checks after directory lookup (before atomic remove operation)
+//   - No check during RemoveFile to maintain atomicity
+//   - Returns NFS3ErrIO status with context error for cancellation
+//   - Always includes WCC data for cache consistency
 //
 // **Design Principles:**
 //
@@ -170,6 +184,7 @@ type RemoveContext struct {
 //   - File is directory → types.NFS3ErrIsDir
 //   - Permission denied → NFS3ErrAcces
 //   - I/O error → types.NFS3ErrIO
+//   - Context cancelled → types.NFS3ErrIO with error return
 //
 // **Weak Cache Consistency (WCC):**
 //
@@ -192,14 +207,14 @@ type RemoveContext struct {
 //   - Cannot delete directories (prevents accidental data loss)
 //
 // **Parameters:**
+//   - ctx: Context with cancellation, client address and authentication credentials
 //   - repository: The metadata repository for file and directory operations
 //   - req: The remove request containing directory handle and filename
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *RemoveResponse: Response with status and directory WCC data
-//   - error: Returns error only for catastrophic internal failures; protocol-level
-//     errors are indicated via the response Status field
+//   - error: Returns error for context cancellation or catastrophic internal failures;
+//     protocol-level errors are indicated via the response Status field
 //
 // **RFC 1813 Section 3.3.12: REMOVE Procedure**
 //
@@ -211,14 +226,19 @@ type RemoveContext struct {
 //	    Filename:  "oldfile.txt",
 //	}
 //	ctx := &RemoveContext{
+//	    Context: context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Remove(repository, req, ctx)
+//	resp, err := handler.Remove(ctx, repository, req)
 //	if err != nil {
-//	    // Internal server error
+//	    if errors.Is(err, context.Canceled) {
+//	        // Client disconnected
+//	    } else {
+//	        // Internal server error
+//	    }
 //	}
 //	if resp.Status == types.NFS3OK {
 //	    // File removed successfully
@@ -228,6 +248,16 @@ func (h *DefaultNFSHandler) Remove(
 	repository metadata.Repository,
 	req *RemoveRequest,
 ) (*RemoveResponse, error) {
+	// Check for cancellation before starting any work
+	// This handles the case where the client disconnects before we begin processing
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("REMOVE cancelled before processing: file='%s' dir=%x client=%s error=%v",
+			req.Filename, req.DirHandle, ctx.ClientAddr, ctx.Context.Err())
+		return &RemoveResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+	default:
+	}
+
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
@@ -251,6 +281,13 @@ func (h *DefaultNFSHandler) Remove(
 	dirHandle := metadata.FileHandle(req.DirHandle)
 	dirAttr, err := repository.GetFile(ctx.Context, dirHandle)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("REMOVE cancelled during directory lookup: file='%s' dir=%x client=%s error=%v",
+				req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+			return &RemoveResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		}
+
 		logger.Warn("REMOVE failed: directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
 		return &RemoveResponse{Status: types.NFS3ErrNoEnt}, nil
@@ -258,6 +295,25 @@ func (h *DefaultNFSHandler) Remove(
 
 	// Capture pre-operation attributes for WCC data
 	wccBefore := xdr.CaptureWccAttr(dirAttr)
+
+	// Check for cancellation before the remove operation
+	// This is the most critical check - we don't want to start removing
+	// the file if the client has already disconnected
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("REMOVE cancelled before remove operation: file='%s' dir=%x client=%s error=%v",
+			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+
+		dirID := xdr.ExtractFileID(dirHandle)
+		wccAfter := xdr.MetadataToNFS(dirAttr, dirID)
+
+		return &RemoveResponse{
+			Status:       types.NFS3ErrIO,
+			DirWccBefore: wccBefore,
+			DirWccAfter:  wccAfter,
+		}, ctx.Context.Err()
+	default:
+	}
 
 	// ========================================================================
 	// Step 3: Build authentication context
@@ -282,15 +338,37 @@ func (h *DefaultNFSHandler) Remove(
 	// - Removing the file from the directory
 	// - Deleting the file metadata
 	// - Updating parent directory timestamps
+	//
+	// We don't check for cancellation inside RemoveFile to maintain atomicity.
+	// The repository should respect context internally for its operations.
 
 	removedFileAttr, err := repository.RemoveFile(authCtx, dirHandle, req.Filename)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("REMOVE cancelled during remove operation: file='%s' dir=%x client=%s error=%v",
+				req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+
+			// Get updated directory attributes for WCC data (best effort)
+			var wccAfter *types.NFSFileAttr
+			if dirAttr, getErr := repository.GetFile(ctx.Context, dirHandle); getErr == nil {
+				dirID := xdr.ExtractFileID(dirHandle)
+				wccAfter = xdr.MetadataToNFS(dirAttr, dirID)
+			}
+
+			return &RemoveResponse{
+				Status:       types.NFS3ErrIO,
+				DirWccBefore: wccBefore,
+				DirWccAfter:  wccAfter,
+			}, ctx.Context.Err()
+		}
+
 		// Map repository errors to NFS status codes
 		nfsStatus := xdr.MapRepositoryErrorToNFSStatus(err, clientIP, "REMOVE")
 
 		// Get updated directory attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
-		if dirAttr, err := repository.GetFile(ctx.Context, dirHandle); err == nil {
+		if dirAttr, getErr := repository.GetFile(ctx.Context, dirHandle); getErr == nil {
 			dirID := xdr.ExtractFileID(dirHandle)
 			wccAfter = xdr.MetadataToNFS(dirAttr, dirID)
 		}

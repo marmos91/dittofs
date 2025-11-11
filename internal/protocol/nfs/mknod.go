@@ -177,18 +177,21 @@ type MknodContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handle format, name syntax, file type)
-//  2. Extract client IP and authentication credentials from context
-//  3. Verify parent directory exists and is a directory (via repository)
-//  4. Capture pre-operation parent state (for WCC)
-//  5. Delegate special file creation to repository.CreateSpecialFile()
-//  6. Return new file handle and attributes with WCC data
+//  1. Check for context cancellation (client disconnect, timeout)
+//  2. Validate request parameters (handle format, name syntax, file type)
+//  3. Extract client IP and authentication credentials from context
+//  4. Verify parent directory exists and is a directory (via repository)
+//  5. Capture pre-operation parent state (for WCC)
+//  6. Check for name conflicts
+//  7. Delegate special file creation to repository.CreateSpecialFile()
+//  8. Return new file handle and attributes with WCC data
 //
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
 //   - All business logic (creation, validation, access control) delegated to repository
 //   - File handle validation performed by repository.GetFile()
+//   - Context cancellation respected throughout the operation
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
 // **Authentication:**
@@ -224,6 +227,20 @@ type MknodContext struct {
 //   - Device numbers are ignored
 //   - The file is a communication endpoint, not a device
 //
+// **Context Cancellation:**
+//
+// MKNOD is a metadata operation that typically completes quickly.
+// Context cancellation is checked at key points:
+//   - Before starting the operation (client disconnect detection)
+//   - After parent directory lookup
+//   - Repository operations respect context (passed through in AuthContext)
+//
+// Cancellation scenarios include:
+//   - Client disconnects before completion
+//   - Client timeout expires
+//   - Server shutdown initiated
+//   - Network connection lost
+//
 // **Security Considerations:**
 //
 // Creating special files has security implications:
@@ -250,6 +267,7 @@ type MknodContext struct {
 //   - Name too long → NFS3ErrNameTooLong
 //   - Permission denied → NFS3ErrAcces
 //   - I/O error → types.NFS3ErrIO
+//   - Context cancelled → returns context error (client disconnect)
 //
 // **Weak Cache Consistency (WCC):**
 //
@@ -261,15 +279,15 @@ type MknodContext struct {
 // Clients use this to maintain cache consistency and detect concurrent modifications.
 //
 // **Parameters:**
+//   - ctx: Context with client address, authentication, and cancellation support
 //   - repository: The metadata repository for file operations
 //   - req: The mknod request containing parent handle, name, type, and attributes
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *MknodResponse: Response with status, new file handle (if successful),
 //     and WCC data for the parent directory
-//   - error: Returns error only for catastrophic internal failures; protocol-level
-//     errors are indicated via the response Status field
+//   - error: Returns error for context cancellation or catastrophic internal failures;
+//     protocol-level errors are indicated via the response Status field
 //
 // **RFC 1813 Section 3.3.11: MKNOD Procedure**
 //
@@ -284,12 +302,17 @@ type MknodContext struct {
 //	    Spec:      DeviceSpec{SpecData1: 1, SpecData2: 3}, // major=1, minor=3
 //	}
 //	ctx := &MknodContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Mknod(repository, req, ctx)
+//	resp, err := handler.Mknod(ctx, repository, req)
+//	if err == context.Canceled {
+//	    // Client disconnected during mknod
+//	    return nil, err
+//	}
 //	if err != nil {
 //	    // Internal server error
 //	}
@@ -301,6 +324,21 @@ func (h *DefaultNFSHandler) Mknod(
 	repository metadata.Repository,
 	req *MknodRequest,
 ) (*MknodResponse, error) {
+	// ========================================================================
+	// Context Cancellation Check - Entry Point
+	// ========================================================================
+	// Check if the client has disconnected or the request has timed out
+	// before we start processing. While MKNOD is typically fast (metadata only),
+	// we should still respect cancellation to avoid wasted work.
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("MKNOD: request cancelled at entry: name='%s' dir=%x client=%s error=%v",
+			req.Name, req.DirHandle, ctx.ClientAddr, ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+		// Context not cancelled, continue processing
+	}
+
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
@@ -324,6 +362,13 @@ func (h *DefaultNFSHandler) Mknod(
 	parentHandle := metadata.FileHandle(req.DirHandle)
 	parentAttr, err := repository.GetFile(ctx.Context, parentHandle)
 	if err != nil {
+		// Check if error is due to context cancellation
+		if err == context.Canceled || err == context.DeadlineExceeded {
+			logger.Debug("MKNOD: parent lookup cancelled: name='%s' dir=%x client=%s",
+				req.Name, req.DirHandle, clientIP)
+			return nil, err
+		}
+
 		logger.Warn("MKNOD failed: parent not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
 		return &MknodResponse{Status: types.NFS3ErrNoEnt}, nil
@@ -346,6 +391,19 @@ func (h *DefaultNFSHandler) Mknod(
 			DirAttrBefore: wccBefore,
 			DirAttrAfter:  wccAfter,
 		}, nil
+	}
+
+	// ========================================================================
+	// Context Cancellation Check - After Parent Lookup
+	// ========================================================================
+	// Check again after parent verification, before child operations
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("MKNOD: request cancelled after parent lookup: name='%s' dir=%x client=%s",
+			req.Name, req.DirHandle, clientIP)
+		return nil, ctx.Context.Err()
+	default:
+		// Context not cancelled, continue processing
 	}
 
 	// ========================================================================
@@ -382,9 +440,11 @@ func (h *DefaultNFSHandler) Mknod(
 	// - Storing device numbers (for block/char devices)
 	// - Linking it to the parent
 	// - Updating parent directory timestamps
+	// - Respecting context cancellation
 
 	// Build authentication context for repository
 	authCtx := &metadata.AuthContext{
+		Context:    ctx.Context, // Pass context through for cancellation
 		AuthFlavor: ctx.AuthFlavor,
 		UID:        ctx.UID,
 		GID:        ctx.GID,
@@ -406,6 +466,13 @@ func (h *DefaultNFSHandler) Mknod(
 		req.Spec.SpecData2, // Minor device number (or 0 for non-devices)
 	)
 	if err != nil {
+		// Check if error is due to context cancellation
+		if err == context.Canceled || err == context.DeadlineExceeded {
+			logger.Debug("MKNOD: creation cancelled: name='%s' dir=%x client=%s",
+				req.Name, req.DirHandle, clientIP)
+			return nil, err
+		}
+
 		logger.Error("MKNOD failed: repository error: name='%s' type=%d client=%s error=%v",
 			req.Name, req.Type, clientIP, err)
 
@@ -431,6 +498,13 @@ func (h *DefaultNFSHandler) Mknod(
 	// Get the newly created file's attributes
 	newFileAttr, err := repository.GetFile(ctx.Context, newHandle)
 	if err != nil {
+		// Check if error is due to context cancellation
+		if err == context.Canceled || err == context.DeadlineExceeded {
+			logger.Debug("MKNOD: final attribute lookup cancelled: name='%s' handle=%x client=%s",
+				req.Name, newHandle, clientIP)
+			return nil, err
+		}
+
 		logger.Error("MKNOD: failed to get new file attributes: handle=%x error=%v",
 			newHandle, err)
 		// This shouldn't happen, but handle gracefully

@@ -72,8 +72,12 @@ type AccessResponse struct {
 }
 
 // AccessContext contains the context information needed to process an ACCESS request.
-// This includes client identification and authentication details for permission checks.
+// This includes client identification, authentication details for permission checks,
+// and cancellation handling.
 type AccessContext struct {
+	// Context carries cancellation signals and deadlines
+	// The Access handler checks this context to abort operations if the client
+	// disconnects or the request times out
 	Context context.Context
 
 	// ClientAddr is the network address of the client making the request.
@@ -119,18 +123,27 @@ type AccessContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handle format and length)
-//  2. Extract client IP and authentication credentials from context
-//  3. Verify file handle exists via repository.GetFile()
-//  4. Delegate permission checking to repository.CheckAccess()
-//  5. Retrieve file attributes for cache consistency
-//  6. Return granted permissions bitmap to client
+//  1. Check for context cancellation (early exit if client disconnected)
+//  2. Validate request parameters (handle format and length)
+//  3. Extract client IP and authentication credentials from context
+//  4. Verify file handle exists via repository.GetFile()
+//  5. Check for cancellation before expensive permission check
+//  6. Delegate permission checking to repository.CheckAccess()
+//  7. Retrieve file attributes for cache consistency
+//  8. Return granted permissions bitmap to client
+//
+// **Context cancellation:**
+//
+//   - Checks at the beginning to respect client disconnection
+//   - Checks after GetFile, before the potentially expensive CheckAccess
+//   - No check after CheckAccess since response building is fast
+//   - Returns NFS3ErrIO status with context error for cancellation
 //
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
 //   - All business logic (permission checking) is delegated to repository
-//   - File handle validation is performed by repository.GetFile(ctx.Context, )
+//   - File handle validation is performed by repository.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
 // **Authentication:**
@@ -162,6 +175,7 @@ type AccessContext struct {
 //   - File not found → types.NFS3ErrNoEnt
 //   - Permission denied → types.NFS3OK with Access=0 (or NFS3ErrAcces)
 //   - I/O error → types.NFS3ErrIO
+//   - Context cancelled → types.NFS3ErrIO with error return
 //
 // **Security Considerations:**
 //
@@ -171,14 +185,14 @@ type AccessContext struct {
 //   - No sensitive information leaked in error messages
 //
 // **Parameters:**
+//   - ctx: Context with cancellation, client address and authentication credentials
 //   - repository: The metadata repository for file access and permission checks
 //   - req: The access request containing handle and requested permissions
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *AccessResponse: Response with status and granted permissions (if successful)
-//   - error: Returns error only for catastrophic internal failures; protocol-level
-//     errors are indicated via the response Status field
+//   - error: Returns error for context cancellation or catastrophic internal failures;
+//     protocol-level errors are indicated via the response Status field
 //
 // **RFC 1813 Section 3.3.4: ACCESS Procedure**
 //
@@ -190,14 +204,19 @@ type AccessContext struct {
 //	    Access: AccessRead | AccessExecute,
 //	}
 //	ctx := &AccessContext{
+//	    Context: context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Access(repository, req, ctx)
+//	resp, err := handler.Access(ctx, repository, req)
 //	if err != nil {
-//	    // Internal server error
+//	    if errors.Is(err, context.Canceled) {
+//	        // Client disconnected
+//	    } else {
+//	        // Internal server error
+//	    }
 //	}
 //	if resp.Status == types.NFS3OK {
 //	    if resp.Access & AccessRead != 0 {
@@ -209,6 +228,16 @@ func (h *DefaultNFSHandler) Access(
 	repository metadata.Repository,
 	req *AccessRequest,
 ) (*AccessResponse, error) {
+	// Check for cancellation before starting any work
+	// This handles the case where the client disconnects before we begin processing
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("ACCESS cancelled before processing: handle=%x client=%s error=%v",
+			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		return &AccessResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+	default:
+	}
+
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
@@ -232,9 +261,26 @@ func (h *DefaultNFSHandler) Access(
 	fileHandle := metadata.FileHandle(req.Handle)
 	attr, err := repository.GetFile(ctx.Context, fileHandle)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("ACCESS cancelled during file lookup: handle=%x client=%s error=%v",
+				req.Handle, clientIP, ctx.Context.Err())
+			return &AccessResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		}
+
 		logger.Debug("ACCESS failed: handle not found: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
 		return &AccessResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Check for cancellation before the permission check
+	// CheckAccess may involve complex ACL evaluation, so it's worth checking here
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("ACCESS cancelled before permission check: handle=%x client=%s error=%v",
+			req.Handle, clientIP, ctx.Context.Err())
+		return &AccessResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+	default:
 	}
 
 	// ========================================================================
@@ -256,6 +302,13 @@ func (h *DefaultNFSHandler) Access(
 
 	grantedAccess, err := repository.CheckAccess(accessCtx, fileHandle, req.Access)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("ACCESS cancelled during permission check: handle=%x client=%s error=%v",
+				req.Handle, clientIP, ctx.Context.Err())
+			return &AccessResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		}
+
 		logger.Error("ACCESS failed: permission check error: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
 		return &AccessResponse{Status: types.NFS3ErrIO}, nil

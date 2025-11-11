@@ -97,9 +97,12 @@ type MkdirResponse struct {
 }
 
 // MkdirContext contains the context information needed to process a MKDIR request.
-// This includes client identification and authentication details for access control
-// and auditing purposes.
+// This includes client identification, authentication details, and cancellation
+// handling for access control and auditing purposes.
 type MkdirContext struct {
+	// Context carries cancellation signals and deadlines
+	// The Mkdir handler checks this context to abort operations if the client
+	// disconnects or the request times out
 	Context context.Context
 
 	// ClientAddr is the network address of the client making the request.
@@ -146,12 +149,25 @@ type MkdirContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handle format, name syntax)
-//  2. Extract client IP and authentication credentials from context
-//  3. Verify parent directory exists and is a directory (via repository)
-//  4. Capture pre-operation parent state (for WCC)
-//  5. Delegate directory creation to repository.CreateDirectory()
-//  6. Return new directory handle and attributes with WCC data
+//  1. Check for context cancellation (early exit if client disconnected)
+//  2. Validate request parameters (handle format, name syntax)
+//  3. Extract client IP and authentication credentials from context
+//  4. Verify parent directory exists and is a directory (via repository)
+//  5. Capture pre-operation parent state (for WCC)
+//  6. Check for cancellation before existence check
+//  7. Check if directory name already exists
+//  8. Check for cancellation before create operation
+//  9. Delegate directory creation to repository.CreateDirectory()
+//  10. Return new directory handle and attributes with WCC data
+//
+// **Context cancellation:**
+//
+//   - Checks at the beginning to respect client disconnection
+//   - Checks after parent lookup (before potentially expensive existence check)
+//   - Checks before the create operation (the most critical check point)
+//   - No check during CreateDirectory to maintain atomicity
+//   - Returns NFS3ErrIO status with context error for cancellation
+//   - Always includes WCC data in responses for cache consistency
 //
 // **Design Principles:**
 //
@@ -205,6 +221,7 @@ type MkdirContext struct {
 //   - Permission denied → NFS3ErrAcces
 //   - No space → NFS3ErrNoSpc
 //   - I/O error → types.NFS3ErrIO
+//   - Context cancelled → types.NFS3ErrIO with error return
 //
 // **Weak Cache Consistency (WCC):**
 //
@@ -228,15 +245,15 @@ type MkdirContext struct {
 //   - Access control prevents unauthorized directory creation
 //
 // **Parameters:**
+//   - ctx: Context with cancellation, client address and authentication credentials
 //   - repository: The metadata repository for directory operations
 //   - req: The mkdir request containing parent handle, name, and attributes
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *MkdirResponse: Response with status, new directory handle (if successful),
 //     and WCC data for the parent directory
-//   - error: Returns error only for catastrophic internal failures; protocol-level
-//     errors are indicated via the response Status field
+//   - error: Returns error for context cancellation or catastrophic internal failures;
+//     protocol-level errors are indicated via the response Status field
 //
 // **RFC 1813 Section 3.3.9: MKDIR Procedure**
 //
@@ -249,14 +266,19 @@ type MkdirContext struct {
 //	    Attr:      SetAttrs{SetMode: true, Mode: 0755},
 //	}
 //	ctx := &MkdirContext{
+//	    Context: context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Mkdir(repository, req, ctx)
+//	resp, err := handler.Mkdir(ctx, repository, req)
 //	if err != nil {
-//	    // Internal server error
+//	    if errors.Is(err, context.Canceled) {
+//	        // Client disconnected
+//	    } else {
+//	        // Internal server error
+//	    }
 //	}
 //	if resp.Status == types.NFS3OK {
 //	    // Directory created successfully, use resp.Handle
@@ -266,6 +288,16 @@ func (h *DefaultNFSHandler) Mkdir(
 	repository metadata.Repository,
 	req *MkdirRequest,
 ) (*MkdirResponse, error) {
+	// Check for cancellation before starting any work
+	// This handles the case where the client disconnects before we begin processing
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("MKDIR cancelled before processing: name='%s' dir=%x client=%s error=%v",
+			req.Name, req.DirHandle, ctx.ClientAddr, ctx.Context.Err())
+		return &MkdirResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+	default:
+	}
+
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
@@ -289,6 +321,13 @@ func (h *DefaultNFSHandler) Mkdir(
 	parentHandle := metadata.FileHandle(req.DirHandle)
 	parentAttr, err := repository.GetFile(ctx.Context, parentHandle)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("MKDIR cancelled during parent lookup: name='%s' dir=%x client=%s error=%v",
+				req.Name, req.DirHandle, clientIP, ctx.Context.Err())
+			return &MkdirResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		}
+
 		logger.Warn("MKDIR failed: parent not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
 		return &MkdirResponse{Status: types.NFS3ErrNoEnt}, nil
@@ -313,11 +352,46 @@ func (h *DefaultNFSHandler) Mkdir(
 		}, nil
 	}
 
+	// Check for cancellation before the existence check
+	// GetChild may involve directory scanning which can be expensive
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("MKDIR cancelled before existence check: name='%s' dir=%x client=%s error=%v",
+			req.Name, req.DirHandle, clientIP, ctx.Context.Err())
+
+		dirID := xdr.ExtractFileID(parentHandle)
+		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+
+		return &MkdirResponse{
+			Status:    types.NFS3ErrIO,
+			WccBefore: wccBefore,
+			WccAfter:  wccAfter,
+		}, ctx.Context.Err()
+	default:
+	}
+
 	// ========================================================================
 	// Step 3: Check if directory name already exists
 	// ========================================================================
 
 	_, err = repository.GetChild(ctx.Context, parentHandle, req.Name)
+	if err != nil && ctx.Context.Err() != nil {
+		// Context was cancelled during GetChild
+		logger.Debug("MKDIR cancelled during existence check: name='%s' dir=%x client=%s error=%v",
+			req.Name, req.DirHandle, clientIP, ctx.Context.Err())
+
+		// Get updated parent attributes for WCC data
+		parentAttr, _ = repository.GetFile(ctx.Context, parentHandle)
+		dirID := xdr.ExtractFileID(parentHandle)
+		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+
+		return &MkdirResponse{
+			Status:    types.NFS3ErrIO,
+			WccBefore: wccBefore,
+			WccAfter:  wccAfter,
+		}, ctx.Context.Err()
+	}
+
 	if err == nil {
 		// Child exists
 		logger.Debug("MKDIR failed: directory '%s' already exists: dir=%x client=%s",
@@ -335,6 +409,27 @@ func (h *DefaultNFSHandler) Mkdir(
 		}, nil
 	}
 
+	// Check for cancellation before the create operation
+	// This is the most critical check - we don't want to start creating
+	// the directory if the client has already disconnected
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("MKDIR cancelled before create operation: name='%s' dir=%x client=%s error=%v",
+			req.Name, req.DirHandle, clientIP, ctx.Context.Err())
+
+		// Get updated parent attributes for WCC data
+		parentAttr, _ = repository.GetFile(ctx.Context, parentHandle)
+		dirID := xdr.ExtractFileID(parentHandle)
+		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+
+		return &MkdirResponse{
+			Status:    types.NFS3ErrIO,
+			WccBefore: wccBefore,
+			WccAfter:  wccAfter,
+		}, ctx.Context.Err()
+	default:
+	}
+
 	// ========================================================================
 	// Step 4: Create directory via repository
 	// ========================================================================
@@ -344,6 +439,9 @@ func (h *DefaultNFSHandler) Mkdir(
 	// - Creating the directory metadata
 	// - Linking it to the parent
 	// - Updating parent directory timestamps
+	//
+	// We don't check for cancellation inside CreateDirectory to maintain atomicity.
+	// The repository should respect context internally for its operations.
 
 	// Build authentication context for repository
 	authCtx := &metadata.AuthContext{
@@ -359,6 +457,23 @@ func (h *DefaultNFSHandler) Mkdir(
 
 	newHandle, err := repository.CreateDirectory(authCtx, parentHandle, req.Name, dirAttr)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("MKDIR cancelled during create operation: name='%s' client=%s error=%v",
+				req.Name, clientIP, ctx.Context.Err())
+
+			// Get updated parent attributes for WCC data
+			parentAttr, _ = repository.GetFile(ctx.Context, parentHandle)
+			dirID := xdr.ExtractFileID(parentHandle)
+			wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+
+			return &MkdirResponse{
+				Status:    types.NFS3ErrIO,
+				WccBefore: wccBefore,
+				WccAfter:  wccAfter,
+			}, ctx.Context.Err()
+		}
+
 		logger.Error("MKDIR failed: repository error: name='%s' client=%s error=%v",
 			req.Name, clientIP, err)
 

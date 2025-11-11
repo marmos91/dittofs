@@ -134,11 +134,12 @@ type CommitContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handle format, offset/count range)
-//  2. Extract client IP and authentication from context
-//  3. Verify file exists and capture pre-operation state
-//  4. Delegate commit operation to repository (when implemented)
-//  5. Return file WCC data and write verifier
+//  1. Check for context cancellation
+//  2. Validate request parameters (handle format, offset/count range)
+//  3. Extract client IP and authentication from context
+//  4. Verify file exists and capture pre-operation state
+//  5. Delegate commit operation to repository (when implemented)
+//  6. Return file WCC data and write verifier
 //
 // **Design Principles:**
 //
@@ -146,6 +147,7 @@ type CommitContext struct {
 //   - Business logic (actual flushing) will be delegated to repository
 //   - File handle validation performed by repository.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
+//   - Respects context cancellation for graceful shutdown and timeouts
 //
 // **Current Implementation:**
 //
@@ -166,6 +168,7 @@ type CommitContext struct {
 //     - Ensure durability (fsync, fdatasync, or equivalent)
 //     - Update file metadata if needed (size, timestamps)
 //     - Handle partial failures gracefully
+//     - Respect context cancellation during long flush operations
 //
 //  3. Consider write cache coherency:
 //     - Track which byte ranges have unstable writes
@@ -200,6 +203,7 @@ type CommitContext struct {
 //   - I/O error during flush → types.NFS3ErrIO
 //   - Directory handle → types.NFS3ErrIsDir
 //   - Invalid handle → types.NFS3ErrBadHandle
+//   - Context cancelled → types.NFS3ErrIO (no specific NFS code for cancellation)
 //
 // **Weak Cache Consistency (WCC):**
 //
@@ -239,6 +243,19 @@ type CommitContext struct {
 //   - Client context enables audit logging
 //   - No special permission checks (commit doesn't modify data)
 //
+// **Context Cancellation:**
+//
+// This operation respects context cancellation:
+//   - Checks at operation start before any work
+//   - Checks before metadata repository calls
+//   - Returns types.NFS3ErrIO on cancellation (NFS has no specific cancel status)
+//
+// For a lightweight metadata operation like this, cancellation is primarily
+// useful for:
+//   - Handling client disconnects
+//   - Supporting server shutdown
+//   - Enforcing request timeouts
+//
 // **Parameters:**
 //   - repository: The metadata repository for file operations
 //   - req: The commit request containing file handle and range
@@ -260,6 +277,7 @@ type CommitContext struct {
 //	    Count:  0, // Commit entire file
 //	}
 //	ctx := &CommitContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
@@ -284,7 +302,19 @@ func (h *DefaultNFSHandler) Commit(
 		req.Handle, req.Offset, req.Count, clientIP, ctx.AuthFlavor)
 
 	// ========================================================================
-	// Step 1: Validate request parameters
+	// Step 1: Check for context cancellation before starting work
+	// ========================================================================
+
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("COMMIT cancelled: handle=%x offset=%d count=%d client=%s error=%v",
+			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
+		return &CommitResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
+
+	// ========================================================================
+	// Step 2: Validate request parameters
 	// ========================================================================
 
 	if err := validateCommitRequest(req); err != nil {
@@ -294,8 +324,17 @@ func (h *DefaultNFSHandler) Commit(
 	}
 
 	// ========================================================================
-	// Step 2: Verify file exists and capture pre-operation state
+	// Step 3: Verify file exists and capture pre-operation state
 	// ========================================================================
+
+	// Check context before repository call
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("COMMIT cancelled before GetFile: handle=%x client=%s error=%v",
+			req.Handle, clientIP, ctx.Context.Err())
+		return &CommitResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
 
 	handle := metadata.FileHandle(req.Handle)
 	fileAttr, err := repository.GetFile(ctx.Context, handle)
@@ -324,7 +363,7 @@ func (h *DefaultNFSHandler) Commit(
 	}
 
 	// ========================================================================
-	// Step 3: Perform commit operation
+	// Step 4: Perform commit operation
 	// ========================================================================
 	// TODO: When the repository supports write caching, delegate to:
 	//   repository.CommitFile(handle, req.Offset, req.Count, authCtx)
@@ -342,8 +381,29 @@ func (h *DefaultNFSHandler) Commit(
 	//     ClientAddr: clientIP,
 	// }
 	//
-	// 2. Call repository to flush writes
-	// if err := repository.CommitFile(handle, req.Offset, req.Count, authCtx); err != nil {
+	// 2. Check context before potentially long flush operation
+	// select {
+	// case <-ctx.Context.Done():
+	//     logger.Warn("COMMIT cancelled before flush: handle=%x offset=%d count=%d client=%s error=%v",
+	//         req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
+	//
+	//     // Get updated attributes for WCC data (best effort)
+	//     var wccAfter *types.NFSFileAttr
+	//     if updatedAttr, getErr := repository.GetFile(ctx.Context, handle); getErr == nil {
+	//         fileID := xdr.ExtractFileID(handle)
+	//         wccAfter = xdr.MetadataToNFS(updatedAttr, fileID)
+	//     }
+	//
+	//     return &CommitResponse{
+	//         Status:     types.NFS3ErrIO,
+	//         AttrBefore: wccBefore,
+	//         AttrAfter:  wccAfter,
+	//     }, nil
+	// default:
+	// }
+	//
+	// 3. Call repository to flush writes (should pass context for cancellation)
+	// if err := repository.CommitFile(ctx.Context, handle, req.Offset, req.Count, authCtx); err != nil {
 	//     logger.Error("COMMIT failed: repository error: handle=%x offset=%d count=%d client=%s error=%v",
 	//         req.Handle, req.Offset, req.Count, clientIP, err)
 	//
@@ -364,7 +424,7 @@ func (h *DefaultNFSHandler) Commit(
 	// }
 
 	// ========================================================================
-	// Step 4: Build success response with updated file attributes
+	// Step 5: Build success response with updated file attributes
 	// ========================================================================
 
 	// Get updated file attributes for WCC data

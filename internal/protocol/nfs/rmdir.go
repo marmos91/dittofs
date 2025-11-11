@@ -129,12 +129,13 @@ type RmdirContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handle format, name syntax)
-//  2. Extract client IP and authentication credentials from context
-//  3. Verify parent directory exists and is a directory (via repository)
-//  4. Capture pre-operation parent state (for WCC)
-//  5. Delegate directory removal to repository (includes validation and deletion)
-//  6. Return status and WCC data for parent directory
+//  1. Check for context cancellation before starting
+//  2. Validate request parameters (handle format, name syntax)
+//  3. Extract client IP and authentication credentials from context
+//  4. Verify parent directory exists and is a directory (via repository)
+//  5. Capture pre-operation parent state (for WCC)
+//  6. Delegate directory removal to repository (includes validation and deletion)
+//  7. Return status and WCC data for parent directory
 //
 // **Design Principles:**
 //
@@ -142,6 +143,7 @@ type RmdirContext struct {
 //   - All business logic (removal, validation, access control) delegated to repository
 //   - File handle validation performed by repository.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
+//   - Respects context cancellation for graceful shutdown and timeouts
 //
 // **Directory Removal Requirements:**
 //
@@ -184,6 +186,7 @@ type RmdirContext struct {
 //   - Name too long → NFS3ErrNameTooLong
 //   - Permission denied → NFS3ErrAcces
 //   - I/O error → types.NFS3ErrIO
+//   - Context cancelled → types.NFS3ErrIO
 //
 // **Weak Cache Consistency (WCC):**
 //
@@ -198,6 +201,17 @@ type RmdirContext struct {
 //   - Update their cached parent directory attributes
 //   - Invalidate stale cached data
 //
+// **Context Cancellation:**
+//
+// This operation respects context cancellation:
+//   - Checks at operation start before any work
+//   - Checks before GetFile (parent directory validation)
+//   - Checks before RemoveDirectory (actual removal operation)
+//   - Returns types.NFS3ErrIO on cancellation with WCC data when available
+//
+// Although RMDIR is typically quick (metadata-only), respecting cancellation
+// ensures proper handling of client disconnects and server shutdown scenarios.
+//
 // **Security Considerations:**
 //
 //   - Handle validation prevents malformed requests
@@ -207,9 +221,9 @@ type RmdirContext struct {
 //   - Access control prevents unauthorized directory removal
 //
 // **Parameters:**
+//   - ctx: Context with cancellation, client address and authentication credentials
 //   - repository: The metadata repository for directory operations
 //   - req: The rmdir request containing parent handle and directory name
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *RmdirResponse: Response with status and WCC data for the parent directory
@@ -226,12 +240,13 @@ type RmdirContext struct {
 //	    Name:      "temp",
 //	}
 //	ctx := &RmdirContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Rmdir(repository, req, ctx)
+//	resp, err := handler.Rmdir(ctx, repository, req)
 //	if err != nil {
 //	    // Internal server error
 //	}
@@ -250,7 +265,19 @@ func (h *DefaultNFSHandler) Rmdir(
 		req.Name, req.DirHandle, clientIP, ctx.AuthFlavor)
 
 	// ========================================================================
-	// Step 1: Validate request parameters
+	// Step 1: Check for context cancellation before starting work
+	// ========================================================================
+
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("RMDIR cancelled: name='%s' dir=%x client=%s error=%v",
+			req.Name, req.DirHandle, clientIP, ctx.Context.Err())
+		return &RmdirResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
+
+	// ========================================================================
+	// Step 2: Validate request parameters
 	// ========================================================================
 
 	if err := validateRmdirRequest(req); err != nil {
@@ -260,8 +287,17 @@ func (h *DefaultNFSHandler) Rmdir(
 	}
 
 	// ========================================================================
-	// Step 2: Verify parent directory exists and is valid
+	// Step 3: Verify parent directory exists and is valid
 	// ========================================================================
+
+	// Check context before repository call
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("RMDIR cancelled before GetFile: name='%s' dir=%x client=%s error=%v",
+			req.Name, req.DirHandle, clientIP, ctx.Context.Err())
+		return &RmdirResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
 	parentAttr, err := repository.GetFile(ctx.Context, parentHandle)
@@ -291,7 +327,7 @@ func (h *DefaultNFSHandler) Rmdir(
 	}
 
 	// ========================================================================
-	// Step 3: Remove directory via repository
+	// Step 4: Remove directory via repository
 	// ========================================================================
 	// The repository is responsible for:
 	// - Verifying the directory exists
@@ -309,6 +345,25 @@ func (h *DefaultNFSHandler) Rmdir(
 		GID:        ctx.GID,
 		GIDs:       ctx.GIDs,
 		ClientAddr: clientIP,
+	}
+
+	// Check context before repository call
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("RMDIR cancelled before RemoveDirectory: name='%s' dir=%x client=%s error=%v",
+			req.Name, req.DirHandle, clientIP, ctx.Context.Err())
+
+		// Get updated parent attributes for WCC data
+		parentAttr, _ = repository.GetFile(ctx.Context, parentHandle)
+		dirID := xdr.ExtractFileID(parentHandle)
+		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+
+		return &RmdirResponse{
+			Status:       types.NFS3ErrIO,
+			DirWccBefore: wccBefore,
+			DirWccAfter:  wccAfter,
+		}, nil
+	default:
 	}
 
 	// Delegate to repository for directory removal
@@ -333,7 +388,7 @@ func (h *DefaultNFSHandler) Rmdir(
 	}
 
 	// ========================================================================
-	// Step 4: Build success response with updated parent attributes
+	// Step 5: Build success response with updated parent attributes
 	// ========================================================================
 
 	// Get updated parent directory attributes

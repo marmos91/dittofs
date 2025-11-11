@@ -92,8 +92,13 @@ type ReadDirResponse struct {
 }
 
 // ReadDirContext contains the context information needed to process a READDIR request.
-// This includes client identification and authentication details for access control.
+// This includes client identification, authentication details, and cancellation handling
+// for access control.
 type ReadDirContext struct {
+	// Context carries cancellation signals and deadlines
+	// The ReadDir handler checks this context to abort operations if the client
+	// disconnects or the request times out, which is especially important for
+	// large directories
 	Context context.Context
 
 	// ClientAddr is the network address of the client making the request.
@@ -145,11 +150,21 @@ type ReadDirContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handle format, count limits)
-//  2. Extract client IP and authentication credentials from context
-//  3. Verify directory handle exists and is a directory (via repository)
-//  4. Delegate entry listing to repository.ReadDir()
-//  5. Return entries with proper pagination support
+//  1. Check for context cancellation (early exit if client disconnected)
+//  2. Validate request parameters (handle format, count limits)
+//  3. Extract client IP and authentication credentials from context
+//  4. Verify directory handle exists and is a directory (via repository)
+//  5. Check for cancellation before expensive ReadDir operation
+//  6. Delegate entry listing to repository.ReadDir()
+//  7. Return entries with proper pagination support
+//
+// **Context cancellation:**
+//
+//   - Checks at the beginning to respect client disconnection
+//   - Checks after directory lookup, before ReadDir (most important check)
+//   - Check after ReadDir for cancellation during the listing operation
+//   - Returns NFS3ErrIO status with context error for cancellation
+//   - Repository's ReadDir should also respect context internally for long scans
 //
 // **Design Principles:**
 //
@@ -200,6 +215,7 @@ type ReadDirContext struct {
 //   - Invalid cookie → NFS3ErrBadCookie
 //   - Access denied → NFS3ErrAcces
 //   - I/O error → types.NFS3ErrIO
+//   - Context cancelled → types.NFS3ErrIO with error return
 //
 // **Performance Considerations:**
 //
@@ -207,6 +223,7 @@ type ReadDirContext struct {
 //   - Server should honor Count but may return fewer entries
 //   - Large directories require multiple calls (pagination)
 //   - Repository should optimize entry iteration
+//   - Context cancellation prevents wasted work on large directories
 //
 // **Security Considerations:**
 //
@@ -216,14 +233,14 @@ type ReadDirContext struct {
 //   - Client context enables audit logging
 //
 // **Parameters:**
+//   - ctx: Context with cancellation, client address and authentication credentials
 //   - repository: The metadata repository for directory operations
 //   - req: The readdir request containing directory handle and pagination info
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *ReadDirResponse: Response with status and directory entries (if successful)
-//   - error: Returns error only for catastrophic internal failures; protocol-level
-//     errors are indicated via the response Status field
+//   - error: Returns error for context cancellation or catastrophic internal failures;
+//     protocol-level errors are indicated via the response Status field
 //
 // **RFC 1813 Section 3.3.16: READDIR Procedure**
 //
@@ -237,14 +254,19 @@ type ReadDirContext struct {
 //	    Count:      4096,
 //	}
 //	ctx := &ReadDirContext{
+//	    Context: context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.ReadDir(repository, req, ctx)
+//	resp, err := handler.ReadDir(ctx, repository, req)
 //	if err != nil {
-//	    // Internal server error
+//	    if errors.Is(err, context.Canceled) {
+//	        // Client disconnected
+//	    } else {
+//	        // Internal server error
+//	    }
 //	}
 //	if resp.Status == types.NFS3OK {
 //	    for _, entry := range resp.Entries {
@@ -259,6 +281,16 @@ func (h *DefaultNFSHandler) ReadDir(
 	repository metadata.Repository,
 	req *ReadDirRequest,
 ) (*ReadDirResponse, error) {
+	// Check for cancellation before starting any work
+	// This handles the case where the client disconnects before we begin processing
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("READDIR cancelled before processing: dir=%x client=%s error=%v",
+			req.DirHandle, ctx.ClientAddr, ctx.Context.Err())
+		return &ReadDirResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+	default:
+	}
+
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
@@ -282,6 +314,13 @@ func (h *DefaultNFSHandler) ReadDir(
 	dirHandle := metadata.FileHandle(req.DirHandle)
 	dirAttr, err := repository.GetFile(ctx.Context, dirHandle)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("READDIR cancelled during directory lookup: dir=%x client=%s error=%v",
+				req.DirHandle, clientIP, ctx.Context.Err())
+			return &ReadDirResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		}
+
 		logger.Warn("READDIR failed: directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
 		return &ReadDirResponse{Status: types.NFS3ErrNoEnt}, nil
@@ -314,6 +353,25 @@ func (h *DefaultNFSHandler) ReadDir(
 		ClientAddr: clientIP,
 	}
 
+	// Check for cancellation before the potentially expensive ReadDir operation
+	// This is the most important check since ReadDir may scan many entries
+	// in large directories
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("READDIR cancelled before reading entries: dir=%x cookie=%d client=%s error=%v",
+			req.DirHandle, req.Cookie, clientIP, ctx.Context.Err())
+
+		// Include directory attributes for cache consistency
+		dirID := xdr.ExtractFileID(dirHandle)
+		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+
+		return &ReadDirResponse{
+			Status:  types.NFS3ErrIO,
+			DirAttr: nfsDirAttr,
+		}, ctx.Context.Err()
+	default:
+	}
+
 	// ========================================================================
 	// Step 4: Read directory entries via repository
 	// ========================================================================
@@ -323,9 +381,25 @@ func (h *DefaultNFSHandler) ReadDir(
 	// - Iterating through children
 	// - Handling cookie-based pagination
 	// - Respecting count limits
+	// - Respecting context cancellation internally during iteration
 
 	entries, eof, err := repository.ReadDir(authCtx, dirHandle, req.Cookie, req.Count)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("READDIR cancelled during directory scan: dir=%x cookie=%d client=%s error=%v",
+				req.DirHandle, req.Cookie, clientIP, ctx.Context.Err())
+
+			// Include directory attributes for cache consistency
+			dirID := xdr.ExtractFileID(dirHandle)
+			nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+
+			return &ReadDirResponse{
+				Status:  types.NFS3ErrIO,
+				DirAttr: nfsDirAttr,
+			}, ctx.Context.Err()
+		}
+
 		logger.Error("READDIR failed: repository error: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
 
@@ -356,6 +430,7 @@ func (h *DefaultNFSHandler) ReadDir(
 	// ========================================================================
 	// Step 5: Convert metadata entries to NFS wire format
 	// ========================================================================
+	// No cancellation check here - this is fast pure computation
 
 	nfsEntries := make([]*types.DirEntry, 0, len(entries))
 	for _, entry := range entries {

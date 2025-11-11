@@ -137,15 +137,16 @@ type ReadContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handle, offset, count)
-//  2. Extract client IP and authentication credentials from context
-//  3. Verify file exists and is a regular file (via repository)
-//  4. Check read permissions (delegated to repository/content layer)
-//  5. Open content for reading
-//  6. Seek to requested offset
-//  7. Read requested number of bytes
-//  8. Detect EOF condition
-//  9. Return data with updated file attributes
+//  1. Check for context cancellation (client disconnect, timeout)
+//  2. Validate request parameters (handle, offset, count)
+//  3. Extract client IP and authentication credentials from context
+//  4. Verify file exists and is a regular file (via repository)
+//  5. Check read permissions (delegated to repository/content layer)
+//  6. Open content for reading
+//  7. Seek to requested offset (with cancellation checks)
+//  8. Read requested number of bytes (with cancellation checks during read)
+//  9. Detect EOF condition
+//  10. Return data with updated file attributes
 //
 // **Design Principles:**
 //
@@ -153,6 +154,7 @@ type ReadContext struct {
 //   - Content repository handles actual data reading
 //   - Metadata repository provides file attributes and validation
 //   - Access control enforced by repository layers
+//   - Context cancellation checked at key operation points
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
 // **Authentication:**
@@ -171,6 +173,24 @@ type ReadContext struct {
 //
 // Clients use this to detect when they've read the entire file.
 //
+// **Context Cancellation:**
+//
+// READ operations can be time-consuming, especially for large files or slow storage.
+// Context cancellation is checked at multiple points:
+//   - Before starting the operation (client disconnect detection)
+//   - After metadata lookup (before opening content)
+//   - During seek operations (for non-seekable readers)
+//   - During data reading (chunked reads for large transfers)
+//
+// Cancellation scenarios include:
+//   - Client disconnects mid-transfer
+//   - Client timeout expires
+//   - Server shutdown initiated
+//   - Network connection lost
+//
+// For large reads (>1MB), we use chunked reading with periodic cancellation checks
+// to ensure responsive cancellation without excessive overhead.
+//
 // **Performance Considerations:**
 //
 // READ is one of the most frequently called NFS procedures. Implementations should:
@@ -179,6 +199,7 @@ type ReadContext struct {
 //   - Minimize data copying
 //   - Return reasonable chunk sizes (check FSINFO rtpref)
 //   - Cache file attributes when possible
+//   - Balance cancellation checks with performance (avoid checking too frequently)
 //
 // **Error Handling:**
 //
@@ -189,6 +210,7 @@ type ReadContext struct {
 //   - Permission denied → NFS3ErrAcces
 //   - I/O error → types.NFS3ErrIO
 //   - Stale handle → NFS3ErrStale
+//   - Context cancelled → returns context error (client disconnect)
 //
 // **Security Considerations:**
 //
@@ -196,17 +218,18 @@ type ReadContext struct {
 //   - Repository/content layers enforce read permissions
 //   - Client context enables audit logging
 //   - No data leakage on permission errors
+//   - Cancellation prevents resource exhaustion
 //
 // **Parameters:**
+//   - ctx: Context with client address, authentication, and cancellation support
 //   - contentRepo: Content repository for file data access
 //   - metadataRepo: Metadata repository for file attributes
 //   - req: The read request containing handle, offset, and count
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *ReadResponse: Response with status, data, and attributes
-//   - error: Returns error only for catastrophic internal failures; protocol-level
-//     errors are indicated via the response Status field
+//   - error: Returns error for context cancellation or catastrophic internal failures;
+//     protocol-level errors are indicated via the response Status field
 //
 // **RFC 1813 Section 3.3.6: READ Procedure**
 //
@@ -219,12 +242,17 @@ type ReadContext struct {
 //	    Count:  4096,
 //	}
 //	ctx := &ReadContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Read(contentRepo, metadataRepo, req, ctx)
+//	resp, err := handler.Read(ctx, contentRepo, metadataRepo, req)
+//	if err == context.Canceled {
+//	    // Client disconnected during read
+//	    return nil, err
+//	}
 //	if err != nil {
 //	    // Internal server error
 //	}
@@ -240,6 +268,20 @@ func (h *DefaultNFSHandler) Read(
 	metadataRepo metadata.Repository,
 	req *ReadRequest,
 ) (*ReadResponse, error) {
+	// ========================================================================
+	// Context Cancellation Check - Entry Point
+	// ========================================================================
+	// Check if the client has disconnected or the request has timed out
+	// before we start any expensive operations.
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("READ: request cancelled at entry: handle=%x client=%s error=%v",
+			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+		// Context not cancelled, continue processing
+	}
+
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
@@ -263,6 +305,13 @@ func (h *DefaultNFSHandler) Read(
 	fileHandle := metadata.FileHandle(req.Handle)
 	attr, err := metadataRepo.GetFile(ctx.Context, fileHandle)
 	if err != nil {
+		// Check if error is due to context cancellation
+		if err == context.Canceled || err == context.DeadlineExceeded {
+			logger.Debug("READ: metadata lookup cancelled: handle=%x client=%s",
+				req.Handle, clientIP)
+			return nil, err
+		}
+
 		logger.Warn("READ failed: file not found: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
 		return &ReadResponse{Status: types.NFS3ErrNoEnt}, nil
@@ -281,6 +330,19 @@ func (h *DefaultNFSHandler) Read(
 			Status: types.NFS3ErrIsDir, // types.NFS3ErrIsDir is used for all non-regular files
 			Attr:   nfsAttr,
 		}, nil
+	}
+
+	// ========================================================================
+	// Context Cancellation Check - After Metadata Lookup
+	// ========================================================================
+	// Check again before opening content (which may be expensive)
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("READ: request cancelled after metadata lookup: handle=%x client=%s",
+			req.Handle, clientIP)
+		return nil, ctx.Context.Err()
+	default:
+		// Context not cancelled, continue processing
 	}
 
 	// ========================================================================
@@ -364,37 +426,64 @@ func (h *DefaultNFSHandler) Read(
 			}
 		} else {
 			// Reader doesn't support seeking - read and discard bytes
+			// For large offsets, check cancellation periodically
 			logger.Debug("READ: reader not seekable, discarding %d bytes", req.Offset)
 
-			discarded, err := io.CopyN(io.Discard, reader, int64(req.Offset))
-			if err != nil && err != io.EOF {
-				logger.Error("READ failed: cannot skip to offset: handle=%x offset=%d discarded=%d client=%s error=%v",
-					req.Handle, req.Offset, discarded, clientIP, err)
+			// Use chunked discard with cancellation checks for large offsets
+			const discardChunkSize = 64 * 1024 // 64KB chunks
+			remaining := int64(req.Offset)
+			totalDiscarded := int64(0)
 
-				fileid := xdr.ExtractFileID(fileHandle)
-				nfsAttr := xdr.MetadataToNFS(attr, fileid)
+			for remaining > 0 {
+				// Check for cancellation during discard
+				select {
+				case <-ctx.Context.Done():
+					logger.Debug("READ: request cancelled during seek discard: handle=%x offset=%d discarded=%d client=%s",
+						req.Handle, req.Offset, totalDiscarded, clientIP)
+					return nil, ctx.Context.Err()
+				default:
+					// Continue
+				}
 
-				return &ReadResponse{
-					Status: types.NFS3ErrIO,
-					Attr:   nfsAttr,
-				}, nil
-			}
+				// Discard in chunks
+				chunkSize := discardChunkSize
+				if remaining < int64(chunkSize) {
+					chunkSize = int(remaining)
+				}
 
-			// If we hit EOF while discarding, return empty with EOF
-			if err == io.EOF {
-				logger.Debug("READ: EOF reached while seeking: handle=%x offset=%d client=%s",
-					req.Handle, req.Offset, clientIP)
+				n, err := io.CopyN(io.Discard, reader, int64(chunkSize))
+				totalDiscarded += n
+				remaining -= n
 
-				fileid := xdr.ExtractFileID(fileHandle)
-				nfsAttr := xdr.MetadataToNFS(attr, fileid)
+				if err == io.EOF {
+					// EOF reached while discarding - return empty with EOF
+					logger.Debug("READ: EOF reached while seeking: handle=%x offset=%d client=%s",
+						req.Handle, req.Offset, clientIP)
 
-				return &ReadResponse{
-					Status: types.NFS3OK,
-					Attr:   nfsAttr,
-					Count:  0,
-					Eof:    true,
-					Data:   []byte{},
-				}, nil
+					fileid := xdr.ExtractFileID(fileHandle)
+					nfsAttr := xdr.MetadataToNFS(attr, fileid)
+
+					return &ReadResponse{
+						Status: types.NFS3OK,
+						Attr:   nfsAttr,
+						Count:  0,
+						Eof:    true,
+						Data:   []byte{},
+					}, nil
+				}
+
+				if err != nil {
+					logger.Error("READ failed: cannot skip to offset: handle=%x offset=%d discarded=%d client=%s error=%v",
+						req.Handle, req.Offset, totalDiscarded, clientIP, err)
+
+					fileid := xdr.ExtractFileID(fileHandle)
+					nfsAttr := xdr.MetadataToNFS(attr, fileid)
+
+					return &ReadResponse{
+						Status: types.NFS3ErrIO,
+						Attr:   nfsAttr,
+					}, nil
+				}
 			}
 		}
 	}
@@ -404,19 +493,38 @@ func (h *DefaultNFSHandler) Read(
 	// ========================================================================
 
 	data := make([]byte, req.Count)
-	n, err := io.ReadFull(reader, data)
+
+	// For large reads (>1MB), use chunked reading with cancellation checks
+	// For smaller reads, use a single read operation
+	const largeReadThreshold = 1024 * 1024 // 1MB
+
+	var n int
+	var readErr error
+
+	if req.Count > largeReadThreshold {
+		// Large read - use chunked reading with periodic cancellation checks
+		n, readErr = readWithCancellation(ctx.Context, reader, data)
+	} else {
+		// Small read - single operation
+		n, readErr = io.ReadFull(reader, data)
+	}
 
 	// Determine EOF condition
 	eof := false
-	if err == io.EOF || err == io.ErrUnexpectedEOF {
+	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
 		// We've reached EOF - this is not an error for READ
 		eof = true
 		data = data[:n] // Truncate buffer to actual bytes read
-		err = nil       // Clear error - EOF is expected
-	} else if err != nil {
+		readErr = nil   // Clear error - EOF is expected
+	} else if readErr == context.Canceled || readErr == context.DeadlineExceeded {
+		// Context was cancelled during read
+		logger.Debug("READ: request cancelled during data read: handle=%x offset=%d read=%d client=%s",
+			req.Handle, req.Offset, n, clientIP)
+		return nil, readErr
+	} else if readErr != nil {
 		// Actual I/O error occurred
 		logger.Error("READ failed: I/O error: handle=%x offset=%d client=%s error=%v",
-			req.Handle, req.Offset, clientIP, err)
+			req.Handle, req.Offset, clientIP, readErr)
 
 		fileid := xdr.ExtractFileID(fileHandle)
 		nfsAttr := xdr.MetadataToNFS(attr, fileid)
@@ -452,6 +560,57 @@ func (h *DefaultNFSHandler) Read(
 		Eof:    eof,
 		Data:   data,
 	}, nil
+}
+
+// readWithCancellation reads data from a reader with periodic context cancellation checks.
+// This is used for large reads to ensure responsive cancellation without checking
+// on every byte.
+//
+// The function reads in chunks, checking for cancellation between chunks to balance
+// performance with responsiveness.
+//
+// Parameters:
+//   - ctx: Context for cancellation detection
+//   - reader: Source to read from
+//   - buf: Destination buffer to fill
+//
+// Returns:
+//   - int: Number of bytes actually read
+//   - error: Any error encountered (including context cancellation)
+func readWithCancellation(ctx context.Context, reader io.Reader, buf []byte) (int, error) {
+	const chunkSize = 256 * 1024 // 256KB chunks for cancellation checks
+
+	totalRead := 0
+	remaining := len(buf)
+
+	for remaining > 0 {
+		// Check for cancellation before each chunk
+		select {
+		case <-ctx.Done():
+			// Return what we've read so far along with context error
+			return totalRead, ctx.Err()
+		default:
+			// Continue reading
+		}
+
+		// Determine chunk size for this iteration
+		readSize := chunkSize
+		if remaining < chunkSize {
+			readSize = remaining
+		}
+
+		// Read chunk
+		n, err := io.ReadFull(reader, buf[totalRead:totalRead+readSize])
+		totalRead += n
+		remaining -= n
+
+		if err != nil {
+			// Return total read and the error (could be EOF, io.ErrUnexpectedEOF, or I/O error)
+			return totalRead, err
+		}
+	}
+
+	return totalRead, nil
 }
 
 // ============================================================================

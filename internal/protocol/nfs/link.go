@@ -129,20 +129,22 @@ type LinkContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handles, name)
-//  2. Extract client IP and authentication credentials
-//  3. Verify source file exists and is a regular file (not a directory)
-//  4. Verify target directory exists and is a directory
-//  5. Capture pre-operation directory state (for WCC)
-//  6. Check that the link name doesn't already exist
-//  7. Delegate link creation to repository.CreateLink()
-//  8. Return file attributes and directory WCC data
+//  1. Check for context cancellation early
+//  2. Validate request parameters (handles, name)
+//  3. Extract client IP and authentication credentials
+//  4. Verify source file exists and is a regular file (not a directory)
+//  5. Verify target directory exists and is a directory
+//  6. Capture pre-operation directory state (for WCC)
+//  7. Check that the link name doesn't already exist
+//  8. Delegate link creation to repository.CreateLink()
+//  9. Return file attributes and directory WCC data
 //
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
 //   - All business logic (link creation, validation) is delegated to repository
 //   - File handle validation is performed by repository.GetFile()
+//   - Context cancellation is checked at strategic points between operations
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
 // **Hard Link Restrictions:**
@@ -179,14 +181,14 @@ type LinkContext struct {
 //   - Client context enables audit logging
 //
 // **Parameters:**
+//   - ctx: Context with cancellation, client address and authentication credentials
 //   - repository: The metadata repository for file and link operations
 //   - req: The link request containing file handle, directory, and name
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *LinkResponse: Response with status and attributes (if successful)
-//   - error: Returns error only for catastrophic internal failures; protocol-level
-//     errors are indicated via the response Status field
+//   - error: Returns error only for catastrophic internal failures or context
+//     cancellation; protocol-level errors are indicated via the response Status field
 //
 // **RFC 1813 Section 3.3.15: LINK Procedure**
 //
@@ -199,14 +201,15 @@ type LinkContext struct {
 //	    Name:       "hardlink.txt",
 //	}
 //	ctx := &LinkContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Link(repository, req, ctx)
+//	resp, err := handler.Link(ctx, repository, req)
 //	if err != nil {
-//	    // Internal server error
+//	    // Internal server error or context cancellation
 //	}
 //	if resp.Status == types.NFS3OK {
 //	    // Hard link created successfully
@@ -223,7 +226,21 @@ func (h *DefaultNFSHandler) Link(
 		req.FileHandle, req.Name, req.DirHandle, clientIP, ctx.AuthFlavor)
 
 	// ========================================================================
-	// Step 1: Validate request parameters
+	// Step 1: Check for context cancellation early
+	// ========================================================================
+	// LINK involves multiple operations, so respect cancellation to avoid
+	// wasting resources on abandoned requests
+
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("LINK cancelled: file=%x name='%s' client=%s error=%v",
+			req.FileHandle, req.Name, clientIP, ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+	}
+
+	// ========================================================================
+	// Step 2: Validate request parameters
 	// ========================================================================
 
 	if err := validateLinkRequest(req); err != nil {
@@ -233,7 +250,19 @@ func (h *DefaultNFSHandler) Link(
 	}
 
 	// ========================================================================
-	// Step 2: Verify source file exists and is a regular file
+	// Step 3: Check cancellation before first repository operation
+	// ========================================================================
+
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("LINK cancelled before GetFile: file=%x name='%s' client=%s error=%v",
+			req.FileHandle, req.Name, clientIP, ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+	}
+
+	// ========================================================================
+	// Step 4: Verify source file exists and is a regular file
 	// ========================================================================
 
 	fileHandle := metadata.FileHandle(req.FileHandle)
@@ -252,7 +281,19 @@ func (h *DefaultNFSHandler) Link(
 	}
 
 	// ========================================================================
-	// Step 3: Verify target directory exists and is a directory
+	// Step 5: Check cancellation before target directory lookup
+	// ========================================================================
+
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("LINK cancelled before directory lookup: file=%x name='%s' client=%s error=%v",
+			req.FileHandle, req.Name, clientIP, ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+	}
+
+	// ========================================================================
+	// Step 6: Verify target directory exists and is a directory
 	// ========================================================================
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
@@ -283,7 +324,19 @@ func (h *DefaultNFSHandler) Link(
 	}
 
 	// ========================================================================
-	// Step 4: Check if name already exists in target directory
+	// Step 7: Check cancellation before name conflict check
+	// ========================================================================
+
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("LINK cancelled before name check: file=%x name='%s' client=%s error=%v",
+			req.FileHandle, req.Name, clientIP, ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+	}
+
+	// ========================================================================
+	// Step 8: Check if name already exists in target directory
 	// ========================================================================
 
 	_, err = repository.GetChild(ctx.Context, dirHandle, req.Name)
@@ -304,7 +357,20 @@ func (h *DefaultNFSHandler) Link(
 	}
 
 	// ========================================================================
-	// Step 5: Create the hard link via repository
+	// Step 9: Check cancellation before write operation
+	// ========================================================================
+	// This is the most critical check as CreateLink modifies filesystem state
+
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("LINK cancelled before CreateLink: file=%x name='%s' client=%s error=%v",
+			req.FileHandle, req.Name, clientIP, ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	default:
+	}
+
+	// ========================================================================
+	// Step 10: Create the hard link via repository
 	// ========================================================================
 	// The repository is responsible for:
 	// - Verifying write access to the target directory
@@ -342,8 +408,10 @@ func (h *DefaultNFSHandler) Link(
 	}
 
 	// ========================================================================
-	// Step 6: Build success response with updated attributes
+	// Step 11: Build success response with updated attributes
 	// ========================================================================
+	// No cancellation check here - operation succeeded, fetching attributes
+	// is best-effort for cache consistency
 
 	// Get updated file attributes (nlink should be incremented)
 	fileAttr, err = repository.GetFile(ctx.Context, fileHandle)

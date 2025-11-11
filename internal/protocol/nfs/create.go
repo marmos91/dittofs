@@ -86,11 +86,16 @@ type CreateResponse struct {
 
 // CreateContext contains the context information for processing a CREATE request.
 //
-// This includes client identification and authentication details used for:
+// This includes client identification, authentication details, and cancellation
+// handling used for:
 //   - Access control enforcement (by repository)
 //   - Audit logging
 //   - Default ownership assignment
+//   - Graceful cancellation of long-running operations
 type CreateContext struct {
+	// Context carries cancellation signals and deadlines
+	// The Create handler checks this context to abort operations if the client
+	// disconnects or the request times out
 	Context context.Context
 
 	// ClientAddr is the network address of the client making the request.
@@ -130,12 +135,23 @@ type CreateContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (filename, mode, handle)
-//  2. Verify parent directory exists and is a directory
-//  3. Capture pre-operation directory state (for WCC)
-//  4. Check if file already exists
-//  5. Based on mode: create new file or truncate existing
-//  6. Return file handle and attributes
+//  1. Check for context cancellation (early exit if client disconnected)
+//  2. Validate request parameters (filename, mode, handle)
+//  3. Verify parent directory exists and is a directory
+//  4. Capture pre-operation directory state (for WCC)
+//  5. Check for cancellation before existence check
+//  6. Check if file already exists
+//  7. Check for cancellation before create/truncate operations
+//  8. Based on mode: create new file or truncate existing
+//  9. Return file handle and attributes
+//
+// **Context cancellation:**
+//
+//   - Checks at the beginning to respect client disconnection
+//   - Checks after parent lookup, before existence check
+//   - Checks before actual create/truncate operations
+//   - No checks during atomic file creation to maintain consistency
+//   - Returns NFS3ErrIO status with context error for cancellation
 //
 // **Authentication:**
 //
@@ -155,16 +171,17 @@ type CreateContext struct {
 //   - Not found → types.NFS3ErrNoEnt
 //   - Already exists → NFS3ErrExist
 //   - I/O error → types.NFS3ErrIO
+//   - Context cancelled → types.NFS3ErrIO with error return
 //
 // **Parameters:**
+//   - ctx: Context with cancellation, client address and authentication credentials
 //   - contentRepo: Content repository for file data operations
 //   - metadataRepo: Metadata repository for file system structure
 //   - req: Create request with parent handle, filename, mode, attributes
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *CreateResponse: Response with status and file handle (if successful)
-//   - error: Returns error only for catastrophic internal failures
+//   - error: Returns error for context cancellation or catastrophic internal failures
 //
 // **RFC 1813 Section 3.3.8: CREATE Procedure**
 func (h *DefaultNFSHandler) Create(
@@ -173,6 +190,16 @@ func (h *DefaultNFSHandler) Create(
 	metadataRepo metadata.Repository,
 	req *CreateRequest,
 ) (*CreateResponse, error) {
+	// Check for cancellation before starting any work
+	// This handles the case where the client disconnects before we begin processing
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("CREATE cancelled before processing: file='%s' dir=%x client=%s error=%v",
+			req.Filename, req.DirHandle, ctx.ClientAddr, ctx.Context.Err())
+		return &CreateResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+	default:
+	}
+
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
@@ -196,6 +223,13 @@ func (h *DefaultNFSHandler) Create(
 	parentHandle := metadata.FileHandle(req.DirHandle)
 	parentAttr, err := metadataRepo.GetFile(ctx.Context, parentHandle)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("CREATE cancelled during parent lookup: file='%s' dir=%x client=%s error=%v",
+				req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+			return &CreateResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		}
+
 		logger.Warn("CREATE failed: parent not found: file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, clientIP, err)
 		return &CreateResponse{Status: types.NFS3ErrNoEnt}, nil
@@ -220,12 +254,38 @@ func (h *DefaultNFSHandler) Create(
 		}, nil
 	}
 
+	// Check for cancellation before the existence check
+	// This is important because GetChild may involve directory scanning
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("CREATE cancelled before existence check: file='%s' dir=%x client=%s error=%v",
+			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+		return &CreateResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+	default:
+	}
+
 	// ========================================================================
 	// Step 3: Check if file already exists
 	// ========================================================================
 
 	existingHandle, err := metadataRepo.GetChild(ctx.Context, parentHandle, req.Filename)
+	if err != nil && ctx.Context.Err() != nil {
+		// Context was cancelled during GetChild
+		logger.Debug("CREATE cancelled during existence check: file='%s' dir=%x client=%s error=%v",
+			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+		return &CreateResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+	}
 	fileExists := (err == nil)
+
+	// Check for cancellation before the potentially expensive create/truncate operations
+	// This is critical because these operations modify state
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("CREATE cancelled before file operation: file='%s' dir=%x exists=%v client=%s error=%v",
+			req.Filename, req.DirHandle, fileExists, clientIP, ctx.Context.Err())
+		return &CreateResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+	default:
+	}
 
 	// ========================================================================
 	// Step 4: Handle creation based on mode
@@ -254,6 +314,7 @@ func (h *DefaultNFSHandler) Create(
 		}
 
 		// Create new file
+		// We don't check for cancellation inside createNewFile to maintain atomicity
 		fileHandle, fileAttr, err = createNewFile(metadataRepo, parentHandle, req, ctx)
 
 	case types.CreateExclusive:
@@ -276,16 +337,19 @@ func (h *DefaultNFSHandler) Create(
 		}
 
 		// Create new file with verifier
+		// We don't check for cancellation inside createNewFile to maintain atomicity
 		fileHandle, fileAttr, err = createNewFile(metadataRepo, parentHandle, req, ctx)
 
 	case types.CreateUnchecked:
 		// UNCHECKED: Create or truncate existing
 		if fileExists {
 			// Truncate existing file
+			// truncateExistingFile respects context internally
 			fileHandle = existingHandle
 			fileAttr, err = truncateExistingFile(ctx.Context, contentRepo, metadataRepo, existingHandle, req)
 		} else {
 			// Create new file
+			// We don't check for cancellation inside createNewFile to maintain atomicity
 			fileHandle, fileAttr, err = createNewFile(metadataRepo, parentHandle, req, ctx)
 		}
 
@@ -309,6 +373,22 @@ func (h *DefaultNFSHandler) Create(
 	// ========================================================================
 
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("CREATE cancelled during file operation: file='%s' client=%s error=%v",
+				req.Filename, clientIP, ctx.Context.Err())
+
+			parentAttr, _ = metadataRepo.GetFile(ctx.Context, parentHandle)
+			dirID := xdr.ExtractFileID(parentHandle)
+			dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+
+			return &CreateResponse{
+				Status:    types.NFS3ErrIO,
+				DirBefore: dirWccBefore,
+				DirAfter:  dirWccAfter,
+			}, ctx.Context.Err()
+		}
+
 		logger.Error("CREATE failed: repository error: file='%s' client=%s error=%v",
 			req.Filename, clientIP, err)
 
@@ -361,6 +441,10 @@ func (h *DefaultNFSHandler) Create(
 //  4. Links file to parent directory
 //  5. Updates parent directory timestamps
 //
+// Note: This function performs atomic file creation and does NOT check for
+// context cancellation internally to maintain consistency. The caller should
+// check for cancellation before calling this function.
+//
 // Parameters:
 //   - metadataRepo: Metadata repository
 //   - parentHandle: Parent directory handle
@@ -407,6 +491,7 @@ func createNewFile(
 	fileHandle := generateFileHandle(req.DirHandle, req.Filename, now)
 
 	// Create file in metadata repository
+	// Repository should respect context internally
 	if err := metadataRepo.CreateFile(ctx.Context, fileHandle, fileAttr); err != nil {
 		return nil, nil, fmt.Errorf("create file metadata: %w", err)
 	}
@@ -445,12 +530,14 @@ func createNewFile(
 //  3. Updates file metadata
 //  4. Truncates content (if WriteRepository is available)
 //
+// Note: This function respects context cancellation internally via repository calls.
+//
 // Parameters:
+//   - ctx: Context for cancellation
 //   - contentRepo: Content repository for truncation
 //   - metadataRepo: Metadata repository
 //   - fileHandle: Handle of existing file
 //   - req: Create request with attributes
-//   - ctx: Context with authentication credentials
 //
 // Returns:
 //   - Updated file attributes and error
@@ -462,6 +549,7 @@ func truncateExistingFile(
 	req *CreateRequest,
 ) (*metadata.FileAttr, error) {
 	// Get current file attributes
+	// Repository should respect context internally
 	fileAttr, err := metadataRepo.GetFile(ctx, fileHandle)
 	if err != nil {
 		return nil, fmt.Errorf("get file for truncation: %w", err)
@@ -486,11 +574,13 @@ func truncateExistingFile(
 	}
 
 	// Update metadata
+	// Repository should respect context internally
 	if err := metadataRepo.UpdateFile(ctx, fileHandle, fileAttr); err != nil {
 		return nil, fmt.Errorf("update file metadata: %w", err)
 	}
 
 	// Truncate content if repository supports writes
+	// This may be a long operation for large files
 	if fileAttr.ContentID != "" {
 		if writeRepo, ok := contentRepo.(content.WriteRepository); ok {
 			if err := writeRepo.Truncate(fileAttr.ContentID, targetSize); err != nil {

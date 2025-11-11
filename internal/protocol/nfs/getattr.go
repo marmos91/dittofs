@@ -55,8 +55,11 @@ type GetAttrResponse struct {
 }
 
 // GetAttrContext contains the context information needed to process a GETATTR request.
-// This includes client identification for auditing purposes.
+// This includes client identification for auditing purposes and cancellation handling.
 type GetAttrContext struct {
+	// Context carries cancellation signals and deadlines
+	// The GetAttr handler checks this context minimally to maintain high performance
+	// while still respecting client disconnection
 	Context context.Context
 
 	// ClientAddr is the network address of the client making the request.
@@ -90,10 +93,18 @@ type GetAttrContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handle format and length)
-//  2. Verify file handle exists via repository.GetFile()
-//  3. Generate file attributes with proper file ID
-//  4. Return attributes to client
+//  1. Check for context cancellation (early exit if client disconnected)
+//  2. Validate request parameters (handle format and length)
+//  3. Verify file handle exists via repository.GetFile()
+//  4. Generate file attributes with proper file ID
+//  5. Return attributes to client
+//
+// **Context cancellation:**
+//
+//   - Single check at the beginning to respect client disconnection
+//   - Check after GetFile to catch cancellation during lookup
+//   - Minimal overhead to maintain high performance for this frequent operation
+//   - Returns NFS3ErrIO status with context error for cancellation
 //
 // **Design Principles:**
 //
@@ -109,6 +120,7 @@ type GetAttrContext struct {
 //   - Minimize repository access overhead
 //   - Use efficient file ID generation
 //   - Avoid unnecessary data copying
+//   - Minimize context cancellation checks (only 2 checks for performance)
 //
 // **Error Handling:**
 //
@@ -118,6 +130,7 @@ type GetAttrContext struct {
 //   - Stale handle → NFS3ErrStale
 //   - I/O error → types.NFS3ErrIO
 //   - Invalid handle → types.NFS3ErrBadHandle
+//   - Context cancelled → types.NFS3ErrIO with error return
 //
 // **Security Considerations:**
 //
@@ -127,14 +140,14 @@ type GetAttrContext struct {
 //   - No sensitive information leaked in error messages
 //
 // **Parameters:**
+//   - ctx: Context with cancellation, client address and authentication flavor
 //   - repository: The metadata repository for file access
 //   - req: The getattr request containing the file handle
-//   - ctx: Context with client address and authentication flavor (optional)
 //
 // **Returns:**
 //   - *GetAttrResponse: Response with status and attributes (if successful)
-//   - error: Returns error only for catastrophic internal failures; protocol-level
-//     errors are indicated via the response Status field
+//   - error: Returns error for context cancellation or catastrophic internal failures;
+//     protocol-level errors are indicated via the response Status field
 //
 // **RFC 1813 Section 3.3.1: GETATTR Procedure**
 //
@@ -143,12 +156,17 @@ type GetAttrContext struct {
 //	handler := &DefaultNFSHandler{}
 //	req := &GetAttrRequest{Handle: fileHandle}
 //	ctx := &GetAttrContext{
+//	    Context: context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 0, // AUTH_NULL
 //	}
-//	resp, err := handler.GetAttr(repository, req, ctx)
+//	resp, err := handler.GetAttr(ctx, repository, req)
 //	if err != nil {
-//	    // Internal server error
+//	    if errors.Is(err, context.Canceled) {
+//	        // Client disconnected
+//	    } else {
+//	        // Internal server error
+//	    }
 //	}
 //	if resp.Status == types.NFS3OK {
 //	    // Use resp.Attr for file information
@@ -158,6 +176,18 @@ func (h *DefaultNFSHandler) GetAttr(
 	repository metadata.Repository,
 	req *GetAttrRequest,
 ) (*GetAttrResponse, error) {
+	// Check for cancellation before starting any work
+	// This is the only pre-operation check for GETATTR to minimize overhead
+	// GETATTR is one of the most frequently called procedures, so we optimize
+	// for the common case of no cancellation
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("GETATTR cancelled before processing: handle=%x client=%s error=%v",
+			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		return &GetAttrResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+	default:
+	}
+
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
@@ -181,6 +211,13 @@ func (h *DefaultNFSHandler) GetAttr(
 	fileHandle := metadata.FileHandle(req.Handle)
 	attr, err := repository.GetFile(ctx.Context, fileHandle)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("GETATTR cancelled during file lookup: handle=%x client=%s error=%v",
+				req.Handle, clientIP, ctx.Context.Err())
+			return &GetAttrResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		}
+
 		logger.Debug("GETATTR failed: handle not found: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
 		return &GetAttrResponse{Status: types.NFS3ErrStale}, nil
@@ -191,6 +228,7 @@ func (h *DefaultNFSHandler) GetAttr(
 	// ========================================================================
 	// The file ID is extracted from the handle for NFS protocol purposes.
 	// This is a protocol-layer concern for creating the wire format.
+	// No cancellation check here - this operation is extremely fast (pure computation)
 
 	fileid := xdr.ExtractFileID(fileHandle)
 	nfsAttr := xdr.MetadataToNFS(attr, fileid)

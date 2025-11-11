@@ -136,11 +136,12 @@ type PathConfContext struct {
 //
 // **Process:**
 //
-//  1. Validate the file handle format and length
-//  2. Verify the file handle exists via repository.GetFile()
-//  3. Retrieve PATHCONF properties from the repository
-//  4. Retrieve file attributes for cache consistency
-//  5. Return comprehensive PATHCONF information
+//  1. Check for context cancellation before starting
+//  2. Validate the file handle format and length
+//  3. Verify the file handle exists via repository.GetFile()
+//  4. Retrieve PATHCONF properties from the repository
+//  5. Retrieve file attributes for cache consistency
+//  6. Return comprehensive PATHCONF information
 //
 // **Design Principles:**
 //
@@ -148,6 +149,7 @@ type PathConfContext struct {
 //   - All business logic (filesystem properties) is delegated to repository
 //   - File handle validation is performed by repository.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
+//   - Respects context cancellation for graceful shutdown and timeouts
 //
 // **PATHCONF vs FSINFO:**
 //
@@ -177,10 +179,21 @@ type PathConfContext struct {
 //   - Client context enables audit logging
 //   - No sensitive information leaked in error messages
 //
+// **Context Cancellation:**
+//
+// This operation respects context cancellation:
+//   - Checks at operation start before any work
+//   - Checks before each repository call (GetFile, GetPathConf)
+//   - Returns types.NFS3ErrIO on cancellation
+//
+// PATHCONF is typically called infrequently (during mount or filesystem
+// discovery), so cancellation overhead is negligible. The checks help handle
+// client disconnects and server shutdown gracefully.
+//
 // **Parameters:**
+//   - ctx: Context with cancellation, client address and auth flavor
 //   - repository: The metadata repository containing filesystem configuration
 //   - req: The PATHCONF request containing the file handle
-//   - ctx: Context information including client address and auth flavor
 //
 // **Returns:**
 //   - *PathConfResponse: The response with PATHCONF information (if successful)
@@ -194,10 +207,11 @@ type PathConfContext struct {
 //	handler := &DefaultNFSHandler{}
 //	req := &PathConfRequest{Handle: fileHandle}
 //	ctx := &PathConfContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	}
-//	resp, err := handler.PathConf(repository, req, ctx)
+//	resp, err := handler.PathConf(ctx, repository, req)
 //	if err != nil {
 //	    // Internal server error occurred
 //	    return nil, err
@@ -214,7 +228,19 @@ func (h *DefaultNFSHandler) PathConf(
 		req.Handle, ctx.ClientAddr, ctx.AuthFlavor)
 
 	// ========================================================================
-	// Step 1: Validate file handle
+	// Step 1: Check for context cancellation before starting work
+	// ========================================================================
+
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("PATHCONF cancelled: handle=%x client=%s error=%v",
+			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
+
+	// ========================================================================
+	// Step 2: Validate file handle
 	// ========================================================================
 
 	if err := validateFileHandle(req.Handle); err != nil {
@@ -223,8 +249,17 @@ func (h *DefaultNFSHandler) PathConf(
 	}
 
 	// ========================================================================
-	// Step 2: Verify the file handle exists and is valid in the repository
+	// Step 3: Verify the file handle exists and is valid in the repository
 	// ========================================================================
+
+	// Check context before repository call
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("PATHCONF cancelled before GetFile: handle=%x client=%s error=%v",
+			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
 
 	attr, err := repository.GetFile(ctx.Context, metadata.FileHandle(req.Handle))
 	if err != nil {
@@ -234,9 +269,18 @@ func (h *DefaultNFSHandler) PathConf(
 	}
 
 	// ========================================================================
-	// Step 3: Retrieve PATHCONF properties from the repository
+	// Step 4: Retrieve PATHCONF properties from the repository
 	// ========================================================================
 	// All business logic about filesystem properties is handled by the repository
+
+	// Check context before repository call
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("PATHCONF cancelled before GetPathConf: handle=%x client=%s error=%v",
+			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
 
 	pathConf, err := repository.GetPathConf(ctx.Context, metadata.FileHandle(req.Handle))
 	if err != nil {
@@ -253,7 +297,7 @@ func (h *DefaultNFSHandler) PathConf(
 	}
 
 	// ========================================================================
-	// Step 4: Generate file attributes for cache consistency
+	// Step 5: Generate file attributes for cache consistency
 	// ========================================================================
 
 	fileid, err := ExtractFileIDFromHandle(req.Handle)
@@ -272,7 +316,7 @@ func (h *DefaultNFSHandler) PathConf(
 		pathConf.ChownRestricted, pathConf.CaseInsensitive, pathConf.CasePreserving)
 
 	// ========================================================================
-	// Step 5: Build response with data from repository
+	// Step 6: Build response with data from repository
 	// ========================================================================
 
 	return &PathConfResponse{

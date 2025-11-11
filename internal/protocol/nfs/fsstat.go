@@ -110,23 +110,31 @@ type FsStatContext struct {
 // the filesystem's current state, including space usage and available inodes.
 //
 // The FSSTAT process follows these steps:
-//  1. Validate the file handle format and size
-//  2. Verify the file handle exists via repository.GetFile()
-//  3. Retrieve current filesystem statistics from the repository
-//  4. Retrieve file attributes for cache consistency
-//  5. Return comprehensive filesystem statistics to the client
+//  1. Check for context cancellation before starting
+//  2. Validate the file handle format and size
+//  3. Verify the file handle exists via repository.GetFile()
+//  4. Retrieve current filesystem statistics from the repository
+//  5. Retrieve file attributes for cache consistency
+//  6. Return comprehensive filesystem statistics to the client
 //
 // Design principles:
 //   - Protocol layer handles only XDR encoding/decoding and validation
 //   - All business logic (space calculations, limits) is delegated to repository
 //   - File handle validation is performed by repository.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
+//   - Respects context cancellation for graceful shutdown and timeouts
 //
 // Security considerations:
 //   - Handle validation prevents malformed requests from causing errors
 //   - Repository layer enforces access control if needed
 //   - Client context enables auditing and rate limiting
 //   - No sensitive information leaked in error messages
+//
+// Context cancellation:
+//   - Checks at operation start before any work
+//   - Checks before each repository call (GetFile, GetFSStats)
+//   - Returns types.NFS3ErrIO on cancellation
+//   - Useful for client disconnects, server shutdown, request timeouts
 //
 // Per RFC 1813 Section 3.3.18:
 //
@@ -137,9 +145,9 @@ type FsStatContext struct {
 //	 - abytes: Number of free bytes available to non-privileged users"
 //
 // Parameters:
+//   - ctx: Context information including cancellation, client address and auth flavor
 //   - repository: The metadata repository containing filesystem statistics
 //   - req: The FSSTAT request containing the file handle
-//   - ctx: Context information including client address and auth flavor
 //
 // Returns:
 //   - *FsStatResponse: The response with filesystem statistics (if successful)
@@ -153,10 +161,11 @@ type FsStatContext struct {
 //	handler := &DefaultNFSHandler{}
 //	req := &FsStatRequest{Handle: rootHandle}
 //	ctx := &FsStatContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	}
-//	resp, err := handler.FsStat(repository, req, ctx)
+//	resp, err := handler.FsStat(ctx, repository, req)
 //	if err != nil {
 //	    // Internal server error
 //	}
@@ -169,6 +178,22 @@ func (h *DefaultNFSHandler) FsStat(
 	req *FsStatRequest,
 ) (*FsStatResponse, error) {
 	logger.Debug("FSSTAT request: handle=%x client=%s", req.Handle, ctx.ClientAddr)
+
+	// ========================================================================
+	// Step 1: Check for context cancellation before starting work
+	// ========================================================================
+
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("FSSTAT cancelled: handle=%x client=%s error=%v",
+			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		return &FsStatResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
+
+	// ========================================================================
+	// Step 2: Validate file handle
+	// ========================================================================
 
 	// Validate file handle
 	if len(req.Handle) == 0 {
@@ -188,19 +213,47 @@ func (h *DefaultNFSHandler) FsStat(
 		return &FsStatResponse{Status: types.NFS3ErrBadHandle}, nil
 	}
 
-	// Verify the file handle exists and is valid
+	// ========================================================================
+	// Step 3: Verify the file handle exists
+	// ========================================================================
+
+	// Check context before repository call
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("FSSTAT cancelled before GetFile: handle=%x client=%s error=%v",
+			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		return &FsStatResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
+
 	attr, err := repository.GetFile(ctx.Context, metadata.FileHandle(req.Handle))
 	if err != nil {
 		logger.Debug("FSSTAT failed: handle not found: %v client=%s", err, ctx.ClientAddr)
 		return &FsStatResponse{Status: types.NFS3ErrStale}, nil
 	}
 
-	// Retrieve filesystem statistics from the repository
+	// ========================================================================
+	// Step 4: Retrieve filesystem statistics from the repository
+	// ========================================================================
+
+	// Check context before repository call
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("FSSTAT cancelled before GetFSStats: handle=%x client=%s error=%v",
+			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		return &FsStatResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
+
 	fsStats, err := repository.GetFSStats(ctx.Context, metadata.FileHandle(req.Handle))
 	if err != nil {
 		logger.Error("FSSTAT failed: error retrieving statistics: %v client=%s", err, ctx.ClientAddr)
 		return &FsStatResponse{Status: types.NFS3ErrIO}, nil
 	}
+
+	// ========================================================================
+	// Step 5: Build success response with file attributes and stats
+	// ========================================================================
 
 	// Generate file ID from handle for attributes
 	fileid := binary.BigEndian.Uint64(req.Handle[:8])

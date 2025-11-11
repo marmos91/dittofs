@@ -99,8 +99,12 @@ type SymlinkResponse struct {
 }
 
 // SymlinkContext contains the context information needed to process a SYMLINK request.
-// This includes client identification and authentication details for access control.
+// This includes client identification, authentication details, and cancellation handling
+// for access control.
 type SymlinkContext struct {
+	// Context carries cancellation signals and deadlines
+	// The Symlink handler checks this context to abort operations if the client
+	// disconnects or the request times out
 	Context context.Context
 
 	// ClientAddr is the network address of the client making the request.
@@ -153,13 +157,26 @@ type SymlinkContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handle format, name syntax, target length)
-//  2. Extract client IP and authentication credentials from context
-//  3. Verify parent directory exists and is a directory (via repository)
-//  4. Capture pre-operation directory state (for WCC)
-//  5. Convert client attributes to metadata format with proper defaults
-//  6. Delegate symlink creation to repository.CreateSymlink()
-//  7. Return symlink handle, attributes, and updated directory WCC data
+//  1. Check for context cancellation (early exit if client disconnected)
+//  2. Validate request parameters (handle format, name syntax, target length)
+//  3. Extract client IP and authentication credentials from context
+//  4. Verify parent directory exists and is a directory (via repository)
+//  5. Capture pre-operation directory state (for WCC)
+//  6. Check for cancellation before create operation
+//  7. Convert client attributes to metadata format with proper defaults
+//  8. Delegate symlink creation to repository.CreateSymlink()
+//  9. Check for cancellation after create
+//  10. Retrieve symlink attributes
+//  11. Return symlink handle, attributes, and updated directory WCC data
+//
+// **Context cancellation:**
+//
+//   - Checks at the beginning to respect client disconnection
+//   - Checks after directory lookup (before create operation)
+//   - Checks after CreateSymlink (before attribute retrieval)
+//   - No check during attribute conversion (pure computation, fast)
+//   - Returns NFS3ErrIO status with context error for cancellation
+//   - Always includes WCC data for cache consistency
 //
 // **Design Principles:**
 //
@@ -214,6 +231,7 @@ type SymlinkContext struct {
 //   - Permission denied → NFS3ErrAcces
 //   - No space left → NFS3ErrNoSpc
 //   - I/O error → types.NFS3ErrIO
+//   - Context cancelled → types.NFS3ErrIO with error return
 //
 // **Weak Cache Consistency (WCC):**
 //
@@ -245,14 +263,14 @@ type SymlinkContext struct {
 //   - Symlinks can create security issues (symlink attacks, race conditions)
 //
 // **Parameters:**
+//   - ctx: Context with cancellation, client address and authentication credentials
 //   - repository: The metadata repository for symlink operations
 //   - req: The symlink request containing directory handle, name, target, and attributes
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *SymlinkResponse: Response with status, symlink handle/attributes, and directory WCC
-//   - error: Returns error only for catastrophic internal failures; protocol-level
-//     errors are indicated via the response Status field
+//   - error: Returns error for context cancellation or catastrophic internal failures;
+//     protocol-level errors are indicated via the response Status field
 //
 // **RFC 1813 Section 3.3.10: SYMLINK Procedure**
 //
@@ -266,14 +284,19 @@ type SymlinkContext struct {
 //	    Attr:      SetAttrs{Mode: &mode},
 //	}
 //	ctx := &SymlinkContext{
+//	    Context: context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Symlink(repository, req, ctx)
+//	resp, err := handler.Symlink(ctx, repository, req)
 //	if err != nil {
-//	    // Internal server error
+//	    if errors.Is(err, context.Canceled) {
+//	        // Client disconnected
+//	    } else {
+//	        // Internal server error
+//	    }
 //	}
 //	if resp.Status == types.NFS3OK {
 //	    // Symlink created successfully
@@ -284,6 +307,16 @@ func (h *DefaultNFSHandler) Symlink(
 	repository metadata.Repository,
 	req *SymlinkRequest,
 ) (*SymlinkResponse, error) {
+	// Check for cancellation before starting any work
+	// This handles the case where the client disconnects before we begin processing
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("SYMLINK cancelled before processing: name='%s' target='%s' client=%s error=%v",
+			req.Name, req.Target, ctx.ClientAddr, ctx.Context.Err())
+		return &SymlinkResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+	default:
+	}
+
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
@@ -307,6 +340,13 @@ func (h *DefaultNFSHandler) Symlink(
 	dirHandle := metadata.FileHandle(req.DirHandle)
 	dirAttr, err := repository.GetFile(ctx.Context, dirHandle)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("SYMLINK cancelled during directory lookup: name='%s' target='%s' client=%s error=%v",
+				req.Name, req.Target, clientIP, ctx.Context.Err())
+			return &SymlinkResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		}
+
 		logger.Warn("SYMLINK failed: directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
 		return &SymlinkResponse{Status: types.NFS3ErrNoEnt}, nil
@@ -329,6 +369,24 @@ func (h *DefaultNFSHandler) Symlink(
 			DirAttrBefore: wccBefore,
 			DirAttrAfter:  nfsDirAttr,
 		}, nil
+	}
+
+	// Check for cancellation before the create operation
+	// This is an important check since we're about to modify the filesystem
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("SYMLINK cancelled before create operation: name='%s' target='%s' client=%s error=%v",
+			req.Name, req.Target, clientIP, ctx.Context.Err())
+
+		dirID := xdr.ExtractFileID(dirHandle)
+		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+
+		return &SymlinkResponse{
+			Status:        types.NFS3ErrIO,
+			DirAttrBefore: wccBefore,
+			DirAttrAfter:  nfsDirAttr,
+		}, ctx.Context.Err()
+	default:
 	}
 
 	// ========================================================================
@@ -357,6 +415,8 @@ func (h *DefaultNFSHandler) Symlink(
 	// - Timestamps (atime, mtime, ctime)
 	// - Size (length of target path)
 	// - Target path (stored in SymlinkTarget field)
+	//
+	// No cancellation check here - this is fast pure computation
 
 	symlinkAttr := xdr.ConvertSetAttrsToMetadata(metadata.FileTypeSymlink, &req.Attr, authCtx)
 
@@ -370,9 +430,29 @@ func (h *DefaultNFSHandler) Symlink(
 	// - Creating the symlink metadata
 	// - Linking it to the parent directory
 	// - Updating parent directory timestamps
+	// - Respecting context cancellation internally
 
 	symlinkHandle, err := repository.CreateSymlink(authCtx, dirHandle, req.Name, req.Target, symlinkAttr)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("SYMLINK cancelled during create operation: name='%s' target='%s' client=%s error=%v",
+				req.Name, req.Target, clientIP, ctx.Context.Err())
+
+			// Get updated directory attributes for WCC data (best effort)
+			var wccAfter *types.NFSFileAttr
+			if updatedDirAttr, getErr := repository.GetFile(ctx.Context, dirHandle); getErr == nil {
+				dirID := xdr.ExtractFileID(dirHandle)
+				wccAfter = xdr.MetadataToNFS(updatedDirAttr, dirID)
+			}
+
+			return &SymlinkResponse{
+				Status:        types.NFS3ErrIO,
+				DirAttrBefore: wccBefore,
+				DirAttrAfter:  wccAfter,
+			}, ctx.Context.Err()
+		}
+
 		logger.Error("SYMLINK failed: repository error: name='%s' target='%s' client=%s error=%v",
 			req.Name, req.Target, clientIP, err)
 
@@ -393,12 +473,60 @@ func (h *DefaultNFSHandler) Symlink(
 		}, nil
 	}
 
+	// Check for cancellation after create, before attribute retrieval
+	// At this point the symlink is created, but we can skip the attribute
+	// retrieval if the client has disconnected
+	select {
+	case <-ctx.Context.Done():
+		logger.Debug("SYMLINK cancelled after create, before attribute retrieval: name='%s' handle=%x client=%s error=%v",
+			req.Name, symlinkHandle, clientIP, ctx.Context.Err())
+
+		// Get updated directory attributes for WCC data (best effort)
+		var wccAfter *types.NFSFileAttr
+		if updatedDirAttr, getErr := repository.GetFile(ctx.Context, dirHandle); getErr == nil {
+			dirID := xdr.ExtractFileID(dirHandle)
+			wccAfter = xdr.MetadataToNFS(updatedDirAttr, dirID)
+		}
+
+		// Return success with handle but no attributes
+		return &SymlinkResponse{
+			Status:        types.NFS3OK,
+			FileHandle:    symlinkHandle,
+			Attr:          nil,
+			DirAttrBefore: wccBefore,
+			DirAttrAfter:  wccAfter,
+		}, nil
+	default:
+	}
+
 	// ========================================================================
 	// Step 6: Retrieve symlink attributes for response
 	// ========================================================================
 
 	symlinkAttr, err = repository.GetFile(ctx.Context, symlinkHandle)
 	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("SYMLINK cancelled during attribute retrieval: name='%s' handle=%x client=%s error=%v",
+				req.Name, symlinkHandle, clientIP, ctx.Context.Err())
+
+			// Get updated directory attributes for WCC data
+			var wccAfter *types.NFSFileAttr
+			if updatedDirAttr, getErr := repository.GetFile(ctx.Context, dirHandle); getErr == nil {
+				dirID := xdr.ExtractFileID(dirHandle)
+				wccAfter = xdr.MetadataToNFS(updatedDirAttr, dirID)
+			}
+
+			// Return success with handle but no attributes
+			return &SymlinkResponse{
+				Status:        types.NFS3OK,
+				FileHandle:    symlinkHandle,
+				Attr:          nil,
+				DirAttrBefore: wccBefore,
+				DirAttrAfter:  wccAfter,
+			}, nil
+		}
+
 		logger.Warn("SYMLINK: created but cannot get symlink attributes: handle=%x error=%v",
 			symlinkHandle, err)
 
@@ -422,6 +550,7 @@ func (h *DefaultNFSHandler) Symlink(
 	// ========================================================================
 	// Step 7: Build success response with attributes and WCC data
 	// ========================================================================
+	// No cancellation check here - this is fast pure computation
 
 	// Generate symlink attributes for response
 	symlinkID := xdr.ExtractFileID(symlinkHandle)

@@ -128,12 +128,13 @@ type LookupContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handles, filename)
-//  2. Extract client IP and authentication credentials from context
-//  3. Verify directory handle exists and is a directory (via repository)
-//  4. Delegate lookup to repository.LookupChild()
-//  5. Retrieve file attributes for found child
-//  6. Return file handle and attributes to client
+//  1. Check for context cancellation before starting
+//  2. Validate request parameters (handles, filename)
+//  3. Extract client IP and authentication credentials from context
+//  4. Verify directory handle exists and is a directory (via repository)
+//  5. Delegate lookup to repository.GetChild()
+//  6. Retrieve file attributes for found child
+//  7. Return file handle and attributes to client
 //
 // **Design Principles:**
 //
@@ -141,6 +142,7 @@ type LookupContext struct {
 //   - All business logic (child lookup, access control) is delegated to repository
 //   - File handle validation is performed by repository.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
+//   - Respects context cancellation for graceful shutdown and timeouts
 //
 // **Authentication:**
 //
@@ -173,6 +175,7 @@ type LookupContext struct {
 //   - Child not found → types.NFS3ErrNoEnt
 //   - Access denied → NFS3ErrAcces
 //   - I/O error → types.NFS3ErrIO
+//   - Context cancelled → types.NFS3ErrIO
 //
 // **Performance Considerations:**
 //
@@ -181,6 +184,7 @@ type LookupContext struct {
 //   - Optimize child lookup algorithms
 //   - Minimize repository access overhead
 //   - Return post-op directory attributes when available
+//   - Minimize context cancellation overhead (check only at operation boundaries)
 //
 // **Security Considerations:**
 //
@@ -189,10 +193,21 @@ type LookupContext struct {
 //   - Filename validation prevents directory traversal
 //   - Client context enables audit logging
 //
+// **Context Cancellation:**
+//
+// This operation respects context cancellation at key boundaries:
+//   - Before operation starts
+//   - Before each repository call (GetFile for dir, GetChild, GetFile for child)
+//   - Returns types.NFS3ErrIO on cancellation
+//
+// Since LOOKUP is a high-frequency operation, cancellation checks are placed
+// strategically to balance responsiveness with performance. The checks occur
+// only between repository operations, not during validation or encoding.
+//
 // **Parameters:**
+//   - ctx: Context with cancellation, client address and authentication credentials
 //   - repository: The metadata repository for file and directory operations
 //   - req: The lookup request containing directory handle and filename
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *LookupResponse: Response with status and file handle (if successful)
@@ -209,12 +224,13 @@ type LookupContext struct {
 //	    Filename:  "myfile.txt",
 //	}
 //	ctx := &LookupContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Lookup(repository, req, ctx)
+//	resp, err := handler.Lookup(ctx, repository, req)
 //	if err != nil {
 //	    // Internal server error
 //	}
@@ -233,7 +249,19 @@ func (h *DefaultNFSHandler) Lookup(
 		req.Filename, req.DirHandle, clientIP, ctx.AuthFlavor)
 
 	// ========================================================================
-	// Step 1: Validate request parameters
+	// Step 1: Check for context cancellation before starting work
+	// ========================================================================
+
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("LOOKUP cancelled: file='%s' dir=%x client=%s error=%v",
+			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+		return &LookupResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
+
+	// ========================================================================
+	// Step 2: Validate request parameters
 	// ========================================================================
 
 	if err := validateLookupRequest(req); err != nil {
@@ -243,8 +271,17 @@ func (h *DefaultNFSHandler) Lookup(
 	}
 
 	// ========================================================================
-	// Step 2: Verify directory handle exists and is valid
+	// Step 3: Verify directory handle exists and is valid
 	// ========================================================================
+
+	// Check context before repository call
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("LOOKUP cancelled before GetFile (dir): file='%s' dir=%x client=%s error=%v",
+			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+		return &LookupResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 	dirAttr, err := repository.GetFile(ctx.Context, dirHandle)
@@ -270,12 +307,29 @@ func (h *DefaultNFSHandler) Lookup(
 	}
 
 	// ========================================================================
-	// Step 3: Look up the child via repository
+	// Step 4: Look up the child via repository
 	// ========================================================================
 	// The repository is responsible for:
 	// - Checking search/execute permission on the directory
 	// - Finding the child by name (including "." and "..")
 	// - Enforcing any access control policies
+
+	// Check context before repository call
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("LOOKUP cancelled before GetChild: file='%s' dir=%x client=%s error=%v",
+			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+
+		// Include directory post-op attributes for cache consistency
+		dirID := xdr.ExtractFileID(dirHandle)
+		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+
+		return &LookupResponse{
+			Status:  types.NFS3ErrIO,
+			DirAttr: nfsDirAttr,
+		}, nil
+	default:
+	}
 
 	childHandle, err := repository.GetChild(ctx.Context, dirHandle, req.Filename)
 	if err != nil {
@@ -293,8 +347,25 @@ func (h *DefaultNFSHandler) Lookup(
 	}
 
 	// ========================================================================
-	// Step 4: Retrieve child attributes
+	// Step 5: Retrieve child attributes
 	// ========================================================================
+
+	// Check context before repository call
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("LOOKUP cancelled before GetFile (child): file='%s' handle=%x client=%s error=%v",
+			req.Filename, childHandle, clientIP, ctx.Context.Err())
+
+		// Include directory post-op attributes for cache consistency
+		dirID := xdr.ExtractFileID(dirHandle)
+		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+
+		return &LookupResponse{
+			Status:  types.NFS3ErrIO,
+			DirAttr: nfsDirAttr,
+		}, nil
+	default:
+	}
 
 	childAttr, err := repository.GetFile(ctx.Context, childHandle)
 	if err != nil {
@@ -313,7 +384,7 @@ func (h *DefaultNFSHandler) Lookup(
 	}
 
 	// ========================================================================
-	// Step 5: Build success response with file handle and attributes
+	// Step 6: Build success response with file handle and attributes
 	// ========================================================================
 
 	// Generate file IDs from handles for NFS attributes

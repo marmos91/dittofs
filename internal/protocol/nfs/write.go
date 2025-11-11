@@ -144,13 +144,14 @@ type WriteContext struct {
 //
 // **Process:**
 //
-//  1. Validate request parameters (handle, offset, count, data)
-//  2. Extract client IP and authentication credentials from context
-//  3. Verify file exists and is a regular file (via repository)
-//  4. Calculate new size (safe after validation)
-//  5. Check write permissions and update metadata (via repository)
-//  6. Write data to content repository
-//  7. Return updated attributes and commit status
+//  1. Check for context cancellation before starting
+//  2. Validate request parameters (handle, offset, count, data)
+//  3. Extract client IP and authentication credentials from context
+//  4. Verify file exists and is a regular file (via repository)
+//  5. Calculate new size (safe after validation)
+//  6. Check write permissions and update metadata (via repository)
+//  7. Write data to content repository
+//  8. Return updated attributes and commit status
 //
 // **Design Principles:**
 //
@@ -160,6 +161,8 @@ type WriteContext struct {
 //   - Metadata repository handles file attributes and permissions
 //   - Access control enforced by metadata repository
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
+//   - Respects context cancellation for graceful shutdown and timeouts
+//   - Cancellation checks before expensive I/O operations
 //
 // **Authentication:**
 //
@@ -210,6 +213,7 @@ type WriteContext struct {
 //   - Read-only filesystem → NFS3ErrRofs
 //   - I/O error → NFS3ErrIO
 //   - Stale handle → NFS3ErrStale
+//   - Context cancelled → types.NFS3ErrIO
 //
 // **Performance Considerations:**
 //
@@ -220,6 +224,23 @@ type WriteContext struct {
 //   - Batch small writes when possible
 //   - Consider write alignment with filesystem blocks
 //   - Respect FSINFO wtpref for optimal performance
+//   - Cancel expensive I/O on client disconnect
+//
+// **Context Cancellation:**
+//
+// This operation respects context cancellation at critical points:
+//   - Before operation starts
+//   - Before GetFile (file validation)
+//   - Before WriteFile (metadata update)
+//   - Before WriteAt (actual data write - most expensive)
+//   - Returns types.NFS3ErrIO on cancellation with WCC data when available
+//
+// WRITE operations can involve significant I/O, especially for large writes
+// or slow storage. Context cancellation is particularly valuable here to:
+//   - Avoid wasting resources on disconnected clients
+//   - Support request timeouts
+//   - Enable graceful server shutdown
+//   - Prevent accumulation of zombie write operations
 //
 // **Security Considerations:**
 //
@@ -230,10 +251,10 @@ type WriteContext struct {
 //   - Prevent writes to system files via export configuration
 //
 // **Parameters:**
+//   - ctx: Context with cancellation, client address and authentication credentials
 //   - contentRepo: Content repository for file data operations
 //   - metadataRepo: Metadata repository for file attributes
 //   - req: The write request containing handle, offset, and data
-//   - ctx: Context with client address and authentication credentials
 //
 // **Returns:**
 //   - *WriteResponse: Response with status, WCC data, and commit info
@@ -253,12 +274,13 @@ type WriteContext struct {
 //	    Data:   dataBytes,
 //	}
 //	ctx := &WriteContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Write(contentRepo, metadataRepo, req, ctx)
+//	resp, err := handler.Write(ctx, contentRepo, metadataRepo, req)
 //	if err != nil {
 //	    // Internal server error
 //	}
@@ -279,7 +301,19 @@ func (h *DefaultNFSHandler) Write(
 		req.Handle, req.Offset, req.Count, req.Stable, clientIP, ctx.AuthFlavor)
 
 	// ========================================================================
-	// Step 1: Validate request parameters
+	// Step 1: Check for context cancellation before starting work
+	// ========================================================================
+
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("WRITE cancelled: handle=%x offset=%d count=%d client=%s error=%v",
+			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
+		return &WriteResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
+
+	// ========================================================================
+	// Step 2: Validate request parameters
 	// ========================================================================
 
 	maxWriteSize := metadataRepo.GetMaxWriteSize(ctx.Context)
@@ -290,8 +324,17 @@ func (h *DefaultNFSHandler) Write(
 	}
 
 	// ========================================================================
-	// Step 2: Verify file exists and is a regular file
+	// Step 3: Verify file exists and is a regular file
 	// ========================================================================
+
+	// Check context before repository call
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("WRITE cancelled before GetFile: handle=%x offset=%d count=%d client=%s error=%v",
+			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
+		return &WriteResponse{Status: types.NFS3ErrIO}, nil
+	default:
+	}
 
 	fileHandle := metadata.FileHandle(req.Handle)
 	attr, err := metadataRepo.GetFile(ctx.Context, fileHandle)
@@ -317,7 +360,7 @@ func (h *DefaultNFSHandler) Write(
 	}
 
 	// ========================================================================
-	// Step 3: Calculate new file size
+	// Step 4: Calculate new file size
 	// ========================================================================
 
 	dataLen := uint64(len(req.Data))
@@ -329,7 +372,7 @@ func (h *DefaultNFSHandler) Write(
 	}
 
 	// ========================================================================
-	// Step 4: Check permissions and update metadata
+	// Step 5: Check permissions and update metadata
 	// ========================================================================
 	// Call repository to:
 	// - Check write permissions
@@ -337,6 +380,22 @@ func (h *DefaultNFSHandler) Write(
 	// - Generate content ID if needed
 	// - Update file size and timestamps
 	// - Return updated attributes
+
+	// Check context before repository call
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("WRITE cancelled before WriteFile: handle=%x offset=%d count=%d client=%s error=%v",
+			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
+
+		fileid := xdr.ExtractFileID(fileHandle)
+		nfsAttr := xdr.MetadataToNFS(attr, fileid)
+
+		return &WriteResponse{
+			Status:    types.NFS3ErrIO,
+			AttrAfter: nfsAttr,
+		}, nil
+	default:
+	}
 
 	updatedAttr, preSize, preMtime, preCtime, err := metadataRepo.WriteFile(
 		&metadata.AuthContext{
@@ -407,7 +466,7 @@ func (h *DefaultNFSHandler) Write(
 	}
 
 	// ========================================================================
-	// Step 5: Check if content repository supports writing
+	// Step 6: Check if content repository supports writing
 	// ========================================================================
 
 	writeRepo, ok := contentRepo.(content.WriteRepository)
@@ -426,13 +485,30 @@ func (h *DefaultNFSHandler) Write(
 	}
 
 	// ========================================================================
-	// Step 6: Write data to content repository
+	// Step 7: Write data to content repository
 	// ========================================================================
 	// The content repository handles:
 	// - Physical storage of data
 	// - Space availability checks
 	// - I/O operations
 	// - Write stability (sync vs async)
+
+	// Check context before expensive I/O operation
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("WRITE cancelled before WriteAt: handle=%x offset=%d count=%d client=%s error=%v",
+			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
+
+		fileid := xdr.ExtractFileID(fileHandle)
+		nfsAttr := xdr.MetadataToNFS(updatedAttr, fileid)
+
+		return &WriteResponse{
+			Status:     types.NFS3ErrIO,
+			AttrBefore: nfsWccAttr,
+			AttrAfter:  nfsAttr,
+		}, nil
+	default:
+	}
 
 	err = writeRepo.WriteAt(updatedAttr.ContentID, req.Data, int64(req.Offset))
 	if err != nil {
@@ -454,7 +530,7 @@ func (h *DefaultNFSHandler) Write(
 	}
 
 	// ========================================================================
-	// Step 7: Build success response
+	// Step 8: Build success response
 	// ========================================================================
 	// Metadata is already updated by WriteFile, so we just need to
 	// convert to NFS wire format
