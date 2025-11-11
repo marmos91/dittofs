@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/metadata"
@@ -22,7 +23,7 @@ import (
 //
 // Returns:
 //   - error: Returns error if handle already exists
-func (r *MemoryRepository) CreateFile(handle metadata.FileHandle, attr *metadata.FileAttr) error {
+func (r *MemoryRepository) CreateFile(ctx context.Context, handle metadata.FileHandle, attr *metadata.FileAttr) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -55,7 +56,7 @@ func (r *MemoryRepository) CreateFile(handle metadata.FileHandle, attr *metadata
 // Returns:
 //   - *metadata.FileAttr: The file attributes
 //   - error: Returns error if file not found
-func (r *MemoryRepository) GetFile(handle metadata.FileHandle) (*metadata.FileAttr, error) {
+func (r *MemoryRepository) GetFile(ctx context.Context, handle metadata.FileHandle) (*metadata.FileAttr, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -86,7 +87,7 @@ func (r *MemoryRepository) GetFile(handle metadata.FileHandle) (*metadata.FileAt
 //
 // Returns:
 //   - error: Returns error if file not found
-func (r *MemoryRepository) UpdateFile(handle metadata.FileHandle, attr *metadata.FileAttr) error {
+func (r *MemoryRepository) UpdateFile(ctx context.Context, handle metadata.FileHandle, attr *metadata.FileAttr) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -121,7 +122,7 @@ func (r *MemoryRepository) UpdateFile(handle metadata.FileHandle, attr *metadata
 //
 // Returns:
 //   - error: Returns error if file not found
-func (r *MemoryRepository) DeleteFile(handle metadata.FileHandle) error {
+func (r *MemoryRepository) DeleteFile(ctx context.Context, handle metadata.FileHandle) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -153,18 +154,18 @@ func (r *MemoryRepository) DeleteFile(handle metadata.FileHandle) error {
 // Returns:
 //   - FileHandle: The generated handle for the new file
 //   - error: Returns error if any operation fails
-func (r *MemoryRepository) AddFileToDirectory(parentHandle metadata.FileHandle, name string, attr *metadata.FileAttr) (metadata.FileHandle, error) {
+func (r *MemoryRepository) AddFileToDirectory(ctx context.Context, parentHandle metadata.FileHandle, name string, attr *metadata.FileAttr) (metadata.FileHandle, error) {
 	fileHandle := r.generateFileHandle(name)
 
-	if err := r.CreateFile(fileHandle, attr); err != nil {
+	if err := r.CreateFile(ctx, fileHandle, attr); err != nil {
 		return nil, err
 	}
 
-	if err := r.AddChild(parentHandle, name, fileHandle); err != nil {
+	if err := r.AddChild(ctx, parentHandle, name, fileHandle); err != nil {
 		return nil, err
 	}
 
-	if err := r.SetParent(fileHandle, parentHandle); err != nil {
+	if err := r.SetParent(ctx, fileHandle, parentHandle); err != nil {
 		return nil, err
 	}
 

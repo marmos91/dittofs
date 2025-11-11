@@ -280,9 +280,9 @@ type SymlinkContext struct {
 //	    // Use resp.FileHandle for subsequent operations
 //	}
 func (h *DefaultNFSHandler) Symlink(
+	ctx *SymlinkContext,
 	repository metadata.Repository,
 	req *SymlinkRequest,
-	ctx *SymlinkContext,
 ) (*SymlinkResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
@@ -371,7 +371,7 @@ func (h *DefaultNFSHandler) Symlink(
 	// - Linking it to the parent directory
 	// - Updating parent directory timestamps
 
-	symlinkHandle, err := repository.CreateSymlink(dirHandle, req.Name, req.Target, symlinkAttr, authCtx)
+	symlinkHandle, err := repository.CreateSymlink(authCtx, dirHandle, req.Name, req.Target, symlinkAttr)
 	if err != nil {
 		logger.Error("SYMLINK failed: repository error: name='%s' target='%s' client=%s error=%v",
 			req.Name, req.Target, clientIP, err)

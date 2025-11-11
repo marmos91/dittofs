@@ -163,7 +163,11 @@ type FsStatContext struct {
 //	if resp.Status == types.NFS3OK {
 //	    // Use resp.Tbytes, resp.Fbytes, etc. for filesystem stats
 //	}
-func (h *DefaultNFSHandler) FsStat(repository metadata.Repository, req *FsStatRequest, ctx *FsStatContext) (*FsStatResponse, error) {
+func (h *DefaultNFSHandler) FsStat(
+	ctx *FsStatContext,
+	repository metadata.Repository,
+	req *FsStatRequest,
+) (*FsStatResponse, error) {
 	logger.Debug("FSSTAT request: handle=%x client=%s", req.Handle, ctx.ClientAddr)
 
 	// Validate file handle

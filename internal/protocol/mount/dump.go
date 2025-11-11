@@ -114,7 +114,7 @@ type DumpContext struct {
 //	for _, entry := range resp.Entries {
 //	    fmt.Printf("  %s mounted %s\n", entry.Hostname, entry.Directory)
 //	}
-func (h *DefaultMountHandler) Dump(repository metadata.Repository, req *DumpRequest, ctx *DumpContext) (*DumpResponse, error) {
+func (h *DefaultMountHandler) Dump(ctx *DumpContext, repository metadata.Repository, req *DumpRequest) (*DumpResponse, error) {
 	// Extract client IP from address (remove port)
 	clientIP, _, err := net.SplitHostPort(ctx.ClientAddr)
 	if err != nil {

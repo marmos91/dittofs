@@ -222,9 +222,9 @@ type LookupContext struct {
 //	    // Use resp.FileHandle for subsequent operations
 //	}
 func (h *DefaultNFSHandler) Lookup(
+	ctx *LookupContext,
 	repository metadata.Repository,
 	req *LookupRequest,
-	ctx *LookupContext,
 ) (*LookupResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)

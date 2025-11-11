@@ -297,9 +297,9 @@ type MknodContext struct {
 //	    // Special file created successfully, use resp.FileHandle
 //	}
 func (h *DefaultNFSHandler) Mknod(
+	ctx *MknodContext,
 	repository metadata.Repository,
 	req *MknodRequest,
-	ctx *MknodContext,
 ) (*MknodResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
@@ -398,12 +398,12 @@ func (h *DefaultNFSHandler) Mknod(
 
 	// Create the special file
 	newHandle, err := repository.CreateSpecialFile(
+		authCtx,
 		parentHandle,
 		req.Name,
 		fileAttr,
 		req.Spec.SpecData1, // Major device number (or 0 for non-devices)
 		req.Spec.SpecData2, // Minor device number (or 0 for non-devices)
-		authCtx,
 	)
 	if err != nil {
 		logger.Error("MKNOD failed: repository error: name='%s' type=%d client=%s error=%v",

@@ -114,7 +114,11 @@ type ExportEntry struct {
 //	        fmt.Printf("    Available to all clients\n")
 //	    }
 //	}
-func (h *DefaultMountHandler) Export(ctx context.Context, repository metadata.Repository, req *ExportRequest) (*ExportResponse, error) {
+func (h *DefaultMountHandler) Export(
+	ctx *ExportContext,
+	repository metadata.Repository,
+	req *ExportRequest,
+) (*ExportResponse, error) {
 	logger.Info("Export request: listing all available exports")
 
 	// Get all configured exports from the repository

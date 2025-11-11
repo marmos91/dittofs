@@ -280,9 +280,9 @@ type SetAttrContext struct {
 //	    // Attributes updated successfully
 //	}
 func (h *DefaultNFSHandler) SetAttr(
+	ctx *SetAttrContext,
 	repository metadata.Repository,
 	req *SetAttrRequest,
-	ctx *SetAttrContext,
 ) (*SetAttrResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
@@ -379,7 +379,7 @@ func (h *DefaultNFSHandler) SetAttr(
 	// Log which attributes are being set (for debugging)
 	logSetAttrRequest(req, clientIP)
 
-	err = repository.SetFileAttributes(fileHandle, &req.NewAttr, authCtx)
+	err = repository.SetFileAttributes(authCtx, fileHandle, &req.NewAttr)
 	if err != nil {
 		logger.Error("SETATTR failed: repository error: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)

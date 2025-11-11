@@ -205,7 +205,11 @@ type PathConfContext struct {
 //	if resp.Status == types.NFS3OK {
 //	    // Success - use resp.Linkmax, resp.NameMax, etc.
 //	}
-func (h *DefaultNFSHandler) PathConf(repository metadata.Repository, req *PathConfRequest, ctx *PathConfContext) (*PathConfResponse, error) {
+func (h *DefaultNFSHandler) PathConf(
+	ctx *PathConfContext,
+	repository metadata.Repository,
+	req *PathConfRequest,
+) (*PathConfResponse, error) {
 	logger.Debug("PATHCONF request: handle=%x client=%s auth=%d",
 		req.Handle, ctx.ClientAddr, ctx.AuthFlavor)
 

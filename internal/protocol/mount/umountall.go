@@ -82,7 +82,11 @@ type UmountAllContext struct {
 //	ctx := &UmountAllContext{ClientAddr: "192.168.1.100:1234"}
 //	resp, err := handler.UmntAll(repository, req, ctx)
 //	// Response is always success
-func (h *DefaultMountHandler) UmntAll(repository metadata.Repository, req *UmountAllRequest, ctx *UmountAllContext) (*UmountAllResponse, error) {
+func (h *DefaultMountHandler) UmntAll(
+	ctx *UmountAllContext,
+	repository metadata.Repository,
+	req *UmountAllRequest,
+) (*UmountAllResponse, error) {
 	select {
 	case <-ctx.Context.Done():
 		return &UmountAllResponse{}, ctx.Context.Err()

@@ -252,9 +252,9 @@ type RenameContext struct {
 //	    // Rename successful
 //	}
 func (h *DefaultNFSHandler) Rename(
+	ctx *RenameContext,
 	repository metadata.Repository,
 	req *RenameRequest,
-	ctx *RenameContext,
 ) (*RenameResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
@@ -367,7 +367,7 @@ func (h *DefaultNFSHandler) Rename(
 		ClientAddr: clientIP,
 	}
 
-	err = repository.RenameFile(fromDirHandle, req.FromName, toDirHandle, req.ToName, authCtx)
+	err = repository.RenameFile(authCtx, fromDirHandle, req.FromName, toDirHandle, req.ToName)
 	if err != nil {
 		logger.Error("RENAME failed: repository error: from='%s' to='%s' client=%s error=%v",
 			req.FromName, req.ToName, clientIP, err)

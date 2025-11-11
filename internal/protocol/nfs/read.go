@@ -235,10 +235,10 @@ type ReadContext struct {
 //	    }
 //	}
 func (h *DefaultNFSHandler) Read(
+	ctx *ReadContext,
 	contentRepo content.Repository,
 	metadataRepo metadata.Repository,
 	req *ReadRequest,
-	ctx *ReadContext,
 ) (*ReadResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)

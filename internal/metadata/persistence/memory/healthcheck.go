@@ -1,5 +1,7 @@
 package memory
 
+import "context"
+
 // Ping performs a health check on the in-memory repository.
 // For the in-memory implementation, this always returns nil since there
 // are no external dependencies to check. The repository is considered
@@ -17,7 +19,7 @@ package memory
 //
 // Returns:
 //   - error: Always returns nil for in-memory implementation
-func (r *MemoryRepository) Healthcheck() error {
+func (r *MemoryRepository) Healthcheck(ctx context.Context) error {
 	// In-memory repository has no external dependencies
 	// Always healthy if the repository object exists
 	return nil

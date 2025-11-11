@@ -106,7 +106,7 @@ type Repository interface {
 	// Returns:
 	//   - uint32: Bitmap of granted permissions (subset of requested)
 	//   - error: Returns error only for internal failures; denied access returns 0 permissions
-	CheckAccess(handle FileHandle, requested uint32, ctx *AccessCheckContext) (uint32, error)
+	CheckAccess(ctx *AccessCheckContext, handle FileHandle, requested uint32) (uint32, error)
 
 	// GetMountsByClient returns all active mounts for a specific client
 	// Used by UMNTALL to determine what will be removed
@@ -153,7 +153,7 @@ type Repository interface {
 	//   - Name already exists in directory
 	//   - Cross-filesystem link attempted (implementation-specific)
 	//   - fileHandle or dirHandle is invalid
-	CreateLink(dirHandle FileHandle, name string, fileHandle FileHandle, ctx *AuthContext) error
+	CreateLink(ctx *AuthContext, dirHandle FileHandle, name string, fileHandle FileHandle) error
 
 	// CreateDirectory creates a new directory with the specified attributes.
 	//
@@ -184,7 +184,7 @@ type Repository interface {
 	//   - Complete the attr structure with size (typically 4096), timestamps, etc.
 	//   - Check that the caller has write permission on the parent directory
 	//   - Ensure the directory has proper default attributes if not specified
-	CreateDirectory(parentHandle FileHandle, name string, attr *FileAttr, ctx *AuthContext) (FileHandle, error)
+	CreateDirectory(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (FileHandle, error)
 
 	// GetPathConf returns POSIX-compatible filesystem information.
 	// This is used by the PATHCONF NFS procedure to inform clients about
@@ -227,7 +227,7 @@ type Repository interface {
 	//   - For device files, check that the caller has sufficient privileges (typically root)
 	//   - Store device numbers appropriately (implementation-specific)
 	//   - Ensure the special file has proper default attributes if not specified
-	CreateSpecialFile(parentHandle FileHandle, name string, attr *FileAttr, majorDevice uint32, minorDevice uint32, ctx *AuthContext) (FileHandle, error)
+	CreateSpecialFile(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr, majorDevice uint32, minorDevice uint32) (FileHandle, error)
 
 	// ReadDir reads directory entries with pagination support.
 	//
@@ -248,7 +248,7 @@ type Repository interface {
 	//   - []DirEntry: List of entries starting from cookie
 	//   - bool: EOF flag (true if all entries returned)
 	//   - error: Access denied or I/O errors
-	ReadDir(dirHandle FileHandle, cookie uint64, count uint32, ctx *AuthContext) ([]DirEntry, bool, error)
+	ReadDir(ctx *AuthContext, dirHandle FileHandle, cookie uint64, count uint32) ([]DirEntry, bool, error)
 
 	// RemoveFile removes a file (not a directory) from a directory.
 	//
@@ -272,7 +272,7 @@ type Repository interface {
 	//     * File is a directory (use RemoveDirectory instead)
 	//     * Parent is not a directory
 	//     * I/O error
-	RemoveFile(parentHandle FileHandle, filename string, ctx *AuthContext) (*FileAttr, error)
+	RemoveFile(ctx *AuthContext, parentHandle FileHandle, filename string) (*FileAttr, error)
 
 	// ReadSymlink reads the target path of a symbolic link.
 	//
@@ -295,7 +295,7 @@ type Repository interface {
 	//     * Access denied (no read permission)
 	//     * Target path is missing or empty
 	//     * I/O error
-	ReadSymlink(handle FileHandle, ctx *AuthContext) (string, *FileAttr, error)
+	ReadSymlink(ctx *AuthContext, handle FileHandle) (string, *FileAttr, error)
 
 	// RemoveDirectory removes an empty directory from a parent directory.
 	//
@@ -320,7 +320,7 @@ type Repository interface {
 	//   - Directory is not empty
 	//   - Parent is not a directory
 	//   - I/O error
-	RemoveDirectory(parentHandle FileHandle, name string, ctx *AuthContext) error
+	RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, name string) error
 
 	// RenameFile renames or moves a file from one directory to another.
 	//
@@ -375,7 +375,7 @@ type Repository interface {
 	//   - Same directory, different name: Simple rename
 	//   - Different directory: Move with potential rename
 	//   - Over existing file: Atomic replacement
-	RenameFile(fromDirHandle FileHandle, fromName string, toDirHandle FileHandle, toName string, ctx *AuthContext) error
+	RenameFile(ctx *AuthContext, fromDirHandle FileHandle, fromName string, toDirHandle FileHandle, toName string) error
 
 	// SetFileAttributes updates file attributes with access control.
 	//
@@ -398,7 +398,7 @@ type Repository interface {
 	//   - Invalid attribute values
 	//   - Read-only filesystem
 	//   - I/O error
-	SetFileAttributes(handle FileHandle, attrs *SetAttrs, ctx *AuthContext) error
+	SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *SetAttrs) error
 
 	// CreateSymlink creates a symbolic link with the specified target path.
 	//
@@ -437,7 +437,7 @@ type Repository interface {
 	//   - Check that the caller has write permission on the parent directory
 	//   - Store the target path in attr.SymlinkTarget
 	//   - Ensure the symlink has proper default attributes if not specified
-	CreateSymlink(parentHandle FileHandle, name string, target string, attr *FileAttr, ctx *AuthContext) (FileHandle, error)
+	CreateSymlink(ctx *AuthContext, parentHandle FileHandle, name string, target string, attr *FileAttr) (FileHandle, error)
 
 	// WriteFile updates file metadata for a write operation.
 	//
@@ -479,7 +479,7 @@ type Repository interface {
 	//	    return err
 	//	}
 	//	err = contentRepo.WriteAt(attr.ContentID, data, offset)
-	WriteFile(handle FileHandle, newSize uint64, ctx *AuthContext) (*FileAttr, uint64, time.Time, time.Time, error)
+	WriteFile(ctx *AuthContext, handle FileHandle, newSize uint64) (*FileAttr, uint64, time.Time, time.Time, error)
 
 	// GetMaxWriteSize returns the maximum write size in bytes that the server will accept.
 	// This should match or be slightly larger than the wtmax value returned by GetFSInfo.

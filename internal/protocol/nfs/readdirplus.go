@@ -304,9 +304,9 @@ type ReadDirPlusContext struct {
 //	    }
 //	}
 func (h *DefaultNFSHandler) ReadDirPlus(
+	ctx *ReadDirPlusContext,
 	repository metadata.Repository,
 	req *ReadDirPlusRequest,
-	ctx *ReadDirPlusContext,
 ) (*ReadDirPlusResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)

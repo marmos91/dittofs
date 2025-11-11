@@ -239,9 +239,9 @@ type RmdirContext struct {
 //	    // Directory removed successfully
 //	}
 func (h *DefaultNFSHandler) Rmdir(
+	ctx *RmdirContext,
 	repository metadata.Repository,
 	req *RmdirRequest,
-	ctx *RmdirContext,
 ) (*RmdirResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
@@ -312,7 +312,7 @@ func (h *DefaultNFSHandler) Rmdir(
 	}
 
 	// Delegate to repository for directory removal
-	err = repository.RemoveDirectory(parentHandle, req.Name, authCtx)
+	err = repository.RemoveDirectory(authCtx, parentHandle, req.Name)
 	if err != nil {
 		logger.Error("RMDIR failed: repository error: name='%s' client=%s error=%v",
 			req.Name, clientIP, err)

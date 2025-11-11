@@ -186,9 +186,9 @@ type NullContext struct {
 //	}
 //	// Server is responding - NULL always returns success
 func (h *DefaultNFSHandler) Null(
+	ctx *NullContext,
 	repository metadata.Repository,
 	req *NullRequest,
-	ctx *NullContext,
 ) (*NullResponse, error) {
 	// Extract client IP for logging
 	clientIP := ctx.ClientAddr

@@ -212,9 +212,9 @@ type LinkContext struct {
 //	    // Hard link created successfully
 //	}
 func (h *DefaultNFSHandler) Link(
+	ctx *LinkContext,
 	repository metadata.Repository,
 	req *LinkRequest,
-	ctx *LinkContext,
 ) (*LinkResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
@@ -321,7 +321,7 @@ func (h *DefaultNFSHandler) Link(
 		ClientAddr: clientIP,
 	}
 
-	err = repository.CreateLink(dirHandle, req.Name, fileHandle, authCtx)
+	err = repository.CreateLink(authCtx, dirHandle, req.Name, fileHandle)
 	if err != nil {
 		logger.Error("LINK failed: repository error: name='%s' client=%s error=%v",
 			req.Name, clientIP, err)

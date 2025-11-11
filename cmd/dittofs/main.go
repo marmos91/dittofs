@@ -17,7 +17,7 @@ import (
 	nfsServer "github.com/marmos91/dittofs/internal/server"
 )
 
-func createInitialStructure(repo *memory.MemoryRepository, contentRepo *content.FSContentRepository, rootHandle metadata.FileHandle) error {
+func createInitialStructure(ctx context.Context, repo *memory.MemoryRepository, contentRepo *content.FSContentRepository, rootHandle metadata.FileHandle) error {
 	now := time.Now()
 
 	// Create "images" directory
@@ -33,7 +33,7 @@ func createInitialStructure(repo *memory.MemoryRepository, contentRepo *content.
 		ContentID: "", // Directories don't have content
 	}
 
-	imagesHandle, err := repo.AddFileToDirectory(rootHandle, "images", imagesAttr)
+	imagesHandle, err := repo.AddFileToDirectory(ctx, rootHandle, "images", imagesAttr)
 	if err != nil {
 		return fmt.Errorf("failed to create images directory: %w", err)
 	}
@@ -68,7 +68,7 @@ func createInitialStructure(repo *memory.MemoryRepository, contentRepo *content.
 			ContentID: contentID,
 		}
 
-		if _, err := repo.AddFileToDirectory(imagesHandle, img.name, fileAttr); err != nil {
+		if _, err := repo.AddFileToDirectory(ctx, imagesHandle, img.name, fileAttr); err != nil {
 			return fmt.Errorf("failed to create %s: %w", img.name, err)
 		}
 	}
@@ -102,7 +102,7 @@ func createInitialStructure(repo *memory.MemoryRepository, contentRepo *content.
 			ContentID: contentID,
 		}
 
-		if _, err := repo.AddFileToDirectory(rootHandle, txt.name, fileAttr); err != nil {
+		if _, err := repo.AddFileToDirectory(ctx, rootHandle, txt.name, fileAttr); err != nil {
 			return fmt.Errorf("failed to create %s: %w", txt.name, err)
 		}
 	}
@@ -134,6 +134,10 @@ func main() {
 	// Configure logger
 	logger.SetLevel(*logLevel)
 
+	// Create cancellable context for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	fmt.Println("DittoFS - Dynamic NFS Server")
 	logger.Info("Log level set to: %s", *logLevel)
 	logger.Info("Content storage path: %s", *contentPath)
@@ -156,7 +160,7 @@ func main() {
 		logger.Info("DUMP access unrestricted (default)")
 	}
 
-	if err := metadataRepo.SetServerConfig(repoConfig); err != nil {
+	if err := metadataRepo.SetServerConfig(ctx, repoConfig); err != nil {
 		log.Fatalf("Failed to set server config: %v", err)
 	}
 
@@ -178,7 +182,7 @@ func main() {
 	anonGID := uint32(metadata.DefaultAnonGID)
 
 	// Add primary export
-	if err := metadataRepo.AddExport("/export", metadata.ExportOptions{
+	if err := metadataRepo.AddExport(ctx, "/export", metadata.ExportOptions{
 		ReadOnly:  false,
 		Async:     true,
 		AllSquash: true,
@@ -190,7 +194,7 @@ func main() {
 	logger.Info("Export added: /export (read-write, all_squash)")
 
 	// Add restricted export example
-	if err := metadataRepo.AddExport("/nolocalhost", metadata.ExportOptions{
+	if err := metadataRepo.AddExport(ctx, "/nolocalhost", metadata.ExportOptions{
 		ReadOnly:           false,
 		Async:              true,
 		AllSquash:          true,
@@ -206,13 +210,13 @@ func main() {
 	logger.Info("Export added: /nolocalhost (network restricted)")
 
 	// Get root handle for initial structure creation
-	rootHandle, err := metadataRepo.GetRootHandle("/export")
+	rootHandle, err := metadataRepo.GetRootHandle(ctx, "/export")
 	if err != nil {
 		log.Fatalf("Failed to get root handle: %v", err)
 	}
 
 	// Create initial file structure
-	if err := createInitialStructure(metadataRepo, contentRepo, rootHandle); err != nil {
+	if err := createInitialStructure(ctx, metadataRepo, contentRepo, rootHandle); err != nil {
 		log.Fatalf("Failed to create initial structure: %v", err)
 	}
 	logger.Info("Initial file structure created")
@@ -248,10 +252,6 @@ func main() {
 
 	// Create NFS server with configuration
 	srv := nfsServer.New(serverConfig, metadataRepo, contentRepo)
-
-	// Create cancellable context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Start server in background
 	serverDone := make(chan error, 1)

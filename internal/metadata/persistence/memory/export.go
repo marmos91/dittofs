@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/metadata"
@@ -23,7 +24,7 @@ import (
 //
 // Returns:
 //   - error: Returns error if export already exists
-func (r *MemoryRepository) AddExport(path string, options metadata.ExportOptions, rootAttr *metadata.FileAttr) error {
+func (r *MemoryRepository) AddExport(ctx context.Context, path string, options metadata.ExportOptions, rootAttr *metadata.FileAttr) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -63,7 +64,7 @@ func (r *MemoryRepository) AddExport(path string, options metadata.ExportOptions
 // Returns:
 //   - []Export: List of all export configurations
 //   - error: Always returns nil (reserved for future use)
-func (r *MemoryRepository) GetExports() ([]metadata.Export, error) {
+func (r *MemoryRepository) GetExports(ctx context.Context) ([]metadata.Export, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -85,7 +86,7 @@ func (r *MemoryRepository) GetExports() ([]metadata.Export, error) {
 // Returns:
 //   - *Export: The export configuration
 //   - error: Returns error if export not found
-func (r *MemoryRepository) FindExport(path string) (*metadata.Export, error) {
+func (r *MemoryRepository) FindExport(ctx context.Context, path string) (*metadata.Export, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -108,7 +109,7 @@ func (r *MemoryRepository) FindExport(path string) (*metadata.Export, error) {
 // Returns:
 //   - FileHandle: The root directory handle
 //   - error: Returns error if export not found
-func (r *MemoryRepository) GetRootHandle(exportPath string) (metadata.FileHandle, error) {
+func (r *MemoryRepository) GetRootHandle(ctx context.Context, exportPath string) (metadata.FileHandle, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -133,7 +134,7 @@ func (r *MemoryRepository) GetRootHandle(exportPath string) (metadata.FileHandle
 //
 // Returns:
 //   - error: Returns error if export not found
-func (r *MemoryRepository) DeleteExport(path string) error {
+func (r *MemoryRepository) DeleteExport(ctx context.Context, path string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

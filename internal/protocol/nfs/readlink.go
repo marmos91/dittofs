@@ -218,9 +218,9 @@ type ReadLinkContext struct {
 //	    // Use resp.Target for symlink resolution
 //	}
 func (h *DefaultNFSHandler) ReadLink(
+	ctx *ReadLinkContext,
 	repository metadata.Repository,
 	req *ReadLinkRequest,
-	ctx *ReadLinkContext,
 ) (*ReadLinkResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
@@ -262,7 +262,7 @@ func (h *DefaultNFSHandler) ReadLink(
 	// - Handling any I/O errors
 
 	fileHandle := metadata.FileHandle(req.Handle)
-	target, attr, err := repository.ReadSymlink(fileHandle, authCtx)
+	target, attr, err := repository.ReadSymlink(authCtx, fileHandle)
 	if err != nil {
 		logger.Warn("READLINK failed: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)

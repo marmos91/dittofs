@@ -121,7 +121,11 @@ type MountContext struct {
 //	if resp.Status == MountOK {
 //	    // Use resp.FileHandle for NFS operations
 //	}
-func (h *DefaultMountHandler) Mount(repository metadata.Repository, req *MountRequest, ctx *MountContext) (*MountResponse, error) {
+func (h *DefaultMountHandler) Mount(
+	ctx *MountContext,
+	repository metadata.Repository,
+	req *MountRequest,
+) (*MountResponse, error) {
 	select {
 	case <-ctx.Context.Done():
 		return &MountResponse{Status: MountErrServerFault}, ctx.Context.Err()

@@ -154,9 +154,9 @@ type GetAttrContext struct {
 //	    // Use resp.Attr for file information
 //	}
 func (h *DefaultNFSHandler) GetAttr(
+	ctx *GetAttrContext,
 	repository metadata.Repository,
 	req *GetAttrRequest,
-	ctx *GetAttrContext,
 ) (*GetAttrResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)

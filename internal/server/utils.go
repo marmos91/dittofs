@@ -30,6 +30,7 @@ type rpcRequest interface {
 		*nfs.MknodRequest |
 		*nfs.CommitRequest |
 		*mount.MountRequest |
+		*mount.NullRequest |
 		*mount.UmountRequest |
 		*mount.DumpRequest |
 		*mount.UmountAllRequest |
@@ -60,6 +61,7 @@ type rpcResponse interface {
 		*nfs.MknodResponse |
 		*nfs.CommitResponse |
 		*mount.MountResponse |
+		*mount.NullResponse |
 		*mount.UmountResponse |
 		*mount.DumpResponse |
 		*mount.UmountAllResponse |

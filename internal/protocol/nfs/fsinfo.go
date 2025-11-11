@@ -179,7 +179,11 @@ type FsInfoContext struct {
 //	if resp.Status == types.NFS3OK {
 //	    // Success - use resp.Rtmax, resp.Wtmax, etc. to optimize I/O
 //	}
-func (h *DefaultNFSHandler) FsInfo(repository metadata.Repository, req *FsInfoRequest, ctx *FsInfoContext) (*FsInfoResponse, error) {
+func (h *DefaultNFSHandler) FsInfo(
+	ctx *FsInfoContext,
+	repository metadata.Repository,
+	req *FsInfoRequest,
+) (*FsInfoResponse, error) {
 	logger.Debug("FSINFO request: handle=%x client=%s auth=%d",
 		req.Handle, ctx.ClientAddr, ctx.AuthFlavor)
 

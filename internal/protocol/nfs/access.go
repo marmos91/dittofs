@@ -205,9 +205,9 @@ type AccessContext struct {
 //	    }
 //	}
 func (h *DefaultNFSHandler) Access(
+	ctx *AccessContext,
 	repository metadata.Repository,
 	req *AccessRequest,
-	ctx *AccessContext,
 ) (*AccessResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
@@ -254,7 +254,7 @@ func (h *DefaultNFSHandler) Access(
 		GIDs:       ctx.GIDs,
 	}
 
-	grantedAccess, err := repository.CheckAccess(fileHandle, req.Access, accessCtx)
+	grantedAccess, err := repository.CheckAccess(accessCtx, fileHandle, req.Access)
 	if err != nil {
 		logger.Error("ACCESS failed: permission check error: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)

@@ -168,10 +168,10 @@ type CreateContext struct {
 //
 // **RFC 1813 Section 3.3.8: CREATE Procedure**
 func (h *DefaultNFSHandler) Create(
+	ctx *CreateContext,
 	contentRepo content.Repository,
 	metadataRepo metadata.Repository,
 	req *CreateRequest,
-	ctx *CreateContext,
 ) (*CreateResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
@@ -462,7 +462,7 @@ func truncateExistingFile(
 	req *CreateRequest,
 ) (*metadata.FileAttr, error) {
 	// Get current file attributes
-	fileAttr, err := metadataRepo.GetFile(ctx.Context, fileHandle)
+	fileAttr, err := metadataRepo.GetFile(ctx, fileHandle)
 	if err != nil {
 		return nil, fmt.Errorf("get file for truncation: %w", err)
 	}

@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/metadata"
@@ -20,7 +21,7 @@ import (
 //
 // Returns:
 //   - error: Always returns nil (reserved for future validation)
-func (r *MemoryRepository) SetServerConfig(config metadata.ServerConfig) error {
+func (r *MemoryRepository) SetServerConfig(ctx context.Context, config metadata.ServerConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -36,7 +37,7 @@ func (r *MemoryRepository) SetServerConfig(config metadata.ServerConfig) error {
 // Returns:
 //   - ServerConfig: The current server configuration
 //   - error: Always returns nil (reserved for future use)
-func (r *MemoryRepository) GetServerConfig() (metadata.ServerConfig, error) {
+func (r *MemoryRepository) GetServerConfig(ctx context.Context) (metadata.ServerConfig, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -58,7 +59,7 @@ func (r *MemoryRepository) GetServerConfig() (metadata.ServerConfig, error) {
 //
 // Returns:
 //   - uint32: Maximum write size (1MB = 1048576 bytes)
-func (r *MemoryRepository) GetMaxWriteSize() uint32 {
+func (r *MemoryRepository) GetMaxWriteSize(ctx context.Context) uint32 {
 	// Return 1MB as a reasonable upper bound for write validation.
 	// This is 16x larger than the advertised wtmax (64KB), providing
 	// significant tolerance while still preventing DoS attacks.
@@ -101,7 +102,7 @@ func (r *MemoryRepository) GetMaxWriteSize() uint32 {
 // Returns:
 //   - *FSInfo: Static filesystem information
 //   - error: Returns error if handle not found
-func (r *MemoryRepository) GetFSInfo(handle metadata.FileHandle) (*metadata.FSInfo, error) {
+func (r *MemoryRepository) GetFSInfo(ctx context.Context, handle metadata.FileHandle) (*metadata.FSInfo, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -162,7 +163,7 @@ func (r *MemoryRepository) GetFSInfo(handle metadata.FileHandle) (*metadata.FSIn
 // Returns:
 //   - *FSStat: Dynamic filesystem statistics
 //   - error: Returns error if handle not found
-func (r *MemoryRepository) GetFSStats(handle metadata.FileHandle) (*metadata.FSStat, error) {
+func (r *MemoryRepository) GetFSStats(ctx context.Context, handle metadata.FileHandle) (*metadata.FSStat, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -214,7 +215,7 @@ func (r *MemoryRepository) GetFSStats(handle metadata.FileHandle) (*metadata.FSS
 // Returns:
 //   - *PathConf: POSIX filesystem properties
 //   - error: Returns error if handle not found
-func (r *MemoryRepository) GetPathConf(handle metadata.FileHandle) (*metadata.PathConf, error) {
+func (r *MemoryRepository) GetPathConf(ctx context.Context, handle metadata.FileHandle) (*metadata.PathConf, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 

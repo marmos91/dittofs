@@ -255,9 +255,9 @@ type ReadDirContext struct {
 //	    }
 //	}
 func (h *DefaultNFSHandler) ReadDir(
+	ctx *ReadDirContext,
 	repository metadata.Repository,
 	req *ReadDirRequest,
-	ctx *ReadDirContext,
 ) (*ReadDirResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
@@ -324,7 +324,7 @@ func (h *DefaultNFSHandler) ReadDir(
 	// - Handling cookie-based pagination
 	// - Respecting count limits
 
-	entries, eof, err := repository.ReadDir(dirHandle, req.Cookie, req.Count, authCtx)
+	entries, eof, err := repository.ReadDir(authCtx, dirHandle, req.Cookie, req.Count)
 	if err != nil {
 		logger.Error("READDIR failed: repository error: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)

@@ -29,7 +29,7 @@ import (
 //
 // Returns:
 //   - bool: true if write permission granted, false otherwise
-func hasWritePermission(attr *metadata.FileAttr, ctx *metadata.AuthContext) bool {
+func hasWritePermission(ctx *metadata.AuthContext, attr *metadata.FileAttr) bool {
 	// No authentication context: deny by default
 	if ctx == nil {
 		return false
@@ -78,7 +78,7 @@ func hasWritePermission(attr *metadata.FileAttr, ctx *metadata.AuthContext) bool
 //
 // Returns:
 //   - bool: true if read permission granted, false otherwise
-func hasReadPermission(attr *metadata.FileAttr, ctx *metadata.AuthContext) bool {
+func hasReadPermission(ctx *metadata.AuthContext, attr *metadata.FileAttr) bool {
 	// No authentication context: deny by default
 	if ctx == nil {
 		return false
@@ -127,7 +127,7 @@ func hasReadPermission(attr *metadata.FileAttr, ctx *metadata.AuthContext) bool 
 //
 // Returns:
 //   - bool: true if execute permission granted, false otherwise
-func hasExecutePermission(attr *metadata.FileAttr, ctx *metadata.AuthContext) bool {
+func hasExecutePermission(ctx *metadata.AuthContext, attr *metadata.FileAttr) bool {
 	// No authentication context: deny by default
 	if ctx == nil {
 		return false
@@ -178,7 +178,7 @@ func hasExecutePermission(attr *metadata.FileAttr, ctx *metadata.AuthContext) bo
 //
 // Returns:
 //   - bool: true if user is owner or root, false otherwise
-func isOwnerOrRoot(attr *metadata.FileAttr, ctx *metadata.AuthContext) bool {
+func isOwnerOrRoot(ctx *metadata.AuthContext, attr *metadata.FileAttr) bool {
 	if ctx == nil || ctx.AuthFlavor == 0 || ctx.UID == nil {
 		return false
 	}
@@ -200,7 +200,7 @@ func isOwnerOrRoot(attr *metadata.FileAttr, ctx *metadata.AuthContext) bool {
 //
 // Returns:
 //   - bool: true if group change is allowed, false otherwise
-func canChangeGroup(attr *metadata.FileAttr, targetGID uint32, ctx *metadata.AuthContext) bool {
+func canChangeGroup(ctx *metadata.AuthContext, attr *metadata.FileAttr, targetGID uint32) bool {
 	if ctx == nil || ctx.AuthFlavor == 0 || ctx.UID == nil || ctx.GID == nil {
 		return false
 	}
@@ -265,9 +265,9 @@ func canChangeGroup(attr *metadata.FileAttr, targetGID uint32, ctx *metadata.Aut
 //   - Attempting to set size on directory or special file
 //   - I/O error
 func (r *MemoryRepository) SetFileAttributes(
+	ctx *metadata.AuthContext,
 	handle metadata.FileHandle,
 	attrs *metadata.SetAttrs,
-	ctx *metadata.AuthContext,
 ) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -298,7 +298,7 @@ func (r *MemoryRepository) SetFileAttributes(
 
 	if attrs.SetMode {
 		// Check if user is owner or root
-		if !isOwnerOrRoot(fileAttr, ctx) {
+		if !isOwnerOrRoot(ctx, fileAttr) {
 			return &metadata.ExportError{
 				Code:    metadata.ExportErrAccessDenied,
 				Message: "only owner or root can change permissions",
@@ -344,7 +344,7 @@ func (r *MemoryRepository) SetFileAttributes(
 
 	if attrs.SetGID {
 		// Check if user can change group
-		if !canChangeGroup(fileAttr, attrs.GID, ctx) {
+		if !canChangeGroup(ctx, fileAttr, attrs.GID) {
 			return &metadata.ExportError{
 				Code:    metadata.ExportErrAccessDenied,
 				Message: "only root or owner (if in target group) can change group",
@@ -371,7 +371,7 @@ func (r *MemoryRepository) SetFileAttributes(
 		}
 
 		// Check write permission
-		if !hasWritePermission(fileAttr, ctx) {
+		if !hasWritePermission(ctx, fileAttr) {
 			return &metadata.ExportError{
 				Code:    metadata.ExportErrAccessDenied,
 				Message: "write permission denied for size change",
@@ -400,7 +400,7 @@ func (r *MemoryRepository) SetFileAttributes(
 
 	if attrs.SetAtime {
 		// Check if user can set atime (owner or write permission)
-		if !isOwnerOrRoot(fileAttr, ctx) && !hasWritePermission(fileAttr, ctx) {
+		if !isOwnerOrRoot(ctx, fileAttr) && !hasWritePermission(ctx, fileAttr) {
 			return &metadata.ExportError{
 				Code:    metadata.ExportErrAccessDenied,
 				Message: "insufficient permission to set atime",
@@ -419,7 +419,7 @@ func (r *MemoryRepository) SetFileAttributes(
 
 	if attrs.SetMtime {
 		// Check if user can set mtime (owner or write permission)
-		if !isOwnerOrRoot(fileAttr, ctx) && !hasWritePermission(fileAttr, ctx) {
+		if !isOwnerOrRoot(ctx, fileAttr) && !hasWritePermission(ctx, fileAttr) {
 			return &metadata.ExportError{
 				Code:    metadata.ExportErrAccessDenied,
 				Message: "insufficient permission to set mtime",
@@ -483,10 +483,10 @@ func (r *MemoryRepository) SetFileAttributes(
 //   - Name already exists in directory
 //   - Cross-filesystem link attempted (implementation-specific)
 func (r *MemoryRepository) CreateLink(
+	ctx *metadata.AuthContext,
 	dirHandle metadata.FileHandle,
 	name string,
 	fileHandle metadata.FileHandle,
-	ctx *metadata.AuthContext,
 ) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -528,7 +528,7 @@ func (r *MemoryRepository) CreateLink(
 	// Step 3: Check write access to directory
 	// ========================================================================
 
-	if !hasWritePermission(dirAttr, ctx) {
+	if !hasWritePermission(ctx, dirAttr) {
 		return &metadata.ExportError{
 			Code:    metadata.ExportErrAccessDenied,
 			Message: "write permission denied on target directory",
@@ -614,10 +614,10 @@ func (r *MemoryRepository) CreateLink(
 //   - Parent is not a directory
 //   - I/O error
 func (r *MemoryRepository) CreateDirectory(
+	ctx *metadata.AuthContext,
 	parentHandle metadata.FileHandle,
 	name string,
 	attr *metadata.FileAttr,
-	ctx *metadata.AuthContext,
 ) (metadata.FileHandle, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -647,7 +647,7 @@ func (r *MemoryRepository) CreateDirectory(
 	// Step 2: Check write access to parent directory
 	// ========================================================================
 
-	if !hasWritePermission(parentAttr, ctx) {
+	if !hasWritePermission(ctx, parentAttr) {
 		return nil, &metadata.ExportError{
 			Code:    metadata.ExportErrAccessDenied,
 			Message: "write permission denied on parent directory",
@@ -774,12 +774,12 @@ func (r *MemoryRepository) CreateDirectory(
 //   - Invalid file type
 //   - I/O error
 func (r *MemoryRepository) CreateSpecialFile(
+	ctx *metadata.AuthContext,
 	parentHandle metadata.FileHandle,
 	name string,
 	attr *metadata.FileAttr,
 	majorDevice uint32,
 	minorDevice uint32,
-	ctx *metadata.AuthContext,
 ) (metadata.FileHandle, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -809,7 +809,7 @@ func (r *MemoryRepository) CreateSpecialFile(
 	// Step 2: Check write access to parent directory
 	// ========================================================================
 
-	if !hasWritePermission(parentAttr, ctx) {
+	if !hasWritePermission(ctx, parentAttr) {
 		return nil, &metadata.ExportError{
 			Code:    metadata.ExportErrAccessDenied,
 			Message: "write permission denied on parent directory",
@@ -976,10 +976,10 @@ func (r *MemoryRepository) CreateSpecialFile(
 //   - bool: EOF flag (true if all entries returned)
 //   - error: Access denied or I/O errors
 func (r *MemoryRepository) ReadDir(
+	ctx *metadata.AuthContext,
 	dirHandle metadata.FileHandle,
 	cookie uint64,
 	count uint32,
-	ctx *metadata.AuthContext,
 ) ([]metadata.DirEntry, bool, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -1011,7 +1011,7 @@ func (r *MemoryRepository) ReadDir(
 	// Execute (search) permission is required to read directory contents
 	// Read permission is required to list the directory
 
-	if !hasReadPermission(dirAttr, ctx) || !hasExecutePermission(dirAttr, ctx) {
+	if !hasReadPermission(ctx, dirAttr) || !hasExecutePermission(ctx, dirAttr) {
 		return nil, false, &metadata.ExportError{
 			Code:    metadata.ExportErrAccessDenied,
 			Message: "read/execute permission denied on directory",
@@ -1189,9 +1189,9 @@ func (r *MemoryRepository) ReadDir(
 //   - Parent is not a directory
 //   - I/O error
 func (r *MemoryRepository) RemoveFile(
+	ctx *metadata.AuthContext,
 	parentHandle metadata.FileHandle,
 	filename string,
-	ctx *metadata.AuthContext,
 ) (*metadata.FileAttr, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1221,7 +1221,7 @@ func (r *MemoryRepository) RemoveFile(
 	// Step 2: Check write permission on parent directory
 	// ========================================================================
 
-	if !hasWritePermission(parentAttr, ctx) {
+	if !hasWritePermission(ctx, parentAttr) {
 		return nil, &metadata.ExportError{
 			Code:    metadata.ExportErrAccessDenied,
 			Message: "write permission denied on parent directory",
@@ -1337,9 +1337,9 @@ func (r *MemoryRepository) RemoveFile(
 //   - Parent is not a directory
 //   - I/O error
 func (r *MemoryRepository) RemoveDirectory(
+	ctx *metadata.AuthContext,
 	parentHandle metadata.FileHandle,
 	name string,
-	ctx *metadata.AuthContext,
 ) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1422,7 +1422,7 @@ func (r *MemoryRepository) RemoveDirectory(
 	// Step 5: Check write permission on parent directory
 	// ========================================================================
 
-	if !hasWritePermission(parentAttr, ctx) {
+	if !hasWritePermission(ctx, parentAttr) {
 		return &metadata.ExportError{
 			Code:    metadata.ExportErrAccessDenied,
 			Message: "write permission denied on parent directory",
@@ -1496,8 +1496,8 @@ func (r *MemoryRepository) RemoveDirectory(
 //   - Target path is missing or empty
 //   - I/O error
 func (r *MemoryRepository) ReadSymlink(
-	handle metadata.FileHandle,
 	ctx *metadata.AuthContext,
+	handle metadata.FileHandle,
 ) (string, *metadata.FileAttr, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -1530,7 +1530,7 @@ func (r *MemoryRepository) ReadSymlink(
 	// Step 3: Check read permission
 	// ========================================================================
 
-	if !hasReadPermission(attr, ctx) {
+	if !hasReadPermission(ctx, attr) {
 		return "", nil, &metadata.ExportError{
 			Code:    metadata.ExportErrAccessDenied,
 			Message: "read permission denied on symbolic link",
@@ -1607,11 +1607,11 @@ func (r *MemoryRepository) ReadSymlink(
 //   - Type mismatch (file vs directory) when replacing
 //   - I/O error
 func (r *MemoryRepository) RenameFile(
+	ctx *metadata.AuthContext,
 	fromDirHandle metadata.FileHandle,
 	fromName string,
 	toDirHandle metadata.FileHandle,
 	toName string,
-	ctx *metadata.AuthContext,
 ) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1661,7 +1661,7 @@ func (r *MemoryRepository) RenameFile(
 	// ========================================================================
 	// Need write permission to remove the entry from source directory
 
-	if !hasWritePermission(fromDirAttr, ctx) {
+	if !hasWritePermission(ctx, fromDirAttr) {
 		return &metadata.ExportError{
 			Code:    metadata.ExportErrAccessDenied,
 			Message: "write permission denied on source directory",
@@ -1673,7 +1673,7 @@ func (r *MemoryRepository) RenameFile(
 	// ========================================================================
 	// Need write permission to add the entry to destination directory
 
-	if !hasWritePermission(toDirAttr, ctx) {
+	if !hasWritePermission(ctx, toDirAttr) {
 		return &metadata.ExportError{
 			Code:    metadata.ExportErrAccessDenied,
 			Message: "write permission denied on destination directory",
@@ -1874,11 +1874,11 @@ func (r *MemoryRepository) RenameFile(
 //   - Parent is not a directory
 //   - I/O error
 func (r *MemoryRepository) CreateSymlink(
+	ctx *metadata.AuthContext,
 	parentHandle metadata.FileHandle,
 	name string,
 	target string,
 	attr *metadata.FileAttr,
-	ctx *metadata.AuthContext,
 ) (metadata.FileHandle, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1908,7 +1908,7 @@ func (r *MemoryRepository) CreateSymlink(
 	// Step 2: Check write access to parent directory
 	// ========================================================================
 
-	if !hasWritePermission(parentAttr, ctx) {
+	if !hasWritePermission(ctx, parentAttr) {
 		return nil, &metadata.ExportError{
 			Code:    metadata.ExportErrAccessDenied,
 			Message: "write permission denied on parent directory",
@@ -2053,9 +2053,9 @@ func (r *MemoryRepository) CreateSymlink(
 //	// File size now reflects write
 //	// newAttr.Mtime reflects write time
 func (r *MemoryRepository) WriteFile(
+	ctx *metadata.AuthContext,
 	handle metadata.FileHandle,
 	newSize uint64,
-	ctx *metadata.AuthContext,
 ) (*metadata.FileAttr, uint64, time.Time, time.Time, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -2096,7 +2096,7 @@ func (r *MemoryRepository) WriteFile(
 	// Step 4: Check write permission
 	// ========================================================================
 
-	if !hasWritePermission(attr, ctx) {
+	if !hasWritePermission(ctx, attr) {
 		return nil, preSize, preMtime, preCtime, &metadata.ExportError{
 			Code:    metadata.ExportErrAccessDenied,
 			Message: "write permission denied",

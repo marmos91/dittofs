@@ -233,11 +233,11 @@ func (c *conn) handleNFSProcedure(ctx context.Context, call *rpc.RPCCallMessage,
 
 	// Dispatch to handler
 	return procInfo.Handler(
+		authCtx,
 		c.server.nfsHandler,
 		c.server.repository,
 		c.server.content,
 		data,
-		authCtx,
 	)
 }
 
@@ -263,10 +263,10 @@ func (c *conn) handleMountProcedure(ctx context.Context, call *rpc.RPCCallMessag
 
 	// Dispatch to handler
 	return procInfo.Handler(
+		authCtx,
 		c.server.mountHandler,
 		c.server.repository,
 		data,
-		authCtx,
 	)
 }
 

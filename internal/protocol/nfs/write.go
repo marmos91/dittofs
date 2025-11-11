@@ -267,10 +267,10 @@ type WriteContext struct {
 //	    // Check resp.Committed for actual stability level
 //	}
 func (h *DefaultNFSHandler) Write(
+	ctx *WriteContext,
 	contentRepo content.Repository,
 	metadataRepo metadata.Repository,
 	req *WriteRequest,
-	ctx *WriteContext,
 ) (*WriteResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
@@ -339,8 +339,6 @@ func (h *DefaultNFSHandler) Write(
 	// - Return updated attributes
 
 	updatedAttr, preSize, preMtime, preCtime, err := metadataRepo.WriteFile(
-		fileHandle,
-		newSize,
 		&metadata.AuthContext{
 			AuthFlavor: ctx.AuthFlavor,
 			UID:        ctx.UID,
@@ -348,6 +346,8 @@ func (h *DefaultNFSHandler) Write(
 			GIDs:       ctx.GIDs,
 			ClientAddr: clientIP,
 		},
+		fileHandle,
+		newSize,
 	)
 
 	// Build WCC attributes from pre-operation values

@@ -262,9 +262,9 @@ type MkdirContext struct {
 //	    // Directory created successfully, use resp.Handle
 //	}
 func (h *DefaultNFSHandler) Mkdir(
+	ctx *MkdirContext,
 	repository metadata.Repository,
 	req *MkdirRequest,
-	ctx *MkdirContext,
 ) (*MkdirResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
@@ -357,7 +357,7 @@ func (h *DefaultNFSHandler) Mkdir(
 	// Convert SetAttrs to metadata format for repository
 	dirAttr := xdr.ConvertSetAttrsToMetadata(metadata.FileTypeDirectory, &req.Attr, authCtx)
 
-	newHandle, err := repository.CreateDirectory(parentHandle, req.Name, dirAttr, authCtx)
+	newHandle, err := repository.CreateDirectory(authCtx, parentHandle, req.Name, dirAttr)
 	if err != nil {
 		logger.Error("MKDIR failed: repository error: name='%s' client=%s error=%v",
 			req.Name, clientIP, err)

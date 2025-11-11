@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"slices"
@@ -46,6 +47,7 @@ import (
 //   - *AuthContext: Contains effective credentials after squashing
 //   - error: Returns ExportError with specific error code if access denied
 func (r *MemoryRepository) CheckExportAccess(
+	ctx context.Context,
 	exportPath string,
 	clientAddr string,
 	authFlavor uint32,
@@ -244,7 +246,7 @@ func matchesIPPattern(clientIP string, pattern string) bool {
 //
 // Note: Denied access returns 0 permissions, not an error. This follows
 // RFC 1813 semantics where ACCESS always succeeds but may grant no permissions.
-func (r *MemoryRepository) CheckAccess(handle metadata.FileHandle, requested uint32, ctx *metadata.AccessCheckContext) (uint32, error) {
+func (r *MemoryRepository) CheckAccess(ctx *metadata.AccessCheckContext, handle metadata.FileHandle, requested uint32) (uint32, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -383,7 +385,7 @@ func (r *MemoryRepository) CheckAccess(handle metadata.FileHandle, requested uin
 //
 // Returns:
 //   - error: Returns ExportError if access denied, nil if allowed
-func (r *MemoryRepository) CheckDumpAccess(clientAddr string) error {
+func (r *MemoryRepository) CheckDumpAccess(ctx context.Context, clientAddr string) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 

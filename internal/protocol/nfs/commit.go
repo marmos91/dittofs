@@ -273,9 +273,9 @@ type CommitContext struct {
 //	    // Data committed successfully
 //	}
 func (h *DefaultNFSHandler) Commit(
+	ctx *CommitContext,
 	repository metadata.Repository,
 	req *CommitRequest,
-	ctx *CommitContext,
 ) (*CommitResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)

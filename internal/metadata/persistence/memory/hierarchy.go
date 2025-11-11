@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"maps"
 
@@ -21,7 +22,7 @@ import (
 //
 // Returns:
 //   - error: Always returns nil (reserved for future validation)
-func (r *MemoryRepository) SetParent(child metadata.FileHandle, parent metadata.FileHandle) error {
+func (r *MemoryRepository) SetParent(ctx context.Context, child metadata.FileHandle, parent metadata.FileHandle) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -42,7 +43,7 @@ func (r *MemoryRepository) SetParent(child metadata.FileHandle, parent metadata.
 // Returns:
 //   - FileHandle: The parent directory handle
 //   - error: Returns error if parent not found
-func (r *MemoryRepository) GetParent(child metadata.FileHandle) (metadata.FileHandle, error) {
+func (r *MemoryRepository) GetParent(ctx context.Context, child metadata.FileHandle) (metadata.FileHandle, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -70,7 +71,7 @@ func (r *MemoryRepository) GetParent(child metadata.FileHandle) (metadata.FileHa
 //
 // Returns:
 //   - error: Returns error if name already exists
-func (r *MemoryRepository) AddChild(parent metadata.FileHandle, name string, child metadata.FileHandle) error {
+func (r *MemoryRepository) AddChild(ctx context.Context, parent metadata.FileHandle, name string, child metadata.FileHandle) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -104,7 +105,7 @@ func (r *MemoryRepository) AddChild(parent metadata.FileHandle, name string, chi
 // Returns:
 //   - FileHandle: The child's file handle
 //   - error: Returns error if parent has no children or name not found
-func (r *MemoryRepository) GetChild(parent metadata.FileHandle, name string) (metadata.FileHandle, error) {
+func (r *MemoryRepository) GetChild(ctx context.Context, parent metadata.FileHandle, name string) (metadata.FileHandle, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -138,7 +139,7 @@ func (r *MemoryRepository) GetChild(parent metadata.FileHandle, name string) (me
 // Returns:
 //   - map[string]FileHandle: Copy of all child name-handle mappings
 //   - error: Always returns nil, empty map if no children
-func (r *MemoryRepository) GetChildren(parent metadata.FileHandle) (map[string]metadata.FileHandle, error) {
+func (r *MemoryRepository) GetChildren(ctx context.Context, parent metadata.FileHandle) (map[string]metadata.FileHandle, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -171,7 +172,7 @@ func (r *MemoryRepository) GetChildren(parent metadata.FileHandle) (map[string]m
 //
 // Returns:
 //   - error: Returns error if parent has no children or name not found
-func (r *MemoryRepository) DeleteChild(parent metadata.FileHandle, name string) error {
+func (r *MemoryRepository) DeleteChild(ctx context.Context, parent metadata.FileHandle, name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

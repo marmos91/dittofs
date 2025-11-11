@@ -224,9 +224,9 @@ type RemoveContext struct {
 //	    // File removed successfully
 //	}
 func (h *DefaultNFSHandler) Remove(
+	ctx *RemoveContext,
 	repository metadata.Repository,
 	req *RemoveRequest,
-	ctx *RemoveContext,
 ) (*RemoveResponse, error) {
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
@@ -283,7 +283,7 @@ func (h *DefaultNFSHandler) Remove(
 	// - Deleting the file metadata
 	// - Updating parent directory timestamps
 
-	removedFileAttr, err := repository.RemoveFile(dirHandle, req.Filename, authCtx)
+	removedFileAttr, err := repository.RemoveFile(authCtx, dirHandle, req.Filename)
 	if err != nil {
 		// Map repository errors to NFS status codes
 		nfsStatus := xdr.MapRepositoryErrorToNFSStatus(err, clientIP, "REMOVE")

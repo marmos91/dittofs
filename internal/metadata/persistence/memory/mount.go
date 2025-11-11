@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/metadata"
@@ -27,7 +28,7 @@ import (
 //
 // Returns:
 //   - error: Always returns nil (reserved for future validation)
-func (r *MemoryRepository) RecordMount(exportPath string, clientAddr string, authFlavor uint32, machineName string, uid *uint32, gid *uint32) error {
+func (r *MemoryRepository) RecordMount(ctx context.Context, exportPath string, clientAddr string, authFlavor uint32, machineName string, uid *uint32, gid *uint32) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -64,7 +65,7 @@ func (r *MemoryRepository) RecordMount(exportPath string, clientAddr string, aut
 //
 // Returns:
 //   - error: Always returns nil (idempotent operation)
-func (r *MemoryRepository) RemoveMount(exportPath string, clientAddr string) error {
+func (r *MemoryRepository) RemoveMount(ctx context.Context, exportPath string, clientAddr string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -86,7 +87,7 @@ func (r *MemoryRepository) RemoveMount(exportPath string, clientAddr string) err
 // Returns:
 //   - []MountEntry: List of matching mount records
 //   - error: Always returns nil
-func (r *MemoryRepository) GetMounts(exportPath string) ([]metadata.MountEntry, error) {
+func (r *MemoryRepository) GetMounts(ctx context.Context, exportPath string) ([]metadata.MountEntry, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -114,7 +115,7 @@ func (r *MemoryRepository) GetMounts(exportPath string) ([]metadata.MountEntry, 
 // Returns:
 //   - bool: True if client has an active mount
 //   - error: Always returns nil
-func (r *MemoryRepository) IsClientMounted(exportPath string, clientAddr string) (bool, error) {
+func (r *MemoryRepository) IsClientMounted(ctx context.Context, exportPath string, clientAddr string) (bool, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -134,7 +135,7 @@ func (r *MemoryRepository) IsClientMounted(exportPath string, clientAddr string)
 // Returns:
 //   - []MountEntry: List of all mounts by this client
 //   - error: Always returns nil
-func (r *MemoryRepository) GetMountsByClient(clientAddr string) ([]metadata.MountEntry, error) {
+func (r *MemoryRepository) GetMountsByClient(ctx context.Context, clientAddr string) ([]metadata.MountEntry, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -162,7 +163,7 @@ func (r *MemoryRepository) GetMountsByClient(clientAddr string) ([]metadata.Moun
 //
 // Returns:
 //   - error: Always returns nil
-func (r *MemoryRepository) RemoveAllMounts(clientAddr string) error {
+func (r *MemoryRepository) RemoveAllMounts(ctx context.Context, clientAddr string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
