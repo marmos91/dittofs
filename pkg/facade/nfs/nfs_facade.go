@@ -494,10 +494,11 @@ func (s *NFSFacade) gracefulShutdown() error {
 //
 // The context parameter allows the caller to set a custom shutdown timeout,
 // overriding the configured ShutdownTimeout. If ctx is cancelled before
-// connections complete, Stop returns immediately.
+// connections complete, Stop returns with the context error.
 //
 // Parameters:
-//   - ctx: Controls the shutdown timeout. If cancelled, Stop returns immediately.
+//   - ctx: Controls the shutdown timeout. If cancelled, Stop returns immediately
+//     with context error after initiating shutdown.
 //
 // Returns:
 //   - nil on successful graceful shutdown
@@ -506,15 +507,38 @@ func (s *NFSFacade) gracefulShutdown() error {
 // Thread safety:
 // Safe to call concurrently from multiple goroutines.
 func (s *NFSFacade) Stop(ctx context.Context) error {
+	// Always initiate shutdown first
 	s.initiateShutdown()
 
-	// If caller provided a context, respect it
-	// Otherwise use our configured timeout
-	if ctx != nil && ctx.Err() != nil {
-		return ctx.Err()
+	// If no context provided, use gracefulShutdown with configured timeout
+	if ctx == nil {
+		return s.gracefulShutdown()
 	}
 
-	return s.gracefulShutdown()
+	// Wait for graceful shutdown with context timeout
+	activeCount := s.connCount.Load()
+	logger.Info("NFS graceful shutdown: waiting for %d active connection(s) (context timeout)",
+		activeCount)
+
+	// Create channel that closes when all connections are done
+	done := make(chan struct{})
+	go func() {
+		s.activeConns.Wait()
+		close(done)
+	}()
+
+	// Wait for completion or context cancellation
+	select {
+	case <-done:
+		logger.Info("NFS graceful shutdown complete: all connections closed")
+		return nil
+
+	case <-ctx.Done():
+		remaining := s.connCount.Load()
+		logger.Warn("NFS shutdown context cancelled: %d connection(s) still active: %v",
+			remaining, ctx.Err())
+		return ctx.Err()
+	}
 }
 
 // logMetrics periodically logs server metrics for monitoring.
