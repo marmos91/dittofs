@@ -4,14 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
-
-// Export data structure
-type exportData struct {
-	Export     metadata.Export
-	RootHandle metadata.FileHandle
-}
 
 // AddExport adds a new export to the repository with the specified configuration.
 //

@@ -1,10 +1,10 @@
-package server
+package facade
 
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/internal/content"
-	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/pkg/content"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // Facade represents a protocol-specific server facade that can be managed by DittoServer.

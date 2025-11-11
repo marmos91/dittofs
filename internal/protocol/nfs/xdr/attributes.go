@@ -1,8 +1,8 @@
 package xdr
 
 import (
-	"github.com/marmos91/dittofs/internal/metadata"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // MetadataToNFS converts internal file metadata to NFS fattr3 format.

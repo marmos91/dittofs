@@ -6,9 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/content"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/pkg/content"
+	"github.com/marmos91/dittofs/pkg/facade"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // DittoServer manages the lifecycle of multiple protocol facades that share
@@ -50,7 +51,7 @@ type DittoServer struct {
 	content content.Repository
 
 	// facades contains all registered protocol facades
-	facades []Facade
+	facades []facade.Facade
 
 	// mu protects the facades slice during concurrent access
 	mu sync.RWMutex
@@ -87,7 +88,7 @@ func New(metadata metadata.Repository, content content.Repository) *DittoServer 
 	return &DittoServer{
 		metadata: metadata,
 		content:  content,
-		facades:  make([]Facade, 0, 4), // Pre-allocate for common case of 2-4 facades
+		facades:  make([]facade.Facade, 0, 4), // Pre-allocate for common case of 2-4 facades
 	}
 }
 
@@ -117,7 +118,7 @@ func New(metadata metadata.Repository, content content.Repository) *DittoServer 
 //
 //	server.AddFacade(nfs.New(nfsConfig)).
 //	       AddFacade(smb.New(smbConfig))
-func (s *DittoServer) AddFacade(facade Facade) *DittoServer {
+func (s *DittoServer) AddFacade(facade facade.Facade) *DittoServer {
 	if facade == nil {
 		panic("facade cannot be nil")
 	}
@@ -198,7 +199,7 @@ func (s *DittoServer) serve(ctx context.Context) error {
 		s.mu.Unlock()
 		return fmt.Errorf("no facades registered; call AddFacade() before Serve()")
 	}
-	facades := make([]Facade, len(s.facades))
+	facades := make([]facade.Facade, len(s.facades))
 	copy(facades, s.facades)
 	s.serving = true
 	s.mu.Unlock()
@@ -214,9 +215,9 @@ func (s *DittoServer) serve(ctx context.Context) error {
 
 	// Start all facades concurrently
 	startTime := time.Now()
-	for _, facade := range facades {
+	for _, fac := range facades {
 		wg.Add(1)
-		go func(f Facade) {
+		go func(f facade.Facade) {
 			defer wg.Done()
 
 			protocol := f.Protocol()
@@ -236,7 +237,7 @@ func (s *DittoServer) serve(ctx context.Context) error {
 			} else {
 				logger.Info("%s facade stopped", protocol)
 			}
-		}(facade)
+		}(fac)
 	}
 
 	// Log successful startup after a brief delay to allow facades to start
@@ -292,7 +293,7 @@ type facadeError struct {
 //
 // Parameters:
 //   - facades: Snapshot of facades to stop (in registration order)
-func (s *DittoServer) stopAllFacades(facades []Facade) {
+func (s *DittoServer) stopAllFacades(facades []facade.Facade) {
 	// Create a context with timeout for all shutdown operations
 	// This prevents a single misbehaving facade from blocking shutdown indefinitely
 	const stopTimeout = 30 * time.Second
@@ -328,11 +329,11 @@ func (s *DittoServer) stopAllFacades(facades []Facade) {
 //
 // Thread safety:
 // Safe to call concurrently with AddFacade() and Serve().
-func (s *DittoServer) Facades() []Facade {
+func (s *DittoServer) Facades() []facade.Facade {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	facades := make([]Facade, len(s.facades))
+	facades := make([]facade.Facade, len(s.facades))
 	copy(facades, s.facades)
 	return facades
 }

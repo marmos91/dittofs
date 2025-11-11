@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"maps"
 
-	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // SetParent establishes the parent-child relationship for a file handle.

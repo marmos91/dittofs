@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/content"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/metadata"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	"github.com/marmos91/dittofs/pkg/content"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -594,10 +594,7 @@ func readWithCancellation(ctx context.Context, reader io.Reader, buf []byte) (in
 		}
 
 		// Determine chunk size for this iteration
-		readSize := chunkSize
-		if remaining < chunkSize {
-			readSize = remaining
-		}
+		readSize := min(remaining, chunkSize)
 
 		// Read chunk
 		n, err := io.ReadFull(reader, buf[totalRead:totalRead+readSize])

@@ -566,8 +566,8 @@ func (s *NFSFacade) GetActiveConnections() int32 {
 //   - tcpConn: The accepted TCP connection
 //
 // Returns a conn instance ready to serve requests.
-func (s *NFSFacade) newConn(tcpConn net.Conn) *nfs.Conn {
-	return nfs.NewConn(s, tcpConn)
+func (s *NFSFacade) newConn(tcpConn net.Conn) *NFSConn {
+	return NewNFSConn(s, tcpConn)
 }
 
 // Port returns the TCP port the NFS server is listening on.

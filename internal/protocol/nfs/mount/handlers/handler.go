@@ -1,6 +1,6 @@
 package handlers
 
-import "github.com/marmos91/dittofs/internal/metadata"
+import "github.com/marmos91/dittofs/pkg/metadata"
 
 type MountHandler interface {
 	// MountNull does nothing. This is used to test connectivity.

@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	nfs "github.com/marmos91/dittofs/internal/protocol/nfs"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
-	"github.com/marmos91/dittofs/pkg/facade/nfs"
 )
 
-type Conn struct {
-	server *nfs.NFSFacade
+type NFSConn struct {
+	server *NFSFacade
 	conn   net.Conn
 }
 
@@ -23,8 +23,8 @@ type fragmentHeader struct {
 	Length uint32
 }
 
-func NewConn(server *nfs.NFSFacade, conn net.Conn) *Conn {
-	return &Conn{
+func NewNFSConn(server *NFSFacade, conn net.Conn) *NFSConn {
+	return &NFSConn{
 		server,
 		conn,
 	}
@@ -43,7 +43,7 @@ func NewConn(server *nfs.NFSFacade, conn net.Conn) *Conn {
 //
 // Context cancellation is checked at the beginning of each request loop,
 // ensuring graceful shutdown and proper cleanup of resources.
-func (c *Conn) Serve(ctx context.Context) {
+func (c *NFSConn) Serve(ctx context.Context) {
 	defer func() {
 		// Panic recovery - prevents a single connection from crashing the server
 		if r := recover(); r != nil {
@@ -119,7 +119,7 @@ func (c *Conn) Serve(ctx context.Context) {
 // - Network error occurs
 // - Message is malformed or too large
 // - Handler returns an error
-func (c *conn) handleRequest(ctx context.Context) error {
+func (c *NFSConn) handleRequest(ctx context.Context) error {
 	// Check context before starting request processing
 	select {
 	case <-ctx.Done():
@@ -161,7 +161,7 @@ func (c *conn) handleRequest(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read RPC message: %w", err)
 	}
-	defer PutBuffer(message) // Always return buffer to pool
+	defer nfs.PutBuffer(message) // Always return buffer to pool
 
 	// Parse RPC call
 	call, err := rpc.ReadCall(message)
@@ -197,7 +197,7 @@ func (c *conn) handleRequest(ctx context.Context) error {
 // - Bits 0-30: Fragment length in bytes
 //
 // Returns the parsed header or an error if reading fails.
-func (c *conn) readFragmentHeader() (*fragmentHeader, error) {
+func (c *NFSConn) readFragmentHeader() (*fragmentHeader, error) {
 	var buf [4]byte
 	_, err := io.ReadFull(c.conn, buf[:])
 	if err != nil {
@@ -217,15 +217,15 @@ func (c *conn) readFragmentHeader() (*fragmentHeader, error) {
 // The caller is responsible for returning the buffer to the pool via PutBuffer.
 //
 // Returns the message buffer or an error if reading fails.
-func (c *conn) readRPCMessage(length uint32) ([]byte, error) {
+func (c *NFSConn) readRPCMessage(length uint32) ([]byte, error) {
 	// Get buffer from pool
-	message := GetBuffer(length)
+	message := nfs.GetBuffer(length)
 
 	// Read directly into pooled buffer
 	_, err := io.ReadFull(c.conn, message)
 	if err != nil {
 		// Return buffer to pool on error
-		PutBuffer(message)
+		nfs.PutBuffer(message)
 		return nil, fmt.Errorf("read message: %w", err)
 	}
 
@@ -244,7 +244,7 @@ func (c *conn) readRPCMessage(length uint32) ([]byte, error) {
 // - Context is cancelled during processing
 // - Handler returns an error
 // - Reply cannot be sent
-func (c *conn) handleRPCCall(ctx context.Context, call *rpc.RPCCallMessage, procedureData []byte) error {
+func (c *NFSConn) handleRPCCall(ctx context.Context, call *rpc.RPCCallMessage, procedureData []byte) error {
 	var replyData []byte
 	var err error
 
@@ -298,16 +298,16 @@ func (c *conn) handleRPCCall(ctx context.Context, call *rpc.RPCCallMessage, proc
 // - Support graceful server shutdown
 //
 // Returns the reply data or an error if the handler fails.
-func (c *conn) handleNFSProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
+func (c *NFSConn) handleNFSProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
 	// Look up procedure in dispatch table
-	procInfo, ok := nfsDispatchTable[call.Procedure]
+	procInfo, ok := nfs.NfsDispatchTable[call.Procedure]
 	if !ok {
 		logger.Debug("Unknown NFS procedure: %d", call.Procedure)
 		return []byte{}, nil
 	}
 
 	// Extract authentication context
-	authCtx := extractAuthContext(ctx, call, clientAddr, procInfo.Name)
+	authCtx := nfs.ExtractAuthContext(ctx, call, clientAddr, procInfo.Name)
 
 	// Log procedure with auth info
 	if authCtx.UID != nil {
@@ -346,16 +346,16 @@ func (c *conn) handleNFSProcedure(ctx context.Context, call *rpc.RPCCallMessage,
 // The context enables handlers to respect cancellation and timeouts.
 //
 // Returns the reply data or an error if the handler fails.
-func (c *conn) handleMountProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
+func (c *NFSConn) handleMountProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
 	// Look up procedure in dispatch table
-	procInfo, ok := mountDispatchTable[call.Procedure]
+	procInfo, ok := nfs.MountDispatchTable[call.Procedure]
 	if !ok {
 		logger.Debug("Unknown Mount procedure: %d", call.Procedure)
 		return []byte{}, nil
 	}
 
 	// Extract authentication context
-	authCtx := extractAuthContext(ctx, call, clientAddr, procInfo.Name)
+	authCtx := nfs.ExtractAuthContext(ctx, call, clientAddr, procInfo.Name)
 
 	// Log procedure with auth info
 	if authCtx.UID != nil {
@@ -393,7 +393,7 @@ func (c *conn) handleMountProcedure(ctx context.Context, call *rpc.RPCCallMessag
 // - Write timeout cannot be set
 // - Reply construction fails
 // - Network write fails
-func (c *conn) sendReply(xid uint32, data []byte) error {
+func (c *NFSConn) sendReply(xid uint32, data []byte) error {
 	if c.server.config.WriteTimeout > 0 {
 		deadline := time.Now().Add(c.server.config.WriteTimeout)
 		if err := c.conn.SetWriteDeadline(deadline); err != nil {

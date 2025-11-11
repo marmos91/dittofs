@@ -3,13 +3,13 @@ package nfs
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/internal/content"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/metadata"
 	mount "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	nfs "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
+	"github.com/marmos91/dittofs/pkg/content"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -84,7 +84,7 @@ type AuthContext struct {
 //
 // Returns:
 //   - AuthContext with extracted authentication information and propagated context
-func extractAuthContext(
+func ExtractAuthContext(
 	ctx context.Context,
 	call *rpc.RPCCallMessage,
 	clientAddr string,
@@ -172,7 +172,7 @@ type nfsProcedureInfo struct {
 // The table is initialized once at package init time for efficiency.
 // Each entry contains the procedure name, handler function, and metadata
 // about authentication requirements.
-var nfsDispatchTable map[uint32]*nfsProcedureInfo
+var NfsDispatchTable map[uint32]*nfsProcedureInfo
 
 // mountProcedureHandler defines the signature for Mount procedure nfs.
 //
@@ -194,8 +194,8 @@ type mountProcedureInfo struct {
 	NeedsAuth bool
 }
 
-// mountDispatchTable maps Mount procedure numbers to their nfs.
-var mountDispatchTable map[uint32]*mountProcedureInfo
+// MountDispatchTable maps Mount procedure numbers to their nfs.
+var MountDispatchTable map[uint32]*mountProcedureInfo
 
 // init initializes the procedure dispatch tables.
 // This is called once at package initialization time.
@@ -209,7 +209,7 @@ func init() {
 // ============================================================================
 
 func initNFSDispatchTable() {
-	nfsDispatchTable = map[uint32]*nfsProcedureInfo{
+	NfsDispatchTable = map[uint32]*nfsProcedureInfo{
 		types.NFSProcNull: {
 			Name:      "NULL",
 			Handler:   handleNFSNull,
@@ -966,7 +966,7 @@ func handleNFSCommit(
 // ============================================================================
 
 func initMountDispatchTable() {
-	mountDispatchTable = map[uint32]*mountProcedureInfo{
+	MountDispatchTable = map[uint32]*mountProcedureInfo{
 		mount.MountProcNull: {
 			Name:      "NULL",
 			Handler:   handleMountNull,

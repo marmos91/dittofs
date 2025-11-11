@@ -3,10 +3,10 @@ package memory
 import (
 	"context"
 	"fmt"
+	internalMetadata "github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"net"
 	"slices"
-
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // CheckExportAccess verifies if a client can access an export and applies squashing rules.
@@ -52,7 +52,7 @@ import (
 //   - *AuthContext: Contains effective credentials after squashing
 //   - error: Returns ExportError with specific error code if access denied,
 //     or context.Canceled/context.DeadlineExceeded if context is cancelled
-func (r *metadata.MemoryRepository) CheckExportAccess(
+func (r *MemoryRepository) CheckExportAccess(
 	ctx context.Context,
 	exportPath string,
 	clientAddr string,
@@ -179,7 +179,7 @@ func (r *metadata.MemoryRepository) CheckExportAccess(
 	// Step 7: Apply squashing rules to get effective credentials
 	// ========================================================================
 
-	effectiveUID, effectiveGID, effectiveGIDs := metadata.ApplySquashing(
+	effectiveUID, effectiveGID, effectiveGIDs := internalMetadata.ApplySquashing(
 		&opts,
 		authFlavor,
 		uid,

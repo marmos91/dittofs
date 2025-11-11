@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"github.com/marmos91/dittofs/internal/content"
-	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/pkg/content"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 type NFSHandler interface {
