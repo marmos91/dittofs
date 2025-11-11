@@ -32,6 +32,9 @@ type fragmentHeader struct {
 // - A read or write timeout occurs
 // - An unrecoverable error occurs
 // - The client closes the connection
+//
+// Context cancellation is checked at the beginning of each request loop,
+// ensuring graceful shutdown and proper cleanup of resources.
 func (c *conn) serve(ctx context.Context) {
 	defer func() {
 		// Panic recovery - prevents a single connection from crashing the server
@@ -54,6 +57,8 @@ func (c *conn) serve(ctx context.Context) {
 	}
 
 	for {
+		// Check for context cancellation before processing next request
+		// This provides graceful shutdown capability
 		select {
 		case <-ctx.Done():
 			logger.Debug("Connection from %s closed due to context cancellation", clientAddr)
@@ -74,6 +79,8 @@ func (c *conn) serve(ctx context.Context) {
 			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				c.server.metrics.RecordTimeout()
 				logger.Debug("Connection from %s timed out: %v", clientAddr, err)
+			} else if err == context.Canceled || err == context.DeadlineExceeded {
+				logger.Debug("Connection from %s cancelled: %v", clientAddr, err)
 			} else {
 				logger.Debug("Error handling request from %s: %v", clientAddr, err)
 			}
@@ -93,7 +100,27 @@ func (c *conn) serve(ctx context.Context) {
 	}
 }
 
+// handleRequest processes a single RPC request.
+//
+// It reads the fragment header, validates the message size, reads the RPC message,
+// parses it, and dispatches it to the appropriate handler.
+//
+// The context is passed through to handlers to enable cancellation of long-running
+// operations.
+//
+// Returns an error if:
+// - Context is cancelled
+// - Network error occurs
+// - Message is malformed or too large
+// - Handler returns an error
 func (c *conn) handleRequest(ctx context.Context) error {
+	// Check context before starting request processing
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	// Apply read timeout if configured
 	if c.server.config.ReadTimeout > 0 {
 		deadline := time.Now().Add(c.server.config.ReadTimeout)
@@ -115,6 +142,13 @@ func (c *conn) handleRequest(ctx context.Context) error {
 		logger.Warn("Fragment size %d exceeds maximum %d from %s",
 			header.Length, maxFragmentSize, c.conn.RemoteAddr().String())
 		return fmt.Errorf("fragment too large: %d bytes", header.Length)
+	}
+
+	// Check context before reading potentially large message
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
 
 	// Read RPC message (now uses buffer pool)
@@ -142,10 +176,24 @@ func (c *conn) handleRequest(ctx context.Context) error {
 		return fmt.Errorf("extract procedure data: %w", err)
 	}
 
-	// Handle the call
+	// Check context before dispatching to handler
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	// Handle the call with context
 	return c.handleRPCCall(ctx, call, procedureData)
 }
 
+// readFragmentHeader reads the 4-byte RPC fragment header.
+//
+// The fragment header contains:
+// - Bit 31: Last fragment flag (1 = last, 0 = more fragments)
+// - Bits 0-30: Fragment length in bytes
+//
+// Returns the parsed header or an error if reading fails.
 func (c *conn) readFragmentHeader() (*fragmentHeader, error) {
 	var buf [4]byte
 	_, err := io.ReadFull(c.conn, buf[:])
@@ -160,6 +208,12 @@ func (c *conn) readFragmentHeader() (*fragmentHeader, error) {
 	}, nil
 }
 
+// readRPCMessage reads an RPC message of the specified length.
+//
+// It uses a buffer pool to reduce allocations for frequently sized messages.
+// The caller is responsible for returning the buffer to the pool via PutBuffer.
+//
+// Returns the message buffer or an error if reading fails.
 func (c *conn) readRPCMessage(length uint32) ([]byte, error) {
 	// Get buffer from pool
 	message := GetBuffer(length)
@@ -175,6 +229,18 @@ func (c *conn) readRPCMessage(length uint32) ([]byte, error) {
 	return message, nil
 }
 
+// handleRPCCall dispatches an RPC call to the appropriate handler.
+//
+// It routes calls to either NFS or MOUNT handlers based on the program number,
+// records metrics, and sends the reply back to the client.
+//
+// The context is passed through to handlers to enable cancellation of
+// long-running operations like large file reads/writes or directory scans.
+//
+// Returns an error if:
+// - Context is cancelled during processing
+// - Handler returns an error
+// - Reply cannot be sent
 func (c *conn) handleRPCCall(ctx context.Context, call *rpc.RPCCallMessage, procedureData []byte) error {
 	startTime := time.Now()
 	var replyData []byte
@@ -185,6 +251,15 @@ func (c *conn) handleRPCCall(ctx context.Context, call *rpc.RPCCallMessage, proc
 
 	logger.Debug("RPC Call Details: Program=%d Version=%d Procedure=%d",
 		call.Program, call.Version, call.Procedure)
+
+	// Check context before dispatching to handler
+	select {
+	case <-ctx.Done():
+		logger.Debug("RPC call cancelled before handler dispatch: XID=0x%x client=%s error=%v",
+			call.XID, clientAddr, ctx.Err())
+		return ctx.Err()
+	default:
+	}
 
 	switch call.Program {
 	case rpc.ProgramNFS:
@@ -204,6 +279,13 @@ func (c *conn) handleRPCCall(ctx context.Context, call *rpc.RPCCallMessage, proc
 	c.server.metrics.RecordRequest(duration, success, isNFS)
 
 	if err != nil {
+		// Check if error was due to context cancellation
+		if err == context.Canceled || err == context.DeadlineExceeded {
+			logger.Debug("Handler cancelled: program=%d procedure=%d xid=0x%x client=%s error=%v",
+				call.Program, call.Procedure, call.XID, clientAddr, err)
+			return err
+		}
+
 		logger.Debug("Handler error: %v", err)
 		return fmt.Errorf("handle program %d: %w", call.Program, err)
 	}
@@ -211,6 +293,17 @@ func (c *conn) handleRPCCall(ctx context.Context, call *rpc.RPCCallMessage, proc
 	return c.sendReply(call.XID, replyData)
 }
 
+// handleNFSProcedure dispatches an NFS procedure call to the appropriate handler.
+//
+// It looks up the procedure in the dispatch table, extracts authentication
+// context from the RPC call, and invokes the handler with the context.
+//
+// The context enables handlers to:
+// - Respect cancellation during long operations (READ, WRITE, READDIR)
+// - Implement request timeouts
+// - Support graceful server shutdown
+//
+// Returns the reply data or an error if the handler fails.
 func (c *conn) handleNFSProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
 	// Look up procedure in dispatch table
 	procInfo, ok := nfsDispatchTable[call.Procedure]
@@ -231,7 +324,17 @@ func (c *conn) handleNFSProcedure(ctx context.Context, call *rpc.RPCCallMessage,
 			procInfo.Name, authCtx.AuthFlavor)
 	}
 
-	// Dispatch to handler
+	// Check context before dispatching to handler
+	// This prevents starting work on cancelled requests
+	select {
+	case <-ctx.Done():
+		logger.Debug("NFS %s cancelled before handler: xid=0x%x client=%s error=%v",
+			procInfo.Name, call.XID, clientAddr, ctx.Err())
+		return nil, ctx.Err()
+	default:
+	}
+
+	// Dispatch to handler with context
 	return procInfo.Handler(
 		authCtx,
 		c.server.nfsHandler,
@@ -241,6 +344,14 @@ func (c *conn) handleNFSProcedure(ctx context.Context, call *rpc.RPCCallMessage,
 	)
 }
 
+// handleMountProcedure dispatches a MOUNT procedure call to the appropriate handler.
+//
+// It looks up the procedure in the dispatch table, extracts authentication
+// context from the RPC call, and invokes the handler with the context.
+//
+// The context enables handlers to respect cancellation and timeouts.
+//
+// Returns the reply data or an error if the handler fails.
 func (c *conn) handleMountProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
 	// Look up procedure in dispatch table
 	procInfo, ok := mountDispatchTable[call.Procedure]
@@ -261,7 +372,16 @@ func (c *conn) handleMountProcedure(ctx context.Context, call *rpc.RPCCallMessag
 			procInfo.Name, authCtx.AuthFlavor)
 	}
 
-	// Dispatch to handler
+	// Check context before dispatching to handler
+	select {
+	case <-ctx.Done():
+		logger.Debug("MOUNT %s cancelled before handler: xid=0x%x client=%s error=%v",
+			procInfo.Name, call.XID, clientAddr, ctx.Err())
+		return nil, ctx.Err()
+	default:
+	}
+
+	// Dispatch to handler with context
 	return procInfo.Handler(
 		authCtx,
 		c.server.mountHandler,
@@ -270,6 +390,15 @@ func (c *conn) handleMountProcedure(ctx context.Context, call *rpc.RPCCallMessag
 	)
 }
 
+// sendReply sends an RPC reply to the client.
+//
+// It applies write timeout if configured, constructs the RPC success reply,
+// and writes it to the connection.
+//
+// Returns an error if:
+// - Write timeout cannot be set
+// - Reply construction fails
+// - Network write fails
 func (c *conn) sendReply(xid uint32, data []byte) error {
 	if c.server.config.WriteTimeout > 0 {
 		deadline := time.Now().Add(c.server.config.WriteTimeout)

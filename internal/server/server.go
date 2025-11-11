@@ -70,7 +70,9 @@ func DefaultServerConfig(port string) ServerConfig {
 // The server is designed for production use with:
 // - Connection limits and timeouts to prevent resource exhaustion
 // - Graceful shutdown with connection draining
+// - Context cancellation support for aborting in-flight requests
 // - Panic recovery in connection handlers
+// - Comprehensive metrics and monitoring
 // - Thread-safe operation
 type NFSServer struct {
 	config       ServerConfig
@@ -91,6 +93,11 @@ type NFSServer struct {
 
 	// Metrics and monitoring
 	metrics *ServerMetrics
+
+	// Context for request cancellation
+	// This context is cancelled on shutdown to abort in-flight requests
+	shutdownCtx    context.Context
+	cancelRequests context.CancelFunc
 }
 
 // New creates a new NFSServer with the specified configuration.
@@ -101,15 +108,22 @@ func New(config ServerConfig, repository metadata.Repository, content content.Re
 		connSemaphore = make(chan struct{}, config.MaxConnections)
 	}
 
+	// Create a cancellable context for request handling
+	// This context is passed to all connection handlers and can be cancelled
+	// during shutdown to abort in-flight NFS operations
+	shutdownCtx, cancelRequests := context.WithCancel(context.Background())
+
 	return &NFSServer{
-		config:        config,
-		nfsHandler:    &nfs.DefaultNFSHandler{},
-		mountHandler:  &mount.DefaultMountHandler{},
-		repository:    repository,
-		content:       content,
-		shutdown:      make(chan struct{}),
-		connSemaphore: connSemaphore,
-		metrics:       newServerMetrics(), // Initialize metrics
+		config:         config,
+		nfsHandler:     &nfs.DefaultNFSHandler{},
+		mountHandler:   &mount.DefaultMountHandler{},
+		repository:     repository,
+		content:        content,
+		shutdown:       make(chan struct{}),
+		connSemaphore:  connSemaphore,
+		metrics:        newServerMetrics(),
+		shutdownCtx:    shutdownCtx,
+		cancelRequests: cancelRequests,
 	}
 }
 
@@ -153,8 +167,20 @@ func (s *NFSServer) GetMetrics() *MetricsSnapshot {
 //
 // When the context is cancelled, Serve initiates a graceful shutdown:
 // 1. Stops accepting new connections
-// 2. Waits for active connections to complete (up to ShutdownTimeout)
-// 3. Forcibly closes any remaining connections
+// 2. Cancels all in-flight request contexts
+// 3. Waits for active connections to complete (up to ShutdownTimeout)
+// 4. Forcibly closes any remaining connections
+//
+// The provided context controls the server lifecycle. When cancelled, it triggers
+// graceful shutdown. Additionally, the server creates a child context (shutdownCtx)
+// that is passed to all request handlers, allowing them to detect shutdown and abort
+// long-running operations gracefully.
+//
+// Context cancellation flow:
+//   - Server context cancelled → initiateShutdown()
+//   - shutdownCtx cancelled → all in-flight NFS operations receive cancellation
+//   - Handlers check context and abort (e.g., READDIR stops scanning directories)
+//   - Connections close after completing or aborting their current request
 //
 // Returns nil on graceful shutdown, or an error if startup fails.
 func (s *NFSServer) Serve(ctx context.Context) error {
@@ -168,7 +194,7 @@ func (s *NFSServer) Serve(ctx context.Context) error {
 	logger.Debug("Server config: max_connections=%d read_timeout=%v write_timeout=%v idle_timeout=%v",
 		s.config.MaxConnections, s.config.ReadTimeout, s.config.WriteTimeout, s.config.IdleTimeout)
 
-	// Start periodic metrics logging
+	// Start periodic metrics logging (implemented in metrics.go)
 	s.startMetricsLogger(ctx, s.config.MetricsLogInterval)
 
 	// Handle context cancellation
@@ -229,7 +255,9 @@ func (s *NFSServer) Serve(ctx context.Context) error {
 					<-s.connSemaphore
 				}
 			}()
-			conn.serve(ctx)
+			// Pass the shutdown context to the connection handler
+			// This allows requests to detect shutdown and abort gracefully
+			conn.serve(s.shutdownCtx)
 		}()
 	}
 }
@@ -237,6 +265,22 @@ func (s *NFSServer) Serve(ctx context.Context) error {
 // initiateShutdown signals the server to begin graceful shutdown.
 // This is called automatically when the context is cancelled.
 // It's safe to call multiple times.
+//
+// During shutdown:
+// 1. The shutdown channel is closed to signal all goroutines
+// 2. The listener is closed to stop accepting new connections
+// 3. All in-flight request contexts are cancelled via cancelRequests()
+//
+// The cancellation propagates through the entire request stack:
+//   - Connection handlers receive cancelled context
+//   - RPC dispatchers receive cancelled context
+//   - NFS procedure handlers receive cancelled context
+//   - Repository operations can detect cancellation
+//
+// This enables graceful abort of long-running operations like:
+//   - Directory scans (READDIR/READDIRPLUS)
+//   - Large file reads/writes
+//   - Metadata operations on large directory trees
 func (s *NFSServer) initiateShutdown() {
 	s.shutdownOnce.Do(func() {
 		close(s.shutdown)
@@ -244,6 +288,10 @@ func (s *NFSServer) initiateShutdown() {
 			// Stop accepting new connections
 			s.listener.Close()
 		}
+		// Cancel all in-flight request contexts
+		// This signals to all NFS procedure handlers that they should abort
+		s.cancelRequests()
+		logger.Debug("Request cancellation signal sent to all in-flight operations")
 	})
 }
 
@@ -277,12 +325,18 @@ func (s *NFSServer) gracefulShutdown() error {
 }
 
 // Stop initiates graceful shutdown of the server.
-// It stops accepting new connections and waits for active connections
-// to complete up to ShutdownTimeout.
+// It stops accepting new connections, cancels all in-flight requests,
+// and waits for active connections to complete up to ShutdownTimeout.
 //
 // Stop is safe to call multiple times and safe to call concurrently with Serve.
 // After Stop returns, no new connections will be accepted and all active
 // connections will have been given a chance to complete.
+//
+// The shutdown process:
+//   - Listener closed → no new connections accepted
+//   - Context cancelled → all in-flight operations receive abort signal
+//   - Wait for connections → up to ShutdownTimeout
+//   - Force close → any remaining connections after timeout
 //
 // Returns nil on successful shutdown, or an error if the shutdown timeout
 // is exceeded.
