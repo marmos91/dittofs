@@ -60,6 +60,8 @@ type AuthContext struct {
 // This is used by the CheckAccess repository method to determine if a client
 // has specific permissions on a file or directory.
 type AccessCheckContext struct {
+	Context context.Context
+
 	// AuthFlavor indicates the authentication method.
 	// 0 = AUTH_NULL, 1 = AUTH_UNIX, etc.
 	AuthFlavor uint32

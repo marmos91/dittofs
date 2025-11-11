@@ -18,15 +18,26 @@ import (
 // children map.
 //
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - path: The export path (e.g., "/export/data")
 //   - options: Export configuration (access control, auth, etc.)
 //   - rootAttr: Attributes for the root directory
 //
 // Returns:
-//   - error: Returns error if export already exists
+//   - error: Returns error if export already exists or context is cancelled
 func (r *MemoryRepository) AddExport(ctx context.Context, path string, options metadata.ExportOptions, rootAttr *metadata.FileAttr) error {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled before adding export: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check context again after acquiring lock
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled while adding export: %w", err)
+	}
 
 	// Check if export already exists
 	if _, exists := r.exports[path]; exists {
@@ -61,12 +72,25 @@ func (r *MemoryRepository) AddExport(ctx context.Context, path string, options m
 // The returned list includes all exports regardless of mount status
 // or access restrictions.
 //
+// Parameters:
+//   - ctx: Context for cancellation and timeouts
+//
 // Returns:
 //   - []Export: List of all export configurations
-//   - error: Always returns nil (reserved for future use)
+//   - error: Returns error if context is cancelled
 func (r *MemoryRepository) GetExports(ctx context.Context) ([]metadata.Export, error) {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled before getting exports: %w", err)
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled while getting exports: %w", err)
+	}
 
 	result := make([]metadata.Export, 0, len(r.exports))
 	for _, ed := range r.exports {
@@ -81,14 +105,25 @@ func (r *MemoryRepository) GetExports(ctx context.Context) ([]metadata.Export, e
 // and access control checks.
 //
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - path: The export path to look up
 //
 // Returns:
 //   - *Export: The export configuration
-//   - error: Returns error if export not found
+//   - error: Returns error if export not found or context is cancelled
 func (r *MemoryRepository) FindExport(ctx context.Context, path string) (*metadata.Export, error) {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled before finding export: %w", err)
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled while finding export: %w", err)
+	}
 
 	ed, exists := r.exports[path]
 	if !exists {
@@ -104,14 +139,25 @@ func (r *MemoryRepository) FindExport(ctx context.Context, path string) (*metada
 // and as the parent for top-level directories.
 //
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - exportPath: The path of the export
 //
 // Returns:
 //   - FileHandle: The root directory handle
-//   - error: Returns error if export not found
+//   - error: Returns error if export not found or context is cancelled
 func (r *MemoryRepository) GetRootHandle(ctx context.Context, exportPath string) (metadata.FileHandle, error) {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled before getting root handle: %w", err)
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled while getting root handle: %w", err)
+	}
 
 	ed, exists := r.exports[exportPath]
 	if !exists {
@@ -130,13 +176,24 @@ func (r *MemoryRepository) GetRootHandle(ctx context.Context, exportPath string)
 // Callers should ensure proper cleanup before deleting exports.
 //
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - path: The export path to delete
 //
 // Returns:
-//   - error: Returns error if export not found
+//   - error: Returns error if export not found or context is cancelled
 func (r *MemoryRepository) DeleteExport(ctx context.Context, path string) error {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled before deleting export: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled while deleting export: %w", err)
+	}
 
 	if _, exists := r.exports[path]; !exists {
 		return fmt.Errorf("export not found: %s", path)

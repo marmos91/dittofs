@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"time"
@@ -253,11 +254,12 @@ func canChangeGroup(ctx *metadata.AuthContext, attr *metadata.FileAttr, targetGI
 // repository for actual data truncation/extension.
 //
 // Parameters:
+//   - ctx: Authentication context for access control
 //   - handle: The file handle to update
 //   - attrs: The attributes to set (only Set* = true are modified)
-//   - ctx: Authentication context for access control
 //
 // Returns error if:
+//   - Context is cancelled
 //   - File not found
 //   - Access denied (insufficient permissions)
 //   - Not owner (for ownership/permission changes)
@@ -269,8 +271,18 @@ func (r *MemoryRepository) SetFileAttributes(
 	handle metadata.FileHandle,
 	attrs *metadata.SetAttrs,
 ) error {
+	// Check context before acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return fmt.Errorf("context cancelled before setting file attributes: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return fmt.Errorf("context cancelled while setting file attributes: %w", err)
+	}
 
 	// ========================================================================
 	// Step 1: Verify file exists and get current attributes
@@ -471,12 +483,13 @@ func (r *MemoryRepository) SetFileAttributes(
 //   - Hard links to directories are typically not allowed
 //
 // Parameters:
+//   - ctx: Authentication context for access control
 //   - dirHandle: Target directory where the link will be created
 //   - name: Name for the new link
 //   - fileHandle: File to link to
-//   - ctx: Authentication context for access control
 //
 // Returns error if:
+//   - Context is cancelled
 //   - Source file not found
 //   - Target directory not found or not a directory
 //   - Access denied (no write permission on directory)
@@ -488,8 +501,18 @@ func (r *MemoryRepository) CreateLink(
 	name string,
 	fileHandle metadata.FileHandle,
 ) error {
+	// Check context before acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return fmt.Errorf("context cancelled before creating link: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return fmt.Errorf("context cancelled while creating link: %w", err)
+	}
 
 	// ========================================================================
 	// Step 1: Verify source file exists
@@ -601,14 +624,15 @@ func (r *MemoryRepository) CreateLink(
 //   - Update parent directory timestamps (mtime, ctime)
 //
 // Parameters:
+//   - ctx: Authentication context for access control
 //   - parentHandle: Handle of the parent directory
 //   - name: Name for the new directory
 //   - attr: Partial attributes (type, mode, uid, gid) - may have defaults
-//   - ctx: Authentication context for access control
 //
 // Returns:
 //   - FileHandle: Handle of the newly created directory
 //   - error: Returns error if:
+//   - Context is cancelled
 //   - Access denied (no write permission on parent)
 //   - Name already exists
 //   - Parent is not a directory
@@ -619,8 +643,18 @@ func (r *MemoryRepository) CreateDirectory(
 	name string,
 	attr *metadata.FileAttr,
 ) (metadata.FileHandle, error) {
+	// Check context before acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled before creating directory: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled while creating directory: %w", err)
+	}
 
 	// ========================================================================
 	// Step 1: Verify parent directory exists
@@ -758,16 +792,17 @@ func (r *MemoryRepository) CreateDirectory(
 //   - Update parent directory timestamps
 //
 // Parameters:
+//   - ctx: Authentication context for access control
 //   - parentHandle: Handle of the parent directory
 //   - name: Name for the new special file
 //   - attr: Partial attributes (type, mode, uid, gid) from protocol layer
 //   - majorDevice: Major device number (for block/char devices, 0 otherwise)
 //   - minorDevice: Minor device number (for block/char devices, 0 otherwise)
-//   - ctx: Authentication context for access control
 //
 // Returns:
 //   - FileHandle: Handle of the newly created special file
 //   - error: Returns error if:
+//   - Context is cancelled
 //   - Access denied (no write permission or insufficient privileges)
 //   - Name already exists
 //   - Parent is not a directory
@@ -781,8 +816,18 @@ func (r *MemoryRepository) CreateSpecialFile(
 	majorDevice uint32,
 	minorDevice uint32,
 ) (metadata.FileHandle, error) {
+	// Check context before acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled before creating special file: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled while creating special file: %w", err)
+	}
 
 	// ========================================================================
 	// Step 1: Verify parent directory exists
@@ -966,23 +1011,33 @@ func (r *MemoryRepository) CreateSpecialFile(
 //   - Return EOF flag when all entries have been sent
 //
 // Parameters:
+//   - ctx: Authentication context for access control
 //   - dirHandle: Directory to read
 //   - cookie: Starting position (0 = beginning)
 //   - count: Maximum response size in bytes (approximate)
-//   - ctx: Authentication context for access control
 //
 // Returns:
 //   - []DirEntry: List of entries starting from cookie
 //   - bool: EOF flag (true if all entries returned)
-//   - error: Access denied or I/O errors
+//   - error: Access denied, context cancelled, or I/O errors
 func (r *MemoryRepository) ReadDir(
 	ctx *metadata.AuthContext,
 	dirHandle metadata.FileHandle,
 	cookie uint64,
 	count uint32,
 ) ([]metadata.DirEntry, bool, error) {
+	// Check context before acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return nil, false, fmt.Errorf("context cancelled before reading directory: %w", err)
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return nil, false, fmt.Errorf("context cancelled while reading directory: %w", err)
+	}
 
 	// ========================================================================
 	// Step 1: Verify directory exists and is a directory
@@ -1067,7 +1122,7 @@ func (r *MemoryRepository) ReadDir(
 	if cookie <= 1 {
 		// Get parent file ID
 		parentFileid := dirFileid // Default to self if no parent
-		if parentHandle, err := r.GetParent(ctx.Context, dirHandle); err == nil {
+		if parentHandle, err := r.GetParent(context.Background(), dirHandle); err == nil {
 			parentFileid = extractFileIDFromHandle(parentHandle)
 		}
 
@@ -1106,6 +1161,11 @@ func (r *MemoryRepository) ReadDir(
 
 		// Iterate through children, skipping entries before cookie
 		for _, name := range names {
+			// Check context periodically during iteration
+			if err := ctx.Context.Err(); err != nil {
+				return nil, false, fmt.Errorf("context cancelled during directory read: %w", err)
+			}
+
 			handle := children[name]
 
 			// Skip entries before the requested cookie
@@ -1176,13 +1236,14 @@ func (r *MemoryRepository) ReadDir(
 //   - Return the removed file's attributes for client cache updates
 //
 // Parameters:
+//   - ctx: Authentication context for access control
 //   - parentHandle: Handle of the parent directory
 //   - filename: Name of the file to remove
-//   - ctx: Authentication context for access control
 //
 // Returns:
 //   - *metadata.FileAttr: The attributes of the removed file (for response)
 //   - error: Returns error if:
+//   - Context is cancelled
 //   - Access denied (no write permission on parent)
 //   - File not found
 //   - File is a directory (use RemoveDirectory instead)
@@ -1193,8 +1254,18 @@ func (r *MemoryRepository) RemoveFile(
 	parentHandle metadata.FileHandle,
 	filename string,
 ) (*metadata.FileAttr, error) {
+	// Check context before acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled before removing file: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled while removing file: %w", err)
+	}
 
 	// ========================================================================
 	// Step 1: Verify parent directory exists
@@ -1325,11 +1396,12 @@ func (r *MemoryRepository) RemoveFile(
 //   - Return appropriate errors for non-empty directories
 //
 // Parameters:
+//   - ctx: Authentication context for access control
 //   - parentHandle: Handle of the parent directory
 //   - name: Name of the directory to remove
-//   - ctx: Authentication context for access control
 //
 // Returns error if:
+//   - Context is cancelled
 //   - Access denied (no write permission on parent)
 //   - Directory not found
 //   - Target is not a directory
@@ -1341,8 +1413,18 @@ func (r *MemoryRepository) RemoveDirectory(
 	parentHandle metadata.FileHandle,
 	name string,
 ) error {
+	// Check context before acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return fmt.Errorf("context cancelled before removing directory: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return fmt.Errorf("context cancelled while removing directory: %w", err)
+	}
 
 	// ========================================================================
 	// Step 1: Verify parent directory exists
@@ -1483,13 +1565,14 @@ func (r *MemoryRepository) RemoveDirectory(
 //   - Return symlink attributes for client cache consistency
 //
 // Parameters:
-//   - handle: File handle of the symbolic link
 //   - ctx: Authentication context for access control
+//   - handle: File handle of the symbolic link
 //
 // Returns:
 //   - string: The symlink target path
 //   - *metadata.FileAttr: Symlink attributes (for cache consistency)
 //   - error: Returns error if:
+//   - Context is cancelled
 //   - Handle not found
 //   - Handle is not a symlink
 //   - Access denied (no read permission)
@@ -1499,8 +1582,18 @@ func (r *MemoryRepository) ReadSymlink(
 	ctx *metadata.AuthContext,
 	handle metadata.FileHandle,
 ) (string, *metadata.FileAttr, error) {
+	// Check context before acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return "", nil, fmt.Errorf("context cancelled before reading symlink: %w", err)
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return "", nil, fmt.Errorf("context cancelled while reading symlink: %w", err)
+	}
 
 	// ========================================================================
 	// Step 1: Get file attributes
@@ -1593,13 +1686,14 @@ func (r *MemoryRepository) ReadSymlink(
 //   - Over existing file: Replace atomically
 //
 // Parameters:
+//   - ctx: Authentication context for access control
 //   - fromDirHandle: Source directory handle
 //   - fromName: Current name of the file/directory
 //   - toDirHandle: Destination directory handle
 //   - toName: New name for the file/directory
-//   - ctx: Authentication context for access control
 //
 // Returns error if:
+//   - Context is cancelled
 //   - Source file/directory not found
 //   - Source or destination directory not found
 //   - Access denied (no write permission on either directory)
@@ -1613,8 +1707,18 @@ func (r *MemoryRepository) RenameFile(
 	toDirHandle metadata.FileHandle,
 	toName string,
 ) error {
+	// Check context before acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return fmt.Errorf("context cancelled before renaming file: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return fmt.Errorf("context cancelled while renaming file: %w", err)
+	}
 
 	// ========================================================================
 	// Step 1: Verify source directory exists and is a directory
@@ -1860,15 +1964,16 @@ func (r *MemoryRepository) RenameFile(
 //   - Set appropriate symlink attributes
 //
 // Parameters:
+//   - ctx: Authentication context for access control
 //   - parentHandle: Handle of the parent directory
 //   - name: Name for the new symbolic link
 //   - target: Path that the symlink will point to
 //   - attr: Partial attributes (mode, uid, gid) from protocol layer with proper defaults
-//   - ctx: Authentication context for access control
 //
 // Returns:
 //   - FileHandle: Handle of the newly created symlink
 //   - error: Returns error if:
+//   - Context is cancelled
 //   - Access denied (no write permission on parent)
 //   - Name already exists
 //   - Parent is not a directory
@@ -1880,8 +1985,18 @@ func (r *MemoryRepository) CreateSymlink(
 	target string,
 	attr *metadata.FileAttr,
 ) (metadata.FileHandle, error) {
+	// Check context before acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled before creating symlink: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled while creating symlink: %w", err)
+	}
 
 	// ========================================================================
 	// Step 1: Verify parent directory exists
@@ -2030,9 +2145,9 @@ func (r *MemoryRepository) CreateSymlink(
 // their cached attributes.
 //
 // Parameters:
+//   - ctx: Authentication context for permission checking
 //   - handle: File handle to write to
 //   - newSize: New file size after write operation
-//   - ctx: Authentication context for permission checking
 //
 // Returns:
 //   - *FileAttr: Updated file attributes after the write
@@ -2040,13 +2155,14 @@ func (r *MemoryRepository) CreateSymlink(
 //   - time.Time: Pre-operation mtime (for WCC)
 //   - time.Time: Pre-operation ctime (for WCC)
 //   - error: Returns ExportError with specific code if operation fails:
+//   - Context is cancelled
 //   - ExportErrNotFound: File doesn't exist
 //   - ExportErrAccessDenied: No write permission
 //   - ExportErrServerFault: Not a regular file or other validation errors
 //
 // Example:
 //
-//	newAttr, preSize, preMtime, preCtime, err := repo.WriteFile(handle, 1024, ctx)
+//	newAttr, preSize, preMtime, preCtime, err := repo.WriteFile(ctx, handle, 1024)
 //	if err != nil {
 //	    // Handle error (permission denied, file not found, etc.)
 //	}
@@ -2057,8 +2173,18 @@ func (r *MemoryRepository) WriteFile(
 	handle metadata.FileHandle,
 	newSize uint64,
 ) (*metadata.FileAttr, uint64, time.Time, time.Time, error) {
+	// Check context before acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return nil, 0, time.Time{}, time.Time{}, fmt.Errorf("context cancelled before writing file: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Context.Err(); err != nil {
+		return nil, 0, time.Time{}, time.Time{}, fmt.Errorf("context cancelled while writing file: %w", err)
+	}
 
 	// ========================================================================
 	// Step 1: Verify file exists

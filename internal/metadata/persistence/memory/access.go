@@ -15,6 +15,10 @@ import (
 // in RFC 1813 and common NFS server implementations. It is called during the mount
 // process to determine whether a client should be granted access to an export.
 //
+// Context Cancellation:
+// This operation checks the context before acquiring locks and during list iterations
+// to ensure timely cancellation during mount operations.
+//
 // Access Control Flow:
 //  1. Verify the export exists
 //  2. Check authentication requirements (RequireAuth flag)
@@ -35,6 +39,7 @@ import (
 // that should be used for all permission checks during this mount session.
 //
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - exportPath: Path of the export being accessed
 //   - clientAddr: IP address of the client
 //   - authFlavor: Authentication flavor (0=AUTH_NULL, 1=AUTH_UNIX, etc.)
@@ -45,7 +50,8 @@ import (
 // Returns:
 //   - *AccessDecision: Contains allowed status, reason, and export properties
 //   - *AuthContext: Contains effective credentials after squashing
-//   - error: Returns ExportError with specific error code if access denied
+//   - error: Returns ExportError with specific error code if access denied,
+//     or context.Canceled/context.DeadlineExceeded if context is cancelled
 func (r *MemoryRepository) CheckExportAccess(
 	ctx context.Context,
 	exportPath string,
@@ -55,6 +61,14 @@ func (r *MemoryRepository) CheckExportAccess(
 	gid *uint32,
 	gids []uint32,
 ) (*metadata.AccessDecision, *metadata.AuthContext, error) {
+	// ========================================================================
+	// Step 0: Check context before acquiring lock
+	// ========================================================================
+
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -106,6 +120,13 @@ func (r *MemoryRepository) CheckExportAccess(
 
 	if len(opts.DeniedClients) > 0 {
 		for _, denied := range opts.DeniedClients {
+			// Check context during iteration (only if list is potentially large)
+			if len(opts.DeniedClients) > 10 {
+				if err := ctx.Err(); err != nil {
+					return nil, nil, err
+				}
+			}
+
 			if matchesIPPattern(clientAddr, denied) {
 				return nil, nil, &metadata.ExportError{
 					Code:    metadata.ExportErrAccessDenied,
@@ -123,6 +144,13 @@ func (r *MemoryRepository) CheckExportAccess(
 	if len(opts.AllowedClients) > 0 {
 		allowed := false
 		for _, pattern := range opts.AllowedClients {
+			// Check context during iteration (only if list is potentially large)
+			if len(opts.AllowedClients) > 10 {
+				if err := ctx.Err(); err != nil {
+					return nil, nil, err
+				}
+			}
+
 			if matchesIPPattern(clientAddr, pattern) {
 				allowed = true
 				break
@@ -220,6 +248,10 @@ func matchesIPPattern(clientIP string, pattern string) bool {
 // following standard Unix permission semantics with owner/group/other
 // permission bits.
 //
+// Context Cancellation:
+// This is a lightweight operation (single map lookup) so context checking
+// is minimal - only before acquiring the lock.
+//
 // Permission Check Flow:
 //  1. If AUTH_NULL, grant minimal permissions (world-readable only)
 //  2. If owner (UID matches), check owner permission bits (rwx)
@@ -236,17 +268,26 @@ func matchesIPPattern(clientIP string, pattern string) bool {
 //   - Files: read=read data, execute=execute file, write=modify data
 //
 // Parameters:
+//   - ctx: Authentication context with client credentials
 //   - handle: The file handle to check permissions for
 //   - requested: Bitmap of requested permissions (AccessRead, AccessModify, etc.)
-//   - ctx: Authentication context with client credentials
 //
 // Returns:
 //   - uint32: Bitmap of granted permissions (subset of requested)
-//   - error: Returns error only for internal failures (file not found)
+//   - error: Returns error only for internal failures (file not found) or
+//     context cancellation (context.Canceled/context.DeadlineExceeded)
 //
 // Note: Denied access returns 0 permissions, not an error. This follows
 // RFC 1813 semantics where ACCESS always succeeds but may grant no permissions.
 func (r *MemoryRepository) CheckAccess(ctx *metadata.AccessCheckContext, handle metadata.FileHandle, requested uint32) (uint32, error) {
+	// ========================================================================
+	// Step 0: Check context before acquiring lock
+	// ========================================================================
+
+	if err := ctx.Context.Err(); err != nil {
+		return 0, err
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -371,6 +412,10 @@ func (r *MemoryRepository) CheckAccess(ctx *metadata.AccessCheckContext, handle 
 // to prevent information disclosure. This method checks if a client is
 // authorized to call DUMP based on server configuration.
 //
+// Context Cancellation:
+// This operation checks the context before acquiring locks and during list
+// iterations to ensure timely cancellation.
+//
 // Access Logic:
 //  1. If no restrictions configured, allow all (RFC 1813 default)
 //  2. Check denied list first (deny takes precedence)
@@ -381,11 +426,21 @@ func (r *MemoryRepository) CheckAccess(ctx *metadata.AccessCheckContext, handle 
 //   - DumpDeniedClients: List of IPs/CIDRs that cannot call DUMP
 //
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - clientAddr: IP address of the client
 //
 // Returns:
-//   - error: Returns ExportError if access denied, nil if allowed
+//   - error: Returns ExportError if access denied, nil if allowed, or
+//     context.Canceled/context.DeadlineExceeded if context is cancelled
 func (r *MemoryRepository) CheckDumpAccess(ctx context.Context, clientAddr string) error {
+	// ========================================================================
+	// Step 0: Check context before acquiring lock
+	// ========================================================================
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -405,6 +460,13 @@ func (r *MemoryRepository) CheckDumpAccess(ctx context.Context, clientAddr strin
 
 	if len(r.serverConfig.DumpDeniedClients) > 0 {
 		for _, denied := range r.serverConfig.DumpDeniedClients {
+			// Check context during iteration (only if list is potentially large)
+			if len(r.serverConfig.DumpDeniedClients) > 10 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
+
 			if matchesIPPattern(clientAddr, denied) {
 				return &metadata.ExportError{
 					Code:    metadata.ExportErrAccessDenied,
@@ -422,6 +484,13 @@ func (r *MemoryRepository) CheckDumpAccess(ctx context.Context, clientAddr strin
 	if len(r.serverConfig.DumpAllowedClients) > 0 {
 		allowed := false
 		for _, pattern := range r.serverConfig.DumpAllowedClients {
+			// Check context during iteration (only if list is potentially large)
+			if len(r.serverConfig.DumpAllowedClients) > 10 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
+
 			if matchesIPPattern(clientAddr, pattern) {
 				allowed = true
 				break

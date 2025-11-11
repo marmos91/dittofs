@@ -17,13 +17,24 @@ import (
 //   - Other server-wide policies
 //
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - config: The server configuration to store
 //
 // Returns:
-//   - error: Always returns nil (reserved for future validation)
+//   - error: Returns error if context is cancelled
 func (r *MemoryRepository) SetServerConfig(ctx context.Context, config metadata.ServerConfig) error {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled before setting server config: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled while setting server config: %w", err)
+	}
 
 	r.serverConfig = config
 	return nil
@@ -34,12 +45,25 @@ func (r *MemoryRepository) SetServerConfig(ctx context.Context, config metadata.
 // This retrieves the global server settings for use in protocol handlers
 // and access control checks.
 //
+// Parameters:
+//   - ctx: Context for cancellation and timeouts
+//
 // Returns:
 //   - ServerConfig: The current server configuration
-//   - error: Always returns nil (reserved for future use)
+//   - error: Returns error if context is cancelled
 func (r *MemoryRepository) GetServerConfig(ctx context.Context) (metadata.ServerConfig, error) {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return metadata.ServerConfig{}, fmt.Errorf("context cancelled before getting server config: %w", err)
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Err(); err != nil {
+		return metadata.ServerConfig{}, fmt.Errorf("context cancelled while getting server config: %w", err)
+	}
 
 	return r.serverConfig, nil
 }
@@ -57,9 +81,16 @@ func (r *MemoryRepository) GetServerConfig(ctx context.Context) (metadata.Server
 // This allows clients that respect FSINFO to use the optimal 64KB size,
 // while preventing malicious clients from sending excessively large writes.
 //
+// Parameters:
+//   - ctx: Context for cancellation and timeouts (not used for this pure function)
+//
 // Returns:
 //   - uint32: Maximum write size (1MB = 1048576 bytes)
 func (r *MemoryRepository) GetMaxWriteSize(ctx context.Context) uint32 {
+	// Note: This is a pure function with no I/O or state access,
+	// so context cancellation is not checked. The function returns
+	// immediately regardless of context state.
+	//
 	// Return 1MB as a reasonable upper bound for write validation.
 	// This is 16x larger than the advertised wtmax (64KB), providing
 	// significant tolerance while still preventing DoS attacks.
@@ -97,14 +128,25 @@ func (r *MemoryRepository) GetMaxWriteSize(ctx context.Context) uint32 {
 //   - FSFCanSetTime (0x0010): Server can set file times
 //
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - handle: A file handle within the filesystem (used to identify export)
 //
 // Returns:
 //   - *FSInfo: Static filesystem information
-//   - error: Returns error if handle not found
+//   - error: Returns error if handle not found or context is cancelled
 func (r *MemoryRepository) GetFSInfo(ctx context.Context, handle metadata.FileHandle) (*metadata.FSInfo, error) {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled before getting fsinfo: %w", err)
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled while getting fsinfo: %w", err)
+	}
 
 	// Verify handle exists
 	key := handleToKey(handle)
@@ -158,14 +200,25 @@ func (r *MemoryRepository) GetFSInfo(ctx context.Context, handle metadata.FileHa
 //   - >0: Number of seconds attributes are guaranteed stable
 //
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - handle: A file handle within the filesystem (used to identify export)
 //
 // Returns:
 //   - *FSStat: Dynamic filesystem statistics
-//   - error: Returns error if handle not found
+//   - error: Returns error if handle not found or context is cancelled
 func (r *MemoryRepository) GetFSStats(ctx context.Context, handle metadata.FileHandle) (*metadata.FSStat, error) {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled before getting fsstats: %w", err)
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled while getting fsstats: %w", err)
+	}
 
 	// Verify handle exists
 	key := handleToKey(handle)
@@ -210,14 +263,25 @@ func (r *MemoryRepository) GetFSStats(ctx context.Context, handle metadata.FileH
 //   - CasePreserving: Preserve filename case (true = standard behavior)
 //
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - handle: A file handle within the filesystem
 //
 // Returns:
 //   - *PathConf: POSIX filesystem properties
-//   - error: Returns error if handle not found
+//   - error: Returns error if handle not found or context is cancelled
 func (r *MemoryRepository) GetPathConf(ctx context.Context, handle metadata.FileHandle) (*metadata.PathConf, error) {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled before getting pathconf: %w", err)
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled while getting pathconf: %w", err)
+	}
 
 	// Verify handle exists
 	key := handleToKey(handle)

@@ -18,14 +18,25 @@ import (
 // or higher-level operations like CreateDirectory, CreateSpecialFile, etc.
 //
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - handle: The file handle (must be unique)
 //   - attr: Complete file attributes
 //
 // Returns:
-//   - error: Returns error if handle already exists
+//   - error: Returns error if handle already exists or context is cancelled
 func (r *MemoryRepository) CreateFile(ctx context.Context, handle metadata.FileHandle, attr *metadata.FileAttr) error {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled before creating file: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled while creating file: %w", err)
+	}
 
 	key := handleToKey(handle)
 	if _, exists := r.files[key]; exists {
@@ -51,14 +62,25 @@ func (r *MemoryRepository) CreateFile(ctx context.Context, handle metadata.FileH
 //   - Content ID for data retrieval
 //
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - handle: The file handle to look up
 //
 // Returns:
 //   - *metadata.FileAttr: The file attributes
-//   - error: Returns error if file not found
+//   - error: Returns error if file not found or context is cancelled
 func (r *MemoryRepository) GetFile(ctx context.Context, handle metadata.FileHandle) (*metadata.FileAttr, error) {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled before getting file: %w", err)
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled while getting file: %w", err)
+	}
 
 	key := handleToKey(handle)
 	attr, exists := r.files[key]
@@ -82,14 +104,25 @@ func (r *MemoryRepository) GetFile(ctx context.Context, handle metadata.FileHand
 //   - Updating timestamps appropriately
 //
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - handle: The file handle to update
 //   - attr: New complete attributes
 //
 // Returns:
-//   - error: Returns error if file not found
+//   - error: Returns error if file not found or context is cancelled
 func (r *MemoryRepository) UpdateFile(ctx context.Context, handle metadata.FileHandle, attr *metadata.FileAttr) error {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled before updating file: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled while updating file: %w", err)
+	}
 
 	key := handleToKey(handle)
 	if _, exists := r.files[key]; !exists {
@@ -118,13 +151,24 @@ func (r *MemoryRepository) UpdateFile(ctx context.Context, handle metadata.FileH
 //   - Operations that have already performed all necessary checks
 //
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - handle: The file handle to delete
 //
 // Returns:
-//   - error: Returns error if file not found
+//   - error: Returns error if file not found or context is cancelled
 func (r *MemoryRepository) DeleteFile(ctx context.Context, handle metadata.FileHandle) error {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled before deleting file: %w", err)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check context after acquiring lock
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled while deleting file: %w", err)
+	}
 
 	key := handleToKey(handle)
 	if _, exists := r.files[key]; !exists {
@@ -147,14 +191,20 @@ func (r *MemoryRepository) DeleteFile(ctx context.Context, handle metadata.FileH
 // single operation without managing handles manually.
 //
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - parentHandle: Handle of the parent directory
 //   - name: Name for the new file
 //   - attr: Complete file attributes
 //
 // Returns:
 //   - FileHandle: The generated handle for the new file
-//   - error: Returns error if any operation fails
+//   - error: Returns error if any operation fails or context is cancelled
 func (r *MemoryRepository) AddFileToDirectory(ctx context.Context, parentHandle metadata.FileHandle, name string, attr *metadata.FileAttr) (metadata.FileHandle, error) {
+	// Check context before starting multi-step operation
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled before adding file to directory: %w", err)
+	}
+
 	fileHandle := r.generateFileHandle(name)
 
 	if err := r.CreateFile(ctx, fileHandle, attr); err != nil {

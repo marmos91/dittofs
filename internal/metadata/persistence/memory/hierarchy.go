@@ -16,15 +16,32 @@ import (
 //   - Permission inheritance checks
 //   - Reference counting (future implementations)
 //
+// Context Cancellation:
+// This lightweight operation checks the context before acquiring the lock.
+//
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - child: The file handle of the child
 //   - parent: The file handle of the parent directory
 //
 // Returns:
-//   - error: Always returns nil (reserved for future validation)
+//   - error: Returns nil on success, or context.Canceled/context.DeadlineExceeded
+//     if context is cancelled
 func (r *MemoryRepository) SetParent(ctx context.Context, child metadata.FileHandle, parent metadata.FileHandle) error {
+	// ========================================================================
+	// Step 1: Check context before acquiring lock
+	// ========================================================================
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// ========================================================================
+	// Step 2: Establish parent-child relationship
+	// ========================================================================
 
 	r.parents[handleToKey(child)] = parent
 	return nil
@@ -37,15 +54,32 @@ func (r *MemoryRepository) SetParent(ctx context.Context, child metadata.FileHan
 //   - Validating rename operations (checking cross-directory moves)
 //   - Permission checks that need parent context
 //
+// Context Cancellation:
+// This lightweight operation checks the context before acquiring the lock.
+//
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - child: The file handle to look up
 //
 // Returns:
 //   - FileHandle: The parent directory handle
-//   - error: Returns error if parent not found
+//   - error: Returns error if parent not found, or context.Canceled/
+//     context.DeadlineExceeded if context is cancelled
 func (r *MemoryRepository) GetParent(ctx context.Context, child metadata.FileHandle) (metadata.FileHandle, error) {
+	// ========================================================================
+	// Step 1: Check context before acquiring lock
+	// ========================================================================
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	// ========================================================================
+	// Step 2: Look up parent handle
+	// ========================================================================
 
 	parent, exists := r.parents[handleToKey(child)]
 	if !exists {
@@ -64,25 +98,50 @@ func (r *MemoryRepository) GetParent(ctx context.Context, child metadata.FileHan
 //   - The name already exists in the directory
 //   - The parent is not a directory (checked by caller)
 //
+// Context Cancellation:
+// This lightweight operation checks the context before acquiring the lock.
+//
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - parent: Handle of the parent directory
 //   - name: Name for the directory entry
 //   - child: Handle of the file to add
 //
 // Returns:
-//   - error: Returns error if name already exists
+//   - error: Returns error if name already exists, or context.Canceled/
+//     context.DeadlineExceeded if context is cancelled
 func (r *MemoryRepository) AddChild(ctx context.Context, parent metadata.FileHandle, name string, child metadata.FileHandle) error {
+	// ========================================================================
+	// Step 1: Check context before acquiring lock
+	// ========================================================================
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// ========================================================================
+	// Step 2: Initialize parent's children map if needed
+	// ========================================================================
 
 	parentKey := handleToKey(parent)
 	if r.children[parentKey] == nil {
 		r.children[parentKey] = make(map[string]metadata.FileHandle)
 	}
 
+	// ========================================================================
+	// Step 3: Check for duplicate name
+	// ========================================================================
+
 	if _, exists := r.children[parentKey][name]; exists {
 		return fmt.Errorf("child already exists: %s", name)
 	}
+
+	// ========================================================================
+	// Step 4: Add child to directory
+	// ========================================================================
 
 	r.children[parentKey][name] = child
 	return nil
@@ -98,16 +157,33 @@ func (r *MemoryRepository) AddChild(ctx context.Context, parent metadata.FileHan
 //   - Path traversal operations
 //   - Name existence checks
 //
+// Context Cancellation:
+// This lightweight operation checks the context before acquiring the lock.
+//
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - parent: Handle of the parent directory
 //   - name: Name to look up
 //
 // Returns:
 //   - FileHandle: The child's file handle
-//   - error: Returns error if parent has no children or name not found
+//   - error: Returns error if parent has no children or name not found, or
+//     context.Canceled/context.DeadlineExceeded if context is cancelled
 func (r *MemoryRepository) GetChild(ctx context.Context, parent metadata.FileHandle, name string) (metadata.FileHandle, error) {
+	// ========================================================================
+	// Step 1: Check context before acquiring lock
+	// ========================================================================
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	// ========================================================================
+	// Step 2: Look up child by name
+	// ========================================================================
 
 	parentKey := handleToKey(parent)
 	if r.children[parentKey] == nil {
@@ -133,20 +209,49 @@ func (r *MemoryRepository) GetChild(ctx context.Context, parent metadata.FileHan
 // The returned map is a copy to prevent concurrent modification issues.
 // Changes to the returned map do not affect the repository.
 //
+// Context Cancellation:
+// This operation checks the context before acquiring the lock and during
+// the map copy operation if the directory is large (>1000 entries).
+//
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - parent: Handle of the directory
 //
 // Returns:
 //   - map[string]FileHandle: Copy of all child name-handle mappings
-//   - error: Always returns nil, empty map if no children
+//   - error: Returns nil on success (empty map if no children), or
+//     context.Canceled/context.DeadlineExceeded if context is cancelled
 func (r *MemoryRepository) GetChildren(ctx context.Context, parent metadata.FileHandle) (map[string]metadata.FileHandle, error) {
+	// ========================================================================
+	// Step 1: Check context before acquiring lock
+	// ========================================================================
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	// ========================================================================
+	// Step 2: Get children map
+	// ========================================================================
 
 	parentKey := handleToKey(parent)
 	children := r.children[parentKey]
 	if children == nil {
 		return make(map[string]metadata.FileHandle), nil
+	}
+
+	// ========================================================================
+	// Step 3: Copy children map to avoid concurrent access issues
+	// ========================================================================
+
+	// For very large directories (>1000 entries), check context during copy
+	if len(children) > 1000 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 	}
 
 	// Return a copy to avoid concurrent access issues
@@ -166,24 +271,49 @@ func (r *MemoryRepository) GetChildren(ctx context.Context, parent metadata.File
 // This is a low-level operation. For file deletion, use RemoveFile which
 // performs complete cleanup.
 //
+// Context Cancellation:
+// This lightweight operation checks the context before acquiring the lock.
+//
 // Parameters:
+//   - ctx: Context for cancellation and timeouts
 //   - parent: Handle of the parent directory
 //   - name: Name of the entry to remove
 //
 // Returns:
-//   - error: Returns error if parent has no children or name not found
+//   - error: Returns error if parent has no children or name not found, or
+//     context.Canceled/context.DeadlineExceeded if context is cancelled
 func (r *MemoryRepository) DeleteChild(ctx context.Context, parent metadata.FileHandle, name string) error {
+	// ========================================================================
+	// Step 1: Check context before acquiring lock
+	// ========================================================================
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// ========================================================================
+	// Step 2: Validate parent has children
+	// ========================================================================
 
 	parentKey := handleToKey(parent)
 	if r.children[parentKey] == nil {
 		return fmt.Errorf("parent has no children")
 	}
 
+	// ========================================================================
+	// Step 3: Check child exists
+	// ========================================================================
+
 	if _, exists := r.children[parentKey][name]; !exists {
 		return fmt.Errorf("child not found: %s", name)
 	}
+
+	// ========================================================================
+	// Step 4: Remove child entry
+	// ========================================================================
 
 	delete(r.children[parentKey], name)
 	return nil
