@@ -6,7 +6,7 @@ import (
 	"net"
 	"slices"
 
-	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // CheckExportAccess verifies if a client can access an export and applies squashing rules.
@@ -52,7 +52,7 @@ import (
 //   - *AuthContext: Contains effective credentials after squashing
 //   - error: Returns ExportError with specific error code if access denied,
 //     or context.Canceled/context.DeadlineExceeded if context is cancelled
-func (r *MemoryRepository) CheckExportAccess(
+func (r *metadata.MemoryRepository) CheckExportAccess(
 	ctx context.Context,
 	exportPath string,
 	clientAddr string,

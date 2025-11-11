@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // Mount tracking key structure

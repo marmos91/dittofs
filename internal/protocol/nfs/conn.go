@@ -10,16 +10,24 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
+	"github.com/marmos91/dittofs/pkg/facade/nfs"
 )
 
-type conn struct {
-	server *NFSFacade
+type Conn struct {
+	server *nfs.NFSFacade
 	conn   net.Conn
 }
 
 type fragmentHeader struct {
 	IsLast bool
 	Length uint32
+}
+
+func NewConn(server *nfs.NFSFacade, conn net.Conn) *Conn {
+	return &Conn{
+		server,
+		conn,
+	}
 }
 
 // serve handles all RPC requests for this connection.
@@ -35,7 +43,7 @@ type fragmentHeader struct {
 //
 // Context cancellation is checked at the beginning of each request loop,
 // ensuring graceful shutdown and proper cleanup of resources.
-func (c *conn) serve(ctx context.Context) {
+func (c *Conn) Serve(ctx context.Context) {
 	defer func() {
 		// Panic recovery - prevents a single connection from crashing the server
 		if r := recover(); r != nil {

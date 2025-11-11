@@ -7,6 +7,12 @@ import (
 	"github.com/marmos91/dittofs/internal/metadata"
 )
 
+// Export data structure
+type exportData struct {
+	Export     metadata.Export
+	RootHandle metadata.FileHandle
+}
+
 // AddExport adds a new export to the repository with the specified configuration.
 //
 // This creates a new exported filesystem with:

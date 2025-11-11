@@ -1,5 +1,34 @@
 package metadata
 
+// FSStat contains dynamic filesystem statistics.
+// This structure is returned by the repository to inform NFS clients
+// about current filesystem capacity and usage.
+type FSStat struct {
+	// TotalBytes is the total size of the filesystem in bytes
+	TotalBytes uint64
+
+	// FreeBytes is the free space available in bytes
+	FreeBytes uint64
+
+	// AvailBytes is the free space available to non-privileged users
+	// May be less than FreeBytes if space is reserved for root
+	AvailBytes uint64
+
+	// TotalFiles is the total number of file slots (inodes)
+	TotalFiles uint64
+
+	// FreeFiles is the number of free file slots
+	FreeFiles uint64
+
+	// AvailFiles is the free file slots available to non-privileged users
+	AvailFiles uint64
+
+	// Invarsec is the number of seconds for which the filesystem is not
+	// expected to change. A value of 0 means the filesystem is expected to
+	// change at any time.
+	Invarsec uint32
+}
+
 // FSInfo contains static filesystem information and capabilities.
 // This structure is returned by the repository to inform NFS clients
 // about server limits, preferences, and supported features.

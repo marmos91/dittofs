@@ -8,11 +8,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/content"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/metadata"
 	mount "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	v3 "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
+	"github.com/marmos91/dittofs/pkg/content"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // NFSFacade implements the server.Facade interface for NFSv3 protocol.
@@ -393,7 +393,7 @@ func (s *NFSFacade) Serve(ctx context.Context) error {
 
 			// Handle connection requests
 			// Pass shutdownCtx so requests can detect shutdown and abort
-			conn.serve(s.shutdownCtx)
+			conn.Serve(s.shutdownCtx)
 		}()
 	}
 }
@@ -566,11 +566,8 @@ func (s *NFSFacade) GetActiveConnections() int32 {
 //   - tcpConn: The accepted TCP connection
 //
 // Returns a conn instance ready to serve requests.
-func (s *NFSFacade) newConn(tcpConn net.Conn) *conn {
-	return &conn{
-		server: s,
-		conn:   tcpConn,
-	}
+func (s *NFSFacade) newConn(tcpConn net.Conn) *nfs.Conn {
+	return nfs.NewConn(s, tcpConn)
 }
 
 // Port returns the TCP port the NFS server is listening on.
