@@ -10,15 +10,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/content"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/metadata"
-	"github.com/marmos91/dittofs/internal/metadata/persistence/memory"
-	"github.com/marmos91/dittofs/internal/protocol/nfs"
-	dittoServer "github.com/marmos91/dittofs/internal/server"
+	content "github.com/marmos91/dittofs/pkg/content"
+	contentFs "github.com/marmos91/dittofs/pkg/content/fs"
+	"github.com/marmos91/dittofs/pkg/facade/nfs"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/memory"
+	dittoServer "github.com/marmos91/dittofs/pkg/server"
 )
 
-func createInitialStructure(ctx context.Context, repo *memory.MemoryRepository, contentRepo *content.FSContentRepository, rootHandle metadata.FileHandle) error {
+func createInitialStructure(ctx context.Context, repo *memory.MemoryRepository, contentRepo *contentFs.FSContentRepository, rootHandle metadata.FileHandle) error {
 	now := time.Now()
 
 	// Create "images" directory
@@ -141,7 +142,7 @@ func main() {
 	logger.Info("Content storage path: %s", *contentPath)
 
 	// Create content repository
-	contentRepo, err := content.NewFSContentRepository(ctx, *contentPath)
+	contentRepo, err := contentFs.NewFSContentRepository(ctx, *contentPath)
 	if err != nil {
 		log.Fatalf("Failed to create content repository: %v", err)
 	}
@@ -223,7 +224,7 @@ func main() {
 
 	portInt := 2049 // default
 	if _, err := fmt.Sscanf(*port, "%d", &portInt); err != nil {
-		log.Fatalf("Invalid port number: %v", err)
+		logger.Warn("Invalid port number: %v, using default port %d", *port, portInt)
 	}
 
 	nfsConfig := nfs.NFSConfig{

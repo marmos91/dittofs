@@ -1,5 +1,7 @@
 package metadata
 
+import "github.com/marmos91/dittofs/pkg/metadata"
+
 // ApplySquashing applies UID/GID squashing rules based on export options.
 //
 // This function implements the standard NFS squashing behaviors:
@@ -26,7 +28,7 @@ package metadata
 //   - effectiveGID: GID to use for permission checks
 //   - effectiveGIDs: Supplementary GIDs to use for permission checks
 func ApplySquashing(
-	opts *ExportOptions,
+	opts *metadata.ExportOptions,
 	authFlavor uint32,
 	uid *uint32,
 	gid *uint32,
@@ -36,14 +38,14 @@ func ApplySquashing(
 	var anonUID uint32
 
 	if opts.AnonUID == nil {
-		anonUID = DefaultAnonUID
+		anonUID = metadata.DefaultAnonUID
 	} else {
 		anonUID = *opts.AnonUID
 	}
 
 	var anonGID uint32
 	if opts.AnonGID == nil {
-		anonGID = DefaultAnonGID
+		anonGID = metadata.DefaultAnonGID
 	} else {
 		anonGID = *opts.AnonGID
 	}

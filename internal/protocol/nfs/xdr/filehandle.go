@@ -3,7 +3,7 @@ package xdr
 import (
 	"encoding/binary"
 
-	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // extractFileID extracts the file identifier from an NFS file handle.

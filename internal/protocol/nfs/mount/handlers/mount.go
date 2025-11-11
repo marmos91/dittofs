@@ -8,8 +8,8 @@ import (
 	"net"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/metadata"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	xdr "github.com/rasky/go-xdr/xdr2"
 )
 

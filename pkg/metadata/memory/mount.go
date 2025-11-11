@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // RecordMount records an active mount by a client with authentication details.

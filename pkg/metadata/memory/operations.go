@@ -6,9 +6,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/content"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/metadata"
+	"github.com/marmos91/dittofs/pkg/content"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
