@@ -389,7 +389,7 @@ func (h *DefaultNFSHandler) Read(
 	// Access control should be enforced by the content repository
 	// based on the file's ContentID and client credentials
 
-	reader, err := contentRepo.ReadContent(attr.ContentID)
+	reader, err := contentRepo.ReadContent(ctx.Context, attr.ContentID)
 	if err != nil {
 		logger.Error("READ failed: cannot open content: handle=%x content_id=%s client=%s error=%v",
 			req.Handle, attr.ContentID, clientIP, err)

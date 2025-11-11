@@ -583,7 +583,7 @@ func truncateExistingFile(
 	// This may be a long operation for large files
 	if fileAttr.ContentID != "" {
 		if writeRepo, ok := contentRepo.(content.WriteRepository); ok {
-			if err := writeRepo.Truncate(fileAttr.ContentID, targetSize); err != nil {
+			if err := writeRepo.Truncate(ctx, fileAttr.ContentID, targetSize); err != nil {
 				logger.Warn("Failed to truncate content to %d bytes: %v", targetSize, err)
 				// Non-fatal: metadata is already updated
 			}
