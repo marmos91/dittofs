@@ -510,7 +510,7 @@ func (h *DefaultNFSHandler) Write(
 	default:
 	}
 
-	err = writeRepo.WriteAt(updatedAttr.ContentID, req.Data, int64(req.Offset))
+	err = writeRepo.WriteAt(ctx.Context, updatedAttr.ContentID, req.Data, int64(req.Offset))
 	if err != nil {
 		logger.Error("WRITE failed: content write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
 			req.Handle, req.Offset, len(req.Data), updatedAttr.ContentID, clientIP, err)

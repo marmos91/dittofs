@@ -52,7 +52,7 @@ func createInitialStructure(ctx context.Context, repo *memory.MemoryRepository, 
 		contentID := content.ContentID(fmt.Sprintf("img-%s", img.name))
 
 		// Write actual content to the content repository
-		if err := contentRepo.WriteContent(contentID, []byte(img.content)); err != nil {
+		if err := contentRepo.WriteContent(ctx, contentID, []byte(img.content)); err != nil {
 			return fmt.Errorf("failed to write content for %s: %w", img.name, err)
 		}
 
@@ -86,7 +86,7 @@ func createInitialStructure(ctx context.Context, repo *memory.MemoryRepository, 
 		contentID := content.ContentID(fmt.Sprintf("txt-%s", txt.name))
 
 		// Write actual content to the content repository
-		if err := contentRepo.WriteContent(contentID, []byte(txt.content)); err != nil {
+		if err := contentRepo.WriteContent(ctx, contentID, []byte(txt.content)); err != nil {
 			return fmt.Errorf("failed to write content for %s: %w", txt.name, err)
 		}
 
@@ -143,7 +143,7 @@ func main() {
 	logger.Info("Content storage path: %s", *contentPath)
 
 	// Create content repository
-	contentRepo, err := content.NewFSContentRepository(*contentPath)
+	contentRepo, err := content.NewFSContentRepository(ctx, *contentPath)
 	if err != nil {
 		log.Fatalf("Failed to create content repository: %v", err)
 	}
