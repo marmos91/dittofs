@@ -24,4 +24,6 @@ func (suite *StoreTestSuite) Run(test *testing.T) {
 	test.Run("Directory", suite.RunDirectoryTests)
 	test.Run("File", suite.RunFileTests)
 	test.Run("Healthcheck", suite.RunHealthcheckTests)
+	test.Run("IO", suite.RunIOTests)
+	test.Run("Remove", suite.RunRemoveTests)
 }
