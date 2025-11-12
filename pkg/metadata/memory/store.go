@@ -68,15 +68,16 @@ type shareData struct {
 //
 // Handle Generation:
 //
-// File handles are generated using SHA-256 hashing of a seed string combined
-// with an incrementing index (handleIndex). This approach ensures:
-//   - Uniqueness: The incrementing index prevents collisions
-//   - Unpredictability: The hash function makes handles non-guessable
-//   - Fixed size: All handles are exactly 32 bytes (256 bits)
+// File handles are generated using UUIDs (Universally Unique Identifiers).
+// This approach ensures:
+//   - Uniqueness: UUIDs provide statistically guaranteed uniqueness
+//   - Unpredictability: Random generation makes handles non-guessable
+//   - Fixed size: All handles are exactly 16 bytes (128 bits)
 //   - Stability: Handles don't change once assigned to a file
+//   - Stateless: No counters or seeds to maintain, serialize, or manage
 //
-// The handleIndex is incremented with each new file/directory creation, ensuring
-// no two files ever get the same handle, even if they have the same name or path.
+// The UUID approach is standard, well-understood, and eliminates the need
+// for any handle generation state in the store.
 //
 // Consistency Guarantees:
 //
@@ -141,28 +142,139 @@ type MemoryMetadataStore struct {
 	// serverConfig stores global server configuration.
 	// This includes settings that apply across all shares and operations.
 	serverConfig metadata.ServerConfig
+
+	// capabilities stores static filesystem capabilities and limits.
+	// These are set at creation time and define what the filesystem supports.
+	capabilities metadata.FilesystemCapabilities
+
+	// maxStorageBytes is the maximum total bytes that can be stored.
+	// 0 means unlimited (constrained only by available memory).
+	maxStorageBytes uint64
+
+	// maxFiles is the maximum number of files (inodes) that can be created.
+	// 0 means unlimited (constrained only by available memory).
+	maxFiles uint64
 }
 
-// NewMemoryMetadataStore creates a new in-memory metadata store.
+// MemoryMetadataStoreConfig contains configuration for creating a memory metadata store.
 //
-// The store is initialized with empty maps for all storage structures.
-// No shares or files are created by default - use AddShare to set up
-// the initial filesystem structure.
+// This structure allows explicit configuration of store capabilities and limits
+// at creation time, making it easy to configure from environment variables,
+// config files, or command-line flags.
+type MemoryMetadataStoreConfig struct {
+	// Capabilities defines static filesystem capabilities and limits
+	Capabilities metadata.FilesystemCapabilities
+
+	// MaxStorageBytes is the maximum total bytes that can be stored
+	// 0 means unlimited (constrained only by available memory)
+	MaxStorageBytes uint64
+
+	// MaxFiles is the maximum number of files that can be created
+	// 0 means unlimited (constrained only by available memory)
+	MaxFiles uint64
+}
+
+// NewMemoryMetadataStore creates a new in-memory metadata store with specified configuration.
+//
+// The store is initialized with the provided capabilities and limits, which define
+// what the filesystem supports and its constraints. These settings are immutable
+// after creation (capabilities are static by nature).
 //
 // The returned store is immediately ready for use and safe for concurrent
 // access from multiple goroutines.
 //
+// Parameters:
+//   - config: Configuration including capabilities and storage limits
+//
 // Returns:
 //   - *MemoryMetadataStore: A new store instance ready for use
-func NewMemoryMetadataStore() *MemoryMetadataStore {
+//
+// Example:
+//
+//	config := MemoryMetadataStoreConfig{
+//	    Capabilities: metadata.FilesystemCapabilities{
+//	        MaxReadSize: 1048576,
+//	        MaxFileSize: 1099511627776, // 1TB
+//	        // ... other fields
+//	    },
+//	    MaxStorageBytes: 10 * 1024 * 1024 * 1024, // 10GB
+//	    MaxFiles: 100000,
+//	}
+//	store := NewMemoryMetadataStore(config)
+func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataStore {
 	return &MemoryMetadataStore{
-		shares:        make(map[string]*shareData),
-		files:         make(map[string]*metadata.FileAttr),
-		parents:       make(map[string]metadata.FileHandle),
-		children:      make(map[string]map[string]metadata.FileHandle),
-		linkCounts:    make(map[string]uint32),
-		pendingWrites: make(map[string]*metadata.WriteOperation),
+		shares:          make(map[string]*shareData),
+		files:           make(map[string]*metadata.FileAttr),
+		parents:         make(map[string]metadata.FileHandle),
+		children:        make(map[string]map[string]metadata.FileHandle),
+		linkCounts:      make(map[string]uint32),
+		pendingWrites:   make(map[string]*metadata.WriteOperation),
+		capabilities:    config.Capabilities,
+		maxStorageBytes: config.MaxStorageBytes,
+		maxFiles:        config.MaxFiles,
 	}
+}
+
+// NewMemoryMetadataStoreWithDefaults creates a new in-memory metadata store with sensible defaults.
+//
+// This is a convenience constructor that sets up the store with standard capabilities
+// and limits suitable for most use cases:
+//
+// Transfer Sizes:
+//   - Max read/write: 1MB
+//   - Preferred read/write: 64KB
+//
+// Limits:
+//   - Max file size: Practically unlimited (2^63-1)
+//   - Max filename: 255 bytes
+//   - Max path: 4096 bytes
+//   - Max hard links: 32767
+//   - Storage: Unlimited (1TB reported)
+//   - Files: Unlimited (1 million reported)
+//
+// Features:
+//   - Hard links: Yes
+//   - Symlinks: Yes
+//   - Case-sensitive: Yes
+//   - Case-preserving: Yes
+//   - ACLs: No
+//   - Extended attributes: No
+//   - Timestamp resolution: 1 nanosecond
+//
+// For custom configuration, use NewMemoryMetadataStore with a MemoryMetadataStoreConfig.
+//
+// Returns:
+//   - *MemoryMetadataStore: A new store instance with default configuration
+func NewMemoryMetadataStoreWithDefaults() *MemoryMetadataStore {
+	return NewMemoryMetadataStore(MemoryMetadataStoreConfig{
+		Capabilities: metadata.FilesystemCapabilities{
+			// Transfer Sizes
+			MaxReadSize:        1048576, // 1MB
+			PreferredReadSize:  65536,   // 64KB
+			MaxWriteSize:       1048576, // 1MB
+			PreferredWriteSize: 65536,   // 64KB
+
+			// Limits
+			MaxFileSize:      9223372036854775807, // 2^63-1 (practically unlimited)
+			MaxFilenameLen:   255,                 // Standard Unix limit
+			MaxPathLen:       4096,                // Standard Unix limit
+			MaxHardLinkCount: 32767,               // Similar to ext4
+
+			// Features
+			SupportsHardLinks:     true, // We track link counts
+			SupportsSymlinks:      true, // We store symlink targets
+			CaseSensitive:         true, // Go map keys are case-sensitive
+			CasePreserving:        true, // We store exact filenames
+			SupportsACLs:          false,
+			SupportsExtendedAttrs: false,
+			TruncatesLongNames:    true, // Reject with error, don't truncate
+
+			// Time Resolution
+			TimestampResolution: 1, // 1 nanosecond (Go time.Time precision)
+		},
+		MaxStorageBytes: 0, // Unlimited (reported as 1TB)
+		MaxFiles:        0, // Unlimited (reported as 1 million)
+	})
 }
 
 // handleToKey converts a FileHandle to a string key for map indexing.
@@ -221,7 +333,7 @@ func handleToKey(handle metadata.FileHandle) string {
 //
 // Returns:
 //   - FileHandle: A unique 16-byte file handle
-func (store *MemoryMetadataStore) generateFileHandle() metadata.FileHandle {
+func (s *MemoryMetadataStore) generateFileHandle(seed string) metadata.FileHandle {
 	id := uuid.New()
 	return id[:]
 }
