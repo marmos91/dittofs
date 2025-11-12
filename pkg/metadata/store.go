@@ -5,10 +5,10 @@ import (
 )
 
 // ============================================================================
-// Repository Interface
+// MetadataStore Interface
 // ============================================================================
 
-// Repository provides protocol-agnostic metadata management for filesystem operations.
+// MetadataStore provides protocol-agnostic metadata management for filesystem operations.
 //
 // This interface is designed to be used by multiple protocol handlers (NFS, SMB, FTP, etc.)
 // without exposing protocol-specific concepts. Protocol handlers are responsible for
@@ -16,7 +16,7 @@ import (
 //
 // Separation of Concerns:
 //
-// The metadata repository manages filesystem structure and metadata (file handles,
+// The metadata store manages filesystem structure and metadata (file handles,
 // attributes, permissions, directory hierarchy) but does NOT manage file content.
 // File content is stored separately in a content repository.
 //
@@ -33,14 +33,14 @@ import (
 //
 // Design Principles:
 //   - Protocol-agnostic: No NFS/SMB/FTP-specific types or values
-//   - Consistent error handling: All operations return RepositoryError for business logic errors
+//   - Consistent error handling: All operations return StoreError for business logic errors
 //   - Context-aware: All operations respect context cancellation and timeouts
 //   - Permission-aware: Operations that modify data require AuthContext for access control
 //   - Atomic operations: High-level operations (Lookup, Create, etc.) are atomic
 //
 // Thread Safety:
 // Implementations must be safe for concurrent use by multiple goroutines.
-type Repository interface {
+type MetadataStore interface {
 	// ========================================================================
 	// Share Management
 	// ========================================================================

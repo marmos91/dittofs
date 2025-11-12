@@ -1,13 +1,13 @@
 package metadata
 
-// RepositoryError represents a domain error from repository operations.
+// StoreError represents a domain error from repository operations.
 //
 // These are business logic errors (file not found, permission denied, etc.)
 // as opposed to infrastructure errors (network failure, disk error).
 //
-// Protocol handlers translate RepositoryError codes to protocol-specific
+// Protocol handlers translate StoreError codes to protocol-specific
 // error codes (e.g., NFS status codes, SMB error codes).
-type RepositoryError struct {
+type StoreError struct {
 	// Code is the error category
 	Code ErrorCode
 
@@ -20,7 +20,7 @@ type RepositoryError struct {
 }
 
 // Error implements the error interface.
-func (e *RepositoryError) Error() string {
+func (e *StoreError) Error() string {
 	if e.Path != "" {
 		return e.Message + ": " + e.Path
 	}
