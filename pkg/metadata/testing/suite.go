@@ -20,4 +20,8 @@ func (suite *StoreTestSuite) Run(test *testing.T) {
 	test.Run("Share", suite.RunShareTests)
 	test.Run("Server", suite.RunShareTests)
 	test.Run("Filesystem", suite.RunFilesystemTests)
+	test.Run("Authentication", suite.RunAuthenticationTests)
+	test.Run("Directory", suite.RunDirectoryTests)
+	test.Run("File", suite.RunFileTests)
+	test.Run("Healthcheck", suite.RunHealthcheckTests)
 }
