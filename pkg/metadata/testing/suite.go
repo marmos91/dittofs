@@ -18,4 +18,5 @@ type StoreTestSuite struct {
 // Run executes all tests in the suite.
 func (suite *StoreTestSuite) Run(test *testing.T) {
 	test.Run("Share", suite.RunShareTests)
+	test.Run("Server", suite.RunShareTests)
 }
