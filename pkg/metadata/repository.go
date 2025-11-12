@@ -2,507 +2,845 @@ package metadata
 
 import (
 	"context"
-	"time"
 )
 
-// DirEntry represents a directory entry returned by ReadDir.
-type DirEntry struct {
-	// Fileid is the unique file identifier
-	Fileid uint64
+// ============================================================================
+// Repository Interface
+// ============================================================================
 
-	// Name is the filename
-	Name string
-
-	// Cookie is an opaque value for pagination
-	Cookie uint64
-}
-
-// Interface for NFS metadata persistence
+// Repository provides protocol-agnostic metadata management for filesystem operations.
+//
+// This interface is designed to be used by multiple protocol handlers (NFS, SMB, FTP, etc.)
+// without exposing protocol-specific concepts. Protocol handlers are responsible for
+// translating between their wire formats and these generic operations.
+//
+// Separation of Concerns:
+//
+// The metadata repository manages filesystem structure and metadata (file handles,
+// attributes, permissions, directory hierarchy) but does NOT manage file content.
+// File content is stored separately in a content repository.
+//
+// Content Coordination:
+//   - PrepareWrite/PrepareRead: Protocol handler uses ContentID to read/write content
+//   - RemoveFile: Protocol handler uses returned ContentID to coordinate content deletion
+//   - Content cleanup can also be handled by garbage collection
+//
+// This separation allows:
+//   - Independent scaling of metadata and content storage
+//   - Content deduplication (multiple files referencing same ContentID)
+//   - Flexible content storage backends (local disk, S3, distributed storage)
+//   - Safe handling of hard links (content persists until all links removed)
+//
+// Design Principles:
+//   - Protocol-agnostic: No NFS/SMB/FTP-specific types or values
+//   - Consistent error handling: All operations return RepositoryError for business logic errors
+//   - Context-aware: All operations respect context cancellation and timeouts
+//   - Permission-aware: Operations that modify data require AuthContext for access control
+//   - Atomic operations: High-level operations (Lookup, Create, etc.) are atomic
+//
+// Thread Safety:
+// Implementations must be safe for concurrent use by multiple goroutines.
 type Repository interface {
-	// Export operations
-	AddExport(ctx context.Context, path string, options ExportOptions, rootAttr *FileAttr) error
-	GetExports(ctx context.Context) ([]Export, error)
-	FindExport(ctx context.Context, path string) (*Export, error)
-	DeleteExport(ctx context.Context, path string) error
+	// ========================================================================
+	// Share Management
+	// ========================================================================
 
-	// GetRootHandle returns the root file handle for an export path
-	GetRootHandle(ctx context.Context, exportPath string) (FileHandle, error)
-
-	// File operations
-	CreateFile(ctx context.Context, handle FileHandle, attr *FileAttr) error
-	GetFile(ctx context.Context, handle FileHandle) (*FileAttr, error)
-	UpdateFile(ctx context.Context, handle FileHandle, attr *FileAttr) error
-	// DeleteFile deletes file metadata by handle.
+	// AddShare makes a filesystem path available to clients with specific access rules.
 	//
-	// WARNING: This is a low-level operation that bypasses all safety checks.
-	// It does NOT:
-	//   - Check permissions
-	//   - Remove the file from its parent directory
-	//   - Update parent directory timestamps
-	//   - Verify the file can be safely deleted
+	// A share represents a root point that clients can connect to. Different protocols
+	// call this different things:
+	//   - NFS: Export
+	//   - SMB: Share
+	//   - FTP: Virtual directory
 	//
-	// In most cases, you should use RemoveFile instead, which performs
-	// proper validation and cleanup.
-	//
-	// This method should only be used for:
-	//   - Internal cleanup operations
-	//   - Orphaned handle garbage collection
-	//   - Operations that have already performed all necessary checks
-	//
-	// Returns error if the handle doesn't exist.
-	DeleteFile(ctx context.Context, handle FileHandle) error
-
-	// Directory hierarchy operations
-	SetParent(ctx context.Context, child FileHandle, parent FileHandle) error
-	GetParent(ctx context.Context, child FileHandle) (FileHandle, error)
-
-	AddChild(ctx context.Context, parent FileHandle, name string, child FileHandle) error
-	GetChild(ctx context.Context, parent FileHandle, name string) (FileHandle, error)
-	GetChildren(ctx context.Context, parent FileHandle) (map[string]FileHandle, error)
-	DeleteChild(ctx context.Context, parent FileHandle, name string) error
-
-	// Helper method to add files/directories to a parent
-	AddFileToDirectory(ctx context.Context, parentHandle FileHandle, name string, attr *FileAttr) (FileHandle, error)
-
-	// Mount tracking operations
-	// RecordMount records an active mount by a client
-	RecordMount(ctx context.Context, exportPath string, clientAddr string, authFlavor uint32, machineName string, uid *uint32, gid *uint32) error
-
-	// RemoveMount removes a mount record when a client unmounts
-	RemoveMount(ctx context.Context, exportPath string, clientAddr string) error
-
-	// GetMounts returns all active mounts, optionally filtered by export path
-	// If exportPath is empty, returns all mounts
-	GetMounts(ctx context.Context, exportPath string) ([]MountEntry, error)
-
-	// IsClientMounted checks if a specific client has an active mount
-	IsClientMounted(ctx context.Context, exportPath string, clientAddr string) (bool, error)
-
-	// CheckExportAccess verifies if a client can access an export and returns effective credentials.
-	// Returns an AccessDecision with details about the authorization and an AuthContext with
-	// the effective UID/GID after applying squashing rules (AllSquash, RootSquash).
-	//
-	// The returned AuthContext should be used for all subsequent permission checks to ensure
-	// consistent application of squashing rules throughout the mount session.
-	CheckExportAccess(
-		ctx context.Context,
-		exportPath string,
-		clientAddr string,
-		authFlavor uint32,
-		uid *uint32,
-		gid *uint32,
-		gids []uint32,
-	) (*AccessDecision, *AuthContext, error)
-
-	// CheckAccess verifies if a client has the requested access permissions on a file.
-	// It performs Unix-style permission checking based on file ownership, mode bits,
-	// and client credentials.
+	// The share configuration includes access control rules, authentication requirements,
+	// and identity mapping options that apply to all files within the share.
 	//
 	// Parameters:
-	//   - handle: The file handle to check permissions for
-	//   - requested: Bitmap of requested permissions (AccessRead, AccessModify, etc.)
+	//   - name: Unique identifier for the share (e.g., "/export/data", "projects")
+	//   - options: Access control and authentication settings
+	//   - rootAttr: Initial attributes for the share's root directory
+	//
+	// Returns:
+	//   - error: ErrAlreadyExists if share exists, or context cancellation error
+	AddShare(ctx context.Context, name string, options ShareOptions, rootAttr *FileAttr) error
+
+	// GetShares returns all configured shares.
+	//
+	// This retrieves the complete list of shares available on the server,
+	// regardless of access restrictions or mount status.
+	//
+	// Returns:
+	//   - []Share: List of all share configurations
+	//   - error: Only context cancellation errors
+	GetShares(ctx context.Context) ([]Share, error)
+
+	// FindShare retrieves a share configuration by path.
+	//
+	// Parameters:
+	//   - name: The share name to look up
+	//
+	// Returns:
+	//   - *Share: The share configuration
+	//   - error: ErrNotFound if share doesn't exist, or context cancellation error
+	FindShare(ctx context.Context, name string) (*Share, error)
+
+	// DeleteShare removes a share configuration.
+	//
+	// WARNING: This only removes the share configuration. It does NOT:
+	//   - Remove the underlying files and directories
+	//   - Disconnect active client sessions
+	//   - Clean up session tracking records
+	//
+	// Callers should ensure proper cleanup before deleting shares.
+	//
+	// Parameters:
+	//   - name: The share name to delete
+	//
+	// Returns:
+	//   - error: ErrNotFound if share doesn't exist, or context cancellation error
+	DeleteShare(ctx context.Context, name string) error
+
+	// GetShareRoot returns the root directory handle for a share.
+	//
+	// This is the entry point for all filesystem operations within a share.
+	// Clients use this handle as the starting point for path traversal.
+	//
+	// Parameters:
+	//   - name: The name of the share
+	//
+	// Returns:
+	//   - FileHandle: Root directory handle for the share
+	//   - error: ErrNotFound if share doesn't exist, or context cancellation error
+	GetShareRoot(ctx context.Context, name string) (FileHandle, error)
+
+	// ========================================================================
+	// Access Control
+	// ========================================================================
+
+	// CheckShareAccess verifies if a client can access a share and returns effective credentials.
+	//
+	// This implements share-level access control including:
+	//   - IP-based access control (allowed/denied clients)
+	//   - Authentication method validation
+	//   - Identity mapping (squashing, anonymous access)
+	//
+	// The returned AuthContext contains the effective identity after applying
+	// identity mapping rules. This should be used for all subsequent operations
+	// to ensure consistent permission checking.
+	//
+	// Access Control Flow:
+	//  1. Verify the share exists
+	//  2. Check authentication requirements (RequireAuth flag)
+	//  3. Validate authentication method against allowed list
+	//  4. Check denied clients list (deny takes precedence)
+	//  5. Check allowed clients list (if specified)
+	//  6. Apply identity mapping rules (MapAllToAnonymous, MapPrivilegedToAnonymous)
+	//  7. Return access decision with effective credentials
+	//
+	// Parameters:
+	//   - shareName: Name of the share being accessed
+	//   - clientAddr: IP address of the client (for access control lists)
+	//   - authMethod: Authentication method used (e.g., "unix", "kerberos", "anonymous")
+	//   - identity: Client's claimed identity (before mapping)
+	//
+	// Returns:
+	//   - *AccessDecision: Contains allowed status, reason, and share properties
+	//   - *AuthContext: Contains effective identity after mapping (use for subsequent operations)
+	//   - error: ErrNotFound if share doesn't exist, ErrAccessDenied if denied,
+	//     ErrAuthRequired if authentication required but not provided, or context errors
+	CheckShareAccess(ctx context.Context, shareName string, clientAddr string,
+		authMethod string, identity *Identity) (*AccessDecision, *AuthContext, error)
+
+	// CheckPermissions performs file-level permission checking.
+	//
+	// This implements Unix-style permission checking based on file ownership,
+	// mode bits, and client credentials. The method checks if the authenticated
+	// user has the requested permissions on a specific file or directory.
+	//
+	// Permission Check Logic:
+	//   - Root (UID 0): Bypass all checks (all permissions granted)
+	//   - Owner: Check owner permission bits (rwx)
+	//   - Group member: Check group permission bits (rwx)
+	//   - Other: Check other permission bits (rwx)
+	//   - Anonymous: Only world-readable/writable/executable
+	//
+	// Directory vs File Permissions:
+	//   - Directories: read=list, execute=traverse, write=modify entries
+	//   - Files: read=read data, execute=run, write=modify data
+	//
+	// Parameters:
 	//   - ctx: Authentication context with client credentials
+	//   - handle: The file handle to check permissions for
+	//   - requested: Bitmap of requested permissions (PermissionRead, PermissionWrite, etc.)
 	//
 	// Returns:
-	//   - uint32: Bitmap of granted permissions (subset of requested)
-	//   - error: Returns error only for internal failures; denied access returns 0 permissions
-	CheckAccess(ctx *AccessCheckContext, handle FileHandle, requested uint32) (uint32, error)
+	//   - Permission: Bitmap of granted permissions (subset of requested)
+	//   - error: Only for internal failures (file not found) or context cancellation.
+	//     Access denial returns 0 permissions, not an error.
+	CheckPermissions(ctx *AuthContext, handle FileHandle, requested Permission) (Permission, error)
 
-	// GetMountsByClient returns all active mounts for a specific client
-	// Used by UMNTALL to determine what will be removed
-	GetMountsByClient(ctx context.Context, clientAddr string) ([]MountEntry, error)
+	// ========================================================================
+	// File/Directory Lookup and Attributes
+	// ========================================================================
 
-	// RemoveAllMounts removes all mount records for a specific client
-	// Used by UMNTALL to clean up all mounts in one operation
-	RemoveAllMounts(ctx context.Context, clientAddr string) error
-
-	// ServerConfig operations
-	// SetServerConfig sets the server-wide configuration
-	SetServerConfig(ctx context.Context, config ServerConfig) error
-
-	// GetServerConfig returns the current server configuration
-	GetServerConfig(ctx context.Context) (ServerConfig, error)
-
-	// CheckDumpAccess verifies if a client can call the DUMP procedure
-	// Returns error if access is denied, nil if allowed
-	CheckDumpAccess(ctx context.Context, clientAddr string) error
-
-	// GetFSInfo returns the static filesystem information and capabilities
-	// This is used by the FSINFO NFS procedure to inform clients about
-	// server limits and preferences (max transfer sizes, properties, etc.)
-	GetFSInfo(ctx context.Context, handle FileHandle) (*FSInfo, error)
-
-	// GetFSStats returns the dynamic filesystem statistics
-	// This is used by the FSSTAT NFS procedure to inform clients about
-	// current filesystem capacity, usage, and available space/inodes
-	GetFSStats(ctx context.Context, handle FileHandle) (*FSStat, error)
-
-	// CreateLink creates a hard link to an existing file.
+	// Lookup resolves a name within a directory to a file handle and attributes.
 	//
-	// This adds a new directory entry that references the same file data.
-	// The file's link count (nlink) should be incremented.
+	// This is the fundamental operation for path resolution. It combines directory
+	// search, permission checking, and attribute retrieval into a single atomic
+	// operation.
+	//
+	// Special Names:
+	//   - ".": Returns the directory itself (dirHandle and its attributes)
+	//   - "..": Returns the parent directory (parent handle and its attributes)
+	//   - Regular names: Returns the child (child handle and its attributes)
+	//
+	// Permission Requirements:
+	//   - Execute/traverse permission on the directory (search permission)
+	//   - For "..": Execute permission on parent (if checking parent access)
+	//
+	// This replaces the pattern of:
+	//   1. GetFile(dirHandle) - verify directory
+	//   2. GetChild(dirHandle, name) - resolve name
+	//   3. GetFile(childHandle) - get attributes
+	//
+	// With a single atomic operation that includes permission checking.
 	//
 	// Parameters:
-	//   - dirHandle: Target directory where the link will be created
-	//   - name: Name for the new link
-	//   - fileHandle: File to link to
-	//   - ctx: Authentication context for access control
-	//
-	// Returns error if:
-	//   - Access denied (no write permission on directory)
-	//   - Name already exists in directory
-	//   - Cross-filesystem link attempted (implementation-specific)
-	//   - fileHandle or dirHandle is invalid
-	CreateLink(ctx *AuthContext, dirHandle FileHandle, name string, fileHandle FileHandle) error
-
-	// CreateDirectory creates a new directory with the specified attributes.
-	//
-	// This method is responsible for:
-	//  1. Checking write permission on the parent directory
-	//  2. Verifying the name doesn't already exist
-	//  3. Building complete directory attributes with defaults
-	//  4. Creating the directory metadata
-	//  5. Linking it to the parent directory
-	//  6. Setting up the parent-child relationship
-	//  7. Updating parent directory timestamps
-	//
-	// Parameters:
-	//   - parentHandle: Handle of the parent directory
-	//   - name: Name for the new directory
-	//   - attr: Partial attributes (type, mode, uid, gid) - may have defaults
-	//   - ctx: Authentication context for access control
+	//   - ctx: Authentication context for permission checking
+	//   - dirHandle: Directory to search in
+	//   - name: Name to resolve (including "." and "..")
 	//
 	// Returns:
-	//   - FileHandle: Handle of the newly created directory
-	//   - error: Returns error if:
-	//     * Access denied (no write permission on parent)
-	//     * Name already exists
-	//     * Parent is not a directory
-	//     * I/O error
-	//
-	// The implementation should:
-	//   - Complete the attr structure with size (typically 4096), timestamps, etc.
-	//   - Check that the caller has write permission on the parent directory
-	//   - Ensure the directory has proper default attributes if not specified
-	CreateDirectory(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (FileHandle, error)
+	//   - FileHandle: Handle of the resolved file/directory
+	//   - *FileAttr: Complete attributes of the resolved file/directory
+	//   - error: ErrNotFound if name doesn't exist, ErrNotDirectory if dirHandle
+	//     is not a directory, ErrAccessDenied if no search permission, or context errors
+	Lookup(ctx *AuthContext, dirHandle FileHandle, name string) (FileHandle, *FileAttr, error)
 
-	// GetPathConf returns POSIX-compatible filesystem information.
-	// This is used by the PATHCONF NFS procedure to inform clients about
-	// filesystem properties and limitations (filename lengths, link limits, etc.)
-	GetPathConf(ctx context.Context, handle FileHandle) (*PathConf, error)
-
-	// CreateSpecialFile creates a special file (device, socket, or FIFO).
+	// GetFile retrieves file attributes by handle.
 	//
-	// This method is responsible for:
-	//  1. Checking write permission on the parent directory
-	//  2. Checking privilege requirements (device creation often requires root)
-	//  3. Verifying the name doesn't already exist
-	//  4. Building complete file attributes with defaults
-	//  5. Storing device numbers (for block/char devices)
-	//  6. Creating the special file metadata
-	//  7. Linking it to the parent directory
-	//  8. Setting up the parent-child relationship
-	//  9. Updating parent directory timestamps
+	// This is a lightweight operation that only reads metadata without permission
+	// checking. It's used for operations where permission checking has already been
+	// performed or is not required (e.g., getting attributes after successful lookup).
+	//
+	// For operations requiring permission checking, use Lookup or PrepareRead instead.
 	//
 	// Parameters:
-	//   - parentHandle: Handle of the parent directory
-	//   - name: Name for the new special file
-	//   - attr: Partial attributes (type, mode, uid, gid) - may have defaults
-	//   - majorDevice: Major device number (for block/char devices, 0 otherwise)
-	//   - minorDevice: Minor device number (for block/char devices, 0 otherwise)
-	//   - ctx: Authentication context for access control
+	//   - handle: The file handle to query
 	//
 	// Returns:
-	//   - FileHandle: Handle of the newly created special file
-	//   - error: Returns error if:
-	//     * Access denied (no write permission on parent or insufficient privileges)
-	//     * Name already exists
-	//     * Parent is not a directory
-	//     * Invalid file type
-	//     * I/O error
-	//
-	// The implementation should:
-	//   - Complete the attr structure with size (0), timestamps, etc.
-	//   - Check that the caller has write permission on the parent directory
-	//   - For device files, check that the caller has sufficient privileges (typically root)
-	//   - Store device numbers appropriately (implementation-specific)
-	//   - Ensure the special file has proper default attributes if not specified
-	CreateSpecialFile(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr, majorDevice uint32, minorDevice uint32) (FileHandle, error)
+	//   - *FileAttr: Complete file attributes
+	//   - error: ErrNotFound if handle doesn't exist, ErrInvalidHandle if handle
+	//     is malformed, or context cancellation error
+	GetFile(ctx context.Context, handle FileHandle) (*FileAttr, error)
 
-	// ReadDir reads directory entries with pagination support.
+	// SetFileAttributes updates file attributes with validation and access control.
 	//
-	// This method handles:
-	//  - Checking read/execute permission on the directory
-	//  - Building "." and ".." entries
-	//  - Iterating through regular entries
-	//  - Cookie-based pagination
-	//  - Respecting count limits
+	// This implements selective attribute updates based on the Set* flags in attrs.
+	// Only attributes with their corresponding Set* flag set to true are modified.
+	// Other attributes remain unchanged.
+	//
+	// Permission Requirements:
+	//   - Mode changes: Owner or root
+	//   - UID changes: Root only
+	//   - GID changes: Root, or owner if member of target group
+	//   - Size changes: Write permission
+	//   - Time changes: Write permission or owner
+	//
+	// Automatic Updates:
+	//   - Ctime (change time): Always updated when any attribute changes
+	//   - Mtime (modification time): Updated when size changes
+	//
+	// Size Changes:
+	// Size modifications coordinate with the content repository:
+	//   - Truncation (new < old): Content repository should remove trailing data
+	//   - Extension (new > old): Content repository should pad with zeros
+	//   - Zero: Content repository should delete all content
+	//
+	// The metadata repository updates the size metadata, but the protocol handler
+	// must coordinate actual content changes with the content repository.
 	//
 	// Parameters:
-	//   - dirHandle: Directory to read
-	//   - cookie: Starting position (0 = beginning)
-	//   - count: Maximum response size in bytes (hint)
-	//   - ctx: Authentication context for access control
-	//
-	// Returns:
-	//   - []DirEntry: List of entries starting from cookie
-	//   - bool: EOF flag (true if all entries returned)
-	//   - error: Access denied or I/O errors
-	ReadDir(ctx *AuthContext, dirHandle FileHandle, cookie uint64, count uint32) ([]DirEntry, bool, error)
-
-	// RemoveFile removes a file (not a directory) from a directory.
-	//
-	// This method is responsible for:
-	//  1. Verifying the file exists and is not a directory
-	//  2. Checking write permission on the parent directory
-	//  3. Removing the file from the directory
-	//  4. Deleting the file metadata
-	//  5. Updating parent directory timestamps
-	//
-	// Parameters:
-	//   - parentHandle: Handle of the parent directory
-	//   - filename: Name of the file to remove
-	//   - ctx: Authentication context for access control
-	//
-	// Returns:
-	//   - *FileAttr: The attributes of the removed file (for response)
-	//   - error: Returns error if:
-	//     * Access denied (no write permission on parent)
-	//     * File not found
-	//     * File is a directory (use RemoveDirectory instead)
-	//     * Parent is not a directory
-	//     * I/O error
-	RemoveFile(ctx *AuthContext, parentHandle FileHandle, filename string) (*FileAttr, error)
-
-	// ReadSymlink reads the target path of a symbolic link.
-	//
-	// This method is responsible for:
-	//  1. Verifying the handle is a valid symbolic link
-	//  2. Checking read permission on the symlink
-	//  3. Retrieving the symlink target path
-	//  4. Returning symlink attributes for cache consistency
-	//
-	// Parameters:
-	//   - handle: File handle of the symbolic link
-	//   - ctx: Authentication context for access control
-	//
-	// Returns:
-	//   - string: The symlink target path
-	//   - *FileAttr: Symlink attributes
-	//   - error: Returns error if:
-	//     * Handle not found
-	//     * Handle is not a symlink
-	//     * Access denied (no read permission)
-	//     * Target path is missing or empty
-	//     * I/O error
-	ReadSymlink(ctx *AuthContext, handle FileHandle) (string, *FileAttr, error)
-
-	// RemoveDirectory removes an empty directory from a parent directory.
-	//
-	// This method is responsible for:
-	//  1. Verifying the directory exists as a child of the parent
-	//  2. Verifying the target is actually a directory
-	//  3. Checking the directory is empty (no entries except "." and "..")
-	//  4. Checking write permission on the parent directory
-	//  5. Removing the directory entry from the parent
-	//  6. Deleting the directory metadata
-	//  7. Updating parent directory timestamps
-	//
-	// Parameters:
-	//   - parentHandle: Handle of the parent directory
-	//   - name: Name of the directory to remove
-	//   - ctx: Authentication context for access control
-	//
-	// Returns error if:
-	//   - Access denied (no write permission on parent)
-	//   - Directory not found
-	//   - Target is not a directory
-	//   - Directory is not empty
-	//   - Parent is not a directory
-	//   - I/O error
-	RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, name string) error
-
-	// RenameFile renames or moves a file from one directory to another.
-	//
-	// This method implements support for the RENAME NFS procedure (RFC 1813 section 3.3.14).
-	// RENAME is used to change a file's name within the same directory, move a file
-	// to a different directory, or atomically replace an existing file.
-	//
-	// Atomicity:
-	// The implementation should strive for atomicity by validating all preconditions
-	// before making any changes and performing operations in a way that minimizes
-	// the window for failure. In a production implementation with persistent storage,
-	// you would use proper transaction semantics or a write-ahead log.
-	//
-	// Replacement Semantics:
-	// When the destination name already exists:
-	//  - File over file: Allowed (atomic replacement)
-	//  - Directory over empty directory: Allowed
-	//  - Directory over non-empty directory: Not allowed (return error)
-	//  - File over directory: Not allowed (return error)
-	//  - Directory over file: Not allowed (return error)
-	//
-	// This method is responsible for:
-	//  1. Verifying source directory exists and is a directory
-	//  2. Verifying destination directory exists and is a directory
-	//  3. Checking write permission on source directory (to remove entry)
-	//  4. Checking write permission on destination directory (to add entry)
-	//  5. Verifying source file/directory exists
-	//  6. Handling no-op case (same directory, same name)
-	//  7. Checking if destination exists and validating replacement rules
-	//  8. Removing destination if replacement is allowed
-	//  9. Performing the rename (remove from source, add to destination)
-	//  10. Updating parent relationships for cross-directory moves
-	//  11. Updating timestamps (ctime for source, mtime+ctime for directories)
-	//
-	// Parameters:
-	//   - fromDirHandle: Source directory handle
-	//   - fromName: Current name of the file/directory
-	//   - toDirHandle: Destination directory handle
-	//   - toName: New name for the file/directory
-	//   - ctx: Authentication context for access control
-	//
-	// Returns error if:
-	//   - Source file/directory not found
-	//   - Source or destination directory not found or not a directory
-	//   - Access denied (no write permission on either directory)
-	//   - Destination is a non-empty directory when replacing
-	//   - Type mismatch (file vs directory) when replacing
-	//   - I/O error
-	//
-	// Special Cases:
-	//   - Same directory, same name: Returns nil (no-op success)
-	//   - Same directory, different name: Simple rename
-	//   - Different directory: Move with potential rename
-	//   - Over existing file: Atomic replacement
-	RenameFile(ctx *AuthContext, fromDirHandle FileHandle, fromName string, toDirHandle FileHandle, toName string) error
-
-	// SetFileAttributes updates file attributes with access control.
-	//
-	// This method is responsible for:
-	//  1. Checking ownership (for chown/chmod)
-	//  2. Checking write permission (for size/time changes)
-	//  3. Validating attribute values
-	//  4. Coordinating with content repository for size changes
-	//  5. Updating ctime automatically
-	//  6. Ensuring atomicity of updates
-	//
-	// Parameters:
+	//   - ctx: Authentication context for permission checking
 	//   - handle: The file handle to update
-	//   - attrs: The attributes to set (only Set* = true are modified)
-	//   - ctx: Authentication context for access control
+	//   - attrs: Attributes to set (only Set* = true are modified)
 	//
-	// Returns error if:
-	//   - Access denied (no permission)
-	//   - Not owner (for chown/chmod)
-	//   - Invalid attribute values
-	//   - Read-only filesystem
-	//   - I/O error
+	// Returns:
+	//   - error: ErrNotFound if file doesn't exist, ErrAccessDenied if insufficient
+	//     permissions, ErrPermissionDenied for ownership/permission changes by non-owner,
+	//     ErrInvalidArgument for invalid values, or context errors
 	SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *SetAttrs) error
 
-	// CreateSymlink creates a symbolic link with the specified target path.
+	// ========================================================================
+	// File/Directory Creation
+	// ========================================================================
+
+	// Create creates a new file or directory.
 	//
-	// This method is responsible for:
-	//  1. Verifying the parent directory exists and is a directory
-	//  2. Checking write permission on the parent directory
-	//  3. Verifying the name doesn't already exist
-	//  4. Completing symlink attributes with server-assigned values:
-	//     - Type: FileTypeSymlink
-	//     - Size: Length of target path
-	//     - Timestamps: Current time for atime, mtime, ctime
-	//     - UID/GID: From auth context or request attributes
-	//     - Mode: Default 0777 or from request attributes
-	//  5. Storing the target path in the symlink metadata
-	//  6. Creating the symlink metadata
-	//  7. Linking it to the parent directory
-	//  8. Updating parent directory timestamps
+	// The type of object created is determined by attr.Type:
+	//   - FileTypeRegular: Creates a regular file (empty, size 0)
+	//   - FileTypeDirectory: Creates a directory
+	//
+	// Other types must use their specific creation methods:
+	//   - FileTypeSymlink: Use CreateSymlink
+	//   - FileTypeBlockDevice, FileTypeCharDevice: Use CreateSpecialFile
+	//   - FileTypeSocket, FileTypeFIFO: Use CreateSpecialFile
+	//
+	// Required fields in attr:
+	//   - Type: Must be FileTypeRegular or FileTypeDirectory
+	//   - Mode: Permission bits (if 0, defaults to 0644 for files, 0755 for directories)
+	//   - UID, GID: Owner (if 0, uses authenticated user's credentials)
+	//
+	// The implementation completes attr with:
+	//   - Size: 0 for files, implementation-specific for directories
+	//   - Timestamps: Current time for atime, mtime, ctime
+	//   - ContentID: Generated for files, empty for directories
 	//
 	// Parameters:
+	//   - ctx: Authentication context for permission checking
 	//   - parentHandle: Handle of the parent directory
-	//   - name: Name for the new symbolic link
-	//   - target: Path that the symlink will point to
+	//   - name: Name for the new file/directory
+	//   - attr: Attributes including Type (must be Regular or Directory)
+	//
+	// Returns:
+	//   - FileHandle: Handle of the newly created file/directory
+	//   - error: ErrInvalidArgument if Type is invalid, ErrAccessDenied if no write
+	//     permission, ErrAlreadyExists if name exists, or other errors
+	Create(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (FileHandle, error)
+
+	// CreateSymlink creates a symbolic link pointing to a target path.
+	//
+	// A symbolic link is a special file that contains a pathname. Unlike hard links,
+	// symlinks can:
+	//   - Point to directories
+	//   - Cross filesystem boundaries
+	//   - Point to non-existent paths (dangling symlinks)
+	//
+	// Target Path:
+	// The target path is stored without validation. Dangling symlinks (pointing to
+	// non-existent paths) are allowed. The target is resolved when the symlink is
+	// followed, not when it's created.
+	//
+	// Attribute Completion:
+	//   - Type: FileTypeSymlink
+	//   - Size: Length of target path string
+	//   - Timestamps: Current time for atime, mtime, ctime
+	//   - LinkTarget: The provided target path
+	//   - ContentID: Empty (symlinks don't have content)
+	//
+	// Parameters:
+	//   - ctx: Authentication context for permission checking
+	//   - parentHandle: Handle of the parent directory
+	//   - name: Name for the new symlink
+	//   - target: Path the symlink will point to (can be absolute or relative)
 	//   - attr: Partial attributes (mode, uid, gid may be set)
-	//   - ctx: Authentication context for access control
 	//
 	// Returns:
 	//   - FileHandle: Handle of the newly created symlink
-	//   - error: Returns error if:
-	//     * Access denied (no write permission on parent)
-	//     * Name already exists
-	//     * Parent is not a directory
-	//     * I/O error
-	//
-	// The implementation should:
-	//   - Complete the attr structure with server-assigned values
-	//   - Check that the caller has write permission on the parent directory
-	//   - Store the target path in attr.SymlinkTarget
-	//   - Ensure the symlink has proper default attributes if not specified
+	//   - error: ErrAccessDenied if no write permission, ErrAlreadyExists if name exists,
+	//     ErrNotDirectory if parent is not a directory, or context errors
 	CreateSymlink(ctx *AuthContext, parentHandle FileHandle, name string, target string, attr *FileAttr) (FileHandle, error)
 
-	// WriteFile updates file metadata for a write operation.
+	// CreateSpecialFile creates a special file (device, socket, or FIFO).
 	//
-	// This method handles the metadata aspects of file writes:
-	//   - Permission validation (owner/group/other write bits)
-	//   - File size updates (extension if newSize > current size)
-	//   - Timestamp updates (mtime always, ctime if size changed)
-	//   - Content ID generation if needed
+	// Special files represent system resources:
+	//   - FileTypeBlockDevice: Block devices (disks, partitions)
+	//   - FileTypeCharDevice: Character devices (terminals, serial ports)
+	//   - FileTypeSocket: Unix domain sockets (IPC endpoints)
+	//   - FileTypeFIFO: Named pipes (IPC channels)
 	//
-	// Pre-Operation Attributes:
-	// The method returns the file's size and timestamps BEFORE any modifications.
-	// The protocol layer uses these for WCC (Weak Cache Consistency) data to help
-	// clients detect concurrent modifications.
+	// Device Files:
+	// For block and character devices, deviceMajor and deviceMinor specify the
+	// device numbers. The storage of device numbers is implementation-specific.
+	// For sockets and FIFOs, device numbers should be 0.
 	//
-	// Design Philosophy:
-	// This method does NOT perform actual data writing. The protocol handler
-	// is responsible for coordinating between metadata and content repositories:
-	//  1. Call WriteFile to check permissions and capture pre-op attributes
-	//  2. Write data via content repository using the ContentID from attributes
-	//  3. Pre-op attributes and updated attributes are ready for response
+	// Security:
+	// Device file creation typically requires root privileges (UID 0) to prevent
+	// unauthorized hardware access. The implementation should enforce this for
+	// FileTypeBlockDevice and FileTypeCharDevice.
+	//
+	// Attribute Completion:
+	//   - Type: As specified in fileType parameter
+	//   - Size: 0 (special files have no content)
+	//   - Timestamps: Current time for atime, mtime, ctime
+	//   - ContentID: Empty (special files don't have content)
 	//
 	// Parameters:
-	//   - handle: File handle to update
-	//   - newSize: File size after write (offset + length of data)
 	//   - ctx: Authentication context for permission checking
+	//   - parentHandle: Handle of the parent directory
+	//   - name: Name for the new special file
+	//   - fileType: Type of special file to create
+	//   - attr: Partial attributes (mode, uid, gid may be set)
+	//   - deviceMajor: Major device number (for block/char devices, 0 otherwise)
+	//   - deviceMinor: Minor device number (for block/char devices, 0 otherwise)
 	//
 	// Returns:
-	//   - *FileAttr: Updated file attributes (includes ContentID for writing)
-	//   - uint64: Pre-operation file size
-	//   - time.Time: Pre-operation modification time
-	//   - time.Time: Pre-operation change time
-	//   - error: ExportError if operation fails
+	//   - FileHandle: Handle of the newly created special file
+	//   - error: ErrAccessDenied if insufficient privileges, ErrAlreadyExists if name
+	//     exists, ErrNotDirectory if parent is not a directory, ErrInvalidArgument
+	//     for invalid fileType, or context errors
+	CreateSpecialFile(ctx *AuthContext, parentHandle FileHandle, name string, fileType FileType, attr *FileAttr, deviceMajor, deviceMinor uint32) (FileHandle, error)
+
+	// CreateHardLink creates a hard link to an existing file.
 	//
-	// Example usage:
+	// A hard link creates a new directory entry that references the same file data
+	// as an existing file. Both names refer to identical content and attributes.
+	// Changes to the file through one name are visible through all names.
 	//
-	//	newSize := offset + uint64(len(data))
-	//	attr, preSize, preMtime, preCtime, err := repo.WriteFile(handle, newSize, authCtx)
+	// Hard Link Restrictions:
+	//   - Source and target must be in the same filesystem
+	//   - Most implementations don't allow hard links to directories
+	//   - Some filesystems have maximum link count limits
+	//
+	// Link Count:
+	// The file's link count (nlink) should be incremented. When the last link is
+	// removed, the file's data is deleted.
+	//
+	// Timestamps:
+	//   - Target file: Ctime updated (metadata changed)
+	//   - Parent directory: Mtime and ctime updated (contents changed)
+	//
+	// Parameters:
+	//   - ctx: Authentication context for permission checking
+	//   - dirHandle: Target directory where the link will be created
+	//   - name: Name for the new link
+	//   - targetHandle: File to link to
+	//
+	// Returns:
+	//   - error: ErrAccessDenied if no write permission on directory, ErrAlreadyExists
+	//     if name exists, ErrNotFound if targetHandle doesn't exist, ErrIsDirectory
+	//     if trying to link a directory, ErrNotSupported if cross-filesystem, or
+	//     context errors
+	CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name string, targetHandle FileHandle) error
+
+	// ========================================================================
+	// File/Directory Removal
+	// ========================================================================
+
+	// RemoveFile removes a file's metadata from its parent directory.
+	//
+	// This performs metadata cleanup including:
+	//   - Permission validation (write permission on parent)
+	//   - Type checking (must not be a directory)
+	//   - File metadata deletion
+	//   - Directory entry removal from parent
+	//   - Parent timestamp updates
+	//
+	// WARNING: This method does NOT delete the file's content data.
+	// The protocol handler is responsible for coordinating content deletion
+	// with the content repository using the ContentID from the returned FileAttr.
+	//
+	// Hard Links:
+	// If the file has multiple hard links, this removes only one link. The file's
+	// content should only be deleted when the last link is removed (when a link
+	// count reaches 0, if tracked).
+	//
+	// Recommended Protocol Handler Pattern:
+	//
+	//	// 1. Remove metadata and get file attributes
+	//	attr, err := repo.RemoveFile(authCtx, parentHandle, filename)
 	//	if err != nil {
 	//	    return err
 	//	}
-	//	err = contentRepo.WriteAt(attr.ContentID, data, offset)
-	WriteFile(ctx *AuthContext, handle FileHandle, newSize uint64) (*FileAttr, uint64, time.Time, time.Time, error)
-
-	// GetMaxWriteSize returns the maximum write size in bytes that the server will accept.
-	// This should match or be slightly larger than the wtmax value returned by GetFSInfo.
 	//
-	// The returned value is used for validation in the WRITE procedure to prevent:
-	//   - Memory exhaustion from oversized requests
-	//   - Protocol violations from malicious clients
-	//   - Resource exhaustion attacks
-	//
-	// Typical values:
-	//   - Production servers: 64KB-1MB (balances performance and safety)
-	//   - High-throughput servers: 1MB-32MB (requires more memory)
-	//   - Conservative servers: 32KB-64KB (matches typical wtmax)
-	//
-	// The value should be at least as large as the wtmax advertised in FSINFO,
-	// but can be larger to provide some tolerance for non-compliant clients.
+	//	// 2. Delete content from content repository (if last link)
+	//	if attr.ContentID != "" {
+	//	    // Check if this was the last link (implementation-specific)
+	//	    if isLastLink {
+	//	        err = contentRepo.Delete(ctx, attr.ContentID)
+	//	        if err != nil {
+	//	            // Log error but don't fail the remove operation
+	//	            // Content can be garbage collected later
+	//	        }
+	//	    }
+	//	}
 	//
 	// Returns:
-	//   - uint32: Maximum write size in bytes
-	GetMaxWriteSize(ctx context.Context) uint32
+	//   - *FileAttr: Attributes of the removed file (includes ContentID for content cleanup)
+	//   - error: ErrAccessDenied, ErrNotFound, ErrIsDirectory, or context errors
+	RemoveFile(ctx *AuthContext, parentHandle FileHandle, name string) (*FileAttr, error)
 
-	// Healthcheck performs a health check on the repository.
-	// Returns nil if the repository is healthy and accessible.
-	// This is used by the NULL procedure for optional health monitoring.
+	// RemoveDirectory removes an empty directory's metadata from its parent.
+	//
+	// This performs metadata cleanup including:
+	//   - Permission validation (write permission on parent)
+	//   - Type checking (must be a directory)
+	//   - Empty check (no children)
+	//   - Directory metadata deletion
+	//   - Directory entry removal from parent
+	//   - Parent timestamp updates
+	//
+	// Content Deletion:
+	// WARNING: This method does NOT delete any associated content data. Directories
+	// typically don't have content in the content repository (ContentID is empty),
+	// but if your implementation stores directory-specific data, cleanup is
+	// the protocol handler's or garbage collector's responsibility.
+	//
+	// Returns:
+	//   - error: ErrAccessDenied, ErrNotFound, ErrNotDirectory, ErrNotEmpty, or context errors
+	RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, name string) error
+
+	// ========================================================================
+	// File/Directory Operations
+	// ========================================================================
+
+	// Move moves or renames a file or directory atomically.
+	//
+	// This operation can:
+	//   - Rename within the same directory (fromDir == toDir, different names)
+	//   - Move to a different directory (fromDir != toDir, same or different name)
+	//   - Move and rename in a single atomic operation
+	//   - Atomically replace an existing file/directory at the destination
+	//
+	// Atomicity:
+	// The operation should appear atomic to concurrent clients. All preconditions
+	// are validated before making changes.
+	//
+	// Replacement Semantics:
+	// When the destination name exists:
+	//   - File over file: Allowed (atomic replacement)
+	//   - Directory over empty directory: Allowed
+	//   - Directory over non-empty directory: NOT allowed (ErrNotEmpty)
+	//   - File over directory: NOT allowed (ErrIsDirectory)
+	//   - Directory over file: NOT allowed (ErrNotDirectory)
+	//
+	// Permission Requirements:
+	//   - Write permission on source directory (to remove entry)
+	//   - Write permission on destination directory (to add entry)
+	//
+	// Special Cases:
+	//   - Same directory, same name: Success (no-op)
+	//   - Moving "." or ".." should be rejected by protocol layer validation
+	//
+	// Timestamps:
+	//   - Moved file/directory: Ctime updated (metadata changed)
+	//   - Source directory: Mtime and ctime updated (contents changed)
+	//   - Destination directory: Mtime and ctime updated (if different from source)
+	//
+	// Parameters:
+	//   - ctx: Authentication context for permission checking
+	//   - fromDir: Source directory handle
+	//   - fromName: Current name
+	//   - toDir: Destination directory handle
+	//   - toName: New name
+	//
+	// Returns:
+	//   - error: ErrAccessDenied if no write permission on either directory,
+	//     ErrNotFound if source doesn't exist, ErrNotEmpty if replacing non-empty
+	//     directory, ErrIsDirectory/ErrNotDirectory for type mismatches, or context errors
+	Move(ctx *AuthContext, fromDir FileHandle, fromName string, toDir FileHandle, toName string) error
+
+	// ReadSymlink reads the target path of a symbolic link.
+	//
+	// This returns the path stored in the symlink without following it. The target
+	// path may be:
+	//   - Absolute or relative
+	//   - Point to a non-existent location (dangling symlink)
+	//   - Point to another symlink (chain of symlinks)
+	//
+	// Permission Requirements:
+	//   - Read permission on the symlink itself (not the target)
+	//
+	// Note: Reading a symlink requires read permission on the symlink file, not
+	// execute permission. Execute permission is required when traversing through
+	// a symlink (following it), which is a separate operation.
+	//
+	// Returns Attributes:
+	// The method also returns the symlink's attributes for cache consistency.
+	// This allows protocols to update their cached attributes in a single operation.
+	//
+	// Parameters:
+	//   - ctx: Authentication context for permission checking
+	//   - handle: File handle of the symbolic link
+	//
+	// Returns:
+	//   - string: The target path stored in the symlink
+	//   - *FileAttr: Attributes of the symlink itself (not the target)
+	//   - error: ErrNotFound if handle doesn't exist, ErrInvalidArgument if handle
+	//     is not a symlink, ErrAccessDenied if no read permission, or context errors
+	ReadSymlink(ctx *AuthContext, handle FileHandle) (string, *FileAttr, error)
+
+	// ReadDirectory reads one page of directory entries with pagination support.
+	//
+	// Pagination:
+	//   - Start with token="" (empty string) to read from beginning
+	//   - Use page.NextToken for subsequent pages
+	//   - page.NextToken="" (empty) indicates no more pages
+	//   - page.HasMore is a convenience flag (same as NextToken != "")
+	//
+	// Pagination Tokens:
+	// Tokens are opaque strings managed by the implementation. The format may
+	// encode position, state, or other pagination information. Implementations
+	// may use:
+	//   - Simple offsets: "0", "100", "200"
+	//   - Filenames: "file123.txt" (resume after this file)
+	//   - Encoded cursors: "cursor:YXJyYXk=" (base64 state)
+	//   - Structured tokens: "v1:dir:abc:offset:50"
+	//
+	// Clients must:
+	//   - Treat tokens as opaque (never parse or construct)
+	//   - Use empty string "" to start pagination
+	//   - Pass NextToken unchanged to continue pagination
+	//   - Not assume tokens are comparable or ordered
+	//   - Not cache tokens across sessions (may become invalid)
+	//
+	// Implementations must:
+	//   - Return "" for NextToken when no more pages
+	//   - Validate token format and return ErrInvalidArgument if invalid
+	//   - Handle token="" as "start from beginning"
+	//   - Ensure tokens are URL-safe if needed by protocol
+	//
+	// Example - Read all entries:
+	//
+	//	var allEntries []DirEntry
+	//	token := ""
+	//	for {
+	//	    page, err := repo.ReadDirectory(authCtx, dirHandle, token, 8192)
+	//	    if err != nil {
+	//	        return err
+	//	    }
+	//	    allEntries = append(allEntries, page.Entries...)
+	//	    if !page.HasMore {
+	//	        break
+	//	    }
+	//	    token = page.NextToken
+	//	}
+	//
+	// Parameters:
+	//   - ctx: Authentication context for permission checking
+	//   - dirHandle: Directory to read
+	//   - token: Pagination token (empty string = start, or NextToken from previous page)
+	//   - maxBytes: Maximum response size hint in bytes (0 = use default of 8192)
+	//
+	// Returns:
+	//   - *ReadDirPage: Page of entries with pagination info
+	//   - error: ErrNotFound if directory doesn't exist, ErrNotDirectory if handle
+	//     is not a directory, ErrPermissionDenied if no read/execute permission,
+	//     ErrInvalidArgument if token is invalid, or context errors
+	ReadDirectory(ctx *AuthContext, dirHandle FileHandle, token string, maxBytes uint32) (*ReadDirPage, error)
+
+	// ========================================================================
+	// File Content Coordination
+	// ========================================================================
+
+	// PrepareWrite validates a write operation and returns a write intent.
+	//
+	// This method validates permissions and file type but does NOT modify
+	// any metadata. Metadata changes are applied by CommitWrite after the
+	// content write succeeds.
+	//
+	// Two-Phase Write Pattern:
+	//
+	//	// Phase 1: Validate and prepare
+	//	intent, err := repo.PrepareWrite(authCtx, handle, newSize)
+	//	if err != nil {
+	//	    return err  // Validation failed, no changes made
+	//	}
+	//
+	//	// Phase 2: Write content
+	//	err = contentRepo.WriteAt(intent.ContentID, data, offset)
+	//	if err != nil {
+	//	    return err  // Content write failed, no metadata changes, nothing to rollback
+	//	}
+	//
+	//	// Phase 3: Commit metadata changes
+	//	err = repo.CommitWrite(authCtx, intent)
+	//	if err != nil {
+	//	    // Content written but metadata not updated
+	//	    // This is detectable and can be repaired by consistency checks
+	//	    return err
+	//	}
+	//
+	// Permission Requirements:
+	//   - Write permission on the file
+	//
+	// Parameters:
+	//   - ctx: Authentication context for permission checking
+	//   - handle: File handle to write to
+	//   - newSize: New file size after write (offset + data length)
+	//
+	// Returns:
+	//   - *WriteIntent: Intent containing ContentID and new attributes
+	//   - error: ErrNotFound, ErrPermissionDenied, ErrIsDirectory, or context errors
+	PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint64) (*WriteOperation, error)
+
+	// CommitWrite applies metadata changes after a successful content write.
+	//
+	// This should be called after ContentRepository.WriteAt succeeds to update
+	// the file's size and modification time.
+	//
+	// If this fails after content was written, the file is in an inconsistent
+	// state (content newer than metadata). This can be detected by consistency
+	// checkers comparing ContentID timestamps with file mtime.
+	//
+	// Parameters:
+	//   - ctx: Authentication context (must be same user as PrepareWrite)
+	//   - intent: The write intent from PrepareWrite
+	//
+	// Returns:
+	//   - *FileAttr: Updated file attributes after commit
+	//   - error: ErrNotFound if file was deleted, ErrStaleHandle if file changed,
+	//     or context errors
+	CommitWrite(ctx *AuthContext, intent *WriteOperation) (*FileAttr, error)
+
+	// PrepareRead validates a read operation and returns file metadata.
+	//
+	// This method handles the metadata aspects of file reads:
+	//   - Permission validation (read permission on file)
+	//   - Attribute retrieval (including ContentID for content repository)
+	//
+	// The method does NOT perform actual data reading. The protocol handler
+	// coordinates between metadata and content repositories:
+	//
+	//  1. Call PrepareRead to validate and get metadata
+	//  2. Read data from content repository using ContentID
+	//  3. Use returned ReadMetadata for protocol response
+	//
+	// Permission Requirements:
+	//   - Read permission on the file
+	//
+	// The returned attributes include the ContentID which the protocol handler
+	// uses to retrieve the actual file data from the content repository.
+	//
+	// Parameters:
+	//   - ctx: Authentication context for permission checking
+	//   - handle: File handle to read from
+	//
+	// Returns:
+	//   - *ReadMetadata: Contains file attributes including ContentID
+	//   - error: ErrNotFound if file doesn't exist, ErrAccessDenied if no read
+	//     permission, ErrIsDirectory if trying to read a directory, or context errors
+	//
+	// Example usage:
+	//
+	//	// Protocol handler for READ operation
+	//	readMeta, err := repo.PrepareRead(authCtx, handle)
+	//	if err != nil {
+	//	    return err
+	//	}
+	//
+	//	// Read actual data from content repository
+	//	data, err := contentRepo.ReadAt(readMeta.Attr.ContentID, offset, count)
+	//	if err != nil {
+	//	    return err
+	//	}
+	//
+	//	// Build protocol response with data and attributes
+	//	return buildReadResponse(data, readMeta.Attr)
+	PrepareRead(ctx *AuthContext, handle FileHandle) (*ReadMetadata, error)
+
+	// ========================================================================
+	// Filesystem Information
+	// ========================================================================
+
+	// GetFilesystemCapabilities returns static filesystem capabilities and limits.
+	//
+	// This provides information about what the filesystem supports and its limits.
+	// The information is relatively static (changes only on configuration updates
+	// or server restart).
+	//
+	// Protocol handlers use this to:
+	//   - Inform clients about server capabilities
+	//   - Negotiate optimal transfer sizes
+	//   - Determine feature support (hard links, symlinks, ACLs, etc.)
+	//
+	// Example protocol mappings:
+	//   - NFS: FSINFO procedure
+	//   - SMB: Query FS Information
+	//
+	// The handle parameter is used to identify which filesystem to query (in case
+	// the server manages multiple filesystems with different capabilities).
+	//
+	// Parameters:
+	//   - handle: A file handle within the filesystem to query
+	//
+	// Returns:
+	//   - *FilesystemCapabilities: Static filesystem capabilities and limits
+	//   - error: ErrNotFound if handle doesn't exist, or context errors
+	GetFilesystemCapabilities(ctx context.Context, handle FileHandle) (*FilesystemCapabilities, error)
+
+	// GetFilesystemStatistics returns dynamic filesystem statistics.
+	//
+	// This provides current information about filesystem usage and availability.
+	// The information is dynamic and may change frequently as files are created,
+	// modified, or deleted.
+	//
+	// Protocol handlers use this to:
+	//   - Report disk space to clients
+	//   - Implement quota enforcement
+	//   - Provide capacity planning information
+	//
+	// Example protocol mappings:
+	//   - NFS: FSSTAT procedure
+	//   - SMB: Query FS Size Information
+	//
+	// The handle parameter is used to identify which filesystem to query.
+	//
+	// Parameters:
+	//   - handle: A file handle within the filesystem to query
+	//
+	// Returns:
+	//   - *FilesystemStatistics: Dynamic filesystem usage statistics
+	//   - error: ErrNotFound if handle doesn't exist, or context errors
+	GetFilesystemStatistics(ctx context.Context, handle FileHandle) (*FilesystemStatistics, error)
+
+	// ========================================================================
+	// Configuration & Health
+	// ========================================================================
+
+	// SetServerConfig sets the server-wide configuration.
+	//
+	// This stores global server settings that apply across all shares and operations.
+	// Configuration changes may affect:
+	//   - Access control policies
+	//   - Protocol-specific behaviors
+	//   - Performance tuning parameters
+	//
+	// Thread Safety:
+	// Configuration changes should be applied atomically. Concurrent operations
+	// should see either the old or new configuration, never a partial update.
+	//
+	// Parameters:
+	//   - config: The server configuration to apply
+	//
+	// Returns:
+	//   - error: Only context cancellation errors
+	SetServerConfig(ctx context.Context, config ServerConfig) error
+
+	// GetServerConfig returns the current server configuration.
+	//
+	// This retrieves the global server settings for use by protocol handlers
+	// and management tools.
+	//
+	// Returns:
+	//   - ServerConfig: Current server configuration
+	//   - error: Only context cancellation errors
+	GetServerConfig(ctx context.Context) (ServerConfig, error)
+
+	// Healthcheck verifies the repository is operational.
+	//
+	// This performs a health check to ensure the repository can serve requests.
+	// For implementations with external dependencies (databases, storage backends),
+	// this should verify connectivity and availability.
+	//
+	// For in-memory implementations, this typically just returns nil since there
+	// are no external dependencies to check.
+	//
+	// Use Cases:
+	//   - Liveness probes in container orchestration
+	//   - Load balancer health checks
+	//   - Monitoring and alerting systems
+	//   - Protocol NULL/ping procedures
+	//
+	// Implementation Guidelines:
+	//   - Should be fast (< 1 second)
+	//   - Should respect context timeouts
+	//   - Should not modify any state
+	//   - Should check critical subsystems only
+	//
+	// Returns:
+	//   - error: Returns error if repository is unhealthy, nil if healthy,
+	//     or context cancellation errors
 	Healthcheck(ctx context.Context) error
 }
