@@ -2,6 +2,7 @@ package memory
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -54,14 +55,14 @@ func (store *MemoryMetadataStore) RemoveFile(
 
 	// Verify parent exists and is a directory
 	parentKey := handleToKey(parentHandle)
-	parentAttr, exists := store.files[parentKey]
+	parentData, exists := store.files[parentKey]
 	if !exists {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
 			Message: "parent directory not found",
 		}
 	}
-	if parentAttr.Type != metadata.FileTypeDirectory {
+	if parentData.Attr.Type != metadata.FileTypeDirectory {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotDirectory,
 			Message: "parent is not a directory",
@@ -75,7 +76,7 @@ func (store *MemoryMetadataStore) RemoveFile(
 	}
 	if granted&metadata.PermissionWrite == 0 {
 		return nil, &metadata.StoreError{
-			Code:    metadata.ErrPermissionDenied,
+			Code:    metadata.ErrAccessDenied,
 			Message: "no write permission on parent directory",
 		}
 	}
@@ -100,9 +101,9 @@ func (store *MemoryMetadataStore) RemoveFile(
 		}
 	}
 
-	// Get file attributes
+	// Get file data
 	fileKey := handleToKey(fileHandle)
-	fileAttr, exists := store.files[fileKey]
+	fileData, exists := store.files[fileKey]
 	if !exists {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
@@ -111,7 +112,7 @@ func (store *MemoryMetadataStore) RemoveFile(
 	}
 
 	// Verify it's not a directory
-	if fileAttr.Type == metadata.FileTypeDirectory {
+	if fileData.Attr.Type == metadata.FileTypeDirectory {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrIsDirectory,
 			Message: "cannot remove directory with RemoveFile, use RemoveDirectory",
@@ -121,16 +122,16 @@ func (store *MemoryMetadataStore) RemoveFile(
 
 	// Make a copy of attributes to return (before we delete the file)
 	returnAttr := &metadata.FileAttr{
-		Type:       fileAttr.Type,
-		Mode:       fileAttr.Mode,
-		UID:        fileAttr.UID,
-		GID:        fileAttr.GID,
-		Size:       fileAttr.Size,
-		Atime:      fileAttr.Atime,
-		Mtime:      fileAttr.Mtime,
-		Ctime:      fileAttr.Ctime,
-		ContentID:  fileAttr.ContentID,
-		LinkTarget: fileAttr.LinkTarget,
+		Type:       fileData.Attr.Type,
+		Mode:       fileData.Attr.Mode,
+		UID:        fileData.Attr.UID,
+		GID:        fileData.Attr.GID,
+		Size:       fileData.Attr.Size,
+		Atime:      fileData.Attr.Atime,
+		Mtime:      fileData.Attr.Mtime,
+		Ctime:      fileData.Attr.Ctime,
+		ContentID:  fileData.Attr.ContentID,
+		LinkTarget: fileData.Attr.LinkTarget,
 	}
 
 	// Decrement link count
@@ -150,9 +151,9 @@ func (store *MemoryMetadataStore) RemoveFile(
 	delete(childrenMap, name)
 
 	// Update parent timestamps
-	now := parentAttr.Mtime.Add(1) // Ensure time moves forward
-	parentAttr.Mtime = now
-	parentAttr.Ctime = now
+	now := time.Now()
+	parentData.Attr.Mtime = now
+	parentData.Attr.Ctime = now
 
 	return returnAttr, nil
 }
@@ -194,14 +195,14 @@ func (store *MemoryMetadataStore) RemoveDirectory(
 
 	// Verify parent exists and is a directory
 	parentKey := handleToKey(parentHandle)
-	parentAttr, exists := store.files[parentKey]
+	parentData, exists := store.files[parentKey]
 	if !exists {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
 			Message: "parent directory not found",
 		}
 	}
-	if parentAttr.Type != metadata.FileTypeDirectory {
+	if parentData.Attr.Type != metadata.FileTypeDirectory {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotDirectory,
 			Message: "parent is not a directory",
@@ -215,7 +216,7 @@ func (store *MemoryMetadataStore) RemoveDirectory(
 	}
 	if granted&metadata.PermissionWrite == 0 {
 		return &metadata.StoreError{
-			Code:    metadata.ErrPermissionDenied,
+			Code:    metadata.ErrAccessDenied,
 			Message: "no write permission on parent directory",
 		}
 	}
@@ -240,9 +241,9 @@ func (store *MemoryMetadataStore) RemoveDirectory(
 		}
 	}
 
-	// Get directory attributes
+	// Get directory data
 	dirKey := handleToKey(dirHandle)
-	dirAttr, exists := store.files[dirKey]
+	dirData, exists := store.files[dirKey]
 	if !exists {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
@@ -251,7 +252,7 @@ func (store *MemoryMetadataStore) RemoveDirectory(
 	}
 
 	// Verify it's a directory
-	if dirAttr.Type != metadata.FileTypeDirectory {
+	if dirData.Attr.Type != metadata.FileTypeDirectory {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotDirectory,
 			Message: "not a directory",
@@ -285,9 +286,9 @@ func (store *MemoryMetadataStore) RemoveDirectory(
 	}
 
 	// Update parent timestamps
-	now := parentAttr.Mtime.Add(1) // Ensure time moves forward
-	parentAttr.Mtime = now
-	parentAttr.Ctime = now
+	now := time.Now()
+	parentData.Attr.Mtime = now
+	parentData.Attr.Ctime = now
 
 	return nil
 }

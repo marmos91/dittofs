@@ -61,9 +61,16 @@ func (s *MemoryMetadataStore) PrepareWrite(
 	}
 
 	// Verify it's a regular file
-	if attr.Type != metadata.FileTypeRegular {
+	if attr.Attr.Type != metadata.FileTypeRegular {
+		// Return appropriate error based on file type
+		if attr.Attr.Type == metadata.FileTypeDirectory {
+			return nil, &metadata.StoreError{
+				Code:    metadata.ErrIsDirectory,
+				Message: "cannot write to directory",
+			}
+		}
 		return nil, &metadata.StoreError{
-			Code:    metadata.ErrIsDirectory,
+			Code:    metadata.ErrInvalidArgument,
 			Message: "cannot write to non-regular file",
 		}
 	}
@@ -75,23 +82,23 @@ func (s *MemoryMetadataStore) PrepareWrite(
 	}
 	if granted&metadata.PermissionWrite == 0 {
 		return nil, &metadata.StoreError{
-			Code:    metadata.ErrPermissionDenied,
+			Code:    metadata.ErrAccessDenied,
 			Message: "no write permission",
 		}
 	}
 
 	// Make a copy of current attributes for PreWriteAttr
 	preWriteAttr := &metadata.FileAttr{
-		Type:       attr.Type,
-		Mode:       attr.Mode,
-		UID:        attr.UID,
-		GID:        attr.GID,
-		Size:       attr.Size,
-		Atime:      attr.Atime,
-		Mtime:      attr.Mtime,
-		Ctime:      attr.Ctime,
-		ContentID:  attr.ContentID,
-		LinkTarget: attr.LinkTarget,
+		Type:       attr.Attr.Type,
+		Mode:       attr.Attr.Mode,
+		UID:        attr.Attr.UID,
+		GID:        attr.Attr.GID,
+		Size:       attr.Attr.Size,
+		Atime:      attr.Attr.Atime,
+		Mtime:      attr.Attr.Mtime,
+		Ctime:      attr.Attr.Ctime,
+		ContentID:  attr.Attr.ContentID,
+		LinkTarget: attr.Attr.LinkTarget,
 	}
 
 	// Create write operation
@@ -99,7 +106,7 @@ func (s *MemoryMetadataStore) PrepareWrite(
 		Handle:       handle,
 		NewSize:      newSize,
 		NewMtime:     time.Now(),
-		ContentID:    attr.ContentID,
+		ContentID:    attr.Attr.ContentID,
 		PreWriteAttr: preWriteAttr,
 	}
 
@@ -137,7 +144,7 @@ func (s *MemoryMetadataStore) CommitWrite(
 	}
 
 	// Verify it's still a regular file
-	if attr.Type != metadata.FileTypeRegular {
+	if attr.Attr.Type != metadata.FileTypeRegular {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrIsDirectory,
 			Message: "file type changed after prepare",
@@ -151,12 +158,12 @@ func (s *MemoryMetadataStore) CommitWrite(
 
 	// Apply metadata changes
 	now := time.Now()
-	attr.Size = intent.NewSize
-	attr.Mtime = intent.NewMtime
-	attr.Ctime = now // Ctime always uses current time (metadata change time)
+	attr.Attr.Size = intent.NewSize
+	attr.Attr.Mtime = now // Mtime is set when the write is committed
+	attr.Attr.Ctime = now // Ctime always uses current time (metadata change time)
 
 	// Return updated attributes
-	return attr, nil
+	return attr.Attr, nil
 }
 
 // PrepareRead validates a read operation and returns file metadata.
@@ -210,9 +217,16 @@ func (s *MemoryMetadataStore) PrepareRead(
 	}
 
 	// Verify it's a regular file
-	if attr.Type != metadata.FileTypeRegular {
+	if attr.Attr.Type != metadata.FileTypeRegular {
+		// Return appropriate error based on file type
+		if attr.Attr.Type == metadata.FileTypeDirectory {
+			return nil, &metadata.StoreError{
+				Code:    metadata.ErrIsDirectory,
+				Message: "cannot read directory",
+			}
+		}
 		return nil, &metadata.StoreError{
-			Code:    metadata.ErrIsDirectory,
+			Code:    metadata.ErrInvalidArgument,
 			Message: "cannot read non-regular file",
 		}
 	}
@@ -224,13 +238,14 @@ func (s *MemoryMetadataStore) PrepareRead(
 	}
 	if granted&metadata.PermissionRead == 0 {
 		return nil, &metadata.StoreError{
-			Code:    metadata.ErrPermissionDenied,
+			Code:    metadata.ErrAccessDenied,
 			Message: "no read permission",
 		}
 	}
 
-	// Return read metadata with pointer to attributes
+	// Return read metadata with a copy of attributes to prevent external modification
+	attrCopy := *attr.Attr
 	return &metadata.ReadMetadata{
-		Attr: attr,
+		Attr: &attrCopy,
 	}, nil
 }

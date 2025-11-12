@@ -18,6 +18,15 @@ type shareData struct {
 	RootHandle metadata.FileHandle
 }
 
+type fileData struct {
+	// Attr contains the protocol-agnostic file attributes
+	Attr *metadata.FileAttr
+
+	// ShareName tracks which share this file belongs to.
+	// Used to enforce share-level policies (e.g., read-only shares).
+	ShareName string
+}
+
 // MemoryMetadataStore implements MetadataStore using in-memory storage.
 //
 // This implementation provides a fully functional metadata repository backed
@@ -105,7 +114,7 @@ type MemoryMetadataStore struct {
 	// This is the primary metadata storage for all files and directories.
 	// Key: string representation of FileHandle
 	// Value: complete file attributes (type, size, permissions, timestamps, etc.)
-	files map[string]*metadata.FileAttr
+	files map[string]*fileData
 
 	// parents maps each file/directory to its parent directory.
 	// This enables upward traversal in the directory tree.
@@ -204,7 +213,7 @@ type MemoryMetadataStoreConfig struct {
 func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataStore {
 	return &MemoryMetadataStore{
 		shares:          make(map[string]*shareData),
-		files:           make(map[string]*metadata.FileAttr),
+		files:           make(map[string]*fileData),
 		parents:         make(map[string]metadata.FileHandle),
 		children:        make(map[string]map[string]metadata.FileHandle),
 		linkCounts:      make(map[string]uint32),

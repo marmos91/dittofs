@@ -31,9 +31,9 @@ func (store *MemoryMetadataStore) Lookup(
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
-	// Get directory attributes
+	// Get directory data
 	dirKey := handleToKey(dirHandle)
-	dirAttr, exists := store.files[dirKey]
+	dirData, exists := store.files[dirKey]
 	if !exists {
 		return nil, nil, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
@@ -42,7 +42,7 @@ func (store *MemoryMetadataStore) Lookup(
 	}
 
 	// Verify it's a directory
-	if dirAttr.Type != metadata.FileTypeDirectory {
+	if dirData.Attr.Type != metadata.FileTypeDirectory {
 		return nil, nil, &metadata.StoreError{
 			Code:    metadata.ErrNotDirectory,
 			Message: "not a directory",
@@ -56,7 +56,7 @@ func (store *MemoryMetadataStore) Lookup(
 	}
 	if granted&metadata.PermissionTraverse == 0 {
 		return nil, nil, &metadata.StoreError{
-			Code:    metadata.ErrPermissionDenied,
+			Code:    metadata.ErrAccessDenied,
 			Message: "no search permission on directory",
 		}
 	}
@@ -101,9 +101,9 @@ func (store *MemoryMetadataStore) Lookup(
 		targetHandle = childHandle
 	}
 
-	// Get target attributes
+	// Get target data
 	targetKey := handleToKey(targetHandle)
-	targetAttr, exists := store.files[targetKey]
+	targetData, exists := store.files[targetKey]
 	if !exists {
 		return nil, nil, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
@@ -112,7 +112,7 @@ func (store *MemoryMetadataStore) Lookup(
 	}
 
 	// Return handle and attributes
-	return targetHandle, targetAttr, nil
+	return targetHandle, targetData.Attr, nil
 }
 
 // GetFile retrieves file attributes by handle.
@@ -140,12 +140,20 @@ func (s *MemoryMetadataStore) GetFile(
 		return nil, err
 	}
 
+	// Check for invalid (empty) handle
+	if len(handle) == 0 {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "invalid file handle",
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// Get file attributes
+	// Get file data
 	key := handleToKey(handle)
-	attr, exists := s.files[key]
+	fileData, exists := s.files[key]
 	if !exists {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
@@ -153,8 +161,9 @@ func (s *MemoryMetadataStore) GetFile(
 		}
 	}
 
-	// Return attributes
-	return attr, nil
+	// Return a copy of the attributes to prevent external modification
+	attrCopy := *fileData.Attr
+	return &attrCopy, nil
 }
 
 // SetFileAttributes updates file attributes with validation and access control.
@@ -174,9 +183,9 @@ func (store *MemoryMetadataStore) SetFileAttributes(
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
-	// Get file attributes
+	// Get file data
 	key := handleToKey(handle)
-	attr, exists := store.files[key]
+	fileData, exists := store.files[key]
 	if !exists {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
@@ -184,10 +193,12 @@ func (store *MemoryMetadataStore) SetFileAttributes(
 		}
 	}
 
+	attr := fileData.Attr // Get the actual attributes
+
 	identity := ctx.Identity
 	if identity == nil || identity.UID == nil {
 		return &metadata.StoreError{
-			Code:    metadata.ErrPermissionDenied,
+			Code:    metadata.ErrAccessDenied,
 			Message: "authentication required to modify attributes",
 		}
 	}
@@ -201,7 +212,7 @@ func (store *MemoryMetadataStore) SetFileAttributes(
 
 	// Validate and apply mode changes
 	if attrs.Mode != nil {
-		// Only owner or root can change mode
+		// Only owner or root can change mode (ownership check, not Unix permissions)
 		if !isOwner && !isRoot {
 			return &metadata.StoreError{
 				Code:    metadata.ErrPermissionDenied,
@@ -217,7 +228,7 @@ func (store *MemoryMetadataStore) SetFileAttributes(
 
 	// Validate and apply UID changes
 	if attrs.UID != nil {
-		// Only root can change ownership
+		// Only root can change ownership (capability check, not Unix permissions)
 		if !isRoot {
 			return &metadata.StoreError{
 				Code:    metadata.ErrPermissionDenied,
@@ -232,7 +243,7 @@ func (store *MemoryMetadataStore) SetFileAttributes(
 	// Validate and apply GID changes
 	if attrs.GID != nil {
 		// Root can change to any group
-		// Owner can change only if member of target group
+		// Owner can change only if member of target group (capability check, not Unix permissions)
 		if !isRoot {
 			if !isOwner {
 				return &metadata.StoreError{
@@ -280,7 +291,7 @@ func (store *MemoryMetadataStore) SetFileAttributes(
 		}
 		if granted&metadata.PermissionWrite == 0 {
 			return &metadata.StoreError{
-				Code:    metadata.ErrPermissionDenied,
+				Code:    metadata.ErrAccessDenied,
 				Message: "no write permission",
 			}
 		}
@@ -301,7 +312,7 @@ func (store *MemoryMetadataStore) SetFileAttributes(
 			}
 			if granted&metadata.PermissionWrite == 0 {
 				return &metadata.StoreError{
-					Code:    metadata.ErrPermissionDenied,
+					Code:    metadata.ErrAccessDenied,
 					Message: "no permission to change atime",
 				}
 			}
@@ -321,7 +332,7 @@ func (store *MemoryMetadataStore) SetFileAttributes(
 			}
 			if granted&metadata.PermissionWrite == 0 {
 				return &metadata.StoreError{
-					Code:    metadata.ErrPermissionDenied,
+					Code:    metadata.ErrAccessDenied,
 					Message: "no permission to change mtime",
 				}
 			}
@@ -379,14 +390,34 @@ func (store *MemoryMetadataStore) Create(
 
 	// Verify parent exists and is a directory
 	parentKey := handleToKey(parentHandle)
-	parentAttr, exists := store.files[parentKey]
+
+	// DEBUG: Check what's in the map
+	parentData, exists := store.files[parentKey]
 	if !exists {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
-			Message: "parent directory not found",
+			Message: fmt.Sprintf("parent directory not found, key=%s, map size=%d", parentKey, len(store.files)),
 		}
 	}
-	if parentAttr.Type != metadata.FileTypeDirectory {
+
+	// DEBUG: Check if parentData is nil (should never happen if exists=true)
+	if parentData == nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrNotSupported,
+			Message: fmt.Sprintf("INTERNAL ERROR: parentData is nil but exists=true, key=%s", parentKey),
+		}
+	}
+
+	// DEBUG: Check if Attr is nil (THIS is where we're crashing)
+	if parentData.Attr == nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrNotEmpty,
+			Message: fmt.Sprintf("INTERNAL ERROR: parentData.Attr is nil, key=%s, shareName=%s", parentKey, parentData.ShareName),
+		}
+	}
+
+	// NOW we can safely access parentData.Attr.Type
+	if parentData.Attr.Type != metadata.FileTypeDirectory {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotDirectory,
 			Message: "parent is not a directory",
@@ -400,7 +431,7 @@ func (store *MemoryMetadataStore) Create(
 	}
 	if granted&metadata.PermissionWrite == 0 {
 		return nil, &metadata.StoreError{
-			Code:    metadata.ErrPermissionDenied,
+			Code:    metadata.ErrAccessDenied,
 			Message: "no write permission on parent directory",
 		}
 	}
@@ -470,9 +501,12 @@ func (store *MemoryMetadataStore) Create(
 		newAttr.ContentID = ""
 	}
 
-	// Store file
+	// Store file with ShareName inherited from parent
 	key := handleToKey(handle)
-	store.files[key] = newAttr
+	store.files[key] = &fileData{
+		Attr:      newAttr,
+		ShareName: parentData.ShareName, // Inherit from parent
+	}
 
 	// Set link count
 	if attr.Type == metadata.FileTypeDirectory {
@@ -495,8 +529,8 @@ func (store *MemoryMetadataStore) Create(
 	store.parents[key] = parentHandle
 
 	// Update parent timestamps
-	parentAttr.Mtime = now
-	parentAttr.Ctime = now
+	parentData.Attr.Mtime = now
+	parentData.Attr.Ctime = now
 
 	return handle, nil
 }
@@ -536,14 +570,14 @@ func (store *MemoryMetadataStore) CreateSymlink(
 
 	// Verify parent exists and is a directory
 	parentKey := handleToKey(parentHandle)
-	parentAttr, exists := store.files[parentKey]
+	parentData, exists := store.files[parentKey]
 	if !exists {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
 			Message: "parent directory not found",
 		}
 	}
-	if parentAttr.Type != metadata.FileTypeDirectory {
+	if parentData.Attr.Type != metadata.FileTypeDirectory {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotDirectory,
 			Message: "parent is not a directory",
@@ -557,7 +591,7 @@ func (store *MemoryMetadataStore) CreateSymlink(
 	}
 	if granted&metadata.PermissionWrite == 0 {
 		return nil, &metadata.StoreError{
-			Code:    metadata.ErrPermissionDenied,
+			Code:    metadata.ErrAccessDenied,
 			Message: "no write permission on parent directory",
 		}
 	}
@@ -618,9 +652,12 @@ func (store *MemoryMetadataStore) CreateSymlink(
 		ContentID:  "", // Symlinks don't have content
 	}
 
-	// Store symlink
+	// Store symlink with ShareName inherited from parent
 	key := handleToKey(handle)
-	store.files[key] = newAttr
+	store.files[key] = &fileData{
+		Attr:      newAttr,
+		ShareName: parentData.ShareName, // Inherit from parent
+	}
 	store.linkCounts[key] = 1
 
 	// Add to parent's children
@@ -633,8 +670,8 @@ func (store *MemoryMetadataStore) CreateSymlink(
 	store.parents[key] = parentHandle
 
 	// Update parent timestamps
-	parentAttr.Mtime = now
-	parentAttr.Ctime = now
+	parentData.Attr.Mtime = now
+	parentData.Attr.Ctime = now
 
 	return handle, nil
 }
@@ -681,7 +718,7 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 	if fileType == metadata.FileTypeBlockDevice || fileType == metadata.FileTypeCharDevice {
 		if ctx.Identity == nil || ctx.Identity.UID == nil || *ctx.Identity.UID != 0 {
 			return nil, &metadata.StoreError{
-				Code:    metadata.ErrPermissionDenied,
+				Code:    metadata.ErrAccessDenied,
 				Message: "only root can create device files",
 			}
 		}
@@ -689,14 +726,14 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 
 	// Verify parent exists and is a directory
 	parentKey := handleToKey(parentHandle)
-	parentAttr, exists := store.files[parentKey]
+	parentData, exists := store.files[parentKey]
 	if !exists {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
 			Message: "parent directory not found",
 		}
 	}
-	if parentAttr.Type != metadata.FileTypeDirectory {
+	if parentData.Attr.Type != metadata.FileTypeDirectory {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotDirectory,
 			Message: "parent is not a directory",
@@ -710,7 +747,7 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 	}
 	if granted&metadata.PermissionWrite == 0 {
 		return nil, &metadata.StoreError{
-			Code:    metadata.ErrPermissionDenied,
+			Code:    metadata.ErrAccessDenied,
 			Message: "no write permission on parent directory",
 		}
 	}
@@ -758,9 +795,6 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 	}
 
 	// Create special file attributes
-	// Note: DeviceMajor and DeviceMinor are not in FileAttr struct
-	// In a real implementation, you might need to store these separately
-	// or extend FileAttr. For now, we'll just create the file without storing device numbers.
 	newAttr := &metadata.FileAttr{
 		Type:       fileType,
 		Mode:       mode & 0o7777,
@@ -778,9 +812,12 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 	// This could be in a separate map or in Extended attributes
 	// For now, they are accepted but not stored
 
-	// Store file
+	// Store file with ShareName inherited from parent
 	key := handleToKey(handle)
-	store.files[key] = newAttr
+	store.files[key] = &fileData{
+		Attr:      newAttr,
+		ShareName: parentData.ShareName, // Inherit from parent
+	}
 	store.linkCounts[key] = 1
 
 	// Add to parent's children
@@ -793,8 +830,8 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 	store.parents[key] = parentHandle
 
 	// Update parent timestamps
-	parentAttr.Mtime = now
-	parentAttr.Ctime = now
+	parentData.Attr.Mtime = now
+	parentData.Attr.Ctime = now
 
 	return handle, nil
 }
@@ -825,14 +862,14 @@ func (store *MemoryMetadataStore) CreateHardLink(
 
 	// Verify directory exists and is a directory
 	dirKey := handleToKey(dirHandle)
-	dirAttr, exists := store.files[dirKey]
+	dirData, exists := store.files[dirKey]
 	if !exists {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
 			Message: "directory not found",
 		}
 	}
-	if dirAttr.Type != metadata.FileTypeDirectory {
+	if dirData.Attr.Type != metadata.FileTypeDirectory {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotDirectory,
 			Message: "not a directory",
@@ -841,7 +878,7 @@ func (store *MemoryMetadataStore) CreateHardLink(
 
 	// Verify target exists
 	targetKey := handleToKey(targetHandle)
-	targetAttr, exists := store.files[targetKey]
+	targetData, exists := store.files[targetKey]
 	if !exists {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
@@ -850,7 +887,7 @@ func (store *MemoryMetadataStore) CreateHardLink(
 	}
 
 	// Cannot hard link directories
-	if targetAttr.Type == metadata.FileTypeDirectory {
+	if targetData.Attr.Type == metadata.FileTypeDirectory {
 		return &metadata.StoreError{
 			Code:    metadata.ErrIsDirectory,
 			Message: "cannot create hard link to directory",
@@ -864,7 +901,7 @@ func (store *MemoryMetadataStore) CreateHardLink(
 	}
 	if granted&metadata.PermissionWrite == 0 {
 		return &metadata.StoreError{
-			Code:    metadata.ErrPermissionDenied,
+			Code:    metadata.ErrAccessDenied,
 			Message: "no write permission on directory",
 		}
 	}
@@ -901,9 +938,9 @@ func (store *MemoryMetadataStore) CreateHardLink(
 
 	// Update timestamps
 	now := time.Now()
-	targetAttr.Ctime = now // Target file's metadata changed
-	dirAttr.Mtime = now    // Directory contents changed
-	dirAttr.Ctime = now
+	targetData.Attr.Ctime = now // Target file's metadata changed
+	dirData.Attr.Mtime = now    // Directory contents changed
+	dirData.Attr.Ctime = now
 
 	return nil
 }
@@ -919,9 +956,9 @@ func (store *MemoryMetadataStore) checkPermissionsLocked(
 	handle metadata.FileHandle,
 	requested metadata.Permission,
 ) (metadata.Permission, error) {
-	// Get file attributes
+	// Get file data
 	key := handleToKey(handle)
-	attr, exists := store.files[key]
+	fileData, exists := store.files[key]
 	if !exists {
 		return 0, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
@@ -929,6 +966,7 @@ func (store *MemoryMetadataStore) checkPermissionsLocked(
 		}
 	}
 
+	attr := fileData.Attr
 	identity := ctx.Identity
 
 	// Handle anonymous/no identity case
@@ -947,13 +985,20 @@ func (store *MemoryMetadataStore) checkPermissionsLocked(
 			granted |= metadata.PermissionExecute | metadata.PermissionTraverse
 		}
 
+		// Apply read-only share restriction for anonymous users
+		if shareData, exists := store.shares[fileData.ShareName]; exists {
+			if shareData.Share.Options.ReadOnly {
+				granted &= ^(metadata.PermissionWrite | metadata.PermissionDelete)
+			}
+		}
+
 		return granted & requested, nil
 	}
 
 	uid := *identity.UID
 	gid := identity.GID
 
-	// Root bypass
+	// Root bypass: UID 0 gets all permissions (even on read-only shares for admin purposes)
 	if uid == 0 {
 		return requested, nil
 	}
@@ -988,6 +1033,13 @@ func (store *MemoryMetadataStore) checkPermissionsLocked(
 	// Owner gets additional privileges
 	if uid == attr.UID {
 		granted |= metadata.PermissionChangePermissions | metadata.PermissionChangeOwnership
+	}
+
+	// Apply read-only share restriction for non-root users
+	if shareData, exists := store.shares[fileData.ShareName]; exists {
+		if shareData.Share.Options.ReadOnly {
+			granted &= ^(metadata.PermissionWrite | metadata.PermissionDelete)
+		}
 	}
 
 	return granted & requested, nil

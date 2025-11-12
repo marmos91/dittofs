@@ -124,8 +124,8 @@ func (store *MemoryMetadataStore) GetFilesystemStatistics(ctx context.Context, h
 	var usedBytes uint64
 	for _, attr := range store.files {
 		// Only count regular files (directories, symlinks have no real content)
-		if attr.Type == metadata.FileTypeRegular {
-			usedBytes += attr.Size
+		if attr.Attr.Type == metadata.FileTypeRegular {
+			usedBytes += attr.Attr.Size
 		}
 	}
 

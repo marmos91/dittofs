@@ -37,6 +37,8 @@ import (
 // Returns:
 //   - error: ErrAlreadyExists if share exists, ErrInvalidArgument if rootAttr.Type
 //     is not Directory, or context cancellation error
+//
+// AddShare makes a filesystem path available to clients with specific access rules.
 func (store *MemoryMetadataStore) AddShare(
 	ctx context.Context,
 	name string,
@@ -82,8 +84,11 @@ func (store *MemoryMetadataStore) AddShare(
 	rootAttrCopy := *rootAttr
 	key := handleToKey(rootHandle)
 
-	// Store root directory in files map
-	store.files[key] = &rootAttrCopy
+	// Create and store fileData for root directory
+	store.files[key] = &fileData{
+		Attr:      &rootAttrCopy,
+		ShareName: name, // Set the share name for the root
+	}
 
 	// Initialize children map for root directory (empty initially)
 	store.children[key] = make(map[string]metadata.FileHandle)
@@ -94,7 +99,7 @@ func (store *MemoryMetadataStore) AddShare(
 	store.linkCounts[key] = 2
 
 	// Root directories have no parent (they are top-level)
-	// So we don't add an entry to s.parents
+	// So we don't add an entry to store.parents
 
 	// Store share configuration
 	store.shares[name] = &shareData{

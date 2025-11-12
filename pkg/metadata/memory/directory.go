@@ -58,14 +58,14 @@ func (store *MemoryMetadataStore) Move(
 	}
 
 	// Verify source directory exists and is a directory
-	fromDirAttr, exists := store.files[fromDirKey]
+	fromDirData, exists := store.files[fromDirKey]
 	if !exists {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
 			Message: "source directory not found",
 		}
 	}
-	if fromDirAttr.Type != metadata.FileTypeDirectory {
+	if fromDirData.Attr.Type != metadata.FileTypeDirectory {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotDirectory,
 			Message: "source parent is not a directory",
@@ -73,14 +73,14 @@ func (store *MemoryMetadataStore) Move(
 	}
 
 	// Verify destination directory exists and is a directory
-	toDirAttr, exists := store.files[toDirKey]
+	toDirData, exists := store.files[toDirKey]
 	if !exists {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
 			Message: "destination directory not found",
 		}
 	}
-	if toDirAttr.Type != metadata.FileTypeDirectory {
+	if toDirData.Attr.Type != metadata.FileTypeDirectory {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotDirectory,
 			Message: "destination parent is not a directory",
@@ -94,7 +94,7 @@ func (store *MemoryMetadataStore) Move(
 	}
 	if granted&metadata.PermissionWrite == 0 {
 		return &metadata.StoreError{
-			Code:    metadata.ErrPermissionDenied,
+			Code:    metadata.ErrAccessDenied,
 			Message: "no write permission on source directory",
 		}
 	}
@@ -107,7 +107,7 @@ func (store *MemoryMetadataStore) Move(
 		}
 		if granted&metadata.PermissionWrite == 0 {
 			return &metadata.StoreError{
-				Code:    metadata.ErrPermissionDenied,
+				Code:    metadata.ErrAccessDenied,
 				Message: "no write permission on destination directory",
 			}
 		}
@@ -135,7 +135,7 @@ func (store *MemoryMetadataStore) Move(
 
 	// Get source attributes
 	sourceKey := handleToKey(sourceHandle)
-	sourceAttr, exists := store.files[sourceKey]
+	sourceData, exists := store.files[sourceKey]
 	if !exists {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
@@ -155,7 +155,7 @@ func (store *MemoryMetadataStore) Move(
 	if destExists {
 		// Destination exists - check replacement rules
 		destKey := handleToKey(destHandle)
-		destAttr, exists := store.files[destKey]
+		destData, exists := store.files[destKey]
 		if !exists {
 			return &metadata.StoreError{
 				Code:    metadata.ErrNotFound,
@@ -164,9 +164,9 @@ func (store *MemoryMetadataStore) Move(
 		}
 
 		// Check type compatibility for replacement
-		if sourceAttr.Type == metadata.FileTypeDirectory {
+		if sourceData.Attr.Type == metadata.FileTypeDirectory {
 			// Moving directory
-			if destAttr.Type != metadata.FileTypeDirectory {
+			if destData.Attr.Type != metadata.FileTypeDirectory {
 				return &metadata.StoreError{
 					Code:    metadata.ErrNotDirectory,
 					Message: "cannot replace non-directory with directory",
@@ -184,7 +184,7 @@ func (store *MemoryMetadataStore) Move(
 			}
 		} else {
 			// Moving non-directory
-			if destAttr.Type == metadata.FileTypeDirectory {
+			if destData.Attr.Type == metadata.FileTypeDirectory {
 				return &metadata.StoreError{
 					Code:    metadata.ErrIsDirectory,
 					Message: "cannot replace directory with non-directory",
@@ -196,15 +196,26 @@ func (store *MemoryMetadataStore) Move(
 		// Remove destination (will be replaced)
 		// Handle link count for replaced file
 		destLinkCount := store.linkCounts[destKey]
-		if destLinkCount > 1 {
+
+		// For directories, the normal link count is 2 ("." and parent entry)
+		// For files, normal link count is 1
+		// Only keep the file if it has additional hard links beyond the normal count
+		var hasOtherLinks bool
+		if destData.Attr.Type == metadata.FileTypeDirectory {
+			hasOtherLinks = destLinkCount > 2 // More than just "." and parent
+		} else {
+			hasOtherLinks = destLinkCount > 1 // More than just this directory entry
+		}
+
+		if hasOtherLinks {
 			// Has other links, just decrement
 			store.linkCounts[destKey]--
 		} else {
-			// Last link, remove all metadata
+			// Last link (or only link for directories), remove all metadata
 			delete(store.files, destKey)
 			delete(store.linkCounts, destKey)
 			delete(store.parents, destKey)
-			if destAttr.Type == metadata.FileTypeDirectory {
+			if destData.Attr.Type == metadata.FileTypeDirectory {
 				delete(store.children, destKey)
 				// Decrement destination directory's link count (removing subdirectory)
 				if store.linkCounts[toDirKey] > 0 {
@@ -226,7 +237,7 @@ func (store *MemoryMetadataStore) Move(
 		store.parents[sourceKey] = toDir
 
 		// If moving a directory, update parent link counts
-		if sourceAttr.Type == metadata.FileTypeDirectory {
+		if sourceData.Attr.Type == metadata.FileTypeDirectory {
 			// Decrement source directory link count (losing ".." reference)
 			if store.linkCounts[fromDirKey] > 0 {
 				store.linkCounts[fromDirKey]--
@@ -240,16 +251,16 @@ func (store *MemoryMetadataStore) Move(
 	now := time.Now()
 
 	// Update source file ctime (metadata changed - new parent/name)
-	sourceAttr.Ctime = now
+	sourceData.Attr.Ctime = now
 
 	// Update source directory (contents changed)
-	fromDirAttr.Mtime = now
-	fromDirAttr.Ctime = now
+	fromDirData.Attr.Mtime = now
+	fromDirData.Attr.Ctime = now
 
 	// Update destination directory if different (contents changed)
 	if fromDirKey != toDirKey {
-		toDirAttr.Mtime = now
-		toDirAttr.Ctime = now
+		toDirData.Attr.Mtime = now
+		toDirData.Attr.Ctime = now
 	}
 
 	return nil
@@ -271,9 +282,9 @@ func (store *MemoryMetadataStore) ReadSymlink(
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
-	// Get file attributes
+	// Get file data
 	key := handleToKey(handle)
-	attr, exists := store.files[key]
+	fileData, exists := store.files[key]
 	if !exists {
 		return "", nil, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
@@ -282,7 +293,7 @@ func (store *MemoryMetadataStore) ReadSymlink(
 	}
 
 	// Verify it's a symlink
-	if attr.Type != metadata.FileTypeSymlink {
+	if fileData.Attr.Type != metadata.FileTypeSymlink {
 		return "", nil, &metadata.StoreError{
 			Code:    metadata.ErrInvalidArgument,
 			Message: "not a symbolic link",
@@ -296,13 +307,13 @@ func (store *MemoryMetadataStore) ReadSymlink(
 	}
 	if granted&metadata.PermissionRead == 0 {
 		return "", nil, &metadata.StoreError{
-			Code:    metadata.ErrPermissionDenied,
+			Code:    metadata.ErrAccessDenied,
 			Message: "no read permission on symlink",
 		}
 	}
 
 	// Return target and attributes
-	return attr.LinkTarget, attr, nil
+	return fileData.Attr.LinkTarget, fileData.Attr, nil
 }
 
 // ReadDirectory reads one page of directory entries with pagination support.
@@ -315,7 +326,6 @@ func (store *MemoryMetadataStore) ReadSymlink(
 //
 // The token format is implementation-specific (offset-based in this implementation).
 func (store *MemoryMetadataStore) ReadDirectory(
-
 	ctx *metadata.AuthContext,
 	dirHandle metadata.FileHandle,
 	token string,
@@ -329,9 +339,9 @@ func (store *MemoryMetadataStore) ReadDirectory(
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
-	// Get directory attributes
+	// Get directory data
 	dirKey := handleToKey(dirHandle)
-	dirAttr, exists := store.files[dirKey]
+	dirData, exists := store.files[dirKey]
 	if !exists {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
@@ -340,7 +350,7 @@ func (store *MemoryMetadataStore) ReadDirectory(
 	}
 
 	// Verify it's a directory
-	if dirAttr.Type != metadata.FileTypeDirectory {
+	if dirData.Attr.Type != metadata.FileTypeDirectory {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotDirectory,
 			Message: "not a directory",
@@ -355,9 +365,23 @@ func (store *MemoryMetadataStore) ReadDirectory(
 	}
 	if granted&metadata.PermissionRead == 0 || granted&metadata.PermissionTraverse == 0 {
 		return nil, &metadata.StoreError{
-			Code:    metadata.ErrPermissionDenied,
+			Code:    metadata.ErrAccessDenied,
 			Message: "no read or execute permission on directory",
 		}
+	}
+
+	// Parse and validate token before checking directory contents
+	// This ensures invalid tokens are rejected even for empty directories
+	offset := 0
+	if token != "" {
+		parsedOffset, err := strconv.Atoi(token)
+		if err != nil {
+			return nil, &metadata.StoreError{
+				Code:    metadata.ErrInvalidArgument,
+				Message: "invalid pagination token",
+			}
+		}
+		offset = parsedOffset
 	}
 
 	// Get children
@@ -369,19 +393,6 @@ func (store *MemoryMetadataStore) ReadDirectory(
 			NextToken: "",
 			HasMore:   false,
 		}, nil
-	}
-
-	// Parse token (offset-based pagination)
-	offset := 0
-	if token != "" {
-		parsedOffset, err := strconv.Atoi(token)
-		if err != nil {
-			return nil, &metadata.StoreError{
-				Code:    metadata.ErrInvalidArgument,
-				Message: "invalid pagination token",
-			}
-		}
-		offset = parsedOffset
 	}
 
 	// Convert children map to sorted slice for stable ordering

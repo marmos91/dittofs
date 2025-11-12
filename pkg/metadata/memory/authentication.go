@@ -25,7 +25,7 @@ func (store *MemoryMetadataStore) CheckShareAccess(
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
-	// Step 1: Verify share exists
+	// Step 1: Verify share exists (this IS a system error)
 	shareData, exists := store.shares[shareName]
 	if !exists {
 		return nil, nil, &metadata.StoreError{
@@ -41,13 +41,9 @@ func (store *MemoryMetadataStore) CheckShareAccess(
 	// Step 2: Check authentication requirements
 	if opts.RequireAuth && authMethod == "anonymous" {
 		return &metadata.AccessDecision{
-				Allowed: false,
-				Reason:  "authentication required but anonymous access attempted",
-			}, nil, &metadata.StoreError{
-				Code:    metadata.ErrAuthRequired,
-				Message: "authentication required",
-				Path:    shareName,
-			}
+			Allowed: false,
+			Reason:  "authentication required but anonymous access attempted",
+		}, nil, nil // ✅ No error - this is a business decision
 	}
 
 	// Step 3: Validate authentication method
@@ -61,14 +57,10 @@ func (store *MemoryMetadataStore) CheckShareAccess(
 		}
 		if !methodAllowed {
 			return &metadata.AccessDecision{
-					Allowed:            false,
-					Reason:             fmt.Sprintf("authentication method '%s' not allowed", authMethod),
-					AllowedAuthMethods: opts.AllowedAuthMethods,
-				}, nil, &metadata.StoreError{
-					Code:    metadata.ErrAccessDenied,
-					Message: fmt.Sprintf("authentication method not allowed: %s", authMethod),
-					Path:    shareName,
-				}
+				Allowed:            false,
+				Reason:             fmt.Sprintf("authentication method '%s' not allowed", authMethod),
+				AllowedAuthMethods: opts.AllowedAuthMethods,
+			}, nil, nil // ✅ No error - this is a business decision
 		}
 	}
 
@@ -84,13 +76,9 @@ func (store *MemoryMetadataStore) CheckShareAccess(
 
 			if matchesIPPattern(clientAddr, denied) {
 				return &metadata.AccessDecision{
-						Allowed: false,
-						Reason:  fmt.Sprintf("client %s is explicitly denied", clientAddr),
-					}, nil, &metadata.StoreError{
-						Code:    metadata.ErrAccessDenied,
-						Message: "client IP denied",
-						Path:    shareName,
-					}
+					Allowed: false,
+					Reason:  fmt.Sprintf("client %s is explicitly denied", clientAddr),
+				}, nil, nil // ✅ No error - this is a business decision
 			}
 		}
 	}
@@ -113,13 +101,9 @@ func (store *MemoryMetadataStore) CheckShareAccess(
 		}
 		if !allowed {
 			return &metadata.AccessDecision{
-					Allowed: false,
-					Reason:  fmt.Sprintf("client %s not in allowed list", clientAddr),
-				}, nil, &metadata.StoreError{
-					Code:    metadata.ErrAccessDenied,
-					Message: "client IP not allowed",
-					Path:    shareName,
-				}
+				Allowed: false,
+				Reason:  fmt.Sprintf("client %s not in allowed list", clientAddr),
+			}, nil, nil // ✅ No error - this is a business decision
 		}
 	}
 
@@ -161,9 +145,9 @@ func (store *MemoryMetadataStore) CheckPermissions(
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
-	// Get file attributes
+	// Get file data
 	key := handleToKey(handle)
-	attr, exists := store.files[key]
+	fileData, exists := store.files[key]
 	if !exists {
 		return 0, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
@@ -171,6 +155,7 @@ func (store *MemoryMetadataStore) CheckPermissions(
 		}
 	}
 
+	attr := fileData.Attr
 	identity := ctx.Identity
 
 	// Handle anonymous/no identity case
@@ -182,8 +167,17 @@ func (store *MemoryMetadataStore) CheckPermissions(
 	uid := *identity.UID
 	gid := identity.GID
 
-	// Root bypass: UID 0 gets all permissions
+	// Root bypass: UID 0 gets all permissions EXCEPT on read-only shares
+	// (root can do operations, but should respect read-only for data integrity)
 	if uid == 0 {
+		// Check if share is read-only
+		if shareData, exists := store.shares[fileData.ShareName]; exists {
+			if shareData.Share.Options.ReadOnly {
+				// Root gets all permissions except write on read-only shares
+				return requested &^ (metadata.PermissionWrite | metadata.PermissionDelete), nil
+			}
+		}
+		// Root gets all permissions on normal shares
 		return requested, nil
 	}
 
@@ -217,6 +211,13 @@ func (store *MemoryMetadataStore) CheckPermissions(
 	// Owner gets additional privileges
 	if uid == attr.UID {
 		granted |= metadata.PermissionChangePermissions | metadata.PermissionChangeOwnership
+	}
+
+	// Apply read-only share restriction for all non-root users
+	if shareData, exists := store.shares[fileData.ShareName]; exists {
+		if shareData.Share.Options.ReadOnly {
+			granted &= ^(metadata.PermissionWrite | metadata.PermissionDelete)
+		}
 	}
 
 	return granted & requested, nil
