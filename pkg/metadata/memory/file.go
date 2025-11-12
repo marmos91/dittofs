@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"time"
@@ -112,6 +113,48 @@ func (store *MemoryMetadataStore) Lookup(
 
 	// Return handle and attributes
 	return targetHandle, targetAttr, nil
+}
+
+// GetFile retrieves file attributes by handle.
+//
+// This is a lightweight operation that only reads metadata without permission
+// checking. It's used for operations where permission checking has already been
+// performed or is not required (e.g., getting attributes after successful lookup).
+//
+// For operations requiring permission checking, use Lookup or PrepareRead instead.
+//
+// Use Cases:
+//   - Getting attributes after successful Lookup (permission already checked)
+//   - Protocol operations that work on file handles (e.g., GETATTR in NFS)
+//   - Internal operations that need file metadata
+//   - Cache updates after modifications
+//
+// Thread Safety:
+// This method uses a read lock and is safe for concurrent access.
+func (s *MemoryMetadataStore) GetFile(
+	ctx context.Context,
+	handle metadata.FileHandle,
+) (*metadata.FileAttr, error) {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Get file attributes
+	key := handleToKey(handle)
+	attr, exists := s.files[key]
+	if !exists {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrNotFound,
+			Message: "file not found",
+		}
+	}
+
+	// Return attributes
+	return attr, nil
 }
 
 // SetFileAttributes updates file attributes with validation and access control.
