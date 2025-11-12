@@ -20,7 +20,7 @@ import (
 //
 // Returns:
 //   - error: Returns nil if healthy, context error if cancelled/timed out
-func (s *MemoryMetadataStore) Healthcheck(ctx context.Context) error {
+func (store *MemoryMetadataStore) Healthcheck(ctx context.Context) error {
 	// For in-memory store, just check if context is valid
 	// This ensures we respect timeouts and cancellation
 	return ctx.Err()
