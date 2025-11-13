@@ -245,6 +245,7 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		capabilities:    config.Capabilities,
 		maxStorageBytes: config.MaxStorageBytes,
 		maxFiles:        config.MaxFiles,
+		sessions:        make(map[string]*metadata.ShareSession),
 	}
 
 	// Initialize the sync.Pool for FileAttr allocations
