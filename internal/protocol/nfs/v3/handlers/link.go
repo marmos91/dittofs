@@ -131,19 +131,19 @@ type LinkContext struct {
 //
 //  1. Check for context cancellation early
 //  2. Validate request parameters (handles, name)
-//  3. Extract client IP and authentication credentials
+//  3. Build AuthContext for permission checking
 //  4. Verify source file exists and is a regular file (not a directory)
 //  5. Verify target directory exists and is a directory
 //  6. Capture pre-operation directory state (for WCC)
-//  7. Check that the link name doesn't already exist
-//  8. Delegate link creation to repository.CreateLink()
+//  7. Check that the link name doesn't already exist using Lookup
+//  8. Delegate link creation to store.CreateHardLink()
 //  9. Return file attributes and directory WCC data
 //
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (link creation, validation) is delegated to repository
-//   - File handle validation is performed by repository.GetFile()
+//   - All business logic (link creation, validation) is delegated to store
+//   - File handle validation is performed by store.GetFile()
 //   - Context cancellation is checked at strategic points between operations
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
@@ -157,14 +157,14 @@ type LinkContext struct {
 // **Authentication:**
 //
 // The context contains authentication credentials from the RPC layer.
-// Access control should be enforced by the repository layer based on:
+// Access control is enforced by the store layer based on:
 //   - Write permission on the target directory
 //   - Client credentials (UID/GID)
 //
 // **Error Handling:**
 //
 // Protocol-level errors return appropriate NFS status codes.
-// Repository errors are mapped to NFS status codes:
+// store errors are mapped to NFS status codes:
 //   - Source not found → types.NFS3ErrNoEnt
 //   - Target directory not found → types.NFS3ErrNoEnt
 //   - Name already exists → NFS3ErrExist
@@ -176,13 +176,13 @@ type LinkContext struct {
 // **Security Considerations:**
 //
 //   - Handle validation prevents malformed requests
-//   - Repository enforces write access to target directory
+//   - store enforces write access to target directory
 //   - Cannot link directories (prevents privilege escalation)
 //   - Client context enables audit logging
 //
 // **Parameters:**
 //   - ctx: Context with cancellation, client address and authentication credentials
-//   - repository: The metadata repository for file and link operations
+//   - metadataStore: The metadata store for file and link operations
 //   - req: The link request containing file handle, directory, and name
 //
 // **Returns:**
@@ -207,7 +207,7 @@ type LinkContext struct {
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Link(ctx, repository, req)
+//	resp, err := handler.Link(ctx, store, req)
 //	if err != nil {
 //	    // Internal server error or context cancellation
 //	}
@@ -216,7 +216,7 @@ type LinkContext struct {
 //	}
 func (h *DefaultNFSHandler) Link(
 	ctx *LinkContext,
-	repository metadata.Repository,
+	metadataStore metadata.MetadataStore,
 	req *LinkRequest,
 ) (*LinkResponse, error) {
 	// Extract client IP for logging
@@ -250,7 +250,13 @@ func (h *DefaultNFSHandler) Link(
 	}
 
 	// ========================================================================
-	// Step 3: Check cancellation before first repository operation
+	// Step 3: Build AuthContext for permission checking
+	// ========================================================================
+
+	authCtx := buildAuthContextFromLink(ctx)
+
+	// ========================================================================
+	// Step 4: Check cancellation before first store operation
 	// ========================================================================
 
 	select {
@@ -262,11 +268,11 @@ func (h *DefaultNFSHandler) Link(
 	}
 
 	// ========================================================================
-	// Step 4: Verify source file exists and is a regular file
+	// Step 5: Verify source file exists and is a regular file
 	// ========================================================================
 
 	fileHandle := metadata.FileHandle(req.FileHandle)
-	fileAttr, err := repository.GetFile(ctx.Context, fileHandle)
+	fileAttr, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		logger.Warn("LINK failed: source file not found: file=%x client=%s error=%v",
 			req.FileHandle, clientIP, err)
@@ -281,7 +287,7 @@ func (h *DefaultNFSHandler) Link(
 	}
 
 	// ========================================================================
-	// Step 5: Check cancellation before target directory lookup
+	// Step 6: Check cancellation before target directory lookup
 	// ========================================================================
 
 	select {
@@ -293,11 +299,11 @@ func (h *DefaultNFSHandler) Link(
 	}
 
 	// ========================================================================
-	// Step 6: Verify target directory exists and is a directory
+	// Step 7: Verify target directory exists and is a directory
 	// ========================================================================
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
-	dirAttr, err := repository.GetFile(ctx.Context, dirHandle)
+	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		logger.Warn("LINK failed: target directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
@@ -324,7 +330,7 @@ func (h *DefaultNFSHandler) Link(
 	}
 
 	// ========================================================================
-	// Step 7: Check cancellation before name conflict check
+	// Step 8: Check cancellation before name conflict check
 	// ========================================================================
 
 	select {
@@ -336,16 +342,17 @@ func (h *DefaultNFSHandler) Link(
 	}
 
 	// ========================================================================
-	// Step 8: Check if name already exists in target directory
+	// Step 9: Check if name already exists in target directory using Lookup
 	// ========================================================================
 
-	_, err = repository.GetChild(ctx.Context, dirHandle, req.Name)
+	_, _, err = metadataStore.Lookup(authCtx, dirHandle, req.Name)
 	if err == nil {
+		// No error means file exists
 		logger.Debug("LINK failed: name already exists: name='%s' dir=%x client=%s",
 			req.Name, req.DirHandle, clientIP)
 
 		// Get updated directory attributes for WCC
-		dirAttr, _ = repository.GetFile(ctx.Context, dirHandle)
+		dirAttr, _ = metadataStore.GetFile(ctx.Context, dirHandle)
 		dirID := xdr.ExtractFileID(dirHandle)
 		dirWccAfter := xdr.MetadataToNFS(dirAttr, dirID)
 
@@ -355,50 +362,42 @@ func (h *DefaultNFSHandler) Link(
 			DirWccAfter:  dirWccAfter,
 		}, nil
 	}
+	// If error, file doesn't exist (good) - continue with link creation
 
 	// ========================================================================
-	// Step 9: Check cancellation before write operation
+	// Step 10: Check cancellation before write operation
 	// ========================================================================
-	// This is the most critical check as CreateLink modifies filesystem state
+	// This is the most critical check as CreateHardLink modifies filesystem state
 
 	select {
 	case <-ctx.Context.Done():
-		logger.Debug("LINK cancelled before CreateLink: file=%x name='%s' client=%s error=%v",
+		logger.Debug("LINK cancelled before CreateHardLink: file=%x name='%s' client=%s error=%v",
 			req.FileHandle, req.Name, clientIP, ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	default:
 	}
 
 	// ========================================================================
-	// Step 10: Create the hard link via repository
+	// Step 11: Create the hard link via store
 	// ========================================================================
-	// The repository is responsible for:
+	// The store is responsible for:
 	// - Verifying write access to the target directory
 	// - Adding the new directory entry
 	// - Incrementing the link count (nlink) on the file
 	// - Updating directory timestamps
 
-	// Build authentication context for repository
-	authCtx := &metadata.AuthContext{
-		AuthFlavor: ctx.AuthFlavor,
-		UID:        ctx.UID,
-		GID:        ctx.GID,
-		GIDs:       ctx.GIDs,
-		ClientAddr: clientIP,
-	}
-
-	err = repository.CreateLink(authCtx, dirHandle, req.Name, fileHandle)
+	err = metadataStore.CreateHardLink(authCtx, dirHandle, req.Name, fileHandle)
 	if err != nil {
-		logger.Error("LINK failed: repository error: name='%s' client=%s error=%v",
+		logger.Error("LINK failed: store error: name='%s' client=%s error=%v",
 			req.Name, clientIP, err)
 
 		// Get updated directory attributes for WCC
-		dirAttr, _ = repository.GetFile(ctx.Context, dirHandle)
+		dirAttr, _ = metadataStore.GetFile(ctx.Context, dirHandle)
 		dirID := xdr.ExtractFileID(dirHandle)
 		dirWccAfter := xdr.MetadataToNFS(dirAttr, dirID)
 
-		// Map repository errors to NFS status codes
-		status := xdr.MapRepositoryErrorToNFSStatus(err, clientIP, "link")
+		// Map store errors to NFS status codes
+		status := mapMetadataErrorToNFS(err)
 
 		return &LinkResponse{
 			Status:       status,
@@ -408,24 +407,24 @@ func (h *DefaultNFSHandler) Link(
 	}
 
 	// ========================================================================
-	// Step 11: Build success response with updated attributes
+	// Step 12: Build success response with updated attributes
 	// ========================================================================
 	// No cancellation check here - operation succeeded, fetching attributes
 	// is best-effort for cache consistency
 
 	// Get updated file attributes (nlink should be incremented)
-	fileAttr, err = repository.GetFile(ctx.Context, fileHandle)
+	fileAttr, err = metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		logger.Error("LINK: failed to get file attributes after link: file=%x error=%v",
 			req.FileHandle, err)
-		// Continue with cached attributes
+		// Continue with cached attributes - this shouldn't happen but handle gracefully
 	}
 
 	fileID := xdr.ExtractFileID(fileHandle)
 	nfsFileAttr := xdr.MetadataToNFS(fileAttr, fileID)
 
 	// Get updated directory attributes
-	dirAttr, _ = repository.GetFile(ctx.Context, dirHandle)
+	dirAttr, _ = metadataStore.GetFile(ctx.Context, dirHandle)
 	dirID := xdr.ExtractFileID(dirHandle)
 	nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
@@ -438,6 +437,41 @@ func (h *DefaultNFSHandler) Link(
 		DirWccBefore: dirWccBefore,
 		DirWccAfter:  nfsDirAttr,
 	}, nil
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+// buildAuthContextFromLink creates an AuthContext from LinkContext.
+//
+// This translates the NFS-specific authentication context into the generic
+// AuthContext used by the metadata store.
+func buildAuthContextFromLink(ctx *LinkContext) *metadata.AuthContext {
+	// Map auth flavor to auth method string
+	authMethod := "anonymous"
+	if ctx.AuthFlavor == 1 {
+		authMethod = "unix"
+	}
+
+	// Build identity from Unix credentials
+	identity := &metadata.Identity{
+		UID:  ctx.UID,
+		GID:  ctx.GID,
+		GIDs: ctx.GIDs,
+	}
+
+	// Set username from UID if available (for logging/auditing)
+	if ctx.UID != nil {
+		identity.Username = fmt.Sprintf("uid:%d", *ctx.UID)
+	}
+
+	return &metadata.AuthContext{
+		Context:    ctx.Context,
+		AuthMethod: authMethod,
+		Identity:   identity,
+		ClientAddr: ctx.ClientAddr,
+	}
 }
 
 // ============================================================================
