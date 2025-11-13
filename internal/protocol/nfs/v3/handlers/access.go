@@ -126,30 +126,30 @@ type AccessContext struct {
 //  1. Check for context cancellation (early exit if client disconnected)
 //  2. Validate request parameters (handle format and length)
 //  3. Extract client IP and authentication credentials from context
-//  4. Verify file handle exists via repository.GetFile()
+//  4. Verify file handle exists via store.GetFile()
 //  5. Check for cancellation before expensive permission check
-//  6. Delegate permission checking to repository.CheckAccess()
+//  6. Delegate permission checking to store.CheckPermissions()
 //  7. Retrieve file attributes for cache consistency
 //  8. Return granted permissions bitmap to client
 //
 // **Context cancellation:**
 //
 //   - Checks at the beginning to respect client disconnection
-//   - Checks after GetFile, before the potentially expensive CheckAccess
-//   - No check after CheckAccess since response building is fast
+//   - Checks after GetFile, before the potentially expensive CheckPermissions
+//   - No check after CheckPermissions since response building is fast
 //   - Returns NFS3ErrIO status with context error for cancellation
 //
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (permission checking) is delegated to repository
-//   - File handle validation is performed by repository.GetFile()
+//   - All business logic (permission checking) is delegated to store
+//   - File handle validation is performed by store.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
 // **Authentication:**
 //
 // The context contains authentication credentials from the RPC layer.
-// The protocol layer extracts and passes these to the repository, which
+// The protocol layer extracts and passes these to the store, which
 // implements the actual permission checking logic based on:
 //   - File ownership (UID/GID)
 //   - File mode bits (rwx permissions)
@@ -171,7 +171,7 @@ type AccessContext struct {
 // The procedure rarely returns errors - instead, it returns success
 // with Access=0 (no permissions granted) when access would be denied.
 //
-// Repository errors are mapped to NFS status codes:
+// Store errors are mapped to NFS status codes:
 //   - File not found → types.NFS3ErrNoEnt
 //   - Permission denied → types.NFS3OK with Access=0 (or NFS3ErrAcces)
 //   - I/O error → types.NFS3ErrIO
@@ -180,13 +180,13 @@ type AccessContext struct {
 // **Security Considerations:**
 //
 //   - Handle validation prevents malformed requests
-//   - Repository layer enforces actual access control
+//   - Store layer enforces actual access control
 //   - Client context enables audit logging
 //   - No sensitive information leaked in error messages
 //
 // **Parameters:**
 //   - ctx: Context with cancellation, client address and authentication credentials
-//   - repository: The metadata repository for file access and permission checks
+//   - store: The metadata store for file access and permission checks
 //   - req: The access request containing handle and requested permissions
 //
 // **Returns:**
@@ -210,7 +210,7 @@ type AccessContext struct {
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Access(ctx, repository, req)
+//	resp, err := handler.Access(ctx, store, req)
 //	if err != nil {
 //	    if errors.Is(err, context.Canceled) {
 //	        // Client disconnected
@@ -225,7 +225,7 @@ type AccessContext struct {
 //	}
 func (h *DefaultNFSHandler) Access(
 	ctx *AccessContext,
-	repository metadata.Repository,
+	store metadata.MetadataStore,
 	req *AccessRequest,
 ) (*AccessResponse, error) {
 	// Check for cancellation before starting any work
@@ -259,7 +259,7 @@ func (h *DefaultNFSHandler) Access(
 	// ========================================================================
 
 	fileHandle := metadata.FileHandle(req.Handle)
-	attr, err := repository.GetFile(ctx.Context, fileHandle)
+	attr, err := store.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -274,7 +274,7 @@ func (h *DefaultNFSHandler) Access(
 	}
 
 	// Check for cancellation before the permission check
-	// CheckAccess may involve complex ACL evaluation, so it's worth checking here
+	// CheckPermissions may involve complex ACL evaluation, so it's worth checking here
 	select {
 	case <-ctx.Context.Done():
 		logger.Debug("ACCESS cancelled before permission check: handle=%x client=%s error=%v",
@@ -284,23 +284,25 @@ func (h *DefaultNFSHandler) Access(
 	}
 
 	// ========================================================================
-	// Step 3: Check permissions via repository
+	// Step 3: Build AuthContext for permission checking
 	// ========================================================================
-	// The repository implements the actual permission checking logic based on:
-	// - File ownership (attr.UID, attr.GID)
-	// - File mode bits (attr.Mode)
-	// - Client credentials (ctx.UID, ctx.GID, ctx.GIDs)
-	// - ACLs or other access control mechanisms (implementation-specific)
 
-	// Build access check context for the repository
-	accessCtx := &metadata.AccessCheckContext{
-		AuthFlavor: ctx.AuthFlavor,
-		UID:        ctx.UID,
-		GID:        ctx.GID,
-		GIDs:       ctx.GIDs,
-	}
+	authCtx := buildAuthContext(ctx)
 
-	grantedAccess, err := repository.CheckAccess(accessCtx, fileHandle, req.Access)
+	// ========================================================================
+	// Step 4: Translate NFS access bits to generic permissions
+	// ========================================================================
+
+	requestedPerms := nfsAccessToPermissions(req.Access, attr.Type)
+
+	logger.Debug("ACCESS translation: nfs_access=0x%x -> generic_perms=0x%x type=%d",
+		req.Access, requestedPerms, attr.Type)
+
+	// ========================================================================
+	// Step 5: Check permissions via store
+	// ========================================================================
+
+	grantedPerms, err := store.CheckPermissions(authCtx, fileHandle, requestedPerms)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -315,7 +317,16 @@ func (h *DefaultNFSHandler) Access(
 	}
 
 	// ========================================================================
-	// Step 4: Build response with granted permissions and attributes
+	// Step 6: Translate granted permissions back to NFS access bits
+	// ========================================================================
+
+	grantedAccess := permissionsToNFSAccess(grantedPerms, attr.Type)
+
+	logger.Debug("ACCESS translation: generic_perms=0x%x -> nfs_access=0x%x",
+		grantedPerms, grantedAccess)
+
+	// ========================================================================
+	// Step 7: Build response with granted permissions and attributes
 	// ========================================================================
 
 	// Generate file ID from handle for NFS attributes
@@ -333,6 +344,145 @@ func (h *DefaultNFSHandler) Access(
 		Attr:   nfsAttr,
 		Access: grantedAccess,
 	}, nil
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+// buildAuthContext creates an AuthContext from AccessContext.
+//
+// This translates the NFS-specific authentication context into the generic
+// AuthContext used by the metadata store.
+func buildAuthContext(ctx *AccessContext) *metadata.AuthContext {
+	// Map auth flavor to auth method string
+	authMethod := "anonymous"
+	if ctx.AuthFlavor == 1 {
+		authMethod = "unix"
+	}
+
+	// Build identity from Unix credentials
+	identity := &metadata.Identity{
+		UID:  ctx.UID,
+		GID:  ctx.GID,
+		GIDs: ctx.GIDs,
+	}
+
+	// Set username from UID if available (for logging/auditing)
+	if ctx.UID != nil {
+		identity.Username = fmt.Sprintf("uid:%d", *ctx.UID)
+	}
+
+	return &metadata.AuthContext{
+		Context:    ctx.Context,
+		AuthMethod: authMethod,
+		Identity:   identity,
+		ClientAddr: ctx.ClientAddr,
+	}
+}
+
+// nfsAccessToPermissions translates NFS ACCESS bits to generic Permission flags.
+//
+// NFS ACCESS bits (RFC 1813 Section 3.3.4):
+//   - AccessRead (0x0001): Read file data or list directory
+//   - AccessLookup (0x0002): Look up names in directory
+//   - AccessModify (0x0004): Modify file data
+//   - AccessExtend (0x0008): Extend file (write beyond EOF)
+//   - AccessDelete (0x0010): Delete file or directory
+//   - AccessExecute (0x0020): Execute file or search directory
+//
+// Generic Permission flags:
+//   - PermissionRead: Read file data
+//   - PermissionWrite: Modify file data
+//   - PermissionExecute: Execute files
+//   - PermissionDelete: Delete files/directories
+//   - PermissionListDirectory: List directory contents (read for directories)
+//   - PermissionTraverse: Search/traverse directories (execute for directories)
+//
+// The translation is context-sensitive based on file type:
+//   - For files: AccessRead -> PermissionRead, AccessModify/AccessExtend -> PermissionWrite
+//   - For directories: AccessRead -> PermissionListDirectory, AccessLookup -> PermissionTraverse
+func nfsAccessToPermissions(nfsAccess uint32, fileType metadata.FileType) metadata.Permission {
+	var perms metadata.Permission
+
+	// Handle directories specially
+	if fileType == metadata.FileTypeDirectory {
+		// AccessRead for directories means list contents
+		if nfsAccess&types.AccessRead != 0 {
+			perms |= metadata.PermissionListDirectory
+		}
+		// AccessLookup means search/traverse
+		if nfsAccess&types.AccessLookup != 0 {
+			perms |= metadata.PermissionTraverse
+		}
+		// AccessExecute also means traverse for directories
+		if nfsAccess&types.AccessExecute != 0 {
+			perms |= metadata.PermissionTraverse
+		}
+		// AccessModify and AccessExtend mean write (add/remove entries)
+		if nfsAccess&(types.AccessModify|types.AccessExtend) != 0 {
+			perms |= metadata.PermissionWrite
+		}
+	} else {
+		// For files: straightforward mapping
+		if nfsAccess&types.AccessRead != 0 {
+			perms |= metadata.PermissionRead
+		}
+		if nfsAccess&(types.AccessModify|types.AccessExtend) != 0 {
+			perms |= metadata.PermissionWrite
+		}
+		if nfsAccess&types.AccessExecute != 0 {
+			perms |= metadata.PermissionExecute
+		}
+	}
+
+	// AccessDelete maps directly
+	if nfsAccess&types.AccessDelete != 0 {
+		perms |= metadata.PermissionDelete
+	}
+
+	return perms
+}
+
+// permissionsToNFSAccess translates generic Permission flags back to NFS ACCESS bits.
+//
+// This is the inverse of nfsAccessToPermissions and must maintain consistency.
+func permissionsToNFSAccess(perms metadata.Permission, fileType metadata.FileType) uint32 {
+	var nfsAccess uint32
+
+	// Handle directories specially
+	if fileType == metadata.FileTypeDirectory {
+		// PermissionListDirectory -> AccessRead
+		if perms&metadata.PermissionListDirectory != 0 {
+			nfsAccess |= types.AccessRead
+		}
+		// PermissionTraverse -> AccessLookup and AccessExecute
+		if perms&metadata.PermissionTraverse != 0 {
+			nfsAccess |= types.AccessLookup | types.AccessExecute
+		}
+		// PermissionWrite -> AccessModify and AccessExtend
+		if perms&metadata.PermissionWrite != 0 {
+			nfsAccess |= types.AccessModify | types.AccessExtend
+		}
+	} else {
+		// For files: straightforward mapping
+		if perms&metadata.PermissionRead != 0 {
+			nfsAccess |= types.AccessRead
+		}
+		if perms&metadata.PermissionWrite != 0 {
+			nfsAccess |= types.AccessModify | types.AccessExtend
+		}
+		if perms&metadata.PermissionExecute != 0 {
+			nfsAccess |= types.AccessExecute
+		}
+	}
+
+	// PermissionDelete maps directly
+	if perms&metadata.PermissionDelete != 0 {
+		nfsAccess |= types.AccessDelete
+	}
+
+	return nfsAccess
 }
 
 // ============================================================================
