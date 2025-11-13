@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"strings"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
@@ -84,12 +83,12 @@ type ReadLinkContext struct {
 	AuthFlavor uint32
 
 	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	UID *uint32
 
 	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	GID *uint32
 
@@ -121,22 +120,22 @@ type ReadLinkContext struct {
 //  1. Check for context cancellation (client disconnect, timeout)
 //  2. Validate request parameters (handle format and length)
 //  3. Extract client IP and authentication credentials from context
-//  4. Delegate symlink reading to repository.ReadSymlink()
+//  4. Delegate symlink reading to store.ReadSymlink()
 //  5. Retrieve symlink attributes for cache consistency
 //  6. Return target path to client
 //
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (symlink reading, access control) delegated to repository
-//   - File handle validation performed by repository
+//   - All business logic (symlink reading, access control) delegated to store
+//   - File handle validation performed by store
 //   - Context cancellation respected for client disconnect scenarios
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
 // **Authentication:**
 //
 // The context contains authentication credentials from the RPC layer.
-// The protocol layer passes these to the repository, which can implement:
+// The protocol layer passes these to the store, which can implement:
 //   - Read permission checking on the symlink
 //   - Access control based on UID/GID
 //   - Directory search permission enforcement for symlink parent
@@ -170,7 +169,7 @@ type ReadLinkContext struct {
 // READLINK is a lightweight metadata operation that typically completes quickly.
 // However, context cancellation is still checked at key points:
 //   - Before starting the operation (client disconnect detection)
-//   - Repository operations respect context (passed through)
+//   - store operations respect context (passed through)
 //
 // Cancellation scenarios include:
 //   - Client disconnects before receiving response
@@ -181,7 +180,7 @@ type ReadLinkContext struct {
 // **Error Handling:**
 //
 // Protocol-level errors return appropriate NFS status codes.
-// Repository errors are mapped to NFS status codes:
+// store errors are mapped to NFS status codes:
 //   - Symlink not found → types.NFS3ErrNoEnt
 //   - Not a symlink → NFS3ErrInval
 //   - Target path missing → types.NFS3ErrIO
@@ -193,14 +192,14 @@ type ReadLinkContext struct {
 //
 // READLINK is frequently called during pathname resolution:
 //   - Symlink targets should be cached by clients when possible
-//   - Repository should efficiently retrieve symlink targets
+//   - store should efficiently retrieve symlink targets
 //   - Post-op attributes help clients maintain cache consistency
 //   - Context check adds negligible overhead (nanoseconds)
 //
 // **Security Considerations:**
 //
 //   - Handle validation prevents malformed requests
-//   - Repository enforces read permission on symlink
+//   - store enforces read permission on symlink
 //   - Target path should not be interpreted or validated by server
 //   - Client context enables audit logging
 //   - No validation of target path content (may contain special characters)
@@ -208,7 +207,7 @@ type ReadLinkContext struct {
 //
 // **Parameters:**
 //   - ctx: Context with client address, authentication, and cancellation support
-//   - repository: The metadata repository for symlink operations
+//   - metadataStore: The metadata store for symlink operations
 //   - req: The readlink request containing the symlink handle
 //
 // **Returns:**
@@ -229,7 +228,7 @@ type ReadLinkContext struct {
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.ReadLink(ctx, repository, req)
+//	resp, err := handler.ReadLink(ctx, store, req)
 //	if err == context.Canceled {
 //	    // Client disconnected during readlink
 //	    return nil, err
@@ -242,7 +241,7 @@ type ReadLinkContext struct {
 //	}
 func (h *DefaultNFSHandler) ReadLink(
 	ctx *ReadLinkContext,
-	repository metadata.Repository,
+	metadataStore metadata.MetadataStore,
 	req *ReadLinkRequest,
 ) (*ReadLinkResponse, error) {
 	// ========================================================================
@@ -277,24 +276,17 @@ func (h *DefaultNFSHandler) ReadLink(
 	}
 
 	// ========================================================================
-	// Step 2: Build authentication context for repository
+	// Step 2: Build authentication context for store
 	// ========================================================================
-	// The repository needs authentication details to enforce access control
+	// The store needs authentication details to enforce access control
 	// on the symbolic link (read permission checking)
 
-	authCtx := &metadata.AuthContext{
-		Context:    ctx.Context, // Pass context through for cancellation
-		AuthFlavor: ctx.AuthFlavor,
-		UID:        ctx.UID,
-		GID:        ctx.GID,
-		GIDs:       ctx.GIDs,
-		ClientAddr: clientIP,
-	}
+	authCtx := buildAuthContextFromReadLink(ctx)
 
 	// ========================================================================
-	// Step 3: Read symlink target via repository
+	// Step 3: Read symlink target via store
 	// ========================================================================
-	// The repository is responsible for:
+	// The store is responsible for:
 	// - Verifying the handle is a valid symlink
 	// - Checking read permission on the symlink
 	// - Retrieving the target path
@@ -302,11 +294,11 @@ func (h *DefaultNFSHandler) ReadLink(
 	// - Respecting context cancellation
 
 	fileHandle := metadata.FileHandle(req.Handle)
-	target, attr, err := repository.ReadSymlink(authCtx, fileHandle)
+	target, attr, err := metadataStore.ReadSymlink(authCtx, fileHandle)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if err == context.Canceled || err == context.DeadlineExceeded {
-			logger.Debug("READLINK: repository operation cancelled: handle=%x client=%s",
+			logger.Debug("READLINK: store operation cancelled: handle=%x client=%s",
 				req.Handle, clientIP)
 			return nil, err
 		}
@@ -314,7 +306,7 @@ func (h *DefaultNFSHandler) ReadLink(
 		logger.Warn("READLINK failed: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
 
-		// Map repository errors to NFS status codes
+		// Map store errors to NFS status codes
 		status := mapReadLinkErrorToNFSStatus(err)
 
 		return &ReadLinkResponse{Status: status}, nil
@@ -396,46 +388,37 @@ func validateReadLinkRequest(req *ReadLinkRequest) *readLinkValidationError {
 // Error Mapping
 // ============================================================================
 
-// mapReadLinkErrorToNFSStatus maps repository errors to NFS status codes.
+// mapReadLinkErrorToNFSStatus maps store errors to NFS status codes.
 // This provides consistent error handling across the READLINK operation.
 func mapReadLinkErrorToNFSStatus(err error) uint32 {
-	// Check for specific error types from repository
-	if exportErr, ok := err.(*metadata.ExportError); ok {
-		switch exportErr.Code {
-		case metadata.ExportErrNotFound:
-			return types.NFS3ErrNoEnt
-		case metadata.ExportErrAccessDenied:
-			return types.NFS3ErrAcces
-		default:
-			return types.NFS3ErrIO
-		}
+	// Use the common metadata error mapper
+	return mapMetadataErrorToNFS(err)
+}
+
+// buildAuthContextFromReadLink creates an AuthContext from ReadLinkContext.
+//
+// This translates the NFS-specific authentication context into the generic
+// AuthContext used by the metadata store.
+func buildAuthContextFromReadLink(ctx *ReadLinkContext) *metadata.AuthContext {
+	// Map auth flavor to auth method string
+	authMethod := "anonymous"
+	if ctx.AuthFlavor == 1 {
+		authMethod = "unix"
 	}
 
-	// Check error message for common patterns
-	errMsg := err.Error()
-
-	if strings.Contains(errMsg, "not found") {
-		return types.NFS3ErrNoEnt
+	// Build identity with proper UID/GID/GIDs structure
+	identity := &metadata.Identity{
+		UID:  ctx.UID,
+		GID:  ctx.GID,
+		GIDs: ctx.GIDs,
 	}
 
-	if strings.Contains(errMsg, "not a symlink") || strings.Contains(errMsg, "not symbolic link") {
-		return types.NFS3ErrInval
+	return &metadata.AuthContext{
+		Context:    ctx.Context,
+		AuthMethod: authMethod,
+		Identity:   identity,
+		ClientAddr: ctx.ClientAddr,
 	}
-
-	if strings.Contains(errMsg, "permission denied") || strings.Contains(errMsg, "access denied") {
-		return types.NFS3ErrAcces
-	}
-
-	if strings.Contains(errMsg, "stale") {
-		return types.NFS3ErrStale
-	}
-
-	if strings.Contains(errMsg, "no target") || strings.Contains(errMsg, "empty target") {
-		return types.NFS3ErrIO
-	}
-
-	// Default to I/O error for unknown errors
-	return types.NFS3ErrIO
 }
 
 // ============================================================================
