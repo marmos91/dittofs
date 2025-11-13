@@ -95,7 +95,7 @@ type GetAttrContext struct {
 //
 //  1. Check for context cancellation (early exit if client disconnected)
 //  2. Validate request parameters (handle format and length)
-//  3. Verify file handle exists via repository.GetFile()
+//  3. Verify file handle exists via store.GetFile()
 //  4. Generate file attributes with proper file ID
 //  5. Return attributes to client
 //
@@ -109,15 +109,15 @@ type GetAttrContext struct {
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (file lookup, attribute generation) is delegated to repository
-//   - File handle validation is performed by repository.GetFile()
+//   - All business logic (file lookup, attribute generation) is delegated to store
+//   - File handle validation is performed by store.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
 // **Performance Considerations:**
 //
 // GETATTR is one of the most frequently called NFS procedures. Implementations should:
 //   - Cache attributes when possible
-//   - Minimize repository access overhead
+//   - Minimize store access overhead
 //   - Use efficient file ID generation
 //   - Avoid unnecessary data copying
 //   - Minimize context cancellation checks (only 2 checks for performance)
@@ -125,7 +125,7 @@ type GetAttrContext struct {
 // **Error Handling:**
 //
 // Protocol-level errors return appropriate NFS status codes.
-// Repository errors are mapped to NFS status codes:
+// store errors are mapped to NFS status codes:
 //   - File not found → types.NFS3ErrNoEnt
 //   - Stale handle → NFS3ErrStale
 //   - I/O error → types.NFS3ErrIO
@@ -135,13 +135,13 @@ type GetAttrContext struct {
 // **Security Considerations:**
 //
 //   - Handle validation prevents malformed requests
-//   - Repository layer can enforce access control if needed
+//   - store layer can enforce access control if needed
 //   - Client context enables audit logging
 //   - No sensitive information leaked in error messages
 //
 // **Parameters:**
 //   - ctx: Context with cancellation, client address and authentication flavor
-//   - repository: The metadata repository for file access
+//   - metadataStore: The metadata store for file access
 //   - req: The getattr request containing the file handle
 //
 // **Returns:**
@@ -160,7 +160,7 @@ type GetAttrContext struct {
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 0, // AUTH_NULL
 //	}
-//	resp, err := handler.GetAttr(ctx, repository, req)
+//	resp, err := handler.GetAttr(ctx, store, req)
 //	if err != nil {
 //	    if errors.Is(err, context.Canceled) {
 //	        // Client disconnected
@@ -173,7 +173,7 @@ type GetAttrContext struct {
 //	}
 func (h *DefaultNFSHandler) GetAttr(
 	ctx *GetAttrContext,
-	repository metadata.Repository,
+	metadataStore metadata.MetadataStore,
 	req *GetAttrRequest,
 ) (*GetAttrResponse, error) {
 	// Check for cancellation before starting any work
@@ -209,7 +209,7 @@ func (h *DefaultNFSHandler) GetAttr(
 	// ========================================================================
 
 	fileHandle := metadata.FileHandle(req.Handle)
-	attr, err := repository.GetFile(ctx.Context, fileHandle)
+	attr, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
