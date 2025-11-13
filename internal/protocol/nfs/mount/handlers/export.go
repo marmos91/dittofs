@@ -125,7 +125,7 @@ type ExportEntry struct {
 //	fmt.Printf("Available exports: %d\n", len(resp.Entries))
 func (h *DefaultMountHandler) Export(
 	ctx *ExportContext,
-	repository metadata.Repository,
+	repository metadata.MetadataStore,
 	req *ExportRequest,
 ) (*ExportResponse, error) {
 	// Check for cancellation before starting any work
@@ -150,7 +150,7 @@ func (h *DefaultMountHandler) Export(
 
 	// Get all configured exports from the repository
 	// The repository should also respect context cancellation internally
-	exports, err := repository.GetExports(ctx.Context)
+	exports, err := repository.GetShares(ctx.Context)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -180,7 +180,7 @@ func (h *DefaultMountHandler) Export(
 		// as the groups field traditionally shows who CAN mount, not who cannot
 
 		entries = append(entries, ExportEntry{
-			Directory: export.Path,
+			Directory: export.Name,
 			Groups:    groups,
 		})
 	}
