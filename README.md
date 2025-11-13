@@ -1,8 +1,20 @@
+<div align="center">
+
 # DittoFS
 
-> **Experimental** - Not yet production ready
+[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen?style=flat)](https://github.com/marmos91/dittofs)
+[![Go Report Card](https://goreportcard.com/badge/github.com/marmos91/dittofs)](https://goreportcard.com/report/github.com/marmos91/dittofs)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat)](LICENSE)
+[![Status](https://img.shields.io/badge/status-experimental-orange?style=flat)](https://github.com/marmos91/dittofs)
 
-A modular virtual filesystem written entirely in Go that decouples file interfaces from storage backends. Expose your data through multiple protocols (NFS, SMB, FTP) while maintaining complete control over how metadata and content are stored.
+**A modular virtual filesystem written entirely in Go**
+
+Decouple file interfaces from storage backends. Expose your data through multiple protocols (NFS, SMB, FTP) while maintaining complete control over how metadata and content are stored.
+
+</div>
+
+---
 
 ## The Problem with Traditional Filesystem Servers
 
@@ -141,6 +153,27 @@ sudo mount -t nfs -o nfsvers=3,tcp,port=12049 localhost:/export /mnt/nfs
 # macOS
 sudo mount -t nfs -o nfsvers=3,tcp,port=12049,resvport localhost:/export /mnt/nfs
 ```
+
+### Testing
+
+```bash
+# Run unit tests
+go test ./...
+
+# Run unit tests with coverage
+go test -cover ./...
+
+# Run E2E tests (requires NFS client installed)
+go test -v -timeout 30m ./test/e2e/...
+
+# Run specific E2E suite
+go test -v ./test/e2e -run TestE2E/memory/BasicOperations
+```
+
+DittoFS includes comprehensive testing:
+- **Unit tests** for core components (RPC, XDR, metadata, content repositories)
+- **E2E tests** that mount real NFS filesystems and test complete workflows
+- **Test matrix** running all suites against multiple storage backends (memory, filesystem)
 
 ## Architecture Deep Dive
 
@@ -310,9 +343,10 @@ with DittoFS. Instead, use direct mount commands or the provided test clients.
 
 **Phase 2: Testing**
 
-- [ ] Comprehensive E2E test suite
+- [x] Comprehensive E2E test suite
+- [x] Unit test coverage for core components (RPC, XDR, Content, Metadata)
 - [ ] NFS protocol compliance tests
-- [ ] Unit test coverage expansion
+- [ ] Coverage reporting and CI/CD integration
 
 **Phase 3: Prometheus Metrics**
 
@@ -457,14 +491,17 @@ DittoFS is in active development and welcomes contributions!
 
 ```bash
 # Clone repository
-git clone https://github.com/cubbit/dittofs.git
+git clone https://github.com/marmos91/dittofs.git
 cd dittofs
 
 # Install dependencies
 go mod download
 
-# Run tests
+# Run unit tests
 go test ./...
+
+# Run E2E tests (requires NFS client)
+go test -v -timeout 30m ./test/e2e/...
 
 # Build
 go build -o dittofs cmd/dittofs/main.go
@@ -472,6 +509,25 @@ go build -o dittofs cmd/dittofs/main.go
 # Run with development settings
 ./dittofs -log-level DEBUG
 ```
+
+### E2E Testing Framework
+
+DittoFS includes a comprehensive end-to-end testing framework that validates real-world NFS operations by:
+
+- **Starting a real DittoFS server** with configurable backends
+- **Mounting the NFS filesystem** using platform-native mount commands
+- **Executing real file operations** using standard Go `os` package functions
+- **Testing all combinations** of facades and storage backends
+
+Test suites cover:
+- Basic file operations (create, read, write, delete)
+- Directory operations (mkdir, readdir, rename)
+- Symbolic and hard links
+- File attributes and permissions
+- Idempotency guarantees
+- Edge cases and boundary conditions
+
+See [test/e2e/README.md](test/e2e/README.md) for detailed documentation on running and writing E2E tests.
 
 ### Code Structure
 
@@ -617,7 +673,7 @@ MIT License - See LICENSE file for details
 
 ## Acknowledgments
 
-Built with ❤️ in Go by the Cubbit team and contributors.
+Built with ❤️ in Go.
 
 ---
 
