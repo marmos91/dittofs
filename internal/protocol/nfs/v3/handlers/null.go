@@ -97,13 +97,13 @@ type NullContext struct {
 //
 //  1. Check for context cancellation (client disconnect, timeout)
 //  2. Log the NULL request with client information
-//  3. Optionally delegate to repository for health check validation
+//  3. Optionally delegate to store for health check validation
 //  4. Return empty success response
 //
 // **Design Principles:**
 //
 //   - Protocol layer handles request/response structure
-//   - Repository can implement health checks (storage availability, resource limits)
+//   - store can implement health checks (storage availability, resource limits)
 //   - Consistent logging pattern with other procedures
 //   - Zero overhead - should be extremely fast
 //   - Respects context cancellation for client disconnects
@@ -155,17 +155,17 @@ type NullContext struct {
 //
 // **Error Handling:**
 //
-// NULL cannot fail under normal circumstances. Even if the repository
+// NULL cannot fail under normal circumstances. Even if the store
 // is unavailable, NULL should succeed. Failure modes:
 //   - Context cancelled (client disconnect/timeout) - returns context.Canceled
 //   - Catastrophic internal error (extremely rare) - returns error
 //
-// **Repository Interaction:**
+// **store Interaction:**
 //
-// While NULL doesn't require repository access, we can optionally:
-//   - Call repository.Healthcheck() to verify backend health
-//   - Return success even if repository check fails (NULL must always succeed)
-//   - Log repository health for monitoring purposes
+// While NULL doesn't require store access, we can optionally:
+//   - Call store.Healthcheck() to verify backend health
+//   - Return success even if store check fails (NULL must always succeed)
+//   - Log store health for monitoring purposes
 //   - Pass context through for cancellation support
 //
 // This allows NULL to serve as a basic health check endpoint while maintaining
@@ -173,7 +173,7 @@ type NullContext struct {
 //
 // **Parameters:**
 //   - ctx: Context with client address, authentication, and cancellation support
-//   - repository: The metadata repository (may be used for health checks)
+//   - metadataStore: The metadata store (may be used for health checks)
 //   - req: The NULL request (empty structure)
 //
 // **Returns:**
@@ -196,7 +196,7 @@ type NullContext struct {
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 0, // AUTH_NULL
 //	}
-//	resp, err := handler.Null(ctx, repository, req)
+//	resp, err := handler.Null(ctx, store, req)
 //	if err == context.Canceled {
 //	    // Client disconnected before response sent
 //	    return nil, err
@@ -208,7 +208,7 @@ type NullContext struct {
 //	// Server is responding - NULL always returns success
 func (h *DefaultNFSHandler) Null(
 	ctx *NullContext,
-	repository metadata.Repository,
+	metadataStore metadata.MetadataStore,
 	req *NullRequest,
 ) (*NullResponse, error) {
 	// ========================================================================
@@ -242,25 +242,25 @@ func (h *DefaultNFSHandler) Null(
 	logger.Info("NULL: client=%s auth=%d", clientIP, ctx.AuthFlavor)
 
 	// ========================================================================
-	// Optional: Repository health check
+	// Optional: store health check
 	// ========================================================================
-	// We can optionally ping the repository to verify backend health.
+	// We can optionally ping the store to verify backend health.
 	// However, per RFC 1813, NULL must always succeed regardless of
-	// repository state, so we log any issues but don't fail the request.
+	// store state, so we log any issues but don't fail the request.
 	//
 	// The context is passed through to allow the health check to be cancelled
 	// if the client disconnects while we're checking backend health.
 
-	if err := repository.Healthcheck(ctx.Context); err != nil {
+	if err := metadataStore.Healthcheck(ctx.Context); err != nil {
 		// Check if the error is due to context cancellation
 		if err == context.Canceled || err == context.DeadlineExceeded {
 			logger.Debug("NULL: health check cancelled: client=%s", clientIP)
 			return nil, err
 		}
 
-		// Log repository health issue but don't fail NULL request
+		// Log store health issue but don't fail NULL request
 		// (only context cancellation should cause NULL to fail)
-		logger.Debug("NULL: repository health check failed (non-fatal): client=%s error=%v",
+		logger.Debug("NULL: store health check failed (non-fatal): client=%s error=%v",
 			clientIP, err)
 		// Continue and return success anyway - NULL must always succeed
 	}
