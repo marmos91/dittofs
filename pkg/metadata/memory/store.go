@@ -180,6 +180,12 @@ type MemoryMetadataStore struct {
 	// attrPool is a sync.Pool for FileAttr allocations to reduce GC pressure.
 	// This pool is used to recycle FileAttr objects during copy operations.
 	attrPool sync.Pool
+
+	// sessions tracks active share mount sessions for monitoring and DUMP.
+	// Key: composite key "shareName|clientAddr"
+	// Value: ShareSession with mount timestamp
+	// Note: Sessions are informational only and don't affect access control
+	sessions map[string]*metadata.ShareSession
 }
 
 // MemoryMetadataStoreConfig contains configuration for creating a memory metadata store.
@@ -243,7 +249,7 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 
 	// Initialize the sync.Pool for FileAttr allocations
 	store.attrPool = sync.Pool{
-		New: func() interface{} {
+		New: func() any {
 			return &metadata.FileAttr{}
 		},
 	}

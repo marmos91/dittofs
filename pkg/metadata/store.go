@@ -114,10 +114,156 @@ type MetadataStore interface {
 	//   - error: ErrNotFound if share doesn't exist, or context cancellation error
 	GetShareRoot(ctx context.Context, name string) (FileHandle, error)
 
+	// RecordShareMount records that a client has successfully mounted a share.
+	//
+	// This creates a session tracking record used for:
+	//   - Administrative monitoring (DUMP procedure in NFS)
+	//   - Audit logging and security monitoring
+	//   - Usage analytics and capacity planning
+	//   - Stale session cleanup
+	//
+	// Session Tracking:
+	// The mount session is informational only - it does NOT:
+	//   - Grant or revoke access permissions
+	//   - Lock the share or prevent modifications
+	//   - Affect filesystem operations
+	//   - Persist across server restarts (implementation-specific)
+	//
+	// Multiple Mounts:
+	// The same client can mount the same share multiple times (this is valid).
+	// Implementations may choose to:
+	//   - Track each mount separately with timestamps
+	//   - Track only unique client+share combinations
+	//   - Update the timestamp on duplicate mounts
+	//
+	// The choice affects DUMP results and cleanup behavior but not correctness.
+	//
+	// Parameters:
+	//   - shareName: The name of the share being mounted
+	//   - clientAddr: The network address of the client (typically "IP" or "IP:port")
+	//
+	// Returns:
+	//   - error: ErrNotFound if share doesn't exist, or context cancellation error
+	//     Note: This operation should succeed even if the session already exists
+	//
+	// Example usage (from NFS MOUNT handler):
+	//
+	//	// After successful access control and handle retrieval
+	//	err := repository.RecordShareMount(ctx, "/export/data", "192.168.1.100")
+	//	if err != nil {
+	//	    // Log error but don't fail the mount - tracking is informational
+	//	    logger.Warn("Failed to record mount session: %v", err)
+	//	}
 	RecordShareMount(ctx context.Context, shareName string, clientAddr string) error
 
-	// GetActiveShares returns all currently active share sessions
-	GetActiveShares(ctx context.Context) ([]ShareSession, error) // Access Control
+	// GetActiveShares returns all currently active share sessions.
+	//
+	// This retrieves the complete list of share mounts across all clients and shares.
+	// Each entry represents one client's mount of one share, including when the
+	// mount occurred.
+	//
+	// Use Cases:
+	//   - NFS DUMP procedure (list all active mounts)
+	//   - Administrative monitoring dashboards
+	//   - Audit reports and security analysis
+	//   - Stale session detection and cleanup
+	//   - Capacity planning and usage analytics
+	//
+	// Session Lifecycle:
+	// Sessions are typically created by RecordShareMount and removed by:
+	//   - RemoveShareMount (explicit unmount)
+	//   - Stale session cleanup (background process)
+	//   - Server restart (sessions may or may not persist)
+	//
+	// Ordering:
+	// The order of returned sessions is implementation-specific. Common strategies:
+	//   - Chronological by MountedAt (oldest first or newest first)
+	//   - Grouped by share name
+	//   - Grouped by client address
+	//   - Arbitrary (insertion order)
+	//
+	// Empty Results:
+	// Returns an empty slice (not an error) if no sessions exist. This is normal
+	// when the server has just started or no clients have mounted shares.
+	//
+	// Performance Considerations:
+	// This may return a large list on busy servers. Implementations should consider:
+	//   - Efficient storage structures (indexes on shareName and clientAddr)
+	//   - Reasonable limits on session count
+	//   - Pagination support (future enhancement)
+	//
+	// Returns:
+	//   - []ShareSession: List of all active share sessions (may be empty)
+	//   - error: Only context cancellation errors
+	//
+	// Example usage (from NFS DUMP handler):
+	//
+	//	sessions, err := repository.GetActiveShares(ctx)
+	//	if err != nil {
+	//	    return fmt.Errorf("failed to get active shares: %w", err)
+	//	}
+	//	for _, session := range sessions {
+	//	    fmt.Printf("Client %s mounted %s at %v\n",
+	//	        session.ClientAddr, session.ShareName, session.MountedAt)
+	//	}
+	GetActiveShares(ctx context.Context) ([]ShareSession, error)
+
+	// RemoveShareMount removes a specific client's mount session of a share.
+	//
+	// This removes the session tracking record for a client that has unmounted
+	// a share. The operation is idempotent - removing a non-existent session
+	// succeeds without error.
+	//
+	// Important Notes:
+	// This does NOT:
+	//   - Disconnect active client connections
+	//   - Invalidate file handles held by the client
+	//   - Close open files
+	//   - Revoke access permissions
+	//
+	// The unmount is purely informational (removing the session record).
+	// Protocol handlers should only call this after the client has already
+	// unmounted on their side.
+	//
+	// Idempotency:
+	// Removing a session that doesn't exist is not an error. This handles:
+	//   - Client crashes (may not have recorded mount)
+	//   - Duplicate unmount requests
+	//   - Server restart with lost session state
+	//   - Race conditions between cleanup processes
+	//
+	// Multiple Mounts:
+	// If a client mounted the same share multiple times, this typically removes
+	// only one mount session. The behavior depends on how RecordShareMount handles
+	// duplicates:
+	//   - If tracking each mount separately: Removes one instance
+	//   - If tracking unique pairs only: Removes the single record
+	//
+	// Parameters:
+	//   - shareName: The name of the share being unmounted
+	//   - clientAddr: The network address of the client
+	//
+	// Returns:
+	//   - error: Only context cancellation errors
+	//     Note: Returns nil (success) even if the session didn't exist
+	//
+	// Example usage (from NFS UMOUNT handler):
+	//
+	//	err := repository.RemoveShareMount(ctx, "/export/data", "192.168.1.100")
+	//	if err != nil {
+	//	    // Log error but return success to client per NFS protocol
+	//	    logger.Warn("Failed to remove mount session: %v", err)
+	//	}
+	//
+	// Example usage (from NFS UMOUNTALL handler):
+	//
+	//	sessions, _ := repository.GetActiveShares(ctx)
+	//	for _, session := range sessions {
+	//	    if session.ClientAddr == clientIP {
+	//	        repository.RemoveShareMount(ctx, session.ShareName, clientIP)
+	//	    }
+	//	}
+	RemoveShareMount(ctx context.Context, shareName string, clientAddr string) error
 
 	// ========================================================================
 	// Access Control

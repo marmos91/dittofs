@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -290,4 +291,130 @@ func (store *MemoryMetadataStore) GetShareRoot(ctx context.Context, name string)
 
 	// Return the root handle
 	return sd.RootHandle, nil
+}
+
+// RecordShareMount records that a client has successfully mounted a share.
+//
+// Implementation Strategy:
+// This implementation tracks unique client+share combinations with timestamp updates.
+// If a client mounts the same share multiple times, we update the timestamp rather
+// than creating duplicate entries. This provides a simpler model for session tracking
+// while still capturing the essential information for DUMP and monitoring.
+//
+// Thread Safety:
+// Protected by the store's write lock to ensure atomic updates to the sessions map.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - shareName: The name of the share being mounted
+//   - clientAddr: The network address of the client
+//
+// Returns:
+//   - error: ErrNotFound if share doesn't exist, or context cancellation error
+func (store *MemoryMetadataStore) RecordShareMount(
+	ctx context.Context,
+	shareName string,
+	clientAddr string,
+) error {
+	// Check context cancellation
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	// Verify share exists
+	if _, exists := store.shares[shareName]; !exists {
+		return &metadata.StoreError{
+			Code:    metadata.ErrNotFound,
+			Message: "share not found",
+			Path:    shareName,
+		}
+	}
+
+	// Create or update session
+	// We use a composite key: "shareName|clientAddr"
+	sessionKey := shareName + "|" + clientAddr
+	store.sessions[sessionKey] = &metadata.ShareSession{
+		ShareName:  shareName,
+		ClientAddr: clientAddr,
+		MountedAt:  time.Now(),
+	}
+
+	return nil
+}
+
+// GetActiveShares returns all currently active share sessions.
+//
+// Implementation Details:
+//   - Returns copies of sessions to prevent external modifications
+//   - Sessions are returned in arbitrary order (map iteration is undefined)
+//   - Empty slice is returned if no sessions exist
+//
+// Thread Safety:
+// Protected by the store's read lock to ensure consistent snapshot of sessions.
+//
+// Returns:
+//   - []ShareSession: List of all active share sessions (may be empty)
+//   - error: Only context cancellation errors
+func (store *MemoryMetadataStore) GetActiveShares(
+	ctx context.Context,
+) ([]metadata.ShareSession, error) {
+	// Check context cancellation
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+
+	// Pre-allocate slice with exact capacity
+	sessions := make([]metadata.ShareSession, 0, len(store.sessions))
+
+	// Copy all sessions
+	for _, session := range store.sessions {
+		// Return a copy to prevent external modifications
+		sessions = append(sessions, *session)
+	}
+
+	return sessions, nil
+}
+
+// RemoveShareMount removes a specific client's mount session of a share.
+//
+// Implementation Details:
+//   - Idempotent: Removing a non-existent session succeeds without error
+//   - Uses composite key matching to find the session
+//   - Does not validate that the share exists (session may be stale)
+//
+// Thread Safety:
+// Protected by the store's write lock to ensure atomic session removal.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - shareName: The name of the share being unmounted
+//   - clientAddr: The network address of the client
+//
+// Returns:
+//   - error: Only context cancellation errors
+func (store *MemoryMetadataStore) RemoveShareMount(
+	ctx context.Context,
+	shareName string,
+	clientAddr string,
+) error {
+	// Check context cancellation
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	// Remove session if it exists
+	// Idempotent: no error if session doesn't exist
+	sessionKey := shareName + "|" + clientAddr
+	delete(store.sessions, sessionKey)
+
+	return nil
 }
