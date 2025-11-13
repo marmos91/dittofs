@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	content "github.com/marmos91/dittofs/pkg/content"
 	contentFs "github.com/marmos91/dittofs/pkg/content/fs"
 	"github.com/marmos91/dittofs/pkg/facade/nfs"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -19,8 +18,22 @@ import (
 	dittoServer "github.com/marmos91/dittofs/pkg/server"
 )
 
-func createInitialStructure(ctx context.Context, repo *memory.MemoryRepository, contentRepo *contentFs.FSContentRepository, rootHandle metadata.FileHandle) error {
+func createInitialStructure(ctx context.Context, repo *memory.MemoryMetadataStore, contentRepo *contentFs.FSContentRepository, rootHandle metadata.FileHandle) error {
 	now := time.Now()
+
+	// Create auth context for initial file creation (using root credentials)
+	uid := uint32(0) // root
+	gid := uint32(0)
+	authCtx := &metadata.AuthContext{
+		Context:    ctx,
+		AuthMethod: "unix",
+		Identity: &metadata.Identity{
+			UID:  &uid,
+			GID:  &gid,
+			GIDs: []uint32{0},
+		},
+		ClientAddr: "127.0.0.1",
+	}
 
 	// Create "images" directory
 	imagesAttr := &metadata.FileAttr{
@@ -35,7 +48,7 @@ func createInitialStructure(ctx context.Context, repo *memory.MemoryRepository, 
 		ContentID: "", // Directories don't have content
 	}
 
-	imagesHandle, err := repo.AddFileToDirectory(ctx, rootHandle, "images", imagesAttr)
+	imagesHandle, err := repo.Create(authCtx, rootHandle, "images", imagesAttr)
 	if err != nil {
 		return fmt.Errorf("failed to create images directory: %w", err)
 	}
@@ -51,10 +64,10 @@ func createInitialStructure(ctx context.Context, repo *memory.MemoryRepository, 
 	}
 
 	for _, img := range imageFiles {
-		contentID := content.ContentID(fmt.Sprintf("img-%s", img.name))
+		contentID := metadata.ContentID(fmt.Sprintf("img-%s", img.name))
 
 		// Write actual content to the content repository
-		if err := contentRepo.WriteContent(ctx, contentID, []byte(img.content)); err != nil {
+		if err := contentRepo.WriteAt(ctx, contentID, []byte(img.content), 0); err != nil {
 			return fmt.Errorf("failed to write content for %s: %w", img.name, err)
 		}
 
@@ -70,7 +83,7 @@ func createInitialStructure(ctx context.Context, repo *memory.MemoryRepository, 
 			ContentID: contentID,
 		}
 
-		if _, err := repo.AddFileToDirectory(ctx, imagesHandle, img.name, fileAttr); err != nil {
+		if _, err := repo.Create(authCtx, imagesHandle, img.name, fileAttr); err != nil {
 			return fmt.Errorf("failed to create %s: %w", img.name, err)
 		}
 	}
@@ -85,10 +98,10 @@ func createInitialStructure(ctx context.Context, repo *memory.MemoryRepository, 
 	}
 
 	for _, txt := range textFiles {
-		contentID := content.ContentID(fmt.Sprintf("txt-%s", txt.name))
+		contentID := metadata.ContentID(fmt.Sprintf("txt-%s", txt.name))
 
 		// Write actual content to the content repository
-		if err := contentRepo.WriteContent(ctx, contentID, []byte(txt.content)); err != nil {
+		if err := contentRepo.WriteAt(ctx, contentID, []byte(txt.content), 0); err != nil {
 			return fmt.Errorf("failed to write content for %s: %w", txt.name, err)
 		}
 
@@ -104,7 +117,7 @@ func createInitialStructure(ctx context.Context, repo *memory.MemoryRepository, 
 			ContentID: contentID,
 		}
 
-		if _, err := repo.AddFileToDirectory(ctx, rootHandle, txt.name, fileAttr); err != nil {
+		if _, err := repo.Create(authCtx, rootHandle, txt.name, fileAttr); err != nil {
 			return fmt.Errorf("failed to create %s: %w", txt.name, err)
 		}
 	}
@@ -147,13 +160,15 @@ func main() {
 		log.Fatalf("Failed to create content repository: %v", err)
 	}
 
-	metadataRepo := memory.NewMemoryRepository()
+	metadataRepo := memory.NewMemoryMetadataStoreWithDefaults()
 
 	// Configure metadata repository settings
-	repoConfig := metadata.ServerConfig{}
+	repoConfig := metadata.ServerConfig{
+		CustomSettings: make(map[string]any),
+	}
 	if *dumpRestricted {
 		// Restrict DUMP to localhost only
-		repoConfig.DumpAllowedClients = []string{"127.0.0.1", "::1"}
+		repoConfig.CustomSettings["nfs.mount.dump_allowed_clients"] = []string{"127.0.0.1", "::1"}
 		logger.Info("DUMP access restricted to localhost")
 	} else {
 		logger.Info("DUMP access unrestricted (default)")
@@ -177,39 +192,43 @@ func main() {
 		ContentID: "", // Root directory has no content
 	}
 
-	anonUID := uint32(metadata.DefaultAnonUID)
-	anonGID := uint32(metadata.DefaultAnonGID)
+	anonUID := uint32(65534) // nobody
+	anonGID := uint32(65534) // nogroup
 
 	// Add primary export
-	if err := metadataRepo.AddExport(ctx, "/export", metadata.ExportOptions{
-		ReadOnly:  false,
-		Async:     true,
-		AllSquash: true,
-		AnonUID:   &anonUID, // nobody
-		AnonGID:   &anonGID, // nogroup
+	if err := metadataRepo.AddShare(ctx, "/export", metadata.ShareOptions{
+		ReadOnly: false,
+		Async:    true,
+		IdentityMapping: &metadata.IdentityMapping{
+			MapAllToAnonymous: true,
+			AnonymousUID:      &anonUID, // nobody
+			AnonymousGID:      &anonGID, // nogroup
+		},
 	}, rootAttr); err != nil {
 		log.Fatalf("Failed to add export: %v", err)
 	}
 	logger.Info("Export added: /export (read-write, all_squash)")
 
 	// Add restricted export example
-	if err := metadataRepo.AddExport(ctx, "/nolocalhost", metadata.ExportOptions{
-		ReadOnly:           false,
-		Async:              true,
-		AllSquash:          true,
-		AnonUID:            &anonUID, // nobody
-		AnonGID:            &anonGID, // nogroup
-		AllowedClients:     []string{"192.168.1.0/24"},
-		DeniedClients:      []string{"192.168.1.50", "::1"},
-		RequireAuth:        false,
-		AllowedAuthFlavors: []uint32{0, 1}, // AUTH_NULL, AUTH_UNIX
+	if err := metadataRepo.AddShare(ctx, "/nolocalhost", metadata.ShareOptions{
+		ReadOnly:       false,
+		Async:          true,
+		AllowedClients: []string{"192.168.1.0/24"},
+		DeniedClients:  []string{"192.168.1.50", "::1"},
+		RequireAuth:    false,
+		AllowedAuthMethods: []string{"anonymous", "unix"}, // AUTH_NULL, AUTH_UNIX
+		IdentityMapping: &metadata.IdentityMapping{
+			MapAllToAnonymous: true,
+			AnonymousUID:      &anonUID, // nobody
+			AnonymousGID:      &anonGID, // nogroup
+		},
 	}, rootAttr); err != nil {
 		log.Fatalf("Failed to add restricted export: %v", err)
 	}
 	logger.Info("Export added: /nolocalhost (network restricted)")
 
 	// Get root handle for initial structure creation
-	rootHandle, err := metadataRepo.GetRootHandle(ctx, "/export")
+	rootHandle, err := metadataRepo.GetShareRoot(ctx, "/export")
 	if err != nil {
 		log.Fatalf("Failed to get root handle: %v", err)
 	}
