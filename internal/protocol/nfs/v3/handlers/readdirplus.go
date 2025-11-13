@@ -146,12 +146,12 @@ type ReadDirPlusContext struct {
 	AuthFlavor uint32
 
 	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	UID *uint32
 
 	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	GID *uint32
 
@@ -186,8 +186,8 @@ type ReadDirPlusContext struct {
 //  1. Check for context cancellation before starting
 //  2. Validate request parameters (handle, counts, cookie)
 //  3. Extract client IP and authentication credentials from context
-//  4. Verify directory handle exists and is a directory (via repository)
-//  5. Get directory children from repository
+//  4. Verify directory handle exists and is a directory (via store)
+//  5. Get directory children from store
 //  6. Build special entries ("." and "..") with cancellation checks
 //  7. Process each child entry with periodic cancellation checks
 //  8. Return entries with attributes and handles
@@ -195,8 +195,8 @@ type ReadDirPlusContext struct {
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (directory listing, access control) delegated to repository
-//   - File handle validation performed by repository.GetFile()
+//   - All business logic (directory listing, access control) delegated to store
+//   - File handle validation performed by store.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //   - Respects context cancellation for graceful shutdown and timeouts
 //   - Periodic cancellation checks during entry processing for large directories
@@ -204,7 +204,7 @@ type ReadDirPlusContext struct {
 // **Authentication:**
 //
 // The context contains authentication credentials from the RPC layer.
-// The protocol layer passes these to the repository, which can implement:
+// The protocol layer passes these to the store, which can implement:
 //   - Read permission checking on the directory
 //   - Access control based on UID/GID
 //   - Filtering of entries based on permissions
@@ -242,7 +242,7 @@ type ReadDirPlusContext struct {
 // **Error Handling:**
 //
 // Protocol-level errors return appropriate NFS status codes.
-// Repository errors are mapped to NFS status codes:
+// store errors are mapped to NFS status codes:
 //   - Directory not found → types.NFS3ErrNoEnt
 //   - Not a directory → types.NFS3ErrNotDir
 //   - Invalid cookie → NFS3ErrBadCookie
@@ -265,7 +265,7 @@ type ReadDirPlusContext struct {
 //
 // This operation respects context cancellation:
 //   - Checks at operation start before any work
-//   - Checks before each repository call (GetFile, GetChildren)
+//   - Checks before each store call (GetFile, GetChildren)
 //   - Checks periodically during entry processing (every 50 entries)
 //   - Returns types.NFS3ErrIO on cancellation with DirAttr when available
 //
@@ -276,13 +276,13 @@ type ReadDirPlusContext struct {
 // **Security Considerations:**
 //
 //   - Handle validation prevents malformed requests
-//   - Repository enforces read permission on directory
+//   - store enforces read permission on directory
 //   - Access control can filter entries based on permissions
 //   - Client context enables audit logging
 //
 // **Parameters:**
 //   - ctx: Context with cancellation, client address and authentication credentials
-//   - repository: The metadata repository for directory and file operations
+//   - metadataStore: The metadata store for directory and file operations
 //   - req: The readdirplus request containing directory handle and parameters
 //
 // **Returns:**
@@ -309,7 +309,7 @@ type ReadDirPlusContext struct {
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.ReadDirPlus(ctx, repository, req)
+//	resp, err := handler.ReadDirPlus(ctx, store, req)
 //	if err != nil {
 //	    // Internal server error
 //	}
@@ -324,7 +324,7 @@ type ReadDirPlusContext struct {
 //	}
 func (h *DefaultNFSHandler) ReadDirPlus(
 	ctx *ReadDirPlusContext,
-	repository metadata.Repository,
+	metadataStore metadata.MetadataStore,
 	req *ReadDirPlusRequest,
 ) (*ReadDirPlusResponse, error) {
 	// Extract client IP for logging
@@ -359,7 +359,7 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	// Step 3: Verify directory handle exists and is valid
 	// ========================================================================
 
-	// Check context before repository call
+	// Check context before store call
 	select {
 	case <-ctx.Context.Done():
 		logger.Warn("READDIRPLUS cancelled before GetFile: dir=%x client=%s error=%v",
@@ -369,7 +369,7 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	}
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
-	dirAttr, err := repository.GetFile(ctx.Context, dirHandle)
+	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		logger.Warn("READDIRPLUS failed: directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
@@ -392,16 +392,21 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	}
 
 	// ========================================================================
-	// Step 4: Get directory children from repository
+	// Step 4: Build authentication context for store
 	// ========================================================================
-	// The repository only retrieves the children of the directory.
-	// This protocol layer is responsible for building the "." and ".." entries.
-	// Access control filtering, if required, would also need to be implemented in this layer.
 
-	// Check context before repository call
+	authCtx := buildAuthContextFromReadDirPlus(ctx)
+
+	// ========================================================================
+	// Step 5: Get directory entries from store
+	// ========================================================================
+	// The store retrieves the directory entries via ReadDirectory.
+	// We need to use Lookup for each entry to get handles and full attributes.
+
+	// Check context before store call
 	select {
 	case <-ctx.Context.Done():
-		logger.Warn("READDIRPLUS cancelled before GetChildren: dir=%x client=%s error=%v",
+		logger.Warn("READDIRPLUS cancelled before ReadDirectory: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, ctx.Context.Err())
 
 		dirID := xdr.ExtractFileID(dirHandle)
@@ -414,115 +419,42 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	default:
 	}
 
-	children, err := repository.GetChildren(ctx.Context, dirHandle)
+	// Use DirCount as maxBytes hint for ReadDirectory
+	page, err := metadataStore.ReadDirectory(authCtx, dirHandle, "", req.DirCount)
 	if err != nil {
-		logger.Error("READDIRPLUS failed: error retrieving children: dir=%x client=%s error=%v",
+		logger.Error("READDIRPLUS failed: error retrieving entries: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
+
+		// Map store error to NFS status
+		status := mapMetadataErrorToNFS(err)
 
 		dirID := xdr.ExtractFileID(dirHandle)
 		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &ReadDirPlusResponse{
-			Status:  types.NFS3ErrIO,
+			Status:  status,
 			DirAttr: nfsDirAttr,
 		}, nil
 	}
 
 	// ========================================================================
-	// Step 5: Build response with directory entries
+	// Step 6: Build response with directory entries
 	// ========================================================================
 
 	// Generate directory file ID for attributes
 	dirID := xdr.ExtractFileID(dirHandle)
 	nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
-	// Build entries list with special entries and children
-	entries := make([]*DirPlusEntry, 0)
-	cookie := uint64(1)
+	// Build entries list - look up each entry to get handle and full attributes
+	entries := make([]*DirPlusEntry, 0, len(page.Entries))
 
-	// ========================================================================
-	// Add "." entry (current directory)
-	// ========================================================================
-
-	if req.Cookie == 0 {
-		entries = append(entries, &DirPlusEntry{
-			Fileid:     dirID,
-			Name:       ".",
-			Cookie:     cookie,
-			Attr:       nfsDirAttr,
-			FileHandle: req.DirHandle,
-		})
-		cookie++
-
-		logger.Debug("READDIRPLUS: added '.' entry cookie=%d", cookie-1)
-	}
-
-	// ========================================================================
-	// Add ".." entry (parent directory)
-	// ========================================================================
-
-	if req.Cookie <= 1 {
-		// Check context periodically (before parent lookup)
-		select {
-		case <-ctx.Context.Done():
-			logger.Warn("READDIRPLUS cancelled during parent lookup: dir=%x client=%s error=%v",
-				req.DirHandle, clientIP, ctx.Context.Err())
-
-			return &ReadDirPlusResponse{
-				Status:  types.NFS3ErrIO,
-				DirAttr: nfsDirAttr,
-			}, nil
-		default:
-		}
-
-		// Get parent handle and attributes
-		parentFileid := dirID
-		parentHandle := req.DirHandle
-		parentAttr := nfsDirAttr
-
-		// Try to get actual parent (may not exist for root)
-		ph, err := repository.GetParent(ctx.Context, dirHandle)
-		if err == nil {
-			parentHandle = ph
-			parentFileid = xdr.ExtractFileID(ph)
-
-			// Get parent attributes
-			if pAttr, err := repository.GetFile(ctx.Context, ph); err == nil {
-				parentAttr = xdr.MetadataToNFS(pAttr, parentFileid)
-			} else {
-				logger.Warn("READDIRPLUS: parent handle exists but attributes missing: parent=%x error=%v",
-					ph, err)
-			}
-		} else {
-			logger.Debug("READDIRPLUS: no parent found (likely root directory), using self for '..'")
-		}
-
-		entries = append(entries, &DirPlusEntry{
-			Fileid:     parentFileid,
-			Name:       "..",
-			Cookie:     cookie,
-			Attr:       parentAttr,
-			FileHandle: parentHandle,
-		})
-		cookie++
-
-		logger.Debug("READDIRPLUS: added '..' entry cookie=%d", cookie-1)
-	}
-
-	// ========================================================================
-	// Add regular entries (actual directory children)
-	// ========================================================================
-
-	entriesAdded := 0
-	entriesProcessed := 0
-
-	for name, childHandle := range children {
+	for i, entry := range page.Entries {
 		// Check context periodically (every 50 entries) for large directories
-		if entriesProcessed%50 == 0 {
+		if i%50 == 0 {
 			select {
 			case <-ctx.Context.Done():
 				logger.Warn("READDIRPLUS cancelled during entry processing: dir=%x processed=%d client=%s error=%v",
-					req.DirHandle, entriesProcessed, clientIP, ctx.Context.Err())
+					req.DirHandle, i, clientIP, ctx.Context.Err())
 
 				return &ReadDirPlusResponse{
 					Status:  types.NFS3ErrIO,
@@ -531,58 +463,53 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 			default:
 			}
 		}
-		entriesProcessed++
 
-		// Skip entries before the requested cookie
-		if cookie <= req.Cookie {
-			cookie++
+		// Use Lookup to get the entry's handle and attributes
+		entryHandle, entryAttr, err := metadataStore.Lookup(authCtx, dirHandle, entry.Name)
+		if err != nil {
+			logger.Warn("READDIRPLUS: failed to lookup '%s': dir=%x error=%v",
+				entry.Name, req.DirHandle, err)
+			// Skip this entry on error rather than failing entire operation
 			continue
 		}
 
-		// Generate file ID for this entry
-		childID := xdr.ExtractFileID(childHandle)
+		// Convert attributes to NFS format
+		entryID := xdr.ExtractFileID(entryHandle)
+		nfsEntryAttr := xdr.MetadataToNFS(entryAttr, entryID)
 
-		// Get attributes for this entry
-		var entryAttr *types.NFSFileAttr
-		if attr, err := repository.GetFile(ctx.Context, childHandle); err == nil {
-			entryAttr = xdr.MetadataToNFS(attr, childID)
-		} else {
-			logger.Warn("READDIRPLUS: child handle exists but attributes missing: name='%s' handle=%x error=%v",
-				name, childHandle, err)
-			// Continue with nil attributes rather than failing entire operation
+		// Create directory entry
+		plusEntry := &DirPlusEntry{
+			Fileid:     entry.ID,
+			Name:       entry.Name,
+			Cookie:     uint64(i + 1),
+			Attr:       nfsEntryAttr,
+			FileHandle: []byte(entryHandle),
 		}
 
-		entries = append(entries, &DirPlusEntry{
-			Fileid:     childID,
-			Name:       name,
-			Cookie:     cookie,
-			Attr:       entryAttr,
-			FileHandle: childHandle,
-		})
+		entries = append(entries, plusEntry)
 
-		cookie++
-		entriesAdded++
-
-		logger.Debug("READDIRPLUS: added entry '%s' cookie=%d fileid=%d",
-			name, cookie-1, childID)
+		logger.Debug("READDIRPLUS: added '%s' cookie=%d fileid=%d", entry.Name, i+1, entry.ID)
 	}
 
 	// ========================================================================
-	// Step 6: Build success response
+	// Step 7: Build success response
 	// ========================================================================
 
-	logger.Info("READDIRPLUS successful: dir=%x entries=%d (special=2 regular=%d) eof=true client=%s",
-		req.DirHandle, len(entries), entriesAdded, clientIP)
+	// EOF is true when there are no more pages
+	eof := !page.HasMore
 
-	logger.Debug("READDIRPLUS details: dir_id=%d total_children=%d cookie_start=%d cookie_end=%d",
-		dirID, len(children), req.Cookie, cookie-1)
+	logger.Info("READDIRPLUS successful: dir=%x entries=%d eof=%v client=%s",
+		req.DirHandle, len(entries), eof, clientIP)
+
+	logger.Debug("READDIRPLUS details: dir_id=%d total_entries=%d eof=%v",
+		dirID, len(page.Entries), eof)
 
 	return &ReadDirPlusResponse{
 		Status:     types.NFS3OK,
 		DirAttr:    nfsDirAttr,
-		CookieVerf: 0, // We don't implement cookie verification yet
+		CookieVerf: 0, // Simple implementation: no verifier checking
 		Entries:    entries,
-		Eof:        true, // For simplicity, return all entries in one response
+		Eof:        eof,
 	}, nil
 }
 
@@ -952,4 +879,30 @@ func (resp *ReadDirPlusResponse) Encode() ([]byte, error) {
 		buf.Len(), resp.Status, len(resp.Entries), resp.Eof)
 
 	return buf.Bytes(), nil
+}
+
+// buildAuthContextFromReadDirPlus creates an AuthContext from ReadDirPlusContext.
+//
+// This translates the NFS-specific authentication context into the generic
+// AuthContext used by the metadata store.
+func buildAuthContextFromReadDirPlus(ctx *ReadDirPlusContext) *metadata.AuthContext {
+	// Map auth flavor to auth method string
+	authMethod := "anonymous"
+	if ctx.AuthFlavor == 1 {
+		authMethod = "unix"
+	}
+
+	// Build identity with proper UID/GID/GIDs structure
+	identity := &metadata.Identity{
+		UID:  ctx.UID,
+		GID:  ctx.GID,
+		GIDs: ctx.GIDs,
+	}
+
+	return &metadata.AuthContext{
+		Context:    ctx.Context,
+		AuthMethod: authMethod,
+		Identity:   identity,
+		ClientAddr: ctx.ClientAddr,
+	}
 }
