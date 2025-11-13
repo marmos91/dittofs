@@ -45,7 +45,7 @@ import (
 //	}
 type DittoServer struct {
 	// metadata is the shared metadata repository for all facades
-	metadata metadata.Repository
+	metadata metadata.MetadataStore
 
 	// content is the shared content repository for all facades
 	content content.Repository
@@ -78,7 +78,7 @@ type DittoServer struct {
 // register protocols, then Serve() to start the server.
 //
 // Panics if either repository is nil (indicates programmer error).
-func New(metadata metadata.Repository, content content.Repository) *DittoServer {
+func New(metadata metadata.MetadataStore, content content.Repository) *DittoServer {
 	if metadata == nil {
 		panic("metadata repository cannot be nil")
 	}
@@ -156,7 +156,7 @@ func (s *DittoServer) AddFacade(f facade.Facade) error {
 	}
 
 	// Inject shared repositories
-	f.SetRepositories(s.metadata, s.content)
+	f.SetStores(s.metadata, s.content)
 
 	// Register the facade
 	s.facades = append(s.facades, f)

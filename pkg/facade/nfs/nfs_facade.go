@@ -54,8 +54,8 @@ type NFSFacade struct {
 	// mountHandler processes MOUNT protocol operations (MNT, UMNT, EXPORT, etc.)
 	mountHandler mount.MountHandler
 
-	// repository provides access to file system metadata operations
-	repository metadata.Repository
+	// store provides access to file system metadata operations
+	metadataStore metadata.MetadataStore
 
 	// content provides access to file content (data blocks)
 	content content.Repository
@@ -248,19 +248,19 @@ func New(config NFSConfig) *NFSFacade {
 	}
 }
 
-// SetRepositories injects the shared metadata and content repositories.
+// SetStores injects the shared metadata and content stores.
 //
-// This method is called by DittoServer before Serve() is called. The repositories
+// This method is called by DittoServer before Serve() is called. The stores
 // are shared across all protocol facades.
 //
 // Parameters:
-//   - metadataRepo: Repository for file system metadata operations
+//   - metadataStore: store for file system metadata operations
 //   - contentRepo: Repository for file content operations
 //
 // Thread safety:
 // Called exactly once before Serve(), no synchronization needed.
-func (s *NFSFacade) SetRepositories(metadataRepo metadata.Repository, contentRepo content.Repository) {
-	s.repository = metadataRepo
+func (s *NFSFacade) SetStores(metadataStore metadata.MetadataStore, contentRepo content.Repository) {
+	s.metadataStore = metadataStore
 	s.content = contentRepo
 	logger.Debug("NFS repositories configured")
 }
@@ -285,7 +285,7 @@ func (s *NFSFacade) SetRepositories(metadataRepo metadata.Repository, contentRep
 //   - Connection handlers receive shutdownCtx
 //   - RPC dispatchers receive shutdownCtx
 //   - NFS procedure handlers receive shutdownCtx
-//   - Repository operations can detect cancellation via ctx.Done()
+//   - store operations can detect cancellation via ctx.Done()
 //
 // This enables graceful abort of long-running operations like:
 //   - Large directory scans (READDIR/READDIRPLUS)
@@ -412,7 +412,7 @@ func (s *NFSFacade) Serve(ctx context.Context) error {
 //   - Connection handlers detect ctx.Done() and finish current request
 //   - RPC dispatchers check ctx.Done() before processing
 //   - NFS procedure handlers check ctx.Done() during long operations
-//   - Repository operations can detect ctx.Done() for early abort
+//   - store operations can detect ctx.Done() for early abort
 //
 // This enables graceful abort of long-running operations like:
 //   - Large directory scans (READDIR/READDIRPLUS check context in loop)

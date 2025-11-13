@@ -44,18 +44,18 @@ type Facade interface {
 	//   - error if startup fails or shutdown is not graceful
 	Serve(ctx context.Context) error
 
-	// SetRepositories injects the shared metadata and content repositories.
+	// SetStores injects the shared metadata and content repositories.
 	//
 	// This method is called exactly once by DittoServer before Serve() is called.
 	// Implementations should store the repositories for use during operation.
 	//
 	// Parameters:
-	//   - metadata: Repository for file system metadata (directories, permissions, etc.)
+	//   - metadataStore: Store for file system metadata (directories, permissions, etc.)
 	//   - content: Repository for file content (data blocks)
 	//
 	// Thread safety:
 	// Called before Serve(), no synchronization needed.
-	SetRepositories(metadata metadata.Repository, content content.Repository)
+	SetStores(metadataStore metadata.MetadataStore, content content.Repository)
 
 	// Stop initiates graceful shutdown of the protocol server.
 	//
