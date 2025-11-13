@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/marmos91/dittofs/pkg/content"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // FSContentRepository implements ContentRepository using the local filesystem.
@@ -72,7 +72,7 @@ func NewFSContentRepository(ctx context.Context, basePath string) (*FSContentRep
 //
 // Returns:
 //   - string: Full filesystem path for the content
-func (r *FSContentRepository) getFilePath(_ context.Context, id content.ContentID) string {
+func (r *FSContentRepository) getFilePath(_ context.Context, id metadata.ContentID) string {
 	return filepath.Join(r.basePath, string(id))
 }
 
@@ -94,7 +94,7 @@ func (r *FSContentRepository) getFilePath(_ context.Context, id content.ContentI
 // Returns:
 //   - io.ReadCloser: Reader for the content (must be closed by caller)
 //   - error: Returns error if content not found, open fails, or context is cancelled
-func (r *FSContentRepository) ReadContent(ctx context.Context, id content.ContentID) (io.ReadCloser, error) {
+func (r *FSContentRepository) ReadContent(ctx context.Context, id metadata.ContentID) (io.ReadCloser, error) {
 	// ========================================================================
 	// Step 1: Check context before filesystem operation
 	// ========================================================================
@@ -134,7 +134,7 @@ func (r *FSContentRepository) ReadContent(ctx context.Context, id content.Conten
 // Returns:
 //   - uint64: Size of the content in bytes
 //   - error: Returns error if content not found, stat fails, or context is cancelled
-func (r *FSContentRepository) GetContentSize(ctx context.Context, id content.ContentID) (uint64, error) {
+func (r *FSContentRepository) GetContentSize(ctx context.Context, id metadata.ContentID) (uint64, error) {
 	// ========================================================================
 	// Step 1: Check context before filesystem operation
 	// ========================================================================
@@ -175,7 +175,7 @@ func (r *FSContentRepository) GetContentSize(ctx context.Context, id content.Con
 //   - bool: True if content exists, false otherwise
 //   - error: Returns error on filesystem errors (excluding not-exists) or
 //     context cancellation
-func (r *FSContentRepository) ContentExists(ctx context.Context, id content.ContentID) (bool, error) {
+func (r *FSContentRepository) ContentExists(ctx context.Context, id metadata.ContentID) (bool, error) {
 	// ========================================================================
 	// Step 1: Check context before filesystem operation
 	// ========================================================================
@@ -217,7 +217,7 @@ func (r *FSContentRepository) ContentExists(ctx context.Context, id content.Cont
 //
 // Returns:
 //   - error: Returns error if write fails or context is cancelled
-func (r *FSContentRepository) WriteContent(ctx context.Context, id content.ContentID, content []byte) error {
+func (r *FSContentRepository) WriteContent(ctx context.Context, id metadata.ContentID, content []byte) error {
 	// ========================================================================
 	// Step 1: Check context before filesystem operation
 	// ========================================================================
@@ -282,7 +282,7 @@ func (r *FSContentRepository) WriteContent(ctx context.Context, id content.Conte
 //
 // Returns:
 //   - error: Returns error if operation fails or context is cancelled
-func (r *FSContentRepository) WriteAt(ctx context.Context, id content.ContentID, data []byte, offset int64) error {
+func (r *FSContentRepository) WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset int64) error {
 	// ========================================================================
 	// Step 1: Check context before filesystem operation
 	// ========================================================================
