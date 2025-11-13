@@ -44,9 +44,9 @@ func (suite *StoreTestSuite) testGetStorageStatsWithContent(t *testing.T) {
 	id2 := generateTestID("stats-2")
 	id3 := generateTestID("stats-3")
 
-	data1 := generateTestData(100)  // 100 bytes
-	data2 := generateTestData(200)  // 200 bytes
-	data3 := generateTestData(300)  // 300 bytes
+	data1 := generateTestData(100) // 100 bytes
+	data2 := generateTestData(200) // 200 bytes
+	data3 := generateTestData(300) // 300 bytes
 
 	mustWriteContent(t, writable, id1, data1)
 	mustWriteContent(t, writable, id2, data2)
@@ -79,9 +79,9 @@ func (suite *StoreTestSuite) testGetStorageStatsAfterDelete(t *testing.T) {
 	id2 := generateTestID("stats-delete-2")
 	id3 := generateTestID("stats-delete-3")
 
-	data1 := generateTestData(100)  // 100 bytes
-	data2 := generateTestData(200)  // 200 bytes
-	data3 := generateTestData(300)  // 300 bytes
+	data1 := generateTestData(100) // 100 bytes
+	data2 := generateTestData(200) // 200 bytes
+	data3 := generateTestData(300) // 300 bytes
 
 	mustWriteContent(t, writable, id1, data1)
 	mustWriteContent(t, writable, id2, data2)
