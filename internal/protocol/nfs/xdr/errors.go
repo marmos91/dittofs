@@ -18,13 +18,20 @@ import (
 // appropriate NFS status codes for client consumption.
 //
 // Error Mapping:
-//   - ExportErrNotFound → types.NFS3ErrNoEnt (ENOENT: No such file or directory)
-//   - ExportErrAccessDenied → NFS3ErrAcces (EACCES: Permission denied)
-//   - ExportErrServerFault → types.NFS3ErrIO or more specific (depends on message)
-//   - "parent is not a directory" → types.NFS3ErrNotDir (ENOTDIR)
-//   - "cannot remove directory with REMOVE" → types.NFS3ErrIsDir (EISDIR)
-//   - other → types.NFS3ErrIO (EIO: I/O error)
-//   - Unknown errors → types.NFS3ErrIO (generic I/O error)
+//   - ErrNotFound → types.NFS3ErrNoEnt (ENOENT: No such file or directory)
+//   - ErrAccessDenied → types.NFS3ErrAcces (EACCES: Permission denied)
+//   - ErrPermissionDenied → types.NFS3ErrAcces (EACCES: Permission denied)
+//   - ErrNotDirectory → types.NFS3ErrNotDir (ENOTDIR: Not a directory)
+//   - ErrIsDirectory → types.NFS3ErrIsDir (EISDIR: Is a directory)
+//   - ErrAlreadyExists → types.NFS3ErrExist (EEXIST: File exists)
+//   - ErrNotEmpty → types.NFS3ErrNotEmpty (ENOTEMPTY: Directory not empty)
+//   - ErrNoSpace → types.NFS3ErrNoSpc (ENOSPC: No space left on device)
+//   - ErrReadOnly → types.NFS3ErrRofs (EROFS: Read-only filesystem)
+//   - ErrStaleHandle → types.NFS3ErrStale (ESTALE: Stale file handle)
+//   - ErrInvalidHandle → types.NFS3ErrBadHandle (EBADHANDLE: Illegal NFS file handle)
+//   - ErrNotSupported → types.NFS3ErrNotSupp (ENOTSUP: Operation not supported)
+//   - ErrIOError → types.NFS3ErrIO (EIO: I/O error)
+//   - Other errors → types.NFS3ErrIO (EIO: Generic I/O error)
 //
 // This function also handles audit logging at appropriate levels:
 //   - Client errors (NotFound, AccessDenied): logged as warnings
@@ -42,53 +49,95 @@ func MapRepositoryErrorToNFSStatus(err error, clientIP string, operation string)
 		return types.NFS3OK
 	}
 
-	// Check if it's a typed ExportError
-	exportErr, ok := err.(*metadata.ExportError)
+	// Check if it's a typed StoreError
+	storeErr, ok := err.(*metadata.StoreError)
 	if !ok {
 		// Generic error: log and return I/O error
 		logger.Error("%s failed: %v client=%s", operation, err, clientIP)
 		return types.NFS3ErrIO
 	}
 
-	// Map ExportError codes to NFS status codes
-	switch exportErr.Code {
-	case metadata.ExportErrNotFound:
+	// Map StoreError codes to NFS status codes
+	switch storeErr.Code {
+	case metadata.ErrNotFound:
 		// File or directory not found
-		logger.Warn("%s failed: %s client=%s", operation, exportErr.Message, clientIP)
+		logger.Warn("%s failed: %s client=%s", operation, storeErr.Message, clientIP)
 		return types.NFS3ErrNoEnt
 
-	case metadata.ExportErrAccessDenied:
-		// Permission denied
-		logger.Warn("%s failed: %s client=%s", operation, exportErr.Message, clientIP)
+	case metadata.ErrAccessDenied, metadata.ErrPermissionDenied:
+		// Permission denied (share-level or file-level)
+		logger.Warn("%s failed: %s client=%s", operation, storeErr.Message, clientIP)
 		return types.NFS3ErrAcces
 
-	case metadata.ExportErrServerFault:
-		// Server error: check message for more specific status
-		switch exportErr.Message {
-		case "parent is not a directory":
-			// Attempting to create/lookup within a non-directory
-			logger.Warn("%s failed: parent not a directory client=%s", operation, clientIP)
-			return types.NFS3ErrNotDir
+	case metadata.ErrAuthRequired:
+		// Authentication required (map to access denied for NFS)
+		logger.Warn("%s failed: authentication required client=%s", operation, clientIP)
+		return types.NFS3ErrAcces
 
-		case "cannot remove directory with REMOVE (use RMDIR)":
-			// Attempting to remove a directory with REMOVE instead of RMDIR
-			logger.Warn("%s failed: attempted to remove directory client=%s", operation, clientIP)
-			return types.NFS3ErrIsDir
+	case metadata.ErrNotDirectory:
+		// Attempting to create/lookup within a non-directory
+		logger.Warn("%s failed: not a directory client=%s", operation, clientIP)
+		return types.NFS3ErrNotDir
 
-		default:
-			// Generic server error
-			logger.Error("%s failed: %s client=%s", operation, exportErr.Message, clientIP)
-			return types.NFS3ErrIO
-		}
+	case metadata.ErrIsDirectory:
+		// Attempting to remove a directory with REMOVE instead of RMDIR
+		logger.Warn("%s failed: is a directory client=%s", operation, clientIP)
+		return types.NFS3ErrIsDir
+
+	case metadata.ErrAlreadyExists:
+		// File or directory already exists
+		logger.Warn("%s failed: already exists client=%s", operation, clientIP)
+		return types.NFS3ErrExist
+
+	case metadata.ErrNotEmpty:
+		// Directory not empty (cannot remove)
+		logger.Warn("%s failed: directory not empty client=%s", operation, clientIP)
+		return types.NFS3ErrNotEmpty
+
+	case metadata.ErrNoSpace:
+		// No space left on device
+		logger.Error("%s failed: no space left client=%s", operation, clientIP)
+		return types.NFS3ErrNoSpc
+
+	case metadata.ErrReadOnly:
+		// Read-only filesystem
+		logger.Warn("%s failed: read-only filesystem client=%s", operation, clientIP)
+		return types.NFS3ErrRofs
+
+	case metadata.ErrStaleHandle:
+		// Stale file handle
+		logger.Warn("%s failed: stale handle client=%s", operation, clientIP)
+		return types.NFS3ErrStale
+
+	case metadata.ErrInvalidHandle:
+		// Invalid file handle
+		logger.Warn("%s failed: invalid handle client=%s", operation, clientIP)
+		return types.NFS3ErrBadHandle
+
+	case metadata.ErrNotSupported:
+		// Operation not supported
+		logger.Warn("%s failed: not supported client=%s", operation, clientIP)
+		return types.NFS3ErrNotSupp
+
+	case metadata.ErrInvalidArgument:
+		// Invalid argument (map to I/O error or INVAL depending on NFS version)
+		logger.Warn("%s failed: invalid argument client=%s", operation, clientIP)
+		return types.NFS3ErrIO
+
+	case metadata.ErrIOError:
+		// Generic I/O error
+		logger.Error("%s failed: I/O error: %s client=%s", operation, storeErr.Message, clientIP)
+		return types.NFS3ErrIO
 
 	default:
 		// Unknown error code
-		logger.Error("%s failed: unknown export error: %s client=%s", operation, exportErr.Message, clientIP)
+		logger.Error("%s failed: unknown error code %d: %s client=%s",
+			operation, storeErr.Code, storeErr.Message, clientIP)
 		return types.NFS3ErrIO
 	}
 }
 
-// mapContentErrorToNFSStatus maps content repository errors to appropriate
+// MapContentErrorToNFSStatus maps content repository errors to appropriate
 // NFS status codes.
 //
 // This function analyzes error messages and types to determine the most
@@ -109,6 +158,13 @@ func MapRepositoryErrorToNFSStatus(err error, clientIP string, operation string)
 func MapContentErrorToNFSStatus(err error) uint32 {
 	if err == nil {
 		return types.NFS3OK
+	}
+
+	// Check if it's a typed StoreError first
+	_, ok := err.(*metadata.StoreError)
+	if ok {
+		// Use the more specific error mapping
+		return MapRepositoryErrorToNFSStatus(err, "", "content operation")
 	}
 
 	// Analyze error message for common patterns

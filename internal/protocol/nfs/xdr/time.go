@@ -42,16 +42,3 @@ func TimeToTimeVal(t time.Time) types.TimeVal {
 		Nseconds: uint32(t.Nanosecond()),
 	}
 }
-
-// getCurrentTime returns the current time.
-//
-// This is separated into its own function to facilitate:
-// - Testing: can be mocked to return deterministic times
-// - Consistency: single source of truth for "now"
-// - Future extensions: could add time skew correction, etc.
-//
-// Returns:
-//   - time.Time: Current system time
-func getCurrentTime() time.Time {
-	return time.Now()
-}

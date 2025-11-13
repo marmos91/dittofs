@@ -106,8 +106,10 @@ func ConvertSetAttrsToMetadata(fileType metadata.FileType, setAttrs *metadata.Se
 	if authCtx == nil {
 		// Defensive: should not happen in production
 		authCtx = &metadata.AuthContext{
-			UID: ptrUint32(0),
-			GID: ptrUint32(0),
+			Identity: &metadata.Identity{
+				UID: ptrUint32(0),
+				GID: ptrUint32(0),
+			},
 		}
 	}
 
@@ -116,8 +118,8 @@ func ConvertSetAttrsToMetadata(fileType metadata.FileType, setAttrs *metadata.Se
 	}
 
 	// Apply mode with type-appropriate defaults
-	if setAttrs != nil && setAttrs.SetMode {
-		attr.Mode = setAttrs.Mode
+	if setAttrs != nil && setAttrs.Mode != nil {
+		attr.Mode = *setAttrs.Mode
 	} else {
 		// Set default mode based on file type per Unix conventions
 		switch fileType {
@@ -127,9 +129,9 @@ func ConvertSetAttrsToMetadata(fileType metadata.FileType, setAttrs *metadata.Se
 			attr.Mode = 0644 // rw-r--r--
 		case metadata.FileTypeSymlink:
 			attr.Mode = 0777 // rwxrwxrwx (symlink perms are typically ignored)
-		case metadata.FileTypeChar, metadata.FileTypeBlock:
+		case metadata.FileTypeCharDevice, metadata.FileTypeBlockDevice:
 			attr.Mode = 0644 // rw-r--r-- (device files)
-		case metadata.FileTypeSocket, metadata.FileTypeFifo:
+		case metadata.FileTypeSocket, metadata.FileTypeFIFO:
 			attr.Mode = 0644 // rw-r--r-- (IPC files)
 		default:
 			attr.Mode = 0644 // Safe default
@@ -137,19 +139,19 @@ func ConvertSetAttrsToMetadata(fileType metadata.FileType, setAttrs *metadata.Se
 	}
 
 	// Apply UID with fallback to authenticated user
-	if setAttrs != nil && setAttrs.SetUID {
-		attr.UID = setAttrs.UID
-	} else if authCtx.UID != nil {
-		attr.UID = *authCtx.UID
+	if setAttrs != nil && setAttrs.UID != nil {
+		attr.UID = *setAttrs.UID
+	} else if authCtx.Identity != nil && authCtx.Identity.UID != nil {
+		attr.UID = *authCtx.Identity.UID
 	} else {
 		attr.UID = 0 // Fallback: root
 	}
 
 	// Apply GID with fallback to authenticated group
-	if setAttrs != nil && setAttrs.SetGID {
-		attr.GID = setAttrs.GID
-	} else if authCtx.GID != nil {
-		attr.GID = *authCtx.GID
+	if setAttrs != nil && setAttrs.GID != nil {
+		attr.GID = *setAttrs.GID
+	} else if authCtx.Identity != nil && authCtx.Identity.GID != nil {
+		attr.GID = *authCtx.Identity.GID
 	} else {
 		attr.GID = 0 // Fallback: root
 	}
@@ -184,28 +186,28 @@ func ApplySetAttrs(fileAttr *metadata.FileAttr, setAttrs *metadata.SetAttrs) {
 		return
 	}
 
-	if setAttrs.SetMode {
-		fileAttr.Mode = setAttrs.Mode
+	if setAttrs.Mode != nil {
+		fileAttr.Mode = *setAttrs.Mode
 	}
 
-	if setAttrs.SetUID {
-		fileAttr.UID = setAttrs.UID
+	if setAttrs.UID != nil {
+		fileAttr.UID = *setAttrs.UID
 	}
 
-	if setAttrs.SetGID {
-		fileAttr.GID = setAttrs.GID
+	if setAttrs.GID != nil {
+		fileAttr.GID = *setAttrs.GID
 	}
 
-	if setAttrs.SetSize {
-		fileAttr.Size = setAttrs.Size
+	if setAttrs.Size != nil {
+		fileAttr.Size = *setAttrs.Size
 	}
 
-	if setAttrs.SetAtime {
-		fileAttr.Atime = setAttrs.Atime
+	if setAttrs.Atime != nil {
+		fileAttr.Atime = *setAttrs.Atime
 	}
 
-	if setAttrs.SetMtime {
-		fileAttr.Mtime = setAttrs.Mtime
+	if setAttrs.Mtime != nil {
+		fileAttr.Mtime = *setAttrs.Mtime
 	}
 }
 
