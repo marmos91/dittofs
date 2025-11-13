@@ -160,11 +160,11 @@ type SymlinkContext struct {
 //  1. Check for context cancellation (early exit if client disconnected)
 //  2. Validate request parameters (handle format, name syntax, target length)
 //  3. Extract client IP and authentication credentials from context
-//  4. Verify parent directory exists and is a directory (via repository)
+//  4. Verify parent directory exists and is a directory (via store)
 //  5. Capture pre-operation directory state (for WCC)
 //  6. Check for cancellation before create operation
 //  7. Convert client attributes to metadata format with proper defaults
-//  8. Delegate symlink creation to repository.CreateSymlink()
+//  8. Delegate symlink creation to store.CreateSymlink()
 //  9. Check for cancellation after create
 //  10. Retrieve symlink attributes
 //  11. Return symlink handle, attributes, and updated directory WCC data
@@ -181,14 +181,14 @@ type SymlinkContext struct {
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (creation, validation, access control) delegated to repository
-//   - File handle validation performed by repository.GetFile()
+//   - All business logic (creation, validation, access control) delegated to store
+//   - File handle validation performed by store.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
 // **Authentication:**
 //
 // The context contains authentication credentials from the RPC layer.
-// The protocol layer passes these to the repository, which can implement:
+// The protocol layer passes these to the store, which can implement:
 //   - Write permission checking on the parent directory
 //   - Access control based on UID/GID
 //   - Ownership assignment for the new symlink
@@ -215,7 +215,7 @@ type SymlinkContext struct {
 //   - Set defaults from authentication context when not provided
 //   - Ensure consistent behavior with other file creation operations
 //
-// The repository completes the attributes with:
+// The store completes the attributes with:
 //   - File type (symlink)
 //   - Creation/modification times
 //   - Size (length of target path)
@@ -224,7 +224,7 @@ type SymlinkContext struct {
 // **Error Handling:**
 //
 // Protocol-level errors return appropriate NFS status codes.
-// Repository errors are mapped to NFS status codes:
+// store errors are mapped to NFS status codes:
 //   - Directory not found → types.NFS3ErrNoEnt
 //   - Not a directory → types.NFS3ErrNotDir
 //   - Name already exists → NFS3ErrExist
@@ -256,7 +256,7 @@ type SymlinkContext struct {
 // **Security Considerations:**
 //
 //   - Handle validation prevents malformed requests
-//   - Repository enforces write permission on parent directory
+//   - store enforces write permission on parent directory
 //   - Name validation prevents directory traversal attacks
 //   - Target path is not validated (allows flexibility but requires care)
 //   - Client context enables audit logging
@@ -264,7 +264,7 @@ type SymlinkContext struct {
 //
 // **Parameters:**
 //   - ctx: Context with cancellation, client address and authentication credentials
-//   - repository: The metadata repository for symlink operations
+//   - metadataStore: The metadata store for symlink operations
 //   - req: The symlink request containing directory handle, name, target, and attributes
 //
 // **Returns:**
@@ -290,7 +290,7 @@ type SymlinkContext struct {
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Symlink(ctx, repository, req)
+//	resp, err := handler.Symlink(ctx, store, req)
 //	if err != nil {
 //	    if errors.Is(err, context.Canceled) {
 //	        // Client disconnected
@@ -304,7 +304,7 @@ type SymlinkContext struct {
 //	}
 func (h *DefaultNFSHandler) Symlink(
 	ctx *SymlinkContext,
-	repository metadata.Repository,
+	metadataStore metadata.MetadataStore,
 	req *SymlinkRequest,
 ) (*SymlinkResponse, error) {
 	// Check for cancellation before starting any work
@@ -338,7 +338,7 @@ func (h *DefaultNFSHandler) Symlink(
 	// ========================================================================
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
-	dirAttr, err := repository.GetFile(ctx.Context, dirHandle)
+	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -390,16 +390,10 @@ func (h *DefaultNFSHandler) Symlink(
 	}
 
 	// ========================================================================
-	// Step 3: Build authentication context for repository
+	// Step 3: Build authentication context for store
 	// ========================================================================
 
-	authCtx := &metadata.AuthContext{
-		AuthFlavor: ctx.AuthFlavor,
-		UID:        ctx.UID,
-		GID:        ctx.GID,
-		GIDs:       ctx.GIDs,
-		ClientAddr: clientIP,
-	}
+	authCtx := buildAuthContextFromSymlink(ctx)
 
 	// ========================================================================
 	// Step 4: Convert client attributes to metadata format
@@ -411,7 +405,7 @@ func (h *DefaultNFSHandler) Symlink(
 	// - Defaults from authentication context when not provided by client
 	// - Default permissions (0777 for symlinks)
 	//
-	// The repository will complete the attributes with:
+	// The store will complete the attributes with:
 	// - Timestamps (atime, mtime, ctime)
 	// - Size (length of target path)
 	// - Target path (stored in SymlinkTarget field)
@@ -421,9 +415,9 @@ func (h *DefaultNFSHandler) Symlink(
 	symlinkAttr := xdr.ConvertSetAttrsToMetadata(metadata.FileTypeSymlink, &req.Attr, authCtx)
 
 	// ========================================================================
-	// Step 5: Create symlink via repository
+	// Step 5: Create symlink via store
 	// ========================================================================
-	// The repository is responsible for:
+	// The store is responsible for:
 	// - Checking write permission on parent directory
 	// - Verifying name doesn't already exist
 	// - Completing symlink attributes (timestamps, size, target path)
@@ -432,7 +426,7 @@ func (h *DefaultNFSHandler) Symlink(
 	// - Updating parent directory timestamps
 	// - Respecting context cancellation internally
 
-	symlinkHandle, err := repository.CreateSymlink(authCtx, dirHandle, req.Name, req.Target, symlinkAttr)
+	symlinkHandle, err := metadataStore.CreateSymlink(authCtx, dirHandle, req.Name, req.Target, symlinkAttr)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -441,7 +435,7 @@ func (h *DefaultNFSHandler) Symlink(
 
 			// Get updated directory attributes for WCC data (best effort)
 			var wccAfter *types.NFSFileAttr
-			if updatedDirAttr, getErr := repository.GetFile(ctx.Context, dirHandle); getErr == nil {
+			if updatedDirAttr, getErr := metadataStore.GetFile(ctx.Context, dirHandle); getErr == nil {
 				dirID := xdr.ExtractFileID(dirHandle)
 				wccAfter = xdr.MetadataToNFS(updatedDirAttr, dirID)
 			}
@@ -453,18 +447,18 @@ func (h *DefaultNFSHandler) Symlink(
 			}, ctx.Context.Err()
 		}
 
-		logger.Error("SYMLINK failed: repository error: name='%s' target='%s' client=%s error=%v",
+		logger.Error("SYMLINK failed: store error: name='%s' target='%s' client=%s error=%v",
 			req.Name, req.Target, clientIP, err)
 
 		// Get updated directory attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
-		if updatedDirAttr, getErr := repository.GetFile(ctx.Context, dirHandle); getErr == nil {
+		if updatedDirAttr, getErr := metadataStore.GetFile(ctx.Context, dirHandle); getErr == nil {
 			dirID := xdr.ExtractFileID(dirHandle)
 			wccAfter = xdr.MetadataToNFS(updatedDirAttr, dirID)
 		}
 
-		// Map repository errors to NFS status codes
-		status := xdr.MapRepositoryErrorToNFSStatus(err, clientIP, "SYMLINK")
+		// Map store errors to NFS status codes
+		status := xdr.MapStoreErrorToNFSStatus(err, clientIP, "SYMLINK")
 
 		return &SymlinkResponse{
 			Status:        status,
@@ -483,7 +477,7 @@ func (h *DefaultNFSHandler) Symlink(
 
 		// Get updated directory attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
-		if updatedDirAttr, getErr := repository.GetFile(ctx.Context, dirHandle); getErr == nil {
+		if updatedDirAttr, getErr := metadataStore.GetFile(ctx.Context, dirHandle); getErr == nil {
 			dirID := xdr.ExtractFileID(dirHandle)
 			wccAfter = xdr.MetadataToNFS(updatedDirAttr, dirID)
 		}
@@ -503,7 +497,7 @@ func (h *DefaultNFSHandler) Symlink(
 	// Step 6: Retrieve symlink attributes for response
 	// ========================================================================
 
-	symlinkAttr, err = repository.GetFile(ctx.Context, symlinkHandle)
+	symlinkAttr, err = metadataStore.GetFile(ctx.Context, symlinkHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -512,7 +506,7 @@ func (h *DefaultNFSHandler) Symlink(
 
 			// Get updated directory attributes for WCC data
 			var wccAfter *types.NFSFileAttr
-			if updatedDirAttr, getErr := repository.GetFile(ctx.Context, dirHandle); getErr == nil {
+			if updatedDirAttr, getErr := metadataStore.GetFile(ctx.Context, dirHandle); getErr == nil {
 				dirID := xdr.ExtractFileID(dirHandle)
 				wccAfter = xdr.MetadataToNFS(updatedDirAttr, dirID)
 			}
@@ -532,7 +526,7 @@ func (h *DefaultNFSHandler) Symlink(
 
 		// Get updated directory attributes for WCC data
 		var wccAfter *types.NFSFileAttr
-		if updatedDirAttr, getErr := repository.GetFile(ctx.Context, dirHandle); getErr == nil {
+		if updatedDirAttr, getErr := metadataStore.GetFile(ctx.Context, dirHandle); getErr == nil {
 			dirID := xdr.ExtractFileID(dirHandle)
 			wccAfter = xdr.MetadataToNFS(updatedDirAttr, dirID)
 		}
@@ -557,7 +551,7 @@ func (h *DefaultNFSHandler) Symlink(
 	nfsSymlinkAttr := xdr.MetadataToNFS(symlinkAttr, symlinkID)
 
 	// Get updated directory attributes for WCC data
-	updatedDirAttr, err := repository.GetFile(ctx.Context, dirHandle)
+	updatedDirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		logger.Warn("SYMLINK: successful but cannot get updated directory attributes: dir=%x error=%v",
 			req.DirHandle, err)
@@ -880,4 +874,30 @@ func (resp *SymlinkResponse) Encode() ([]byte, error) {
 
 	logger.Debug("Encoded SYMLINK response: %d bytes status=%d", buf.Len(), resp.Status)
 	return buf.Bytes(), nil
+}
+
+// buildAuthContextFromSymlink creates an AuthContext from SymlinkContext.
+//
+// This translates the NFS-specific authentication context into the generic
+// AuthContext used by the metadata store.
+func buildAuthContextFromSymlink(ctx *SymlinkContext) *metadata.AuthContext {
+	// Map auth flavor to auth method string
+	authMethod := "anonymous"
+	if ctx.AuthFlavor == 1 {
+		authMethod = "unix"
+	}
+
+	// Build identity with proper UID/GID/GIDs structure
+	identity := &metadata.Identity{
+		UID:  ctx.UID,
+		GID:  ctx.GID,
+		GIDs: ctx.GIDs,
+	}
+
+	return &metadata.AuthContext{
+		Context:    ctx.Context,
+		AuthMethod: authMethod,
+		Identity:   identity,
+		ClientAddr: ctx.ClientAddr,
+	}
 }
