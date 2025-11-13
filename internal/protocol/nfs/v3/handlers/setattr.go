@@ -101,12 +101,12 @@ type SetAttrContext struct {
 	AuthFlavor uint32
 
 	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	UID *uint32
 
 	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	GID *uint32
 
@@ -145,23 +145,23 @@ type SetAttrContext struct {
 //  1. Check for context cancellation (client disconnect, timeout)
 //  2. Validate request parameters (handle format)
 //  3. Extract client IP and authentication credentials from context
-//  4. Verify file handle exists (via repository)
+//  4. Verify file handle exists (via store)
 //  5. Check guard condition if specified (optimistic concurrency control)
-//  6. Delegate attribute updates to repository.SetFileAttributes()
+//  6. Delegate attribute updates to store.SetFileAttributes()
 //  7. Return updated WCC data
 //
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (attribute modification, validation, access control) delegated to repository
-//   - File handle validation performed by repository.GetFile()
+//   - All business logic (attribute modification, validation, access control) delegated to store
+//   - File handle validation performed by store.GetFile()
 //   - Context cancellation respected throughout the operation
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
 // **Authentication:**
 //
 // The context contains authentication credentials from the RPC layer.
-// The protocol layer passes these to the repository, which implements:
+// The protocol layer passes these to the store, which implements:
 //   - Ownership checks (only owner or root can chown)
 //   - Permission checks (owner can chmod, write permission for size/time)
 //   - Access control based on UID/GID
@@ -194,12 +194,12 @@ type SetAttrContext struct {
 //
 // **Size Changes:**
 //
-// Size changes require coordination with the content repository:
+// Size changes require coordination with the content store:
 //   - Truncation (new size < old size): Remove trailing content
 //   - Extension (new size > old size): Pad with zeros
 //   - Zero size: Delete all content
 //
-// The metadata repository delegates content operations to the content repository.
+// The metadata store delegates content operations to the content store.
 // Size changes can be time-consuming for large files, so context cancellation
 // is particularly important.
 //
@@ -219,7 +219,7 @@ type SetAttrContext struct {
 // Context cancellation is checked at key points:
 //   - Before starting the operation (client disconnect detection)
 //   - During metadata lookup (before and after guard check)
-//   - Repository operations respect context (passed through in AuthContext)
+//   - store operations respect context (passed through in AuthContext)
 //
 // Cancellation scenarios include:
 //   - Client disconnects before completion
@@ -233,7 +233,7 @@ type SetAttrContext struct {
 // **Error Handling:**
 //
 // Protocol-level errors return appropriate NFS status codes.
-// Repository errors are mapped to NFS status codes:
+// store errors are mapped to NFS status codes:
 //   - File not found → types.NFS3ErrNoEnt
 //   - Guard check failed → types.NFS3ErrNotSync
 //   - Permission denied → NFS3ErrAcces
@@ -258,7 +258,7 @@ type SetAttrContext struct {
 // **Security Considerations:**
 //
 //   - Handle validation prevents malformed requests
-//   - Repository enforces ownership and permission checks
+//   - store enforces ownership and permission checks
 //   - Only owner or root can change ownership
 //   - Only owner can change permissions
 //   - Size/time changes require write permission
@@ -268,7 +268,7 @@ type SetAttrContext struct {
 //
 // **Parameters:**
 //   - ctx: Context with client address, authentication, and cancellation support
-//   - repository: The metadata repository for file operations
+//   - metadataStore: The metadata store for file operations
 //   - req: The setattr request containing handle and new attributes
 //
 // **Returns:**
@@ -296,7 +296,7 @@ type SetAttrContext struct {
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.SetAttr(ctx, repository, req)
+//	resp, err := handler.SetAttr(ctx, store, req)
 //	if err == context.Canceled {
 //	    // Client disconnected during setattr
 //	    return nil, err
@@ -309,7 +309,7 @@ type SetAttrContext struct {
 //	}
 func (h *DefaultNFSHandler) SetAttr(
 	ctx *SetAttrContext,
-	repository metadata.Repository,
+	metadataStore metadata.MetadataStore,
 	req *SetAttrRequest,
 ) (*SetAttrResponse, error) {
 	// ========================================================================
@@ -348,7 +348,7 @@ func (h *DefaultNFSHandler) SetAttr(
 	// ========================================================================
 
 	fileHandle := metadata.FileHandle(req.Handle)
-	currentAttr, err := repository.GetFile(ctx.Context, fileHandle)
+	currentAttr, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if err == context.Canceled || err == context.DeadlineExceeded {
@@ -400,7 +400,7 @@ func (h *DefaultNFSHandler) SetAttr(
 
 			// Get updated attributes for WCC data (best effort)
 			var wccAfter *types.NFSFileAttr
-			if attr, err := repository.GetFile(ctx.Context, fileHandle); err == nil {
+			if attr, err := metadataStore.GetFile(ctx.Context, fileHandle); err == nil {
 				fileID := xdr.ExtractFileID(fileHandle)
 				wccAfter = xdr.MetadataToNFS(attr, fileID)
 			}
@@ -417,26 +417,19 @@ func (h *DefaultNFSHandler) SetAttr(
 	}
 
 	// ========================================================================
-	// Step 4: Build authentication context for repository
+	// Step 4: Build authentication context for store
 	// ========================================================================
 
-	authCtx := &metadata.AuthContext{
-		Context:    ctx.Context, // Pass context through for cancellation
-		AuthFlavor: ctx.AuthFlavor,
-		UID:        ctx.UID,
-		GID:        ctx.GID,
-		GIDs:       ctx.GIDs,
-		ClientAddr: clientIP,
-	}
+	authCtx := buildAuthContextFromSetAttr(ctx)
 
 	// ========================================================================
-	// Step 5: Apply attribute updates via repository
+	// Step 5: Apply attribute updates via store
 	// ========================================================================
-	// The repository is responsible for:
+	// The store is responsible for:
 	// - Checking ownership (for chown/chmod)
 	// - Checking write permission (for size/time changes)
 	// - Validating attribute values (e.g., invalid size)
-	// - Coordinating with content repository for size changes
+	// - Coordinating with content store for size changes
 	// - Updating ctime automatically
 	// - Ensuring atomicity of updates
 	// - Respecting context cancellation (especially for size changes)
@@ -444,27 +437,27 @@ func (h *DefaultNFSHandler) SetAttr(
 	// Log which attributes are being set (for debugging)
 	logSetAttrRequest(req, clientIP)
 
-	err = repository.SetFileAttributes(authCtx, fileHandle, &req.NewAttr)
+	err = metadataStore.SetFileAttributes(authCtx, fileHandle, &req.NewAttr)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if err == context.Canceled || err == context.DeadlineExceeded {
-			logger.Debug("SETATTR: repository operation cancelled: handle=%x client=%s",
+			logger.Debug("SETATTR: store operation cancelled: handle=%x client=%s",
 				req.Handle, clientIP)
 			return nil, err
 		}
 
-		logger.Error("SETATTR failed: repository error: handle=%x client=%s error=%v",
+		logger.Error("SETATTR failed: store error: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
 
 		// Get updated attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
-		if attr, getErr := repository.GetFile(ctx.Context, fileHandle); getErr == nil {
+		if attr, getErr := metadataStore.GetFile(ctx.Context, fileHandle); getErr == nil {
 			fileID := xdr.ExtractFileID(fileHandle)
 			wccAfter = xdr.MetadataToNFS(attr, fileID)
 		}
 
-		// Map repository errors to NFS status codes
-		status := xdr.MapRepositoryErrorToNFSStatus(err, clientIP, "SETATTR")
+		// Map store errors to NFS status codes
+		status := xdr.MapStoreErrorToNFSStatus(err, clientIP, "SETATTR")
 
 		return &SetAttrResponse{
 			Status:     status,
@@ -478,7 +471,7 @@ func (h *DefaultNFSHandler) SetAttr(
 	// ========================================================================
 
 	// Get updated file attributes for WCC data
-	updatedAttr, err := repository.GetFile(ctx.Context, fileHandle)
+	updatedAttr, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if err == context.Canceled || err == context.DeadlineExceeded {
@@ -565,8 +558,8 @@ func validateSetAttrRequest(req *SetAttrRequest) *setAttrValidationError {
 	}
 
 	// Check that at least one attribute is being set
-	if !req.NewAttr.SetMode && !req.NewAttr.SetUID && !req.NewAttr.SetGID &&
-		!req.NewAttr.SetSize && !req.NewAttr.SetAtime && !req.NewAttr.SetMtime {
+	if req.NewAttr.Mode == nil && req.NewAttr.UID == nil && req.NewAttr.GID == nil &&
+		req.NewAttr.Size == nil && req.NewAttr.Atime == nil && req.NewAttr.Mtime == nil {
 		return &setAttrValidationError{
 			message:   "no attributes specified for update",
 			nfsStatus: types.NFS3ErrInval,
@@ -574,18 +567,18 @@ func validateSetAttrRequest(req *SetAttrRequest) *setAttrValidationError {
 	}
 
 	// Validate mode value if being set (only use lower 12 bits)
-	if req.NewAttr.SetMode {
+	if req.NewAttr.Mode != nil {
 		// Mode should only use file type and permission bits (lower 12 bits)
 		// The upper bits are reserved and should be zero
-		if req.NewAttr.Mode > 0o7777 {
+		if *req.NewAttr.Mode > 0o7777 {
 			return &setAttrValidationError{
-				message:   fmt.Sprintf("invalid mode value: 0%o (max 0o7777)", req.NewAttr.Mode),
+				message:   fmt.Sprintf("invalid mode value: 0%o (max 0o7777)", *req.NewAttr.Mode),
 				nfsStatus: types.NFS3ErrInval,
 			}
 		}
 	}
 
-	// Size validation is done by the repository as it depends on file type
+	// Size validation is done by the store as it depends on file type
 	// (e.g., cannot set size on directories)
 
 	return nil
@@ -767,26 +760,52 @@ func (resp *SetAttrResponse) Encode() ([]byte, error) {
 func logSetAttrRequest(req *SetAttrRequest, clientIP string) {
 	attrs := make([]string, 0, 6)
 
-	if req.NewAttr.SetMode {
-		attrs = append(attrs, fmt.Sprintf("mode=0%o", req.NewAttr.Mode))
+	if req.NewAttr.Mode != nil {
+		attrs = append(attrs, fmt.Sprintf("mode=0%o", *req.NewAttr.Mode))
 	}
-	if req.NewAttr.SetUID {
-		attrs = append(attrs, fmt.Sprintf("uid=%d", req.NewAttr.UID))
+	if req.NewAttr.UID != nil {
+		attrs = append(attrs, fmt.Sprintf("uid=%d", *req.NewAttr.UID))
 	}
-	if req.NewAttr.SetGID {
-		attrs = append(attrs, fmt.Sprintf("gid=%d", req.NewAttr.GID))
+	if req.NewAttr.GID != nil {
+		attrs = append(attrs, fmt.Sprintf("gid=%d", *req.NewAttr.GID))
 	}
-	if req.NewAttr.SetSize {
-		attrs = append(attrs, fmt.Sprintf("size=%d", req.NewAttr.Size))
+	if req.NewAttr.Size != nil {
+		attrs = append(attrs, fmt.Sprintf("size=%d", *req.NewAttr.Size))
 	}
-	if req.NewAttr.SetAtime {
-		attrs = append(attrs, fmt.Sprintf("atime=%v", req.NewAttr.Atime))
+	if req.NewAttr.Atime != nil {
+		attrs = append(attrs, fmt.Sprintf("atime=%v", *req.NewAttr.Atime))
 	}
-	if req.NewAttr.SetMtime {
-		attrs = append(attrs, fmt.Sprintf("mtime=%v", req.NewAttr.Mtime))
+	if req.NewAttr.Mtime != nil {
+		attrs = append(attrs, fmt.Sprintf("mtime=%v", *req.NewAttr.Mtime))
 	}
 
 	if len(attrs) > 0 {
 		logger.Debug("SETATTR attributes: %v client=%s", attrs, clientIP)
+	}
+}
+
+// buildAuthContextFromSetAttr creates an AuthContext from SetAttrContext.
+//
+// This translates the NFS-specific authentication context into the generic
+// AuthContext used by the metadata store.
+func buildAuthContextFromSetAttr(ctx *SetAttrContext) *metadata.AuthContext {
+	// Map auth flavor to auth method string
+	authMethod := "anonymous"
+	if ctx.AuthFlavor == 1 {
+		authMethod = "unix"
+	}
+
+	// Build identity with proper UID/GID/GIDs structure
+	identity := &metadata.Identity{
+		UID:  ctx.UID,
+		GID:  ctx.GID,
+		GIDs: ctx.GIDs,
+	}
+
+	return &metadata.AuthContext{
+		Context:    ctx.Context,
+		AuthMethod: authMethod,
+		Identity:   identity,
+		ClientAddr: ctx.ClientAddr,
 	}
 }
