@@ -94,12 +94,12 @@ type LookupContext struct {
 	AuthFlavor uint32
 
 	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	UID *uint32
 
 	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	GID *uint32
 
@@ -130,24 +130,29 @@ type LookupContext struct {
 //
 //  1. Check for context cancellation before starting
 //  2. Validate request parameters (handles, filename)
-//  3. Extract client IP and authentication credentials from context
-//  4. Verify directory handle exists and is a directory (via repository)
-//  5. Delegate lookup to repository.GetChild()
-//  6. Retrieve file attributes for found child
+//  3. Build AuthContext for permission checking
+//  4. Verify directory handle exists and is a directory (via GetFile)
+//  5. Delegate lookup to store.Lookup() which atomically:
+//     - Checks search/execute permission on directory
+//     - Finds the child by name
+//     - Returns handle AND attributes
+//  6. Optionally retrieve directory attributes for cache consistency
 //  7. Return file handle and attributes to client
 //
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (child lookup, access control) is delegated to repository
-//   - File handle validation is performed by repository.GetFile()
+//   - All business logic (child lookup, access control) is delegated to store
+//   - store.Lookup() is atomic - combines search and attribute retrieval
+//   - File handle validation is performed by store.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //   - Respects context cancellation for graceful shutdown and timeouts
 //
 // **Authentication:**
 //
 // The context contains authentication credentials from the RPC layer.
-// The protocol layer passes these to the repository, which can implement:
+// The protocol layer builds AuthContext and passes it to store.Lookup(),
+// which implements:
 //   - Execute permission checking on the directory (search permission)
 //   - Access control based on UID/GID
 //   - Hiding files based on permissions
@@ -169,7 +174,7 @@ type LookupContext struct {
 // **Error Handling:**
 //
 // Protocol-level errors return appropriate NFS status codes.
-// Repository errors are mapped to NFS status codes:
+// store errors are mapped to NFS status codes:
 //   - Directory not found → types.NFS3ErrNoEnt
 //   - Not a directory → types.NFS3ErrNotDir
 //   - Child not found → types.NFS3ErrNoEnt
@@ -179,17 +184,16 @@ type LookupContext struct {
 //
 // **Performance Considerations:**
 //
-// LOOKUP is one of the most frequently called NFS procedures. Implementations should:
-//   - Cache directory listings when possible
-//   - Optimize child lookup algorithms
-//   - Minimize repository access overhead
-//   - Return post-op directory attributes when available
-//   - Minimize context cancellation overhead (check only at operation boundaries)
+// LOOKUP is one of the most frequently called NFS procedures. The new design:
+//   - Combines search and attribute retrieval in one store call
+//   - Reduces round trips to storage
+//   - Built-in caching opportunities in store
+//   - Minimal context cancellation overhead (check only at operation boundaries)
 //
 // **Security Considerations:**
 //
 //   - Handle validation prevents malformed requests
-//   - Repository layer enforces directory search permission
+//   - store layer enforces directory search permission
 //   - Filename validation prevents directory traversal
 //   - Client context enables audit logging
 //
@@ -197,16 +201,15 @@ type LookupContext struct {
 //
 // This operation respects context cancellation at key boundaries:
 //   - Before operation starts
-//   - Before each repository call (GetFile for dir, GetChild, GetFile for child)
-//   - Returns types.NFS3ErrIO on cancellation
+//   - Before GetFile for directory verification
+//   - Before Lookup call
 //
 // Since LOOKUP is a high-frequency operation, cancellation checks are placed
-// strategically to balance responsiveness with performance. The checks occur
-// only between repository operations, not during validation or encoding.
+// strategically to balance responsiveness with performance.
 //
 // **Parameters:**
 //   - ctx: Context with cancellation, client address and authentication credentials
-//   - repository: The metadata repository for file and directory operations
+//   - metadataStore: The metadata store for file and directory operations
 //   - req: The lookup request containing directory handle and filename
 //
 // **Returns:**
@@ -230,7 +233,7 @@ type LookupContext struct {
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Lookup(ctx, repository, req)
+//	resp, err := handler.Lookup(ctx, store, req)
 //	if err != nil {
 //	    // Internal server error
 //	}
@@ -239,7 +242,7 @@ type LookupContext struct {
 //	}
 func (h *DefaultNFSHandler) Lookup(
 	ctx *LookupContext,
-	repository metadata.Repository,
+	metadataStore metadata.MetadataStore,
 	req *LookupRequest,
 ) (*LookupResponse, error) {
 	// Extract client IP for logging
@@ -271,10 +274,16 @@ func (h *DefaultNFSHandler) Lookup(
 	}
 
 	// ========================================================================
-	// Step 3: Verify directory handle exists and is valid
+	// Step 3: Build AuthContext for permission checking
 	// ========================================================================
 
-	// Check context before repository call
+	authCtx := buildAuthContextFromLookup(ctx)
+
+	// ========================================================================
+	// Step 4: Verify directory handle exists and is valid
+	// ========================================================================
+
+	// Check context before store call
 	select {
 	case <-ctx.Context.Done():
 		logger.Warn("LOOKUP cancelled before GetFile (dir): file='%s' dir=%x client=%s error=%v",
@@ -284,7 +293,7 @@ func (h *DefaultNFSHandler) Lookup(
 	}
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
-	dirAttr, err := repository.GetFile(ctx.Context, dirHandle)
+	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		logger.Warn("LOOKUP failed: directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
@@ -307,17 +316,18 @@ func (h *DefaultNFSHandler) Lookup(
 	}
 
 	// ========================================================================
-	// Step 4: Look up the child via repository
+	// Step 5: Look up the child via store
 	// ========================================================================
-	// The repository is responsible for:
-	// - Checking search/execute permission on the directory
-	// - Finding the child by name (including "." and "..")
-	// - Enforcing any access control policies
+	// The store.Lookup() method atomically:
+	// - Checks search/execute permission on the directory
+	// - Finds the child by name (including "." and "..")
+	// - Returns both handle AND attributes in one operation
+	// - Enforces any access control policies
 
-	// Check context before repository call
+	// Check context before store call
 	select {
 	case <-ctx.Context.Done():
-		logger.Warn("LOOKUP cancelled before GetChild: file='%s' dir=%x client=%s error=%v",
+		logger.Warn("LOOKUP cancelled before Lookup: file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
 
 		// Include directory post-op attributes for cache consistency
@@ -331,54 +341,20 @@ func (h *DefaultNFSHandler) Lookup(
 	default:
 	}
 
-	childHandle, err := repository.GetChild(ctx.Context, dirHandle, req.Filename)
+	childHandle, childAttr, err := metadataStore.Lookup(authCtx, dirHandle, req.Filename)
 	if err != nil {
-		logger.Debug("LOOKUP failed: child not found: file='%s' dir=%x client=%s error=%v",
+		logger.Debug("LOOKUP failed: child not found or access denied: file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, clientIP, err)
 
-		// Include directory post-op attributes for cache consistency
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
-
-		return &LookupResponse{
-			Status:  types.NFS3ErrNoEnt,
-			DirAttr: nfsDirAttr,
-		}, nil
-	}
-
-	// ========================================================================
-	// Step 5: Retrieve child attributes
-	// ========================================================================
-
-	// Check context before repository call
-	select {
-	case <-ctx.Context.Done():
-		logger.Warn("LOOKUP cancelled before GetFile (child): file='%s' handle=%x client=%s error=%v",
-			req.Filename, childHandle, clientIP, ctx.Context.Err())
+		// Map store errors to NFS status codes
+		status := mapMetadataErrorToNFS(err)
 
 		// Include directory post-op attributes for cache consistency
 		dirID := xdr.ExtractFileID(dirHandle)
 		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &LookupResponse{
-			Status:  types.NFS3ErrIO,
-			DirAttr: nfsDirAttr,
-		}, nil
-	default:
-	}
-
-	childAttr, err := repository.GetFile(ctx.Context, childHandle)
-	if err != nil {
-		logger.Error("LOOKUP failed: child handle exists but attributes missing: file='%s' handle=%x client=%s error=%v",
-			req.Filename, childHandle, clientIP, err)
-
-		// This is an internal consistency error - handle exists but no attributes
-		// Include directory post-op attributes for cache consistency
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
-
-		return &LookupResponse{
-			Status:  types.NFS3ErrIO,
+			Status:  status,
 			DirAttr: nfsDirAttr,
 		}, nil
 	}
@@ -386,6 +362,8 @@ func (h *DefaultNFSHandler) Lookup(
 	// ========================================================================
 	// Step 6: Build success response with file handle and attributes
 	// ========================================================================
+	// store.Lookup() already returned both handle and attributes,
+	// so we don't need a separate GetFile() call!
 
 	// Generate file IDs from handles for NFS attributes
 	childID := xdr.ExtractFileID(childHandle)
@@ -406,6 +384,41 @@ func (h *DefaultNFSHandler) Lookup(
 		Attr:       nfsChildAttr,
 		DirAttr:    nfsDirAttr,
 	}, nil
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+// buildAuthContextFromLookup creates an AuthContext from LookupContext.
+//
+// This translates the NFS-specific authentication context into the generic
+// AuthContext used by the metadata store.
+func buildAuthContextFromLookup(ctx *LookupContext) *metadata.AuthContext {
+	// Map auth flavor to auth method string
+	authMethod := "anonymous"
+	if ctx.AuthFlavor == 1 {
+		authMethod = "unix"
+	}
+
+	// Build identity from Unix credentials
+	identity := &metadata.Identity{
+		UID:  ctx.UID,
+		GID:  ctx.GID,
+		GIDs: ctx.GIDs,
+	}
+
+	// Set username from UID if available (for logging/auditing)
+	if ctx.UID != nil {
+		identity.Username = fmt.Sprintf("uid:%d", *ctx.UID)
+	}
+
+	return &metadata.AuthContext{
+		Context:    ctx.Context,
+		AuthMethod: authMethod,
+		Identity:   identity,
+		ClientAddr: ctx.ClientAddr,
+	}
 }
 
 // ============================================================================
@@ -486,7 +499,7 @@ func validateLookupRequest(req *LookupRequest) *lookupValidationError {
 	}
 
 	// Check for path separators (prevents directory traversal attacks)
-	// Note: "." and ".." are allowed (handled specially by repository)
+	// Note: "." and ".." are allowed (handled specially by store)
 	if bytes.ContainsAny([]byte(req.Filename), "/") {
 		return &lookupValidationError{
 			message:   "filename contains path separator",
