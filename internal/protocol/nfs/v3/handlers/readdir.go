@@ -112,17 +112,17 @@ type ReadDirContext struct {
 	AuthFlavor uint32
 
 	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	UID *uint32
 
 	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	GID *uint32
 
 	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	GIDs []uint32
 }
@@ -153,9 +153,9 @@ type ReadDirContext struct {
 //  1. Check for context cancellation (early exit if client disconnected)
 //  2. Validate request parameters (handle format, count limits)
 //  3. Extract client IP and authentication credentials from context
-//  4. Verify directory handle exists and is a directory (via repository)
+//  4. Verify directory handle exists and is a directory (via store)
 //  5. Check for cancellation before expensive ReadDir operation
-//  6. Delegate entry listing to repository.ReadDir()
+//  6. Delegate entry listing to store.ReadDir()
 //  7. Return entries with proper pagination support
 //
 // **Context cancellation:**
@@ -164,13 +164,13 @@ type ReadDirContext struct {
 //   - Checks after directory lookup, before ReadDir (most important check)
 //   - Check after ReadDir for cancellation during the listing operation
 //   - Returns NFS3ErrIO status with context error for cancellation
-//   - Repository's ReadDir should also respect context internally for long scans
+//   - store's ReadDir should also respect context internally for long scans
 //
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (entry listing, ".", "..", access control) delegated to repository
-//   - File handle validation performed by repository.GetFile()
+//   - All business logic (entry listing, ".", "..", access control) delegated to store
+//   - File handle validation performed by store.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
 // **Pagination:**
@@ -201,7 +201,7 @@ type ReadDirContext struct {
 // **Authentication:**
 //
 // The context contains authentication credentials from the RPC layer.
-// The protocol layer passes these to the repository, which can implement:
+// The protocol layer passes these to the store, which can implement:
 //   - Execute permission checking on the directory (search permission)
 //   - Access control based on UID/GID
 //   - Filtering entries based on permissions
@@ -209,7 +209,7 @@ type ReadDirContext struct {
 // **Error Handling:**
 //
 // Protocol-level errors return appropriate NFS status codes.
-// Repository errors are mapped to NFS status codes:
+// store errors are mapped to NFS status codes:
 //   - Directory not found → types.NFS3ErrNoEnt
 //   - Not a directory → types.NFS3ErrNotDir
 //   - Invalid cookie → NFS3ErrBadCookie
@@ -222,19 +222,19 @@ type ReadDirContext struct {
 //   - Count parameter allows clients to control response size
 //   - Server should honor Count but may return fewer entries
 //   - Large directories require multiple calls (pagination)
-//   - Repository should optimize entry iteration
+//   - store should optimize entry iteration
 //   - Context cancellation prevents wasted work on large directories
 //
 // **Security Considerations:**
 //
 //   - Handle validation prevents malformed requests
-//   - Repository enforces directory search permission
+//   - store enforces directory search permission
 //   - Cookie validation prevents directory traversal attacks
 //   - Client context enables audit logging
 //
 // **Parameters:**
 //   - ctx: Context with cancellation, client address and authentication credentials
-//   - repository: The metadata repository for directory operations
+//   - metadataStore: The metadata store for directory operations
 //   - req: The readdir request containing directory handle and pagination info
 //
 // **Returns:**
@@ -260,7 +260,7 @@ type ReadDirContext struct {
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.ReadDir(ctx, repository, req)
+//	resp, err := handler.ReadDir(ctx, store, req)
 //	if err != nil {
 //	    if errors.Is(err, context.Canceled) {
 //	        // Client disconnected
@@ -278,7 +278,7 @@ type ReadDirContext struct {
 //	}
 func (h *DefaultNFSHandler) ReadDir(
 	ctx *ReadDirContext,
-	repository metadata.Repository,
+	metadataStore metadata.MetadataStore,
 	req *ReadDirRequest,
 ) (*ReadDirResponse, error) {
 	// Check for cancellation before starting any work
@@ -312,7 +312,7 @@ func (h *DefaultNFSHandler) ReadDir(
 	// ========================================================================
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
-	dirAttr, err := repository.GetFile(ctx.Context, dirHandle)
+	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -342,16 +342,10 @@ func (h *DefaultNFSHandler) ReadDir(
 	}
 
 	// ========================================================================
-	// Step 3: Build authentication context for repository
+	// Step 3: Build authentication context for store
 	// ========================================================================
 
-	authCtx := &metadata.AuthContext{
-		AuthFlavor: ctx.AuthFlavor,
-		UID:        ctx.UID,
-		GID:        ctx.GID,
-		GIDs:       ctx.GIDs,
-		ClientAddr: clientIP,
-	}
+	authCtx := buildAuthContextFromReadDir(ctx)
 
 	// Check for cancellation before the potentially expensive ReadDir operation
 	// This is the most important check since ReadDir may scan many entries
@@ -373,9 +367,9 @@ func (h *DefaultNFSHandler) ReadDir(
 	}
 
 	// ========================================================================
-	// Step 4: Read directory entries via repository
+	// Step 4: Read directory entries via store
 	// ========================================================================
-	// The repository is responsible for:
+	// The store is responsible for:
 	// - Checking read/execute permission on the directory
 	// - Building "." and ".." entries
 	// - Iterating through children
@@ -383,7 +377,7 @@ func (h *DefaultNFSHandler) ReadDir(
 	// - Respecting count limits
 	// - Respecting context cancellation internally during iteration
 
-	entries, eof, err := repository.ReadDir(authCtx, dirHandle, req.Cookie, req.Count)
+	page, err := metadataStore.ReadDirectory(authCtx, dirHandle, "", req.Count)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -400,29 +394,18 @@ func (h *DefaultNFSHandler) ReadDir(
 			}, ctx.Context.Err()
 		}
 
-		logger.Error("READDIR failed: repository error: dir=%x client=%s error=%v",
+		logger.Error("READDIR failed: store error: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
 
-		// Check for specific error types
-		if exportErr, ok := err.(*metadata.ExportError); ok {
-			status := mapExportErrorToNFSStatus(exportErr)
+		// Map store error to NFS status
+		status := mapMetadataErrorToNFS(err)
 
-			// Include directory attributes for cache consistency
-			dirID := xdr.ExtractFileID(dirHandle)
-			nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
-
-			return &ReadDirResponse{
-				Status:  status,
-				DirAttr: nfsDirAttr,
-			}, nil
-		}
-
-		// Generic I/O error
+		// Include directory attributes for cache consistency
 		dirID := xdr.ExtractFileID(dirHandle)
 		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &ReadDirResponse{
-			Status:  types.NFS3ErrIO,
+			Status:  status,
 			DirAttr: nfsDirAttr,
 		}, nil
 	}
@@ -432,12 +415,12 @@ func (h *DefaultNFSHandler) ReadDir(
 	// ========================================================================
 	// No cancellation check here - this is fast pure computation
 
-	nfsEntries := make([]*types.DirEntry, 0, len(entries))
-	for _, entry := range entries {
+	nfsEntries := make([]*types.DirEntry, 0, len(page.Entries))
+	for i, entry := range page.Entries {
 		nfsEntries = append(nfsEntries, &types.DirEntry{
-			Fileid: entry.Fileid,
+			Fileid: entry.ID,
 			Name:   entry.Name,
-			Cookie: entry.Cookie,
+			Cookie: uint64(i + 1), // Sequential cookies for entries
 		})
 	}
 
@@ -448,6 +431,9 @@ func (h *DefaultNFSHandler) ReadDir(
 	// Generate directory attributes for response
 	dirID := xdr.ExtractFileID(dirHandle)
 	nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+
+	// EOF is true when there are no more pages
+	eof := !page.HasMore
 
 	logger.Info("READDIR successful: dir=%x entries=%d eof=%v client=%s",
 		req.DirHandle, len(nfsEntries), eof, clientIP)
@@ -807,16 +793,28 @@ func getLastCookie(entries []*types.DirEntry) uint64 {
 	return entries[len(entries)-1].Cookie
 }
 
-// mapExportErrorToNFSStatus maps metadata.ExportError to NFS status codes.
-func mapExportErrorToNFSStatus(err *metadata.ExportError) uint32 {
-	switch err.Code {
-	case metadata.ExportErrAccessDenied:
-		return types.NFS3ErrAcces
-	case metadata.ExportErrNotFound:
-		return types.NFS3ErrNoEnt
-	case metadata.ExportErrAuthRequired:
-		return types.NFS3ErrAcces
-	default:
-		return types.NFS3ErrIO
+// buildAuthContextFromReadDir creates an AuthContext from ReadDirContext.
+//
+// This translates the NFS-specific authentication context into the generic
+// AuthContext used by the metadata store.
+func buildAuthContextFromReadDir(ctx *ReadDirContext) *metadata.AuthContext {
+	// Map auth flavor to auth method string
+	authMethod := "anonymous"
+	if ctx.AuthFlavor == 1 {
+		authMethod = "unix"
+	}
+
+	// Build identity with proper UID/GID/GIDs structure
+	identity := &metadata.Identity{
+		UID:  ctx.UID,
+		GID:  ctx.GID,
+		GIDs: ctx.GIDs,
+	}
+
+	return &metadata.AuthContext{
+		Context:    ctx.Context,
+		AuthMethod: authMethod,
+		Identity:   identity,
+		ClientAddr: ctx.ClientAddr,
 	}
 }
