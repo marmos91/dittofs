@@ -16,6 +16,10 @@ func (suite *StoreTestSuite) RunServerTests(test *testing.T) {
 	test.Run("GetServerConfig_AfterSet", suite.TestGetServerConfig_AfterSet)
 	test.Run("SetServerConfig_VariousTypes", suite.TestSetServerConfig_VariousTypes)
 	test.Run("SetServerConfig_ProtocolSettings", suite.TestSetServerConfig_ProtocolSettings)
+	test.Run("TestGetServerConfig_InitiallyEmpty", suite.TestGetServerConfig_InitiallyEmpty)
+	test.Run("TestGetServerConfig_InitiallyEmpty", suite.TestGetServerConfig_InitiallyEmpty)
+	test.Run("TestGetServerConfig_ContextCanceled", suite.TestGetServerConfig_ContextCanceled)
+	test.Run("TestSetServerConfig_ContextCanceled", suite.TestSetServerConfig_ContextCanceled)
 }
 
 // TestSetServerConfig_Success verifies that server configuration can be set.
@@ -284,4 +288,38 @@ func (suite *StoreTestSuite) TestSetServerConfig_ProtocolSettings(test *testing.
 			}
 		})
 	}
+}
+
+func (suite *StoreTestSuite) TestGetServerConfig_InitiallyEmpty(test *testing.T) {
+	store := suite.NewStore()
+	ctx := context.Background()
+
+	config, err := store.GetServerConfig(ctx)
+	require.NoError(test, err)
+	assert.Equal(test, metadata.ServerConfig{}, config, "Initial config should be empty")
+}
+
+func (suite *StoreTestSuite) TestGetServerConfig_ContextCanceled(t *testing.T) {
+	store := suite.NewStore()
+	ctx := context.Background()
+
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	_, err := store.GetServerConfig(canceledCtx)
+	assert.Error(t, err, "Should fail with canceled context")
+}
+
+func (suite *StoreTestSuite) TestSetServerConfig_ContextCanceled(t *testing.T) {
+	store := suite.NewStore()
+	ctx := context.Background()
+
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	config := metadata.ServerConfig{
+		CustomSettings: map[string]any{"test": "value"},
+	}
+	err := store.SetServerConfig(canceledCtx, config)
+	assert.Error(t, err, "Should fail with canceled context")
 }
