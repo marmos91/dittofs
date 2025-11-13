@@ -109,12 +109,12 @@ type ReadContext struct {
 	UID *uint32
 
 	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for read permission checks by the repository.
+	// Used for read permission checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	GID *uint32
 
 	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	GIDs []uint32
 }
@@ -140,8 +140,8 @@ type ReadContext struct {
 //  1. Check for context cancellation (client disconnect, timeout)
 //  2. Validate request parameters (handle, offset, count)
 //  3. Extract client IP and authentication credentials from context
-//  4. Verify file exists and is a regular file (via repository)
-//  5. Check read permissions (delegated to repository/content layer)
+//  4. Verify file exists and is a regular file (via store)
+//  5. Check read permissions (delegated to store/content layer)
 //  6. Open content for reading
 //  7. Seek to requested offset (with cancellation checks)
 //  8. Read requested number of bytes (with cancellation checks during read)
@@ -151,9 +151,9 @@ type ReadContext struct {
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
-//   - Content repository handles actual data reading
-//   - Metadata repository provides file attributes and validation
-//   - Access control enforced by repository layers
+//   - Content store handles actual data reading
+//   - Metadata store provides file attributes and validation
+//   - Access control enforced by store layers
 //   - Context cancellation checked at key operation points
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
@@ -161,8 +161,8 @@ type ReadContext struct {
 //
 // The context contains authentication credentials from the RPC layer.
 // Read permission checking should be implemented by:
-//   - Repository layer for file existence validation
-//   - Content repository layer for read access control
+//   - store layer for file existence validation
+//   - Content store layer for read access control
 //
 // **EOF Detection:**
 //
@@ -194,7 +194,7 @@ type ReadContext struct {
 // **Performance Considerations:**
 //
 // READ is one of the most frequently called NFS procedures. Implementations should:
-//   - Use efficient content repository access
+//   - Use efficient content store access
 //   - Support seekable readers when possible
 //   - Minimize data copying
 //   - Return reasonable chunk sizes (check FSINFO rtpref)
@@ -204,7 +204,7 @@ type ReadContext struct {
 // **Error Handling:**
 //
 // Protocol-level errors return appropriate NFS status codes.
-// Repository/Content errors are mapped to NFS status codes:
+// store/Content errors are mapped to NFS status codes:
 //   - File not found → types.NFS3ErrNoEnt
 //   - Not a regular file → types.NFS3ErrIsDir
 //   - Permission denied → NFS3ErrAcces
@@ -215,7 +215,7 @@ type ReadContext struct {
 // **Security Considerations:**
 //
 //   - Handle validation prevents malformed requests
-//   - Repository/content layers enforce read permissions
+//   - store/content layers enforce read permissions
 //   - Client context enables audit logging
 //   - No data leakage on permission errors
 //   - Cancellation prevents resource exhaustion
@@ -223,7 +223,7 @@ type ReadContext struct {
 // **Parameters:**
 //   - ctx: Context with client address, authentication, and cancellation support
 //   - contentRepo: Content repository for file data access
-//   - metadataRepo: Metadata repository for file attributes
+//   - metadataStore: Metadata store for file attributes
 //   - req: The read request containing handle, offset, and count
 //
 // **Returns:**
@@ -265,7 +265,7 @@ type ReadContext struct {
 func (h *DefaultNFSHandler) Read(
 	ctx *ReadContext,
 	contentRepo content.Repository,
-	metadataRepo metadata.Repository,
+	metadataStore metadata.MetadataStore,
 	req *ReadRequest,
 ) (*ReadResponse, error) {
 	// ========================================================================
@@ -303,7 +303,7 @@ func (h *DefaultNFSHandler) Read(
 	// ========================================================================
 
 	fileHandle := metadata.FileHandle(req.Handle)
-	attr, err := metadataRepo.GetFile(ctx.Context, fileHandle)
+	attr, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if err == context.Canceled || err == context.DeadlineExceeded {
@@ -386,7 +386,7 @@ func (h *DefaultNFSHandler) Read(
 	// ========================================================================
 	// Step 4: Open content for reading
 	// ========================================================================
-	// Access control should be enforced by the content repository
+	// Access control should be enforced by the content store
 	// based on the file's ContentID and client credentials
 
 	reader, err := contentRepo.ReadContent(ctx.Context, attr.ContentID)
