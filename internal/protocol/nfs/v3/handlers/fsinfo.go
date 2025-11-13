@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
@@ -30,7 +31,7 @@ type FsInfoRequest struct {
 	// but can be any valid file handle within the filesystem.
 	//
 	// The handle is treated as opaque by the protocol layer and validated
-	// by the repository implementation.
+	// by the store implementation.
 	Handle []byte
 }
 
@@ -135,15 +136,15 @@ type FsInfoContext struct {
 // their operations:
 //  1. Check for context cancellation early
 //  2. Validate the file handle format and length
-//  3. Verify the file handle exists via repository
-//  4. Retrieve filesystem capabilities from the repository
+//  3. Verify the file handle exists via store
+//  4. Retrieve filesystem capabilities from the store
 //  5. Retrieve file attributes for cache consistency
 //  6. Return comprehensive filesystem information
 //
 // Design principles:
 //   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (filesystem limits, capabilities) is delegated to repository
-//   - File handle validation is performed by repository.GetFile()
+//   - All business logic (filesystem limits, capabilities) is delegated to store
+//   - File handle validation is performed by store.GetFile()
 //   - Context cancellation is checked at strategic points
 //   - Comprehensive logging at DEBUG level for troubleshooting
 //
@@ -155,7 +156,7 @@ type FsInfoContext struct {
 //
 // Parameters:
 //   - ctx: Context information including cancellation, client address and auth flavor
-//   - repository: The metadata repository containing filesystem configuration
+//   - metadataStore: The metadata store containing filesystem configuration
 //   - req: The FSINFO request containing the file handle
 //
 // Returns:
@@ -174,7 +175,7 @@ type FsInfoContext struct {
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	}
-//	resp, err := handler.FsInfo(ctx, repository, req)
+//	resp, err := handler.FsInfo(ctx, store, req)
 //	if err != nil {
 //	    // Internal server error or context cancellation occurred
 //	    return nil, err
@@ -184,7 +185,7 @@ type FsInfoContext struct {
 //	}
 func (h *DefaultNFSHandler) FsInfo(
 	ctx *FsInfoContext,
-	repository metadata.Repository,
+	metadataStore metadata.MetadataStore,
 	req *FsInfoRequest,
 ) (*FsInfoResponse, error) {
 	logger.Debug("FSINFO request: handle=%x client=%s auth=%d",
@@ -207,8 +208,8 @@ func (h *DefaultNFSHandler) FsInfo(
 		return &FsInfoResponse{Status: types.NFS3ErrBadHandle}, nil
 	}
 
-	// Check for cancellation before repository call
-	// Repository operations might involve I/O or locks
+	// Check for cancellation before store call
+	// store operations might involve I/O or locks
 	select {
 	case <-ctx.Context.Done():
 		logger.Debug("FSINFO cancelled before GetFile: handle=%x client=%s error=%v",
@@ -217,29 +218,29 @@ func (h *DefaultNFSHandler) FsInfo(
 	default:
 	}
 
-	// Verify the file handle exists and is valid in the repository
-	// The repository is responsible for validating handle format and existence
-	attr, err := repository.GetFile(ctx.Context, metadata.FileHandle(req.Handle))
+	// Verify the file handle exists and is valid in the store
+	// The store is responsible for validating handle format and existence
+	attr, err := metadataStore.GetFile(ctx.Context, metadata.FileHandle(req.Handle))
 	if err != nil {
 		logger.Debug("FSINFO failed: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, err)
 		return &FsInfoResponse{Status: types.NFS3ErrNoEnt}, nil
 	}
 
-	// Retrieve filesystem capabilities from the repository
-	// All business logic about filesystem limits is handled by the repository
-	// Note: We don't check cancellation here since GetFSInfo is typically
+	// Retrieve filesystem capabilities from the store
+	// All business logic about filesystem limits is handled by the store
+	// Note: We don't check cancellation here since GetFilesystemCapabilities is typically
 	// a fast in-memory operation returning static configuration
-	fsInfo, err := repository.GetFSInfo(ctx.Context, metadata.FileHandle(req.Handle))
+	capabilities, err := metadataStore.GetFilesystemCapabilities(ctx.Context, metadata.FileHandle(req.Handle))
 	if err != nil {
-		logger.Error("FSINFO failed: handle=%x client=%s error=failed to retrieve fsinfo: %v",
+		logger.Error("FSINFO failed: handle=%x client=%s error=failed to retrieve capabilities: %v",
 			req.Handle, ctx.ClientAddr, err)
 		return &FsInfoResponse{Status: types.NFS3ErrIO}, nil
 	}
 
-	// Defensive check: ensure repository returned valid fsInfo
-	if fsInfo == nil {
-		logger.Error("FSINFO failed: handle=%x client=%s error=repository returned nil fsInfo",
+	// Defensive check: ensure store returned valid capabilities
+	if capabilities == nil {
+		logger.Error("FSINFO failed: handle=%x client=%s error=store returned nil capabilities",
 			req.Handle, ctx.ClientAddr)
 		return &FsInfoResponse{Status: types.NFS3ErrIO}, nil
 	}
@@ -256,28 +257,72 @@ func (h *DefaultNFSHandler) FsInfo(
 	// Convert metadata attributes to NFS wire format
 	nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
-	logger.Info("FSINFO successful: client=%s rtmax=%d wtmax=%d maxfilesize=%d properties=0x%x",
-		ctx.ClientAddr, fsInfo.RtMax, fsInfo.WtMax, fsInfo.MaxFileSize, fsInfo.Properties)
+	// Convert timestamp resolution to NFS TimeVal format
+	timeDelta := durationToTimeVal(capabilities.TimestampResolution)
 
-	// Build response with data from repository
-	// All fields are populated from the repository's FSInfo structure
+	// Build NFS properties bitmask from capabilities
+	properties := buildNFSProperties(capabilities)
+
+	logger.Info("FSINFO successful: client=%s rtmax=%d wtmax=%d maxfilesize=%d properties=0x%x",
+		ctx.ClientAddr, capabilities.MaxReadSize, capabilities.MaxWriteSize,
+		capabilities.MaxFileSize, properties)
+
+	// Build response with data from store
+	// Map the standardized FilesystemCapabilities to NFS wire format
 	return &FsInfoResponse{
 		Status:      types.NFS3OK,
 		Attr:        nfsAttr,
-		Rtmax:       fsInfo.RtMax,
-		Rtpref:      fsInfo.RtPref,
-		Rtmult:      fsInfo.RtMult,
-		Wtmax:       fsInfo.WtMax,
-		Wtpref:      fsInfo.WtPref,
-		Wtmult:      fsInfo.WtMult,
-		Dtpref:      fsInfo.DtPref,
-		Maxfilesize: fsInfo.MaxFileSize,
-		TimeDelta: types.TimeVal{
-			Seconds:  fsInfo.TimeDelta.Seconds,
-			Nseconds: fsInfo.TimeDelta.Nseconds,
-		},
-		Properties: fsInfo.Properties,
+		Rtmax:       capabilities.MaxReadSize,
+		Rtpref:      capabilities.PreferredReadSize,
+		Rtmult:      4096, // Common block size multiple
+		Wtmax:       capabilities.MaxWriteSize,
+		Wtpref:      capabilities.PreferredWriteSize,
+		Wtmult:      4096, // Common block size multiple
+		Dtpref:      8192, // Reasonable default for directory reads
+		Maxfilesize: capabilities.MaxFileSize,
+		TimeDelta:   timeDelta,
+		Properties:  properties,
 	}, nil
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+// buildNFSProperties builds the NFS properties bitmask from FilesystemCapabilities.
+//
+// This translates the generic capability flags into NFS-specific property bits.
+func buildNFSProperties(cap *metadata.FilesystemCapabilities) uint32 {
+	var properties uint32
+
+	if cap.SupportsHardLinks {
+		properties |= types.FSFLink
+	}
+	if cap.SupportsSymlinks {
+		properties |= types.FSFSymlink
+	}
+
+	// Always set FSFHomogeneous - PATHCONF is valid for all files
+	properties |= types.FSFHomogeneous
+
+	// Always set FSFCanSetTime - server can set file times via SETATTR
+	properties |= types.FSFCanSetTime
+
+	return properties
+}
+
+// durationToTimeVal converts a time.Duration to NFS TimeVal format.
+//
+// The TimeVal represents the server's time resolution - the smallest
+// time difference it can reliably distinguish.
+func durationToTimeVal(d time.Duration) types.TimeVal {
+	seconds := uint32(d / time.Second)
+	nanoseconds := uint32(d % time.Second)
+
+	return types.TimeVal{
+		Seconds:  seconds,
+		Nseconds: nanoseconds,
+	}
 }
 
 // DecodeFsInfoRequest decodes an FSINFO request from XDR-encoded bytes.
@@ -478,7 +523,7 @@ func validateFileHandle(handle []byte) error {
 // The file ID is derived from the first 8 bytes of the handle.
 //
 // This is a protocol-layer utility used to generate NFS file IDs
-// from opaque file handles. The repository defines the handle format,
+// from opaque file handles. The store defines the handle format,
 // but the protocol layer needs to extract identifiers for wire protocol.
 //
 // Parameters:
