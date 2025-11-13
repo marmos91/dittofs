@@ -83,7 +83,7 @@ On every push and pull request.
 ```
 Test (Go os package)
     ↓ (real NFS mount)
-NFS Facade
+NFS Adapter
     ↓
 Metadata Store (memory)
     ↓

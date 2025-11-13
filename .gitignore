@@ -46,6 +46,10 @@ tmp/
 temp/
 /tmp/dittofs-content/
 
+# Benchmark results
+benchmark_results/
+*.prof
+
 # OS
 .DS_Store
 Thumbs.db

@@ -14,7 +14,7 @@ The e2e test suite validates the complete DittoFS stack:
            │
            ▼ (mounted NFS)
 ┌─────────────────────────────┐
-│    NFS Facade               │
+│    NFS Adapter              │
 └──────────┬──────────────────┘
            │
            ▼
@@ -34,7 +34,7 @@ The e2e test suite validates the complete DittoFS stack:
 
 Tests run against all combinations of:
 
-- **Facades**: NFS (currently; SMB, WebDAV planned)
+- **Adapters**: NFS (currently; SMB, WebDAV planned)
 - **Content Stores**: Memory, Filesystem
 
 Each test suite is executed against each combination to ensure consistent behavior across all backends.
@@ -363,8 +363,8 @@ Typical timing:
 
 ## Future Enhancements
 
-- [ ] Add SMB facade tests when implemented
-- [ ] Add WebDAV facade tests when implemented
+- [ ] Add SMB adapter tests when implemented
+- [ ] Add WebDAV adapter tests when implemented
 - [ ] Add concurrent client tests (multiple mounts)
 - [ ] Add stress tests (large number of operations)
 - [ ] Add network failure simulation

@@ -192,7 +192,7 @@ func (s *DittoServer) AddAdapter(a adapter.Adapter) error {
 // Returns:
 //   - nil on successful graceful shutdown
 //   - context.Canceled if shutdown was triggered by context cancellation
-//   - error if startup failed or a facade encountered an error
+//   - error if startup failed or an adapter encountered an error
 //
 // Panics if Serve() is called more than once on the same DittoServer instance.
 //

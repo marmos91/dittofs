@@ -71,6 +71,44 @@ go fmt ./...
 go vet ./...
 ```
 
+### Benchmarking
+```bash
+# Run comprehensive benchmark suite (separate from tests, run periodically)
+./scripts/benchmark.sh
+
+# Run with profiling (CPU and memory)
+./scripts/benchmark.sh --profile
+
+# Compare with previous results
+./scripts/benchmark.sh --compare
+
+# Custom configuration
+BENCH_TIME=30s BENCH_COUNT=5 ./scripts/benchmark.sh
+
+# Run specific benchmarks manually
+go test -bench='BenchmarkE2E/memory/ReadThroughput' -benchtime=20s ./test/e2e/
+go test -bench='BenchmarkE2E/filesystem' -benchmem ./test/e2e/
+
+# Generate CPU profile for specific benchmark
+go test -bench=BenchmarkE2E/memory/WriteThroughput/100MB \
+    -cpuprofile=cpu.prof -benchtime=30s ./test/e2e/
+
+# Analyze profile
+go tool pprof cpu.prof
+go tool pprof -http=:8080 cpu.prof
+```
+
+**Important**: Benchmarks are stress tests designed to push DittoFS to its limits. They:
+- Test with files from 4KB to 100MB
+- Create thousands of files/directories
+- Run mixed concurrent workloads
+- Profile CPU and memory usage
+- Compare different storage backends
+
+Results are saved to `benchmark_results/<timestamp>/` and should NOT be committed to the repository.
+
+See `test/e2e/BENCHMARKS.md` for detailed documentation and `test/e2e/COMPARISON_GUIDE.md` for comparing with other NFS implementations.
+
 ## Architecture
 
 ### Core Abstraction Layers
