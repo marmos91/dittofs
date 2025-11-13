@@ -690,7 +690,7 @@ A: Not yet. NLM (Network Lock Manager) protocol support is planned but not curre
 
 **Q: Can I use this with Windows clients?**
 
-A: Windows can mount NFS shares, but the SMB/CIFS facade will provide better Windows integration when implemented.
+A: Windows can mount NFS shares, but the SMB/CIFS adapter will provide better Windows integration when implemented.
 
 **Q: Is content deduplication supported?**
 
