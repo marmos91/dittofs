@@ -19,15 +19,15 @@ import (
 type DefaultMountHandler struct{}
 
 // MountRequest represents a MOUNT (MNT) request from an NFS client.
-// The client sends the path of the directory they wish to
+// The client sends the path of the directory they wish to mount.
 // This structure is decoded from XDR-encoded data received over the network.
 //
 // RFC 1813 Appendix I specifies the MOUNT procedure as:
 //
 //	MNT(dirpath) -> fhstatus3
 type MountRequest struct {
-	// DirPath is the absolute path on the server that the client wants to
-	// This must match an exported path configured in the server's repository.
+	// DirPath is the absolute path on the server that the client wants to mount.
+	// This must match a share name configured in the server's repository.
 	// Example: "/export" or "/data/shared"
 	DirPath string
 }
@@ -53,7 +53,7 @@ type MountResponse struct {
 	FileHandle []byte
 
 	// AuthFlavors is a list of authentication flavors supported by the server
-	// for this  Only present when Status == MountOK.
+	// for this mount. Only present when Status == MountOK.
 	// Common values:
 	//   - 0: AUTH_NULL (no authentication)
 	//   - 1: AUTH_UNIX (Unix-style authentication)
@@ -90,7 +90,7 @@ type MountContext struct {
 //  3. Extract and log authentication credentials
 //  4. Perform access control checks via the repository (most expensive operation)
 //  5. Validate authentication requirements
-//  6. Retrieve the root file handle for the export
+//  6. Retrieve the root file handle for the share
 //  7. Record the mount in the repository for tracking
 //  8. Return the handle with appropriate authentication flavors
 //
@@ -101,14 +101,14 @@ type MountContext struct {
 //   - Cancellation is checked before and after expensive operations
 //
 // Security considerations:
-//   - Validates client IP against export access control lists
-//   - Enforces authentication requirements per export configuration
+//   - Validates client IP against share access control lists
+//   - Enforces authentication requirements per share configuration
 //   - Tracks active mounts for audit and the DUMP procedure
 //   - Returns detailed error codes for troubleshooting
 //
 // Parameters:
 //   - ctx: Context information including cancellation, client address, and auth flavor
-//   - repository: The metadata repository containing export configurations
+//   - repository: The metadata repository containing share configurations
 //   - req: The mount request containing the directory path to mount
 //
 // Returns:
@@ -117,34 +117,12 @@ type MountContext struct {
 //     protocol-level errors are indicated via the response Status field
 //
 // RFC 1813 Appendix I: MOUNT Procedure
-//
-// Example:
-//
-//	handler := &DefaultMountHandler{}
-//	req := &MountRequest{DirPath: "/export"}
-//	ctx := &MountContext{
-//	    Context: context.Background(),
-//	    ClientAddr: "192.168.1.100:1234",
-//	    AuthFlavor: 0, // AUTH_NULL
-//	}
-//	resp, err := handler.Mount(ctx, repository, req)
-//	if err != nil {
-//	    if errors.Is(err, context.Canceled) {
-//	        // Client disconnected
-//	    } else {
-//	        // Internal server error
-//	    }
-//	}
-//	if resp.Status == MountOK {
-//	    // Use resp.FileHandle for NFS operations
-//	}
 func (h *DefaultMountHandler) Mount(
 	ctx *MountContext,
-	repository metadata.Repository,
+	repository metadata.MetadataStore,
 	req *MountRequest,
 ) (*MountResponse, error) {
 	// Check for cancellation before starting any work
-	// This handles the case where the client disconnects before we begin processing
 	select {
 	case <-ctx.Context.Done():
 		logger.Debug("Mount request cancelled before processing: path=%s client=%s error=%v",
@@ -160,24 +138,31 @@ func (h *DefaultMountHandler) Mount(
 		clientIP = ctx.ClientAddr
 	}
 
-	// Extract credentials from context
-	var uid, gid *uint32
-	var gids []uint32
+	// Build identity from authentication credentials
+	var identity *metadata.Identity
+	authMethod := "anonymous"
 
 	if ctx.AuthFlavor == rpc.AuthUnix && ctx.UnixAuth != nil {
-		uid = &ctx.UnixAuth.UID
-		gid = &ctx.UnixAuth.GID
-		gids = ctx.UnixAuth.GIDs
+		authMethod = "unix"
+		identity = &metadata.Identity{
+			UID:      &ctx.UnixAuth.UID,
+			GID:      &ctx.UnixAuth.GID,
+			GIDs:     ctx.UnixAuth.GIDs,
+			Username: ctx.UnixAuth.MachineName, // NFS doesn't have usernames, use machine name
+		}
 
 		logger.Info("Mount request: path=%s client=%s auth=UNIX uid=%d gid=%d machine=%s",
-			req.DirPath, clientIP, *uid, *gid, ctx.UnixAuth.MachineName)
+			req.DirPath, clientIP, ctx.UnixAuth.UID, ctx.UnixAuth.GID, ctx.UnixAuth.MachineName)
 	} else {
+		authMethod = authFlavorName(ctx.AuthFlavor)
+		identity = &metadata.Identity{
+			Username: "anonymous",
+		}
 		logger.Info("Mount request: path=%s client=%s auth=%s",
-			req.DirPath, clientIP, authFlavorName(ctx.AuthFlavor))
+			req.DirPath, clientIP, authMethod)
 	}
 
 	// Check for cancellation before the potentially expensive access control check
-	// Access control may involve complex ACL evaluation and credential squashing
 	select {
 	case <-ctx.Context.Done():
 		logger.Debug("Mount request cancelled before access check: path=%s client=%s error=%v",
@@ -186,17 +171,14 @@ func (h *DefaultMountHandler) Mount(
 	default:
 	}
 
-	// Check export access and apply squashing
-	// The repository will apply AllSquash/RootSquash and return effective credentials
-	// This operation should also respect context cancellation internally
-	accessDecision, authCtx, err := repository.CheckExportAccess(
+	// Check share access control
+	// This validates IP-based access control, authentication, and applies identity mapping
+	accessDecision, authCtx, err := repository.CheckShareAccess(
 		ctx.Context,
-		req.DirPath,
+		req.DirPath, // Share name (NFS uses path as share name)
 		clientIP,
-		ctx.AuthFlavor,
-		uid,
-		gid,
-		gids,
+		authMethod,
+		identity,
 	)
 	if err != nil {
 		// Check if the error is due to context cancellation
@@ -206,11 +188,12 @@ func (h *DefaultMountHandler) Mount(
 			return &MountResponse{Status: MountErrServerFault}, ctx.Context.Err()
 		}
 
-		if exportErr, ok := err.(*metadata.ExportError); ok {
+		// Map StoreError to mount status codes
+		if storeErr, ok := err.(*metadata.StoreError); ok {
 			logger.Warn("Mount denied: path=%s client=%s reason=%s",
-				req.DirPath, clientIP, exportErr.Message)
+				req.DirPath, clientIP, storeErr.Message)
 
-			status := mapExportErrorToMountStatus(exportErr.Code)
+			status := mapStoreErrorToMountStatus(storeErr.Code)
 			return &MountResponse{Status: status}, nil
 		}
 
@@ -225,38 +208,23 @@ func (h *DefaultMountHandler) Mount(
 		return &MountResponse{Status: MountErrAccess}, nil
 	}
 
-	// Log squashing information if credentials were modified (UID or GID)
-	if (authCtx.UID != nil && uid != nil && *authCtx.UID != *uid) ||
-		(authCtx.GID != nil && gid != nil && *authCtx.GID != *gid) {
-		logger.Info("Mount: credentials squashed for path=%s client=%s original_uid=%d effective_uid=%d original_gid=%d effective_gid=%d",
+	// Log identity mapping if credentials were changed
+	if identity.UID != nil && authCtx.Identity.UID != nil && *identity.UID != *authCtx.Identity.UID {
+		logger.Info("Mount: credentials mapped for path=%s client=%s original_uid=%d effective_uid=%d original_gid=%d effective_gid=%d",
 			req.DirPath, clientIP,
+			*identity.UID,
+			*authCtx.Identity.UID,
 			func() uint32 {
-				if uid != nil {
-					return *uid
-				} else {
-					return 0
+				if identity.GID != nil {
+					return *identity.GID
 				}
+				return 0
 			}(),
 			func() uint32 {
-				if authCtx.UID != nil {
-					return *authCtx.UID
-				} else {
-					return 0
+				if authCtx.Identity.GID != nil {
+					return *authCtx.Identity.GID
 				}
-			}(),
-			func() uint32 {
-				if gid != nil {
-					return *gid
-				} else {
-					return 0
-				}
-			}(),
-			func() uint32 {
-				if authCtx.GID != nil {
-					return *authCtx.GID
-				} else {
-					return 0
-				}
+				return 0
 			}(),
 		)
 	}
@@ -270,9 +238,8 @@ func (h *DefaultMountHandler) Mount(
 	default:
 	}
 
-	// Get the root file handle for the export
-	// The repository should also respect context cancellation internally
-	handleBytes, err := repository.GetRootHandle(ctx.Context, req.DirPath)
+	// Get the root file handle for the share
+	rootHandle, err := repository.GetShareRoot(ctx.Context, req.DirPath)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -281,48 +248,42 @@ func (h *DefaultMountHandler) Mount(
 			return &MountResponse{Status: MountErrServerFault}, ctx.Context.Err()
 		}
 
+		// Map StoreError to mount status codes
+		if storeErr, ok := err.(*metadata.StoreError); ok {
+			logger.Error("Failed to get root handle: path=%s client=%s error=%s",
+				req.DirPath, clientIP, storeErr.Message)
+			status := mapStoreErrorToMountStatus(storeErr.Code)
+			return &MountResponse{Status: status}, nil
+		}
+
 		logger.Error("Failed to get root handle: path=%s client=%s error=%v",
 			req.DirPath, clientIP, err)
 		return &MountResponse{Status: MountErrServerFault}, nil
 	}
 
-	// Record mount with ORIGINAL credentials (before squashing)
-	// This preserves audit trail of who actually mounted
-	var recordUID, recordGID *uint32
-	machineName := ""
-	if ctx.UnixAuth != nil {
-		recordUID = &ctx.UnixAuth.UID
-		recordGID = &ctx.UnixAuth.GID
-		machineName = ctx.UnixAuth.MachineName
+	// TODO: Record the mount session for tracking (needed by DUMP procedure)
+	// This requires adding RecordShareMount() to MetadataStore interface
+	// For now, we'll skip recording but log that it should be done
+	logger.Debug("Mount session tracking not yet implemented: path=%s client=%s",
+		req.DirPath, clientIP)
+
+	// Convert allowed auth methods to int32 array for response
+	authFlavors := make([]int32, len(accessDecision.AllowedAuthMethods))
+	for i, method := range accessDecision.AllowedAuthMethods {
+		authFlavors[i] = int32(authMethodToFlavor(method))
 	}
 
-	// Record the mount (non-fatal if it fails, but we log the error)
-	// We don't check for cancellation here because recording is quick
-	// and provides valuable audit information
-	if err := repository.RecordMount(ctx.Context, req.DirPath, clientIP, ctx.AuthFlavor, machineName, recordUID, recordGID); err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("Mount request cancelled during mount recording: path=%s client=%s error=%v",
-				req.DirPath, clientIP, ctx.Context.Err())
-			// We already have the handle, so we can still return success
-			// The mount record is best-effort for audit purposes
-		} else {
-			logger.Warn("Failed to record mount: path=%s client=%s error=%v",
-				req.DirPath, clientIP, err)
-		}
-	}
-
-	authFlavors := make([]int32, len(accessDecision.AllowedAuth))
-	for i, flavor := range accessDecision.AllowedAuth {
-		authFlavors[i] = int32(flavor)
+	// If no specific auth methods configured, return the one used for mount
+	if len(authFlavors) == 0 {
+		authFlavors = []int32{int32(ctx.AuthFlavor)}
 	}
 
 	logger.Info("Mount successful: path=%s client=%s handle_len=%d auth_flavors=%v readonly=%v",
-		req.DirPath, clientIP, len(handleBytes), authFlavors, accessDecision.ReadOnly)
+		req.DirPath, clientIP, len(rootHandle), authFlavors, accessDecision.ReadOnly)
 
 	return &MountResponse{
 		Status:      MountOK,
-		FileHandle:  handleBytes,
+		FileHandle:  rootHandle,
 		AuthFlavors: authFlavors,
 	}, nil
 }
@@ -366,23 +327,6 @@ func DecodeMountRequest(data []byte) (*MountRequest, error) {
 //
 // XDR encoding requires all data to be aligned to 4-byte boundaries,
 // so padding bytes are added after variable-length fields.
-//
-// Returns:
-//   - []byte: The XDR-encoded response ready to send to the client
-//   - error: Any error encountered during encoding
-//
-// Example:
-//
-//	resp := &MountResponse{
-//	    Status:      MountOK,
-//	    FileHandle:  []byte{0x01, 0x02, 0x03, 0x04},
-//	    AuthFlavors: []int32{0},
-//	}
-//	data, err := resp.Encode()
-//	if err != nil {
-//	    // handle error
-//	}
-//	// Send 'data' to client
 func (resp *MountResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
@@ -425,17 +369,17 @@ func (resp *MountResponse) Encode() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// mapExportErrorToMountStatus converts repository export errors to Mount protocol status codes
-func mapExportErrorToMountStatus(code metadata.ExportErrorCode) uint32 {
+// mapStoreErrorToMountStatus converts repository store errors to Mount protocol status codes
+func mapStoreErrorToMountStatus(code metadata.ErrorCode) uint32 {
 	switch code {
-	case metadata.ExportErrNotFound:
+	case metadata.ErrNotFound:
 		return MountErrNoEnt
-	case metadata.ExportErrAccessDenied:
+	case metadata.ErrAccessDenied:
 		return MountErrAccess
-	case metadata.ExportErrAuthRequired:
+	case metadata.ErrAuthRequired:
 		return MountErrAccess
-	case metadata.ExportErrServerFault:
-		return MountErrServerFault
+	case metadata.ErrPermissionDenied:
+		return MountErrAccess
 	default:
 		return MountErrServerFault
 	}
@@ -454,5 +398,21 @@ func authFlavorName(flavor uint32) string {
 		return "DES"
 	default:
 		return fmt.Sprintf("UNKNOWN(%d)", flavor)
+	}
+}
+
+// authMethodToFlavor converts string auth method to RPC auth flavor
+func authMethodToFlavor(method string) uint32 {
+	switch method {
+	case "anonymous", "null":
+		return rpc.AuthNull
+	case "unix":
+		return rpc.AuthUnix
+	case "short":
+		return rpc.AuthShort
+	case "des":
+		return rpc.AuthDES
+	default:
+		return rpc.AuthNull
 	}
 }
