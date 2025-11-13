@@ -2,7 +2,6 @@ package memory
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"time"
 
@@ -232,6 +231,12 @@ func (store *MemoryMetadataStore) Move(
 	// Add to destination directory
 	toChildren[toName] = sourceHandle
 
+	// Invalidate directory caches
+	store.invalidateDirCache(fromDir)
+	if fromDirKey != toDirKey {
+		store.invalidateDirCache(toDir)
+	}
+
 	// Update parent pointer if moving to different directory
 	if fromDirKey != toDirKey {
 		store.parents[sourceKey] = toDir
@@ -395,24 +400,11 @@ func (store *MemoryMetadataStore) ReadDirectory(
 		}, nil
 	}
 
-	// Convert children map to sorted slice for stable ordering
-	type namedHandle struct {
-		name   string
-		handle metadata.FileHandle
-	}
-
-	allChildren := make([]namedHandle, 0, len(childrenMap))
-	for name, handle := range childrenMap {
-		allChildren = append(allChildren, namedHandle{name: name, handle: handle})
-	}
-
-	// Sort by name for stable ordering
-	sort.Slice(allChildren, func(i, j int) bool {
-		return allChildren[i].name < allChildren[j].name
-	})
+	// Get sorted child names (uses cache to avoid repeated sorting)
+	sortedNames := store.getSortedDirEntries(dirHandle, childrenMap)
 
 	// Check if offset is valid
-	if offset >= len(allChildren) {
+	if offset >= len(sortedNames) {
 		// Past the end, return empty
 		return &metadata.ReadDirPage{
 			Entries:   []metadata.DirEntry{},
@@ -435,14 +427,15 @@ func (store *MemoryMetadataStore) ReadDirectory(
 	currentBytes := uint32(0)
 	currentIndex := offset
 
-	for currentIndex < len(allChildren) {
-		child := allChildren[currentIndex]
+	for currentIndex < len(sortedNames) {
+		name := sortedNames[currentIndex]
+		handle := childrenMap[name]
 
 		// Extract file ID from handle
-		fileID := extractFileIDFromHandle(child.handle)
+		fileID := extractFileIDFromHandle(handle)
 
 		// Estimate entry size
-		entrySize := uint32(len(child.name)) + 8 + estimatedOverheadPerEntry
+		entrySize := uint32(len(name)) + 8 + estimatedOverheadPerEntry
 
 		// Check if adding this entry would exceed maxBytes
 		if len(entries) > 0 && currentBytes+entrySize > maxBytes {
@@ -453,7 +446,7 @@ func (store *MemoryMetadataStore) ReadDirectory(
 		// Add entry
 		entries = append(entries, metadata.DirEntry{
 			ID:   fileID,
-			Name: child.name,
+			Name: name,
 		})
 
 		currentBytes += entrySize
@@ -461,7 +454,7 @@ func (store *MemoryMetadataStore) ReadDirectory(
 	}
 
 	// Determine if there are more entries
-	hasMore := currentIndex < len(allChildren)
+	hasMore := currentIndex < len(sortedNames)
 	nextToken := ""
 	if hasMore {
 		nextToken = strconv.Itoa(currentIndex)

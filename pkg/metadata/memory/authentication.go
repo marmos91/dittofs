@@ -4,9 +4,24 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
+	"regexp"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+)
+
+// Pre-compiled regular expressions for Administrator SID validation.
+// These patterns match well-known Windows administrator SID formats to avoid
+// false positives from SIDs that merely end in "-500".
+var (
+	// domainAdminSIDPattern matches domain administrator accounts.
+	// Format: S-1-5-21-<domain identifier (3 parts)>-500
+	// Example: S-1-5-21-3623811015-3361044348-30300820-500
+	domainAdminSIDPattern = regexp.MustCompile(`^S-1-5-21-\d+-\d+-\d+-500$`)
+
+	// localAdminSIDPattern matches local administrator accounts.
+	// Format: S-1-5-<authority>-500
+	// Less common but valid for some local administrator accounts
+	localAdminSIDPattern = regexp.MustCompile(`^S-1-5-\d+-500$`)
 )
 
 // CheckShareAccess verifies if a client can access a share and returns effective credentials.
@@ -187,7 +202,7 @@ func (store *MemoryMetadataStore) CheckPermissions(
 	if uid == attr.UID {
 		// Owner permissions (bits 6-8)
 		permBits = (attr.Mode >> 6) & 0x7
-	} else if gid != nil && (*gid == attr.GID || containsGID(identity.GIDs, attr.GID)) {
+	} else if gid != nil && (*gid == attr.GID || identity.HasGID(attr.GID)) {
 		// Group permissions (bits 3-5)
 		permBits = (attr.Mode >> 3) & 0x7
 	} else {
@@ -259,14 +274,48 @@ func applyIdentityMapping(identity *metadata.Identity, mapping *metadata.Identit
 			result.GIDs = nil
 		}
 
-		// Windows: Check for Administrator SID (S-1-5-*-500)
-		if result.SID != nil && strings.HasSuffix(*result.SID, "-500") {
+		// Windows: Check for Administrator SID using proper validation
+		if result.SID != nil && isAdministratorSID(*result.SID) {
 			result.SID = mapping.AnonymousSID
 			result.GroupSIDs = nil
 		}
 	}
 
 	return result
+}
+
+// isAdministratorSID checks if a Windows SID represents an administrator account.
+//
+// This validates against well-known administrator SID patterns:
+//   - Built-in Administrator: S-1-5-21-<domain>-500 (domain administrator)
+//   - Local Administrator: S-1-5-<authority>-500
+//   - Built-in Administrators group: S-1-5-32-544
+//
+// The function uses proper regex validation to avoid false positives from
+// SIDs that happen to end in "-500" but are not actually administrator accounts.
+//
+// Performance: Uses pre-compiled regex patterns for efficiency on repeated calls.
+//
+// Parameters:
+//   - sid: The Windows SID string to check (e.g., "S-1-5-21-123456789-987654321-111111111-500")
+//
+// Returns:
+//   - bool: true if the SID represents an administrator, false otherwise
+//
+// References:
+//   - https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-identifiers
+func isAdministratorSID(sid string) bool {
+	if sid == "" {
+		return false
+	}
+
+	// S-1-5-32-544: BUILTIN\Administrators group (well-known SID)
+	if sid == "S-1-5-32-544" {
+		return true
+	}
+
+	// Check against pre-compiled patterns for domain and local administrators
+	return domainAdminSIDPattern.MatchString(sid) || localAdminSIDPattern.MatchString(sid)
 }
 
 // matchesIPPattern checks if an IP address matches a pattern (CIDR or exact IP).
@@ -307,7 +356,8 @@ func checkOtherPermissions(mode uint32, requested metadata.Permission) metadata.
 	return granted & requested
 }
 
-// containsGID checks if a target GID is present in a list of GIDs.
+// containsGID is deprecated. Use Identity.HasGID() instead for O(1) lookup.
+// This function is kept for backward compatibility but may be removed in future versions.
 func containsGID(gids []uint32, target uint32) bool {
 	for _, gid := range gids {
 		if gid == target {

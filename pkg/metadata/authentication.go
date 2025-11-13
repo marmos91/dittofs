@@ -83,6 +83,11 @@ type Identity struct {
 	// Empty for anonymous or simple authentication
 	GIDs []uint32
 
+	// gidSet is a cached map for O(1) group membership lookups
+	// Automatically populated from GIDs on first use
+	// Not exported - internal optimization detail
+	gidSet map[uint32]struct{}
+
 	// Windows-style identity
 	// Used by SMB/CIFS and Windows-based protocols
 
@@ -107,6 +112,37 @@ type Identity struct {
 	// Examples: "WORKGROUP", "EXAMPLE.COM", "example.com"
 	// Empty for local authentication
 	Domain string
+}
+
+// HasGID checks if the identity has the specified group ID in its supplementary groups.
+//
+// This method provides O(1) group membership lookup by lazily building and caching
+// a map on first use. For users with many supplementary groups (e.g., 50-100+),
+// this is significantly faster than linear search.
+//
+// Thread safety: This method is NOT thread-safe. Identity objects should not be
+// shared across goroutines, or callers must provide their own synchronization.
+//
+// Parameters:
+//   - gid: The group ID to check for
+//
+// Returns:
+//   - bool: true if the GID is in the supplementary groups list, false otherwise
+func (i *Identity) HasGID(gid uint32) bool {
+	if len(i.GIDs) == 0 {
+		return false
+	}
+
+	// Lazy initialization of the GID set
+	if i.gidSet == nil {
+		i.gidSet = make(map[uint32]struct{}, len(i.GIDs))
+		for _, g := range i.GIDs {
+			i.gidSet[g] = struct{}{}
+		}
+	}
+
+	_, exists := i.gidSet[gid]
+	return exists
 }
 
 // AccessDecision contains the result of a share-level access control check.

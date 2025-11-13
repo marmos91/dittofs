@@ -151,6 +151,9 @@ func (store *MemoryMetadataStore) RemoveFile(
 	// Remove from parent's children
 	delete(childrenMap, name)
 
+	// Invalidate parent directory cache
+	store.invalidateDirCache(parentHandle)
+
 	// Update parent timestamps
 	now := time.Now()
 	parentData.Attr.Mtime = now
@@ -279,6 +282,9 @@ func (store *MemoryMetadataStore) RemoveDirectory(
 
 	// Remove from parent's children
 	delete(childrenMap, name)
+
+	// Invalidate parent directory cache
+	store.invalidateDirCache(parentHandle)
 
 	// Decrement parent's link count
 	// (removing a subdirectory removes one ".." reference to parent)

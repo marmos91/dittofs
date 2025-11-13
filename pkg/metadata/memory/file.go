@@ -508,6 +508,9 @@ func (store *MemoryMetadataStore) Create(
 	}
 	store.children[parentKey][name] = handle
 
+	// Invalidate parent directory cache
+	store.invalidateDirCache(parentHandle)
+
 	// Set parent relationship
 	store.parents[key] = parentHandle
 
@@ -649,6 +652,9 @@ func (store *MemoryMetadataStore) CreateSymlink(
 		store.children[parentKey] = make(map[string]metadata.FileHandle)
 	}
 	store.children[parentKey][name] = handle
+
+	// Invalidate parent directory cache
+	store.invalidateDirCache(parentHandle)
 
 	// Set parent relationship
 	store.parents[key] = parentHandle
@@ -815,6 +821,9 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 	}
 	store.children[parentKey][name] = handle
 
+	// Invalidate parent directory cache
+	store.invalidateDirCache(parentHandle)
+
 	// Set parent relationship
 	store.parents[key] = parentHandle
 
@@ -922,6 +931,9 @@ func (store *MemoryMetadataStore) CreateHardLink(
 	}
 	store.children[dirKey][name] = targetHandle
 
+	// Invalidate directory cache
+	store.invalidateDirCache(dirHandle)
+
 	// Increment link count
 	store.linkCounts[targetKey]++
 
@@ -998,7 +1010,7 @@ func (store *MemoryMetadataStore) checkPermissionsLocked(
 	if uid == attr.UID {
 		// Owner permissions (bits 6-8)
 		permBits = (attr.Mode >> 6) & 0x7
-	} else if gid != nil && (*gid == attr.GID || containsGID(identity.GIDs, attr.GID)) {
+	} else if gid != nil && (*gid == attr.GID || identity.HasGID(attr.GID)) {
 		// Group permissions (bits 3-5)
 		permBits = (attr.Mode >> 3) & 0x7
 	} else {
