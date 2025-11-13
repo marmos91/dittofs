@@ -62,6 +62,12 @@ type FilesystemCapabilities struct {
 	// false: Case information may be lost
 	CasePreserving bool
 
+	// ChownRestricted indicates if chown is restricted to the superuser
+	// true: Only root/superuser can change file ownership (POSIX-compliant)
+	// false: File owner can give away ownership
+	// Most POSIX-compliant systems set this to true for security
+	ChownRestricted bool
+
 	// SupportsACLs indicates whether the filesystem supports Access Control Lists
 	// beyond basic Unix permissions
 	SupportsACLs bool

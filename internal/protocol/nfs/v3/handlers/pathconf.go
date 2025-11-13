@@ -138,16 +138,17 @@ type PathConfContext struct {
 //
 //  1. Check for context cancellation before starting
 //  2. Validate the file handle format and length
-//  3. Verify the file handle exists via repository.GetFile()
-//  4. Retrieve PATHCONF properties from the repository
-//  5. Retrieve file attributes for cache consistency
-//  6. Return comprehensive PATHCONF information
+//  3. Verify the file handle exists via store.GetFile()
+//  4. Retrieve filesystem capabilities from store
+//  5. Map FilesystemCapabilities to PATHCONF response
+//  6. Return comprehensive PATHCONF information with file attributes
 //
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (filesystem properties) is delegated to repository
-//   - File handle validation is performed by repository.GetFile()
+//   - All business logic (filesystem properties) is delegated to store
+//   - File handle validation is performed by store.GetFile()
+//   - FilesystemCapabilities provides POSIX-compatible properties
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //   - Respects context cancellation for graceful shutdown and timeouts
 //
@@ -166,16 +167,18 @@ type PathConfContext struct {
 //
 // **POSIX Semantics:**
 //
-// The returned values should match POSIX pathconf() behavior where applicable:
-//   - linkmax: _PC_LINK_MAX
-//   - name_max: _PC_NAME_MAX
-//   - no_trunc: _PC_NO_TRUNC
-//   - chown_restricted: _PC_CHOWN_RESTRICTED
+// The returned values match POSIX pathconf() behavior:
+//   - linkmax: _PC_LINK_MAX (from FilesystemCapabilities.MaxLinks)
+//   - name_max: _PC_NAME_MAX (from FilesystemCapabilities.MaxNameLength)
+//   - no_trunc: _PC_NO_TRUNC (from FilesystemCapabilities.NoTrunc)
+//   - chown_restricted: _PC_CHOWN_RESTRICTED (from FilesystemCapabilities.ChownRestricted)
+//   - case_insensitive: (from FilesystemCapabilities.CaseInsensitive)
+//   - case_preserving: (from FilesystemCapabilities.CasePreserving)
 //
 // **Security Considerations:**
 //
 //   - Handle validation prevents malformed requests
-//   - Repository layer can enforce access control if needed
+//   - store layer can enforce access control if needed
 //   - Client context enables audit logging
 //   - No sensitive information leaked in error messages
 //
@@ -183,16 +186,15 @@ type PathConfContext struct {
 //
 // This operation respects context cancellation:
 //   - Checks at operation start before any work
-//   - Checks before each repository call (GetFile, GetPathConf)
+//   - Checks before store calls (GetFile, GetCapabilities)
 //   - Returns types.NFS3ErrIO on cancellation
 //
 // PATHCONF is typically called infrequently (during mount or filesystem
-// discovery), so cancellation overhead is negligible. The checks help handle
-// client disconnects and server shutdown gracefully.
+// discovery), so cancellation overhead is negligible.
 //
 // **Parameters:**
 //   - ctx: Context with cancellation, client address and auth flavor
-//   - repository: The metadata repository containing filesystem configuration
+//   - metadataStore: The metadata store containing filesystem configuration
 //   - req: The PATHCONF request containing the file handle
 //
 // **Returns:**
@@ -211,7 +213,7 @@ type PathConfContext struct {
 //	    ClientAddr: "192.168.1.100:1234",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	}
-//	resp, err := handler.PathConf(ctx, repository, req)
+//	resp, err := handler.PathConf(ctx, store, req)
 //	if err != nil {
 //	    // Internal server error occurred
 //	    return nil, err
@@ -221,11 +223,14 @@ type PathConfContext struct {
 //	}
 func (h *DefaultNFSHandler) PathConf(
 	ctx *PathConfContext,
-	repository metadata.Repository,
+	metadataStore metadata.MetadataStore,
 	req *PathConfRequest,
 ) (*PathConfResponse, error) {
-	logger.Debug("PATHCONF request: handle=%x client=%s auth=%d",
-		req.Handle, ctx.ClientAddr, ctx.AuthFlavor)
+	// Extract client IP for logging
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+
+	logger.Info("PATHCONF: handle=%x client=%s auth=%d",
+		req.Handle, clientIP, ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Check for context cancellation before starting work
@@ -234,7 +239,7 @@ func (h *DefaultNFSHandler) PathConf(
 	select {
 	case <-ctx.Context.Done():
 		logger.Warn("PATHCONF cancelled: handle=%x client=%s error=%v",
-			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+			req.Handle, clientIP, ctx.Context.Err())
 		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
 	default:
 	}
@@ -243,56 +248,52 @@ func (h *DefaultNFSHandler) PathConf(
 	// Step 2: Validate file handle
 	// ========================================================================
 
-	if err := validateFileHandle(req.Handle); err != nil {
-		logger.Debug("PATHCONF failed: invalid handle: %v", err)
-		return &PathConfResponse{Status: types.NFS3ErrBadHandle}, nil
+	if err := validatePathConfHandle(req.Handle); err != nil {
+		logger.Warn("PATHCONF validation failed: client=%s error=%v",
+			clientIP, err)
+		return &PathConfResponse{Status: err.nfsStatus}, nil
 	}
 
 	// ========================================================================
-	// Step 3: Verify the file handle exists and is valid in the repository
+	// Step 3: Verify the file handle exists and is valid in the store
 	// ========================================================================
 
-	// Check context before repository call
+	// Check context before store call
 	select {
 	case <-ctx.Context.Done():
 		logger.Warn("PATHCONF cancelled before GetFile: handle=%x client=%s error=%v",
-			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+			req.Handle, clientIP, ctx.Context.Err())
 		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
 	default:
 	}
 
-	attr, err := repository.GetFile(ctx.Context, metadata.FileHandle(req.Handle))
+	fileHandle := metadata.FileHandle(req.Handle)
+	attr, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
-		logger.Debug("PATHCONF failed: handle=%x client=%s error=%v",
-			req.Handle, ctx.ClientAddr, err)
+		logger.Warn("PATHCONF failed: handle not found: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
 		return &PathConfResponse{Status: types.NFS3ErrNoEnt}, nil
 	}
 
 	// ========================================================================
-	// Step 4: Retrieve PATHCONF properties from the repository
+	// Step 4: Retrieve filesystem capabilities from the store
 	// ========================================================================
-	// All business logic about filesystem properties is handled by the repository
+	// FilesystemCapabilities contains POSIX-compatible properties
+	// that map directly to PATHCONF response fields
 
-	// Check context before repository call
+	// Check context before store call
 	select {
 	case <-ctx.Context.Done():
-		logger.Warn("PATHCONF cancelled before GetPathConf: handle=%x client=%s error=%v",
-			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		logger.Warn("PATHCONF cancelled before GetCapabilities: handle=%x client=%s error=%v",
+			req.Handle, clientIP, ctx.Context.Err())
 		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
 	default:
 	}
 
-	pathConf, err := repository.GetPathConf(ctx.Context, metadata.FileHandle(req.Handle))
+	caps, err := metadataStore.GetFilesystemCapabilities(ctx.Context, fileHandle)
 	if err != nil {
-		logger.Error("PATHCONF failed: handle=%x client=%s error=failed to retrieve pathconf: %v",
-			req.Handle, ctx.ClientAddr, err)
-		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
-	}
-
-	// Defensive check: ensure repository returned valid pathConf
-	if pathConf == nil {
-		logger.Error("PATHCONF failed: handle=%x client=%s error=repository returned nil pathconf",
-			req.Handle, ctx.ClientAddr)
+		logger.Error("PATHCONF failed: could not get filesystem capabilities: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
 		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
 	}
 
@@ -300,35 +301,80 @@ func (h *DefaultNFSHandler) PathConf(
 	// Step 5: Generate file attributes for cache consistency
 	// ========================================================================
 
-	fileid, err := ExtractFileIDFromHandle(req.Handle)
-	if err != nil {
-		logger.Error("PATHCONF failed: handle=%x client=%s error=failed to extract file ID: %v",
-			req.Handle, ctx.ClientAddr, err)
-		return &PathConfResponse{Status: types.NFS3ErrBadHandle}, nil
-	}
-
-	// Convert metadata attributes to NFS wire format
+	fileid := xdr.ExtractFileID(fileHandle)
 	nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
-	logger.Info("PATHCONF successful: client=%s handle=%x", ctx.ClientAddr, req.Handle)
+	logger.Info("PATHCONF successful: handle=%x client=%s", req.Handle, clientIP)
 	logger.Debug("PATHCONF properties: linkmax=%d namemax=%d no_trunc=%v chown_restricted=%v case_insensitive=%v case_preserving=%v",
-		pathConf.Linkmax, pathConf.NameMax, pathConf.NoTrunc,
-		pathConf.ChownRestricted, pathConf.CaseInsensitive, pathConf.CasePreserving)
+		caps.MaxHardLinkCount, caps.MaxFilenameLen, !caps.TruncatesLongNames,
+		caps.ChownRestricted, !caps.CaseSensitive, caps.CasePreserving)
 
 	// ========================================================================
-	// Step 6: Build response with data from repository
+	// Step 6: Build response with filesystem capabilities
 	// ========================================================================
+	// Map FilesystemCapabilities fields to PATHCONF response fields
 
 	return &PathConfResponse{
 		Status:          types.NFS3OK,
 		Attr:            nfsAttr,
-		Linkmax:         pathConf.Linkmax,
-		NameMax:         pathConf.NameMax,
-		NoTrunc:         pathConf.NoTrunc,
-		ChownRestricted: pathConf.ChownRestricted,
-		CaseInsensitive: pathConf.CaseInsensitive,
-		CasePreserving:  pathConf.CasePreserving,
+		Linkmax:         caps.MaxHardLinkCount,
+		NameMax:         caps.MaxFilenameLen,
+		NoTrunc:         !caps.TruncatesLongNames,
+		ChownRestricted: caps.ChownRestricted,
+		CaseInsensitive: !caps.CaseSensitive,
+		CasePreserving:  caps.CasePreserving,
 	}, nil
+}
+
+// ============================================================================
+// Request Validation
+// ============================================================================
+
+// pathConfValidationError represents a PATHCONF request validation error.
+type pathConfValidationError struct {
+	message   string
+	nfsStatus uint32
+}
+
+func (e *pathConfValidationError) Error() string {
+	return e.message
+}
+
+// validatePathConfHandle validates a PATHCONF file handle.
+//
+// Checks performed:
+//   - Handle is not empty
+//   - Handle length is within RFC 1813 limits (max 64 bytes)
+//   - Handle is long enough for file ID extraction (min 8 bytes)
+//
+// Returns:
+//   - nil if valid
+//   - *pathConfValidationError with NFS status if invalid
+func validatePathConfHandle(handle []byte) *pathConfValidationError {
+	if len(handle) == 0 {
+		return &pathConfValidationError{
+			message:   "empty file handle",
+			nfsStatus: types.NFS3ErrBadHandle,
+		}
+	}
+
+	// RFC 1813 specifies maximum handle size of 64 bytes
+	if len(handle) > 64 {
+		return &pathConfValidationError{
+			message:   fmt.Sprintf("file handle too long: %d bytes (max 64)", len(handle)),
+			nfsStatus: types.NFS3ErrBadHandle,
+		}
+	}
+
+	// Handle must be at least 8 bytes for file ID extraction
+	if len(handle) < 8 {
+		return &pathConfValidationError{
+			message:   fmt.Sprintf("file handle too short: %d bytes (min 8)", len(handle)),
+			nfsStatus: types.NFS3ErrBadHandle,
+		}
+	}
+
+	return nil
 }
 
 // ============================================================================
@@ -368,35 +414,16 @@ func DecodePathConfRequest(data []byte) (*PathConfRequest, error) {
 
 	reader := bytes.NewReader(data)
 
-	// Read handle length (4 bytes, big-endian)
-	var handleLen uint32
-	if err := binary.Read(reader, binary.BigEndian, &handleLen); err != nil {
-		return nil, fmt.Errorf("failed to read handle length: %w", err)
+	// ========================================================================
+	// Decode file handle
+	// ========================================================================
+
+	handle, err := xdr.DecodeOpaque(reader)
+	if err != nil {
+		return nil, fmt.Errorf("decode handle: %w", err)
 	}
 
-	// Validate handle length (NFS v3 handles are typically <= 64 bytes per RFC 1813)
-	if handleLen > 64 {
-		return nil, fmt.Errorf("invalid handle length: %d (max 64)", handleLen)
-	}
-
-	// Prevent zero-length handles which would cause issues downstream
-	if handleLen == 0 {
-		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
-	}
-
-	// Ensure we have enough data for the handle
-	// 4 bytes for length + handleLen bytes for data
-	if len(data) < int(4+handleLen) {
-		return nil, fmt.Errorf("data too short for handle: need %d bytes total, got %d", 4+handleLen, len(data))
-	}
-
-	// Read handle data
-	handle := make([]byte, handleLen)
-	if err := binary.Read(reader, binary.BigEndian, &handle); err != nil {
-		return nil, fmt.Errorf("failed to read handle data: %w", err)
-	}
-
-	logger.Debug("Decoded PATHCONF request: handle_len=%d", handleLen)
+	logger.Debug("Decoded PATHCONF request: handle_len=%d", len(handle))
 
 	return &PathConfRequest{Handle: handle}, nil
 }
@@ -454,7 +481,7 @@ func (resp *PathConfResponse) Encode() ([]byte, error) {
 	// ========================================================================
 
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
-		return nil, fmt.Errorf("failed to write status: %w", err)
+		return nil, fmt.Errorf("write status: %w", err)
 	}
 
 	// ========================================================================
@@ -462,7 +489,7 @@ func (resp *PathConfResponse) Encode() ([]byte, error) {
 	// ========================================================================
 
 	if err := xdr.EncodeOptionalFileAttr(&buf, resp.Attr); err != nil {
-		return nil, fmt.Errorf("failed to encode attributes: %w", err)
+		return nil, fmt.Errorf("encode attributes: %w", err)
 	}
 
 	// ========================================================================
@@ -470,7 +497,7 @@ func (resp *PathConfResponse) Encode() ([]byte, error) {
 	// ========================================================================
 
 	if resp.Status != types.NFS3OK {
-		logger.Debug("Encoding PATHCONF error response: status=%d", resp.Status)
+		logger.Debug("Encoded PATHCONF error response: status=%d", resp.Status)
 		return buf.Bytes(), nil
 	}
 
@@ -480,12 +507,12 @@ func (resp *PathConfResponse) Encode() ([]byte, error) {
 
 	// Write linkmax
 	if err := binary.Write(&buf, binary.BigEndian, resp.Linkmax); err != nil {
-		return nil, fmt.Errorf("failed to write linkmax: %w", err)
+		return nil, fmt.Errorf("write linkmax: %w", err)
 	}
 
 	// Write name_max
 	if err := binary.Write(&buf, binary.BigEndian, resp.NameMax); err != nil {
-		return nil, fmt.Errorf("failed to write name_max: %w", err)
+		return nil, fmt.Errorf("write name_max: %w", err)
 	}
 
 	// Write no_trunc (boolean as uint32)
@@ -494,7 +521,7 @@ func (resp *PathConfResponse) Encode() ([]byte, error) {
 		noTrunc = 1
 	}
 	if err := binary.Write(&buf, binary.BigEndian, noTrunc); err != nil {
-		return nil, fmt.Errorf("failed to write no_trunc: %w", err)
+		return nil, fmt.Errorf("write no_trunc: %w", err)
 	}
 
 	// Write chown_restricted (boolean as uint32)
@@ -503,7 +530,7 @@ func (resp *PathConfResponse) Encode() ([]byte, error) {
 		chownRestricted = 1
 	}
 	if err := binary.Write(&buf, binary.BigEndian, chownRestricted); err != nil {
-		return nil, fmt.Errorf("failed to write chown_restricted: %w", err)
+		return nil, fmt.Errorf("write chown_restricted: %w", err)
 	}
 
 	// Write case_insensitive (boolean as uint32)
@@ -512,7 +539,7 @@ func (resp *PathConfResponse) Encode() ([]byte, error) {
 		caseInsensitive = 1
 	}
 	if err := binary.Write(&buf, binary.BigEndian, caseInsensitive); err != nil {
-		return nil, fmt.Errorf("failed to write case_insensitive: %w", err)
+		return nil, fmt.Errorf("write case_insensitive: %w", err)
 	}
 
 	// Write case_preserving (boolean as uint32)
@@ -521,9 +548,9 @@ func (resp *PathConfResponse) Encode() ([]byte, error) {
 		casePreserving = 1
 	}
 	if err := binary.Write(&buf, binary.BigEndian, casePreserving); err != nil {
-		return nil, fmt.Errorf("failed to write case_preserving: %w", err)
+		return nil, fmt.Errorf("write case_preserving: %w", err)
 	}
 
-	logger.Debug("Encoded PATHCONF response: %d bytes", buf.Len())
+	logger.Debug("Encoded PATHCONF response: %d bytes status=%d", buf.Len(), resp.Status)
 	return buf.Bytes(), nil
 }

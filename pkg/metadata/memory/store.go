@@ -308,6 +308,7 @@ func NewMemoryMetadataStoreWithDefaults() *MemoryMetadataStore {
 			SupportsSymlinks:      true, // We store symlink targets
 			CaseSensitive:         true, // Go map keys are case-sensitive
 			CasePreserving:        true, // We store exact filenames
+			ChownRestricted:       false,
 			SupportsACLs:          false,
 			SupportsExtendedAttrs: false,
 			TruncatesLongNames:    true, // Reject with error, don't truncate
