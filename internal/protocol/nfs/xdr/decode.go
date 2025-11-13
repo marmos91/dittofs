@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -80,7 +81,7 @@ func DecodeString(reader io.Reader) (string, error) {
 	return string(data), nil
 }
 
-// xdr.DecodeSetAttrs decodes NFS sattr3 (set attributes) structure from XDR.
+// DecodeSetAttrs decodes NFS sattr3 (set attributes) structure from XDR.
 //
 // Per RFC 1813 Section 2.5.3 (sattr3):
 //
@@ -94,15 +95,15 @@ func DecodeString(reader io.Reader) (string, error) {
 //	};
 //
 // Each field is a discriminated union:
-//   - set=0 (DONT_CHANGE): field not set, skip value
-//   - set=1 (SET_TO_CLIENT_TIME): field is set, read value (for time: read nfstime3)
+//   - set=0 (DONT_CHANGE): field not set, pointer remains nil
+//   - set=1 (SET_TO_CLIENT_TIME): field is set, pointer to value (for time: read nfstime3)
 //   - set=2 (SET_TO_SERVER_TIME): field is set to server time (for time fields only)
 //
 // Parameters:
 //   - reader: Input stream positioned at start of sattr3
 //
 // Returns:
-//   - *metadata.SetAttrs: Decoded attributes with flags indicating which fields are set
+//   - *metadata.SetAttrs: Decoded attributes with nil pointers for unchanged fields
 //   - error: Decoding error
 func DecodeSetAttrs(reader io.Reader) (*metadata.SetAttrs, error) {
 	attr := &metadata.SetAttrs{}
@@ -112,11 +113,12 @@ func DecodeSetAttrs(reader io.Reader) (*metadata.SetAttrs, error) {
 	if err := binary.Read(reader, binary.BigEndian, &setMode); err != nil {
 		return nil, fmt.Errorf("read set_mode: %w", err)
 	}
-	attr.SetMode = (setMode == 1)
-	if attr.SetMode {
-		if err := binary.Read(reader, binary.BigEndian, &attr.Mode); err != nil {
+	if setMode == 1 {
+		var mode uint32
+		if err := binary.Read(reader, binary.BigEndian, &mode); err != nil {
 			return nil, fmt.Errorf("read mode: %w", err)
 		}
+		attr.Mode = &mode
 	}
 
 	// Decode UID (set_uid3)
@@ -124,11 +126,12 @@ func DecodeSetAttrs(reader io.Reader) (*metadata.SetAttrs, error) {
 	if err := binary.Read(reader, binary.BigEndian, &setUID); err != nil {
 		return nil, fmt.Errorf("read set_uid: %w", err)
 	}
-	attr.SetUID = (setUID == 1)
-	if attr.SetUID {
-		if err := binary.Read(reader, binary.BigEndian, &attr.UID); err != nil {
+	if setUID == 1 {
+		var uid uint32
+		if err := binary.Read(reader, binary.BigEndian, &uid); err != nil {
 			return nil, fmt.Errorf("read uid: %w", err)
 		}
+		attr.UID = &uid
 	}
 
 	// Decode GID (set_gid3)
@@ -136,11 +139,12 @@ func DecodeSetAttrs(reader io.Reader) (*metadata.SetAttrs, error) {
 	if err := binary.Read(reader, binary.BigEndian, &setGID); err != nil {
 		return nil, fmt.Errorf("read set_gid: %w", err)
 	}
-	attr.SetGID = (setGID == 1)
-	if attr.SetGID {
-		if err := binary.Read(reader, binary.BigEndian, &attr.GID); err != nil {
+	if setGID == 1 {
+		var gid uint32
+		if err := binary.Read(reader, binary.BigEndian, &gid); err != nil {
 			return nil, fmt.Errorf("read gid: %w", err)
 		}
+		attr.GID = &gid
 	}
 
 	// Decode Size (set_size3)
@@ -148,11 +152,12 @@ func DecodeSetAttrs(reader io.Reader) (*metadata.SetAttrs, error) {
 	if err := binary.Read(reader, binary.BigEndian, &setSize); err != nil {
 		return nil, fmt.Errorf("read set_size: %w", err)
 	}
-	attr.SetSize = (setSize == 1)
-	if attr.SetSize {
-		if err := binary.Read(reader, binary.BigEndian, &attr.Size); err != nil {
+	if setSize == 1 {
+		var size uint64
+		if err := binary.Read(reader, binary.BigEndian, &size); err != nil {
 			return nil, fmt.Errorf("read size: %w", err)
 		}
+		attr.Size = &size
 	}
 
 	// Decode Atime (set_atime)
@@ -162,9 +167,8 @@ func DecodeSetAttrs(reader io.Reader) (*metadata.SetAttrs, error) {
 	}
 	switch setAtime {
 	case 0: // DONT_CHANGE
-		attr.SetAtime = false
+		// attr.Atime remains nil
 	case 1: // SET_TO_CLIENT_TIME
-		attr.SetAtime = true
 		var seconds, nseconds uint32
 		if err := binary.Read(reader, binary.BigEndian, &seconds); err != nil {
 			return nil, fmt.Errorf("read atime seconds: %w", err)
@@ -172,10 +176,11 @@ func DecodeSetAttrs(reader io.Reader) (*metadata.SetAttrs, error) {
 		if err := binary.Read(reader, binary.BigEndian, &nseconds); err != nil {
 			return nil, fmt.Errorf("read atime nseconds: %w", err)
 		}
-		attr.Atime = timeValToTime(seconds, nseconds)
+		t := timeValToTime(seconds, nseconds)
+		attr.Atime = &t
 	case 2: // SET_TO_SERVER_TIME
-		attr.SetAtime = true
-		attr.Atime = getCurrentTime()
+		t := time.Now()
+		attr.Atime = &t
 	default:
 		return nil, fmt.Errorf("invalid set_atime value: %d", setAtime)
 	}
@@ -187,9 +192,8 @@ func DecodeSetAttrs(reader io.Reader) (*metadata.SetAttrs, error) {
 	}
 	switch setMtime {
 	case 0: // DONT_CHANGE
-		attr.SetMtime = false
+		// attr.Mtime remains nil
 	case 1: // SET_TO_CLIENT_TIME
-		attr.SetMtime = true
 		var seconds, nseconds uint32
 		if err := binary.Read(reader, binary.BigEndian, &seconds); err != nil {
 			return nil, fmt.Errorf("read mtime seconds: %w", err)
@@ -197,10 +201,11 @@ func DecodeSetAttrs(reader io.Reader) (*metadata.SetAttrs, error) {
 		if err := binary.Read(reader, binary.BigEndian, &nseconds); err != nil {
 			return nil, fmt.Errorf("read mtime nseconds: %w", err)
 		}
-		attr.Mtime = timeValToTime(seconds, nseconds)
+		t := timeValToTime(seconds, nseconds)
+		attr.Mtime = &t
 	case 2: // SET_TO_SERVER_TIME
-		attr.SetMtime = true
-		attr.Mtime = getCurrentTime()
+		t := time.Now()
+		attr.Mtime = &t
 	default:
 		return nil, fmt.Errorf("invalid set_mtime value: %d", setMtime)
 	}
