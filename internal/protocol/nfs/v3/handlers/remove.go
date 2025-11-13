@@ -93,12 +93,12 @@ type RemoveContext struct {
 	AuthFlavor uint32
 
 	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	UID *uint32
 
 	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	GID *uint32
 
@@ -129,10 +129,10 @@ type RemoveContext struct {
 //  1. Check for context cancellation (early exit if client disconnected)
 //  2. Validate request parameters (handle format, filename syntax)
 //  3. Extract client IP and authentication credentials from context
-//  4. Verify parent directory exists (via repository)
+//  4. Verify parent directory exists (via store)
 //  5. Capture pre-operation directory state (for WCC)
 //  6. Check for cancellation before remove operation
-//  7. Delegate file removal to repository.RemoveFile()
+//  7. Delegate file removal to store.RemoveFile()
 //  8. Return updated directory WCC data
 //
 // **Context cancellation:**
@@ -146,14 +146,14 @@ type RemoveContext struct {
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (deletion, validation, access control) delegated to repository
-//   - File handle validation performed by repository.GetFile()
+//   - All business logic (deletion, validation, access control) delegated to store
+//   - File handle validation performed by store.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
 // **Authentication:**
 //
 // The context contains authentication credentials from the RPC layer.
-// The protocol layer passes these to the repository, which can implement:
+// The protocol layer passes these to the store, which can implement:
 //   - Write permission checking on the parent directory
 //   - Access control based on UID/GID
 //   - Ownership verification (can only delete own files, or root can delete any)
@@ -177,7 +177,7 @@ type RemoveContext struct {
 // **Error Handling:**
 //
 // Protocol-level errors return appropriate NFS status codes.
-// Repository errors are mapped to NFS status codes:
+// store errors are mapped to NFS status codes:
 //   - Directory not found → types.NFS3ErrNoEnt
 //   - Not a directory → types.NFS3ErrNotDir
 //   - File not found → types.NFS3ErrNoEnt
@@ -201,14 +201,14 @@ type RemoveContext struct {
 // **Security Considerations:**
 //
 //   - Handle validation prevents malformed requests
-//   - Repository enforces write permission on parent directory
+//   - store enforces write permission on parent directory
 //   - Filename validation prevents directory traversal attacks
 //   - Client context enables audit logging
 //   - Cannot delete directories (prevents accidental data loss)
 //
 // **Parameters:**
 //   - ctx: Context with cancellation, client address and authentication credentials
-//   - repository: The metadata repository for file and directory operations
+//   - metadataStore: The metadata store for file and directory operations
 //   - req: The remove request containing directory handle and filename
 //
 // **Returns:**
@@ -232,7 +232,7 @@ type RemoveContext struct {
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Remove(ctx, repository, req)
+//	resp, err := handler.Remove(ctx, store, req)
 //	if err != nil {
 //	    if errors.Is(err, context.Canceled) {
 //	        // Client disconnected
@@ -245,7 +245,7 @@ type RemoveContext struct {
 //	}
 func (h *DefaultNFSHandler) Remove(
 	ctx *RemoveContext,
-	repository metadata.Repository,
+	metadataStore metadata.MetadataStore,
 	req *RemoveRequest,
 ) (*RemoveResponse, error) {
 	// Check for cancellation before starting any work
@@ -279,7 +279,7 @@ func (h *DefaultNFSHandler) Remove(
 	// ========================================================================
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
-	dirAttr, err := repository.GetFile(ctx.Context, dirHandle)
+	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -319,18 +319,12 @@ func (h *DefaultNFSHandler) Remove(
 	// Step 3: Build authentication context
 	// ========================================================================
 
-	authCtx := &metadata.AuthContext{
-		AuthFlavor: ctx.AuthFlavor,
-		UID:        ctx.UID,
-		GID:        ctx.GID,
-		GIDs:       ctx.GIDs,
-		ClientAddr: clientIP,
-	}
+	authCtx := buildAuthContextFromRemove(ctx)
 
 	// ========================================================================
-	// Step 4: Remove file via repository
+	// Step 4: Remove file via store
 	// ========================================================================
-	// The repository handles:
+	// The store handles:
 	// - Verifying parent is a directory
 	// - Verifying the file exists
 	// - Checking it's not a directory (must use RMDIR for directories)
@@ -340,9 +334,9 @@ func (h *DefaultNFSHandler) Remove(
 	// - Updating parent directory timestamps
 	//
 	// We don't check for cancellation inside RemoveFile to maintain atomicity.
-	// The repository should respect context internally for its operations.
+	// The store should respect context internally for its operations.
 
-	removedFileAttr, err := repository.RemoveFile(authCtx, dirHandle, req.Filename)
+	removedFileAttr, err := metadataStore.RemoveFile(authCtx, dirHandle, req.Filename)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -351,7 +345,7 @@ func (h *DefaultNFSHandler) Remove(
 
 			// Get updated directory attributes for WCC data (best effort)
 			var wccAfter *types.NFSFileAttr
-			if dirAttr, getErr := repository.GetFile(ctx.Context, dirHandle); getErr == nil {
+			if dirAttr, getErr := metadataStore.GetFile(ctx.Context, dirHandle); getErr == nil {
 				dirID := xdr.ExtractFileID(dirHandle)
 				wccAfter = xdr.MetadataToNFS(dirAttr, dirID)
 			}
@@ -363,12 +357,12 @@ func (h *DefaultNFSHandler) Remove(
 			}, ctx.Context.Err()
 		}
 
-		// Map repository errors to NFS status codes
-		nfsStatus := xdr.MapRepositoryErrorToNFSStatus(err, clientIP, "REMOVE")
+		// Map store errors to NFS status codes
+		nfsStatus := xdr.MapStoreErrorToNFSStatus(err, clientIP, "REMOVE")
 
 		// Get updated directory attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
-		if dirAttr, getErr := repository.GetFile(ctx.Context, dirHandle); getErr == nil {
+		if dirAttr, getErr := metadataStore.GetFile(ctx.Context, dirHandle); getErr == nil {
 			dirID := xdr.ExtractFileID(dirHandle)
 			wccAfter = xdr.MetadataToNFS(dirAttr, dirID)
 		}
@@ -385,7 +379,7 @@ func (h *DefaultNFSHandler) Remove(
 	// ========================================================================
 
 	// Get updated directory attributes for WCC data
-	dirAttr, err = repository.GetFile(ctx.Context, dirHandle)
+	dirAttr, err = metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		logger.Warn("REMOVE: file removed but cannot get updated directory attributes: dir=%x error=%v",
 			req.DirHandle, err)
@@ -676,4 +670,30 @@ func (resp *RemoveResponse) Encode() ([]byte, error) {
 
 	logger.Debug("Encoded REMOVE response: %d bytes status=%d", buf.Len(), resp.Status)
 	return buf.Bytes(), nil
+}
+
+// buildAuthContextFromRemove creates an AuthContext from RemoveContext.
+//
+// This translates the NFS-specific authentication context into the generic
+// AuthContext used by the metadata store.
+func buildAuthContextFromRemove(ctx *RemoveContext) *metadata.AuthContext {
+	// Map auth flavor to auth method string
+	authMethod := "anonymous"
+	if ctx.AuthFlavor == 1 {
+		authMethod = "unix"
+	}
+
+	// Build identity with proper UID/GID/GIDs structure
+	identity := &metadata.Identity{
+		UID:  ctx.UID,
+		GID:  ctx.GID,
+		GIDs: ctx.GIDs,
+	}
+
+	return &metadata.AuthContext{
+		Context:    ctx.Context,
+		AuthMethod: authMethod,
+		Identity:   identity,
+		ClientAddr: ctx.ClientAddr,
+	}
 }
