@@ -110,17 +110,17 @@ type RenameContext struct {
 	AuthFlavor uint32
 
 	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	UID *uint32
 
 	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	GID *uint32
 
 	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	GIDs []uint32
 }
@@ -156,7 +156,7 @@ type RenameContext struct {
 //  7. Verify destination directory exists and is valid
 //  8. Capture pre-operation WCC data for destination directory
 //  9. Check for cancellation before atomic rename operation
-//  10. Delegate rename operation to repository.RenameFile()
+//  10. Delegate rename operation to store.RenameFile()
 //  11. Return updated WCC data for both directories
 //
 // **Context cancellation:**
@@ -171,14 +171,14 @@ type RenameContext struct {
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (rename, replace, validation) delegated to repository
-//   - File handle validation performed by repository.GetFile()
+//   - All business logic (rename, replace, validation) delegated to store
+//   - File handle validation performed by store.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
 // **Authentication:**
 //
 // The context contains authentication credentials from the RPC layer.
-// The protocol layer passes these to the repository, which implements:
+// The protocol layer passes these to the store, which implements:
 //   - Write permission checking on source directory (to remove entry)
 //   - Write permission checking on destination directory (to add entry)
 //   - Ownership checks for replacing existing files
@@ -191,7 +191,7 @@ type RenameContext struct {
 //   - The source should not disappear before destination is updated
 //   - Failures should leave filesystem in consistent state
 //
-// The repository implementation should ensure atomicity or handle
+// The store implementation should ensure atomicity or handle
 // failure recovery appropriately.
 //
 // **Special Cases:**
@@ -207,7 +207,7 @@ type RenameContext struct {
 // **Error Handling:**
 //
 // Protocol-level errors return appropriate NFS status codes.
-// Repository errors are mapped to NFS status codes:
+// store errors are mapped to NFS status codes:
 //   - Source not found → types.NFS3ErrNoEnt
 //   - Source/dest not directory → types.NFS3ErrNotDir
 //   - Invalid names → NFS3ErrInval
@@ -231,14 +231,14 @@ type RenameContext struct {
 // **Security Considerations:**
 //
 //   - Handle validation prevents malformed requests
-//   - Repository enforces write permission on both directories
+//   - store enforces write permission on both directories
 //   - Name validation prevents directory traversal
 //   - Cannot rename "." or ".." (prevents filesystem corruption)
 //   - Client context enables audit logging
 //
 // **Parameters:**
 //   - ctx: Context with cancellation, client address and authentication credentials
-//   - repository: The metadata repository for file operations
+//   - metadataStore: The metadata store for file operations
 //   - req: The rename request containing source and destination info
 //
 // **Returns:**
@@ -264,7 +264,7 @@ type RenameContext struct {
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Rename(ctx, repository, req)
+//	resp, err := handler.Rename(ctx, store, req)
 //	if err != nil {
 //	    if errors.Is(err, context.Canceled) {
 //	        // Client disconnected
@@ -277,7 +277,7 @@ type RenameContext struct {
 //	}
 func (h *DefaultNFSHandler) Rename(
 	ctx *RenameContext,
-	repository metadata.Repository,
+	metadataStore metadata.MetadataStore,
 	req *RenameRequest,
 ) (*RenameResponse, error) {
 	// Check for cancellation before starting any work
@@ -311,7 +311,7 @@ func (h *DefaultNFSHandler) Rename(
 	// ========================================================================
 
 	fromDirHandle := metadata.FileHandle(req.FromDirHandle)
-	fromDirAttr, err := repository.GetFile(ctx.Context, fromDirHandle)
+	fromDirAttr, err := metadataStore.GetFile(ctx.Context, fromDirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -365,7 +365,7 @@ func (h *DefaultNFSHandler) Rename(
 	// ========================================================================
 
 	toDirHandle := metadata.FileHandle(req.ToDirHandle)
-	toDirAttr, err := repository.GetFile(ctx.Context, toDirHandle)
+	toDirAttr, err := metadataStore.GetFile(ctx.Context, toDirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -445,9 +445,9 @@ func (h *DefaultNFSHandler) Rename(
 	}
 
 	// ========================================================================
-	// Step 4: Perform rename via repository
+	// Step 4: Perform rename via store
 	// ========================================================================
-	// The repository is responsible for:
+	// The store is responsible for:
 	// - Verifying source file exists
 	// - Checking write permissions on both directories
 	// - Handling atomic replacement of destination if it exists
@@ -457,18 +457,12 @@ func (h *DefaultNFSHandler) Rename(
 	// - Ensuring atomicity or proper rollback
 	//
 	// We don't check for cancellation inside RenameFile to maintain atomicity.
-	// The repository should respect context internally for its operations.
+	// The store should respect context internally for its operations.
 
-	// Build authentication context for repository
-	authCtx := &metadata.AuthContext{
-		AuthFlavor: ctx.AuthFlavor,
-		UID:        ctx.UID,
-		GID:        ctx.GID,
-		GIDs:       ctx.GIDs,
-		ClientAddr: clientIP,
-	}
+	// Build authentication context for store
+	authCtx := buildAuthContextFromRename(ctx)
 
-	err = repository.RenameFile(authCtx, fromDirHandle, req.FromName, toDirHandle, req.ToName)
+	err = metadataStore.Move(authCtx, fromDirHandle, req.FromName, toDirHandle, req.ToName)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -477,13 +471,13 @@ func (h *DefaultNFSHandler) Rename(
 
 			// Get updated directory attributes for WCC data (best effort)
 			var fromDirWccAfter *types.NFSFileAttr
-			if updatedFromDirAttr, getErr := repository.GetFile(ctx.Context, fromDirHandle); getErr == nil {
+			if updatedFromDirAttr, getErr := metadataStore.GetFile(ctx.Context, fromDirHandle); getErr == nil {
 				fromDirID := xdr.ExtractFileID(fromDirHandle)
 				fromDirWccAfter = xdr.MetadataToNFS(updatedFromDirAttr, fromDirID)
 			}
 
 			var toDirWccAfter *types.NFSFileAttr
-			if updatedToDirAttr, getErr := repository.GetFile(ctx.Context, toDirHandle); getErr == nil {
+			if updatedToDirAttr, getErr := metadataStore.GetFile(ctx.Context, toDirHandle); getErr == nil {
 				toDirID := xdr.ExtractFileID(toDirHandle)
 				toDirWccAfter = xdr.MetadataToNFS(updatedToDirAttr, toDirID)
 			}
@@ -497,24 +491,24 @@ func (h *DefaultNFSHandler) Rename(
 			}, ctx.Context.Err()
 		}
 
-		logger.Error("RENAME failed: repository error: from='%s' to='%s' client=%s error=%v",
+		logger.Error("RENAME failed: store error: from='%s' to='%s' client=%s error=%v",
 			req.FromName, req.ToName, clientIP, err)
 
 		// Get updated directory attributes for WCC data
 		var fromDirWccAfter *types.NFSFileAttr
-		if updatedFromDirAttr, getErr := repository.GetFile(ctx.Context, fromDirHandle); getErr == nil {
+		if updatedFromDirAttr, getErr := metadataStore.GetFile(ctx.Context, fromDirHandle); getErr == nil {
 			fromDirID := xdr.ExtractFileID(fromDirHandle)
 			fromDirWccAfter = xdr.MetadataToNFS(updatedFromDirAttr, fromDirID)
 		}
 
 		var toDirWccAfter *types.NFSFileAttr
-		if updatedToDirAttr, getErr := repository.GetFile(ctx.Context, toDirHandle); getErr == nil {
+		if updatedToDirAttr, getErr := metadataStore.GetFile(ctx.Context, toDirHandle); getErr == nil {
 			toDirID := xdr.ExtractFileID(toDirHandle)
 			toDirWccAfter = xdr.MetadataToNFS(updatedToDirAttr, toDirID)
 		}
 
-		// Map repository errors to NFS status codes
-		status := xdr.MapRepositoryErrorToNFSStatus(err, clientIP, "rename")
+		// Map store errors to NFS status codes
+		status := xdr.MapStoreErrorToNFSStatus(err, clientIP, "rename")
 
 		return &RenameResponse{
 			Status:           status,
@@ -531,7 +525,7 @@ func (h *DefaultNFSHandler) Rename(
 
 	// Get updated source directory attributes
 	var fromDirWccAfter *types.NFSFileAttr
-	if updatedFromDirAttr, getErr := repository.GetFile(ctx.Context, fromDirHandle); getErr != nil {
+	if updatedFromDirAttr, getErr := metadataStore.GetFile(ctx.Context, fromDirHandle); getErr != nil {
 		logger.Warn("RENAME: successful but cannot get updated source directory attributes: dir=%x error=%v",
 			req.FromDirHandle, getErr)
 		// fromDirWccAfter will be nil
@@ -542,7 +536,7 @@ func (h *DefaultNFSHandler) Rename(
 
 	// Get updated destination directory attributes
 	var toDirWccAfter *types.NFSFileAttr
-	if updatedToDirAttr, getErr := repository.GetFile(ctx.Context, toDirHandle); getErr != nil {
+	if updatedToDirAttr, getErr := metadataStore.GetFile(ctx.Context, toDirHandle); getErr != nil {
 		logger.Warn("RENAME: successful but cannot get updated destination directory attributes: dir=%x error=%v",
 			req.ToDirHandle, getErr)
 		// toDirWccAfter will be nil
@@ -849,4 +843,30 @@ func (resp *RenameResponse) Encode() ([]byte, error) {
 
 	logger.Debug("Encoded RENAME response: %d bytes status=%d", buf.Len(), resp.Status)
 	return buf.Bytes(), nil
+}
+
+// buildAuthContextFromRename creates an AuthContext from RenameContext.
+//
+// This translates the NFS-specific authentication context into the generic
+// AuthContext used by the metadata store.
+func buildAuthContextFromRename(ctx *RenameContext) *metadata.AuthContext {
+	// Map auth flavor to auth method string
+	authMethod := "anonymous"
+	if ctx.AuthFlavor == 1 {
+		authMethod = "unix"
+	}
+
+	// Build identity with proper UID/GID/GIDs structure
+	identity := &metadata.Identity{
+		UID:  ctx.UID,
+		GID:  ctx.GID,
+		GIDs: ctx.GIDs,
+	}
+
+	return &metadata.AuthContext{
+		Context:    ctx.Context,
+		AuthMethod: authMethod,
+		Identity:   identity,
+		ClientAddr: ctx.ClientAddr,
+	}
 }
