@@ -15,9 +15,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// NFSFacade implements the server.Facade interface for NFSv3 protocol.
+// NFSAdapter implements the adapter.Adapter interface for NFSv3 protocol.
 //
-// This facade provides a production-ready NFSv3 server with:
+// This adapter provides a production-ready NFSv3 server with:
 //   - Graceful shutdown with configurable timeout
 //   - Connection limiting and resource management
 //   - Context-based request cancellation
@@ -25,9 +25,9 @@ import (
 //   - Thread-safe operation with atomic counters
 //
 // Architecture:
-// NFSFacade manages the TCP listener and connection lifecycle. Each accepted
+// NFSAdapter manages the TCP listener and connection lifecycle. Each accepted
 // connection is handled by a conn instance (defined elsewhere) that manages
-// RPC request/response cycles. The facade coordinates graceful shutdown across
+// RPC request/response cycles. The adapter coordinates graceful shutdown across
 // all active connections using context cancellation and wait groups.
 //
 // Shutdown flow:
@@ -40,7 +40,7 @@ import (
 // Thread safety:
 // All methods are safe for concurrent use. The shutdown mechanism uses sync.Once
 // to ensure idempotent behavior even if Stop() is called multiple times.
-type NFSFacade struct {
+type NFSAdapter struct {
 	// config holds the server configuration (ports, timeouts, limits)
 	config NFSConfig
 
@@ -201,9 +201,9 @@ func (c *NFSConfig) validate() error {
 	return nil
 }
 
-// New creates a new NFSFacade with the specified configuration.
+// New creates a new NFSAdapter with the specified configuration.
 //
-// The facade is created in a stopped state. Call SetRepositories() to inject
+// The adapter is created in a stopped state. Call SetStores() to inject
 // the backend repositories, then call Serve() to start accepting connections.
 //
 // Configuration:
@@ -213,10 +213,10 @@ func (c *NFSConfig) validate() error {
 // Parameters:
 //   - config: Server configuration (ports, timeouts, limits)
 //
-// Returns a configured but not yet started NFSFacade.
+// Returns a configured but not yet started NFSAdapter.
 //
 // Panics if config validation fails.
-func New(config NFSConfig) *NFSFacade {
+func New(config NFSConfig) *NFSAdapter {
 	// Apply defaults for zero values
 	config.applyDefaults()
 
@@ -237,7 +237,7 @@ func New(config NFSConfig) *NFSFacade {
 	// Create shutdown context for request cancellation
 	shutdownCtx, cancelRequests := context.WithCancel(context.Background())
 
-	return &NFSFacade{
+	return &NFSAdapter{
 		config:         config,
 		nfsHandler:     &v3.DefaultNFSHandler{},
 		mountHandler:   &mount.DefaultMountHandler{},
@@ -251,7 +251,7 @@ func New(config NFSConfig) *NFSFacade {
 // SetStores injects the shared metadata and content stores.
 //
 // This method is called by DittoServer before Serve() is called. The stores
-// are shared across all protocol facades.
+// are shared across all protocol adapters.
 //
 // Parameters:
 //   - metadataStore: store for file system metadata operations
@@ -259,7 +259,7 @@ func New(config NFSConfig) *NFSFacade {
 //
 // Thread safety:
 // Called exactly once before Serve(), no synchronization needed.
-func (s *NFSFacade) SetStores(metadataStore metadata.MetadataStore, contentRepo content.ContentStore) {
+func (s *NFSAdapter) SetStores(metadataStore metadata.MetadataStore, contentRepo content.ContentStore) {
 	s.metadataStore = metadataStore
 	s.content = contentRepo
 	logger.Debug("NFS repositories configured")
@@ -301,8 +301,8 @@ func (s *NFSFacade) SetStores(metadataStore metadata.MetadataStore, contentRepo 
 //   - error if listener fails to start or shutdown is not graceful
 //
 // Thread safety:
-// Serve() should only be called once per NFSFacade instance.
-func (s *NFSFacade) Serve(ctx context.Context) error {
+// Serve() should only be called once per NFSAdapter instance.
+func (s *NFSAdapter) Serve(ctx context.Context) error {
 	// Create TCP listener
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", s.config.Port))
 	if err != nil {
@@ -422,7 +422,7 @@ func (s *NFSFacade) Serve(ctx context.Context) error {
 // Thread safety:
 // Safe to call multiple times and from multiple goroutines.
 // Uses sync.Once to ensure shutdown logic only runs once.
-func (s *NFSFacade) initiateShutdown() {
+func (s *NFSAdapter) initiateShutdown() {
 	s.shutdownOnce.Do(func() {
 		logger.Debug("NFS shutdown initiated")
 
@@ -460,7 +460,7 @@ func (s *NFSFacade) initiateShutdown() {
 //
 // Thread safety:
 // Should only be called once, from the Serve() method.
-func (s *NFSFacade) gracefulShutdown() error {
+func (s *NFSAdapter) gracefulShutdown() error {
 	activeCount := s.connCount.Load()
 	logger.Info("NFS graceful shutdown: waiting for %d active connection(s) (timeout: %v)",
 		activeCount, s.config.ShutdownTimeout)
@@ -506,7 +506,7 @@ func (s *NFSFacade) gracefulShutdown() error {
 //
 // Thread safety:
 // Safe to call concurrently from multiple goroutines.
-func (s *NFSFacade) Stop(ctx context.Context) error {
+func (s *NFSAdapter) Stop(ctx context.Context) error {
 	// Always initiate shutdown first
 	s.initiateShutdown()
 
@@ -553,7 +553,7 @@ func (s *NFSFacade) Stop(ctx context.Context) error {
 //   - Memory usage
 //
 // The goroutine exits when the context is cancelled.
-func (s *NFSFacade) logMetrics(ctx context.Context) {
+func (s *NFSAdapter) logMetrics(ctx context.Context) {
 	ticker := time.NewTicker(s.config.MetricsLogInterval)
 	defer ticker.Stop()
 
@@ -576,7 +576,7 @@ func (s *NFSFacade) logMetrics(ctx context.Context) {
 //
 // Thread safety:
 // Safe to call concurrently. Uses atomic operations.
-func (s *NFSFacade) GetActiveConnections() int32 {
+func (s *NFSAdapter) GetActiveConnections() int32 {
 	return s.connCount.Load()
 }
 
@@ -590,24 +590,24 @@ func (s *NFSFacade) GetActiveConnections() int32 {
 //   - tcpConn: The accepted TCP connection
 //
 // Returns a conn instance ready to serve requests.
-func (s *NFSFacade) newConn(tcpConn net.Conn) *NFSConn {
-	return NewNFSConn(s, tcpConn)
+func (s *NFSAdapter) newConn(tcpConn net.Conn) *NFSConnection {
+	return NewNFSConnection(s, tcpConn)
 }
 
 // Port returns the TCP port the NFS server is listening on.
 //
-// This implements the server.Facade interface.
+// This implements the adapter.Adapter interface.
 //
 // Returns the configured port number.
-func (s *NFSFacade) Port() int {
+func (s *NFSAdapter) Port() int {
 	return s.config.Port
 }
 
 // Protocol returns "NFS" as the protocol identifier.
 //
-// This implements the server.Facade interface.
+// This implements the adapter.Adapter interface.
 //
 // Returns "NFS" for logging and metrics.
-func (s *NFSFacade) Protocol() string {
+func (s *NFSAdapter) Protocol() string {
 	return "NFS"
 }

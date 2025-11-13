@@ -1,4 +1,4 @@
-package facade
+package adapter
 
 import (
 	"context"
@@ -7,22 +7,22 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// Facade represents a protocol-specific server facade that can be managed by DittoServer.
+// Adapter represents a protocol-specific server adapter that can be managed by DittoServer.
 //
-// Each facade implements a specific file sharing protocol (e.g., NFS, SMB)
-// and provides a unified interface for lifecycle management. All facades share the
+// Each adapter implements a specific file sharing protocol (e.g., NFS, SMB)
+// and provides a unified interface for lifecycle management. All adapters share the
 // same metadata and content repositories, ensuring consistency across protocols.
 //
 // Lifecycle:
-//  1. Creation: Facade is created with protocol-specific configuration
-//  2. Repository injection: SetRepositories() provides shared backend access
+//  1. Creation: Adapter is created with protocol-specific configuration
+//  2. Repository injection: SetStores() provides shared backend access
 //  3. Startup: Serve() starts the protocol server and blocks until shutdown
 //  4. Shutdown: Stop() initiates graceful shutdown with timeout
 //
 // Thread safety:
-// Implementations must be safe for concurrent use. SetRepositories() is called
+// Implementations must be safe for concurrent use. SetStores() is called
 // once before Serve(), but Stop() may be called concurrently with Serve().
-type Facade interface {
+type Adapter interface {
 	// Serve starts the protocol server and blocks until the context is cancelled
 	// or an unrecoverable error occurs.
 	//
@@ -33,7 +33,7 @@ type Facade interface {
 	//   - Return context.Canceled or nil
 	//
 	// If Serve returns before context cancellation, DittoServer treats it as
-	// a fatal error and stops all other facades.
+	// a fatal error and stops all other adapters.
 	//
 	// Parameters:
 	//   - ctx: Controls the server lifecycle. Cancellation triggers shutdown.
@@ -78,14 +78,14 @@ type Facade interface {
 	//
 	// Examples: "NFS", "SMB", "WebDAV", "FTP"
 	//
-	// The returned value should be constant for the lifecycle of the facade.
+	// The returned value should be constant for the lifecycle of the adapter.
 	Protocol() string
 
-	// Port returns the TCP/UDP port the facade is listening on.
+	// Port returns the TCP/UDP port the adapter is listening on.
 	//
 	// This is used for logging and health checks. The returned value should
 	// be constant after Serve() is called.
 	//
-	// Returns 0 if the facade has not yet started or uses dynamic port allocation.
+	// Returns 0 if the adapter has not yet started or uses dynamic port allocation.
 	Port() int
 }

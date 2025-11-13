@@ -48,7 +48,7 @@ DittoFS provides a modular architecture that separates concerns through three ke
                      │
         ┌────────────┴────────────┐
         │     DittoFS Core        │
-        │   (Facade Manager)      │
+        │   (Adapter Manager)     │
         └────────┬──────────┬─────┘
                  │          │
                  ▼          ▼
@@ -64,11 +64,11 @@ DittoFS provides a modular architecture that separates concerns through three ke
 
 ### Key Concepts
 
-**1. Facades**: Protocol-specific interfaces that clients connect to
+**1. Adapters**: Protocol-specific interfaces that clients connect to
 
-- Each facade implements a specific file access protocol (NFS, SMB, etc.)
-- Multiple facades can run simultaneously
-- Facades are lightweight wrappers that translate protocol operations
+- Each adapter implements a specific file access protocol (NFS, SMB, etc.)
+- Multiple adapters can run simultaneously
+- Adapters are lightweight wrappers that translate protocol operations
 
 **2. Metadata Repository**: Stores file structure and attributes
 
@@ -87,7 +87,7 @@ DittoFS provides a modular architecture that separates concerns through three ke
 
 1. **Multi-Protocol Support**: Expose the same data through NFS, SMB, FTP, or custom protocols
 2. **No Special Permissions**: Runs entirely in userspace - no FUSE, no kernel modules
-3. **Maximum Flexibility**: Mix and match any protocol facade with any storage backend
+3. **Maximum Flexibility**: Mix and match any protocol adapter with any storage backend
 4. **Better Performance**: Direct protocol implementation, optimized I/O paths
 5. **Easy Integration**: Pure Go means easy embedding in existing applications
 6. **Cloud Native**: Perfect for distributed systems and cloud architectures
@@ -97,7 +97,7 @@ DittoFS provides a modular architecture that separates concerns through three ke
 ### Unified Multi-Protocol Gateway
 
 ```
-Facades → NFS + SMB (simultaneous access)
+Adapters → NFS + SMB (simultaneous access)
 Metadata → PostgreSQL (ACID compliance, fast queries)
 Content → S3 (scalable, durable, cost-effective)
 
@@ -137,7 +137,7 @@ go build -o dittofs cmd/dittofs/main.go
 ### Run Server
 
 ```bash
-# Default configuration (NFS facade on port 12049)
+# Default configuration (NFS adapter on port 12049)
 ./dittofs
 
 # Custom configuration
@@ -177,30 +177,31 @@ DittoFS includes comprehensive testing:
 
 ## Architecture Deep Dive
 
-### Facade Pattern
+### Adapter Pattern
 
-DittoFS uses the facade pattern to provide clean protocol abstractions:
+DittoFS uses the Adapter pattern to provide clean protocol abstractions:
 
 ```go
-// Facade interface - each protocol implements this
-type Facade interface {
-    Start(ctx context.Context) error
+// Adapter interface - each protocol implements this
+type Adapter interface {
+    Serve(ctx context.Context) error
     Stop(ctx context.Context) error
     Protocol() string
+    Port() int
 }
 
-// Example: NFS Facade
-type NFSFacade struct {
-    port           string
-    metadataRepo   metadata.Repository
-    contentRepo    content.Repository
+// Example: NFS Adapter
+type NFSAdapter struct {
+    config         NFSConfig
+    metadataStore  metadata.MetadataStore
+    content        content.ContentStore
 }
 
-// Multiple facades can run concurrently
-server := dittofs.New()
-server.AddFacade(nfs.NewFacade(":12049", metadataRepo, contentRepo))
-server.AddFacade(smb.NewFacade(":445", metadataRepo, contentRepo)) // Future
-server.Start()
+// Multiple adapters can run concurrently
+server := dittofs.New(metadataRepo, contentRepo)
+server.AddAdapter(nfs.New(nfsConfig))
+server.AddAdapter(smb.New(smbConfig)) // Future
+server.Serve(ctx)
 ```
 
 ### Repository Interfaces
@@ -273,14 +274,14 @@ func main() {
     // Initialize repositories
     metadataRepo := NewPostgresRepository(dbConn)
     contentRepo := NewS3Repository(s3Client, "my-bucket")
-    
-    // Create and configure facade
-    nfsFacade := nfs.NewFacade(":12049", metadataRepo, contentRepo)
-    
+
+    // Create and configure adapter
+    nfsAdapter := nfs.New(nfs.NFSConfig{Port: 12049})
+
     // Start server
-    server := dittofs.New()
-    server.AddFacade(nfsFacade)
-    server.Start()
+    server := dittofs.New(metadataRepo, contentRepo)
+    server.AddAdapter(nfsAdapter)
+    server.Serve(ctx)
 }
 ```
 
@@ -309,7 +310,7 @@ with DittoFS. Instead, use direct mount commands or the provided test clients.
 
 ### ✅ Implemented
 
-**NFS Facade (NFSv3)**
+**NFS Adapter (NFSv3)**
 
 - Core read operations (GETATTR, LOOKUP, READ, READDIR, READDIRPLUS)
 - Core write operations (WRITE, CREATE, MKDIR, REMOVE, RMDIR, RENAME)
@@ -325,7 +326,7 @@ with DittoFS. Instead, use direct mount commands or the provided test clients.
 
 **Infrastructure**
 
-- Facade management framework
+- Adapter management framework
 - XDR encoding/decoding
 - RPC message handling
 - Configurable logging
@@ -365,7 +366,7 @@ with DittoFS. Instead, use direct mount commands or the provided test clients.
 - [ ] S3-compatible content repository
 - [ ] SQLite metadata repository
 
-**Phase 6: SMB Protocol Facade**
+**Phase 6: SMB Protocol Adapter**
 
 - [ ] SMB/CIFS protocol implementation
 - [ ] Windows client compatibility

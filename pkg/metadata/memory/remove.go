@@ -138,9 +138,12 @@ func (store *MemoryMetadataStore) RemoveFile(
 	linkCount := store.linkCounts[fileKey]
 	if linkCount > 1 {
 		// File has other hard links, just decrement count
+		// Clear ContentID so caller knows not to delete content
+		returnAttr.ContentID = ""
 		store.linkCounts[fileKey]--
 	} else {
 		// This was the last link, remove all metadata
+		// ContentID is returned so caller can delete content
 		delete(store.files, fileKey)
 		delete(store.linkCounts, fileKey)
 		delete(store.parents, fileKey)

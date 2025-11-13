@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/content"
 	contentfs "github.com/marmos91/dittofs/pkg/content/fs"
 	contentmemory "github.com/marmos91/dittofs/pkg/content/memory"
-	"github.com/marmos91/dittofs/pkg/facade/nfs"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/memory"
 	"github.com/marmos91/dittofs/pkg/server"
@@ -151,15 +151,15 @@ func (ts *TestServer) Start() error {
 	}
 	ts.t.Logf("Added share %s", ts.config.ShareName)
 
-	// Create NFS facade
+	// Create NFS adapter
 	nfsConfig := nfs.NFSConfig{
 		Port: ts.config.Port,
 	}
-	nfsFacade := nfs.New(nfsConfig)
+	nfsAdapter := nfs.New(nfsConfig)
 
 	// Create DittoServer
 	ts.server = server.New(ts.metadataStore, ts.contentStore)
-	ts.server.AddFacade(nfsFacade)
+	ts.server.AddAdapter(nfsAdapter)
 
 	// Start server in background
 	ts.wg.Add(1)

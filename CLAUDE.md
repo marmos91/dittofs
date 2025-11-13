@@ -75,19 +75,19 @@ go vet ./...
 
 ### Core Abstraction Layers
 
-DittoFS uses a **facade pattern** to decouple protocols from storage:
+DittoFS uses the **Adapter pattern** to decouple protocols from storage:
 
 ```
 ┌─────────────────────────────────────────┐
-│         Protocol Facades                │
+│         Protocol Adapters               │
 │   (NFS, SMB future, WebDAV future)      │
-│   pkg/facade/{nfs,smb}/                 │
+│   pkg/adapter/{nfs,smb}/                │
 └───────────────┬─────────────────────────┘
                 │
                 ▼
 ┌─────────────────────────────────────────┐
 │         DittoServer                     │
-│   (Facade lifecycle management)         │
+│   (Adapter lifecycle management)        │
 │   pkg/server/server.go                  │
 └───────┬───────────────────┬─────────────┘
         │                   │
@@ -100,10 +100,10 @@ DittoFS uses a **facade pattern** to decouple protocols from storage:
 
 ### Key Interfaces
 
-**1. Facade Interface** (`pkg/facade/facade.go`)
-- Each protocol implements the `Facade` interface
-- Lifecycle: `SetRepositories() → Serve() → Stop()`
-- Multiple facades share the same metadata/content repositories
+**1. Adapter Interface** (`pkg/adapter/adapter.go`)
+- Each protocol implements the `Adapter` interface
+- Lifecycle: `SetStores() → Serve() → Stop()`
+- Multiple adapters share the same metadata/content repositories
 - Thread-safe, supports graceful shutdown
 
 **2. Metadata Repository** (`pkg/metadata/repository.go`)
@@ -127,9 +127,9 @@ dittofs/
 │   └── main.go               # Server startup, flag parsing, init
 │
 ├── pkg/                      # Public API (stable interfaces)
-│   ├── facade/               # Protocol facade interface
-│   │   ├── facade.go         # Core Facade interface
-│   │   └── nfs/              # NFS facade implementation
+│   ├── adapter/              # Protocol adapter interface
+│   │   ├── adapter.go        # Core Adapter interface
+│   │   └── nfs/              # NFS adapter implementation
 │   ├── metadata/             # Metadata repository interface
 │   │   ├── repository.go     # Repository interface
 │   │   ├── types.go          # FileAttr, FileHandle, etc.
@@ -138,7 +138,7 @@ dittofs/
 │   │   ├── repository.go     # Repository interface
 │   │   └── fs/               # Filesystem implementation
 │   └── server/               # DittoServer orchestration
-│       └── server.go         # Multi-facade server management
+│       └── server.go         # Multi-adapter server management
 │
 └── internal/                 # Private implementation details
     ├── protocol/nfs/         # NFS protocol implementation
@@ -312,13 +312,13 @@ Large I/O operations use buffer pools (`internal/protocol/nfs/bufpool.go`):
 3. Handle sparse files and truncation
 4. Consider using `SeekableContentRepository` for efficiency
 
-### Adding a New Protocol Facade
+### Adding a New Protocol Adapter
 
-1. Create new package in `pkg/facade/`
-2. Implement `Facade` interface:
+1. Create new package in `pkg/adapter/`
+2. Implement `Adapter` interface:
    - `Serve(ctx)`: Start protocol server
    - `Stop(ctx)`: Graceful shutdown
-   - `SetRepositories()`: Receive metadata/content repos
+   - `SetStores()`: Receive metadata/content repos
    - `Protocol()`: Return name
    - `Port()`: Return listen port
 3. Register in `cmd/dittofs/main.go`

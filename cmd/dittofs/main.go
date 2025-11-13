@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	contentFs "github.com/marmos91/dittofs/pkg/content/fs"
-	"github.com/marmos91/dittofs/pkg/facade/nfs"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/memory"
 	dittoServer "github.com/marmos91/dittofs/pkg/server"
@@ -255,12 +255,12 @@ func main() {
 		ShutdownTimeout: *shutdownTimeout,
 	}
 
-	nfsFacade := nfs.New(nfsConfig)
-	dittoSrv.AddFacade(nfsFacade)
+	nfsAdapter := nfs.New(nfsConfig)
+	dittoSrv.AddAdapter(nfsAdapter)
 
 	// Log server configuration
 	logger.Info("Server configuration:")
-	logger.Info("  Port: %d", nfsFacade.Port())
+	logger.Info("  Port: %d", nfsAdapter.Port())
 
 	// Start server in background
 	serverDone := make(chan error, 1)

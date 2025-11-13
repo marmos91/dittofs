@@ -7,35 +7,34 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/content"
-	"github.com/marmos91/dittofs/pkg/facade"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// DittoServer manages the lifecycle of multiple protocol facades that share
+// DittoServer manages the lifecycle of multiple protocol adapters that share
 // common metadata and content repositories.
 //
 // Architecture:
-// DittoServer implements a facade pattern where different file sharing protocols
-// (NFS, SMB, WebDAV, etc.) are represented as Facade implementations. All facades
-// share the same backend repositories, providing a unified view of the file system
-// across all protocols.
+// DittoServer orchestrates different file sharing protocols (NFS, SMB, WebDAV, etc.)
+// that are represented as Adapter implementations. All adapters share the same backend
+// repositories, providing a unified view of the file system across all protocols.
 //
 // Lifecycle:
 //  1. Creation: New() with repositories
-//  2. Registration: AddFacade() for each protocol
-//  3. Startup: Serve() starts all facades concurrently
-//  4. Shutdown: Context cancellation triggers graceful shutdown of all facades
+//  2. Registration: AddAdapter() for each protocol
+//  3. Startup: Serve() starts all adapters concurrently
+//  4. Shutdown: Context cancellation triggers graceful shutdown of all adapters
 //
 // Thread safety:
-// DittoServer is safe for concurrent use. AddFacade() may be called concurrently
+// DittoServer is safe for concurrent use. AddAdapter() may be called concurrently
 // with other methods. Serve() should only be called once per server instance.
 //
 // Example usage:
 //
 //	server := New(metadataRepo, contentRepo)
-//	server.AddFacade(nfs.New(nfsConfig)).
-//	       AddFacade(smb.New(smbConfig))
+//	server.AddAdapter(nfs.New(nfsConfig))
+//	server.AddAdapter(smb.New(smbConfig))
 //
 //	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 //	defer cancel()
@@ -44,16 +43,16 @@ import (
 //	    log.Fatal(err)
 //	}
 type DittoServer struct {
-	// metadata is the shared metadata repository for all facades
+	// metadata is the shared metadata repository for all adapters
 	metadata metadata.MetadataStore
 
-	// content is the shared content repository for all facades
+	// content is the shared content repository for all adapters
 	content content.ContentStore
 
-	// facades contains all registered protocol facades
-	facades []facade.Facade
+	// adapters contains all registered protocol adapters
+	adapters []adapter.Adapter
 
-	// mu protects the facades slice and serving flag
+	// mu protects the adapters slice and serving flag
 	mu sync.RWMutex
 
 	// serveOnce ensures Serve() is only called once
@@ -66,7 +65,7 @@ type DittoServer struct {
 
 // New creates a new DittoServer with the provided repositories.
 //
-// The repositories are shared across all facades added to this server, ensuring
+// The repositories are shared across all adapters added to this server, ensuring
 // that file system operations are consistent regardless of which protocol is used
 // to access the data.
 //
@@ -74,7 +73,7 @@ type DittoServer struct {
 //   - metadata: Repository for file system metadata operations (required)
 //   - content: Repository for file content operations (required)
 //
-// Returns a configured but not yet started DittoServer. Call AddFacade() to
+// Returns a configured but not yet started DittoServer. Call AddAdapter() to
 // register protocols, then Serve() to start the server.
 //
 // Panics if either repository is nil (indicates programmer error).
@@ -89,28 +88,27 @@ func New(metadata metadata.MetadataStore, content content.ContentStore) *DittoSe
 	return &DittoServer{
 		metadata: metadata,
 		content:  content,
-		facades:  make([]facade.Facade, 0, 4), // Pre-allocate for common case of 2-4 facades
+		adapters: make([]adapter.Adapter, 0, 4), // Pre-allocate for common case of 2-4 adapters
 	}
 }
 
-// AddFacade registers a new protocol facade with the server.
+// AddAdapter registers a new protocol adapter with the server.
 //
-// This method injects the shared repositories into the facade and adds it to the
-// list of facades that will be started when Serve() is called.
+// This method injects the shared repositories into the adapter and adds it to the
+// list of adapters that will be started when Serve() is called.
 //
-// AddFacade() may be called multiple times to register different protocol facades.
-// Each facade must implement a different protocol or listen on a different port.
+// AddAdapter() may be called multiple times to register different protocol adapters.
+// Each adapter must implement a different protocol or listen on a different port.
 // Duplicate protocols or port conflicts are detected and return an error.
 //
 // Parameters:
-//   - facade: The protocol facade to register (must not be nil)
+//   - a: The protocol adapter to register (must not be nil)
 //
 // Returns:
-//   - The server instance to allow method chaining
-//   - An error if the facade is invalid or conflicts with an existing facade
+//   - error if the adapter is invalid or conflicts with an existing adapter
 //
 // Panics if:
-//   - facade is nil (programmer error)
+//   - adapter is nil (programmer error)
 //   - Serve() has already been called (server is running)
 //
 // Thread safety:
@@ -118,15 +116,15 @@ func New(metadata metadata.MetadataStore, content content.ContentStore) *DittoSe
 //
 // Example:
 //
-//	if err := server.AddFacade(nfs.New(nfsConfig)); err != nil {
+//	if err := server.AddAdapter(nfs.New(nfsConfig)); err != nil {
 //	    log.Fatal(err)
 //	}
-//	if err := server.AddFacade(smb.New(smbConfig)); err != nil {
+//	if err := server.AddAdapter(smb.New(smbConfig)); err != nil {
 //	    log.Fatal(err)
 //	}
-func (s *DittoServer) AddFacade(f facade.Facade) error {
-	if f == nil {
-		panic("facade cannot be nil")
+func (s *DittoServer) AddAdapter(a adapter.Adapter) error {
+	if a == nil {
+		panic("adapter cannot be nil")
 	}
 
 	s.mu.Lock()
@@ -134,59 +132,59 @@ func (s *DittoServer) AddFacade(f facade.Facade) error {
 
 	// Check if Serve() has been called
 	if s.served {
-		panic("cannot add facade after Serve() has been called")
+		panic("cannot add adapter after Serve() has been called")
 	}
 
-	protocol := f.Protocol()
-	port := f.Port()
+	protocol := a.Protocol()
+	port := a.Port()
 
 	// Validate no duplicate protocols
-	for _, existing := range s.facades {
+	for _, existing := range s.adapters {
 		if existing.Protocol() == protocol {
-			return fmt.Errorf("facade for protocol %s already registered", protocol)
+			return fmt.Errorf("adapter for protocol %s already registered", protocol)
 		}
 	}
 
 	// Validate no port conflicts
-	for _, existing := range s.facades {
+	for _, existing := range s.adapters {
 		if existing.Port() == port {
-			return fmt.Errorf("port %d already in use by %s facade",
+			return fmt.Errorf("port %d already in use by %s adapter",
 				port, existing.Protocol())
 		}
 	}
 
 	// Inject shared repositories
-	f.SetStores(s.metadata, s.content)
+	a.SetStores(s.metadata, s.content)
 
-	// Register the facade
-	s.facades = append(s.facades, f)
+	// Register the adapter
+	s.adapters = append(s.adapters, a)
 
-	logger.Info("Registered %s facade on port %d", protocol, port)
+	logger.Info("Registered %s adapter on port %d", protocol, port)
 
 	return nil
 }
 
-// Serve starts all registered facades and blocks until the context is cancelled
-// or a facade fails to start.
+// Serve starts all registered adapters and blocks until the context is cancelled
+// or an adapter fails to start.
 //
-// Serve() orchestrates the lifecycle of all facades:
-//  1. Validates that at least one facade is registered
-//  2. Starts all facades concurrently in separate goroutines
-//  3. Monitors for context cancellation or facade failures
-//  4. On shutdown signal: stops all facades in reverse order
-//  5. Waits for all facades to complete shutdown
+// Serve() orchestrates the lifecycle of all adapters:
+//  1. Validates that at least one adapter is registered
+//  2. Starts all adapters concurrently in separate goroutines
+//  3. Monitors for context cancellation or adapter failures
+//  4. On shutdown signal: stops all adapters in reverse order
+//  5. Waits for all adapters to complete shutdown
 //
 // Shutdown behavior:
-// When the context is cancelled or a facade fails:
-//   - All facades receive Stop() calls in reverse registration order
-//   - Each facade has 30 seconds (configurable via stopTimeout) to shut down
-//   - Facades are stopped concurrently after the Stop() calls are issued
-//   - Serve() waits for all facades to complete before returning
+// When the context is cancelled or an adapter fails:
+//   - All adapters receive Stop() calls in reverse registration order
+//   - Each adapter has 30 seconds (configurable via stopTimeout) to shut down
+//   - Adapters are stopped concurrently after the Stop() calls are issued
+//   - Serve() waits for all adapters to complete before returning
 //
 // Error handling:
-//   - If any facade fails to start: stops all already-started facades and returns error
+//   - If any adapter fails to start: stops all already-started adapters and returns error
 //   - If context is cancelled: initiates graceful shutdown and returns context.Canceled
-//   - If any facade fails during operation: stops all facades and returns the error
+//   - If any adapter fails during operation: stops all adapters and returns the error
 //
 // Parameters:
 //   - ctx: Controls server lifecycle. Cancellation triggers graceful shutdown.
@@ -200,7 +198,7 @@ func (s *DittoServer) AddFacade(f facade.Facade) error {
 //
 // Thread safety:
 // Serve() must only be called once. Calling it multiple times will panic.
-// AddFacade() must not be called after Serve() is called.
+// AddAdapter() must not be called after Serve() is called.
 func (s *DittoServer) Serve(ctx context.Context) error {
 	var err error
 
@@ -231,75 +229,75 @@ func (s *DittoServer) Serve(ctx context.Context) error {
 // serve is the internal implementation of Serve().
 // Separated to allow serveOnce protection.
 func (s *DittoServer) serve(ctx context.Context) error {
-	// Get snapshot of facades under lock
+	// Get snapshot of adapters under lock
 	s.mu.Lock()
-	if len(s.facades) == 0 {
+	if len(s.adapters) == 0 {
 		s.mu.Unlock()
-		return fmt.Errorf("no facades registered; call AddFacade() before Serve()")
+		return fmt.Errorf("no adapters registered; call AddAdapter() before Serve()")
 	}
-	facades := make([]facade.Facade, len(s.facades))
-	copy(facades, s.facades)
+	adapters := make([]adapter.Adapter, len(s.adapters))
+	copy(adapters, s.adapters)
 	s.mu.Unlock()
 
-	logger.Info("Starting DittoServer with %d facade(s)", len(facades))
+	logger.Info("Starting DittoServer with %d adapter(s)", len(adapters))
 
-	// Channel to collect errors from facade goroutines
-	// Buffered to prevent goroutine leaks if multiple facades fail simultaneously
-	errChan := make(chan facadeError, len(facades))
+	// Channel to collect errors from adapter goroutines
+	// Buffered to prevent goroutine leaks if multiple adapters fail simultaneously
+	errChan := make(chan adapterError, len(adapters))
 
-	// WaitGroup to track facade goroutines
+	// WaitGroup to track adapter goroutines
 	var wg sync.WaitGroup
 
-	// Start all facades concurrently
+	// Start all adapters concurrently
 	startTime := time.Now()
-	for _, fac := range facades {
+	for _, adp := range adapters {
 		wg.Add(1)
-		go func(f facade.Facade) {
+		go func(a adapter.Adapter) {
 			defer wg.Done()
 
-			protocol := f.Protocol()
-			port := f.Port()
+			protocol := a.Protocol()
+			port := a.Port()
 
-			logger.Info("Starting %s facade on port %d", protocol, port)
+			logger.Info("Starting %s adapter on port %d", protocol, port)
 
-			if err := f.Serve(ctx); err != nil {
+			if err := a.Serve(ctx); err != nil {
 				// Only log and report unexpected errors
 				// context.Canceled is expected during shutdown
 				if err != context.Canceled && ctx.Err() == nil {
-					logger.Error("%s facade failed: %v", protocol, err)
-					errChan <- facadeError{protocol: protocol, err: err}
+					logger.Error("%s adapter failed: %v", protocol, err)
+					errChan <- adapterError{protocol: protocol, err: err}
 				} else {
-					logger.Debug("%s facade stopped gracefully", protocol)
+					logger.Debug("%s adapter stopped gracefully", protocol)
 				}
 			} else {
-				logger.Info("%s facade stopped", protocol)
+				logger.Info("%s adapter stopped", protocol)
 			}
-		}(fac)
+		}(adp)
 	}
 
-	// Log successful startup after a brief delay to allow facades to initialize
+	// Log successful startup after a brief delay to allow adapters to initialize
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		logger.Info("All facades started successfully in %v", time.Since(startTime))
+		logger.Info("All adapters started successfully in %v", time.Since(startTime))
 	}()
 
-	// Wait for either context cancellation or facade error
+	// Wait for either context cancellation or adapter error
 	var shutdownErr error
 	select {
 	case <-ctx.Done():
 		logger.Info("Shutdown signal received (reason: %v)", ctx.Err())
-		s.stopAllFacades(facades)
+		s.stopAllAdapters(adapters)
 		shutdownErr = ctx.Err()
 
-	case facadeErr := <-errChan:
-		logger.Error("Facade %s failed: %v - initiating shutdown of all facades",
-			facadeErr.protocol, facadeErr.err)
-		s.stopAllFacades(facades)
-		shutdownErr = fmt.Errorf("%s facade error: %w", facadeErr.protocol, facadeErr.err)
+	case adapterErr := <-errChan:
+		logger.Error("Adapter %s failed: %v - initiating shutdown of all adapters",
+			adapterErr.protocol, adapterErr.err)
+		s.stopAllAdapters(adapters)
+		shutdownErr = fmt.Errorf("%s adapter error: %w", adapterErr.protocol, adapterErr.err)
 	}
 
-	// Wait for all facade goroutines to complete
-	logger.Debug("Waiting for all facades to complete shutdown")
+	// Wait for all adapter goroutines to complete
+	logger.Debug("Waiting for all adapters to complete shutdown")
 	wg.Wait()
 
 	logger.Info("DittoServer stopped gracefully")
@@ -307,72 +305,72 @@ func (s *DittoServer) serve(ctx context.Context) error {
 	return shutdownErr
 }
 
-// facadeError pairs a facade protocol name with its error for better error reporting.
-type facadeError struct {
+// adapterError pairs an adapter protocol name with its error for better error reporting.
+type adapterError struct {
 	protocol string
 	err      error
 }
 
-// stopAllFacades initiates graceful shutdown of all facades in reverse registration order.
+// stopAllAdapters initiates graceful shutdown of all adapters in reverse registration order.
 //
-// Facades are stopped in reverse order to handle dependencies (e.g., if facade B depends
-// on facade A, B should be stopped first). Each facade receives a Stop() call with a
+// Adapters are stopped in reverse order to handle dependencies (e.g., if adapter B depends
+// on adapter A, B should be stopped first). Each adapter receives a Stop() call with a
 // timeout context.
 //
 // The shutdown process:
 //  1. Create a context with 30-second timeout for all Stop() operations
-//  2. Call Stop() on each facade in reverse order
-//  3. Log any errors but continue stopping remaining facades
+//  2. Call Stop() on each adapter in reverse order
+//  3. Log any errors but continue stopping remaining adapters
 //  4. Return after all Stop() calls complete or timeout expires
 //
-// Note: This method only initiates shutdown. The caller must wait for facade
+// Note: This method only initiates shutdown. The caller must wait for adapter
 // goroutines to complete using the WaitGroup.
 //
 // Parameters:
-//   - facades: Snapshot of facades to stop (in registration order)
-func (s *DittoServer) stopAllFacades(facades []facade.Facade) {
+//   - adapters: Snapshot of adapters to stop (in registration order)
+func (s *DittoServer) stopAllAdapters(adapters []adapter.Adapter) {
 	// Create a context with timeout for all shutdown operations
-	// This prevents a single misbehaving facade from blocking shutdown indefinitely
+	// This prevents a single misbehaving adapter from blocking shutdown indefinitely
 	const stopTimeout = 30 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 	defer cancel()
 
-	logger.Info("Initiating graceful shutdown of %d facade(s)", len(facades))
+	logger.Info("Initiating graceful shutdown of %d adapter(s)", len(adapters))
 
-	// Stop facades in reverse registration order
-	// This handles potential dependencies between facades
-	for i := len(facades) - 1; i >= 0; i-- {
-		facade := facades[i]
-		protocol := facade.Protocol()
+	// Stop adapters in reverse registration order
+	// This handles potential dependencies between adapters
+	for i := len(adapters) - 1; i >= 0; i-- {
+		adp := adapters[i]
+		protocol := adp.Protocol()
 
-		logger.Debug("Stopping %s facade (port %d)", protocol, facade.Port())
+		logger.Debug("Stopping %s adapter (port %d)", protocol, adp.Port())
 
 		// Call Stop() with timeout context
-		// We don't wait for Stop() to complete here - the facade's Serve() goroutine
-		// will handle actual cleanup. Stop() just signals the facade to begin shutdown.
-		if err := facade.Stop(ctx); err != nil && err != context.Canceled {
-			logger.Error("Error stopping %s facade: %v", protocol, err)
+		// We don't wait for Stop() to complete here - the adapter's Serve() goroutine
+		// will handle actual cleanup. Stop() just signals the adapter to begin shutdown.
+		if err := adp.Stop(ctx); err != nil && err != context.Canceled {
+			logger.Error("Error stopping %s adapter: %v", protocol, err)
 		} else {
-			logger.Debug("%s facade stop signal sent", protocol)
+			logger.Debug("%s adapter stop signal sent", protocol)
 		}
 	}
 }
 
-// Facades returns a snapshot of currently registered facades.
+// Adapters returns a snapshot of currently registered adapters.
 //
 // The returned slice is a copy and safe to iterate over without holding locks.
-// Modifications to the returned slice do not affect the server's facade list.
+// Modifications to the returned slice do not affect the server's adapter list.
 //
 // Returns:
-//   - A copy of the facades slice (never nil, may be empty)
+//   - A copy of the adapters slice (never nil, may be empty)
 //
 // Thread safety:
-// Safe to call concurrently with AddFacade() and Serve().
-func (s *DittoServer) Facades() []facade.Facade {
+// Safe to call concurrently with AddAdapter() and Serve().
+func (s *DittoServer) Adapters() []adapter.Adapter {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	facades := make([]facade.Facade, len(s.facades))
-	copy(facades, s.facades)
-	return facades
+	adapters := make([]adapter.Adapter, len(s.adapters))
+	copy(adapters, s.adapters)
+	return adapters
 }

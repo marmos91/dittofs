@@ -13,8 +13,8 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
 )
 
-type NFSConn struct {
-	server *NFSFacade
+type NFSConnection struct {
+	server *NFSAdapter
 	conn   net.Conn
 }
 
@@ -23,8 +23,8 @@ type fragmentHeader struct {
 	Length uint32
 }
 
-func NewNFSConn(server *NFSFacade, conn net.Conn) *NFSConn {
-	return &NFSConn{
+func NewNFSConnection(server *NFSAdapter, conn net.Conn) *NFSConnection {
+	return &NFSConnection{
 		server,
 		conn,
 	}
@@ -43,7 +43,7 @@ func NewNFSConn(server *NFSFacade, conn net.Conn) *NFSConn {
 //
 // Context cancellation is checked at the beginning of each request loop,
 // ensuring graceful shutdown and proper cleanup of resources.
-func (c *NFSConn) Serve(ctx context.Context) {
+func (c *NFSConnection) Serve(ctx context.Context) {
 	defer func() {
 		// Panic recovery - prevents a single connection from crashing the server
 		if r := recover(); r != nil {
@@ -119,7 +119,7 @@ func (c *NFSConn) Serve(ctx context.Context) {
 // - Network error occurs
 // - Message is malformed or too large
 // - Handler returns an error
-func (c *NFSConn) handleRequest(ctx context.Context) error {
+func (c *NFSConnection) handleRequest(ctx context.Context) error {
 	// Check context before starting request processing
 	select {
 	case <-ctx.Done():
@@ -202,7 +202,7 @@ func (c *NFSConn) handleRequest(ctx context.Context) error {
 // - Bits 0-30: Fragment length in bytes
 //
 // Returns the parsed header or an error if reading fails.
-func (c *NFSConn) readFragmentHeader() (*fragmentHeader, error) {
+func (c *NFSConnection) readFragmentHeader() (*fragmentHeader, error) {
 	var buf [4]byte
 	_, err := io.ReadFull(c.conn, buf[:])
 	if err != nil {
@@ -222,7 +222,7 @@ func (c *NFSConn) readFragmentHeader() (*fragmentHeader, error) {
 // The caller is responsible for returning the buffer to the pool via PutBuffer.
 //
 // Returns the message buffer or an error if reading fails.
-func (c *NFSConn) readRPCMessage(length uint32) ([]byte, error) {
+func (c *NFSConnection) readRPCMessage(length uint32) ([]byte, error) {
 	// Get buffer from pool
 	message := nfs.GetBuffer(length)
 
@@ -249,7 +249,7 @@ func (c *NFSConn) readRPCMessage(length uint32) ([]byte, error) {
 // - Context is cancelled during processing
 // - Handler returns an error
 // - Reply cannot be sent
-func (c *NFSConn) handleRPCCall(ctx context.Context, call *rpc.RPCCallMessage, procedureData []byte) error {
+func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMessage, procedureData []byte) error {
 	var replyData []byte
 	var err error
 
@@ -303,7 +303,7 @@ func (c *NFSConn) handleRPCCall(ctx context.Context, call *rpc.RPCCallMessage, p
 // - Support graceful server shutdown
 //
 // Returns the reply data or an error if the handler fails.
-func (c *NFSConn) handleNFSProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
+func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
 	// Look up procedure in dispatch table
 	procInfo, ok := nfs.NfsDispatchTable[call.Procedure]
 	if !ok {
@@ -351,7 +351,7 @@ func (c *NFSConn) handleNFSProcedure(ctx context.Context, call *rpc.RPCCallMessa
 // The context enables handlers to respect cancellation and timeouts.
 //
 // Returns the reply data or an error if the handler fails.
-func (c *NFSConn) handleMountProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
+func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
 	// Look up procedure in dispatch table
 	procInfo, ok := nfs.MountDispatchTable[call.Procedure]
 	if !ok {
@@ -398,7 +398,7 @@ func (c *NFSConn) handleMountProcedure(ctx context.Context, call *rpc.RPCCallMes
 // - Write timeout cannot be set
 // - Reply construction fails
 // - Network write fails
-func (c *NFSConn) sendReply(xid uint32, data []byte) error {
+func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
 	if c.server.config.WriteTimeout > 0 {
 		deadline := time.Now().Add(c.server.config.WriteTimeout)
 		if err := c.conn.SetWriteDeadline(deadline); err != nil {

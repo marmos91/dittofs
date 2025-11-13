@@ -2,6 +2,7 @@ package content
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -74,7 +75,9 @@ func NewFSContentStore(ctx context.Context, basePath string) (*FSContentStore, e
 // Returns:
 //   - string: Full filesystem path for the content
 func (r *FSContentStore) getFilePath(_ context.Context, id metadata.ContentID) string {
-	return filepath.Join(r.basePath, string(id))
+	// Hex-encode the content ID to make it filesystem-safe
+	// Binary data like SHA-256 hashes contain illegal byte sequences
+	return filepath.Join(r.basePath, hex.EncodeToString([]byte(id)))
 }
 
 // ReadContent returns a reader for the content identified by the given ID.
