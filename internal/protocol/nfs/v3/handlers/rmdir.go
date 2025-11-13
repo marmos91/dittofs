@@ -93,17 +93,17 @@ type RmdirContext struct {
 	AuthFlavor uint32
 
 	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	UID *uint32
 
 	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	GID *uint32
 
 	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// Used for access control checks by the repository.
+	// Used for access control checks by the store.
 	// Only valid when AuthFlavor == AUTH_UNIX.
 	GIDs []uint32
 }
@@ -132,16 +132,16 @@ type RmdirContext struct {
 //  1. Check for context cancellation before starting
 //  2. Validate request parameters (handle format, name syntax)
 //  3. Extract client IP and authentication credentials from context
-//  4. Verify parent directory exists and is a directory (via repository)
+//  4. Verify parent directory exists and is a directory (via store)
 //  5. Capture pre-operation parent state (for WCC)
-//  6. Delegate directory removal to repository (includes validation and deletion)
+//  6. Delegate directory removal to store (includes validation and deletion)
 //  7. Return status and WCC data for parent directory
 //
 // **Design Principles:**
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (removal, validation, access control) delegated to repository
-//   - File handle validation performed by repository.GetFile()
+//   - All business logic (removal, validation, access control) delegated to store
+//   - File handle validation performed by store.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //   - Respects context cancellation for graceful shutdown and timeouts
 //
@@ -157,7 +157,7 @@ type RmdirContext struct {
 // **Authentication:**
 //
 // The context contains authentication credentials from the RPC layer.
-// The protocol layer passes these to the repository, which can implement:
+// The protocol layer passes these to the store, which can implement:
 //   - Write permission checking on the parent directory
 //   - Access control based on UID/GID
 //   - Ownership verification (some systems require ownership for deletion)
@@ -176,7 +176,7 @@ type RmdirContext struct {
 // **Error Handling:**
 //
 // Protocol-level errors return appropriate NFS status codes.
-// Repository errors are mapped to NFS status codes:
+// store errors are mapped to NFS status codes:
 //   - Parent not found → types.NFS3ErrNoEnt
 //   - Parent not directory → types.NFS3ErrNotDir
 //   - Directory not found → types.NFS3ErrNoEnt
@@ -215,14 +215,14 @@ type RmdirContext struct {
 // **Security Considerations:**
 //
 //   - Handle validation prevents malformed requests
-//   - Repository enforces write permission on parent directory
+//   - store enforces write permission on parent directory
 //   - Name validation prevents directory traversal attacks
 //   - Client context enables audit logging
 //   - Access control prevents unauthorized directory removal
 //
 // **Parameters:**
 //   - ctx: Context with cancellation, client address and authentication credentials
-//   - repository: The metadata repository for directory operations
+//   - metadataStore: The metadata store for directory operations
 //   - req: The rmdir request containing parent handle and directory name
 //
 // **Returns:**
@@ -246,7 +246,7 @@ type RmdirContext struct {
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Rmdir(ctx, repository, req)
+//	resp, err := handler.Rmdir(ctx, store, req)
 //	if err != nil {
 //	    // Internal server error
 //	}
@@ -255,7 +255,7 @@ type RmdirContext struct {
 //	}
 func (h *DefaultNFSHandler) Rmdir(
 	ctx *RmdirContext,
-	repository metadata.Repository,
+	metadataStore metadata.MetadataStore,
 	req *RmdirRequest,
 ) (*RmdirResponse, error) {
 	// Extract client IP for logging
@@ -290,7 +290,7 @@ func (h *DefaultNFSHandler) Rmdir(
 	// Step 3: Verify parent directory exists and is valid
 	// ========================================================================
 
-	// Check context before repository call
+	// Check context before store call
 	select {
 	case <-ctx.Context.Done():
 		logger.Warn("RMDIR cancelled before GetFile: name='%s' dir=%x client=%s error=%v",
@@ -300,7 +300,7 @@ func (h *DefaultNFSHandler) Rmdir(
 	}
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
-	parentAttr, err := repository.GetFile(ctx.Context, parentHandle)
+	parentAttr, err := metadataStore.GetFile(ctx.Context, parentHandle)
 	if err != nil {
 		logger.Warn("RMDIR failed: parent not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
@@ -327,9 +327,9 @@ func (h *DefaultNFSHandler) Rmdir(
 	}
 
 	// ========================================================================
-	// Step 4: Remove directory via repository
+	// Step 4: Remove directory via store
 	// ========================================================================
-	// The repository is responsible for:
+	// The store is responsible for:
 	// - Verifying the directory exists
 	// - Verifying it's actually a directory
 	// - Checking it's empty (no entries except "." and "..")
@@ -338,23 +338,17 @@ func (h *DefaultNFSHandler) Rmdir(
 	// - Deleting the directory metadata
 	// - Updating parent directory timestamps
 
-	// Build authentication context for repository
-	authCtx := &metadata.AuthContext{
-		AuthFlavor: ctx.AuthFlavor,
-		UID:        ctx.UID,
-		GID:        ctx.GID,
-		GIDs:       ctx.GIDs,
-		ClientAddr: clientIP,
-	}
+	// Build authentication context for store
+	authCtx := buildAuthContextFromRmdir(ctx)
 
-	// Check context before repository call
+	// Check context before store call
 	select {
 	case <-ctx.Context.Done():
 		logger.Warn("RMDIR cancelled before RemoveDirectory: name='%s' dir=%x client=%s error=%v",
 			req.Name, req.DirHandle, clientIP, ctx.Context.Err())
 
 		// Get updated parent attributes for WCC data
-		parentAttr, _ = repository.GetFile(ctx.Context, parentHandle)
+		parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
 		dirID := xdr.ExtractFileID(parentHandle)
 		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
@@ -366,18 +360,18 @@ func (h *DefaultNFSHandler) Rmdir(
 	default:
 	}
 
-	// Delegate to repository for directory removal
-	err = repository.RemoveDirectory(authCtx, parentHandle, req.Name)
+	// Delegate to store for directory removal
+	err = metadataStore.RemoveDirectory(authCtx, parentHandle, req.Name)
 	if err != nil {
-		logger.Error("RMDIR failed: repository error: name='%s' client=%s error=%v",
+		logger.Error("RMDIR failed: store error: name='%s' client=%s error=%v",
 			req.Name, clientIP, err)
 
 		// Get updated parent attributes for WCC data
-		parentAttr, _ = repository.GetFile(ctx.Context, parentHandle)
+		parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
 		dirID := xdr.ExtractFileID(parentHandle)
 		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
-		// Map repository errors to NFS status codes
+		// Map store errors to NFS status codes
 		status := mapRmdirErrorToNFSStatus(err)
 
 		return &RmdirResponse{
@@ -392,7 +386,7 @@ func (h *DefaultNFSHandler) Rmdir(
 	// ========================================================================
 
 	// Get updated parent directory attributes
-	parentAttr, _ = repository.GetFile(ctx.Context, parentHandle)
+	parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
 	dirID := xdr.ExtractFileID(parentHandle)
 	wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
@@ -652,22 +646,15 @@ func (resp *RmdirResponse) Encode() ([]byte, error) {
 // Error Mapping
 // ============================================================================
 
-// mapRmdirErrorToNFSStatus maps repository errors to NFS status codes.
+// mapRmdirErrorToNFSStatus maps store errors to NFS status codes.
 // This provides consistent error mapping for RMDIR operations.
 func mapRmdirErrorToNFSStatus(err error) uint32 {
-	// Check for specific error types from repository
-	if exportErr, ok := err.(*metadata.ExportError); ok {
-		switch exportErr.Code {
-		case metadata.ExportErrAccessDenied:
-			return types.NFS3ErrAcces
-		case metadata.ExportErrNotFound:
-			return types.NFS3ErrNoEnt
-		default:
-			return types.NFS3ErrIO
-		}
-	}
+	// Use the common metadata error mapper
+	return mapMetadataErrorToNFS(err)
+}
 
-	// Check for specific error messages that indicate specific conditions
+// OLD CODE - Check for specific error messages
+func _unused_mapRmdirErrors(err error) uint32 {
 	errMsg := err.Error()
 
 	// Directory not empty
@@ -683,4 +670,30 @@ func mapRmdirErrorToNFSStatus(err error) uint32 {
 
 	// Default to I/O error for unknown errors
 	return types.NFS3ErrIO
+}
+
+// buildAuthContextFromRmdir creates an AuthContext from RmdirContext.
+//
+// This translates the NFS-specific authentication context into the generic
+// AuthContext used by the metadata store.
+func buildAuthContextFromRmdir(ctx *RmdirContext) *metadata.AuthContext {
+	// Map auth flavor to auth method string
+	authMethod := "anonymous"
+	if ctx.AuthFlavor == 1 {
+		authMethod = "unix"
+	}
+
+	// Build identity with proper UID/GID/GIDs structure
+	identity := &metadata.Identity{
+		UID:  ctx.UID,
+		GID:  ctx.GID,
+		GIDs: ctx.GIDs,
+	}
+
+	return &metadata.AuthContext{
+		Context:    ctx.Context,
+		AuthMethod: authMethod,
+		Identity:   identity,
+		ClientAddr: ctx.ClientAddr,
+	}
 }
