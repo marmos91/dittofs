@@ -126,8 +126,8 @@ func (s *S3ContentStore) ReadAt(ctx context.Context, id metadata.ContentID, p []
 
 		// S3 returns InvalidRange error code for invalid ranges
 		// This typically happens when offset is beyond the file size
-		var invalidRange *types.InvalidRange
-		if errors.Is(err, io.EOF) || errors.As(err, &invalidRange) {
+		// Check if the error indicates an invalid range (offset beyond file size)
+		if errors.Is(err, io.EOF) || strings.Contains(err.Error(), "InvalidRange") {
 			return 0, io.EOF
 		}
 

@@ -59,9 +59,10 @@ type S3ContentStore struct {
 	uploadSessions   map[string]*multipartUpload
 	uploadSessionsMu sync.RWMutex
 
-	// Storage stats cache
+	// Storage stats cache (stores value instead of pointer to eliminate cloning)
 	statsCache struct {
-		stats     *content.StorageStats
+		stats     content.StorageStats
+		hasStats  bool
 		timestamp time.Time
 		ttl       time.Duration
 		mu        sync.RWMutex
@@ -251,17 +252,10 @@ func (s *S3ContentStore) GetStorageStats(ctx context.Context) (stats *content.St
 
 	// Check cache first
 	s.statsCache.mu.RLock()
-	if s.statsCache.stats != nil && time.Since(s.statsCache.timestamp) < s.statsCache.ttl {
-		// Clone the stats to avoid race condition when caller modifies it
-		cached := &content.StorageStats{
-			TotalSize:     s.statsCache.stats.TotalSize,
-			UsedSize:      s.statsCache.stats.UsedSize,
-			AvailableSize: s.statsCache.stats.AvailableSize,
-			ContentCount:  s.statsCache.stats.ContentCount,
-			AverageSize:   s.statsCache.stats.AverageSize,
-		}
+	if s.statsCache.hasStats && time.Since(s.statsCache.timestamp) < s.statsCache.ttl {
+		cached := s.statsCache.stats
 		s.statsCache.mu.RUnlock()
-		return cached, nil
+		return &cached, nil
 	}
 	s.statsCache.mu.RUnlock()
 
@@ -301,7 +295,7 @@ func (s *S3ContentStore) GetStorageStats(ctx context.Context) (stats *content.St
 		averageSize = totalSize / objectCount
 	}
 
-	computedStats := &content.StorageStats{
+	computedStats := content.StorageStats{
 		TotalSize:     maxUint64,
 		UsedSize:      totalSize,
 		AvailableSize: maxUint64,
@@ -309,11 +303,18 @@ func (s *S3ContentStore) GetStorageStats(ctx context.Context) (stats *content.St
 		AverageSize:   averageSize,
 	}
 
-	// Update cache
+	// Update cache - check again to prevent race condition
 	s.statsCache.mu.Lock()
+	// Double-check if another goroutine updated the cache while we were computing
+	if s.statsCache.hasStats && time.Since(s.statsCache.timestamp) < s.statsCache.ttl {
+		cached := s.statsCache.stats
+		s.statsCache.mu.Unlock()
+		return &cached, nil
+	}
 	s.statsCache.stats = computedStats
+	s.statsCache.hasStats = true
 	s.statsCache.timestamp = time.Now()
 	s.statsCache.mu.Unlock()
 
-	return computedStats, nil
+	return &computedStats, nil
 }

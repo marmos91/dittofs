@@ -103,6 +103,7 @@ func (s *S3ContentStore) UploadPart(ctx context.Context, id metadata.ContentID, 
 		return fmt.Errorf("upload session %s not found", uploadID)
 	}
 
+	// Lock before appending to prevent race condition
 	upload.mu.Lock()
 	upload.completedParts = append(upload.completedParts, types.CompletedPart{
 		ETag:       result.ETag,

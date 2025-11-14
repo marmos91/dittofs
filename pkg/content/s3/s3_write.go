@@ -109,6 +109,9 @@ func (s *S3ContentStore) WriteAt(ctx context.Context, id metadata.ContentID, dat
 		}
 	}
 
+	// WARNING: For sparse writes (small data at large offsets), this creates a large
+	// allocation with mostly zero-filled space. Use multipart uploads for large files
+	// or avoid sparse write patterns with S3.
 	// Extend existing data if needed
 	requiredSize := offset + int64(len(data))
 	if int64(len(existingData)) < requiredSize {

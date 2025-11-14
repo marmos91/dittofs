@@ -120,10 +120,10 @@ func (w *s3Writer) uploadPart() error {
 
 	// Upload the part
 	if err := w.store.UploadPart(w.ctx, w.id, w.uploadID, w.partNum, data); err != nil {
-		// Abort the multipart upload on error
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// Abort the multipart upload on error with timeout to prevent hangs
+		abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = w.store.AbortMultipartUpload(ctx, w.id, w.uploadID)
+		_ = w.store.AbortMultipartUpload(abortCtx, w.id, w.uploadID)
 		return fmt.Errorf("failed to upload part %d: %w", w.partNum, err)
 	}
 
@@ -143,9 +143,11 @@ func (w *s3Writer) Close() error {
 	}()
 
 	if w.err != nil {
-		// If there was an error during writes, abort any in-progress upload
+		// If there was an error during writes, abort any in-progress upload with timeout
 		if w.uploadID != "" {
-			_ = w.store.AbortMultipartUpload(context.Background(), w.id, w.uploadID)
+			abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = w.store.AbortMultipartUpload(abortCtx, w.id, w.uploadID)
 		}
 		return w.err
 	}
@@ -173,10 +175,14 @@ func (w *s3Writer) Close() error {
 
 	// Complete the multipart upload
 	// Complete the multipart upload using the tracked parts in the upload session.
-	err := w.store.CompleteMultipartUpload(w.ctx, w.id, w.uploadID)
+	// Pass nil for partNumbers to use all parts tracked in the session
+	err := w.store.CompleteMultipartUpload(w.ctx, w.id, w.uploadID, nil)
 	if err != nil {
 		w.err = err
-		_ = w.store.AbortMultipartUpload(context.Background(), w.id, w.uploadID)
+		// Abort with timeout to prevent hangs
+		abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = w.store.AbortMultipartUpload(abortCtx, w.id, w.uploadID)
 		return fmt.Errorf("failed to complete multipart upload: %w", err)
 	}
 

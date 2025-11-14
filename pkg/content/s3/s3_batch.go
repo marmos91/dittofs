@@ -6,6 +6,7 @@ package s3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -140,7 +141,7 @@ func (s *S3ContentStore) DeleteBatch(ctx context.Context, ids []metadata.Content
 			if deleteErr.Code != nil && deleteErr.Message != nil {
 				errMsg = fmt.Sprintf("%s: %s", *deleteErr.Code, *deleteErr.Message)
 			}
-			failures[id] = fmt.Errorf("%s", errMsg)
+			failures[id] = errors.New(errMsg)
 		}
 	}
 
