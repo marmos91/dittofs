@@ -267,9 +267,9 @@ server:
 
 #### 3. Content Store
 
-Configures where file content is stored. Two implementations available:
+Configures where file content is stored.
 
-**Filesystem Backend** (default):
+**Filesystem Backend** (default and currently only available option):
 ```yaml
 content:
   type: "filesystem"
@@ -277,13 +277,15 @@ content:
     path: "/tmp/dittofs-content"
 ```
 
-**In-Memory Backend** (for testing):
+**In-Memory Backend** (planned for future release):
 ```yaml
 content:
   type: "memory"
   memory:
     max_size_bytes: 1073741824  # 1GB
 ```
+
+> **Note**: Memory content store is not yet implemented. Use `filesystem` type for now.
 
 #### 4. Metadata Store
 

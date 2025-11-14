@@ -279,17 +279,29 @@ func TestValidate_InvalidRootMode(t *testing.T) {
 }
 
 func TestValidate_LogLevelNormalization(t *testing.T) {
-	cfg := GetDefaultConfig()
-	cfg.Logging.Level = "info" // Lowercase
+	// Test that validation accepts both uppercase and lowercase log levels
+	testCases := []string{"info", "INFO", "debug", "DEBUG", "warn", "WARN", "error", "ERROR"}
 
-	err := Validate(cfg)
-	if err != nil {
-		t.Fatalf("Validation failed: %v", err)
+	for _, level := range testCases {
+		cfg := GetDefaultConfig()
+		cfg.Logging.Level = level
+
+		err := Validate(cfg)
+		if err != nil {
+			t.Errorf("Validation failed for level %q: %v", level, err)
+		}
+
+		// Validation should NOT normalize - level should remain as-is
+		if cfg.Logging.Level != level {
+			t.Errorf("Expected level to remain %q after validation, got %q", level, cfg.Logging.Level)
+		}
 	}
 
-	// Should be normalized to uppercase
+	// Test that normalization happens in ApplyDefaults
+	cfg := &Config{Logging: LoggingConfig{Level: "info"}}
+	ApplyDefaults(cfg)
 	if cfg.Logging.Level != "INFO" {
-		t.Errorf("Expected level to be normalized to 'INFO', got %q", cfg.Logging.Level)
+		t.Errorf("Expected ApplyDefaults to normalize 'info' to 'INFO', got %q", cfg.Logging.Level)
 	}
 }
 

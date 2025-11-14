@@ -33,7 +33,7 @@ func CreateContentStore(ctx context.Context, cfg *ContentConfig) (content.Writab
 	case "filesystem":
 		return createFilesystemContentStore(ctx, cfg.Filesystem)
 	case "memory":
-		return nil, fmt.Errorf("memory content store not yet implemented")
+		return nil, fmt.Errorf("memory content store is not available - use 'filesystem' instead (planned for future release)")
 	default:
 		return nil, fmt.Errorf("unknown content store type: %q", cfg.Type)
 	}

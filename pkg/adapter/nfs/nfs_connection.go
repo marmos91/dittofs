@@ -166,7 +166,9 @@ func (c *NFSConnection) handleRequest(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read RPC message: %w", err)
 	}
-	defer nfs.PutBuffer(message) // Always return buffer to pool
+	// NOTE: Buffer is returned AFTER handler completes to allow zero-copy
+	// operations where procedureData is a slice into the original buffer
+	defer nfs.PutBuffer(message)
 
 	// Parse RPC call
 	call, err := rpc.ReadCall(message)
@@ -178,7 +180,7 @@ func (c *NFSConnection) handleRequest(ctx context.Context) error {
 	logger.Debug("RPC Call: XID=0x%x Program=%d Version=%d Procedure=%d",
 		call.XID, call.Program, call.Version, call.Procedure)
 
-	// Extract procedure data
+	// Extract procedure data (returns slice into message buffer - zero-copy)
 	procedureData, err := rpc.ReadData(message, call)
 	if err != nil {
 		return fmt.Errorf("extract procedure data: %w", err)
@@ -192,6 +194,8 @@ func (c *NFSConnection) handleRequest(ctx context.Context) error {
 	}
 
 	// Handle the call with context
+	// IMPORTANT: procedureData is a slice into the pooled message buffer
+	// The buffer will be returned to the pool when this function exits
 	return c.handleRPCCall(ctx, call, procedureData)
 }
 

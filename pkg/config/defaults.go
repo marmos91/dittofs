@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
@@ -25,11 +26,14 @@ func ApplyDefaults(cfg *Config) {
 	applyAdaptersDefaults(&cfg.Adapters)
 }
 
-// applyLoggingDefaults sets logging defaults.
+// applyLoggingDefaults sets logging defaults and normalizes values.
 func applyLoggingDefaults(cfg *LoggingConfig) {
 	if cfg.Level == "" {
 		cfg.Level = "INFO"
 	}
+	// Normalize log level to uppercase for consistent internal representation
+	cfg.Level = strings.ToUpper(cfg.Level)
+
 	if cfg.Format == "" {
 		cfg.Format = "text"
 	}
@@ -113,20 +117,9 @@ func applyCapabilitiesDefaults(cfg *metadata.FilesystemCapabilities) {
 		cfg.MaxHardLinkCount = 32767
 	}
 
-	// Boolean defaults - only set if they're false (zero value)
-	// These default to true
-	if !cfg.SupportsHardLinks {
-		cfg.SupportsHardLinks = true
-	}
-	if !cfg.SupportsSymlinks {
-		cfg.SupportsSymlinks = true
-	}
-	if !cfg.CaseSensitive {
-		cfg.CaseSensitive = true
-	}
-	if !cfg.CasePreserving {
-		cfg.CasePreserving = true
-	}
+	// Note: Boolean capability fields (SupportsHardLinks, SupportsSymlinks, etc.)
+	// default to false (zero value). This allows users to explicitly disable features.
+	// GetDefaultConfig() sets these to true for the default configuration.
 }
 
 // applyShareDefaults sets share defaults.
@@ -192,10 +185,8 @@ func applyAdaptersDefaults(cfg *AdaptersConfig) {
 
 // applyNFSDefaults sets NFS adapter defaults.
 func applyNFSDefaults(cfg *nfs.NFSConfig) {
-	// Enabled defaults to true
-	if !cfg.Enabled {
-		cfg.Enabled = true
-	}
+	// Note: Enabled defaults to false (zero value). This allows users to explicitly
+	// disable the NFS adapter. GetDefaultConfig() sets Enabled to true.
 
 	if cfg.Port == 0 {
 		cfg.Port = 2049
@@ -240,6 +231,13 @@ func GetDefaultConfig() *Config {
 		},
 		Metadata: MetadataConfig{
 			Memory: make(map[string]any),
+			// Set capability defaults to true for default config
+			Capabilities: metadata.FilesystemCapabilities{
+				SupportsHardLinks: true,
+				SupportsSymlinks:  true,
+				CaseSensitive:     true,
+				CasePreserving:    true,
+			},
 		},
 		Shares: []ShareConfig{
 			{
@@ -251,7 +249,11 @@ func GetDefaultConfig() *Config {
 				},
 			},
 		},
-		Adapters: AdaptersConfig{},
+		Adapters: AdaptersConfig{
+			NFS: nfs.NFSConfig{
+				Enabled: true, // NFS adapter enabled by default
+			},
+		},
 	}
 
 	ApplyDefaults(cfg)

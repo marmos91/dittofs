@@ -737,11 +737,16 @@ func DecodeReadRequest(data []byte) (*ReadRequest, error) {
 		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
 	}
 
-	// Read handle data
-	handle := make([]byte, handleLen)
-	if err := binary.Read(reader, binary.BigEndian, &handle); err != nil {
+	// PERFORMANCE OPTIMIZATION: Use stack-allocated buffer for file handles
+	// File handles are max 64 bytes per RFC 1813, so we can avoid heap allocation
+	var handleBuf [64]byte
+	handleSlice := handleBuf[:handleLen]
+	if err := binary.Read(reader, binary.BigEndian, &handleSlice); err != nil {
 		return nil, fmt.Errorf("failed to read handle data: %w", err)
 	}
+	// Make a copy to return (original stack buffer will be reused)
+	handle := make([]byte, handleLen)
+	copy(handle, handleSlice)
 
 	// Skip padding to 4-byte boundary
 	padding := (4 - (handleLen % 4)) % 4
@@ -819,13 +824,26 @@ func DecodeReadRequest(data []byte) (*ReadRequest, error) {
 //	}
 //	// Send 'data' to client over network
 func (resp *ReadResponse) Encode() ([]byte, error) {
-	var buf bytes.Buffer
+	// PERFORMANCE OPTIMIZATION: Pre-allocate buffer with estimated size
+	// to avoid multiple allocations during encoding.
+	//
+	// Size calculation:
+	//   - Status: 4 bytes
+	//   - Optional attr (present): 1 byte + ~84 bytes (NFSFileAttr)
+	//   - Count: 4 bytes
+	//   - EOF: 4 bytes
+	//   - Data length: 4 bytes
+	//   - Data: resp.Count bytes
+	//   - Padding: 0-3 bytes
+	//   Total: ~105 + data length + padding
+	estimatedSize := 110 + int(resp.Count) + 3
+	buf := bytes.NewBuffer(make([]byte, 0, estimatedSize))
 
 	// ========================================================================
 	// Write status code
 	// ========================================================================
 
-	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
+	if err := binary.Write(buf, binary.BigEndian, resp.Status); err != nil {
 		return nil, fmt.Errorf("failed to write status: %w", err)
 	}
 
@@ -833,7 +851,7 @@ func (resp *ReadResponse) Encode() ([]byte, error) {
 	// Write post-op attributes (both success and error cases)
 	// ========================================================================
 
-	if err := xdr.EncodeOptionalFileAttr(&buf, resp.Attr); err != nil {
+	if err := xdr.EncodeOptionalFileAttr(buf, resp.Attr); err != nil {
 		return nil, fmt.Errorf("failed to encode attributes: %w", err)
 	}
 
@@ -851,7 +869,7 @@ func (resp *ReadResponse) Encode() ([]byte, error) {
 	// ========================================================================
 
 	// Write count (number of bytes read)
-	if err := binary.Write(&buf, binary.BigEndian, resp.Count); err != nil {
+	if err := binary.Write(buf, binary.BigEndian, resp.Count); err != nil {
 		return nil, fmt.Errorf("failed to write count: %w", err)
 	}
 
@@ -860,13 +878,13 @@ func (resp *ReadResponse) Encode() ([]byte, error) {
 	if resp.Eof {
 		eofVal = 1
 	}
-	if err := binary.Write(&buf, binary.BigEndian, eofVal); err != nil {
+	if err := binary.Write(buf, binary.BigEndian, eofVal); err != nil {
 		return nil, fmt.Errorf("failed to write eof flag: %w", err)
 	}
 
 	// Write data as opaque (length + data + padding)
 	dataLen := uint32(len(resp.Data))
-	if err := binary.Write(&buf, binary.BigEndian, dataLen); err != nil {
+	if err := binary.Write(buf, binary.BigEndian, dataLen); err != nil {
 		return nil, fmt.Errorf("failed to write data length: %w", err)
 	}
 

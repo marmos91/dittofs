@@ -238,11 +238,15 @@ func MakeSuccessReply(xid uint32, data []byte) ([]byte, error) {
 		AcceptStat: RPCSuccess, // 0 = SUCCESS (procedure executed successfully)
 	}
 
-	var buf bytes.Buffer
+	// PERFORMANCE OPTIMIZATION: Pre-allocate buffer for reply header
+	// Size: RPC reply header (~28 bytes) + procedure data
+	replyHeaderSize := 28
+	estimatedSize := replyHeaderSize + len(data)
+	buf := bytes.NewBuffer(make([]byte, 0, estimatedSize))
 
 	// Marshal the reply header using XDR encoding
 	// This converts the struct to network byte order
-	_, err := xdr.Marshal(&buf, &reply)
+	_, err := xdr.Marshal(buf, &reply)
 	if err != nil {
 		return nil, fmt.Errorf("marshal reply: %w", err)
 	}
@@ -261,8 +265,11 @@ func MakeSuccessReply(xid uint32, data []byte) ([]byte, error) {
 	// 0x80000000 = binary 10000000_00000000_00000000_00000000
 	binary.BigEndian.PutUint32(fragmentHeader, 0x80000000|uint32(len(replyData)))
 
-	// Return complete message: fragment header + reply header + result data
-	return append(fragmentHeader, replyData...), nil
+	// PERFORMANCE OPTIMIZATION: Pre-allocate final buffer to avoid append reallocation
+	result := make([]byte, 0, 4+len(replyData))
+	result = append(result, fragmentHeader...)
+	result = append(result, replyData...)
+	return result, nil
 }
 
 // XdrPadding calculates the number of padding bytes needed for XDR alignment.
