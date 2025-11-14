@@ -43,7 +43,7 @@ type TestServerConfig struct {
 
 // TestServer wraps a DittoFS server for testing
 type TestServer struct {
-	t             *testing.T
+	t             testing.TB
 	config        TestServerConfig
 	server        *server.DittoServer
 	metadataStore metadata.MetadataStore
@@ -57,7 +57,7 @@ type TestServer struct {
 }
 
 // NewTestServer creates a new test server instance
-func NewTestServer(t *testing.T, config TestServerConfig) *TestServer {
+func NewTestServer(t testing.TB, config TestServerConfig) *TestServer {
 	t.Helper()
 
 	// Set defaults
@@ -271,7 +271,7 @@ func (ts *TestServer) waitForServer() error {
 }
 
 // findFreePort finds an available port
-func findFreePort(t *testing.T) int {
+func findFreePort(t testing.TB) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", "localhost:0")
 	if err != nil {

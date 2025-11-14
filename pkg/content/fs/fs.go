@@ -318,7 +318,9 @@ func (r *FSContentStore) WriteAt(ctx context.Context, id metadata.ContentID, dat
 		}
 
 		if err := r.fdCache.Put(id, file, filePath); err != nil {
-			file.Close()
+			if closeErr := file.Close(); closeErr != nil {
+				return fmt.Errorf("failed to cache file descriptor: %w (close error: %v)", err, closeErr)
+			}
 			return fmt.Errorf("failed to cache file descriptor: %w", err)
 		}
 	}

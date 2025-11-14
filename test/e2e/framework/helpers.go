@@ -8,14 +8,14 @@ import (
 
 // TestContext holds the context for a test run
 type TestContext struct {
-	T          *testing.T
+	T          testing.TB
 	Server     *TestServer
 	Mount      *NFSMount
 	MountPoint string
 }
 
 // NewTestContext creates a complete test context with server and mount
-func NewTestContext(t *testing.T, storeType StoreType) *TestContext {
+func NewTestContext(t testing.TB, storeType StoreType) *TestContext {
 	t.Helper()
 
 	ctx := &TestContext{

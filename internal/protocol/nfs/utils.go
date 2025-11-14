@@ -109,7 +109,6 @@ func handleRequestWithPool[Req rpcRequest, Resp rpcResponse](
 	handle func(Req) (Resp, error),
 	errorStatus uint32,
 	makeErrorResp func(uint32) Resp,
-	getResp func() Resp,
 	putResp func(Resp),
 ) ([]byte, error) {
 	// Decode request

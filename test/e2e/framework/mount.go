@@ -24,14 +24,14 @@ type MountConfig struct {
 
 // NFSMount represents a mounted NFS filesystem
 type NFSMount struct {
-	t          *testing.T
+	t          testing.TB
 	config     MountConfig
 	mountPoint string
 	mounted    bool
 }
 
 // NewNFSMount creates a new NFS mount helper
-func NewNFSMount(t *testing.T, config MountConfig) *NFSMount {
+func NewNFSMount(t testing.TB, config MountConfig) *NFSMount {
 	t.Helper()
 
 	// Set defaults
@@ -282,7 +282,7 @@ func IsCommandAvailable(cmd string) bool {
 }
 
 // CanMount checks if NFS mounting is available on this system
-func CanMount(t *testing.T) bool {
+func CanMount(t testing.TB) bool {
 	t.Helper()
 
 	// Check if mount command exists
