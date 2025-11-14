@@ -370,37 +370,6 @@ func (h *DefaultNFSHandler) Access(
 // Helper Functions
 // ============================================================================
 
-// buildAuthContext creates an AuthContext from AccessContext.
-//
-// This translates the NFS-specific authentication context into the generic
-// AuthContext used by the metadata store.
-func buildAuthContext(ctx *AccessContext) *metadata.AuthContext {
-	// Map auth flavor to auth method string
-	authMethod := "anonymous"
-	if ctx.AuthFlavor == 1 {
-		authMethod = "unix"
-	}
-
-	// Build identity from Unix credentials
-	identity := &metadata.Identity{
-		UID:  ctx.UID,
-		GID:  ctx.GID,
-		GIDs: ctx.GIDs,
-	}
-
-	// Set username from UID if available (for logging/auditing)
-	if ctx.UID != nil {
-		identity.Username = fmt.Sprintf("uid:%d", *ctx.UID)
-	}
-
-	return &metadata.AuthContext{
-		Context:    ctx.Context,
-		AuthMethod: authMethod,
-		Identity:   identity,
-		ClientAddr: ctx.ClientAddr,
-	}
-}
-
 // nfsAccessToPermissions translates NFS ACCESS bits to generic Permission flags.
 //
 // NFS ACCESS bits (RFC 1813 Section 3.3.4):
@@ -637,7 +606,7 @@ func DecodeAccessRequest(data []byte) (*AccessRequest, error) {
 
 	// Skip padding to 4-byte boundary
 	padding := (4 - (handleLen % 4)) % 4
-	for i := range padding {
+	for i := uint32(0); i < padding; i++ {
 		if _, err := reader.ReadByte(); err != nil {
 			return nil, fmt.Errorf("failed to read padding byte %d: %w", i, err)
 		}

@@ -156,34 +156,6 @@ func decodeFileHandle(handle metadata.FileHandle) (shareName, fullPath string, i
 	return shareName, fullPath, false, nil
 }
 
-// validateFileHandle performs basic validation on a file handle.
-//
-// This checks:
-//   - Non-empty handle
-//   - Size within NFS limits (≤ 64 bytes)
-//   - Valid format (can be decoded or is hash-based)
-//
-// Thread Safety: Safe for concurrent use.
-//
-// Parameters:
-//   - handle: The file handle to validate
-//
-// Returns:
-//   - error: Error if handle is invalid, nil otherwise
-func validateFileHandle(handle metadata.FileHandle) error {
-	if len(handle) == 0 {
-		return fmt.Errorf("empty file handle")
-	}
-
-	if len(handle) > maxNFSHandleSize {
-		return fmt.Errorf("file handle too large: %d bytes (max %d)", len(handle), maxNFSHandleSize)
-	}
-
-	// Try to decode to ensure it's valid
-	_, _, _, err := decodeFileHandle(handle)
-	return err
-}
-
 // handleToKey converts a FileHandle to a string key for database indexing.
 //
 // This is a helper for using FileHandles as database keys. It converts the

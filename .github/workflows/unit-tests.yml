@@ -1,19 +1,19 @@
-name: Build and Test
+name: Unit Tests
 
 on:
   push:
-    branches: [main, develop]
+    branches: [develop]
   pull_request:
-    branches: [main, develop]
+    branches: [develop, main]
 
 jobs:
-  build:
-    name: Build and Test
+  unit-tests:
+    name: Unit Tests
     runs-on: ubuntu-latest
 
     strategy:
       matrix:
-        go-version: ["1.25.x"]
+        go-version: ["1.24.x"]
 
     steps:
       - name: Checkout code
@@ -51,15 +51,19 @@ jobs:
             exit 1
           fi
 
-      - name: Run tests
-        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+      - name: Run unit tests
+        run: |
+          go test -v -race -coverprofile=coverage.txt -covermode=atomic \
+            ./pkg/... \
+            ./internal/... \
+            ./cmd/...
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
           file: ./coverage.txt
           flags: unittests
-          name: codecov-umbrella
+          name: codecov-unit-tests
         continue-on-error: true
 
       - name: Build binary
@@ -71,23 +75,3 @@ jobs:
           name: dittofs-${{ matrix.go-version }}
           path: dittofs
           retention-days: 7
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.25.x"
-
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          args: --timeout=5m
-        continue-on-error: true

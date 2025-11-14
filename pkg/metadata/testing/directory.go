@@ -559,7 +559,7 @@ func (suite *StoreTestSuite) testReadDirectoryMultiplePagesComplete(t *testing.T
 
 	dirHandle := createTestDirectory(t, store, authCtx, rootHandle, "dir")
 	expectedFiles := make([]string, 50)
-	for i := range 50 {
+	for i := 0; i < 50; i++ {
 		name := fmt.Sprintf("file%03d.txt", i)
 		expectedFiles[i] = name
 		createTestFile(t, store, authCtx, dirHandle, name)
@@ -607,7 +607,7 @@ func (suite *StoreTestSuite) testReadDirectoryPaginationSmallLimit(t *testing.T)
 	authCtx := createRootAuthContext(share)
 
 	dirHandle := createTestDirectory(t, store, authCtx, rootHandle, "dir")
-	for i := range 10 {
+	for i := 0; i < 10; i++ {
 		createTestFile(t, store, authCtx, dirHandle, fmt.Sprintf("file%d.txt", i))
 	}
 
@@ -718,7 +718,7 @@ func (suite *StoreTestSuite) testReadDirectoryConsistentOrdering(t *testing.T) {
 	authCtx := createRootAuthContext(share)
 
 	dirHandle := createTestDirectory(t, store, authCtx, rootHandle, "dir")
-	for i := range 5 {
+	for i := 0; i < 5; i++ {
 		createTestFile(t, store, authCtx, dirHandle, fmt.Sprintf("file%d.txt", i))
 	}
 

@@ -355,14 +355,3 @@ func checkOtherPermissions(mode uint32, requested metadata.Permission) metadata.
 
 	return granted & requested
 }
-
-// containsGID is deprecated. Use Identity.HasGID() instead for O(1) lookup.
-// This function is kept for backward compatibility but may be removed in future versions.
-func containsGID(gids []uint32, target uint32) bool {
-	for _, gid := range gids {
-		if gid == target {
-			return true
-		}
-	}
-	return false
-}

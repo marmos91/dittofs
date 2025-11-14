@@ -1,0 +1,54 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  e2e-tests:
+    name: E2E Tests (NFS Integration)
+    runs-on: macos-latest  # macOS required for NFS mounting capabilities
+
+    strategy:
+      matrix:
+        go-version: ["1.24.x"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run E2E tests
+        run: |
+          # E2E tests require sudo for NFS mounting
+          go test -v -timeout 5m ./test/e2e/...
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-logs-${{ matrix.go-version }}
+          path: |
+            /tmp/dittofs-*
+            /var/folders/**/dittofs-*
+          retention-days: 3
+          if-no-files-found: ignore

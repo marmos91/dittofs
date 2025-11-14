@@ -165,57 +165,6 @@ func encodeDeviceNumber(dev *deviceNumber) ([]byte, error) {
 	return bytes, nil
 }
 
-// decodeDeviceNumber deserializes deviceNumber from JSON bytes.
-//
-// Parameters:
-//   - bytes: JSON-encoded device number
-//
-// Returns:
-//   - *deviceNumber: Decoded device number
-//   - error: Decoding error if deserialization fails
-func decodeDeviceNumber(bytes []byte) (*deviceNumber, error) {
-	var dev deviceNumber
-	if err := json.Unmarshal(bytes, &dev); err != nil {
-		return nil, fmt.Errorf("failed to decode device number: %w", err)
-	}
-	return &dev, nil
-}
-
-// encodeWriteOperation serializes WriteOperation to JSON bytes.
-//
-// Write operations are tracked for the two-phase write protocol used by
-// PrepareWrite/CommitWrite. The JSON format preserves all operation details.
-//
-// Parameters:
-//   - op: The write operation to encode
-//
-// Returns:
-//   - []byte: JSON-encoded bytes
-//   - error: Encoding error if serialization fails
-func encodeWriteOperation(op *metadata.WriteOperation) ([]byte, error) {
-	bytes, err := json.Marshal(op)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode write operation: %w", err)
-	}
-	return bytes, nil
-}
-
-// decodeWriteOperation deserializes WriteOperation from JSON bytes.
-//
-// Parameters:
-//   - bytes: JSON-encoded write operation
-//
-// Returns:
-//   - *metadata.WriteOperation: Decoded write operation
-//   - error: Decoding error if deserialization fails
-func decodeWriteOperation(bytes []byte) (*metadata.WriteOperation, error) {
-	var op metadata.WriteOperation
-	if err := json.Unmarshal(bytes, &op); err != nil {
-		return nil, fmt.Errorf("failed to decode write operation: %w", err)
-	}
-	return &op, nil
-}
-
 // encodeShareSession serializes ShareSession to JSON bytes.
 //
 // Sessions track active mounts for administrative monitoring and the NFS

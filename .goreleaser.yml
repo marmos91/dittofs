@@ -1,0 +1,128 @@
+# GoReleaser configuration for DittoFS
+# Documentation: https://goreleaser.com
+
+version: 2
+
+before:
+  hooks:
+    # Ensure dependencies are up to date
+    - go mod tidy
+    # Run tests before building
+    - go test -short ./...
+
+builds:
+  - id: dittofs
+    main: ./cmd/dittofs/main.go
+    binary: dittofs
+
+    env:
+      - CGO_ENABLED=0  # Static binaries
+
+    goos:
+      - linux
+      - darwin
+      - windows
+
+    goarch:
+      - amd64
+      - arm64
+      - arm
+
+    goarm:
+      - "7"  # ARMv7 for Raspberry Pi, etc.
+
+    # Ignore combinations that don't make sense
+    ignore:
+      - goos: windows
+        goarch: arm
+    ldflags:
+      # Inject version info
+      - -s -w  # Strip debug info
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+      - -X main.builtBy=goreleaser
+
+archives:
+  - id: dittofs-archive
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+
+    format_overrides:
+      - goos: windows
+        format: zip
+
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - merges
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: 'Bug Fixes'
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: 'Performance Improvements'
+      regexp: '^.*?perf(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: Others
+      order: 999
+
+release:
+  github:
+    owner: marmos91
+    name: dittofs
+
+  # Prerelease detection
+  prerelease: auto
+
+  # Release notes
+  header: |
+    ## DittoFS {{ .Tag }}
+
+    A modular virtual filesystem that decouples file interfaces from storage backends.
+
+    ### Installation
+
+    Download the appropriate binary for your platform below, or use:
+
+    ```bash
+    # Linux/macOS
+    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dittofs_{{ .Tag }}_{{ title .Os }}_{{ if eq .Arch "amd64" }}x86_64{{ else if eq .Arch "386" }}i386{{ else }}{{ .Arch }}{{ end }}{{ if .Arm }}v{{ .Arm }}{{ end }}.tar.gz | tar xz
+
+    # Or download directly from assets below
+    ```
+
+  footer: |
+    ---
+
+    **Full Changelog**: https://github.com/marmos91/dittofs/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+    ### Verifying Checksums
+
+    ```bash
+    sha256sum -c checksums.txt
+    ```
