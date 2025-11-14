@@ -27,7 +27,7 @@ import (
 //
 // Note: This does NOT validate configuration consistency. The caller should
 // ensure the provided configuration is valid before calling this method.
-func (s *MemoryMetadataStore) SetServerConfig(ctx context.Context, config metadata.ServerConfig) error {
+func (s *MemoryMetadataStore) SetServerConfig(ctx context.Context, config metadata.MetadataServerConfig) error {
 	// Check context before acquiring lock
 	if err := ctx.Err(); err != nil {
 		return err
@@ -59,10 +59,10 @@ func (s *MemoryMetadataStore) SetServerConfig(ctx context.Context, config metada
 // Note: The returned ServerConfig is a copy of the internal configuration.
 // Modifying the returned struct does not affect the server's configuration.
 // Use SetServerConfig to update configuration.
-func (s *MemoryMetadataStore) GetServerConfig(ctx context.Context) (metadata.ServerConfig, error) {
+func (s *MemoryMetadataStore) GetServerConfig(ctx context.Context) (metadata.MetadataServerConfig, error) {
 	// Check context before acquiring lock
 	if err := ctx.Err(); err != nil {
-		return metadata.ServerConfig{}, err
+		return metadata.MetadataServerConfig{}, err
 	}
 
 	s.mu.RLock()

@@ -429,7 +429,7 @@ func setupBenchmarkServer(b *testing.B, storeType framework.StoreType) (*framewo
 	b.Helper()
 
 	// Create and start server
-	srv := framework.NewTestServer(&testing.T{}, framework.ServerConfig{
+	srv := framework.NewTestServer(&testing.T{}, framework.TestServerConfig{
 		ContentStore: storeType,
 		LogLevel:     "ERROR",
 	})

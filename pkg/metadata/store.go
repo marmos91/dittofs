@@ -957,7 +957,7 @@ type MetadataStore interface {
 	//
 	// Returns:
 	//   - error: Only context cancellation errors
-	SetServerConfig(ctx context.Context, config ServerConfig) error
+	SetServerConfig(ctx context.Context, config MetadataServerConfig) error
 
 	// GetServerConfig returns the current server configuration.
 	//
@@ -965,9 +965,9 @@ type MetadataStore interface {
 	// and management tools.
 	//
 	// Returns:
-	//   - ServerConfig: Current server configuration
+	//   - MetadataServerConfig: Current server configuration
 	//   - error: Only context cancellation errors
-	GetServerConfig(ctx context.Context) (ServerConfig, error)
+	GetServerConfig(ctx context.Context) (MetadataServerConfig, error)
 
 	// Healthcheck verifies the repository is operational.
 	//

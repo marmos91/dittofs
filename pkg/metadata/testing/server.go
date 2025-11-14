@@ -27,7 +27,7 @@ func (suite *StoreTestSuite) TestSetServerConfig_Success(test *testing.T) {
 	store := suite.NewStore()
 	ctx := context.Background()
 
-	config := metadata.ServerConfig{
+	config := metadata.MetadataServerConfig{
 		CustomSettings: map[string]any{
 			"test.setting": "value",
 		},
@@ -59,7 +59,7 @@ func (suite *StoreTestSuite) TestSetServerConfig_Update(test *testing.T) {
 	ctx := context.Background()
 
 	// Set initial configuration
-	initialConfig := metadata.ServerConfig{
+	initialConfig := metadata.MetadataServerConfig{
 		CustomSettings: map[string]any{
 			"setting1": "initial_value",
 			"setting2": 100,
@@ -69,7 +69,7 @@ func (suite *StoreTestSuite) TestSetServerConfig_Update(test *testing.T) {
 	require.NoError(test, err)
 
 	// Update configuration with different settings
-	updatedConfig := metadata.ServerConfig{
+	updatedConfig := metadata.MetadataServerConfig{
 		CustomSettings: map[string]any{
 			"setting1": "updated_value",
 			"setting3": true, // New setting
@@ -100,19 +100,19 @@ func (suite *StoreTestSuite) TestGetServerConfig_AfterSet(test *testing.T) {
 
 	tests := []struct {
 		name        string
-		config      metadata.ServerConfig
+		config      metadata.MetadataServerConfig
 		description string
 	}{
 		{
 			name: "empty_config",
-			config: metadata.ServerConfig{
+			config: metadata.MetadataServerConfig{
 				CustomSettings: map[string]any{},
 			},
 			description: "Empty server configuration",
 		},
 		{
 			name: "single_setting",
-			config: metadata.ServerConfig{
+			config: metadata.MetadataServerConfig{
 				CustomSettings: map[string]any{
 					"nfs.mount.allowed_clients": []string{"192.168.1.0/24"},
 				},
@@ -121,7 +121,7 @@ func (suite *StoreTestSuite) TestGetServerConfig_AfterSet(test *testing.T) {
 		},
 		{
 			name: "multiple_settings",
-			config: metadata.ServerConfig{
+			config: metadata.MetadataServerConfig{
 				CustomSettings: map[string]any{
 					"nfs.mount.allowed_clients": []string{"192.168.1.0/24"},
 					"smb.signing_required":      true,
@@ -132,7 +132,7 @@ func (suite *StoreTestSuite) TestGetServerConfig_AfterSet(test *testing.T) {
 		},
 		{
 			name: "nil_custom_settings",
-			config: metadata.ServerConfig{
+			config: metadata.MetadataServerConfig{
 				CustomSettings: nil,
 			},
 			description: "Configuration with nil CustomSettings",
@@ -176,7 +176,7 @@ func (suite *StoreTestSuite) TestSetServerConfig_VariousTypes(test *testing.T) {
 	store := suite.NewStore()
 	ctx := context.Background()
 
-	config := metadata.ServerConfig{
+	config := metadata.MetadataServerConfig{
 		CustomSettings: map[string]any{
 			"string_setting": "test_value",
 			"int_setting":    42,
@@ -216,12 +216,12 @@ func (suite *StoreTestSuite) TestSetServerConfig_ProtocolSettings(test *testing.
 
 	tests := []struct {
 		name        string
-		config      metadata.ServerConfig
+		config      metadata.MetadataServerConfig
 		description string
 	}{
 		{
 			name: "nfs_settings",
-			config: metadata.ServerConfig{
+			config: metadata.MetadataServerConfig{
 				CustomSettings: map[string]any{
 					"nfs.mount.allowed_clients": []string{"192.168.1.0/24", "10.0.0.0/8"},
 					"nfs.mount.denied_clients":  []string{"192.168.1.50"},
@@ -234,7 +234,7 @@ func (suite *StoreTestSuite) TestSetServerConfig_ProtocolSettings(test *testing.
 		},
 		{
 			name: "smb_settings",
-			config: metadata.ServerConfig{
+			config: metadata.MetadataServerConfig{
 				CustomSettings: map[string]any{
 					"smb.signing_required":    true,
 					"smb.encryption_required": false,
@@ -246,7 +246,7 @@ func (suite *StoreTestSuite) TestSetServerConfig_ProtocolSettings(test *testing.
 		},
 		{
 			name: "ftp_settings",
-			config: metadata.ServerConfig{
+			config: metadata.MetadataServerConfig{
 				CustomSettings: map[string]any{
 					"ftp.passive_ports": "10000-10100",
 					"ftp.port":          21,
@@ -257,7 +257,7 @@ func (suite *StoreTestSuite) TestSetServerConfig_ProtocolSettings(test *testing.
 		},
 		{
 			name: "mixed_protocols",
-			config: metadata.ServerConfig{
+			config: metadata.MetadataServerConfig{
 				CustomSettings: map[string]any{
 					"nfs.port":               2049,
 					"smb.signing_required":   true,
@@ -296,7 +296,7 @@ func (suite *StoreTestSuite) TestGetServerConfig_InitiallyEmpty(test *testing.T)
 
 	config, err := store.GetServerConfig(ctx)
 	require.NoError(test, err)
-	assert.Equal(test, metadata.ServerConfig{}, config, "Initial config should be empty")
+	assert.Equal(test, metadata.MetadataServerConfig{}, config, "Initial config should be empty")
 }
 
 func (suite *StoreTestSuite) TestGetServerConfig_ContextCanceled(t *testing.T) {
@@ -317,7 +317,7 @@ func (suite *StoreTestSuite) TestSetServerConfig_ContextCanceled(t *testing.T) {
 	canceledCtx, cancel := context.WithCancel(ctx)
 	cancel()
 
-	config := metadata.ServerConfig{
+	config := metadata.MetadataServerConfig{
 		CustomSettings: map[string]any{"test": "value"},
 	}
 	err := store.SetServerConfig(canceledCtx, config)

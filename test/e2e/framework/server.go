@@ -28,8 +28,10 @@ const (
 	StoreTypeFilesystem StoreType = "filesystem"
 )
 
-// ServerConfig holds configuration for the test server
-type ServerConfig struct {
+// TestServerConfig holds configuration for the test server.
+// This is distinct from pkg/config.ServerConfig (application-level server settings)
+// and pkg/metadata.MetadataServerConfig (repository-level settings).
+type TestServerConfig struct {
 	Port           int
 	ContentStore   StoreType
 	ContentPath    string // Only used for filesystem store
@@ -41,7 +43,7 @@ type ServerConfig struct {
 // TestServer wraps a DittoFS server for testing
 type TestServer struct {
 	t             *testing.T
-	config        ServerConfig
+	config        TestServerConfig
 	server        *server.DittoServer
 	metadataStore metadata.MetadataStore
 	contentStore  content.WritableContentStore
@@ -54,7 +56,7 @@ type TestServer struct {
 }
 
 // NewTestServer creates a new test server instance
-func NewTestServer(t *testing.T, config ServerConfig) *TestServer {
+func NewTestServer(t *testing.T, config TestServerConfig) *TestServer {
 	t.Helper()
 
 	// Set defaults

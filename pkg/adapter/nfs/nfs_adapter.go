@@ -112,52 +112,60 @@ type NFSAdapter struct {
 //   - IdleTimeout: 5m closes inactive connections to free resources
 //   - ShutdownTimeout: 30s balances graceful shutdown with restart time
 type NFSConfig struct {
+	// Enabled controls whether the NFS adapter is active.
+	// When false, the NFS adapter will not be started.
+	Enabled bool `mapstructure:"enabled"`
+
 	// Port is the TCP port to listen on for NFS connections.
 	// Standard NFS port is 2049. Must be > 0.
 	// If 0, defaults to 2049.
-	Port int
+	Port int `mapstructure:"port" validate:"min=0,max=65535"`
 
 	// MaxConnections limits the number of concurrent client connections.
 	// When reached, new connections are rejected until existing ones close.
 	// 0 means unlimited (not recommended for production).
 	// Recommended: 1000-5000 for production servers.
-	MaxConnections int
+	MaxConnections int `mapstructure:"max_connections" validate:"min=0"`
 
 	// ReadTimeout is the maximum duration for reading a complete RPC request.
 	// This prevents slow or malicious clients from holding connections indefinitely.
 	// 0 means no timeout (not recommended).
 	// Recommended: 30s for LAN, 60s for WAN.
-	ReadTimeout time.Duration
+	ReadTimeout time.Duration `mapstructure:"read_timeout" validate:"min=0"`
 
 	// WriteTimeout is the maximum duration for writing an RPC response.
 	// This prevents slow networks or clients from blocking server resources.
 	// 0 means no timeout (not recommended).
 	// Recommended: 30s for LAN, 60s for WAN.
-	WriteTimeout time.Duration
+	WriteTimeout time.Duration `mapstructure:"write_timeout" validate:"min=0"`
 
 	// IdleTimeout is the maximum duration a connection can remain idle
 	// between requests before being closed automatically.
 	// This frees resources from abandoned connections.
 	// 0 means no timeout (connections stay open indefinitely).
 	// Recommended: 5m for production.
-	IdleTimeout time.Duration
+	IdleTimeout time.Duration `mapstructure:"idle_timeout" validate:"min=0"`
 
 	// ShutdownTimeout is the maximum duration to wait for active connections
 	// to complete during graceful shutdown.
 	// After this timeout, remaining connections are forcibly closed.
 	// Must be > 0 to ensure shutdown completes.
 	// Recommended: 30s (balances graceful shutdown with restart time).
-	ShutdownTimeout time.Duration
+	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout" validate:"required,gt=0"`
 
 	// MetricsLogInterval is the interval at which to log server metrics
 	// (active connections, requests/sec, etc.).
 	// 0 disables periodic metrics logging.
 	// Recommended: 5m for production monitoring.
-	MetricsLogInterval time.Duration
+	MetricsLogInterval time.Duration `mapstructure:"metrics_log_interval" validate:"min=0"`
 }
 
 // applyDefaults fills in zero values with sensible defaults.
 func (c *NFSConfig) applyDefaults() {
+	// Enabled defaults to true if not explicitly set
+	// (zero value for bool is false, but we want it enabled by default)
+	// Note: This is handled in pkg/config/defaults.go for consistency
+
 	if c.Port <= 0 {
 		c.Port = 2049
 	}

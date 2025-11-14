@@ -28,7 +28,7 @@ func NewTestContext(t *testing.T, storeType StoreType) *TestContext {
 	})
 
 	// Create and start server
-	server := NewTestServer(t, ServerConfig{
+	server := NewTestServer(t, TestServerConfig{
 		ContentStore: storeType,
 		LogLevel:     "ERROR",
 	})

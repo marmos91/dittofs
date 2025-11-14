@@ -165,7 +165,7 @@ type MemoryMetadataStore struct {
 
 	// serverConfig stores global server configuration.
 	// This includes settings that apply across all shares and operations.
-	serverConfig metadata.ServerConfig
+	serverConfig metadata.MetadataServerConfig
 
 	// capabilities stores static filesystem capabilities and limits.
 	// These are set at creation time and define what the filesystem supports.

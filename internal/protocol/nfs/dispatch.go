@@ -16,9 +16,13 @@ import (
 // Authentication Context Creation
 // ============================================================================
 
-// AuthContext holds the common authentication information extracted from
-// an RPC call. This provides a unified view of authentication data that
-// is passed to all NFS and Mount procedures.
+// NFSAuthContext holds the RPC-level authentication information extracted from
+// an NFS/Mount RPC call. This contains raw wire-format authentication data
+// that is passed to all NFS and Mount procedure handlers.
+//
+// This is distinct from pkg/metadata/AuthContext, which contains the effective
+// identity after share-level identity mapping rules are applied. NFSAuthContext
+// represents the raw RPC credentials before any mapping.
 //
 // The context includes both the raw authentication flavor (AUTH_UNIX, AUTH_NULL)
 // and parsed Unix credentials when available. Procedures can use this to make
@@ -35,7 +39,7 @@ import (
 //
 // All procedure handlers receive this context and should check for cancellation
 // before expensive operations.
-type AuthContext struct {
+type NFSAuthContext struct {
 	// Context is the Go context for cancellation and timeout control.
 	// This context is derived from the connection's context and may be
 	// cancelled when:
@@ -58,7 +62,7 @@ type AuthContext struct {
 	GIDs []uint32 // Supplementary group IDs
 }
 
-// extractAuthContext creates an AuthContext from an RPC call message.
+// extractAuthContext creates an NFSAuthContext from an RPC call message.
 // This centralizes authentication extraction logic and ensures consistent
 // handling across all procedures.
 //
@@ -72,7 +76,7 @@ type AuthContext struct {
 //
 // **Context Propagation:**
 //
-// The Go context passed to this function is embedded in the returned AuthContext.
+// The Go context passed to this function is embedded in the returned NFSAuthContext.
 // This context will be passed through to all procedure handlers, enabling them
 // to respect cancellation signals from the server or client disconnect events.
 //
@@ -83,14 +87,14 @@ type AuthContext struct {
 //   - procedure: Name of the procedure (for logging purposes)
 //
 // Returns:
-//   - AuthContext with extracted authentication information and propagated context
+//   - NFSAuthContext with extracted authentication information and propagated context
 func ExtractAuthContext(
 	ctx context.Context,
 	call *rpc.RPCCallMessage,
 	clientAddr string,
 	procedure string,
-) *AuthContext {
-	authCtx := &AuthContext{
+) *NFSAuthContext {
+	authCtx := &NFSAuthContext{
 		Context:    ctx,
 		ClientAddr: clientAddr,
 		AuthFlavor: call.GetAuthFlavor(),
@@ -138,14 +142,14 @@ func ExtractAuthContext(
 //
 // **Context Handling:**
 //
-// The AuthContext parameter includes a Go context that handlers should check
+// The NFSAuthContext parameter includes a Go context that handlers should check
 // for cancellation before expensive operations. This enables:
 //   - Graceful server shutdown without waiting for in-flight requests
 //   - Cancellation of orphaned requests from disconnected clients
 //   - Request timeout enforcement
 //   - Efficient resource cleanup
 type nfsProcedureHandler func(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -178,10 +182,10 @@ var NfsDispatchTable map[uint32]*nfsProcedureInfo
 //
 // **Context Handling:**
 //
-// Like NFS handlers, Mount handlers receive an AuthContext with a Go context
+// Like NFS handlers, Mount handlers receive an NFSAuthContext with a Go context
 // for cancellation support.
 type mountProcedureHandler func(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler mount.MountHandler,
 	store metadata.MetadataStore,
 	data []byte,
@@ -340,7 +344,7 @@ func initNFSDispatchTable() {
 //  - Clean up resources properly on cancellation
 
 func handleNFSNull(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -369,7 +373,7 @@ func handleNFSNull(
 }
 
 func handleNFSGetAttr(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -395,7 +399,7 @@ func handleNFSGetAttr(
 }
 
 func handleNFSSetAttr(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -424,7 +428,7 @@ func handleNFSSetAttr(
 }
 
 func handleNFSLookup(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -453,7 +457,7 @@ func handleNFSLookup(
 }
 
 func handleNFSAccess(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -482,7 +486,7 @@ func handleNFSAccess(
 }
 
 func handleNFSReadLink(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -511,7 +515,7 @@ func handleNFSReadLink(
 }
 
 func handleNFSRead(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -540,7 +544,7 @@ func handleNFSRead(
 }
 
 func handleNFSWrite(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -569,7 +573,7 @@ func handleNFSWrite(
 }
 
 func handleNFSCreate(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -597,7 +601,7 @@ func handleNFSCreate(
 }
 
 func handleNFSMkdir(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -626,7 +630,7 @@ func handleNFSMkdir(
 }
 
 func handleNFSSymlink(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -655,7 +659,7 @@ func handleNFSSymlink(
 }
 
 func handleNFSMknod(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -684,7 +688,7 @@ func handleNFSMknod(
 }
 
 func handleNFSRemove(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -713,7 +717,7 @@ func handleNFSRemove(
 }
 
 func handleNFSRmdir(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -742,7 +746,7 @@ func handleNFSRmdir(
 }
 
 func handleNFSRename(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -771,7 +775,7 @@ func handleNFSRename(
 }
 
 func handleNFSLink(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -800,7 +804,7 @@ func handleNFSLink(
 }
 
 func handleNFSReadDir(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -829,7 +833,7 @@ func handleNFSReadDir(
 }
 
 func handleNFSReadDirPlus(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -858,7 +862,7 @@ func handleNFSReadDirPlus(
 }
 
 func handleNFSFsStat(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -884,7 +888,7 @@ func handleNFSFsStat(
 }
 
 func handleNFSFsInfo(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -910,7 +914,7 @@ func handleNFSFsInfo(
 }
 
 func handleNFSPathConf(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -936,7 +940,7 @@ func handleNFSPathConf(
 }
 
 func handleNFSCommit(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler nfs.NFSHandler,
 	store metadata.MetadataStore,
 	content content.ContentStore,
@@ -1011,7 +1015,7 @@ func initMountDispatchTable() {
 // context propagation for cancellation support.
 
 func handleMountNull(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler mount.MountHandler,
 	store metadata.MetadataStore,
 	data []byte,
@@ -1040,7 +1044,7 @@ func handleMountNull(
 }
 
 func handleMountMnt(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler mount.MountHandler,
 	store metadata.MetadataStore,
 	data []byte,
@@ -1076,7 +1080,7 @@ func handleMountMnt(
 }
 
 func handleMountDump(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler mount.MountHandler,
 	store metadata.MetadataStore,
 	data []byte,
@@ -1100,7 +1104,7 @@ func handleMountDump(
 }
 
 func handleMountUmnt(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler mount.MountHandler,
 	store metadata.MetadataStore,
 	data []byte,
@@ -1124,7 +1128,7 @@ func handleMountUmnt(
 }
 
 func handleMountUmntAll(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler mount.MountHandler,
 	store metadata.MetadataStore,
 	data []byte,
@@ -1148,7 +1152,7 @@ func handleMountUmntAll(
 }
 
 func handleMountExport(
-	authCtx *AuthContext,
+	authCtx *NFSAuthContext,
 	handler mount.MountHandler,
 	store metadata.MetadataStore,
 	data []byte,

@@ -8,259 +8,185 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
-	contentFs "github.com/marmos91/dittofs/pkg/content/fs"
-	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/memory"
+	"github.com/marmos91/dittofs/pkg/config"
 	dittoServer "github.com/marmos91/dittofs/pkg/server"
 )
 
-func createInitialStructure(ctx context.Context, repo *memory.MemoryMetadataStore, contentRepo *contentFs.FSContentStore, rootHandle metadata.FileHandle) error {
-	now := time.Now()
+const usage = `DittoFS - Dynamic NFS Server
 
-	// Create auth context for initial file creation (using root credentials)
-	uid := uint32(0) // root
-	gid := uint32(0)
-	authCtx := &metadata.AuthContext{
-		Context:    ctx,
-		AuthMethod: "unix",
-		Identity: &metadata.Identity{
-			UID:  &uid,
-			GID:  &gid,
-			GIDs: []uint32{0},
-		},
-		ClientAddr: "127.0.0.1",
-	}
+Usage:
+  dittofs <command> [flags]
 
-	// Create "images" directory
-	imagesAttr := &metadata.FileAttr{
-		Type:      metadata.FileTypeDirectory,
-		Mode:      0755,
-		UID:       501,
-		GID:       20,
-		Size:      4096,
-		Atime:     now,
-		Mtime:     now,
-		Ctime:     now,
-		ContentID: "", // Directories don't have content
-	}
+Commands:
+  init     Initialize a sample configuration file
+  start    Start the DittoFS server
 
-	imagesHandle, err := repo.Create(authCtx, rootHandle, "images", imagesAttr)
-	if err != nil {
-		return fmt.Errorf("failed to create images directory: %w", err)
-	}
+Flags:
+  --config string    Path to config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)
+  --force            Force overwrite existing config file (init command only)
 
-	// Create image files inside images directory with actual content
-	imageFiles := []struct {
-		name    string
-		content string
-	}{
-		{"background1.png", "PNG image content for background1"},
-		{"background2.jpg", "JPEG image content for background2"},
-		{"wallpaper.png", "PNG image content for wallpaper"},
-	}
+Examples:
+  # Initialize config file
+  dittofs init
 
-	for _, img := range imageFiles {
-		contentID := metadata.ContentID(fmt.Sprintf("img-%s", img.name))
+  # Start server with default config location
+  dittofs start
 
-		// Write actual content to the content repository
-		if err := contentRepo.WriteAt(ctx, contentID, []byte(img.content), 0); err != nil {
-			return fmt.Errorf("failed to write content for %s: %w", img.name, err)
-		}
+  # Start server with custom config
+  dittofs start --config /etc/dittofs/config.yaml
 
-		fileAttr := &metadata.FileAttr{
-			Type:      metadata.FileTypeRegular,
-			Mode:      0644,
-			UID:       501,
-			GID:       20,
-			Size:      uint64(len(img.content)),
-			Atime:     now,
-			Mtime:     now,
-			Ctime:     now,
-			ContentID: contentID,
-		}
+  # Use environment variables to override config
+  DITTOFS_LOGGING_LEVEL=DEBUG dittofs start
 
-		if _, err := repo.Create(authCtx, imagesHandle, img.name, fileAttr); err != nil {
-			return fmt.Errorf("failed to create %s: %w", img.name, err)
-		}
-	}
+Environment Variables:
+  All configuration options can be overridden using environment variables.
+  Format: DITTOFS_<SECTION>_<KEY> (use underscores for nested keys)
 
-	// Create text files in root
-	textFiles := []struct {
-		name    string
-		content string
-	}{
-		{"readme.txt", "This is a README file.\nWelcome to dittofs!\n"},
-		{"notes.txt", "Some notes about this NFS server.\nIt's pretty cool!\n"},
-	}
+  Examples:
+    DITTOFS_LOGGING_LEVEL=DEBUG
+    DITTOFS_ADAPTERS_NFS_PORT=3049
+    DITTOFS_CONTENT_FILESYSTEM_PATH=/custom/path
 
-	for _, txt := range textFiles {
-		contentID := metadata.ContentID(fmt.Sprintf("txt-%s", txt.name))
-
-		// Write actual content to the content repository
-		if err := contentRepo.WriteAt(ctx, contentID, []byte(txt.content), 0); err != nil {
-			return fmt.Errorf("failed to write content for %s: %w", txt.name, err)
-		}
-
-		fileAttr := &metadata.FileAttr{
-			Type:      metadata.FileTypeRegular,
-			Mode:      0644,
-			UID:       501,
-			GID:       20,
-			Size:      uint64(len(txt.content)),
-			Atime:     now,
-			Mtime:     now,
-			Ctime:     now,
-			ContentID: contentID,
-		}
-
-		if _, err := repo.Create(authCtx, rootHandle, txt.name, fileAttr); err != nil {
-			return fmt.Errorf("failed to create %s: %w", txt.name, err)
-		}
-	}
-
-	return nil
-}
+For more information, visit: https://github.com/marmos91/dittofs
+`
 
 func main() {
-	// Server configuration flags
-	port := flag.String("port", "2049", "Port to listen on")
-	logLevel := flag.String("log-level", "INFO", "Log level (DEBUG, INFO, WARN, ERROR)")
-	contentPath := flag.String("content-path", "/tmp/dittofs-content", "Path to store file content")
+	if len(os.Args) < 2 {
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(1)
+	}
 
-	// Connection limit flags
-	maxConnections := flag.Int("max-connections", 0, "Maximum concurrent connections (0 = unlimited)")
-	readTimeout := flag.Duration("read-timeout", 30*time.Second, "Read timeout for RPC requests")
-	writeTimeout := flag.Duration("write-timeout", 30*time.Second, "Write timeout for RPC responses")
-	idleTimeout := flag.Duration("idle-timeout", 5*time.Minute, "Idle timeout between requests")
-	shutdownTimeout := flag.Duration("shutdown-timeout", 30*time.Second, "Graceful shutdown timeout")
+	command := os.Args[1]
 
-	// Repository configuration flags
-	dumpRestricted := flag.Bool("dump-restricted", false, "Restrict DUMP to localhost only")
+	switch command {
+	case "init":
+		runInit()
+	case "start":
+		runStart()
+	case "help", "--help", "-h":
+		fmt.Print(usage)
+		os.Exit(0)
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", command)
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(1)
+	}
+}
 
-	flag.Parse()
+// runInit handles the init subcommand
+func runInit() {
+	// Parse flags for init command
+	initFlags := flag.NewFlagSet("init", flag.ExitOnError)
+	configFile := initFlags.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)")
+	force := initFlags.Bool("force", false, "Force overwrite existing config file")
+
+	if err := initFlags.Parse(os.Args[2:]); err != nil {
+		log.Fatalf("Failed to parse flags: %v", err)
+	}
+
+	var configPath string
+	var err error
+
+	if *configFile != "" {
+		// Use custom path
+		err = config.InitConfigToPath(*configFile, *force)
+		configPath = *configFile
+	} else {
+		// Use default path
+		configPath, err = config.InitConfig(*force)
+	}
+
+	if err != nil {
+		log.Fatalf("Failed to initialize config: %v", err)
+	}
+
+	fmt.Printf("✓ Configuration file created at: %s\n", configPath)
+	fmt.Println("\nNext steps:")
+	fmt.Println("  1. Edit the configuration file to customize your setup")
+	fmt.Println("  2. Start the server with: dittofs start")
+	fmt.Printf("  3. Or specify custom config: dittofs start --config %s\n", configPath)
+}
+
+// runStart handles the start subcommand
+func runStart() {
+	// Parse flags for start command
+	startFlags := flag.NewFlagSet("start", flag.ExitOnError)
+	configFile := startFlags.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)")
+
+	if err := startFlags.Parse(os.Args[2:]); err != nil {
+		log.Fatalf("Failed to parse flags: %v", err)
+	}
+
+	// Check if config exists
+	if *configFile == "" && !config.ConfigExists() {
+		fmt.Fprintf(os.Stderr, "Error: No configuration file found at default location: %s\n\n", config.GetDefaultConfigPath())
+		fmt.Fprintln(os.Stderr, "Please initialize a configuration file first:")
+		fmt.Fprintln(os.Stderr, "  dittofs init")
+		fmt.Fprintln(os.Stderr, "\nOr specify a custom config file:")
+		fmt.Fprintln(os.Stderr, "  dittofs start --config /path/to/config.yaml")
+		os.Exit(1)
+	}
+
+	// Load configuration
+	cfg, err := config.Load(*configFile)
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
 
 	// Configure logger
-	logger.SetLevel(*logLevel)
+	logger.SetLevel(cfg.Logging.Level)
 
 	// Create cancellable context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	fmt.Println("DittoFS - Dynamic NFS Server")
-	logger.Info("Log level set to: %s", *logLevel)
-	logger.Info("Content storage path: %s", *contentPath)
+	logger.Info("Log level: %s", cfg.Logging.Level)
+	logger.Info("Configuration loaded from: %s", getConfigSource(*configFile))
 
-	// Create content repository
-	contentRepo, err := contentFs.NewFSContentStore(ctx, *contentPath)
+	// Create content store
+	contentStore, err := config.CreateContentStore(ctx, &cfg.Content)
 	if err != nil {
-		log.Fatalf("Failed to create content repository: %v", err)
+		log.Fatalf("Failed to create content store: %v", err)
 	}
+	logger.Info("Content store initialized: type=%s", cfg.Content.Type)
 
-	metadataRepo := memory.NewMemoryMetadataStoreWithDefaults()
-
-	// Configure metadata repository settings
-	repoConfig := metadata.ServerConfig{
-		CustomSettings: make(map[string]any),
-	}
-	if *dumpRestricted {
-		// Restrict DUMP to localhost only
-		repoConfig.CustomSettings["nfs.mount.dump_allowed_clients"] = []string{"127.0.0.1", "::1"}
-		logger.Info("DUMP access restricted to localhost")
-	} else {
-		logger.Info("DUMP access unrestricted (default)")
-	}
-
-	if err := metadataRepo.SetServerConfig(ctx, repoConfig); err != nil {
-		log.Fatalf("Failed to set server config: %v", err)
-	}
-
-	// Create root directory attributes
-	now := time.Now()
-	rootAttr := &metadata.FileAttr{
-		Type:      metadata.FileTypeDirectory,
-		Mode:      0755,
-		UID:       501,
-		GID:       20,
-		Size:      4096,
-		Atime:     now,
-		Mtime:     now,
-		Ctime:     now,
-		ContentID: "", // Root directory has no content
-	}
-
-	anonUID := uint32(65534) // nobody
-	anonGID := uint32(65534) // nogroup
-
-	// Add primary export
-	if err := metadataRepo.AddShare(ctx, "/export", metadata.ShareOptions{
-		ReadOnly: false,
-		Async:    true,
-		IdentityMapping: &metadata.IdentityMapping{
-			MapAllToAnonymous: true,
-			AnonymousUID:      &anonUID, // nobody
-			AnonymousGID:      &anonGID, // nogroup
-		},
-	}, rootAttr); err != nil {
-		log.Fatalf("Failed to add export: %v", err)
-	}
-	logger.Info("Export added: /export (read-write, all_squash)")
-
-	// Add restricted export example
-	if err := metadataRepo.AddShare(ctx, "/nolocalhost", metadata.ShareOptions{
-		ReadOnly:           false,
-		Async:              true,
-		AllowedClients:     []string{"192.168.1.0/24"},
-		DeniedClients:      []string{"192.168.1.50", "::1"},
-		RequireAuth:        false,
-		AllowedAuthMethods: []string{"anonymous", "unix"}, // AUTH_NULL, AUTH_UNIX
-		IdentityMapping: &metadata.IdentityMapping{
-			MapAllToAnonymous: true,
-			AnonymousUID:      &anonUID, // nobody
-			AnonymousGID:      &anonGID, // nogroup
-		},
-	}, rootAttr); err != nil {
-		log.Fatalf("Failed to add restricted export: %v", err)
-	}
-	logger.Info("Export added: /nolocalhost (network restricted)")
-
-	// Get root handle for initial structure creation
-	rootHandle, err := metadataRepo.GetShareRoot(ctx, "/export")
+	// Create metadata store
+	metadataStore, err := config.CreateMetadataStore(ctx, &cfg.Metadata)
 	if err != nil {
-		log.Fatalf("Failed to get root handle: %v", err)
+		log.Fatalf("Failed to create metadata store: %v", err)
+	}
+	logger.Info("Metadata store initialized: type=%s", cfg.Metadata.Type)
+
+	// Configure metadata store settings
+	if err := config.ConfigureMetadataStore(ctx, metadataStore, &cfg.Metadata); err != nil {
+		log.Fatalf("Failed to configure metadata store: %v", err)
 	}
 
-	// Create initial file structure
-	if err := createInitialStructure(ctx, metadataRepo, contentRepo, rootHandle); err != nil {
-		log.Fatalf("Failed to create initial structure: %v", err)
+	// Create shares
+	if err := config.CreateShares(ctx, metadataStore, cfg.Shares); err != nil {
+		log.Fatalf("Failed to create shares: %v", err)
 	}
-	logger.Info("Initial file structure created")
-
-	dittoSrv := dittoServer.New(metadataRepo, contentRepo)
-
-	portInt := 2049 // default
-	if _, err := fmt.Sscanf(*port, "%d", &portInt); err != nil {
-		logger.Warn("Invalid port number: %v, using default port %d", *port, portInt)
+	logger.Info("Configured %d share(s)", len(cfg.Shares))
+	for _, share := range cfg.Shares {
+		logger.Info("  - %s (read_only=%v)", share.Name, share.ReadOnly)
 	}
 
-	nfsConfig := nfs.NFSConfig{
-		Port:            portInt,
-		MaxConnections:  *maxConnections,
-		ReadTimeout:     *readTimeout,
-		WriteTimeout:    *writeTimeout,
-		IdleTimeout:     *idleTimeout,
-		ShutdownTimeout: *shutdownTimeout,
+	// Create DittoServer
+	dittoSrv := dittoServer.New(metadataStore, contentStore)
+
+	// Add enabled adapters
+	if cfg.Adapters.NFS.Enabled {
+		// Use the config's NFSConfig directly (no manual mapping needed)
+		nfsAdapter := nfs.New(cfg.Adapters.NFS)
+		if err := dittoSrv.AddAdapter(nfsAdapter); err != nil {
+			log.Fatalf("Failed to add NFS adapter: %v", err)
+		}
+		logger.Info("NFS adapter enabled on port %d", nfsAdapter.Port())
 	}
-
-	nfsAdapter := nfs.New(nfsConfig)
-	dittoSrv.AddAdapter(nfsAdapter)
-
-	// Log server configuration
-	logger.Info("Server configuration:")
-	logger.Info("  Port: %d", nfsAdapter.Port())
 
 	// Start server in background
 	serverDone := make(chan error, 1)
@@ -271,8 +197,9 @@ func main() {
 	// Wait for interrupt signal or server error
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigChan) // Clean up signal notification to prevent goroutine leak
 
-	logger.Info("Server is running on port %s. Press Ctrl+C to stop.", *port)
+	logger.Info("Server is running. Press Ctrl+C to stop.")
 
 	select {
 	case <-sigChan:
@@ -293,4 +220,15 @@ func main() {
 		}
 		logger.Info("Server stopped")
 	}
+}
+
+// getConfigSource returns a description of where the config was loaded from
+func getConfigSource(configFile string) string {
+	if configFile != "" {
+		return configFile
+	}
+	if config.ConfigExists() {
+		return config.GetDefaultConfigPath()
+	}
+	return "defaults"
 }
