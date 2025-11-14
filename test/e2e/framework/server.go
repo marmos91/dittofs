@@ -24,8 +24,9 @@ import (
 type StoreType string
 
 const (
-	StoreTypeMemory     StoreType = "memory"
-	StoreTypeFilesystem StoreType = "filesystem"
+	StoreTypeMemory        StoreType = "memory"
+	StoreTypeMemoryChunked StoreType = "memory-chunked"
+	StoreTypeFilesystem    StoreType = "filesystem"
 )
 
 // TestServerConfig holds configuration for the test server.
@@ -122,6 +123,12 @@ func (ts *TestServer) Start() error {
 			return fmt.Errorf("failed to create memory content store: %w", err)
 		}
 		ts.t.Logf("Using memory content store")
+	case StoreTypeMemoryChunked:
+		ts.contentStore, err = contentmemory.NewChunkedMemoryContentStore(ts.ctx, 64*1024)
+		if err != nil {
+			return fmt.Errorf("failed to create chunked memory content store: %w", err)
+		}
+		ts.t.Logf("Using chunked memory content store")
 	case StoreTypeFilesystem:
 		ts.contentStore, err = contentfs.NewFSContentStore(ts.ctx, ts.config.ContentPath)
 		if err != nil {

@@ -363,7 +363,7 @@ func (h *DefaultNFSHandler) Rmdir(
 	// Delegate to store for directory removal
 	err = metadataStore.RemoveDirectory(authCtx, parentHandle, req.Name)
 	if err != nil {
-		logger.Error("RMDIR failed: store error: name='%s' client=%s error=%v",
+		logger.Debug("RMDIR failed: store error: name='%s' client=%s error=%v",
 			req.Name, clientIP, err)
 
 		// Get updated parent attributes for WCC data

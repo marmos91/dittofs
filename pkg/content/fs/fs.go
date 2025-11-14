@@ -24,6 +24,7 @@ import (
 // ensure proper synchronization for concurrent access to the same content ID.
 type FSContentStore struct {
 	basePath string
+	fdCache  *FDCache
 }
 
 // NewFSContentStore creates a new filesystem-based content repository.
@@ -58,8 +59,11 @@ func NewFSContentStore(ctx context.Context, basePath string) (*FSContentStore, e
 		return nil, fmt.Errorf("failed to create base directory: %w", err)
 	}
 
+	const defaultFDCacheSize = 512
+
 	return &FSContentStore{
 		basePath: basePath,
+		fdCache:  NewFDCache(defaultFDCacheSize),
 	}, nil
 }
 
@@ -298,14 +302,26 @@ func (r *FSContentStore) WriteAt(ctx context.Context, id metadata.ContentID, dat
 	filePath := r.getFilePath(ctx, id)
 
 	// ========================================================================
-	// Step 2: Open file for read/write, create if doesn't exist
+	// Step 2: Per-file locking and FD cache lookup
 	// ========================================================================
 
-	file, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open file for writing: %w", err)
+	r.fdCache.LockFile(id)
+	defer r.fdCache.UnlockFile(id)
+
+	file, cacheHit := r.fdCache.Get(id)
+
+	if !cacheHit {
+		var err error
+		file, err = os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0644)
+		if err != nil {
+			return fmt.Errorf("failed to open file for writing: %w", err)
+		}
+
+		if err := r.fdCache.Put(id, file, filePath); err != nil {
+			file.Close()
+			return fmt.Errorf("failed to cache file descriptor: %w", err)
+		}
 	}
-	defer file.Close()
 
 	// ========================================================================
 	// Step 3: Seek to offset
@@ -315,7 +331,7 @@ func (r *FSContentStore) WriteAt(ctx context.Context, id metadata.ContentID, dat
 		return err
 	}
 
-	_, err = file.Seek(offset, io.SeekStart)
+	_, err := file.Seek(offset, io.SeekStart)
 	if err != nil {
 		return fmt.Errorf("failed to seek to offset: %w", err)
 	}
@@ -432,7 +448,15 @@ func (r *FSContentStore) Delete(ctx context.Context, id metadata.ContentID) erro
 	filePath := r.getFilePath(ctx, id)
 
 	// ========================================================================
-	// Step 2: Remove the file
+	// Step 2: Remove from FD cache if present
+	// ========================================================================
+
+	if err := r.fdCache.Remove(id); err != nil {
+		// Cache removal error is non-fatal
+	}
+
+	// ========================================================================
+	// Step 3: Remove the file
 	// ========================================================================
 
 	err := os.Remove(filePath)
@@ -637,4 +661,9 @@ func (r *FSContentStore) ReadContentSeekable(ctx context.Context, id metadata.Co
 	}
 
 	return file, nil
+}
+
+// Close closes all cached file descriptors and cleans up resources
+func (r *FSContentStore) Close() error {
+	return r.fdCache.Close()
 }

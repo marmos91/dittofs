@@ -102,3 +102,42 @@ func handleRequest[Req rpcRequest, Resp rpcResponse](
 
 	return encoded, nil
 }
+
+func handleRequestWithPool[Req rpcRequest, Resp rpcResponse](
+	data []byte,
+	decode func([]byte) (Req, error),
+	handle func(Req) (Resp, error),
+	errorStatus uint32,
+	makeErrorResp func(uint32) Resp,
+	getResp func() Resp,
+	putResp func(Resp),
+) ([]byte, error) {
+	// Decode request
+	req, err := decode(data)
+	if err != nil {
+		logger.Debug("Error decoding request: %v", err)
+		errorResp := makeErrorResp(errorStatus)
+		return errorResp.Encode()
+	}
+
+	// Call handler
+	resp, err := handle(req)
+	if err != nil {
+		logger.Debug("Handler error: %v", err)
+		errorResp := makeErrorResp(errorStatus)
+		return errorResp.Encode()
+	}
+
+	// Encode response
+	encoded, err := resp.Encode()
+	if err != nil {
+		logger.Debug("Error encoding response: %v", err)
+		errorResp := makeErrorResp(errorStatus)
+		return errorResp.Encode()
+	}
+
+	// Return response to pool
+	putResp(resp)
+
+	return encoded, nil
+}
