@@ -116,8 +116,10 @@ func createS3ContentStore(ctx context.Context, options map[string]any) (content.
 
 	// Set custom endpoint if provided (for MinIO, Localstack, etc.)
 	if storeCfg.Endpoint != "" {
+		//nolint:staticcheck // TODO: migrate to BaseEndpoint when AWS SDK v2 stabilizes the new API
 		customResolver := aws.EndpointResolverWithOptionsFunc(
 			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+				//nolint:staticcheck // TODO: migrate to BaseEndpoint when AWS SDK v2 stabilizes the new API
 				return aws.Endpoint{
 					URL:               storeCfg.Endpoint,
 					HostnameImmutable: true,
@@ -125,6 +127,7 @@ func createS3ContentStore(ctx context.Context, options map[string]any) (content.
 				}, nil
 			},
 		)
+		//nolint:staticcheck // TODO: migrate to BaseEndpoint when AWS SDK v2 stabilizes the new API
 		configOptions = append(configOptions, awsConfig.WithEndpointResolverWithOptions(customResolver))
 	}
 

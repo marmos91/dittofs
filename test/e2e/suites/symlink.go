@@ -44,7 +44,7 @@ func TestSymlinkOperations(t *testing.T, storeType framework.StoreType) {
 		if err != nil {
 			t.Fatalf("Failed to create directory: %v", err)
 		}
-		ctx.WriteFile("targetdir/file.txt", []byte("data"), 0644)
+		_ = ctx.WriteFile("targetdir/file.txt", []byte("data"), 0644)
 
 		// Create symlink to directory
 		err = ctx.Symlink("targetdir", "linkdir")
@@ -69,7 +69,7 @@ func TestSymlinkOperations(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("CreateAbsoluteSymlink", func(t *testing.T) {
 		// Create target file
-		ctx.WriteFile("abstarget.txt", []byte("absolute"), 0644)
+		_ = ctx.WriteFile("abstarget.txt", []byte("absolute"), 0644)
 
 		// Create absolute symlink
 		absTarget := ctx.Path("abstarget.txt")
@@ -117,8 +117,8 @@ func TestSymlinkOperations(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("DeleteSymlink", func(t *testing.T) {
 		// Create target and symlink
-		ctx.WriteFile("deletestarget.txt", []byte("data"), 0644)
-		ctx.Symlink("deletestarget.txt", "deleteslink.txt")
+		_ = ctx.WriteFile("deletestarget.txt", []byte("data"), 0644)
+		_ = ctx.Symlink("deletestarget.txt", "deleteslink.txt")
 		ctx.AssertIsSymlink("deleteslink.txt")
 
 		// Delete symlink
@@ -134,8 +134,8 @@ func TestSymlinkOperations(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("RenameSymlink", func(t *testing.T) {
 		// Create target and symlink
-		ctx.WriteFile("renametarget.txt", []byte("data"), 0644)
-		ctx.Symlink("renametarget.txt", "oldlink.txt")
+		_ = ctx.WriteFile("renametarget.txt", []byte("data"), 0644)
+		_ = ctx.Symlink("renametarget.txt", "oldlink.txt")
 
 		// Rename symlink
 		err := ctx.Rename("oldlink.txt", "newlink.txt")
@@ -159,14 +159,14 @@ func TestSymlinkOperations(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("OverwriteSymlink", func(t *testing.T) {
 		// Create first target and symlink
-		ctx.WriteFile("target1.txt", []byte("first"), 0644)
-		ctx.Symlink("target1.txt", "overlink.txt")
+		_ = ctx.WriteFile("target1.txt", []byte("first"), 0644)
+		_ = ctx.Symlink("target1.txt", "overlink.txt")
 
 		// Create second target
-		ctx.WriteFile("target2.txt", []byte("second"), 0644)
+		_ = ctx.WriteFile("target2.txt", []byte("second"), 0644)
 
 		// Remove and recreate symlink to new target
-		ctx.Remove("overlink.txt")
+		_ = ctx.Remove("overlink.txt")
 		err := ctx.Symlink("target2.txt", "overlink.txt")
 		if err != nil {
 			t.Fatalf("Failed to overwrite symlink: %v", err)
@@ -186,10 +186,10 @@ func TestSymlinkOperations(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("ChainedSymlinks", func(t *testing.T) {
 		// Create chain: target.txt <- link1 <- link2 <- link3
-		ctx.WriteFile("chaintarget.txt", []byte("chain content"), 0644)
-		ctx.Symlink("chaintarget.txt", "chainlink1.txt")
-		ctx.Symlink("chainlink1.txt", "chainlink2.txt")
-		ctx.Symlink("chainlink2.txt", "chainlink3.txt")
+		_ = ctx.WriteFile("chaintarget.txt", []byte("chain content"), 0644)
+		_ = ctx.Symlink("chaintarget.txt", "chainlink1.txt")
+		_ = ctx.Symlink("chainlink1.txt", "chainlink2.txt")
+		_ = ctx.Symlink("chainlink2.txt", "chainlink3.txt")
 
 		// Verify final link can access content
 		ctx.AssertFileContent("chainlink3.txt", []byte("chain content"))
@@ -213,11 +213,11 @@ func TestSymlinkOperations(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("SymlinkWithRelativePath", func(t *testing.T) {
 		// Create nested structure
-		ctx.MkdirAll("dir1/subdir", 0755)
-		ctx.WriteFile("dir1/file.txt", []byte("relative content"), 0644)
+		_ = ctx.MkdirAll("dir1/subdir", 0755)
+		_ = ctx.WriteFile("dir1/file.txt", []byte("relative content"), 0644)
 
 		// Create symlink with relative path
-		ctx.Symlink("../file.txt", "dir1/subdir/link.txt")
+		_ = ctx.Symlink("../file.txt", "dir1/subdir/link.txt")
 
 		// Verify symlink target
 		target, err := ctx.Readlink("dir1/subdir/link.txt")

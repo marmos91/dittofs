@@ -146,7 +146,7 @@ func ParseUnixAuth(body []byte) (*UnixAuth, error) {
 	// XDR strings are padded to ensure the next field starts at a 4-byte boundary
 	padding := (4 - (nameLen % 4)) % 4
 	for i := uint32(0); i < padding; i++ {
-		reader.ReadByte()
+		_, _ = reader.ReadByte()
 	}
 
 	// Read UID (4 bytes, big-endian)

@@ -14,7 +14,7 @@ func TestFileAttributes(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("FileSize", func(t *testing.T) {
 		content := []byte("test content with known size")
-		ctx.WriteFile("sized.txt", content, 0644)
+		_ = ctx.WriteFile("sized.txt", content, 0644)
 
 		info, err := ctx.Stat("sized.txt")
 		if err != nil {
@@ -41,7 +41,7 @@ func TestFileAttributes(t *testing.T, storeType framework.StoreType) {
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
 				filename := "perm_" + tc.name + ".txt"
-				ctx.WriteFile(filename, []byte("content"), tc.mode)
+				_ = ctx.WriteFile(filename, []byte("content"), tc.mode)
 
 				info, err := ctx.Stat(filename)
 				if err != nil {
@@ -61,7 +61,7 @@ func TestFileAttributes(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("ChangePermissions", func(t *testing.T) {
 		// Create file with initial permissions
-		ctx.WriteFile("chmod.txt", []byte("chmod test"), 0644)
+		_ = ctx.WriteFile("chmod.txt", []byte("chmod test"), 0644)
 
 		// Change permissions
 		newMode := os.FileMode(0600)
@@ -87,7 +87,7 @@ func TestFileAttributes(t *testing.T, storeType framework.StoreType) {
 		before := time.Now()
 		time.Sleep(10 * time.Millisecond) // Small delay for timestamp resolution
 
-		ctx.WriteFile("mtime.txt", []byte("mtime test"), 0644)
+		_ = ctx.WriteFile("mtime.txt", []byte("mtime test"), 0644)
 
 		time.Sleep(10 * time.Millisecond)
 		after := time.Now()
@@ -106,7 +106,7 @@ func TestFileAttributes(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("ModificationTimeUpdates", func(t *testing.T) {
 		// Create file
-		ctx.WriteFile("mtime_update.txt", []byte("initial"), 0644)
+		_ = ctx.WriteFile("mtime_update.txt", []byte("initial"), 0644)
 
 		// Get initial mtime
 		info1, _ := ctx.Stat("mtime_update.txt")
@@ -116,7 +116,7 @@ func TestFileAttributes(t *testing.T, storeType framework.StoreType) {
 		time.Sleep(100 * time.Millisecond)
 
 		// Modify file
-		ctx.WriteFile("mtime_update.txt", []byte("modified"), 0644)
+		_ = ctx.WriteFile("mtime_update.txt", []byte("modified"), 0644)
 
 		// Get new mtime
 		info2, _ := ctx.Stat("mtime_update.txt")
@@ -131,7 +131,7 @@ func TestFileAttributes(t *testing.T, storeType framework.StoreType) {
 	t.Run("DirectoryPermissions", func(t *testing.T) {
 		// Create directory with specific permissions
 		mode := os.FileMode(0755)
-		ctx.Mkdir("permdir", mode)
+		_ = ctx.Mkdir("permdir", mode)
 
 		info, err := ctx.Stat("permdir")
 		if err != nil {
@@ -152,7 +152,7 @@ func TestFileAttributes(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("FileType", func(t *testing.T) {
 		// Test regular file
-		ctx.WriteFile("regular.txt", []byte("regular file"), 0644)
+		_ = ctx.WriteFile("regular.txt", []byte("regular file"), 0644)
 		info, _ := ctx.Stat("regular.txt")
 		if !info.Mode().IsRegular() {
 			t.Error("File should be regular file")
@@ -162,7 +162,7 @@ func TestFileAttributes(t *testing.T, storeType framework.StoreType) {
 		}
 
 		// Test directory
-		ctx.Mkdir("testdir", 0755)
+		_ = ctx.Mkdir("testdir", 0755)
 		info, _ = ctx.Stat("testdir")
 		if !info.IsDir() {
 			t.Error("Directory should be directory")
@@ -172,7 +172,7 @@ func TestFileAttributes(t *testing.T, storeType framework.StoreType) {
 		}
 
 		// Test symlink
-		ctx.Symlink("regular.txt", "symlink.txt")
+		_ = ctx.Symlink("regular.txt", "symlink.txt")
 		info, _ = ctx.Lstat("symlink.txt")
 		if info.Mode()&os.ModeSymlink == 0 {
 			t.Error("Should be symlink")
@@ -182,7 +182,7 @@ func TestFileAttributes(t *testing.T, storeType framework.StoreType) {
 	t.Run("TruncateFile", func(t *testing.T) {
 		// Create file with content
 		content := []byte("this is a longer file content that will be truncated")
-		ctx.WriteFile("truncate.txt", content, 0644)
+		_ = ctx.WriteFile("truncate.txt", content, 0644)
 
 		// Verify initial size
 		info, _ := ctx.Stat("truncate.txt")
@@ -216,7 +216,7 @@ func TestFileAttributes(t *testing.T, storeType framework.StoreType) {
 	t.Run("ExtendFile", func(t *testing.T) {
 		// Create small file
 		content := []byte("small")
-		ctx.WriteFile("extend.txt", content, 0644)
+		_ = ctx.WriteFile("extend.txt", content, 0644)
 
 		// Extend file
 		newSize := int64(100)

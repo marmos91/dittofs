@@ -43,7 +43,7 @@ func (suite *StoreTestSuite) testReadContentSeekableBasic(t *testing.T) {
 	// Read with seeking
 	reader, err := seekable.ReadContentSeekable(testContext(), id)
 	require.NoError(t, err)
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	// Read all
 	data, err := io.ReadAll(reader)
@@ -72,7 +72,7 @@ func (suite *StoreTestSuite) testReadContentSeekableSeekStart(t *testing.T) {
 	// Read with seeking
 	reader, err := seekable.ReadContentSeekable(testContext(), id)
 	require.NoError(t, err)
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	// Seek to position 5 from start
 	pos, err := reader.Seek(5, io.SeekStart)
@@ -108,7 +108,7 @@ func (suite *StoreTestSuite) testReadContentSeekableSeekEnd(t *testing.T) {
 	// Read with seeking
 	reader, err := seekable.ReadContentSeekable(testContext(), id)
 	require.NoError(t, err)
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	// Seek to 4 bytes before end
 	pos, err := reader.Seek(-4, io.SeekEnd)
@@ -142,7 +142,7 @@ func (suite *StoreTestSuite) testReadContentSeekableSeekCurrent(t *testing.T) {
 	// Read with seeking
 	reader, err := seekable.ReadContentSeekable(testContext(), id)
 	require.NoError(t, err)
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	// Read first 5 bytes
 	buf := make([]byte, 5)

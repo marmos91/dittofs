@@ -84,7 +84,7 @@ func NewTestServer(t testing.TB, config TestServerConfig) *TestServer {
 	if config.ContentStore == StoreTypeFilesystem && config.ContentPath == "" {
 		config.ContentPath = filepath.Join(tempDir, "content")
 		if err := os.MkdirAll(config.ContentPath, 0755); err != nil {
-			os.RemoveAll(tempDir)
+			_ = os.RemoveAll(tempDir)
 			t.Fatalf("Failed to create content directory: %v", err)
 		}
 	}
@@ -168,7 +168,7 @@ func (ts *TestServer) Start() error {
 
 	// Create DittoServer
 	ts.server = server.New(ts.metadataStore, ts.contentStore)
-	ts.server.AddAdapter(nfsAdapter)
+	_ = ts.server.AddAdapter(nfsAdapter)
 
 	// Start server in background
 	ts.wg.Add(1)
@@ -258,7 +258,7 @@ func (ts *TestServer) waitForServer() error {
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", ts.config.Port), 500*time.Millisecond)
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			// Give the NFS service more time to fully initialize and bind
 			// This is especially important for macOS
 			time.Sleep(1 * time.Second)
@@ -278,7 +278,7 @@ func findFreePort(t testing.TB) int {
 		t.Fatalf("Failed to find free port: %v", err)
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
-	listener.Close()
+	_ = listener.Close()
 	// Give the OS time to release the port
 	time.Sleep(100 * time.Millisecond)
 	return port

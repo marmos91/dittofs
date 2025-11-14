@@ -402,7 +402,7 @@ func (h *DefaultNFSHandler) Read(
 			Attr:   nfsAttr,
 		}, nil
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	// ========================================================================
 	// Step 5: Seek to requested offset
@@ -515,7 +515,8 @@ func (h *DefaultNFSHandler) Read(
 		// We've reached EOF - this is not an error for READ
 		eof = true
 		data = data[:n] // Truncate buffer to actual bytes read
-		readErr = nil   // Clear error - EOF is expected
+		// Clear error - EOF is expected for READ operations
+		readErr = nil //nolint:ineffassign // Assignment is checked in subsequent else-if branches
 	} else if readErr == context.Canceled || readErr == context.DeadlineExceeded {
 		// Context was cancelled during read
 		logger.Debug("READ: request cancelled during data read: handle=%x offset=%d read=%d client=%s",

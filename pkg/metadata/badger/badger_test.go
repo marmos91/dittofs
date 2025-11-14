@@ -46,7 +46,7 @@ func TestBadgerMetadataStorePersistence(t *testing.T) {
 	// Phase 1: Create and populate store
 	t.Run("Phase1_Populate", func(t *testing.T) {
 		store := createStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		// Add a share
 		rootAttr := &metadata.FileAttr{
@@ -76,7 +76,7 @@ func TestBadgerMetadataStorePersistence(t *testing.T) {
 	// Phase 2: Reopen and verify persistence
 	t.Run("Phase2_Verify", func(t *testing.T) {
 		store := createStore()
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		// Verify share persisted
 		shares, err := store.GetShares(ctx)

@@ -168,7 +168,7 @@ func TestBasicOperations(t *testing.T, storeType framework.StoreType) {
 				ctx.AssertFileContent(filename, content)
 
 				// Clean up
-				ctx.Remove(filename)
+				_ = ctx.Remove(filename)
 			})
 		}
 	})

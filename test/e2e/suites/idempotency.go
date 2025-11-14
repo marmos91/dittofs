@@ -59,7 +59,7 @@ func TestIdempotency(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("ReadSameFileTwice", func(t *testing.T) {
 		content := []byte("read me twice")
-		ctx.WriteFile("readtwice.txt", content, 0644)
+		_ = ctx.WriteFile("readtwice.txt", content, 0644)
 
 		// Read first time
 		data1, err := ctx.ReadFile("readtwice.txt")
@@ -83,7 +83,7 @@ func TestIdempotency(t *testing.T, storeType framework.StoreType) {
 	})
 
 	t.Run("StatSameFileTwice", func(t *testing.T) {
-		ctx.WriteFile("stattwice.txt", []byte("content"), 0644)
+		_ = ctx.WriteFile("stattwice.txt", []byte("content"), 0644)
 
 		// Stat first time
 		info1, err := ctx.Stat("stattwice.txt")
@@ -122,8 +122,8 @@ func TestIdempotency(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("RenameToExistingName", func(t *testing.T) {
 		// Create two files
-		ctx.WriteFile("rename-src.txt", []byte("source"), 0644)
-		ctx.WriteFile("rename-dst.txt", []byte("destination"), 0644)
+		_ = ctx.WriteFile("rename-src.txt", []byte("source"), 0644)
+		_ = ctx.WriteFile("rename-dst.txt", []byte("destination"), 0644)
 
 		// Rename source to destination (should replace)
 		err := ctx.Rename("rename-src.txt", "rename-dst.txt")
@@ -143,7 +143,7 @@ func TestIdempotency(t *testing.T, storeType framework.StoreType) {
 		link := "idempotent-link.txt"
 
 		// Create target
-		ctx.WriteFile(target, []byte("data"), 0644)
+		_ = ctx.WriteFile(target, []byte("data"), 0644)
 
 		// Create symlink
 		err := ctx.Symlink(target, link)
@@ -152,7 +152,7 @@ func TestIdempotency(t *testing.T, storeType framework.StoreType) {
 		}
 
 		// Delete and recreate symlink
-		ctx.Remove(link)
+		_ = ctx.Remove(link)
 		err = ctx.Symlink(target, link)
 		if err != nil {
 			t.Fatalf("Second symlink creation failed: %v", err)
@@ -174,23 +174,23 @@ func TestIdempotency(t *testing.T, storeType framework.StoreType) {
 		content2 := []byte("second version")
 
 		// Create file
-		ctx.WriteFile(filename, content1, 0644)
+		_ = ctx.WriteFile(filename, content1, 0644)
 		ctx.AssertFileContent(filename, content1)
 
 		// Delete file
-		ctx.Remove(filename)
+		_ = ctx.Remove(filename)
 		ctx.AssertFileNotExists(filename)
 
 		// Recreate with different content
-		ctx.WriteFile(filename, content2, 0644)
+		_ = ctx.WriteFile(filename, content2, 0644)
 		ctx.AssertFileContent(filename, content2)
 	})
 
 	t.Run("ListDirectoryMultipleTimes", func(t *testing.T) {
 		// Create directory with files
-		ctx.Mkdir("list-dir", 0755)
-		ctx.WriteFile("list-dir/file1.txt", []byte("1"), 0644)
-		ctx.WriteFile("list-dir/file2.txt", []byte("2"), 0644)
+		_ = ctx.Mkdir("list-dir", 0755)
+		_ = ctx.WriteFile("list-dir/file1.txt", []byte("1"), 0644)
+		_ = ctx.WriteFile("list-dir/file2.txt", []byte("2"), 0644)
 
 		// List multiple times
 		for i := 0; i < 3; i++ {

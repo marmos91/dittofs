@@ -94,11 +94,11 @@ func TestDirectoryOperations(t *testing.T, storeType framework.StoreType) {
 		}
 
 		// Add files
-		ctx.WriteFile("mixeddir/file.txt", []byte("data"), 0644)
+		_ = ctx.WriteFile("mixeddir/file.txt", []byte("data"), 0644)
 
 		// Add subdirectories
-		ctx.Mkdir("mixeddir/subdir1", 0755)
-		ctx.Mkdir("mixeddir/subdir2", 0755)
+		_ = ctx.Mkdir("mixeddir/subdir1", 0755)
+		_ = ctx.Mkdir("mixeddir/subdir2", 0755)
 
 		// List directory
 		entries, err := ctx.ReadDir("mixeddir")
@@ -149,7 +149,7 @@ func TestDirectoryOperations(t *testing.T, storeType framework.StoreType) {
 		if err != nil {
 			t.Fatalf("Failed to create directory: %v", err)
 		}
-		ctx.WriteFile("nonempty/file.txt", []byte("data"), 0644)
+		_ = ctx.WriteFile("nonempty/file.txt", []byte("data"), 0644)
 
 		// Try to delete (should fail with Remove, but RemoveAll should work)
 		err = ctx.Remove("nonempty")
@@ -174,7 +174,7 @@ func TestDirectoryOperations(t *testing.T, storeType framework.StoreType) {
 		if err != nil {
 			t.Fatalf("Failed to create directory: %v", err)
 		}
-		ctx.WriteFile("oldname/file.txt", []byte("data"), 0644)
+		_ = ctx.WriteFile("oldname/file.txt", []byte("data"), 0644)
 
 		// Rename directory
 		err = ctx.Rename("oldname", "newname")
@@ -192,8 +192,8 @@ func TestDirectoryOperations(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("MoveFileToDirectory", func(t *testing.T) {
 		// Create file and directory
-		ctx.WriteFile("moveme.txt", []byte("move this"), 0644)
-		ctx.Mkdir("destdir", 0755)
+		_ = ctx.WriteFile("moveme.txt", []byte("move this"), 0644)
+		_ = ctx.Mkdir("destdir", 0755)
 
 		// Move file into directory
 		err := ctx.Rename("moveme.txt", "destdir/moveme.txt")

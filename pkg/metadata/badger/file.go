@@ -1089,13 +1089,9 @@ func (s *BadgerMetadataStore) Move(
 			if err := txn.Delete(keyParent(destHandle)); err != nil && err != badger.ErrKeyNotFound {
 				return fmt.Errorf("failed to delete destination parent: %w", err)
 			}
-			// Clean up device numbers and handle mapping if present
-			if err := txn.Delete(keyDeviceNumber(destHandle)); err != nil && err != badger.ErrKeyNotFound {
-				// Ignore not found
-			}
-			if err := txn.Delete(keyHandleMapping(destHandle)); err != nil && err != badger.ErrKeyNotFound {
-				// Ignore not found
-			}
+			// Clean up device numbers and handle mapping if present (ignore not found)
+			_ = txn.Delete(keyDeviceNumber(destHandle))
+			_ = txn.Delete(keyHandleMapping(destHandle))
 		} else if err != badger.ErrKeyNotFound {
 			return fmt.Errorf("failed to check destination: %w", err)
 		}

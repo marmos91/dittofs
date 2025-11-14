@@ -65,7 +65,7 @@ func BenchmarkE2E(b *testing.B) {
 func benchmarkFileOperations(b *testing.B, storeType framework.StoreType) {
 	srv, mount := setupBenchmarkServer(b, storeType)
 	defer mount.Cleanup()
-	defer srv.Stop()
+	defer func() { _ = srv.Stop() }()
 
 	b.Run("Create", func(b *testing.B) {
 		b.ResetTimer()
@@ -77,7 +77,7 @@ func benchmarkFileOperations(b *testing.B, storeType framework.StoreType) {
 			if err != nil {
 				b.Fatalf("Failed to create file: %v", err)
 			}
-			f.Close()
+			_ = f.Close()
 		}
 	})
 
@@ -85,7 +85,7 @@ func benchmarkFileOperations(b *testing.B, storeType framework.StoreType) {
 		// Create test file
 		testFile := filepath.Join(mount.MountPoint(), "stat_test")
 		f, _ := os.Create(testFile)
-		f.Close()
+		_ = f.Close()
 
 		b.ResetTimer()
 		b.ReportAllocs()
@@ -104,7 +104,7 @@ func benchmarkFileOperations(b *testing.B, storeType framework.StoreType) {
 		for i := 0; i < b.N; i++ {
 			filename := filepath.Join(mount.MountPoint(), fmt.Sprintf("del_%d", i))
 			f, _ := os.Create(filename)
-			f.Close()
+			_ = f.Close()
 			files[i] = filename
 		}
 
@@ -125,7 +125,7 @@ func benchmarkFileOperations(b *testing.B, storeType framework.StoreType) {
 		for i := 0; i < b.N; i++ {
 			filename := filepath.Join(mount.MountPoint(), fmt.Sprintf("ren_%d", i))
 			f, _ := os.Create(filename)
-			f.Close()
+			_ = f.Close()
 			files[i] = filename
 		}
 
@@ -146,7 +146,7 @@ func benchmarkFileOperations(b *testing.B, storeType framework.StoreType) {
 func benchmarkDirectoryOperations(b *testing.B, storeType framework.StoreType) {
 	srv, mount := setupBenchmarkServer(b, storeType)
 	defer mount.Cleanup()
-	defer srv.Stop()
+	defer func() { _ = srv.Stop() }()
 
 	b.Run("Mkdir", func(b *testing.B) {
 		b.ResetTimer()
@@ -164,10 +164,10 @@ func benchmarkDirectoryOperations(b *testing.B, storeType framework.StoreType) {
 	b.Run("Readdir", func(b *testing.B) {
 		// Create directory with files
 		testDir := filepath.Join(mount.MountPoint(), "readdir_test")
-		os.Mkdir(testDir, 0755)
+		_ = os.Mkdir(testDir, 0755)
 		for i := 0; i < 100; i++ {
 			f, _ := os.Create(filepath.Join(testDir, fmt.Sprintf("file%d", i)))
-			f.Close()
+			_ = f.Close()
 		}
 
 		b.ResetTimer()
@@ -187,10 +187,10 @@ func benchmarkDirectoryOperations(b *testing.B, storeType framework.StoreType) {
 	b.Run("ReaddirLarge", func(b *testing.B) {
 		// Create directory with many files
 		testDir := filepath.Join(mount.MountPoint(), "readdir_large")
-		os.Mkdir(testDir, 0755)
+		_ = os.Mkdir(testDir, 0755)
 		for i := 0; i < 1000; i++ {
 			f, _ := os.Create(filepath.Join(testDir, fmt.Sprintf("file%d", i)))
-			f.Close()
+			_ = f.Close()
 		}
 
 		b.ResetTimer()
@@ -212,7 +212,7 @@ func benchmarkDirectoryOperations(b *testing.B, storeType framework.StoreType) {
 func benchmarkReadThroughput(b *testing.B, storeType framework.StoreType) {
 	srv, mount := setupBenchmarkServer(b, storeType)
 	defer mount.Cleanup()
-	defer srv.Stop()
+	defer func() { _ = srv.Stop() }()
 
 	sizes := []struct {
 		name string
@@ -240,10 +240,10 @@ func benchmarkReadThroughput(b *testing.B, storeType framework.StoreType) {
 				data[i] = byte(i % 256)
 			}
 			if _, err := f.Write(data); err != nil {
-				f.Close()
+				_ = f.Close()
 				b.Fatalf("Failed to write test data: %v", err)
 			}
-			f.Close()
+			_ = f.Close()
 
 			// Benchmark reads
 			buf := make([]byte, size.size)
@@ -259,15 +259,15 @@ func benchmarkReadThroughput(b *testing.B, storeType framework.StoreType) {
 
 				n, err := f.Read(buf)
 				if err != nil {
-					f.Close()
+					_ = f.Close()
 					b.Fatalf("Failed to read file: %v", err)
 				}
 				if int64(n) != size.size {
-					f.Close()
+					_ = f.Close()
 					b.Fatalf("Expected to read %d bytes, got %d", size.size, n)
 				}
 
-				f.Close()
+				_ = f.Close()
 			}
 		})
 	}
@@ -277,7 +277,7 @@ func benchmarkReadThroughput(b *testing.B, storeType framework.StoreType) {
 func benchmarkWriteThroughput(b *testing.B, storeType framework.StoreType) {
 	srv, mount := setupBenchmarkServer(b, storeType)
 	defer mount.Cleanup()
-	defer srv.Stop()
+	defer func() { _ = srv.Stop() }()
 
 	sizes := []struct {
 		name string
@@ -311,15 +311,15 @@ func benchmarkWriteThroughput(b *testing.B, storeType framework.StoreType) {
 
 				n, err := f.Write(data)
 				if err != nil {
-					f.Close()
+					_ = f.Close()
 					b.Fatalf("Failed to write file: %v", err)
 				}
 				if int64(n) != size.size {
-					f.Close()
+					_ = f.Close()
 					b.Fatalf("Expected to write %d bytes, got %d", size.size, n)
 				}
 
-				f.Close()
+				_ = f.Close()
 			}
 		})
 	}
@@ -329,15 +329,15 @@ func benchmarkWriteThroughput(b *testing.B, storeType framework.StoreType) {
 func benchmarkMixedWorkload(b *testing.B, storeType framework.StoreType) {
 	srv, mount := setupBenchmarkServer(b, storeType)
 	defer mount.Cleanup()
-	defer srv.Stop()
+	defer func() { _ = srv.Stop() }()
 
 	// Pre-create some files
 	testDir := filepath.Join(mount.MountPoint(), "mixed")
-	os.Mkdir(testDir, 0755)
+	_ = os.Mkdir(testDir, 0755)
 	for i := 0; i < 50; i++ {
 		f, _ := os.Create(filepath.Join(testDir, fmt.Sprintf("existing_%d", i)))
-		f.Write(make([]byte, 4096))
-		f.Close()
+		_, _ = f.Write(make([]byte, 4096))
+		_ = f.Close()
 	}
 
 	data := make([]byte, 4096)
@@ -350,28 +350,28 @@ func benchmarkMixedWorkload(b *testing.B, storeType framework.StoreType) {
 		switch op {
 		case 0: // Create and write
 			f, _ := os.Create(filepath.Join(testDir, fmt.Sprintf("new_%d", i)))
-			f.Write(data)
-			f.Close()
+			_, _ = f.Write(data)
+			_ = f.Close()
 
 		case 1: // Read existing
 			idx := i % 50
 			f, _ := os.Open(filepath.Join(testDir, fmt.Sprintf("existing_%d", idx)))
-			f.Read(data)
-			f.Close()
+			_, _ = f.Read(data)
+			_ = f.Close()
 
 		case 2: // Stat
 			idx := i % 50
-			os.Stat(filepath.Join(testDir, fmt.Sprintf("existing_%d", idx)))
+			_, _ = os.Stat(filepath.Join(testDir, fmt.Sprintf("existing_%d", idx)))
 
 		case 3: // Readdir
-			os.ReadDir(testDir)
+			_, _ = os.ReadDir(testDir)
 
 		case 4: // Rename
 			if i > 100 {
 				oldIdx := (i - 100) % 50
 				oldFile := filepath.Join(testDir, fmt.Sprintf("new_%d", oldIdx))
 				newFile := filepath.Join(testDir, fmt.Sprintf("renamed_%d", oldIdx))
-				os.Rename(oldFile, newFile)
+				_ = os.Rename(oldFile, newFile)
 			}
 		}
 	}
@@ -381,13 +381,13 @@ func benchmarkMixedWorkload(b *testing.B, storeType framework.StoreType) {
 func benchmarkMetadataOperations(b *testing.B, storeType framework.StoreType) {
 	srv, mount := setupBenchmarkServer(b, storeType)
 	defer mount.Cleanup()
-	defer srv.Stop()
+	defer func() { _ = srv.Stop() }()
 
 	b.Run("Chmod", func(b *testing.B) {
 		// Create test file
 		testFile := filepath.Join(mount.MountPoint(), "chmod_test")
 		f, _ := os.Create(testFile)
-		f.Close()
+		_ = f.Close()
 
 		b.ResetTimer()
 		b.ReportAllocs()
@@ -408,7 +408,7 @@ func benchmarkMetadataOperations(b *testing.B, storeType framework.StoreType) {
 		// Create test file
 		testFile := filepath.Join(mount.MountPoint(), "chtimes_test")
 		f, _ := os.Create(testFile)
-		f.Close()
+		_ = f.Close()
 
 		now := time.Now()
 
@@ -444,7 +444,7 @@ func setupBenchmarkServer(b *testing.B, storeType framework.StoreType) (*framewo
 		ExportPath: srv.ShareName(),
 	})
 	if err := mount.Mount(); err != nil {
-		srv.Stop()
+		_ = srv.Stop()
 		b.Fatalf("Failed to mount: %v", err)
 	}
 

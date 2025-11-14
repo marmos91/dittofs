@@ -165,8 +165,8 @@ func applyShareDefaults(shares []ShareConfig) {
 
 		// RequireAuth defaults to false
 
-		// If AllowedAuthMethods is nil or empty, default to both methods
-		if share.AllowedAuthMethods == nil || len(share.AllowedAuthMethods) == 0 {
+		// If AllowedAuthMethods is empty, default to both methods
+		if len(share.AllowedAuthMethods) == 0 {
 			share.AllowedAuthMethods = []string{"anonymous", "unix"}
 		}
 

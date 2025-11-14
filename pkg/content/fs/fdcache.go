@@ -57,9 +57,7 @@ func (c *FDCache) Put(id metadata.ContentID, file *os.File, path string) error {
 		c.lru.MoveToFront(elem)
 		entry := elem.Value.(*cacheEntry)
 		if entry.file != file {
-			if err := entry.file.Close(); err != nil {
-				// Non-fatal
-			}
+			_ = entry.file.Close() // Ignore error on replacement
 			entry.file = file
 			entry.path = path
 		}

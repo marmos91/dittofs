@@ -168,7 +168,7 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 
 	// Initialize singleton keys if they don't exist
 	if err := store.initializeSingletons(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to initialize singletons: %w", err)
 	}
 
@@ -318,7 +318,7 @@ func (s *BadgerMetadataStore) lookupHashedHandlePath(handle metadata.FileHandle)
 		if err == badger.ErrKeyNotFound {
 			return &metadata.StoreError{
 				Code:    metadata.ErrNotFound,
-				Message: fmt.Sprintf("handle mapping not found for hashed handle"),
+				Message: "handle mapping not found for hashed handle",
 			}
 		}
 		if err != nil {

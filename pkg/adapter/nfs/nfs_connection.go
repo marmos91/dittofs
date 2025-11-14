@@ -50,7 +50,7 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 			logger.Error("Panic in connection handler from %s: %v",
 				c.conn.RemoteAddr().String(), r)
 		}
-		c.conn.Close()
+		_ = c.conn.Close()
 	}()
 
 	clientAddr := c.conn.RemoteAddr().String()

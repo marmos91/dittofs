@@ -214,14 +214,9 @@ func (s *BadgerMetadataStore) RemoveFile(
 			if err := txn.Delete(keyParent(fileHandle)); err != nil && err != badger.ErrKeyNotFound {
 				return fmt.Errorf("failed to delete parent: %w", err)
 			}
-			// Clean up device numbers if present
-			if err := txn.Delete(keyDeviceNumber(fileHandle)); err != nil && err != badger.ErrKeyNotFound {
-				// Ignore not found - most files don't have device numbers
-			}
-			// Clean up handle mapping if it's a hashed handle
-			if err := txn.Delete(keyHandleMapping(fileHandle)); err != nil && err != badger.ErrKeyNotFound {
-				// Ignore not found - most handles are path-based
-			}
+			// Clean up device numbers and handle mapping if present (ignore not found)
+			_ = txn.Delete(keyDeviceNumber(fileHandle))
+			_ = txn.Delete(keyHandleMapping(fileHandle))
 		}
 
 		// Remove from parent's children
@@ -426,10 +421,8 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 		if err := txn.Delete(keyParent(dirHandle)); err != nil && err != badger.ErrKeyNotFound {
 			return fmt.Errorf("failed to delete parent: %w", err)
 		}
-		// Clean up handle mapping if it's a hashed handle
-		if err := txn.Delete(keyHandleMapping(dirHandle)); err != nil && err != badger.ErrKeyNotFound {
-			// Ignore not found - most handles are path-based
-		}
+		// Clean up handle mapping if it's a hashed handle (ignore not found)
+		_ = txn.Delete(keyHandleMapping(dirHandle))
 
 		// Remove from parent's children
 		if err := txn.Delete(keyChild(parentHandle, name)); err != nil {

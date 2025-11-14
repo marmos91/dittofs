@@ -428,7 +428,7 @@ func (s *S3ContentStore) WriteAt(ctx context.Context, id metadata.ContentID, dat
 		if err != nil {
 			return err
 		}
-		defer reader.Close()
+		defer func() { _ = reader.Close() }()
 
 		existingData, err = io.ReadAll(reader)
 		if err != nil {
@@ -512,7 +512,7 @@ func (s *S3ContentStore) Truncate(ctx context.Context, id metadata.ContentID, ne
 		if err != nil {
 			return fmt.Errorf("failed to get object for truncate: %w", err)
 		}
-		defer result.Body.Close()
+		defer func() { _ = result.Body.Close() }()
 
 		data, err := io.ReadAll(result.Body)
 		if err != nil {
@@ -533,7 +533,7 @@ func (s *S3ContentStore) Truncate(ctx context.Context, id metadata.ContentID, ne
 		if err != nil {
 			return err
 		}
-		defer reader.Close()
+		defer func() { _ = reader.Close() }()
 
 		existingData, err := io.ReadAll(reader)
 		if err != nil {

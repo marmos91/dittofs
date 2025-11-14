@@ -199,11 +199,11 @@ func TestGetConfigDir(t *testing.T) {
 
 func TestLoad_EnvironmentVariables(t *testing.T) {
 	// Set environment variables
-	os.Setenv("DITTOFS_LOGGING_LEVEL", "ERROR")
-	os.Setenv("DITTOFS_ADAPTERS_NFS_PORT", "5049")
+	_ = os.Setenv("DITTOFS_LOGGING_LEVEL", "ERROR")
+	_ = os.Setenv("DITTOFS_ADAPTERS_NFS_PORT", "5049")
 	defer func() {
-		os.Unsetenv("DITTOFS_LOGGING_LEVEL")
-		os.Unsetenv("DITTOFS_ADAPTERS_NFS_PORT")
+		_ = os.Unsetenv("DITTOFS_LOGGING_LEVEL")
+		_ = os.Unsetenv("DITTOFS_ADAPTERS_NFS_PORT")
 	}()
 
 	// Create minimal config file

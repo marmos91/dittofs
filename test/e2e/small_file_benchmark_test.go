@@ -43,7 +43,7 @@ func BenchmarkSmallFileWorkloads(b *testing.B) {
 		b.Run(string(storeType), func(b *testing.B) {
 			srv, mount := setupSmallFileServer(b, storeType)
 			defer mount.Cleanup()
-			defer srv.Stop()
+			defer func() { _ = srv.Stop() }()
 
 			// Run sub-benchmarks
 			b.Run("SequentialWrites", func(b *testing.B) {
@@ -81,7 +81,7 @@ func setupSmallFileServer(b *testing.B, storeType framework.StoreType) (*framewo
 		ExportPath: srv.ShareName(),
 	})
 	if err := mount.Mount(); err != nil {
-		srv.Stop()
+		_ = srv.Stop()
 		b.Fatalf("Failed to mount: %v", err)
 	}
 
@@ -114,7 +114,7 @@ func benchmarkSequentialWrites(b *testing.B, mountPoint string) {
 		// Cleanup
 		for fileIdx := 0; fileIdx < numFiles; fileIdx++ {
 			filename := filepath.Join(mountPoint, fmt.Sprintf("seq_file_%d_%d.txt", i, fileIdx))
-			os.Remove(filename)
+			_ = os.Remove(filename)
 		}
 	}
 }
@@ -142,7 +142,7 @@ func benchmarkMultiFileUpdates(b *testing.B, mountPoint string) {
 	defer func() {
 		for fileIdx := 0; fileIdx < numFiles; fileIdx++ {
 			filename := filepath.Join(mountPoint, fmt.Sprintf("doc_%d.txt", fileIdx))
-			os.Remove(filename)
+			_ = os.Remove(filename)
 		}
 	}()
 
@@ -195,7 +195,7 @@ func benchmarkInterleavedReadWrite(b *testing.B, mountPoint string) {
 			}
 
 			// Cleanup
-			os.Remove(filename)
+			_ = os.Remove(filename)
 		}
 	}
 }

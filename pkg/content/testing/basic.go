@@ -50,7 +50,7 @@ func (suite *StoreTestSuite) testReadContentSuccess(t *testing.T) {
 	// Read content
 	reader, err := store.ReadContent(testContext(), id)
 	require.NoError(t, err)
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	// Verify data
 	data, err := io.ReadAll(reader)

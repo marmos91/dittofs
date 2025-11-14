@@ -38,7 +38,7 @@ func mustReadContent(t *testing.T, store content.ContentStore, id metadata.Conte
 	t.Helper()
 	reader, err := store.ReadContent(testContext(), id)
 	require.NoError(t, err, "ReadContent should succeed")
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	data, err := io.ReadAll(reader)
 	require.NoError(t, err, "Reading content should succeed")

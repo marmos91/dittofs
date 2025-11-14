@@ -27,22 +27,22 @@ func validAuthUnixCredentials() *UnixAuth {
 func encodeAuthUnix(auth *UnixAuth) []byte {
 	buf := new(bytes.Buffer)
 
-	binary.Write(buf, binary.BigEndian, auth.Stamp)
+	_ = binary.Write(buf, binary.BigEndian, auth.Stamp)
 
 	nameLen := uint32(len(auth.MachineName))
-	binary.Write(buf, binary.BigEndian, nameLen)
+	_ = binary.Write(buf, binary.BigEndian, nameLen)
 	buf.WriteString(auth.MachineName)
 	padding := (4 - (nameLen % 4)) % 4
 	for i := uint32(0); i < padding; i++ {
 		buf.WriteByte(0)
 	}
 
-	binary.Write(buf, binary.BigEndian, auth.UID)
-	binary.Write(buf, binary.BigEndian, auth.GID)
+	_ = binary.Write(buf, binary.BigEndian, auth.UID)
+	_ = binary.Write(buf, binary.BigEndian, auth.GID)
 
-	binary.Write(buf, binary.BigEndian, uint32(len(auth.GIDs)))
+	_ = binary.Write(buf, binary.BigEndian, uint32(len(auth.GIDs)))
 	for _, gid := range auth.GIDs {
-		binary.Write(buf, binary.BigEndian, gid)
+		_ = binary.Write(buf, binary.BigEndian, gid)
 	}
 
 	return buf.Bytes()
@@ -106,12 +106,12 @@ func TestParseUnixAuth(t *testing.T) {
 
 	t.Run("RejectsExcessiveGroups", func(t *testing.T) {
 		buf := new(bytes.Buffer)
-		binary.Write(buf, binary.BigEndian, uint32(12345))
-		binary.Write(buf, binary.BigEndian, uint32(8))
-		buf.WriteString("testhost")
-		binary.Write(buf, binary.BigEndian, uint32(1000))
-		binary.Write(buf, binary.BigEndian, uint32(1000))
-		binary.Write(buf, binary.BigEndian, uint32(17)) // Too many groups
+		_ = binary.Write(buf, binary.BigEndian, uint32(12345))
+		_ = binary.Write(buf, binary.BigEndian, uint32(8))
+		_, _ = buf.WriteString("testhost")
+		_ = binary.Write(buf, binary.BigEndian, uint32(1000))
+		_ = binary.Write(buf, binary.BigEndian, uint32(1000))
+		_ = binary.Write(buf, binary.BigEndian, uint32(17)) // Too many groups
 
 		_, err := ParseUnixAuth(buf.Bytes())
 		require.Error(t, err)
@@ -120,8 +120,8 @@ func TestParseUnixAuth(t *testing.T) {
 
 	t.Run("RejectsLongMachineName", func(t *testing.T) {
 		buf := new(bytes.Buffer)
-		binary.Write(buf, binary.BigEndian, uint32(12345))
-		binary.Write(buf, binary.BigEndian, uint32(256)) // Too long
+		_ = binary.Write(buf, binary.BigEndian, uint32(12345))
+		_ = binary.Write(buf, binary.BigEndian, uint32(256)) // Too long
 
 		_, err := ParseUnixAuth(buf.Bytes())
 		require.Error(t, err)

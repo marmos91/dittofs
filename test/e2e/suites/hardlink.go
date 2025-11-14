@@ -57,7 +57,7 @@ func TestHardLinkOperations(t *testing.T, storeType framework.StoreType) {
 		}
 
 		// Create hard link
-		ctx.Link("modify1.txt", "modify2.txt")
+		_ = ctx.Link("modify1.txt", "modify2.txt")
 
 		// Modify through hard link
 		err = ctx.WriteFile("modify2.txt", []byte("modified"), 0644)
@@ -73,8 +73,8 @@ func TestHardLinkOperations(t *testing.T, storeType framework.StoreType) {
 	t.Run("DeleteOriginalKeepsHardLink", func(t *testing.T) {
 		// Create original and hard link
 		content := []byte("persistent content")
-		ctx.WriteFile("deloriginal.txt", content, 0644)
-		ctx.Link("deloriginal.txt", "persistent.txt")
+		_ = ctx.WriteFile("deloriginal.txt", content, 0644)
+		_ = ctx.Link("deloriginal.txt", "persistent.txt")
 
 		// Delete original
 		err := ctx.Remove("deloriginal.txt")
@@ -90,8 +90,8 @@ func TestHardLinkOperations(t *testing.T, storeType framework.StoreType) {
 	t.Run("DeleteHardLinkKeepsOriginal", func(t *testing.T) {
 		// Create original and hard link
 		content := []byte("keep original")
-		ctx.WriteFile("keeporiginal.txt", content, 0644)
-		ctx.Link("keeporiginal.txt", "deletehardlink.txt")
+		_ = ctx.WriteFile("keeporiginal.txt", content, 0644)
+		_ = ctx.Link("keeporiginal.txt", "deletehardlink.txt")
 
 		// Delete hard link
 		err := ctx.Remove("deletehardlink.txt")
@@ -107,12 +107,12 @@ func TestHardLinkOperations(t *testing.T, storeType framework.StoreType) {
 	t.Run("MultipleHardLinks", func(t *testing.T) {
 		// Create original file
 		content := []byte("shared content")
-		ctx.WriteFile("multi.txt", content, 0644)
+		_ = ctx.WriteFile("multi.txt", content, 0644)
 
 		// Create multiple hard links
-		ctx.Link("multi.txt", "link1.txt")
-		ctx.Link("multi.txt", "link2.txt")
-		ctx.Link("multi.txt", "link3.txt")
+		_ = ctx.Link("multi.txt", "link1.txt")
+		_ = ctx.Link("multi.txt", "link2.txt")
+		_ = ctx.Link("multi.txt", "link3.txt")
 
 		// Verify all have same content
 		ctx.AssertFileContent("multi.txt", content)
@@ -122,7 +122,7 @@ func TestHardLinkOperations(t *testing.T, storeType framework.StoreType) {
 
 		// Modify through one link
 		newContent := []byte("modified shared")
-		ctx.WriteFile("link2.txt", newContent, 0644)
+		_ = ctx.WriteFile("link2.txt", newContent, 0644)
 
 		// Verify all reflect the change
 		ctx.AssertFileContent("multi.txt", newContent)
@@ -133,12 +133,12 @@ func TestHardLinkOperations(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("HardLinkAcrossDirectories", func(t *testing.T) {
 		// Create directories
-		ctx.Mkdir("dir1", 0755)
-		ctx.Mkdir("dir2", 0755)
+		_ = ctx.Mkdir("dir1", 0755)
+		_ = ctx.Mkdir("dir2", 0755)
 
 		// Create file in first directory
 		content := []byte("cross-directory")
-		ctx.WriteFile("dir1/file.txt", content, 0644)
+		_ = ctx.WriteFile("dir1/file.txt", content, 0644)
 
 		// Create hard link in second directory
 		err := ctx.Link("dir1/file.txt", "dir2/link.txt")
@@ -153,7 +153,7 @@ func TestHardLinkOperations(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("CannotHardLinkDirectory", func(t *testing.T) {
 		// Create directory
-		ctx.Mkdir("linkdir", 0755)
+		_ = ctx.Mkdir("linkdir", 0755)
 
 		// Try to create hard link to directory (should fail)
 		err := ctx.Link("linkdir", "dirlink")
@@ -173,8 +173,8 @@ func TestHardLinkOperations(t *testing.T, storeType framework.StoreType) {
 	t.Run("RenameOneHardLink", func(t *testing.T) {
 		// Create original and hard link
 		content := []byte("rename test")
-		ctx.WriteFile("rename1.txt", content, 0644)
-		ctx.Link("rename1.txt", "rename2.txt")
+		_ = ctx.WriteFile("rename1.txt", content, 0644)
+		_ = ctx.Link("rename1.txt", "rename2.txt")
 
 		// Rename one of them
 		err := ctx.Rename("rename2.txt", "renamed.txt")
@@ -191,7 +191,7 @@ func TestHardLinkOperations(t *testing.T, storeType framework.StoreType) {
 
 		// Modify through renamed link
 		newContent := []byte("after rename")
-		ctx.WriteFile("renamed.txt", newContent, 0644)
+		_ = ctx.WriteFile("renamed.txt", newContent, 0644)
 
 		// Verify both reflect the change
 		ctx.AssertFileContent("rename1.txt", newContent)
@@ -200,13 +200,13 @@ func TestHardLinkOperations(t *testing.T, storeType framework.StoreType) {
 
 	t.Run("HardLinkPermissions", func(t *testing.T) {
 		// Create file with specific permissions
-		ctx.WriteFile("perms.txt", []byte("permissions test"), 0600)
+		_ = ctx.WriteFile("perms.txt", []byte("permissions test"), 0600)
 
 		// Get original permissions
 		info1, _ := ctx.Stat("perms.txt")
 
 		// Create hard link
-		ctx.Link("perms.txt", "permslink.txt")
+		_ = ctx.Link("perms.txt", "permslink.txt")
 
 		// Verify hard link has same permissions
 		info2, _ := ctx.Stat("permslink.txt")

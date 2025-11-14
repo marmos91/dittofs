@@ -140,7 +140,7 @@ func (h *DefaultMountHandler) Mount(
 
 	// Build identity from authentication credentials
 	var identity *metadata.Identity
-	authMethod := "anonymous"
+	var authMethod string
 
 	if ctx.AuthFlavor == rpc.AuthUnix && ctx.UnixAuth != nil {
 		authMethod = "unix"

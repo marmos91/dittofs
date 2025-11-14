@@ -16,15 +16,15 @@ func TestInitConfig_Success(t *testing.T) {
 	// Override the config directory for this test
 	// We'll use environment variable to control this
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	// Clear XDG_CONFIG_HOME
 	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	os.Unsetenv("XDG_CONFIG_HOME")
+	_ = os.Unsetenv("XDG_CONFIG_HOME")
 	defer func() {
 		if oldXDG != "" {
-			os.Setenv("XDG_CONFIG_HOME", oldXDG)
+			_ = os.Setenv("XDG_CONFIG_HOME", oldXDG)
 		}
 	}()
 
@@ -70,14 +70,14 @@ func TestInitConfig_Success(t *testing.T) {
 func TestInitConfig_AlreadyExists(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	os.Unsetenv("XDG_CONFIG_HOME")
+	_ = os.Unsetenv("XDG_CONFIG_HOME")
 	defer func() {
 		if oldXDG != "" {
-			os.Setenv("XDG_CONFIG_HOME", oldXDG)
+			_ = os.Setenv("XDG_CONFIG_HOME", oldXDG)
 		}
 	}()
 
@@ -100,14 +100,14 @@ func TestInitConfig_AlreadyExists(t *testing.T) {
 func TestInitConfig_ForceOverwrite(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	os.Unsetenv("XDG_CONFIG_HOME")
+	_ = os.Unsetenv("XDG_CONFIG_HOME")
 	defer func() {
 		if oldXDG != "" {
-			os.Setenv("XDG_CONFIG_HOME", oldXDG)
+			_ = os.Setenv("XDG_CONFIG_HOME", oldXDG)
 		}
 	}()
 
@@ -258,14 +258,14 @@ func TestGenerateYAMLWithComments_ValidConfig(t *testing.T) {
 func TestGeneratedConfigIsLoadable(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", oldHome)
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	os.Unsetenv("XDG_CONFIG_HOME")
+	_ = os.Unsetenv("XDG_CONFIG_HOME")
 	defer func() {
 		if oldXDG != "" {
-			os.Setenv("XDG_CONFIG_HOME", oldXDG)
+			_ = os.Setenv("XDG_CONFIG_HOME", oldXDG)
 		}
 	}()
 

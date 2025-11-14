@@ -61,7 +61,7 @@ func (tc *TestContext) Cleanup() {
 		tc.Mount.Cleanup()
 	}
 	if tc.Server != nil {
-		tc.Server.Stop()
+		_ = tc.Server.Stop()
 	}
 }
 

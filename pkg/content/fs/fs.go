@@ -253,7 +253,7 @@ func (r *FSContentStore) WriteContent(ctx context.Context, id metadata.ContentID
 	if err != nil {
 		return fmt.Errorf("failed to open file for writing: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	const chunkSize = 1 * 1024 * 1024 // 1MB chunks
 	for offset := 0; offset < len(content); offset += chunkSize {
@@ -453,9 +453,7 @@ func (r *FSContentStore) Delete(ctx context.Context, id metadata.ContentID) erro
 	// Step 2: Remove from FD cache if present
 	// ========================================================================
 
-	if err := r.fdCache.Remove(id); err != nil {
-		// Cache removal error is non-fatal
-	}
+	_ = r.fdCache.Remove(id) // Ignore cache removal errors
 
 	// ========================================================================
 	// Step 3: Remove the file

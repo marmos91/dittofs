@@ -35,7 +35,7 @@ func TestEdgeCases(t *testing.T, storeType framework.StoreType) {
 		}
 
 		ctx.AssertFileContent(longName, content)
-		ctx.Remove(longName)
+		_ = ctx.Remove(longName)
 	})
 
 	t.Run("MaxFilename", func(t *testing.T) {
@@ -49,7 +49,7 @@ func TestEdgeCases(t *testing.T, storeType framework.StoreType) {
 		}
 
 		ctx.AssertFileContent(maxName, content)
-		ctx.Remove(maxName)
+		_ = ctx.Remove(maxName)
 	})
 
 	t.Run("DotFiles", func(t *testing.T) {
@@ -96,7 +96,7 @@ func TestEdgeCases(t *testing.T, storeType framework.StoreType) {
 		if err != nil {
 			// Parent directory might not exist - that's expected
 			// Create parent first
-			ctx.Mkdir("parent", 0755)
+			_ = ctx.Mkdir("parent", 0755)
 			err = ctx.WriteFile("parent/child.txt", []byte("data"), 0644)
 			if err != nil {
 				t.Fatalf("Failed to create file in subdirectory: %v", err)
@@ -134,7 +134,7 @@ func TestEdgeCases(t *testing.T, storeType framework.StoreType) {
 	t.Run("ConcurrentReads", func(t *testing.T) {
 		// Create file
 		content := []byte("concurrent read test content")
-		ctx.WriteFile("concurrent-read.txt", content, 0644)
+		_ = ctx.WriteFile("concurrent-read.txt", content, 0644)
 
 		// Read concurrently from multiple goroutines
 		const numReaders = 10
@@ -188,13 +188,13 @@ func TestEdgeCases(t *testing.T, storeType framework.StoreType) {
 		// Create and open file
 		filename := "remove-while-open.txt"
 		content := []byte("delete me while open")
-		ctx.WriteFile(filename, content, 0644)
+		_ = ctx.WriteFile(filename, content, 0644)
 
 		file, err := os.Open(ctx.Path(filename))
 		if err != nil {
 			t.Fatalf("Failed to open file: %v", err)
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 
 		// Try to remove while open
 		// On Unix-like systems, this should succeed
@@ -257,12 +257,12 @@ func TestEdgeCases(t *testing.T, storeType framework.StoreType) {
 	t.Run("ManyFilesInDirectory", func(t *testing.T) {
 		// Create directory with many files
 		dirname := "many-files"
-		ctx.Mkdir(dirname, 0755)
+		_ = ctx.Mkdir(dirname, 0755)
 
 		numFiles := 100
 		for i := 0; i < numFiles; i++ {
 			filename := filepath.Join(dirname, fmt.Sprintf("file_%03d.txt", i))
-			ctx.WriteFile(filename, []byte("data"), 0644)
+			_ = ctx.WriteFile(filename, []byte("data"), 0644)
 		}
 
 		// List directory
@@ -280,7 +280,7 @@ func TestEdgeCases(t *testing.T, storeType framework.StoreType) {
 		// Create file
 		filename := "same-name.txt"
 		content := []byte("rename to self")
-		ctx.WriteFile(filename, content, 0644)
+		_ = ctx.WriteFile(filename, content, 0644)
 
 		// Rename to same name (no-op)
 		err := ctx.Rename(filename, filename)

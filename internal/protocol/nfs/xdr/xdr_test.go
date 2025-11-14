@@ -227,7 +227,7 @@ func TestExtractFileID(t *testing.T) {
 func TestDecodeOpaque(t *testing.T) {
 	t.Run("DecodesEmptyOpaque", func(t *testing.T) {
 		buf := new(bytes.Buffer)
-		binary.Write(buf, binary.BigEndian, uint32(0))
+		_ = binary.Write(buf, binary.BigEndian, uint32(0))
 
 		data, err := DecodeOpaque(buf)
 		require.NoError(t, err)
@@ -236,8 +236,8 @@ func TestDecodeOpaque(t *testing.T) {
 
 	t.Run("DecodesOpaqueWithoutPadding", func(t *testing.T) {
 		buf := new(bytes.Buffer)
-		binary.Write(buf, binary.BigEndian, uint32(4))
-		buf.Write([]byte{0x01, 0x02, 0x03, 0x04})
+		_ = binary.Write(buf, binary.BigEndian, uint32(4))
+		_, _ = buf.Write([]byte{0x01, 0x02, 0x03, 0x04})
 
 		data, err := DecodeOpaque(buf)
 		require.NoError(t, err)
@@ -246,8 +246,8 @@ func TestDecodeOpaque(t *testing.T) {
 
 	t.Run("DecodesOpaqueWithPadding", func(t *testing.T) {
 		buf := new(bytes.Buffer)
-		binary.Write(buf, binary.BigEndian, uint32(3))
-		buf.Write([]byte{0x01, 0x02, 0x03, 0x00})
+		_ = binary.Write(buf, binary.BigEndian, uint32(3))
+		_, _ = buf.Write([]byte{0x01, 0x02, 0x03, 0x00})
 
 		data, err := DecodeOpaque(buf)
 		require.NoError(t, err)
@@ -256,7 +256,7 @@ func TestDecodeOpaque(t *testing.T) {
 
 	t.Run("RejectsExcessiveLength", func(t *testing.T) {
 		buf := new(bytes.Buffer)
-		binary.Write(buf, binary.BigEndian, uint32(2*1024*1024))
+		_ = binary.Write(buf, binary.BigEndian, uint32(2*1024*1024))
 
 		_, err := DecodeOpaque(buf)
 		require.Error(t, err)
@@ -271,7 +271,7 @@ func TestDecodeOpaque(t *testing.T) {
 func TestDecodeString(t *testing.T) {
 	t.Run("DecodesEmptyString", func(t *testing.T) {
 		buf := new(bytes.Buffer)
-		binary.Write(buf, binary.BigEndian, uint32(0))
+		_ = binary.Write(buf, binary.BigEndian, uint32(0))
 
 		str, err := DecodeString(buf)
 		require.NoError(t, err)
@@ -281,9 +281,9 @@ func TestDecodeString(t *testing.T) {
 	t.Run("DecodesSimpleString", func(t *testing.T) {
 		buf := new(bytes.Buffer)
 		testStr := "hello"
-		binary.Write(buf, binary.BigEndian, uint32(len(testStr)))
-		buf.WriteString(testStr)
-		buf.Write([]byte{0, 0, 0}) // padding
+		_ = binary.Write(buf, binary.BigEndian, uint32(len(testStr)))
+		_, _ = buf.WriteString(testStr)
+		_, _ = buf.Write([]byte{0, 0, 0}) // padding
 
 		str, err := DecodeString(buf)
 		require.NoError(t, err)
