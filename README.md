@@ -58,8 +58,8 @@ DittoFS provides a modular architecture that separates concerns through three ke
         └─────────────┘  └──────────────┘
              │                  │
              ▼                  ▼
-        Redis/Postgres     S3/Filesystem
-        In-Memory          Custom Storage
+        Memory/BadgerDB    S3/Filesystem
+        Postgres/Redis     Custom Storage
 ```
 
 ### Key Concepts
@@ -75,7 +75,8 @@ DittoFS provides a modular architecture that separates concerns through three ke
 - File metadata (size, timestamps, permissions, extended attributes)
 - Directory hierarchy and relationships
 - File handles and export configuration
-- Pluggable backends (in-memory, Redis, PostgreSQL, etc.)
+- Pluggable backends (memory, BadgerDB, Redis, PostgreSQL, etc.)
+- **Built-in options**: In-memory (ephemeral) or BadgerDB (persistent)
 
 **3. Content Repository**: Stores actual file data
 
@@ -98,11 +99,11 @@ DittoFS provides a modular architecture that separates concerns through three ke
 
 ```
 Adapters → NFS + SMB (simultaneous access)
-Metadata → PostgreSQL (ACID compliance, fast queries)
+Metadata → BadgerDB (persistent, ACID, embedded)
 Content → S3 (scalable, durable, cost-effective)
 
-Use case: Allow Linux servers (NFS) and Windows clients (SMB) 
-to access the same S3-backed storage
+Use case: Allow Linux servers (NFS) and Windows clients (SMB)
+to access the same S3-backed storage with persistent metadata
 ```
 
 ### Development & Testing
@@ -113,6 +114,17 @@ Metadata → In-Memory
 Content → In-Memory or local filesystem
 
 Use case: Fast development iteration without external dependencies
+```
+
+### Persistent Production NFS Server
+
+```
+Adapters → NFS
+Metadata → BadgerDB (persistent, survives restarts)
+Content → Filesystem (local storage or network mount)
+
+Use case: Production NFS server with metadata that persists
+across restarts - no data loss, stable file handles
 ```
 
 ### High-Performance Distributed Cache
@@ -289,13 +301,28 @@ content:
 
 #### 4. Metadata Store
 
-Configures where file metadata (structure, attributes) is stored:
+Configures where file metadata (structure, attributes) is stored.
 
+**In-Memory Backend** (ephemeral, for development/testing):
 ```yaml
 metadata:
   type: "memory"
-  memory: {}  # In-memory store has no configuration options
+  memory: {}  # No configuration options
+```
 
+**BadgerDB Backend** (persistent, recommended for production):
+```yaml
+metadata:
+  type: "badger"
+  badger:
+    db_path: "/var/lib/dittofs/metadata.db"  # Required: database file path
+    max_storage_bytes: 10737418240           # Optional: 10GB limit
+    max_files: 1000000                       # Optional: max file count
+```
+
+**Common Configuration** (applies to all metadata stores):
+```yaml
+metadata:
   # Filesystem capabilities and limits
   capabilities:
     max_read_size: 1048576        # 1MB
@@ -317,6 +344,8 @@ metadata:
     - "127.0.0.1"
     - "::1"
 ```
+
+> **Persistence**: BadgerDB stores all metadata persistently on disk. File handles, directory structure, permissions, and all metadata survive server restarts. The memory backend loses all data when the server stops.
 
 #### 5. Shares (Exports)
 
@@ -467,7 +496,7 @@ adapters:
 
 #### Production Setup
 
-Filesystem-backed with access control:
+Persistent storage with access control:
 
 ```yaml
 logging:
@@ -484,7 +513,11 @@ content:
     path: "/var/lib/dittofs/content"
 
 metadata:
-  type: "memory"
+  type: "badger"  # Persistent metadata storage
+  badger:
+    db_path: "/var/lib/dittofs/metadata.db"
+    max_storage_bytes: 107374182400  # 100GB
+    max_files: 10000000              # 10M files
   capabilities:
     max_read_size: 1048576
     max_write_size: 1048576
@@ -630,7 +663,25 @@ type Repository interface {
 }
 ```
 
-### Custom Backend Implementation
+### Built-In and Custom Backends
+
+**Using Built-In Backends** (No custom code required):
+
+```go
+// Memory backend (ephemeral)
+metadataStore := memory.NewMemoryMetadataStoreWithDefaults()
+
+// BadgerDB backend (persistent)
+metadataStore, err := badger.NewBadgerMetadataStoreWithDefaults(ctx, "/var/lib/dittofs/metadata.db")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Wire to server
+server := dittofs.New(metadataStore, contentStore)
+```
+
+**Implementing Custom Backends**:
 
 ```go
 // 1. Implement metadata backend (e.g., PostgreSQL)
@@ -718,7 +769,8 @@ with DittoFS. Instead, use direct mount commands or the provided test clients.
 
 **Repositories**
 
-- In-memory metadata repository (fully functional)
+- In-memory metadata repository (ephemeral, fully functional)
+- BadgerDB metadata repository (persistent, path-based handles, fully functional)
 - Filesystem content repository (fully functional)
 
 **Infrastructure**
@@ -728,6 +780,49 @@ with DittoFS. Instead, use direct mount commands or the provided test clients.
 - RPC message handling
 - Configurable logging
 - Buffer pooling for performance
+
+### 💾 Metadata Persistence
+
+DittoFS offers two metadata storage options:
+
+**In-Memory (Ephemeral)**
+- All metadata stored in RAM
+- Fast access and zero persistence overhead
+- **Data is lost when server stops**
+- Ideal for: Development, testing, temporary workloads
+
+**BadgerDB (Persistent)**
+- All metadata stored on disk using BadgerDB (embedded key-value database)
+- **Survives server restarts** - file handles, directory structure, permissions persist
+- Path-based file handles: `"shareName:/path/to/file"` format enables stable references
+- Atomic operations with ACID guarantees
+- Ideal for: Production deployments, long-running servers, data durability requirements
+
+**Path-Based File Handles**
+
+BadgerDB uses a deterministic path-based handle strategy:
+- Handles are derived from the full file path: `"export:/documents/report.pdf"`
+- Stable across server restarts (same file = same handle)
+- Enables future features: import existing filesystems, migrate between stores, backup/restore
+- Automatic fallback to hash-based handles for paths exceeding NFS 64-byte limit
+
+**Switching Backends**
+
+Simply change the `metadata.type` in your configuration:
+
+```yaml
+# Development: Fast, no persistence
+metadata:
+  type: "memory"
+
+# Production: Persistent, durable
+metadata:
+  type: "badger"
+  badger:
+    db_path: "/var/lib/dittofs/metadata.db"
+```
+
+> **Note**: Metadata stores are not currently compatible. Switching backends requires recreating shares and file structure.
 
 ### 🚧 Roadmap
 
@@ -761,7 +856,8 @@ with DittoFS. Instead, use direct mount commands or the provided test clients.
 **Phase 5: Production-Ready Backends**
 
 - [ ] S3-compatible content repository
-- [ ] SQLite metadata repository
+- [x] BadgerDB metadata repository (persistent, path-based handles)
+- [ ] SQLite metadata repository (planned)
 
 **Phase 6: SMB Protocol Adapter**
 
@@ -852,7 +948,8 @@ Go provides significant advantages for a project like DittoFS:
 | Permission Requirements | Kernel-level | Varies | Userspace only |
 | Multi-protocol Support | Separate servers | Limited | Unified (planned) |
 | Storage Backend | Filesystem only | Vendor-specific | Pluggable |
-| Metadata Backend | Filesystem only | Vendor-specific | Pluggable |
+| Metadata Backend | Filesystem only | Vendor-specific | Pluggable (Memory/BadgerDB) |
+| Metadata Persistence | Filesystem-bound | Varies | Optional (BadgerDB) |
 | Language | C/C++ | Varies | Pure Go |
 | Deployment | Complex (kernel modules) | Complex (dependencies) | Single binary |
 | Customization | Limited | Limited | Full control |
@@ -1054,6 +1151,14 @@ A: Windows can mount NFS shares, but the SMB/CIFS adapter will provide better Wi
 **Q: Is content deduplication supported?**
 
 A: Not currently, but the content repository abstraction allows for implementing content-addressable storage with deduplication.
+
+**Q: Does metadata persist across server restarts?**
+
+A: Yes, when using the BadgerDB metadata backend (`type: badger`). The in-memory backend (`type: memory`) loses all metadata when the server stops.
+
+**Q: Can I import an existing filesystem into DittoFS?**
+
+A: Not yet, but the path-based file handle strategy in BadgerDB enables this as a future feature. The handles are deterministic based on file paths, making filesystem scanning and import possible.
 
 ## License
 
