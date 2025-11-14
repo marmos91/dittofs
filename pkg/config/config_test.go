@@ -150,8 +150,8 @@ func TestGetDefaultConfig(t *testing.T) {
 	if cfg.Content.Type != "filesystem" {
 		t.Errorf("Expected default content type 'filesystem', got %q", cfg.Content.Type)
 	}
-	if cfg.Metadata.Type != "memory" {
-		t.Errorf("Expected default metadata type 'memory', got %q", cfg.Metadata.Type)
+	if cfg.Metadata.Type != "badger" {
+		t.Errorf("Expected default metadata type 'badger', got %q", cfg.Metadata.Type)
 	}
 	if len(cfg.Shares) != 1 {
 		t.Errorf("Expected 1 default share, got %d", len(cfg.Shares))

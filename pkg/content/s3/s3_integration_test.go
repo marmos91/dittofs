@@ -15,28 +15,29 @@ import (
 	"github.com/marmos91/dittofs/pkg/content/testing"
 )
 
-// TestS3ContentStore_Integration runs the complete content store test suite
-// against a real S3-compatible service (Localstack).
+// setupTestS3 creates an S3 client and test bucket for integration tests.
 //
-// Prerequisites:
-//   - Localstack running on localhost:4566
-//   - Run with: go test -tags=integration ./pkg/content/s3/...
+// It connects to Localstack (or other S3-compatible endpoint) and creates a
+// test bucket that will be cleaned up when the cleanup function is called.
 //
-// To start Localstack:
+// Parameters:
+//   - t: The testing instance
+//   - bucketName: Name of the test bucket to create
 //
-//	docker run --rm -p 4566:4566 localstack/localstack
-func TestS3ContentStore_Integration(t *testing.T) {
+// Returns:
+//   - *s3.Client: Configured S3 client
+//   - cleanup: Function to delete all objects and the bucket
+func setupTestS3(t *testing.T, bucketName string) (*s3.Client, func()) {
+	t.Helper()
 	ctx := context.Background()
 
-	// ========================================================================
-	// Setup: Create S3 client connected to Localstack
-	// ========================================================================
-
+	// Get Localstack endpoint from environment or use default
 	endpoint := os.Getenv("LOCALSTACK_ENDPOINT")
 	if endpoint == "" {
 		endpoint = "http://localhost:4566"
 	}
 
+	// Load AWS config with Localstack endpoint
 	cfg, err := awsConfig.LoadDefaultConfig(ctx,
 		awsConfig.WithRegion("us-east-1"),
 		awsConfig.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
@@ -58,16 +59,12 @@ func TestS3ContentStore_Integration(t *testing.T) {
 		t.Fatalf("Failed to load AWS config: %v", err)
 	}
 
+	// Create S3 client with path-style URLs (required for Localstack)
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.UsePathStyle = true // Required for Localstack
+		o.UsePathStyle = true
 	})
 
-	// ========================================================================
 	// Create test bucket
-	// ========================================================================
-
-	bucketName := "dittofs-test-bucket"
-
 	_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{
 		Bucket: aws.String(bucketName),
 	})
@@ -75,8 +72,8 @@ func TestS3ContentStore_Integration(t *testing.T) {
 		t.Fatalf("Failed to create test bucket: %v", err)
 	}
 
-	// Cleanup bucket after test
-	defer func() {
+	// Return cleanup function
+	cleanup := func() {
 		// List and delete all objects first
 		listResp, _ := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 			Bucket: aws.String(bucketName),
@@ -94,7 +91,31 @@ func TestS3ContentStore_Integration(t *testing.T) {
 		client.DeleteBucket(ctx, &s3.DeleteBucketInput{
 			Bucket: aws.String(bucketName),
 		})
-	}()
+	}
+
+	return client, cleanup
+}
+
+// TestS3ContentStore_Integration runs the complete content store test suite
+// against a real S3-compatible service (Localstack).
+//
+// Prerequisites:
+//   - Localstack running on localhost:4566
+//   - Run with: go test -tags=integration ./pkg/content/s3/...
+//
+// To start Localstack:
+//
+//	docker run --rm -p 4566:4566 localstack/localstack
+func TestS3ContentStore_Integration(t *testing.T) {
+	ctx := context.Background()
+
+	// ========================================================================
+	// Setup: Create S3 client connected to Localstack
+	// ========================================================================
+
+	bucketName := "dittofs-test-bucket"
+	client, cleanup := setupTestS3(t, bucketName)
+	defer cleanup()
 
 	// ========================================================================
 	// Create S3 content store
@@ -139,65 +160,9 @@ func TestS3ContentStore_Multipart(t *testing.T) {
 	// Setup: Create S3 client connected to Localstack
 	// ========================================================================
 
-	endpoint := os.Getenv("LOCALSTACK_ENDPOINT")
-	if endpoint == "" {
-		endpoint = "http://localhost:4566"
-	}
-
-	cfg, err := awsConfig.LoadDefaultConfig(ctx,
-		awsConfig.WithRegion("us-east-1"),
-		awsConfig.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
-			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-				return aws.Endpoint{
-					URL:               endpoint,
-					HostnameImmutable: true,
-					Source:            aws.EndpointSourceCustom,
-				}, nil
-			},
-		)),
-		awsConfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			"test",
-			"test",
-			"",
-		)),
-	)
-	if err != nil {
-		t.Fatalf("Failed to load AWS config: %v", err)
-	}
-
-	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.UsePathStyle = true
-	})
-
-	// ========================================================================
-	// Create test bucket
-	// ========================================================================
-
 	bucketName := "dittofs-multipart-test"
-
-	_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{
-		Bucket: aws.String(bucketName),
-	})
-	if err != nil {
-		t.Fatalf("Failed to create test bucket: %v", err)
-	}
-
-	defer func() {
-		listResp, _ := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket: aws.String(bucketName),
-		})
-		if listResp != nil {
-			for _, obj := range listResp.Contents {
-				client.DeleteObject(ctx, &s3.DeleteObjectInput{
-					Bucket: aws.String(bucketName),
-					Key:    obj.Key,
-				})
-			}
-		}
-		client.DeleteBucket(ctx, &s3.DeleteBucketInput{
-			Bucket: aws.String(bucketName),
-		})
-	}()
+	client, cleanup := setupTestS3(t, bucketName)
+	defer cleanup()
 
 	// ========================================================================
 	// Create S3 content store
@@ -303,61 +268,9 @@ func TestS3ContentStore_Multipart(t *testing.T) {
 func TestS3ContentStore_StreamingOperations(t *testing.T) {
 	ctx := context.Background()
 
-	endpoint := os.Getenv("LOCALSTACK_ENDPOINT")
-	if endpoint == "" {
-		endpoint = "http://localhost:4566"
-	}
-
-	cfg, err := awsConfig.LoadDefaultConfig(ctx,
-		awsConfig.WithRegion("us-east-1"),
-		awsConfig.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
-			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-				return aws.Endpoint{
-					URL:               endpoint,
-					HostnameImmutable: true,
-					Source:            aws.EndpointSourceCustom,
-				}, nil
-			},
-		)),
-		awsConfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			"test",
-			"test",
-			"",
-		)),
-	)
-	if err != nil {
-		t.Fatalf("Failed to load AWS config: %v", err)
-	}
-
-	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.UsePathStyle = true
-	})
-
 	bucketName := "dittofs-streaming-test"
-
-	_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{
-		Bucket: aws.String(bucketName),
-	})
-	if err != nil {
-		t.Fatalf("Failed to create test bucket: %v", err)
-	}
-
-	defer func() {
-		listResp, _ := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket: aws.String(bucketName),
-		})
-		if listResp != nil {
-			for _, obj := range listResp.Contents {
-				client.DeleteObject(ctx, &s3.DeleteObjectInput{
-					Bucket: aws.String(bucketName),
-					Key:    obj.Key,
-				})
-			}
-		}
-		client.DeleteBucket(ctx, &s3.DeleteBucketInput{
-			Bucket: aws.String(bucketName),
-		})
-	}()
+	client, cleanup := setupTestS3(t, bucketName)
+	defer cleanup()
 
 	store, err := NewS3ContentStore(ctx, S3ContentStoreConfig{
 		Client: client,

@@ -90,12 +90,20 @@ func applyContentDefaults(cfg *ContentConfig) {
 // applyMetadataDefaults sets metadata store defaults.
 func applyMetadataDefaults(cfg *MetadataConfig) {
 	if cfg.Type == "" {
-		cfg.Type = "memory"
+		cfg.Type = "badger"
 	}
 
 	// Initialize maps if nil
 	if cfg.Memory == nil {
 		cfg.Memory = make(map[string]any)
+	}
+	if cfg.Badger == nil {
+		cfg.Badger = make(map[string]any)
+	}
+
+	// Apply defaults for all store types (for config file generation)
+	if _, ok := cfg.Badger["db_path"]; !ok {
+		cfg.Badger["db_path"] = "/tmp/dittofs-metadata"
 	}
 
 	// Apply filesystem capabilities defaults
@@ -258,6 +266,7 @@ func GetDefaultConfig() *Config {
 		},
 		Metadata: MetadataConfig{
 			Memory: make(map[string]any),
+			Badger: make(map[string]any),
 			// Set capability defaults to true for default config
 			Capabilities: metadata.FilesystemCapabilities{
 				SupportsHardLinks: true,

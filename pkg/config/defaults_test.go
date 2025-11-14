@@ -60,12 +60,20 @@ func TestApplyDefaults_Metadata(t *testing.T) {
 	cfg := &Config{}
 	ApplyDefaults(cfg)
 
-	if cfg.Metadata.Type != "memory" {
-		t.Errorf("Expected default metadata type 'memory', got %q", cfg.Metadata.Type)
+	if cfg.Metadata.Type != "badger" {
+		t.Errorf("Expected default metadata type 'badger', got %q", cfg.Metadata.Type)
 	}
 
 	if cfg.Metadata.Memory == nil {
 		t.Fatal("Expected Memory map to be initialized")
+	}
+
+	if cfg.Metadata.Badger == nil {
+		t.Fatal("Expected Badger map to be initialized")
+	}
+
+	if dbPath, ok := cfg.Metadata.Badger["db_path"]; !ok || dbPath != "/tmp/dittofs-metadata" {
+		t.Errorf("Expected default db_path '/tmp/dittofs-metadata', got %v", dbPath)
 	}
 
 	// DumpRestricted should default to false

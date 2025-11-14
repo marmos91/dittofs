@@ -3,6 +3,7 @@ package s3
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -53,6 +54,10 @@ type S3ContentStore struct {
 	bucket    string
 	keyPrefix string // Optional prefix for all keys
 	partSize  int64  // Size for multipart upload parts (default: 10MB)
+
+	// Multipart upload state (per-instance)
+	uploadSessions   map[string]*multipartUpload
+	uploadSessionsMu sync.RWMutex
 }
 
 // S3ContentStoreConfig contains configuration for S3 content store.
@@ -134,10 +139,11 @@ func NewS3ContentStore(ctx context.Context, cfg S3ContentStoreConfig) (*S3Conten
 	}
 
 	return &S3ContentStore{
-		client:    cfg.Client,
-		bucket:    cfg.Bucket,
-		keyPrefix: cfg.KeyPrefix,
-		partSize:  partSize,
+		client:         cfg.Client,
+		bucket:         cfg.Bucket,
+		keyPrefix:      cfg.KeyPrefix,
+		partSize:       partSize,
+		uploadSessions: make(map[string]*multipartUpload),
 	}, nil
 }
 
@@ -215,7 +221,7 @@ func (s *S3ContentStore) ReadContent(ctx context.Context, id metadata.ContentID)
 	if err != nil {
 		// Check if object doesn't exist
 		var notFound *types.NoSuchKey
-		if _, ok := err.(*types.NoSuchKey); ok || notFound != nil {
+		if errors.As(err, &notFound) {
 			return nil, fmt.Errorf("content %s: %w", id, content.ErrContentNotFound)
 		}
 		return nil, fmt.Errorf("failed to get object from S3: %w", err)
@@ -252,7 +258,7 @@ func (s *S3ContentStore) GetContentSize(ctx context.Context, id metadata.Content
 	})
 	if err != nil {
 		var notFound *types.NoSuchKey
-		if _, ok := err.(*types.NoSuchKey); ok || notFound != nil {
+		if errors.As(err, &notFound) {
 			return 0, fmt.Errorf("content %s: %w", id, content.ErrContentNotFound)
 		}
 		return 0, fmt.Errorf("failed to head object: %w", err)
@@ -292,7 +298,7 @@ func (s *S3ContentStore) ContentExists(ctx context.Context, id metadata.ContentI
 	})
 	if err != nil {
 		var notFound *types.NoSuchKey
-		if _, ok := err.(*types.NoSuchKey); ok || notFound != nil {
+		if errors.As(err, &notFound) {
 			return false, nil
 		}
 		return false, fmt.Errorf("failed to check object existence: %w", err)
@@ -681,12 +687,6 @@ type multipartUpload struct {
 	mu             sync.Mutex
 }
 
-// uploadSessions tracks active multipart uploads.
-var (
-	uploadSessions   = make(map[string]*multipartUpload)
-	uploadSessionsMu sync.RWMutex
-)
-
 // BeginMultipartUpload initiates a multipart upload session.
 //
 // This creates an S3 multipart upload and returns an upload ID for subsequent
@@ -716,12 +716,12 @@ func (s *S3ContentStore) BeginMultipartUpload(ctx context.Context, id metadata.C
 
 	uploadID := *result.UploadId
 
-	uploadSessionsMu.Lock()
-	uploadSessions[uploadID] = &multipartUpload{
+	s.uploadSessionsMu.Lock()
+	s.uploadSessions[uploadID] = &multipartUpload{
 		uploadID:       uploadID,
 		completedParts: make([]types.CompletedPart, 0),
 	}
-	uploadSessionsMu.Unlock()
+	s.uploadSessionsMu.Unlock()
 
 	return uploadID, nil
 }
@@ -757,9 +757,9 @@ func (s *S3ContentStore) UploadPart(ctx context.Context, id metadata.ContentID, 
 		return fmt.Errorf("failed to upload part %d: %w", partNumber, err)
 	}
 
-	uploadSessionsMu.RLock()
-	upload, ok := uploadSessions[uploadID]
-	uploadSessionsMu.RUnlock()
+	s.uploadSessionsMu.RLock()
+	upload, ok := s.uploadSessions[uploadID]
+	s.uploadSessionsMu.RUnlock()
 
 	if !ok {
 		return fmt.Errorf("upload session %s not found", uploadID)
@@ -792,9 +792,9 @@ func (s *S3ContentStore) CompleteMultipartUpload(ctx context.Context, id metadat
 		return err
 	}
 
-	uploadSessionsMu.RLock()
-	upload, ok := uploadSessions[uploadID]
-	uploadSessionsMu.RUnlock()
+	s.uploadSessionsMu.RLock()
+	upload, ok := s.uploadSessions[uploadID]
+	s.uploadSessionsMu.RUnlock()
 
 	if !ok {
 		return fmt.Errorf("upload session %s not found", uploadID)
@@ -824,9 +824,9 @@ func (s *S3ContentStore) CompleteMultipartUpload(ctx context.Context, id metadat
 		return fmt.Errorf("failed to complete multipart upload: %w", err)
 	}
 
-	uploadSessionsMu.Lock()
-	delete(uploadSessions, uploadID)
-	uploadSessionsMu.Unlock()
+	s.uploadSessionsMu.Lock()
+	delete(s.uploadSessions, uploadID)
+	s.uploadSessionsMu.Unlock()
 
 	return nil
 }
@@ -857,16 +857,16 @@ func (s *S3ContentStore) AbortMultipartUpload(ctx context.Context, id metadata.C
 	if err != nil {
 		// Check for NoSuchUpload error (idempotent behavior)
 		var noSuchUpload *types.NoSuchUpload
-		if _, ok := err.(*types.NoSuchUpload); ok || noSuchUpload != nil {
+		if errors.As(err, &noSuchUpload) {
 			// Ignore - upload doesn't exist
 		} else {
 			return fmt.Errorf("failed to abort multipart upload: %w", err)
 		}
 	}
 
-	uploadSessionsMu.Lock()
-	delete(uploadSessions, uploadID)
-	uploadSessionsMu.Unlock()
+	s.uploadSessionsMu.Lock()
+	delete(s.uploadSessions, uploadID)
+	s.uploadSessionsMu.Unlock()
 
 	return nil
 }

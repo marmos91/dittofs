@@ -150,6 +150,7 @@ go build -o dittofs cmd/dittofs/main.go
 
 ```bash
 # Initialize configuration file (one-time setup)
+# Creates config with BadgerDB metadata and filesystem content
 ./dittofs init
 
 # Start server with default config ($XDG_CONFIG_HOME/dittofs/config.yaml)
@@ -281,7 +282,7 @@ server:
 
 Configures where file content is stored.
 
-**Filesystem Backend** (default and currently only available option):
+**Filesystem Backend** (default, recommended for local storage):
 ```yaml
 content:
   type: "filesystem"
@@ -289,7 +290,22 @@ content:
     path: "/tmp/dittofs-content"
 ```
 
-**In-Memory Backend** (planned for future release):
+**S3 Backend** (recommended for cloud deployments):
+```yaml
+content:
+  type: "s3"
+  s3:
+    region: "us-east-1"              # AWS region (required)
+    bucket: "my-dittofs-bucket"      # S3 bucket name (required)
+    key_prefix: ""                   # Optional prefix for all keys
+    endpoint: ""                     # Optional: S3-compatible endpoint
+                                     # Example: "https://s3.cubbit.eu"
+    access_key_id: ""                # Optional: AWS credentials
+    secret_access_key: ""            # Leave empty to use AWS credential chain
+    part_size: 10485760              # Multipart upload part size (10MB)
+```
+
+**In-Memory Backend** (development/testing only):
 ```yaml
 content:
   type: "memory"
@@ -297,27 +313,27 @@ content:
     max_size_bytes: 1073741824  # 1GB
 ```
 
-> **Note**: Memory content store is not yet implemented. Use `filesystem` type for now.
+> **Note**: Memory content store is not yet implemented. Use `filesystem` or `s3` type.
+>
+> **S3 Path Design**: The S3 store uses path-based object keys (e.g., `export/docs/report.pdf`) that mirror the filesystem structure. This enables easy bucket inspection and metadata reconstruction for disaster recovery. See `config-s3-example.yaml` for detailed configuration.
 
 #### 4. Metadata Store
 
 Configures where file metadata (structure, attributes) is stored.
 
-**In-Memory Backend** (ephemeral, for development/testing):
-```yaml
-metadata:
-  type: "memory"
-  memory: {}  # No configuration options
-```
-
-**BadgerDB Backend** (persistent, recommended for production):
+**BadgerDB Backend** (default, recommended for production):
 ```yaml
 metadata:
   type: "badger"
   badger:
-    db_path: "/var/lib/dittofs/metadata.db"  # Required: database file path
-    max_storage_bytes: 10737418240           # Optional: 10GB limit
-    max_files: 1000000                       # Optional: max file count
+    db_path: "/tmp/dittofs-metadata"  # Required: database directory path
+```
+
+**In-Memory Backend** (ephemeral, for development/testing only):
+```yaml
+metadata:
+  type: "memory"
+  memory: {}  # No configuration options
 ```
 
 **Common Configuration** (applies to all metadata stores):

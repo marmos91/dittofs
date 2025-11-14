@@ -75,7 +75,7 @@ server:
 
 # Content store configuration
 content:
-  # Content store type: filesystem, memory
+  # Content store type: filesystem, memory, s3
   type: "` + cfg.Content.Type + `"
 
   # Filesystem content store configuration (used when type=filesystem)
@@ -90,11 +90,16 @@ content:
 
 # Metadata store configuration
 metadata:
-  # Metadata store type: memory
+  # Metadata store type: memory, badger
   type: "` + cfg.Metadata.Type + `"
 
   # Memory metadata store configuration (used when type=memory)
   memory: {}
+
+  # BadgerDB metadata store configuration (used when type=badger)
+  badger:
+    # Directory path for BadgerDB database
+    db_path: "` + fmt.Sprintf("%v", cfg.Metadata.Badger["db_path"]) + `"
 
   # Filesystem capabilities and limits
   capabilities:
