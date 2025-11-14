@@ -133,7 +133,6 @@ func (c *RenameContext) GetUID() *uint32             { return c.UID }
 func (c *RenameContext) GetGID() *uint32             { return c.GID }
 func (c *RenameContext) GetGIDs() []uint32           { return c.GIDs }
 
-
 // ============================================================================
 // Protocol Handler
 // ============================================================================

@@ -525,7 +525,7 @@ func assertTimestampAfter(t *testing.T, timestamp, reference time.Time, fieldNam
 func assertTimestampUnchanged(t *testing.T, timestamp, reference time.Time, fieldName string) {
 	t.Helper()
 
-	require.Equal(t, reference, timestamp, "%s should not have changed", fieldName)
+	require.True(t, timestamp.Equal(reference), "%s should not have changed. Got %v, reference %v", fieldName, timestamp, reference)
 }
 
 // ============================================================================

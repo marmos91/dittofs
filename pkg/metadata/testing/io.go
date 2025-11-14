@@ -744,8 +744,8 @@ func (suite *StoreTestSuite) testWriteReadIntegration(t *testing.T) {
 
 		// Read doesn't change timestamps at metadata level
 		readMeta := prepareRead(t, store, authCtx, fileHandle)
-		assert.Equal(t, writeAttr.Atime, readMeta.Attr.Atime)
-		assert.Equal(t, writeAttr.Mtime, readMeta.Attr.Mtime)
-		assert.Equal(t, writeAttr.Ctime, readMeta.Attr.Ctime)
+		assert.True(t, writeAttr.Atime.Equal(readMeta.Attr.Atime), "atime should match after read")
+		assert.True(t, writeAttr.Mtime.Equal(readMeta.Attr.Mtime), "mtime should match after read")
+		assert.True(t, writeAttr.Ctime.Equal(readMeta.Attr.Ctime), "ctime should match after read")
 	})
 }

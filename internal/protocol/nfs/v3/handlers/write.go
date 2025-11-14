@@ -135,7 +135,6 @@ func (c *WriteContext) GetUID() *uint32             { return c.UID }
 func (c *WriteContext) GetGID() *uint32             { return c.GID }
 func (c *WriteContext) GetGIDs() []uint32           { return c.GIDs }
 
-
 // ============================================================================
 // Protocol Handler
 // ============================================================================

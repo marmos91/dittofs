@@ -124,7 +124,6 @@ func (c *SetAttrContext) GetUID() *uint32             { return c.UID }
 func (c *SetAttrContext) GetGID() *uint32             { return c.GID }
 func (c *SetAttrContext) GetGIDs() []uint32           { return c.GIDs }
 
-
 // ============================================================================
 // Protocol Handler
 // ============================================================================

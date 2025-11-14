@@ -117,7 +117,6 @@ func (c *LinkContext) GetUID() *uint32             { return c.UID }
 func (c *LinkContext) GetGID() *uint32             { return c.GID }
 func (c *LinkContext) GetGIDs() []uint32           { return c.GIDs }
 
-
 // ============================================================================
 // Protocol Handler
 // ============================================================================

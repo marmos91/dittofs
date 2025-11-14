@@ -117,7 +117,6 @@ func (c *LookupContext) GetUID() *uint32             { return c.UID }
 func (c *LookupContext) GetGID() *uint32             { return c.GID }
 func (c *LookupContext) GetGIDs() []uint32           { return c.GIDs }
 
-
 // ============================================================================
 // Protocol Handler
 // ============================================================================

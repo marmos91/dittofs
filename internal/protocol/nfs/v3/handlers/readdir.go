@@ -135,7 +135,6 @@ func (c *ReadDirContext) GetUID() *uint32             { return c.UID }
 func (c *ReadDirContext) GetGID() *uint32             { return c.GID }
 func (c *ReadDirContext) GetGIDs() []uint32           { return c.GIDs }
 
-
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -829,4 +828,3 @@ func getLastCookie(entries []*types.DirEntry) uint64 {
 	}
 	return entries[len(entries)-1].Cookie
 }
-

@@ -106,7 +106,6 @@ func (c *ReadLinkContext) GetUID() *uint32             { return c.UID }
 func (c *ReadLinkContext) GetGID() *uint32             { return c.GID }
 func (c *ReadLinkContext) GetGIDs() []uint32           { return c.GIDs }
 
-
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -415,7 +414,6 @@ func mapReadLinkErrorToNFSStatus(err error) uint32 {
 	// Use the common metadata error mapper
 	return mapMetadataErrorToNFS(err)
 }
-
 
 // ============================================================================
 // XDR Decoding

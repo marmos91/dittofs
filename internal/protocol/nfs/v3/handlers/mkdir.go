@@ -139,7 +139,6 @@ func (c *MkdirContext) GetUID() *uint32             { return c.UID }
 func (c *MkdirContext) GetGID() *uint32             { return c.GID }
 func (c *MkdirContext) GetGIDs() []uint32           { return c.GIDs }
 
-
 // ============================================================================
 // Protocol Handler
 // ============================================================================

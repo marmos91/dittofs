@@ -141,7 +141,6 @@ func (c *SymlinkContext) GetUID() *uint32             { return c.UID }
 func (c *SymlinkContext) GetGID() *uint32             { return c.GID }
 func (c *SymlinkContext) GetGIDs() []uint32           { return c.GIDs }
 
-
 // ============================================================================
 // Protocol Handler
 // ============================================================================

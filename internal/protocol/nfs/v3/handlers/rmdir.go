@@ -116,7 +116,6 @@ func (c *RmdirContext) GetUID() *uint32             { return c.UID }
 func (c *RmdirContext) GetGID() *uint32             { return c.GID }
 func (c *RmdirContext) GetGIDs() []uint32           { return c.GIDs }
 
-
 // ============================================================================
 // Protocol Handler
 // ============================================================================
