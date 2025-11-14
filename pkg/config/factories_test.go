@@ -52,8 +52,8 @@ func TestCreateContentStore_Memory(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error for unimplemented memory store")
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("Expected 'not yet implemented' error, got: %v", err)
+	if !strings.Contains(err.Error(), "not available") {
+		t.Errorf("Expected 'not available' error, got: %v", err)
 	}
 }
 

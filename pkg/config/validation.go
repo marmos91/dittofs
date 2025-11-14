@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/go-playground/validator/v10"
 )
@@ -20,11 +19,11 @@ func init() {
 // via struct tags, with additional custom validation for complex rules
 // that cannot be expressed in tags.
 //
+// Note: Log level normalization is handled in ApplyDefaults, not here.
+// Validation accepts both uppercase and lowercase log levels.
+//
 // Returns an error describing validation failures.
 func Validate(cfg *Config) error {
-	// Normalize log level to uppercase for validation
-	cfg.Logging.Level = strings.ToUpper(cfg.Logging.Level)
-
 	// Run struct tag validation
 	if err := validate.Struct(cfg); err != nil {
 		return formatValidationError(err)

@@ -49,11 +49,14 @@ func DecodeOpaque(reader io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("read data: %w", err)
 	}
 
-	// Skip padding to 4-byte boundary
+	// PERFORMANCE OPTIMIZATION: Skip padding using stack-allocated buffer
+	// XDR padding is max 3 bytes, so we use a tiny stack buffer instead of io.CopyN
+	// This avoids the overhead of io.CopyN for tiny reads
 	// Example: length=5 → padding=3, length=8 → padding=0
 	padding := (4 - (length % 4)) % 4
 	if padding > 0 {
-		if _, err := io.CopyN(io.Discard, reader, int64(padding)); err != nil {
+		var padBuf [3]byte
+		if _, err := io.ReadFull(reader, padBuf[:padding]); err != nil {
 			return nil, fmt.Errorf("skip padding: %w", err)
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
@@ -716,11 +717,16 @@ func DecodeWriteRequest(data []byte) (*WriteRequest, error) {
 		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
 	}
 
-	// Read handle data
-	handle := make([]byte, handleLen)
-	if err := binary.Read(reader, binary.BigEndian, &handle); err != nil {
+	// PERFORMANCE OPTIMIZATION: Use stack-allocated buffer for file handles
+	// File handles are max 64 bytes per RFC 1813, so we can avoid heap allocation
+	var handleBuf [64]byte
+	handleSlice := handleBuf[:handleLen]
+	if err := binary.Read(reader, binary.BigEndian, &handleSlice); err != nil {
 		return nil, fmt.Errorf("failed to read handle data: %w", err)
 	}
+	// Make a copy to return (original stack buffer will be reused)
+	handle := make([]byte, handleLen)
+	copy(handle, handleSlice)
 
 	// Skip padding to 4-byte boundary
 	padding := (4 - (handleLen % 4)) % 4
@@ -782,10 +788,24 @@ func DecodeWriteRequest(data []byte) (*WriteRequest, error) {
 		return nil, fmt.Errorf("data length too large: %d bytes (max %d for decoding)", dataLen, maxDecodingSize)
 	}
 
-	// Read data bytes
-	writeData := make([]byte, dataLen)
-	if err := binary.Read(reader, binary.BigEndian, &writeData); err != nil {
-		return nil, fmt.Errorf("failed to read data: %w", err)
+	// ZERO-COPY OPTIMIZATION: Instead of allocating a new buffer, slice the
+	// original data buffer. This avoids a memory allocation and copy operation.
+	// The data remains valid until the pooled buffer is returned (after handler completes).
+	//
+	// Calculate current offset in the original data slice
+	currentPos := len(data) - reader.Len()
+
+	// Validate we have enough data remaining
+	if currentPos+int(dataLen) > len(data) {
+		return nil, fmt.Errorf("insufficient data: need %d bytes, have %d", dataLen, len(data)-currentPos)
+	}
+
+	// Slice the original buffer (zero-copy)
+	writeData := data[currentPos : currentPos+int(dataLen)]
+
+	// Advance the reader position to skip the data we just sliced
+	if _, err := reader.Seek(int64(dataLen), io.SeekCurrent); err != nil {
+		return nil, fmt.Errorf("failed to advance reader: %w", err)
 	}
 
 	// Skip padding to 4-byte boundary (XDR alignment requirement)

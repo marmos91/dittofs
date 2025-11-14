@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"gopkg.in/yaml.v3"
 )
 
 // InitConfig creates a sample configuration file at the default location.
@@ -219,17 +217,17 @@ func InitConfigToPath(path string, force bool) error {
 		}
 	}
 
-	// Generate sample config
+	// Generate sample config with comments
 	cfg := GetDefaultConfig()
 
-	// Marshal to YAML
-	yamlData, err := yaml.Marshal(cfg)
+	// Generate YAML with helpful comments
+	yamlData, err := generateYAMLWithComments(cfg)
 	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
+		return fmt.Errorf("failed to generate config: %w", err)
 	}
 
 	// Write to file
-	if err := os.WriteFile(path, yamlData, 0644); err != nil {
+	if err := os.WriteFile(path, []byte(yamlData), 0644); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 

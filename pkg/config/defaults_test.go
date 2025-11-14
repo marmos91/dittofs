@@ -121,8 +121,11 @@ func TestApplyDefaults_NFS(t *testing.T) {
 
 	nfs := cfg.Adapters.NFS
 
-	if !nfs.Enabled {
-		t.Error("Expected NFS to be enabled by default")
+	// Note: ApplyDefaults doesn't set boolean fields like Enabled.
+	// GetDefaultConfig() sets Enabled=true explicitly for default configs.
+	// This allows users to explicitly set Enabled=false in their config files.
+	if nfs.Enabled {
+		t.Error("Expected NFS Enabled to remain false (zero value) after ApplyDefaults")
 	}
 	if nfs.Port != 2049 {
 		t.Errorf("Expected default NFS port 2049, got %d", nfs.Port)

@@ -55,8 +55,8 @@ type Config struct {
 // LoggingConfig controls logging behavior.
 type LoggingConfig struct {
 	// Level is the minimum log level to output
-	// Valid values: DEBUG, INFO, WARN, ERROR
-	Level string `mapstructure:"level" validate:"required,oneof=DEBUG INFO WARN ERROR"`
+	// Valid values: DEBUG, INFO, WARN, ERROR (case-insensitive, normalized to uppercase)
+	Level string `mapstructure:"level" validate:"required,oneof=DEBUG INFO WARN ERROR debug info warn error"`
 
 	// Format specifies the log output format
 	// Valid values: text, json
@@ -263,7 +263,8 @@ func readConfigFile(v *viper.Viper, configPath string) error {
 
 // getConfigDir returns the configuration directory path.
 //
-// Uses XDG_CONFIG_HOME if set, otherwise ~/.config
+// Uses XDG_CONFIG_HOME if set, otherwise ~/.config, or falls back to current
+// directory (.) if home directory cannot be determined.
 func getConfigDir() string {
 	// Check XDG_CONFIG_HOME
 	if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {

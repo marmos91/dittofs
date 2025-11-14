@@ -162,9 +162,8 @@ type NFSConfig struct {
 
 // applyDefaults fills in zero values with sensible defaults.
 func (c *NFSConfig) applyDefaults() {
-	// Enabled defaults to true if not explicitly set
-	// (zero value for bool is false, but we want it enabled by default)
-	// Note: This is handled in pkg/config/defaults.go for consistency
+	// Note: Enabled field defaults are handled in pkg/config/defaults.go
+	// to allow explicit false values from configuration files.
 
 	if c.Port <= 0 {
 		c.Port = 2049

@@ -121,13 +121,24 @@ func runStart() {
 	}
 
 	// Check if config exists
-	if *configFile == "" && !config.ConfigExists() {
-		fmt.Fprintf(os.Stderr, "Error: No configuration file found at default location: %s\n\n", config.GetDefaultConfigPath())
-		fmt.Fprintln(os.Stderr, "Please initialize a configuration file first:")
-		fmt.Fprintln(os.Stderr, "  dittofs init")
-		fmt.Fprintln(os.Stderr, "\nOr specify a custom config file:")
-		fmt.Fprintln(os.Stderr, "  dittofs start --config /path/to/config.yaml")
-		os.Exit(1)
+	if *configFile == "" {
+		// Check default location
+		if !config.ConfigExists() {
+			fmt.Fprintf(os.Stderr, "Error: No configuration file found at default location: %s\n\n", config.GetDefaultConfigPath())
+			fmt.Fprintln(os.Stderr, "Please initialize a configuration file first:")
+			fmt.Fprintln(os.Stderr, "  dittofs init")
+			fmt.Fprintln(os.Stderr, "\nOr specify a custom config file:")
+			fmt.Fprintln(os.Stderr, "  dittofs start --config /path/to/config.yaml")
+			os.Exit(1)
+		}
+	} else {
+		// Check explicitly specified path
+		if _, err := os.Stat(*configFile); os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Error: Configuration file not found: %s\n\n", *configFile)
+			fmt.Fprintln(os.Stderr, "Please create the configuration file:")
+			fmt.Fprintf(os.Stderr, "  dittofs init --config %s\n", *configFile)
+			os.Exit(1)
+		}
 	}
 
 	// Load configuration
@@ -197,12 +208,12 @@ func runStart() {
 	// Wait for interrupt signal or server error
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigChan) // Clean up signal notification to prevent goroutine leak
 
 	logger.Info("Server is running. Press Ctrl+C to stop.")
 
 	select {
 	case <-sigChan:
+		signal.Stop(sigChan) // Stop signal notification immediately after receiving signal
 		logger.Info("Shutdown signal received, initiating graceful shutdown...")
 		cancel() // Cancel context to initiate shutdown
 
@@ -214,6 +225,7 @@ func runStart() {
 		logger.Info("Server stopped gracefully")
 
 	case err := <-serverDone:
+		signal.Stop(sigChan) // Stop signal notification when server stops
 		if err != nil {
 			logger.Error("Server error: %v", err)
 			os.Exit(1)

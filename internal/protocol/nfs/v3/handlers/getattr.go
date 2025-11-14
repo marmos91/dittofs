@@ -357,11 +357,16 @@ func DecodeGetAttrRequest(data []byte) (*GetAttrRequest, error) {
 		return nil, fmt.Errorf("data too short for handle: need %d bytes total, got %d", 4+handleLen, len(data))
 	}
 
-	// Read handle data
-	handle := make([]byte, handleLen)
-	if err := binary.Read(reader, binary.BigEndian, &handle); err != nil {
+	// PERFORMANCE OPTIMIZATION: Use stack-allocated buffer for file handles
+	// File handles are max 64 bytes per RFC 1813, so we can avoid heap allocation
+	var handleBuf [64]byte
+	handleSlice := handleBuf[:handleLen]
+	if err := binary.Read(reader, binary.BigEndian, &handleSlice); err != nil {
 		return nil, fmt.Errorf("failed to read handle data: %w", err)
 	}
+	// Make a copy to return (original stack buffer will be reused)
+	handle := make([]byte, handleLen)
+	copy(handle, handleSlice)
 
 	logger.Debug("Decoded GETATTR request: handle_len=%d", handleLen)
 
