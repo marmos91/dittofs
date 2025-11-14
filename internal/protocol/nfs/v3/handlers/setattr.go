@@ -116,6 +116,15 @@ type SetAttrContext struct {
 	GIDs []uint32
 }
 
+// Implement NFSAuthContext interface for SetAttrContext
+func (c *SetAttrContext) GetContext() context.Context { return c.Context }
+func (c *SetAttrContext) GetClientAddr() string       { return c.ClientAddr }
+func (c *SetAttrContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
+func (c *SetAttrContext) GetUID() *uint32             { return c.UID }
+func (c *SetAttrContext) GetGID() *uint32             { return c.GID }
+func (c *SetAttrContext) GetGIDs() []uint32           { return c.GIDs }
+
+
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -417,10 +426,30 @@ func (h *DefaultNFSHandler) SetAttr(
 	}
 
 	// ========================================================================
-	// Step 4: Build authentication context for store
+	// Step 4: Build authentication context with share-level identity mapping
 	// ========================================================================
 
-	authCtx := buildAuthContextFromSetAttr(ctx)
+	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, fileHandle)
+	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("SETATTR cancelled during auth context building: handle=%x client=%s error=%v",
+				req.Handle, clientIP, ctx.Context.Err())
+			return nil, ctx.Context.Err()
+		}
+
+		logger.Error("SETATTR failed: failed to build auth context: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
+
+		fileID := xdr.ExtractFileID(fileHandle)
+		wccAfter := xdr.MetadataToNFS(currentAttr, fileID)
+
+		return &SetAttrResponse{
+			Status:     types.NFS3ErrIO,
+			AttrBefore: wccBefore,
+			AttrAfter:  wccAfter,
+		}, nil
+	}
 
 	// ========================================================================
 	// Step 5: Apply attribute updates via store
@@ -781,31 +810,5 @@ func logSetAttrRequest(req *SetAttrRequest, clientIP string) {
 
 	if len(attrs) > 0 {
 		logger.Debug("SETATTR attributes: %v client=%s", attrs, clientIP)
-	}
-}
-
-// buildAuthContextFromSetAttr creates an AuthContext from SetAttrContext.
-//
-// This translates the NFS-specific authentication context into the generic
-// AuthContext used by the metadata store.
-func buildAuthContextFromSetAttr(ctx *SetAttrContext) *metadata.AuthContext {
-	// Map auth flavor to auth method string
-	authMethod := "anonymous"
-	if ctx.AuthFlavor == 1 {
-		authMethod = "unix"
-	}
-
-	// Build identity with proper UID/GID/GIDs structure
-	identity := &metadata.Identity{
-		UID:  ctx.UID,
-		GID:  ctx.GID,
-		GIDs: ctx.GIDs,
-	}
-
-	return &metadata.AuthContext{
-		Context:    ctx.Context,
-		AuthMethod: authMethod,
-		Identity:   identity,
-		ClientAddr: ctx.ClientAddr,
 	}
 }

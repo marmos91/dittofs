@@ -159,6 +159,15 @@ type MknodContext struct {
 	GIDs []uint32
 }
 
+// Implement NFSAuthContext interface for MknodContext
+func (c *MknodContext) GetContext() context.Context { return c.Context }
+func (c *MknodContext) GetClientAddr() string       { return c.ClientAddr }
+func (c *MknodContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
+func (c *MknodContext) GetUID() *uint32             { return c.UID }
+func (c *MknodContext) GetGID() *uint32             { return c.GID }
+func (c *MknodContext) GetGIDs() []uint32           { return c.GIDs }
+
+
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -318,13 +327,7 @@ func (h *DefaultNFSHandler) Mknod(
 	}
 
 	// ========================================================================
-	// Step 2: Build AuthContext for permission checking
-	// ========================================================================
-
-	authCtx := buildAuthContextFromMknod(ctx)
-
-	// ========================================================================
-	// Step 3: Verify parent directory exists and is valid
+	// Step 2: Verify parent directory exists and is valid
 	// ========================================================================
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
@@ -356,6 +359,42 @@ func (h *DefaultNFSHandler) Mknod(
 
 		return &MknodResponse{
 			Status:        types.NFS3ErrNotDir,
+			DirAttrBefore: wccBefore,
+			DirAttrAfter:  wccAfter,
+		}, nil
+	}
+
+	// ========================================================================
+	// Step 3: Build AuthContext for permission checking
+	// ========================================================================
+
+	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, parentHandle)
+	if err != nil {
+		// Check if error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("MKNOD cancelled during auth context building: name='%s' dir=%x client=%s error=%v",
+				req.Name, req.DirHandle, clientIP, ctx.Context.Err())
+
+			// Get current parent state for WCC
+			dirID := xdr.ExtractFileID(parentHandle)
+			wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+
+			return &MknodResponse{
+				Status:        types.NFS3ErrIO,
+				DirAttrBefore: wccBefore,
+				DirAttrAfter:  wccAfter,
+			}, ctx.Context.Err()
+		}
+
+		logger.Error("MKNOD failed: failed to build auth context: name='%s' dir=%x client=%s error=%v",
+			req.Name, req.DirHandle, clientIP, err)
+
+		// Get current parent state for WCC
+		dirID := xdr.ExtractFileID(parentHandle)
+		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+
+		return &MknodResponse{
+			Status:        types.NFS3ErrIO,
 			DirAttrBefore: wccBefore,
 			DirAttrAfter:  wccAfter,
 		}, nil
@@ -524,37 +563,6 @@ func (h *DefaultNFSHandler) Mknod(
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-// buildAuthContextFromMknod creates an AuthContext from MknodContext.
-//
-// This translates the NFS-specific authentication context into the generic
-// AuthContext used by the metadata store.
-func buildAuthContextFromMknod(ctx *MknodContext) *metadata.AuthContext {
-	// Map auth flavor to auth method string
-	authMethod := "anonymous"
-	if ctx.AuthFlavor == 1 {
-		authMethod = "unix"
-	}
-
-	// Build identity from Unix credentials
-	identity := &metadata.Identity{
-		UID:  ctx.UID,
-		GID:  ctx.GID,
-		GIDs: ctx.GIDs,
-	}
-
-	// Set username from UID if available (for logging/auditing)
-	if ctx.UID != nil {
-		identity.Username = fmt.Sprintf("uid:%d", *ctx.UID)
-	}
-
-	return &metadata.AuthContext{
-		Context:    ctx.Context,
-		AuthMethod: authMethod,
-		Identity:   identity,
-		ClientAddr: ctx.ClientAddr,
-	}
-}
 
 // nfsTypeToMetadataType converts NFS file type to metadata file type.
 //

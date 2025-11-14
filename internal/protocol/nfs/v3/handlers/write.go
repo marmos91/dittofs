@@ -127,6 +127,15 @@ type WriteContext struct {
 	GIDs []uint32
 }
 
+// Implement NFSAuthContext interface for WriteContext
+func (c *WriteContext) GetContext() context.Context { return c.Context }
+func (c *WriteContext) GetClientAddr() string       { return c.ClientAddr }
+func (c *WriteContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
+func (c *WriteContext) GetUID() *uint32             { return c.UID }
+func (c *WriteContext) GetGID() *uint32             { return c.GID }
+func (c *WriteContext) GetGIDs() []uint32           { return c.GIDs }
+
+
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -379,13 +388,35 @@ func (h *DefaultNFSHandler) Write(
 	}
 
 	// ========================================================================
-	// Step 5: Prepare write operation (validate permissions)
+	// Step 5: Build AuthContext with share-level identity mapping
+	// ========================================================================
+
+	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, fileHandle)
+	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("WRITE cancelled during auth context building: handle=%x client=%s error=%v",
+				req.Handle, clientIP, ctx.Context.Err())
+			return &WriteResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		}
+
+		logger.Error("WRITE failed: failed to build auth context: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
+
+		fileid := xdr.ExtractFileID(fileHandle)
+		nfsAttr := xdr.MetadataToNFS(attr, fileid)
+
+		return &WriteResponse{
+			Status:    types.NFS3ErrIO,
+			AttrAfter: nfsAttr,
+		}, nil
+	}
+
+	// ========================================================================
+	// Step 6: Prepare write operation (validate permissions)
 	// ========================================================================
 	// PrepareWrite validates permissions but does NOT modify metadata yet.
 	// Metadata is updated by CommitWrite after content write succeeds.
-
-	// Build authentication context
-	authCtx := buildAuthContextFromWrite(ctx)
 
 	// Check context before store call
 	select {
@@ -957,30 +988,4 @@ func (resp *WriteResponse) Encode() ([]byte, error) {
 		buf.Len(), resp.Status, resp.Count, resp.Committed)
 
 	return buf.Bytes(), nil
-}
-
-// buildAuthContextFromWrite creates an AuthContext from WriteContext.
-//
-// This translates the NFS-specific authentication context into the generic
-// AuthContext used by the metadata store.
-func buildAuthContextFromWrite(ctx *WriteContext) *metadata.AuthContext {
-	// Map auth flavor to auth method string
-	authMethod := "anonymous"
-	if ctx.AuthFlavor == 1 {
-		authMethod = "unix"
-	}
-
-	// Build identity with proper UID/GID/GIDs structure
-	identity := &metadata.Identity{
-		UID:  ctx.UID,
-		GID:  ctx.GID,
-		GIDs: ctx.GIDs,
-	}
-
-	return &metadata.AuthContext{
-		Context:    ctx.Context,
-		AuthMethod: authMethod,
-		Identity:   identity,
-		ClientAddr: ctx.ClientAddr,
-	}
 }

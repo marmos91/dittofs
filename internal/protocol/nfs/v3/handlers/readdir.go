@@ -127,6 +127,15 @@ type ReadDirContext struct {
 	GIDs []uint32
 }
 
+// Implement NFSAuthContext interface for ReadDirContext
+func (c *ReadDirContext) GetContext() context.Context { return c.Context }
+func (c *ReadDirContext) GetClientAddr() string       { return c.ClientAddr }
+func (c *ReadDirContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
+func (c *ReadDirContext) GetUID() *uint32             { return c.UID }
+func (c *ReadDirContext) GetGID() *uint32             { return c.GID }
+func (c *ReadDirContext) GetGIDs() []uint32           { return c.GIDs }
+
+
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -345,7 +354,35 @@ func (h *DefaultNFSHandler) ReadDir(
 	// Step 3: Build authentication context for store
 	// ========================================================================
 
-	authCtx := buildAuthContextFromReadDir(ctx)
+	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, dirHandle)
+	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("READDIR cancelled during auth context building: dir=%x client=%s error=%v",
+				req.DirHandle, clientIP, ctx.Context.Err())
+
+			// Include directory attributes for cache consistency
+			dirID := xdr.ExtractFileID(dirHandle)
+			nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+
+			return &ReadDirResponse{
+				Status:  types.NFS3ErrIO,
+				DirAttr: nfsDirAttr,
+			}, ctx.Context.Err()
+		}
+
+		logger.Error("READDIR failed: failed to build auth context: dir=%x client=%s error=%v",
+			req.DirHandle, clientIP, err)
+
+		// Include directory attributes for cache consistency
+		dirID := xdr.ExtractFileID(dirHandle)
+		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+
+		return &ReadDirResponse{
+			Status:  types.NFS3ErrIO,
+			DirAttr: nfsDirAttr,
+		}, nil
+	}
 
 	// Check for cancellation before the potentially expensive ReadDir operation
 	// This is the most important check since ReadDir may scan many entries
@@ -793,28 +830,3 @@ func getLastCookie(entries []*types.DirEntry) uint64 {
 	return entries[len(entries)-1].Cookie
 }
 
-// buildAuthContextFromReadDir creates an AuthContext from ReadDirContext.
-//
-// This translates the NFS-specific authentication context into the generic
-// AuthContext used by the metadata store.
-func buildAuthContextFromReadDir(ctx *ReadDirContext) *metadata.AuthContext {
-	// Map auth flavor to auth method string
-	authMethod := "anonymous"
-	if ctx.AuthFlavor == 1 {
-		authMethod = "unix"
-	}
-
-	// Build identity with proper UID/GID/GIDs structure
-	identity := &metadata.Identity{
-		UID:  ctx.UID,
-		GID:  ctx.GID,
-		GIDs: ctx.GIDs,
-	}
-
-	return &metadata.AuthContext{
-		Context:    ctx.Context,
-		AuthMethod: authMethod,
-		Identity:   identity,
-		ClientAddr: ctx.ClientAddr,
-	}
-}

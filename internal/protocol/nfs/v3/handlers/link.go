@@ -109,6 +109,15 @@ type LinkContext struct {
 	GIDs []uint32
 }
 
+// Implement NFSAuthContext interface for LinkContext
+func (c *LinkContext) GetContext() context.Context { return c.Context }
+func (c *LinkContext) GetClientAddr() string       { return c.ClientAddr }
+func (c *LinkContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
+func (c *LinkContext) GetUID() *uint32             { return c.UID }
+func (c *LinkContext) GetGID() *uint32             { return c.GID }
+func (c *LinkContext) GetGIDs() []uint32           { return c.GIDs }
+
+
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -253,7 +262,20 @@ func (h *DefaultNFSHandler) Link(
 	// Step 3: Build AuthContext for permission checking
 	// ========================================================================
 
-	authCtx := buildAuthContextFromLink(ctx)
+	dirHandle := metadata.FileHandle(req.DirHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, dirHandle)
+	if err != nil {
+		// Check if error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("LINK cancelled during auth context building: file=%x name='%s' client=%s error=%v",
+				req.FileHandle, req.Name, clientIP, ctx.Context.Err())
+			return &LinkResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		}
+
+		logger.Error("LINK failed: failed to build auth context: file=%x name='%s' client=%s error=%v",
+			req.FileHandle, req.Name, clientIP, err)
+		return &LinkResponse{Status: types.NFS3ErrIO}, nil
+	}
 
 	// ========================================================================
 	// Step 4: Check cancellation before first store operation
@@ -302,7 +324,6 @@ func (h *DefaultNFSHandler) Link(
 	// Step 7: Verify target directory exists and is a directory
 	// ========================================================================
 
-	dirHandle := metadata.FileHandle(req.DirHandle)
 	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		logger.Warn("LINK failed: target directory not found: dir=%x client=%s error=%v",
@@ -442,37 +463,6 @@ func (h *DefaultNFSHandler) Link(
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-// buildAuthContextFromLink creates an AuthContext from LinkContext.
-//
-// This translates the NFS-specific authentication context into the generic
-// AuthContext used by the metadata store.
-func buildAuthContextFromLink(ctx *LinkContext) *metadata.AuthContext {
-	// Map auth flavor to auth method string
-	authMethod := "anonymous"
-	if ctx.AuthFlavor == 1 {
-		authMethod = "unix"
-	}
-
-	// Build identity from Unix credentials
-	identity := &metadata.Identity{
-		UID:  ctx.UID,
-		GID:  ctx.GID,
-		GIDs: ctx.GIDs,
-	}
-
-	// Set username from UID if available (for logging/auditing)
-	if ctx.UID != nil {
-		identity.Username = fmt.Sprintf("uid:%d", *ctx.UID)
-	}
-
-	return &metadata.AuthContext{
-		Context:    ctx.Context,
-		AuthMethod: authMethod,
-		Identity:   identity,
-		ClientAddr: ctx.ClientAddr,
-	}
-}
 
 // ============================================================================
 // Request Validation

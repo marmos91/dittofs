@@ -161,6 +161,15 @@ type ReadDirPlusContext struct {
 	GIDs []uint32
 }
 
+// Implement NFSAuthContext interface for ReadDirPlusContext
+func (c *ReadDirPlusContext) GetContext() context.Context { return c.Context }
+func (c *ReadDirPlusContext) GetClientAddr() string       { return c.ClientAddr }
+func (c *ReadDirPlusContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
+func (c *ReadDirPlusContext) GetUID() *uint32             { return c.UID }
+func (c *ReadDirPlusContext) GetGID() *uint32             { return c.GID }
+func (c *ReadDirPlusContext) GetGIDs() []uint32           { return c.GIDs }
+
+
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -395,7 +404,33 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	// Step 4: Build authentication context for store
 	// ========================================================================
 
-	authCtx := buildAuthContextFromReadDirPlus(ctx)
+	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, dirHandle)
+	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("READDIRPLUS cancelled during auth context building: dir=%x client=%s error=%v",
+				req.DirHandle, clientIP, ctx.Context.Err())
+
+			dirID := xdr.ExtractFileID(dirHandle)
+			nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+
+			return &ReadDirPlusResponse{
+				Status:  types.NFS3ErrIO,
+				DirAttr: nfsDirAttr,
+			}, nil
+		}
+
+		logger.Error("READDIRPLUS failed: failed to build auth context: dir=%x client=%s error=%v",
+			req.DirHandle, clientIP, err)
+
+		dirID := xdr.ExtractFileID(dirHandle)
+		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+
+		return &ReadDirPlusResponse{
+			Status:  types.NFS3ErrIO,
+			DirAttr: nfsDirAttr,
+		}, nil
+	}
 
 	// ========================================================================
 	// Step 5: Get directory entries from store
@@ -881,28 +916,3 @@ func (resp *ReadDirPlusResponse) Encode() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// buildAuthContextFromReadDirPlus creates an AuthContext from ReadDirPlusContext.
-//
-// This translates the NFS-specific authentication context into the generic
-// AuthContext used by the metadata store.
-func buildAuthContextFromReadDirPlus(ctx *ReadDirPlusContext) *metadata.AuthContext {
-	// Map auth flavor to auth method string
-	authMethod := "anonymous"
-	if ctx.AuthFlavor == 1 {
-		authMethod = "unix"
-	}
-
-	// Build identity with proper UID/GID/GIDs structure
-	identity := &metadata.Identity{
-		UID:  ctx.UID,
-		GID:  ctx.GID,
-		GIDs: ctx.GIDs,
-	}
-
-	return &metadata.AuthContext{
-		Context:    ctx.Context,
-		AuthMethod: authMethod,
-		Identity:   identity,
-		ClientAddr: ctx.ClientAddr,
-	}
-}

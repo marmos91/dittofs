@@ -122,6 +122,14 @@ type CreateContext struct {
 	GIDs []uint32
 }
 
+// Implement NFSAuthContext interface for CreateContext
+func (c *CreateContext) GetContext() context.Context { return c.Context }
+func (c *CreateContext) GetClientAddr() string       { return c.ClientAddr }
+func (c *CreateContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
+func (c *CreateContext) GetUID() *uint32             { return c.UID }
+func (c *CreateContext) GetGID() *uint32             { return c.GID }
+func (c *CreateContext) GetGIDs() []uint32           { return c.GIDs }
+
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -221,13 +229,7 @@ func (h *DefaultNFSHandler) Create(
 	}
 
 	// ========================================================================
-	// Step 2: Build AuthContext for permission checking
-	// ========================================================================
-
-	authCtx := buildAuthContextFromCreate(ctx)
-
-	// ========================================================================
-	// Step 3: Verify parent directory exists and is valid
+	// Step 2: Verify parent directory exists and is valid
 	// ========================================================================
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
@@ -259,6 +261,33 @@ func (h *DefaultNFSHandler) Create(
 
 		return &CreateResponse{
 			Status:    types.NFS3ErrNotDir,
+			DirBefore: dirWccBefore,
+			DirAfter:  dirWccAfter,
+		}, nil
+	}
+
+	// ========================================================================
+	// Step 3: Build AuthContext with share-level identity mapping
+	// ========================================================================
+
+	authCtx, err := BuildAuthContextWithMapping(ctx, metadataRepo, parentHandle)
+	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("CREATE cancelled during auth context building: file='%s' dir=%x client=%s error=%v",
+				req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+			return &CreateResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		}
+
+		logger.Error("CREATE failed: failed to build auth context: file='%s' dir=%x client=%s error=%v",
+			req.Filename, req.DirHandle, clientIP, err)
+
+		// Get current parent state for WCC
+		dirID := xdr.ExtractFileID(parentHandle)
+		dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+
+		return &CreateResponse{
+			Status:    types.NFS3ErrIO,
 			DirBefore: dirWccBefore,
 			DirAfter:  dirWccAfter,
 		}, nil
@@ -442,37 +471,6 @@ func (h *DefaultNFSHandler) Create(
 // ============================================================================
 // Helper Functions for File Operations
 // ============================================================================
-
-// buildAuthContextFromCreate creates an AuthContext from CreateContext.
-//
-// This translates the NFS-specific authentication context into the generic
-// AuthContext used by the metadata repository.
-func buildAuthContextFromCreate(ctx *CreateContext) *metadata.AuthContext {
-	// Map auth flavor to auth method string
-	authMethod := "anonymous"
-	if ctx.AuthFlavor == 1 {
-		authMethod = "unix"
-	}
-
-	// Build identity from Unix credentials
-	identity := &metadata.Identity{
-		UID:  ctx.UID,
-		GID:  ctx.GID,
-		GIDs: ctx.GIDs,
-	}
-
-	// Set username from UID if available (for logging/auditing)
-	if ctx.UID != nil {
-		identity.Username = fmt.Sprintf("uid:%d", *ctx.UID)
-	}
-
-	return &metadata.AuthContext{
-		Context:    ctx.Context,
-		AuthMethod: authMethod,
-		Identity:   identity,
-		ClientAddr: ctx.ClientAddr,
-	}
-}
 
 // createNewFile creates a new file using the metadata repository's Create method.
 //

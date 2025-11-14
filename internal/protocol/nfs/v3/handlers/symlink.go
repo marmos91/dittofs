@@ -133,6 +133,15 @@ type SymlinkContext struct {
 	GIDs []uint32
 }
 
+// Implement NFSAuthContext interface for SymlinkContext
+func (c *SymlinkContext) GetContext() context.Context { return c.Context }
+func (c *SymlinkContext) GetClientAddr() string       { return c.ClientAddr }
+func (c *SymlinkContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
+func (c *SymlinkContext) GetUID() *uint32             { return c.UID }
+func (c *SymlinkContext) GetGID() *uint32             { return c.GID }
+func (c *SymlinkContext) GetGIDs() []uint32           { return c.GIDs }
+
+
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -393,7 +402,35 @@ func (h *DefaultNFSHandler) Symlink(
 	// Step 3: Build authentication context for store
 	// ========================================================================
 
-	authCtx := buildAuthContextFromSymlink(ctx)
+	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, dirHandle)
+	if err != nil {
+		// Check if error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("SYMLINK cancelled during auth context building: name='%s' target='%s' client=%s error=%v",
+				req.Name, req.Target, clientIP, ctx.Context.Err())
+
+			dirID := xdr.ExtractFileID(dirHandle)
+			nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+
+			return &SymlinkResponse{
+				Status:        types.NFS3ErrIO,
+				DirAttrBefore: wccBefore,
+				DirAttrAfter:  nfsDirAttr,
+			}, ctx.Context.Err()
+		}
+
+		logger.Error("SYMLINK failed: failed to build auth context: name='%s' target='%s' client=%s error=%v",
+			req.Name, req.Target, clientIP, err)
+
+		dirID := xdr.ExtractFileID(dirHandle)
+		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+
+		return &SymlinkResponse{
+			Status:        types.NFS3ErrIO,
+			DirAttrBefore: wccBefore,
+			DirAttrAfter:  nfsDirAttr,
+		}, nil
+	}
 
 	// ========================================================================
 	// Step 4: Convert client attributes to metadata format
@@ -874,30 +911,4 @@ func (resp *SymlinkResponse) Encode() ([]byte, error) {
 
 	logger.Debug("Encoded SYMLINK response: %d bytes status=%d", buf.Len(), resp.Status)
 	return buf.Bytes(), nil
-}
-
-// buildAuthContextFromSymlink creates an AuthContext from SymlinkContext.
-//
-// This translates the NFS-specific authentication context into the generic
-// AuthContext used by the metadata store.
-func buildAuthContextFromSymlink(ctx *SymlinkContext) *metadata.AuthContext {
-	// Map auth flavor to auth method string
-	authMethod := "anonymous"
-	if ctx.AuthFlavor == 1 {
-		authMethod = "unix"
-	}
-
-	// Build identity with proper UID/GID/GIDs structure
-	identity := &metadata.Identity{
-		UID:  ctx.UID,
-		GID:  ctx.GID,
-		GIDs: ctx.GIDs,
-	}
-
-	return &metadata.AuthContext{
-		Context:    ctx.Context,
-		AuthMethod: authMethod,
-		Identity:   identity,
-		ClientAddr: ctx.ClientAddr,
-	}
 }

@@ -106,6 +106,14 @@ type AccessContext struct {
 	GIDs []uint32
 }
 
+// Implement NFSAuthContext interface for AccessContext
+func (c *AccessContext) GetContext() context.Context { return c.Context }
+func (c *AccessContext) GetClientAddr() string       { return c.ClientAddr }
+func (c *AccessContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
+func (c *AccessContext) GetUID() *uint32             { return c.UID }
+func (c *AccessContext) GetGID() *uint32             { return c.GID }
+func (c *AccessContext) GetGIDs() []uint32           { return c.GIDs }
+
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -284,10 +292,22 @@ func (h *DefaultNFSHandler) Access(
 	}
 
 	// ========================================================================
-	// Step 3: Build AuthContext for permission checking
+	// Step 3: Build AuthContext with share-level identity mapping
 	// ========================================================================
 
-	authCtx := buildAuthContext(ctx)
+	authCtx, err := BuildAuthContextWithMapping(ctx, store, fileHandle)
+	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("ACCESS cancelled during auth context building: handle=%x client=%s error=%v",
+				req.Handle, clientIP, ctx.Context.Err())
+			return &AccessResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		}
+
+		logger.Error("ACCESS failed: failed to build auth context: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
+		return &AccessResponse{Status: types.NFS3ErrIO}, nil
+	}
 
 	// ========================================================================
 	// Step 4: Translate NFS access bits to generic permissions

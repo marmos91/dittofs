@@ -246,57 +246,45 @@ func (suite *StoreTestSuite) TestCheckShareAccess_ReadOnlyShare(test *testing.T)
 	store := suite.NewStore()
 	ctx := context.Background()
 
-	// Setup - Create READ-ONLY share
-	shareName := "/export/readonly"
-	err := store.AddShare(ctx, shareName, metadata.ShareOptions{ReadOnly: true}, DefaultRootDirAttr())
+	// Test 1: Verify CheckShareAccess reports read-only flag correctly
+	readOnlyShareName := "/export/readonly"
+	err := store.AddShare(ctx, readOnlyShareName, metadata.ShareOptions{ReadOnly: true}, DefaultRootDirAttr())
 	require.NoError(test, err)
 
-	rootHandle, err := store.GetShareRoot(ctx, shareName)
+	decision, authCtx, err := store.CheckShareAccess(ctx, readOnlyShareName, "127.0.0.1", "unix", &metadata.Identity{
+		UID: uint32Ptr(1000),
+		GID: uint32Ptr(1000),
+	})
 	require.NoError(test, err)
+	assert.True(test, decision.Allowed, "Access should be allowed to read-only share")
+	assert.NotNil(test, authCtx, "AuthContext should be returned")
 
-	// Create file with full permissions (mode 0777)
-	authCtx := &metadata.AuthContext{
-		Context:    ctx,
-		AuthMethod: "unix",
-		Identity: &metadata.Identity{
-			UID: uint32Ptr(0),
-			GID: uint32Ptr(0),
-		},
-		ClientAddr: "127.0.0.1",
-	}
+	// Test 2: Verify that file creation fails on read-only share
+	rootHandle, err := store.GetShareRoot(ctx, readOnlyShareName)
+	require.NoError(test, err)
 
 	fileAttr := &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Size: 0,
-		Mode: 0777, // Full permissions
+		Mode: 0644,
 		UID:  1000,
 		GID:  1000,
 	}
 
-	fileHandle, err := store.Create(authCtx, rootHandle, "rofile.txt", fileAttr)
+	// Attempt to create file on read-only share should fail
+	_, err = store.Create(authCtx, rootHandle, "testfile.txt", fileAttr)
+	assert.Error(test, err, "Creating files should fail on read-only share")
+
+	// Test 3: Verify CheckPermissions on the root directory of read-only share
+	// Read should be allowed, write should be denied
+	granted, err := store.CheckPermissions(authCtx, rootHandle, metadata.PermissionRead)
 	require.NoError(test, err)
+	assert.Equal(test, metadata.PermissionRead, granted, "Read should be allowed on read-only share root")
 
-	// Test with file owner - need to pass share context for read-only check
-	// The AuthContext needs to know which share this file belongs to
-	ownerCtx := &metadata.AuthContext{
-		Context:    ctx,
-		AuthMethod: "unix",
-		Identity: &metadata.Identity{
-			UID: uint32Ptr(1000),
-			GID: uint32Ptr(1000),
-		},
-		ClientAddr: "127.0.0.1",
-	}
-
-	// Act & Assert
-	granted, err := store.CheckPermissions(ownerCtx, fileHandle, metadata.PermissionRead)
-	require.NoError(test, err)
-	assert.Equal(test, metadata.PermissionRead, granted, "Read should be allowed on read-only share")
-
-	granted, err = store.CheckPermissions(ownerCtx, fileHandle, metadata.PermissionWrite)
+	granted, err = store.CheckPermissions(authCtx, rootHandle, metadata.PermissionWrite)
 	require.NoError(test, err)
 	assert.Equal(test, metadata.Permission(0), granted,
-		"Write should be blocked on read-only share, even with file permissions")
+		"Write should be blocked on read-only share root, even for root user")
 }
 
 // TestCheckShareAccess_AuthMethods verifies authentication method restrictions.

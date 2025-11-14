@@ -125,6 +125,15 @@ type RenameContext struct {
 	GIDs []uint32
 }
 
+// Implement NFSAuthContext interface for RenameContext
+func (c *RenameContext) GetContext() context.Context { return c.Context }
+func (c *RenameContext) GetClientAddr() string       { return c.ClientAddr }
+func (c *RenameContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
+func (c *RenameContext) GetUID() *uint32             { return c.UID }
+func (c *RenameContext) GetGID() *uint32             { return c.GID }
+func (c *RenameContext) GetGIDs() []uint32           { return c.GIDs }
+
+
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -445,7 +454,51 @@ func (h *DefaultNFSHandler) Rename(
 	}
 
 	// ========================================================================
-	// Step 4: Perform rename via store
+	// Step 4: Build authentication context for store
+	// ========================================================================
+
+	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, fromDirHandle)
+	if err != nil {
+		// Check if error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("RENAME cancelled during auth context building: from='%s' to='%s' client=%s error=%v",
+				req.FromName, req.ToName, clientIP, ctx.Context.Err())
+
+			fromDirID := xdr.ExtractFileID(fromDirHandle)
+			fromDirWccAfter := xdr.MetadataToNFS(fromDirAttr, fromDirID)
+
+			toDirID := xdr.ExtractFileID(toDirHandle)
+			toDirWccAfter := xdr.MetadataToNFS(toDirAttr, toDirID)
+
+			return &RenameResponse{
+				Status:           types.NFS3ErrIO,
+				FromDirWccBefore: fromDirWccBefore,
+				FromDirWccAfter:  fromDirWccAfter,
+				ToDirWccBefore:   toDirWccBefore,
+				ToDirWccAfter:    toDirWccAfter,
+			}, ctx.Context.Err()
+		}
+
+		logger.Error("RENAME failed: failed to build auth context: from='%s' to='%s' client=%s error=%v",
+			req.FromName, req.ToName, clientIP, err)
+
+		fromDirID := xdr.ExtractFileID(fromDirHandle)
+		fromDirWccAfter := xdr.MetadataToNFS(fromDirAttr, fromDirID)
+
+		toDirID := xdr.ExtractFileID(toDirHandle)
+		toDirWccAfter := xdr.MetadataToNFS(toDirAttr, toDirID)
+
+		return &RenameResponse{
+			Status:           types.NFS3ErrIO,
+			FromDirWccBefore: fromDirWccBefore,
+			FromDirWccAfter:  fromDirWccAfter,
+			ToDirWccBefore:   toDirWccBefore,
+			ToDirWccAfter:    toDirWccAfter,
+		}, nil
+	}
+
+	// ========================================================================
+	// Step 5: Perform rename via store
 	// ========================================================================
 	// The store is responsible for:
 	// - Verifying source file exists
@@ -458,9 +511,6 @@ func (h *DefaultNFSHandler) Rename(
 	//
 	// We don't check for cancellation inside RenameFile to maintain atomicity.
 	// The store should respect context internally for its operations.
-
-	// Build authentication context for store
-	authCtx := buildAuthContextFromRename(ctx)
 
 	err = metadataStore.Move(authCtx, fromDirHandle, req.FromName, toDirHandle, req.ToName)
 	if err != nil {
@@ -520,7 +570,7 @@ func (h *DefaultNFSHandler) Rename(
 	}
 
 	// ========================================================================
-	// Step 5: Build success response with updated WCC data
+	// Step 6: Build success response with updated WCC data
 	// ========================================================================
 
 	// Get updated source directory attributes
@@ -843,30 +893,4 @@ func (resp *RenameResponse) Encode() ([]byte, error) {
 
 	logger.Debug("Encoded RENAME response: %d bytes status=%d", buf.Len(), resp.Status)
 	return buf.Bytes(), nil
-}
-
-// buildAuthContextFromRename creates an AuthContext from RenameContext.
-//
-// This translates the NFS-specific authentication context into the generic
-// AuthContext used by the metadata store.
-func buildAuthContextFromRename(ctx *RenameContext) *metadata.AuthContext {
-	// Map auth flavor to auth method string
-	authMethod := "anonymous"
-	if ctx.AuthFlavor == 1 {
-		authMethod = "unix"
-	}
-
-	// Build identity with proper UID/GID/GIDs structure
-	identity := &metadata.Identity{
-		UID:  ctx.UID,
-		GID:  ctx.GID,
-		GIDs: ctx.GIDs,
-	}
-
-	return &metadata.AuthContext{
-		Context:    ctx.Context,
-		AuthMethod: authMethod,
-		Identity:   identity,
-		ClientAddr: ctx.ClientAddr,
-	}
 }

@@ -109,6 +109,15 @@ type LookupContext struct {
 	GIDs []uint32
 }
 
+// Implement NFSAuthContext interface for LookupContext
+func (c *LookupContext) GetContext() context.Context { return c.Context }
+func (c *LookupContext) GetClientAddr() string       { return c.ClientAddr }
+func (c *LookupContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
+func (c *LookupContext) GetUID() *uint32             { return c.UID }
+func (c *LookupContext) GetGID() *uint32             { return c.GID }
+func (c *LookupContext) GetGIDs() []uint32           { return c.GIDs }
+
+
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -274,13 +283,7 @@ func (h *DefaultNFSHandler) Lookup(
 	}
 
 	// ========================================================================
-	// Step 3: Build AuthContext for permission checking
-	// ========================================================================
-
-	authCtx := buildAuthContextFromLookup(ctx)
-
-	// ========================================================================
-	// Step 4: Verify directory handle exists and is valid
+	// Step 3: Verify directory handle exists and is valid
 	// ========================================================================
 
 	// Check context before store call
@@ -311,6 +314,31 @@ func (h *DefaultNFSHandler) Lookup(
 
 		return &LookupResponse{
 			Status:  types.NFS3ErrNotDir,
+			DirAttr: nfsDirAttr,
+		}, nil
+	}
+
+	// ========================================================================
+	// Step 4: Build AuthContext with share-level identity mapping
+	// ========================================================================
+
+	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, dirHandle)
+	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("LOOKUP cancelled during auth context building: file='%s' dir=%x client=%s error=%v",
+				req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+			return &LookupResponse{Status: types.NFS3ErrIO}, nil
+		}
+
+		logger.Error("LOOKUP failed: failed to build auth context: file='%s' dir=%x client=%s error=%v",
+			req.Filename, req.DirHandle, clientIP, err)
+
+		dirID := xdr.ExtractFileID(dirHandle)
+		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+
+		return &LookupResponse{
+			Status:  types.NFS3ErrIO,
 			DirAttr: nfsDirAttr,
 		}, nil
 	}
@@ -384,41 +412,6 @@ func (h *DefaultNFSHandler) Lookup(
 		Attr:       nfsChildAttr,
 		DirAttr:    nfsDirAttr,
 	}, nil
-}
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-// buildAuthContextFromLookup creates an AuthContext from LookupContext.
-//
-// This translates the NFS-specific authentication context into the generic
-// AuthContext used by the metadata store.
-func buildAuthContextFromLookup(ctx *LookupContext) *metadata.AuthContext {
-	// Map auth flavor to auth method string
-	authMethod := "anonymous"
-	if ctx.AuthFlavor == 1 {
-		authMethod = "unix"
-	}
-
-	// Build identity from Unix credentials
-	identity := &metadata.Identity{
-		UID:  ctx.UID,
-		GID:  ctx.GID,
-		GIDs: ctx.GIDs,
-	}
-
-	// Set username from UID if available (for logging/auditing)
-	if ctx.UID != nil {
-		identity.Username = fmt.Sprintf("uid:%d", *ctx.UID)
-	}
-
-	return &metadata.AuthContext{
-		Context:    ctx.Context,
-		AuthMethod: authMethod,
-		Identity:   identity,
-		ClientAddr: ctx.ClientAddr,
-	}
 }
 
 // ============================================================================

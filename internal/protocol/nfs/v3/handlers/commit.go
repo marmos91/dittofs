@@ -111,6 +111,15 @@ type CommitContext struct {
 	GIDs []uint32
 }
 
+// Implement NFSAuthContext interface for CommitContext
+func (c *CommitContext) GetContext() context.Context { return c.Context }
+func (c *CommitContext) GetClientAddr() string       { return c.ClientAddr }
+func (c *CommitContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
+func (c *CommitContext) GetUID() *uint32             { return c.UID }
+func (c *CommitContext) GetGID() *uint32             { return c.GID }
+func (c *CommitContext) GetGIDs() []uint32           { return c.GIDs }
+
+
 // ============================================================================
 // Protocol Handler
 // ============================================================================

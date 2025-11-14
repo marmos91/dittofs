@@ -109,6 +109,15 @@ type RemoveContext struct {
 	GIDs []uint32
 }
 
+// Implement NFSAuthContext interface for RemoveContext
+func (c *RemoveContext) GetContext() context.Context { return c.Context }
+func (c *RemoveContext) GetClientAddr() string       { return c.ClientAddr }
+func (c *RemoveContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
+func (c *RemoveContext) GetUID() *uint32             { return c.UID }
+func (c *RemoveContext) GetGID() *uint32             { return c.GID }
+func (c *RemoveContext) GetGIDs() []uint32           { return c.GIDs }
+
+
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -318,10 +327,38 @@ func (h *DefaultNFSHandler) Remove(
 	}
 
 	// ========================================================================
-	// Step 3: Build authentication context
+	// Step 3: Build authentication context with share-level identity mapping
 	// ========================================================================
 
-	authCtx := buildAuthContextFromRemove(ctx)
+	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, dirHandle)
+	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("REMOVE cancelled during auth context building: file='%s' dir=%x client=%s error=%v",
+				req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+
+			dirID := xdr.ExtractFileID(dirHandle)
+			wccAfter := xdr.MetadataToNFS(dirAttr, dirID)
+
+			return &RemoveResponse{
+				Status:       types.NFS3ErrIO,
+				DirWccBefore: wccBefore,
+				DirWccAfter:  wccAfter,
+			}, ctx.Context.Err()
+		}
+
+		logger.Error("REMOVE failed: failed to build auth context: file='%s' dir=%x client=%s error=%v",
+			req.Filename, req.DirHandle, clientIP, err)
+
+		dirID := xdr.ExtractFileID(dirHandle)
+		wccAfter := xdr.MetadataToNFS(dirAttr, dirID)
+
+		return &RemoveResponse{
+			Status:       types.NFS3ErrIO,
+			DirWccBefore: wccBefore,
+			DirWccAfter:  wccAfter,
+		}, nil
+	}
 
 	// ========================================================================
 	// Step 4: Remove file via store
@@ -699,30 +736,4 @@ func (resp *RemoveResponse) Encode() ([]byte, error) {
 
 	logger.Debug("Encoded REMOVE response: %d bytes status=%d", buf.Len(), resp.Status)
 	return buf.Bytes(), nil
-}
-
-// buildAuthContextFromRemove creates an AuthContext from RemoveContext.
-//
-// This translates the NFS-specific authentication context into the generic
-// AuthContext used by the metadata store.
-func buildAuthContextFromRemove(ctx *RemoveContext) *metadata.AuthContext {
-	// Map auth flavor to auth method string
-	authMethod := "anonymous"
-	if ctx.AuthFlavor == 1 {
-		authMethod = "unix"
-	}
-
-	// Build identity with proper UID/GID/GIDs structure
-	identity := &metadata.Identity{
-		UID:  ctx.UID,
-		GID:  ctx.GID,
-		GIDs: ctx.GIDs,
-	}
-
-	return &metadata.AuthContext{
-		Context:    ctx.Context,
-		AuthMethod: authMethod,
-		Identity:   identity,
-		ClientAddr: ctx.ClientAddr,
-	}
 }

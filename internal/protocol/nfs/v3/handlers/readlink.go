@@ -98,6 +98,15 @@ type ReadLinkContext struct {
 	GIDs []uint32
 }
 
+// Implement NFSAuthContext interface for ReadLinkContext
+func (c *ReadLinkContext) GetContext() context.Context { return c.Context }
+func (c *ReadLinkContext) GetClientAddr() string       { return c.ClientAddr }
+func (c *ReadLinkContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
+func (c *ReadLinkContext) GetUID() *uint32             { return c.UID }
+func (c *ReadLinkContext) GetGID() *uint32             { return c.GID }
+func (c *ReadLinkContext) GetGIDs() []uint32           { return c.GIDs }
+
+
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -281,7 +290,20 @@ func (h *DefaultNFSHandler) ReadLink(
 	// The store needs authentication details to enforce access control
 	// on the symbolic link (read permission checking)
 
-	authCtx := buildAuthContextFromReadLink(ctx)
+	fileHandle := metadata.FileHandle(req.Handle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, fileHandle)
+	if err != nil {
+		// Check if error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("READLINK cancelled during auth context building: handle=%x client=%s error=%v",
+				req.Handle, clientIP, ctx.Context.Err())
+			return &ReadLinkResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		}
+
+		logger.Error("READLINK failed: failed to build auth context: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
+		return &ReadLinkResponse{Status: types.NFS3ErrIO}, nil
+	}
 
 	// ========================================================================
 	// Step 3: Read symlink target via store
@@ -293,7 +315,6 @@ func (h *DefaultNFSHandler) ReadLink(
 	// - Handling any I/O errors
 	// - Respecting context cancellation
 
-	fileHandle := metadata.FileHandle(req.Handle)
 	target, attr, err := metadataStore.ReadSymlink(authCtx, fileHandle)
 	if err != nil {
 		// Check if error is due to context cancellation
@@ -395,31 +416,6 @@ func mapReadLinkErrorToNFSStatus(err error) uint32 {
 	return mapMetadataErrorToNFS(err)
 }
 
-// buildAuthContextFromReadLink creates an AuthContext from ReadLinkContext.
-//
-// This translates the NFS-specific authentication context into the generic
-// AuthContext used by the metadata store.
-func buildAuthContextFromReadLink(ctx *ReadLinkContext) *metadata.AuthContext {
-	// Map auth flavor to auth method string
-	authMethod := "anonymous"
-	if ctx.AuthFlavor == 1 {
-		authMethod = "unix"
-	}
-
-	// Build identity with proper UID/GID/GIDs structure
-	identity := &metadata.Identity{
-		UID:  ctx.UID,
-		GID:  ctx.GID,
-		GIDs: ctx.GIDs,
-	}
-
-	return &metadata.AuthContext{
-		Context:    ctx.Context,
-		AuthMethod: authMethod,
-		Identity:   identity,
-		ClientAddr: ctx.ClientAddr,
-	}
-}
 
 // ============================================================================
 // XDR Decoding

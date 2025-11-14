@@ -108,6 +108,15 @@ type RmdirContext struct {
 	GIDs []uint32
 }
 
+// Implement NFSAuthContext interface for RmdirContext
+func (c *RmdirContext) GetContext() context.Context { return c.Context }
+func (c *RmdirContext) GetClientAddr() string       { return c.ClientAddr }
+func (c *RmdirContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
+func (c *RmdirContext) GetUID() *uint32             { return c.UID }
+func (c *RmdirContext) GetGID() *uint32             { return c.GID }
+func (c *RmdirContext) GetGIDs() []uint32           { return c.GIDs }
+
+
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -327,7 +336,41 @@ func (h *DefaultNFSHandler) Rmdir(
 	}
 
 	// ========================================================================
-	// Step 4: Remove directory via store
+	// Step 4: Build authentication context with share-level identity mapping
+	// ========================================================================
+
+	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, parentHandle)
+	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("RMDIR cancelled during auth context building: name='%s' dir=%x client=%s error=%v",
+				req.Name, req.DirHandle, clientIP, ctx.Context.Err())
+
+			dirID := xdr.ExtractFileID(parentHandle)
+			wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+
+			return &RmdirResponse{
+				Status:       types.NFS3ErrIO,
+				DirWccBefore: wccBefore,
+				DirWccAfter:  wccAfter,
+			}, nil
+		}
+
+		logger.Error("RMDIR failed: failed to build auth context: name='%s' dir=%x client=%s error=%v",
+			req.Name, req.DirHandle, clientIP, err)
+
+		dirID := xdr.ExtractFileID(parentHandle)
+		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+
+		return &RmdirResponse{
+			Status:       types.NFS3ErrIO,
+			DirWccBefore: wccBefore,
+			DirWccAfter:  wccAfter,
+		}, nil
+	}
+
+	// ========================================================================
+	// Step 5: Remove directory via store
 	// ========================================================================
 	// The store is responsible for:
 	// - Verifying the directory exists
@@ -337,9 +380,6 @@ func (h *DefaultNFSHandler) Rmdir(
 	// - Removing the directory entry from parent
 	// - Deleting the directory metadata
 	// - Updating parent directory timestamps
-
-	// Build authentication context for store
-	authCtx := buildAuthContextFromRmdir(ctx)
 
 	// Check context before store call
 	select {
@@ -651,30 +691,4 @@ func (resp *RmdirResponse) Encode() ([]byte, error) {
 func mapRmdirErrorToNFSStatus(err error) uint32 {
 	// Use the common metadata error mapper
 	return mapMetadataErrorToNFS(err)
-}
-
-// buildAuthContextFromRmdir creates an AuthContext from RmdirContext.
-//
-// This translates the NFS-specific authentication context into the generic
-// AuthContext used by the metadata store.
-func buildAuthContextFromRmdir(ctx *RmdirContext) *metadata.AuthContext {
-	// Map auth flavor to auth method string
-	authMethod := "anonymous"
-	if ctx.AuthFlavor == 1 {
-		authMethod = "unix"
-	}
-
-	// Build identity with proper UID/GID/GIDs structure
-	identity := &metadata.Identity{
-		UID:  ctx.UID,
-		GID:  ctx.GID,
-		GIDs: ctx.GIDs,
-	}
-
-	return &metadata.AuthContext{
-		Context:    ctx.Context,
-		AuthMethod: authMethod,
-		Identity:   identity,
-		ClientAddr: ctx.ClientAddr,
-	}
 }
