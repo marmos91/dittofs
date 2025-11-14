@@ -28,7 +28,7 @@ import (
 
 func BenchmarkSmallFileWorkloads(b *testing.B) {
 	// Check if NFS mounting is available
-	if !framework.CanMount(&testing.T{}) {
+	if !framework.CanMount(b) {
 		b.Skip("NFS mounting not available on this system")
 	}
 
@@ -66,7 +66,7 @@ func setupSmallFileServer(b *testing.B, storeType framework.StoreType) (*framewo
 	b.Helper()
 
 	// Create and start server
-	srv := framework.NewTestServer(&testing.T{}, framework.TestServerConfig{
+	srv := framework.NewTestServer(b, framework.TestServerConfig{
 		ContentStore: storeType,
 		LogLevel:     "ERROR",
 	})
@@ -76,7 +76,7 @@ func setupSmallFileServer(b *testing.B, storeType framework.StoreType) (*framewo
 	}
 
 	// Mount the filesystem
-	mount := framework.NewNFSMount(&testing.T{}, framework.MountConfig{
+	mount := framework.NewNFSMount(b, framework.MountConfig{
 		ServerPort: srv.Port(),
 		ExportPath: srv.ShareName(),
 	})
