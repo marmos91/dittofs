@@ -575,7 +575,7 @@ func DecodeLookupRequest(data []byte) (*LookupRequest, error) {
 
 	// Skip padding to 4-byte boundary
 	padding := (4 - (handleLen % 4)) % 4
-	for i := range padding {
+	for i := uint32(0); i < padding; i++ {
 		if _, err := reader.ReadByte(); err != nil {
 			return nil, fmt.Errorf("failed to read handle padding byte %d: %w", i, err)
 		}

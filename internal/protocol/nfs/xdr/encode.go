@@ -51,7 +51,7 @@ func EncodeOptionalOpaque(buf *bytes.Buffer, data []byte) error {
 
 	// Padding to 4-byte boundary
 	padding := (4 - (length % 4)) % 4
-	for range padding {
+	for i := uint32(0); i < padding; i++ {
 		if err := buf.WriteByte(0); err != nil {
 			return fmt.Errorf("write padding: %w", err)
 		}

@@ -114,9 +114,6 @@ const (
 	// prefixDeviceNumber is the key prefix for device numbers
 	prefixDeviceNumber = "d:"
 
-	// prefixPendingWrite is the key prefix for pending write operations
-	prefixPendingWrite = "w:"
-
 	// prefixSession is the key prefix for mount sessions
 	prefixSession = "m:"
 
@@ -197,23 +194,6 @@ func keyChildPrefix(parentHandle metadata.FileHandle) []byte {
 	return []byte(prefixChild + handleToKey(parentHandle) + ":")
 }
 
-// keyChildPrefixEnd generates the end key for range scanning children.
-//
-// This creates a key that is lexicographically greater than all possible
-// child entries for the given parent, used as the exclusive upper bound
-// for range scans.
-//
-// Parameters:
-//   - parentHandle: The parent directory handle
-//
-// Returns:
-//   - []byte: Database key range end for children
-func keyChildPrefixEnd(parentHandle metadata.FileHandle) []byte {
-	prefix := keyChildPrefix(parentHandle)
-	// Append 0xFF to create a key greater than all children
-	return append(prefix, 0xFF)
-}
-
 // keyShare generates a key for share configuration.
 //
 // Format: "s:<shareName>"
@@ -261,19 +241,6 @@ func keyLinkCount(handle metadata.FileHandle) []byte {
 //   - []byte: Database key for device numbers
 func keyDeviceNumber(handle metadata.FileHandle) []byte {
 	return []byte(prefixDeviceNumber + handleToKey(handle))
-}
-
-// keyPendingWrite generates a key for pending write operations.
-//
-// Format: "w:<operationID>"
-//
-// Parameters:
-//   - operationID: The write operation ID (typically UUID)
-//
-// Returns:
-//   - []byte: Database key for pending write
-func keyPendingWrite(operationID string) []byte {
-	return []byte(prefixPendingWrite + operationID)
 }
 
 // keySession generates a key for mount session.
