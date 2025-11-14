@@ -60,6 +60,11 @@ func (r *ChunkedMemoryContentStore) WriteAt(ctx context.Context, id metadata.Con
 		return err
 	}
 
+	// Early return for zero-byte writes - don't modify file size
+	if len(data) == 0 {
+		return nil
+	}
+
 	r.mu.Lock()
 	file, exists := r.data[id]
 	if !exists {
