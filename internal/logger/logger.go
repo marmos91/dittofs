@@ -5,6 +5,7 @@ import (
 	stdlog "log"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,9 +19,14 @@ const (
 )
 
 var (
-	currentLevel = LevelInfo
+	currentLevel atomic.Int32
 	logger       = stdlog.New(os.Stdout, "", 0)
 )
+
+func init() {
+	// Set default level to Info
+	currentLevel.Store(int32(LevelInfo))
+}
 
 func (l Level) String() string {
 	switch l {
@@ -40,18 +46,18 @@ func (l Level) String() string {
 func SetLevel(level string) {
 	switch strings.ToUpper(level) {
 	case "DEBUG":
-		currentLevel = LevelDebug
+		currentLevel.Store(int32(LevelDebug))
 	case "INFO":
-		currentLevel = LevelInfo
+		currentLevel.Store(int32(LevelInfo))
 	case "WARN":
-		currentLevel = LevelWarn
+		currentLevel.Store(int32(LevelWarn))
 	case "ERROR":
-		currentLevel = LevelError
+		currentLevel.Store(int32(LevelError))
 	}
 }
 
 func log(level Level, format string, v ...any) {
-	if level < currentLevel {
+	if level < Level(currentLevel.Load()) {
 		return
 	}
 

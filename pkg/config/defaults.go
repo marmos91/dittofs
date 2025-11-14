@@ -22,6 +22,21 @@ func ApplyDefaults(cfg *Config) {
 	applyServerDefaults(&cfg.Server)
 	applyContentDefaults(&cfg.Content)
 	applyMetadataDefaults(&cfg.Metadata)
+
+	// Add default share if none configured
+	if len(cfg.Shares) == 0 {
+		cfg.Shares = []ShareConfig{
+			{
+				Name:     "/export",
+				ReadOnly: false,
+				Async:    true,
+				IdentityMapping: IdentityMappingConfig{
+					MapAllToAnonymous: true,
+				},
+			},
+		}
+	}
+
 	applyShareDefaults(cfg.Shares)
 	applyAdaptersDefaults(&cfg.Adapters)
 }
@@ -180,13 +195,25 @@ func applyRootAttrDefaults(cfg *RootAttrConfig) {
 
 // applyAdaptersDefaults sets adapter defaults.
 func applyAdaptersDefaults(cfg *AdaptersConfig) {
+	// Enable NFS adapter by default if no adapters are configured
+	// This ensures that a freshly loaded config (with no config file) will have
+	// at least one adapter enabled and pass validation.
+	// Users can explicitly set enabled: false in their config to disable it.
+	if !cfg.NFS.Enabled {
+		// Check if this looks like a default/unconfigured state
+		// (Port is 0, meaning no explicit configuration was provided)
+		if cfg.NFS.Port == 0 {
+			cfg.NFS.Enabled = true
+		}
+	}
+
 	applyNFSDefaults(&cfg.NFS)
 }
 
 // applyNFSDefaults sets NFS adapter defaults.
 func applyNFSDefaults(cfg *nfs.NFSConfig) {
-	// Note: Enabled defaults to false (zero value). This allows users to explicitly
-	// disable the NFS adapter. GetDefaultConfig() sets Enabled to true.
+	// Note: Port and timeout defaults are always applied.
+	// Enabled is set to true in applyAdaptersDefaults if not explicitly configured.
 
 	if cfg.Port == 0 {
 		cfg.Port = 2049
