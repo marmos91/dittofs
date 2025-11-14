@@ -137,11 +137,17 @@ go build -o dittofs cmd/dittofs/main.go
 ### Run Server
 
 ```bash
-# Default configuration (NFS adapter on port 12049)
-./dittofs
+# Initialize configuration file (one-time setup)
+./dittofs init
 
-# Custom configuration
-./dittofs -port 12049 -log-level DEBUG -content-path /var/lib/dittofs
+# Start server with default config ($XDG_CONFIG_HOME/dittofs/config.yaml)
+./dittofs start
+
+# Start with custom config
+./dittofs start --config /path/to/config.yaml
+
+# Override config with environment variables
+DITTOFS_LOGGING_LEVEL=DEBUG DITTOFS_ADAPTERS_NFS_PORT=12049 ./dittofs start
 ```
 
 ### Mount from Client (NFS)
@@ -212,6 +218,357 @@ Results are saved to `benchmark_results/<timestamp>/` with:
 **Documentation**:
 - See [test/e2e/BENCHMARKS.md](test/e2e/BENCHMARKS.md) for detailed usage and interpretation
 - See [test/e2e/COMPARISON_GUIDE.md](test/e2e/COMPARISON_GUIDE.md) for comparing with FUSE-based and kernel NFS implementations
+
+## Configuration
+
+DittoFS uses a flexible configuration system with support for YAML/TOML files and environment variable overrides.
+
+### Configuration Files
+
+**Default Location**: `$XDG_CONFIG_HOME/dittofs/config.yaml` (typically `~/.config/dittofs/config.yaml`)
+
+**Initialization**:
+```bash
+# Generate default configuration file
+./dittofs init
+
+# Generate with custom path
+./dittofs init --config /etc/dittofs/config.yaml
+
+# Force overwrite existing config
+./dittofs init --force
+```
+
+**Supported Formats**: YAML (`.yaml`, `.yml`) and TOML (`.toml`)
+
+### Configuration Structure
+
+DittoFS configuration is organized into six main sections:
+
+#### 1. Logging
+
+Controls log output behavior:
+
+```yaml
+logging:
+  level: "INFO"           # DEBUG, INFO, WARN, ERROR
+  format: "text"          # text, json
+  output: "stdout"        # stdout, stderr, or file path
+```
+
+#### 2. Server Settings
+
+Application-wide server configuration:
+
+```yaml
+server:
+  shutdown_timeout: 30s   # Maximum time to wait for graceful shutdown
+```
+
+#### 3. Content Store
+
+Configures where file content is stored. Two implementations available:
+
+**Filesystem Backend** (default):
+```yaml
+content:
+  type: "filesystem"
+  filesystem:
+    path: "/tmp/dittofs-content"
+```
+
+**In-Memory Backend** (for testing):
+```yaml
+content:
+  type: "memory"
+  memory:
+    max_size_bytes: 1073741824  # 1GB
+```
+
+#### 4. Metadata Store
+
+Configures where file metadata (structure, attributes) is stored:
+
+```yaml
+metadata:
+  type: "memory"
+  memory: {}  # In-memory store has no configuration options
+
+  # Filesystem capabilities and limits
+  capabilities:
+    max_read_size: 1048576        # 1MB
+    preferred_read_size: 65536    # 64KB
+    max_write_size: 1048576       # 1MB
+    preferred_write_size: 65536   # 64KB
+    max_file_size: 9223372036854775807  # ~8EB
+    max_filename_len: 255
+    max_path_len: 4096
+    max_hard_link_count: 32767
+    supports_hard_links: true
+    supports_symlinks: true
+    case_sensitive: true
+    case_preserving: true
+
+  # Restrict DUMP operations to specific clients (optional)
+  dump_restricted: false
+  dump_allowed_clients:
+    - "127.0.0.1"
+    - "::1"
+```
+
+#### 5. Shares (Exports)
+
+Defines network shares/exports available to clients:
+
+```yaml
+shares:
+  - name: "/export"              # Share path (must start with /)
+    read_only: false             # Make share read-only
+    async: true                  # Allow async writes (better performance)
+
+    # Client access control
+    allowed_clients: []          # Empty = all allowed (CIDR supported)
+    denied_clients: []           # Takes precedence over allowed_clients
+
+    # Authentication
+    require_auth: false
+    allowed_auth_methods:
+      - "anonymous"
+      - "unix"
+
+    # Identity mapping (user/group squashing)
+    identity_mapping:
+      map_all_to_anonymous: true              # all_squash
+      map_privileged_to_anonymous: false      # root_squash
+      anonymous_uid: 65534                    # nobody
+      anonymous_gid: 65534                    # nogroup
+
+    # Root directory attributes
+    root_attr:
+      mode: 0755
+      uid: 0
+      gid: 0
+```
+
+#### 6. Protocol Adapters
+
+Configures protocol-specific settings:
+
+**NFS Adapter**:
+```yaml
+adapters:
+  nfs:
+    enabled: true
+    port: 2049
+    max_connections: 0           # 0 = unlimited
+    read_timeout: 5m0s           # Max time to read request
+    write_timeout: 30s           # Max time to write response
+    idle_timeout: 5m0s           # Max idle time between requests
+    shutdown_timeout: 30s        # Graceful shutdown timeout
+    metrics_log_interval: 5m0s   # Metrics logging interval (0 = disabled)
+```
+
+### Environment Variables
+
+Override configuration using environment variables with the `DITTOFS_` prefix:
+
+**Format**: `DITTOFS_<SECTION>_<SUBSECTION>_<KEY>`
+- Use uppercase
+- Replace dots with underscores
+- Nested paths use underscores
+
+**Examples**:
+```bash
+# Logging
+export DITTOFS_LOGGING_LEVEL=DEBUG
+export DITTOFS_LOGGING_FORMAT=json
+
+# Server
+export DITTOFS_SERVER_SHUTDOWN_TIMEOUT=60s
+
+# Content store
+export DITTOFS_CONTENT_TYPE=filesystem
+export DITTOFS_CONTENT_FILESYSTEM_PATH=/data/dittofs
+
+# NFS adapter
+export DITTOFS_ADAPTERS_NFS_ENABLED=true
+export DITTOFS_ADAPTERS_NFS_PORT=12049
+export DITTOFS_ADAPTERS_NFS_MAX_CONNECTIONS=1000
+
+# Start server with overrides
+DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
+```
+
+### Configuration Precedence
+
+Settings are applied in the following order (highest to lowest priority):
+
+1. **Environment Variables** (`DITTOFS_*`) - Highest priority
+2. **Configuration File** (YAML/TOML)
+3. **Default Values** - Lowest priority
+
+Example:
+```bash
+# config.yaml has port: 2049
+# This overrides it to 12049
+DITTOFS_ADAPTERS_NFS_PORT=12049 ./dittofs start
+```
+
+### Configuration Examples
+
+#### Minimal Configuration
+
+```yaml
+# Minimal config - uses all defaults
+logging:
+  level: "INFO"
+
+content:
+  type: "filesystem"
+
+shares:
+  - name: "/export"
+
+adapters:
+  nfs:
+    enabled: true
+```
+
+#### Development Setup
+
+Fast iteration with in-memory stores:
+
+```yaml
+logging:
+  level: "DEBUG"
+  format: "text"
+
+content:
+  type: "memory"
+  memory:
+    max_size_bytes: 1073741824  # 1GB
+
+metadata:
+  type: "memory"
+
+shares:
+  - name: "/export"
+    async: true
+    identity_mapping:
+      map_all_to_anonymous: true
+
+adapters:
+  nfs:
+    enabled: true
+    port: 12049
+```
+
+#### Production Setup
+
+Filesystem-backed with access control:
+
+```yaml
+logging:
+  level: "WARN"
+  format: "json"
+  output: "/var/log/dittofs/server.log"
+
+server:
+  shutdown_timeout: 30s
+
+content:
+  type: "filesystem"
+  filesystem:
+    path: "/var/lib/dittofs/content"
+
+metadata:
+  type: "memory"
+  capabilities:
+    max_read_size: 1048576
+    max_write_size: 1048576
+  dump_restricted: true
+  dump_allowed_clients:
+    - "127.0.0.1"
+    - "10.0.0.0/8"
+
+shares:
+  - name: "/export"
+    read_only: false
+    async: false  # Synchronous writes for data safety
+    allowed_clients:
+      - "192.168.1.0/24"
+    denied_clients:
+      - "192.168.1.50"
+    identity_mapping:
+      map_all_to_anonymous: false
+      map_privileged_to_anonymous: true
+      anonymous_uid: 65534
+      anonymous_gid: 65534
+    root_attr:
+      mode: 0755
+      uid: 0
+      gid: 0
+
+adapters:
+  nfs:
+    enabled: true
+    port: 2049
+    max_connections: 1000
+    read_timeout: 5m0s
+    write_timeout: 30s
+    idle_timeout: 5m0s
+    metrics_log_interval: 5m0s
+```
+
+#### Multi-Client Access Control
+
+Different shares with different access rules:
+
+```yaml
+shares:
+  # Public read-only share
+  - name: "/public"
+    read_only: true
+    identity_mapping:
+      map_all_to_anonymous: true
+
+  # Private share - specific client network
+  - name: "/private"
+    read_only: false
+    allowed_clients:
+      - "10.0.1.0/24"
+    identity_mapping:
+      map_all_to_anonymous: false
+      map_privileged_to_anonymous: true
+
+  # Admin share - localhost only
+  - name: "/admin"
+    read_only: false
+    allowed_clients:
+      - "127.0.0.1"
+      - "::1"
+    identity_mapping:
+      map_all_to_anonymous: false
+      map_privileged_to_anonymous: false
+```
+
+### Viewing Active Configuration
+
+Check the generated config file:
+
+```bash
+# Default location
+cat ~/.config/dittofs/config.yaml
+
+# Custom location
+cat /path/to/config.yaml
+```
+
+Start server with debug logging to see loaded configuration:
+
+```bash
+DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
+```
 
 ## Architecture Deep Dive
 
@@ -378,7 +735,7 @@ with DittoFS. Instead, use direct mount commands or the provided test clients.
 - [ ] Memory leak prevention and profiling
 - [ ] Performance optimization (zero-copy I/O where possible)
 - [ ] Connection pool management
-- [ ] Modular configuration system
+- [x] Modular configuration system
 
 **Phase 2: Testing**
 

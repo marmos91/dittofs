@@ -296,9 +296,9 @@ func TestValidate_LogLevelNormalization(t *testing.T) {
 func TestValidate_MultipleValidShares(t *testing.T) {
 	cfg := GetDefaultConfig()
 	cfg.Shares = append(cfg.Shares, ShareConfig{
-		Name:     "/data",
-		ReadOnly: true,
-		Async:    false,
+		Name:               "/data",
+		ReadOnly:           true,
+		Async:              false,
 		AllowedAuthMethods: []string{"unix"},
 		IdentityMapping: IdentityMappingConfig{
 			MapAllToAnonymous: false,

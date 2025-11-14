@@ -120,9 +120,9 @@ func TestCreateShares_SingleShare(t *testing.T) {
 	// Create share
 	shares := []ShareConfig{
 		{
-			Name:     "/test",
-			ReadOnly: false,
-			Async:    true,
+			Name:               "/test",
+			ReadOnly:           false,
+			Async:              true,
 			AllowedAuthMethods: []string{"anonymous", "unix"},
 			IdentityMapping: IdentityMappingConfig{
 				MapAllToAnonymous: true,

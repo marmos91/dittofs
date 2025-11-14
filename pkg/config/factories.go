@@ -145,10 +145,10 @@ func CreateShares(ctx context.Context, store metadata.MetadataStore, shares []Sh
 			RequireAuth:        shareCfg.RequireAuth,
 			AllowedAuthMethods: shareCfg.AllowedAuthMethods,
 			IdentityMapping: &metadata.IdentityMapping{
-				MapAllToAnonymous:         shareCfg.IdentityMapping.MapAllToAnonymous,
-				MapPrivilegedToAnonymous:  shareCfg.IdentityMapping.MapPrivilegedToAnonymous,
-				AnonymousUID:              &shareCfg.IdentityMapping.AnonymousUID,
-				AnonymousGID:              &shareCfg.IdentityMapping.AnonymousGID,
+				MapAllToAnonymous:        shareCfg.IdentityMapping.MapAllToAnonymous,
+				MapPrivilegedToAnonymous: shareCfg.IdentityMapping.MapPrivilegedToAnonymous,
+				AnonymousUID:             &shareCfg.IdentityMapping.AnonymousUID,
+				AnonymousGID:             &shareCfg.IdentityMapping.AnonymousGID,
 			},
 		}
 
