@@ -97,12 +97,16 @@ type ContentConfig struct {
 // Only the corresponding type-specific configuration section is used.
 type MetadataConfig struct {
 	// Type specifies which metadata store implementation to use
-	// Valid values: memory
-	Type string `mapstructure:"type" validate:"required,oneof=memory"`
+	// Valid values: memory, badger
+	Type string `mapstructure:"type" validate:"required,oneof=memory badger"`
 
 	// Memory contains memory-specific configuration
 	// Only used when Type = "memory"
 	Memory map[string]any `mapstructure:"memory"`
+
+	// Badger contains BadgerDB-specific configuration
+	// Only used when Type = "badger"
+	Badger map[string]any `mapstructure:"badger"`
 
 	// Capabilities defines filesystem capabilities and limits
 	// Uses the metadata.FilesystemCapabilities type directly

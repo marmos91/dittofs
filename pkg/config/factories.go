@@ -7,6 +7,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/content"
 	contentFs "github.com/marmos91/dittofs/pkg/content/fs"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/badger"
 	"github.com/marmos91/dittofs/pkg/metadata/memory"
 	"github.com/mitchellh/mapstructure"
 )
@@ -73,7 +74,8 @@ func createFilesystemContentStore(ctx context.Context, options map[string]any) (
 // map and passes it to the store's constructor.
 //
 // Supported types:
-//   - "memory": Uses pkg/metadata/memory (in-memory storage)
+//   - "memory": Uses pkg/metadata/memory (in-memory storage, ephemeral)
+//   - "badger": Uses pkg/metadata/badger (BadgerDB storage, persistent)
 //
 // Parameters:
 //   - ctx: Context for initialization operations
@@ -86,8 +88,10 @@ func CreateMetadataStore(ctx context.Context, cfg *MetadataConfig) (metadata.Met
 	switch cfg.Type {
 	case "memory":
 		return createMemoryMetadataStore(ctx, cfg.Memory, &cfg.Capabilities)
+	case "badger":
+		return createBadgerMetadataStore(ctx, cfg.Badger, &cfg.Capabilities)
 	default:
-		return nil, fmt.Errorf("unknown metadata store type: %q", cfg.Type)
+		return nil, fmt.Errorf("unknown metadata store type: %q (supported: memory, badger)", cfg.Type)
 	}
 }
 
@@ -117,6 +121,46 @@ func createMemoryMetadataStore(ctx context.Context, options map[string]any, capa
 	}
 
 	store := memory.NewMemoryMetadataStore(storeConfig)
+	return store, nil
+}
+
+// createBadgerMetadataStore creates a BadgerDB-based persistent metadata store.
+func createBadgerMetadataStore(ctx context.Context, options map[string]any, capabilities *metadata.FilesystemCapabilities) (metadata.MetadataStore, error) {
+	// Check context before creating store
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Decode store-specific options
+	type BadgerMetadataStoreOptions struct {
+		DBPath          string `mapstructure:"db_path"`
+		MaxStorageBytes uint64 `mapstructure:"max_storage_bytes"`
+		MaxFiles        uint64 `mapstructure:"max_files"`
+	}
+
+	var storeOpts BadgerMetadataStoreOptions
+	if err := mapstructure.Decode(options, &storeOpts); err != nil {
+		return nil, fmt.Errorf("failed to decode badger metadata store options: %w", err)
+	}
+
+	// Validate required fields
+	if storeOpts.DBPath == "" {
+		return nil, fmt.Errorf("badger metadata store: db_path is required")
+	}
+
+	// Create store config
+	storeConfig := badger.BadgerMetadataStoreConfig{
+		DBPath:          storeOpts.DBPath,
+		Capabilities:    *capabilities,
+		MaxStorageBytes: storeOpts.MaxStorageBytes,
+		MaxFiles:        storeOpts.MaxFiles,
+	}
+
+	store, err := badger.NewBadgerMetadataStore(ctx, storeConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create badger metadata store: %w", err)
+	}
+
 	return store, nil
 }
 
