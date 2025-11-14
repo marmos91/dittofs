@@ -119,7 +119,6 @@ func (c *CommitContext) GetUID() *uint32             { return c.UID }
 func (c *CommitContext) GetGID() *uint32             { return c.GID }
 func (c *CommitContext) GetGIDs() []uint32           { return c.GIDs }
 
-
 // ============================================================================
 // Protocol Handler
 // ============================================================================

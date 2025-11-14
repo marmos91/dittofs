@@ -169,7 +169,6 @@ func (c *ReadDirPlusContext) GetUID() *uint32             { return c.UID }
 func (c *ReadDirPlusContext) GetGID() *uint32             { return c.GID }
 func (c *ReadDirPlusContext) GetGIDs() []uint32           { return c.GIDs }
 
-
 // ============================================================================
 // Protocol Handler
 // ============================================================================
@@ -915,4 +914,3 @@ func (resp *ReadDirPlusResponse) Encode() ([]byte, error) {
 
 	return buf.Bytes(), nil
 }
-

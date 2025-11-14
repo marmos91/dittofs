@@ -167,7 +167,6 @@ func (c *MknodContext) GetUID() *uint32             { return c.UID }
 func (c *MknodContext) GetGID() *uint32             { return c.GID }
 func (c *MknodContext) GetGIDs() []uint32           { return c.GIDs }
 
-
 // ============================================================================
 // Protocol Handler
 // ============================================================================

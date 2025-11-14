@@ -117,7 +117,6 @@ func (c *RemoveContext) GetUID() *uint32             { return c.UID }
 func (c *RemoveContext) GetGID() *uint32             { return c.GID }
 func (c *RemoveContext) GetGIDs() []uint32           { return c.GIDs }
 
-
 // ============================================================================
 // Protocol Handler
 // ============================================================================
