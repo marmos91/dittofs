@@ -272,6 +272,72 @@ func MakeSuccessReply(xid uint32, data []byte) ([]byte, error) {
 	return result, nil
 }
 
+// MakeErrorReply creates an RPC error reply message.
+//
+// This function constructs a complete RPC reply that indicates an error
+// occurred on the server side. It's used when the server accepts the RPC call
+// but cannot successfully execute it due to system errors, resource exhaustion,
+// or rate limiting.
+//
+// The reply indicates MSG_ACCEPTED (the call was syntactically valid) but
+// sets the AcceptStat to indicate the specific error type (e.g., SYSTEM_ERR).
+//
+// Parameters:
+//   - xid: Transaction ID from the original RPC call (must match)
+//   - acceptStat: The error status code (RPCSystemErr, RPCProcUnavail, etc.)
+//
+// Returns:
+//   - []byte: Complete RPC error reply ready to send on the wire
+//   - error: Encoding error if reply marshaling fails
+//
+// Example usage:
+//
+//	// Rate limit exceeded - send system error
+//	reply, err := rpc.MakeErrorReply(call.XID, rpc.RPCSystemErr)
+//	if err != nil {
+//	    return err
+//	}
+//	conn.Write(reply)
+func MakeErrorReply(xid uint32, acceptStat uint32) ([]byte, error) {
+	// Construct the RPC reply header
+	reply := RPCReplyMessage{
+		XID:        xid,            // Echo back the transaction ID from the call
+		MsgType:    RPCReply,       // 1 = REPLY
+		ReplyState: RPCMsgAccepted, // 0 = MSG_ACCEPTED (call was accepted)
+
+		// AUTH_NULL verifier (no authentication in reply)
+		Verf: OpaqueAuth{
+			Flavor: AuthNull, // 0 = AUTH_NULL
+			Body:   []byte{},
+		},
+
+		AcceptStat: acceptStat, // Error status (e.g., SYSTEM_ERR)
+	}
+
+	// Pre-allocate buffer for reply header
+	replyHeaderSize := 28
+	buf := bytes.NewBuffer(make([]byte, 0, replyHeaderSize))
+
+	// Marshal the reply header using XDR encoding
+	_, err := xdr.Marshal(buf, &reply)
+	if err != nil {
+		return nil, fmt.Errorf("marshal error reply: %w", err)
+	}
+
+	// Prepend RPC fragment header (4 bytes)
+	replyData := buf.Bytes()
+	fragmentHeader := make([]byte, 4)
+
+	// Set high bit to indicate last fragment
+	binary.BigEndian.PutUint32(fragmentHeader, 0x80000000|uint32(len(replyData)))
+
+	// Combine fragment header and reply data
+	result := make([]byte, 0, 4+len(replyData))
+	result = append(result, fragmentHeader...)
+	result = append(result, replyData...)
+	return result, nil
+}
+
 // XdrPadding calculates the number of padding bytes needed for XDR alignment.
 //
 // XDR (External Data Representation) requires all data to be aligned on

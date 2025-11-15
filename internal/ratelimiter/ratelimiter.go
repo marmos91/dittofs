@@ -135,7 +135,8 @@ func (r *RateLimiter) AllowN(n uint) bool {
 // SetLimit updates the rate limit to a new value.
 //
 // This allows dynamic rate limit adjustments without creating a new limiter.
-// The burst size is automatically adjusted to 2x the new rate.
+// The burst size is automatically adjusted to match the new rate if it was
+// previously at or below the old rate, or if it was at the default ratio (2x old rate).
 //
 // Parameters:
 //   - requestsPerSecond: New maximum sustained rate
@@ -147,11 +148,16 @@ func (r *RateLimiter) SetLimit(requestsPerSecond uint) {
 		requestsPerSecond = 1_000_000_000 // Effectively unlimited
 	}
 
-	// Only update burst if it was previously at the default ratio (2x old rate)
+	// Update burst size based on relationship to old rate
 	oldRate := uint(r.limiter.Limit())
 	oldBurst := uint(r.limiter.Burst())
 	r.limiter.SetLimit(rate.Limit(requestsPerSecond))
-	if oldBurst == oldRate*2 {
+
+	// Update burst if:
+	// 1. It was at the default ratio (2x old rate), OR
+	// 2. It was equal to or below the old rate (indicating a custom small burst)
+	// This ensures the bucket can hold tokens accumulated at the new rate.
+	if oldBurst == oldRate*2 || oldBurst <= oldRate {
 		r.limiter.SetBurst(int(requestsPerSecond * 2))
 	}
 }

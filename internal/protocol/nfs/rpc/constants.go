@@ -97,4 +97,12 @@ const (
 	// implement the requested procedure number. This typically
 	// indicates an invalid procedure number or unimplemented feature.
 	RPCProcUnavail = 3
+
+	// RPCSystemErr indicates a system error on the server.
+	// This is used when the server encounters an unexpected error
+	// that prevents it from processing the request, such as:
+	//   - Resource exhaustion
+	//   - Rate limiting
+	//   - Internal server errors
+	RPCSystemErr = 5
 )
