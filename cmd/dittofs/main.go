@@ -176,14 +176,22 @@ func runStart() {
 			Port: cfg.Server.Metrics.Port,
 		})
 
+		metricsReady := make(chan error, 1)
 		go func() {
-			if err := metricsServer.Start(ctx); err != nil && err != context.Canceled {
+			err := metricsServer.Start(ctx)
+			metricsReady <- err
+			if err != nil && err != context.Canceled {
 				logger.Error("Metrics server error: %v", err)
 			}
 		}()
 
-		logger.Info("Metrics server started on port %d", cfg.Server.Metrics.Port)
-		logger.Info("Metrics available at: http://localhost:%d/metrics", cfg.Server.Metrics.Port)
+		// Wait for metrics server to signal readiness
+		if err := <-metricsReady; err != nil && err != context.Canceled {
+			log.Fatalf("Failed to start metrics server: %v", err)
+		} else {
+			logger.Info("Metrics server started on port %d", cfg.Server.Metrics.Port)
+			logger.Info("Metrics available at: http://localhost:%d/metrics", cfg.Server.Metrics.Port)
+		}
 	} else {
 		logger.Debug("Metrics collection disabled")
 	}

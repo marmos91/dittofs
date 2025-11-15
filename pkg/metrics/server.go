@@ -139,7 +139,11 @@ func (s *Server) Start(ctx context.Context) error {
 		logger.Debug("Metrics endpoint available at http://localhost:%d/metrics", s.port)
 
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errChan <- err
+			select {
+			case errChan <- err:
+			default:
+				// Context was cancelled, error is not needed
+			}
 		}
 	}()
 
@@ -147,7 +151,7 @@ func (s *Server) Start(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		logger.Info("Metrics server shutdown signal received")
-		return s.Stop(context.Background())
+		return s.Stop(ctx)
 	case err := <-errChan:
 		return fmt.Errorf("metrics server failed: %w", err)
 	}

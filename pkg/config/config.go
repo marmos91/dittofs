@@ -83,7 +83,7 @@ type MetricsConfig struct {
 
 	// Port is the HTTP port for the metrics endpoint
 	// Default: 9090
-	Port int `mapstructure:"port" validate:"omitempty,min=0,max=65535"`
+	Port int `mapstructure:"port" validate:"omitempty,min=1,max=65535"`
 }
 
 // ContentConfig specifies content store configuration.

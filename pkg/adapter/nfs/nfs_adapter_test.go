@@ -24,16 +24,14 @@ func TestGracefulShutdown(t *testing.T) {
 		serverDone <- adapter.Serve(ctx)
 	}()
 
-	// Wait for listener to be ready
-	time.Sleep(100 * time.Millisecond)
-
-	// Get the actual port from the listener
-	if adapter.listener == nil {
-		t.Fatal("Adapter listener is nil")
+	// Get the actual port from the listener (blocks until ready)
+	listenerAddr := adapter.GetListenerAddr()
+	if listenerAddr == "" {
+		t.Fatal("Failed to get listener address")
 	}
 
 	// Create a test connection but don't close it
-	conn, err := net.Dial("tcp", adapter.listener.Addr().String())
+	conn, err := net.Dial("tcp", listenerAddr)
 	if err != nil {
 		t.Fatalf("Failed to connect to adapter: %v", err)
 	}
@@ -80,11 +78,11 @@ func TestForcedConnectionClosure(t *testing.T) {
 		serverDone <- adapter.Serve(ctx)
 	}()
 
-	// Wait for listener to be ready
-	time.Sleep(100 * time.Millisecond)
+	// Get the actual port from the listener (blocks until ready)
+	listenerAddr := adapter.GetListenerAddr()
 
 	// Create a test connection
-	conn, err := net.Dial("tcp", adapter.listener.Addr().String())
+	conn, err := net.Dial("tcp", listenerAddr)
 	if err != nil {
 		t.Fatalf("Failed to connect to adapter: %v", err)
 	}
@@ -144,13 +142,13 @@ func TestConnectionLimiting(t *testing.T) {
 		serverDone <- adapter.Serve(ctx)
 	}()
 
-	// Wait for listener to be ready
-	time.Sleep(100 * time.Millisecond)
+	// Get the actual port from the listener (blocks until ready)
+	listenerAddr := adapter.GetListenerAddr()
 
 	// Create MaxConnections connections
 	var conns []net.Conn
 	for i := 0; i < 2; i++ {
-		conn, err := net.Dial("tcp", adapter.listener.Addr().String())
+		conn, err := net.Dial("tcp", listenerAddr)
 		if err != nil {
 			t.Fatalf("Failed to create connection %d: %v", i, err)
 		}
@@ -195,11 +193,11 @@ func TestDrainMode(t *testing.T) {
 		serverDone <- adapter.Serve(ctx)
 	}()
 
-	// Wait for listener to be ready
-	time.Sleep(100 * time.Millisecond)
+	// Get the actual port from the listener (blocks until ready)
+	listenerAddr := adapter.GetListenerAddr()
 
 	// Create initial connection - should succeed
-	conn1, err := net.Dial("tcp", adapter.listener.Addr().String())
+	conn1, err := net.Dial("tcp", listenerAddr)
 	if err != nil {
 		t.Fatalf("Failed to create initial connection: %v", err)
 	}
@@ -212,7 +210,7 @@ func TestDrainMode(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Try to create new connection - should fail (listener closed)
-	_, err = net.Dial("tcp", adapter.listener.Addr().String())
+	_, err = net.Dial("tcp", listenerAddr)
 	if err == nil {
 		t.Error("New connection succeeded during shutdown, expected failure (drain mode)")
 	} else {
@@ -238,7 +236,7 @@ func TestConcurrentShutdown(t *testing.T) {
 	}()
 
 	// Wait for listener to be ready
-	time.Sleep(100 * time.Millisecond)
+	_ = adapter.GetListenerAddr()
 
 	// Call Stop() multiple times concurrently
 	var wg sync.WaitGroup
@@ -280,8 +278,8 @@ func TestConnectionTracking(t *testing.T) {
 		serverDone <- adapter.Serve(ctx)
 	}()
 
-	// Wait for listener to be ready
-	time.Sleep(100 * time.Millisecond)
+	// Get the actual port from the listener (blocks until ready)
+	listenerAddr := adapter.GetListenerAddr()
 
 	// Verify initial state
 	if adapter.GetActiveConnections() != 0 {
@@ -291,7 +289,7 @@ func TestConnectionTracking(t *testing.T) {
 	// Create connections and verify count increases
 	var conns []net.Conn
 	for i := 1; i <= 5; i++ {
-		conn, err := net.Dial("tcp", adapter.listener.Addr().String())
+		conn, err := net.Dial("tcp", listenerAddr)
 		if err != nil {
 			t.Fatalf("Failed to create connection %d: %v", i, err)
 		}

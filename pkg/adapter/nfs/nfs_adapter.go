@@ -99,6 +99,13 @@ type NFSAdapter struct {
 	// Maps connection remote address (string) to net.Conn for forced shutdown
 	// Uses sync.Map for lock-free concurrent access (better performance under high churn)
 	activeConnections sync.Map
+
+	// listenerReady is closed when the listener is ready to accept connections
+	// Used by tests to synchronize with server startup
+	listenerReady chan struct{}
+
+	// listenerMu protects access to the listener field
+	listenerMu sync.RWMutex
 }
 
 // NFSConfig holds configuration parameters for the NFS server.
@@ -269,6 +276,7 @@ func New(config NFSConfig, nfsMetrics metrics.NFSMetrics) *NFSAdapter {
 		connSemaphore:  connSemaphore,
 		shutdownCtx:    shutdownCtx,
 		cancelRequests: cancelRequests,
+		listenerReady:  make(chan struct{}),
 		// activeConnections is initialized as zero-value sync.Map (ready to use)
 	}
 }
@@ -346,7 +354,12 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 		return fmt.Errorf("failed to create NFS listener on port %d: %w", s.config.Port, err)
 	}
 
+	// Store listener with mutex protection and signal readiness
+	s.listenerMu.Lock()
 	s.listener = listener
+	s.listenerMu.Unlock()
+	close(s.listenerReady)
+
 	logger.Info("NFS server listening on port %d", s.config.Port)
 	logger.Debug("NFS config: max_connections=%d read_timeout=%v write_timeout=%v idle_timeout=%v",
 		s.config.MaxConnections, s.config.ReadTimeout, s.config.WriteTimeout, s.config.IdleTimeout)
@@ -696,6 +709,30 @@ func (s *NFSAdapter) logMetrics(ctx context.Context) {
 // Safe to call concurrently. Uses atomic operations.
 func (s *NFSAdapter) GetActiveConnections() int32 {
 	return s.connCount.Load()
+}
+
+// GetListenerAddr returns the address the server is listening on.
+// This method blocks until the listener is ready, making it safe for tests
+// to use without race conditions.
+//
+// Returns:
+//   - The listener address as a string (e.g., "127.0.0.1:2049")
+//   - Empty string if the server failed to start
+//
+// Thread safety:
+// Safe to call concurrently. Waits for listener to be ready before accessing.
+func (s *NFSAdapter) GetListenerAddr() string {
+	// Wait for listener to be ready
+	<-s.listenerReady
+
+	// Read listener with mutex protection
+	s.listenerMu.RLock()
+	defer s.listenerMu.RUnlock()
+
+	if s.listener == nil {
+		return ""
+	}
+	return s.listener.Addr().String()
 }
 
 // newConn creates a new connection wrapper for a TCP connection.
