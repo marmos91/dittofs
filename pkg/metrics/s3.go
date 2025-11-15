@@ -18,13 +18,13 @@ import (
 //   - Multipart upload statistics
 //   - Cache hit/miss rates
 type s3Metrics struct {
-	operationsTotal      *prometheus.CounterVec
-	operationDuration    *prometheus.HistogramVec
-	bytesTransferred     *prometheus.CounterVec
-	multipartUploads     *prometheus.CounterVec
-	statsCacheHits       prometheus.Counter
-	statsCacheMisses     prometheus.Counter
-	errorsTotal          *prometheus.CounterVec
+	operationsTotal   *prometheus.CounterVec
+	operationDuration *prometheus.HistogramVec
+	bytesTransferred  *prometheus.CounterVec
+	multipartUploads  *prometheus.CounterVec
+	statsCacheHits    prometheus.Counter
+	statsCacheMisses  prometheus.Counter
+	errorsTotal       *prometheus.CounterVec
 }
 
 // NewS3Metrics creates a new Prometheus-backed S3Metrics instance.

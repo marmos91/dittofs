@@ -277,12 +277,13 @@ func New(config NFSConfig, nfsMetrics metrics.NFSMetrics) *NFSAdapter {
 type noopNFSMetrics struct{}
 
 func (noopNFSMetrics) RecordRequest(procedure string, duration time.Duration, err error) {}
-func (noopNFSMetrics) RecordRequestStart(procedure string)                                {}
-func (noopNFSMetrics) RecordRequestEnd(procedure string)                                  {}
-func (noopNFSMetrics) RecordBytesTransferred(direction string, bytes int64)               {}
-func (noopNFSMetrics) SetActiveConnections(count int32)                                   {}
-func (noopNFSMetrics) RecordConnectionAccepted()                                          {}
-func (noopNFSMetrics) RecordConnectionClosed()                                            {}
+func (noopNFSMetrics) RecordRequestStart(procedure string)                               {}
+func (noopNFSMetrics) RecordRequestEnd(procedure string)                                 {}
+func (noopNFSMetrics) RecordBytesTransferred(direction string, bytes int64)              {}
+func (noopNFSMetrics) SetActiveConnections(count int32)                                  {}
+func (noopNFSMetrics) RecordConnectionAccepted()                                         {}
+func (noopNFSMetrics) RecordConnectionClosed()                                           {}
+func (noopNFSMetrics) RecordConnectionForceClosed()                                      {}
 
 // SetStores injects the shared metadata and content stores.
 //
@@ -585,6 +586,8 @@ func (s *NFSAdapter) forceCloseConnections() {
 		} else {
 			closedCount++
 			logger.Debug("Force-closed connection to %s", addr)
+			// Record metric for each force-closed connection
+			s.metrics.RecordConnectionForceClosed()
 		}
 
 		// Continue iteration

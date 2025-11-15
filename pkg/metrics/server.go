@@ -63,9 +63,9 @@ func NewServer(config ServerConfig) *Server {
 	} else {
 		// Metrics disabled - return helpful message
 		mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusServiceUnavailable)
 			w.Header().Set("Content-Type", "text/plain")
-			fmt.Fprintf(w, "Metrics collection is disabled\n")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprintf(w, "Metrics collection is disabled\n")
 		})
 		logger.Debug("Metrics collection disabled")
 	}
@@ -78,7 +78,7 @@ func NewServer(config ServerConfig) *Server {
 		}
 
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprintf(w, `<!DOCTYPE html>
+		_, _ = fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
 <head>
     <title>DittoFS Metrics</title>

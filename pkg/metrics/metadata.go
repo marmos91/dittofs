@@ -70,15 +70,15 @@ type MetadataMetrics interface {
 
 // metadataMetrics is the Prometheus implementation of MetadataMetrics.
 type metadataMetrics struct {
-	storeType           string
-	operationsTotal     *prometheus.CounterVec
-	operationDuration   *prometheus.HistogramVec
-	cacheHits           *prometheus.CounterVec
-	cacheMisses         *prometheus.CounterVec
-	activeHandles       prometheus.Gauge
-	activeMounts        prometheus.Gauge
-	storageOpsTotal     *prometheus.CounterVec
-	storageOpsDuration  *prometheus.HistogramVec
+	storeType          string
+	operationsTotal    *prometheus.CounterVec
+	operationDuration  *prometheus.HistogramVec
+	cacheHits          *prometheus.CounterVec
+	cacheMisses        *prometheus.CounterVec
+	activeHandles      prometheus.Gauge
+	activeMounts       prometheus.Gauge
+	storageOpsTotal    *prometheus.CounterVec
+	storageOpsDuration *prometheus.HistogramVec
 }
 
 // NewMetadataMetrics creates a new Prometheus-backed MetadataMetrics instance.

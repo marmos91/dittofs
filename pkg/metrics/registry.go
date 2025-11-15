@@ -39,8 +39,6 @@ var (
 // will return no-op implementations.
 func InitRegistry() {
 	registryOnce.Do(func() {
-		registryMu.Lock()
-		defer registryMu.Unlock()
 		registry = prometheus.NewRegistry()
 	})
 }

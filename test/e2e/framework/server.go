@@ -164,7 +164,7 @@ func (ts *TestServer) Start() error {
 	nfsConfig := nfs.NFSConfig{
 		Port: ts.config.Port,
 	}
-	nfsAdapter := nfs.New(nfsConfig)
+	nfsAdapter := nfs.New(nfsConfig, nil) // nil = no metrics for tests
 
 	// Create DittoServer
 	ts.server = server.New(ts.metadataStore, ts.contentStore)

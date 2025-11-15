@@ -63,17 +63,22 @@ type NFSMetrics interface {
 
 	// RecordConnectionClosed increments the total closed connections counter.
 	RecordConnectionClosed()
+
+	// RecordConnectionForceClosed increments the force-closed connections counter.
+	// Called when connections are forcibly closed after shutdown timeout.
+	RecordConnectionForceClosed()
 }
 
 // nfsMetrics is the Prometheus implementation of NFSMetrics.
 type nfsMetrics struct {
-	requestsTotal       *prometheus.CounterVec
-	requestDuration     *prometheus.HistogramVec
-	requestsInFlight    *prometheus.GaugeVec
-	bytesTransferred    *prometheus.CounterVec
-	activeConnections   prometheus.Gauge
-	connectionsAccepted prometheus.Counter
-	connectionsClosed   prometheus.Counter
+	requestsTotal          *prometheus.CounterVec
+	requestDuration        *prometheus.HistogramVec
+	requestsInFlight       *prometheus.GaugeVec
+	bytesTransferred       *prometheus.CounterVec
+	activeConnections      prometheus.Gauge
+	connectionsAccepted    prometheus.Counter
+	connectionsClosed      prometheus.Counter
+	connectionsForceClosed prometheus.Counter
 }
 
 // NewNFSMetrics creates a new Prometheus-backed NFSMetrics instance.
@@ -148,6 +153,12 @@ func NewNFSMetrics() NFSMetrics {
 				Help: "Total number of NFS connections closed",
 			},
 		),
+		connectionsForceClosed: promauto.With(reg).NewCounter(
+			prometheus.CounterOpts{
+				Name: "dittofs_nfs_connections_force_closed_total",
+				Help: "Total number of NFS connections force-closed during shutdown timeout",
+			},
+		),
 	}
 }
 
@@ -185,13 +196,18 @@ func (m *nfsMetrics) RecordConnectionClosed() {
 	m.connectionsClosed.Inc()
 }
 
+func (m *nfsMetrics) RecordConnectionForceClosed() {
+	m.connectionsForceClosed.Inc()
+}
+
 // noopNFSMetrics is a no-op implementation of NFSMetrics with zero overhead.
 type noopNFSMetrics struct{}
 
 func (noopNFSMetrics) RecordRequest(procedure string, duration time.Duration, err error) {}
-func (noopNFSMetrics) RecordRequestStart(procedure string)                                {}
-func (noopNFSMetrics) RecordRequestEnd(procedure string)                                  {}
-func (noopNFSMetrics) RecordBytesTransferred(direction string, bytes int64)               {}
-func (noopNFSMetrics) SetActiveConnections(count int32)                                   {}
-func (noopNFSMetrics) RecordConnectionAccepted()                                          {}
-func (noopNFSMetrics) RecordConnectionClosed()                                            {}
+func (noopNFSMetrics) RecordRequestStart(procedure string)                               {}
+func (noopNFSMetrics) RecordRequestEnd(procedure string)                                 {}
+func (noopNFSMetrics) RecordBytesTransferred(direction string, bytes int64)              {}
+func (noopNFSMetrics) SetActiveConnections(count int32)                                  {}
+func (noopNFSMetrics) RecordConnectionAccepted()                                         {}
+func (noopNFSMetrics) RecordConnectionClosed()                                           {}
+func (noopNFSMetrics) RecordConnectionForceClosed()                                      {}

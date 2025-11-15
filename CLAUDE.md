@@ -109,6 +109,44 @@ Results are saved to `benchmark_results/<timestamp>/` and should NOT be committe
 
 See `test/e2e/BENCHMARKS.md` for detailed documentation and `test/e2e/COMPARISON_GUIDE.md` for comparing with other NFS implementations.
 
+## Production Features
+
+### Graceful Shutdown & Connection Management
+
+DittoFS implements comprehensive graceful shutdown with multiple layers:
+
+1. **Automatic Drain Mode**: Listener closes immediately on shutdown signal (no new connections)
+2. **Context Cancellation**: Propagates through all request handlers for clean abort
+3. **Graceful Wait**: Waits up to `ShutdownTimeout` for connections to complete naturally
+4. **Forced Closure**: After timeout, actively closes TCP connections to release resources
+5. **Connection Tracking**: Uses lock-free `sync.Map` for high-performance tracking
+
+**Shutdown Flow**:
+```
+SIGINT/SIGTERM → Cancel Context → Close Listener → Wait (up to timeout) → Force Close
+```
+
+### Connection Pooling & Performance
+
+- **Buffer Pooling**: Three-tier `sync.Pool` (4KB/64KB/1MB) reduces allocations by ~90%
+- **Lock-Free Tracking**: `sync.Map` for connection registry (better than mutex under high churn)
+- **Goroutine-Per-Connection**: Correct model for stateful NFS protocol
+- **Zero-Copy Operations**: Procedure data references pooled buffers directly
+- **Optimized Accept Loop**: Minimal select overhead in hot path
+
+### Prometheus Metrics
+
+Optional metrics collection with zero overhead when disabled:
+
+- Request counters by procedure and status
+- Request duration histograms
+- In-flight request gauges
+- Bytes transferred counters
+- Active connection gauge
+- Connection lifecycle counters (accepted/closed/force-closed)
+
+Metrics exposed on port 9090 at `/metrics` endpoint.
+
 ## Architecture
 
 ### Core Abstraction Layers
