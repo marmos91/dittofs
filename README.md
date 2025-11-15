@@ -438,6 +438,11 @@ adapters:
     idle_timeout: 5m0s           # Max idle time between requests
     shutdown_timeout: 30s        # Graceful shutdown timeout
     metrics_log_interval: 5m0s   # Metrics logging interval (0 = disabled)
+
+    # Rate Limiting (Production Hardening)
+    rate_limit_enabled: false              # Enable request rate limiting
+    rate_limit_requests_per_second: 5000   # Max sustained request rate
+    rate_limit_burst: 10000                # Max burst capacity (2x sustained rate)
 ```
 
 ### Environment Variables
@@ -468,6 +473,11 @@ export DITTOFS_CONTENT_FILESYSTEM_PATH=/data/dittofs
 export DITTOFS_ADAPTERS_NFS_ENABLED=true
 export DITTOFS_ADAPTERS_NFS_PORT=12049
 export DITTOFS_ADAPTERS_NFS_MAX_CONNECTIONS=1000
+
+# NFS rate limiting
+export DITTOFS_ADAPTERS_NFS_RATE_LIMIT_ENABLED=true
+export DITTOFS_ADAPTERS_NFS_RATE_LIMIT_REQUESTS_PER_SECOND=10000
+export DITTOFS_ADAPTERS_NFS_RATE_LIMIT_BURST=20000
 
 # Start server with overrides
 DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
@@ -893,11 +903,11 @@ metadata:
 - Performance benchmark framework
 - Modular configuration system
 
-**Phase 1: NFSv3 Production Hardening** (Current Focus)
+**Phase 1: NFSv3 Production Hardening** ✅ (Complete)
 
 - [x] Prometheus metrics integration
 - [x] Enhanced graceful shutdown
-- [ ] Request rate limiting
+- [x] Request rate limiting
 
 **Phase 2: Kubernetes Integration**
 

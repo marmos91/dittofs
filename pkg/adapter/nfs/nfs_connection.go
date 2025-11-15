@@ -262,6 +262,18 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 	logger.Debug("RPC Call Details: Program=%d Version=%d Procedure=%d",
 		call.Program, call.Version, call.Procedure)
 
+	// Check rate limit before processing request
+	if c.server.rateLimiter != nil {
+		if !c.server.rateLimiter.Allow() {
+			// Rate limit exceeded - reject request
+			c.server.metrics.RecordRateLimitExceeded()
+			logger.Debug("Rate limit exceeded for client %s: XID=0x%x program=%d procedure=%d",
+				clientAddr, call.XID, call.Program, call.Procedure)
+			// Send RPC error response to client to indicate rate limiting
+			return c.sendErrorReply(call.XID, rpc.AcceptStat_SYSTEM_ERR, "rate limit exceeded")
+		}
+	}
+
 	// Check context before dispatching to handler
 	select {
 	case <-ctx.Done():

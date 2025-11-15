@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/ratelimiter"
 	mount "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	v3 "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/pkg/content"
@@ -106,6 +107,10 @@ type NFSAdapter struct {
 
 	// listenerMu protects access to the listener field
 	listenerMu sync.RWMutex
+
+	// rateLimiter enforces request rate limiting when enabled
+	// nil if rate limiting is disabled
+	rateLimiter *ratelimiter.RateLimiter
 }
 
 // NFSConfig holds configuration parameters for the NFS server.
@@ -175,6 +180,24 @@ type NFSConfig struct {
 	// 0 disables periodic metrics logging.
 	// Recommended: 5m for production monitoring.
 	MetricsLogInterval time.Duration `mapstructure:"metrics_log_interval" validate:"min=0"`
+
+	// RateLimitEnabled enables request rate limiting when true.
+	// When false, no rate limiting is applied (unlimited requests).
+	// Recommended: true for production to prevent resource exhaustion.
+	RateLimitEnabled bool `mapstructure:"rate_limit_enabled"`
+
+	// RateLimitRequestsPerSecond limits the number of requests per second.
+	// Only used when RateLimitEnabled is true.
+	// 0 means unlimited (rate limiting effectively disabled).
+	// Recommended: 1000-10000 depending on server capacity.
+	RateLimitRequestsPerSecond uint `mapstructure:"rate_limit_requests_per_second"`
+
+	// RateLimitBurst is the maximum burst size for request rate limiting.
+	// Allows temporary bursts above the sustained rate.
+	// Only used when RateLimitEnabled is true.
+	// Must be >= RateLimitRequestsPerSecond for smooth operation.
+	// Recommended: 2x RateLimitRequestsPerSecond for handling traffic spikes.
+	RateLimitBurst uint `mapstructure:"rate_limit_burst"`
 }
 
 // applyDefaults fills in zero values with sensible defaults.
@@ -200,6 +223,15 @@ func (c *NFSConfig) applyDefaults() {
 	if c.MetricsLogInterval == 0 {
 		c.MetricsLogInterval = 5 * time.Minute
 	}
+	// Rate limiting defaults: disabled by default for backward compatibility
+	// Production deployments should explicitly enable and configure rate limiting
+	if c.RateLimitEnabled && c.RateLimitRequestsPerSecond == 0 {
+		c.RateLimitRequestsPerSecond = 5000 // Default: 5000 req/s
+	}
+	if c.RateLimitEnabled && c.RateLimitBurst == 0 {
+		// Default burst is 2x the sustained rate for handling traffic spikes
+		c.RateLimitBurst = c.RateLimitRequestsPerSecond * 2
+	}
 }
 
 // validate checks that the configuration is valid for production use.
@@ -221,6 +253,10 @@ func (c *NFSConfig) validate() error {
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("invalid ShutdownTimeout %v: must be > 0", c.ShutdownTimeout)
+	}
+	if c.RateLimitEnabled && c.RateLimitRequestsPerSecond > 0 && c.RateLimitBurst < c.RateLimitRequestsPerSecond {
+		return fmt.Errorf("invalid RateLimitBurst %d: should be >= RateLimitRequestsPerSecond %d",
+			c.RateLimitBurst, c.RateLimitRequestsPerSecond)
 	}
 	return nil
 }
@@ -267,6 +303,16 @@ func New(config NFSConfig, nfsMetrics metrics.NFSMetrics) *NFSAdapter {
 		nfsMetrics = metrics.NewNoopNFSMetrics()
 	}
 
+	// Create rate limiter if enabled
+	var rateLimiter *ratelimiter.RateLimiter
+	if config.RateLimitEnabled {
+		rateLimiter = ratelimiter.New(config.RateLimitRequestsPerSecond, config.RateLimitBurst)
+		logger.Info("NFS rate limiting enabled: %d req/s (burst: %d)",
+			config.RateLimitRequestsPerSecond, config.RateLimitBurst)
+	} else {
+		logger.Debug("NFS rate limiting disabled")
+	}
+
 	return &NFSAdapter{
 		config:         config,
 		nfsHandler:     &v3.DefaultNFSHandler{},
@@ -277,6 +323,7 @@ func New(config NFSConfig, nfsMetrics metrics.NFSMetrics) *NFSAdapter {
 		shutdownCtx:    shutdownCtx,
 		cancelRequests: cancelRequests,
 		listenerReady:  make(chan struct{}),
+		rateLimiter:    rateLimiter,
 		// activeConnections is initialized as zero-value sync.Map (ready to use)
 	}
 }

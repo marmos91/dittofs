@@ -67,6 +67,10 @@ type NFSMetrics interface {
 	// RecordConnectionForceClosed increments the force-closed connections counter.
 	// Called when connections are forcibly closed after shutdown timeout.
 	RecordConnectionForceClosed()
+
+	// RecordRateLimitExceeded increments the rate limit exceeded counter.
+	// Called when a request is rejected due to rate limiting.
+	RecordRateLimitExceeded()
 }
 
 // nfsMetrics is the Prometheus implementation of NFSMetrics.
@@ -79,6 +83,7 @@ type nfsMetrics struct {
 	connectionsAccepted    prometheus.Counter
 	connectionsClosed      prometheus.Counter
 	connectionsForceClosed prometheus.Counter
+	rateLimitExceeded      prometheus.Counter
 }
 
 // NewNFSMetrics creates a new Prometheus-backed NFSMetrics instance.
@@ -159,6 +164,12 @@ func NewNFSMetrics() NFSMetrics {
 				Help: "Total number of NFS connections force-closed during shutdown timeout",
 			},
 		),
+		rateLimitExceeded: promauto.With(reg).NewCounter(
+			prometheus.CounterOpts{
+				Name: "dittofs_nfs_rate_limit_exceeded_total",
+				Help: "Total number of NFS requests rejected due to rate limiting",
+			},
+		),
 	}
 }
 
@@ -200,6 +211,10 @@ func (m *nfsMetrics) RecordConnectionForceClosed() {
 	m.connectionsForceClosed.Inc()
 }
 
+func (m *nfsMetrics) RecordRateLimitExceeded() {
+	m.rateLimitExceeded.Inc()
+}
+
 // noopNFSMetrics is a no-op implementation of NFSMetrics with zero overhead.
 type noopNFSMetrics struct{}
 
@@ -211,6 +226,7 @@ func (noopNFSMetrics) SetActiveConnections(count int32)                         
 func (noopNFSMetrics) RecordConnectionAccepted()                                         {}
 func (noopNFSMetrics) RecordConnectionClosed()                                           {}
 func (noopNFSMetrics) RecordConnectionForceClosed()                                      {}
+func (noopNFSMetrics) RecordRateLimitExceeded()                                          {}
 
 // NewNoopNFSMetrics returns a no-op implementation of NFSMetrics.
 // This is useful for testing or when metrics collection is disabled.
