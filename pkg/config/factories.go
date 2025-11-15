@@ -198,9 +198,9 @@ func createS3ContentStore(ctx context.Context, options map[string]any) (content.
 func CreateMetadataStore(ctx context.Context, cfg *MetadataConfig) (metadata.MetadataStore, error) {
 	switch cfg.Type {
 	case "memory":
-		return createMemoryMetadataStore(ctx, cfg.Memory, &cfg.Capabilities)
+		return createMemoryMetadataStore(ctx, cfg.Memory, &cfg.FilesystemCapabilities)
 	case "badger":
-		return createBadgerMetadataStore(ctx, cfg.Badger, &cfg.Capabilities)
+		return createBadgerMetadataStore(ctx, cfg.Badger, &cfg.FilesystemCapabilities)
 	default:
 		return nil, fmt.Errorf("unknown metadata store type: %q (supported: memory, badger)", cfg.Type)
 	}

@@ -104,29 +104,29 @@ metadata:
   # Filesystem capabilities and limits
   capabilities:
     # Maximum size of a single read operation (bytes)
-    max_read_size: ` + fmt.Sprintf("%d", cfg.Metadata.Capabilities.MaxReadSize) + `
+    max_read_size: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxReadSize) + `
     # Preferred read size for optimal performance (bytes)
-    preferred_read_size: ` + fmt.Sprintf("%d", cfg.Metadata.Capabilities.PreferredReadSize) + `
+    preferred_read_size: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.PreferredReadSize) + `
     # Maximum size of a single write operation (bytes)
-    max_write_size: ` + fmt.Sprintf("%d", cfg.Metadata.Capabilities.MaxWriteSize) + `
+    max_write_size: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxWriteSize) + `
     # Preferred write size for optimal performance (bytes)
-    preferred_write_size: ` + fmt.Sprintf("%d", cfg.Metadata.Capabilities.PreferredWriteSize) + `
+    preferred_write_size: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.PreferredWriteSize) + `
     # Maximum file size supported (bytes)
-    max_file_size: ` + fmt.Sprintf("%d", cfg.Metadata.Capabilities.MaxFileSize) + `
+    max_file_size: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxFileSize) + `
     # Maximum filename length (characters)
-    max_filename_len: ` + fmt.Sprintf("%d", cfg.Metadata.Capabilities.MaxFilenameLen) + `
+    max_filename_len: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxFilenameLen) + `
     # Maximum path length (characters)
-    max_path_len: ` + fmt.Sprintf("%d", cfg.Metadata.Capabilities.MaxPathLen) + `
+    max_path_len: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxPathLen) + `
     # Maximum number of hard links per file
-    max_hard_link_count: ` + fmt.Sprintf("%d", cfg.Metadata.Capabilities.MaxHardLinkCount) + `
+    max_hard_link_count: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxHardLinkCount) + `
     # Whether hard links are supported
-    supports_hard_links: ` + fmt.Sprintf("%t", cfg.Metadata.Capabilities.SupportsHardLinks) + `
+    supports_hard_links: ` + fmt.Sprintf("%t", cfg.Metadata.FilesystemCapabilities.SupportsHardLinks) + `
     # Whether symbolic links are supported
-    supports_symlinks: ` + fmt.Sprintf("%t", cfg.Metadata.Capabilities.SupportsSymlinks) + `
+    supports_symlinks: ` + fmt.Sprintf("%t", cfg.Metadata.FilesystemCapabilities.SupportsSymlinks) + `
     # Whether filenames are case-sensitive
-    case_sensitive: ` + fmt.Sprintf("%t", cfg.Metadata.Capabilities.CaseSensitive) + `
+    case_sensitive: ` + fmt.Sprintf("%t", cfg.Metadata.FilesystemCapabilities.CaseSensitive) + `
     # Whether filename case is preserved
-    case_preserving: ` + fmt.Sprintf("%t", cfg.Metadata.Capabilities.CasePreserving) + `
+    case_preserving: ` + fmt.Sprintf("%t", cfg.Metadata.FilesystemCapabilities.CasePreserving) + `
 
   # Restrict DUMP operations to allowed clients only
   dump_restricted: ` + fmt.Sprintf("%t", cfg.Metadata.DumpRestricted) + `
@@ -182,14 +182,16 @@ adapters:
     port: ` + fmt.Sprintf("%d", cfg.Adapters.NFS.Port) + `
     # Maximum concurrent connections (0 = unlimited)
     max_connections: ` + fmt.Sprintf("%d", cfg.Adapters.NFS.MaxConnections) + `
-    # Maximum time to read a request
-    read_timeout: ` + cfg.Adapters.NFS.ReadTimeout.String() + `
-    # Maximum time to write a response
-    write_timeout: ` + cfg.Adapters.NFS.WriteTimeout.String() + `
-    # Maximum idle time between requests
-    idle_timeout: ` + cfg.Adapters.NFS.IdleTimeout.String() + `
-    # Graceful shutdown timeout
-    shutdown_timeout: ` + cfg.Adapters.NFS.ShutdownTimeout.String() + `
+    # Timeout configuration
+    timeouts:
+      # Maximum time to read a request
+      read: ` + cfg.Adapters.NFS.Timeouts.Read.String() + `
+      # Maximum time to write a response
+      write: ` + cfg.Adapters.NFS.Timeouts.Write.String() + `
+      # Maximum idle time between requests
+      idle: ` + cfg.Adapters.NFS.Timeouts.Idle.String() + `
+      # Graceful shutdown timeout
+      shutdown: ` + cfg.Adapters.NFS.Timeouts.Shutdown.String() + `
     # Metrics logging interval (0 = disabled)
     metrics_log_interval: ` + cfg.Adapters.NFS.MetricsLogInterval.String() + `
 `

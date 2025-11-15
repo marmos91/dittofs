@@ -428,21 +428,44 @@ Configures protocol-specific settings:
 **NFS Adapter**:
 
 ```yaml
+server:
+  shutdown_timeout: 30s
+
+  # Global rate limiting (applies to all adapters unless overridden)
+  rate_limiting:
+    enabled: false
+    requests_per_second: 5000    # Sustained rate limit
+    burst: 10000                  # Burst capacity (2x sustained recommended)
+
+metadata:
+  type: "badger"
+
+  # Renamed from 'capabilities' for clarity
+  filesystem_capabilities:
+    max_read_size: 1048576       # 1MB
+    preferred_read_size: 65536   # 64KB
+    # ... other capability fields
+
 adapters:
   nfs:
     enabled: true
     port: 2049
     max_connections: 0           # 0 = unlimited
-    read_timeout: 5m0s           # Max time to read request
-    write_timeout: 30s           # Max time to write response
-    idle_timeout: 5m0s           # Max idle time between requests
-    shutdown_timeout: 30s        # Graceful shutdown timeout
-    metrics_log_interval: 5m0s   # Metrics logging interval (0 = disabled)
 
-    # Rate Limiting (Production Hardening)
-    rate_limit_enabled: false              # Enable request rate limiting
-    rate_limit_requests_per_second: 5000   # Max sustained request rate
-    rate_limit_burst: 10000                # Max burst capacity (2x sustained rate)
+    # Grouped timeout configuration
+    timeouts:
+      read: 5m                   # Max time to read request
+      write: 30s                 # Max time to write response
+      idle: 5m                   # Max idle time between requests
+      shutdown: 30s              # Graceful shutdown timeout
+
+    metrics_log_interval: 5m     # Metrics logging interval (0 = disabled)
+
+    # Optional: override server-level rate limiting for this adapter
+    # rate_limiting:
+    #   enabled: true
+    #   requests_per_second: 10000
+    #   burst: 20000
 ```
 
 ### Environment Variables
@@ -469,19 +492,54 @@ export DITTOFS_SERVER_SHUTDOWN_TIMEOUT=60s
 export DITTOFS_CONTENT_TYPE=filesystem
 export DITTOFS_CONTENT_FILESYSTEM_PATH=/data/dittofs
 
+# Server-level configuration
+export DITTOFS_SERVER_SHUTDOWN_TIMEOUT=60s
+
+# Global rate limiting
+export DITTOFS_SERVER_RATE_LIMITING_ENABLED=true
+export DITTOFS_SERVER_RATE_LIMITING_REQUESTS_PER_SECOND=10000
+export DITTOFS_SERVER_RATE_LIMITING_BURST=20000
+
+# Metadata
+export DITTOFS_METADATA_TYPE=badger
+
 # NFS adapter
 export DITTOFS_ADAPTERS_NFS_ENABLED=true
 export DITTOFS_ADAPTERS_NFS_PORT=12049
 export DITTOFS_ADAPTERS_NFS_MAX_CONNECTIONS=1000
 
-# NFS rate limiting
-export DITTOFS_ADAPTERS_NFS_RATE_LIMIT_ENABLED=true
-export DITTOFS_ADAPTERS_NFS_RATE_LIMIT_REQUESTS_PER_SECOND=10000
-export DITTOFS_ADAPTERS_NFS_RATE_LIMIT_BURST=20000
+# NFS timeouts
+export DITTOFS_ADAPTERS_NFS_TIMEOUTS_READ=5m
+export DITTOFS_ADAPTERS_NFS_TIMEOUTS_WRITE=30s
+export DITTOFS_ADAPTERS_NFS_TIMEOUTS_IDLE=5m
+export DITTOFS_ADAPTERS_NFS_TIMEOUTS_SHUTDOWN=30s
 
 # Start server with overrides
 DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
 ```
+
+### IDE Support with JSON Schema
+
+DittoFS provides a JSON schema for configuration validation and autocomplete in VS Code and other editors.
+
+**Setup for VS Code**:
+
+1. The `.vscode/settings.json` file is already configured
+2. Install the [YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)
+3. Open any `dittofs.yaml` or `config.yaml` file
+4. Get autocomplete, validation, and inline documentation
+
+**Generate schema** (if modified):
+
+```bash
+go run cmd/generate-schema/main.go config.schema.json
+```
+
+**Features**:
+- ✅ Field autocomplete
+- ✅ Type validation
+- ✅ Inline documentation on hover
+- ✅ Error highlighting for invalid values
 
 ### Configuration Precedence
 

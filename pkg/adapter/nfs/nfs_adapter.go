@@ -113,26 +113,55 @@ type NFSAdapter struct {
 	rateLimiter *ratelimiter.RateLimiter
 }
 
+// NFSTimeoutsConfig groups all timeout-related configuration.
+type NFSTimeoutsConfig struct {
+	// Read is the maximum duration for reading a complete RPC request.
+	// This prevents slow or malicious clients from holding connections indefinitely.
+	// 0 means no timeout (not recommended).
+	// Recommended: 30s for LAN, 60s for WAN.
+	Read time.Duration `mapstructure:"read" validate:"min=0"`
+
+	// Write is the maximum duration for writing an RPC response.
+	// This prevents slow networks or clients from blocking server resources.
+	// 0 means no timeout (not recommended).
+	// Recommended: 30s for LAN, 60s for WAN.
+	Write time.Duration `mapstructure:"write" validate:"min=0"`
+
+	// Idle is the maximum duration a connection can remain idle
+	// between requests before being closed automatically.
+	// This frees resources from abandoned connections.
+	// 0 means no timeout (connections stay open indefinitely).
+	// Recommended: 5m for production.
+	Idle time.Duration `mapstructure:"idle" validate:"min=0"`
+
+	// Shutdown is the maximum duration to wait for active connections
+	// to complete during graceful shutdown.
+	// After this timeout, remaining connections are forcibly closed.
+	// Must be > 0 to ensure shutdown completes.
+	// Recommended: 30s (balances graceful shutdown with restart time).
+	Shutdown time.Duration `mapstructure:"shutdown" validate:"required,gt=0"`
+}
+
 // NFSConfig holds configuration parameters for the NFS server.
 //
 // These values control server behavior including connection limits, timeouts,
-// and resource management. All timeout values are optional - zero means no timeout.
+// and resource management.
 //
 // Default values (applied by New if zero):
 //   - Port: 2049 (standard NFS port)
 //   - MaxConnections: 0 (unlimited)
-//   - ReadTimeout: 30s
-//   - WriteTimeout: 30s
-//   - IdleTimeout: 5m
-//   - ShutdownTimeout: 30s
+//   - Timeouts.Read: 5m
+//   - Timeouts.Write: 30s
+//   - Timeouts.Idle: 5m
+//   - Timeouts.Shutdown: 30s
 //   - MetricsLogInterval: 5m (0 disables)
 //
 // Production recommendations:
 //   - MaxConnections: Set based on expected load (e.g., 1000 for busy servers)
-//   - ReadTimeout: 30s prevents slow clients from holding connections
-//   - WriteTimeout: 30s prevents slow networks from blocking responses
-//   - IdleTimeout: 5m closes inactive connections to free resources
-//   - ShutdownTimeout: 30s balances graceful shutdown with restart time
+//   - Timeouts.Read: 30s prevents slow clients from holding connections
+//   - Timeouts.Write: 30s prevents slow networks from blocking responses
+//   - Timeouts.Idle: 5m closes inactive connections to free resources
+//   - Timeouts.Shutdown: 30s balances graceful shutdown with restart time
 type NFSConfig struct {
 	// Enabled controls whether the NFS adapter is active.
 	// When false, the NFS adapter will not be started.
@@ -149,31 +178,8 @@ type NFSConfig struct {
 	// Recommended: 1000-5000 for production servers.
 	MaxConnections int `mapstructure:"max_connections" validate:"min=0"`
 
-	// ReadTimeout is the maximum duration for reading a complete RPC request.
-	// This prevents slow or malicious clients from holding connections indefinitely.
-	// 0 means no timeout (not recommended).
-	// Recommended: 30s for LAN, 60s for WAN.
-	ReadTimeout time.Duration `mapstructure:"read_timeout" validate:"min=0"`
-
-	// WriteTimeout is the maximum duration for writing an RPC response.
-	// This prevents slow networks or clients from blocking server resources.
-	// 0 means no timeout (not recommended).
-	// Recommended: 30s for LAN, 60s for WAN.
-	WriteTimeout time.Duration `mapstructure:"write_timeout" validate:"min=0"`
-
-	// IdleTimeout is the maximum duration a connection can remain idle
-	// between requests before being closed automatically.
-	// This frees resources from abandoned connections.
-	// 0 means no timeout (connections stay open indefinitely).
-	// Recommended: 5m for production.
-	IdleTimeout time.Duration `mapstructure:"idle_timeout" validate:"min=0"`
-
-	// ShutdownTimeout is the maximum duration to wait for active connections
-	// to complete during graceful shutdown.
-	// After this timeout, remaining connections are forcibly closed.
-	// Must be > 0 to ensure shutdown completes.
-	// Recommended: 30s (balances graceful shutdown with restart time).
-	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout" validate:"required,gt=0"`
+	// Timeouts groups all timeout-related configuration
+	Timeouts NFSTimeoutsConfig `mapstructure:"timeouts"`
 
 	// MetricsLogInterval is the interval at which to log server metrics
 	// (active connections, requests/sec, etc.).
@@ -181,23 +187,18 @@ type NFSConfig struct {
 	// Recommended: 5m for production monitoring.
 	MetricsLogInterval time.Duration `mapstructure:"metrics_log_interval" validate:"min=0"`
 
-	// RateLimitEnabled enables request rate limiting when true.
-	// When false, no rate limiting is applied (unlimited requests).
-	// Recommended: true for production to prevent resource exhaustion.
-	RateLimitEnabled bool `mapstructure:"rate_limit_enabled"`
+	// RateLimiting contains adapter-specific rate limiting configuration.
+	// If not specified, inherits from server.rate_limiting.
+	// If specified, overrides server-level configuration for this adapter.
+	RateLimiting *RateLimitingConfig `mapstructure:"rate_limiting"`
+}
 
-	// RateLimitRequestsPerSecond limits the number of requests per second.
-	// Only used when RateLimitEnabled is true.
-	// 0 means unlimited (rate limiting effectively disabled).
-	// Recommended: 1000-10000 depending on server capacity.
-	RateLimitRequestsPerSecond uint `mapstructure:"rate_limit_requests_per_second"`
-
-	// RateLimitBurst is the maximum burst size for request rate limiting.
-	// Allows temporary bursts above the sustained rate.
-	// Only used when RateLimitEnabled is true.
-	// Must be >= RateLimitRequestsPerSecond for smooth operation.
-	// Recommended: 2x RateLimitRequestsPerSecond for handling traffic spikes.
-	RateLimitBurst uint `mapstructure:"rate_limit_burst"`
+// RateLimitingConfig controls request rate limiting for the NFS adapter.
+// This type mirrors config.RateLimitingConfig to avoid import cycles.
+type RateLimitingConfig struct {
+	Enabled           bool `mapstructure:"enabled"`
+	RequestsPerSecond uint `mapstructure:"requests_per_second"`
+	Burst             uint `mapstructure:"burst"`
 }
 
 // applyDefaults fills in zero values with sensible defaults.
@@ -208,29 +209,31 @@ func (c *NFSConfig) applyDefaults() {
 	if c.Port <= 0 {
 		c.Port = 2049
 	}
-	if c.ReadTimeout == 0 {
-		c.ReadTimeout = 5 * time.Minute
+	if c.Timeouts.Read == 0 {
+		c.Timeouts.Read = 5 * time.Minute
 	}
-	if c.WriteTimeout == 0 {
-		c.WriteTimeout = 30 * time.Second
+	if c.Timeouts.Write == 0 {
+		c.Timeouts.Write = 30 * time.Second
 	}
-	if c.IdleTimeout == 0 {
-		c.IdleTimeout = 5 * time.Minute
+	if c.Timeouts.Idle == 0 {
+		c.Timeouts.Idle = 5 * time.Minute
 	}
-	if c.ShutdownTimeout == 0 {
-		c.ShutdownTimeout = 30 * time.Second
+	if c.Timeouts.Shutdown == 0 {
+		c.Timeouts.Shutdown = 30 * time.Second
 	}
 	if c.MetricsLogInterval == 0 {
 		c.MetricsLogInterval = 5 * time.Minute
 	}
-	// Rate limiting defaults: disabled by default for backward compatibility
-	// Production deployments should explicitly enable and configure rate limiting
-	if c.RateLimitEnabled && c.RateLimitRequestsPerSecond == 0 {
-		c.RateLimitRequestsPerSecond = 5000 // Default: 5000 req/s
-	}
-	if c.RateLimitEnabled && c.RateLimitBurst == 0 {
-		// Default burst is 2x the sustained rate for handling traffic spikes
-		c.RateLimitBurst = c.RateLimitRequestsPerSecond * 2
+	// Rate limiting defaults are handled at server level in pkg/config/defaults.go
+	// Adapter-level rate limiting is optional and inherits from server config
+	if c.RateLimiting != nil {
+		if c.RateLimiting.Enabled && c.RateLimiting.RequestsPerSecond == 0 {
+			c.RateLimiting.RequestsPerSecond = 5000 // Default: 5000 req/s
+		}
+		if c.RateLimiting.Enabled && c.RateLimiting.Burst == 0 {
+			// Default burst is 2x the sustained rate for handling traffic spikes
+			c.RateLimiting.Burst = c.RateLimiting.RequestsPerSecond * 2
+		}
 	}
 }
 
@@ -242,21 +245,21 @@ func (c *NFSConfig) validate() error {
 	if c.MaxConnections < 0 {
 		return fmt.Errorf("invalid MaxConnections %d: must be >= 0", c.MaxConnections)
 	}
-	if c.ReadTimeout < 0 {
-		return fmt.Errorf("invalid ReadTimeout %v: must be >= 0", c.ReadTimeout)
+	if c.Timeouts.Read < 0 {
+		return fmt.Errorf("invalid timeouts.read %v: must be >= 0", c.Timeouts.Read)
 	}
-	if c.WriteTimeout < 0 {
-		return fmt.Errorf("invalid WriteTimeout %v: must be >= 0", c.WriteTimeout)
+	if c.Timeouts.Write < 0 {
+		return fmt.Errorf("invalid timeouts.write %v: must be >= 0", c.Timeouts.Write)
 	}
-	if c.IdleTimeout < 0 {
-		return fmt.Errorf("invalid IdleTimeout %v: must be >= 0", c.IdleTimeout)
+	if c.Timeouts.Idle < 0 {
+		return fmt.Errorf("invalid timeouts.idle %v: must be >= 0", c.Timeouts.Idle)
 	}
-	if c.ShutdownTimeout <= 0 {
-		return fmt.Errorf("invalid ShutdownTimeout %v: must be > 0", c.ShutdownTimeout)
+	if c.Timeouts.Shutdown <= 0 {
+		return fmt.Errorf("invalid timeouts.shutdown %v: must be > 0", c.Timeouts.Shutdown)
 	}
-	if c.RateLimitEnabled && c.RateLimitRequestsPerSecond > 0 && c.RateLimitBurst < c.RateLimitRequestsPerSecond {
-		return fmt.Errorf("invalid RateLimitBurst %d: should be >= RateLimitRequestsPerSecond %d",
-			c.RateLimitBurst, c.RateLimitRequestsPerSecond)
+	if c.RateLimiting != nil && c.RateLimiting.Enabled && c.RateLimiting.RequestsPerSecond > 0 && c.RateLimiting.Burst < c.RateLimiting.RequestsPerSecond {
+		return fmt.Errorf("invalid rate_limiting.burst %d: should be >= rate_limiting.requests_per_second %d",
+			c.RateLimiting.Burst, c.RateLimiting.RequestsPerSecond)
 	}
 	return nil
 }
@@ -272,25 +275,26 @@ func (c *NFSConfig) validate() error {
 //
 // Parameters:
 //   - config: Server configuration (ports, timeouts, limits)
+//   - serverRateLimit: Server-level rate limiting config (can be nil)
 //   - nfsMetrics: Optional metrics collector (nil for no metrics)
 //
 // Returns a configured but not yet started NFSAdapter.
 //
 // Panics if config validation fails.
-func New(config NFSConfig, nfsMetrics metrics.NFSMetrics) *NFSAdapter {
+func New(nfsConfig NFSConfig, serverRateLimit *RateLimitingConfig, nfsMetrics metrics.NFSMetrics) *NFSAdapter {
 	// Apply defaults for zero values
-	config.applyDefaults()
+	nfsConfig.applyDefaults()
 
 	// Validate configuration
-	if err := config.validate(); err != nil {
+	if err := nfsConfig.validate(); err != nil {
 		panic(fmt.Sprintf("invalid NFS config: %v", err))
 	}
 
 	// Create connection semaphore if MaxConnections is set
 	var connSemaphore chan struct{}
-	if config.MaxConnections > 0 {
-		connSemaphore = make(chan struct{}, config.MaxConnections)
-		logger.Debug("NFS connection limit: %d", config.MaxConnections)
+	if nfsConfig.MaxConnections > 0 {
+		connSemaphore = make(chan struct{}, nfsConfig.MaxConnections)
+		logger.Debug("NFS connection limit: %d", nfsConfig.MaxConnections)
 	} else {
 		logger.Debug("NFS connection limit: unlimited")
 	}
@@ -303,18 +307,29 @@ func New(config NFSConfig, nfsMetrics metrics.NFSMetrics) *NFSAdapter {
 		nfsMetrics = metrics.NewNoopNFSMetrics()
 	}
 
+	// Determine effective rate limiting config
+	// Adapter-level config overrides server-level config
+	var effectiveRateLimit *RateLimitingConfig
+	if nfsConfig.RateLimiting != nil {
+		effectiveRateLimit = nfsConfig.RateLimiting
+		logger.Debug("Using adapter-level rate limiting configuration")
+	} else if serverRateLimit != nil {
+		effectiveRateLimit = serverRateLimit
+		logger.Debug("Using server-level rate limiting configuration")
+	}
+
 	// Create rate limiter if enabled
 	var rateLimiter *ratelimiter.RateLimiter
-	if config.RateLimitEnabled {
-		rateLimiter = ratelimiter.New(config.RateLimitRequestsPerSecond, config.RateLimitBurst)
+	if effectiveRateLimit != nil && effectiveRateLimit.Enabled {
+		rateLimiter = ratelimiter.New(effectiveRateLimit.RequestsPerSecond, effectiveRateLimit.Burst)
 		logger.Info("NFS rate limiting enabled: %d req/s (burst: %d)",
-			config.RateLimitRequestsPerSecond, config.RateLimitBurst)
+			effectiveRateLimit.RequestsPerSecond, effectiveRateLimit.Burst)
 	} else {
 		logger.Debug("NFS rate limiting disabled")
 	}
 
 	return &NFSAdapter{
-		config:         config,
+		config:         nfsConfig,
 		nfsHandler:     &v3.DefaultNFSHandler{},
 		mountHandler:   &mount.DefaultMountHandler{},
 		metrics:        nfsMetrics,
@@ -324,7 +339,6 @@ func New(config NFSConfig, nfsMetrics metrics.NFSMetrics) *NFSAdapter {
 		cancelRequests: cancelRequests,
 		listenerReady:  make(chan struct{}),
 		rateLimiter:    rateLimiter,
-		// activeConnections is initialized as zero-value sync.Map (ready to use)
 	}
 }
 
@@ -397,7 +411,7 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 
 	logger.Info("NFS server listening on port %d", s.config.Port)
 	logger.Debug("NFS config: max_connections=%d read_timeout=%v write_timeout=%v idle_timeout=%v",
-		s.config.MaxConnections, s.config.ReadTimeout, s.config.WriteTimeout, s.config.IdleTimeout)
+		s.config.MaxConnections, s.config.Timeouts.Read, s.config.Timeouts.Write, s.config.Timeouts.Idle)
 
 	// Monitor context cancellation in separate goroutine
 	// This allows the main accept loop to focus on accepting connections
@@ -574,7 +588,7 @@ func (s *NFSAdapter) initiateShutdown() {
 func (s *NFSAdapter) gracefulShutdown() error {
 	activeCount := s.connCount.Load()
 	logger.Info("NFS graceful shutdown: waiting for %d active connection(s) (timeout: %v)",
-		activeCount, s.config.ShutdownTimeout)
+		activeCount, s.config.Timeouts.Shutdown)
 
 	// Create channel that closes when all connections are done
 	done := make(chan struct{})
@@ -589,10 +603,10 @@ func (s *NFSAdapter) gracefulShutdown() error {
 		logger.Info("NFS graceful shutdown complete: all connections closed")
 		return nil
 
-	case <-time.After(s.config.ShutdownTimeout):
+	case <-time.After(s.config.Timeouts.Shutdown):
 		remaining := s.connCount.Load()
 		logger.Warn("NFS shutdown timeout exceeded: %d connection(s) still active after %v - forcing closure",
-			remaining, s.config.ShutdownTimeout)
+			remaining, s.config.Timeouts.Shutdown)
 
 		// Force-close all remaining connections
 		s.forceCloseConnections()

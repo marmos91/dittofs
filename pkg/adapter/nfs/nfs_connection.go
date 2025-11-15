@@ -57,8 +57,8 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 	logger.Debug("New connection from %s", clientAddr)
 
 	// Set initial idle timeout
-	if c.server.config.IdleTimeout > 0 {
-		if err := c.conn.SetDeadline(time.Now().Add(c.server.config.IdleTimeout)); err != nil {
+	if c.server.config.Timeouts.Idle > 0 {
+		if err := c.conn.SetDeadline(time.Now().Add(c.server.config.Timeouts.Idle)); err != nil {
 			logger.Warn("Failed to set deadline for %s: %v", clientAddr, err)
 		}
 	}
@@ -98,8 +98,8 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 		_ = duration // Will be recorded in handleRPCCall
 
 		// Reset idle timeout after successful request
-		if c.server.config.IdleTimeout > 0 {
-			if err := c.conn.SetDeadline(time.Now().Add(c.server.config.IdleTimeout)); err != nil {
+		if c.server.config.Timeouts.Idle > 0 {
+			if err := c.conn.SetDeadline(time.Now().Add(c.server.config.Timeouts.Idle)); err != nil {
 				logger.Warn("Failed to reset deadline for %s: %v", clientAddr, err)
 			}
 		}
@@ -128,8 +128,8 @@ func (c *NFSConnection) handleRequest(ctx context.Context) error {
 	}
 
 	// Apply read timeout if configured
-	if c.server.config.ReadTimeout > 0 {
-		deadline := time.Now().Add(c.server.config.ReadTimeout)
+	if c.server.config.Timeouts.Read > 0 {
+		deadline := time.Now().Add(c.server.config.Timeouts.Read)
 		if err := c.conn.SetReadDeadline(deadline); err != nil {
 			return fmt.Errorf("set read deadline: %w", err)
 		}
@@ -438,8 +438,8 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 // - Reply construction fails
 // - Network write fails
 func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
-	if c.server.config.WriteTimeout > 0 {
-		deadline := time.Now().Add(c.server.config.WriteTimeout)
+	if c.server.config.Timeouts.Write > 0 {
+		deadline := time.Now().Add(c.server.config.Timeouts.Write)
 		if err := c.conn.SetWriteDeadline(deadline); err != nil {
 			return fmt.Errorf("set write deadline: %w", err)
 		}
@@ -474,8 +474,8 @@ func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
 // - Reply construction fails
 // - Network write fails
 func (c *NFSConnection) sendErrorReply(xid uint32, acceptStat uint32) error {
-	if c.server.config.WriteTimeout > 0 {
-		deadline := time.Now().Add(c.server.config.WriteTimeout)
+	if c.server.config.Timeouts.Write > 0 {
+		deadline := time.Now().Add(c.server.config.Timeouts.Write)
 		if err := c.conn.SetWriteDeadline(deadline); err != nil {
 			return fmt.Errorf("set write deadline: %w", err)
 		}

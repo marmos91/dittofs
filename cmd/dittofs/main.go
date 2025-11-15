@@ -222,9 +222,18 @@ func runStart() {
 
 	// Add enabled adapters
 	if cfg.Adapters.NFS.Enabled {
-		// Use the config's NFSConfig directly (no manual mapping needed)
-		// Pass metrics if enabled (nil if disabled - adapter will use no-op)
-		nfsAdapter := nfs.New(cfg.Adapters.NFS, nfsMetrics)
+		// Convert server-level rate limiting config to NFS adapter type (avoids import cycle)
+		var serverRateLimit *nfs.RateLimitingConfig
+		if cfg.Server.RateLimiting.Enabled || cfg.Server.RateLimiting.RequestsPerSecond > 0 {
+			serverRateLimit = &nfs.RateLimitingConfig{
+				Enabled:           cfg.Server.RateLimiting.Enabled,
+				RequestsPerSecond: cfg.Server.RateLimiting.RequestsPerSecond,
+				Burst:             cfg.Server.RateLimiting.Burst,
+			}
+		}
+
+		// Pass server-level rate limiting config and metrics if enabled (nil if disabled - adapter will use no-op)
+		nfsAdapter := nfs.New(cfg.Adapters.NFS, serverRateLimit, nfsMetrics)
 		if err := dittoSrv.AddAdapter(nfsAdapter); err != nil {
 			log.Fatalf("Failed to add NFS adapter: %v", err)
 		}

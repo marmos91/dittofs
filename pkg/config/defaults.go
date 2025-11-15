@@ -65,6 +65,24 @@ func applyServerDefaults(cfg *ServerConfig) {
 
 	// Apply metrics defaults
 	applyMetricsDefaults(&cfg.Metrics)
+
+	// Apply rate limiting defaults
+	applyRateLimitingDefaults(&cfg.RateLimiting)
+}
+
+// applyRateLimitingDefaults sets rate limiting defaults.
+func applyRateLimitingDefaults(cfg *RateLimitingConfig) {
+	// Enabled defaults to false (opt-in for rate limiting)
+	// RequestsPerSecond and Burst default to 0 (no limit when disabled)
+	if cfg.Enabled {
+		if cfg.RequestsPerSecond == 0 {
+			cfg.RequestsPerSecond = 5000 // Default: 5000 req/s
+		}
+		if cfg.Burst == 0 {
+			// Default burst is 2x the sustained rate for handling traffic spikes
+			cfg.Burst = cfg.RequestsPerSecond * 2
+		}
+	}
 }
 
 // applyMetricsDefaults sets metrics defaults.
@@ -119,7 +137,7 @@ func applyMetadataDefaults(cfg *MetadataConfig) {
 	}
 
 	// Apply filesystem capabilities defaults
-	applyCapabilitiesDefaults(&cfg.Capabilities)
+	applyCapabilitiesDefaults(&cfg.FilesystemCapabilities)
 
 	// DumpRestricted defaults to false
 	// DumpAllowedClients defaults to empty list
@@ -241,25 +259,29 @@ func applyNFSDefaults(cfg *nfs.NFSConfig) {
 
 	// MaxConnections defaults to 0 (unlimited)
 
-	if cfg.ReadTimeout == 0 {
-		cfg.ReadTimeout = 5 * time.Minute
+	// Apply timeout defaults
+	if cfg.Timeouts.Read == 0 {
+		cfg.Timeouts.Read = 5 * time.Minute
 	}
 
-	if cfg.WriteTimeout == 0 {
-		cfg.WriteTimeout = 30 * time.Second
+	if cfg.Timeouts.Write == 0 {
+		cfg.Timeouts.Write = 30 * time.Second
 	}
 
-	if cfg.IdleTimeout == 0 {
-		cfg.IdleTimeout = 5 * time.Minute
+	if cfg.Timeouts.Idle == 0 {
+		cfg.Timeouts.Idle = 5 * time.Minute
 	}
 
-	if cfg.ShutdownTimeout == 0 {
-		cfg.ShutdownTimeout = 30 * time.Second
+	if cfg.Timeouts.Shutdown == 0 {
+		cfg.Timeouts.Shutdown = 30 * time.Second
 	}
 
 	if cfg.MetricsLogInterval == 0 {
 		cfg.MetricsLogInterval = 5 * time.Minute
 	}
+
+	// Rate limiting is now handled at server level
+	// Adapter-level overrides are optional and handled by applyDefaults in nfs.NFSConfig
 }
 
 // GetDefaultConfig returns a Config struct with all default values applied.
@@ -280,7 +302,7 @@ func GetDefaultConfig() *Config {
 			Memory: make(map[string]any),
 			Badger: make(map[string]any),
 			// Set capability defaults to true for default config
-			Capabilities: metadata.FilesystemCapabilities{
+			FilesystemCapabilities: metadata.FilesystemCapabilities{
 				SupportsHardLinks: true,
 				SupportsSymlinks:  true,
 				CaseSensitive:     true,

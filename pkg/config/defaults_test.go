@@ -141,17 +141,17 @@ func TestApplyDefaults_NFS(t *testing.T) {
 	if nfs.MaxConnections != 0 {
 		t.Errorf("Expected default max_connections 0, got %d", nfs.MaxConnections)
 	}
-	if nfs.ReadTimeout != 5*time.Minute {
-		t.Errorf("Expected default read_timeout 5m, got %v", nfs.ReadTimeout)
+	if nfs.Timeouts.Read != 5*time.Minute {
+		t.Errorf("Expected default read_timeout 5m, got %v", nfs.Timeouts.Read)
 	}
-	if nfs.WriteTimeout != 30*time.Second {
-		t.Errorf("Expected default write_timeout 30s, got %v", nfs.WriteTimeout)
+	if nfs.Timeouts.Write != 30*time.Second {
+		t.Errorf("Expected default write_timeout 30s, got %v", nfs.Timeouts.Write)
 	}
-	if nfs.IdleTimeout != 5*time.Minute {
-		t.Errorf("Expected default idle_timeout 5m, got %v", nfs.IdleTimeout)
+	if nfs.Timeouts.Idle != 5*time.Minute {
+		t.Errorf("Expected default idle_timeout 5m, got %v", nfs.Timeouts.Idle)
 	}
-	if nfs.ShutdownTimeout != 30*time.Second {
-		t.Errorf("Expected default shutdown_timeout 30s, got %v", nfs.ShutdownTimeout)
+	if nfs.Timeouts.Shutdown != 30*time.Second {
+		t.Errorf("Expected default shutdown_timeout 30s, got %v", nfs.Timeouts.Shutdown)
 	}
 	if nfs.MetricsLogInterval != 5*time.Minute {
 		t.Errorf("Expected default metrics_log_interval 5m, got %v", nfs.MetricsLogInterval)

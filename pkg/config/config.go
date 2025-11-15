@@ -74,6 +74,10 @@ type ServerConfig struct {
 
 	// Metrics contains Prometheus metrics server configuration
 	Metrics MetricsConfig `mapstructure:"metrics"`
+
+	// RateLimiting contains global rate limiting configuration
+	// Applied to all adapters unless overridden at adapter level
+	RateLimiting RateLimitingConfig `mapstructure:"rate_limiting"`
 }
 
 // MetricsConfig configures the Prometheus metrics HTTP server.
@@ -85,6 +89,27 @@ type MetricsConfig struct {
 	// Port is the HTTP port for the metrics endpoint
 	// Default: 9090
 	Port int `mapstructure:"port" validate:"omitempty,min=1,max=65535"`
+}
+
+// RateLimitingConfig controls request rate limiting.
+type RateLimitingConfig struct {
+	// Enabled enables request rate limiting when true.
+	// When false, no rate limiting is applied (unlimited requests).
+	// Recommended: true for production to prevent resource exhaustion.
+	Enabled bool `mapstructure:"enabled"`
+
+	// RequestsPerSecond limits the number of requests per second.
+	// Only used when Enabled is true.
+	// 0 means unlimited (rate limiting effectively disabled).
+	// Recommended: 1000-10000 depending on server capacity.
+	RequestsPerSecond uint `mapstructure:"requests_per_second"`
+
+	// Burst is the maximum burst size for request rate limiting.
+	// Allows temporary bursts above the sustained rate.
+	// Only used when Enabled is true.
+	// Must be >= RequestsPerSecond for smooth operation.
+	// Recommended: 2x RequestsPerSecond for handling traffic spikes.
+	Burst uint `mapstructure:"burst"`
 }
 
 // ContentConfig specifies content store configuration.
@@ -126,9 +151,9 @@ type MetadataConfig struct {
 	// Only used when Type = "badger"
 	Badger map[string]any `mapstructure:"badger"`
 
-	// Capabilities defines filesystem capabilities and limits
+	// FilesystemCapabilities defines filesystem capabilities and limits
 	// Uses the metadata.FilesystemCapabilities type directly
-	Capabilities metadata.FilesystemCapabilities `mapstructure:"capabilities"`
+	FilesystemCapabilities metadata.FilesystemCapabilities `mapstructure:"filesystem_capabilities"`
 
 	// DumpRestricted restricts DUMP operations to allowed clients only
 	DumpRestricted bool `mapstructure:"dump_restricted"`

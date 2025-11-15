@@ -1,0 +1,118 @@
+# DittoFS Configuration Example
+#
+# This file demonstrates the complete configuration structure for DittoFS.
+# JSON Schema validation available in VS Code with YAML extension.
+#
+# Quick start:
+#   1. Copy this file to dittofs.yaml
+#   2. Modify values as needed
+#   3. Run: ./dittofs start
+
+# Logging configuration
+logging:
+  level: "INFO"           # DEBUG, INFO, WARN, ERROR
+  format: "text"          # text or json
+  output: "stdout"        # stdout, stderr, or file path
+
+# Server-wide settings
+server:
+  shutdown_timeout: 30s   # Graceful shutdown timeout
+
+  # Prometheus metrics
+  metrics:
+    enabled: false        # Enable metrics collection
+    port: 9090           # Metrics HTTP endpoint port
+
+  # Global rate limiting (applies to all adapters unless overridden)
+  rate_limiting:
+    enabled: false                # Enable rate limiting
+    requests_per_second: 5000     # Sustained rate limit
+    burst: 10000                   # Burst capacity (2x sustained recommended)
+
+# Content storage configuration
+content:
+  type: "filesystem"      # filesystem, memory, or s3
+
+  filesystem:
+    path: "/tmp/dittofs-content"
+
+  # Uncomment for S3 storage
+  # s3:
+  #   bucket: "my-bucket"
+  #   region: "us-east-1"
+  #   endpoint: ""  # Custom endpoint (optional)
+
+# Metadata storage configuration
+metadata:
+  type: "badger"          # badger or memory
+
+  badger:
+    db_path: "/tmp/dittofs-metadata"
+
+  # Filesystem capabilities and limits
+  filesystem_capabilities:
+    max_read_size: 1048576        # 1MB
+    preferred_read_size: 65536    # 64KB
+    max_write_size: 1048576       # 1MB
+    preferred_write_size: 65536   # 64KB
+    max_file_size: 9223372036854775807  # 2^63-1
+    max_filename_len: 255
+    max_path_len: 4096
+    max_hard_link_count: 32767
+    supports_hard_links: true
+    supports_symlinks: true
+    case_sensitive: true
+    case_preserving: true
+
+  # DUMP operation restrictions
+  dump_restricted: false
+  dump_allowed_clients: []        # IPs allowed to use DUMP (if restricted)
+
+# Share/export definitions
+shares:
+  - name: "/export"
+    read_only: false
+    async: true                   # Allow async writes
+
+    # Access control
+    allowed_clients: []           # Empty = all allowed
+    denied_clients: []
+
+    # Authentication
+    require_auth: false
+    allowed_auth_methods: ["anonymous", "unix"]
+
+    # Identity mapping
+    identity_mapping:
+      map_all_to_anonymous: true  # Map all users to anonymous
+      map_privileged_to_anonymous: false
+      anonymous_uid: 65534        # nobody
+      anonymous_gid: 65534        # nogroup
+
+    # Root directory attributes
+    root_attr:
+      mode: 0755
+      uid: 0
+      gid: 0
+
+# Protocol adapters
+adapters:
+  nfs:
+    enabled: true
+    port: 2049
+    max_connections: 0            # 0 = unlimited
+
+    # Timeout configuration
+    timeouts:
+      read: 5m                    # Max time to read request
+      write: 30s                  # Max time to write response
+      idle: 5m                    # Max idle time between requests
+      shutdown: 30s               # Graceful shutdown timeout
+
+    metrics_log_interval: 5m      # Metrics logging interval (0 = disabled)
+
+    # Adapter-level rate limiting (overrides server.rate_limiting)
+    # rate_limiting:
+    #   enabled: true
+    #   requests_per_second: 10000
+    #   burst: 20000
