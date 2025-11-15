@@ -182,14 +182,16 @@ adapters:
     port: ` + fmt.Sprintf("%d", cfg.Adapters.NFS.Port) + `
     # Maximum concurrent connections (0 = unlimited)
     max_connections: ` + fmt.Sprintf("%d", cfg.Adapters.NFS.MaxConnections) + `
-    # Maximum time to read a request
-    read_timeout: ` + cfg.Adapters.NFS.Timeouts.Read.String() + `
-    # Maximum time to write a response
-    write_timeout: ` + cfg.Adapters.NFS.Timeouts.Write.String() + `
-    # Maximum idle time between requests
-    idle_timeout: ` + cfg.Adapters.NFS.Timeouts.Idle.String() + `
-    # Graceful shutdown timeout
-    shutdown_timeout: ` + cfg.Adapters.NFS.Timeouts.Shutdown.String() + `
+    # Timeout configuration
+    timeouts:
+      # Maximum time to read a request
+      read: ` + cfg.Adapters.NFS.Timeouts.Read.String() + `
+      # Maximum time to write a response
+      write: ` + cfg.Adapters.NFS.Timeouts.Write.String() + `
+      # Maximum idle time between requests
+      idle: ` + cfg.Adapters.NFS.Timeouts.Idle.String() + `
+      # Graceful shutdown timeout
+      shutdown: ` + cfg.Adapters.NFS.Timeouts.Shutdown.String() + `
     # Metrics logging interval (0 = disabled)
     metrics_log_interval: ` + cfg.Adapters.NFS.MetricsLogInterval.String() + `
 `

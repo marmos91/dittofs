@@ -19,9 +19,9 @@ func main() {
 	schema := reflector.Reflect(&config.Config{})
 
 	// Add schema metadata
+	schema.Version = "https://json-schema.org/draft/2020-12/schema"
 	schema.Title = "DittoFS Configuration"
-	schema.Description = "Configuration schema for DittoFS server"
-	schema.Version = "1.0.0"
+	schema.Description = "Configuration schema for DittoFS server (version 1.0.0)"
 
 	// Marshal to pretty JSON
 	schemaJSON, err := json.MarshalIndent(schema, "", "  ")

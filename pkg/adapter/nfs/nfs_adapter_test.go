@@ -14,7 +14,7 @@ import (
 func TestGracefulShutdown(t *testing.T) {
 	// Create adapter with short shutdown timeout
 	config := NFSConfig{
-		Port:            0, // OS assigns random port
+		Port:     0, // OS assigns random port
 		Timeouts: NFSTimeoutsConfig{Shutdown: 2 * time.Second},
 	}
 	adapter := New(config, nil, nil) // nil = no metrics
@@ -68,7 +68,7 @@ func TestGracefulShutdown(t *testing.T) {
 func TestForcedConnectionClosure(t *testing.T) {
 	// Create adapter with very short shutdown timeout
 	config := NFSConfig{
-		Port:            0, // OS assigns random port
+		Port:     0, // OS assigns random port
 		Timeouts: NFSTimeoutsConfig{Shutdown: 500 * time.Millisecond},
 	}
 	adapter := New(config, nil, nil)
@@ -129,9 +129,9 @@ func TestForcedConnectionClosure(t *testing.T) {
 func TestConnectionLimiting(t *testing.T) {
 	// Create adapter with connection limit
 	config := NFSConfig{
-		Port:            0, // OS assigns random port
-		MaxConnections:  2,
-		Timeouts: NFSTimeoutsConfig{Shutdown: 1 * time.Second},
+		Port:           0, // OS assigns random port
+		MaxConnections: 2,
+		Timeouts:       NFSTimeoutsConfig{Shutdown: 1 * time.Second},
 	}
 	adapter := New(config, nil, nil)
 
@@ -183,7 +183,7 @@ func TestConnectionLimiting(t *testing.T) {
 func TestDrainMode(t *testing.T) {
 	// Create adapter
 	config := NFSConfig{
-		Port:            0, // OS assigns random port
+		Port:     0, // OS assigns random port
 		Timeouts: NFSTimeoutsConfig{Shutdown: 2 * time.Second},
 	}
 	adapter := New(config, nil, nil)
@@ -226,7 +226,7 @@ func TestDrainMode(t *testing.T) {
 // TestConcurrentShutdown verifies that concurrent shutdown calls are safe
 func TestConcurrentShutdown(t *testing.T) {
 	config := NFSConfig{
-		Port:            0,
+		Port:     0,
 		Timeouts: NFSTimeoutsConfig{Shutdown: 1 * time.Second},
 	}
 	adapter := New(config, nil, nil)
@@ -267,7 +267,7 @@ func TestConcurrentShutdown(t *testing.T) {
 // TestConnectionTracking verifies that connection tracking works correctly
 func TestConnectionTracking(t *testing.T) {
 	config := NFSConfig{
-		Port:            0,
+		Port:     0,
 		Timeouts: NFSTimeoutsConfig{Shutdown: 1 * time.Second},
 	}
 	adapter := New(config, nil, nil)
@@ -332,7 +332,7 @@ func TestMetricsIntegration(t *testing.T) {
 	// This test just verifies the adapter accepts metrics
 	// Full integration testing would require implementing the full interface
 	config := NFSConfig{
-		Port:            0,
+		Port:     0,
 		Timeouts: NFSTimeoutsConfig{Shutdown: 1 * time.Second},
 	}
 

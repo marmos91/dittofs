@@ -117,8 +117,8 @@ func TestValidate_ShareNameMustStartWithSlash(t *testing.T) {
 		},
 		Adapters: AdaptersConfig{
 			NFS: nfs.NFSConfig{
-				Enabled:         true,
-				Port:            2049,
+				Enabled:  true,
+				Port:     2049,
 				Timeouts: nfs.NFSTimeoutsConfig{Shutdown: 30 * time.Second},
 			},
 		},
@@ -167,8 +167,8 @@ func TestValidate_InvalidAuthMethod(t *testing.T) {
 		},
 		Adapters: AdaptersConfig{
 			NFS: nfs.NFSConfig{
-				Enabled:         true,
-				Port:            2049,
+				Enabled:  true,
+				Port:     2049,
 				Timeouts: nfs.NFSTimeoutsConfig{Shutdown: 30 * time.Second},
 			},
 		},
@@ -361,8 +361,8 @@ func TestValidate_EmptyShareName(t *testing.T) {
 		},
 		Adapters: AdaptersConfig{
 			NFS: nfs.NFSConfig{
-				Enabled:         true,
-				Port:            2049,
+				Enabled:  true,
+				Port:     2049,
 				Timeouts: nfs.NFSTimeoutsConfig{Shutdown: 30 * time.Second},
 			},
 		},

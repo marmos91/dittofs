@@ -1,5 +1,5 @@
 {
-  "$schema": "1.0.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/marmos91/dittofs/pkg/config/config",
   "properties": {
     "Logging": {
@@ -366,8 +366,7 @@
             "Port",
             "MaxConnections",
             "Timeouts",
-            "MetricsLogInterval",
-            "RateLimiting"
+            "MetricsLogInterval"
           ]
         }
       },
@@ -389,5 +388,5 @@
     "Adapters"
   ],
   "title": "DittoFS Configuration",
-  "description": "Configuration schema for DittoFS server"
+  "description": "Configuration schema for DittoFS server (version 1.0.0)"
 }
