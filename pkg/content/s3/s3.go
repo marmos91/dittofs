@@ -74,6 +74,18 @@ type S3ContentStore struct {
 
 	// Metrics
 	metrics S3Metrics
+
+	// Buffered deletion queue for batching delete operations
+	deletionQueue struct {
+		enabled       bool                 // Whether buffered deletion is enabled (default: true)
+		queue         []metadata.ContentID // Pending deletions
+		mu            sync.Mutex           // Protects queue
+		flushInterval time.Duration        // How often to batch process (default: 2s)
+		batchSize     int                  // Trigger flush when this many items queued (default: 100)
+		stopCh        chan struct{}        // Signal to stop background worker
+		flushCh       chan struct{}        // Signal to trigger immediate flush
+		doneCh        chan struct{}        // Signal when worker stopped
+	}
 }
 
 // writeBuffer accumulates sequential writes before uploading to S3
@@ -106,6 +118,18 @@ type S3ContentStoreConfig struct {
 
 	// Metrics is an optional metrics collector
 	Metrics S3Metrics
+
+	// BufferedDeletionEnabled enables buffered deletion for batch processing (default: true)
+	// When enabled, Delete() calls are queued and processed in batches
+	BufferedDeletionEnabled bool
+
+	// DeletionFlushInterval is how often to flush pending deletions (default: 2s)
+	// Set to 0 to use the default 2-second interval
+	DeletionFlushInterval time.Duration
+
+	// DeletionBatchSize triggers flush when this many items are queued (default: 100)
+	// Set to 0 to use the default batch size of 100
+	DeletionBatchSize int
 }
 
 // NewS3ContentStore creates a new S3-based content store.
@@ -193,6 +217,28 @@ func NewS3ContentStore(ctx context.Context, cfg S3ContentStoreConfig) (*S3Conten
 
 	// Initialize stats cache
 	store.statsCache.ttl = statsCacheTTL
+
+	// Initialize deletion queue
+	store.deletionQueue.enabled = cfg.BufferedDeletionEnabled
+	if cfg.DeletionFlushInterval > 0 {
+		store.deletionQueue.flushInterval = cfg.DeletionFlushInterval
+	} else {
+		store.deletionQueue.flushInterval = 2 * time.Second // Default: 2 seconds
+	}
+	if cfg.DeletionBatchSize > 0 {
+		store.deletionQueue.batchSize = cfg.DeletionBatchSize
+	} else {
+		store.deletionQueue.batchSize = 100 // Default: 100 items
+	}
+	store.deletionQueue.queue = make([]metadata.ContentID, 0, store.deletionQueue.batchSize)
+	store.deletionQueue.stopCh = make(chan struct{})
+	store.deletionQueue.flushCh = make(chan struct{}, 1) // Buffered to avoid blocking
+	store.deletionQueue.doneCh = make(chan struct{})
+
+	// Start background deletion worker if buffering is enabled
+	if store.deletionQueue.enabled {
+		go store.deletionWorker()
+	}
 
 	return store, nil
 }
