@@ -88,7 +88,7 @@ func TestReadDirCache(t *testing.T) {
 			CacheTTL:        5 * time.Second,
 			CacheMaxEntries: 100,
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		// Create test share and directory with files
 		share := createTestShare(t, store, "/test")
@@ -147,7 +147,7 @@ func TestReadDirCache(t *testing.T) {
 			CacheMaxEntries:        100,
 			CacheInvalidateOnWrite: true,
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -198,7 +198,7 @@ func TestReadDirCache(t *testing.T) {
 			CacheMaxEntries:        100,
 			CacheInvalidateOnWrite: true,
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -254,7 +254,7 @@ func TestReadDirCache(t *testing.T) {
 			CacheTTL:        100 * time.Millisecond, // Very short TTL
 			CacheMaxEntries: 100,
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -300,7 +300,7 @@ func TestReadDirCache(t *testing.T) {
 			CacheTTL:        5 * time.Second,
 			CacheMaxEntries: 2, // Very small cache
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -356,7 +356,7 @@ func TestReadDirCache(t *testing.T) {
 			},
 			CacheEnabled: false, // Cache disabled
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -392,7 +392,7 @@ func TestLookupCache(t *testing.T) {
 			CacheTTL:        5 * time.Second,
 			CacheMaxEntries: 100,
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -447,7 +447,7 @@ func TestLookupCache(t *testing.T) {
 			CacheMaxEntries:        100,
 			CacheInvalidateOnWrite: true,
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -499,7 +499,7 @@ func TestLookupCache(t *testing.T) {
 			CacheMaxEntries:        100,
 			CacheInvalidateOnWrite: true,
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -550,7 +550,7 @@ func TestLookupCache(t *testing.T) {
 			CacheTTL:        5 * time.Second,
 			CacheMaxEntries: 100,
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -588,7 +588,7 @@ func TestLookupCache(t *testing.T) {
 			CacheTTL:        100 * time.Millisecond, // Very short TTL
 			CacheMaxEntries: 100,
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -646,7 +646,7 @@ func TestGetFileCache(t *testing.T) {
 			CacheTTL:        5 * time.Second,
 			CacheMaxEntries: 100,
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -698,7 +698,7 @@ func TestGetFileCache(t *testing.T) {
 			CacheMaxEntries:        100,
 			CacheInvalidateOnWrite: true,
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -755,7 +755,7 @@ func TestGetFileCache(t *testing.T) {
 			CacheMaxEntries:        100,
 			CacheInvalidateOnWrite: true,
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -814,7 +814,7 @@ func TestGetFileCache(t *testing.T) {
 			CacheMaxEntries:        100,
 			CacheInvalidateOnWrite: true,
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -858,7 +858,7 @@ func TestGetFileCache(t *testing.T) {
 			CacheTTL:        100 * time.Millisecond, // Very short TTL
 			CacheMaxEntries: 100,
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -911,7 +911,7 @@ func TestGetFileCache(t *testing.T) {
 			},
 			CacheEnabled: false, // Cache disabled
 		})
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		share := createTestShare(t, store, "/test")
 		rootHandle := share.RootHandle
@@ -955,7 +955,7 @@ func TestCacheStatistics(t *testing.T) {
 		CacheTTL:        5 * time.Second,
 		CacheMaxEntries: 100,
 	})
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	share := createTestShare(t, store, "/test")
 	rootHandle := share.RootHandle

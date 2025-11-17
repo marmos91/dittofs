@@ -696,8 +696,7 @@ func (s *BadgerMetadataStore) getGetfileCached(handle metadata.FileHandle) *getf
 	s.getfileCache.mu.RLock()
 	defer s.getfileCache.mu.RUnlock()
 
-	key := string(handle)
-	entry, exists := s.getfileCache.cache[key]
+	entry, exists := s.getfileCache.cache[string(handle)]
 	if !exists {
 		return nil
 	}
@@ -785,8 +784,7 @@ func (s *BadgerMetadataStore) getShareNameCached(handle metadata.FileHandle) *sh
 	s.shareNameCache.mu.RLock()
 	defer s.shareNameCache.mu.RUnlock()
 
-	key := string(handle)
-	entry, exists := s.shareNameCache.cache[key]
+	entry, exists := s.shareNameCache.cache[string(handle)]
 	if !exists {
 		return nil
 	}

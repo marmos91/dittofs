@@ -63,8 +63,8 @@ func (s *S3ContentStore) WriteContent(ctx context.Context, id metadata.ContentID
 //  3. Random/sparse writes: Fall back to read-modify-write (slow but correct)
 //
 // Performance:
-//  - Sequential: O(n) - each write uploads only new data
-//  - Random: O(n²) - each write downloads and re-uploads entire file
+//   - Sequential: O(n) - each write uploads only new data
+//   - Random: O(n²) - each write downloads and re-uploads entire file
 //
 // Context Cancellation:
 // S3 operations respect context cancellation.
