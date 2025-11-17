@@ -262,6 +262,69 @@ func (s *BadgerMetadataStore) GetFile(
 	return &attrCopy, nil
 }
 
+// GetShareNameForHandle returns the share name for a given file handle.
+//
+// This works with both path-based and hash-based handles by looking up the
+// file metadata which contains the ShareName field.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - handle: File handle (path-based or hash-based)
+//
+// Returns:
+//   - string: Share name the file belongs to
+//   - error: ErrNotFound if handle is invalid, context errors
+func (s *BadgerMetadataStore) GetShareNameForHandle(
+	ctx context.Context,
+	handle metadata.FileHandle,
+) (string, error) {
+	// Check context cancellation
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	// Check for invalid (empty) handle
+	if len(handle) == 0 {
+		return "", &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "invalid file handle",
+		}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var shareName string
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(keyFile(handle))
+		if err == badger.ErrKeyNotFound {
+			return &metadata.StoreError{
+				Code:    metadata.ErrNotFound,
+				Message: "file not found",
+			}
+		}
+		if err != nil {
+			return fmt.Errorf("failed to get file: %w", err)
+		}
+
+		return item.Value(func(val []byte) error {
+			fileData, err := decodeFileData(val)
+			if err != nil {
+				return err
+			}
+			shareName = fileData.ShareName
+			return nil
+		})
+	})
+
+	if err != nil {
+		return "", err
+	}
+
+	return shareName, nil
+}
+
 // SetFileAttributes updates file attributes with validation and access control.
 //
 // This implements selective attribute updates based on the Set* flags in attrs,
@@ -702,6 +765,9 @@ func (s *BadgerMetadataStore) Create(
 	if err != nil {
 		return nil, err
 	}
+
+	// Invalidate stats cache since we created a new file
+	s.invalidateStatsCache()
 
 	return newHandle, nil
 }

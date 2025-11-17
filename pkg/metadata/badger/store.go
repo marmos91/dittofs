@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
 	"github.com/dgraph-io/badger/v4/options"
@@ -69,6 +70,18 @@ type BadgerMetadataStore struct {
 	// maxFiles is the maximum number of files (inodes) that can be created.
 	// 0 means unlimited (constrained only by available disk space).
 	maxFiles uint64
+
+	// statsCache caches filesystem statistics to avoid expensive database scans.
+	// Filesystem statistics require scanning all file entries, which can be slow.
+	// This cache stores the result with a timestamp and TTL to serve repeated
+	// FSSTAT requests efficiently (macOS Finder calls FSSTAT very frequently).
+	statsCache struct {
+		stats     metadata.FilesystemStatistics
+		hasStats  bool
+		timestamp time.Time
+		ttl       time.Duration
+		mu        sync.RWMutex
+	}
 }
 
 // BadgerMetadataStoreConfig contains configuration for creating a BadgerDB metadata store.
@@ -165,6 +178,11 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		maxStorageBytes: config.MaxStorageBytes,
 		maxFiles:        config.MaxFiles,
 	}
+
+	// Initialize stats cache with a 5-second TTL for responsive updates
+	// This prevents expensive database scans on every FSSTAT request while
+	// still keeping stats reasonably fresh
+	store.statsCache.ttl = 5 * time.Second
 
 	// Initialize singleton keys if they don't exist
 	if err := store.initializeSingletons(ctx); err != nil {
@@ -273,6 +291,23 @@ func (s *BadgerMetadataStore) initializeSingletons(ctx context.Context) error {
 
 		return nil
 	})
+}
+
+// invalidateStatsCache invalidates the filesystem statistics cache.
+//
+// This should be called after operations that modify file count or total size:
+//   - Creating files/directories/symlinks
+//   - Removing files/directories
+//   - Writing to files (changes size)
+//   - Truncating files (changes size)
+//
+// The cache will be recomputed on the next GetFilesystemStatistics call.
+//
+// Thread Safety: Safe for concurrent use.
+func (s *BadgerMetadataStore) invalidateStatsCache() {
+	s.statsCache.mu.Lock()
+	s.statsCache.hasStats = false
+	s.statsCache.mu.Unlock()
 }
 
 // Close closes the BadgerDB database and releases all resources.

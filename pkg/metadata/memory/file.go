@@ -166,6 +166,51 @@ func (s *MemoryMetadataStore) GetFile(
 	return &attrCopy, nil
 }
 
+// GetShareNameForHandle returns the share name for a given file handle.
+//
+// This works with both path-based and hash-based handles by looking up the
+// file metadata which contains the ShareName field.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - handle: File handle (path-based or hash-based)
+//
+// Returns:
+//   - string: Share name the file belongs to
+//   - error: ErrNotFound if handle is invalid, context errors
+func (s *MemoryMetadataStore) GetShareNameForHandle(
+	ctx context.Context,
+	handle metadata.FileHandle,
+) (string, error) {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	// Check for invalid (empty) handle
+	if len(handle) == 0 {
+		return "", &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "invalid file handle",
+		}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Get file data
+	key := handleToKey(handle)
+	fileData, exists := s.files[key]
+	if !exists {
+		return "", &metadata.StoreError{
+			Code:    metadata.ErrNotFound,
+			Message: "file not found",
+		}
+	}
+
+	return fileData.ShareName, nil
+}
+
 // SetFileAttributes updates file attributes with validation and access control.
 //
 // Only attributes with non-nil pointers in attrs are modified.

@@ -243,6 +243,9 @@ func (s *BadgerMetadataStore) RemoveFile(
 		return nil, err
 	}
 
+	// Invalidate stats cache since we removed a file
+	s.invalidateStatsCache()
+
 	return returnAttr, nil
 }
 
@@ -290,7 +293,7 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.db.Update(func(txn *badger.Txn) error {
+	err := s.db.Update(func(txn *badger.Txn) error {
 		// Verify parent exists and is a directory
 		item, err := txn.Get(keyFile(parentHandle))
 		if err == badger.ErrKeyNotFound {
@@ -468,4 +471,13 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 
 		return nil
 	})
+
+	if err != nil {
+		return err
+	}
+
+	// Invalidate stats cache since we removed a directory
+	s.invalidateStatsCache()
+
+	return nil
 }

@@ -46,17 +46,11 @@ func BuildAuthContextWithMapping(
 	clientAddr := nfsCtx.GetClientAddr()
 	authFlavor := nfsCtx.GetAuthFlavor()
 
-	// Extract share name from path-based file handle
-	// Format: "shareName:/path" or "shareName:/"
-	handleStr := string(handle)
-	shareName := handleStr
-	if colonIdx := len(handleStr); colonIdx > 0 {
-		for i, ch := range handleStr {
-			if ch == ':' {
-				shareName = handleStr[:i]
-				break
-			}
-		}
+	// Get share name for this handle using the metadata store's method.
+	// This works for both path-based and hash-based handles.
+	shareName, err := store.GetShareNameForHandle(ctx, handle)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get share name for handle: %w", err)
 	}
 
 	// Map auth flavor to auth method string
@@ -82,7 +76,8 @@ func BuildAuthContextWithMapping(
 
 	// Apply share-level identity mapping via CheckShareAccess
 	// This applies all_squash, root_squash, and other identity mapping rules
-	_, effectiveAuthCtx, err := store.CheckShareAccess(
+	var effectiveAuthCtx *metadata.AuthContext
+	_, effectiveAuthCtx, err = store.CheckShareAccess(
 		ctx,
 		shareName,
 		clientIP,

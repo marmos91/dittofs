@@ -152,6 +152,31 @@ type MetadataStore interface {
 	//   - error: ErrNotFound if share doesn't exist, or context cancellation error
 	GetShareRoot(ctx context.Context, name string) (FileHandle, error)
 
+	// GetShareNameForHandle returns the share name for a given file handle.
+	//
+	// This is needed for operations that require share-level context but only
+	// have a file handle. Examples include:
+	//   - Applying share-level identity mapping (all_squash, root_squash)
+	//   - Checking share-level permissions
+	//   - Building authentication contexts for protocol handlers
+	//
+	// Handle Format Compatibility:
+	// This method works with both path-based and hash-based handles:
+	//   - Path-based: "shareName:/path" - share extracted from prefix
+	//   - Hash-based: "64-char-hex" - share looked up from internal mapping
+	//
+	// The method abstracts away the handle format, allowing protocol handlers
+	// to work with any handle without knowing its internal structure.
+	//
+	// Parameters:
+	//   - handle: File handle (path-based or hash-based)
+	//
+	// Returns:
+	//   - string: Name of the share this handle belongs to
+	//   - error: ErrNotFound if handle doesn't exist, ErrInvalidHandle if handle
+	//     is malformed, or context cancellation error
+	GetShareNameForHandle(ctx context.Context, handle FileHandle) (string, error)
+
 	// RecordShareMount records that a client has successfully mounted a share.
 	//
 	// This creates a session tracking record used for:

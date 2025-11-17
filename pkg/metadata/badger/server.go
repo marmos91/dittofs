@@ -3,6 +3,7 @@ package badger
 import (
 	"context"
 	"fmt"
+	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -222,6 +223,21 @@ func (s *BadgerMetadataStore) GetFilesystemStatistics(ctx context.Context, handl
 		return nil, err
 	}
 
+	// ========================================================================
+	// Step 1: Check cache first (fast path)
+	// ========================================================================
+	s.statsCache.mu.RLock()
+	if s.statsCache.hasStats && time.Since(s.statsCache.timestamp) < s.statsCache.ttl {
+		cached := s.statsCache.stats
+		s.statsCache.mu.RUnlock()
+		return &cached, nil
+	}
+	s.statsCache.mu.RUnlock()
+
+	// ========================================================================
+	// Step 2: Cache miss or expired - compute stats (slow path)
+	// ========================================================================
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -302,6 +318,21 @@ func (s *BadgerMetadataStore) GetFilesystemStatistics(ctx context.Context, handl
 		stats.TotalFiles = reportedFiles
 		stats.AvailableFiles = reportedFiles - fileCount
 	}
+
+	// ========================================================================
+	// Step 3: Update cache with fresh stats
+	// ========================================================================
+	s.statsCache.mu.Lock()
+	// Double-check if another goroutine updated the cache while we were computing
+	if s.statsCache.hasStats && time.Since(s.statsCache.timestamp) < s.statsCache.ttl {
+		cached := s.statsCache.stats
+		s.statsCache.mu.Unlock()
+		return &cached, nil
+	}
+	s.statsCache.stats = stats
+	s.statsCache.hasStats = true
+	s.statsCache.timestamp = time.Now()
+	s.statsCache.mu.Unlock()
 
 	return &stats, nil
 }

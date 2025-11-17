@@ -248,6 +248,9 @@ func (s *BadgerMetadataStore) CommitWrite(
 		return nil, err
 	}
 
+	// Invalidate stats cache since file size may have changed
+	s.invalidateStatsCache()
+
 	return updatedAttr, nil
 }
 
