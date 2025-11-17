@@ -59,6 +59,10 @@ type S3ContentStore struct {
 	uploadSessions   map[string]*multipartUpload
 	uploadSessionsMu sync.RWMutex
 
+	// Write buffer for sequential writes (optimization to avoid read-modify-write cycles)
+	writeBuffers   map[string]*writeBuffer
+	writeBuffersMu sync.RWMutex
+
 	// Storage stats cache (stores value instead of pointer to eliminate cloning)
 	statsCache struct {
 		stats     content.StorageStats
@@ -70,6 +74,14 @@ type S3ContentStore struct {
 
 	// Metrics
 	metrics S3Metrics
+}
+
+// writeBuffer accumulates sequential writes before uploading to S3
+type writeBuffer struct {
+	data         []byte    // Accumulated data
+	expectedSize int64     // Expected next write offset
+	lastWrite    time.Time // Last write timestamp for timeout-based flushing
+	mu           sync.Mutex
 }
 
 // S3ContentStoreConfig contains configuration for S3 content store.
@@ -175,6 +187,7 @@ func NewS3ContentStore(ctx context.Context, cfg S3ContentStoreConfig) (*S3Conten
 		keyPrefix:      cfg.KeyPrefix,
 		partSize:       partSize,
 		uploadSessions: make(map[string]*multipartUpload),
+		writeBuffers:   make(map[string]*writeBuffer),
 		metrics:        metrics,
 	}
 

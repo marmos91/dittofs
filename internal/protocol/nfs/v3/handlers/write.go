@@ -542,6 +542,42 @@ func (h *DefaultNFSHandler) Write(
 	}
 
 	// ========================================================================
+	// Step 7.5: Flush write buffers for stable writes
+	// ========================================================================
+	// For FILE_SYNC (stable=2) and DATA_SYNC (stable=1) writes, we must
+	// ensure data is committed to stable storage before returning success.
+	// For UNSTABLE (stable=0) writes, data can remain buffered until COMMIT.
+
+	if req.Stable == FileSyncWrite || req.Stable == DataSyncWrite {
+		// Check if content store supports flushing (e.g., S3 store)
+		type flusher interface {
+			FlushWrites(ctx context.Context, id metadata.ContentID) error
+		}
+
+		if flushableStore, ok := writeRepo.(flusher); ok && writeIntent.ContentID != "" {
+			logger.Debug("Flushing write buffers for stable write: content_id=%s stable=%d",
+				writeIntent.ContentID, req.Stable)
+
+			if err := flushableStore.FlushWrites(ctx.Context, writeIntent.ContentID); err != nil {
+				logger.Error("WRITE failed: flush error for stable write: handle=%x offset=%d count=%d content_id=%s stable=%d client=%s error=%v",
+					req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, req.Stable, clientIP, err)
+
+				fileid := xdr.ExtractFileID(fileHandle)
+				nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
+
+				return &WriteResponse{
+					Status:     types.NFS3ErrIO,
+					AttrBefore: nfsWccAttr,
+					AttrAfter:  nfsAttr,
+				}, nil
+			}
+
+			logger.Debug("Write buffers flushed successfully for stable write: content_id=%s",
+				writeIntent.ContentID)
+		}
+	}
+
+	// ========================================================================
 	// Step 8: Commit metadata changes after successful content write
 	// ========================================================================
 

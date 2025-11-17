@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
@@ -244,13 +245,24 @@ func createBadgerMetadataStore(ctx context.Context, options map[string]any, capa
 
 	// Decode store-specific options
 	type BadgerMetadataStoreOptions struct {
-		DBPath          string `mapstructure:"db_path"`
-		MaxStorageBytes uint64 `mapstructure:"max_storage_bytes"`
-		MaxFiles        uint64 `mapstructure:"max_files"`
+		DBPath                 string        `mapstructure:"db_path"`
+		MaxStorageBytes        uint64        `mapstructure:"max_storage_bytes"`
+		MaxFiles               uint64        `mapstructure:"max_files"`
+		CacheEnabled           bool          `mapstructure:"cache_enabled"`
+		CacheTTL               time.Duration `mapstructure:"cache_ttl"`
+		CacheMaxEntries        int           `mapstructure:"cache_max_entries"`
+		CacheInvalidateOnWrite bool          `mapstructure:"cache_invalidate_on_write"`
 	}
 
 	var storeOpts BadgerMetadataStoreOptions
-	if err := mapstructure.Decode(options, &storeOpts); err != nil {
+	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		DecodeHook: mapstructure.StringToTimeDurationHookFunc(),
+		Result:     &storeOpts,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create decoder: %w", err)
+	}
+	if err := decoder.Decode(options); err != nil {
 		return nil, fmt.Errorf("failed to decode badger metadata store options: %w", err)
 	}
 
@@ -261,10 +273,14 @@ func createBadgerMetadataStore(ctx context.Context, options map[string]any, capa
 
 	// Create store config
 	storeConfig := badger.BadgerMetadataStoreConfig{
-		DBPath:          storeOpts.DBPath,
-		Capabilities:    *capabilities,
-		MaxStorageBytes: storeOpts.MaxStorageBytes,
-		MaxFiles:        storeOpts.MaxFiles,
+		DBPath:                 storeOpts.DBPath,
+		Capabilities:           *capabilities,
+		MaxStorageBytes:        storeOpts.MaxStorageBytes,
+		MaxFiles:               storeOpts.MaxFiles,
+		CacheEnabled:           storeOpts.CacheEnabled,
+		CacheTTL:               storeOpts.CacheTTL,
+		CacheMaxEntries:        storeOpts.CacheMaxEntries,
+		CacheInvalidateOnWrite: storeOpts.CacheInvalidateOnWrite,
 	}
 
 	store, err := badger.NewBadgerMetadataStore(ctx, storeConfig)

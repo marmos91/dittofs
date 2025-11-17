@@ -246,6 +246,9 @@ func (s *BadgerMetadataStore) RemoveFile(
 	// Invalidate stats cache since we removed a file
 	s.invalidateStatsCache()
 
+	// Invalidate directory caches for parent directory
+	s.invalidateDirectory(parentHandle)
+
 	return returnAttr, nil
 }
 
@@ -478,6 +481,9 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 
 	// Invalidate stats cache since we removed a directory
 	s.invalidateStatsCache()
+
+	// Invalidate directory caches for parent directory
+	s.invalidateDirectory(parentHandle)
 
 	return nil
 }

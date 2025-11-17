@@ -356,6 +356,17 @@ func New(nfsConfig NFSConfig, serverRateLimit *RateLimitingConfig, nfsMetrics me
 func (s *NFSAdapter) SetStores(metadataStore metadata.MetadataStore, contentRepo content.ContentStore) {
 	s.metadataStore = metadataStore
 	s.content = contentRepo
+
+	// Update the NFS handler with content store for flushing writes
+	if defaultHandler, ok := s.nfsHandler.(*v3.DefaultNFSHandler); ok {
+		if writableStore, ok := contentRepo.(content.WritableContentStore); ok {
+			defaultHandler.ContentStore = writableStore
+			logger.Debug("NFS handler configured with writable content store")
+		} else {
+			logger.Warn("Content store does not implement WritableContentStore interface")
+		}
+	}
+
 	logger.Debug("NFS repositories configured")
 }
 

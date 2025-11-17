@@ -1,6 +1,7 @@
 package badger
 
 import (
+	"container/list"
 	"context"
 	"fmt"
 	"sync"
@@ -8,6 +9,7 @@ import (
 
 	badger "github.com/dgraph-io/badger/v4"
 	"github.com/dgraph-io/badger/v4/options"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -82,6 +84,49 @@ type BadgerMetadataStore struct {
 		ttl       time.Duration
 		mu        sync.RWMutex
 	}
+
+	// readdirCache caches directory listings (LRU + TTL).
+	readdirCache struct {
+		enabled      bool
+		ttl          time.Duration
+		maxEntries   int
+		invalidOnMod bool
+		cache        map[string]*readdirCacheEntry
+		lruList      *list.List
+		mu           sync.RWMutex
+		hits         uint64
+		misses       uint64
+	}
+
+	// lookupCache caches lookup results (LRU + TTL).
+	lookupCache struct {
+		enabled      bool
+		ttl          time.Duration
+		maxEntries   int
+		invalidOnMod bool
+		cache        map[string]*lookupCacheEntry
+		lruList      *list.List
+		mu           sync.RWMutex
+		hits         uint64
+		misses       uint64
+	}
+}
+
+// readdirCacheEntry stores cached directory listing.
+type readdirCacheEntry struct {
+	children  []metadata.FileHandle
+	attrs     []*metadata.FileAttr
+	names     []string
+	timestamp time.Time
+	lruNode   *list.Element
+}
+
+// lookupCacheEntry stores cached lookup result.
+type lookupCacheEntry struct {
+	handle    metadata.FileHandle
+	attr      *metadata.FileAttr
+	timestamp time.Time
+	lruNode   *list.Element
 }
 
 // BadgerMetadataStoreConfig contains configuration for creating a BadgerDB metadata store.
@@ -107,6 +152,18 @@ type BadgerMetadataStoreConfig struct {
 	// BadgerOptions allows customization of BadgerDB behavior
 	// If nil, sensible defaults are used
 	BadgerOptions *badger.Options
+
+	// CacheEnabled enables metadata caching (readdir + lookup)
+	CacheEnabled bool
+
+	// CacheTTL is cache entry lifetime (default: 5s)
+	CacheTTL time.Duration
+
+	// CacheMaxEntries limits cache size (default: 1000 for readdir, 10000 for lookup)
+	CacheMaxEntries int
+
+	// CacheInvalidateOnWrite clears cache on modifications (default: true)
+	CacheInvalidateOnWrite bool
 }
 
 // NewBadgerMetadataStore creates a new BadgerDB-based metadata store with specified configuration.
@@ -183,6 +240,41 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 	// This prevents expensive database scans on every FSSTAT request while
 	// still keeping stats reasonably fresh
 	store.statsCache.ttl = 5 * time.Second
+
+	// Initialize caches if enabled
+	if config.CacheEnabled {
+		// Common settings
+		ttl := config.CacheTTL
+		if ttl == 0 {
+			ttl = 5 * time.Second
+		}
+		invalidOnMod := config.CacheInvalidateOnWrite
+
+		// ReadDir cache (smaller - one entry per directory)
+		store.readdirCache.enabled = true
+		store.readdirCache.ttl = ttl
+		store.readdirCache.maxEntries = config.CacheMaxEntries
+		if store.readdirCache.maxEntries == 0 {
+			store.readdirCache.maxEntries = 1000
+		}
+		store.readdirCache.invalidOnMod = invalidOnMod
+		store.readdirCache.cache = make(map[string]*readdirCacheEntry)
+		store.readdirCache.lruList = list.New()
+
+		// Lookup cache (larger - one entry per file)
+		store.lookupCache.enabled = true
+		store.lookupCache.ttl = ttl
+		store.lookupCache.maxEntries = config.CacheMaxEntries * 10
+		if config.CacheMaxEntries == 0 {
+			store.lookupCache.maxEntries = 10000
+		}
+		store.lookupCache.invalidOnMod = invalidOnMod
+		store.lookupCache.cache = make(map[string]*lookupCacheEntry)
+		store.lookupCache.lruList = list.New()
+
+		logger.Info("Metadata cache enabled: ttl=%v readdir_max=%d lookup_max=%d invalidate_on_write=%v",
+			ttl, store.readdirCache.maxEntries, store.lookupCache.maxEntries, invalidOnMod)
+	}
 
 	// Initialize singleton keys if they don't exist
 	if err := store.initializeSingletons(ctx); err != nil {
@@ -308,6 +400,214 @@ func (s *BadgerMetadataStore) invalidateStatsCache() {
 	s.statsCache.mu.Lock()
 	s.statsCache.hasStats = false
 	s.statsCache.mu.Unlock()
+}
+
+// readdirCacheKey generates cache key for directory listing.
+func readdirCacheKey(handle metadata.FileHandle) string {
+	return string(handle)
+}
+
+// lookupCacheKey generates cache key for lookup operation.
+func lookupCacheKey(parentHandle metadata.FileHandle, name string) string {
+	return string(parentHandle) + ":" + name
+}
+
+// getReaddirCached retrieves cached directory listing if valid.
+func (s *BadgerMetadataStore) getReaddirCached(handle metadata.FileHandle) *readdirCacheEntry {
+	if !s.readdirCache.enabled {
+		return nil
+	}
+
+	s.readdirCache.mu.RLock()
+	defer s.readdirCache.mu.RUnlock()
+
+	key := readdirCacheKey(handle)
+	entry, exists := s.readdirCache.cache[key]
+	if !exists {
+		return nil
+	}
+
+	// Check TTL
+	if time.Since(entry.timestamp) > s.readdirCache.ttl {
+		return nil
+	}
+
+	// Update LRU
+	s.readdirCache.lruList.MoveToFront(entry.lruNode)
+	return entry
+}
+
+// putReaddirCached stores directory listing in cache.
+func (s *BadgerMetadataStore) putReaddirCached(handle metadata.FileHandle, children []metadata.FileHandle, attrs []*metadata.FileAttr, names []string) {
+	if !s.readdirCache.enabled {
+		return
+	}
+
+	s.readdirCache.mu.Lock()
+	defer s.readdirCache.mu.Unlock()
+
+	key := readdirCacheKey(handle)
+
+	// Update existing entry
+	if existing, exists := s.readdirCache.cache[key]; exists {
+		existing.children = children
+		existing.attrs = attrs
+		existing.names = names
+		existing.timestamp = time.Now()
+		s.readdirCache.lruList.MoveToFront(existing.lruNode)
+		return
+	}
+
+	// Evict if full
+	if len(s.readdirCache.cache) >= s.readdirCache.maxEntries {
+		s.evictOldestReaddir()
+	}
+
+	// Create new entry
+	entry := &readdirCacheEntry{
+		children:  children,
+		attrs:     attrs,
+		names:     names,
+		timestamp: time.Now(),
+	}
+	entry.lruNode = s.readdirCache.lruList.PushFront(key)
+	s.readdirCache.cache[key] = entry
+}
+
+// evictOldestReaddir removes LRU entry from readdir cache.
+func (s *BadgerMetadataStore) evictOldestReaddir() {
+	if s.readdirCache.lruList.Len() == 0 {
+		return
+	}
+
+	oldest := s.readdirCache.lruList.Back()
+	if oldest == nil {
+		return
+	}
+	s.readdirCache.lruList.Remove(oldest)
+
+	key := oldest.Value.(string)
+	delete(s.readdirCache.cache, key)
+}
+
+// getLookupCached retrieves cached lookup result if valid.
+func (s *BadgerMetadataStore) getLookupCached(parentHandle metadata.FileHandle, name string) *lookupCacheEntry {
+	if !s.lookupCache.enabled {
+		return nil
+	}
+
+	s.lookupCache.mu.RLock()
+	defer s.lookupCache.mu.RUnlock()
+
+	key := lookupCacheKey(parentHandle, name)
+	entry, exists := s.lookupCache.cache[key]
+	if !exists {
+		return nil
+	}
+
+	// Check TTL
+	if time.Since(entry.timestamp) > s.lookupCache.ttl {
+		return nil
+	}
+
+	// Update LRU
+	s.lookupCache.lruList.MoveToFront(entry.lruNode)
+	return entry
+}
+
+// putLookupCached stores lookup result in cache.
+func (s *BadgerMetadataStore) putLookupCached(parentHandle metadata.FileHandle, name string, handle metadata.FileHandle, attr *metadata.FileAttr) {
+	if !s.lookupCache.enabled {
+		return
+	}
+
+	s.lookupCache.mu.Lock()
+	defer s.lookupCache.mu.Unlock()
+
+	key := lookupCacheKey(parentHandle, name)
+
+	// Update existing entry
+	if existing, exists := s.lookupCache.cache[key]; exists {
+		existing.handle = handle
+		existing.attr = attr
+		existing.timestamp = time.Now()
+		s.lookupCache.lruList.MoveToFront(existing.lruNode)
+		return
+	}
+
+	// Evict if full
+	if len(s.lookupCache.cache) >= s.lookupCache.maxEntries {
+		s.evictOldestLookup()
+	}
+
+	// Create new entry
+	entry := &lookupCacheEntry{
+		handle:    handle,
+		attr:      attr,
+		timestamp: time.Now(),
+	}
+	entry.lruNode = s.lookupCache.lruList.PushFront(key)
+	s.lookupCache.cache[key] = entry
+}
+
+// evictOldestLookup removes LRU entry from lookup cache.
+func (s *BadgerMetadataStore) evictOldestLookup() {
+	if s.lookupCache.lruList.Len() == 0 {
+		return
+	}
+
+	oldest := s.lookupCache.lruList.Back()
+	if oldest == nil {
+		return
+	}
+	s.lookupCache.lruList.Remove(oldest)
+
+	key := oldest.Value.(string)
+	delete(s.lookupCache.cache, key)
+}
+
+// invalidateReaddir removes directory from readdir cache.
+func (s *BadgerMetadataStore) invalidateReaddir(handle metadata.FileHandle) {
+	if !s.readdirCache.enabled || !s.readdirCache.invalidOnMod {
+		return
+	}
+
+	s.readdirCache.mu.Lock()
+	defer s.readdirCache.mu.Unlock()
+
+	key := readdirCacheKey(handle)
+	entry, exists := s.readdirCache.cache[key]
+	if !exists {
+		return
+	}
+
+	s.readdirCache.lruList.Remove(entry.lruNode)
+	delete(s.readdirCache.cache, key)
+}
+
+// invalidateLookup removes all lookups for a directory from cache.
+func (s *BadgerMetadataStore) invalidateLookup(parentHandle metadata.FileHandle) {
+	if !s.lookupCache.enabled || !s.lookupCache.invalidOnMod {
+		return
+	}
+
+	s.lookupCache.mu.Lock()
+	defer s.lookupCache.mu.Unlock()
+
+	// Remove all lookups with this parent
+	prefix := string(parentHandle) + ":"
+	for key, entry := range s.lookupCache.cache {
+		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
+			s.lookupCache.lruList.Remove(entry.lruNode)
+			delete(s.lookupCache.cache, key)
+		}
+	}
+}
+
+// invalidateDirectory invalidates all caches for a directory (called on modifications).
+func (s *BadgerMetadataStore) invalidateDirectory(handle metadata.FileHandle) {
+	s.invalidateReaddir(handle)
+	s.invalidateLookup(handle)
 }
 
 // Close closes the BadgerDB database and releases all resources.

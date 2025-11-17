@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -35,6 +38,16 @@ func (s *BadgerMetadataStore) Lookup(
 	// Check context cancellation
 	if err := ctx.Context.Err(); err != nil {
 		return nil, nil, err
+	}
+
+	// Try cache (only for regular names, not "." or "..")
+	if name != "." && name != ".." {
+		if cached := s.getLookupCached(dirHandle, name); cached != nil {
+			atomic.AddUint64(&s.lookupCache.hits, 1)
+			attrCopy := *cached.attr
+			return cached.handle, &attrCopy, nil
+		}
+		atomic.AddUint64(&s.lookupCache.misses, 1)
 	}
 
 	s.mu.RLock()
@@ -188,6 +201,11 @@ func (s *BadgerMetadataStore) Lookup(
 
 	if err != nil {
 		return nil, nil, err
+	}
+
+	// Cache regular lookups (not "." or "..")
+	if name != "." && name != ".." {
+		s.putLookupCached(dirHandle, name, targetHandle, targetAttr)
 	}
 
 	// Return a copy of attributes to prevent external modification
@@ -708,8 +726,21 @@ func (s *BadgerMetadataStore) Create(
 			// Generate ContentID for regular files
 			// Format: shareName/path/to/file (e.g., "export/docs/report.pdf")
 			// This mirrors the filesystem structure in S3 for easy inspection and recovery
-			contentID := buildContentID(parentData.ShareName, fullPath)
+
+			// Extract relative path from fullPath
+			// fullPath format: /<shareName>:/<relative-path>
+			// Example: /export:/scripts/file.txt -> /scripts/file.txt
+			relativePath := fullPath
+			if colonIndex := strings.Index(fullPath, ":"); colonIndex != -1 {
+				relativePath = fullPath[colonIndex+1:]
+			}
+
+			contentID := buildContentID(parentData.ShareName, relativePath)
 			newAttr.ContentID = metadata.ContentID(contentID)
+
+			// Log ContentID generation for debugging (temporary)
+			logger.Info("Generated ContentID: file='%s' fullPath='%s' relativePath='%s' contentID='%s'",
+				name, fullPath, relativePath, contentID)
 		} else {
 			newAttr.ContentID = ""
 		}
@@ -769,6 +800,9 @@ func (s *BadgerMetadataStore) Create(
 	// Invalidate stats cache since we created a new file
 	s.invalidateStatsCache()
 
+	// Invalidate directory caches for parent directory
+	s.invalidateDirectory(parentHandle)
+
 	return newHandle, nil
 }
 
@@ -810,7 +844,7 @@ func (s *BadgerMetadataStore) CreateHardLink(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.db.Update(func(txn *badger.Txn) error {
+	err := s.db.Update(func(txn *badger.Txn) error {
 		// Verify target exists and is not a directory
 		targetItem, err := txn.Get(keyFile(targetHandle))
 		if err == badger.ErrKeyNotFound {
@@ -953,6 +987,13 @@ func (s *BadgerMetadataStore) CreateHardLink(
 
 		return nil
 	})
+
+	if err == nil {
+		// Invalidate directory caches for parent directory
+		s.invalidateDirectory(dirHandle)
+	}
+
+	return err
 }
 
 // Move moves or renames a file or directory atomically.
@@ -1001,7 +1042,7 @@ func (s *BadgerMetadataStore) Move(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.db.Update(func(txn *badger.Txn) error {
+	err := s.db.Update(func(txn *badger.Txn) error {
 		// Get source handle
 		sourceItem, err := txn.Get(keyChild(fromDir, fromName))
 		if err == badger.ErrKeyNotFound {
@@ -1250,4 +1291,14 @@ func (s *BadgerMetadataStore) Move(
 
 		return nil
 	})
+
+	if err == nil {
+		// Invalidate directory caches for both source and destination
+		s.invalidateDirectory(fromDir)
+		if !slices.Equal(fromDir, toDir) {
+			s.invalidateDirectory(toDir)
+		}
+	}
+
+	return err
 }

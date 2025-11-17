@@ -371,65 +371,63 @@ func (h *DefaultNFSHandler) Commit(
 	}
 
 	// ========================================================================
-	// Step 4: Perform commit operation
+	// Step 4: Perform commit operation - flush write buffers to storage
 	// ========================================================================
-	// TODO: When the store supports write caching, delegate to:
-	//   store.CommitFile(handle, req.Offset, req.Count, authCtx)
-	//
-	// For now, this is a no-op since the in-memory store doesn't
-	// have write caching - all writes are immediately "committed".
 
-	// In a production implementation with write caching, you would:
-	// 1. Build authentication context
-	// authCtx := &metadata.AuthContext{
-	//     AuthFlavor: ctx.AuthFlavor,
-	//     UID:        ctx.UID,
-	//     GID:        ctx.GID,
-	//     GIDs:       ctx.GIDs,
-	//     ClientAddr: clientIP,
-	// }
-	//
-	// 2. Check context before potentially long flush operation
-	// select {
-	// case <-ctx.Context.Done():
-	//     logger.Warn("COMMIT cancelled before flush: handle=%x offset=%d count=%d client=%s error=%v",
-	//         req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
-	//
-	//     // Get updated attributes for WCC data (best effort)
-	//     var wccAfter *types.NFSFileAttr
-	//     if updatedAttr, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-	//         fileID := xdr.ExtractFileID(handle)
-	//         wccAfter = xdr.MetadataToNFS(updatedAttr, fileID)
-	//     }
-	//
-	//     return &CommitResponse{
-	//         Status:     types.NFS3ErrIO,
-	//         AttrBefore: wccBefore,
-	//         AttrAfter:  wccAfter,
-	//     }, nil
-	// default:
-	// }
-	//
-	// 3. Call store to flush writes (should pass context for cancellation)
-	// if err := store.CommitFile(ctx.Context, handle, req.Offset, req.Count, authCtx); err != nil {
-	//     logger.Error("COMMIT failed: store error: handle=%x offset=%d count=%d client=%s error=%v",
-	//         req.Handle, req.Offset, req.Count, clientIP, err)
-	//
-	//     // Get updated attributes for WCC data (best effort)
-	//     var wccAfter *types.NFSFileAttr
-	//     if updatedAttr, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-	//         fileID := xdr.ExtractFileID(handle)
-	//         wccAfter = xdr.MetadataToNFS(updatedAttr, fileID)
-	//     }
-	//
-	//     status := xdr.MapStoreErrorToNFSStatus(err, clientIP, "COMMIT")
-	//     return &CommitResponse{
-	//         Status:        status,
-	//         AttrBefore:    wccBefore,
-	//         AttrAfter:     wccAfter,
-	//         WriteVerifier: 0,
-	//     }, nil
-	// }
+	// Check context before potentially long flush operation
+	select {
+	case <-ctx.Context.Done():
+		logger.Warn("COMMIT cancelled before flush: handle=%x offset=%d count=%d client=%s error=%v",
+			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
+
+		// Get updated attributes for WCC data (best effort)
+		var wccAfter *types.NFSFileAttr
+		if updatedAttr, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
+			fileID := xdr.ExtractFileID(handle)
+			wccAfter = xdr.MetadataToNFS(updatedAttr, fileID)
+		}
+
+		return &CommitResponse{
+			Status:     types.NFS3ErrIO,
+			AttrBefore: wccBefore,
+			AttrAfter:  wccAfter,
+		}, nil
+	default:
+	}
+
+	// If content store supports flushing, flush the write buffers
+	// This ensures buffered writes are persisted to storage (S3, filesystem, etc.)
+	if h.ContentStore != nil {
+		// Check if content store has FlushWrites method (e.g., S3 store)
+		type flusher interface {
+			FlushWrites(ctx context.Context, id metadata.ContentID) error
+		}
+
+		if flushableStore, ok := h.ContentStore.(flusher); ok && fileAttr.ContentID != "" {
+			logger.Debug("Flushing write buffers for content_id=%s", fileAttr.ContentID)
+			if err := flushableStore.FlushWrites(ctx.Context, fileAttr.ContentID); err != nil {
+				logger.Error("COMMIT failed: flush error: handle=%x offset=%d count=%d client=%s content_id=%s error=%v",
+					req.Handle, req.Offset, req.Count, clientIP, fileAttr.ContentID, err)
+
+				// Get updated attributes for WCC data (best effort)
+				var wccAfter *types.NFSFileAttr
+				if updatedAttr, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
+					fileID := xdr.ExtractFileID(handle)
+					wccAfter = xdr.MetadataToNFS(updatedAttr, fileID)
+				}
+
+				return &CommitResponse{
+					Status:        types.NFS3ErrIO,
+					AttrBefore:    wccBefore,
+					AttrAfter:     wccAfter,
+					WriteVerifier: 0,
+				}, nil
+			}
+			logger.Debug("Write buffers flushed successfully for content_id=%s", fileAttr.ContentID)
+		} else {
+			logger.Debug("Content store does not support flushing or no content ID")
+		}
+	}
 
 	// ========================================================================
 	// Step 5: Build success response with updated file attributes

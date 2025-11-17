@@ -3,6 +3,7 @@ package badger
 import (
 	"fmt"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
@@ -36,10 +37,33 @@ func (s *BadgerMetadataStore) ReadDirectory(
 		return nil, err
 	}
 
+	// Try cache if reading from start (token="") and not paginating
+	if token == "" {
+		if cached := s.getReaddirCached(dirHandle); cached != nil {
+			atomic.AddUint64(&s.readdirCache.hits, 1)
+			// Convert cached data back to ReadDirPage format
+			entries := make([]metadata.DirEntry, len(cached.names))
+			for i := range cached.names {
+				entries[i] = metadata.DirEntry{
+					ID:   fileHandleToID(cached.children[i]),
+					Name: cached.names[i],
+				}
+			}
+			return &metadata.ReadDirPage{
+				Entries:   entries,
+				NextToken: "",
+				HasMore:   false,
+			}, nil
+		}
+		atomic.AddUint64(&s.readdirCache.misses, 1)
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var page *metadata.ReadDirPage
+	var allChildren []metadata.FileHandle
+	var allNames []string
 
 	err := s.db.View(func(txn *badger.Txn) error {
 		// Get directory data
@@ -128,12 +152,6 @@ func (s *BadgerMetadataStore) ReadDirectory(
 				}
 			}
 
-			// Skip entries before offset
-			if currentOffset < offset {
-				currentOffset++
-				continue
-			}
-
 			item := it.Item()
 			key := item.Key()
 
@@ -152,6 +170,18 @@ func (s *BadgerMetadataStore) ReadDirectory(
 			})
 			if err != nil {
 				return err
+			}
+
+			// Track all children for caching (if reading from start)
+			if token == "" {
+				allChildren = append(allChildren, childHandle)
+				allNames = append(allNames, childName)
+			}
+
+			// Skip entries before offset
+			if currentOffset < offset {
+				currentOffset++
+				continue
 			}
 
 			// Create directory entry
@@ -190,6 +220,12 @@ func (s *BadgerMetadataStore) ReadDirectory(
 
 	if err != nil {
 		return nil, err
+	}
+
+	// Cache directory listing if we read from start (even if paginated)
+	// The cache stores the complete listing we've seen so far
+	if token == "" && len(allChildren) > 0 {
+		s.putReaddirCached(dirHandle, allChildren, nil, allNames)
 	}
 
 	return page, nil
@@ -492,6 +528,9 @@ func (s *BadgerMetadataStore) CreateSymlink(
 		return nil, err
 	}
 
+	// Invalidate directory caches for parent directory
+	s.invalidateDirectory(parentHandle)
+
 	return newHandle, nil
 }
 
@@ -730,6 +769,9 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 	if err != nil {
 		return nil, err
 	}
+
+	// Invalidate directory caches for parent directory
+	s.invalidateDirectory(parentHandle)
 
 	return newHandle, nil
 }
