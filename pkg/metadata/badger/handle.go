@@ -206,10 +206,16 @@ func buildFullPath(store pathBuilder, parentHandle metadata.FileHandle, childNam
 
 	// If parent uses hash-based handle, we need to look it up
 	if isHash {
-		parentPath, err = store.lookupHashedHandlePath(parentHandle)
+		fullHandleStr, err := store.lookupHashedHandlePath(parentHandle)
 		if err != nil {
 			return "", fmt.Errorf("failed to lookup hashed parent handle: %w", err)
 		}
+		// lookupHashedHandlePath returns "shareName:fullPath", extract just the path
+		idx := strings.Index(fullHandleStr, ":")
+		if idx < 0 {
+			return "", fmt.Errorf("invalid hashed handle mapping format: %s", fullHandleStr)
+		}
+		parentPath = fullHandleStr[idx+1:]
 	}
 
 	// Construct the full path

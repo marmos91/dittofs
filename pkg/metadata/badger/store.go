@@ -110,6 +110,19 @@ type BadgerMetadataStore struct {
 		hits         uint64
 		misses       uint64
 	}
+
+	// getfileCache caches file attributes by handle (LRU + TTL).
+	getfileCache struct {
+		enabled      bool
+		ttl          time.Duration
+		maxEntries   int
+		invalidOnMod bool
+		cache        map[string]*getfileCacheEntry
+		lruList      *list.List
+		mu           sync.RWMutex
+		hits         uint64
+		misses       uint64
+	}
 }
 
 // readdirCacheEntry stores cached directory listing.
@@ -124,6 +137,13 @@ type readdirCacheEntry struct {
 // lookupCacheEntry stores cached lookup result.
 type lookupCacheEntry struct {
 	handle    metadata.FileHandle
+	attr      *metadata.FileAttr
+	timestamp time.Time
+	lruNode   *list.Element
+}
+
+// getfileCacheEntry stores cached file attributes.
+type getfileCacheEntry struct {
 	attr      *metadata.FileAttr
 	timestamp time.Time
 	lruNode   *list.Element
@@ -164,6 +184,14 @@ type BadgerMetadataStoreConfig struct {
 
 	// CacheInvalidateOnWrite clears cache on modifications (default: true)
 	CacheInvalidateOnWrite bool
+
+	// BlockCacheSizeMB is BadgerDB's block cache size in MB (default: 256)
+	// This caches LSM-tree data blocks for faster reads
+	BlockCacheSizeMB int64
+
+	// IndexCacheSizeMB is BadgerDB's index cache size in MB (default: 128)
+	// This caches LSM-tree indices for faster lookups
+	IndexCacheSizeMB int64
 }
 
 // NewBadgerMetadataStore creates a new BadgerDB-based metadata store with specified configuration.
@@ -217,10 +245,22 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		// - Frequent small reads/writes
 		// - Range scans for directory listings
 		// - Moderate write amplification acceptable
+		// - Large working set from macOS Finder scanning directories
 		opts = opts.WithLoggingLevel(badger.WARNING) // Reduce log noise
 		opts = opts.WithCompression(options.None)    // Metadata is small, compression overhead not worth it
-		opts = opts.WithBlockCacheSize(64 << 20)     // 64MB block cache for hot metadata
-		opts = opts.WithIndexCacheSize(32 << 20)     // 32MB index cache
+
+		// Configure cache sizes (with defaults if not specified)
+		blockCacheMB := config.BlockCacheSizeMB
+		if blockCacheMB == 0 {
+			blockCacheMB = 256 // Default: 256MB
+		}
+		indexCacheMB := config.IndexCacheSizeMB
+		if indexCacheMB == 0 {
+			indexCacheMB = 128 // Default: 128MB
+		}
+
+		opts = opts.WithBlockCacheSize(blockCacheMB << 20) // Convert MB to bytes
+		opts = opts.WithIndexCacheSize(indexCacheMB << 20) // Convert MB to bytes
 	}
 
 	// Open BadgerDB
@@ -272,8 +312,19 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		store.lookupCache.cache = make(map[string]*lookupCacheEntry)
 		store.lookupCache.lruList = list.New()
 
-		logger.Info("Metadata cache enabled: ttl=%v readdir_max=%d lookup_max=%d invalidate_on_write=%v",
-			ttl, store.readdirCache.maxEntries, store.lookupCache.maxEntries, invalidOnMod)
+		// GetFile cache (same size as lookup - one entry per file)
+		store.getfileCache.enabled = true
+		store.getfileCache.ttl = ttl
+		store.getfileCache.maxEntries = config.CacheMaxEntries * 10
+		if config.CacheMaxEntries == 0 {
+			store.getfileCache.maxEntries = 10000
+		}
+		store.getfileCache.invalidOnMod = invalidOnMod
+		store.getfileCache.cache = make(map[string]*getfileCacheEntry)
+		store.getfileCache.lruList = list.New()
+
+		logger.Info("Metadata cache enabled: ttl=%v readdir_max=%d lookup_max=%d getfile_max=%d invalidate_on_write=%v",
+			ttl, store.readdirCache.maxEntries, store.lookupCache.maxEntries, store.getfileCache.maxEntries, invalidOnMod)
 	}
 
 	// Initialize singleton keys if they don't exist
@@ -601,6 +652,95 @@ func (s *BadgerMetadataStore) invalidateLookup(parentHandle metadata.FileHandle)
 			s.lookupCache.lruList.Remove(entry.lruNode)
 			delete(s.lookupCache.cache, key)
 		}
+	}
+}
+
+// getGetfileCached retrieves cached file attributes by handle.
+func (s *BadgerMetadataStore) getGetfileCached(handle metadata.FileHandle) *getfileCacheEntry {
+	if !s.getfileCache.enabled {
+		return nil
+	}
+
+	s.getfileCache.mu.RLock()
+	defer s.getfileCache.mu.RUnlock()
+
+	key := string(handle)
+	entry, exists := s.getfileCache.cache[key]
+	if !exists {
+		return nil
+	}
+
+	// Check TTL
+	if time.Since(entry.timestamp) > s.getfileCache.ttl {
+		return nil
+	}
+
+	// Update LRU
+	s.getfileCache.lruList.MoveToFront(entry.lruNode)
+
+	return entry
+}
+
+// putGetfileCached stores file attributes in cache.
+func (s *BadgerMetadataStore) putGetfileCached(handle metadata.FileHandle, attr *metadata.FileAttr) {
+	if !s.getfileCache.enabled {
+		return
+	}
+
+	s.getfileCache.mu.Lock()
+	defer s.getfileCache.mu.Unlock()
+
+	key := string(handle)
+
+	// Update existing entry
+	if existing, exists := s.getfileCache.cache[key]; exists {
+		existing.attr = attr
+		existing.timestamp = time.Now()
+		s.getfileCache.lruList.MoveToFront(existing.lruNode)
+		return
+	}
+
+	// Evict if full
+	if len(s.getfileCache.cache) >= s.getfileCache.maxEntries {
+		s.evictOldestGetfile()
+	}
+
+	// Create new entry
+	entry := &getfileCacheEntry{
+		attr:      attr,
+		timestamp: time.Now(),
+	}
+	entry.lruNode = s.getfileCache.lruList.PushFront(key)
+	s.getfileCache.cache[key] = entry
+}
+
+// evictOldestGetfile removes the least recently used getfile cache entry.
+func (s *BadgerMetadataStore) evictOldestGetfile() {
+	if s.getfileCache.lruList.Len() == 0 {
+		return
+	}
+
+	oldest := s.getfileCache.lruList.Back()
+	if oldest != nil {
+		key := oldest.Value.(string)
+		delete(s.getfileCache.cache, key)
+		s.getfileCache.lruList.Remove(oldest)
+	}
+}
+
+// invalidateGetfile invalidates cached file attributes for a specific handle.
+func (s *BadgerMetadataStore) invalidateGetfile(handle metadata.FileHandle) {
+	if !s.getfileCache.enabled || !s.getfileCache.invalidOnMod {
+		return
+	}
+
+	s.getfileCache.mu.Lock()
+	defer s.getfileCache.mu.Unlock()
+
+	key := string(handle)
+	if entry, exists := s.getfileCache.cache[key]; exists {
+		s.getfileCache.lruList.Remove(entry.lruNode)
+		delete(s.getfileCache.cache, key)
 	}
 }
 

@@ -244,6 +244,16 @@ func (s *BadgerMetadataStore) GetFile(
 		}
 	}
 
+	// Try cache if enabled
+	if s.getfileCache.enabled {
+		if cached := s.getGetfileCached(handle); cached != nil {
+			atomic.AddUint64(&s.getfileCache.hits, 1)
+			attrCopy := *cached.attr
+			return &attrCopy, nil
+		}
+		atomic.AddUint64(&s.getfileCache.misses, 1)
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -274,6 +284,9 @@ func (s *BadgerMetadataStore) GetFile(
 	if err != nil {
 		return nil, err
 	}
+
+	// Cache the result
+	s.putGetfileCached(handle, attr)
 
 	// Return a copy to prevent external modification
 	attrCopy := *attr
@@ -554,6 +567,9 @@ func (s *BadgerMetadataStore) SetFileAttributes(
 			if err := txn.Set(keyFile(handle), fileBytes); err != nil {
 				return fmt.Errorf("failed to update file data: %w", err)
 			}
+
+			// Invalidate getfile cache
+			s.invalidateGetfile(handle)
 		}
 
 		return nil
@@ -1042,6 +1058,9 @@ func (s *BadgerMetadataStore) Move(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	var movedHandle metadata.FileHandle
+	var replacedHandle metadata.FileHandle
+
 	err := s.db.Update(func(txn *badger.Txn) error {
 		// Get source handle
 		sourceItem, err := txn.Get(keyChild(fromDir, fromName))
@@ -1059,6 +1078,7 @@ func (s *BadgerMetadataStore) Move(
 		var sourceHandle metadata.FileHandle
 		err = sourceItem.Value(func(val []byte) error {
 			sourceHandle = metadata.FileHandle(val)
+			movedHandle = sourceHandle // Save for cache invalidation
 			return nil
 		})
 		if err != nil {
@@ -1124,6 +1144,7 @@ func (s *BadgerMetadataStore) Move(
 			var destHandle metadata.FileHandle
 			err = destChildItem.Value(func(val []byte) error {
 				destHandle = metadata.FileHandle(val)
+				replacedHandle = destHandle // Save for cache invalidation
 				return nil
 			})
 			if err != nil {
@@ -1297,6 +1318,11 @@ func (s *BadgerMetadataStore) Move(
 		s.invalidateDirectory(fromDir)
 		if !slices.Equal(fromDir, toDir) {
 			s.invalidateDirectory(toDir)
+		}
+		// Invalidate getfile cache for moved file and replaced file (if any)
+		s.invalidateGetfile(movedHandle)
+		if len(replacedHandle) > 0 {
+			s.invalidateGetfile(replacedHandle)
 		}
 	}
 

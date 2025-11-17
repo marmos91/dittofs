@@ -634,6 +634,316 @@ func TestLookupCache(t *testing.T) {
 	})
 }
 
+// TestGetFileCache tests the GetFile caching functionality
+func TestGetFileCache(t *testing.T) {
+	t.Run("CacheHit", func(t *testing.T) {
+		store := createTestStore(t, BadgerMetadataStoreConfig{
+			DBPath: t.TempDir(),
+			Capabilities: metadata.FilesystemCapabilities{
+				MaxReadSize: 1048576,
+			},
+			CacheEnabled:    true,
+			CacheTTL:        5 * time.Second,
+			CacheMaxEntries: 100,
+		})
+		defer store.Close()
+
+		share := createTestShare(t, store, "/test")
+		rootHandle := share.RootHandle
+		ctx := createAuthContext("127.0.0.1")
+
+		// Create a test file
+		fileHandle, err := store.Create(ctx, rootHandle, "test.txt", &metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0644,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create file: %v", err)
+		}
+
+		// First GetFile - should be a cache miss
+		initialMisses := store.getfileCache.misses
+		attr1, err := store.GetFile(context.Background(), fileHandle)
+		if err != nil {
+			t.Fatalf("First GetFile failed: %v", err)
+		}
+		if store.getfileCache.misses != initialMisses+1 {
+			t.Errorf("Expected cache miss on first GetFile")
+		}
+
+		// Second GetFile - should be a cache hit
+		initialHits := store.getfileCache.hits
+		attr2, err := store.GetFile(context.Background(), fileHandle)
+		if err != nil {
+			t.Fatalf("Second GetFile failed: %v", err)
+		}
+		if store.getfileCache.hits != initialHits+1 {
+			t.Errorf("Expected cache hit on second GetFile")
+		}
+
+		// Verify same results
+		if attr1.Size != attr2.Size || attr1.Mode != attr2.Mode {
+			t.Errorf("Cache returned different attributes")
+		}
+	})
+
+	t.Run("CacheInvalidationOnSetAttr", func(t *testing.T) {
+		store := createTestStore(t, BadgerMetadataStoreConfig{
+			DBPath: t.TempDir(),
+			Capabilities: metadata.FilesystemCapabilities{
+				MaxReadSize: 1048576,
+			},
+			CacheEnabled:           true,
+			CacheTTL:               5 * time.Second,
+			CacheMaxEntries:        100,
+			CacheInvalidateOnWrite: true,
+		})
+		defer store.Close()
+
+		share := createTestShare(t, store, "/test")
+		rootHandle := share.RootHandle
+		ctx := createAuthContext("127.0.0.1")
+
+		// Create a test file
+		fileHandle, err := store.Create(ctx, rootHandle, "test.txt", &metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0644,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create file: %v", err)
+		}
+
+		// GetFile to populate cache
+		_, err = store.GetFile(context.Background(), fileHandle)
+		if err != nil {
+			t.Fatalf("GetFile failed: %v", err)
+		}
+
+		// Modify attributes - should invalidate cache
+		newMode := uint32(0755)
+		err = store.SetFileAttributes(ctx, fileHandle, &metadata.SetAttrs{
+			Mode: &newMode,
+		})
+		if err != nil {
+			t.Fatalf("SetFileAttributes failed: %v", err)
+		}
+
+		// Next GetFile should be a cache miss
+		initialMisses := store.getfileCache.misses
+		attr, err := store.GetFile(context.Background(), fileHandle)
+		if err != nil {
+			t.Fatalf("GetFile after SetFileAttributes failed: %v", err)
+		}
+		if store.getfileCache.misses != initialMisses+1 {
+			t.Errorf("Expected cache miss after SetFileAttributes")
+		}
+
+		// Verify new mode
+		if attr.Mode != 0755 {
+			t.Errorf("Expected mode 0755, got %04o", attr.Mode)
+		}
+	})
+
+	t.Run("CacheInvalidationOnWrite", func(t *testing.T) {
+		store := createTestStore(t, BadgerMetadataStoreConfig{
+			DBPath: t.TempDir(),
+			Capabilities: metadata.FilesystemCapabilities{
+				MaxReadSize: 1048576,
+			},
+			CacheEnabled:           true,
+			CacheTTL:               5 * time.Second,
+			CacheMaxEntries:        100,
+			CacheInvalidateOnWrite: true,
+		})
+		defer store.Close()
+
+		share := createTestShare(t, store, "/test")
+		rootHandle := share.RootHandle
+		ctx := createAuthContext("127.0.0.1")
+
+		// Create a test file
+		fileHandle, err := store.Create(ctx, rootHandle, "test.txt", &metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0644,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create file: %v", err)
+		}
+
+		// GetFile to populate cache
+		attr1, err := store.GetFile(context.Background(), fileHandle)
+		if err != nil {
+			t.Fatalf("GetFile failed: %v", err)
+		}
+		initialSize := attr1.Size
+
+		// Write to file - should invalidate cache
+		intent, err := store.PrepareWrite(ctx, fileHandle, 100)
+		if err != nil {
+			t.Fatalf("PrepareWrite failed: %v", err)
+		}
+		_, err = store.CommitWrite(ctx, intent)
+		if err != nil {
+			t.Fatalf("CommitWrite failed: %v", err)
+		}
+
+		// Next GetFile should be a cache miss
+		initialMisses := store.getfileCache.misses
+		attr2, err := store.GetFile(context.Background(), fileHandle)
+		if err != nil {
+			t.Fatalf("GetFile after write failed: %v", err)
+		}
+		if store.getfileCache.misses != initialMisses+1 {
+			t.Errorf("Expected cache miss after write")
+		}
+
+		// Verify size changed
+		if attr2.Size == initialSize {
+			t.Errorf("Expected size to change after write")
+		}
+	})
+
+	t.Run("CacheInvalidationOnRemove", func(t *testing.T) {
+		store := createTestStore(t, BadgerMetadataStoreConfig{
+			DBPath: t.TempDir(),
+			Capabilities: metadata.FilesystemCapabilities{
+				MaxReadSize: 1048576,
+			},
+			CacheEnabled:           true,
+			CacheTTL:               5 * time.Second,
+			CacheMaxEntries:        100,
+			CacheInvalidateOnWrite: true,
+		})
+		defer store.Close()
+
+		share := createTestShare(t, store, "/test")
+		rootHandle := share.RootHandle
+		ctx := createAuthContext("127.0.0.1")
+
+		// Create a test file
+		fileHandle, err := store.Create(ctx, rootHandle, "test.txt", &metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0644,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create file: %v", err)
+		}
+
+		// GetFile to populate cache
+		_, err = store.GetFile(context.Background(), fileHandle)
+		if err != nil {
+			t.Fatalf("GetFile failed: %v", err)
+		}
+
+		// Remove file
+		_, err = store.RemoveFile(ctx, rootHandle, "test.txt")
+		if err != nil {
+			t.Fatalf("RemoveFile failed: %v", err)
+		}
+
+		// GetFile should now fail (file doesn't exist)
+		_, err = store.GetFile(context.Background(), fileHandle)
+		if err == nil {
+			t.Error("Expected error getting removed file")
+		}
+	})
+
+	t.Run("CacheTTLExpiration", func(t *testing.T) {
+		store := createTestStore(t, BadgerMetadataStoreConfig{
+			DBPath: t.TempDir(),
+			Capabilities: metadata.FilesystemCapabilities{
+				MaxReadSize: 1048576,
+			},
+			CacheEnabled:    true,
+			CacheTTL:        100 * time.Millisecond, // Very short TTL
+			CacheMaxEntries: 100,
+		})
+		defer store.Close()
+
+		share := createTestShare(t, store, "/test")
+		rootHandle := share.RootHandle
+		ctx := createAuthContext("127.0.0.1")
+
+		// Create a test file
+		fileHandle, err := store.Create(ctx, rootHandle, "test.txt", &metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0644,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create file: %v", err)
+		}
+
+		// First GetFile - populate cache
+		_, err = store.GetFile(context.Background(), fileHandle)
+		if err != nil {
+			t.Fatalf("First GetFile failed: %v", err)
+		}
+
+		// Immediate second GetFile - should hit cache
+		initialHits := store.getfileCache.hits
+		_, err = store.GetFile(context.Background(), fileHandle)
+		if err != nil {
+			t.Fatalf("Second GetFile failed: %v", err)
+		}
+		if store.getfileCache.hits != initialHits+1 {
+			t.Errorf("Expected cache hit before TTL expiration")
+		}
+
+		// Wait for TTL to expire
+		time.Sleep(150 * time.Millisecond)
+
+		// Third GetFile - should miss cache (expired)
+		initialMisses := store.getfileCache.misses
+		_, err = store.GetFile(context.Background(), fileHandle)
+		if err != nil {
+			t.Fatalf("Third GetFile failed: %v", err)
+		}
+		if store.getfileCache.misses != initialMisses+1 {
+			t.Errorf("Expected cache miss after TTL expiration")
+		}
+	})
+
+	t.Run("CacheDisabled", func(t *testing.T) {
+		store := createTestStore(t, BadgerMetadataStoreConfig{
+			DBPath: t.TempDir(),
+			Capabilities: metadata.FilesystemCapabilities{
+				MaxReadSize: 1048576,
+			},
+			CacheEnabled: false, // Cache disabled
+		})
+		defer store.Close()
+
+		share := createTestShare(t, store, "/test")
+		rootHandle := share.RootHandle
+		ctx := createAuthContext("127.0.0.1")
+
+		// Create a test file
+		fileHandle, err := store.Create(ctx, rootHandle, "test.txt", &metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0644,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create file: %v", err)
+		}
+
+		// Multiple GetFile calls should all bypass cache
+		for i := 0; i < 3; i++ {
+			_, err := store.GetFile(context.Background(), fileHandle)
+			if err != nil {
+				t.Fatalf("GetFile %d failed: %v", i, err)
+			}
+		}
+
+		// Should have 0 hits and 0 misses (cache not used)
+		if store.getfileCache.hits != 0 {
+			t.Errorf("Expected 0 cache hits when disabled, got %d", store.getfileCache.hits)
+		}
+		if store.getfileCache.misses != 0 {
+			t.Errorf("Expected 0 cache misses when disabled, got %d", store.getfileCache.misses)
+		}
+	})
+}
+
 // TestCacheStatistics tests that cache statistics are properly tracked
 func TestCacheStatistics(t *testing.T) {
 	store := createTestStore(t, BadgerMetadataStoreConfig{

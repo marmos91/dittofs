@@ -56,6 +56,7 @@ func (s *BadgerMetadataStore) RemoveFile(
 	defer s.mu.Unlock()
 
 	var returnAttr *metadata.FileAttr
+	var removedHandle metadata.FileHandle
 
 	err := s.db.Update(func(txn *badger.Txn) error {
 		// Verify parent exists and is a directory
@@ -120,6 +121,7 @@ func (s *BadgerMetadataStore) RemoveFile(
 		var fileHandle metadata.FileHandle
 		err = childItem.Value(func(val []byte) error {
 			fileHandle = metadata.FileHandle(val)
+			removedHandle = fileHandle // Save for cache invalidation
 			return nil
 		})
 		if err != nil {
@@ -243,11 +245,10 @@ func (s *BadgerMetadataStore) RemoveFile(
 		return nil, err
 	}
 
-	// Invalidate stats cache since we removed a file
+	// Invalidate caches
 	s.invalidateStatsCache()
-
-	// Invalidate directory caches for parent directory
 	s.invalidateDirectory(parentHandle)
+	s.invalidateGetfile(removedHandle)
 
 	return returnAttr, nil
 }
@@ -295,6 +296,8 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	var removedHandle metadata.FileHandle
 
 	err := s.db.Update(func(txn *badger.Txn) error {
 		// Verify parent exists and is a directory
@@ -359,6 +362,7 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 		var dirHandle metadata.FileHandle
 		err = childItem.Value(func(val []byte) error {
 			dirHandle = metadata.FileHandle(val)
+			removedHandle = dirHandle // Save for cache invalidation
 			return nil
 		})
 		if err != nil {
@@ -479,11 +483,10 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 		return err
 	}
 
-	// Invalidate stats cache since we removed a directory
+	// Invalidate caches
 	s.invalidateStatsCache()
-
-	// Invalidate directory caches for parent directory
 	s.invalidateDirectory(parentHandle)
+	s.invalidateGetfile(removedHandle)
 
 	return nil
 }
