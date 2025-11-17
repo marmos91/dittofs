@@ -761,6 +761,8 @@ func (s *BadgerMetadataStore) Create(
 			// Extract relative path from fullPath
 			// fullPath format: /<shareName>:/<relative-path>
 			// Example: /export:/scripts/file.txt -> /scripts/file.txt
+			// Note: In some contexts (e.g., tests), fullPath may not have a share prefix,
+			// in which case we use the entire path as the relative path.
 			relativePath := fullPath
 			if colonIndex := strings.Index(fullPath, ":"); colonIndex != -1 {
 				relativePath = fullPath[colonIndex+1:]
@@ -1339,6 +1341,12 @@ func (s *BadgerMetadataStore) Move(
 		if len(replacedHandle) > 0 {
 			s.invalidateGetfile(replacedHandle)
 		}
+		// Note: We do NOT invalidate sharename cache here because a file's share
+		// cannot change during a Move operation within the same filesystem. Shares
+		// are root-level mount points, and all files within a share remain in that
+		// share even when moved to different directories. This is different from
+		// RemoveFile, which may affect the file's share association if deleting
+		// cross-share references.
 	}
 
 	return err

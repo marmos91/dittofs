@@ -323,22 +323,26 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		store.readdirCache.lruList = list.New()
 
 		// Lookup cache (larger - one entry per file)
+		// Default: 10x readdir cache size (10000 entries), or 10x configured value
 		store.lookupCache.enabled = true
 		store.lookupCache.ttl = ttl
-		store.lookupCache.maxEntries = config.CacheMaxEntries * 10
 		if config.CacheMaxEntries == 0 {
-			store.lookupCache.maxEntries = 10000
+			store.lookupCache.maxEntries = 10000 // Default
+		} else {
+			store.lookupCache.maxEntries = config.CacheMaxEntries * 10
 		}
 		store.lookupCache.invalidOnMod = invalidOnMod
 		store.lookupCache.cache = make(map[string]*lookupCacheEntry)
 		store.lookupCache.lruList = list.New()
 
 		// GetFile cache (same size as lookup - one entry per file)
+		// Default: 10000 entries, or 10x configured value
 		store.getfileCache.enabled = true
 		store.getfileCache.ttl = ttl
-		store.getfileCache.maxEntries = config.CacheMaxEntries * 10
 		if config.CacheMaxEntries == 0 {
-			store.getfileCache.maxEntries = 10000
+			store.getfileCache.maxEntries = 10000 // Default
+		} else {
+			store.getfileCache.maxEntries = config.CacheMaxEntries * 10
 		}
 		store.getfileCache.invalidOnMod = invalidOnMod
 		store.getfileCache.cache = make(map[string]*getfileCacheEntry)
@@ -346,11 +350,13 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 
 		// ShareName cache (same size as getfile - one entry per file)
 		// Share names are immutable and frequently accessed on every NFS operation
+		// Default: 10000 entries, or 10x configured value
 		store.shareNameCache.enabled = true
 		store.shareNameCache.ttl = ttl
-		store.shareNameCache.maxEntries = config.CacheMaxEntries * 10
 		if config.CacheMaxEntries == 0 {
-			store.shareNameCache.maxEntries = 10000
+			store.shareNameCache.maxEntries = 10000 // Default
+		} else {
+			store.shareNameCache.maxEntries = config.CacheMaxEntries * 10
 		}
 		store.shareNameCache.cache = make(map[string]*shareNameCacheEntry)
 		store.shareNameCache.lruList = list.New()

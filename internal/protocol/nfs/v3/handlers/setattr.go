@@ -616,6 +616,9 @@ func validateSetAttrRequest(req *SetAttrRequest) *setAttrValidationError {
 	// handler, returning current attributes without modification.
 
 	// Validate and normalize mode value if being set
+	// NOTE: This function modifies req.NewAttr.Mode in place for normalization.
+	// This mutation is intentional and normalizes client-provided modes to a
+	// canonical form before further processing.
 	if req.NewAttr.Mode != nil {
 		// Some clients (like macOS Finder) send mode values that include file type bits
 		// in the upper bits (e.g., 0100644 for regular file, 040755 for directory).
@@ -623,6 +626,7 @@ func validateSetAttrRequest(req *SetAttrRequest) *setAttrValidationError {
 		// This is standard behavior - SETATTR cannot change file type, only permissions.
 
 		// Strip file type bits and keep only permission bits (lower 12 bits)
+		// This modifies the request in place to normalize the value for downstream processing.
 		*req.NewAttr.Mode = *req.NewAttr.Mode & 0o7777
 	}
 
