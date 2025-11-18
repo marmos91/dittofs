@@ -52,8 +52,6 @@ func (s *BadgerMetadataStore) ReadDirectory(
 	}
 
 	// Acquire read lock to ensure consistency during read
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var page *metadata.ReadDirPage
 
@@ -238,8 +236,6 @@ func (s *BadgerMetadataStore) ReadSymlink(
 		}
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var target string
 	var attr *metadata.FileAttr
@@ -350,8 +346,6 @@ func (s *BadgerMetadataStore) CreateSymlink(
 		}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	var newHandle metadata.FileHandle
 
@@ -572,8 +566,6 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 		}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	var newHandle metadata.FileHandle
 

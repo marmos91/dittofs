@@ -51,8 +51,6 @@ func (s *BadgerMetadataStore) AddShare(
 		}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	// Execute in transaction for atomicity
 	return s.db.Update(func(txn *badger.Txn) error {
@@ -148,8 +146,6 @@ func (s *BadgerMetadataStore) GetShares(ctx context.Context) ([]metadata.Share, 
 		return nil, err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var shares []metadata.Share
 
@@ -202,8 +198,6 @@ func (s *BadgerMetadataStore) FindShare(ctx context.Context, name string) (*meta
 		return nil, err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var share *metadata.Share
 
@@ -256,8 +250,6 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, name string) erro
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	return s.db.Update(func(txn *badger.Txn) error {
 		// Check if share exists
@@ -299,8 +291,6 @@ func (s *BadgerMetadataStore) GetShareRoot(ctx context.Context, name string) (me
 		return nil, err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var rootHandle metadata.FileHandle
 
@@ -354,8 +344,6 @@ func (s *BadgerMetadataStore) RecordShareMount(ctx context.Context, shareName, c
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	return s.db.Update(func(txn *badger.Txn) error {
 		// Verify share exists
@@ -408,8 +396,6 @@ func (s *BadgerMetadataStore) GetActiveShares(ctx context.Context) ([]metadata.S
 		return nil, err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	// Initialize to empty slice (not nil) to match test expectations
 	sessions := []metadata.ShareSession{}
@@ -465,8 +451,6 @@ func (s *BadgerMetadataStore) RemoveShareMount(ctx context.Context, shareName, c
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	return s.db.Update(func(txn *badger.Txn) error {
 		// Delete the session (idempotent - no error if doesn't exist)

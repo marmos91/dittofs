@@ -42,8 +42,6 @@ func (s *BadgerMetadataStore) PrepareWrite(
 		return nil, err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var writeOp *metadata.WriteOperation
 
@@ -93,9 +91,7 @@ func (s *BadgerMetadataStore) PrepareWrite(
 		// Check write permission using the public CheckPermissions method
 		// We need to release the RLock temporarily to call CheckPermissions
 		// which acquires its own RLock
-		s.mu.RUnlock()
 		granted, err := s.CheckPermissions(ctx, handle, metadata.PermissionWrite)
-		s.mu.RLock()
 
 		if err != nil {
 			return err
@@ -168,8 +164,6 @@ func (s *BadgerMetadataStore) CommitWrite(
 		return nil, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	var updatedAttr *metadata.FileAttr
 
@@ -279,8 +273,6 @@ func (s *BadgerMetadataStore) PrepareRead(
 		return nil, err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var readMeta *metadata.ReadMetadata
 
@@ -329,9 +321,7 @@ func (s *BadgerMetadataStore) PrepareRead(
 
 		// Check read permission using the public CheckPermissions method
 		// We need to release the RLock temporarily to call CheckPermissions
-		s.mu.RUnlock()
 		granted, err := s.CheckPermissions(ctx, handle, metadata.PermissionRead)
-		s.mu.RLock()
 
 		if err != nil {
 			return err

@@ -60,8 +60,6 @@ func (s *BadgerMetadataStore) CheckShareAccess(
 		return nil, nil, err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var decision *metadata.AccessDecision
 	var authCtx *metadata.AuthContext
@@ -226,8 +224,6 @@ func (s *BadgerMetadataStore) CheckPermissions(
 		return 0, err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var granted metadata.Permission
 

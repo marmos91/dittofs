@@ -40,8 +40,6 @@ func (s *BadgerMetadataStore) Lookup(
 	}
 
 	// Acquire read lock to ensure consistency during read
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var targetHandle metadata.FileHandle
 	var targetAttr *metadata.FileAttr
@@ -82,9 +80,7 @@ func (s *BadgerMetadataStore) Lookup(
 
 		// Check execute/traverse permission on directory (search permission)
 		// Release lock temporarily for CheckPermissions
-		s.mu.RUnlock()
 		granted, err := s.CheckPermissions(ctx, dirHandle, metadata.PermissionTraverse)
-		s.mu.RLock()
 
 		if err != nil {
 			return err
@@ -230,8 +226,6 @@ func (s *BadgerMetadataStore) GetFile(
 	}
 
 	// Acquire read lock to ensure consistency during read
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var attr *metadata.FileAttr
 
@@ -295,8 +289,6 @@ func (s *BadgerMetadataStore) GetShareNameForHandle(
 		}
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var shareName string
 
@@ -353,8 +345,6 @@ func (s *BadgerMetadataStore) SetFileAttributes(
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	return s.db.Update(func(txn *badger.Txn) error {
 		// Get file data
@@ -468,9 +458,7 @@ func (s *BadgerMetadataStore) SetFileAttributes(
 			}
 
 			// Check write permission
-			s.mu.Unlock()
 			granted, err := s.CheckPermissions(ctx, handle, metadata.PermissionWrite)
-			s.mu.Lock()
 			if err != nil {
 				return err
 			}
@@ -489,9 +477,7 @@ func (s *BadgerMetadataStore) SetFileAttributes(
 		// Apply atime changes
 		if attrs.Atime != nil {
 			if !isOwner && !isRoot {
-				s.mu.Unlock()
 				granted, err := s.CheckPermissions(ctx, handle, metadata.PermissionWrite)
-				s.mu.Lock()
 				if err != nil {
 					return err
 				}
@@ -510,9 +496,7 @@ func (s *BadgerMetadataStore) SetFileAttributes(
 		// Apply mtime changes
 		if attrs.Mtime != nil {
 			if !isOwner && !isRoot {
-				s.mu.Unlock()
 				granted, err := s.CheckPermissions(ctx, handle, metadata.PermissionWrite)
-				s.mu.Lock()
 				if err != nil {
 					return err
 				}
@@ -590,8 +574,6 @@ func (s *BadgerMetadataStore) Create(
 		}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	var newHandle metadata.FileHandle
 
@@ -629,9 +611,7 @@ func (s *BadgerMetadataStore) Create(
 		}
 
 		// Check write permission on parent
-		s.mu.Unlock()
 		granted, err := s.CheckPermissions(ctx, parentHandle, metadata.PermissionWrite)
-		s.mu.Lock()
 		if err != nil {
 			return err
 		}
@@ -823,8 +803,6 @@ func (s *BadgerMetadataStore) CreateHardLink(
 		}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	err := s.db.Update(func(txn *badger.Txn) error {
 		// Verify target exists and is not a directory
@@ -892,9 +870,7 @@ func (s *BadgerMetadataStore) CreateHardLink(
 		}
 
 		// Check write permission on directory
-		s.mu.Unlock()
 		granted, err := s.CheckPermissions(ctx, dirHandle, metadata.PermissionWrite)
-		s.mu.Lock()
 		if err != nil {
 			return err
 		}
@@ -1016,8 +992,6 @@ func (s *BadgerMetadataStore) Move(
 		}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	err := s.db.Update(func(txn *badger.Txn) error {
 		// Get source handle
@@ -1067,9 +1041,7 @@ func (s *BadgerMetadataStore) Move(
 		}
 
 		// Check write permission on source directory
-		s.mu.Unlock()
 		granted, err := s.CheckPermissions(ctx, fromDir, metadata.PermissionWrite)
-		s.mu.Lock()
 		if err != nil {
 			return err
 		}
@@ -1081,9 +1053,7 @@ func (s *BadgerMetadataStore) Move(
 		}
 
 		// Check write permission on destination directory
-		s.mu.Unlock()
 		granted, err = s.CheckPermissions(ctx, toDir, metadata.PermissionWrite)
-		s.mu.Lock()
 		if err != nil {
 			return err
 		}

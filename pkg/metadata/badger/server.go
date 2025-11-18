@@ -28,8 +28,6 @@ func (s *BadgerMetadataStore) SetServerConfig(ctx context.Context, config metada
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	return s.db.Update(func(txn *badger.Txn) error {
 		configBytes, err := encodeServerConfig(&config)
@@ -61,8 +59,6 @@ func (s *BadgerMetadataStore) GetServerConfig(ctx context.Context) (metadata.Met
 		return metadata.MetadataServerConfig{}, err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var config metadata.MetadataServerConfig
 
@@ -123,8 +119,6 @@ func (s *BadgerMetadataStore) Healthcheck(ctx context.Context) error {
 		return err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	// Attempt a simple read transaction to verify database is accessible
 	err := s.db.View(func(txn *badger.Txn) error {
@@ -162,8 +156,6 @@ func (s *BadgerMetadataStore) GetFilesystemCapabilities(ctx context.Context, han
 		return nil, err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var caps *metadata.FilesystemCapabilities
 
@@ -238,8 +230,6 @@ func (s *BadgerMetadataStore) GetFilesystemStatistics(ctx context.Context, handl
 	// Step 2: Cache miss or expired - compute stats (slow path)
 	// ========================================================================
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	var stats metadata.FilesystemStatistics
 	var fileCount uint64

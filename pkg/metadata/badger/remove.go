@@ -66,8 +66,6 @@ func (s *BadgerMetadataStore) RemoveFile(
 		}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	var returnAttr *metadata.FileAttr
 	var removedHandle metadata.FileHandle
@@ -303,8 +301,6 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 		}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	var removedHandle metadata.FileHandle
 
@@ -339,17 +335,14 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 				childCount, retryDelay, attempt, maxAttempts)
 
 			// Release lock during wait to allow other operations to complete
-			s.mu.Unlock()
 
 			select {
 			case <-time.After(retryDelay):
 				// Retry
 			case <-ctx.Context.Done():
-				s.mu.Lock()
 				return ctx.Context.Err()
 			}
 
-			s.mu.Lock()
 		} else {
 			// Don't retry - fail immediately
 			err = attemptErr

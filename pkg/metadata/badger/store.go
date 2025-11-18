@@ -53,11 +53,7 @@ import (
 // For paths exceeding NFS limits (64 bytes), handles are automatically converted
 // to hash-based format with reverse mapping stored in the database.
 type BadgerMetadataStore struct {
-	// mu protects all fields in this struct for concurrent access.
-	// Operations acquire read locks for queries and write locks for mutations.
-	mu sync.RWMutex
-
-	// db is the BadgerDB database handle
+	// db is the BadgerDB database handle (thread-safe, uses internal MVCC)
 	db *badger.DB
 
 	// capabilities stores static filesystem capabilities and limits.
@@ -408,9 +404,6 @@ func (s *BadgerMetadataStore) initializeSingletons(ctx context.Context) error {
 // Returns:
 //   - error: Error if closing the database fails
 func (s *BadgerMetadataStore) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if err := s.db.Close(); err != nil {
 		return fmt.Errorf("failed to close BadgerDB: %w", err)
 	}

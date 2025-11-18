@@ -37,8 +37,6 @@ func (s *BadgerMetadataStore) GetAllContentIDs(ctx context.Context) ([]metadata.
 		return nil, err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	// Use map for deduplication (hard links may share ContentIDs)
 	contentIDs := make(map[metadata.ContentID]struct{})
