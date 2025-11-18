@@ -52,13 +52,28 @@ func (s *BadgerMetadataStore) RemoveFile(
 		}
 	}
 
+	// Check write permission BEFORE acquiring lock to avoid unlock/relock race
+	granted, err := s.CheckPermissions(ctx, parentHandle, metadata.PermissionWrite)
+	if err != nil {
+		return nil, err
+	}
+	if granted&metadata.PermissionWrite == 0 {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrAccessDenied,
+			Message: "no write permission on parent directory",
+		}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Invalidate cache before transaction to prevent concurrent reads from caching stale data
+	s.invalidateDirectory(parentHandle)
 
 	var returnAttr *metadata.FileAttr
 	var removedHandle metadata.FileHandle
 
-	err := s.db.Update(func(txn *badger.Txn) error {
+	err = s.db.Update(func(txn *badger.Txn) error {
 		// Verify parent exists and is a directory
 		item, err := txn.Get(keyFile(parentHandle))
 		if err == badger.ErrKeyNotFound {
@@ -88,20 +103,6 @@ func (s *BadgerMetadataStore) RemoveFile(
 			return &metadata.StoreError{
 				Code:    metadata.ErrNotDirectory,
 				Message: "parent is not a directory",
-			}
-		}
-
-		// Check write permission on parent
-		s.mu.Unlock()
-		granted, err := s.CheckPermissions(ctx, parentHandle, metadata.PermissionWrite)
-		s.mu.Lock()
-		if err != nil {
-			return err
-		}
-		if granted&metadata.PermissionWrite == 0 {
-			return &metadata.StoreError{
-				Code:    metadata.ErrAccessDenied,
-				Message: "no write permission on parent directory",
 			}
 		}
 
@@ -245,7 +246,9 @@ func (s *BadgerMetadataStore) RemoveFile(
 		return nil, err
 	}
 
-	// Invalidate caches
+	// Invalidate all caches after successful removal.
+	// We invalidate directory cache again (after pre-emptive invalidation)
+	// because another thread might have repopulated it during our transaction.
 	s.invalidateStatsCache()
 	s.invalidateDirectory(parentHandle)
 	s.invalidateGetfile(removedHandle)
@@ -295,12 +298,27 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 		}
 	}
 
+	// Check write permission BEFORE acquiring lock to avoid unlock/relock race
+	granted, err := s.CheckPermissions(ctx, parentHandle, metadata.PermissionWrite)
+	if err != nil {
+		return err
+	}
+	if granted&metadata.PermissionWrite == 0 {
+		return &metadata.StoreError{
+			Code:    metadata.ErrAccessDenied,
+			Message: "no write permission on parent directory",
+		}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Invalidate cache before transaction to prevent concurrent reads from caching stale data
+	s.invalidateDirectory(parentHandle)
+
 	var removedHandle metadata.FileHandle
 
-	err := s.db.Update(func(txn *badger.Txn) error {
+	err = s.db.Update(func(txn *badger.Txn) error {
 		// Verify parent exists and is a directory
 		item, err := txn.Get(keyFile(parentHandle))
 		if err == badger.ErrKeyNotFound {
@@ -330,20 +348,6 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 			return &metadata.StoreError{
 				Code:    metadata.ErrNotDirectory,
 				Message: "parent is not a directory",
-			}
-		}
-
-		// Check write permission on parent
-		s.mu.Unlock()
-		granted, err := s.CheckPermissions(ctx, parentHandle, metadata.PermissionWrite)
-		s.mu.Lock()
-		if err != nil {
-			return err
-		}
-		if granted&metadata.PermissionWrite == 0 {
-			return &metadata.StoreError{
-				Code:    metadata.ErrAccessDenied,
-				Message: "no write permission on parent directory",
 			}
 		}
 
@@ -484,7 +488,9 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 		return err
 	}
 
-	// Invalidate caches
+	// Invalidate all caches after successful removal.
+	// We invalidate directory cache again (after pre-emptive invalidation)
+	// because another thread might have repopulated it during our transaction.
 	s.invalidateStatsCache()
 	s.invalidateDirectory(parentHandle)
 	s.invalidateGetfile(removedHandle)

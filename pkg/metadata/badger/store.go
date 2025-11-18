@@ -96,6 +96,7 @@ type BadgerMetadataStore struct {
 		mu           sync.RWMutex
 		hits         uint64
 		misses       uint64
+		generation   uint64 // Incremented on any invalidation to detect stale reads
 	}
 
 	// lookupCache caches lookup results (LRU + TTL).
@@ -680,6 +681,9 @@ func (s *BadgerMetadataStore) invalidateReaddir(handle metadata.FileHandle) {
 
 	s.readdirCache.mu.Lock()
 	defer s.readdirCache.mu.Unlock()
+
+	// Increment generation to invalidate in-flight reads
+	s.readdirCache.generation++
 
 	key := readdirCacheKey(handle)
 	entry, exists := s.readdirCache.cache[key]
