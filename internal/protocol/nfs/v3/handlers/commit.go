@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	"github.com/marmos91/dittofs/pkg/content"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -395,47 +396,38 @@ func (h *DefaultNFSHandler) Commit(
 	default:
 	}
 
-	// If content store supports flushing, flush the write buffers
-	// This ensures buffered writes are persisted to storage (S3, filesystem, etc.)
+	// Flush cached writes to storage
+	// COMMIT ensures all buffered writes are persisted to stable storage
 	if h.ContentStore != nil {
-		// Check if content store has FlushWrites method (e.g., S3 store)
-		type flusher interface {
-			FlushWrites(ctx context.Context, id metadata.ContentID) error
-		}
+		// Cast to WritableContentStore (required for flushing)
+		writeStore, ok := h.ContentStore.(content.WritableContentStore)
+		if !ok {
+			logger.Debug("COMMIT: content store is not writable, skipping flush: handle=%x client=%s",
+				req.Handle, clientIP)
+		} else if fileAttr.ContentID != "" {
+			// Flush using shared helper method
+			if err := h.flushContent(ctx.Context, writeStore, fileAttr.ContentID, FlushReasonCommit); err != nil {
+				logger.Error("COMMIT failed: flush error: handle=%x offset=%d count=%d client=%s content_id=%s error=%v",
+					req.Handle, req.Offset, req.Count, clientIP, fileAttr.ContentID, err)
 
-		if flushableStore, ok := h.ContentStore.(flusher); ok {
-			if fileAttr.ContentID == "" {
-				// Empty ContentID is expected for directories and special files,
-				// but may indicate a bug for regular files
-				if fileAttr.Type == metadata.FileTypeRegular {
-					logger.Warn("COMMIT: Regular file has empty ContentID (potential bug): handle=%x client=%s",
-						req.Handle, clientIP)
+				// Get updated attributes for WCC data (best effort)
+				var wccAfter *types.NFSFileAttr
+				if updatedAttr, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
+					fileID := xdr.ExtractFileID(handle)
+					wccAfter = xdr.MetadataToNFS(updatedAttr, fileID)
 				}
-				// Skip flush - nothing to flush
-			} else {
-				logger.Debug("Flushing write buffers for content_id=%s", fileAttr.ContentID)
-				if err := flushableStore.FlushWrites(ctx.Context, fileAttr.ContentID); err != nil {
-					logger.Error("COMMIT failed: flush error: handle=%x offset=%d count=%d client=%s content_id=%s error=%v",
-						req.Handle, req.Offset, req.Count, clientIP, fileAttr.ContentID, err)
 
-					// Get updated attributes for WCC data (best effort)
-					var wccAfter *types.NFSFileAttr
-					if updatedAttr, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-						fileID := xdr.ExtractFileID(handle)
-						wccAfter = xdr.MetadataToNFS(updatedAttr, fileID)
-					}
-
-					return &CommitResponse{
-						Status:        types.NFS3ErrIO,
-						AttrBefore:    wccBefore,
-						AttrAfter:     wccAfter,
-						WriteVerifier: 0,
-					}, nil
-				}
-				logger.Debug("Write buffers flushed successfully for content_id=%s", fileAttr.ContentID)
+				return &CommitResponse{
+					Status:        types.NFS3ErrIO,
+					AttrBefore:    wccBefore,
+					AttrAfter:     wccAfter,
+					WriteVerifier: 0,
+				}, nil
 			}
-		} else {
-			logger.Debug("Content store does not support flushing")
+		} else if fileAttr.Type == metadata.FileTypeRegular {
+			// Empty ContentID for regular file is unusual
+			logger.Warn("COMMIT: regular file has empty ContentID: handle=%x client=%s",
+				req.Handle, clientIP)
 		}
 	}
 

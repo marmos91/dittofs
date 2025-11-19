@@ -13,6 +13,7 @@ import (
 	v3 "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/internal/ratelimiter"
 	"github.com/marmos91/dittofs/pkg/content"
+	"github.com/marmos91/dittofs/pkg/content/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metrics"
 )
@@ -61,6 +62,10 @@ type NFSAdapter struct {
 
 	// content provides access to file content (data blocks)
 	content content.ContentStore
+
+	// writeCache is the auto-flush write cache (if enabled)
+	// Stored for graceful shutdown
+	writeCache cache.WriteCache
 
 	// metrics provides optional Prometheus metrics collection
 	// If nil, no metrics are collected (zero overhead)
@@ -186,6 +191,17 @@ type NFSConfig struct {
 	// 0 disables periodic metrics logging.
 	// Recommended: 5m for production monitoring.
 	MetricsLogInterval time.Duration `mapstructure:"metrics_log_interval" validate:"min=0"`
+
+	// AutoFlushTimeout is the idle timeout before cached writes are flushed
+	// Critical for macOS which doesn't send COMMIT operations
+	// 0 uses default of 30 seconds
+	// Recommended: 30s for macOS compatibility
+	AutoFlushTimeout time.Duration `mapstructure:"auto_flush_timeout" validate:"min=0"`
+
+	// AutoFlushInterval is how often to check for stale cached writes
+	// 0 uses default of 10 seconds
+	// Recommended: 10s (balance between responsiveness and CPU usage)
+	AutoFlushInterval time.Duration `mapstructure:"auto_flush_interval" validate:"min=0"`
 
 	// RateLimiting contains adapter-specific rate limiting configuration.
 	// If not specified, inherits from server.rate_limiting.
@@ -357,11 +373,59 @@ func (s *NFSAdapter) SetStores(metadataStore metadata.MetadataStore, contentRepo
 	s.metadataStore = metadataStore
 	s.content = contentRepo
 
-	// Update the NFS handler with content store for flushing writes
+	// Update the NFS handler with content store and write cache
 	if defaultHandler, ok := s.nfsHandler.(*v3.DefaultNFSHandler); ok {
 		if writableStore, ok := contentRepo.(content.WritableContentStore); ok {
 			defaultHandler.ContentStore = writableStore
 			logger.Debug("NFS handler configured with writable content store")
+
+			// Create write cache for buffering writes before flushing to content store
+			// This eliminates read-modify-write cycles for S3 and improves performance
+			baseCache := cache.NewMemoryWriteCache()
+
+			// Create flush callback that calls ContentStore.FlushWrites()
+			// This keeps the cache and content store interfaces completely separated
+			flushCallback := func(ctx context.Context, id metadata.ContentID) error {
+				if flushableStore, ok := writableStore.(content.FlushableContentStore); ok {
+					return flushableStore.FlushWrites(ctx, id)
+				}
+				// Content store doesn't support flushing - no-op
+				return nil
+			}
+
+			// Wrap with auto-flush decorator (critical for macOS which doesn't send COMMIT)
+			timeout := s.config.AutoFlushTimeout
+			if timeout == 0 {
+				timeout = 5 * time.Second // Default: 5s (reduced for testing)
+			}
+			interval := s.config.AutoFlushInterval
+			if interval == 0 {
+				interval = 2 * time.Second // Default: 2s (reduced for testing)
+			}
+
+			autoCache := cache.NewAutoFlushWriteCache(baseCache, flushCallback, cache.AutoFlushConfig{
+				Timeout:       timeout,
+				CheckInterval: interval,
+			})
+
+			// Start the auto-flush worker
+			autoCache.Start()
+
+			// Store the auto-flush cache for shutdown
+			s.writeCache = autoCache
+
+			defaultHandler.WriteCache = autoCache
+			logger.Info("NFS handler configured with auto-flush write cache (timeout=%v, interval=%v)", timeout, interval)
+
+			// Inject cache into content store if it supports SetWriteCache
+			// This is required for S3ContentStore to access cached data during FlushWrites()
+			type writeCacheSetter interface {
+				SetWriteCache(cache.WriteCache)
+			}
+			if setter, ok := writableStore.(writeCacheSetter); ok {
+				setter.SetWriteCache(autoCache)
+				logger.Debug("Injected write cache into content store")
+			}
 		} else {
 			logger.Warn("Content store does not implement WritableContentStore interface")
 		}
@@ -609,10 +673,10 @@ func (s *NFSAdapter) gracefulShutdown() error {
 	}()
 
 	// Wait for completion or timeout
+	var err error
 	select {
 	case <-done:
 		logger.Info("NFS graceful shutdown complete: all connections closed")
-		return nil
 
 	case <-time.After(s.config.Timeouts.Shutdown):
 		remaining := s.connCount.Load()
@@ -622,8 +686,23 @@ func (s *NFSAdapter) gracefulShutdown() error {
 		// Force-close all remaining connections
 		s.forceCloseConnections()
 
-		return fmt.Errorf("NFS shutdown timeout: %d connections force-closed", remaining)
+		err = fmt.Errorf("NFS shutdown timeout: %d connections force-closed", remaining)
 	}
+
+	// Close write cache (performs final flush and stops auto-flush worker)
+	if s.writeCache != nil {
+		logger.Debug("Closing write cache...")
+		if closeErr := s.writeCache.Close(); closeErr != nil {
+			logger.Error("Error closing write cache: %v", closeErr)
+			if err == nil {
+				err = closeErr
+			}
+		} else {
+			logger.Debug("Write cache closed successfully")
+		}
+	}
+
+	return err
 }
 
 // forceCloseConnections closes all active TCP connections to accelerate shutdown.
@@ -719,17 +798,32 @@ func (s *NFSAdapter) Stop(ctx context.Context) error {
 	}()
 
 	// Wait for completion or context cancellation
+	var err error
 	select {
 	case <-done:
 		logger.Info("NFS graceful shutdown complete: all connections closed")
-		return nil
 
 	case <-ctx.Done():
 		remaining := s.connCount.Load()
 		logger.Warn("NFS shutdown context cancelled: %d connection(s) still active: %v",
 			remaining, ctx.Err())
-		return ctx.Err()
+		err = ctx.Err()
 	}
+
+	// Close write cache (performs final flush and stops auto-flush worker)
+	if s.writeCache != nil {
+		logger.Debug("Closing write cache...")
+		if closeErr := s.writeCache.Close(); closeErr != nil {
+			logger.Error("Error closing write cache: %v", closeErr)
+			if err == nil {
+				err = closeErr
+			}
+		} else {
+			logger.Debug("Write cache closed successfully")
+		}
+	}
+
+	return err
 }
 
 // logMetrics periodically logs server metrics for monitoring.

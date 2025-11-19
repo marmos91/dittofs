@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/marmos91/dittofs/pkg/content"
+	"github.com/marmos91/dittofs/pkg/content/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -59,9 +60,11 @@ type S3ContentStore struct {
 	uploadSessions   map[string]*multipartUpload
 	uploadSessionsMu sync.RWMutex
 
-	// Write buffer for sequential writes (optimization to avoid read-modify-write cycles)
-	writeBuffers   map[string]*writeBuffer
-	writeBuffersMu sync.RWMutex
+	// Write cache (injected from NFS handler)
+	writeCache cache.WriteCache
+
+	// Multipart threshold for flushing (default: 5MB)
+	multipartThreshold uint64
 
 	// Storage stats cache (stores value instead of pointer to eliminate cloning)
 	statsCache struct {
@@ -90,13 +93,6 @@ type S3ContentStore struct {
 	}
 }
 
-// writeBuffer accumulates sequential writes before uploading to S3
-type writeBuffer struct {
-	data         []byte    // Accumulated data
-	expectedSize int64     // Expected next write offset
-	lastWrite    time.Time // Last write timestamp for timeout-based flushing
-	mu           sync.Mutex
-}
 
 // S3ContentStoreConfig contains configuration for S3 content store.
 type S3ContentStoreConfig struct {
@@ -137,6 +133,16 @@ type S3ContentStoreConfig struct {
 	// For large deletion queues or slow S3 connections, increase this value
 	// Set to 0 to use the default 60-second timeout
 	DeletionShutdownTimeout time.Duration
+
+	// WriteCache is an optional write cache for buffering writes before flushing to S3
+	// When provided, enables efficient write buffering and reduces S3 API calls
+	// The cache should be shared between the NFS handler and content store
+	WriteCache cache.WriteCache
+
+	// MultipartThreshold is the size threshold for using multipart uploads (default: 5MB)
+	// Files smaller than this use PutObject, larger files use multipart upload
+	// Must be at least 5MB (S3 requirement). Set to 0 to use default.
+	MultipartThreshold uint64
 }
 
 // NewS3ContentStore creates a new S3-based content store.
@@ -212,14 +218,25 @@ func NewS3ContentStore(ctx context.Context, cfg S3ContentStoreConfig) (*S3Conten
 		metrics = noopMetrics{}
 	}
 
+	// Set default multipart threshold
+	multipartThreshold := cfg.MultipartThreshold
+	if multipartThreshold == 0 {
+		multipartThreshold = 5 * 1024 * 1024 // Default: 5MB (S3 minimum)
+	}
+	// Validate multipart threshold (must be at least 5MB per S3 requirements)
+	if multipartThreshold < 5*1024*1024 {
+		return nil, fmt.Errorf("multipart threshold must be at least 5MB, got %d bytes", multipartThreshold)
+	}
+
 	store := &S3ContentStore{
-		client:         cfg.Client,
-		bucket:         cfg.Bucket,
-		keyPrefix:      cfg.KeyPrefix,
-		partSize:       partSize,
-		uploadSessions: make(map[string]*multipartUpload),
-		writeBuffers:   make(map[string]*writeBuffer),
-		metrics:        metrics,
+		client:             cfg.Client,
+		bucket:             cfg.Bucket,
+		keyPrefix:          cfg.KeyPrefix,
+		partSize:           partSize,
+		uploadSessions:     make(map[string]*multipartUpload),
+		metrics:            metrics,
+		writeCache:         cfg.WriteCache,
+		multipartThreshold: multipartThreshold,
 	}
 
 	// Initialize stats cache
@@ -293,6 +310,21 @@ func (s *S3ContentStore) getObjectKey(id metadata.ContentID) string {
 	}
 
 	return key
+}
+
+// SetWriteCache injects a write cache into the S3ContentStore.
+//
+// This allows the NFS adapter to provide a shared cache after the content store
+// has been created. The cache is used by FlushWrites() to read buffered data
+// and upload it to S3.
+//
+// This method is safe to call multiple times and is typically called once during
+// server initialization by the NFS adapter after creating the cache.
+//
+// Parameters:
+//   - cache: The write cache to use for buffering writes
+func (s *S3ContentStore) SetWriteCache(cache cache.WriteCache) {
+	s.writeCache = cache
 }
 
 // GetStorageStats returns statistics about S3 storage.

@@ -384,34 +384,63 @@ func (h *DefaultNFSHandler) Read(
 	}
 
 	// ========================================================================
-	// Step 4: Read content data
+	// Step 4: Read content data (with read-through cache)
 	// ========================================================================
-	// Try to use efficient ReadAt if available (especially for S3).
-	// Fall back to sequential read for stores that don't support it.
+	// Three read paths (in priority order):
+	//   1. Cache (if WriteCache available and has data) - fastest
+	//   2. ReadAt (if content store supports it) - efficient for range reads
+	//   3. ReadContent (fallback) - sequential read
 
 	var data []byte
 	var n int
 	var readErr error
 	var eof bool
+	var readFromCache bool
 
-	// Check if content store supports efficient random-access reads
-	if readAtStore, ok := contentRepo.(content.ReadAtContentStore); ok {
-		// ====================================================================
-		// FAST PATH: Use ReadAt for efficient range reads (S3, etc.)
-		// ====================================================================
-		// This is dramatically more efficient for backends like S3:
-		// - ReadAt: Uses HTTP range request for only requested bytes
-		// - ReadContent: Downloads entire file then seeks/reads
-		//
-		// For a 100MB file with 4KB request:
-		// - ReadAt: Downloads 4KB (efficient!)
-		// - ReadContent: Downloads 100MB then uses 4KB (wasteful!)
+	// Try cache first (if available)
+	if h.WriteCache != nil {
+		cacheSize := h.WriteCache.Size(attr.ContentID)
+		if cacheSize > 0 {
+			// Data exists in cache - read from cache
+			logger.Debug("READ: using cache path: handle=%x offset=%d count=%d cache_size=%d content_id=%s",
+				req.Handle, req.Offset, req.Count, cacheSize, attr.ContentID)
 
-		logger.Debug("READ: using efficient ReadAt path: handle=%x offset=%d count=%d",
-			req.Handle, req.Offset, req.Count)
+			data = make([]byte, req.Count)
+			n, readErr = h.WriteCache.ReadAt(attr.ContentID, data, int64(req.Offset))
 
-		data = make([]byte, req.Count)
-		n, readErr = readAtStore.ReadAt(ctx.Context, attr.ContentID, data, int64(req.Offset))
+			if readErr == nil || readErr == io.EOF {
+				readFromCache = true
+				eof = (readErr == io.EOF) || (int64(req.Offset)+int64(n) >= cacheSize)
+				logger.Debug("READ: cache hit: handle=%x bytes_read=%d eof=%v content_id=%s",
+					req.Handle, n, eof, attr.ContentID)
+			} else {
+				logger.Warn("READ: cache read error, falling back to content store: handle=%x content_id=%s error=%v",
+					req.Handle, attr.ContentID, readErr)
+				readFromCache = false
+			}
+		}
+	}
+
+	// If not read from cache, try content store
+	if !readFromCache {
+		// Check if content store supports efficient random-access reads
+		if readAtStore, ok := contentRepo.(content.ReadAtContentStore); ok {
+			// ================================================================
+			// FAST PATH: Use ReadAt for efficient range reads (S3, etc.)
+			// ================================================================
+			// This is dramatically more efficient for backends like S3:
+			// - ReadAt: Uses HTTP range request for only requested bytes
+			// - ReadContent: Downloads entire file then seeks/reads
+			//
+			// For a 100MB file with 4KB request:
+			// - ReadAt: Downloads 4KB (efficient!)
+			// - ReadContent: Downloads 100MB then uses 4KB (wasteful!)
+
+			logger.Debug("READ: using content store ReadAt path: handle=%x offset=%d count=%d content_id=%s",
+				req.Handle, req.Offset, req.Count, attr.ContentID)
+
+			data = make([]byte, req.Count)
+			n, readErr = readAtStore.ReadAt(ctx.Context, attr.ContentID, data, int64(req.Offset))
 
 		// Handle ReadAt results
 		if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
@@ -572,6 +601,7 @@ func (h *DefaultNFSHandler) Read(
 				Attr:   nfsAttr,
 			}, nil
 		}
+	}
 	}
 
 	// Even if ReadFull succeeded, check if we're at or past EOF

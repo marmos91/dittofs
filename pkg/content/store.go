@@ -357,6 +357,216 @@ type WritableContentStore interface {
 }
 
 // ============================================================================
+// FlushableContentStore Interface
+// ============================================================================
+
+// FlushableContentStore extends WritableContentStore with explicit write flushing.
+//
+// This interface is OPTIONAL. Content stores that buffer writes in memory or
+// temporary storage should implement this interface to allow protocol handlers
+// to explicitly flush writes to durable storage.
+//
+// Design Rationale:
+// Many storage backends benefit from write buffering:
+//   - S3: Buffer writes to avoid read-modify-write cycles
+//   - Filesystem: Write-back caching for performance
+//   - Network stores: Batch writes to reduce round-trips
+//
+// However, NFS protocol requires explicit durability guarantees:
+//   - WRITE with FILE_SYNC: Must persist before returning
+//   - WRITE with UNSTABLE: Can buffer, but COMMIT must flush
+//   - File close: Should flush (though NFS has no explicit close)
+//
+// Use Cases:
+//   - S3: Accumulate sequential writes, upload in one PutObject or multipart
+//   - Filesystem: Sync() to ensure data reaches disk
+//   - Memory: No-op (already durable in RAM)
+//
+// Protocol Integration:
+//   - NFS WRITE with FILE_SYNC/DATA_SYNC calls FlushWrites() after WriteAt()
+//   - NFS COMMIT calls FlushWrites() to persist unstable writes
+//   - NFS handlers should call FlushWrites() before file close
+//   - Stores that don't buffer can return nil immediately (no-op)
+//
+// Thread Safety:
+// Implementations must be safe for concurrent calls across different content IDs.
+// Flushing one file should not block operations on other files.
+//
+// Platform Considerations:
+//   - macOS NFS client never sends COMMIT - auto-flush timeout required!
+//   - Linux may or may not send COMMIT depending on mount options
+//   - Windows behavior varies by NFS client implementation
+//
+// Therefore, implementations should also support timeout-based auto-flush
+// to ensure durability even when COMMIT is not called.
+type FlushableContentStore interface {
+	WritableContentStore
+
+	// FlushWrites forces all buffered writes for a content ID to durable storage.
+	//
+	// This method blocks until:
+	//   - All buffered data is written to the backing store
+	//   - The backing store acknowledges durability (e.g., S3 PutObject completes)
+	//
+	// Behavior:
+	//   - Idempotent: Multiple calls are safe, subsequent calls are no-ops
+	//   - Per-file: Only flushes the specified content ID
+	//   - Clears cache: After successful flush, internal buffers should be released
+	//   - Partial flush: If cache exceeds threshold (e.g., 5MB for S3 multipart),
+	//     implementation may flush incrementally and keep session active
+	//
+	// Error Handling:
+	//   - On success: Buffer is cleared, returns nil
+	//   - On failure: Buffer is retained for retry, returns error
+	//
+	// Context Cancellation:
+	// The method should respect context cancellation and stop flushing.
+	// Partial flushes (e.g., multipart uploads) should be aborted cleanly.
+	//
+	// Parameters:
+	//   - ctx: Context for cancellation and timeouts
+	//   - id: Content identifier to flush
+	//
+	// Returns:
+	//   - error: Returns error if flush fails (write buffer retained for retry)
+	//
+	// Example (NFS WRITE handler with stable=FILE_SYNC):
+	//
+	//	// Check if store supports flushing
+	//	type flusher interface {
+	//	    FlushWrites(ctx context.Context, id metadata.ContentID) error
+	//	}
+	//
+	//	if flushable, ok := contentStore.(flusher); ok {
+	//	    if err := flushable.FlushWrites(ctx, contentID); err != nil {
+	//	        return nfs.NFS3ErrIO
+	//	    }
+	//	}
+	FlushWrites(ctx context.Context, id metadata.ContentID) error
+
+	// FlushThreshold returns the recommended flush size for this store.
+	//
+	// Protocol handlers should check the cache size against this threshold
+	// and call FlushWrites() when the threshold is reached. This allows
+	// each content store to define its own optimal flush point:
+	//   - S3: 5MB (multipart upload threshold)
+	//   - Filesystem: 1MB (reasonable memory limit)
+	//   - Memory: 0 (no threshold, unlimited buffering)
+	//
+	// How it works:
+	//   1. Handler writes to cache
+	//   2. Handler checks: if cache.Size(id) >= store.FlushThreshold() { flush }
+	//   3. Content store handles flush logic (multipart vs simple upload)
+	//
+	// Returns:
+	//   - uint64: Threshold in bytes (0 = no threshold, unlimited buffering)
+	//
+	// Example (NFS WRITE handler):
+	//
+	//	// After writing to cache
+	//	cache.WriteAt(contentID, data, offset)
+	//
+	//	// Check threshold
+	//	if flushable, ok := store.(FlushableContentStore); ok {
+	//	    if uint64(cache.Size(contentID)) >= flushable.FlushThreshold() {
+	//	        flushable.FlushWrites(ctx, contentID)
+	//	    }
+	//	}
+	FlushThreshold() uint64
+}
+
+// ============================================================================
+// CloseableContentStore Interface
+// ============================================================================
+
+// CloseableContentStore allows explicit closing of open write sessions.
+//
+// This interface is OPTIONAL. Some content stores may maintain open file handles,
+// multipart upload sessions, or other resources that benefit from explicit cleanup.
+//
+// Design Rationale:
+// NFS protocol does not have explicit file close operations - the protocol is
+// stateless. However, internally we may track resources per file:
+//   - Write caches (memory or temp files)
+//   - Multipart upload sessions (S3)
+//   - Open file descriptors
+//   - Locks or other resources
+//
+// This interface provides a hint to the content store that:
+//   - The file handle is no longer in use
+//   - Resources can be cleaned up
+//   - Any pending writes should be flushed
+//
+// Use Cases:
+//   - Metadata store calls CloseContent() when last file handle is released
+//   - Server shutdown calls CloseContent() for all open files
+//   - Periodic cleanup of idle resources
+//
+// Protocol Integration:
+//   - When NFS file handle is released (reference count reaches 0)
+//   - During server graceful shutdown
+//   - When idle timeout is reached
+//
+// Relationship with FlushWrites:
+// CloseContent typically calls FlushWrites internally, plus additional cleanup:
+//   - Flush any buffered writes
+//   - Delete temporary files
+//   - Complete or abort multipart uploads
+//   - Close file descriptors
+//   - Release locks
+//
+// Thread Safety:
+// Implementations must be safe for concurrent calls. Multiple calls to
+// CloseContent for the same ID should be idempotent.
+type CloseableContentStore interface {
+	WritableContentStore
+
+	// CloseContent closes any open resources for a content ID.
+	//
+	// For stores with write buffering, this typically:
+	//   1. Calls FlushWrites() to persist data
+	//   2. Releases temporary resources (temp files, upload sessions)
+	//   3. Clears internal state
+	//
+	// This is a hint for cleanup - stores must handle cases where
+	// CloseContent is never called (e.g., server crash).
+	//
+	// Idempotency:
+	// Multiple calls with the same ID are safe. Subsequent calls are no-ops.
+	//
+	// Error Handling:
+	// If flush fails, the error is returned and resources are retained for retry.
+	// If only cleanup fails (after successful flush), the error may be logged
+	// but should not prevent future operations on the content ID.
+	//
+	// Context Cancellation:
+	// The method should respect context cancellation. If cancelled during flush,
+	// resources are retained and can be closed later.
+	//
+	// Parameters:
+	//   - ctx: Context for cancellation and timeouts
+	//   - id: Content identifier to close
+	//
+	// Returns:
+	//   - error: Returns error if close fails (typically from FlushWrites failure)
+	//
+	// Example (metadata store on handle release):
+	//
+	//	// When last reference to file handle is released
+	//	type closeable interface {
+	//	    CloseContent(ctx context.Context, id metadata.ContentID) error
+	//	}
+	//
+	//	if closeableStore, ok := contentStore.(closeable); ok {
+	//	    if err := closeableStore.CloseContent(ctx, contentID); err != nil {
+	//	        logger.Warn("Failed to close content: %v", err)
+	//	        // Don't fail handle release - can retry later
+	//	    }
+	//	}
+	CloseContent(ctx context.Context, id metadata.ContentID) error
+}
+
+// ============================================================================
 // SeekableContentStore Interface
 // ============================================================================
 
