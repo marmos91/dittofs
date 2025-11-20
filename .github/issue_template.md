@@ -35,7 +35,7 @@ assignees: ''
 ./dittofs -port 2049 -log-level DEBUG
 
 # Mount command used
-sudo mount -t nfs -o nfsvers=3,tcp localhost:/export /mnt/nfs
+sudo mount -t nfs -o nfsvers=3,tcp,port=2049,mountport=2049 localhost:/export /mnt/nfs
 ```
 
 ## Logs
