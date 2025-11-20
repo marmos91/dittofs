@@ -4,7 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-DittoFS is an experimental modular virtual filesystem written in Go that decouples file interfaces from storage backends. It implements NFSv3 protocol server in pure Go (userspace, no FUSE required) with pluggable metadata and content repositories.
+DittoFS is an experimental modular virtual filesystem written in Go that decouples file interfaces from storage backends.
+It implements NFSv3 protocol server in pure Go (userspace, no FUSE required) with pluggable metadata and content repositories.
 
 **Status**: Experimental - not production ready.
 
@@ -151,7 +152,7 @@ Metrics exposed on port 9090 at the `/metrics` endpoint.
 
 ### Core Abstraction Layers
 
-DittoFS uses the **Adapter pattern** to decouple protocols from storage:
+DittoFS uses the **Registry pattern** to enable named, reusable stores that can be shared across multiple NFS exports:
 
 ```
 ┌─────────────────────────────────────────┐
@@ -165,68 +166,161 @@ DittoFS uses the **Adapter pattern** to decouple protocols from storage:
 │         DittoServer                     │
 │   (Adapter lifecycle management)        │
 │   pkg/server/server.go                  │
+└───────┬─────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────┐
+│         Store Registry                  │
+│   (Named store management)              │
+│   pkg/registry/registry.go              │
+│                                         │
+│  Stores:                                │
+│  - "fast-memory" → Memory stores        │
+│  - "persistent"  → BadgerDB + FS        │
+│  - "s3-archive"  → BadgerDB + S3        │
 └───────┬───────────────────┬─────────────┘
         │                   │
         ▼                   ▼
 ┌────────────────┐  ┌────────────────────┐
 │   Metadata     │  │   Content          │
-│   Repository   │  │   Repository       │
+│     Stores     │  │     Stores         │
+│                │  │                    │
+│  - Memory      │  │  - Memory          │
+│  - BadgerDB    │  │  - Filesystem      │
+│                │  │  - S3              │
 └────────────────┘  └────────────────────┘
 ```
 
 ### Key Interfaces
 
-**1. Adapter Interface** (`pkg/adapter/adapter.go`)
+**1. Store Registry** (`pkg/registry/registry.go`)
+- Central registry for managing named metadata and content stores
+- Stores are created once and shared across multiple NFS shares/exports
+- Enables flexible configurations (e.g., "fast-memory", "s3-archive", "persistent")
+- Handles store lifecycle and identity resolution
+- Maps file handles to their originating share for proper store routing
+
+**2. Adapter Interface** (`pkg/adapter/adapter.go`)
 - Each protocol implements the `Adapter` interface
-- Lifecycle: `SetStores() → Serve() → Stop()`
-- Multiple adapters share the same metadata/content repositories
+- Adapters receive a registry reference to resolve stores per-share
+- Lifecycle: `SetRegistry() → Serve() → Stop()`
+- Multiple adapters can share the same registry
 - Thread-safe, supports graceful shutdown
 
-**2. Metadata Repository** (`pkg/metadata/repository.go`)
+**3. Metadata Store** (`pkg/store/metadata/store.go`)
 - Stores file/directory structure, attributes, permissions
-- Handles access control, mount tracking, exports
-- Current implementation: `pkg/metadata/memory/` (in-memory)
+- Handles access control and root directory creation
+- Implementations:
+  - `pkg/store/metadata/memory/`: In-memory (fast, ephemeral)
+  - `pkg/store/metadata/badger/`: BadgerDB (persistent, embedded)
 - File handles are opaque uint64 identifiers
 
-**3. Content Repository** (`pkg/content/repository.go`)
+**4. Content Store** (`pkg/store/content/store.go`)
 - Stores actual file data
 - Supports read, write-at, truncate operations
-- Current implementations:
-  - `pkg/content/fs/`: Filesystem-backed storage
-  - In-memory (used in tests)
+- Implementations:
+  - `pkg/store/content/memory/`: In-memory (fast, ephemeral)
+  - `pkg/store/content/fs/`: Filesystem-backed storage
+  - `pkg/store/content/s3/`: S3-backed storage (multipart, streaming)
 
 ### Directory Structure
 
 ```
 dittofs/
 ├── cmd/dittofs/              # Main application entry point
-│   └── main.go               # Server startup, flag parsing, init
+│   └── main.go               # Server startup, config parsing, init
 │
 ├── pkg/                      # Public API (stable interfaces)
 │   ├── adapter/              # Protocol adapter interface
 │   │   ├── adapter.go        # Core Adapter interface
 │   │   └── nfs/              # NFS adapter implementation
-│   ├── metadata/             # Metadata repository interface
-│   │   ├── repository.go     # Repository interface
-│   │   ├── types.go          # FileAttr, FileHandle, etc.
-│   │   └── memory/           # In-memory implementation
-│   ├── content/              # Content repository interface
-│   │   ├── repository.go     # Repository interface
-│   │   └── fs/               # Filesystem implementation
+│   ├── registry/             # Store registry
+│   │   ├── registry.go       # Central store registry
+│   │   ├── share.go          # Share configuration
+│   │   └── access.go         # Identity mapping and handle resolution
+│   ├── store/                # Storage layer
+│   │   ├── metadata/         # Metadata store interface
+│   │   │   ├── store.go      # Store interface
+│   │   │   ├── memory/       # In-memory implementation
+│   │   │   └── badger/       # BadgerDB implementation
+│   │   └── content/          # Content store interface
+│   │       ├── store.go      # Store interface
+│   │       ├── memory/       # In-memory implementation
+│   │       ├── fs/           # Filesystem implementation
+│   │       └── s3/           # S3 implementation
+│   ├── config/               # Configuration parsing
+│   │   ├── config.go         # Main config struct
+│   │   ├── stores.go         # Store configuration
+│   │   └── registry.go       # Registry initialization
 │   └── server/               # DittoServer orchestration
 │       └── server.go         # Multi-adapter server management
 │
-└── internal/                 # Private implementation details
-    ├── protocol/nfs/         # NFS protocol implementation
-    │   ├── dispatch.go       # RPC procedure routing
-    │   ├── rpc/              # RPC layer (call/reply handling)
-    │   ├── xdr/              # XDR encoding/decoding
-    │   ├── types/            # NFS constants and types
-    │   ├── mount/handlers/   # Mount protocol procedures
-    │   └── v3/handlers/      # NFSv3 procedures (READ, WRITE, etc.)
-    ├── metadata/             # Internal metadata utilities
-    └── logger/               # Logging utilities
+├── internal/                 # Private implementation details
+│   ├── protocol/nfs/         # NFS protocol implementation
+│   │   ├── dispatch.go       # RPC procedure routing
+│   │   ├── rpc/              # RPC layer (call/reply handling)
+│   │   ├── xdr/              # XDR encoding/decoding
+│   │   ├── types/            # NFS constants and types
+│   │   ├── mount/handlers/   # Mount protocol procedures
+│   │   └── v3/handlers/      # NFSv3 procedures (READ, WRITE, etc.)
+│   └── logger/               # Logging utilities
+│
+└── test/                     # Test suites
+    ├── integration/          # Integration tests (S3, BadgerDB)
+    └── e2e/                  # End-to-end tests (real NFS mounts)
 ```
+
+## Store Registry Pattern
+
+The Store Registry is the central innovation enabling flexible, multi-share configurations.
+
+### How It Works
+
+1. **Named Store Creation**: Stores are created with unique names (e.g., "fast-memory", "s3-archive")
+2. **Share-to-Store Mapping**: Each NFS share references a store by name
+3. **Handle Identity**: File handles encode both the share ID and file-specific data
+4. **Store Resolution**: When handling operations, the registry decodes the handle to identify the share, then routes to the correct stores
+
+### Configuration Example
+
+```yaml
+# Define named stores (created once, shared across shares)
+metadata:
+  stores:
+    fast-meta:
+      type: memory
+    persistent-meta:
+      type: badger
+      badger:
+        db_path: /data/metadata
+
+content:
+  stores:
+    fast-content:
+      type: memory
+    s3-content:
+      type: s3
+      s3:
+        region: us-east-1
+        bucket: my-bucket
+
+# Define shares that reference stores
+shares:
+  - name: /temp
+    path: /export/temp
+    stores: fast-meta/fast-content      # Uses memory stores
+
+  - name: /archive
+    path: /export/archive
+    stores: persistent-meta/s3-content  # Uses BadgerDB + S3
+```
+
+### Benefits
+
+- **Resource Efficiency**: One S3 client serves multiple shares
+- **Flexible Topologies**: Mix ephemeral and persistent storage per-share
+- **Isolated Testing**: Each share can use different backends
+- **Future Multi-Tenancy**: Foundation for per-tenant store isolation
 
 ## Important Design Principles
 
@@ -277,9 +371,10 @@ Export-level access control (AllSquash, RootSquash) is applied during mount in `
 ### 3. File Handle Management
 
 File handles are **opaque 64-bit identifiers**:
-- Generated by metadata repository
+- Generated by metadata store
+- Encode share identity for registry routing
 - Never parsed or interpreted by protocol handlers
-- Must remain stable across server restarts for production (currently not implemented)
+- Must remain stable across server restarts for production
 
 Handles are obtained via:
 - Root export handle: `GetRootHandle(exportPath)`
@@ -325,8 +420,8 @@ Log appropriately:
 - `LOOKUP`: Resolve name in directory → file handle
 - `GETATTR`: Get file attributes
 - `SETATTR`: Update attributes (size, mode, times)
-- `READ`: Read file content (uses content repository)
-- `WRITE`: Write file content (coordinates metadata + content)
+- `READ`: Read file content (uses content store)
+- `WRITE`: Write file content (coordinates metadata + content stores)
 - `CREATE`: Create file
 - `MKDIR`: Create directory
 - `REMOVE`: Delete file
@@ -336,19 +431,19 @@ Log appropriately:
 
 ### Write Coordination Pattern
 
-WRITE operations require coordination between metadata and content repositories:
+WRITE operations require coordination between metadata and content stores:
 
 ```go
 // 1. Update metadata (validates permissions, updates size/timestamps)
-attr, preSize, preMtime, preCtime, err := metadataRepo.WriteFile(handle, newSize, authCtx)
+attr, preSize, preMtime, preCtime, err := metadataStore.WriteFile(handle, newSize, authCtx)
 
-// 2. Write actual data via content repository
-err = contentRepo.WriteAt(attr.ContentID, data, offset)
+// 2. Write actual data via content store
+err = contentStore.WriteAt(attr.ContentID, data, offset)
 
 // 3. Return updated attributes to client for cache consistency
 ```
 
-The metadata repository:
+The metadata store:
 - Validates write permission
 - Returns pre-operation attributes (for WCC data)
 - Updates file size if extended
@@ -373,20 +468,22 @@ Large I/O operations use buffer pools (`internal/protocol/nfs/bufpool.go`):
 5. Update dispatch table in `dispatch.go`
 6. Add test coverage
 
-### Adding a New Repository Backend
+### Adding a New Store Backend
 
-**Metadata Repository:**
-1. Implement `pkg/metadata/Repository` interface
+**Metadata Store:**
+1. Implement `pkg/store/metadata/Store` interface
 2. Handle file handle generation (must be unique and stable)
-3. Implement permission checking in `CheckAccess()`
-4. Ensure thread safety (concurrent mount access)
-5. Consider persistence strategy for handles
+3. Implement root directory creation (`CreateRootDirectory`)
+4. Implement permission checking in `CheckAccess()`
+5. Ensure thread safety (concurrent access across shares)
+6. Consider persistence strategy for handles
 
-**Content Repository:**
-1. Implement `pkg/content/Repository` interface
-2. Support random-access writes (`WriteAt`)
+**Content Store:**
+1. Implement `pkg/store/content/Store` interface
+2. Support random-access reads/writes (`ReadAt`/`WriteAt`)
 3. Handle sparse files and truncation
-4. Consider using `SeekableContentRepository` for efficiency
+4. Consider implementing `ReadAtContentStore` for efficient partial reads
+5. Test with the integration test suite in `test/integration/`
 
 ### Adding a New Protocol Adapter
 
@@ -394,7 +491,7 @@ Large I/O operations use buffer pools (`internal/protocol/nfs/bufpool.go`):
 2. Implement `Adapter` interface:
    - `Serve(ctx)`: Start protocol server
    - `Stop(ctx)`: Graceful shutdown
-   - `SetStores()`: Receive metadata/content repos
+   - `SetRegistry()`: Receive store registry reference
    - `Protocol()`: Return name
    - `Port()`: Return listen port
 3. Register in `cmd/dittofs/main.go`

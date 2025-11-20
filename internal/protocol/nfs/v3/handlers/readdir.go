@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -284,9 +284,8 @@ func (c *ReadDirContext) GetGIDs() []uint32           { return c.GIDs }
 //	        // More entries available, call again with last cookie
 //	    }
 //	}
-func (h *DefaultNFSHandler) ReadDir(
+func (h *Handler) ReadDir(
 	ctx *ReadDirContext,
-	metadataStore metadata.MetadataStore,
 	req *ReadDirRequest,
 ) (*ReadDirResponse, error) {
 	// Check for cancellation before starting any work
@@ -316,10 +315,38 @@ func (h *DefaultNFSHandler) ReadDir(
 	}
 
 	// ========================================================================
-	// Step 2: Verify directory handle exists and is valid
+	// Step 2: Decode share name from directory file handle
 	// ========================================================================
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
+	shareName, path, err := metadata.DecodeShareHandle(dirHandle)
+	if err != nil {
+		logger.Warn("READDIR failed: invalid directory handle: dir=%x client=%s error=%v",
+			req.DirHandle, clientIP, err)
+		return &ReadDirResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("READDIR failed: share not found: share=%s dir=%x client=%s",
+			shareName, req.DirHandle, clientIP)
+		return &ReadDirResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("READDIR failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
+			shareName, req.DirHandle, clientIP, err)
+		return &ReadDirResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("READDIR: share=%s path=%s", shareName, path)
+
+	// ========================================================================
+	// Step 3: Verify directory handle exists and is valid
+	// ========================================================================
+
 	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
@@ -353,7 +380,7 @@ func (h *DefaultNFSHandler) ReadDir(
 	// Step 3: Build authentication context for store
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, dirHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, dirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {

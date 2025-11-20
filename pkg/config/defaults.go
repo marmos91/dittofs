@@ -1,11 +1,12 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ApplyDefaults sets default values for any unspecified configuration fields.
@@ -20,25 +21,17 @@ import (
 func ApplyDefaults(cfg *Config) {
 	applyLoggingDefaults(&cfg.Logging)
 	applyServerDefaults(&cfg.Server)
-	applyContentDefaults(&cfg.Content)
 	applyMetadataDefaults(&cfg.Metadata)
-
-	// Add default share if none configured
-	if len(cfg.Shares) == 0 {
-		cfg.Shares = []ShareConfig{
-			{
-				Name:     "/export",
-				ReadOnly: false,
-				Async:    true,
-				IdentityMapping: IdentityMappingConfig{
-					MapAllToAnonymous: true,
-				},
-			},
-		}
-	}
-
+	applyContentDefaults(&cfg.Content)
 	applyShareDefaults(cfg.Shares)
 	applyAdaptersDefaults(&cfg.Adapters)
+
+	// Note: No defaults for stores, shares, or adapters themselves
+	// User must configure at least:
+	// - One metadata store
+	// - One content store
+	// - One share
+	// - One adapter
 }
 
 // applyLoggingDefaults sets logging defaults and normalizes values.
@@ -65,24 +58,6 @@ func applyServerDefaults(cfg *ServerConfig) {
 
 	// Apply metrics defaults
 	applyMetricsDefaults(&cfg.Metrics)
-
-	// Apply rate limiting defaults
-	applyRateLimitingDefaults(&cfg.RateLimiting)
-}
-
-// applyRateLimitingDefaults sets rate limiting defaults.
-func applyRateLimitingDefaults(cfg *RateLimitingConfig) {
-	// Enabled defaults to false (opt-in for rate limiting)
-	// RequestsPerSecond and Burst default to 0 (no limit when disabled)
-	if cfg.Enabled {
-		if cfg.RequestsPerSecond == 0 {
-			cfg.RequestsPerSecond = 5000 // Default: 5000 req/s
-		}
-		if cfg.Burst == 0 {
-			// Default burst is 2x the sustained rate for handling traffic spikes
-			cfg.Burst = cfg.RequestsPerSecond * 2
-		}
-	}
 }
 
 // applyMetricsDefaults sets metrics defaults.
@@ -96,51 +71,70 @@ func applyMetricsDefaults(cfg *MetricsConfig) {
 
 // applyContentDefaults sets content store defaults.
 func applyContentDefaults(cfg *ContentConfig) {
-	if cfg.Type == "" {
-		cfg.Type = "filesystem"
+	// Initialize stores map if nil
+	if cfg.Stores == nil {
+		cfg.Stores = make(map[string]ContentStoreConfig)
 	}
 
-	// Initialize maps if nil
-	if cfg.Filesystem == nil {
-		cfg.Filesystem = make(map[string]any)
-	}
-	if cfg.Memory == nil {
-		cfg.Memory = make(map[string]any)
-	}
+	// Apply defaults to each store
+	for name, store := range cfg.Stores {
+		// Initialize maps if nil
+		if store.Filesystem == nil {
+			store.Filesystem = make(map[string]any)
+		}
+		if store.Memory == nil {
+			store.Memory = make(map[string]any)
+		}
+		if store.S3 == nil {
+			store.S3 = make(map[string]any)
+		}
 
-	// Apply defaults for all store types (for config file generation)
-	if _, ok := cfg.Filesystem["path"]; !ok {
-		cfg.Filesystem["path"] = "/tmp/dittofs-content"
-	}
-	if _, ok := cfg.Memory["max_size_bytes"]; !ok {
-		cfg.Memory["max_size_bytes"] = uint64(1073741824) // 1GB
+		// Apply type-specific defaults
+		switch store.Type {
+		case "filesystem":
+			if _, ok := store.Filesystem["path"]; !ok {
+				store.Filesystem["path"] = "/tmp/dittofs-content"
+			}
+		case "memory":
+			if _, ok := store.Memory["max_size_bytes"]; !ok {
+				store.Memory["max_size_bytes"] = uint64(1073741824) // 1GB
+			}
+		}
+
+		cfg.Stores[name] = store
 	}
 }
 
 // applyMetadataDefaults sets metadata store defaults.
 func applyMetadataDefaults(cfg *MetadataConfig) {
-	if cfg.Type == "" {
-		cfg.Type = "badger"
+	// Initialize stores map if nil
+	if cfg.Stores == nil {
+		cfg.Stores = make(map[string]MetadataStoreConfig)
 	}
 
-	// Initialize maps if nil
-	if cfg.Memory == nil {
-		cfg.Memory = make(map[string]any)
-	}
-	if cfg.Badger == nil {
-		cfg.Badger = make(map[string]any)
+	// Apply defaults to each store
+	for name, store := range cfg.Stores {
+		// Initialize maps if nil
+		if store.Memory == nil {
+			store.Memory = make(map[string]any)
+		}
+		if store.Badger == nil {
+			store.Badger = make(map[string]any)
+		}
+
+		// Apply type-specific defaults
+		switch store.Type {
+		case "badger":
+			if _, ok := store.Badger["db_path"]; !ok {
+				store.Badger["db_path"] = "/tmp/dittofs-metadata"
+			}
+		}
+
+		cfg.Stores[name] = store
 	}
 
-	// Apply defaults for all store types (for config file generation)
-	if _, ok := cfg.Badger["db_path"]; !ok {
-		cfg.Badger["db_path"] = "/tmp/dittofs-metadata"
-	}
-
-	// Apply filesystem capabilities defaults
-	applyCapabilitiesDefaults(&cfg.FilesystemCapabilities)
-
-	// DumpRestricted defaults to false
-	// DumpAllowedClients defaults to empty list
+	// Apply global settings defaults
+	applyCapabilitiesDefaults(&cfg.Global.FilesystemCapabilities)
 }
 
 // applyCapabilitiesDefaults sets filesystem capabilities defaults.
@@ -203,8 +197,14 @@ func applyShareDefaults(shares []ShareConfig) {
 		// Apply identity mapping defaults
 		applyIdentityMappingDefaults(&share.IdentityMapping)
 
-		// Apply root attr defaults
-		applyRootAttrDefaults(&share.RootAttr)
+		// Apply root directory attribute defaults
+		applyRootDirectoryAttributesDefaults(&share.RootDirectoryAttributes)
+
+		// DumpRestricted defaults to false
+		// DumpAllowedClients defaults to empty list (no restrictions)
+		if share.DumpAllowedClients == nil {
+			share.DumpAllowedClients = []string{}
+		}
 	}
 }
 
@@ -222,13 +222,26 @@ func applyIdentityMappingDefaults(cfg *IdentityMappingConfig) {
 	}
 }
 
-// applyRootAttrDefaults sets root directory attribute defaults.
-func applyRootAttrDefaults(cfg *RootAttrConfig) {
+// applyRootDirectoryAttributesDefaults sets root directory attribute defaults.
+func applyRootDirectoryAttributesDefaults(cfg *RootDirectoryAttributesConfig) {
 	if cfg.Mode == 0 {
 		cfg.Mode = 0755
 	}
-	// UID and GID default to 0 (root) if not specified
-	// This is acceptable since these are the root directory attributes
+
+	// UID and GID default to current user if not specified
+	// This makes the default config more user-friendly and avoids permission issues
+	if cfg.UID == 0 && cfg.GID == 0 {
+		// Get current user's UID
+		uid := uint32(os.Getuid())
+		gid := uint32(os.Getgid())
+
+		// Only use current user if not running as root
+		// If running as root, keep 0:0 as that's probably intentional
+		if uid != 0 {
+			cfg.UID = uid
+			cfg.GID = gid
+		}
+	}
 }
 
 // applyAdaptersDefaults sets adapter defaults.
@@ -279,9 +292,6 @@ func applyNFSDefaults(cfg *nfs.NFSConfig) {
 	if cfg.MetricsLogInterval == 0 {
 		cfg.MetricsLogInterval = 5 * time.Minute
 	}
-
-	// Rate limiting is now handled at server level
-	// Adapter-level overrides are optional and handled by applyDefaults in nfs.NFSConfig
 }
 
 // GetDefaultConfig returns a Config struct with all default values applied.
@@ -295,27 +305,41 @@ func GetDefaultConfig() *Config {
 		Logging: LoggingConfig{},
 		Server:  ServerConfig{},
 		Content: ContentConfig{
-			Filesystem: make(map[string]any),
-			Memory:     make(map[string]any),
+			Stores: map[string]ContentStoreConfig{
+				"default": {
+					Type:       "filesystem",
+					Filesystem: map[string]any{"path": "/tmp/dittofs-content"},
+				},
+			},
 		},
 		Metadata: MetadataConfig{
-			Memory: make(map[string]any),
-			Badger: make(map[string]any),
-			// Set capability defaults to true for default config
-			FilesystemCapabilities: metadata.FilesystemCapabilities{
-				SupportsHardLinks: true,
-				SupportsSymlinks:  true,
-				CaseSensitive:     true,
-				CasePreserving:    true,
+			Global: MetadataGlobalConfig{
+				FilesystemCapabilities: metadata.FilesystemCapabilities{
+					SupportsHardLinks: true,
+					SupportsSymlinks:  true,
+					CaseSensitive:     true,
+					CasePreserving:    true,
+				},
+			},
+			Stores: map[string]MetadataStoreConfig{
+				"default": {
+					Type:   "badger",
+					Badger: map[string]any{"db_path": "/tmp/dittofs-metadata"},
+				},
 			},
 		},
 		Shares: []ShareConfig{
 			{
-				Name:     "/export",
-				ReadOnly: false,
-				Async:    true,
+				Name:          "/export",
+				MetadataStore: "default",
+				ContentStore:  "default",
+				ReadOnly:      false,
+				Async:         true,
 				IdentityMapping: IdentityMappingConfig{
-					MapAllToAnonymous: true,
+					MapAllToAnonymous:        false, // Don't squash by default
+					MapPrivilegedToAnonymous: false, // root_squash disabled by default
+					AnonymousUID:             65534, // nobody
+					AnonymousGID:             65534, // nogroup
 				},
 			},
 		},

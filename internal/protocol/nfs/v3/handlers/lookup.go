@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -248,9 +248,8 @@ func (c *LookupContext) GetGIDs() []uint32           { return c.GIDs }
 //	if resp.Status == types.NFS3OK {
 //	    // Use resp.FileHandle for subsequent operations
 //	}
-func (h *DefaultNFSHandler) Lookup(
+func (h *Handler) Lookup(
 	ctx *LookupContext,
-	metadataStore metadata.MetadataStore,
 	req *LookupRequest,
 ) (*LookupResponse, error) {
 	// Extract client IP for logging
@@ -282,7 +281,36 @@ func (h *DefaultNFSHandler) Lookup(
 	}
 
 	// ========================================================================
-	// Step 3: Verify directory handle exists and is valid
+	// Step 3: Decode share name from directory file handle
+	// ========================================================================
+
+	dirHandle := metadata.FileHandle(req.DirHandle)
+	shareName, path, err := metadata.DecodeShareHandle(dirHandle)
+	if err != nil {
+		logger.Warn("LOOKUP failed: invalid directory handle: dir=%x client=%s error=%v",
+			req.DirHandle, clientIP, err)
+		return &LookupResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("LOOKUP failed: share not found: share=%s dir=%x client=%s",
+			shareName, req.DirHandle, clientIP)
+		return &LookupResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("LOOKUP failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
+			shareName, req.DirHandle, clientIP, err)
+		return &LookupResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("LOOKUP: share=%s path=%s file=%s", shareName, path, req.Filename)
+
+	// ========================================================================
+	// Step 4: Verify directory handle exists and is valid
 	// ========================================================================
 
 	// Check context before store call
@@ -294,7 +322,6 @@ func (h *DefaultNFSHandler) Lookup(
 	default:
 	}
 
-	dirHandle := metadata.FileHandle(req.DirHandle)
 	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		logger.Warn("LOOKUP failed: directory not found: dir=%x client=%s error=%v",
@@ -321,7 +348,7 @@ func (h *DefaultNFSHandler) Lookup(
 	// Step 4: Build AuthContext with share-level identity mapping
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, dirHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, dirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {

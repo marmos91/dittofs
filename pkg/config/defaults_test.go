@@ -32,53 +32,58 @@ func TestApplyDefaults_Server(t *testing.T) {
 }
 
 func TestApplyDefaults_Content(t *testing.T) {
-	cfg := &Config{}
+	cfg := &Config{
+		Content: ContentConfig{
+			Stores: map[string]ContentStoreConfig{
+				"default": {
+					Type: "filesystem",
+				},
+			},
+		},
+	}
 	ApplyDefaults(cfg)
 
-	if cfg.Content.Type != "filesystem" {
-		t.Errorf("Expected default content type 'filesystem', got %q", cfg.Content.Type)
+	// Check that stores map is initialized
+	if cfg.Content.Stores == nil {
+		t.Fatal("Expected Content.Stores to be initialized")
 	}
 
-	// Check filesystem defaults
-	if cfg.Content.Filesystem == nil {
-		t.Fatal("Expected Filesystem map to be initialized")
-	}
-	if path, ok := cfg.Content.Filesystem["path"]; !ok || path != "/tmp/dittofs-content" {
-		t.Errorf("Expected default filesystem path '/tmp/dittofs-content', got %v", path)
-	}
-
-	// Check memory defaults
-	if cfg.Content.Memory == nil {
-		t.Fatal("Expected Memory map to be initialized")
-	}
-	if maxSize, ok := cfg.Content.Memory["max_size_bytes"]; !ok || maxSize != uint64(1073741824) {
-		t.Errorf("Expected default memory max_size_bytes 1073741824, got %v", maxSize)
+	// Check filesystem defaults for the default store
+	if store, ok := cfg.Content.Stores["default"]; ok {
+		if store.Filesystem == nil {
+			t.Fatal("Expected Filesystem map to be initialized")
+		}
+		if path, ok := store.Filesystem["path"]; !ok || path != "/tmp/dittofs-content" {
+			t.Errorf("Expected default filesystem path '/tmp/dittofs-content', got %v", path)
+		}
 	}
 }
 
 func TestApplyDefaults_Metadata(t *testing.T) {
-	cfg := &Config{}
+	cfg := &Config{
+		Metadata: MetadataConfig{
+			Stores: map[string]MetadataStoreConfig{
+				"default": {
+					Type: "badger",
+				},
+			},
+		},
+	}
 	ApplyDefaults(cfg)
 
-	if cfg.Metadata.Type != "badger" {
-		t.Errorf("Expected default metadata type 'badger', got %q", cfg.Metadata.Type)
+	// Check that stores map is initialized
+	if cfg.Metadata.Stores == nil {
+		t.Fatal("Expected Metadata.Stores to be initialized")
 	}
 
-	if cfg.Metadata.Memory == nil {
-		t.Fatal("Expected Memory map to be initialized")
-	}
-
-	if cfg.Metadata.Badger == nil {
-		t.Fatal("Expected Badger map to be initialized")
-	}
-
-	if dbPath, ok := cfg.Metadata.Badger["db_path"]; !ok || dbPath != "/tmp/dittofs-metadata" {
-		t.Errorf("Expected default db_path '/tmp/dittofs-metadata', got %v", dbPath)
-	}
-
-	// DumpRestricted should default to false
-	if cfg.Metadata.DumpRestricted {
-		t.Error("Expected dump_restricted to default to false")
+	// Check badger defaults for the default store
+	if store, ok := cfg.Metadata.Stores["default"]; ok {
+		if store.Badger == nil {
+			t.Fatal("Expected Badger map to be initialized")
+		}
+		if dbPath, ok := store.Badger["db_path"]; !ok || dbPath != "/tmp/dittofs-metadata" {
+			t.Errorf("Expected default db_path '/tmp/dittofs-metadata', got %v", dbPath)
+		}
 	}
 }
 
@@ -118,8 +123,8 @@ func TestApplyDefaults_Shares(t *testing.T) {
 	}
 
 	// Check root attributes
-	if share.RootAttr.Mode != 0755 {
-		t.Errorf("Expected default root mode 0755, got 0%o", share.RootAttr.Mode)
+	if share.RootDirectoryAttributes.Mode != 0755 {
+		t.Errorf("Expected default root mode 0755, got 0%o", share.RootDirectoryAttributes.Mode)
 	}
 }
 
@@ -169,14 +174,22 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 			ShutdownTimeout: 60 * time.Second,
 		},
 		Content: ContentConfig{
-			Type: "memory",
-			Filesystem: map[string]any{
-				"path": "/custom/path",
+			Stores: map[string]ContentStoreConfig{
+				"custom": {
+					Type: "memory",
+					Filesystem: map[string]any{
+						"path": "/custom/path",
+					},
+				},
 			},
 		},
-		Metadata: MetadataConfig{
-			Type:           "memory",
-			DumpRestricted: true,
+		Shares: []ShareConfig{
+			{
+				Name:           "/export",
+				DumpRestricted: true,
+				MetadataStore:  "default",
+				ContentStore:   "custom",
+			},
 		},
 	}
 
@@ -195,10 +208,7 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 	if cfg.Server.ShutdownTimeout != 60*time.Second {
 		t.Errorf("Expected explicit timeout 60s to be preserved, got %v", cfg.Server.ShutdownTimeout)
 	}
-	if cfg.Content.Type != "memory" {
-		t.Errorf("Expected explicit content type 'memory' to be preserved, got %q", cfg.Content.Type)
-	}
-	if !cfg.Metadata.DumpRestricted {
+	if !cfg.Shares[0].DumpRestricted {
 		t.Error("Expected explicit dump_restricted true to be preserved")
 	}
 }
@@ -274,11 +284,11 @@ func TestGetDefaultConfig_HasRequiredFields(t *testing.T) {
 	if cfg.Logging.Level == "" {
 		t.Error("Default config missing logging level")
 	}
-	if cfg.Content.Type == "" {
-		t.Error("Default config missing content type")
+	if len(cfg.Content.Stores) == 0 {
+		t.Error("Default config has no content stores")
 	}
-	if cfg.Metadata.Type == "" {
-		t.Error("Default config missing metadata type")
+	if len(cfg.Metadata.Stores) == 0 {
+		t.Error("Default config has no metadata stores")
 	}
 	if len(cfg.Shares) == 0 {
 		t.Error("Default config has no shares")

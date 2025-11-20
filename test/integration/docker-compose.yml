@@ -1,0 +1,35 @@
+services:
+  # Localstack - S3-compatible storage for integration tests
+  localstack:
+    image: localstack/localstack:latest
+    container_name: dittofs-localstack
+    ports:
+      - "4566:4566" # Localstack edge port
+    environment:
+      # Core services to start
+      - SERVICES=s3
+      # Disable analytics
+      - LOCALSTACK_API_KEY=${LOCALSTACK_API_KEY:-}
+      # Persistence (optional - uncomment to persist data between restarts)
+      # - DATA_DIR=/tmp/localstack/data
+      # Debug settings
+      - DEBUG=0
+      - LS_LOG=warn
+    volumes:
+      # Persistence volume (optional)
+      # - "./localstack-data:/tmp/localstack"
+      # Docker socket for Lambda functions (if needed in future)
+      # - "/var/run/docker.sock:/var/run/docker.sock"
+      - "./localstack-init:/etc/localstack/init/ready.d" # Init scripts
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - dittofs-test
+
+networks:
+  dittofs-test:
+    driver: bridge

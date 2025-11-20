@@ -2,24 +2,19 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/config"
-	"github.com/marmos91/dittofs/pkg/gc"
-	"github.com/marmos91/dittofs/pkg/metrics"
 	dittoServer "github.com/marmos91/dittofs/pkg/server"
 )
 
-const usage = `DittoFS - Dynamic NFS Server
+const usage = `DittoFS - Modular virtual filesystem
 
 Usage:
   dittofs <command> [flags]
@@ -127,7 +122,7 @@ func runStart() {
 	// Check if config exists
 	if *configFile == "" {
 		// Check default location
-		if !config.ConfigExists() {
+		if !config.DefaultConfigExists() {
 			fmt.Fprintf(os.Stderr, "Error: No configuration file found at default location: %s\n\n", config.GetDefaultConfigPath())
 			fmt.Fprintln(os.Stderr, "Please initialize a configuration file first:")
 			fmt.Fprintln(os.Stderr, "  dittofs init")
@@ -158,122 +153,53 @@ func runStart() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	fmt.Println("DittoFS - Dynamic NFS Server")
+	fmt.Println("DittoFS - A modular virtual filesystem")
 	logger.Info("Log level: %s", cfg.Logging.Level)
 	logger.Info("Configuration loaded from: %s", getConfigSource(*configFile))
 
-	// Initialize metrics if enabled
-	var metricsServer *metrics.Server
-	var nfsMetrics metrics.NFSMetrics
-	if cfg.Server.Metrics.Enabled {
-		logger.Info("Metrics collection enabled")
-
-		// Initialize global Prometheus registry
-		metrics.InitRegistry()
-
-		// Create NFS metrics collector
-		nfsMetrics = metrics.NewNFSMetrics()
-
-		// Start metrics HTTP server
-		metricsServer = metrics.NewServer(metrics.ServerConfig{
-			Port: cfg.Server.Metrics.Port,
-		})
-
-		go func() {
-			if err := metricsServer.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				logger.Error("Metrics server error: %v", err)
-			}
-		}()
-
-		logger.Info("Metrics server starting on port %d", cfg.Server.Metrics.Port)
-		logger.Info("Metrics will be available at: http://localhost:%d/metrics", cfg.Server.Metrics.Port)
-	} else {
-		logger.Debug("Metrics collection disabled")
-	}
-
-	// Create content store
-	contentStore, err := config.CreateContentStore(ctx, &cfg.Content)
+	// Initialize registry with all stores and shares
+	reg, err := config.InitializeRegistry(ctx, cfg)
 	if err != nil {
-		log.Fatalf("Failed to create content store: %v", err)
+		log.Fatalf("Failed to initialize registry: %v", err)
 	}
-	logger.Info("Content store initialized: type=%s", cfg.Content.Type)
+	logger.Info("Registry initialized: %d metadata store(s), %d content store(s), %d share(s)",
+		reg.CountMetadataStores(), reg.CountContentStores(), reg.CountShares())
 
-	// Create metadata store
-	metadataStore, err := config.CreateMetadataStore(ctx, &cfg.Metadata)
-	if err != nil {
-		log.Fatalf("Failed to create metadata store: %v", err)
-	}
-	logger.Info("Metadata store initialized: type=%s", cfg.Metadata.Type)
-
-	// Configure metadata store settings
-	if err := config.ConfigureMetadataStore(ctx, metadataStore, &cfg.Metadata); err != nil {
-		log.Fatalf("Failed to configure metadata store: %v", err)
+	// Log share details
+	for _, shareName := range reg.ListShares() {
+		share, _ := reg.GetShare(shareName)
+		logger.Info("  - %s (metadata: %s, content: %s, read_only: %v)",
+			share.Name, share.MetadataStore, share.ContentStore, share.ReadOnly)
 	}
 
-	// Create shares
-	if err := config.CreateShares(ctx, metadataStore, cfg.Shares); err != nil {
-		log.Fatalf("Failed to create shares: %v", err)
-	}
-	logger.Info("Configured %d share(s)", len(cfg.Shares))
-	for _, share := range cfg.Shares {
-		logger.Info("  - %s (read_only=%v)", share.Name, share.ReadOnly)
-	}
+	// Create DittoServer with registry and shutdown timeout
+	dittoSrv := dittoServer.New(reg, cfg.Server.ShutdownTimeout)
 
-	// Create DittoServer
-	dittoSrv := dittoServer.New(metadataStore, contentStore)
-
-	// Create and set garbage collector if enabled
+	// TODO(Phase 4): Update GC to work with Registry and multiple stores
+	// The garbage collector currently expects single stores but we now have
+	// a registry with potentially multiple stores. This needs to be refactored
+	// to either:
+	// 1. Create one GC per store pair, or
+	// 2. Update GC to work with Registry directly
+	//
+	// For now, GC is disabled during the store-per-share refactor.
 	if cfg.GC.Enabled {
-		collector, err := gc.NewCollector(metadataStore, contentStore, gc.Config{
-			Enabled:   cfg.GC.Enabled,
-			Interval:  cfg.GC.Interval,
-			Timeout:   cfg.GC.Timeout,
-			BatchSize: cfg.GC.BatchSize,
-			DryRun:    cfg.GC.DryRun,
-		})
-		if err != nil {
-			logger.Warn("Failed to create garbage collector: %v", err)
-			logger.Warn("Server will continue without garbage collection")
-		} else {
-			dittoSrv.SetGC(collector)
-			// Log effective values after defaults are applied by NewCollector
-			effectiveInterval := cfg.GC.Interval
-			if effectiveInterval == 0 {
-				effectiveInterval = 24 * time.Hour
-			}
-			effectiveTimeout := cfg.GC.Timeout
-			if effectiveTimeout == 0 {
-				effectiveTimeout = 10 * time.Minute
-			}
-			effectiveBatchSize := cfg.GC.BatchSize
-			if effectiveBatchSize == 0 {
-				effectiveBatchSize = 1000
-			}
-			logger.Info("Garbage collector configured: interval=%s timeout=%s batch_size=%d dry_run=%v",
-				effectiveInterval, effectiveTimeout, effectiveBatchSize, cfg.GC.DryRun)
-		}
-	} else {
-		logger.Debug("Garbage collection disabled")
+		logger.Warn("Garbage collection is temporarily disabled during store-per-share refactor")
+		logger.Warn("GC will be re-enabled in a future phase with multi-store support")
 	}
 
-	// Add enabled adapters
-	if cfg.Adapters.NFS.Enabled {
-		// Convert server-level rate limiting config to NFS adapter type (avoids import cycle)
-		var serverRateLimit *nfs.RateLimitingConfig
-		if cfg.Server.RateLimiting.Enabled || cfg.Server.RateLimiting.RequestsPerSecond > 0 {
-			serverRateLimit = &nfs.RateLimitingConfig{
-				Enabled:           cfg.Server.RateLimiting.Enabled,
-				RequestsPerSecond: cfg.Server.RateLimiting.RequestsPerSecond,
-				Burst:             cfg.Server.RateLimiting.Burst,
-			}
-		}
+	// Create all enabled adapters using the factory
+	adapters, err := config.CreateAdapters(cfg, nil) // nil = no metrics for now
+	if err != nil {
+		log.Fatalf("Failed to create adapters: %v", err)
+	}
 
-		// Pass server-level rate limiting config and metrics if enabled (nil if disabled - adapter will use no-op)
-		nfsAdapter := nfs.New(cfg.Adapters.NFS, serverRateLimit, nfsMetrics)
-		if err := dittoSrv.AddAdapter(nfsAdapter); err != nil {
-			log.Fatalf("Failed to add NFS adapter: %v", err)
+	// Add all adapters to the server
+	for _, adapter := range adapters {
+		if err := dittoSrv.AddAdapter(adapter); err != nil {
+			log.Fatalf("Failed to add %s adapter: %v", adapter.Protocol(), err)
 		}
-		logger.Info("NFS adapter enabled on port %d", nfsAdapter.Port())
+		logger.Info("%s adapter enabled on port %d", adapter.Protocol(), adapter.Port())
 	}
 
 	// Start server in background
@@ -288,17 +214,6 @@ func runStart() {
 
 	logger.Info("Server is running. Press Ctrl+C to stop.")
 
-	// Helper function to stop metrics server before exit
-	stopMetricsServer := func() {
-		if metricsServer != nil {
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
-			defer shutdownCancel()
-			if err := metricsServer.Stop(shutdownCtx); err != nil {
-				logger.Error("Metrics server shutdown error: %v", err)
-			}
-		}
-	}
-
 	select {
 	case <-sigChan:
 		signal.Stop(sigChan) // Stop signal notification immediately after receiving signal
@@ -308,7 +223,6 @@ func runStart() {
 		// Wait for server to shut down gracefully
 		if err := <-serverDone; err != nil {
 			logger.Error("Server shutdown error: %v", err)
-			stopMetricsServer()
 			os.Exit(1)
 		}
 		logger.Info("Server stopped gracefully")
@@ -317,14 +231,10 @@ func runStart() {
 		signal.Stop(sigChan) // Stop signal notification when server stops
 		if err != nil {
 			logger.Error("Server error: %v", err)
-			stopMetricsServer()
 			os.Exit(1)
 		}
 		logger.Info("Server stopped")
 	}
-
-	// Stop metrics server if running (common for both paths)
-	stopMetricsServer()
 }
 
 // getConfigSource returns a description of where the config was loaded from
@@ -332,7 +242,7 @@ func getConfigSource(configFile string) string {
 	if configFile != "" {
 		return configFile
 	}
-	if config.ConfigExists() {
+	if config.DefaultConfigExists() {
 		return config.GetDefaultConfigPath()
 	}
 	return "defaults"

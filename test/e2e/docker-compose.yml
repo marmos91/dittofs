@@ -1,0 +1,19 @@
+services:
+  localstack:
+    image: localstack/localstack:latest
+    container_name: dittofs-localstack
+    ports:
+      - "4566:4566" # LocalStack gateway
+    environment:
+      # Services to enable (S3 only for our use case)
+      - SERVICES=s3
+      # Disable debug mode for cleaner output
+      - DEBUG=0
+      # Use ephemeral storage (data not persisted across restarts)
+      - PERSISTENCE=0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s

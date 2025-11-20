@@ -10,8 +10,8 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/content"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/content"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -282,7 +282,7 @@ func (c *WriteContext) GetGIDs() []uint32           { return c.GIDs }
 //
 // **Parameters:**
 //   - ctx: Context with cancellation, client address and authentication credentials
-//   - contentRepo: Content store for file data operations
+//   - contentStore: Content store for file data operations
 //   - metadataStore: Metadata store for file attributes
 //   - req: The write request containing handle, offset, and data
 //
@@ -310,7 +310,7 @@ func (c *WriteContext) GetGIDs() []uint32           { return c.GIDs }
 //	    UID:        &uid,
 //	    GID:        &gid,
 //	}
-//	resp, err := handler.Write(ctx, contentRepo, metadataRepo, req)
+//	resp, err := handler.Write(ctx, contentStore, metadataStore, req)
 //	if err != nil {
 //	    // Internal server error
 //	}
@@ -318,10 +318,8 @@ func (c *WriteContext) GetGIDs() []uint32           { return c.GIDs }
 //	    // Write successful, resp.Count bytes written
 //	    // Check resp.Committed for actual stability level
 //	}
-func (h *DefaultNFSHandler) Write(
+func (h *Handler) Write(
 	ctx *WriteContext,
-	contentStore content.ContentStore,
-	metadataStore metadata.MetadataStore,
 	req *WriteRequest,
 ) (*WriteResponse, error) {
 	// Extract client IP for logging
@@ -343,10 +341,46 @@ func (h *DefaultNFSHandler) Write(
 	}
 
 	// ========================================================================
-	// Step 2: Validate request parameters
+	// Step 2: Decode share name from file handle
 	// ========================================================================
 
 	fileHandle := metadata.FileHandle(req.Handle)
+	shareName, path, err := metadata.DecodeShareHandle(fileHandle)
+	if err != nil {
+		logger.Warn("WRITE failed: invalid file handle: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
+		return &WriteResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("WRITE failed: share not found: share=%s handle=%x client=%s",
+			shareName, req.Handle, clientIP)
+		return &WriteResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("WRITE failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
+			shareName, req.Handle, clientIP, err)
+		return &WriteResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	// Get content store for this share
+	contentStore, err := h.Registry.GetContentStoreForShare(shareName)
+	if err != nil {
+		logger.Error("WRITE failed: cannot get content store: share=%s handle=%x client=%s error=%v",
+			shareName, req.Handle, clientIP, err)
+		return &WriteResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("WRITE: share=%s path=%s", shareName, path)
+
+	// ========================================================================
+	// Step 3: Validate request parameters
+	// ========================================================================
+
 	caps, err := metadataStore.GetFilesystemCapabilities(ctx.Context, fileHandle)
 	if err != nil {
 		logger.Warn("WRITE failed: cannot get capabilities: handle=%x client=%s error=%v",
@@ -411,7 +445,7 @@ func (h *DefaultNFSHandler) Write(
 	// Step 5: Build AuthContext with share-level identity mapping
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, fileHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, fileHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -541,29 +575,33 @@ func (h *DefaultNFSHandler) Write(
 	default:
 	}
 
-	if h.WriteCache != nil {
-		// CACHED MODE: Write to cache
-		logger.Debug("WRITE: cached mode: content_id=%s offset=%d count=%d",
-			writeIntent.ContentID, req.Offset, len(req.Data))
+	// TODO: Phase 5 - Access stores via registry
+	/*
+		if false { // Disabled until Phase 5
+			// CACHED MODE: Write to cache
+			logger.Debug("WRITE: cached mode: content_id=%s offset=%d count=%d",
+				writeIntent.ContentID, req.Offset, len(req.Data))
 
-		err = h.WriteCache.WriteAt(writeIntent.ContentID, req.Data, int64(req.Offset))
-		if err != nil {
-			logger.Error("WRITE failed: cache write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
-				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
+			err = h.WriteCache.WriteAt(writeIntent.ContentID, req.Data, int64(req.Offset))
+			if err != nil {
+				logger.Error("WRITE failed: cache write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
+					req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
 
-			fileid := xdr.ExtractFileID(fileHandle)
-			nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
+				fileid := xdr.ExtractFileID(fileHandle)
+				nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
 
-			return &WriteResponse{
-				Status:     types.NFS3ErrIO,
-				AttrBefore: nfsWccAttr,
-				AttrAfter:  nfsAttr,
-			}, nil
-		}
+				return &WriteResponse{
+					Status:     types.NFS3ErrIO,
+					AttrBefore: nfsWccAttr,
+					AttrAfter:  nfsAttr,
+				}, nil
+			}
 
-		logger.Debug("WRITE: cached successfully: content_id=%s cache_size=%d",
-			writeIntent.ContentID, h.WriteCache.Size(writeIntent.ContentID))
-	} else {
+			logger.Debug("WRITE: cached successfully: content_id=%s cache_size=%d",
+				writeIntent.ContentID, h.WriteCache.Size(writeIntent.ContentID))
+		} else {
+	*/
+	{
 		// DIRECT MODE: Write directly to content store
 		logger.Debug("WRITE: direct mode: content_id=%s offset=%d count=%d",
 			writeIntent.ContentID, req.Offset, len(req.Data))
@@ -592,7 +630,7 @@ func (h *DefaultNFSHandler) Write(
 	// Step 8: Flush if necessary (stable writes or threshold reached)
 	// ========================================================================
 
-	flushReason := h.determineFlushReason(writeStore, writeIntent.ContentID, req.Stable)
+	flushReason := h.determineFlushReason()
 	if flushReason != "" {
 		if err := h.flushContent(ctx.Context, writeStore, writeIntent.ContentID, flushReason); err != nil {
 			logger.Error("WRITE failed: flush error: handle=%x offset=%d count=%d content_id=%s reason=%s client=%s error=%v",
@@ -655,7 +693,8 @@ func (h *DefaultNFSHandler) Write(
 	//   - No unnecessary COMMIT calls
 	committed := uint32(UnstableWrite)
 
-	if h.WriteCache == nil {
+	// TODO: Phase 5
+	if true { // Changed until Phase 5
 		// No cache: data written directly to storage, return requested stability
 		committed = req.Stable
 	} else if flushReason != "" {
@@ -672,7 +711,7 @@ func (h *DefaultNFSHandler) Write(
 		AttrBefore: nfsWccAttr,
 		AttrAfter:  nfsAttr,
 		Count:      uint32(len(req.Data)),
-		Committed:  committed,     // UNSTABLE when using cache, tells client to call COMMIT
+		Committed:  committed,      // UNSTABLE when using cache, tells client to call COMMIT
 		Verf:       serverBootTime, // Server boot time for restart detection
 	}, nil
 }
@@ -701,11 +740,7 @@ func (h *DefaultNFSHandler) Write(
 //
 // Returns:
 //   - FlushReason: Reason for flush, or empty string if no flush needed
-func (h *DefaultNFSHandler) determineFlushReason(
-	writeStore content.WritableContentStore,
-	contentID metadata.ContentID,
-	stable uint32,
-) FlushReason {
+func (h *Handler) determineFlushReason() FlushReason {
 	// When using write cache, NEVER flush on write operations
 	// Flushing happens via:
 	//   1. COMMIT procedure (explicit client request)
@@ -732,7 +767,7 @@ func (h *DefaultNFSHandler) determineFlushReason(
 //
 // Returns:
 //   - error: Returns error if flush fails, nil otherwise
-func (h *DefaultNFSHandler) flushContent(
+func (h *Handler) flushContent(
 	ctx context.Context,
 	writeStore content.WritableContentStore,
 	contentID metadata.ContentID,

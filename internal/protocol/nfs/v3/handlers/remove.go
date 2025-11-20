@@ -10,8 +10,8 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/content"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/content"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -252,10 +252,8 @@ func (c *RemoveContext) GetGIDs() []uint32           { return c.GIDs }
 //	if resp.Status == types.NFS3OK {
 //	    // File removed successfully
 //	}
-func (h *DefaultNFSHandler) Remove(
+func (h *Handler) Remove(
 	ctx *RemoveContext,
-	contentStore content.ContentStore,
-	metadataStore metadata.MetadataStore,
 	req *RemoveRequest,
 ) (*RemoveResponse, error) {
 	// Check for cancellation before starting any work
@@ -285,10 +283,46 @@ func (h *DefaultNFSHandler) Remove(
 	}
 
 	// ========================================================================
-	// Step 2: Capture pre-operation directory attributes for WCC
+	// Step 2: Decode share name from directory file handle
 	// ========================================================================
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
+	shareName, path, err := metadata.DecodeShareHandle(dirHandle)
+	if err != nil {
+		logger.Warn("REMOVE failed: invalid directory handle: dir=%x client=%s error=%v",
+			req.DirHandle, clientIP, err)
+		return &RemoveResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("REMOVE failed: share not found: share=%s dir=%x client=%s",
+			shareName, req.DirHandle, clientIP)
+		return &RemoveResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("REMOVE failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
+			shareName, req.DirHandle, clientIP, err)
+		return &RemoveResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	// Get content store for this share
+	contentStore, err := h.Registry.GetContentStoreForShare(shareName)
+	if err != nil {
+		logger.Error("REMOVE failed: cannot get content store: share=%s dir=%x client=%s error=%v",
+			shareName, req.DirHandle, clientIP, err)
+		return &RemoveResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("REMOVE: share=%s path=%s file=%s", shareName, path, req.Filename)
+
+	// ========================================================================
+	// Step 3: Capture pre-operation directory attributes for WCC
+	// ========================================================================
+
 	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
@@ -329,7 +363,7 @@ func (h *DefaultNFSHandler) Remove(
 	// Step 3: Build authentication context with share-level identity mapping
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, dirHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, dirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {

@@ -10,7 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -310,9 +310,8 @@ func (c *SymlinkContext) GetGIDs() []uint32           { return c.GIDs }
 //	    // Symlink created successfully
 //	    // Use resp.FileHandle for subsequent operations
 //	}
-func (h *DefaultNFSHandler) Symlink(
+func (h *Handler) Symlink(
 	ctx *SymlinkContext,
-	metadataStore metadata.MetadataStore,
 	req *SymlinkRequest,
 ) (*SymlinkResponse, error) {
 	// Check for cancellation before starting any work
@@ -342,10 +341,38 @@ func (h *DefaultNFSHandler) Symlink(
 	}
 
 	// ========================================================================
-	// Step 2: Verify parent directory exists and capture pre-op attributes
+	// Step 2: Decode share name from directory file handle
 	// ========================================================================
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
+	shareName, path, err := metadata.DecodeShareHandle(dirHandle)
+	if err != nil {
+		logger.Warn("SYMLINK failed: invalid directory handle: dir=%x client=%s error=%v",
+			req.DirHandle, clientIP, err)
+		return &SymlinkResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("SYMLINK failed: share not found: share=%s dir=%x client=%s",
+			shareName, req.DirHandle, clientIP)
+		return &SymlinkResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("SYMLINK failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
+			shareName, req.DirHandle, clientIP, err)
+		return &SymlinkResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("SYMLINK: share=%s path=%s name=%s target=%s", shareName, path, req.Name, req.Target)
+
+	// ========================================================================
+	// Step 3: Verify parent directory exists and capture pre-op attributes
+	// ========================================================================
+
 	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
@@ -401,7 +428,7 @@ func (h *DefaultNFSHandler) Symlink(
 	// Step 3: Build authentication context for store
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, dirHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, dirHandle)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if ctx.Context.Err() != nil {

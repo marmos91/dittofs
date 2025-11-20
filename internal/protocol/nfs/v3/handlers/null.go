@@ -5,7 +5,6 @@ import (
 	"context"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -206,9 +205,8 @@ type NullContext struct {
 //	    log.Fatal("NULL procedure failed:", err)
 //	}
 //	// Server is responding - NULL always returns success
-func (h *DefaultNFSHandler) Null(
+func (h *Handler) Null(
 	ctx *NullContext,
-	metadataStore metadata.MetadataStore,
 	req *NullRequest,
 ) (*NullResponse, error) {
 	// ========================================================================
@@ -244,26 +242,9 @@ func (h *DefaultNFSHandler) Null(
 	// ========================================================================
 	// Optional: store health check
 	// ========================================================================
-	// We can optionally ping the store to verify backend health.
-	// However, per RFC 1813, NULL must always succeed regardless of
-	// store state, so we log any issues but don't fail the request.
-	//
-	// The context is passed through to allow the health check to be cancelled
-	// if the client disconnects while we're checking backend health.
-
-	if err := metadataStore.Healthcheck(ctx.Context); err != nil {
-		// Check if the error is due to context cancellation
-		if err == context.Canceled || err == context.DeadlineExceeded {
-			logger.Debug("NULL: health check cancelled: client=%s", clientIP)
-			return nil, err
-		}
-
-		// Log store health issue but don't fail NULL request
-		// (only context cancellation should cause NULL to fail)
-		logger.Debug("NULL: store health check failed (non-fatal): client=%s error=%v",
-			clientIP, err)
-		// Continue and return success anyway - NULL must always succeed
-	}
+	// NOTE: Health check removed as NULL doesn't have a file handle to decode
+	// and shouldn't depend on any particular share. NULL must always succeed
+	// per RFC 1813 regardless of backend state.
 
 	logger.Debug("NULL: request completed successfully: client=%s", clientIP)
 

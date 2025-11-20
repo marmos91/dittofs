@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -284,9 +284,8 @@ func (c *MknodContext) GetGIDs() []uint32           { return c.GIDs }
 //     protocol-level errors are indicated via the response Status field
 //
 // **RFC 1813 Section 3.3.11: MKNOD Procedure**
-func (h *DefaultNFSHandler) Mknod(
+func (h *Handler) Mknod(
 	ctx *MknodContext,
-	metadataStore metadata.MetadataStore,
 	req *MknodRequest,
 ) (*MknodResponse, error) {
 	// ========================================================================
@@ -326,10 +325,38 @@ func (h *DefaultNFSHandler) Mknod(
 	}
 
 	// ========================================================================
-	// Step 2: Verify parent directory exists and is valid
+	// Step 2: Decode share name from directory file handle
 	// ========================================================================
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
+	shareName, path, err := metadata.DecodeShareHandle(parentHandle)
+	if err != nil {
+		logger.Warn("MKNOD failed: invalid directory handle: dir=%x client=%s error=%v",
+			req.DirHandle, clientIP, err)
+		return &MknodResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("MKNOD failed: share not found: share=%s dir=%x client=%s",
+			shareName, req.DirHandle, clientIP)
+		return &MknodResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("MKNOD failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
+			shareName, req.DirHandle, clientIP, err)
+		return &MknodResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("MKNOD: share=%s path=%s name=%s type=%d", shareName, path, req.Name, req.Type)
+
+	// ========================================================================
+	// Step 3: Verify parent directory exists and is valid
+	// ========================================================================
+
 	parentAttr, err := metadataStore.GetFile(ctx.Context, parentHandle)
 	if err != nil {
 		// Check if error is due to context cancellation
@@ -367,7 +394,7 @@ func (h *DefaultNFSHandler) Mknod(
 	// Step 3: Build AuthContext for permission checking
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, parentHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, parentHandle)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if ctx.Context.Err() != nil {

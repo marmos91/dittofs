@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -231,9 +231,8 @@ func (c *AccessContext) GetGIDs() []uint32           { return c.GIDs }
 //	        // Client has read permission
 //	    }
 //	}
-func (h *DefaultNFSHandler) Access(
+func (h *Handler) Access(
 	ctx *AccessContext,
-	store metadata.MetadataStore,
 	req *AccessRequest,
 ) (*AccessResponse, error) {
 	// Check for cancellation before starting any work
@@ -263,10 +262,38 @@ func (h *DefaultNFSHandler) Access(
 	}
 
 	// ========================================================================
-	// Step 2: Verify file handle exists and is valid
+	// Step 2: Decode share name from file handle
 	// ========================================================================
 
 	fileHandle := metadata.FileHandle(req.Handle)
+	shareName, path, err := metadata.DecodeShareHandle(fileHandle)
+	if err != nil {
+		logger.Warn("ACCESS failed: invalid file handle: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
+		return &AccessResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("ACCESS failed: share not found: share=%s handle=%x client=%s",
+			shareName, req.Handle, clientIP)
+		return &AccessResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	store, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("ACCESS failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
+			shareName, req.Handle, clientIP, err)
+		return &AccessResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("ACCESS: share=%s path=%s", shareName, path)
+
+	// ========================================================================
+	// Step 3: Verify file handle exists and is valid
+	// ========================================================================
+
 	attr, err := store.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
@@ -295,7 +322,7 @@ func (h *DefaultNFSHandler) Access(
 	// Step 3: Build AuthContext with share-level identity mapping
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, store, fileHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, fileHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {

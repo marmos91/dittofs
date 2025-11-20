@@ -12,16 +12,25 @@ func TestLoad_DefaultConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
 
-	// Write minimal config
+	// Write minimal config with new store structure
 	configContent := `
 logging:
   level: "INFO"
 
 content:
-  type: "filesystem"
+  stores:
+    default:
+      type: "filesystem"
+
+metadata:
+  stores:
+    default:
+      type: "memory"
 
 shares:
   - name: "/export"
+    metadata_store: "default"
+    content_store: "default"
 
 adapters:
   nfs:
@@ -55,22 +64,29 @@ adapters:
 // TestLoad_WithOverrides removed - we only support environment variable overrides now
 
 func TestLoad_NoConfigFile(t *testing.T) {
-	// Use a temporary directory with a non-existent config file path
-	// This ensures we don't load the user's config from ~/.config/dittofs/
+	// Loading with no config file returns a valid default config.
+	// This allows users to run the server without a config file for quick testing.
 	tmpDir := t.TempDir()
 	nonExistentPath := filepath.Join(tmpDir, "nonexistent.yaml")
 
 	cfg, err := Load(nonExistentPath)
 	if err != nil {
-		t.Fatalf("Expected no error with missing config file, got: %v", err)
+		t.Fatalf("Expected no error when loading default config, got: %v", err)
 	}
 
-	// Verify defaults
-	if cfg.Logging.Level != "INFO" {
-		t.Errorf("Expected default level 'INFO', got %q", cfg.Logging.Level)
+	// Verify default config is returned
+	if cfg == nil {
+		t.Fatal("Expected default config to be returned")
 	}
-	if cfg.Content.Type != "filesystem" {
-		t.Errorf("Expected default content type 'filesystem', got %q", cfg.Content.Type)
+
+	// Verify default config has at least one share
+	if len(cfg.Shares) == 0 {
+		t.Error("Expected default config to have at least one share")
+	}
+
+	// Verify NFS adapter is enabled by default
+	if !cfg.Adapters.NFS.Enabled {
+		t.Error("Expected NFS adapter to be enabled in default config")
 	}
 }
 
@@ -104,11 +120,16 @@ func TestLoad_TOML(t *testing.T) {
 level = "WARN"
 format = "json"
 
-[content]
+[content.stores.default]
 type = "filesystem"
+
+[metadata.stores.default]
+type = "memory"
 
 [[shares]]
 name = "/export"
+metadata_store = "default"
+content_store = "default"
 
 [adapters.nfs]
 enabled = true
@@ -147,11 +168,12 @@ func TestGetDefaultConfig(t *testing.T) {
 	if cfg.Server.ShutdownTimeout != 30*time.Second {
 		t.Errorf("Expected default shutdown timeout 30s, got %v", cfg.Server.ShutdownTimeout)
 	}
-	if cfg.Content.Type != "filesystem" {
-		t.Errorf("Expected default content type 'filesystem', got %q", cfg.Content.Type)
+	// Check stores are configured
+	if len(cfg.Content.Stores) == 0 {
+		t.Error("Expected at least one content store")
 	}
-	if cfg.Metadata.Type != "badger" {
-		t.Errorf("Expected default metadata type 'badger', got %q", cfg.Metadata.Type)
+	if len(cfg.Metadata.Stores) == 0 {
+		t.Error("Expected at least one metadata store")
 	}
 	if len(cfg.Shares) != 1 {
 		t.Errorf("Expected 1 default share, got %d", len(cfg.Shares))
@@ -215,10 +237,19 @@ logging:
   level: "INFO"
 
 content:
-  type: "filesystem"
+  stores:
+    default:
+      type: "filesystem"
+
+metadata:
+  stores:
+    default:
+      type: "memory"
 
 shares:
   - name: "/export"
+    metadata_store: "default"
+    content_store: "default"
 
 adapters:
   nfs:

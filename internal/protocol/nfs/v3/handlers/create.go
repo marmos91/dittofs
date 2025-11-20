@@ -9,8 +9,8 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/content"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/content"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -187,8 +187,8 @@ func (c *CreateContext) GetGIDs() []uint32           { return c.GIDs }
 //
 // **Parameters:**
 //   - ctx: Context with cancellation, client address and authentication credentials
-//   - contentRepo: Content repository for file data operations
-//   - metadataRepo: Metadata repository for file system structure
+//   - contentStore: Content store for file data operations
+//   - metadataStore: Metadata store for file system structure
 //   - req: Create request with parent handle, filename, mode, attributes
 //
 // **Returns:**
@@ -196,10 +196,8 @@ func (c *CreateContext) GetGIDs() []uint32           { return c.GIDs }
 //   - error: Returns error for context cancellation or catastrophic internal failures
 //
 // **RFC 1813 Section 3.3.8: CREATE Procedure**
-func (h *DefaultNFSHandler) Create(
+func (h *Handler) Create(
 	ctx *CreateContext,
-	contentRepo content.ContentStore,
-	metadataRepo metadata.MetadataStore,
 	req *CreateRequest,
 ) (*CreateResponse, error) {
 	// Check for cancellation before starting any work
@@ -229,11 +227,47 @@ func (h *DefaultNFSHandler) Create(
 	}
 
 	// ========================================================================
-	// Step 2: Verify parent directory exists and is valid
+	// Step 2: Decode share name from directory file handle
 	// ========================================================================
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
-	parentAttr, err := metadataRepo.GetFile(ctx.Context, parentHandle)
+	shareName, path, err := metadata.DecodeShareHandle(parentHandle)
+	if err != nil {
+		logger.Warn("CREATE failed: invalid directory handle: dir=%x client=%s error=%v",
+			req.DirHandle, clientIP, err)
+		return &CreateResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("CREATE failed: share not found: share=%s dir=%x client=%s",
+			shareName, req.DirHandle, clientIP)
+		return &CreateResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("CREATE failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
+			shareName, req.DirHandle, clientIP, err)
+		return &CreateResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	// Get content store for this share
+	contentStore, err := h.Registry.GetContentStoreForShare(shareName)
+	if err != nil {
+		logger.Error("CREATE failed: cannot get content store: share=%s dir=%x client=%s error=%v",
+			shareName, req.DirHandle, clientIP, err)
+		return &CreateResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("CREATE: share=%s path=%s file=%s", shareName, path, req.Filename)
+
+	// ========================================================================
+	// Step 3: Verify parent directory exists and is valid
+	// ========================================================================
+
+	parentAttr, err := metadataStore.GetFile(ctx.Context, parentHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -270,7 +304,7 @@ func (h *DefaultNFSHandler) Create(
 	// Step 3: Build AuthContext with share-level identity mapping
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, metadataRepo, parentHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, parentHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -307,7 +341,7 @@ func (h *DefaultNFSHandler) Create(
 	// Step 4: Check if file already exists using Lookup
 	// ========================================================================
 
-	existingHandle, existingAttr, err := metadataRepo.Lookup(authCtx, parentHandle, req.Filename)
+	existingHandle, existingAttr, err := metadataStore.Lookup(authCtx, parentHandle, req.Filename)
 	if err != nil && ctx.Context.Err() != nil {
 		// Context was cancelled during Lookup
 		logger.Debug("CREATE cancelled during existence check: file='%s' dir=%x client=%s error=%v",
@@ -343,7 +377,7 @@ func (h *DefaultNFSHandler) Create(
 				req.Filename, clientIP)
 
 			// Get current parent state for WCC
-			parentAttr, _ = metadataRepo.GetFile(ctx.Context, parentHandle)
+			parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
 			dirID := xdr.ExtractFileID(parentHandle)
 			dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
@@ -355,7 +389,7 @@ func (h *DefaultNFSHandler) Create(
 		}
 
 		// Create new file
-		fileHandle, fileAttr, err = createNewFile(authCtx, metadataRepo, parentHandle, req)
+		fileHandle, fileAttr, err = createNewFile(authCtx, metadataStore, parentHandle, req)
 
 	case types.CreateExclusive:
 		// EXCLUSIVE: Check verifier if file exists
@@ -365,7 +399,7 @@ func (h *DefaultNFSHandler) Create(
 			logger.Debug("CREATE failed: file exists (exclusive): file='%s' client=%s verifier=%016x",
 				req.Filename, clientIP, req.Verf)
 
-			parentAttr, _ = metadataRepo.GetFile(ctx.Context, parentHandle)
+			parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
 			dirID := xdr.ExtractFileID(parentHandle)
 			dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
@@ -377,24 +411,24 @@ func (h *DefaultNFSHandler) Create(
 		}
 
 		// Create new file with verifier
-		fileHandle, fileAttr, err = createNewFile(authCtx, metadataRepo, parentHandle, req)
+		fileHandle, fileAttr, err = createNewFile(authCtx, metadataStore, parentHandle, req)
 
 	case types.CreateUnchecked:
 		// UNCHECKED: Create or truncate existing
 		if fileExists {
 			// Truncate existing file
 			fileHandle = existingHandle
-			fileAttr, err = truncateExistingFile(authCtx, contentRepo, metadataRepo, existingHandle, existingAttr, req)
+			fileAttr, err = truncateExistingFile(authCtx, contentStore, metadataStore, existingHandle, existingAttr, req)
 		} else {
 			// Create new file
-			fileHandle, fileAttr, err = createNewFile(authCtx, metadataRepo, parentHandle, req)
+			fileHandle, fileAttr, err = createNewFile(authCtx, metadataStore, parentHandle, req)
 		}
 
 	default:
 		logger.Warn("CREATE failed: invalid mode: file='%s' mode=%d client=%s",
 			req.Filename, req.Mode, clientIP)
 
-		parentAttr, _ = metadataRepo.GetFile(ctx.Context, parentHandle)
+		parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
 		dirID := xdr.ExtractFileID(parentHandle)
 		dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
@@ -415,7 +449,7 @@ func (h *DefaultNFSHandler) Create(
 			logger.Debug("CREATE cancelled during file operation: file='%s' client=%s error=%v",
 				req.Filename, clientIP, ctx.Context.Err())
 
-			parentAttr, _ = metadataRepo.GetFile(ctx.Context, parentHandle)
+			parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
 			dirID := xdr.ExtractFileID(parentHandle)
 			dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
@@ -432,7 +466,7 @@ func (h *DefaultNFSHandler) Create(
 		// Map repository errors to NFS status codes
 		nfsStatus := mapMetadataErrorToNFS(err)
 
-		parentAttr, _ = metadataRepo.GetFile(ctx.Context, parentHandle)
+		parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
 		dirID := xdr.ExtractFileID(parentHandle)
 		dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
 
@@ -452,7 +486,7 @@ func (h *DefaultNFSHandler) Create(
 	nfsFileAttr := xdr.MetadataToNFS(fileAttr, fileID)
 
 	// Get updated parent directory attributes
-	parentAttr, _ = metadataRepo.GetFile(ctx.Context, parentHandle)
+	parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
 	dirID := xdr.ExtractFileID(parentHandle)
 	nfsDirAttr := xdr.MetadataToNFS(parentAttr, dirID)
 
@@ -472,11 +506,11 @@ func (h *DefaultNFSHandler) Create(
 // Helper Functions for File Operations
 // ============================================================================
 
-// createNewFile creates a new file using the metadata repository's Create method.
+// createNewFile creates a new file using the metadata store's Create method.
 //
 // This function:
 //  1. Builds file attributes with defaults from context
-//  2. Calls repository.Create() which atomically:
+//  2. Calls store.Create() which atomically:
 //     - Creates file metadata
 //     - Links file to parent directory
 //     - Updates parent timestamps
@@ -487,7 +521,7 @@ func (h *DefaultNFSHandler) Create(
 //
 // Parameters:
 //   - authCtx: Authentication context for permission checking
-//   - metadataRepo: Metadata repository
+//   - metadataStore: Metadata store
 //   - parentHandle: Parent directory handle
 //   - req: Create request with filename and attributes
 //
@@ -495,7 +529,7 @@ func (h *DefaultNFSHandler) Create(
 //   - File handle, file attributes, and error
 func createNewFile(
 	authCtx *metadata.AuthContext,
-	metadataRepo metadata.MetadataStore,
+	metadataStore metadata.MetadataStore,
 	parentHandle metadata.FileHandle,
 	req *CreateRequest,
 ) (metadata.FileHandle, *metadata.FileAttr, error) {
@@ -522,15 +556,15 @@ func createNewFile(
 		applySetAttrsToFileAttr(fileAttr, req.Attr)
 	}
 
-	// Call repository's atomic Create operation
+	// Call store's atomic Create operation
 	// This handles file creation, parent linking, and permission checking
-	fileHandle, err := metadataRepo.Create(authCtx, parentHandle, req.Filename, fileAttr)
+	fileHandle, err := metadataStore.Create(authCtx, parentHandle, req.Filename, fileAttr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create file: %w", err)
 	}
 
 	// Get the completed attributes (with timestamps and ContentID)
-	createdAttr, err := metadataRepo.GetFile(authCtx.Context, fileHandle)
+	createdAttr, err := metadataStore.GetFile(authCtx.Context, fileHandle)
 	if err != nil {
 		return nil, nil, fmt.Errorf("get created file attributes: %w", err)
 	}
@@ -543,12 +577,12 @@ func createNewFile(
 // For UNCHECKED mode when file exists, this:
 //  1. Determines target size (from Attr.Size or 0)
 //  2. Updates file metadata using SetFileAttributes
-//  3. Truncates content (if content repository is available)
+//  3. Truncates content (if content store is available)
 //
 // Parameters:
 //   - authCtx: Authentication context for permission checking
-//   - contentRepo: Content repository for truncation
-//   - metadataRepo: Metadata repository
+//   - contentStore: Content store for truncation
+//   - metadataStore: Metadata store
 //   - fileHandle: Handle of existing file
 //   - existingAttr: Current file attributes
 //   - req: Create request with attributes
@@ -557,8 +591,8 @@ func createNewFile(
 //   - Updated file attributes and error
 func truncateExistingFile(
 	authCtx *metadata.AuthContext,
-	contentRepo content.ContentStore,
-	metadataRepo metadata.MetadataStore,
+	contentStore content.ContentStore,
+	metadataStore metadata.MetadataStore,
 	fileHandle metadata.FileHandle,
 	existingAttr *metadata.FileAttr,
 	req *CreateRequest,
@@ -592,16 +626,16 @@ func truncateExistingFile(
 		}
 	}
 
-	// Update file metadata using repository
+	// Update file metadata using store
 	// This includes permission checking
-	if err := metadataRepo.SetFileAttributes(authCtx, fileHandle, setAttrs); err != nil {
+	if err := metadataStore.SetFileAttributes(authCtx, fileHandle, setAttrs); err != nil {
 		return nil, fmt.Errorf("update file metadata: %w", err)
 	}
 
-	// Truncate content if repository supports writes and file has content
+	// Truncate content if store supports writes and file has content
 	if existingAttr.ContentID != "" {
-		if writeRepo, ok := contentRepo.(content.WritableContentStore); ok {
-			if err := writeRepo.Truncate(authCtx.Context, existingAttr.ContentID, targetSize); err != nil {
+		if writeStore, ok := contentStore.(content.WritableContentStore); ok {
+			if err := writeStore.Truncate(authCtx.Context, existingAttr.ContentID, targetSize); err != nil {
 				logger.Warn("Failed to truncate content to %d bytes: %v", targetSize, err)
 				// Non-fatal: metadata is already updated
 			}
@@ -609,7 +643,7 @@ func truncateExistingFile(
 	}
 
 	// Get updated attributes
-	updatedAttr, err := metadataRepo.GetFile(authCtx.Context, fileHandle)
+	updatedAttr, err := metadataStore.GetFile(authCtx.Context, fileHandle)
 	if err != nil {
 		return nil, fmt.Errorf("get updated attributes: %w", err)
 	}

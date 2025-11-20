@@ -7,7 +7,6 @@ import (
 	"net"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	xdr "github.com/rasky/go-xdr/xdr2"
 )
 
@@ -100,7 +99,7 @@ type UmountContext struct {
 //
 // Example:
 //
-//	handler := &DefaultMountHandler{}
+//	handler := &Handler{}
 //	req := &UmountRequest{DirPath: "/export"}
 //	ctx := &UmountContext{
 //	    Context: context.Background(),
@@ -113,9 +112,8 @@ type UmountContext struct {
 //	    }
 //	}
 //	// Response is always success unless cancelled early
-func (h *DefaultMountHandler) Umnt(
+func (h *Handler) Umnt(
 	ctx *UmountContext,
-	repository metadata.MetadataStore,
 	req *UmountRequest,
 ) (*UmountResponse, error) {
 	// Check for cancellation before starting
@@ -140,35 +138,14 @@ func (h *DefaultMountHandler) Umnt(
 
 	logger.Info("Unmount request: path=%s client=%s", req.DirPath, clientIP)
 
-	// Remove the mount session record from tracking
-	// Note: We remove the SESSION, NOT the share itself! The share persists.
-	// We don't fail the UMNT if session removal fails because UMNT always succeeds per RFC 1813
-	// Even if the mount session doesn't exist, we acknowledge the unmount
-	//
-	// We don't check for cancellation here because:
-	// 1. RemoveShareMount should be very fast (typically < 1ms)
-	// 2. We want to complete the cleanup to maintain tracking consistency
-	// 3. The client has already decided to unmount, so we should honor that
-	// 4. Leaving stale mount records would pollute the DUMP output
-	//
-	// The repository should respect context internally if needed
-	err = repository.RemoveShareMount(ctx.Context, req.DirPath, clientIP)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			// Context was cancelled during RemoveShareMount
-			// We still return success per RFC 1813 (UMNT always succeeds)
-			// but log that the mount record may not have been removed
-			logger.Warn("Unmount cancelled during mount record removal: path=%s client=%s error=%v (mount record may be stale)",
-				req.DirPath, clientIP, ctx.Context.Err())
-		} else {
-			// Log the error but still return success
-			// The mount tracking is informational - the client has already unmounted
-			logger.Warn("Failed to remove mount record: path=%s client=%s error=%v",
-				req.DirPath, clientIP, err)
-		}
-	} else {
+	// Remove the mount record from the registry
+	// Note: We remove the mount SESSION, NOT the share itself! The share persists.
+	// UMNT always succeeds per RFC 1813, even if no mount record exists
+	removed := h.Registry.RemoveMount(clientIP)
+	if removed {
 		logger.Info("Unmount successful: path=%s client=%s", req.DirPath, clientIP)
+	} else {
+		logger.Debug("Unmount acknowledged (no active mount): path=%s client=%s", req.DirPath, clientIP)
 	}
 
 	// UMNT always returns void/success per RFC 1813

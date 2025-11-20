@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -171,9 +171,8 @@ type GetAttrContext struct {
 //	if resp.Status == types.NFS3OK {
 //	    // Use resp.Attr for file information
 //	}
-func (h *DefaultNFSHandler) GetAttr(
+func (h *Handler) GetAttr(
 	ctx *GetAttrContext,
-	metadataStore metadata.MetadataStore,
 	req *GetAttrRequest,
 ) (*GetAttrResponse, error) {
 	// Check for cancellation before starting any work
@@ -205,10 +204,38 @@ func (h *DefaultNFSHandler) GetAttr(
 	}
 
 	// ========================================================================
-	// Step 2: Verify file handle exists and retrieve attributes
+	// Step 2: Decode share name from file handle
 	// ========================================================================
 
 	fileHandle := metadata.FileHandle(req.Handle)
+	shareName, path, err := metadata.DecodeShareHandle(fileHandle)
+	if err != nil {
+		logger.Warn("GETATTR failed: invalid file handle: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
+		return &GetAttrResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("GETATTR failed: share not found: share=%s handle=%x client=%s",
+			shareName, req.Handle, clientIP)
+		return &GetAttrResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("GETATTR failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
+			shareName, req.Handle, clientIP, err)
+		return &GetAttrResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("GETATTR: share=%s path=%s", shareName, path)
+
+	// ========================================================================
+	// Step 3: Verify file handle exists and retrieve attributes
+	// ========================================================================
+
 	attr, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
@@ -224,7 +251,7 @@ func (h *DefaultNFSHandler) GetAttr(
 	}
 
 	// ========================================================================
-	// Step 3: Generate file attributes with proper file ID
+	// Step 4: Generate file attributes with proper file ID
 	// ========================================================================
 	// The file ID is extracted from the handle for NFS protocol purposes.
 	// This is a protocol-layer concern for creating the wire format.

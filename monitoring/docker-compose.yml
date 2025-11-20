@@ -1,19 +1,19 @@
-version: '3.8'
+version: "3.8"
 
 services:
   prometheus:
     image: prom/prometheus:latest
     container_name: dittofs-prometheus
     ports:
-      - "9091:9090"  # Expose on 9091 to avoid conflict with DittoFS metrics port
+      - "9091:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus-data:/prometheus
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
     networks:
       - dittofs-monitoring
     restart: unless-stopped

@@ -9,21 +9,22 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter"
-	"github.com/marmos91/dittofs/pkg/content"
 	"github.com/marmos91/dittofs/pkg/gc"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/registry"
 )
 
-// DittoServer manages the lifecycle of multiple protocol adapters that share
-// common metadata and content repositories.
+// DefaultShutdownTimeout is the default timeout for graceful adapter shutdown.
+const DefaultShutdownTimeout = 30 * time.Second
+
+// DittoServer manages the lifecycle of multiple protocol adapters.
 //
 // Architecture:
 // DittoServer orchestrates different file sharing protocols (NFS, SMB, WebDAV, etc.)
-// that are represented as Adapter implementations. All adapters share the same backend
-// repositories, providing a unified view of the file system across all protocols.
+// that are represented as Adapter implementations. All adapters access stores through
+// a shared Registry that manages metadata stores, content stores, and shares.
 //
 // Lifecycle:
-//  1. Creation: New() with repositories
+//  1. Creation: New() with a Registry containing all configured stores and shares
 //  2. Registration: AddAdapter() for each protocol
 //  3. Startup: Serve() starts all adapters concurrently
 //  4. Shutdown: Context cancellation triggers graceful shutdown of all adapters
@@ -34,7 +35,8 @@ import (
 //
 // Example usage:
 //
-//	server := New(metadataRepo, contentRepo)
+//	reg, _ := config.InitializeRegistry(ctx, cfg)
+//	server := New(reg)
 //	server.AddAdapter(nfs.New(nfsConfig))
 //	server.AddAdapter(smb.New(smbConfig))
 //
@@ -45,17 +47,17 @@ import (
 //	    log.Fatal(err)
 //	}
 type DittoServer struct {
-	// metadata is the shared metadata repository for all adapters
-	metadata metadata.MetadataStore
-
-	// content is the shared content repository for all adapters
-	content content.ContentStore
+	// registry contains all stores and shares
+	registry *registry.Registry
 
 	// adapters contains all registered protocol adapters
 	adapters []adapter.Adapter
 
 	// gc is the garbage collector for orphaned content (optional)
 	gc *gc.Collector
+
+	// shutdownTimeout is the maximum time to wait for adapter shutdown
+	shutdownTimeout time.Duration
 
 	// mu protects the adapters slice and serving flag
 	mu sync.RWMutex
@@ -68,32 +70,40 @@ type DittoServer struct {
 	served bool
 }
 
-// New creates a new DittoServer with the provided repositories.
+// adapterError pairs an adapter protocol name with its error for better error reporting.
+type adapterError struct {
+	protocol string
+	err      error
+}
+
+// New creates a new DittoServer with the provided registry and shutdown timeout.
 //
-// The repositories are shared across all adapters added to this server, ensuring
-// that file system operations are consistent regardless of which protocol is used
-// to access the data.
+// The registry contains all configured stores and shares. Adapters access
+// stores through the registry, enabling multi-share support where different
+// shares can use different backend stores.
 //
 // Parameters:
-//   - metadata: Repository for file system metadata operations (required)
-//   - content: Repository for file content operations (required)
+//   - reg: Registry containing all metadata stores, content stores, and shares (required)
+//   - shutdownTimeout: Maximum time to wait for graceful adapter shutdown (0 = use default)
 //
 // Returns a configured but not yet started DittoServer. Call AddAdapter() to
 // register protocols, then Serve() to start the server.
 //
-// Panics if either repository is nil (indicates programmer error).
-func New(metadata metadata.MetadataStore, content content.ContentStore) *DittoServer {
-	if metadata == nil {
-		panic("metadata repository cannot be nil")
+// Panics if registry is nil (indicates programmer error).
+func New(reg *registry.Registry, shutdownTimeout time.Duration) *DittoServer {
+	if reg == nil {
+		panic("registry cannot be nil")
 	}
-	if content == nil {
-		panic("content repository cannot be nil")
+
+	// Use default timeout if not specified
+	if shutdownTimeout == 0 {
+		shutdownTimeout = DefaultShutdownTimeout
 	}
 
 	return &DittoServer{
-		metadata: metadata,
-		content:  content,
-		adapters: make([]adapter.Adapter, 0, 4), // Pre-allocate for common case of 2-4 adapters
+		registry:        reg,
+		shutdownTimeout: shutdownTimeout,
+		adapters:        make([]adapter.Adapter, 0, 2), // Pre-allocate for expected case of 1-2 adapters (NFS, SMB)
 	}
 }
 
@@ -188,13 +198,11 @@ func (s *DittoServer) AddAdapter(a adapter.Adapter) error {
 		}
 	}
 
-	// Inject shared repositories
-	a.SetStores(s.metadata, s.content)
+	// Inject shared registry
+	a.SetRegistry(s.registry)
 
 	// Register the adapter
 	s.adapters = append(s.adapters, a)
-
-	logger.Info("Registered %s adapter on port %d", protocol, port)
 
 	return nil
 }
@@ -315,11 +323,7 @@ func (s *DittoServer) serve(ctx context.Context) error {
 		}(adp)
 	}
 
-	// Log successful startup after a brief delay to allow adapters to initialize
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		logger.Info("All adapters started successfully in %v", time.Since(startTime))
-	}()
+	logger.Debug("All %d adapter(s) launched in %v", len(adapters), time.Since(startTime))
 
 	// Wait for either context cancellation or adapter error
 	var shutdownErr error
@@ -340,18 +344,48 @@ func (s *DittoServer) serve(ctx context.Context) error {
 	logger.Debug("Waiting for all adapters to complete shutdown")
 	wg.Wait()
 
-	// Close content store first to flush pending deletions before stopping GC
-	// This order prevents race conditions where GC tries to delete while store is closing
-	if closer, ok := s.content.(io.Closer); ok {
-		logger.Debug("Closing content store to flush pending operations")
-		if err := closer.Close(); err != nil {
-			logger.Error("Content store shutdown error: %v", err)
+	// Close all content stores first to flush pending deletions before stopping GC
+	// This order prevents race conditions where GC tries to delete while stores are closing
+	logger.Debug("Closing content stores")
+	contentStores := s.registry.ListContentStores()
+	for _, storeName := range contentStores {
+		store, err := s.registry.GetContentStore(storeName)
+		if err != nil {
+			logger.Error("Failed to get content store %q during shutdown: %v", storeName, err)
+			continue
+		}
+
+		if closer, ok := store.(io.Closer); ok {
+			logger.Debug("Closing content store %q", storeName)
+			if err := closer.Close(); err != nil {
+				logger.Error("Content store %q shutdown error: %v", storeName, err)
+			}
 		}
 	}
 
-	// Stop garbage collector after content store is closed
-	// GC may still be running a collection cycle that references the content store
+	// Close all metadata stores
+	// Done after GC stops since GC queries metadata to find orphaned content
+	logger.Debug("Closing metadata stores")
+	metadataStores := s.registry.ListMetadataStores()
+	for _, storeName := range metadataStores {
+		store, err := s.registry.GetMetadataStore(storeName)
+		if err != nil {
+			logger.Error("Failed to get metadata store %q during shutdown: %v", storeName, err)
+			continue
+		}
+
+		if closer, ok := store.(io.Closer); ok {
+			logger.Debug("Closing metadata store %q", storeName)
+			if err := closer.Close(); err != nil {
+				logger.Error("Metadata store %q shutdown error: %v", storeName, err)
+			}
+		}
+	}
+
+	// Stop garbage collector after content stores are closed
+	// GC may still be running a collection cycle that references the content stores
 	if s.gc != nil {
+		logger.Debug("Stopping garbage collector")
 		gcCtx, gcCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer gcCancel()
 
@@ -365,12 +399,6 @@ func (s *DittoServer) serve(ctx context.Context) error {
 	return shutdownErr
 }
 
-// adapterError pairs an adapter protocol name with its error for better error reporting.
-type adapterError struct {
-	protocol string
-	err      error
-}
-
 // stopAllAdapters initiates graceful shutdown of all adapters in reverse registration order.
 //
 // Adapters are stopped in reverse order to handle dependencies (e.g., if adapter B depends
@@ -378,7 +406,7 @@ type adapterError struct {
 // timeout context.
 //
 // The shutdown process:
-//  1. Create a context with 30-second timeout for all Stop() operations
+//  1. Create a context with configured timeout for all Stop() operations
 //  2. Call Stop() on each adapter in reverse order
 //  3. Log any errors but continue stopping remaining adapters
 //  4. Return after all Stop() calls complete or timeout expires
@@ -389,10 +417,9 @@ type adapterError struct {
 // Parameters:
 //   - adapters: Snapshot of adapters to stop (in registration order)
 func (s *DittoServer) stopAllAdapters(adapters []adapter.Adapter) {
-	// Create a context with timeout for all shutdown operations
+	// Create a context with configured timeout for all shutdown operations
 	// This prevents a single misbehaving adapter from blocking shutdown indefinitely
-	const stopTimeout = 30 * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 	defer cancel()
 
 	logger.Info("Initiating graceful shutdown of %d adapter(s)", len(adapters))

@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -247,9 +247,8 @@ func (c *ReadLinkContext) GetGIDs() []uint32           { return c.GIDs }
 //	if resp.Status == types.NFS3OK {
 //	    // Use resp.Target for symlink resolution
 //	}
-func (h *DefaultNFSHandler) ReadLink(
+func (h *Handler) ReadLink(
 	ctx *ReadLinkContext,
-	metadataStore metadata.MetadataStore,
 	req *ReadLinkRequest,
 ) (*ReadLinkResponse, error) {
 	// ========================================================================
@@ -284,13 +283,41 @@ func (h *DefaultNFSHandler) ReadLink(
 	}
 
 	// ========================================================================
-	// Step 2: Build authentication context for store
+	// Step 2: Decode share name from file handle
+	// ========================================================================
+
+	fileHandle := metadata.FileHandle(req.Handle)
+	shareName, path, err := metadata.DecodeShareHandle(fileHandle)
+	if err != nil {
+		logger.Warn("READLINK failed: invalid file handle: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
+		return &ReadLinkResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("READLINK failed: share not found: share=%s handle=%x client=%s",
+			shareName, req.Handle, clientIP)
+		return &ReadLinkResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("READLINK failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
+			shareName, req.Handle, clientIP, err)
+		return &ReadLinkResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("READLINK: share=%s path=%s", shareName, path)
+
+	// ========================================================================
+	// Step 3: Build authentication context for store
 	// ========================================================================
 	// The store needs authentication details to enforce access control
 	// on the symbolic link (read permission checking)
 
-	fileHandle := metadata.FileHandle(req.Handle)
-	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, fileHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, fileHandle)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if ctx.Context.Err() != nil {

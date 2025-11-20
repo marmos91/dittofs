@@ -3,7 +3,7 @@ package metrics
 import (
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/content/cache"
+	"github.com/marmos91/dittofs/pkg/store/content/cache"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -16,15 +16,15 @@ import (
 //   - Buffer counts
 //   - Throughput measurements
 type cacheMetrics struct {
-	writeOperations  *prometheus.CounterVec
-	writeDuration    prometheus.Histogram
-	writeBytes       prometheus.Counter
-	readOperations   *prometheus.CounterVec
-	readDuration     prometheus.Histogram
-	readBytes        prometheus.Counter
-	cacheSize        *prometheus.GaugeVec
-	bufferCount      prometheus.Gauge
-	resetOperations  prometheus.Counter
+	writeOperations *prometheus.CounterVec
+	writeDuration   prometheus.Histogram
+	writeBytes      prometheus.Counter
+	readOperations  *prometheus.CounterVec
+	readDuration    prometheus.Histogram
+	readBytes       prometheus.Counter
+	cacheSize       *prometheus.GaugeVec
+	bufferCount     prometheus.Gauge
+	resetOperations prometheus.Counter
 }
 
 // NewCacheMetrics creates a new Prometheus-backed CacheMetrics instance.
@@ -53,16 +53,16 @@ func NewCacheMetrics() cache.CacheMetrics {
 				Name: "dittofs_cache_write_duration_seconds",
 				Help: "Duration of cache write operations in seconds",
 				Buckets: []float64{
-					0.00001,  // 10µs
-					0.00005,  // 50µs
-					0.0001,   // 100µs
-					0.0005,   // 500µs
-					0.001,    // 1ms
-					0.005,    // 5ms
-					0.01,     // 10ms
-					0.05,     // 50ms
-					0.1,      // 100ms
-					0.5,      // 500ms
+					0.00001, // 10µs
+					0.00005, // 50µs
+					0.0001,  // 100µs
+					0.0005,  // 500µs
+					0.001,   // 1ms
+					0.005,   // 5ms
+					0.01,    // 10ms
+					0.05,    // 50ms
+					0.1,     // 100ms
+					0.5,     // 500ms
 				},
 			},
 		),
@@ -84,16 +84,16 @@ func NewCacheMetrics() cache.CacheMetrics {
 				Name: "dittofs_cache_read_duration_seconds",
 				Help: "Duration of cache read operations in seconds",
 				Buckets: []float64{
-					0.00001,  // 10µs
-					0.00005,  // 50µs
-					0.0001,   // 100µs
-					0.0005,   // 500µs
-					0.001,    // 1ms
-					0.005,    // 5ms
-					0.01,     // 10ms
-					0.05,     // 50ms
-					0.1,      // 100ms
-					0.5,      // 500ms
+					0.00001, // 10µs
+					0.00005, // 50µs
+					0.0001,  // 100µs
+					0.0005,  // 500µs
+					0.001,   // 1ms
+					0.005,   // 5ms
+					0.01,    // 10ms
+					0.05,    // 50ms
+					0.1,     // 100ms
+					0.5,     // 500ms
 				},
 			},
 		),

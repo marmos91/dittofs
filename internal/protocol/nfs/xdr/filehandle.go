@@ -1,7 +1,7 @@
 package xdr
 
 import (
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ExtractFileID extracts the file identifier (inode number) from an NFS file handle.
@@ -26,5 +26,5 @@ import (
 //
 // See: metadata.HandleToFileID() for implementation details
 func ExtractFileID(handle metadata.FileHandle) uint64 {
-	return metadata.HandleToFileID(handle)
+	return metadata.HandleToINode(handle)
 }

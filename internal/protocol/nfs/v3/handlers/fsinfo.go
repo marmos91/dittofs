@@ -10,7 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // FsInfoRequest represents an FSINFO request from an NFS client.
@@ -183,9 +183,8 @@ type FsInfoContext struct {
 //	if resp.Status == types.NFS3OK {
 //	    // Success - use resp.Rtmax, resp.Wtmax, etc. to optimize I/O
 //	}
-func (h *DefaultNFSHandler) FsInfo(
+func (h *Handler) FsInfo(
 	ctx *FsInfoContext,
-	metadataStore metadata.MetadataStore,
 	req *FsInfoRequest,
 ) (*FsInfoResponse, error) {
 	logger.Debug("FSINFO request: handle=%x client=%s auth=%d",
@@ -208,6 +207,35 @@ func (h *DefaultNFSHandler) FsInfo(
 		return &FsInfoResponse{Status: types.NFS3ErrBadHandle}, nil
 	}
 
+	// ========================================================================
+	// Decode share name from file handle
+	// ========================================================================
+
+	fileHandle := metadata.FileHandle(req.Handle)
+	shareName, path, err := metadata.DecodeShareHandle(fileHandle)
+	if err != nil {
+		logger.Warn("FSINFO failed: invalid file handle: handle=%x client=%s error=%v",
+			req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
+		return &FsInfoResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("FSINFO failed: share not found: share=%s handle=%x client=%s",
+			shareName, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr))
+		return &FsInfoResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("FSINFO failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
+			shareName, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
+		return &FsInfoResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("FSINFO: share=%s path=%s", shareName, path)
+
 	// Check for cancellation before store call
 	// store operations might involve I/O or locks
 	select {
@@ -220,7 +248,7 @@ func (h *DefaultNFSHandler) FsInfo(
 
 	// Verify the file handle exists and is valid in the store
 	// The store is responsible for validating handle format and existence
-	attr, err := metadataStore.GetFile(ctx.Context, metadata.FileHandle(req.Handle))
+	attr, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		logger.Debug("FSINFO failed: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, err)

@@ -10,7 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -283,9 +283,8 @@ func (c *RenameContext) GetGIDs() []uint32           { return c.GIDs }
 //	if resp.Status == types.NFS3OK {
 //	    // Rename successful
 //	}
-func (h *DefaultNFSHandler) Rename(
+func (h *Handler) Rename(
 	ctx *RenameContext,
-	metadataStore metadata.MetadataStore,
 	req *RenameRequest,
 ) (*RenameResponse, error) {
 	// Check for cancellation before starting any work
@@ -315,10 +314,53 @@ func (h *DefaultNFSHandler) Rename(
 	}
 
 	// ========================================================================
-	// Step 2: Verify source directory exists and is valid
+	// Step 2: Decode share names from directory file handles
 	// ========================================================================
 
 	fromDirHandle := metadata.FileHandle(req.FromDirHandle)
+	fromShareName, fromPath, err := metadata.DecodeShareHandle(fromDirHandle)
+	if err != nil {
+		logger.Warn("RENAME failed: invalid source directory handle: dir=%x client=%s error=%v",
+			req.FromDirHandle, clientIP, err)
+		return &RenameResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	toDirHandle := metadata.FileHandle(req.ToDirHandle)
+	toShareName, toPath, err := metadata.DecodeShareHandle(toDirHandle)
+	if err != nil {
+		logger.Warn("RENAME failed: invalid destination directory handle: dir=%x client=%s error=%v",
+			req.ToDirHandle, clientIP, err)
+		return &RenameResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Verify both handles are from the same share (cross-share rename not allowed)
+	if fromShareName != toShareName {
+		logger.Warn("RENAME failed: cross-share rename attempted: from_share=%s to_share=%s client=%s",
+			fromShareName, toShareName, clientIP)
+		return &RenameResponse{Status: types.NFS3ErrInval}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(fromShareName) {
+		logger.Warn("RENAME failed: share not found: share=%s client=%s",
+			fromShareName, clientIP)
+		return &RenameResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(fromShareName)
+	if err != nil {
+		logger.Error("RENAME failed: cannot get metadata store: share=%s client=%s error=%v",
+			fromShareName, clientIP, err)
+		return &RenameResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("RENAME: share=%s from_path=%s/%s to_path=%s/%s", fromShareName, fromPath, req.FromName, toPath, req.ToName)
+
+	// ========================================================================
+	// Step 3: Verify source directory exists and is valid
+	// ========================================================================
+
 	fromDirAttr, err := metadataStore.GetFile(ctx.Context, fromDirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
@@ -372,7 +414,6 @@ func (h *DefaultNFSHandler) Rename(
 	// Step 3: Verify destination directory exists and is valid
 	// ========================================================================
 
-	toDirHandle := metadata.FileHandle(req.ToDirHandle)
 	toDirAttr, err := metadataStore.GetFile(ctx.Context, toDirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
@@ -456,7 +497,7 @@ func (h *DefaultNFSHandler) Rename(
 	// Step 4: Build authentication context for store
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, fromDirHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, fromDirHandle)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if ctx.Context.Err() != nil {

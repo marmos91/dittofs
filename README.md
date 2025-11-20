@@ -34,7 +34,7 @@ This results in:
 
 ## The DittoFS Solution
 
-DittoFS provides a modular architecture that separates concerns through three key abstractions:
+DittoFS provides a modular architecture with named, reusable stores that can be mixed and matched per share:
 
 ```
         ┌──────────────────────────────────────────────┐
@@ -49,42 +49,76 @@ DittoFS provides a modular architecture that separates concerns through three ke
                 ▼
         ┌─────────────────────────────────┐
         │           DittoFS Core          │
-        │         (Adapter Manager)       │
+        │     (Share → Store Router)      │
         └─────────┬──────────────┬────────┘
                   │              │
-                  ▼              ▼
-          ┌─────────────┐  ┌──────────────┐
-          │  Metadata   │  │   Content    │
-          │    Store    │  │    Store     │
-          └──────┬──────┘  └──────┬───────┘
-                 │                │
-                 ▼                ▼
-          Memory/BadgerDB    S3/Filesystem
-          (future: Redis)    (future: Dropbox)
+     ┌────────────┼──────────────┼────────────┐
+     │            │              │            │
+     ▼            ▼              ▼            ▼
+┌─────────┐  ┌─────────┐    ┌────────┐  ┌────────┐
+│ Share 1 │  │ Share 2 │    │Share 3 │  │Share 4 │
+│ /fast   │  │ /cloud  │    │/archive│  │/cache  │
+└────┬────┘  └────┬────┘    └────┬───┘  └────┬───┘
+     │            │              │           │
+     │            └──────┬───────┘           │
+     ▼                   ▼                   ▼
+┌─────────────────────────────────────────────────┐
+│            Named Store Registry                 │
+├─────────────────────────────────────────────────┤
+│  Metadata Stores        │  Content Stores       │
+│  ┌───────────────┐      │  ┌─────────────┐      │
+│  │ memory-fast   │      │  │ local-disk  │      │
+│  └───────────────┘      │  └─────────────┘      │
+│  ┌───────────────┐      │  ┌─────────────┐      │
+│  │ badger-main   │      │  │ s3-prod     │      │
+│  └───────────────┘      │  └─────────────┘      │
+│  ┌───────────────┐      │  ┌─────────────┐      │
+│  │badger-isolated│      │  │ s3-archive  │      │
+│  └───────────────┘      │  └─────────────┘      │
+└─────────────────────────────────────────────────┘
+
+Example Mappings:
+  /fast    → memory-fast + local-disk
+  /cloud   → badger-main + s3-prod
+  /archive → badger-main + s3-archive  (shares metadata with /cloud)
+  /cache   → memory-fast + memory-cache (shares metadata with /fast)
 ```
 
 ### Key Concepts
 
-**1. Adapters**: Protocol-specific interfaces that clients connect to
+**1. Protocol Adapters**: Protocol-specific interfaces that clients connect to
 
 - Each adapter implements a specific file access protocol (NFS, SMB, etc.)
 - Multiple adapters can run simultaneously
-- Adapters are lightweight wrappers that translate protocol operations
+- Adapters route requests to the appropriate share and its stores
 
-**2. Metadata Store**: Stores file structure and attributes
+**2. Shares**: Export points that clients mount
 
-- File metadata (size, timestamps, permissions, extended attributes)
-- Directory hierarchy and relationships
-- File handles and export configuration
-- Pluggable backends (memory, BadgerDB, SQLite)
-- **Built-in options**: In-memory (ephemeral) or BadgerDB (persistent)
+- Each share has a unique path (e.g., `/export`, `/cloud`, `/archive`)
+- Explicitly references a metadata store and content store by name
+- Multiple shares can reference the same store instances for resource sharing
+- Supports per-share access control, authentication, and identity mapping
 
-**3. Content Store**: Stores actual file data
+**3. Named Store Registry**: Reusable store instances
 
-- Read and write operations
-- Content addressing and chunking strategies
-- Pluggable backends (filesystem, S3, custom solutions)
-- **Built-in options**: Filesystem (local/network) or S3 (cloud)
+- **Metadata Stores**: File structure, attributes, permissions, handles
+  - Types: `memory` (ephemeral), `badger` (persistent)
+  - Future: Redis, PostgreSQL, SQLite
+
+- **Content Stores**: Actual file data
+  - Types: `filesystem` (local/network), `s3` (cloud), `memory` (ephemeral)
+  - Future: Azure Blob, GCS, custom backends
+
+- **Store Sharing**: Multiple shares can reference the same store instance
+  - Example: `/cloud` and `/archive` share `badger-main` metadata
+  - Efficient resource utilization, no duplication
+
+**4. Configuration Flexibility**: Mix and match per share
+
+- Fast shares: memory metadata + local disk content
+- Cloud shares: BadgerDB metadata + S3 content
+- Isolated shares: separate stores for security boundaries
+- Tiered shares: different performance/cost profiles per share
 
 ### Key Benefits
 
@@ -97,47 +131,64 @@ DittoFS provides a modular architecture that separates concerns through three ke
 
 ## Use Cases
 
-### Unified Multi-Protocol Gateway
+### Multi-Tenant Cloud Storage Gateway
 
+```yaml
+shares:
+  - name: /tenant-a
+    metadata_store: badger-tenant-a  # Isolated metadata
+    content_store: s3-tenant-a       # Dedicated S3 bucket
+  - name: /tenant-b
+    metadata_store: badger-tenant-b  # Isolated metadata
+    content_store: s3-tenant-b       # Different bucket
+
+Use case: Each tenant gets isolated metadata and content stores
+for security and billing separation
 ```
-Adapters → NFS + SMB (simultaneous access)
-Metadata → BadgerDB (persistent, ACID, embedded)
-Content → S3 (scalable, durable, cost-effective)
 
-Use case: Allow Linux servers (NFS) and Windows clients (SMB)
-to access the same S3-backed storage with persistent metadata
+### Performance-Tiered Storage
+
+```yaml
+shares:
+  - name: /fast           # Hot data
+    metadata_store: memory-fast
+    content_store: local-nvme
+  - name: /warm           # Frequently accessed
+    metadata_store: badger-main
+    content_store: local-disk
+  - name: /cold           # Archive
+    metadata_store: badger-main      # Shares metadata with /warm
+    content_store: s3-glacier
+
+Use case: Different performance tiers with shared metadata
+for consistent namespace across hot, warm, and cold storage
 ```
 
 ### Development & Testing
 
-```
-Adapters → NFS only
-Metadata → In-Memory
-Content → In-Memory or local filesystem
+```yaml
+shares:
+  - name: /export
+    metadata_store: dev-memory
+    content_store: dev-memory
 
-Use case: Fast development iteration without external dependencies
-```
-
-### Persistent Production NFS Server
-
-```
-Adapters → NFS
-Metadata → BadgerDB (persistent, survives restarts)
-Content → Filesystem (local storage or network mount)
-
-Use case: Production NFS server with metadata that persists
-across restarts - no data loss, stable file handles
+Use case: Fast iteration with in-memory stores,
+no external dependencies
 ```
 
-### High-Performance Distributed Cache
+### Hybrid Cloud Deployment
 
-```
-Adapters → NFS
-Metadata → Redis (in-memory, sub-millisecond lookups)
-Content → Local NVMe + S3 tiering
+```yaml
+shares:
+  - name: /local          # On-premises data
+    metadata_store: badger-main
+    content_store: local-disk
+  - name: /cloud          # Cloud-backed data
+    metadata_store: badger-main      # Shares metadata with /local
+    content_store: s3-production
 
-Use case: ML training pipelines with hot data on NVMe,
-cold data automatically tiered to S3
+Use case: Unified namespace across on-premises and cloud storage
+with shared metadata for cross-share operations
 ```
 
 ## Quick Start
@@ -233,11 +284,6 @@ Results are saved to `benchmark_results/<timestamp>/` with:
 - Summary report with throughput/latency comparisons
 - Comparison with previous runs (if `--compare` used)
 
-**Documentation**:
-
-- See [test/e2e/BENCHMARKS.md](test/e2e/BENCHMARKS.md) for detailed usage and interpretation
-- See [test/e2e/COMPARISON_GUIDE.md](test/e2e/COMPARISON_GUIDE.md) for comparing with FUSE-based and kernel NFS implementations
-
 ## Configuration
 
 DittoFS uses a flexible configuration system with support for YAML/TOML files and environment variable overrides.
@@ -263,7 +309,7 @@ DittoFS uses a flexible configuration system with support for YAML/TOML files an
 
 ### Configuration Structure
 
-DittoFS configuration is organized into six main sections:
+DittoFS uses a flexible configuration approach with named, reusable stores. This allows different shares to use completely different backends, or multiple shares can efficiently share the same store instances.
 
 #### 1. Logging
 
@@ -283,129 +329,135 @@ Application-wide server configuration:
 ```yaml
 server:
   shutdown_timeout: 30s   # Maximum time to wait for graceful shutdown
+
+  metrics:
+    enabled: false
+    port: 9090
+
+  rate_limiting:
+    enabled: false
+    requests_per_second: 5000
+    burst: 10000
 ```
 
-#### 3. Content Store
+#### 3. Metadata Configuration
 
-Configures where file content is stored.
+Define named metadata store instances that shares can reference:
 
-**Filesystem Backend** (default, recommended for local storage):
+```yaml
+metadata:
+  # Global settings that apply to all metadata stores
+  global:
+    # Filesystem capabilities and limits
+    filesystem_capabilities:
+      max_read_size: 1048576        # 1MB
+      preferred_read_size: 65536    # 64KB
+      max_write_size: 1048576       # 1MB
+      preferred_write_size: 65536   # 64KB
+      max_file_size: 9223372036854775807  # ~8EB
+      max_filename_len: 255
+      max_path_len: 4096
+      max_hard_link_count: 32767
+      supports_hard_links: true
+      supports_symlinks: true
+      case_sensitive: true
+      case_preserving: true
+
+    # DUMP operation restrictions
+    dump_restricted: false
+    dump_allowed_clients: []
+
+  # Named metadata store instances
+  stores:
+    # In-memory metadata for fast temporary workloads
+    memory-fast:
+      type: memory
+      memory: {}
+
+    # BadgerDB for persistent metadata
+    badger-main:
+      type: badger
+      badger:
+        db_path: /tmp/dittofs-metadata-main
+
+    # Separate BadgerDB instance for isolated shares
+    badger-isolated:
+      type: badger
+      badger:
+        db_path: /tmp/dittofs-metadata-isolated
+```
+
+> **Persistence**: BadgerDB stores all metadata persistently on disk. File handles, directory structure, permissions,
+> and all metadata survive server restarts. The memory backend loses all data when the server stops.
+
+#### 4. Content Configuration
+
+Define named content store instances that shares can reference:
 
 ```yaml
 content:
-  type: "filesystem"
-  filesystem:
-    path: "/tmp/dittofs-content"
+  # Global settings that apply to all content stores
+  global:
+    # Future: cache settings, compression, encryption
+
+  # Named content store instances
+  stores:
+    # Local filesystem storage for fast access
+    local-disk:
+      type: filesystem
+      filesystem:
+        path: /tmp/dittofs-content
+
+    # S3 storage for cloud-backed shares
+    s3-production:
+      type: s3
+      s3:
+        region: us-east-1
+        bucket: dittofs-production
+        key_prefix: ""
+        endpoint: ""
+        access_key_id: ""
+        secret_access_key: ""
+        part_size: 10485760  # 10MB
+
+    # In-memory storage for caching/testing
+    memory-cache:
+      type: memory
+      memory: {}
 ```
 
-**S3 Backend** (recommended for cloud deployments):
-
-```yaml
-content:
-  type: "s3"
-  s3:
-    region: "us-east-1"              # AWS region (required)
-    bucket: "my-dittofs-bucket"      # S3 bucket name (required)
-    key_prefix: ""                   # Optional prefix for all keys
-    endpoint: ""                     # Optional: S3-compatible endpoint
-                                     # Example: "https://s3.cubbit.eu"
-    access_key_id: ""                # Optional: AWS credentials
-    secret_access_key: ""            # Leave empty to use AWS credential chain
-    part_size: 10485760              # Multipart upload part size (10MB)
-    stats_cache_ttl: "5m"            # Cache storage stats (default: 5 minutes)
-    # metrics: (optional)            # Metrics interface for observability
-```
-
-**In-Memory Backend** (development/testing only):
-
-```yaml
-content:
-  type: "memory"
-  memory:
-    max_size_bytes: 1073741824  # 1GB
-```
-
-> **Note**: Memory content store is not yet implemented. Use `filesystem` or `s3` type.
+> **S3 Path Design**: The S3 store uses path-based object keys (e.g., `export/docs/report.pdf`) that mirror the filesystem structure.
+> This enables easy bucket inspection and metadata reconstruction for disaster recovery.
 >
-> **S3 Path Design**: The S3 store uses path-based object keys (e.g., `export/docs/report.pdf`) that mirror the filesystem structure. This enables easy bucket inspection and metadata reconstruction for disaster recovery.
->
-> **S3 Phase 1 Production Features**: The S3 content store includes production-ready optimizations:
+> **S3 Production Features**: The S3 content store includes production-ready optimizations:
 >
 > - **Range Reads**: Efficient partial reads using S3 byte-range requests (100x faster for small reads from large files)
 > - **Streaming Multipart Uploads**: Automatic multipart uploads for large files (98% memory reduction)
 > - **Stats Caching**: Intelligent caching reduces expensive S3 ListObjects calls by 99%+
 > - **Metrics Support**: Optional instrumentation for Prometheus/observability
 >
-> See `pkg/content/s3/PHASE1_SUMMARY.md` for details. Example config: `config-s3-example.yaml`
-
-#### 4. Metadata Store
-
-Configures where file metadata (structure, attributes) is stored.
-
-**BadgerDB Backend** (default, recommended for production):
-
-```yaml
-metadata:
-  type: "badger"
-  badger:
-    db_path: "/tmp/dittofs-metadata"  # Required: database directory path
-```
-
-**In-Memory Backend** (ephemeral, for development/testing only):
-
-```yaml
-metadata:
-  type: "memory"
-  memory: {}  # No configuration options
-```
-
-**Common Configuration** (applies to all metadata stores):
-
-```yaml
-metadata:
-  # Filesystem capabilities and limits
-  capabilities:
-    max_read_size: 1048576        # 1MB
-    preferred_read_size: 65536    # 64KB
-    max_write_size: 1048576       # 1MB
-    preferred_write_size: 65536   # 64KB
-    max_file_size: 9223372036854775807  # ~8EB
-    max_filename_len: 255
-    max_path_len: 4096
-    max_hard_link_count: 32767
-    supports_hard_links: true
-    supports_symlinks: true
-    case_sensitive: true
-    case_preserving: true
-
-  # Restrict DUMP operations to specific clients (optional)
-  dump_restricted: false
-  dump_allowed_clients:
-    - "127.0.0.1"
-    - "::1"
-```
-
-> **Persistence**: BadgerDB stores all metadata persistently on disk. File handles, directory structure, permissions, and all metadata survive server restarts. The memory backend loses all data when the server stops.
+> See `pkg/content/s3/PHASE1_SUMMARY.md` for details. Example config: `config-new-design.yaml`
 
 #### 5. Shares (Exports)
 
-Defines network shares/exports available to clients:
+Each share explicitly references metadata and content stores by name. Multiple shares can reference the same store instances for resource sharing:
 
 ```yaml
 shares:
-  - name: "/export"              # Share path (must start with /)
-    read_only: false             # Make share read-only
-    async: true                  # Allow async writes (better performance)
+  # Fast local share using in-memory metadata and local disk
+  - name: /fast
+    metadata_store: memory-fast    # References metadata.stores.memory-fast
+    content_store: local-disk      # References content.stores.local-disk
+    read_only: false
+    async: true
 
-    # Client access control
-    allowed_clients: []          # Empty = all allowed (CIDR supported)
-    denied_clients: []           # Takes precedence over allowed_clients
+    # Access control
+    allowed_clients: []
+    denied_clients: []
 
     # Authentication
     require_auth: false
-    allowed_auth_methods:
-      - "anonymous"
-      - "unix"
+    allowed_auth_methods: [anonymous, unix]
 
     # Identity mapping (user/group squashing)
     identity_mapping:
@@ -419,7 +471,30 @@ shares:
       mode: 0755
       uid: 0
       gid: 0
+
+  # Cloud-backed share with persistent metadata
+  - name: /cloud
+    metadata_store: badger-main
+    content_store: s3-production
+    read_only: false
+    async: false
+    # ... (same access control options as above)
+
+  # Archive share sharing metadata with /cloud
+  - name: /archive
+    metadata_store: badger-main      # Shares metadata with /cloud
+    content_store: s3-archive        # Different content backend
+    read_only: false
+    async: false
+    # ... (same access control options as above)
 ```
+
+**Configuration Patterns:**
+
+- **Shared Metadata**: `/cloud` and `/archive` both use `badger-main` - they share the same metadata database
+- **Performance Tiering**: Different shares use different storage backends (memory, local disk, S3)
+- **Isolation**: Different shares can use completely separate stores for security boundaries
+- **Resource Efficiency**: Multiple shares can reference the same store instance (no duplication)
 
 #### 6. Protocol Adapters
 
@@ -536,6 +611,7 @@ go run cmd/generate-schema/main.go config.schema.json
 ```
 
 **Features**:
+
 - ✅ Field autocomplete
 - ✅ Type validation
 - ✅ Inline documentation on hover
@@ -561,16 +637,28 @@ DITTOFS_ADAPTERS_NFS_PORT=12049 ./dittofs start
 
 #### Minimal Configuration
 
+Single share with minimal settings:
+
 ```yaml
-# Minimal config - uses all defaults
 logging:
-  level: "INFO"
+  level: INFO
+
+metadata:
+  stores:
+    default:
+      type: memory
 
 content:
-  type: "filesystem"
+  stores:
+    default:
+      type: filesystem
+      filesystem:
+        path: /tmp/dittofs-content
 
 shares:
-  - name: "/export"
+  - name: /export
+    metadata_store: default
+    content_store: default
 
 adapters:
   nfs:
@@ -583,19 +671,23 @@ Fast iteration with in-memory stores:
 
 ```yaml
 logging:
-  level: "DEBUG"
-  format: "text"
-
-content:
-  type: "memory"
-  memory:
-    max_size_bytes: 1073741824  # 1GB
+  level: DEBUG
+  format: text
 
 metadata:
-  type: "memory"
+  stores:
+    dev-memory:
+      type: memory
+
+content:
+  stores:
+    dev-memory:
+      type: memory
 
 shares:
-  - name: "/export"
+  - name: /export
+    metadata_store: dev-memory
+    content_store: dev-memory
     async: true
     identity_mapping:
       map_all_to_anonymous: true
@@ -612,45 +704,49 @@ Persistent storage with access control:
 
 ```yaml
 logging:
-  level: "WARN"
-  format: "json"
-  output: "/var/log/dittofs/server.log"
+  level: WARN
+  format: json
+  output: /var/log/dittofs/server.log
 
 server:
   shutdown_timeout: 30s
 
-content:
-  type: "filesystem"
-  filesystem:
-    path: "/var/lib/dittofs/content"
-
 metadata:
-  type: "badger"  # Persistent metadata storage
-  badger:
-    db_path: "/var/lib/dittofs/metadata.db"
-    max_storage_bytes: 107374182400  # 100GB
-    max_files: 10000000              # 10M files
-  capabilities:
-    max_read_size: 1048576
-    max_write_size: 1048576
-  dump_restricted: true
-  dump_allowed_clients:
-    - "127.0.0.1"
-    - "10.0.0.0/8"
+  global:
+    filesystem_capabilities:
+      max_read_size: 1048576
+      max_write_size: 1048576
+    dump_restricted: true
+    dump_allowed_clients:
+      - 127.0.0.1
+      - 10.0.0.0/8
+
+  stores:
+    prod-badger:
+      type: badger
+      badger:
+        db_path: /var/lib/dittofs/metadata
+
+content:
+  stores:
+    prod-disk:
+      type: filesystem
+      filesystem:
+        path: /var/lib/dittofs/content
 
 shares:
-  - name: "/export"
+  - name: /export
+    metadata_store: prod-badger
+    content_store: prod-disk
     read_only: false
     async: false  # Synchronous writes for data safety
     allowed_clients:
-      - "192.168.1.0/24"
+      - 192.168.1.0/24
     denied_clients:
-      - "192.168.1.50"
+      - 192.168.1.50
     identity_mapping:
       map_all_to_anonymous: false
       map_privileged_to_anonymous: true
-      anonymous_uid: 65534
-      anonymous_gid: 65534
     root_attr:
       mode: 0755
       uid: 0
@@ -661,42 +757,107 @@ adapters:
     enabled: true
     port: 2049
     max_connections: 1000
-    read_timeout: 5m0s
-    write_timeout: 30s
-    idle_timeout: 5m0s
-    metrics_log_interval: 5m0s
+    timeouts:
+      read: 5m
+      write: 30s
+      idle: 5m
 ```
 
-#### Multi-Client Access Control
+#### Multi-Share with Different Backends
 
-Different shares with different access rules:
+Different shares using different storage backends:
 
 ```yaml
+metadata:
+  stores:
+    fast-memory:
+      type: memory
+    persistent-badger:
+      type: badger
+      badger:
+        db_path: /var/lib/dittofs/metadata
+
+content:
+  stores:
+    local-disk:
+      type: filesystem
+      filesystem:
+        path: /var/lib/dittofs/content
+    cloud-s3:
+      type: s3
+      s3:
+        region: us-east-1
+        bucket: my-dittofs-bucket
+
 shares:
+  # Fast temporary share
+  - name: /temp
+    metadata_store: fast-memory
+    content_store: local-disk
+    read_only: false
+    identity_mapping:
+      map_all_to_anonymous: true
+
+  # Cloud-backed persistent share
+  - name: /cloud
+    metadata_store: persistent-badger
+    content_store: cloud-s3
+    read_only: false
+    allowed_clients:
+      - 10.0.1.0/24
+
   # Public read-only share
-  - name: "/public"
+  - name: /public
+    metadata_store: persistent-badger
+    content_store: local-disk
     read_only: true
     identity_mapping:
       map_all_to_anonymous: true
 
-  # Private share - specific client network
-  - name: "/private"
-    read_only: false
-    allowed_clients:
-      - "10.0.1.0/24"
-    identity_mapping:
-      map_all_to_anonymous: false
-      map_privileged_to_anonymous: true
+adapters:
+  nfs:
+    enabled: true
+```
 
-  # Admin share - localhost only
-  - name: "/admin"
+#### Shared Metadata Pattern
+
+Multiple shares sharing the same metadata database:
+
+```yaml
+metadata:
+  stores:
+    shared-badger:
+      type: badger
+      badger:
+        db_path: /var/lib/dittofs/shared-metadata
+
+content:
+  stores:
+    s3-production:
+      type: s3
+      s3:
+        bucket: prod-bucket
+    s3-archive:
+      type: s3
+      s3:
+        bucket: archive-bucket
+
+shares:
+  # Production share
+  - name: /prod
+    metadata_store: shared-badger    # Shared metadata
+    content_store: s3-production
     read_only: false
-    allowed_clients:
-      - "127.0.0.1"
-      - "::1"
-    identity_mapping:
-      map_all_to_anonymous: false
-      map_privileged_to_anonymous: false
+
+  # Archive share (shares metadata with /prod)
+  - name: /archive
+    metadata_store: shared-badger    # Same metadata store
+    content_store: s3-archive        # Different content backend
+    read_only: false
+
+adapters:
+  nfs:
+    enabled: true
 ```
 
 ### Viewing Active Configuration
@@ -1110,7 +1271,7 @@ DittoFS is in active development and welcomes contributions!
 - Advanced caching strategies
 - Multi-region replication
 
-### Development Setup
+### Getting Started
 
 ```bash
 # Clone repository

@@ -1,0 +1,35 @@
+# Markdownlint configuration for DittoFS
+# Relaxed style rules for technical documentation
+
+# MD013/line-length - Allow longer lines for technical docs
+MD013:
+  line_length: 200
+  code_blocks: false
+  tables: false
+
+# MD022/blanks-around-headings - Allow flexible heading spacing
+MD022: false
+
+# MD029/ol-prefix - Allow flexible ordered list numbering
+MD029: false
+
+# MD031/blanks-around-fences - Allow flexible code fence spacing
+MD031: false
+
+# MD032/blanks-around-lists - Allow flexible list spacing
+MD032: false
+
+# MD033/no-inline-html - Allow HTML for styling (README uses divs/images)
+MD033: false
+
+# MD034/no-bare-urls - Allow bare URLs in documentation
+MD034: false
+
+# MD036/no-emphasis-as-heading - Allow emphasis for subheadings
+MD036: false
+
+# MD040/fenced-code-language - Require language for code blocks (disabled for now)
+MD040: false
+
+# MD041/first-line-heading - Allow non-heading first line (README has logo/badges)
+MD041: false

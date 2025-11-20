@@ -10,7 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -261,9 +261,8 @@ func (c *RmdirContext) GetGIDs() []uint32           { return c.GIDs }
 //	if resp.Status == types.NFS3OK {
 //	    // Directory removed successfully
 //	}
-func (h *DefaultNFSHandler) Rmdir(
+func (h *Handler) Rmdir(
 	ctx *RmdirContext,
-	metadataStore metadata.MetadataStore,
 	req *RmdirRequest,
 ) (*RmdirResponse, error) {
 	// Extract client IP for logging
@@ -295,7 +294,36 @@ func (h *DefaultNFSHandler) Rmdir(
 	}
 
 	// ========================================================================
-	// Step 3: Verify parent directory exists and is valid
+	// Step 3: Decode share name from directory file handle
+	// ========================================================================
+
+	parentHandle := metadata.FileHandle(req.DirHandle)
+	shareName, path, err := metadata.DecodeShareHandle(parentHandle)
+	if err != nil {
+		logger.Warn("RMDIR failed: invalid directory handle: dir=%x client=%s error=%v",
+			req.DirHandle, clientIP, err)
+		return &RmdirResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("RMDIR failed: share not found: share=%s dir=%x client=%s",
+			shareName, req.DirHandle, clientIP)
+		return &RmdirResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("RMDIR failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
+			shareName, req.DirHandle, clientIP, err)
+		return &RmdirResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("RMDIR: share=%s path=%s name=%s", shareName, path, req.Name)
+
+	// ========================================================================
+	// Step 4: Verify parent directory exists and is valid
 	// ========================================================================
 
 	// Check context before store call
@@ -307,7 +335,6 @@ func (h *DefaultNFSHandler) Rmdir(
 	default:
 	}
 
-	parentHandle := metadata.FileHandle(req.DirHandle)
 	parentAttr, err := metadataStore.GetFile(ctx.Context, parentHandle)
 	if err != nil {
 		logger.Warn("RMDIR failed: parent not found: dir=%x client=%s error=%v",
@@ -338,7 +365,7 @@ func (h *DefaultNFSHandler) Rmdir(
 	// Step 4: Build authentication context with share-level identity mapping
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, parentHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, parentHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {

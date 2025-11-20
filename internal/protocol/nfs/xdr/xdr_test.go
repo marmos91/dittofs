@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -61,12 +61,6 @@ func validWccAttr() *types.WccAttr {
 		Mtime: types.TimeVal{Seconds: uint32(now.Unix()), Nseconds: uint32(now.Nanosecond())},
 		Ctime: types.TimeVal{Seconds: uint32(now.Unix()), Nseconds: uint32(now.Nanosecond())},
 	}
-}
-
-func validFileHandle(id uint64) metadata.FileHandle {
-	handle := make([]byte, 8)
-	binary.BigEndian.PutUint64(handle, id)
-	return metadata.FileHandle(handle)
 }
 
 // ============================================================================
@@ -189,34 +183,57 @@ func TestEncodeWccData(t *testing.T) {
 // ============================================================================
 
 func TestExtractFileID(t *testing.T) {
-	t.Run("ExtractsValidFileID", func(t *testing.T) {
-		handle := validFileHandle(12345)
+	t.Run("ExtractsFileIDFromShareHandle", func(t *testing.T) {
+		// Create a share-aware handle
+		handle := metadata.EncodeShareHandle("export", "/path/to/file")
 		fileID := ExtractFileID(handle)
-		assert.Equal(t, uint64(12345), fileID)
+
+		// File ID should be non-zero and deterministic
+		assert.NotEqual(t, uint64(0), fileID)
+
+		// Same handle should always produce same file ID
+		fileID2 := ExtractFileID(handle)
+		assert.Equal(t, fileID, fileID2)
 	})
 
-	t.Run("ExtractsZeroFileID", func(t *testing.T) {
-		handle := validFileHandle(0)
-		fileID := ExtractFileID(handle)
-		assert.Equal(t, uint64(0), fileID)
+	t.Run("DifferentHandlesProduceDifferentIDs", func(t *testing.T) {
+		handle1 := metadata.EncodeShareHandle("export", "/path/file1")
+		handle2 := metadata.EncodeShareHandle("export", "/path/file2")
+
+		fileID1 := ExtractFileID(handle1)
+		fileID2 := ExtractFileID(handle2)
+
+		assert.NotEqual(t, fileID1, fileID2)
 	})
 
-	t.Run("ExtractsMaxUint64", func(t *testing.T) {
-		handle := validFileHandle(^uint64(0))
-		fileID := ExtractFileID(handle)
-		assert.Equal(t, uint64(^uint64(0)), fileID)
-	})
+	t.Run("SamePathDifferentSharesProduceDifferentIDs", func(t *testing.T) {
+		handle1 := metadata.EncodeShareHandle("share1", "/file.txt")
+		handle2 := metadata.EncodeShareHandle("share2", "/file.txt")
 
-	t.Run("ReturnsZeroForShortHandle", func(t *testing.T) {
-		handle := metadata.FileHandle([]byte{0x01, 0x02})
-		fileID := ExtractFileID(handle)
-		assert.Equal(t, uint64(0), fileID)
+		fileID1 := ExtractFileID(handle1)
+		fileID2 := ExtractFileID(handle2)
+
+		assert.NotEqual(t, fileID1, fileID2)
 	})
 
 	t.Run("ReturnsZeroForEmptyHandle", func(t *testing.T) {
 		handle := metadata.FileHandle([]byte{})
 		fileID := ExtractFileID(handle)
 		assert.Equal(t, uint64(0), fileID)
+	})
+
+	t.Run("HandlesDifferentPathLengths", func(t *testing.T) {
+		// Short path
+		handle1 := metadata.EncodeShareHandle("export", "/a")
+		fileID1 := ExtractFileID(handle1)
+		assert.NotEqual(t, uint64(0), fileID1)
+
+		// Long path
+		handle2 := metadata.EncodeShareHandle("export", "/very/long/path/to/deeply/nested/file.txt")
+		fileID2 := ExtractFileID(handle2)
+		assert.NotEqual(t, uint64(0), fileID2)
+
+		assert.NotEqual(t, fileID1, fileID2)
 	})
 }
 
