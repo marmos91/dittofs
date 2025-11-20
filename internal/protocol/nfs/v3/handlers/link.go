@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -222,9 +222,8 @@ func (c *LinkContext) GetGIDs() []uint32           { return c.GIDs }
 //	if resp.Status == types.NFS3OK {
 //	    // Hard link created successfully
 //	}
-func (h *DefaultNFSHandler) Link(
+func (h *Handler) Link(
 	ctx *LinkContext,
-	metadataStore metadata.MetadataStore,
 	req *LinkRequest,
 ) (*LinkResponse, error) {
 	// Extract client IP for logging
@@ -258,11 +257,55 @@ func (h *DefaultNFSHandler) Link(
 	}
 
 	// ========================================================================
-	// Step 3: Build AuthContext for permission checking
+	// Step 3: Decode share name from directory file handle
 	// ========================================================================
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
-	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, dirHandle)
+	shareName, path, err := metadata.DecodeShareHandle(dirHandle)
+	if err != nil {
+		logger.Warn("LINK failed: invalid directory handle: dir=%x client=%s error=%v",
+			req.DirHandle, clientIP, err)
+		return &LinkResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Decode file handle to verify it's from the same share
+	fileHandle := metadata.FileHandle(req.FileHandle)
+	fileShareName, _, err := metadata.DecodeShareHandle(fileHandle)
+	if err != nil {
+		logger.Warn("LINK failed: invalid file handle: file=%x client=%s error=%v",
+			req.FileHandle, clientIP, err)
+		return &LinkResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Verify both handles are from the same share (cross-share linking not allowed)
+	if shareName != fileShareName {
+		logger.Warn("LINK failed: cross-share link attempted: file_share=%s dir_share=%s client=%s",
+			fileShareName, shareName, clientIP)
+		return &LinkResponse{Status: types.NFS3ErrInval}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("LINK failed: share not found: share=%s client=%s",
+			shareName, clientIP)
+		return &LinkResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("LINK failed: cannot get metadata store: share=%s client=%s error=%v",
+			shareName, clientIP, err)
+		return &LinkResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("LINK: share=%s path=%s name=%s", shareName, path, req.Name)
+
+	// ========================================================================
+	// Step 4: Build AuthContext for permission checking
+	// ========================================================================
+
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, dirHandle)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -292,7 +335,6 @@ func (h *DefaultNFSHandler) Link(
 	// Step 5: Verify source file exists and is a regular file
 	// ========================================================================
 
-	fileHandle := metadata.FileHandle(req.FileHandle)
 	fileAttr, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		logger.Warn("LINK failed: source file not found: file=%x client=%s error=%v",

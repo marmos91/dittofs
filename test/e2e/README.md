@@ -1,376 +1,437 @@
 # DittoFS End-to-End Tests
 
-This directory contains comprehensive end-to-end (e2e) tests for DittoFS that verify functionality by actually mounting the NFS server and performing real file operations.
+Simplified, modular e2e tests for DittoFS that test real file operations through mounted NFS shares.
 
 ## Overview
 
-The e2e test suite validates the complete DittoFS stack:
+The e2e tests validate DittoFS functionality by:
+1. Starting a DittoFS server with specific metadata/content stores
+2. Mounting the NFS share
+3. Performing file operations using standard Go `os` package
+4. Verifying results
+5. Cleaning up (unmount, shutdown, cleanup)
 
+## Quick Start
+
+**⚠️  Important:** E2E tests require `sudo` to mount NFS shares on both macOS and Linux.
+
+### Standard Tests (No External Dependencies)
+
+```bash
+# Run all standard tests (requires sudo)
+cd test/e2e
+sudo ./run-e2e.sh
+
+# Or directly with go test
+sudo go test -v ./...
+
+# Run a specific test
+sudo go test -v -run TestCreateFolder
 ```
-┌─────────────────────────────┐
-│    Test Client (Go)         │
-│    os.ReadFile, etc.        │
-└──────────┬──────────────────┘
-           │
-           ▼ (mounted NFS)
-┌─────────────────────────────┐
-│    NFS Adapter              │
-└──────────┬──────────────────┘
-           │
-           ▼
-┌─────────────────────────────┐
-│    Metadata Store           │
-│    (Memory)                 │
-└─────────────────────────────┘
-           │
-           ▼
-┌─────────────────────────────┐
-│    Content Store            │
-│    (Memory or Filesystem)   │
-└─────────────────────────────┘
+
+### S3 Tests (Requires Localstack)
+
+```bash
+# Run all tests including S3 (requires sudo + Docker)
+sudo ./run-e2e.sh --s3
+
+# The script will automatically:
+# 1. Start Localstack via docker-compose
+# 2. Wait for it to be ready
+# 3. Run all tests
+# 4. Clean up Localstack
 ```
-
-## Test Matrix
-
-Tests run against all combinations of:
-
-- **Adapters**: NFS (currently; SMB, WebDAV planned)
-- **Content Stores**: Memory, Filesystem
-
-Each test suite is executed against each combination to ensure consistent behavior across all backends.
 
 ## Test Structure
 
 ```
 test/e2e/
-├── framework/              # Test infrastructure
-│   ├── server.go          # DittoFS server lifecycle management
-│   ├── mount.go           # NFS mount/unmount helpers
-│   └── helpers.go         # Test utilities and assertions
-├── suites/                # Test suites
-│   ├── basic.go           # Basic CRUD operations
-│   ├── directory.go       # Directory operations
-│   ├── symlink.go         # Symbolic link operations
-│   ├── hardlink.go        # Hard link operations
-│   ├── attributes.go      # File attributes and metadata
-│   ├── idempotency.go     # Idempotency testing
-│   └── edgecases.go       # Edge cases and boundary conditions
-├── matrix_test.go         # Main test runner
-└── README.md              # This file
+├── framework.go           # Server lifecycle and mount management
+├── config.go              # Configuration matrix (metadata × content stores)
+├── localstack.go          # Localstack S3 integration
+├── operations_test.go     # Individual operation tests
+├── filesize_test.go       # Parametrized file size tests
+├── docker-compose.yml     # Localstack setup
+├── run-e2e.sh            # Test orchestration script
+└── README.md             # This file
 ```
 
-## Test Suites
+## Configuration Matrix
 
-### Basic Operations (`basic.go`)
-- File creation, reading, writing, deletion
-- Empty files
-- Large files (1MB+)
-- Binary files
-- Files with special characters in names
-- Append operations
-- Overwrite operations
+Tests run against all combinations of:
 
-### Directory Operations (`directory.go`)
-- Directory creation (mkdir, mkdir -p)
-- Directory listing (readdir)
-- Nested directory structures
-- Directory deletion (empty and non-empty)
-- Directory renaming
-- Moving files between directories
-- Deep nesting
+### Metadata Stores
+- **Memory**: Fast, in-memory metadata (no persistence)
+- **Badger**: Embedded key-value store (persistent)
 
-### Symlink Operations (`symlink.go`)
-- Symlink creation (to files and directories)
-- Absolute and relative symlinks
-- Dangling symlinks
-- Symlink deletion
-- Symlink renaming
-- Chained symlinks
-- Symlink loops
+### Content Stores
+- **Memory**: Fast, in-memory content storage
+- **Filesystem**: Local filesystem storage
+- **S3**: S3-compatible storage (via Localstack)
 
-### Hard Link Operations (`hardlink.go`)
-- Hard link creation
-- Modifications through hard links
-- Hard link deletion
-- Multiple hard links to same file
-- Hard links across directories
-- Hard link permissions
+### Available Configurations
 
-### File Attributes (`attributes.go`)
-- File size
-- File permissions (chmod)
-- File timestamps (mtime, atime)
-- File type detection
-- Truncate operations
-- File extension
+**Standard (no external dependencies):**
+- `memory/memory` - Both metadata and content in memory
+- `memory/filesystem` - Memory metadata, filesystem content
+- `badger/filesystem` - Badger metadata, filesystem content
 
-### Idempotency (`idempotency.go`)
-- Repeated operations produce consistent results
-- Creating same file multiple times
-- Reading same file multiple times
-- Deleting non-existent files
-- Rename to same name
-- Recreate deleted files
+**S3 (requires Localstack):**
+- `memory/s3` - Memory metadata, S3 content
+- `badger/s3` - Badger metadata, S3 content
 
-### Edge Cases (`edgecases.go`)
-- Empty filenames
-- Very long filenames (up to 255 bytes)
-- Dot files (hidden files)
-- Zero-size files
-- Concurrent reads
-- Non-existent file operations
-- Removing open files
-- Deep directory nesting
-- Many files in one directory
+## Available Tests
 
-## Running Tests
+### Operation Tests (`operations_test.go`)
 
-### Prerequisites
-
-**Linux:**
-```bash
-# Install NFS client utilities
-sudo apt-get install nfs-common  # Debian/Ubuntu
-sudo yum install nfs-utils        # RHEL/CentOS
-```
-
-**macOS:**
-```bash
-# NFS client is built-in, no installation needed
-```
-
-### Run All E2E Tests
+Individual tests that can be run separately:
 
 ```bash
-# Run all e2e tests
-go test -v ./test/e2e/...
-
-# Run with timeout (recommended for CI)
-go test -v -timeout 30m ./test/e2e/...
+# Test individual operations
+go test -v -run TestCreateFolder
+go test -v -run TestCreateNestedFolders
+go test -v -run TestCreateEmptyFile
+go test -v -run TestCreateEmptyFilesInNestedFolders
+go test -v -run TestDeleteSingleFile
+go test -v -run TestDeleteAllFolders
+go test -v -run TestDeleteAllFiles
+go test -v -run TestEditFile
+go test -v -run TestEditMultipleFiles
+go test -v -run TestUnmount
 ```
 
-### Run Specific Test Suite
+**What each test does:**
+
+- `TestCreateFolder` - Creates a single folder
+- `TestCreateNestedFolders` - Creates 20 nested folders (folder1/folder2/.../folder20)
+- `TestCreateEmptyFile` - Creates a single empty file
+- `TestCreateEmptyFilesInNestedFolders` - Creates 20 nested folders, each with an empty file
+- `TestDeleteSingleFile` - Creates and deletes a single file
+- `TestDeleteAllFolders` - Creates 10 folders and deletes them all
+- `TestDeleteAllFiles` - Creates 20 files and deletes them all
+- `TestEditFile` - Creates a file and overwrites it with new content
+- `TestEditMultipleFiles` - Creates 20 files and edits them all
+- `TestUnmount` - Tests unmounting and remounting the share
+
+### File Size Tests (`filesize_test.go`)
+
+Parametrized tests for different file sizes:
 
 ```bash
-# Run only basic operations tests
-go test -v ./test/e2e -run TestE2E/memory/BasicOperations
+# Test specific file sizes
+go test -v -run TestCreateFile_500KB
+go test -v -run TestCreateFile_1MB
+go test -v -run TestCreateFile_10MB
+go test -v -run TestCreateFile_100MB
 
-# Run only filesystem store tests
-go test -v ./test/e2e -run TestE2E/filesystem
+# Test all sizes
+go test -v -run TestCreateFilesBySize
 
-# Run only symlink tests across all stores
-go test -v ./test/e2e -run TestE2E/.*/SymlinkOperations
+# Test multiple files of each size
+go test -v -run TestCreateMultipleFilesBySize
+
+# Test read operations
+go test -v -run TestReadFilesBySize
+
+# Test write-then-read
+go test -v -run TestWriteThenReadBySize
+
+# Test overwrite operations
+go test -v -run TestOverwriteFilesBySize
+
+# Test delete operations
+go test -v -run TestDeleteFilesBySize
 ```
 
-### Run with Verbose Logging
+**Available file sizes:**
+- 500KB
+- 1MB
+- 10MB
+- 100MB
+
+### Running Tests on Specific Configurations
 
 ```bash
-# Enable server logging
-go test -v ./test/e2e -run TestE2E
+# Run only on memory/memory configuration
+go test -v -run "TestCreateFolder/memory-memory"
+
+# Run only on badger/filesystem configuration
+go test -v -run "TestCreateFile_1MB/badger-filesystem"
+
+# Run all tests on S3 configurations
+./run-e2e.sh --s3 --test "s3"
 ```
 
-To see detailed DittoFS server logs, modify the test to set `LogLevel: "DEBUG"` in `framework/helpers.go:NewTestContext()`.
+## Script Usage
 
-## How It Works
+The `run-e2e.sh` script provides convenient test orchestration:
 
-### 1. Server Lifecycle
-
-Each test context:
-1. Creates a temporary directory
-2. Starts a DittoFS server with a free port
-3. Configures the specified content store (memory or filesystem)
-4. Waits for server to be ready
-
-### 2. Mount Process
-
-Platform-specific mount commands:
-
-**Linux:**
 ```bash
-mount -t nfs -o nfsvers=3,tcp,port=<PORT>,nolock localhost:/export /tmp/mount-XXXXX
+# Basic usage
+./run-e2e.sh                              # Standard tests only
+./run-e2e.sh --s3                         # Include S3 tests
+./run-e2e.sh --verbose                    # Verbose output
+./run-e2e.sh --test TestCreateFile_1MB   # Run specific test
+./run-e2e.sh --keep-localstack            # Keep Localstack running after tests
+
+# Combined options
+./run-e2e.sh --s3 --verbose --test TestCreateFilesBySize
 ```
 
-**macOS:**
+**Script options:**
+- `--s3` - Run S3 tests (starts Localstack automatically)
+- `--verbose`, `-v` - Enable verbose test output
+- `--test`, `-t NAME` - Run specific test by name
+- `--keep-localstack` - Keep Localstack running after tests (for debugging)
+- `--help`, `-h` - Show help message
+
+## Localstack Setup
+
+### Using the Script (Recommended)
+
 ```bash
-mount -t nfs -o nfsvers=3,tcp,port=<PORT> localhost:/export /tmp/mount-XXXXX
+# Script handles everything automatically
+./run-e2e.sh --s3
 ```
 
-### 3. Test Execution
+### Manual Setup
 
-Tests use standard Go `os` package functions:
-- `os.ReadFile()`, `os.WriteFile()`
-- `os.Mkdir()`, `os.ReadDir()`
-- `os.Symlink()`, `os.Link()`
-- `os.Stat()`, `os.Chmod()`
+```bash
+# Start Localstack
+docker-compose up -d
 
-This ensures we're testing real NFS client behavior.
+# Wait for it to be ready
+curl http://localhost:4566/_localstack/health
 
-### 4. Cleanup
+# Set environment variable
+export LOCALSTACK_ENDPOINT=http://localhost:4566
 
-After each test:
-1. Unmount the NFS filesystem
-2. Stop the DittoFS server
-3. Remove temporary directories
+# Run tests
+go test -v ./...
+
+# Stop Localstack
+docker-compose down -v
+```
+
+### Troubleshooting Localstack
+
+```bash
+# Check if Localstack is running
+docker ps | grep localstack
+
+# View Localstack logs
+docker-compose logs -f
+
+# Check health
+curl http://localhost:4566/_localstack/health
+
+# Restart Localstack
+docker-compose down -v
+docker-compose up -d
+```
 
 ## Writing New Tests
 
-To add new tests:
+### Adding a New Operation Test
 
-1. **Create a new suite file** in `suites/`:
-   ```go
-   package suites
+1. Open `operations_test.go`
+2. Add your test function:
 
-   func TestMyNewFeature(t *testing.T, storeType framework.StoreType) {
-       ctx := framework.NewTestContext(t, storeType)
-       defer ctx.Cleanup()
+```go
+func TestMyNewOperation(t *testing.T) {
+    runOnAllConfigs(t, func(t *testing.T, tc *TestContext) {
+        // Your test code using tc.Path() for file paths
+        filePath := tc.Path("myfile.txt")
+        err := os.WriteFile(filePath, []byte("content"), 0644)
+        if err != nil {
+            t.Fatalf("Failed: %v", err)
+        }
+    })
+}
+```
 
-       t.Run("TestCase1", func(t *testing.T) {
-           // Use ctx helper methods
-           ctx.WriteFile("test.txt", []byte("data"), 0644)
-           ctx.AssertFileContent("test.txt", []byte("data"))
-       })
-   }
-   ```
+### Adding a New File Size Test
 
-2. **Register in matrix_test.go**:
-   ```go
-   t.Run("MyNewFeature", func(t *testing.T) {
-       suites.TestMyNewFeature(t, storeType)
-   })
-   ```
+1. Open `filesize_test.go`
+2. Define a new size (if needed):
 
-3. **Use helper methods** from `TestContext`:
-   - `ctx.Path(relativePath)` - Get absolute path
-   - `ctx.WriteFile()` - Write file
-   - `ctx.ReadFile()` - Read file
-   - `ctx.AssertFileExists()` - Assert file exists
-   - `ctx.AssertFileContent()` - Assert file content
+```go
+var Size5MB = FileSize{Name: "5MB", Bytes: 5 * 1024 * 1024}
+```
 
-## Helper Methods
+3. Add to `StandardFileSizes` or create a custom test:
 
-### Assertions
-- `AssertFileExists(path)` - File must exist
-- `AssertFileNotExists(path)` - File must not exist
-- `AssertFileContent(path, expected)` - Content must match
-- `AssertDirExists(path)` - Directory must exist
-- `AssertIsSymlink(path)` - Must be a symlink
+```go
+func TestCreateFile_5MB(t *testing.T) {
+    runOnAllConfigs(t, func(t *testing.T, tc *TestContext) {
+        testCreateFileOfSize(t, tc, Size5MB)
+    })
+}
+```
 
-### File Operations
-- `WriteFile(path, content, mode)` - Write file
-- `ReadFile(path)` - Read file
-- `Remove(path)` - Remove file/empty dir
-- `RemoveAll(path)` - Remove recursively
+### Running Only on Specific Configurations
 
-### Directory Operations
-- `Mkdir(path, mode)` - Create directory
-- `MkdirAll(path, mode)` - Create with parents
-- `ReadDir(path)` - List directory
+```go
+// Run only on S3 configurations
+func TestS3SpecificFeature(t *testing.T) {
+    runOnS3Configs(t, func(t *testing.T, tc *TestContext) {
+        // Your S3-specific test
+    })
+}
+```
 
-### Link Operations
-- `Symlink(target, link)` - Create symlink
-- `Readlink(link)` - Read symlink target
-- `Link(target, link)` - Create hard link
+## TestContext API
 
-### Metadata Operations
-- `Stat(path)` - Get file info
-- `Lstat(path)` - Get file info (no follow symlinks)
-- `Rename(old, new)` - Rename/move file
+The `TestContext` provides helper methods:
 
-## Continuous Integration
+```go
+// Path construction
+tc.Path("file.txt")                      // Absolute path in mount
 
-The e2e tests run automatically on:
-- Every push to `main` or `develop`
-- Every pull request
-- Both Linux and macOS runners
+// Access to configuration
+tc.Config.MetadataStore                  // "memory" or "badger"
+tc.Config.ContentStore                   // "memory", "filesystem", or "s3"
 
-See `.github/workflows/build.yml` for the complete CI configuration.
+// Access to mount point
+tc.MountPath                             // Absolute path to mount
 
-### CI Test Flow
+// Access to stores (for advanced tests)
+tc.MetadataStore
+tc.ContentStore
+```
+
+## Common Patterns
+
+### Create and Verify File
+
+```go
+filePath := tc.Path("test.txt")
+content := []byte("test content")
+
+// Write
+err := os.WriteFile(filePath, content, 0644)
+if err != nil {
+    t.Fatalf("Failed to write: %v", err)
+}
+
+// Read back
+actualContent, err := os.ReadFile(filePath)
+if err != nil {
+    t.Fatalf("Failed to read: %v", err)
+}
+
+// Verify
+if !bytes.Equal(content, actualContent) {
+    t.Errorf("Content mismatch")
+}
+```
+
+### Create Folder Structure
+
+```go
+basePath := tc.Path("base")
+err := os.MkdirAll(filepath.Join(basePath, "sub1", "sub2"), 0755)
+if err != nil {
+    t.Fatalf("Failed to create folders: %v", err)
+}
+```
+
+### List Directory
+
+```go
+entries, err := os.ReadDir(tc.Path("folder"))
+if err != nil {
+    t.Fatalf("Failed to read dir: %v", err)
+}
+
+for _, entry := range entries {
+    t.Logf("Found: %s (dir=%v)", entry.Name(), entry.IsDir())
+}
+```
+
+## CI Integration
+
+The tests are designed to run in CI with minimal setup:
 
 ```yaml
-1. Build and Test (unit tests)
-   └─> Ubuntu + macOS
+# .github/workflows/e2e.yml
+- name: Run E2E tests (standard)
+  run: |
+    cd test/e2e
+    ./run-e2e.sh
 
-2. E2E Tests
-   ├─> Ubuntu
-   │   ├─> Install nfs-common
-   │   ├─> Run e2e tests
-   │   └─> Upload logs on failure
-   └─> macOS
-       ├─> Run e2e tests (NFS built-in)
-       └─> Upload logs on failure
+- name: Run E2E tests (with S3)
+  run: |
+    cd test/e2e
+    ./run-e2e.sh --s3
 ```
+
+## Prerequisites
+
+### All Tests
+- Go 1.21+
+- NFS client utilities:
+  - **macOS**: Built-in (no installation needed)
+  - **Linux**: `sudo apt-get install nfs-common` (Debian/Ubuntu)
+  - **Linux**: `sudo yum install nfs-utils` (RHEL/CentOS)
+
+### S3 Tests
+- Docker
+- docker-compose
+
+## Performance Considerations
+
+- **Memory/Memory**: Fastest, use for rapid development
+- **Memory/Filesystem**: Fast, more realistic
+- **Badger/Filesystem**: More realistic, tests persistence
+- **S3 Configurations**: Slower due to Localstack overhead, use for S3-specific testing
+
+Typical test times:
+- Single operation test: 100-500ms
+- File size test (1MB): 200-1000ms
+- File size test (100MB): 2-10s (depending on store)
+- Full suite (standard): 2-5 minutes
+- Full suite (with S3): 5-15 minutes
+
+## Tips
+
+1. **Use specific tests during development**: `./run-e2e.sh --test TestCreateFile_1MB`
+2. **Keep Localstack running**: `./run-e2e.sh --s3 --keep-localstack` (then run tests repeatedly with `go test`)
+3. **Verbose output for debugging**: `./run-e2e.sh --verbose`
+4. **Test on specific config**: `go test -v -run "TestName/memory-filesystem"`
 
 ## Troubleshooting
 
-### Tests fail with "mount: permission denied"
+### Tests fail with "permission denied" on mount
+- Ensure NFS client is installed
+- Check that you're not using a reserved port (tests use >1024)
+- On macOS, ensure `resvport` option is used (automatically handled)
 
-DittoFS uses non-privileged ports (>1024) by default, so no root is needed. If you see permission errors:
-
-1. **Check if port is free**: The test framework automatically finds a free port
-2. **Check NFS client is installed**: See prerequisites above
-3. **Check mount command exists**: `which mount`
+### Localstack tests are skipped
+- Ensure Localstack is running: `docker ps | grep localstack`
+- Check endpoint: `curl http://localhost:4566/_localstack/health`
+- Use the script: `./run-e2e.sh --s3`
 
 ### Tests timeout
+- Increase timeout: `go test -timeout 60m ./...`
+- Large files (100MB) can be slow on some systems
 
-E2E tests can be slow, especially on macOS. Increase timeout:
-
-```bash
-go test -v -timeout 60m ./test/e2e/...
-```
-
-### Mount fails on Linux
-
-Ensure `nfs-common` is installed:
-
-```bash
-sudo apt-get install nfs-common
-```
-
-### Tests pass locally but fail in CI
-
-Check CI logs for:
-1. NFS utilities installation
-2. Mount command output
-3. Server startup logs
-
-Logs are uploaded as artifacts on failure.
-
-### Cleaning up stuck mounts
-
-If a test crashes and leaves a mount:
-
+### Stuck NFS mounts
 ```bash
 # List mounts
 mount | grep dittofs
 
 # Force unmount
-umount -f /tmp/dittofs-mount-XXXXX  # Linux
-umount -f /tmp/dittofs-mount-XXXXX  # macOS
+sudo umount -f /path/to/mount
 ```
-
-## Performance Considerations
-
-E2E tests are slower than unit tests because they:
-- Start a real server
-- Perform actual mount operations
-- Do real I/O through NFS protocol
-
-Typical timing:
-- Test suite setup: ~500ms
-- Individual test: 10-100ms
-- Full matrix (2 stores × 7 suites): ~5-10 minutes
 
 ## Future Enhancements
 
-- [ ] Add SMB adapter tests when implemented
-- [ ] Add WebDAV adapter tests when implemented
-- [ ] Add concurrent client tests (multiple mounts)
-- [ ] Add stress tests (large number of operations)
-- [ ] Add network failure simulation
-- [ ] Add quota testing
-- [ ] Add permission/ACL testing with different users
-- [ ] Add NFSv4 tests when implemented
+- [ ] Concurrent client tests (multiple mounts)
+- [ ] Stress tests (thousands of operations)
+- [ ] Network failure simulation
+- [ ] Performance benchmarks (throughput, latency)
+- [ ] Cross-platform NFS client testing
 
 ## License
 

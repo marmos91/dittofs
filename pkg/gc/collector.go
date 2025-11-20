@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/content"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/content"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // Collector performs periodic garbage collection on content stores.

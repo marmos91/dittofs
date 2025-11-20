@@ -1,0 +1,83 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        go-version: ["1.24.x"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Start Docker services
+        run: |
+          cd test/integration
+          docker compose -f docker-compose.yml up -d
+
+      - name: Wait for Localstack
+        run: |
+          echo "Waiting for Localstack to be ready..."
+          for i in {1..30}; do
+            if curl -sf http://localhost:4566/_localstack/health > /dev/null 2>&1; then
+              echo "Localstack is ready!"
+              exit 0
+            fi
+            echo -n "."
+            sleep 1
+          done
+          echo "Localstack failed to start"
+          exit 1
+
+      - name: Run integration tests - BadgerDB
+        run: |
+          export LOCALSTACK_ENDPOINT=http://localhost:4566
+          go test -tags=integration -v -timeout=10m ./test/integration/badger
+
+      - name: Run integration tests - S3
+        run: |
+          export LOCALSTACK_ENDPOINT=http://localhost:4566
+          go test -tags=integration -v -timeout=10m ./test/integration/s3
+
+      - name: Stop Docker services
+        if: always()
+        run: |
+          cd test/integration
+          docker compose -f docker-compose.yml down -v
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-logs-${{ matrix.go-version }}
+          path: |
+            /tmp/dittofs-*
+          retention-days: 3
+          if-no-files-found: ignore

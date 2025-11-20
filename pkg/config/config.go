@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 	"github.com/spf13/viper"
 )
 
@@ -77,10 +77,6 @@ type ServerConfig struct {
 
 	// Metrics contains Prometheus metrics server configuration
 	Metrics MetricsConfig `mapstructure:"metrics"`
-
-	// RateLimiting contains global rate limiting configuration
-	// Applied to all adapters unless overridden at adapter level
-	RateLimiting RateLimitingConfig `mapstructure:"rate_limiting"`
 }
 
 // MetricsConfig configures the Prometheus metrics HTTP server.
@@ -94,32 +90,22 @@ type MetricsConfig struct {
 	Port int `mapstructure:"port" validate:"omitempty,min=1,max=65535"`
 }
 
-// RateLimitingConfig controls request rate limiting.
-type RateLimitingConfig struct {
-	// Enabled enables request rate limiting when true.
-	// When false, no rate limiting is applied (unlimited requests).
-	// Recommended: true for production to prevent resource exhaustion.
-	Enabled bool `mapstructure:"enabled"`
+// ContentConfig specifies content store configuration with named stores.
+type ContentConfig struct {
+	// Global settings that apply to all content stores
+	Global ContentGlobalConfig `mapstructure:"global"`
 
-	// RequestsPerSecond limits the number of requests per second.
-	// Only used when Enabled is true.
-	// 0 means unlimited (rate limiting effectively disabled).
-	// Recommended: 1000-10000 depending on server capacity.
-	RequestsPerSecond uint `mapstructure:"requests_per_second"`
-
-	// Burst is the maximum burst size for request rate limiting.
-	// Allows temporary bursts above the sustained rate.
-	// Only used when Enabled is true.
-	// Must be >= RequestsPerSecond for smooth operation.
-	// Recommended: 2x RequestsPerSecond for handling traffic spikes.
-	Burst uint `mapstructure:"burst"`
+	// Named content store instances
+	Stores map[string]ContentStoreConfig `mapstructure:"stores"`
 }
 
-// ContentConfig specifies content store configuration.
-//
-// The Type field determines which store implementation is used.
-// Only the corresponding type-specific configuration section is used.
-type ContentConfig struct {
+// ContentGlobalConfig contains global settings for all content stores.
+type ContentGlobalConfig struct {
+	// Future: cache settings, compression, encryption
+}
+
+// ContentStoreConfig defines a single content store instance.
+type ContentStoreConfig struct {
 	// Type specifies which content store implementation to use
 	// Valid values: filesystem, memory, s3
 	Type string `mapstructure:"type" validate:"required,oneof=filesystem memory s3"`
@@ -137,11 +123,23 @@ type ContentConfig struct {
 	S3 map[string]any `mapstructure:"s3"`
 }
 
-// MetadataConfig specifies metadata store configuration.
-//
-// The Type field determines which store implementation is used.
-// Only the corresponding type-specific configuration section is used.
+// MetadataConfig specifies metadata store configuration with named stores.
 type MetadataConfig struct {
+	// Global settings that apply to all metadata stores
+	Global MetadataGlobalConfig `mapstructure:"global"`
+
+	// Named metadata store instances
+	Stores map[string]MetadataStoreConfig `mapstructure:"stores"`
+}
+
+// MetadataGlobalConfig contains global settings for all metadata stores.
+type MetadataGlobalConfig struct {
+	// FilesystemCapabilities defines filesystem capabilities and limits
+	FilesystemCapabilities metadata.FilesystemCapabilities `mapstructure:"filesystem_capabilities"`
+}
+
+// MetadataStoreConfig defines a single metadata store instance.
+type MetadataStoreConfig struct {
 	// Type specifies which metadata store implementation to use
 	// Valid values: memory, badger
 	Type string `mapstructure:"type" validate:"required,oneof=memory badger"`
@@ -153,23 +151,18 @@ type MetadataConfig struct {
 	// Badger contains BadgerDB-specific configuration
 	// Only used when Type = "badger"
 	Badger map[string]any `mapstructure:"badger"`
-
-	// FilesystemCapabilities defines filesystem capabilities and limits
-	// Uses the metadata.FilesystemCapabilities type directly
-	FilesystemCapabilities metadata.FilesystemCapabilities `mapstructure:"filesystem_capabilities"`
-
-	// DumpRestricted restricts DUMP operations to allowed clients only
-	DumpRestricted bool `mapstructure:"dump_restricted"`
-
-	// DumpAllowedClients lists IP addresses allowed to use DUMP
-	// Only used if DumpRestricted is true
-	DumpAllowedClients []string `mapstructure:"dump_allowed_clients"`
 }
 
 // ShareConfig defines a single share/export.
 type ShareConfig struct {
 	// Name is the share path (e.g., "/export")
 	Name string `mapstructure:"name" validate:"required,startswith=/"`
+
+	// MetadataStore is the name of the metadata store to use for this share
+	MetadataStore string `mapstructure:"metadata_store" validate:"required"`
+
+	// ContentStore is the name of the content store to use for this share
+	ContentStore string `mapstructure:"content_store" validate:"required"`
 
 	// ReadOnly makes the share read-only if true
 	ReadOnly bool `mapstructure:"read_only"`
@@ -195,8 +188,18 @@ type ShareConfig struct {
 	// IdentityMapping configures user/group mapping
 	IdentityMapping IdentityMappingConfig `mapstructure:"identity_mapping" validate:"required"`
 
-	// RootAttr specifies attributes for the share root directory
-	RootAttr RootAttrConfig `mapstructure:"root_attr" validate:"required"`
+	// RootDirectoryAttributes specifies attributes for the share root directory
+	// These define the permissions and ownership of the export root
+	RootDirectoryAttributes RootDirectoryAttributesConfig `mapstructure:"root_directory_attributes" validate:"required"`
+
+	// DumpRestricted restricts DUMP operations to allowed clients only
+	// DUMP is a mount protocol operation that lists active mounts for this share
+	DumpRestricted bool `mapstructure:"dump_restricted"`
+
+	// DumpAllowedClients lists IP addresses or CIDR ranges allowed to use DUMP
+	// Only used if DumpRestricted is true
+	// Empty list with DumpRestricted=true means no clients can use DUMP
+	DumpAllowedClients []string `mapstructure:"dump_allowed_clients"`
 }
 
 // IdentityMappingConfig controls user/group identity mapping.
@@ -214,8 +217,9 @@ type IdentityMappingConfig struct {
 	AnonymousGID uint32 `mapstructure:"anonymous_gid"`
 }
 
-// RootAttrConfig specifies root directory attributes.
-type RootAttrConfig struct {
+// RootDirectoryAttributesConfig specifies the attributes for a share's root directory.
+// These attributes define the permissions and ownership of the export root.
+type RootDirectoryAttributesConfig struct {
 	// Mode is the Unix permission mode (e.g., 0755)
 	Mode uint32 `mapstructure:"mode" validate:"lte=511"` // 511 = 0777 in decimal
 
@@ -285,8 +289,15 @@ func Load(configPath string) (*Config, error) {
 	setupViper(v, configPath)
 
 	// Read configuration file if it exists
-	if err := readConfigFile(v, configPath); err != nil {
+	configFileFound, err := readConfigFile(v)
+	if err != nil {
 		return nil, err
+	}
+
+	// If no config file was found, use defaults
+	if !configFileFound {
+		cfg := GetDefaultConfig()
+		return cfg, nil
 	}
 
 	// Unmarshal into config struct
@@ -329,23 +340,24 @@ func setupViper(v *viper.Viper, configPath string) {
 }
 
 // readConfigFile reads the configuration file if it exists.
-func readConfigFile(v *viper.Viper, configPath string) error {
+// Returns (fileFound, error) where fileFound indicates if a config file was found.
+func readConfigFile(v *viper.Viper) (bool, error) {
 	if err := v.ReadInConfig(); err != nil {
 		// Check if error is "config file not found"
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
 			// Config file not found is acceptable - use defaults
-			return nil
+			return false, nil
 		}
 		// Also check for os.PathError when explicit config file doesn't exist
 		if os.IsNotExist(err) {
 			// Config file not found is acceptable - use defaults
-			return nil
+			return false, nil
 		}
 		// Other errors are problems
-		return fmt.Errorf("failed to read config file: %w", err)
+		return false, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	return nil
+	return true, nil
 }
 
 // getConfigDir returns the configuration directory path.
@@ -373,8 +385,8 @@ func GetDefaultConfigPath() string {
 	return filepath.Join(getConfigDir(), "config.yaml")
 }
 
-// ConfigExists checks if a config file exists at the default location.
-func ConfigExists() bool {
+// DefaultConfigExists checks if a config file exists at the default location.
+func DefaultConfigExists() bool {
 	path := GetDefaultConfigPath()
 	_, err := os.Stat(path)
 	return err == nil

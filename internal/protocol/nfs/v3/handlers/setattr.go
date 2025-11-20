@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -315,9 +315,8 @@ func (c *SetAttrContext) GetGIDs() []uint32           { return c.GIDs }
 //	if resp.Status == types.NFS3OK {
 //	    // Attributes updated successfully
 //	}
-func (h *DefaultNFSHandler) SetAttr(
+func (h *Handler) SetAttr(
 	ctx *SetAttrContext,
-	metadataStore metadata.MetadataStore,
 	req *SetAttrRequest,
 ) (*SetAttrResponse, error) {
 	// ========================================================================
@@ -352,10 +351,38 @@ func (h *DefaultNFSHandler) SetAttr(
 	}
 
 	// ========================================================================
-	// Step 2: Get current file attributes for WCC and guard check
+	// Step 2: Decode share name from file handle
 	// ========================================================================
 
 	fileHandle := metadata.FileHandle(req.Handle)
+	shareName, path, err := metadata.DecodeShareHandle(fileHandle)
+	if err != nil {
+		logger.Warn("SETATTR failed: invalid file handle: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
+		return &SetAttrResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("SETATTR failed: share not found: share=%s handle=%x client=%s",
+			shareName, req.Handle, clientIP)
+		return &SetAttrResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("SETATTR failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
+			shareName, req.Handle, clientIP, err)
+		return &SetAttrResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("SETATTR: share=%s path=%s", shareName, path)
+
+	// ========================================================================
+	// Step 3: Get current file attributes for WCC and guard check
+	// ========================================================================
+
 	currentAttr, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		// Check if error is due to context cancellation
@@ -453,7 +480,7 @@ func (h *DefaultNFSHandler) SetAttr(
 	// Step 4: Build authentication context with share-level identity mapping
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, fileHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, fileHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {

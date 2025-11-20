@@ -8,8 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	nfs "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
-	"github.com/marmos91/dittofs/pkg/content"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/registry"
 )
 
 // ============================================================================
@@ -136,7 +135,7 @@ func ExtractAuthContext(
 // Procedure Dispatch Tables
 // ============================================================================
 
-// nfsProcedureHandler defines the signature for NFS procedure nfs.
+// nfsProcedureHandler defines the signature for NFS procedure handlers.
 // Each handler receives the necessary stores, request data, and
 // authentication context, and returns encoded response data or an error.
 //
@@ -150,9 +149,8 @@ func ExtractAuthContext(
 //   - Efficient resource cleanup
 type nfsProcedureHandler func(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error)
 
@@ -178,7 +176,7 @@ type nfsProcedureInfo struct {
 // about authentication requirements.
 var NfsDispatchTable map[uint32]*nfsProcedureInfo
 
-// mountProcedureHandler defines the signature for Mount procedure nfs.
+// mountProcedureHandler defines the signature for Mount procedure handlers.
 //
 // **Context Handling:**
 //
@@ -186,8 +184,8 @@ var NfsDispatchTable map[uint32]*nfsProcedureInfo
 // for cancellation support.
 type mountProcedureHandler func(
 	authCtx *NFSAuthContext,
-	handler mount.MountHandler,
-	store metadata.MetadataStore,
+	handler *mount.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error)
 
@@ -345,9 +343,8 @@ func initNFSDispatchTable() {
 
 func handleNFSNull(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.NullContext{
@@ -363,7 +360,7 @@ func handleNFSNull(
 		data,
 		nfs.DecodeNullRequest,
 		func(req *nfs.NullRequest) (*nfs.NullResponse, error) {
-			return handler.Null(ctx, store, req)
+			return handler.Null(ctx, req)
 		},
 		types.NFS3ErrAcces,
 		func(status uint32) *nfs.NullResponse {
@@ -374,9 +371,8 @@ func handleNFSNull(
 
 func handleNFSGetAttr(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.GetAttrContext{
@@ -389,7 +385,7 @@ func handleNFSGetAttr(
 		data,
 		nfs.DecodeGetAttrRequest,
 		func(req *nfs.GetAttrRequest) (*nfs.GetAttrResponse, error) {
-			return handler.GetAttr(ctx, store, req)
+			return handler.GetAttr(ctx, req)
 		},
 		types.NFS3ErrAcces,
 		func(status uint32) *nfs.GetAttrResponse {
@@ -400,9 +396,8 @@ func handleNFSGetAttr(
 
 func handleNFSSetAttr(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.SetAttrContext{
@@ -418,7 +413,7 @@ func handleNFSSetAttr(
 		data,
 		nfs.DecodeSetAttrRequest,
 		func(req *nfs.SetAttrRequest) (*nfs.SetAttrResponse, error) {
-			return handler.SetAttr(ctx, store, req)
+			return handler.SetAttr(ctx, req)
 		},
 		types.NFS3ErrAcces,
 		func(status uint32) *nfs.SetAttrResponse {
@@ -429,9 +424,8 @@ func handleNFSSetAttr(
 
 func handleNFSLookup(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.LookupContext{
@@ -447,7 +441,7 @@ func handleNFSLookup(
 		data,
 		nfs.DecodeLookupRequest,
 		func(req *nfs.LookupRequest) (*nfs.LookupResponse, error) {
-			return handler.Lookup(ctx, store, req)
+			return handler.Lookup(ctx, req)
 		},
 		types.NFS3ErrAcces,
 		func(status uint32) *nfs.LookupResponse {
@@ -458,9 +452,8 @@ func handleNFSLookup(
 
 func handleNFSAccess(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.AccessContext{
@@ -476,7 +469,7 @@ func handleNFSAccess(
 		data,
 		nfs.DecodeAccessRequest,
 		func(req *nfs.AccessRequest) (*nfs.AccessResponse, error) {
-			return handler.Access(ctx, store, req)
+			return handler.Access(ctx, req)
 		},
 		types.NFS3ErrAcces,
 		func(status uint32) *nfs.AccessResponse {
@@ -487,9 +480,8 @@ func handleNFSAccess(
 
 func handleNFSReadLink(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.ReadLinkContext{
@@ -505,7 +497,7 @@ func handleNFSReadLink(
 		data,
 		nfs.DecodeReadLinkRequest,
 		func(req *nfs.ReadLinkRequest) (*nfs.ReadLinkResponse, error) {
-			return handler.ReadLink(ctx, store, req)
+			return handler.ReadLink(ctx, req)
 		},
 		types.NFS3ErrIO,
 		func(status uint32) *nfs.ReadLinkResponse {
@@ -516,9 +508,8 @@ func handleNFSReadLink(
 
 func handleNFSRead(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.ReadContext{
@@ -534,7 +525,7 @@ func handleNFSRead(
 		data,
 		nfs.DecodeReadRequest,
 		func(req *nfs.ReadRequest) (*nfs.ReadResponse, error) {
-			return handler.Read(ctx, content, store, req)
+			return handler.Read(ctx, req)
 		},
 		types.NFS3ErrIO,
 		func(status uint32) *nfs.ReadResponse {
@@ -545,9 +536,8 @@ func handleNFSRead(
 
 func handleNFSWrite(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.WriteContext{
@@ -563,7 +553,7 @@ func handleNFSWrite(
 		data,
 		nfs.DecodeWriteRequest,
 		func(req *nfs.WriteRequest) (*nfs.WriteResponse, error) {
-			return handler.Write(ctx, content, store, req)
+			return handler.Write(ctx, req)
 		},
 		types.NFS3ErrIO,
 		func(status uint32) *nfs.WriteResponse {
@@ -574,9 +564,8 @@ func handleNFSWrite(
 
 func handleNFSCreate(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.CreateContext{
@@ -591,7 +580,7 @@ func handleNFSCreate(
 		data,
 		nfs.DecodeCreateRequest,
 		func(req *nfs.CreateRequest) (*nfs.CreateResponse, error) {
-			return handler.Create(ctx, content, store, req)
+			return handler.Create(ctx, req)
 		},
 		types.NFS3ErrIO,
 		func(status uint32) *nfs.CreateResponse {
@@ -602,9 +591,8 @@ func handleNFSCreate(
 
 func handleNFSMkdir(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.MkdirContext{
@@ -620,7 +608,7 @@ func handleNFSMkdir(
 		data,
 		nfs.DecodeMkdirRequest,
 		func(req *nfs.MkdirRequest) (*nfs.MkdirResponse, error) {
-			return handler.Mkdir(ctx, store, req)
+			return handler.Mkdir(ctx, req)
 		},
 		types.NFS3ErrIO,
 		func(status uint32) *nfs.MkdirResponse {
@@ -631,9 +619,8 @@ func handleNFSMkdir(
 
 func handleNFSSymlink(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.SymlinkContext{
@@ -649,7 +636,7 @@ func handleNFSSymlink(
 		data,
 		nfs.DecodeSymlinkRequest,
 		func(req *nfs.SymlinkRequest) (*nfs.SymlinkResponse, error) {
-			return handler.Symlink(ctx, store, req)
+			return handler.Symlink(ctx, req)
 		},
 		types.NFS3ErrIO,
 		func(status uint32) *nfs.SymlinkResponse {
@@ -660,9 +647,8 @@ func handleNFSSymlink(
 
 func handleNFSMknod(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.MknodContext{
@@ -678,7 +664,7 @@ func handleNFSMknod(
 		data,
 		nfs.DecodeMknodRequest,
 		func(req *nfs.MknodRequest) (*nfs.MknodResponse, error) {
-			return handler.Mknod(ctx, store, req)
+			return handler.Mknod(ctx, req)
 		},
 		types.NFS3ErrIO,
 		func(status uint32) *nfs.MknodResponse {
@@ -689,9 +675,8 @@ func handleNFSMknod(
 
 func handleNFSRemove(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.RemoveContext{
@@ -707,7 +692,7 @@ func handleNFSRemove(
 		data,
 		nfs.DecodeRemoveRequest,
 		func(req *nfs.RemoveRequest) (*nfs.RemoveResponse, error) {
-			return handler.Remove(ctx, content, store, req)
+			return handler.Remove(ctx, req)
 		},
 		types.NFS3ErrIO,
 		func(status uint32) *nfs.RemoveResponse {
@@ -718,9 +703,8 @@ func handleNFSRemove(
 
 func handleNFSRmdir(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.RmdirContext{
@@ -736,7 +720,7 @@ func handleNFSRmdir(
 		data,
 		nfs.DecodeRmdirRequest,
 		func(req *nfs.RmdirRequest) (*nfs.RmdirResponse, error) {
-			return handler.Rmdir(ctx, store, req)
+			return handler.Rmdir(ctx, req)
 		},
 		types.NFS3ErrIO,
 		func(status uint32) *nfs.RmdirResponse {
@@ -747,9 +731,8 @@ func handleNFSRmdir(
 
 func handleNFSRename(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.RenameContext{
@@ -765,7 +748,7 @@ func handleNFSRename(
 		data,
 		nfs.DecodeRenameRequest,
 		func(req *nfs.RenameRequest) (*nfs.RenameResponse, error) {
-			return handler.Rename(ctx, store, req)
+			return handler.Rename(ctx, req)
 		},
 		types.NFS3ErrIO,
 		func(status uint32) *nfs.RenameResponse {
@@ -776,9 +759,8 @@ func handleNFSRename(
 
 func handleNFSLink(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.LinkContext{
@@ -794,7 +776,7 @@ func handleNFSLink(
 		data,
 		nfs.DecodeLinkRequest,
 		func(req *nfs.LinkRequest) (*nfs.LinkResponse, error) {
-			return handler.Link(ctx, store, req)
+			return handler.Link(ctx, req)
 		},
 		types.NFS3ErrIO,
 		func(status uint32) *nfs.LinkResponse {
@@ -805,9 +787,8 @@ func handleNFSLink(
 
 func handleNFSReadDir(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.ReadDirContext{
@@ -823,7 +804,7 @@ func handleNFSReadDir(
 		data,
 		nfs.DecodeReadDirRequest,
 		func(req *nfs.ReadDirRequest) (*nfs.ReadDirResponse, error) {
-			return handler.ReadDir(ctx, store, req)
+			return handler.ReadDir(ctx, req)
 		},
 		types.NFS3ErrAcces,
 		func(status uint32) *nfs.ReadDirResponse {
@@ -834,9 +815,8 @@ func handleNFSReadDir(
 
 func handleNFSReadDirPlus(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.ReadDirPlusContext{
@@ -852,7 +832,7 @@ func handleNFSReadDirPlus(
 		data,
 		nfs.DecodeReadDirPlusRequest,
 		func(req *nfs.ReadDirPlusRequest) (*nfs.ReadDirPlusResponse, error) {
-			return handler.ReadDirPlus(ctx, store, req)
+			return handler.ReadDirPlus(ctx, req)
 		},
 		types.NFS3ErrAcces,
 		func(status uint32) *nfs.ReadDirPlusResponse {
@@ -863,9 +843,8 @@ func handleNFSReadDirPlus(
 
 func handleNFSFsStat(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.FsStatContext{
@@ -878,7 +857,7 @@ func handleNFSFsStat(
 		data,
 		nfs.DecodeFsStatRequest,
 		func(req *nfs.FsStatRequest) (*nfs.FsStatResponse, error) {
-			return handler.FsStat(ctx, store, req)
+			return handler.FsStat(ctx, req)
 		},
 		types.NFS3ErrIO,
 		func(status uint32) *nfs.FsStatResponse {
@@ -889,9 +868,8 @@ func handleNFSFsStat(
 
 func handleNFSFsInfo(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.FsInfoContext{
@@ -904,7 +882,7 @@ func handleNFSFsInfo(
 		data,
 		nfs.DecodeFsInfoRequest,
 		func(req *nfs.FsInfoRequest) (*nfs.FsInfoResponse, error) {
-			return handler.FsInfo(ctx, store, req)
+			return handler.FsInfo(ctx, req)
 		},
 		types.NFS3ErrIO,
 		func(status uint32) *nfs.FsInfoResponse {
@@ -915,9 +893,8 @@ func handleNFSFsInfo(
 
 func handleNFSPathConf(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.PathConfContext{
@@ -930,7 +907,7 @@ func handleNFSPathConf(
 		data,
 		nfs.DecodePathConfRequest,
 		func(req *nfs.PathConfRequest) (*nfs.PathConfResponse, error) {
-			return handler.PathConf(ctx, store, req)
+			return handler.PathConf(ctx, req)
 		},
 		types.NFS3ErrIO,
 		func(status uint32) *nfs.PathConfResponse {
@@ -941,9 +918,8 @@ func handleNFSPathConf(
 
 func handleNFSCommit(
 	authCtx *NFSAuthContext,
-	handler nfs.NFSHandler,
-	store metadata.MetadataStore,
-	content content.ContentStore,
+	handler *nfs.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &nfs.CommitContext{
@@ -959,7 +935,7 @@ func handleNFSCommit(
 		data,
 		nfs.DecodeCommitRequest,
 		func(req *nfs.CommitRequest) (*nfs.CommitResponse, error) {
-			return handler.Commit(ctx, store, req)
+			return handler.Commit(ctx, req)
 		},
 		types.NFS3ErrIO,
 		func(status uint32) *nfs.CommitResponse {
@@ -1016,8 +992,8 @@ func initMountDispatchTable() {
 
 func handleMountNull(
 	authCtx *NFSAuthContext,
-	handler mount.MountHandler,
-	store metadata.MetadataStore,
+	handler *mount.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	nullCtx := &mount.NullContext{
@@ -1033,7 +1009,7 @@ func handleMountNull(
 		data,
 		mount.DecodeNullRequest,
 		func(req *mount.NullRequest) (*mount.NullResponse, error) {
-			return handler.MountNull(nullCtx, store, req)
+			return handler.MountNull(nullCtx, req)
 		},
 		mount.MountErrIO,
 		func(status uint32) *mount.NullResponse {
@@ -1045,8 +1021,8 @@ func handleMountNull(
 
 func handleMountMnt(
 	authCtx *NFSAuthContext,
-	handler mount.MountHandler,
-	store metadata.MetadataStore,
+	handler *mount.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	// Create mount context with Unix auth if available
@@ -1070,7 +1046,7 @@ func handleMountMnt(
 		data,
 		mount.DecodeMountRequest,
 		func(req *mount.MountRequest) (*mount.MountResponse, error) {
-			return handler.Mount(ctx, store, req)
+			return handler.Mount(ctx, req)
 		},
 		mount.MountErrIO,
 		func(status uint32) *mount.MountResponse {
@@ -1081,8 +1057,8 @@ func handleMountMnt(
 
 func handleMountDump(
 	authCtx *NFSAuthContext,
-	handler mount.MountHandler,
-	store metadata.MetadataStore,
+	handler *mount.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &mount.DumpContext{
@@ -1094,7 +1070,7 @@ func handleMountDump(
 		data,
 		mount.DecodeDumpRequest,
 		func(req *mount.DumpRequest) (*mount.DumpResponse, error) {
-			return handler.Dump(ctx, store, req)
+			return handler.Dump(ctx, req)
 		},
 		mount.MountErrIO,
 		func(status uint32) *mount.DumpResponse {
@@ -1105,8 +1081,8 @@ func handleMountDump(
 
 func handleMountUmnt(
 	authCtx *NFSAuthContext,
-	handler mount.MountHandler,
-	store metadata.MetadataStore,
+	handler *mount.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &mount.UmountContext{
@@ -1118,7 +1094,7 @@ func handleMountUmnt(
 		data,
 		mount.DecodeUmountRequest,
 		func(req *mount.UmountRequest) (*mount.UmountResponse, error) {
-			return handler.Umnt(ctx, store, req)
+			return handler.Umnt(ctx, req)
 		},
 		mount.MountErrIO,
 		func(status uint32) *mount.UmountResponse {
@@ -1129,8 +1105,8 @@ func handleMountUmnt(
 
 func handleMountUmntAll(
 	authCtx *NFSAuthContext,
-	handler mount.MountHandler,
-	store metadata.MetadataStore,
+	handler *mount.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	ctx := &mount.UmountAllContext{
@@ -1142,7 +1118,7 @@ func handleMountUmntAll(
 		data,
 		mount.DecodeUmountAllRequest,
 		func(req *mount.UmountAllRequest) (*mount.UmountAllResponse, error) {
-			return handler.UmntAll(ctx, store, req)
+			return handler.UmntAll(ctx, req)
 		},
 		mount.MountErrIO,
 		func(status uint32) *mount.UmountAllResponse {
@@ -1153,8 +1129,8 @@ func handleMountUmntAll(
 
 func handleMountExport(
 	authCtx *NFSAuthContext,
-	handler mount.MountHandler,
-	store metadata.MetadataStore,
+	handler *mount.Handler,
+	reg *registry.Registry,
 	data []byte,
 ) ([]byte, error) {
 	exportCtx := &mount.ExportContext{
@@ -1165,7 +1141,7 @@ func handleMountExport(
 		data,
 		mount.DecodeExportRequest,
 		func(req *mount.ExportRequest) (*mount.ExportResponse, error) {
-			return handler.Export(exportCtx, store, req)
+			return handler.Export(exportCtx, req)
 		},
 		mount.MountErrIO,
 		func(status uint32) *mount.ExportResponse {

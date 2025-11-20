@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ExportRequest represents an EXPORT request from an NFS client.
@@ -111,7 +110,7 @@ type ExportEntry struct {
 //
 // Example:
 //
-//	handler := &DefaultMountHandler{}
+//	handler := &Handler{}
 //	ctx := &ExportContext{Context: context.Background()}
 //	req := &ExportRequest{}
 //	resp, err := handler.Export(ctx, repository, req)
@@ -123,9 +122,8 @@ type ExportEntry struct {
 //	    }
 //	}
 //	fmt.Printf("Available exports: %d\n", len(resp.Entries))
-func (h *DefaultMountHandler) Export(
+func (h *Handler) Export(
 	ctx *ExportContext,
-	repository metadata.MetadataStore,
 	req *ExportRequest,
 ) (*ExportResponse, error) {
 	// Check for cancellation before starting any work
@@ -139,49 +137,15 @@ func (h *DefaultMountHandler) Export(
 
 	logger.Info("Export request: listing all available exports")
 
-	// Check for cancellation before the potentially expensive export list retrieval
-	// This is especially important if there are many exports configured
-	select {
-	case <-ctx.Context.Done():
-		logger.Debug("Export request cancelled during processing: error=%v", ctx.Context.Err())
-		return nil, ctx.Context.Err()
-	default:
-	}
+	// Get all shares from registry
+	shareNames := h.Registry.ListShares()
 
-	// Get all configured exports from the repository
-	// The repository should also respect context cancellation internally
-	exports, err := repository.GetShares(ctx.Context)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("Export request cancelled while retrieving exports: error=%v", ctx.Context.Err())
-			return nil, ctx.Context.Err()
-		}
-
-		logger.Error("Failed to get exports: error=%v", err)
-		return nil, fmt.Errorf("failed to retrieve exports: %w", err)
-	}
-
-	// Convert repository export entries to EXPORT response format
-	entries := make([]ExportEntry, 0, len(exports))
-	for _, export := range exports {
-		// Build groups list from access control configuration
-		// If AllowedClients is specified, include them as groups
-		// If empty, the export is world-exportable (available to all)
-		groups := make([]string, 0)
-
-		if len(export.Options.AllowedClients) > 0 {
-			// Include allowed clients as groups
-			// Note: This is informational only - actual access control
-			// is enforced by the MOUNT procedure
-			groups = append(groups, export.Options.AllowedClients...)
-		}
-		// Note: We don't include denied clients in the groups list
-		// as the groups field traditionally shows who CAN mount, not who cannot
-
+	// Convert to export entries
+	entries := make([]ExportEntry, 0, len(shareNames))
+	for _, name := range shareNames {
 		entries = append(entries, ExportEntry{
-			Directory: export.Name,
-			Groups:    groups,
+			Directory: name,
+			Groups:    nil, // No group restrictions
 		})
 	}
 
@@ -190,11 +154,7 @@ func (h *DefaultMountHandler) Export(
 	// Log details at debug level
 	if len(entries) > 0 {
 		for _, entry := range entries {
-			if len(entry.Groups) > 0 {
-				logger.Debug("  Export: path=%s groups=%v", entry.Directory, entry.Groups)
-			} else {
-				logger.Debug("  Export: path=%s (world-exportable)", entry.Directory)
-			}
+			logger.Debug("  Export: path=%s (world-exportable)", entry.Directory)
 		}
 	}
 

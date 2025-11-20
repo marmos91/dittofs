@@ -10,7 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -331,9 +331,8 @@ func (c *ReadDirPlusContext) GetGIDs() []uint32           { return c.GIDs }
 //	        // More entries available, use last cookie
 //	    }
 //	}
-func (h *DefaultNFSHandler) ReadDirPlus(
+func (h *Handler) ReadDirPlus(
 	ctx *ReadDirPlusContext,
-	metadataStore metadata.MetadataStore,
 	req *ReadDirPlusRequest,
 ) (*ReadDirPlusResponse, error) {
 	// Extract client IP for logging
@@ -377,7 +376,35 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	default:
 	}
 
+	// ========================================================================
+	// Decode share name from directory file handle
+	// ========================================================================
+
 	dirHandle := metadata.FileHandle(req.DirHandle)
+	shareName, path, err := metadata.DecodeShareHandle(dirHandle)
+	if err != nil {
+		logger.Warn("READDIRPLUS failed: invalid directory handle: dir=%x client=%s error=%v",
+			req.DirHandle, clientIP, err)
+		return &ReadDirPlusResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("READDIRPLUS failed: share not found: share=%s dir=%x client=%s",
+			shareName, req.DirHandle, clientIP)
+		return &ReadDirPlusResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("READDIRPLUS failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
+			shareName, req.DirHandle, clientIP, err)
+		return &ReadDirPlusResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("READDIRPLUS: share=%s path=%s", shareName, path)
+
 	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		logger.Warn("READDIRPLUS failed: directory not found: dir=%x client=%s error=%v",
@@ -404,7 +431,7 @@ func (h *DefaultNFSHandler) ReadDirPlus(
 	// Step 4: Build authentication context for store
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, metadataStore, dirHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, dirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {

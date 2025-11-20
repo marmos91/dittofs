@@ -8,7 +8,6 @@ import (
 	"net"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // DumpRequest represents a DUMP request from an NFS client.
@@ -115,7 +114,7 @@ type DumpContext struct {
 //
 // Example:
 //
-//	handler := &DefaultMountHandler{}
+//	handler := &Handler{}
 //	ctx := &DumpContext{Context: context.Background(), ClientAddr: "192.168.1.100:1234"}
 //	req := &DumpRequest{}
 //	resp, err := handler.Dump(ctx, repository, req)
@@ -127,7 +126,7 @@ type DumpContext struct {
 //	    }
 //	}
 //	fmt.Printf("Active mounts: %d\n", len(resp.Entries))
-func (h *DefaultMountHandler) Dump(ctx *DumpContext, repository metadata.MetadataStore, req *DumpRequest) (*DumpResponse, error) {
+func (h *Handler) Dump(ctx *DumpContext, req *DumpRequest) (*DumpResponse, error) {
 	// Check for cancellation before starting any work
 	select {
 	case <-ctx.Context.Done():
@@ -145,42 +144,24 @@ func (h *DefaultMountHandler) Dump(ctx *DumpContext, repository metadata.Metadat
 
 	logger.Info("Dump request: client=%s", clientIP)
 
-	// Check for cancellation before the potentially expensive share list retrieval
-	select {
-	case <-ctx.Context.Done():
-		logger.Debug("Dump request cancelled during processing: client=%s error=%v", clientIP, ctx.Context.Err())
-		return nil, ctx.Context.Err()
-	default:
-	}
+	// Get all mounts from registry
+	mounts := h.Registry.ListMounts()
 
-	// Get all active share sessions from the repository
-	sessions, err := repository.GetActiveShares(ctx.Context)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("Dump request cancelled while retrieving shares: client=%s error=%v", clientIP, ctx.Context.Err())
-			return nil, ctx.Context.Err()
-		}
-
-		logger.Error("Failed to get active shares: client=%s error=%v", clientIP, err)
-		return nil, fmt.Errorf("failed to retrieve active shares: %w", err)
-	}
-
-	// Convert share sessions to DUMP response format
-	entries := make([]DumpEntry, 0, len(sessions))
-	for _, session := range sessions {
+	// Convert to response format
+	entries := make([]DumpEntry, 0, len(mounts))
+	for _, mount := range mounts {
 		entries = append(entries, DumpEntry{
-			Hostname:  session.ClientAddr,
-			Directory: session.ShareName,
+			Hostname:  mount.ClientAddr,
+			Directory: mount.ShareName,
 		})
 	}
 
-	logger.Info("Dump successful: client=%s returned=%d active share(s)", clientIP, len(entries))
+	logger.Info("Dump successful: client=%s returned=%d active mount(s)", clientIP, len(entries))
 
 	// Log details at debug level
 	if len(entries) > 0 {
 		for _, entry := range entries {
-			logger.Debug("  Active share: client=%s share=%s", entry.Hostname, entry.Directory)
+			logger.Debug("  Active mount: client=%s share=%s", entry.Hostname, entry.Directory)
 		}
 	}
 

@@ -11,11 +11,9 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	mount "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	v3 "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
-	"github.com/marmos91/dittofs/internal/ratelimiter"
-	"github.com/marmos91/dittofs/pkg/content"
-	"github.com/marmos91/dittofs/pkg/content/cache"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metrics"
+	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/store/content/cache"
 )
 
 // NFSAdapter implements the adapter.Adapter interface for NFSv3 protocol.
@@ -52,16 +50,13 @@ type NFSAdapter struct {
 	listener net.Listener
 
 	// nfsHandler processes NFSv3 protocol operations (LOOKUP, READ, WRITE, etc.)
-	nfsHandler v3.NFSHandler
+	nfsHandler *v3.Handler
 
 	// mountHandler processes MOUNT protocol operations (MNT, UMNT, EXPORT, etc.)
-	mountHandler mount.MountHandler
+	mountHandler *mount.Handler
 
-	// store provides access to file system metadata operations
-	metadataStore metadata.MetadataStore
-
-	// content provides access to file content (data blocks)
-	content content.ContentStore
+	// registry provides access to all stores and shares
+	registry *registry.Registry
 
 	// writeCache is the auto-flush write cache (if enabled)
 	// Stored for graceful shutdown
@@ -112,10 +107,6 @@ type NFSAdapter struct {
 
 	// listenerMu protects access to the listener field
 	listenerMu sync.RWMutex
-
-	// rateLimiter enforces request rate limiting when enabled
-	// nil if rate limiting is disabled
-	rateLimiter *ratelimiter.RateLimiter
 }
 
 // NFSTimeoutsConfig groups all timeout-related configuration.
@@ -191,19 +182,6 @@ type NFSConfig struct {
 	// 0 disables periodic metrics logging.
 	// Recommended: 5m for production monitoring.
 	MetricsLogInterval time.Duration `mapstructure:"metrics_log_interval" validate:"min=0"`
-
-	// RateLimiting contains adapter-specific rate limiting configuration.
-	// If not specified, inherits from server.rate_limiting.
-	// If specified, overrides server-level configuration for this adapter.
-	RateLimiting *RateLimitingConfig `mapstructure:"rate_limiting"`
-}
-
-// RateLimitingConfig controls request rate limiting for the NFS adapter.
-// This type mirrors config.RateLimitingConfig to avoid import cycles.
-type RateLimitingConfig struct {
-	Enabled           bool `mapstructure:"enabled"`
-	RequestsPerSecond uint `mapstructure:"requests_per_second"`
-	Burst             uint `mapstructure:"burst"`
 }
 
 // applyDefaults fills in zero values with sensible defaults.
@@ -229,17 +207,6 @@ func (c *NFSConfig) applyDefaults() {
 	if c.MetricsLogInterval == 0 {
 		c.MetricsLogInterval = 5 * time.Minute
 	}
-	// Rate limiting defaults are handled at server level in pkg/config/defaults.go
-	// Adapter-level rate limiting is optional and inherits from server config
-	if c.RateLimiting != nil {
-		if c.RateLimiting.Enabled && c.RateLimiting.RequestsPerSecond == 0 {
-			c.RateLimiting.RequestsPerSecond = 5000 // Default: 5000 req/s
-		}
-		if c.RateLimiting.Enabled && c.RateLimiting.Burst == 0 {
-			// Default burst is 2x the sustained rate for handling traffic spikes
-			c.RateLimiting.Burst = c.RateLimiting.RequestsPerSecond * 2
-		}
-	}
 }
 
 // validate checks that the configuration is valid for production use.
@@ -262,10 +229,6 @@ func (c *NFSConfig) validate() error {
 	if c.Timeouts.Shutdown <= 0 {
 		return fmt.Errorf("invalid timeouts.shutdown %v: must be > 0", c.Timeouts.Shutdown)
 	}
-	if c.RateLimiting != nil && c.RateLimiting.Enabled && c.RateLimiting.RequestsPerSecond > 0 && c.RateLimiting.Burst < c.RateLimiting.RequestsPerSecond {
-		return fmt.Errorf("invalid rate_limiting.burst %d: should be >= rate_limiting.requests_per_second %d",
-			c.RateLimiting.Burst, c.RateLimiting.RequestsPerSecond)
-	}
 	return nil
 }
 
@@ -280,13 +243,15 @@ func (c *NFSConfig) validate() error {
 //
 // Parameters:
 //   - config: Server configuration (ports, timeouts, limits)
-//   - serverRateLimit: Server-level rate limiting config (can be nil)
 //   - nfsMetrics: Optional metrics collector (nil for no metrics)
 //
 // Returns a configured but not yet started NFSAdapter.
 //
 // Panics if config validation fails.
-func New(nfsConfig NFSConfig, serverRateLimit *RateLimitingConfig, nfsMetrics metrics.NFSMetrics) *NFSAdapter {
+func New(
+	nfsConfig NFSConfig,
+	nfsMetrics metrics.NFSMetrics,
+) *NFSAdapter {
 	// Apply defaults for zero values
 	nfsConfig.applyDefaults()
 
@@ -312,95 +277,40 @@ func New(nfsConfig NFSConfig, serverRateLimit *RateLimitingConfig, nfsMetrics me
 		nfsMetrics = metrics.NewNoopNFSMetrics()
 	}
 
-	// Determine effective rate limiting config
-	// Adapter-level config overrides server-level config
-	var effectiveRateLimit *RateLimitingConfig
-	if nfsConfig.RateLimiting != nil {
-		effectiveRateLimit = nfsConfig.RateLimiting
-		logger.Debug("Using adapter-level rate limiting configuration")
-	} else if serverRateLimit != nil {
-		effectiveRateLimit = serverRateLimit
-		logger.Debug("Using server-level rate limiting configuration")
-	}
-
-	// Create rate limiter if enabled
-	var rateLimiter *ratelimiter.RateLimiter
-	if effectiveRateLimit != nil && effectiveRateLimit.Enabled {
-		rateLimiter = ratelimiter.New(effectiveRateLimit.RequestsPerSecond, effectiveRateLimit.Burst)
-		logger.Info("NFS rate limiting enabled: %d req/s (burst: %d)",
-			effectiveRateLimit.RequestsPerSecond, effectiveRateLimit.Burst)
-	} else {
-		logger.Debug("NFS rate limiting disabled")
-	}
-
 	return &NFSAdapter{
 		config:         nfsConfig,
-		nfsHandler:     &v3.DefaultNFSHandler{},
-		mountHandler:   &mount.DefaultMountHandler{},
+		nfsHandler:     &v3.Handler{},
+		mountHandler:   &mount.Handler{},
 		metrics:        nfsMetrics,
 		shutdown:       make(chan struct{}),
 		connSemaphore:  connSemaphore,
 		shutdownCtx:    shutdownCtx,
 		cancelRequests: cancelRequests,
 		listenerReady:  make(chan struct{}),
-		rateLimiter:    rateLimiter,
 	}
 }
 
-// SetStores injects the shared metadata and content stores.
+// SetRegistry injects the registry containing all stores and shares.
 //
-// This method is called by DittoServer before Serve() is called. The stores
-// are shared across all protocol adapters.
+// This method is called by DittoServer before Serve() is called. The registry
+// provides access to all configured metadata stores, content stores, and shares.
+//
+// The NFS adapter stores the registry and injects it into both the NFS and Mount
+// handlers so they can access stores based on share names.
 //
 // Parameters:
-//   - metadataStore: store for file system metadata operations
-//   - contentRepo: Repository for file content operations
+//   - reg: Registry containing all stores and shares
 //
 // Thread safety:
 // Called exactly once before Serve(), no synchronization needed.
-func (s *NFSAdapter) SetStores(metadataStore metadata.MetadataStore, contentRepo content.ContentStore) {
-	s.metadataStore = metadataStore
-	s.content = contentRepo
+func (s *NFSAdapter) SetRegistry(reg *registry.Registry) {
+	s.registry = reg
 
-	// Update the NFS handler with content store and write cache
-	if defaultHandler, ok := s.nfsHandler.(*v3.DefaultNFSHandler); ok {
-		if writableStore, ok := contentRepo.(content.WritableContentStore); ok {
-			defaultHandler.ContentStore = writableStore
-			logger.Debug("NFS handler configured with writable content store")
+	// Inject registry into handlers
+	s.nfsHandler.Registry = reg
+	s.mountHandler.Registry = reg
 
-			// Create write cache with metrics
-			// This eliminates read-modify-write cycles for S3 and improves performance
-			//
-			// Flush strategy:
-			//   - Writes buffer in memory (fast)
-			//   - Server returns UNSTABLE to client
-			//   - Client calls COMMIT when it wants durability
-			//   - COMMIT procedure triggers flush to S3
-			//   - Cache also flushes on shutdown and file removal
-			cacheMetrics := metrics.NewCacheMetrics()
-			writeCache := cache.NewMemoryWriteCache(cacheMetrics)
-
-			// Store the cache for shutdown
-			s.writeCache = writeCache
-
-			defaultHandler.WriteCache = writeCache
-			logger.Info("NFS handler configured with write cache (COMMIT-based flushing)")
-
-			// Inject cache into content store if it supports SetWriteCache
-			// This is required for S3ContentStore to access cached data during FlushWrites()
-			type writeCacheSetter interface {
-				SetWriteCache(cache.WriteCache)
-			}
-			if setter, ok := writableStore.(writeCacheSetter); ok {
-				setter.SetWriteCache(writeCache)
-				logger.Debug("Injected write cache into content store")
-			}
-		} else {
-			logger.Warn("Content store does not implement WritableContentStore interface")
-		}
-	}
-
-	logger.Debug("NFS repositories configured")
+	logger.Debug("NFS adapter configured with registry (%d shares)", reg.CountShares())
 }
 
 // Serve starts the NFS server and blocks until the context is cancelled

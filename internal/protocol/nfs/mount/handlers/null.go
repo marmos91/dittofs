@@ -5,7 +5,6 @@ import (
 	"context"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // NullRequest represents a NULL request from an NFS client.
@@ -121,7 +120,7 @@ type NullContext struct {
 //
 // Example:
 //
-//	handler := &DefaultMountHandler{}
+//	handler := &Handler{}
 //	ctx := &NullContext{
 //	    Context: context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
@@ -134,9 +133,8 @@ type NullContext struct {
 //	    }
 //	}
 //	// resp is always non-nil on success (empty response)
-func (h *DefaultMountHandler) MountNull(
+func (h *Handler) MountNull(
 	ctx *NullContext,
-	repository metadata.MetadataStore,
 	req *NullRequest,
 ) (*NullResponse, error) {
 	// Check for cancellation before starting
@@ -164,27 +162,8 @@ func (h *DefaultMountHandler) MountNull(
 
 	logger.Info("NULL: client=%s auth=%d", clientIP, ctx.AuthFlavor)
 
-	// ========================================================================
-	// Optional: Repository health check
-	// ========================================================================
-	// We can optionally ping the repository to verify backend health.
-	// However, per RFC 1813, NULL must always succeed regardless of
-	// repository state, so we log any issues but don't fail the request.
-	//
-	// We don't check for cancellation here because:
-	// 1. Healthcheck should be very fast (typically < 1ms)
-	// 2. NULL must succeed per RFC even if backend has issues
-	// 3. We already checked cancellation at the beginning
-	//
-	// The repository's Healthcheck should respect context internally if needed
-
-	if err := repository.Healthcheck(ctx.Context); err != nil {
-		// Log repository health issue but don't fail NULL request
-		logger.Debug("NULL: repository health check failed (non-fatal): client=%s error=%v",
-			clientIP, err)
-		// Continue and return success anyway - NULL must always succeed
-	}
-
+	// NULL procedure does nothing - just returns success
+	// Per RFC 1813, this is used for connectivity testing
 	logger.Debug("NULL: request completed successfully: client=%s", clientIP)
 
 	// Return empty response - NULL always succeeds

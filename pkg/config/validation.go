@@ -58,9 +58,11 @@ func validateCustomRules(cfg *Config) error {
 		return fmt.Errorf("adapters: at least one adapter must be enabled")
 	}
 
-	// Validate dump_restricted logic
-	if cfg.Metadata.DumpRestricted && len(cfg.Metadata.DumpAllowedClients) == 0 {
-		return fmt.Errorf("metadata: dump_restricted is true but dump_allowed_clients is empty")
+	// Validate dump_restricted logic for each share
+	for i, share := range cfg.Shares {
+		if share.DumpRestricted && len(share.DumpAllowedClients) == 0 {
+			return fmt.Errorf("shares[%d]: dump_restricted is true but dump_allowed_clients is empty", i)
+		}
 	}
 
 	return nil

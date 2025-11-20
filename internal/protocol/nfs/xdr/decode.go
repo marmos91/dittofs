@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================

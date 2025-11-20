@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -221,9 +221,8 @@ type PathConfContext struct {
 //	if resp.Status == types.NFS3OK {
 //	    // Success - use resp.Linkmax, resp.NameMax, etc.
 //	}
-func (h *DefaultNFSHandler) PathConf(
+func (h *Handler) PathConf(
 	ctx *PathConfContext,
-	metadataStore metadata.MetadataStore,
 	req *PathConfRequest,
 ) (*PathConfResponse, error) {
 	// Extract client IP for logging
@@ -268,6 +267,30 @@ func (h *DefaultNFSHandler) PathConf(
 	}
 
 	fileHandle := metadata.FileHandle(req.Handle)
+	shareName, path, err := metadata.DecodeShareHandle(fileHandle)
+	if err != nil {
+		logger.Warn("PATHCONF failed: invalid file handle: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
+		return &PathConfResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("PATHCONF failed: share not found: share=%s handle=%x client=%s",
+			shareName, req.Handle, clientIP)
+		return &PathConfResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("PATHCONF failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
+			shareName, req.Handle, clientIP, err)
+		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("PATHCONF: share=%s path=%s", shareName, path)
+
 	attr, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		logger.Warn("PATHCONF failed: handle not found: handle=%x client=%s error=%v",

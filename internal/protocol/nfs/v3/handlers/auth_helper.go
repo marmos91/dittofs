@@ -5,8 +5,7 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // NFSAuthContext represents common NFS authentication context used across all handlers.
@@ -25,13 +24,12 @@ type NFSAuthContext interface {
 // This is a shared helper function used by all NFS v3 handlers to ensure consistent
 // identity mapping across all operations. It:
 //  1. Extracts the share name from the path-based file handle
-//  2. Looks up the share configuration
-//  3. Applies identity mapping rules (all_squash, root_squash)
-//  4. Returns effective credentials for permission checking
+//  2. Applies identity mapping rules from the registry (all_squash, root_squash)
+//  3. Returns effective credentials for permission checking
 //
 // Parameters:
 //   - nfsCtx: The NFS context (any handler's context type that implements NFSAuthContext)
-//   - store: Metadata store to query share configuration
+//   - reg: Registry to get stores and apply identity mapping
 //   - handle: File handle to extract share name from
 //
 // Returns:
@@ -39,16 +37,16 @@ type NFSAuthContext interface {
 //   - error: If share lookup fails or context is cancelled
 func BuildAuthContextWithMapping(
 	nfsCtx NFSAuthContext,
-	store metadata.MetadataStore,
+	reg RegistryAccessor,
 	handle metadata.FileHandle,
 ) (*metadata.AuthContext, error) {
 	ctx := nfsCtx.GetContext()
 	clientAddr := nfsCtx.GetClientAddr()
 	authFlavor := nfsCtx.GetAuthFlavor()
 
-	// Get share name for this handle using the metadata store's method.
+	// Get share name for this handle using the registry's method.
 	// This works for both path-based and hash-based handles.
-	shareName, err := store.GetShareNameForHandle(ctx, handle)
+	shareName, err := reg.GetShareNameForHandle(ctx, handle)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get share name for handle: %w", err)
 	}
@@ -60,54 +58,62 @@ func BuildAuthContextWithMapping(
 	}
 
 	// Build identity from Unix credentials (before mapping)
-	identity := &metadata.Identity{
+	originalIdentity := &metadata.Identity{
 		UID:  nfsCtx.GetUID(),
 		GID:  nfsCtx.GetGID(),
 		GIDs: nfsCtx.GetGIDs(),
 	}
 
 	// Set username from UID if available (for logging/auditing)
-	if identity.UID != nil {
-		identity.Username = fmt.Sprintf("uid:%d", *identity.UID)
+	if originalIdentity.UID != nil {
+		originalIdentity.Username = fmt.Sprintf("uid:%d", *originalIdentity.UID)
 	}
 
-	// Extract client IP for CheckShareAccess
-	clientIP := xdr.ExtractClientIP(clientAddr)
-
-	// Apply share-level identity mapping via CheckShareAccess
-	// This applies all_squash, root_squash, and other identity mapping rules
-	var effectiveAuthCtx *metadata.AuthContext
-	_, effectiveAuthCtx, err = store.CheckShareAccess(
-		ctx,
-		shareName,
-		clientIP,
-		authMethod,
-		identity,
-	)
+	// Apply share-level identity mapping (all_squash, root_squash)
+	effectiveIdentity, err := reg.ApplyIdentityMapping(shareName, originalIdentity)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check share access for identity mapping: %w", err)
+		return nil, fmt.Errorf("failed to apply identity mapping: %w", err)
 	}
 
-	// Log identity mapping (dereference pointers for readable output)
+	// Create auth context with the effective (mapped) identity
+	effectiveAuthCtx := &metadata.AuthContext{
+		Context:    ctx,
+		ClientAddr: clientAddr,
+		AuthMethod: authMethod,
+		Identity:   effectiveIdentity,
+	}
+
+	// Log identity mapping
 	origUID := "nil"
-	if identity.UID != nil {
-		origUID = fmt.Sprintf("%d", *identity.UID)
+	if originalIdentity.UID != nil {
+		origUID = fmt.Sprintf("%d", *originalIdentity.UID)
 	}
 	effUID := "nil"
-	if effectiveAuthCtx.Identity.UID != nil {
-		effUID = fmt.Sprintf("%d", *effectiveAuthCtx.Identity.UID)
+	if effectiveIdentity.UID != nil {
+		effUID = fmt.Sprintf("%d", *effectiveIdentity.UID)
 	}
 	origGID := "nil"
-	if identity.GID != nil {
-		origGID = fmt.Sprintf("%d", *identity.GID)
+	if originalIdentity.GID != nil {
+		origGID = fmt.Sprintf("%d", *originalIdentity.GID)
 	}
 	effGID := "nil"
-	if effectiveAuthCtx.Identity.GID != nil {
-		effGID = fmt.Sprintf("%d", *effectiveAuthCtx.Identity.GID)
+	if effectiveIdentity.GID != nil {
+		effGID = fmt.Sprintf("%d", *effectiveIdentity.GID)
 	}
 
-	logger.Debug("Identity mapping: share=%s original_uid=%s effective_uid=%s original_gid=%s effective_gid=%s",
-		shareName, origUID, effUID, origGID, effGID)
+	if origUID != effUID || origGID != effGID {
+		logger.Debug("Identity mapping applied: share=%s original_uid=%s->%s original_gid=%s->%s",
+			shareName, origUID, effUID, origGID, effGID)
+	} else {
+		logger.Debug("Auth context created: share=%s uid=%s gid=%s", shareName, effUID, effGID)
+	}
 
 	return effectiveAuthCtx, nil
+}
+
+// RegistryAccessor defines the minimal registry interface needed by auth_helper.
+// This allows for easier testing and decoupling.
+type RegistryAccessor interface {
+	GetShareNameForHandle(ctx context.Context, handle metadata.FileHandle) (string, error)
+	ApplyIdentityMapping(shareName string, identity *metadata.Identity) (*metadata.Identity, error)
 }

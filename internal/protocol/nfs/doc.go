@@ -57,7 +57,7 @@
 //		MetricsLogInterval: 5 * time.Minute,
 //	}
 //
-//	srv := server.New(config, metadataRepo, contentRepo)
+//	srv := server.New(config, metadataStore, contentStore)
 //
 //	// Optional: Register custom handlers
 //	srv.RegisterNFSHandler(customNFSHandler)

@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -172,9 +172,8 @@ type FsStatContext struct {
 //	if resp.Status == types.NFS3OK {
 //	    // Use resp.Tbytes, resp.Fbytes, etc. for filesystem stats
 //	}
-func (h *DefaultNFSHandler) FsStat(
+func (h *Handler) FsStat(
 	ctx *FsStatContext,
-	metadataStore metadata.MetadataStore,
 	req *FsStatRequest,
 ) (*FsStatResponse, error) {
 	logger.Debug("FSSTAT request: handle=%x client=%s", req.Handle, ctx.ClientAddr)
@@ -226,7 +225,36 @@ func (h *DefaultNFSHandler) FsStat(
 	default:
 	}
 
-	attr, err := metadataStore.GetFile(ctx.Context, metadata.FileHandle(req.Handle))
+	// ========================================================================
+	// Decode share name from file handle
+	// ========================================================================
+
+	fileHandle := metadata.FileHandle(req.Handle)
+	shareName, path, err := metadata.DecodeShareHandle(fileHandle)
+	if err != nil {
+		logger.Warn("FSSTAT failed: invalid file handle: handle=%x client=%s error=%v",
+			req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
+		return &FsStatResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("FSSTAT failed: share not found: share=%s handle=%x client=%s",
+			shareName, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr))
+		return &FsStatResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("FSSTAT failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
+			shareName, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
+		return &FsStatResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("FSSTAT: share=%s path=%s", shareName, path)
+
+	attr, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		logger.Debug("FSSTAT failed: handle not found: %v client=%s", err, ctx.ClientAddr)
 		return &FsStatResponse{Status: types.NFS3ErrStale}, nil

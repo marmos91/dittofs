@@ -5,7 +5,6 @@ import (
 	"net"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // UmountAllRequest represents an UMNTALL request from an NFS client.
@@ -89,9 +88,8 @@ type UmountAllContext struct {
 //     otherwise always returns nil per RFC 1813
 //
 // RFC 1813 Appendix I: UMNTALL Procedure
-func (h *DefaultMountHandler) UmntAll(
+func (h *Handler) UmntAll(
 	ctx *UmountAllContext,
-	repository metadata.MetadataStore,
 	req *UmountAllRequest,
 ) (*UmountAllResponse, error) {
 	// Check for cancellation before starting any work
@@ -112,80 +110,10 @@ func (h *DefaultMountHandler) UmntAll(
 
 	logger.Info("Unmount-all request: client=%s", clientIP)
 
-	// Get all active share sessions to find this client's mounts
-	// This is for logging purposes - if it fails, we continue anyway
-	allSessions, err := repository.GetActiveShares(ctx.Context)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("Unmount-all cancelled while getting share list: client=%s error=%v",
-				clientIP, ctx.Context.Err())
-			return &UmountAllResponse{}, ctx.Context.Err()
-		}
+	// Remove all mount records from the registry
+	count := h.Registry.RemoveAllMounts()
 
-		// Log the error but continue - we'll try to remove anyway
-		logger.Warn("Failed to get active shares: client=%s error=%v", clientIP, err)
-		allSessions = []metadata.ShareSession{} // Empty list
-	}
-
-	// Filter to find mounts belonging to this client
-	clientSessions := make([]metadata.ShareSession, 0)
-	for _, session := range allSessions {
-		if session.ClientAddr == clientIP {
-			clientSessions = append(clientSessions, session)
-		}
-	}
-
-	mountCount := len(clientSessions)
-	if mountCount == 0 {
-		logger.Info("Unmount-all: client=%s had no active mounts", clientIP)
-		return &UmountAllResponse{}, nil
-	}
-
-	// Check for cancellation before the destructive remove operations
-	// This is important because once we start removing, we want to complete
-	// the operation to avoid leaving partial/inconsistent mount records
-	select {
-	case <-ctx.Context.Done():
-		logger.Debug("Unmount-all cancelled before removing mounts: client=%s count=%d error=%v",
-			clientIP, mountCount, ctx.Context.Err())
-		return &UmountAllResponse{}, ctx.Context.Err()
-	default:
-	}
-
-	// Remove each mount for this client
-	// TODO: This could be optimized with a batch RemoveAllShareMountsByClient() method
-	// For now, we remove them individually
-	removedCount := 0
-	for _, session := range clientSessions {
-		err := repository.RemoveShareMount(ctx.Context, session.ShareName, clientIP)
-		if err != nil {
-			// Check if cancelled during removal
-			if ctx.Context.Err() != nil {
-				logger.Warn("Unmount-all cancelled during mount removal: client=%s removed=%d of %d error=%v",
-					clientIP, removedCount, mountCount, ctx.Context.Err())
-				// Per RFC 1813, UMNTALL always succeeds
-				break
-			}
-
-			// Log error but continue removing other mounts
-			logger.Warn("Failed to remove mount record: client=%s share=%s error=%v",
-				clientIP, session.ShareName, err)
-		} else {
-			removedCount++
-			logger.Debug("Removed mount: client=%s share=%s", clientIP, session.ShareName)
-		}
-	}
-
-	if removedCount == mountCount {
-		logger.Info("Unmount-all successful: client=%s removed=%d mounts", clientIP, removedCount)
-	} else if removedCount > 0 {
-		logger.Warn("Unmount-all partially successful: client=%s removed=%d of %d mounts",
-			clientIP, removedCount, mountCount)
-	} else {
-		logger.Warn("Unmount-all failed to remove any mounts: client=%s count=%d",
-			clientIP, mountCount)
-	}
+	logger.Info("Unmount-all successful: client=%s removed=%d mount(s)", clientIP, count)
 
 	// UMNTALL always returns void/success per RFC 1813
 	// Even if RemoveShareMount failed or was cancelled, we return success

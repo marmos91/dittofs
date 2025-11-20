@@ -9,8 +9,8 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/content"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	// // "github.com/marmos91/dittofs/pkg/store/content" // TODO: Phase 5 // TODO: Will be accessed via registry in Phase 5
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -299,9 +299,8 @@ func (c *CommitContext) GetGIDs() []uint32           { return c.GIDs }
 //	if resp.Status == types.NFS3OK {
 //	    // Data committed successfully
 //	}
-func (h *DefaultNFSHandler) Commit(
+func (h *Handler) Commit(
 	ctx *CommitContext,
-	store metadata.MetadataStore,
 	req *CommitRequest,
 ) (*CommitResponse, error) {
 	// Extract client IP for logging
@@ -333,7 +332,36 @@ func (h *DefaultNFSHandler) Commit(
 	}
 
 	// ========================================================================
-	// Step 3: Verify file exists and capture pre-operation state
+	// Step 3: Decode share name from file handle
+	// ========================================================================
+
+	handle := metadata.FileHandle(req.Handle)
+	shareName, path, err := metadata.DecodeShareHandle(handle)
+	if err != nil {
+		logger.Warn("COMMIT failed: invalid file handle: handle=%x client=%s error=%v",
+			req.Handle, clientIP, err)
+		return &CommitResponse{Status: types.NFS3ErrBadHandle}, nil
+	}
+
+	// Check if share exists
+	if !h.Registry.ShareExists(shareName) {
+		logger.Warn("COMMIT failed: share not found: share=%s handle=%x client=%s",
+			shareName, req.Handle, clientIP)
+		return &CommitResponse{Status: types.NFS3ErrStale}, nil
+	}
+
+	// Get metadata store for this share
+	store, err := h.Registry.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		logger.Error("COMMIT failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
+			shareName, req.Handle, clientIP, err)
+		return &CommitResponse{Status: types.NFS3ErrIO}, nil
+	}
+
+	logger.Debug("COMMIT: share=%s path=%s", shareName, path)
+
+	// ========================================================================
+	// Step 4: Verify file exists and capture pre-operation state
 	// ========================================================================
 
 	// Check context before store call
@@ -345,7 +373,6 @@ func (h *DefaultNFSHandler) Commit(
 	default:
 	}
 
-	handle := metadata.FileHandle(req.Handle)
 	fileAttr, err := store.GetFile(ctx.Context, handle)
 	if err != nil {
 		logger.Warn("COMMIT failed: file not found: handle=%x client=%s error=%v",
@@ -427,38 +454,42 @@ func (h *DefaultNFSHandler) Commit(
 			req.Offset, req.Count, fileAttr.Size)
 	}
 
-	if shouldFlush && h.ContentStore != nil {
-		// Cast to WritableContentStore (required for flushing)
-		writeStore, ok := h.ContentStore.(content.WritableContentStore)
-		if !ok {
-			logger.Debug("COMMIT: content store is not writable, skipping flush: handle=%x client=%s",
-				req.Handle, clientIP)
-		} else if fileAttr.ContentID != "" {
-			// Flush using shared helper method
-			if err := h.flushContent(ctx.Context, writeStore, fileAttr.ContentID, FlushReasonCommit); err != nil {
-				logger.Error("COMMIT failed: flush error: handle=%x offset=%d count=%d client=%s content_id=%s error=%v",
-					req.Handle, req.Offset, req.Count, clientIP, fileAttr.ContentID, err)
+	// TODO: Phase 5 - Access stores via registry
+	_ = shouldFlush // Suppress unused
+	/*
+		if false && shouldFlush { // Disabled until Phase 5
+			// Cast to WritableContentStore (required for flushing)
+			writeStore, ok := h.ContentStore.(content.WritableContentStore)
+			if !ok {
+				logger.Debug("COMMIT: content store is not writable, skipping flush: handle=%x client=%s",
+					req.Handle, clientIP)
+			} else if fileAttr.ContentID != "" {
+				// Flush using shared helper method
+				if err := h.flushContent(ctx.Context, writeStore, fileAttr.ContentID, FlushReasonCommit); err != nil {
+					logger.Error("COMMIT failed: flush error: handle=%x offset=%d count=%d client=%s content_id=%s error=%v",
+						req.Handle, req.Offset, req.Count, clientIP, fileAttr.ContentID, err)
 
-				// Get updated attributes for WCC data (best effort)
-				var wccAfter *types.NFSFileAttr
-				if updatedAttr, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-					fileID := xdr.ExtractFileID(handle)
-					wccAfter = xdr.MetadataToNFS(updatedAttr, fileID)
+					// Get updated attributes for WCC data (best effort)
+					var wccAfter *types.NFSFileAttr
+					if updatedAttr, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
+						fileID := xdr.ExtractFileID(handle)
+						wccAfter = xdr.MetadataToNFS(updatedAttr, fileID)
+					}
+
+					return &CommitResponse{
+						Status:        types.NFS3ErrIO,
+						AttrBefore:    wccBefore,
+						AttrAfter:     wccAfter,
+						WriteVerifier: 0,
+					}, nil
 				}
-
-				return &CommitResponse{
-					Status:        types.NFS3ErrIO,
-					AttrBefore:    wccBefore,
-					AttrAfter:     wccAfter,
-					WriteVerifier: 0,
-				}, nil
+			} else if fileAttr.Type == metadata.FileTypeRegular {
+				// Empty ContentID for regular file is unusual
+				logger.Warn("COMMIT: regular file has empty ContentID: handle=%x client=%s",
+					req.Handle, clientIP)
 			}
-		} else if fileAttr.Type == metadata.FileTypeRegular {
-			// Empty ContentID for regular file is unusual
-			logger.Warn("COMMIT: regular file has empty ContentID: handle=%x client=%s",
-				req.Handle, clientIP)
 		}
-	}
+	*/
 
 	// ========================================================================
 	// Step 5: Build success response with updated file attributes

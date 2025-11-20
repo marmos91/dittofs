@@ -262,18 +262,6 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 	logger.Debug("RPC Call Details: Program=%d Version=%d Procedure=%d",
 		call.Program, call.Version, call.Procedure)
 
-	// Check rate limit before processing request
-	if c.server.rateLimiter != nil {
-		if !c.server.rateLimiter.Allow() {
-			// Rate limit exceeded - reject request
-			c.server.metrics.RecordRateLimitExceeded()
-			logger.Debug("Rate limit exceeded for client %s: XID=0x%x program=%d procedure=%d",
-				clientAddr, call.XID, call.Program, call.Procedure)
-			// Send RPC error response to client to indicate rate limiting
-			return c.sendErrorReply(call.XID, rpc.RPCSystemErr)
-		}
-	}
-
 	// Check context before dispatching to handler
 	select {
 	case <-ctx.Done():
@@ -358,8 +346,7 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	replyData, err := procInfo.Handler(
 		authCtx,
 		c.server.nfsHandler,
-		c.server.metadataStore,
-		c.server.content,
+		c.server.registry,
 		data,
 	)
 	duration := time.Since(startTime)
@@ -417,7 +404,7 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 	replyData, err := procInfo.Handler(
 		authCtx,
 		c.server.mountHandler,
-		c.server.metadataStore,
+		c.server.registry,
 		data,
 	)
 	duration := time.Since(startTime)
@@ -456,41 +443,5 @@ func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
 	}
 
 	logger.Debug("Sent reply for XID=0x%x (%d bytes)", xid, len(reply))
-	return nil
-}
-
-// sendErrorReply sends an RPC error reply to the client.
-//
-// It applies write timeout if configured, constructs the RPC error reply
-// with the specified accept status, and writes it to the connection.
-//
-// This is used when the server needs to reject a request due to:
-// - Rate limiting (RPCSystemErr)
-// - Resource exhaustion (RPCSystemErr)
-// - Other server-side errors
-//
-// Returns an error if:
-// - Write timeout cannot be set
-// - Reply construction fails
-// - Network write fails
-func (c *NFSConnection) sendErrorReply(xid uint32, acceptStat uint32) error {
-	if c.server.config.Timeouts.Write > 0 {
-		deadline := time.Now().Add(c.server.config.Timeouts.Write)
-		if err := c.conn.SetWriteDeadline(deadline); err != nil {
-			return fmt.Errorf("set write deadline: %w", err)
-		}
-	}
-
-	reply, err := rpc.MakeErrorReply(xid, acceptStat)
-	if err != nil {
-		return fmt.Errorf("make error reply: %w", err)
-	}
-
-	_, err = c.conn.Write(reply)
-	if err != nil {
-		return fmt.Errorf("write error reply: %w", err)
-	}
-
-	logger.Debug("Sent error reply for XID=0x%x (accept_stat=%d, %d bytes)", xid, acceptStat, len(reply))
 	return nil
 }

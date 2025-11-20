@@ -3,8 +3,7 @@ package adapter
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/content"
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/registry"
 )
 
 // Adapter represents a protocol-specific server adapter that can be managed by DittoServer.
@@ -44,18 +43,18 @@ type Adapter interface {
 	//   - error if startup fails or shutdown is not graceful
 	Serve(ctx context.Context) error
 
-	// SetStores injects the shared metadata and content repositories.
+	// SetRegistry injects the shared registry containing all stores and shares.
 	//
 	// This method is called exactly once by DittoServer before Serve() is called.
-	// Implementations should store the repositories for use during operation.
+	// Implementations should store the registry for use during operation to
+	// resolve shares and access their corresponding stores.
 	//
 	// Parameters:
-	//   - metadataStore: Store for file system metadata (directories, permissions, etc.)
-	//   - content: Repository for file content (data blocks)
+	//   - reg: Registry containing all metadata stores, content stores, and shares
 	//
 	// Thread safety:
 	// Called before Serve(), no synchronization needed.
-	SetStores(metadataStore metadata.MetadataStore, content content.ContentStore)
+	SetRegistry(reg *registry.Registry)
 
 	// Stop initiates graceful shutdown of the protocol server.
 	//

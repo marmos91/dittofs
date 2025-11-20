@@ -10,3 +10,5 @@ linters:
     - errcheck
     - staticcheck
     - ineffassign
+  disable:
+    - intrange  # Disable "range over int" modernization suggestions
