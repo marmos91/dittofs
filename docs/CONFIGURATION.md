@@ -530,10 +530,12 @@ content:
     s3-production:
       type: s3
       s3:
+        region: us-east-1
         bucket: prod-bucket
     s3-archive:
       type: s3
       s3:
+        region: us-east-1
         bucket: archive-bucket
 
 shares:

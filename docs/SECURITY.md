@@ -201,7 +201,7 @@ DittoFS does not encrypt NFS traffic. All data is transmitted in plaintext over 
    ```bash
    # Set up WireGuard VPN between client and server
    # Then mount over the VPN interface
-   sudo mount -t nfs -o nfsvers=3,tcp,port=12049 10.0.0.1:/export /mnt/test
+   sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 10.0.0.1:/export /mnt/test
    ```
 
 2. **IPsec:**
@@ -216,7 +216,7 @@ DittoFS does not encrypt NFS traffic. All data is transmitted in plaintext over 
    ssh -L 12049:localhost:12049 user@server
 
    # Mount through tunnel
-   sudo mount -t nfs -o nfsvers=3,tcp,port=12049 localhost:/export /mnt/test
+   sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
    ```
 
 ### Firewall Configuration

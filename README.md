@@ -195,6 +195,7 @@ content:
     s3-cloud:
       type: s3
       s3:
+        region: us-east-1
         bucket: my-dittofs-bucket
 
 # Define shares that reference stores

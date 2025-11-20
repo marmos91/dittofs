@@ -137,10 +137,10 @@ See [test/e2e/README.md](../test/e2e/README.md) for detailed documentation.
 
 ```bash
 # Mount on Linux
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049 localhost:/export /mnt/test
+sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
 
 # Mount on macOS (requires resvport)
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,resvport localhost:/export /mnt/test
+sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport localhost:/export /mnt/test
 
 # Test operations
 cd /mnt/test

@@ -95,7 +95,7 @@ mount.nfs: access denied by server while mounting
 
 2. **On macOS, use resvport option:**
    ```bash
-   sudo mount -t nfs -o nfsvers=3,tcp,port=12049,resvport localhost:/export /mnt/test
+   sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport localhost:/export /mnt/test
    ```
 
 3. **Check export configuration:**
@@ -133,7 +133,7 @@ mount.nfs: mounting localhost:/export failed, reason given by server: No such fi
 2. **Check share names are correct:**
    ```bash
    # Mount using the exact share name from config
-   sudo mount -t nfs -o nfsvers=3,tcp,port=12049 localhost:/export /mnt/test
+   sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
    ```
 
 ## Permission Issues
@@ -197,7 +197,7 @@ touch: cannot touch 'file.txt': Read-only file system
 2. **Verify mount options:**
    ```bash
    # Make sure you're not mounting with 'ro'
-   sudo mount -t nfs -o nfsvers=3,tcp,port=12049,rw localhost:/export /mnt/test
+   sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,rw localhost:/export /mnt/test
    ```
 
 ## File Handle Issues
@@ -219,7 +219,7 @@ ls: cannot access 'file.txt': Stale file handle
 1. **Unmount and remount the filesystem:**
    ```bash
    sudo umount /mnt/test
-   sudo mount -t nfs -o nfsvers=3,tcp,port=12049 localhost:/export /mnt/test
+   sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
    ```
 
 2. **For persistent handles, use BadgerDB metadata:**
@@ -387,7 +387,7 @@ DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start 2>&1 | grep -i "config"
 **Solution:** Check share names in config and use exact match:
 ```bash
 # If config has "name: /export"
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049 localhost:/export /mnt/test
+sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
 ```
 
 ### "authentication failed"

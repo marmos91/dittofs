@@ -128,12 +128,12 @@ Enable-WindowsOptionalFeature -FeatureName ServicesForNFS-ClientOnly, ClientForN
 
 **Linux:**
 ```bash
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049 localhost:/export /mnt/test
+sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
 ```
 
 **macOS:**
 ```bash
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,resvport localhost:/export /mnt/test
+sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport localhost:/export /mnt/test
 ```
 
 **Windows:**
@@ -166,6 +166,7 @@ content:
     cloud-s3:
       type: s3
       s3:
+        region: us-east-1
         bucket: my-bucket
 
 shares:

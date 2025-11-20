@@ -148,12 +148,12 @@ content:
 # Define shares that reference stores
 shares:
   - name: /temp
-    path: /export/temp
-    stores: fast-meta/fast-content      # Uses memory stores
+    metadata_store: fast-meta           # Uses memory store for metadata
+    content_store: fast-content         # Uses memory store for content
 
   - name: /archive
-    path: /export/archive
-    stores: persistent-meta/s3-content  # Uses BadgerDB + S3
+    metadata_store: persistent-meta     # Uses BadgerDB for metadata
+    content_store: s3-content           # Uses S3 for content
 ```
 
 ### Benefits

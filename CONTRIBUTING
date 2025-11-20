@@ -62,10 +62,10 @@ go test ./...
 
 ```bash
 # Linux
-sudo mount -t nfs -o nfsvers=3,tcp localhost:/export /mnt/test
+sudo mount -t nfs -o nfsvers=3,tcp,port=2049,mountport=2049 localhost:/export /mnt/test
 
 # macOS
-sudo mount -t nfs -o nfsvers=3,tcp,resvport localhost:/export /mnt/test
+sudo mount -t nfs -o nfsvers=3,tcp,port=2049,mountport=2049,resvport localhost:/export /mnt/test
 ```
 
 ## How to Contribute
