@@ -327,6 +327,16 @@ func (tc *TestContext) CreateTempDir(prefix string) string {
 	return dir
 }
 
+// GetConfig returns the test configuration
+func (tc *TestContext) GetConfig() *TestConfig {
+	return tc.Config
+}
+
+// GetPort returns the server port
+func (tc *TestContext) GetPort() int {
+	return tc.Port
+}
+
 // findFreePort finds an available TCP port
 func findFreePort(t *testing.T) int {
 	t.Helper()

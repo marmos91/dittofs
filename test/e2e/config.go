@@ -32,6 +32,13 @@ const (
 	ContentS3         ContentStoreType = "s3"
 )
 
+// TestContextProvider is an interface for providing test context dependencies
+type TestContextProvider interface {
+	CreateTempDir(prefix string) string
+	GetConfig() *TestConfig
+	GetPort() int
+}
+
 // TestConfig holds the configuration for a test run
 type TestConfig struct {
 	Name          string
@@ -50,7 +57,7 @@ func (tc *TestConfig) String() string {
 }
 
 // CreateMetadataStore creates a metadata store based on the configuration
-func (tc *TestConfig) CreateMetadataStore(ctx context.Context, testCtx *TestContext) (metadata.MetadataStore, error) {
+func (tc *TestConfig) CreateMetadataStore(ctx context.Context, testCtx TestContextProvider) (metadata.MetadataStore, error) {
 	switch tc.MetadataStore {
 	case MetadataMemory:
 		return metadatamemory.NewMemoryMetadataStoreWithDefaults(), nil
@@ -69,7 +76,7 @@ func (tc *TestConfig) CreateMetadataStore(ctx context.Context, testCtx *TestCont
 }
 
 // CreateContentStore creates a content store based on the configuration
-func (tc *TestConfig) CreateContentStore(ctx context.Context, testCtx *TestContext) (content.WritableContentStore, error) {
+func (tc *TestConfig) CreateContentStore(ctx context.Context, testCtx TestContextProvider) (content.WritableContentStore, error) {
 	switch tc.ContentStore {
 	case ContentMemory:
 		store, err := contentmemory.NewMemoryContentStore(ctx)
@@ -88,13 +95,14 @@ func (tc *TestConfig) CreateContentStore(ctx context.Context, testCtx *TestConte
 
 	case ContentS3:
 		// S3 requires localstack setup
-		if testCtx.Config.s3Client == nil {
+		config := testCtx.GetConfig()
+		if config.s3Client == nil {
 			return nil, fmt.Errorf("S3 client not initialized (localstack not running?)")
 		}
 
-		bucketName := fmt.Sprintf("dittofs-e2e-test-%d", testCtx.Port)
+		bucketName := fmt.Sprintf("dittofs-e2e-test-%d", testCtx.GetPort())
 		store, err := contents3.NewS3ContentStore(ctx, contents3.S3ContentStoreConfig{
-			Client:        testCtx.Config.s3Client,
+			Client:        config.s3Client,
 			Bucket:        bucketName,
 			KeyPrefix:     "test/",
 			PartSize:      5 * 1024 * 1024, // 5MB parts
@@ -105,7 +113,7 @@ func (tc *TestConfig) CreateContentStore(ctx context.Context, testCtx *TestConte
 		}
 
 		// Store bucket name for cleanup
-		testCtx.Config.s3Bucket = bucketName
+		config.s3Bucket = bucketName
 
 		return store, nil
 
