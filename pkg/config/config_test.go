@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -65,18 +64,29 @@ adapters:
 // TestLoad_WithOverrides removed - we only support environment variable overrides now
 
 func TestLoad_NoConfigFile(t *testing.T) {
-	// Loading with no config file should fail validation because
-	// at least one share must be configured. This test verifies that
-	// we properly validate even when using all defaults.
+	// Loading with no config file returns a valid default config.
+	// This allows users to run the server without a config file for quick testing.
 	tmpDir := t.TempDir()
 	nonExistentPath := filepath.Join(tmpDir, "nonexistent.yaml")
 
-	_, err := Load(nonExistentPath)
-	if err == nil {
-		t.Fatal("Expected validation error with no config file (no shares configured)")
+	cfg, err := Load(nonExistentPath)
+	if err != nil {
+		t.Fatalf("Expected no error when loading default config, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "share") {
-		t.Errorf("Expected error about shares, got: %v", err)
+
+	// Verify default config is returned
+	if cfg == nil {
+		t.Fatal("Expected default config to be returned")
+	}
+
+	// Verify default config has at least one share
+	if len(cfg.Shares) == 0 {
+		t.Error("Expected default config to have at least one share")
+	}
+
+	// Verify NFS adapter is enabled by default
+	if !cfg.Adapters.NFS.Enabled {
+		t.Error("Expected NFS adapter to be enabled in default config")
 	}
 }
 

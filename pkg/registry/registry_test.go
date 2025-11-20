@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	contentMemory "github.com/marmos91/dittofs/pkg/content/memory"
-	metadataMemory "github.com/marmos91/dittofs/pkg/metadata/memory"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
+	contentMemory "github.com/marmos91/dittofs/pkg/store/content/memory"
+	metadataMemory "github.com/marmos91/dittofs/pkg/store/metadata/memory"
 )
 
 // Helper to create memory content store for testing
@@ -15,6 +16,17 @@ func mustCreateMemoryContentStore() *contentMemory.MemoryContentStore {
 		panic(err)
 	}
 	return store
+}
+
+// Helper to create a basic ShareConfig for testing
+func testShareConfig(name, metadataStore, contentStore string, readOnly bool) *ShareConfig {
+	return &ShareConfig{
+		Name:          name,
+		MetadataStore: metadataStore,
+		ContentStore:  contentStore,
+		ReadOnly:      readOnly,
+		RootAttr:      &metadata.FileAttr{}, // Empty attr, AddShare will apply defaults
+	}
 }
 
 func TestNewRegistry(t *testing.T) {
@@ -108,7 +120,8 @@ func TestAddShare(t *testing.T) {
 	_ = reg.RegisterContentStore("content1", contentStore)
 
 	// Test successful share creation
-	err := reg.AddShare("/export", "meta1", "content1", false)
+	ctx := context.Background()
+	err := reg.AddShare(ctx, testShareConfig("/export", "meta1", "content1", false))
 	if err != nil {
 		t.Fatalf("Failed to add share: %v", err)
 	}
@@ -118,25 +131,25 @@ func TestAddShare(t *testing.T) {
 	}
 
 	// Test duplicate share
-	err = reg.AddShare("/export", "meta1", "content1", false)
+	err = reg.AddShare(ctx, testShareConfig("/export", "meta1", "content1", false))
 	if err == nil {
 		t.Error("Expected error when adding duplicate share")
 	}
 
 	// Test non-existent metadata store
-	err = reg.AddShare("/export2", "nonexistent", "content1", false)
+	err = reg.AddShare(ctx, testShareConfig("/export2", "nonexistent", "content1", false))
 	if err == nil {
 		t.Error("Expected error when adding share with non-existent metadata store")
 	}
 
 	// Test non-existent content store
-	err = reg.AddShare("/export2", "meta1", "nonexistent", false)
+	err = reg.AddShare(ctx, testShareConfig("/export2", "meta1", "nonexistent", false))
 	if err == nil {
 		t.Error("Expected error when adding share with non-existent content store")
 	}
 
 	// Test empty share name
-	err = reg.AddShare("", "meta1", "content1", false)
+	err = reg.AddShare(ctx, testShareConfig("", "meta1", "content1", false))
 	if err == nil {
 		t.Error("Expected error when adding share with empty name")
 	}
@@ -146,10 +159,11 @@ func TestRemoveShare(t *testing.T) {
 	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 	contentStore := mustCreateMemoryContentStore()
+	ctx := context.Background()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
 	_ = reg.RegisterContentStore("content1", contentStore)
-	_ = reg.AddShare("/export", "meta1", "content1", false)
+	_ = reg.AddShare(ctx, testShareConfig("/export", "meta1", "content1", false))
 
 	// Test successful removal
 	err := reg.RemoveShare("/export")
@@ -175,7 +189,7 @@ func TestGetShare(t *testing.T) {
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
 	_ = reg.RegisterContentStore("content1", contentStore)
-	_ = reg.AddShare("/export", "meta1", "content1", true)
+	_ = reg.AddShare(context.Background(), testShareConfig("/export", "meta1", "content1", true))
 
 	// Test successful retrieval
 	share, err := reg.GetShare("/export")
@@ -256,7 +270,7 @@ func TestGetStoresForShare(t *testing.T) {
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
 	_ = reg.RegisterContentStore("content1", contentStore)
-	_ = reg.AddShare("/export", "meta1", "content1", false)
+	_ = reg.AddShare(context.Background(), testShareConfig("/export", "meta1", "content1", false))
 
 	// Test getting metadata store for share
 	ms, err := reg.GetMetadataStoreForShare("/export")
@@ -303,9 +317,9 @@ func TestListShares(t *testing.T) {
 	}
 
 	// Add shares
-	_ = reg.AddShare("/export1", "meta1", "content1", false)
-	_ = reg.AddShare("/export2", "meta1", "content1", false)
-	_ = reg.AddShare("/export3", "meta1", "content1", false)
+	_ = reg.AddShare(context.Background(), testShareConfig("/export1", "meta1", "content1", false))
+	_ = reg.AddShare(context.Background(), testShareConfig("/export2", "meta1", "content1", false))
+	_ = reg.AddShare(context.Background(), testShareConfig("/export3", "meta1", "content1", false))
 
 	shares = reg.ListShares()
 	if len(shares) != 3 {
@@ -358,9 +372,9 @@ func TestListSharesUsingStore(t *testing.T) {
 	_ = reg.RegisterContentStore("content2", contentStore2)
 
 	// Create shares with different store combinations
-	_ = reg.AddShare("/export1", "meta1", "content1", false)
-	_ = reg.AddShare("/export2", "meta1", "content2", false)
-	_ = reg.AddShare("/export3", "meta2", "content1", false)
+	_ = reg.AddShare(context.Background(), testShareConfig("/export1", "meta1", "content1", false))
+	_ = reg.AddShare(context.Background(), testShareConfig("/export2", "meta1", "content2", false))
+	_ = reg.AddShare(context.Background(), testShareConfig("/export3", "meta2", "content1", false))
 
 	// Test metadata store usage
 	sharesUsingMeta1 := reg.ListSharesUsingMetadataStore("meta1")
@@ -400,9 +414,9 @@ func TestMultipleSharesSameStore(t *testing.T) {
 	_ = reg.RegisterContentStore("shared-content", contentStore)
 
 	// Create multiple shares using the same stores
-	_ = reg.AddShare("/export1", "shared-meta", "shared-content", false)
-	_ = reg.AddShare("/export2", "shared-meta", "shared-content", true)
-	_ = reg.AddShare("/export3", "shared-meta", "shared-content", false)
+	_ = reg.AddShare(context.Background(), testShareConfig("/export1", "shared-meta", "shared-content", false))
+	_ = reg.AddShare(context.Background(), testShareConfig("/export2", "shared-meta", "shared-content", true))
+	_ = reg.AddShare(context.Background(), testShareConfig("/export3", "shared-meta", "shared-content", false))
 
 	if reg.CountShares() != 3 {
 		t.Errorf("Expected 3 shares, got %d", reg.CountShares())
@@ -436,7 +450,7 @@ func TestConcurrentAccess(t *testing.T) {
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
 	_ = reg.RegisterContentStore("content1", contentStore)
-	_ = reg.AddShare("/export", "meta1", "content1", false)
+	_ = reg.AddShare(context.Background(), testShareConfig("/export", "meta1", "content1", false))
 
 	// Simulate concurrent reads
 	done := make(chan bool)

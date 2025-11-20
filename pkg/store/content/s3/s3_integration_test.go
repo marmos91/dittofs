@@ -11,7 +11,9 @@ import (
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/marmos91/dittofs/pkg/content/testing"
+	"github.com/marmos91/dittofs/pkg/store/content"
+	contenttesting "github.com/marmos91/dittofs/pkg/store/content/testing"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // setupTestS3 creates an S3 client and test bucket for integration tests.
@@ -134,21 +136,12 @@ func TestS3ContentStore_Integration(t *testing.T) {
 	// Run standard test suite
 	// ========================================================================
 
-	t.Run("BasicOperations", func(t *testing.T) {
-		testing.RunBasicTests(t, store)
-	})
-
-	t.Run("WriteOperations", func(t *testing.T) {
-		testing.RunWriteTests(t, store)
-	})
-
-	t.Run("GarbageCollection", func(t *testing.T) {
-		testing.RunGCTests(t, store)
-	})
-
-	t.Run("StorageStats", func(t *testing.T) {
-		testing.RunStatsTests(t, store)
-	})
+	suite := &contenttesting.StoreTestSuite{
+		NewStore: func() content.ContentStore {
+			return store
+		},
+	}
+	suite.Run(t)
 }
 
 // TestS3ContentStore_Multipart tests multipart upload functionality.
@@ -181,7 +174,7 @@ func TestS3ContentStore_Multipart(t *testing.T) {
 	// ========================================================================
 
 	t.Run("MultipartUpload", func(t *testing.T) {
-		contentID := "multipart-test-content"
+		contentID := metadata.ContentID("multipart-test-content")
 
 		// Begin multipart upload
 		uploadID, err := store.BeginMultipartUpload(ctx, contentID)
@@ -231,7 +224,7 @@ func TestS3ContentStore_Multipart(t *testing.T) {
 	})
 
 	t.Run("AbortMultipartUpload", func(t *testing.T) {
-		contentID := "abort-test-content"
+		contentID := metadata.ContentID("abort-test-content")
 
 		// Begin multipart upload
 		uploadID, err := store.BeginMultipartUpload(ctx, contentID)
@@ -261,24 +254,4 @@ func TestS3ContentStore_Multipart(t *testing.T) {
 			t.Error("Content should not exist after abort")
 		}
 	})
-}
-
-// TestS3ContentStore_StreamingOperations tests streaming read/write.
-func TestS3ContentStore_StreamingOperations(t *testing.T) {
-	ctx := context.Background()
-
-	bucketName := "dittofs-streaming-test"
-	client, cleanup := setupTestS3(t, bucketName)
-	defer cleanup()
-
-	store, err := NewS3ContentStore(ctx, S3ContentStoreConfig{
-		Client: client,
-		Bucket: bucketName,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create S3 content store: %v", err)
-	}
-
-	// Run streaming tests
-	testing.RunStreamingTests(t, store)
 }

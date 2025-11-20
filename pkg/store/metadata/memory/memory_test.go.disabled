@@ -3,8 +3,8 @@ package memory
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
-	metadatatesting "github.com/marmos91/dittofs/pkg/metadata/testing"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
+	metadatatesting "github.com/marmos91/dittofs/pkg/store/metadata/testing"
 )
 
 // TestMemoryMetadataStore runs the complete MetadataStore test suite

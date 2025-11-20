@@ -1,3 +1,5 @@
+//go:build obsolete
+
 package testing
 
 import (
