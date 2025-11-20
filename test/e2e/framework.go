@@ -177,7 +177,7 @@ func (tc *TestContext) waitForServer() {
 		case <-ticker.C:
 			conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", tc.Port), time.Second)
 			if err == nil {
-				conn.Close()
+				_ = conn.Close()
 				return
 			}
 		}
@@ -335,7 +335,7 @@ func findFreePort(t *testing.T) int {
 	if err != nil {
 		t.Fatalf("Failed to find free port: %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	return listener.Addr().(*net.TCPAddr).Port
 }

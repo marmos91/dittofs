@@ -111,25 +111,6 @@ func decodeFileData(bytes []byte) (*fileData, error) {
 	return &data, nil
 }
 
-// encodeShareData serializes shareData to JSON bytes.
-//
-// This stores the complete share configuration including access control
-// rules and the root directory handle.
-//
-// Parameters:
-//   - data: The share data to encode
-//
-// Returns:
-//   - []byte: JSON-encoded bytes
-//   - error: Encoding error if serialization fails
-func encodeShareData(data *shareData) ([]byte, error) {
-	bytes, err := json.Marshal(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode share data: %w", err)
-	}
-	return bytes, nil
-}
-
 // decodeShareData deserializes shareData from JSON bytes.
 //
 // Parameters:
@@ -163,41 +144,6 @@ func encodeDeviceNumber(dev *deviceNumber) ([]byte, error) {
 		return nil, fmt.Errorf("failed to encode device number: %w", err)
 	}
 	return bytes, nil
-}
-
-// encodeShareSession serializes ShareSession to JSON bytes.
-//
-// Sessions track active mounts for administrative monitoring and the NFS
-// DUMP procedure. The JSON format includes timestamps and client information.
-//
-// Parameters:
-//   - session: The session to encode
-//
-// Returns:
-//   - []byte: JSON-encoded bytes
-//   - error: Encoding error if serialization fails
-func encodeShareSession(session *metadata.ShareSession) ([]byte, error) {
-	bytes, err := json.Marshal(session)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode share session: %w", err)
-	}
-	return bytes, nil
-}
-
-// decodeShareSession deserializes ShareSession from JSON bytes.
-//
-// Parameters:
-//   - bytes: JSON-encoded session
-//
-// Returns:
-//   - *metadata.ShareSession: Decoded session
-//   - error: Decoding error if deserialization fails
-func decodeShareSession(bytes []byte) (*metadata.ShareSession, error) {
-	var session metadata.ShareSession
-	if err := json.Unmarshal(bytes, &session); err != nil {
-		return nil, fmt.Errorf("failed to decode share session: %w", err)
-	}
-	return &session, nil
 }
 
 // encodeServerConfig serializes MetadataServerConfig to JSON bytes.

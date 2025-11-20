@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/store/metadata"
 	contentMemory "github.com/marmos91/dittofs/pkg/store/content/memory"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 	metadataMemory "github.com/marmos91/dittofs/pkg/store/metadata/memory"
 )
 

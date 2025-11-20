@@ -98,7 +98,7 @@ func (tc *TestConfig) CreateContentStore(ctx context.Context, testCtx *TestConte
 			Bucket:        bucketName,
 			KeyPrefix:     "test/",
 			PartSize:      5 * 1024 * 1024, // 5MB parts
-			StatsCacheTTL: 1,                // 1ns - effectively disabled for tests
+			StatsCacheTTL: 1,               // 1ns - effectively disabled for tests
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create S3 content store: %w", err)

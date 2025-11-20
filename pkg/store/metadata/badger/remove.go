@@ -66,7 +66,6 @@ func (s *BadgerMetadataStore) RemoveFile(
 		}
 	}
 
-
 	var returnAttr *metadata.FileAttr
 	var removedHandle metadata.FileHandle
 
@@ -300,7 +299,6 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 			Message: "no write permission on parent directory",
 		}
 	}
-
 
 	var removedHandle metadata.FileHandle
 

@@ -457,38 +457,38 @@ func (h *Handler) Commit(
 	// TODO: Phase 5 - Access stores via registry
 	_ = shouldFlush // Suppress unused
 	/*
-	if false && shouldFlush { // Disabled until Phase 5
-		// Cast to WritableContentStore (required for flushing)
-		writeStore, ok := h.ContentStore.(content.WritableContentStore)
-		if !ok {
-			logger.Debug("COMMIT: content store is not writable, skipping flush: handle=%x client=%s",
-				req.Handle, clientIP)
-		} else if fileAttr.ContentID != "" {
-			// Flush using shared helper method
-			if err := h.flushContent(ctx.Context, writeStore, fileAttr.ContentID, FlushReasonCommit); err != nil {
-				logger.Error("COMMIT failed: flush error: handle=%x offset=%d count=%d client=%s content_id=%s error=%v",
-					req.Handle, req.Offset, req.Count, clientIP, fileAttr.ContentID, err)
+		if false && shouldFlush { // Disabled until Phase 5
+			// Cast to WritableContentStore (required for flushing)
+			writeStore, ok := h.ContentStore.(content.WritableContentStore)
+			if !ok {
+				logger.Debug("COMMIT: content store is not writable, skipping flush: handle=%x client=%s",
+					req.Handle, clientIP)
+			} else if fileAttr.ContentID != "" {
+				// Flush using shared helper method
+				if err := h.flushContent(ctx.Context, writeStore, fileAttr.ContentID, FlushReasonCommit); err != nil {
+					logger.Error("COMMIT failed: flush error: handle=%x offset=%d count=%d client=%s content_id=%s error=%v",
+						req.Handle, req.Offset, req.Count, clientIP, fileAttr.ContentID, err)
 
-				// Get updated attributes for WCC data (best effort)
-				var wccAfter *types.NFSFileAttr
-				if updatedAttr, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-					fileID := xdr.ExtractFileID(handle)
-					wccAfter = xdr.MetadataToNFS(updatedAttr, fileID)
+					// Get updated attributes for WCC data (best effort)
+					var wccAfter *types.NFSFileAttr
+					if updatedAttr, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
+						fileID := xdr.ExtractFileID(handle)
+						wccAfter = xdr.MetadataToNFS(updatedAttr, fileID)
+					}
+
+					return &CommitResponse{
+						Status:        types.NFS3ErrIO,
+						AttrBefore:    wccBefore,
+						AttrAfter:     wccAfter,
+						WriteVerifier: 0,
+					}, nil
 				}
-
-				return &CommitResponse{
-					Status:        types.NFS3ErrIO,
-					AttrBefore:    wccBefore,
-					AttrAfter:     wccAfter,
-					WriteVerifier: 0,
-				}, nil
+			} else if fileAttr.Type == metadata.FileTypeRegular {
+				// Empty ContentID for regular file is unusual
+				logger.Warn("COMMIT: regular file has empty ContentID: handle=%x client=%s",
+					req.Handle, clientIP)
 			}
-		} else if fileAttr.Type == metadata.FileTypeRegular {
-			// Empty ContentID for regular file is unusual
-			logger.Warn("COMMIT: regular file has empty ContentID: handle=%x client=%s",
-				req.Handle, clientIP)
 		}
-	}
 	*/
 
 	// ========================================================================

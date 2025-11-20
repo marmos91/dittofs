@@ -60,7 +60,6 @@ func (s *BadgerMetadataStore) CheckShareAccess(
 		return nil, nil, err
 	}
 
-
 	var decision *metadata.AccessDecision
 	var authCtx *metadata.AuthContext
 
@@ -223,7 +222,6 @@ func (s *BadgerMetadataStore) CheckPermissions(
 	if err := ctx.Context.Err(); err != nil {
 		return 0, err
 	}
-
 
 	var granted metadata.Permission
 

@@ -426,9 +426,8 @@ func (s *DittoServer) stopAllAdapters(adapters []adapter.Adapter) {
 
 	// Stop adapters in reverse registration order
 	// This handles potential dependencies between adapters
-	for i := range len(adapters) {
-		// Iterate in reverse order
-		adp := adapters[len(adapters)-1-i]
+	for i := len(adapters) - 1; i >= 0; i-- {
+		adp := adapters[i]
 		protocol := adp.Protocol()
 
 		logger.Debug("Stopping %s adapter (port %d)", protocol, adp.Port())

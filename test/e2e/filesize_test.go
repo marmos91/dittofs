@@ -17,11 +17,11 @@ type FileSize struct {
 
 var (
 	// Standard file sizes for testing
-	Size500KB  = FileSize{Name: "500KB", Bytes: 500 * 1024}
-	Size1MB    = FileSize{Name: "1MB", Bytes: 1 * 1024 * 1024}
-	Size10MB   = FileSize{Name: "10MB", Bytes: 10 * 1024 * 1024}
-	Size100MB  = FileSize{Name: "100MB", Bytes: 100 * 1024 * 1024}
-	Size1GB    = FileSize{Name: "1GB", Bytes: 1 * 1024 * 1024 * 1024}
+	Size500KB = FileSize{Name: "500KB", Bytes: 500 * 1024}
+	Size1MB   = FileSize{Name: "1MB", Bytes: 1 * 1024 * 1024}
+	Size10MB  = FileSize{Name: "10MB", Bytes: 10 * 1024 * 1024}
+	Size100MB = FileSize{Name: "100MB", Bytes: 100 * 1024 * 1024}
+	Size1GB   = FileSize{Name: "1GB", Bytes: 1 * 1024 * 1024 * 1024}
 
 	// All standard sizes
 	StandardFileSizes = []FileSize{Size500KB, Size1MB, Size10MB, Size100MB}

@@ -1,7 +1,6 @@
 package badger
 
 import (
-	"container/list"
 	"context"
 	"fmt"
 	"sync"
@@ -79,89 +78,6 @@ type BadgerMetadataStore struct {
 		ttl       time.Duration
 		mu        sync.RWMutex
 	}
-
-	// readdirCache caches directory listings (LRU + TTL).
-	readdirCache struct {
-		enabled      bool
-		ttl          time.Duration
-		maxEntries   int
-		invalidOnMod bool
-		cache        map[string]*readdirCacheEntry
-		lruList      *list.List
-		mu           sync.RWMutex
-		hits         uint64
-		misses       uint64
-	}
-
-	// lookupCache caches lookup results (LRU + TTL).
-	lookupCache struct {
-		enabled      bool
-		ttl          time.Duration
-		maxEntries   int
-		invalidOnMod bool
-		cache        map[string]*lookupCacheEntry
-		lruList      *list.List
-		mu           sync.RWMutex
-		hits         uint64
-		misses       uint64
-	}
-
-	// getfileCache caches file attributes by handle (LRU + TTL).
-	getfileCache struct {
-		enabled      bool
-		ttl          time.Duration
-		maxEntries   int
-		invalidOnMod bool
-		cache        map[string]*getfileCacheEntry
-		lruList      *list.List
-		mu           sync.RWMutex
-		hits         uint64
-		misses       uint64
-	}
-
-	// shareNameCache caches share names by handle (LRU + TTL).
-	// Share names are immutable for a given handle, making them ideal for caching.
-	// This avoids expensive DB lookups on every NFS operation that needs auth context.
-	shareNameCache struct {
-		enabled    bool
-		ttl        time.Duration
-		maxEntries int
-		cache      map[string]*shareNameCacheEntry
-		lruList    *list.List
-		mu         sync.RWMutex
-		hits       uint64
-		misses     uint64
-	}
-}
-
-// readdirCacheEntry stores cached directory listing.
-type readdirCacheEntry struct {
-	children  []metadata.FileHandle
-	names     []string
-	timestamp time.Time
-	lruNode   *list.Element
-}
-
-// lookupCacheEntry stores cached lookup result.
-type lookupCacheEntry struct {
-	handle    metadata.FileHandle
-	attr      *metadata.FileAttr
-	timestamp time.Time
-	lruNode   *list.Element
-}
-
-// getfileCacheEntry stores cached file attributes.
-type getfileCacheEntry struct {
-	attr      *metadata.FileAttr
-	timestamp time.Time
-	lruNode   *list.Element
-}
-
-// shareNameCacheEntry stores cached share name.
-type shareNameCacheEntry struct {
-	shareName string
-	timestamp time.Time
-	lruNode   *list.Element
 }
 
 // BadgerMetadataStoreConfig contains configuration for creating a BadgerDB metadata store.

@@ -95,7 +95,6 @@ type S3ContentStore struct {
 	}
 }
 
-
 // S3ContentStoreConfig contains configuration for S3 content store.
 type S3ContentStoreConfig struct {
 	// Client is the configured S3 client

@@ -172,7 +172,7 @@ func TestSafeAddRealWorldScenarios(t *testing.T) {
 	t.Run("FileSystemBlockCalculation", func(t *testing.T) {
 		// Simulating: file size in bytes + block size
 		fileSize := uint64(1024 * 1024 * 1024) // 1 GB
-		blockSize := uint64(4096)               // 4 KB
+		blockSize := uint64(4096)              // 4 KB
 
 		sum, overflow := safeAdd(fileSize, blockSize)
 		assert.False(t, overflow)

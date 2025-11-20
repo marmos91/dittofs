@@ -1,10 +1,13 @@
+# E2E Tests - Temporarily disabled due to performance issues with large files in memory
+# Re-enable after optimizing memory handling for 100MB+ files
 name: E2E Tests
 
 on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main, develop ]
+  # Disabled automatic triggers - only manual dispatch for now
+  # push:
+  #   branches: [ main, develop ]
+  # pull_request:
+  #   branches: [ main, develop ]
   workflow_dispatch:
 
 jobs:

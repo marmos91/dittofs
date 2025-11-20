@@ -289,7 +289,6 @@ func (s *BadgerMetadataStore) GetShareNameForHandle(
 		}
 	}
 
-
 	var shareName string
 
 	err := s.db.View(func(txn *badger.Txn) error {
@@ -344,7 +343,6 @@ func (s *BadgerMetadataStore) SetFileAttributes(
 	if err := ctx.Context.Err(); err != nil {
 		return err
 	}
-
 
 	return s.db.Update(func(txn *badger.Txn) error {
 		// Get file data
@@ -574,7 +572,6 @@ func (s *BadgerMetadataStore) Create(
 		}
 	}
 
-
 	var newHandle metadata.FileHandle
 
 	err := s.db.Update(func(txn *badger.Txn) error {
@@ -803,7 +800,6 @@ func (s *BadgerMetadataStore) CreateHardLink(
 		}
 	}
 
-
 	err := s.db.Update(func(txn *badger.Txn) error {
 		// Verify target exists and is not a directory
 		targetItem, err := txn.Get(keyFile(targetHandle))
@@ -991,7 +987,6 @@ func (s *BadgerMetadataStore) Move(
 			Path:    toName,
 		}
 	}
-
 
 	err := s.db.Update(func(txn *badger.Txn) error {
 		// Get source handle

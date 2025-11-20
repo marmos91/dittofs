@@ -15,7 +15,6 @@ require (
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/viper v1.21.0
-	golang.org/x/time v0.14.0
 )
 
 require (

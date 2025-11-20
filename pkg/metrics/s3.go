@@ -18,16 +18,16 @@ import (
 //   - Multipart upload statistics
 //   - Cache hit/miss rates
 type s3Metrics struct {
-	operationsTotal   *prometheus.CounterVec
-	operationDuration *prometheus.HistogramVec
-	bytesTransferred  *prometheus.CounterVec
-	multipartUploads  *prometheus.CounterVec
-	statsCacheHits    prometheus.Counter
-	statsCacheMisses  prometheus.Counter
-	errorsTotal       *prometheus.CounterVec
+	operationsTotal    *prometheus.CounterVec
+	operationDuration  *prometheus.HistogramVec
+	bytesTransferred   *prometheus.CounterVec
+	multipartUploads   *prometheus.CounterVec
+	statsCacheHits     prometheus.Counter
+	statsCacheMisses   prometheus.Counter
+	errorsTotal        *prometheus.CounterVec
 	flushPhaseDuration *prometheus.HistogramVec
-	flushOperations   *prometheus.CounterVec
-	flushBytes        *prometheus.HistogramVec
+	flushOperations    *prometheus.CounterVec
+	flushBytes         *prometheus.HistogramVec
 }
 
 // NewS3Metrics creates a new Prometheus-backed S3Metrics instance.
@@ -135,16 +135,16 @@ func NewS3Metrics() s3.S3Metrics {
 				Name: "dittofs_s3_flush_bytes",
 				Help: "Size of flushed content in bytes by reason",
 				Buckets: []float64{
-					4096,           // 4KB
-					65536,          // 64KB
-					524288,         // 512KB
-					1048576,        // 1MB
-					5242880,        // 5MB
-					10485760,       // 10MB
-					52428800,       // 50MB
-					104857600,      // 100MB
-					524288000,      // 500MB
-					1073741824,     // 1GB
+					4096,       // 4KB
+					65536,      // 64KB
+					524288,     // 512KB
+					1048576,    // 1MB
+					5242880,    // 5MB
+					10485760,   // 10MB
+					52428800,   // 50MB
+					104857600,  // 100MB
+					524288000,  // 500MB
+					1073741824, // 1GB
 				},
 			},
 			[]string{"reason"},

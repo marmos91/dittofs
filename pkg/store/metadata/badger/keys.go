@@ -1,8 +1,6 @@
 package badger
 
 import (
-	"fmt"
-
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -114,9 +112,6 @@ const (
 	// prefixDeviceNumber is the key prefix for device numbers
 	prefixDeviceNumber = "d:"
 
-	// prefixSession is the key prefix for mount sessions
-	prefixSession = "m:"
-
 	// prefixHandleMapping is the key prefix for hash-based handle reverse mapping
 	prefixHandleMapping = "hmap:"
 
@@ -207,16 +202,6 @@ func keyShare(shareName string) []byte {
 	return []byte(prefixShare + shareName)
 }
 
-// keySharePrefix returns the prefix for range scanning all shares.
-//
-// Format: "s:"
-//
-// Returns:
-//   - []byte: Database key prefix for all shares
-func keySharePrefix() []byte {
-	return []byte(prefixShare)
-}
-
 // keyLinkCount generates a key for file link count.
 //
 // Format: "l:<handleKey>"
@@ -241,33 +226,6 @@ func keyLinkCount(handle metadata.FileHandle) []byte {
 //   - []byte: Database key for device numbers
 func keyDeviceNumber(handle metadata.FileHandle) []byte {
 	return []byte(prefixDeviceNumber + handleToKey(handle))
-}
-
-// keySession generates a key for mount session.
-//
-// Format: "m:<shareName>|<clientAddr>"
-//
-// The "|" separator is chosen because it's unlikely to appear in share names
-// or client addresses, and makes the key human-readable.
-//
-// Parameters:
-//   - shareName: The share name
-//   - clientAddr: The client address
-//
-// Returns:
-//   - []byte: Database key for session
-func keySession(shareName, clientAddr string) []byte {
-	return []byte(fmt.Sprintf("%s%s|%s", prefixSession, shareName, clientAddr))
-}
-
-// keySessionPrefix returns the prefix for range scanning all sessions.
-//
-// Format: "m:"
-//
-// Returns:
-//   - []byte: Database key prefix for all sessions
-func keySessionPrefix() []byte {
-	return []byte(prefixSession)
 }
 
 // keyHandleMapping generates a key for hash-based handle reverse mapping.

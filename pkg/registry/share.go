@@ -31,13 +31,13 @@ type Share struct {
 
 // ShareConfig contains all configuration needed to create a share.
 type ShareConfig struct {
-	Name              string
-	MetadataStore     string
-	ContentStore      string
-	ReadOnly          bool
-	AllowedClients    []string
-	DeniedClients     []string
-	RequireAuth       bool
+	Name               string
+	MetadataStore      string
+	ContentStore       string
+	ReadOnly           bool
+	AllowedClients     []string
+	DeniedClients      []string
+	RequireAuth        bool
 	AllowedAuthMethods []string
 
 	// Identity Mapping

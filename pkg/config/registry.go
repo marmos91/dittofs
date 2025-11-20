@@ -191,4 +191,3 @@ func createRootAttributes(cfg RootDirectoryAttributesConfig) *metadata.FileAttr 
 		// Size, timestamps, and other fields will be filled by CreateRootDirectory
 	}
 }
-

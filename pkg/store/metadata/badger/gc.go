@@ -37,7 +37,6 @@ func (s *BadgerMetadataStore) GetAllContentIDs(ctx context.Context) ([]metadata.
 		return nil, err
 	}
 
-
 	// Use map for deduplication (hard links may share ContentIDs)
 	contentIDs := make(map[metadata.ContentID]struct{})
 	processedCount := 0

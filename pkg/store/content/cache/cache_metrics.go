@@ -38,8 +38,8 @@ type CacheMetrics interface {
 // noopCacheMetrics is a default no-op metrics implementation
 type noopCacheMetrics struct{}
 
-func (noopCacheMetrics) ObserveWrite(bytes int64, duration time.Duration)       {}
-func (noopCacheMetrics) ObserveRead(bytes int64, duration time.Duration)        {}
-func (noopCacheMetrics) RecordCacheSize(contentID string, bytes int64)          {}
-func (noopCacheMetrics) RecordCacheReset(contentID string)                      {}
-func (noopCacheMetrics) RecordBufferCount(count int)                            {}
+func (noopCacheMetrics) ObserveWrite(bytes int64, duration time.Duration) {}
+func (noopCacheMetrics) ObserveRead(bytes int64, duration time.Duration)  {}
+func (noopCacheMetrics) RecordCacheSize(contentID string, bytes int64)    {}
+func (noopCacheMetrics) RecordCacheReset(contentID string)                {}
+func (noopCacheMetrics) RecordBufferCount(count int)                      {}

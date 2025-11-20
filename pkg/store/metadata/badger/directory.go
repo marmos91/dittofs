@@ -236,7 +236,6 @@ func (s *BadgerMetadataStore) ReadSymlink(
 		}
 	}
 
-
 	var target string
 	var attr *metadata.FileAttr
 
@@ -345,7 +344,6 @@ func (s *BadgerMetadataStore) CreateSymlink(
 			Message: "no write permission on parent directory",
 		}
 	}
-
 
 	var newHandle metadata.FileHandle
 
@@ -565,7 +563,6 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 			Message: "no write permission on parent directory",
 		}
 	}
-
 
 	var newHandle metadata.FileHandle
 

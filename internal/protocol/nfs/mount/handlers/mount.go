@@ -10,8 +10,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
 	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 	xdr "github.com/rasky/go-xdr/xdr2"
 )
 
@@ -292,4 +292,3 @@ func authFlavorName(flavor uint32) string {
 		return fmt.Sprintf("UNKNOWN(%d)", flavor)
 	}
 }
-

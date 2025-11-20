@@ -185,10 +185,10 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 		},
 		Shares: []ShareConfig{
 			{
-				Name:            "/export",
-				DumpRestricted:  true,
-				MetadataStore:   "default",
-				ContentStore:    "custom",
+				Name:           "/export",
+				DumpRestricted: true,
+				MetadataStore:  "default",
+				ContentStore:   "custom",
 			},
 		},
 	}

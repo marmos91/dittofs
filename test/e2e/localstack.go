@@ -50,15 +50,6 @@ func (lh *LocalstackHelper) createClient() {
 
 	cfg, err := awsConfig.LoadDefaultConfig(ctx,
 		awsConfig.WithRegion("us-east-1"),
-		awsConfig.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
-			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-				return aws.Endpoint{
-					URL:               lh.Endpoint,
-					HostnameImmutable: true,
-					Source:            aws.EndpointSourceCustom,
-				}, nil
-			},
-		)),
 		awsConfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
 			"test", // AccessKeyID
 			"test", // SecretAccessKey
@@ -69,8 +60,9 @@ func (lh *LocalstackHelper) createClient() {
 		lh.T.Fatalf("Failed to load AWS config: %v", err)
 	}
 
-	// Create S3 client with path-style URLs (required for Localstack)
+	// Create S3 client with path-style URLs and custom endpoint (required for Localstack)
 	lh.Client = s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = &lh.Endpoint
 		o.UsePathStyle = true
 	})
 }

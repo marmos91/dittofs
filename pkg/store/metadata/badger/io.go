@@ -42,7 +42,6 @@ func (s *BadgerMetadataStore) PrepareWrite(
 		return nil, err
 	}
 
-
 	var writeOp *metadata.WriteOperation
 
 	err := s.db.View(func(txn *badger.Txn) error {
@@ -172,7 +171,6 @@ func (s *BadgerMetadataStore) CommitWrite(
 		return nil, err
 	}
 
-
 	var updatedAttr *metadata.FileAttr
 
 	err := s.db.Update(func(txn *badger.Txn) error {
@@ -280,7 +278,6 @@ func (s *BadgerMetadataStore) PrepareRead(
 	if err := ctx.Context.Err(); err != nil {
 		return nil, err
 	}
-
 
 	var readMeta *metadata.ReadMetadata
 

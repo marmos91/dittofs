@@ -273,4 +273,3 @@ adapters:
 		t.Errorf("Expected port 5049 from env var, got %d", cfg.Adapters.NFS.Port)
 	}
 }
-

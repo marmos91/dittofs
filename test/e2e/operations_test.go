@@ -361,30 +361,3 @@ func runOnAllConfigs(t *testing.T, testFunc func(t *testing.T, tc *TestContext))
 		})
 	}
 }
-
-// runOnS3Configs is a helper that runs a test on S3 configurations
-func runOnS3Configs(t *testing.T, testFunc func(t *testing.T, tc *TestContext)) {
-	t.Helper()
-
-	// Check if Localstack is available
-	if !CheckLocalstackAvailable(t) {
-		t.Skip("Localstack not available, skipping S3 tests")
-	}
-
-	helper := NewLocalstackHelper(t)
-	defer helper.Cleanup()
-
-	configs := S3Configurations()
-
-	for _, config := range configs {
-		t.Run(config.Name, func(t *testing.T) {
-			// Setup S3 for this config
-			SetupS3Config(t, config, helper)
-
-			tc := NewTestContext(t, config)
-			defer tc.Cleanup()
-
-			testFunc(t, tc)
-		})
-	}
-}

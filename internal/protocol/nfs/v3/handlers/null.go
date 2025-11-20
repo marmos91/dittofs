@@ -5,7 +5,7 @@ import (
 	"context"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	)
+)
 
 // ============================================================================
 // Request and Response Structures

@@ -577,29 +577,29 @@ func (h *Handler) Write(
 
 	// TODO: Phase 5 - Access stores via registry
 	/*
-	if false { // Disabled until Phase 5
-		// CACHED MODE: Write to cache
-		logger.Debug("WRITE: cached mode: content_id=%s offset=%d count=%d",
-			writeIntent.ContentID, req.Offset, len(req.Data))
+		if false { // Disabled until Phase 5
+			// CACHED MODE: Write to cache
+			logger.Debug("WRITE: cached mode: content_id=%s offset=%d count=%d",
+				writeIntent.ContentID, req.Offset, len(req.Data))
 
-		err = h.WriteCache.WriteAt(writeIntent.ContentID, req.Data, int64(req.Offset))
-		if err != nil {
-			logger.Error("WRITE failed: cache write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
-				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
+			err = h.WriteCache.WriteAt(writeIntent.ContentID, req.Data, int64(req.Offset))
+			if err != nil {
+				logger.Error("WRITE failed: cache write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
+					req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
 
-			fileid := xdr.ExtractFileID(fileHandle)
-			nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
+				fileid := xdr.ExtractFileID(fileHandle)
+				nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
 
-			return &WriteResponse{
-				Status:     types.NFS3ErrIO,
-				AttrBefore: nfsWccAttr,
-				AttrAfter:  nfsAttr,
-			}, nil
-		}
+				return &WriteResponse{
+					Status:     types.NFS3ErrIO,
+					AttrBefore: nfsWccAttr,
+					AttrAfter:  nfsAttr,
+				}, nil
+			}
 
-		logger.Debug("WRITE: cached successfully: content_id=%s cache_size=%d",
-			writeIntent.ContentID, h.WriteCache.Size(writeIntent.ContentID))
-	} else {
+			logger.Debug("WRITE: cached successfully: content_id=%s cache_size=%d",
+				writeIntent.ContentID, h.WriteCache.Size(writeIntent.ContentID))
+		} else {
 	*/
 	{
 		// DIRECT MODE: Write directly to content store
@@ -711,7 +711,7 @@ func (h *Handler) Write(
 		AttrBefore: nfsWccAttr,
 		AttrAfter:  nfsAttr,
 		Count:      uint32(len(req.Data)),
-		Committed:  committed,     // UNSTABLE when using cache, tells client to call COMMIT
+		Committed:  committed,      // UNSTABLE when using cache, tells client to call COMMIT
 		Verf:       serverBootTime, // Server boot time for restart detection
 	}, nil
 }

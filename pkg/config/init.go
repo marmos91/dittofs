@@ -127,13 +127,14 @@ metadata:
       type: "` + metadataStore.Type + `"`
 
 	// Add type-specific configuration
-	if metadataStore.Type == "badger" {
+	switch metadataStore.Type {
+	case "badger":
 		yaml += `
       # BadgerDB configuration
       badger:
         # Directory path for BadgerDB database
         db_path: "` + fmt.Sprintf("%v", metadataStore.Badger["db_path"]) + `"`
-	} else if metadataStore.Type == "memory" {
+	case "memory":
 		yaml += `
       # Memory store has no specific configuration
       memory: {}`
@@ -153,19 +154,20 @@ content:
       type: "` + contentStore.Type + `"`
 
 	// Add type-specific configuration
-	if contentStore.Type == "filesystem" {
+	switch contentStore.Type {
+	case "filesystem":
 		yaml += `
       # Filesystem configuration
       filesystem:
         # Directory path for storing file content
         path: "` + fmt.Sprintf("%v", contentStore.Filesystem["path"]) + `"`
-	} else if contentStore.Type == "memory" {
+	case "memory":
 		yaml += `
       # Memory configuration
       memory:
         # Maximum total size of content in bytes (0 = unlimited)
         max_size_bytes: ` + fmt.Sprintf("%v", contentStore.Memory["max_size_bytes"])
-	} else if contentStore.Type == "s3" {
+	case "s3":
 		yaml += `
       # S3 configuration
       s3:

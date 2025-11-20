@@ -28,7 +28,6 @@ func (s *BadgerMetadataStore) SetServerConfig(ctx context.Context, config metada
 		return err
 	}
 
-
 	return s.db.Update(func(txn *badger.Txn) error {
 		configBytes, err := encodeServerConfig(&config)
 		if err != nil {
@@ -58,7 +57,6 @@ func (s *BadgerMetadataStore) GetServerConfig(ctx context.Context) (metadata.Met
 	if err := ctx.Err(); err != nil {
 		return metadata.MetadataServerConfig{}, err
 	}
-
 
 	var config metadata.MetadataServerConfig
 
@@ -119,7 +117,6 @@ func (s *BadgerMetadataStore) Healthcheck(ctx context.Context) error {
 		return err
 	}
 
-
 	// Attempt a simple read transaction to verify database is accessible
 	err := s.db.View(func(txn *badger.Txn) error {
 		// Just verify we can start a transaction
@@ -155,7 +152,6 @@ func (s *BadgerMetadataStore) GetFilesystemCapabilities(ctx context.Context, han
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-
 
 	var caps *metadata.FilesystemCapabilities
 
@@ -262,7 +258,6 @@ func (s *BadgerMetadataStore) GetFilesystemStatistics(ctx context.Context, handl
 	// ========================================================================
 	// Step 2: Cache miss or expired - compute stats (slow path)
 	// ========================================================================
-
 
 	var stats metadata.FilesystemStatistics
 	var fileCount uint64
