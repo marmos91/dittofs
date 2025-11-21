@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -39,45 +38,12 @@ type GetAttrRequest struct {
 //
 // The response is encoded in XDR format before being sent back to the client.
 type GetAttrResponse struct {
-	// Status indicates the result of the getattr operation.
-	// Common values:
-	//   - types.NFS3OK (0): Success
-	//   - types.NFS3ErrNoEnt (2): File handle not found
-	//   - types.NFS3ErrIO (5): I/O error
-	//   - NFS3ErrStale (70): Stale file handle
-	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
-	Status uint32
+	NFSResponseBase // Embeds Status field and GetStatus() method
 
 	// Attr contains the file attributes.
 	// Only present when Status == types.NFS3OK.
 	// Includes file type, permissions, ownership, size, timestamps, etc.
 	Attr *types.NFSFileAttr
-}
-
-// GetStatus returns the status code from the response.
-func (r *GetAttrResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// GetAttrContext contains the context information needed to process a GETATTR request.
-// This includes client identification for auditing purposes and cancellation handling.
-type GetAttrContext struct {
-	// Context carries cancellation signals and deadlines
-	// The GetAttr handler checks this context minimally to maintain high performance
-	// while still respecting client disconnection
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client.
-	// Common values:
-	//   - 0: AUTH_NULL (no authentication)
-	//   - 1: AUTH_UNIX (Unix UID/GID authentication)
-	// Note: GETATTR typically doesn't require authentication in standard NFS,
-	// but the context is provided for consistency and potential future use.
-	AuthFlavor uint32
 }
 
 // ============================================================================
@@ -177,7 +143,7 @@ type GetAttrContext struct {
 //	    // Use resp.Attr for file information
 //	}
 func (h *Handler) GetAttr(
-	ctx *GetAttrContext,
+	ctx *NFSHandlerContext,
 	req *GetAttrRequest,
 ) (*GetAttrResponse, error) {
 	// Check for cancellation before starting any work
@@ -188,7 +154,7 @@ func (h *Handler) GetAttr(
 	case <-ctx.Context.Done():
 		logger.Debug("GETATTR cancelled before processing: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
-		return &GetAttrResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	default:
 	}
 
@@ -205,7 +171,7 @@ func (h *Handler) GetAttr(
 	if err := validateGetAttrRequest(req); err != nil {
 		logger.Warn("GETATTR validation failed: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &GetAttrResponse{Status: err.nfsStatus}, nil
+		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
 	// ========================================================================
@@ -217,14 +183,14 @@ func (h *Handler) GetAttr(
 	if err != nil {
 		logger.Warn("GETATTR failed: invalid file handle: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &GetAttrResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Check if share exists
 	if !h.Registry.ShareExists(shareName) {
 		logger.Warn("GETATTR failed: share not found: share=%s handle=%x client=%s",
 			shareName, req.Handle, clientIP)
-		return &GetAttrResponse{Status: types.NFS3ErrStale}, nil
+		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get metadata store for this share
@@ -232,7 +198,7 @@ func (h *Handler) GetAttr(
 	if err != nil {
 		logger.Error("GETATTR failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
 			shareName, req.Handle, clientIP, err)
-		return &GetAttrResponse{Status: types.NFS3ErrIO}, nil
+		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	logger.Debug("GETATTR: share=%s path=%s", shareName, path)
@@ -247,12 +213,12 @@ func (h *Handler) GetAttr(
 		if ctx.Context.Err() != nil {
 			logger.Debug("GETATTR cancelled during file lookup: handle=%x client=%s error=%v",
 				req.Handle, clientIP, ctx.Context.Err())
-			return &GetAttrResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+			return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
 		logger.Debug("GETATTR failed: handle not found: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &GetAttrResponse{Status: types.NFS3ErrStale}, nil
+		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// ========================================================================
@@ -272,8 +238,8 @@ func (h *Handler) GetAttr(
 		fileid, nfsAttr.UID, nfsAttr.GID, nfsAttr.Mtime.Seconds, nfsAttr.Mtime.Nseconds)
 
 	return &GetAttrResponse{
-		Status: types.NFS3OK,
-		Attr:   nfsAttr,
+		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+		Attr:            nfsAttr,
 	}, nil
 }
 
@@ -429,7 +395,7 @@ func DecodeGetAttrRequest(data []byte) (*GetAttrRequest, error) {
 // Example:
 //
 //	resp := &GetAttrResponse{
-//	    Status: types.NFS3OK,
+//	    NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 //	    Attr:   fileAttr,
 //	}
 //	data, err := resp.Encode()

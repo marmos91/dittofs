@@ -53,16 +53,7 @@ type ReadRequest struct {
 //
 // The response is encoded in XDR format before being sent back to the client.
 type ReadResponse struct {
-	// Status indicates the result of the read operation.
-	// Common values:
-	//   - types.NFS3OK (0): Success
-	//   - types.NFS3ErrNoEnt (2): File handle not found
-	//   - types.NFS3ErrIO (5): I/O error during read
-	//   - NFS3ErrAcces (13): Permission denied
-	//   - types.NFS3ErrIsDir (21): Handle is a directory, not a file
-	//   - NFS3ErrStale (70): Stale file handle
-	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
-	Status uint32
+	NFSResponseBase // Embeds Status field and GetStatus() method
 
 	// Attr contains post-operation attributes of the file.
 	// Optional, may be nil if Status != types.NFS3OK or attributes unavailable.
@@ -86,42 +77,6 @@ type ReadResponse struct {
 	// Length matches Count field.
 	// Empty if Count == 0 or Status != types.NFS3OK.
 	Data []byte
-}
-
-// GetStatus returns the status code from the response.
-func (r *ReadResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// ReadContext contains the context information needed to process a READ request.
-// This includes client identification and authentication details for access control.
-type ReadContext struct {
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client.
-	// Common values:
-	//   - 0: AUTH_NULL (no authentication)
-	//   - 1: AUTH_UNIX (Unix UID/GID authentication)
-	AuthFlavor uint32
-
-	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for read permission checks by the repository.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	UID *uint32
-
-	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for read permission checks by the store.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GID *uint32
-
-	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// Used for access control checks by the store.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GIDs []uint32
 }
 
 // ============================================================================
@@ -246,9 +201,10 @@ type ReadContext struct {
 //	    Offset: 0,
 //	    Count:  4096,
 //	}
-//	ctx := &ReadContext{
+//	ctx := &NFSHandlerContext{
 //	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
+//	    Share:      "/export",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
@@ -268,7 +224,7 @@ type ReadContext struct {
 //	    }
 //	}
 func (h *Handler) Read(
-	ctx *ReadContext,
+	ctx *NFSHandlerContext,
 	req *ReadRequest,
 ) (*ReadResponse, error) {
 	// ========================================================================
@@ -298,7 +254,7 @@ func (h *Handler) Read(
 	if err := validateReadRequest(req); err != nil {
 		logger.Warn("READ validation failed: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &ReadResponse{Status: err.nfsStatus}, nil
+		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
 	// ========================================================================
@@ -310,14 +266,14 @@ func (h *Handler) Read(
 	if err != nil {
 		logger.Warn("READ failed: invalid file handle: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &ReadResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Check if share exists
 	if !h.Registry.ShareExists(shareName) {
 		logger.Warn("READ failed: share not found: share=%s handle=%x client=%s",
 			shareName, req.Handle, clientIP)
-		return &ReadResponse{Status: types.NFS3ErrStale}, nil
+		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get metadata store for this share
@@ -325,7 +281,7 @@ func (h *Handler) Read(
 	if err != nil {
 		logger.Error("READ failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
 			shareName, req.Handle, clientIP, err)
-		return &ReadResponse{Status: types.NFS3ErrIO}, nil
+		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// Get content store for this share
@@ -333,7 +289,7 @@ func (h *Handler) Read(
 	if err != nil {
 		logger.Error("READ failed: cannot get content store: share=%s handle=%x client=%s error=%v",
 			shareName, req.Handle, clientIP, err)
-		return &ReadResponse{Status: types.NFS3ErrIO}, nil
+		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	logger.Debug("READ: share=%s path=%s", shareName, path)
@@ -353,7 +309,7 @@ func (h *Handler) Read(
 
 		logger.Warn("READ failed: file not found: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &ReadResponse{Status: types.NFS3ErrNoEnt}, nil
+		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	// Verify it's a regular file (not a directory or special file)
@@ -366,8 +322,8 @@ func (h *Handler) Read(
 		nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 		return &ReadResponse{
-			Status: types.NFS3ErrIsDir, // types.NFS3ErrIsDir is used for all non-regular files
-			Attr:   nfsAttr,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir}, // types.NFS3ErrIsDir is used for all non-regular files
+			Attr:            nfsAttr,
 		}, nil
 	}
 
@@ -397,11 +353,11 @@ func (h *Handler) Read(
 		nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 		return &ReadResponse{
-			Status: types.NFS3OK,
-			Attr:   nfsAttr,
-			Count:  0,
-			Eof:    true,
-			Data:   []byte{},
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+			Attr:            nfsAttr,
+			Count:           0,
+			Eof:             true,
+			Data:            []byte{},
 		}, nil
 	}
 
@@ -414,11 +370,11 @@ func (h *Handler) Read(
 		nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 		return &ReadResponse{
-			Status: types.NFS3OK,
-			Attr:   nfsAttr,
-			Count:  0,
-			Eof:    true,
-			Data:   []byte{},
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+			Attr:            nfsAttr,
+			Count:           0,
+			Eof:             true,
+			Data:            []byte{},
 		}, nil
 	}
 
@@ -502,8 +458,8 @@ func (h *Handler) Read(
 				nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 				return &ReadResponse{
-					Status: types.NFS3ErrIO,
-					Attr:   nfsAttr,
+					NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+					Attr:            nfsAttr,
 				}, nil
 			}
 		} else {
@@ -525,8 +481,8 @@ func (h *Handler) Read(
 				nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 				return &ReadResponse{
-					Status: types.NFS3ErrIO,
-					Attr:   nfsAttr,
+					NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+					Attr:            nfsAttr,
 				}, nil
 			}
 			defer func() { _ = reader.Close() }()
@@ -544,8 +500,8 @@ func (h *Handler) Read(
 						nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 						return &ReadResponse{
-							Status: types.NFS3ErrIO,
-							Attr:   nfsAttr,
+							NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+							Attr:            nfsAttr,
 						}, nil
 					}
 				} else {
@@ -587,11 +543,11 @@ func (h *Handler) Read(
 							nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 							return &ReadResponse{
-								Status: types.NFS3OK,
-								Attr:   nfsAttr,
-								Count:  0,
-								Eof:    true,
-								Data:   []byte{},
+								NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+								Attr:            nfsAttr,
+								Count:           0,
+								Eof:             true,
+								Data:            []byte{},
 							}, nil
 						}
 
@@ -603,8 +559,8 @@ func (h *Handler) Read(
 							nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 							return &ReadResponse{
-								Status: types.NFS3ErrIO,
-								Attr:   nfsAttr,
+								NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+								Attr:            nfsAttr,
 							}, nil
 						}
 					}
@@ -638,8 +594,8 @@ func (h *Handler) Read(
 				nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 				return &ReadResponse{
-					Status: types.NFS3ErrIO,
-					Attr:   nfsAttr,
+					NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+					Attr:            nfsAttr,
 				}, nil
 			}
 		}
@@ -664,11 +620,11 @@ func (h *Handler) Read(
 		attr.Size, nfsAttr.Type, attr.Mode)
 
 	return &ReadResponse{
-		Status: types.NFS3OK,
-		Attr:   nfsAttr,
-		Count:  uint32(n),
-		Eof:    eof,
-		Data:   data,
+		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+		Attr:            nfsAttr,
+		Count:           uint32(n),
+		Eof:             eof,
+		Data:            data,
 	}, nil
 }
 
@@ -921,7 +877,7 @@ func DecodeReadRequest(data []byte) (*ReadRequest, error) {
 // Example:
 //
 //	resp := &ReadResponse{
-//	    Status: types.NFS3OK,
+//	    NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 //	    Attr:   fileAttr,
 //	    Count:  1024,
 //	    Eof:    false,

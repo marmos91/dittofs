@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"net"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -27,29 +26,7 @@ type UmountAllRequest struct {
 // Note: Like UMNT, UMNTALL always succeeds per the protocol specification.
 // The server acknowledges the request regardless of whether any mounts existed.
 type UmountAllResponse struct {
-	Status uint32
-}
-
-// GetStatus returns the status code from the response.
-// UMOUNTALL responses don't have a status field, always return 0 (success).
-func (r *UmountAllResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// UmountAllContext contains the context information needed to process an unmount-all request.
-// Since UMNTALL removes all mounts for a specific client, only the client address is needed,
-// along with cancellation handling.
-type UmountAllContext struct {
-	// Context carries cancellation signals and deadlines
-	// The UmntAll handler checks this context to handle client disconnection
-	// Note: We prioritize completing cleanup once started to maintain
-	// mount tracking consistency
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	// The IP portion is used to identify all mounts belonging to this client
-	ClientAddr string
+	MountResponseBase // Embeds Status and GetStatus()
 }
 
 // UmntAll handles the UMOUNTALL (UMNTALL) procedure, which allows clients
@@ -95,7 +72,7 @@ type UmountAllContext struct {
 //
 // RFC 1813 Appendix I: UMNTALL Procedure
 func (h *Handler) UmntAll(
-	ctx *UmountAllContext,
+	ctx *MountHandlerContext,
 	req *UmountAllRequest,
 ) (*UmountAllResponse, error) {
 	// Check for cancellation before starting any work
@@ -103,7 +80,7 @@ func (h *Handler) UmntAll(
 	case <-ctx.Context.Done():
 		logger.Debug("Unmount-all request cancelled before processing: client=%s error=%v",
 			ctx.ClientAddr, ctx.Context.Err())
-		return &UmountAllResponse{Status: MountOK}, ctx.Context.Err()
+		return &UmountAllResponse{MountResponseBase: MountResponseBase{Status: MountOK}}, ctx.Context.Err()
 	default:
 	}
 
@@ -124,7 +101,7 @@ func (h *Handler) UmntAll(
 	// UMNTALL always returns void/success per RFC 1813
 	// Even if RemoveShareMount failed or was cancelled, we return success
 	// because the client-side unmount has already occurred
-	return &UmountAllResponse{Status: MountOK}, nil
+	return &UmountAllResponse{MountResponseBase: MountResponseBase{Status: MountOK}}, nil
 }
 
 // DecodeUmountAllRequest decodes an UMOUNTALL request.

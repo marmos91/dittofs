@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -51,18 +50,7 @@ type LinkRequest struct {
 //
 // The response is encoded in XDR format before being sent back to the client.
 type LinkResponse struct {
-	// Status indicates the result of the link operation.
-	// Common values:
-	//   - types.NFS3OK (0): Success
-	//   - types.NFS3ErrNoEnt (2): Source file or target directory not found
-	//   - NFS3ErrExist (17): Name already exists in target directory
-	//   - types.NFS3ErrNotDir (20): DirHandle is not a directory
-	//   - types.NFS3ErrIsDir (21): Attempted to link a directory
-	//   - NFS3ErrInval (22): Invalid argument
-	//   - types.NFS3ErrIO (5): I/O error
-	//   - NFS3ErrStale (70): Stale file handle
-	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
-	Status uint32
+	NFSResponseBase // Embeds Status field and GetStatus() method
 
 	// FileAttr contains post-operation attributes of the linked file.
 	// Only present when Status == types.NFS3OK or for cache consistency on errors.
@@ -77,50 +65,6 @@ type LinkResponse struct {
 	// Used for weak cache consistency. Present for both success and failure.
 	DirWccAfter *types.NFSFileAttr
 }
-
-// GetStatus returns the status code from the response.
-func (r *LinkResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// LinkContext contains the context information needed to process a LINK request.
-// This includes client identification and authentication details for access control.
-type LinkContext struct {
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client.
-	// Common values:
-	//   - 0: AUTH_NULL (no authentication)
-	//   - 1: AUTH_UNIX (Unix UID/GID authentication)
-	AuthFlavor uint32
-
-	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for access control checks.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	UID *uint32
-
-	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for access control checks.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GID *uint32
-
-	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// Used for access control checks.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GIDs []uint32
-}
-
-// Implement NFSAuthContext interface for LinkContext
-func (c *LinkContext) GetContext() context.Context { return c.Context }
-func (c *LinkContext) GetClientAddr() string       { return c.ClientAddr }
-func (c *LinkContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
-func (c *LinkContext) GetUID() *uint32             { return c.UID }
-func (c *LinkContext) GetGID() *uint32             { return c.GID }
-func (c *LinkContext) GetGIDs() []uint32           { return c.GIDs }
 
 // ============================================================================
 // Protocol Handler
@@ -228,7 +172,7 @@ func (c *LinkContext) GetGIDs() []uint32           { return c.GIDs }
 //	    // Hard link created successfully
 //	}
 func (h *Handler) Link(
-	ctx *LinkContext,
+	ctx *NFSHandlerContext,
 	req *LinkRequest,
 ) (*LinkResponse, error) {
 	// Extract client IP for logging
@@ -258,7 +202,7 @@ func (h *Handler) Link(
 	if err := validateLinkRequest(req); err != nil {
 		logger.Warn("LINK validation failed: name='%s' client=%s error=%v",
 			req.Name, clientIP, err)
-		return &LinkResponse{Status: err.nfsStatus}, nil
+		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
 	// ========================================================================
@@ -270,7 +214,7 @@ func (h *Handler) Link(
 	if err != nil {
 		logger.Warn("LINK failed: invalid directory handle: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &LinkResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Decode file handle to verify it's from the same share
@@ -279,21 +223,21 @@ func (h *Handler) Link(
 	if err != nil {
 		logger.Warn("LINK failed: invalid file handle: file=%x client=%s error=%v",
 			req.FileHandle, clientIP, err)
-		return &LinkResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Verify both handles are from the same share (cross-share linking not allowed)
 	if shareName != fileShareName {
 		logger.Warn("LINK failed: cross-share link attempted: file_share=%s dir_share=%s client=%s",
 			fileShareName, shareName, clientIP)
-		return &LinkResponse{Status: types.NFS3ErrInval}, nil
+		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrInval}}, nil
 	}
 
 	// Check if share exists
 	if !h.Registry.ShareExists(shareName) {
 		logger.Warn("LINK failed: share not found: share=%s client=%s",
 			shareName, clientIP)
-		return &LinkResponse{Status: types.NFS3ErrStale}, nil
+		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get metadata store for this share
@@ -301,7 +245,7 @@ func (h *Handler) Link(
 	if err != nil {
 		logger.Error("LINK failed: cannot get metadata store: share=%s client=%s error=%v",
 			shareName, clientIP, err)
-		return &LinkResponse{Status: types.NFS3ErrIO}, nil
+		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	logger.Debug("LINK: share=%s path=%s name=%s", shareName, path, req.Name)
@@ -310,18 +254,18 @@ func (h *Handler) Link(
 	// Step 4: Build AuthContext for permission checking
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, dirHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if ctx.Context.Err() != nil {
 			logger.Debug("LINK cancelled during auth context building: file=%x name='%s' client=%s error=%v",
 				req.FileHandle, req.Name, clientIP, ctx.Context.Err())
-			return &LinkResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+			return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
 		logger.Error("LINK failed: failed to build auth context: file=%x name='%s' client=%s error=%v",
 			req.FileHandle, req.Name, clientIP, err)
-		return &LinkResponse{Status: types.NFS3ErrIO}, nil
+		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// ========================================================================
@@ -344,14 +288,14 @@ func (h *Handler) Link(
 	if err != nil {
 		logger.Warn("LINK failed: source file not found: file=%x client=%s error=%v",
 			req.FileHandle, clientIP, err)
-		return &LinkResponse{Status: types.NFS3ErrNoEnt}, nil
+		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	// Hard links to directories are not allowed (prevents filesystem cycles)
 	if fileAttr.Type == metadata.FileTypeDirectory {
 		logger.Warn("LINK failed: cannot link directory: file=%x client=%s",
 			req.FileHandle, clientIP)
-		return &LinkResponse{Status: types.NFS3ErrIsDir}, nil
+		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir}}, nil
 	}
 
 	// ========================================================================
@@ -374,7 +318,7 @@ func (h *Handler) Link(
 	if err != nil {
 		logger.Warn("LINK failed: target directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &LinkResponse{Status: types.NFS3ErrNoEnt}, nil
+		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	// Capture pre-operation directory attributes for WCC
@@ -390,9 +334,9 @@ func (h *Handler) Link(
 		dirWccAfter := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &LinkResponse{
-			Status:       types.NFS3ErrNotDir,
-			DirWccBefore: dirWccBefore,
-			DirWccAfter:  dirWccAfter,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
+			DirWccBefore:    dirWccBefore,
+			DirWccAfter:     dirWccAfter,
 		}, nil
 	}
 
@@ -424,9 +368,9 @@ func (h *Handler) Link(
 		dirWccAfter := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &LinkResponse{
-			Status:       types.NFS3ErrExist,
-			DirWccBefore: dirWccBefore,
-			DirWccAfter:  dirWccAfter,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrExist},
+			DirWccBefore:    dirWccBefore,
+			DirWccAfter:     dirWccAfter,
 		}, nil
 	}
 	// If error, file doesn't exist (good) - continue with link creation
@@ -467,9 +411,9 @@ func (h *Handler) Link(
 		status := mapMetadataErrorToNFS(err)
 
 		return &LinkResponse{
-			Status:       status,
-			DirWccBefore: dirWccBefore,
-			DirWccAfter:  dirWccAfter,
+			NFSResponseBase: NFSResponseBase{Status: status},
+			DirWccBefore:    dirWccBefore,
+			DirWccAfter:     dirWccAfter,
 		}, nil
 	}
 
@@ -499,10 +443,10 @@ func (h *Handler) Link(
 		req.Name, req.FileHandle, nfsFileAttr.Nlink, clientIP)
 
 	return &LinkResponse{
-		Status:       types.NFS3OK,
-		FileAttr:     nfsFileAttr,
-		DirWccBefore: dirWccBefore,
-		DirWccAfter:  nfsDirAttr,
+		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+		FileAttr:        nfsFileAttr,
+		DirWccBefore:    dirWccBefore,
+		DirWccAfter:     nfsDirAttr,
 	}, nil
 }
 
@@ -701,7 +645,7 @@ func DecodeLinkRequest(data []byte) (*LinkRequest, error) {
 // Example:
 //
 //	resp := &LinkResponse{
-//	    Status:       types.NFS3OK,
+//	    NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 //	    FileAttr:     fileAttr,
 //	    DirWccBefore: wccBefore,
 //	    DirWccAfter:  wccAfter,

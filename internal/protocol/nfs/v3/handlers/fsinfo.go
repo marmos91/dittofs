@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"time"
@@ -44,14 +43,7 @@ type FsInfoRequest struct {
 // This information helps clients optimize their I/O operations by using
 // the server's preferred sizes and understanding what features are supported.
 type FsInfoResponse struct {
-	// Status indicates the result of the fsinfo operation.
-	// Common values:
-	//   - types.NFS3OK (0): Success
-	//   - types.NFS3ErrNoEnt (2): File handle not found
-	//   - NFS3ErrStale (70): Stale file handle
-	//   - types.NFS3ErrBadHandle (10001): Malformed file handle
-	//   - types.NFS3ErrIO (5): I/O error
-	Status uint32
+	NFSResponseBase // Embeds Status field and GetStatus() method
 
 	// Attr contains the post-operation attributes of the file system object.
 	// Present when Status == types.NFS3OK. May be nil if attributes are unavailable.
@@ -111,29 +103,6 @@ type FsInfoResponse struct {
 	Properties uint32
 }
 
-// GetStatus returns the status code from the response.
-func (r *FsInfoResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// FsInfoContext contains the context information needed to process an FSINFO request.
-// This includes client identification and authentication details.
-type FsInfoContext struct {
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client
-	// This field is available for future authentication enhancements.
-	// Common values:
-	//   - 0: AUTH_NULL (no authentication)
-	//   - 1: AUTH_UNIX (Unix-style authentication)
-	// Currently not enforced for FSINFO as it's typically an unauthenticated operation.
-	AuthFlavor uint32
-}
-
 // FsInfo handles the FSINFO procedure, which returns static information about
 // the NFS server's capabilities and the filesystem.
 //
@@ -189,7 +158,7 @@ type FsInfoContext struct {
 //	    // Success - use resp.Rtmax, resp.Wtmax, etc. to optimize I/O
 //	}
 func (h *Handler) FsInfo(
-	ctx *FsInfoContext,
+	ctx *NFSHandlerContext,
 	req *FsInfoRequest,
 ) (*FsInfoResponse, error) {
 	logger.Debug("FSINFO request: handle=%x client=%s auth=%d",
@@ -209,7 +178,7 @@ func (h *Handler) FsInfo(
 	// Validate file handle before using it
 	if err := validateFileHandle(req.Handle); err != nil {
 		logger.Debug("FSINFO failed: invalid handle: %v", err)
-		return &FsInfoResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// ========================================================================
@@ -221,14 +190,14 @@ func (h *Handler) FsInfo(
 	if err != nil {
 		logger.Warn("FSINFO failed: invalid file handle: handle=%x client=%s error=%v",
 			req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
-		return &FsInfoResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Check if share exists
 	if !h.Registry.ShareExists(shareName) {
 		logger.Warn("FSINFO failed: share not found: share=%s handle=%x client=%s",
 			shareName, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr))
-		return &FsInfoResponse{Status: types.NFS3ErrStale}, nil
+		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get metadata store for this share
@@ -236,7 +205,7 @@ func (h *Handler) FsInfo(
 	if err != nil {
 		logger.Error("FSINFO failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
 			shareName, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
-		return &FsInfoResponse{Status: types.NFS3ErrIO}, nil
+		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	logger.Debug("FSINFO: share=%s path=%s", shareName, path)
@@ -257,7 +226,7 @@ func (h *Handler) FsInfo(
 	if err != nil {
 		logger.Debug("FSINFO failed: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, err)
-		return &FsInfoResponse{Status: types.NFS3ErrNoEnt}, nil
+		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	// Retrieve filesystem capabilities from the store
@@ -268,14 +237,14 @@ func (h *Handler) FsInfo(
 	if err != nil {
 		logger.Error("FSINFO failed: handle=%x client=%s error=failed to retrieve capabilities: %v",
 			req.Handle, ctx.ClientAddr, err)
-		return &FsInfoResponse{Status: types.NFS3ErrIO}, nil
+		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// Defensive check: ensure store returned valid capabilities
 	if capabilities == nil {
 		logger.Error("FSINFO failed: handle=%x client=%s error=store returned nil capabilities",
 			req.Handle, ctx.ClientAddr)
-		return &FsInfoResponse{Status: types.NFS3ErrIO}, nil
+		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// Generate file ID from handle for attributes
@@ -284,7 +253,7 @@ func (h *Handler) FsInfo(
 	if err != nil {
 		logger.Error("FSINFO failed: handle=%x client=%s error=failed to extract file ID: %v",
 			req.Handle, ctx.ClientAddr, err)
-		return &FsInfoResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Convert metadata attributes to NFS wire format
@@ -303,18 +272,18 @@ func (h *Handler) FsInfo(
 	// Build response with data from store
 	// Map the standardized FilesystemCapabilities to NFS wire format
 	return &FsInfoResponse{
-		Status:      types.NFS3OK,
-		Attr:        nfsAttr,
-		Rtmax:       capabilities.MaxReadSize,
-		Rtpref:      capabilities.PreferredReadSize,
-		Rtmult:      4096, // Common block size multiple
-		Wtmax:       capabilities.MaxWriteSize,
-		Wtpref:      capabilities.PreferredWriteSize,
-		Wtmult:      4096, // Common block size multiple
-		Dtpref:      8192, // Reasonable default for directory reads
-		Maxfilesize: capabilities.MaxFileSize,
-		TimeDelta:   timeDelta,
-		Properties:  properties,
+		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+		Attr:            nfsAttr,
+		Rtmax:           capabilities.MaxReadSize,
+		Rtpref:          capabilities.PreferredReadSize,
+		Rtmult:          4096, // Common block size multiple
+		Wtmax:           capabilities.MaxWriteSize,
+		Wtpref:          capabilities.PreferredWriteSize,
+		Wtmult:          4096, // Common block size multiple
+		Dtpref:          8192, // Reasonable default for directory reads
+		Maxfilesize:     capabilities.MaxFileSize,
+		TimeDelta:       timeDelta,
+		Properties:      properties,
 	}, nil
 }
 
@@ -449,7 +418,7 @@ func DecodeFsInfoRequest(data []byte) (*FsInfoRequest, error) {
 // Example:
 //
 //	resp := &FsInfoResponse{
-//	    Status:      types.NFS3OK,
+//	    NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 //	    Rtmax:       65536,
 //	    Wtmax:       65536,
 //	    Maxfilesize: 1<<63 - 1,

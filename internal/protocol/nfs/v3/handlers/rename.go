@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"strings"
@@ -58,20 +57,7 @@ type RenameRequest struct {
 //
 // The response is encoded in XDR format before being sent back to the client.
 type RenameResponse struct {
-	// Status indicates the result of the rename operation.
-	// Common values:
-	//   - types.NFS3OK (0): Success
-	//   - types.NFS3ErrNoEnt (2): Source file or directory not found
-	//   - types.NFS3ErrNotDir (20): From or To handle is not a directory
-	//   - NFS3ErrInval (22): Invalid argument (e.g., renaming to "." or "..")
-	//   - NFS3ErrExist (17): Destination exists and cannot be replaced
-	//   - NFS3ErrNotEmpty (66): Attempt to rename directory over non-empty directory
-	//   - types.NFS3ErrIO (5): I/O error
-	//   - NFS3ErrAcces (13): Permission denied
-	//   - NFS3ErrXDev (18): Cross-device rename attempted (not supported)
-	//   - NFS3ErrStale (70): Stale file handle
-	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
-	Status uint32
+	NFSResponseBase // Embeds Status field and GetStatus() method
 
 	// FromDirWccBefore contains pre-operation attributes of the source directory.
 	// Used for weak cache consistency.
@@ -89,54 +75,6 @@ type RenameResponse struct {
 	// Used for weak cache consistency.
 	ToDirWccAfter *types.NFSFileAttr
 }
-
-// GetStatus returns the status code from the response.
-func (r *RenameResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// RenameContext contains the context information needed to process a RENAME request.
-// This includes client identification, authentication details, and cancellation handling
-// for access control.
-type RenameContext struct {
-	// Context carries cancellation signals and deadlines
-	// The Rename handler checks this context to abort operations if the client
-	// disconnects or the request times out
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client.
-	// Common values:
-	//   - 0: AUTH_NULL (no authentication)
-	//   - 1: AUTH_UNIX (Unix UID/GID authentication)
-	AuthFlavor uint32
-
-	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for access control checks by the store.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	UID *uint32
-
-	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for access control checks by the store.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GID *uint32
-
-	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// Used for access control checks by the store.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GIDs []uint32
-}
-
-// Implement NFSAuthContext interface for RenameContext
-func (c *RenameContext) GetContext() context.Context { return c.Context }
-func (c *RenameContext) GetClientAddr() string       { return c.ClientAddr }
-func (c *RenameContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
-func (c *RenameContext) GetUID() *uint32             { return c.UID }
-func (c *RenameContext) GetGID() *uint32             { return c.GID }
-func (c *RenameContext) GetGIDs() []uint32           { return c.GIDs }
 
 // ============================================================================
 // Protocol Handler
@@ -289,7 +227,7 @@ func (c *RenameContext) GetGIDs() []uint32           { return c.GIDs }
 //	    // Rename successful
 //	}
 func (h *Handler) Rename(
-	ctx *RenameContext,
+	ctx *NFSHandlerContext,
 	req *RenameRequest,
 ) (*RenameResponse, error) {
 	// Check for cancellation before starting any work
@@ -298,7 +236,7 @@ func (h *Handler) Rename(
 	case <-ctx.Context.Done():
 		logger.Debug("RENAME cancelled before processing: from='%s' to='%s' client=%s error=%v",
 			req.FromName, req.ToName, ctx.ClientAddr, ctx.Context.Err())
-		return &RenameResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	default:
 	}
 
@@ -315,7 +253,7 @@ func (h *Handler) Rename(
 	if err := validateRenameRequest(req); err != nil {
 		logger.Warn("RENAME validation failed: from='%s' to='%s' client=%s error=%v",
 			req.FromName, req.ToName, clientIP, err)
-		return &RenameResponse{Status: err.nfsStatus}, nil
+		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
 	// ========================================================================
@@ -327,7 +265,7 @@ func (h *Handler) Rename(
 	if err != nil {
 		logger.Warn("RENAME failed: invalid source directory handle: dir=%x client=%s error=%v",
 			req.FromDirHandle, clientIP, err)
-		return &RenameResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	toDirHandle := metadata.FileHandle(req.ToDirHandle)
@@ -335,21 +273,21 @@ func (h *Handler) Rename(
 	if err != nil {
 		logger.Warn("RENAME failed: invalid destination directory handle: dir=%x client=%s error=%v",
 			req.ToDirHandle, clientIP, err)
-		return &RenameResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Verify both handles are from the same share (cross-share rename not allowed)
 	if fromShareName != toShareName {
 		logger.Warn("RENAME failed: cross-share rename attempted: from_share=%s to_share=%s client=%s",
 			fromShareName, toShareName, clientIP)
-		return &RenameResponse{Status: types.NFS3ErrInval}, nil
+		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrInval}}, nil
 	}
 
 	// Check if share exists
 	if !h.Registry.ShareExists(fromShareName) {
 		logger.Warn("RENAME failed: share not found: share=%s client=%s",
 			fromShareName, clientIP)
-		return &RenameResponse{Status: types.NFS3ErrStale}, nil
+		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get metadata store for this share
@@ -357,7 +295,7 @@ func (h *Handler) Rename(
 	if err != nil {
 		logger.Error("RENAME failed: cannot get metadata store: share=%s client=%s error=%v",
 			fromShareName, clientIP, err)
-		return &RenameResponse{Status: types.NFS3ErrIO}, nil
+		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	logger.Debug("RENAME: share=%s from_path=%s/%s to_path=%s/%s", fromShareName, fromPath, req.FromName, toPath, req.ToName)
@@ -372,12 +310,12 @@ func (h *Handler) Rename(
 		if ctx.Context.Err() != nil {
 			logger.Debug("RENAME cancelled during source directory lookup: from='%s' to='%s' client=%s error=%v",
 				req.FromName, req.ToName, clientIP, ctx.Context.Err())
-			return &RenameResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+			return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
 		logger.Warn("RENAME failed: source directory not found: dir=%x client=%s error=%v",
 			req.FromDirHandle, clientIP, err)
-		return &RenameResponse{Status: types.NFS3ErrNoEnt}, nil
+		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	// Capture pre-operation attributes for source directory
@@ -392,7 +330,7 @@ func (h *Handler) Rename(
 		fromDirWccAfter := xdr.MetadataToNFS(fromDirAttr, fromDirID)
 
 		return &RenameResponse{
-			Status:           types.NFS3ErrNotDir,
+			NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrNotDir},
 			FromDirWccBefore: fromDirWccBefore,
 			FromDirWccAfter:  fromDirWccAfter,
 		}, nil
@@ -408,7 +346,7 @@ func (h *Handler) Rename(
 		fromDirWccAfter := xdr.MetadataToNFS(fromDirAttr, fromDirID)
 
 		return &RenameResponse{
-			Status:           types.NFS3ErrIO,
+			NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrIO},
 			FromDirWccBefore: fromDirWccBefore,
 			FromDirWccAfter:  fromDirWccAfter,
 		}, ctx.Context.Err()
@@ -431,7 +369,7 @@ func (h *Handler) Rename(
 			fromDirWccAfter := xdr.MetadataToNFS(fromDirAttr, fromDirID)
 
 			return &RenameResponse{
-				Status:           types.NFS3ErrIO,
+				NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrIO},
 				FromDirWccBefore: fromDirWccBefore,
 				FromDirWccAfter:  fromDirWccAfter,
 			}, ctx.Context.Err()
@@ -445,7 +383,7 @@ func (h *Handler) Rename(
 		fromDirWccAfter := xdr.MetadataToNFS(fromDirAttr, fromDirID)
 
 		return &RenameResponse{
-			Status:           types.NFS3ErrNoEnt,
+			NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrNoEnt},
 			FromDirWccBefore: fromDirWccBefore,
 			FromDirWccAfter:  fromDirWccAfter,
 		}, nil
@@ -466,7 +404,7 @@ func (h *Handler) Rename(
 		toDirWccAfter := xdr.MetadataToNFS(toDirAttr, toDirID)
 
 		return &RenameResponse{
-			Status:           types.NFS3ErrNotDir,
+			NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrNotDir},
 			FromDirWccBefore: fromDirWccBefore,
 			FromDirWccAfter:  fromDirWccAfter,
 			ToDirWccBefore:   toDirWccBefore,
@@ -489,7 +427,7 @@ func (h *Handler) Rename(
 		toDirWccAfter := xdr.MetadataToNFS(toDirAttr, toDirID)
 
 		return &RenameResponse{
-			Status:           types.NFS3ErrIO,
+			NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrIO},
 			FromDirWccBefore: fromDirWccBefore,
 			FromDirWccAfter:  fromDirWccAfter,
 			ToDirWccBefore:   toDirWccBefore,
@@ -502,7 +440,7 @@ func (h *Handler) Rename(
 	// Step 4: Build authentication context for store
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, fromDirHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -516,7 +454,7 @@ func (h *Handler) Rename(
 			toDirWccAfter := xdr.MetadataToNFS(toDirAttr, toDirID)
 
 			return &RenameResponse{
-				Status:           types.NFS3ErrIO,
+				NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrIO},
 				FromDirWccBefore: fromDirWccBefore,
 				FromDirWccAfter:  fromDirWccAfter,
 				ToDirWccBefore:   toDirWccBefore,
@@ -534,7 +472,7 @@ func (h *Handler) Rename(
 		toDirWccAfter := xdr.MetadataToNFS(toDirAttr, toDirID)
 
 		return &RenameResponse{
-			Status:           types.NFS3ErrIO,
+			NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrIO},
 			FromDirWccBefore: fromDirWccBefore,
 			FromDirWccAfter:  fromDirWccAfter,
 			ToDirWccBefore:   toDirWccBefore,
@@ -578,7 +516,7 @@ func (h *Handler) Rename(
 			}
 
 			return &RenameResponse{
-				Status:           types.NFS3ErrIO,
+				NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrIO},
 				FromDirWccBefore: fromDirWccBefore,
 				FromDirWccAfter:  fromDirWccAfter,
 				ToDirWccBefore:   toDirWccBefore,
@@ -606,7 +544,7 @@ func (h *Handler) Rename(
 		status := xdr.MapStoreErrorToNFSStatus(err, clientIP, "rename")
 
 		return &RenameResponse{
-			Status:           status,
+			NFSResponseBase:  NFSResponseBase{Status: status},
 			FromDirWccBefore: fromDirWccBefore,
 			FromDirWccAfter:  fromDirWccAfter,
 			ToDirWccBefore:   toDirWccBefore,
@@ -650,7 +588,7 @@ func (h *Handler) Rename(
 		fromDirID, toDirID, bytes.Equal(req.FromDirHandle, req.ToDirHandle))
 
 	return &RenameResponse{
-		Status:           types.NFS3OK,
+		NFSResponseBase:  NFSResponseBase{Status: types.NFS3OK},
 		FromDirWccBefore: fromDirWccBefore,
 		FromDirWccAfter:  fromDirWccAfter,
 		ToDirWccBefore:   toDirWccBefore,
@@ -897,7 +835,7 @@ func DecodeRenameRequest(data []byte) (*RenameRequest, error) {
 // Example:
 //
 //	resp := &RenameResponse{
-//	    Status:           types.NFS3OK,
+//	    NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 //	    FromDirWccBefore: fromWccBefore,
 //	    FromDirWccAfter:  fromWccAfter,
 //	    ToDirWccBefore:   toWccBefore,

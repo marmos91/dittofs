@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -25,31 +24,16 @@ type ExportRequest struct {
 	// Empty struct - EXPORT takes no parameters
 }
 
-// ExportContext contains the context information needed to process an export request.
-// This includes cancellation handling for the request lifecycle.
-type ExportContext struct {
-	// Context carries cancellation signals and deadlines
-	// The Export handler checks this context to abort operations if the client
-	// disconnects or the request times out
-	Context context.Context
-}
-
 // ExportResponse represents the response to an EXPORT request.
 // It contains a list of all file systems currently exported by the server.
 //
 // The response format follows the XDR specification for a linked list,
 // where each entry is followed by a boolean indicating if more entries exist.
 type ExportResponse struct {
-	Status uint32
+	MountResponseBase // Embeds Status and GetStatus()
 	// Entries is the list of currently exported filesystems
 	// Each entry contains the export path and optionally a list of allowed groups
 	Entries []ExportEntry
-}
-
-// GetStatus returns the status code from the response.
-// EXPORT responses don't have a status field, always return 0 (success).
-func (r *ExportResponse) GetStatus() uint32 {
-	return r.Status
 }
 
 // ExportEntry represents a single export entry in the EXPORT response.
@@ -118,7 +102,11 @@ type ExportEntry struct {
 // Example:
 //
 //	handler := &Handler{}
-//	ctx := &ExportContext{Context: context.Background()}
+//	ctx := &MountHandlerContext{
+//	    Context:    context.Background(),
+//	    ClientAddr: "192.168.1.100:1234",
+//	    AuthFlavor: 0, // AUTH_NULL
+//	}
 //	req := &ExportRequest{}
 //	resp, err := handler.Export(ctx, repository, req)
 //	if err != nil {
@@ -130,7 +118,7 @@ type ExportEntry struct {
 //	}
 //	fmt.Printf("Available exports: %d\n", len(resp.Entries))
 func (h *Handler) Export(
-	ctx *ExportContext,
+	ctx *MountHandlerContext,
 	req *ExportRequest,
 ) (*ExportResponse, error) {
 	// Check for cancellation before starting any work
@@ -166,8 +154,8 @@ func (h *Handler) Export(
 	}
 
 	return &ExportResponse{
-		Status:  MountOK,
-		Entries: entries,
+		MountResponseBase: MountResponseBase{Status: MountOK},
+		Entries:           entries,
 	}, nil
 }
 

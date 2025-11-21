@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
@@ -36,49 +35,7 @@ type NullRequest struct {
 //
 // The response is encoded in XDR format (empty) before being sent to the client.
 type NullResponse struct {
-	// Status is always NFS3OK for NULL (NULL always succeeds)
-	Status uint32
-}
-
-// GetStatus returns the status code from the response.
-func (r *NullResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// NullContext contains the context information for a NULL request.
-// This includes client identification for logging and monitoring purposes.
-//
-// While NULL doesn't perform operations requiring authentication, we maintain
-// the context structure for:
-//   - Consistent logging across all procedures
-//   - Connection monitoring and metrics
-//   - Security auditing (detecting port scans, etc.)
-//   - Rate limiting and abuse detection
-type NullContext struct {
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client.
-	// Common values:
-	//   - 0: AUTH_NULL (no authentication)
-	//   - 1: AUTH_UNIX (Unix UID/GID authentication)
-	// For NULL procedure, authentication is typically not enforced.
-	AuthFlavor uint32
-
-	// UID is the authenticated user ID (from AUTH_UNIX).
-	// May be nil for AUTH_NULL or when authentication is not provided.
-	UID *uint32
-
-	// GID is the authenticated group ID (from AUTH_UNIX).
-	// May be nil for AUTH_NULL or when authentication is not provided.
-	GID *uint32
-
-	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// May be empty for AUTH_NULL or when authentication is not provided.
-	GIDs []uint32
+	NFSResponseBase // Embeds Status field and GetStatus() method
 }
 
 // ============================================================================
@@ -195,11 +152,12 @@ type NullContext struct {
 //
 // Example:
 //
-//	handler := &DefaultNFSHandler{}
+//	handler := &Handler{}
 //	req := &NullRequest{}
-//	ctx := &NullContext{
+//	ctx := &NFSHandlerContext{
 //	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
+//	    Share:      "/export",
 //	    AuthFlavor: 0, // AUTH_NULL
 //	}
 //	resp, err := handler.Null(ctx, store, req)
@@ -213,7 +171,7 @@ type NullContext struct {
 //	}
 //	// Server is responding - NULL always returns success
 func (h *Handler) Null(
-	ctx *NullContext,
+	ctx *NFSHandlerContext,
 	req *NullRequest,
 ) (*NullResponse, error) {
 	// ========================================================================
@@ -256,7 +214,7 @@ func (h *Handler) Null(
 	logger.Debug("NULL: request completed successfully: client=%s", clientIP)
 
 	// Return empty response - NULL always succeeds
-	return &NullResponse{Status: types.NFS3OK}, nil
+	return &NullResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3OK}}, nil
 }
 
 // ============================================================================

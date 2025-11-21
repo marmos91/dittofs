@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"strings"
@@ -63,19 +62,7 @@ type SymlinkRequest struct {
 //
 // The response is encoded in XDR format before being sent back to the client.
 type SymlinkResponse struct {
-	// Status indicates the result of the symlink creation.
-	// Common values:
-	//   - types.NFS3OK (0): Success - symlink created
-	//   - types.NFS3ErrNoEnt (2): Parent directory not found
-	//   - types.NFS3ErrNotDir (20): DirHandle is not a directory
-	//   - NFS3ErrExist (17): A file with the same name already exists
-	//   - NFS3ErrAcces (13): Permission denied
-	//   - types.NFS3ErrIO (5): I/O error
-	//   - NFS3ErrStale (70): Stale file handle
-	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
-	//   - NFS3ErrNameTooLong (63): Name or target path too long
-	//   - NFS3ErrNoSpc (28): No space left on device
-	Status uint32
+	NFSResponseBase // Embeds Status field and GetStatus() method
 
 	// FileHandle is the file handle of the newly created symlink.
 	// Only present when Status == types.NFS3OK.
@@ -97,54 +84,6 @@ type SymlinkResponse struct {
 	// Should be present for both success and failure cases when possible.
 	DirAttrAfter *types.NFSFileAttr
 }
-
-// GetStatus returns the status code from the response.
-func (r *SymlinkResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// SymlinkContext contains the context information needed to process a SYMLINK request.
-// This includes client identification, authentication details, and cancellation handling
-// for access control.
-type SymlinkContext struct {
-	// Context carries cancellation signals and deadlines
-	// The Symlink handler checks this context to abort operations if the client
-	// disconnects or the request times out
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client.
-	// Common values:
-	//   - 0: AUTH_NULL (no authentication)
-	//   - 1: AUTH_UNIX (Unix UID/GID authentication)
-	AuthFlavor uint32
-
-	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for access control checks and setting symlink ownership.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	UID *uint32
-
-	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for access control checks and setting symlink ownership.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GID *uint32
-
-	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// Used for checking if user belongs to directory's group.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GIDs []uint32
-}
-
-// Implement NFSAuthContext interface for SymlinkContext
-func (c *SymlinkContext) GetContext() context.Context { return c.Context }
-func (c *SymlinkContext) GetClientAddr() string       { return c.ClientAddr }
-func (c *SymlinkContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
-func (c *SymlinkContext) GetUID() *uint32             { return c.UID }
-func (c *SymlinkContext) GetGID() *uint32             { return c.GID }
-func (c *SymlinkContext) GetGIDs() []uint32           { return c.GIDs }
 
 // ============================================================================
 // Protocol Handler
@@ -316,7 +255,7 @@ func (c *SymlinkContext) GetGIDs() []uint32           { return c.GIDs }
 //	    // Use resp.FileHandle for subsequent operations
 //	}
 func (h *Handler) Symlink(
-	ctx *SymlinkContext,
+	ctx *NFSHandlerContext,
 	req *SymlinkRequest,
 ) (*SymlinkResponse, error) {
 	// Check for cancellation before starting any work
@@ -325,7 +264,7 @@ func (h *Handler) Symlink(
 	case <-ctx.Context.Done():
 		logger.Debug("SYMLINK cancelled before processing: name='%s' target='%s' client=%s error=%v",
 			req.Name, req.Target, ctx.ClientAddr, ctx.Context.Err())
-		return &SymlinkResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	default:
 	}
 
@@ -342,7 +281,7 @@ func (h *Handler) Symlink(
 	if err := validateSymlinkRequest(req); err != nil {
 		logger.Warn("SYMLINK validation failed: name='%s' target='%s' client=%s error=%v",
 			req.Name, req.Target, clientIP, err)
-		return &SymlinkResponse{Status: err.nfsStatus}, nil
+		return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
 	// ========================================================================
@@ -354,14 +293,14 @@ func (h *Handler) Symlink(
 	if err != nil {
 		logger.Warn("SYMLINK failed: invalid directory handle: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &SymlinkResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Check if share exists
 	if !h.Registry.ShareExists(shareName) {
 		logger.Warn("SYMLINK failed: share not found: share=%s dir=%x client=%s",
 			shareName, req.DirHandle, clientIP)
-		return &SymlinkResponse{Status: types.NFS3ErrStale}, nil
+		return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get metadata store for this share
@@ -369,7 +308,7 @@ func (h *Handler) Symlink(
 	if err != nil {
 		logger.Error("SYMLINK failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
 			shareName, req.DirHandle, clientIP, err)
-		return &SymlinkResponse{Status: types.NFS3ErrIO}, nil
+		return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	logger.Debug("SYMLINK: share=%s path=%s name=%s target=%s", shareName, path, req.Name, req.Target)
@@ -384,12 +323,12 @@ func (h *Handler) Symlink(
 		if ctx.Context.Err() != nil {
 			logger.Debug("SYMLINK cancelled during directory lookup: name='%s' target='%s' client=%s error=%v",
 				req.Name, req.Target, clientIP, ctx.Context.Err())
-			return &SymlinkResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+			return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
 		logger.Warn("SYMLINK failed: directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &SymlinkResponse{Status: types.NFS3ErrNoEnt}, nil
+		return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	// Capture pre-operation attributes for WCC data
@@ -405,9 +344,9 @@ func (h *Handler) Symlink(
 		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &SymlinkResponse{
-			Status:        types.NFS3ErrNotDir,
-			DirAttrBefore: wccBefore,
-			DirAttrAfter:  nfsDirAttr,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
+			DirAttrBefore:   wccBefore,
+			DirAttrAfter:    nfsDirAttr,
 		}, nil
 	}
 
@@ -422,9 +361,9 @@ func (h *Handler) Symlink(
 		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &SymlinkResponse{
-			Status:        types.NFS3ErrIO,
-			DirAttrBefore: wccBefore,
-			DirAttrAfter:  nfsDirAttr,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			DirAttrBefore:   wccBefore,
+			DirAttrAfter:    nfsDirAttr,
 		}, ctx.Context.Err()
 	default:
 	}
@@ -433,7 +372,7 @@ func (h *Handler) Symlink(
 	// Step 3: Build authentication context for store
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, dirHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -444,9 +383,9 @@ func (h *Handler) Symlink(
 			nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 			return &SymlinkResponse{
-				Status:        types.NFS3ErrIO,
-				DirAttrBefore: wccBefore,
-				DirAttrAfter:  nfsDirAttr,
+				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+				DirAttrBefore:   wccBefore,
+				DirAttrAfter:    nfsDirAttr,
 			}, ctx.Context.Err()
 		}
 
@@ -457,9 +396,9 @@ func (h *Handler) Symlink(
 		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &SymlinkResponse{
-			Status:        types.NFS3ErrIO,
-			DirAttrBefore: wccBefore,
-			DirAttrAfter:  nfsDirAttr,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			DirAttrBefore:   wccBefore,
+			DirAttrAfter:    nfsDirAttr,
 		}, nil
 	}
 
@@ -509,9 +448,9 @@ func (h *Handler) Symlink(
 			}
 
 			return &SymlinkResponse{
-				Status:        types.NFS3ErrIO,
-				DirAttrBefore: wccBefore,
-				DirAttrAfter:  wccAfter,
+				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+				DirAttrBefore:   wccBefore,
+				DirAttrAfter:    wccAfter,
 			}, ctx.Context.Err()
 		}
 
@@ -529,9 +468,9 @@ func (h *Handler) Symlink(
 		status := xdr.MapStoreErrorToNFSStatus(err, clientIP, "SYMLINK")
 
 		return &SymlinkResponse{
-			Status:        status,
-			DirAttrBefore: wccBefore,
-			DirAttrAfter:  wccAfter,
+			NFSResponseBase: NFSResponseBase{Status: status},
+			DirAttrBefore:   wccBefore,
+			DirAttrAfter:    wccAfter,
 		}, nil
 	}
 
@@ -552,11 +491,11 @@ func (h *Handler) Symlink(
 
 		// Return success with handle but no attributes
 		return &SymlinkResponse{
-			Status:        types.NFS3OK,
-			FileHandle:    symlinkHandle,
-			Attr:          nil,
-			DirAttrBefore: wccBefore,
-			DirAttrAfter:  wccAfter,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+			FileHandle:      symlinkHandle,
+			Attr:            nil,
+			DirAttrBefore:   wccBefore,
+			DirAttrAfter:    wccAfter,
 		}, nil
 	default:
 	}
@@ -581,11 +520,11 @@ func (h *Handler) Symlink(
 
 			// Return success with handle but no attributes
 			return &SymlinkResponse{
-				Status:        types.NFS3OK,
-				FileHandle:    symlinkHandle,
-				Attr:          nil,
-				DirAttrBefore: wccBefore,
-				DirAttrAfter:  wccAfter,
+				NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+				FileHandle:      symlinkHandle,
+				Attr:            nil,
+				DirAttrBefore:   wccBefore,
+				DirAttrAfter:    wccAfter,
 			}, nil
 		}
 
@@ -601,11 +540,11 @@ func (h *Handler) Symlink(
 
 		// Return success with nil symlink attributes
 		return &SymlinkResponse{
-			Status:        types.NFS3OK,
-			FileHandle:    symlinkHandle,
-			Attr:          nil,
-			DirAttrBefore: wccBefore,
-			DirAttrAfter:  wccAfter,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+			FileHandle:      symlinkHandle,
+			Attr:            nil,
+			DirAttrBefore:   wccBefore,
+			DirAttrAfter:    wccAfter,
 		}, nil
 	}
 
@@ -640,11 +579,11 @@ func (h *Handler) Symlink(
 		symlinkAttr.Size, len(req.Target))
 
 	return &SymlinkResponse{
-		Status:        types.NFS3OK,
-		FileHandle:    symlinkHandle,
-		Attr:          nfsSymlinkAttr,
-		DirAttrBefore: wccBefore,
-		DirAttrAfter:  wccAfter,
+		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+		FileHandle:      symlinkHandle,
+		Attr:            nfsSymlinkAttr,
+		DirAttrBefore:   wccBefore,
+		DirAttrAfter:    wccAfter,
 	}, nil
 }
 
@@ -891,7 +830,7 @@ func DecodeSymlinkRequest(data []byte) (*SymlinkRequest, error) {
 // Example:
 //
 //	resp := &SymlinkResponse{
-//	    Status:        types.NFS3OK,
+//	    NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 //	    FileHandle:    symlinkHandle,
 //	    Attr:          symlinkAttr,
 //	    DirAttrBefore: wccBefore,

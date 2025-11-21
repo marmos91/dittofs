@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -38,16 +37,7 @@ type FsStatRequest struct {
 //
 // The response is encoded in XDR format before being sent back to the client.
 type FsStatResponse struct {
-	// Status indicates the result of the filesystem stat operation.
-	// Common values:
-	//   - types.NFS3OK (0): Success
-	//   - types.NFS3ErrNoEnt (2): File handle not found
-	//   - types.NFS3ErrIO (5): I/O error
-	//   - NFS3ErrAcces (13): Permission denied
-	//   - NFS3ErrStale (70): Stale file handle
-	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
-	//   - NFS3ErrServerFault (10006): Internal server error
-	Status uint32
+	NFSResponseBase // Embeds Status field and GetStatus() method
 
 	// Attr contains the post-operation attributes for the file handle.
 	// This is optional and may be nil if Status != types.NFS3OK.
@@ -85,26 +75,6 @@ type FsStatResponse struct {
 	// change at any time. This helps clients optimize stat operations.
 	// Only present when Status == types.NFS3OK.
 	Invarsec uint32
-}
-
-// GetStatus returns the status code from the response.
-func (r *FsStatResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// FsStatContext contains the context information needed to process an FSSTAT request.
-// This includes client identification and authentication details for access control
-// and auditing purposes.
-type FsStatContext struct {
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client.
-	// 0 = AUTH_NULL, 1 = AUTH_UNIX, etc.
-	AuthFlavor uint32
 }
 
 // ============================================================================
@@ -178,7 +148,7 @@ type FsStatContext struct {
 //	    // Use resp.Tbytes, resp.Fbytes, etc. for filesystem stats
 //	}
 func (h *Handler) FsStat(
-	ctx *FsStatContext,
+	ctx *NFSHandlerContext,
 	req *FsStatRequest,
 ) (*FsStatResponse, error) {
 	logger.Debug("FSSTAT request: handle=%x client=%s", req.Handle, ctx.ClientAddr)
@@ -191,7 +161,7 @@ func (h *Handler) FsStat(
 	case <-ctx.Context.Done():
 		logger.Warn("FSSTAT cancelled: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
-		return &FsStatResponse{Status: types.NFS3ErrIO}, nil
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	default:
 	}
 
@@ -202,19 +172,19 @@ func (h *Handler) FsStat(
 	// Validate file handle
 	if len(req.Handle) == 0 {
 		logger.Warn("FSSTAT failed: empty file handle from client=%s", ctx.ClientAddr)
-		return &FsStatResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// RFC 1813 specifies maximum handle size of 64 bytes
 	if len(req.Handle) > 64 {
 		logger.Warn("FSSTAT failed: oversized handle (%d bytes) from client=%s", len(req.Handle), ctx.ClientAddr)
-		return &FsStatResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Validate handle length for file ID extraction (need at least 8 bytes)
 	if len(req.Handle) < 8 {
 		logger.Warn("FSSTAT failed: undersized handle (%d bytes) from client=%s", len(req.Handle), ctx.ClientAddr)
-		return &FsStatResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// ========================================================================
@@ -226,7 +196,7 @@ func (h *Handler) FsStat(
 	case <-ctx.Context.Done():
 		logger.Warn("FSSTAT cancelled before GetFile: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
-		return &FsStatResponse{Status: types.NFS3ErrIO}, nil
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	default:
 	}
 
@@ -239,14 +209,14 @@ func (h *Handler) FsStat(
 	if err != nil {
 		logger.Warn("FSSTAT failed: invalid file handle: handle=%x client=%s error=%v",
 			req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
-		return &FsStatResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Check if share exists
 	if !h.Registry.ShareExists(shareName) {
 		logger.Warn("FSSTAT failed: share not found: share=%s handle=%x client=%s",
 			shareName, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr))
-		return &FsStatResponse{Status: types.NFS3ErrStale}, nil
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get metadata store for this share
@@ -254,7 +224,7 @@ func (h *Handler) FsStat(
 	if err != nil {
 		logger.Error("FSSTAT failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
 			shareName, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
-		return &FsStatResponse{Status: types.NFS3ErrIO}, nil
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	logger.Debug("FSSTAT: share=%s path=%s", shareName, path)
@@ -262,7 +232,7 @@ func (h *Handler) FsStat(
 	attr, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		logger.Debug("FSSTAT failed: handle not found: %v client=%s", err, ctx.ClientAddr)
-		return &FsStatResponse{Status: types.NFS3ErrStale}, nil
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// ========================================================================
@@ -274,20 +244,20 @@ func (h *Handler) FsStat(
 	case <-ctx.Context.Done():
 		logger.Warn("FSSTAT cancelled before GetFilesystemStatistics: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
-		return &FsStatResponse{Status: types.NFS3ErrIO}, nil
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	default:
 	}
 
 	stats, err := metadataStore.GetFilesystemStatistics(ctx.Context, metadata.FileHandle(req.Handle))
 	if err != nil {
 		logger.Error("FSSTAT failed: error retrieving statistics: %v client=%s", err, ctx.ClientAddr)
-		return &FsStatResponse{Status: types.NFS3ErrIO}, nil
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// Defensive check: ensure store returned valid statistics
 	if stats == nil {
 		logger.Error("FSSTAT failed: store returned nil statistics client=%s", ctx.ClientAddr)
-		return &FsStatResponse{Status: types.NFS3ErrIO}, nil
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// ========================================================================
@@ -311,15 +281,15 @@ func (h *Handler) FsStat(
 	freeBytes := stats.TotalBytes - stats.UsedBytes
 
 	return &FsStatResponse{
-		Status:   types.NFS3OK,
-		Attr:     nfsAttr,
-		Tbytes:   stats.TotalBytes,
-		Fbytes:   freeBytes,
-		Abytes:   stats.AvailableBytes,
-		Tfiles:   stats.TotalFiles,
-		Ffiles:   stats.TotalFiles - stats.UsedFiles, // Free = Total - Used
-		Afiles:   stats.AvailableFiles,
-		Invarsec: invarsec,
+		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+		Attr:            nfsAttr,
+		Tbytes:          stats.TotalBytes,
+		Fbytes:          freeBytes,
+		Abytes:          stats.AvailableBytes,
+		Tfiles:          stats.TotalFiles,
+		Ffiles:          stats.TotalFiles - stats.UsedFiles, // Free = Total - Used
+		Afiles:          stats.AvailableFiles,
+		Invarsec:        invarsec,
 	}, nil
 }
 

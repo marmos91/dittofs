@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 
 	"github.com/marmos91/dittofs/internal/logger"
 )
@@ -31,55 +30,7 @@ type NullRequest struct {
 //
 // The response is encoded in XDR format (empty) before being sent to the client.
 type NullResponse struct {
-	Status uint32
-}
-
-// GetStatus returns the status code from the response.
-// NULL responses don't have a status field, always return 0 (success).
-func (r *NullResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// NullContext contains the context information for a NULL request.
-// This includes client identification for logging and monitoring purposes,
-// as well as cancellation handling.
-//
-// While NULL doesn't perform operations requiring authentication, we maintain
-// the context structure for:
-//   - Consistent logging across all procedures
-//   - Connection monitoring and metrics
-//   - Security auditing (detecting port scans, etc.)
-//   - Rate limiting and abuse detection
-//   - Graceful handling of client disconnections
-type NullContext struct {
-	// Context carries cancellation signals and deadlines
-	// The NULL handler checks this context to abort if the client disconnects
-	// Note: Per RFC 1813, NULL should be extremely fast, so cancellation
-	// checks are minimal to maintain low latency
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client.
-	// Common values:
-	//   - 0: AUTH_NULL (no authentication)
-	//   - 1: AUTH_UNIX (Unix UID/GID authentication)
-	// For NULL procedure, authentication is typically not enforced.
-	AuthFlavor uint32
-
-	// UID is the authenticated user ID (from AUTH_UNIX).
-	// May be nil for AUTH_NULL or when authentication is not provided.
-	UID *uint32
-
-	// GID is the authenticated group ID (from AUTH_UNIX).
-	// May be nil for AUTH_NULL or when authentication is not provided.
-	GID *uint32
-
-	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// May be empty for AUTH_NULL or when authentication is not provided.
-	GIDs []uint32
+	MountResponseBase // Embeds Status and GetStatus()
 }
 
 // MountNull handles the NULL procedure, which is a no-op used to test connectivity.
@@ -140,7 +91,7 @@ type NullContext struct {
 //	}
 //	// resp is always non-nil on success (empty response)
 func (h *Handler) MountNull(
-	ctx *NullContext,
+	ctx *MountHandlerContext,
 	req *NullRequest,
 ) (*NullResponse, error) {
 	// Check for cancellation before starting
@@ -173,7 +124,7 @@ func (h *Handler) MountNull(
 	logger.Debug("NULL: request completed successfully: client=%s", clientIP)
 
 	// Return empty response - NULL always succeeds
-	return &NullResponse{Status: MountOK}, nil
+	return &NullResponse{MountResponseBase: MountResponseBase{Status: MountOK}}, nil
 }
 
 // ============================================================================

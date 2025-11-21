@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"strconv"
@@ -66,18 +65,7 @@ type ReadDirPlusRequest struct {
 //
 // The response is encoded in XDR format before being sent back to the client.
 type ReadDirPlusResponse struct {
-	// Status indicates the result of the readdirplus operation.
-	// Common values:
-	//   - types.NFS3OK (0): Success
-	//   - types.NFS3ErrNoEnt (2): Directory not found
-	//   - types.NFS3ErrNotDir (20): Handle is not a directory
-	//   - types.NFS3ErrIO (5): I/O error
-	//   - NFS3ErrAcces (13): Permission denied
-	//   - NFS3ErrStale (70): Stale directory handle
-	//   - types.NFS3ErrBadHandle (10001): Invalid directory handle
-	//   - NFS3ErrBadCookie (10003): Invalid cookie or cookieverf
-	//   - NFS3ErrTooSmall (10005): MaxCount too small for entry
-	Status uint32
+	NFSResponseBase // Embeds Status field and GetStatus() method
 
 	// DirAttr contains post-operation attributes of the directory.
 	// Optional, may be nil.
@@ -100,11 +88,6 @@ type ReadDirPlusResponse struct {
 	// true: No more entries in directory
 	// false: More entries available, use last cookie for next request
 	Eof bool
-}
-
-// GetStatus returns the status code from the response.
-func (r *ReadDirPlusResponse) GetStatus() uint32 {
-	return r.Status
 }
 
 // DirPlusEntry represents a single directory entry with full information.
@@ -134,46 +117,6 @@ type DirPlusEntry struct {
 	// Clients can use this handle directly without a LOOKUP call.
 	FileHandle []byte
 }
-
-// ReadDirPlusContext contains the context information needed to process
-// a READDIRPLUS request. This includes client identification and
-// authentication details for access control.
-type ReadDirPlusContext struct {
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client.
-	// Common values:
-	//   - 0: AUTH_NULL (no authentication)
-	//   - 1: AUTH_UNIX (Unix UID/GID authentication)
-	AuthFlavor uint32
-
-	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for access control checks by the store.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	UID *uint32
-
-	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for access control checks by the store.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GID *uint32
-
-	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// Used for checking if user belongs to file's group.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GIDs []uint32
-}
-
-// Implement NFSAuthContext interface for ReadDirPlusContext
-func (c *ReadDirPlusContext) GetContext() context.Context { return c.Context }
-func (c *ReadDirPlusContext) GetClientAddr() string       { return c.ClientAddr }
-func (c *ReadDirPlusContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
-func (c *ReadDirPlusContext) GetUID() *uint32             { return c.UID }
-func (c *ReadDirPlusContext) GetGID() *uint32             { return c.GID }
-func (c *ReadDirPlusContext) GetGIDs() []uint32           { return c.GIDs }
 
 // ============================================================================
 // Protocol Handler
@@ -337,7 +280,7 @@ func (c *ReadDirPlusContext) GetGIDs() []uint32           { return c.GIDs }
 //	    }
 //	}
 func (h *Handler) ReadDirPlus(
-	ctx *ReadDirPlusContext,
+	ctx *NFSHandlerContext,
 	req *ReadDirPlusRequest,
 ) (*ReadDirPlusResponse, error) {
 	// Extract client IP for logging
@@ -354,7 +297,7 @@ func (h *Handler) ReadDirPlus(
 	case <-ctx.Context.Done():
 		logger.Warn("READDIRPLUS cancelled: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, ctx.Context.Err())
-		return &ReadDirPlusResponse{Status: types.NFS3ErrIO}, nil
+		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	default:
 	}
 
@@ -365,7 +308,7 @@ func (h *Handler) ReadDirPlus(
 	if err := validateReadDirPlusRequest(req); err != nil {
 		logger.Warn("READDIRPLUS validation failed: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &ReadDirPlusResponse{Status: err.nfsStatus}, nil
+		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
 	// ========================================================================
@@ -377,7 +320,7 @@ func (h *Handler) ReadDirPlus(
 	case <-ctx.Context.Done():
 		logger.Warn("READDIRPLUS cancelled before GetFile: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, ctx.Context.Err())
-		return &ReadDirPlusResponse{Status: types.NFS3ErrIO}, nil
+		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	default:
 	}
 
@@ -390,14 +333,14 @@ func (h *Handler) ReadDirPlus(
 	if err != nil {
 		logger.Warn("READDIRPLUS failed: invalid directory handle: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &ReadDirPlusResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Check if share exists
 	if !h.Registry.ShareExists(shareName) {
 		logger.Warn("READDIRPLUS failed: share not found: share=%s dir=%x client=%s",
 			shareName, req.DirHandle, clientIP)
-		return &ReadDirPlusResponse{Status: types.NFS3ErrStale}, nil
+		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get metadata store for this share
@@ -405,7 +348,7 @@ func (h *Handler) ReadDirPlus(
 	if err != nil {
 		logger.Error("READDIRPLUS failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
 			shareName, req.DirHandle, clientIP, err)
-		return &ReadDirPlusResponse{Status: types.NFS3ErrIO}, nil
+		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	logger.Debug("READDIRPLUS: share=%s path=%s", shareName, path)
@@ -414,7 +357,7 @@ func (h *Handler) ReadDirPlus(
 	if err != nil {
 		logger.Warn("READDIRPLUS failed: directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &ReadDirPlusResponse{Status: types.NFS3ErrNoEnt}, nil
+		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	// Verify handle is actually a directory
@@ -427,8 +370,8 @@ func (h *Handler) ReadDirPlus(
 		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &ReadDirPlusResponse{
-			Status:  types.NFS3ErrNotDir,
-			DirAttr: nfsDirAttr,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
+			DirAttr:         nfsDirAttr,
 		}, nil
 	}
 
@@ -436,7 +379,7 @@ func (h *Handler) ReadDirPlus(
 	// Step 4: Build authentication context for store
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, dirHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -447,8 +390,8 @@ func (h *Handler) ReadDirPlus(
 			nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 			return &ReadDirPlusResponse{
-				Status:  types.NFS3ErrIO,
-				DirAttr: nfsDirAttr,
+				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+				DirAttr:         nfsDirAttr,
 			}, nil
 		}
 
@@ -459,8 +402,8 @@ func (h *Handler) ReadDirPlus(
 		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &ReadDirPlusResponse{
-			Status:  types.NFS3ErrIO,
-			DirAttr: nfsDirAttr,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			DirAttr:         nfsDirAttr,
 		}, nil
 	}
 
@@ -480,8 +423,8 @@ func (h *Handler) ReadDirPlus(
 		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &ReadDirPlusResponse{
-			Status:  types.NFS3ErrIO,
-			DirAttr: nfsDirAttr,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			DirAttr:         nfsDirAttr,
 		}, nil
 	default:
 	}
@@ -507,8 +450,8 @@ func (h *Handler) ReadDirPlus(
 		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &ReadDirPlusResponse{
-			Status:  status,
-			DirAttr: nfsDirAttr,
+			NFSResponseBase: NFSResponseBase{Status: status},
+			DirAttr:         nfsDirAttr,
 		}, nil
 	}
 
@@ -535,8 +478,8 @@ func (h *Handler) ReadDirPlus(
 					req.DirHandle, i, clientIP, ctx.Context.Err())
 
 				return &ReadDirPlusResponse{
-					Status:  types.NFS3ErrIO,
-					DirAttr: nfsDirAttr,
+					NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+					DirAttr:         nfsDirAttr,
 				}, nil
 			default:
 			}
@@ -603,11 +546,11 @@ func (h *Handler) ReadDirPlus(
 		dirID, len(page.Entries), eof)
 
 	return &ReadDirPlusResponse{
-		Status:     types.NFS3OK,
-		DirAttr:    nfsDirAttr,
-		CookieVerf: 0, // Simple implementation: no verifier checking
-		Entries:    entries,
-		Eof:        eof,
+		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+		DirAttr:         nfsDirAttr,
+		CookieVerf:      0, // Simple implementation: no verifier checking
+		Entries:         entries,
+		Eof:             eof,
 	}, nil
 }
 
@@ -855,7 +798,7 @@ func DecodeReadDirPlusRequest(data []byte) (*ReadDirPlusRequest, error) {
 // Example:
 //
 //	resp := &ReadDirPlusResponse{
-//	    Status:     types.NFS3OK,
+//	    NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 //	    DirAttr:    dirAttr,
 //	    CookieVerf: 0,
 //	    Entries:    entries,

@@ -109,57 +109,13 @@ type WriteRequest struct {
 //
 // The response is encoded in XDR format before being sent back to the client.
 type WriteResponse struct {
-	Status     uint32
-	AttrBefore *types.WccAttr     // Pre-op attributes (optional)
-	AttrAfter  *types.NFSFileAttr // Post-op attributes (optional)
-	Count      uint32             // Number of bytes written
-	Committed  uint32             // How data was committed
-	Verf       uint64             // Write verifier
+	NFSResponseBase                    // Embeds Status field and GetStatus() method
+	AttrBefore      *types.WccAttr     // Pre-op attributes (optional)
+	AttrAfter       *types.NFSFileAttr // Post-op attributes (optional)
+	Count           uint32             // Number of bytes written
+	Committed       uint32             // How data was committed
+	Verf            uint64             // Write verifier
 }
-
-// GetStatus returns the status code from the response.
-func (r *WriteResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// WriteContext contains the context information needed to process a WRITE request.
-// This includes client identification and authentication details for access control.
-type WriteContext struct {
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client.
-	// Common values:
-	//   - 0: AUTH_NULL (no authentication)
-	//   - 1: AUTH_UNIX (Unix UID/GID authentication)
-	AuthFlavor uint32
-
-	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for write permission checks by the store.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	UID *uint32
-
-	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for write permission checks by the store.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GID *uint32
-
-	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// Used for access control checks by the store.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GIDs []uint32
-}
-
-// Implement NFSAuthContext interface for WriteContext
-func (c *WriteContext) GetContext() context.Context { return c.Context }
-func (c *WriteContext) GetClientAddr() string       { return c.ClientAddr }
-func (c *WriteContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
-func (c *WriteContext) GetUID() *uint32             { return c.UID }
-func (c *WriteContext) GetGID() *uint32             { return c.GID }
-func (c *WriteContext) GetGIDs() []uint32           { return c.GIDs }
 
 // ============================================================================
 // Protocol Handler
@@ -308,9 +264,10 @@ func (c *WriteContext) GetGIDs() []uint32           { return c.GIDs }
 //	    Stable: FileSyncWrite,
 //	    Data:   dataBytes,
 //	}
-//	ctx := &WriteContext{
+//	ctx := &NFSHandlerContext{
 //	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
+//	    Share:      "/export",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
@@ -324,7 +281,7 @@ func (c *WriteContext) GetGIDs() []uint32           { return c.GIDs }
 //	    // Check resp.Committed for actual stability level
 //	}
 func (h *Handler) Write(
-	ctx *WriteContext,
+	ctx *NFSHandlerContext,
 	req *WriteRequest,
 ) (*WriteResponse, error) {
 	// Extract client IP for logging
@@ -341,7 +298,7 @@ func (h *Handler) Write(
 	case <-ctx.Context.Done():
 		logger.Warn("WRITE cancelled: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
-		return &WriteResponse{Status: types.NFS3ErrIO}, nil
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	default:
 	}
 
@@ -354,14 +311,14 @@ func (h *Handler) Write(
 	if err != nil {
 		logger.Warn("WRITE failed: invalid file handle: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &WriteResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Check if share exists
 	if !h.Registry.ShareExists(shareName) {
 		logger.Warn("WRITE failed: share not found: share=%s handle=%x client=%s",
 			shareName, req.Handle, clientIP)
-		return &WriteResponse{Status: types.NFS3ErrStale}, nil
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get metadata store for this share
@@ -369,7 +326,7 @@ func (h *Handler) Write(
 	if err != nil {
 		logger.Error("WRITE failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
 			shareName, req.Handle, clientIP, err)
-		return &WriteResponse{Status: types.NFS3ErrIO}, nil
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// Get content store for this share
@@ -377,7 +334,7 @@ func (h *Handler) Write(
 	if err != nil {
 		logger.Error("WRITE failed: cannot get content store: share=%s handle=%x client=%s error=%v",
 			shareName, req.Handle, clientIP, err)
-		return &WriteResponse{Status: types.NFS3ErrIO}, nil
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	logger.Debug("WRITE: share=%s path=%s", shareName, path)
@@ -390,13 +347,13 @@ func (h *Handler) Write(
 	if err != nil {
 		logger.Warn("WRITE failed: cannot get capabilities: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &WriteResponse{Status: types.NFS3ErrNoEnt}, nil
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	if err := validateWriteRequest(req, caps.MaxWriteSize); err != nil {
 		logger.Warn("WRITE validation failed: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &WriteResponse{Status: err.nfsStatus}, nil
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
 	// ========================================================================
@@ -408,7 +365,7 @@ func (h *Handler) Write(
 	case <-ctx.Context.Done():
 		logger.Warn("WRITE cancelled before GetFile: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
-		return &WriteResponse{Status: types.NFS3ErrIO}, nil
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	default:
 	}
 
@@ -416,7 +373,7 @@ func (h *Handler) Write(
 	if err != nil {
 		logger.Warn("WRITE failed: file not found: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &WriteResponse{Status: types.NFS3ErrNoEnt}, nil
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	// Verify it's a regular file (not a directory or special file)
@@ -429,8 +386,8 @@ func (h *Handler) Write(
 		nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 		return &WriteResponse{
-			Status:    types.NFS3ErrIsDir, // NFS3ErrIsDir used for all non-regular files
-			AttrAfter: nfsAttr,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir}, // NFS3ErrIsDir used for all non-regular files
+			AttrAfter:       nfsAttr,
 		}, nil
 	}
 
@@ -443,20 +400,20 @@ func (h *Handler) Write(
 	if overflow {
 		logger.Warn("WRITE failed: offset + dataLen overflow: offset=%d dataLen=%d client=%s",
 			req.Offset, dataLen, clientIP)
-		return &WriteResponse{Status: types.NFS3ErrInval}, nil
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrInval}}, nil
 	}
 
 	// ========================================================================
 	// Step 5: Build AuthContext with share-level identity mapping
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, fileHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
 			logger.Debug("WRITE cancelled during auth context building: handle=%x client=%s error=%v",
 				req.Handle, clientIP, ctx.Context.Err())
-			return &WriteResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+			return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
 		logger.Error("WRITE failed: failed to build auth context: handle=%x client=%s error=%v",
@@ -466,8 +423,8 @@ func (h *Handler) Write(
 		nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 		return &WriteResponse{
-			Status:    types.NFS3ErrIO,
-			AttrAfter: nfsAttr,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			AttrAfter:       nfsAttr,
 		}, nil
 	}
 
@@ -487,8 +444,8 @@ func (h *Handler) Write(
 		nfsAttr := xdr.MetadataToNFS(attr, fileid)
 
 		return &WriteResponse{
-			Status:    types.NFS3ErrIO,
-			AttrAfter: nfsAttr,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			AttrAfter:       nfsAttr,
 		}, nil
 	default:
 	}
@@ -518,9 +475,9 @@ func (h *Handler) Write(
 		}
 
 		return &WriteResponse{
-			Status:     status,
-			AttrBefore: nfsWccAttr,
-			AttrAfter:  nfsAttr,
+			NFSResponseBase: NFSResponseBase{Status: status},
+			AttrBefore:      nfsWccAttr,
+			AttrAfter:       nfsAttr,
 		}, nil
 	}
 
@@ -550,9 +507,9 @@ func (h *Handler) Write(
 		nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
 
 		return &WriteResponse{
-			Status:     types.NFS3ErrRofs, // Read-only filesystem
-			AttrBefore: nfsWccAttr,
-			AttrAfter:  nfsAttr,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrRofs}, // Read-only filesystem
+			AttrBefore:      nfsWccAttr,
+			AttrAfter:       nfsAttr,
 		}, nil
 	}
 
@@ -573,9 +530,9 @@ func (h *Handler) Write(
 		nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
 
 		return &WriteResponse{
-			Status:     types.NFS3ErrIO,
-			AttrBefore: nfsWccAttr,
-			AttrAfter:  nfsAttr,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			AttrBefore:      nfsWccAttr,
+			AttrAfter:       nfsAttr,
 		}, nil
 	default:
 	}
@@ -596,7 +553,7 @@ func (h *Handler) Write(
 				nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
 
 				return &WriteResponse{
-					Status:     types.NFS3ErrIO,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 					AttrBefore: nfsWccAttr,
 					AttrAfter:  nfsAttr,
 				}, nil
@@ -622,9 +579,9 @@ func (h *Handler) Write(
 			status := xdr.MapContentErrorToNFSStatus(err)
 
 			return &WriteResponse{
-				Status:     status,
-				AttrBefore: nfsWccAttr,
-				AttrAfter:  nfsAttr,
+				NFSResponseBase: NFSResponseBase{Status: status},
+				AttrBefore:      nfsWccAttr,
+				AttrAfter:       nfsAttr,
 			}, nil
 		}
 
@@ -645,9 +602,9 @@ func (h *Handler) Write(
 			nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
 
 			return &WriteResponse{
-				Status:     types.NFS3ErrIO,
-				AttrBefore: nfsWccAttr,
-				AttrAfter:  nfsAttr,
+				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+				AttrBefore:      nfsWccAttr,
+				AttrAfter:       nfsAttr,
 			}, nil
 		}
 	}
@@ -669,9 +626,9 @@ func (h *Handler) Write(
 		nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
 
 		return &WriteResponse{
-			Status:     status,
-			AttrBefore: nfsWccAttr,
-			AttrAfter:  nfsAttr,
+			NFSResponseBase: NFSResponseBase{Status: status},
+			AttrBefore:      nfsWccAttr,
+			AttrAfter:       nfsAttr,
 		}, nil
 	}
 
@@ -712,12 +669,12 @@ func (h *Handler) Write(
 		req.Stable, committed, updatedAttr.Size, updatedAttr.Type, updatedAttr.Mode)
 
 	return &WriteResponse{
-		Status:     types.NFS3OK,
-		AttrBefore: nfsWccAttr,
-		AttrAfter:  nfsAttr,
-		Count:      uint32(len(req.Data)),
-		Committed:  committed,      // UNSTABLE when using cache, tells client to call COMMIT
-		Verf:       serverBootTime, // Server boot time for restart detection
+		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+		AttrBefore:      nfsWccAttr,
+		AttrAfter:       nfsAttr,
+		Count:           uint32(len(req.Data)),
+		Committed:       committed,      // UNSTABLE when using cache, tells client to call COMMIT
+		Verf:            serverBootTime, // Server boot time for restart detection
 	}, nil
 }
 
@@ -1103,7 +1060,7 @@ func DecodeWriteRequest(data []byte) (*WriteRequest, error) {
 // Example:
 //
 //	resp := &WriteResponse{
-//	    Status:     NFS3OK,
+//	    NFSResponseBase: NFSResponseBase{Status: NFS3OK},
 //	    AttrBefore: wccAttr,
 //	    AttrAfter:  fileAttr,
 //	    Count:      1024,

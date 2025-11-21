@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -45,14 +44,7 @@ type PathConfRequest struct {
 //
 // The response is encoded in XDR format before being sent back to the client.
 type PathConfResponse struct {
-	// Status indicates the result of the pathconf operation.
-	// Common values:
-	//   - types.NFS3OK (0): Success
-	//   - types.NFS3ErrNoEnt (2): File handle not found
-	//   - types.NFS3ErrIO (5): I/O error
-	//   - NFS3ErrStale (70): Stale file handle
-	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
-	Status uint32
+	NFSResponseBase // Embeds Status field and GetStatus() method
 
 	// Attr contains post-operation attributes of the file system object.
 	// Present when Status == types.NFS3OK. May be nil if attributes are unavailable.
@@ -96,28 +88,6 @@ type PathConfResponse struct {
 	//   - false: Case information may be lost
 	// Most modern filesystems set this to true.
 	CasePreserving bool
-}
-
-// GetStatus returns the status code from the response.
-func (r *PathConfResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// PathConfContext contains the context information needed to process a PATHCONF request.
-// This includes client identification and authentication details.
-type PathConfContext struct {
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client.
-	// Common values:
-	//   - 0: AUTH_NULL (no authentication)
-	//   - 1: AUTH_UNIX (Unix-style authentication)
-	// Currently not enforced for PATHCONF as it's typically an unauthenticated operation.
-	AuthFlavor uint32
 }
 
 // ============================================================================
@@ -227,7 +197,7 @@ type PathConfContext struct {
 //	    // Success - use resp.Linkmax, resp.NameMax, etc.
 //	}
 func (h *Handler) PathConf(
-	ctx *PathConfContext,
+	ctx *NFSHandlerContext,
 	req *PathConfRequest,
 ) (*PathConfResponse, error) {
 	// Extract client IP for logging
@@ -244,7 +214,7 @@ func (h *Handler) PathConf(
 	case <-ctx.Context.Done():
 		logger.Warn("PATHCONF cancelled: handle=%x client=%s error=%v",
 			req.Handle, clientIP, ctx.Context.Err())
-		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
+		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	default:
 	}
 
@@ -255,7 +225,7 @@ func (h *Handler) PathConf(
 	if err := validatePathConfHandle(req.Handle); err != nil {
 		logger.Warn("PATHCONF validation failed: client=%s error=%v",
 			clientIP, err)
-		return &PathConfResponse{Status: err.nfsStatus}, nil
+		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
 	// ========================================================================
@@ -267,7 +237,7 @@ func (h *Handler) PathConf(
 	case <-ctx.Context.Done():
 		logger.Warn("PATHCONF cancelled before GetFile: handle=%x client=%s error=%v",
 			req.Handle, clientIP, ctx.Context.Err())
-		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
+		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	default:
 	}
 
@@ -276,14 +246,14 @@ func (h *Handler) PathConf(
 	if err != nil {
 		logger.Warn("PATHCONF failed: invalid file handle: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &PathConfResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Check if share exists
 	if !h.Registry.ShareExists(shareName) {
 		logger.Warn("PATHCONF failed: share not found: share=%s handle=%x client=%s",
 			shareName, req.Handle, clientIP)
-		return &PathConfResponse{Status: types.NFS3ErrStale}, nil
+		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get metadata store for this share
@@ -291,7 +261,7 @@ func (h *Handler) PathConf(
 	if err != nil {
 		logger.Error("PATHCONF failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
 			shareName, req.Handle, clientIP, err)
-		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
+		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	logger.Debug("PATHCONF: share=%s path=%s", shareName, path)
@@ -300,7 +270,7 @@ func (h *Handler) PathConf(
 	if err != nil {
 		logger.Warn("PATHCONF failed: handle not found: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &PathConfResponse{Status: types.NFS3ErrNoEnt}, nil
+		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	// ========================================================================
@@ -314,7 +284,7 @@ func (h *Handler) PathConf(
 	case <-ctx.Context.Done():
 		logger.Warn("PATHCONF cancelled before GetCapabilities: handle=%x client=%s error=%v",
 			req.Handle, clientIP, ctx.Context.Err())
-		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
+		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	default:
 	}
 
@@ -322,7 +292,7 @@ func (h *Handler) PathConf(
 	if err != nil {
 		logger.Error("PATHCONF failed: could not get filesystem capabilities: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &PathConfResponse{Status: types.NFS3ErrIO}, nil
+		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// ========================================================================
@@ -343,7 +313,7 @@ func (h *Handler) PathConf(
 	// Map FilesystemCapabilities fields to PATHCONF response fields
 
 	return &PathConfResponse{
-		Status:          types.NFS3OK,
+		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 		Attr:            nfsAttr,
 		Linkmax:         caps.MaxHardLinkCount,
 		NameMax:         caps.MaxFilenameLen,
@@ -486,7 +456,7 @@ func DecodePathConfRequest(data []byte) (*PathConfRequest, error) {
 // Example:
 //
 //	resp := &PathConfResponse{
-//	    Status:          types.NFS3OK,
+//	    NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 //	    Attr:            fileAttr,
 //	    Linkmax:         32767,
 //	    NameMax:         255,

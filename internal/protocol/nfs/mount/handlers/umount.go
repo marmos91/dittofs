@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"net"
 
@@ -37,28 +36,7 @@ type UmountRequest struct {
 // This is because unmounting is primarily a client-side operation.
 // The server's mount tracking is informational and used by the DUMP procedure.
 type UmountResponse struct {
-	Status uint32
-}
-
-// GetStatus returns the status code from the response.
-// UMOUNT responses don't have a status field, always return 0 (success).
-func (r *UmountResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// UmountContext contains the context information needed to process an unmount request.
-// This includes client identification for removing the correct mount record and
-// cancellation handling.
-type UmountContext struct {
-	// Context carries cancellation signals and deadlines
-	// The Umnt handler checks this context to handle client disconnection
-	// Note: Even if cancelled, we may complete the unmount to maintain
-	// mount tracking consistency
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
+	MountResponseBase // Embeds Status and GetStatus()
 }
 
 // Umnt handles the UMOUNT (UMNT) procedure, which allows clients to indicate
@@ -107,9 +85,10 @@ type UmountContext struct {
 //
 //	handler := &Handler{}
 //	req := &UmountRequest{DirPath: "/export"}
-//	ctx := &UmountContext{
-//	    Context: context.Background(),
+//	ctx := &MountHandlerContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
+//	    AuthFlavor: 0, // AUTH_NULL
 //	}
 //	resp, err := handler.Umnt(ctx, repository, req)
 //	if err != nil {
@@ -119,7 +98,7 @@ type UmountContext struct {
 //	}
 //	// Response is always success unless cancelled early
 func (h *Handler) Umnt(
-	ctx *UmountContext,
+	ctx *MountHandlerContext,
 	req *UmountRequest,
 ) (*UmountResponse, error) {
 	// Check for cancellation before starting
@@ -131,7 +110,7 @@ func (h *Handler) Umnt(
 	case <-ctx.Context.Done():
 		logger.Debug("Unmount request cancelled before processing: path=%s client=%s error=%v",
 			req.DirPath, ctx.ClientAddr, ctx.Context.Err())
-		return &UmountResponse{Status: MountOK}, ctx.Context.Err()
+		return &UmountResponse{MountResponseBase: MountResponseBase{Status: MountOK}}, ctx.Context.Err()
 	default:
 	}
 
@@ -157,7 +136,7 @@ func (h *Handler) Umnt(
 	// UMNT always returns void/success per RFC 1813
 	// Even if RemoveMount failed or was cancelled, we return success
 	// because the client-side unmount has already occurred
-	return &UmountResponse{Status: MountOK}, nil
+	return &UmountResponse{MountResponseBase: MountResponseBase{Status: MountOK}}, nil
 }
 
 // DecodeUmountRequest decodes an UMOUNT request from XDR-encoded bytes.

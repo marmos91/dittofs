@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -53,14 +52,7 @@ type CommitRequest struct {
 //
 // The response is encoded in XDR format before being sent back to the client.
 type CommitResponse struct {
-	// Status indicates the result of the commit operation.
-	// Common values:
-	//   - types.NFS3OK (0): Success, data committed to stable storage
-	//   - types.NFS3ErrNoEnt (2): File not found
-	//   - types.NFS3ErrIO (5): I/O error during commit
-	//   - types.NFS3ErrStale (70): Stale file handle
-	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
-	Status uint32
+	NFSResponseBase // Embeds Status field and GetStatus() method
 
 	// AttrBefore contains pre-operation attributes of the file.
 	// Used for weak cache consistency to detect concurrent changes.
@@ -83,47 +75,6 @@ type CommitResponse struct {
 	//   - A production implementation should track server start time or boot ID
 	WriteVerifier uint64
 }
-
-// GetStatus returns the status code from the response.
-func (r *CommitResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// CommitContext contains the context information needed to process a COMMIT request.
-// This includes client identification and authentication details.
-type CommitContext struct {
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client.
-	// Common values:
-	//   - 0: AUTH_NULL (no authentication)
-	//   - 1: AUTH_UNIX (Unix UID/GID authentication)
-	AuthFlavor uint32
-
-	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	UID *uint32
-
-	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GID *uint32
-
-	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GIDs []uint32
-}
-
-// Implement NFSAuthContext interface for CommitContext
-func (c *CommitContext) GetContext() context.Context { return c.Context }
-func (c *CommitContext) GetClientAddr() string       { return c.ClientAddr }
-func (c *CommitContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
-func (c *CommitContext) GetUID() *uint32             { return c.UID }
-func (c *CommitContext) GetGID() *uint32             { return c.GID }
-func (c *CommitContext) GetGIDs() []uint32           { return c.GIDs }
 
 // ============================================================================
 // Protocol Handler
@@ -305,7 +256,7 @@ func (c *CommitContext) GetGIDs() []uint32           { return c.GIDs }
 //	    // Data committed successfully
 //	}
 func (h *Handler) Commit(
-	ctx *CommitContext,
+	ctx *NFSHandlerContext,
 	req *CommitRequest,
 ) (*CommitResponse, error) {
 	// Extract client IP for logging
@@ -322,7 +273,7 @@ func (h *Handler) Commit(
 	case <-ctx.Context.Done():
 		logger.Warn("COMMIT cancelled: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
-		return &CommitResponse{Status: types.NFS3ErrIO}, nil
+		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	default:
 	}
 
@@ -333,7 +284,7 @@ func (h *Handler) Commit(
 	if err := validateCommitRequest(req); err != nil {
 		logger.Warn("COMMIT validation failed: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, err)
-		return &CommitResponse{Status: err.nfsStatus}, nil
+		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
 	// ========================================================================
@@ -345,14 +296,14 @@ func (h *Handler) Commit(
 	if err != nil {
 		logger.Warn("COMMIT failed: invalid file handle: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &CommitResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Check if share exists
 	if !h.Registry.ShareExists(shareName) {
 		logger.Warn("COMMIT failed: share not found: share=%s handle=%x client=%s",
 			shareName, req.Handle, clientIP)
-		return &CommitResponse{Status: types.NFS3ErrStale}, nil
+		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get metadata store for this share
@@ -360,7 +311,7 @@ func (h *Handler) Commit(
 	if err != nil {
 		logger.Error("COMMIT failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
 			shareName, req.Handle, clientIP, err)
-		return &CommitResponse{Status: types.NFS3ErrIO}, nil
+		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	logger.Debug("COMMIT: share=%s path=%s", shareName, path)
@@ -374,7 +325,7 @@ func (h *Handler) Commit(
 	case <-ctx.Context.Done():
 		logger.Warn("COMMIT cancelled before GetFile: handle=%x client=%s error=%v",
 			req.Handle, clientIP, ctx.Context.Err())
-		return &CommitResponse{Status: types.NFS3ErrIO}, nil
+		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	default:
 	}
 
@@ -382,7 +333,7 @@ func (h *Handler) Commit(
 	if err != nil {
 		logger.Warn("COMMIT failed: file not found: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &CommitResponse{Status: types.NFS3ErrNoEnt}, nil
+		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	// Capture pre-operation attributes for WCC data
@@ -397,9 +348,9 @@ func (h *Handler) Commit(
 		wccAfter := xdr.MetadataToNFS(fileAttr, fileID)
 
 		return &CommitResponse{
-			Status:     types.NFS3ErrIsDir,
-			AttrBefore: wccBefore,
-			AttrAfter:  wccAfter,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir},
+			AttrBefore:      wccBefore,
+			AttrAfter:       wccAfter,
 		}, nil
 	}
 
@@ -421,9 +372,9 @@ func (h *Handler) Commit(
 		}
 
 		return &CommitResponse{
-			Status:     types.NFS3ErrIO,
-			AttrBefore: wccBefore,
-			AttrAfter:  wccAfter,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			AttrBefore:      wccBefore,
+			AttrAfter:       wccAfter,
 		}, nil
 	default:
 	}
@@ -482,10 +433,10 @@ func (h *Handler) Commit(
 					}
 
 					return &CommitResponse{
-						Status:        types.NFS3ErrIO,
-						AttrBefore:    wccBefore,
-						AttrAfter:     wccAfter,
-						WriteVerifier: 0,
+						NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+						AttrBefore:      wccBefore,
+						AttrAfter:       wccAfter,
+						WriteVerifier:   0,
 					}, nil
 				}
 			} else if fileAttr.Type == metadata.FileTypeRegular {
@@ -519,10 +470,10 @@ func (h *Handler) Commit(
 	logger.Info("COMMIT successful: handle=%x offset=%d count=%d client=%s (no-op in current implementation)",
 		req.Handle, req.Offset, req.Count, clientIP)
 	return &CommitResponse{
-		Status:        types.NFS3OK,
-		AttrBefore:    wccBefore,
-		AttrAfter:     wccAfter,
-		WriteVerifier: serverBootTime,
+		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+		AttrBefore:      wccBefore,
+		AttrAfter:       wccAfter,
+		WriteVerifier:   serverBootTime,
 	}, nil
 }
 
@@ -715,7 +666,7 @@ func DecodeCommitRequest(data []byte) (*CommitRequest, error) {
 // Example:
 //
 //	resp := &CommitResponse{
-//	    Status:        types.NFS3OK,
+//	    NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 //	    AttrBefore:    wccBefore,
 //	    AttrAfter:     wccAfter,
 //	    WriteVerifier: 0,

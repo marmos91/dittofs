@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -31,16 +30,10 @@ type DumpRequest struct {
 // The response format follows the XDR specification for a linked list,
 // where each entry is followed by a boolean indicating if more entries exist.
 type DumpResponse struct {
-	Status uint32
+	MountResponseBase // Embeds Status and GetStatus()
 	// Entries is the list of currently active mounts
 	// Each entry contains the client hostname/address and mounted directory path
 	Entries []DumpEntry
-}
-
-// GetStatus returns the status code from the response.
-// DUMP responses don't have a status field, always return 0 (success).
-func (r *DumpResponse) GetStatus() uint32 {
-	return r.Status
 }
 
 // DumpEntry represents a single mount entry in the DUMP response.
@@ -55,19 +48,6 @@ type DumpEntry struct {
 	// This corresponds to the export path provided in the MOUNT request
 	// Example: "/export" or "/data/shared"
 	Directory string
-}
-
-// DumpContext contains the context information needed to process a dump request.
-// This includes client identification for access control and cancellation handling.
-type DumpContext struct {
-	// Context carries cancellation signals and deadlines
-	// The Dump handler checks this context to abort operations if the client
-	// disconnects or the request times out
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
 }
 
 // Dump handles the DUMP procedure, which returns a list of all filesystems
@@ -122,7 +102,11 @@ type DumpContext struct {
 // Example:
 //
 //	handler := &Handler{}
-//	ctx := &DumpContext{Context: context.Background(), ClientAddr: "192.168.1.100:1234"}
+//	ctx := &MountHandlerContext{
+//	    Context:    context.Background(),
+//	    ClientAddr: "192.168.1.100:1234",
+//	    AuthFlavor: 0, // AUTH_NULL
+//	}
 //	req := &DumpRequest{}
 //	resp, err := handler.Dump(ctx, repository, req)
 //	if err != nil {
@@ -133,7 +117,7 @@ type DumpContext struct {
 //	    }
 //	}
 //	fmt.Printf("Active mounts: %d\n", len(resp.Entries))
-func (h *Handler) Dump(ctx *DumpContext, req *DumpRequest) (*DumpResponse, error) {
+func (h *Handler) Dump(ctx *MountHandlerContext, req *DumpRequest) (*DumpResponse, error) {
 	// Check for cancellation before starting any work
 	select {
 	case <-ctx.Context.Done():
@@ -173,8 +157,8 @@ func (h *Handler) Dump(ctx *DumpContext, req *DumpRequest) (*DumpResponse, error
 	}
 
 	return &DumpResponse{
-		Status:  MountOK,
-		Entries: entries,
+		MountResponseBase: MountResponseBase{Status: MountOK},
+		Entries:           entries,
 	}, nil
 }
 

@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -44,13 +43,7 @@ type MountRequest struct {
 //
 // The response is encoded in XDR format before being sent back to the client.
 type MountResponse struct {
-	// Status indicates the result of the mount operation.
-	// Common values:
-	//   - MountOK (0): Success
-	//   - MountErrNoEnt (2): Export path not found
-	//   - MountErrAccess (13): Permission denied
-	//   - MountErrServerFault (10006): Internal server error
-	Status uint32
+	MountResponseBase // Embeds Status and GetStatus()
 
 	// FileHandle is the opaque file handle for the root of the mounted filesystem.
 	// This handle is used in subsequent NFS operations to identify the filesystem.
@@ -64,32 +57,6 @@ type MountResponse struct {
 	//   - 0: AUTH_NULL (no authentication)
 	//   - 1: AUTH_UNIX (Unix-style authentication)
 	AuthFlavors []int32
-}
-
-// GetStatus returns the status code from the response.
-func (r *MountResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// MountContext contains the context information needed to process a mount request.
-// This includes client identification, authentication details, and cancellation handling.
-type MountContext struct {
-	// Context carries cancellation signals and deadlines
-	// The Mount handler checks this context to abort operations if the client
-	// disconnects or the request times out
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client
-	// 0 = AUTH_NULL, 1 = AUTH_UNIX, etc.
-	AuthFlavor uint32
-
-	// UnixAuth contains Unix authentication credentials if AuthFlavor == AUTH_UNIX
-	// This includes UID, GID, machine name, etc.
-	UnixAuth *rpc.UnixAuth
 }
 
 // Mount handles the MOUNT (MNT) procedure, which is the primary operation
@@ -129,7 +96,7 @@ type MountContext struct {
 //
 // RFC 1813 Appendix I: MOUNT Procedure
 func (h *Handler) Mount(
-	ctx *MountContext,
+	ctx *MountHandlerContext,
 	req *MountRequest,
 ) (*MountResponse, error) {
 	// Check for cancellation before starting any work
@@ -137,7 +104,7 @@ func (h *Handler) Mount(
 	case <-ctx.Context.Done():
 		logger.Debug("Mount request cancelled before processing: path=%s client=%s error=%v",
 			req.DirPath, ctx.ClientAddr, ctx.Context.Err())
-		return &MountResponse{Status: MountErrServerFault}, ctx.Context.Err()
+		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrServerFault}}, ctx.Context.Err()
 	default:
 	}
 
@@ -149,9 +116,9 @@ func (h *Handler) Mount(
 	}
 
 	// Log authentication info
-	if ctx.AuthFlavor == rpc.AuthUnix && ctx.UnixAuth != nil {
-		logger.Info("Mount request: path=%s client=%s auth=UNIX uid=%d gid=%d machine=%s",
-			req.DirPath, clientIP, ctx.UnixAuth.UID, ctx.UnixAuth.GID, ctx.UnixAuth.MachineName)
+	if ctx.AuthFlavor == rpc.AuthUnix && ctx.UID != nil && ctx.GID != nil {
+		logger.Info("Mount request: path=%s client=%s auth=UNIX uid=%d gid=%d",
+			req.DirPath, clientIP, *ctx.UID, *ctx.GID)
 	} else {
 		authMethod := authFlavorName(ctx.AuthFlavor)
 		logger.Info("Mount request: path=%s client=%s auth=%s",
@@ -163,7 +130,7 @@ func (h *Handler) Mount(
 	case <-ctx.Context.Done():
 		logger.Debug("Mount request cancelled before access check: path=%s client=%s error=%v",
 			req.DirPath, clientIP, ctx.Context.Err())
-		return &MountResponse{Status: MountErrServerFault}, ctx.Context.Err()
+		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrServerFault}}, ctx.Context.Err()
 	default:
 	}
 
@@ -171,7 +138,7 @@ func (h *Handler) Mount(
 	if !h.Registry.ShareExists(req.DirPath) {
 		logger.Warn("Mount denied: path=%s client=%s reason=share not found",
 			req.DirPath, clientIP)
-		return &MountResponse{Status: MountErrNoEnt}, nil
+		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrNoEnt}}, nil
 	}
 
 	// Get share to check read-only status
@@ -179,7 +146,7 @@ func (h *Handler) Mount(
 	if err != nil {
 		logger.Error("Mount access check failed: path=%s client=%s error=%v",
 			req.DirPath, clientIP, err)
-		return &MountResponse{Status: MountErrServerFault}, nil
+		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrServerFault}}, nil
 	}
 
 	// Record the mount in the registry
@@ -195,9 +162,9 @@ func (h *Handler) Mount(
 		req.DirPath, clientIP, len(rootHandle), authFlavors, share.ReadOnly)
 
 	return &MountResponse{
-		Status:      MountOK,
-		FileHandle:  rootHandle,
-		AuthFlavors: authFlavors,
+		MountResponseBase: MountResponseBase{Status: MountOK},
+		FileHandle:        rootHandle,
+		AuthFlavors:       authFlavors,
 	}, nil
 }
 

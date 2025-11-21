@@ -43,15 +43,7 @@ type ReadLinkRequest struct {
 //
 // The response is encoded in XDR format before being sent back to the client.
 type ReadLinkResponse struct {
-	// Status indicates the result of the readlink operation.
-	// Common values:
-	//   - types.NFS3OK (0): Success - target path returned
-	//   - types.NFS3ErrNoEnt (2): Symlink not found
-	//   - types.NFS3ErrIO (5): I/O error reading symlink
-	//   - NFS3ErrInval (22): Handle is not a symbolic link
-	//   - NFS3ErrStale (70): Stale file handle
-	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
-	Status uint32
+	NFSResponseBase // Embeds Status field and GetStatus() method
 
 	// Attr contains the post-operation attributes of the symbolic link.
 	// Optional, may be nil. These attributes help clients maintain cache
@@ -65,51 +57,6 @@ type ReadLinkResponse struct {
 	// Maximum length is 1024 bytes per POSIX PATH_MAX.
 	Target string
 }
-
-// GetStatus returns the status code from the response.
-func (r *ReadLinkResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// ReadLinkContext contains the context information needed to process a READLINK request.
-// This includes client identification and authentication details for access control
-// and auditing purposes.
-type ReadLinkContext struct {
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client.
-	// Common values:
-	//   - 0: AUTH_NULL (no authentication)
-	//   - 1: AUTH_UNIX (Unix UID/GID authentication)
-	AuthFlavor uint32
-
-	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for access control checks by the store.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	UID *uint32
-
-	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for access control checks by the store.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GID *uint32
-
-	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// Used for checking if user belongs to symlink's group.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GIDs []uint32
-}
-
-// Implement NFSAuthContext interface for ReadLinkContext
-func (c *ReadLinkContext) GetContext() context.Context { return c.Context }
-func (c *ReadLinkContext) GetClientAddr() string       { return c.ClientAddr }
-func (c *ReadLinkContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
-func (c *ReadLinkContext) GetUID() *uint32             { return c.UID }
-func (c *ReadLinkContext) GetGID() *uint32             { return c.GID }
-func (c *ReadLinkContext) GetGIDs() []uint32           { return c.GIDs }
 
 // ============================================================================
 // Protocol Handler
@@ -253,7 +200,7 @@ func (c *ReadLinkContext) GetGIDs() []uint32           { return c.GIDs }
 //	    // Use resp.Target for symlink resolution
 //	}
 func (h *Handler) ReadLink(
-	ctx *ReadLinkContext,
+	ctx *NFSHandlerContext,
 	req *ReadLinkRequest,
 ) (*ReadLinkResponse, error) {
 	// ========================================================================
@@ -284,7 +231,7 @@ func (h *Handler) ReadLink(
 	if err := validateReadLinkRequest(req); err != nil {
 		logger.Warn("READLINK validation failed: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &ReadLinkResponse{Status: err.nfsStatus}, nil
+		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
 	// ========================================================================
@@ -296,14 +243,14 @@ func (h *Handler) ReadLink(
 	if err != nil {
 		logger.Warn("READLINK failed: invalid file handle: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &ReadLinkResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Check if share exists
 	if !h.Registry.ShareExists(shareName) {
 		logger.Warn("READLINK failed: share not found: share=%s handle=%x client=%s",
 			shareName, req.Handle, clientIP)
-		return &ReadLinkResponse{Status: types.NFS3ErrStale}, nil
+		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get metadata store for this share
@@ -311,7 +258,7 @@ func (h *Handler) ReadLink(
 	if err != nil {
 		logger.Error("READLINK failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
 			shareName, req.Handle, clientIP, err)
-		return &ReadLinkResponse{Status: types.NFS3ErrIO}, nil
+		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	logger.Debug("READLINK: share=%s path=%s", shareName, path)
@@ -322,18 +269,18 @@ func (h *Handler) ReadLink(
 	// The store needs authentication details to enforce access control
 	// on the symbolic link (read permission checking)
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, fileHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if ctx.Context.Err() != nil {
 			logger.Debug("READLINK cancelled during auth context building: handle=%x client=%s error=%v",
 				req.Handle, clientIP, ctx.Context.Err())
-			return &ReadLinkResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+			return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
 		logger.Error("READLINK failed: failed to build auth context: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &ReadLinkResponse{Status: types.NFS3ErrIO}, nil
+		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// ========================================================================
@@ -361,7 +308,7 @@ func (h *Handler) ReadLink(
 		// Map store errors to NFS status codes
 		status := mapReadLinkErrorToNFSStatus(err)
 
-		return &ReadLinkResponse{Status: status}, nil
+		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: status}}, nil
 	}
 
 	// ========================================================================
@@ -378,9 +325,9 @@ func (h *Handler) ReadLink(
 		fileid, attr.Mode, attr.UID, attr.GID, attr.Size)
 
 	return &ReadLinkResponse{
-		Status: types.NFS3OK,
-		Attr:   nfsAttr,
-		Target: target,
+		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+		Attr:            nfsAttr,
+		Target:          target,
 	}, nil
 }
 
@@ -542,7 +489,7 @@ func DecodeReadLinkRequest(data []byte) (*ReadLinkRequest, error) {
 // Example:
 //
 //	resp := &ReadLinkResponse{
-//	    Status: types.NFS3OK,
+//	    NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 //	    Attr:   symlinkAttr,
 //	    Target: "/usr/bin/python3",
 //	}

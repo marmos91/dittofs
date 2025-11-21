@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -47,15 +46,7 @@ type AccessRequest struct {
 //
 // The response is encoded in XDR format before being sent back to the client.
 type AccessResponse struct {
-	// Status indicates the result of the access check.
-	// Common values:
-	//   - types.NFS3OK (0): Success - check Access field for granted permissions
-	//   - types.NFS3ErrNoEnt (2): File handle not found
-	//   - types.NFS3ErrIO (5): I/O error
-	//   - NFS3ErrAcces (13): Permission denied (rare - usually returns with Access=0)
-	//   - NFS3ErrStale (70): Stale file handle
-	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
-	Status uint32
+	NFSResponseBase // Embeds Status field and GetStatus() method
 
 	// Attr contains the post-operation attributes for the file handle.
 	// This is optional and may be nil.
@@ -70,54 +61,6 @@ type AccessResponse struct {
 	// The client should check each bit individually.
 	Access uint32
 }
-
-// GetStatus returns the status code from the response.
-func (r *AccessResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// AccessContext contains the context information needed to process an ACCESS request.
-// This includes client identification, authentication details for permission checks,
-// and cancellation handling.
-type AccessContext struct {
-	// Context carries cancellation signals and deadlines
-	// The Access handler checks this context to abort operations if the client
-	// disconnects or the request times out
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client.
-	// Common values:
-	//   - 0: AUTH_NULL (no authentication)
-	//   - 1: AUTH_UNIX (Unix UID/GID authentication)
-	AuthFlavor uint32
-
-	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for permission checking against file ownership and mode bits.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	UID *uint32
-
-	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for permission checking against file group ownership and mode bits.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GID *uint32
-
-	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// Used for checking if user belongs to file's group.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GIDs []uint32
-}
-
-// Implement NFSAuthContext interface for AccessContext
-func (c *AccessContext) GetContext() context.Context { return c.Context }
-func (c *AccessContext) GetClientAddr() string       { return c.ClientAddr }
-func (c *AccessContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
-func (c *AccessContext) GetUID() *uint32             { return c.UID }
-func (c *AccessContext) GetGID() *uint32             { return c.GID }
-func (c *AccessContext) GetGIDs() []uint32           { return c.GIDs }
 
 // ============================================================================
 // Protocol Handler
@@ -211,14 +154,15 @@ func (c *AccessContext) GetGIDs() []uint32           { return c.GIDs }
 //
 // Example:
 //
-//	handler := &DefaultNFSHandler{}
+//	handler := &Handler{}
 //	req := &AccessRequest{
 //	    Handle: fileHandle,
 //	    Access: AccessRead | AccessExecute,
 //	}
-//	ctx := &AccessContext{
-//	    Context: context.Background(),
+//	ctx := &NFSHandlerContext{
+//	    Context:    context.Background(),
 //	    ClientAddr: "192.168.1.100:1234",
+//	    Share:      "/export",
 //	    AuthFlavor: 1, // AUTH_UNIX
 //	    UID:        &uid,
 //	    GID:        &gid,
@@ -237,7 +181,7 @@ func (c *AccessContext) GetGIDs() []uint32           { return c.GIDs }
 //	    }
 //	}
 func (h *Handler) Access(
-	ctx *AccessContext,
+	ctx *NFSHandlerContext,
 	req *AccessRequest,
 ) (*AccessResponse, error) {
 	// Check for cancellation before starting any work
@@ -246,7 +190,7 @@ func (h *Handler) Access(
 	case <-ctx.Context.Done():
 		logger.Debug("ACCESS cancelled before processing: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
-		return &AccessResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	default:
 	}
 
@@ -263,7 +207,7 @@ func (h *Handler) Access(
 	if err := validateAccessRequest(req); err != nil {
 		logger.Warn("ACCESS validation failed: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &AccessResponse{Status: err.nfsStatus}, nil
+		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
 	// ========================================================================
@@ -275,14 +219,14 @@ func (h *Handler) Access(
 	if err != nil {
 		logger.Warn("ACCESS failed: invalid file handle: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &AccessResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Check if share exists
 	if !h.Registry.ShareExists(shareName) {
 		logger.Warn("ACCESS failed: share not found: share=%s handle=%x client=%s",
 			shareName, req.Handle, clientIP)
-		return &AccessResponse{Status: types.NFS3ErrStale}, nil
+		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get metadata store for this share
@@ -290,7 +234,7 @@ func (h *Handler) Access(
 	if err != nil {
 		logger.Error("ACCESS failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
 			shareName, req.Handle, clientIP, err)
-		return &AccessResponse{Status: types.NFS3ErrIO}, nil
+		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	logger.Debug("ACCESS: share=%s path=%s", shareName, path)
@@ -305,12 +249,12 @@ func (h *Handler) Access(
 		if ctx.Context.Err() != nil {
 			logger.Debug("ACCESS cancelled during file lookup: handle=%x client=%s error=%v",
 				req.Handle, clientIP, ctx.Context.Err())
-			return &AccessResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+			return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
 		logger.Debug("ACCESS failed: handle not found: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &AccessResponse{Status: types.NFS3ErrStale}, nil
+		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Check for cancellation before the permission check
@@ -319,7 +263,7 @@ func (h *Handler) Access(
 	case <-ctx.Context.Done():
 		logger.Debug("ACCESS cancelled before permission check: handle=%x client=%s error=%v",
 			req.Handle, clientIP, ctx.Context.Err())
-		return &AccessResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	default:
 	}
 
@@ -327,18 +271,18 @@ func (h *Handler) Access(
 	// Step 3: Build AuthContext with share-level identity mapping
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, fileHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
 			logger.Debug("ACCESS cancelled during auth context building: handle=%x client=%s error=%v",
 				req.Handle, clientIP, ctx.Context.Err())
-			return &AccessResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+			return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
 		logger.Error("ACCESS failed: failed to build auth context: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &AccessResponse{Status: types.NFS3ErrIO}, nil
+		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// ========================================================================
@@ -360,12 +304,12 @@ func (h *Handler) Access(
 		if ctx.Context.Err() != nil {
 			logger.Debug("ACCESS cancelled during permission check: handle=%x client=%s error=%v",
 				req.Handle, clientIP, ctx.Context.Err())
-			return &AccessResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+			return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
 		logger.Error("ACCESS failed: permission check error: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
-		return &AccessResponse{Status: types.NFS3ErrIO}, nil
+		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// ========================================================================
@@ -392,9 +336,9 @@ func (h *Handler) Access(
 		nfsAttr.Type, attr.Mode, attr.UID, attr.GID, ctx.UID, ctx.GID)
 
 	return &AccessResponse{
-		Status: types.NFS3OK,
-		Attr:   nfsAttr,
-		Access: grantedAccess,
+		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+		Attr:            nfsAttr,
+		Access:          grantedAccess,
 	}, nil
 }
 
@@ -682,7 +626,7 @@ func DecodeAccessRequest(data []byte) (*AccessRequest, error) {
 // Example:
 //
 //	resp := &AccessResponse{
-//	    Status: types.NFS3OK,
+//	    NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 //	    Attr:   fileAttr,
 //	    Access: AccessRead | AccessLookup,
 //	}

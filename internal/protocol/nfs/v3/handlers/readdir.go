@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -58,17 +57,7 @@ type ReadDirRequest struct {
 //
 // The response is encoded in XDR format before being sent back to the client.
 type ReadDirResponse struct {
-	// Status indicates the result of the readdir operation.
-	// Common values:
-	//   - types.NFS3OK (0): Success
-	//   - types.NFS3ErrNoEnt (2): Directory not found
-	//   - types.NFS3ErrNotDir (20): Handle is not a directory
-	//   - types.NFS3ErrIO (5): I/O error
-	//   - NFS3ErrAcces (13): Permission denied
-	//   - NFS3ErrStale (70): Stale file handle
-	//   - types.NFS3ErrBadHandle (10001): Invalid file handle
-	//   - NFS3ErrBadCookie (10003): Invalid cookie
-	Status uint32
+	NFSResponseBase // Embeds Status field and GetStatus() method
 
 	// DirAttr contains post-operation attributes of the directory.
 	// Optional, may be nil. Helps clients maintain cache consistency.
@@ -90,55 +79,6 @@ type ReadDirResponse struct {
 	// false: More entries available, client should call again with updated cookie
 	Eof bool
 }
-
-// GetStatus returns the status code from the response.
-func (r *ReadDirResponse) GetStatus() uint32 {
-	return r.Status
-}
-
-// ReadDirContext contains the context information needed to process a READDIR request.
-// This includes client identification, authentication details, and cancellation handling
-// for access control.
-type ReadDirContext struct {
-	// Context carries cancellation signals and deadlines
-	// The ReadDir handler checks this context to abort operations if the client
-	// disconnects or the request times out, which is especially important for
-	// large directories
-	Context context.Context
-
-	// ClientAddr is the network address of the client making the request.
-	// Format: "IP:port" (e.g., "192.168.1.100:1234")
-	ClientAddr string
-
-	// AuthFlavor is the authentication method used by the client.
-	// Common values:
-	//   - 0: AUTH_NULL (no authentication)
-	//   - 1: AUTH_UNIX (Unix UID/GID authentication)
-	AuthFlavor uint32
-
-	// UID is the authenticated user ID (from AUTH_UNIX).
-	// Used for access control checks by the store.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	UID *uint32
-
-	// GID is the authenticated group ID (from AUTH_UNIX).
-	// Used for access control checks by the store.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GID *uint32
-
-	// GIDs is a list of supplementary group IDs (from AUTH_UNIX).
-	// Used for access control checks by the store.
-	// Only valid when AuthFlavor == AUTH_UNIX.
-	GIDs []uint32
-}
-
-// Implement NFSAuthContext interface for ReadDirContext
-func (c *ReadDirContext) GetContext() context.Context { return c.Context }
-func (c *ReadDirContext) GetClientAddr() string       { return c.ClientAddr }
-func (c *ReadDirContext) GetAuthFlavor() uint32       { return c.AuthFlavor }
-func (c *ReadDirContext) GetUID() *uint32             { return c.UID }
-func (c *ReadDirContext) GetGID() *uint32             { return c.GID }
-func (c *ReadDirContext) GetGIDs() []uint32           { return c.GIDs }
 
 // ============================================================================
 // Protocol Handler
@@ -290,7 +230,7 @@ func (c *ReadDirContext) GetGIDs() []uint32           { return c.GIDs }
 //	    }
 //	}
 func (h *Handler) ReadDir(
-	ctx *ReadDirContext,
+	ctx *NFSHandlerContext,
 	req *ReadDirRequest,
 ) (*ReadDirResponse, error) {
 	// Check for cancellation before starting any work
@@ -299,7 +239,7 @@ func (h *Handler) ReadDir(
 	case <-ctx.Context.Done():
 		logger.Debug("READDIR cancelled before processing: dir=%x client=%s error=%v",
 			req.DirHandle, ctx.ClientAddr, ctx.Context.Err())
-		return &ReadDirResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	default:
 	}
 
@@ -316,7 +256,7 @@ func (h *Handler) ReadDir(
 	if err := validateReadDirRequest(req); err != nil {
 		logger.Warn("READDIR validation failed: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &ReadDirResponse{Status: err.nfsStatus}, nil
+		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
 	// ========================================================================
@@ -328,14 +268,14 @@ func (h *Handler) ReadDir(
 	if err != nil {
 		logger.Warn("READDIR failed: invalid directory handle: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &ReadDirResponse{Status: types.NFS3ErrBadHandle}, nil
+		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Check if share exists
 	if !h.Registry.ShareExists(shareName) {
 		logger.Warn("READDIR failed: share not found: share=%s dir=%x client=%s",
 			shareName, req.DirHandle, clientIP)
-		return &ReadDirResponse{Status: types.NFS3ErrStale}, nil
+		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get metadata store for this share
@@ -343,7 +283,7 @@ func (h *Handler) ReadDir(
 	if err != nil {
 		logger.Error("READDIR failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
 			shareName, req.DirHandle, clientIP, err)
-		return &ReadDirResponse{Status: types.NFS3ErrIO}, nil
+		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	logger.Debug("READDIR: share=%s path=%s", shareName, path)
@@ -358,12 +298,12 @@ func (h *Handler) ReadDir(
 		if ctx.Context.Err() != nil {
 			logger.Debug("READDIR cancelled during directory lookup: dir=%x client=%s error=%v",
 				req.DirHandle, clientIP, ctx.Context.Err())
-			return &ReadDirResponse{Status: types.NFS3ErrIO}, ctx.Context.Err()
+			return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
 		logger.Warn("READDIR failed: directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
-		return &ReadDirResponse{Status: types.NFS3ErrNoEnt}, nil
+		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	// Verify it's actually a directory
@@ -376,8 +316,8 @@ func (h *Handler) ReadDir(
 		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &ReadDirResponse{
-			Status:  types.NFS3ErrNotDir,
-			DirAttr: nfsDirAttr,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
+			DirAttr:         nfsDirAttr,
 		}, nil
 	}
 
@@ -385,7 +325,7 @@ func (h *Handler) ReadDir(
 	// Step 3: Build authentication context for store
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, dirHandle)
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -397,8 +337,8 @@ func (h *Handler) ReadDir(
 			nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 			return &ReadDirResponse{
-				Status:  types.NFS3ErrIO,
-				DirAttr: nfsDirAttr,
+				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+				DirAttr:         nfsDirAttr,
 			}, ctx.Context.Err()
 		}
 
@@ -410,8 +350,8 @@ func (h *Handler) ReadDir(
 		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &ReadDirResponse{
-			Status:  types.NFS3ErrIO,
-			DirAttr: nfsDirAttr,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			DirAttr:         nfsDirAttr,
 		}, nil
 	}
 
@@ -428,8 +368,8 @@ func (h *Handler) ReadDir(
 		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &ReadDirResponse{
-			Status:  types.NFS3ErrIO,
-			DirAttr: nfsDirAttr,
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			DirAttr:         nfsDirAttr,
 		}, ctx.Context.Err()
 	default:
 	}
@@ -457,8 +397,8 @@ func (h *Handler) ReadDir(
 			nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 			return &ReadDirResponse{
-				Status:  types.NFS3ErrIO,
-				DirAttr: nfsDirAttr,
+				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+				DirAttr:         nfsDirAttr,
 			}, ctx.Context.Err()
 		}
 
@@ -473,8 +413,8 @@ func (h *Handler) ReadDir(
 		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
 
 		return &ReadDirResponse{
-			Status:  status,
-			DirAttr: nfsDirAttr,
+			NFSResponseBase: NFSResponseBase{Status: status},
+			DirAttr:         nfsDirAttr,
 		}, nil
 	}
 
@@ -510,11 +450,11 @@ func (h *Handler) ReadDir(
 		req.Cookie, getLastCookie(nfsEntries), req.Count)
 
 	return &ReadDirResponse{
-		Status:     types.NFS3OK,
-		DirAttr:    nfsDirAttr,
-		CookieVerf: 0, // Simple implementation: no verifier checking
-		Entries:    nfsEntries,
-		Eof:        eof,
+		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+		DirAttr:         nfsDirAttr,
+		CookieVerf:      0, // Simple implementation: no verifier checking
+		Entries:         nfsEntries,
+		Eof:             eof,
 	}, nil
 }
 
@@ -729,7 +669,7 @@ func DecodeReadDirRequest(data []byte) (*ReadDirRequest, error) {
 // Example:
 //
 //	resp := &ReadDirResponse{
-//	    Status:     types.NFS3OK,
+//	    NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 //	    DirAttr:    dirAttr,
 //	    CookieVerf: 0,
 //	    Entries: []*DirEntry{

@@ -188,8 +188,17 @@ func runStart() {
 		logger.Warn("GC will be re-enabled in a future phase with multi-store support")
 	}
 
+	// Initialize metrics (server and collectors)
+	metricsResult := config.InitializeMetrics(cfg)
+	if metricsResult.Server != nil {
+		logger.Info("Metrics enabled on port %d", cfg.Server.Metrics.Port)
+		dittoSrv.SetMetricsServer(metricsResult.Server)
+	} else {
+		logger.Info("Metrics collection disabled")
+	}
+
 	// Create all enabled adapters using the factory
-	adapters, err := config.CreateAdapters(cfg, nil) // nil = no metrics for now
+	adapters, err := config.CreateAdapters(cfg, metricsResult.NFSMetrics)
 	if err != nil {
 		log.Fatalf("Failed to create adapters: %v", err)
 	}
