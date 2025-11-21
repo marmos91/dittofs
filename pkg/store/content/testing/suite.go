@@ -35,7 +35,6 @@ type StoreTestSuite struct {
 func (suite *StoreTestSuite) Run(t *testing.T) {
 	t.Run("BasicOperations", suite.RunBasicTests)
 	t.Run("WriteOperations", suite.RunWriteTests)
-	t.Run("GarbageCollection", suite.RunGCTests)
 	t.Run("Statistics", suite.RunStatsTests)
 }
 

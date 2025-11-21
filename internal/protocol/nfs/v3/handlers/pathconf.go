@@ -266,7 +266,7 @@ func (h *Handler) PathConf(
 
 	logger.Debug("PATHCONF: share=%s path=%s", shareName, path)
 
-	attr, err := metadataStore.GetFile(ctx.Context, fileHandle)
+	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		logger.Warn("PATHCONF failed: handle not found: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
@@ -300,7 +300,7 @@ func (h *Handler) PathConf(
 	// ========================================================================
 
 	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(attr, fileid)
+	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 	logger.Info("PATHCONF successful: handle=%x client=%s", req.Handle, clientIP)
 	logger.Debug("PATHCONF properties: linkmax=%d namemax=%d no_trunc=%v chown_restricted=%v case_insensitive=%v case_preserving=%v",

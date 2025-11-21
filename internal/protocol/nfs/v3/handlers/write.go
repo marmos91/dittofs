@@ -369,7 +369,7 @@ func (h *Handler) Write(
 	default:
 	}
 
-	attr, err := metadataStore.GetFile(ctx.Context, fileHandle)
+	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		logger.Warn("WRITE failed: file not found: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
@@ -383,7 +383,7 @@ func (h *Handler) Write(
 
 		// Return file attributes even on error for cache consistency
 		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(attr, fileid)
+		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir}, // NFS3ErrIsDir used for all non-regular files
@@ -420,7 +420,7 @@ func (h *Handler) Write(
 			req.Handle, clientIP, err)
 
 		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(attr, fileid)
+		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -441,7 +441,7 @@ func (h *Handler) Write(
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 
 		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(attr, fileid)
+		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -459,7 +459,7 @@ func (h *Handler) Write(
 			req.Handle, req.Offset, len(req.Data), clientIP, err)
 
 		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(attr, fileid)
+		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 		// Build WCC attributes from current state
 		nfsWccAttr := &types.WccAttr{

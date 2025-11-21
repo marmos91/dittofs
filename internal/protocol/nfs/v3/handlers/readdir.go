@@ -292,7 +292,7 @@ func (h *Handler) ReadDir(
 	// Step 3: Verify directory handle exists and is valid
 	// ========================================================================
 
-	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
+	dirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -307,13 +307,13 @@ func (h *Handler) ReadDir(
 	}
 
 	// Verify it's actually a directory
-	if dirAttr.Type != metadata.FileTypeDirectory {
+	if dirFile.Type != metadata.FileTypeDirectory {
 		logger.Warn("READDIR failed: handle not a directory: dir=%x type=%d client=%s",
-			req.DirHandle, dirAttr.Type, clientIP)
+			req.DirHandle, dirFile.Type, clientIP)
 
 		// Include directory attributes even on error for cache consistency
 		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 		return &ReadDirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
@@ -334,7 +334,7 @@ func (h *Handler) ReadDir(
 
 			// Include directory attributes for cache consistency
 			dirID := xdr.ExtractFileID(dirHandle)
-			nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+			nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 			return &ReadDirResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -347,7 +347,7 @@ func (h *Handler) ReadDir(
 
 		// Include directory attributes for cache consistency
 		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 		return &ReadDirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -365,7 +365,7 @@ func (h *Handler) ReadDir(
 
 		// Include directory attributes for cache consistency
 		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 		return &ReadDirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -394,7 +394,7 @@ func (h *Handler) ReadDir(
 
 			// Include directory attributes for cache consistency
 			dirID := xdr.ExtractFileID(dirHandle)
-			nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+			nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 			return &ReadDirResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -410,7 +410,7 @@ func (h *Handler) ReadDir(
 
 		// Include directory attributes for cache consistency
 		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 		return &ReadDirResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},
@@ -438,7 +438,7 @@ func (h *Handler) ReadDir(
 
 	// Generate directory attributes for response
 	dirID := xdr.ExtractFileID(dirHandle)
-	nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+	nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 	// EOF is true when there are no more pages
 	eof := !page.HasMore

@@ -409,9 +409,9 @@ func (h *Handler) SetAttr(
 
 			// Get updated attributes for WCC data (best effort)
 			var wccAfter *types.NFSFileAttr
-			if attr, err := metadataStore.GetFile(ctx.Context, fileHandle); err == nil {
+			if file, err := metadataStore.GetFile(ctx.Context, fileHandle); err == nil {
 				fileID := xdr.ExtractFileID(fileHandle)
-				wccAfter = xdr.MetadataToNFS(attr, fileID)
+				wccAfter = xdr.MetadataToNFS(&file.FileAttr, fileID)
 			}
 
 			return &SetAttrResponse{
@@ -482,7 +482,7 @@ func (h *Handler) SetAttr(
 		var wccAfter *types.NFSFileAttr
 		if attr, getErr := metadataStore.GetFile(ctx.Context, fileHandle); getErr == nil {
 			fileID := xdr.ExtractFileID(fileHandle)
-			wccAfter = xdr.MetadataToNFS(attr, fileID)
+			wccAfter = xdr.MetadataToNFS(&file.FileAttr, fileID)
 		}
 
 		// Map store errors to NFS status codes

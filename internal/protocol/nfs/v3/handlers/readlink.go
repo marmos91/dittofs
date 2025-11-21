@@ -316,7 +316,7 @@ func (h *Handler) ReadLink(
 	// ========================================================================
 
 	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(attr, fileid)
+	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 	logger.Info("READLINK successful: handle=%x target='%s' target_len=%d client=%s",
 		req.Handle, target, len(target), clientIP)

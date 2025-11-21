@@ -353,7 +353,7 @@ func (h *Handler) ReadDirPlus(
 
 	logger.Debug("READDIRPLUS: share=%s path=%s", shareName, path)
 
-	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
+	dirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		logger.Warn("READDIRPLUS failed: directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
@@ -361,13 +361,13 @@ func (h *Handler) ReadDirPlus(
 	}
 
 	// Verify handle is actually a directory
-	if dirAttr.Type != metadata.FileTypeDirectory {
+	if dirFile.Type != metadata.FileTypeDirectory {
 		logger.Warn("READDIRPLUS failed: handle not a directory: dir=%x type=%d client=%s",
-			req.DirHandle, dirAttr.Type, clientIP)
+			req.DirHandle, dirFile.Type, clientIP)
 
 		// Include directory attributes even on error for cache consistency
 		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 		return &ReadDirPlusResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
@@ -387,7 +387,7 @@ func (h *Handler) ReadDirPlus(
 				req.DirHandle, clientIP, ctx.Context.Err())
 
 			dirID := xdr.ExtractFileID(dirHandle)
-			nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+			nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 			return &ReadDirPlusResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -399,7 +399,7 @@ func (h *Handler) ReadDirPlus(
 			req.DirHandle, clientIP, err)
 
 		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 		return &ReadDirPlusResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -420,7 +420,7 @@ func (h *Handler) ReadDirPlus(
 			req.DirHandle, clientIP, ctx.Context.Err())
 
 		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 		return &ReadDirPlusResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -447,7 +447,7 @@ func (h *Handler) ReadDirPlus(
 		status := mapMetadataErrorToNFS(err)
 
 		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 		return &ReadDirPlusResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},
@@ -461,7 +461,7 @@ func (h *Handler) ReadDirPlus(
 
 	// Generate directory file ID for attributes
 	dirID := xdr.ExtractFileID(dirHandle)
-	nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+	nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 	// Build entries list - look up each entry to get handle and full attributes
 	entries := make([]*DirPlusEntry, 0, len(page.Entries))
@@ -503,7 +503,7 @@ func (h *Handler) ReadDirPlus(
 
 		// Get attributes for the entry
 		// TODO: Use entry.Attr if populated to avoid this GetFile() call
-		entryAttr, err := metadataStore.GetFile(ctx.Context, entryHandle)
+		entryFile, err := metadataStore.GetFile(ctx.Context, entryHandle)
 		if err != nil {
 			logger.Warn("READDIRPLUS: failed to get attributes for '%s': dir=%x handle=%x error=%v",
 				entry.Name, req.DirHandle, entryHandle, err)
@@ -513,7 +513,7 @@ func (h *Handler) ReadDirPlus(
 
 		// Convert attributes to NFS format
 		entryID := xdr.ExtractFileID(entryHandle)
-		nfsEntryAttr := xdr.MetadataToNFS(entryAttr, entryID)
+		nfsEntryAttr := xdr.MetadataToNFS(&entryFile.FileAttr, entryID)
 
 		// Create directory entry with absolute cookie position
 		// Cookie = startOffset + i + 1 (absolute position in directory)

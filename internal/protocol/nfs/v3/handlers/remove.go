@@ -268,7 +268,7 @@ func (h *Handler) Remove(
 	// Step 3: Capture pre-operation directory attributes for WCC
 	// ========================================================================
 
-	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
+	dirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -283,7 +283,7 @@ func (h *Handler) Remove(
 	}
 
 	// Capture pre-operation attributes for WCC data
-	wccBefore := xdr.CaptureWccAttr(dirAttr)
+	wccBefore := xdr.CaptureWccAttr(&dirFile.FileAttr)
 
 	// Check for cancellation before the remove operation
 	// This is the most critical check - we don't want to start removing
@@ -294,7 +294,7 @@ func (h *Handler) Remove(
 			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
 
 		dirID := xdr.ExtractFileID(dirHandle)
-		wccAfter := xdr.MetadataToNFS(dirAttr, dirID)
+		wccAfter := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 		return &RemoveResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -316,7 +316,7 @@ func (h *Handler) Remove(
 				req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
 
 			dirID := xdr.ExtractFileID(dirHandle)
-			wccAfter := xdr.MetadataToNFS(dirAttr, dirID)
+			wccAfter := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 			return &RemoveResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -329,7 +329,7 @@ func (h *Handler) Remove(
 			req.Filename, req.DirHandle, clientIP, err)
 
 		dirID := xdr.ExtractFileID(dirHandle)
-		wccAfter := xdr.MetadataToNFS(dirAttr, dirID)
+		wccAfter := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 		return &RemoveResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -364,7 +364,7 @@ func (h *Handler) Remove(
 			var wccAfter *types.NFSFileAttr
 			if dirAttr, getErr := metadataStore.GetFile(ctx.Context, dirHandle); getErr == nil {
 				dirID := xdr.ExtractFileID(dirHandle)
-				wccAfter = xdr.MetadataToNFS(dirAttr, dirID)
+				wccAfter = xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 			}
 
 			return &RemoveResponse{
@@ -381,7 +381,7 @@ func (h *Handler) Remove(
 		var wccAfter *types.NFSFileAttr
 		if dirAttr, getErr := metadataStore.GetFile(ctx.Context, dirHandle); getErr == nil {
 			dirID := xdr.ExtractFileID(dirHandle)
-			wccAfter = xdr.MetadataToNFS(dirAttr, dirID)
+			wccAfter = xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 		}
 
 		return &RemoveResponse{
@@ -452,7 +452,7 @@ func (h *Handler) Remove(
 	var wccAfter *types.NFSFileAttr
 	if dirAttr != nil {
 		dirID := xdr.ExtractFileID(dirHandle)
-		wccAfter = xdr.MetadataToNFS(dirAttr, dirID)
+		wccAfter = xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 	}
 
 	logger.Info("REMOVE successful: file='%s' dir=%x client=%s",

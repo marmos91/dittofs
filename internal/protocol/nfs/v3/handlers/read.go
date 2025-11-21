@@ -298,7 +298,7 @@ func (h *Handler) Read(
 	// Step 3: Verify file exists and is a regular file
 	// ========================================================================
 
-	attr, err := metadataStore.GetFile(ctx.Context, fileHandle)
+	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if err == context.Canceled || err == context.DeadlineExceeded {
@@ -313,13 +313,13 @@ func (h *Handler) Read(
 	}
 
 	// Verify it's a regular file (not a directory or special file)
-	if attr.Type != metadata.FileTypeRegular {
+	if file.Type != metadata.FileTypeRegular {
 		logger.Warn("READ failed: not a regular file: handle=%x type=%d client=%s",
-			req.Handle, attr.Type, clientIP)
+			req.Handle, file.Type, clientIP)
 
 		// Return file attributes even on error for cache consistency
 		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(attr, fileid)
+		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 		return &ReadResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir}, // types.NFS3ErrIsDir is used for all non-regular files
@@ -345,12 +345,12 @@ func (h *Handler) Read(
 	// ========================================================================
 
 	// If file has no content, return empty data with EOF
-	if attr.ContentID == "" || attr.Size == 0 {
+	if file.ContentID == "" || file.Size == 0 {
 		logger.Debug("READ: empty file: handle=%x size=%d client=%s",
-			req.Handle, attr.Size, clientIP)
+			req.Handle, file.Size, clientIP)
 
 		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(attr, fileid)
+		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 		return &ReadResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -362,12 +362,12 @@ func (h *Handler) Read(
 	}
 
 	// If offset is at or beyond EOF, return empty data with EOF
-	if req.Offset >= attr.Size {
+	if req.Offset >= file.Size {
 		logger.Debug("READ: offset beyond EOF: handle=%x offset=%d size=%d client=%s",
-			req.Handle, req.Offset, attr.Size, clientIP)
+			req.Handle, req.Offset, file.Size, clientIP)
 
 		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(attr, fileid)
+		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 		return &ReadResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -396,23 +396,23 @@ func (h *Handler) Read(
 	// TODO: Phase 5 - Access stores via registry
 	/*
 		if false { // Disabled until Phase 5
-			cacheSize := h.WriteCache.Size(attr.ContentID)
+			cacheSize := h.WriteCache.Size(file.ContentID)
 			if cacheSize > 0 {
 				// Data exists in cache - read from cache
 				logger.Debug("READ: using cache path: handle=%x offset=%d count=%d cache_size=%d content_id=%s",
-					req.Handle, req.Offset, req.Count, cacheSize, attr.ContentID)
+					req.Handle, req.Offset, req.Count, cacheSize, file.ContentID)
 
 				data = make([]byte, req.Count)
-				n, readErr = h.WriteCache.ReadAt(attr.ContentID, data, int64(req.Offset))
+				n, readErr = h.WriteCache.ReadAt(file.ContentID, data, int64(req.Offset))
 
 				if readErr == nil || readErr == io.EOF {
 					readFromCache = true
 					eof = (readErr == io.EOF) || (int64(req.Offset)+int64(n) >= cacheSize)
 					logger.Debug("READ: cache hit: handle=%x bytes_read=%d eof=%v content_id=%s",
-						req.Handle, n, eof, attr.ContentID)
+						req.Handle, n, eof, file.ContentID)
 				} else {
 					logger.Warn("READ: cache read error, falling back to content store: handle=%x content_id=%s error=%v",
-						req.Handle, attr.ContentID, readErr)
+						req.Handle, file.ContentID, readErr)
 					readFromCache = false
 				}
 			}
@@ -436,10 +436,10 @@ func (h *Handler) Read(
 			// - ReadContent: Downloads 100MB then uses 4KB (wasteful!)
 
 			logger.Debug("READ: using content store ReadAt path: handle=%x offset=%d count=%d content_id=%s",
-				req.Handle, req.Offset, req.Count, attr.ContentID)
+				req.Handle, req.Offset, req.Count, file.ContentID)
 
 			data = make([]byte, req.Count)
-			n, readErr = readAtStore.ReadAt(ctx.Context, attr.ContentID, data, int64(req.Offset))
+			n, readErr = readAtStore.ReadAt(ctx.Context, file.ContentID, data, int64(req.Offset))
 
 			// Handle ReadAt results
 			if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
@@ -455,7 +455,7 @@ func (h *Handler) Read(
 					req.Handle, req.Offset, clientIP, readErr)
 
 				fileid := xdr.ExtractFileID(fileHandle)
-				nfsAttr := xdr.MetadataToNFS(attr, fileid)
+				nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 				return &ReadResponse{
 					NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -472,13 +472,13 @@ func (h *Handler) Read(
 			logger.Debug("READ: using sequential read path (no ReadAt support): handle=%x offset=%d count=%d",
 				req.Handle, req.Offset, req.Count)
 
-			reader, err := contentStore.ReadContent(ctx.Context, attr.ContentID)
+			reader, err := contentStore.ReadContent(ctx.Context, file.ContentID)
 			if err != nil {
 				logger.Error("READ failed: cannot open content: handle=%x content_id=%s client=%s error=%v",
-					req.Handle, attr.ContentID, clientIP, err)
+					req.Handle, file.ContentID, clientIP, err)
 
 				fileid := xdr.ExtractFileID(fileHandle)
-				nfsAttr := xdr.MetadataToNFS(attr, fileid)
+				nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 				return &ReadResponse{
 					NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -497,7 +497,7 @@ func (h *Handler) Read(
 							req.Handle, req.Offset, clientIP, err)
 
 						fileid := xdr.ExtractFileID(fileHandle)
-						nfsAttr := xdr.MetadataToNFS(attr, fileid)
+						nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 						return &ReadResponse{
 							NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -540,7 +540,7 @@ func (h *Handler) Read(
 								req.Handle, req.Offset, clientIP)
 
 							fileid := xdr.ExtractFileID(fileHandle)
-							nfsAttr := xdr.MetadataToNFS(attr, fileid)
+							nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 							return &ReadResponse{
 								NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -556,7 +556,7 @@ func (h *Handler) Read(
 								req.Handle, req.Offset, totalDiscarded, clientIP, discardErr)
 
 							fileid := xdr.ExtractFileID(fileHandle)
-							nfsAttr := xdr.MetadataToNFS(attr, fileid)
+							nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 							return &ReadResponse{
 								NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -591,7 +591,7 @@ func (h *Handler) Read(
 					req.Handle, req.Offset, clientIP, readErr)
 
 				fileid := xdr.ExtractFileID(fileHandle)
-				nfsAttr := xdr.MetadataToNFS(attr, fileid)
+				nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 				return &ReadResponse{
 					NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -602,7 +602,7 @@ func (h *Handler) Read(
 	}
 
 	// Even if ReadFull succeeded, check if we're at or past EOF
-	if req.Offset+uint64(n) >= attr.Size {
+	if req.Offset+uint64(n) >= file.Size {
 		eof = true
 	}
 
@@ -611,13 +611,13 @@ func (h *Handler) Read(
 	// ========================================================================
 
 	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(attr, fileid)
+	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 	logger.Info("READ successful: handle=%x offset=%d requested=%d read=%d eof=%v client=%s",
 		req.Handle, req.Offset, req.Count, n, eof, clientIP)
 
 	logger.Debug("READ details: size=%d type=%d mode=%o",
-		attr.Size, nfsAttr.Type, attr.Mode)
+		file.Size, nfsAttr.Type, file.Mode)
 
 	return &ReadResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -895,7 +895,7 @@ func (resp *ReadResponse) Encode() ([]byte, error) {
 	//
 	// Size calculation:
 	//   - Status: 4 bytes
-	//   - Optional attr (present): 1 byte + ~84 bytes (NFSFileAttr)
+	//   - Optional file (present): 1 byte + ~84 bytes (NFSFileAttr)
 	//   - Count: 4 bytes
 	//   - EOF: 4 bytes
 	//   - Data length: 4 bytes
