@@ -1,7 +1,6 @@
 package memory
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -569,64 +568,4 @@ func (s *MemoryMetadataStore) getSortedDirEntries(dirHandle metadata.FileHandle,
 	// For now, we'll cache on next write operation
 	// This is still better than sorting every time
 	return sorted
-}
-
-// GetAllContentIDs returns all ContentIDs referenced by metadata.
-//
-// This method is used by garbage collection to identify which content is
-// still in use. Content not in this list may be orphaned and eligible for
-// deletion.
-//
-// Implementation Details:
-//   - Iterates through all files in the store
-//   - Filters for regular files with non-empty ContentIDs
-//   - Deduplicates ContentIDs (hard links may share content)
-//   - Periodically checks context for cancellation
-//
-// Performance:
-// For large filesystems (millions of files), this scans all file entries
-// but is optimized to check context every 1000 files.
-//
-// Parameters:
-//   - ctx: Context for cancellation and timeouts
-//
-// Returns:
-//   - []metadata.ContentID: List of all referenced ContentIDs (deduplicated)
-//   - error: Returns error if context is cancelled
-func (s *MemoryMetadataStore) GetAllContentIDs(ctx context.Context) ([]metadata.ContentID, error) {
-	// Check context before starting
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	// Use map for deduplication (hard links may share ContentIDs)
-	contentIDs := make(map[metadata.ContentID]struct{})
-	processedCount := 0
-
-	// Iterate through all files
-	for _, fileData := range s.files {
-		// Check for cancellation periodically (every 1000 files)
-		processedCount++
-		if processedCount%1000 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-		}
-
-		// Only collect ContentIDs from regular files
-		if fileData.Attr.Type == metadata.FileTypeRegular && fileData.Attr.ContentID != "" {
-			contentIDs[fileData.Attr.ContentID] = struct{}{}
-		}
-	}
-
-	// Convert map to slice
-	result := make([]metadata.ContentID, 0, len(contentIDs))
-	for id := range contentIDs {
-		result = append(result, id)
-	}
-
-	return result, nil
 }

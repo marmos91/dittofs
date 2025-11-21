@@ -309,28 +309,6 @@ func (s *BadgerMetadataStore) initializeSingletons(ctx context.Context) error {
 	})
 }
 
-// GetAllContentIDs returns all ContentIDs referenced by metadata.
-//
-// TODO: This is a stub implementation. Full implementation needs to:
-// - Iterate through all files in BadgerDB using prefix scan
-// - Collect ContentIDs from regular files
-// - Deduplicate IDs (for hard links)
-// - Check context cancellation periodically
-//
-// For now, this returns an empty list.
-func (s *BadgerMetadataStore) GetAllContentIDs(ctx context.Context) ([]metadata.ContentID, error) {
-	// Check context before starting
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	// TODO: Implement actual iteration through BadgerDB
-	// This would use db.View() with a prefix scan on the files prefix
-	// and collect all ContentIDs from regular files
-
-	return []metadata.ContentID{}, nil
-}
-
 // Close closes the BadgerDB database and releases all resources.
 //
 // This should be called when the store is no longer needed, typically during
