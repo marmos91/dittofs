@@ -1,7 +1,6 @@
 package nfs
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -11,8 +10,10 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	nfs "github.com/marmos91/dittofs/internal/protocol/nfs"
+	mount "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	handlers "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
 )
 
 type NFSConnection struct {
@@ -78,9 +79,7 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 		default:
 		}
 
-		startTime := time.Now()
 		err := c.handleRequest(ctx)
-		duration := time.Since(startTime)
 
 		if err != nil {
 			if err == io.EOF {
@@ -94,10 +93,6 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 			}
 			return
 		}
-
-		// Record successful request (actual success/error determined in handler)
-		// This records the request was processed, not necessarily successful
-		_ = duration // Will be recorded in handleRPCCall
 
 		// Reset idle timeout after successful request
 		if c.server.config.Timeouts.Idle > 0 {
@@ -280,7 +275,12 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 		replyData, err = c.handleMountProcedure(ctx, call, procedureData, clientAddr)
 	default:
 		logger.Debug("Unknown program: %d", call.Program)
-		return nil
+		// Send PROC_UNAVAIL error reply for unknown programs
+		errorReply, err := rpc.MakeErrorReply(call.XID, rpc.RPCProcUnavail)
+		if err != nil {
+			return fmt.Errorf("make error reply: %w", err)
+		}
+		return c.sendReply(call.XID, errorReply)
 	}
 
 	if err != nil {
@@ -291,7 +291,23 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 			return err
 		}
 
-		logger.Debug("Handler error: %v", err)
+		// Handler returned an error - send RPC SYSTEM_ERR reply to client
+		// Per RFC 5531, every RPC call should receive a reply, even on failure
+		logger.Debug("Handler error: program=%d procedure=%d xid=0x%x error=%v",
+			call.Program, call.Procedure, call.XID, err)
+
+		errorReply, makeErr := rpc.MakeErrorReply(call.XID, rpc.RPCSystemErr)
+		if makeErr != nil {
+			// Failed to create error reply - return error to close connection
+			return fmt.Errorf("make error reply: %w", makeErr)
+		}
+
+		// Send the error reply to client
+		if sendErr := c.sendReply(call.XID, errorReply); sendErr != nil {
+			return fmt.Errorf("send error reply: %w", sendErr)
+		}
+
+		// Return original error for logging/metrics but reply was sent
 		return fmt.Errorf("handle program %d: %w", call.Program, err)
 	}
 
@@ -301,58 +317,32 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 // extractShareName attempts to extract the share name from NFS request data.
 //
 // Most NFS procedures include a file handle at the beginning of the request.
-// This function decodes the file handle and uses the registry to determine
-// which share it belongs to.
+// This function decodes the file handle using XDR and resolves it to a share
+// name using the registry.
 //
 // Parameters:
 //   - ctx: Context for cancellation
-//   - data: Raw procedure data (includes file handle)
+//   - data: Raw procedure data (XDR-encoded, file handle as first field)
 //
 // Returns:
 //   - string: Share name, or empty string if no handle present (e.g., NULL procedure)
-//   - error: NFS3ErrBadHandle if handle is malformed or share not found
+//   - error: Decoding or resolution error
 func (c *NFSConnection) extractShareName(ctx context.Context, data []byte) (string, error) {
-	// Need at least 4 bytes for handle length
-	if len(data) < 4 {
-		return "", nil // No handle present (e.g., NULL procedure)
+	// Decode file handle from XDR request data
+	handle, err := xdr.DecodeFileHandleFromRequest(data)
+	if err != nil {
+		return "", fmt.Errorf("decode file handle: %w", err)
 	}
 
-	reader := bytes.NewReader(data)
-
-	// Read handle length (4 bytes, big-endian)
-	var handleLen uint32
-	if err := binary.Read(reader, binary.BigEndian, &handleLen); err != nil {
-		return "", nil // Failed to read, assume no handle
-	}
-
-	// No handle present (length is 0)
-	if handleLen == 0 {
+	// No handle present (procedures like NULL, FSINFO don't have handles)
+	if handle == nil {
 		return "", nil
 	}
 
-	// Validate handle length (NFS v3 handles must be <= 64 bytes per RFC 1813)
-	if handleLen > 64 {
-		return "", fmt.Errorf("handle length %d exceeds maximum 64 bytes", handleLen)
-	}
-
-	// Check if we have enough data for the handle
-	if len(data) < int(4+handleLen) {
-		return "", fmt.Errorf("incomplete file handle: need %d bytes, have %d", 4+handleLen, len(data))
-	}
-
-	// Read the handle bytes
-	handleBytes := make([]byte, handleLen)
-	if _, err := reader.Read(handleBytes); err != nil {
-		return "", fmt.Errorf("failed to read file handle: %w", err)
-	}
-
-	// Convert to FileHandle type
-	handle := metadata.FileHandle(handleBytes)
-
-	// Extract share name from handle using registry
+	// Resolve share name from handle using registry
 	shareName, err := c.server.registry.GetShareNameForHandle(ctx, handle)
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve share from handle: %w", err)
+		return "", fmt.Errorf("resolve share from handle: %w", err)
 	}
 
 	return shareName, nil
@@ -361,7 +351,7 @@ func (c *NFSConnection) extractShareName(ctx context.Context, data []byte) (stri
 // logNFSRequest logs an NFS request with procedure, share, and auth information.
 //
 // This consolidates all the conditional logging logic in one place for cleaner code.
-func (c *NFSConnection) logNFSRequest(procedure, share string, authCtx *nfs.NFSAuthContext) {
+func (c *NFSConnection) logNFSRequest(procedure, share string, ctx *handlers.NFSHandlerContext) {
 	var parts []string
 
 	parts = append(parts, fmt.Sprintf("NFS %s", procedure))
@@ -370,11 +360,11 @@ func (c *NFSConnection) logNFSRequest(procedure, share string, authCtx *nfs.NFSA
 		parts = append(parts, fmt.Sprintf("share=%s", share))
 	}
 
-	if authCtx.UID != nil {
+	if ctx.UID != nil {
 		parts = append(parts, fmt.Sprintf("uid=%d gid=%d ngids=%d",
-			*authCtx.UID, *authCtx.GID, len(authCtx.GIDs)))
+			*ctx.UID, *ctx.GID, len(ctx.GIDs)))
 	} else {
-		parts = append(parts, fmt.Sprintf("auth_flavor=%d", authCtx.AuthFlavor))
+		parts = append(parts, fmt.Sprintf("auth_flavor=%d", ctx.AuthFlavor))
 	}
 
 	logger.Debug("%s", parts[0])
@@ -396,7 +386,7 @@ func (c *NFSConnection) logNFSRequest(procedure, share string, authCtx *nfs.NFSA
 // Returns the reply data or an error if the handler fails.
 func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
 	// Look up procedure in dispatch table
-	procInfo, ok := nfs.NfsDispatchTable[call.Procedure]
+	procedure, ok := nfs.NfsDispatchTable[call.Procedure]
 	if !ok {
 		logger.Debug("Unknown NFS procedure: %d", call.Procedure)
 		return []byte{}, nil
@@ -405,47 +395,74 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	// Extract share name from file handle (best effort for metrics)
 	share, extractErr := c.extractShareName(ctx, data)
 	if extractErr != nil {
-		logger.Debug("NFS %s: failed to extract share (handle may be invalid): %v", procInfo.Name, extractErr)
+		logger.Warn("NFS %s: failed to extract share (handle may be invalid): %v", procedure.Name, extractErr)
 		// Continue anyway - handler will validate and return proper NFS error
 		share = ""
 	}
 
-	// Extract authentication context (includes share for handlers)
-	authCtx := nfs.ExtractAuthContext(ctx, call, clientAddr, share, procInfo.Name)
+	// Extract handler context (includes share and authentication for handlers)
+	handlerCtx := nfs.ExtractHandlerContext(ctx, call, clientAddr, share, procedure.Name)
 
 	// Log request with clean helper
-	c.logNFSRequest(procInfo.Name, share, authCtx)
+	c.logNFSRequest(procedure.Name, share, handlerCtx)
 
 	// Check context before dispatching to handler
 	select {
 	case <-ctx.Done():
-		logger.Debug("NFS %s cancelled before handler: xid=0x%x", procInfo.Name, call.XID)
+		logger.Debug("NFS %s cancelled before handler: xid=0x%x", procedure.Name, call.XID)
 		return nil, ctx.Err()
 	default:
 	}
 
-	// Record request start in metrics
-	c.server.metrics.RecordRequestStart(procInfo.Name, share)
-	defer c.server.metrics.RecordRequestEnd(procInfo.Name, share)
+	// ============================================================================
+	// Metrics Instrumentation (Transparent to Handlers)
+	// ============================================================================
+	//
+	// Three metrics are recorded for each request, following Prometheus best practices:
+	//
+	// 1. In-Flight Gauge (RecordRequestStart/End):
+	//    - Tracks concurrent requests at any moment
+	//    - Useful for capacity planning and detecting overload
+	//    - Metric: dittofs_nfs_requests_in_flight
+	//
+	// 2. Request Counter (RecordRequest):
+	//    - Counts total requests by procedure, share, status, and error code
+	//    - Enables calculation of success/error rates and error type distribution
+	//    - Metric: dittofs_nfs_requests_total
+	//
+	// 3. Duration Histogram (RecordRequest):
+	//    - Tracks latency distribution for percentile calculations (p50, p95, p99)
+	//    - Same call records both counter and histogram for efficiency
+	//    - Metric: dittofs_nfs_request_duration_milliseconds
+	//
+	// This pattern ensures:
+	//  - Handlers remain unaware of metrics (clean separation of concerns)
+	//  - All procedures are instrumented consistently
+	//  - Metrics include NFS protocol status codes, not Go errors
+	//  - Share-level tracking enables per-tenant analysis
+	//
+	c.server.metrics.RecordRequestStart(procedure.Name, share)
+	defer c.server.metrics.RecordRequestEnd(procedure.Name, share)
 
-	// Dispatch to handler with context and record metrics
+	// Execute handler and measure duration
 	startTime := time.Now()
-	result, err := procInfo.Handler(
-		authCtx,
+	result, err := procedure.Handler(
+		handlerCtx,
 		c.server.nfsHandler,
 		c.server.registry,
 		data,
 	)
 	duration := time.Since(startTime)
 
-	// Record request completion in metrics with NFS status code
-	var errorCode string
+	// Record completion with NFS status code (e.g., "NFS3_OK", "NFS3ERR_NOENT")
+	// This provides RFC-compliant error tracking for observability
+	var responseStatus string
 	if result != nil {
-		errorCode = nfs.NFSStatusToString(result.NFSStatus)
+		responseStatus = nfs.NFSStatusToString(result.NFSStatus)
 	} else if err != nil {
-		errorCode = "ERROR_NO_RESULT"
+		responseStatus = "ERROR_NO_RESULT"
 	}
-	c.server.metrics.RecordRequest(procInfo.Name, share, duration, errorCode)
+	c.server.metrics.RecordRequest(procedure.Name, share, duration, responseStatus)
 
 	if result == nil {
 		return nil, err
@@ -463,7 +480,7 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 // Returns the reply data or an error if the handler fails.
 func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
 	// Look up procedure in dispatch table
-	procInfo, ok := nfs.MountDispatchTable[call.Procedure]
+	procedure, ok := nfs.MountDispatchTable[call.Procedure]
 	if !ok {
 		logger.Debug("Unknown Mount procedure: %d", call.Procedure)
 		return []byte{}, nil
@@ -472,17 +489,42 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 	// Mount requests don't have file handles, so no share
 	share := ""
 
-	// Extract authentication context (includes empty share for mount requests)
-	authCtx := nfs.ExtractAuthContext(ctx, call, clientAddr, share, procInfo.Name)
+	// Extract handler context for mount requests
+	handlerCtx := &mount.MountHandlerContext{
+		Context:    ctx,
+		ClientAddr: clientAddr,
+		AuthFlavor: call.GetAuthFlavor(),
+	}
 
-	// Log request with clean helper (MOUNT_ prefix)
-	procedureName := "MOUNT_" + procInfo.Name
-	c.logNFSRequest(procedureName, share, authCtx)
+	// Parse Unix credentials if AUTH_UNIX
+	if handlerCtx.AuthFlavor == rpc.AuthUnix {
+		authBody := call.GetAuthBody()
+		if len(authBody) > 0 {
+			if unixAuth, err := rpc.ParseUnixAuth(authBody); err == nil {
+				handlerCtx.UID = &unixAuth.UID
+				handlerCtx.GID = &unixAuth.GID
+				handlerCtx.GIDs = unixAuth.GIDs
+			}
+		}
+	}
+
+	// Log request (MOUNT_ prefix) - convert to NFSHandlerContext for logging
+	procedureName := "MOUNT_" + procedure.Name
+	logCtx := &handlers.NFSHandlerContext{
+		Context:    handlerCtx.Context,
+		ClientAddr: handlerCtx.ClientAddr,
+		Share:      share,
+		AuthFlavor: handlerCtx.AuthFlavor,
+		UID:        handlerCtx.UID,
+		GID:        handlerCtx.GID,
+		GIDs:       handlerCtx.GIDs,
+	}
+	c.logNFSRequest(procedureName, share, logCtx)
 
 	// Check context before dispatching to handler
 	select {
 	case <-ctx.Done():
-		logger.Debug("MOUNT %s cancelled before handler: xid=0x%x", procInfo.Name, call.XID)
+		logger.Debug("MOUNT %s cancelled before handler: xid=0x%x", procedure.Name, call.XID)
 		return nil, ctx.Err()
 	default:
 	}
@@ -493,8 +535,8 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 
 	// Dispatch to handler with context and record metrics
 	startTime := time.Now()
-	result, err := procInfo.Handler(
-		authCtx,
+	result, err := procedure.Handler(
+		handlerCtx,
 		c.server.mountHandler,
 		c.server.registry,
 		data,
@@ -502,13 +544,13 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 	duration := time.Since(startTime)
 
 	// Record request completion in metrics with Mount status code
-	var errorCode string
+	var responseStatus string
 	if result != nil {
-		errorCode = nfs.MountStatusToString(result.NFSStatus)
+		responseStatus = nfs.MountStatusToString(result.NFSStatus)
 	} else if err != nil {
-		errorCode = "ERROR_NO_RESULT"
+		responseStatus = "ERROR_NO_RESULT"
 	}
-	c.server.metrics.RecordRequest(procedureName, share, duration, errorCode)
+	c.server.metrics.RecordRequest(procedureName, share, duration, responseStatus)
 
 	if result == nil {
 		return nil, err
