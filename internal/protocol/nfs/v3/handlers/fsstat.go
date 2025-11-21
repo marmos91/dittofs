@@ -205,7 +205,7 @@ func (h *Handler) FsStat(
 	// ========================================================================
 
 	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, path, err := metadata.DecodeFileHandle(fileHandle)
+	shareName, _, err := metadata.DecodeFileHandle(fileHandle)
 	if err != nil {
 		logger.Warn("FSSTAT failed: invalid file handle: handle=%x client=%s error=%v",
 			req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
@@ -227,13 +227,13 @@ func (h *Handler) FsStat(
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	logger.Debug("FSSTAT: share=%s path=%s", shareName, path)
-
-	attr, err := metadataStore.GetFile(ctx.Context, fileHandle)
+	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		logger.Debug("FSSTAT failed: handle not found: %v client=%s", err, ctx.ClientAddr)
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
+
+	logger.Debug("FSSTAT: share=%s path=%s", shareName, file.Path)
 
 	// ========================================================================
 	// Step 4: Retrieve filesystem statistics from the store
@@ -266,7 +266,7 @@ func (h *Handler) FsStat(
 
 	// Generate file ID from handle for attributes
 	fileid := binary.BigEndian.Uint64(req.Handle[:8])
-	nfsAttr := xdr.MetadataToNFS(attr, fileid)
+	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 	// Convert ValidFor duration to seconds for Invarsec
 	invarsec := uint32(stats.ValidFor.Seconds())

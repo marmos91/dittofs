@@ -10,7 +10,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
 	"github.com/marmos91/dittofs/pkg/registry"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
 	xdr "github.com/rasky/go-xdr/xdr2"
 )
 
@@ -152,8 +151,13 @@ func (h *Handler) Mount(
 	// Record the mount in the registry
 	h.Registry.RecordMount(clientIP, req.DirPath, time.Now().Unix())
 
-	// Encode root file handle for this share
-	rootHandle := metadata.EncodeFileHandle(req.DirPath, "/")
+	// Get root handle from registry (which encodes the share and root path)
+	rootHandle, err := h.Registry.GetRootHandle(req.DirPath)
+	if err != nil {
+		logger.Error("Mount failed: cannot get root handle: path=%s client=%s error=%v",
+			req.DirPath, clientIP, err)
+		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrServerFault}}, nil
+	}
 
 	// Return the authentication flavor used for mount
 	authFlavors := []int32{int32(ctx.AuthFlavor)}

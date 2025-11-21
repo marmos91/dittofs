@@ -186,7 +186,7 @@ func (h *Handler) FsInfo(
 	// ========================================================================
 
 	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, path, err := metadata.DecodeFileHandle(fileHandle)
+	shareName, _, err := metadata.DecodeFileHandle(fileHandle)
 	if err != nil {
 		logger.Warn("FSINFO failed: invalid file handle: handle=%x client=%s error=%v",
 			req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
@@ -208,8 +208,6 @@ func (h *Handler) FsInfo(
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	logger.Debug("FSINFO: share=%s path=%s", shareName, path)
-
 	// Check for cancellation before store call
 	// store operations might involve I/O or locks
 	select {
@@ -222,12 +220,14 @@ func (h *Handler) FsInfo(
 
 	// Verify the file handle exists and is valid in the store
 	// The store is responsible for validating handle format and existence
-	attr, err := metadataStore.GetFile(ctx.Context, fileHandle)
+	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		logger.Debug("FSINFO failed: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, err)
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
+
+	logger.Debug("FSINFO: share=%s path=%s", shareName, file.Path)
 
 	// Retrieve filesystem capabilities from the store
 	// All business logic about filesystem limits is handled by the store
@@ -257,7 +257,7 @@ func (h *Handler) FsInfo(
 	}
 
 	// Convert metadata attributes to NFS wire format
-	nfsAttr := xdr.MetadataToNFS(attr, fileid)
+	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 	// Convert timestamp resolution to NFS TimeVal format
 	timeDelta := durationToTimeVal(capabilities.TimestampResolution)

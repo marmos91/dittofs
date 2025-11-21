@@ -210,7 +210,7 @@ func (h *Handler) Create(
 	// Step 3: Verify parent directory exists and is valid
 	// ========================================================================
 
-	parentAttr, err := metadataStore.GetFile(ctx.Context, parentHandle)
+	parentFile, err := metadataStore.GetFile(ctx.Context, parentHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -225,16 +225,16 @@ func (h *Handler) Create(
 	}
 
 	// Capture pre-operation directory state for WCC
-	dirWccBefore := xdr.CaptureWccAttr(parentAttr)
+	dirWccBefore := xdr.CaptureWccAttr(&parentFile.FileAttr)
 
 	// Verify parent is a directory
-	if parentAttr.Type != metadata.FileTypeDirectory {
+	if parentFile.Type != metadata.FileTypeDirectory {
 		logger.Warn("CREATE failed: parent not a directory: file='%s' dir=%x type=%d client=%s",
-			req.Filename, req.DirHandle, parentAttr.Type, clientIP)
+			req.Filename, req.DirHandle, parentFile.Type, clientIP)
 
 		// Get current parent state for WCC
 		dirID := xdr.ExtractFileID(parentHandle)
-		dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+		dirWccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
 
 		return &CreateResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
@@ -261,7 +261,7 @@ func (h *Handler) Create(
 
 		// Get current parent state for WCC
 		dirID := xdr.ExtractFileID(parentHandle)
-		dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+		dirWccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
 
 		return &CreateResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -284,7 +284,7 @@ func (h *Handler) Create(
 	// Step 4: Check if file already exists using Lookup
 	// ========================================================================
 
-	existingHandle, existingAttr, err := metadataStore.Lookup(authCtx, parentHandle, req.Filename)
+	existingFile, err := metadataStore.Lookup(authCtx, parentHandle, req.Filename)
 	if err != nil && ctx.Context.Err() != nil {
 		// Context was cancelled during Lookup
 		logger.Debug("CREATE cancelled during existence check: file='%s' dir=%x client=%s error=%v",
@@ -320,9 +320,8 @@ func (h *Handler) Create(
 				req.Filename, clientIP)
 
 			// Get current parent state for WCC
-			parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
 			dirID := xdr.ExtractFileID(parentHandle)
-			dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+			dirWccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
 
 			return &CreateResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrExist},
@@ -342,9 +341,8 @@ func (h *Handler) Create(
 			logger.Debug("CREATE failed: file exists (exclusive): file='%s' client=%s verifier=%016x",
 				req.Filename, clientIP, req.Verf)
 
-			parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
 			dirID := xdr.ExtractFileID(parentHandle)
-			dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+			dirWccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
 
 			return &CreateResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrExist},
@@ -360,8 +358,9 @@ func (h *Handler) Create(
 		// UNCHECKED: Create or truncate existing
 		if fileExists {
 			// Truncate existing file
+			existingHandle, _ := metadata.EncodeFileHandle(existingFile)
 			fileHandle = existingHandle
-			fileAttr, err = truncateExistingFile(authCtx, contentStore, metadataStore, existingHandle, existingAttr, req)
+			fileAttr, err = truncateExistingFile(authCtx, contentStore, metadataStore, existingFile, req)
 		} else {
 			// Create new file
 			fileHandle, fileAttr, err = createNewFile(authCtx, metadataStore, parentHandle, req)
@@ -371,9 +370,8 @@ func (h *Handler) Create(
 		logger.Warn("CREATE failed: invalid mode: file='%s' mode=%d client=%s",
 			req.Filename, req.Mode, clientIP)
 
-		parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
 		dirID := xdr.ExtractFileID(parentHandle)
-		dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+		dirWccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
 
 		return &CreateResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrInval},
@@ -392,9 +390,8 @@ func (h *Handler) Create(
 			logger.Debug("CREATE cancelled during file operation: file='%s' client=%s error=%v",
 				req.Filename, clientIP, ctx.Context.Err())
 
-			parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
 			dirID := xdr.ExtractFileID(parentHandle)
-			dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+			dirWccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
 
 			return &CreateResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -409,9 +406,8 @@ func (h *Handler) Create(
 		// Map repository errors to NFS status codes
 		nfsStatus := mapMetadataErrorToNFS(err)
 
-		parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
 		dirID := xdr.ExtractFileID(parentHandle)
-		dirWccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+		dirWccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
 
 		return &CreateResponse{
 			NFSResponseBase: NFSResponseBase{Status: nfsStatus},
@@ -429,9 +425,9 @@ func (h *Handler) Create(
 	nfsFileAttr := xdr.MetadataToNFS(fileAttr, fileID)
 
 	// Get updated parent directory attributes
-	parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
+	updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
 	dirID := xdr.ExtractFileID(parentHandle)
-	nfsDirAttr := xdr.MetadataToNFS(parentAttr, dirID)
+	nfsDirAttr := xdr.MetadataToNFS(&updatedParentFile.FileAttr, dirID)
 
 	logger.Info("CREATE successful: file='%s' handle=%x mode=%o size=%d client=%s",
 		req.Filename, fileHandle, fileAttr.Mode, fileAttr.Size, clientIP)
@@ -501,18 +497,18 @@ func createNewFile(
 
 	// Call store's atomic Create operation
 	// This handles file creation, parent linking, and permission checking
-	fileHandle, err := metadataStore.Create(authCtx, parentHandle, req.Filename, fileAttr)
+	createdFile, err := metadataStore.Create(authCtx, parentHandle, req.Filename, fileAttr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create file: %w", err)
 	}
 
-	// Get the completed attributes (with timestamps and ContentID)
-	createdAttr, err := metadataStore.GetFile(authCtx.Context, fileHandle)
+	// Encode the file handle for return
+	fileHandle, err := metadata.EncodeFileHandle(createdFile)
 	if err != nil {
-		return nil, nil, fmt.Errorf("get created file attributes: %w", err)
+		return nil, nil, fmt.Errorf("encode file handle: %w", err)
 	}
 
-	return fileHandle, createdAttr, nil
+	return fileHandle, &createdFile.FileAttr, nil
 }
 
 // truncateExistingFile truncates an existing file and updates attributes.
@@ -526,8 +522,7 @@ func createNewFile(
 //   - authCtx: Authentication context for permission checking
 //   - contentStore: Content store for truncation
 //   - metadataStore: Metadata store
-//   - fileHandle: Handle of existing file
-//   - existingAttr: Current file attributes
+//   - existingFile: Existing file to truncate
 //   - req: Create request with attributes
 //
 // Returns:
@@ -536,10 +531,10 @@ func truncateExistingFile(
 	authCtx *metadata.AuthContext,
 	contentStore content.ContentStore,
 	metadataStore metadata.MetadataStore,
-	fileHandle metadata.FileHandle,
-	existingAttr *metadata.FileAttr,
+	existingFile *metadata.File,
 	req *CreateRequest,
 ) (*metadata.FileAttr, error) {
+	fileHandle, _ := metadata.EncodeFileHandle(existingFile)
 	// Build SetAttrs for the update
 	setAttrs := &metadata.SetAttrs{}
 
@@ -576,9 +571,9 @@ func truncateExistingFile(
 	}
 
 	// Truncate content if store supports writes and file has content
-	if existingAttr.ContentID != "" {
+	if existingFile.ContentID != "" {
 		if writeStore, ok := contentStore.(content.WritableContentStore); ok {
-			if err := writeStore.Truncate(authCtx.Context, existingAttr.ContentID, targetSize); err != nil {
+			if err := writeStore.Truncate(authCtx.Context, existingFile.ContentID, targetSize); err != nil {
 				logger.Warn("Failed to truncate content to %d bytes: %v", targetSize, err)
 				// Non-fatal: metadata is already updated
 			}
@@ -586,12 +581,12 @@ func truncateExistingFile(
 	}
 
 	// Get updated attributes
-	updatedAttr, err := metadataStore.GetFile(authCtx.Context, fileHandle)
+	updatedFile, err := metadataStore.GetFile(authCtx.Context, fileHandle)
 	if err != nil {
 		return nil, fmt.Errorf("get updated attributes: %w", err)
 	}
 
-	return updatedAttr, nil
+	return &updatedFile.FileAttr, nil
 }
 
 // applySetAttrsToFileAttr applies SetAttrs to FileAttr for initial file creation.

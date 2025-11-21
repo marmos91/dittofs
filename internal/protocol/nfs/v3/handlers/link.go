@@ -314,7 +314,7 @@ func (h *Handler) Link(
 	// Step 7: Verify target directory exists and is a directory
 	// ========================================================================
 
-	dirAttr, err := metadataStore.GetFile(ctx.Context, dirHandle)
+	dirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		logger.Warn("LINK failed: target directory not found: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
@@ -322,16 +322,16 @@ func (h *Handler) Link(
 	}
 
 	// Capture pre-operation directory attributes for WCC
-	dirWccBefore := xdr.CaptureWccAttr(dirAttr)
+	dirWccBefore := xdr.CaptureWccAttr(&dirFile.FileAttr)
 
 	// Verify target is a directory
-	if dirAttr.Type != metadata.FileTypeDirectory {
+	if dirFile.Type != metadata.FileTypeDirectory {
 		logger.Warn("LINK failed: target not a directory: dir=%x type=%d client=%s",
-			req.DirHandle, dirAttr.Type, clientIP)
+			req.DirHandle, dirFile.Type, clientIP)
 
 		// Get current directory state for WCC
 		dirID := xdr.ExtractFileID(dirHandle)
-		dirWccAfter := xdr.MetadataToNFS(dirAttr, dirID)
+		dirWccAfter := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
 
 		return &LinkResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
@@ -356,16 +356,16 @@ func (h *Handler) Link(
 	// Step 9: Check if name already exists in target directory using Lookup
 	// ========================================================================
 
-	_, _, err = metadataStore.Lookup(authCtx, dirHandle, req.Name)
+	_, err = metadataStore.Lookup(authCtx, dirHandle, req.Name)
 	if err == nil {
 		// No error means file exists
 		logger.Debug("LINK failed: name already exists: name='%s' dir=%x client=%s",
 			req.Name, req.DirHandle, clientIP)
 
 		// Get updated directory attributes for WCC
-		dirAttr, _ = metadataStore.GetFile(ctx.Context, dirHandle)
+		updatedDirFile, _ := metadataStore.GetFile(ctx.Context, dirHandle)
 		dirID := xdr.ExtractFileID(dirHandle)
-		dirWccAfter := xdr.MetadataToNFS(dirAttr, dirID)
+		dirWccAfter := xdr.MetadataToNFS(&updatedDirFile.FileAttr, dirID)
 
 		return &LinkResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrExist},
@@ -403,9 +403,9 @@ func (h *Handler) Link(
 			req.Name, clientIP, err)
 
 		// Get updated directory attributes for WCC
-		dirAttr, _ = metadataStore.GetFile(ctx.Context, dirHandle)
+		updatedDirFile, _ := metadataStore.GetFile(ctx.Context, dirHandle)
 		dirID := xdr.ExtractFileID(dirHandle)
-		dirWccAfter := xdr.MetadataToNFS(dirAttr, dirID)
+		dirWccAfter := xdr.MetadataToNFS(&updatedDirFile.FileAttr, dirID)
 
 		// Map store errors to NFS status codes
 		status := mapMetadataErrorToNFS(err)
@@ -424,7 +424,7 @@ func (h *Handler) Link(
 	// is best-effort for cache consistency
 
 	// Get updated file attributes (nlink should be incremented)
-	fileAttr, err = metadataStore.GetFile(ctx.Context, fileHandle)
+	updatedFile, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		logger.Error("LINK: failed to get file attributes after link: file=%x error=%v",
 			req.FileHandle, err)
@@ -432,12 +432,12 @@ func (h *Handler) Link(
 	}
 
 	fileID := xdr.ExtractFileID(fileHandle)
-	nfsFileAttr := xdr.MetadataToNFS(fileAttr, fileID)
+	nfsFileAttr := xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
 
 	// Get updated directory attributes
-	dirAttr, _ = metadataStore.GetFile(ctx.Context, dirHandle)
+	updatedDirFile, _ := metadataStore.GetFile(ctx.Context, dirHandle)
 	dirID := xdr.ExtractFileID(dirHandle)
-	nfsDirAttr := xdr.MetadataToNFS(dirAttr, dirID)
+	nfsDirAttr := xdr.MetadataToNFS(&updatedDirFile.FileAttr, dirID)
 
 	logger.Info("LINK successful: name='%s' file=%x nlink=%d client=%s",
 		req.Name, req.FileHandle, nfsFileAttr.Nlink, clientIP)

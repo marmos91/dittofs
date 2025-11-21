@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+
 	// // "github.com/marmos91/dittofs/pkg/store/content" // TODO: Phase 5 // TODO: Will be accessed via registry in Phase 5
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
@@ -329,7 +330,7 @@ func (h *Handler) Commit(
 	default:
 	}
 
-	fileAttr, err := store.GetFile(ctx.Context, handle)
+	file, err := store.GetFile(ctx.Context, handle)
 	if err != nil {
 		logger.Warn("COMMIT failed: file not found: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
@@ -337,15 +338,15 @@ func (h *Handler) Commit(
 	}
 
 	// Capture pre-operation attributes for WCC data
-	wccBefore := xdr.CaptureWccAttr(fileAttr)
+	wccBefore := xdr.CaptureWccAttr(&file.FileAttr)
 
 	// Verify this is not a directory
-	if fileAttr.Type == metadata.FileTypeDirectory {
+	if file.Type == metadata.FileTypeDirectory {
 		logger.Warn("COMMIT failed: handle is a directory: handle=%x client=%s",
 			req.Handle, clientIP)
 
 		fileID := xdr.ExtractFileID(handle)
-		wccAfter := xdr.MetadataToNFS(fileAttr, fileID)
+		wccAfter := xdr.MetadataToNFS(&file.FileAttr, fileID)
 
 		return &CommitResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir},
@@ -366,9 +367,9 @@ func (h *Handler) Commit(
 
 		// Get updated attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
-		if updatedAttr, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
+		if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
 			fileID := xdr.ExtractFileID(handle)
-			wccAfter = xdr.MetadataToNFS(updatedAttr, fileID)
+			wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
 		}
 
 		return &CommitResponse{
@@ -399,15 +400,15 @@ func (h *Handler) Commit(
 		// Commit from offset to EOF
 		shouldFlush = true
 		logger.Debug("COMMIT: from offset to EOF (count=0)")
-	} else if req.Offset+uint64(req.Count) >= fileAttr.Size {
+	} else if req.Offset+uint64(req.Count) >= file.Size {
 		// Commit range covers entire file
 		shouldFlush = true
 		logger.Debug("COMMIT: range covers file (offset=%d count=%d size=%d)",
-			req.Offset, req.Count, fileAttr.Size)
+			req.Offset, req.Count, file.Size)
 	} else {
 		// Partial range COMMIT - defer flush until full file is committed
 		logger.Debug("COMMIT: partial range, skipping flush (offset=%d count=%d size=%d)",
-			req.Offset, req.Count, fileAttr.Size)
+			req.Offset, req.Count, file.Size)
 	}
 
 	// TODO: Phase 5 - Access stores via registry
@@ -452,7 +453,7 @@ func (h *Handler) Commit(
 	// ========================================================================
 
 	// Get updated file attributes for WCC data
-	fileAttr, err = store.GetFile(ctx.Context, handle)
+	updatedFile, err := store.GetFile(ctx.Context, handle)
 	if err != nil {
 		logger.Warn("COMMIT: successful but cannot get updated file attributes: handle=%x error=%v",
 			req.Handle, err)
@@ -460,11 +461,11 @@ func (h *Handler) Commit(
 	}
 
 	var wccAfter *types.NFSFileAttr
-	if fileAttr != nil {
+	if updatedFile != nil {
 		fileID := xdr.ExtractFileID(handle)
-		wccAfter = xdr.MetadataToNFS(fileAttr, fileID)
+		wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
 		logger.Debug("COMMIT details: file_size=%d file_type=%d",
-			fileAttr.Size, wccAfter.Type)
+			updatedFile.Size, wccAfter.Type)
 	}
 
 	logger.Info("COMMIT successful: handle=%x offset=%d count=%d client=%s (no-op in current implementation)",

@@ -264,7 +264,7 @@ func (h *Handler) Mkdir(
 	// Step 3: Verify parent directory exists and is valid
 	// ========================================================================
 
-	parentAttr, err := metadataStore.GetFile(ctx.Context, parentHandle)
+	parentFile, err := metadataStore.GetFile(ctx.Context, parentHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -279,7 +279,7 @@ func (h *Handler) Mkdir(
 	}
 
 	// Capture pre-operation attributes for WCC data
-	wccBefore := xdr.CaptureWccAttr(parentAttr)
+	wccBefore := xdr.CaptureWccAttr(&parentFile.FileAttr)
 
 	// ========================================================================
 	// Step 3: Build AuthContext with share-level identity mapping
@@ -293,7 +293,7 @@ func (h *Handler) Mkdir(
 				req.Name, req.DirHandle, clientIP, ctx.Context.Err())
 
 			dirID := xdr.ExtractFileID(parentHandle)
-			wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+			wccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
 
 			return &MkdirResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -306,7 +306,7 @@ func (h *Handler) Mkdir(
 			req.Name, req.DirHandle, clientIP, err)
 
 		dirID := xdr.ExtractFileID(parentHandle)
-		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+		wccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
 
 		return &MkdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -316,13 +316,13 @@ func (h *Handler) Mkdir(
 	}
 
 	// Verify parent is actually a directory
-	if parentAttr.Type != metadata.FileTypeDirectory {
+	if parentFile.Type != metadata.FileTypeDirectory {
 		logger.Warn("MKDIR failed: parent not a directory: dir=%x type=%d client=%s",
-			req.DirHandle, parentAttr.Type, clientIP)
+			req.DirHandle, parentFile.Type, clientIP)
 
 		// Get current parent state for WCC
 		dirID := xdr.ExtractFileID(parentHandle)
-		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+		wccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
 
 		return &MkdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
@@ -339,7 +339,7 @@ func (h *Handler) Mkdir(
 			req.Name, req.DirHandle, clientIP, ctx.Context.Err())
 
 		dirID := xdr.ExtractFileID(parentHandle)
-		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+		wccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
 
 		return &MkdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -353,16 +353,16 @@ func (h *Handler) Mkdir(
 	// Step 4: Check if directory name already exists using Lookup
 	// ========================================================================
 
-	_, _, err = metadataStore.Lookup(authCtx, parentHandle, req.Name)
+	_, err = metadataStore.Lookup(authCtx, parentHandle, req.Name)
 	if err != nil && ctx.Context.Err() != nil {
 		// Context was cancelled during Lookup
 		logger.Debug("MKDIR cancelled during existence check: name='%s' dir=%x client=%s error=%v",
 			req.Name, req.DirHandle, clientIP, ctx.Context.Err())
 
 		// Get updated parent attributes for WCC data
-		parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
+		updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
 		dirID := xdr.ExtractFileID(parentHandle)
-		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+		wccAfter := xdr.MetadataToNFS(&updatedParentFile.FileAttr, dirID)
 
 		return &MkdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -377,9 +377,9 @@ func (h *Handler) Mkdir(
 			req.Name, req.DirHandle, clientIP)
 
 		// Get updated parent attributes for WCC data
-		parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
+		updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
 		dirID := xdr.ExtractFileID(parentHandle)
-		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+		wccAfter := xdr.MetadataToNFS(&updatedParentFile.FileAttr, dirID)
 
 		return &MkdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrExist},
@@ -398,9 +398,9 @@ func (h *Handler) Mkdir(
 			req.Name, req.DirHandle, clientIP, ctx.Context.Err())
 
 		// Get updated parent attributes for WCC data
-		parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
+		updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
 		dirID := xdr.ExtractFileID(parentHandle)
-		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+		wccAfter := xdr.MetadataToNFS(&updatedParentFile.FileAttr, dirID)
 
 		return &MkdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -454,7 +454,7 @@ func (h *Handler) Mkdir(
 
 	// Call store.Create() with Type = FileTypeDirectory
 	// The store will complete the attributes with timestamps, size, etc.
-	newHandle, err := metadataStore.Create(authCtx, parentHandle, req.Name, dirAttr)
+	newDirFile, err := metadataStore.Create(authCtx, parentHandle, req.Name, dirAttr)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -462,9 +462,9 @@ func (h *Handler) Mkdir(
 				req.Name, clientIP, ctx.Context.Err())
 
 			// Get updated parent attributes for WCC data
-			parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
+			updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
 			dirID := xdr.ExtractFileID(parentHandle)
-			wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+			wccAfter := xdr.MetadataToNFS(&updatedParentFile.FileAttr, dirID)
 
 			return &MkdirResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -477,9 +477,9 @@ func (h *Handler) Mkdir(
 			req.Name, clientIP, err)
 
 		// Get updated parent attributes for WCC data
-		parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
+		updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
 		dirID := xdr.ExtractFileID(parentHandle)
-		wccAfter := xdr.MetadataToNFS(parentAttr, dirID)
+		wccAfter := xdr.MetadataToNFS(&updatedParentFile.FileAttr, dirID)
 
 		// Map store errors to NFS status codes
 		status := mapMetadataErrorToNFS(err)
@@ -495,29 +495,27 @@ func (h *Handler) Mkdir(
 	// Step 6: Build success response with new directory attributes
 	// ========================================================================
 
-	// Get the newly created directory's attributes
-	newDirAttr, err := metadataStore.GetFile(ctx.Context, newHandle)
+	// Encode the file handle for the new directory
+	newHandle, err := metadata.EncodeFileHandle(newDirFile)
 	if err != nil {
-		logger.Error("MKDIR: failed to get new directory attributes: handle=%x error=%v",
-			newHandle, err)
-		// This shouldn't happen, but handle gracefully
+		logger.Error("MKDIR: failed to encode directory handle: error=%v", err)
 		return &MkdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// Generate file ID from handle for NFS attributes
 	fileid := xdr.ExtractFileID(newHandle)
-	nfsAttr := xdr.MetadataToNFS(newDirAttr, fileid)
+	nfsAttr := xdr.MetadataToNFS(&newDirFile.FileAttr, fileid)
 
 	// Get updated parent attributes for WCC data
-	parentAttr, _ = metadataStore.GetFile(ctx.Context, parentHandle)
+	updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
 	parentFileid := xdr.ExtractFileID(parentHandle)
-	wccAfter := xdr.MetadataToNFS(parentAttr, parentFileid)
+	wccAfter := xdr.MetadataToNFS(&updatedParentFile.FileAttr, parentFileid)
 
 	logger.Info("MKDIR successful: name='%s' handle=%x mode=%o size=%d client=%s",
-		req.Name, newHandle, newDirAttr.Mode, newDirAttr.Size, clientIP)
+		req.Name, newHandle, newDirFile.Mode, newDirFile.Size, clientIP)
 
 	logger.Debug("MKDIR details: fileid=%d uid=%d gid=%d parent=%d",
-		fileid, newDirAttr.UID, newDirAttr.GID, parentFileid)
+		fileid, newDirFile.UID, newDirFile.GID, parentFileid)
 
 	return &MkdirResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

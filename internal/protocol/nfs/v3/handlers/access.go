@@ -215,7 +215,7 @@ func (h *Handler) Access(
 	// ========================================================================
 
 	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, path, err := metadata.DecodeFileHandle(fileHandle)
+	shareName, _, err := metadata.DecodeFileHandle(fileHandle)
 	if err != nil {
 		logger.Warn("ACCESS failed: invalid file handle: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
@@ -237,13 +237,13 @@ func (h *Handler) Access(
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	logger.Debug("ACCESS: share=%s path=%s", shareName, path)
+	logger.Debug("ACCESS: share=%s", shareName)
 
 	// ========================================================================
 	// Step 3: Verify file handle exists and is valid
 	// ========================================================================
 
-	attr, err := store.GetFile(ctx.Context, fileHandle)
+	file, err := store.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -289,10 +289,10 @@ func (h *Handler) Access(
 	// Step 4: Translate NFS access bits to generic permissions
 	// ========================================================================
 
-	requestedPerms := nfsAccessToPermissions(req.Access, attr.Type)
+	requestedPerms := nfsAccessToPermissions(req.Access, file.Type)
 
 	logger.Debug("ACCESS translation: nfs_access=0x%x -> generic_perms=0x%x type=%d",
-		req.Access, requestedPerms, attr.Type)
+		req.Access, requestedPerms, file.Type)
 
 	// ========================================================================
 	// Step 5: Check permissions via store
@@ -316,7 +316,7 @@ func (h *Handler) Access(
 	// Step 6: Translate granted permissions back to NFS access bits
 	// ========================================================================
 
-	grantedAccess := permissionsToNFSAccess(grantedPerms, attr.Type)
+	grantedAccess := permissionsToNFSAccess(grantedPerms, file.Type)
 
 	logger.Debug("ACCESS translation: generic_perms=0x%x -> nfs_access=0x%x",
 		grantedPerms, grantedAccess)
@@ -327,13 +327,13 @@ func (h *Handler) Access(
 
 	// Generate file ID from handle for NFS attributes
 	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(attr, fileid)
+	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
 	logger.Info("ACCESS successful: handle=%x granted=0x%x requested=0x%x client=%s",
 		req.Handle, grantedAccess, req.Access, clientIP)
 
 	logger.Debug("ACCESS details: type=%d mode=%o uid=%d gid=%d client_uid=%v client_gid=%v",
-		nfsAttr.Type, attr.Mode, attr.UID, attr.GID, ctx.UID, ctx.GID)
+		nfsAttr.Type, file.Mode, file.UID, file.GID, ctx.UID, ctx.GID)
 
 	return &AccessResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
