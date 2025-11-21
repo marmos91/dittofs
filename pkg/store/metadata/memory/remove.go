@@ -35,7 +35,7 @@ func (store *MemoryMetadataStore) RemoveFile(
 	ctx *metadata.AuthContext,
 	parentHandle metadata.FileHandle,
 	name string,
-) (*metadata.FileAttr, error) {
+) (*metadata.File, error) {
 	// Check context before acquiring lock
 	if err := ctx.Context.Err(); err != nil {
 		return nil, err
@@ -120,18 +120,32 @@ func (store *MemoryMetadataStore) RemoveFile(
 		}
 	}
 
-	// Make a copy of attributes to return (before we delete the file)
-	returnAttr := &metadata.FileAttr{
-		Type:       fileData.Attr.Type,
-		Mode:       fileData.Attr.Mode,
-		UID:        fileData.Attr.UID,
-		GID:        fileData.Attr.GID,
-		Size:       fileData.Attr.Size,
-		Atime:      fileData.Attr.Atime,
-		Mtime:      fileData.Attr.Mtime,
-		Ctime:      fileData.Attr.Ctime,
-		ContentID:  fileData.Attr.ContentID,
-		LinkTarget: fileData.Attr.LinkTarget,
+	// Decode handle to get ID
+	shareName, id, err := metadata.DecodeFileHandle(fileHandle)
+	if err != nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "failed to decode file handle",
+		}
+	}
+
+	// Make a copy of file to return (before we delete it)
+	returnFile := &metadata.File{
+		ID:        id,
+		ShareName: shareName,
+		Path:      "", // TODO: Memory store doesn't track full paths yet
+		FileAttr: metadata.FileAttr{
+			Type:       fileData.Attr.Type,
+			Mode:       fileData.Attr.Mode,
+			UID:        fileData.Attr.UID,
+			GID:        fileData.Attr.GID,
+			Size:       fileData.Attr.Size,
+			Atime:      fileData.Attr.Atime,
+			Mtime:      fileData.Attr.Mtime,
+			Ctime:      fileData.Attr.Ctime,
+			ContentID:  fileData.Attr.ContentID,
+			LinkTarget: fileData.Attr.LinkTarget,
+		},
 	}
 
 	// Decrement link count
@@ -140,7 +154,7 @@ func (store *MemoryMetadataStore) RemoveFile(
 		// File has other hard links, just decrement count
 		// Empty ContentID signals to the caller that content should NOT be deleted
 		// because other hard links still reference it
-		returnAttr.ContentID = ""
+		returnFile.ContentID = ""
 		store.linkCounts[fileKey]--
 	} else {
 		// This was the last link, remove all metadata
@@ -163,7 +177,7 @@ func (store *MemoryMetadataStore) RemoveFile(
 	parentData.Attr.Mtime = now
 	parentData.Attr.Ctime = now
 
-	return returnAttr, nil
+	return returnFile, nil
 }
 
 // RemoveDirectory removes an empty directory's metadata from its parent.

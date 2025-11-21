@@ -729,5 +729,43 @@ func (s *BadgerMetadataStore) Create(
 	return newFile, nil
 }
 
-// Continue with CreateHardLink and Move methods...
-// (rest of the file would continue similarly, updating all methods)
+// CreateHardLink creates a hard link to an existing file.
+//
+// TODO: This is a stub implementation. Hard links need proper implementation
+// in BadgerDB with link count tracking and proper handle management.
+//
+// For now, this returns ErrNotSupported to indicate the feature is not yet implemented.
+func (s *BadgerMetadataStore) CreateHardLink(
+	ctx *metadata.AuthContext,
+	dirHandle metadata.FileHandle,
+	name string,
+	targetHandle metadata.FileHandle,
+) error {
+	return &metadata.StoreError{
+		Code:    metadata.ErrNotSupported,
+		Message: "hard links not yet implemented in BadgerDB",
+	}
+}
+
+// Move moves or renames a file or directory atomically.
+//
+// TODO: This is a stub implementation. Move/rename operations need proper implementation
+// in BadgerDB with:
+// - Atomic update of parent-child relationships
+// - Proper handling of cross-directory moves
+// - Timestamp updates for source and destination directories
+// - Validation of replacement semantics (file over file, dir over empty dir, etc.)
+//
+// For now, this returns ErrNotSupported to indicate the feature is not yet implemented.
+func (s *BadgerMetadataStore) Move(
+	ctx *metadata.AuthContext,
+	fromDir metadata.FileHandle,
+	fromName string,
+	toDir metadata.FileHandle,
+	toName string,
+) error {
+	return &metadata.StoreError{
+		Code:    metadata.ErrNotSupported,
+		Message: "move/rename not yet implemented in BadgerDB",
+	}
+}

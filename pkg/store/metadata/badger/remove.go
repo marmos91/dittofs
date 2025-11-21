@@ -40,7 +40,7 @@ func (s *BadgerMetadataStore) RemoveFile(
 	ctx *metadata.AuthContext,
 	parentHandle metadata.FileHandle,
 	name string,
-) (*metadata.FileAttr, error) {
+) (*metadata.File, error) {
 	// Check context cancellation
 	if err := ctx.Context.Err(); err != nil {
 		return nil, err
@@ -67,7 +67,7 @@ func (s *BadgerMetadataStore) RemoveFile(
 		}
 	}
 
-	var returnAttr *metadata.FileAttr
+	var returnFile *metadata.File
 	var removedHandle metadata.FileHandle
 
 	err = s.db.Update(func(txn *badger.Txn) error {
@@ -191,25 +191,30 @@ func (s *BadgerMetadataStore) RemoveFile(
 			return err
 		}
 
-		// Make a copy of attributes to return
-		returnAttr = &metadata.FileAttr{
-			Type:       file.Type,
-			Mode:       file.Mode,
-			UID:        file.UID,
-			GID:        file.GID,
-			Size:       file.Size,
-			Atime:      file.Atime,
-			Mtime:      file.Mtime,
-			Ctime:      file.Ctime,
-			ContentID:  file.ContentID,
-			LinkTarget: file.LinkTarget,
+		// Make a copy of file to return
+		returnFile = &metadata.File{
+			ID:        file.ID,
+			ShareName: file.ShareName,
+			Path:      file.Path,
+			FileAttr: metadata.FileAttr{
+				Type:       file.Type,
+				Mode:       file.Mode,
+				UID:        file.UID,
+				GID:        file.GID,
+				Size:       file.Size,
+				Atime:      file.Atime,
+				Mtime:      file.Mtime,
+				Ctime:      file.Ctime,
+				ContentID:  file.ContentID,
+				LinkTarget: file.LinkTarget,
+			},
 		}
 
 		// Decrement link count
 		if linkCount > 1 {
 			// File has other hard links, just decrement count
 			// Empty ContentID signals to caller that content should NOT be deleted
-			returnAttr.ContentID = ""
+			returnFile.ContentID = ""
 			linkCount--
 			if err := txn.Set(keyLinkCount(fileID), encodeUint32(linkCount)); err != nil {
 				return fmt.Errorf("failed to update link count: %w", err)
@@ -256,7 +261,7 @@ func (s *BadgerMetadataStore) RemoveFile(
 
 	logger.Debug("REMOVE succeeded: name=%s parent_handle=%s file_handle=%s", name, parentHandle, removedHandle)
 
-	return returnAttr, nil
+	return returnFile, nil
 }
 
 // RemoveDirectory removes an empty directory's metadata from its parent.

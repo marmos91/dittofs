@@ -142,9 +142,15 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 	}
 
 	// Create the root directory
-	_, err := metadataStore.CreateRootDirectory(ctx, config.Name, rootAttr)
+	rootFile, err := metadataStore.CreateRootDirectory(ctx, config.Name, rootAttr)
 	if err != nil {
 		return fmt.Errorf("failed to create root directory: %w", err)
+	}
+
+	// Encode the root file handle
+	rootHandle, err := metadata.EncodeFileHandle(rootFile)
+	if err != nil {
+		return fmt.Errorf("failed to encode root handle: %w", err)
 	}
 
 	// Register share in registry with full configuration
@@ -152,6 +158,7 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 		Name:                     config.Name,
 		MetadataStore:            config.MetadataStore,
 		ContentStore:             config.ContentStore,
+		RootHandle:               rootHandle,
 		ReadOnly:                 config.ReadOnly,
 		AllowedClients:           config.AllowedClients,
 		DeniedClients:            config.DeniedClients,
@@ -192,6 +199,20 @@ func (r *Registry) GetShare(name string) (*Share, error) {
 		return nil, fmt.Errorf("share %q not found", name)
 	}
 	return share, nil
+}
+
+// GetRootHandle retrieves the root file handle for a share by name.
+// This is used by mount handlers to get the root file handle for a mounted share.
+// Returns an error if the share doesn't exist.
+func (r *Registry) GetRootHandle(shareName string) (metadata.FileHandle, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	share, exists := r.shares[shareName]
+	if !exists {
+		return nil, fmt.Errorf("share %q not found", shareName)
+	}
+	return share.RootHandle, nil
 }
 
 // GetMetadataStore retrieves a metadata store by name.

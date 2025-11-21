@@ -377,9 +377,9 @@ func (h *Handler) Write(
 	}
 
 	// Verify it's a regular file (not a directory or special file)
-	if attr.Type != metadata.FileTypeRegular {
+	if file.Type != metadata.FileTypeRegular {
 		logger.Warn("WRITE failed: not a regular file: handle=%x type=%d client=%s",
-			req.Handle, attr.Type, clientIP)
+			req.Handle, file.Type, clientIP)
 
 		// Return file attributes even on error for cache consistency
 		fileid := xdr.ExtractFileID(fileHandle)
@@ -463,14 +463,14 @@ func (h *Handler) Write(
 
 		// Build WCC attributes from current state
 		nfsWccAttr := &types.WccAttr{
-			Size: attr.Size,
+			Size: file.Size,
 			Mtime: types.TimeVal{
-				Seconds:  uint32(attr.Mtime.Unix()),
-				Nseconds: uint32(attr.Mtime.Nanosecond()),
+				Seconds:  uint32(file.Mtime.Unix()),
+				Nseconds: uint32(file.Mtime.Nanosecond()),
 			},
 			Ctime: types.TimeVal{
-				Seconds:  uint32(attr.Ctime.Unix()),
-				Nseconds: uint32(attr.Ctime.Nanosecond()),
+				Seconds:  uint32(file.Ctime.Unix()),
+				Nseconds: uint32(file.Ctime.Nanosecond()),
 			},
 		}
 
@@ -613,7 +613,7 @@ func (h *Handler) Write(
 	// Step 9: Commit metadata changes after successful content write
 	// ========================================================================
 
-	updatedAttr, err := metadataStore.CommitWrite(authCtx, writeIntent)
+	updatedFile, err := metadataStore.CommitWrite(authCtx, writeIntent)
 	if err != nil {
 		logger.Error("WRITE failed: CommitWrite error (content written but metadata not updated): handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, len(req.Data), clientIP, err)
@@ -637,10 +637,10 @@ func (h *Handler) Write(
 	// ========================================================================
 
 	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(updatedAttr, fileid)
+	nfsAttr := xdr.MetadataToNFS(&updatedFile.FileAttr, fileid)
 
 	logger.Info("WRITE successful: handle=%x offset=%d requested=%d written=%d new_size=%d client=%s",
-		req.Handle, req.Offset, req.Count, len(req.Data), updatedAttr.Size, clientIP)
+		req.Handle, req.Offset, req.Count, len(req.Data), updatedFile.Size, clientIP)
 
 	// Determine what stability level to return based on whether we're using a cache
 	//
@@ -666,7 +666,7 @@ func (h *Handler) Write(
 	// else: Cache enabled, no flush, return UNSTABLE
 
 	logger.Debug("WRITE details: stable_requested=%d committed=%d size=%d type=%d mode=%o",
-		req.Stable, committed, updatedAttr.Size, updatedAttr.Type, updatedAttr.Mode)
+		req.Stable, committed, updatedFile.Size, updatedFile.Type, updatedFile.Mode)
 
 	return &WriteResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

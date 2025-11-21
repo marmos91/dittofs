@@ -74,14 +74,20 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 			GID:  1000,
 		}
 
-		rootHandle, err := store.CreateRootDirectory(ctx, "testshare", rootAttr)
+		rootFile, err := store.CreateRootDirectory(ctx, "testshare", rootAttr)
 		if err != nil {
 			t.Fatalf("Failed to create root directory: %v", err)
 		}
 
-		// Verify root handle was created
-		if rootHandle == nil {
-			t.Fatal("Root handle should not be nil")
+		// Verify root file was created
+		if rootFile == nil {
+			t.Fatal("Root file should not be nil")
+		}
+
+		// Encode the file handle
+		rootHandle, err := metadata.EncodeFileHandle(rootFile)
+		if err != nil {
+			t.Fatalf("Failed to encode file handle: %v", err)
 		}
 
 		// Get the file attributes back
@@ -120,9 +126,15 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 				GID:  1000,
 			}
 
-			rootHandle, err = store.CreateRootDirectory(ctx, "persistshare", rootAttr)
+			rootFile, err := store.CreateRootDirectory(ctx, "persistshare", rootAttr)
 			if err != nil {
 				t.Fatalf("Failed to create root directory: %v", err)
+			}
+
+			// Encode the file handle for persistence check
+			rootHandle, err = metadata.EncodeFileHandle(rootFile)
+			if err != nil {
+				t.Fatalf("Failed to encode file handle: %v", err)
 			}
 
 			// Close store
@@ -191,9 +203,15 @@ func TestBadgerMetadataStore_FileOperations(t *testing.T) {
 		GID:  1000,
 	}
 
-	rootHandle, err := store.CreateRootDirectory(ctx, "files", rootAttr)
+	rootFile, err := store.CreateRootDirectory(ctx, "files", rootAttr)
 	if err != nil {
 		t.Fatalf("Failed to create root directory: %v", err)
+	}
+
+	// Encode the file handle
+	rootHandle, err := metadata.EncodeFileHandle(rootFile)
+	if err != nil {
+		t.Fatalf("Failed to encode root file handle: %v", err)
 	}
 
 	// Create auth context
@@ -221,9 +239,15 @@ func TestBadgerMetadataStore_FileOperations(t *testing.T) {
 			GID:  1000,
 		}
 
-		dirHandle, err := store.Create(authCtx, rootHandle, "testdir", dirAttr)
+		dirFile, err := store.Create(authCtx, rootHandle, "testdir", dirAttr)
 		if err != nil {
 			t.Fatalf("Failed to create directory: %v", err)
+		}
+
+		// Encode the directory handle
+		dirHandle, err := metadata.EncodeFileHandle(dirFile)
+		if err != nil {
+			t.Fatalf("Failed to encode directory handle: %v", err)
 		}
 
 		// Verify directory exists
@@ -248,9 +272,15 @@ func TestBadgerMetadataStore_FileOperations(t *testing.T) {
 			GID:  1000,
 		}
 
-		fileHandle, err := store.Create(authCtx, rootHandle, "testfile.txt", fileAttr)
+		createdFile, err := store.Create(authCtx, rootHandle, "testfile.txt", fileAttr)
 		if err != nil {
 			t.Fatalf("Failed to create file: %v", err)
+		}
+
+		// Encode the file handle
+		fileHandle, err := metadata.EncodeFileHandle(createdFile)
+		if err != nil {
+			t.Fatalf("Failed to encode file handle: %v", err)
 		}
 
 		// Verify file exists
@@ -269,17 +299,17 @@ func TestBadgerMetadataStore_FileOperations(t *testing.T) {
 
 	t.Run("Lookup", func(t *testing.T) {
 		// Lookup the file we just created
-		fileHandle, fileAttr, err := store.Lookup(authCtx, rootHandle, "testfile.txt")
+		lookedUpFile, err := store.Lookup(authCtx, rootHandle, "testfile.txt")
 		if err != nil {
 			t.Fatalf("Failed to lookup file: %v", err)
 		}
 
-		if fileHandle == nil {
-			t.Fatal("File handle should not be nil")
+		if lookedUpFile == nil {
+			t.Fatal("Looked up file should not be nil")
 		}
 
-		if fileAttr.Type != metadata.FileTypeRegular {
-			t.Errorf("Expected regular file type, got %v", fileAttr.Type)
+		if lookedUpFile.Type != metadata.FileTypeRegular {
+			t.Errorf("Expected regular file type, got %v", lookedUpFile.Type)
 		}
 	})
 

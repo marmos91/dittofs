@@ -419,7 +419,7 @@ func (h *Handler) Symlink(
 	//
 	// No cancellation check here - this is fast pure computation
 
-	symlinkFile := xdr.ConvertSetAttrsToMetadata(metadata.FileTypeSymlink, &req.Attr, authCtx)
+	symlinkAttr := xdr.ConvertSetAttrsToMetadata(metadata.FileTypeSymlink, &req.Attr, authCtx)
 
 	// ========================================================================
 	// Step 5: Create symlink via store
@@ -433,7 +433,7 @@ func (h *Handler) Symlink(
 	// - Updating parent directory timestamps
 	// - Respecting context cancellation internally
 
-	symlinkFile, err := metadataStore.CreateSymlink(authCtx, dirHandle, req.Name, req.Target, symlinkFile)
+	createdSymlink, err := metadataStore.CreateSymlink(authCtx, dirHandle, req.Name, req.Target, symlinkAttr)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -474,88 +474,20 @@ func (h *Handler) Symlink(
 		}, nil
 	}
 
-	// Check for cancellation after create, before attribute retrieval
-	// At this point the symlink is created, but we can skip the attribute
-	// retrieval if the client has disconnected
-	select {
-	case <-ctx.Context.Done():
-		logger.Debug("SYMLINK cancelled after create, before attribute retrieval: name='%s' handle=%x client=%s error=%v",
-			req.Name, symlinkFile, clientIP, ctx.Context.Err())
-
-		// Get updated directory attributes for WCC data (best effort)
-		var wccAfter *types.NFSFileAttr
-		if updatedDirFile, getErr := metadataStore.GetFile(ctx.Context, dirHandle); getErr == nil {
-			dirID := xdr.ExtractFileID(dirHandle)
-			wccAfter = xdr.MetadataToNFS(&updatedDirFile.FileAttr, dirID)
-		}
-
-		// Return success with handle but no attributes
-		return &SymlinkResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
-			FileHandle:      symlinkFile,
-			Attr:            nil,
-			DirAttrBefore:   wccBefore,
-			DirAttrAfter:    wccAfter,
-		}, nil
-	default:
-	}
-
 	// ========================================================================
-	// Step 6: Retrieve symlink attributes for response
+	// Step 6: Encode file handle and prepare response
 	// ========================================================================
 
-	// Symlink file already available from CreateSymlink
+	// Encode the file handle for the symlink
+	symlinkHandle, err := metadata.EncodeFileHandle(createdSymlink)
 	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("SYMLINK cancelled during attribute retrieval: name='%s' handle=%x client=%s error=%v",
-				req.Name, symlinkFile, clientIP, ctx.Context.Err())
-
-			// Get updated directory attributes for WCC data
-			var wccAfter *types.NFSFileAttr
-			if updatedDirFile, getErr := metadataStore.GetFile(ctx.Context, dirHandle); getErr == nil {
-				dirID := xdr.ExtractFileID(dirHandle)
-				wccAfter = xdr.MetadataToNFS(&updatedDirFile.FileAttr, dirID)
-			}
-
-			// Return success with handle but no attributes
-			return &SymlinkResponse{
-				NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
-				FileHandle:      symlinkFile,
-				Attr:            nil,
-				DirAttrBefore:   wccBefore,
-				DirAttrAfter:    wccAfter,
-			}, nil
-		}
-
-		logger.Warn("SYMLINK: created but cannot get symlink attributes: handle=%x error=%v",
-			symlinkFile, err)
-
-		// Get updated directory attributes for WCC data
-		var wccAfter *types.NFSFileAttr
-		if updatedDirFile, getErr := metadataStore.GetFile(ctx.Context, dirHandle); getErr == nil {
-			dirID := xdr.ExtractFileID(dirHandle)
-			wccAfter = xdr.MetadataToNFS(&updatedDirFile.FileAttr, dirID)
-		}
-
-		// Return success with nil symlink attributes
-		return &SymlinkResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
-			FileHandle:      symlinkFile,
-			Attr:            nil,
-			DirAttrBefore:   wccBefore,
-			DirAttrAfter:    wccAfter,
-		}, nil
+		logger.Error("SYMLINK: failed to encode symlink handle: error=%v", err)
+		return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
-
-	// ========================================================================
-	// Step 7: Build success response with attributes and WCC data
-	// ========================================================================
-	// No cancellation check here - this is fast pure computation
 
 	// Generate symlink attributes for response
-	symlinkID := xdr.ExtractFileID(symlinkFile)
-	nfsSymlinkAttr := xdr.MetadataToNFS(symlinkFile, symlinkID)
+	symlinkID := xdr.ExtractFileID(symlinkHandle)
+	nfsSymlinkAttr := xdr.MetadataToNFS(&createdSymlink.FileAttr, symlinkID)
 
 	// Get updated directory attributes for WCC data
 	updatedDirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
@@ -572,15 +504,15 @@ func (h *Handler) Symlink(
 	}
 
 	logger.Info("SYMLINK successful: name='%s' target='%s' dir=%x handle=%x client=%s",
-		req.Name, req.Target, req.DirHandle, symlinkFile, clientIP)
+		req.Name, req.Target, req.DirHandle, symlinkHandle, clientIP)
 
 	logger.Debug("SYMLINK details: symlink_id=%d mode=%o uid=%d gid=%d size=%d target_len=%d",
-		symlinkID, symlinkFile.Mode, symlinkFile.UID, symlinkFile.GID,
-		symlinkFile.Size, len(req.Target))
+		symlinkID, createdSymlink.Mode, createdSymlink.UID, createdSymlink.GID,
+		createdSymlink.Size, len(req.Target))
 
 	return &SymlinkResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
-		FileHandle:      symlinkFile,
+		FileHandle:      symlinkHandle,
 		Attr:            nfsSymlinkAttr,
 		DirAttrBefore:   wccBefore,
 		DirAttrAfter:    wccAfter,

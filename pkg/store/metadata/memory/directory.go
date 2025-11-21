@@ -278,7 +278,7 @@ func (store *MemoryMetadataStore) Move(
 func (store *MemoryMetadataStore) ReadSymlink(
 	ctx *metadata.AuthContext,
 	handle metadata.FileHandle,
-) (string, *metadata.FileAttr, error) {
+) (string, *metadata.File, error) {
 	// Check context before acquiring lock
 	if err := ctx.Context.Err(); err != nil {
 		return "", nil, err
@@ -317,8 +317,22 @@ func (store *MemoryMetadataStore) ReadSymlink(
 		}
 	}
 
-	// Return target and attributes
-	return fileData.Attr.LinkTarget, fileData.Attr, nil
+	// Decode handle to get ID
+	shareName, id, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return "", nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "failed to decode handle",
+		}
+	}
+
+	// Return target and full File information
+	return fileData.Attr.LinkTarget, &metadata.File{
+		ID:        id,
+		ShareName: shareName,
+		Path:      "", // TODO: Memory store doesn't track full paths yet
+		FileAttr:  *fileData.Attr,
+	}, nil
 }
 
 // ReadDirectory reads one page of directory entries with pagination support.

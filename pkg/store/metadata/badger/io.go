@@ -170,13 +170,13 @@ func (s *BadgerMetadataStore) PrepareWrite(
 func (s *BadgerMetadataStore) CommitWrite(
 	ctx *metadata.AuthContext,
 	intent *metadata.WriteOperation,
-) (*metadata.FileAttr, error) {
+) (*metadata.File, error) {
 	// Check context before acquiring lock
 	if err := ctx.Context.Err(); err != nil {
 		return nil, err
 	}
 
-	var updatedAttr *metadata.FileAttr
+	var updatedFile *metadata.File
 
 	err := s.db.Update(func(txn *badger.Txn) error {
 		// Get file attributes
@@ -239,19 +239,8 @@ func (s *BadgerMetadataStore) CommitWrite(
 			return fmt.Errorf("failed to update file data: %w", err)
 		}
 
-		// Make a copy for return
-		updatedAttr = &metadata.FileAttr{
-			Type:       file.Type,
-			Mode:       file.Mode,
-			UID:        file.UID,
-			GID:        file.GID,
-			Size:       file.Size,
-			Atime:      file.Atime,
-			Mtime:      file.Mtime,
-			Ctime:      file.Ctime,
-			ContentID:  file.ContentID,
-			LinkTarget: file.LinkTarget,
-		}
+		// Store updated file for return
+		updatedFile = file
 
 		return nil
 	})
@@ -260,7 +249,7 @@ func (s *BadgerMetadataStore) CommitWrite(
 		return nil, err
 	}
 
-	return updatedAttr, nil
+	return updatedFile, nil
 }
 
 // PrepareRead validates a read operation and returns file metadata.

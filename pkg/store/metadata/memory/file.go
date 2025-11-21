@@ -22,10 +22,10 @@ func (store *MemoryMetadataStore) Lookup(
 	ctx *metadata.AuthContext,
 	dirHandle metadata.FileHandle,
 	name string,
-) (metadata.FileHandle, *metadata.FileAttr, error) {
+) (*metadata.File, error) {
 	// Check context before acquiring lock
 	if err := ctx.Context.Err(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	store.mu.RLock()
@@ -35,7 +35,7 @@ func (store *MemoryMetadataStore) Lookup(
 	dirKey := handleToKey(dirHandle)
 	dirData, exists := store.files[dirKey]
 	if !exists {
-		return nil, nil, &metadata.StoreError{
+		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
 			Message: "directory not found",
 		}
@@ -43,7 +43,7 @@ func (store *MemoryMetadataStore) Lookup(
 
 	// Verify it's a directory
 	if dirData.Attr.Type != metadata.FileTypeDirectory {
-		return nil, nil, &metadata.StoreError{
+		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotDirectory,
 			Message: "not a directory",
 		}
@@ -52,10 +52,10 @@ func (store *MemoryMetadataStore) Lookup(
 	// Check execute/traverse permission on directory (search permission)
 	granted, err := store.checkPermissionsLocked(ctx, dirHandle, metadata.PermissionTraverse)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if granted&metadata.PermissionTraverse == 0 {
-		return nil, nil, &metadata.StoreError{
+		return nil, &metadata.StoreError{
 			Code:    metadata.ErrAccessDenied,
 			Message: "no search permission on directory",
 		}
@@ -83,7 +83,7 @@ func (store *MemoryMetadataStore) Lookup(
 		// Regular name lookup
 		childrenMap, hasChildren := store.children[dirKey]
 		if !hasChildren {
-			return nil, nil, &metadata.StoreError{
+			return nil, &metadata.StoreError{
 				Code:    metadata.ErrNotFound,
 				Message: fmt.Sprintf("name not found: %s", name),
 				Path:    name,
@@ -92,7 +92,7 @@ func (store *MemoryMetadataStore) Lookup(
 
 		childHandle, exists := childrenMap[name]
 		if !exists {
-			return nil, nil, &metadata.StoreError{
+			return nil, &metadata.StoreError{
 				Code:    metadata.ErrNotFound,
 				Message: fmt.Sprintf("name not found: %s", name),
 				Path:    name,
@@ -105,14 +105,28 @@ func (store *MemoryMetadataStore) Lookup(
 	targetKey := handleToKey(targetHandle)
 	targetData, exists := store.files[targetKey]
 	if !exists {
-		return nil, nil, &metadata.StoreError{
+		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
 			Message: "target file not found",
 		}
 	}
 
-	// Return handle and attributes
-	return targetHandle, targetData.Attr, nil
+	// Decode handle to get ID
+	shareName, id, err := metadata.DecodeFileHandle(targetHandle)
+	if err != nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "failed to decode target handle",
+		}
+	}
+
+	// Return full File information
+	return &metadata.File{
+		ID:        id,
+		ShareName: shareName,
+		Path:      "", // TODO: Memory store doesn't track full paths yet
+		FileAttr:  *targetData.Attr,
+	}, nil
 }
 
 // GetFile retrieves file attributes by handle.
@@ -134,7 +148,7 @@ func (store *MemoryMetadataStore) Lookup(
 func (s *MemoryMetadataStore) GetFile(
 	ctx context.Context,
 	handle metadata.FileHandle,
-) (*metadata.FileAttr, error) {
+) (*metadata.File, error) {
 	// Check context before acquiring lock
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -161,9 +175,23 @@ func (s *MemoryMetadataStore) GetFile(
 		}
 	}
 
-	// Return a copy of the attributes to prevent external modification
-	attrCopy := *fileData.Attr
-	return &attrCopy, nil
+	// Decode handle to get ID
+	shareName, id, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "failed to decode file handle",
+		}
+	}
+
+	// Return full File information
+	// Note: Path is not tracked in memory store currently, using empty string
+	return &metadata.File{
+		ID:        id,
+		ShareName: shareName,
+		Path:      "", // TODO: Memory store doesn't track full paths yet
+		FileAttr:  *fileData.Attr,
+	}, nil
 }
 
 // GetShareNameForHandle returns the share name for a given file handle.
@@ -407,7 +435,7 @@ func (store *MemoryMetadataStore) Create(
 	parentHandle metadata.FileHandle,
 	name string,
 	attr *metadata.FileAttr,
-) (metadata.FileHandle, error) {
+) (*metadata.File, error) {
 	// Check context before acquiring lock
 	if err := ctx.Context.Err(); err != nil {
 		return nil, err
@@ -564,7 +592,22 @@ func (store *MemoryMetadataStore) Create(
 	parentData.Attr.Mtime = now
 	parentData.Attr.Ctime = now
 
-	return handle, nil
+	// Decode handle to get ID
+	shareName, id, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrIOError,
+			Message: "failed to decode newly created handle",
+		}
+	}
+
+	// Return full File information
+	return &metadata.File{
+		ID:        id,
+		ShareName: shareName,
+		Path:      fullPath,
+		FileAttr:  *newAttr,
+	}, nil
 }
 
 // CreateSymlink creates a symbolic link pointing to a target path.
@@ -574,7 +617,7 @@ func (store *MemoryMetadataStore) CreateSymlink(
 	name string,
 	target string,
 	attr *metadata.FileAttr,
-) (metadata.FileHandle, error) {
+) (*metadata.File, error) {
 	// Check context before acquiring lock
 	if err := ctx.Context.Err(); err != nil {
 		return nil, err
@@ -709,7 +752,22 @@ func (store *MemoryMetadataStore) CreateSymlink(
 	parentData.Attr.Mtime = now
 	parentData.Attr.Ctime = now
 
-	return handle, nil
+	// Decode handle to get ID
+	shareName, id, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrIOError,
+			Message: "failed to decode newly created handle",
+		}
+	}
+
+	// Return full File information
+	return &metadata.File{
+		ID:        id,
+		ShareName: shareName,
+		Path:      fullPath,
+		FileAttr:  *newAttr,
+	}, nil
 }
 
 // CreateSpecialFile creates a special file (device, socket, or FIFO).
@@ -720,7 +778,7 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 	fileType metadata.FileType,
 	attr *metadata.FileAttr,
 	deviceMajor, deviceMinor uint32,
-) (metadata.FileHandle, error) {
+) (*metadata.File, error) {
 	// Check context before acquiring lock
 	if err := ctx.Context.Err(); err != nil {
 		return nil, err
@@ -877,7 +935,22 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 	parentData.Attr.Mtime = now
 	parentData.Attr.Ctime = now
 
-	return handle, nil
+	// Decode handle to get ID
+	shareName, id, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrIOError,
+			Message: "failed to decode newly created handle",
+		}
+	}
+
+	// Return full File information
+	return &metadata.File{
+		ID:        id,
+		ShareName: shareName,
+		Path:      fullPath,
+		FileAttr:  *newAttr,
+	}, nil
 }
 
 // CreateHardLink creates a hard link to an existing file.

@@ -124,7 +124,7 @@ func (s *MemoryMetadataStore) PrepareWrite(
 func (s *MemoryMetadataStore) CommitWrite(
 	ctx *metadata.AuthContext,
 	intent *metadata.WriteOperation,
-) (*metadata.FileAttr, error) {
+) (*metadata.File, error) {
 	// Check context before acquiring lock
 	if err := ctx.Context.Err(); err != nil {
 		return nil, err
@@ -135,7 +135,7 @@ func (s *MemoryMetadataStore) CommitWrite(
 
 	// Get file attributes
 	key := handleToKey(intent.Handle)
-	attr, exists := s.files[key]
+	fileData, exists := s.files[key]
 	if !exists {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
@@ -144,7 +144,7 @@ func (s *MemoryMetadataStore) CommitWrite(
 	}
 
 	// Verify it's still a regular file
-	if attr.Attr.Type != metadata.FileTypeRegular {
+	if fileData.Attr.Type != metadata.FileTypeRegular {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrIsDirectory,
 			Message: "file type changed after prepare",
@@ -158,12 +158,26 @@ func (s *MemoryMetadataStore) CommitWrite(
 
 	// Apply metadata changes
 	now := time.Now()
-	attr.Attr.Size = intent.NewSize
-	attr.Attr.Mtime = now // Mtime is set when the write is committed
-	attr.Attr.Ctime = now // Ctime always uses current time (metadata change time)
+	fileData.Attr.Size = intent.NewSize
+	fileData.Attr.Mtime = now // Mtime is set when the write is committed
+	fileData.Attr.Ctime = now // Ctime always uses current time (metadata change time)
 
-	// Return updated attributes
-	return attr.Attr, nil
+	// Decode handle to get ID and other info
+	shareName, id, err := metadata.DecodeFileHandle(intent.Handle)
+	if err != nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "invalid file handle",
+		}
+	}
+
+	// Construct and return full File
+	return &metadata.File{
+		ID:        id,
+		ShareName: shareName,
+		Path:      "",  // TODO: Memory store doesn't track paths yet
+		FileAttr:  *fileData.Attr,
+	}, nil
 }
 
 // PrepareRead validates a read operation and returns file metadata.

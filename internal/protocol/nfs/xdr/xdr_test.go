@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 	"github.com/stretchr/testify/assert"
@@ -184,8 +185,9 @@ func TestEncodeWccData(t *testing.T) {
 
 func TestExtractFileID(t *testing.T) {
 	t.Run("ExtractsFileIDFromShareHandle", func(t *testing.T) {
-		// Create a share-aware handle
-		handle := metadata.EncodeShareHandle("export", "/path/to/file")
+		// Create a share-aware handle with a UUID
+		id := uuid.New()
+		handle, _ := metadata.EncodeShareHandle("export", id)
 		fileID := ExtractFileID(handle)
 
 		// File ID should be non-zero and deterministic
@@ -197,8 +199,10 @@ func TestExtractFileID(t *testing.T) {
 	})
 
 	t.Run("DifferentHandlesProduceDifferentIDs", func(t *testing.T) {
-		handle1 := metadata.EncodeShareHandle("export", "/path/file1")
-		handle2 := metadata.EncodeShareHandle("export", "/path/file2")
+		id1 := uuid.New()
+		id2 := uuid.New()
+		handle1, _ := metadata.EncodeShareHandle("export", id1)
+		handle2, _ := metadata.EncodeShareHandle("export", id2)
 
 		fileID1 := ExtractFileID(handle1)
 		fileID2 := ExtractFileID(handle2)
@@ -206,9 +210,11 @@ func TestExtractFileID(t *testing.T) {
 		assert.NotEqual(t, fileID1, fileID2)
 	})
 
-	t.Run("SamePathDifferentSharesProduceDifferentIDs", func(t *testing.T) {
-		handle1 := metadata.EncodeShareHandle("share1", "/file.txt")
-		handle2 := metadata.EncodeShareHandle("share2", "/file.txt")
+	t.Run("SameUUIDDifferentSharesProduceDifferentIDs", func(t *testing.T) {
+		// Use the same UUID but different shares
+		id := uuid.New()
+		handle1, _ := metadata.EncodeShareHandle("share1", id)
+		handle2, _ := metadata.EncodeShareHandle("share2", id)
 
 		fileID1 := ExtractFileID(handle1)
 		fileID2 := ExtractFileID(handle2)
@@ -222,14 +228,15 @@ func TestExtractFileID(t *testing.T) {
 		assert.Equal(t, uint64(0), fileID)
 	})
 
-	t.Run("HandlesDifferentPathLengths", func(t *testing.T) {
-		// Short path
-		handle1 := metadata.EncodeShareHandle("export", "/a")
+	t.Run("HandlesDifferentUUIDs", func(t *testing.T) {
+		// Different UUIDs should produce different file IDs
+		id1 := uuid.New()
+		handle1, _ := metadata.EncodeShareHandle("export", id1)
 		fileID1 := ExtractFileID(handle1)
 		assert.NotEqual(t, uint64(0), fileID1)
 
-		// Long path
-		handle2 := metadata.EncodeShareHandle("export", "/very/long/path/to/deeply/nested/file.txt")
+		id2 := uuid.New()
+		handle2, _ := metadata.EncodeShareHandle("export", id2)
 		fileID2 := ExtractFileID(handle2)
 		assert.NotEqual(t, uint64(0), fileID2)
 

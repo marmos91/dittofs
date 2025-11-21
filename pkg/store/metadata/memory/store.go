@@ -2,12 +2,13 @@ package memory
 
 import (
 	"context"
-	"crypto/sha256"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
 	"unsafe"
 
+	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 	"github.com/marmos91/dittofs/pkg/store/metadata/internal"
 )
@@ -434,65 +435,46 @@ func buildContentID(shareName, fullPath string) string {
 	return internal.BuildContentID(shareName, fullPath)
 }
 
-// generateFileHandle creates a deterministic file handle from a share name and path.
+// generateFileHandle creates a UUID-based file handle from a share name.
 //
-// This function implements a hybrid handle generation strategy, choosing between
-// path-based and hash-based formats depending on the total length:
+// This function generates a new UUID for each file and encodes it with the
+// share name to create a unique file handle in the format:
 //
-// Path-Based (Primary) - For paths that fit in NFS limit:
+//	Format: "shareName:uuid"
+//	Example: "/export:550e8400-e29b-41d4-a716-446655440000"
+//	Size: share name length + 37 bytes (1 colon + 36 UUID chars)
 //
-//	Format: "shareName:fullPath"
-//	Example: "/export:/images/photo.jpg" → []byte("/export:/images/photo.jpg")
-//	Size: Variable, typically 20-50 bytes
-//	Used when: len(shareName + ":" + fullPath) <= 64 bytes
+// UUID-based handles provide:
+//   - Guaranteed uniqueness (no collisions)
+//   - NFS compatibility (typically under 64 bytes)
+//   - Stable identifiers (UUID doesn't change)
+//   - No path length limitations
 //
-// Hash-Based (Fallback) - For very long paths exceeding NFS limit:
-//
-//	Format: "H:" + sha256(shareName:fullPath)[:30]
-//	Example: "/export:/very/long/path..." → []byte("H:" + hash[:30])
-//	Size: Fixed 32 bytes (2 byte prefix + 30 bytes hash)
-//	Used when: len(shareName + ":" + fullPath) > 64 bytes
-//
-// This hybrid approach provides:
-//   - Direct path extraction for import/export (when using path-based)
-//   - NFS compatibility (max 64 bytes per RFC 1813)
-//   - Graceful handling of edge cases (very long filenames)
-//   - Deterministic generation (reproducible across restarts)
+// Note: The fullPath parameter is currently unused but kept for compatibility
+// with existing code. In the future, if path tracking is needed, it should be
+// stored separately in the fileData structure.
 //
 // Parameters:
 //   - shareName: The share name this file belongs to
-//   - fullPath: The full path of the file within the share (e.g., "/images/photo.jpg")
+//   - fullPath: Reserved for future use (currently ignored)
 //
 // Returns:
-//   - FileHandle: A deterministic file handle (path-based or hash-based)
+//   - FileHandle: A UUID-based file handle
 func (store *MemoryMetadataStore) generateFileHandle(shareName, fullPath string) metadata.FileHandle {
-	const (
-		// maxNFSHandleSize is the maximum file handle size supported by NFSv3 (RFC 1813)
-		maxNFSHandleSize = 64
-		// hashPrefixSize is the size of the "H:" prefix for hash-based handles
-		hashPrefixSize = 2
-		// hashHandleDataSize is the number of hash bytes included in hash-based handles
-		hashHandleDataSize = 30
-		// hashHandlePrefix identifies hash-based handles
-		hashHandlePrefix = "H:"
-	)
+	// Generate a new UUID for this file
+	id := uuid.New()
 
-	// Construct the path-based handle format
-	pathBased := shareName + ":" + fullPath
-
-	// If it fits in the NFS limit, use path-based format (preferred)
-	if len(pathBased) <= maxNFSHandleSize {
-		return metadata.FileHandle([]byte(pathBased))
+	// Encode the handle using the standard format
+	handle, err := metadata.EncodeShareHandle(shareName, id)
+	if err != nil {
+		// This should never happen for valid share names and UUIDs
+		// If it does, generate a fallback handle
+		// In practice, this error only occurs if the encoded handle exceeds 64 bytes,
+		// which is unlikely for reasonable share names
+		panic(fmt.Sprintf("failed to encode file handle: %v", err))
 	}
 
-	// For long paths, use hash-based format
-	// Format: "H:" + sha256(pathBased)[:30]
-	h := sha256.Sum256([]byte(pathBased))
-	handle := make([]byte, hashPrefixSize+hashHandleDataSize)
-	copy(handle, []byte(hashHandlePrefix))
-	copy(handle[hashPrefixSize:], h[:hashHandleDataSize])
-
-	return metadata.FileHandle(handle)
+	return handle
 }
 
 // extractFileIDFromHandle derives a 64-bit file ID from a file handle.

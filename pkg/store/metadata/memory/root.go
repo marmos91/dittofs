@@ -18,13 +18,13 @@ import (
 //   - attr: Directory attributes (Type must be FileTypeDirectory)
 //
 // Returns:
-//   - FileHandle: Handle of the newly created root directory
+//   - *File: Complete file information for the newly created root directory
 //   - error: ErrAlreadyExists if root exists, ErrInvalidArgument if not a directory
 func (store *MemoryMetadataStore) CreateRootDirectory(
 	ctx context.Context,
 	shareName string,
 	attr *metadata.FileAttr,
-) (metadata.FileHandle, error) {
+) (*metadata.File, error) {
 	// Check context cancellation
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -47,9 +47,22 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	defer store.mu.Unlock()
 
 	// Check if root already exists - if so, just return success (idempotent)
-	if _, exists := store.files[key]; exists {
+	if existingData, exists := store.files[key]; exists {
 		// Root already exists, this is OK (idempotent operation)
-		return rootHandle, nil
+		// Decode handle to get ID
+		_, id, err := metadata.DecodeFileHandle(rootHandle)
+		if err != nil {
+			return nil, &metadata.StoreError{
+				Code:    metadata.ErrIOError,
+				Message: "failed to decode root handle",
+			}
+		}
+		return &metadata.File{
+			ID:        id,
+			ShareName: shareName,
+			Path:      "/",
+			FileAttr:  *existingData.Attr,
+		}, nil
 	}
 
 	// Root doesn't exist, create it
@@ -86,5 +99,20 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	// Root directories have no parent (they are top-level)
 	// So we don't add an entry to store.parents
 
-	return rootHandle, nil
+	// Decode handle to get ID
+	_, id, err := metadata.DecodeFileHandle(rootHandle)
+	if err != nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrIOError,
+			Message: "failed to decode root handle",
+		}
+	}
+
+	// Return full File information
+	return &metadata.File{
+		ID:        id,
+		ShareName: shareName,
+		Path:      "/",
+		FileAttr:  rootAttrCopy,
+	}, nil
 }

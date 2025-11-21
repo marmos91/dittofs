@@ -12,8 +12,9 @@ import "github.com/marmos91/dittofs/pkg/store/metadata"
 // Multiple shares can reference the same store instances.
 type Share struct {
 	Name          string
-	MetadataStore string // Name of the metadata store
-	ContentStore  string // Name of the content store
+	MetadataStore string             // Name of the metadata store
+	ContentStore  string             // Name of the content store
+	RootHandle    metadata.FileHandle // Encoded file handle for the root directory
 	ReadOnly      bool
 
 	// Access Control
