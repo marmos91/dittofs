@@ -348,4 +348,3 @@ func (s *BadgerMetadataStore) Close() error {
 
 	return nil
 }
-

@@ -25,37 +25,6 @@ import (
 // The UUID is generated when a file is created and never changes, even if the
 // file is renamed or moved.
 
-const (
-	// maxNFSHandleSize is the NFS RFC 1813 recommended maximum (64 bytes).
-	// With UUID-based handles ("shareName:uuid"), we stay well under this limit.
-	maxNFSHandleSize = 64
-)
-
-// generateFileHandle creates a file handle from a File.
-//
-// This is used by the protocol layer to convert internal File objects into
-// opaque byte handles for transmission to NFS clients.
-//
-// The handle format: "shareName:uuid"
-// Example: "/export:550e8400-e29b-41d4-a716-446655440000"
-//
-// Thread Safety: Safe for concurrent use (pure function).
-//
-// Parameters:
-//   - file: The file to generate a handle for
-//
-// Returns:
-//   - metadata.FileHandle: Handle for the file (always under 64 bytes)
-//   - error: Error if handle would exceed NFS limit (should never happen with UUIDs)
-//
-// Example:
-//
-//	handle, err := generateFileHandle(file)
-//	// Returns: []byte("/export:550e8400-e29b-41d4-a716-446655440000"), nil
-func generateFileHandle(file *metadata.File) (metadata.FileHandle, error) {
-	return metadata.EncodeFileHandle(file)
-}
-
 // buildFullPath constructs the full path for a file from its parent's path and child name.
 //
 // This is used during file creation to determine the complete path from the root.

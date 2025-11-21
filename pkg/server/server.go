@@ -107,7 +107,6 @@ func New(reg *registry.Registry, shutdownTimeout time.Duration) *DittoServer {
 	}
 }
 
-
 // SetMetricsServer sets the metrics HTTP server for the server.
 //
 // The metrics server exposes Prometheus metrics at /metrics endpoint.

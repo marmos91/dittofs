@@ -175,7 +175,7 @@ func (s *MemoryMetadataStore) CommitWrite(
 	return &metadata.File{
 		ID:        id,
 		ShareName: shareName,
-		Path:      "",  // TODO: Memory store doesn't track paths yet
+		Path:      "", // TODO: Memory store doesn't track paths yet
 		FileAttr:  *fileData.Attr,
 	}, nil
 }

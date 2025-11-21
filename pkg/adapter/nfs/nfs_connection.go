@@ -13,8 +13,8 @@ import (
 	mount_handlers "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
 	nfs_types "github.com/marmos91/dittofs/internal/protocol/nfs/types"
-	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	handlers "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 type NFSConnection struct {
