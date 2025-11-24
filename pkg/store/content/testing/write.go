@@ -29,16 +29,12 @@ func (suite *StoreTestSuite) RunWriteTests(t *testing.T) {
 
 func (suite *StoreTestSuite) testWriteContentBasic(t *testing.T) {
 	store := suite.NewStore()
-	writable, ok := store.(content.WritableContentStore)
-	if !ok {
-		t.Skip("Store does not implement WritableContentStore")
-	}
 
 	id := generateTestID("write-basic")
 	testData := []byte("Hello, World!")
 
 	// Write content
-	mustWriteContent(t, writable, id, testData)
+	mustWriteContent(t, store, id, testData)
 
 	// Verify content
 	assertContentEquals(t, store, id, testData)
@@ -47,21 +43,17 @@ func (suite *StoreTestSuite) testWriteContentBasic(t *testing.T) {
 
 func (suite *StoreTestSuite) testWriteContentOverwrite(t *testing.T) {
 	store := suite.NewStore()
-	writable, ok := store.(content.WritableContentStore)
-	if !ok {
-		t.Skip("Store does not implement WritableContentStore")
-	}
 
 	id := generateTestID("write-overwrite")
 	oldData := []byte("Old data")
 	newData := []byte("New data that is longer")
 
 	// Write initial content
-	mustWriteContent(t, writable, id, oldData)
+	mustWriteContent(t, store, id, oldData)
 	assertContentEquals(t, store, id, oldData)
 
 	// Overwrite with new content
-	mustWriteContent(t, writable, id, newData)
+	mustWriteContent(t, store, id, newData)
 	assertContentEquals(t, store, id, newData)
 	assertContentSize(t, store, id, uint64(len(newData)))
 }
@@ -72,20 +64,16 @@ func (suite *StoreTestSuite) testWriteContentOverwrite(t *testing.T) {
 
 func (suite *StoreTestSuite) testTruncateShrink(t *testing.T) {
 	store := suite.NewStore()
-	writable, ok := store.(content.WritableContentStore)
-	if !ok {
-		t.Skip("Store does not implement WritableContentStore")
-	}
 
 	id := generateTestID("truncate-shrink")
 	testData := []byte("Hello, World!")
 
 	// Write content
-	mustWriteContent(t, writable, id, testData)
+	mustWriteContent(t, store, id, testData)
 	assertContentSize(t, store, id, uint64(len(testData)))
 
 	// Truncate to 5 bytes
-	mustTruncate(t, writable, id, 5)
+	mustTruncate(t, store, id, 5)
 
 	// Verify
 	assertContentSize(t, store, id, 5)
@@ -94,20 +82,16 @@ func (suite *StoreTestSuite) testTruncateShrink(t *testing.T) {
 
 func (suite *StoreTestSuite) testTruncateGrow(t *testing.T) {
 	store := suite.NewStore()
-	writable, ok := store.(content.WritableContentStore)
-	if !ok {
-		t.Skip("Store does not implement WritableContentStore")
-	}
 
 	id := generateTestID("truncate-grow")
 	testData := []byte("Hello")
 
 	// Write content
-	mustWriteContent(t, writable, id, testData)
+	mustWriteContent(t, store, id, testData)
 	assertContentSize(t, store, id, uint64(len(testData)))
 
 	// Truncate to 10 bytes (extend with zeros)
-	mustTruncate(t, writable, id, 10)
+	mustTruncate(t, store, id, 10)
 
 	// Verify
 	assertContentSize(t, store, id, 10)
@@ -118,15 +102,11 @@ func (suite *StoreTestSuite) testTruncateGrow(t *testing.T) {
 
 func (suite *StoreTestSuite) testTruncateNotFound(t *testing.T) {
 	store := suite.NewStore()
-	writable, ok := store.(content.WritableContentStore)
-	if !ok {
-		t.Skip("Store does not implement WritableContentStore")
-	}
 
 	id := generateTestID("truncate-notfound")
 
 	// Truncate non-existent content should error
-	err := writable.Truncate(testContext(), id, 100)
+	err := store.Truncate(testContext(), id, 100)
 	AssertErrorIs(t, content.ErrContentNotFound, err)
 }
 
@@ -136,20 +116,16 @@ func (suite *StoreTestSuite) testTruncateNotFound(t *testing.T) {
 
 func (suite *StoreTestSuite) testDeleteSuccess(t *testing.T) {
 	store := suite.NewStore()
-	writable, ok := store.(content.WritableContentStore)
-	if !ok {
-		t.Skip("Store does not implement WritableContentStore")
-	}
 
 	id := generateTestID("delete-success")
 	testData := []byte("To be deleted")
 
 	// Write content
-	mustWriteContent(t, writable, id, testData)
+	mustWriteContent(t, store, id, testData)
 	assertContentExists(t, store, id, true)
 
 	// Delete content
-	mustDelete(t, writable, id)
+	mustDelete(t, store, id)
 
 	// Verify deleted
 	assertContentExists(t, store, id, false)
@@ -161,18 +137,14 @@ func (suite *StoreTestSuite) testDeleteSuccess(t *testing.T) {
 
 func (suite *StoreTestSuite) testDeleteIdempotent(t *testing.T) {
 	store := suite.NewStore()
-	writable, ok := store.(content.WritableContentStore)
-	if !ok {
-		t.Skip("Store does not implement WritableContentStore")
-	}
 
 	id := generateTestID("delete-idempotent")
 
 	// Delete non-existent content should succeed (idempotent)
-	err := writable.Delete(testContext(), id)
+	err := store.Delete(testContext(), id)
 	require.NoError(t, err)
 
 	// Delete again should still succeed
-	err = writable.Delete(testContext(), id)
+	err = store.Delete(testContext(), id)
 	require.NoError(t, err)
 }

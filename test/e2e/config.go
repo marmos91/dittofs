@@ -76,7 +76,7 @@ func (tc *TestConfig) CreateMetadataStore(ctx context.Context, testCtx TestConte
 }
 
 // CreateContentStore creates a content store based on the configuration
-func (tc *TestConfig) CreateContentStore(ctx context.Context, testCtx TestContextProvider) (content.WritableContentStore, error) {
+func (tc *TestConfig) CreateContentStore(ctx context.Context, testCtx TestContextProvider) (content.ContentStore, error) {
 	switch tc.ContentStore {
 	case ContentMemory:
 		store, err := contentmemory.NewMemoryContentStore(ctx)

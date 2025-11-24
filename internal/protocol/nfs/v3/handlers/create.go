@@ -570,13 +570,11 @@ func truncateExistingFile(
 		return nil, fmt.Errorf("update file metadata: %w", err)
 	}
 
-	// Truncate content if store supports writes and file has content
+	// Truncate content if file has content
 	if existingFile.ContentID != "" {
-		if writeStore, ok := contentStore.(content.WritableContentStore); ok {
-			if err := writeStore.Truncate(authCtx.Context, existingFile.ContentID, targetSize); err != nil {
-				logger.Warn("Failed to truncate content to %d bytes: %v", targetSize, err)
-				// Non-fatal: metadata is already updated
-			}
+		if err := contentStore.Truncate(authCtx.Context, existingFile.ContentID, targetSize); err != nil {
+			logger.Warn("Failed to truncate content to %d bytes: %v", targetSize, err)
+			// Non-fatal: metadata is already updated
 		}
 	}
 
