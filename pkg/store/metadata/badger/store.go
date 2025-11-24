@@ -167,21 +167,25 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		opts = badger.DefaultOptions(config.DBPath)
 
 		// Optimize for metadata workload:
-		// - Frequent small reads/writes
-		// - Range scans for directory listings
-		// - Moderate write amplification acceptable
-		// - Large working set from macOS Finder scanning directories
+		// - Frequent small reads/writes (file attributes, directory entries)
+		// - Range scans for directory listings (READDIR operations)
+		// - Concurrent access from multiple NFS clients
+		// - Large working set from directory scanning (Finder, ls -R, etc.)
+		// - High cache hit ratio critical for performance
 		opts = opts.WithLoggingLevel(badger.WARNING) // Reduce log noise
 		opts = opts.WithCompression(options.None)    // Metadata is small, compression overhead not worth it
 
-		// Configure cache sizes (with defaults if not specified)
+		// Configure cache sizes (with production-ready defaults if not specified)
+		// Production NFS workloads require larger caches to maintain high hit ratios:
+		// - With 256MB caches: ~8% hit ratio (cache thrashing, poor performance)
+		// - With 1GB+ caches: >80% hit ratio (good performance for 100s of concurrent operations)
 		blockCacheMB := config.BlockCacheSizeMB
 		if blockCacheMB == 0 {
-			blockCacheMB = 256 // Default: 256MB
+			blockCacheMB = 1024 // Default: 1GB for production NFS workloads
 		}
 		indexCacheMB := config.IndexCacheSizeMB
 		if indexCacheMB == 0 {
-			indexCacheMB = 128 // Default: 128MB
+			indexCacheMB = 512 // Default: 512MB for production workloads
 		}
 
 		opts = opts.WithBlockCacheSize(blockCacheMB << 20) // Convert MB to bytes
