@@ -139,17 +139,22 @@ func (c *MemoryCache) Write(ctx context.Context, id metadata.ContentID, data []b
 	}
 
 	buf.mu.Lock()
-	defer buf.mu.Unlock()
-
 	// Replace entire buffer
 	buf.data = make([]byte, len(data))
 	copy(buf.data, data)
 	buf.lastWrite = time.Now()
+	bufSize := int64(len(buf.data))
+	buf.mu.Unlock()
 
-	// Record cache size after write
+	// Record cache size after write (must be done after releasing buf lock)
 	if c.metrics != nil {
-		c.metrics.RecordCacheSize(string(id), int64(len(buf.data)))
+		c.metrics.RecordCacheSize(string(id), bufSize)
+
+		// Need to acquire lock to update total cache size and buffer count
+		c.mu.RLock()
+		c.metrics.RecordBufferCount(len(c.buffers))
 		c.updateTotalCacheSize()
+		c.mu.RUnlock()
 	}
 
 	return nil
@@ -179,8 +184,6 @@ func (c *MemoryCache) WriteAt(ctx context.Context, id metadata.ContentID, data [
 	}
 
 	buf.mu.Lock()
-	defer buf.mu.Unlock()
-
 	writeEnd := offset + int64(len(data))
 	currentSize := int64(len(buf.data))
 
@@ -223,11 +226,18 @@ func (c *MemoryCache) WriteAt(ctx context.Context, id metadata.ContentID, data [
 	// Copy data at offset
 	copy(buf.data[offset:], data)
 	buf.lastWrite = time.Now()
+	bufSize := int64(len(buf.data))
+	buf.mu.Unlock()
 
-	// Record cache size after write
+	// Record cache size after write (must be done after releasing buf lock)
 	if c.metrics != nil {
-		c.metrics.RecordCacheSize(string(id), int64(len(buf.data)))
+		c.metrics.RecordCacheSize(string(id), bufSize)
+
+		// Need to acquire lock to update total cache size and buffer count
+		c.mu.RLock()
+		c.metrics.RecordBufferCount(len(c.buffers))
 		c.updateTotalCacheSize()
+		c.mu.RUnlock()
 	}
 
 	return nil
@@ -343,11 +353,9 @@ func (c *MemoryCache) List() []metadata.ContentID {
 }
 
 // updateTotalCacheSize calculates and records the total cache size across all buffers.
-// Must be called while holding c.mu.RLock or c.mu.Lock.
+// Caller must hold c.mu (RLock or Lock).
 func (c *MemoryCache) updateTotalCacheSize() {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
+	// Lock must be held by caller
 	var totalSize int64
 	for _, buf := range c.buffers {
 		buf.mu.Lock()
@@ -355,7 +363,9 @@ func (c *MemoryCache) updateTotalCacheSize() {
 		buf.mu.Unlock()
 	}
 
-	c.metrics.RecordTotalCacheSize(totalSize)
+	if c.metrics != nil {
+		c.metrics.RecordTotalCacheSize(totalSize)
+	}
 }
 
 // Remove clears the cached data for a specific content ID.

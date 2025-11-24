@@ -146,74 +146,37 @@ func (s *S3ContentStore) FlushIncremental(ctx context.Context, id metadata.Conte
 		return 0, nil
 	}
 
-	// Collect all parts that are ready to upload
-	var partsToUpload []struct {
-		partNumber int
-		data       []byte
+	// CRITICAL PERFORMANCE FIX:
+	// Upload ONLY ONE part per COMMIT to avoid blocking the NFS client.
+	// Uploading all buffered parts at once can take 20+ seconds for large buffers,
+	// causing "NFS server not responding" warnings on the client.
+	//
+	// By uploading one part at a time (~5 seconds per COMMIT), we:
+	// - Keep COMMIT operations fast and responsive
+	// - Maintain RFC 1813 compliance (data is committed to S3 before returning success)
+	// - Allow incremental progress on large file uploads
+	// - Let subsequent COMMITs handle remaining buffered data
+
+	// Read exactly one part from buffer
+	partData := make([]byte, minPartSize)
+	nRead, err := session.buffer.Read(partData)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read from buffer: %w", err)
+	}
+	partData = partData[:nRead] // Trim to actual size
+
+	// Upload this single part synchronously (COMMIT waits for this to complete)
+	err = s.UploadPart(ctx, id, session.uploadID, session.currentPartNumber, partData)
+	if err != nil {
+		return 0, fmt.Errorf("failed to upload part %d: %w", session.currentPartNumber, err)
 	}
 
-	for session.buffer.Len() >= minPartSize {
-		// Read exactly 5MB (or minPartSize) from buffer
-		partData := make([]byte, minPartSize)
-		nRead, err := session.buffer.Read(partData)
-		if err != nil {
-			return 0, fmt.Errorf("failed to read from buffer: %w", err)
-		}
-		partData = partData[:nRead] // Trim to actual size
+	// Update state
+	partsFlushed := int64(len(partData))
+	session.totalFlushed += partsFlushed
+	session.currentPartNumber++
 
-		partsToUpload = append(partsToUpload, struct {
-			partNumber int
-			data       []byte
-		}{
-			partNumber: session.currentPartNumber,
-			data:       partData,
-		})
-
-		session.currentPartNumber++
-	}
-
-	if len(partsToUpload) == 0 {
-		return 0, nil
-	}
-
-	// Upload all parts in parallel with bounded concurrency
-	// Use semaphore to limit concurrent uploads (prevents overwhelming S3 or network)
-	const maxConcurrentUploads = 10
-	sem := make(chan struct{}, maxConcurrentUploads)
-	errChan := make(chan error, len(partsToUpload))
-	var uploadWg sync.WaitGroup
-
-	for _, part := range partsToUpload {
-		uploadWg.Add(1)
-		go func(partNum int, partData []byte) {
-			defer uploadWg.Done()
-
-			// Acquire semaphore slot
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			// Upload this part
-			err := s.UploadPart(ctx, id, session.uploadID, partNum, partData)
-			if err != nil {
-				errChan <- fmt.Errorf("failed to upload part %d: %w", partNum, err)
-			}
-		}(part.partNumber, part.data)
-	}
-
-	// Wait for all uploads to complete
-	uploadWg.Wait()
-	close(errChan)
-
-	// Check for errors
-	if err := <-errChan; err != nil {
-		return 0, err
-	}
-
-	// Calculate total flushed
-	totalFlushed := int64(len(partsToUpload)) * minPartSize
-	session.totalFlushed += totalFlushed
-
-	return totalFlushed, nil
+	return partsFlushed, nil
 }
 
 // CompleteIncrementalWrite finalizes an incremental write session.

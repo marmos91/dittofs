@@ -385,6 +385,6 @@ func (s *BadgerMetadataStore) lockFile(fileID string) *sync.Mutex {
 }
 
 // unlockFile releases the per-file mutex.
-func (s *BadgerMetadataStore) unlockFile(fileID string, mu *sync.Mutex) {
+func (s *BadgerMetadataStore) unlockFile(_ string, mu *sync.Mutex) {
 	mu.Unlock()
 }
