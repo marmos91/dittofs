@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"sync"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
@@ -424,6 +425,12 @@ func (h *Handler) Commit(
 			//
 			// S3 allows 1-part uploads since the "last part" can be any size.
 			// This simplifies the code - single code path for all files.
+
+			// Acquire per-file lock to prevent race conditions with concurrent COMMITs
+			// Multiple COMMIT operations can run in parallel (due to goroutine-per-request),
+			// but operations on the same file must be serialized to avoid session conflicts.
+			fileLock := h.acquireFileLock(file.ContentID)
+			defer h.releaseFileLock(fileLock)
 
 			// Ensure incremental write session exists
 			state := incStore.GetIncrementalWriteState(file.ContentID)
@@ -847,6 +854,41 @@ func DecodeCommitRequest(data []byte) (*CommitRequest, error) {
 		Offset: offset,
 		Count:  count,
 	}, nil
+}
+
+// ============================================================================
+// Per-File Locking (Race Condition Prevention)
+// ============================================================================
+
+// acquireFileLock obtains a per-ContentID mutex to serialize COMMIT operations
+// on the same file. This prevents race conditions when multiple concurrent
+// COMMIT operations target the same file (e.g., due to parallel NFS requests).
+//
+// The lock is stored in h.fileLocks and must be released by calling releaseFileLock.
+//
+// Parameters:
+//   - id: Content identifier to lock
+//
+// Returns:
+//   - *sync.Mutex: The acquired lock (caller must unlock when done)
+func (h *Handler) acquireFileLock(id metadata.ContentID) *sync.Mutex {
+	// Get or create mutex for this content ID
+	value, _ := h.fileLocks.LoadOrStore(id, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu
+}
+
+// releaseFileLock releases a per-ContentID mutex after COMMIT operations complete.
+//
+// This allows other concurrent COMMIT operations for the same file to proceed.
+// The mutex is kept in the map for future operations (not deleted) to avoid
+// allocation overhead.
+//
+// Parameters:
+//   - mu: The mutex to unlock (obtained from acquireFileLock)
+func (h *Handler) releaseFileLock(mu *sync.Mutex) {
+	mu.Unlock()
 }
 
 // ============================================================================

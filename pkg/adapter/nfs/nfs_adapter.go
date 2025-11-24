@@ -174,6 +174,13 @@ type NFSConfig struct {
 	// Recommended: 1000-5000 for production servers.
 	MaxConnections int `mapstructure:"max_connections" validate:"min=0"`
 
+	// MaxRequestsPerConnection limits the number of concurrent RPC requests
+	// that can be processed simultaneously on a single connection.
+	// This enables parallel handling of multiple COMMITs, WRITEs, and READs.
+	// 0 means unlimited (will default to 100).
+	// Recommended: 50-200 for high-throughput servers.
+	MaxRequestsPerConnection int `mapstructure:"max_requests_per_connection" validate:"min=0"`
+
 	// Timeouts groups all timeout-related configuration
 	Timeouts NFSTimeoutsConfig `mapstructure:"timeouts"`
 
@@ -191,6 +198,9 @@ func (c *NFSConfig) applyDefaults() {
 
 	if c.Port <= 0 {
 		c.Port = 2049
+	}
+	if c.MaxRequestsPerConnection == 0 {
+		c.MaxRequestsPerConnection = 100
 	}
 	if c.Timeouts.Read == 0 {
 		c.Timeouts.Read = 5 * time.Minute

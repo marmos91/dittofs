@@ -78,6 +78,12 @@ type BadgerMetadataStore struct {
 		ttl       time.Duration
 		mu        sync.RWMutex
 	}
+
+	// fileLocks provides per-file write serialization to prevent BadgerDB transaction conflicts.
+	// When parallel NFS request handling is enabled, multiple WRITEs to the same file can
+	// happen concurrently. Without serialization, they cause BadgerDB transaction conflicts.
+	// This map holds a mutex for each file ID that has active writes.
+	fileLocks sync.Map // map[string]*sync.Mutex (file ID -> mutex)
 }
 
 // BadgerMetadataStoreConfig contains configuration for creating a BadgerDB metadata store.

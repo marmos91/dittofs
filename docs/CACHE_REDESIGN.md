@@ -1049,6 +1049,298 @@ These are noted but not implemented in this phase:
 6. **Cache Warming** - Pre-populate cache on server startup from persistent storage
 7. **Multi-tier Caching** - Combine memory and disk caches with automatic promotion/demotion
 
+## Alternative Approach: Temp Parts with Background Compaction
+
+**Status**: Design proposal - not yet implemented. Documented for future consideration.
+
+### Problem Statement
+
+The main design (buffer in cache + multipart) has a fundamental tension:
+- **RFC 1813**: COMMIT returning NFS3OK means data MUST be on stable storage
+- **S3 Multipart**: Parts must be ≥5MB except the last part
+- **macOS Client**: Calls COMMIT every 4MB during large file writes
+
+The buffer-in-cache approach is a "soft RFC violation" - COMMIT returns success but data is still in cache, not on S3. While the write verifier protects against data loss, the data isn't immediately durable.
+
+### Proposed Solution
+
+Write each COMMIT as a temporary S3 object immediately (any size), then compact in the background.
+
+#### Phase 1: COMMIT writes temp parts immediately
+
+```go
+func (h *Handler) Commit(ctx *NFSHandlerContext, req *CommitRequest) (*CommitResponse, error) {
+    // ... validation ...
+
+    writeCache, err := h.Registry.GetWriteCacheForShare(shareName)
+    if writeCache == nil {
+        // Sync mode: already written directly to store
+        return &CommitResponse{Status: types.NFS3OK, ...}, nil
+    }
+
+    // Read cached data
+    data, err := writeCache.Read(ctx.Context, file.ContentID)
+    if err != nil {
+        return &CommitResponse{Status: types.NFS3ErrIO, ...}, nil
+    }
+
+    // Write as temp part to S3 (any size - no 5MB restriction!)
+    s3Store, _ := h.Registry.GetContentStoreForShare(shareName)
+    partNum := getNextPartNum(file.ContentID)
+    tempKey := fmt.Sprintf(".temp/%s/part-%03d", file.ContentID, partNum)
+
+    err = s3Store.PutObject(ctx.Context, tempKey, data)
+    if err != nil {
+        return &CommitResponse{Status: types.NFS3ErrIO, ...}, nil
+    }
+
+    // Mark in metadata that this file has temp parts pending compaction
+    metadataStore.MarkPendingCompaction(file.ContentID, partNum)
+
+    // Clean cache immediately after writing to S3
+    writeCache.Remove(file.ContentID)
+
+    // ✓ Data is now on stable storage (S3)!
+    return &CommitResponse{
+        Status: types.NFS3OK,
+        AttrBefore: wccBefore,
+        AttrAfter: wccAfter,
+        WriteVerifier: serverBootTime,
+    }, nil
+}
+```
+
+**COMMIT returns immediately after PutObject** → RFC 1813 compliant! Data is truly on stable storage.
+
+#### Phase 2: Background compaction worker
+
+```go
+func (h *Handler) runCompactionWorker(ctx context.Context) {
+    ticker := time.NewTicker(5 * time.Minute)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            h.compactPendingFiles(ctx)
+        }
+    }
+}
+
+func (h *Handler) compactPendingFiles(ctx context.Context) {
+    // Get files marked for compaction from metadata store
+    files := metadataStore.ListPendingCompaction()
+
+    for _, contentID := range files {
+        // Check if file is still being actively written
+        if h.isActivelyWriting(contentID) {
+            continue  // Skip, wait for writes to finish
+        }
+
+        // Compact: merge temp parts into final object
+        err := h.compactFile(ctx, contentID)
+        if err != nil {
+            logger.Warn("Compaction failed for %s: %v", contentID, err)
+            continue
+        }
+
+        // Mark as compacted in metadata
+        metadataStore.ClearPendingCompaction(contentID)
+    }
+}
+
+func (h *Handler) compactFile(ctx context.Context, contentID string) error {
+    s3Store := h.Registry.GetContentStoreForShare(shareName)
+
+    // List all temp parts for this file
+    tempPrefix := fmt.Sprintf(".temp/%s/", contentID)
+    parts, err := s3Store.ListObjects(ctx, tempPrefix)
+    if err != nil {
+        return err
+    }
+
+    if len(parts) == 0 {
+        return nil  // Already compacted
+    }
+
+    if len(parts) == 1 {
+        // Only one part - just move it (rename)
+        err := s3Store.CopyObject(ctx, parts[0], contentID)
+        if err != nil {
+            return err
+        }
+        s3Store.DeleteObject(ctx, parts[0])
+        return nil
+    }
+
+    // Multiple parts - use multipart upload for efficiency
+    // Note: This uses S3 server-side operations, no data transfer!
+    uploadID, err := s3Store.CreateMultipartUpload(ctx, contentID)
+    if err != nil {
+        return err
+    }
+
+    // Upload each part using UploadPartCopy (server-side copy, no download!)
+    for i, partKey := range parts {
+        err := s3Store.UploadPartCopy(ctx, uploadID, i+1, partKey)
+        if err != nil {
+            s3Store.AbortMultipartUpload(ctx, uploadID)
+            return err
+        }
+    }
+
+    // Complete multipart upload
+    err = s3Store.CompleteMultipartUpload(ctx, uploadID)
+    if err != nil {
+        return err
+    }
+
+    // Delete temp parts
+    for _, partKey := range parts {
+        s3Store.DeleteObject(ctx, partKey)
+    }
+
+    logger.Info("Compacted %d parts for %s into final object", len(parts), contentID)
+    return nil
+}
+```
+
+#### Phase 3: READ handles both temp and final objects
+
+```go
+func (s *S3ContentStore) ReadAt(ctx context.Context, id ContentID, buf []byte, offset int64) (int, error) {
+    // Try reading final object first (most common case)
+    n, err := s.client.GetObject(ctx, string(id), buf, offset)
+    if err == nil {
+        return n, nil  // ✓ Found final object
+    }
+
+    // Check if error is "not found" vs other errors
+    if !isNotFoundError(err) {
+        return 0, err  // Real error, not just missing
+    }
+
+    // Not found - check for temp parts
+    tempPrefix := fmt.Sprintf(".temp/%s/", id)
+    parts, err := s.client.ListObjects(ctx, tempPrefix)
+    if err != nil {
+        return 0, err
+    }
+
+    if len(parts) == 0 {
+        return 0, ErrNotFound  // Truly doesn't exist
+    }
+
+    // Download and merge temp parts
+    // TODO: Optimize to only download relevant parts for the requested range
+    merged := []byte{}
+    for _, partKey := range parts {
+        partData, err := s.client.GetObject(ctx, partKey)
+        if err != nil {
+            return 0, err
+        }
+        merged = append(merged, partData...)
+    }
+
+    // Extract requested range
+    if offset >= int64(len(merged)) {
+        return 0, io.EOF
+    }
+
+    n = copy(buf, merged[offset:])
+    return n, nil
+}
+```
+
+### Benefits
+
+✓ **RFC 1813 Compliant**: COMMIT writes to S3 immediately (true stable storage)
+✓ **No 5MB blocking**: Can write any size temp parts with PutObject
+✓ **Efficient eventual state**: Background worker merges into single object
+✓ **Crash resilient**: Temp parts survive server crash
+✓ **Self-healing**: Compaction can run after restart to clean up orphaned parts
+✓ **Simpler than buffering**: No session state tracking during writes
+
+### Trade-offs
+
+**Costs:**
+- More S3 API calls during write phase (each COMMIT = PutObject)
+- Temp parts use S3 storage until compaction runs
+- READ needs fallback logic to handle temp parts (slight performance penalty)
+- Background worker adds complexity
+- S3 storage costs for temp objects before compaction
+
+**Compaction triggers:**
+- File hasn't been written to in 5+ minutes (probably done)
+- File has >10 temp parts (getting fragmented)
+- Scheduled maintenance window
+- Manual trigger for specific files
+
+### Optimization: Server-side Copy
+
+S3's `UploadPartCopy` API is key to efficiency:
+```go
+// No data transfer! S3 copies internally between objects
+s3.UploadPartCopy(
+    uploadID,
+    partNumber,
+    sourceKey: ".temp/abc123/part-001"
+)
+```
+
+**Compaction is nearly free** - just API calls, no network transfer costs!
+
+### Metadata Tracking
+
+Add to metadata store FileAttr:
+```go
+type FileAttr struct {
+    // ... existing fields ...
+
+    TempPartCount   int       // Number of temp parts (0 = final object)
+    LastWriteTime   time.Time // When last COMMIT happened
+    CompactionState string    // "pending", "compacting", "final"
+}
+```
+
+### Comparison with Main Design
+
+| Aspect | Buffer in Cache (Main) | Temp Parts + Compaction (Alternative) |
+|--------|----------------------|----------------------------------|
+| **RFC Compliance** | Soft violation (returns OK while in cache) | Strict compliance (data on S3 before OK) |
+| **Implementation Complexity** | Medium (session tracking, chunking) | Medium (background worker, dual read path) |
+| **Write Performance** | Fast (cache writes) | Slower (S3 PutObject on each COMMIT) |
+| **Read Performance** | Fast (no S3 until flush) | Fast after compaction, slower before |
+| **Crash Safety** | Write verifier protects | Temp parts survive, auto-cleanup |
+| **S3 Costs** | Lower (fewer API calls) | Higher (more PutObjects, temp storage) |
+| **Client Perspective** | Appears committed (verifier protection) | Truly committed immediately |
+
+### When to Use Which Approach
+
+**Use Buffer in Cache (Main Design):**
+- Write performance is critical
+- Most files are small (<5MB)
+- Disk-backed cache is available for durability
+- S3 API costs are a concern
+
+**Use Temp Parts + Compaction (Alternative):**
+- Strict RFC compliance is required
+- Write-heavy workloads with many partial COMMITs
+- Want data on stable storage immediately
+- Can tolerate S3 API costs
+
+### Implementation Priority
+
+This could be implemented as **Phase 8** or **v2.0 feature**:
+```
+Phase 1-7: Basic cache + incremental writes (buffer in cache)
+Phase 8: Add temp parts + compaction (optional alternative mode)
+```
+
+**Recommendation**: Start with main design (simpler, proven), add compaction as optional enhancement based on real-world usage patterns.
+
 ## Questions and Decisions
 
 ### Q: Should FILE_SYNC mode (async=false) do explicit fsync?

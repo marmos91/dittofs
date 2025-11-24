@@ -2,6 +2,7 @@ package badger
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
@@ -176,9 +177,23 @@ func (s *BadgerMetadataStore) CommitWrite(
 		return nil, err
 	}
 
+	// Decode file ID before locking (for lock key)
+	_, fileID, err := metadata.DecodeFileHandle(intent.Handle)
+	if err != nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "invalid file handle",
+		}
+	}
+
+	// Acquire per-file lock to serialize writes to the same file
+	// This prevents BadgerDB transaction conflicts with parallel NFS requests
+	mu := s.lockFile(fileID.String())
+	defer s.unlockFile(fileID.String(), mu)
+
 	var updatedFile *metadata.File
 
-	err := s.db.Update(func(txn *badger.Txn) error {
+	err = s.db.Update(func(txn *badger.Txn) error {
 		// Get file attributes
 		_, id, err := metadata.DecodeFileHandle(intent.Handle)
 		if err != nil {
@@ -358,4 +373,18 @@ func (s *BadgerMetadataStore) PrepareRead(
 	}
 
 	return readMeta, nil
+}
+
+// lockFile acquires a per-file mutex to serialize writes to the same file.
+// This prevents BadgerDB transaction conflicts when parallel requests modify the same file.
+func (s *BadgerMetadataStore) lockFile(fileID string) *sync.Mutex {
+	mu, _ := s.fileLocks.LoadOrStore(fileID, &sync.Mutex{})
+	fileMu := mu.(*sync.Mutex)
+	fileMu.Lock()
+	return fileMu
+}
+
+// unlockFile releases the per-file mutex.
+func (s *BadgerMetadataStore) unlockFile(fileID string, mu *sync.Mutex) {
+	mu.Unlock()
 }
