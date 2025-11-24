@@ -63,7 +63,7 @@ type S3ContentStore struct {
 	uploadSessionsMu sync.RWMutex
 
 	// Write cache (injected from NFS handler)
-	writeCache cache.WriteCache
+	writeCache cache.Cache
 
 	// Multipart threshold for flushing (default: 5MB)
 	multipartThreshold uint64
@@ -138,7 +138,7 @@ type S3ContentStoreConfig struct {
 	// WriteCache is an optional write cache for buffering writes before flushing to S3
 	// When provided, enables efficient write buffering and reduces S3 API calls
 	// The cache should be shared between the NFS handler and content store
-	WriteCache cache.WriteCache
+	WriteCache cache.Cache
 
 	// MultipartThreshold is the size threshold for using multipart uploads (default: 5MB)
 	// Files smaller than this use PutObject, larger files use multipart upload
@@ -245,11 +245,8 @@ func NewS3ContentStore(ctx context.Context, cfg S3ContentStoreConfig) (*S3Conten
 		statsCacheTTL = 5 * time.Minute // Default: 5 minutes
 	}
 
-	// Set default metrics (no-op if not provided)
+	// Metrics can be nil for zero-overhead disabled metrics
 	metrics := cfg.Metrics
-	if metrics == nil {
-		metrics = noopMetrics{}
-	}
 
 	// Set default multipart threshold
 	multipartThreshold := cfg.MultipartThreshold
@@ -356,8 +353,8 @@ func (s *S3ContentStore) getObjectKey(id metadata.ContentID) string {
 //
 // Parameters:
 //   - cache: The write cache to use for buffering writes
-func (s *S3ContentStore) SetWriteCache(cache cache.WriteCache) {
-	s.writeCache = cache
+func (s *S3ContentStore) SetWriteCache(c cache.Cache) {
+	s.writeCache = c
 }
 
 // GetStorageStats returns statistics about S3 storage.
@@ -379,7 +376,9 @@ func (s *S3ContentStore) SetWriteCache(cache cache.WriteCache) {
 func (s *S3ContentStore) GetStorageStats(ctx context.Context) (stats *content.StorageStats, err error) {
 	start := time.Now()
 	defer func() {
-		s.metrics.ObserveOperation("GetStorageStats", time.Since(start), err)
+		if s.metrics != nil {
+			s.metrics.ObserveOperation("GetStorageStats", time.Since(start), err)
+		}
 	}()
 
 	if err = ctx.Err(); err != nil {

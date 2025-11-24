@@ -259,7 +259,7 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 
 		// Phase 1: Read from cache
 		cacheReadStart := time.Now()
-		data, err := s.writeCache.ReadAll(id)
+		data, err := s.writeCache.Read(ctx, id)
 		if err != nil {
 			flushErr = fmt.Errorf("failed to read from write cache: %w", err)
 			return flushErr
@@ -361,7 +361,7 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 
 			// Read chunk from cache
 			partBuffer := make([]byte, bytesToRead)
-			n, readErr := s.writeCache.ReadAt(id, partBuffer, offset)
+			n, readErr := s.writeCache.ReadAt(ctx, id, partBuffer, offset)
 			if readErr != nil && readErr != io.EOF {
 				flushErr = readErr
 				return flushErr
@@ -454,10 +454,10 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 
 	// Phase 3: Clear cache after successful upload
 	cacheClearStart := time.Now()
-	if resetErr := s.writeCache.Reset(id); resetErr != nil {
+	if resetErr := s.writeCache.Remove(id); resetErr != nil {
 		// Log warning but don't fail the flush operation
 		// The data is already in S3, so the operation succeeded
-		flushErr = fmt.Errorf("flush succeeded but cache reset failed: %w", resetErr)
+		flushErr = fmt.Errorf("flush succeeded but cache removal failed: %w", resetErr)
 		return flushErr
 	}
 	cacheClearDuration := time.Since(cacheClearStart)

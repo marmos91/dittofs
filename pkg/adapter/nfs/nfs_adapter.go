@@ -60,7 +60,7 @@ type NFSAdapter struct {
 
 	// writeCache is the auto-flush write cache (if enabled)
 	// Stored for graceful shutdown
-	writeCache cache.WriteCache
+	writeCache cache.Cache
 
 	// metrics provides optional Prometheus metrics collection
 	// If nil, no metrics are collected (zero overhead)
@@ -272,10 +272,7 @@ func New(
 	// Create shutdown context for request cancellation
 	shutdownCtx, cancelRequests := context.WithCancel(context.Background())
 
-	// Use no-op metrics if none provided
-	if nfsMetrics == nil {
-		nfsMetrics = metrics.NewNoopNFSMetrics()
-	}
+	// nfsMetrics can be nil for zero-overhead disabled metrics
 
 	return &NFSAdapter{
 		config:         nfsConfig,
@@ -428,9 +425,11 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 		s.activeConnections.Store(connAddr, tcpConn)
 
 		// Record metrics for connection accepted
-		s.metrics.RecordConnectionAccepted()
 		currentConns := s.connCount.Load()
-		s.metrics.SetActiveConnections(currentConns)
+		if s.metrics != nil {
+			s.metrics.RecordConnectionAccepted()
+			s.metrics.SetActiveConnections(currentConns)
+		}
 
 		// Log new connection (debug level to avoid log spam under load)
 		logger.Debug("NFS connection accepted from %s (active: %d)",
@@ -452,12 +451,14 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 				}
 
 				// Record metrics for connection closed
-				s.metrics.RecordConnectionClosed()
-				currentConns := s.connCount.Load()
-				s.metrics.SetActiveConnections(currentConns)
+				if s.metrics != nil {
+					s.metrics.RecordConnectionClosed()
+					currentConns := s.connCount.Load()
+					s.metrics.SetActiveConnections(currentConns)
+				}
 
 				logger.Debug("NFS connection closed from %s (active: %d)",
-					tcp.RemoteAddr(), currentConns)
+					tcp.RemoteAddr(), s.connCount.Load())
 			}()
 
 			// Handle connection requests
@@ -618,7 +619,9 @@ func (s *NFSAdapter) forceCloseConnections() {
 			closedCount++
 			logger.Debug("Force-closed connection to %s", addr)
 			// Record metric for each force-closed connection
-			s.metrics.RecordConnectionForceClosed()
+			if s.metrics != nil {
+				s.metrics.RecordConnectionForceClosed()
+			}
 		}
 
 		// Continue iteration

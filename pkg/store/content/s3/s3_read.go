@@ -38,7 +38,9 @@ import (
 func (s *S3ContentStore) ReadContent(ctx context.Context, id metadata.ContentID) (rc io.ReadCloser, err error) {
 	start := time.Now()
 	defer func() {
-		s.metrics.ObserveOperation("ReadContent", time.Since(start), err)
+		if s.metrics != nil {
+			s.metrics.ObserveOperation("ReadContent", time.Since(start), err)
+		}
 	}()
 
 	if err = ctx.Err(); err != nil {
@@ -91,9 +93,11 @@ func (s *S3ContentStore) ReadContent(ctx context.Context, id metadata.ContentID)
 func (s *S3ContentStore) ReadAt(ctx context.Context, id metadata.ContentID, p []byte, offset int64) (n int, err error) {
 	start := time.Now()
 	defer func() {
-		s.metrics.ObserveOperation("ReadAt", time.Since(start), err)
-		if n > 0 {
-			s.metrics.RecordBytes("read", int64(n))
+		if s.metrics != nil {
+			s.metrics.ObserveOperation("ReadAt", time.Since(start), err)
+			if n > 0 {
+				s.metrics.RecordBytes("read", int64(n))
+			}
 		}
 	}()
 

@@ -442,8 +442,10 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	//  - Metrics include NFS protocol status codes, not Go errors
 	//  - Share-level tracking enables per-tenant analysis
 	//
-	c.server.metrics.RecordRequestStart(procedure.Name, share)
-	defer c.server.metrics.RecordRequestEnd(procedure.Name, share)
+	if c.server.metrics != nil {
+		c.server.metrics.RecordRequestStart(procedure.Name, share)
+		defer c.server.metrics.RecordRequestEnd(procedure.Name, share)
+	}
 
 	// Execute handler and measure duration
 	startTime := time.Now()
@@ -458,28 +460,30 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	// Record completion with NFS status code (e.g., "NFS3_OK", "NFS3ERR_NOENT")
 	// This provides RFC-compliant error tracking for observability
 	// Note: Pass empty string for NFS3_OK (success) to avoid labeling as error
-	var responseStatus string
-	if result != nil {
-		if result.NFSStatus != nfs_types.NFS3OK {
-			responseStatus = nfs.NFSStatusToString(result.NFSStatus)
-		}
+	if c.server.metrics != nil {
+		var responseStatus string
+		if result != nil {
+			if result.NFSStatus != nfs_types.NFS3OK {
+				responseStatus = nfs.NFSStatusToString(result.NFSStatus)
+			}
 
-		// Record bytes transferred for READ/WRITE operations
-		// Only successful operations populate these fields
-		if result.NFSStatus == nfs_types.NFS3OK {
-			if result.BytesRead > 0 {
-				c.server.metrics.RecordBytesTransferred(procedure.Name, share, "read", result.BytesRead)
-				c.server.metrics.RecordOperationSize("read", share, result.BytesRead)
+			// Record bytes transferred for READ/WRITE operations
+			// Only successful operations populate these fields
+			if result.NFSStatus == nfs_types.NFS3OK {
+				if result.BytesRead > 0 {
+					c.server.metrics.RecordBytesTransferred(procedure.Name, share, "read", result.BytesRead)
+					c.server.metrics.RecordOperationSize("read", share, result.BytesRead)
+				}
+				if result.BytesWritten > 0 {
+					c.server.metrics.RecordBytesTransferred(procedure.Name, share, "write", result.BytesWritten)
+					c.server.metrics.RecordOperationSize("write", share, result.BytesWritten)
+				}
 			}
-			if result.BytesWritten > 0 {
-				c.server.metrics.RecordBytesTransferred(procedure.Name, share, "write", result.BytesWritten)
-				c.server.metrics.RecordOperationSize("write", share, result.BytesWritten)
-			}
+		} else if err != nil {
+			responseStatus = "ERROR_NO_RESULT"
 		}
-	} else if err != nil {
-		responseStatus = "ERROR_NO_RESULT"
+		c.server.metrics.RecordRequest(procedure.Name, share, duration, responseStatus)
 	}
-	c.server.metrics.RecordRequest(procedure.Name, share, duration, responseStatus)
 
 	if result == nil {
 		return nil, err
@@ -547,8 +551,10 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 	}
 
 	// Record request start in metrics
-	c.server.metrics.RecordRequestStart(procedureName, share)
-	defer c.server.metrics.RecordRequestEnd(procedureName, share)
+	if c.server.metrics != nil {
+		c.server.metrics.RecordRequestStart(procedureName, share)
+		defer c.server.metrics.RecordRequestEnd(procedureName, share)
+	}
 
 	// Dispatch to handler with context and record metrics
 	startTime := time.Now()
@@ -562,15 +568,17 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 
 	// Record request completion in metrics with Mount status code
 	// Note: Pass empty string for MountOK (success) to avoid labeling as error
-	var responseStatus string
-	if result != nil {
-		if result.NFSStatus != mount_handlers.MountOK {
-			responseStatus = nfs.MountStatusToString(result.NFSStatus)
+	if c.server.metrics != nil {
+		var responseStatus string
+		if result != nil {
+			if result.NFSStatus != mount_handlers.MountOK {
+				responseStatus = nfs.MountStatusToString(result.NFSStatus)
+			}
+		} else if err != nil {
+			responseStatus = "ERROR_NO_RESULT"
 		}
-	} else if err != nil {
-		responseStatus = "ERROR_NO_RESULT"
+		c.server.metrics.RecordRequest(procedureName, share, duration, responseStatus)
 	}
-	c.server.metrics.RecordRequest(procedureName, share, duration, responseStatus)
 
 	if result == nil {
 		return nil, err

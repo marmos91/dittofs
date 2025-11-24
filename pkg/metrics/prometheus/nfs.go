@@ -23,10 +23,10 @@ type nfsMetrics struct {
 
 // NewNFSMetrics creates a new Prometheus-backed NFSMetrics instance.
 //
-// Returns a no-op implementation if metrics are not enabled (InitRegistry not called).
+// Returns nil if metrics are not enabled (InitRegistry not called).
 func NewNFSMetrics() metrics.NFSMetrics {
 	if !metrics.IsEnabled() {
-		return metrics.NewNoopNFSMetrics()
+		return nil
 	}
 
 	reg := metrics.GetRegistry()

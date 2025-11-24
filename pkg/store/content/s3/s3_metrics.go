@@ -12,8 +12,8 @@ import (
 // S3Metrics provides observability for S3 operations.
 //
 // Implementations can use this interface to collect metrics about S3 operations,
-// latency, throughput, and errors. This is optional - if not provided, metrics
-// collection is skipped.
+// latency, throughput, and errors. This is optional - pass nil to disable metrics
+// collection with zero overhead.
 //
 // Example implementations:
 //   - Prometheus metrics
@@ -36,15 +36,6 @@ type S3Metrics interface {
 	RecordFlushOperation(reason string, bytes int64, duration time.Duration, err error)
 }
 
-// noopMetrics is a default no-op metrics implementation
-type noopMetrics struct{}
-
-func (noopMetrics) ObserveOperation(operation string, duration time.Duration, err error) {}
-func (noopMetrics) RecordBytes(operation string, bytes int64)                            {}
-func (noopMetrics) ObserveFlushPhase(phase string, duration time.Duration, bytes int64)  {}
-func (noopMetrics) RecordFlushOperation(reason string, bytes int64, duration time.Duration, err error) {
-}
-
 // metricsReadCloser wraps an io.ReadCloser to track bytes read
 type metricsReadCloser struct {
 	io.ReadCloser
@@ -64,7 +55,7 @@ func (m *metricsReadCloser) Read(p []byte) (n int, err error) {
 func (m *metricsReadCloser) Close() error {
 	err := m.ReadCloser.Close()
 	// Record bytes read regardless of close error
-	if m.bytesRead > 0 {
+	if m.bytesRead > 0 && m.metrics != nil {
 		m.metrics.RecordBytes(m.operation, m.bytesRead)
 	}
 	return err
