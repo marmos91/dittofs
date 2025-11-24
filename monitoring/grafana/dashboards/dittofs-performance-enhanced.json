@@ -10,7 +10,12 @@
   "panels": [
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "id": 100,
       "panels": [],
       "title": "Overview",
@@ -20,29 +25,56 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "thresholds"},
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {"color": "green", "value": null},
-              {"color": "yellow", "value": 50},
-              {"color": "red", "value": 100}
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 50
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
             ]
           },
           "unit": "short"
         }
       },
-      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1},
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
       "id": 1,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
       },
-      "targets": [{"expr": "dittofs_nfs_active_connections", "refId": "A"}],
+      "targets": [
+        {
+          "expr": "dittofs_nfs_active_connections",
+          "refId": "A"
+        }
+      ],
       "title": "Active Connections",
       "type": "stat"
     },
@@ -50,30 +82,55 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "thresholds"},
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {"color": "green", "value": null},
-              {"color": "yellow", "value": 1000},
-              {"color": "red", "value": 5000}
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1000
+              },
+              {
+                "color": "red",
+                "value": 5000
+              }
             ]
           },
           "unit": "reqps"
         }
       },
-      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1},
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
       "id": 2,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
       },
       "targets": [
-        {"expr": "sum(rate(dittofs_nfs_requests_total{share=~\"$share\", procedure=~\"$procedure\"}[1m]))", "refId": "A"}
+        {
+          "expr": "sum(rate(dittofs_nfs_requests_total{share=~\"$share\", procedure=~\"$procedure\"}[1m]))",
+          "refId": "A"
+        }
       ],
       "title": "Request Rate",
       "type": "stat"
@@ -82,64 +139,55 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "thresholds"},
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "green", "value": null},
-              {"color": "yellow", "value": 0.8},
-              {"color": "red", "value": 0.95}
-            ]
+          "color": {
+            "mode": "thresholds"
           },
-          "unit": "percentunit",
-          "max": 1,
-          "min": 0
-        }
-      },
-      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 1},
-      "id": 3,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
-      },
-      "targets": [
-        {"expr": "sum(rate(dittofs_cache_read_operations_total{status=\"hit\"}[5m])) / sum(rate(dittofs_cache_read_operations_total[5m]))", "refId": "A"}
-      ],
-      "title": "Cache Hit Rate",
-      "type": "stat"
-    },
-    {
-      "datasource": "Prometheus",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "thresholds"},
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {"color": "green", "value": null},
-              {"color": "yellow", "value": 100},
-              {"color": "red", "value": 500}
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 100
+              },
+              {
+                "color": "red",
+                "value": 500
+              }
             ]
           },
           "unit": "MB"
         }
       },
-      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 1},
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
       "id": 4,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
       },
       "targets": [
-        {"expr": "dittofs_cache_total_size_bytes / 1024 / 1024", "refId": "A"}
+        {
+          "expr": "dittofs_cache_total_size_bytes",
+          "refId": "A"
+        }
       ],
       "title": "Total Cache Size",
       "type": "stat"
@@ -148,30 +196,55 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "thresholds"},
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {"color": "green", "value": null},
-              {"color": "yellow", "value": 10},
-              {"color": "red", "value": 50}
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 10
+              },
+              {
+                "color": "red",
+                "value": 50
+              }
             ]
           },
           "unit": "short"
         }
       },
-      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 1},
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
       "id": 5,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
       },
       "targets": [
-        {"expr": "sum(dittofs_s3_active_uploads)", "refId": "A"}
+        {
+          "expr": "dittofs_s3_active_uploads",
+          "refId": "A"
+        }
       ],
       "title": "Active S3 Uploads",
       "type": "stat"
@@ -180,37 +253,67 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "thresholds"},
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {"color": "green", "value": null},
-              {"color": "yellow", "value": 100},
-              {"color": "red", "value": 500}
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 100
+              },
+              {
+                "color": "red",
+                "value": 500
+              }
             ]
           },
           "unit": "ms"
         }
       },
-      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 1},
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
       "id": 6,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {"calcs": ["mean"], "fields": "", "values": false}
+        "reduceOptions": {
+          "calcs": [
+            "mean"
+          ],
+          "fields": "",
+          "values": false
+        }
       },
       "targets": [
-        {"expr": "histogram_quantile(0.95, sum(rate(dittofs_nfs_request_duration_milliseconds_bucket{share=~\"$share\", procedure=~\"$procedure\"}[5m])) by (le))", "refId": "A"}
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(dittofs_nfs_request_duration_milliseconds_bucket{share=~\"$share\", procedure=~\"$procedure\"}[5m])) by (le))",
+          "refId": "A"
+        }
       ],
       "title": "Request Latency (p95)",
       "type": "stat"
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
       "id": 200,
       "panels": [],
       "title": "S3 Backend Performance",
@@ -220,7 +323,9 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "axisLabel": "operations/sec",
             "drawStyle": "line",
@@ -231,11 +336,27 @@
           "unit": "ops"
         }
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
       "id": 201,
       "options": {
-        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
@@ -251,7 +372,9 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "axisLabel": "milliseconds",
             "drawStyle": "line",
@@ -262,11 +385,27 @@
           "unit": "ms"
         }
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
       "id": 202,
       "options": {
-        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
@@ -287,7 +426,9 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "axisLabel": "MB/s",
             "drawStyle": "line",
@@ -298,11 +439,27 @@
           "unit": "MBs"
         }
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
       "id": 203,
       "options": {
-        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
@@ -318,98 +475,73 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
-            "axisLabel": "operations/sec",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
             "lineWidth": 2,
-            "showPoints": "never"
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
           },
           "unit": "ops"
         }
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
-      "id": 204,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "id": 301,
       "options": {
-        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "right"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
       },
       "targets": [
         {
-          "expr": "sum by (reason) (rate(dittofs_s3_flush_operations_total[1m]))",
-          "legendFormat": "{{reason}}",
+          "expr": "sum by (operation) (rate(dittofs_s3_operations_total{status=\"success\"}[5m]))",
+          "legendFormat": "{{operation}}",
           "refId": "A"
         }
       ],
-      "title": "Flush Operations by Reason",
-      "type": "timeseries"
-    },
-    {
-      "datasource": "Prometheus",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisLabel": "milliseconds",
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "lineWidth": 2,
-            "showPoints": "never"
-          },
-          "unit": "ms"
-        }
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 22},
-      "id": 205,
-      "options": {
-        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.95, sum by (phase, le) (rate(dittofs_s3_flush_phase_duration_milliseconds_bucket[1m])))",
-          "legendFormat": "{{phase}} (p95)",
-          "refId": "A"
-        }
-      ],
-      "title": "Flush Phase Duration",
-      "type": "timeseries"
-    },
-    {
-      "datasource": "Prometheus",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisLabel": "MB",
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "lineWidth": 2,
-            "showPoints": "never"
-          },
-          "unit": "MB"
-        }
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 22},
-      "id": 206,
-      "options": {
-        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.95, sum by (reason, le) (rate(dittofs_s3_flush_bytes_bucket[1m]))) / 1024 / 1024",
-          "legendFormat": "{{reason}} (p95)",
-          "refId": "A"
-        }
-      ],
-      "title": "Flush Size Distribution",
+      "title": "S3 Operations by API",
       "type": "timeseries"
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 30},
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
       "id": 300,
       "panels": [],
       "title": "Write Cache Performance",
@@ -419,7 +551,9 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "axisLabel": "operations/sec",
             "drawStyle": "line",
@@ -430,11 +564,27 @@
           "unit": "ops"
         }
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 31},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 31
+      },
       "id": 301,
       "options": {
-        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
@@ -455,7 +605,9 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "axisLabel": "milliseconds",
             "drawStyle": "line",
@@ -466,11 +618,27 @@
           "unit": "ms"
         }
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 31},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 31
+      },
       "id": 302,
       "options": {
-        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
@@ -491,7 +659,9 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "axisLabel": "MB",
             "drawStyle": "line",
@@ -502,11 +672,27 @@
           "unit": "MB"
         }
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 39},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 39
+      },
       "id": 303,
       "options": {
-        "legend": {"calcs": ["last", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
@@ -522,40 +708,9 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
-          "custom": {
-            "axisLabel": "hit rate",
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "lineWidth": 2,
-            "showPoints": "never"
+          "color": {
+            "mode": "palette-classic"
           },
-          "unit": "percentunit",
-          "max": 1,
-          "min": 0
-        }
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 39},
-      "id": 304,
-      "options": {
-        "legend": {"calcs": ["mean", "last"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "expr": "sum by (cache_type) (rate(dittofs_cache_read_operations_total{status=\"hit\"}[5m])) / sum by (cache_type) (rate(dittofs_cache_read_operations_total[5m]))",
-          "legendFormat": "{{cache_type}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Cache Hit Rate",
-      "type": "timeseries"
-    },
-    {
-      "datasource": "Prometheus",
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
           "custom": {
             "axisLabel": "buffers",
             "drawStyle": "line",
@@ -566,11 +721,27 @@
           "unit": "short"
         }
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 47},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 47
+      },
       "id": 305,
       "options": {
-        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "none"}
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
       },
       "targets": [
         {
@@ -586,7 +757,9 @@
       "datasource": "Prometheus",
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "axisLabel": "resets/sec",
             "drawStyle": "line",
@@ -597,11 +770,27 @@
           "unit": "ops"
         }
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 47},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 47
+      },
       "id": 306,
       "options": {
-        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "none"}
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
       },
       "targets": [
         {
@@ -616,11 +805,20 @@
   ],
   "refresh": "5s",
   "schemaVersion": 39,
-  "tags": ["dittofs", "performance", "s3", "cache"],
+  "tags": [
+    "dittofs",
+    "performance",
+    "s3",
+    "cache"
+  ],
   "templating": {
     "list": [
       {
-        "current": {"selected": true, "text": "All", "value": "$__all"},
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
         "datasource": "Prometheus",
         "definition": "label_values(dittofs_nfs_requests_total, share)",
         "hide": 0,
@@ -639,7 +837,11 @@
         "type": "query"
       },
       {
-        "current": {"selected": true, "text": "All", "value": "$__all"},
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
         "datasource": "Prometheus",
         "definition": "label_values(dittofs_nfs_requests_total, procedure)",
         "hide": 0,
@@ -659,7 +861,10 @@
       }
     ]
   },
-  "time": {"from": "now-15m", "to": "now"},
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "browser",
   "title": "DittoFS Performance - Enhanced (S3 + Cache)",
