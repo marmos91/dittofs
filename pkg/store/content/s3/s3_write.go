@@ -39,12 +39,23 @@ func (s *S3ContentStore) WriteContent(ctx context.Context, id metadata.ContentID
 	}
 
 	key := s.getObjectKey(id)
+	dataSize := int64(len(data))
 
+	start := time.Now()
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 		Body:   bytes.NewReader(data),
 	})
+
+	// Record metrics
+	if s.metrics != nil {
+		s.metrics.ObserveOperation("PutObject", time.Since(start), err)
+		if err == nil {
+			s.metrics.RecordBytes("PutObject", dataSize)
+		}
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to write content to S3: %w", err)
 	}
@@ -88,7 +99,15 @@ func (s *S3ContentStore) WriteAt(ctx context.Context, id metadata.ContentID, dat
 // Returns:
 //   - error: Returns error if truncate fails or context is cancelled
 func (s *S3ContentStore) Truncate(ctx context.Context, id metadata.ContentID, newSize uint64) error {
-	if err := ctx.Err(); err != nil {
+	start := time.Now()
+	var err error
+	defer func() {
+		if s.metrics != nil {
+			s.metrics.ObserveOperation("Truncate", time.Since(start), err)
+		}
+	}()
+
+	if err = ctx.Err(); err != nil {
 		return err
 	}
 
@@ -554,10 +573,17 @@ func (s *S3ContentStore) Delete(ctx context.Context, id metadata.ContentID) erro
 	// Buffering disabled - execute immediately (synchronous)
 	key := s.getObjectKey(id)
 
+	start := time.Now()
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
+
+	// Record metrics
+	if s.metrics != nil {
+		s.metrics.ObserveOperation("DeleteObject", time.Since(start), err)
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to delete object from S3: %w", err)
 	}

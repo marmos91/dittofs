@@ -34,6 +34,10 @@ type S3Metrics interface {
 	// RecordFlushOperation records a complete flush operation
 	// reason can be: "stable_write", "commit", "timeout", "threshold"
 	RecordFlushOperation(reason string, bytes int64, duration time.Duration, err error)
+
+	// RecordActiveUpload tracks the number of active multipart uploads
+	// delta: +1 when upload starts, -1 when upload completes/aborts
+	RecordActiveUpload(store string, delta int)
 }
 
 // metricsReadCloser wraps an io.ReadCloser to track bytes read

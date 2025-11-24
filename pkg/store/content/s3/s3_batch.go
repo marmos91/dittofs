@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -110,6 +111,7 @@ func (s *S3ContentStore) DeleteBatch(ctx context.Context, ids []metadata.Content
 		}
 
 		// Execute batch delete
+		start := time.Now()
 		result, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 			Bucket: aws.String(s.bucket),
 			Delete: &types.Delete{
@@ -117,6 +119,12 @@ func (s *S3ContentStore) DeleteBatch(ctx context.Context, ids []metadata.Content
 				Quiet:   aws.Bool(false),
 			},
 		})
+
+		// Record metrics
+		if s.metrics != nil {
+			s.metrics.ObserveOperation("DeleteObjects", time.Since(start), err)
+		}
+
 		if err != nil {
 			for _, id := range batch {
 				failures[id] = err

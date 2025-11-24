@@ -149,6 +149,7 @@ func (c *MemoryCache) Write(ctx context.Context, id metadata.ContentID, data []b
 	// Record cache size after write
 	if c.metrics != nil {
 		c.metrics.RecordCacheSize(string(id), int64(len(buf.data)))
+		c.updateTotalCacheSize()
 	}
 
 	return nil
@@ -226,6 +227,7 @@ func (c *MemoryCache) WriteAt(ctx context.Context, id metadata.ContentID, data [
 	// Record cache size after write
 	if c.metrics != nil {
 		c.metrics.RecordCacheSize(string(id), int64(len(buf.data)))
+		c.updateTotalCacheSize()
 	}
 
 	return nil
@@ -340,13 +342,30 @@ func (c *MemoryCache) List() []metadata.ContentID {
 	return result
 }
 
+// updateTotalCacheSize calculates and records the total cache size across all buffers.
+// Must be called while holding c.mu.RLock or c.mu.Lock.
+func (c *MemoryCache) updateTotalCacheSize() {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var totalSize int64
+	for _, buf := range c.buffers {
+		buf.mu.Lock()
+		totalSize += int64(len(buf.data))
+		buf.mu.Unlock()
+	}
+
+	c.metrics.RecordTotalCacheSize(totalSize)
+}
+
 // Remove clears the cached data for a specific content ID.
 func (c *MemoryCache) Remove(id metadata.ContentID) error {
 	c.mu.Lock()
 	defer func() {
-		// Record buffer count after removal
+		// Record buffer count and total size after removal
 		if c.metrics != nil {
 			c.metrics.RecordBufferCount(len(c.buffers))
+			c.updateTotalCacheSize()
 		}
 		c.mu.Unlock()
 	}()
@@ -395,6 +414,12 @@ func (c *MemoryCache) RemoveAll() error {
 
 	// Clear the map
 	c.buffers = make(map[string]*buffer)
+
+	// Record metrics after clearing
+	if c.metrics != nil {
+		c.metrics.RecordBufferCount(0)
+		c.metrics.RecordTotalCacheSize(0)
+	}
 
 	return nil
 }

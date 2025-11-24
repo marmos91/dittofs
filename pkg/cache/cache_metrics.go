@@ -33,5 +33,8 @@ type CacheMetrics interface {
 
 	// RecordBufferCount records the total number of active buffers
 	RecordBufferCount(count int)
+
+	// RecordTotalCacheSize records the total cache size across all content IDs
+	RecordTotalCacheSize(bytes int64)
 }
 
