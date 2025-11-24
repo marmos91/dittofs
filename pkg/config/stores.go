@@ -6,6 +6,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/cache"
 	cachememory "github.com/marmos91/dittofs/pkg/cache/memory"
+	promMetrics "github.com/marmos91/dittofs/pkg/metrics/prometheus"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	contentfs "github.com/marmos91/dittofs/pkg/store/content/fs"
 	contentmemory "github.com/marmos91/dittofs/pkg/store/content/memory"
@@ -190,6 +191,7 @@ func createS3ContentStore(
 		Bucket:    yamlCfg.Bucket,
 		KeyPrefix: yamlCfg.KeyPrefix,
 		PartSize:  yamlCfg.PartSize,
+		Metrics:   promMetrics.NewS3Metrics(), // Enable S3 metrics collection
 	}
 
 	// Create S3 store
@@ -237,8 +239,8 @@ func createMemoryCache(ctx context.Context, cfg CacheStoreConfig) (cache.Cache, 
 		maxSize = 100 * 1024 * 1024 // Default: 100MB
 	}
 
-	// Create memory cache (nil metrics = no metrics)
-	cache := cachememory.NewMemoryCache(maxSize, nil)
+	// Create memory cache with metrics collection enabled
+	cache := cachememory.NewMemoryCache(maxSize, promMetrics.NewCacheMetrics())
 
 	return cache, nil
 }
