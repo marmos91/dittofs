@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/marmos91/dittofs/pkg/cache"
+	cachememory "github.com/marmos91/dittofs/pkg/cache/memory"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	contentfs "github.com/marmos91/dittofs/pkg/store/content/fs"
 	contentmemory "github.com/marmos91/dittofs/pkg/store/content/memory"
@@ -197,4 +199,46 @@ func createS3ContentStore(
 	}
 
 	return store, nil
+}
+
+// ============================================================================
+// Cache Creation Functions
+// ============================================================================
+
+// memoryCacheYAMLConfig represents memory cache configuration loaded from YAML files.
+type memoryCacheYAMLConfig struct {
+	MaxSize int64 `mapstructure:"max_size"` // Maximum cache size in bytes
+}
+
+// createCache creates a single cache instance.
+func createCache(ctx context.Context, cfg CacheStoreConfig) (cache.Cache, error) {
+	switch cfg.Type {
+	case "memory":
+		return createMemoryCache(ctx, cfg)
+	case "filesystem":
+		// TODO: Implement filesystem cache
+		return nil, fmt.Errorf("filesystem cache not yet implemented")
+	default:
+		return nil, fmt.Errorf("unknown cache type: %q", cfg.Type)
+	}
+}
+
+// createMemoryCache creates an in-memory cache.
+func createMemoryCache(ctx context.Context, cfg CacheStoreConfig) (cache.Cache, error) {
+	// Decode memory-specific configuration
+	var yamlCfg memoryCacheYAMLConfig
+	if err := mapstructure.Decode(cfg.Memory, &yamlCfg); err != nil {
+		return nil, fmt.Errorf("failed to decode memory cache config: %w", err)
+	}
+
+	// Apply defaults
+	maxSize := yamlCfg.MaxSize
+	if maxSize == 0 {
+		maxSize = 100 * 1024 * 1024 // Default: 100MB
+	}
+
+	// Create memory cache (nil metrics = no metrics)
+	cache := cachememory.NewMemoryCache(maxSize, nil)
+
+	return cache, nil
 }

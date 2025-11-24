@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/store/content/cache"
+	"github.com/marmos91/dittofs/pkg/cache"
 )
 
 // CacheTestSuite is a comprehensive test suite for Cache implementations.

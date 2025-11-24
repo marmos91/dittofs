@@ -63,7 +63,15 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 	}
 	logger.Debug("Registered %d content store(s)", reg.CountContentStores())
 
-	// Step 3: Add all shares
+	// Step 3: Register all caches (optional, may be empty)
+	if err := registerCaches(ctx, reg, cfg); err != nil {
+		return nil, fmt.Errorf("failed to register caches: %w", err)
+	}
+	if reg.CountCaches() > 0 {
+		logger.Debug("Registered %d cache(s)", reg.CountCaches())
+	}
+
+	// Step 4: Add all shares
 	if err := addShares(ctx, reg, cfg); err != nil {
 		return nil, fmt.Errorf("failed to add shares: %w", err)
 	}
@@ -136,11 +144,40 @@ func registerContentStores(ctx context.Context, reg *registry.Registry, cfg *Con
 	return nil
 }
 
+// registerCaches creates and registers all configured caches.
+func registerCaches(ctx context.Context, reg *registry.Registry, cfg *Config) error {
+	// Caches are optional - if no caches are configured, that's fine
+	if len(cfg.Cache.Stores) == 0 {
+		return nil
+	}
+
+	for name, cacheCfg := range cfg.Cache.Stores {
+		logger.Debug("Creating cache %q (type: %s)", name, cacheCfg.Type)
+
+		cache, err := createCache(ctx, cacheCfg)
+		if err != nil {
+			return fmt.Errorf("failed to create cache %q: %w", name, err)
+		}
+
+		if err := reg.RegisterCache(name, cache); err != nil {
+			return fmt.Errorf("failed to register cache %q: %w", name, err)
+		}
+
+		logger.Debug("Cache %q registered successfully", name)
+	}
+
+	return nil
+}
+
 // addShares validates and adds all configured shares to the registry.
 func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 	for i, shareCfg := range cfg.Shares {
-		logger.Debug("Adding share %q (metadata: %s, content: %s, read_only: %v)",
-			shareCfg.Name, shareCfg.MetadataStore, shareCfg.ContentStore, shareCfg.ReadOnly)
+		cacheInfo := ""
+		if shareCfg.WriteCache != "" || shareCfg.ReadCache != "" {
+			cacheInfo = fmt.Sprintf(", write_cache: %s, read_cache: %s", shareCfg.WriteCache, shareCfg.ReadCache)
+		}
+		logger.Debug("Adding share %q (metadata: %s, content: %s, read_only: %v%s)",
+			shareCfg.Name, shareCfg.MetadataStore, shareCfg.ContentStore, shareCfg.ReadOnly, cacheInfo)
 
 		// Validate share configuration
 		if shareCfg.Name == "" {
@@ -158,6 +195,8 @@ func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 			Name:                     shareCfg.Name,
 			MetadataStore:            shareCfg.MetadataStore,
 			ContentStore:             shareCfg.ContentStore,
+			WriteCache:               shareCfg.WriteCache,
+			ReadCache:                shareCfg.ReadCache,
 			ReadOnly:                 shareCfg.ReadOnly,
 			AllowedClients:           shareCfg.AllowedClients,
 			DeniedClients:            shareCfg.DeniedClients,

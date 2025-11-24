@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/store/content/cache"
+	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 

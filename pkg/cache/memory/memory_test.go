@@ -3,8 +3,8 @@ package memory
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/store/content/cache"
-	cachetest "github.com/marmos91/dittofs/pkg/store/content/cache/testing"
+	"github.com/marmos91/dittofs/pkg/cache"
+	cachetest "github.com/marmos91/dittofs/pkg/cache/testing"
 )
 
 // TestMemoryCache runs the complete test suite for MemoryCache.
