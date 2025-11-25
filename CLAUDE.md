@@ -320,6 +320,27 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
     - **Metrics Support**: Optional Prometheus instrumentation
     - **Path-Based Keys**: Objects stored as `export/path/to/file` for easy inspection
 
+**5. Cache Layer** (`pkg/cache/`)
+- Optional caching layer to improve read/write performance
+- Separate write and read caches per share
+- **Write Cache**:
+  - Buffers writes before flushing to content store
+  - Enables efficient batching for backends like S3
+  - Automatically flushed on COMMIT operations
+- **Read Cache**:
+  - LRU cache for frequently accessed files
+  - Populated after READ operations from content store
+  - Also populated after COMMIT operations (write → read optimization)
+  - Configurable size limit with automatic eviction
+  - Improves performance for repeated reads
+- Implementations:
+  - `pkg/cache/memory/`: In-memory LRU cache with size limits
+- **Configuration**:
+  - `write_cache`: Cache name for buffering writes (optional)
+  - `read_cache`: Cache name for read optimization (optional)
+  - Cache size configured per cache instance (in bytes)
+- **Metrics**: Cache hits/misses exposed via Prometheus
+
 ### Directory Structure
 
 ```

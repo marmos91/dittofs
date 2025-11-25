@@ -381,47 +381,102 @@ func (h *Handler) Read(
 	// ========================================================================
 	// Step 4: Read content data (with read-through cache)
 	// ========================================================================
-	// Three read paths (in priority order):
-	//   1. Cache (if WriteCache available and has data) - fastest
-	//   2. ReadAt (if content store supports it) - efficient for range reads
-	//   3. ReadContent (fallback) - sequential read
+	// Four read paths (in priority order):
+	//   1. Write cache (if WriteCache available and has data) - fastest, handles files being written
+	//   2. Read cache (if ReadCache available and has data) - fast, handles recently read files
+	//   3. ReadAt (if content store supports it) - efficient for range reads
+	//   4. ReadContent (fallback) - sequential read
 
 	var data []byte
 	var n int
 	var readErr error
 	var eof bool
 	var readFromCache bool
+	var cacheHit bool
 
-	// Try cache first (if available)
-	// TODO: Phase 5 - Access stores via registry
-	/*
-		if false { // Disabled until Phase 5
-			cacheSize := h.WriteCache.Size(file.ContentID)
-			if cacheSize > 0 {
-				// Data exists in cache - read from cache
-				logger.Debug("READ: using cache path: handle=%x offset=%d count=%d cache_size=%d content_id=%s",
-					req.Handle, req.Offset, req.Count, cacheSize, file.ContentID)
+	// Get write cache for this share (may be nil)
+	writeCache, err := h.Registry.GetWriteCacheForShare(shareName)
+	if err != nil {
+		logger.Error("READ failed: cannot get write cache: share=%s handle=%x client=%s error=%v",
+			shareName, req.Handle, clientIP, err)
+		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
-				data = make([]byte, req.Count)
-				n, readErr = h.WriteCache.ReadAt(file.ContentID, data, int64(req.Offset))
+	// Get read cache for this share (may be nil)
+	readCache, err := h.Registry.GetReadCacheForShare(shareName)
+	if err != nil {
+		logger.Error("READ failed: cannot get read cache: share=%s handle=%x client=%s error=%v",
+			shareName, req.Handle, clientIP, err)
+		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
-				if readErr == nil || readErr == io.EOF {
-					readFromCache = true
-					eof = (readErr == io.EOF) || (int64(req.Offset)+int64(n) >= cacheSize)
-					logger.Debug("READ: cache hit: handle=%x bytes_read=%d eof=%v content_id=%s",
-						req.Handle, n, eof, file.ContentID)
-				} else {
-					logger.Warn("READ: cache read error, falling back to content store: handle=%x content_id=%s error=%v",
-						req.Handle, file.ContentID, readErr)
-					readFromCache = false
+	// Try write cache first (highest priority - file may be actively being written)
+	if writeCache != nil && writeCache.Exists(file.ContentID) {
+		cacheSize := writeCache.Size(file.ContentID)
+		if cacheSize > 0 {
+			logger.Debug("READ: trying write cache: handle=%x offset=%d count=%d cache_size=%d content_id=%s",
+				req.Handle, req.Offset, req.Count, cacheSize, file.ContentID)
+
+			data = make([]byte, req.Count)
+			n, readErr = writeCache.ReadAt(ctx.Context, file.ContentID, data, int64(req.Offset))
+
+			if readErr == nil || readErr == io.EOF {
+				readFromCache = true
+				cacheHit = true
+				eof = (readErr == io.EOF) || (int64(req.Offset)+int64(n) >= cacheSize)
+				data = data[:n] // Truncate to actual bytes read
+				logger.Debug("READ: write cache hit: handle=%x bytes_read=%d eof=%v content_id=%s",
+					req.Handle, n, eof, file.ContentID)
+
+				// Record cache hit metric
+				if h.Metrics != nil {
+					h.Metrics.RecordCacheHit(shareName, "write", uint64(n))
 				}
+			} else {
+				logger.Warn("READ: write cache read error, falling back: handle=%x content_id=%s error=%v",
+					req.Handle, file.ContentID, readErr)
+				readFromCache = false
 			}
 		}
-	*/
-	_ = readFromCache // Suppress unused
+	}
 
-	// If not read from cache, try content store
+	// Try read cache next (if write cache miss)
+	if !readFromCache && readCache != nil && readCache.Exists(file.ContentID) {
+		cacheSize := readCache.Size(file.ContentID)
+		if cacheSize > 0 {
+			logger.Debug("READ: trying read cache: handle=%x offset=%d count=%d cache_size=%d content_id=%s",
+				req.Handle, req.Offset, req.Count, cacheSize, file.ContentID)
+
+			data = make([]byte, req.Count)
+			n, readErr = readCache.ReadAt(ctx.Context, file.ContentID, data, int64(req.Offset))
+
+			if readErr == nil || readErr == io.EOF {
+				readFromCache = true
+				cacheHit = true
+				eof = (readErr == io.EOF) || (int64(req.Offset)+int64(n) >= cacheSize)
+				data = data[:n] // Truncate to actual bytes read
+				logger.Debug("READ: read cache hit: handle=%x bytes_read=%d eof=%v content_id=%s",
+					req.Handle, n, eof, file.ContentID)
+
+				// Record cache hit metric
+				if h.Metrics != nil {
+					h.Metrics.RecordCacheHit(shareName, "read", uint64(n))
+				}
+			} else {
+				logger.Warn("READ: read cache read error, falling back: handle=%x content_id=%s error=%v",
+					req.Handle, file.ContentID, readErr)
+				readFromCache = false
+			}
+		}
+	}
+
+	// If not read from cache, try content store and populate read cache
 	if !readFromCache {
+		// Record cache miss metric
+		if h.Metrics != nil {
+			h.Metrics.RecordCacheMiss(shareName, uint64(req.Count))
+		}
+
 		// Check if content store supports efficient random-access reads
 		if readAtStore, ok := contentStore.(content.ReadAtContentStore); ok {
 			// ================================================================
@@ -599,6 +654,37 @@ func (h *Handler) Read(
 				}, nil
 			}
 		}
+
+		// ================================================================
+		// Populate read cache after successful read from content store
+		// ================================================================
+		// Only populate if:
+		// - Read cache is configured
+		// - Read was successful (readErr is nil or EOF)
+		// - We actually read some data (n > 0)
+		//
+		// We populate the cache with the data we just read to speed up
+		// subsequent reads of the same data.
+		if readCache != nil && (readErr == nil || readErr == io.EOF || readErr == io.ErrUnexpectedEOF) && n > 0 {
+			// Populate cache for small to medium files (< 10MB)
+			// For very large files, we skip caching to avoid cache thrashing
+			const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
+			if file.Size <= uint64(maxReadCacheSize) {
+				// Write the data we just read to the cache at the appropriate offset
+				cacheErr := readCache.WriteAt(ctx.Context, file.ContentID, data[:n], int64(req.Offset))
+				if cacheErr != nil {
+					// Cache population failure is not fatal - log and continue
+					logger.Warn("READ: failed to populate read cache: handle=%x content_id=%s offset=%d size=%d error=%v",
+						req.Handle, file.ContentID, req.Offset, n, cacheErr)
+				} else {
+					logger.Debug("READ: populated read cache: handle=%x content_id=%s offset=%d size=%d cache_size=%d",
+						req.Handle, file.ContentID, req.Offset, n, readCache.Size(file.ContentID))
+				}
+			} else {
+				logger.Debug("READ: skipping cache population for large file: handle=%x size=%d max_cache_size=%d",
+					req.Handle, file.Size, maxReadCacheSize)
+			}
+		}
 	}
 
 	// Even if ReadFull succeeded, check if we're at or past EOF
@@ -613,8 +699,14 @@ func (h *Handler) Read(
 	fileid := xdr.ExtractFileID(fileHandle)
 	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
 
-	logger.Info("READ successful: handle=%x offset=%d requested=%d read=%d eof=%v client=%s",
-		req.Handle, req.Offset, req.Count, n, eof, clientIP)
+	// Log cache hit/miss for performance monitoring
+	cacheSource := "content_store"
+	if cacheHit {
+		cacheSource = "cache"
+	}
+
+	logger.Info("READ successful: handle=%x offset=%d requested=%d read=%d eof=%v source=%s client=%s",
+		req.Handle, req.Offset, req.Count, n, eof, cacheSource, clientIP)
 
 	logger.Debug("READ details: size=%d type=%d mode=%o",
 		file.Size, nfsAttr.Type, file.Mode)

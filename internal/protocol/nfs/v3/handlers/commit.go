@@ -486,7 +486,27 @@ func (h *Handler) Commit(
 						}, nil
 					}
 
-					// Clean cache after successful write
+					// Populate read cache after successful write to content store
+					// This makes the file immediately available for fast reads
+					readCache, rcErr := h.Registry.GetReadCacheForShare(shareName)
+					if rcErr != nil {
+						logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", shareName, rcErr)
+					} else if readCache != nil && len(data) > 0 {
+						// Only cache small to medium files (< 10MB) to avoid thrashing
+						const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
+						if len(data) <= maxReadCacheSize {
+							rcErr = readCache.Write(ctx.Context, file.ContentID, data)
+							if rcErr != nil {
+								logger.Warn("COMMIT: failed to populate read cache: content_id=%s size=%d error=%v",
+									file.ContentID, len(data), rcErr)
+							} else {
+								logger.Debug("COMMIT: populated read cache: content_id=%s size=%d",
+									file.ContentID, len(data))
+							}
+						}
+					}
+
+					// Clean write cache after successful write
 					err = writeCache.Remove(file.ContentID)
 					if err != nil {
 						logger.Warn("COMMIT: cache cleanup failed: content_id=%s error=%v", file.ContentID, err)
@@ -614,6 +634,26 @@ func (h *Handler) Commit(
 							file.ContentID, len(data))
 					}
 
+					// Populate read cache after successful write to content store
+					// For multipart uploads, we populate the cache from the write cache data
+					readCache, rcErr := h.Registry.GetReadCacheForShare(shareName)
+					if rcErr != nil {
+						logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", shareName, rcErr)
+					} else if readCache != nil && len(data) > 0 {
+						// Only cache small to medium files (< 10MB) to avoid thrashing
+						const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
+						if len(data) <= maxReadCacheSize {
+							rcErr = readCache.Write(ctx.Context, file.ContentID, data)
+							if rcErr != nil {
+								logger.Warn("COMMIT: failed to populate read cache: content_id=%s size=%d error=%v",
+									file.ContentID, len(data), rcErr)
+							} else {
+								logger.Debug("COMMIT: populated read cache: content_id=%s size=%d",
+									file.ContentID, len(data))
+							}
+						}
+					}
+
 					// Clean cache after successful flush
 					err = writeCache.Remove(file.ContentID)
 					if err != nil {
@@ -688,6 +728,34 @@ func (h *Handler) Commit(
 				// Final COMMIT is one that reaches EOF: count=0 OR offset+count >= fileSize
 				isFinalCommit := req.Count == 0 || req.Offset+uint64(req.Count) >= file.Size
 				if isFinalCommit && cacheSize >= int64(file.Size) {
+					// Populate read cache before cleaning write cache
+					// This makes the file immediately available for fast reads
+					readCache, rcErr := h.Registry.GetReadCacheForShare(shareName)
+					if rcErr != nil {
+						logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", shareName, rcErr)
+					} else if readCache != nil && cacheSize > 0 {
+						// Only cache small to medium files (< 10MB) to avoid thrashing
+						const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
+						if cacheSize <= maxReadCacheSize {
+							// Read all data from write cache
+							cachedData, rcErr := writeCache.Read(ctx.Context, file.ContentID)
+							if rcErr != nil {
+								logger.Warn("COMMIT: failed to read from write cache for read cache population: content_id=%s error=%v",
+									file.ContentID, rcErr)
+							} else if len(cachedData) > 0 {
+								// Write to read cache
+								rcErr = readCache.Write(ctx.Context, file.ContentID, cachedData)
+								if rcErr != nil {
+									logger.Warn("COMMIT: failed to populate read cache: content_id=%s size=%d error=%v",
+										file.ContentID, len(cachedData), rcErr)
+								} else {
+									logger.Debug("COMMIT: populated read cache: content_id=%s size=%d",
+										file.ContentID, len(cachedData))
+								}
+							}
+						}
+					}
+
 					err = writeCache.Remove(file.ContentID)
 					if err != nil {
 						logger.Warn("COMMIT: cache cleanup failed: content_id=%s error=%v", file.ContentID, err)

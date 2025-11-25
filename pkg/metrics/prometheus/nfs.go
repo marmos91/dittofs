@@ -19,6 +19,8 @@ type nfsMetrics struct {
 	connectionsAccepted    prometheus.Counter
 	connectionsClosed      prometheus.Counter
 	connectionsForceClosed prometheus.Counter
+	cacheHits              *prometheus.CounterVec
+	cacheMisses            *prometheus.CounterVec
 }
 
 // NewNFSMetrics creates a new Prometheus-backed NFSMetrics instance.
@@ -104,6 +106,20 @@ func NewNFSMetrics() metrics.NFSMetrics {
 				Help: "Total number of NFS connections force-closed during shutdown timeout",
 			},
 		),
+		cacheHits: promauto.With(reg).NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "dittofs_nfs_cache_hits_total",
+				Help: "Total number of cache hits during READ operations",
+			},
+			[]string{"share", "cache_type"},
+		),
+		cacheMisses: promauto.With(reg).NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "dittofs_nfs_cache_misses_total",
+				Help: "Total number of cache misses during READ operations",
+			},
+			[]string{"share"},
+		),
 	}
 }
 
@@ -147,4 +163,12 @@ func (m *nfsMetrics) RecordConnectionClosed() {
 
 func (m *nfsMetrics) RecordConnectionForceClosed() {
 	m.connectionsForceClosed.Inc()
+}
+
+func (m *nfsMetrics) RecordCacheHit(share string, cacheType string, bytes uint64) {
+	m.cacheHits.WithLabelValues(share, cacheType).Add(float64(bytes))
+}
+
+func (m *nfsMetrics) RecordCacheMiss(share string, bytes uint64) {
+	m.cacheMisses.WithLabelValues(share).Add(float64(bytes))
 }

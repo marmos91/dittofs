@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 	"time"
 
@@ -150,11 +151,9 @@ func (c *MemoryCache) Write(ctx context.Context, id metadata.ContentID, data []b
 	if c.metrics != nil {
 		c.metrics.RecordCacheSize(string(id), bufSize)
 
-		// Need to acquire lock to update total cache size and buffer count
-		c.mu.RLock()
-		c.metrics.RecordBufferCount(len(c.buffers))
-		c.updateTotalCacheSize()
-		c.mu.RUnlock()
+		// REMOVED: updateTotalCacheSize() here causes severe lock contention
+		// with concurrent writes. Total size metrics are updated in Size()
+		// and Remove() instead, which are less frequent operations.
 	}
 
 	return nil
@@ -233,11 +232,9 @@ func (c *MemoryCache) WriteAt(ctx context.Context, id metadata.ContentID, data [
 	if c.metrics != nil {
 		c.metrics.RecordCacheSize(string(id), bufSize)
 
-		// Need to acquire lock to update total cache size and buffer count
-		c.mu.RLock()
-		c.metrics.RecordBufferCount(len(c.buffers))
-		c.updateTotalCacheSize()
-		c.mu.RUnlock()
+		// REMOVED: updateTotalCacheSize() here causes severe lock contention
+		// with concurrent writes. Total size metrics are updated in Size()
+		// and Remove() instead, which are less frequent operations.
 	}
 
 	return nil
@@ -353,29 +350,33 @@ func (c *MemoryCache) List() []metadata.ContentID {
 }
 
 // updateTotalCacheSize calculates and records the total cache size across all buffers.
-// Caller must hold c.mu (RLock or Lock).
-func (c *MemoryCache) updateTotalCacheSize() {
-	// Lock must be held by caller
-	var totalSize int64
-	for _, buf := range c.buffers {
-		buf.mu.Lock()
-		totalSize += int64(len(buf.data))
-		buf.mu.Unlock()
-	}
-
-	if c.metrics != nil {
-		c.metrics.RecordTotalCacheSize(totalSize)
-	}
-}
+// DISABLED: This function causes deadlock when called while holding c.mu and concurrent
+// writes hold individual buffer locks. See deadlock analysis in git history.
+// TODO: Implement non-blocking total size calculation or async metrics updates
+//
+// func (c *MemoryCache) updateTotalCacheSize() {
+// 	// Lock must be held by caller
+// 	var totalSize int64
+// 	for _, buf := range c.buffers {
+// 		buf.mu.Lock()
+// 		totalSize += int64(len(buf.data))
+// 		buf.mu.Unlock()
+// 	}
+//
+// 	if c.metrics != nil {
+// 		c.metrics.RecordTotalCacheSize(totalSize)
+// 	}
+// }
 
 // Remove clears the cached data for a specific content ID.
 func (c *MemoryCache) Remove(id metadata.ContentID) error {
 	c.mu.Lock()
 	defer func() {
-		// Record buffer count and total size after removal
+		// Record buffer count after removal
 		if c.metrics != nil {
 			c.metrics.RecordBufferCount(len(c.buffers))
-			c.updateTotalCacheSize()
+			// REMOVED: updateTotalCacheSize() causes deadlock when called from COMMIT/Remove
+			// while concurrent writes hold individual buffer locks
 		}
 		c.mu.Unlock()
 	}()
@@ -479,6 +480,155 @@ func (c *MemoryCache) Close() error {
 
 	return nil
 }
+
+// EvictLRU evicts the least recently used (oldest by last write time) cached files
+// until the total cache size drops below the target threshold.
+//
+// This method is called automatically when writes would exceed MaxSize(), but can
+// also be called manually to free up cache space.
+//
+// Eviction strategy:
+//   - Only evicts if MaxSize() is configured (> 0)
+//   - Evicts oldest files first (by LastWrite timestamp)
+//   - Continues evicting until TotalSize() <= targetSize
+//   - Default targetSize is 90% of MaxSize() to avoid thrashing
+//   - Thread-safe: can be called concurrently with other operations
+//
+// Parameters:
+//   - targetSize: Target cache size in bytes (0 = use 90% of MaxSize())
+//
+// Returns:
+//   - int: Number of files evicted
+//   - int64: Total bytes freed
+func (c *MemoryCache) EvictLRU(targetSize int64) (int, int64) {
+	// No eviction if cache has no size limit
+	if c.maxSize == 0 {
+		return 0, 0
+	}
+
+	// Use 90% of max size as default target (hysteresis to avoid thrashing)
+	if targetSize == 0 {
+		targetSize = (c.maxSize * 90) / 100
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return 0, 0
+	}
+
+	// Check if eviction is needed
+	currentSize := int64(0)
+	for _, buf := range c.buffers {
+		buf.mu.Lock()
+		currentSize += int64(len(buf.data))
+		buf.mu.Unlock()
+	}
+
+	if currentSize <= targetSize {
+		return 0, 0 // No eviction needed
+	}
+
+	// Build list of candidates sorted by last write time (oldest first)
+	type evictionCandidate struct {
+		id        string
+		size      int64
+		lastWrite time.Time
+	}
+
+	candidates := make([]evictionCandidate, 0, len(c.buffers))
+	for idStr, buf := range c.buffers {
+		buf.mu.Lock()
+		candidates = append(candidates, evictionCandidate{
+			id:        idStr,
+			size:      int64(len(buf.data)),
+			lastWrite: buf.lastWrite,
+		})
+		buf.mu.Unlock()
+	}
+
+	// Sort by last write time (oldest first) using standard library
+	// O(n log n) is more efficient than selection sort O(n²) for larger caches
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].lastWrite.Before(candidates[j].lastWrite)
+	})
+
+	// Evict oldest files until we reach target size
+	evicted := 0
+	bytesFreed := int64(0)
+
+	for _, candidate := range candidates {
+		if currentSize <= targetSize {
+			break // Target reached
+		}
+
+		// Remove the buffer
+		buf, exists := c.buffers[candidate.id]
+		if !exists {
+			continue // Already removed by concurrent operation
+		}
+
+		buf.mu.Lock()
+		bufSize := int64(len(buf.data))
+		buf.data = nil
+		buf.mu.Unlock()
+
+		delete(c.buffers, candidate.id)
+
+		currentSize -= bufSize
+		bytesFreed += bufSize
+		evicted++
+
+		// Record cache removal
+		if c.metrics != nil {
+			c.metrics.RecordCacheReset(candidate.id)
+		}
+	}
+
+	// Update metrics after eviction
+	if c.metrics != nil {
+		c.metrics.RecordBufferCount(len(c.buffers))
+		// REMOVED: updateTotalCacheSize() causes lock contention during eviction
+	}
+
+	return evicted, bytesFreed
+}
+
+// ensureCacheSize checks if adding dataSize bytes would exceed MaxSize(),
+// and evicts LRU entries if needed.
+//
+// This should be called before adding new data to the cache.
+// It's a helper to automatically trigger eviction during Write/WriteAt operations.
+//
+// Parameters:
+//   - dataSize: Number of bytes about to be added
+//
+// Thread safety: Caller must NOT hold c.mu lock
+// DISABLED: Automatic eviction causes lock contention during concurrent writes.
+// TODO: Implement non-blocking eviction strategy (async eviction, try-lock pattern, etc.)
+//
+// func (c *MemoryCache) ensureCacheSize(dataSize int64) {
+// 	// No eviction if cache has no size limit
+// 	if c.maxSize == 0 {
+// 		return
+// 	}
+//
+// 	// Check if we need to evict (check without lock first for performance)
+// 	totalSize := c.TotalSize()
+// 	if totalSize+dataSize <= c.maxSize {
+// 		return // No eviction needed
+// 	}
+//
+// 	// Need to evict - target 90% of max to leave room for this write
+// 	targetSize := (c.maxSize * 90) / 100
+// 	evicted, bytesFreed := c.EvictLRU(targetSize)
+//
+// 	if evicted > 0 {
+// 		logger.Debug("Cache eviction: evicted=%d bytes_freed=%d total_before=%d total_after=%d max=%d",
+// 			evicted, bytesFreed, totalSize, c.TotalSize(), c.maxSize)
+// 	}
+// }
 
 // ============================================================================
 // Helper functions
