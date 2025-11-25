@@ -11,7 +11,7 @@ import (
 func (suite *CacheTestSuite) RunBasicTests(t *testing.T) {
 	t.Run("ExistsReturnsFalseForNonExistentContent", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 
 		id := metadata.ContentID("test-content-1")
 
@@ -22,7 +22,7 @@ func (suite *CacheTestSuite) RunBasicTests(t *testing.T) {
 
 	t.Run("ExistsReturnsTrueAfterWrite", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-content-2")
@@ -39,7 +39,7 @@ func (suite *CacheTestSuite) RunBasicTests(t *testing.T) {
 
 	t.Run("SizeReturnsZeroForNonExistentContent", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 
 		id := metadata.ContentID("test-content-3")
 
@@ -50,7 +50,7 @@ func (suite *CacheTestSuite) RunBasicTests(t *testing.T) {
 
 	t.Run("SizeReturnsCorrectSizeAfterWrite", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-content-4")
@@ -68,7 +68,7 @@ func (suite *CacheTestSuite) RunBasicTests(t *testing.T) {
 
 	t.Run("LastWriteReturnsZeroTimeForNonExistentContent", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 
 		id := metadata.ContentID("test-content-5")
 
@@ -80,7 +80,7 @@ func (suite *CacheTestSuite) RunBasicTests(t *testing.T) {
 
 	t.Run("LastWriteReturnsRecentTimeAfterWrite", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-content-6")
@@ -101,7 +101,7 @@ func (suite *CacheTestSuite) RunBasicTests(t *testing.T) {
 
 	t.Run("ListReturnsEmptyForNewCache", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 
 		list := c.List()
 		if len(list) != 0 {
@@ -111,7 +111,7 @@ func (suite *CacheTestSuite) RunBasicTests(t *testing.T) {
 
 	t.Run("ListReturnsAllCachedContent", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		ids := []metadata.ContentID{
@@ -146,7 +146,7 @@ func (suite *CacheTestSuite) RunBasicTests(t *testing.T) {
 
 	t.Run("TotalSizeReturnsZeroForNewCache", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 
 		if total := c.TotalSize(); total != 0 {
 			t.Errorf("TotalSize() should return 0 for new cache, got %d", total)
@@ -155,12 +155,12 @@ func (suite *CacheTestSuite) RunBasicTests(t *testing.T) {
 
 	t.Run("TotalSizeReturnsSumOfAllCachedData", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
-		data1 := []byte("data1")      // 5 bytes
-		data2 := []byte("data22")     // 6 bytes
-		data3 := []byte("data333")    // 7 bytes
+		data1 := []byte("data1")   // 5 bytes
+		data2 := []byte("data22")  // 6 bytes
+		data3 := []byte("data333") // 7 bytes
 		expectedTotal := int64(18)
 
 		if err := c.Write(ctx, "content-1", data1); err != nil {
@@ -180,7 +180,7 @@ func (suite *CacheTestSuite) RunBasicTests(t *testing.T) {
 
 	t.Run("MaxSizeReturnsConfiguredLimit", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 
 		// MaxSize should return whatever was configured
 		// (could be 0 for unlimited or a positive value)

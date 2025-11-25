@@ -52,8 +52,8 @@ type MemoryCache struct {
 	buffers map[string]*buffer
 	mu      sync.RWMutex
 	closed  bool
-	maxSize int64                // Maximum total cache size (0 = unlimited)
-	metrics cache.CacheMetrics   // Optional metrics collector
+	maxSize int64              // Maximum total cache size (0 = unlimited)
+	metrics cache.CacheMetrics // Optional metrics collector
 }
 
 // NewMemoryCache creates a new in-memory cache.

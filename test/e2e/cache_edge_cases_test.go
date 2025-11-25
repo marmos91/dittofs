@@ -26,10 +26,10 @@ func TestFileSizeBoundaries(t *testing.T) {
 
 	// Test cases for different file sizes relative to 5MB multipart threshold
 	testCases := []struct {
-		name     string
-		size     int
-		usesPut  bool // Should use PutObject (not multipart)
-		desc     string
+		name    string
+		size    int
+		usesPut bool // Should use PutObject (not multipart)
+		desc    string
 	}{
 		{
 			name:    "empty_file",
@@ -105,7 +105,7 @@ func TestFileSizeBoundaries(t *testing.T) {
 				t.Fatalf("Failed to open file: %v", err)
 			}
 			err = file.Sync()
-			file.Close()
+			_ = file.Close()
 			if err != nil {
 				t.Fatalf("Failed to sync file: %v", err)
 			}
@@ -164,7 +164,7 @@ func TestEmptyFile(t *testing.T) {
 		t.Fatalf("Failed to open file: %v", err)
 	}
 	err = file.Sync()
-	file.Close()
+	_ = file.Close()
 	if err != nil {
 		t.Fatalf("Failed to sync file: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestConcurrentCommits(t *testing.T) {
 				return
 			}
 			err = file.Sync()
-			file.Close()
+			_ = file.Close()
 			if err != nil {
 				errors <- err
 				return
@@ -293,7 +293,7 @@ func TestPartialThenFinalCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create file: %v", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	chunk := make([]byte, chunkSize)
 	for i := range chunk {
@@ -321,7 +321,7 @@ func TestPartialThenFinalCommit(t *testing.T) {
 		t.Logf("COMMIT %d: %d/%d bytes written", commitCount, bytesWritten, totalSize)
 	}
 
-	file.Close()
+	_ = file.Close()
 
 	// Verify multipart session was created and completed
 	t.Logf("Total COMMITs: %d (expected ~%d)", commitCount, totalSize/chunkSize)
@@ -378,7 +378,7 @@ func TestWriteDeleteRace(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		syncErr = file.Sync()
-		file.Close()
+		_ = file.Close()
 	}()
 
 	// Immediately try to delete (creates race condition)

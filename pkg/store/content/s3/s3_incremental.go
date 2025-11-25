@@ -182,9 +182,9 @@ func (s *S3ContentStore) FlushIncremental(ctx context.Context, id metadata.Conte
 // CompleteIncrementalWrite finalizes an incremental write session.
 //
 // This:
-//   1. Uploads any remaining buffered data as the final part
-//   2. Completes the S3 multipart upload
-//   3. Cleans up session state
+//  1. Uploads any remaining buffered data as the final part
+//  2. Completes the S3 multipart upload
+//  3. Cleans up session state
 //
 // After this call, the content is available for reading via ReadContent().
 //
@@ -251,9 +251,9 @@ func (s *S3ContentStore) CompleteIncrementalWrite(ctx context.Context, id metada
 // AbortIncrementalWrite cancels an incremental write session.
 //
 // This:
-//   1. Aborts the S3 multipart upload (frees storage)
-//   2. Discards any buffered data
-//   3. Cleans up session state
+//  1. Aborts the S3 multipart upload (frees storage)
+//  2. Discards any buffered data
+//  3. Cleans up session state
 //
 // This operation is idempotent - aborting a non-existent session succeeds.
 //

@@ -10,7 +10,7 @@ import (
 func (suite *CacheTestSuite) RunManagementTests(t *testing.T) {
 	t.Run("RemoveDeletesCachedData", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-1")
@@ -43,7 +43,7 @@ func (suite *CacheTestSuite) RunManagementTests(t *testing.T) {
 
 	t.Run("RemoveIsIdempotent", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 
 		id := metadata.ContentID("test-2")
 
@@ -60,7 +60,7 @@ func (suite *CacheTestSuite) RunManagementTests(t *testing.T) {
 
 	t.Run("RemoveUpdatesTotalSize", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id1 := metadata.ContentID("content-1")
@@ -94,7 +94,7 @@ func (suite *CacheTestSuite) RunManagementTests(t *testing.T) {
 
 	t.Run("RemoveUpdatesListSize", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id1 := metadata.ContentID("content-1")
@@ -133,7 +133,7 @@ func (suite *CacheTestSuite) RunManagementTests(t *testing.T) {
 
 	t.Run("RemoveAllClearsAllCachedData", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		ids := []metadata.ContentID{"content-1", "content-2", "content-3"}
@@ -175,7 +175,7 @@ func (suite *CacheTestSuite) RunManagementTests(t *testing.T) {
 
 	t.Run("RemoveAllIsIdempotent", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 
 		// RemoveAll on empty cache (should succeed)
 		if err := c.RemoveAll(); err != nil {

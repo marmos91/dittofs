@@ -148,7 +148,7 @@ func (tc *testContextWithCache) startServerWithCache() {
 	}
 
 	// Start server (reuse base implementation)
-	tc.TestContext.startServerFromRegistry()
+	tc.startServerFromRegistry()
 }
 
 // getWriteCache returns the write cache for verification
@@ -197,7 +197,7 @@ func testBasicWriteAndCommit(t *testing.T, tc *testContextWithCache, writeCache 
 	if err != nil {
 		t.Fatalf("Failed to sync file: %v", err)
 	}
-	file.Close()
+	_ = file.Close()
 
 	t.Logf("Cache total size after sync: %d bytes", writeCache.TotalSize())
 
@@ -250,7 +250,7 @@ func testMultipleWritesBeforeCommit(t *testing.T, tc *testContextWithCache, writ
 	if err != nil {
 		t.Fatalf("Failed to sync file: %v", err)
 	}
-	file.Close()
+	_ = file.Close()
 
 	t.Logf("Cache size after sync: %d bytes", writeCache.TotalSize())
 
@@ -301,7 +301,7 @@ func testLargeFileWriteAndCommit(t *testing.T, tc *testContextWithCache, writeCa
 	if err != nil {
 		t.Fatalf("Failed to sync large file: %v", err)
 	}
-	file.Close()
+	_ = file.Close()
 
 	t.Logf("Cache size after sync: %d bytes", writeCache.TotalSize())
 
@@ -383,7 +383,7 @@ func TestCacheIsolation(t *testing.T) {
 		t.Fatalf("Failed to open file1: %v", err)
 	}
 	err = f1.Sync()
-	f1.Close()
+	_ = f1.Close()
 	if err != nil {
 		t.Fatalf("Failed to sync file1: %v", err)
 	}
@@ -449,7 +449,7 @@ func TestCacheWithDirectories(t *testing.T) {
 		t.Fatalf("Failed to open nested file: %v", err)
 	}
 	err = file.Sync()
-	file.Close()
+	_ = file.Close()
 	if err != nil {
 		t.Fatalf("Failed to sync nested file: %v", err)
 	}

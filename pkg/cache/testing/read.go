@@ -13,7 +13,7 @@ import (
 func (suite *CacheTestSuite) RunReadTests(t *testing.T) {
 	t.Run("ReadReturnsEmptyForNonExistentContent", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-1")
@@ -30,7 +30,7 @@ func (suite *CacheTestSuite) RunReadTests(t *testing.T) {
 
 	t.Run("ReadReturnsWrittenData", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-2")
@@ -52,7 +52,7 @@ func (suite *CacheTestSuite) RunReadTests(t *testing.T) {
 
 	t.Run("ReadReturnsIndependentCopy", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-3")
@@ -81,7 +81,7 @@ func (suite *CacheTestSuite) RunReadTests(t *testing.T) {
 
 	t.Run("ReadRespectsCancellation", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // Cancel immediately
@@ -96,7 +96,7 @@ func (suite *CacheTestSuite) RunReadTests(t *testing.T) {
 
 	t.Run("ReadAtReturnsEOFForNonExistentContent", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-5")
@@ -113,7 +113,7 @@ func (suite *CacheTestSuite) RunReadTests(t *testing.T) {
 
 	t.Run("ReadAtReturnsPartialData", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-6")
@@ -142,7 +142,7 @@ func (suite *CacheTestSuite) RunReadTests(t *testing.T) {
 
 	t.Run("ReadAtReturnsEOFAtEndOfData", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-7")
@@ -165,7 +165,7 @@ func (suite *CacheTestSuite) RunReadTests(t *testing.T) {
 
 	t.Run("ReadAtReturnsPartialReadWithEOF", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-8")
@@ -195,7 +195,7 @@ func (suite *CacheTestSuite) RunReadTests(t *testing.T) {
 
 	t.Run("ReadAtWithNegativeOffsetFails", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-9")
@@ -214,7 +214,7 @@ func (suite *CacheTestSuite) RunReadTests(t *testing.T) {
 
 	t.Run("ReadAtRespectsCancellation", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // Cancel immediately
@@ -230,7 +230,7 @@ func (suite *CacheTestSuite) RunReadTests(t *testing.T) {
 
 	t.Run("ReadAtMultipleChunks", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-11")

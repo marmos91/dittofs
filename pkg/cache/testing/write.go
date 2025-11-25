@@ -12,7 +12,7 @@ import (
 func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 	t.Run("WriteStoresData", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-1")
@@ -35,7 +35,7 @@ func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 
 	t.Run("WriteReplacesExistingData", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-2")
@@ -65,7 +65,7 @@ func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 
 	t.Run("WriteEmptyDataSucceeds", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-3")
@@ -88,7 +88,7 @@ func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 
 	t.Run("WriteAtAppendsAtEnd", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-4")
@@ -119,7 +119,7 @@ func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 
 	t.Run("WriteAtOverwritesMiddle", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-5")
@@ -150,7 +150,7 @@ func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 
 	t.Run("WriteAtWithGapFillsZeros", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-6")
@@ -187,7 +187,7 @@ func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 
 	t.Run("WriteAtCreatesNewContent", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-7")
@@ -211,7 +211,7 @@ func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 
 	t.Run("WriteAtWithNegativeOffsetFails", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-8")
@@ -225,7 +225,7 @@ func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 
 	t.Run("WriteRespectsCancellation", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // Cancel immediately
@@ -241,7 +241,7 @@ func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 
 	t.Run("WriteAtRespectsCancellation", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // Cancel immediately
@@ -257,7 +257,7 @@ func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 
 	t.Run("WriteLargeDataSucceeds", func(t *testing.T) {
 		c := suite.NewCache()
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		ctx := testContext()
 
 		id := metadata.ContentID("test-11")

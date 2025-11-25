@@ -11,12 +11,12 @@ import (
 
 // s3Metrics is the Prometheus implementation of s3.S3Metrics.
 type s3Metrics struct {
-	operationsTotal     *prometheus.CounterVec
-	operationDuration   *prometheus.HistogramVec
-	bytesTransferred    *prometheus.CounterVec
-	flushPhaseDuration  *prometheus.HistogramVec
-	flushOperations     *prometheus.CounterVec
-	flushDuration       *prometheus.HistogramVec
+	operationsTotal       *prometheus.CounterVec
+	operationDuration     *prometheus.HistogramVec
+	bytesTransferred      *prometheus.CounterVec
+	flushPhaseDuration    *prometheus.HistogramVec
+	flushOperations       *prometheus.CounterVec
+	flushDuration         *prometheus.HistogramVec
 	flushBytes            *prometheus.HistogramVec
 	activeUploads         *prometheus.GaugeVec
 	multipartPartNumber   prometheus.Histogram

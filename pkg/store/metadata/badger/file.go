@@ -953,6 +953,7 @@ func (s *BadgerMetadataStore) CreateHardLink(
 //   - File can replace file
 //   - Directory can only replace empty directory
 //   - Directory cannot replace file and vice versa
+//
 // - Updates parent-child relationships in BadgerDB
 // - Updates timestamps (mtime/ctime) on source and destination directories
 // - Updates ctime on the moved file/directory

@@ -43,8 +43,8 @@ type ShareConfig struct {
 	Name               string
 	MetadataStore      string
 	ContentStore       string
-	WriteCache         string   // Optional write cache name (empty = sync writes)
-	ReadCache          string   // Optional read cache name (empty = no read caching)
+	WriteCache         string // Optional write cache name (empty = sync writes)
+	ReadCache          string // Optional read cache name (empty = no read caching)
 	ReadOnly           bool
 	AllowedClients     []string
 	DeniedClients      []string

@@ -24,8 +24,8 @@ type NFSConnection struct {
 
 	// Concurrent request handling
 	requestSem chan struct{}  // Semaphore to limit concurrent requests
-	wg         sync.WaitGroup  // Track active requests for graceful shutdown
-	writeMu    sync.Mutex      // Protects connection writes (replies must be serialized)
+	wg         sync.WaitGroup // Track active requests for graceful shutdown
+	writeMu    sync.Mutex     // Protects connection writes (replies must be serialized)
 }
 
 type fragmentHeader struct {
