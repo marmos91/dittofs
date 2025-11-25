@@ -576,6 +576,36 @@ func (h *Handler) Write(
 	}
 
 	// ========================================================================
+	// Step 7.5: Populate read cache after successful direct write (no write cache)
+	// ========================================================================
+	// If we wrote directly to content store (no write cache), populate the read cache
+	// This makes the newly written data available for fast subsequent reads
+	if writeCache == nil {
+		readCache, rcErr := h.Registry.GetReadCacheForShare(shareName)
+		if rcErr != nil {
+			logger.Warn("WRITE: cannot get read cache: share=%s error=%v", shareName, rcErr)
+		} else if readCache != nil && len(req.Data) > 0 {
+			// Only cache small to medium files (< 10MB) to avoid thrashing
+			const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
+			if newSize <= uint64(maxReadCacheSize) {
+				// Write the data we just wrote at the appropriate offset
+				rcErr = readCache.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, int64(req.Offset))
+				if rcErr != nil {
+					// Cache population failure is not fatal - log and continue
+					logger.Warn("WRITE: failed to populate read cache: handle=%x content_id=%s offset=%d size=%d error=%v",
+						req.Handle, writeIntent.ContentID, req.Offset, len(req.Data), rcErr)
+				} else {
+					logger.Debug("WRITE: populated read cache: handle=%x content_id=%s offset=%d size=%d cache_size=%d",
+						req.Handle, writeIntent.ContentID, req.Offset, len(req.Data), readCache.Size(writeIntent.ContentID))
+				}
+			} else {
+				logger.Debug("WRITE: skipping read cache population for large file: handle=%x size=%d max_cache_size=%d",
+					req.Handle, newSize, maxReadCacheSize)
+			}
+		}
+	}
+
+	// ========================================================================
 	// Step 8: Commit metadata changes after successful content write
 	// ========================================================================
 
