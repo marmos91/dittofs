@@ -106,7 +106,6 @@ type testContextWithReadCache struct {
 	readCache        cache.Cache
 	writeCache       cache.Cache
 	readCacheName    string
-	writeCacheName   string
 	localstackHelper *LocalstackHelper
 }
 
@@ -367,7 +366,6 @@ func testLRUEvictsOldestFile(t *testing.T, tc *testContextWithReadCache, readCac
 	fileSize := 30 * 1024 // 30KB each file
 	numFiles := 5         // 150KB total, will exceed 100KB cache
 
-	var files []string
 	for i := 0; i < numFiles; i++ {
 		filename := filepath.Join(tc.MountPath, fmt.Sprintf("evict-test-%d.txt", i))
 		data := make([]byte, fileSize)
@@ -383,8 +381,6 @@ func testLRUEvictsOldestFile(t *testing.T, tc *testContextWithReadCache, readCac
 		if _, err := os.ReadFile(filename); err != nil {
 			t.Fatalf("Failed to read file %d: %v", i, err)
 		}
-
-		files = append(files, filename)
 
 		// Small delay to ensure different write times
 		time.Sleep(20 * time.Millisecond)
