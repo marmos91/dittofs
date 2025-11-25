@@ -17,9 +17,11 @@ type s3Metrics struct {
 	flushPhaseDuration  *prometheus.HistogramVec
 	flushOperations     *prometheus.CounterVec
 	flushDuration       *prometheus.HistogramVec
-	flushBytes          *prometheus.HistogramVec
-	activeUploads       *prometheus.GaugeVec
-	multipartPartNumber prometheus.Histogram
+	flushBytes            *prometheus.HistogramVec
+	activeUploads         *prometheus.GaugeVec
+	multipartPartNumber   prometheus.Histogram
+	orphanedUploads       prometheus.Counter
+	multipartAbortedTotal prometheus.Counter
 }
 
 // NewS3Metrics creates a new Prometheus-backed S3Metrics instance.
@@ -143,6 +145,18 @@ func NewS3Metrics() s3.S3Metrics {
 				},
 			},
 		),
+		orphanedUploads: promauto.With(reg).NewCounter(
+			prometheus.CounterOpts{
+				Name: "dittofs_s3_multipart_orphaned_total",
+				Help: "Total number of orphaned multipart uploads detected and cleaned up",
+			},
+		),
+		multipartAbortedTotal: promauto.With(reg).NewCounter(
+			prometheus.CounterOpts{
+				Name: "dittofs_s3_multipart_aborted_total",
+				Help: "Total number of multipart uploads that were aborted due to errors",
+			},
+		),
 	}
 }
 
@@ -221,4 +235,20 @@ func (m *s3Metrics) RecordMultipartPartNumber(partNumber int) {
 		return
 	}
 	m.multipartPartNumber.Observe(float64(partNumber))
+}
+
+// RecordOrphanedUpload records an orphaned multipart upload that was cleaned up.
+func (m *s3Metrics) RecordOrphanedUpload() {
+	if m == nil {
+		return
+	}
+	m.orphanedUploads.Inc()
+}
+
+// RecordAbortedUpload records a multipart upload that was aborted due to an error.
+func (m *s3Metrics) RecordAbortedUpload() {
+	if m == nil {
+		return
+	}
+	m.multipartAbortedTotal.Inc()
 }

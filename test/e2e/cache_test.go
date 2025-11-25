@@ -61,6 +61,17 @@ func newTestContextWithCache(t *testing.T, config *TestConfig) *testContextWithC
 		},
 	}
 
+	// If using S3, setup localstack client
+	if config.ContentStore == ContentS3 {
+		if !CheckLocalstackAvailable(t) {
+			t.Skip("Localstack not available, skipping S3 test")
+		}
+		helper := NewLocalstackHelper(t)
+		SetupS3Config(t, config, helper)
+		// Store helper for cleanup
+		tc.localstackHelper = helper
+	}
+
 	// Setup stores
 	tc.setupStores()
 
@@ -79,8 +90,9 @@ func newTestContextWithCache(t *testing.T, config *TestConfig) *testContextWithC
 // testContextWithCache extends TestContext with cache support
 type testContextWithCache struct {
 	*TestContext
-	writeCache cache.Cache
-	cacheName  string
+	writeCache       cache.Cache
+	cacheName        string
+	localstackHelper *LocalstackHelper
 }
 
 // setupCache initializes the write cache
@@ -142,6 +154,17 @@ func (tc *testContextWithCache) startServerWithCache() {
 // getWriteCache returns the write cache for verification
 func (tc *testContextWithCache) getWriteCache() cache.Cache {
 	return tc.writeCache
+}
+
+// Cleanup overrides parent cleanup to also cleanup localstack resources
+func (tc *testContextWithCache) Cleanup() {
+	// Call parent cleanup first
+	tc.TestContext.Cleanup()
+
+	// Cleanup localstack if used
+	if tc.localstackHelper != nil {
+		tc.localstackHelper.Cleanup()
+	}
 }
 
 // testBasicWriteAndCommit tests basic write -> commit flow

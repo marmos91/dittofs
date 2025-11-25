@@ -158,7 +158,11 @@ func (s *MemoryMetadataStore) CommitWrite(
 
 	// Apply metadata changes
 	now := time.Now()
-	fileData.Attr.Size = intent.NewSize
+	// Use max(current_size, new_size) to handle concurrent writes completing out of order
+	// This prevents a write at an earlier offset from shrinking the file after a write at a later offset has already extended it
+	if intent.NewSize > fileData.Attr.Size {
+		fileData.Attr.Size = intent.NewSize
+	}
 	fileData.Attr.Mtime = now // Mtime is set when the write is committed
 	fileData.Attr.Ctime = now // Ctime always uses current time (metadata change time)
 

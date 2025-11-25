@@ -241,7 +241,11 @@ func (s *BadgerMetadataStore) CommitWrite(
 
 		// Apply metadata changes
 		now := time.Now()
-		file.Size = intent.NewSize
+		// Use max(current_size, new_size) to handle concurrent writes completing out of order
+		// This prevents a write at an earlier offset from shrinking the file after a write at a later offset has already extended it
+		if intent.NewSize > file.Size {
+			file.Size = intent.NewSize
+		}
 		file.Mtime = now // Mtime is set when the write is committed
 		file.Ctime = now // Ctime always uses current time (metadata change time)
 

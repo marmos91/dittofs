@@ -3,7 +3,9 @@ package handlers
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -626,66 +628,76 @@ func (h *Handler) Commit(
 
 		} else {
 			// ================================================================
-			// SIMPLE FLUSH PATH (filesystem, memory stores)
+			// INCREMENTAL FLUSH PATH (filesystem, memory stores)
 			// ================================================================
-			// These stores don't have size/timeout constraints, so we can
-			// buffer all data and flush on final commit.
+			// For non-incremental stores, we still flush incrementally by:
+			// 1. Checking what's already in content store
+			// 2. Flushing only NEW bytes from cache using WriteAt()
+			//
+			// This is efficient and handles concurrent WRITEs correctly.
 
-			if isFinalCommit {
-				// Final commit: flush entire file from cache to content store
-				logger.Debug("COMMIT: final commit, flushing entire file: content_id=%s", file.ContentID)
-
-				// Read entire file from cache
-				data, err := writeCache.Read(ctx.Context, file.ContentID)
-				if err != nil {
-					logger.Error("COMMIT failed: cache read error: handle=%x content_id=%s client=%s error=%v",
+			cacheSize := writeCache.Size(file.ContentID)
+			if cacheSize > 0 {
+				// Check how much is already committed to content store
+				var contentSize int64
+				contentSizeU64, err := contentStore.GetContentSize(ctx.Context, file.ContentID)
+				if errors.Is(err, content.ErrContentNotFound) {
+					// Content doesn't exist yet in content store - this is normal for first COMMIT
+					contentSize = 0
+				} else if err != nil {
+					// Actual error accessing content store
+					logger.Error("COMMIT failed: cannot check content store size: handle=%x content_id=%s client=%s error=%v",
 						req.Handle, file.ContentID, clientIP, err)
+					return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+				} else {
+					// Success - convert to int64
+					contentSize = int64(contentSizeU64)
+				}
 
-					var wccAfter *types.NFSFileAttr
-					if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-						fileID := xdr.ExtractFileID(handle)
-						wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+				// Calculate how many new bytes to flush
+				bytesToFlush := cacheSize - contentSize
+				if bytesToFlush > 0 {
+					logger.Debug("COMMIT: flushing %d new bytes (cache=%d, content_store=%d): content_id=%s",
+						bytesToFlush, cacheSize, contentSize, file.ContentID)
+
+					// Read only the new bytes from cache
+					buf := make([]byte, bytesToFlush)
+					n, err := writeCache.ReadAt(ctx.Context, file.ContentID, buf, contentSize)
+					if err != nil && err != io.EOF {
+						logger.Error("COMMIT failed: cache read error: handle=%x content_id=%s offset=%d client=%s error=%v",
+							req.Handle, file.ContentID, contentSize, clientIP, err)
+						return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 					}
 
-					return &CommitResponse{
-						NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-						AttrBefore:      wccBefore,
-						AttrAfter:       wccAfter,
-					}, nil
-				}
-
-				// Write to content store
-				err = contentStore.WriteContent(ctx.Context, file.ContentID, data)
-				if err != nil {
-					logger.Error("COMMIT failed: content store write error: handle=%x content_id=%s size=%d client=%s error=%v",
-						req.Handle, file.ContentID, len(data), clientIP, err)
-
-					var wccAfter *types.NFSFileAttr
-					if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-						fileID := xdr.ExtractFileID(handle)
-						wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+					// Write new bytes to content store at the correct offset
+					err = contentStore.WriteAt(ctx.Context, file.ContentID, buf[:n], contentSize)
+					if err != nil {
+						logger.Error("COMMIT failed: content store write error: handle=%x content_id=%s offset=%d size=%d client=%s error=%v",
+							req.Handle, file.ContentID, contentSize, n, clientIP, err)
+						return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 					}
 
-					return &CommitResponse{
-						NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-						AttrBefore:      wccBefore,
-						AttrAfter:       wccAfter,
-					}, nil
+					logger.Info("COMMIT: flushed %d bytes to content store at offset %d: content_id=%s",
+						n, contentSize, file.ContentID)
+				} else {
+					logger.Debug("COMMIT: no new bytes to flush (cache=%d, content_store=%d): content_id=%s",
+						cacheSize, contentSize, file.ContentID)
 				}
 
-				// Clean cache after successful flush
-				err = writeCache.Remove(file.ContentID)
-				if err != nil {
-					logger.Warn("COMMIT: cache cleanup failed: content_id=%s error=%v", file.ContentID, err)
+				// Clean up cache if this is the final COMMIT
+				// Final COMMIT is one that reaches EOF: count=0 OR offset+count >= fileSize
+				isFinalCommit := req.Count == 0 || req.Offset+uint64(req.Count) >= file.Size
+				if isFinalCommit && cacheSize >= int64(file.Size) {
+					err = writeCache.Remove(file.ContentID)
+					if err != nil {
+						logger.Warn("COMMIT: cache cleanup failed: content_id=%s error=%v", file.ContentID, err)
+					} else {
+						logger.Debug("COMMIT: cleaned cache after final commit: content_id=%s", file.ContentID)
+					}
 				}
-
-				logger.Info("COMMIT: flushed %d bytes from cache to content store: content_id=%s",
-					len(data), file.ContentID)
 			} else {
-				// Partial commit: keep buffering
-				// Data stays in cache until final commit
-				logger.Debug("COMMIT: partial range, keeping data in cache: offset=%d count=%d size=%d",
-					req.Offset, req.Count, file.Size)
+				// No data in cache yet - this is okay, file might be empty or writes haven't started
+				logger.Debug("COMMIT: no data in cache yet: content_id=%s", file.ContentID)
 			}
 		}
 	}
@@ -710,7 +722,7 @@ func (h *Handler) Commit(
 			updatedFile.Size, wccAfter.Type)
 	}
 
-	logger.Info("COMMIT successful: handle=%x offset=%d count=%d client=%s (no-op in current implementation)",
+	logger.Info("COMMIT successful: handle=%x offset=%d count=%d client=%s",
 		req.Handle, req.Offset, req.Count, clientIP)
 	return &CommitResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -743,22 +755,24 @@ func (h *Handler) Commit(
 //   - true if this commit covers the entire file
 //   - false if this is a partial range commit
 func isFullFileCommit(file *metadata.FileAttr, req *CommitRequest) bool {
+	// A full file commit must start at offset 0
+	// This prevents data loss from uncommitted bytes at the beginning of the file
+	if req.Offset != 0 {
+		return false // Partial commit (doesn't start at beginning)
+	}
+
 	// Commit entire file (offset=0, count=0)
-	if req.Offset == 0 && req.Count == 0 {
-		return true
-	}
-
-	// Commit from offset to EOF (count=0)
 	if req.Count == 0 {
-		return true
+		return true // From beginning to EOF
 	}
 
-	// Commit range covers entire file
+	// Commit range from beginning to end of file
+	// Check if the commit range covers the entire file size
 	if req.Offset+uint64(req.Count) >= file.Size {
-		return true
+		return true // From beginning to (at least) EOF
 	}
 
-	// Partial range commit
+	// Partial range commit from beginning but not to end
 	return false
 }
 

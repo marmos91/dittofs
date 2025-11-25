@@ -22,6 +22,7 @@ type cacheMetrics struct {
 	resetOperations prometheus.Counter
 	activeBuffers   prometheus.Gauge
 	hitRate         *prometheus.GaugeVec
+	evictions       *prometheus.CounterVec
 }
 
 // NewCacheMetrics creates a new Prometheus-backed CacheMetrics instance.
@@ -149,6 +150,13 @@ func NewCacheMetrics() cache.CacheMetrics {
 			},
 			[]string{"cache_type"},
 		),
+		evictions: promauto.With(reg).NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "dittofs_cache_evictions_total",
+				Help: "Total number of cache evictions by cache type and reason",
+			},
+			[]string{"cache_type", "reason"}, // reason: "size_limit", "timeout", "explicit"
+		),
 	}
 }
 
@@ -234,4 +242,13 @@ func (m *cacheMetrics) RecordTotalCacheSize(bytes int64) {
 		return
 	}
 	m.totalCacheSize.Set(float64(bytes))
+}
+
+// RecordEviction records a cache eviction.
+// reason can be: "size_limit", "timeout", "explicit"
+func (m *cacheMetrics) RecordEviction(cacheType, reason string) {
+	if m == nil {
+		return
+	}
+	m.evictions.WithLabelValues(cacheType, reason).Inc()
 }
