@@ -427,6 +427,11 @@ func (h *Handler) Read(
 				data = data[:n] // Truncate to actual bytes read
 				logger.Debug("READ: write cache hit: handle=%x bytes_read=%d eof=%v content_id=%s",
 					req.Handle, n, eof, file.ContentID)
+
+				// Record cache hit metric
+				if h.Metrics != nil {
+					h.Metrics.RecordCacheHit(shareName, "write", uint64(n))
+				}
 			} else {
 				logger.Warn("READ: write cache read error, falling back: handle=%x content_id=%s error=%v",
 					req.Handle, file.ContentID, readErr)
@@ -452,6 +457,11 @@ func (h *Handler) Read(
 				data = data[:n] // Truncate to actual bytes read
 				logger.Debug("READ: read cache hit: handle=%x bytes_read=%d eof=%v content_id=%s",
 					req.Handle, n, eof, file.ContentID)
+
+				// Record cache hit metric
+				if h.Metrics != nil {
+					h.Metrics.RecordCacheHit(shareName, "read", uint64(n))
+				}
 			} else {
 				logger.Warn("READ: read cache read error, falling back: handle=%x content_id=%s error=%v",
 					req.Handle, file.ContentID, readErr)
@@ -462,6 +472,11 @@ func (h *Handler) Read(
 
 	// If not read from cache, try content store and populate read cache
 	if !readFromCache {
+		// Record cache miss metric
+		if h.Metrics != nil {
+			h.Metrics.RecordCacheMiss(shareName, uint64(req.Count))
+		}
+
 		// Check if content store supports efficient random-access reads
 		if readAtStore, ok := contentStore.(content.ReadAtContentStore); ok {
 			// ================================================================

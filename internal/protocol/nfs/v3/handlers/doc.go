@@ -3,6 +3,7 @@ package handlers
 import (
 	"sync"
 
+	"github.com/marmos91/dittofs/pkg/metrics"
 	"github.com/marmos91/dittofs/pkg/registry"
 )
 
@@ -13,6 +14,10 @@ type Handler struct {
 	// Registry provides access to all stores and shares
 	// Exported to allow injection by the NFS adapter
 	Registry *registry.Registry
+
+	// Metrics collects observability data for NFS operations
+	// Optional - may be nil to disable metrics with zero overhead
+	Metrics metrics.NFSMetrics
 
 	// fileLocks provides per-ContentID mutexes to prevent race conditions
 	// when multiple concurrent COMMIT operations target the same file.
