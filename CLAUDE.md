@@ -9,6 +9,27 @@ It implements NFSv3 protocol server in pure Go (userspace, no FUSE required) wit
 
 **Status**: Experimental - not production ready.
 
+## Documentation Structure
+
+DittoFS has comprehensive documentation organized by topic:
+
+### Core Documentation
+- **[README.md](README.md)** - Quick start and project overview
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Deep dive into design patterns and implementation
+- **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** - Complete configuration guide with examples
+- **[docs/NFS.md](docs/NFS.md)** - NFSv3 protocol implementation details and client usage
+- **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)** - Development guide and contribution guidelines
+
+### Operational Guides
+- **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** - Common issues and solutions
+- **[docs/SECURITY.md](docs/SECURITY.md)** - Security considerations and best practices
+- **[docs/FAQ.md](docs/FAQ.md)** - Frequently asked questions
+- **[docs/RELEASING.md](docs/RELEASING.md)** - Release process and versioning
+
+### Testing and Performance
+- **[test/e2e/BENCHMARKS.md](test/e2e/BENCHMARKS.md)** - Performance benchmark documentation
+- **[test/e2e/COMPARISON_GUIDE.md](test/e2e/COMPARISON_GUIDE.md)** - Comparing with other NFS implementations
+
 ## Essential Commands
 
 ### Building
@@ -20,21 +41,40 @@ go build -o dittofs cmd/dittofs/main.go
 go mod download
 ```
 
+### Configuration
+```bash
+# Initialize configuration file (creates ~/.config/dittofs/config.yaml)
+./dittofs init
+
+# Initialize with custom path
+./dittofs init --config /etc/dittofs/config.yaml
+
+# Force overwrite existing config
+./dittofs init --force
+```
+
 ### Running
 ```bash
-# Run server with defaults (port 2049, INFO logging)
-./dittofs
+# Start server with default config
+./dittofs start
 
-# Run with debug logging and custom settings
-./dittofs -port 2049 -log-level DEBUG -content-path /tmp/dittofs-content
+# Start with custom config file
+./dittofs start --config /path/to/config.yaml
 
-# Available flags:
-# -port: Server port (default: 2049)
-# -log-level: DEBUG, INFO, WARN, ERROR (default: INFO)
-# -content-path: Storage path for file content (default: /tmp/dittofs-content)
-# -max-connections: Max concurrent connections (default: 0 = unlimited)
-# -dump-restricted: Restrict DUMP to localhost only
+# Start with environment variable overrides
+DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
+DITTOFS_ADAPTERS_NFS_PORT=3049 ./dittofs start
+
+# Common environment variables:
+# DITTOFS_LOGGING_LEVEL: DEBUG, INFO, WARN, ERROR
+# DITTOFS_ADAPTERS_NFS_PORT: NFS server port (default: 12049)
+# DITTOFS_SERVER_SHUTDOWN_TIMEOUT: Graceful shutdown timeout (default: 30s)
+# DITTOFS_SERVER_RATE_LIMITING_ENABLED: Enable rate limiting (default: false)
 ```
+
+**Configuration File**: See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for complete configuration guide.
+
+**Default Location**: `~/.config/dittofs/config.yaml` (or `$XDG_CONFIG_HOME/dittofs/config.yaml`)
 
 ### Testing
 ```bash
@@ -53,11 +93,14 @@ go test ./pkg/metadata/memory/
 
 ### NFS Client Testing
 ```bash
-# Mount on Linux
-sudo mount -t nfs -o nfsvers=3,tcp,port=2049,mountport=2049 localhost:/export /mnt/test
+# Mount on Linux (default port 12049)
+sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
 
-# Mount on macOS (requires resvport)
-sudo mount -t nfs -o nfsvers=3,tcp,port=2049,mountport=2049,resvport localhost:/export /mnt/test
+# Mount on macOS
+sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
+
+# Mount with custom port (if configured differently)
+sudo mount -t nfs -o nfsvers=3,tcp,port=2049,mountport=2049 localhost:/export /mnt/test
 
 # Unmount
 sudo umount /mnt/test
@@ -72,43 +115,49 @@ go fmt ./...
 go vet ./...
 ```
 
-### Benchmarking
+### End-to-End Testing
 ```bash
-# Run comprehensive benchmark suite (separate from tests, run periodically)
-./scripts/benchmark.sh
+# Run all E2E tests (requires NFS client and sudo)
+cd test/e2e
+sudo ./run-e2e.sh
 
-# Run with profiling (CPU and memory)
-./scripts/benchmark.sh --profile
+# Run with S3 tests (requires Docker for Localstack)
+sudo ./run-e2e.sh --s3
 
-# Compare with previous results
-./scripts/benchmark.sh --compare
+# Run specific test
+sudo ./run-e2e.sh --test TestCreateFile_1MB
 
-# Custom configuration
-BENCH_TIME=30s BENCH_COUNT=5 ./scripts/benchmark.sh
+# Run with verbose output
+sudo ./run-e2e.sh --verbose
 
-# Run specific benchmarks manually
-go test -bench='BenchmarkE2E/memory/ReadThroughput' -benchtime=20s ./test/e2e/
-go test -bench='BenchmarkE2E/filesystem' -benchmem ./test/e2e/
+# Keep Localstack running for repeated testing
+sudo ./run-e2e.sh --s3 --keep-localstack
 
-# Generate CPU profile for specific benchmark
-go test -bench=BenchmarkE2E/memory/WriteThroughput/100MB \
-    -cpuprofile=cpu.prof -benchtime=30s ./test/e2e/
+# Run directly with go test (no script)
+sudo go test -v ./test/e2e/...
 
-# Analyze profile
-go tool pprof cpu.prof
-go tool pprof -http=:8080 cpu.prof
+# Run specific configuration
+sudo go test -v -run "TestCreateFolder/memory-memory" ./test/e2e/
+
+# Run with race detection
+sudo go test -v -race -timeout 30m ./test/e2e/...
 ```
 
-**Important**: Benchmarks are stress tests designed to push DittoFS to its limits. They:
-- Test with files from 4KB to 100MB
-- Create thousands of files/directories
-- Run mixed concurrent workloads
-- Profile CPU and memory usage
-- Compare different storage backends
+**E2E Test Features**:
+- Tests all storage backend combinations (memory, BadgerDB, filesystem, S3)
+- Real NFS mount testing with actual kernel NFS client
+- File size tests from 500KB to 100MB
+- Shared store scenarios (multiple shares using same stores)
+- Optional Localstack integration for S3 testing
 
-Results are saved to `benchmark_results/<timestamp>/` and should NOT be committed to the repository.
+**Available Test Configurations**:
+- `memory/memory` - Both metadata and content in memory
+- `memory/filesystem` - Memory metadata, filesystem content
+- `badger/filesystem` - BadgerDB metadata, filesystem content
+- `memory/s3` - Memory metadata, S3 content (requires Localstack)
+- `badger/s3` - BadgerDB metadata, S3 content (requires Localstack)
 
-See `test/e2e/BENCHMARKS.md` for detailed documentation and `test/e2e/COMPARISON_GUIDE.md` for comparing with other NFS implementations.
+See `test/e2e/README.md` for detailed documentation.
 
 ## Production Features
 
@@ -118,13 +167,19 @@ DittoFS implements comprehensive graceful shutdown with multiple layers:
 
 1. **Automatic Drain Mode**: Listener closes immediately on shutdown signal (no new connections)
 2. **Context Cancellation**: Propagates through all request handlers for clean abort
-3. **Graceful Wait**: Waits up to `ShutdownTimeout` for connections to complete naturally
+3. **Graceful Wait**: Waits up to `ShutdownTimeout` for connections to complete naturally (configurable, default 30s)
 4. **Forced Closure**: After timeout, actively closes TCP connections to release resources
 5. **Connection Tracking**: Uses lock-free `sync.Map` for high-performance tracking
 
 **Shutdown Flow**:
 ```
 SIGINT/SIGTERM → Cancel Context → Close Listener → Wait (up to timeout) → Force Close
+```
+
+**Configuration**:
+```yaml
+server:
+  shutdown_timeout: 30s  # Customize graceful shutdown timeout
 ```
 
 ### Connection Pooling & Performance
@@ -134,6 +189,33 @@ SIGINT/SIGTERM → Cancel Context → Close Listener → Wait (up to timeout) �
 - **Goroutine-Per-Connection**: Correct model for stateful NFS protocol
 - **Zero-Copy Operations**: Procedure data references pooled buffers directly
 - **Optimized Accept Loop**: Minimal select overhead in hot path
+
+### Rate Limiting
+
+Optional request rate limiting to protect against traffic spikes:
+
+- **Token Bucket Algorithm**: Allows burst traffic while limiting sustained rate
+- **Per-Adapter Configuration**: Apply different limits to different protocols
+- **Global and Adapter-Level**: Set server-wide defaults or override per adapter
+- **Zero Overhead When Disabled**: No performance impact when not enabled
+
+**Configuration**:
+```yaml
+server:
+  # Global rate limiting (applies to all adapters)
+  rate_limiting:
+    enabled: true
+    requests_per_second: 5000    # Sustained rate limit
+    burst: 10000                  # Burst capacity (2x sustained recommended)
+
+adapters:
+  nfs:
+    # Optional: override for this adapter
+    rate_limiting:
+      enabled: true
+      requests_per_second: 10000
+      burst: 20000
+```
 
 ### Prometheus Metrics
 
@@ -145,8 +227,17 @@ Optional metrics collection with zero overhead when disabled:
 - Bytes transferred counters
 - Active connection gauge
 - Connection lifecycle counters (accepted/closed/force-closed)
+- Storage operation metrics (S3, BadgerDB)
 
-Metrics exposed on port 9090 at the `/metrics` endpoint.
+**Configuration**:
+```yaml
+server:
+  metrics:
+    enabled: true
+    port: 9090
+```
+
+Metrics exposed at the `/metrics` endpoint (default port 9090).
 
 ## Architecture
 
@@ -211,17 +302,23 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 - Stores file/directory structure, attributes, permissions
 - Handles access control and root directory creation
 - Implementations:
-  - `pkg/store/metadata/memory/`: In-memory (fast, ephemeral)
-  - `pkg/store/metadata/badger/`: BadgerDB (persistent, embedded)
+  - `pkg/store/metadata/memory/`: In-memory (fast, ephemeral, full hard link support)
+  - `pkg/store/metadata/badger/`: BadgerDB (persistent, embedded, path-based handles)
 - File handles are opaque uint64 identifiers
+- BadgerDB handles are path-based, enabling metadata recovery from content store
 
 **4. Content Store** (`pkg/store/content/store.go`)
 - Stores actual file data
 - Supports read, write-at, truncate operations
 - Implementations:
-  - `pkg/store/content/memory/`: In-memory (fast, ephemeral)
-  - `pkg/store/content/fs/`: Filesystem-backed storage
-  - `pkg/store/content/s3/`: S3-backed storage (multipart, streaming)
+  - `pkg/store/content/memory/`: In-memory (fast, ephemeral, testing)
+  - `pkg/store/content/fs/`: Filesystem-backed (local/network storage)
+  - `pkg/store/content/s3/`: **Production-ready** S3 storage with:
+    - **Range Reads**: Efficient byte-range requests (100x faster for small reads from large files)
+    - **Streaming Multipart Uploads**: Automatic multipart for large files (98% memory reduction)
+    - **Stats Caching**: Intelligent caching reduces S3 ListObjects calls by 99%+
+    - **Metrics Support**: Optional Prometheus instrumentation
+    - **Path-Based Keys**: Objects stored as `export/path/to/file` for easy inspection
 
 ### Directory Structure
 
@@ -503,19 +600,60 @@ Large I/O operations use buffer pools (`internal/protocol/nfs/bufpool.go`):
 - Test repository implementations in isolation
 - Mock dependencies where needed
 - Focus on business logic correctness
+- Run with: `go test ./...`
 
 ### Integration Tests
-- Test complete request/response cycles
-- Use in-memory repositories for speed
+- Test complete request/response cycles with real backends
+- Verify S3, BadgerDB, and filesystem integration
+- Test with in-memory stores for speed
 - Verify protocol compliance
+- Located in: `test/integration/`
+
+### End-to-End (E2E) Tests
+- Real NFS mount testing with actual kernel NFS client
+- Tests all storage backend combinations
+- Verifies complete workflows (create, read, write, delete, etc.)
+- Tests shared store scenarios (multiple shares using same stores)
+- Includes performance benchmarks (separate from regular tests)
+- Located in: `test/e2e/`
+
+**Running E2E Tests**:
+```bash
+# Run all E2E tests (requires NFS client and sudo)
+go test -v -timeout 30m ./test/e2e/...
+
+# Run specific test suite
+go test -v ./test/e2e/ -run TestE2E/memory
+go test -v ./test/e2e/ -run TestE2E/badger
+go test -v ./test/e2e/ -run TestE2E/s3
+
+# Run with race detection
+go test -v -race -timeout 30m ./test/e2e/...
+```
+
+**File Size Testing**:
+```bash
+# Test specific file sizes
+sudo go test -v -run TestCreateFile_500KB ./test/e2e/
+sudo go test -v -run TestCreateFile_1MB ./test/e2e/
+sudo go test -v -run TestCreateFile_10MB ./test/e2e/
+sudo go test -v -run TestCreateFile_100MB ./test/e2e/
+
+# Test read/write operations
+sudo go test -v -run TestReadFilesBySize ./test/e2e/
+sudo go test -v -run TestWriteThenReadBySize ./test/e2e/
+```
 
 ### Manual NFS Testing
 ```bash
 # Start server
-./dittofs -log-level DEBUG
+./dittofs start
+
+# Or with debug logging
+DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
 
 # Mount and test operations
-sudo mount -t nfs -o nfsvers=3,tcp,port=2049,mountport=2049 localhost:/export /mnt/test
+sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
 cd /mnt/test
 ls -la              # READDIR / READDIRPLUS
 cat readme.txt      # READ
@@ -523,25 +661,52 @@ echo "test" > new   # CREATE + WRITE
 mkdir foo           # MKDIR
 rm new              # REMOVE
 rmdir foo           # RMDIR
+mv file1 file2      # RENAME
+ln file1 file2      # LINK (hard link)
 ```
 
 ## Known Limitations
 
-1. **No persistence**: In-memory metadata is lost on restart (BadgerDB backend provides persistence)
-2. **Limited hard link support**:
-   - Memory store: Full hard link support with proper link count tracking
-   - BadgerDB store: Link counts tracked internally (90% done) but `CreateHardLink()` returns NFS3ERR_NOTSUPP
-   - Both stores: Link counts not exposed in `FileAttr` struct, always reported as 1 to NFS clients
+1. **Memory metadata is ephemeral**: In-memory metadata store loses all data on restart
+   - Use BadgerDB backend for persistence
+   - BadgerDB provides full persistence with path-based handles
+
+2. **Hard link support varies by backend**:
+   - **Memory store**: Full hard link support with proper link count tracking
+   - **BadgerDB store**: Link counts tracked internally but `LINK` procedure returns NFS3ERR_NOTSUPP
+   - **Both stores**: Link counts not exposed in `FileAttr` struct, always reported as 1 to NFS clients
    - See TODO in `pkg/store/metadata/file.go:89` and `pkg/store/metadata/badger/file.go:734`
+
 3. **Inaccurate link counts in NFS responses**:
    - Always reported as 1 for all files/directories
    - Incorrect for directories (should be 2 + subdirectory count)
    - Incorrect for files with multiple hard links
    - Internally tracked but not exposed to protocol layer
-4. **No file locking**: NLM protocol not implemented
+
+4. **No file locking**: NLM (Network Lock Manager) protocol not implemented
+   - Applications requiring file locks may not work correctly
+   - No protection against concurrent writes from multiple clients
+
 5. **No NFSv4**: Only NFSv3 is supported
-6. **Limited security**: Basic AUTH_UNIX only, no Kerberos
+   - No ACLs, no named attributes, no delegations
+   - Use NFSv3-compatible clients only
+
+6. **Limited security**: Basic AUTH_UNIX only
+   - No Kerberos authentication
+   - No built-in encryption (use VPN or network-level encryption)
+   - See [docs/SECURITY.md](docs/SECURITY.md) for recommendations
+
 7. **Single-node only**: No distributed/HA support
+   - No clustering or high availability
+   - No replication (except via S3 bucket replication)
+   - Single point of failure
+
+8. **Garbage collection temporarily disabled**:
+   - GC needs refactoring to work with registry and multiple stores
+   - Will be re-enabled in future phase
+   - Orphaned content may accumulate
+
+See [docs/FAQ.md](docs/FAQ.md) and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for workarounds and more details.
 
 ## References
 
