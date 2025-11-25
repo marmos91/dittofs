@@ -12,6 +12,9 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/config"
 	dittoServer "github.com/marmos91/dittofs/pkg/server"
+
+	// Import prometheus metrics to register init() functions
+	_ "github.com/marmos91/dittofs/pkg/metrics/prometheus"
 )
 
 const usage = `DittoFS - Modular virtual filesystem
@@ -157,6 +160,10 @@ func runStart() {
 	logger.Info("Log level: %s", cfg.Logging.Level)
 	logger.Info("Configuration loaded from: %s", getConfigSource(*configFile))
 
+	// Initialize metrics FIRST (before creating stores that use metrics)
+	// This ensures metrics.IsEnabled() returns true when stores are created
+	metricsResult := config.InitializeMetrics(cfg)
+
 	// Initialize registry with all stores and shares
 	reg, err := config.InitializeRegistry(ctx, cfg)
 	if err != nil {
@@ -187,9 +194,6 @@ func runStart() {
 		logger.Warn("Garbage collection is temporarily disabled during store-per-share refactor")
 		logger.Warn("GC will be re-enabled in a future phase with multi-store support")
 	}
-
-	// Initialize metrics (server and collectors)
-	metricsResult := config.InitializeMetrics(cfg)
 	if metricsResult.Server != nil {
 		logger.Info("Metrics enabled on port %d", cfg.Server.Metrics.Port)
 		dittoSrv.SetMetricsServer(metricsResult.Server)

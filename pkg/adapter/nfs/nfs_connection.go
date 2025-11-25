@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -20,6 +21,11 @@ import (
 type NFSConnection struct {
 	server *NFSAdapter
 	conn   net.Conn
+
+	// Concurrent request handling
+	requestSem chan struct{}  // Semaphore to limit concurrent requests
+	wg         sync.WaitGroup // Track active requests for graceful shutdown
+	writeMu    sync.Mutex     // Protects connection writes (replies must be serialized)
 }
 
 type fragmentHeader struct {
@@ -29,8 +35,9 @@ type fragmentHeader struct {
 
 func NewNFSConnection(server *NFSAdapter, conn net.Conn) *NFSConnection {
 	return &NFSConnection{
-		server,
-		conn,
+		server:     server,
+		conn:       conn,
+		requestSem: make(chan struct{}, server.config.MaxRequestsPerConnection),
 	}
 }
 
@@ -54,6 +61,9 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 			logger.Error("Panic in connection handler from %s: %v",
 				c.conn.RemoteAddr().String(), r)
 		}
+
+		// Wait for all in-flight requests to complete before closing connection
+		c.wg.Wait()
 		_ = c.conn.Close()
 	}()
 
@@ -80,8 +90,9 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 		default:
 		}
 
-		err := c.handleRequest(ctx)
-
+		// Read the request (blocks until data available)
+		// This is done synchronously to maintain request order on the wire
+		xid, procData, err := c.readRequest(ctx)
 		if err != nil {
 			if err == io.EOF {
 				logger.Debug("Connection from %s closed by client", clientAddr)
@@ -90,12 +101,35 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 			} else if err == context.Canceled || err == context.DeadlineExceeded {
 				logger.Debug("Connection from %s cancelled: %v", clientAddr, err)
 			} else {
-				logger.Debug("Error handling request from %s: %v", clientAddr, err)
+				logger.Debug("Error reading request from %s: %v", clientAddr, err)
 			}
 			return
 		}
 
-		// Reset idle timeout after successful request
+		// Acquire semaphore slot (blocks if at limit)
+		c.requestSem <- struct{}{}
+
+		// Process request in parallel goroutine
+		c.wg.Add(1)
+		go func(xid uint32, procData []byte) {
+			defer func() {
+				<-c.requestSem // Release semaphore slot
+				c.wg.Done()
+
+				if r := recover(); r != nil {
+					logger.Error("Panic in request handler from %s: XID=0x%x error=%v",
+						clientAddr, xid, r)
+				}
+			}()
+
+			// Process and send reply
+			if err := c.processRequest(ctx, xid, procData); err != nil {
+				logger.Debug("Error processing request from %s: XID=0x%x error=%v",
+					clientAddr, xid, err)
+			}
+		}(xid, procData)
+
+		// Reset idle timeout after reading request
 		if c.server.config.Timeouts.Idle > 0 {
 			if err := c.conn.SetDeadline(time.Now().Add(c.server.config.Timeouts.Idle)); err != nil {
 				logger.Warn("Failed to reset deadline for %s: %v", clientAddr, err)
@@ -104,24 +138,21 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 	}
 }
 
-// handleRequest processes a single RPC request.
+// readRequest reads and parses an RPC request from the connection.
 //
-// It reads the fragment header, validates the message size, reads the RPC message,
-// parses it, and dispatches it to the appropriate handler.
+// This reads the fragment header, validates the message size, reads the RPC message,
+// and extracts both the call information and procedure data. Both are copied so they
+// can be safely processed in a separate goroutine.
 //
-// The context is passed through to handlers to enable cancellation of long-running
-// operations.
-//
-// Returns an error if:
-// - Context is cancelled
-// - Network error occurs
-// - Message is malformed or too large
-// - Handler returns an error
-func (c *NFSConnection) handleRequest(ctx context.Context) error {
+// Returns:
+//   - XID: The RPC transaction ID (for logging/tracking)
+//   - rawMessage: The complete raw RPC message (copied from pool)
+//   - error: Any error that occurred during reading
+func (c *NFSConnection) readRequest(ctx context.Context) (uint32, []byte, error) {
 	// Check context before starting request processing
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return 0, nil, ctx.Err()
 	default:
 	}
 
@@ -129,7 +160,7 @@ func (c *NFSConnection) handleRequest(ctx context.Context) error {
 	if c.server.config.Timeouts.Read > 0 {
 		deadline := time.Now().Add(c.server.config.Timeouts.Read)
 		if err := c.conn.SetReadDeadline(deadline); err != nil {
-			return fmt.Errorf("set read deadline: %w", err)
+			return 0, nil, fmt.Errorf("set read deadline: %w", err)
 		}
 	}
 
@@ -140,7 +171,7 @@ func (c *NFSConnection) handleRequest(ctx context.Context) error {
 		if err != io.EOF {
 			logger.Debug("Error reading fragment header from %s: %v", c.conn.RemoteAddr().String(), err)
 		}
-		return err
+		return 0, nil, err
 	}
 	logger.Debug("Read fragment header from %s: last=%v length=%d", c.conn.RemoteAddr().String(), header.IsLast, header.Length)
 
@@ -149,51 +180,69 @@ func (c *NFSConnection) handleRequest(ctx context.Context) error {
 	if header.Length > maxFragmentSize {
 		logger.Warn("Fragment size %d exceeds maximum %d from %s",
 			header.Length, maxFragmentSize, c.conn.RemoteAddr().String())
-		return fmt.Errorf("fragment too large: %d bytes", header.Length)
+		return 0, nil, fmt.Errorf("fragment too large: %d bytes", header.Length)
 	}
 
 	// Check context before reading potentially large message
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return 0, nil, ctx.Err()
 	default:
 	}
 
-	// Read RPC message (now uses buffer pool)
+	// Read RPC message (uses buffer pool)
 	message, err := c.readRPCMessage(header.Length)
 	if err != nil {
-		return fmt.Errorf("read RPC message: %w", err)
+		return 0, nil, fmt.Errorf("read RPC message: %w", err)
 	}
-	// NOTE: Buffer is returned AFTER handler completes to allow zero-copy
-	// operations where procedureData is a slice into the original buffer
-	defer nfs.PutBuffer(message)
+	defer nfs.PutBuffer(message) // Return buffer after extracting data
 
-	// Parse RPC call
+	// Parse RPC call to get XID for tracking
 	call, err := rpc.ReadCall(message)
 	if err != nil {
 		logger.Debug("Error parsing RPC call: %v", err)
-		return nil
+		return 0, nil, err
 	}
 
 	logger.Debug("RPC Call: XID=0x%x Program=%d Version=%d Procedure=%d",
 		call.XID, call.Program, call.Version, call.Procedure)
 
-	// Extract procedure data (returns slice into message buffer - zero-copy)
-	procedureData, err := rpc.ReadData(message, call)
-	if err != nil {
-		return fmt.Errorf("extract procedure data: %w", err)
-	}
+	// Copy the entire message since it will be processed in a separate goroutine
+	// This allows the pooled buffer to be returned immediately
+	messageCopy := make([]byte, len(message))
+	copy(messageCopy, message)
 
-	// Check context before dispatching to handler
+	return call.XID, messageCopy, nil
+}
+
+// processRequest processes an RPC request and sends the reply.
+//
+// This takes a raw RPC message (already read from network), parses it,
+// dispatches to the appropriate handler, and sends the reply.
+//
+// This method is designed to be called in a goroutine for parallel processing.
+func (c *NFSConnection) processRequest(ctx context.Context, xid uint32, rawMessage []byte) error {
+	// Check context before processing
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
 	}
 
-	// Handle the call with context
-	// IMPORTANT: procedureData is a slice into the pooled message buffer
-	// The buffer will be returned to the pool when this function exits
+	// Parse RPC call from raw message
+	call, err := rpc.ReadCall(rawMessage)
+	if err != nil {
+		logger.Debug("Error parsing RPC call in worker: XID=0x%x error=%v", xid, err)
+		return nil
+	}
+
+	// Extract procedure data
+	procedureData, err := rpc.ReadData(rawMessage, call)
+	if err != nil {
+		return fmt.Errorf("extract procedure data: %w", err)
+	}
+
+	// Dispatch to handler (this is where the real work happens - COMMIT, etc.)
 	return c.handleRPCCall(ctx, call, procedureData)
 }
 
@@ -442,8 +491,10 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	//  - Metrics include NFS protocol status codes, not Go errors
 	//  - Share-level tracking enables per-tenant analysis
 	//
-	c.server.metrics.RecordRequestStart(procedure.Name, share)
-	defer c.server.metrics.RecordRequestEnd(procedure.Name, share)
+	if c.server.metrics != nil {
+		c.server.metrics.RecordRequestStart(procedure.Name, share)
+		defer c.server.metrics.RecordRequestEnd(procedure.Name, share)
+	}
 
 	// Execute handler and measure duration
 	startTime := time.Now()
@@ -458,28 +509,30 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	// Record completion with NFS status code (e.g., "NFS3_OK", "NFS3ERR_NOENT")
 	// This provides RFC-compliant error tracking for observability
 	// Note: Pass empty string for NFS3_OK (success) to avoid labeling as error
-	var responseStatus string
-	if result != nil {
-		if result.NFSStatus != nfs_types.NFS3OK {
-			responseStatus = nfs.NFSStatusToString(result.NFSStatus)
-		}
+	if c.server.metrics != nil {
+		var responseStatus string
+		if result != nil {
+			if result.NFSStatus != nfs_types.NFS3OK {
+				responseStatus = nfs.NFSStatusToString(result.NFSStatus)
+			}
 
-		// Record bytes transferred for READ/WRITE operations
-		// Only successful operations populate these fields
-		if result.NFSStatus == nfs_types.NFS3OK {
-			if result.BytesRead > 0 {
-				c.server.metrics.RecordBytesTransferred(procedure.Name, share, "read", result.BytesRead)
-				c.server.metrics.RecordOperationSize("read", share, result.BytesRead)
+			// Record bytes transferred for READ/WRITE operations
+			// Only successful operations populate these fields
+			if result.NFSStatus == nfs_types.NFS3OK {
+				if result.BytesRead > 0 {
+					c.server.metrics.RecordBytesTransferred(procedure.Name, share, "read", result.BytesRead)
+					c.server.metrics.RecordOperationSize("read", share, result.BytesRead)
+				}
+				if result.BytesWritten > 0 {
+					c.server.metrics.RecordBytesTransferred(procedure.Name, share, "write", result.BytesWritten)
+					c.server.metrics.RecordOperationSize("write", share, result.BytesWritten)
+				}
 			}
-			if result.BytesWritten > 0 {
-				c.server.metrics.RecordBytesTransferred(procedure.Name, share, "write", result.BytesWritten)
-				c.server.metrics.RecordOperationSize("write", share, result.BytesWritten)
-			}
+		} else if err != nil {
+			responseStatus = "ERROR_NO_RESULT"
 		}
-	} else if err != nil {
-		responseStatus = "ERROR_NO_RESULT"
+		c.server.metrics.RecordRequest(procedure.Name, share, duration, responseStatus)
 	}
-	c.server.metrics.RecordRequest(procedure.Name, share, duration, responseStatus)
 
 	if result == nil {
 		return nil, err
@@ -547,8 +600,10 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 	}
 
 	// Record request start in metrics
-	c.server.metrics.RecordRequestStart(procedureName, share)
-	defer c.server.metrics.RecordRequestEnd(procedureName, share)
+	if c.server.metrics != nil {
+		c.server.metrics.RecordRequestStart(procedureName, share)
+		defer c.server.metrics.RecordRequestEnd(procedureName, share)
+	}
 
 	// Dispatch to handler with context and record metrics
 	startTime := time.Now()
@@ -562,15 +617,17 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 
 	// Record request completion in metrics with Mount status code
 	// Note: Pass empty string for MountOK (success) to avoid labeling as error
-	var responseStatus string
-	if result != nil {
-		if result.NFSStatus != mount_handlers.MountOK {
-			responseStatus = nfs.MountStatusToString(result.NFSStatus)
+	if c.server.metrics != nil {
+		var responseStatus string
+		if result != nil {
+			if result.NFSStatus != mount_handlers.MountOK {
+				responseStatus = nfs.MountStatusToString(result.NFSStatus)
+			}
+		} else if err != nil {
+			responseStatus = "ERROR_NO_RESULT"
 		}
-	} else if err != nil {
-		responseStatus = "ERROR_NO_RESULT"
+		c.server.metrics.RecordRequest(procedureName, share, duration, responseStatus)
 	}
-	c.server.metrics.RecordRequest(procedureName, share, duration, responseStatus)
 
 	if result == nil {
 		return nil, err
@@ -583,11 +640,19 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 // It applies write timeout if configured, constructs the RPC success reply,
 // and writes it to the connection.
 //
+// This method is thread-safe and can be called from multiple goroutines.
+// Writes are serialized using writeMu to prevent concurrent writes from
+// corrupting the TCP stream.
+//
 // Returns an error if:
 // - Write timeout cannot be set
 // - Reply construction fails
 // - Network write fails
 func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
+	// Serialize all connection writes to prevent corruption
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
 	if c.server.config.Timeouts.Write > 0 {
 		deadline := time.Now().Add(c.server.config.Timeouts.Write)
 		if err := c.conn.SetWriteDeadline(deadline); err != nil {

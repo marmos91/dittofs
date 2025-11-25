@@ -527,12 +527,21 @@ rmdir foo           # RMDIR
 
 ## Known Limitations
 
-1. **No persistence**: In-memory metadata is lost on restart
-2. **No file locking**: NLM protocol not implemented
-3. **No NFSv4**: Only NFSv3 is supported
-4. **Limited security**: Basic AUTH_UNIX only, no Kerberos
-5. **No caching**: Every operation hits repository
-6. **Single-node only**: No distributed/HA support
+1. **No persistence**: In-memory metadata is lost on restart (BadgerDB backend provides persistence)
+2. **Limited hard link support**:
+   - Memory store: Full hard link support with proper link count tracking
+   - BadgerDB store: Link counts tracked internally (90% done) but `CreateHardLink()` returns NFS3ERR_NOTSUPP
+   - Both stores: Link counts not exposed in `FileAttr` struct, always reported as 1 to NFS clients
+   - See TODO in `pkg/store/metadata/file.go:89` and `pkg/store/metadata/badger/file.go:734`
+3. **Inaccurate link counts in NFS responses**:
+   - Always reported as 1 for all files/directories
+   - Incorrect for directories (should be 2 + subdirectory count)
+   - Incorrect for files with multiple hard links
+   - Internally tracked but not exposed to protocol layer
+4. **No file locking**: NLM protocol not implemented
+5. **No NFSv4**: Only NFSv3 is supported
+6. **Limited security**: Basic AUTH_UNIX only, no Kerberos
+7. **Single-node only**: No distributed/HA support
 
 ## References
 

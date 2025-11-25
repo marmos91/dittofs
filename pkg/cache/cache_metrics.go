@@ -33,13 +33,7 @@ type CacheMetrics interface {
 
 	// RecordBufferCount records the total number of active buffers
 	RecordBufferCount(count int)
+
+	// RecordTotalCacheSize records the total cache size across all content IDs
+	RecordTotalCacheSize(bytes int64)
 }
-
-// noopCacheMetrics is a default no-op metrics implementation
-type noopCacheMetrics struct{}
-
-func (noopCacheMetrics) ObserveWrite(bytes int64, duration time.Duration) {}
-func (noopCacheMetrics) ObserveRead(bytes int64, duration time.Duration)  {}
-func (noopCacheMetrics) RecordCacheSize(contentID string, bytes int64)    {}
-func (noopCacheMetrics) RecordCacheReset(contentID string)                {}
-func (noopCacheMetrics) RecordBufferCount(count int)                      {}

@@ -45,6 +45,9 @@ type Config struct {
 	// Metadata specifies the metadata store type and type-specific configuration
 	Metadata MetadataConfig `mapstructure:"metadata"`
 
+	// Cache specifies cache configuration for read and write buffering
+	Cache CacheConfig `mapstructure:"cache"`
+
 	// Shares defines the list of shares/exports available to clients
 	Shares []ShareConfig `mapstructure:"shares" validate:"dive"`
 
@@ -153,6 +156,27 @@ type MetadataStoreConfig struct {
 	Badger map[string]any `mapstructure:"badger"`
 }
 
+// CacheConfig specifies cache configuration with named cache instances.
+type CacheConfig struct {
+	// Named cache instances
+	Stores map[string]CacheStoreConfig `mapstructure:"stores"`
+}
+
+// CacheStoreConfig defines a single cache instance.
+type CacheStoreConfig struct {
+	// Type specifies which cache implementation to use
+	// Valid values: memory, filesystem
+	Type string `mapstructure:"type" validate:"required,oneof=memory filesystem"`
+
+	// Memory contains memory-specific configuration
+	// Only used when Type = "memory"
+	Memory map[string]any `mapstructure:"memory"`
+
+	// Filesystem contains filesystem-specific configuration
+	// Only used when Type = "filesystem"
+	Filesystem map[string]any `mapstructure:"filesystem"`
+}
+
 // ShareConfig defines a single share/export.
 type ShareConfig struct {
 	// Name is the share path (e.g., "/export")
@@ -164,11 +188,18 @@ type ShareConfig struct {
 	// ContentStore is the name of the content store to use for this share
 	ContentStore string `mapstructure:"content_store" validate:"required"`
 
+	// WriteCache is the name of the write cache to use for async writes (optional)
+	// If specified, enables async write mode: WRITE → cache, COMMIT → flush to store
+	// If empty, writes go directly to the content store (sync mode)
+	WriteCache string `mapstructure:"write_cache"`
+
+	// ReadCache is the name of the read cache to use for caching reads (optional)
+	// If specified, enables read caching for better performance
+	// If empty, reads go directly to the content store (no caching)
+	ReadCache string `mapstructure:"read_cache"`
+
 	// ReadOnly makes the share read-only if true
 	ReadOnly bool `mapstructure:"read_only"`
-
-	// Async allows asynchronous writes if true
-	Async bool `mapstructure:"async"`
 
 	// AllowedClients lists IP addresses or CIDR ranges allowed to access
 	// Empty list means all clients are allowed

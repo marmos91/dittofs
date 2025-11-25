@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/cache"
+	cacheMemory "github.com/marmos91/dittofs/pkg/cache/memory"
 	contentMemory "github.com/marmos91/dittofs/pkg/store/content/memory"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 	metadataMemory "github.com/marmos91/dittofs/pkg/store/metadata/memory"
@@ -18,12 +20,31 @@ func mustCreateMemoryContentStore() *contentMemory.MemoryContentStore {
 	return store
 }
 
+// Helper to create memory cache for testing
+func mustCreateMemoryCache() cache.Cache {
+	// 100MB cache for testing
+	return cacheMemory.NewMemoryCache(100*1024*1024, nil)
+}
+
 // Helper to create a basic ShareConfig for testing
 func testShareConfig(name, metadataStore, contentStore string, readOnly bool) *ShareConfig {
 	return &ShareConfig{
 		Name:          name,
 		MetadataStore: metadataStore,
 		ContentStore:  contentStore,
+		ReadOnly:      readOnly,
+		RootAttr:      &metadata.FileAttr{}, // Empty attr, AddShare will apply defaults
+	}
+}
+
+// Helper to create ShareConfig with cache configuration
+func testShareConfigWithCache(name, metadataStore, contentStore, writeCache, readCache string, readOnly bool) *ShareConfig {
+	return &ShareConfig{
+		Name:          name,
+		MetadataStore: metadataStore,
+		ContentStore:  contentStore,
+		WriteCache:    writeCache,
+		ReadCache:     readCache,
 		ReadOnly:      readOnly,
 		RootAttr:      &metadata.FileAttr{}, // Empty attr, AddShare will apply defaults
 	}
@@ -39,6 +60,9 @@ func TestNewRegistry(t *testing.T) {
 	}
 	if reg.CountContentStores() != 0 {
 		t.Errorf("Expected 0 content stores, got %d", reg.CountContentStores())
+	}
+	if reg.CountCaches() != 0 {
+		t.Errorf("Expected 0 caches, got %d", reg.CountCaches())
 	}
 	if reg.CountShares() != 0 {
 		t.Errorf("Expected 0 shares, got %d", reg.CountShares())
@@ -467,5 +491,355 @@ func TestConcurrentAccess(t *testing.T) {
 	// Wait for all goroutines
 	for i := 0; i < 10; i++ {
 		<-done
+	}
+}
+
+// ============================================================================
+// Cache Tests
+// ============================================================================
+
+func TestRegisterCache(t *testing.T) {
+	reg := NewRegistry()
+	cache := mustCreateMemoryCache()
+
+	// Test successful registration
+	err := reg.RegisterCache("test-cache", cache)
+	if err != nil {
+		t.Fatalf("Failed to register cache: %v", err)
+	}
+
+	if reg.CountCaches() != 1 {
+		t.Errorf("Expected 1 cache, got %d", reg.CountCaches())
+	}
+
+	// Test duplicate registration
+	err = reg.RegisterCache("test-cache", cache)
+	if err == nil {
+		t.Error("Expected error when registering duplicate cache")
+	}
+
+	// Test nil cache
+	err = reg.RegisterCache("nil-cache", nil)
+	if err == nil {
+		t.Error("Expected error when registering nil cache")
+	}
+
+	// Test empty name
+	err = reg.RegisterCache("", cache)
+	if err == nil {
+		t.Error("Expected error when registering cache with empty name")
+	}
+}
+
+func TestGetCache(t *testing.T) {
+	reg := NewRegistry()
+	cache := mustCreateMemoryCache()
+
+	_ = reg.RegisterCache("cache1", cache)
+
+	// Test successful retrieval
+	retrieved, err := reg.GetCache("cache1")
+	if err != nil {
+		t.Fatalf("Failed to get cache: %v", err)
+	}
+	if retrieved != cache {
+		t.Error("Retrieved cache is not the same as registered cache")
+	}
+
+	// Test non-existent cache
+	_, err = reg.GetCache("nonexistent")
+	if err == nil {
+		t.Error("Expected error when getting non-existent cache")
+	}
+}
+
+func TestAddShareWithCache(t *testing.T) {
+	reg := NewRegistry()
+	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
+	contentStore := mustCreateMemoryContentStore()
+	writeCache := mustCreateMemoryCache()
+	readCache := mustCreateMemoryCache()
+
+	_ = reg.RegisterMetadataStore("meta1", metaStore)
+	_ = reg.RegisterContentStore("content1", contentStore)
+	_ = reg.RegisterCache("write-cache", writeCache)
+	_ = reg.RegisterCache("read-cache", readCache)
+
+	ctx := context.Background()
+
+	// Test share with write cache only
+	err := reg.AddShare(ctx, testShareConfigWithCache("/export1", "meta1", "content1", "write-cache", "", false))
+	if err != nil {
+		t.Fatalf("Failed to add share with write cache: %v", err)
+	}
+
+	share1, _ := reg.GetShare("/export1")
+	if share1.WriteCache != "write-cache" {
+		t.Errorf("Expected write cache 'write-cache', got %q", share1.WriteCache)
+	}
+	if share1.ReadCache != "" {
+		t.Errorf("Expected empty read cache, got %q", share1.ReadCache)
+	}
+
+	// Test share with read cache only
+	err = reg.AddShare(ctx, testShareConfigWithCache("/export2", "meta1", "content1", "", "read-cache", false))
+	if err != nil {
+		t.Fatalf("Failed to add share with read cache: %v", err)
+	}
+
+	share2, _ := reg.GetShare("/export2")
+	if share2.WriteCache != "" {
+		t.Errorf("Expected empty write cache, got %q", share2.WriteCache)
+	}
+	if share2.ReadCache != "read-cache" {
+		t.Errorf("Expected read cache 'read-cache', got %q", share2.ReadCache)
+	}
+
+	// Test share with both caches
+	err = reg.AddShare(ctx, testShareConfigWithCache("/export3", "meta1", "content1", "write-cache", "read-cache", false))
+	if err != nil {
+		t.Fatalf("Failed to add share with both caches: %v", err)
+	}
+
+	share3, _ := reg.GetShare("/export3")
+	if share3.WriteCache != "write-cache" {
+		t.Errorf("Expected write cache 'write-cache', got %q", share3.WriteCache)
+	}
+	if share3.ReadCache != "read-cache" {
+		t.Errorf("Expected read cache 'read-cache', got %q", share3.ReadCache)
+	}
+
+	// Test share with no caches (sync mode)
+	err = reg.AddShare(ctx, testShareConfig("/export4", "meta1", "content1", false))
+	if err != nil {
+		t.Fatalf("Failed to add share without caches: %v", err)
+	}
+
+	share4, _ := reg.GetShare("/export4")
+	if share4.WriteCache != "" {
+		t.Errorf("Expected empty write cache, got %q", share4.WriteCache)
+	}
+	if share4.ReadCache != "" {
+		t.Errorf("Expected empty read cache, got %q", share4.ReadCache)
+	}
+}
+
+func TestAddShareWithNonexistentCache(t *testing.T) {
+	reg := NewRegistry()
+	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
+	contentStore := mustCreateMemoryContentStore()
+
+	_ = reg.RegisterMetadataStore("meta1", metaStore)
+	_ = reg.RegisterContentStore("content1", contentStore)
+
+	ctx := context.Background()
+
+	// Test non-existent write cache
+	err := reg.AddShare(ctx, testShareConfigWithCache("/export1", "meta1", "content1", "nonexistent-write", "", false))
+	if err == nil {
+		t.Error("Expected error when adding share with non-existent write cache")
+	}
+
+	// Test non-existent read cache
+	err = reg.AddShare(ctx, testShareConfigWithCache("/export2", "meta1", "content1", "", "nonexistent-read", false))
+	if err == nil {
+		t.Error("Expected error when adding share with non-existent read cache")
+	}
+}
+
+func TestGetCachesForShare(t *testing.T) {
+	reg := NewRegistry()
+	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
+	contentStore := mustCreateMemoryContentStore()
+	writeCache := mustCreateMemoryCache()
+	readCache := mustCreateMemoryCache()
+
+	_ = reg.RegisterMetadataStore("meta1", metaStore)
+	_ = reg.RegisterContentStore("content1", contentStore)
+	_ = reg.RegisterCache("write-cache", writeCache)
+	_ = reg.RegisterCache("read-cache", readCache)
+
+	ctx := context.Background()
+	_ = reg.AddShare(ctx, testShareConfigWithCache("/export", "meta1", "content1", "write-cache", "read-cache", false))
+
+	// Test getting write cache for share
+	wc, err := reg.GetWriteCacheForShare("/export")
+	if err != nil {
+		t.Fatalf("Failed to get write cache for share: %v", err)
+	}
+	if wc != writeCache {
+		t.Error("Retrieved write cache is not the same as registered cache")
+	}
+
+	// Test getting read cache for share
+	rc, err := reg.GetReadCacheForShare("/export")
+	if err != nil {
+		t.Fatalf("Failed to get read cache for share: %v", err)
+	}
+	if rc != readCache {
+		t.Error("Retrieved read cache is not the same as registered cache")
+	}
+
+	// Test non-existent share
+	_, err = reg.GetWriteCacheForShare("/nonexistent")
+	if err == nil {
+		t.Error("Expected error when getting write cache for non-existent share")
+	}
+
+	_, err = reg.GetReadCacheForShare("/nonexistent")
+	if err == nil {
+		t.Error("Expected error when getting read cache for non-existent share")
+	}
+}
+
+func TestGetCachesForShareWithNoCaches(t *testing.T) {
+	reg := NewRegistry()
+	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
+	contentStore := mustCreateMemoryContentStore()
+
+	_ = reg.RegisterMetadataStore("meta1", metaStore)
+	_ = reg.RegisterContentStore("content1", contentStore)
+
+	ctx := context.Background()
+	_ = reg.AddShare(ctx, testShareConfig("/export", "meta1", "content1", false))
+
+	// Test getting write cache for share without cache (should return nil)
+	wc, err := reg.GetWriteCacheForShare("/export")
+	if err != nil {
+		t.Fatalf("Unexpected error getting write cache for share: %v", err)
+	}
+	if wc != nil {
+		t.Error("Expected nil write cache for share without write cache configured")
+	}
+
+	// Test getting read cache for share without cache (should return nil)
+	rc, err := reg.GetReadCacheForShare("/export")
+	if err != nil {
+		t.Fatalf("Unexpected error getting read cache for share: %v", err)
+	}
+	if rc != nil {
+		t.Error("Expected nil read cache for share without read cache configured")
+	}
+}
+
+func TestListCaches(t *testing.T) {
+	reg := NewRegistry()
+
+	// Empty list
+	caches := reg.ListCaches()
+	if len(caches) != 0 {
+		t.Errorf("Expected 0 caches, got %d", len(caches))
+	}
+
+	// Add caches
+	_ = reg.RegisterCache("cache1", mustCreateMemoryCache())
+	_ = reg.RegisterCache("cache2", mustCreateMemoryCache())
+	_ = reg.RegisterCache("cache3", mustCreateMemoryCache())
+
+	caches = reg.ListCaches()
+	if len(caches) != 3 {
+		t.Errorf("Expected 3 caches, got %d", len(caches))
+	}
+
+	// Verify all names are present
+	nameSet := make(map[string]bool)
+	for _, name := range caches {
+		nameSet[name] = true
+	}
+	if !nameSet["cache1"] || !nameSet["cache2"] || !nameSet["cache3"] {
+		t.Error("Missing expected cache names in list")
+	}
+}
+
+func TestListSharesUsingCache(t *testing.T) {
+	reg := NewRegistry()
+	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
+	contentStore := mustCreateMemoryContentStore()
+	writeCache1 := mustCreateMemoryCache()
+	writeCache2 := mustCreateMemoryCache()
+	readCache1 := mustCreateMemoryCache()
+	readCache2 := mustCreateMemoryCache()
+
+	_ = reg.RegisterMetadataStore("meta1", metaStore)
+	_ = reg.RegisterContentStore("content1", contentStore)
+	_ = reg.RegisterCache("write-cache1", writeCache1)
+	_ = reg.RegisterCache("write-cache2", writeCache2)
+	_ = reg.RegisterCache("read-cache1", readCache1)
+	_ = reg.RegisterCache("read-cache2", readCache2)
+
+	ctx := context.Background()
+
+	// Create shares with different cache combinations
+	_ = reg.AddShare(ctx, testShareConfigWithCache("/export1", "meta1", "content1", "write-cache1", "read-cache1", false))
+	_ = reg.AddShare(ctx, testShareConfigWithCache("/export2", "meta1", "content1", "write-cache1", "read-cache2", false))
+	_ = reg.AddShare(ctx, testShareConfigWithCache("/export3", "meta1", "content1", "write-cache2", "read-cache1", false))
+	_ = reg.AddShare(ctx, testShareConfig("/export4", "meta1", "content1", false)) // No caches
+
+	// Test write cache usage
+	sharesUsingWriteCache1 := reg.ListSharesUsingWriteCache("write-cache1")
+	if len(sharesUsingWriteCache1) != 2 {
+		t.Errorf("Expected 2 shares using write-cache1, got %d", len(sharesUsingWriteCache1))
+	}
+
+	sharesUsingWriteCache2 := reg.ListSharesUsingWriteCache("write-cache2")
+	if len(sharesUsingWriteCache2) != 1 {
+		t.Errorf("Expected 1 share using write-cache2, got %d", len(sharesUsingWriteCache2))
+	}
+
+	// Test read cache usage
+	sharesUsingReadCache1 := reg.ListSharesUsingReadCache("read-cache1")
+	if len(sharesUsingReadCache1) != 2 {
+		t.Errorf("Expected 2 shares using read-cache1, got %d", len(sharesUsingReadCache1))
+	}
+
+	sharesUsingReadCache2 := reg.ListSharesUsingReadCache("read-cache2")
+	if len(sharesUsingReadCache2) != 1 {
+		t.Errorf("Expected 1 share using read-cache2, got %d", len(sharesUsingReadCache2))
+	}
+
+	// Test non-existent cache
+	sharesUsingNonexistent := reg.ListSharesUsingWriteCache("nonexistent")
+	if len(sharesUsingNonexistent) != 0 {
+		t.Errorf("Expected 0 shares using non-existent cache, got %d", len(sharesUsingNonexistent))
+	}
+}
+
+func TestMultipleSharesSameCache(t *testing.T) {
+	reg := NewRegistry()
+	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
+	contentStore := mustCreateMemoryContentStore()
+	sharedCache := mustCreateMemoryCache()
+
+	_ = reg.RegisterMetadataStore("meta1", metaStore)
+	_ = reg.RegisterContentStore("content1", contentStore)
+	_ = reg.RegisterCache("shared-cache", sharedCache)
+
+	ctx := context.Background()
+
+	// Create multiple shares using the same cache
+	_ = reg.AddShare(ctx, testShareConfigWithCache("/export1", "meta1", "content1", "shared-cache", "", false))
+	_ = reg.AddShare(ctx, testShareConfigWithCache("/export2", "meta1", "content1", "shared-cache", "", false))
+	_ = reg.AddShare(ctx, testShareConfigWithCache("/export3", "meta1", "content1", "shared-cache", "", false))
+
+	if reg.CountShares() != 3 {
+		t.Errorf("Expected 3 shares, got %d", reg.CountShares())
+	}
+
+	// Verify all point to same cache name
+	share1, _ := reg.GetShare("/export1")
+	share2, _ := reg.GetShare("/export2")
+	share3, _ := reg.GetShare("/export3")
+
+	if share1.WriteCache != "shared-cache" || share2.WriteCache != "shared-cache" || share3.WriteCache != "shared-cache" {
+		t.Error("All shares should use 'shared-cache' write cache")
+	}
+
+	// Verify they all resolve to the same cache instance
+	cache1, _ := reg.GetWriteCacheForShare("/export1")
+	cache2, _ := reg.GetWriteCacheForShare("/export2")
+	cache3, _ := reg.GetWriteCacheForShare("/export3")
+
+	if cache1 != sharedCache || cache2 != sharedCache || cache3 != sharedCache {
+		t.Error("All shares should resolve to the same cache instance")
 	}
 }

@@ -6,14 +6,22 @@ import "github.com/marmos91/dittofs/pkg/store/metadata"
 // - A share name (export path for NFS, share name for SMB)
 // - A metadata store instance (for file/directory structure)
 // - A content store instance (for file data)
+// - Optional caches for read/write buffering
 // - Access control rules (IP-based, authentication)
 // - Identity mapping rules (squashing)
 //
 // Multiple shares can reference the same store instances.
+//
+// Caching Modes:
+// - Write Cache: If specified, enables async writes (WRITE → cache, COMMIT → flush to store)
+// - Read Cache: If specified, caches content reads for better performance
+// - Both caches are optional and independent
 type Share struct {
 	Name          string
 	MetadataStore string              // Name of the metadata store
 	ContentStore  string              // Name of the content store
+	WriteCache    string              // Name of the write cache (optional, empty = sync writes)
+	ReadCache     string              // Name of the read cache (optional, empty = no read caching)
 	RootHandle    metadata.FileHandle // Encoded file handle for the root directory
 	ReadOnly      bool
 
@@ -35,6 +43,8 @@ type ShareConfig struct {
 	Name               string
 	MetadataStore      string
 	ContentStore       string
+	WriteCache         string // Optional write cache name (empty = sync writes)
+	ReadCache          string // Optional read cache name (empty = no read caching)
 	ReadOnly           bool
 	AllowedClients     []string
 	DeniedClients      []string

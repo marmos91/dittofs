@@ -7,16 +7,16 @@ import (
 // NFSMetrics provides observability for NFS adapter operations.
 //
 // Implementations can collect metrics about NFS requests, connection lifecycle,
-// throughput, and errors. This interface is optional - if not provided to the
-// NFS adapter, a no-op implementation is used with zero overhead.
+// throughput, and errors. This interface is optional - pass nil to disable
+// metrics collection with zero overhead.
 //
 // Example usage:
 //
 //	// With metrics enabled
-//	metrics := metrics.NewNFSMetrics()
+//	metrics := prometheus.NewNFSMetrics()
 //	adapter := nfs.New(config, metrics)
 //
-//	// Without metrics (no-op)
+//	// Without metrics (pass nil for zero overhead)
 //	adapter := nfs.New(config, nil)
 type NFSMetrics interface {
 	// RecordRequest records a completed NFS request with its procedure name,
@@ -77,25 +77,4 @@ type NFSMetrics interface {
 	// RecordConnectionForceClosed increments the force-closed connections counter.
 	// Called when connections are forcibly closed after shutdown timeout.
 	RecordConnectionForceClosed()
-}
-
-// noopNFSMetrics is a no-op implementation of NFSMetrics with zero overhead.
-type noopNFSMetrics struct{}
-
-func (noopNFSMetrics) RecordRequest(procedure string, share string, duration time.Duration, errorCode string) {
-}
-func (noopNFSMetrics) RecordRequestStart(procedure string, share string) {}
-func (noopNFSMetrics) RecordRequestEnd(procedure string, share string)   {}
-func (noopNFSMetrics) RecordBytesTransferred(procedure string, share string, direction string, bytes uint64) {
-}
-func (noopNFSMetrics) RecordOperationSize(operation string, share string, bytes uint64) {}
-func (noopNFSMetrics) SetActiveConnections(count int32)                                 {}
-func (noopNFSMetrics) RecordConnectionAccepted()                                        {}
-func (noopNFSMetrics) RecordConnectionClosed()                                          {}
-func (noopNFSMetrics) RecordConnectionForceClosed()                                     {}
-
-// NewNoopNFSMetrics returns a no-op implementation of NFSMetrics.
-// This is useful for testing or when metrics collection is disabled.
-func NewNoopNFSMetrics() NFSMetrics {
-	return &noopNFSMetrics{}
 }

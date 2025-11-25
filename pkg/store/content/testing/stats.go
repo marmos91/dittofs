@@ -3,7 +3,6 @@ package testing
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,10 +33,6 @@ func (suite *StoreTestSuite) testGetStorageStatsEmpty(t *testing.T) {
 
 func (suite *StoreTestSuite) testGetStorageStatsWithContent(t *testing.T) {
 	store := suite.NewStore()
-	writable, ok := store.(content.WritableContentStore)
-	if !ok {
-		t.Skip("Store does not implement WritableContentStore")
-	}
 
 	// Create some content items of different sizes
 	id1 := generateTestID("stats-1")
@@ -48,9 +43,9 @@ func (suite *StoreTestSuite) testGetStorageStatsWithContent(t *testing.T) {
 	data2 := generateTestData(200) // 200 bytes
 	data3 := generateTestData(300) // 300 bytes
 
-	mustWriteContent(t, writable, id1, data1)
-	mustWriteContent(t, writable, id2, data2)
-	mustWriteContent(t, writable, id3, data3)
+	mustWriteContent(t, store, id1, data1)
+	mustWriteContent(t, store, id2, data2)
+	mustWriteContent(t, store, id3, data3)
 
 	// Get stats
 	stats, err := store.GetStorageStats(testContext())
@@ -69,10 +64,6 @@ func (suite *StoreTestSuite) testGetStorageStatsWithContent(t *testing.T) {
 
 func (suite *StoreTestSuite) testGetStorageStatsAfterDelete(t *testing.T) {
 	store := suite.NewStore()
-	writable, ok := store.(content.WritableContentStore)
-	if !ok {
-		t.Skip("Store does not implement WritableContentStore")
-	}
 
 	// Create content
 	id1 := generateTestID("stats-delete-1")
@@ -83,9 +74,9 @@ func (suite *StoreTestSuite) testGetStorageStatsAfterDelete(t *testing.T) {
 	data2 := generateTestData(200) // 200 bytes
 	data3 := generateTestData(300) // 300 bytes
 
-	mustWriteContent(t, writable, id1, data1)
-	mustWriteContent(t, writable, id2, data2)
-	mustWriteContent(t, writable, id3, data3)
+	mustWriteContent(t, store, id1, data1)
+	mustWriteContent(t, store, id2, data2)
+	mustWriteContent(t, store, id3, data3)
 
 	// Get initial stats
 	stats1, err := store.GetStorageStats(testContext())
@@ -94,7 +85,7 @@ func (suite *StoreTestSuite) testGetStorageStatsAfterDelete(t *testing.T) {
 	assert.Equal(t, uint64(3), stats1.ContentCount)
 
 	// Delete one item
-	mustDelete(t, writable, id2)
+	mustDelete(t, store, id2)
 
 	// Get stats after delete
 	stats2, err := store.GetStorageStats(testContext())
@@ -104,8 +95,8 @@ func (suite *StoreTestSuite) testGetStorageStatsAfterDelete(t *testing.T) {
 	assert.Equal(t, uint64(200), stats2.AverageSize)
 
 	// Delete all
-	mustDelete(t, writable, id1)
-	mustDelete(t, writable, id3)
+	mustDelete(t, store, id1)
+	mustDelete(t, store, id3)
 
 	// Get final stats
 	stats3, err := store.GetStorageStats(testContext())

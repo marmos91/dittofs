@@ -36,16 +36,12 @@ func (suite *StoreTestSuite) testReadContentNotFound(t *testing.T) {
 
 func (suite *StoreTestSuite) testReadContentSuccess(t *testing.T) {
 	store := suite.NewStore()
-	writable, ok := store.(content.WritableContentStore)
-	if !ok {
-		t.Skip("Store does not implement WritableContentStore")
-	}
 
 	id := generateTestID("read-success")
 	testData := []byte("Hello, World!")
 
 	// Write content
-	mustWriteContent(t, writable, id, testData)
+	mustWriteContent(t, store, id, testData)
 
 	// Read content
 	reader, err := store.ReadContent(testContext(), id)
@@ -60,16 +56,12 @@ func (suite *StoreTestSuite) testReadContentSuccess(t *testing.T) {
 
 func (suite *StoreTestSuite) testReadContentEmpty(t *testing.T) {
 	store := suite.NewStore()
-	writable, ok := store.(content.WritableContentStore)
-	if !ok {
-		t.Skip("Store does not implement WritableContentStore")
-	}
 
 	id := generateTestID("empty")
 	testData := []byte{}
 
 	// Write empty content
-	mustWriteContent(t, writable, id, testData)
+	mustWriteContent(t, store, id, testData)
 
 	// Read content
 	data := mustReadContent(t, store, id)
@@ -78,17 +70,13 @@ func (suite *StoreTestSuite) testReadContentEmpty(t *testing.T) {
 
 func (suite *StoreTestSuite) testReadContentLarge(t *testing.T) {
 	store := suite.NewStore()
-	writable, ok := store.(content.WritableContentStore)
-	if !ok {
-		t.Skip("Store does not implement WritableContentStore")
-	}
 
 	id := generateTestID("large")
 	// 10MB test data
 	testData := generateTestData(10 * 1024 * 1024)
 
 	// Write large content
-	mustWriteContent(t, writable, id, testData)
+	mustWriteContent(t, store, id, testData)
 
 	// Read content
 	data := mustReadContent(t, store, id)
@@ -110,16 +98,12 @@ func (suite *StoreTestSuite) testGetContentSizeNotFound(t *testing.T) {
 
 func (suite *StoreTestSuite) testGetContentSizeSuccess(t *testing.T) {
 	store := suite.NewStore()
-	writable, ok := store.(content.WritableContentStore)
-	if !ok {
-		t.Skip("Store does not implement WritableContentStore")
-	}
 
 	id := generateTestID("size-success")
 	testData := []byte("Test data for size")
 
 	// Write content
-	mustWriteContent(t, writable, id, testData)
+	mustWriteContent(t, store, id, testData)
 
 	// Get size
 	size := mustGetSize(t, store, id)
@@ -139,10 +123,6 @@ func (suite *StoreTestSuite) testContentExistsNotFound(t *testing.T) {
 
 func (suite *StoreTestSuite) testContentExistsSuccess(t *testing.T) {
 	store := suite.NewStore()
-	writable, ok := store.(content.WritableContentStore)
-	if !ok {
-		t.Skip("Store does not implement WritableContentStore")
-	}
 
 	id := generateTestID("exists-success")
 	testData := []byte("Exists test")
@@ -151,7 +131,7 @@ func (suite *StoreTestSuite) testContentExistsSuccess(t *testing.T) {
 	assertContentExists(t, store, id, false)
 
 	// Write content
-	mustWriteContent(t, writable, id, testData)
+	mustWriteContent(t, store, id, testData)
 
 	// After write
 	assertContentExists(t, store, id, true)

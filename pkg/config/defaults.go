@@ -175,7 +175,7 @@ func applyShareDefaults(shares []ShareConfig) {
 		share := &shares[i]
 
 		// ReadOnly defaults to false
-		// Async defaults to false (sync writes by default)
+		// WriteCache and ReadCache default to empty strings (sync mode, no caching)
 
 		// If AllowedClients is nil, initialize to empty (all allowed)
 		if share.AllowedClients == nil {
@@ -334,7 +334,7 @@ func GetDefaultConfig() *Config {
 				MetadataStore: "default",
 				ContentStore:  "default",
 				ReadOnly:      false,
-				Async:         true,
+				// WriteCache and ReadCache are empty by default (sync mode, no caching)
 				IdentityMapping: IdentityMappingConfig{
 					MapAllToAnonymous:        false, // Don't squash by default
 					MapPrivilegedToAnonymous: false, // root_squash disabled by default
