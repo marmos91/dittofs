@@ -317,7 +317,6 @@ func TestValidate_MultipleValidShares(t *testing.T) {
 		MetadataStore:      "default",
 		ContentStore:       "default",
 		ReadOnly:           true,
-		Async:              false,
 		AllowedAuthMethods: []string{"unix"},
 		IdentityMapping: IdentityMappingConfig{
 			MapAllToAnonymous: false,

@@ -128,7 +128,9 @@ func (w *s3Writer) uploadPart() error {
 	}
 
 	// Record metrics
-	w.store.metrics.RecordBytes("write", int64(len(data)))
+	if w.store.metrics != nil {
+		w.store.metrics.RecordBytes("write", int64(len(data)))
+	}
 
 	// Clear buffer for next part
 	w.buffer.Reset()
@@ -139,7 +141,9 @@ func (w *s3Writer) uploadPart() error {
 func (w *s3Writer) Close() error {
 	start := time.Now()
 	defer func() {
-		w.store.metrics.ObserveOperation("OpenWriter.Close", time.Since(start), w.err)
+		if w.store.metrics != nil {
+			w.store.metrics.ObserveOperation("OpenWriter.Close", time.Since(start), w.err)
+		}
 	}()
 
 	if w.err != nil {
@@ -160,7 +164,9 @@ func (w *s3Writer) Close() error {
 			w.err = err
 			return err
 		}
-		w.store.metrics.RecordBytes("write", int64(len(data)))
+		if w.store.metrics != nil {
+			w.store.metrics.RecordBytes("write", int64(len(data)))
+		}
 		return nil
 	}
 

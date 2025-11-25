@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -10,7 +9,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -337,7 +335,19 @@ func (h *Handler) Write(
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	logger.Debug("WRITE: share=%s path=%s", shareName, path)
+	// Get write cache for this share (optional - may be nil for sync mode)
+	writeCache, err := h.Registry.GetWriteCacheForShare(shareName)
+	if err != nil {
+		logger.Error("WRITE failed: cannot get write cache: share=%s handle=%x client=%s error=%v",
+			shareName, req.Handle, clientIP, err)
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
+
+	if writeCache != nil {
+		logger.Debug("WRITE: share=%s path=%s mode=async (using write cache)", shareName, path)
+	} else {
+		logger.Debug("WRITE: share=%s path=%s mode=sync (no write cache)", shareName, path)
+	}
 
 	// ========================================================================
 	// Step 3: Validate request parameters
@@ -495,26 +505,7 @@ func (h *Handler) Write(
 	}
 
 	// ========================================================================
-	// Step 6: Check if content store supports writing
-	// ========================================================================
-
-	writeStore, ok := contentStore.(content.WritableContentStore)
-	if !ok {
-		logger.Error("WRITE failed: content store does not support writing: handle=%x client=%s",
-			req.Handle, clientIP)
-
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
-
-		return &WriteResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrRofs}, // Read-only filesystem
-			AttrBefore:      nfsWccAttr,
-			AttrAfter:       nfsAttr,
-		}, nil
-	}
-
-	// ========================================================================
-	// Step 7: Write data to cache or content store
+	// Step 6: Write data to cache or content store
 	// ========================================================================
 	// Write modes:
 	//   1. Cached mode (if WriteCache available): Write to cache first
@@ -537,38 +528,34 @@ func (h *Handler) Write(
 	default:
 	}
 
-	// TODO: Phase 5 - Access stores via registry
-	/*
-		if false { // Disabled until Phase 5
-			// CACHED MODE: Write to cache
-			logger.Debug("WRITE: cached mode: content_id=%s offset=%d count=%d",
-				writeIntent.ContentID, req.Offset, len(req.Data))
+	if writeCache != nil {
+		// CACHED MODE: Write to cache
+		logger.Debug("WRITE: cached mode: content_id=%s offset=%d count=%d",
+			writeIntent.ContentID, req.Offset, len(req.Data))
 
-			err = h.WriteCache.WriteAt(writeIntent.ContentID, req.Data, int64(req.Offset))
-			if err != nil {
-				logger.Error("WRITE failed: cache write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
-					req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
+		err = writeCache.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, int64(req.Offset))
+		if err != nil {
+			logger.Error("WRITE failed: cache write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
+				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
 
-				fileid := xdr.ExtractFileID(fileHandle)
-				nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
+			fileid := xdr.ExtractFileID(fileHandle)
+			nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
 
-				return &WriteResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-					AttrBefore: nfsWccAttr,
-					AttrAfter:  nfsAttr,
-				}, nil
-			}
+			return &WriteResponse{
+				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+				AttrBefore:      nfsWccAttr,
+				AttrAfter:       nfsAttr,
+			}, nil
+		}
 
-			logger.Debug("WRITE: cached successfully: content_id=%s cache_size=%d",
-				writeIntent.ContentID, h.WriteCache.Size(writeIntent.ContentID))
-		} else {
-	*/
-	{
+		logger.Debug("WRITE: cached successfully: content_id=%s cache_size=%d",
+			writeIntent.ContentID, writeCache.Size(writeIntent.ContentID))
+	} else {
 		// DIRECT MODE: Write directly to content store
 		logger.Debug("WRITE: direct mode: content_id=%s offset=%d count=%d",
 			writeIntent.ContentID, req.Offset, len(req.Data))
 
-		err = writeStore.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, int64(req.Offset))
+		err = contentStore.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, int64(req.Offset))
 		if err != nil {
 			logger.Error("WRITE failed: content write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
 				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
@@ -589,28 +576,7 @@ func (h *Handler) Write(
 	}
 
 	// ========================================================================
-	// Step 8: Flush if necessary (stable writes or threshold reached)
-	// ========================================================================
-
-	flushReason := h.determineFlushReason()
-	if flushReason != "" {
-		if err := h.flushContent(ctx.Context, writeStore, writeIntent.ContentID, flushReason); err != nil {
-			logger.Error("WRITE failed: flush error: handle=%x offset=%d count=%d content_id=%s reason=%s client=%s error=%v",
-				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, flushReason, clientIP, err)
-
-			fileid := xdr.ExtractFileID(fileHandle)
-			nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
-
-			return &WriteResponse{
-				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-				AttrBefore:      nfsWccAttr,
-				AttrAfter:       nfsAttr,
-			}, nil
-		}
-	}
-
-	// ========================================================================
-	// Step 9: Commit metadata changes after successful content write
+	// Step 8: Commit metadata changes after successful content write
 	// ========================================================================
 
 	updatedFile, err := metadataStore.CommitWrite(authCtx, writeIntent)
@@ -633,7 +599,7 @@ func (h *Handler) Write(
 	}
 
 	// ========================================================================
-	// Step 10: Build success response
+	// Step 9: Build success response
 	// ========================================================================
 
 	fileid := xdr.ExtractFileID(fileHandle)
@@ -644,26 +610,25 @@ func (h *Handler) Write(
 
 	// Determine what stability level to return based on whether we're using a cache
 	//
-	// WITH cache (S3, etc.):
+	// WITH cache:
 	//   - Return UNSTABLE to tell client data is buffered
 	//   - Client will call COMMIT when it wants durability
 	//   - This prevents flush-on-every-write performance issue
 	//
-	// WITHOUT cache (filesystem store, direct write):
+	// WITHOUT cache (direct write to content store):
 	//   - Return requested stability level (data is already committed)
 	//   - Client won't call COMMIT since we said data is stable
 	//   - No unnecessary COMMIT calls
-	committed := uint32(UnstableWrite)
-
-	// TODO: Phase 5
-	if true { // Changed until Phase 5
+	var committed uint32
+	if writeCache != nil {
+		// Cache enabled: always return UNSTABLE so client will call COMMIT
+		committed = uint32(UnstableWrite)
+		logger.Debug("WRITE: returning UNSTABLE (cache enabled, flush on COMMIT)")
+	} else {
 		// No cache: data written directly to storage, return requested stability
 		committed = req.Stable
-	} else if flushReason != "" {
-		// Cache enabled but we flushed: return requested stability
-		committed = req.Stable
+		logger.Debug("WRITE: returning stability=%d (no cache, data committed)", committed)
 	}
-	// else: Cache enabled, no flush, return UNSTABLE
 
 	logger.Debug("WRITE details: stable_requested=%d committed=%d size=%d type=%d mode=%o",
 		req.Stable, committed, updatedFile.Size, updatedFile.Type, updatedFile.Mode)
@@ -676,89 +641,6 @@ func (h *Handler) Write(
 		Committed:       committed,      // UNSTABLE when using cache, tells client to call COMMIT
 		Verf:            serverBootTime, // Server boot time for restart detection
 	}, nil
-}
-
-// ============================================================================
-// Helper Methods
-// ============================================================================
-
-// determineFlushReason determines if a flush is needed and returns the reason.
-//
-// Flush strategy when using write cache:
-//   - NEVER flush on stable write requests (defeats the cache!)
-//   - Client will call COMMIT procedure when it wants a flush
-//   - Auto-flush worker handles timeout-based flushing (30s idle)
-//
-// Why we ignore the stable flag:
-//   - macOS NFS client sends stable=FileSyncWrite on EVERY write operation
-//   - This causes 32 S3 uploads for a 1MB file (one per 32KB chunk)
-//   - Completely defeats write caching and kills performance
-//   - RFC 1813 allows servers to return UNSTABLE and defer flush to COMMIT
-//
-// Parameters:
-//   - writeStore: Content store (must implement WritableContentStore)
-//   - contentID: Content identifier
-//   - stable: Write stability level (IGNORED when using cache)
-//
-// Returns:
-//   - FlushReason: Reason for flush, or empty string if no flush needed
-func (h *Handler) determineFlushReason() FlushReason {
-	// When using write cache, NEVER flush on write operations
-	// Flushing happens via:
-	//   1. COMMIT procedure (explicit client request)
-	//   2. Auto-flush worker (timeout-based, after 30s idle)
-	//   3. Cache threshold (handled by auto-flush worker)
-	//
-	// This prevents the catastrophic performance issue where macOS
-	// sends stable=FileSyncWrite on every write, causing dozens of
-	// S3 uploads per file instead of one.
-	return ""
-}
-
-// flushContent flushes cached content to the content store.
-//
-// This method handles both cached and direct modes:
-//   - Cached mode: Flushes cache to content store via FlushWrites()
-//   - Direct mode: Calls FlushWrites() if store supports it (no-op for most stores)
-//
-// Parameters:
-//   - ctx: Context for cancellation
-//   - writeStore: Content store (must implement WritableContentStore)
-//   - contentID: Content identifier to flush
-//   - reason: Reason for flush (for logging)
-//
-// Returns:
-//   - error: Returns error if flush fails, nil otherwise
-func (h *Handler) flushContent(
-	ctx context.Context,
-	writeStore content.WritableContentStore,
-	contentID metadata.ContentID,
-	reason FlushReason,
-) error {
-	// Only flush if content store supports it
-	flushableStore, ok := writeStore.(content.FlushableContentStore)
-	if !ok {
-		// Content store doesn't support flushing - this is fine
-		logger.Debug("Flush skipped: content store does not support FlushableContentStore interface: content_id=%s reason=%s",
-			contentID, reason)
-		return nil
-	}
-
-	// Skip flush if contentID is empty
-	if contentID == "" {
-		logger.Debug("Flush skipped: empty content ID: reason=%s", reason)
-		return nil
-	}
-
-	logger.Info("Flushing content: content_id=%s reason=%s", contentID, reason)
-
-	// Flush writes (this reads from cache if available, or flushes store's internal buffers)
-	if err := flushableStore.FlushWrites(ctx, contentID); err != nil {
-		return fmt.Errorf("flush failed: %w", err)
-	}
-
-	logger.Info("Flush complete: content_id=%s reason=%s", contentID, reason)
-	return nil
 }
 
 // ============================================================================

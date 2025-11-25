@@ -30,7 +30,7 @@ type TestContext struct {
 	Server        *server.DittoServer
 	Registry      *registry.Registry
 	MetadataStore metadata.MetadataStore
-	ContentStore  content.WritableContentStore
+	ContentStore  content.ContentStore
 	MountPath     string
 	Port          int
 	ctx           context.Context
@@ -145,6 +145,46 @@ func (tc *TestContext) startServer() {
 	tc.Server = server.New(tc.Registry, 30*time.Second)
 
 	// Add adapter (server will call SetRegistry automatically)
+	if err := tc.Server.AddAdapter(nfsAdapter); err != nil {
+		tc.T.Fatalf("Failed to add NFS adapter: %v", err)
+	}
+
+	// Start server in background
+	tc.wg.Add(1)
+	go func() {
+		defer tc.wg.Done()
+		if err := tc.Server.Serve(tc.ctx); err != nil && err != context.Canceled {
+			tc.T.Logf("Server error: %v", err)
+		}
+	}()
+
+	// Wait for server to be ready
+	tc.waitForServer()
+}
+
+// startServerFromRegistry starts the DittoFS server using an already-initialized registry.
+// This is useful for tests that need to customize the registry before starting the server.
+func (tc *TestContext) startServerFromRegistry() {
+	tc.T.Helper()
+
+	// Create NFS adapter
+	nfsConfig := nfs.NFSConfig{
+		Enabled:        true,
+		Port:           tc.Port,
+		MaxConnections: 0,
+		Timeouts: nfs.NFSTimeoutsConfig{
+			Read:     5 * time.Minute,
+			Write:    30 * time.Second,
+			Idle:     5 * time.Minute,
+			Shutdown: 30 * time.Second,
+		},
+	}
+	nfsAdapter := nfs.New(nfsConfig, nil) // nil = no metrics
+
+	// Create DittoServer
+	tc.Server = server.New(tc.Registry, 30*time.Second)
+
+	// Add adapter
 	if err := tc.Server.AddAdapter(nfsAdapter); err != nil {
 		tc.T.Fatalf("Failed to add NFS adapter: %v", err)
 	}

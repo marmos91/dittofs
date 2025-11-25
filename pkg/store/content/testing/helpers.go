@@ -20,7 +20,7 @@ func AssertErrorIs(t *testing.T, expected error, actual error) {
 }
 
 // mustWriteContent writes content and fails the test if it errors.
-func mustWriteContent(t *testing.T, store content.WritableContentStore, id metadata.ContentID, data []byte) {
+func mustWriteContent(t *testing.T, store content.ContentStore, id metadata.ContentID, data []byte) {
 	t.Helper()
 	err := store.WriteContent(testContext(), id, data)
 	require.NoError(t, err, "WriteContent should succeed")
@@ -47,14 +47,14 @@ func mustGetSize(t *testing.T, store content.ContentStore, id metadata.ContentID
 }
 
 // mustDelete deletes content and fails the test if it errors.
-func mustDelete(t *testing.T, store content.WritableContentStore, id metadata.ContentID) {
+func mustDelete(t *testing.T, store content.ContentStore, id metadata.ContentID) {
 	t.Helper()
 	err := store.Delete(testContext(), id)
 	require.NoError(t, err, "Delete should succeed")
 }
 
 // mustTruncate truncates content and fails the test if it errors.
-func mustTruncate(t *testing.T, store content.WritableContentStore, id metadata.ContentID, size uint64) {
+func mustTruncate(t *testing.T, store content.ContentStore, id metadata.ContentID, size uint64) {
 	t.Helper()
 	err := store.Truncate(testContext(), id, size)
 	require.NoError(t, err, "Truncate should succeed")

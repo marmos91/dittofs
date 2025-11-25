@@ -763,8 +763,8 @@ func DecodeSymlinkRequest(data []byte) (*SymlinkRequest, error) {
 //
 //	resp := &SymlinkResponse{
 //	    NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
-//	    FileHandle:    symlinkFile,
-//	    Attr:          symlinkFile,
+//	    FileHandle:    encodedHandle,   // []byte - encoded file handle
+//	    Attr:          symlinkAttr,     // *types.NFSFileAttr - NFS attributes
 //	    DirAttrBefore: wccBefore,
 //	    DirAttrAfter:  wccAfter,
 //	}

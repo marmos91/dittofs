@@ -30,7 +30,7 @@ type MultiShareTestContext struct {
 	Server        *server.DittoServer
 	Registry      *registry.Registry
 	MetadataStore metadata.MetadataStore
-	ContentStore  content.WritableContentStore
+	ContentStore  content.ContentStore
 	Shares        map[string]*ShareMount // share name -> mount info
 	Port          int
 	ctx           context.Context

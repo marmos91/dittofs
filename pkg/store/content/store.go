@@ -62,6 +62,11 @@ import (
 // (last-write-wins, corruption, or error) depending on the implementation.
 // Callers should use external synchronization when concurrent access to the
 // same content is needed.
+//
+// Write Semantics:
+// All content stores in DittoFS are writable. The interface includes both
+// read and write operations. Optional interfaces (FlushableContentStore,
+// ReadAtContentStore, etc.) extend this base interface with additional capabilities.
 type ContentStore interface {
 	// ========================================================================
 	// Content Reading
@@ -175,39 +180,6 @@ type ContentStore interface {
 	//   - *StorageStats: Current storage statistics
 	//   - error: Only context cancellation or storage access errors
 	GetStorageStats(ctx context.Context) (*StorageStats, error)
-}
-
-// ============================================================================
-// WritableContentStore Interface
-// ============================================================================
-
-// WritableContentStore extends ContentStore with write and delete operations.
-//
-// This interface adds the ability to create, modify, and delete content.
-// Not all content stores support writing (e.g., read-only mirrors, archives).
-//
-// Write Semantics:
-//   - WriteAt: Partial writes at specific offsets (for NFS WRITE operations)
-//   - Truncate: Resize content (for NFS SETATTR size changes)
-//   - Delete: Remove content (for file deletion, garbage collection)
-//   - WriteContent: Convenience method for full content writes
-//
-// Atomicity:
-// Implementations should strive for atomic operations where possible:
-//   - WriteAt should be atomic for the written region
-//   - Truncate should be atomic
-//   - Delete should be idempotent (deleting non-existent content succeeds)
-//
-// Concurrent Writes:
-// Concurrent writes to the same ContentID have undefined behavior:
-//   - May result in corruption (interleaved writes)
-//   - May result in last-write-wins
-//   - May return an error
-//
-// Callers should use external synchronization (locks in MetadataStore)
-// to prevent concurrent writes to the same content.
-type WritableContentStore interface {
-	ContentStore
 
 	// ========================================================================
 	// Content Writing
@@ -328,6 +300,7 @@ type WritableContentStore interface {
 	//   - Testing and setup
 	//   - Small files that fit in memory
 	//   - Content creation (not updates)
+	//   - Flushing cache to content store
 	//
 	// For large files or partial updates, use WriteAt instead.
 	//
@@ -345,284 +318,15 @@ type WritableContentStore interface {
 	// Returns:
 	//   - error: Returns error if write fails or context is cancelled
 	//
-	// Example (testing):
+	// Example (cache flush):
 	//
-	//	// Create test content
-	//	contentID := metadata.ContentID("test-content-123")
-	//	err := store.WriteContent(ctx, contentID, []byte("Hello, World!"))
+	//	// Flush cache to content store
+	//	data, _ := cache.Read(ctx, contentID)
+	//	err := store.WriteContent(ctx, contentID, data)
 	//	if err != nil {
-	//	    t.Fatalf("Failed to write content: %v", err)
+	//	    return err
 	//	}
 	WriteContent(ctx context.Context, id metadata.ContentID, data []byte) error
-}
-
-// ============================================================================
-// FlushableContentStore Interface
-// ============================================================================
-
-// FlushableContentStore extends WritableContentStore with explicit write flushing.
-//
-// This interface is OPTIONAL. Content stores that buffer writes in memory or
-// temporary storage should implement this interface to allow protocol handlers
-// to explicitly flush writes to durable storage.
-//
-// Design Rationale:
-// Many storage backends benefit from write buffering:
-//   - S3: Buffer writes to avoid read-modify-write cycles
-//   - Filesystem: Write-back caching for performance
-//   - Network stores: Batch writes to reduce round-trips
-//
-// However, NFS protocol requires explicit durability guarantees:
-//   - WRITE with FILE_SYNC: Must persist before returning
-//   - WRITE with UNSTABLE: Can buffer, but COMMIT must flush
-//   - File close: Should flush (though NFS has no explicit close)
-//
-// Use Cases:
-//   - S3: Accumulate sequential writes, upload in one PutObject or multipart
-//   - Filesystem: Sync() to ensure data reaches disk
-//   - Memory: No-op (already durable in RAM)
-//
-// Protocol Integration:
-//   - NFS WRITE with FILE_SYNC/DATA_SYNC calls FlushWrites() after WriteAt()
-//   - NFS COMMIT calls FlushWrites() to persist unstable writes
-//   - NFS handlers should call FlushWrites() before file close
-//   - Stores that don't buffer can return nil immediately (no-op)
-//
-// Thread Safety:
-// Implementations must be safe for concurrent calls across different content IDs.
-// Flushing one file should not block operations on other files.
-//
-// Platform Considerations:
-//   - macOS NFS client never sends COMMIT - auto-flush timeout required!
-//   - Linux may or may not send COMMIT depending on mount options
-//   - Windows behavior varies by NFS client implementation
-//
-// Therefore, implementations should also support timeout-based auto-flush
-// to ensure durability even when COMMIT is not called.
-type FlushableContentStore interface {
-	WritableContentStore
-
-	// FlushWrites forces all buffered writes for a content ID to durable storage.
-	//
-	// This method blocks until:
-	//   - All buffered data is written to the backing store
-	//   - The backing store acknowledges durability (e.g., S3 PutObject completes)
-	//
-	// Behavior:
-	//   - Idempotent: Multiple calls are safe, subsequent calls are no-ops
-	//   - Per-file: Only flushes the specified content ID
-	//   - Clears cache: After successful flush, internal buffers should be released
-	//   - Partial flush: If cache exceeds threshold (e.g., 5MB for S3 multipart),
-	//     implementation may flush incrementally and keep session active
-	//
-	// Error Handling:
-	//   - On success: Buffer is cleared, returns nil
-	//   - On failure: Buffer is retained for retry, returns error
-	//
-	// Context Cancellation:
-	// The method should respect context cancellation and stop flushing.
-	// Partial flushes (e.g., multipart uploads) should be aborted cleanly.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - id: Content identifier to flush
-	//
-	// Returns:
-	//   - error: Returns error if flush fails (write buffer retained for retry)
-	//
-	// Example (NFS WRITE handler with stable=FILE_SYNC):
-	//
-	//	// Check if store supports flushing
-	//	type flusher interface {
-	//	    FlushWrites(ctx context.Context, id metadata.ContentID) error
-	//	}
-	//
-	//	if flushable, ok := contentStore.(flusher); ok {
-	//	    if err := flushable.FlushWrites(ctx, contentID); err != nil {
-	//	        return nfs.NFS3ErrIO
-	//	    }
-	//	}
-	FlushWrites(ctx context.Context, id metadata.ContentID) error
-
-	// FlushThreshold returns the recommended flush size for this store.
-	//
-	// Protocol handlers should check the cache size against this threshold
-	// and call FlushWrites() when the threshold is reached. This allows
-	// each content store to define its own optimal flush point:
-	//   - S3: 5MB (multipart upload threshold)
-	//   - Filesystem: 1MB (reasonable memory limit)
-	//   - Memory: 0 (no threshold, unlimited buffering)
-	//
-	// How it works:
-	//   1. Handler writes to cache
-	//   2. Handler checks: if cache.Size(id) >= store.FlushThreshold() { flush }
-	//   3. Content store handles flush logic (multipart vs simple upload)
-	//
-	// Returns:
-	//   - uint64: Threshold in bytes (0 = no threshold, unlimited buffering)
-	//
-	// Example (NFS WRITE handler):
-	//
-	//	// After writing to cache
-	//	cache.WriteAt(contentID, data, offset)
-	//
-	//	// Check threshold
-	//	if flushable, ok := store.(FlushableContentStore); ok {
-	//	    if uint64(cache.Size(contentID)) >= flushable.FlushThreshold() {
-	//	        flushable.FlushWrites(ctx, contentID)
-	//	    }
-	//	}
-	FlushThreshold() uint64
-}
-
-// ============================================================================
-// CloseableContentStore Interface
-// ============================================================================
-
-// CloseableContentStore allows explicit closing of open write sessions.
-//
-// This interface is OPTIONAL. Some content stores may maintain open file handles,
-// multipart upload sessions, or other resources that benefit from explicit cleanup.
-//
-// Design Rationale:
-// NFS protocol does not have explicit file close operations - the protocol is
-// stateless. However, internally we may track resources per file:
-//   - Write caches (memory or temp files)
-//   - Multipart upload sessions (S3)
-//   - Open file descriptors
-//   - Locks or other resources
-//
-// This interface provides a hint to the content store that:
-//   - The file handle is no longer in use
-//   - Resources can be cleaned up
-//   - Any pending writes should be flushed
-//
-// Use Cases:
-//   - Metadata store calls CloseContent() when last file handle is released
-//   - Server shutdown calls CloseContent() for all open files
-//   - Periodic cleanup of idle resources
-//
-// Protocol Integration:
-//   - When NFS file handle is released (reference count reaches 0)
-//   - During server graceful shutdown
-//   - When idle timeout is reached
-//
-// Relationship with FlushWrites:
-// CloseContent typically calls FlushWrites internally, plus additional cleanup:
-//   - Flush any buffered writes
-//   - Delete temporary files
-//   - Complete or abort multipart uploads
-//   - Close file descriptors
-//   - Release locks
-//
-// Thread Safety:
-// Implementations must be safe for concurrent calls. Multiple calls to
-// CloseContent for the same ID should be idempotent.
-type CloseableContentStore interface {
-	WritableContentStore
-
-	// CloseContent closes any open resources for a content ID.
-	//
-	// For stores with write buffering, this typically:
-	//   1. Calls FlushWrites() to persist data
-	//   2. Releases temporary resources (temp files, upload sessions)
-	//   3. Clears internal state
-	//
-	// This is a hint for cleanup - stores must handle cases where
-	// CloseContent is never called (e.g., server crash).
-	//
-	// Idempotency:
-	// Multiple calls with the same ID are safe. Subsequent calls are no-ops.
-	//
-	// Error Handling:
-	// If flush fails, the error is returned and resources are retained for retry.
-	// If only cleanup fails (after successful flush), the error may be logged
-	// but should not prevent future operations on the content ID.
-	//
-	// Context Cancellation:
-	// The method should respect context cancellation. If cancelled during flush,
-	// resources are retained and can be closed later.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - id: Content identifier to close
-	//
-	// Returns:
-	//   - error: Returns error if close fails (typically from FlushWrites failure)
-	//
-	// Example (metadata store on handle release):
-	//
-	//	// When last reference to file handle is released
-	//	type closeable interface {
-	//	    CloseContent(ctx context.Context, id metadata.ContentID) error
-	//	}
-	//
-	//	if closeableStore, ok := contentStore.(closeable); ok {
-	//	    if err := closeableStore.CloseContent(ctx, contentID); err != nil {
-	//	        logger.Warn("Failed to close content: %v", err)
-	//	        // Don't fail handle release - can retry later
-	//	    }
-	//	}
-	CloseContent(ctx context.Context, id metadata.ContentID) error
-}
-
-// ============================================================================
-// SeekableContentStore Interface
-// ============================================================================
-
-// SeekableContentStore is an optional interface for random access reads.
-//
-// This interface is supported by storage backends that allow efficient
-// random access:
-//   - Filesystem: Supports efficient seeking (✓)
-//   - Memory: Supports efficient seeking (✓)
-//   - S3: Does NOT support seeking (✗) - requires range requests
-//
-// Use Cases:
-//   - Efficient partial reads (read middle of file)
-//   - Reading file in non-sequential order
-//   - Implementing database-like access patterns
-//
-// Protocol handlers should check if the content store implements this
-// interface and use it when available for better performance.
-type SeekableContentStore interface {
-	ContentStore
-
-	// ReadContentSeekable returns a reader with seeking support.
-	//
-	// The returned reader implements io.ReadSeekCloser, allowing random
-	// access to any position in the content without reading from the beginning.
-	//
-	// This is more efficient than ReadContent() when:
-	//   - Reading small portions of large files
-	//   - Reading in non-sequential order
-	//   - Implementing random access protocols
-	//
-	// The caller is responsible for closing the reader when done.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - id: Content identifier to read
-	//
-	// Returns:
-	//   - io.ReadSeekCloser: Seekable reader (must be closed by caller)
-	//   - error: ErrContentNotFound if content doesn't exist, or context/IO errors
-	//
-	// Example (random access read):
-	//
-	//	reader, err := store.ReadContentSeekable(ctx, contentID)
-	//	if err != nil {
-	//	    return err
-	//	}
-	//	defer reader.Close()
-	//
-	//	// Read last 100 bytes
-	//	_, err = reader.Seek(-100, io.SeekEnd)
-	//	if err != nil {
-	//	    return err
-	//	}
-	//	tail, err := io.ReadAll(reader)
-	ReadContentSeekable(ctx context.Context, id metadata.ContentID) (io.ReadSeekCloser, error)
 }
 
 // ============================================================================
@@ -697,353 +401,214 @@ type ReadAtContentStore interface {
 }
 
 // ============================================================================
-// StreamingContentStore Interface
+// IncrementalWriteStore Interface
 // ============================================================================
 
-// StreamingContentStore is an optional interface for streaming operations.
+// IncrementalWriteStore enables incremental flushing from cache to content store.
 //
-// This interface provides more control over reading and writing compared to
-// the base ContentStore interface. It's particularly useful for:
-//   - S3: Efficient streaming uploads/downloads
-//   - Large files: Avoid loading entire file in memory
-//   - Progressive processing: Process data as it's read/written
+// This interface is designed for S3-backed stores where uploading large files
+// in one operation is not feasible due to:
+//   - Single PutObject size limits (varies by S3 service)
+//   - Network timeout constraints (3+ minutes for 1GB upload)
+//   - NFS client timeouts ("server not responding")
 //
-// Implementations:
-//   - Filesystem: Can implement using os.File (✓)
-//   - Memory: Can implement using bytes.Buffer wrappers (✓)
-//   - S3: Should implement for efficient streaming (✓)
-type StreamingContentStore interface {
-	ContentStore
-
-	// OpenWriter returns a writer for streaming content writes.
-	//
-	// This allows writing content incrementally without loading it all in
-	// memory first. The writer must be closed to finalize the write.
-	//
-	// Write Semantics:
-	//   - Sequential writes only (no seeking)
-	//   - Content is created if it doesn't exist
-	//   - If content exists, it is overwritten (replaced)
-	//   - Closing the writer commits the content
-	//   - Not closing the writer may lose data
-	//
-	// Error Handling:
-	// Errors during Write() should be returned immediately. Errors during
-	// Close() indicate the content was not successfully written.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - id: Content identifier (created if doesn't exist, replaced if exists)
-	//
-	// Returns:
-	//   - io.WriteCloser: Writer for streaming writes (must be closed)
-	//   - error: Returns error if writer cannot be created
-	//
-	// Example (streaming upload):
-	//
-	//	writer, err := store.OpenWriter(ctx, contentID)
-	//	if err != nil {
-	//	    return err
-	//	}
-	//	defer writer.Close()
-	//
-	//	// Stream data from source
-	//	_, err = io.Copy(writer, sourceReader)
-	//	if err != nil {
-	//	    return err
-	//	}
-	//
-	//	// Commit by closing
-	//	if err := writer.Close(); err != nil {
-	//	    return err
-	//	}
-	OpenWriter(ctx context.Context, id metadata.ContentID) (io.WriteCloser, error)
-
-	// OpenReader returns a reader for streaming content reads.
-	//
-	// This is similar to ReadContent() but may provide additional control
-	// or different behavior depending on the implementation.
-	//
-	// Some implementations may return the same reader as ReadContent().
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - id: Content identifier to read
-	//
-	// Returns:
-	//   - io.ReadCloser: Reader for streaming reads (must be closed)
-	//   - error: ErrContentNotFound if content doesn't exist, or context/IO errors
-	OpenReader(ctx context.Context, id metadata.ContentID) (io.ReadCloser, error)
-}
-
-// ============================================================================
-// MultipartContentStore Interface
-// ============================================================================
-
-// MultipartContentStore is an optional interface for multipart uploads.
+// Problem Scenario (Real-World Test):
+//   - User copies 1.1GB file over NFS
+//   - macOS NFS client calls COMMIT every ~4MB (253 COMMITs total)
+//   - Current implementation: buffer all 1.1GB in cache, flush on final COMMIT
+//   - Result: 3+ minute blocking upload → client timeout + EntityTooLarge error
 //
-// This interface is designed for S3-style multipart uploads, which are essential
-// for uploading large files efficiently:
-//   - Files can be uploaded in parallel parts
-//   - Failed parts can be retried without re-uploading entire file
-//   - Supports very large files (>5GB)
-//   - Efficient bandwidth usage
+// Solution:
+// Instead of buffering all data and flushing at the end, flush incrementally
+// during partial COMMIT operations using S3 multipart uploads:
+//   - COMMIT #1-2 (~8MB accumulated): Upload part 1 (5MB), keep 3MB in cache
+//   - COMMIT #3-4 (~8MB accumulated): Upload part 2 (5MB), keep 3MB in cache
+//   - ...
+//   - COMMIT #253 (final): Upload remaining data + complete multipart
 //
-// Multipart Upload Flow:
-//  1. BeginMultipartUpload() → uploadID
-//  2. UploadPart() for each part (can be parallel)
-//  3. CompleteMultipartUpload() to finalize
-//  4. OR AbortMultipartUpload() to cancel
-//
-// Implementations:
-//   - S3: Native multipart upload support (✓)
-//   - Filesystem: Can implement by assembling parts (✓)
-//   - Memory: Probably not useful (✗)
-//
-// Part Size Guidelines:
+// S3 Multipart Requirements:
 //   - Minimum part size: 5MB (except last part)
-//   - Maximum part size: 5GB
 //   - Maximum parts: 10,000
-//   - Optimal part size: 10-100MB depending on network
-type MultipartContentStore interface {
+//   - Parts must be numbered sequentially (1, 2, 3, ...)
+//
+// Flow:
+//  1. BeginIncrementalWrite(contentID) → initiates multipart upload, returns upload ID
+//  2. FlushIncremental(contentID, data) → accumulates data, uploads when >= 5MB
+//  3. FlushIncremental(contentID, data) → continues uploading parts
+//  4. CompleteIncrementalWrite(contentID) → uploads final part + completes multipart
+//
+// Benefits:
+//   - No client timeouts (each COMMIT responds quickly)
+//   - No S3 size limits (uses multipart for large files)
+//   - Cache stays small (data is incrementally removed)
+//   - Failed uploads can be retried per-part
+//
+// Implementations:
+//   - S3: MUST implement using native multipart uploads (✓)
+//   - Filesystem: No-op (writes are already incremental)
+//   - Memory: No-op (no size/timeout constraints)
+type IncrementalWriteStore interface {
 	ContentStore
 
-	// BeginMultipartUpload initiates a multipart upload session.
+	// BeginIncrementalWrite initiates an incremental write session.
 	//
-	// This creates an upload session and returns an upload ID that must be
-	// used for all subsequent part uploads and completion.
+	// This creates an S3 multipart upload session and prepares for incremental
+	// flushing of cached data. The session is tracked by content ID.
 	//
-	// The upload is not finalized until CompleteMultipartUpload() is called.
-	// Incomplete uploads should be cleaned up using AbortMultipartUpload()
-	// or a background cleanup process.
+	// Multiple calls with the same ID should be idempotent (return existing session).
 	//
 	// Parameters:
 	//   - ctx: Context for cancellation and timeouts
-	//   - id: Content identifier for the content being uploaded
+	//   - id: Content identifier
 	//
 	// Returns:
 	//   - string: Upload ID for this multipart upload session
-	//   - error: Returns error if upload cannot be initiated
+	//   - error: Returns error if session cannot be initiated
 	//
-	// Example:
+	// Example (COMMIT handler on first partial commit):
 	//
-	//	uploadID, err := store.BeginMultipartUpload(ctx, contentID)
-	//	if err != nil {
-	//	    return err
+	//	if incStore, ok := contentStore.(content.IncrementalWriteStore); ok {
+	//	    uploadID, err := incStore.BeginIncrementalWrite(ctx, contentID)
+	//	    if err != nil {
+	//	        return fmt.Errorf("failed to begin incremental write: %w", err)
+	//	    }
+	//	    // Store uploadID in session state for subsequent commits
 	//	}
-	BeginMultipartUpload(ctx context.Context, id metadata.ContentID) (uploadID string, err error)
+	BeginIncrementalWrite(ctx context.Context, id metadata.ContentID) (uploadID string, err error)
 
-	// UploadPart uploads one part of a multipart upload.
+	// FlushIncremental writes partial data from cache to content store.
 	//
-	// Parts can be uploaded in parallel from multiple goroutines. Part numbers
-	// must be unique within an upload (1-10000). Parts can be uploaded in any
-	// order.
+	// This uploads data as a multipart part if enough data has been accumulated
+	// (>= 5MB for S3). If less than 5MB, data is buffered until more arrives.
 	//
-	// Part Size:
-	//   - Minimum size: 5MB (except last part which can be smaller)
-	//   - Maximum size: 5GB
-	//   - All parts except last should be same size for optimal performance
+	// The implementation tracks:
+	//   - Upload ID (from BeginIncrementalWrite)
+	//   - Current part number (auto-incremented)
+	//   - Buffered data (accumulated until >= 5MB)
+	//
+	// Returns the number of bytes actually uploaded to S3 (may be 0 if still buffering).
 	//
 	// Parameters:
 	//   - ctx: Context for cancellation and timeouts
 	//   - id: Content identifier
-	//   - uploadID: Upload ID from BeginMultipartUpload
-	//   - partNumber: Part number (1-10000, must be unique)
-	//   - data: Part data (typically 5MB-5GB)
+	//   - data: Partial data from cache (typically ~4MB from one COMMIT)
 	//
 	// Returns:
+	//   - flushed: Number of bytes actually uploaded to S3 (0 if buffering)
 	//   - error: Returns error if upload fails
 	//
-	// Example (parallel upload):
+	// Example (COMMIT handler on partial commit):
 	//
-	//	var wg sync.WaitGroup
-	//	for i, chunk := range chunks {
-	//	    wg.Add(1)
-	//	    go func(partNum int, data []byte) {
-	//	        defer wg.Done()
-	//	        err := store.UploadPart(ctx, contentID, uploadID, partNum, data)
-	//	        if err != nil {
-	//	            log.Printf("Part %d failed: %v", partNum, err)
-	//	        }
-	//	    }(i+1, chunk)
+	//	// Read partial data from cache (e.g., 4MB range)
+	//	data, _ := cache.ReadRange(ctx, contentID, offset, count)
+	//
+	//	if incStore, ok := contentStore.(content.IncrementalWriteStore); ok {
+	//	    flushed, err := incStore.FlushIncremental(ctx, contentID, data)
+	//	    if err != nil {
+	//	        return fmt.Errorf("failed to flush incremental: %w", err)
+	//	    }
+	//	    logger.Debug("Flushed %d bytes to S3 (buffered: %d)", flushed, len(data)-int(flushed))
 	//	}
-	//	wg.Wait()
-	UploadPart(ctx context.Context, id metadata.ContentID, uploadID string, partNumber int, data []byte) error
+	FlushIncremental(ctx context.Context, id metadata.ContentID, data []byte) (flushed int64, err error)
 
-	// CompleteMultipartUpload finalizes a multipart upload.
+	// CompleteIncrementalWrite finalizes an incremental write session.
 	//
-	// This assembles all uploaded parts into the final content. After this
-	// operation succeeds, the content is available for reading and the upload
-	// ID is no longer valid.
+	// This:
+	//   1. Uploads any remaining buffered data as the final part
+	//   2. Completes the S3 multipart upload
+	//   3. Cleans up session state
 	//
-	// Requirements:
-	//   - All parts must be successfully uploaded before calling this
-	//   - Part numbers must be provided in order (1, 2, 3, ...)
-	//   - No gaps in part numbers
-	//
-	// If completion fails, the upload remains in progress and can be retried
-	// or aborted.
+	// After this call, the content is available for reading via ReadContent().
 	//
 	// Parameters:
 	//   - ctx: Context for cancellation and timeouts
 	//   - id: Content identifier
-	//   - uploadID: Upload ID from BeginMultipartUpload
-	//   - partNumbers: Ordered list of part numbers to assemble
 	//
 	// Returns:
 	//   - error: Returns error if completion fails
 	//
-	// Example:
+	// Example (COMMIT handler on final commit):
 	//
-	//	// After all parts uploaded successfully
-	//	partNumbers := []int{1, 2, 3, 4, 5}
-	//	err := store.CompleteMultipartUpload(ctx, contentID, uploadID, partNumbers)
-	//	if err != nil {
-	//	    return err
+	//	if incStore, ok := contentStore.(content.IncrementalWriteStore); ok {
+	//	    err := incStore.CompleteIncrementalWrite(ctx, contentID)
+	//	    if err != nil {
+	//	        return fmt.Errorf("failed to complete incremental write: %w", err)
+	//	    }
+	//	    logger.Info("Completed incremental write: %s", contentID)
 	//	}
-	CompleteMultipartUpload(ctx context.Context, id metadata.ContentID, uploadID string, partNumbers []int) error
+	CompleteIncrementalWrite(ctx context.Context, id metadata.ContentID) error
 
-	// AbortMultipartUpload cancels an in-progress multipart upload.
+	// AbortIncrementalWrite cancels an incremental write session.
 	//
-	// This cleans up all uploaded parts and invalidates the upload ID.
-	// Storage space used by parts is reclaimed.
+	// This:
+	//   1. Aborts the S3 multipart upload (frees storage)
+	//   2. Discards any buffered data
+	//   3. Cleans up session state
 	//
-	// This operation is idempotent - aborting a non-existent upload succeeds.
+	// This operation is idempotent - aborting a non-existent session succeeds.
 	//
 	// Use Cases:
-	//   - Upload errors occurred (network failure, data corruption)
-	//   - Client cancelled the upload
+	//   - WRITE or COMMIT operation failed
+	//   - Client disconnected during upload
 	//   - Timeout exceeded
-	//   - Cleanup of stale uploads
+	//   - Cleanup on server shutdown
 	//
 	// Parameters:
 	//   - ctx: Context for cancellation and timeouts
 	//   - id: Content identifier
-	//   - uploadID: Upload ID from BeginMultipartUpload
 	//
 	// Returns:
-	//   - error: Returns error only for context cancellation or storage failures,
-	//     NOT for non-existent uploads
+	//   - error: Returns error only for storage failures (idempotent)
 	//
-	// Example:
+	// Example (COMMIT handler on error):
 	//
-	//	uploadID, _ := store.BeginMultipartUpload(ctx, contentID)
 	//	defer func() {
-	//	    if err != nil {
-	//	        // Cleanup on error
-	//	        store.AbortMultipartUpload(context.Background(), contentID, uploadID)
+	//	    if err != nil && incStore != nil {
+	//	        incStore.AbortIncrementalWrite(context.Background(), contentID)
 	//	    }
 	//	}()
-	AbortMultipartUpload(ctx context.Context, id metadata.ContentID, uploadID string) error
+	AbortIncrementalWrite(ctx context.Context, id metadata.ContentID) error
+
+	// GetIncrementalWriteState returns the current state of an incremental write session.
+	//
+	// This allows the COMMIT handler to check if an incremental write is in progress
+	// and get information about the current upload (upload ID, part number, buffered size).
+	//
+	// Returns nil if no incremental write session exists for this content ID.
+	//
+	// Parameters:
+	//   - id: Content identifier
+	//
+	// Returns:
+	//   - *IncrementalWriteState: Current state (nil if no session)
+	//
+	// Example (COMMIT handler):
+	//
+	//	state := incStore.GetIncrementalWriteState(contentID)
+	//	if state == nil {
+	//	    // First commit - begin incremental write
+	//	    uploadID, _ := incStore.BeginIncrementalWrite(ctx, contentID)
+	//	} else {
+	//	    // Subsequent commit - continue flushing
+	//	    logger.Debug("Incremental write in progress: uploadID=%s part=%d buffered=%d",
+	//	        state.UploadID, state.CurrentPartNumber, state.BufferedSize)
+	//	}
+	GetIncrementalWriteState(id metadata.ContentID) *IncrementalWriteState
 }
 
-// ============================================================================
-// GarbageCollectableStore Interface
-// ============================================================================
+// IncrementalWriteState tracks the state of an incremental write session.
+type IncrementalWriteState struct {
+	// UploadID is the S3 multipart upload ID
+	UploadID string
 
-// GarbageCollectableStore is an optional interface for content cleanup.
-//
-// This interface enables automatic garbage collection of unreferenced content.
-// Content becomes garbage when:
-//   - File is deleted (metadata removed, content remains)
-//   - Hard link is removed (last reference to content)
-//   - Failed operations leave orphaned content
-//   - Migration or sync leaves old content
-//
-// Garbage Collection Process:
-//  1. MetadataStore provides list of all referenced ContentIDs
-//  2. ContentStore.ListAllContent() returns all ContentIDs
-//  3. Compute: unreferenced = all content - referenced
-//  4. ContentStore.DeleteBatch() removes unreferenced content
-//
-// Implementations:
-//   - Filesystem: Should implement (✓)
-//   - Memory: Should implement (✓)
-//   - S3: Should implement (✓)
-type GarbageCollectableStore interface {
-	ContentStore
+	// CurrentPartNumber is the next part number to upload (1-indexed)
+	CurrentPartNumber int
 
-	// ListAllContent returns all content IDs in the store.
-	//
-	// This returns a complete list of all content currently stored, regardless
-	// of whether it's referenced by metadata or not.
-	//
-	// Performance Warning:
-	// For large content stores, this may be slow and consume significant memory.
-	// Implementations should consider:
-	//   - Pagination or streaming results
-	//   - Caching the list (if content changes infrequently)
-	//   - Background processing
-	//
-	// Context Cancellation:
-	// For large stores, implementations should periodically check context
-	// during iteration.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//
-	// Returns:
-	//   - []metadata.ContentID: List of all content IDs
-	//   - error: Returns error for context cancellation or storage failures
-	//
-	// Example (garbage collection):
-	//
-	//	// Get all content
-	//	allContent, err := store.ListAllContent(ctx)
-	//	if err != nil {
-	//	    return err
-	//	}
-	//
-	//	// Get referenced content from metadata
-	//	referenced := metadataStore.GetAllContentIDs(ctx)
-	//
-	//	// Find unreferenced content
-	//	unreferenced := difference(allContent, referenced)
-	ListAllContent(ctx context.Context) ([]metadata.ContentID, error)
+	// BufferedSize is the amount of data buffered but not yet uploaded
+	BufferedSize int64
 
-	// DeleteBatch removes multiple content items in one operation.
-	//
-	// This is more efficient than calling Delete() multiple times, especially
-	// for backends like S3 that support batch operations.
-	//
-	// The operation is best-effort:
-	//   - Partial failures are allowed
-	//   - Successfully deleted items are not rolled back on partial failure
-	//   - Returns map of failed deletions (empty map = all succeeded)
-	//
-	// Idempotency:
-	// Non-existent content IDs are considered successful deletions (not errors).
-	//
-	// Context Cancellation:
-	// For large batches, implementations should periodically check context.
-	// If cancelled, returns errors for remaining items.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - ids: Content identifiers to delete
-	//
-	// Returns:
-	//   - map[metadata.ContentID]error: Map of failed deletions (empty = all succeeded)
-	//   - error: Returns error only for context cancellation or catastrophic failures,
-	//     NOT for individual item failures (those go in the map)
-	//
-	// Example (garbage collection):
-	//
-	//	// Delete unreferenced content
-	//	failures, err := store.DeleteBatch(ctx, unreferencedIDs)
-	//	if err != nil {
-	//	    return fmt.Errorf("batch delete failed: %w", err)
-	//	}
-	//
-	//	// Log individual failures
-	//	for id, err := range failures {
-	//	    logger.Warn("Failed to delete %s: %v", id, err)
-	//	}
-	//
-	//	deletedCount := len(unreferencedIDs) - len(failures)
-	//	logger.Info("Garbage collection: deleted %d items, %d failed",
-	//	    deletedCount, len(failures))
-	DeleteBatch(ctx context.Context, ids []metadata.ContentID) (failures map[metadata.ContentID]error, err error)
+	// TotalFlushed is the total bytes uploaded so far
+	TotalFlushed int64
 }
 
 // ============================================================================

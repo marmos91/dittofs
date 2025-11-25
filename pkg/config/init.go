@@ -185,10 +185,12 @@ shares:
     metadata_store: "` + cfg.Shares[0].MetadataStore + `"
     # Reference to content store by name
     content_store: "` + cfg.Shares[0].ContentStore + `"
+    # Optional write cache for async writes (empty = sync mode)
+    # write_cache: "fast-write"
+    # Optional read cache for caching reads (empty = no caching)
+    # read_cache: "disk-read"
     # Make share read-only
     read_only: ` + fmt.Sprintf("%t", cfg.Shares[0].ReadOnly) + `
-    # Allow asynchronous writes
-    async: ` + fmt.Sprintf("%t", cfg.Shares[0].Async) + `
     # IP addresses or CIDR ranges allowed to access (empty = all)
     allowed_clients: []
     # IP addresses or CIDR ranges explicitly denied

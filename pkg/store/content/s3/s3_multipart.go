@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -44,10 +45,17 @@ func (s *S3ContentStore) BeginMultipartUpload(ctx context.Context, id metadata.C
 
 	key := s.getObjectKey(id)
 
+	start := time.Now()
 	result, err := s.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
+
+	// Record metrics
+	if s.metrics != nil {
+		s.metrics.ObserveOperation("CreateMultipartUpload", time.Since(start), err)
+	}
+
 	if err != nil {
 		return "", fmt.Errorf("failed to create multipart upload: %w", err)
 	}
@@ -60,6 +68,11 @@ func (s *S3ContentStore) BeginMultipartUpload(ctx context.Context, id metadata.C
 		completedParts: make([]types.CompletedPart, 0),
 	}
 	s.uploadSessionsMu.Unlock()
+
+	// Record active upload
+	if s.metrics != nil {
+		s.metrics.RecordActiveUpload("s3", 1)
+	}
 
 	return uploadID, nil
 }
@@ -83,7 +96,9 @@ func (s *S3ContentStore) UploadPart(ctx context.Context, id metadata.ContentID, 
 	}
 
 	key := s.getObjectKey(id)
+	dataSize := int64(len(data))
 
+	start := time.Now()
 	result, err := s.client.UploadPart(ctx, &s3.UploadPartInput{
 		Bucket:     aws.String(s.bucket),
 		Key:        aws.String(key),
@@ -91,6 +106,15 @@ func (s *S3ContentStore) UploadPart(ctx context.Context, id metadata.ContentID, 
 		PartNumber: aws.Int32(int32(partNumber)),
 		Body:       bytes.NewReader(data),
 	})
+
+	// Record metrics
+	if s.metrics != nil {
+		s.metrics.ObserveOperation("UploadPart", time.Since(start), err)
+		if err == nil {
+			s.metrics.RecordBytes("UploadPart", dataSize)
+		}
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to upload part %d: %w", partNumber, err)
 	}
@@ -151,6 +175,7 @@ func (s *S3ContentStore) CompleteMultipartUpload(ctx context.Context, id metadat
 
 	key := s.getObjectKey(id)
 
+	start := time.Now()
 	_, err := s.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
 		Bucket:   aws.String(s.bucket),
 		Key:      aws.String(key),
@@ -159,6 +184,12 @@ func (s *S3ContentStore) CompleteMultipartUpload(ctx context.Context, id metadat
 			Parts: completedParts,
 		},
 	})
+
+	// Record metrics
+	if s.metrics != nil {
+		s.metrics.ObserveOperation("CompleteMultipartUpload", time.Since(start), err)
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to complete multipart upload: %w", err)
 	}
@@ -166,6 +197,11 @@ func (s *S3ContentStore) CompleteMultipartUpload(ctx context.Context, id metadat
 	s.uploadSessionsMu.Lock()
 	delete(s.uploadSessions, uploadID)
 	s.uploadSessionsMu.Unlock()
+
+	// Record completed upload
+	if s.metrics != nil {
+		s.metrics.RecordActiveUpload("s3", -1)
+	}
 
 	return nil
 }
@@ -188,11 +224,18 @@ func (s *S3ContentStore) AbortMultipartUpload(ctx context.Context, id metadata.C
 
 	key := s.getObjectKey(id)
 
+	start := time.Now()
 	_, err := s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
 		Bucket:   aws.String(s.bucket),
 		Key:      aws.String(key),
 		UploadId: aws.String(uploadID),
 	})
+
+	// Record metrics (before error handling to capture all attempts)
+	if s.metrics != nil {
+		s.metrics.ObserveOperation("AbortMultipartUpload", time.Since(start), err)
+	}
+
 	if err != nil {
 		// Ignore NoSuchUpload error (idempotent behavior)
 		var noSuchUpload *types.NoSuchUpload
@@ -204,6 +247,11 @@ func (s *S3ContentStore) AbortMultipartUpload(ctx context.Context, id metadata.C
 	s.uploadSessionsMu.Lock()
 	delete(s.uploadSessions, uploadID)
 	s.uploadSessionsMu.Unlock()
+
+	// Record aborted upload
+	if s.metrics != nil {
+		s.metrics.RecordActiveUpload("s3", -1)
+	}
 
 	return nil
 }

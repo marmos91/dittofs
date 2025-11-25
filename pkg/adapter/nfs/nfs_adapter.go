@@ -11,9 +11,9 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	mount "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	v3 "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
+	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metrics"
 	"github.com/marmos91/dittofs/pkg/registry"
-	"github.com/marmos91/dittofs/pkg/store/content/cache"
 )
 
 // NFSAdapter implements the adapter.Adapter interface for NFSv3 protocol.
@@ -60,7 +60,7 @@ type NFSAdapter struct {
 
 	// writeCache is the auto-flush write cache (if enabled)
 	// Stored for graceful shutdown
-	writeCache cache.WriteCache
+	writeCache cache.Cache
 
 	// metrics provides optional Prometheus metrics collection
 	// If nil, no metrics are collected (zero overhead)
@@ -174,6 +174,13 @@ type NFSConfig struct {
 	// Recommended: 1000-5000 for production servers.
 	MaxConnections int `mapstructure:"max_connections" validate:"min=0"`
 
+	// MaxRequestsPerConnection limits the number of concurrent RPC requests
+	// that can be processed simultaneously on a single connection.
+	// This enables parallel handling of multiple COMMITs, WRITEs, and READs.
+	// 0 means unlimited (will default to 100).
+	// Recommended: 50-200 for high-throughput servers.
+	MaxRequestsPerConnection int `mapstructure:"max_requests_per_connection" validate:"min=0"`
+
 	// Timeouts groups all timeout-related configuration
 	Timeouts NFSTimeoutsConfig `mapstructure:"timeouts"`
 
@@ -191,6 +198,9 @@ func (c *NFSConfig) applyDefaults() {
 
 	if c.Port <= 0 {
 		c.Port = 2049
+	}
+	if c.MaxRequestsPerConnection == 0 {
+		c.MaxRequestsPerConnection = 100
 	}
 	if c.Timeouts.Read == 0 {
 		c.Timeouts.Read = 5 * time.Minute
@@ -272,10 +282,7 @@ func New(
 	// Create shutdown context for request cancellation
 	shutdownCtx, cancelRequests := context.WithCancel(context.Background())
 
-	// Use no-op metrics if none provided
-	if nfsMetrics == nil {
-		nfsMetrics = metrics.NewNoopNFSMetrics()
-	}
+	// nfsMetrics can be nil for zero-overhead disabled metrics
 
 	return &NFSAdapter{
 		config:         nfsConfig,
@@ -428,9 +435,11 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 		s.activeConnections.Store(connAddr, tcpConn)
 
 		// Record metrics for connection accepted
-		s.metrics.RecordConnectionAccepted()
 		currentConns := s.connCount.Load()
-		s.metrics.SetActiveConnections(currentConns)
+		if s.metrics != nil {
+			s.metrics.RecordConnectionAccepted()
+			s.metrics.SetActiveConnections(currentConns)
+		}
 
 		// Log new connection (debug level to avoid log spam under load)
 		logger.Debug("NFS connection accepted from %s (active: %d)",
@@ -452,12 +461,14 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 				}
 
 				// Record metrics for connection closed
-				s.metrics.RecordConnectionClosed()
-				currentConns := s.connCount.Load()
-				s.metrics.SetActiveConnections(currentConns)
+				if s.metrics != nil {
+					s.metrics.RecordConnectionClosed()
+					currentConns := s.connCount.Load()
+					s.metrics.SetActiveConnections(currentConns)
+				}
 
 				logger.Debug("NFS connection closed from %s (active: %d)",
-					tcp.RemoteAddr(), currentConns)
+					tcp.RemoteAddr(), s.connCount.Load())
 			}()
 
 			// Handle connection requests
@@ -618,7 +629,9 @@ func (s *NFSAdapter) forceCloseConnections() {
 			closedCount++
 			logger.Debug("Force-closed connection to %s", addr)
 			// Record metric for each force-closed connection
-			s.metrics.RecordConnectionForceClosed()
+			if s.metrics != nil {
+				s.metrics.RecordConnectionForceClosed()
+			}
 		}
 
 		// Continue iteration

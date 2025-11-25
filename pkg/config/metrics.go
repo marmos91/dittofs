@@ -32,10 +32,10 @@ type MetricsResult struct {
 //   - MetricsResult containing all metrics components
 func InitializeMetrics(cfg *Config) *MetricsResult {
 	if !cfg.Server.Metrics.Enabled {
-		// Metrics disabled - return no-op implementations
+		// Metrics disabled - return nil for zero overhead
 		return &MetricsResult{
 			Server:     nil,
-			NFSMetrics: metrics.NewNoopNFSMetrics(),
+			NFSMetrics: nil,
 		}
 	}
 

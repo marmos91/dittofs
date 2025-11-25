@@ -6,11 +6,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
-// Registry manages all named resources: metadata stores, content stores, and shares.
+// Registry manages all named resources: metadata stores, content stores, caches, and shares.
 // It provides thread-safe registration and lookup of all server resources.
 //
 // The Registry also tracks active mounts (NFS clients that have mounted shares).
@@ -21,7 +22,13 @@ import (
 //	reg := NewRegistry()
 //	reg.RegisterMetadataStore("badger-main", badgerStore)
 //	reg.RegisterContentStore("local-disk", fsStore)
-//	reg.AddShare("export", "badger-main", "local-disk", false)
+//	reg.RegisterCache("fast-write", memCache)
+//	reg.AddShare(ctx, &ShareConfig{
+//	    Name: "/export",
+//	    MetadataStore: "badger-main",
+//	    ContentStore: "local-disk",
+//	    WriteCache: "fast-write",
+//	})
 //
 //	share, _ := reg.GetShare("/export")
 //	metaStore, _ := reg.GetMetadataStoreForShare("/export")
@@ -29,6 +36,7 @@ type Registry struct {
 	mu       sync.RWMutex
 	metadata map[string]metadata.MetadataStore
 	content  map[string]content.ContentStore
+	caches   map[string]cache.Cache
 	shares   map[string]*Share
 	mounts   map[string]*MountInfo // key: clientAddr, value: mount info
 }
@@ -45,6 +53,7 @@ func NewRegistry() *Registry {
 	return &Registry{
 		metadata: make(map[string]metadata.MetadataStore),
 		content:  make(map[string]content.ContentStore),
+		caches:   make(map[string]cache.Cache),
 		shares:   make(map[string]*Share),
 		mounts:   make(map[string]*MountInfo),
 	}
@@ -92,6 +101,28 @@ func (r *Registry) RegisterContentStore(name string, store content.ContentStore)
 	return nil
 }
 
+// RegisterCache adds a named cache to the registry.
+// Returns an error if a cache with the same name already exists.
+// Caches can be used for both read and write buffering depending on share configuration.
+func (r *Registry) RegisterCache(name string, c cache.Cache) error {
+	if c == nil {
+		return fmt.Errorf("cannot register nil cache")
+	}
+	if name == "" {
+		return fmt.Errorf("cannot register cache with empty name")
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.caches[name]; exists {
+		return fmt.Errorf("cache %q already registered", name)
+	}
+
+	r.caches[name] = c
+	return nil
+}
+
 // AddShare creates and registers a new share with the given configuration.
 // This method:
 //  1. Validates that the share doesn't already exist
@@ -123,6 +154,18 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 	}
 	if _, exists := r.content[config.ContentStore]; !exists {
 		return fmt.Errorf("content store %q not found", config.ContentStore)
+	}
+
+	// Validate that caches exist (if specified)
+	if config.WriteCache != "" {
+		if _, exists := r.caches[config.WriteCache]; !exists {
+			return fmt.Errorf("write cache %q not found", config.WriteCache)
+		}
+	}
+	if config.ReadCache != "" {
+		if _, exists := r.caches[config.ReadCache]; !exists {
+			return fmt.Errorf("read cache %q not found", config.ReadCache)
+		}
 	}
 
 	// Create root directory in metadata store
@@ -158,6 +201,8 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 		Name:                     config.Name,
 		MetadataStore:            config.MetadataStore,
 		ContentStore:             config.ContentStore,
+		WriteCache:               config.WriteCache,
+		ReadCache:                config.ReadCache,
 		RootHandle:               rootHandle,
 		ReadOnly:                 config.ReadOnly,
 		AllowedClients:           config.AllowedClients,
@@ -241,6 +286,19 @@ func (r *Registry) GetContentStore(name string) (content.ContentStore, error) {
 	return store, nil
 }
 
+// GetCache retrieves a cache by name.
+// Returns nil, error if not found.
+func (r *Registry) GetCache(name string) (cache.Cache, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	c, exists := r.caches[name]
+	if !exists {
+		return nil, fmt.Errorf("cache %q not found", name)
+	}
+	return c, nil
+}
+
 // GetMetadataStoreForShare retrieves the metadata store used by the specified share.
 // Returns nil, error if the share or store doesn't exist.
 func (r *Registry) GetMetadataStoreForShare(shareName string) (metadata.MetadataStore, error) {
@@ -277,6 +335,56 @@ func (r *Registry) GetContentStoreForShare(shareName string) (content.ContentSto
 	}
 
 	return store, nil
+}
+
+// GetWriteCacheForShare retrieves the write cache used by the specified share.
+// Returns nil if the share doesn't have a write cache configured (sync mode).
+// Returns error if the share doesn't exist or the cache reference is invalid.
+func (r *Registry) GetWriteCacheForShare(shareName string) (cache.Cache, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	share, exists := r.shares[shareName]
+	if !exists {
+		return nil, fmt.Errorf("share %q not found", shareName)
+	}
+
+	// No write cache configured (sync mode)
+	if share.WriteCache == "" {
+		return nil, nil
+	}
+
+	c, exists := r.caches[share.WriteCache]
+	if !exists {
+		return nil, fmt.Errorf("write cache %q not found for share %q", share.WriteCache, shareName)
+	}
+
+	return c, nil
+}
+
+// GetReadCacheForShare retrieves the read cache used by the specified share.
+// Returns nil if the share doesn't have a read cache configured.
+// Returns error if the share doesn't exist or the cache reference is invalid.
+func (r *Registry) GetReadCacheForShare(shareName string) (cache.Cache, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	share, exists := r.shares[shareName]
+	if !exists {
+		return nil, fmt.Errorf("share %q not found", shareName)
+	}
+
+	// No read cache configured
+	if share.ReadCache == "" {
+		return nil, nil
+	}
+
+	c, exists := r.caches[share.ReadCache]
+	if !exists {
+		return nil, fmt.Errorf("read cache %q not found for share %q", share.ReadCache, shareName)
+	}
+
+	return c, nil
 }
 
 // ListShares returns all registered share names.
@@ -318,6 +426,19 @@ func (r *Registry) ListContentStores() []string {
 	return names
 }
 
+// ListCaches returns all registered cache names.
+// The returned slice is a copy and safe to modify.
+func (r *Registry) ListCaches() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	names := make([]string, 0, len(r.caches))
+	for name := range r.caches {
+		names = append(names, name)
+	}
+	return names
+}
+
 // ListSharesUsingMetadataStore returns all shares that use the specified metadata store.
 // The returned slice is a copy and safe to modify.
 func (r *Registry) ListSharesUsingMetadataStore(storeName string) []string {
@@ -348,6 +469,36 @@ func (r *Registry) ListSharesUsingContentStore(storeName string) []string {
 	return shares
 }
 
+// ListSharesUsingWriteCache returns all shares that use the specified write cache.
+// The returned slice is a copy and safe to modify.
+func (r *Registry) ListSharesUsingWriteCache(cacheName string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var shares []string
+	for _, share := range r.shares {
+		if share.WriteCache == cacheName {
+			shares = append(shares, share.Name)
+		}
+	}
+	return shares
+}
+
+// ListSharesUsingReadCache returns all shares that use the specified read cache.
+// The returned slice is a copy and safe to modify.
+func (r *Registry) ListSharesUsingReadCache(cacheName string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var shares []string
+	for _, share := range r.shares {
+		if share.ReadCache == cacheName {
+			shares = append(shares, share.Name)
+		}
+	}
+	return shares
+}
+
 // CountShares returns the number of registered shares.
 func (r *Registry) CountShares() int {
 	r.mu.RLock()
@@ -367,6 +518,13 @@ func (r *Registry) CountContentStores() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.content)
+}
+
+// CountCaches returns the number of registered caches.
+func (r *Registry) CountCaches() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.caches)
 }
 
 // ShareExists checks if a share with the given name exists in the registry.
