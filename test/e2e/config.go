@@ -100,7 +100,13 @@ func (tc *TestConfig) CreateContentStore(ctx context.Context, testCtx TestContex
 			return nil, fmt.Errorf("S3 client not initialized (localstack not running?)")
 		}
 
-		bucketName := fmt.Sprintf("dittofs-e2e-test-%d", testCtx.GetPort())
+		// Use bucket name from SetupS3Config if available, otherwise create default name
+		bucketName := config.s3Bucket
+		if bucketName == "" {
+			bucketName = fmt.Sprintf("dittofs-e2e-test-%d", testCtx.GetPort())
+			config.s3Bucket = bucketName
+		}
+
 		store, err := contents3.NewS3ContentStore(ctx, contents3.S3ContentStoreConfig{
 			Client:        config.s3Client,
 			Bucket:        bucketName,
@@ -111,9 +117,6 @@ func (tc *TestConfig) CreateContentStore(ctx context.Context, testCtx TestContex
 		if err != nil {
 			return nil, fmt.Errorf("failed to create S3 content store: %w", err)
 		}
-
-		// Store bucket name for cleanup
-		config.s3Bucket = bucketName
 
 		return store, nil
 

@@ -446,7 +446,6 @@ func (h *Handler) Read(
 				// EOF is not an error for READ operations
 				eof = true
 				data = data[:n] // Truncate to actual bytes read
-				readErr = nil   // Clear error - EOF is success for NFS READ
 			} else if readErr == context.Canceled || readErr == context.DeadlineExceeded {
 				logger.Debug("READ: request cancelled during ReadAt: handle=%x offset=%d read=%d client=%s",
 					req.Handle, req.Offset, n, clientIP)
@@ -583,7 +582,6 @@ func (h *Handler) Read(
 			if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
 				eof = true
 				data = data[:n]
-				readErr = nil // Clear error - EOF is success for NFS READ
 			} else if readErr == context.Canceled || readErr == context.DeadlineExceeded {
 				logger.Debug("READ: request cancelled during data read: handle=%x offset=%d read=%d client=%s",
 					req.Handle, req.Offset, n, clientIP)
