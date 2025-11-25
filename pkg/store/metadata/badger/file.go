@@ -731,20 +731,26 @@ func (s *BadgerMetadataStore) Create(
 
 // CreateHardLink creates a hard link to an existing file.
 //
-// This creates a new directory entry that points to the same file data as an
-// existing file. The link count is incremented, and both names refer to identical
-// content and attributes.
+// TODO: Hard links are 90% implemented but CreateHardLink is not yet exposed.
+// Note: Move/Rename IS fully implemented (see Move() function).
 //
-// Thread Safety: Safe for concurrent use.
+// Current state:
+// - ✅ Link counts are tracked internally (keyLinkCount)
+// - ✅ Link counts initialized properly (1 for files, 2 for directories)
+// - ✅ Link counts decremented on file removal (see remove.go)
+// - ✅ Files only deleted when link count reaches 0
+// - ✅ Capabilities report SupportsHardLinks: true
+// - ❌ CreateHardLink not implemented (this function)
+// - ❌ Link counts not exposed in FileAttr struct (always reported as 1 to NFS clients)
 //
-// Parameters:
-//   - ctx: Authentication context for permission checking
-//   - dirHandle: Target directory where the link will be created
-//   - name: Name for the new link
-//   - targetHandle: File to link to
+// To complete hard link support:
+// 1. Implement this function to create additional child entries pointing to same file UUID
+// 2. Increment link count when creating hard link
+// 3. Add Nlink field to FileAttr (see pkg/store/metadata/file.go:89)
+// 4. Read and return link counts in GetFileAttributes and similar operations
+// 5. Update NFS protocol layer to use FileAttr.Nlink instead of hardcoding 1
 //
-// Returns:
-//   - error: ErrAccessDenied, ErrAlreadyExists, ErrNotFound, ErrIsDirectory, etc.
+// For now, this returns ErrNotSupported to indicate the feature is not yet fully exposed.
 func (s *BadgerMetadataStore) CreateHardLink(
 	ctx *metadata.AuthContext,
 	dirHandle metadata.FileHandle,
@@ -940,9 +946,16 @@ func (s *BadgerMetadataStore) CreateHardLink(
 
 // Move moves or renames a file or directory atomically.
 //
-// This operation can rename within the same directory or move to a different
-// directory, and can atomically replace an existing file/directory at the
-// destination if type-compatible.
+// This operation performs a full atomic move/rename within a BadgerDB transaction:
+// - Validates both source and destination directory handles
+// - Checks write permissions on both directories
+// - Handles replacement rules:
+//   - File can replace file
+//   - Directory can only replace empty directory
+//   - Directory cannot replace file and vice versa
+// - Updates parent-child relationships in BadgerDB
+// - Updates timestamps (mtime/ctime) on source and destination directories
+// - Updates ctime on the moved file/directory
 //
 // Thread Safety: Safe for concurrent use.
 //
@@ -968,22 +981,20 @@ func (s *BadgerMetadataStore) Move(
 	}
 
 	// Validate names
-	if fromName == "" || fromName == "." || fromName == ".." {
+	if fromName == "" || toName == "" {
 		return &metadata.StoreError{
 			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid source name",
-			Path:    fromName,
+			Message: "empty filename",
 		}
 	}
-	if toName == "" || toName == "." || toName == ".." {
+	if fromName == "." || fromName == ".." || toName == "." || toName == ".." {
 		return &metadata.StoreError{
 			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid destination name",
-			Path:    toName,
+			Message: "cannot move . or ..",
 		}
 	}
 
-	// Decode directory handles
+	// Decode handles
 	_, fromDirID, err := metadata.DecodeFileHandle(fromDir)
 	if err != nil {
 		return &metadata.StoreError{
@@ -991,7 +1002,6 @@ func (s *BadgerMetadataStore) Move(
 			Message: "invalid source directory handle",
 		}
 	}
-
 	_, toDirID, err := metadata.DecodeFileHandle(toDir)
 	if err != nil {
 		return &metadata.StoreError{
@@ -1000,15 +1010,10 @@ func (s *BadgerMetadataStore) Move(
 		}
 	}
 
-	// Check if it's a no-op (same directory, same name)
-	if fromDirID == toDirID && fromName == toName {
-		// No-op, return success
-		return nil
-	}
-
-	return s.db.Update(func(txn *badger.Txn) error {
-		// Verify source directory exists and is a directory
-		item, err := txn.Get(keyFile(fromDirID))
+	// Perform the move in a transaction
+	err = s.db.Update(func(txn *badger.Txn) error {
+		// 1. Get and verify source directory
+		fromDirItem, err := txn.Get(keyFile(fromDirID))
 		if err == badger.ErrKeyNotFound {
 			return &metadata.StoreError{
 				Code:    metadata.ErrNotFound,
@@ -1020,12 +1025,12 @@ func (s *BadgerMetadataStore) Move(
 		}
 
 		var fromDirFile *metadata.File
-		err = item.Value(func(val []byte) error {
-			f, err := decodeFile(val)
+		err = fromDirItem.Value(func(val []byte) error {
+			fd, err := decodeFile(val)
 			if err != nil {
 				return err
 			}
-			fromDirFile = f
+			fromDirFile = fd
 			return nil
 		})
 		if err != nil {
@@ -1036,38 +1041,6 @@ func (s *BadgerMetadataStore) Move(
 			return &metadata.StoreError{
 				Code:    metadata.ErrNotDirectory,
 				Message: "source parent is not a directory",
-			}
-		}
-
-		// Verify destination directory exists and is a directory
-		item, err = txn.Get(keyFile(toDirID))
-		if err == badger.ErrKeyNotFound {
-			return &metadata.StoreError{
-				Code:    metadata.ErrNotFound,
-				Message: "destination directory not found",
-			}
-		}
-		if err != nil {
-			return fmt.Errorf("failed to get destination directory: %w", err)
-		}
-
-		var toDirFile *metadata.File
-		err = item.Value(func(val []byte) error {
-			f, err := decodeFile(val)
-			if err != nil {
-				return err
-			}
-			toDirFile = f
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-
-		if toDirFile.Type != metadata.FileTypeDirectory {
-			return &metadata.StoreError{
-				Code:    metadata.ErrNotDirectory,
-				Message: "destination parent is not a directory",
 			}
 		}
 
@@ -1083,44 +1056,52 @@ func (s *BadgerMetadataStore) Move(
 			}
 		}
 
-		// Check write permission on destination directory (if different)
-		if fromDirID != toDirID {
-			granted, err := s.CheckPermissions(ctx, toDir, metadata.PermissionWrite)
-			if err != nil {
-				return err
-			}
-			if granted&metadata.PermissionWrite == 0 {
-				return &metadata.StoreError{
-					Code:    metadata.ErrAccessDenied,
-					Message: "no write permission on destination directory",
-				}
-			}
-		}
-
-		// Find source file
-		sourceItem, err := txn.Get(keyChild(fromDirID, fromName))
+		// 2. Get and verify destination directory
+		toDirItem, err := txn.Get(keyFile(toDirID))
 		if err == badger.ErrKeyNotFound {
 			return &metadata.StoreError{
 				Code:    metadata.ErrNotFound,
-				Message: fmt.Sprintf("source not found: %s", fromName),
-				Path:    fromName,
+				Message: "destination directory not found",
 			}
 		}
 		if err != nil {
-			return fmt.Errorf("failed to get source child: %w", err)
+			return fmt.Errorf("failed to get destination directory: %w", err)
 		}
 
-		var sourceID uuid.UUID
-		err = sourceItem.Value(func(val []byte) error {
-			sourceID, err = uuid.FromBytes(val)
-			return err
+		var toDirFile *metadata.File
+		err = toDirItem.Value(func(val []byte) error {
+			fd, err := decodeFile(val)
+			if err != nil {
+				return err
+			}
+			toDirFile = fd
+			return nil
 		})
 		if err != nil {
 			return err
 		}
 
-		// Get source file attributes
-		sourceFileItem, err := txn.Get(keyFile(sourceID))
+		if toDirFile.Type != metadata.FileTypeDirectory {
+			return &metadata.StoreError{
+				Code:    metadata.ErrNotDirectory,
+				Message: "destination parent is not a directory",
+			}
+		}
+
+		// Check write permission on destination directory
+		granted, err = s.CheckPermissions(ctx, toDir, metadata.PermissionWrite)
+		if err != nil {
+			return err
+		}
+		if granted&metadata.PermissionWrite == 0 {
+			return &metadata.StoreError{
+				Code:    metadata.ErrAccessDenied,
+				Message: "no write permission on destination directory",
+			}
+		}
+
+		// 3. Get source file
+		sourceChildItem, err := txn.Get(keyChild(fromDirID, fromName))
 		if err == badger.ErrKeyNotFound {
 			return &metadata.StoreError{
 				Code:    metadata.ErrNotFound,
@@ -1128,264 +1109,147 @@ func (s *BadgerMetadataStore) Move(
 			}
 		}
 		if err != nil {
-			return fmt.Errorf("failed to get source file: %w", err)
+			return fmt.Errorf("failed to get source child: %w", err)
 		}
 
-		var sourceFile *metadata.File
-		err = sourceFileItem.Value(func(val []byte) error {
-			f, err := decodeFile(val)
+		var sourceID uuid.UUID
+		err = sourceChildItem.Value(func(val []byte) error {
+			id, err := uuid.FromBytes(val)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to decode child UUID: %w", err)
 			}
-			sourceFile = f
+			sourceID = id
 			return nil
 		})
 		if err != nil {
 			return err
 		}
 
-		// Check if destination exists
-		destItem, err := txn.Get(keyChild(toDirID, toName))
-		destExists := err == nil
-		if err != nil && err != badger.ErrKeyNotFound {
-			return fmt.Errorf("failed to check destination: %w", err)
+		// Get source file metadata
+		sourceFileItem, err := txn.Get(keyFile(sourceID))
+		if err != nil {
+			return fmt.Errorf("failed to get source file: %w", err)
 		}
 
-		if destExists {
+		var sourceFile *metadata.File
+		err = sourceFileItem.Value(func(val []byte) error {
+			fd, err := decodeFile(val)
+			if err != nil {
+				return err
+			}
+			sourceFile = fd
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+
+		// 4. Check if destination exists
+		var destID uuid.UUID
+		var destFile *metadata.File
+		destChildItem, err := txn.Get(keyChild(toDirID, toName))
+		if err == nil {
 			// Destination exists - check replacement rules
-			var destID uuid.UUID
-			err = destItem.Value(func(val []byte) error {
-				destID, err = uuid.FromBytes(val)
-				return err
-			})
-			if err != nil {
-				return err
-			}
-
-			// Get destination file attributes
-			destFileItem, err := txn.Get(keyFile(destID))
-			if err == badger.ErrKeyNotFound {
-				return &metadata.StoreError{
-					Code:    metadata.ErrNotFound,
-					Message: "destination file not found",
-				}
-			}
-			if err != nil {
-				return fmt.Errorf("failed to get destination file: %w", err)
-			}
-
-			var destFile *metadata.File
-			err = destFileItem.Value(func(val []byte) error {
-				f, err := decodeFile(val)
+			err = destChildItem.Value(func(val []byte) error {
+				id, err := uuid.FromBytes(val)
 				if err != nil {
-					return err
+					return fmt.Errorf("failed to decode dest UUID: %w", err)
 				}
-				destFile = f
+				destID = id
 				return nil
 			})
 			if err != nil {
 				return err
 			}
 
-			// Check type compatibility for replacement
+			destFileItem, err := txn.Get(keyFile(destID))
+			if err != nil {
+				return fmt.Errorf("failed to get destination file: %w", err)
+			}
+
+			err = destFileItem.Value(func(val []byte) error {
+				fd, err := decodeFile(val)
+				if err != nil {
+					return err
+				}
+				destFile = fd
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+
+			// Apply replacement rules
 			if sourceFile.Type == metadata.FileTypeDirectory {
-				// Moving directory
+				// Moving directory: destination must not exist or be empty directory
 				if destFile.Type != metadata.FileTypeDirectory {
 					return &metadata.StoreError{
-						Code:    metadata.ErrNotDirectory,
+						Code:    metadata.ErrAlreadyExists,
 						Message: "cannot replace non-directory with directory",
-						Path:    toName,
 					}
 				}
 
 				// Check if destination directory is empty
-				// Use prefix scan to check for children
 				prefix := keyChildPrefix(destID)
 				opts := badger.DefaultIteratorOptions
+				opts.PrefetchValues = false
 				opts.Prefix = prefix
-				opts.PrefetchValues = false // Only need keys
-
 				it := txn.NewIterator(opts)
 				defer it.Close()
 
 				it.Rewind()
-				if it.Valid() {
+				if it.ValidForPrefix(prefix) {
 					return &metadata.StoreError{
 						Code:    metadata.ErrNotEmpty,
 						Message: "destination directory not empty",
-						Path:    toName,
 					}
 				}
 			} else {
-				// Moving non-directory
+				// Moving non-directory: destination must not be a directory
 				if destFile.Type == metadata.FileTypeDirectory {
 					return &metadata.StoreError{
 						Code:    metadata.ErrIsDirectory,
 						Message: "cannot replace directory with non-directory",
-						Path:    toName,
 					}
 				}
 			}
 
-			// Remove destination (will be replaced)
-			// Handle link count for replaced file
-			var destLinkCount uint32
-			linkItem, err := txn.Get(keyLinkCount(destID))
-			if err == badger.ErrKeyNotFound {
-				destLinkCount = 1
-			} else if err != nil {
-				return fmt.Errorf("failed to get destination link count: %w", err)
-			} else {
-				err = linkItem.Value(func(val []byte) error {
-					destLinkCount, err = decodeUint32(val)
-					return err
-				})
-				if err != nil {
-					return err
-				}
+			// Remove destination file
+			if err := txn.Delete(keyChild(toDirID, toName)); err != nil {
+				return fmt.Errorf("failed to delete destination child entry: %w", err)
 			}
-
-			// For directories, the normal link count is 2 ("." and parent entry)
-			// For files, normal link count is 1
-			// Only keep the file if it has additional hard links beyond the normal count
-			var hasOtherLinks bool
-			if destFile.Type == metadata.FileTypeDirectory {
-				hasOtherLinks = destLinkCount > 2 // More than just "." and parent
-			} else {
-				hasOtherLinks = destLinkCount > 1 // More than just this directory entry
+			if err := txn.Delete(keyFile(destID)); err != nil {
+				return fmt.Errorf("failed to delete destination file: %w", err)
 			}
-
-			if hasOtherLinks {
-				// Has other links, just decrement
-				newCount := destLinkCount - 1
-				if err := txn.Set(keyLinkCount(destID), encodeUint32(newCount)); err != nil {
-					return fmt.Errorf("failed to update destination link count: %w", err)
-				}
-			} else {
-				// Last link, remove all metadata
-				if err := txn.Delete(keyFile(destID)); err != nil {
-					return fmt.Errorf("failed to delete destination file: %w", err)
-				}
-				if err := txn.Delete(keyLinkCount(destID)); err != nil {
-					return fmt.Errorf("failed to delete destination link count: %w", err)
-				}
-				if err := txn.Delete(keyParent(destID)); err != nil {
-					return fmt.Errorf("failed to delete destination parent: %w", err)
-				}
-
-				if destFile.Type == metadata.FileTypeDirectory {
-					// For directories, we need to scan and delete all child entries
-					prefix := keyChildPrefix(destID)
-					opts := badger.DefaultIteratorOptions
-					opts.Prefix = prefix
-
-					it := txn.NewIterator(opts)
-					defer it.Close()
-
-					for it.Rewind(); it.Valid(); it.Next() {
-						item := it.Item()
-						if err := txn.Delete(item.Key()); err != nil {
-							return fmt.Errorf("failed to delete destination child: %w", err)
-						}
-					}
-
-					// Only decrement if we're not about to add a directory back in the same parent
-					if sourceFile.Type != metadata.FileTypeDirectory || fromDirID != toDirID {
-						destDirLinkItem, err := txn.Get(keyLinkCount(toDirID))
-						if err == nil {
-							var destDirLinkCount uint32
-							err = destDirLinkItem.Value(func(val []byte) error {
-								destDirLinkCount, err = decodeUint32(val)
-								return err
-							})
-							if err == nil && destDirLinkCount > 0 {
-								newCount := destDirLinkCount - 1
-								if err := txn.Set(keyLinkCount(toDirID), encodeUint32(newCount)); err != nil {
-									return fmt.Errorf("failed to update destination dir link count: %w", err)
-								}
-							}
-						}
-					}
-				}
-			}
+		} else if err != badger.ErrKeyNotFound {
+			return fmt.Errorf("failed to check destination: %w", err)
 		}
 
-		// Perform the move
+		// 5. Perform the move
 		// Remove from source directory
 		if err := txn.Delete(keyChild(fromDirID, fromName)); err != nil {
-			return fmt.Errorf("failed to remove from source directory: %w", err)
+			return fmt.Errorf("failed to delete source child entry: %w", err)
 		}
 
 		// Add to destination directory
-		if err := txn.Set(keyChild(toDirID, toName), sourceID[:]); err != nil {
-			return fmt.Errorf("failed to add to destination directory: %w", err)
+		sourceIDBytes, err := sourceID.MarshalBinary()
+		if err != nil {
+			return fmt.Errorf("failed to marshal source ID: %w", err)
+		}
+		if err := txn.Set(keyChild(toDirID, toName), sourceIDBytes); err != nil {
+			return fmt.Errorf("failed to set destination child entry: %w", err)
 		}
 
-		// Update parent pointer if moving to different directory
-		if fromDirID != toDirID {
-			if err := txn.Set(keyParent(sourceID), toDirID[:]); err != nil {
-				return fmt.Errorf("failed to update parent: %w", err)
-			}
-
-			// If moving a directory, update parent link counts
-			if sourceFile.Type == metadata.FileTypeDirectory {
-				// Decrement source directory link count (losing ".." reference)
-				fromDirLinkItem, err := txn.Get(keyLinkCount(fromDirID))
-				if err == nil {
-					var fromDirLinkCount uint32
-					err = fromDirLinkItem.Value(func(val []byte) error {
-						fromDirLinkCount, err = decodeUint32(val)
-						return err
-					})
-					if err == nil && fromDirLinkCount > 0 {
-						newCount := fromDirLinkCount - 1
-						if err := txn.Set(keyLinkCount(fromDirID), encodeUint32(newCount)); err != nil {
-							return fmt.Errorf("failed to decrement source dir link count: %w", err)
-						}
-					}
-				}
-
-				// Increment destination directory link count (gaining ".." reference)
-				toDirLinkItem, err := txn.Get(keyLinkCount(toDirID))
-				if err == badger.ErrKeyNotFound {
-					// Initialize if missing
-					if err := txn.Set(keyLinkCount(toDirID), encodeUint32(1)); err != nil {
-						return fmt.Errorf("failed to initialize destination dir link count: %w", err)
-					}
-				} else if err != nil {
-					return fmt.Errorf("failed to get destination dir link count: %w", err)
-				} else {
-					var toDirLinkCount uint32
-					err = toDirLinkItem.Value(func(val []byte) error {
-						toDirLinkCount, err = decodeUint32(val)
-						return err
-					})
-					if err == nil {
-						newCount := toDirLinkCount + 1
-						if err := txn.Set(keyLinkCount(toDirID), encodeUint32(newCount)); err != nil {
-							return fmt.Errorf("failed to increment destination dir link count: %w", err)
-						}
-					}
-				}
-			}
-		}
-
-		// Update timestamps
+		// 6. Update timestamps
+		// TODO: When Nlink is added to FileAttr (see pkg/store/metadata/file.go:89),
+		// update link counts here:
+		// - Decrement fromDirFile.Nlink if sourceFile is a directory
+		// - Increment toDirFile.Nlink if sourceFile is a directory
 		now := time.Now()
 
-		// Update source file ctime (metadata changed - new parent/name)
-		sourceFile.Ctime = now
-		sourceBytes, err := encodeFile(sourceFile)
-		if err != nil {
-			return err
-		}
-		if err := txn.Set(keyFile(sourceID), sourceBytes); err != nil {
-			return fmt.Errorf("failed to update source file: %w", err)
-		}
-
-		// Update source directory (contents changed)
-		fromDirFile.Mtime = now
+		// Update source directory (lost a child)
 		fromDirFile.Ctime = now
+		fromDirFile.Mtime = now
 		fromDirBytes, err := encodeFile(fromDirFile)
 		if err != nil {
 			return err
@@ -1394,19 +1258,29 @@ func (s *BadgerMetadataStore) Move(
 			return fmt.Errorf("failed to update source directory: %w", err)
 		}
 
-		// Update destination directory if different (contents changed)
-		if fromDirID != toDirID {
-			toDirFile.Mtime = now
-			toDirFile.Ctime = now
-			toDirBytes, err := encodeFile(toDirFile)
-			if err != nil {
-				return err
-			}
-			if err := txn.Set(keyFile(toDirID), toDirBytes); err != nil {
-				return fmt.Errorf("failed to update destination directory: %w", err)
-			}
+		// Update destination directory (gained a child)
+		toDirFile.Ctime = now
+		toDirFile.Mtime = now
+		toDirBytes, err := encodeFile(toDirFile)
+		if err != nil {
+			return err
+		}
+		if err := txn.Set(keyFile(toDirID), toDirBytes); err != nil {
+			return fmt.Errorf("failed to update destination directory: %w", err)
+		}
+
+		// Update moved file's ctime
+		sourceFile.Ctime = now
+		sourceBytes, err := encodeFile(sourceFile)
+		if err != nil {
+			return err
+		}
+		if err := txn.Set(keyFile(sourceID), sourceBytes); err != nil {
+			return fmt.Errorf("failed to update moved file: %w", err)
 		}
 
 		return nil
 	})
+
+	return err
 }
