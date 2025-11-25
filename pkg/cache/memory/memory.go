@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
@@ -133,6 +134,9 @@ func (c *MemoryCache) Write(ctx context.Context, id metadata.ContentID, data []b
 		}
 	}()
 
+	// Ensure cache has space for this write (evict LRU if needed)
+	c.ensureCacheSize(int64(len(data)))
+
 	buf, err := c.getOrCreateBuffer(id)
 	if err != nil {
 		return err
@@ -177,6 +181,10 @@ func (c *MemoryCache) WriteAt(ctx context.Context, id metadata.ContentID, data [
 	if offset < 0 {
 		return fmt.Errorf("negative offset: %d", offset)
 	}
+
+	// Ensure cache has space for this write (evict LRU if needed)
+	// Note: We estimate the size conservatively; actual size may be less if overwriting
+	c.ensureCacheSize(int64(len(data)))
 
 	buf, err := c.getOrCreateBuffer(id)
 	if err != nil {
@@ -478,6 +486,156 @@ func (c *MemoryCache) Close() error {
 	c.closed = true
 
 	return nil
+}
+
+// EvictLRU evicts the least recently used (oldest by last write time) cached files
+// until the total cache size drops below the target threshold.
+//
+// This method is called automatically when writes would exceed MaxSize(), but can
+// also be called manually to free up cache space.
+//
+// Eviction strategy:
+//   - Only evicts if MaxSize() is configured (> 0)
+//   - Evicts oldest files first (by LastWrite timestamp)
+//   - Continues evicting until TotalSize() <= targetSize
+//   - Default targetSize is 90% of MaxSize() to avoid thrashing
+//   - Thread-safe: can be called concurrently with other operations
+//
+// Parameters:
+//   - targetSize: Target cache size in bytes (0 = use 90% of MaxSize())
+//
+// Returns:
+//   - int: Number of files evicted
+//   - int64: Total bytes freed
+func (c *MemoryCache) EvictLRU(targetSize int64) (int, int64) {
+	// No eviction if cache has no size limit
+	if c.maxSize == 0 {
+		return 0, 0
+	}
+
+	// Use 90% of max size as default target (hysteresis to avoid thrashing)
+	if targetSize == 0 {
+		targetSize = (c.maxSize * 90) / 100
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return 0, 0
+	}
+
+	// Check if eviction is needed
+	currentSize := int64(0)
+	for _, buf := range c.buffers {
+		buf.mu.Lock()
+		currentSize += int64(len(buf.data))
+		buf.mu.Unlock()
+	}
+
+	if currentSize <= targetSize {
+		return 0, 0 // No eviction needed
+	}
+
+	// Build list of candidates sorted by last write time (oldest first)
+	type evictionCandidate struct {
+		id        string
+		size      int64
+		lastWrite time.Time
+	}
+
+	candidates := make([]evictionCandidate, 0, len(c.buffers))
+	for idStr, buf := range c.buffers {
+		buf.mu.Lock()
+		candidates = append(candidates, evictionCandidate{
+			id:        idStr,
+			size:      int64(len(buf.data)),
+			lastWrite: buf.lastWrite,
+		})
+		buf.mu.Unlock()
+	}
+
+	// Sort by last write time (oldest first)
+	// Using a simple selection sort since we may not need to sort all entries
+	for i := 0; i < len(candidates); i++ {
+		for j := i + 1; j < len(candidates); j++ {
+			if candidates[j].lastWrite.Before(candidates[i].lastWrite) {
+				candidates[i], candidates[j] = candidates[j], candidates[i]
+			}
+		}
+	}
+
+	// Evict oldest files until we reach target size
+	evicted := 0
+	bytesFreed := int64(0)
+
+	for _, candidate := range candidates {
+		if currentSize <= targetSize {
+			break // Target reached
+		}
+
+		// Remove the buffer
+		buf, exists := c.buffers[candidate.id]
+		if !exists {
+			continue // Already removed by concurrent operation
+		}
+
+		buf.mu.Lock()
+		bufSize := int64(len(buf.data))
+		buf.data = nil
+		buf.mu.Unlock()
+
+		delete(c.buffers, candidate.id)
+
+		currentSize -= bufSize
+		bytesFreed += bufSize
+		evicted++
+
+		// Record cache removal
+		if c.metrics != nil {
+			c.metrics.RecordCacheReset(candidate.id)
+		}
+	}
+
+	// Update metrics after eviction
+	if c.metrics != nil {
+		c.metrics.RecordBufferCount(len(c.buffers))
+		c.updateTotalCacheSize()
+	}
+
+	return evicted, bytesFreed
+}
+
+// ensureCacheSize checks if adding dataSize bytes would exceed MaxSize(),
+// and evicts LRU entries if needed.
+//
+// This should be called before adding new data to the cache.
+// It's a helper to automatically trigger eviction during Write/WriteAt operations.
+//
+// Parameters:
+//   - dataSize: Number of bytes about to be added
+//
+// Thread safety: Caller must NOT hold c.mu lock
+func (c *MemoryCache) ensureCacheSize(dataSize int64) {
+	// No eviction if cache has no size limit
+	if c.maxSize == 0 {
+		return
+	}
+
+	// Check if we need to evict (check without lock first for performance)
+	totalSize := c.TotalSize()
+	if totalSize+dataSize <= c.maxSize {
+		return // No eviction needed
+	}
+
+	// Need to evict - target 90% of max to leave room for this write
+	targetSize := (c.maxSize * 90) / 100
+	evicted, bytesFreed := c.EvictLRU(targetSize)
+
+	if evicted > 0 {
+		logger.Debug("Cache eviction: evicted=%d bytes_freed=%d total_before=%d total_after=%d max=%d",
+			evicted, bytesFreed, totalSize, c.TotalSize(), c.maxSize)
+	}
 }
 
 // ============================================================================
