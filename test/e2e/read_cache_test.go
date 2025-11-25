@@ -92,7 +92,7 @@ func TestReadCacheLRUEviction(t *testing.T) {
 	}
 
 	// Use very small cache (100KB) to force eviction
-	tc := newTestContextWithReadCacheSize(t, config, 100*1024)
+	tc := newTestContextWithReadCacheSize(t, config, 100*1024, false) // no write cache
 	defer tc.Cleanup()
 
 	readCache := tc.getReadCache()
@@ -111,16 +111,17 @@ type testContextWithReadCache struct {
 	readCache        cache.Cache
 	writeCache       cache.Cache
 	readCacheName    string
+	writeCacheName   string
 	localstackHelper *LocalstackHelper
 }
 
 // newTestContextWithReadCache creates a test context with read cache
 func newTestContextWithReadCache(t *testing.T, config *TestConfig, withWriteCache bool) *testContextWithReadCache {
-	return newTestContextWithReadCacheSize(t, config, 10*1024*1024) // 10MB default
+	return newTestContextWithReadCacheSize(t, config, 10*1024*1024, withWriteCache) // 10MB default
 }
 
 // newTestContextWithReadCacheSize creates a test context with specific cache size
-func newTestContextWithReadCacheSize(t *testing.T, config *TestConfig, cacheSize int64) *testContextWithReadCache {
+func newTestContextWithReadCacheSize(t *testing.T, config *TestConfig, cacheSize int64, withWriteCache bool) *testContextWithReadCache {
 	t.Helper()
 
 	// Create base test context manually
@@ -151,9 +152,12 @@ func newTestContextWithReadCacheSize(t *testing.T, config *TestConfig, cacheSize
 
 	// Setup caches
 	tc.setupReadCache(cacheSize)
+	if withWriteCache {
+		tc.setupWriteCache(cacheSize)
+	}
 
 	// Start server with caches
-	tc.startServerWithReadCache()
+	tc.startServerWithReadCache(withWriteCache)
 
 	// Mount NFS
 	tc.mountNFS()
@@ -170,8 +174,17 @@ func (tc *testContextWithReadCache) setupReadCache(size int64) {
 	tc.readCache = cachememory.NewMemoryCache(size, nil)
 }
 
+// setupWriteCache initializes the write cache with specified size
+func (tc *testContextWithReadCache) setupWriteCache(size int64) {
+	tc.T.Helper()
+
+	// Create write cache
+	tc.writeCacheName = "write-cache"
+	tc.writeCache = cachememory.NewMemoryCache(size, nil)
+}
+
 // startServerWithReadCache starts the server with read cache configured
-func (tc *testContextWithReadCache) startServerWithReadCache() {
+func (tc *testContextWithReadCache) startServerWithReadCache(withWriteCache bool) {
 	tc.T.Helper()
 
 	// Create registry
@@ -190,7 +203,14 @@ func (tc *testContextWithReadCache) startServerWithReadCache() {
 		tc.T.Fatalf("Failed to register read cache: %v", err)
 	}
 
-	// Add share with read cache
+	// Register write cache if requested
+	if withWriteCache && tc.writeCache != nil {
+		if err := reg.RegisterCache(tc.writeCacheName, tc.writeCache); err != nil {
+			tc.T.Fatalf("Failed to register write cache: %v", err)
+		}
+	}
+
+	// Add share with read cache (and optionally write cache)
 	shareConfig := &registry.ShareConfig{
 		Name:          tc.Config.ShareName,
 		MetadataStore: "metadata",
@@ -205,6 +225,11 @@ func (tc *testContextWithReadCache) startServerWithReadCache() {
 			Mtime: time.Now(),
 			Ctime: time.Now(),
 		},
+	}
+
+	// Add write cache if requested
+	if withWriteCache && tc.writeCache != nil {
+		shareConfig.WriteCache = tc.writeCacheName
 	}
 
 	if err := reg.AddShare(tc.ctx, shareConfig); err != nil {
