@@ -653,8 +653,8 @@ func (h *Handler) Read(
 		if readCache != nil && (readErr == nil || readErr == io.EOF || readErr == io.ErrUnexpectedEOF) && n > 0 {
 			// Populate cache for small to medium files (< 10MB)
 			// For very large files, we skip caching to avoid cache thrashing
-			const maxCacheFileSize = 10 * 1024 * 1024 // 10MB
-			if file.Size <= uint64(maxCacheFileSize) {
+			const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
+			if file.Size <= uint64(maxReadCacheSize) {
 				// Write the data we just read to the cache at the appropriate offset
 				cacheErr := readCache.WriteAt(ctx.Context, file.ContentID, data[:n], int64(req.Offset))
 				if cacheErr != nil {
@@ -667,7 +667,7 @@ func (h *Handler) Read(
 				}
 			} else {
 				logger.Debug("READ: skipping cache population for large file: handle=%x size=%d max_cache_size=%d",
-					req.Handle, file.Size, maxCacheFileSize)
+					req.Handle, file.Size, maxReadCacheSize)
 			}
 		}
 	}
