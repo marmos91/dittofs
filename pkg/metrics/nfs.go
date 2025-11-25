@@ -77,4 +77,19 @@ type NFSMetrics interface {
 	// RecordConnectionForceClosed increments the force-closed connections counter.
 	// Called when connections are forcibly closed after shutdown timeout.
 	RecordConnectionForceClosed()
+
+	// RecordCacheHit records a cache hit during a READ operation.
+	//
+	// Parameters:
+	//   - share: Share name
+	//   - cacheType: Type of cache ("read" or "write")
+	//   - bytes: Number of bytes served from cache
+	RecordCacheHit(share string, cacheType string, bytes uint64)
+
+	// RecordCacheMiss records a cache miss during a READ operation.
+	//
+	// Parameters:
+	//   - share: Share name
+	//   - bytes: Number of bytes that will be read from content store
+	RecordCacheMiss(share string, bytes uint64)
 }

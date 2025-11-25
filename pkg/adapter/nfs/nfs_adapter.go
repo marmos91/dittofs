@@ -286,7 +286,7 @@ func New(
 
 	return &NFSAdapter{
 		config:         nfsConfig,
-		nfsHandler:     &v3.Handler{},
+		nfsHandler:     &v3.Handler{Metrics: nfsMetrics},
 		mountHandler:   &mount.Handler{},
 		metrics:        nfsMetrics,
 		shutdown:       make(chan struct{}),
