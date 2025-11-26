@@ -397,25 +397,13 @@ func (h *Handler) SetAttr(
 	// Step 4: Build authentication context with share-level identity mapping
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("SETATTR cancelled during auth context building: handle=%x client=%s error=%v",
-				req.Handle, clientIP, ctx.Context.Err())
-			return nil, ctx.Context.Err()
-		}
-
-		logger.Error("SETATTR failed: failed to build auth context: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-
-		wccAfter := h.convertFileAttrToNFS(fileHandle, &currentFile.FileAttr)
-
+	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, fileHandle, &currentFile.FileAttr, "SETATTR", "", req.Handle)
+	if authCtx == nil {
 		return &SetAttrResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			AttrBefore:      wccBefore,
 			AttrAfter:       wccAfter,
-		}, nil
+		}, err
 	}
 
 	// ========================================================================
@@ -475,10 +463,8 @@ func (h *Handler) SetAttr(
 		logger.Warn("SETATTR: attributes updated but cannot get new attributes: handle=%x",
 			req.Handle)
 		// Continue with nil WccAfter rather than failing the entire operation
-	}
-
-	var wccAfter *types.NFSFileAttr
-	if updatedFile != nil {
+		wccAfter = nil
+	} else {
 		wccAfter = h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
 	}
 

@@ -386,31 +386,8 @@ func (h *Handler) Rename(
 	// Step 4: Build authentication context for store
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
-	if err != nil {
-		// Check if error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("RENAME cancelled during auth context building: from='%s' to='%s' client=%s error=%v",
-				req.FromName, req.ToName, clientIP, ctx.Context.Err())
-
-			fromDirWccAfter := h.convertFileAttrToNFS(fromDirHandle, &fromDirFile.FileAttr)
-
-			toDirWccAfter := h.convertFileAttrToNFS(toDirHandle, &toDirFile.FileAttr)
-
-			return &RenameResponse{
-				NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrIO},
-				FromDirWccBefore: fromDirWccBefore,
-				FromDirWccAfter:  fromDirWccAfter,
-				ToDirWccBefore:   toDirWccBefore,
-				ToDirWccAfter:    toDirWccAfter,
-			}, ctx.Context.Err()
-		}
-
-		logger.Error("RENAME failed: failed to build auth context: from='%s' to='%s' client=%s error=%v",
-			req.FromName, req.ToName, clientIP, err)
-
-		fromDirWccAfter := h.convertFileAttrToNFS(fromDirHandle, &fromDirFile.FileAttr)
-
+	authCtx, fromDirWccAfter, err := h.buildAuthContextWithWCCError(ctx, fromDirHandle, &fromDirFile.FileAttr, "RENAME", req.FromName, req.FromDirHandle)
+	if authCtx == nil {
 		toDirWccAfter := h.convertFileAttrToNFS(toDirHandle, &toDirFile.FileAttr)
 
 		return &RenameResponse{
@@ -419,7 +396,7 @@ func (h *Handler) Rename(
 			FromDirWccAfter:  fromDirWccAfter,
 			ToDirWccBefore:   toDirWccBefore,
 			ToDirWccAfter:    toDirWccAfter,
-		}, nil
+		}, err
 	}
 
 	// ========================================================================
@@ -495,11 +472,10 @@ func (h *Handler) Rename(
 	// ========================================================================
 
 	// Get updated source directory attributes
-	var fromDirWccAfter *types.NFSFileAttr
 	if updatedFromDirFile, getErr := metadataStore.GetFile(ctx.Context, fromDirHandle); getErr != nil {
 		logger.Warn("RENAME: successful but cannot get updated source directory attributes: dir=%x error=%v",
 			req.FromDirHandle, getErr)
-		// fromDirWccAfter will be nil
+		fromDirWccAfter = nil
 	} else {
 		fromDirWccAfter = h.convertFileAttrToNFS(fromDirHandle, &updatedFromDirFile.FileAttr)
 	}

@@ -342,32 +342,13 @@ func (h *Handler) Symlink(
 	// Step 3: Build authentication context for store
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
-	if err != nil {
-		// Check if error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("SYMLINK cancelled during auth context building: name='%s' target='%s' client=%s error=%v",
-				req.Name, req.Target, clientIP, ctx.Context.Err())
-
-			nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
-
-			return &SymlinkResponse{
-				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-				DirAttrBefore:   wccBefore,
-				DirAttrAfter:    nfsDirAttr,
-			}, ctx.Context.Err()
-		}
-
-		logger.Error("SYMLINK failed: failed to build auth context: name='%s' target='%s' client=%s error=%v",
-			req.Name, req.Target, clientIP, err)
-
-		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
-
+	authCtx, nfsDirAttr, err := h.buildAuthContextWithWCCError(ctx, dirHandle, &dirFile.FileAttr, "SYMLINK", req.Name, req.DirHandle)
+	if authCtx == nil {
 		return &SymlinkResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			DirAttrBefore:   wccBefore,
 			DirAttrAfter:    nfsDirAttr,
-		}, nil
+		}, err
 	}
 
 	// ========================================================================

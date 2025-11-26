@@ -292,32 +292,13 @@ func (h *Handler) Rmdir(
 	// Step 4: Build authentication context with share-level identity mapping
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("RMDIR cancelled during auth context building: name='%s' dir=%x client=%s error=%v",
-				req.Name, req.DirHandle, clientIP, ctx.Context.Err())
-
-			wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
-
-			return &RmdirResponse{
-				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-				DirWccBefore:    wccBefore,
-				DirWccAfter:     wccAfter,
-			}, nil
-		}
-
-		logger.Error("RMDIR failed: failed to build auth context: name='%s' dir=%x client=%s error=%v",
-			req.Name, req.DirHandle, clientIP, err)
-
-		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
-
+	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "RMDIR", req.Name, req.DirHandle)
+	if authCtx == nil {
 		return &RmdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			DirWccBefore:    wccBefore,
 			DirWccAfter:     wccAfter,
-		}, nil
+		}, err
 	}
 
 	// ========================================================================
@@ -374,7 +355,7 @@ func (h *Handler) Rmdir(
 
 	// Get updated parent directory attributes
 	parentFile, _ = metadataStore.GetFile(ctx.Context, parentHandle)
-	wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
+	wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 	logger.Info("RMDIR successful: name='%s' dir=%x client=%s",
 		req.Name, req.DirHandle, clientIP)

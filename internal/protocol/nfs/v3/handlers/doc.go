@@ -115,3 +115,52 @@ func (h *Handler) getFileOrError(
 
 	return file, types.NFS3OK, nil
 }
+
+// buildAuthContextWithWCCError builds an auth context or returns WCC error data.
+// This helper consolidates the common pattern in mutation handlers of:
+//  1. Calling BuildAuthContextWithMapping
+//  2. Checking for context cancellation
+//  3. Logging appropriate error messages
+//  4. Constructing WCC after attributes for error responses
+//
+// Returns:
+//   - authCtx: Non-nil auth context on success, nil on error
+//   - wccAfter: Nil on success, populated NFS attributes on error (for WCC response)
+//   - err: Context cancellation error if cancelled, nil otherwise
+//
+// Usage pattern:
+//
+//	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, handle, &file.FileAttr, "CREATE", req.Filename, req.DirHandle)
+//	if authCtx == nil {
+//	    return &CreateResponse{Status: types.NFS3ErrIO, DirBefore: wccBefore, DirAfter: wccAfter}, err
+//	}
+func (h *Handler) buildAuthContextWithWCCError(
+	ctx *NFSHandlerContext,
+	handle metadata.FileHandle,
+	fileAttr *metadata.FileAttr,
+	operation string,
+	filename string,
+	dirHandleBytes []byte,
+) (*metadata.AuthContext, *types.NFSFileAttr, error) {
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
+	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("%s cancelled during auth context building: file='%s' dir=%x client=%s error=%v",
+				operation, filename, dirHandleBytes, clientIP, ctx.Context.Err())
+
+			wccAfter := h.convertFileAttrToNFS(handle, fileAttr)
+			return nil, wccAfter, ctx.Context.Err()
+		}
+
+		logger.Error("%s failed: failed to build auth context: file='%s' dir=%x client=%s error=%v",
+			operation, filename, dirHandleBytes, clientIP, err)
+
+		wccAfter := h.convertFileAttrToNFS(handle, fileAttr)
+		return nil, wccAfter, nil
+	}
+
+	return authCtx, nil, nil
+}

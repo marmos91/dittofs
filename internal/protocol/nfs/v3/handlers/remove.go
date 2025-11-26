@@ -277,32 +277,13 @@ func (h *Handler) Remove(
 	// Step 3: Build authentication context with share-level identity mapping
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("REMOVE cancelled during auth context building: file='%s' dir=%x client=%s error=%v",
-				req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
-
-			wccAfter := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
-
-			return &RemoveResponse{
-				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-				DirWccBefore:    wccBefore,
-				DirWccAfter:     wccAfter,
-			}, ctx.Context.Err()
-		}
-
-		logger.Error("REMOVE failed: failed to build auth context: file='%s' dir=%x client=%s error=%v",
-			req.Filename, req.DirHandle, clientIP, err)
-
-		wccAfter := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
-
+	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, dirHandle, &dirFile.FileAttr, "REMOVE", req.Filename, req.DirHandle)
+	if authCtx == nil {
 		return &RemoveResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			DirWccBefore:    wccBefore,
 			DirWccAfter:     wccAfter,
-		}, nil
+		}, err
 	}
 
 	// ========================================================================
@@ -391,10 +372,8 @@ func (h *Handler) Remove(
 		logger.Warn("REMOVE: file removed but cannot get updated directory attributes: dir=%x error=%v",
 			req.DirHandle, err)
 		// Continue with nil WccAfter rather than failing the entire operation
-	}
-
-	var wccAfter *types.NFSFileAttr
-	if dirFile != nil {
+		wccAfter = nil
+	} else {
 		wccAfter = h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 	}
 

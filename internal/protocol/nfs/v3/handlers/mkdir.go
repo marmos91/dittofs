@@ -258,32 +258,13 @@ func (h *Handler) Mkdir(
 	// Step 3: Build AuthContext with share-level identity mapping
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("MKDIR cancelled during auth context building: name='%s' dir=%x client=%s error=%v",
-				req.Name, req.DirHandle, clientIP, ctx.Context.Err())
-
-			wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
-
-			return &MkdirResponse{
-				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-				WccBefore:       wccBefore,
-				WccAfter:        wccAfter,
-			}, ctx.Context.Err()
-		}
-
-		logger.Error("MKDIR failed: failed to build auth context: name='%s' dir=%x client=%s error=%v",
-			req.Name, req.DirHandle, clientIP, err)
-
-		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
-
+	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "MKDIR", req.Name, req.DirHandle)
+	if authCtx == nil {
 		return &MkdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			WccBefore:       wccBefore,
 			WccAfter:        wccAfter,
-		}, nil
+		}, err
 	}
 
 	// Verify parent is actually a directory
@@ -467,7 +448,7 @@ func (h *Handler) Mkdir(
 
 	// Get updated parent attributes for WCC data
 	updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
-	wccAfter := h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
+	wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
 
 	logger.Info("MKDIR successful: name='%s' handle=%x mode=%o size=%d client=%s",
 		req.Name, newHandle, newDirFile.Mode, newDirFile.Size, clientIP)

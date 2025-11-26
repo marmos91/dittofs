@@ -336,7 +336,7 @@ func TestWriteXDROpaque(t *testing.T) {
 		require.NoError(t, err)
 
 		expected := []byte{
-			0, 0, 0, 4,          // length = 4
+			0, 0, 0, 4, // length = 4
 			0x01, 0x02, 0x03, 0x04, // data
 		}
 		assert.Equal(t, expected, buf.Bytes())
@@ -350,7 +350,7 @@ func TestWriteXDROpaque(t *testing.T) {
 		require.NoError(t, err)
 
 		expected := []byte{
-			0, 0, 0, 3,       // length = 3
+			0, 0, 0, 3, // length = 3
 			0x01, 0x02, 0x03, 0, // data + 1 byte padding
 		}
 		assert.Equal(t, expected, buf.Bytes())
@@ -364,7 +364,7 @@ func TestWriteXDROpaque(t *testing.T) {
 		require.NoError(t, err)
 
 		expected := []byte{
-			0, 0, 0, 2,    // length = 2
+			0, 0, 0, 2, // length = 2
 			0x01, 0x02, 0, 0, // data + 2 bytes padding
 		}
 		assert.Equal(t, expected, buf.Bytes())
@@ -378,7 +378,7 @@ func TestWriteXDROpaque(t *testing.T) {
 		require.NoError(t, err)
 
 		expected := []byte{
-			0, 0, 0, 1,  // length = 1
+			0, 0, 0, 1, // length = 1
 			0x01, 0, 0, 0, // data + 3 bytes padding
 		}
 		assert.Equal(t, expected, buf.Bytes())
@@ -407,7 +407,7 @@ func TestWriteXDRString(t *testing.T) {
 		require.NoError(t, err)
 
 		expected := []byte{
-			0, 0, 0, 4,       // length = 4
+			0, 0, 0, 4, // length = 4
 			't', 'e', 's', 't', // data
 		}
 		assert.Equal(t, expected, buf.Bytes())
@@ -421,7 +421,7 @@ func TestWriteXDRString(t *testing.T) {
 		require.NoError(t, err)
 
 		expected := []byte{
-			0, 0, 0, 3,    // length = 3
+			0, 0, 0, 3, // length = 3
 			'a', 'b', 'c', 0, // data + 1 byte padding
 		}
 		assert.Equal(t, expected, buf.Bytes())
@@ -435,7 +435,7 @@ func TestWriteXDRString(t *testing.T) {
 		require.NoError(t, err)
 
 		expected := []byte{
-			0, 0, 0, 2,   // length = 2
+			0, 0, 0, 2, // length = 2
 			'h', 'i', 0, 0, // data + 2 bytes padding
 		}
 		assert.Equal(t, expected, buf.Bytes())
@@ -511,7 +511,7 @@ func TestWriteXDRPadding(t *testing.T) {
 
 	t.Run("HandlesDifferentLengths", func(t *testing.T) {
 		testCases := []struct {
-			length         uint32
+			length          uint32
 			expectedPadding int
 		}{
 			{0, 0},

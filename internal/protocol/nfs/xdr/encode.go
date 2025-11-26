@@ -294,7 +294,8 @@ func EncodeFileAttr(buf *bytes.Buffer, attr *types.NFSFileAttr) error {
 //   - error: Encoding error
 //
 // Example:
-//   []byte{0x01, 0x02, 0x03} → [00 00 00 03][01 02 03][00] (8 bytes total)
+//
+//	[]byte{0x01, 0x02, 0x03} → [00 00 00 03][01 02 03][00] (8 bytes total)
 func WriteXDROpaque(buf *bytes.Buffer, data []byte) error {
 	// Write length
 	length := uint32(len(data))
@@ -333,8 +334,9 @@ func WriteXDROpaque(buf *bytes.Buffer, data []byte) error {
 //   - error: Encoding error
 //
 // Example:
-//   "abc" (3 bytes) → [00 00 00 03][61 62 63][00] (8 bytes total)
-//   "test" (4 bytes) → [00 00 00 04][74 65 73 74] (8 bytes total)
+//
+//	"abc" (3 bytes) → [00 00 00 03][61 62 63][00] (8 bytes total)
+//	"test" (4 bytes) → [00 00 00 04][74 65 73 74] (8 bytes total)
 func WriteXDRString(buf *bytes.Buffer, s string) error {
 	// Write length
 	length := uint32(len(s))
@@ -369,9 +371,10 @@ func WriteXDRString(buf *bytes.Buffer, s string) error {
 //   - error: Write error
 //
 // Example:
-//   dataLen=3 → writes 1 padding byte
-//   dataLen=4 → writes 0 padding bytes
-//   dataLen=5 → writes 3 padding bytes
+//
+//	dataLen=3 → writes 1 padding byte
+//	dataLen=4 → writes 0 padding bytes
+//	dataLen=5 → writes 3 padding bytes
 func WriteXDRPadding(buf *bytes.Buffer, dataLen uint32) error {
 	padding := (4 - (dataLen % 4)) % 4
 	if padding > 0 {

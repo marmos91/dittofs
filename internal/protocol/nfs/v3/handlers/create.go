@@ -219,26 +219,13 @@ func (h *Handler) Create(
 	// Step 3: Build AuthContext with share-level identity mapping
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("CREATE cancelled during auth context building: file='%s' dir=%x client=%s error=%v",
-				req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
-			return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-		}
-
-		logger.Error("CREATE failed: failed to build auth context: file='%s' dir=%x client=%s error=%v",
-			req.Filename, req.DirHandle, clientIP, err)
-
-		// Get current parent state for WCC
-		dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
-
+	authCtx, dirWccAfter, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "CREATE", req.Filename, req.DirHandle)
+	if authCtx == nil {
 		return &CreateResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			DirBefore:       dirWccBefore,
 			DirAfter:        dirWccAfter,
-		}, nil
+		}, err
 	}
 
 	// Check for cancellation before the existence check

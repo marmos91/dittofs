@@ -315,34 +315,13 @@ func (h *Handler) Mknod(
 	// Step 3: Build AuthContext for permission checking
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
-	if err != nil {
-		// Check if error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("MKNOD cancelled during auth context building: name='%s' dir=%x client=%s error=%v",
-				req.Name, req.DirHandle, clientIP, ctx.Context.Err())
-
-			// Get current parent state for WCC
-			wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
-
-			return &MknodResponse{
-				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-				DirAttrBefore:   wccBefore,
-				DirAttrAfter:    wccAfter,
-			}, ctx.Context.Err()
-		}
-
-		logger.Error("MKNOD failed: failed to build auth context: name='%s' dir=%x client=%s error=%v",
-			req.Name, req.DirHandle, clientIP, err)
-
-		// Get current parent state for WCC
-		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
-
+	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "MKNOD", req.Name, req.DirHandle)
+	if authCtx == nil {
 		return &MknodResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			DirAttrBefore:   wccBefore,
 			DirAttrAfter:    wccAfter,
-		}, nil
+		}, err
 	}
 
 	// ========================================================================
@@ -471,7 +450,7 @@ func (h *Handler) Mknod(
 
 	// Get updated parent attributes for WCC data
 	updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
-	wccAfter := h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
+	wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
 
 	logger.Info("MKNOD successful: name='%s' type=%s handle=%x mode=%o major=%d minor=%d client=%s",
 		req.Name, specialFileTypeName(req.Type), newHandle, newFile.Mode,
