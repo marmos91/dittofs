@@ -293,12 +293,10 @@ func (h *Handler) ReadDirPlus(
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("READDIRPLUS cancelled: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, ctx.Context.Err())
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	// ========================================================================
@@ -316,42 +314,25 @@ func (h *Handler) ReadDirPlus(
 	// ========================================================================
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("READDIRPLUS cancelled before GetFile: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, ctx.Context.Err())
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	// ========================================================================
-	// Decode share name from directory file handle
+	// Get metadata store from context
 	// ========================================================================
 
-	dirHandle := metadata.FileHandle(req.DirHandle)
-	shareName, path, err := metadata.DecodeFileHandle(dirHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("READDIRPLUS failed: invalid directory handle: dir=%x client=%s error=%v",
-			req.DirHandle, clientIP, err)
-		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("READDIRPLUS failed: share not found: share=%s dir=%x client=%s",
-			shareName, req.DirHandle, clientIP)
+		logger.Warn("READDIRPLUS failed: %v dir=%x client=%s", err, req.DirHandle, clientIP)
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("READDIRPLUS failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
-			shareName, req.DirHandle, clientIP, err)
-		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
+	dirHandle := metadata.FileHandle(req.DirHandle)
 
-	logger.Debug("READDIRPLUS: share=%s path=%s", shareName, path)
+	logger.Debug("READDIRPLUS: share=%s", ctx.Share)
 
 	dirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
@@ -366,8 +347,7 @@ func (h *Handler) ReadDirPlus(
 			req.DirHandle, dirFile.Type, clientIP)
 
 		// Include directory attributes even on error for cache consistency
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &ReadDirPlusResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
@@ -386,8 +366,7 @@ func (h *Handler) ReadDirPlus(
 			logger.Debug("READDIRPLUS cancelled during auth context building: dir=%x client=%s error=%v",
 				req.DirHandle, clientIP, ctx.Context.Err())
 
-			dirID := xdr.ExtractFileID(dirHandle)
-			nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+			nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 			return &ReadDirPlusResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -398,8 +377,7 @@ func (h *Handler) ReadDirPlus(
 		logger.Error("READDIRPLUS failed: failed to build auth context: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
 
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &ReadDirPlusResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -414,19 +392,16 @@ func (h *Handler) ReadDirPlus(
 	// We need to use Lookup for each entry to get handles and full attributes.
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("READDIRPLUS cancelled before ReadDirectory: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, ctx.Context.Err())
 
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &ReadDirPlusResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			DirAttr:         nfsDirAttr,
 		}, nil
-	default:
 	}
 
 	// Convert cookie to string token for ReadDirectory pagination
@@ -446,8 +421,7 @@ func (h *Handler) ReadDirPlus(
 		// Map store error to NFS status
 		status := mapMetadataErrorToNFS(err)
 
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &ReadDirPlusResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},
@@ -460,8 +434,7 @@ func (h *Handler) ReadDirPlus(
 	// ========================================================================
 
 	// Generate directory file ID for attributes
-	dirID := xdr.ExtractFileID(dirHandle)
-	nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+	nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 	// Build entries list - look up each entry to get handle and full attributes
 	entries := make([]*DirPlusEntry, 0, len(page.Entries))
@@ -513,8 +486,7 @@ func (h *Handler) ReadDirPlus(
 		}
 
 		// Convert attributes to NFS format
-		entryID := xdr.ExtractFileID(entryHandle)
-		nfsEntryAttr := xdr.MetadataToNFS(&entryFile.FileAttr, entryID)
+		nfsEntryAttr := h.convertFileAttrToNFS(entryHandle, &entryFile.FileAttr)
 
 		// Create directory entry with absolute cookie position
 		// Cookie = startOffset + i + 1 (absolute position in directory)
@@ -543,8 +515,8 @@ func (h *Handler) ReadDirPlus(
 	logger.Info("READDIRPLUS successful: dir=%x entries=%d eof=%v client=%s",
 		req.DirHandle, len(entries), eof, clientIP)
 
-	logger.Debug("READDIRPLUS details: dir_id=%d total_entries=%d eof=%v",
-		dirID, len(page.Entries), eof)
+	logger.Debug("READDIRPLUS details: dir_handle=%x total_entries=%d eof=%v",
+		dirHandle, len(page.Entries), eof)
 
 	return &ReadDirPlusResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -863,21 +835,8 @@ func (resp *ReadDirPlusResponse) Encode() ([]byte, error) {
 		}
 
 		// Write name (string: length + data + padding)
-		nameLen := uint32(len(entry.Name))
-		if err := binary.Write(&buf, binary.BigEndian, nameLen); err != nil {
-			return nil, fmt.Errorf("failed to write name length for entry '%s': %w", entry.Name, err)
-		}
-
-		if _, err := buf.Write([]byte(entry.Name)); err != nil {
-			return nil, fmt.Errorf("failed to write name data for entry '%s': %w", entry.Name, err)
-		}
-
-		// Add padding to 4-byte boundary
-		padding := (4 - (nameLen % 4)) % 4
-		for i := range padding {
-			if err := buf.WriteByte(0); err != nil {
-				return nil, fmt.Errorf("failed to write name padding byte %d for entry '%s': %w", i, entry.Name, err)
-			}
+		if err := xdr.WriteXDRString(&buf, entry.Name); err != nil {
+			return nil, fmt.Errorf("failed to write name for entry '%s': %w", entry.Name, err)
 		}
 
 		// Write cookie (8 bytes)

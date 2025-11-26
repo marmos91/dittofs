@@ -167,12 +167,10 @@ func (h *Handler) FsInfo(
 	// Check for context cancellation before starting any work
 	// FSINFO is lightweight, but we respect cancellation to prevent
 	// wasting resources on abandoned requests
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("FSINFO cancelled: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
 	}
 
 	// Validate file handle before using it
@@ -182,52 +180,33 @@ func (h *Handler) FsInfo(
 	}
 
 	// ========================================================================
-	// Decode share name from file handle
+	// Get metadata store from context
 	// ========================================================================
 
-	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, _, err := metadata.DecodeFileHandle(fileHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("FSINFO failed: invalid file handle: handle=%x client=%s error=%v",
-			req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
-		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("FSINFO failed: share not found: share=%s handle=%x client=%s",
-			shareName, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr))
+		logger.Warn("FSINFO failed: %v handle=%x client=%s", err, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr))
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("FSINFO failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
-		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
+	fileHandle := metadata.FileHandle(req.Handle)
 
 	// Check for cancellation before store call
 	// store operations might involve I/O or locks
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("FSINFO cancelled before GetFile: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
 	}
 
 	// Verify the file handle exists and is valid in the store
 	// The store is responsible for validating handle format and existence
-	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
-	if err != nil {
-		logger.Debug("FSINFO failed: handle=%x client=%s error=%v",
-			req.Handle, ctx.ClientAddr, err)
-		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "FSINFO", req.Handle)
+	if file == nil {
+		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
-	logger.Debug("FSINFO: share=%s path=%s", shareName, file.Path)
+	logger.Debug("FSINFO: share=%s path=%s", ctx.Share, file.Path)
 
 	// Retrieve filesystem capabilities from the store
 	// All business logic about filesystem limits is handled by the store

@@ -274,13 +274,10 @@ func (h *Handler) SetAttr(
 	// Check if the client has disconnected or the request has timed out
 	// before we start any operations. This is especially important for
 	// SETATTR operations that may involve expensive content truncation.
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("SETATTR: request cancelled at entry: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
-		// Context not cancelled, continue processing
 	}
 
 	// Extract client IP for logging
@@ -300,50 +297,26 @@ func (h *Handler) SetAttr(
 	}
 
 	// ========================================================================
-	// Step 2: Decode share name from file handle
+	// Step 2: Get metadata store from context
 	// ========================================================================
 
-	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, path, err := metadata.DecodeFileHandle(fileHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("SETATTR failed: invalid file handle: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("SETATTR failed: share not found: share=%s handle=%x client=%s",
-			shareName, req.Handle, clientIP)
+		logger.Warn("SETATTR failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("SETATTR failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
-		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
+	fileHandle := metadata.FileHandle(req.Handle)
 
-	logger.Debug("SETATTR: share=%s path=%s", shareName, path)
+	logger.Debug("SETATTR: share=%s", ctx.Share)
 
 	// ========================================================================
 	// Step 3: Get current file attributes for WCC and guard check
 	// ========================================================================
 
-	currentFile, err := metadataStore.GetFile(ctx.Context, fileHandle)
-	if err != nil {
-		// Check if error is due to context cancellation
-		if err == context.Canceled || err == context.DeadlineExceeded {
-			logger.Debug("SETATTR: metadata lookup cancelled: handle=%x client=%s",
-				req.Handle, clientIP)
-			return nil, err
-		}
-
-		logger.Warn("SETATTR failed: file not found: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	currentFile, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "SETATTR", req.Handle)
+	if currentFile == nil {
+		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	// Capture pre-operation attributes for WCC data
@@ -364,8 +337,7 @@ func (h *Handler) SetAttr(
 			req.Handle, clientIP)
 
 		// Return current attributes without modification
-		fileID := xdr.ExtractFileID(fileHandle)
-		wccAfter := xdr.MetadataToNFS(&currentFile.FileAttr, fileID)
+		wccAfter := h.convertFileAttrToNFS(fileHandle, &currentFile.FileAttr)
 
 		return &SetAttrResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -378,13 +350,10 @@ func (h *Handler) SetAttr(
 	// Context Cancellation Check - After Metadata Lookup
 	// ========================================================================
 	// Check again after metadata lookup, before guard check and attribute update
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("SETATTR: request cancelled after metadata lookup: handle=%x client=%s",
 			req.Handle, clientIP)
 		return nil, ctx.Context.Err()
-	default:
-		// Context not cancelled, continue processing
 	}
 
 	// ========================================================================
@@ -410,8 +379,7 @@ func (h *Handler) SetAttr(
 			// Get updated attributes for WCC data (best effort)
 			var wccAfter *types.NFSFileAttr
 			if file, err := metadataStore.GetFile(ctx.Context, fileHandle); err == nil {
-				fileID := xdr.ExtractFileID(fileHandle)
-				wccAfter = xdr.MetadataToNFS(&file.FileAttr, fileID)
+				wccAfter = h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 			}
 
 			return &SetAttrResponse{
@@ -429,26 +397,13 @@ func (h *Handler) SetAttr(
 	// Step 4: Build authentication context with share-level identity mapping
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("SETATTR cancelled during auth context building: handle=%x client=%s error=%v",
-				req.Handle, clientIP, ctx.Context.Err())
-			return nil, ctx.Context.Err()
-		}
-
-		logger.Error("SETATTR failed: failed to build auth context: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-
-		fileID := xdr.ExtractFileID(fileHandle)
-		wccAfter := xdr.MetadataToNFS(&currentFile.FileAttr, fileID)
-
+	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, fileHandle, &currentFile.FileAttr, "SETATTR", "", req.Handle)
+	if authCtx == nil {
 		return &SetAttrResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			AttrBefore:      wccBefore,
 			AttrAfter:       wccAfter,
-		}, nil
+		}, err
 	}
 
 	// ========================================================================
@@ -481,8 +436,7 @@ func (h *Handler) SetAttr(
 		// Get updated attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
 		if file, getErr := metadataStore.GetFile(ctx.Context, fileHandle); getErr == nil {
-			fileID := xdr.ExtractFileID(fileHandle)
-			wccAfter = xdr.MetadataToNFS(&file.FileAttr, fileID)
+			wccAfter = h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 		}
 
 		// Map store errors to NFS status codes
@@ -500,24 +454,18 @@ func (h *Handler) SetAttr(
 	// ========================================================================
 
 	// Get updated file attributes for WCC data
-	updatedFile, err := metadataStore.GetFile(ctx.Context, fileHandle)
-	if err != nil {
-		// Check if error is due to context cancellation
-		if err == context.Canceled || err == context.DeadlineExceeded {
-			logger.Debug("SETATTR: final attribute lookup cancelled: handle=%x client=%s",
-				req.Handle, clientIP)
-			return nil, err
-		}
-
-		logger.Warn("SETATTR: attributes updated but cannot get new attributes: handle=%x error=%v",
-			req.Handle, err)
-		// Continue with nil WccAfter rather than failing the entire operation
+	updatedFile, _, err := h.getFileOrError(ctx, metadataStore, fileHandle, "SETATTR", req.Handle)
+	if updatedFile == nil && err != nil {
+		// Context cancelled
+		return nil, err
 	}
-
-	var wccAfter *types.NFSFileAttr
-	if updatedFile != nil {
-		fileID := xdr.ExtractFileID(fileHandle)
-		wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+	if updatedFile == nil {
+		logger.Warn("SETATTR: attributes updated but cannot get new attributes: handle=%x",
+			req.Handle)
+		// Continue with nil WccAfter rather than failing the entire operation
+		wccAfter = nil
+	} else {
+		wccAfter = h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
 	}
 
 	logger.Info("SETATTR successful: handle=%x client=%s", req.Handle, clientIP)

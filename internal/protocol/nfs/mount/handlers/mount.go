@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"net"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
+	internalxdr "github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/pkg/registry"
 	xdr "github.com/rasky/go-xdr/xdr2"
 )
@@ -99,20 +99,14 @@ func (h *Handler) Mount(
 	req *MountRequest,
 ) (*MountResponse, error) {
 	// Check for cancellation before starting any work
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("Mount request cancelled before processing: path=%s client=%s error=%v",
 			req.DirPath, ctx.ClientAddr, ctx.Context.Err())
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrServerFault}}, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP from address (remove port)
-	clientIP, _, err := net.SplitHostPort(ctx.ClientAddr)
-	if err != nil {
-		// If parsing fails, use the whole address (might be IP only)
-		clientIP = ctx.ClientAddr
-	}
+	clientIP := extractClientIP(ctx.ClientAddr)
 
 	// Log authentication info
 	if ctx.AuthFlavor == rpc.AuthUnix && ctx.UID != nil && ctx.GID != nil {
@@ -225,17 +219,10 @@ func (resp *MountResponse) Encode() ([]byte, error) {
 	}
 
 	// Write file handle (opaque data)
-	// XDR opaque format: length followed by data
-	handleLen := uint32(len(resp.FileHandle))
-	if err := binary.Write(&buf, binary.BigEndian, handleLen); err != nil {
-		return nil, fmt.Errorf("write handle length: %w", err)
+	// XDR opaque format: length followed by data with padding
+	if err := internalxdr.WriteXDROpaque(&buf, resp.FileHandle); err != nil {
+		return nil, fmt.Errorf("write file handle: %w", err)
 	}
-
-	buf.Write(resp.FileHandle)
-
-	// Add padding to 4-byte boundary (XDR alignment requirement)
-	padding := (4 - (handleLen % 4)) % 4
-	buf.Write(make([]byte, padding))
 
 	// Write auth flavors array
 	// XDR array format: count followed by elements

@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"net"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // DumpRequest represents a DUMP request from an NFS client.
@@ -119,19 +119,13 @@ type DumpEntry struct {
 //	fmt.Printf("Active mounts: %d\n", len(resp.Entries))
 func (h *Handler) Dump(ctx *MountHandlerContext, req *DumpRequest) (*DumpResponse, error) {
 	// Check for cancellation before starting any work
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("Dump request cancelled before processing: client=%s error=%v", ctx.ClientAddr, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP from address (remove port)
-	clientIP, _, err := net.SplitHostPort(ctx.ClientAddr)
-	if err != nil {
-		// If parsing fails, use the whole address (might be IP only)
-		clientIP = ctx.ClientAddr
-	}
+	clientIP := extractClientIP(ctx.ClientAddr)
 
 	logger.Info("Dump request: client=%s", clientIP)
 
@@ -226,26 +220,14 @@ func (resp *DumpResponse) Encode() ([]byte, error) {
 		}
 
 		// Write hostname (string: length + data + padding)
-		hostnameLen := uint32(len(entry.Hostname))
-		if err := binary.Write(&buf, binary.BigEndian, hostnameLen); err != nil {
-			return nil, fmt.Errorf("write hostname length: %w", err)
+		if err := xdr.WriteXDRString(&buf, entry.Hostname); err != nil {
+			return nil, fmt.Errorf("write hostname: %w", err)
 		}
-		buf.Write([]byte(entry.Hostname))
-
-		// Add padding to 4-byte boundary
-		hostnamePadding := (4 - (hostnameLen % 4)) % 4
-		buf.Write(make([]byte, hostnamePadding))
 
 		// Write directory (string: length + data + padding)
-		directoryLen := uint32(len(entry.Directory))
-		if err := binary.Write(&buf, binary.BigEndian, directoryLen); err != nil {
-			return nil, fmt.Errorf("write directory length: %w", err)
+		if err := xdr.WriteXDRString(&buf, entry.Directory); err != nil {
+			return nil, fmt.Errorf("write directory: %w", err)
 		}
-		buf.Write([]byte(entry.Directory))
-
-		// Add padding to 4-byte boundary
-		directoryPadding := (4 - (directoryLen % 4)) % 4
-		buf.Write(make([]byte, directoryPadding))
 	}
 
 	// Write value_follows = FALSE (no more entries)

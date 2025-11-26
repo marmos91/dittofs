@@ -155,13 +155,14 @@ func TestEvictLRU(t *testing.T) {
 		defer func() { _ = mc.Close() }()
 
 		// Write three files with delays to ensure different timestamps
+		// With automatic eviction enabled, the third write should trigger eviction
 		files := []struct {
 			id   metadata.ContentID
 			size int
 		}{
-			{"test/old.txt", 700},    // Oldest
-			{"test/medium.txt", 700}, // Middle
-			{"test/new.txt", 700},    // Newest
+			{"test/old.txt", 700},    // Oldest - will be evicted automatically
+			{"test/medium.txt", 700}, // Middle - should remain
+			{"test/new.txt", 700},    // Newest - should remain
 		}
 
 		for _, f := range files {
@@ -172,26 +173,32 @@ func TestEvictLRU(t *testing.T) {
 			time.Sleep(50 * time.Millisecond) // Ensure different timestamps
 		}
 
-		// Total size: 2100 bytes, exceeds 2048 limit
-		// Evict down to 90% of limit (1843 bytes)
-		count, freed := mc.EvictLRU(0) // Use default target (90%)
+		// After all writes, automatic eviction should have happened
+		// Writing 3rd file (700 bytes) when cache has 1400 bytes triggers eviction
+		// Target = (2048 * 0.90) - 700 = 1143 bytes
+		// Should evict file 1 (700 bytes), leaving file 2 (700 bytes)
+		// Then write file 3, resulting in files 2 & 3 (1400 bytes total)
 
-		if count == 0 {
-			t.Error("Expected at least one file to be evicted")
-		}
-
-		if freed == 0 {
-			t.Error("Expected some bytes to be freed")
-		}
-
-		// Oldest file should be evicted
+		// Oldest file should have been auto-evicted
 		if mc.Exists(files[0].id) {
-			t.Error("Oldest file should have been evicted")
+			t.Error("Oldest file should have been auto-evicted during writes")
 		}
 
 		// Newer files should still exist
 		if !mc.Exists(files[1].id) || !mc.Exists(files[2].id) {
 			t.Error("Newer files should still exist")
+		}
+
+		// Verify cache size is under max
+		totalSize := mc.TotalSize()
+		if totalSize > mc.MaxSize() {
+			t.Errorf("Cache size %d exceeds max %d after auto-eviction", totalSize, mc.MaxSize())
+		}
+
+		// Expected size: 2 files × 700 bytes = 1400 bytes
+		expectedSize := int64(1400)
+		if totalSize != expectedSize {
+			t.Errorf("Expected cache size %d, got %d", expectedSize, totalSize)
 		}
 	})
 
@@ -200,6 +207,7 @@ func TestEvictLRU(t *testing.T) {
 		defer func() { _ = mc.Close() }()
 
 		// Write multiple small files
+		// With automatic eviction, writes 7-10 will trigger eviction
 		for i := 0; i < 10; i++ {
 			id := metadata.ContentID("test/file" + string(rune('0'+i)) + ".txt")
 			err := mc.Write(ctx, id, make([]byte, 300))
@@ -209,17 +217,24 @@ func TestEvictLRU(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 
-		// Total: 3000 bytes, target: 1024 bytes
-		count, freed := mc.EvictLRU(1024)
+		// After automatic eviction during writes, cache should have newest 4 files
+		// Files 6,7,8,9 = 1200 bytes (auto-eviction keeps it under max)
+		sizeAfterWrites := mc.TotalSize()
+		if sizeAfterWrites > mc.MaxSize() {
+			t.Errorf("Cache size %d exceeds max %d after auto-eviction", sizeAfterWrites, mc.MaxSize())
+		}
+
+		// Now manually evict to a lower target
+		count, freed := mc.EvictLRU(900) // Target 900 bytes (3 files)
 
 		if count == 0 {
-			t.Error("Expected multiple files to be evicted")
+			t.Error("Expected at least one file to be evicted")
 		}
 
 		// Should have freed enough to reach target
 		remaining := mc.TotalSize()
-		if remaining > 1024 {
-			t.Errorf("Expected remaining size <= 1024, got %d", remaining)
+		if remaining > 900 {
+			t.Errorf("Expected remaining size <= 900, got %d", remaining)
 		}
 
 		t.Logf("Evicted %d files, freed %d bytes, remaining %d bytes", count, freed, remaining)

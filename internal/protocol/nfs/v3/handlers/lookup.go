@@ -213,12 +213,10 @@ func (h *Handler) Lookup(
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("LOOKUP cancelled: file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	// ========================================================================
@@ -232,45 +230,27 @@ func (h *Handler) Lookup(
 	}
 
 	// ========================================================================
-	// Step 3: Decode share name from directory file handle
+	// Step 3: Get metadata store from context
 	// ========================================================================
 
-	dirHandle := metadata.FileHandle(req.DirHandle)
-	shareName, _, err := metadata.DecodeFileHandle(dirHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("LOOKUP failed: invalid directory handle: dir=%x client=%s error=%v",
-			req.DirHandle, clientIP, err)
-		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("LOOKUP failed: share not found: share=%s dir=%x client=%s",
-			shareName, req.DirHandle, clientIP)
+		logger.Warn("LOOKUP failed: %v dir=%x client=%s", err, req.DirHandle, clientIP)
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("LOOKUP failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
-			shareName, req.DirHandle, clientIP, err)
-		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
-
-	logger.Debug("LOOKUP: share=%s file=%s", shareName, req.Filename)
+	dirHandle := metadata.FileHandle(req.DirHandle)
+	logger.Debug("LOOKUP: share=%s file=%s", ctx.Share, req.Filename)
 
 	// ========================================================================
 	// Step 4: Verify directory handle exists and is valid
 	// ========================================================================
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("LOOKUP cancelled before GetFile (dir): file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	dirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
@@ -286,8 +266,7 @@ func (h *Handler) Lookup(
 			req.DirHandle, dirFile.Type, clientIP)
 
 		// Include directory attributes even on error for cache consistency
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &LookupResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
@@ -311,8 +290,7 @@ func (h *Handler) Lookup(
 		logger.Error("LOOKUP failed: failed to build auth context: file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, clientIP, err)
 
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &LookupResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -330,20 +308,17 @@ func (h *Handler) Lookup(
 	// - Enforces any access control policies
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("LOOKUP cancelled before Lookup: file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
 
 		// Include directory post-op attributes for cache consistency
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &LookupResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			DirAttr:         nfsDirAttr,
 		}, nil
-	default:
 	}
 
 	childFile, err := metadataStore.Lookup(authCtx, dirHandle, req.Filename)
@@ -355,8 +330,7 @@ func (h *Handler) Lookup(
 		status := mapMetadataErrorToNFS(err)
 
 		// Include directory post-op attributes for cache consistency
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &LookupResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},
@@ -376,8 +350,7 @@ func (h *Handler) Lookup(
 		logger.Error("LOOKUP failed: cannot encode child handle: file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, clientIP, err)
 
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &LookupResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -386,17 +359,14 @@ func (h *Handler) Lookup(
 	}
 
 	// Generate file IDs from handles for NFS attributes
-	childID := xdr.ExtractFileID(childHandle)
-	nfsChildAttr := xdr.MetadataToNFS(&childFile.FileAttr, childID)
-
-	dirID := xdr.ExtractFileID(dirHandle)
-	nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+	nfsChildAttr := h.convertFileAttrToNFS(childHandle, &childFile.FileAttr)
+	nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 	logger.Info("LOOKUP successful: file='%s' handle=%x type=%d size=%d client=%s",
 		req.Filename, childHandle, nfsChildAttr.Type, childFile.Size, clientIP)
 
-	logger.Debug("LOOKUP details: child_id=%d child_mode=%o dir_id=%d",
-		childID, childFile.Mode, dirID)
+	logger.Debug("LOOKUP details: child_handle=%x child_mode=%o dir_handle=%x",
+		childHandle, childFile.Mode, dirHandle)
 
 	return &LookupResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -676,21 +646,8 @@ func (resp *LookupResponse) Encode() ([]byte, error) {
 	// ========================================================================
 
 	// Write file handle (opaque data: length + data + padding)
-	handleLen := uint32(len(resp.FileHandle))
-	if err := binary.Write(&buf, binary.BigEndian, handleLen); err != nil {
-		return nil, fmt.Errorf("failed to write handle length: %w", err)
-	}
-
-	if _, err := buf.Write(resp.FileHandle); err != nil {
-		return nil, fmt.Errorf("failed to write handle data: %w", err)
-	}
-
-	// Add padding to 4-byte boundary (XDR alignment requirement)
-	padding := (4 - (handleLen % 4)) % 4
-	for i := range padding {
-		if err := buf.WriteByte(0); err != nil {
-			return nil, fmt.Errorf("failed to write handle padding byte %d: %w", i, err)
-		}
+	if err := xdr.WriteXDROpaque(&buf, resp.FileHandle); err != nil {
+		return nil, fmt.Errorf("failed to write handle: %w", err)
 	}
 
 	// Write object attributes (present flag + attributes if present)

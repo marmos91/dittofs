@@ -157,12 +157,10 @@ func (h *Handler) FsStat(
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("FSSTAT cancelled: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	// ========================================================================
@@ -192,60 +190,40 @@ func (h *Handler) FsStat(
 	// ========================================================================
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("FSSTAT cancelled before GetFile: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	// ========================================================================
-	// Decode share name from file handle
+	// Get metadata store from context
 	// ========================================================================
+
+	metadataStore, err := h.getMetadataStore(ctx)
+	if err != nil {
+		logger.Warn("FSSTAT failed: %v handle=%x client=%s", err, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr))
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
+	}
 
 	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, _, err := metadata.DecodeFileHandle(fileHandle)
-	if err != nil {
-		logger.Warn("FSSTAT failed: invalid file handle: handle=%x client=%s error=%v",
-			req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
-		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
+
+	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "FSSTAT", req.Handle)
+	if file == nil {
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("FSSTAT failed: share not found: share=%s handle=%x client=%s",
-			shareName, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr))
-		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
-
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("FSSTAT failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
-		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
-
-	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
-	if err != nil {
-		logger.Debug("FSSTAT failed: handle not found: %v client=%s", err, ctx.ClientAddr)
-		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
-
-	logger.Debug("FSSTAT: share=%s path=%s", shareName, file.Path)
+	logger.Debug("FSSTAT: share=%s path=%s", ctx.Share, file.Path)
 
 	// ========================================================================
 	// Step 4: Retrieve filesystem statistics from the store
 	// ========================================================================
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("FSSTAT cancelled before GetFilesystemStatistics: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	stats, err := metadataStore.GetFilesystemStatistics(ctx.Context, metadata.FileHandle(req.Handle))

@@ -10,6 +10,7 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/cache"
@@ -49,12 +50,14 @@ type buffer struct {
 // Thread Safety:
 // Safe for concurrent use. Operations on different content IDs are fully
 // parallel. Operations on the same content ID are serialized.
+// Total size is tracked with atomic operations to avoid lock contention.
 type MemoryCache struct {
-	buffers map[string]*buffer
-	mu      sync.RWMutex
-	closed  bool
-	maxSize int64              // Maximum total cache size (0 = unlimited)
-	metrics cache.CacheMetrics // Optional metrics collector
+	buffers   map[string]*buffer
+	mu        sync.RWMutex
+	closed    bool
+	maxSize   int64              // Maximum total cache size (0 = unlimited)
+	totalSize atomic.Int64       // Current total cache size (atomic for lock-free access)
+	metrics   cache.CacheMetrics // Optional metrics collector
 }
 
 // NewMemoryCache creates a new in-memory cache.
@@ -127,6 +130,13 @@ func (c *MemoryCache) Write(ctx context.Context, id metadata.ContentID, data []b
 		return err
 	}
 
+	// Debug: Log write start
+	// fmt.Printf("[CACHE] Write start: id=%s size=%d maxSize=%d totalSize=%d\n",
+	//	string(id), len(data), c.maxSize, c.totalSize.Load())
+
+	// Ensure cache has space before writing (triggers eviction if needed)
+	c.ensureCacheSize(int64(len(data)))
+
 	start := time.Now()
 	defer func() {
 		if c.metrics != nil {
@@ -140,21 +150,29 @@ func (c *MemoryCache) Write(ctx context.Context, id metadata.ContentID, data []b
 	}
 
 	buf.mu.Lock()
+	oldSize := int64(len(buf.data))
 	// Replace entire buffer
 	buf.data = make([]byte, len(data))
 	copy(buf.data, data)
 	buf.lastWrite = time.Now()
-	bufSize := int64(len(buf.data))
+	newSize := int64(len(buf.data))
 	buf.mu.Unlock()
 
-	// Record cache size after write (must be done after releasing buf lock)
-	if c.metrics != nil {
-		c.metrics.RecordCacheSize(string(id), bufSize)
-
-		// REMOVED: updateTotalCacheSize() here causes severe lock contention
-		// with concurrent writes. Total size metrics are updated in Size()
-		// and Remove() instead, which are less frequent operations.
+	// Update total size atomically (delta = newSize - oldSize)
+	sizeDelta := newSize - oldSize
+	if sizeDelta != 0 {
+		c.totalSize.Add(sizeDelta)
 	}
+
+	// Record cache size after write
+	if c.metrics != nil {
+		c.metrics.RecordCacheSize(string(id), newSize)
+		c.metrics.RecordTotalCacheSize(c.totalSize.Load())
+	}
+
+	// Debug: Log write complete
+	// fmt.Printf("[CACHE] Write done: id=%s newSize=%d totalSize=%d\n",
+	//	string(id), newSize, c.totalSize.Load())
 
 	return nil
 }
@@ -165,6 +183,10 @@ func (c *MemoryCache) WriteAt(ctx context.Context, id metadata.ContentID, data [
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	// Ensure cache has space before writing (triggers eviction if needed)
+	// Note: This is an estimate - actual size increase may be less if overwriting
+	c.ensureCacheSize(int64(len(data)))
 
 	start := time.Now()
 	defer func() {
@@ -182,16 +204,25 @@ func (c *MemoryCache) WriteAt(ctx context.Context, id metadata.ContentID, data [
 		return err
 	}
 
+	// Acquire lock for the write operation
+	// We used to try optimizing by checking capacity before locking, but this caused:
+	// 1. Data races when copying old data without lock
+	// 2. Incorrect totalSize tracking from stale oldSize
+	// 3. Double-lock overhead
+	// Simpler is better: just do everything in one lock acquisition
 	buf.mu.Lock()
+
+	// Capture size BEFORE the write for accurate delta tracking
+	oldSize := int64(len(buf.data))
+	currentSize := oldSize
 	writeEnd := offset + int64(len(data))
-	currentSize := int64(len(buf.data))
 
 	// Extend buffer if needed
 	if writeEnd > currentSize {
 		newSize := writeEnd
+
 		if newSize > int64(cap(buf.data)) {
-			// Need to reallocate - use exponential growth strategy
-			// This prevents O(N²) behavior when writing large files sequentially
+			// Need to reallocate - calculate new capacity
 			newCap := int64(cap(buf.data))
 			if newCap == 0 {
 				newCap = defaultBufferCapacity
@@ -210,7 +241,7 @@ func (c *MemoryCache) WriteAt(ctx context.Context, id metadata.ContentID, data [
 			copy(newBuf, buf.data)
 			buf.data = newBuf
 		} else {
-			// Just extend length
+			// Just extend length (capacity is sufficient)
 			buf.data = buf.data[:newSize]
 		}
 
@@ -225,16 +256,19 @@ func (c *MemoryCache) WriteAt(ctx context.Context, id metadata.ContentID, data [
 	// Copy data at offset
 	copy(buf.data[offset:], data)
 	buf.lastWrite = time.Now()
-	bufSize := int64(len(buf.data))
+	newSize := int64(len(buf.data))
 	buf.mu.Unlock()
 
-	// Record cache size after write (must be done after releasing buf lock)
-	if c.metrics != nil {
-		c.metrics.RecordCacheSize(string(id), bufSize)
+	// Update total size atomically (delta = newSize - oldSize)
+	sizeDelta := newSize - oldSize
+	if sizeDelta != 0 {
+		c.totalSize.Add(sizeDelta)
+	}
 
-		// REMOVED: updateTotalCacheSize() here causes severe lock contention
-		// with concurrent writes. Total size metrics are updated in Size()
-		// and Remove() instead, which are less frequent operations.
+	// Record cache size after write
+	if c.metrics != nil {
+		c.metrics.RecordCacheSize(string(id), newSize)
+		c.metrics.RecordTotalCacheSize(c.totalSize.Load())
 	}
 
 	return nil
@@ -349,37 +383,10 @@ func (c *MemoryCache) List() []metadata.ContentID {
 	return result
 }
 
-// updateTotalCacheSize calculates and records the total cache size across all buffers.
-// DISABLED: This function causes deadlock when called while holding c.mu and concurrent
-// writes hold individual buffer locks. See deadlock analysis in git history.
-// TODO: Implement non-blocking total size calculation or async metrics updates
-//
-// func (c *MemoryCache) updateTotalCacheSize() {
-// 	// Lock must be held by caller
-// 	var totalSize int64
-// 	for _, buf := range c.buffers {
-// 		buf.mu.Lock()
-// 		totalSize += int64(len(buf.data))
-// 		buf.mu.Unlock()
-// 	}
-//
-// 	if c.metrics != nil {
-// 		c.metrics.RecordTotalCacheSize(totalSize)
-// 	}
-// }
-
 // Remove clears the cached data for a specific content ID.
 func (c *MemoryCache) Remove(id metadata.ContentID) error {
 	c.mu.Lock()
-	defer func() {
-		// Record buffer count after removal
-		if c.metrics != nil {
-			c.metrics.RecordBufferCount(len(c.buffers))
-			// REMOVED: updateTotalCacheSize() causes deadlock when called from COMMIT/Remove
-			// while concurrent writes hold individual buffer locks
-		}
-		c.mu.Unlock()
-	}()
+	defer c.mu.Unlock()
 
 	if c.closed {
 		return fmt.Errorf("cache is closed")
@@ -388,22 +395,34 @@ func (c *MemoryCache) Remove(id metadata.ContentID) error {
 	idStr := string(id)
 	buf, exists := c.buffers[idStr]
 	if !exists {
+		fmt.Printf("[CACHE] Remove: id=%s not found (already removed)\n", string(id))
 		return nil // Already removed (idempotent)
 	}
 
-	// Clear buffer data
+	fmt.Printf("[CACHE] Remove: acquiring buf lock for id=%s\n", string(id))
+	// Get buffer size before clearing
 	buf.mu.Lock()
+	bufSize := int64(len(buf.data))
 	buf.data = nil
 	buf.mu.Unlock()
+	fmt.Printf("[CACHE] Remove: released buf lock for id=%s size=%d\n", string(id), bufSize)
+
+	// Update total size atomically
+	if bufSize > 0 {
+		c.totalSize.Add(-bufSize)
+	}
 
 	// Remove from map
 	delete(c.buffers, idStr)
 
-	// Record cache removal
+	// Record metrics after removal
 	if c.metrics != nil {
 		c.metrics.RecordCacheReset(idStr)
+		c.metrics.RecordBufferCount(len(c.buffers))
+		c.metrics.RecordTotalCacheSize(c.totalSize.Load())
 	}
 
+	fmt.Printf("[CACHE] Remove DONE: id=%s totalSize=%d\n", string(id), c.totalSize.Load())
 	return nil
 }
 
@@ -426,6 +445,9 @@ func (c *MemoryCache) RemoveAll() error {
 	// Clear the map
 	c.buffers = make(map[string]*buffer)
 
+	// Reset total size atomically
+	c.totalSize.Store(0)
+
 	// Record metrics after clearing
 	if c.metrics != nil {
 		c.metrics.RecordBufferCount(0)
@@ -436,22 +458,9 @@ func (c *MemoryCache) RemoveAll() error {
 }
 
 // TotalSize returns the total size of all cached data across all files.
+// This is now lock-free and uses atomic operations for zero contention.
 func (c *MemoryCache) TotalSize() int64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if c.closed {
-		return 0
-	}
-
-	var total int64
-	for _, buf := range c.buffers {
-		buf.mu.Lock()
-		total += int64(len(buf.data))
-		buf.mu.Unlock()
-	}
-
-	return total
+	return c.totalSize.Load()
 }
 
 // MaxSize returns the maximum cache size configured for this cache.
@@ -518,14 +527,8 @@ func (c *MemoryCache) EvictLRU(targetSize int64) (int, int64) {
 		return 0, 0
 	}
 
-	// Check if eviction is needed
-	currentSize := int64(0)
-	for _, buf := range c.buffers {
-		buf.mu.Lock()
-		currentSize += int64(len(buf.data))
-		buf.mu.Unlock()
-	}
-
+	// Check if eviction is needed using atomic total
+	currentSize := c.totalSize.Load()
 	if currentSize <= targetSize {
 		return 0, 0 // No eviction needed
 	}
@@ -576,6 +579,9 @@ func (c *MemoryCache) EvictLRU(targetSize int64) (int, int64) {
 
 		delete(c.buffers, candidate.id)
 
+		// Update total size atomically
+		c.totalSize.Add(-bufSize)
+
 		currentSize -= bufSize
 		bytesFreed += bufSize
 		evicted++
@@ -589,7 +595,7 @@ func (c *MemoryCache) EvictLRU(targetSize int64) (int, int64) {
 	// Update metrics after eviction
 	if c.metrics != nil {
 		c.metrics.RecordBufferCount(len(c.buffers))
-		// REMOVED: updateTotalCacheSize() causes lock contention during eviction
+		c.metrics.RecordTotalCacheSize(c.totalSize.Load())
 	}
 
 	return evicted, bytesFreed
@@ -605,30 +611,36 @@ func (c *MemoryCache) EvictLRU(targetSize int64) (int, int64) {
 //   - dataSize: Number of bytes about to be added
 //
 // Thread safety: Caller must NOT hold c.mu lock
-// DISABLED: Automatic eviction causes lock contention during concurrent writes.
-// TODO: Implement non-blocking eviction strategy (async eviction, try-lock pattern, etc.)
-//
-// func (c *MemoryCache) ensureCacheSize(dataSize int64) {
-// 	// No eviction if cache has no size limit
-// 	if c.maxSize == 0 {
-// 		return
-// 	}
-//
-// 	// Check if we need to evict (check without lock first for performance)
-// 	totalSize := c.TotalSize()
-// 	if totalSize+dataSize <= c.maxSize {
-// 		return // No eviction needed
-// 	}
-//
-// 	// Need to evict - target 90% of max to leave room for this write
-// 	targetSize := (c.maxSize * 90) / 100
-// 	evicted, bytesFreed := c.EvictLRU(targetSize)
-//
-// 	if evicted > 0 {
-// 		logger.Debug("Cache eviction: evicted=%d bytes_freed=%d total_before=%d total_after=%d max=%d",
-// 			evicted, bytesFreed, totalSize, c.TotalSize(), c.maxSize)
-// 	}
-// }
+func (c *MemoryCache) ensureCacheSize(dataSize int64) {
+	// No eviction if cache has no size limit
+	if c.maxSize == 0 {
+		return
+	}
+
+	// Check if we need to evict using atomic total (lock-free check)
+	totalSize := c.TotalSize()
+	if totalSize+dataSize <= c.maxSize {
+		return // No eviction needed
+	}
+
+	// Need to evict - target should leave room for the incoming write
+	// We want: (size after eviction) + dataSize <= 90% of max
+	// Therefore: targetSize = (maxSize * 90 / 100) - dataSize
+	// But ensure target is at least 0
+	hysteresisTarget := (c.maxSize * 90) / 100
+	targetSize := hysteresisTarget - dataSize
+	if targetSize < 0 {
+		targetSize = 0
+	}
+
+	evicted, bytesFreed := c.EvictLRU(targetSize)
+
+	// Log eviction activity (only in debug mode)
+	_ = evicted
+	_ = bytesFreed
+	// Note: Removed logger.Debug() to avoid import dependency
+	// Can be re-added if logger is needed for debugging
+}
 
 // ============================================================================
 // Helper functions

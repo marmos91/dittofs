@@ -186,12 +186,10 @@ func (h *Handler) Access(
 ) (*AccessResponse, error) {
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("ACCESS cancelled before processing: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP for logging
@@ -211,33 +209,18 @@ func (h *Handler) Access(
 	}
 
 	// ========================================================================
-	// Step 2: Decode share name from file handle
+	// Step 2: Get metadata store from context
 	// ========================================================================
 
-	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, _, err := metadata.DecodeFileHandle(fileHandle)
+	store, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("ACCESS failed: invalid file handle: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("ACCESS failed: share not found: share=%s handle=%x client=%s",
-			shareName, req.Handle, clientIP)
+		logger.Warn("ACCESS failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	store, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("ACCESS failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
-		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
+	fileHandle := metadata.FileHandle(req.Handle)
 
-	logger.Debug("ACCESS: share=%s", shareName)
+	logger.Debug("ACCESS: share=%s", ctx.Share)
 
 	// ========================================================================
 	// Step 3: Verify file handle exists and is valid
@@ -259,12 +242,10 @@ func (h *Handler) Access(
 
 	// Check for cancellation before the permission check
 	// CheckPermissions may involve complex ACL evaluation, so it's worth checking here
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("ACCESS cancelled before permission check: handle=%x client=%s error=%v",
 			req.Handle, clientIP, ctx.Context.Err())
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================
@@ -326,8 +307,7 @@ func (h *Handler) Access(
 	// ========================================================================
 
 	// Generate file ID from handle for NFS attributes
-	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 	logger.Info("ACCESS successful: handle=%x granted=0x%x requested=0x%x client=%s",
 		req.Handle, grantedAccess, req.Access, clientIP)
