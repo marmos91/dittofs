@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 )
 
 // ExportRequest represents an EXPORT request from an NFS client.
@@ -225,15 +226,9 @@ func (resp *ExportResponse) Encode() ([]byte, error) {
 		}
 
 		// Write directory (string: length + data + padding)
-		directoryLen := uint32(len(entry.Directory))
-		if err := binary.Write(&buf, binary.BigEndian, directoryLen); err != nil {
-			return nil, fmt.Errorf("write directory length: %w", err)
+		if err := xdr.WriteXDRString(&buf, entry.Directory); err != nil {
+			return nil, fmt.Errorf("write directory: %w", err)
 		}
-		buf.Write([]byte(entry.Directory))
-
-		// Add padding to 4-byte boundary
-		directoryPadding := (4 - (directoryLen % 4)) % 4
-		buf.Write(make([]byte, directoryPadding))
 
 		// Write groups list (linked list of strings)
 		for _, group := range entry.Groups {
@@ -243,15 +238,9 @@ func (resp *ExportResponse) Encode() ([]byte, error) {
 			}
 
 			// Write group name (string: length + data + padding)
-			groupLen := uint32(len(group))
-			if err := binary.Write(&buf, binary.BigEndian, groupLen); err != nil {
-				return nil, fmt.Errorf("write group length: %w", err)
+			if err := xdr.WriteXDRString(&buf, group); err != nil {
+				return nil, fmt.Errorf("write group: %w", err)
 			}
-			buf.Write([]byte(group))
-
-			// Add padding to 4-byte boundary
-			groupPadding := (4 - (groupLen % 4)) % 4
-			buf.Write(make([]byte, groupPadding))
 		}
 
 		// Write value_follows = FALSE (no more groups for this export)

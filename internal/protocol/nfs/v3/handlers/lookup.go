@@ -654,21 +654,8 @@ func (resp *LookupResponse) Encode() ([]byte, error) {
 	// ========================================================================
 
 	// Write file handle (opaque data: length + data + padding)
-	handleLen := uint32(len(resp.FileHandle))
-	if err := binary.Write(&buf, binary.BigEndian, handleLen); err != nil {
-		return nil, fmt.Errorf("failed to write handle length: %w", err)
-	}
-
-	if _, err := buf.Write(resp.FileHandle); err != nil {
-		return nil, fmt.Errorf("failed to write handle data: %w", err)
-	}
-
-	// Add padding to 4-byte boundary (XDR alignment requirement)
-	padding := (4 - (handleLen % 4)) % 4
-	for i := range padding {
-		if err := buf.WriteByte(0); err != nil {
-			return nil, fmt.Errorf("failed to write handle padding byte %d: %w", i, err)
-		}
+	if err := xdr.WriteXDROpaque(&buf, resp.FileHandle); err != nil {
+		return nil, fmt.Errorf("failed to write handle: %w", err)
 	}
 
 	// Write object attributes (present flag + attributes if present)

@@ -516,26 +516,10 @@ func (resp *ReadLinkResponse) Encode() ([]byte, error) {
 	// ========================================================================
 
 	// Write target path as XDR string (length + data + padding)
-	targetLen := uint32(len(resp.Target))
-
-	// Write length
-	if err := binary.Write(&buf, binary.BigEndian, targetLen); err != nil {
-		return nil, fmt.Errorf("failed to write target length: %w", err)
+	if err := xdr.WriteXDRString(&buf, resp.Target); err != nil {
+		return nil, fmt.Errorf("failed to write target: %w", err)
 	}
 
-	// Write target string data
-	if _, err := buf.Write([]byte(resp.Target)); err != nil {
-		return nil, fmt.Errorf("failed to write target data: %w", err)
-	}
-
-	// Add padding to 4-byte boundary (XDR alignment requirement)
-	padding := (4 - (targetLen % 4)) % 4
-	for i := uint32(0); i < padding; i++ {
-		if err := buf.WriteByte(0); err != nil {
-			return nil, fmt.Errorf("failed to write target padding byte %d: %w", i, err)
-		}
-	}
-
-	logger.Debug("Encoded READLINK response: %d bytes target_len=%d", buf.Len(), targetLen)
+	logger.Debug("Encoded READLINK response: %d bytes target_len=%d", buf.Len(), len(resp.Target))
 	return buf.Bytes(), nil
 }

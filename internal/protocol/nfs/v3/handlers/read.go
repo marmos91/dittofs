@@ -1019,26 +1019,12 @@ func (resp *ReadResponse) Encode() ([]byte, error) {
 	}
 
 	// Write data as opaque (length + data + padding)
-	dataLen := uint32(len(resp.Data))
-	if err := binary.Write(buf, binary.BigEndian, dataLen); err != nil {
-		return nil, fmt.Errorf("failed to write data length: %w", err)
-	}
-
-	// Write data bytes
-	if _, err := buf.Write(resp.Data); err != nil {
+	if err := xdr.WriteXDROpaque(buf, resp.Data); err != nil {
 		return nil, fmt.Errorf("failed to write data: %w", err)
 	}
 
-	// Add padding to 4-byte boundary (XDR alignment requirement)
-	padding := (4 - (dataLen % 4)) % 4
-	for i := uint32(0); i < padding; i++ {
-		if err := buf.WriteByte(0); err != nil {
-			return nil, fmt.Errorf("failed to write data padding byte %d: %w", i, err)
-		}
-	}
-
 	logger.Debug("Encoded READ response: %d bytes total, %d data bytes, status=%d",
-		buf.Len(), dataLen, resp.Status)
+		buf.Len(), len(resp.Data), resp.Status)
 
 	return buf.Bytes(), nil
 }

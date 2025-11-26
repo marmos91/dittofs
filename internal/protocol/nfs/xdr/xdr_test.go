@@ -314,3 +314,230 @@ func TestDecodeString(t *testing.T) {
 		assert.Equal(t, "hello", str)
 	})
 }
+
+// ============================================================================
+// WriteXDROpaque Tests
+// ============================================================================
+
+func TestWriteXDROpaque(t *testing.T) {
+	t.Run("EncodesEmptyOpaque", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		err := WriteXDROpaque(buf, []byte{})
+		require.NoError(t, err)
+
+		expected := []byte{0, 0, 0, 0} // length = 0
+		assert.Equal(t, expected, buf.Bytes())
+	})
+
+	t.Run("EncodesOpaqueWithoutPaddingNeeded", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		data := []byte{0x01, 0x02, 0x03, 0x04} // 4 bytes, no padding needed
+		err := WriteXDROpaque(buf, data)
+		require.NoError(t, err)
+
+		expected := []byte{
+			0, 0, 0, 4,          // length = 4
+			0x01, 0x02, 0x03, 0x04, // data
+		}
+		assert.Equal(t, expected, buf.Bytes())
+		assert.Equal(t, 0, len(buf.Bytes())%4, "data should be aligned to 4-byte boundary")
+	})
+
+	t.Run("EncodesOpaqueWith1BytePadding", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		data := []byte{0x01, 0x02, 0x03} // 3 bytes, needs 1 byte padding
+		err := WriteXDROpaque(buf, data)
+		require.NoError(t, err)
+
+		expected := []byte{
+			0, 0, 0, 3,       // length = 3
+			0x01, 0x02, 0x03, 0, // data + 1 byte padding
+		}
+		assert.Equal(t, expected, buf.Bytes())
+		assert.Equal(t, 0, len(buf.Bytes())%4, "data should be aligned to 4-byte boundary")
+	})
+
+	t.Run("EncodesOpaqueWith2BytesPadding", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		data := []byte{0x01, 0x02} // 2 bytes, needs 2 bytes padding
+		err := WriteXDROpaque(buf, data)
+		require.NoError(t, err)
+
+		expected := []byte{
+			0, 0, 0, 2,    // length = 2
+			0x01, 0x02, 0, 0, // data + 2 bytes padding
+		}
+		assert.Equal(t, expected, buf.Bytes())
+		assert.Equal(t, 0, len(buf.Bytes())%4, "data should be aligned to 4-byte boundary")
+	})
+
+	t.Run("EncodesOpaqueWith3BytesPadding", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		data := []byte{0x01} // 1 byte, needs 3 bytes padding
+		err := WriteXDROpaque(buf, data)
+		require.NoError(t, err)
+
+		expected := []byte{
+			0, 0, 0, 1,  // length = 1
+			0x01, 0, 0, 0, // data + 3 bytes padding
+		}
+		assert.Equal(t, expected, buf.Bytes())
+		assert.Equal(t, 0, len(buf.Bytes())%4, "data should be aligned to 4-byte boundary")
+	})
+}
+
+// ============================================================================
+// WriteXDRString Tests
+// ============================================================================
+
+func TestWriteXDRString(t *testing.T) {
+	t.Run("EncodesEmptyString", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		err := WriteXDRString(buf, "")
+		require.NoError(t, err)
+
+		expected := []byte{0, 0, 0, 0} // length = 0
+		assert.Equal(t, expected, buf.Bytes())
+	})
+
+	t.Run("EncodesStringWithoutPaddingNeeded", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		str := "test" // 4 bytes, no padding needed
+		err := WriteXDRString(buf, str)
+		require.NoError(t, err)
+
+		expected := []byte{
+			0, 0, 0, 4,       // length = 4
+			't', 'e', 's', 't', // data
+		}
+		assert.Equal(t, expected, buf.Bytes())
+		assert.Equal(t, 0, len(buf.Bytes())%4, "data should be aligned to 4-byte boundary")
+	})
+
+	t.Run("EncodesStringWith1BytePadding", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		str := "abc" // 3 bytes, needs 1 byte padding
+		err := WriteXDRString(buf, str)
+		require.NoError(t, err)
+
+		expected := []byte{
+			0, 0, 0, 3,    // length = 3
+			'a', 'b', 'c', 0, // data + 1 byte padding
+		}
+		assert.Equal(t, expected, buf.Bytes())
+		assert.Equal(t, 0, len(buf.Bytes())%4, "data should be aligned to 4-byte boundary")
+	})
+
+	t.Run("EncodesStringWith2BytesPadding", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		str := "hi" // 2 bytes, needs 2 bytes padding
+		err := WriteXDRString(buf, str)
+		require.NoError(t, err)
+
+		expected := []byte{
+			0, 0, 0, 2,   // length = 2
+			'h', 'i', 0, 0, // data + 2 bytes padding
+		}
+		assert.Equal(t, expected, buf.Bytes())
+		assert.Equal(t, 0, len(buf.Bytes())%4, "data should be aligned to 4-byte boundary")
+	})
+
+	t.Run("EncodesStringWith3BytesPadding", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		str := "x" // 1 byte, needs 3 bytes padding
+		err := WriteXDRString(buf, str)
+		require.NoError(t, err)
+
+		expected := []byte{
+			0, 0, 0, 1, // length = 1
+			'x', 0, 0, 0, // data + 3 bytes padding
+		}
+		assert.Equal(t, expected, buf.Bytes())
+		assert.Equal(t, 0, len(buf.Bytes())%4, "data should be aligned to 4-byte boundary")
+	})
+
+	t.Run("EncodesLongerString", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		str := "/export/test" // 12 bytes, no padding needed
+		err := WriteXDRString(buf, str)
+		require.NoError(t, err)
+
+		// Verify length field
+		assert.Equal(t, uint32(12), binary.BigEndian.Uint32(buf.Bytes()[0:4]))
+		// Verify string content
+		assert.Equal(t, []byte(str), buf.Bytes()[4:16])
+		// Verify alignment
+		assert.Equal(t, 0, len(buf.Bytes())%4, "data should be aligned to 4-byte boundary")
+	})
+}
+
+// ============================================================================
+// WriteXDRPadding Tests
+// ============================================================================
+
+func TestWriteXDRPadding(t *testing.T) {
+	t.Run("WritesNoPaddingForAlignedLength", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		err := WriteXDRPadding(buf, 4)
+		require.NoError(t, err)
+		assert.Equal(t, 0, buf.Len(), "no padding needed for 4-byte aligned data")
+
+		buf.Reset()
+		err = WriteXDRPadding(buf, 8)
+		require.NoError(t, err)
+		assert.Equal(t, 0, buf.Len(), "no padding needed for 8-byte aligned data")
+	})
+
+	t.Run("Writes1BytePadding", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		err := WriteXDRPadding(buf, 3)
+		require.NoError(t, err)
+		assert.Equal(t, []byte{0}, buf.Bytes(), "should write 1 padding byte for length 3")
+	})
+
+	t.Run("Writes2BytesPadding", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		err := WriteXDRPadding(buf, 2)
+		require.NoError(t, err)
+		assert.Equal(t, []byte{0, 0}, buf.Bytes(), "should write 2 padding bytes for length 2")
+	})
+
+	t.Run("Writes3BytesPadding", func(t *testing.T) {
+		buf := new(bytes.Buffer)
+		err := WriteXDRPadding(buf, 1)
+		require.NoError(t, err)
+		assert.Equal(t, []byte{0, 0, 0}, buf.Bytes(), "should write 3 padding bytes for length 1")
+	})
+
+	t.Run("HandlesDifferentLengths", func(t *testing.T) {
+		testCases := []struct {
+			length         uint32
+			expectedPadding int
+		}{
+			{0, 0},
+			{1, 3},
+			{2, 2},
+			{3, 1},
+			{4, 0},
+			{5, 3},
+			{6, 2},
+			{7, 1},
+			{8, 0},
+			{100, 0},
+			{101, 3},
+		}
+
+		for _, tc := range testCases {
+			buf := new(bytes.Buffer)
+			err := WriteXDRPadding(buf, tc.length)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedPadding, buf.Len(),
+				"length %d should produce %d bytes of padding", tc.length, tc.expectedPadding)
+
+			// Verify all padding bytes are zeros
+			for _, b := range buf.Bytes() {
+				assert.Equal(t, byte(0), b, "padding bytes must be zero")
+			}
+		}
+	})
+}

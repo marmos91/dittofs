@@ -842,21 +842,8 @@ func (resp *ReadDirPlusResponse) Encode() ([]byte, error) {
 		}
 
 		// Write name (string: length + data + padding)
-		nameLen := uint32(len(entry.Name))
-		if err := binary.Write(&buf, binary.BigEndian, nameLen); err != nil {
-			return nil, fmt.Errorf("failed to write name length for entry '%s': %w", entry.Name, err)
-		}
-
-		if _, err := buf.Write([]byte(entry.Name)); err != nil {
-			return nil, fmt.Errorf("failed to write name data for entry '%s': %w", entry.Name, err)
-		}
-
-		// Add padding to 4-byte boundary
-		padding := (4 - (nameLen % 4)) % 4
-		for i := range padding {
-			if err := buf.WriteByte(0); err != nil {
-				return nil, fmt.Errorf("failed to write name padding byte %d for entry '%s': %w", i, entry.Name, err)
-			}
+		if err := xdr.WriteXDRString(&buf, entry.Name); err != nil {
+			return nil, fmt.Errorf("failed to write name for entry '%s': %w", entry.Name, err)
 		}
 
 		// Write cookie (8 bytes)
