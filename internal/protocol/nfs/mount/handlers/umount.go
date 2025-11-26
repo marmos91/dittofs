@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"fmt"
-	"net"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	xdr "github.com/rasky/go-xdr/xdr2"
@@ -106,20 +105,14 @@ func (h *Handler) Umnt(
 	// 1. The operation is very fast (simple database delete)
 	// 2. We want to complete cleanup once started to maintain consistency
 	// 3. Per RFC 1813, UMNT always succeeds and should be quick
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("Unmount request cancelled before processing: path=%s client=%s error=%v",
 			req.DirPath, ctx.ClientAddr, ctx.Context.Err())
 		return &UmountResponse{MountResponseBase: MountResponseBase{Status: MountOK}}, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP from address (remove port)
-	clientIP, _, err := net.SplitHostPort(ctx.ClientAddr)
-	if err != nil {
-		// If parsing fails, use the whole address (might be IP only)
-		clientIP = ctx.ClientAddr
-	}
+	clientIP := extractClientIP(ctx.ClientAddr)
 
 	logger.Info("Unmount request: path=%s client=%s", req.DirPath, clientIP)
 

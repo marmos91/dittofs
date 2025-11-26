@@ -55,17 +55,7 @@ func NewNFSConnection(server *NFSAdapter, conn net.Conn) *NFSConnection {
 // Context cancellation is checked at the beginning of each request loop,
 // ensuring graceful shutdown and proper cleanup of resources.
 func (c *NFSConnection) Serve(ctx context.Context) {
-	defer func() {
-		// Panic recovery - prevents a single connection from crashing the server
-		if r := recover(); r != nil {
-			logger.Error("Panic in connection handler from %s: %v",
-				c.conn.RemoteAddr().String(), r)
-		}
-
-		// Wait for all in-flight requests to complete before closing connection
-		c.wg.Wait()
-		_ = c.conn.Close()
-	}()
+	defer c.handleConnectionClose()
 
 	clientAddr := c.conn.RemoteAddr().String()
 	logger.Debug("New connection from %s", clientAddr)
@@ -112,15 +102,7 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 		// Process request in parallel goroutine
 		c.wg.Add(1)
 		go func(xid uint32, procData []byte) {
-			defer func() {
-				<-c.requestSem // Release semaphore slot
-				c.wg.Done()
-
-				if r := recover(); r != nil {
-					logger.Error("Panic in request handler from %s: XID=0x%x error=%v",
-						clientAddr, xid, r)
-				}
-			}()
+			defer c.handleRequestPanic(clientAddr, xid)
 
 			// Process and send reply
 			if err := c.processRequest(ctx, xid, procData); err != nil {
@@ -672,4 +654,37 @@ func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
 
 	logger.Debug("Sent reply for XID=0x%x (%d bytes)", xid, len(reply))
 	return nil
+}
+
+// handleConnectionClose handles cleanup and panic recovery for the connection.
+// This is called as a deferred function in Serve to ensure proper cleanup
+// even if a panic occurs. It:
+//  1. Recovers from any panics in the connection handler
+//  2. Waits for all in-flight requests to complete
+//  3. Closes the connection
+func (c *NFSConnection) handleConnectionClose() {
+	// Panic recovery - prevents a single connection from crashing the server
+	if r := recover(); r != nil {
+		logger.Error("Panic in connection handler from %s: %v",
+			c.conn.RemoteAddr().String(), r)
+	}
+
+	// Wait for all in-flight requests to complete before closing connection
+	c.wg.Wait()
+	_ = c.conn.Close()
+}
+
+// handleRequestPanic handles cleanup and panic recovery for individual requests.
+// This is called as a deferred function in the request processing goroutine to:
+//  1. Release the semaphore slot
+//  2. Decrement the wait group counter
+//  3. Recover from any panics in the request handler
+func (c *NFSConnection) handleRequestPanic(clientAddr string, xid uint32) {
+	<-c.requestSem // Release semaphore slot
+	c.wg.Done()
+
+	if r := recover(); r != nil {
+		logger.Error("Panic in request handler from %s: XID=0x%x error=%v",
+			clientAddr, xid, r)
+	}
 }

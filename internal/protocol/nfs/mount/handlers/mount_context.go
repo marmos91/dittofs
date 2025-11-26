@@ -1,6 +1,9 @@
 package handlers
 
-import "context"
+import (
+	"context"
+	"net"
+)
 
 // MountHandlerContext is the unified context used by all Mount protocol procedure handlers.
 //
@@ -55,4 +58,51 @@ type MountHandlerContext struct {
 	// GIDs is the list of supplementary group IDs from AUTH_UNIX credentials.
 	// Empty if AuthFlavor != AUTH_UNIX or credentials not provided.
 	GIDs []uint32
+}
+
+// extractClientIP extracts the IP address from a network address string.
+// It handles the common pattern of splitting "IP:port" addresses and falling
+// back to the full address if parsing fails.
+//
+// This is a helper to reduce code duplication across mount handlers, as the
+// same IP extraction logic was repeated in multiple files.
+//
+// Parameters:
+//   - addr: Network address in "IP:port" format (e.g., "192.168.1.100:1234")
+//
+// Returns:
+//   - string: The IP address without the port, or the full address if parsing fails
+//
+// Example:
+//
+//	extractClientIP("192.168.1.100:1234") // Returns "192.168.1.100"
+//	extractClientIP("192.168.1.100")      // Returns "192.168.1.100" (no port)
+func extractClientIP(addr string) string {
+	clientIP, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// If parsing fails, use the whole address (might be IP only)
+		return addr
+	}
+	return clientIP
+}
+
+// isContextCancelled checks if the context has been cancelled.
+// This is a convenience helper to simplify the common pattern of checking
+// for context cancellation at the start of handler functions.
+//
+// Returns true if the context is cancelled, false otherwise.
+//
+// Example usage in a handler:
+//
+//	if isContextCancelled(ctx) {
+//	    logger.Debug("Operation cancelled: client=%s error=%v", ctx.ClientAddr, ctx.Context.Err())
+//	    return &Response{Status: ErrorStatus}, ctx.Context.Err()
+//	}
+func (c *MountHandlerContext) isContextCancelled() bool {
+	select {
+	case <-c.Context.Done():
+		return true
+	default:
+		return false
+	}
 }

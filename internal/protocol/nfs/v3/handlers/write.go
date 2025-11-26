@@ -292,61 +292,43 @@ func (h *Handler) Write(
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("WRITE cancelled: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	// ========================================================================
-	// Step 2: Decode share name from file handle
+	// Step 2: Get metadata and content stores from context
 	// ========================================================================
 
-	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, path, err := metadata.DecodeFileHandle(fileHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("WRITE failed: invalid file handle: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("WRITE failed: share not found: share=%s handle=%x client=%s",
-			shareName, req.Handle, clientIP)
+		logger.Warn("WRITE failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("WRITE failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
-
 	// Get content store for this share
-	contentStore, err := h.Registry.GetContentStoreForShare(shareName)
+	contentStore, err := h.getContentStore(ctx)
 	if err != nil {
-		logger.Error("WRITE failed: cannot get content store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
+		logger.Warn("WRITE failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// Get write cache for this share (optional - may be nil for sync mode)
-	writeCache, err := h.Registry.GetWriteCacheForShare(shareName)
+	writeCache, err := h.Registry.GetWriteCacheForShare(ctx.Share)
 	if err != nil {
 		logger.Error("WRITE failed: cannot get write cache: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
+			ctx.Share, req.Handle, clientIP, err)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
+	fileHandle := metadata.FileHandle(req.Handle)
+
 	if writeCache != nil {
-		logger.Debug("WRITE: share=%s path=%s mode=async (using write cache)", shareName, path)
+		logger.Debug("WRITE: share=%s mode=async (using write cache)", ctx.Share)
 	} else {
-		logger.Debug("WRITE: share=%s path=%s mode=sync (no write cache)", shareName, path)
+		logger.Debug("WRITE: share=%s mode=sync (no write cache)", ctx.Share)
 	}
 
 	// ========================================================================
@@ -371,19 +353,15 @@ func (h *Handler) Write(
 	// ========================================================================
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("WRITE cancelled before GetFile: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
-	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
-	if err != nil {
-		logger.Warn("WRITE failed: file not found: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "WRITE", req.Handle)
+	if file == nil {
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	// Verify it's a regular file (not a directory or special file)
@@ -392,8 +370,7 @@ func (h *Handler) Write(
 			req.Handle, file.Type, clientIP)
 
 		// Return file attributes even on error for cache consistency
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir}, // NFS3ErrIsDir used for all non-regular files
@@ -429,8 +406,7 @@ func (h *Handler) Write(
 		logger.Error("WRITE failed: failed to build auth context: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
 
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -445,19 +421,16 @@ func (h *Handler) Write(
 	// Metadata is updated by CommitWrite after content write succeeds.
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("WRITE cancelled before PrepareWrite: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			AttrAfter:       nfsAttr,
 		}, nil
-	default:
 	}
 
 	writeIntent, err := metadataStore.PrepareWrite(authCtx, fileHandle, newSize)
@@ -468,8 +441,7 @@ func (h *Handler) Write(
 		logger.Warn("WRITE failed: PrepareWrite error: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, len(req.Data), clientIP, err)
 
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 		// Build WCC attributes from current state
 		nfsWccAttr := &types.WccAttr{
@@ -512,20 +484,17 @@ func (h *Handler) Write(
 	//   2. Direct mode (no cache): Write directly to content store
 
 	// Check context before write operation
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("WRITE cancelled before write: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, writeIntent.PreWriteAttr)
 
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			AttrBefore:      nfsWccAttr,
 			AttrAfter:       nfsAttr,
 		}, nil
-	default:
 	}
 
 	if writeCache != nil {
@@ -538,8 +507,7 @@ func (h *Handler) Write(
 			logger.Error("WRITE failed: cache write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
 				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
 
-			fileid := xdr.ExtractFileID(fileHandle)
-			nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
+			nfsAttr := h.convertFileAttrToNFS(fileHandle, writeIntent.PreWriteAttr)
 
 			return &WriteResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -560,8 +528,7 @@ func (h *Handler) Write(
 			logger.Error("WRITE failed: content write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
 				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
 
-			fileid := xdr.ExtractFileID(fileHandle)
-			nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
+			nfsAttr := h.convertFileAttrToNFS(fileHandle, writeIntent.PreWriteAttr)
 
 			status := xdr.MapContentErrorToNFSStatus(err)
 
@@ -581,9 +548,9 @@ func (h *Handler) Write(
 	// If we wrote directly to content store (no write cache), populate the read cache
 	// This makes the newly written data available for fast subsequent reads
 	if writeCache == nil {
-		readCache, rcErr := h.Registry.GetReadCacheForShare(shareName)
+		readCache, rcErr := h.Registry.GetReadCacheForShare(ctx.Share)
 		if rcErr != nil {
-			logger.Warn("WRITE: cannot get read cache: share=%s error=%v", shareName, rcErr)
+			logger.Warn("WRITE: cannot get read cache: share=%s error=%v", ctx.Share, rcErr)
 		} else if readCache != nil && len(req.Data) > 0 {
 			// Only cache small to medium files (< 10MB) to avoid thrashing
 			const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
@@ -618,8 +585,7 @@ func (h *Handler) Write(
 		// Map error to NFS status
 		status := mapMetadataErrorToNFS(err)
 
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, writeIntent.PreWriteAttr)
 
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},
@@ -632,8 +598,7 @@ func (h *Handler) Write(
 	// Step 9: Build success response
 	// ========================================================================
 
-	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(&updatedFile.FileAttr, fileid)
+	nfsAttr := h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
 
 	logger.Info("WRITE successful: handle=%x offset=%d requested=%d written=%d new_size=%d client=%s",
 		req.Handle, req.Offset, req.Count, len(req.Data), updatedFile.Size, clientIP)

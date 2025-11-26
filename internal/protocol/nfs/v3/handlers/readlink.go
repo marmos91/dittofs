@@ -209,13 +209,10 @@ func (h *Handler) ReadLink(
 	// Check if the client has disconnected or the request has timed out
 	// before we start processing. While READLINK is fast, we should still
 	// respect cancellation to avoid wasted work on abandoned requests.
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("READLINK: request cancelled at entry: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
-		// Context not cancelled, continue processing
 	}
 
 	// Extract client IP for logging
@@ -235,31 +232,16 @@ func (h *Handler) ReadLink(
 	}
 
 	// ========================================================================
-	// Step 2: Decode share name from file handle
+	// Step 2: Get metadata store from context
 	// ========================================================================
 
-	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, _, err := metadata.DecodeFileHandle(fileHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("READLINK failed: invalid file handle: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("READLINK failed: share not found: share=%s handle=%x client=%s",
-			shareName, req.Handle, clientIP)
+		logger.Warn("READLINK failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("READLINK failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
-		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
+	fileHandle := metadata.FileHandle(req.Handle)
 
 	// Symlink file resolved in store
 
@@ -315,14 +297,13 @@ func (h *Handler) ReadLink(
 	// Step 4: Generate file attributes for cache consistency
 	// ========================================================================
 
-	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 	logger.Info("READLINK successful: handle=%x target='%s' target_len=%d client=%s",
 		req.Handle, target, len(target), clientIP)
 
-	logger.Debug("READLINK details: fileid=%d mode=%o uid=%d gid=%d size=%d",
-		fileid, file.Mode, file.UID, file.GID, file.Size)
+	logger.Debug("READLINK details: handle=%x mode=%o uid=%d gid=%d size=%d",
+		fileHandle, file.Mode, file.UID, file.GID, file.Size)
 
 	return &ReadLinkResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -534,26 +515,10 @@ func (resp *ReadLinkResponse) Encode() ([]byte, error) {
 	// ========================================================================
 
 	// Write target path as XDR string (length + data + padding)
-	targetLen := uint32(len(resp.Target))
-
-	// Write length
-	if err := binary.Write(&buf, binary.BigEndian, targetLen); err != nil {
-		return nil, fmt.Errorf("failed to write target length: %w", err)
+	if err := xdr.WriteXDRString(&buf, resp.Target); err != nil {
+		return nil, fmt.Errorf("failed to write target: %w", err)
 	}
 
-	// Write target string data
-	if _, err := buf.Write([]byte(resp.Target)); err != nil {
-		return nil, fmt.Errorf("failed to write target data: %w", err)
-	}
-
-	// Add padding to 4-byte boundary (XDR alignment requirement)
-	padding := (4 - (targetLen % 4)) % 4
-	for i := uint32(0); i < padding; i++ {
-		if err := buf.WriteByte(0); err != nil {
-			return nil, fmt.Errorf("failed to write target padding byte %d: %w", i, err)
-		}
-	}
-
-	logger.Debug("Encoded READLINK response: %d bytes target_len=%d", buf.Len(), targetLen)
+	logger.Debug("Encoded READLINK response: %d bytes target_len=%d", buf.Len(), len(resp.Target))
 	return buf.Bytes(), nil
 }

@@ -150,12 +150,10 @@ func (h *Handler) GetAttr(
 	// This is the only pre-operation check for GETATTR to minimize overhead
 	// GETATTR is one of the most frequently called procedures, so we optimize
 	// for the common case of no cancellation
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("GETATTR cancelled before processing: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP for logging
@@ -175,51 +173,27 @@ func (h *Handler) GetAttr(
 	}
 
 	// ========================================================================
-	// Step 2: Decode share name from file handle
+	// Step 2: Get metadata store from context
 	// ========================================================================
 
-	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, _, err := metadata.DecodeFileHandle(fileHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("GETATTR failed: invalid file handle: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("GETATTR failed: share not found: share=%s handle=%x client=%s",
-			shareName, req.Handle, clientIP)
+		logger.Warn("GETATTR failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
-
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("GETATTR failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
-		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// ========================================================================
 	// Step 3: Verify file handle exists and retrieve attributes
 	// ========================================================================
 
-	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("GETATTR cancelled during file lookup: handle=%x client=%s error=%v",
-				req.Handle, clientIP, ctx.Context.Err())
-			return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-		}
+	fileHandle := metadata.FileHandle(req.Handle)
 
-		logger.Debug("GETATTR failed: handle not found: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
+	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "GETATTR", req.Handle)
+	if file == nil {
+		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
-	logger.Debug("GETATTR: share=%s path=%s", shareName, file.Path)
+	logger.Debug("GETATTR: share=%s path=%s", ctx.Share, file.Path)
 
 	// ========================================================================
 	// Step 4: Generate file attributes with proper file ID
@@ -228,14 +202,13 @@ func (h *Handler) GetAttr(
 	// This is a protocol-layer concern for creating the wire format.
 	// No cancellation check here - this operation is extremely fast (pure computation)
 
-	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 	logger.Info("GETATTR successful: handle=%x type=%d mode=%o size=%d client=%s",
 		req.Handle, nfsAttr.Type, nfsAttr.Mode, nfsAttr.Size, clientIP)
 
-	logger.Debug("GETATTR details: fileid=%d uid=%d gid=%d mtime=%d.%d",
-		fileid, nfsAttr.UID, nfsAttr.GID, nfsAttr.Mtime.Seconds, nfsAttr.Mtime.Nseconds)
+	logger.Debug("GETATTR details: handle=%x uid=%d gid=%d mtime=%d.%d",
+		fileHandle, nfsAttr.UID, nfsAttr.GID, nfsAttr.Mtime.Seconds, nfsAttr.Mtime.Nseconds)
 
 	return &GetAttrResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

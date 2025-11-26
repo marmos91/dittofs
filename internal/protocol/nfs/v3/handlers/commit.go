@@ -272,12 +272,10 @@ func (h *Handler) Commit(
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("COMMIT cancelled: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	// ========================================================================
@@ -291,45 +289,26 @@ func (h *Handler) Commit(
 	}
 
 	// ========================================================================
-	// Step 3: Decode share name from file handle
+	// Step 3: Get metadata store from context
 	// ========================================================================
 
-	handle := metadata.FileHandle(req.Handle)
-	shareName, path, err := metadata.DecodeFileHandle(handle)
+	store, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("COMMIT failed: invalid file handle: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("COMMIT failed: share not found: share=%s handle=%x client=%s",
-			shareName, req.Handle, clientIP)
+		logger.Warn("COMMIT failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	store, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("COMMIT failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
-		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
-
-	logger.Debug("COMMIT: share=%s path=%s", shareName, path)
+	handle := metadata.FileHandle(req.Handle)
 
 	// ========================================================================
 	// Step 4: Verify file exists and capture pre-operation state
 	// ========================================================================
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("COMMIT cancelled before GetFile: handle=%x client=%s error=%v",
 			req.Handle, clientIP, ctx.Context.Err())
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	file, err := store.GetFile(ctx.Context, handle)
@@ -347,8 +326,7 @@ func (h *Handler) Commit(
 		logger.Warn("COMMIT failed: handle is a directory: handle=%x client=%s",
 			req.Handle, clientIP)
 
-		fileID := xdr.ExtractFileID(handle)
-		wccAfter := xdr.MetadataToNFS(&file.FileAttr, fileID)
+		wccAfter := h.convertFileAttrToNFS(handle, &file.FileAttr)
 
 		return &CommitResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir},
@@ -362,16 +340,14 @@ func (h *Handler) Commit(
 	// ========================================================================
 
 	// Check context before potentially long flush operation
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("COMMIT cancelled before flush: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 
 		// Get updated attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
 		if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-			fileID := xdr.ExtractFileID(handle)
-			wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+			wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 		}
 
 		return &CommitResponse{
@@ -379,14 +355,13 @@ func (h *Handler) Commit(
 			AttrBefore:      wccBefore,
 			AttrAfter:       wccAfter,
 		}, nil
-	default:
 	}
 
 	// Get write cache for this share (may be nil if sync mode)
-	writeCache, err := h.Registry.GetWriteCacheForShare(shareName)
+	writeCache, err := h.Registry.GetWriteCacheForShare(ctx.Share)
 	if err != nil {
 		logger.Error("COMMIT failed: cannot get write cache: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
+			ctx.Share, req.Handle, clientIP, err)
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -404,10 +379,10 @@ func (h *Handler) Commit(
 		isFinalCommit := isFullFileCommit(&file.FileAttr, req)
 
 		// Get content store for this share
-		contentStore, err := h.Registry.GetContentStoreForShare(shareName)
+		contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
 		if err != nil {
 			logger.Error("COMMIT failed: cannot get content store: share=%s handle=%x client=%s error=%v",
-				shareName, req.Handle, clientIP, err)
+				ctx.Share, req.Handle, clientIP, err)
 			return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 		}
 
@@ -453,8 +428,7 @@ func (h *Handler) Commit(
 
 					var wccAfter *types.NFSFileAttr
 					if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-						fileID := xdr.ExtractFileID(handle)
-						wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+						wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 					}
 
 					return &CommitResponse{
@@ -475,8 +449,7 @@ func (h *Handler) Commit(
 
 						var wccAfter *types.NFSFileAttr
 						if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-							fileID := xdr.ExtractFileID(handle)
-							wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+							wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 						}
 
 						return &CommitResponse{
@@ -488,9 +461,9 @@ func (h *Handler) Commit(
 
 					// Populate read cache after successful write to content store
 					// This makes the file immediately available for fast reads
-					readCache, rcErr := h.Registry.GetReadCacheForShare(shareName)
+					readCache, rcErr := h.Registry.GetReadCacheForShare(ctx.Share)
 					if rcErr != nil {
-						logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", shareName, rcErr)
+						logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", ctx.Share, rcErr)
 					} else if readCache != nil && len(data) > 0 {
 						// Only cache small to medium files (< 10MB) to avoid thrashing
 						const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
@@ -533,8 +506,7 @@ func (h *Handler) Commit(
 
 					var wccAfter *types.NFSFileAttr
 					if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-						fileID := xdr.ExtractFileID(handle)
-						wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+						wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 					}
 
 					return &CommitResponse{
@@ -560,8 +532,7 @@ func (h *Handler) Commit(
 
 					var wccAfter *types.NFSFileAttr
 					if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-						fileID := xdr.ExtractFileID(handle)
-						wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+						wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 					}
 
 					return &CommitResponse{
@@ -582,8 +553,7 @@ func (h *Handler) Commit(
 
 					var wccAfter *types.NFSFileAttr
 					if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-						fileID := xdr.ExtractFileID(handle)
-						wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+						wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 					}
 
 					return &CommitResponse{
@@ -613,8 +583,7 @@ func (h *Handler) Commit(
 
 						var wccAfter *types.NFSFileAttr
 						if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-							fileID := xdr.ExtractFileID(handle)
-							wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+							wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 						}
 
 						return &CommitResponse{
@@ -636,9 +605,9 @@ func (h *Handler) Commit(
 
 					// Populate read cache after successful write to content store
 					// For multipart uploads, we populate the cache from the write cache data
-					readCache, rcErr := h.Registry.GetReadCacheForShare(shareName)
+					readCache, rcErr := h.Registry.GetReadCacheForShare(ctx.Share)
 					if rcErr != nil {
-						logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", shareName, rcErr)
+						logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", ctx.Share, rcErr)
 					} else if readCache != nil && len(data) > 0 {
 						// Only cache small to medium files (< 10MB) to avoid thrashing
 						const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
@@ -730,9 +699,9 @@ func (h *Handler) Commit(
 				if isFinalCommit && cacheSize >= int64(file.Size) {
 					// Populate read cache before cleaning write cache
 					// This makes the file immediately available for fast reads
-					readCache, rcErr := h.Registry.GetReadCacheForShare(shareName)
+					readCache, rcErr := h.Registry.GetReadCacheForShare(ctx.Share)
 					if rcErr != nil {
-						logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", shareName, rcErr)
+						logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", ctx.Share, rcErr)
 					} else if readCache != nil && cacheSize > 0 {
 						// Only cache small to medium files (< 10MB) to avoid thrashing
 						const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
@@ -784,8 +753,7 @@ func (h *Handler) Commit(
 
 	var wccAfter *types.NFSFileAttr
 	if updatedFile != nil {
-		fileID := xdr.ExtractFileID(handle)
-		wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+		wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 		logger.Debug("COMMIT details: file_size=%d file_type=%d",
 			updatedFile.Size, wccAfter.Type)
 	}

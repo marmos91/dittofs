@@ -210,12 +210,10 @@ func (h *Handler) PathConf(
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("PATHCONF cancelled: handle=%x client=%s error=%v",
 			req.Handle, clientIP, ctx.Context.Err())
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	// ========================================================================
@@ -233,44 +231,25 @@ func (h *Handler) PathConf(
 	// ========================================================================
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("PATHCONF cancelled before GetFile: handle=%x client=%s error=%v",
 			req.Handle, clientIP, ctx.Context.Err())
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
-	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, path, err := metadata.DecodeFileHandle(fileHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("PATHCONF failed: invalid file handle: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("PATHCONF failed: share not found: share=%s handle=%x client=%s",
-			shareName, req.Handle, clientIP)
+		logger.Warn("PATHCONF failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("PATHCONF failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
-		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
+	fileHandle := metadata.FileHandle(req.Handle)
 
-	logger.Debug("PATHCONF: share=%s path=%s", shareName, path)
+	logger.Debug("PATHCONF: share=%s", ctx.Share)
 
-	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
-	if err != nil {
-		logger.Warn("PATHCONF failed: handle not found: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "PATHCONF", req.Handle)
+	if file == nil {
+		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	// ========================================================================
@@ -280,12 +259,10 @@ func (h *Handler) PathConf(
 	// that map directly to PATHCONF response fields
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("PATHCONF cancelled before GetCapabilities: handle=%x client=%s error=%v",
 			req.Handle, clientIP, ctx.Context.Err())
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	caps, err := metadataStore.GetFilesystemCapabilities(ctx.Context, fileHandle)
@@ -299,8 +276,7 @@ func (h *Handler) PathConf(
 	// Step 5: Generate file attributes for cache consistency
 	// ========================================================================
 
-	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 	logger.Info("PATHCONF successful: handle=%x client=%s", req.Handle, clientIP)
 	logger.Debug("PATHCONF properties: linkmax=%d namemax=%d no_trunc=%v chown_restricted=%v case_insensitive=%v case_preserving=%v",

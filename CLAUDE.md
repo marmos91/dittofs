@@ -77,8 +77,10 @@ DITTOFS_ADAPTERS_NFS_PORT=3049 ./dittofs start
 **Default Location**: `~/.config/dittofs/config.yaml` (or `$XDG_CONFIG_HOME/dittofs/config.yaml`)
 
 ### Testing
+
+**Unit and Integration Tests** (fast, no special permissions needed):
 ```bash
-# Run all tests
+# Run all unit/integration tests
 go test ./...
 
 # Run with coverage
@@ -89,6 +91,20 @@ go test -race ./...
 
 # Run specific package
 go test ./pkg/metadata/memory/
+```
+
+**E2E Tests** (requires sudo and NFS mount capabilities):
+```bash
+# Note: E2E tests use build tags and are excluded from `go test ./...`
+# Use the provided script (recommended):
+cd test/e2e
+sudo ./run-e2e.sh
+
+# Or run directly with go test:
+sudo go test -tags=e2e -v ./test/e2e/...
+
+# Run specific e2e test:
+sudo go test -tags=e2e -v ./test/e2e/ -run TestCreateFile_1MB
 ```
 
 ### NFS Client Testing
@@ -133,14 +149,14 @@ sudo ./run-e2e.sh --verbose
 # Keep Localstack running for repeated testing
 sudo ./run-e2e.sh --s3 --keep-localstack
 
-# Run directly with go test (no script)
-sudo go test -v ./test/e2e/...
+# Run directly with go test (no script) - note the -tags=e2e flag
+sudo go test -tags=e2e -v ./test/e2e/...
 
 # Run specific configuration
-sudo go test -v -run "TestCreateFolder/memory-memory" ./test/e2e/
+sudo go test -tags=e2e -v -run "TestCreateFolder/memory-memory" ./test/e2e/
 
 # Run with race detection
-sudo go test -v -race -timeout 30m ./test/e2e/...
+sudo go test -tags=e2e -v -race -timeout 30m ./test/e2e/...
 ```
 
 **E2E Test Features**:

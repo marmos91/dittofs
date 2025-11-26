@@ -232,13 +232,10 @@ func (h *Handler) Read(
 	// ========================================================================
 	// Check if the client has disconnected or the request has timed out
 	// before we start any expensive operations.
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("READ: request cancelled at entry: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
-		// Context not cancelled, continue processing
 	}
 
 	// Extract client IP for logging
@@ -258,58 +255,33 @@ func (h *Handler) Read(
 	}
 
 	// ========================================================================
-	// Step 2: Decode share name from file handle
+	// Step 2: Get metadata and content stores from context
 	// ========================================================================
 
-	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, path, err := metadata.DecodeFileHandle(fileHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("READ failed: invalid file handle: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("READ failed: share not found: share=%s handle=%x client=%s",
-			shareName, req.Handle, clientIP)
+		logger.Warn("READ failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("READ failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
-		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
-
 	// Get content store for this share
-	contentStore, err := h.Registry.GetContentStoreForShare(shareName)
+	contentStore, err := h.getContentStore(ctx)
 	if err != nil {
-		logger.Error("READ failed: cannot get content store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
+		logger.Warn("READ failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	logger.Debug("READ: share=%s path=%s", shareName, path)
+	fileHandle := metadata.FileHandle(req.Handle)
+
+	logger.Debug("READ: share=%s", ctx.Share)
 
 	// ========================================================================
 	// Step 3: Verify file exists and is a regular file
 	// ========================================================================
 
-	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
-	if err != nil {
-		// Check if error is due to context cancellation
-		if err == context.Canceled || err == context.DeadlineExceeded {
-			logger.Debug("READ: metadata lookup cancelled: handle=%x client=%s",
-				req.Handle, clientIP)
-			return nil, err
-		}
-
-		logger.Warn("READ failed: file not found: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "READ", req.Handle)
+	if file == nil {
+		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	// Verify it's a regular file (not a directory or special file)
@@ -318,8 +290,7 @@ func (h *Handler) Read(
 			req.Handle, file.Type, clientIP)
 
 		// Return file attributes even on error for cache consistency
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 		return &ReadResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir}, // types.NFS3ErrIsDir is used for all non-regular files
@@ -331,13 +302,10 @@ func (h *Handler) Read(
 	// Context Cancellation Check - After Metadata Lookup
 	// ========================================================================
 	// Check again before opening content (which may be expensive)
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("READ: request cancelled after metadata lookup: handle=%x client=%s",
 			req.Handle, clientIP)
 		return nil, ctx.Context.Err()
-	default:
-		// Context not cancelled, continue processing
 	}
 
 	// ========================================================================
@@ -349,8 +317,7 @@ func (h *Handler) Read(
 		logger.Debug("READ: empty file: handle=%x size=%d client=%s",
 			req.Handle, file.Size, clientIP)
 
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 		return &ReadResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -366,8 +333,7 @@ func (h *Handler) Read(
 		logger.Debug("READ: offset beyond EOF: handle=%x offset=%d size=%d client=%s",
 			req.Handle, req.Offset, file.Size, clientIP)
 
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 		return &ReadResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -395,18 +361,18 @@ func (h *Handler) Read(
 	var cacheHit bool
 
 	// Get write cache for this share (may be nil)
-	writeCache, err := h.Registry.GetWriteCacheForShare(shareName)
+	writeCache, err := h.Registry.GetWriteCacheForShare(ctx.Share)
 	if err != nil {
 		logger.Error("READ failed: cannot get write cache: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
+			ctx.Share, req.Handle, clientIP, err)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// Get read cache for this share (may be nil)
-	readCache, err := h.Registry.GetReadCacheForShare(shareName)
+	readCache, err := h.Registry.GetReadCacheForShare(ctx.Share)
 	if err != nil {
 		logger.Error("READ failed: cannot get read cache: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
+			ctx.Share, req.Handle, clientIP, err)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -430,7 +396,7 @@ func (h *Handler) Read(
 
 				// Record cache hit metric
 				if h.Metrics != nil {
-					h.Metrics.RecordCacheHit(shareName, "write", uint64(n))
+					h.Metrics.RecordCacheHit(ctx.Share, "write", uint64(n))
 				}
 			} else {
 				logger.Warn("READ: write cache read error, falling back: handle=%x content_id=%s error=%v",
@@ -460,7 +426,7 @@ func (h *Handler) Read(
 
 				// Record cache hit metric
 				if h.Metrics != nil {
-					h.Metrics.RecordCacheHit(shareName, "read", uint64(n))
+					h.Metrics.RecordCacheHit(ctx.Share, "read", uint64(n))
 				}
 			} else {
 				logger.Warn("READ: read cache read error, falling back: handle=%x content_id=%s error=%v",
@@ -474,7 +440,7 @@ func (h *Handler) Read(
 	if !readFromCache {
 		// Record cache miss metric
 		if h.Metrics != nil {
-			h.Metrics.RecordCacheMiss(shareName, uint64(req.Count))
+			h.Metrics.RecordCacheMiss(ctx.Share, uint64(req.Count))
 		}
 
 		// Check if content store supports efficient random-access reads
@@ -509,8 +475,7 @@ func (h *Handler) Read(
 				logger.Error("READ failed: ReadAt error: handle=%x offset=%d client=%s error=%v",
 					req.Handle, req.Offset, clientIP, readErr)
 
-				fileid := xdr.ExtractFileID(fileHandle)
-				nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+				nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 				return &ReadResponse{
 					NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -532,8 +497,7 @@ func (h *Handler) Read(
 				logger.Error("READ failed: cannot open content: handle=%x content_id=%s client=%s error=%v",
 					req.Handle, file.ContentID, clientIP, err)
 
-				fileid := xdr.ExtractFileID(fileHandle)
-				nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+				nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 				return &ReadResponse{
 					NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -551,8 +515,7 @@ func (h *Handler) Read(
 						logger.Error("READ failed: seek error: handle=%x offset=%d client=%s error=%v",
 							req.Handle, req.Offset, clientIP, err)
 
-						fileid := xdr.ExtractFileID(fileHandle)
-						nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+						nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 						return &ReadResponse{
 							NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -594,8 +557,7 @@ func (h *Handler) Read(
 							logger.Debug("READ: EOF reached while seeking: handle=%x offset=%d client=%s",
 								req.Handle, req.Offset, clientIP)
 
-							fileid := xdr.ExtractFileID(fileHandle)
-							nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+							nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 							return &ReadResponse{
 								NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -610,8 +572,7 @@ func (h *Handler) Read(
 							logger.Error("READ failed: cannot skip to offset: handle=%x offset=%d discarded=%d client=%s error=%v",
 								req.Handle, req.Offset, totalDiscarded, clientIP, discardErr)
 
-							fileid := xdr.ExtractFileID(fileHandle)
-							nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+							nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 							return &ReadResponse{
 								NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -645,8 +606,7 @@ func (h *Handler) Read(
 				logger.Error("READ failed: I/O error: handle=%x offset=%d client=%s error=%v",
 					req.Handle, req.Offset, clientIP, readErr)
 
-				fileid := xdr.ExtractFileID(fileHandle)
-				nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+				nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 				return &ReadResponse{
 					NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -696,8 +656,7 @@ func (h *Handler) Read(
 	// Step 7: Build success response
 	// ========================================================================
 
-	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 	// Log cache hit/miss for performance monitoring
 	cacheSource := "content_store"
@@ -1041,26 +1000,12 @@ func (resp *ReadResponse) Encode() ([]byte, error) {
 	}
 
 	// Write data as opaque (length + data + padding)
-	dataLen := uint32(len(resp.Data))
-	if err := binary.Write(buf, binary.BigEndian, dataLen); err != nil {
-		return nil, fmt.Errorf("failed to write data length: %w", err)
-	}
-
-	// Write data bytes
-	if _, err := buf.Write(resp.Data); err != nil {
+	if err := xdr.WriteXDROpaque(buf, resp.Data); err != nil {
 		return nil, fmt.Errorf("failed to write data: %w", err)
 	}
 
-	// Add padding to 4-byte boundary (XDR alignment requirement)
-	padding := (4 - (dataLen % 4)) % 4
-	for i := uint32(0); i < padding; i++ {
-		if err := buf.WriteByte(0); err != nil {
-			return nil, fmt.Errorf("failed to write data padding byte %d: %w", i, err)
-		}
-	}
-
 	logger.Debug("Encoded READ response: %d bytes total, %d data bytes, status=%d",
-		buf.Len(), dataLen, resp.Status)
+		buf.Len(), len(resp.Data), resp.Status)
 
 	return buf.Bytes(), nil
 }

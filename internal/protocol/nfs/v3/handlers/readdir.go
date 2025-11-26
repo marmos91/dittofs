@@ -235,12 +235,10 @@ func (h *Handler) ReadDir(
 ) (*ReadDirResponse, error) {
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("READDIR cancelled before processing: dir=%x client=%s error=%v",
 			req.DirHandle, ctx.ClientAddr, ctx.Context.Err())
 		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP for logging
@@ -260,50 +258,26 @@ func (h *Handler) ReadDir(
 	}
 
 	// ========================================================================
-	// Step 2: Decode share name from directory file handle
+	// Step 2: Get metadata store from context
 	// ========================================================================
 
-	dirHandle := metadata.FileHandle(req.DirHandle)
-	shareName, path, err := metadata.DecodeFileHandle(dirHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("READDIR failed: invalid directory handle: dir=%x client=%s error=%v",
-			req.DirHandle, clientIP, err)
-		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("READDIR failed: share not found: share=%s dir=%x client=%s",
-			shareName, req.DirHandle, clientIP)
+		logger.Warn("READDIR failed: %v dir=%x client=%s", err, req.DirHandle, clientIP)
 		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("READDIR failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
-			shareName, req.DirHandle, clientIP, err)
-		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
+	dirHandle := metadata.FileHandle(req.DirHandle)
 
-	logger.Debug("READDIR: share=%s path=%s", shareName, path)
+	logger.Debug("READDIR: share=%s", ctx.Share)
 
 	// ========================================================================
 	// Step 3: Verify directory handle exists and is valid
 	// ========================================================================
 
-	dirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("READDIR cancelled during directory lookup: dir=%x client=%s error=%v",
-				req.DirHandle, clientIP, ctx.Context.Err())
-			return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-		}
-
-		logger.Warn("READDIR failed: directory not found: dir=%x client=%s error=%v",
-			req.DirHandle, clientIP, err)
-		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	dirFile, status, err := h.getFileOrError(ctx, metadataStore, dirHandle, "READDIR", req.DirHandle)
+	if dirFile == nil {
+		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	// Verify it's actually a directory
@@ -312,8 +286,7 @@ func (h *Handler) ReadDir(
 			req.DirHandle, dirFile.Type, clientIP)
 
 		// Include directory attributes even on error for cache consistency
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &ReadDirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
@@ -333,8 +306,7 @@ func (h *Handler) ReadDir(
 				req.DirHandle, clientIP, ctx.Context.Err())
 
 			// Include directory attributes for cache consistency
-			dirID := xdr.ExtractFileID(dirHandle)
-			nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+			nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 			return &ReadDirResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -346,8 +318,7 @@ func (h *Handler) ReadDir(
 			req.DirHandle, clientIP, err)
 
 		// Include directory attributes for cache consistency
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &ReadDirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -358,20 +329,17 @@ func (h *Handler) ReadDir(
 	// Check for cancellation before the potentially expensive ReadDir operation
 	// This is the most important check since ReadDir may scan many entries
 	// in large directories
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("READDIR cancelled before reading entries: dir=%x cookie=%d client=%s error=%v",
 			req.DirHandle, req.Cookie, clientIP, ctx.Context.Err())
 
 		// Include directory attributes for cache consistency
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &ReadDirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			DirAttr:         nfsDirAttr,
 		}, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================
@@ -393,8 +361,7 @@ func (h *Handler) ReadDir(
 				req.DirHandle, req.Cookie, clientIP, ctx.Context.Err())
 
 			// Include directory attributes for cache consistency
-			dirID := xdr.ExtractFileID(dirHandle)
-			nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+			nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 			return &ReadDirResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -409,8 +376,7 @@ func (h *Handler) ReadDir(
 		status := mapMetadataErrorToNFS(err)
 
 		// Include directory attributes for cache consistency
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &ReadDirResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},
@@ -437,8 +403,7 @@ func (h *Handler) ReadDir(
 	// ========================================================================
 
 	// Generate directory attributes for response
-	dirID := xdr.ExtractFileID(dirHandle)
-	nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+	nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 	// EOF is true when there are no more pages
 	eof := !page.HasMore
@@ -737,21 +702,8 @@ func (resp *ReadDirResponse) Encode() ([]byte, error) {
 		}
 
 		// Write filename (length + data + padding)
-		nameLen := uint32(len(entry.Name))
-		if err := binary.Write(&buf, binary.BigEndian, nameLen); err != nil {
-			return nil, fmt.Errorf("write name length: %w", err)
-		}
-
-		if _, err := buf.Write([]byte(entry.Name)); err != nil {
+		if err := xdr.WriteXDRString(&buf, entry.Name); err != nil {
 			return nil, fmt.Errorf("write name: %w", err)
-		}
-
-		// Add padding to 4-byte boundary
-		padding := (4 - (nameLen % 4)) % 4
-		for range padding {
-			if err := buf.WriteByte(0); err != nil {
-				return nil, fmt.Errorf("write padding: %w", err)
-			}
 		}
 
 		// Write cookie (8 bytes)

@@ -97,12 +97,10 @@ func (h *Handler) MountNull(
 	// Check for cancellation before starting
 	// This is the only cancellation check for NULL since the operation is so fast
 	// Per RFC 1813, NULL should be extremely lightweight, so we minimize overhead
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("NULL: request cancelled before processing: client=%s error=%v",
 			ctx.ClientAddr, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP for logging
