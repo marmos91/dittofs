@@ -175,35 +175,20 @@ func (h *Handler) GetAttr(
 	}
 
 	// ========================================================================
-	// Step 2: Decode share name from file handle
+	// Step 2: Get metadata store from context
 	// ========================================================================
 
-	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, _, err := metadata.DecodeFileHandle(fileHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("GETATTR failed: invalid file handle: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("GETATTR failed: share not found: share=%s handle=%x client=%s",
-			shareName, req.Handle, clientIP)
+		logger.Warn("GETATTR failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
-
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("GETATTR failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
-		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// ========================================================================
 	// Step 3: Verify file handle exists and retrieve attributes
 	// ========================================================================
+
+	fileHandle := metadata.FileHandle(req.Handle)
 
 	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
@@ -219,7 +204,7 @@ func (h *Handler) GetAttr(
 		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	logger.Debug("GETATTR: share=%s path=%s", shareName, file.Path)
+	logger.Debug("GETATTR: share=%s path=%s", ctx.Share, file.Path)
 
 	// ========================================================================
 	// Step 4: Generate file attributes with proper file ID

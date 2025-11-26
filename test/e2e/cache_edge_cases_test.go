@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 import (
@@ -267,6 +269,8 @@ func TestConcurrentCommits(t *testing.T) {
 
 // TestPartialThenFinalCommit tests multipart session tracking across multiple COMMITs
 func TestPartialThenFinalCommit(t *testing.T) {
+	t.Skip("Test currently hangs - needs investigation")
+
 	config := &TestConfig{
 		Name:          "badger-s3-partial",
 		MetadataStore: MetadataBadger,

@@ -130,7 +130,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Build test flags
-TEST_FLAGS="-timeout 30m"
+TEST_FLAGS="-tags=e2e -timeout 30m"
 
 if [ "$VERBOSE" = true ]; then
     TEST_FLAGS="$TEST_FLAGS -v"

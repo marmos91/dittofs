@@ -182,31 +182,16 @@ func (h *Handler) FsInfo(
 	}
 
 	// ========================================================================
-	// Decode share name from file handle
+	// Get metadata store from context
 	// ========================================================================
 
-	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, _, err := metadata.DecodeFileHandle(fileHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("FSINFO failed: invalid file handle: handle=%x client=%s error=%v",
-			req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
-		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("FSINFO failed: share not found: share=%s handle=%x client=%s",
-			shareName, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr))
+		logger.Warn("FSINFO failed: %v handle=%x client=%s", err, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr))
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("FSINFO failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, xdr.ExtractClientIP(ctx.ClientAddr), err)
-		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
+	fileHandle := metadata.FileHandle(req.Handle)
 
 	// Check for cancellation before store call
 	// store operations might involve I/O or locks
@@ -227,7 +212,7 @@ func (h *Handler) FsInfo(
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
-	logger.Debug("FSINFO: share=%s path=%s", shareName, file.Path)
+	logger.Debug("FSINFO: share=%s path=%s", ctx.Share, file.Path)
 
 	// Retrieve filesystem capabilities from the store
 	// All business logic about filesystem limits is handled by the store

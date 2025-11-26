@@ -301,52 +301,36 @@ func (h *Handler) Write(
 	}
 
 	// ========================================================================
-	// Step 2: Decode share name from file handle
+	// Step 2: Get metadata and content stores from context
 	// ========================================================================
 
-	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, path, err := metadata.DecodeFileHandle(fileHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("WRITE failed: invalid file handle: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("WRITE failed: share not found: share=%s handle=%x client=%s",
-			shareName, req.Handle, clientIP)
+		logger.Warn("WRITE failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("WRITE failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
-
 	// Get content store for this share
-	contentStore, err := h.Registry.GetContentStoreForShare(shareName)
+	contentStore, err := h.getContentStore(ctx)
 	if err != nil {
-		logger.Error("WRITE failed: cannot get content store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
+		logger.Warn("WRITE failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// Get write cache for this share (optional - may be nil for sync mode)
-	writeCache, err := h.Registry.GetWriteCacheForShare(shareName)
+	writeCache, err := h.Registry.GetWriteCacheForShare(ctx.Share)
 	if err != nil {
 		logger.Error("WRITE failed: cannot get write cache: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
+			ctx.Share, req.Handle, clientIP, err)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
+	fileHandle := metadata.FileHandle(req.Handle)
+
 	if writeCache != nil {
-		logger.Debug("WRITE: share=%s path=%s mode=async (using write cache)", shareName, path)
+		logger.Debug("WRITE: share=%s mode=async (using write cache)", ctx.Share)
 	} else {
-		logger.Debug("WRITE: share=%s path=%s mode=sync (no write cache)", shareName, path)
+		logger.Debug("WRITE: share=%s mode=sync (no write cache)", ctx.Share)
 	}
 
 	// ========================================================================
@@ -581,9 +565,9 @@ func (h *Handler) Write(
 	// If we wrote directly to content store (no write cache), populate the read cache
 	// This makes the newly written data available for fast subsequent reads
 	if writeCache == nil {
-		readCache, rcErr := h.Registry.GetReadCacheForShare(shareName)
+		readCache, rcErr := h.Registry.GetReadCacheForShare(ctx.Share)
 		if rcErr != nil {
-			logger.Warn("WRITE: cannot get read cache: share=%s error=%v", shareName, rcErr)
+			logger.Warn("WRITE: cannot get read cache: share=%s error=%v", ctx.Share, rcErr)
 		} else if readCache != nil && len(req.Data) > 0 {
 			// Only cache small to medium files (< 10MB) to avoid thrashing
 			const maxReadCacheSize = 10 * 1024 * 1024 // 10MB

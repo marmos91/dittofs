@@ -258,41 +258,25 @@ func (h *Handler) Read(
 	}
 
 	// ========================================================================
-	// Step 2: Decode share name from file handle
+	// Step 2: Get metadata and content stores from context
 	// ========================================================================
 
-	fileHandle := metadata.FileHandle(req.Handle)
-	shareName, path, err := metadata.DecodeFileHandle(fileHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("READ failed: invalid file handle: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("READ failed: share not found: share=%s handle=%x client=%s",
-			shareName, req.Handle, clientIP)
+		logger.Warn("READ failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("READ failed: cannot get metadata store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
-		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
-
 	// Get content store for this share
-	contentStore, err := h.Registry.GetContentStoreForShare(shareName)
+	contentStore, err := h.getContentStore(ctx)
 	if err != nil {
-		logger.Error("READ failed: cannot get content store: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
+		logger.Warn("READ failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	logger.Debug("READ: share=%s path=%s", shareName, path)
+	fileHandle := metadata.FileHandle(req.Handle)
+
+	logger.Debug("READ: share=%s", ctx.Share)
 
 	// ========================================================================
 	// Step 3: Verify file exists and is a regular file
@@ -395,18 +379,18 @@ func (h *Handler) Read(
 	var cacheHit bool
 
 	// Get write cache for this share (may be nil)
-	writeCache, err := h.Registry.GetWriteCacheForShare(shareName)
+	writeCache, err := h.Registry.GetWriteCacheForShare(ctx.Share)
 	if err != nil {
 		logger.Error("READ failed: cannot get write cache: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
+			ctx.Share, req.Handle, clientIP, err)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// Get read cache for this share (may be nil)
-	readCache, err := h.Registry.GetReadCacheForShare(shareName)
+	readCache, err := h.Registry.GetReadCacheForShare(ctx.Share)
 	if err != nil {
 		logger.Error("READ failed: cannot get read cache: share=%s handle=%x client=%s error=%v",
-			shareName, req.Handle, clientIP, err)
+			ctx.Share, req.Handle, clientIP, err)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -430,7 +414,7 @@ func (h *Handler) Read(
 
 				// Record cache hit metric
 				if h.Metrics != nil {
-					h.Metrics.RecordCacheHit(shareName, "write", uint64(n))
+					h.Metrics.RecordCacheHit(ctx.Share, "write", uint64(n))
 				}
 			} else {
 				logger.Warn("READ: write cache read error, falling back: handle=%x content_id=%s error=%v",
@@ -460,7 +444,7 @@ func (h *Handler) Read(
 
 				// Record cache hit metric
 				if h.Metrics != nil {
-					h.Metrics.RecordCacheHit(shareName, "read", uint64(n))
+					h.Metrics.RecordCacheHit(ctx.Share, "read", uint64(n))
 				}
 			} else {
 				logger.Warn("READ: read cache read error, falling back: handle=%x content_id=%s error=%v",
@@ -474,7 +458,7 @@ func (h *Handler) Read(
 	if !readFromCache {
 		// Record cache miss metric
 		if h.Metrics != nil {
-			h.Metrics.RecordCacheMiss(shareName, uint64(req.Count))
+			h.Metrics.RecordCacheMiss(ctx.Share, uint64(req.Count))
 		}
 
 		// Check if content store supports efficient random-access reads

@@ -170,41 +170,25 @@ func (h *Handler) Create(
 	}
 
 	// ========================================================================
-	// Step 2: Decode share name from directory file handle
+	// Step 2: Get metadata and content stores from context
 	// ========================================================================
 
-	parentHandle := metadata.FileHandle(req.DirHandle)
-	shareName, path, err := metadata.DecodeFileHandle(parentHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("CREATE failed: invalid directory handle: dir=%x client=%s error=%v",
-			req.DirHandle, clientIP, err)
-		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("CREATE failed: share not found: share=%s dir=%x client=%s",
-			shareName, req.DirHandle, clientIP)
+		logger.Warn("CREATE failed: %v dir=%x client=%s", err, req.DirHandle, clientIP)
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("CREATE failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
-			shareName, req.DirHandle, clientIP, err)
-		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
-
 	// Get content store for this share
-	contentStore, err := h.Registry.GetContentStoreForShare(shareName)
+	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
 	if err != nil {
 		logger.Error("CREATE failed: cannot get content store: share=%s dir=%x client=%s error=%v",
-			shareName, req.DirHandle, clientIP, err)
+			ctx.Share, req.DirHandle, clientIP, err)
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	logger.Debug("CREATE: share=%s path=%s file=%s", shareName, path, req.Filename)
+	parentHandle := metadata.FileHandle(req.DirHandle)
+	logger.Debug("CREATE: share=%s file=%s", ctx.Share, req.Filename)
 
 	// ========================================================================
 	// Step 3: Verify parent directory exists and is valid

@@ -257,48 +257,35 @@ func (h *Handler) Rename(
 	}
 
 	// ========================================================================
-	// Step 2: Decode share names from directory file handles
+	// Step 2: Get metadata store from context and validate handles
 	// ========================================================================
 
-	fromDirHandle := metadata.FileHandle(req.FromDirHandle)
-	fromShareName, fromPath, err := metadata.DecodeFileHandle(fromDirHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("RENAME failed: invalid source directory handle: dir=%x client=%s error=%v",
-			req.FromDirHandle, clientIP, err)
-		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
+		logger.Warn("RENAME failed: %v from_dir=%x to_dir=%x client=%s", err, req.FromDirHandle, req.ToDirHandle, clientIP)
+		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
+	fromDirHandle := metadata.FileHandle(req.FromDirHandle)
 	toDirHandle := metadata.FileHandle(req.ToDirHandle)
-	toShareName, toPath, err := metadata.DecodeFileHandle(toDirHandle)
-	if err != nil {
-		logger.Warn("RENAME failed: invalid destination directory handle: dir=%x client=%s error=%v",
-			req.ToDirHandle, clientIP, err)
-		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
 
 	// Verify both handles are from the same share (cross-share rename not allowed)
+	// This is validated by extracting share from both handles
+	fromShareName, _, fromErr := metadata.DecodeFileHandle(fromDirHandle)
+	toShareName, _, toErr := metadata.DecodeFileHandle(toDirHandle)
+	if fromErr != nil || toErr != nil {
+		logger.Warn("RENAME failed: invalid file handle: from_dir=%x to_dir=%x client=%s",
+			req.FromDirHandle, req.ToDirHandle, clientIP)
+		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
+	}
+
 	if fromShareName != toShareName {
 		logger.Warn("RENAME failed: cross-share rename attempted: from_share=%s to_share=%s client=%s",
 			fromShareName, toShareName, clientIP)
 		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrInval}}, nil
 	}
 
-	// Check if share exists
-	if !h.Registry.ShareExists(fromShareName) {
-		logger.Warn("RENAME failed: share not found: share=%s client=%s",
-			fromShareName, clientIP)
-		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
-
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(fromShareName)
-	if err != nil {
-		logger.Error("RENAME failed: cannot get metadata store: share=%s client=%s error=%v",
-			fromShareName, clientIP, err)
-		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
-
-	logger.Debug("RENAME: share=%s from_path=%s/%s to_path=%s/%s", fromShareName, fromPath, req.FromName, toPath, req.ToName)
+	logger.Debug("RENAME: share=%s from=%s to=%s", ctx.Share, req.FromName, req.ToName)
 
 	// ========================================================================
 	// Step 3: Verify source directory exists and is valid

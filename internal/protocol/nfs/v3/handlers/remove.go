@@ -227,41 +227,25 @@ func (h *Handler) Remove(
 	}
 
 	// ========================================================================
-	// Step 2: Decode share name from directory file handle
+	// Step 2: Get metadata and content stores from context
 	// ========================================================================
 
-	dirHandle := metadata.FileHandle(req.DirHandle)
-	shareName, path, err := metadata.DecodeFileHandle(dirHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("REMOVE failed: invalid directory handle: dir=%x client=%s error=%v",
-			req.DirHandle, clientIP, err)
-		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("REMOVE failed: share not found: share=%s dir=%x client=%s",
-			shareName, req.DirHandle, clientIP)
+		logger.Warn("REMOVE failed: %v dir=%x client=%s", err, req.DirHandle, clientIP)
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("REMOVE failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
-			shareName, req.DirHandle, clientIP, err)
-		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
-
 	// Get content store for this share
-	contentStore, err := h.Registry.GetContentStoreForShare(shareName)
+	contentStore, err := h.getContentStore(ctx)
 	if err != nil {
-		logger.Error("REMOVE failed: cannot get content store: share=%s dir=%x client=%s error=%v",
-			shareName, req.DirHandle, clientIP, err)
+		logger.Warn("REMOVE failed: %v dir=%x client=%s", err, req.DirHandle, clientIP)
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	logger.Debug("REMOVE: share=%s path=%s file=%s", shareName, path, req.Filename)
+	dirHandle := metadata.FileHandle(req.DirHandle)
+
+	logger.Debug("REMOVE: share=%s file=%s", ctx.Share, req.Filename)
 
 	// ========================================================================
 	// Step 3: Capture pre-operation directory attributes for WCC

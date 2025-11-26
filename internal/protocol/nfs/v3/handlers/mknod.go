@@ -277,30 +277,15 @@ func (h *Handler) Mknod(
 	// Step 2: Decode share name from directory file handle
 	// ========================================================================
 
-	parentHandle := metadata.FileHandle(req.DirHandle)
-	shareName, path, err := metadata.DecodeFileHandle(parentHandle)
+	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("MKNOD failed: invalid directory handle: dir=%x client=%s error=%v",
-			req.DirHandle, clientIP, err)
-		return &MknodResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
-	// Check if share exists
-	if !h.Registry.ShareExists(shareName) {
-		logger.Warn("MKNOD failed: share not found: share=%s dir=%x client=%s",
-			shareName, req.DirHandle, clientIP)
+		logger.Warn("MKNOD failed: %v dir=%x client=%s", err, req.DirHandle, clientIP)
 		return &MknodResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(shareName)
-	if err != nil {
-		logger.Error("MKNOD failed: cannot get metadata store: share=%s dir=%x client=%s error=%v",
-			shareName, req.DirHandle, clientIP, err)
-		return &MknodResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
+	parentHandle := metadata.FileHandle(req.DirHandle)
 
-	logger.Debug("MKNOD: share=%s path=%s name=%s type=%d", shareName, path, req.Name, req.Type)
+	logger.Debug("MKNOD: share=%s name=%s type=%d", ctx.Share, req.Name, req.Type)
 
 	// ========================================================================
 	// Step 3: Verify parent directory exists and is valid
