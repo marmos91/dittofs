@@ -279,8 +279,7 @@ func (h *Handler) Rmdir(
 			req.DirHandle, parentFile.Type, clientIP)
 
 		// Get current parent state for WCC
-		dirID := xdr.ExtractFileID(parentHandle)
-		wccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
+		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 		return &RmdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
@@ -300,8 +299,7 @@ func (h *Handler) Rmdir(
 			logger.Debug("RMDIR cancelled during auth context building: name='%s' dir=%x client=%s error=%v",
 				req.Name, req.DirHandle, clientIP, ctx.Context.Err())
 
-			dirID := xdr.ExtractFileID(parentHandle)
-			wccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
+			wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 			return &RmdirResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -313,8 +311,7 @@ func (h *Handler) Rmdir(
 		logger.Error("RMDIR failed: failed to build auth context: name='%s' dir=%x client=%s error=%v",
 			req.Name, req.DirHandle, clientIP, err)
 
-		dirID := xdr.ExtractFileID(parentHandle)
-		wccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
+		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 		return &RmdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -342,8 +339,7 @@ func (h *Handler) Rmdir(
 
 		// Get updated parent attributes for WCC data
 		parentFile, _ = metadataStore.GetFile(ctx.Context, parentHandle)
-		dirID := xdr.ExtractFileID(parentHandle)
-		wccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
+		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 		return &RmdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -360,8 +356,7 @@ func (h *Handler) Rmdir(
 
 		// Get updated parent attributes for WCC data
 		parentFile, _ = metadataStore.GetFile(ctx.Context, parentHandle)
-		dirID := xdr.ExtractFileID(parentHandle)
-		wccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
+		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 		// Map store errors to NFS status codes
 		status := mapRmdirErrorToNFSStatus(err)
@@ -379,13 +374,12 @@ func (h *Handler) Rmdir(
 
 	// Get updated parent directory attributes
 	parentFile, _ = metadataStore.GetFile(ctx.Context, parentHandle)
-	dirID := xdr.ExtractFileID(parentHandle)
-	wccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
+	wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 	logger.Info("RMDIR successful: name='%s' dir=%x client=%s",
 		req.Name, req.DirHandle, clientIP)
 
-	logger.Debug("RMDIR details: parent_id=%d", dirID)
+	logger.Debug("RMDIR details: parent_handle=%x", parentHandle)
 
 	return &RmdirResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

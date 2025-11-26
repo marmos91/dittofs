@@ -359,11 +359,9 @@ func (h *Handler) Write(
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
-	if err != nil {
-		logger.Warn("WRITE failed: file not found: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "WRITE", req.Handle)
+	if file == nil {
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	// Verify it's a regular file (not a directory or special file)
@@ -372,8 +370,7 @@ func (h *Handler) Write(
 			req.Handle, file.Type, clientIP)
 
 		// Return file attributes even on error for cache consistency
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir}, // NFS3ErrIsDir used for all non-regular files
@@ -409,8 +406,7 @@ func (h *Handler) Write(
 		logger.Error("WRITE failed: failed to build auth context: handle=%x client=%s error=%v",
 			req.Handle, clientIP, err)
 
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -429,8 +425,7 @@ func (h *Handler) Write(
 		logger.Warn("WRITE cancelled before PrepareWrite: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -446,8 +441,7 @@ func (h *Handler) Write(
 		logger.Warn("WRITE failed: PrepareWrite error: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, len(req.Data), clientIP, err)
 
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 		// Build WCC attributes from current state
 		nfsWccAttr := &types.WccAttr{
@@ -494,8 +488,7 @@ func (h *Handler) Write(
 		logger.Warn("WRITE cancelled before write: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, writeIntent.PreWriteAttr)
 
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -514,8 +507,7 @@ func (h *Handler) Write(
 			logger.Error("WRITE failed: cache write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
 				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
 
-			fileid := xdr.ExtractFileID(fileHandle)
-			nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
+			nfsAttr := h.convertFileAttrToNFS(fileHandle, writeIntent.PreWriteAttr)
 
 			return &WriteResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -536,8 +528,7 @@ func (h *Handler) Write(
 			logger.Error("WRITE failed: content write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
 				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
 
-			fileid := xdr.ExtractFileID(fileHandle)
-			nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
+			nfsAttr := h.convertFileAttrToNFS(fileHandle, writeIntent.PreWriteAttr)
 
 			status := xdr.MapContentErrorToNFSStatus(err)
 
@@ -594,8 +585,7 @@ func (h *Handler) Write(
 		// Map error to NFS status
 		status := mapMetadataErrorToNFS(err)
 
-		fileid := xdr.ExtractFileID(fileHandle)
-		nfsAttr := xdr.MetadataToNFS(writeIntent.PreWriteAttr, fileid)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, writeIntent.PreWriteAttr)
 
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},
@@ -608,8 +598,7 @@ func (h *Handler) Write(
 	// Step 9: Build success response
 	// ========================================================================
 
-	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(&updatedFile.FileAttr, fileid)
+	nfsAttr := h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
 
 	logger.Info("WRITE successful: handle=%x offset=%d requested=%d written=%d new_size=%d client=%s",
 		req.Handle, req.Offset, req.Count, len(req.Data), updatedFile.Size, clientIP)

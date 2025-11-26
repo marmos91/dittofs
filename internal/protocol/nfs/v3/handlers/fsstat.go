@@ -208,10 +208,9 @@ func (h *Handler) FsStat(
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
-	if err != nil {
-		logger.Debug("FSSTAT failed: handle not found: %v client=%s", err, ctx.ClientAddr)
-		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
+	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "FSSTAT", req.Handle)
+	if file == nil {
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	logger.Debug("FSSTAT: share=%s path=%s", ctx.Share, file.Path)

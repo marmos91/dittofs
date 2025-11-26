@@ -247,11 +247,9 @@ func (h *Handler) PathConf(
 
 	logger.Debug("PATHCONF: share=%s", ctx.Share)
 
-	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
-	if err != nil {
-		logger.Warn("PATHCONF failed: handle not found: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "PATHCONF", req.Handle)
+	if file == nil {
+		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	// ========================================================================
@@ -278,8 +276,7 @@ func (h *Handler) PathConf(
 	// Step 5: Generate file attributes for cache consistency
 	// ========================================================================
 
-	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 	logger.Info("PATHCONF successful: handle=%x client=%s", req.Handle, clientIP)
 	logger.Debug("PATHCONF properties: linkmax=%d namemax=%d no_trunc=%v chown_restricted=%v case_insensitive=%v case_preserving=%v",

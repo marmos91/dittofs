@@ -192,18 +192,9 @@ func (h *Handler) Create(
 	// Step 3: Verify parent directory exists and is valid
 	// ========================================================================
 
-	parentFile, err := metadataStore.GetFile(ctx.Context, parentHandle)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("CREATE cancelled during parent lookup: file='%s' dir=%x client=%s error=%v",
-				req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
-			return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-		}
-
-		logger.Warn("CREATE failed: parent not found: file='%s' dir=%x client=%s error=%v",
-			req.Filename, req.DirHandle, clientIP, err)
-		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	parentFile, status, err := h.getFileOrError(ctx, metadataStore, parentHandle, "CREATE", req.DirHandle)
+	if parentFile == nil {
+		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	// Capture pre-operation directory state for WCC
@@ -215,8 +206,7 @@ func (h *Handler) Create(
 			req.Filename, req.DirHandle, parentFile.Type, clientIP)
 
 		// Get current parent state for WCC
-		dirID := xdr.ExtractFileID(parentHandle)
-		dirWccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
+		dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 		return &CreateResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
@@ -242,8 +232,7 @@ func (h *Handler) Create(
 			req.Filename, req.DirHandle, clientIP, err)
 
 		// Get current parent state for WCC
-		dirID := xdr.ExtractFileID(parentHandle)
-		dirWccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
+		dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 		return &CreateResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -298,8 +287,7 @@ func (h *Handler) Create(
 				req.Filename, clientIP)
 
 			// Get current parent state for WCC
-			dirID := xdr.ExtractFileID(parentHandle)
-			dirWccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
+			dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 			return &CreateResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrExist},
@@ -319,8 +307,7 @@ func (h *Handler) Create(
 			logger.Debug("CREATE failed: file exists (exclusive): file='%s' client=%s verifier=%016x",
 				req.Filename, clientIP, req.Verf)
 
-			dirID := xdr.ExtractFileID(parentHandle)
-			dirWccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
+			dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 			return &CreateResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrExist},
@@ -348,8 +335,7 @@ func (h *Handler) Create(
 		logger.Warn("CREATE failed: invalid mode: file='%s' mode=%d client=%s",
 			req.Filename, req.Mode, clientIP)
 
-		dirID := xdr.ExtractFileID(parentHandle)
-		dirWccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
+		dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 		return &CreateResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrInval},
@@ -368,8 +354,7 @@ func (h *Handler) Create(
 			logger.Debug("CREATE cancelled during file operation: file='%s' client=%s error=%v",
 				req.Filename, clientIP, ctx.Context.Err())
 
-			dirID := xdr.ExtractFileID(parentHandle)
-			dirWccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
+			dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 			return &CreateResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -384,8 +369,7 @@ func (h *Handler) Create(
 		// Map repository errors to NFS status codes
 		nfsStatus := mapMetadataErrorToNFS(err)
 
-		dirID := xdr.ExtractFileID(parentHandle)
-		dirWccAfter := xdr.MetadataToNFS(&parentFile.FileAttr, dirID)
+		dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 		return &CreateResponse{
 			NFSResponseBase: NFSResponseBase{Status: nfsStatus},
@@ -399,13 +383,11 @@ func (h *Handler) Create(
 	// ========================================================================
 
 	// Convert metadata to NFS attributes
-	fileID := xdr.ExtractFileID(fileHandle)
-	nfsFileAttr := xdr.MetadataToNFS(fileAttr, fileID)
+	nfsFileAttr := h.convertFileAttrToNFS(fileHandle, fileAttr)
 
 	// Get updated parent directory attributes
 	updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
-	dirID := xdr.ExtractFileID(parentHandle)
-	nfsDirAttr := xdr.MetadataToNFS(&updatedParentFile.FileAttr, dirID)
+	nfsDirAttr := h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
 
 	logger.Info("CREATE successful: file='%s' handle=%x mode=%o size=%d client=%s",
 		req.Filename, fileHandle, fileAttr.Mode, fileAttr.Size, clientIP)

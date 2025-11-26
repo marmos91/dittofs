@@ -201,11 +201,9 @@ func (h *Handler) FsInfo(
 
 	// Verify the file handle exists and is valid in the store
 	// The store is responsible for validating handle format and existence
-	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
-	if err != nil {
-		logger.Debug("FSINFO failed: handle=%x client=%s error=%v",
-			req.Handle, ctx.ClientAddr, err)
-		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "FSINFO", req.Handle)
+	if file == nil {
+		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	logger.Debug("FSINFO: share=%s path=%s", ctx.Share, file.Path)

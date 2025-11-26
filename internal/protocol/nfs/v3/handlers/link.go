@@ -308,8 +308,7 @@ func (h *Handler) Link(
 			req.DirHandle, dirFile.Type, clientIP)
 
 		// Get current directory state for WCC
-		dirID := xdr.ExtractFileID(dirHandle)
-		dirWccAfter := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		dirWccAfter := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &LinkResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
@@ -340,8 +339,7 @@ func (h *Handler) Link(
 
 		// Get updated directory attributes for WCC
 		updatedDirFile, _ := metadataStore.GetFile(ctx.Context, dirHandle)
-		dirID := xdr.ExtractFileID(dirHandle)
-		dirWccAfter := xdr.MetadataToNFS(&updatedDirFile.FileAttr, dirID)
+		dirWccAfter := h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
 
 		return &LinkResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrExist},
@@ -378,8 +376,7 @@ func (h *Handler) Link(
 
 		// Get updated directory attributes for WCC
 		updatedDirFile, _ := metadataStore.GetFile(ctx.Context, dirHandle)
-		dirID := xdr.ExtractFileID(dirHandle)
-		dirWccAfter := xdr.MetadataToNFS(&updatedDirFile.FileAttr, dirID)
+		dirWccAfter := h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
 
 		// Map store errors to NFS status codes
 		status := mapMetadataErrorToNFS(err)
@@ -405,13 +402,11 @@ func (h *Handler) Link(
 		// Continue with cached attributes - this shouldn't happen but handle gracefully
 	}
 
-	fileID := xdr.ExtractFileID(fileHandle)
-	nfsFileAttr := xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+	nfsFileAttr := h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
 
 	// Get updated directory attributes
 	updatedDirFile, _ := metadataStore.GetFile(ctx.Context, dirHandle)
-	dirID := xdr.ExtractFileID(dirHandle)
-	nfsDirAttr := xdr.MetadataToNFS(&updatedDirFile.FileAttr, dirID)
+	nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
 
 	logger.Info("LINK successful: name='%s' file=%x nlink=%d client=%s",
 		req.Name, req.FileHandle, nfsFileAttr.Nlink, clientIP)

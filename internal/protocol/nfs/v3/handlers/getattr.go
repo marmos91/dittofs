@@ -188,18 +188,9 @@ func (h *Handler) GetAttr(
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("GETATTR cancelled during file lookup: handle=%x client=%s error=%v",
-				req.Handle, clientIP, ctx.Context.Err())
-			return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-		}
-
-		logger.Debug("GETATTR failed: handle not found: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
-		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
+	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "GETATTR", req.Handle)
+	if file == nil {
+		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	logger.Debug("GETATTR: share=%s path=%s", ctx.Share, file.Path)
@@ -211,14 +202,13 @@ func (h *Handler) GetAttr(
 	// This is a protocol-layer concern for creating the wire format.
 	// No cancellation check here - this operation is extremely fast (pure computation)
 
-	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 	logger.Info("GETATTR successful: handle=%x type=%d mode=%o size=%d client=%s",
 		req.Handle, nfsAttr.Type, nfsAttr.Mode, nfsAttr.Size, clientIP)
 
-	logger.Debug("GETATTR details: fileid=%d uid=%d gid=%d mtime=%d.%d",
-		fileid, nfsAttr.UID, nfsAttr.GID, nfsAttr.Mtime.Seconds, nfsAttr.Mtime.Nseconds)
+	logger.Debug("GETATTR details: handle=%x uid=%d gid=%d mtime=%d.%d",
+		fileHandle, nfsAttr.UID, nfsAttr.GID, nfsAttr.Mtime.Seconds, nfsAttr.Mtime.Nseconds)
 
 	return &GetAttrResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

@@ -266,8 +266,7 @@ func (h *Handler) Lookup(
 			req.DirHandle, dirFile.Type, clientIP)
 
 		// Include directory attributes even on error for cache consistency
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &LookupResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
@@ -291,8 +290,7 @@ func (h *Handler) Lookup(
 		logger.Error("LOOKUP failed: failed to build auth context: file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, clientIP, err)
 
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &LookupResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -315,8 +313,7 @@ func (h *Handler) Lookup(
 			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
 
 		// Include directory post-op attributes for cache consistency
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &LookupResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -333,8 +330,7 @@ func (h *Handler) Lookup(
 		status := mapMetadataErrorToNFS(err)
 
 		// Include directory post-op attributes for cache consistency
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &LookupResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},
@@ -354,8 +350,7 @@ func (h *Handler) Lookup(
 		logger.Error("LOOKUP failed: cannot encode child handle: file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, clientIP, err)
 
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &LookupResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -364,17 +359,14 @@ func (h *Handler) Lookup(
 	}
 
 	// Generate file IDs from handles for NFS attributes
-	childID := xdr.ExtractFileID(childHandle)
-	nfsChildAttr := xdr.MetadataToNFS(&childFile.FileAttr, childID)
-
-	dirID := xdr.ExtractFileID(dirHandle)
-	nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+	nfsChildAttr := h.convertFileAttrToNFS(childHandle, &childFile.FileAttr)
+	nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 	logger.Info("LOOKUP successful: file='%s' handle=%x type=%d size=%d client=%s",
 		req.Filename, childHandle, nfsChildAttr.Type, childFile.Size, clientIP)
 
-	logger.Debug("LOOKUP details: child_id=%d child_mode=%o dir_id=%d",
-		childID, childFile.Mode, dirID)
+	logger.Debug("LOOKUP details: child_handle=%x child_mode=%o dir_handle=%x",
+		childHandle, childFile.Mode, dirHandle)
 
 	return &LookupResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

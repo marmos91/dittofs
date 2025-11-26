@@ -326,8 +326,7 @@ func (h *Handler) Commit(
 		logger.Warn("COMMIT failed: handle is a directory: handle=%x client=%s",
 			req.Handle, clientIP)
 
-		fileID := xdr.ExtractFileID(handle)
-		wccAfter := xdr.MetadataToNFS(&file.FileAttr, fileID)
+		wccAfter := h.convertFileAttrToNFS(handle, &file.FileAttr)
 
 		return &CommitResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir},
@@ -348,8 +347,7 @@ func (h *Handler) Commit(
 		// Get updated attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
 		if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-			fileID := xdr.ExtractFileID(handle)
-			wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+			wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 		}
 
 		return &CommitResponse{
@@ -430,8 +428,7 @@ func (h *Handler) Commit(
 
 					var wccAfter *types.NFSFileAttr
 					if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-						fileID := xdr.ExtractFileID(handle)
-						wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+						wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 					}
 
 					return &CommitResponse{
@@ -452,8 +449,7 @@ func (h *Handler) Commit(
 
 						var wccAfter *types.NFSFileAttr
 						if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-							fileID := xdr.ExtractFileID(handle)
-							wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+							wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 						}
 
 						return &CommitResponse{
@@ -510,8 +506,7 @@ func (h *Handler) Commit(
 
 					var wccAfter *types.NFSFileAttr
 					if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-						fileID := xdr.ExtractFileID(handle)
-						wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+						wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 					}
 
 					return &CommitResponse{
@@ -537,8 +532,7 @@ func (h *Handler) Commit(
 
 					var wccAfter *types.NFSFileAttr
 					if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-						fileID := xdr.ExtractFileID(handle)
-						wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+						wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 					}
 
 					return &CommitResponse{
@@ -559,8 +553,7 @@ func (h *Handler) Commit(
 
 					var wccAfter *types.NFSFileAttr
 					if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-						fileID := xdr.ExtractFileID(handle)
-						wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+						wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 					}
 
 					return &CommitResponse{
@@ -590,8 +583,7 @@ func (h *Handler) Commit(
 
 						var wccAfter *types.NFSFileAttr
 						if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-							fileID := xdr.ExtractFileID(handle)
-							wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+							wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 						}
 
 						return &CommitResponse{
@@ -761,8 +753,7 @@ func (h *Handler) Commit(
 
 	var wccAfter *types.NFSFileAttr
 	if updatedFile != nil {
-		fileID := xdr.ExtractFileID(handle)
-		wccAfter = xdr.MetadataToNFS(&updatedFile.FileAttr, fileID)
+		wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 		logger.Debug("COMMIT details: file_size=%d file_type=%d",
 			updatedFile.Size, wccAfter.Type)
 	}

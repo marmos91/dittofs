@@ -347,8 +347,7 @@ func (h *Handler) ReadDirPlus(
 			req.DirHandle, dirFile.Type, clientIP)
 
 		// Include directory attributes even on error for cache consistency
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &ReadDirPlusResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
@@ -367,8 +366,7 @@ func (h *Handler) ReadDirPlus(
 			logger.Debug("READDIRPLUS cancelled during auth context building: dir=%x client=%s error=%v",
 				req.DirHandle, clientIP, ctx.Context.Err())
 
-			dirID := xdr.ExtractFileID(dirHandle)
-			nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+			nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 			return &ReadDirPlusResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -379,8 +377,7 @@ func (h *Handler) ReadDirPlus(
 		logger.Error("READDIRPLUS failed: failed to build auth context: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, err)
 
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &ReadDirPlusResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -399,8 +396,7 @@ func (h *Handler) ReadDirPlus(
 		logger.Warn("READDIRPLUS cancelled before ReadDirectory: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, ctx.Context.Err())
 
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &ReadDirPlusResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -425,8 +421,7 @@ func (h *Handler) ReadDirPlus(
 		// Map store error to NFS status
 		status := mapMetadataErrorToNFS(err)
 
-		dirID := xdr.ExtractFileID(dirHandle)
-		nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &ReadDirPlusResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},
@@ -439,8 +434,7 @@ func (h *Handler) ReadDirPlus(
 	// ========================================================================
 
 	// Generate directory file ID for attributes
-	dirID := xdr.ExtractFileID(dirHandle)
-	nfsDirAttr := xdr.MetadataToNFS(&dirFile.FileAttr, dirID)
+	nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 	// Build entries list - look up each entry to get handle and full attributes
 	entries := make([]*DirPlusEntry, 0, len(page.Entries))
@@ -492,8 +486,7 @@ func (h *Handler) ReadDirPlus(
 		}
 
 		// Convert attributes to NFS format
-		entryID := xdr.ExtractFileID(entryHandle)
-		nfsEntryAttr := xdr.MetadataToNFS(&entryFile.FileAttr, entryID)
+		nfsEntryAttr := h.convertFileAttrToNFS(entryHandle, &entryFile.FileAttr)
 
 		// Create directory entry with absolute cookie position
 		// Cookie = startOffset + i + 1 (absolute position in directory)
@@ -522,8 +515,8 @@ func (h *Handler) ReadDirPlus(
 	logger.Info("READDIRPLUS successful: dir=%x entries=%d eof=%v client=%s",
 		req.DirHandle, len(entries), eof, clientIP)
 
-	logger.Debug("READDIRPLUS details: dir_id=%d total_entries=%d eof=%v",
-		dirID, len(page.Entries), eof)
+	logger.Debug("READDIRPLUS details: dir_handle=%x total_entries=%d eof=%v",
+		dirHandle, len(page.Entries), eof)
 
 	return &ReadDirPlusResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

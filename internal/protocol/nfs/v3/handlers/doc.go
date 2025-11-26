@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/pkg/metrics"
 	"github.com/marmos91/dittofs/pkg/registry"
 	"github.com/marmos91/dittofs/pkg/store/content"
@@ -71,4 +74,44 @@ func (h *Handler) getContentStore(ctx *NFSHandlerContext) (content.ContentStore,
 	}
 
 	return contentStore, nil
+}
+
+// convertFileAttrToNFS converts metadata file attributes to NFS wire format.
+// Extracts the file ID from the handle and converts the attributes.
+func (h *Handler) convertFileAttrToNFS(fileHandle metadata.FileHandle, fileAttr *metadata.FileAttr) *types.NFSFileAttr {
+	fileid := xdr.ExtractFileID(fileHandle)
+	return xdr.MetadataToNFS(fileAttr, fileid)
+}
+
+// getFileOrError retrieves a file from the metadata store with error handling.
+// Checks for context cancellation and returns appropriate NFS status codes.
+//
+// Returns:
+//   - file: The retrieved file (nil on error)
+//   - status: NFS3OK on success, NFS3ErrIO on cancellation, NFS3ErrStale on not found
+//   - error: Context error if cancelled, nil otherwise
+func (h *Handler) getFileOrError(
+	ctx *NFSHandlerContext,
+	metadataStore metadata.MetadataStore,
+	fileHandle metadata.FileHandle,
+	operationName string,
+	handleBytes []byte,
+) (*metadata.File, uint32, error) {
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+
+	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
+	if err != nil {
+		// Check if the error is due to context cancellation
+		if ctx.Context.Err() != nil {
+			logger.Debug("%s cancelled during file lookup: handle=%x client=%s error=%v",
+				operationName, handleBytes, clientIP, ctx.Context.Err())
+			return nil, types.NFS3ErrIO, ctx.Context.Err()
+		}
+
+		logger.Debug("%s failed: handle not found: handle=%x client=%s error=%v",
+			operationName, handleBytes, clientIP, err)
+		return nil, types.NFS3ErrStale, nil
+	}
+
+	return file, types.NFS3OK, nil
 }

@@ -289,18 +289,9 @@ func (h *Handler) Rename(
 	// Step 3: Verify source directory exists and is valid
 	// ========================================================================
 
-	fromDirFile, err := metadataStore.GetFile(ctx.Context, fromDirHandle)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("RENAME cancelled during source directory lookup: from='%s' to='%s' client=%s error=%v",
-				req.FromName, req.ToName, clientIP, ctx.Context.Err())
-			return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-		}
-
-		logger.Warn("RENAME failed: source directory not found: dir=%x client=%s error=%v",
-			req.FromDirHandle, clientIP, err)
-		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	fromDirFile, status, err := h.getFileOrError(ctx, metadataStore, fromDirHandle, "RENAME", req.FromDirHandle)
+	if fromDirFile == nil {
+		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
 	// Capture pre-operation attributes for source directory
@@ -311,8 +302,7 @@ func (h *Handler) Rename(
 		logger.Warn("RENAME failed: source handle not a directory: dir=%x type=%d client=%s",
 			req.FromDirHandle, fromDirFile.Type, clientIP)
 
-		fromDirID := xdr.ExtractFileID(fromDirHandle)
-		fromDirWccAfter := xdr.MetadataToNFS(&fromDirFile.FileAttr, fromDirID)
+		fromDirWccAfter := h.convertFileAttrToNFS(fromDirHandle, &fromDirFile.FileAttr)
 
 		return &RenameResponse{
 			NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrNotDir},
@@ -326,8 +316,7 @@ func (h *Handler) Rename(
 		logger.Debug("RENAME cancelled before destination lookup: from='%s' to='%s' client=%s error=%v",
 			req.FromName, req.ToName, clientIP, ctx.Context.Err())
 
-		fromDirID := xdr.ExtractFileID(fromDirHandle)
-		fromDirWccAfter := xdr.MetadataToNFS(&fromDirFile.FileAttr, fromDirID)
+		fromDirWccAfter := h.convertFileAttrToNFS(fromDirHandle, &fromDirFile.FileAttr)
 
 		return &RenameResponse{
 			NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrIO},
@@ -340,36 +329,16 @@ func (h *Handler) Rename(
 	// Step 3: Verify destination directory exists and is valid
 	// ========================================================================
 
-	toDirFile, err := metadataStore.GetFile(ctx.Context, toDirHandle)
-	if err != nil {
-		// Check if the error is due to context cancellation
-		if ctx.Context.Err() != nil {
-			logger.Debug("RENAME cancelled during destination directory lookup: from='%s' to='%s' client=%s error=%v",
-				req.FromName, req.ToName, clientIP, ctx.Context.Err())
-
-			// Return WCC for source directory
-			fromDirID := xdr.ExtractFileID(fromDirHandle)
-			fromDirWccAfter := xdr.MetadataToNFS(&fromDirFile.FileAttr, fromDirID)
-
-			return &RenameResponse{
-				NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrIO},
-				FromDirWccBefore: fromDirWccBefore,
-				FromDirWccAfter:  fromDirWccAfter,
-			}, ctx.Context.Err()
-		}
-
-		logger.Warn("RENAME failed: destination directory not found: dir=%x client=%s error=%v",
-			req.ToDirHandle, clientIP, err)
-
+	toDirFile, status, err := h.getFileOrError(ctx, metadataStore, toDirHandle, "RENAME", req.ToDirHandle)
+	if toDirFile == nil {
 		// Return WCC for source directory
-		fromDirID := xdr.ExtractFileID(fromDirHandle)
-		fromDirWccAfter := xdr.MetadataToNFS(&fromDirFile.FileAttr, fromDirID)
+		fromDirWccAfter := h.convertFileAttrToNFS(fromDirHandle, &fromDirFile.FileAttr)
 
 		return &RenameResponse{
-			NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrNoEnt},
+			NFSResponseBase:  NFSResponseBase{Status: status},
 			FromDirWccBefore: fromDirWccBefore,
 			FromDirWccAfter:  fromDirWccAfter,
-		}, nil
+		}, err
 	}
 
 	// Capture pre-operation attributes for destination directory
@@ -380,11 +349,9 @@ func (h *Handler) Rename(
 		logger.Warn("RENAME failed: destination handle not a directory: dir=%x type=%d client=%s",
 			req.ToDirHandle, toDirFile.Type, clientIP)
 
-		fromDirID := xdr.ExtractFileID(fromDirHandle)
-		fromDirWccAfter := xdr.MetadataToNFS(&fromDirFile.FileAttr, fromDirID)
+		fromDirWccAfter := h.convertFileAttrToNFS(fromDirHandle, &fromDirFile.FileAttr)
 
-		toDirID := xdr.ExtractFileID(toDirHandle)
-		toDirWccAfter := xdr.MetadataToNFS(&toDirFile.FileAttr, toDirID)
+		toDirWccAfter := h.convertFileAttrToNFS(toDirHandle, &toDirFile.FileAttr)
 
 		return &RenameResponse{
 			NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrNotDir},
@@ -402,11 +369,9 @@ func (h *Handler) Rename(
 		logger.Debug("RENAME cancelled before rename operation: from='%s' to='%s' client=%s error=%v",
 			req.FromName, req.ToName, clientIP, ctx.Context.Err())
 
-		fromDirID := xdr.ExtractFileID(fromDirHandle)
-		fromDirWccAfter := xdr.MetadataToNFS(&fromDirFile.FileAttr, fromDirID)
+		fromDirWccAfter := h.convertFileAttrToNFS(fromDirHandle, &fromDirFile.FileAttr)
 
-		toDirID := xdr.ExtractFileID(toDirHandle)
-		toDirWccAfter := xdr.MetadataToNFS(&toDirFile.FileAttr, toDirID)
+		toDirWccAfter := h.convertFileAttrToNFS(toDirHandle, &toDirFile.FileAttr)
 
 		return &RenameResponse{
 			NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrIO},
@@ -428,11 +393,9 @@ func (h *Handler) Rename(
 			logger.Debug("RENAME cancelled during auth context building: from='%s' to='%s' client=%s error=%v",
 				req.FromName, req.ToName, clientIP, ctx.Context.Err())
 
-			fromDirID := xdr.ExtractFileID(fromDirHandle)
-			fromDirWccAfter := xdr.MetadataToNFS(&fromDirFile.FileAttr, fromDirID)
+			fromDirWccAfter := h.convertFileAttrToNFS(fromDirHandle, &fromDirFile.FileAttr)
 
-			toDirID := xdr.ExtractFileID(toDirHandle)
-			toDirWccAfter := xdr.MetadataToNFS(&toDirFile.FileAttr, toDirID)
+			toDirWccAfter := h.convertFileAttrToNFS(toDirHandle, &toDirFile.FileAttr)
 
 			return &RenameResponse{
 				NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrIO},
@@ -446,11 +409,9 @@ func (h *Handler) Rename(
 		logger.Error("RENAME failed: failed to build auth context: from='%s' to='%s' client=%s error=%v",
 			req.FromName, req.ToName, clientIP, err)
 
-		fromDirID := xdr.ExtractFileID(fromDirHandle)
-		fromDirWccAfter := xdr.MetadataToNFS(&fromDirFile.FileAttr, fromDirID)
+		fromDirWccAfter := h.convertFileAttrToNFS(fromDirHandle, &fromDirFile.FileAttr)
 
-		toDirID := xdr.ExtractFileID(toDirHandle)
-		toDirWccAfter := xdr.MetadataToNFS(&toDirFile.FileAttr, toDirID)
+		toDirWccAfter := h.convertFileAttrToNFS(toDirHandle, &toDirFile.FileAttr)
 
 		return &RenameResponse{
 			NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrIO},
@@ -486,14 +447,12 @@ func (h *Handler) Rename(
 			// Get updated directory attributes for WCC data (best effort)
 			var fromDirWccAfter *types.NFSFileAttr
 			if updatedFromDirFile, getErr := metadataStore.GetFile(ctx.Context, fromDirHandle); getErr == nil {
-				fromDirID := xdr.ExtractFileID(fromDirHandle)
-				fromDirWccAfter = xdr.MetadataToNFS(&updatedFromDirFile.FileAttr, fromDirID)
+				fromDirWccAfter = h.convertFileAttrToNFS(fromDirHandle, &updatedFromDirFile.FileAttr)
 			}
 
 			var toDirWccAfter *types.NFSFileAttr
 			if updatedToDirFile, getErr := metadataStore.GetFile(ctx.Context, toDirHandle); getErr == nil {
-				toDirID := xdr.ExtractFileID(toDirHandle)
-				toDirWccAfter = xdr.MetadataToNFS(&updatedToDirFile.FileAttr, toDirID)
+				toDirWccAfter = h.convertFileAttrToNFS(toDirHandle, &updatedToDirFile.FileAttr)
 			}
 
 			return &RenameResponse{
@@ -511,14 +470,12 @@ func (h *Handler) Rename(
 		// Get updated directory attributes for WCC data
 		var fromDirWccAfter *types.NFSFileAttr
 		if updatedFromDirFile, getErr := metadataStore.GetFile(ctx.Context, fromDirHandle); getErr == nil {
-			fromDirID := xdr.ExtractFileID(fromDirHandle)
-			fromDirWccAfter = xdr.MetadataToNFS(&updatedFromDirFile.FileAttr, fromDirID)
+			fromDirWccAfter = h.convertFileAttrToNFS(fromDirHandle, &updatedFromDirFile.FileAttr)
 		}
 
 		var toDirWccAfter *types.NFSFileAttr
 		if updatedToDirFile, getErr := metadataStore.GetFile(ctx.Context, toDirHandle); getErr == nil {
-			toDirID := xdr.ExtractFileID(toDirHandle)
-			toDirWccAfter = xdr.MetadataToNFS(&updatedToDirFile.FileAttr, toDirID)
+			toDirWccAfter = h.convertFileAttrToNFS(toDirHandle, &updatedToDirFile.FileAttr)
 		}
 
 		// Map store errors to NFS status codes
@@ -544,8 +501,7 @@ func (h *Handler) Rename(
 			req.FromDirHandle, getErr)
 		// fromDirWccAfter will be nil
 	} else {
-		fromDirID := xdr.ExtractFileID(fromDirHandle)
-		fromDirWccAfter = xdr.MetadataToNFS(&updatedFromDirFile.FileAttr, fromDirID)
+		fromDirWccAfter = h.convertFileAttrToNFS(fromDirHandle, &updatedFromDirFile.FileAttr)
 	}
 
 	// Get updated destination directory attributes
@@ -555,8 +511,7 @@ func (h *Handler) Rename(
 			req.ToDirHandle, getErr)
 		// toDirWccAfter will be nil
 	} else {
-		toDirID := xdr.ExtractFileID(toDirHandle)
-		toDirWccAfter = xdr.MetadataToNFS(&updatedToDirFile.FileAttr, toDirID)
+		toDirWccAfter = h.convertFileAttrToNFS(toDirHandle, &updatedToDirFile.FileAttr)
 	}
 
 	logger.Info("RENAME successful: from='%s' to='%s' client=%s",

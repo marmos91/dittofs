@@ -307,8 +307,7 @@ func (h *Handler) Access(
 	// ========================================================================
 
 	// Generate file ID from handle for NFS attributes
-	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 	logger.Info("ACCESS successful: handle=%x granted=0x%x requested=0x%x client=%s",
 		req.Handle, grantedAccess, req.Access, clientIP)

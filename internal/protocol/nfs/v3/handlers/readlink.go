@@ -297,14 +297,13 @@ func (h *Handler) ReadLink(
 	// Step 4: Generate file attributes for cache consistency
 	// ========================================================================
 
-	fileid := xdr.ExtractFileID(fileHandle)
-	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 	logger.Info("READLINK successful: handle=%x target='%s' target_len=%d client=%s",
 		req.Handle, target, len(target), clientIP)
 
-	logger.Debug("READLINK details: fileid=%d mode=%o uid=%d gid=%d size=%d",
-		fileid, file.Mode, file.UID, file.GID, file.Size)
+	logger.Debug("READLINK details: handle=%x mode=%o uid=%d gid=%d size=%d",
+		fileHandle, file.Mode, file.UID, file.GID, file.Size)
 
 	return &ReadLinkResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
