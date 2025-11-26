@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	"net"
-
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
@@ -76,20 +74,14 @@ func (h *Handler) UmntAll(
 	req *UmountAllRequest,
 ) (*UmountAllResponse, error) {
 	// Check for cancellation before starting any work
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("Unmount-all request cancelled before processing: client=%s error=%v",
 			ctx.ClientAddr, ctx.Context.Err())
 		return &UmountAllResponse{MountResponseBase: MountResponseBase{Status: MountOK}}, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP from address (remove port)
-	clientIP, _, err := net.SplitHostPort(ctx.ClientAddr)
-	if err != nil {
-		// If parsing fails, use the whole address (might be IP only)
-		clientIP = ctx.ClientAddr
-	}
+	clientIP := extractClientIP(ctx.ClientAddr)
 
 	logger.Info("Unmount-all request: client=%s", clientIP)
 

@@ -99,3 +99,24 @@ func (c *NFSHandlerContext) GetGIDs() []uint32 {
 func (c *NFSHandlerContext) GetShare() string {
 	return c.Share
 }
+
+// isContextCancelled checks if the context has been cancelled.
+// This is a convenience helper to simplify the common pattern of checking
+// for context cancellation at the start of handler functions.
+//
+// Returns true if the context is cancelled, false otherwise.
+//
+// Example usage in a handler:
+//
+//	if ctx.isContextCancelled() {
+//	    logger.Debug("Operation cancelled: client=%s error=%v", ctx.ClientAddr, ctx.Context.Err())
+//	    return &Response{Status: ErrorStatus}, ctx.Context.Err()
+//	}
+func (c *NFSHandlerContext) isContextCancelled() bool {
+	select {
+	case <-c.Context.Done():
+		return true
+	default:
+		return false
+	}
+}

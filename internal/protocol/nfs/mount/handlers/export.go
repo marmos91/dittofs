@@ -123,11 +123,9 @@ func (h *Handler) Export(
 ) (*ExportResponse, error) {
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("Export request cancelled before processing: error=%v", ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
 	}
 
 	logger.Info("Export request: listing all available exports")

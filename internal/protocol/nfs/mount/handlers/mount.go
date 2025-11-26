@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"net"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -99,20 +98,14 @@ func (h *Handler) Mount(
 	req *MountRequest,
 ) (*MountResponse, error) {
 	// Check for cancellation before starting any work
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("Mount request cancelled before processing: path=%s client=%s error=%v",
 			req.DirPath, ctx.ClientAddr, ctx.Context.Err())
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrServerFault}}, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP from address (remove port)
-	clientIP, _, err := net.SplitHostPort(ctx.ClientAddr)
-	if err != nil {
-		// If parsing fails, use the whole address (might be IP only)
-		clientIP = ctx.ClientAddr
-	}
+	clientIP := extractClientIP(ctx.ClientAddr)
 
 	// Log authentication info
 	if ctx.AuthFlavor == rpc.AuthUnix && ctx.UID != nil && ctx.GID != nil {
