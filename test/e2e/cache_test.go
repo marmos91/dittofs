@@ -99,8 +99,11 @@ type testContextWithCache struct {
 func (tc *testContextWithCache) setupCache() {
 	tc.T.Helper()
 
-	// Create 10MB memory cache
-	tc.writeCache = cachememory.NewMemoryCache(10*1024*1024, nil)
+	// Create unlimited memory cache for write caching
+	// Write caches should NOT have size limits because:
+	// 1. Auto-eviction would discard unflushed data
+	// 2. COMMIT handler explicitly removes entries after flushing to storage
+	tc.writeCache = cachememory.NewMemoryCache(0, nil) // 0 = unlimited
 	tc.cacheName = "test-write-cache"
 }
 

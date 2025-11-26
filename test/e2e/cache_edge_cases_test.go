@@ -267,13 +267,6 @@ func TestConcurrentCommits(t *testing.T) {
 
 // TestPartialThenFinalCommit tests multipart session tracking across multiple COMMITs
 func TestPartialThenFinalCommit(t *testing.T) {
-	// SKIP: This test hangs due to lock contention in updateTotalCacheSize()
-	// during concurrent write operations. The deadlock occurs when multiple
-	// goroutines try to acquire locks on cache entries while updating total size.
-	// This is a pre-existing issue on both develop and feature branches.
-	// TODO: Re-enable after implementing non-blocking cache size tracking
-	t.Skip("Test hangs due to lock contention in updateTotalCacheSize()")
-
 	config := &TestConfig{
 		Name:          "badger-s3-partial",
 		MetadataStore: MetadataBadger,

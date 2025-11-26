@@ -78,11 +78,6 @@ func TestReadCacheWithWriteCache(t *testing.T) {
 
 // TestReadCacheLRUEviction tests that LRU eviction works properly
 func TestReadCacheLRUEviction(t *testing.T) {
-	// SKIP: Automatic LRU eviction is temporarily disabled to avoid lock contention
-	// during concurrent writes. See pkg/cache/memory/memory.go:ensureCacheSize()
-	// TODO: Re-enable this test after implementing non-blocking eviction strategy
-	t.Skip("Automatic LRU eviction temporarily disabled due to lock contention issues")
-
 	// Create test context with small cache size to force eviction
 	config := &TestConfig{
 		Name:          "memory-memory-with-small-read-cache",
