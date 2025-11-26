@@ -232,12 +232,10 @@ func (h *Handler) Rename(
 ) (*RenameResponse, error) {
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("RENAME cancelled before processing: from='%s' to='%s' client=%s error=%v",
 			req.FromName, req.ToName, ctx.ClientAddr, ctx.Context.Err())
 		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP for logging
@@ -324,8 +322,7 @@ func (h *Handler) Rename(
 	}
 
 	// Check for cancellation before destination directory lookup
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("RENAME cancelled before destination lookup: from='%s' to='%s' client=%s error=%v",
 			req.FromName, req.ToName, clientIP, ctx.Context.Err())
 
@@ -337,7 +334,6 @@ func (h *Handler) Rename(
 			FromDirWccBefore: fromDirWccBefore,
 			FromDirWccAfter:  fromDirWccAfter,
 		}, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================
@@ -402,8 +398,7 @@ func (h *Handler) Rename(
 	// Check for cancellation before the atomic rename operation
 	// This is the most critical check - we don't want to start the rename
 	// if the client has already disconnected
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("RENAME cancelled before rename operation: from='%s' to='%s' client=%s error=%v",
 			req.FromName, req.ToName, clientIP, ctx.Context.Err())
 
@@ -420,7 +415,6 @@ func (h *Handler) Rename(
 			ToDirWccBefore:   toDirWccBefore,
 			ToDirWccAfter:    toDirWccAfter,
 		}, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================

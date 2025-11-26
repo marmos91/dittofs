@@ -210,12 +210,10 @@ func (h *Handler) PathConf(
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("PATHCONF cancelled: handle=%x client=%s error=%v",
 			req.Handle, clientIP, ctx.Context.Err())
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	// ========================================================================
@@ -233,12 +231,10 @@ func (h *Handler) PathConf(
 	// ========================================================================
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("PATHCONF cancelled before GetFile: handle=%x client=%s error=%v",
 			req.Handle, clientIP, ctx.Context.Err())
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	metadataStore, err := h.getMetadataStore(ctx)
@@ -265,12 +261,10 @@ func (h *Handler) PathConf(
 	// that map directly to PATHCONF response fields
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("PATHCONF cancelled before GetCapabilities: handle=%x client=%s error=%v",
 			req.Handle, clientIP, ctx.Context.Err())
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	caps, err := metadataStore.GetFilesystemCapabilities(ctx.Context, fileHandle)

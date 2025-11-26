@@ -209,13 +209,10 @@ func (h *Handler) ReadLink(
 	// Check if the client has disconnected or the request has timed out
 	// before we start processing. While READLINK is fast, we should still
 	// respect cancellation to avoid wasted work on abandoned requests.
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("READLINK: request cancelled at entry: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
-		// Context not cancelled, continue processing
 	}
 
 	// Extract client IP for logging

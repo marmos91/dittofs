@@ -232,13 +232,10 @@ func (h *Handler) Read(
 	// ========================================================================
 	// Check if the client has disconnected or the request has timed out
 	// before we start any expensive operations.
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("READ: request cancelled at entry: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
-		// Context not cancelled, continue processing
 	}
 
 	// Extract client IP for logging
@@ -315,13 +312,10 @@ func (h *Handler) Read(
 	// Context Cancellation Check - After Metadata Lookup
 	// ========================================================================
 	// Check again before opening content (which may be expensive)
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("READ: request cancelled after metadata lookup: handle=%x client=%s",
 			req.Handle, clientIP)
 		return nil, ctx.Context.Err()
-	default:
-		// Context not cancelled, continue processing
 	}
 
 	// ========================================================================

@@ -213,12 +213,10 @@ func (h *Handler) Lookup(
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("LOOKUP cancelled: file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	// ========================================================================
@@ -249,12 +247,10 @@ func (h *Handler) Lookup(
 	// ========================================================================
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("LOOKUP cancelled before GetFile (dir): file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	dirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
@@ -314,8 +310,7 @@ func (h *Handler) Lookup(
 	// - Enforces any access control policies
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("LOOKUP cancelled before Lookup: file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
 
@@ -327,7 +322,6 @@ func (h *Handler) Lookup(
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			DirAttr:         nfsDirAttr,
 		}, nil
-	default:
 	}
 
 	childFile, err := metadataStore.Lookup(authCtx, dirHandle, req.Filename)

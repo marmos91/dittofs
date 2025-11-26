@@ -260,12 +260,10 @@ func (h *Handler) Symlink(
 ) (*SymlinkResponse, error) {
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("SYMLINK cancelled before processing: name='%s' target='%s' client=%s error=%v",
 			req.Name, req.Target, ctx.ClientAddr, ctx.Context.Err())
 		return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP for logging
@@ -337,8 +335,7 @@ func (h *Handler) Symlink(
 
 	// Check for cancellation before the create operation
 	// This is an important check since we're about to modify the filesystem
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("SYMLINK cancelled before create operation: name='%s' target='%s' client=%s error=%v",
 			req.Name, req.Target, clientIP, ctx.Context.Err())
 
@@ -350,7 +347,6 @@ func (h *Handler) Symlink(
 			DirAttrBefore:   wccBefore,
 			DirAttrAfter:    nfsDirAttr,
 		}, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================

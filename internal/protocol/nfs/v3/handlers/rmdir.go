@@ -222,12 +222,10 @@ func (h *Handler) Rmdir(
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("RMDIR cancelled: name='%s' dir=%x client=%s error=%v",
 			req.Name, req.DirHandle, clientIP, ctx.Context.Err())
 		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	// ========================================================================
@@ -259,12 +257,10 @@ func (h *Handler) Rmdir(
 	// ========================================================================
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("RMDIR cancelled before GetFile: name='%s' dir=%x client=%s error=%v",
 			req.Name, req.DirHandle, clientIP, ctx.Context.Err())
 		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	parentFile, err := metadataStore.GetFile(ctx.Context, parentHandle)
@@ -340,8 +336,7 @@ func (h *Handler) Rmdir(
 	// - Updating parent directory timestamps
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("RMDIR cancelled before RemoveDirectory: name='%s' dir=%x client=%s error=%v",
 			req.Name, req.DirHandle, clientIP, ctx.Context.Err())
 
@@ -355,7 +350,6 @@ func (h *Handler) Rmdir(
 			DirWccBefore:    wccBefore,
 			DirWccAfter:     wccAfter,
 		}, nil
-	default:
 	}
 
 	// Delegate to store for directory removal

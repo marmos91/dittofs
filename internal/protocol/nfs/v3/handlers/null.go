@@ -181,13 +181,10 @@ func (h *Handler) Null(
 	// While NULL is extremely fast, we should still respect cancellation to
 	// avoid wasting resources on abandoned requests (e.g., during server shutdown,
 	// load balancer health check timeouts, or client disconnects).
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("NULL: request cancelled: client=%s error=%v",
 			ctx.ClientAddr, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
-		// Context not cancelled, continue processing
 	}
 
 	// Extract client IP for logging

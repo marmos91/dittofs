@@ -202,12 +202,10 @@ func (h *Handler) Remove(
 ) (*RemoveResponse, error) {
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("REMOVE cancelled before processing: file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, ctx.ClientAddr, ctx.Context.Err())
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP for logging
@@ -271,8 +269,7 @@ func (h *Handler) Remove(
 	// Check for cancellation before the remove operation
 	// This is the most critical check - we don't want to start removing
 	// the file if the client has already disconnected
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("REMOVE cancelled before remove operation: file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
 
@@ -284,7 +281,6 @@ func (h *Handler) Remove(
 			DirWccBefore:    wccBefore,
 			DirWccAfter:     wccAfter,
 		}, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================

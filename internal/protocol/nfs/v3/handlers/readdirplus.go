@@ -293,12 +293,10 @@ func (h *Handler) ReadDirPlus(
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("READDIRPLUS cancelled: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, ctx.Context.Err())
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	// ========================================================================
@@ -316,12 +314,10 @@ func (h *Handler) ReadDirPlus(
 	// ========================================================================
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("READDIRPLUS cancelled before GetFile: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, ctx.Context.Err())
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	// ========================================================================
@@ -399,8 +395,7 @@ func (h *Handler) ReadDirPlus(
 	// We need to use Lookup for each entry to get handles and full attributes.
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("READDIRPLUS cancelled before ReadDirectory: dir=%x client=%s error=%v",
 			req.DirHandle, clientIP, ctx.Context.Err())
 
@@ -411,7 +406,6 @@ func (h *Handler) ReadDirPlus(
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			DirAttr:         nfsDirAttr,
 		}, nil
-	default:
 	}
 
 	// Convert cookie to string token for ReadDirectory pagination

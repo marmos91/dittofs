@@ -186,12 +186,10 @@ func (h *Handler) Access(
 ) (*AccessResponse, error) {
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("ACCESS cancelled before processing: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP for logging
@@ -244,12 +242,10 @@ func (h *Handler) Access(
 
 	// Check for cancellation before the permission check
 	// CheckPermissions may involve complex ACL evaluation, so it's worth checking here
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("ACCESS cancelled before permission check: handle=%x client=%s error=%v",
 			req.Handle, clientIP, ctx.Context.Err())
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================

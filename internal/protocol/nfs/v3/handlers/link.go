@@ -187,12 +187,10 @@ func (h *Handler) Link(
 	// LINK involves multiple operations, so respect cancellation to avoid
 	// wasting resources on abandoned requests
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("LINK cancelled: file=%x name='%s' client=%s error=%v",
 			req.FileHandle, req.Name, clientIP, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================
@@ -256,12 +254,10 @@ func (h *Handler) Link(
 	// Step 4: Check cancellation before first store operation
 	// ========================================================================
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("LINK cancelled before GetFile: file=%x name='%s' client=%s error=%v",
 			req.FileHandle, req.Name, clientIP, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================
@@ -286,12 +282,10 @@ func (h *Handler) Link(
 	// Step 6: Check cancellation before target directory lookup
 	// ========================================================================
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("LINK cancelled before directory lookup: file=%x name='%s' client=%s error=%v",
 			req.FileHandle, req.Name, clientIP, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================
@@ -328,12 +322,10 @@ func (h *Handler) Link(
 	// Step 8: Check cancellation before name conflict check
 	// ========================================================================
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("LINK cancelled before name check: file=%x name='%s' client=%s error=%v",
 			req.FileHandle, req.Name, clientIP, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================
@@ -364,12 +356,10 @@ func (h *Handler) Link(
 	// ========================================================================
 	// This is the most critical check as CreateHardLink modifies filesystem state
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("LINK cancelled before CreateHardLink: file=%x name='%s' client=%s error=%v",
 			req.FileHandle, req.Name, clientIP, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================

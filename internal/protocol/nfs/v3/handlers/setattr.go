@@ -274,13 +274,10 @@ func (h *Handler) SetAttr(
 	// Check if the client has disconnected or the request has timed out
 	// before we start any operations. This is especially important for
 	// SETATTR operations that may involve expensive content truncation.
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("SETATTR: request cancelled at entry: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
-		// Context not cancelled, continue processing
 	}
 
 	// Extract client IP for logging
@@ -363,13 +360,10 @@ func (h *Handler) SetAttr(
 	// Context Cancellation Check - After Metadata Lookup
 	// ========================================================================
 	// Check again after metadata lookup, before guard check and attribute update
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("SETATTR: request cancelled after metadata lookup: handle=%x client=%s",
 			req.Handle, clientIP)
 		return nil, ctx.Context.Err()
-	default:
-		// Context not cancelled, continue processing
 	}
 
 	// ========================================================================

@@ -292,12 +292,10 @@ func (h *Handler) Write(
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("WRITE cancelled: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	// ========================================================================
@@ -355,12 +353,10 @@ func (h *Handler) Write(
 	// ========================================================================
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("WRITE cancelled before GetFile: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
@@ -429,8 +425,7 @@ func (h *Handler) Write(
 	// Metadata is updated by CommitWrite after content write succeeds.
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("WRITE cancelled before PrepareWrite: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 
@@ -441,7 +436,6 @@ func (h *Handler) Write(
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			AttrAfter:       nfsAttr,
 		}, nil
-	default:
 	}
 
 	writeIntent, err := metadataStore.PrepareWrite(authCtx, fileHandle, newSize)
@@ -496,8 +490,7 @@ func (h *Handler) Write(
 	//   2. Direct mode (no cache): Write directly to content store
 
 	// Check context before write operation
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("WRITE cancelled before write: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 
@@ -509,7 +502,6 @@ func (h *Handler) Write(
 			AttrBefore:      nfsWccAttr,
 			AttrAfter:       nfsAttr,
 		}, nil
-	default:
 	}
 
 	if writeCache != nil {

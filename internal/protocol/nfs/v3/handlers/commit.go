@@ -272,12 +272,10 @@ func (h *Handler) Commit(
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("COMMIT cancelled: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	// ========================================================================
@@ -307,12 +305,10 @@ func (h *Handler) Commit(
 	// ========================================================================
 
 	// Check context before store call
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("COMMIT cancelled before GetFile: handle=%x client=%s error=%v",
 			req.Handle, clientIP, ctx.Context.Err())
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	default:
 	}
 
 	file, err := store.GetFile(ctx.Context, handle)
@@ -345,8 +341,7 @@ func (h *Handler) Commit(
 	// ========================================================================
 
 	// Check context before potentially long flush operation
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Warn("COMMIT cancelled before flush: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 
@@ -362,7 +357,6 @@ func (h *Handler) Commit(
 			AttrBefore:      wccBefore,
 			AttrAfter:       wccAfter,
 		}, nil
-	default:
 	}
 
 	// Get write cache for this share (may be nil if sync mode)

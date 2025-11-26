@@ -235,12 +235,10 @@ func (h *Handler) ReadDir(
 ) (*ReadDirResponse, error) {
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("READDIR cancelled before processing: dir=%x client=%s error=%v",
 			req.DirHandle, ctx.ClientAddr, ctx.Context.Err())
 		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP for logging
@@ -343,8 +341,7 @@ func (h *Handler) ReadDir(
 	// Check for cancellation before the potentially expensive ReadDir operation
 	// This is the most important check since ReadDir may scan many entries
 	// in large directories
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("READDIR cancelled before reading entries: dir=%x cookie=%d client=%s error=%v",
 			req.DirHandle, req.Cookie, clientIP, ctx.Context.Err())
 
@@ -356,7 +353,6 @@ func (h *Handler) ReadDir(
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			DirAttr:         nfsDirAttr,
 		}, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================

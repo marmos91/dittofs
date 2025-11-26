@@ -150,12 +150,10 @@ func (h *Handler) GetAttr(
 	// This is the only pre-operation check for GETATTR to minimize overhead
 	// GETATTR is one of the most frequently called procedures, so we optimize
 	// for the common case of no cancellation
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("GETATTR cancelled before processing: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP for logging

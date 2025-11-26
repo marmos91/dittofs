@@ -167,12 +167,10 @@ func (h *Handler) FsInfo(
 	// Check for context cancellation before starting any work
 	// FSINFO is lightweight, but we respect cancellation to prevent
 	// wasting resources on abandoned requests
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("FSINFO cancelled: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
 	}
 
 	// Validate file handle before using it
@@ -195,12 +193,10 @@ func (h *Handler) FsInfo(
 
 	// Check for cancellation before store call
 	// store operations might involve I/O or locks
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("FSINFO cancelled before GetFile: handle=%x client=%s error=%v",
 			req.Handle, ctx.ClientAddr, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
 	}
 
 	// Verify the file handle exists and is valid in the store

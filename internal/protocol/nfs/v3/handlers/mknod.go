@@ -243,13 +243,10 @@ func (h *Handler) Mknod(
 	// Check if the client has disconnected or the request has timed out
 	// before we start processing. While MKNOD is typically fast (metadata only),
 	// we should still respect cancellation to avoid wasted work.
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("MKNOD: request cancelled at entry: name='%s' dir=%x client=%s error=%v",
 			req.Name, req.DirHandle, ctx.ClientAddr, ctx.Context.Err())
 		return nil, ctx.Context.Err()
-	default:
-		// Context not cancelled, continue processing
 	}
 
 	// Extract client IP for logging
@@ -364,13 +361,10 @@ func (h *Handler) Mknod(
 	// Context Cancellation Check - After Parent Lookup
 	// ========================================================================
 	// Check again after parent verification, before child operations
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("MKNOD: request cancelled after parent lookup: name='%s' dir=%x client=%s",
 			req.Name, req.DirHandle, clientIP)
 		return nil, ctx.Context.Err()
-	default:
-		// Context not cancelled, continue processing
 	}
 
 	// ========================================================================

@@ -202,12 +202,10 @@ func (h *Handler) Mkdir(
 ) (*MkdirResponse, error) {
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("MKDIR cancelled before processing: name='%s' dir=%x client=%s error=%v",
 			req.Name, req.DirHandle, ctx.ClientAddr, ctx.Context.Err())
 		return &MkdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP for logging
@@ -317,8 +315,7 @@ func (h *Handler) Mkdir(
 
 	// Check for cancellation before the existence check
 	// Lookup may involve directory scanning which can be expensive
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("MKDIR cancelled before existence check: name='%s' dir=%x client=%s error=%v",
 			req.Name, req.DirHandle, clientIP, ctx.Context.Err())
 
@@ -330,7 +327,6 @@ func (h *Handler) Mkdir(
 			WccBefore:       wccBefore,
 			WccAfter:        wccAfter,
 		}, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================
@@ -376,8 +372,7 @@ func (h *Handler) Mkdir(
 	// Check for cancellation before the create operation
 	// This is the most critical check - we don't want to start creating
 	// the directory if the client has already disconnected
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("MKDIR cancelled before create operation: name='%s' dir=%x client=%s error=%v",
 			req.Name, req.DirHandle, clientIP, ctx.Context.Err())
 
@@ -391,7 +386,6 @@ func (h *Handler) Mkdir(
 			WccBefore:       wccBefore,
 			WccAfter:        wccAfter,
 		}, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================

@@ -145,12 +145,10 @@ func (h *Handler) Create(
 ) (*CreateResponse, error) {
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("CREATE cancelled before processing: file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, ctx.ClientAddr, ctx.Context.Err())
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-	default:
 	}
 
 	// Extract client IP for logging
@@ -256,12 +254,10 @@ func (h *Handler) Create(
 
 	// Check for cancellation before the existence check
 	// This is important because Lookup may involve directory scanning
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("CREATE cancelled before existence check: file='%s' dir=%x client=%s error=%v",
 			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================
@@ -281,12 +277,10 @@ func (h *Handler) Create(
 
 	// Check for cancellation before the potentially expensive create/truncate operations
 	// This is critical because these operations modify state
-	select {
-	case <-ctx.Context.Done():
+	if ctx.isContextCancelled() {
 		logger.Debug("CREATE cancelled before file operation: file='%s' dir=%x exists=%v client=%s error=%v",
 			req.Filename, req.DirHandle, fileExists, clientIP, ctx.Context.Err())
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
-	default:
 	}
 
 	// ========================================================================
