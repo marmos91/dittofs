@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
@@ -374,10 +375,6 @@ func (h *Handler) Commit(
 		// Async mode: flush cache to content store
 		logger.Debug("COMMIT: async mode, flushing cache to content store")
 
-		// Determine if this is a final commit for the entire file
-		// This affects flush strategy for non-incremental stores
-		isFinalCommit := isFullFileCommit(&file.FileAttr, req)
-
 		// Get content store for this share
 		contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
 		if err != nil {
@@ -386,356 +383,23 @@ func (h *Handler) Commit(
 			return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 		}
 
-		// Check if content store supports incremental writes (S3)
-		incStore, supportsIncremental := contentStore.(content.IncrementalWriteStore)
+		// Flush cache to content store
+		// Content store decides implementation strategy (incremental, direct, etc.)
+		flushErr := flushCacheToContentStore(ctx, h, ctx.Share, writeCache, contentStore, file, req)
+		if flushErr != nil {
+			logger.Error("COMMIT failed: flush error: handle=%x content_id=%s client=%s error=%v",
+				req.Handle, file.ContentID, clientIP, flushErr)
 
-		if supportsIncremental {
-			// ================================================================
-			// INCREMENTAL FLUSH PATH (S3 multipart uploads)
-			// ================================================================
-			// This path uploads data incrementally during partial COMMITs
-			// to avoid timeouts and S3 size limits for large files.
-			//
-			// Strategy:
-			//   - Small files committed in single operation (< 5MB, no multipart session): Use PutObject (1 API call)
-			//   - Large files or files requiring multiple COMMITs: Use multipart upload
-			//
-			// This optimization eliminates CreateMultipartUpload + CompleteMultipartUpload
-			// overhead for small files, reducing latency by ~300ms per file.
-
-			// Acquire per-file lock to prevent race conditions with concurrent COMMITs
-			// Multiple COMMIT operations can run in parallel (due to goroutine-per-request),
-			// but operations on the same file must be serialized to avoid session conflicts.
-			fileLock := h.acquireFileLock(file.ContentID)
-			defer h.releaseFileLock(fileLock)
-
-			// Check if incremental write session exists
-			state := incStore.GetIncrementalWriteState(file.ContentID)
-
-			// Optimization: Use direct PutObject for small files committed in single operation
-			const smallFileThreshold = 5 * 1024 * 1024 // 5MB (S3 multipart minimum)
-			usedPutObject := false
-
-			if state == nil && isFinalCommit {
-				// No multipart session exists yet, and this is a final COMMIT
-				// Check if we can use direct PutObject instead of multipart
-
-				// Read data from cache
-				data, err := writeCache.Read(ctx.Context, file.ContentID)
-				if err != nil {
-					logger.Error("COMMIT failed: cache read error: handle=%x content_id=%s client=%s error=%v",
-						req.Handle, file.ContentID, clientIP, err)
-
-					var wccAfter *types.NFSFileAttr
-					if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-						wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
-					}
-
-					return &CommitResponse{
-						NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-						AttrBefore:      wccBefore,
-						AttrAfter:       wccAfter,
-					}, nil
-				}
-
-				if len(data) < smallFileThreshold {
-					// Small file - use direct PutObject (single API call, faster)
-					logger.Debug("COMMIT: small file (%d bytes), using direct PutObject: content_id=%s", len(data), file.ContentID)
-
-					err = contentStore.WriteContent(ctx.Context, file.ContentID, data)
-					if err != nil {
-						logger.Error("COMMIT failed: PutObject error: handle=%x content_id=%s size=%d client=%s error=%v",
-							req.Handle, file.ContentID, len(data), clientIP, err)
-
-						var wccAfter *types.NFSFileAttr
-						if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-							wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
-						}
-
-						return &CommitResponse{
-							NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-							AttrBefore:      wccBefore,
-							AttrAfter:       wccAfter,
-						}, nil
-					}
-
-					// Populate read cache after successful write to content store
-					// This makes the file immediately available for fast reads
-					readCache, rcErr := h.Registry.GetReadCacheForShare(ctx.Share)
-					if rcErr != nil {
-						logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", ctx.Share, rcErr)
-					} else if readCache != nil && len(data) > 0 {
-						// Only cache small to medium files (< 10MB) to avoid thrashing
-						const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
-						if len(data) <= maxReadCacheSize {
-							rcErr = readCache.Write(ctx.Context, file.ContentID, data)
-							if rcErr != nil {
-								logger.Warn("COMMIT: failed to populate read cache: content_id=%s size=%d error=%v",
-									file.ContentID, len(data), rcErr)
-							} else {
-								logger.Debug("COMMIT: populated read cache: content_id=%s size=%d",
-									file.ContentID, len(data))
-							}
-						}
-					}
-
-					// Clean write cache after successful write
-					err = writeCache.Remove(file.ContentID)
-					if err != nil {
-						logger.Warn("COMMIT: cache cleanup failed: content_id=%s error=%v", file.ContentID, err)
-					}
-
-					logger.Info("COMMIT: wrote small file via PutObject: content_id=%s size=%d",
-						file.ContentID, len(data))
-
-					usedPutObject = true
-				} else {
-					// Large file (>= 5MB) - must use multipart upload
-					// Fall through to standard multipart path below
-					logger.Debug("COMMIT: large file (%d bytes), using multipart upload: content_id=%s", len(data), file.ContentID)
-				}
+			var wccAfter *types.NFSFileAttr
+			if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
+				wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 			}
 
-			// Standard multipart upload path (for large files or files with existing sessions)
-			if !usedPutObject && state == nil {
-				// Start new session (handles both first partial commit and immediate final commit)
-				uploadID, err := incStore.BeginIncrementalWrite(ctx.Context, file.ContentID)
-				if err != nil {
-					logger.Error("COMMIT failed: cannot begin incremental write: handle=%x content_id=%s client=%s error=%v",
-						req.Handle, file.ContentID, clientIP, err)
-
-					var wccAfter *types.NFSFileAttr
-					if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-						wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
-					}
-
-					return &CommitResponse{
-						NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-						AttrBefore:      wccBefore,
-						AttrAfter:       wccAfter,
-					}, nil
-				}
-
-				logger.Debug("COMMIT: began incremental write: content_id=%s upload_id=%s", file.ContentID, uploadID)
-			}
-
-			// Multipart upload logic (skip if we used PutObject)
-			if !usedPutObject {
-				// Read data from cache
-				data, err := writeCache.Read(ctx.Context, file.ContentID)
-				if err != nil {
-					logger.Error("COMMIT failed: cache read error: handle=%x content_id=%s client=%s error=%v",
-						req.Handle, file.ContentID, clientIP, err)
-
-					// Abort incremental write on error
-					_ = incStore.AbortIncrementalWrite(ctx.Context, file.ContentID)
-
-					var wccAfter *types.NFSFileAttr
-					if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-						wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
-					}
-
-					return &CommitResponse{
-						NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-						AttrBefore:      wccBefore,
-						AttrAfter:       wccAfter,
-					}, nil
-				}
-
-				// Flush incremental (uploads parts if enough data accumulated)
-				flushed, err := incStore.FlushIncremental(ctx.Context, file.ContentID, data)
-				if err != nil {
-					logger.Error("COMMIT failed: incremental flush error: handle=%x content_id=%s client=%s error=%v",
-						req.Handle, file.ContentID, clientIP, err)
-
-					// Abort incremental write on error
-					_ = incStore.AbortIncrementalWrite(ctx.Context, file.ContentID)
-
-					var wccAfter *types.NFSFileAttr
-					if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-						wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
-					}
-
-					return &CommitResponse{
-						NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-						AttrBefore:      wccBefore,
-						AttrAfter:       wccAfter,
-					}, nil
-				}
-
-				if flushed > 0 {
-					logger.Info("COMMIT: flushed %d bytes incrementally: content_id=%s buffered=%d",
-						flushed, file.ContentID, len(data)-int(flushed))
-				}
-
-				// If this is the final commit, complete the multipart upload
-				if isFinalCommit {
-					logger.Debug("COMMIT: final commit, completing incremental write: content_id=%s", file.ContentID)
-
-					// Complete incremental write (uploads any remaining buffered data + finalizes)
-					err = incStore.CompleteIncrementalWrite(ctx.Context, file.ContentID)
-					if err != nil {
-						logger.Error("COMMIT failed: incremental write completion error: handle=%x content_id=%s client=%s error=%v",
-							req.Handle, file.ContentID, clientIP, err)
-
-						// Abort the multipart upload on error
-						_ = incStore.AbortIncrementalWrite(ctx.Context, file.ContentID)
-
-						var wccAfter *types.NFSFileAttr
-						if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-							wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
-						}
-
-						return &CommitResponse{
-							NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-							AttrBefore:      wccBefore,
-							AttrAfter:       wccAfter,
-						}, nil
-					}
-
-					// Get final state for logging
-					finalState := incStore.GetIncrementalWriteState(file.ContentID)
-					if finalState != nil {
-						logger.Info("COMMIT: completed incremental write: content_id=%s total_flushed=%d parts=%d",
-							file.ContentID, finalState.TotalFlushed, finalState.CurrentPartNumber-1)
-					} else {
-						logger.Info("COMMIT: completed incremental write: content_id=%s size=%d",
-							file.ContentID, len(data))
-					}
-
-					// Populate read cache after successful write to content store
-					// For multipart uploads, we populate the cache from the write cache data
-					readCache, rcErr := h.Registry.GetReadCacheForShare(ctx.Share)
-					if rcErr != nil {
-						logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", ctx.Share, rcErr)
-					} else if readCache != nil && len(data) > 0 {
-						// Only cache small to medium files (< 10MB) to avoid thrashing
-						const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
-						if len(data) <= maxReadCacheSize {
-							rcErr = readCache.Write(ctx.Context, file.ContentID, data)
-							if rcErr != nil {
-								logger.Warn("COMMIT: failed to populate read cache: content_id=%s size=%d error=%v",
-									file.ContentID, len(data), rcErr)
-							} else {
-								logger.Debug("COMMIT: populated read cache: content_id=%s size=%d",
-									file.ContentID, len(data))
-							}
-						}
-					}
-
-					// Clean cache after successful flush
-					err = writeCache.Remove(file.ContentID)
-					if err != nil {
-						logger.Warn("COMMIT: cache cleanup failed: content_id=%s error=%v", file.ContentID, err)
-					}
-				} else {
-					// Partial commit - keep session open for next commit
-					logger.Debug("COMMIT: partial commit, keeping session open: content_id=%s buffered=%d",
-						file.ContentID, len(data)-int(flushed))
-				}
-			}
-
-		} else {
-			// ================================================================
-			// INCREMENTAL FLUSH PATH (filesystem, memory stores)
-			// ================================================================
-			// For non-incremental stores, we still flush incrementally by:
-			// 1. Checking what's already in content store
-			// 2. Flushing only NEW bytes from cache using WriteAt()
-			//
-			// This is efficient and handles concurrent WRITEs correctly.
-
-			cacheSize := writeCache.Size(file.ContentID)
-			if cacheSize > 0 {
-				// Check how much is already committed to content store
-				var contentSize int64
-				contentSizeU64, err := contentStore.GetContentSize(ctx.Context, file.ContentID)
-				if errors.Is(err, content.ErrContentNotFound) {
-					// Content doesn't exist yet in content store - this is normal for first COMMIT
-					contentSize = 0
-				} else if err != nil {
-					// Actual error accessing content store
-					logger.Error("COMMIT failed: cannot check content store size: handle=%x content_id=%s client=%s error=%v",
-						req.Handle, file.ContentID, clientIP, err)
-					return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-				} else {
-					// Success - convert to int64
-					contentSize = int64(contentSizeU64)
-				}
-
-				// Calculate how many new bytes to flush
-				bytesToFlush := cacheSize - contentSize
-				if bytesToFlush > 0 {
-					logger.Debug("COMMIT: flushing %d new bytes (cache=%d, content_store=%d): content_id=%s",
-						bytesToFlush, cacheSize, contentSize, file.ContentID)
-
-					// Read only the new bytes from cache
-					buf := make([]byte, bytesToFlush)
-					n, err := writeCache.ReadAt(ctx.Context, file.ContentID, buf, contentSize)
-					if err != nil && err != io.EOF {
-						logger.Error("COMMIT failed: cache read error: handle=%x content_id=%s offset=%d client=%s error=%v",
-							req.Handle, file.ContentID, contentSize, clientIP, err)
-						return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-					}
-
-					// Write new bytes to content store at the correct offset
-					err = contentStore.WriteAt(ctx.Context, file.ContentID, buf[:n], contentSize)
-					if err != nil {
-						logger.Error("COMMIT failed: content store write error: handle=%x content_id=%s offset=%d size=%d client=%s error=%v",
-							req.Handle, file.ContentID, contentSize, n, clientIP, err)
-						return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-					}
-
-					logger.Info("COMMIT: flushed %d bytes to content store at offset %d: content_id=%s",
-						n, contentSize, file.ContentID)
-				} else {
-					logger.Debug("COMMIT: no new bytes to flush (cache=%d, content_store=%d): content_id=%s",
-						cacheSize, contentSize, file.ContentID)
-				}
-
-				// Clean up cache if this is the final COMMIT
-				// Final COMMIT is one that reaches EOF: count=0 OR offset+count >= fileSize
-				isFinalCommit := req.Count == 0 || req.Offset+uint64(req.Count) >= file.Size
-				if isFinalCommit && cacheSize >= int64(file.Size) {
-					// Populate read cache before cleaning write cache
-					// This makes the file immediately available for fast reads
-					readCache, rcErr := h.Registry.GetReadCacheForShare(ctx.Share)
-					if rcErr != nil {
-						logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", ctx.Share, rcErr)
-					} else if readCache != nil && cacheSize > 0 {
-						// Only cache small to medium files (< 10MB) to avoid thrashing
-						const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
-						if cacheSize <= maxReadCacheSize {
-							// Read all data from write cache
-							cachedData, rcErr := writeCache.Read(ctx.Context, file.ContentID)
-							if rcErr != nil {
-								logger.Warn("COMMIT: failed to read from write cache for read cache population: content_id=%s error=%v",
-									file.ContentID, rcErr)
-							} else if len(cachedData) > 0 {
-								// Write to read cache
-								rcErr = readCache.Write(ctx.Context, file.ContentID, cachedData)
-								if rcErr != nil {
-									logger.Warn("COMMIT: failed to populate read cache: content_id=%s size=%d error=%v",
-										file.ContentID, len(cachedData), rcErr)
-								} else {
-									logger.Debug("COMMIT: populated read cache: content_id=%s size=%d",
-										file.ContentID, len(cachedData))
-								}
-							}
-						}
-					}
-
-					err = writeCache.Remove(file.ContentID)
-					if err != nil {
-						logger.Warn("COMMIT: cache cleanup failed: content_id=%s error=%v", file.ContentID, err)
-					} else {
-						logger.Debug("COMMIT: cleaned cache after final commit: content_id=%s", file.ContentID)
-					}
-				}
-			} else {
-				// No data in cache yet - this is okay, file might be empty or writes haven't started
-				logger.Debug("COMMIT: no data in cache yet: content_id=%s", file.ContentID)
-			}
+			return &CommitResponse{
+				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+				AttrBefore:      wccBefore,
+				AttrAfter:       wccAfter,
+			}, nil
 		}
 	}
 
@@ -766,6 +430,284 @@ func (h *Handler) Commit(
 		AttrAfter:       wccAfter,
 		WriteVerifier:   serverBootTime,
 	}, nil
+}
+
+// ============================================================================
+// Commit Helper Functions
+// ============================================================================
+
+// populateReadCacheAfterCommit populates the read cache after a successful commit.
+// Only populates for small to medium files to avoid cache thrashing.
+//
+// Parameters:
+//   - ctx: Handler context
+//   - h: Handler with registry access
+//   - share: Share name
+//   - contentID: Content identifier
+//   - data: Data that was committed
+//   - handle: File handle for logging
+func populateReadCacheAfterCommit(
+	ctx *NFSHandlerContext,
+	h *Handler,
+	share string,
+	contentID metadata.ContentID,
+	data []byte,
+	handle []byte,
+) {
+	readCache, err := h.Registry.GetReadCacheForShare(share)
+	if err != nil {
+		logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", share, err)
+		return
+	}
+
+	if readCache == nil || len(data) == 0 {
+		return // No cache configured or no data to cache
+	}
+
+	// Only cache small to medium files (< 10MB) to avoid thrashing
+	const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
+	if len(data) > maxReadCacheSize {
+		return
+	}
+
+	err = readCache.Write(ctx.Context, contentID, data)
+	if err != nil {
+		logger.Warn("COMMIT: failed to populate read cache: content_id=%s size=%d error=%v",
+			contentID, len(data), err)
+	} else {
+		logger.Debug("COMMIT: populated read cache: content_id=%s size=%d",
+			contentID, len(data))
+	}
+}
+
+// flushCacheToContentStore flushes the write cache to the content store.
+// This is implementation-agnostic - the content store decides its own strategy.
+//
+// Strategy selection is delegated to the content store implementation:
+//   - Incremental stores (S3): Use BeginIncrementalWrite/FlushIncremental/CompleteIncrementalWrite
+//   - Non-incremental stores (filesystem, memory): Use WriteAt for new bytes only
+//
+// Parameters:
+//   - ctx: Handler context
+//   - h: Handler with registry access
+//   - share: Share name
+//   - writeCache: Write cache to read from
+//   - contentStore: Content store to write to
+//   - file: File metadata
+//   - req: Commit request
+//   - clientIP: Client IP for logging
+//
+// Returns:
+//   - error: Error if flush failed
+func flushCacheToContentStore(
+	ctx *NFSHandlerContext,
+	h *Handler,
+	share string,
+	writeCache cache.Cache,
+	contentStore content.ContentStore,
+	file *metadata.File,
+	req *CommitRequest,
+) error {
+	// Check if content store supports incremental writes
+	if incStore, ok := contentStore.(content.IncrementalWriteStore); ok {
+		return flushIncremental(ctx, h, share, writeCache, incStore, file, req)
+	}
+
+	// Fallback: non-incremental store (filesystem, memory)
+	return flushNonIncremental(ctx, h, share, writeCache, contentStore, file, req)
+}
+
+// flushIncremental handles flushing to stores that support incremental writes.
+// Uses the IncrementalWriteStore interface for efficient streaming uploads.
+func flushIncremental(
+	ctx *NFSHandlerContext,
+	h *Handler,
+	share string,
+	writeCache cache.Cache,
+	incStore content.IncrementalWriteStore,
+	file *metadata.File,
+	req *CommitRequest,
+) error {
+	contentID := file.ContentID
+	isFinalCommit := isFullFileCommit(&file.FileAttr, req)
+
+	// Acquire per-file lock to serialize concurrent commits to same file
+	// This prevents race conditions with multipart upload sessions
+	fileLock := h.acquireFileLock(contentID)
+	defer h.releaseFileLock(fileLock)
+
+	// Check if incremental write session exists
+	state := incStore.GetIncrementalWriteState(contentID)
+
+	// Start new session if needed
+	if state == nil {
+		uploadID, err := incStore.BeginIncrementalWrite(ctx.Context, contentID)
+		if err != nil {
+			return fmt.Errorf("cannot begin incremental write: %w", err)
+		}
+		logger.Debug("COMMIT: began incremental write: content_id=%s upload_id=%s", contentID, uploadID)
+	}
+
+	// Read data from cache
+	data, err := writeCache.Read(ctx.Context, contentID)
+	if err != nil {
+		// Abort incremental write on error
+		_ = incStore.AbortIncrementalWrite(ctx.Context, contentID)
+		return fmt.Errorf("cache read error: %w", err)
+	}
+
+	// Flush incremental (content store decides when to upload parts)
+	flushed, err := incStore.FlushIncremental(ctx.Context, contentID, data)
+	if err != nil {
+		// Abort incremental write on error
+		_ = incStore.AbortIncrementalWrite(ctx.Context, contentID)
+		return fmt.Errorf("incremental flush error: %w", err)
+	}
+
+	if flushed > 0 {
+		logger.Info("COMMIT: flushed %d bytes incrementally: content_id=%s buffered=%d",
+			flushed, contentID, len(data)-int(flushed))
+	}
+
+	// Complete write if this is the final commit
+	if isFinalCommit {
+		logger.Debug("COMMIT: final commit, completing incremental write: content_id=%s", contentID)
+
+		err = incStore.CompleteIncrementalWrite(ctx.Context, contentID)
+		if err != nil {
+			// Abort the upload on error
+			_ = incStore.AbortIncrementalWrite(ctx.Context, contentID)
+			return fmt.Errorf("incremental write completion error: %w", err)
+		}
+
+		logger.Info("COMMIT: completed incremental write: content_id=%s", contentID)
+
+		// Populate read cache after successful write
+		populateReadCacheAfterCommit(ctx, h, share, contentID, data, req.Handle)
+
+		// Clean cache after successful flush
+		err = writeCache.Remove(contentID)
+		if err != nil {
+			logger.Warn("COMMIT: cache cleanup failed: content_id=%s error=%v", contentID, err)
+		}
+	} else {
+		// Partial commit - keep session open for next commit
+		logger.Debug("COMMIT: partial commit, keeping session open: content_id=%s buffered=%d",
+			contentID, len(data)-int(flushed))
+	}
+
+	return nil
+}
+
+// flushNonIncremental handles flushing to stores that don't support incremental writes.
+// This includes filesystem and memory stores.
+//
+// Strategy:
+//  1. Check what's already in content store
+//  2. Flush only NEW bytes from cache using WriteAt()
+//
+// This is efficient and handles concurrent WRITEs correctly.
+//
+// Parameters:
+//   - ctx: Handler context
+//   - h: Handler with registry access
+//   - share: Share name
+//   - writeCache: Write cache to read from
+//   - contentStore: Content store to write to
+//   - file: File metadata for size checks
+//   - req: Commit request for final commit detection
+//
+// Returns:
+//   - error: Error if flush failed
+func flushNonIncremental(
+	ctx *NFSHandlerContext,
+	h *Handler,
+	share string,
+	writeCache cache.Cache,
+	contentStore content.ContentStore,
+	file *metadata.File,
+	req *CommitRequest,
+) error {
+	contentID := file.ContentID
+	cacheSize := writeCache.Size(contentID)
+	if cacheSize == 0 {
+		// No data in cache yet - this is okay, file might be empty or writes haven't started
+		logger.Debug("COMMIT: no data in cache yet: content_id=%s", contentID)
+		return nil
+	}
+
+	// Check how much is already committed to content store
+	var contentSize int64
+	contentSizeU64, err := contentStore.GetContentSize(ctx.Context, contentID)
+	if errors.Is(err, content.ErrContentNotFound) {
+		// Content doesn't exist yet in content store - this is normal for first COMMIT
+		contentSize = 0
+	} else if err != nil {
+		// Actual error accessing content store
+		return fmt.Errorf("cannot check content store size: %w", err)
+	} else {
+		// Success - convert to int64
+		contentSize = int64(contentSizeU64)
+	}
+
+	// Calculate how many new bytes to flush
+	bytesToFlush := cacheSize - contentSize
+	if bytesToFlush > 0 {
+		logger.Debug("COMMIT: flushing %d new bytes (cache=%d, content_store=%d): content_id=%s",
+			bytesToFlush, cacheSize, contentSize, contentID)
+
+		// Read only the new bytes from cache
+		buf := make([]byte, bytesToFlush)
+		n, err := writeCache.ReadAt(ctx.Context, contentID, buf, contentSize)
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("cache read error: %w", err)
+		}
+
+		// Write new bytes to content store at the correct offset
+		err = contentStore.WriteAt(ctx.Context, contentID, buf[:n], contentSize)
+		if err != nil {
+			return fmt.Errorf("content store write error: %w", err)
+		}
+
+		logger.Info("COMMIT: flushed %d bytes to content store at offset %d: content_id=%s",
+			n, contentSize, contentID)
+	} else {
+		logger.Debug("COMMIT: no new bytes to flush (cache=%d, content_store=%d): content_id=%s",
+			cacheSize, contentSize, contentID)
+	}
+
+	// Clean up cache if this is the final COMMIT
+	isFinalCommit := req.Count == 0 || req.Offset+uint64(req.Count) >= file.Size
+	if isFinalCommit && cacheSize >= int64(file.Size) {
+		// Populate read cache before cleaning write cache
+		readCache, rcErr := h.Registry.GetReadCacheForShare(share)
+		if rcErr != nil {
+			logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", share, rcErr)
+		} else if readCache != nil && cacheSize > 0 {
+			// Only cache small to medium files (< 10MB) to avoid thrashing
+			const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
+			if cacheSize <= maxReadCacheSize {
+				// Read all data from write cache
+				cachedData, rcErr := writeCache.Read(ctx.Context, contentID)
+				if rcErr != nil {
+					logger.Warn("COMMIT: failed to read from write cache for read cache population: content_id=%s error=%v",
+						contentID, rcErr)
+				} else if len(cachedData) > 0 {
+					// Populate read cache
+					populateReadCacheAfterCommit(ctx, h, share, contentID, cachedData, req.Handle)
+				}
+			}
+		}
+
+		err = writeCache.Remove(contentID)
+		if err != nil {
+			logger.Warn("COMMIT: cache cleanup failed: content_id=%s error=%v", contentID, err)
+		} else {
+			logger.Debug("COMMIT: cleaned cache after final commit: content_id=%s", contentID)
+		}
+	}
+
+	return nil
 }
 
 // ============================================================================
