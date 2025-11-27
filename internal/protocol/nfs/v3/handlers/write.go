@@ -9,6 +9,8 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -441,40 +443,11 @@ func (h *Handler) Write(
 		logger.Warn("WRITE failed: PrepareWrite error: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, len(req.Data), clientIP, err)
 
-		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
-
-		// Build WCC attributes from current state
-		nfsWccAttr := &types.WccAttr{
-			Size: file.Size,
-			Mtime: types.TimeVal{
-				Seconds:  uint32(file.Mtime.Unix()),
-				Nseconds: uint32(file.Mtime.Nanosecond()),
-			},
-			Ctime: types.TimeVal{
-				Seconds:  uint32(file.Ctime.Unix()),
-				Nseconds: uint32(file.Ctime.Nanosecond()),
-			},
-		}
-
-		return &WriteResponse{
-			NFSResponseBase: NFSResponseBase{Status: status},
-			AttrBefore:      nfsWccAttr,
-			AttrAfter:       nfsAttr,
-		}, nil
+		return h.buildWriteErrorResponse(status, fileHandle, &file.FileAttr, &file.FileAttr), nil
 	}
 
 	// Build WCC attributes from pre-write state
-	nfsWccAttr := &types.WccAttr{
-		Size: writeIntent.PreWriteAttr.Size,
-		Mtime: types.TimeVal{
-			Seconds:  uint32(writeIntent.PreWriteAttr.Mtime.Unix()),
-			Nseconds: uint32(writeIntent.PreWriteAttr.Mtime.Nanosecond()),
-		},
-		Ctime: types.TimeVal{
-			Seconds:  uint32(writeIntent.PreWriteAttr.Ctime.Unix()),
-			Nseconds: uint32(writeIntent.PreWriteAttr.Ctime.Nanosecond()),
-		},
-	}
+	nfsWccAttr := buildWccAttr(writeIntent.PreWriteAttr)
 
 	// ========================================================================
 	// Step 6: Write data to cache or content store
@@ -488,58 +461,19 @@ func (h *Handler) Write(
 		logger.Warn("WRITE cancelled before write: handle=%x offset=%d count=%d client=%s error=%v",
 			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
 
-		nfsAttr := h.convertFileAttrToNFS(fileHandle, writeIntent.PreWriteAttr)
-
-		return &WriteResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-			AttrBefore:      nfsWccAttr,
-			AttrAfter:       nfsAttr,
-		}, nil
+		return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
 
-	if writeCache != nil {
-		// CACHED MODE: Write to cache
-		logger.Debug("WRITE: cached mode: content_id=%s offset=%d count=%d",
-			writeIntent.ContentID, req.Offset, len(req.Data))
-
-		err = writeCache.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, int64(req.Offset))
-		if err != nil {
-			logger.Error("WRITE failed: cache write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
-				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
-
-			nfsAttr := h.convertFileAttrToNFS(fileHandle, writeIntent.PreWriteAttr)
-
-			return &WriteResponse{
-				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-				AttrBefore:      nfsWccAttr,
-				AttrAfter:       nfsAttr,
-			}, nil
+	// Write to storage (cache or direct)
+	err = writeToStorage(ctx, writeCache, contentStore, writeIntent.ContentID, req.Data, req.Offset, clientIP, req.Handle)
+	if err != nil {
+		var status uint32 = types.NFS3ErrIO
+		// Map content store errors to appropriate NFS status
+		if writeCache == nil {
+			status = xdr.MapContentErrorToNFSStatus(err)
 		}
 
-		logger.Debug("WRITE: cached successfully: content_id=%s cache_size=%d",
-			writeIntent.ContentID, writeCache.Size(writeIntent.ContentID))
-	} else {
-		// DIRECT MODE: Write directly to content store
-		logger.Debug("WRITE: direct mode: content_id=%s offset=%d count=%d",
-			writeIntent.ContentID, req.Offset, len(req.Data))
-
-		err = contentStore.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, int64(req.Offset))
-		if err != nil {
-			logger.Error("WRITE failed: content write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
-				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
-
-			nfsAttr := h.convertFileAttrToNFS(fileHandle, writeIntent.PreWriteAttr)
-
-			status := xdr.MapContentErrorToNFSStatus(err)
-
-			return &WriteResponse{
-				NFSResponseBase: NFSResponseBase{Status: status},
-				AttrBefore:      nfsWccAttr,
-				AttrAfter:       nfsAttr,
-			}, nil
-		}
-
-		logger.Debug("WRITE: direct write successful: content_id=%s", writeIntent.ContentID)
+		return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
 
 	// ========================================================================
@@ -548,28 +482,7 @@ func (h *Handler) Write(
 	// If we wrote directly to content store (no write cache), populate the read cache
 	// This makes the newly written data available for fast subsequent reads
 	if writeCache == nil {
-		readCache, rcErr := h.Registry.GetReadCacheForShare(ctx.Share)
-		if rcErr != nil {
-			logger.Warn("WRITE: cannot get read cache: share=%s error=%v", ctx.Share, rcErr)
-		} else if readCache != nil && len(req.Data) > 0 {
-			// Only cache small to medium files (< 10MB) to avoid thrashing
-			const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
-			if newSize <= uint64(maxReadCacheSize) {
-				// Write the data we just wrote at the appropriate offset
-				rcErr = readCache.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, int64(req.Offset))
-				if rcErr != nil {
-					// Cache population failure is not fatal - log and continue
-					logger.Warn("WRITE: failed to populate read cache: handle=%x content_id=%s offset=%d size=%d error=%v",
-						req.Handle, writeIntent.ContentID, req.Offset, len(req.Data), rcErr)
-				} else {
-					logger.Debug("WRITE: populated read cache: handle=%x content_id=%s offset=%d size=%d cache_size=%d",
-						req.Handle, writeIntent.ContentID, req.Offset, len(req.Data), readCache.Size(writeIntent.ContentID))
-				}
-			} else {
-				logger.Debug("WRITE: skipping read cache population for large file: handle=%x size=%d max_cache_size=%d",
-					req.Handle, newSize, maxReadCacheSize)
-			}
-		}
+		populateReadCacheAfterWrite(ctx, h, ctx.Share, writeIntent.ContentID, req.Data, req.Offset, newSize, req.Handle)
 	}
 
 	// ========================================================================
@@ -585,13 +498,7 @@ func (h *Handler) Write(
 		// Map error to NFS status
 		status := mapMetadataErrorToNFS(err)
 
-		nfsAttr := h.convertFileAttrToNFS(fileHandle, writeIntent.PreWriteAttr)
-
-		return &WriteResponse{
-			NFSResponseBase: NFSResponseBase{Status: status},
-			AttrBefore:      nfsWccAttr,
-			AttrAfter:       nfsAttr,
-		}, nil
+		return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
 
 	// ========================================================================
@@ -636,6 +543,134 @@ func (h *Handler) Write(
 		Committed:       committed,      // UNSTABLE when using cache, tells client to call COMMIT
 		Verf:            serverBootTime, // Server boot time for restart detection
 	}, nil
+}
+
+// ============================================================================
+// Write Helper Functions
+// ============================================================================
+
+// buildWriteErrorResponse creates a consistent error response with WCC data.
+// This centralizes error response creation to reduce duplication.
+func (h *Handler) buildWriteErrorResponse(
+	status uint32,
+	handle metadata.FileHandle,
+	preWriteAttr *metadata.FileAttr,
+	currentAttr *metadata.FileAttr,
+) *WriteResponse {
+	var wccBefore *types.WccAttr
+	if preWriteAttr != nil {
+		wccBefore = buildWccAttr(preWriteAttr)
+	}
+
+	var wccAfter *types.NFSFileAttr
+	if currentAttr != nil {
+		wccAfter = h.convertFileAttrToNFS(handle, currentAttr)
+	}
+
+	return &WriteResponse{
+		NFSResponseBase: NFSResponseBase{Status: status},
+		AttrBefore:      wccBefore,
+		AttrAfter:       wccAfter,
+	}
+}
+
+// writeToStorage handles writing data to either cache or content store.
+// Returns the storage strategy used and any error encountered.
+//
+// Strategy:
+//   - If writeCache exists: Write to cache (async mode)
+//   - Otherwise: Write directly to content store (sync mode)
+func writeToStorage(
+	ctx *NFSHandlerContext,
+	writeCache cache.Cache,
+	contentStore content.ContentStore,
+	contentID metadata.ContentID,
+	data []byte,
+	offset uint64,
+	clientIP string,
+	handle []byte,
+) error {
+	if writeCache != nil {
+		// CACHED MODE: Write to cache
+		logger.Debug("WRITE: cached mode: content_id=%s offset=%d count=%d",
+			contentID, offset, len(data))
+
+		err := writeCache.WriteAt(ctx.Context, contentID, data, int64(offset))
+		if err != nil {
+			logger.Error("WRITE failed: cache write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
+				handle, offset, len(data), contentID, clientIP, err)
+			return err
+		}
+
+		logger.Debug("WRITE: cached successfully: content_id=%s cache_size=%d",
+			contentID, writeCache.Size(contentID))
+		return nil
+	}
+
+	// DIRECT MODE: Write directly to content store
+	logger.Debug("WRITE: direct mode: content_id=%s offset=%d count=%d",
+		contentID, offset, len(data))
+
+	err := contentStore.WriteAt(ctx.Context, contentID, data, int64(offset))
+	if err != nil {
+		logger.Error("WRITE failed: content write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
+			handle, offset, len(data), contentID, clientIP, err)
+		return err
+	}
+
+	logger.Debug("WRITE: direct write successful: content_id=%s", contentID)
+	return nil
+}
+
+// populateReadCacheAfterWrite populates the read cache after a successful direct write.
+// Only called in sync mode (no write cache) to make newly written data available for fast reads.
+//
+// Parameters:
+//   - ctx: Handler context
+//   - h: Handler with registry access
+//   - share: Share name
+//   - contentID: Content identifier
+//   - data: Data that was written
+//   - offset: Offset where data was written
+//   - newSize: New file size after write
+//   - handle: File handle for logging
+func populateReadCacheAfterWrite(
+	ctx *NFSHandlerContext,
+	h *Handler,
+	share string,
+	contentID metadata.ContentID,
+	data []byte,
+	offset uint64,
+	newSize uint64,
+	handle []byte,
+) {
+	readCache, err := h.Registry.GetReadCacheForShare(share)
+	if err != nil {
+		logger.Warn("WRITE: cannot get read cache: share=%s error=%v", share, err)
+		return
+	}
+
+	if readCache == nil || len(data) == 0 {
+		return // No cache configured or no data to cache
+	}
+
+	// Only cache small to medium files (< 10MB) to avoid thrashing
+	const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
+	if newSize > uint64(maxReadCacheSize) {
+		logger.Debug("WRITE: skipping read cache population for large file: handle=%x size=%d max_cache_size=%d",
+			handle, newSize, maxReadCacheSize)
+		return
+	}
+
+	// Write the data we just wrote at the appropriate offset
+	err = readCache.WriteAt(ctx.Context, contentID, data, int64(offset))
+	if err != nil {
+		logger.Warn("WRITE: failed to populate read cache: handle=%x content_id=%s offset=%d size=%d error=%v",
+			handle, contentID, offset, len(data), err)
+	} else {
+		logger.Debug("WRITE: populated read cache: handle=%x content_id=%s offset=%d size=%d cache_size=%d",
+			handle, contentID, offset, len(data), readCache.Size(contentID))
+	}
 }
 
 // ============================================================================
