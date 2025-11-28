@@ -524,7 +524,7 @@ func (c *MemoryCache) Close() error {
 	return nil
 }
 
-// EvictLRU evicts the least recently used (oldest by last write time) cached files
+// EvictLRU evicts the least recently used (oldest by last access time) cached files
 // until the total cache size drops below the target threshold.
 //
 // This method is called automatically when writes would exceed MaxSize(), but can
@@ -532,9 +532,11 @@ func (c *MemoryCache) Close() error {
 //
 // Eviction strategy:
 //   - Only evicts if MaxSize() is configured (> 0)
-//   - Evicts oldest files first (by LastWrite timestamp)
+//   - Only evicts CLEAN entries (StateCached) - dirty entries are protected
+//   - Evicts oldest files first (by LastAccess timestamp)
 //   - Continues evicting until TotalSize() <= targetSize
 //   - Default targetSize is 90% of MaxSize() to avoid thrashing
+//   - If all entries are dirty, allows temporary overflow (no data loss)
 //   - Thread-safe: can be called concurrently with other operations
 //
 // Parameters:
@@ -567,31 +569,36 @@ func (c *MemoryCache) EvictLRU(targetSize int64) (int, int64) {
 		return 0, 0 // No eviction needed
 	}
 
-	// Build list of candidates sorted by last write time (oldest first)
+	// Build list of evictable candidates (only clean entries)
+	// sorted by last access time (oldest first)
 	type evictionCandidate struct {
-		id        string
-		size      int64
-		lastWrite time.Time
+		id         string
+		size       int64
+		lastAccess time.Time
 	}
 
 	candidates := make([]evictionCandidate, 0, len(c.buffers))
 	for idStr, buf := range c.buffers {
 		buf.mu.Lock()
-		candidates = append(candidates, evictionCandidate{
-			id:        idStr,
-			size:      int64(len(buf.data)),
-			lastWrite: buf.lastWrite,
-		})
+		// Only consider clean entries for eviction
+		// Dirty entries (Buffering, Uploading) are protected
+		if !buf.state.IsDirty() {
+			candidates = append(candidates, evictionCandidate{
+				id:         idStr,
+				size:       int64(len(buf.data)),
+				lastAccess: buf.lastAccess,
+			})
+		}
 		buf.mu.Unlock()
 	}
 
-	// Sort by last write time (oldest first) using standard library
+	// Sort by last access time (oldest first) using standard library
 	// O(n log n) is more efficient than selection sort O(n²) for larger caches
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].lastWrite.Before(candidates[j].lastWrite)
+		return candidates[i].lastAccess.Before(candidates[j].lastAccess)
 	})
 
-	// Evict oldest files until we reach target size
+	// Evict oldest clean files until we reach target size
 	evicted := 0
 	bytesFreed := int64(0)
 
@@ -606,7 +613,12 @@ func (c *MemoryCache) EvictLRU(targetSize int64) (int, int64) {
 			continue // Already removed by concurrent operation
 		}
 
+		// Double-check state under lock (may have changed)
 		buf.mu.Lock()
+		if buf.state.IsDirty() {
+			buf.mu.Unlock()
+			continue // Entry became dirty, skip it
+		}
 		bufSize := int64(len(buf.data))
 		buf.data = nil
 		buf.mu.Unlock()
@@ -631,6 +643,10 @@ func (c *MemoryCache) EvictLRU(targetSize int64) (int, int64) {
 		c.metrics.RecordBufferCount(len(c.buffers))
 		c.metrics.RecordTotalCacheSize(c.totalSize.Load())
 	}
+
+	// Note: If we couldn't reach targetSize because all remaining entries are dirty,
+	// that's OK - we allow temporary overflow to protect unflushed data.
+	// The cache will shrink once those entries are finalized (become StateCached).
 
 	return evicted, bytesFreed
 }
