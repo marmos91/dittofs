@@ -24,11 +24,22 @@ const defaultBufferCapacity = 5 * 1024 * 1024
 // MemoryCache - In-memory implementation
 // ============================================================================
 
-// buffer represents a single file's write buffer.
+// buffer represents a single file's cache entry.
 type buffer struct {
 	data      []byte
 	lastWrite time.Time
 	mu        sync.Mutex
+
+	// State tracking (unified cache)
+	state         cache.CacheState
+	flushedOffset int64
+	lastAccess    time.Time
+	cachedAt      time.Time
+
+	// Validity tracking (read cache coherency)
+	cachedMtime time.Time
+	cachedSize  uint64
+	hasMetadata bool // true if cachedMtime/cachedSize are set
 }
 
 // MemoryCache manages in-memory buffers for multiple files.
@@ -97,9 +108,13 @@ func (c *MemoryCache) getOrCreateBuffer(id metadata.ContentID) (*buffer, error) 
 		// Double-check after acquiring write lock
 		buf, exists = c.buffers[idStr]
 		if !exists {
+			now := time.Now()
 			buf = &buffer{
-				data:      make([]byte, 0, defaultBufferCapacity),
-				lastWrite: time.Now(),
+				data:       make([]byte, 0, defaultBufferCapacity),
+				lastWrite:  now,
+				lastAccess: now,
+				cachedAt:   now,
+				state:      cache.StateBuffering, // New entries start buffering
 			}
 			c.buffers[idStr] = buf
 		}
@@ -154,7 +169,15 @@ func (c *MemoryCache) Write(ctx context.Context, id metadata.ContentID, data []b
 	// Replace entire buffer
 	buf.data = make([]byte, len(data))
 	copy(buf.data, data)
-	buf.lastWrite = time.Now()
+	now := time.Now()
+	buf.lastWrite = now
+	buf.lastAccess = now
+	// Reset to buffering state on new write (if was Cached)
+	if buf.state == cache.StateCached {
+		buf.state = cache.StateBuffering
+		buf.flushedOffset = 0
+		buf.hasMetadata = false
+	}
 	newSize := int64(len(buf.data))
 	buf.mu.Unlock()
 
@@ -255,7 +278,15 @@ func (c *MemoryCache) WriteAt(ctx context.Context, id metadata.ContentID, data [
 
 	// Copy data at offset
 	copy(buf.data[offset:], data)
-	buf.lastWrite = time.Now()
+	now := time.Now()
+	buf.lastWrite = now
+	buf.lastAccess = now
+	// Reset to buffering state on new write (if was Cached)
+	if buf.state == cache.StateCached {
+		buf.state = cache.StateBuffering
+		buf.flushedOffset = 0
+		buf.hasMetadata = false
+	}
 	newSize := int64(len(buf.data))
 	buf.mu.Unlock()
 
@@ -325,6 +356,9 @@ func (c *MemoryCache) ReadAt(ctx context.Context, id metadata.ContentID, buf []b
 	if offset >= int64(len(cacheBuf.data)) {
 		return 0, io.EOF
 	}
+
+	// Update last access time on read
+	cacheBuf.lastAccess = time.Now()
 
 	n := copy(buf, cacheBuf.data[offset:])
 	if n < len(buf) {
@@ -640,6 +674,199 @@ func (c *MemoryCache) ensureCacheSize(dataSize int64) {
 	_ = bytesFreed
 	// Note: Removed logger.Debug() to avoid import dependency
 	// Can be re-added if logger is needed for debugging
+}
+
+// ============================================================================
+// State Management (Unified Cache)
+// ============================================================================
+
+// GetState returns the current state of a cache entry.
+//
+// Returns cache.StateNone if the entry does not exist.
+// This is the zero value of CacheState, making it safe to use without
+// checking existence first:
+//
+//	state := c.GetState(id)
+//	if state == cache.StateNone {
+//	    // Entry doesn't exist, handle accordingly
+//	}
+func (c *MemoryCache) GetState(id metadata.ContentID) cache.CacheState {
+	cacheBuf, exists := c.getBuffer(id)
+	if !exists {
+		return cache.StateNone
+	}
+
+	cacheBuf.mu.Lock()
+	defer cacheBuf.mu.Unlock()
+
+	return cacheBuf.state
+}
+
+// SetState updates the state of a cache entry.
+//
+// This is a no-op if the entry doesn't exist. Use Write/WriteAt to create
+// entries (which start in StateBuffering).
+//
+// Valid state transitions:
+//   - StateBuffering → StateUploading (when flush starts)
+//   - StateUploading → StateCached (when finalization completes)
+//   - StateCached → StateBuffering (automatically on new Write/WriteAt)
+//
+// Note: Transitioning to StateNone should use Remove() instead.
+func (c *MemoryCache) SetState(id metadata.ContentID, state cache.CacheState) {
+	cacheBuf, exists := c.getBuffer(id)
+	if !exists {
+		return
+	}
+
+	cacheBuf.mu.Lock()
+	defer cacheBuf.mu.Unlock()
+
+	cacheBuf.state = state
+}
+
+// GetFlushedOffset returns how many bytes have been flushed to the content store.
+//
+// Returns 0 if the entry doesn't exist or no data has been flushed yet.
+//
+// Use this to calculate unflushed data:
+//
+//	unflushed := cache.Size(id) - cache.GetFlushedOffset(id)
+func (c *MemoryCache) GetFlushedOffset(id metadata.ContentID) int64 {
+	cacheBuf, exists := c.getBuffer(id)
+	if !exists {
+		return 0
+	}
+
+	cacheBuf.mu.Lock()
+	defer cacheBuf.mu.Unlock()
+
+	return cacheBuf.flushedOffset
+}
+
+// SetFlushedOffset updates the flushed offset for a cache entry.
+//
+// Called by the flush coordinator after successfully flushing data to the
+// content store. The offset should only increase (flushing is forward-only).
+//
+// This is a no-op if the entry doesn't exist.
+func (c *MemoryCache) SetFlushedOffset(id metadata.ContentID, offset int64) {
+	cacheBuf, exists := c.getBuffer(id)
+	if !exists {
+		return
+	}
+
+	cacheBuf.mu.Lock()
+	defer cacheBuf.mu.Unlock()
+
+	cacheBuf.flushedOffset = offset
+}
+
+// ============================================================================
+// Cache Coherency (Read Validation)
+// ============================================================================
+
+// GetCachedMetadata returns the metadata snapshot stored when the entry was cached.
+//
+// Returns ok=false if:
+//   - The entry doesn't exist
+//   - No metadata has been stored yet (entry is dirty from writes)
+//
+// Use this with IsValid() to check if cached data is still fresh.
+func (c *MemoryCache) GetCachedMetadata(id metadata.ContentID) (mtime time.Time, size uint64, ok bool) {
+	cacheBuf, exists := c.getBuffer(id)
+	if !exists {
+		return time.Time{}, 0, false
+	}
+
+	cacheBuf.mu.Lock()
+	defer cacheBuf.mu.Unlock()
+
+	if !cacheBuf.hasMetadata {
+		return time.Time{}, 0, false
+	}
+
+	return cacheBuf.cachedMtime, cacheBuf.cachedSize, true
+}
+
+// SetCachedMetadata stores a metadata snapshot for cache validation.
+//
+// Call this:
+//   - After populating cache from a READ (store current file mtime/size)
+//   - After finalization (store post-write mtime/size)
+//
+// This is a no-op if the entry doesn't exist.
+func (c *MemoryCache) SetCachedMetadata(id metadata.ContentID, mtime time.Time, size uint64) {
+	cacheBuf, exists := c.getBuffer(id)
+	if !exists {
+		return
+	}
+
+	cacheBuf.mu.Lock()
+	defer cacheBuf.mu.Unlock()
+
+	cacheBuf.cachedMtime = mtime
+	cacheBuf.cachedSize = size
+	cacheBuf.hasMetadata = true
+}
+
+// IsValid checks if cached data is still valid against current file metadata.
+//
+// Validation logic:
+//   - Returns false if entry doesn't exist
+//   - Returns true if entry is dirty (Buffering or Uploading) - we're the source of truth
+//   - Returns false if no cached metadata exists
+//   - Returns false if mtime or size differs from current file metadata
+//
+// Example usage in READ handler:
+//
+//	if cache.Exists(id) && cache.IsValid(id, file.Mtime, file.Size) {
+//	    // Serve from cache
+//	} else {
+//	    // Fetch from content store, populate cache
+//	}
+func (c *MemoryCache) IsValid(id metadata.ContentID, currentMtime time.Time, currentSize uint64) bool {
+	cacheBuf, exists := c.getBuffer(id)
+	if !exists {
+		return false
+	}
+
+	cacheBuf.mu.Lock()
+	defer cacheBuf.mu.Unlock()
+
+	// Dirty entries are always valid (we're the source of truth)
+	if cacheBuf.state.IsDirty() {
+		return true
+	}
+
+	// Clean entries: validate against current metadata
+	if !cacheBuf.hasMetadata {
+		return false
+	}
+
+	// Check if file was modified externally
+	if !cacheBuf.cachedMtime.Equal(currentMtime) || cacheBuf.cachedSize != currentSize {
+		return false
+	}
+
+	return true
+}
+
+// LastAccess returns the timestamp of the last access (read or write).
+//
+// Returns zero time if the entry doesn't exist.
+//
+// Used for LRU eviction - entries with oldest LastAccess are evicted first.
+func (c *MemoryCache) LastAccess(id metadata.ContentID) time.Time {
+	cacheBuf, exists := c.getBuffer(id)
+	if !exists {
+		return time.Time{}
+	}
+
+	cacheBuf.mu.Lock()
+	defer cacheBuf.mu.Unlock()
+
+	return cacheBuf.lastAccess
 }
 
 // ============================================================================

@@ -33,6 +33,8 @@ func (suite *CacheTestSuite) Run(t *testing.T) {
 	t.Run("WriteOperations", suite.RunWriteTests)
 	t.Run("ReadOperations", suite.RunReadTests)
 	t.Run("Management", suite.RunManagementTests)
+	t.Run("StateManagement", suite.RunStateManagementTests)
+	t.Run("CacheCoherency", suite.RunCacheCoherencyTests)
 }
 
 // testContext returns a standard test context.

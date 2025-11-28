@@ -1,21 +1,25 @@
 // Package cache implements buffering for content stores.
 //
-// This package provides a generic caching layer that acts as a buffer between
+// This package provides a unified caching layer that acts as a buffer between
 // protocol handlers (NFS) and content stores (S3, filesystem, etc.). The cache
-// is intentionally simple - it's just a buffer. Flushing logic is handled by
-// the NFS handlers, not the cache itself.
+// is content-store agnostic and handles both reads and writes.
 //
 // Key Design Principles:
-//   - Cache is just a buffer - no flush methods
-//   - Supports both full-file Write() and random-access WriteAt()
+//   - One unified cache per share (serves both reads and writes)
+//   - Content-store agnostic (no S3 multipart knowledge, no fsync knowledge)
+//   - Three states: Buffering (dirty), Uploading (flush in progress), Cached (clean)
 //   - Context-aware for cancellation and timeouts
 //   - Thread-safe for concurrent operations
-//   - Tracks total size for eviction logic
+//   - LRU eviction with dirty entry protection
+//   - Read cache coherency via mtime/size validation
 //
 // The cache enables:
-//   - Async write mode: WRITE goes to cache, COMMIT flushes to storage
-//   - Incremental multipart uploads: Upload to S3 as cache grows (no full buffering)
-//   - Efficient memory usage: Evict flushed files when cache is full
+//   - Async write mode: WRITE goes to cache, COMMIT triggers flush
+//   - Read caching: READ populates cache, subsequent reads served from cache
+//   - Inactivity-based finalization: Background sweeper detects idle files
+//   - Efficient memory usage: Evict clean entries when cache is full
+//
+// See docs/CACHE.md for detailed design documentation.
 package cache
 
 import (
@@ -24,6 +28,66 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
+
+// ============================================================================
+// Cache State
+// ============================================================================
+
+// CacheState represents the state of a cache entry.
+//
+// The state machine is:
+//
+//	(not in cache) → StateNone
+//	WRITE (new)    → StateBuffering
+//	COMMIT         → StateUploading (flush in progress)
+//	Finalize       → StateCached (clean, can be evicted)
+//	READ (miss)    → StateCached (populated from content store)
+//	WRITE          → StateBuffering (if was Cached, restart cycle)
+//	Eviction       → StateNone
+type CacheState int
+
+const (
+	// StateNone indicates the entry does not exist in the cache.
+	// This is the zero value and is returned when looking up non-existent entries.
+	StateNone CacheState = iota
+
+	// StateBuffering indicates writes are accumulating in the cache buffer.
+	// This is the initial state when a new write begins.
+	// Entry is dirty and cannot be evicted.
+	StateBuffering
+
+	// StateUploading indicates a flush is in progress to the content store.
+	// The content store may be doing multipart upload, streaming write, etc.
+	// Entry is dirty and cannot be evicted.
+	StateUploading
+
+	// StateCached indicates the entry contains clean data.
+	// Either finalized from writes, or populated from a read.
+	// Entry can be evicted. Needs validation on read hit (mtime/size check).
+	StateCached
+)
+
+// String returns the string representation of the cache state.
+func (s CacheState) String() string {
+	switch s {
+	case StateNone:
+		return "None"
+	case StateBuffering:
+		return "Buffering"
+	case StateUploading:
+		return "Uploading"
+	case StateCached:
+		return "Cached"
+	default:
+		return "Unknown"
+	}
+}
+
+// IsDirty returns true if the entry has unflushed data.
+// Dirty entries cannot be evicted.
+func (s CacheState) IsDirty() bool {
+	return s == StateBuffering || s == StateUploading
+}
 
 // Cache provides a generic buffering layer for content.
 //
@@ -340,4 +404,125 @@ type Cache interface {
 	//
 	//	defer cache.Close()
 	Close() error
+
+	// ====================================================================
+	// State Management (Unified Cache)
+	// ====================================================================
+
+	// GetState returns the current state of a cache entry.
+	//
+	// Returns StateNone if the entry does not exist in the cache.
+	// This makes it safe to check state without first calling Exists():
+	//
+	//	state := cache.GetState(id)
+	//	if state == cache.StateNone {
+	//	    // Entry doesn't exist
+	//	}
+	//	if state.IsDirty() {
+	//	    // Entry has unflushed data
+	//	}
+	//
+	// Parameters:
+	//   - id: Content identifier
+	//
+	// Returns:
+	//   - CacheState: Current state (None, Buffering, Uploading, or Cached)
+	GetState(id metadata.ContentID) CacheState
+
+	// SetState updates the state of a cache entry.
+	//
+	// This is a no-op if the entry doesn't exist. Use Write/WriteAt to create
+	// entries (which start in StateBuffering automatically).
+	//
+	// Valid state transitions:
+	//   - StateBuffering → StateUploading (when flush starts)
+	//   - StateUploading → StateCached (when finalization completes)
+	//   - StateCached → StateBuffering (automatically on new Write/WriteAt)
+	//
+	// Note: To transition to StateNone (remove entry), use Remove() instead.
+	//
+	// Parameters:
+	//   - id: Content identifier
+	//   - state: New state (should not be StateNone)
+	SetState(id metadata.ContentID, state CacheState)
+
+	// GetFlushedOffset returns how many bytes have been flushed to the content store.
+	//
+	// This is used to track progress during incremental flushes.
+	// Returns 0 if no cached data exists.
+	//
+	// Parameters:
+	//   - id: Content identifier
+	//
+	// Returns:
+	//   - int64: Number of bytes successfully flushed
+	GetFlushedOffset(id metadata.ContentID) int64
+
+	// SetFlushedOffset updates the flushed offset for a cache entry.
+	//
+	// Called by the flush coordinator after successfully flushing data
+	// to the content store.
+	//
+	// Parameters:
+	//   - id: Content identifier
+	//   - offset: New flushed offset (bytes)
+	SetFlushedOffset(id metadata.ContentID, offset int64)
+
+	// ====================================================================
+	// Cache Coherency (Read Validation)
+	// ====================================================================
+
+	// GetCachedMetadata returns the metadata snapshot stored when the entry was cached.
+	//
+	// This is used to validate cached data against current file metadata.
+	// Returns ok=false if no metadata is stored or entry doesn't exist.
+	//
+	// Parameters:
+	//   - id: Content identifier
+	//
+	// Returns:
+	//   - mtime: File modification time when cached
+	//   - size: File size when cached
+	//   - ok: True if metadata exists
+	GetCachedMetadata(id metadata.ContentID) (mtime time.Time, size uint64, ok bool)
+
+	// SetCachedMetadata stores a metadata snapshot for cache validation.
+	//
+	// Should be called:
+	//   - After populating cache from a READ (store current mtime/size)
+	//   - After finalization (store post-write mtime/size)
+	//
+	// Parameters:
+	//   - id: Content identifier
+	//   - mtime: File modification time
+	//   - size: File size
+	SetCachedMetadata(id metadata.ContentID, mtime time.Time, size uint64)
+
+	// IsValid checks if cached data is still valid against current metadata.
+	//
+	// Validation logic:
+	//   - Dirty entries (Buffering, Uploading) are always valid
+	//   - Clean entries (Cached) compare mtime and size
+	//   - Returns false if mtime or size changed (file was modified)
+	//   - May also check TTL if configured
+	//
+	// Parameters:
+	//   - id: Content identifier
+	//   - currentMtime: Current file modification time from metadata
+	//   - currentSize: Current file size from metadata
+	//
+	// Returns:
+	//   - bool: True if cached data is valid, false if stale
+	IsValid(id metadata.ContentID, currentMtime time.Time, currentSize uint64) bool
+
+	// LastAccess returns the timestamp of the last access (read or write).
+	//
+	// Used for LRU eviction ordering. Returns zero time if no cached data exists.
+	//
+	// Parameters:
+	//   - id: Content identifier
+	//
+	// Returns:
+	//   - time.Time: Last access timestamp
+	LastAccess(id metadata.ContentID) time.Time
 }
