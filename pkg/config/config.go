@@ -188,14 +188,20 @@ type ShareConfig struct {
 	// ContentStore is the name of the content store to use for this share
 	ContentStore string `mapstructure:"content_store" validate:"required"`
 
-	// WriteCache is the name of the write cache to use for async writes (optional)
-	// If specified, enables async write mode: WRITE → cache, COMMIT → flush to store
-	// If empty, writes go directly to the content store (sync mode)
+	// Cache is the name of the unified cache for this share (optional)
+	// The unified cache serves both reads and writes:
+	// - Writes accumulate in cache (StateBuffering)
+	// - COMMIT flushes to content store (StateUploading → StateCached)
+	// - Reads check cache first, populate on miss
+	// If empty, caching is disabled (sync writes, no read caching)
+	Cache string `mapstructure:"cache"`
+
+	// WriteCache is deprecated. Use Cache instead.
+	// Kept for backward compatibility - if Cache is empty, this is used.
 	WriteCache string `mapstructure:"write_cache"`
 
-	// ReadCache is the name of the read cache to use for caching reads (optional)
-	// If specified, enables read caching for better performance
-	// If empty, reads go directly to the content store (no caching)
+	// ReadCache is deprecated. Use Cache instead.
+	// Kept for backward compatibility - if Cache is empty, this is used.
 	ReadCache string `mapstructure:"read_cache"`
 
 	// ReadOnly makes the share read-only if true

@@ -195,8 +195,9 @@ func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 			Name:                     shareCfg.Name,
 			MetadataStore:            shareCfg.MetadataStore,
 			ContentStore:             shareCfg.ContentStore,
-			WriteCache:               shareCfg.WriteCache,
-			ReadCache:                shareCfg.ReadCache,
+			Cache:                    shareCfg.Cache,      // Unified cache
+			WriteCache:               shareCfg.WriteCache, // Deprecated, backward compatibility
+			ReadCache:                shareCfg.ReadCache,  // Deprecated, backward compatibility
 			ReadOnly:                 shareCfg.ReadOnly,
 			AllowedClients:           shareCfg.AllowedClients,
 			DeniedClients:            shareCfg.DeniedClients,

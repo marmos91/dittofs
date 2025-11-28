@@ -6,24 +6,30 @@ import "github.com/marmos91/dittofs/pkg/store/metadata"
 // - A share name (export path for NFS, share name for SMB)
 // - A metadata store instance (for file/directory structure)
 // - A content store instance (for file data)
-// - Optional caches for read/write buffering
+// - Optional unified cache for read/write buffering
 // - Access control rules (IP-based, authentication)
 // - Identity mapping rules (squashing)
 //
 // Multiple shares can reference the same store instances.
 //
-// Caching Modes:
-// - Write Cache: If specified, enables async writes (WRITE → cache, COMMIT → flush to store)
-// - Read Cache: If specified, caches content reads for better performance
-// - Both caches are optional and independent
+// Caching:
+// The unified cache serves both reads and writes:
+// - Writes accumulate in cache (StateBuffering)
+// - COMMIT flushes to content store (StateUploading → StateCached)
+// - Reads check cache first, populate on miss
+// - Cache is optional (empty = sync writes, no read caching)
 type Share struct {
 	Name          string
 	MetadataStore string              // Name of the metadata store
 	ContentStore  string              // Name of the content store
-	WriteCache    string              // Name of the write cache (optional, empty = sync writes)
-	ReadCache     string              // Name of the read cache (optional, empty = no read caching)
+	Cache         string              // Name of the unified cache (optional, empty = no caching)
 	RootHandle    metadata.FileHandle // Encoded file handle for the root directory
 	ReadOnly      bool
+
+	// Deprecated: Use Cache instead. These fields are kept for backward compatibility.
+	// If Cache is empty but WriteCache or ReadCache are set, they will be used.
+	WriteCache string // Deprecated: Name of the write cache
+	ReadCache  string // Deprecated: Name of the read cache
 
 	// Access Control
 	AllowedClients     []string // IP addresses or CIDR ranges allowed (empty = all allowed)
@@ -40,12 +46,16 @@ type Share struct {
 
 // ShareConfig contains all configuration needed to create a share.
 type ShareConfig struct {
-	Name               string
-	MetadataStore      string
-	ContentStore       string
-	WriteCache         string // Optional write cache name (empty = sync writes)
-	ReadCache          string // Optional read cache name (empty = no read caching)
-	ReadOnly           bool
+	Name          string
+	MetadataStore string
+	ContentStore  string
+	Cache         string // Unified cache name (optional, empty = no caching)
+	ReadOnly      bool
+
+	// Deprecated: Use Cache instead. These are kept for backward compatibility.
+	WriteCache string // Deprecated: Optional write cache name
+	ReadCache  string // Deprecated: Optional read cache name
+
 	AllowedClients     []string
 	DeniedClients      []string
 	RequireAuth        bool

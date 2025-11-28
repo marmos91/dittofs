@@ -156,7 +156,14 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 		return fmt.Errorf("content store %q not found", config.ContentStore)
 	}
 
-	// Validate that caches exist (if specified)
+	// Validate that cache exists (if specified)
+	// New unified cache takes priority, deprecated fields are fallbacks
+	if config.Cache != "" {
+		if _, exists := r.caches[config.Cache]; !exists {
+			return fmt.Errorf("cache %q not found", config.Cache)
+		}
+	}
+	// Also validate deprecated cache fields for backward compatibility
 	if config.WriteCache != "" {
 		if _, exists := r.caches[config.WriteCache]; !exists {
 			return fmt.Errorf("write cache %q not found", config.WriteCache)
@@ -201,8 +208,9 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 		Name:                     config.Name,
 		MetadataStore:            config.MetadataStore,
 		ContentStore:             config.ContentStore,
-		WriteCache:               config.WriteCache,
-		ReadCache:                config.ReadCache,
+		Cache:                    config.Cache,
+		WriteCache:               config.WriteCache, // Deprecated, for backward compatibility
+		ReadCache:                config.ReadCache,  // Deprecated, for backward compatibility
 		RootHandle:               rootHandle,
 		ReadOnly:                 config.ReadOnly,
 		AllowedClients:           config.AllowedClients,
@@ -337,9 +345,51 @@ func (r *Registry) GetContentStoreForShare(shareName string) (content.ContentSto
 	return store, nil
 }
 
+// GetCacheForShare retrieves the unified cache used by the specified share.
+// Returns nil if the share doesn't have a cache configured.
+// Returns error if the share doesn't exist or the cache reference is invalid.
+//
+// The unified cache serves both reads and writes:
+// - Writes accumulate in cache (StateBuffering)
+// - COMMIT flushes to content store (StateUploading → StateCached)
+// - Reads check cache first, populate on miss
+//
+// For backward compatibility, if the new Cache field is empty but WriteCache
+// is set, it falls back to WriteCache. This allows gradual migration.
+func (r *Registry) GetCacheForShare(shareName string) (cache.Cache, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	share, exists := r.shares[shareName]
+	if !exists {
+		return nil, fmt.Errorf("share %q not found", shareName)
+	}
+
+	// Determine which cache name to use
+	// Priority: Cache > WriteCache (for backward compatibility)
+	cacheName := share.Cache
+	if cacheName == "" {
+		cacheName = share.WriteCache // Fallback to deprecated WriteCache
+	}
+
+	// No cache configured
+	if cacheName == "" {
+		return nil, nil
+	}
+
+	c, exists := r.caches[cacheName]
+	if !exists {
+		return nil, fmt.Errorf("cache %q not found for share %q", cacheName, shareName)
+	}
+
+	return c, nil
+}
+
 // GetWriteCacheForShare retrieves the write cache used by the specified share.
 // Returns nil if the share doesn't have a write cache configured (sync mode).
 // Returns error if the share doesn't exist or the cache reference is invalid.
+//
+// Deprecated: Use GetCacheForShare instead. The unified cache serves both reads and writes.
 func (r *Registry) GetWriteCacheForShare(shareName string) (cache.Cache, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -349,14 +399,20 @@ func (r *Registry) GetWriteCacheForShare(shareName string) (cache.Cache, error) 
 		return nil, fmt.Errorf("share %q not found", shareName)
 	}
 
+	// Try unified cache first, then fall back to deprecated WriteCache
+	cacheName := share.Cache
+	if cacheName == "" {
+		cacheName = share.WriteCache
+	}
+
 	// No write cache configured (sync mode)
-	if share.WriteCache == "" {
+	if cacheName == "" {
 		return nil, nil
 	}
 
-	c, exists := r.caches[share.WriteCache]
+	c, exists := r.caches[cacheName]
 	if !exists {
-		return nil, fmt.Errorf("write cache %q not found for share %q", share.WriteCache, shareName)
+		return nil, fmt.Errorf("write cache %q not found for share %q", cacheName, shareName)
 	}
 
 	return c, nil
@@ -365,6 +421,8 @@ func (r *Registry) GetWriteCacheForShare(shareName string) (cache.Cache, error) 
 // GetReadCacheForShare retrieves the read cache used by the specified share.
 // Returns nil if the share doesn't have a read cache configured.
 // Returns error if the share doesn't exist or the cache reference is invalid.
+//
+// Deprecated: Use GetCacheForShare instead. The unified cache serves both reads and writes.
 func (r *Registry) GetReadCacheForShare(shareName string) (cache.Cache, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -374,14 +432,20 @@ func (r *Registry) GetReadCacheForShare(shareName string) (cache.Cache, error) {
 		return nil, fmt.Errorf("share %q not found", shareName)
 	}
 
+	// Try unified cache first, then fall back to deprecated ReadCache
+	cacheName := share.Cache
+	if cacheName == "" {
+		cacheName = share.ReadCache
+	}
+
 	// No read cache configured
-	if share.ReadCache == "" {
+	if cacheName == "" {
 		return nil, nil
 	}
 
-	c, exists := r.caches[share.ReadCache]
+	c, exists := r.caches[cacheName]
 	if !exists {
-		return nil, fmt.Errorf("read cache %q not found for share %q", share.ReadCache, shareName)
+		return nil, fmt.Errorf("read cache %q not found for share %q", cacheName, shareName)
 	}
 
 	return c, nil
