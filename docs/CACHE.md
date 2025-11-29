@@ -63,21 +63,25 @@ The cache buffers data and tracks state, but delegates all persistence to the co
 - **No filesystem knowledge**: Cache doesn't know about fsync, file descriptors, etc.
 - **Simple interface**: Write, Read, track state, track what's been flushed
 
-### 3. Three States Only
+### 3. Cache States
 
 ```go
 type CacheState int
 
 const (
-    StateBuffering CacheState = iota  // Writes accumulating, not yet flushed
-    StateUploading                     // Flush in progress to content store
-    StateCached                        // Clean data (finalized writes OR read-cached)
+    StateNone        CacheState = iota  // Not in cache
+    StateBuffering                       // Writes accumulating, not yet flushed
+    StateUploading                       // Flush in progress to content store
+    StateCached                          // Clean data (finalized writes OR read-cached)
+    StatePrefetching                     // Background prefetch in progress
 )
 ```
 
+- **None**: Entry doesn't exist in cache
 - **Buffering**: Dirty, actively receiving writes
 - **Uploading**: Dirty, flush in progress (content store may be doing multipart)
 - **Cached**: Clean, can be evicted, needs validation on read
+- **Prefetching**: Background prefetch in progress, reads can wait for specific offsets
 
 ### 4. Dirty Entry Protection
 
@@ -417,7 +421,7 @@ If someone modifies the content store directly (bypassing DittoFS):
 | **Cache** | Buffer data, track state, track flushed offset |
 | **Content Store** | Persist data, manage upload sessions internally |
 | **Flush Coordinator** | Orchestrate flush timing, call content store APIs |
-| **Background Finalizer** | Detect idle files, trigger finalization |
+| **Background Flusher** | Detect idle files, trigger finalization |
 
 ### Flush Coordinator (in handlers)
 
@@ -456,40 +460,50 @@ func flushToContentStore(ctx context.Context, cache Cache, contentStore ContentS
 }
 ```
 
-### Background Finalizer
+### Background Flusher
 
 Runs periodically to finalize idle files:
 
 ```go
-func (f *Finalizer) sweepForFinalization(ctx context.Context) {
-    threshold := time.Now().Add(-f.finalizeTimeout)
+func (f *BackgroundFlusher) sweep() {
+    threshold := time.Now().Add(-f.flushTimeout)
 
     for _, id := range f.cache.List() {
-        entry := f.cache.GetEntry(id)
+        state := f.cache.GetState(id)
+
+        // Skip entries that don't need flushing
+        if state != StateUploading {
+            continue
+        }
 
         // Skip if not idle or not fully flushed
-        if entry.LastWriteTime.After(threshold) {
+        lastWrite := f.cache.LastWrite(id)
+        if lastWrite.After(threshold) {
             continue  // Still active
         }
-        if entry.FlushedOffset < entry.BufferSize {
+        if f.cache.GetFlushedOffset(id) < f.cache.Size(id) {
             continue  // Still has unflushed data
         }
-        if entry.State == StateCached {
-            continue  // Already finalized
+
+        // For incremental stores, check if upload still in progress
+        if incStore, ok := f.contentStore.(IncrementalWriteStore); ok {
+            if writeState := incStore.GetIncrementalWriteState(id); writeState != nil {
+                if writeState.BufferedSize > 0 {
+                    continue  // Upload still in progress
+                }
+            }
         }
 
-        // Finalize
-        f.finalize(ctx, id)
+        // Flush this entry
+        f.flush(id)
     }
 }
 
-func (f *Finalizer) finalize(ctx context.Context, id ContentID) error {
-    contentStore := f.registry.GetContentStore(shareID)
-
+func (f *BackgroundFlusher) flush(id ContentID) error {
     // Complete any in-progress upload (S3 multipart, etc.)
-    if incStore, ok := contentStore.(IncrementalWriteStore); ok {
+    if incStore, ok := f.contentStore.(IncrementalWriteStore); ok {
         if state := incStore.GetIncrementalWriteState(id); state != nil {
-            if err := incStore.CompleteIncrementalWrite(ctx, id); err != nil {
+            if err := incStore.CompleteIncrementalWrite(f.ctx, id); err != nil {
                 return err
             }
         }
@@ -497,43 +511,59 @@ func (f *Finalizer) finalize(ctx context.Context, id ContentID) error {
 
     // Mark as cached (clean)
     f.cache.SetState(id, StateCached)
-
-    // Store current metadata for validation
-    meta := f.metadataStore.GetFile(ctx, handle)
-    f.cache.SetCachedMetadata(id, meta.Mtime, meta.Size)
-
     return nil
 }
 ```
 
 ## Configuration
 
-### Share-Level Cache Configuration
+### Cache Store Configuration
+
+Caches are defined as named stores and referenced by shares:
 
 ```yaml
+cache:
+  stores:
+    my-cache:
+      type: memory
+      memory:
+        max_size: 1073741824  # 1GB in bytes
+      prefetch:
+        enabled: true           # Enable read prefetch (default: true)
+        max_file_size: 104857600  # 100MB - skip prefetch for larger files
+        chunk_size: 524288      # 512KB - prefetch chunk size
+      flusher:
+        sweep_interval: 10s     # How often to check for finalization
+        flush_timeout: 30s      # Inactivity before finalizing writes
+
 shares:
   - name: /data
     metadata_store: badger-meta
     content_store: s3-content
-    cache:
-      enabled: true
-      max_size: 1GB
-      finalize_timeout: 30s    # Inactivity before finalizing writes
-      sweep_interval: 10s      # How often to check for finalization
-      read_ttl: 300s           # Max age for read-cached data (0 = no TTL)
-      validate_on_read: true   # Compare mtime/size on cache hit
+    cache: my-cache             # Reference the cache store
 ```
 
-### Configuration Options
+### Cache Store Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `enabled` | `true` | Enable/disable caching for this share |
-| `max_size` | `256MB` | Maximum total cache size |
-| `finalize_timeout` | `30s` | Time since last write before finalizing |
-| `sweep_interval` | `10s` | Background sweeper interval |
-| `read_ttl` | `0` | Max age for cached reads (0 = no expiry, rely on validation) |
-| `validate_on_read` | `true` | Validate mtime/size on cache hit |
+| `type` | - | Cache type: `memory` or `filesystem` |
+| `memory.max_size` | `0` | Maximum cache size in bytes (0 = unlimited) |
+
+### Prefetch Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `true` | Enable/disable read prefetch |
+| `max_file_size` | `100MB` | Skip prefetch for files larger than this |
+| `chunk_size` | `512KB` | Size of each prefetch chunk |
+
+### Flusher Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `sweep_interval` | `10s` | How often to check for idle files |
+| `flush_timeout` | `30s` | Time since last write before finalizing |
 
 ## Implementation Details
 
@@ -572,7 +602,7 @@ LRU eviction with dirty entry protection:
 - Per-entry mutex for buffer operations
 - Cache-level RWMutex for entry map
 - Atomic operations for `TotalSize` tracking
-- Background finalizer uses separate goroutine with context cancellation
+- Background flusher uses separate goroutine with context cancellation
 
 ## Metrics
 

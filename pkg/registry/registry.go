@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/cache/flusher"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
@@ -22,12 +23,12 @@ import (
 //	reg := NewRegistry()
 //	reg.RegisterMetadataStore("badger-main", badgerStore)
 //	reg.RegisterContentStore("local-disk", fsStore)
-//	reg.RegisterCache("fast-write", memCache)
+//	reg.RegisterCache("unified-cache", memCache)
 //	reg.AddShare(ctx, &ShareConfig{
 //	    Name: "/export",
 //	    MetadataStore: "badger-main",
 //	    ContentStore: "local-disk",
-//	    WriteCache: "fast-write",
+//	    Cache: "unified-cache",
 //	})
 //
 //	share, _ := reg.GetShare("/export")
@@ -103,7 +104,7 @@ func (r *Registry) RegisterContentStore(name string, store content.ContentStore)
 
 // RegisterCache adds a named cache to the registry.
 // Returns an error if a cache with the same name already exists.
-// Caches can be used for both read and write buffering depending on share configuration.
+// Caches are used for unified read/write buffering.
 func (r *Registry) RegisterCache(name string, c cache.Cache) error {
 	if c == nil {
 		return fmt.Errorf("cannot register nil cache")
@@ -157,21 +158,9 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 	}
 
 	// Validate that cache exists (if specified)
-	// New unified cache takes priority, deprecated fields are fallbacks
 	if config.Cache != "" {
 		if _, exists := r.caches[config.Cache]; !exists {
 			return fmt.Errorf("cache %q not found", config.Cache)
-		}
-	}
-	// Also validate deprecated cache fields for backward compatibility
-	if config.WriteCache != "" {
-		if _, exists := r.caches[config.WriteCache]; !exists {
-			return fmt.Errorf("write cache %q not found", config.WriteCache)
-		}
-	}
-	if config.ReadCache != "" {
-		if _, exists := r.caches[config.ReadCache]; !exists {
-			return fmt.Errorf("read cache %q not found", config.ReadCache)
 		}
 	}
 
@@ -203,14 +192,12 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 		return fmt.Errorf("failed to encode root handle: %w", err)
 	}
 
-	// Register share in registry with full configuration
-	r.shares[config.Name] = &Share{
+	// Create share struct
+	share := &Share{
 		Name:                     config.Name,
 		MetadataStore:            config.MetadataStore,
 		ContentStore:             config.ContentStore,
 		Cache:                    config.Cache,
-		WriteCache:               config.WriteCache, // Deprecated, for backward compatibility
-		ReadCache:                config.ReadCache,  // Deprecated, for backward compatibility
 		RootHandle:               rootHandle,
 		ReadOnly:                 config.ReadOnly,
 		AllowedClients:           config.AllowedClients,
@@ -221,7 +208,26 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 		MapPrivilegedToAnonymous: config.MapPrivilegedToAnonymous,
 		AnonymousUID:             config.AnonymousUID,
 		AnonymousGID:             config.AnonymousGID,
+		PrefetchConfig:           config.PrefetchConfig,
+		FlusherConfig:            config.FlusherConfig,
 	}
+
+	// Create and start background flusher if cache is configured
+	if config.Cache != "" {
+		shareCache := r.caches[config.Cache]
+		contentStore := r.content[config.ContentStore]
+
+		// Use flusher config from share config
+		flusherCfg := &flusher.Config{
+			SweepInterval: config.FlusherConfig.SweepInterval,
+			FlushTimeout:  config.FlusherConfig.FlushTimeout,
+		}
+
+		share.Flusher = flusher.New(shareCache, contentStore, flusherCfg)
+		share.Flusher.Start(ctx)
+	}
+
+	r.shares[config.Name] = share
 
 	return nil
 }
@@ -229,12 +235,19 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 // RemoveShare removes a share from the registry.
 // Returns an error if the share doesn't exist.
 // Note: This does NOT close the underlying stores, as they may be used by other shares.
+// If the share has a flusher running, it will be stopped gracefully.
 func (r *Registry) RemoveShare(name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, exists := r.shares[name]; !exists {
+	share, exists := r.shares[name]
+	if !exists {
 		return fmt.Errorf("share %q not found", name)
+	}
+
+	// Stop the flusher if running
+	if share.Flusher != nil {
+		share.Flusher.Stop()
 	}
 
 	delete(r.shares, name)
@@ -346,109 +359,32 @@ func (r *Registry) GetContentStoreForShare(shareName string) (content.ContentSto
 }
 
 // GetCacheForShare retrieves the unified cache used by the specified share.
-// Returns nil if the share doesn't have a cache configured.
-// Returns error if the share doesn't exist or the cache reference is invalid.
+// Returns nil if the share doesn't have a cache configured or if the share doesn't exist.
 //
 // The unified cache serves both reads and writes:
 // - Writes accumulate in cache (StateBuffering)
 // - COMMIT flushes to content store (StateUploading → StateCached)
 // - Reads check cache first, populate on miss
-//
-// For backward compatibility, if the new Cache field is empty but WriteCache
-// is set, it falls back to WriteCache. This allows gradual migration.
-func (r *Registry) GetCacheForShare(shareName string) (cache.Cache, error) {
+func (r *Registry) GetCacheForShare(shareName string) cache.Cache {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	share, exists := r.shares[shareName]
 	if !exists {
-		return nil, fmt.Errorf("share %q not found", shareName)
-	}
-
-	// Determine which cache name to use
-	// Priority: Cache > WriteCache (for backward compatibility)
-	cacheName := share.Cache
-	if cacheName == "" {
-		cacheName = share.WriteCache // Fallback to deprecated WriteCache
+		return nil
 	}
 
 	// No cache configured
-	if cacheName == "" {
-		return nil, nil
+	if share.Cache == "" {
+		return nil
 	}
 
-	c, exists := r.caches[cacheName]
+	c, exists := r.caches[share.Cache]
 	if !exists {
-		return nil, fmt.Errorf("cache %q not found for share %q", cacheName, shareName)
+		return nil
 	}
 
-	return c, nil
-}
-
-// GetWriteCacheForShare retrieves the write cache used by the specified share.
-// Returns nil if the share doesn't have a write cache configured (sync mode).
-// Returns error if the share doesn't exist or the cache reference is invalid.
-//
-// Deprecated: Use GetCacheForShare instead. The unified cache serves both reads and writes.
-func (r *Registry) GetWriteCacheForShare(shareName string) (cache.Cache, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	share, exists := r.shares[shareName]
-	if !exists {
-		return nil, fmt.Errorf("share %q not found", shareName)
-	}
-
-	// Try unified cache first, then fall back to deprecated WriteCache
-	cacheName := share.Cache
-	if cacheName == "" {
-		cacheName = share.WriteCache
-	}
-
-	// No write cache configured (sync mode)
-	if cacheName == "" {
-		return nil, nil
-	}
-
-	c, exists := r.caches[cacheName]
-	if !exists {
-		return nil, fmt.Errorf("write cache %q not found for share %q", cacheName, shareName)
-	}
-
-	return c, nil
-}
-
-// GetReadCacheForShare retrieves the read cache used by the specified share.
-// Returns nil if the share doesn't have a read cache configured.
-// Returns error if the share doesn't exist or the cache reference is invalid.
-//
-// Deprecated: Use GetCacheForShare instead. The unified cache serves both reads and writes.
-func (r *Registry) GetReadCacheForShare(shareName string) (cache.Cache, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	share, exists := r.shares[shareName]
-	if !exists {
-		return nil, fmt.Errorf("share %q not found", shareName)
-	}
-
-	// Try unified cache first, then fall back to deprecated ReadCache
-	cacheName := share.Cache
-	if cacheName == "" {
-		cacheName = share.ReadCache
-	}
-
-	// No read cache configured
-	if cacheName == "" {
-		return nil, nil
-	}
-
-	c, exists := r.caches[cacheName]
-	if !exists {
-		return nil, fmt.Errorf("read cache %q not found for share %q", cacheName, shareName)
-	}
-
-	return c, nil
+	return c
 }
 
 // ListShares returns all registered share names.
@@ -533,30 +469,15 @@ func (r *Registry) ListSharesUsingContentStore(storeName string) []string {
 	return shares
 }
 
-// ListSharesUsingWriteCache returns all shares that use the specified write cache.
+// ListSharesUsingCache returns all shares that use the specified cache.
 // The returned slice is a copy and safe to modify.
-func (r *Registry) ListSharesUsingWriteCache(cacheName string) []string {
+func (r *Registry) ListSharesUsingCache(cacheName string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	var shares []string
 	for _, share := range r.shares {
-		if share.WriteCache == cacheName {
-			shares = append(shares, share.Name)
-		}
-	}
-	return shares
-}
-
-// ListSharesUsingReadCache returns all shares that use the specified read cache.
-// The returned slice is a copy and safe to modify.
-func (r *Registry) ListSharesUsingReadCache(cacheName string) []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	var shares []string
-	for _, share := range r.shares {
-		if share.ReadCache == cacheName {
+		if share.Cache == cacheName {
 			shares = append(shares, share.Name)
 		}
 	}

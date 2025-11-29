@@ -1,6 +1,37 @@
 package registry
 
-import "github.com/marmos91/dittofs/pkg/store/metadata"
+import (
+	"time"
+
+	"github.com/marmos91/dittofs/pkg/cache/flusher"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
+)
+
+// PrefetchConfig configures read prefetch behavior for a share.
+type PrefetchConfig struct {
+	// Enabled controls whether prefetch is enabled (default: true)
+	Enabled bool
+
+	// MaxFileSize is the maximum file size to prefetch in bytes.
+	// Files larger than this are not prefetched to avoid cache thrashing.
+	// Default: 100MB
+	MaxFileSize int64
+
+	// ChunkSize is the size of each chunk read during prefetch in bytes.
+	// Default: 512KB
+	ChunkSize int64
+}
+
+// FlusherConfig configures background flusher behavior for a share.
+type FlusherConfig struct {
+	// SweepInterval is how often to check for idle files.
+	// Default: 10s
+	SweepInterval time.Duration
+
+	// FlushTimeout is how long a file must be idle before flushing.
+	// Default: 30s
+	FlushTimeout time.Duration
+}
 
 // Share represents a configured share that binds together:
 // - A share name (export path for NFS, share name for SMB)
@@ -26,11 +57,6 @@ type Share struct {
 	RootHandle    metadata.FileHandle // Encoded file handle for the root directory
 	ReadOnly      bool
 
-	// Deprecated: Use Cache instead. These fields are kept for backward compatibility.
-	// If Cache is empty but WriteCache or ReadCache are set, they will be used.
-	WriteCache string // Deprecated: Name of the write cache
-	ReadCache  string // Deprecated: Name of the read cache
-
 	// Access Control
 	AllowedClients     []string // IP addresses or CIDR ranges allowed (empty = all allowed)
 	DeniedClients      []string // IP addresses or CIDR ranges denied (takes precedence)
@@ -42,6 +68,13 @@ type Share struct {
 	MapPrivilegedToAnonymous bool   // Map root to anonymous (root_squash)
 	AnonymousUID             uint32 // UID for anonymous users
 	AnonymousGID             uint32 // GID for anonymous users
+
+	// Cache behavior configuration
+	PrefetchConfig PrefetchConfig // Read prefetch settings
+	FlusherConfig  FlusherConfig  // Background flusher settings
+
+	// Background flusher for this share (nil if no cache configured)
+	Flusher *flusher.BackgroundFlusher
 }
 
 // ShareConfig contains all configuration needed to create a share.
@@ -51,10 +84,6 @@ type ShareConfig struct {
 	ContentStore  string
 	Cache         string // Unified cache name (optional, empty = no caching)
 	ReadOnly      bool
-
-	// Deprecated: Use Cache instead. These are kept for backward compatibility.
-	WriteCache string // Deprecated: Optional write cache name
-	ReadCache  string // Deprecated: Optional read cache name
 
 	AllowedClients     []string
 	DeniedClients      []string
@@ -69,4 +98,8 @@ type ShareConfig struct {
 
 	// Root directory attributes
 	RootAttr *metadata.FileAttr
+
+	// Cache behavior configuration
+	PrefetchConfig PrefetchConfig // Read prefetch settings
+	FlusherConfig  FlusherConfig  // Background flusher settings
 }

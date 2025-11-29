@@ -173,8 +173,8 @@ func registerCaches(ctx context.Context, reg *registry.Registry, cfg *Config) er
 func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 	for i, shareCfg := range cfg.Shares {
 		cacheInfo := ""
-		if shareCfg.WriteCache != "" || shareCfg.ReadCache != "" {
-			cacheInfo = fmt.Sprintf(", write_cache: %s, read_cache: %s", shareCfg.WriteCache, shareCfg.ReadCache)
+		if shareCfg.Cache != "" {
+			cacheInfo = fmt.Sprintf(", cache: %s", shareCfg.Cache)
 		}
 		logger.Debug("Adding share %q (metadata: %s, content: %s, read_only: %v%s)",
 			shareCfg.Name, shareCfg.MetadataStore, shareCfg.ContentStore, shareCfg.ReadOnly, cacheInfo)
@@ -195,9 +195,7 @@ func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 			Name:                     shareCfg.Name,
 			MetadataStore:            shareCfg.MetadataStore,
 			ContentStore:             shareCfg.ContentStore,
-			Cache:                    shareCfg.Cache,      // Unified cache
-			WriteCache:               shareCfg.WriteCache, // Deprecated, backward compatibility
-			ReadCache:                shareCfg.ReadCache,  // Deprecated, backward compatibility
+			Cache:                    shareCfg.Cache, // Unified cache
 			ReadOnly:                 shareCfg.ReadOnly,
 			AllowedClients:           shareCfg.AllowedClients,
 			DeniedClients:            shareCfg.DeniedClients,
@@ -208,6 +206,24 @@ func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 			AnonymousUID:             shareCfg.IdentityMapping.AnonymousUID,
 			AnonymousGID:             shareCfg.IdentityMapping.AnonymousGID,
 			RootAttr:                 createRootAttributes(shareCfg.RootDirectoryAttributes),
+		}
+
+		// If a cache is configured, copy cache behavior settings to share config
+		if shareCfg.Cache != "" {
+			if cacheCfg, ok := cfg.Cache.Stores[shareCfg.Cache]; ok {
+				// Copy prefetch config
+				if cacheCfg.Prefetch.Enabled != nil {
+					shareConfig.PrefetchConfig.Enabled = *cacheCfg.Prefetch.Enabled
+				} else {
+					shareConfig.PrefetchConfig.Enabled = true // default
+				}
+				shareConfig.PrefetchConfig.MaxFileSize = cacheCfg.Prefetch.MaxFileSize
+				shareConfig.PrefetchConfig.ChunkSize = cacheCfg.Prefetch.ChunkSize
+
+				// Copy flusher config
+				shareConfig.FlusherConfig.SweepInterval = cacheCfg.Flusher.SweepInterval
+				shareConfig.FlusherConfig.FlushTimeout = cacheCfg.Flusher.FlushTimeout
+			}
 		}
 
 		// Add share to registry (registry will validate stores exist and create root directory)

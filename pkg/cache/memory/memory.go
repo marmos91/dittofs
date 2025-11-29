@@ -40,6 +40,10 @@ type buffer struct {
 	cachedMtime time.Time
 	cachedSize  uint64
 	hasMetadata bool // true if cachedMtime/cachedSize are set
+
+	// Prefetch support
+	prefetchedOffset int64 // How many bytes have been prefetched (only valid in StatePrefetching)
+	prefetchExpected int64 // Expected total size of the file being prefetched
 }
 
 // MemoryCache manages in-memory buffers for multiple files.
@@ -915,4 +919,185 @@ func GetInfo(c cache.Cache) map[metadata.ContentID]BufferInfo {
 	}
 
 	return result
+}
+
+// ============================================================================
+// Prefetch Support
+// ============================================================================
+
+// StartPrefetch marks an entry as being prefetched.
+//
+// Returns true if this call started the prefetch (entry created in StatePrefetching).
+// Returns false if prefetch is already in progress or entry exists in another state.
+func (c *MemoryCache) StartPrefetch(id metadata.ContentID, expectedSize int64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return false
+	}
+
+	idStr := string(id)
+	buf, exists := c.buffers[idStr]
+
+	if exists {
+		buf.mu.Lock()
+		defer buf.mu.Unlock()
+
+		// If already prefetching or in any other state, don't start a new prefetch
+		if buf.state != cache.StateNone {
+			return false
+		}
+	}
+
+	// Create new buffer in prefetching state
+	now := time.Now()
+	buf = &buffer{
+		data:             make([]byte, 0, expectedSize),
+		lastWrite:        now,
+		lastAccess:       now,
+		cachedAt:         now,
+		state:            cache.StatePrefetching,
+		prefetchedOffset: 0,
+		prefetchExpected: expectedSize,
+	}
+
+	c.buffers[idStr] = buf
+	return true
+}
+
+// WaitForPrefetchOffset waits until the prefetch has fetched at least up to the required offset.
+//
+// Returns immediately if:
+//   - Entry doesn't exist or is not prefetching
+//   - Required offset has already been prefetched
+//   - Prefetch is complete (StateCached)
+//   - Context is cancelled
+//
+// Uses polling with short sleeps for context-aware waiting. This is simpler and
+// safer than trying to make sync.Cond work with context cancellation.
+func (c *MemoryCache) WaitForPrefetchOffset(ctx context.Context, id metadata.ContentID, requiredOffset int64) error {
+	const pollInterval = 10 * time.Millisecond
+
+	for {
+		// Check context first
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		buf, exists := c.getBuffer(id)
+		if !exists {
+			return nil // Entry was removed (prefetch failed or evicted)
+		}
+
+		buf.mu.Lock()
+		state := buf.state
+		prefetchedOffset := buf.prefetchedOffset
+		buf.mu.Unlock()
+
+		// Not prefetching anymore - return (either completed or failed)
+		if state != cache.StatePrefetching {
+			return nil
+		}
+
+		// Have enough data - return
+		if prefetchedOffset >= requiredOffset {
+			return nil
+		}
+
+		// Wait a bit before checking again
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pollInterval):
+			// Continue loop
+		}
+	}
+}
+
+// GetPrefetchedOffset returns how many bytes have been prefetched so far.
+//
+// Returns 0 if entry doesn't exist or is not in prefetching state.
+func (c *MemoryCache) GetPrefetchedOffset(id metadata.ContentID) int64 {
+	buf, exists := c.getBuffer(id)
+	if !exists {
+		return 0
+	}
+
+	buf.mu.Lock()
+	defer buf.mu.Unlock()
+
+	if buf.state != cache.StatePrefetching {
+		return 0
+	}
+
+	return buf.prefetchedOffset
+}
+
+// UpdatePrefetchedOffset updates the prefetched offset.
+//
+// Called by the prefetch goroutine after writing each chunk to the cache.
+// Waiters polling in WaitForPrefetchOffset will see the updated offset.
+func (c *MemoryCache) UpdatePrefetchedOffset(id metadata.ContentID, offset int64) {
+	buf, exists := c.getBuffer(id)
+	if !exists {
+		return
+	}
+
+	buf.mu.Lock()
+	defer buf.mu.Unlock()
+
+	if buf.state != cache.StatePrefetching {
+		return
+	}
+
+	// Only increase (prefetch is forward-only)
+	if offset > buf.prefetchedOffset {
+		buf.prefetchedOffset = offset
+	}
+}
+
+// CompletePrefetch marks a prefetch as complete and transitions to StateCached.
+//
+// If success is false, the entry is removed (prefetch failed).
+// Waiters polling in WaitForPrefetchOffset will see the state change and return.
+func (c *MemoryCache) CompletePrefetch(id metadata.ContentID, success bool) {
+	if !success {
+		// Prefetch failed - remove entry
+		c.mu.Lock()
+		idStr := string(id)
+		buf, exists := c.buffers[idStr]
+		if exists {
+			buf.mu.Lock()
+			bufSize := int64(len(buf.data))
+			buf.data = nil
+			buf.state = cache.StateNone
+			buf.mu.Unlock()
+
+			delete(c.buffers, idStr)
+
+			// Update total size
+			if bufSize > 0 {
+				c.totalSize.Add(-bufSize)
+			}
+		}
+		c.mu.Unlock()
+		return
+	}
+
+	// Prefetch succeeded - transition to StateCached
+	buf, exists := c.getBuffer(id)
+	if !exists {
+		return
+	}
+
+	buf.mu.Lock()
+	defer buf.mu.Unlock()
+
+	if buf.state == cache.StatePrefetching {
+		buf.state = cache.StateCached
+		buf.prefetchedOffset = int64(len(buf.data)) // Mark all data as prefetched
+	}
 }

@@ -41,8 +41,9 @@ import (
 //	WRITE (new)    → StateBuffering
 //	COMMIT         → StateUploading (flush in progress)
 //	Finalize       → StateCached (clean, can be evicted)
-//	READ (miss)    → StateCached (populated from content store)
-//	WRITE          → StateBuffering (if was Cached, restart cycle)
+//	READ (miss)    → StatePrefetching (background fetch started)
+//	Prefetch done  → StateCached (populated from content store)
+//	WRITE          → StateBuffering (if was Cached/Prefetching, restart cycle)
 //	Eviction       → StateNone
 type CacheState int
 
@@ -65,6 +66,12 @@ const (
 	// Either finalized from writes, or populated from a read.
 	// Entry can be evicted. Needs validation on read hit (mtime/size check).
 	StateCached
+
+	// StatePrefetching indicates a background fetch is in progress.
+	// The READ handler spawned a goroutine to fetch the entire file.
+	// Entry cannot be evicted until prefetch completes.
+	// Concurrent READs should read from content store directly.
+	StatePrefetching
 )
 
 // String returns the string representation of the cache state.
@@ -78,6 +85,8 @@ func (s CacheState) String() string {
 		return "Uploading"
 	case StateCached:
 		return "Cached"
+	case StatePrefetching:
+		return "Prefetching"
 	default:
 		return "Unknown"
 	}
@@ -87,6 +96,13 @@ func (s CacheState) String() string {
 // Dirty entries cannot be evicted.
 func (s CacheState) IsDirty() bool {
 	return s == StateBuffering || s == StateUploading
+}
+
+// CanEvict returns true if the entry can be safely evicted.
+// Only StateCached entries can be evicted. Dirty entries (Buffering, Uploading)
+// and entries being prefetched cannot be evicted.
+func (s CacheState) CanEvict() bool {
+	return s == StateCached
 }
 
 // Cache provides a generic buffering layer for content.
@@ -467,6 +483,79 @@ type Cache interface {
 	//   - id: Content identifier
 	//   - offset: New flushed offset (bytes)
 	SetFlushedOffset(id metadata.ContentID, offset int64)
+
+	// ====================================================================
+	// Prefetch Support
+	// ====================================================================
+
+	// StartPrefetch marks an entry as being prefetched and returns whether this call started it.
+	//
+	// If prefetch is already in progress (StatePrefetching), returns false (already started).
+	// If entry already exists in a non-prefetching state (Buffering, Uploading, Cached),
+	// returns false (no prefetch needed).
+	//
+	// The caller should:
+	//  1. Check if started is true
+	//  2. If true, spawn a goroutine to populate cache using WriteAt + UpdatePrefetchedOffset
+	//  3. Call CompletePrefetch when done (success or failure)
+	//
+	// Parameters:
+	//   - id: Content identifier
+	//   - expectedSize: Expected total file size (for pre-allocation and progress tracking)
+	//
+	// Returns:
+	//   - bool: True if this call started the prefetch, false if already in progress or not needed
+	StartPrefetch(id metadata.ContentID, expectedSize int64) (started bool)
+
+	// WaitForPrefetchOffset waits until the prefetch has fetched at least up to the required offset.
+	//
+	// This allows READ requests to be served as soon as their byte range is available,
+	// without waiting for the entire file to be prefetched.
+	//
+	// Returns immediately if:
+	//   - No prefetch is in progress (state != StatePrefetching)
+	//   - The required offset has already been prefetched
+	//   - Context is cancelled
+	//
+	// Parameters:
+	//   - ctx: Context for cancellation
+	//   - id: Content identifier
+	//   - requiredOffset: The byte offset that must be available (typically offset + count)
+	//
+	// Returns:
+	//   - error: Context error if cancelled, nil otherwise
+	WaitForPrefetchOffset(ctx context.Context, id metadata.ContentID, requiredOffset int64) error
+
+	// GetPrefetchedOffset returns how many bytes have been prefetched so far.
+	//
+	// Returns 0 if entry doesn't exist or is not in prefetching state.
+	//
+	// Parameters:
+	//   - id: Content identifier
+	//
+	// Returns:
+	//   - int64: Number of bytes prefetched so far
+	GetPrefetchedOffset(id metadata.ContentID) int64
+
+	// UpdatePrefetchedOffset updates the prefetched offset as data is fetched.
+	//
+	// Called by the prefetch goroutine after writing each chunk to the cache.
+	// This wakes up any waiters blocked in WaitForPrefetchOffset.
+	//
+	// Parameters:
+	//   - id: Content identifier
+	//   - offset: New prefetched offset (should only increase)
+	UpdatePrefetchedOffset(id metadata.ContentID, offset int64)
+
+	// CompletePrefetch marks a prefetch as complete and transitions to StateCached.
+	//
+	// This wakes up all waiters blocked in WaitForPrefetchOffset.
+	// If success is false, the entry is removed (prefetch failed).
+	//
+	// Parameters:
+	//   - id: Content identifier
+	//   - success: True if prefetch succeeded, false if failed
+	CompletePrefetch(id metadata.ContentID, success bool)
 
 	// ====================================================================
 	// Cache Coherency (Read Validation)

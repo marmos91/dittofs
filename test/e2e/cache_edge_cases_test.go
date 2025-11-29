@@ -24,7 +24,7 @@ func TestFileSizeBoundaries(t *testing.T) {
 	tc := newTestContextWithCache(t, config)
 	defer tc.Cleanup()
 
-	cache := tc.getWriteCache()
+	c := tc.getCache()
 
 	// Test cases for different file sizes relative to 5MB multipart threshold
 	testCases := []struct {
@@ -130,7 +130,7 @@ func TestFileSizeBoundaries(t *testing.T) {
 			}
 
 			// Verify cache was cleaned up
-			cacheSize := cache.TotalSize()
+			cacheSize := c.TotalSize()
 			if cacheSize > 0 {
 				t.Logf("WARNING: Cache not fully cleaned: %d bytes remain", cacheSize)
 			}
