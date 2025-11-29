@@ -721,8 +721,8 @@ func (tc *testContextWithCache) startServerWithCacheAndFlusher() {
 		},
 		// Fast flusher settings for testing
 		FlusherConfig: registry.FlusherConfig{
-			SweepInterval: 1 * time.Second,  // Check every second
-			FlushTimeout:  2 * time.Second,  // Flush after 2 seconds idle
+			SweepInterval: 1 * time.Second, // Check every second
+			FlushTimeout:  2 * time.Second, // Flush after 2 seconds idle
 		},
 	}
 
