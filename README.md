@@ -69,6 +69,18 @@ go build -o dittofs cmd/dittofs/main.go
 ./dittofs start
 ```
 
+### Run with Docker
+
+To run DittoFS is with Docker, ensure first to have the config file `~/.config/dittofs/config.yaml` to let docker compose mount it in the container:
+
+```bash
+# Start the server
+docker-compose up -d
+
+# View logs
+docker-compose logs -f dittofs
+```
+
 ### Mount from Client
 
 ```bash
