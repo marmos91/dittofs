@@ -47,12 +47,12 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 
 ## Features
 
-✅ **Production-Ready NFSv3**: 28 procedures fully implemented
-✅ **No Special Permissions**: Runs entirely in userspace - no FUSE, no kernel modules
-✅ **Pluggable Storage**: Mix protocols with any backend (S3, filesystem, custom)
-✅ **Cloud-Native**: S3 backend with production optimizations
-✅ **Pure Go**: Single binary, easy deployment, cross-platform
-✅ **Extensible**: Clean adapter pattern for new protocols
+- ✅ **Production-Ready NFSv3**: 28 procedures fully implemented
+- ✅ **No Special Permissions**: Runs entirely in userspace - no FUSE, no kernel modules
+- ✅ **Pluggable Storage**: Mix protocols with any backend (S3, filesystem, custom)
+- ✅ **Cloud-Native**: S3 backend with production optimizations
+- ✅ **Pure Go**: Single binary, easy deployment, cross-platform
+- ✅ **Extensible**: Clean adapter pattern for new protocols
 
 ## Quick Start
 
