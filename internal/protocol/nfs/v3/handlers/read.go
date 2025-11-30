@@ -10,6 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
@@ -357,8 +358,8 @@ func (h *Handler) Read(
 	var eof bool
 	var cacheHit bool
 
-	// Try reading from cache first (write cache → read cache)
-	cacheResult, err := tryReadFromCache(ctx, h, ctx.Share, file.ContentID, req.Offset, req.Count, clientIP, req.Handle)
+	// Try reading from cache first
+	cacheResult, err := h.tryReadFromCache(ctx, file.ContentID, req.Offset, req.Count)
 	if err != nil {
 		logger.Error("READ failed: %v handle=%x client=%s", err, req.Handle, clientIP)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
@@ -404,8 +405,8 @@ func (h *Handler) Read(
 		n = readResult.bytesRead
 		eof = readResult.eof
 
-		// Populate read cache after successful content store read
-		populateReadCacheFromRead(ctx, h, ctx.Share, file.ContentID, data, req.Offset, file.Size, req.Handle)
+		// Start background prefetch to cache the entire file for future reads
+		h.startBackgroundPrefetch(ctx, contentStore, file.ContentID, file.Size)
 	}
 
 	// Even if read succeeded, check if we're at or past EOF
@@ -452,58 +453,56 @@ type cacheReadResult struct {
 	hit       bool // true if data was found in cache
 }
 
-// tryReadFromCache attempts to read data from write cache first, then read cache.
+// tryReadFromCache attempts to read data from the unified cache.
 // Returns cache hit result if successful, or empty result if cache miss.
 //
-// Priority order:
-//  1. Write cache (highest priority - file may be actively being written)
-//  2. Read cache (fast - handles recently read files)
+// Cache state handling:
+//   - StateBuffering/StateUploading: Read from cache (dirty data, highest priority)
+//   - StateCached: Read from cache (clean data)
+//   - StatePrefetching: Cache miss (prefetch in progress, read from content store)
+//   - StateNone: Cache miss
 //
 // Parameters:
 //   - ctx: Handler context with cancellation support
-//   - h: Handler with metrics support
-//   - share: Share name for cache lookup
 //   - contentID: Content identifier to read
 //   - offset: Byte offset to read from
 //   - count: Number of bytes to read
-//   - clientIP: Client IP for logging
-//   - handle: File handle for logging
 //
 // Returns:
 //   - cacheReadResult: Result with data if cache hit, empty if cache miss
-//   - error: Error if cache lookup failed (cache miss returns nil error)
-func tryReadFromCache(
+//   - error: Error if cache read failed (cache miss returns nil error)
+func (h *Handler) tryReadFromCache(
 	ctx *NFSHandlerContext,
-	h *Handler,
-	share string,
 	contentID metadata.ContentID,
 	offset uint64,
 	count uint32,
-	clientIP string,
-	handle []byte,
 ) (cacheReadResult, error) {
-	// Try write cache first
-	writeCache, err := h.Registry.GetWriteCacheForShare(share)
-	if err != nil {
-		return cacheReadResult{}, fmt.Errorf("cannot get write cache: %w", err)
+	c := h.Registry.GetCacheForShare(ctx.Share)
+	if c == nil {
+		// No cache configured
+		return cacheReadResult{hit: false}, nil
 	}
 
-	if writeCache != nil && writeCache.Exists(contentID) {
-		cacheSize := writeCache.Size(contentID)
+	state := c.GetState(contentID)
+
+	switch state {
+	case cache.StateBuffering, cache.StateUploading:
+		// Dirty data in cache - must read from cache (content store may not have it yet)
+		cacheSize := c.Size(contentID)
 		if cacheSize > 0 {
-			logger.Debug("READ: trying write cache: handle=%x offset=%d count=%d cache_size=%d content_id=%s",
-				handle, offset, count, cacheSize, contentID)
+			logger.Debug("READ: reading dirty data from cache: state=%s offset=%d count=%d cache_size=%d content_id=%s",
+				state, offset, count, cacheSize, contentID)
 
 			data := make([]byte, count)
-			n, readErr := writeCache.ReadAt(ctx.Context, contentID, data, int64(offset))
+			n, readErr := c.ReadAt(ctx.Context, contentID, data, int64(offset))
 
 			if readErr == nil || readErr == io.EOF {
 				eof := (readErr == io.EOF) || (int64(offset)+int64(n) >= cacheSize)
-				logger.Debug("READ: write cache hit: handle=%x bytes_read=%d eof=%v content_id=%s",
-					handle, n, eof, contentID)
+				logger.Debug("READ: cache hit (dirty): bytes_read=%d eof=%v content_id=%s",
+					n, eof, contentID)
 
 				if h.Metrics != nil {
-					h.Metrics.RecordCacheHit(share, "write", uint64(n))
+					h.Metrics.RecordCacheHit(ctx.Share, "dirty", uint64(n))
 				}
 
 				return cacheReadResult{
@@ -514,33 +513,28 @@ func tryReadFromCache(
 				}, nil
 			}
 
-			logger.Warn("READ: write cache read error, falling back: handle=%x content_id=%s error=%v",
-				handle, contentID, readErr)
+			logger.Warn("READ: cache read error (dirty data), this is unexpected: content_id=%s error=%v",
+				contentID, readErr)
+			// Fall through to content store - but this shouldn't happen for dirty data
 		}
-	}
 
-	// Try read cache
-	readCache, err := h.Registry.GetReadCacheForShare(share)
-	if err != nil {
-		return cacheReadResult{}, fmt.Errorf("cannot get read cache: %w", err)
-	}
-
-	if readCache != nil && readCache.Exists(contentID) {
-		cacheSize := readCache.Size(contentID)
+	case cache.StateCached:
+		// Clean data in cache - read from cache
+		cacheSize := c.Size(contentID)
 		if cacheSize > 0 {
-			logger.Debug("READ: trying read cache: handle=%x offset=%d count=%d cache_size=%d content_id=%s",
-				handle, offset, count, cacheSize, contentID)
+			logger.Debug("READ: reading from cache: offset=%d count=%d cache_size=%d content_id=%s",
+				offset, count, cacheSize, contentID)
 
 			data := make([]byte, count)
-			n, readErr := readCache.ReadAt(ctx.Context, contentID, data, int64(offset))
+			n, readErr := c.ReadAt(ctx.Context, contentID, data, int64(offset))
 
 			if readErr == nil || readErr == io.EOF {
 				eof := (readErr == io.EOF) || (int64(offset)+int64(n) >= cacheSize)
-				logger.Debug("READ: read cache hit: handle=%x bytes_read=%d eof=%v content_id=%s",
-					handle, n, eof, contentID)
+				logger.Debug("READ: cache hit: bytes_read=%d eof=%v content_id=%s",
+					n, eof, contentID)
 
 				if h.Metrics != nil {
-					h.Metrics.RecordCacheHit(share, "read", uint64(n))
+					h.Metrics.RecordCacheHit(ctx.Share, "clean", uint64(n))
 				}
 
 				return cacheReadResult{
@@ -551,17 +545,234 @@ func tryReadFromCache(
 				}, nil
 			}
 
-			logger.Warn("READ: read cache read error, falling back: handle=%x content_id=%s error=%v",
-				handle, contentID, readErr)
+			logger.Warn("READ: cache read error, falling back to content store: content_id=%s error=%v",
+				contentID, readErr)
 		}
+
+	case cache.StatePrefetching:
+		// Prefetch in progress - wait for the required offset to be available
+		requiredOffset := int64(offset) + int64(count)
+		logger.Debug("READ: prefetch in progress, waiting for offset %d: content_id=%s", requiredOffset, contentID)
+
+		if err := c.WaitForPrefetchOffset(ctx.Context, contentID, requiredOffset); err != nil {
+			return cacheReadResult{hit: false}, err
+		}
+
+		// Our bytes are now available - read from cache
+		cacheSize := c.Size(contentID)
+		data := make([]byte, count)
+		n, readErr := c.ReadAt(ctx.Context, contentID, data, int64(offset))
+
+		if readErr == nil || readErr == io.EOF {
+			eof := (readErr == io.EOF) || (int64(offset)+int64(n) >= cacheSize)
+			logger.Debug("READ: cache hit after prefetch: bytes_read=%d eof=%v content_id=%s", n, eof, contentID)
+
+			if h.Metrics != nil {
+				h.Metrics.RecordCacheHit(ctx.Share, "prefetch", uint64(n))
+			}
+
+			return cacheReadResult{
+				data:      data[:n],
+				bytesRead: n,
+				eof:       eof,
+				hit:       true,
+			}, nil
+		}
+
+		logger.Warn("READ: cache read error after prefetch wait: content_id=%s error=%v", contentID, readErr)
+		// Fall through to cache miss
+
+	case cache.StateNone:
+		// Not in cache
+		logger.Debug("READ: cache miss: content_id=%s", contentID)
 	}
 
 	// Cache miss
 	if h.Metrics != nil {
-		h.Metrics.RecordCacheMiss(share, uint64(count))
+		h.Metrics.RecordCacheMiss(ctx.Share, uint64(count))
 	}
 
 	return cacheReadResult{hit: false}, nil
+}
+
+// Prefetch configuration defaults (used when config values are zero)
+const (
+	// defaultMaxPrefetchSize is the maximum file size to prefetch.
+	// Files larger than this are not prefetched to avoid cache thrashing.
+	defaultMaxPrefetchSize = 100 * 1024 * 1024 // 100MB
+
+	// defaultPrefetchChunkSize is the size of each chunk read during prefetch.
+	// Larger chunks = fewer requests but longer wait before unblocking reads.
+	// Smaller chunks = more requests but faster unblocking of waiting reads.
+	defaultPrefetchChunkSize = 512 * 1024 // 512KB
+)
+
+// startBackgroundPrefetch starts a background goroutine to fetch the entire file into cache.
+//
+// This is called on cache miss to prefetch the file for future reads.
+// The prefetch runs asynchronously - the current READ request has already been served
+// from the content store directly.
+//
+// Prefetch is skipped if:
+//   - No cache is configured for this share
+//   - Prefetch is disabled for this share
+//   - File is too large (> maxPrefetchSize from config)
+//   - Prefetch is already in progress for this content ID
+func (h *Handler) startBackgroundPrefetch(
+	ctx *NFSHandlerContext,
+	contentStore content.ContentStore,
+	contentID metadata.ContentID,
+	fileSize uint64,
+) {
+	c := h.Registry.GetCacheForShare(ctx.Share)
+	if c == nil {
+		return // No cache configured
+	}
+
+	// Get share to access prefetch config
+	share, err := h.Registry.GetShare(ctx.Share)
+	if err != nil {
+		return // Share not found
+	}
+
+	// Check if prefetch is enabled
+	if !share.PrefetchConfig.Enabled {
+		return // Prefetch disabled
+	}
+
+	// Get max file size from config (use default if not set)
+	maxFileSize := share.PrefetchConfig.MaxFileSize
+	if maxFileSize == 0 {
+		maxFileSize = defaultMaxPrefetchSize
+	}
+
+	// Skip large files to avoid cache thrashing
+	if fileSize > uint64(maxFileSize) {
+		logger.Debug("READ: skipping prefetch for large file: content_id=%s size=%d max=%d",
+			contentID, fileSize, maxFileSize)
+		return
+	}
+
+	// Try to start prefetch - returns false if already in progress or not needed
+	if !c.StartPrefetch(contentID, int64(fileSize)) {
+		logger.Debug("READ: prefetch already in progress or not needed: content_id=%s", contentID)
+		return
+	}
+
+	// Get chunk size from config (use default if not set)
+	chunkSize := share.PrefetchConfig.ChunkSize
+	if chunkSize == 0 {
+		chunkSize = defaultPrefetchChunkSize
+	}
+
+	logger.Debug("READ: starting background prefetch: content_id=%s size=%d chunk_size=%d", contentID, fileSize, chunkSize)
+
+	// Spawn background goroutine to fetch the file
+	go h.runPrefetch(ctx.Share, contentStore, contentID, fileSize, chunkSize)
+}
+
+// runPrefetch fetches the entire file content and writes it to cache.
+//
+// This runs in a background goroutine. It reads the file in chunks,
+// updating the prefetched offset after each chunk so that waiting
+// READ requests can be served as soon as their bytes are available.
+func (h *Handler) runPrefetch(
+	share string,
+	contentStore content.ContentStore,
+	contentID metadata.ContentID,
+	fileSize uint64,
+	chunkSize int64,
+) {
+	c := h.Registry.GetCacheForShare(share)
+	if c == nil {
+		return // Cache was removed
+	}
+
+	// Use a background context - prefetch should continue even if original request is done
+	ctx := context.Background()
+
+	var offset int64
+	success := false
+
+	defer func() {
+		c.CompletePrefetch(contentID, success)
+		if success {
+			logger.Debug("READ: prefetch completed: content_id=%s size=%d", contentID, fileSize)
+		} else {
+			logger.Warn("READ: prefetch failed: content_id=%s", contentID)
+		}
+	}()
+
+	// Check if content store supports ReadAt for efficient chunked reads
+	readAtStore, hasReadAt := contentStore.(content.ReadAtContentStore)
+
+	if hasReadAt {
+		// Efficient path: read in chunks using ReadAt
+		for offset < int64(fileSize) {
+			remaining := int64(fileSize) - offset
+			readSize := min(remaining, chunkSize)
+
+			chunk := make([]byte, readSize)
+			n, err := readAtStore.ReadAt(ctx, contentID, chunk, offset)
+			if err != nil && err != io.EOF {
+				logger.Warn("READ: prefetch chunk read failed: content_id=%s offset=%d error=%v",
+					contentID, offset, err)
+				return
+			}
+
+			if n > 0 {
+				// Write chunk to cache
+				if err := c.WriteAt(ctx, contentID, chunk[:n], offset); err != nil {
+					logger.Warn("READ: prefetch cache write failed: content_id=%s offset=%d error=%v",
+						contentID, offset, err)
+					return
+				}
+
+				offset += int64(n)
+				c.UpdatePrefetchedOffset(contentID, offset)
+			}
+
+			if err == io.EOF || n == 0 {
+				break
+			}
+		}
+	} else {
+		// Fallback: read entire content using streaming reader
+		reader, err := contentStore.ReadContent(ctx, contentID)
+		if err != nil {
+			logger.Warn("READ: prefetch read failed: content_id=%s error=%v", contentID, err)
+			return
+		}
+		defer func() { _ = reader.Close() }()
+
+		// Read and write in chunks
+		for {
+			chunk := make([]byte, chunkSize)
+			n, err := reader.Read(chunk)
+
+			if n > 0 {
+				if writeErr := c.WriteAt(ctx, contentID, chunk[:n], offset); writeErr != nil {
+					logger.Warn("READ: prefetch cache write failed: content_id=%s offset=%d error=%v",
+						contentID, offset, writeErr)
+					return
+				}
+
+				offset += int64(n)
+				c.UpdatePrefetchedOffset(contentID, offset)
+			}
+
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				logger.Warn("READ: prefetch read failed: content_id=%s offset=%d error=%v",
+					contentID, offset, err)
+				return
+			}
+		}
+	}
+
+	success = true
 }
 
 // contentStoreReadResult holds the result of reading from content store.
@@ -786,57 +997,6 @@ func readFromContentStoreSequential(
 		bytesRead: n,
 		eof:       false,
 	}, nil
-}
-
-// populateReadCacheFromRead populates the read cache after a successful read from content store.
-// Only populates for small to medium files to avoid cache thrashing.
-//
-// Parameters:
-//   - ctx: Handler context
-//   - h: Handler with registry access
-//   - share: Share name
-//   - contentID: Content identifier
-//   - data: Data that was read
-//   - offset: Offset where data was read
-//   - fileSize: Total file size
-//   - handle: File handle for logging
-func populateReadCacheFromRead(
-	ctx *NFSHandlerContext,
-	h *Handler,
-	share string,
-	contentID metadata.ContentID,
-	data []byte,
-	offset uint64,
-	fileSize uint64,
-	handle []byte,
-) {
-	readCache, err := h.Registry.GetReadCacheForShare(share)
-	if err != nil {
-		logger.Warn("READ: cannot get read cache: share=%s error=%v", share, err)
-		return
-	}
-
-	if readCache == nil || len(data) == 0 {
-		return // No cache configured or no data to cache
-	}
-
-	// Only cache small to medium files (< 10MB) to avoid thrashing
-	const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
-	if fileSize > uint64(maxReadCacheSize) {
-		logger.Debug("READ: skipping cache population for large file: handle=%x size=%d max_cache_size=%d",
-			handle, fileSize, maxReadCacheSize)
-		return
-	}
-
-	// Write the data we just read to the cache at the appropriate offset
-	err = readCache.WriteAt(ctx.Context, contentID, data, int64(offset))
-	if err != nil {
-		logger.Warn("READ: failed to populate read cache: handle=%x content_id=%s offset=%d size=%d error=%v",
-			handle, contentID, offset, len(data), err)
-	} else {
-		logger.Debug("READ: populated read cache: handle=%x content_id=%s offset=%d size=%d cache_size=%d",
-			handle, contentID, offset, len(data), readCache.Size(contentID))
-	}
 }
 
 // readWithCancellation reads data from a reader with periodic context cancellation checks.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -476,40 +477,43 @@ type IncrementalWriteStore interface {
 	//	}
 	BeginIncrementalWrite(ctx context.Context, id metadata.ContentID) (uploadID string, err error)
 
-	// FlushIncremental writes partial data from cache to content store.
+	// FlushIncremental reads from cache and writes to content store incrementally.
 	//
-	// This uploads data as a multipart part if enough data has been accumulated
-	// (>= 5MB for S3). If less than 5MB, data is buffered until more arrives.
+	// The store implementation:
+	//   1. Reads new bytes from cache using cache.GetFlushedOffset() and cache.ReadAt()
+	//   2. Buffers data until enough for an upload (e.g., 5MB for S3 multipart)
+	//   3. Uploads when buffer threshold is reached
+	//   4. Updates cache.SetFlushedOffset() after successful upload
+	//
+	// This keeps the COMMIT handler agnostic of store-specific buffering logic.
+	// Each store decides its own flush strategy (S3: 5MB parts, filesystem: immediate).
 	//
 	// The implementation tracks:
 	//   - Upload ID (from BeginIncrementalWrite)
 	//   - Current part number (auto-incremented)
-	//   - Buffered data (accumulated until >= 5MB)
+	//   - Internal buffer (accumulated until threshold)
 	//
-	// Returns the number of bytes actually uploaded to S3 (may be 0 if still buffering).
+	// Returns the number of bytes actually uploaded (may be 0 if still buffering).
 	//
 	// Parameters:
 	//   - ctx: Context for cancellation and timeouts
 	//   - id: Content identifier
-	//   - data: Partial data from cache (typically ~4MB from one COMMIT)
+	//   - c: Cache to read data from (store manages offsets and updates FlushedOffset)
 	//
 	// Returns:
-	//   - flushed: Number of bytes actually uploaded to S3 (0 if buffering)
-	//   - error: Returns error if upload fails
+	//   - flushed: Number of bytes actually uploaded to storage (0 if buffering)
+	//   - error: Returns error if read or upload fails
 	//
-	// Example (COMMIT handler on partial commit):
-	//
-	//	// Read partial data from cache (e.g., 4MB range)
-	//	data, _ := cache.ReadRange(ctx, contentID, offset, count)
+	// Example (COMMIT handler):
 	//
 	//	if incStore, ok := contentStore.(content.IncrementalWriteStore); ok {
-	//	    flushed, err := incStore.FlushIncremental(ctx, contentID, data)
+	//	    flushed, err := incStore.FlushIncremental(ctx, contentID, cache)
 	//	    if err != nil {
 	//	        return fmt.Errorf("failed to flush incremental: %w", err)
 	//	    }
-	//	    logger.Debug("Flushed %d bytes to S3 (buffered: %d)", flushed, len(data)-int(flushed))
+	//	    // Store handles cache.SetFlushedOffset() internally
 	//	}
-	FlushIncremental(ctx context.Context, id metadata.ContentID, data []byte) (flushed int64, err error)
+	FlushIncremental(ctx context.Context, id metadata.ContentID, c cache.Cache) (flushed int64, err error)
 
 	// CompleteIncrementalWrite finalizes an incremental write session.
 	//

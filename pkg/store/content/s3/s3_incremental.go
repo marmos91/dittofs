@@ -9,8 +9,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"sync"
 
+	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
@@ -79,27 +81,25 @@ func (s *S3ContentStore) BeginIncrementalWrite(ctx context.Context, id metadata.
 	return uploadID, nil
 }
 
-// FlushIncremental writes partial data from cache to content store.
+// FlushIncremental reads from cache and writes to S3 incrementally.
 //
-// This uploads data as a multipart part if enough data has been accumulated
-// (>= 5MB for S3). If less than 5MB, data is buffered until more arrives.
-//
-// The implementation tracks:
-//   - Upload ID (from BeginIncrementalWrite)
-//   - Current part number (auto-incremented)
-//   - Buffered data (accumulated until >= 5MB)
+// The store implementation:
+//  1. Reads new bytes from cache using cache.GetFlushedOffset() and cache.ReadAt()
+//  2. Buffers data until enough for an upload (5MB for S3 multipart)
+//  3. Uploads when buffer threshold is reached
+//  4. Updates cache.SetFlushedOffset() after successful upload
 //
 // Returns the number of bytes actually uploaded to S3 (may be 0 if still buffering).
 //
 // Parameters:
 //   - ctx: Context for cancellation and timeouts
 //   - id: Content identifier
-//   - data: Partial data from cache (typically ~4MB from one COMMIT)
+//   - c: Cache to read data from (store manages offsets and updates FlushedOffset)
 //
 // Returns:
 //   - flushed: Number of bytes actually uploaded to S3 (0 if buffering)
-//   - error: Returns error if upload fails
-func (s *S3ContentStore) FlushIncremental(ctx context.Context, id metadata.ContentID, data []byte) (int64, error) {
+//   - error: Returns error if read or upload fails
+func (s *S3ContentStore) FlushIncremental(ctx context.Context, id metadata.ContentID, c cache.Cache) (int64, error) {
 	// Get session
 	incrementalSessionsMu.RLock()
 	session, exists := incrementalSessions[id]
@@ -112,37 +112,43 @@ func (s *S3ContentStore) FlushIncremental(ctx context.Context, id metadata.Conte
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
-	// Calculate how many new bytes are in this data
-	// (data may contain bytes we've already seen)
-	totalDataSize := int64(len(data))
-	if totalDataSize <= session.totalReceived {
-		// No new data - this can happen if COMMIT is called multiple times
-		// for the same range
+	// Read new bytes from cache since last flush
+	cacheSize := c.Size(id)
+	flushedOffset := c.GetFlushedOffset(id)
+	bytesToRead := cacheSize - flushedOffset
+
+	if bytesToRead <= 0 {
+		// No new data in cache
 		return 0, nil
 	}
 
-	// Only process new bytes beyond what we've already received
-	newBytesOffset := session.totalReceived
-	newData := data[newBytesOffset:]
+	// Read new bytes from cache
+	buf := make([]byte, bytesToRead)
+	n, err := c.ReadAt(ctx, id, buf, flushedOffset)
+	if err != nil && err != io.EOF {
+		return 0, fmt.Errorf("failed to read from cache: %w", err)
+	}
+	newData := buf[:n]
 
-	// Add new data to buffer
-	n, err := session.buffer.Write(newData)
+	// Add new data to internal buffer
+	written, err := session.buffer.Write(newData)
 	if err != nil {
 		return 0, fmt.Errorf("failed to buffer data: %w", err)
 	}
-	if n != len(newData) {
-		return 0, fmt.Errorf("partial buffer write: wrote %d of %d bytes", n, len(newData))
+	if written != len(newData) {
+		return 0, fmt.Errorf("partial buffer write: wrote %d of %d bytes", written, len(newData))
 	}
 
 	// Update total received
-	session.totalReceived = totalDataSize
+	session.totalReceived += int64(n)
 
 	// Check if we have enough data to upload a part (5MB minimum for S3)
 	const minPartSize = 5 * 1024 * 1024 // 5MB
 	bufferSize := session.buffer.Len()
 
 	if bufferSize < minPartSize {
-		// Not enough data yet - keep buffering
+		// Not enough data yet - update flushed offset to mark bytes as "received by store"
+		c.SetFlushedOffset(id, flushedOffset+int64(n))
 		return 0, nil
 	}
 
@@ -171,10 +177,13 @@ func (s *S3ContentStore) FlushIncremental(ctx context.Context, id metadata.Conte
 		return 0, fmt.Errorf("failed to upload part %d: %w", session.currentPartNumber, err)
 	}
 
-	// Update state
+	// Update session state
 	partsFlushed := int64(len(partData))
 	session.totalFlushed += partsFlushed
 	session.currentPartNumber++
+
+	// Update cache flushed offset
+	c.SetFlushedOffset(id, flushedOffset+int64(n))
 
 	return partsFlushed, nil
 }

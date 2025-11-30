@@ -9,8 +9,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/cache"
-	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -317,20 +315,15 @@ func (h *Handler) Write(
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// Get write cache for this share (optional - may be nil for sync mode)
-	writeCache, err := h.Registry.GetWriteCacheForShare(ctx.Share)
-	if err != nil {
-		logger.Error("WRITE failed: cannot get write cache: share=%s handle=%x client=%s error=%v",
-			ctx.Share, req.Handle, clientIP, err)
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
+	// Get unified cache for this share (optional - nil means sync mode)
+	cache := h.Registry.GetCacheForShare(ctx.Share)
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	if writeCache != nil {
-		logger.Debug("WRITE: share=%s mode=async (using write cache)", ctx.Share)
+	if cache != nil {
+		logger.Debug("WRITE: share=%s mode=async (using cache)", ctx.Share)
 	} else {
-		logger.Debug("WRITE: share=%s mode=sync (no write cache)", ctx.Share)
+		logger.Debug("WRITE: share=%s mode=sync (no cache)", ctx.Share)
 	}
 
 	// ========================================================================
@@ -464,25 +457,26 @@ func (h *Handler) Write(
 		return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
 
-	// Write to storage (cache or direct)
-	err = writeToStorage(ctx, writeCache, contentStore, writeIntent.ContentID, req.Data, req.Offset, clientIP, req.Handle)
-	if err != nil {
-		var status uint32 = types.NFS3ErrIO
-		// Map content store errors to appropriate NFS status
-		if writeCache == nil {
-			status = xdr.MapContentErrorToNFSStatus(err)
+	// Write to storage (cache or direct to content store)
+	if cache != nil {
+		// Async mode: write to cache, will be flushed on COMMIT
+		err = cache.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, int64(req.Offset))
+		if err != nil {
+			logger.Error("WRITE failed: cache write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
+				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
+			return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 		}
-
-		return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
-	}
-
-	// ========================================================================
-	// Step 7.5: Populate read cache after successful direct write (no write cache)
-	// ========================================================================
-	// If we wrote directly to content store (no write cache), populate the read cache
-	// This makes the newly written data available for fast subsequent reads
-	if writeCache == nil {
-		populateReadCacheAfterWrite(ctx, h, ctx.Share, writeIntent.ContentID, req.Data, req.Offset, newSize, req.Handle)
+		logger.Debug("WRITE: cached successfully: content_id=%s cache_size=%d", writeIntent.ContentID, cache.Size(writeIntent.ContentID))
+	} else {
+		// Sync mode: write directly to content store
+		err = contentStore.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, int64(req.Offset))
+		if err != nil {
+			logger.Error("WRITE failed: content write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
+				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
+			status := xdr.MapContentErrorToNFSStatus(err)
+			return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
+		}
+		logger.Debug("WRITE: direct write successful: content_id=%s", writeIntent.ContentID)
 	}
 
 	// ========================================================================
@@ -515,21 +509,16 @@ func (h *Handler) Write(
 	// WITH cache:
 	//   - Return UNSTABLE to tell client data is buffered
 	//   - Client will call COMMIT when it wants durability
-	//   - This prevents flush-on-every-write performance issue
 	//
 	// WITHOUT cache (direct write to content store):
-	//   - Return requested stability level (data is already committed)
-	//   - Client won't call COMMIT since we said data is stable
-	//   - No unnecessary COMMIT calls
+	//   - Return FILE_SYNC since data is committed to storage
 	var committed uint32
-	if writeCache != nil {
-		// Cache enabled: always return UNSTABLE so client will call COMMIT
+	if cache != nil {
 		committed = uint32(UnstableWrite)
 		logger.Debug("WRITE: returning UNSTABLE (cache enabled, flush on COMMIT)")
 	} else {
-		// No cache: data written directly to storage, return requested stability
-		committed = req.Stable
-		logger.Debug("WRITE: returning stability=%d (no cache, data committed)", committed)
+		committed = uint32(FileSyncWrite)
+		logger.Debug("WRITE: returning FILE_SYNC (no cache, data committed)")
 	}
 
 	logger.Debug("WRITE details: stable_requested=%d committed=%d size=%d type=%d mode=%o",
@@ -571,105 +560,6 @@ func (h *Handler) buildWriteErrorResponse(
 		NFSResponseBase: NFSResponseBase{Status: status},
 		AttrBefore:      wccBefore,
 		AttrAfter:       wccAfter,
-	}
-}
-
-// writeToStorage handles writing data to either cache or content store.
-// Returns the storage strategy used and any error encountered.
-//
-// Strategy:
-//   - If writeCache exists: Write to cache (async mode)
-//   - Otherwise: Write directly to content store (sync mode)
-func writeToStorage(
-	ctx *NFSHandlerContext,
-	writeCache cache.Cache,
-	contentStore content.ContentStore,
-	contentID metadata.ContentID,
-	data []byte,
-	offset uint64,
-	clientIP string,
-	handle []byte,
-) error {
-	if writeCache != nil {
-		// CACHED MODE: Write to cache
-		logger.Debug("WRITE: cached mode: content_id=%s offset=%d count=%d",
-			contentID, offset, len(data))
-
-		err := writeCache.WriteAt(ctx.Context, contentID, data, int64(offset))
-		if err != nil {
-			logger.Error("WRITE failed: cache write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
-				handle, offset, len(data), contentID, clientIP, err)
-			return err
-		}
-
-		logger.Debug("WRITE: cached successfully: content_id=%s cache_size=%d",
-			contentID, writeCache.Size(contentID))
-		return nil
-	}
-
-	// DIRECT MODE: Write directly to content store
-	logger.Debug("WRITE: direct mode: content_id=%s offset=%d count=%d",
-		contentID, offset, len(data))
-
-	err := contentStore.WriteAt(ctx.Context, contentID, data, int64(offset))
-	if err != nil {
-		logger.Error("WRITE failed: content write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
-			handle, offset, len(data), contentID, clientIP, err)
-		return err
-	}
-
-	logger.Debug("WRITE: direct write successful: content_id=%s", contentID)
-	return nil
-}
-
-// populateReadCacheAfterWrite populates the read cache after a successful direct write.
-// Only called in sync mode (no write cache) to make newly written data available for fast reads.
-//
-// Parameters:
-//   - ctx: Handler context
-//   - h: Handler with registry access
-//   - share: Share name
-//   - contentID: Content identifier
-//   - data: Data that was written
-//   - offset: Offset where data was written
-//   - newSize: New file size after write
-//   - handle: File handle for logging
-func populateReadCacheAfterWrite(
-	ctx *NFSHandlerContext,
-	h *Handler,
-	share string,
-	contentID metadata.ContentID,
-	data []byte,
-	offset uint64,
-	newSize uint64,
-	handle []byte,
-) {
-	readCache, err := h.Registry.GetReadCacheForShare(share)
-	if err != nil {
-		logger.Warn("WRITE: cannot get read cache: share=%s error=%v", share, err)
-		return
-	}
-
-	if readCache == nil || len(data) == 0 {
-		return // No cache configured or no data to cache
-	}
-
-	// Only cache small to medium files (< 10MB) to avoid thrashing
-	const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
-	if newSize > uint64(maxReadCacheSize) {
-		logger.Debug("WRITE: skipping read cache population for large file: handle=%x size=%d max_cache_size=%d",
-			handle, newSize, maxReadCacheSize)
-		return
-	}
-
-	// Write the data we just wrote at the appropriate offset
-	err = readCache.WriteAt(ctx.Context, contentID, data, int64(offset))
-	if err != nil {
-		logger.Warn("WRITE: failed to populate read cache: handle=%x content_id=%s offset=%d size=%d error=%v",
-			handle, contentID, offset, len(data), err)
-	} else {
-		logger.Debug("WRITE: populated read cache: handle=%x content_id=%s offset=%d size=%d cache_size=%d",
-			handle, contentID, offset, len(data), readCache.Size(contentID))
 	}
 }
 

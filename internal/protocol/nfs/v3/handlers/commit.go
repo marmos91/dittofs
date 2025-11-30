@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -358,68 +357,73 @@ func (h *Handler) Commit(
 		}, nil
 	}
 
-	// Get write cache for this share (may be nil if sync mode)
-	writeCache, err := h.Registry.GetWriteCacheForShare(ctx.Share)
+	// Get unified cache for this share (may be nil if sync mode)
+	cache := h.Registry.GetCacheForShare(ctx.Share)
+
+	// Convert file attributes for WCC "after" data
+	wccAfter := h.convertFileAttrToNFS(handle, &file.FileAttr)
+
+	if cache == nil {
+		// Sync mode: data was written directly to content store, nothing to flush
+		logger.Debug("COMMIT: sync mode (no cache), returning success")
+		logger.Info("COMMIT successful: handle=%x offset=%d count=%d client=%s (sync mode)",
+			req.Handle, req.Offset, req.Count, clientIP)
+		return &CommitResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+			AttrBefore:      wccBefore,
+			AttrAfter:       wccAfter,
+			WriteVerifier:   serverBootTime,
+		}, nil
+	}
+
+	// Async mode: check if there's data to flush
+	if cache.Size(file.ContentID) == 0 {
+		logger.Debug("COMMIT: no data in cache, returning success")
+		logger.Info("COMMIT successful: handle=%x offset=%d count=%d client=%s (empty cache)",
+			req.Handle, req.Offset, req.Count, clientIP)
+		return &CommitResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+			AttrBefore:      wccBefore,
+			AttrAfter:       wccAfter,
+			WriteVerifier:   serverBootTime,
+		}, nil
+	}
+
+	// Flush cache to content store
+	logger.Debug("COMMIT: flushing cache to content store")
+
+	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
 	if err != nil {
-		logger.Error("COMMIT failed: cannot get write cache: share=%s handle=%x client=%s error=%v",
+		logger.Error("COMMIT failed: cannot get content store: share=%s handle=%x client=%s error=%v",
 			ctx.Share, req.Handle, clientIP, err)
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	if writeCache == nil {
-		// Sync mode: data was written directly to content store
-		// This is a no-op - just return success
-		logger.Debug("COMMIT: sync mode (no write cache), data already in content store")
-		// Continue to step 5 to return success response
-	} else {
-		// Async mode: flush cache to content store
-		logger.Debug("COMMIT: async mode, flushing cache to content store")
+	// Flush cache to content store
+	flushErr := flushCacheToContentStore(ctx, h, cache, contentStore, file, req)
+	if flushErr != nil {
+		logger.Error("COMMIT failed: flush error: handle=%x content_id=%s client=%s error=%v",
+			req.Handle, file.ContentID, clientIP, flushErr)
 
-		// Get content store for this share
-		contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
-		if err != nil {
-			logger.Error("COMMIT failed: cannot get content store: share=%s handle=%x client=%s error=%v",
-				ctx.Share, req.Handle, clientIP, err)
-			return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+		// Try to get updated attributes for error response
+		if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
+			wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 		}
 
-		// Flush cache to content store
-		// Content store decides implementation strategy (incremental, direct, etc.)
-		flushErr := flushCacheToContentStore(ctx, h, ctx.Share, writeCache, contentStore, file, req)
-		if flushErr != nil {
-			logger.Error("COMMIT failed: flush error: handle=%x content_id=%s client=%s error=%v",
-				req.Handle, file.ContentID, clientIP, flushErr)
-
-			var wccAfter *types.NFSFileAttr
-			if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
-				wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
-			}
-
-			return &CommitResponse{
-				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-				AttrBefore:      wccBefore,
-				AttrAfter:       wccAfter,
-			}, nil
-		}
+		return &CommitResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			AttrBefore:      wccBefore,
+			AttrAfter:       wccAfter,
+		}, nil
 	}
 
-	// ========================================================================
-	// Step 5: Build success response with updated file attributes
-	// ========================================================================
-
-	// Get updated file attributes for WCC data
-	updatedFile, err := store.GetFile(ctx.Context, handle)
-	if err != nil {
-		logger.Warn("COMMIT: successful but cannot get updated file attributes: handle=%x error=%v",
-			req.Handle, err)
-		// Continue with nil WccAfter rather than failing
-	}
-
-	var wccAfter *types.NFSFileAttr
-	if updatedFile != nil {
+	// Get updated file attributes for WCC data (file may have changed after flush)
+	if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
 		wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
-		logger.Debug("COMMIT details: file_size=%d file_type=%d",
-			updatedFile.Size, wccAfter.Type)
+		logger.Debug("COMMIT details: file_size=%d file_type=%d", updatedFile.Size, wccAfter.Type)
+	} else {
+		logger.Warn("COMMIT: successful but cannot get updated file attributes: handle=%x error=%v",
+			req.Handle, getErr)
 	}
 
 	logger.Info("COMMIT successful: handle=%x offset=%d count=%d client=%s",
@@ -436,322 +440,74 @@ func (h *Handler) Commit(
 // Commit Helper Functions
 // ============================================================================
 
-// populateReadCacheAfterCommit populates the read cache after a successful commit.
-// Only populates for small to medium files to avoid cache thrashing.
+// flushCacheToContentStore flushes the cache to the content store.
 //
-// Parameters:
-//   - ctx: Handler context
-//   - h: Handler with registry access
-//   - share: Share name
-//   - contentID: Content identifier
-//   - data: Data that was committed
-//   - handle: File handle for logging
-func populateReadCacheAfterCommit(
-	ctx *NFSHandlerContext,
-	h *Handler,
-	share string,
-	contentID metadata.ContentID,
-	data []byte,
-	handle []byte,
-) {
-	readCache, err := h.Registry.GetReadCacheForShare(share)
-	if err != nil {
-		logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", share, err)
-		return
-	}
-
-	if readCache == nil || len(data) == 0 {
-		return // No cache configured or no data to cache
-	}
-
-	// Only cache small to medium files (< 10MB) to avoid thrashing
-	const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
-	if len(data) > maxReadCacheSize {
-		return
-	}
-
-	err = readCache.Write(ctx.Context, contentID, data)
-	if err != nil {
-		logger.Warn("COMMIT: failed to populate read cache: content_id=%s size=%d error=%v",
-			contentID, len(data), err)
-	} else {
-		logger.Debug("COMMIT: populated read cache: content_id=%s size=%d",
-			contentID, len(data))
-	}
-}
-
-// flushCacheToContentStore flushes the write cache to the content store.
-// This is implementation-agnostic - the content store decides its own strategy.
+// Strategy depends on content store capabilities:
+//   - IncrementalWriteStore (S3): streaming multipart uploads
+//   - WriteAtStore (filesystem, memory): write only new bytes at offset
+//   - Basic store: write entire file (inefficient fallback)
 //
-// Strategy selection is delegated to the content store implementation:
-//   - Incremental stores (S3): Use BeginIncrementalWrite/FlushIncremental/CompleteIncrementalWrite
-//   - Non-incremental stores (filesystem, memory): Use WriteAt for new bytes only
-//
-// Parameters:
-//   - ctx: Handler context
-//   - h: Handler with registry access
-//   - share: Share name
-//   - writeCache: Write cache to read from
-//   - contentStore: Content store to write to
-//   - file: File metadata
-//   - req: Commit request
-//   - clientIP: Client IP for logging
-//
-// Returns:
-//   - error: Error if flush failed
+// State transitions are handled by the background flusher, not here.
 func flushCacheToContentStore(
 	ctx *NFSHandlerContext,
 	h *Handler,
-	share string,
-	writeCache cache.Cache,
+	c cache.Cache,
 	contentStore content.ContentStore,
 	file *metadata.File,
 	req *CommitRequest,
 ) error {
-	// Check if content store supports incremental writes
+	contentID := file.ContentID
+	cacheSize := c.Size(contentID)
+	flushedOffset := c.GetFlushedOffset(contentID)
+
+	// Check for incremental write support first (S3)
 	if incStore, ok := contentStore.(content.IncrementalWriteStore); ok {
-		return flushIncremental(ctx, h, share, writeCache, incStore, file, req)
-	}
+		// Incremental write (S3): streaming multipart uploads
+		// Acquire per-file lock to serialize concurrent commits
+		fileLock := h.acquireFileLock(contentID)
+		defer h.releaseFileLock(fileLock)
 
-	// Fallback: non-incremental store (filesystem, memory)
-	return flushNonIncremental(ctx, h, share, writeCache, contentStore, file, req)
-}
-
-// flushIncremental handles flushing to stores that support incremental writes.
-// Uses the IncrementalWriteStore interface for efficient streaming uploads.
-func flushIncremental(
-	ctx *NFSHandlerContext,
-	h *Handler,
-	share string,
-	writeCache cache.Cache,
-	incStore content.IncrementalWriteStore,
-	file *metadata.File,
-	req *CommitRequest,
-) error {
-	contentID := file.ContentID
-	isFinalCommit := isFullFileCommit(&file.FileAttr, req)
-
-	// Acquire per-file lock to serialize concurrent commits to same file
-	// This prevents race conditions with multipart upload sessions
-	fileLock := h.acquireFileLock(contentID)
-	defer h.releaseFileLock(fileLock)
-
-	// Check if incremental write session exists
-	state := incStore.GetIncrementalWriteState(contentID)
-
-	// Start new session if needed
-	if state == nil {
-		uploadID, err := incStore.BeginIncrementalWrite(ctx.Context, contentID)
-		if err != nil {
-			return fmt.Errorf("cannot begin incremental write: %w", err)
-		}
-		logger.Debug("COMMIT: began incremental write: content_id=%s upload_id=%s", contentID, uploadID)
-	}
-
-	// Read data from cache
-	data, err := writeCache.Read(ctx.Context, contentID)
-	if err != nil {
-		// Abort incremental write on error
-		_ = incStore.AbortIncrementalWrite(ctx.Context, contentID)
-		return fmt.Errorf("cache read error: %w", err)
-	}
-
-	// Flush incremental (content store decides when to upload parts)
-	flushed, err := incStore.FlushIncremental(ctx.Context, contentID, data)
-	if err != nil {
-		// Abort incremental write on error
-		_ = incStore.AbortIncrementalWrite(ctx.Context, contentID)
-		return fmt.Errorf("incremental flush error: %w", err)
-	}
-
-	if flushed > 0 {
-		logger.Info("COMMIT: flushed %d bytes incrementally: content_id=%s buffered=%d",
-			flushed, contentID, len(data)-int(flushed))
-	}
-
-	// Complete write if this is the final commit
-	if isFinalCommit {
-		logger.Debug("COMMIT: final commit, completing incremental write: content_id=%s", contentID)
-
-		err = incStore.CompleteIncrementalWrite(ctx.Context, contentID)
-		if err != nil {
-			// Abort the upload on error
-			_ = incStore.AbortIncrementalWrite(ctx.Context, contentID)
-			return fmt.Errorf("incremental write completion error: %w", err)
+		// Start new session if needed
+		if incStore.GetIncrementalWriteState(contentID) == nil {
+			uploadID, err := incStore.BeginIncrementalWrite(ctx.Context, contentID)
+			if err != nil {
+				return fmt.Errorf("cannot begin incremental write: %w", err)
+			}
+			logger.Debug("COMMIT: began incremental write: content_id=%s upload_id=%s", contentID, uploadID)
 		}
 
-		logger.Info("COMMIT: completed incremental write: content_id=%s", contentID)
-
-		// Populate read cache after successful write
-		populateReadCacheAfterCommit(ctx, h, share, contentID, data, req.Handle)
-
-		// Clean cache after successful flush
-		err = writeCache.Remove(contentID)
+		// Flush to content store - store handles reading from cache and updating flushed offset
+		flushed, err := incStore.FlushIncremental(ctx.Context, contentID, c)
 		if err != nil {
-			logger.Warn("COMMIT: cache cleanup failed: content_id=%s error=%v", contentID, err)
+			return fmt.Errorf("incremental flush error: %w", err)
 		}
-	} else {
-		// Partial commit - keep session open for next commit
-		logger.Debug("COMMIT: partial commit, keeping session open: content_id=%s buffered=%d",
-			contentID, len(data)-int(flushed))
-	}
 
-	return nil
-}
-
-// flushNonIncremental handles flushing to stores that don't support incremental writes.
-// This includes filesystem and memory stores.
-//
-// Strategy:
-//  1. Check what's already in content store
-//  2. Flush only NEW bytes from cache using WriteAt()
-//
-// This is efficient and handles concurrent WRITEs correctly.
-//
-// Parameters:
-//   - ctx: Handler context
-//   - h: Handler with registry access
-//   - share: Share name
-//   - writeCache: Write cache to read from
-//   - contentStore: Content store to write to
-//   - file: File metadata for size checks
-//   - req: Commit request for final commit detection
-//
-// Returns:
-//   - error: Error if flush failed
-func flushNonIncremental(
-	ctx *NFSHandlerContext,
-	h *Handler,
-	share string,
-	writeCache cache.Cache,
-	contentStore content.ContentStore,
-	file *metadata.File,
-	req *CommitRequest,
-) error {
-	contentID := file.ContentID
-	cacheSize := writeCache.Size(contentID)
-	if cacheSize == 0 {
-		// No data in cache yet - this is okay, file might be empty or writes haven't started
-		logger.Debug("COMMIT: no data in cache yet: content_id=%s", contentID)
+		logger.Info("COMMIT: flushed %d bytes incrementally: content_id=%s", flushed, contentID)
 		return nil
 	}
 
-	// Check how much is already committed to content store
-	var contentSize int64
-	contentSizeU64, err := contentStore.GetContentSize(ctx.Context, contentID)
-	if errors.Is(err, content.ErrContentNotFound) {
-		// Content doesn't exist yet in content store - this is normal for first COMMIT
-		contentSize = 0
-	} else if err != nil {
-		// Actual error accessing content store
-		return fmt.Errorf("cannot check content store size: %w", err)
-	} else {
-		// Success - convert to int64
-		contentSize = int64(contentSizeU64)
+	// WriteAt-capable store (filesystem, memory): write only new bytes
+	bytesToFlush := cacheSize - flushedOffset
+	if bytesToFlush <= 0 {
+		logger.Info("COMMIT: flushed 0 bytes (already up to date): content_id=%s", contentID)
+		return nil
 	}
 
-	// Calculate how many new bytes to flush
-	bytesToFlush := cacheSize - contentSize
-	if bytesToFlush > 0 {
-		logger.Debug("COMMIT: flushing %d new bytes (cache=%d, content_store=%d): content_id=%s",
-			bytesToFlush, cacheSize, contentSize, contentID)
-
-		// Read only the new bytes from cache
-		buf := make([]byte, bytesToFlush)
-		n, err := writeCache.ReadAt(ctx.Context, contentID, buf, contentSize)
-		if err != nil && err != io.EOF {
-			return fmt.Errorf("cache read error: %w", err)
-		}
-
-		// Write new bytes to content store at the correct offset
-		err = contentStore.WriteAt(ctx.Context, contentID, buf[:n], contentSize)
-		if err != nil {
-			return fmt.Errorf("content store write error: %w", err)
-		}
-
-		logger.Info("COMMIT: flushed %d bytes to content store at offset %d: content_id=%s",
-			n, contentSize, contentID)
-	} else {
-		logger.Debug("COMMIT: no new bytes to flush (cache=%d, content_store=%d): content_id=%s",
-			cacheSize, contentSize, contentID)
+	buf := make([]byte, bytesToFlush)
+	n, err := c.ReadAt(ctx.Context, contentID, buf, flushedOffset)
+	if err != nil && err != io.EOF {
+		return fmt.Errorf("cache read error: %w", err)
 	}
 
-	// Clean up cache if this is the final COMMIT
-	isFinalCommit := req.Count == 0 || req.Offset+uint64(req.Count) >= file.Size
-	if isFinalCommit && cacheSize >= int64(file.Size) {
-		// Populate read cache before cleaning write cache
-		readCache, rcErr := h.Registry.GetReadCacheForShare(share)
-		if rcErr != nil {
-			logger.Warn("COMMIT: cannot get read cache: share=%s error=%v", share, rcErr)
-		} else if readCache != nil && cacheSize > 0 {
-			// Only cache small to medium files (< 10MB) to avoid thrashing
-			const maxReadCacheSize = 10 * 1024 * 1024 // 10MB
-			if cacheSize <= maxReadCacheSize {
-				// Read all data from write cache
-				cachedData, rcErr := writeCache.Read(ctx.Context, contentID)
-				if rcErr != nil {
-					logger.Warn("COMMIT: failed to read from write cache for read cache population: content_id=%s error=%v",
-						contentID, rcErr)
-				} else if len(cachedData) > 0 {
-					// Populate read cache
-					populateReadCacheAfterCommit(ctx, h, share, contentID, cachedData, req.Handle)
-				}
-			}
-		}
-
-		err = writeCache.Remove(contentID)
-		if err != nil {
-			logger.Warn("COMMIT: cache cleanup failed: content_id=%s error=%v", contentID, err)
-		} else {
-			logger.Debug("COMMIT: cleaned cache after final commit: content_id=%s", contentID)
-		}
+	err = contentStore.WriteAt(ctx.Context, contentID, buf[:n], flushedOffset)
+	if err != nil {
+		return fmt.Errorf("content store write error: %w", err)
 	}
+
+	c.SetFlushedOffset(contentID, flushedOffset+int64(n))
+	logger.Info("COMMIT: flushed %d bytes at offset %d: content_id=%s", n, flushedOffset, contentID)
 
 	return nil
-}
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-// isFullFileCommit determines if a COMMIT request covers the entire file.
-//
-// This is used to decide flush strategy:
-//   - Full file commits: flush to content store (finalize the file)
-//   - Partial commits: keep buffering (wait for more writes)
-//
-// A commit is considered "full file" if:
-//   - offset=0 AND count=0: RFC 1813 says "commit entire file"
-//   - count=0: RFC 1813 says "commit from offset to EOF"
-//   - offset+count >= filesize: commit range covers entire file
-//
-// Parameters:
-//   - file: Current file attributes (contains size)
-//   - req: The COMMIT request (contains offset and count)
-//
-// Returns:
-//   - true if this commit covers the entire file
-//   - false if this is a partial range commit
-func isFullFileCommit(file *metadata.FileAttr, req *CommitRequest) bool {
-	// A full file commit must start at offset 0
-	// This prevents data loss from uncommitted bytes at the beginning of the file
-	if req.Offset != 0 {
-		return false // Partial commit (doesn't start at beginning)
-	}
-
-	// Commit entire file (offset=0, count=0)
-	if req.Count == 0 {
-		return true // From beginning to EOF
-	}
-
-	// Commit range from beginning to end of file
-	// Check if the commit range covers the entire file size
-	if req.Offset+uint64(req.Count) >= file.Size {
-		return true // From beginning to (at least) EOF
-	}
-
-	// Partial range commit from beginning but not to end
-	return false
 }
 
 // ============================================================================

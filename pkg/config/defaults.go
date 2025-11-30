@@ -23,6 +23,7 @@ func ApplyDefaults(cfg *Config) {
 	applyServerDefaults(&cfg.Server)
 	applyMetadataDefaults(&cfg.Metadata)
 	applyContentDefaults(&cfg.Content)
+	applyCacheDefaults(&cfg.Cache)
 	applyShareDefaults(cfg.Shares)
 	applyAdaptersDefaults(&cfg.Adapters)
 
@@ -66,6 +67,65 @@ func applyMetricsDefaults(cfg *MetricsConfig) {
 	// Port defaults to 9090 if metrics are enabled
 	if cfg.Enabled && cfg.Port == 0 {
 		cfg.Port = 9090
+	}
+}
+
+// applyCacheDefaults sets cache defaults.
+func applyCacheDefaults(cfg *CacheConfig) {
+	// Initialize stores map if nil
+	if cfg.Stores == nil {
+		cfg.Stores = make(map[string]CacheStoreConfig)
+	}
+
+	// Apply defaults to each store
+	for name, store := range cfg.Stores {
+		// Initialize maps if nil
+		if store.Memory == nil {
+			store.Memory = make(map[string]any)
+		}
+		if store.Filesystem == nil {
+			store.Filesystem = make(map[string]any)
+		}
+
+		// Apply prefetch defaults
+		applyPrefetchDefaults(&store.Prefetch)
+
+		// Apply flusher defaults
+		applyFlusherDefaults(&store.Flusher)
+
+		cfg.Stores[name] = store
+	}
+}
+
+// applyPrefetchDefaults sets prefetch configuration defaults.
+func applyPrefetchDefaults(cfg *PrefetchConfig) {
+	// Enabled defaults to true
+	if cfg.Enabled == nil {
+		enabled := true
+		cfg.Enabled = &enabled
+	}
+
+	// MaxFileSize defaults to 100MB
+	if cfg.MaxFileSize == 0 {
+		cfg.MaxFileSize = 100 * 1024 * 1024 // 100MB
+	}
+
+	// ChunkSize defaults to 512KB
+	if cfg.ChunkSize == 0 {
+		cfg.ChunkSize = 512 * 1024 // 512KB
+	}
+}
+
+// applyFlusherDefaults sets background flusher configuration defaults.
+func applyFlusherDefaults(cfg *FlusherConfig) {
+	// SweepInterval defaults to 10 seconds
+	if cfg.SweepInterval == 0 {
+		cfg.SweepInterval = 10 * time.Second
+	}
+
+	// FlushTimeout defaults to 30 seconds
+	if cfg.FlushTimeout == 0 {
+		cfg.FlushTimeout = 30 * time.Second
 	}
 }
 
@@ -175,7 +235,7 @@ func applyShareDefaults(shares []ShareConfig) {
 		share := &shares[i]
 
 		// ReadOnly defaults to false
-		// WriteCache and ReadCache default to empty strings (sync mode, no caching)
+		// Cache defaults to empty string (sync mode, no caching)
 
 		// If AllowedClients is nil, initialize to empty (all allowed)
 		if share.AllowedClients == nil {
@@ -334,7 +394,7 @@ func GetDefaultConfig() *Config {
 				MetadataStore: "default",
 				ContentStore:  "default",
 				ReadOnly:      false,
-				// WriteCache and ReadCache are empty by default (sync mode, no caching)
+				// Cache is empty by default (sync mode, no caching)
 				IdentityMapping: IdentityMappingConfig{
 					MapAllToAnonymous:        false, // Don't squash by default
 					MapPrivilegedToAnonymous: false, // root_squash disabled by default

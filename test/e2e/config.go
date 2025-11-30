@@ -127,8 +127,49 @@ func (tc *TestConfig) CreateContentStore(ctx context.Context, testCtx TestContex
 	}
 }
 
-// AllConfigurations returns all test configurations to run
+// AllConfigurations returns all test configurations to run, including S3.
+// S3 tests require Localstack to be running (use run-e2e.sh --s3).
+// Use LocalConfigurations() to run only non-S3 tests.
 func AllConfigurations() []*TestConfig {
+	return []*TestConfig{
+		// Local backends (no external dependencies)
+		{
+			Name:          "memory-memory",
+			MetadataStore: MetadataMemory,
+			ContentStore:  ContentMemory,
+			ShareName:     "/export",
+		},
+		{
+			Name:          "memory-filesystem",
+			MetadataStore: MetadataMemory,
+			ContentStore:  ContentFilesystem,
+			ShareName:     "/export",
+		},
+		{
+			Name:          "badger-filesystem",
+			MetadataStore: MetadataBadger,
+			ContentStore:  ContentFilesystem,
+			ShareName:     "/export",
+		},
+		// S3 backends (requires Localstack)
+		{
+			Name:          "memory-s3",
+			MetadataStore: MetadataMemory,
+			ContentStore:  ContentS3,
+			ShareName:     "/export",
+		},
+		{
+			Name:          "badger-s3",
+			MetadataStore: MetadataBadger,
+			ContentStore:  ContentS3,
+			ShareName:     "/export",
+		},
+	}
+}
+
+// LocalConfigurations returns configurations that don't require external services.
+// Use this when Localstack is not available.
+func LocalConfigurations() []*TestConfig {
 	return []*TestConfig{
 		{
 			Name:          "memory-memory",
@@ -151,7 +192,7 @@ func AllConfigurations() []*TestConfig {
 	}
 }
 
-// S3Configurations returns configurations that use S3 (requires localstack)
+// S3Configurations returns only S3 configurations (requires Localstack).
 func S3Configurations() []*TestConfig {
 	return []*TestConfig{
 		{
@@ -171,19 +212,10 @@ func S3Configurations() []*TestConfig {
 
 // GetConfiguration returns a specific configuration by name
 func GetConfiguration(name string) *TestConfig {
-	// Check standard configurations
 	for _, config := range AllConfigurations() {
 		if config.Name == name {
 			return config
 		}
 	}
-
-	// Check S3 configurations
-	for _, config := range S3Configurations() {
-		if config.Name == name {
-			return config
-		}
-	}
-
 	return nil
 }
