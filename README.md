@@ -76,7 +76,7 @@ go build -o dittofs cmd/dittofs/main.go
 sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
 
 # macOS
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
+sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /tmp/nfs
 ```
 
 ### Testing

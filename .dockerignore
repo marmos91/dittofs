@@ -1,0 +1,61 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+docs/
+LICENSE
+CONTRIBUTING
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test files and directories
+test/
+*_test.go
+*.test
+
+# Monitoring and development files
+monitoring/
+
+# Build artifacts
+dittofs
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Coverage and profiling
+*.out
+*.prof
+coverage.txt
+
+# Config files (will be mounted)
+config.yaml
+*.yaml
+*.yml
+*.toml
+
+# Data directories
+/data/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Other
+gopls.yaml
+CLAUDE.md
