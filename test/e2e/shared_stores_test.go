@@ -52,6 +52,15 @@ type ShareMount struct {
 func NewMultiShareTestContext(t *testing.T, config *TestConfig, shareNames []string) *MultiShareTestContext {
 	t.Helper()
 
+	// For S3 configurations, check Localstack and setup S3 client
+	if config.ContentStore == ContentS3 {
+		if !CheckLocalstackAvailable(t) {
+			t.Skip("Localstack not available, skipping S3 test")
+		}
+		helper := NewLocalstackHelper(t)
+		SetupS3Config(t, config, helper)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	tc := &MultiShareTestContext{

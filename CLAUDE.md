@@ -337,25 +337,25 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
     - **Path-Based Keys**: Objects stored as `export/path/to/file` for easy inspection
 
 **5. Cache Layer** (`pkg/cache/`)
-- Optional caching layer to improve read/write performance
-- Separate write and read caches per share
-- **Write Cache**:
-  - Buffers writes before flushing to content store
-  - Enables efficient batching for backends like S3
-  - Automatically flushed on COMMIT operations
-- **Read Cache**:
-  - LRU cache for frequently accessed files
-  - Populated after READ operations from content store
-  - Also populated after COMMIT operations (write → read optimization)
-  - Configurable size limit with automatic eviction
-  - Improves performance for repeated reads
+- Optional unified caching layer for read/write performance
+- **One cache per share** serving both reads and writes
+- **Content-store agnostic**: Cache doesn't know about S3 multipart, fsync, etc.
+- **Three states**: Buffering (dirty), Uploading (flush in progress), Cached (clean)
+- **Key features**:
+  - Buffers writes before flushing to content store on COMMIT
+  - Serves reads from cache when available
+  - LRU eviction with dirty entry protection
+  - Read cache coherency via mtime/size validation
+  - Inactivity-based finalization for write completion detection
 - Implementations:
-  - `pkg/cache/memory/`: In-memory LRU cache with size limits
-- **Configuration**:
-  - `write_cache`: Cache name for buffering writes (optional)
-  - `read_cache`: Cache name for read optimization (optional)
-  - Cache size configured per cache instance (in bytes)
-- **Metrics**: Cache hits/misses exposed via Prometheus
+  - `pkg/cache/memory/`: In-memory cache with size limits
+- **Configuration** (per share):
+  - `cache.enabled`: Enable/disable caching
+  - `cache.max_size`: Maximum cache size
+  - `cache.finalize_timeout`: Inactivity before finalizing writes
+  - `cache.read_ttl`: Max age for cached reads (optional)
+- **Metrics**: Cache hits/misses/invalidations exposed via Prometheus
+- **Documentation**: See [docs/CACHE.md](docs/CACHE.md) for detailed design
 
 ### Directory Structure
 

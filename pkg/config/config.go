@@ -175,6 +175,46 @@ type CacheStoreConfig struct {
 	// Filesystem contains filesystem-specific configuration
 	// Only used when Type = "filesystem"
 	Filesystem map[string]any `mapstructure:"filesystem"`
+
+	// Prefetch contains read prefetch configuration
+	Prefetch PrefetchConfig `mapstructure:"prefetch"`
+
+	// Flusher contains background flusher configuration
+	Flusher FlusherConfig `mapstructure:"flusher"`
+}
+
+// PrefetchConfig configures read prefetch behavior.
+// Prefetch proactively loads file content into cache on first read.
+type PrefetchConfig struct {
+	// Enabled controls whether prefetch is enabled (default: true)
+	Enabled *bool `mapstructure:"enabled"`
+
+	// MaxFileSize is the maximum file size to prefetch in bytes.
+	// Files larger than this are not prefetched to avoid cache thrashing.
+	// Default: 100MB (100 * 1024 * 1024)
+	MaxFileSize int64 `mapstructure:"max_file_size"`
+
+	// ChunkSize is the size of each chunk read during prefetch in bytes.
+	// Larger chunks = fewer requests but longer wait before unblocking reads.
+	// Smaller chunks = more requests but faster unblocking of waiting reads.
+	// Default: 512KB (512 * 1024)
+	ChunkSize int64 `mapstructure:"chunk_size"`
+}
+
+// FlusherConfig configures background flusher behavior.
+// The flusher detects idle cache entries and completes their upload to content store.
+// The flusher is always enabled when a cache is configured - it's essential for NFS
+// since there's no "close" operation and files need to be flushed after idle timeout.
+type FlusherConfig struct {
+	// SweepInterval is how often to check for idle files.
+	// Default: 10s
+	SweepInterval time.Duration `mapstructure:"sweep_interval"`
+
+	// FlushTimeout is how long a file must be idle before flushing.
+	// This is the key NFS async write timeout - files are considered "done"
+	// when no writes have occurred for this duration.
+	// Default: 30s
+	FlushTimeout time.Duration `mapstructure:"flush_timeout"`
 }
 
 // ShareConfig defines a single share/export.
@@ -188,15 +228,13 @@ type ShareConfig struct {
 	// ContentStore is the name of the content store to use for this share
 	ContentStore string `mapstructure:"content_store" validate:"required"`
 
-	// WriteCache is the name of the write cache to use for async writes (optional)
-	// If specified, enables async write mode: WRITE → cache, COMMIT → flush to store
-	// If empty, writes go directly to the content store (sync mode)
-	WriteCache string `mapstructure:"write_cache"`
-
-	// ReadCache is the name of the read cache to use for caching reads (optional)
-	// If specified, enables read caching for better performance
-	// If empty, reads go directly to the content store (no caching)
-	ReadCache string `mapstructure:"read_cache"`
+	// Cache is the name of the unified cache for this share (optional)
+	// The unified cache serves both reads and writes:
+	// - Writes accumulate in cache (StateBuffering)
+	// - COMMIT flushes to content store (StateUploading → StateCached)
+	// - Reads check cache first, populate on miss
+	// If empty, caching is disabled (sync writes, no read caching)
+	Cache string `mapstructure:"cache"`
 
 	// ReadOnly makes the share read-only if true
 	ReadOnly bool `mapstructure:"read_only"`
