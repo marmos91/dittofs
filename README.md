@@ -71,15 +71,31 @@ go build -o dittofs cmd/dittofs/main.go
 
 ### Run with Docker
 
-To run DittoFS is with Docker, ensure first to have the config file `~/.config/dittofs/config.yaml` to let docker compose mount it in the container:
+To run DittoFS with Docker, ensure first to have the config file `~/.config/dittofs/config.yaml` to let docker compose mount it in the container:
 
 ```bash
-# Start the server
-docker-compose up -d
+# Start with local filesystem backend (default)
+docker compose up -d
+
+# Start with S3 backend (includes localstack)
+docker compose --profile s3-backend up -d
 
 # View logs
-docker-compose logs -f dittofs
+docker compose logs -f dittofs
 ```
+
+**Storage Backends:**
+- **Local Filesystem (default)**: Uses Docker volumes for both metadata and content
+- **S3 Backend**: Uses Docker volume for metadata, S3 (localstack) for content
+
+**Monitoring:**
+For Prometheus and Grafana monitoring stack, see [`monitoring/README.md`](monitoring/README.md).
+
+**Docker Images:**
+- **Production** (`Dockerfile`): Uses Google's distroless image for minimal attack surface
+- **Debug** (`Dockerfile.debug`): Includes shell and debugging tools when needed
+
+> 💡 **Tip**: Make sure your `config.yaml` matches the backend you're using. The default service uses local filesystem, while the `--profile s3-backend` expects S3 configuration.
 
 ### Mount from Client
 
@@ -88,6 +104,7 @@ docker-compose logs -f dittofs
 sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
 
 # macOS
+mkdir /tmp/nfs
 sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /tmp/nfs
 ```
 

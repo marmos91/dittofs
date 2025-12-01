@@ -16,29 +16,24 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -o dittofs \
     cmd/dittofs/main.go
 
-FROM alpine:latest
-
-RUN apk add --no-cache \
-    ca-certificates \
-    tzdata
-
-RUN addgroup -g 1000 dittofs && \
-    adduser -D -u 1000 -G dittofs dittofs
-
-RUN mkdir -p /data/metadata /data/content /config && \
-    chown -R dittofs:dittofs /data /config
+FROM gcr.io/distroless/static-debian12:nonroot
 
 WORKDIR /app
 
-COPY --from=builder /build/dittofs .
+# Copy the binary from builder
+COPY --from=builder --chown=65532:65532 /build/dittofs /app/dittofs
 
-RUN chown dittofs:dittofs /app/dittofs
+USER 65532:65532
 
-USER dittofs
+EXPOSE 2049/tcp 9090/tcp
 
-EXPOSE 12049/tcp 12049/udp 9090/tcp
+# - /data/metadata: Metadata store (BadgerDB, etc.)
+# - /data/content: Content store for local filesystem backend (unused for S3)
+# - /config: Configuration file location
+VOLUME ["/data/metadata", "/data/content", "/config"]
 
-VOLUME ["/data", "/config"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD ["/app/dittofs", "help"]
 
 ENTRYPOINT ["/app/dittofs"]
 CMD ["start", "--config", "/config/config.yaml"]

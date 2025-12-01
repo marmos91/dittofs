@@ -6,23 +6,30 @@ services:
     container_name: dittofs-server
     image: dittofs:latest
     ports:
-      - "12049:12049/tcp"
-      - "2049:2049/udp"
+      - "2049:2049/tcp"
       - "9090:9090/tcp"
     volumes:
       - ~/.config/dittofs/config.yaml:/config/config.yaml:ro
       - dittofs-metadata:/data/metadata
       - dittofs-content:/data/content
     restart: unless-stopped
-    cap_add:
-      - SYS_ADMIN
-    healthcheck:
-      test: ["CMD", "/app/dittofs", "help"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-
+  dittofs-s3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dittofs-s3-server
+    image: dittofs:latest
+    ports:
+      - "2049:2049/tcp"
+      - "9090:9090/tcp"
+    volumes:
+      - ~/.config/dittofs/config.yaml:/config/config.yaml:ro
+      - dittofs-metadata:/data/metadata
+    depends_on:
+      - localstack
+    restart: unless-stopped
+    profiles:
+      - s3-backend
   localstack:
     image: localstack/localstack:latest
     container_name: dittofs-localstack
@@ -36,48 +43,15 @@ services:
       - localstack-data:/tmp/localstack
     profiles:
       - s3-backend
-
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: dittofs-prometheus
-    ports:
-      - "9091:9090"
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-    profiles:
-      - monitoring
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: dittofs-grafana
-    ports:
-      - "3000:3000"
-    volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - grafana-data:/var/lib/grafana
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_USERS_ALLOW_SIGN_UP=false
-    depends_on:
-      - prometheus
-    profiles:
-      - monitoring
-
 volumes:
+  # Metadata store (always needed)
   dittofs-metadata:
     driver: local
+  # Content store (only for local filesystem backend)
   dittofs-content:
     driver: local
+  # S3 storage (only for S3 backend)
   localstack-data:
-    driver: local
-  prometheus-data:
-    driver: local
-  grafana-data:
     driver: local
 
 networks:
