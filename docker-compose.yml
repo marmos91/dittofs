@@ -1,0 +1,59 @@
+services:
+  dittofs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dittofs-server
+    image: dittofs:latest
+    ports:
+      - "2049:2049/tcp"
+      - "9090:9090/tcp"
+    volumes:
+      - ~/.config/dittofs/config.yaml:/config/config.yaml:ro
+      - dittofs-metadata:/data/metadata
+      - dittofs-content:/data/content
+    restart: unless-stopped
+  dittofs-s3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dittofs-s3-server
+    image: dittofs:latest
+    ports:
+      - "2049:2049/tcp"
+      - "9090:9090/tcp"
+    volumes:
+      - ~/.config/dittofs/config.yaml:/config/config.yaml:ro
+      - dittofs-metadata:/data/metadata
+    depends_on:
+      - localstack
+    restart: unless-stopped
+    profiles:
+      - s3-backend
+  localstack:
+    image: localstack/localstack:latest
+    container_name: dittofs-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3
+      - DEBUG=1
+      - DATA_DIR=/tmp/localstack/data
+    volumes:
+      - localstack-data:/tmp/localstack
+    profiles:
+      - s3-backend
+volumes:
+  # Metadata store (always needed)
+  dittofs-metadata:
+    driver: local
+  # Content store (only for local filesystem backend)
+  dittofs-content:
+    driver: local
+  # S3 storage (only for S3 backend)
+  localstack-data:
+    driver: local
+
+networks:
+  default:
+    name: dittofs-network
