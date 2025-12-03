@@ -101,7 +101,7 @@ func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 		}
 
 		// Append more data
-		if err := c.WriteAt(ctx, id, data2, int64(len(data1))); err != nil {
+		if err := c.WriteAt(ctx, id, data2, uint64(len(data1))); err != nil {
 			t.Fatalf("WriteAt() failed: %v", err)
 		}
 
@@ -163,7 +163,7 @@ func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 		}
 
 		// Write with gap (sparse file behavior)
-		gapOffset := int64(10)
+		gapOffset := uint64(10)
 		if err := c.WriteAt(ctx, id, data2, gapOffset); err != nil {
 			t.Fatalf("WriteAt() failed: %v", err)
 		}
@@ -175,7 +175,7 @@ func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 		}
 
 		// Expected: "Hello" + zeros + "World"
-		expected := make([]byte, gapOffset+int64(len(data2)))
+		expected := make([]byte, gapOffset+uint64(len(data2)))
 		copy(expected[0:], data1)
 		// Middle is zeros (default)
 		copy(expected[gapOffset:], data2)
@@ -209,19 +209,7 @@ func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 		}
 	})
 
-	t.Run("WriteAtWithNegativeOffsetFails", func(t *testing.T) {
-		c := suite.NewCache()
-		defer func() { _ = c.Close() }()
-		ctx := testContext()
-
-		id := metadata.ContentID("test-8")
-		data := []byte("Hello")
-
-		err := c.WriteAt(ctx, id, data, -1)
-		if err == nil {
-			t.Error("WriteAt() with negative offset should fail")
-		}
-	})
+	// Note: WriteAt now uses uint64 for offset, so negative offsets are not possible at compile time
 
 	t.Run("WriteRespectsCancellation", func(t *testing.T) {
 		c := suite.NewCache()
@@ -272,7 +260,7 @@ func (suite *CacheTestSuite) RunWriteTests(t *testing.T) {
 		}
 
 		// Verify size
-		if size := c.Size(id); size != int64(len(largeData)) {
+		if size := c.Size(id); size != uint64(len(largeData)) {
 			t.Errorf("Size() returned %d, expected %d", size, len(largeData))
 		}
 	})

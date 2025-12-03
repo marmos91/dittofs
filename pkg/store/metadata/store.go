@@ -827,4 +827,26 @@ type MetadataStore interface {
 	//   - error: Returns error if repository is unhealthy, nil if healthy,
 	//     or context cancellation errors
 	Healthcheck(ctx context.Context) error
+
+	// ========================================================================
+	// Content ID Operations
+	// ========================================================================
+
+	// GetFileByContentID retrieves file metadata by its content identifier.
+	//
+	// This is used by the background flusher to validate that cached data
+	// matches the expected file size before completing uploads. It enables
+	// detection of interrupted copies (where cache size != expected file size).
+	//
+	// Note: This operation may be slow for large filesystems since it may
+	// require scanning all files. Use sparingly and only where necessary.
+	//
+	// Parameters:
+	//   - ctx: Context for cancellation
+	//   - contentID: The content identifier to look up
+	//
+	// Returns:
+	//   - *File: File metadata if found
+	//   - error: ErrNotFound if no file has this content ID, or context errors
+	GetFileByContentID(ctx context.Context, contentID ContentID) (*File, error)
 }

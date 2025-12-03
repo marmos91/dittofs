@@ -390,7 +390,7 @@ func (h *Handler) Commit(
 	}
 
 	// Flush cache to content store
-	logger.Debug("COMMIT: flushing cache to content store")
+	logger.Info("COMMIT: flushing cache to content store for share=%s", ctx.Share)
 
 	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
 	if err != nil {
@@ -426,8 +426,8 @@ func (h *Handler) Commit(
 			req.Handle, getErr)
 	}
 
-	logger.Info("COMMIT successful: handle=%x offset=%d count=%d client=%s",
-		req.Handle, req.Offset, req.Count, clientIP)
+	logger.Info("COMMIT successful: file=%s offset=%d count=%d client=%s",
+		file.ContentID, req.Offset, req.Count, clientIP)
 	return &CommitResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 		AttrBefore:      wccBefore,
@@ -462,25 +462,20 @@ func flushCacheToContentStore(
 
 	// Check for incremental write support first (S3)
 	if incStore, ok := contentStore.(content.IncrementalWriteStore); ok {
-		// Incremental write (S3): streaming multipart uploads
-		// Acquire per-file lock to serialize concurrent commits
-		fileLock := h.acquireFileLock(contentID)
-		defer h.releaseFileLock(fileLock)
+		// Incremental write (S3): parallel multipart uploads
+		// No handler-level lock needed - FlushIncremental handles concurrency internally
+		// using uploadedParts/uploadingParts maps to coordinate parallel uploads
 
-		// Start new session if needed
-		if incStore.GetIncrementalWriteState(contentID) == nil {
-			uploadID, err := incStore.BeginIncrementalWrite(ctx.Context, contentID)
-			if err != nil {
-				return fmt.Errorf("cannot begin incremental write: %w", err)
-			}
-			logger.Debug("COMMIT: began incremental write: content_id=%s upload_id=%s", contentID, uploadID)
-		}
-
-		// Flush to content store - store handles reading from cache and updating flushed offset
+		// Flush to content store - uploads complete parts in parallel
+		// Returns 0 for small files (< partSize) - they'll use PutObject on finalization
 		flushed, err := incStore.FlushIncremental(ctx.Context, contentID, c)
 		if err != nil {
 			return fmt.Errorf("incremental flush error: %w", err)
 		}
+
+		// Transition to StateUploading so the background flusher can complete the upload
+		// when the file becomes idle (no more writes for flush_timeout duration)
+		c.SetState(contentID, cache.StateUploading)
 
 		logger.Info("COMMIT: flushed %d bytes incrementally: content_id=%s", flushed, contentID)
 		return nil
@@ -499,12 +494,17 @@ func flushCacheToContentStore(
 		return fmt.Errorf("cache read error: %w", err)
 	}
 
-	err = contentStore.WriteAt(ctx.Context, contentID, buf[:n], flushedOffset)
+	// Content store WriteAt uses int64 for io.ReaderAt compatibility
+	err = contentStore.WriteAt(ctx.Context, contentID, buf[:n], int64(flushedOffset))
 	if err != nil {
 		return fmt.Errorf("content store write error: %w", err)
 	}
 
-	c.SetFlushedOffset(contentID, flushedOffset+int64(n))
+	c.SetFlushedOffset(contentID, flushedOffset+uint64(n))
+
+	// Transition to StateUploading so the background flusher can finalize
+	c.SetState(contentID, cache.StateUploading)
+
 	logger.Info("COMMIT: flushed %d bytes at offset %d: content_id=%s", n, flushedOffset, contentID)
 
 	return nil

@@ -1285,3 +1285,75 @@ func (s *BadgerMetadataStore) Move(
 
 	return err
 }
+
+// GetFileByContentID retrieves file metadata by its content identifier.
+//
+// This scans all files to find one matching the given ContentID.
+// Note: This is O(n) and may be slow for large filesystems.
+func (store *BadgerMetadataStore) GetFileByContentID(
+	ctx context.Context,
+	contentID metadata.ContentID,
+) (*metadata.File, error) {
+	// Check context before starting
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	var result *metadata.File
+
+	err := store.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchSize = 100
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		prefix := []byte(prefixFile)
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			// Check context periodically
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				file, err := decodeFile(val)
+				if err != nil {
+					return nil // Skip corrupted entries
+				}
+
+				if file.FileAttr.ContentID == contentID {
+					// Found matching file - return it directly
+					// (decodeFile returns *metadata.File with all fields populated)
+					result = file
+					return errFound // Signal we found it
+				}
+				return nil
+			})
+
+			if err == errFound {
+				return nil // Exit iterator
+			}
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if result == nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrNotFound,
+			Message: fmt.Sprintf("no file found with content ID: %s", contentID),
+		}
+	}
+
+	return result, nil
+}
+
+// errFound is used to signal iterator completion when we find a match
+var errFound = fmt.Errorf("found")

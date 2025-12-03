@@ -165,7 +165,52 @@ content:
 > - **Stats Caching**: Intelligent caching reduces expensive S3 ListObjects calls by 99%+
 > - **Metrics Support**: Optional instrumentation for Prometheus/observability
 
-### 5. Shares (Exports)
+### 5. Cache Configuration
+
+Define named cache instances that shares can reference for read/write buffering:
+
+```yaml
+cache:
+  # Named cache instances
+  stores:
+    # Memory cache for fast read/write buffering
+    fast-cache:
+      type: memory
+      memory:
+        max_size: 1073741824  # 1GB in bytes
+
+      # Read prefetch configuration
+      prefetch:
+        enabled: true           # Enable read prefetch (default: true)
+        max_file_size: 104857600  # 100MB - skip prefetch for larger files
+        chunk_size: 524288      # 512KB - prefetch chunk size
+
+      # Background flusher configuration
+      flusher:
+        sweep_interval: 10s     # How often to check for finalization
+        flush_timeout: 30s      # Inactivity before finalizing writes
+```
+
+> **Unified Cache**: Each cache instance serves both reads and writes:
+> - **Writes** accumulate in cache (StateBuffering), then flush on COMMIT (StateUploading → StateCached)
+> - **Reads** check cache first, populate on miss
+> - **Dirty Protection**: Entries with unflushed data cannot be evicted
+>
+> See [CACHE.md](CACHE.md) for detailed cache architecture documentation.
+
+**Cache Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `type` | - | Cache type: `memory` or `filesystem` |
+| `memory.max_size` | `0` | Maximum cache size in bytes (0 = unlimited) |
+| `prefetch.enabled` | `true` | Enable/disable read prefetch |
+| `prefetch.max_file_size` | `100MB` | Skip prefetch for files larger than this |
+| `prefetch.chunk_size` | `512KB` | Size of each prefetch chunk |
+| `flusher.sweep_interval` | `10s` | How often to check for idle files |
+| `flusher.flush_timeout` | `30s` | Time since last write before finalizing |
+
+### 6. Shares (Exports)
 
 Each share explicitly references metadata and content stores by name. Multiple shares can reference the same store instances for resource sharing:
 
@@ -175,6 +220,7 @@ shares:
   - name: /fast
     metadata_store: memory-fast    # References metadata.stores.memory-fast
     content_store: local-disk      # References content.stores.local-disk
+    cache: fast-cache              # References cache.stores.fast-cache (optional)
     read_only: false
     async: true
 
@@ -199,10 +245,11 @@ shares:
       uid: 0
       gid: 0
 
-  # Cloud-backed share with persistent metadata
+  # Cloud-backed share with persistent metadata and caching
   - name: /cloud
     metadata_store: badger-main
     content_store: s3-production
+    cache: fast-cache              # Cache for S3 performance
     read_only: false
     async: false
     # ... (same access control options as above)
@@ -211,6 +258,7 @@ shares:
   - name: /archive
     metadata_store: badger-main      # Shares metadata with /cloud
     content_store: s3-archive        # Different content backend
+    # No cache - direct S3 access
     read_only: false
     async: false
     # ... (same access control options as above)
@@ -222,6 +270,8 @@ shares:
 - **Performance Tiering**: Different shares use different storage backends (memory, local disk, S3)
 - **Isolation**: Different shares can use completely separate stores for security boundaries
 - **Resource Efficiency**: Multiple shares can reference the same store instance (no duplication)
+- **Cache Sharing**: Multiple shares can share a cache (e.g., `/fast` and `/cloud` both use `fast-cache`)
+- **No Cache**: Shares without `cache` field operate in sync mode (direct writes, no read caching)
 
 ### 6. Protocol Adapters
 

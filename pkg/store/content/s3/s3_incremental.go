@@ -1,30 +1,29 @@
 // Package s3 implements S3-based content storage for DittoFS.
 //
 // This file contains incremental write operations for the S3 content store,
-// enabling efficient uploads of large files via multipart uploads during
-// partial COMMIT operations.
+// enabling efficient parallel uploads of large files via multipart uploads.
 package s3
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
+	"sort"
 	"sync"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // incrementalWriteSession tracks state for an incremental write.
+// Designed for parallel part uploads based on offset ranges.
 type incrementalWriteSession struct {
-	uploadID          string
-	currentPartNumber int
-	buffer            *bytes.Buffer
-	totalFlushed      int64
-	totalReceived     int64 // Total bytes received (including buffered)
-	mu                sync.Mutex
+	uploadID       string
+	uploadedParts  map[int]bool // Parts that completed successfully
+	uploadingParts map[int]bool // Parts currently being uploaded
+	totalFlushed   int64
+	mu             sync.Mutex
 }
 
 // Incremental write sessions map (content ID → session state)
@@ -38,242 +37,377 @@ var _ content.IncrementalWriteStore = (*S3ContentStore)(nil)
 
 // BeginIncrementalWrite initiates an incremental write session.
 //
-// This creates an S3 multipart upload session and prepares for incremental
-// flushing of cached data. Multiple calls with the same ID are idempotent
-// (returns existing session if already started).
-//
-// Parameters:
-//   - ctx: Context for cancellation and timeouts
-//   - id: Content identifier
-//
-// Returns:
-//   - string: Upload ID for this multipart upload session
-//   - error: Returns error if session cannot be initiated
+// This is now mostly a no-op since we lazily create multipart uploads
+// only when we have enough data. Kept for interface compatibility.
 func (s *S3ContentStore) BeginIncrementalWrite(ctx context.Context, id metadata.ContentID) (string, error) {
-	// Check if session already exists
 	incrementalSessionsMu.RLock()
 	existing, exists := incrementalSessions[id]
 	incrementalSessionsMu.RUnlock()
 
-	if exists {
-		// Idempotent: return existing upload ID
+	if exists && existing.uploadID != "" {
 		return existing.uploadID, nil
 	}
 
-	// Create new multipart upload session
-	uploadID, err := s.BeginMultipartUpload(ctx, id)
-	if err != nil {
-		return "", fmt.Errorf("failed to begin multipart upload: %w", err)
-	}
-
-	// Create and store session state
-	session := &incrementalWriteSession{
-		uploadID:          uploadID,
-		currentPartNumber: 1,
-		buffer:            bytes.NewBuffer(nil),
-		totalFlushed:      0,
-	}
-
+	// Don't create multipart upload yet - wait until we have enough data
+	// Just ensure session exists
 	incrementalSessionsMu.Lock()
-	incrementalSessions[id] = session
+	if _, ok := incrementalSessions[id]; !ok {
+		incrementalSessions[id] = &incrementalWriteSession{
+			uploadID:       "",
+			uploadedParts:  make(map[int]bool),
+			uploadingParts: make(map[int]bool),
+			totalFlushed:   0,
+		}
+	}
 	incrementalSessionsMu.Unlock()
 
-	return uploadID, nil
+	return "", nil
 }
 
-// FlushIncremental reads from cache and writes to S3 incrementally.
+// FlushIncremental uploads complete parts from cache to S3 in parallel.
 //
-// The store implementation:
-//  1. Reads new bytes from cache using cache.GetFlushedOffset() and cache.ReadAt()
-//  2. Buffers data until enough for an upload (5MB for S3 multipart)
-//  3. Uploads when buffer threshold is reached
-//  4. Updates cache.SetFlushedOffset() after successful upload
-//
-// Returns the number of bytes actually uploaded to S3 (may be 0 if still buffering).
-//
-// Parameters:
-//   - ctx: Context for cancellation and timeouts
-//   - id: Content identifier
-//   - c: Cache to read data from (store manages offsets and updates FlushedOffset)
-//
-// Returns:
-//   - flushed: Number of bytes actually uploaded to S3 (0 if buffering)
-//   - error: Returns error if read or upload fails
+// This implementation:
+//   - Returns 0 if cacheSize < partSize (small file, wait for finalization)
+//   - Calculates which complete parts can be uploaded
+//   - Finds parts not yet uploaded and not currently uploading
+//   - Uploads selected parts in parallel (up to maxParallelUploads)
+//   - Updates cache flushedOffset to highest contiguous uploaded position
 func (s *S3ContentStore) FlushIncremental(ctx context.Context, id metadata.ContentID, c cache.Cache) (int64, error) {
-	// Get session
+	cacheSize := c.Size(id)
+	if cacheSize == 0 {
+		return 0, nil
+	}
+
+	// Small files: don't use multipart, wait for finalization to use PutObject
+	if cacheSize < s.partSize {
+		return 0, nil
+	}
+
+	// Get or create session
 	incrementalSessionsMu.RLock()
 	session, exists := incrementalSessions[id]
 	incrementalSessionsMu.RUnlock()
 
 	if !exists {
-		return 0, fmt.Errorf("no incremental write session found for %s (call BeginIncrementalWrite first)", id)
+		session = &incrementalWriteSession{
+			uploadID:       "",
+			uploadedParts:  make(map[int]bool),
+			uploadingParts: make(map[int]bool),
+			totalFlushed:   0,
+		}
+		incrementalSessionsMu.Lock()
+		if existing, ok := incrementalSessions[id]; ok {
+			session = existing
+		} else {
+			incrementalSessions[id] = session
+		}
+		incrementalSessionsMu.Unlock()
 	}
 
+	// Calculate how many COMPLETE parts we can upload
+	// Only upload complete parts - final partial part is handled by CompleteIncrementalWrite
+	numCompleteParts := cacheSize / s.partSize
+	if numCompleteParts == 0 {
+		return 0, nil
+	}
+
+	// Lock briefly to find parts to upload and mark them as uploading
 	session.mu.Lock()
-	defer session.mu.Unlock()
 
-	// Read new bytes from cache since last flush
-	cacheSize := c.Size(id)
-	flushedOffset := c.GetFlushedOffset(id)
-	bytesToRead := cacheSize - flushedOffset
+	// Lazily create multipart upload on first actual part upload
+	if session.uploadID == "" {
+		uploadID, err := s.BeginMultipartUpload(ctx, id)
+		if err != nil {
+			session.mu.Unlock()
+			return 0, fmt.Errorf("failed to begin multipart upload: %w", err)
+		}
+		session.uploadID = uploadID
+		logger.Info("FlushIncremental: started multipart upload: content_id=%s upload_id=%s", id, uploadID)
+	}
+	uploadID := session.uploadID
 
-	if bytesToRead <= 0 {
-		// No new data in cache
+	// Find parts that need uploading (not uploaded and not currently uploading)
+	var partsToUpload []int
+	for partNum := 1; partNum <= int(numCompleteParts); partNum++ {
+		if !session.uploadedParts[partNum] && !session.uploadingParts[partNum] {
+			partsToUpload = append(partsToUpload, partNum)
+		}
+	}
+
+	if len(partsToUpload) == 0 {
+		// Calculate flushed offset while still holding the lock
+		flushedOffset := s.calculateFlushedOffset(session, cacheSize)
+		session.mu.Unlock()
+		// All parts already uploaded or uploading, update flushed offset
+		c.SetFlushedOffset(id, flushedOffset)
 		return 0, nil
 	}
 
-	// Read new bytes from cache
-	buf := make([]byte, bytesToRead)
-	n, err := c.ReadAt(ctx, id, buf, flushedOffset)
-	if err != nil && err != io.EOF {
-		return 0, fmt.Errorf("failed to read from cache: %w", err)
+	// Limit concurrent uploads
+	maxConcurrent := s.maxParallelUploads
+	if maxConcurrent == 0 {
+		maxConcurrent = 4
 	}
-	newData := buf[:n]
-
-	// Add new data to internal buffer
-	written, err := session.buffer.Write(newData)
-	if err != nil {
-		return 0, fmt.Errorf("failed to buffer data: %w", err)
-	}
-	if written != len(newData) {
-		return 0, fmt.Errorf("partial buffer write: wrote %d of %d bytes", written, len(newData))
+	if len(partsToUpload) > maxConcurrent {
+		partsToUpload = partsToUpload[:maxConcurrent]
 	}
 
-	// Update total received
-	session.totalReceived += int64(n)
+	// Mark selected parts as uploading
+	for _, partNum := range partsToUpload {
+		session.uploadingParts[partNum] = true
+	}
+	session.mu.Unlock()
 
-	// Check if we have enough data to upload a part (5MB minimum for S3)
-	const minPartSize = 5 * 1024 * 1024 // 5MB
-	bufferSize := session.buffer.Len()
+	// Upload parts in parallel (blocking - wait for all to complete)
+	// NFS COMMIT semantics require data to be on stable storage when we return
+	var wg sync.WaitGroup
+	type uploadResult struct {
+		partNum int
+		size    int64
+		err     error
+	}
+	results := make(chan uploadResult, len(partsToUpload))
 
-	if bufferSize < minPartSize {
-		// Not enough data yet - update flushed offset to mark bytes as "received by store"
-		c.SetFlushedOffset(id, flushedOffset+int64(n))
-		return 0, nil
+	for _, partNum := range partsToUpload {
+		wg.Add(1)
+		go func(pn int) {
+			defer wg.Done()
+
+			// Calculate offset range for this part
+			startOffset := uint64(pn-1) * s.partSize
+			partSize := s.partSize
+
+			// Read part data directly from cache
+			partData := make([]byte, partSize)
+			n, err := c.ReadAt(ctx, id, partData, startOffset)
+			if err != nil {
+				results <- uploadResult{pn, 0, fmt.Errorf("failed to read part %d from cache: %w", pn, err)}
+				return
+			}
+			partData = partData[:n]
+
+			// Upload part
+			if err := s.UploadPart(ctx, id, uploadID, pn, partData); err != nil {
+				results <- uploadResult{pn, 0, fmt.Errorf("failed to upload part %d: %w", pn, err)}
+				return
+			}
+
+			logger.Debug("FlushIncremental: uploaded part %d (%d bytes): content_id=%s", pn, n, id)
+			results <- uploadResult{pn, int64(n), nil}
+		}(partNum)
 	}
 
-	// CRITICAL PERFORMANCE FIX:
-	// Upload ONLY ONE part per COMMIT to avoid blocking the NFS client.
-	// Uploading all buffered parts at once can take 20+ seconds for large buffers,
-	// causing "NFS server not responding" warnings on the client.
-	//
-	// By uploading one part at a time (~5 seconds per COMMIT), we:
-	// - Keep COMMIT operations fast and responsive
-	// - Maintain RFC 1813 compliance (data is committed to S3 before returning success)
-	// - Allow incremental progress on large file uploads
-	// - Let subsequent COMMITs handle remaining buffered data
+	wg.Wait()
+	close(results)
 
-	// Read exactly one part from buffer
-	partData := make([]byte, minPartSize)
-	nRead, err := session.buffer.Read(partData)
-	if err != nil {
-		return 0, fmt.Errorf("failed to read from buffer: %w", err)
+	// Process results - lock briefly to update state
+	session.mu.Lock()
+	var totalUploaded int64
+	var firstErr error
+
+	for result := range results {
+		// Remove from uploading regardless of success/failure
+		delete(session.uploadingParts, result.partNum)
+
+		if result.err != nil {
+			if firstErr == nil {
+				firstErr = result.err
+			}
+			logger.Warn("FlushIncremental: part %d failed: %v", result.partNum, result.err)
+			continue
+		}
+
+		// Mark as uploaded on success
+		session.uploadedParts[result.partNum] = true
+		session.totalFlushed += result.size
+		totalUploaded += result.size
 	}
-	partData = partData[:nRead] // Trim to actual size
+	session.mu.Unlock()
 
-	// Upload this single part synchronously (COMMIT waits for this to complete)
-	err = s.UploadPart(ctx, id, session.uploadID, session.currentPartNumber, partData)
-	if err != nil {
-		return 0, fmt.Errorf("failed to upload part %d: %w", session.currentPartNumber, err)
+	if firstErr != nil {
+		return totalUploaded, firstErr
 	}
 
-	// Update session state
-	partsFlushed := int64(len(partData))
-	session.totalFlushed += partsFlushed
-	session.currentPartNumber++
+	if totalUploaded > 0 {
+		logger.Info("FlushIncremental: uploaded %d parts (%d bytes): content_id=%s", len(partsToUpload), totalUploaded, id)
+	}
 
-	// Update cache flushed offset
-	c.SetFlushedOffset(id, flushedOffset+int64(n))
+	return totalUploaded, nil
+}
 
-	return partsFlushed, nil
+// calculateFlushedOffset returns the highest contiguous uploaded byte position.
+// Must be called with session.mu held.
+func (s *S3ContentStore) calculateFlushedOffset(session *incrementalWriteSession, cacheSize uint64) uint64 {
+	if len(session.uploadedParts) == 0 {
+		return 0
+	}
+
+	// Find highest contiguous part number
+	highestContiguous := 0
+	for partNum := 1; ; partNum++ {
+		if !session.uploadedParts[partNum] {
+			break
+		}
+		highestContiguous = partNum
+	}
+
+	if highestContiguous == 0 {
+		return 0
+	}
+
+	// Calculate byte offset
+	offset := uint64(highestContiguous) * s.partSize
+	if offset > cacheSize {
+		offset = cacheSize
+	}
+	return offset
 }
 
 // CompleteIncrementalWrite finalizes an incremental write session.
 //
-// This:
-//  1. Uploads any remaining buffered data as the final part
-//  2. Completes the S3 multipart upload
-//  3. Cleans up session state
-//
-// After this call, the content is available for reading via ReadContent().
-//
-// Parameters:
-//   - ctx: Context for cancellation and timeouts
-//   - id: Content identifier
-//
-// Returns:
-//   - error: Returns error if completion fails
-func (s *S3ContentStore) CompleteIncrementalWrite(ctx context.Context, id metadata.ContentID) error {
-	// Get and remove session
-	incrementalSessionsMu.Lock()
-	session, exists := incrementalSessions[id]
-	if exists {
-		delete(incrementalSessions, id)
-	}
-	incrementalSessionsMu.Unlock()
+// For small files (< partSize): uses simple PutObject from cache
+// For large files: uploads remaining parts + CompleteMultipartUpload
+func (s *S3ContentStore) CompleteIncrementalWrite(ctx context.Context, id metadata.ContentID, c cache.Cache) error {
+	cacheSize := c.Size(id)
 
-	if !exists {
-		// Idempotent: no session means already completed or never started
+	// Get session (but don't delete yet - only delete after successful completion)
+	incrementalSessionsMu.RLock()
+	session, exists := incrementalSessions[id]
+	incrementalSessionsMu.RUnlock()
+
+	// Small file or no session: use simple PutObject
+	if !exists || session.uploadID == "" {
+		if cacheSize > 0 {
+			data := make([]byte, cacheSize)
+			n, err := c.ReadAt(ctx, id, data, 0)
+			if err != nil {
+				return fmt.Errorf("failed to read small file from cache: %w", err)
+			}
+			if err := s.WriteContent(ctx, id, data[:n]); err != nil {
+				return fmt.Errorf("failed to write small file via PutObject: %w", err)
+			}
+			logger.Info("CompleteIncrementalWrite: used PutObject for small file: content_id=%s size=%d", id, n)
+		}
+		// Delete session if it exists (for small files that had an empty session)
+		if exists {
+			incrementalSessionsMu.Lock()
+			delete(incrementalSessions, id)
+			incrementalSessionsMu.Unlock()
+		}
 		return nil
+	}
+
+	session.mu.Lock()
+
+	// Calculate total parts needed (including final partial part)
+	totalParts := (cacheSize + s.partSize - 1) / s.partSize
+
+	// Find parts that still need uploading
+	var remainingParts []int
+	for partNum := 1; partNum <= int(totalParts); partNum++ {
+		if !session.uploadedParts[partNum] {
+			remainingParts = append(remainingParts, partNum)
+		}
+	}
+	uploadID := session.uploadID
+	session.mu.Unlock()
+
+	// Upload remaining parts in parallel for better performance
+	if len(remainingParts) > 0 {
+		logger.Info("CompleteIncrementalWrite: uploading %d remaining parts in parallel: content_id=%s", len(remainingParts), id)
+
+		// Use same parallelism as FlushIncremental
+		maxConcurrent := s.maxParallelUploads
+		if maxConcurrent == 0 {
+			maxConcurrent = 4
+		}
+
+		var wg sync.WaitGroup
+		semaphore := make(chan struct{}, maxConcurrent)
+		errChan := make(chan error, len(remainingParts))
+
+		for _, partNum := range remainingParts {
+			wg.Add(1)
+			semaphore <- struct{}{} // Acquire slot
+
+			go func(pn int) {
+				defer wg.Done()
+				defer func() { <-semaphore }() // Release slot
+
+				// Calculate offset range for this part
+				startOffset := uint64(pn-1) * s.partSize
+				endOffset := startOffset + s.partSize
+				if endOffset > cacheSize {
+					endOffset = cacheSize
+				}
+				partSize := endOffset - startOffset
+
+				if partSize == 0 {
+					return
+				}
+
+				// Read and upload
+				partData := make([]byte, partSize)
+				n, err := c.ReadAt(ctx, id, partData, startOffset)
+				if err != nil {
+					errChan <- fmt.Errorf("failed to read part %d from cache: %w", pn, err)
+					return
+				}
+
+				if err := s.UploadPart(ctx, id, uploadID, pn, partData[:n]); err != nil {
+					errChan <- fmt.Errorf("failed to upload part %d: %w", pn, err)
+					return
+				}
+
+				session.mu.Lock()
+				session.uploadedParts[pn] = true
+				session.mu.Unlock()
+
+				logger.Debug("CompleteIncrementalWrite: uploaded part %d (%d bytes): content_id=%s", pn, n, id)
+			}(partNum)
+		}
+
+		wg.Wait()
+		close(errChan)
+
+		// Check for any errors
+		for err := range errChan {
+			return err
+		}
 	}
 
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
-	// Determine how many parts we actually uploaded
-	// currentPartNumber always points to the NEXT part to upload
-	// If currentPartNumber = 4, we've uploaded parts 1, 2, 3
-	actualPartCount := session.currentPartNumber - 1
-
-	// Upload any remaining buffered data as final part
-	if session.buffer.Len() > 0 {
-		finalPartData := session.buffer.Bytes()
-		err := s.UploadPart(ctx, id, session.uploadID, session.currentPartNumber, finalPartData)
-		if err != nil {
-			return fmt.Errorf("failed to upload final part %d: %w", session.currentPartNumber, err)
-		}
-		session.totalFlushed += int64(len(finalPartData))
-		actualPartCount = session.currentPartNumber // Include the final part we just uploaded
-	}
-
-	// Only complete if we uploaded at least one part
-	if actualPartCount == 0 {
-		// No parts uploaded (empty file) - abort the multipart upload
+	// Build sorted part numbers list
+	if len(session.uploadedParts) == 0 {
+		// No parts uploaded - abort
 		return s.AbortMultipartUpload(ctx, id, session.uploadID)
 	}
 
-	// Build part numbers list (1, 2, 3, ..., actualPartCount)
-	partNumbers := make([]int, actualPartCount)
-	for i := 0; i < actualPartCount; i++ {
-		partNumbers[i] = i + 1
+	partNumbers := make([]int, 0, len(session.uploadedParts))
+	for partNum := range session.uploadedParts {
+		partNumbers = append(partNumbers, partNum)
 	}
+	sort.Ints(partNumbers)
 
 	// Complete multipart upload
-	err := s.CompleteMultipartUpload(ctx, id, session.uploadID, partNumbers)
-	if err != nil {
+	if err := s.CompleteMultipartUpload(ctx, id, session.uploadID, partNumbers); err != nil {
 		return fmt.Errorf("failed to complete multipart upload: %w", err)
 	}
 
+	// Only delete session after successful completion to prevent race conditions
+	// where a new COMMIT creates a fresh session and re-uploads everything
+	incrementalSessionsMu.Lock()
+	delete(incrementalSessions, id)
+	incrementalSessionsMu.Unlock()
+
+	logger.Info("CompleteIncrementalWrite: completed multipart upload: content_id=%s parts=%d", id, len(partNumbers))
 	return nil
 }
 
 // AbortIncrementalWrite cancels an incremental write session.
-//
-// This:
-//  1. Aborts the S3 multipart upload (frees storage)
-//  2. Discards any buffered data
-//  3. Cleans up session state
-//
-// This operation is idempotent - aborting a non-existent session succeeds.
-//
-// Parameters:
-//   - ctx: Context for cancellation and timeouts
-//   - id: Content identifier
-//
-// Returns:
-//   - error: Returns error only for storage failures (idempotent)
 func (s *S3ContentStore) AbortIncrementalWrite(ctx context.Context, id metadata.ContentID) error {
-	// Get and remove session
 	incrementalSessionsMu.Lock()
 	session, exists := incrementalSessions[id]
 	if exists {
@@ -281,14 +415,11 @@ func (s *S3ContentStore) AbortIncrementalWrite(ctx context.Context, id metadata.
 	}
 	incrementalSessionsMu.Unlock()
 
-	if !exists {
-		// Idempotent: no session to abort
+	if !exists || session.uploadID == "" {
 		return nil
 	}
 
-	// Abort multipart upload
-	err := s.AbortMultipartUpload(ctx, id, session.uploadID)
-	if err != nil {
+	if err := s.AbortMultipartUpload(ctx, id, session.uploadID); err != nil {
 		return fmt.Errorf("failed to abort multipart upload: %w", err)
 	}
 
@@ -296,14 +427,6 @@ func (s *S3ContentStore) AbortIncrementalWrite(ctx context.Context, id metadata.
 }
 
 // GetIncrementalWriteState returns the current state of an incremental write session.
-//
-// Returns nil if no incremental write session exists for this content ID.
-//
-// Parameters:
-//   - id: Content identifier
-//
-// Returns:
-//   - *IncrementalWriteState: Current state (nil if no session)
 func (s *S3ContentStore) GetIncrementalWriteState(id metadata.ContentID) *content.IncrementalWriteState {
 	incrementalSessionsMu.RLock()
 	session, exists := incrementalSessions[id]
@@ -317,9 +440,9 @@ func (s *S3ContentStore) GetIncrementalWriteState(id metadata.ContentID) *conten
 	defer session.mu.Unlock()
 
 	return &content.IncrementalWriteState{
-		UploadID:          session.uploadID,
-		CurrentPartNumber: session.currentPartNumber,
-		BufferedSize:      int64(session.buffer.Len()),
-		TotalFlushed:      session.totalFlushed,
+		UploadID:       session.uploadID,
+		PartsUploaded:  len(session.uploadedParts),
+		PartsUploading: len(session.uploadingParts),
+		TotalFlushed:   session.totalFlushed,
 	}
 }

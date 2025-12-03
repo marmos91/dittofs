@@ -60,7 +60,7 @@ func (suite *CacheTestSuite) RunBasicTests(t *testing.T) {
 			t.Fatalf("Write() failed: %v", err)
 		}
 
-		expectedSize := int64(len(data))
+		expectedSize := uint64(len(data))
 		if size := c.Size(id); size != expectedSize {
 			t.Errorf("Size() returned %d, expected %d", size, expectedSize)
 		}
@@ -161,7 +161,7 @@ func (suite *CacheTestSuite) RunBasicTests(t *testing.T) {
 		data1 := []byte("data1")   // 5 bytes
 		data2 := []byte("data22")  // 6 bytes
 		data3 := []byte("data333") // 7 bytes
-		expectedTotal := int64(18)
+		expectedTotal := uint64(18)
 
 		if err := c.Write(ctx, "content-1", data1); err != nil {
 			t.Fatalf("Write() failed: %v", err)

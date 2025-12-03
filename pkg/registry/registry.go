@@ -216,14 +216,16 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 	if config.Cache != "" {
 		shareCache := r.caches[config.Cache]
 		contentStore := r.content[config.ContentStore]
+		metaStore := r.metadata[config.MetadataStore]
 
 		// Use flusher config from share config
 		flusherCfg := &flusher.Config{
 			SweepInterval: config.FlusherConfig.SweepInterval,
 			FlushTimeout:  config.FlusherConfig.FlushTimeout,
+			FlushPoolSize: config.FlusherConfig.FlushPoolSize,
 		}
 
-		share.Flusher = flusher.New(shareCache, contentStore, flusherCfg)
+		share.Flusher = flusher.New(shareCache, contentStore, metaStore, flusherCfg)
 		share.Flusher.Start(ctx)
 	}
 

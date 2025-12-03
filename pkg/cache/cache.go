@@ -181,7 +181,7 @@ type Cache interface {
 	//   - ctx: Context for cancellation and timeouts
 	//   - id: Content identifier (created if doesn't exist)
 	//   - data: Data to write
-	//   - offset: Byte offset where writing begins (0-based)
+	//   - offset: Byte offset where writing begins (0-based, unsigned)
 	//
 	// Returns:
 	//   - error: Returns error if write fails or context is cancelled
@@ -193,7 +193,7 @@ type Cache interface {
 	//	if err != nil {
 	//	    return fmt.Errorf("cache write failed: %w", err)
 	//	}
-	WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset int64) error
+	WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset uint64) error
 
 	// ====================================================================
 	// Read Operations
@@ -250,7 +250,7 @@ type Cache interface {
 	//   - ctx: Context for cancellation and timeouts
 	//   - id: Content identifier
 	//   - buf: Buffer to read into
-	//   - offset: Byte offset to start reading from (0-based)
+	//   - offset: Byte offset to start reading from (0-based, unsigned)
 	//
 	// Returns:
 	//   - int: Number of bytes read
@@ -264,7 +264,7 @@ type Cache interface {
 	//	    return err
 	//	}
 	//	// Upload chunk[:n] to S3
-	ReadAt(ctx context.Context, id metadata.ContentID, buf []byte, offset int64) (int, error)
+	ReadAt(ctx context.Context, id metadata.ContentID, buf []byte, offset uint64) (int, error)
 
 	// ====================================================================
 	// Metadata
@@ -284,8 +284,8 @@ type Cache interface {
 	//   - id: Content identifier
 	//
 	// Returns:
-	//   - int64: Size in bytes (0 if no cached data)
-	Size(id metadata.ContentID) int64
+	//   - uint64: Size in bytes (0 if no cached data)
+	Size(id metadata.ContentID) uint64
 
 	// LastWrite returns the timestamp of the last write for a content ID.
 	//
@@ -385,8 +385,8 @@ type Cache interface {
 	//   - Memory pressure detection
 	//
 	// Returns:
-	//   - int64: Total cached size in bytes
-	TotalSize() int64
+	//   - uint64: Total cached size in bytes
+	TotalSize() uint64
 
 	// MaxSize returns the maximum cache size configured for this cache.
 	//
@@ -396,8 +396,8 @@ type Cache interface {
 	// Returns 0 if there's no size limit (unlimited cache).
 	//
 	// Returns:
-	//   - int64: Maximum cache size in bytes (0 = unlimited)
-	MaxSize() int64
+	//   - uint64: Maximum cache size in bytes (0 = unlimited)
+	MaxSize() uint64
 
 	// ====================================================================
 	// Lifecycle
@@ -471,8 +471,8 @@ type Cache interface {
 	//   - id: Content identifier
 	//
 	// Returns:
-	//   - int64: Number of bytes successfully flushed
-	GetFlushedOffset(id metadata.ContentID) int64
+	//   - uint64: Number of bytes successfully flushed
+	GetFlushedOffset(id metadata.ContentID) uint64
 
 	// SetFlushedOffset updates the flushed offset for a cache entry.
 	//
@@ -481,8 +481,8 @@ type Cache interface {
 	//
 	// Parameters:
 	//   - id: Content identifier
-	//   - offset: New flushed offset (bytes)
-	SetFlushedOffset(id metadata.ContentID, offset int64)
+	//   - offset: New flushed offset (bytes, unsigned)
+	SetFlushedOffset(id metadata.ContentID, offset uint64)
 
 	// ====================================================================
 	// Prefetch Support
@@ -505,7 +505,7 @@ type Cache interface {
 	//
 	// Returns:
 	//   - bool: True if this call started the prefetch, false if already in progress or not needed
-	StartPrefetch(id metadata.ContentID, expectedSize int64) (started bool)
+	StartPrefetch(id metadata.ContentID, expectedSize uint64) (started bool)
 
 	// WaitForPrefetchOffset waits until the prefetch has fetched at least up to the required offset.
 	//
@@ -524,7 +524,7 @@ type Cache interface {
 	//
 	// Returns:
 	//   - error: Context error if cancelled, nil otherwise
-	WaitForPrefetchOffset(ctx context.Context, id metadata.ContentID, requiredOffset int64) error
+	WaitForPrefetchOffset(ctx context.Context, id metadata.ContentID, requiredOffset uint64) error
 
 	// GetPrefetchedOffset returns how many bytes have been prefetched so far.
 	//
@@ -534,10 +534,10 @@ type Cache interface {
 	//   - id: Content identifier
 	//
 	// Returns:
-	//   - int64: Number of bytes prefetched so far
-	GetPrefetchedOffset(id metadata.ContentID) int64
+	//   - uint64: Number of bytes prefetched so far
+	GetPrefetchedOffset(id metadata.ContentID) uint64
 
-	// UpdatePrefetchedOffset updates the prefetched offset as data is fetched.
+	// SetPrefetchedOffset updates the prefetched offset as data is fetched.
 	//
 	// Called by the prefetch goroutine after writing each chunk to the cache.
 	// This wakes up any waiters blocked in WaitForPrefetchOffset.
@@ -545,7 +545,7 @@ type Cache interface {
 	// Parameters:
 	//   - id: Content identifier
 	//   - offset: New prefetched offset (should only increase)
-	UpdatePrefetchedOffset(id metadata.ContentID, offset int64)
+	SetPrefetchedOffset(id metadata.ContentID, offset uint64)
 
 	// CompletePrefetch marks a prefetch as complete and transitions to StateCached.
 	//

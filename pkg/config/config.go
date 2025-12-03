@@ -215,6 +215,11 @@ type FlusherConfig struct {
 	// when no writes have occurred for this duration.
 	// Default: 30s
 	FlushTimeout time.Duration `mapstructure:"flush_timeout"`
+
+	// FlushPoolSize is how many files to flush in parallel.
+	// Higher values improve throughput when many files are idle.
+	// Default: 4
+	FlushPoolSize int `mapstructure:"flush_pool_size"`
 }
 
 // ShareConfig defines a single share/export.

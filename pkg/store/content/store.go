@@ -413,36 +413,33 @@ type ReadAtContentStore interface {
 //   - Network timeout constraints (3+ minutes for 1GB upload)
 //   - NFS client timeouts ("server not responding")
 //
-// Problem Scenario (Real-World Test):
-//   - User copies 1.1GB file over NFS
-//   - macOS NFS client calls COMMIT every ~4MB (253 COMMITs total)
-//   - Current implementation: buffer all 1.1GB in cache, flush on final COMMIT
-//   - Result: 3+ minute blocking upload → client timeout + EntityTooLarge error
+// Design: Parallel Multipart Uploads
 //
-// Solution:
-// Instead of buffering all data and flushing at the end, flush incrementally
-// during partial COMMIT operations using S3 multipart uploads:
-//   - COMMIT #1-2 (~8MB accumulated): Upload part 1 (5MB), keep 3MB in cache
-//   - COMMIT #3-4 (~8MB accumulated): Upload part 2 (5MB), keep 3MB in cache
-//   - ...
-//   - COMMIT #253 (final): Upload remaining data + complete multipart
+// The implementation uses parallel part uploads for maximum throughput:
+//   - Part numbers are deterministic: partNumber = (offset / partSize) + 1
+//   - Multiple COMMITs can upload different parts simultaneously
+//   - No intermediate buffering - reads directly from cache
+//   - Small files (< partSize) use simple PutObject on finalization
 //
 // S3 Multipart Requirements:
 //   - Minimum part size: 5MB (except last part)
 //   - Maximum parts: 10,000
-//   - Parts must be numbered sequentially (1, 2, 3, ...)
+//   - Parts can be uploaded in any order (numbered 1, 2, 3, ...)
 //
 // Flow:
-//  1. BeginIncrementalWrite(contentID) → initiates multipart upload, returns upload ID
-//  2. FlushIncremental(contentID, data) → accumulates data, uploads when >= 5MB
-//  3. FlushIncremental(contentID, data) → continues uploading parts
-//  4. CompleteIncrementalWrite(contentID) → uploads final part + completes multipart
+//  1. FlushIncremental(contentID, cache) → uploads complete parts in parallel
+//     - Returns 0 if cacheSize < partSize (small file, wait for finalization)
+//     - Lazily creates multipart upload on first actual part upload
+//  2. CompleteIncrementalWrite(contentID, cache) → finalizes the upload
+//     - Small files: uses PutObject directly from cache
+//     - Large files: uploads remaining parts + CompleteMultipartUpload
 //
 // Benefits:
-//   - No client timeouts (each COMMIT responds quickly)
-//   - No S3 size limits (uses multipart for large files)
-//   - Cache stays small (data is incrementally removed)
-//   - Failed uploads can be retried per-part
+//   - Parallel uploads: Multiple COMMITs upload different parts simultaneously
+//   - No blocking: S3 uploads happen outside of locks
+//   - No wasted API calls: CreateMultipartUpload only when data >= partSize
+//   - Small file optimization: Single PutObject instead of 3-call multipart
+//   - Memory efficient: No intermediate buffer, reads directly from cache
 //
 // Implementations:
 //   - S3: MUST implement using native multipart uploads (✓)
@@ -477,31 +474,34 @@ type IncrementalWriteStore interface {
 	//	}
 	BeginIncrementalWrite(ctx context.Context, id metadata.ContentID) (uploadID string, err error)
 
-	// FlushIncremental reads from cache and writes to content store incrementally.
+	// FlushIncremental uploads complete parts from cache to content store.
 	//
-	// The store implementation:
-	//   1. Reads new bytes from cache using cache.GetFlushedOffset() and cache.ReadAt()
-	//   2. Buffers data until enough for an upload (e.g., 5MB for S3 multipart)
-	//   3. Uploads when buffer threshold is reached
-	//   4. Updates cache.SetFlushedOffset() after successful upload
+	// The implementation:
+	//   1. Returns 0 if cacheSize < partSize (small file, nothing to upload yet)
+	//   2. Calculates which complete parts can be uploaded: floor(cacheSize / partSize)
+	//   3. Finds parts not yet uploaded and not currently uploading
+	//   4. Uploads selected parts in parallel (up to maxParallelUploads)
+	//   5. Updates cache.SetFlushedOffset() to highest contiguous uploaded position
 	//
-	// This keeps the COMMIT handler agnostic of store-specific buffering logic.
-	// Each store decides its own flush strategy (S3: 5MB parts, filesystem: immediate).
+	// Part numbers are deterministic based on offset:
+	//   partNumber = (offset / partSize) + 1
 	//
-	// The implementation tracks:
-	//   - Upload ID (from BeginIncrementalWrite)
-	//   - Current part number (auto-incremented)
-	//   - Internal buffer (accumulated until threshold)
+	// This enables multiple concurrent COMMITs to upload different parts simultaneously
+	// without coordination - each COMMIT calculates which parts it can upload.
 	//
-	// Returns the number of bytes actually uploaded (may be 0 if still buffering).
+	// The implementation tracks per content ID:
+	//   - uploadedParts: map of successfully uploaded part numbers
+	//   - uploadingParts: map of parts currently being uploaded (prevents duplicates)
+	//
+	// Returns the number of bytes actually uploaded (0 if small file or all parts done).
 	//
 	// Parameters:
 	//   - ctx: Context for cancellation and timeouts
 	//   - id: Content identifier
-	//   - c: Cache to read data from (store manages offsets and updates FlushedOffset)
+	//   - c: Cache to read data from
 	//
 	// Returns:
-	//   - flushed: Number of bytes actually uploaded to storage (0 if buffering)
+	//   - flushed: Number of bytes actually uploaded to storage
 	//   - error: Returns error if read or upload fails
 	//
 	// Example (COMMIT handler):
@@ -511,36 +511,46 @@ type IncrementalWriteStore interface {
 	//	    if err != nil {
 	//	        return fmt.Errorf("failed to flush incremental: %w", err)
 	//	    }
-	//	    // Store handles cache.SetFlushedOffset() internally
+	//	    if flushed > 0 {
+	//	        cache.SetState(contentID, StateUploading)
+	//	    }
 	//	}
 	FlushIncremental(ctx context.Context, id metadata.ContentID, c cache.Cache) (flushed int64, err error)
 
 	// CompleteIncrementalWrite finalizes an incremental write session.
 	//
-	// This:
-	//   1. Uploads any remaining buffered data as the final part
-	//   2. Completes the S3 multipart upload
-	//   3. Cleans up session state
+	// This handles two cases:
+	//
+	// Small files (cacheSize < partSize):
+	//   - No multipart upload was started
+	//   - Uses simple PutObject to upload directly from cache
+	//   - Single API call (efficient)
+	//
+	// Large files (cacheSize >= partSize):
+	//   - Uploads any remaining parts not yet uploaded (including final partial part)
+	//   - Calls CompleteMultipartUpload with list of all part numbers
+	//   - Cleans up session state
 	//
 	// After this call, the content is available for reading via ReadContent().
 	//
 	// Parameters:
 	//   - ctx: Context for cancellation and timeouts
 	//   - id: Content identifier
+	//   - c: Cache to read data from (for small files or remaining parts)
 	//
 	// Returns:
 	//   - error: Returns error if completion fails
 	//
-	// Example (COMMIT handler on final commit):
+	// Example (Background flusher):
 	//
 	//	if incStore, ok := contentStore.(content.IncrementalWriteStore); ok {
-	//	    err := incStore.CompleteIncrementalWrite(ctx, contentID)
+	//	    err := incStore.CompleteIncrementalWrite(ctx, contentID, cache)
 	//	    if err != nil {
 	//	        return fmt.Errorf("failed to complete incremental write: %w", err)
 	//	    }
-	//	    logger.Info("Completed incremental write: %s", contentID)
+	//	    cache.SetState(contentID, StateCached)
 	//	}
-	CompleteIncrementalWrite(ctx context.Context, id metadata.ContentID) error
+	CompleteIncrementalWrite(ctx context.Context, id metadata.ContentID, c cache.Cache) error
 
 	// AbortIncrementalWrite cancels an incremental write session.
 	//
@@ -575,8 +585,8 @@ type IncrementalWriteStore interface {
 
 	// GetIncrementalWriteState returns the current state of an incremental write session.
 	//
-	// This allows the COMMIT handler to check if an incremental write is in progress
-	// and get information about the current upload (upload ID, part number, buffered size).
+	// This allows checking if an incremental write is in progress and getting
+	// information about uploaded/uploading parts.
 	//
 	// Returns nil if no incremental write session exists for this content ID.
 	//
@@ -586,30 +596,27 @@ type IncrementalWriteStore interface {
 	// Returns:
 	//   - *IncrementalWriteState: Current state (nil if no session)
 	//
-	// Example (COMMIT handler):
+	// Example (Background flusher):
 	//
 	//	state := incStore.GetIncrementalWriteState(contentID)
-	//	if state == nil {
-	//	    // First commit - begin incremental write
-	//	    uploadID, _ := incStore.BeginIncrementalWrite(ctx, contentID)
-	//	} else {
-	//	    // Subsequent commit - continue flushing
-	//	    logger.Debug("Incremental write in progress: uploadID=%s part=%d buffered=%d",
-	//	        state.UploadID, state.CurrentPartNumber, state.BufferedSize)
+	//	if state != nil && state.PartsUploading > 0 {
+	//	    // Parts still being uploaded, wait before finalizing
+	//	    continue
 	//	}
 	GetIncrementalWriteState(id metadata.ContentID) *IncrementalWriteState
 }
 
 // IncrementalWriteState tracks the state of an incremental write session.
 type IncrementalWriteState struct {
-	// UploadID is the S3 multipart upload ID
+	// UploadID is the S3 multipart upload ID (empty if not yet started)
 	UploadID string
 
-	// CurrentPartNumber is the next part number to upload (1-indexed)
-	CurrentPartNumber int
+	// PartsUploaded is the count of successfully uploaded parts
+	PartsUploaded int
 
-	// BufferedSize is the amount of data buffered but not yet uploaded
-	BufferedSize int64
+	// PartsUploading is the count of parts currently being uploaded
+	// Used by flusher to avoid finalizing while uploads in progress
+	PartsUploading int
 
 	// TotalFlushed is the total bytes uploaded so far
 	TotalFlushed int64

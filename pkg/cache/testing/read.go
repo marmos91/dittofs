@@ -193,24 +193,7 @@ func (suite *CacheTestSuite) RunReadTests(t *testing.T) {
 		}
 	})
 
-	t.Run("ReadAtWithNegativeOffsetFails", func(t *testing.T) {
-		c := suite.NewCache()
-		defer func() { _ = c.Close() }()
-		ctx := testContext()
-
-		id := metadata.ContentID("test-9")
-		data := []byte("Hello")
-
-		if err := c.Write(ctx, id, data); err != nil {
-			t.Fatalf("Write() failed: %v", err)
-		}
-
-		buf := make([]byte, 10)
-		_, err := c.ReadAt(ctx, id, buf, -1)
-		if err == nil {
-			t.Error("ReadAt() with negative offset should fail")
-		}
-	})
+	// Note: ReadAt now uses uint64 for offset, so negative offsets are not possible at compile time
 
 	t.Run("ReadAtRespectsCancellation", func(t *testing.T) {
 		c := suite.NewCache()
@@ -246,7 +229,7 @@ func (suite *CacheTestSuite) RunReadTests(t *testing.T) {
 
 		for offset := 0; offset < len(data); offset += chunkSize {
 			buf := make([]byte, chunkSize)
-			n, err := c.ReadAt(ctx, id, buf, int64(offset))
+			n, err := c.ReadAt(ctx, id, buf, uint64(offset))
 			if err != nil && err != io.EOF {
 				t.Fatalf("ReadAt() at offset %d failed: %v", offset, err)
 			}

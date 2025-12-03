@@ -15,7 +15,7 @@ func TestMemoryCache(t *testing.T) {
 	suite := &cachetest.CacheTestSuite{
 		NewCache: func() cache.Cache {
 			// Create cache with 100MB limit for testing
-			maxSize := int64(100 * 1024 * 1024)
+			var maxSize uint64 = 100 * 1024 * 1024
 			return NewMemoryCache(maxSize, nil)
 		},
 	}
@@ -67,7 +67,7 @@ func TestGetInfo(t *testing.T) {
 			t.Fatal("Expected content ID in info map")
 		}
 
-		if bufInfo.Size != int64(len(data)) {
+		if bufInfo.Size != uint64(len(data)) {
 			t.Errorf("Expected size %d, got %d", len(data), bufInfo.Size)
 		}
 
@@ -113,7 +113,7 @@ func TestGetInfo(t *testing.T) {
 				continue
 			}
 
-			if bufInfo.Size != int64(len(expectedData)) {
+			if bufInfo.Size != uint64(len(expectedData)) {
 				t.Errorf("For %s: expected size %d, got %d", id, len(expectedData), bufInfo.Size)
 			}
 

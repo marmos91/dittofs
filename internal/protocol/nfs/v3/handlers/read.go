@@ -494,10 +494,10 @@ func (h *Handler) tryReadFromCache(
 				state, offset, count, cacheSize, contentID)
 
 			data := make([]byte, count)
-			n, readErr := c.ReadAt(ctx.Context, contentID, data, int64(offset))
+			n, readErr := c.ReadAt(ctx.Context, contentID, data, offset)
 
 			if readErr == nil || readErr == io.EOF {
-				eof := (readErr == io.EOF) || (int64(offset)+int64(n) >= cacheSize)
+				eof := (readErr == io.EOF) || (offset+uint64(n) >= cacheSize)
 				logger.Debug("READ: cache hit (dirty): bytes_read=%d eof=%v content_id=%s",
 					n, eof, contentID)
 
@@ -526,10 +526,10 @@ func (h *Handler) tryReadFromCache(
 				offset, count, cacheSize, contentID)
 
 			data := make([]byte, count)
-			n, readErr := c.ReadAt(ctx.Context, contentID, data, int64(offset))
+			n, readErr := c.ReadAt(ctx.Context, contentID, data, offset)
 
 			if readErr == nil || readErr == io.EOF {
-				eof := (readErr == io.EOF) || (int64(offset)+int64(n) >= cacheSize)
+				eof := (readErr == io.EOF) || (offset+uint64(n) >= cacheSize)
 				logger.Debug("READ: cache hit: bytes_read=%d eof=%v content_id=%s",
 					n, eof, contentID)
 
@@ -551,7 +551,7 @@ func (h *Handler) tryReadFromCache(
 
 	case cache.StatePrefetching:
 		// Prefetch in progress - wait for the required offset to be available
-		requiredOffset := int64(offset) + int64(count)
+		requiredOffset := offset + uint64(count)
 		logger.Debug("READ: prefetch in progress, waiting for offset %d: content_id=%s", requiredOffset, contentID)
 
 		if err := c.WaitForPrefetchOffset(ctx.Context, contentID, requiredOffset); err != nil {
@@ -561,10 +561,10 @@ func (h *Handler) tryReadFromCache(
 		// Our bytes are now available - read from cache
 		cacheSize := c.Size(contentID)
 		data := make([]byte, count)
-		n, readErr := c.ReadAt(ctx.Context, contentID, data, int64(offset))
+		n, readErr := c.ReadAt(ctx.Context, contentID, data, offset)
 
 		if readErr == nil || readErr == io.EOF {
-			eof := (readErr == io.EOF) || (int64(offset)+int64(n) >= cacheSize)
+			eof := (readErr == io.EOF) || (offset+uint64(n) >= cacheSize)
 			logger.Debug("READ: cache hit after prefetch: bytes_read=%d eof=%v content_id=%s", n, eof, contentID)
 
 			if h.Metrics != nil {
@@ -654,7 +654,7 @@ func (h *Handler) startBackgroundPrefetch(
 	}
 
 	// Try to start prefetch - returns false if already in progress or not needed
-	if !c.StartPrefetch(contentID, int64(fileSize)) {
+	if !c.StartPrefetch(contentID, fileSize) {
 		logger.Debug("READ: prefetch already in progress or not needed: content_id=%s", contentID)
 		return
 	}
@@ -691,7 +691,7 @@ func (h *Handler) runPrefetch(
 	// Use a background context - prefetch should continue even if original request is done
 	ctx := context.Background()
 
-	var offset int64
+	var offset uint64
 	success := false
 
 	defer func() {
@@ -708,12 +708,13 @@ func (h *Handler) runPrefetch(
 
 	if hasReadAt {
 		// Efficient path: read in chunks using ReadAt
-		for offset < int64(fileSize) {
-			remaining := int64(fileSize) - offset
-			readSize := min(remaining, chunkSize)
+		for offset < fileSize {
+			remaining := fileSize - offset
+			readSize := min(remaining, uint64(chunkSize))
 
 			chunk := make([]byte, readSize)
-			n, err := readAtStore.ReadAt(ctx, contentID, chunk, offset)
+			// Content store ReadAt uses int64 for io.ReaderAt compatibility
+			n, err := readAtStore.ReadAt(ctx, contentID, chunk, int64(offset))
 			if err != nil && err != io.EOF {
 				logger.Warn("READ: prefetch chunk read failed: content_id=%s offset=%d error=%v",
 					contentID, offset, err)
@@ -728,8 +729,8 @@ func (h *Handler) runPrefetch(
 					return
 				}
 
-				offset += int64(n)
-				c.UpdatePrefetchedOffset(contentID, offset)
+				offset += uint64(n)
+				c.SetPrefetchedOffset(contentID, offset)
 			}
 
 			if err == io.EOF || n == 0 {
@@ -757,8 +758,8 @@ func (h *Handler) runPrefetch(
 					return
 				}
 
-				offset += int64(n)
-				c.UpdatePrefetchedOffset(contentID, offset)
+				offset += uint64(n)
+				c.SetPrefetchedOffset(contentID, offset)
 			}
 
 			if err == io.EOF {

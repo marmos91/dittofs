@@ -321,9 +321,9 @@ func (h *Handler) Write(
 	fileHandle := metadata.FileHandle(req.Handle)
 
 	if cache != nil {
-		logger.Debug("WRITE: share=%s mode=async (using cache)", ctx.Share)
+		logger.Info("WRITE: share=%s mode=async (using cache)", ctx.Share)
 	} else {
-		logger.Debug("WRITE: share=%s mode=sync (no cache)", ctx.Share)
+		logger.Info("WRITE: share=%s mode=sync (no cache)", ctx.Share)
 	}
 
 	// ========================================================================
@@ -460,7 +460,7 @@ func (h *Handler) Write(
 	// Write to storage (cache or direct to content store)
 	if cache != nil {
 		// Async mode: write to cache, will be flushed on COMMIT
-		err = cache.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, int64(req.Offset))
+		err = cache.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, req.Offset)
 		if err != nil {
 			logger.Error("WRITE failed: cache write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
 				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
@@ -501,8 +501,8 @@ func (h *Handler) Write(
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
 
-	logger.Info("WRITE successful: handle=%x offset=%d requested=%d written=%d new_size=%d client=%s",
-		req.Handle, req.Offset, req.Count, len(req.Data), updatedFile.Size, clientIP)
+	logger.Info("WRITE successful: file=%s offset=%d requested=%d written=%d new_size=%d client=%s",
+		updatedFile.ContentID, req.Offset, req.Count, len(req.Data), updatedFile.Size, clientIP)
 
 	// Determine what stability level to return based on whether we're using a cache
 	//
