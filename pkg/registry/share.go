@@ -31,6 +31,10 @@ type FlusherConfig struct {
 	// FlushTimeout is how long a file must be idle before flushing.
 	// Default: 30s
 	FlushTimeout time.Duration
+
+	// FlushPoolSize is how many files to flush in parallel.
+	// Default: 4
+	FlushPoolSize int
 }
 
 // Share represents a configured share that binds together:

@@ -205,8 +205,8 @@ func (s *S3ContentStore) Truncate(ctx context.Context, id metadata.ContentID, ne
 // This method reads buffered writes from the WriteCache (if available) and
 // uploads them to S3. The upload strategy depends on the data size:
 //
-//   - Small files (< multipartThreshold): Single PutObject operation
-//   - Large files (>= multipartThreshold): Multipart upload for efficiency
+//   - Small files (< partSize): Single PutObject operation
+//   - Large files (>= partSize): Multipart upload with partSize chunks
 //
 // This implements the FlushableContentStore interface and is called by:
 //   - NFS handlers when stable write is requested (DataSyncWrite/FileSyncWrite)
@@ -259,22 +259,21 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 	}
 
 	key := s.getObjectKey(id)
-	dataSize := uint64(cacheSize)
 
 	logger.Info("S3 FlushWrites: starting flush content_id=%s size=%d bytes", id, cacheSize)
 
 	// Choose upload strategy based on data size
-	if dataSize < s.multipartThreshold {
+	// Files < partSize use PutObject, files >= partSize use multipart upload
+	if cacheSize < s.partSize {
 		// ====================================================================
-		// SMALL FILE PATH: Simple PutObject (< multipartThreshold)
+		// SMALL FILE PATH: Simple PutObject (< partSize)
 		// ====================================================================
-		// For files smaller than the multipart threshold, use a single
-		// PutObject operation. This is simpler and more efficient than
-		// multipart upload for small files.
+		// For files smaller than partSize, use a single PutObject operation.
+		// This is simpler and more efficient than multipart upload for small files.
 		//
 		// For small files, it's acceptable to load entire content into memory.
 
-		logger.Info("S3 FlushWrites: using PutObject (small file) content_id=%s size=%d", id, dataSize)
+		logger.Info("S3 FlushWrites: using PutObject (small file) content_id=%s size=%d", id, cacheSize)
 
 		// Phase 1: Read from cache
 		cacheReadStart := time.Now()
@@ -304,12 +303,12 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 			s.metrics.ObserveFlushPhase("s3_upload", s3UploadDuration, int64(len(data)))
 		}
 
-		logger.Info("S3 FlushWrites: PutObject complete content_id=%s size=%d", id, dataSize)
+		logger.Info("S3 FlushWrites: PutObject complete content_id=%s size=%d", id, cacheSize)
 	} else {
 		// ====================================================================
-		// LARGE FILE PATH: Multipart upload (>= multipartThreshold)
+		// LARGE FILE PATH: Multipart upload (>= partSize)
 		// ====================================================================
-		// For files at or above the multipart threshold, use multipart upload.
+		// For files at or above partSize, use multipart upload.
 		// This is more efficient for large files and required for files > 5GB.
 		//
 		// IMPORTANT: For large files, we read from cache in chunks (partSize)
@@ -323,7 +322,7 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 		// 4. Complete multipart upload
 		// 5. Abort on any error
 
-		logger.Info("S3 FlushWrites: using multipart upload (large file) content_id=%s size=%d", id, dataSize)
+		logger.Info("S3 FlushWrites: using multipart upload (large file) content_id=%s size=%d", id, cacheSize)
 
 		// Track S3 upload time for multipart
 		s3UploadStart := time.Now()
@@ -356,7 +355,7 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 		// - Network bandwidth fully utilized
 		// - S3 easily handles 50+ concurrent part uploads
 
-		numParts := int((cacheSize + s.partSize - 1) / s.partSize)
+		numParts := (cacheSize + s.partSize - 1) / s.partSize
 		logger.Info("S3 FlushWrites: preparing %d parts for parallel upload content_id=%s", numParts, id)
 
 		// Pre-read all parts from cache into memory
@@ -364,18 +363,18 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 		type partData struct {
 			number int
 			data   []byte
-			offset int64
+			offset uint64
 		}
 		parts := make([]partData, 0, numParts)
 
-		offset := int64(0)
+		var offset uint64
 		partNumber := 1
 		for offset < cacheSize {
 			// Determine how many bytes to read for this part
 			remainingBytes := cacheSize - offset
-			bytesToRead := int(s.partSize)
-			if int64(bytesToRead) > remainingBytes {
-				bytesToRead = int(remainingBytes)
+			bytesToRead := s.partSize
+			if bytesToRead > remainingBytes {
+				bytesToRead = remainingBytes
 			}
 
 			// Read chunk from cache
@@ -392,7 +391,7 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 				offset: offset,
 			})
 
-			offset += int64(n)
+			offset += uint64(n)
 			partNumber++
 		}
 
@@ -465,10 +464,10 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 		// Record S3 upload phase duration for multipart
 		s3UploadDuration := time.Since(s3UploadStart)
 		if s.metrics != nil {
-			s.metrics.ObserveFlushPhase("s3_upload", s3UploadDuration, int64(dataSize))
+			s.metrics.ObserveFlushPhase("s3_upload", s3UploadDuration, int64(cacheSize))
 		}
 
-		logger.Info("S3 FlushWrites: multipart upload complete content_id=%s size=%d", id, dataSize)
+		logger.Info("S3 FlushWrites: multipart upload complete content_id=%s size=%d", id, cacheSize)
 	}
 
 	// Phase 3: Clear cache after successful upload
@@ -506,12 +505,11 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 // This implements the FlushableContentStore interface.
 //
 // Returns:
-//   - uint64: Flush threshold in bytes (typically 5MB = 5 * 1024 * 1024)
+//   - uint64: Flush threshold in bytes (partSize, typically 5MB)
 func (s *S3ContentStore) FlushThreshold() uint64 {
-	// Return the configured multipart threshold
-	// This was set during NewS3ContentStore() initialization
-	if s.multipartThreshold > 0 {
-		return s.multipartThreshold
+	// Return the configured partSize (used for both threshold and part size)
+	if s.partSize > 0 {
+		return s.partSize
 	}
 
 	// Default to 5MB if not set (should not happen in practice)

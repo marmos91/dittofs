@@ -19,14 +19,15 @@ import (
 
 // s3YAMLConfig represents S3 configuration loaded from YAML files.
 type s3YAMLConfig struct {
-	Endpoint        string `mapstructure:"endpoint"`
-	Region          string `mapstructure:"region"`
-	Bucket          string `mapstructure:"bucket"`
-	AccessKeyID     string `mapstructure:"access_key_id"`
-	SecretAccessKey string `mapstructure:"secret_access_key"`
-	KeyPrefix       string `mapstructure:"key_prefix"`
-	ForcePathStyle  bool   `mapstructure:"force_path_style"`
-	PartSize        int64  `mapstructure:"part_size"`
+	Endpoint           string `mapstructure:"endpoint"`
+	Region             string `mapstructure:"region"`
+	Bucket             string `mapstructure:"bucket"`
+	AccessKeyID        string `mapstructure:"access_key_id"`
+	SecretAccessKey    string `mapstructure:"secret_access_key"`
+	KeyPrefix          string `mapstructure:"key_prefix"`
+	ForcePathStyle     bool   `mapstructure:"force_path_style"`
+	PartSize           uint64 `mapstructure:"part_size"`
+	MaxParallelUploads int    `mapstructure:"max_parallel_uploads"`
 }
 
 // createMetadataStore creates a single metadata store instance.
@@ -187,11 +188,12 @@ func createS3ContentStore(
 
 	// Build S3ContentStoreConfig
 	s3Cfg := s3.S3ContentStoreConfig{
-		Client:    client,
-		Bucket:    yamlCfg.Bucket,
-		KeyPrefix: yamlCfg.KeyPrefix,
-		PartSize:  yamlCfg.PartSize,
-		Metrics:   promMetrics.NewS3Metrics(), // Enable S3 metrics collection
+		Client:             client,
+		Bucket:             yamlCfg.Bucket,
+		KeyPrefix:          yamlCfg.KeyPrefix,
+		PartSize:           yamlCfg.PartSize,
+		MaxParallelUploads: yamlCfg.MaxParallelUploads,
+		Metrics:            promMetrics.NewS3Metrics(), // Enable S3 metrics collection
 	}
 
 	// Create S3 store
@@ -209,7 +211,7 @@ func createS3ContentStore(
 
 // memoryCacheYAMLConfig represents memory cache configuration loaded from YAML files.
 type memoryCacheYAMLConfig struct {
-	MaxSize int64 `mapstructure:"max_size"` // Maximum cache size in bytes
+	MaxSize uint64 `mapstructure:"max_size"` // Maximum cache size in bytes
 }
 
 // createCache creates a single cache instance.

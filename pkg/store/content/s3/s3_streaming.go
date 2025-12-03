@@ -68,10 +68,10 @@ type s3Writer struct {
 	ctx        context.Context
 	id         metadata.ContentID
 	buffer     *bytes.Buffer
-	partSize   int64
+	partSize   uint64
 	uploadID   string
 	partNum    int
-	totalBytes int64
+	totalBytes uint64
 	err        error
 }
 
@@ -86,10 +86,10 @@ func (w *s3Writer) Write(p []byte) (n int, err error) {
 		return n, err
 	}
 
-	w.totalBytes += int64(n)
+	w.totalBytes += uint64(n)
 
 	// If buffer has reached partSize, upload a part
-	if int64(w.buffer.Len()) >= w.partSize {
+	if uint64(w.buffer.Len()) >= w.partSize {
 		if err := w.uploadPart(); err != nil {
 			w.err = err
 			return n, err

@@ -55,27 +55,29 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 	if err := registerMetadataStores(ctx, reg, cfg); err != nil {
 		return nil, fmt.Errorf("failed to register metadata stores: %w", err)
 	}
-	logger.Debug("Registered %d metadata store(s)", reg.CountMetadataStores())
+	logger.Info("Registered %d metadata store(s)", reg.CountMetadataStores())
 
 	// Step 2: Register all content stores
 	if err := registerContentStores(ctx, reg, cfg); err != nil {
 		return nil, fmt.Errorf("failed to register content stores: %w", err)
 	}
-	logger.Debug("Registered %d content store(s)", reg.CountContentStores())
+	logger.Info("Registered %d content store(s)", reg.CountContentStores())
 
 	// Step 3: Register all caches (optional, may be empty)
 	if err := registerCaches(ctx, reg, cfg); err != nil {
 		return nil, fmt.Errorf("failed to register caches: %w", err)
 	}
 	if reg.CountCaches() > 0 {
-		logger.Debug("Registered %d cache(s)", reg.CountCaches())
+		logger.Info("Registered %d cache(s)", reg.CountCaches())
+	} else {
+		logger.Info("No caches configured (all shares will use sync mode)")
 	}
 
 	// Step 4: Add all shares
 	if err := addShares(ctx, reg, cfg); err != nil {
 		return nil, fmt.Errorf("failed to add shares: %w", err)
 	}
-	logger.Debug("Registered %d share(s)", reg.CountShares())
+	logger.Info("Registered %d share(s)", reg.CountShares())
 
 	return reg, nil
 }
@@ -223,12 +225,22 @@ func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 				// Copy flusher config
 				shareConfig.FlusherConfig.SweepInterval = cacheCfg.Flusher.SweepInterval
 				shareConfig.FlusherConfig.FlushTimeout = cacheCfg.Flusher.FlushTimeout
+				shareConfig.FlusherConfig.FlushPoolSize = cacheCfg.Flusher.FlushPoolSize
 			}
 		}
 
 		// Add share to registry (registry will validate stores exist and create root directory)
 		if err := reg.AddShare(ctx, shareConfig); err != nil {
 			return fmt.Errorf("failed to add share %q: %w", shareCfg.Name, err)
+		}
+
+		// Log cache status at INFO level for visibility
+		if shareCfg.Cache != "" {
+			logger.Info("Share %q configured with cache %q (async writes, read caching enabled)",
+				shareCfg.Name, shareCfg.Cache)
+		} else {
+			logger.Info("Share %q configured without cache (sync writes, no read caching)",
+				shareCfg.Name)
 		}
 
 		logger.Debug("Share %q added successfully", shareCfg.Name)

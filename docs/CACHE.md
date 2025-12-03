@@ -427,34 +427,38 @@ If someone modifies the content store directly (bypassing DittoFS):
 
 ```go
 func flushToContentStore(ctx context.Context, cache Cache, contentStore ContentStore, contentID ContentID) error {
-    entry := cache.GetEntry(contentID)
-    unflushed := entry.BufferSize - entry.FlushedOffset
+    // Check if content store supports incremental writes
+    if incStore, ok := contentStore.(IncrementalWriteStore); ok {
+        // S3: content store reads directly from cache and manages multipart internally
+        // For small files (< partSize), this returns 0 - finalization uses PutObject
+        // For large files, this uploads complete parts in parallel
+        flushed, err := incStore.FlushIncremental(ctx, contentID, cache)
+        if err != nil {
+            return err
+        }
+        if flushed > 0 {
+            cache.SetState(contentID, StateUploading)
+        }
+        return nil
+    }
+
+    // Simple store: write unflushed data at offset
+    cacheSize := cache.Size(contentID)
+    flushedOffset := cache.GetFlushedOffset(contentID)
+    unflushed := cacheSize - flushedOffset
 
     if unflushed == 0 {
         return nil  // Nothing to flush
     }
 
-    // Read unflushed data from cache
     data := make([]byte, unflushed)
-    cache.ReadAt(ctx, contentID, data, entry.FlushedOffset)
+    cache.ReadAt(ctx, contentID, data, flushedOffset)
 
-    // Check if content store supports incremental writes
-    if incStore, ok := contentStore.(IncrementalWriteStore); ok {
-        // S3: content store manages multipart internally
-        flushed, err := incStore.FlushIncremental(ctx, contentID, data)
-        if err != nil {
-            return err
-        }
-        cache.SetFlushedOffset(contentID, entry.FlushedOffset + flushed)
-    } else {
-        // Simple store: write at offset
-        err := contentStore.WriteAt(ctx, contentID, data, entry.FlushedOffset)
-        if err != nil {
-            return err
-        }
-        cache.SetFlushedOffset(contentID, entry.FlushedOffset + int64(len(data)))
+    err := contentStore.WriteAt(ctx, contentID, data, flushedOffset)
+    if err != nil {
+        return err
     }
-
+    cache.SetFlushedOffset(contentID, flushedOffset + int64(len(data)))
     cache.SetState(contentID, StateUploading)
     return nil
 }
@@ -476,36 +480,34 @@ func (f *BackgroundFlusher) sweep() {
             continue
         }
 
-        // Skip if not idle or not fully flushed
+        // Skip if not idle
         lastWrite := f.cache.LastWrite(id)
         if lastWrite.After(threshold) {
             continue  // Still active
         }
-        if f.cache.GetFlushedOffset(id) < f.cache.Size(id) {
-            continue  // Still has unflushed data
-        }
 
-        // For incremental stores, check if upload still in progress
+        // For incremental stores, check if any parts still uploading
         if incStore, ok := f.contentStore.(IncrementalWriteStore); ok {
             if writeState := incStore.GetIncrementalWriteState(id); writeState != nil {
-                if writeState.BufferedSize > 0 {
-                    continue  // Upload still in progress
+                if writeState.PartsUploading > 0 {
+                    continue  // Parts still uploading
                 }
             }
         }
 
-        // Flush this entry
+        // Finalize this entry
         f.flush(id)
     }
 }
 
 func (f *BackgroundFlusher) flush(id ContentID) error {
-    // Complete any in-progress upload (S3 multipart, etc.)
+    // Complete any in-progress upload (S3 multipart or PutObject for small files)
     if incStore, ok := f.contentStore.(IncrementalWriteStore); ok {
-        if state := incStore.GetIncrementalWriteState(id); state != nil {
-            if err := incStore.CompleteIncrementalWrite(f.ctx, id); err != nil {
-                return err
-            }
+        // CompleteIncrementalWrite handles both:
+        // - Small files: PutObject directly from cache
+        // - Large files: upload remaining parts + CompleteMultipartUpload
+        if err := incStore.CompleteIncrementalWrite(f.ctx, id, f.cache); err != nil {
+            return err
         }
     }
 
@@ -617,6 +619,177 @@ LRU eviction with dirty entry protection:
 | `dittofs_cache_flushes_total` | Counter | Flush operations |
 | `dittofs_cache_finalizations_total` | Counter | File finalizations |
 | `dittofs_cache_evictions_total` | Counter | LRU evictions |
+
+## S3 Parallel Incremental Uploads
+
+For S3-backed content stores, we use a parallel multipart upload strategy that maximizes throughput while handling the stateless nature of NFS.
+
+### Design Goals
+
+1. **Parallel uploads**: Multiple concurrent COMMITs can upload different parts simultaneously
+2. **No wasted API calls**: Only create multipart upload when we have enough data for a part
+3. **Small file optimization**: Files < 5MB use simple PutObject (1 API call vs 3)
+4. **No blocking**: S3 uploads happen outside of locks
+
+### Part Number Calculation
+
+Part numbers are deterministic based on offset:
+
+```
+partNumber = (offset / partSize) + 1
+```
+
+This means:
+- Part 1 = bytes [0, partSize)
+- Part 2 = bytes [partSize, 2*partSize)
+- Part 3 = bytes [2*partSize, 3*partSize)
+- etc.
+
+Each COMMIT knows exactly which part(s) it's responsible for without coordination.
+
+### Session State
+
+```go
+type incrementalWriteSession struct {
+    uploadID       string          // Empty until first part upload
+    uploadedParts  map[int]bool    // Parts that completed successfully
+    uploadingParts map[int]bool    // Parts currently being uploaded
+    mu             sync.Mutex      // Protects maps only, NOT held during upload
+}
+```
+
+Three states per part:
+- **Not in either map**: Needs to be uploaded
+- **In uploadingParts**: Another COMMIT is uploading this part
+- **In uploadedParts**: Successfully uploaded
+
+### FlushIncremental Flow
+
+```
+FlushIncremental(contentID, cache):
+    1. cacheSize = cache.Size(contentID)
+
+    2. if cacheSize < partSize:
+       - Return 0 (not enough data for even one part)
+       - Background flusher will use PutObject later
+
+    3. Get or create session
+       - Lazily call CreateMultipartUpload on first actual part upload
+
+    4. Lock session briefly:
+       - Calculate complete parts: floor(cacheSize / partSize)
+       - Find parts where: NOT uploaded AND NOT uploading
+       - Mark selected parts as "uploading"
+       - Unlock
+
+    5. Upload selected parts in parallel (outside lock):
+       - Read directly from cache at calculated offset
+       - Upload to S3
+
+    6. Lock session briefly:
+       - Move successful parts: uploading → uploaded
+       - Remove failed parts from uploading (can be retried)
+       - Unlock
+
+    7. Update flushedOffset to highest contiguous uploaded position
+```
+
+### CompleteIncrementalWrite Flow
+
+```
+CompleteIncrementalWrite(contentID, cache):
+    1. cacheSize = cache.Size(contentID)
+
+    2. If cacheSize < partSize (small file):
+       - No multipart was ever started
+       - Use simple PutObject from cache
+       - Done
+
+    3. If multipart was started:
+       - Upload any remaining parts (including final partial part < 5MB)
+       - Call CompleteMultipartUpload with list of part numbers
+```
+
+### Concurrent COMMIT Example
+
+```
+Time 0: Cache has 20MB (4 complete 5MB parts)
+
+COMMIT #1:                              COMMIT #2:
+├─ Lock                                 │
+├─ Parts 1,2,3,4 not uploaded          │
+├─ Parts 1,2,3,4 not uploading         │
+├─ Mark 1,2 as uploading               │
+├─ Unlock                               ├─ Lock
+├─ Upload Part 1 ──────────────────┐   ├─ Parts 3,4 not uploaded
+├─ Upload Part 2 ──────────────┐   │   ├─ Parts 1,2 ARE uploading (skip)
+│                              │   │   ├─ Mark 3,4 as uploading
+│                              │   │   ├─ Unlock
+│                              │   │   ├─ Upload Part 3 ─────────┐
+│                              │   │   ├─ Upload Part 4 ─────┐   │
+│                              │   │   │                     │   │
+│                              ▼   ▼   │                     ▼   ▼
+├─ Lock                                 ├─ Lock
+├─ Move 1,2 to uploaded                 ├─ Move 3,4 to uploaded
+├─ Unlock                               ├─ Unlock
+
+Result: All 4 parts uploaded in parallel by 2 COMMITs
+```
+
+### Small File Example
+
+```
+WRITE 3KB → cache has 3KB
+COMMIT → FlushIncremental: 3KB < 5MB partSize, return 0
+... file idle for flush_timeout ...
+Flusher → CompleteIncrementalWrite:
+          cacheSize (3KB) < partSize, no session exists
+          → Use PutObject(3KB) directly from cache
+```
+
+### Large File Example
+
+```
+WRITE 12MB → cache has 12MB
+COMMIT #1 → FlushIncremental:
+            - 12MB / 5MB = 2 complete parts
+            - Parts 1,2 not uploaded, not uploading
+            - Mark 1,2 as uploading
+            - Upload Parts 1,2 in parallel
+            - Move 1,2 to uploaded
+            - flushedOffset = 10MB (2 complete parts)
+
+... more writes ...
+WRITE 3MB → cache has 15MB
+
+COMMIT #2 → FlushIncremental:
+            - 15MB / 5MB = 3 complete parts
+            - Parts 1,2 uploaded, Part 3 not uploaded
+            - Mark 3 as uploading
+            - Upload Part 3
+            - Move 3 to uploaded
+            - flushedOffset = 15MB
+
+... file idle for flush_timeout ...
+Flusher → CompleteIncrementalWrite:
+          - All 3 parts uploaded
+          - Call CompleteMultipartUpload([1, 2, 3])
+```
+
+### Error Handling
+
+If an upload fails:
+- Remove part from `uploadingParts`
+- Don't add to `uploadedParts`
+- Return error from FlushIncremental
+- Next COMMIT will retry the failed part
+
+### Configuration
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `s3.part_size` | `5MB` | Size of each multipart part (min 5MB per S3) |
+| `s3.max_parallel_uploads` | `4` | Max concurrent part uploads per file |
 
 ## Summary
 

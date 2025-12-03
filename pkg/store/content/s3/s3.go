@@ -56,7 +56,7 @@ type S3ContentStore struct {
 	client    *s3.Client
 	bucket    string
 	keyPrefix string // Optional prefix for all keys
-	partSize  int64  // Size for multipart upload parts (default: 10MB)
+	partSize  uint64 // Size for multipart upload parts (default: 10MB)
 
 	// Multipart upload state (per-instance)
 	uploadSessions   map[string]*multipartUpload
@@ -65,8 +65,8 @@ type S3ContentStore struct {
 	// Write cache (injected from NFS handler)
 	writeCache cache.Cache
 
-	// Multipart threshold for flushing (default: 5MB)
-	multipartThreshold uint64
+	// Max parallel part uploads (default: 4)
+	maxParallelUploads int
 
 	// Storage stats cache (stores value instead of pointer to eliminate cloning)
 	statsCache struct {
@@ -107,9 +107,18 @@ type S3ContentStoreConfig struct {
 	// Example: "dittofs/content/" results in keys like "dittofs/content/abc123"
 	KeyPrefix string
 
-	// PartSize is the size of each part for multipart uploads (default: 10MB)
-	// Must be between 5MB and 5GB
-	PartSize int64
+	// PartSize controls multipart upload behavior:
+	// - Files smaller than PartSize use PutObject (single request)
+	// - Files >= PartSize use multipart upload with parts of this size
+	// - During incremental writes, UploadPart is called when buffer reaches PartSize
+	// - Only the final part can be smaller than PartSize
+	// Must be between 5MB and 5GB. Default: 5MB.
+	PartSize uint64
+
+	// MaxParallelUploads is the maximum number of concurrent part uploads (default: 4).
+	// Higher values improve throughput for large files but use more memory and connections.
+	// This is typically set to match the flusher's FlushPoolSize for consistency.
+	MaxParallelUploads int
 
 	// StatsCacheTTL is the duration to cache storage stats (default: 5 minutes)
 	// Set to 0 to use the default 5-minute TTL
@@ -139,11 +148,6 @@ type S3ContentStoreConfig struct {
 	// When provided, enables efficient write buffering and reduces S3 API calls
 	// The cache should be shared between the NFS handler and content store
 	WriteCache cache.Cache
-
-	// MultipartThreshold is the size threshold for using multipart uploads (default: 5MB)
-	// Files smaller than this use PutObject, larger files use multipart upload
-	// Must be at least 5MB (S3 requirement). Set to 0 to use default.
-	MultipartThreshold uint64
 }
 
 // NewS3ClientFromConfig creates an S3 client from configuration parameters.
@@ -214,10 +218,10 @@ func NewS3ContentStore(ctx context.Context, cfg S3ContentStoreConfig) (*S3Conten
 		return nil, fmt.Errorf("bucket name is required")
 	}
 
-	// Set defaults
+	// Set defaults for partSize (used for both threshold and part size)
 	partSize := cfg.PartSize
 	if partSize == 0 {
-		partSize = 10 * 1024 * 1024 // 10MB default
+		partSize = 5 * 1024 * 1024 // 5MB default (S3 minimum)
 	}
 
 	// Validate part size (S3 limits: 5MB to 5GB)
@@ -226,6 +230,12 @@ func NewS3ContentStore(ctx context.Context, cfg S3ContentStoreConfig) (*S3Conten
 	}
 	if partSize > 5*1024*1024*1024 {
 		return nil, fmt.Errorf("part size must be at most 5GB, got %d bytes", partSize)
+	}
+
+	// Set default max parallel uploads
+	maxParallelUploads := cfg.MaxParallelUploads
+	if maxParallelUploads == 0 {
+		maxParallelUploads = 4 // Default: 4 concurrent uploads
 	}
 
 	// ========================================================================
@@ -248,25 +258,15 @@ func NewS3ContentStore(ctx context.Context, cfg S3ContentStoreConfig) (*S3Conten
 	// Metrics can be nil for zero-overhead disabled metrics
 	metrics := cfg.Metrics
 
-	// Set default multipart threshold
-	multipartThreshold := cfg.MultipartThreshold
-	if multipartThreshold == 0 {
-		multipartThreshold = 5 * 1024 * 1024 // Default: 5MB (S3 minimum)
-	}
-	// Validate multipart threshold (must be at least 5MB per S3 requirements)
-	if multipartThreshold < 5*1024*1024 {
-		return nil, fmt.Errorf("multipart threshold must be at least 5MB, got %d bytes", multipartThreshold)
-	}
-
 	store := &S3ContentStore{
 		client:             cfg.Client,
 		bucket:             cfg.Bucket,
 		keyPrefix:          cfg.KeyPrefix,
 		partSize:           partSize,
+		maxParallelUploads: maxParallelUploads,
 		uploadSessions:     make(map[string]*multipartUpload),
 		metrics:            metrics,
 		writeCache:         cfg.WriteCache,
-		multipartThreshold: multipartThreshold,
 	}
 
 	// Initialize stats cache

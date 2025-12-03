@@ -1164,3 +1164,37 @@ func (store *MemoryMetadataStore) checkPermissionsLocked(
 
 	return granted & requested, nil
 }
+
+// GetFileByContentID retrieves file metadata by its content identifier.
+//
+// This scans all files to find one matching the given ContentID.
+// Note: This is O(n) and may be slow for large filesystems.
+func (store *MemoryMetadataStore) GetFileByContentID(
+	ctx context.Context,
+	contentID metadata.ContentID,
+) (*metadata.File, error) {
+	// Check context before acquiring lock
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+
+	// Scan all files for matching ContentID
+	for _, fileData := range store.files {
+		if fileData.Attr.ContentID == contentID {
+			// Return File with just the attributes we need
+			// ID and Path aren't needed by the flusher (only Size is used)
+			return &metadata.File{
+				ShareName: fileData.ShareName,
+				FileAttr:  *fileData.Attr,
+			}, nil
+		}
+	}
+
+	return nil, &metadata.StoreError{
+		Code:    metadata.ErrNotFound,
+		Message: fmt.Sprintf("no file found with content ID: %s", contentID),
+	}
+}
