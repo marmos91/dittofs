@@ -440,9 +440,9 @@ func (s *S3ContentStore) GetIncrementalWriteState(id metadata.ContentID) *conten
 	defer session.mu.Unlock()
 
 	return &content.IncrementalWriteState{
-		UploadID:       session.uploadID,
-		PartsUploaded:  len(session.uploadedParts),
-		PartsUploading: len(session.uploadingParts),
-		TotalFlushed:   session.totalFlushed,
+		UploadID:     session.uploadID,
+		PartsWritten: len(session.uploadedParts),
+		PartsWriting: len(session.uploadingParts),
+		TotalFlushed: session.totalFlushed,
 	}
 }

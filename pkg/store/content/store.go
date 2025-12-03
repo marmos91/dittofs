@@ -611,12 +611,12 @@ type IncrementalWriteState struct {
 	// UploadID is the S3 multipart upload ID (empty if not yet started)
 	UploadID string
 
-	// PartsUploaded is the count of successfully uploaded parts
-	PartsUploaded int
+	// PartsWritten is the count of successfully uploaded parts
+	PartsWritten int
 
-	// PartsUploading is the count of parts currently being uploaded
+	// PartsWriting is the count of parts currently being uploaded
 	// Used by flusher to avoid finalizing while uploads in progress
-	PartsUploading int
+	PartsWriting int
 
 	// TotalFlushed is the total bytes uploaded so far
 	TotalFlushed int64
