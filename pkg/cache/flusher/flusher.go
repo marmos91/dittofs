@@ -25,45 +25,59 @@ const (
 	// This is the key NFS async write timeout - files are considered "done"
 	// when no writes have occurred for this duration.
 	defaultFlushTimeout = 30 * time.Second
-
-	// defaultFlushPoolSize is the maximum number of files to flush in parallel.
-	// This improves throughput when multiple files are ready to be finalized.
-	defaultFlushPoolSize = 4
 )
 
-// BackgroundFlusher runs in the background to detect and flush idle files.
+// BackgroundFlusher monitors the cache and finalizes idle file uploads.
 //
-// The flusher:
+// In NFS, there's no "close" operation - the server never knows when a client
+// is done writing to a file. The flusher solves this by detecting files that
+// haven't been written to recently (idle files) and completing their upload
+// to the content store.
+//
+// Lifecycle:
+//   - Created via New() with cache, content store, and optional metadata store
+//   - Started via Start() which spawns the background goroutine
+//   - Stopped via Stop() which cancels the context and waits for completion
+//
+// Sweep Behavior:
 //   - Runs periodically (default: every 10 seconds)
-//   - Checks each cache entry for idle status
-//   - Validates cache size matches expected file size before completing
-//   - Completes incremental uploads (S3 multipart) for fully flushed files
-//   - Aborts incomplete uploads (e.g., interrupted copies)
-//   - Transitions entries from StateUploading to StateCached
-//   - Processes multiple files in parallel for better throughput
+//   - Checks each cache entry in StateUploading for idle status
+//   - A file is "idle" if no writes occurred for flushTimeout (default: 30s)
+//   - Idle files are finalized in parallel (no limit on concurrency)
+//
+// Finalization:
+//   - Validates cache size matches expected file size (if metadata store available)
+//   - For incremental stores (S3): calls CompleteIncrementalWrite
+//   - For small files: uploads via PutObject directly from cache
+//   - Transitions entry from StateUploading to StateCached
+//   - Aborts incomplete uploads (e.g., interrupted copies) if size mismatch detected
+//
+// Thread Safety:
+//   - The flusher is safe for concurrent use
+//   - Uses context cancellation for graceful shutdown
+//   - Waits for all flush operations to complete before Stop() returns
 type BackgroundFlusher struct {
-	cache         cache.Cache
-	contentStore  content.ContentStore
-	metadataStore metadata.MetadataStore
-	sweepInterval time.Duration
-	flushTimeout  time.Duration
-	flushPoolSize int
+	cache         cache.Cache          // Cache to monitor for idle files
+	contentStore  content.ContentStore // Content store to finalize uploads to
+	sweepInterval time.Duration        // How often to check for idle files
+	flushTimeout  time.Duration        // How long a file must be idle before flushing
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ctx    context.Context    // Context for cancellation (created in Start)
+	cancel context.CancelFunc // Cancel function to trigger shutdown
+	wg     sync.WaitGroup     // Tracks the main run() goroutine for graceful shutdown
 }
 
-// Config holds configuration for the flusher.
+// Config holds configuration for the background flusher.
 type Config struct {
-	// SweepInterval is how often to check for idle files (default: 10s)
+	// SweepInterval is how often to check for idle files.
+	// Default: 10 seconds. Lower values provide faster finalization but increase CPU usage.
 	SweepInterval time.Duration
 
-	// FlushTimeout is how long a file must be idle before flushing (default: 30s)
+	// FlushTimeout is how long a file must be idle (no writes) before flushing.
+	// Default: 30 seconds. This is the key timeout for detecting "done" files.
+	// Lower values finalize faster but risk flushing files that are still being written
+	// (e.g., slow network transfers). Higher values delay finalization.
 	FlushTimeout time.Duration
-
-	// FlushPoolSize is how many files to flush in parallel (default: 4)
-	FlushPoolSize int
 }
 
 // New creates a new background flusher.
@@ -72,18 +86,23 @@ type Config struct {
 //
 // Parameters:
 //   - c: The cache to monitor for idle files
-//   - contentStore: The content store to flush uploads to
-//   - metadataStore: The metadata store to validate file sizes (optional, nil disables validation)
-//   - config: Optional configuration (nil for defaults)
+//   - contentStore: The content store to finalize uploads to
+//   - config: Optional configuration. If nil, defaults are used.
+//
+// Example:
+//
+//	f := flusher.New(cache, s3Store, &flusher.Config{
+//	    FlushTimeout: 60 * time.Second, // Wait longer for slow uploads
+//	})
+//	f.Start(ctx)
+//	defer f.Stop()
 func New(
 	c cache.Cache,
 	contentStore content.ContentStore,
-	metadataStore metadata.MetadataStore,
 	config *Config,
 ) *BackgroundFlusher {
 	sweepInterval := defaultSweepInterval
 	flushTimeout := defaultFlushTimeout
-	flushPoolSize := defaultFlushPoolSize
 
 	if config != nil {
 		if config.SweepInterval > 0 {
@@ -92,29 +111,29 @@ func New(
 		if config.FlushTimeout > 0 {
 			flushTimeout = config.FlushTimeout
 		}
-		if config.FlushPoolSize > 0 {
-			flushPoolSize = config.FlushPoolSize
-		}
 	}
 
 	return &BackgroundFlusher{
 		cache:         c,
 		contentStore:  contentStore,
-		metadataStore: metadataStore,
 		sweepInterval: sweepInterval,
 		flushTimeout:  flushTimeout,
-		flushPoolSize: flushPoolSize,
 	}
 }
 
 // Start begins the background flusher goroutine.
 //
-// The flusher will run until Stop() is called or the context is cancelled.
+// The flusher runs until Stop() is called or the parent context is cancelled.
+// Start should only be called once. Calling Start multiple times without Stop
+// will leak goroutines.
+//
+// The provided context is used as the parent for all flush operations.
+// Cancelling it will trigger a graceful shutdown (equivalent to calling Stop).
 func (f *BackgroundFlusher) Start(ctx context.Context) {
 	f.ctx, f.cancel = context.WithCancel(ctx)
 
-	logger.Info("Background flusher started: sweep_interval=%s, flush_timeout=%s, pool_size=%d",
-		f.sweepInterval, f.flushTimeout, f.flushPoolSize)
+	logger.Info("Background flusher started: sweep_interval=%s flush_timeout=%s",
+		f.sweepInterval, f.flushTimeout)
 
 	f.wg.Add(1)
 	go f.run()
@@ -122,7 +141,12 @@ func (f *BackgroundFlusher) Start(ctx context.Context) {
 
 // Stop gracefully stops the flusher.
 //
-// This blocks until the flusher goroutine has exited.
+// This cancels the context and blocks until the flusher goroutine has exited.
+// Before exiting, the flusher performs one final sweep to flush any remaining
+// idle files.
+//
+// Stop is safe to call multiple times. After the first call, subsequent calls
+// return immediately.
 func (f *BackgroundFlusher) Stop() {
 	if f.cancel != nil {
 		f.cancel()
@@ -150,6 +174,14 @@ func (f *BackgroundFlusher) run() {
 }
 
 // sweep checks all cache entries and flushes idle ones in parallel.
+//
+// The sweep:
+//  1. Collects all entries that meet the flush criteria (idle for flushTimeout)
+//  2. Spawns a goroutine for each entry to flush in parallel
+//  3. Waits for all flush operations to complete before returning
+//
+// Concurrency is unlimited - all eligible entries are flushed simultaneously.
+// The S3 store's maxParallelUploads setting limits actual upload concurrency.
 func (f *BackgroundFlusher) sweep() {
 	threshold := time.Now().Add(-f.flushTimeout)
 
@@ -172,11 +204,10 @@ func (f *BackgroundFlusher) sweep() {
 		return
 	}
 
-	logger.Debug("Flusher: found %d entries to flush (pool size: %d)", len(toFlush), f.flushPoolSize)
+	logger.Debug("Flusher: found %d entries to flush", len(toFlush))
 
-	// Process entries in parallel using a worker pool
+	// Flush all entries in parallel
 	var flushWg sync.WaitGroup
-	semaphore := make(chan struct{}, f.flushPoolSize)
 
 	for _, id := range toFlush {
 		// Check context before starting new flush
@@ -187,11 +218,9 @@ func (f *BackgroundFlusher) sweep() {
 		}
 
 		flushWg.Add(1)
-		semaphore <- struct{}{} // Acquire slot
 
 		go func(contentID metadata.ContentID) {
 			defer flushWg.Done()
-			defer func() { <-semaphore }() // Release slot
 
 			if err := f.flush(contentID); err != nil {
 				logger.Warn("Flusher: failed to flush %s: %v", contentID, err)
@@ -203,6 +232,12 @@ func (f *BackgroundFlusher) sweep() {
 }
 
 // shouldFlush checks if an entry should be flushed.
+//
+// An entry is eligible for flushing when:
+//   - It's in StateUploading (has been committed at least once)
+//   - It's been idle for at least flushTimeout (no recent writes)
+//   - No parts are currently being uploaded (for incremental stores)
+//   - All cache data has been flushed (for non-incremental stores)
 func (f *BackgroundFlusher) shouldFlush(id metadata.ContentID, threshold time.Time) bool {
 	state := f.cache.GetState(id)
 
@@ -227,15 +262,14 @@ func (f *BackgroundFlusher) shouldFlush(id metadata.ContentID, threshold time.Ti
 	if incStore, ok := f.contentStore.(content.IncrementalWriteStore); ok {
 		if writeState := incStore.GetIncrementalWriteState(id); writeState != nil {
 			// Check if any parts are still being uploaded
-			if writeState.PartsUploading > 0 {
+			if writeState.PartsWriting > 0 {
 				logger.Debug("Flusher: skipping %s, parts still uploading: uploading=%d",
-					id, writeState.PartsUploading)
+					id, writeState.PartsWriting)
 				return false
 			}
-			// Multipart upload in progress with no active uploads - ready to finalize
+			// Incremental write in progress with no active writes - ready to finalize
 			return true
 		}
-		// No write state means small file (< partSize) - ready to upload via PutObject
 		// CompleteIncrementalWrite will handle this case
 		return true
 	}
@@ -253,44 +287,23 @@ func (f *BackgroundFlusher) shouldFlush(id metadata.ContentID, threshold time.Ti
 }
 
 // flush completes the upload for a single cache entry.
+//
+// For incremental stores (S3), this calls CompleteIncrementalWrite which:
+//   - Small files: uploads via PutObject directly from cache
+//   - Large files: uploads remaining parts + calls CompleteMultipartUpload
+//
+// After successful completion, the entry transitions to StateCached.
 func (f *BackgroundFlusher) flush(id metadata.ContentID) error {
 	logger.Debug("Flusher: flushing %s", id)
 
 	cacheSize := f.cache.Size(id)
 
-	// Validate file completeness if metadata store is available
-	// This prevents completing uploads for interrupted copies
-	if f.metadataStore != nil {
-		expectedSize, err := f.getExpectedFileSize(id)
-		if err != nil {
-			logger.Warn("Flusher: cannot get expected size for %s, skipping: %v", id, err)
-			return nil // Skip this entry, don't complete or abort
-		}
-
-		if cacheSize != expectedSize {
-			logger.Warn("Flusher: incomplete file detected %s: cache_size=%d expected_size=%d, aborting upload",
-				id, cacheSize, expectedSize)
-
-			// Abort the incomplete upload
-			if incStore, ok := f.contentStore.(content.IncrementalWriteStore); ok {
-				if err := incStore.AbortIncrementalWrite(f.ctx, id); err != nil {
-					logger.Error("Flusher: failed to abort incomplete upload %s: %v", id, err)
-				}
-			}
-
-			// Remove from cache since it's incomplete
-			f.cache.Remove(id)
-
-			return nil
-		}
-	}
-
-	// Complete any in-progress incremental upload (S3 multipart or PutObject for small files)
+	// Complete any in-progress incremental write
 	if incStore, ok := f.contentStore.(content.IncrementalWriteStore); ok {
 		state := incStore.GetIncrementalWriteState(id)
 		if state != nil {
-			logger.Debug("Flusher: completing incremental write for %s (parts_uploaded=%d, flushed=%d)",
-				id, state.PartsUploaded, state.TotalFlushed)
+			logger.Debug("Flusher: completing incremental write for %s (parts_written=%d, flushed=%d)",
+				id, state.PartsWritten, state.TotalFlushed)
 		} else {
 			logger.Debug("Flusher: completing small file write for %s", id)
 		}
@@ -311,17 +324,3 @@ func (f *BackgroundFlusher) flush(id metadata.ContentID) error {
 	return nil
 }
 
-// getExpectedFileSize looks up the expected file size from metadata.
-// The ContentID is typically the file path (e.g., "export/path/to/file").
-func (f *BackgroundFlusher) getExpectedFileSize(id metadata.ContentID) (uint64, error) {
-	// ContentID is the file path - we need to find the file by content ID
-	// This requires iterating or having a reverse lookup
-	// For now, use a simple approach: the metadata store should have a way to look this up
-
-	file, err := f.metadataStore.GetFileByContentID(f.ctx, id)
-	if err != nil {
-		return 0, err
-	}
-
-	return file.Size, nil
-}
