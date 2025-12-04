@@ -88,8 +88,7 @@ func (s *S3ContentStore) Delete(ctx context.Context, id metadata.ContentID) erro
 	for attempt := 0; attempt <= int(s.retry.maxRetries); attempt++ {
 		if attempt > 0 {
 			backoff := s.calculateBackoff(attempt - 1)
-			logger.Debug("Delete: retrying after %v (attempt %d/%d): key=%s",
-				backoff, attempt, s.retry.maxRetries, key)
+			logger.Debug("Delete: retrying", "backoff", backoff, "attempt", attempt, "max_retries", s.retry.maxRetries, "key", key)
 
 			select {
 			case <-ctx.Done():
@@ -116,8 +115,7 @@ func (s *S3ContentStore) Delete(ctx context.Context, id metadata.ContentID) erro
 			break
 		}
 
-		logger.Debug("Delete: transient error (attempt %d/%d): key=%s error=%v",
-			attempt+1, s.retry.maxRetries+1, key, lastErr)
+		logger.Debug("Delete: transient error", "attempt", attempt+1, "max_retries", s.retry.maxRetries+1, "key", key, "error", lastErr)
 	}
 
 	err = fmt.Errorf("failed to delete object from S3 after %d attempts: %w", s.retry.maxRetries+1, lastErr)
@@ -141,8 +139,7 @@ func (s *S3ContentStore) deletionWorker() {
 	ticker := time.NewTicker(s.deletionQueue.flushInterval)
 	defer ticker.Stop()
 
-	logger.Info("S3 deletion worker started: flush_interval=%s batch_size=%d",
-		s.deletionQueue.flushInterval, s.deletionQueue.batchSize)
+	logger.Info("S3 deletion worker started", "flush_interval", s.deletionQueue.flushInterval, "batch_size", s.deletionQueue.batchSize)
 
 	for {
 		select {
@@ -201,24 +198,22 @@ func (s *S3ContentStore) flushDeletionQueue(ctx context.Context) {
 	flushCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	logger.Debug("S3 deletion flush: processing %d unique items (from %d queued)",
-		len(ids), len(pending))
+	logger.Debug("S3 deletion flush: processing unique items", "count", len(ids), "queued", len(pending))
 
 	// Call batch delete (uses S3 DeleteObjects API)
 	failures, err := s.DeleteBatch(flushCtx, ids)
 	if err != nil {
-		logger.Error("S3 deletion flush failed: %v", err)
+		logger.Error("S3 deletion flush failed", "error", err)
 		return
 	}
 
 	if len(failures) > 0 {
-		logger.Warn("S3 deletion flush: %d items failed, %d succeeded",
-			len(failures), len(ids)-len(failures))
+		logger.Warn("S3 deletion flush: items failed", "failed", len(failures), "succeeded", len(ids)-len(failures))
 		for id, ferr := range failures {
-			logger.Debug("S3 deletion failed: content_id=%s error=%v", id, ferr)
+			logger.Debug("S3 deletion failed", "content_id", id, "error", ferr)
 		}
 	} else {
-		logger.Debug("S3 deletion flush: successfully deleted %d items", len(ids))
+		logger.Debug("S3 deletion flush: successfully deleted items", "count", len(ids))
 	}
 }
 
@@ -295,7 +290,7 @@ func (s *S3ContentStore) Close() error {
 		case <-s.deletionQueue.doneCh:
 			logger.Info("S3 deletion worker stopped successfully")
 		case <-time.After(timeout):
-			logger.Warn("S3 deletion worker shutdown timeout after %s", timeout)
+			logger.Warn("S3 deletion worker shutdown timeout", "timeout", timeout)
 		}
 	})
 

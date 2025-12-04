@@ -65,6 +65,23 @@ func validateCustomRules(cfg *Config) error {
 		}
 	}
 
+	// Validate telemetry configuration
+	if err := validateTelemetry(&cfg.Telemetry); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateTelemetry validates telemetry configuration.
+func validateTelemetry(cfg *TelemetryConfig) error {
+	// If telemetry is enabled, endpoint must be set
+	if cfg.Enabled && cfg.Endpoint == "" {
+		return fmt.Errorf("telemetry: endpoint is required when telemetry is enabled")
+	}
+
+	// Sample rate validation is handled by struct tags (gte=0,lte=1)
+
 	return nil
 }
 

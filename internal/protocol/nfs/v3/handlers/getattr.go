@@ -151,24 +151,30 @@ func (h *Handler) GetAttr(
 	// GETATTR is one of the most frequently called procedures, so we optimize
 	// for the common case of no cancellation
 	if ctx.isContextCancelled() {
-		logger.Debug("GETATTR cancelled before processing: handle=%x client=%s error=%v",
-			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		logger.Debug("GETATTR cancelled before processing",
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", ctx.ClientAddr,
+			"error", ctx.Context.Err())
 		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	}
 
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("GETATTR: handle=%x client=%s auth=%d",
-		req.Handle, clientIP, ctx.AuthFlavor)
+	logger.Info("GETATTR",
+		"handle", fmt.Sprintf("%x", req.Handle),
+		"client", clientIP,
+		"auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Validate request parameters
 	// ========================================================================
 
 	if err := validateGetAttrRequest(req); err != nil {
-		logger.Warn("GETATTR validation failed: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
+		logger.Warn("GETATTR validation failed",
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", clientIP,
+			"error", err)
 		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -178,7 +184,10 @@ func (h *Handler) GetAttr(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("GETATTR failed: %v handle=%x client=%s", err, req.Handle, clientIP)
+		logger.Warn("GETATTR failed",
+			"error", err,
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", clientIP)
 		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
@@ -193,7 +202,9 @@ func (h *Handler) GetAttr(
 		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
-	logger.Debug("GETATTR: share=%s path=%s", ctx.Share, file.Path)
+	logger.Debug("GETATTR",
+		"share", ctx.Share,
+		"path", file.Path)
 
 	// ========================================================================
 	// Step 4: Generate file attributes with proper file ID
@@ -204,11 +215,18 @@ func (h *Handler) GetAttr(
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
-	logger.Info("GETATTR successful: handle=%x type=%d mode=%o size=%d client=%s",
-		req.Handle, nfsAttr.Type, nfsAttr.Mode, nfsAttr.Size, clientIP)
+	logger.Info("GETATTR successful",
+		"handle", fmt.Sprintf("%x", req.Handle),
+		"type", nfsAttr.Type,
+		"mode", fmt.Sprintf("%o", nfsAttr.Mode),
+		"size", nfsAttr.Size,
+		"client", clientIP)
 
-	logger.Debug("GETATTR details: handle=%x uid=%d gid=%d mtime=%d.%d",
-		fileHandle, nfsAttr.UID, nfsAttr.GID, nfsAttr.Mtime.Seconds, nfsAttr.Mtime.Nseconds)
+	logger.Debug("GETATTR details",
+		"handle", fmt.Sprintf("%x", fileHandle),
+		"uid", nfsAttr.UID,
+		"gid", nfsAttr.GID,
+		"mtime", fmt.Sprintf("%d.%d", nfsAttr.Mtime.Seconds, nfsAttr.Mtime.Nseconds))
 
 	return &GetAttrResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -339,7 +357,8 @@ func DecodeGetAttrRequest(data []byte) (*GetAttrRequest, error) {
 	handle := make([]byte, handleLen)
 	copy(handle, handleSlice)
 
-	logger.Debug("Decoded GETATTR request: handle_len=%d", handleLen)
+	logger.Debug("Decoded GETATTR request",
+		"handle_len", handleLen)
 
 	return &GetAttrRequest{Handle: handle}, nil
 }
@@ -388,7 +407,8 @@ func (resp *GetAttrResponse) Encode() ([]byte, error) {
 	// If status is not OK, return just the status (no attributes)
 	// Per RFC 1813, error responses contain only the status code
 	if resp.Status != types.NFS3OK {
-		logger.Debug("Encoding GETATTR error response: status=%d", resp.Status)
+		logger.Debug("Encoding GETATTR error response",
+			"status", resp.Status)
 		return buf.Bytes(), nil
 	}
 
@@ -398,6 +418,7 @@ func (resp *GetAttrResponse) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("failed to encode file attributes: %w", err)
 	}
 
-	logger.Debug("Encoded GETATTR response: %d bytes", buf.Len())
+	logger.Debug("Encoded GETATTR response",
+		"bytes", buf.Len())
 	return buf.Bytes(), nil
 }

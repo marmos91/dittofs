@@ -132,8 +132,7 @@ func New(
 func (f *BackgroundFlusher) Start(ctx context.Context) {
 	f.ctx, f.cancel = context.WithCancel(ctx)
 
-	logger.Info("Background flusher started: sweep_interval=%s flush_timeout=%s",
-		f.sweepInterval, f.flushTimeout)
+	logger.Info("Background flusher started", "sweep_interval", f.sweepInterval, "flush_timeout", f.flushTimeout)
 
 	f.wg.Add(1)
 	go f.run()
@@ -204,7 +203,7 @@ func (f *BackgroundFlusher) sweep() {
 		return
 	}
 
-	logger.Debug("Flusher: found %d entries to flush", len(toFlush))
+	logger.Debug("Flusher: found entries to flush", "count", len(toFlush))
 
 	// Flush all entries in parallel
 	var flushWg sync.WaitGroup
@@ -213,7 +212,7 @@ func (f *BackgroundFlusher) sweep() {
 		// Check context before starting new flush
 		select {
 		case <-f.ctx.Done():
-			break
+			return
 		default:
 		}
 
@@ -223,7 +222,7 @@ func (f *BackgroundFlusher) sweep() {
 			defer flushWg.Done()
 
 			if err := f.flush(contentID); err != nil {
-				logger.Warn("Flusher: failed to flush %s: %v", contentID, err)
+				logger.Warn("Flusher: failed to flush", "content_id", contentID, "error", err)
 			}
 		}(id)
 	}
@@ -263,8 +262,7 @@ func (f *BackgroundFlusher) shouldFlush(id metadata.ContentID, threshold time.Ti
 		if writeState := incStore.GetIncrementalWriteState(id); writeState != nil {
 			// Check if any parts are still being uploaded
 			if writeState.PartsWriting > 0 {
-				logger.Debug("Flusher: skipping %s, parts still uploading: uploading=%d",
-					id, writeState.PartsWriting)
+				logger.Debug("Flusher: skipping, parts still uploading", "content_id", id, "uploading", writeState.PartsWriting)
 				return false
 			}
 			// Incremental write in progress with no active writes - ready to finalize
@@ -278,8 +276,7 @@ func (f *BackgroundFlusher) shouldFlush(id metadata.ContentID, threshold time.Ti
 	cacheSize := f.cache.Size(id)
 	flushedOffset := f.cache.GetFlushedOffset(id)
 	if flushedOffset < cacheSize {
-		logger.Debug("Flusher: skipping %s, unflushed cache data: flushed=%d size=%d",
-			id, flushedOffset, cacheSize)
+		logger.Debug("Flusher: skipping, unflushed cache data", "content_id", id, "flushed", flushedOffset, "size", cacheSize)
 		return false
 	}
 
@@ -294,7 +291,7 @@ func (f *BackgroundFlusher) shouldFlush(id metadata.ContentID, threshold time.Ti
 //
 // After successful completion, the entry transitions to StateCached.
 func (f *BackgroundFlusher) flush(id metadata.ContentID) error {
-	logger.Debug("Flusher: flushing %s", id)
+	logger.Debug("Flusher: flushing", "content_id", id)
 
 	cacheSize := f.cache.Size(id)
 
@@ -302,10 +299,9 @@ func (f *BackgroundFlusher) flush(id metadata.ContentID) error {
 	if incStore, ok := f.contentStore.(content.IncrementalWriteStore); ok {
 		state := incStore.GetIncrementalWriteState(id)
 		if state != nil {
-			logger.Debug("Flusher: completing incremental write for %s (parts_written=%d, flushed=%d)",
-				id, state.PartsWritten, state.TotalFlushed)
+			logger.Debug("Flusher: completing incremental write", "content_id", id, "parts_written", state.PartsWritten, "flushed", state.TotalFlushed)
 		} else {
-			logger.Debug("Flusher: completing small file write for %s", id)
+			logger.Debug("Flusher: completing small file write", "content_id", id)
 		}
 
 		// CompleteIncrementalWrite handles both:
@@ -319,7 +315,7 @@ func (f *BackgroundFlusher) flush(id metadata.ContentID) error {
 	// Transition to cached state
 	f.cache.SetState(id, cache.StateCached)
 
-	logger.Info("Flusher: flushed %s (size=%d)", id, cacheSize)
+	logger.Info("Flusher: flushed", "content_id", id, "size", cacheSize)
 
 	return nil
 }

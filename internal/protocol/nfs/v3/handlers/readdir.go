@@ -236,24 +236,21 @@ func (h *Handler) ReadDir(
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
 	if ctx.isContextCancelled() {
-		logger.Debug("READDIR cancelled before processing: dir=%x client=%s error=%v",
-			req.DirHandle, ctx.ClientAddr, ctx.Context.Err())
+		logger.Debug("READDIR cancelled before processing", "handle", fmt.Sprintf("%x", req.DirHandle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	}
 
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("READDIR: dir=%x cookie=%d count=%d client=%s auth=%d",
-		req.DirHandle, req.Cookie, req.Count, clientIP, ctx.AuthFlavor)
+	logger.Info("READDIR", "handle", fmt.Sprintf("%x", req.DirHandle), "cookie", req.Cookie, "count", req.Count, "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Validate request parameters
 	// ========================================================================
 
 	if err := validateReadDirRequest(req); err != nil {
-		logger.Warn("READDIR validation failed: dir=%x client=%s error=%v",
-			req.DirHandle, clientIP, err)
+		logger.Warn("READDIR validation failed", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
 		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -263,13 +260,13 @@ func (h *Handler) ReadDir(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("READDIR failed: %v dir=%x client=%s", err, req.DirHandle, clientIP)
+		logger.Warn("READDIR failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 
-	logger.Debug("READDIR: share=%s", ctx.Share)
+	logger.Debug("READDIR", "share", ctx.Share)
 
 	// ========================================================================
 	// Step 3: Verify directory handle exists and is valid
@@ -282,8 +279,7 @@ func (h *Handler) ReadDir(
 
 	// Verify it's actually a directory
 	if dirFile.Type != metadata.FileTypeDirectory {
-		logger.Warn("READDIR failed: handle not a directory: dir=%x type=%d client=%s",
-			req.DirHandle, dirFile.Type, clientIP)
+		logger.Warn("READDIR failed: handle not a directory", "handle", fmt.Sprintf("%x", req.DirHandle), "type", dirFile.Type, "client", clientIP)
 
 		// Include directory attributes even on error for cache consistency
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
@@ -302,8 +298,7 @@ func (h *Handler) ReadDir(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("READDIR cancelled during auth context building: dir=%x client=%s error=%v",
-				req.DirHandle, clientIP, ctx.Context.Err())
+			logger.Debug("READDIR cancelled during auth context building", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 
 			// Include directory attributes for cache consistency
 			nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
@@ -314,8 +309,7 @@ func (h *Handler) ReadDir(
 			}, ctx.Context.Err()
 		}
 
-		logger.Error("READDIR failed: failed to build auth context: dir=%x client=%s error=%v",
-			req.DirHandle, clientIP, err)
+		logger.Error("READDIR failed: failed to build auth context", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
 
 		// Include directory attributes for cache consistency
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
@@ -330,8 +324,7 @@ func (h *Handler) ReadDir(
 	// This is the most important check since ReadDir may scan many entries
 	// in large directories
 	if ctx.isContextCancelled() {
-		logger.Debug("READDIR cancelled before reading entries: dir=%x cookie=%d client=%s error=%v",
-			req.DirHandle, req.Cookie, clientIP, ctx.Context.Err())
+		logger.Debug("READDIR cancelled before reading entries", "handle", fmt.Sprintf("%x", req.DirHandle), "cookie", req.Cookie, "client", clientIP, "error", ctx.Context.Err())
 
 		// Include directory attributes for cache consistency
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
@@ -357,8 +350,7 @@ func (h *Handler) ReadDir(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("READDIR cancelled during directory scan: dir=%x cookie=%d client=%s error=%v",
-				req.DirHandle, req.Cookie, clientIP, ctx.Context.Err())
+			logger.Debug("READDIR cancelled during directory scan", "handle", fmt.Sprintf("%x", req.DirHandle), "cookie", req.Cookie, "client", clientIP, "error", ctx.Context.Err())
 
 			// Include directory attributes for cache consistency
 			nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
@@ -369,8 +361,7 @@ func (h *Handler) ReadDir(
 			}, ctx.Context.Err()
 		}
 
-		logger.Error("READDIR failed: store error: dir=%x client=%s error=%v",
-			req.DirHandle, clientIP, err)
+		logger.Error("READDIR failed: store error", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
 
 		// Map store error to NFS status
 		status := mapMetadataErrorToNFS(err)
@@ -408,11 +399,9 @@ func (h *Handler) ReadDir(
 	// EOF is true when there are no more pages
 	eof := !page.HasMore
 
-	logger.Info("READDIR successful: dir=%x entries=%d eof=%v client=%s",
-		req.DirHandle, len(nfsEntries), eof, clientIP)
+	logger.Info("READDIR successful", "handle", fmt.Sprintf("%x", req.DirHandle), "entries", len(nfsEntries), "eof", eof, "client", clientIP)
 
-	logger.Debug("READDIR details: cookie_start=%d cookie_end=%d count_limit=%d",
-		req.Cookie, getLastCookie(nfsEntries), req.Count)
+	logger.Debug("READDIR details", "cookie_start", req.Cookie, "cookie_end", getLastCookie(nfsEntries), "count_limit", req.Count)
 
 	return &ReadDirResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -592,8 +581,7 @@ func DecodeReadDirRequest(data []byte) (*ReadDirRequest, error) {
 		return nil, fmt.Errorf("read count: %w", err)
 	}
 
-	logger.Debug("Decoded READDIR request: handle_len=%d cookie=%d count=%d",
-		handleLen, cookie, count)
+	logger.Debug("Decoded READDIR request", "handle_len", handleLen, "cookie", cookie, "count", count)
 
 	return &ReadDirRequest{
 		DirHandle:  dirHandle,
@@ -674,7 +662,7 @@ func (resp *ReadDirResponse) Encode() ([]byte, error) {
 	// ========================================================================
 
 	if resp.Status != types.NFS3OK {
-		logger.Debug("Encoding READDIR error response: status=%d", resp.Status)
+		logger.Debug("Encoding READDIR error response", "status", resp.Status)
 		return buf.Bytes(), nil
 	}
 
@@ -734,8 +722,7 @@ func (resp *ReadDirResponse) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("write eof: %w", err)
 	}
 
-	logger.Debug("Encoded READDIR response: %d bytes entries=%d eof=%v",
-		buf.Len(), len(resp.Entries), resp.Eof)
+	logger.Debug("Encoded READDIR response", "bytes", buf.Len(), "entries", len(resp.Entries), "eof", resp.Eof)
 
 	return buf.Bytes(), nil
 }

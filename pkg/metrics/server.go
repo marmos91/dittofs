@@ -58,7 +58,7 @@ func NewServer(config ServerConfig) *Server {
 			mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{
 				EnableOpenMetrics: true,
 			}))
-			logger.Debug("Metrics endpoint registered at /metrics")
+			logger.Debug("Metrics endpoint registered", "path", "/metrics")
 		}
 	} else {
 		// Metrics disabled - return helpful message
@@ -135,8 +135,8 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start server in goroutine
 	errChan := make(chan error, 1)
 	go func() {
-		logger.Info("Metrics server listening on port %d", s.port)
-		logger.Debug("Metrics endpoint available at http://localhost:%d/metrics", s.port)
+		logger.Info("Metrics server listening", "port", s.port)
+		logger.Debug("Metrics endpoint available", "url", fmt.Sprintf("http://localhost:%d/metrics", s.port))
 
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			select {
@@ -178,7 +178,7 @@ func (s *Server) Stop(ctx context.Context) error {
 
 		if err := s.server.Shutdown(ctx); err != nil {
 			shutdownErr = fmt.Errorf("metrics server shutdown error: %w", err)
-			logger.Error("Metrics server shutdown error: %v", err)
+			logger.Error("Metrics server shutdown error", "error", err)
 		} else {
 			logger.Info("Metrics server stopped gracefully")
 		}

@@ -176,6 +176,8 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 
 **Production Features**
 - Prometheus metrics integration
+- OpenTelemetry distributed tracing
+- Structured JSON logging
 - Request rate limiting
 - Enhanced graceful shutdown
 - Comprehensive E2E test suite

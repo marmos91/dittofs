@@ -80,7 +80,7 @@ func handleRequest[Req rpcRequest, Resp rpcResponse](
 	// Decode request
 	req, err := decode(data)
 	if err != nil {
-		logger.Debug("Error decoding request: %v", err)
+		logger.Debug("Error decoding request", "error", err)
 		errorResp := makeErrorResp(errorStatus)
 		encoded, encErr := errorResp.Encode()
 		if encErr != nil {
@@ -92,7 +92,7 @@ func handleRequest[Req rpcRequest, Resp rpcResponse](
 	// Call handler
 	resp, err := handle(req)
 	if err != nil {
-		logger.Debug("Handler error: %v", err)
+		logger.Debug("Handler error", "error", err)
 		errorResp := makeErrorResp(errorStatus)
 		encoded, encErr := errorResp.Encode()
 		if encErr != nil {
@@ -107,7 +107,7 @@ func handleRequest[Req rpcRequest, Resp rpcResponse](
 	// Encode response
 	encoded, err := resp.Encode()
 	if err != nil {
-		logger.Debug("Error encoding response: %v", err)
+		logger.Debug("Error encoding response", "error", err)
 		errorResp := makeErrorResp(errorStatus)
 		encodedErr, encErr := errorResp.Encode()
 		if encErr != nil {

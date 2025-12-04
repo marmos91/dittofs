@@ -84,6 +84,20 @@ logging:
   # Log output: stdout, stderr, or file path
   output: "` + cfg.Logging.Output + `"
 
+# OpenTelemetry distributed tracing configuration
+# Traces are exported to an OTLP-compatible collector (Jaeger, Tempo, etc.)
+telemetry:
+  # Enable distributed tracing (default: false)
+  enabled: ` + fmt.Sprintf("%t", cfg.Telemetry.Enabled) + `
+  # OTLP collector endpoint (host:port)
+  endpoint: "` + cfg.Telemetry.Endpoint + `"
+  # Use insecure (non-TLS) connection (default: false)
+  # Set to true for local development without TLS
+  insecure: ` + fmt.Sprintf("%t", cfg.Telemetry.Insecure) + `
+  # Trace sampling rate (0.0 to 1.0)
+  # 1.0 = sample all, 0.5 = sample 50%
+  sample_rate: ` + fmt.Sprintf("%.1f", cfg.Telemetry.SampleRate) + `
+
 # Server-wide settings
 server:
   # Maximum time to wait for graceful shutdown

@@ -164,7 +164,7 @@ func (s *S3ContentStore) uploadPartsInParallel(
 				return
 			}
 
-			logger.Debug("uploadPartsInParallel: uploaded part %d (%d bytes): content_id=%s", pn, n, id)
+			logger.Debug("uploadPartsInParallel: uploaded part", "part", pn, "bytes", n, "content_id", id)
 			results <- uploadPartResult{pn, uint64(n), nil}
 		}(partNum)
 	}
@@ -187,7 +187,7 @@ func (s *S3ContentStore) uploadPartsInParallel(
 			if firstErr == nil {
 				firstErr = result.err
 			}
-			logger.Warn("uploadPartsInParallel: part %d failed: %v", result.partNum, result.err)
+			logger.Warn("uploadPartsInParallel: part failed", "part", result.partNum, "error", result.err)
 			continue
 		}
 
@@ -213,8 +213,7 @@ func (s *S3ContentStore) uploadPartWithRetry(
 	for attempt := 0; attempt <= int(s.retry.maxRetries); attempt++ {
 		if attempt > 0 {
 			backoff := s.calculateBackoff(attempt - 1)
-			logger.Debug("uploadPartWithRetry: retrying after %v (attempt %d/%d): part=%d",
-				backoff, attempt, s.retry.maxRetries, partNum)
+			logger.Debug("uploadPartWithRetry: retrying after backoff", "backoff", backoff, "attempt", attempt, "max_retries", s.retry.maxRetries, "part", partNum)
 
 			select {
 			case <-ctx.Done():
@@ -232,8 +231,7 @@ func (s *S3ContentStore) uploadPartWithRetry(
 			return fmt.Errorf("failed to upload part %d: %w", partNum, lastErr)
 		}
 
-		logger.Debug("uploadPartWithRetry: transient error (attempt %d/%d): part=%d error=%v",
-			attempt+1, s.retry.maxRetries+1, partNum, lastErr)
+		logger.Debug("uploadPartWithRetry: transient error", "attempt", attempt+1, "max_retries", s.retry.maxRetries+1, "part", partNum, "error", lastErr)
 	}
 
 	return fmt.Errorf("failed to upload part %d after %d attempts: %w", partNum, s.retry.maxRetries+1, lastErr)
@@ -284,7 +282,7 @@ func (s *S3ContentStore) FlushIncremental(
 			return 0, fmt.Errorf("failed to begin multipart upload: %w", err)
 		}
 		session.uploadID = uploadID
-		logger.Info("FlushIncremental: started multipart upload: content_id=%s upload_id=%s", id, uploadID)
+		logger.Info("FlushIncremental: started multipart upload", "content_id", id, "upload_id", uploadID)
 	}
 	uploadID := session.uploadID
 
@@ -329,7 +327,7 @@ func (s *S3ContentStore) FlushIncremental(
 	}
 
 	if totalUploaded > 0 {
-		logger.Info("FlushIncremental: uploaded %d parts (%d bytes): content_id=%s", len(partsToUpload), totalUploaded, id)
+		logger.Info("FlushIncremental: uploaded parts", "parts", len(partsToUpload), "bytes", totalUploaded, "content_id", id)
 	}
 
 	return totalUploaded, nil
@@ -385,7 +383,7 @@ func (s *S3ContentStore) CompleteIncrementalWrite(ctx context.Context, id metada
 			if err := s.WriteContent(ctx, id, data[:n]); err != nil {
 				return fmt.Errorf("failed to write small file via PutObject: %w", err)
 			}
-			logger.Info("CompleteIncrementalWrite: used PutObject for small file: content_id=%s size=%d", id, n)
+			logger.Info("CompleteIncrementalWrite: used PutObject for small file", "content_id", id, "size", n)
 		}
 		// Delete session if it exists (for small files that had an empty session)
 		if exists {
@@ -412,7 +410,7 @@ func (s *S3ContentStore) CompleteIncrementalWrite(ctx context.Context, id metada
 
 	// Upload remaining parts in parallel for better performance
 	if len(remainingParts) > 0 {
-		logger.Info("CompleteIncrementalWrite: uploading %d remaining parts: content_id=%s", len(remainingParts), id)
+		logger.Info("CompleteIncrementalWrite: uploading remaining parts", "parts", len(remainingParts), "content_id", id)
 
 		_, err := s.uploadPartsInParallel(ctx, id, uploadID, c, cacheSize, remainingParts, session)
 		if err != nil {
@@ -427,7 +425,7 @@ func (s *S3ContentStore) CompleteIncrementalWrite(ctx context.Context, id metada
 	if len(session.uploadedParts) == 0 {
 		// No parts uploaded - abort the multipart upload
 		if err := s.AbortMultipartUpload(ctx, id, session.uploadID); err != nil {
-			logger.Warn("CompleteIncrementalWrite: failed to abort empty upload: %v", err)
+			logger.Warn("CompleteIncrementalWrite: failed to abort empty upload", "error", err)
 		}
 		s.deleteSession(id)
 		return nil
@@ -448,7 +446,7 @@ func (s *S3ContentStore) CompleteIncrementalWrite(ctx context.Context, id metada
 	// where a new COMMIT creates a fresh session and re-uploads everything
 	s.deleteSession(id)
 
-	logger.Info("CompleteIncrementalWrite: completed multipart upload: content_id=%s parts=%d", id, len(partNumbers))
+	logger.Info("CompleteIncrementalWrite: completed multipart upload", "content_id", id, "parts", len(partNumbers))
 	return nil
 }
 

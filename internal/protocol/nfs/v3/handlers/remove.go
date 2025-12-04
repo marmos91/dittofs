@@ -203,24 +203,21 @@ func (h *Handler) Remove(
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
 	if ctx.isContextCancelled() {
-		logger.Debug("REMOVE cancelled before processing: file='%s' dir=%x client=%s error=%v",
-			req.Filename, req.DirHandle, ctx.ClientAddr, ctx.Context.Err())
+		logger.Debug("REMOVE cancelled before processing", "name", req.Filename, "handle", fmt.Sprintf("%x", req.DirHandle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	}
 
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("REMOVE: file='%s' dir=%x client=%s auth=%d",
-		req.Filename, req.DirHandle, clientIP, ctx.AuthFlavor)
+	logger.Info("REMOVE", "name", req.Filename, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Validate request parameters
 	// ========================================================================
 
 	if err := validateRemoveRequest(req); err != nil {
-		logger.Warn("REMOVE validation failed: file='%s' client=%s error=%v",
-			req.Filename, clientIP, err)
+		logger.Warn("REMOVE validation failed", "name", req.Filename, "client", clientIP, "error", err)
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -230,20 +227,20 @@ func (h *Handler) Remove(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("REMOVE failed: %v dir=%x client=%s", err, req.DirHandle, clientIP)
+		logger.Warn("REMOVE failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get content store for this share
 	contentStore, err := h.getContentStore(ctx)
 	if err != nil {
-		logger.Warn("REMOVE failed: %v dir=%x client=%s", err, req.DirHandle, clientIP)
+		logger.Warn("REMOVE failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 
-	logger.Debug("REMOVE: share=%s file=%s", ctx.Share, req.Filename)
+	logger.Debug("REMOVE", "share", ctx.Share, "name", req.Filename)
 
 	// ========================================================================
 	// Step 3: Capture pre-operation directory attributes for WCC
@@ -261,8 +258,7 @@ func (h *Handler) Remove(
 	// This is the most critical check - we don't want to start removing
 	// the file if the client has already disconnected
 	if ctx.isContextCancelled() {
-		logger.Debug("REMOVE cancelled before remove operation: file='%s' dir=%x client=%s error=%v",
-			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+		logger.Debug("REMOVE cancelled before remove operation", "name", req.Filename, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 
 		wccAfter := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
@@ -305,8 +301,7 @@ func (h *Handler) Remove(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("REMOVE cancelled during remove operation: file='%s' dir=%x client=%s error=%v",
-				req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+			logger.Debug("REMOVE cancelled during remove operation", "name", req.Filename, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 
 			// Get updated directory attributes for WCC data (best effort)
 			var wccAfter *types.NFSFileAttr
@@ -352,13 +347,11 @@ func (h *Handler) Remove(
 	if removedFileAttr.ContentID != "" {
 		if err := contentStore.Delete(ctx.Context, removedFileAttr.ContentID); err != nil {
 			// Log but don't fail the operation - metadata is already removed
-			logger.Warn("REMOVE: failed to delete content for file='%s' content_id=%s: %v",
-				req.Filename, removedFileAttr.ContentID, err)
+			logger.Warn("REMOVE: failed to delete content", "name", req.Filename, "content_id", removedFileAttr.ContentID, "error", err)
 			// This is non-fatal - the file is successfully removed from metadata
 			// The orphaned content can be cleaned up later via garbage collection
 		} else {
-			logger.Debug("REMOVE: deleted content for file='%s' content_id=%s",
-				req.Filename, removedFileAttr.ContentID)
+			logger.Debug("REMOVE: deleted content", "name", req.Filename, "content_id", removedFileAttr.ContentID)
 		}
 	}
 
@@ -369,21 +362,18 @@ func (h *Handler) Remove(
 	// Get updated directory attributes for WCC data
 	dirFile, err = metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
-		logger.Warn("REMOVE: file removed but cannot get updated directory attributes: dir=%x error=%v",
-			req.DirHandle, err)
+		logger.Warn("REMOVE: file removed but cannot get updated directory attributes", "handle", fmt.Sprintf("%x", req.DirHandle), "error", err)
 		// Continue with nil WccAfter rather than failing the entire operation
 		wccAfter = nil
 	} else {
 		wccAfter = h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 	}
 
-	logger.Info("REMOVE successful: file='%s' dir=%x client=%s",
-		req.Filename, req.DirHandle, clientIP)
+	logger.Info("REMOVE successful", "name", req.Filename, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 	// Convert internal type to NFS type for logging
 	nfsType := uint32(removedFileAttr.Type) + 1 // Internal types are 0-based, NFS types are 1-based
-	logger.Debug("REMOVE details: file_type=%d file_size=%d",
-		nfsType, removedFileAttr.Size)
+	logger.Debug("REMOVE details", "file_type", nfsType, "file_size", removedFileAttr.Size)
 
 	return &RemoveResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -592,8 +582,7 @@ func DecodeRemoveRequest(data []byte) (*RemoveRequest, error) {
 		return nil, fmt.Errorf("failed to read filename data: %w", err)
 	}
 
-	logger.Debug("Decoded REMOVE request: handle_len=%d filename='%s'",
-		handleLen, string(filenameBytes))
+	logger.Debug("Decoded REMOVE request", "handle_len", handleLen, "name", string(filenameBytes))
 
 	return &RemoveRequest{
 		DirHandle: dirHandle,
@@ -655,6 +644,6 @@ func (resp *RemoveResponse) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("failed to encode directory wcc data: %w", err)
 	}
 
-	logger.Debug("Encoded REMOVE response: %d bytes status=%d", buf.Len(), resp.Status)
+	logger.Debug("Encoded REMOVE response", "bytes", buf.Len(), "status", resp.Status)
 	return buf.Bytes(), nil
 }

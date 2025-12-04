@@ -234,24 +234,21 @@ func (h *Handler) Read(
 	// Check if the client has disconnected or the request has timed out
 	// before we start any expensive operations.
 	if ctx.isContextCancelled() {
-		logger.Debug("READ: request cancelled at entry: handle=%x client=%s error=%v",
-			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		logger.Debug("READ: request cancelled at entry", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("READ: handle=%x offset=%d count=%d client=%s auth=%d",
-		req.Handle, req.Offset, req.Count, clientIP, ctx.AuthFlavor)
+	logger.Info("READ", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Validate request parameters
 	// ========================================================================
 
 	if err := validateReadRequest(req); err != nil {
-		logger.Warn("READ validation failed: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
+		logger.Warn("READ validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", err)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -261,19 +258,19 @@ func (h *Handler) Read(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("READ failed: %v handle=%x client=%s", err, req.Handle, clientIP)
+		logger.Warn("READ failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	contentStore, err := h.getContentStore(ctx)
 	if err != nil {
-		logger.Warn("READ failed: %v handle=%x client=%s", err, req.Handle, clientIP)
+		logger.Warn("READ failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	logger.Debug("READ: share=%s", ctx.Share)
+	logger.Debug("READ: share", "share", ctx.Share)
 
 	// ========================================================================
 	// Step 3: Verify file exists and is a regular file
@@ -286,8 +283,7 @@ func (h *Handler) Read(
 
 	// Verify it's a regular file (not a directory or special file)
 	if file.Type != metadata.FileTypeRegular {
-		logger.Warn("READ failed: not a regular file: handle=%x type=%d client=%s",
-			req.Handle, file.Type, clientIP)
+		logger.Warn("READ failed: not a regular file", "handle", fmt.Sprintf("0x%x", req.Handle), "type", file.Type, "client", clientIP)
 
 		// Return file attributes even on error for cache consistency
 		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
@@ -303,8 +299,7 @@ func (h *Handler) Read(
 	// ========================================================================
 	// Check again before opening content (which may be expensive)
 	if ctx.isContextCancelled() {
-		logger.Debug("READ: request cancelled after metadata lookup: handle=%x client=%s",
-			req.Handle, clientIP)
+		logger.Debug("READ: request cancelled after metadata lookup", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return nil, ctx.Context.Err()
 	}
 
@@ -314,8 +309,7 @@ func (h *Handler) Read(
 
 	// If file has no content, return empty data with EOF
 	if file.ContentID == "" || file.Size == 0 {
-		logger.Debug("READ: empty file: handle=%x size=%d client=%s",
-			req.Handle, file.Size, clientIP)
+		logger.Debug("READ: empty file", "handle", fmt.Sprintf("0x%x", req.Handle), "size", file.Size, "client", clientIP)
 
 		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
@@ -330,8 +324,7 @@ func (h *Handler) Read(
 
 	// If offset is at or beyond EOF, return empty data with EOF
 	if req.Offset >= file.Size {
-		logger.Debug("READ: offset beyond EOF: handle=%x offset=%d size=%d client=%s",
-			req.Handle, req.Offset, file.Size, clientIP)
+		logger.Debug("READ: offset beyond EOF", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "size", file.Size, "client", clientIP)
 
 		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
@@ -361,7 +354,7 @@ func (h *Handler) Read(
 	// Try reading from cache first
 	cacheResult, err := h.tryReadFromCache(ctx, file.ContentID, req.Offset, req.Count)
 	if err != nil {
-		logger.Error("READ failed: %v handle=%x client=%s", err, req.Handle, clientIP)
+		logger.Error("READ failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -393,7 +386,7 @@ func (h *Handler) Read(
 			}
 
 			// I/O error
-			logger.Error("READ failed: %v handle=%x offset=%d client=%s", readErr, req.Handle, req.Offset, clientIP)
+			logger.Error("READ failed", "error", readErr, "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "client", clientIP)
 			nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 			return &ReadResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -426,11 +419,9 @@ func (h *Handler) Read(
 		cacheSource = "cache"
 	}
 
-	logger.Info("READ successful: handle=%x offset=%d requested=%d read=%d eof=%v source=%s client=%s",
-		req.Handle, req.Offset, req.Count, n, eof, cacheSource, clientIP)
+	logger.Info("READ successful", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "requested", req.Count, "read", n, "eof", eof, "source", cacheSource, "client", clientIP)
 
-	logger.Debug("READ details: size=%d type=%d mode=%o",
-		file.Size, nfsAttr.Type, file.Mode)
+	logger.Debug("READ details", "size", file.Size, "type", nfsAttr.Type, "mode", fmt.Sprintf("%o", file.Mode))
 
 	return &ReadResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -490,16 +481,14 @@ func (h *Handler) tryReadFromCache(
 		// Dirty data in cache - must read from cache (content store may not have it yet)
 		cacheSize := c.Size(contentID)
 		if cacheSize > 0 {
-			logger.Debug("READ: reading dirty data from cache: state=%s offset=%d count=%d cache_size=%d content_id=%s",
-				state, offset, count, cacheSize, contentID)
+			logger.Debug("READ: reading dirty data from cache", "state", state, "offset", offset, "count", count, "cache_size", cacheSize, "content_id", contentID)
 
 			data := make([]byte, count)
 			n, readErr := c.ReadAt(ctx.Context, contentID, data, offset)
 
 			if readErr == nil || readErr == io.EOF {
 				eof := (readErr == io.EOF) || (offset+uint64(n) >= cacheSize)
-				logger.Debug("READ: cache hit (dirty): bytes_read=%d eof=%v content_id=%s",
-					n, eof, contentID)
+				logger.Debug("READ: cache hit (dirty)", "bytes_read", n, "eof", eof, "content_id", contentID)
 
 				if h.Metrics != nil {
 					h.Metrics.RecordCacheHit(ctx.Share, "dirty", uint64(n))
@@ -513,8 +502,7 @@ func (h *Handler) tryReadFromCache(
 				}, nil
 			}
 
-			logger.Warn("READ: cache read error (dirty data), this is unexpected: content_id=%s error=%v",
-				contentID, readErr)
+			logger.Warn("READ: cache read error (dirty data), this is unexpected", "content_id", contentID, "error", readErr)
 			// Fall through to content store - but this shouldn't happen for dirty data
 		}
 
@@ -522,16 +510,14 @@ func (h *Handler) tryReadFromCache(
 		// Clean data in cache - read from cache
 		cacheSize := c.Size(contentID)
 		if cacheSize > 0 {
-			logger.Debug("READ: reading from cache: offset=%d count=%d cache_size=%d content_id=%s",
-				offset, count, cacheSize, contentID)
+			logger.Debug("READ: reading from cache", "offset", offset, "count", count, "cache_size", cacheSize, "content_id", contentID)
 
 			data := make([]byte, count)
 			n, readErr := c.ReadAt(ctx.Context, contentID, data, offset)
 
 			if readErr == nil || readErr == io.EOF {
 				eof := (readErr == io.EOF) || (offset+uint64(n) >= cacheSize)
-				logger.Debug("READ: cache hit: bytes_read=%d eof=%v content_id=%s",
-					n, eof, contentID)
+				logger.Debug("READ: cache hit", "bytes_read", n, "eof", eof, "content_id", contentID)
 
 				if h.Metrics != nil {
 					h.Metrics.RecordCacheHit(ctx.Share, "clean", uint64(n))
@@ -545,14 +531,13 @@ func (h *Handler) tryReadFromCache(
 				}, nil
 			}
 
-			logger.Warn("READ: cache read error, falling back to content store: content_id=%s error=%v",
-				contentID, readErr)
+			logger.Warn("READ: cache read error, falling back to content store", "content_id", contentID, "error", readErr)
 		}
 
 	case cache.StatePrefetching:
 		// Prefetch in progress - wait for the required offset to be available
 		requiredOffset := offset + uint64(count)
-		logger.Debug("READ: prefetch in progress, waiting for offset %d: content_id=%s", requiredOffset, contentID)
+		logger.Debug("READ: prefetch in progress, waiting for offset", "required_offset", requiredOffset, "content_id", contentID)
 
 		if err := c.WaitForPrefetchOffset(ctx.Context, contentID, requiredOffset); err != nil {
 			return cacheReadResult{hit: false}, err
@@ -565,7 +550,7 @@ func (h *Handler) tryReadFromCache(
 
 		if readErr == nil || readErr == io.EOF {
 			eof := (readErr == io.EOF) || (offset+uint64(n) >= cacheSize)
-			logger.Debug("READ: cache hit after prefetch: bytes_read=%d eof=%v content_id=%s", n, eof, contentID)
+			logger.Debug("READ: cache hit after prefetch", "bytes_read", n, "eof", eof, "content_id", contentID)
 
 			if h.Metrics != nil {
 				h.Metrics.RecordCacheHit(ctx.Share, "prefetch", uint64(n))
@@ -579,12 +564,12 @@ func (h *Handler) tryReadFromCache(
 			}, nil
 		}
 
-		logger.Warn("READ: cache read error after prefetch wait: content_id=%s error=%v", contentID, readErr)
+		logger.Warn("READ: cache read error after prefetch wait", "content_id", contentID, "error", readErr)
 		// Fall through to cache miss
 
 	case cache.StateNone:
 		// Not in cache
-		logger.Debug("READ: cache miss: content_id=%s", contentID)
+		logger.Debug("READ: cache miss", "content_id", contentID)
 	}
 
 	// Cache miss
@@ -648,14 +633,13 @@ func (h *Handler) startBackgroundPrefetch(
 
 	// Skip large files to avoid cache thrashing
 	if fileSize > uint64(maxFileSize) {
-		logger.Debug("READ: skipping prefetch for large file: content_id=%s size=%d max=%d",
-			contentID, fileSize, maxFileSize)
+		logger.Debug("READ: skipping prefetch for large file", "content_id", contentID, "size", fileSize, "max", maxFileSize)
 		return
 	}
 
 	// Try to start prefetch - returns false if already in progress or not needed
 	if !c.StartPrefetch(contentID, fileSize) {
-		logger.Debug("READ: prefetch already in progress or not needed: content_id=%s", contentID)
+		logger.Debug("READ: prefetch already in progress or not needed", "content_id", contentID)
 		return
 	}
 
@@ -665,7 +649,7 @@ func (h *Handler) startBackgroundPrefetch(
 		chunkSize = defaultPrefetchChunkSize
 	}
 
-	logger.Debug("READ: starting background prefetch: content_id=%s size=%d chunk_size=%d", contentID, fileSize, chunkSize)
+	logger.Debug("READ: starting background prefetch", "content_id", contentID, "size", fileSize, "chunk_size", chunkSize)
 
 	// Spawn background goroutine to fetch the file
 	go h.runPrefetch(ctx.Share, contentStore, contentID, fileSize, chunkSize)
@@ -697,9 +681,9 @@ func (h *Handler) runPrefetch(
 	defer func() {
 		c.CompletePrefetch(contentID, success)
 		if success {
-			logger.Debug("READ: prefetch completed: content_id=%s size=%d", contentID, fileSize)
+			logger.Debug("READ: prefetch completed", "content_id", contentID, "size", fileSize)
 		} else {
-			logger.Warn("READ: prefetch failed: content_id=%s", contentID)
+			logger.Warn("READ: prefetch failed", "content_id", contentID)
 		}
 	}()
 
@@ -715,16 +699,14 @@ func (h *Handler) runPrefetch(
 			chunk := make([]byte, readSize)
 			n, err := readAtStore.ReadAt(ctx, contentID, chunk, offset)
 			if err != nil && err != io.EOF {
-				logger.Warn("READ: prefetch chunk read failed: content_id=%s offset=%d error=%v",
-					contentID, offset, err)
+				logger.Warn("READ: prefetch chunk read failed", "content_id", contentID, "offset", offset, "error", err)
 				return
 			}
 
 			if n > 0 {
 				// Write chunk to cache
 				if err := c.WriteAt(ctx, contentID, chunk[:n], offset); err != nil {
-					logger.Warn("READ: prefetch cache write failed: content_id=%s offset=%d error=%v",
-						contentID, offset, err)
+					logger.Warn("READ: prefetch cache write failed", "content_id", contentID, "offset", offset, "error", err)
 					return
 				}
 
@@ -740,7 +722,7 @@ func (h *Handler) runPrefetch(
 		// Fallback: read entire content using streaming reader
 		reader, err := contentStore.ReadContent(ctx, contentID)
 		if err != nil {
-			logger.Warn("READ: prefetch read failed: content_id=%s error=%v", contentID, err)
+			logger.Warn("READ: prefetch read failed", "content_id", contentID, "error", err)
 			return
 		}
 		defer func() { _ = reader.Close() }()
@@ -752,8 +734,7 @@ func (h *Handler) runPrefetch(
 
 			if n > 0 {
 				if writeErr := c.WriteAt(ctx, contentID, chunk[:n], offset); writeErr != nil {
-					logger.Warn("READ: prefetch cache write failed: content_id=%s offset=%d error=%v",
-						contentID, offset, writeErr)
+					logger.Warn("READ: prefetch cache write failed", "content_id", contentID, "offset", offset, "error", writeErr)
 					return
 				}
 
@@ -765,8 +746,7 @@ func (h *Handler) runPrefetch(
 				break
 			}
 			if err != nil {
-				logger.Warn("READ: prefetch read failed: content_id=%s offset=%d error=%v",
-					contentID, offset, err)
+				logger.Warn("READ: prefetch read failed", "content_id", contentID, "offset", offset, "error", err)
 				return
 			}
 		}
@@ -806,8 +786,7 @@ func readFromContentStoreWithReadAt(
 	clientIP string,
 	handle []byte,
 ) (contentStoreReadResult, error) {
-	logger.Debug("READ: using content store ReadAt path: handle=%x offset=%d count=%d content_id=%s",
-		handle, offset, count, contentID)
+	logger.Debug("READ: using content store ReadAt path", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count, "content_id", contentID)
 
 	data := make([]byte, count)
 	n, readErr := readAtStore.ReadAt(ctx.Context, contentID, data, offset)
@@ -822,8 +801,7 @@ func readFromContentStoreWithReadAt(
 	}
 
 	if readErr == context.Canceled || readErr == context.DeadlineExceeded {
-		logger.Debug("READ: request cancelled during ReadAt: handle=%x offset=%d read=%d client=%s",
-			handle, offset, n, clientIP)
+		logger.Debug("READ: request cancelled during ReadAt", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "read", n, "client", clientIP)
 		return contentStoreReadResult{}, readErr
 	}
 
@@ -871,7 +849,7 @@ func seekToOffset(
 	}
 
 	// Reader doesn't support seeking - read and discard bytes
-	logger.Debug("READ: reader not seekable, discarding %d bytes", offset)
+	logger.Debug("READ: reader not seekable, discarding bytes", "bytes", offset)
 
 	// Use chunked discard with cancellation checks for large offsets
 	const discardChunkSize = 64 * 1024 // 64KB chunks
@@ -882,8 +860,7 @@ func seekToOffset(
 		// Check for cancellation during discard
 		select {
 		case <-ctx.Context.Done():
-			logger.Debug("READ: request cancelled during seek discard: handle=%x offset=%d discarded=%d client=%s",
-				handle, offset, totalDiscarded, clientIP)
+			logger.Debug("READ: request cancelled during seek discard", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "discarded", totalDiscarded, "client", clientIP)
 			return ctx.Context.Err()
 		default:
 			// Continue
@@ -935,8 +912,7 @@ func readFromContentStoreSequential(
 	clientIP string,
 	handle []byte,
 ) (contentStoreReadResult, error) {
-	logger.Debug("READ: using sequential read path (no ReadAt support): handle=%x offset=%d count=%d",
-		handle, offset, count)
+	logger.Debug("READ: using sequential read path (no ReadAt support)", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count)
 
 	reader, err := contentStore.ReadContent(ctx.Context, contentID)
 	if err != nil {
@@ -948,8 +924,7 @@ func readFromContentStoreSequential(
 	if err := seekToOffset(ctx, reader, offset, clientIP, handle); err != nil {
 		if err == io.EOF {
 			// EOF reached while seeking - return empty with EOF
-			logger.Debug("READ: EOF reached while seeking: handle=%x offset=%d client=%s",
-				handle, offset, clientIP)
+			logger.Debug("READ: EOF reached while seeking", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "client", clientIP)
 			return contentStoreReadResult{
 				data:      []byte{},
 				bytesRead: 0,
@@ -983,8 +958,7 @@ func readFromContentStoreSequential(
 	}
 
 	if readErr == context.Canceled || readErr == context.DeadlineExceeded {
-		logger.Debug("READ: request cancelled during data read: handle=%x offset=%d read=%d client=%s",
-			handle, offset, n, clientIP)
+		logger.Debug("READ: request cancelled during data read", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "read", n, "client", clientIP)
 		return contentStoreReadResult{}, readErr
 	}
 
@@ -1211,8 +1185,7 @@ func DecodeReadRequest(data []byte) (*ReadRequest, error) {
 		return nil, fmt.Errorf("failed to read count: %w", err)
 	}
 
-	logger.Debug("Decoded READ request: handle_len=%d offset=%d count=%d",
-		handleLen, offset, count)
+	logger.Debug("Decoded READ request", "handle_len", handleLen, "offset", offset, "count", count)
 
 	return &ReadRequest{
 		Handle: handle,
@@ -1297,7 +1270,7 @@ func (resp *ReadResponse) Encode() ([]byte, error) {
 	// ========================================================================
 
 	if resp.Status != types.NFS3OK {
-		logger.Debug("Encoding READ error response: status=%d", resp.Status)
+		logger.Debug("Encoding READ error response", "status", resp.Status)
 		return buf.Bytes(), nil
 	}
 
@@ -1324,8 +1297,7 @@ func (resp *ReadResponse) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("failed to write data: %w", err)
 	}
 
-	logger.Debug("Encoded READ response: %d bytes total, %d data bytes, status=%d",
-		buf.Len(), len(resp.Data), resp.Status)
+	logger.Debug("Encoded READ response", "bytes_total", buf.Len(), "data_bytes", len(resp.Data), "status", resp.Status)
 
 	return buf.Bytes(), nil
 }
