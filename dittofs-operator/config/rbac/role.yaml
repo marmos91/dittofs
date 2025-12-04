@@ -1,11 +1,32 @@
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  labels:
-    app.kubernetes.io/name: dittofs/dittofs-operator
-    app.kubernetes.io/managed-by: kustomize
   name: manager-role
 rules:
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "watch"]
+- apiGroups:
+  - dittofs.dittofs.com
+  resources:
+  - dittoservers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - dittofs.dittofs.com
+  resources:
+  - dittoservers/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - dittofs.dittofs.com
+  resources:
+  - dittoservers/status
+  verbs:
+  - get
+  - patch
+  - update
