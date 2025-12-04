@@ -85,22 +85,6 @@ func toSlogLevel(l Level) slog.Level {
 	}
 }
 
-// parseLevel converts string to Level
-func parseLevel(level string) Level {
-	switch strings.ToUpper(level) {
-	case "DEBUG":
-		return LevelDebug
-	case "INFO":
-		return LevelInfo
-	case "WARN":
-		return LevelWarn
-	case "ERROR":
-		return LevelError
-	default:
-		return LevelInfo
-	}
-}
-
 // reconfigure rebuilds the slog handler based on current settings
 func reconfigure() {
 	mu.Lock()

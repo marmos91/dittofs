@@ -533,7 +533,7 @@ func TestContextLogging(t *testing.T) {
 
 		// Should not panic with nil context
 		require.NotPanics(t, func() {
-			InfoCtx(nil, "test message")
+			InfoCtx(context.TODO(), "test message")
 		})
 
 		assert.Contains(t, buf.String(), "test message")

@@ -1320,7 +1320,7 @@ func (store *BadgerMetadataStore) GetFileByContentID(
 					return nil // Skip corrupted entries
 				}
 
-				if file.FileAttr.ContentID == contentID {
+				if file.ContentID == contentID {
 					// Found matching file - return it directly
 					// (decodeFile returns *metadata.File with all fields populated)
 					result = file

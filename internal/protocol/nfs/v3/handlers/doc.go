@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
@@ -24,12 +23,6 @@ type Handler struct {
 	// Metrics collects observability data for NFS operations
 	// Optional - may be nil to disable metrics with zero overhead
 	Metrics metrics.NFSMetrics
-
-	// fileLocks provides per-ContentID mutexes to prevent race conditions
-	// when multiple concurrent COMMIT operations target the same file.
-	// This prevents session conflicts during incremental uploads.
-	// Uses sync.Map for lock-free reads and minimal contention.
-	fileLocks sync.Map // map[metadata.ContentID]*sync.Mutex
 }
 
 // getMetadataStore retrieves the metadata store for the share specified in the context.

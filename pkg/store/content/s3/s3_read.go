@@ -36,7 +36,7 @@ func isRetryableError(err error) bool {
 	// Network errors are retryable
 	var netErr net.Error
 	if errors.As(err, &netErr) {
-		return netErr.Timeout() || netErr.Temporary()
+		return netErr.Timeout()
 	}
 
 	// Check for AWS API errors

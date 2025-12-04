@@ -212,7 +212,7 @@ func (f *BackgroundFlusher) sweep() {
 		// Check context before starting new flush
 		select {
 		case <-f.ctx.Done():
-			break
+			return
 		default:
 		}
 
