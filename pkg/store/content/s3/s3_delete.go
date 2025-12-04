@@ -1,16 +1,126 @@
 // Package s3 implements S3-based content storage for DittoFS.
 //
-// This file contains buffered deletion logic for the S3 content store,
-// enabling efficient batch processing of delete operations.
+// This file contains delete operations for the S3 content store,
+// including single deletes, batch deletes, and buffered deletion logic.
 package s3
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
+
+// Delete removes content from S3.
+//
+// Buffered Deletion (Asynchronous Mode):
+// When buffered deletion is enabled, this method returns nil immediately after
+// queuing the deletion. The actual S3 deletion happens asynchronously via a
+// background worker that batches deletions every 2 seconds or when 100+ items
+// are queued (using S3's DeleteObjects API for efficiency).
+//
+// IMPORTANT: In buffered mode, returning nil does NOT guarantee the deletion
+// has completed or succeeded. Callers must be aware:
+//   - The content may still exist in S3 after this method returns
+//   - Server crashes before flush will lose queued deletions
+//   - Use Close() or TriggerFlush() before shutdown to ensure deletions complete
+//
+// When buffered deletion is disabled, deletions happen immediately (synchronous)
+// with retry logic for transient errors.
+//
+// This operation is idempotent - deleting non-existent content returns nil.
+//
+// Retry Behavior:
+// Synchronous deletions retry transient errors with exponential backoff.
+//
+// Context Cancellation:
+// The S3 DeleteObject operation respects context cancellation.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeouts
+//   - id: Content identifier to delete
+//
+// Returns:
+//   - error: Returns error for S3 failures or context cancellation (not for non-existent objects)
+func (s *S3ContentStore) Delete(ctx context.Context, id metadata.ContentID) error {
+	start := time.Now()
+	var err error
+	defer func() {
+		if s.metrics != nil && !s.deletionQueue.enabled {
+			// Only record metrics for synchronous deletes
+			s.metrics.ObserveOperation("Delete", time.Since(start), err)
+		}
+	}()
+
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+
+	// If buffered deletion is enabled, queue it
+	if s.deletionQueue.enabled {
+		s.deletionQueue.mu.Lock()
+		s.deletionQueue.queue = append(s.deletionQueue.queue, id)
+		queueLen := len(s.deletionQueue.queue)
+		s.deletionQueue.mu.Unlock()
+
+		// Trigger immediate flush if batch size threshold reached
+		if uint(queueLen) >= s.deletionQueue.batchSize {
+			select {
+			case s.deletionQueue.flushCh <- struct{}{}:
+			default:
+				// Channel already has signal, skip
+			}
+		}
+
+		return nil
+	}
+
+	// Buffering disabled - execute immediately with retry
+	key := s.getObjectKey(id)
+	var lastErr error
+
+	for attempt := 0; attempt <= int(s.retry.maxRetries); attempt++ {
+		if attempt > 0 {
+			backoff := s.calculateBackoff(attempt - 1)
+			logger.Debug("Delete: retrying after %v (attempt %d/%d): key=%s",
+				backoff, attempt, s.retry.maxRetries, key)
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		_, lastErr = s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: aws.String(s.bucket),
+			Key:    aws.String(key),
+		})
+
+		if lastErr == nil {
+			return nil
+		}
+
+		// Not found is not an error for delete (idempotent)
+		if isNotFoundError(lastErr) {
+			return nil
+		}
+
+		if !isRetryableError(lastErr) {
+			break
+		}
+
+		logger.Debug("Delete: transient error (attempt %d/%d): key=%s error=%v",
+			attempt+1, s.retry.maxRetries+1, key, lastErr)
+	}
+
+	err = fmt.Errorf("failed to delete object from S3 after %d attempts: %w", s.retry.maxRetries+1, lastErr)
+	return err
+}
 
 // deletionWorker is a background goroutine that batches and processes delete operations.
 //
