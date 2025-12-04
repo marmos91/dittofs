@@ -332,6 +332,7 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
   - `pkg/store/content/s3/`: **Production-ready** S3 storage with:
     - **Range Reads**: Efficient byte-range requests (100x faster for small reads from large files)
     - **Streaming Multipart Uploads**: Automatic multipart for large files (98% memory reduction)
+    - **Configurable Retry**: Exponential backoff for transient errors (network, throttling, 5xx)
     - **Stats Caching**: Intelligent caching reduces S3 ListObjects calls by 99%+
     - **Metrics Support**: Optional Prometheus instrumentation
     - **Path-Based Keys**: Objects stored as `export/path/to/file` for easy inspection
@@ -738,10 +739,10 @@ ln file1 file2      # LINK (hard link)
    - No replication (except via S3 bucket replication)
    - Single point of failure
 
-8. **Garbage collection temporarily disabled**:
-   - GC needs refactoring to work with registry and multiple stores
-   - Will be re-enabled in future phase
-   - Orphaned content may accumulate
+8. **No garbage collection**:
+   - Orphaned content in S3/filesystem is not automatically cleaned up
+   - Manual cleanup may be needed if files are deleted while server is down
+   - Consider using S3 lifecycle policies for automatic cleanup
 
 See [docs/FAQ.md](docs/FAQ.md) and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for workarounds and more details.
 

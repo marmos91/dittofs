@@ -515,7 +515,7 @@ type IncrementalWriteStore interface {
 	//	        cache.SetState(contentID, StateUploading)
 	//	    }
 	//	}
-	FlushIncremental(ctx context.Context, id metadata.ContentID, c cache.Cache) (flushed int64, err error)
+	FlushIncremental(ctx context.Context, id metadata.ContentID, c cache.Cache) (flushed uint64, err error)
 
 	// CompleteIncrementalWrite finalizes an incremental write session.
 	//

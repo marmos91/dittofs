@@ -22,7 +22,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
-
 // isRetryableError returns true if the error is transient and the operation should be retried.
 func isRetryableError(err error) bool {
 	if err == nil {

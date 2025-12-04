@@ -53,9 +53,14 @@ type S3ContentStore struct {
 	keyPrefix string // Optional prefix for all keys
 	partSize  uint64 // Size for multipart upload parts (default: 5MB)
 
-	// Multipart upload state (per-instance)
+	// Multipart upload state (per-instance, keyed by uploadID)
 	uploadSessions   map[string]*multipartUpload
 	uploadSessionsMu sync.RWMutex
+
+	// Incremental write sessions (per-instance, keyed by contentID)
+	// Tracks incremental write state for cache-flusher integration
+	incrementalSessions   map[metadata.ContentID]*incrementalWriteSession
+	incrementalSessionsMu sync.RWMutex
 
 	// Cache for buffering writes (optional, injected via SetCache)
 	cache cache.Cache
@@ -310,14 +315,15 @@ func NewS3ContentStore(ctx context.Context, cfg S3ContentStoreConfig) (*S3Conten
 	}
 
 	store := &S3ContentStore{
-		client:             cfg.Client,
-		bucket:             cfg.Bucket,
-		keyPrefix:          cfg.KeyPrefix,
-		partSize:           partSize,
-		maxParallelUploads: maxParallelUploads,
-		uploadSessions:     make(map[string]*multipartUpload),
-		metrics:            cfg.Metrics,
-		cache:              cfg.Cache,
+		client:              cfg.Client,
+		bucket:              cfg.Bucket,
+		keyPrefix:           cfg.KeyPrefix,
+		partSize:            partSize,
+		maxParallelUploads:  maxParallelUploads,
+		uploadSessions:      make(map[string]*multipartUpload),
+		incrementalSessions: make(map[metadata.ContentID]*incrementalWriteSession),
+		metrics:             cfg.Metrics,
+		cache:               cfg.Cache,
 		retry: retryConfig{
 			maxRetries:        maxRetries,
 			initialBackoff:    initialBackoff,
