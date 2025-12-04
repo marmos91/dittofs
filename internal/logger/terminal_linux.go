@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build linux
 
 package logger
 
@@ -7,13 +7,16 @@ import (
 	"unsafe"
 )
 
-// isTerminal checks if the file descriptor is a terminal on macOS
+// TCGETS is the ioctl number for getting terminal attributes on Linux
+const TCGETS = 0x5401
+
+// isTerminal checks if the file descriptor is a terminal on Linux
 func isTerminal(fd uintptr) bool {
 	var termios syscall.Termios
 	_, _, err := syscall.Syscall6(
 		syscall.SYS_IOCTL,
 		fd,
-		syscall.TIOCGETA, // macOS uses TIOCGETA
+		TCGETS, // Linux uses TCGETS
 		uintptr(unsafe.Pointer(&termios)),
 		0, 0, 0,
 	)

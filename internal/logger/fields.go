@@ -18,11 +18,11 @@ const (
 	// ========================================================================
 	// Protocol & Operation (protocol-agnostic)
 	// ========================================================================
-	KeyProtocol  = "protocol"  // Protocol type: nfs, smb, webdav, etc.
-	KeyProcedure = "procedure" // Operation/procedure name: READ, WRITE, CREATE, etc.
-	KeyHandle    = "handle"    // File handle (protocol-specific opaque identifier)
-	KeyShare     = "share"     // Share/export name: /export, \\server\share, etc.
-	KeyStatus    = "status"    // Operation status code (protocol-specific)
+	KeyProtocol  = "protocol"   // Protocol type: nfs, smb, webdav, etc.
+	KeyProcedure = "procedure"  // Operation/procedure name: READ, WRITE, CREATE, etc.
+	KeyHandle    = "handle"     // File handle (protocol-specific opaque identifier)
+	KeyShare     = "share"      // Share/export name: /export, \\server\share, etc.
+	KeyStatus    = "status"     // Operation status code (protocol-specific)
 	KeyStatusMsg = "status_msg" // Human-readable status message
 
 	// ========================================================================
