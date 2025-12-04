@@ -713,8 +713,7 @@ func (h *Handler) runPrefetch(
 			readSize := min(remaining, uint64(chunkSize))
 
 			chunk := make([]byte, readSize)
-			// Content store ReadAt uses int64 for io.ReaderAt compatibility
-			n, err := readAtStore.ReadAt(ctx, contentID, chunk, int64(offset))
+			n, err := readAtStore.ReadAt(ctx, contentID, chunk, offset)
 			if err != nil && err != io.EOF {
 				logger.Warn("READ: prefetch chunk read failed: content_id=%s offset=%d error=%v",
 					contentID, offset, err)
@@ -811,7 +810,7 @@ func readFromContentStoreWithReadAt(
 		handle, offset, count, contentID)
 
 	data := make([]byte, count)
-	n, readErr := readAtStore.ReadAt(ctx.Context, contentID, data, int64(offset))
+	n, readErr := readAtStore.ReadAt(ctx.Context, contentID, data, offset)
 
 	// Handle ReadAt results
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {

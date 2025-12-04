@@ -494,8 +494,7 @@ func flushCacheToContentStore(
 		return fmt.Errorf("cache read error: %w", err)
 	}
 
-	// Content store WriteAt uses int64 for io.ReaderAt compatibility
-	err = contentStore.WriteAt(ctx.Context, contentID, buf[:n], int64(flushedOffset))
+	err = contentStore.WriteAt(ctx.Context, contentID, buf[:n], flushedOffset)
 	if err != nil {
 		return fmt.Errorf("content store write error: %w", err)
 	}

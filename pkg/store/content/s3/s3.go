@@ -51,7 +51,7 @@ type S3ContentStore struct {
 	client    *s3.Client
 	bucket    string
 	keyPrefix string // Optional prefix for all keys
-	partSize  uint64 // Size for multipart upload parts (default: 10MB)
+	partSize  uint64 // Size for multipart upload parts (default: 5MB)
 
 	// Multipart upload state (per-instance)
 	uploadSessions   map[string]*multipartUpload
@@ -62,6 +62,9 @@ type S3ContentStore struct {
 
 	// Max parallel part uploads (default: 4)
 	maxParallelUploads uint
+
+	// Retry configuration for transient errors
+	retry retryConfig
 
 	// Cached storage stats (avoids repeated S3 ListObjects calls)
 	cachedStats struct {
@@ -88,6 +91,14 @@ type S3ContentStore struct {
 		doneCh          chan struct{}        // Signal when worker stopped
 		closeOnce       sync.Once            // Ensures Close() only executes once
 	}
+}
+
+// retryConfig holds retry settings for S3 operations.
+type retryConfig struct {
+	maxRetries        uint          // Maximum number of retry attempts (default: 3)
+	initialBackoff    time.Duration // Initial backoff duration (default: 100ms)
+	maxBackoff        time.Duration // Maximum backoff duration (default: 2s)
+	backoffMultiplier float64       // Backoff multiplier (default: 2.0)
 }
 
 // S3ContentStoreConfig contains configuration for S3 content store.
@@ -142,6 +153,21 @@ type S3ContentStoreConfig struct {
 	// When provided, enables efficient write buffering and reduces S3 API calls.
 	// Can be nil if caching is not configured for this share.
 	Cache cache.Cache
+
+	// MaxRetries is the maximum number of retry attempts for transient errors (default: 3).
+	// Set to 0 to disable retries.
+	MaxRetries uint
+
+	// InitialBackoff is the initial backoff duration before first retry (default: 100ms).
+	// Subsequent retries use exponential backoff up to MaxBackoff.
+	InitialBackoff time.Duration
+
+	// MaxBackoff is the maximum backoff duration between retries (default: 2s).
+	MaxBackoff time.Duration
+
+	// BackoffMultiplier is the multiplier for exponential backoff (default: 2.0).
+	// Each retry waits: min(InitialBackoff * (BackoffMultiplier ^ attempt), MaxBackoff)
+	BackoffMultiplier float64
 }
 
 // NewS3ClientFromConfig creates an S3 client from configuration parameters.
@@ -265,6 +291,24 @@ func NewS3ContentStore(ctx context.Context, cfg S3ContentStoreConfig) (*S3Conten
 		deletionShutdownTimeout = 60 * time.Second
 	}
 
+	// Apply retry config defaults
+	maxRetries := cfg.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = 3 // Default: 3 retries
+	}
+	initialBackoff := cfg.InitialBackoff
+	if initialBackoff == 0 {
+		initialBackoff = 100 * time.Millisecond // Default: 100ms
+	}
+	maxBackoff := cfg.MaxBackoff
+	if maxBackoff == 0 {
+		maxBackoff = 2 * time.Second // Default: 2s
+	}
+	backoffMultiplier := cfg.BackoffMultiplier
+	if backoffMultiplier == 0 {
+		backoffMultiplier = 2.0 // Default: 2x
+	}
+
 	store := &S3ContentStore{
 		client:             cfg.Client,
 		bucket:             cfg.Bucket,
@@ -274,6 +318,12 @@ func NewS3ContentStore(ctx context.Context, cfg S3ContentStoreConfig) (*S3Conten
 		uploadSessions:     make(map[string]*multipartUpload),
 		metrics:            cfg.Metrics,
 		cache:              cfg.Cache,
+		retry: retryConfig{
+			maxRetries:        maxRetries,
+			initialBackoff:    initialBackoff,
+			maxBackoff:        maxBackoff,
+			backoffMultiplier: backoffMultiplier,
+		},
 	}
 
 	// Initialize cached stats

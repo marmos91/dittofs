@@ -469,7 +469,7 @@ func (h *Handler) Write(
 		logger.Debug("WRITE: cached successfully: content_id=%s cache_size=%d", writeIntent.ContentID, cache.Size(writeIntent.ContentID))
 	} else {
 		// Sync mode: write directly to content store
-		err = contentStore.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, int64(req.Offset))
+		err = contentStore.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, req.Offset)
 		if err != nil {
 			logger.Error("WRITE failed: content write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
 				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
