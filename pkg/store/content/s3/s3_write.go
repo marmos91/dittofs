@@ -76,7 +76,7 @@ func (s *S3ContentStore) WriteContent(ctx context.Context, id metadata.ContentID
 //
 // Returns:
 //   - error: Always returns an error indicating the operation is not supported
-func (s *S3ContentStore) WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset int64) error {
+func (s *S3ContentStore) WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset uint64) error {
 	return fmt.Errorf("WriteAt is not supported for S3 content store: use cache + IncrementalWriteStore instead")
 }
 

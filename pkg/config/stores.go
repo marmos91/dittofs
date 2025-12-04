@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/cache"
 	cachememory "github.com/marmos91/dittofs/pkg/cache/memory"
@@ -17,8 +18,16 @@ import (
 	"github.com/mitchellh/mapstructure"
 )
 
-// s3YAMLConfig represents S3 configuration loaded from YAML files.
-type s3YAMLConfig struct {
+// s3RetryConfig represents retry configuration for S3 operations.
+type s3RetryConfig struct {
+	MaxRetries        uint    `mapstructure:"max_retries"`         // Max retry attempts (default: 3)
+	InitialBackoff    string  `mapstructure:"initial_backoff"`     // Initial backoff duration (default: 100ms)
+	MaxBackoff        string  `mapstructure:"max_backoff"`         // Max backoff duration (default: 2s)
+	BackoffMultiplier float64 `mapstructure:"backoff_multiplier"`  // Backoff multiplier (default: 2.0)
+}
+
+// s3Config represents S3 configuration loaded from YAML files.
+type s3Config struct {
 	Endpoint           string `mapstructure:"endpoint"`
 	Region             string `mapstructure:"region"`
 	Bucket             string `mapstructure:"bucket"`
@@ -28,6 +37,9 @@ type s3YAMLConfig struct {
 	ForcePathStyle     bool   `mapstructure:"force_path_style"`
 	PartSize           uint64 `mapstructure:"part_size"`
 	MaxParallelUploads uint   `mapstructure:"max_parallel_uploads"`
+
+	// Retry configuration for transient S3 errors
+	Retry s3RetryConfig `mapstructure:"retry"`
 }
 
 // createMetadataStore creates a single metadata store instance.
@@ -160,7 +172,7 @@ func createS3ContentStore(
 	cfg ContentStoreConfig,
 ) (content.ContentStore, error) {
 	// Decode S3 configuration from YAML
-	var yamlCfg s3YAMLConfig
+	var yamlCfg s3Config
 	if err := mapstructure.Decode(cfg.S3, &yamlCfg); err != nil {
 		return nil, fmt.Errorf("invalid S3 config: %w", err)
 	}
@@ -186,6 +198,21 @@ func createS3ContentStore(
 		return nil, fmt.Errorf("failed to create S3 client: %w", err)
 	}
 
+	// Parse retry configuration durations
+	var initialBackoff, maxBackoff time.Duration
+	if yamlCfg.Retry.InitialBackoff != "" {
+		initialBackoff, err = time.ParseDuration(yamlCfg.Retry.InitialBackoff)
+		if err != nil {
+			return nil, fmt.Errorf("invalid retry.initial_backoff duration: %w", err)
+		}
+	}
+	if yamlCfg.Retry.MaxBackoff != "" {
+		maxBackoff, err = time.ParseDuration(yamlCfg.Retry.MaxBackoff)
+		if err != nil {
+			return nil, fmt.Errorf("invalid retry.max_backoff duration: %w", err)
+		}
+	}
+
 	// Build S3ContentStoreConfig
 	s3Cfg := s3.S3ContentStoreConfig{
 		Client:             client,
@@ -194,6 +221,12 @@ func createS3ContentStore(
 		PartSize:           yamlCfg.PartSize,
 		MaxParallelUploads: yamlCfg.MaxParallelUploads,
 		Metrics:            promMetrics.NewS3Metrics(), // Enable S3 metrics collection
+
+		// Retry configuration
+		MaxRetries:        yamlCfg.Retry.MaxRetries,
+		InitialBackoff:    initialBackoff,
+		MaxBackoff:        maxBackoff,
+		BackoffMultiplier: yamlCfg.Retry.BackoffMultiplier,
 	}
 
 	// Create S3 store

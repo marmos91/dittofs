@@ -33,8 +33,8 @@ import (
 //   - offset: Byte offset where writing begins
 //
 // Returns:
-//   - error: Returns error if offset is negative or context is cancelled
-func (s *MemoryContentStore) WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset int64) error {
+//   - error: Returns error if context is cancelled
+func (s *MemoryContentStore) WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset uint64) error {
 	// ========================================================================
 	// Step 1: Check context before acquiring lock
 	// ========================================================================
@@ -44,15 +44,7 @@ func (s *MemoryContentStore) WriteAt(ctx context.Context, id metadata.ContentID,
 	}
 
 	// ========================================================================
-	// Step 2: Validate offset
-	// ========================================================================
-
-	if offset < 0 {
-		return fmt.Errorf("offset %d: %w", offset, content.ErrInvalidOffset)
-	}
-
-	// ========================================================================
-	// Step 3: Acquire write lock and perform write
+	// Step 2: Acquire write lock and perform write
 	// ========================================================================
 
 	s.mu.Lock()

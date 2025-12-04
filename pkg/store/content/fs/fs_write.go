@@ -140,7 +140,7 @@ func (r *FSContentStore) WriteContent(ctx context.Context, id metadata.ContentID
 //
 // Returns:
 //   - error: Returns error if operation fails or context is cancelled
-func (r *FSContentStore) WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset int64) error {
+func (r *FSContentStore) WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset uint64) error {
 	// ========================================================================
 	// Step 1: Check context before filesystem operation
 	// ========================================================================
@@ -191,7 +191,7 @@ func (r *FSContentStore) WriteAt(ctx context.Context, id metadata.ContentID, dat
 		return err
 	}
 
-	_, err := file.Seek(offset, io.SeekStart)
+	_, err := file.Seek(int64(offset), io.SeekStart)
 	if err != nil {
 		return fmt.Errorf("failed to seek to offset: %w", err)
 	}

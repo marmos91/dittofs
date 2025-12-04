@@ -218,7 +218,7 @@ type ContentStore interface {
 	//	if err != nil {
 	//	    return nfs.NFS3ErrIO
 	//	}
-	WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset int64) error
+	WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset uint64) error
 
 	// Truncate changes the size of the content.
 	//
@@ -398,7 +398,7 @@ type ReadAtContentStore interface {
 	// Thread Safety:
 	//   - Safe for concurrent calls with different offsets
 	//   - Each call is independent
-	ReadAt(ctx context.Context, id metadata.ContentID, p []byte, offset int64) (n int, err error)
+	ReadAt(ctx context.Context, id metadata.ContentID, p []byte, offset uint64) (n int, err error)
 }
 
 // ============================================================================

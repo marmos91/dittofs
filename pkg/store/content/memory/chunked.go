@@ -55,7 +55,7 @@ func NewChunkedMemoryContentStore(ctx context.Context, pageSize int) (*ChunkedMe
 
 // WriteAt writes data to the content at the specified offset.
 // Only the pages touched by this write are allocated or modified.
-func (r *ChunkedMemoryContentStore) WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset int64) error {
+func (r *ChunkedMemoryContentStore) WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -80,14 +80,14 @@ func (r *ChunkedMemoryContentStore) WriteAt(ctx context.Context, id metadata.Con
 	defer file.mu.Unlock()
 
 	// Calculate the new size
-	endOffset := offset + int64(len(data))
-	if endOffset > file.size {
-		file.size = endOffset
+	endOffset := offset + uint64(len(data))
+	if int64(endOffset) > file.size {
+		file.size = int64(endOffset)
 	}
 
 	// Calculate page indices
-	startPage := int(offset / int64(r.pageSize))
-	endPage := int((endOffset - 1) / int64(r.pageSize))
+	startPage := int(offset / uint64(r.pageSize))
+	endPage := int((endOffset - 1) / uint64(r.pageSize))
 
 	// Ensure we have enough pages
 	requiredPages := endPage + 1
@@ -101,7 +101,7 @@ func (r *ChunkedMemoryContentStore) WriteAt(ctx context.Context, id metadata.Con
 	dataOffset := 0
 	for pageIdx := startPage; pageIdx <= endPage; pageIdx++ {
 		// Calculate offset within this page
-		pageOffset := int64(pageIdx) * int64(r.pageSize)
+		pageOffset := uint64(pageIdx) * uint64(r.pageSize)
 		startInPage := int(offset - pageOffset)
 		if pageIdx > startPage {
 			startInPage = 0

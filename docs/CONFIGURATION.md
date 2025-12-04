@@ -147,6 +147,13 @@ content:
         access_key_id: ""
         secret_access_key: ""
         part_size: 10485760  # 10MB
+        max_parallel_uploads: 4  # Concurrent part uploads
+        # Retry configuration for transient S3 errors (network, throttling, 5xx)
+        retry:
+          max_retries: 3           # Max retry attempts (default: 3)
+          initial_backoff: 100ms   # Initial backoff duration (default: 100ms)
+          max_backoff: 2s          # Max backoff duration (default: 2s)
+          backoff_multiplier: 2.0  # Exponential backoff multiplier (default: 2.0)
 
     # In-memory storage for caching/testing
     memory-cache:
@@ -164,6 +171,7 @@ content:
 > - **Streaming Multipart Uploads**: Automatic multipart uploads for large files (98% memory reduction)
 > - **Stats Caching**: Intelligent caching reduces expensive S3 ListObjects calls by 99%+
 > - **Metrics Support**: Optional instrumentation for Prometheus/observability
+> - **Configurable Retry**: Automatic retry with exponential backoff for transient S3 errors (network issues, throttling, 5xx errors)
 
 ### 5. Cache Configuration
 
