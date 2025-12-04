@@ -672,8 +672,7 @@ func (s *BadgerMetadataStore) Create(
 			newFile.ContentID = metadata.ContentID(contentID)
 
 			// Log ContentID generation for debugging
-			logger.Debug("Generated ContentID: file='%s' fullPath='%s' contentID='%s'",
-				name, fullPath, contentID)
+			logger.Debug("Generated ContentID", "name", name, "path", fullPath, "content_id", contentID)
 		} else {
 			newFile.ContentID = ""
 		}

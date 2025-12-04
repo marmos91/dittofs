@@ -104,7 +104,7 @@ func ExtractHandlerContext(
 	// Get auth body
 	authBody := call.GetAuthBody()
 	if len(authBody) == 0 {
-		logger.Warn("%s: AUTH_UNIX specified but auth body is empty", procedure)
+		logger.Warn("AUTH_UNIX specified but auth body is empty", "procedure", procedure)
 		return handlerCtx
 	}
 
@@ -113,13 +113,18 @@ func ExtractHandlerContext(
 	if err != nil {
 		// Log the parsing failure - this is unexpected and may indicate
 		// a protocol issue or malicious client
-		logger.Warn("%s: Failed to parse AUTH_UNIX credentials: %v", procedure, err)
+		logger.Warn("Failed to parse AUTH_UNIX credentials",
+			"procedure", procedure,
+			"error", err)
 		return handlerCtx
 	}
 
 	// Log successful auth parsing at debug level
-	logger.Debug("%s: Parsed Unix auth: uid=%d gid=%d ngids=%d",
-		procedure, unixAuth.UID, unixAuth.GID, len(unixAuth.GIDs))
+	logger.Debug("Parsed Unix auth",
+		"procedure", procedure,
+		"uid", unixAuth.UID,
+		"gid", unixAuth.GID,
+		"ngids", len(unixAuth.GIDs))
 
 	handlerCtx.UID = &unixAuth.UID
 	handlerCtx.GID = &unixAuth.GID

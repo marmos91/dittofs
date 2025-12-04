@@ -125,7 +125,7 @@ func (h *Handler) Export(
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
 	if ctx.isContextCancelled() {
-		logger.Debug("Export request cancelled before processing: error=%v", ctx.Context.Err())
+		logger.Debug("Export request cancelled before processing", "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
@@ -143,12 +143,12 @@ func (h *Handler) Export(
 		})
 	}
 
-	logger.Info("Export successful: returned %d export(s)", len(entries))
+	logger.Info("Export successful", "returned", len(entries))
 
 	// Log details at debug level
 	if len(entries) > 0 {
 		for _, entry := range entries {
-			logger.Debug("  Export: path=%s (world-exportable)", entry.Directory)
+			logger.Debug("Export", "path", entry.Directory, "access", "world-exportable")
 		}
 	}
 

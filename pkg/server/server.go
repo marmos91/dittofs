@@ -132,7 +132,7 @@ func (s *DittoServer) SetMetricsServer(metricsServer *metrics.Server) {
 	s.metricsServer = metricsServer
 
 	if metricsServer != nil {
-		logger.Info("Metrics server registered on port %d", metricsServer.Port())
+		logger.Info("Metrics server registered", "port", metricsServer.Port())
 	}
 }
 
@@ -281,14 +281,14 @@ func (s *DittoServer) serve(ctx context.Context) error {
 	copy(adapters, s.adapters)
 	s.mu.Unlock()
 
-	logger.Info("Starting DittoServer with %d adapter(s)", len(adapters))
+	logger.Info("Starting DittoServer", "adapters", len(adapters))
 
 	// Start metrics server if configured
 	metricsErrChan := make(chan error, 1)
 	if s.metricsServer != nil {
 		go func() {
 			if err := s.metricsServer.Start(ctx); err != nil {
-				logger.Error("Metrics server error: %v", err)
+				logger.Error("Metrics server error", "error", err)
 				metricsErrChan <- err
 			}
 		}()
@@ -311,36 +311,35 @@ func (s *DittoServer) serve(ctx context.Context) error {
 			protocol := a.Protocol()
 			port := a.Port()
 
-			logger.Info("Starting %s adapter on port %d", protocol, port)
+			logger.Info("Starting adapter", "protocol", protocol, "port", port)
 
 			if err := a.Serve(ctx); err != nil {
 				// Only log and report unexpected errors
 				// context.Canceled is expected during shutdown
 				if err != context.Canceled && ctx.Err() == nil {
-					logger.Error("%s adapter failed: %v", protocol, err)
+					logger.Error("Adapter failed", "protocol", protocol, "error", err)
 					errChan <- adapterError{protocol: protocol, err: err}
 				} else {
-					logger.Debug("%s adapter stopped gracefully", protocol)
+					logger.Debug("Adapter stopped gracefully", "protocol", protocol)
 				}
 			} else {
-				logger.Info("%s adapter stopped", protocol)
+				logger.Info("Adapter stopped", "protocol", protocol)
 			}
 		}(adp)
 	}
 
-	logger.Debug("All %d adapter(s) launched in %v", len(adapters), time.Since(startTime))
+	logger.Debug("All adapters launched", "count", len(adapters), "duration", time.Since(startTime))
 
 	// Wait for either context cancellation or adapter error
 	var shutdownErr error
 	select {
 	case <-ctx.Done():
-		logger.Info("Shutdown signal received (reason: %v)", ctx.Err())
+		logger.Info("Shutdown signal received", "reason", ctx.Err())
 		s.stopAllAdapters(adapters)
 		shutdownErr = ctx.Err()
 
 	case adapterErr := <-errChan:
-		logger.Error("Adapter %s failed: %v - initiating shutdown of all adapters",
-			adapterErr.protocol, adapterErr.err)
+		logger.Error("Adapter failed - initiating shutdown of all adapters", "protocol", adapterErr.protocol, "error", adapterErr.err)
 		s.stopAllAdapters(adapters)
 		shutdownErr = fmt.Errorf("%s adapter error: %w", adapterErr.protocol, adapterErr.err)
 	}
@@ -356,14 +355,14 @@ func (s *DittoServer) serve(ctx context.Context) error {
 	for _, storeName := range contentStores {
 		store, err := s.registry.GetContentStore(storeName)
 		if err != nil {
-			logger.Error("Failed to get content store %q during shutdown: %v", storeName, err)
+			logger.Error("Failed to get content store during shutdown", "store", storeName, "error", err)
 			continue
 		}
 
 		if closer, ok := store.(io.Closer); ok {
-			logger.Debug("Closing content store %q", storeName)
+			logger.Debug("Closing content store", "store", storeName)
 			if err := closer.Close(); err != nil {
-				logger.Error("Content store %q shutdown error: %v", storeName, err)
+				logger.Error("Content store shutdown error", "store", storeName, "error", err)
 			}
 		}
 	}
@@ -375,14 +374,14 @@ func (s *DittoServer) serve(ctx context.Context) error {
 	for _, storeName := range metadataStores {
 		store, err := s.registry.GetMetadataStore(storeName)
 		if err != nil {
-			logger.Error("Failed to get metadata store %q during shutdown: %v", storeName, err)
+			logger.Error("Failed to get metadata store during shutdown", "store", storeName, "error", err)
 			continue
 		}
 
 		if closer, ok := store.(io.Closer); ok {
-			logger.Debug("Closing metadata store %q", storeName)
+			logger.Debug("Closing metadata store", "store", storeName)
 			if err := closer.Close(); err != nil {
-				logger.Error("Metadata store %q shutdown error: %v", storeName, err)
+				logger.Error("Metadata store shutdown error", "store", storeName, "error", err)
 			}
 		}
 	}
@@ -394,7 +393,7 @@ func (s *DittoServer) serve(ctx context.Context) error {
 		defer metricsCancel()
 
 		if err := s.metricsServer.Stop(metricsCtx); err != nil {
-			logger.Error("Metrics server shutdown error: %v", err)
+			logger.Error("Metrics server shutdown error", "error", err)
 		}
 	}
 
@@ -426,7 +425,7 @@ func (s *DittoServer) stopAllAdapters(adapters []adapter.Adapter) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 	defer cancel()
 
-	logger.Info("Initiating graceful shutdown of %d adapter(s)", len(adapters))
+	logger.Info("Initiating graceful shutdown of adapters", "count", len(adapters))
 
 	// Stop adapters in reverse registration order
 	// This handles potential dependencies between adapters
@@ -434,15 +433,15 @@ func (s *DittoServer) stopAllAdapters(adapters []adapter.Adapter) {
 		adp := adapters[i]
 		protocol := adp.Protocol()
 
-		logger.Debug("Stopping %s adapter (port %d)", protocol, adp.Port())
+		logger.Debug("Stopping adapter", "protocol", protocol, "port", adp.Port())
 
 		// Call Stop() with timeout context
 		// We don't wait for Stop() to complete here - the adapter's Serve() goroutine
 		// will handle actual cleanup. Stop() just signals the adapter to begin shutdown.
 		if err := adp.Stop(ctx); err != nil && err != context.Canceled {
-			logger.Error("Error stopping %s adapter: %v", protocol, err)
+			logger.Error("Error stopping adapter", "protocol", protocol, "error", err)
 		} else {
-			logger.Debug("%s adapter stop signal sent", protocol)
+			logger.Debug("Adapter stop signal sent", "protocol", protocol)
 		}
 	}
 }

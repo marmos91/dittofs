@@ -174,8 +174,7 @@ func (s *S3ContentStore) ReadContent(ctx context.Context, id metadata.ContentID)
 	for attempt := 0; attempt <= int(s.retry.maxRetries); attempt++ {
 		if attempt > 0 {
 			backoff := s.calculateBackoff(attempt - 1)
-			logger.Debug("ReadContent: retrying after %v (attempt %d/%d): key=%s",
-				backoff, attempt, s.retry.maxRetries, key)
+			logger.Debug("ReadContent: retrying", "backoff", backoff, "attempt", attempt, "max_retries", s.retry.maxRetries, "key", key)
 
 			select {
 			case <-ctx.Done():
@@ -202,8 +201,7 @@ func (s *S3ContentStore) ReadContent(ctx context.Context, id metadata.ContentID)
 			break
 		}
 
-		logger.Debug("ReadContent: transient error (attempt %d/%d): key=%s error=%v",
-			attempt+1, s.retry.maxRetries+1, key, lastErr)
+		logger.Debug("ReadContent: transient error", "attempt", attempt+1, "max_retries", s.retry.maxRetries+1, "key", key, "error", lastErr)
 	}
 
 	if lastErr != nil {
@@ -279,8 +277,7 @@ func (s *S3ContentStore) ReadAt(
 	for attempt := 0; attempt <= int(s.retry.maxRetries); attempt++ {
 		if attempt > 0 {
 			backoff := s.calculateBackoff(attempt - 1)
-			logger.Debug("ReadAt: retrying after %v (attempt %d/%d): key=%s offset=%d",
-				backoff, attempt, s.retry.maxRetries, key, offset)
+			logger.Debug("ReadAt: retrying", "backoff", backoff, "attempt", attempt, "max_retries", s.retry.maxRetries, "key", key, "offset", offset)
 
 			select {
 			case <-ctx.Done():
@@ -312,8 +309,7 @@ func (s *S3ContentStore) ReadAt(
 			break
 		}
 
-		logger.Debug("ReadAt: transient error (attempt %d/%d): key=%s offset=%d error=%v",
-			attempt+1, s.retry.maxRetries+1, key, offset, lastErr)
+		logger.Debug("ReadAt: transient error", "attempt", attempt+1, "max_retries", s.retry.maxRetries+1, "key", key, "offset", offset, "error", lastErr)
 	}
 
 	if lastErr != nil {
@@ -372,8 +368,7 @@ func (s *S3ContentStore) GetContentSize(ctx context.Context, id metadata.Content
 	for attempt := 0; attempt <= int(s.retry.maxRetries); attempt++ {
 		if attempt > 0 {
 			backoff := s.calculateBackoff(attempt - 1)
-			logger.Debug("GetContentSize: retrying after %v (attempt %d/%d): key=%s",
-				backoff, attempt, s.retry.maxRetries, key)
+			logger.Debug("GetContentSize: retrying", "backoff", backoff, "attempt", attempt, "max_retries", s.retry.maxRetries, "key", key)
 
 			select {
 			case <-ctx.Done():
@@ -400,8 +395,7 @@ func (s *S3ContentStore) GetContentSize(ctx context.Context, id metadata.Content
 			break
 		}
 
-		logger.Debug("GetContentSize: transient error (attempt %d/%d): key=%s error=%v",
-			attempt+1, s.retry.maxRetries+1, key, lastErr)
+		logger.Debug("GetContentSize: transient error", "attempt", attempt+1, "max_retries", s.retry.maxRetries+1, "key", key, "error", lastErr)
 	}
 
 	if lastErr != nil {
@@ -452,8 +446,7 @@ func (s *S3ContentStore) ContentExists(ctx context.Context, id metadata.ContentI
 	for attempt := 0; attempt <= int(s.retry.maxRetries); attempt++ {
 		if attempt > 0 {
 			backoff := s.calculateBackoff(attempt - 1)
-			logger.Debug("ContentExists: retrying after %v (attempt %d/%d): key=%s",
-				backoff, attempt, s.retry.maxRetries, key)
+			logger.Debug("ContentExists: retrying", "backoff", backoff, "attempt", attempt, "max_retries", s.retry.maxRetries, "key", key)
 
 			select {
 			case <-ctx.Done():
@@ -480,8 +473,7 @@ func (s *S3ContentStore) ContentExists(ctx context.Context, id metadata.ContentI
 			break
 		}
 
-		logger.Debug("ContentExists: transient error (attempt %d/%d): key=%s error=%v",
-			attempt+1, s.retry.maxRetries+1, key, lastErr)
+		logger.Debug("ContentExists: transient error", "attempt", attempt+1, "max_retries", s.retry.maxRetries+1, "key", key, "error", lastErr)
 	}
 
 	return false, fmt.Errorf("failed to check object existence after %d attempts: %w", s.retry.maxRetries+1, lastErr)

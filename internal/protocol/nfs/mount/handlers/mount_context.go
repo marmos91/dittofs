@@ -95,7 +95,7 @@ func extractClientIP(addr string) string {
 // Example usage in a handler:
 //
 //	if isContextCancelled(ctx) {
-//	    logger.Debug("Operation cancelled: client=%s error=%v", ctx.ClientAddr, ctx.Context.Err())
+//	    logger.Debug("Operation cancelled", "client", ctx.ClientAddr, "error", ctx.Context.Err())
 //	    return &Response{Status: ErrorStatus}, ctx.Context.Err()
 //	}
 func (c *MountHandlerContext) isContextCancelled() bool {

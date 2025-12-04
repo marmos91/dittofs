@@ -206,16 +206,22 @@ func (h *Handler) Lookup(
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("LOOKUP: file='%s' dir=%x client=%s auth=%d",
-		req.Filename, req.DirHandle, clientIP, ctx.AuthFlavor)
+	logger.Info("LOOKUP",
+		"name", req.Filename,
+		"handle", fmt.Sprintf("%x", req.DirHandle),
+		"client", clientIP,
+		"auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
 	if ctx.isContextCancelled() {
-		logger.Warn("LOOKUP cancelled: file='%s' dir=%x client=%s error=%v",
-			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+		logger.Warn("LOOKUP cancelled",
+			"name", req.Filename,
+			"handle", fmt.Sprintf("%x", req.DirHandle),
+			"client", clientIP,
+			"error", ctx.Context.Err())
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -224,8 +230,10 @@ func (h *Handler) Lookup(
 	// ========================================================================
 
 	if err := validateLookupRequest(req); err != nil {
-		logger.Warn("LOOKUP validation failed: file='%s' client=%s error=%v",
-			req.Filename, clientIP, err)
+		logger.Warn("LOOKUP validation failed",
+			"name", req.Filename,
+			"client", clientIP,
+			"error", err)
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -235,12 +243,17 @@ func (h *Handler) Lookup(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("LOOKUP failed: %v dir=%x client=%s", err, req.DirHandle, clientIP)
+		logger.Warn("LOOKUP failed",
+			"error", err,
+			"handle", fmt.Sprintf("%x", req.DirHandle),
+			"client", clientIP)
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
-	logger.Debug("LOOKUP: share=%s file=%s", ctx.Share, req.Filename)
+	logger.Debug("LOOKUP",
+		"share", ctx.Share,
+		"name", req.Filename)
 
 	// ========================================================================
 	// Step 4: Verify directory handle exists and is valid
@@ -248,22 +261,29 @@ func (h *Handler) Lookup(
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
-		logger.Warn("LOOKUP cancelled before GetFile (dir): file='%s' dir=%x client=%s error=%v",
-			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+		logger.Warn("LOOKUP cancelled before GetFile (dir)",
+			"name", req.Filename,
+			"handle", fmt.Sprintf("%x", req.DirHandle),
+			"client", clientIP,
+			"error", ctx.Context.Err())
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	dirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
-		logger.Warn("LOOKUP failed: directory not found: dir=%x client=%s error=%v",
-			req.DirHandle, clientIP, err)
+		logger.Warn("LOOKUP failed: directory not found",
+			"handle", fmt.Sprintf("%x", req.DirHandle),
+			"client", clientIP,
+			"error", err)
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	// Verify parent is actually a directory
 	if dirFile.Type != metadata.FileTypeDirectory {
-		logger.Warn("LOOKUP failed: handle not a directory: dir=%x type=%d client=%s",
-			req.DirHandle, dirFile.Type, clientIP)
+		logger.Warn("LOOKUP failed: handle not a directory",
+			"handle", fmt.Sprintf("%x", req.DirHandle),
+			"type", dirFile.Type,
+			"client", clientIP)
 
 		// Include directory attributes even on error for cache consistency
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
@@ -282,13 +302,19 @@ func (h *Handler) Lookup(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("LOOKUP cancelled during auth context building: file='%s' dir=%x client=%s error=%v",
-				req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+			logger.Debug("LOOKUP cancelled during auth context building",
+				"name", req.Filename,
+				"handle", fmt.Sprintf("%x", req.DirHandle),
+				"client", clientIP,
+				"error", ctx.Context.Err())
 			return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 		}
 
-		logger.Error("LOOKUP failed: failed to build auth context: file='%s' dir=%x client=%s error=%v",
-			req.Filename, req.DirHandle, clientIP, err)
+		logger.Error("LOOKUP failed: failed to build auth context",
+			"name", req.Filename,
+			"handle", fmt.Sprintf("%x", req.DirHandle),
+			"client", clientIP,
+			"error", err)
 
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
@@ -309,8 +335,11 @@ func (h *Handler) Lookup(
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
-		logger.Warn("LOOKUP cancelled before Lookup: file='%s' dir=%x client=%s error=%v",
-			req.Filename, req.DirHandle, clientIP, ctx.Context.Err())
+		logger.Warn("LOOKUP cancelled before Lookup",
+			"name", req.Filename,
+			"handle", fmt.Sprintf("%x", req.DirHandle),
+			"client", clientIP,
+			"error", ctx.Context.Err())
 
 		// Include directory post-op attributes for cache consistency
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
@@ -323,8 +352,11 @@ func (h *Handler) Lookup(
 
 	childFile, err := metadataStore.Lookup(authCtx, dirHandle, req.Filename)
 	if err != nil {
-		logger.Debug("LOOKUP failed: child not found or access denied: file='%s' dir=%x client=%s error=%v",
-			req.Filename, req.DirHandle, clientIP, err)
+		logger.Debug("LOOKUP failed: child not found or access denied",
+			"name", req.Filename,
+			"handle", fmt.Sprintf("%x", req.DirHandle),
+			"client", clientIP,
+			"error", err)
 
 		// Map store errors to NFS status codes
 		status := mapMetadataErrorToNFS(err)
@@ -347,8 +379,11 @@ func (h *Handler) Lookup(
 	// Encode child file handle
 	childHandle, err := metadata.EncodeFileHandle(childFile)
 	if err != nil {
-		logger.Error("LOOKUP failed: cannot encode child handle: file='%s' dir=%x client=%s error=%v",
-			req.Filename, req.DirHandle, clientIP, err)
+		logger.Error("LOOKUP failed: cannot encode child handle",
+			"name", req.Filename,
+			"handle", fmt.Sprintf("%x", req.DirHandle),
+			"client", clientIP,
+			"error", err)
 
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
@@ -362,11 +397,17 @@ func (h *Handler) Lookup(
 	nfsChildAttr := h.convertFileAttrToNFS(childHandle, &childFile.FileAttr)
 	nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
-	logger.Info("LOOKUP successful: file='%s' handle=%x type=%d size=%d client=%s",
-		req.Filename, childHandle, nfsChildAttr.Type, childFile.Size, clientIP)
+	logger.Info("LOOKUP successful",
+		"name", req.Filename,
+		"handle", fmt.Sprintf("%x", childHandle),
+		"type", nfsChildAttr.Type,
+		"size", childFile.Size,
+		"client", clientIP)
 
-	logger.Debug("LOOKUP details: child_handle=%x child_mode=%o dir_handle=%x",
-		childHandle, childFile.Mode, dirHandle)
+	logger.Debug("LOOKUP details",
+		"child_handle", fmt.Sprintf("%x", childHandle),
+		"child_mode", fmt.Sprintf("%o", childFile.Mode),
+		"dir_handle", fmt.Sprintf("%x", dirHandle))
 
 	return &LookupResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -570,7 +611,9 @@ func DecodeLookupRequest(data []byte) (*LookupRequest, error) {
 		return nil, fmt.Errorf("failed to read filename data: %w", err)
 	}
 
-	logger.Debug("Decoded LOOKUP request: handle_len=%d filename='%s'", handleLen, string(filenameBytes))
+	logger.Debug("Decoded LOOKUP request",
+		"handle_len", handleLen,
+		"filename", string(filenameBytes))
 
 	return &LookupRequest{
 		DirHandle: dirHandle,
@@ -631,7 +674,8 @@ func (resp *LookupResponse) Encode() ([]byte, error) {
 	// ========================================================================
 
 	if resp.Status != types.NFS3OK {
-		logger.Debug("Encoding LOOKUP error response: status=%d", resp.Status)
+		logger.Debug("Encoding LOOKUP error response",
+			"status", resp.Status)
 
 		// Write post-op directory attributes (optional)
 		if err := xdr.EncodeOptionalFileAttr(&buf, resp.DirAttr); err != nil {
@@ -666,6 +710,8 @@ func (resp *LookupResponse) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("failed to encode directory attributes: %w", err)
 	}
 
-	logger.Debug("Encoded LOOKUP response: %d bytes status=%d", buf.Len(), resp.Status)
+	logger.Debug("Encoded LOOKUP response",
+		"bytes", buf.Len(),
+		"status", resp.Status)
 	return buf.Bytes(), nil
 }

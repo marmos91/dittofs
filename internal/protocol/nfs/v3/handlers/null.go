@@ -182,8 +182,7 @@ func (h *Handler) Null(
 	// avoid wasting resources on abandoned requests (e.g., during server shutdown,
 	// load balancer health check timeouts, or client disconnects).
 	if ctx.isContextCancelled() {
-		logger.Debug("NULL: request cancelled: client=%s error=%v",
-			ctx.ClientAddr, ctx.Context.Err())
+		logger.Debug("NULL: request cancelled", "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
@@ -199,7 +198,7 @@ func (h *Handler) Null(
 		}
 	}
 
-	logger.Info("NULL: client=%s auth=%d", clientIP, ctx.AuthFlavor)
+	logger.Info("NULL", "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Optional: store health check
@@ -208,7 +207,7 @@ func (h *Handler) Null(
 	// and shouldn't depend on any particular share. NULL must always succeed
 	// per RFC 1813 regardless of backend state.
 
-	logger.Debug("NULL: request completed successfully: client=%s", clientIP)
+	logger.Debug("NULL: request completed successfully", "client", clientIP)
 
 	// Return empty response - NULL always succeeds
 	return &NullResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3OK}}, nil
@@ -248,7 +247,7 @@ func DecodeNullRequest(data []byte) (*NullRequest, error) {
 	// NULL takes no arguments - data should be empty
 	// We accept empty or minimal data for compatibility
 	if len(data) > 0 {
-		logger.Debug("NULL: received non-empty request body (%d bytes), ignoring", len(data))
+		logger.Debug("NULL: received non-empty request body, ignoring", "bytes", len(data))
 	}
 
 	return &NullRequest{}, nil
@@ -286,6 +285,6 @@ func (resp *NullResponse) Encode() ([]byte, error) {
 	// NULL returns no data - return empty buffer
 	var buf bytes.Buffer
 
-	logger.Debug("Encoded NULL response: 0 bytes")
+	logger.Debug("Encoded NULL response", "bytes", 0)
 	return buf.Bytes(), nil
 }

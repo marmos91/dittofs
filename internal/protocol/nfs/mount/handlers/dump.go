@@ -120,14 +120,14 @@ type DumpEntry struct {
 func (h *Handler) Dump(ctx *MountHandlerContext, req *DumpRequest) (*DumpResponse, error) {
 	// Check for cancellation before starting any work
 	if ctx.isContextCancelled() {
-		logger.Debug("Dump request cancelled before processing: client=%s error=%v", ctx.ClientAddr, ctx.Context.Err())
+		logger.Debug("Dump request cancelled before processing", "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
 	// Extract client IP from address (remove port)
 	clientIP := extractClientIP(ctx.ClientAddr)
 
-	logger.Info("Dump request: client=%s", clientIP)
+	logger.Info("Dump request", "client_ip", clientIP)
 
 	// Get all mounts from registry
 	mounts := h.Registry.ListMounts()
@@ -141,12 +141,12 @@ func (h *Handler) Dump(ctx *MountHandlerContext, req *DumpRequest) (*DumpRespons
 		})
 	}
 
-	logger.Info("Dump successful: client=%s returned=%d active mount(s)", clientIP, len(entries))
+	logger.Info("Dump successful", "client_ip", clientIP, "returned", len(entries))
 
 	// Log details at debug level
 	if len(entries) > 0 {
 		for _, entry := range entries {
-			logger.Debug("  Active mount: client=%s share=%s", entry.Hostname, entry.Directory)
+			logger.Debug("Active mount", "client", entry.Hostname, "share", entry.Directory)
 		}
 	}
 

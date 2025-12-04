@@ -75,20 +75,19 @@ func (h *Handler) UmntAll(
 ) (*UmountAllResponse, error) {
 	// Check for cancellation before starting any work
 	if ctx.isContextCancelled() {
-		logger.Debug("Unmount-all request cancelled before processing: client=%s error=%v",
-			ctx.ClientAddr, ctx.Context.Err())
+		logger.Debug("Unmount-all request cancelled before processing", "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return &UmountAllResponse{MountResponseBase: MountResponseBase{Status: MountOK}}, ctx.Context.Err()
 	}
 
 	// Extract client IP from address (remove port)
 	clientIP := extractClientIP(ctx.ClientAddr)
 
-	logger.Info("Unmount-all request: client=%s", clientIP)
+	logger.Info("Unmount-all request", "client_ip", clientIP)
 
 	// Remove all mount records from the registry
 	count := h.Registry.RemoveAllMounts()
 
-	logger.Info("Unmount-all successful: client=%s removed=%d mount(s)", clientIP, count)
+	logger.Info("Unmount-all successful", "client_ip", clientIP, "removed", count)
 
 	// UMNTALL always returns void/success per RFC 1813
 	// Even if RemoveShareMount failed or was cancelled, we return success

@@ -53,7 +53,7 @@ func MapStoreErrorToNFSStatus(err error, clientIP string, operation string) uint
 	storeErr, ok := err.(*metadata.StoreError)
 	if !ok {
 		// Generic error: log and return I/O error
-		logger.Error("%s failed: %v client=%s", operation, err, clientIP)
+		logger.Error("Operation failed", "operation", operation, "error", err, "client", clientIP)
 		return types.NFS3ErrIO
 	}
 
@@ -61,78 +61,77 @@ func MapStoreErrorToNFSStatus(err error, clientIP string, operation string) uint
 	switch storeErr.Code {
 	case metadata.ErrNotFound:
 		// File or directory not found
-		logger.Warn("%s failed: %s client=%s", operation, storeErr.Message, clientIP)
+		logger.Warn("Operation failed", "operation", operation, "message", storeErr.Message, "client", clientIP)
 		return types.NFS3ErrNoEnt
 
 	case metadata.ErrAccessDenied, metadata.ErrPermissionDenied:
 		// Permission denied (share-level or file-level)
-		logger.Warn("%s failed: %s client=%s", operation, storeErr.Message, clientIP)
+		logger.Warn("Operation failed", "operation", operation, "message", storeErr.Message, "client", clientIP)
 		return types.NFS3ErrAcces
 
 	case metadata.ErrAuthRequired:
 		// Authentication required (map to access denied for NFS)
-		logger.Warn("%s failed: authentication required client=%s", operation, clientIP)
+		logger.Warn("Operation failed: authentication required", "operation", operation, "client", clientIP)
 		return types.NFS3ErrAcces
 
 	case metadata.ErrNotDirectory:
 		// Attempting to create/lookup within a non-directory
-		logger.Warn("%s failed: not a directory client=%s", operation, clientIP)
+		logger.Warn("Operation failed: not a directory", "operation", operation, "client", clientIP)
 		return types.NFS3ErrNotDir
 
 	case metadata.ErrIsDirectory:
 		// Attempting to remove a directory with REMOVE instead of RMDIR
-		logger.Warn("%s failed: is a directory client=%s", operation, clientIP)
+		logger.Warn("Operation failed: is a directory", "operation", operation, "client", clientIP)
 		return types.NFS3ErrIsDir
 
 	case metadata.ErrAlreadyExists:
 		// File or directory already exists
-		logger.Warn("%s failed: already exists client=%s", operation, clientIP)
+		logger.Warn("Operation failed: already exists", "operation", operation, "client", clientIP)
 		return types.NFS3ErrExist
 
 	case metadata.ErrNotEmpty:
 		// Directory not empty (cannot remove)
-		logger.Warn("%s failed: directory not empty client=%s", operation, clientIP)
+		logger.Warn("Operation failed: directory not empty", "operation", operation, "client", clientIP)
 		return types.NFS3ErrNotEmpty
 
 	case metadata.ErrNoSpace:
 		// No space left on device
-		logger.Error("%s failed: no space left client=%s", operation, clientIP)
+		logger.Error("Operation failed: no space left", "operation", operation, "client", clientIP)
 		return types.NFS3ErrNoSpc
 
 	case metadata.ErrReadOnly:
 		// Read-only filesystem
-		logger.Warn("%s failed: read-only filesystem client=%s", operation, clientIP)
+		logger.Warn("Operation failed: read-only filesystem", "operation", operation, "client", clientIP)
 		return types.NFS3ErrRofs
 
 	case metadata.ErrStaleHandle:
 		// Stale file handle
-		logger.Warn("%s failed: stale handle client=%s", operation, clientIP)
+		logger.Warn("Operation failed: stale handle", "operation", operation, "client", clientIP)
 		return types.NFS3ErrStale
 
 	case metadata.ErrInvalidHandle:
 		// Invalid file handle
-		logger.Warn("%s failed: invalid handle client=%s", operation, clientIP)
+		logger.Warn("Operation failed: invalid handle", "operation", operation, "client", clientIP)
 		return types.NFS3ErrBadHandle
 
 	case metadata.ErrNotSupported:
 		// Operation not supported
-		logger.Warn("%s failed: not supported client=%s", operation, clientIP)
+		logger.Warn("Operation failed: not supported", "operation", operation, "client", clientIP)
 		return types.NFS3ErrNotSupp
 
 	case metadata.ErrInvalidArgument:
 		// Invalid argument (map to I/O error or INVAL depending on NFS version)
-		logger.Warn("%s failed: invalid argument client=%s", operation, clientIP)
+		logger.Warn("Operation failed: invalid argument", "operation", operation, "client", clientIP)
 		return types.NFS3ErrIO
 
 	case metadata.ErrIOError:
 		// Generic I/O error
-		logger.Error("%s failed: I/O error: %s client=%s", operation, storeErr.Message, clientIP)
+		logger.Error("Operation failed: I/O error", "operation", operation, "message", storeErr.Message, "client", clientIP)
 		return types.NFS3ErrIO
 
 	default:
 		// Unknown error code
-		logger.Error("%s failed: unknown error code %d: %s client=%s",
-			operation, storeErr.Code, storeErr.Message, clientIP)
+		logger.Error("Operation failed: unknown error code", "operation", operation, "code", storeErr.Code, "message", storeErr.Message, "client", clientIP)
 		return types.NFS3ErrIO
 	}
 }
