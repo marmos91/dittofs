@@ -7,6 +7,7 @@ package s3
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -73,6 +74,12 @@ func (s *S3ContentStore) WriteContent(
 //   - WriteContent for full file replacement
 //   - IncrementalWriteStore for streaming uploads
 //
+// Thread Safety:
+// Concurrent WriteAt calls on the same object are serialized using per-object
+// locks to prevent race conditions. Without this, concurrent writes would race:
+// each goroutine reads the current state, modifies it, and uploads - the last
+// upload wins, losing changes from other goroutines.
+//
 // Retry Behavior:
 // Transient errors are retried with exponential backoff.
 //
@@ -110,12 +117,21 @@ func (s *S3ContentStore) WriteAt(
 		return nil
 	}
 
+	// Acquire per-object lock to serialize concurrent writes to the same object.
+	// This prevents the read-modify-write race condition where concurrent writers
+	// would each read the same initial state, modify it independently, and then
+	// upload - with the last upload overwriting all previous changes.
+	lock := s.getObjectLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+
 	key := s.getObjectKey(id)
 
 	// Check if object exists and get current size
 	currentSize, err := s.GetContentSize(ctx, id)
 	if err != nil {
-		if isNotFoundError(err) {
+		// Check for both S3-specific not found errors and the wrapped content.ErrContentNotFound
+		if isNotFoundError(err) || errors.Is(err, content.ErrContentNotFound) {
 			// Object doesn't exist - create new content with data at offset
 			// Fill with zeros up to offset, then append data
 			newSize := offset + uint64(len(data))
@@ -141,8 +157,7 @@ func (s *S3ContentStore) WriteAt(
 	for attempt := 0; attempt <= int(s.retry.maxRetries); attempt++ {
 		if attempt > 0 {
 			backoff := s.calculateBackoff(attempt - 1)
-			logger.Debug("WriteAt: retrying download after %v (attempt %d/%d): key=%s",
-				backoff, attempt, s.retry.maxRetries, key)
+			logger.Debug("WriteAt: retrying download", "backoff", backoff, "attempt", attempt, "max_retries", s.retry.maxRetries, "key", key)
 
 			select {
 			case <-ctx.Done():
@@ -191,8 +206,7 @@ func (s *S3ContentStore) writeContentWithRetry(ctx context.Context, key string, 
 	for attempt := 0; attempt <= int(s.retry.maxRetries); attempt++ {
 		if attempt > 0 {
 			backoff := s.calculateBackoff(attempt - 1)
-			logger.Debug("writeContentWithRetry: retrying after %v (attempt %d/%d): key=%s",
-				backoff, attempt, s.retry.maxRetries, key)
+			logger.Debug("writeContentWithRetry: retrying", "backoff", backoff, "attempt", attempt, "max_retries", s.retry.maxRetries, "key", key)
 
 			select {
 			case <-ctx.Done():
@@ -218,8 +232,7 @@ func (s *S3ContentStore) writeContentWithRetry(ctx context.Context, key string, 
 			break
 		}
 
-		logger.Debug("writeContentWithRetry: transient error (attempt %d/%d): key=%s error=%v",
-			attempt+1, s.retry.maxRetries+1, key, lastErr)
+		logger.Debug("writeContentWithRetry: transient error", "attempt", attempt+1, "max_retries", s.retry.maxRetries+1, "key", key, "error", lastErr)
 	}
 
 	return fmt.Errorf("failed to write content to S3 after %d attempts: %w", s.retry.maxRetries+1, lastErr)
@@ -235,6 +248,10 @@ func (s *S3ContentStore) writeContentWithRetry(ctx context.Context, key string, 
 // WARNING: Extending large files is memory-intensive as the entire new
 // content must be held in memory. Consider using sparse file semantics
 // in metadata for very large extensions.
+//
+// Thread Safety:
+// Concurrent Truncate calls on the same object are serialized using per-object
+// locks to prevent race conditions during read-modify-write operations.
 //
 // Retry Behavior:
 // Transient errors are retried with exponential backoff.
@@ -264,6 +281,12 @@ func (s *S3ContentStore) Truncate(
 	if err = ctx.Err(); err != nil {
 		return err
 	}
+
+	// Acquire per-object lock to serialize concurrent truncate operations.
+	// This prevents race conditions during read-modify-write.
+	lock := s.getObjectLock(id)
+	lock.Lock()
+	defer lock.Unlock()
 
 	key := s.getObjectKey(id)
 
@@ -296,8 +319,7 @@ func (s *S3ContentStore) Truncate(
 		for attempt := 0; attempt <= int(s.retry.maxRetries); attempt++ {
 			if attempt > 0 {
 				backoff := s.calculateBackoff(attempt - 1)
-				logger.Debug("Truncate: retrying range GET after %v (attempt %d/%d): key=%s",
-					backoff, attempt, s.retry.maxRetries, key)
+				logger.Debug("Truncate: retrying range GET", "backoff", backoff, "attempt", attempt, "max_retries", s.retry.maxRetries, "key", key)
 
 				select {
 				case <-ctx.Done():
@@ -345,8 +367,7 @@ func (s *S3ContentStore) Truncate(
 	for attempt := 0; attempt <= int(s.retry.maxRetries); attempt++ {
 		if attempt > 0 {
 			backoff := s.calculateBackoff(attempt - 1)
-			logger.Debug("Truncate: retrying GET after %v (attempt %d/%d): key=%s",
-				backoff, attempt, s.retry.maxRetries, key)
+			logger.Debug("Truncate: retrying GET", "backoff", backoff, "attempt", attempt, "max_retries", s.retry.maxRetries, "key", key)
 
 			select {
 			case <-ctx.Done():

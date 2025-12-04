@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/marmos91/dittofs/pkg/cache"
+	memorycache "github.com/marmos91/dittofs/pkg/cache/memory"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	contentfs "github.com/marmos91/dittofs/pkg/store/content/fs"
 	contentmemory "github.com/marmos91/dittofs/pkg/store/content/memory"
@@ -47,6 +49,7 @@ type TestConfig struct {
 	MetadataStore MetadataStoreType
 	ContentStore  ContentStoreType
 	ShareName     string
+	UseCache      bool // Enable cache layer (recommended for S3 with large files)
 
 	// S3-specific fields (set by localstack setup)
 	s3Client *s3.Client
@@ -55,7 +58,20 @@ type TestConfig struct {
 
 // String returns a string representation of the configuration
 func (tc *TestConfig) String() string {
+	if tc.UseCache {
+		return fmt.Sprintf("%s/%s-cached", tc.MetadataStore, tc.ContentStore)
+	}
 	return fmt.Sprintf("%s/%s", tc.MetadataStore, tc.ContentStore)
+}
+
+// CreateCache creates a memory cache if UseCache is enabled.
+// Returns nil if caching is not enabled.
+func (tc *TestConfig) CreateCache() cache.Cache {
+	if !tc.UseCache {
+		return nil
+	}
+	// 256MB cache - enough for large file tests
+	return memorycache.NewMemoryCache(256*1024*1024, nil)
 }
 
 // CreateMetadataStore creates a metadata store based on the configuration
@@ -130,6 +146,10 @@ func (tc *TestConfig) CreateContentStore(ctx context.Context, testCtx TestContex
 // AllConfigurations returns all test configurations to run, including S3.
 // S3 tests require Localstack to be running (use run-e2e.sh --s3).
 // Use LocalConfigurations() to run only non-S3 tests.
+//
+// Note: S3 tests without cache are included for testing fallback behavior
+// with small files. For large file tests (>5MB), use S3CachedConfigurations()
+// which enables the cache layer for efficient writes.
 func AllConfigurations() []*TestConfig {
 	return []*TestConfig{
 		// Local backends (no external dependencies)
@@ -151,7 +171,8 @@ func AllConfigurations() []*TestConfig {
 			ContentStore:  ContentFilesystem,
 			ShareName:     "/export",
 		},
-		// S3 backends (requires Localstack)
+		// S3 backends without cache (requires Localstack)
+		// Good for testing small files and verifying fallback behavior
 		{
 			Name:          "memory-s3",
 			MetadataStore: MetadataMemory,
@@ -163,6 +184,22 @@ func AllConfigurations() []*TestConfig {
 			MetadataStore: MetadataBadger,
 			ContentStore:  ContentS3,
 			ShareName:     "/export",
+		},
+		// S3 backends with cache (requires Localstack)
+		// Recommended for large file tests (10MB+) to avoid timeout
+		{
+			Name:          "memory-s3-cached",
+			MetadataStore: MetadataMemory,
+			ContentStore:  ContentS3,
+			ShareName:     "/export",
+			UseCache:      true,
+		},
+		{
+			Name:          "badger-s3-cached",
+			MetadataStore: MetadataBadger,
+			ContentStore:  ContentS3,
+			ShareName:     "/export",
+			UseCache:      true,
 		},
 	}
 }
@@ -192,7 +229,8 @@ func LocalConfigurations() []*TestConfig {
 	}
 }
 
-// S3Configurations returns only S3 configurations (requires Localstack).
+// S3Configurations returns S3 configurations without cache (requires Localstack).
+// Use for small file tests where fallback behavior should be tested.
 func S3Configurations() []*TestConfig {
 	return []*TestConfig{
 		{
@@ -208,6 +246,32 @@ func S3Configurations() []*TestConfig {
 			ShareName:     "/export",
 		},
 	}
+}
+
+// S3CachedConfigurations returns S3 configurations with cache enabled (requires Localstack).
+// Use for large file tests (10MB+) where cache is necessary for efficient writes.
+func S3CachedConfigurations() []*TestConfig {
+	return []*TestConfig{
+		{
+			Name:          "memory-s3-cached",
+			MetadataStore: MetadataMemory,
+			ContentStore:  ContentS3,
+			ShareName:     "/export",
+			UseCache:      true,
+		},
+		{
+			Name:          "badger-s3-cached",
+			MetadataStore: MetadataBadger,
+			ContentStore:  ContentS3,
+			ShareName:     "/export",
+			UseCache:      true,
+		},
+	}
+}
+
+// AllS3Configurations returns all S3 configurations (both with and without cache).
+func AllS3Configurations() []*TestConfig {
+	return append(S3Configurations(), S3CachedConfigurations()...)
 }
 
 // GetConfiguration returns a specific configuration by name
