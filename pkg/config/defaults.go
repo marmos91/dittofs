@@ -20,6 +20,7 @@ import (
 //   - Store-specific defaults are handled by store implementations
 func ApplyDefaults(cfg *Config) {
 	applyLoggingDefaults(&cfg.Logging)
+	applyTelemetryDefaults(&cfg.Telemetry)
 	applyServerDefaults(&cfg.Server)
 	applyMetadataDefaults(&cfg.Metadata)
 	applyContentDefaults(&cfg.Content)
@@ -48,6 +49,28 @@ func applyLoggingDefaults(cfg *LoggingConfig) {
 	}
 	if cfg.Output == "" {
 		cfg.Output = "stdout"
+	}
+}
+
+// applyTelemetryDefaults sets OpenTelemetry defaults.
+func applyTelemetryDefaults(cfg *TelemetryConfig) {
+	// Enabled defaults to false (opt-in for telemetry)
+	// No need to set, zero value is false
+
+	// Default endpoint is localhost:4317 (standard OTLP gRPC port)
+	if cfg.Endpoint == "" {
+		cfg.Endpoint = "localhost:4317"
+	}
+
+	// Default to insecure for local development
+	// Note: Insecure defaults to true only if telemetry is enabled and not explicitly set
+	// Since bool zero value is false, we need to handle this differently if we want true default
+	// For safety, we leave Insecure as false by default (require TLS)
+	// Users must explicitly set insecure: true for non-TLS connections
+
+	// Default sample rate is 1.0 (sample all traces)
+	if cfg.SampleRate == 0 {
+		cfg.SampleRate = 1.0
 	}
 }
 
