@@ -259,7 +259,7 @@ func (s *BadgerMetadataStore) RemoveFile(
 		return nil, err
 	}
 
-	logger.Debug("REMOVE succeeded: name=%s parent_handle=%s file_handle=%s", name, parentHandle, removedHandle)
+	logger.Debug("REMOVE succeeded", "name", name, "parent_handle", parentHandle, "file_handle", removedHandle)
 
 	return returnFile, nil
 }
@@ -346,8 +346,7 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 
 		// Decide whether to retry
 		if attempt < maxAttempts && shouldRetry && childCount > 0 && childCount <= maxRetryChildren {
-			logger.Debug("RMDIR retry: directory has %d children, waiting %v before retry (attempt %d/%d)",
-				childCount, retryDelay, attempt, maxAttempts)
+			logger.Debug("RMDIR retry: directory has children", "children_count", childCount, "wait", retryDelay, "attempt", attempt, "max_retries", maxAttempts)
 
 			// Release lock during wait to allow other operations to complete
 
@@ -369,7 +368,7 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 		return err
 	}
 
-	logger.Debug("RMDIR succeeded: name=%s parent_handle=%s dir_handle=%s", name, parentHandle, removedHandle)
+	logger.Debug("RMDIR succeeded", "name", name, "parent_handle", parentHandle, "dir_handle", removedHandle)
 
 	return nil
 }
@@ -514,8 +513,7 @@ func (s *BadgerMetadataStore) attemptRemoveDirectory(
 			// Capture for return value
 			childCountCapture = childCount
 
-			logger.Warn("RMDIR attempt failed - directory not empty: name=%s handle=%s children_count=%d children_sample=%v",
-				name, dirHandle, childCount, childNames)
+			logger.Warn("RMDIR attempt failed - directory not empty", "name", name, "handle", dirHandle, "children_count", childCount, "children_sample", childNames)
 
 			return &metadata.StoreError{
 				Code:    metadata.ErrNotEmpty,

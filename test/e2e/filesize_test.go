@@ -145,6 +145,9 @@ func TestDeleteFilesBySize(t *testing.T) {
 func testCreateFileOfSize(t *testing.T, tc *TestContext, size FileSize) {
 	t.Helper()
 
+	// Skip large file tests on S3 without cache
+	skipIfS3WithoutCache(t, tc, size.Bytes)
+
 	filePath := tc.Path(fmt.Sprintf("file_%s.bin", size.Name))
 
 	// Generate random data
@@ -174,6 +177,9 @@ func testCreateFileOfSize(t *testing.T, tc *TestContext, size FileSize) {
 // testCreateMultipleFilesOfSize creates multiple files of the specified size
 func testCreateMultipleFilesOfSize(t *testing.T, tc *TestContext, size FileSize, count int) {
 	t.Helper()
+
+	// Skip large file tests on S3 without cache
+	skipIfS3WithoutCache(t, tc, size.Bytes)
 
 	basePath := tc.Path(fmt.Sprintf("files_%s", size.Name))
 
@@ -214,6 +220,9 @@ func testCreateMultipleFilesOfSize(t *testing.T, tc *TestContext, size FileSize,
 func testReadFileOfSize(t *testing.T, tc *TestContext, size FileSize) {
 	t.Helper()
 
+	// Skip large file tests on S3 without cache
+	skipIfS3WithoutCache(t, tc, size.Bytes)
+
 	filePath := tc.Path(fmt.Sprintf("read_%s.bin", size.Name))
 
 	// Generate random data
@@ -244,6 +253,9 @@ func testReadFileOfSize(t *testing.T, tc *TestContext, size FileSize) {
 // testWriteThenReadFileOfSize creates, writes, and reads a file
 func testWriteThenReadFileOfSize(t *testing.T, tc *TestContext, size FileSize) {
 	t.Helper()
+
+	// Skip large file tests on S3 without cache
+	skipIfS3WithoutCache(t, tc, size.Bytes)
 
 	filePath := tc.Path(fmt.Sprintf("write_read_%s.bin", size.Name))
 
@@ -281,6 +293,9 @@ func testWriteThenReadFileOfSize(t *testing.T, tc *TestContext, size FileSize) {
 func testOverwriteFileOfSize(t *testing.T, tc *TestContext, size FileSize) {
 	t.Helper()
 
+	// Skip large file tests on S3 without cache
+	skipIfS3WithoutCache(t, tc, size.Bytes)
+
 	filePath := tc.Path(fmt.Sprintf("overwrite_%s.bin", size.Name))
 
 	// Write initial data
@@ -317,6 +332,9 @@ func testOverwriteFileOfSize(t *testing.T, tc *TestContext, size FileSize) {
 // testDeleteFileOfSize creates and deletes a file of the specified size
 func testDeleteFileOfSize(t *testing.T, tc *TestContext, size FileSize) {
 	t.Helper()
+
+	// Skip large file tests on S3 without cache
+	skipIfS3WithoutCache(t, tc, size.Bytes)
 
 	filePath := tc.Path(fmt.Sprintf("delete_%s.bin", size.Name))
 

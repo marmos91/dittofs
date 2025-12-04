@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"sync"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
@@ -265,16 +264,14 @@ func (h *Handler) Commit(
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("COMMIT: handle=%x offset=%d count=%d client=%s auth=%d",
-		req.Handle, req.Offset, req.Count, clientIP, ctx.AuthFlavor)
+	logger.Info("COMMIT", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
 	if ctx.isContextCancelled() {
-		logger.Warn("COMMIT cancelled: handle=%x offset=%d count=%d client=%s error=%v",
-			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
+		logger.Warn("COMMIT cancelled", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -283,8 +280,7 @@ func (h *Handler) Commit(
 	// ========================================================================
 
 	if err := validateCommitRequest(req); err != nil {
-		logger.Warn("COMMIT validation failed: handle=%x offset=%d count=%d client=%s error=%v",
-			req.Handle, req.Offset, req.Count, clientIP, err)
+		logger.Warn("COMMIT validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", err)
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -294,7 +290,7 @@ func (h *Handler) Commit(
 
 	store, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("COMMIT failed: %v handle=%x client=%s", err, req.Handle, clientIP)
+		logger.Warn("COMMIT failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
@@ -306,15 +302,13 @@ func (h *Handler) Commit(
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
-		logger.Warn("COMMIT cancelled before GetFile: handle=%x client=%s error=%v",
-			req.Handle, clientIP, ctx.Context.Err())
+		logger.Warn("COMMIT cancelled before GetFile", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", ctx.Context.Err())
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	file, err := store.GetFile(ctx.Context, handle)
 	if err != nil {
-		logger.Warn("COMMIT failed: file not found: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
+		logger.Warn("COMMIT failed: file not found", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", err)
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
@@ -323,8 +317,7 @@ func (h *Handler) Commit(
 
 	// Verify this is not a directory
 	if file.Type == metadata.FileTypeDirectory {
-		logger.Warn("COMMIT failed: handle is a directory: handle=%x client=%s",
-			req.Handle, clientIP)
+		logger.Warn("COMMIT failed: handle is a directory", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 
 		wccAfter := h.convertFileAttrToNFS(handle, &file.FileAttr)
 
@@ -341,8 +334,7 @@ func (h *Handler) Commit(
 
 	// Check context before potentially long flush operation
 	if ctx.isContextCancelled() {
-		logger.Warn("COMMIT cancelled before flush: handle=%x offset=%d count=%d client=%s error=%v",
-			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
+		logger.Warn("COMMIT cancelled before flush", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
 
 		// Get updated attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
@@ -366,8 +358,7 @@ func (h *Handler) Commit(
 	if cache == nil {
 		// Sync mode: data was written directly to content store, nothing to flush
 		logger.Debug("COMMIT: sync mode (no cache), returning success")
-		logger.Info("COMMIT successful: handle=%x offset=%d count=%d client=%s (sync mode)",
-			req.Handle, req.Offset, req.Count, clientIP)
+		logger.Info("COMMIT successful (sync mode)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
 		return &CommitResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 			AttrBefore:      wccBefore,
@@ -379,8 +370,7 @@ func (h *Handler) Commit(
 	// Async mode: check if there's data to flush
 	if cache.Size(file.ContentID) == 0 {
 		logger.Debug("COMMIT: no data in cache, returning success")
-		logger.Info("COMMIT successful: handle=%x offset=%d count=%d client=%s (empty cache)",
-			req.Handle, req.Offset, req.Count, clientIP)
+		logger.Info("COMMIT successful (empty cache)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
 		return &CommitResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 			AttrBefore:      wccBefore,
@@ -390,20 +380,18 @@ func (h *Handler) Commit(
 	}
 
 	// Flush cache to content store
-	logger.Info("COMMIT: flushing cache to content store for share=%s", ctx.Share)
+	logger.Info("COMMIT: flushing cache to content store", "share", ctx.Share)
 
 	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
 	if err != nil {
-		logger.Error("COMMIT failed: cannot get content store: share=%s handle=%x client=%s error=%v",
-			ctx.Share, req.Handle, clientIP, err)
+		logger.Error("COMMIT failed: cannot get content store", "share", ctx.Share, "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", err)
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// Flush cache to content store
 	flushErr := flushCacheToContentStore(ctx, h, cache, contentStore, file, req)
 	if flushErr != nil {
-		logger.Error("COMMIT failed: flush error: handle=%x content_id=%s client=%s error=%v",
-			req.Handle, file.ContentID, clientIP, flushErr)
+		logger.Error("COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "content_id", file.ContentID, "client", clientIP, "error", flushErr)
 
 		// Try to get updated attributes for error response
 		if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
@@ -420,14 +408,12 @@ func (h *Handler) Commit(
 	// Get updated file attributes for WCC data (file may have changed after flush)
 	if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
 		wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
-		logger.Debug("COMMIT details: file_size=%d file_type=%d", updatedFile.Size, wccAfter.Type)
+		logger.Debug("COMMIT details", "file_size", updatedFile.Size, "file_type", wccAfter.Type)
 	} else {
-		logger.Warn("COMMIT: successful but cannot get updated file attributes: handle=%x error=%v",
-			req.Handle, getErr)
+		logger.Warn("COMMIT: successful but cannot get updated file attributes", "handle", fmt.Sprintf("0x%x", req.Handle), "error", getErr)
 	}
 
-	logger.Info("COMMIT successful: file=%s offset=%d count=%d client=%s",
-		file.ContentID, req.Offset, req.Count, clientIP)
+	logger.Info("COMMIT successful", "file", file.ContentID, "offset", req.Offset, "count", req.Count, "client", clientIP)
 	return &CommitResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 		AttrBefore:      wccBefore,
@@ -477,14 +463,14 @@ func flushCacheToContentStore(
 		// when the file becomes idle (no more writes for flush_timeout duration)
 		c.SetState(contentID, cache.StateUploading)
 
-		logger.Info("COMMIT: flushed %d bytes incrementally: content_id=%s", flushed, contentID)
+		logger.Info("COMMIT: flushed incrementally", "bytes", flushed, "content_id", contentID)
 		return nil
 	}
 
 	// WriteAt-capable store (filesystem, memory): write only new bytes
 	bytesToFlush := cacheSize - flushedOffset
 	if bytesToFlush <= 0 {
-		logger.Info("COMMIT: flushed 0 bytes (already up to date): content_id=%s", contentID)
+		logger.Info("COMMIT: flushed (already up to date)", "bytes", 0, "content_id", contentID)
 		return nil
 	}
 
@@ -504,7 +490,7 @@ func flushCacheToContentStore(
 	// Transition to StateUploading so the background flusher can finalize
 	c.SetState(contentID, cache.StateUploading)
 
-	logger.Info("COMMIT: flushed %d bytes at offset %d: content_id=%s", n, flushedOffset, contentID)
+	logger.Info("COMMIT: flushed", "bytes", n, "offset", flushedOffset, "content_id", contentID)
 
 	return nil
 }
@@ -664,49 +650,13 @@ func DecodeCommitRequest(data []byte) (*CommitRequest, error) {
 		return nil, fmt.Errorf("failed to read count: %w", err)
 	}
 
-	logger.Debug("Decoded COMMIT request: handle_len=%d offset=%d count=%d",
-		handleLen, offset, count)
+	logger.Debug("Decoded COMMIT request", "handle_len", handleLen, "offset", offset, "count", count)
 
 	return &CommitRequest{
 		Handle: handle,
 		Offset: offset,
 		Count:  count,
 	}, nil
-}
-
-// ============================================================================
-// Per-File Locking (Race Condition Prevention)
-// ============================================================================
-
-// acquireFileLock obtains a per-ContentID mutex to serialize COMMIT operations
-// on the same file. This prevents race conditions when multiple concurrent
-// COMMIT operations target the same file (e.g., due to parallel NFS requests).
-//
-// The lock is stored in h.fileLocks and must be released by calling releaseFileLock.
-//
-// Parameters:
-//   - id: Content identifier to lock
-//
-// Returns:
-//   - *sync.Mutex: The acquired lock (caller must unlock when done)
-func (h *Handler) acquireFileLock(id metadata.ContentID) *sync.Mutex {
-	// Get or create mutex for this content ID
-	value, _ := h.fileLocks.LoadOrStore(id, &sync.Mutex{})
-	mu := value.(*sync.Mutex)
-	mu.Lock()
-	return mu
-}
-
-// releaseFileLock releases a per-ContentID mutex after COMMIT operations complete.
-//
-// This allows other concurrent COMMIT operations for the same file to proceed.
-// The mutex is kept in the map for future operations (not deleted) to avoid
-// allocation overhead.
-//
-// Parameters:
-//   - mu: The mutex to unlock (obtained from acquireFileLock)
-func (h *Handler) releaseFileLock(mu *sync.Mutex) {
-	mu.Unlock()
 }
 
 // ============================================================================
@@ -775,6 +725,6 @@ func (resp *CommitResponse) Encode() ([]byte, error) {
 		}
 	}
 
-	logger.Debug("Encoded COMMIT response: %d bytes status=%d", buf.Len(), resp.Status)
+	logger.Debug("Encoded COMMIT response", "bytes", buf.Len(), "status", resp.Status)
 	return buf.Bytes(), nil
 }

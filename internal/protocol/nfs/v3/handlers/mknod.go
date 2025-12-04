@@ -244,8 +244,7 @@ func (h *Handler) Mknod(
 	// before we start processing. While MKNOD is typically fast (metadata only),
 	// we should still respect cancellation to avoid wasted work.
 	if ctx.isContextCancelled() {
-		logger.Debug("MKNOD: request cancelled at entry: name='%s' dir=%x client=%s error=%v",
-			req.Name, req.DirHandle, ctx.ClientAddr, ctx.Context.Err())
+		logger.Debug("MKNOD: request cancelled at entry", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
@@ -257,16 +256,14 @@ func (h *Handler) Mknod(
 		mode = *req.Attr.Mode
 	}
 
-	logger.Info("MKNOD: name='%s' type=%s dir=%x mode=%o client=%s auth=%d",
-		req.Name, specialFileTypeName(req.Type), req.DirHandle, mode, clientIP, ctx.AuthFlavor)
+	logger.Info("MKNOD", "name", req.Name, "type", specialFileTypeName(req.Type), "handle", fmt.Sprintf("%x", req.DirHandle), "mode", fmt.Sprintf("%o", mode), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Validate request parameters
 	// ========================================================================
 
 	if err := validateMknodRequest(req); err != nil {
-		logger.Warn("MKNOD validation failed: name='%s' type=%d client=%s error=%v",
-			req.Name, req.Type, clientIP, err)
+		logger.Warn("MKNOD validation failed", "name", req.Name, "type", req.Type, "client", clientIP, "error", err)
 		return &MknodResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -276,13 +273,13 @@ func (h *Handler) Mknod(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("MKNOD failed: %v dir=%x client=%s", err, req.DirHandle, clientIP)
+		logger.Warn("MKNOD failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return &MknodResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
 
-	logger.Debug("MKNOD: share=%s name=%s type=%d", ctx.Share, req.Name, req.Type)
+	logger.Debug("MKNOD", "share", ctx.Share, "name", req.Name, "type", req.Type)
 
 	// ========================================================================
 	// Step 3: Verify parent directory exists and is valid
@@ -298,8 +295,7 @@ func (h *Handler) Mknod(
 
 	// Verify parent is actually a directory
 	if parentFile.Type != metadata.FileTypeDirectory {
-		logger.Warn("MKNOD failed: parent not a directory: dir=%x type=%d client=%s",
-			req.DirHandle, parentFile.Type, clientIP)
+		logger.Warn("MKNOD failed: parent not a directory", "handle", fmt.Sprintf("%x", req.DirHandle), "type", parentFile.Type, "client", clientIP)
 
 		// Get current parent state for WCC
 		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
@@ -329,8 +325,7 @@ func (h *Handler) Mknod(
 	// ========================================================================
 	// Check again after parent verification, before child operations
 	if ctx.isContextCancelled() {
-		logger.Debug("MKNOD: request cancelled after parent lookup: name='%s' dir=%x client=%s",
-			req.Name, req.DirHandle, clientIP)
+		logger.Debug("MKNOD: request cancelled after parent lookup", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return nil, ctx.Context.Err()
 	}
 
@@ -341,8 +336,7 @@ func (h *Handler) Mknod(
 	_, err = metadataStore.Lookup(authCtx, parentHandle, req.Name)
 	if err == nil {
 		// Child exists (no error from Lookup)
-		logger.Debug("MKNOD failed: file '%s' already exists: dir=%x client=%s",
-			req.Name, req.DirHandle, clientIP)
+		logger.Debug("MKNOD failed: file already exists", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		// Get updated parent attributes for WCC data
 		updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
@@ -412,13 +406,11 @@ func (h *Handler) Mknod(
 	if err != nil {
 		// Check if error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("MKNOD: creation cancelled: name='%s' dir=%x client=%s",
-				req.Name, req.DirHandle, clientIP)
+			logger.Debug("MKNOD: creation cancelled", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 			return nil, ctx.Context.Err()
 		}
 
-		logger.Error("MKNOD failed: store error: name='%s' type=%d client=%s error=%v",
-			req.Name, req.Type, clientIP, err)
+		logger.Error("MKNOD failed: store error", "name", req.Name, "type", req.Type, "client", clientIP, "error", err)
 
 		// Get updated parent attributes for WCC data
 		updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
@@ -441,7 +433,7 @@ func (h *Handler) Mknod(
 	// Encode the file handle for the new special file
 	newHandle, err := metadata.EncodeFileHandle(newFile)
 	if err != nil {
-		logger.Error("MKNOD: failed to encode file handle: error=%v", err)
+		logger.Error("MKNOD: failed to encode file handle", "error", err)
 		return &MknodResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -452,12 +444,9 @@ func (h *Handler) Mknod(
 	updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
 	wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
 
-	logger.Info("MKNOD successful: name='%s' type=%s handle=%x mode=%o major=%d minor=%d client=%s",
-		req.Name, specialFileTypeName(req.Type), newHandle, newFile.Mode,
-		req.Spec.SpecData1, req.Spec.SpecData2, clientIP)
+	logger.Info("MKNOD successful", "name", req.Name, "type", specialFileTypeName(req.Type), "handle", fmt.Sprintf("%x", newHandle), "mode", fmt.Sprintf("%o", newFile.Mode), "major", req.Spec.SpecData1, "minor", req.Spec.SpecData2, "client", clientIP)
 
-	logger.Debug("MKNOD details: handle=%x uid=%d gid=%d parentHandle=%x",
-		newHandle, newFile.UID, newFile.GID, parentHandle)
+	logger.Debug("MKNOD details", "handle", fmt.Sprintf("%x", newHandle), "uid", newFile.UID, "gid", newFile.GID, "parent", fmt.Sprintf("%x", parentHandle))
 
 	return &MknodResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -765,8 +754,7 @@ func DecodeMknodRequest(data []byte) (*MknodRequest, error) {
 		mode = *req.Attr.Mode
 	}
 
-	logger.Debug("Decoded MKNOD request: handle_len=%d name='%s' type=%d mode=%o major=%d minor=%d",
-		len(handle), name, fileType, mode, req.Spec.SpecData1, req.Spec.SpecData2)
+	logger.Debug("Decoded MKNOD request", "handle_len", len(handle), "name", name, "type", fileType, "mode", fmt.Sprintf("%o", mode), "major", req.Spec.SpecData1, "minor", req.Spec.SpecData2)
 
 	return req, nil
 }
@@ -839,6 +827,6 @@ func (resp *MknodResponse) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("encode directory wcc data: %w", err)
 	}
 
-	logger.Debug("Encoded MKNOD response: %d bytes status=%d", buf.Len(), resp.Status)
+	logger.Debug("Encoded MKNOD response", "bytes", buf.Len(), "status", resp.Status)
 	return buf.Bytes(), nil
 }

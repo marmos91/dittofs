@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/config"
 	dittoServer "github.com/marmos91/dittofs/pkg/server"
 
@@ -149,16 +150,47 @@ func runStart() {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Configure logger
-	logger.SetLevel(cfg.Logging.Level)
+	// Initialize the structured logger
+	loggerCfg := logger.Config{
+		Level:  cfg.Logging.Level,
+		Format: cfg.Logging.Format,
+		Output: cfg.Logging.Output,
+	}
+	if err := logger.Init(loggerCfg); err != nil {
+		log.Fatalf("Failed to initialize logger: %v", err)
+	}
 
 	// Create cancellable context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Initialize OpenTelemetry (if enabled)
+	telemetryCfg := telemetry.Config{
+		Enabled:        cfg.Telemetry.Enabled,
+		ServiceName:    "dittofs",
+		ServiceVersion: "dev", // TODO: inject version at build time
+		Endpoint:       cfg.Telemetry.Endpoint,
+		Insecure:       cfg.Telemetry.Insecure,
+		SampleRate:     cfg.Telemetry.SampleRate,
+	}
+	telemetryShutdown, err := telemetry.Init(ctx, telemetryCfg)
+	if err != nil {
+		log.Fatalf("Failed to initialize telemetry: %v", err)
+	}
+	defer func() {
+		if err := telemetryShutdown(ctx); err != nil {
+			logger.Error("telemetry shutdown error", "error", err)
+		}
+	}()
+
 	fmt.Println("DittoFS - A modular virtual filesystem")
-	logger.Info("Log level: %s", cfg.Logging.Level)
-	logger.Info("Configuration loaded from: %s", getConfigSource(*configFile))
+	logger.Info("Log level", "level", cfg.Logging.Level, "format", cfg.Logging.Format)
+	logger.Info("Configuration loaded", "source", getConfigSource(*configFile))
+	if telemetry.IsEnabled() {
+		logger.Info("Telemetry enabled", "endpoint", cfg.Telemetry.Endpoint, "sample_rate", cfg.Telemetry.SampleRate)
+	} else {
+		logger.Info("Telemetry disabled")
+	}
 
 	// Initialize metrics FIRST (before creating stores that use metrics)
 	// This ensures metrics.IsEnabled() returns true when stores are created
@@ -169,14 +201,19 @@ func runStart() {
 	if err != nil {
 		log.Fatalf("Failed to initialize registry: %v", err)
 	}
-	logger.Info("Registry initialized: %d metadata store(s), %d content store(s), %d share(s)",
-		reg.CountMetadataStores(), reg.CountContentStores(), reg.CountShares())
+	logger.Info("Registry initialized",
+		"metadata_stores", reg.CountMetadataStores(),
+		"content_stores", reg.CountContentStores(),
+		"shares", reg.CountShares())
 
 	// Log share details
 	for _, shareName := range reg.ListShares() {
 		share, _ := reg.GetShare(shareName)
-		logger.Info("  - %s (metadata: %s, content: %s, read_only: %v)",
-			share.Name, share.MetadataStore, share.ContentStore, share.ReadOnly)
+		logger.Info("Share configured",
+			"name", share.Name,
+			"metadata_store", share.MetadataStore,
+			"content_store", share.ContentStore,
+			"read_only", share.ReadOnly)
 	}
 
 	// Create DittoServer with registry and shutdown timeout
@@ -191,11 +228,11 @@ func runStart() {
 	//
 	// For now, GC is disabled during the store-per-share refactor.
 	if cfg.GC.Enabled {
-		logger.Warn("Garbage collection is temporarily disabled during store-per-share refactor")
+		logger.Warn("Garbage collection temporarily disabled during store-per-share refactor")
 		logger.Warn("GC will be re-enabled in a future phase with multi-store support")
 	}
 	if metricsResult.Server != nil {
-		logger.Info("Metrics enabled on port %d", cfg.Server.Metrics.Port)
+		logger.Info("Metrics enabled", "port", cfg.Server.Metrics.Port)
 		dittoSrv.SetMetricsServer(metricsResult.Server)
 	} else {
 		logger.Info("Metrics collection disabled")
@@ -212,7 +249,7 @@ func runStart() {
 		if err := dittoSrv.AddAdapter(adapter); err != nil {
 			log.Fatalf("Failed to add %s adapter: %v", adapter.Protocol(), err)
 		}
-		logger.Info("%s adapter enabled on port %d", adapter.Protocol(), adapter.Port())
+		logger.Info("Adapter enabled", "protocol", adapter.Protocol(), "port", adapter.Port())
 	}
 
 	// Start server in background
@@ -230,12 +267,12 @@ func runStart() {
 	select {
 	case <-sigChan:
 		signal.Stop(sigChan) // Stop signal notification immediately after receiving signal
-		logger.Info("Shutdown signal received, initiating graceful shutdown...")
+		logger.Info("Shutdown signal received, initiating graceful shutdown")
 		cancel() // Cancel context to initiate shutdown
 
 		// Wait for server to shut down gracefully
 		if err := <-serverDone; err != nil {
-			logger.Error("Server shutdown error: %v", err)
+			logger.Error("Server shutdown error", "error", err)
 			os.Exit(1)
 		}
 		logger.Info("Server stopped gracefully")
@@ -243,7 +280,7 @@ func runStart() {
 	case err := <-serverDone:
 		signal.Stop(sigChan) // Stop signal notification when server stops
 		if err != nil {
-			logger.Error("Server error: %v", err)
+			logger.Error("Server error", "error", err)
 			os.Exit(1)
 		}
 		logger.Info("Server stopped")

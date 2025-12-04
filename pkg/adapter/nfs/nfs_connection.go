@@ -9,13 +9,15 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/marmos91/dittofs/internal/logger"
 	nfs "github.com/marmos91/dittofs/internal/protocol/nfs"
 	mount_handlers "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
 	nfs_types "github.com/marmos91/dittofs/internal/protocol/nfs/types"
-	handlers "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/telemetry"
 )
 
 type NFSConnection struct {
@@ -58,12 +60,12 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 	defer c.handleConnectionClose()
 
 	clientAddr := c.conn.RemoteAddr().String()
-	logger.Debug("New connection from %s", clientAddr)
+	logger.Debug("New connection", "address", clientAddr)
 
 	// Set initial idle timeout
 	if c.server.config.Timeouts.Idle > 0 {
 		if err := c.conn.SetDeadline(time.Now().Add(c.server.config.Timeouts.Idle)); err != nil {
-			logger.Warn("Failed to set deadline for %s: %v", clientAddr, err)
+			logger.Warn("Failed to set deadline", "address", clientAddr, "error", err)
 		}
 	}
 
@@ -72,10 +74,10 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 		// This provides graceful shutdown capability
 		select {
 		case <-ctx.Done():
-			logger.Debug("Connection from %s closed due to context cancellation", clientAddr)
+			logger.Debug("Connection closed due to context cancellation", "address", clientAddr)
 			return
 		case <-c.server.shutdown:
-			logger.Debug("Connection from %s closed due to server shutdown", clientAddr)
+			logger.Debug("Connection closed due to server shutdown", "address", clientAddr)
 			return
 		default:
 		}
@@ -85,13 +87,13 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 		xid, procData, err := c.readRequest(ctx)
 		if err != nil {
 			if err == io.EOF {
-				logger.Debug("Connection from %s closed by client", clientAddr)
+				logger.Debug("Connection closed by client", "address", clientAddr)
 			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				logger.Debug("Connection from %s timed out: %v", clientAddr, err)
+				logger.Debug("Connection timed out", "address", clientAddr, "error", err)
 			} else if err == context.Canceled || err == context.DeadlineExceeded {
-				logger.Debug("Connection from %s cancelled: %v", clientAddr, err)
+				logger.Debug("Connection cancelled", "address", clientAddr, "error", err)
 			} else {
-				logger.Debug("Error reading request from %s: %v", clientAddr, err)
+				logger.Debug("Error reading request", "address", clientAddr, "error", err)
 			}
 			return
 		}
@@ -106,15 +108,14 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 
 			// Process and send reply
 			if err := c.processRequest(ctx, xid, procData); err != nil {
-				logger.Debug("Error processing request from %s: XID=0x%x error=%v",
-					clientAddr, xid, err)
+				logger.Debug("Error processing request", "address", clientAddr, "xid", fmt.Sprintf("0x%x", xid), "error", err)
 			}
 		}(xid, procData)
 
 		// Reset idle timeout after reading request
 		if c.server.config.Timeouts.Idle > 0 {
 			if err := c.conn.SetDeadline(time.Now().Add(c.server.config.Timeouts.Idle)); err != nil {
-				logger.Warn("Failed to reset deadline for %s: %v", clientAddr, err)
+				logger.Warn("Failed to reset deadline", "address", clientAddr, "error", err)
 			}
 		}
 	}
@@ -151,17 +152,16 @@ func (c *NFSConnection) readRequest(ctx context.Context) (uint32, []byte, error)
 	if err != nil {
 		// Don't log EOF as an error - it's a normal client disconnect
 		if err != io.EOF {
-			logger.Debug("Error reading fragment header from %s: %v", c.conn.RemoteAddr().String(), err)
+			logger.Debug("Error reading fragment header", "address", c.conn.RemoteAddr().String(), "error", err)
 		}
 		return 0, nil, err
 	}
-	logger.Debug("Read fragment header from %s: last=%v length=%d", c.conn.RemoteAddr().String(), header.IsLast, header.Length)
+	logger.Debug("Read fragment header", "address", c.conn.RemoteAddr().String(), "last", header.IsLast, "length", header.Length)
 
 	// Validate fragment size to prevent memory exhaustion
 	const maxFragmentSize = 1 << 20 // 1MB - NFS messages are typically much smaller
 	if header.Length > maxFragmentSize {
-		logger.Warn("Fragment size %d exceeds maximum %d from %s",
-			header.Length, maxFragmentSize, c.conn.RemoteAddr().String())
+		logger.Warn("Fragment size exceeds maximum", "size", header.Length, "max", maxFragmentSize, "address", c.conn.RemoteAddr().String())
 		return 0, nil, fmt.Errorf("fragment too large: %d bytes", header.Length)
 	}
 
@@ -182,12 +182,11 @@ func (c *NFSConnection) readRequest(ctx context.Context) (uint32, []byte, error)
 	// Parse RPC call to get XID for tracking
 	call, err := rpc.ReadCall(message)
 	if err != nil {
-		logger.Debug("Error parsing RPC call: %v", err)
+		logger.Debug("Error parsing RPC call", "error", err)
 		return 0, nil, err
 	}
 
-	logger.Debug("RPC Call: XID=0x%x Program=%d Version=%d Procedure=%d",
-		call.XID, call.Program, call.Version, call.Procedure)
+	logger.Debug("RPC Call", "xid", fmt.Sprintf("0x%x", call.XID), "program", call.Program, "version", call.Version, "procedure", call.Procedure)
 
 	// Copy the entire message since it will be processed in a separate goroutine
 	// This allows the pooled buffer to be returned immediately
@@ -214,7 +213,7 @@ func (c *NFSConnection) processRequest(ctx context.Context, xid uint32, rawMessa
 	// Parse RPC call from raw message
 	call, err := rpc.ReadCall(rawMessage)
 	if err != nil {
-		logger.Debug("Error parsing RPC call in worker: XID=0x%x error=%v", xid, err)
+		logger.Debug("Error parsing RPC call in worker", "xid", fmt.Sprintf("0x%x", xid), "error", err)
 		return nil
 	}
 
@@ -288,14 +287,12 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 
 	clientAddr := c.conn.RemoteAddr().String()
 
-	logger.Debug("RPC Call Details: Program=%d Version=%d Procedure=%d",
-		call.Program, call.Version, call.Procedure)
+	logger.Debug("RPC Call Details", "program", call.Program, "version", call.Version, "procedure", call.Procedure)
 
 	// Check context before dispatching to handler
 	select {
 	case <-ctx.Done():
-		logger.Debug("RPC call cancelled before handler dispatch: XID=0x%x client=%s error=%v",
-			call.XID, clientAddr, ctx.Err())
+		logger.Debug("RPC call cancelled before handler dispatch", "xid", fmt.Sprintf("0x%x", call.XID), "client", clientAddr, "error", ctx.Err())
 		return ctx.Err()
 	default:
 	}
@@ -306,7 +303,7 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 	case rpc.ProgramMount:
 		replyData, err = c.handleMountProcedure(ctx, call, procedureData, clientAddr)
 	default:
-		logger.Debug("Unknown program: %d", call.Program)
+		logger.Debug("Unknown program", "program", call.Program)
 		// Send PROC_UNAVAIL error reply for unknown programs
 		errorReply, err := rpc.MakeErrorReply(call.XID, rpc.RPCProcUnavail)
 		if err != nil {
@@ -318,15 +315,13 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 	if err != nil {
 		// Check if error was due to context cancellation
 		if err == context.Canceled || err == context.DeadlineExceeded {
-			logger.Debug("Handler cancelled: program=%d procedure=%d xid=0x%x client=%s error=%v",
-				call.Program, call.Procedure, call.XID, clientAddr, err)
+			logger.Debug("Handler cancelled", "program", call.Program, "procedure", call.Procedure, "xid", fmt.Sprintf("0x%x", call.XID), "client", clientAddr, "error", err)
 			return err
 		}
 
 		// Handler returned an error - send RPC SYSTEM_ERR reply to client
 		// Per RFC 5531, every RPC call should receive a reply, even on failure
-		logger.Debug("Handler error: program=%d procedure=%d xid=0x%x error=%v",
-			call.Program, call.Procedure, call.XID, err)
+		logger.Debug("Handler error", "program", call.Program, "procedure", call.Procedure, "xid", fmt.Sprintf("0x%x", call.XID), "error", err)
 
 		errorReply, makeErr := rpc.MakeErrorReply(call.XID, rpc.RPCSystemErr)
 		if makeErr != nil {
@@ -380,31 +375,6 @@ func (c *NFSConnection) extractShareName(ctx context.Context, data []byte) (stri
 	return shareName, nil
 }
 
-// logNFSRequest logs an NFS request with procedure, share, and auth information.
-//
-// This consolidates all the conditional logging logic in one place for cleaner code.
-func (c *NFSConnection) logNFSRequest(procedure, share string, ctx *handlers.NFSHandlerContext) {
-	var parts []string
-
-	parts = append(parts, fmt.Sprintf("NFS %s", procedure))
-
-	if share != "" {
-		parts = append(parts, fmt.Sprintf("share=%s", share))
-	}
-
-	if ctx.UID != nil {
-		parts = append(parts, fmt.Sprintf("uid=%d gid=%d ngids=%d",
-			*ctx.UID, *ctx.GID, len(ctx.GIDs)))
-	} else {
-		parts = append(parts, fmt.Sprintf("auth_flavor=%d", ctx.AuthFlavor))
-	}
-
-	logger.Debug("%s", parts[0])
-	for i := 1; i < len(parts); i++ {
-		logger.Debug("  %s", parts[i])
-	}
-}
-
 // handleNFSProcedure dispatches an NFS procedure call to the appropriate handler.
 //
 // It looks up the procedure in the dispatch table, extracts authentication
@@ -420,28 +390,45 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	// Look up procedure in dispatch table
 	procedure, ok := nfs.NfsDispatchTable[call.Procedure]
 	if !ok {
-		logger.Debug("Unknown NFS procedure: %d", call.Procedure)
+		logger.Debug("Unknown NFS procedure", "procedure", call.Procedure)
 		return []byte{}, nil
 	}
 
 	// Extract share name from file handle (best effort for metrics)
 	share, extractErr := c.extractShareName(ctx, data)
 	if extractErr != nil {
-		logger.Warn("NFS %s: failed to extract share (handle may be invalid): %v", procedure.Name, extractErr)
+		logger.Warn("Failed to extract share from handle",
+			"procedure", procedure.Name,
+			"error", extractErr)
 		// Continue anyway - handler will validate and return proper NFS error
 		share = ""
 	}
 
+	// Start a span for this NFS operation
+	// The span will be passed through the context to all downstream operations
+	ctx, span := telemetry.StartNFSSpan(ctx, procedure.Name, nil,
+		telemetry.ClientAddr(clientAddr),
+		telemetry.RPCXID(call.XID),
+		telemetry.NFSShare(share))
+	defer span.End()
+
 	// Extract handler context (includes share and authentication for handlers)
 	handlerCtx := nfs.ExtractHandlerContext(ctx, call, clientAddr, share, procedure.Name)
 
-	// Log request with clean helper
-	c.logNFSRequest(procedure.Name, share, handlerCtx)
+	// Log request with trace context
+	logger.DebugCtx(ctx, "NFS request",
+		"procedure", procedure.Name,
+		"share", share,
+		"client", clientAddr,
+		"xid", fmt.Sprintf("0x%x", call.XID))
 
 	// Check context before dispatching to handler
 	select {
 	case <-ctx.Done():
-		logger.Debug("NFS %s cancelled before handler: xid=0x%x", procedure.Name, call.XID)
+		telemetry.RecordError(ctx, ctx.Err())
+		logger.DebugCtx(ctx, "NFS request cancelled before handler",
+			"procedure", procedure.Name,
+			"xid", fmt.Sprintf("0x%x", call.XID))
 		return nil, ctx.Err()
 	default:
 	}
@@ -534,12 +521,21 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 	// Look up procedure in dispatch table
 	procedure, ok := nfs.MountDispatchTable[call.Procedure]
 	if !ok {
-		logger.Debug("Unknown Mount procedure: %d", call.Procedure)
+		logger.Debug("Unknown Mount procedure", "procedure", call.Procedure)
 		return []byte{}, nil
 	}
 
 	// Mount requests don't have file handles, so no share
 	share := ""
+	procedureName := "MOUNT_" + procedure.Name
+
+	// Start a span for this Mount operation
+	ctx, span := telemetry.StartSpan(ctx, "mount."+procedure.Name,
+		trace.WithAttributes(
+			telemetry.ClientAddr(clientAddr),
+			telemetry.RPCXID(call.XID),
+		))
+	defer span.End()
 
 	// Extract handler context for mount requests
 	handlerCtx := &mount_handlers.MountHandlerContext{
@@ -560,23 +556,19 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 		}
 	}
 
-	// Log request (MOUNT_ prefix) - convert to NFSHandlerContext for logging
-	procedureName := "MOUNT_" + procedure.Name
-	logCtx := &handlers.NFSHandlerContext{
-		Context:    handlerCtx.Context,
-		ClientAddr: handlerCtx.ClientAddr,
-		Share:      share,
-		AuthFlavor: handlerCtx.AuthFlavor,
-		UID:        handlerCtx.UID,
-		GID:        handlerCtx.GID,
-		GIDs:       handlerCtx.GIDs,
-	}
-	c.logNFSRequest(procedureName, share, logCtx)
+	// Log request with trace context
+	logger.DebugCtx(ctx, "Mount request",
+		"procedure", procedureName,
+		"client", clientAddr,
+		"xid", fmt.Sprintf("0x%x", call.XID))
 
 	// Check context before dispatching to handler
 	select {
 	case <-ctx.Done():
-		logger.Debug("MOUNT %s cancelled before handler: xid=0x%x", procedure.Name, call.XID)
+		telemetry.RecordError(ctx, ctx.Err())
+		logger.DebugCtx(ctx, "Mount request cancelled before handler",
+			"procedure", procedure.Name,
+			"xid", fmt.Sprintf("0x%x", call.XID))
 		return nil, ctx.Err()
 	default:
 	}
@@ -652,7 +644,7 @@ func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
 		return fmt.Errorf("write reply: %w", err)
 	}
 
-	logger.Debug("Sent reply for XID=0x%x (%d bytes)", xid, len(reply))
+	logger.Debug("Sent reply", "xid", fmt.Sprintf("0x%x", xid), "bytes", len(reply))
 	return nil
 }
 
@@ -665,8 +657,7 @@ func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
 func (c *NFSConnection) handleConnectionClose() {
 	// Panic recovery - prevents a single connection from crashing the server
 	if r := recover(); r != nil {
-		logger.Error("Panic in connection handler from %s: %v",
-			c.conn.RemoteAddr().String(), r)
+		logger.Error("Panic in connection handler", "address", c.conn.RemoteAddr().String(), "error", r)
 	}
 
 	// Wait for all in-flight requests to complete before closing connection
@@ -684,7 +675,6 @@ func (c *NFSConnection) handleRequestPanic(clientAddr string, xid uint32) {
 	c.wg.Done()
 
 	if r := recover(); r != nil {
-		logger.Error("Panic in request handler from %s: XID=0x%x error=%v",
-			clientAddr, xid, r)
+		logger.Error("Panic in request handler", "address", clientAddr, "xid", fmt.Sprintf("0x%x", xid), "error", r)
 	}
 }

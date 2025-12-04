@@ -274,9 +274,9 @@ func New(
 	var connSemaphore chan struct{}
 	if nfsConfig.MaxConnections > 0 {
 		connSemaphore = make(chan struct{}, nfsConfig.MaxConnections)
-		logger.Debug("NFS connection limit: %d", nfsConfig.MaxConnections)
+		logger.Debug("NFS connection limit", "max_connections", nfsConfig.MaxConnections)
 	} else {
-		logger.Debug("NFS connection limit: unlimited")
+		logger.Debug("NFS connection limit", "max_connections", "unlimited")
 	}
 
 	// Create shutdown context for request cancellation
@@ -317,7 +317,7 @@ func (s *NFSAdapter) SetRegistry(reg *registry.Registry) {
 	s.nfsHandler.Registry = reg
 	s.mountHandler.Registry = reg
 
-	logger.Debug("NFS adapter configured with registry (%d shares)", reg.CountShares())
+	logger.Debug("NFS adapter configured with registry", "shares", reg.CountShares())
 }
 
 // Serve starts the NFS server and blocks until the context is cancelled
@@ -370,15 +370,14 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 	s.listenerMu.Unlock()
 	close(s.listenerReady)
 
-	logger.Info("NFS server listening on port %d", s.config.Port)
-	logger.Debug("NFS config: max_connections=%d read_timeout=%v write_timeout=%v idle_timeout=%v",
-		s.config.MaxConnections, s.config.Timeouts.Read, s.config.Timeouts.Write, s.config.Timeouts.Idle)
+	logger.Info("NFS server listening", "port", s.config.Port)
+	logger.Debug("NFS config", "max_connections", s.config.MaxConnections, "read_timeout", s.config.Timeouts.Read, "write_timeout", s.config.Timeouts.Write, "idle_timeout", s.config.Timeouts.Idle)
 
 	// Monitor context cancellation in separate goroutine
 	// This allows the main accept loop to focus on accepting connections
 	go func() {
 		<-ctx.Done()
-		logger.Info("NFS shutdown signal received: %v", ctx.Err())
+		logger.Info("NFS shutdown signal received", "error", ctx.Err())
 		s.initiateShutdown()
 	}()
 
@@ -421,7 +420,7 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 			default:
 				// Unexpected error - log but continue
 				// Common causes: resource exhaustion, network issues
-				logger.Debug("Error accepting NFS connection: %v", err)
+				logger.Debug("Error accepting NFS connection", "error", err)
 				continue
 			}
 		}
@@ -442,8 +441,7 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 		}
 
 		// Log new connection (debug level to avoid log spam under load)
-		logger.Debug("NFS connection accepted from %s (active: %d)",
-			tcpConn.RemoteAddr(), currentConns)
+		logger.Debug("NFS connection accepted", "address", tcpConn.RemoteAddr(), "active", currentConns)
 
 		// Handle connection in separate goroutine
 		// Capture connAddr and tcpConn in closure to avoid races
@@ -467,8 +465,7 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 					s.metrics.SetActiveConnections(currentConns)
 				}
 
-				logger.Debug("NFS connection closed from %s (active: %d)",
-					tcp.RemoteAddr(), s.connCount.Load())
+				logger.Debug("NFS connection closed", "address", tcp.RemoteAddr(), "active", s.connCount.Load())
 			}()
 
 			// Handle connection requests
@@ -512,7 +509,7 @@ func (s *NFSAdapter) initiateShutdown() {
 		// Close listener (stops accepting new connections)
 		if s.listener != nil {
 			if err := s.listener.Close(); err != nil {
-				logger.Debug("Error closing NFS listener: %v", err)
+				logger.Debug("Error closing NFS listener", "error", err)
 			}
 		}
 
@@ -552,8 +549,7 @@ func (s *NFSAdapter) initiateShutdown() {
 // Should only be called once, from the Serve() method.
 func (s *NFSAdapter) gracefulShutdown() error {
 	activeCount := s.connCount.Load()
-	logger.Info("NFS graceful shutdown: waiting for %d active connection(s) (timeout: %v)",
-		activeCount, s.config.Timeouts.Shutdown)
+	logger.Info("NFS graceful shutdown: waiting for active connections", "active", activeCount, "timeout", s.config.Timeouts.Shutdown)
 
 	// Create channel that closes when all connections are done
 	done := make(chan struct{})
@@ -570,8 +566,7 @@ func (s *NFSAdapter) gracefulShutdown() error {
 
 	case <-time.After(s.config.Timeouts.Shutdown):
 		remaining := s.connCount.Load()
-		logger.Warn("NFS shutdown timeout exceeded: %d connection(s) still active after %v - forcing closure",
-			remaining, s.config.Timeouts.Shutdown)
+		logger.Warn("NFS shutdown timeout exceeded - forcing closure", "active", remaining, "timeout", s.config.Timeouts.Shutdown)
 
 		// Force-close all remaining connections
 		s.forceCloseConnections()
@@ -581,9 +576,9 @@ func (s *NFSAdapter) gracefulShutdown() error {
 
 	// Close write cache (releases resources)
 	if s.writeCache != nil {
-		logger.Debug("Closing write cache...")
+		logger.Debug("Closing write cache")
 		if closeErr := s.writeCache.Close(); closeErr != nil {
-			logger.Error("Error closing write cache: %v", closeErr)
+			logger.Error("Error closing write cache", "error", closeErr)
 			if err == nil {
 				err = closeErr
 			}
@@ -624,10 +619,10 @@ func (s *NFSAdapter) forceCloseConnections() {
 		conn := value.(net.Conn)
 
 		if err := conn.Close(); err != nil {
-			logger.Debug("Error force-closing connection to %s: %v", addr, err)
+			logger.Debug("Error force-closing connection", "address", addr, "error", err)
 		} else {
 			closedCount++
-			logger.Debug("Force-closed connection to %s", addr)
+			logger.Debug("Force-closed connection", "address", addr)
 			// Record metric for each force-closed connection
 			if s.metrics != nil {
 				s.metrics.RecordConnectionForceClosed()
@@ -641,7 +636,7 @@ func (s *NFSAdapter) forceCloseConnections() {
 	if closedCount == 0 {
 		logger.Debug("No connections to force-close")
 	} else {
-		logger.Info("Force-closed %d connection(s)", closedCount)
+		logger.Info("Force-closed connections", "count", closedCount)
 	}
 
 	// Note: sync.Map entries are automatically deleted by deferred cleanup in Serve()
@@ -679,8 +674,8 @@ func (s *NFSAdapter) Stop(ctx context.Context) error {
 
 	// Wait for graceful shutdown with context timeout
 	activeCount := s.connCount.Load()
-	logger.Info("NFS graceful shutdown: waiting for %d active connection(s) (context timeout)",
-		activeCount)
+	logger.Info("NFS graceful shutdown: waiting for active connections (context timeout)",
+		"active", activeCount)
 
 	// Create channel that closes when all connections are done
 	done := make(chan struct{})
@@ -697,16 +692,15 @@ func (s *NFSAdapter) Stop(ctx context.Context) error {
 
 	case <-ctx.Done():
 		remaining := s.connCount.Load()
-		logger.Warn("NFS shutdown context cancelled: %d connection(s) still active: %v",
-			remaining, ctx.Err())
+		logger.Warn("NFS shutdown context cancelled", "active", remaining, "error", ctx.Err())
 		err = ctx.Err()
 	}
 
 	// Close write cache (releases resources)
 	if s.writeCache != nil {
-		logger.Debug("Closing write cache...")
+		logger.Debug("Closing write cache")
 		if closeErr := s.writeCache.Close(); closeErr != nil {
-			logger.Error("Error closing write cache: %v", closeErr)
+			logger.Error("Error closing write cache", "error", closeErr)
 			if err == nil {
 				err = closeErr
 			}
@@ -740,7 +734,7 @@ func (s *NFSAdapter) logMetrics(ctx context.Context) {
 			return
 		case <-ticker.C:
 			activeConns := s.connCount.Load()
-			logger.Info("NFS metrics: active_connections=%d", activeConns)
+			logger.Info("NFS metrics", "active_connections", activeConns)
 		}
 	}
 }

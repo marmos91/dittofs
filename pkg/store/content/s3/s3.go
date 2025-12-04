@@ -45,8 +45,8 @@ import (
 //
 // Thread Safety:
 // This implementation is safe for concurrent use by multiple goroutines.
-// Concurrent writes to the same ContentID may result in last-write-wins
-// behavior due to S3's eventual consistency model.
+// WriteAt and Truncate operations are serialized per-object using objectLocks
+// to prevent race conditions when multiple goroutines write to the same object.
 type S3ContentStore struct {
 	client    *s3.Client
 	bucket    string
@@ -61,6 +61,11 @@ type S3ContentStore struct {
 	// Tracks incremental write state for cache-flusher integration
 	incrementalSessions   map[metadata.ContentID]*incrementalWriteSession
 	incrementalSessionsMu sync.RWMutex
+
+	// Per-object locks for WriteAt and Truncate operations
+	// This prevents race conditions when multiple goroutines write to the same object
+	objectLocks   map[metadata.ContentID]*sync.Mutex
+	objectLocksMu sync.Mutex
 
 	// Cache for buffering writes (optional, injected via SetCache)
 	cache cache.Cache
@@ -322,6 +327,7 @@ func NewS3ContentStore(ctx context.Context, cfg S3ContentStoreConfig) (*S3Conten
 		maxParallelUploads:  maxParallelUploads,
 		uploadSessions:      make(map[string]*multipartUpload),
 		incrementalSessions: make(map[metadata.ContentID]*incrementalWriteSession),
+		objectLocks:         make(map[metadata.ContentID]*sync.Mutex),
 		metrics:             cfg.Metrics,
 		cache:               cfg.Cache,
 		retry: retryConfig{
@@ -403,6 +409,35 @@ func (s *S3ContentStore) getObjectKey(id metadata.ContentID) string {
 //   - c: The cache to use for buffering writes (can be nil to disable)
 func (s *S3ContentStore) SetCache(c cache.Cache) {
 	s.cache = c
+}
+
+// getObjectLock returns a mutex for the given content ID, creating one if needed.
+//
+// This provides per-object locking to serialize concurrent WriteAt and Truncate
+// operations on the same object. Without this, concurrent writes would race:
+// each goroutine reads the current state, modifies it, and uploads - the last
+// upload wins, losing changes from other goroutines.
+//
+// The lock is held for the duration of read-modify-write operations.
+// This is a trade-off: it serializes writes to the same object but prevents
+// data loss from concurrent modifications.
+//
+// Parameters:
+//   - id: Content identifier for the object to lock
+//
+// Returns:
+//   - *sync.Mutex: The mutex for the given content ID (never nil)
+func (s *S3ContentStore) getObjectLock(id metadata.ContentID) *sync.Mutex {
+	s.objectLocksMu.Lock()
+	defer s.objectLocksMu.Unlock()
+
+	if lock, exists := s.objectLocks[id]; exists {
+		return lock
+	}
+
+	lock := &sync.Mutex{}
+	s.objectLocks[id] = lock
+	return lock
 }
 
 // GetStorageStats returns statistics about S3 storage.

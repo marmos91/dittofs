@@ -187,24 +187,31 @@ func (h *Handler) Access(
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
 	if ctx.isContextCancelled() {
-		logger.Debug("ACCESS cancelled before processing: handle=%x client=%s error=%v",
-			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		logger.Debug("ACCESS cancelled before processing",
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", ctx.ClientAddr,
+			"error", ctx.Context.Err())
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	}
 
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("ACCESS: handle=%x requested=0x%x client=%s auth=%d",
-		req.Handle, req.Access, clientIP, ctx.AuthFlavor)
+	logger.Info("ACCESS",
+		"handle", fmt.Sprintf("%x", req.Handle),
+		"requested", fmt.Sprintf("0x%x", req.Access),
+		"client", clientIP,
+		"auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Validate request parameters
 	// ========================================================================
 
 	if err := validateAccessRequest(req); err != nil {
-		logger.Warn("ACCESS validation failed: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
+		logger.Warn("ACCESS validation failed",
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", clientIP,
+			"error", err)
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -214,13 +221,16 @@ func (h *Handler) Access(
 
 	store, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("ACCESS failed: %v handle=%x client=%s", err, req.Handle, clientIP)
+		logger.Warn("ACCESS failed",
+			"error", err,
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", clientIP)
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	logger.Debug("ACCESS: share=%s", ctx.Share)
+	logger.Debug("ACCESS", "share", ctx.Share)
 
 	// ========================================================================
 	// Step 3: Verify file handle exists and is valid
@@ -230,21 +240,27 @@ func (h *Handler) Access(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("ACCESS cancelled during file lookup: handle=%x client=%s error=%v",
-				req.Handle, clientIP, ctx.Context.Err())
+			logger.Debug("ACCESS cancelled during file lookup",
+				"handle", fmt.Sprintf("%x", req.Handle),
+				"client", clientIP,
+				"error", ctx.Context.Err())
 			return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		logger.Debug("ACCESS failed: handle not found: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
+		logger.Debug("ACCESS failed: handle not found",
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", clientIP,
+			"error", err)
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Check for cancellation before the permission check
 	// CheckPermissions may involve complex ACL evaluation, so it's worth checking here
 	if ctx.isContextCancelled() {
-		logger.Debug("ACCESS cancelled before permission check: handle=%x client=%s error=%v",
-			req.Handle, clientIP, ctx.Context.Err())
+		logger.Debug("ACCESS cancelled before permission check",
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", clientIP,
+			"error", ctx.Context.Err())
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	}
 
@@ -256,13 +272,17 @@ func (h *Handler) Access(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("ACCESS cancelled during auth context building: handle=%x client=%s error=%v",
-				req.Handle, clientIP, ctx.Context.Err())
+			logger.Debug("ACCESS cancelled during auth context building",
+				"handle", fmt.Sprintf("%x", req.Handle),
+				"client", clientIP,
+				"error", ctx.Context.Err())
 			return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		logger.Error("ACCESS failed: failed to build auth context: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
+		logger.Error("ACCESS failed: failed to build auth context",
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", clientIP,
+			"error", err)
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -272,8 +292,10 @@ func (h *Handler) Access(
 
 	requestedPerms := nfsAccessToPermissions(req.Access, file.Type)
 
-	logger.Debug("ACCESS translation: nfs_access=0x%x -> generic_perms=0x%x type=%d",
-		req.Access, requestedPerms, file.Type)
+	logger.Debug("ACCESS translation",
+		"nfs_access", fmt.Sprintf("0x%x", req.Access),
+		"generic_perms", fmt.Sprintf("0x%x", requestedPerms),
+		"type", file.Type)
 
 	// ========================================================================
 	// Step 5: Check permissions via store
@@ -283,13 +305,17 @@ func (h *Handler) Access(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("ACCESS cancelled during permission check: handle=%x client=%s error=%v",
-				req.Handle, clientIP, ctx.Context.Err())
+			logger.Debug("ACCESS cancelled during permission check",
+				"handle", fmt.Sprintf("%x", req.Handle),
+				"client", clientIP,
+				"error", ctx.Context.Err())
 			return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		logger.Error("ACCESS failed: permission check error: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
+		logger.Error("ACCESS failed: permission check error",
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", clientIP,
+			"error", err)
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -299,8 +325,9 @@ func (h *Handler) Access(
 
 	grantedAccess := permissionsToNFSAccess(grantedPerms, file.Type)
 
-	logger.Debug("ACCESS translation: generic_perms=0x%x -> nfs_access=0x%x",
-		grantedPerms, grantedAccess)
+	logger.Debug("ACCESS translation",
+		"generic_perms", fmt.Sprintf("0x%x", grantedPerms),
+		"nfs_access", fmt.Sprintf("0x%x", grantedAccess))
 
 	// ========================================================================
 	// Step 7: Build response with granted permissions and attributes
@@ -309,11 +336,19 @@ func (h *Handler) Access(
 	// Generate file ID from handle for NFS attributes
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
-	logger.Info("ACCESS successful: handle=%x granted=0x%x requested=0x%x client=%s",
-		req.Handle, grantedAccess, req.Access, clientIP)
+	logger.Info("ACCESS successful",
+		"handle", fmt.Sprintf("%x", req.Handle),
+		"granted", fmt.Sprintf("0x%x", grantedAccess),
+		"requested", fmt.Sprintf("0x%x", req.Access),
+		"client", clientIP)
 
-	logger.Debug("ACCESS details: type=%d mode=%o uid=%d gid=%d client_uid=%v client_gid=%v",
-		nfsAttr.Type, file.Mode, file.UID, file.GID, ctx.UID, ctx.GID)
+	logger.Debug("ACCESS details",
+		"type", nfsAttr.Type,
+		"mode", fmt.Sprintf("%o", file.Mode),
+		"uid", file.UID,
+		"gid", file.GID,
+		"client_uid", ctx.UID,
+		"client_gid", ctx.GID)
 
 	return &AccessResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

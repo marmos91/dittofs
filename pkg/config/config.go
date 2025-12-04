@@ -16,6 +16,7 @@ import (
 //
 // This structure captures all configurable aspects of the DittoFS server including:
 //   - Logging configuration
+//   - Telemetry/tracing configuration
 //   - Server-wide settings
 //   - Content store selection and configuration (store-specific)
 //   - Metadata store selection and configuration (store-specific)
@@ -35,6 +36,9 @@ import (
 type Config struct {
 	// Logging controls log output behavior
 	Logging LoggingConfig `mapstructure:"logging"`
+
+	// Telemetry controls OpenTelemetry distributed tracing
+	Telemetry TelemetryConfig `mapstructure:"telemetry"`
 
 	// Server contains server-wide settings
 	Server ServerConfig `mapstructure:"server"`
@@ -71,6 +75,29 @@ type LoggingConfig struct {
 	// Output specifies where logs are written
 	// Valid values: stdout, stderr, or a file path
 	Output string `mapstructure:"output" validate:"required"`
+}
+
+// TelemetryConfig controls OpenTelemetry distributed tracing.
+// When enabled, trace data is exported to an OTLP-compatible collector
+// (e.g., Jaeger, Tempo, or any OTLP receiver).
+type TelemetryConfig struct {
+	// Enabled controls whether distributed tracing is enabled
+	// Default: false (opt-in for telemetry)
+	Enabled bool `mapstructure:"enabled"`
+
+	// Endpoint is the OTLP collector endpoint (host:port)
+	// Default: "localhost:4317" (standard OTLP gRPC port)
+	Endpoint string `mapstructure:"endpoint"`
+
+	// Insecure controls whether to use insecure (non-TLS) connection
+	// Default: true (for local development)
+	// Set to false in production with a TLS-enabled collector
+	Insecure bool `mapstructure:"insecure"`
+
+	// SampleRate controls the trace sampling rate (0.0 to 1.0)
+	// 1.0 = sample all traces, 0.5 = sample 50%, 0.0 = no sampling
+	// Default: 1.0 (sample all)
+	SampleRate float64 `mapstructure:"sample_rate" validate:"omitempty,gte=0,lte=1"`
 }
 
 // ServerConfig contains server-wide settings.

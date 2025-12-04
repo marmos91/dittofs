@@ -55,20 +55,20 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 	if err := registerMetadataStores(ctx, reg, cfg); err != nil {
 		return nil, fmt.Errorf("failed to register metadata stores: %w", err)
 	}
-	logger.Info("Registered %d metadata store(s)", reg.CountMetadataStores())
+	logger.Info("Registered metadata stores", "count", reg.CountMetadataStores())
 
 	// Step 2: Register all content stores
 	if err := registerContentStores(ctx, reg, cfg); err != nil {
 		return nil, fmt.Errorf("failed to register content stores: %w", err)
 	}
-	logger.Info("Registered %d content store(s)", reg.CountContentStores())
+	logger.Info("Registered content stores", "count", reg.CountContentStores())
 
 	// Step 3: Register all caches (optional, may be empty)
 	if err := registerCaches(ctx, reg, cfg); err != nil {
 		return nil, fmt.Errorf("failed to register caches: %w", err)
 	}
 	if reg.CountCaches() > 0 {
-		logger.Info("Registered %d cache(s)", reg.CountCaches())
+		logger.Info("Registered caches", "count", reg.CountCaches())
 	} else {
 		logger.Info("No caches configured (all shares will use sync mode)")
 	}
@@ -77,7 +77,7 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 	if err := addShares(ctx, reg, cfg); err != nil {
 		return nil, fmt.Errorf("failed to add shares: %w", err)
 	}
-	logger.Info("Registered %d share(s)", reg.CountShares())
+	logger.Info("Registered shares", "count", reg.CountShares())
 
 	return reg, nil
 }
@@ -109,7 +109,7 @@ func registerMetadataStores(ctx context.Context, reg *registry.Registry, cfg *Co
 	capabilities := cfg.Metadata.Global.FilesystemCapabilities
 
 	for name, storeCfg := range cfg.Metadata.Stores {
-		logger.Debug("Creating metadata store %q (type: %s)", name, storeCfg.Type)
+		logger.Debug("Creating metadata store", "name", name, "type", storeCfg.Type)
 
 		store, err := createMetadataStore(ctx, storeCfg, capabilities)
 		if err != nil {
@@ -120,7 +120,7 @@ func registerMetadataStores(ctx context.Context, reg *registry.Registry, cfg *Co
 			return fmt.Errorf("failed to register metadata store %q: %w", name, err)
 		}
 
-		logger.Debug("Metadata store %q registered successfully", name)
+		logger.Debug("Metadata store registered successfully", "name", name)
 	}
 
 	return nil
@@ -129,7 +129,7 @@ func registerMetadataStores(ctx context.Context, reg *registry.Registry, cfg *Co
 // registerContentStores creates and registers all configured content stores.
 func registerContentStores(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 	for name, storeCfg := range cfg.Content.Stores {
-		logger.Debug("Creating content store %q (type: %s)", name, storeCfg.Type)
+		logger.Debug("Creating content store", "name", name, "type", storeCfg.Type)
 
 		store, err := createContentStore(ctx, storeCfg)
 		if err != nil {
@@ -140,7 +140,7 @@ func registerContentStores(ctx context.Context, reg *registry.Registry, cfg *Con
 			return fmt.Errorf("failed to register content store %q: %w", name, err)
 		}
 
-		logger.Debug("Content store %q registered successfully", name)
+		logger.Debug("Content store registered successfully", "name", name)
 	}
 
 	return nil
@@ -154,7 +154,7 @@ func registerCaches(ctx context.Context, reg *registry.Registry, cfg *Config) er
 	}
 
 	for name, cacheCfg := range cfg.Cache.Stores {
-		logger.Debug("Creating cache %q (type: %s)", name, cacheCfg.Type)
+		logger.Debug("Creating cache", "name", name, "type", cacheCfg.Type)
 
 		cache, err := createCache(ctx, cacheCfg)
 		if err != nil {
@@ -165,7 +165,7 @@ func registerCaches(ctx context.Context, reg *registry.Registry, cfg *Config) er
 			return fmt.Errorf("failed to register cache %q: %w", name, err)
 		}
 
-		logger.Debug("Cache %q registered successfully", name)
+		logger.Debug("Cache registered successfully", "name", name)
 	}
 
 	return nil
@@ -174,12 +174,11 @@ func registerCaches(ctx context.Context, reg *registry.Registry, cfg *Config) er
 // addShares validates and adds all configured shares to the registry.
 func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 	for i, shareCfg := range cfg.Shares {
-		cacheInfo := ""
 		if shareCfg.Cache != "" {
-			cacheInfo = fmt.Sprintf(", cache: %s", shareCfg.Cache)
+			logger.Debug("Adding share", "name", shareCfg.Name, "metadata", shareCfg.MetadataStore, "content", shareCfg.ContentStore, "read_only", shareCfg.ReadOnly, "cache", shareCfg.Cache)
+		} else {
+			logger.Debug("Adding share", "name", shareCfg.Name, "metadata", shareCfg.MetadataStore, "content", shareCfg.ContentStore, "read_only", shareCfg.ReadOnly)
 		}
-		logger.Debug("Adding share %q (metadata: %s, content: %s, read_only: %v%s)",
-			shareCfg.Name, shareCfg.MetadataStore, shareCfg.ContentStore, shareCfg.ReadOnly, cacheInfo)
 
 		// Validate share configuration
 		if shareCfg.Name == "" {
@@ -236,14 +235,12 @@ func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 
 		// Log cache status at INFO level for visibility
 		if shareCfg.Cache != "" {
-			logger.Info("Share %q configured with cache %q (async writes, read caching enabled)",
-				shareCfg.Name, shareCfg.Cache)
+			logger.Info("Share configured with cache (async writes, read caching enabled)", "share", shareCfg.Name, "cache", shareCfg.Cache)
 		} else {
-			logger.Info("Share %q configured without cache (sync writes, no read caching)",
-				shareCfg.Name)
+			logger.Info("Share configured without cache (sync writes, no read caching)", "share", shareCfg.Name)
 		}
 
-		logger.Debug("Share %q added successfully", shareCfg.Name)
+		logger.Debug("Share added successfully", "name", shareCfg.Name)
 	}
 
 	return nil

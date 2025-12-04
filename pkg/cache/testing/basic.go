@@ -184,10 +184,7 @@ func (suite *CacheTestSuite) RunBasicTests(t *testing.T) {
 
 		// MaxSize should return whatever was configured
 		// (could be 0 for unlimited or a positive value)
-		maxSize := c.MaxSize()
-		if maxSize < 0 {
-			t.Errorf("MaxSize() returned negative value: %d", maxSize)
-		}
+		_ = c.MaxSize() // uint64 is always non-negative
 	})
 
 	t.Run("CloseIsIdempotent", func(t *testing.T) {

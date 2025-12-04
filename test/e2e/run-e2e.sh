@@ -13,7 +13,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Default options
-RUN_S3_TESTS=false
+RUN_S3_TESTS=true
 VERBOSE=false
 SPECIFIC_TEST=""
 KEEP_LOCALSTACK=false
@@ -23,6 +23,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --s3)
             RUN_S3_TESTS=true
+            shift
+            ;;
+        --no-s3)
+            RUN_S3_TESTS=false
             shift
             ;;
         --verbose|-v)
@@ -41,17 +45,18 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --s3                 Run S3 tests (requires Localstack)"
+            echo "  --s3                 Run S3 tests (default, requires Localstack/Docker)"
+            echo "  --no-s3              Skip S3 tests (run without Docker)"
             echo "  --verbose, -v        Enable verbose test output"
             echo "  --test, -t NAME      Run specific test (e.g., TestCreateFolder)"
             echo "  --keep-localstack    Keep Localstack running after tests"
             echo "  --help, -h           Show this help message"
             echo ""
             echo "Examples:"
-            echo "  $0                              # Run standard tests (no S3)"
-            echo "  $0 --s3                         # Run all tests including S3"
+            echo "  $0                              # Run all tests including S3 (default)"
+            echo "  $0 --no-s3                      # Run tests without S3"
             echo "  $0 --test TestCreateFile_1MB   # Run specific test"
-            echo "  $0 --s3 --verbose               # Run with verbose output"
+            echo "  $0 --verbose                    # Run with verbose output"
             exit 0
             ;;
         *)
@@ -176,8 +181,8 @@ if [ "$RUN_S3_TESTS" = true ]; then
     echo ""
     go test $TEST_FLAGS ./...
 else
-    echo -e "${YELLOW}Running standard tests (excluding S3)${NC}"
-    echo -e "${YELLOW}Use --s3 flag to include S3 tests${NC}"
+    echo -e "${YELLOW}Running tests without S3${NC}"
+    echo -e "${YELLOW}Use default (no flags) or --s3 to include S3 tests${NC}"
     echo ""
     # Run tests but skip S3-specific ones
     go test $TEST_FLAGS ./... -skip "S3"

@@ -210,24 +210,21 @@ func (h *Handler) ReadLink(
 	// before we start processing. While READLINK is fast, we should still
 	// respect cancellation to avoid wasted work on abandoned requests.
 	if ctx.isContextCancelled() {
-		logger.Debug("READLINK: request cancelled at entry: handle=%x client=%s error=%v",
-			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		logger.Debug("READLINK: request cancelled at entry", "handle", fmt.Sprintf("%x", req.Handle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("READLINK: handle=%x client=%s auth=%d",
-		req.Handle, clientIP, ctx.AuthFlavor)
+	logger.Info("READLINK", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Validate request parameters
 	// ========================================================================
 
 	if err := validateReadLinkRequest(req); err != nil {
-		logger.Warn("READLINK validation failed: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
+		logger.Warn("READLINK validation failed", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", err)
 		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -237,7 +234,7 @@ func (h *Handler) ReadLink(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("READLINK failed: %v handle=%x client=%s", err, req.Handle, clientIP)
+		logger.Warn("READLINK failed", "error", err, "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
 		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
@@ -255,13 +252,11 @@ func (h *Handler) ReadLink(
 	if err != nil {
 		// Check if error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("READLINK cancelled during auth context building: handle=%x client=%s error=%v",
-				req.Handle, clientIP, ctx.Context.Err())
+			logger.Debug("READLINK cancelled during auth context building", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", ctx.Context.Err())
 			return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		logger.Error("READLINK failed: failed to build auth context: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
+		logger.Error("READLINK failed: failed to build auth context", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", err)
 		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -279,13 +274,11 @@ func (h *Handler) ReadLink(
 	if err != nil {
 		// Check if error is due to context cancellation
 		if err == context.Canceled || err == context.DeadlineExceeded {
-			logger.Debug("READLINK: store operation cancelled: handle=%x client=%s",
-				req.Handle, clientIP)
+			logger.Debug("READLINK: store operation cancelled", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
 			return nil, err
 		}
 
-		logger.Warn("READLINK failed: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
+		logger.Warn("READLINK failed", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", err)
 
 		// Map store errors to NFS status codes
 		status := mapReadLinkErrorToNFSStatus(err)
@@ -299,11 +292,9 @@ func (h *Handler) ReadLink(
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
-	logger.Info("READLINK successful: handle=%x target='%s' target_len=%d client=%s",
-		req.Handle, target, len(target), clientIP)
+	logger.Info("READLINK successful", "handle", fmt.Sprintf("%x", req.Handle), "target", target, "target_len", len(target), "client", clientIP)
 
-	logger.Debug("READLINK details: handle=%x mode=%o uid=%d gid=%d size=%d",
-		fileHandle, file.Mode, file.UID, file.GID, file.Size)
+	logger.Debug("READLINK details", "handle", fmt.Sprintf("%x", fileHandle), "mode", fmt.Sprintf("%o", file.Mode), "uid", file.UID, "gid", file.GID, "size", file.Size)
 
 	return &ReadLinkResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -439,7 +430,7 @@ func DecodeReadLinkRequest(data []byte) (*ReadLinkRequest, error) {
 		return nil, fmt.Errorf("failed to read handle data: %w", err)
 	}
 
-	logger.Debug("Decoded READLINK request: handle_len=%d", handleLen)
+	logger.Debug("Decoded READLINK request", "handle_len", handleLen)
 
 	return &ReadLinkRequest{Handle: handle}, nil
 }
@@ -506,7 +497,7 @@ func (resp *ReadLinkResponse) Encode() ([]byte, error) {
 	// ========================================================================
 
 	if resp.Status != types.NFS3OK {
-		logger.Debug("Encoding READLINK error response: status=%d", resp.Status)
+		logger.Debug("Encoding READLINK error response", "status", resp.Status)
 		return buf.Bytes(), nil
 	}
 
@@ -519,6 +510,6 @@ func (resp *ReadLinkResponse) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("failed to write target: %w", err)
 	}
 
-	logger.Debug("Encoded READLINK response: %d bytes target_len=%d", buf.Len(), len(resp.Target))
+	logger.Debug("Encoded READLINK response", "bytes", buf.Len(), "target_len", len(resp.Target))
 	return buf.Bytes(), nil
 }

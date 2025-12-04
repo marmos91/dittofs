@@ -106,24 +106,23 @@ func (h *Handler) Umnt(
 	// 2. We want to complete cleanup once started to maintain consistency
 	// 3. Per RFC 1813, UMNT always succeeds and should be quick
 	if ctx.isContextCancelled() {
-		logger.Debug("Unmount request cancelled before processing: path=%s client=%s error=%v",
-			req.DirPath, ctx.ClientAddr, ctx.Context.Err())
+		logger.Debug("Unmount request cancelled before processing", "path", req.DirPath, "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return &UmountResponse{MountResponseBase: MountResponseBase{Status: MountOK}}, ctx.Context.Err()
 	}
 
 	// Extract client IP from address (remove port)
 	clientIP := extractClientIP(ctx.ClientAddr)
 
-	logger.Info("Unmount request: path=%s client=%s", req.DirPath, clientIP)
+	logger.Info("Unmount request", "path", req.DirPath, "client_ip", clientIP)
 
 	// Remove the mount record from the registry
 	// Note: We remove the mount SESSION, NOT the share itself! The share persists.
 	// UMNT always succeeds per RFC 1813, even if no mount record exists
 	removed := h.Registry.RemoveMount(clientIP)
 	if removed {
-		logger.Info("Unmount successful: path=%s client=%s", req.DirPath, clientIP)
+		logger.Info("Unmount successful", "path", req.DirPath, "client_ip", clientIP)
 	} else {
-		logger.Debug("Unmount acknowledged (no active mount): path=%s client=%s", req.DirPath, clientIP)
+		logger.Debug("Unmount acknowledged (no active mount)", "path", req.DirPath, "client_ip", clientIP)
 	}
 
 	// UMNT always returns void/success per RFC 1813

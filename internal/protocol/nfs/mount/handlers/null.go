@@ -98,8 +98,7 @@ func (h *Handler) MountNull(
 	// This is the only cancellation check for NULL since the operation is so fast
 	// Per RFC 1813, NULL should be extremely lightweight, so we minimize overhead
 	if ctx.isContextCancelled() {
-		logger.Debug("NULL: request cancelled before processing: client=%s error=%v",
-			ctx.ClientAddr, ctx.Context.Err())
+		logger.Debug("NULL: request cancelled before processing", "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
@@ -115,11 +114,11 @@ func (h *Handler) MountNull(
 		}
 	}
 
-	logger.Info("NULL: client=%s auth=%d", clientIP, ctx.AuthFlavor)
+	logger.Info("NULL", "client_ip", clientIP, "auth", ctx.AuthFlavor)
 
 	// NULL procedure does nothing - just returns success
 	// Per RFC 1813, this is used for connectivity testing
-	logger.Debug("NULL: request completed successfully: client=%s", clientIP)
+	logger.Debug("NULL: request completed successfully", "client_ip", clientIP)
 
 	// Return empty response - NULL always succeeds
 	return &NullResponse{MountResponseBase: MountResponseBase{Status: MountOK}}, nil
@@ -159,7 +158,7 @@ func DecodeNullRequest(data []byte) (*NullRequest, error) {
 	// NULL takes no arguments - data should be empty
 	// We accept empty or minimal data for compatibility
 	if len(data) > 0 {
-		logger.Debug("NULL: received non-empty request body (%d bytes), ignoring", len(data))
+		logger.Debug("NULL: received non-empty request body, ignoring", "bytes", len(data))
 	}
 
 	return &NullRequest{}, nil
@@ -197,6 +196,6 @@ func (resp *NullResponse) Encode() ([]byte, error) {
 	// NULL returns no data - return empty buffer
 	var buf bytes.Buffer
 
-	logger.Debug("Encoded NULL response: 0 bytes")
+	logger.Debug("Encoded NULL response", "bytes", 0)
 	return buf.Bytes(), nil
 }

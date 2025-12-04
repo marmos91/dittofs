@@ -285,16 +285,14 @@ func (h *Handler) Write(
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("WRITE: handle=%x offset=%d count=%d stable=%d client=%s auth=%d",
-		req.Handle, req.Offset, req.Count, req.Stable, clientIP, ctx.AuthFlavor)
+	logger.Info("WRITE", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "stable", req.Stable, "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
 	if ctx.isContextCancelled() {
-		logger.Warn("WRITE cancelled: handle=%x offset=%d count=%d client=%s error=%v",
-			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
+		logger.Warn("WRITE cancelled", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -304,14 +302,14 @@ func (h *Handler) Write(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("WRITE failed: %v handle=%x client=%s", err, req.Handle, clientIP)
+		logger.Warn("WRITE failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get content store for this share
 	contentStore, err := h.getContentStore(ctx)
 	if err != nil {
-		logger.Warn("WRITE failed: %v handle=%x client=%s", err, req.Handle, clientIP)
+		logger.Warn("WRITE failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -321,9 +319,9 @@ func (h *Handler) Write(
 	fileHandle := metadata.FileHandle(req.Handle)
 
 	if cache != nil {
-		logger.Info("WRITE: share=%s mode=async (using cache)", ctx.Share)
+		logger.Info("WRITE", "share", ctx.Share, "mode", "async (using cache)")
 	} else {
-		logger.Info("WRITE: share=%s mode=sync (no cache)", ctx.Share)
+		logger.Info("WRITE", "share", ctx.Share, "mode", "sync (no cache)")
 	}
 
 	// ========================================================================
@@ -332,14 +330,12 @@ func (h *Handler) Write(
 
 	caps, err := metadataStore.GetFilesystemCapabilities(ctx.Context, fileHandle)
 	if err != nil {
-		logger.Warn("WRITE failed: cannot get capabilities: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
+		logger.Warn("WRITE failed: cannot get capabilities", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", err)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	if err := validateWriteRequest(req, caps.MaxWriteSize); err != nil {
-		logger.Warn("WRITE validation failed: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
+		logger.Warn("WRITE validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", err)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -349,8 +345,7 @@ func (h *Handler) Write(
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
-		logger.Warn("WRITE cancelled before GetFile: handle=%x offset=%d count=%d client=%s error=%v",
-			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
+		logger.Warn("WRITE cancelled before GetFile", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -361,8 +356,7 @@ func (h *Handler) Write(
 
 	// Verify it's a regular file (not a directory or special file)
 	if file.Type != metadata.FileTypeRegular {
-		logger.Warn("WRITE failed: not a regular file: handle=%x type=%d client=%s",
-			req.Handle, file.Type, clientIP)
+		logger.Warn("WRITE failed: not a regular file", "handle", fmt.Sprintf("0x%x", req.Handle), "type", file.Type, "client", clientIP)
 
 		// Return file attributes even on error for cache consistency
 		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
@@ -380,8 +374,7 @@ func (h *Handler) Write(
 	dataLen := uint64(len(req.Data))
 	newSize, overflow := safeAdd(req.Offset, dataLen)
 	if overflow {
-		logger.Warn("WRITE failed: offset + dataLen overflow: offset=%d dataLen=%d client=%s",
-			req.Offset, dataLen, clientIP)
+		logger.Warn("WRITE failed: offset + dataLen overflow", "offset", req.Offset, "dataLen", dataLen, "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrInval}}, nil
 	}
 
@@ -393,13 +386,11 @@ func (h *Handler) Write(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("WRITE cancelled during auth context building: handle=%x client=%s error=%v",
-				req.Handle, clientIP, ctx.Context.Err())
+			logger.Debug("WRITE cancelled during auth context building", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", ctx.Context.Err())
 			return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		logger.Error("WRITE failed: failed to build auth context: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
+		logger.Error("WRITE failed: failed to build auth context", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", err)
 
 		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
@@ -417,8 +408,7 @@ func (h *Handler) Write(
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
-		logger.Warn("WRITE cancelled before PrepareWrite: handle=%x offset=%d count=%d client=%s error=%v",
-			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
+		logger.Warn("WRITE cancelled before PrepareWrite", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
 
 		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
@@ -433,8 +423,7 @@ func (h *Handler) Write(
 		// Map store error to NFS status
 		status := mapMetadataErrorToNFS(err)
 
-		logger.Warn("WRITE failed: PrepareWrite error: handle=%x offset=%d count=%d client=%s error=%v",
-			req.Handle, req.Offset, len(req.Data), clientIP, err)
+		logger.Warn("WRITE failed: PrepareWrite error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP, "error", err)
 
 		return h.buildWriteErrorResponse(status, fileHandle, &file.FileAttr, &file.FileAttr), nil
 	}
@@ -451,8 +440,7 @@ func (h *Handler) Write(
 
 	// Check context before write operation
 	if ctx.isContextCancelled() {
-		logger.Warn("WRITE cancelled before write: handle=%x offset=%d count=%d client=%s error=%v",
-			req.Handle, req.Offset, req.Count, clientIP, ctx.Context.Err())
+		logger.Warn("WRITE cancelled before write", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
 
 		return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
@@ -462,21 +450,19 @@ func (h *Handler) Write(
 		// Async mode: write to cache, will be flushed on COMMIT
 		err = cache.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, req.Offset)
 		if err != nil {
-			logger.Error("WRITE failed: cache write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
-				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
+			logger.Error("WRITE failed: cache write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.ContentID, "client", clientIP, "error", err)
 			return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 		}
-		logger.Debug("WRITE: cached successfully: content_id=%s cache_size=%d", writeIntent.ContentID, cache.Size(writeIntent.ContentID))
+		logger.Debug("WRITE: cached successfully", "content_id", writeIntent.ContentID, "cache_size", cache.Size(writeIntent.ContentID))
 	} else {
 		// Sync mode: write directly to content store
 		err = contentStore.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, req.Offset)
 		if err != nil {
-			logger.Error("WRITE failed: content write error: handle=%x offset=%d count=%d content_id=%s client=%s error=%v",
-				req.Handle, req.Offset, len(req.Data), writeIntent.ContentID, clientIP, err)
+			logger.Error("WRITE failed: content write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.ContentID, "client", clientIP, "error", err)
 			status := xdr.MapContentErrorToNFSStatus(err)
 			return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 		}
-		logger.Debug("WRITE: direct write successful: content_id=%s", writeIntent.ContentID)
+		logger.Debug("WRITE: direct write successful", "content_id", writeIntent.ContentID)
 	}
 
 	// ========================================================================
@@ -485,8 +471,7 @@ func (h *Handler) Write(
 
 	updatedFile, err := metadataStore.CommitWrite(authCtx, writeIntent)
 	if err != nil {
-		logger.Error("WRITE failed: CommitWrite error (content written but metadata not updated): handle=%x offset=%d count=%d client=%s error=%v",
-			req.Handle, req.Offset, len(req.Data), clientIP, err)
+		logger.Error("WRITE failed: CommitWrite error (content written but metadata not updated)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP, "error", err)
 
 		// Content is written but metadata not updated - this is an inconsistent state
 		// Map error to NFS status
@@ -501,8 +486,7 @@ func (h *Handler) Write(
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
 
-	logger.Info("WRITE successful: file=%s offset=%d requested=%d written=%d new_size=%d client=%s",
-		updatedFile.ContentID, req.Offset, req.Count, len(req.Data), updatedFile.Size, clientIP)
+	logger.Info("WRITE successful", "file", updatedFile.ContentID, "offset", req.Offset, "requested", req.Count, "written", len(req.Data), "new_size", updatedFile.Size, "client", clientIP)
 
 	// Determine what stability level to return based on whether we're using a cache
 	//
@@ -521,8 +505,7 @@ func (h *Handler) Write(
 		logger.Debug("WRITE: returning FILE_SYNC (no cache, data committed)")
 	}
 
-	logger.Debug("WRITE details: stable_requested=%d committed=%d size=%d type=%d mode=%o",
-		req.Stable, committed, updatedFile.Size, updatedFile.Type, updatedFile.Mode)
+	logger.Debug("WRITE details", "stable_requested", req.Stable, "committed", committed, "size", updatedFile.Size, "type", updatedFile.Type, "mode", fmt.Sprintf("%o", updatedFile.Mode))
 
 	return &WriteResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -623,8 +606,7 @@ func validateWriteRequest(req *WriteRequest, maxWriteSize uint32) *writeValidati
 	// Some tolerance is acceptable, but large mismatches indicate corruption
 	dataLen := uint32(len(req.Data))
 	if dataLen != req.Count {
-		logger.Warn("WRITE: count mismatch: count=%d data_len=%d (proceeding with actual data length)",
-			req.Count, dataLen)
+		logger.Warn("WRITE: count mismatch (proceeding with actual data length)", "count", req.Count, "data_len", dataLen)
 		// Not fatal - we'll use actual data length
 	}
 
@@ -823,8 +805,7 @@ func DecodeWriteRequest(data []byte) (*WriteRequest, error) {
 		}
 	}
 
-	logger.Debug("Decoded WRITE request: handle_len=%d offset=%d count=%d stable=%d data_len=%d",
-		handleLen, offset, count, stable, dataLen)
+	logger.Debug("Decoded WRITE request", "handle_len", handleLen, "offset", offset, "count", count, "stable", stable, "data_len", dataLen)
 
 	return &WriteRequest{
 		Handle: handle,
@@ -936,7 +917,7 @@ func (resp *WriteResponse) Encode() ([]byte, error) {
 	// ========================================================================
 
 	if resp.Status != types.NFS3OK {
-		logger.Debug("Encoding WRITE error response: status=%d", resp.Status)
+		logger.Debug("Encoding WRITE error response", "status", resp.Status)
 		return buf.Bytes(), nil
 	}
 
@@ -959,8 +940,7 @@ func (resp *WriteResponse) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("failed to write verifier: %w", err)
 	}
 
-	logger.Debug("Encoded WRITE response: %d bytes total, status=%d count=%d committed=%d",
-		buf.Len(), resp.Status, resp.Count, resp.Committed)
+	logger.Debug("Encoded WRITE response", "bytes", buf.Len(), "status", resp.Status, "count", resp.Count, "committed", resp.Committed)
 
 	return buf.Bytes(), nil
 }

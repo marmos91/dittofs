@@ -100,8 +100,7 @@ func (h *Handler) Mount(
 ) (*MountResponse, error) {
 	// Check for cancellation before starting any work
 	if ctx.isContextCancelled() {
-		logger.Debug("Mount request cancelled before processing: path=%s client=%s error=%v",
-			req.DirPath, ctx.ClientAddr, ctx.Context.Err())
+		logger.Debug("Mount request cancelled before processing", "path", req.DirPath, "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrServerFault}}, ctx.Context.Err()
 	}
 
@@ -110,35 +109,30 @@ func (h *Handler) Mount(
 
 	// Log authentication info
 	if ctx.AuthFlavor == rpc.AuthUnix && ctx.UID != nil && ctx.GID != nil {
-		logger.Info("Mount request: path=%s client=%s auth=UNIX uid=%d gid=%d",
-			req.DirPath, clientIP, *ctx.UID, *ctx.GID)
+		logger.Info("Mount request", "path", req.DirPath, "client_ip", clientIP, "auth", "UNIX", "uid", *ctx.UID, "gid", *ctx.GID)
 	} else {
 		authMethod := authFlavorName(ctx.AuthFlavor)
-		logger.Info("Mount request: path=%s client=%s auth=%s",
-			req.DirPath, clientIP, authMethod)
+		logger.Info("Mount request", "path", req.DirPath, "client_ip", clientIP, "auth", authMethod)
 	}
 
 	// Check for cancellation before the potentially expensive access control check
 	select {
 	case <-ctx.Context.Done():
-		logger.Debug("Mount request cancelled before access check: path=%s client=%s error=%v",
-			req.DirPath, clientIP, ctx.Context.Err())
+		logger.Debug("Mount request cancelled before access check", "path", req.DirPath, "client_ip", clientIP, "error", ctx.Context.Err())
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrServerFault}}, ctx.Context.Err()
 	default:
 	}
 
 	// Check if share exists in registry
 	if !h.Registry.ShareExists(req.DirPath) {
-		logger.Warn("Mount denied: path=%s client=%s reason=share not found",
-			req.DirPath, clientIP)
+		logger.Warn("Mount denied", "path", req.DirPath, "client_ip", clientIP, "reason", "share not found")
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrNoEnt}}, nil
 	}
 
 	// Get share to check read-only status
 	share, err := h.Registry.GetShare(req.DirPath)
 	if err != nil {
-		logger.Error("Mount access check failed: path=%s client=%s error=%v",
-			req.DirPath, clientIP, err)
+		logger.Error("Mount access check failed", "path", req.DirPath, "client_ip", clientIP, "error", err)
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrServerFault}}, nil
 	}
 
@@ -148,16 +142,14 @@ func (h *Handler) Mount(
 	// Get root handle from registry (which encodes the share and root path)
 	rootHandle, err := h.Registry.GetRootHandle(req.DirPath)
 	if err != nil {
-		logger.Error("Mount failed: cannot get root handle: path=%s client=%s error=%v",
-			req.DirPath, clientIP, err)
+		logger.Error("Mount failed: cannot get root handle", "path", req.DirPath, "client_ip", clientIP, "error", err)
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrServerFault}}, nil
 	}
 
 	// Return the authentication flavor used for mount
 	authFlavors := []int32{int32(ctx.AuthFlavor)}
 
-	logger.Info("Mount successful: path=%s client=%s handle_len=%d auth_flavors=%v readonly=%v",
-		req.DirPath, clientIP, len(rootHandle), authFlavors, share.ReadOnly)
+	logger.Info("Mount successful", "path", req.DirPath, "client_ip", clientIP, "handle_len", len(rootHandle), "auth_flavors", authFlavors, "readonly", share.ReadOnly)
 
 	return &MountResponse{
 		MountResponseBase: MountResponseBase{Status: MountOK},

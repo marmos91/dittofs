@@ -275,24 +275,31 @@ func (h *Handler) SetAttr(
 	// before we start any operations. This is especially important for
 	// SETATTR operations that may involve expensive content truncation.
 	if ctx.isContextCancelled() {
-		logger.Debug("SETATTR: request cancelled at entry: handle=%x client=%s error=%v",
-			req.Handle, ctx.ClientAddr, ctx.Context.Err())
+		logger.Debug("SETATTR: request cancelled at entry",
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", ctx.ClientAddr,
+			"error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("SETATTR: handle=%x guard=%v client=%s auth=%d",
-		req.Handle, req.Guard.Check, clientIP, ctx.AuthFlavor)
+	logger.Info("SETATTR",
+		"handle", fmt.Sprintf("%x", req.Handle),
+		"guard", req.Guard.Check,
+		"client", clientIP,
+		"auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Validate request parameters
 	// ========================================================================
 
 	if err := validateSetAttrRequest(req); err != nil {
-		logger.Warn("SETATTR validation failed: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
+		logger.Warn("SETATTR validation failed",
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", clientIP,
+			"error", err)
 		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -302,13 +309,17 @@ func (h *Handler) SetAttr(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("SETATTR failed: %v handle=%x client=%s", err, req.Handle, clientIP)
+		logger.Warn("SETATTR failed",
+			"error", err,
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", clientIP)
 		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	logger.Debug("SETATTR: share=%s", ctx.Share)
+	logger.Debug("SETATTR",
+		"share", ctx.Share)
 
 	// ========================================================================
 	// Step 3: Get current file attributes for WCC and guard check
@@ -333,8 +344,9 @@ func (h *Handler) SetAttr(
 	if req.NewAttr.Mode == nil && req.NewAttr.UID == nil && req.NewAttr.GID == nil &&
 		req.NewAttr.Size == nil && req.NewAttr.Atime == nil && req.NewAttr.Mtime == nil {
 
-		logger.Debug("SETATTR: no attributes specified (no-op): handle=%x client=%s",
-			req.Handle, clientIP)
+		logger.Debug("SETATTR: no attributes specified (no-op)",
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", clientIP)
 
 		// Return current attributes without modification
 		wccAfter := h.convertFileAttrToNFS(fileHandle, &currentFile.FileAttr)
@@ -351,8 +363,9 @@ func (h *Handler) SetAttr(
 	// ========================================================================
 	// Check again after metadata lookup, before guard check and attribute update
 	if ctx.isContextCancelled() {
-		logger.Debug("SETATTR: request cancelled after metadata lookup: handle=%x client=%s",
-			req.Handle, clientIP)
+		logger.Debug("SETATTR: request cancelled after metadata lookup",
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", clientIP)
 		return nil, ctx.Context.Err()
 	}
 
@@ -370,11 +383,11 @@ func (h *Handler) SetAttr(
 		// Compare ctime from guard with current ctime
 		if currentCtime.Seconds != req.Guard.Time.Seconds ||
 			currentCtime.Nseconds != req.Guard.Time.Nseconds {
-			logger.Debug("SETATTR guard check failed: handle=%x expected=%d.%d got=%d.%d client=%s",
-				req.Handle,
-				req.Guard.Time.Seconds, req.Guard.Time.Nseconds,
-				currentCtime.Seconds, currentCtime.Nseconds,
-				clientIP)
+			logger.Debug("SETATTR guard check failed",
+				"handle", fmt.Sprintf("%x", req.Handle),
+				"expected", fmt.Sprintf("%d.%d", req.Guard.Time.Seconds, req.Guard.Time.Nseconds),
+				"got", fmt.Sprintf("%d.%d", currentCtime.Seconds, currentCtime.Nseconds),
+				"client", clientIP)
 
 			// Get updated attributes for WCC data (best effort)
 			var wccAfter *types.NFSFileAttr
@@ -389,8 +402,9 @@ func (h *Handler) SetAttr(
 			}, nil
 		}
 
-		logger.Debug("SETATTR guard check passed: handle=%x ctime=%d.%d",
-			req.Handle, currentCtime.Seconds, currentCtime.Nseconds)
+		logger.Debug("SETATTR guard check passed",
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"ctime", fmt.Sprintf("%d.%d", currentCtime.Seconds, currentCtime.Nseconds))
 	}
 
 	// ========================================================================
@@ -425,13 +439,16 @@ func (h *Handler) SetAttr(
 	if err != nil {
 		// Check if error is due to context cancellation
 		if err == context.Canceled || err == context.DeadlineExceeded {
-			logger.Debug("SETATTR: store operation cancelled: handle=%x client=%s",
-				req.Handle, clientIP)
+			logger.Debug("SETATTR: store operation cancelled",
+				"handle", fmt.Sprintf("%x", req.Handle),
+				"client", clientIP)
 			return nil, err
 		}
 
-		logger.Error("SETATTR failed: store error: handle=%x client=%s error=%v",
-			req.Handle, clientIP, err)
+		logger.Error("SETATTR failed: store error",
+			"handle", fmt.Sprintf("%x", req.Handle),
+			"client", clientIP,
+			"error", err)
 
 		// Get updated attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
@@ -460,22 +477,28 @@ func (h *Handler) SetAttr(
 		return nil, err
 	}
 	if updatedFile == nil {
-		logger.Warn("SETATTR: attributes updated but cannot get new attributes: handle=%x",
-			req.Handle)
+		logger.Warn("SETATTR: attributes updated but cannot get new attributes",
+			"handle", fmt.Sprintf("%x", req.Handle))
 		// Continue with nil WccAfter rather than failing the entire operation
 		wccAfter = nil
 	} else {
 		wccAfter = h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
 	}
 
-	logger.Info("SETATTR successful: handle=%x client=%s", req.Handle, clientIP)
+	logger.Info("SETATTR successful",
+		"handle", fmt.Sprintf("%x", req.Handle),
+		"client", clientIP)
 
 	if updatedFile != nil {
-		logger.Debug("SETATTR details: old_size=%d new_size=%d old_mode=%o new_mode=%o",
-			currentFile.Size, updatedFile.Size, currentFile.Mode, updatedFile.Mode)
+		logger.Debug("SETATTR details",
+			"old_size", currentFile.Size,
+			"new_size", updatedFile.Size,
+			"old_mode", fmt.Sprintf("%o", currentFile.Mode),
+			"new_mode", fmt.Sprintf("%o", updatedFile.Mode))
 	} else {
-		logger.Debug("SETATTR details: old_size=%d new_size=unknown old_mode=%o new_mode=unknown",
-			currentFile.Size, currentFile.Mode)
+		logger.Debug("SETATTR details",
+			"old_size", currentFile.Size,
+			"old_mode", fmt.Sprintf("%o", currentFile.Mode))
 	}
 
 	return &SetAttrResponse{
@@ -651,13 +674,17 @@ func DecodeSetAttrRequest(data []byte) (*SetAttrRequest, error) {
 			return nil, fmt.Errorf("decode guard time nseconds: %w", err)
 		}
 
-		logger.Debug("Decoded SETATTR guard: check=true ctime=%d.%d",
-			guard.Time.Seconds, guard.Time.Nseconds)
+		logger.Debug("Decoded SETATTR guard",
+			"check", true,
+			"ctime", fmt.Sprintf("%d.%d", guard.Time.Seconds, guard.Time.Nseconds))
 	} else {
-		logger.Debug("Decoded SETATTR guard: check=false")
+		logger.Debug("Decoded SETATTR guard",
+			"check", false)
 	}
 
-	logger.Debug("Decoded SETATTR request: handle_len=%d guard=%v", len(handle), guard.Check)
+	logger.Debug("Decoded SETATTR request",
+		"handle_len", len(handle),
+		"guard", guard.Check)
 
 	return &SetAttrRequest{
 		Handle:  handle,
@@ -723,7 +750,9 @@ func (resp *SetAttrResponse) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("encode wcc data: %w", err)
 	}
 
-	logger.Debug("Encoded SETATTR response: %d bytes status=%d", buf.Len(), resp.Status)
+	logger.Debug("Encoded SETATTR response",
+		"bytes", buf.Len(),
+		"status", resp.Status)
 	return buf.Bytes(), nil
 }
 
@@ -756,6 +785,8 @@ func logSetAttrRequest(req *SetAttrRequest, clientIP string) {
 	}
 
 	if len(attrs) > 0 {
-		logger.Debug("SETATTR attributes: %v client=%s", attrs, clientIP)
+		logger.Debug("SETATTR attributes",
+			"attrs", attrs,
+			"client", clientIP)
 	}
 }

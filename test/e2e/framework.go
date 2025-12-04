@@ -16,6 +16,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
+	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/registry"
 	"github.com/marmos91/dittofs/pkg/server"
 	"github.com/marmos91/dittofs/pkg/store/content"
@@ -33,6 +34,7 @@ type TestContext struct {
 	Registry      *registry.Registry
 	MetadataStore metadata.MetadataStore
 	ContentStore  content.ContentStore
+	Cache         cache.Cache // Optional cache (nil if caching disabled)
 	MountPath     string
 	Port          int
 	ctx           context.Context
@@ -96,6 +98,9 @@ func (tc *TestContext) setupStores() {
 	if err != nil {
 		tc.T.Fatalf("Failed to create content store: %v", err)
 	}
+
+	// Create cache if enabled
+	tc.Cache = tc.Config.CreateCache()
 }
 
 // startServer starts the DittoFS server with the configured stores
@@ -121,11 +126,21 @@ func (tc *TestContext) startServer() {
 		tc.T.Fatalf("Failed to register content store: %v", err)
 	}
 
+	// Register cache if enabled
+	cacheName := ""
+	if tc.Cache != nil {
+		cacheName = fmt.Sprintf("test-cache-%d", tc.Port)
+		if err := tc.Registry.RegisterCache(cacheName, tc.Cache); err != nil {
+			tc.T.Fatalf("Failed to register cache: %v", err)
+		}
+	}
+
 	// Create share
 	shareConfig := &registry.ShareConfig{
 		Name:          "/export",
 		MetadataStore: storeName,
 		ContentStore:  contentStoreName,
+		Cache:         cacheName,
 		ReadOnly:      false,
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
@@ -316,7 +331,7 @@ func (tc *TestContext) Cleanup() {
 	// Wait for server to stop
 	tc.wg.Wait()
 
-	// Close stores
+	// Close stores and cache
 	if tc.MetadataStore != nil {
 		if closer, ok := tc.MetadataStore.(interface{ Close() error }); ok {
 			_ = closer.Close()
@@ -326,6 +341,9 @@ func (tc *TestContext) Cleanup() {
 		if closer, ok := tc.ContentStore.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
+	}
+	if tc.Cache != nil {
+		_ = tc.Cache.Close()
 	}
 
 	// Remove temporary directories

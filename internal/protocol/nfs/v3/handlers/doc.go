@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
@@ -24,12 +23,6 @@ type Handler struct {
 	// Metrics collects observability data for NFS operations
 	// Optional - may be nil to disable metrics with zero overhead
 	Metrics metrics.NFSMetrics
-
-	// fileLocks provides per-ContentID mutexes to prevent race conditions
-	// when multiple concurrent COMMIT operations target the same file.
-	// This prevents session conflicts during incremental uploads.
-	// Uses sync.Map for lock-free reads and minimal contention.
-	fileLocks sync.Map // map[metadata.ContentID]*sync.Mutex
 }
 
 // getMetadataStore retrieves the metadata store for the share specified in the context.
@@ -103,13 +96,11 @@ func (h *Handler) getFileOrError(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("%s cancelled during file lookup: handle=%x client=%s error=%v",
-				operationName, handleBytes, clientIP, ctx.Context.Err())
+			logger.Debug(operationName+" cancelled during file lookup", "handle", fmt.Sprintf("%x", handleBytes), "client", clientIP, "error", ctx.Context.Err())
 			return nil, types.NFS3ErrIO, ctx.Context.Err()
 		}
 
-		logger.Debug("%s failed: handle not found: handle=%x client=%s error=%v",
-			operationName, handleBytes, clientIP, err)
+		logger.Debug(operationName+" failed: handle not found", "handle", fmt.Sprintf("%x", handleBytes), "client", clientIP, "error", err)
 		return nil, types.NFS3ErrStale, nil
 	}
 
@@ -148,15 +139,13 @@ func (h *Handler) buildAuthContextWithWCCError(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("%s cancelled during auth context building: file='%s' dir=%x client=%s error=%v",
-				operation, filename, dirHandleBytes, clientIP, ctx.Context.Err())
+			logger.Debug(operation+" cancelled during auth context building", "name", filename, "handle", fmt.Sprintf("%x", dirHandleBytes), "client", clientIP, "error", ctx.Context.Err())
 
 			wccAfter := h.convertFileAttrToNFS(handle, fileAttr)
 			return nil, wccAfter, ctx.Context.Err()
 		}
 
-		logger.Error("%s failed: failed to build auth context: file='%s' dir=%x client=%s error=%v",
-			operation, filename, dirHandleBytes, clientIP, err)
+		logger.Error(operation+" failed: failed to build auth context", "name", filename, "handle", fmt.Sprintf("%x", dirHandleBytes), "client", clientIP, "error", err)
 
 		wccAfter := h.convertFileAttrToNFS(handle, fileAttr)
 		return nil, wccAfter, nil
