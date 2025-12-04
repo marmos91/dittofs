@@ -1,0 +1,9 @@
+apiVersion: dittofs.dittofs.com/v1
+kind: DittoServer
+metadata:
+  labels:
+    app.kubernetes.io/name: dittofs/dittofs-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: dittoserver-sample
+spec:
+  # TODO(user): Add fields here

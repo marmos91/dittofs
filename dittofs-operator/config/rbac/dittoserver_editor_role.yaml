@@ -1,0 +1,33 @@
+# This rule is not used by the project dittofs/dittofs-operator itself.
+# It is provided to allow the cluster admin to help manage permissions for users.
+#
+# Grants permissions to create, update, and delete resources within the dittofs.dittofs.com.
+# This role is intended for users who need to manage these resources
+# but should not control RBAC or manage permissions for others.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: dittofs/dittofs-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: dittoserver-editor-role
+rules:
+- apiGroups:
+  - dittofs.dittofs.com
+  resources:
+  - dittoservers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - dittofs.dittofs.com
+  resources:
+  - dittoservers/status
+  verbs:
+  - get
