@@ -49,7 +49,60 @@ logging:
   output: "stdout"        # stdout, stderr, or file path
 ```
 
-### 2. Server Settings
+**Log Formats:**
+
+- **text**: Human-readable format with colored output (when terminal supports it)
+  ```
+  2024-01-15T10:30:45.123Z INFO  Starting DittoFS server component=server version=1.0.0
+  ```
+
+- **json**: Structured JSON format for log aggregation (Elasticsearch, Loki, etc.)
+  ```json
+  {"time":"2024-01-15T10:30:45.123Z","level":"INFO","msg":"Starting DittoFS server","component":"server","version":"1.0.0"}
+  ```
+
+### 2. Telemetry (OpenTelemetry)
+
+Controls distributed tracing for observability:
+
+```yaml
+telemetry:
+  enabled: false          # Enable/disable tracing (default: false)
+  endpoint: "localhost:4317"  # OTLP collector endpoint (gRPC)
+  insecure: false         # Use insecure connection (no TLS)
+  sample_rate: 1.0        # Trace sampling rate (0.0 to 1.0)
+```
+
+When enabled, DittoFS exports traces to any OTLP-compatible collector (Jaeger, Tempo, Honeycomb, etc.).
+
+**Configuration Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `false` | Enable/disable distributed tracing |
+| `endpoint` | `localhost:4317` | OTLP gRPC collector endpoint |
+| `insecure` | `false` | Skip TLS verification (for local development) |
+| `sample_rate` | `1.0` | Sampling rate: 1.0 = all traces, 0.5 = 50%, 0.0 = none |
+
+**Example with Jaeger:**
+
+```yaml
+telemetry:
+  enabled: true
+  endpoint: "jaeger:4317"
+  insecure: true  # For local Docker setup
+  sample_rate: 1.0
+```
+
+**Trace Propagation:**
+
+Traces include:
+- NFS operation spans (READ, WRITE, LOOKUP, etc.)
+- Storage backend operations (S3, BadgerDB, filesystem)
+- Cache operations (hits, misses, flushes)
+- Request context (client IP, file handles, paths)
+
+### 3. Server Settings
 
 Application-wide server configuration:
 
@@ -67,7 +120,7 @@ server:
     burst: 10000
 ```
 
-### 3. Metadata Configuration
+### 4. Metadata Configuration
 
 Define named metadata store instances that shares can reference:
 
@@ -118,7 +171,7 @@ metadata:
 > permissions, and all metadata survive server restarts. The memory backend loses all data when
 > the server stops.
 
-### 4. Content Configuration
+### 5. Content Configuration
 
 Define named content store instances that shares can reference:
 
@@ -173,7 +226,7 @@ content:
 > - **Metrics Support**: Optional instrumentation for Prometheus/observability
 > - **Configurable Retry**: Automatic retry with exponential backoff for transient S3 errors (network issues, throttling, 5xx errors)
 
-### 5. Cache Configuration
+### 6. Cache Configuration
 
 Define named cache instances that shares can reference for read/write buffering:
 
@@ -218,7 +271,7 @@ cache:
 | `flusher.sweep_interval` | `10s` | How often to check for idle files |
 | `flusher.flush_timeout` | `30s` | Time since last write before finalizing |
 
-### 6. Shares (Exports)
+### 7. Shares (Exports)
 
 Each share explicitly references metadata and content stores by name. Multiple shares can reference the same store instances for resource sharing:
 
@@ -281,7 +334,7 @@ shares:
 - **Cache Sharing**: Multiple shares can share a cache (e.g., `/fast` and `/cloud` both use `fast-cache`)
 - **No Cache**: Shares without `cache` field operate in sync mode (direct writes, no read caching)
 
-### 6. Protocol Adapters
+### 8. Protocol Adapters
 
 Configures protocol-specific settings:
 
@@ -335,6 +388,12 @@ Override configuration using environment variables with the `DITTOFS_` prefix:
 # Logging
 export DITTOFS_LOGGING_LEVEL=DEBUG
 export DITTOFS_LOGGING_FORMAT=json
+
+# Telemetry (OpenTelemetry)
+export DITTOFS_TELEMETRY_ENABLED=true
+export DITTOFS_TELEMETRY_ENDPOINT=jaeger:4317
+export DITTOFS_TELEMETRY_INSECURE=true
+export DITTOFS_TELEMETRY_SAMPLE_RATE=0.5
 
 # Server
 export DITTOFS_SERVER_SHUTDOWN_TIMEOUT=60s
@@ -452,7 +511,7 @@ adapters:
 
 ### Production Setup
 
-Persistent storage with access control:
+Persistent storage with access control, structured logging, and telemetry:
 
 ```yaml
 logging:
@@ -460,8 +519,17 @@ logging:
   format: json
   output: /var/log/dittofs/server.log
 
+telemetry:
+  enabled: true
+  endpoint: "tempo:4317"     # Or your OTLP collector
+  insecure: false            # Use TLS in production
+  sample_rate: 0.1           # Sample 10% of traces
+
 server:
   shutdown_timeout: 30s
+  metrics:
+    enabled: true
+    port: 9090
 
 metadata:
   global:

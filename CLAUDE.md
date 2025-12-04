@@ -67,9 +67,12 @@ DITTOFS_ADAPTERS_NFS_PORT=3049 ./dittofs start
 
 # Common environment variables:
 # DITTOFS_LOGGING_LEVEL: DEBUG, INFO, WARN, ERROR
+# DITTOFS_LOGGING_FORMAT: text, json (default: text)
 # DITTOFS_ADAPTERS_NFS_PORT: NFS server port (default: 12049)
 # DITTOFS_SERVER_SHUTDOWN_TIMEOUT: Graceful shutdown timeout (default: 30s)
 # DITTOFS_SERVER_RATE_LIMITING_ENABLED: Enable rate limiting (default: false)
+# DITTOFS_TELEMETRY_ENABLED: Enable OpenTelemetry tracing (default: false)
+# DITTOFS_TELEMETRY_ENDPOINT: OTLP collector endpoint (default: localhost:4317)
 ```
 
 **Configuration File**: See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for complete configuration guide.
@@ -254,6 +257,46 @@ server:
 ```
 
 Metrics exposed at the `/metrics` endpoint (default port 9090).
+
+### OpenTelemetry Tracing
+
+Optional distributed tracing with zero overhead when disabled:
+
+- NFS operation spans (READ, WRITE, LOOKUP, etc.)
+- Storage backend spans (S3, BadgerDB, filesystem)
+- Cache operation spans (hits, misses, flushes)
+- Request context propagation (client IP, file handles, paths)
+
+**Configuration**:
+```yaml
+telemetry:
+  enabled: true
+  endpoint: "localhost:4317"  # OTLP gRPC endpoint
+  insecure: true              # Skip TLS for local development
+  sample_rate: 1.0            # 1.0 = all traces, 0.1 = 10%
+```
+
+Traces are exported via OTLP gRPC to any compatible collector (Jaeger, Tempo, Honeycomb, etc.).
+
+### Structured Logging
+
+Configurable log output format:
+
+- **text**: Human-readable format with colors (for terminal)
+- **json**: Structured JSON for log aggregation (Elasticsearch, Loki, etc.)
+
+**Configuration**:
+```yaml
+logging:
+  level: INFO      # DEBUG, INFO, WARN, ERROR
+  format: json     # text or json
+  output: stdout   # stdout, stderr, or file path
+```
+
+JSON logs include structured fields:
+```json
+{"time":"2024-01-15T10:30:45.123Z","level":"INFO","msg":"NFS READ","client":"192.168.1.100","handle":"abc123","offset":0,"count":65536}
+```
 
 ## Architecture
 

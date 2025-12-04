@@ -171,3 +171,69 @@ docker-compose down -v      # Stop and remove data volumes
 ```
 
 Prometheus scrapes DittoFS metrics every 5 seconds and stores them in a time-series database. Grafana queries Prometheus to visualize the metrics.
+
+## Distributed Tracing (OpenTelemetry)
+
+DittoFS supports distributed tracing via OpenTelemetry, allowing you to trace requests across NFS operations and storage backends.
+
+### Enabling Tracing
+
+Add telemetry configuration to your `config.yaml`:
+
+```yaml
+telemetry:
+  enabled: true
+  endpoint: "localhost:4317"  # OTLP gRPC endpoint
+  insecure: true              # Use for local development
+  sample_rate: 1.0            # Sample all traces (reduce in production)
+```
+
+Or via environment variables:
+
+```bash
+DITTOFS_TELEMETRY_ENABLED=true \
+DITTOFS_TELEMETRY_ENDPOINT=localhost:4317 \
+DITTOFS_TELEMETRY_INSECURE=true \
+./dittofs start
+```
+
+### Running Jaeger Locally
+
+Add Jaeger to your monitoring stack:
+
+```yaml
+# Add to docker-compose.yml
+jaeger:
+  image: jaegertracing/all-in-one:1.51
+  ports:
+    - "16686:16686"   # Jaeger UI
+    - "4317:4317"     # OTLP gRPC
+    - "4318:4318"     # OTLP HTTP
+  environment:
+    - COLLECTOR_OTLP_ENABLED=true
+```
+
+Then access the Jaeger UI at http://localhost:16686
+
+### What's Traced
+
+DittoFS traces include:
+
+- **NFS Operations**: Each NFS procedure (READ, WRITE, LOOKUP, etc.) creates a span
+- **Storage Operations**: S3 uploads/downloads, BadgerDB queries, filesystem I/O
+- **Cache Operations**: Cache hits, misses, flushes, and prefetch operations
+- **Context Propagation**: Client IP, file handles, paths, and operation metadata
+
+### Trace Sampling
+
+In production, sample traces to reduce overhead:
+
+```yaml
+telemetry:
+  sample_rate: 0.1  # Sample 10% of traces
+```
+
+Recommended sampling rates:
+- **Development**: `1.0` (all traces)
+- **Staging**: `0.5` (50% of traces)
+- **Production**: `0.01` to `0.1` (1-10% of traces)
