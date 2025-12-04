@@ -20,10 +20,10 @@ import (
 
 // s3RetryConfig represents retry configuration for S3 operations.
 type s3RetryConfig struct {
-	MaxRetries        uint    `mapstructure:"max_retries"`         // Max retry attempts (default: 3)
-	InitialBackoff    string  `mapstructure:"initial_backoff"`     // Initial backoff duration (default: 100ms)
-	MaxBackoff        string  `mapstructure:"max_backoff"`         // Max backoff duration (default: 2s)
-	BackoffMultiplier float64 `mapstructure:"backoff_multiplier"`  // Backoff multiplier (default: 2.0)
+	MaxRetries        uint    `mapstructure:"max_retries"`        // Max retry attempts (default: 3)
+	InitialBackoff    string  `mapstructure:"initial_backoff"`    // Initial backoff duration (default: 100ms)
+	MaxBackoff        string  `mapstructure:"max_backoff"`        // Max backoff duration (default: 2s)
+	BackoffMultiplier float64 `mapstructure:"backoff_multiplier"` // Backoff multiplier (default: 2.0)
 }
 
 // s3Config represents S3 configuration loaded from YAML files.

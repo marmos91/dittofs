@@ -6,11 +6,13 @@ package s3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
@@ -298,4 +300,92 @@ func (s *S3ContentStore) Close() error {
 	})
 
 	return nil
+}
+
+// DeleteBatch removes multiple content items in one operation.
+//
+// S3 supports batch deletes of up to 1000 objects at a time. This implementation
+// automatically chunks larger batches.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeouts
+//   - ids: Content identifiers to delete
+//
+// Returns:
+//   - map[metadata.ContentID]error: Map of failed deletions (empty = all succeeded)
+//   - error: Returns error for catastrophic failures or context cancellation
+func (s *S3ContentStore) DeleteBatch(ctx context.Context, ids []metadata.ContentID) (map[metadata.ContentID]error, error) {
+	failures := make(map[metadata.ContentID]error)
+
+	// S3 allows max 1000 objects per delete request
+	const maxBatchSize = 1000
+
+	for i := 0; i < len(ids); i += maxBatchSize {
+		if err := ctx.Err(); err != nil {
+			for j := i; j < len(ids); j++ {
+				failures[ids[j]] = ctx.Err()
+			}
+			return failures, ctx.Err()
+		}
+
+		end := i + maxBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+
+		batch := ids[i:end]
+
+		// Build delete objects input
+		objects := make([]types.ObjectIdentifier, len(batch))
+		for j, id := range batch {
+			key := s.getObjectKey(id)
+			objects[j] = types.ObjectIdentifier{
+				Key: aws.String(key),
+			}
+		}
+
+		// Execute batch delete
+		start := time.Now()
+		result, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(s.bucket),
+			Delete: &types.Delete{
+				Objects: objects,
+				Quiet:   aws.Bool(false),
+			},
+		})
+
+		// Record metrics
+		if s.metrics != nil {
+			s.metrics.ObserveOperation("DeleteObjects", time.Since(start), err)
+		}
+
+		if err != nil {
+			for _, id := range batch {
+				failures[id] = err
+			}
+			continue
+		}
+
+		// Check for individual errors
+		for _, deleteErr := range result.Errors {
+			if deleteErr.Key == nil {
+				continue
+			}
+
+			// Find the ContentID for this key (remove prefix to get path)
+			key := *deleteErr.Key
+			if s.keyPrefix != "" && len(key) > len(s.keyPrefix) {
+				key = key[len(s.keyPrefix):]
+			}
+
+			id := metadata.ContentID(key)
+			errMsg := "unknown error"
+			if deleteErr.Code != nil && deleteErr.Message != nil {
+				errMsg = fmt.Sprintf("%s: %s", *deleteErr.Code, *deleteErr.Message)
+			}
+			failures[id] = errors.New(errMsg)
+		}
+	}
+
+	return failures, nil
 }

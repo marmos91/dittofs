@@ -323,4 +323,3 @@ func (f *BackgroundFlusher) flush(id metadata.ContentID) error {
 
 	return nil
 }
-
