@@ -27,7 +27,7 @@ type s3YAMLConfig struct {
 	KeyPrefix          string `mapstructure:"key_prefix"`
 	ForcePathStyle     bool   `mapstructure:"force_path_style"`
 	PartSize           uint64 `mapstructure:"part_size"`
-	MaxParallelUploads int    `mapstructure:"max_parallel_uploads"`
+	MaxParallelUploads uint   `mapstructure:"max_parallel_uploads"`
 }
 
 // createMetadataStore creates a single metadata store instance.

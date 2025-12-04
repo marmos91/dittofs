@@ -22,31 +22,26 @@ import (
 // S3ContentStore implements ContentStore using Amazon S3 or S3-compatible storage.
 //
 // This implementation provides:
-//   - Full WritableContentStore support (read, write, delete)
-//   - StreamingContentStore support for efficient uploads/downloads
-//   - MultipartContentStore support for large files (>5MB)
-//   - GarbageCollectableStore support for cleanup
+//   - Full ContentStore support (read, write, delete, truncate)
+//   - ReadAtContentStore for efficient byte-range reads
+//   - IncrementalWriteStore for parallel multipart uploads
 //
 // Path-Based Key Design:
 //   - ContentID is the relative file path from share root
 //   - Format: "shareName/path/to/file" (e.g., "export/docs/report.pdf")
-//   - No leading "/" and no ":content" suffix
 //   - S3 bucket mirrors the actual filesystem structure
 //   - Enables metadata reconstruction from S3 (disaster recovery)
-//   - Human-readable and inspectable S3 bucket contents
 //
 // S3 Characteristics:
 //   - Object storage (no true random access like filesystem)
-//   - Supports range reads (for partial reads)
-//   - Multipart uploads for large files
+//   - Supports range reads (ReadAt uses HTTP Range header)
+//   - Multipart uploads for large files (>= partSize, default 5MB)
 //   - Eventually consistent (depending on S3 configuration)
-//   - High durability and availability
 //
-// Implementation Details:
-//   - WriteAt is implemented using read-modify-write for small files
-//   - For large files, consider using multipart uploads directly
-//   - No local caching (every read hits S3)
-//   - Supports custom endpoint for S3-compatible storage (Cubbit DS3, etc.)
+// Cache Integration:
+//   - Optional cache can be injected via SetCache()
+//   - Cache is used by IncrementalWriteStore for buffering writes
+//   - When cache is nil, writes go directly to S3
 //
 // Thread Safety:
 // This implementation is safe for concurrent use by multiple goroutines.
@@ -62,18 +57,18 @@ type S3ContentStore struct {
 	uploadSessions   map[string]*multipartUpload
 	uploadSessionsMu sync.RWMutex
 
-	// Write cache (injected from NFS handler)
-	writeCache cache.Cache
+	// Cache for buffering writes (optional, injected via SetCache)
+	cache cache.Cache
 
 	// Max parallel part uploads (default: 4)
-	maxParallelUploads int
+	maxParallelUploads uint
 
-	// Storage stats cache (stores value instead of pointer to eliminate cloning)
-	statsCache struct {
+	// Cached storage stats (avoids repeated S3 ListObjects calls)
+	cachedStats struct {
 		stats     content.StorageStats
-		hasStats  bool
-		timestamp time.Time
-		ttl       time.Duration
+		valid     bool          // True if stats have been computed at least once
+		timestamp time.Time     // When stats were last computed
+		ttl       time.Duration // How long to cache stats
 		mu        sync.RWMutex
 	}
 
@@ -86,7 +81,7 @@ type S3ContentStore struct {
 		queue           []metadata.ContentID // Pending deletions
 		mu              sync.Mutex           // Protects queue
 		flushInterval   time.Duration        // How often to batch process (default: 2s)
-		batchSize       int                  // Trigger flush when this many items queued (default: 100)
+		batchSize       uint                 // Trigger flush when this many items queued (default: 100)
 		shutdownTimeout time.Duration        // Max time to wait for worker to finish on shutdown (default: 60s)
 		stopCh          chan struct{}        // Signal to stop background worker
 		flushCh         chan struct{}        // Signal to trigger immediate flush
@@ -117,8 +112,7 @@ type S3ContentStoreConfig struct {
 
 	// MaxParallelUploads is the maximum number of concurrent part uploads (default: 4).
 	// Higher values improve throughput for large files but use more memory and connections.
-	// This is typically set to match the flusher's FlushPoolSize for consistency.
-	MaxParallelUploads int
+	MaxParallelUploads uint
 
 	// StatsCacheTTL is the duration to cache storage stats (default: 5 minutes)
 	// Set to 0 to use the default 5-minute TTL
@@ -137,22 +131,29 @@ type S3ContentStoreConfig struct {
 
 	// DeletionBatchSize triggers flush when this many items are queued (default: 100)
 	// Set to 0 to use the default batch size of 100
-	DeletionBatchSize int
+	DeletionBatchSize uint
 
 	// DeletionShutdownTimeout is the maximum time to wait for deletion worker to finish on shutdown (default: 60s)
 	// For large deletion queues or slow S3 connections, increase this value
 	// Set to 0 to use the default 60-second timeout
 	DeletionShutdownTimeout time.Duration
 
-	// WriteCache is an optional write cache for buffering writes before flushing to S3
-	// When provided, enables efficient write buffering and reduces S3 API calls
-	// The cache should be shared between the NFS handler and content store
-	WriteCache cache.Cache
+	// Cache is an optional cache for buffering writes before flushing to S3.
+	// When provided, enables efficient write buffering and reduces S3 API calls.
+	// Can be nil if caching is not configured for this share.
+	Cache cache.Cache
 }
 
 // NewS3ClientFromConfig creates an S3 client from configuration parameters.
 // This is a helper function for creating S3 clients from YAML configuration.
-func NewS3ClientFromConfig(ctx context.Context, endpoint, region, accessKeyID, secretAccessKey string, forcePathStyle bool) (*s3.Client, error) {
+func NewS3ClientFromConfig(
+	ctx context.Context,
+	endpoint,
+	region,
+	accessKeyID,
+	secretAccessKey string,
+	forcePathStyle bool,
+) (*s3.Client, error) {
 	// Build AWS config with credentials
 	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion(region),
@@ -166,18 +167,13 @@ func NewS3ClientFromConfig(ctx context.Context, endpoint, region, accessKeyID, s
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	// Create S3 client with optional custom endpoint
-	var client *s3.Client
-	if endpoint != "" {
-		client = s3.NewFromConfig(cfg, func(o *s3.Options) {
+	// Create S3 client with options
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		if endpoint != "" {
 			o.BaseEndpoint = &endpoint
-			o.UsePathStyle = forcePathStyle
-		})
-	} else {
-		client = s3.NewFromConfig(cfg, func(o *s3.Options) {
-			o.UsePathStyle = forcePathStyle
-		})
-	}
+		}
+		o.UsePathStyle = forcePathStyle
+	})
 
 	return client, nil
 }
@@ -255,8 +251,19 @@ func NewS3ContentStore(ctx context.Context, cfg S3ContentStoreConfig) (*S3Conten
 		statsCacheTTL = 5 * time.Minute // Default: 5 minutes
 	}
 
-	// Metrics can be nil for zero-overhead disabled metrics
-	metrics := cfg.Metrics
+	// Apply deletion queue defaults
+	deletionFlushInterval := cfg.DeletionFlushInterval
+	if deletionFlushInterval == 0 {
+		deletionFlushInterval = 2 * time.Second
+	}
+	deletionBatchSize := cfg.DeletionBatchSize
+	if deletionBatchSize == 0 {
+		deletionBatchSize = 100
+	}
+	deletionShutdownTimeout := cfg.DeletionShutdownTimeout
+	if deletionShutdownTimeout == 0 {
+		deletionShutdownTimeout = 60 * time.Second
+	}
 
 	store := &S3ContentStore{
 		client:             cfg.Client,
@@ -265,33 +272,21 @@ func NewS3ContentStore(ctx context.Context, cfg S3ContentStoreConfig) (*S3Conten
 		partSize:           partSize,
 		maxParallelUploads: maxParallelUploads,
 		uploadSessions:     make(map[string]*multipartUpload),
-		metrics:            metrics,
-		writeCache:         cfg.WriteCache,
+		metrics:            cfg.Metrics,
+		cache:              cfg.Cache,
 	}
 
-	// Initialize stats cache
-	store.statsCache.ttl = statsCacheTTL
+	// Initialize cached stats
+	store.cachedStats.ttl = statsCacheTTL
 
 	// Initialize deletion queue
 	store.deletionQueue.enabled = cfg.BufferedDeletionEnabled
-	if cfg.DeletionFlushInterval > 0 {
-		store.deletionQueue.flushInterval = cfg.DeletionFlushInterval
-	} else {
-		store.deletionQueue.flushInterval = 2 * time.Second // Default: 2 seconds
-	}
-	if cfg.DeletionBatchSize > 0 {
-		store.deletionQueue.batchSize = cfg.DeletionBatchSize
-	} else {
-		store.deletionQueue.batchSize = 100 // Default: 100 items
-	}
-	if cfg.DeletionShutdownTimeout > 0 {
-		store.deletionQueue.shutdownTimeout = cfg.DeletionShutdownTimeout
-	} else {
-		store.deletionQueue.shutdownTimeout = 60 * time.Second // Default: 60 seconds
-	}
-	store.deletionQueue.queue = make([]metadata.ContentID, 0, store.deletionQueue.batchSize)
+	store.deletionQueue.flushInterval = deletionFlushInterval
+	store.deletionQueue.batchSize = deletionBatchSize
+	store.deletionQueue.shutdownTimeout = deletionShutdownTimeout
+	store.deletionQueue.queue = make([]metadata.ContentID, 0, deletionBatchSize)
 	store.deletionQueue.stopCh = make(chan struct{})
-	store.deletionQueue.flushCh = make(chan struct{}, 1) // Buffered to avoid blocking
+	store.deletionQueue.flushCh = make(chan struct{}, 1)
 	store.deletionQueue.doneCh = make(chan struct{})
 
 	// Start background deletion worker if buffering is enabled
@@ -342,19 +337,16 @@ func (s *S3ContentStore) getObjectKey(id metadata.ContentID) string {
 	return key
 }
 
-// SetWriteCache injects a write cache into the S3ContentStore.
+// SetCache injects a cache into the S3ContentStore.
 //
-// This allows the NFS adapter to provide a shared cache after the content store
-// has been created. The cache is used by FlushWrites() to read buffered data
-// and upload it to S3.
-//
-// This method is safe to call multiple times and is typically called once during
-// server initialization by the NFS adapter after creating the cache.
+// This allows the registry to provide a shared cache after the content store
+// has been created. The cache is used by IncrementalWriteStore methods to
+// read buffered data and upload it to S3.
 //
 // Parameters:
-//   - cache: The write cache to use for buffering writes
-func (s *S3ContentStore) SetWriteCache(c cache.Cache) {
-	s.writeCache = c
+//   - c: The cache to use for buffering writes (can be nil to disable)
+func (s *S3ContentStore) SetCache(c cache.Cache) {
+	s.cache = c
 }
 
 // GetStorageStats returns statistics about S3 storage.
@@ -385,14 +377,14 @@ func (s *S3ContentStore) GetStorageStats(ctx context.Context) (stats *content.St
 		return nil, err
 	}
 
-	// Check cache first
-	s.statsCache.mu.RLock()
-	if s.statsCache.hasStats && time.Since(s.statsCache.timestamp) < s.statsCache.ttl {
-		cached := s.statsCache.stats
-		s.statsCache.mu.RUnlock()
+	// Check cached stats first
+	s.cachedStats.mu.RLock()
+	if s.cachedStats.valid && time.Since(s.cachedStats.timestamp) < s.cachedStats.ttl {
+		cached := s.cachedStats.stats
+		s.cachedStats.mu.RUnlock()
 		return &cached, nil
 	}
-	s.statsCache.mu.RUnlock()
+	s.cachedStats.mu.RUnlock()
 
 	// Cache miss or expired - compute stats
 	var totalSize uint64
@@ -438,18 +430,18 @@ func (s *S3ContentStore) GetStorageStats(ctx context.Context) (stats *content.St
 		AverageSize:   averageSize,
 	}
 
-	// Update cache - check again to prevent race condition
-	s.statsCache.mu.Lock()
-	// Double-check if another goroutine updated the cache while we were computing
-	if s.statsCache.hasStats && time.Since(s.statsCache.timestamp) < s.statsCache.ttl {
-		cached := s.statsCache.stats
-		s.statsCache.mu.Unlock()
+	// Update cached stats - check again to prevent race condition
+	s.cachedStats.mu.Lock()
+	// Double-check if another goroutine updated while we were computing
+	if s.cachedStats.valid && time.Since(s.cachedStats.timestamp) < s.cachedStats.ttl {
+		cached := s.cachedStats.stats
+		s.cachedStats.mu.Unlock()
 		return &cached, nil
 	}
-	s.statsCache.stats = computedStats
-	s.statsCache.hasStats = true
-	s.statsCache.timestamp = time.Now()
-	s.statsCache.mu.Unlock()
+	s.cachedStats.stats = computedStats
+	s.cachedStats.valid = true
+	s.cachedStats.timestamp = time.Now()
+	s.cachedStats.mu.Unlock()
 
 	return &computedStats, nil
 }

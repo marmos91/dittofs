@@ -66,10 +66,7 @@ func (s *S3ContentStore) WriteContent(ctx context.Context, id metadata.ContentID
 // WriteAt is not supported by S3ContentStore.
 //
 // S3 does not support random-access writes natively. For NFS write operations,
-// use the FlushableContentStore interface with WriteCache for proper write buffering.
-//
-// This method always returns an error to satisfy the WritableContentStore interface
-// while indicating that the operation is not supported.
+// writes are buffered in cache and flushed to S3 via IncrementalWriteStore.
 //
 // Parameters:
 //   - ctx: Context for cancellation and timeouts
@@ -78,9 +75,9 @@ func (s *S3ContentStore) WriteContent(ctx context.Context, id metadata.ContentID
 //   - offset: Byte offset where writing begins
 //
 // Returns:
-//   - error: Always returns ErrNotSupported
+//   - error: Always returns an error indicating the operation is not supported
 func (s *S3ContentStore) WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset int64) error {
-	return fmt.Errorf("WriteAt is not supported for S3 content store: use FlushWrites with WriteCache instead")
+	return fmt.Errorf("WriteAt is not supported for S3 content store: use cache + IncrementalWriteStore instead")
 }
 
 // Truncate changes the size of the content.
@@ -202,7 +199,7 @@ func (s *S3ContentStore) Truncate(ctx context.Context, id metadata.ContentID, ne
 
 // FlushWrites flushes cached writes for a specific content ID to S3.
 //
-// This method reads buffered writes from the WriteCache (if available) and
+// This method reads buffered writes from the cache (if available) and
 // uploads them to S3. The upload strategy depends on the data size:
 //
 //   - Small files (< partSize): Single PutObject operation
@@ -231,8 +228,8 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 
 	defer func() {
 		// Record overall flush operation at the end
-		if s.metrics != nil {
-			cacheSize := s.writeCache.Size(id)
+		if s.metrics != nil && s.cache != nil {
+			cacheSize := s.cache.Size(id)
 			s.metrics.RecordFlushOperation("auto", int64(cacheSize), time.Since(flushStart), flushErr)
 		}
 	}()
@@ -242,17 +239,14 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 		return err
 	}
 
-	// Check if WriteCache is available
-	if s.writeCache == nil {
+	// Check if cache is available
+	if s.cache == nil {
 		// No cache configured - nothing to flush
-		// This can happen if:
-		// - S3ContentStore is used directly without NFS handler
-		// - Cache was not injected during initialization
 		return nil
 	}
 
 	// Get cache size first to determine upload strategy
-	cacheSize := s.writeCache.Size(id)
+	cacheSize := s.cache.Size(id)
 	if cacheSize == 0 {
 		// No data in cache, nothing to flush
 		return nil
@@ -277,9 +271,9 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 
 		// Phase 1: Read from cache
 		cacheReadStart := time.Now()
-		data, err := s.writeCache.Read(ctx, id)
+		data, err := s.cache.Read(ctx, id)
 		if err != nil {
-			flushErr = fmt.Errorf("failed to read from write cache: %w", err)
+			flushErr = fmt.Errorf("failed to read from cache: %w", err)
 			return flushErr
 		}
 		cacheReadDuration := time.Since(cacheReadStart)
@@ -379,7 +373,7 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 
 			// Read chunk from cache
 			partBuffer := make([]byte, bytesToRead)
-			n, readErr := s.writeCache.ReadAt(ctx, id, partBuffer, offset)
+			n, readErr := s.cache.ReadAt(ctx, id, partBuffer, offset)
 			if readErr != nil && readErr != io.EOF {
 				flushErr = readErr
 				return flushErr
@@ -472,7 +466,7 @@ func (s *S3ContentStore) FlushWrites(ctx context.Context, id metadata.ContentID)
 
 	// Phase 3: Clear cache after successful upload
 	cacheClearStart := time.Now()
-	if resetErr := s.writeCache.Remove(id); resetErr != nil {
+	if resetErr := s.cache.Remove(id); resetErr != nil {
 		// Log warning but don't fail the flush operation
 		// The data is already in S3, so the operation succeeded
 		flushErr = fmt.Errorf("flush succeeded but cache removal failed: %w", resetErr)
@@ -557,7 +551,7 @@ func (s *S3ContentStore) Delete(ctx context.Context, id metadata.ContentID) erro
 		s.deletionQueue.mu.Unlock()
 
 		// Trigger immediate flush if batch size threshold reached
-		if queueLen >= s.deletionQueue.batchSize {
+		if uint(queueLen) >= s.deletionQueue.batchSize {
 			select {
 			case s.deletionQueue.flushCh <- struct{}{}:
 			default:

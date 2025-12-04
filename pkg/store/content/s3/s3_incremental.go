@@ -148,7 +148,7 @@ func (s *S3ContentStore) FlushIncremental(ctx context.Context, id metadata.Conte
 	if maxConcurrent == 0 {
 		maxConcurrent = 4
 	}
-	if len(partsToUpload) > maxConcurrent {
+	if uint(len(partsToUpload)) > maxConcurrent {
 		partsToUpload = partsToUpload[:maxConcurrent]
 	}
 
