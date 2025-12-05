@@ -35,6 +35,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
+        description: DittoServer is the Schema for the dittoservers API
         properties:
           apiVersion:
             description: |-
@@ -54,19 +55,46 @@ spec:
           metadata:
             type: object
           spec:
+            description: DittoServerSpec defines the desired state of DittoServer
             properties:
               config:
+                description: |-
+                  DittoFS configuration (shares, backends, etc.)
+                  This maps directly to the config.yaml format used by DittoFS
                 properties:
                   backends:
+                    description: |-
+                      Backend storage definitions (metadata and content stores)
+                      These are referenced by name in ShareConfig
                     items:
+                      description: |-
+                        BackendConfig defines a storage backend (metadata or content store)
+                        Backends are referenced by name in ShareConfig
                       properties:
                         config:
                           additionalProperties:
                             type: string
+                          description: |-
+                            Backend-specific configuration (e.g., S3 bucket, region, credentials)
+                            The structure depends on the Type field
+                          example:
+                            bucket: my-bucket
+                            region: us-east-1
                           type: object
                         name:
+                          description: |-
+                            Unique name for this backend
+                            Used as a reference in MetadataStore/ContentStore fields
+                          example: s3-production
                           type: string
                         type:
+                          description: Type of backend storage
+                          enum:
+                          - s3
+                          - local
+                          - badger
+                          - gcs
+                          - azure
                           type: string
                       required:
                       - name
@@ -74,15 +102,28 @@ spec:
                       type: object
                     type: array
                   shares:
+                    description: |-
+                      NFS exports/shares configuration
+                      Each share defines an NFS export path and its backing stores
                     items:
+                      description: ShareConfig defines an NFS export/share
                       properties:
                         contentStore:
+                          description: |-
+                            Reference to a backend in the Backends list (by name)
+                            This backend will store file content
                           type: string
                         exportPath:
+                          default: /export
+                          description: NFS export path (e.g., "/export", "/data")
                           type: string
                         metadataStore:
+                          description: |-
+                            Reference to a backend in the Backends list (by name)
+                            This backend will store filesystem metadata
                           type: string
                         name:
+                          description: Unique name for this share
                           type: string
                       required:
                       - contentStore
@@ -90,31 +131,66 @@ spec:
                       - metadataStore
                       - name
                       type: object
+                    minItems: 1
                     type: array
                 required:
                 - shares
                 type: object
               image:
+                default: dittofs/dittofs:latest
+                description: Container image for DittoFS server
                 type: string
               replicas:
+                default: 1
+                description: |-
+                  Number of server replicas
+                  Only 0 or 1 is supported. Multiple replicas would cause BadgerDB corruption.
                 format: int32
+                maximum: 1
+                minimum: 0
                 type: integer
               service:
+                description: Service configuration for the NFS server endpoint
                 properties:
                   annotations:
                     additionalProperties:
                       type: string
+                    description: Service annotations (e.g., for cloud load balancer
+                      configuration)
                     type: object
                   type:
+                    default: ClusterIP
+                    description: Service type
+                    enum:
+                    - ClusterIP
+                    - NodePort
+                    - LoadBalancer
                     type: string
                 type: object
               storage:
+                description: |-
+                  Storage configuration for DittoFS server's internal volumes
+                  These PVCs are mounted inside the server pod at /data/metadata and /data/content
+                  This is separate from the NFS storage exposed to clients
                 properties:
                   contentSize:
+                    description: |-
+                      Size for content store PVC (mounted at /data/content)
+                      Used for local filesystem content backend (not needed if using pure S3)
+                    example: 50Gi
+                    pattern: ^[0-9]+(Gi|Mi|Ti)$
                     type: string
                   metadataSize:
+                    description: |-
+                      Size for metadata store PVC (mounted at /data/metadata)
+                      Used by BadgerDB or other metadata backends
+                    example: 10Gi
+                    pattern: ^[0-9]+(Gi|Mi|Ti)$
                     type: string
                   storageClassName:
+                    description: |-
+                      StorageClass for the server's PVCs
+                      If not specified, uses the cluster's default StorageClass
                     type: string
                 required:
                 - contentSize
@@ -190,11 +266,11 @@ spec:
                 type: array
               nfsEndpoint:
                 description: |-
-                  NFS endpoint that clients should use
+                  NFS endpoint that clients should use to mount
                   Format: service-name.namespace.svc.cluster.local:2049
                 type: string
               phase:
-                description: Phase of the server
+                description: Current phase of the DittoServer
                 enum:
                 - Pending
                 - Running
