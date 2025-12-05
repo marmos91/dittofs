@@ -18,13 +18,20 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/labstack/gommon/log"
+	dittoiov1alpha1 "github.com/marmos91/dittofs/dittofs-operator/api/v1alpha1"
+	"github.com/marmos91/dittofs/dittofs-operator/internal/controller/config"
+	"github.com/marmos91/dittofs/dittofs-operator/utils/conditions"
+	"go.yaml.in/yaml/v2"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-
-	dittoiov1 "github.com/marmos91/dittofs/dittofs-operator/api/v1"
 )
 
 // DittoServerReconciler reconciles a DittoServer object
@@ -36,6 +43,12 @@ type DittoServerReconciler struct {
 // +kubebuilder:rbac:groups=dittofs.dittofs.com,resources=dittoservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=dittofs.dittofs.com,resources=dittoservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=dittofs.dittofs.com,resources=dittoservers/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -49,7 +62,46 @@ type DittoServerReconciler struct {
 func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	dittoServer := &dittoiov1alpha1.DittoServer{}
+	if err := r.Get(ctx, req.NamespacedName, dittoServer); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// replicas := int32(1)
+	// if dittoServer.Spec.Replicas != nil {
+	// 	replicas = *dittoServer.Spec.Replicas
+	// }
+
+	// if replicas == 0 {
+	// 	dittoServer.Status.Phase = "Stopped"
+	// } else {
+	// 	dittoServer.Status.Phase = "Running"
+	// }
+
+	// Reconcile ConfigMap
+	if err := r.reconcileConfigMap(ctx, dittoServer); err != nil {
+		log.Error(err, "Failed to reconcile ConfigMap")
+		return ctrl.Result{}, err
+	}
+
+	dittoServerCopy := dittoServer.DeepCopy()
+	dittoServerCopy.Status.Phase = "Pending"
+	conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation, "Creating", metav1.ConditionTrue, "GeneratedConfigMap", "ConfigMap has been generated")
+
+	if err := r.Status().Update(ctx, dittoServerCopy); err != nil {
+		log.Error(err, "Failed to update DittoServer status")
+		return ctrl.Result{}, err
+	}
+
+	// to be done:
+	// 2. reconcile pvc for badger/postgres
+	// 3. reconcile pvc for content (eventually)
+	// 4. reconcile service to expose the server (get annotation)
+	// 5. reconcile statefulset of dittofs operator
+	//		5.1 pass all informations
+	// if err := r.reconcileStatefulSet(ctx, dittoServer, replicas); err != nil {
+	// 	return ctrl.Result{}, err
+	// }
 
 	return ctrl.Result{}, nil
 }
@@ -57,7 +109,158 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 // SetupWithManager sets up the controller with the Manager.
 func (r *DittoServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&dittoiov1.DittoServer{}).
+		For(&dittoiov1alpha1.DittoServer{}).
 		Named("dittoserver").
 		Complete(r)
+}
+
+func (r *DittoServerReconciler) reconcileConfigMap(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      dittoServer.Name + "-config",
+			Namespace: dittoServer.Namespace,
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, configMap, func() error {
+		if err := controllerutil.SetControllerReference(dittoServer, configMap, r.Scheme); err != nil {
+			return err
+		}
+
+		configYAML, err := r.generateDittoFSConfig(dittoServer)
+		if err != nil {
+			return fmt.Errorf("failed to generate config: %w", err)
+		}
+
+		configMap.Data = map[string]string{
+			"config.yaml": configYAML,
+		}
+
+		return nil
+	})
+
+	return err
+}
+
+func (r *DittoServerReconciler) generateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, error) {
+	metadataStores := make(map[string]config.MetadataStore)
+	contentStores := make(map[string]config.ContentStore)
+
+	for _, backend := range dittoServer.Spec.Config.Backends {
+		switch backend.Type {
+		case "badger":
+			metadataStores[backend.Name] = config.MetadataStore{
+				Type: "badger",
+				Badger: &config.BadgerConfig{
+					DBPath: getConfigValue(backend.Config, "path", "/data/metadata"),
+				},
+			}
+		case "local":
+			contentStores[backend.Name] = config.ContentStore{
+				Type: "filesystem",
+				Filesystem: &config.FilesystemConfig{
+					Path: getConfigValue(backend.Config, "path", "/data/content"),
+				},
+			}
+		case "s3":
+			contentStores[backend.Name] = config.ContentStore{
+				Type: "s3",
+				S3: &config.S3Config{
+					Bucket:   getConfigValue(backend.Config, "bucket", ""),
+					Region:   getConfigValue(backend.Config, "region", "us-east-1"),
+					Endpoint: getConfigValue(backend.Config, "endpoint", ""),
+				},
+			}
+		}
+	}
+
+	shares := make([]config.ShareYAML, 0, len(dittoServer.Spec.Config.Shares))
+	for _, share := range dittoServer.Spec.Config.Shares {
+		shares = append(shares, config.ShareYAML{
+			Name:               share.ExportPath,
+			MetadataStore:      share.MetadataStore,
+			ContentStore:       share.ContentStore,
+			ReadOnly:           false,
+			AllowedClients:     []string{},
+			DeniedClients:      []string{},
+			RequireAuth:        false,
+			AllowedAuthMethods: []string{"anonymous", "unix"},
+			IdentityMapping: config.IdentityMapping{
+				MapAllToAnonymous:        false,
+				MapPrivilegedToAnonymous: false,
+				AnonymousUID:             65534,
+				AnonymousGID:             65534,
+			},
+			RootDirectoryAttributes: config.DirectoryAttributes{
+				Mode: 0755,
+				UID:  501,
+				GID:  20,
+			},
+			DumpRestricted:     false,
+			DumpAllowedClients: []string{},
+		})
+	}
+
+	config := config.DittoFSConfig{
+		Logging: config.LoggingConfig{
+			Level:  "INFO",
+			Format: "text",
+			Output: "stdout",
+		},
+		Server: config.ServerConfig{
+			ShutdownTimeout: "30s",
+		},
+		Metadata: config.MetadataConfig{
+			Global: config.MetadataGlobal{
+				FilesystemCapabilities: config.FilesystemCapabilities{
+					MaxReadSize:        1048576,
+					PreferredReadSize:  65536,
+					MaxWriteSize:       1048576,
+					PreferredWriteSize: 65536,
+					MaxFileSize:        9223372036854775807,
+					MaxFilenameLen:     255,
+					MaxPathLen:         4096,
+					MaxHardLinkCount:   32767,
+					SupportsHardLinks:  true,
+					SupportsSymlinks:   true,
+					CaseSensitive:      true,
+					CasePreserving:     true,
+				},
+			},
+			Stores: metadataStores,
+		},
+		Content: config.ContentConfig{
+			Global: map[string]interface{}{},
+			Stores: contentStores,
+		},
+		Shares: shares,
+		Adapters: config.AdaptersConfig{
+			NFS: config.NFSAdapter{
+				Enabled:        true,
+				Port:           2049,
+				MaxConnections: 0,
+				Timeouts: config.TimeoutsConfig{
+					Read:     "5m0s",
+					Write:    "30s",
+					Idle:     "5m0s",
+					Shutdown: "30s",
+				},
+				MetricsLogInterval: "5m0s",
+			},
+		},
+	}
+
+	yamlBytes, err := yaml.Marshal(&config)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal config to YAML: %w", err)
+	}
+
+	return string(yamlBytes), nil
+}
+
+func getConfigValue(config map[string]string, key, defaultValue string) string {
+	if val, ok := config[key]; ok {
+		return val
+	}
+	return defaultValue
 }

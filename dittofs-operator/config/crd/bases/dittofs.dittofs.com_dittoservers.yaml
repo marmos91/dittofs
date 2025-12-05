@@ -93,8 +93,6 @@ spec:
                           - s3
                           - local
                           - badger
-                          - gcs
-                          - azure
                           type: string
                       required:
                       - name

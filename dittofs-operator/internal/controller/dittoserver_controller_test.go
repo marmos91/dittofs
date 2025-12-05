@@ -27,7 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	dittoiov1 "github.com/marmos91/dittofs/dittofs-operator/api/v1"
+	dittoiov1alpha1 "github.com/marmos91/dittofs/dittofs-operator/api/v1alpha1"
 )
 
 var _ = Describe("DittoServer Controller", func() {
@@ -40,13 +40,13 @@ var _ = Describe("DittoServer Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		dittoserver := &dittoiov1.DittoServer{}
+		dittoserver := &dittoiov1alpha1.DittoServer{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind DittoServer")
 			err := k8sClient.Get(ctx, typeNamespacedName, dittoserver)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &dittoiov1.DittoServer{
+				resource := &dittoiov1alpha1.DittoServer{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
@@ -59,7 +59,7 @@ var _ = Describe("DittoServer Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &dittoiov1.DittoServer{}
+			resource := &dittoiov1alpha1.DittoServer{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 

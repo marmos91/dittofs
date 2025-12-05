@@ -2,7 +2,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   labels:
-    app.kubernetes.io/name: dittofs/dittofs-operator
+    app.kubernetes.io/name: dittofs-operator
     app.kubernetes.io/managed-by: kustomize
   name: leader-election-rolebinding
 roleRef:
@@ -12,4 +12,4 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: controller-manager
-  namespace: system
+  namespace: dittofs

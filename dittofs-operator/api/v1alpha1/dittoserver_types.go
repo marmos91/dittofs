@@ -98,7 +98,7 @@ type BackendConfig struct {
 
 	// Type of backend storage
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=s3;local;badger;gcs;azure
+	// +kubebuilder:validation:Enum=s3;local;badger
 	Type string `json:"type"`
 
 	// Backend-specific configuration (e.g., S3 bucket, region, credentials)
