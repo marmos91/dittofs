@@ -24,7 +24,6 @@ import (
 	dittoiov1alpha1 "github.com/marmos91/dittofs/dittofs-operator/api/v1alpha1"
 	"github.com/marmos91/dittofs/dittofs-operator/internal/controller/config"
 	"github.com/marmos91/dittofs/dittofs-operator/utils/conditions"
-	"go.yaml.in/yaml/v2"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -127,7 +126,7 @@ func (r *DittoServerReconciler) reconcileConfigMap(ctx context.Context, dittoSer
 			return err
 		}
 
-		configYAML, err := r.generateDittoFSConfig(dittoServer)
+		configYAML, err := config.GenerateDittoFSConfig(dittoServer)
 		if err != nil {
 			return fmt.Errorf("failed to generate config: %w", err)
 		}
@@ -140,127 +139,4 @@ func (r *DittoServerReconciler) reconcileConfigMap(ctx context.Context, dittoSer
 	})
 
 	return err
-}
-
-func (r *DittoServerReconciler) generateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, error) {
-	metadataStores := make(map[string]config.MetadataStore)
-	contentStores := make(map[string]config.ContentStore)
-
-	for _, backend := range dittoServer.Spec.Config.Backends {
-		switch backend.Type {
-		case "badger":
-			metadataStores[backend.Name] = config.MetadataStore{
-				Type: "badger",
-				Badger: &config.BadgerConfig{
-					DBPath: getConfigValue(backend.Config, "path", "/data/metadata"),
-				},
-			}
-		case "local":
-			contentStores[backend.Name] = config.ContentStore{
-				Type: "filesystem",
-				Filesystem: &config.FilesystemConfig{
-					Path: getConfigValue(backend.Config, "path", "/data/content"),
-				},
-			}
-		case "s3":
-			contentStores[backend.Name] = config.ContentStore{
-				Type: "s3",
-				S3: &config.S3Config{
-					Bucket:   getConfigValue(backend.Config, "bucket", ""),
-					Region:   getConfigValue(backend.Config, "region", "us-east-1"),
-					Endpoint: getConfigValue(backend.Config, "endpoint", ""),
-				},
-			}
-		}
-	}
-
-	shares := make([]config.ShareYAML, 0, len(dittoServer.Spec.Config.Shares))
-	for _, share := range dittoServer.Spec.Config.Shares {
-		shares = append(shares, config.ShareYAML{
-			Name:               share.ExportPath,
-			MetadataStore:      share.MetadataStore,
-			ContentStore:       share.ContentStore,
-			ReadOnly:           false,
-			AllowedClients:     []string{},
-			DeniedClients:      []string{},
-			RequireAuth:        false,
-			AllowedAuthMethods: []string{"anonymous", "unix"},
-			IdentityMapping: config.IdentityMapping{
-				MapAllToAnonymous:        false,
-				MapPrivilegedToAnonymous: false,
-				AnonymousUID:             65534,
-				AnonymousGID:             65534,
-			},
-			RootDirectoryAttributes: config.DirectoryAttributes{
-				Mode: 0755,
-				UID:  501,
-				GID:  20,
-			},
-			DumpRestricted:     false,
-			DumpAllowedClients: []string{},
-		})
-	}
-
-	config := config.DittoFSConfig{
-		Logging: config.LoggingConfig{
-			Level:  "INFO",
-			Format: "text",
-			Output: "stdout",
-		},
-		Server: config.ServerConfig{
-			ShutdownTimeout: "30s",
-		},
-		Metadata: config.MetadataConfig{
-			Global: config.MetadataGlobal{
-				FilesystemCapabilities: config.FilesystemCapabilities{
-					MaxReadSize:        1048576,
-					PreferredReadSize:  65536,
-					MaxWriteSize:       1048576,
-					PreferredWriteSize: 65536,
-					MaxFileSize:        9223372036854775807,
-					MaxFilenameLen:     255,
-					MaxPathLen:         4096,
-					MaxHardLinkCount:   32767,
-					SupportsHardLinks:  true,
-					SupportsSymlinks:   true,
-					CaseSensitive:      true,
-					CasePreserving:     true,
-				},
-			},
-			Stores: metadataStores,
-		},
-		Content: config.ContentConfig{
-			Global: map[string]interface{}{},
-			Stores: contentStores,
-		},
-		Shares: shares,
-		Adapters: config.AdaptersConfig{
-			NFS: config.NFSAdapter{
-				Enabled:        true,
-				Port:           2049,
-				MaxConnections: 0,
-				Timeouts: config.TimeoutsConfig{
-					Read:     "5m0s",
-					Write:    "30s",
-					Idle:     "5m0s",
-					Shutdown: "30s",
-				},
-				MetricsLogInterval: "5m0s",
-			},
-		},
-	}
-
-	yamlBytes, err := yaml.Marshal(&config)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal config to YAML: %w", err)
-	}
-
-	return string(yamlBytes), nil
-}
-
-func getConfigValue(config map[string]string, key, defaultValue string) string {
-	if val, ok := config[key]; ok {
-		return val
-	}
-	return defaultValue
 }
