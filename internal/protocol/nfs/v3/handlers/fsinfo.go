@@ -161,19 +161,19 @@ func (h *Handler) FsInfo(
 	ctx *NFSHandlerContext,
 	req *FsInfoRequest,
 ) (*FsInfoResponse, error) {
-	logger.Debug("FSINFO request", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "FSINFO request", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr, "auth", ctx.AuthFlavor)
 
 	// Check for context cancellation before starting any work
 	// FSINFO is lightweight, but we respect cancellation to prevent
 	// wasting resources on abandoned requests
 	if ctx.isContextCancelled() {
-		logger.Debug("FSINFO cancelled", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "FSINFO cancelled", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
 	// Validate file handle before using it
 	if err := validateFileHandle(req.Handle); err != nil {
-		logger.Debug("FSINFO failed: invalid handle", "error", err)
+		logger.DebugCtx(ctx.Context, "FSINFO failed: invalid handle", "error", err)
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
@@ -183,7 +183,7 @@ func (h *Handler) FsInfo(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("FSINFO failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", xdr.ExtractClientIP(ctx.ClientAddr))
+		logger.WarnCtx(ctx.Context, "FSINFO failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", xdr.ExtractClientIP(ctx.ClientAddr))
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
@@ -192,7 +192,7 @@ func (h *Handler) FsInfo(
 	// Check for cancellation before store call
 	// store operations might involve I/O or locks
 	if ctx.isContextCancelled() {
-		logger.Debug("FSINFO cancelled before GetFile", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "FSINFO cancelled before GetFile", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
@@ -203,7 +203,7 @@ func (h *Handler) FsInfo(
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
-	logger.Debug("FSINFO", "share", ctx.Share, "path", file.Path)
+	logger.DebugCtx(ctx.Context, "FSINFO", "share", ctx.Share, "path", file.Path)
 
 	// Retrieve filesystem capabilities from the store
 	// All business logic about filesystem limits is handled by the store
@@ -211,13 +211,13 @@ func (h *Handler) FsInfo(
 	// a fast in-memory operation returning static configuration
 	capabilities, err := metadataStore.GetFilesystemCapabilities(ctx.Context, metadata.FileHandle(req.Handle))
 	if err != nil {
-		logger.Error("FSINFO failed to retrieve capabilities", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr, "error", err)
+		traceError(ctx.Context, err, "FSINFO failed to retrieve capabilities", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr)
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// Defensive check: ensure store returned valid capabilities
 	if capabilities == nil {
-		logger.Error("FSINFO failed: store returned nil capabilities", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr)
+		traceError(ctx.Context, fmt.Errorf("store returned nil capabilities"), "FSINFO failed: store returned nil capabilities", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr)
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -225,7 +225,7 @@ func (h *Handler) FsInfo(
 	// This is a protocol-layer concern for creating the NFS attribute structure
 	fileid, err := ExtractFileIDFromHandle(req.Handle)
 	if err != nil {
-		logger.Error("FSINFO failed to extract file ID", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr, "error", err)
+		traceError(ctx.Context, err, "FSINFO failed to extract file ID", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr)
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
@@ -238,7 +238,7 @@ func (h *Handler) FsInfo(
 	// Build NFS properties bitmask from capabilities
 	properties := buildNFSProperties(capabilities)
 
-	logger.Info("FSINFO successful", "client", ctx.ClientAddr, "rtmax", capabilities.MaxReadSize, "wtmax", capabilities.MaxWriteSize, "maxfilesize", capabilities.MaxFileSize, "properties", fmt.Sprintf("0x%x", properties))
+	logger.InfoCtx(ctx.Context, "FSINFO successful", "client", ctx.ClientAddr, "rtmax", capabilities.MaxReadSize, "wtmax", capabilities.MaxWriteSize, "maxfilesize", capabilities.MaxFileSize, "properties", fmt.Sprintf("0x%x", properties))
 
 	// Build response with data from store
 	// Map the standardized FilesystemCapabilities to NFS wire format

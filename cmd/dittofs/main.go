@@ -183,6 +183,24 @@ func runStart() {
 		}
 	}()
 
+	// Initialize Pyroscope profiling (if enabled)
+	profilingCfg := telemetry.ProfilingConfig{
+		Enabled:        cfg.Telemetry.Profiling.Enabled,
+		ServiceName:    "dittofs",
+		ServiceVersion: "dev", // TODO: inject version at build time
+		Endpoint:       cfg.Telemetry.Profiling.Endpoint,
+		ProfileTypes:   cfg.Telemetry.Profiling.ProfileTypes,
+	}
+	profilingShutdown, err := telemetry.InitProfiling(profilingCfg)
+	if err != nil {
+		log.Fatalf("Failed to initialize profiling: %v", err)
+	}
+	defer func() {
+		if err := profilingShutdown(); err != nil {
+			logger.Error("profiling shutdown error", "error", err)
+		}
+	}()
+
 	fmt.Println("DittoFS - A modular virtual filesystem")
 	logger.Info("Log level", "level", cfg.Logging.Level, "format", cfg.Logging.Format)
 	logger.Info("Configuration loaded", "source", getConfigSource(*configFile))
@@ -190,6 +208,11 @@ func runStart() {
 		logger.Info("Telemetry enabled", "endpoint", cfg.Telemetry.Endpoint, "sample_rate", cfg.Telemetry.SampleRate)
 	} else {
 		logger.Info("Telemetry disabled")
+	}
+	if telemetry.IsProfilingEnabled() {
+		logger.Info("Profiling enabled", "endpoint", cfg.Telemetry.Profiling.Endpoint, "profile_types", cfg.Telemetry.Profiling.ProfileTypes)
+	} else {
+		logger.Info("Profiling disabled")
 	}
 
 	// Initialize metrics FIRST (before creating stores that use metrics)

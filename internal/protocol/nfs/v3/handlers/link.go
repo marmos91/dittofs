@@ -178,7 +178,7 @@ func (h *Handler) Link(
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("LINK", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "dir_handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.InfoCtx(ctx.Context, "LINK", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "dir_handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Check for context cancellation early
@@ -187,7 +187,7 @@ func (h *Handler) Link(
 	// wasting resources on abandoned requests
 
 	if ctx.isContextCancelled() {
-		logger.Debug("LINK cancelled", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "LINK cancelled", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
@@ -196,7 +196,7 @@ func (h *Handler) Link(
 	// ========================================================================
 
 	if err := validateLinkRequest(req); err != nil {
-		logger.Warn("LINK validation failed", "name", req.Name, "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "LINK validation failed", "name", req.Name, "client", clientIP, "error", err)
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -208,24 +208,24 @@ func (h *Handler) Link(
 	fileHandle := metadata.FileHandle(req.FileHandle)
 	fileShareName, _, err := metadata.DecodeFileHandle(fileHandle)
 	if err != nil {
-		logger.Warn("LINK failed: invalid file handle", "file_handle", fmt.Sprintf("%x", req.FileHandle), "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "LINK failed: invalid file handle", "file_handle", fmt.Sprintf("%x", req.FileHandle), "client", clientIP, "error", err)
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
 	// Verify both handles are from the same share (cross-share linking not allowed)
 	if ctx.Share != fileShareName {
-		logger.Warn("LINK failed: cross-share link attempted", "file_share", fileShareName, "dir_share", ctx.Share, "client", clientIP)
+		logger.WarnCtx(ctx.Context, "LINK failed: cross-share link attempted", "file_share", fileShareName, "dir_share", ctx.Share, "client", clientIP)
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrInval}}, nil
 	}
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("LINK failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
+		logger.WarnCtx(ctx.Context, "LINK failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
-	logger.Debug("LINK", "share", ctx.Share, "name", req.Name)
+	logger.DebugCtx(ctx.Context, "LINK", "share", ctx.Share, "name", req.Name)
 
 	// ========================================================================
 	// Step 4: Build AuthContext for permission checking
@@ -235,11 +235,11 @@ func (h *Handler) Link(
 	if err != nil {
 		// Check if error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("LINK cancelled during auth context building", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
+			logger.DebugCtx(ctx.Context, "LINK cancelled during auth context building", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
 			return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		logger.Error("LINK failed: failed to build auth context", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", err)
+		traceError(ctx.Context, err, "LINK failed: failed to build auth context", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP)
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -248,7 +248,7 @@ func (h *Handler) Link(
 	// ========================================================================
 
 	if ctx.isContextCancelled() {
-		logger.Debug("LINK cancelled before GetFile", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "LINK cancelled before GetFile", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
@@ -258,13 +258,13 @@ func (h *Handler) Link(
 
 	fileAttr, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
-		logger.Warn("LINK failed: source file not found", "file_handle", fmt.Sprintf("%x", req.FileHandle), "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "LINK failed: source file not found", "file_handle", fmt.Sprintf("%x", req.FileHandle), "client", clientIP, "error", err)
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	// Hard links to directories are not allowed (prevents filesystem cycles)
 	if fileAttr.Type == metadata.FileTypeDirectory {
-		logger.Warn("LINK failed: cannot link directory", "file_handle", fmt.Sprintf("%x", req.FileHandle), "client", clientIP)
+		logger.WarnCtx(ctx.Context, "LINK failed: cannot link directory", "file_handle", fmt.Sprintf("%x", req.FileHandle), "client", clientIP)
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir}}, nil
 	}
 
@@ -273,7 +273,7 @@ func (h *Handler) Link(
 	// ========================================================================
 
 	if ctx.isContextCancelled() {
-		logger.Debug("LINK cancelled before directory lookup", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "LINK cancelled before directory lookup", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
@@ -283,7 +283,7 @@ func (h *Handler) Link(
 
 	dirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
-		logger.Warn("LINK failed: target directory not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "LINK failed: target directory not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
@@ -292,7 +292,7 @@ func (h *Handler) Link(
 
 	// Verify target is a directory
 	if dirFile.Type != metadata.FileTypeDirectory {
-		logger.Warn("LINK failed: target not a directory", "handle", fmt.Sprintf("%x", req.DirHandle), "type", dirFile.Type, "client", clientIP)
+		logger.WarnCtx(ctx.Context, "LINK failed: target not a directory", "handle", fmt.Sprintf("%x", req.DirHandle), "type", dirFile.Type, "client", clientIP)
 
 		// Get current directory state for WCC
 		dirWccAfter := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
@@ -309,7 +309,7 @@ func (h *Handler) Link(
 	// ========================================================================
 
 	if ctx.isContextCancelled() {
-		logger.Debug("LINK cancelled before name check", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "LINK cancelled before name check", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
@@ -320,7 +320,7 @@ func (h *Handler) Link(
 	_, err = metadataStore.Lookup(authCtx, dirHandle, req.Name)
 	if err == nil {
 		// No error means file exists
-		logger.Debug("LINK failed: name already exists", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
+		logger.DebugCtx(ctx.Context, "LINK failed: name already exists", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		// Get updated directory attributes for WCC
 		updatedDirFile, _ := metadataStore.GetFile(ctx.Context, dirHandle)
@@ -340,7 +340,7 @@ func (h *Handler) Link(
 	// This is the most critical check as CreateHardLink modifies filesystem state
 
 	if ctx.isContextCancelled() {
-		logger.Debug("LINK cancelled before CreateHardLink", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "LINK cancelled before CreateHardLink", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
@@ -355,7 +355,7 @@ func (h *Handler) Link(
 
 	err = metadataStore.CreateHardLink(authCtx, dirHandle, req.Name, fileHandle)
 	if err != nil {
-		logger.Error("LINK failed: store error", "name", req.Name, "client", clientIP, "error", err)
+		traceError(ctx.Context, err, "LINK failed: store error", "name", req.Name, "client", clientIP)
 
 		// Get updated directory attributes for WCC
 		updatedDirFile, _ := metadataStore.GetFile(ctx.Context, dirHandle)
@@ -380,7 +380,7 @@ func (h *Handler) Link(
 	// Get updated file attributes (nlink should be incremented)
 	updatedFile, err := metadataStore.GetFile(ctx.Context, fileHandle)
 	if err != nil {
-		logger.Error("LINK: failed to get file attributes after link", "file_handle", fmt.Sprintf("%x", req.FileHandle), "error", err)
+		traceError(ctx.Context, err, "LINK: failed to get file attributes after link", "file_handle", fmt.Sprintf("%x", req.FileHandle))
 		// Continue with cached attributes - this shouldn't happen but handle gracefully
 	}
 
@@ -390,7 +390,7 @@ func (h *Handler) Link(
 	updatedDirFile, _ := metadataStore.GetFile(ctx.Context, dirHandle)
 	nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
 
-	logger.Info("LINK successful", "name", req.Name, "file_handle", fmt.Sprintf("%x", req.FileHandle), "nlink", nfsFileAttr.Nlink, "client", clientIP)
+	logger.InfoCtx(ctx.Context, "LINK successful", "name", req.Name, "file_handle", fmt.Sprintf("%x", req.FileHandle), "nlink", nfsFileAttr.Nlink, "client", clientIP)
 
 	return &LinkResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

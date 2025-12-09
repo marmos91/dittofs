@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
@@ -245,6 +246,13 @@ func (s *S3ContentStore) ReadAt(
 	p []byte,
 	offset uint64,
 ) (n int, err error) {
+	ctx, span := telemetry.StartContentSpan(ctx, "read", string(id),
+		telemetry.FSOffset(offset),
+		telemetry.FSCount(uint32(len(p))),
+		telemetry.StoreName("s3"),
+		telemetry.StoreType("content"))
+	defer span.End()
+
 	start := time.Now()
 	defer func() {
 		if s.metrics != nil {
@@ -252,6 +260,9 @@ func (s *S3ContentStore) ReadAt(
 			if n > 0 {
 				s.metrics.RecordBytes("read", int64(n))
 			}
+		}
+		if err != nil {
+			telemetry.RecordError(ctx, err)
 		}
 	}()
 

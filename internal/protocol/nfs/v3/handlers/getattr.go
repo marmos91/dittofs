@@ -151,7 +151,7 @@ func (h *Handler) GetAttr(
 	// GETATTR is one of the most frequently called procedures, so we optimize
 	// for the common case of no cancellation
 	if ctx.isContextCancelled() {
-		logger.Debug("GETATTR cancelled before processing",
+		logger.DebugCtx(ctx.Context, "GETATTR cancelled before processing",
 			"handle", fmt.Sprintf("%x", req.Handle),
 			"client", ctx.ClientAddr,
 			"error", ctx.Context.Err())
@@ -161,7 +161,7 @@ func (h *Handler) GetAttr(
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("GETATTR",
+	logger.InfoCtx(ctx.Context, "GETATTR",
 		"handle", fmt.Sprintf("%x", req.Handle),
 		"client", clientIP,
 		"auth", ctx.AuthFlavor)
@@ -171,7 +171,7 @@ func (h *Handler) GetAttr(
 	// ========================================================================
 
 	if err := validateGetAttrRequest(req); err != nil {
-		logger.Warn("GETATTR validation failed",
+		logger.WarnCtx(ctx.Context, "GETATTR validation failed",
 			"handle", fmt.Sprintf("%x", req.Handle),
 			"client", clientIP,
 			"error", err)
@@ -184,7 +184,7 @@ func (h *Handler) GetAttr(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("GETATTR failed",
+		logger.WarnCtx(ctx.Context, "GETATTR failed",
 			"error", err,
 			"handle", fmt.Sprintf("%x", req.Handle),
 			"client", clientIP)
@@ -202,7 +202,7 @@ func (h *Handler) GetAttr(
 		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
-	logger.Debug("GETATTR",
+	logger.DebugCtx(ctx.Context, "GETATTR",
 		"share", ctx.Share,
 		"path", file.Path)
 
@@ -215,14 +215,14 @@ func (h *Handler) GetAttr(
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
-	logger.Info("GETATTR successful",
+	logger.InfoCtx(ctx.Context, "GETATTR successful",
 		"handle", fmt.Sprintf("%x", req.Handle),
 		"type", nfsAttr.Type,
 		"mode", fmt.Sprintf("%o", nfsAttr.Mode),
 		"size", nfsAttr.Size,
 		"client", clientIP)
 
-	logger.Debug("GETATTR details",
+	logger.DebugCtx(ctx.Context, "GETATTR details",
 		"handle", fmt.Sprintf("%x", fileHandle),
 		"uid", nfsAttr.UID,
 		"gid", nfsAttr.GID,

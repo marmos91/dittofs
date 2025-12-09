@@ -12,6 +12,61 @@ services:
       - "--storage.tsdb.path=/prometheus"
       - "--web.console.libraries=/usr/share/prometheus/console_libraries"
       - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-remote-write-receiver"
+      - "--enable-feature=exemplar-storage"
+    networks:
+      - dittofs-monitoring
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:latest
+    container_name: dittofs-tempo
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "3200:3200"   # Tempo API
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml
+      - tempo-data:/var/tempo
+    networks:
+      - dittofs-monitoring
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:latest
+    container_name: dittofs-loki
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml
+      - loki-data:/loki
+    networks:
+      - dittofs-monitoring
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: dittofs-promtail
+    command: ["-config.file=/etc/promtail/promtail.yaml"]
+    volumes:
+      - ./promtail/promtail.yaml:/etc/promtail/promtail.yaml
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log:/var/log:ro
+    depends_on:
+      - loki
+    networks:
+      - dittofs-monitoring
+    restart: unless-stopped
+
+  pyroscope:
+    image: grafana/pyroscope:latest
+    container_name: dittofs-pyroscope
+    ports:
+      - "4040:4040"
+    volumes:
+      - pyroscope-data:/data
     networks:
       - dittofs-monitoring
     restart: unless-stopped
@@ -25,12 +80,17 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_SERVER_ROOT_URL=http://localhost:3000
+      # Enable feature toggles for better observability integration
+      - GF_FEATURE_TOGGLES_ENABLE=traceToProfiles,tracesEmbeddedFlameGraph
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning
       - ./grafana/dashboards:/var/lib/grafana/dashboards
     depends_on:
       - prometheus
+      - tempo
+      - loki
+      - pyroscope
     networks:
       - dittofs-monitoring
     restart: unless-stopped
@@ -42,3 +102,6 @@ networks:
 volumes:
   prometheus-data:
   grafana-data:
+  tempo-data:
+  loki-data:
+  pyroscope-data:

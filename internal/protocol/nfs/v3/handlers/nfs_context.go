@@ -109,7 +109,7 @@ func (c *NFSHandlerContext) GetShare() string {
 // Example usage in a handler:
 //
 //	if ctx.isContextCancelled() {
-//	    logger.Debug("Operation cancelled: client=%s error=%v", ctx.ClientAddr, ctx.Context.Err())
+//	    logger.DebugCtx(ctx.Context, "Operation cancelled: client=%s error=%v", ctx.ClientAddr, ctx.Context.Err())
 //	    return &Response{Status: ErrorStatus}, ctx.Context.Err()
 //	}
 func (c *NFSHandlerContext) isContextCancelled() bool {

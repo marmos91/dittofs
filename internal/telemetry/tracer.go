@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -291,6 +292,14 @@ func StorageKey(key string) attribute.KeyValue {
 	return attribute.String(AttrKey, key)
 }
 
+// Error returns an attribute for error message (used in span events)
+func Error(err error) attribute.KeyValue {
+	if err == nil {
+		return attribute.String("error", "")
+	}
+	return attribute.String("error", err.Error())
+}
+
 // StartNFSSpan starts a span for an NFS procedure.
 // This is a convenience function that sets common attributes.
 func StartNFSSpan(ctx context.Context, procedure string, handle []byte, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
@@ -445,4 +454,32 @@ func StartProtocolSpan(ctx context.Context, protocol, operation string, attrs ..
 	allAttrs = append(allAttrs, attrs...)
 
 	return StartSpan(ctx, protocol+"."+operation, trace.WithAttributes(allAttrs...))
+}
+
+// InjectTraceContext injects trace/span IDs from the current span into the logger context.
+// This enables log-trace correlation in Loki/Tempo.
+// Returns a new context with logger context containing trace information.
+func InjectTraceContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return ctx
+	}
+
+	// Get trace and span IDs
+	traceID := TraceID(ctx)
+	spanID := SpanID(ctx)
+
+	if traceID == "" && spanID == "" {
+		return ctx
+	}
+
+	// Get or create logger context
+	lc := logger.FromContext(ctx)
+	if lc == nil {
+		lc = logger.NewLogContext("")
+	}
+
+	// Add trace info
+	lc = lc.WithTrace(traceID, spanID)
+
+	return logger.WithContext(ctx, lc)
 }

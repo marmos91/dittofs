@@ -412,6 +412,9 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 		telemetry.NFSShare(share))
 	defer span.End()
 
+	// Inject trace context into logger context for log-trace correlation
+	ctx = telemetry.InjectTraceContext(ctx)
+
 	// Extract handler context (includes share and authentication for handlers)
 	handlerCtx := nfs.ExtractHandlerContext(ctx, call, clientAddr, share, procedure.Name)
 

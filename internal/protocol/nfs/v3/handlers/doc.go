@@ -96,11 +96,11 @@ func (h *Handler) getFileOrError(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug(operationName+" cancelled during file lookup", "handle", fmt.Sprintf("%x", handleBytes), "client", clientIP, "error", ctx.Context.Err())
+			logger.DebugCtx(ctx.Context, operationName+" cancelled during file lookup", "handle", fmt.Sprintf("%x", handleBytes), "client", clientIP, "error", ctx.Context.Err())
 			return nil, types.NFS3ErrIO, ctx.Context.Err()
 		}
 
-		logger.Debug(operationName+" failed: handle not found", "handle", fmt.Sprintf("%x", handleBytes), "client", clientIP, "error", err)
+		logger.DebugCtx(ctx.Context, operationName+" failed: handle not found", "handle", fmt.Sprintf("%x", handleBytes), "client", clientIP, "error", err)
 		return nil, types.NFS3ErrStale, nil
 	}
 
@@ -139,13 +139,13 @@ func (h *Handler) buildAuthContextWithWCCError(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug(operation+" cancelled during auth context building", "name", filename, "handle", fmt.Sprintf("%x", dirHandleBytes), "client", clientIP, "error", ctx.Context.Err())
+			logger.DebugCtx(ctx.Context, operation+" cancelled during auth context building", "name", filename, "handle", fmt.Sprintf("%x", dirHandleBytes), "client", clientIP, "error", ctx.Context.Err())
 
 			wccAfter := h.convertFileAttrToNFS(handle, fileAttr)
 			return nil, wccAfter, ctx.Context.Err()
 		}
 
-		logger.Error(operation+" failed: failed to build auth context", "name", filename, "handle", fmt.Sprintf("%x", dirHandleBytes), "client", clientIP, "error", err)
+		traceError(ctx.Context, err, operation+" failed: failed to build auth context", "name", filename, "handle", fmt.Sprintf("%x", dirHandleBytes), "client", clientIP)
 
 		wccAfter := h.convertFileAttrToNFS(handle, fileAttr)
 		return nil, wccAfter, nil
