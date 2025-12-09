@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -39,7 +40,13 @@ type multipartUpload struct {
 //   - string: Upload ID for this multipart upload session
 //   - error: Returns error if upload cannot be initiated
 func (s *S3ContentStore) BeginMultipartUpload(ctx context.Context, id metadata.ContentID) (string, error) {
+	ctx, span := telemetry.StartContentSpan(ctx, "begin_multipart_upload", string(id),
+		telemetry.StoreName("s3"),
+		telemetry.StoreType("content"))
+	defer span.End()
+
 	if err := ctx.Err(); err != nil {
+		telemetry.RecordError(ctx, err)
 		return "", err
 	}
 
@@ -91,7 +98,14 @@ func (s *S3ContentStore) BeginMultipartUpload(ctx context.Context, id metadata.C
 // Returns:
 //   - error: Returns error if upload fails
 func (s *S3ContentStore) UploadPart(ctx context.Context, id metadata.ContentID, uploadID string, partNumber int, data []byte) error {
+	ctx, span := telemetry.StartContentSpan(ctx, "upload_part", string(id),
+		telemetry.StoreName("s3"),
+		telemetry.StoreType("content"),
+		telemetry.FSCount(uint32(len(data))))
+	defer span.End()
+
 	if err := ctx.Err(); err != nil {
+		telemetry.RecordError(ctx, err)
 		return err
 	}
 
@@ -151,7 +165,13 @@ func (s *S3ContentStore) UploadPart(ctx context.Context, id metadata.ContentID, 
 // Returns:
 //   - error: Returns error if completion fails
 func (s *S3ContentStore) CompleteMultipartUpload(ctx context.Context, id metadata.ContentID, uploadID string, partNumbers []int) error {
+	ctx, span := telemetry.StartContentSpan(ctx, "complete_multipart_upload", string(id),
+		telemetry.StoreName("s3"),
+		telemetry.StoreType("content"))
+	defer span.End()
+
 	if err := ctx.Err(); err != nil {
+		telemetry.RecordError(ctx, err)
 		return err
 	}
 
