@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
@@ -252,6 +253,11 @@ func (s *S3ContentStore) FlushIncremental(
 	id metadata.ContentID,
 	c cache.Cache,
 ) (uint64, error) {
+	ctx, span := telemetry.StartContentSpan(ctx, "flush_incremental", string(id),
+		telemetry.StoreName("s3"),
+		telemetry.StoreType("content"))
+	defer span.End()
+
 	cacheSize := c.Size(id)
 	if cacheSize == 0 {
 		return 0, nil
@@ -365,6 +371,11 @@ func (s *S3ContentStore) calculateFlushedOffset(session *incrementalWriteSession
 // This method is called by the cache flusher when a file write is finalized
 // (detected via inactivity timeout).
 func (s *S3ContentStore) CompleteIncrementalWrite(ctx context.Context, id metadata.ContentID, c cache.Cache) error {
+	ctx, span := telemetry.StartContentSpan(ctx, "complete_incremental_write", string(id),
+		telemetry.StoreName("s3"),
+		telemetry.StoreType("content"))
+	defer span.End()
+
 	cacheSize := c.Size(id)
 
 	// Get session (but don't delete yet - only delete after successful completion)

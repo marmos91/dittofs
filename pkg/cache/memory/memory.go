@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
@@ -208,7 +209,14 @@ func (c *MemoryCache) Write(ctx context.Context, id metadata.ContentID, data []b
 //
 // Returns an error if the context is cancelled or the cache is closed.
 func (c *MemoryCache) WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset uint64) error {
+	ctx, span := telemetry.StartCacheSpan(ctx, "write",
+		telemetry.ContentID(string(id)),
+		telemetry.FSOffset(offset),
+		telemetry.FSCount(uint32(len(data))))
+	defer span.End()
+
 	if err := ctx.Err(); err != nil {
+		telemetry.RecordError(ctx, err)
 		return err
 	}
 
@@ -339,7 +347,14 @@ func (c *MemoryCache) Read(ctx context.Context, id metadata.ContentID) ([]byte, 
 //   - (len(buf), nil) if full buffer was read
 //   - (0, err) if context is cancelled
 func (c *MemoryCache) ReadAt(ctx context.Context, id metadata.ContentID, buf []byte, offset uint64) (int, error) {
+	ctx, span := telemetry.StartCacheSpan(ctx, "read",
+		telemetry.ContentID(string(id)),
+		telemetry.FSOffset(offset),
+		telemetry.FSCount(uint32(len(buf))))
+	defer span.End()
+
 	if err := ctx.Err(); err != nil {
+		telemetry.RecordError(ctx, err)
 		return 0, err
 	}
 

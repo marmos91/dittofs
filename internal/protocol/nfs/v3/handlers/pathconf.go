@@ -203,14 +203,14 @@ func (h *Handler) PathConf(
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("PATHCONF", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.InfoCtx(ctx.Context, "PATHCONF", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
 	if ctx.isContextCancelled() {
-		logger.Warn("PATHCONF cancelled", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", ctx.Context.Err())
+		logger.WarnCtx(ctx.Context, "PATHCONF cancelled", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", ctx.Context.Err())
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -219,7 +219,7 @@ func (h *Handler) PathConf(
 	// ========================================================================
 
 	if err := validatePathConfHandle(req.Handle); err != nil {
-		logger.Warn("PATHCONF validation failed", "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "PATHCONF validation failed", "client", clientIP, "error", err)
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -229,19 +229,19 @@ func (h *Handler) PathConf(
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
-		logger.Warn("PATHCONF cancelled before GetFile", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", ctx.Context.Err())
+		logger.WarnCtx(ctx.Context, "PATHCONF cancelled before GetFile", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", ctx.Context.Err())
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("PATHCONF failed", "error", err, "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
+		logger.WarnCtx(ctx.Context, "PATHCONF failed", "error", err, "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	logger.Debug("PATHCONF", "share", ctx.Share)
+	logger.DebugCtx(ctx.Context, "PATHCONF", "share", ctx.Share)
 
 	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "PATHCONF", req.Handle)
 	if file == nil {
@@ -256,13 +256,13 @@ func (h *Handler) PathConf(
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
-		logger.Warn("PATHCONF cancelled before GetCapabilities", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", ctx.Context.Err())
+		logger.WarnCtx(ctx.Context, "PATHCONF cancelled before GetCapabilities", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", ctx.Context.Err())
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	caps, err := metadataStore.GetFilesystemCapabilities(ctx.Context, fileHandle)
 	if err != nil {
-		logger.Error("PATHCONF failed: could not get filesystem capabilities", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", err)
+		traceError(ctx.Context, err, "PATHCONF failed: could not get filesystem capabilities", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -272,8 +272,8 @@ func (h *Handler) PathConf(
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
-	logger.Info("PATHCONF successful", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
-	logger.Debug("PATHCONF properties", "linkmax", caps.MaxHardLinkCount, "namemax", caps.MaxFilenameLen, "no_trunc", !caps.TruncatesLongNames, "chown_restricted", caps.ChownRestricted, "case_insensitive", !caps.CaseSensitive, "case_preserving", caps.CasePreserving)
+	logger.InfoCtx(ctx.Context, "PATHCONF successful", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
+	logger.DebugCtx(ctx.Context, "PATHCONF properties", "linkmax", caps.MaxHardLinkCount, "namemax", caps.MaxFilenameLen, "no_trunc", !caps.TruncatesLongNames, "chown_restricted", caps.ChownRestricted, "case_insensitive", !caps.CaseSensitive, "case_preserving", caps.CasePreserving)
 
 	// ========================================================================
 	// Step 6: Build response with filesystem capabilities

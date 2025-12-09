@@ -215,14 +215,14 @@ func (h *Handler) Rmdir(
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("RMDIR", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.InfoCtx(ctx.Context, "RMDIR", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
 	if ctx.isContextCancelled() {
-		logger.Warn("RMDIR cancelled", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
+		logger.WarnCtx(ctx.Context, "RMDIR cancelled", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -231,7 +231,7 @@ func (h *Handler) Rmdir(
 	// ========================================================================
 
 	if err := validateRmdirRequest(req); err != nil {
-		logger.Warn("RMDIR validation failed", "name", req.Name, "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "RMDIR validation failed", "name", req.Name, "client", clientIP, "error", err)
 		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -241,13 +241,13 @@ func (h *Handler) Rmdir(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("RMDIR failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
+		logger.WarnCtx(ctx.Context, "RMDIR failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
 
-	logger.Debug("RMDIR", "share", ctx.Share, "name", req.Name)
+	logger.DebugCtx(ctx.Context, "RMDIR", "share", ctx.Share, "name", req.Name)
 
 	// ========================================================================
 	// Step 4: Verify parent directory exists and is valid
@@ -255,13 +255,13 @@ func (h *Handler) Rmdir(
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
-		logger.Warn("RMDIR cancelled before GetFile", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
+		logger.WarnCtx(ctx.Context, "RMDIR cancelled before GetFile", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	parentFile, err := metadataStore.GetFile(ctx.Context, parentHandle)
 	if err != nil {
-		logger.Warn("RMDIR failed: parent not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "RMDIR failed: parent not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
 		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
@@ -270,7 +270,7 @@ func (h *Handler) Rmdir(
 
 	// Verify parent is actually a directory
 	if parentFile.Type != metadata.FileTypeDirectory {
-		logger.Warn("RMDIR failed: parent not a directory", "handle", fmt.Sprintf("%x", req.DirHandle), "type", parentFile.Type, "client", clientIP)
+		logger.WarnCtx(ctx.Context, "RMDIR failed: parent not a directory", "handle", fmt.Sprintf("%x", req.DirHandle), "type", parentFile.Type, "client", clientIP)
 
 		// Get current parent state for WCC
 		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
@@ -309,7 +309,7 @@ func (h *Handler) Rmdir(
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
-		logger.Warn("RMDIR cancelled before RemoveDirectory", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
+		logger.WarnCtx(ctx.Context, "RMDIR cancelled before RemoveDirectory", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 
 		// Get updated parent attributes for WCC data
 		parentFile, _ = metadataStore.GetFile(ctx.Context, parentHandle)
@@ -325,7 +325,7 @@ func (h *Handler) Rmdir(
 	// Delegate to store for directory removal
 	err = metadataStore.RemoveDirectory(authCtx, parentHandle, req.Name)
 	if err != nil {
-		logger.Debug("RMDIR failed: store error", "name", req.Name, "client", clientIP, "error", err)
+		logger.DebugCtx(ctx.Context, "RMDIR failed: store error", "name", req.Name, "client", clientIP, "error", err)
 
 		// Get updated parent attributes for WCC data
 		parentFile, _ = metadataStore.GetFile(ctx.Context, parentHandle)
@@ -349,9 +349,9 @@ func (h *Handler) Rmdir(
 	parentFile, _ = metadataStore.GetFile(ctx.Context, parentHandle)
 	wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
-	logger.Info("RMDIR successful", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
+	logger.InfoCtx(ctx.Context, "RMDIR successful", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
-	logger.Debug("RMDIR details", "parent_handle", fmt.Sprintf("%x", parentHandle))
+	logger.DebugCtx(ctx.Context, "RMDIR details", "parent_handle", fmt.Sprintf("%x", parentHandle))
 
 	return &RmdirResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

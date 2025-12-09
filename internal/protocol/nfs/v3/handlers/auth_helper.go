@@ -84,9 +84,9 @@ func BuildAuthContextWithMapping(
 	}
 
 	if origUID != effUID || origGID != effGID {
-		logger.Debug("Identity mapping applied", "share", shareName, "original_uid", origUID, "uid", effUID, "original_gid", origGID, "gid", effGID)
+		logger.DebugCtx(ctx, "Identity mapping applied", "share", shareName, "original_uid", origUID, "uid", effUID, "original_gid", origGID, "gid", effGID)
 	} else {
-		logger.Debug("Auth context created", "share", shareName, "uid", effUID, "gid", effGID)
+		logger.DebugCtx(ctx, "Auth context created", "share", shareName, "uid", effUID, "gid", effGID)
 	}
 
 	return effectiveAuthCtx, nil

@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
@@ -42,6 +43,12 @@ func (s *S3ContentStore) WriteContent(
 	id metadata.ContentID,
 	data []byte,
 ) error {
+	ctx, span := telemetry.StartContentSpan(ctx, "write_content", string(id),
+		telemetry.FSCount(uint32(len(data))),
+		telemetry.StoreName("s3"),
+		telemetry.StoreType("content"))
+	defer span.End()
+
 	start := time.Now()
 	var err error
 	defer func() {
@@ -50,6 +57,9 @@ func (s *S3ContentStore) WriteContent(
 			if err == nil {
 				s.metrics.RecordBytes("write", int64(len(data)))
 			}
+		}
+		if err != nil {
+			telemetry.RecordError(ctx, err)
 		}
 	}()
 
@@ -100,11 +110,21 @@ func (s *S3ContentStore) WriteAt(
 	data []byte,
 	offset uint64,
 ) error {
+	ctx, span := telemetry.StartContentSpan(ctx, "write", string(id),
+		telemetry.FSOffset(offset),
+		telemetry.FSCount(uint32(len(data))),
+		telemetry.StoreName("s3"),
+		telemetry.StoreType("content"))
+	defer span.End()
+
 	start := time.Now()
 	var err error
 	defer func() {
 		if s.metrics != nil {
 			s.metrics.ObserveOperation("WriteAt", time.Since(start), err)
+		}
+		if err != nil {
+			telemetry.RecordError(ctx, err)
 		}
 	}()
 
