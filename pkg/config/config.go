@@ -98,6 +98,28 @@ type TelemetryConfig struct {
 	// 1.0 = sample all traces, 0.5 = sample 50%, 0.0 = no sampling
 	// Default: 1.0 (sample all)
 	SampleRate float64 `mapstructure:"sample_rate" validate:"omitempty,gte=0,lte=1"`
+
+	// Profiling contains Pyroscope continuous profiling configuration
+	Profiling ProfilingConfig `mapstructure:"profiling"`
+}
+
+// ProfilingConfig controls Pyroscope continuous profiling.
+// When enabled, CPU and memory profiles are continuously sent to a Pyroscope server
+// for flame graph visualization and performance analysis.
+type ProfilingConfig struct {
+	// Enabled controls whether continuous profiling is enabled
+	// Default: false (opt-in for profiling)
+	Enabled bool `mapstructure:"enabled"`
+
+	// Endpoint is the Pyroscope server endpoint (URL)
+	// Default: "http://localhost:4040" (standard Pyroscope port)
+	Endpoint string `mapstructure:"endpoint"`
+
+	// ProfileTypes specifies which profile types to collect
+	// Valid values: cpu, alloc_objects, alloc_space, inuse_objects, inuse_space,
+	//               goroutines, mutex_count, mutex_duration, block_count, block_duration
+	// Default: ["cpu", "alloc_objects", "alloc_space", "inuse_objects", "inuse_space", "goroutines"]
+	ProfileTypes []string `mapstructure:"profile_types"`
 }
 
 // ServerConfig contains server-wide settings.

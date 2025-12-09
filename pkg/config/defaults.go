@@ -72,6 +72,32 @@ func applyTelemetryDefaults(cfg *TelemetryConfig) {
 	if cfg.SampleRate == 0 {
 		cfg.SampleRate = 1.0
 	}
+
+	// Apply profiling defaults
+	applyProfilingDefaults(&cfg.Profiling)
+}
+
+// applyProfilingDefaults sets Pyroscope profiling defaults.
+func applyProfilingDefaults(cfg *ProfilingConfig) {
+	// Enabled defaults to false (opt-in for profiling)
+	// No need to set, zero value is false
+
+	// Default endpoint is localhost:4040 (standard Pyroscope port)
+	if cfg.Endpoint == "" {
+		cfg.Endpoint = "http://localhost:4040"
+	}
+
+	// Default profile types include CPU, memory allocation, and goroutines
+	if len(cfg.ProfileTypes) == 0 {
+		cfg.ProfileTypes = []string{
+			"cpu",
+			"alloc_objects",
+			"alloc_space",
+			"inuse_objects",
+			"inuse_space",
+			"goroutines",
+		}
+	}
 }
 
 // applyServerDefaults sets server defaults.
