@@ -48,9 +48,9 @@ func buildWccAttr(attr *metadata.FileAttr) *types.WccAttr {
 func traceError(ctx context.Context, err error, msg string, args ...any) {
 	if err != nil {
 		telemetry.RecordError(ctx, err)
+		// Only append error to args if err is not nil
+		args = append(args, "error", err)
 	}
-	// Append error to args for logging
-	args = append(args, "error", err)
 	logger.ErrorCtx(ctx, msg, args...)
 }
 
@@ -61,7 +61,8 @@ func traceWarn(ctx context.Context, err error, msg string, args ...any) {
 	if err != nil {
 		// Add as event, not error - warnings shouldn't mark span as failed
 		telemetry.AddEvent(ctx, msg, telemetry.Error(err))
+		// Only append error to args if err is not nil
+		args = append(args, "error", err)
 	}
-	args = append(args, "error", err)
 	logger.WarnCtx(ctx, msg, args...)
 }
