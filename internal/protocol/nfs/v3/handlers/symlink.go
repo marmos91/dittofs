@@ -261,21 +261,21 @@ func (h *Handler) Symlink(
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
 	if ctx.isContextCancelled() {
-		logger.Debug("SYMLINK cancelled before processing", "name", req.Name, "target", req.Target, "client", ctx.ClientAddr, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "SYMLINK cancelled before processing", "name", req.Name, "target", req.Target, "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	}
 
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("SYMLINK", "name", req.Name, "target", req.Target, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.InfoCtx(ctx.Context, "SYMLINK", "name", req.Name, "target", req.Target, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Validate request parameters
 	// ========================================================================
 
 	if err := validateSymlinkRequest(req); err != nil {
-		logger.Warn("SYMLINK validation failed", "name", req.Name, "target", req.Target, "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "SYMLINK validation failed", "name", req.Name, "target", req.Target, "client", clientIP, "error", err)
 		return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -285,13 +285,13 @@ func (h *Handler) Symlink(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("SYMLINK failed", "error", err, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP)
+		logger.WarnCtx(ctx.Context, "SYMLINK failed", "error", err, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP)
 		return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 
-	logger.Debug("SYMLINK", "share", ctx.Share, "name", req.Name, "target", req.Target)
+	logger.DebugCtx(ctx.Context, "SYMLINK", "share", ctx.Share, "name", req.Name, "target", req.Target)
 
 	// ========================================================================
 	// Step 3: Verify parent directory exists and capture pre-op attributes
@@ -307,7 +307,7 @@ func (h *Handler) Symlink(
 
 	// Verify parent is a directory
 	if dirFile.Type != metadata.FileTypeDirectory {
-		logger.Warn("SYMLINK failed: handle not a directory", "dir", fmt.Sprintf("0x%x", req.DirHandle), "type", dirFile.Type, "client", clientIP)
+		logger.WarnCtx(ctx.Context, "SYMLINK failed: handle not a directory", "dir", fmt.Sprintf("0x%x", req.DirHandle), "type", dirFile.Type, "client", clientIP)
 
 		// Include directory attributes even on error for cache consistency
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
@@ -322,7 +322,7 @@ func (h *Handler) Symlink(
 	// Check for cancellation before the create operation
 	// This is an important check since we're about to modify the filesystem
 	if ctx.isContextCancelled() {
-		logger.Debug("SYMLINK cancelled before create operation", "name", req.Name, "target", req.Target, "client", clientIP, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "SYMLINK cancelled before create operation", "name", req.Name, "target", req.Target, "client", clientIP, "error", ctx.Context.Err())
 
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
@@ -381,7 +381,7 @@ func (h *Handler) Symlink(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("SYMLINK cancelled during create operation", "name", req.Name, "target", req.Target, "client", clientIP, "error", ctx.Context.Err())
+			logger.DebugCtx(ctx.Context, "SYMLINK cancelled during create operation", "name", req.Name, "target", req.Target, "client", clientIP, "error", ctx.Context.Err())
 
 			// Get updated directory attributes for WCC data (best effort)
 			var wccAfter *types.NFSFileAttr
@@ -396,7 +396,7 @@ func (h *Handler) Symlink(
 			}, ctx.Context.Err()
 		}
 
-		logger.Error("SYMLINK failed: store error", "name", req.Name, "target", req.Target, "client", clientIP, "error", err)
+		traceError(ctx.Context, err, "SYMLINK failed: store error", "name", req.Name, "target", req.Target, "client", clientIP)
 
 		// Get updated directory attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
@@ -421,7 +421,7 @@ func (h *Handler) Symlink(
 	// Encode the file handle for the symlink
 	symlinkHandle, err := metadata.EncodeFileHandle(createdSymlink)
 	if err != nil {
-		logger.Error("SYMLINK: failed to encode symlink handle", "error", err)
+		traceError(ctx.Context, err, "SYMLINK: failed to encode symlink handle")
 		return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -431,7 +431,7 @@ func (h *Handler) Symlink(
 	// Get updated directory attributes for WCC data
 	updatedDirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
-		logger.Warn("SYMLINK: successful but cannot get updated directory attributes", "dir", fmt.Sprintf("0x%x", req.DirHandle), "error", err)
+		logger.WarnCtx(ctx.Context, "SYMLINK: successful but cannot get updated directory attributes", "dir", fmt.Sprintf("0x%x", req.DirHandle), "error", err)
 		// Continue with nil WccAfter rather than failing
 	}
 
@@ -440,9 +440,9 @@ func (h *Handler) Symlink(
 		wccAfter = h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
 	}
 
-	logger.Info("SYMLINK successful", "name", req.Name, "target", req.Target, "dir", fmt.Sprintf("0x%x", req.DirHandle), "handle", fmt.Sprintf("0x%x", symlinkHandle), "client", clientIP)
+	logger.InfoCtx(ctx.Context, "SYMLINK successful", "name", req.Name, "target", req.Target, "dir", fmt.Sprintf("0x%x", req.DirHandle), "handle", fmt.Sprintf("0x%x", symlinkHandle), "client", clientIP)
 
-	logger.Debug("SYMLINK details", "symlink_handle", fmt.Sprintf("0x%x", symlinkHandle), "mode", fmt.Sprintf("%o", createdSymlink.Mode), "uid", createdSymlink.UID, "gid", createdSymlink.GID, "size", createdSymlink.Size, "target_len", len(req.Target))
+	logger.DebugCtx(ctx.Context, "SYMLINK details", "symlink_handle", fmt.Sprintf("0x%x", symlinkHandle), "mode", fmt.Sprintf("%o", createdSymlink.Mode), "uid", createdSymlink.UID, "gid", createdSymlink.GID, "size", createdSymlink.Size, "target_len", len(req.Target))
 
 	return &SymlinkResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

@@ -203,7 +203,7 @@ func (h *Handler) Mkdir(
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
 	if ctx.isContextCancelled() {
-		logger.Debug("MKDIR cancelled before processing", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "MKDIR cancelled before processing", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return &MkdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	}
 
@@ -215,14 +215,14 @@ func (h *Handler) Mkdir(
 		mode = *req.Attr.Mode
 	}
 
-	logger.Info("MKDIR", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "mode", fmt.Sprintf("%o", mode), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.InfoCtx(ctx.Context, "MKDIR", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "mode", fmt.Sprintf("%o", mode), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Validate request parameters
 	// ========================================================================
 
 	if err := validateMkdirRequest(req); err != nil {
-		logger.Warn("MKDIR validation failed", "name", req.Name, "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "MKDIR validation failed", "name", req.Name, "client", clientIP, "error", err)
 		return &MkdirResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -232,12 +232,12 @@ func (h *Handler) Mkdir(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("MKDIR failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
+		logger.WarnCtx(ctx.Context, "MKDIR failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return &MkdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
-	logger.Debug("MKDIR", "share", ctx.Share, "name", req.Name)
+	logger.DebugCtx(ctx.Context, "MKDIR", "share", ctx.Share, "name", req.Name)
 
 	// ========================================================================
 	// Step 3: Verify parent directory exists and is valid
@@ -266,7 +266,7 @@ func (h *Handler) Mkdir(
 
 	// Verify parent is actually a directory
 	if parentFile.Type != metadata.FileTypeDirectory {
-		logger.Warn("MKDIR failed: parent not a directory", "handle", fmt.Sprintf("%x", req.DirHandle), "type", parentFile.Type, "client", clientIP)
+		logger.WarnCtx(ctx.Context, "MKDIR failed: parent not a directory", "handle", fmt.Sprintf("%x", req.DirHandle), "type", parentFile.Type, "client", clientIP)
 
 		// Get current parent state for WCC
 		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
@@ -281,7 +281,7 @@ func (h *Handler) Mkdir(
 	// Check for cancellation before the existence check
 	// Lookup may involve directory scanning which can be expensive
 	if ctx.isContextCancelled() {
-		logger.Debug("MKDIR cancelled before existence check", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "MKDIR cancelled before existence check", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 
 		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
@@ -299,7 +299,7 @@ func (h *Handler) Mkdir(
 	_, err = metadataStore.Lookup(authCtx, parentHandle, req.Name)
 	if err != nil && ctx.Context.Err() != nil {
 		// Context was cancelled during Lookup
-		logger.Debug("MKDIR cancelled during existence check", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "MKDIR cancelled during existence check", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 
 		// Get updated parent attributes for WCC data
 		updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
@@ -314,7 +314,7 @@ func (h *Handler) Mkdir(
 
 	if err == nil {
 		// Child exists (no error from Lookup)
-		logger.Debug("MKDIR failed: directory already exists", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
+		logger.DebugCtx(ctx.Context, "MKDIR failed: directory already exists", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		// Get updated parent attributes for WCC data
 		updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
@@ -332,7 +332,7 @@ func (h *Handler) Mkdir(
 	// This is the most critical check - we don't want to start creating
 	// the directory if the client has already disconnected
 	if ctx.isContextCancelled() {
-		logger.Debug("MKDIR cancelled before create operation", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "MKDIR cancelled before create operation", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 
 		// Get updated parent attributes for WCC data
 		updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
@@ -393,7 +393,7 @@ func (h *Handler) Mkdir(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("MKDIR cancelled during create operation", "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
+			logger.DebugCtx(ctx.Context, "MKDIR cancelled during create operation", "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
 
 			// Get updated parent attributes for WCC data
 			updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
@@ -406,7 +406,7 @@ func (h *Handler) Mkdir(
 			}, ctx.Context.Err()
 		}
 
-		logger.Error("MKDIR failed: store error", "name", req.Name, "client", clientIP, "error", err)
+		traceError(ctx.Context, err, "MKDIR failed: store error", "name", req.Name, "client", clientIP)
 
 		// Get updated parent attributes for WCC data
 		updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
@@ -429,7 +429,7 @@ func (h *Handler) Mkdir(
 	// Encode the file handle for the new directory
 	newHandle, err := metadata.EncodeFileHandle(newDirFile)
 	if err != nil {
-		logger.Error("MKDIR: failed to encode directory handle", "error", err)
+		traceError(ctx.Context, err, "MKDIR: failed to encode directory handle")
 		return &MkdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -440,9 +440,9 @@ func (h *Handler) Mkdir(
 	updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
 	wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
 
-	logger.Info("MKDIR successful", "name", req.Name, "handle", fmt.Sprintf("%x", newHandle), "mode", fmt.Sprintf("%o", newDirFile.Mode), "size", newDirFile.Size, "client", clientIP)
+	logger.InfoCtx(ctx.Context, "MKDIR successful", "name", req.Name, "handle", fmt.Sprintf("%x", newHandle), "mode", fmt.Sprintf("%o", newDirFile.Mode), "size", newDirFile.Size, "client", clientIP)
 
-	logger.Debug("MKDIR details", "handle", fmt.Sprintf("%x", newHandle), "uid", newDirFile.UID, "gid", newDirFile.GID, "parent_handle", fmt.Sprintf("%x", parentHandle))
+	logger.DebugCtx(ctx.Context, "MKDIR details", "handle", fmt.Sprintf("%x", newHandle), "uid", newDirFile.UID, "gid", newDirFile.GID, "parent_handle", fmt.Sprintf("%x", parentHandle))
 
 	return &MkdirResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

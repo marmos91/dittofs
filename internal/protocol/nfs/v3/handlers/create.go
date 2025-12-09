@@ -146,21 +146,21 @@ func (h *Handler) Create(
 	// Check for cancellation before starting any work
 	// This handles the case where the client disconnects before we begin processing
 	if ctx.isContextCancelled() {
-		logger.Debug("CREATE cancelled before processing", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "CREATE cancelled before processing", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	}
 
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("CREATE", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "mode", createModeName(req.Mode), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.InfoCtx(ctx.Context, "CREATE", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "mode", createModeName(req.Mode), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Validate request parameters
 	// ========================================================================
 
 	if err := validateCreateRequest(req); err != nil {
-		logger.Warn("CREATE validation failed", "file", req.Filename, "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "CREATE validation failed", "file", req.Filename, "client", clientIP, "error", err)
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -170,19 +170,19 @@ func (h *Handler) Create(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("CREATE failed", "error", err, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP)
+		logger.WarnCtx(ctx.Context, "CREATE failed", "error", err, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP)
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get content store for this share
 	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
 	if err != nil {
-		logger.Error("CREATE failed: cannot get content store", "share", ctx.Share, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP, "error", err)
+		traceError(ctx.Context, err, "CREATE failed: cannot get content store", "share", ctx.Share, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP)
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
-	logger.Debug("CREATE", "share", ctx.Share, "file", req.Filename)
+	logger.DebugCtx(ctx.Context, "CREATE", "share", ctx.Share, "file", req.Filename)
 
 	// ========================================================================
 	// Step 3: Verify parent directory exists and is valid
@@ -198,7 +198,7 @@ func (h *Handler) Create(
 
 	// Verify parent is a directory
 	if parentFile.Type != metadata.FileTypeDirectory {
-		logger.Warn("CREATE failed: parent not a directory", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "type", parentFile.Type, "client", clientIP)
+		logger.WarnCtx(ctx.Context, "CREATE failed: parent not a directory", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "type", parentFile.Type, "client", clientIP)
 
 		// Get current parent state for WCC
 		dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
@@ -226,7 +226,7 @@ func (h *Handler) Create(
 	// Check for cancellation before the existence check
 	// This is important because Lookup may involve directory scanning
 	if ctx.isContextCancelled() {
-		logger.Debug("CREATE cancelled before existence check", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "CREATE cancelled before existence check", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	}
 
@@ -237,7 +237,7 @@ func (h *Handler) Create(
 	existingFile, err := metadataStore.Lookup(authCtx, parentHandle, req.Filename)
 	if err != nil && ctx.Context.Err() != nil {
 		// Context was cancelled during Lookup
-		logger.Debug("CREATE cancelled during existence check", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "CREATE cancelled during existence check", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	}
 
@@ -247,7 +247,7 @@ func (h *Handler) Create(
 	// Check for cancellation before the potentially expensive create/truncate operations
 	// This is critical because these operations modify state
 	if ctx.isContextCancelled() {
-		logger.Debug("CREATE cancelled before file operation", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "exists", fileExists, "client", clientIP, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "CREATE cancelled before file operation", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "exists", fileExists, "client", clientIP, "error", ctx.Context.Err())
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	}
 
@@ -262,7 +262,7 @@ func (h *Handler) Create(
 	case types.CreateGuarded:
 		// GUARDED: Fail if file exists
 		if fileExists {
-			logger.Debug("CREATE failed: file exists (guarded)", "file", req.Filename, "client", clientIP)
+			logger.DebugCtx(ctx.Context, "CREATE failed: file exists (guarded)", "file", req.Filename, "client", clientIP)
 
 			// Get current parent state for WCC
 			dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
@@ -282,7 +282,7 @@ func (h *Handler) Create(
 		if fileExists {
 			// TODO: Implement verifier checking for idempotency
 			// For now, treat like GUARDED
-			logger.Debug("CREATE failed: file exists (exclusive)", "file", req.Filename, "client", clientIP, "verifier", fmt.Sprintf("0x%016x", req.Verf))
+			logger.DebugCtx(ctx.Context, "CREATE failed: file exists (exclusive)", "file", req.Filename, "client", clientIP, "verifier", fmt.Sprintf("0x%016x", req.Verf))
 
 			dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
@@ -309,7 +309,7 @@ func (h *Handler) Create(
 		}
 
 	default:
-		logger.Warn("CREATE failed: invalid mode", "file", req.Filename, "mode", req.Mode, "client", clientIP)
+		logger.WarnCtx(ctx.Context, "CREATE failed: invalid mode", "file", req.Filename, "mode", req.Mode, "client", clientIP)
 
 		dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
@@ -327,7 +327,7 @@ func (h *Handler) Create(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("CREATE cancelled during file operation", "file", req.Filename, "client", clientIP, "error", ctx.Context.Err())
+			logger.DebugCtx(ctx.Context, "CREATE cancelled during file operation", "file", req.Filename, "client", clientIP, "error", ctx.Context.Err())
 
 			dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
@@ -338,7 +338,7 @@ func (h *Handler) Create(
 			}, ctx.Context.Err()
 		}
 
-		logger.Error("CREATE failed: repository error", "file", req.Filename, "client", clientIP, "error", err)
+		traceError(ctx.Context, err, "CREATE failed: repository error", "file", req.Filename, "client", clientIP)
 
 		// Map repository errors to NFS status codes
 		nfsStatus := mapMetadataErrorToNFS(err)
@@ -363,7 +363,7 @@ func (h *Handler) Create(
 	updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
 	nfsDirAttr := h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
 
-	logger.Info("CREATE successful", "file", req.Filename, "handle", fmt.Sprintf("0x%x", fileHandle), "mode", fmt.Sprintf("0%o", fileAttr.Mode), "size", fileAttr.Size, "client", clientIP)
+	logger.InfoCtx(ctx.Context, "CREATE successful", "file", req.Filename, "handle", fmt.Sprintf("0x%x", fileHandle), "mode", fmt.Sprintf("0%o", fileAttr.Mode), "size", fileAttr.Size, "client", clientIP)
 
 	return &CreateResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

@@ -286,14 +286,14 @@ func (h *Handler) ReadDirPlus(
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.Info("READDIRPLUS", "handle", fmt.Sprintf("%x", req.DirHandle), "cookie", req.Cookie, "dircount", req.DirCount, "maxcount", req.MaxCount, "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.InfoCtx(ctx.Context, "READDIRPLUS", "handle", fmt.Sprintf("%x", req.DirHandle), "cookie", req.Cookie, "dircount", req.DirCount, "maxcount", req.MaxCount, "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Check for context cancellation before starting work
 	// ========================================================================
 
 	if ctx.isContextCancelled() {
-		logger.Warn("READDIRPLUS cancelled", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
+		logger.WarnCtx(ctx.Context, "READDIRPLUS cancelled", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -302,7 +302,7 @@ func (h *Handler) ReadDirPlus(
 	// ========================================================================
 
 	if err := validateReadDirPlusRequest(req); err != nil {
-		logger.Warn("READDIRPLUS validation failed", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "READDIRPLUS validation failed", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -312,7 +312,7 @@ func (h *Handler) ReadDirPlus(
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
-		logger.Warn("READDIRPLUS cancelled before GetFile", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
+		logger.WarnCtx(ctx.Context, "READDIRPLUS cancelled before GetFile", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -322,23 +322,23 @@ func (h *Handler) ReadDirPlus(
 
 	metadataStore, err := h.getMetadataStore(ctx)
 	if err != nil {
-		logger.Warn("READDIRPLUS failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
+		logger.WarnCtx(ctx.Context, "READDIRPLUS failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 
-	logger.Debug("READDIRPLUS", "share", ctx.Share)
+	logger.DebugCtx(ctx.Context, "READDIRPLUS", "share", ctx.Share)
 
 	dirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
 	if err != nil {
-		logger.Warn("READDIRPLUS failed: directory not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
+		logger.WarnCtx(ctx.Context, "READDIRPLUS failed: directory not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
 	}
 
 	// Verify handle is actually a directory
 	if dirFile.Type != metadata.FileTypeDirectory {
-		logger.Warn("READDIRPLUS failed: handle not a directory", "handle", fmt.Sprintf("%x", req.DirHandle), "type", dirFile.Type, "client", clientIP)
+		logger.WarnCtx(ctx.Context, "READDIRPLUS failed: handle not a directory", "handle", fmt.Sprintf("%x", req.DirHandle), "type", dirFile.Type, "client", clientIP)
 
 		// Include directory attributes even on error for cache consistency
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
@@ -357,7 +357,7 @@ func (h *Handler) ReadDirPlus(
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
-			logger.Debug("READDIRPLUS cancelled during auth context building", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
+			logger.DebugCtx(ctx.Context, "READDIRPLUS cancelled during auth context building", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 
 			nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
@@ -367,7 +367,7 @@ func (h *Handler) ReadDirPlus(
 			}, nil
 		}
 
-		logger.Error("READDIRPLUS failed: failed to build auth context", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
+		traceError(ctx.Context, err, "READDIRPLUS failed: failed to build auth context", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
@@ -385,7 +385,7 @@ func (h *Handler) ReadDirPlus(
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
-		logger.Warn("READDIRPLUS cancelled before ReadDirectory", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
+		logger.WarnCtx(ctx.Context, "READDIRPLUS cancelled before ReadDirectory", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
@@ -406,7 +406,7 @@ func (h *Handler) ReadDirPlus(
 	// ReadDirectory handles retries internally to ensure consistent snapshots
 	page, err := metadataStore.ReadDirectory(authCtx, dirHandle, token, req.DirCount)
 	if err != nil {
-		logger.Error("READDIRPLUS failed: error retrieving entries", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
+		traceError(ctx.Context, err, "READDIRPLUS failed: error retrieving entries", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		// Map store error to NFS status
 		status := mapMetadataErrorToNFS(err)
@@ -437,7 +437,7 @@ func (h *Handler) ReadDirPlus(
 		if i%50 == 0 {
 			select {
 			case <-ctx.Context.Done():
-				logger.Warn("READDIRPLUS cancelled during entry processing", "handle", fmt.Sprintf("%x", req.DirHandle), "processed", i, "client", clientIP, "error", ctx.Context.Err())
+				logger.WarnCtx(ctx.Context, "READDIRPLUS cancelled during entry processing", "handle", fmt.Sprintf("%x", req.DirHandle), "processed", i, "client", clientIP, "error", ctx.Context.Err())
 
 				return &ReadDirPlusResponse{
 					NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -452,11 +452,11 @@ func (h *Handler) ReadDirPlus(
 		entryHandle := entry.Handle
 		if len(entryHandle) == 0 {
 			// Fallback: Handle not populated, use Lookup (shouldn't happen with proper implementation)
-			logger.Warn("READDIRPLUS: entry.Handle not populated, falling back to Lookup", "name", entry.Name)
+			logger.WarnCtx(ctx.Context, "READDIRPLUS: entry.Handle not populated, falling back to Lookup", "name", entry.Name)
 			var err error
 			lookupFile, err := metadataStore.Lookup(authCtx, dirHandle, entry.Name)
 			if err != nil {
-				logger.Warn("READDIRPLUS: failed to lookup", "name", entry.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "error", err)
+				logger.WarnCtx(ctx.Context, "READDIRPLUS: failed to lookup", "name", entry.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "error", err)
 				// Skip this entry on error rather than failing entire operation
 				continue
 			}
@@ -467,7 +467,7 @@ func (h *Handler) ReadDirPlus(
 		// TODO: Use entry.Attr if populated to avoid this GetFile() call
 		entryFile, err := metadataStore.GetFile(ctx.Context, entryHandle)
 		if err != nil {
-			logger.Warn("READDIRPLUS: failed to get attributes", "name", entry.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "entry_handle", fmt.Sprintf("%x", entryHandle), "error", err)
+			logger.WarnCtx(ctx.Context, "READDIRPLUS: failed to get attributes", "name", entry.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "entry_handle", fmt.Sprintf("%x", entryHandle), "error", err)
 			// Skip this entry on error - file may have been deleted during iteration
 			continue
 		}
@@ -489,7 +489,7 @@ func (h *Handler) ReadDirPlus(
 
 		entries = append(entries, plusEntry)
 
-		logger.Debug("READDIRPLUS: added entry", "name", entry.Name, "cookie", absoluteCookie, "fileid", entry.ID)
+		logger.DebugCtx(ctx.Context, "READDIRPLUS: added entry", "name", entry.Name, "cookie", absoluteCookie, "fileid", entry.ID)
 	}
 
 	// ========================================================================
@@ -499,9 +499,9 @@ func (h *Handler) ReadDirPlus(
 	// EOF is true when there are no more pages
 	eof := !page.HasMore
 
-	logger.Info("READDIRPLUS successful", "handle", fmt.Sprintf("%x", req.DirHandle), "entries", len(entries), "eof", eof, "client", clientIP)
+	logger.InfoCtx(ctx.Context, "READDIRPLUS successful", "handle", fmt.Sprintf("%x", req.DirHandle), "entries", len(entries), "eof", eof, "client", clientIP)
 
-	logger.Debug("READDIRPLUS details", "handle", fmt.Sprintf("%x", dirHandle), "total_entries", len(page.Entries), "eof", eof)
+	logger.DebugCtx(ctx.Context, "READDIRPLUS details", "handle", fmt.Sprintf("%x", dirHandle), "total_entries", len(page.Entries), "eof", eof)
 
 	return &ReadDirPlusResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

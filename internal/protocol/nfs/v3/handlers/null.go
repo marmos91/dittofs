@@ -182,7 +182,7 @@ func (h *Handler) Null(
 	// avoid wasting resources on abandoned requests (e.g., during server shutdown,
 	// load balancer health check timeouts, or client disconnects).
 	if ctx.isContextCancelled() {
-		logger.Debug("NULL: request cancelled", "client", ctx.ClientAddr, "error", ctx.Context.Err())
+		logger.DebugCtx(ctx.Context, "NULL: request cancelled", "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
 
@@ -198,7 +198,7 @@ func (h *Handler) Null(
 		}
 	}
 
-	logger.Info("NULL", "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.InfoCtx(ctx.Context, "NULL", "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Optional: store health check
@@ -207,7 +207,7 @@ func (h *Handler) Null(
 	// and shouldn't depend on any particular share. NULL must always succeed
 	// per RFC 1813 regardless of backend state.
 
-	logger.Debug("NULL: request completed successfully", "client", clientIP)
+	logger.DebugCtx(ctx.Context, "NULL: request completed successfully", "client", clientIP)
 
 	// Return empty response - NULL always succeeds
 	return &NullResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3OK}}, nil

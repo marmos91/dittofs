@@ -1,7 +1,11 @@
 package handlers
 
 import (
+	"context"
+
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -30,4 +34,34 @@ func buildWccAttr(attr *metadata.FileAttr) *types.WccAttr {
 			Nseconds: uint32(attr.Ctime.Nanosecond()),
 		},
 	}
+}
+
+// ============================================================================
+// Trace-Aware Error Logging
+// ============================================================================
+// These helper functions combine logging with OpenTelemetry span error recording.
+// Use these instead of plain logger.ErrorCtx/WarnCtx when the error should also
+// be visible in distributed traces.
+
+// traceError logs an error and records it on the current span.
+// Use this for actual errors that indicate something went wrong.
+func traceError(ctx context.Context, err error, msg string, args ...any) {
+	if err != nil {
+		telemetry.RecordError(ctx, err)
+	}
+	// Append error to args for logging
+	args = append(args, "error", err)
+	logger.ErrorCtx(ctx, msg, args...)
+}
+
+// traceWarn logs a warning and optionally records it on the span.
+// Warnings are recorded on spans as events (not errors) when err is not nil.
+// Use this for expected failures like "file not found" or "permission denied".
+func traceWarn(ctx context.Context, err error, msg string, args ...any) {
+	if err != nil {
+		// Add as event, not error - warnings shouldn't mark span as failed
+		telemetry.AddEvent(ctx, msg, telemetry.Error(err))
+	}
+	args = append(args, "error", err)
+	logger.WarnCtx(ctx, msg, args...)
 }
