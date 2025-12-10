@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"context"
 	"fmt"
 	"path"
 	"time"
@@ -26,14 +25,14 @@ func (s *PostgresMetadataStore) SetFileAttributes(
 	}
 
 	// Begin transaction
-	tx, err := s.pool.Begin(context.Background())
+	tx, err := s.pool.Begin(ctx.Context)
 	if err != nil {
 		return mapPgError(err, "SetFileAttributes", "")
 	}
-	defer tx.Rollback(context.Background())
+	defer tx.Rollback(ctx.Context)
 
 	// Get and lock file
-	file, err := s.getFileByIDTx(context.Background(), tx, fileID, shareName)
+	file, err := s.getFileByIDTx(ctx.Context, tx, fileID, shareName)
 	if err != nil {
 		return err
 	}
@@ -107,13 +106,13 @@ func (s *PostgresMetadataStore) SetFileAttributes(
 	params = append(params, fileID, shareName)
 
 	// Execute update
-	_, err = tx.Exec(context.Background(), query, params...)
+	_, err = tx.Exec(ctx.Context, query, params...)
 	if err != nil {
 		return mapPgError(err, "SetFileAttributes", file.Path)
 	}
 
 	// Commit transaction
-	if err := tx.Commit(context.Background()); err != nil {
+	if err := tx.Commit(ctx.Context); err != nil {
 		return mapPgError(err, "SetFileAttributes", file.Path)
 	}
 
@@ -161,14 +160,14 @@ func (s *PostgresMetadataStore) CreateSymlink(
 	}
 
 	// Begin transaction
-	tx, err := s.pool.Begin(context.Background())
+	tx, err := s.pool.Begin(ctx.Context)
 	if err != nil {
 		return nil, mapPgError(err, "CreateSymlink", name)
 	}
-	defer tx.Rollback(context.Background())
+	defer tx.Rollback(ctx.Context)
 
 	// Get and lock parent directory
-	parent, err := s.getFileByIDTx(context.Background(), tx, parentID, shareName)
+	parent, err := s.getFileByIDTx(ctx.Context, tx, parentID, shareName)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +193,7 @@ func (s *PostgresMetadataStore) CreateSymlink(
 		)
 	`
 	var exists bool
-	err = tx.QueryRow(context.Background(), checkQuery, parentID, name).Scan(&exists)
+	err = tx.QueryRow(ctx.Context, checkQuery, parentID, name).Scan(&exists)
 	if err != nil {
 		return nil, mapPgError(err, "CreateSymlink", name)
 	}
@@ -227,7 +226,7 @@ func (s *PostgresMetadataStore) CreateSymlink(
 		)
 	`
 
-	_, err = tx.Exec(context.Background(), insertQuery,
+	_, err = tx.Exec(ctx.Context, insertQuery,
 		symlinkID,
 		shareName,
 		symlinkPath,
@@ -254,7 +253,7 @@ func (s *PostgresMetadataStore) CreateSymlink(
 		VALUES ($1, $2, $3)
 	`
 
-	_, err = tx.Exec(context.Background(), insertMapQuery, parentID, symlinkID, name)
+	_, err = tx.Exec(ctx.Context, insertMapQuery, parentID, symlinkID, name)
 	if err != nil {
 		return nil, mapPgError(err, "CreateSymlink", symlinkPath)
 	}
@@ -265,7 +264,7 @@ func (s *PostgresMetadataStore) CreateSymlink(
 		VALUES ($1, $2)
 	`
 
-	_, err = tx.Exec(context.Background(), insertLinkCountQuery, symlinkID, 1)
+	_, err = tx.Exec(ctx.Context, insertLinkCountQuery, symlinkID, 1)
 	if err != nil {
 		return nil, mapPgError(err, "CreateSymlink", symlinkPath)
 	}
@@ -277,13 +276,13 @@ func (s *PostgresMetadataStore) CreateSymlink(
 		WHERE id = $2
 	`
 
-	_, err = tx.Exec(context.Background(), updateParentQuery, now, parentID)
+	_, err = tx.Exec(ctx.Context, updateParentQuery, now, parentID)
 	if err != nil {
 		return nil, mapPgError(err, "CreateSymlink", symlinkPath)
 	}
 
 	// Commit transaction
-	if err := tx.Commit(context.Background()); err != nil {
+	if err := tx.Commit(ctx.Context); err != nil {
 		return nil, mapPgError(err, "CreateSymlink", symlinkPath)
 	}
 
@@ -314,7 +313,7 @@ func (s *PostgresMetadataStore) CreateSymlink(
 // ReadSymlink reads the target of a symbolic link
 func (s *PostgresMetadataStore) ReadSymlink(ctx *metadata.AuthContext, handle metadata.FileHandle) (string, *metadata.File, error) {
 	// Get file
-	file, err := s.GetFile(context.Background(), handle)
+	file, err := s.GetFile(ctx.Context, handle)
 	if err != nil {
 		return "", nil, err
 	}

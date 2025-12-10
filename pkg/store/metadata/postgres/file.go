@@ -90,17 +90,17 @@ func (s *PostgresMetadataStore) GetFileByContentID(ctx context.Context, contentI
 }
 
 // Lookup finds a file by name in a parent directory
-func (s *PostgresMetadataStore) Lookup(ctx context.Context, authCtx *metadata.AuthContext, parentHandle metadata.FileHandle, name string) (metadata.FileHandle, *metadata.FileAttr, error) {
+func (s *PostgresMetadataStore) Lookup(ctx *metadata.AuthContext, parentHandle metadata.FileHandle, name string) (*metadata.File, error) {
 	// Validate input
 	if name == "" {
-		return nil, nil, &metadata.StoreError{
+		return nil, &metadata.StoreError{
 			Code:    metadata.ErrInvalidArgument,
 			Message: "file name cannot be empty",
 		}
 	}
 
 	if name == "." || name == ".." {
-		return nil, nil, &metadata.StoreError{
+		return nil, &metadata.StoreError{
 			Code:    metadata.ErrInvalidArgument,
 			Message: "lookup of '.' and '..' not supported",
 		}
@@ -109,20 +109,20 @@ func (s *PostgresMetadataStore) Lookup(ctx context.Context, authCtx *metadata.Au
 	// Decode parent handle
 	shareName, parentID, err := decodeFileHandle(parentHandle)
 	if err != nil {
-		return nil, nil, &metadata.StoreError{
+		return nil, &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
 			Message: "invalid parent handle",
 		}
 	}
 
 	// Check if parent is a directory (with execute permission)
-	parent, err := s.getFileByID(ctx, parentID, shareName)
+	parent, err := s.getFileByID(ctx.Context, parentID, shareName)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	if parent.Type != metadata.FileTypeDirectory {
-		return nil, nil, &metadata.StoreError{
+		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotDirectory,
 			Message: "parent is not a directory",
 			Path:    parent.Path,
@@ -130,8 +130,8 @@ func (s *PostgresMetadataStore) Lookup(ctx context.Context, authCtx *metadata.Au
 	}
 
 	// Check execute permission on parent directory
-	if err := s.checkAccess(parent, authCtx, metadata.PermissionExecute); err != nil {
-		return nil, nil, err
+	if err := s.checkAccess(parent, ctx, metadata.PermissionExecute); err != nil {
+		return nil, err
 	}
 
 	// Query child file
@@ -146,22 +146,13 @@ func (s *PostgresMetadataStore) Lookup(ctx context.Context, authCtx *metadata.Au
 		WHERE pcm.parent_id = $1 AND pcm.child_name = $2
 	`
 
-	row := s.pool.QueryRow(ctx, query, parentID, name)
+	row := s.pool.QueryRow(ctx.Context, query, parentID, name)
 	child, err := fileRowToFile(row)
 	if err != nil {
-		return nil, nil, mapPgError(err, "Lookup", fmt.Sprintf("%s/%s", parent.Path, name))
+		return nil, mapPgError(err, "Lookup", fmt.Sprintf("%s/%s", parent.Path, name))
 	}
 
-	// Encode child handle
-	childHandle, err := metadata.EncodeFileHandle(child)
-	if err != nil {
-		return nil, nil, &metadata.StoreError{
-			Code:    metadata.ErrIOError,
-			Message: "failed to encode child handle",
-		}
-	}
-
-	return childHandle, &child.FileAttr, nil
+	return child, nil
 }
 
 // GetShareNameForHandle returns the share name for a given file handle

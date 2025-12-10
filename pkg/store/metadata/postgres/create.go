@@ -67,14 +67,14 @@ func (s *PostgresMetadataStore) createFile(
 	}
 
 	// Begin transaction
-	tx, err := s.pool.Begin(context.Background())
+	tx, err := s.pool.Begin(ctx.Context)
 	if err != nil {
 		return nil, mapPgError(err, "createFile", name)
 	}
-	defer tx.Rollback(context.Background())
+	defer tx.Rollback(ctx.Context)
 
 	// Get and lock parent directory
-	parent, err := s.getFileByIDTx(context.Background(), tx, parentID, shareName)
+	parent, err := s.getFileByIDTx(ctx.Context, tx, parentID, shareName)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ func (s *PostgresMetadataStore) createFile(
 		)
 	`
 	var exists bool
-	err = tx.QueryRow(context.Background(), checkQuery, parentID, name).Scan(&exists)
+	err = tx.QueryRow(ctx.Context, checkQuery, parentID, name).Scan(&exists)
 	if err != nil {
 		return nil, mapPgError(err, "createFile", name)
 	}
@@ -134,7 +134,7 @@ func (s *PostgresMetadataStore) createFile(
 		)
 	`
 
-	_, err = tx.Exec(context.Background(), insertQuery,
+	_, err = tx.Exec(ctx.Context, insertQuery,
 		fileID,
 		shareName,
 		filePath,
@@ -161,7 +161,7 @@ func (s *PostgresMetadataStore) createFile(
 		VALUES ($1, $2, $3)
 	`
 
-	_, err = tx.Exec(context.Background(), insertMapQuery, parentID, fileID, name)
+	_, err = tx.Exec(ctx.Context, insertMapQuery, parentID, fileID, name)
 	if err != nil {
 		return nil, mapPgError(err, "createFile", filePath)
 	}
@@ -172,7 +172,7 @@ func (s *PostgresMetadataStore) createFile(
 		VALUES ($1, $2)
 	`
 
-	_, err = tx.Exec(context.Background(), insertLinkCountQuery, fileID, 1)
+	_, err = tx.Exec(ctx.Context, insertLinkCountQuery, fileID, 1)
 	if err != nil {
 		return nil, mapPgError(err, "createFile", filePath)
 	}
@@ -184,13 +184,13 @@ func (s *PostgresMetadataStore) createFile(
 		WHERE id = $2
 	`
 
-	_, err = tx.Exec(context.Background(), updateParentQuery, now, parentID)
+	_, err = tx.Exec(ctx.Context, updateParentQuery, now, parentID)
 	if err != nil {
 		return nil, mapPgError(err, "createFile", filePath)
 	}
 
 	// Commit transaction
-	if err := tx.Commit(context.Background()); err != nil {
+	if err := tx.Commit(ctx.Context); err != nil {
 		return nil, mapPgError(err, "createFile", filePath)
 	}
 
@@ -252,14 +252,14 @@ func (s *PostgresMetadataStore) createDirectory(
 	}
 
 	// Begin transaction
-	tx, err := s.pool.Begin(context.Background())
+	tx, err := s.pool.Begin(ctx.Context)
 	if err != nil {
 		return nil, mapPgError(err, "createDirectory", name)
 	}
-	defer tx.Rollback(context.Background())
+	defer tx.Rollback(ctx.Context)
 
 	// Get and lock parent directory
-	parent, err := s.getFileByIDTx(context.Background(), tx, parentID, shareName)
+	parent, err := s.getFileByIDTx(ctx.Context, tx, parentID, shareName)
 	if err != nil {
 		return nil, err
 	}
@@ -285,7 +285,7 @@ func (s *PostgresMetadataStore) createDirectory(
 		)
 	`
 	var exists bool
-	err = tx.QueryRow(context.Background(), checkQuery, parentID, name).Scan(&exists)
+	err = tx.QueryRow(ctx.Context, checkQuery, parentID, name).Scan(&exists)
 	if err != nil {
 		return nil, mapPgError(err, "createDirectory", name)
 	}
@@ -318,7 +318,7 @@ func (s *PostgresMetadataStore) createDirectory(
 		)
 	`
 
-	_, err = tx.Exec(context.Background(), insertQuery,
+	_, err = tx.Exec(ctx.Context, insertQuery,
 		dirID,
 		shareName,
 		dirPath,
@@ -345,7 +345,7 @@ func (s *PostgresMetadataStore) createDirectory(
 		VALUES ($1, $2, $3)
 	`
 
-	_, err = tx.Exec(context.Background(), insertMapQuery, parentID, dirID, name)
+	_, err = tx.Exec(ctx.Context, insertMapQuery, parentID, dirID, name)
 	if err != nil {
 		return nil, mapPgError(err, "createDirectory", dirPath)
 	}
@@ -356,7 +356,7 @@ func (s *PostgresMetadataStore) createDirectory(
 		VALUES ($1, $2)
 	`
 
-	_, err = tx.Exec(context.Background(), insertLinkCountQuery, dirID, 2)
+	_, err = tx.Exec(ctx.Context, insertLinkCountQuery, dirID, 2)
 	if err != nil {
 		return nil, mapPgError(err, "createDirectory", dirPath)
 	}
@@ -368,13 +368,13 @@ func (s *PostgresMetadataStore) createDirectory(
 		WHERE id = $2
 	`
 
-	_, err = tx.Exec(context.Background(), updateParentQuery, now, parentID)
+	_, err = tx.Exec(ctx.Context, updateParentQuery, now, parentID)
 	if err != nil {
 		return nil, mapPgError(err, "createDirectory", dirPath)
 	}
 
 	// Commit transaction
-	if err := tx.Commit(context.Background()); err != nil {
+	if err := tx.Commit(ctx.Context); err != nil {
 		return nil, mapPgError(err, "createDirectory", dirPath)
 	}
 

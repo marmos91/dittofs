@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"context"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/store/metadata"
@@ -23,7 +22,7 @@ func (s *PostgresMetadataStore) PrepareWrite(
 	}
 
 	// Get file
-	file, err := s.getFileByID(context.Background(), fileID, shareName)
+	file, err := s.getFileByID(ctx.Context, fileID, shareName)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +75,7 @@ func (s *PostgresMetadataStore) CommitWrite(
 		WHERE id = $4 AND share_name = $5
 	`
 
-	_, err = s.pool.Exec(context.Background(), updateQuery,
+	_, err = s.pool.Exec(ctx.Context, updateQuery,
 		int64(intent.NewSize),
 		intent.NewMtime,
 		now,
@@ -91,7 +90,7 @@ func (s *PostgresMetadataStore) CommitWrite(
 	s.statsCache.invalidate()
 
 	// Get updated file
-	file, err := s.getFileByID(context.Background(), fileID, shareName)
+	file, err := s.getFileByID(ctx.Context, fileID, shareName)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +104,7 @@ func (s *PostgresMetadataStore) PrepareRead(
 	handle metadata.FileHandle,
 ) (*metadata.ReadMetadata, error) {
 	// Get file
-	file, err := s.GetFile(context.Background(), handle)
+	file, err := s.GetFile(ctx.Context, handle)
 	if err != nil {
 		return nil, err
 	}

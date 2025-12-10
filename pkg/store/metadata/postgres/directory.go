@@ -156,7 +156,7 @@ func (s *PostgresMetadataStore) ReadDirectory(
 	}
 
 	// Get directory file
-	dir, err := s.getFileByID(context.Background(), dirID, shareName)
+	dir, err := s.getFileByID(ctx.Context, dirID, shareName)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +211,7 @@ func (s *PostgresMetadataStore) ReadDirectory(
 		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := s.pool.Query(context.Background(), query, dirID, maxEntries+1, offset)
+	rows, err := s.pool.Query(ctx.Context, query, dirID, maxEntries+1, offset)
 	if err != nil {
 		return nil, mapPgError(err, "ReadDirectory", dir.Path)
 	}

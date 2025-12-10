@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"context"
 	"path"
 	"time"
 
@@ -11,8 +10,7 @@ import (
 
 // Move moves or renames a file or directory
 func (s *PostgresMetadataStore) Move(
-	ctx context.Context,
-	authCtx *metadata.AuthContext,
+	ctx *metadata.AuthContext,
 	srcParentHandle metadata.FileHandle,
 	srcName string,
 	dstParentHandle metadata.FileHandle,
@@ -51,11 +49,11 @@ func (s *PostgresMetadataStore) Move(
 	}
 
 	// Begin transaction
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.pool.Begin(ctx.Context)
 	if err != nil {
 		return mapPgError(err, "Move", srcName)
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx.Context)
 
 	// Lock both parents in deterministic order (by UUID) to prevent deadlocks
 	parentIDs := []uuid.UUID{srcParentID, dstParentID}
@@ -71,13 +69,13 @@ func (s *PostgresMetadataStore) Move(
 		FOR UPDATE
 	`
 
-	_, err = tx.Exec(ctx, lockQuery, parentIDs)
+	_, err = tx.Exec(ctx.Context, lockQuery, parentIDs)
 	if err != nil {
 		return mapPgError(err, "Move", srcName)
 	}
 
 	// Get source parent
-	srcParent, err := s.getFileByIDTx(ctx, tx, srcParentID, srcShareName)
+	srcParent, err := s.getFileByIDTx(ctx.Context, tx, srcParentID, srcShareName)
 	if err != nil {
 		return err
 	}
@@ -91,12 +89,12 @@ func (s *PostgresMetadataStore) Move(
 	}
 
 	// Check write permission on source parent
-	if err := s.checkAccess(srcParent, authCtx, metadata.PermissionWrite); err != nil {
+	if err := s.checkAccess(srcParent, ctx, metadata.PermissionWrite); err != nil {
 		return err
 	}
 
 	// Get destination parent
-	dstParent, err := s.getFileByIDTx(ctx, tx, dstParentID, dstShareName)
+	dstParent, err := s.getFileByIDTx(ctx.Context, tx, dstParentID, dstShareName)
 	if err != nil {
 		return err
 	}
@@ -111,7 +109,7 @@ func (s *PostgresMetadataStore) Move(
 
 	// Check write permission on destination parent (if different from source)
 	if srcParentID != dstParentID {
-		if err := s.checkAccess(dstParent, authCtx, metadata.PermissionWrite); err != nil {
+		if err := s.checkAccess(dstParent, ctx, metadata.PermissionWrite); err != nil {
 			return err
 		}
 	}
@@ -124,7 +122,7 @@ func (s *PostgresMetadataStore) Move(
 	`
 
 	var srcFileID uuid.UUID
-	err = tx.QueryRow(ctx, srcLookupQuery, srcParentID, srcName).Scan(&srcFileID)
+	err = tx.QueryRow(ctx.Context, srcLookupQuery, srcParentID, srcName).Scan(&srcFileID)
 	if err != nil {
 		return mapPgError(err, "Move", srcName)
 	}
@@ -138,7 +136,7 @@ func (s *PostgresMetadataStore) Move(
 	`
 
 	var dstExists bool
-	err = tx.QueryRow(ctx, dstCheckQuery, dstParentID, dstName).Scan(&dstExists)
+	err = tx.QueryRow(ctx.Context, dstCheckQuery, dstParentID, dstName).Scan(&dstExists)
 	if err != nil {
 		return mapPgError(err, "Move", dstName)
 	}
@@ -154,7 +152,7 @@ func (s *PostgresMetadataStore) Move(
 	now := time.Now()
 
 	// Get source file to update its path
-	srcFile, err := s.getFileByIDTx(ctx, tx, srcFileID, srcShareName)
+	srcFile, err := s.getFileByIDTx(ctx.Context, tx, srcFileID, srcShareName)
 	if err != nil {
 		return err
 	}
@@ -171,7 +169,7 @@ func (s *PostgresMetadataStore) Move(
 			WHERE parent_id = $2 AND child_id = $3
 		`
 
-		_, err = tx.Exec(ctx, updateMapQuery, dstName, srcParentID, srcFileID)
+		_, err = tx.Exec(ctx.Context, updateMapQuery, dstName, srcParentID, srcFileID)
 		if err != nil {
 			return mapPgError(err, "Move", srcName)
 		}
@@ -183,7 +181,7 @@ func (s *PostgresMetadataStore) Move(
 			WHERE id = $3
 		`
 
-		_, err = tx.Exec(ctx, updatePathQuery, newPath, now, srcFileID)
+		_, err = tx.Exec(ctx.Context, updatePathQuery, newPath, now, srcFileID)
 		if err != nil {
 			return mapPgError(err, "Move", srcName)
 		}
@@ -195,7 +193,7 @@ func (s *PostgresMetadataStore) Move(
 			WHERE id = $2
 		`
 
-		_, err = tx.Exec(ctx, updateParentQuery, now, srcParentID)
+		_, err = tx.Exec(ctx.Context, updateParentQuery, now, srcParentID)
 		if err != nil {
 			return mapPgError(err, "Move", srcName)
 		}
@@ -206,7 +204,7 @@ func (s *PostgresMetadataStore) Move(
 			WHERE parent_id = $1 AND child_id = $2
 		`
 
-		_, err = tx.Exec(ctx, deleteMapQuery, srcParentID, srcFileID)
+		_, err = tx.Exec(ctx.Context, deleteMapQuery, srcParentID, srcFileID)
 		if err != nil {
 			return mapPgError(err, "Move", srcName)
 		}
@@ -216,7 +214,7 @@ func (s *PostgresMetadataStore) Move(
 			VALUES ($1, $2, $3)
 		`
 
-		_, err = tx.Exec(ctx, insertMapQuery, dstParentID, srcFileID, dstName)
+		_, err = tx.Exec(ctx.Context, insertMapQuery, dstParentID, srcFileID, dstName)
 		if err != nil {
 			return mapPgError(err, "Move", dstName)
 		}
@@ -228,7 +226,7 @@ func (s *PostgresMetadataStore) Move(
 			WHERE id = $3
 		`
 
-		_, err = tx.Exec(ctx, updatePathQuery, newPath, now, srcFileID)
+		_, err = tx.Exec(ctx.Context, updatePathQuery, newPath, now, srcFileID)
 		if err != nil {
 			return mapPgError(err, "Move", srcName)
 		}
@@ -240,7 +238,7 @@ func (s *PostgresMetadataStore) Move(
 			WHERE id = ANY($2::uuid[])
 		`
 
-		_, err = tx.Exec(ctx, updateParentsQuery, now, []uuid.UUID{srcParentID, dstParentID})
+		_, err = tx.Exec(ctx.Context, updateParentsQuery, now, []uuid.UUID{srcParentID, dstParentID})
 		if err != nil {
 			return mapPgError(err, "Move", srcName)
 		}
@@ -262,7 +260,7 @@ func (s *PostgresMetadataStore) Move(
 			WHERE path LIKE $4 AND share_name = $5
 		`
 
-		_, err = tx.Exec(ctx, updateDescendantsQuery,
+		_, err = tx.Exec(ctx.Context, updateDescendantsQuery,
 			newPathPrefix,
 			len(oldPathPrefix)+1,
 			now,
@@ -275,7 +273,7 @@ func (s *PostgresMetadataStore) Move(
 	}
 
 	// Commit transaction
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(ctx.Context); err != nil {
 		return mapPgError(err, "Move", srcName)
 	}
 
