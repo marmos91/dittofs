@@ -7,16 +7,17 @@ import (
 )
 
 // GetFilesystemCapabilities returns the filesystem capabilities
-func (s *PostgresMetadataStore) GetFilesystemCapabilities(ctx context.Context) (metadata.FilesystemCapabilities, error) {
+func (s *PostgresMetadataStore) GetFilesystemCapabilities(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemCapabilities, error) {
 	// Return cached capabilities (set during initialization)
-	return s.capabilities, nil
+	// Note: handle parameter not used as capabilities are share-level, not file-level
+	return &s.capabilities, nil
 }
 
 // GetFilesystemStatistics returns filesystem statistics with caching
-func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context) (metadata.FilesystemStatistics, error) {
+func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemStatistics, error) {
 	// Check cache first
 	if stats, valid := s.statsCache.get(); valid {
-		return stats, nil
+		return &stats, nil
 	}
 
 	// Cache miss - query database
@@ -30,7 +31,7 @@ func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context) (me
 	var bytesUsed, filesUsed int64
 	err := s.pool.QueryRow(ctx, query).Scan(&bytesUsed, &filesUsed)
 	if err != nil {
-		return metadata.FilesystemStatistics{}, mapPgError(err, "GetFilesystemStatistics", "")
+		return nil, mapPgError(err, "GetFilesystemStatistics", "")
 	}
 
 	// For PostgreSQL, we don't have hard limits on storage
@@ -48,24 +49,26 @@ func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context) (me
 	// Update cache
 	s.statsCache.set(stats)
 
-	return stats, nil
+	return &stats, nil
 }
 
 // GetServerConfig retrieves server-wide configuration
-func (s *PostgresMetadataStore) GetServerConfig(ctx context.Context) (map[string]any, error) {
+func (s *PostgresMetadataStore) GetServerConfig(ctx context.Context) (metadata.MetadataServerConfig, error) {
 	query := `SELECT config FROM server_config WHERE id = 1`
 
-	var config map[string]any
-	err := s.pool.QueryRow(ctx, query).Scan(&config)
+	var customSettings map[string]any
+	err := s.pool.QueryRow(ctx, query).Scan(&customSettings)
 	if err != nil {
-		return nil, mapPgError(err, "GetServerConfig", "")
+		return metadata.MetadataServerConfig{}, mapPgError(err, "GetServerConfig", "")
 	}
 
-	return config, nil
+	return metadata.MetadataServerConfig{
+		CustomSettings: customSettings,
+	}, nil
 }
 
 // SetServerConfig updates server-wide configuration
-func (s *PostgresMetadataStore) SetServerConfig(ctx context.Context, config map[string]any) error {
+func (s *PostgresMetadataStore) SetServerConfig(ctx context.Context, config metadata.MetadataServerConfig) error {
 	query := `
 		INSERT INTO server_config (id, config)
 		VALUES (1, $1)
@@ -73,7 +76,7 @@ func (s *PostgresMetadataStore) SetServerConfig(ctx context.Context, config map[
 		SET config = EXCLUDED.config, updated_at = NOW()
 	`
 
-	_, err := s.pool.Exec(ctx, query, config)
+	_, err := s.pool.Exec(ctx, query, config.CustomSettings)
 	if err != nil {
 		return mapPgError(err, "SetServerConfig", "")
 	}

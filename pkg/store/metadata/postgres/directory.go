@@ -11,12 +11,24 @@ import (
 )
 
 // CreateRootDirectory creates the root directory for a share
-func (s *PostgresMetadataStore) CreateRootDirectory(ctx context.Context, shareName string, uid, gid uint32) (metadata.FileHandle, error) {
+func (s *PostgresMetadataStore) CreateRootDirectory(
+	ctx context.Context,
+	shareName string,
+	attr *metadata.FileAttr,
+) (*metadata.File, error) {
 	if shareName == "" {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrInvalidArgument,
 			Message: "share name cannot be empty",
 		}
+	}
+
+	// Apply defaults
+	uid := attr.UID
+	gid := attr.GID
+	mode := attr.Mode
+	if mode == 0 {
+		mode = 0o755
 	}
 
 	s.logger.Info("Creating root directory",
@@ -53,21 +65,21 @@ func (s *PostgresMetadataStore) CreateRootDirectory(ctx context.Context, shareNa
 	`
 
 	_, err = tx.Exec(ctx, insertFileQuery,
-		rootID,                         // id
-		shareName,                      // share_name
-		"/",                            // path (root)
+		rootID,                            // id
+		shareName,                         // share_name
+		"/",                               // path (root)
 		int16(metadata.FileTypeDirectory), // file_type
-		int32(0o755),                   // mode (rwxr-xr-x)
-		int32(uid),                     // uid
-		int32(gid),                     // gid
-		int64(0),                       // size
-		now,                            // atime
-		now,                            // mtime
-		now,                            // ctime
-		nil,                            // content_id (NULL for directories)
-		nil,                            // link_target (NULL)
-		nil,                            // device_major (NULL)
-		nil,                            // device_minor (NULL)
+		int32(mode),                       // mode
+		int32(uid),                        // uid
+		int32(gid),                        // gid
+		int64(0),                          // size
+		now,                               // atime
+		now,                               // mtime
+		now,                               // ctime
+		nil,                               // content_id (NULL for directories)
+		nil,                               // link_target (NULL)
+		nil,                               // device_major (NULL)
+		nil,                               // device_minor (NULL)
 	)
 	if err != nil {
 		return nil, mapPgError(err, "CreateRootDirectory", shareName)
@@ -102,49 +114,56 @@ func (s *PostgresMetadataStore) CreateRootDirectory(ctx context.Context, shareNa
 		return nil, mapPgError(err, "CreateRootDirectory", shareName)
 	}
 
-	// Encode handle
-	handle, err := metadata.EncodeShareHandle(shareName, rootID)
-	if err != nil {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrIOError,
-			Message: "failed to encode root handle",
-		}
-	}
-
 	s.logger.Info("Root directory created successfully",
 		"share", shareName,
 		"root_id", rootID,
 	)
 
-	return handle, nil
+	// Build File
+	file := &metadata.File{
+		ID:        rootID,
+		ShareName: shareName,
+		Path:      "/",
+		FileAttr: metadata.FileAttr{
+			Type:  metadata.FileTypeDirectory,
+			Mode:  mode,
+			UID:   uid,
+			GID:   gid,
+			Size:  0,
+			Atime: now,
+			Mtime: now,
+			Ctime: now,
+		},
+	}
+
+	return file, nil
 }
 
 // ReadDirectory reads directory entries with pagination
 func (s *PostgresMetadataStore) ReadDirectory(
-	ctx context.Context,
-	authCtx *metadata.AuthContext,
+	ctx *metadata.AuthContext,
 	dirHandle metadata.FileHandle,
 	token string,
-	maxEntries int,
-) ([]metadata.DirectoryEntry, string, error) {
+	maxBytes uint32,
+) (*metadata.ReadDirPage, error) {
 	// Decode directory handle
 	shareName, dirID, err := decodeFileHandle(dirHandle)
 	if err != nil {
-		return nil, "", &metadata.StoreError{
+		return nil, &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
 			Message: "invalid directory handle",
 		}
 	}
 
 	// Get directory file
-	dir, err := s.getFileByID(ctx, dirID, shareName)
+	dir, err := s.getFileByID(context.Background(), dirID, shareName)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
 	// Verify it's a directory
 	if dir.Type != metadata.FileTypeDirectory {
-		return nil, "", &metadata.StoreError{
+		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotDirectory,
 			Message: "not a directory",
 			Path:    dir.Path,
@@ -152,8 +171,8 @@ func (s *PostgresMetadataStore) ReadDirectory(
 	}
 
 	// Check read permission
-	if err := s.checkAccess(dir, authCtx, metadata.PermissionRead); err != nil {
-		return nil, "", err
+	if err := s.checkAccess(dir, ctx, metadata.PermissionRead); err != nil {
+		return nil, err
 	}
 
 	// Parse token (offset-based pagination)
@@ -161,16 +180,20 @@ func (s *PostgresMetadataStore) ReadDirectory(
 	if token != "" {
 		_, err := fmt.Sscanf(token, "%d", &offset)
 		if err != nil {
-			return nil, "", &metadata.StoreError{
+			return nil, &metadata.StoreError{
 				Code:    metadata.ErrInvalidArgument,
 				Message: "invalid pagination token",
 			}
 		}
 	}
 
-	// Set default max entries
-	if maxEntries <= 0 {
-		maxEntries = 1000
+	// Estimate max entries based on maxBytes (conservative estimate: ~200 bytes per entry)
+	maxEntries := 1000
+	if maxBytes > 0 {
+		maxEntries = int(maxBytes / 200)
+		if maxEntries < 10 {
+			maxEntries = 10 // Minimum entries per page
+		}
 	}
 
 	// Query children with pagination
@@ -188,13 +211,13 @@ func (s *PostgresMetadataStore) ReadDirectory(
 		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := s.pool.Query(ctx, query, dirID, maxEntries+1, offset)
+	rows, err := s.pool.Query(context.Background(), query, dirID, maxEntries+1, offset)
 	if err != nil {
-		return nil, "", mapPgError(err, "ReadDirectory", dir.Path)
+		return nil, mapPgError(err, "ReadDirectory", dir.Path)
 	}
 	defer rows.Close()
 
-	var entries []metadata.DirectoryEntry
+	var entries []metadata.DirEntry
 	count := 0
 
 	for rows.Next() {
@@ -207,23 +230,23 @@ func (s *PostgresMetadataStore) ReadDirectory(
 		// Scan row (including child_name from join)
 		file, childName, err := scanDirectoryEntry(rows)
 		if err != nil {
-			return nil, "", mapPgError(err, "ReadDirectory", dir.Path)
+			return nil, mapPgError(err, "ReadDirectory", dir.Path)
 		}
 
 		// Encode child handle
 		childHandle, err := metadata.EncodeFileHandle(file)
 		if err != nil {
-			return nil, "", &metadata.StoreError{
+			return nil, &metadata.StoreError{
 				Code:    metadata.ErrIOError,
 				Message: "failed to encode child handle",
 			}
 		}
 
 		// Create directory entry
-		entry := metadata.DirectoryEntry{
+		entry := metadata.DirEntry{
+			ID:     metadata.HandleToINode(childHandle),
 			Name:   childName,
 			Handle: childHandle,
-			FileID: metadata.HandleToINode(childHandle),
 			Attr:   &file.FileAttr,
 		}
 
@@ -231,16 +254,24 @@ func (s *PostgresMetadataStore) ReadDirectory(
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, "", mapPgError(err, "ReadDirectory", dir.Path)
+		return nil, mapPgError(err, "ReadDirectory", dir.Path)
 	}
 
 	// Generate next token if there are more entries
 	nextToken := ""
+	hasMore := false
 	if count > maxEntries {
 		nextToken = fmt.Sprintf("%d", offset+maxEntries)
+		hasMore = true
 	}
 
-	return entries, nextToken, nil
+	page := &metadata.ReadDirPage{
+		Entries:   entries,
+		NextToken: nextToken,
+		HasMore:   hasMore,
+	}
+
+	return page, nil
 }
 
 // scanDirectoryEntry scans a directory entry row including the child name

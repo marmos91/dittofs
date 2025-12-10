@@ -173,7 +173,7 @@ func initializeFilesystemCapabilities(ctx context.Context, pool *pgxpool.Pool, c
 		caps.CaseSensitive,
 		caps.CasePreserving,
 		caps.SupportsACLs,
-		caps.TimeResolution,
+		caps.TimestampResolution,
 	)
 
 	return err
