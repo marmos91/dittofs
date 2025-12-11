@@ -42,10 +42,9 @@ type StorageSpec struct {
 
 	// Size for content store PVC (mounted at /data/content)
 	// Used for local filesystem content backend (not needed if using pure S3)
-	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^[0-9]+(Gi|Mi|Ti)$`
 	// +kubebuilder:example="50Gi"
-	ContentSize string `json:"contentSize"`
+	ContentSize string `json:"contentSize,omitempty"`
 
 	// StorageClass for the server's PVCs
 	// If not specified, uses the cluster's default StorageClass

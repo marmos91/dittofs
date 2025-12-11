@@ -191,7 +191,6 @@ spec:
                       If not specified, uses the cluster's default StorageClass
                     type: string
                 required:
-                - contentSize
                 - metadataSize
                 type: object
             required:
