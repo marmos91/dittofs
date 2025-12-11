@@ -80,13 +80,17 @@ docker compose up -d
 # Start with S3 backend (includes localstack)
 docker compose --profile s3-backend up -d
 
+# Start with PostgreSQL backend (includes postgres)
+docker compose --profile postgres-backend up -d
+
 # View logs
 docker compose logs -f dittofs
 ```
 
 **Storage Backends:**
-- **Local Filesystem (default)**: Uses Docker volumes for both metadata and content
-- **S3 Backend**: Uses Docker volume for metadata, S3 (localstack) for content
+- **Local Filesystem (default)**: Uses Docker volumes for both metadata (BadgerDB) and content
+- **S3 Backend**: Uses Docker volume for metadata (BadgerDB), S3 (localstack) for content
+- **PostgreSQL Backend**: Uses PostgreSQL for metadata, Docker volume for content
 
 **Monitoring:**
 For Prometheus and Grafana monitoring stack, see [`monitoring/README.md`](monitoring/README.md).
@@ -95,7 +99,10 @@ For Prometheus and Grafana monitoring stack, see [`monitoring/README.md`](monito
 - **Production** (`Dockerfile`): Uses Google's distroless image for minimal attack surface
 - **Debug** (`Dockerfile.debug`): Includes shell and debugging tools when needed
 
-> 💡 **Tip**: Make sure your `config.yaml` matches the backend you're using. The default service uses local filesystem, while the `--profile s3-backend` expects S3 configuration.
+> 💡 **Tip**: Make sure your `config.yaml` matches the backend you're using:
+> - Default profile expects BadgerDB metadata + filesystem content
+> - `--profile s3-backend` expects BadgerDB metadata + S3 content
+> - `--profile postgres-backend` expects PostgreSQL metadata + filesystem content
 
 ### Mount from Client
 
