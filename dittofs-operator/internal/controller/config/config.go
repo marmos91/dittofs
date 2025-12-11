@@ -5,7 +5,7 @@ import (
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/dittofs-operator/api/v1alpha1"
 
-	"go.yaml.in/yaml/v2"
+	"gopkg.in/yaml.v3"
 )
 
 func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, error) {
