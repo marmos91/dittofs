@@ -72,9 +72,10 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 - Stores file/directory structure, attributes, permissions
 - Handles access control and root directory creation
 - Implementations:
-  - `pkg/store/metadata/memory/`: In-memory (fast, ephemeral)
-  - `pkg/store/metadata/badger/`: BadgerDB (persistent, embedded)
-- File handles are opaque uint64 identifiers
+  - `pkg/store/metadata/memory/`: In-memory (fast, ephemeral, full hard link support)
+  - `pkg/store/metadata/badger/`: BadgerDB (persistent, embedded, path-based handles)
+  - `pkg/store/metadata/postgres/`: PostgreSQL (persistent, distributed, UUID-based handles)
+- File handles are opaque identifiers (implementation-specific format)
 
 **4. Content Store** (`pkg/store/content/store.go`)
 - Stores actual file data
@@ -287,7 +288,8 @@ dittofs/
 │   │   ├── metadata/         # Metadata store interface
 │   │   │   ├── store.go      # Store interface
 │   │   │   ├── memory/       # In-memory implementation
-│   │   │   └── badger/       # BadgerDB implementation
+│   │   │   ├── badger/       # BadgerDB implementation
+│   │   │   └── postgres/     # PostgreSQL implementation
 │   │   └── content/          # Content store interface
 │   │       ├── store.go      # Store interface
 │   │       ├── memory/       # In-memory implementation
@@ -314,6 +316,117 @@ dittofs/
     ├── integration/          # Integration tests (S3, BadgerDB)
     └── e2e/                  # End-to-end tests (real NFS mounts)
 ```
+
+## Horizontal Scaling with PostgreSQL
+
+The PostgreSQL metadata store enables horizontal scaling for high-availability and high-throughput deployments:
+
+### Architecture
+
+```
+┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+│  DittoFS #1 │  │  DittoFS #2 │  │  DittoFS #3 │
+│  (Pod 1)    │  │  (Pod 2)    │  │  (Pod 3)    │
+└──────┬──────┘  └──────┬──────┘  └──────┬──────┘
+       │                │                │
+       └────────────────┼────────────────┘
+                        │
+                   ┌────▼─────┐
+                   │PostgreSQL│
+                   │ Cluster  │
+                   └──────────┘
+```
+
+### Key Features
+
+1. **Multiple DittoFS Instances**: Run multiple instances sharing one PostgreSQL database
+2. **Load Balancing**: Use Kubernetes services or external load balancers to distribute requests
+3. **No Session Affinity Required**: Any instance can serve any request (stateless design)
+4. **Independent Connection Pools**: Each instance maintains its own connection pool (10-15 conns typical)
+5. **Statistics Caching**: 5-second TTL cache reduces database load
+6. **ACID Transactions**: Ensures consistency across concurrent operations
+
+### Deployment Example (Kubernetes)
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dittofs
+spec:
+  replicas: 3  # Multiple instances for HA
+  selector:
+    matchLabels:
+      app: dittofs
+  template:
+    metadata:
+      labels:
+        app: dittofs
+    spec:
+      containers:
+      - name: dittofs
+        image: dittofs:latest
+        ports:
+        - containerPort: 12049
+          name: nfs
+        env:
+        - name: DITTOFS_METADATA_POSTGRES_HOST
+          value: postgres-service
+        - name: DITTOFS_METADATA_POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: password
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dittofs-nfs
+spec:
+  selector:
+    app: dittofs
+  ports:
+  - port: 2049
+    targetPort: 12049
+    protocol: TCP
+  type: LoadBalancer
+```
+
+### Connection Pool Sizing
+
+Connection pool sizing depends on your workload:
+
+- **Light workload** (< 10 concurrent clients): `max_conns: 10`
+- **Medium workload** (10-50 concurrent clients): `max_conns: 15`
+- **Heavy workload** (50+ concurrent clients): `max_conns: 20-25`
+
+**Formula**: `max_conns ≈ 2 × expected_concurrent_operations`
+
+**PostgreSQL Limits**: Ensure PostgreSQL `max_connections` > `(DittoFS instances × max_conns)`
+
+Example: 3 DittoFS instances × 15 conns = 45 total connections needed from PostgreSQL
+
+### Performance Considerations
+
+- **Network Latency**: PostgreSQL adds ~1-2ms latency per metadata operation
+- **Statistics Caching**: Reduces expensive queries (disk usage, file counts)
+- **Query Optimization**: All queries use indexed fields for fast lookups
+- **Transaction Overhead**: Short-lived transactions minimize lock contention
+
+### Best Practices
+
+1. **Use Connection Pooling**: Keep `max_conns` reasonable (10-20 per instance)
+2. **Enable TLS**: Use `sslmode: require` or higher in production
+3. **Monitor Connections**: Watch PostgreSQL connection count and utilization
+4. **Scale Horizontally**: Add DittoFS replicas, not connection pool size
+5. **Separate Read Replicas**: For read-heavy workloads, consider PostgreSQL read replicas
 
 ## Performance Characteristics
 

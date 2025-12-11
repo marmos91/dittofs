@@ -25,7 +25,7 @@ CREATE TABLE files (
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT unique_share_path UNIQUE(share_name, path),
-    CONSTRAINT valid_file_type CHECK (file_type BETWEEN 1 AND 7),
+    CONSTRAINT valid_file_type CHECK (file_type BETWEEN 0 AND 6),
     CONSTRAINT valid_mode CHECK (mode >= 0 AND mode <= 4095),  -- 0o7777
     CONSTRAINT valid_uid CHECK (uid >= 0),
     CONSTRAINT valid_gid CHECK (gid >= 0),

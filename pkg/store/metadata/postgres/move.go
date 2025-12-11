@@ -255,7 +255,7 @@ func (s *PostgresMetadataStore) Move(
 
 		updateDescendantsQuery := `
 			UPDATE files
-			SET path = $1 || SUBSTRING(path FROM $2),
+			SET path = $1 || SUBSTRING(path FROM $2::INTEGER),
 			    ctime = $3
 			WHERE path LIKE $4 AND share_name = $5
 		`
