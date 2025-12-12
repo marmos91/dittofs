@@ -120,8 +120,10 @@ package mystore
 
 import (
     "context"
+    "database/sql"
     "sync"
 
+    lru "github.com/hashicorp/golang-lru/v2"
     "github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -138,8 +140,8 @@ type MyMetadataStore struct {
     mu sync.RWMutex
 
     // Caches (optional but recommended)
-    handleCache *lru.Cache
-    pathCache   *lru.Cache
+    handleCache *lru.Cache[string, *metadata.File]
+    pathCache   *lru.Cache[string, metadata.FileHandle]
 }
 ```
 
@@ -316,7 +318,7 @@ func (s *MyMetadataStore) Create(
     }
 
     // Check if name already exists
-    childHandle, err := s.lookupChild(ctx.Context, parentHandle, name)
+    _, err = s.lookupChild(ctx.Context, parentHandle, name)
     if err == nil {
         return nil, &metadata.StoreError{
             Code:    metadata.ErrAlreadyExists,
@@ -442,8 +444,10 @@ func (s *MyMetadataStore) ReadDirectory(
         }
     }
 
-    // Query children from backend
-    children, err := s.queryChildren(ctx.Context, dirHandle, offset, maxBytes)
+    // Query children from backend with a reasonable batch size
+    // Note: maxBytes is for response size limiting, not entry count
+    const batchSize = 100 // Adjust based on typical entry size
+    children, hasMore, err := s.queryChildren(ctx.Context, dirHandle, offset, batchSize)
     if err != nil {
         return nil, err
     }
@@ -462,8 +466,7 @@ func (s *MyMetadataStore) ReadDirectory(
         })
     }
 
-    // Determine if more entries exist
-    hasMore := len(children) >= maxBytes
+    // Generate next token if more entries exist
     nextToken := ""
     if hasMore {
         nextToken = strconv.Itoa(offset + len(children))
@@ -1192,7 +1195,7 @@ func (s *MyMetadataStore) updateFile(ctx context.Context, handle FileHandle, upd
 **Use transactions for multi-step operations**:
 
 ```go
-func (s *MyMetadataStore) Move(ctx *AuthContext, fromDir, fromName, toDir, toName FileHandle) error {
+func (s *MyMetadataStore) Move(ctx *AuthContext, fromDir FileHandle, fromName string, toDir FileHandle, toName string) error {
     // Begin transaction
     tx, err := s.db.BeginTx(ctx.Context, nil)
     if err != nil {
@@ -1200,17 +1203,23 @@ func (s *MyMetadataStore) Move(ctx *AuthContext, fromDir, fromName, toDir, toNam
     }
     defer tx.Rollback()
 
-    // Step 1: Unlink from source
+    // Step 1: Get source file handle
+    srcHandle, err := s.lookupChild(tx, fromDir, fromName)
+    if err != nil {
+        return err
+    }
+
+    // Step 2: Unlink from source
     if err := s.unlinkChild(tx, fromDir, fromName); err != nil {
         return err
     }
 
-    // Step 2: Link to destination
-    if err := s.linkChild(tx, toDir, toName, handle); err != nil {
+    // Step 3: Link to destination
+    if err := s.linkChild(tx, toDir, toName, srcHandle); err != nil {
         return err
     }
 
-    // Step 3: Update timestamps
+    // Step 4: Update timestamps
     now := time.Now()
     if err := s.updateTimes(tx, fromDir, now, now); err != nil {
         return err
