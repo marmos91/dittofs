@@ -37,6 +37,8 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 					Endpoint: getConfigValue(backend.Config, "endpoint", ""),
 				},
 			}
+		default:
+			return "", fmt.Errorf("unsupported backend type %q for backend %q", backend.Type, backend.Name)
 		}
 	}
 
