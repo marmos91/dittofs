@@ -280,13 +280,16 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
+					SecurityContext: dittoServer.Spec.PodSecurityContext,
 					Containers: []corev1.Container{
 						{
-							Name:         "dittofs",
-							Image:        dittoServer.Spec.Image,
-							Command:      []string{"/app/dittofs"},
-							Args:         []string{"start", "--config", "/config/config.yaml"},
-							VolumeMounts: volumeMounts,
+							Name:            "dittofs",
+							Image:           dittoServer.Spec.Image,
+							Command:         []string{"/app/dittofs"},
+							Args:            []string{"start", "--config", "/config/config.yaml"},
+							VolumeMounts:    volumeMounts,
+							Resources:       dittoServer.Spec.Resources,
+							SecurityContext: dittoServer.Spec.SecurityContext,
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "nfs",

@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -28,6 +29,19 @@ type DittoServerSpec struct {
 
 	// Service configuration for the NFS server endpoint
 	Service ServiceSpec `json:"service,omitempty"`
+
+	// Resource requirements for the DittoFS container (CPU, memory limits/requests)
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Security context for the DittoFS container
+	// Use this to configure capabilities (e.g., CAP_SYS_ADMIN for privileged ports)
+	// +optional
+	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
+
+	// Pod security context for the DittoFS pod
+	// +optional
+	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
 }
 
 // StorageSpec defines storage volumes for the DittoFS server pod's internal use
