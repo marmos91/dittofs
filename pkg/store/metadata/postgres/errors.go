@@ -144,10 +144,10 @@ func mapPgErrorCode(pgErr *pgconn.PgError, operation, path string) error {
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) &&
 		(s == substr ||
-		 len(s) > len(substr) &&
-		 (s[:len(substr)] == substr ||
-		  s[len(s)-len(substr):] == substr ||
-		  findSubstring(s, substr)))
+			len(s) > len(substr) &&
+				(s[:len(substr)] == substr ||
+					s[len(s)-len(substr):] == substr ||
+					findSubstring(s, substr)))
 }
 
 func findSubstring(s, substr string) bool {
@@ -155,29 +155,6 @@ func findSubstring(s, substr string) bool {
 		if s[i:i+len(substr)] == substr {
 			return true
 		}
-	}
-	return false
-}
-
-// isNotFoundError checks if an error is a "not found" error
-func isNotFoundError(err error) bool {
-	if errors.Is(err, pgx.ErrNoRows) {
-		return true
-	}
-
-	var storeErr *metadata.StoreError
-	if errors.As(err, &storeErr) {
-		return storeErr.Code == metadata.ErrNotFound
-	}
-
-	return false
-}
-
-// isDeadlockError checks if an error is a deadlock error (should retry)
-func isDeadlockError(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code == "40P01" || pgErr.Code == "40001"
 	}
 	return false
 }

@@ -11,7 +11,7 @@ import (
 func TestCreateSymlink(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -46,7 +46,7 @@ func TestCreateSymlink(t *testing.T) {
 func TestReadSymlink(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -81,7 +81,7 @@ func TestReadSymlink(t *testing.T) {
 func TestReadSymlink_NotSymlink(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -97,7 +97,7 @@ func TestReadSymlink_NotSymlink(t *testing.T) {
 func TestCreateSymlink_AlreadyExists(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -123,7 +123,7 @@ func TestCreateSymlink_AlreadyExists(t *testing.T) {
 func TestGetFilesystemCapabilities(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -150,7 +150,7 @@ func TestGetFilesystemCapabilities(t *testing.T) {
 func TestGetFilesystemStatistics(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -199,7 +199,7 @@ func TestGetFilesystemStatistics(t *testing.T) {
 func TestGetFilesystemStatistics_Caching(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -227,7 +227,7 @@ func TestGetFilesystemStatistics_Caching(t *testing.T) {
 func TestHealthcheck(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -243,7 +243,7 @@ func TestHealthcheck_AfterClose(t *testing.T) {
 	defer tc.cleanup(t)
 
 	// Close the store
-	store.Close()
+	_ = store.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -258,7 +258,7 @@ func TestHealthcheck_AfterClose(t *testing.T) {
 func TestGetServerConfig(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Initially should be empty or default
 	_, err := store.GetServerConfig(context.Background())
@@ -297,7 +297,7 @@ func TestGetServerConfig(t *testing.T) {
 func TestSetServerConfig_Update(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Set initial config
 	config1 := metadata.MetadataServerConfig{
@@ -331,7 +331,7 @@ func TestSetServerConfig_Update(t *testing.T) {
 func TestGetShareNameForHandle(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, shareName := mustGetRootHandle(t, store)
 
@@ -353,7 +353,7 @@ func TestGetShareNameForHandle(t *testing.T) {
 func TestGetShareNameForHandle_InvalidHandle(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Invalid handle
 	invalidHandle := metadata.FileHandle([]byte("invalid:not-a-uuid"))
@@ -365,7 +365,7 @@ func TestGetShareNameForHandle_InvalidHandle(t *testing.T) {
 func TestCreateSpecialFile_CharDevice(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -405,7 +405,7 @@ func TestCreateSpecialFile_CharDevice(t *testing.T) {
 func TestCreateSpecialFile_BlockDevice(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -439,7 +439,7 @@ func TestCreateSpecialFile_BlockDevice(t *testing.T) {
 func TestCreateSpecialFile_FIFO(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -468,7 +468,7 @@ func TestCreateSpecialFile_FIFO(t *testing.T) {
 func TestCreateSpecialFile_Socket(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -494,7 +494,7 @@ func TestCreateSpecialFile_Socket(t *testing.T) {
 func TestCreateSpecialFile_DeviceRequiresRoot(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -515,7 +515,7 @@ func TestCreateSpecialFile_DeviceRequiresRoot(t *testing.T) {
 func TestCreateSpecialFile_InvalidType(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -533,7 +533,7 @@ func TestCreateSpecialFile_InvalidType(t *testing.T) {
 func TestCreateSpecialFile_AlreadyExists(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -559,7 +559,7 @@ func TestCreateSpecialFile_AlreadyExists(t *testing.T) {
 func TestCreateHardLink(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -593,7 +593,7 @@ func TestCreateHardLink(t *testing.T) {
 func TestCreateHardLink_VerifyLinkCountIncrement(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -626,7 +626,7 @@ func TestCreateHardLink_VerifyLinkCountIncrement(t *testing.T) {
 func TestCreateHardLink_RemoveOriginal(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -676,7 +676,7 @@ func TestCreateHardLink_RemoveOriginal(t *testing.T) {
 func TestCreateHardLink_RemoveOriginal_ContentIDClearing(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -723,7 +723,7 @@ func TestCreateHardLink_RemoveOriginal_ContentIDClearing(t *testing.T) {
 func TestCreateHardLink_AlreadyExists(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -745,7 +745,7 @@ func TestCreateHardLink_AlreadyExists(t *testing.T) {
 func TestCreateHardLink_ToDirectory(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -761,7 +761,7 @@ func TestCreateHardLink_ToDirectory(t *testing.T) {
 func TestCreateHardLink_InvalidName(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -780,7 +780,7 @@ func TestCreateHardLink_InvalidName(t *testing.T) {
 func TestCreateHardLink_PermissionDenied(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 

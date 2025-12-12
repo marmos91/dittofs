@@ -53,7 +53,7 @@ func (s *PostgresMetadataStore) Move(
 	if err != nil {
 		return mapPgError(err, "Move", srcName)
 	}
-	defer tx.Rollback(ctx.Context)
+	defer func() { _ = tx.Rollback(ctx.Context) }()
 
 	// Lock both parents in deterministic order (by UUID) to prevent deadlocks
 	parentIDs := []uuid.UUID{srcParentID, dstParentID}

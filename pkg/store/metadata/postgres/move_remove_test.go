@@ -9,7 +9,7 @@ import (
 func TestMove_SameDirectory(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -46,7 +46,7 @@ func TestMove_SameDirectory(t *testing.T) {
 func TestMove_CrossDirectory(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -92,7 +92,7 @@ func TestMove_CrossDirectory(t *testing.T) {
 func TestMove_DirectoryWithContents(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -145,7 +145,7 @@ func TestMove_DirectoryWithContents(t *testing.T) {
 func TestMove_ReplaceFile(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -185,7 +185,7 @@ func TestMove_ReplaceFile(t *testing.T) {
 func TestMove_ReplaceDirectoryNotAllowed(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -203,7 +203,7 @@ func TestMove_ReplaceDirectoryNotAllowed(t *testing.T) {
 func TestMove_ReplaceNonEmptyDirectory(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -237,7 +237,7 @@ func TestMove_ReplaceNonEmptyDirectory(t *testing.T) {
 func TestMove_PermissionDenied(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -264,7 +264,7 @@ func TestMove_PermissionDenied(t *testing.T) {
 func TestRemoveFile(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -295,7 +295,7 @@ func TestRemoveFile(t *testing.T) {
 func TestRemoveFile_NotFile(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -310,7 +310,7 @@ func TestRemoveFile_NotFile(t *testing.T) {
 func TestRemoveFile_PermissionDenied(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -337,7 +337,7 @@ func TestRemoveFile_PermissionDenied(t *testing.T) {
 func TestRemoveDirectory(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -363,7 +363,7 @@ func TestRemoveDirectory(t *testing.T) {
 func TestRemoveDirectory_NotEmpty(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -382,7 +382,7 @@ func TestRemoveDirectory_NotEmpty(t *testing.T) {
 func TestRemoveDirectory_NotDirectory(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -397,7 +397,7 @@ func TestRemoveDirectory_NotDirectory(t *testing.T) {
 func TestRemoveDirectory_PermissionDenied(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 

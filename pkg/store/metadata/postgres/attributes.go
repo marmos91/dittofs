@@ -29,7 +29,7 @@ func (s *PostgresMetadataStore) SetFileAttributes(
 	if err != nil {
 		return mapPgError(err, "SetFileAttributes", "")
 	}
-	defer tx.Rollback(ctx.Context)
+	defer func() { _ = tx.Rollback(ctx.Context) }()
 
 	// Get and lock file
 	file, err := s.getFileByIDTx(ctx.Context, tx, fileID, shareName)
@@ -164,7 +164,7 @@ func (s *PostgresMetadataStore) CreateSymlink(
 	if err != nil {
 		return nil, mapPgError(err, "CreateSymlink", name)
 	}
-	defer tx.Rollback(ctx.Context)
+	defer func() { _ = tx.Rollback(ctx.Context) }()
 
 	// Get and lock parent directory
 	parent, err := s.getFileByIDTx(ctx.Context, tx, parentID, shareName)
@@ -231,7 +231,7 @@ func (s *PostgresMetadataStore) CreateSymlink(
 		shareName,
 		symlinkPath,
 		int16(metadata.FileTypeSymlink),
-		int32(mode & 0o7777),
+		int32(mode&0o7777),
 		int32(uid),
 		int32(gid),
 		int64(len(target)), // size is length of target path
@@ -406,7 +406,7 @@ func (s *PostgresMetadataStore) CreateSpecialFile(
 	if err != nil {
 		return nil, mapPgError(err, "CreateSpecialFile", name)
 	}
-	defer tx.Rollback(ctx.Context)
+	defer func() { _ = tx.Rollback(ctx.Context) }()
 
 	// Get and lock parent directory
 	parent, err := s.getFileByIDTx(ctx.Context, tx, parentID, shareName)
@@ -608,7 +608,7 @@ func (s *PostgresMetadataStore) CreateHardLink(
 	if err != nil {
 		return mapPgError(err, "CreateHardLink", name)
 	}
-	defer tx.Rollback(ctx.Context)
+	defer func() { _ = tx.Rollback(ctx.Context) }()
 
 	// Get and verify directory
 	dirFile, err := s.getFileByIDTx(ctx.Context, tx, dirID, dirShareName)

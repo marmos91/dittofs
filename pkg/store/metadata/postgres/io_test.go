@@ -10,7 +10,7 @@ import (
 func TestPrepareWrite(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -45,7 +45,7 @@ func TestPrepareWrite(t *testing.T) {
 func TestPrepareWrite_PermissionDenied(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -72,7 +72,7 @@ func TestPrepareWrite_PermissionDenied(t *testing.T) {
 func TestPrepareWrite_NotRegularFile(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -88,7 +88,7 @@ func TestPrepareWrite_NotRegularFile(t *testing.T) {
 func TestCommitWrite(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -137,7 +137,7 @@ func TestCommitWrite(t *testing.T) {
 func TestCommitWrite_MultipleWrites(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -182,7 +182,7 @@ func TestCommitWrite_MultipleWrites(t *testing.T) {
 func TestPrepareRead(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -215,7 +215,7 @@ func TestPrepareRead(t *testing.T) {
 func TestPrepareRead_PermissionDenied(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -242,7 +242,7 @@ func TestPrepareRead_PermissionDenied(t *testing.T) {
 func TestPrepareRead_NotRegularFile(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -258,7 +258,7 @@ func TestPrepareRead_NotRegularFile(t *testing.T) {
 func TestSetFileAttributes(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -301,7 +301,7 @@ func TestSetFileAttributes(t *testing.T) {
 func TestSetFileAttributes_Ownership(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -336,7 +336,7 @@ func TestSetFileAttributes_Ownership(t *testing.T) {
 func TestSetFileAttributes_PermissionDenied(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 

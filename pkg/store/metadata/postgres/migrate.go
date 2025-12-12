@@ -24,7 +24,7 @@ func runMigrations(ctx context.Context, connString string, logger *slog.Logger) 
 	if err != nil {
 		return fmt.Errorf("failed to open database connection: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Test the connection
 	if err := db.PingContext(ctx); err != nil {
@@ -107,41 +107,4 @@ func RunMigrations(ctx context.Context, cfg *PostgresMetadataStoreConfig) error 
 
 	// Run migrations
 	return runMigrations(ctx, cfg.ConnectionString(), logger)
-}
-
-// getMigrationVersion returns the current migration version
-func getMigrationVersion(connString string) (uint, bool, error) {
-	db, err := sql.Open("pgx", connString)
-	if err != nil {
-		return 0, false, fmt.Errorf("failed to open database connection: %w", err)
-	}
-	defer db.Close()
-
-	driver, err := postgres.WithInstance(db, &postgres.Config{
-		MigrationsTable: "schema_migrations",
-	})
-	if err != nil {
-		return 0, false, fmt.Errorf("failed to create postgres driver: %w", err)
-	}
-
-	sourceDriver, err := iofs.New(migrations.FS, ".")
-	if err != nil {
-		return 0, false, fmt.Errorf("failed to create source driver: %w", err)
-	}
-
-	m, err := migrate.NewWithInstance("iofs", sourceDriver, "postgres", driver)
-	if err != nil {
-		return 0, false, fmt.Errorf("failed to create migrate instance: %w", err)
-	}
-
-	version, dirty, err := m.Version()
-	if err != nil && err != migrate.ErrNilVersion {
-		return 0, false, err
-	}
-
-	if err == migrate.ErrNilVersion {
-		return 0, false, nil
-	}
-
-	return version, dirty, nil
 }

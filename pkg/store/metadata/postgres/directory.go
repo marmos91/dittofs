@@ -42,7 +42,7 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 	if err != nil {
 		return nil, mapPgError(err, "CreateRootDirectory", shareName)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Generate UUID for root directory
 	rootID := uuid.New()
@@ -277,22 +277,22 @@ func (s *PostgresMetadataStore) ReadDirectory(
 // scanDirectoryEntry scans a directory entry row including the child name
 func scanDirectoryEntry(rows pgx.Rows) (*metadata.File, string, error) {
 	var (
-		id           uuid.UUID
-		shareName    string
-		path         string
-		fileType     int16
-		mode         int32
-		uid          int32
-		gid          int32
-		size         int64
-		atime        time.Time
-		mtime        time.Time
-		ctime        time.Time
-		contentID    *string
-		linkTarget   *string
-		deviceMajor  *int32
-		deviceMinor  *int32
-		childName    string
+		id          uuid.UUID
+		shareName   string
+		path        string
+		fileType    int16
+		mode        int32
+		uid         int32
+		gid         int32
+		size        int64
+		atime       time.Time
+		mtime       time.Time
+		ctime       time.Time
+		contentID   *string
+		linkTarget  *string
+		deviceMajor *int32
+		deviceMinor *int32
+		childName   string
 	)
 
 	err := rows.Scan(

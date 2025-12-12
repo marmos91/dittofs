@@ -179,18 +179,6 @@ func initializeFilesystemCapabilities(ctx context.Context, pool *pgxpool.Pool, c
 	return err
 }
 
-// Helper method to check if stats cache is valid
-func (sc *statsCache) isValid() bool {
-	sc.mu.RLock()
-	defer sc.mu.RUnlock()
-
-	if !sc.hasStats {
-		return false
-	}
-
-	return time.Since(sc.timestamp) < sc.ttl
-}
-
 // Helper method to get cached stats
 func (sc *statsCache) get() (metadata.FilesystemStatistics, bool) {
 	sc.mu.RLock()

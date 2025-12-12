@@ -95,10 +95,10 @@ func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context, han
 	// Return very large values to indicate "unlimited"
 	// In production, you might want to configure these based on your PostgreSQL instance
 	stats := metadata.FilesystemStatistics{
-		TotalBytes:     1 << 50,         // 1 PB (effectively unlimited)
+		TotalBytes:     1 << 50, // 1 PB (effectively unlimited)
 		AvailableBytes: (1 << 50) - uint64(bytesUsed),
 		UsedBytes:      uint64(bytesUsed),
-		TotalFiles:     1 << 32,         // 4 billion files
+		TotalFiles:     1 << 32, // 4 billion files
 		AvailableFiles: (1 << 32) - uint64(filesUsed),
 		UsedFiles:      uint64(filesUsed),
 	}

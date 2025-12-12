@@ -12,7 +12,7 @@ import (
 func TestNewPostgresMetadataStore(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Verify store was created
 	if store == nil {
@@ -31,7 +31,7 @@ func TestNewPostgresMetadataStore(t *testing.T) {
 func TestCreateRootDirectory(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	shareName := "test-share"
 	attr := &metadata.FileAttr{
@@ -69,7 +69,7 @@ func TestCreateRootDirectory(t *testing.T) {
 func TestCreateRootDirectory_EmptyShareName(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	attr := &metadata.FileAttr{
 		Mode: 0755,
@@ -84,7 +84,7 @@ func TestCreateRootDirectory_EmptyShareName(t *testing.T) {
 func TestGetFile(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -105,7 +105,7 @@ func TestGetFile(t *testing.T) {
 func TestGetFile_InvalidHandle(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create invalid handle
 	invalidHandle := metadata.FileHandle([]byte("invalid:not-a-uuid"))
@@ -117,7 +117,7 @@ func TestGetFile_InvalidHandle(t *testing.T) {
 func TestGetFile_NotFound(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	_, _ = mustGetRootHandle(t, store)
 
@@ -132,7 +132,7 @@ func TestGetFile_NotFound(t *testing.T) {
 func TestLookup(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -152,7 +152,7 @@ func TestLookup(t *testing.T) {
 func TestLookup_NotFound(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -165,7 +165,7 @@ func TestLookup_NotFound(t *testing.T) {
 func TestLookup_EmptyName(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -178,7 +178,7 @@ func TestLookup_EmptyName(t *testing.T) {
 func TestLookup_DotFiles(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -196,7 +196,7 @@ func TestLookup_DotFiles(t *testing.T) {
 func TestLookup_ParentNotDirectory(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -212,7 +212,7 @@ func TestLookup_ParentNotDirectory(t *testing.T) {
 func TestCreate_File(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -251,7 +251,7 @@ func TestCreate_File(t *testing.T) {
 func TestCreate_Directory(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -284,7 +284,7 @@ func TestCreate_Directory(t *testing.T) {
 func TestCreate_AlreadyExists(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -311,7 +311,7 @@ func TestCreate_AlreadyExists(t *testing.T) {
 func TestCreate_InvalidType(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 

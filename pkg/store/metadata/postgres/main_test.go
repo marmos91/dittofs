@@ -47,14 +47,14 @@ func TestMain(m *testing.M) {
 	// Get connection details
 	host, err := container.Host(ctx)
 	if err != nil {
-		container.Terminate(ctx)
+		_ = container.Terminate(ctx)
 		fmt.Fprintf(os.Stderr, "failed to get container host: %v\n", err)
 		os.Exit(1)
 	}
 
 	port, err := container.MappedPort(ctx, "5432")
 	if err != nil {
-		container.Terminate(ctx)
+		_ = container.Terminate(ctx)
 		fmt.Fprintf(os.Stderr, "failed to get container port: %v\n", err)
 		os.Exit(1)
 	}

@@ -9,7 +9,7 @@ import (
 func TestReadDirectory(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -52,7 +52,7 @@ func TestReadDirectory(t *testing.T) {
 func TestReadDirectory_Pagination(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -112,7 +112,7 @@ func TestReadDirectory_Pagination(t *testing.T) {
 func TestReadDirectory_Empty(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -136,7 +136,7 @@ func TestReadDirectory_Empty(t *testing.T) {
 func TestReadDirectory_NotDirectory(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -154,7 +154,7 @@ func TestReadDirectory_NotDirectory(t *testing.T) {
 func TestReadDirectory_PermissionDenied(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 
@@ -182,7 +182,7 @@ func TestReadDirectory_PermissionDenied(t *testing.T) {
 func TestNestedDirectories(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	rootHandle, _ := mustGetRootHandle(t, store)
 

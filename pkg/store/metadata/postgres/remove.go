@@ -46,7 +46,7 @@ func (s *PostgresMetadataStore) RemoveFile(
 	if err != nil {
 		return nil, mapPgError(err, "RemoveFile", name)
 	}
-	defer tx.Rollback(ctx.Context)
+	defer func() { _ = tx.Rollback(ctx.Context) }()
 
 	// Get and lock parent directory
 	parent, err := s.getFileByIDTx(ctx.Context, tx, parentID, shareName)
@@ -191,7 +191,7 @@ func (s *PostgresMetadataStore) RemoveDirectory(
 	if err != nil {
 		return mapPgError(err, "RemoveDirectory", name)
 	}
-	defer tx.Rollback(ctx.Context)
+	defer func() { _ = tx.Rollback(ctx.Context) }()
 
 	// Get and lock parent directory
 	parent, err := s.getFileByIDTx(ctx.Context, tx, parentID, shareName)

@@ -71,7 +71,7 @@ func (s *PostgresMetadataStore) createFile(
 	if err != nil {
 		return nil, mapPgError(err, "createFile", name)
 	}
-	defer tx.Rollback(ctx.Context)
+	defer func() { _ = tx.Rollback(ctx.Context) }()
 
 	// Get and lock parent directory
 	parent, err := s.getFileByIDTx(ctx.Context, tx, parentID, shareName)
@@ -139,7 +139,7 @@ func (s *PostgresMetadataStore) createFile(
 		shareName,
 		filePath,
 		int16(metadata.FileTypeRegular),
-		int32(mode & 0o7777),
+		int32(mode&0o7777),
 		int32(uid),
 		int32(gid),
 		int64(0), // size = 0 for new file
@@ -256,7 +256,7 @@ func (s *PostgresMetadataStore) createDirectory(
 	if err != nil {
 		return nil, mapPgError(err, "createDirectory", name)
 	}
-	defer tx.Rollback(ctx.Context)
+	defer func() { _ = tx.Rollback(ctx.Context) }()
 
 	// Get and lock parent directory
 	parent, err := s.getFileByIDTx(ctx.Context, tx, parentID, shareName)
@@ -323,7 +323,7 @@ func (s *PostgresMetadataStore) createDirectory(
 		shareName,
 		dirPath,
 		int16(metadata.FileTypeDirectory),
-		int32(mode & 0o7777),
+		int32(mode&0o7777),
 		int32(uid),
 		int32(gid),
 		int64(0), // size = 0 for directory
@@ -431,7 +431,7 @@ func (s *PostgresMetadataStore) CreateFile(
 	if err != nil {
 		return nil, nil, mapPgError(err, "CreateFile", name)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Get and lock parent directory
 	parent, err := s.getFileByIDTx(ctx, tx, parentID, shareName)
@@ -513,7 +513,7 @@ func (s *PostgresMetadataStore) CreateFile(
 		shareName,
 		filePath,
 		int16(metadata.FileTypeRegular),
-		int32(mode & 0o7777),
+		int32(mode&0o7777),
 		int32(uid),
 		int32(gid),
 		int64(0), // size starts at 0
@@ -626,7 +626,7 @@ func (s *PostgresMetadataStore) CreateDirectory(
 	if err != nil {
 		return nil, nil, mapPgError(err, "CreateDirectory", name)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Get and lock parent directory
 	parent, err := s.getFileByIDTx(ctx, tx, parentID, shareName)
@@ -705,7 +705,7 @@ func (s *PostgresMetadataStore) CreateDirectory(
 		shareName,
 		dirPath,
 		int16(metadata.FileTypeDirectory),
-		int32(mode & 0o7777),
+		int32(mode&0o7777),
 		int32(uid),
 		int32(gid),
 		int64(0), // size
