@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/marmos91/dittofs/pkg/cache"
@@ -17,14 +18,16 @@ import (
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 	metadatabadger "github.com/marmos91/dittofs/pkg/store/metadata/badger"
 	metadatamemory "github.com/marmos91/dittofs/pkg/store/metadata/memory"
+	metadatapostgres "github.com/marmos91/dittofs/pkg/store/metadata/postgres"
 )
 
 // MetadataStoreType represents the type of metadata store
 type MetadataStoreType string
 
 const (
-	MetadataMemory MetadataStoreType = "memory"
-	MetadataBadger MetadataStoreType = "badger"
+	MetadataMemory   MetadataStoreType = "memory"
+	MetadataBadger   MetadataStoreType = "badger"
+	MetadataPostgres MetadataStoreType = "postgres"
 )
 
 // ContentStoreType represents the type of content store
@@ -54,6 +57,9 @@ type TestConfig struct {
 	// S3-specific fields (set by localstack setup)
 	s3Client *s3.Client
 	s3Bucket string
+
+	// PostgreSQL-specific fields (set by postgres setup)
+	postgresConfig *PostgresConfig
 }
 
 // String returns a string representation of the configuration
@@ -85,6 +91,49 @@ func (tc *TestConfig) CreateMetadataStore(ctx context.Context, testCtx TestConte
 		store, err := metadatabadger.NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create badger metadata store: %w", err)
+		}
+		return store, nil
+
+	case MetadataPostgres:
+		// PostgreSQL requires setup via SetupPostgresConfig
+		config := testCtx.GetConfig()
+		if config.postgresConfig == nil {
+			return nil, fmt.Errorf("PostgreSQL config not initialized (postgres container not running?)")
+		}
+
+		pgConfig := &metadatapostgres.PostgresMetadataStoreConfig{
+			Host:        config.postgresConfig.Host,
+			Port:        config.postgresConfig.Port,
+			Database:    config.postgresConfig.Database,
+			User:        config.postgresConfig.User,
+			Password:    config.postgresConfig.Password,
+			SSLMode:     "disable",
+			MaxConns:    10,
+			MinConns:    2,
+			AutoMigrate: true, // Enable auto-migration for tests
+		}
+
+		// Set reasonable default capabilities for testing
+		capabilities := metadata.FilesystemCapabilities{
+			MaxReadSize:         1024 * 1024,
+			PreferredReadSize:   64 * 1024,
+			MaxWriteSize:        1024 * 1024,
+			PreferredWriteSize:  64 * 1024,
+			MaxFileSize:         1024 * 1024 * 1024 * 100, // 100 GB
+			MaxFilenameLen:      255,
+			MaxPathLen:          4096,
+			MaxHardLinkCount:    32767,
+			SupportsHardLinks:   true,
+			SupportsSymlinks:    true,
+			CaseSensitive:       true,
+			CasePreserving:      true,
+			SupportsACLs:        false,
+			TimestampResolution: time.Nanosecond,
+		}
+
+		store, err := metadatapostgres.NewPostgresMetadataStore(ctx, pgConfig, capabilities)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create postgres metadata store: %w", err)
 		}
 		return store, nil
 
@@ -143,9 +192,10 @@ func (tc *TestConfig) CreateContentStore(ctx context.Context, testCtx TestContex
 	}
 }
 
-// AllConfigurations returns all test configurations to run, including S3.
+// AllConfigurations returns all test configurations to run, including S3 and PostgreSQL.
 // S3 tests require Localstack to be running (use run-e2e.sh --s3).
-// Use LocalConfigurations() to run only non-S3 tests.
+// PostgreSQL tests require Docker or external PostgreSQL (use run-e2e.sh --postgres).
+// Use LocalConfigurations() to run only non-S3, non-PostgreSQL tests.
 //
 // Note: S3 tests without cache are included for testing fallback behavior
 // with small files. For large file tests (>5MB), use S3CachedConfigurations()
@@ -168,6 +218,19 @@ func AllConfigurations() []*TestConfig {
 		{
 			Name:          "badger-filesystem",
 			MetadataStore: MetadataBadger,
+			ContentStore:  ContentFilesystem,
+			ShareName:     "/export",
+		},
+		// PostgreSQL backends (requires Docker or external PostgreSQL)
+		{
+			Name:          "postgres-memory",
+			MetadataStore: MetadataPostgres,
+			ContentStore:  ContentMemory,
+			ShareName:     "/export",
+		},
+		{
+			Name:          "postgres-filesystem",
+			MetadataStore: MetadataPostgres,
 			ContentStore:  ContentFilesystem,
 			ShareName:     "/export",
 		},
@@ -197,6 +260,20 @@ func AllConfigurations() []*TestConfig {
 		{
 			Name:          "badger-s3-cached",
 			MetadataStore: MetadataBadger,
+			ContentStore:  ContentS3,
+			ShareName:     "/export",
+			UseCache:      true,
+		},
+		// PostgreSQL + S3 (requires both Docker/PostgreSQL and Localstack)
+		{
+			Name:          "postgres-s3",
+			MetadataStore: MetadataPostgres,
+			ContentStore:  ContentS3,
+			ShareName:     "/export",
+		},
+		{
+			Name:          "postgres-s3-cached",
+			MetadataStore: MetadataPostgres,
 			ContentStore:  ContentS3,
 			ShareName:     "/export",
 			UseCache:      true,
@@ -272,6 +349,48 @@ func S3CachedConfigurations() []*TestConfig {
 // AllS3Configurations returns all S3 configurations (both with and without cache).
 func AllS3Configurations() []*TestConfig {
 	return append(S3Configurations(), S3CachedConfigurations()...)
+}
+
+// PostgresConfigurations returns PostgreSQL configurations (requires Docker or external PostgreSQL).
+func PostgresConfigurations() []*TestConfig {
+	return []*TestConfig{
+		{
+			Name:          "postgres-memory",
+			MetadataStore: MetadataPostgres,
+			ContentStore:  ContentMemory,
+			ShareName:     "/export",
+		},
+		{
+			Name:          "postgres-filesystem",
+			MetadataStore: MetadataPostgres,
+			ContentStore:  ContentFilesystem,
+			ShareName:     "/export",
+		},
+	}
+}
+
+// PostgresS3Configurations returns PostgreSQL + S3 configurations (requires both PostgreSQL and Localstack).
+func PostgresS3Configurations() []*TestConfig {
+	return []*TestConfig{
+		{
+			Name:          "postgres-s3",
+			MetadataStore: MetadataPostgres,
+			ContentStore:  ContentS3,
+			ShareName:     "/export",
+		},
+		{
+			Name:          "postgres-s3-cached",
+			MetadataStore: MetadataPostgres,
+			ContentStore:  ContentS3,
+			ShareName:     "/export",
+			UseCache:      true,
+		},
+	}
+}
+
+// AllPostgresConfigurations returns all PostgreSQL configurations (with and without S3).
+func AllPostgresConfigurations() []*TestConfig {
+	return append(PostgresConfigurations(), PostgresS3Configurations()...)
 }
 
 // GetConfiguration returns a specific configuration by name

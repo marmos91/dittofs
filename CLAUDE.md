@@ -364,8 +364,10 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 - Implementations:
   - `pkg/store/metadata/memory/`: In-memory (fast, ephemeral, full hard link support)
   - `pkg/store/metadata/badger/`: BadgerDB (persistent, embedded, path-based handles)
-- File handles are opaque uint64 identifiers
+  - `pkg/store/metadata/postgres/`: PostgreSQL (persistent, distributed, UUID-based handles)
+- File handles are opaque identifiers (format varies by implementation)
 - BadgerDB handles are path-based, enabling metadata recovery from content store
+- PostgreSQL handles encode shareName + UUID for multi-share, distributed deployments
 
 **4. Content Store** (`pkg/store/content/store.go`)
 - Stores actual file data

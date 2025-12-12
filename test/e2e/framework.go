@@ -47,8 +47,18 @@ type TestContext struct {
 // NewTestContext creates a new test environment with the specified configuration.
 // It starts the DittoFS server and mounts the NFS share.
 // For S3 configurations, it checks Localstack availability and skips if unavailable.
+// For PostgreSQL configurations, it starts a PostgreSQL container via testcontainers.
 func NewTestContext(t *testing.T, config *TestConfig) *TestContext {
 	t.Helper()
+
+	// For PostgreSQL configurations, check availability and setup
+	if config.MetadataStore == MetadataPostgres {
+		if !CheckPostgresAvailable(t) {
+			t.Skip("PostgreSQL not available, skipping PostgreSQL test")
+		}
+		helper := NewPostgresHelper(t)
+		SetupPostgresConfig(t, config, helper)
+	}
 
 	// For S3 configurations, check Localstack and setup S3 client
 	if config.ContentStore == ContentS3 {
