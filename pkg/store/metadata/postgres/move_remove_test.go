@@ -142,7 +142,7 @@ func TestMove_DirectoryWithContents(t *testing.T) {
 	}
 }
 
-func TestMove_DestinationExists(t *testing.T) {
+func TestMove_ReplaceFile(t *testing.T) {
 	store, tc := setupTestStore(t)
 	defer tc.cleanup(t)
 	defer store.Close()
@@ -152,12 +152,86 @@ func TestMove_DestinationExists(t *testing.T) {
 	ctx := createTestAuthContext()
 
 	// Create two files
-	_ = createTestFile(t, store, ctx, rootHandle, "file1.txt")
-	_ = createTestFile(t, store, ctx, rootHandle, "file2.txt")
+	file1 := createTestFile(t, store, ctx, rootHandle, "file1.txt")
+	file2 := createTestFile(t, store, ctx, rootHandle, "file2.txt")
 
-	// Try to move file1 to file2 (destination exists)
+	// Move file1 to file2 (destination should be replaced)
 	err := store.Move(ctx, rootHandle, "file1.txt", rootHandle, "file2.txt")
-	assertError(t, err, metadata.ErrAlreadyExists, "destination exists")
+	if err != nil {
+		t.Fatalf("Move failed: %v", err)
+	}
+
+	// Verify file1 no longer exists
+	_, err = store.Lookup(ctx, rootHandle, "file1.txt")
+	assertError(t, err, metadata.ErrNotFound, "source should not exist")
+
+	// Verify file2 now points to file1's content
+	newFile2, err := store.Lookup(ctx, rootHandle, "file2.txt")
+	if err != nil {
+		t.Fatalf("Lookup file2 failed: %v", err)
+	}
+
+	// Should have file1's ID (same file, new name)
+	if newFile2.ID != file1.ID {
+		t.Errorf("expected file2 to have file1's ID %v, got %v", file1.ID, newFile2.ID)
+	}
+
+	// Old file2's ID should be gone
+	if newFile2.ID == file2.ID {
+		t.Error("file2 should have been replaced, but has same ID")
+	}
+}
+
+func TestMove_ReplaceDirectoryNotAllowed(t *testing.T) {
+	store, tc := setupTestStore(t)
+	defer tc.cleanup(t)
+	defer store.Close()
+
+	rootHandle, _ := mustGetRootHandle(t, store)
+
+	ctx := createTestAuthContext()
+
+	// Create a file and a directory
+	_ = createTestFile(t, store, ctx, rootHandle, "file.txt")
+	_ = createTestDirectory(t, store, ctx, rootHandle, "dir")
+
+	// Try to replace directory with file - should fail
+	err := store.Move(ctx, rootHandle, "file.txt", rootHandle, "dir")
+	assertError(t, err, metadata.ErrIsDirectory, "cannot replace directory with file")
+}
+
+func TestMove_ReplaceNonEmptyDirectory(t *testing.T) {
+	store, tc := setupTestStore(t)
+	defer tc.cleanup(t)
+	defer store.Close()
+
+	rootHandle, _ := mustGetRootHandle(t, store)
+
+	ctx := createTestAuthContext()
+
+	// Create two directories
+	dir1 := createTestDirectory(t, store, ctx, rootHandle, "dir1")
+	dir2 := createTestDirectory(t, store, ctx, rootHandle, "dir2")
+	dir2Handle := getFileHandle(dir2)
+
+	// Add a file to dir2 (make it non-empty)
+	_ = createTestFile(t, store, ctx, dir2Handle, "child.txt")
+
+	// Try to replace non-empty dir2 with dir1 - should fail
+	dir1Handle := getFileHandle(dir1)
+	err := store.Move(ctx, rootHandle, "dir1", rootHandle, "dir2")
+	assertError(t, err, metadata.ErrNotEmpty, "cannot replace non-empty directory")
+
+	// dir1 should still exist
+	_, err = store.Lookup(ctx, rootHandle, "dir1")
+	if err != nil {
+		t.Errorf("dir1 should still exist: %v", err)
+	}
+
+	// dir2 should still exist with its child
+	_, err = store.Lookup(ctx, dir1Handle, "child.txt")
+	// Since dir1 wasn't deleted, this lookup should fail (child is in dir2)
+	_ = err // expected
 }
 
 func TestMove_PermissionDenied(t *testing.T) {

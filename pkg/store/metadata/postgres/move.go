@@ -129,27 +129,120 @@ func (s *PostgresMetadataStore) Move(
 
 	// Check if destination already exists
 	dstCheckQuery := `
-		SELECT EXISTS(
-			SELECT 1 FROM parent_child_map
-			WHERE parent_id = $1 AND child_name = $2
-		)
+		SELECT child_id FROM parent_child_map
+		WHERE parent_id = $1 AND child_name = $2
 	`
 
-	var dstExists bool
-	err = tx.QueryRow(ctx.Context, dstCheckQuery, dstParentID, dstName).Scan(&dstExists)
-	if err != nil {
+	var dstFileID uuid.UUID
+	err = tx.QueryRow(ctx.Context, dstCheckQuery, dstParentID, dstName).Scan(&dstFileID)
+	dstExists := err == nil
+	if err != nil && err.Error() != "no rows in result set" {
 		return mapPgError(err, "Move", dstName)
 	}
 
+	now := time.Now()
+
+	// If destination exists, handle replacement
 	if dstExists {
-		return &metadata.StoreError{
-			Code:    metadata.ErrAlreadyExists,
-			Message: "destination already exists",
-			Path:    path.Join(dstParent.Path, dstName),
+		// Get destination file to check type compatibility
+		dstFile, err := s.getFileByIDTx(ctx.Context, tx, dstFileID, dstShareName)
+		if err != nil {
+			return err
+		}
+
+		// Get source file for type checking
+		srcFile, err := s.getFileByIDTx(ctx.Context, tx, srcFileID, srcShareName)
+		if err != nil {
+			return err
+		}
+
+		// Check type compatibility for replacement
+		if srcFile.Type == metadata.FileTypeDirectory {
+			// Moving directory - destination must be a directory too
+			if dstFile.Type != metadata.FileTypeDirectory {
+				return &metadata.StoreError{
+					Code:    metadata.ErrNotDirectory,
+					Message: "cannot replace non-directory with directory",
+					Path:    path.Join(dstParent.Path, dstName),
+				}
+			}
+			// Check if destination directory is empty
+			emptyCheckQuery := `
+				SELECT EXISTS(
+					SELECT 1 FROM parent_child_map
+					WHERE parent_id = $1
+				)
+			`
+			var hasChildren bool
+			err = tx.QueryRow(ctx.Context, emptyCheckQuery, dstFileID).Scan(&hasChildren)
+			if err != nil {
+				return mapPgError(err, "Move", dstName)
+			}
+			if hasChildren {
+				return &metadata.StoreError{
+					Code:    metadata.ErrNotEmpty,
+					Message: "destination directory not empty",
+					Path:    path.Join(dstParent.Path, dstName),
+				}
+			}
+		} else {
+			// Moving non-directory - destination must not be a directory
+			if dstFile.Type == metadata.FileTypeDirectory {
+				return &metadata.StoreError{
+					Code:    metadata.ErrIsDirectory,
+					Message: "cannot replace directory with non-directory",
+					Path:    path.Join(dstParent.Path, dstName),
+				}
+			}
+		}
+
+		// Get link count for destination file
+		var dstLinkCount int32
+		linkCountQuery := `SELECT link_count FROM link_counts WHERE file_id = $1`
+		err = tx.QueryRow(ctx.Context, linkCountQuery, dstFileID).Scan(&dstLinkCount)
+		if err != nil {
+			return mapPgError(err, "Move", dstName)
+		}
+
+		// Remove destination from parent_child_map
+		deleteDstMapQuery := `
+			DELETE FROM parent_child_map
+			WHERE parent_id = $1 AND child_name = $2
+		`
+		_, err = tx.Exec(ctx.Context, deleteDstMapQuery, dstParentID, dstName)
+		if err != nil {
+			return mapPgError(err, "Move", dstName)
+		}
+
+		// Handle link count and potential file deletion
+		if dstLinkCount > 1 {
+			// Has other hard links, just decrement count
+			decrementLinkQuery := `
+				UPDATE link_counts
+				SET link_count = link_count - 1
+				WHERE file_id = $1
+			`
+			_, err = tx.Exec(ctx.Context, decrementLinkQuery, dstFileID)
+			if err != nil {
+				return mapPgError(err, "Move", dstName)
+			}
+		} else {
+			// Last link - delete the file entirely
+			// Delete from link_counts first (foreign key)
+			deleteLinkCountQuery := `DELETE FROM link_counts WHERE file_id = $1`
+			_, err = tx.Exec(ctx.Context, deleteLinkCountQuery, dstFileID)
+			if err != nil {
+				return mapPgError(err, "Move", dstName)
+			}
+
+			// Delete the file itself
+			deleteFileQuery := `DELETE FROM files WHERE id = $1`
+			_, err = tx.Exec(ctx.Context, deleteFileQuery, dstFileID)
+			if err != nil {
+				return mapPgError(err, "Move", dstName)
+			}
 		}
 	}
-
-	now := time.Now()
 
 	// Get source file to update its path
 	srcFile, err := s.getFileByIDTx(ctx.Context, tx, srcFileID, srcShareName)
