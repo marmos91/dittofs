@@ -165,14 +165,17 @@ func TestCommitWrite_MultipleWrites(t *testing.T) {
 		t.Errorf("write 2: expected size 2048, got %d", updatedFile2.Size)
 	}
 
-	// Third write (truncate: 2048 -> 512)
+	// Third write at earlier offset (simulates out-of-order writes)
+	// CommitWrite should NOT shrink the file - only SETATTR can truncate
+	// This tests that concurrent writes completing out of order don't corrupt size
 	writeOp3, _ := store.PrepareWrite(ctx, fileHandle, 512)
 	updatedFile3, err := store.CommitWrite(ctx, writeOp3)
 	if err != nil {
 		t.Fatalf("CommitWrite 3 failed: %v", err)
 	}
-	if updatedFile3.Size != 512 {
-		t.Errorf("write 3: expected size 512, got %d", updatedFile3.Size)
+	// Size should remain at 2048 (the largest size seen), not shrink to 512
+	if updatedFile3.Size != 2048 {
+		t.Errorf("write 3: expected size to remain at 2048 (no shrink via CommitWrite), got %d", updatedFile3.Size)
 	}
 }
 

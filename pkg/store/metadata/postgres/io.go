@@ -68,10 +68,13 @@ func (s *PostgresMetadataStore) CommitWrite(
 	}
 
 	// Update file with new size and mtime
+	// Use GREATEST to handle concurrent writes - only grow the file size, never shrink
+	// This prevents race conditions where out-of-order write completions could
+	// incorrectly reduce the file size
 	now := time.Now()
 	updateQuery := `
 		UPDATE files
-		SET size = $1, mtime = $2, ctime = $3
+		SET size = GREATEST(size, $1), mtime = $2, ctime = $3
 		WHERE id = $4 AND share_name = $5
 	`
 
