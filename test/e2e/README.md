@@ -29,6 +29,25 @@ sudo go test -v ./...
 sudo go test -v -run TestCreateFolder
 ```
 
+### PostgreSQL Tests (Requires Docker)
+
+```bash
+# Run PostgreSQL tests (requires sudo + Docker)
+# PostgreSQL container is started automatically via testcontainers
+sudo go test -tags=e2e -v ./test/e2e/ -run "postgres"
+
+# Run specific PostgreSQL configuration
+sudo go test -tags=e2e -v -run "TestCreateFolder/postgres-filesystem" ./test/e2e/
+
+# Use external PostgreSQL (instead of testcontainers)
+export POSTGRES_HOST=localhost
+export POSTGRES_PORT=5432
+export POSTGRES_DATABASE=dittofs_e2e
+export POSTGRES_USER=dittofs
+export POSTGRES_PASSWORD=dittofs
+sudo go test -tags=e2e -v ./test/e2e/ -run "postgres"
+```
+
 ### S3 Tests (Requires Localstack)
 
 ```bash
@@ -63,6 +82,7 @@ Tests run against all combinations of:
 ### Metadata Stores
 - **Memory**: Fast, in-memory metadata (no persistence)
 - **Badger**: Embedded key-value store (persistent)
+- **PostgreSQL**: Distributed database (persistent, horizontally scalable)
 
 ### Content Stores
 - **Memory**: Fast, in-memory content storage
@@ -76,9 +96,17 @@ Tests run against all combinations of:
 - `memory/filesystem` - Memory metadata, filesystem content
 - `badger/filesystem` - Badger metadata, filesystem content
 
+**PostgreSQL (requires Docker or external PostgreSQL):**
+- `postgres/memory` - PostgreSQL metadata, memory content
+- `postgres/filesystem` - PostgreSQL metadata, filesystem content
+
 **S3 (requires Localstack):**
 - `memory/s3` - Memory metadata, S3 content
 - `badger/s3` - Badger metadata, S3 content
+
+**PostgreSQL + S3 (requires both PostgreSQL and Localstack):**
+- `postgres/s3` - PostgreSQL metadata, S3 content
+- `postgres/s3-cached` - PostgreSQL metadata, S3 content with cache
 
 ## Available Tests
 
@@ -375,6 +403,10 @@ The tests are designed to run in CI with minimal setup:
   - **Linux**: `sudo apt-get install nfs-common` (Debian/Ubuntu)
   - **Linux**: `sudo yum install nfs-utils` (RHEL/CentOS)
 
+### PostgreSQL Tests
+- Docker (for testcontainers)
+- Or: External PostgreSQL instance with environment variables configured
+
 ### S3 Tests
 - Docker
 - docker-compose
@@ -384,7 +416,9 @@ The tests are designed to run in CI with minimal setup:
 - **Memory/Memory**: Fastest, use for rapid development
 - **Memory/Filesystem**: Fast, more realistic
 - **Badger/Filesystem**: More realistic, tests persistence
+- **PostgreSQL/Filesystem**: Tests distributed metadata, adds ~1-2ms latency per operation
 - **S3 Configurations**: Slower due to Localstack overhead, use for S3-specific testing
+- **PostgreSQL + S3**: Slowest, but most production-like configuration
 
 Typical test times:
 - Single operation test: 100-500ms

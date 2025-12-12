@@ -52,6 +52,15 @@ type ShareMount struct {
 func NewMultiShareTestContext(t *testing.T, config *TestConfig, shareNames []string) *MultiShareTestContext {
 	t.Helper()
 
+	// For PostgreSQL configurations, check availability and setup
+	if config.MetadataStore == MetadataPostgres {
+		if !CheckPostgresAvailable(t) {
+			t.Skip("PostgreSQL not available, skipping PostgreSQL test")
+		}
+		helper := NewPostgresHelper(t)
+		SetupPostgresConfig(t, config, helper)
+	}
+
 	// For S3 configurations, check Localstack and setup S3 client
 	if config.ContentStore == ContentS3 {
 		if !CheckLocalstackAvailable(t) {

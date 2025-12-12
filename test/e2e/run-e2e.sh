@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # DittoFS E2E Test Runner
-# This script orchestrates running e2e tests with optional Localstack for S3 tests
+# This script orchestrates running e2e tests
+# External services (PostgreSQL, Localstack) are managed by testcontainers
 
 set -e
 
@@ -14,9 +15,9 @@ NC='\033[0m' # No Color
 
 # Default options
 RUN_S3_TESTS=true
+RUN_POSTGRES_TESTS=true
 VERBOSE=false
 SPECIFIC_TEST=""
-KEEP_LOCALSTACK=false
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -29,6 +30,19 @@ while [[ $# -gt 0 ]]; do
             RUN_S3_TESTS=false
             shift
             ;;
+        --postgres)
+            RUN_POSTGRES_TESTS=true
+            shift
+            ;;
+        --no-postgres)
+            RUN_POSTGRES_TESTS=false
+            shift
+            ;;
+        --local)
+            RUN_S3_TESTS=false
+            RUN_POSTGRES_TESTS=false
+            shift
+            ;;
         --verbose|-v)
             VERBOSE=true
             shift
@@ -37,25 +51,32 @@ while [[ $# -gt 0 ]]; do
             SPECIFIC_TEST="$2"
             shift 2
             ;;
-        --keep-localstack)
-            KEEP_LOCALSTACK=true
-            shift
-            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --s3                 Run S3 tests (default, requires Localstack/Docker)"
-            echo "  --no-s3              Skip S3 tests (run without Docker)"
+            echo "  --s3                 Run S3 tests (default, requires Docker)"
+            echo "  --no-s3              Skip S3 tests"
+            echo "  --postgres           Run PostgreSQL tests (default, requires Docker)"
+            echo "  --no-postgres        Skip PostgreSQL tests"
+            echo "  --local              Run only local tests (no Docker required)"
             echo "  --verbose, -v        Enable verbose test output"
             echo "  --test, -t NAME      Run specific test (e.g., TestCreateFolder)"
-            echo "  --keep-localstack    Keep Localstack running after tests"
             echo "  --help, -h           Show this help message"
             echo ""
+            echo "External Services:"
+            echo "  PostgreSQL and Localstack are managed automatically via testcontainers."
+            echo "  Docker must be running for S3 and PostgreSQL tests."
+            echo ""
+            echo "  To use external services instead of testcontainers, set:"
+            echo "    POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DATABASE"
+            echo "    LOCALSTACK_ENDPOINT"
+            echo ""
             echo "Examples:"
-            echo "  $0                              # Run all tests including S3 (default)"
-            echo "  $0 --no-s3                      # Run tests without S3"
-            echo "  $0 --test TestCreateFile_1MB   # Run specific test"
+            echo "  $0                              # Run all tests (default)"
+            echo "  $0 --local                      # Run only local tests (no Docker)"
+            echo "  $0 --no-s3                      # Skip S3 tests"
+            echo "  $0 --test TestCreateFile_1MB    # Run specific test"
             echo "  $0 --verbose                    # Run with verbose output"
             exit 0
             ;;
@@ -76,38 +97,22 @@ echo -e "${BLUE}DittoFS E2E Test Runner${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
-# Function to check if Localstack is healthy
-wait_for_localstack() {
-    echo -e "${YELLOW}Waiting for Localstack to be ready...${NC}"
-
-    local max_attempts=30
-    local attempt=1
-
-    while [ $attempt -le $max_attempts ]; do
-        if curl -s http://localhost:4566/_localstack/health > /dev/null 2>&1; then
-            echo -e "${GREEN}Localstack is ready!${NC}"
-            return 0
-        fi
-
-        echo -n "."
-        sleep 1
-        attempt=$((attempt + 1))
-    done
-
-    echo -e "${RED}Localstack failed to start${NC}"
-    return 1
-}
-
-# Function to stop Localstack
-stop_localstack() {
-    if [ "$KEEP_LOCALSTACK" = false ]; then
-        echo -e "${YELLOW}Stopping Localstack...${NC}"
-        docker-compose down -v
-        echo -e "${GREEN}Localstack stopped${NC}"
-    else
-        echo -e "${YELLOW}Keeping Localstack running (use 'docker-compose down' to stop)${NC}"
+# Check Docker availability if needed
+if [ "$RUN_S3_TESTS" = true ] || [ "$RUN_POSTGRES_TESTS" = true ]; then
+    if ! command -v docker &> /dev/null; then
+        echo -e "${RED}Docker not found. Please install Docker.${NC}"
+        echo -e "${YELLOW}Use --local to run tests without Docker${NC}"
+        exit 1
     fi
-}
+
+    if ! docker info &> /dev/null; then
+        echo -e "${RED}Docker daemon is not running. Please start Docker.${NC}"
+        echo -e "${YELLOW}Use --local to run tests without Docker${NC}"
+        exit 1
+    fi
+
+    echo -e "${GREEN}Docker is available${NC}"
+fi
 
 # Cleanup function
 cleanup() {
@@ -122,10 +127,6 @@ cleanup() {
         echo -e "${RED}========================================${NC}"
         echo -e "${RED}Tests failed!${NC}"
         echo -e "${RED}========================================${NC}"
-    fi
-
-    if [ "$RUN_S3_TESTS" = true ]; then
-        stop_localstack
     fi
 
     exit $exit_code
@@ -145,47 +146,44 @@ if [ -n "$SPECIFIC_TEST" ]; then
     TEST_FLAGS="$TEST_FLAGS -run $SPECIFIC_TEST"
 fi
 
-# Start Localstack if running S3 tests
-if [ "$RUN_S3_TESTS" = true ]; then
-    echo -e "${YELLOW}Starting Localstack for S3 tests...${NC}"
+# Build skip pattern
+SKIP_PATTERNS=""
 
-    # Check if docker-compose is available
-    if ! command -v docker-compose &> /dev/null; then
-        echo -e "${RED}docker-compose not found. Please install docker-compose.${NC}"
-        exit 1
-    fi
-
-    # Start Localstack
-    docker-compose up -d
-
-    # Wait for Localstack to be ready
-    if ! wait_for_localstack; then
-        echo -e "${RED}Failed to start Localstack${NC}"
-        docker-compose logs
-        exit 1
-    fi
-
-    # Set environment variable for tests
-    export LOCALSTACK_ENDPOINT="http://localhost:4566"
-
-    echo ""
+if [ "$RUN_S3_TESTS" = false ]; then
+    SKIP_PATTERNS="${SKIP_PATTERNS}S3|"
 fi
+
+if [ "$RUN_POSTGRES_TESTS" = false ]; then
+    SKIP_PATTERNS="${SKIP_PATTERNS}postgres|Postgres|"
+fi
+
+# Remove trailing |
+SKIP_PATTERNS="${SKIP_PATTERNS%|}"
 
 # Run tests
 echo -e "${BLUE}Running tests...${NC}"
 echo -e "${YELLOW}Test flags: $TEST_FLAGS${NC}"
-echo ""
 
 if [ "$RUN_S3_TESTS" = true ]; then
-    echo -e "${YELLOW}Running ALL tests (including S3)${NC}"
-    echo ""
-    go test $TEST_FLAGS ./...
+    echo -e "${GREEN}S3 tests: enabled (testcontainers)${NC}"
 else
-    echo -e "${YELLOW}Running tests without S3${NC}"
-    echo -e "${YELLOW}Use default (no flags) or --s3 to include S3 tests${NC}"
-    echo ""
-    # Run tests but skip S3-specific ones
-    go test $TEST_FLAGS ./... -skip "S3"
+    echo -e "${YELLOW}S3 tests: disabled${NC}"
+fi
+
+if [ "$RUN_POSTGRES_TESTS" = true ]; then
+    echo -e "${GREEN}PostgreSQL tests: enabled (testcontainers)${NC}"
+else
+    echo -e "${YELLOW}PostgreSQL tests: disabled${NC}"
+fi
+
+echo ""
+
+if [ -n "$SKIP_PATTERNS" ]; then
+    echo -e "${YELLOW}Skipping patterns: $SKIP_PATTERNS${NC}"
+    go test $TEST_FLAGS ./... -skip "$SKIP_PATTERNS"
+else
+    echo -e "${GREEN}Running ALL tests${NC}"
+    go test $TEST_FLAGS ./...
 fi
 
 echo ""
