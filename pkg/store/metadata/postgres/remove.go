@@ -7,7 +7,19 @@ import (
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
-// RemoveFile removes a file
+// RemoveFile removes a file's metadata from its parent directory.
+//
+// This performs metadata cleanup including permission validation, type checking,
+// and directory entry removal. The file's content data is NOT deleted by this
+// method - the caller must coordinate content deletion with the content repository
+// using the returned ContentID.
+//
+// Hard Links:
+// If the file has multiple hard links (linkCount > 1), this removes only one link.
+// The returned File will have an empty ContentID to signal that the caller should
+// NOT delete the content (other hard links still reference it).
+// When the last link is removed (linkCount reaches 0), the ContentID is returned
+// so the caller can delete the content.
 func (s *PostgresMetadataStore) RemoveFile(
 	ctx *metadata.AuthContext,
 	parentHandle metadata.FileHandle,
@@ -84,12 +96,15 @@ func (s *PostgresMetadataStore) RemoveFile(
 	}
 
 	// Delete parent_child_map entry
+	// NOTE: We delete by parent_id AND child_name, NOT child_id
+	// This is critical for hard link support - multiple entries can have the same child_id
+	// but different child_names (hard links). We only want to remove the specific name.
 	deleteMapQuery := `
 		DELETE FROM parent_child_map
-		WHERE parent_id = $1 AND child_id = $2
+		WHERE parent_id = $1 AND child_name = $2
 	`
 
-	_, err = tx.Exec(ctx.Context, deleteMapQuery, parentID, childID)
+	_, err = tx.Exec(ctx.Context, deleteMapQuery, parentID, name)
 	if err != nil {
 		return nil, mapPgError(err, "RemoveFile", child.Path)
 	}
@@ -138,6 +153,13 @@ func (s *PostgresMetadataStore) RemoveFile(
 
 	// Invalidate stats cache
 	s.statsCache.invalidate()
+
+	// If link count > 0, other hard links still reference this content.
+	// Clear ContentID to signal to the caller that content should NOT be deleted.
+	// This matches the memory store behavior - empty ContentID means "don't delete content".
+	if linkCount > 0 {
+		child.ContentID = ""
+	}
 
 	return child, nil
 }
