@@ -88,18 +88,41 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	statefulSet := &appsv1.StatefulSet{}
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: dittoServer.Namespace,
+		Name:      dittoServer.Name,
+	}, statefulSet); err != nil {
+		logger.Error(err, "Failed to get StatefulSet")
+		return ctrl.Result{}, err
+	}
+
 	dittoServerCopy := dittoServer.DeepCopy()
+	dittoServerCopy.Status.AvailableReplicas = statefulSet.Status.ReadyReplicas
+
 	if replicas == 0 {
 		dittoServerCopy.Status.Phase = "Stopped"
-	} else {
+	} else if statefulSet.Status.ReadyReplicas == replicas {
 		dittoServerCopy.Status.Phase = "Running"
+	} else {
+		dittoServerCopy.Status.Phase = "Pending"
 	}
 
 	dittoServerCopy.Status.NFSEndpoint = fmt.Sprintf("%s.%s.svc.cluster.local:2049",
 		dittoServer.Name, dittoServer.Namespace)
 
-	conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
-		"Ready", metav1.ConditionTrue, "ReconcileSuccess", "All resources reconciled successfully")
+	if statefulSet.Status.ReadyReplicas == replicas && replicas > 0 {
+		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+			"Ready", metav1.ConditionTrue, "StatefulSetReady",
+			fmt.Sprintf("StatefulSet has %d/%d ready replicas", statefulSet.Status.ReadyReplicas, replicas))
+	} else if replicas == 0 {
+		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+			"Ready", metav1.ConditionTrue, "Stopped", "DittoServer is stopped (replicas=0)")
+	} else {
+		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+			"Ready", metav1.ConditionFalse, "StatefulSetNotReady",
+			fmt.Sprintf("StatefulSet has %d/%d ready replicas", statefulSet.Status.ReadyReplicas, replicas))
+	}
 
 	if err := r.Status().Update(ctx, dittoServerCopy); err != nil {
 		logger.Error(err, "Failed to update DittoServer status")
