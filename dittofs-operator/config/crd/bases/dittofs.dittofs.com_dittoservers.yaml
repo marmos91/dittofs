@@ -106,15 +106,78 @@ spec:
                     items:
                       description: ShareConfig defines an NFS export/share
                       properties:
+                        allowedAuthMethods:
+                          default:
+                          - anonymous
+                          - unix
+                          description: |-
+                            AllowedAuthMethods lists allowed authentication methods
+                            Valid values: anonymous, unix
+                          items:
+                            type: string
+                          type: array
+                        allowedClients:
+                          description: |-
+                            AllowedClients lists IP addresses or CIDR ranges allowed to access this share
+                            Empty list means all clients are allowed
+                          items:
+                            type: string
+                          type: array
                         contentStore:
                           description: |-
                             Reference to a backend in the Backends list (by name)
                             This backend will store file content
                           type: string
+                        deniedClients:
+                          description: |-
+                            DeniedClients lists IP addresses or CIDR ranges explicitly denied access
+                            Takes precedence over AllowedClients
+                          items:
+                            type: string
+                          type: array
+                        dumpAllowedClients:
+                          description: |-
+                            DumpAllowedClients lists clients allowed to perform dump operations
+                            Only relevant if DumpRestricted is true
+                          items:
+                            type: string
+                          type: array
+                        dumpRestricted:
+                          default: false
+                          description: DumpRestricted restricts dump operations if
+                            true
+                          type: boolean
                         exportPath:
                           default: /export
                           description: NFS export path (e.g., "/export", "/data")
                           type: string
+                        identityMapping:
+                          description: IdentityMapping configures user/group mapping
+                            for this share
+                          properties:
+                            anonymousGID:
+                              default: 65534
+                              description: AnonymousGID is the GID used for anonymous
+                                users
+                              format: int32
+                              type: integer
+                            anonymousUID:
+                              default: 65534
+                              description: AnonymousUID is the UID used for anonymous
+                                users
+                              format: int32
+                              type: integer
+                            mapAllToAnonymous:
+                              default: false
+                              description: MapAllToAnonymous maps all users to anonymous
+                                if true
+                              type: boolean
+                            mapPrivilegedToAnonymous:
+                              default: false
+                              description: MapPrivilegedToAnonymous maps root/privileged
+                                users to anonymous if true
+                              type: boolean
+                          type: object
                         metadataStore:
                           description: |-
                             Reference to a backend in the Backends list (by name)
@@ -123,6 +186,35 @@ spec:
                         name:
                           description: Unique name for this share
                           type: string
+                        readOnly:
+                          default: false
+                          description: ReadOnly makes the share read-only if true
+                          type: boolean
+                        requireAuth:
+                          default: false
+                          description: RequireAuth requires authentication if true
+                          type: boolean
+                        rootDirectoryAttributes:
+                          description: RootDirectoryAttributes sets the attributes
+                            for the root directory of the share
+                          properties:
+                            gid:
+                              default: 0
+                              description: GID is the group ID of the directory owner
+                              format: int32
+                              type: integer
+                            mode:
+                              default: 493
+                              description: Mode is the file mode/permissions (e.g.,
+                                0755)
+                              format: int32
+                              type: integer
+                            uid:
+                              default: 0
+                              description: UID is the user ID of the directory owner
+                              format: int32
+                              type: integer
+                          type: object
                       required:
                       - contentStore
                       - exportPath

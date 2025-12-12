@@ -44,29 +44,57 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 
 	shares := make([]ShareYAML, 0, len(dittoServer.Spec.Config.Shares))
 	for _, share := range dittoServer.Spec.Config.Shares {
-		shares = append(shares, ShareYAML{
-			Name:               share.ExportPath,
-			MetadataStore:      share.MetadataStore,
-			ContentStore:       share.ContentStore,
-			ReadOnly:           false,
-			AllowedClients:     []string{},
-			DeniedClients:      []string{},
-			RequireAuth:        false,
-			AllowedAuthMethods: []string{"anonymous", "unix"},
-			IdentityMapping: IdentityMapping{
-				MapAllToAnonymous:        false,
-				MapPrivilegedToAnonymous: false,
-				AnonymousUID:             65534,
-				AnonymousGID:             65534,
-			},
-			RootDirectoryAttributes: DirectoryAttributes{
-				Mode: 0755,
-				UID:  501,
-				GID:  20,
-			},
-			DumpRestricted:     false,
-			DumpAllowedClients: []string{},
-		})
+		allowedAuthMethods := share.AllowedAuthMethods
+		if len(allowedAuthMethods) == 0 {
+			allowedAuthMethods = []string{"anonymous", "unix"}
+		}
+
+		identityMapping := IdentityMapping{
+			MapAllToAnonymous:        false,
+			MapPrivilegedToAnonymous: false,
+			AnonymousUID:             65534,
+			AnonymousGID:             65534,
+		}
+		if share.IdentityMapping != nil {
+			identityMapping.MapAllToAnonymous = share.IdentityMapping.MapAllToAnonymous
+			identityMapping.MapPrivilegedToAnonymous = share.IdentityMapping.MapPrivilegedToAnonymous
+			if share.IdentityMapping.AnonymousUID != 0 {
+				identityMapping.AnonymousUID = share.IdentityMapping.AnonymousUID
+			}
+			if share.IdentityMapping.AnonymousGID != 0 {
+				identityMapping.AnonymousGID = share.IdentityMapping.AnonymousGID
+			}
+		}
+
+		rootDirAttrs := DirectoryAttributes{
+			Mode: 0755,
+			UID:  0,
+			GID:  0,
+		}
+		if share.RootDirectoryAttributes != nil {
+			if share.RootDirectoryAttributes.Mode != 0 {
+				rootDirAttrs.Mode = share.RootDirectoryAttributes.Mode
+			}
+			rootDirAttrs.UID = share.RootDirectoryAttributes.UID
+			rootDirAttrs.GID = share.RootDirectoryAttributes.GID
+		}
+
+		shareYAML := ShareYAML{
+			Name:                    share.ExportPath,
+			MetadataStore:           share.MetadataStore,
+			ContentStore:            share.ContentStore,
+			ReadOnly:                share.ReadOnly,
+			AllowedClients:          share.AllowedClients,
+			DeniedClients:           share.DeniedClients,
+			RequireAuth:             share.RequireAuth,
+			AllowedAuthMethods:      allowedAuthMethods,
+			IdentityMapping:         identityMapping,
+			RootDirectoryAttributes: rootDirAttrs,
+			DumpRestricted:          share.DumpRestricted,
+			DumpAllowedClients:      share.DumpAllowedClients,
+		}
+
+		shares = append(shares, shareYAML)
 	}
 
 	config := DittoFSConfig{

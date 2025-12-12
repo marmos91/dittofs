@@ -98,6 +98,91 @@ type ShareConfig struct {
 	// This backend will store file content
 	// +kubebuilder:validation:Required
 	ContentStore string `json:"contentStore"`
+
+	// ReadOnly makes the share read-only if true
+	// +kubebuilder:default=false
+	// +optional
+	ReadOnly bool `json:"readOnly,omitempty"`
+
+	// AllowedClients lists IP addresses or CIDR ranges allowed to access this share
+	// Empty list means all clients are allowed
+	// +optional
+	AllowedClients []string `json:"allowedClients,omitempty"`
+
+	// DeniedClients lists IP addresses or CIDR ranges explicitly denied access
+	// Takes precedence over AllowedClients
+	// +optional
+	DeniedClients []string `json:"deniedClients,omitempty"`
+
+	// RequireAuth requires authentication if true
+	// +kubebuilder:default=false
+	// +optional
+	RequireAuth bool `json:"requireAuth,omitempty"`
+
+	// AllowedAuthMethods lists allowed authentication methods
+	// Valid values: anonymous, unix
+	// +kubebuilder:default={"anonymous","unix"}
+	// +optional
+	AllowedAuthMethods []string `json:"allowedAuthMethods,omitempty"`
+
+	// IdentityMapping configures user/group mapping for this share
+	// +optional
+	IdentityMapping *IdentityMappingConfig `json:"identityMapping,omitempty"`
+
+	// RootDirectoryAttributes sets the attributes for the root directory of the share
+	// +optional
+	RootDirectoryAttributes *DirectoryAttributesConfig `json:"rootDirectoryAttributes,omitempty"`
+
+	// DumpRestricted restricts dump operations if true
+	// +kubebuilder:default=false
+	// +optional
+	DumpRestricted bool `json:"dumpRestricted,omitempty"`
+
+	// DumpAllowedClients lists clients allowed to perform dump operations
+	// Only relevant if DumpRestricted is true
+	// +optional
+	DumpAllowedClients []string `json:"dumpAllowedClients,omitempty"`
+}
+
+// IdentityMappingConfig defines user/group mapping configuration for NFS shares
+type IdentityMappingConfig struct {
+	// MapAllToAnonymous maps all users to anonymous if true
+	// +kubebuilder:default=false
+	// +optional
+	MapAllToAnonymous bool `json:"mapAllToAnonymous,omitempty"`
+
+	// MapPrivilegedToAnonymous maps root/privileged users to anonymous if true
+	// +kubebuilder:default=false
+	// +optional
+	MapPrivilegedToAnonymous bool `json:"mapPrivilegedToAnonymous,omitempty"`
+
+	// AnonymousUID is the UID used for anonymous users
+	// +kubebuilder:default=65534
+	// +optional
+	AnonymousUID int32 `json:"anonymousUID,omitempty"`
+
+	// AnonymousGID is the GID used for anonymous users
+	// +kubebuilder:default=65534
+	// +optional
+	AnonymousGID int32 `json:"anonymousGID,omitempty"`
+}
+
+// DirectoryAttributesConfig defines directory ownership and permissions
+type DirectoryAttributesConfig struct {
+	// Mode is the file mode/permissions (e.g., 0755)
+	// +kubebuilder:default=493
+	// +optional
+	Mode int32 `json:"mode,omitempty"`
+
+	// UID is the user ID of the directory owner
+	// +kubebuilder:default=0
+	// +optional
+	UID int32 `json:"uid,omitempty"`
+
+	// GID is the group ID of the directory owner
+	// +kubebuilder:default=0
+	// +optional
+	GID int32 `json:"gid,omitempty"`
 }
 
 // BackendConfig defines a storage backend (metadata or content store)
