@@ -13,6 +13,8 @@ services:
       - dittofs-metadata:/data/metadata
       - dittofs-content:/data/content
     restart: unless-stopped
+    profiles:
+      - default
   dittofs-s3:
     build:
       context: .
@@ -48,9 +50,9 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: dittofs-postgres-server
-    image: dittofs:latest
+    image: dittofs-postgres:latest
     ports:
-      - "2049:2049/tcp"
+      - "12049:12049/tcp"
       - "9090:9090/tcp"
     volumes:
       - ~/.config/dittofs/config.yaml:/config/config.yaml:ro
