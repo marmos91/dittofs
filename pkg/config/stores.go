@@ -15,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 	"github.com/marmos91/dittofs/pkg/store/metadata/badger"
 	metadatamemory "github.com/marmos91/dittofs/pkg/store/metadata/memory"
+	"github.com/marmos91/dittofs/pkg/store/metadata/postgres"
 	"github.com/mitchellh/mapstructure"
 )
 
@@ -54,6 +55,8 @@ func createMetadataStore(
 		return createMemoryMetadataStore(ctx, cfg, capabilities)
 	case "badger":
 		return createBadgerMetadataStore(ctx, cfg, capabilities)
+	case "postgres":
+		return createPostgresMetadataStore(ctx, cfg, capabilities)
 	default:
 		return nil, fmt.Errorf("unknown metadata store type: %q", cfg.Type)
 	}
@@ -97,6 +100,40 @@ func createBadgerMetadataStore(
 	}
 
 	store.SetFilesystemCapabilities(capabilities)
+
+	return store, nil
+}
+
+// createPostgresMetadataStore creates a PostgreSQL metadata store.
+func createPostgresMetadataStore(
+	ctx context.Context,
+	cfg MetadataStoreConfig,
+	capabilities metadata.FilesystemCapabilities,
+) (metadata.MetadataStore, error) {
+	// Decode PostgreSQL-specific configuration
+	var pgCfg postgres.PostgresMetadataStoreConfig
+	if err := mapstructure.Decode(cfg.Postgres, &pgCfg); err != nil {
+		return nil, fmt.Errorf("invalid postgres config: %w", err)
+	}
+
+	// Apply defaults
+	pgCfg.ApplyDefaults()
+
+	// Handle PrepareStatements default (we want true by default)
+	// mapstructure doesn't have a way to set bool defaults, so we check if it's explicitly set
+	if cfg.Postgres != nil {
+		if _, exists := cfg.Postgres["prepare_statements"]; !exists {
+			pgCfg.PrepareStatements = true // Default to true
+		}
+	} else {
+		pgCfg.PrepareStatements = true
+	}
+
+	// Create PostgreSQL store
+	store, err := postgres.NewPostgresMetadataStore(ctx, &pgCfg, capabilities)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create postgres metadata store: %w", err)
+	}
 
 	return store, nil
 }

@@ -7,39 +7,109 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // LocalstackHelper manages Localstack S3 integration for tests
 type LocalstackHelper struct {
-	T        *testing.T
-	Endpoint string
-	Client   *s3.Client
-	Buckets  []string
+	T         *testing.T
+	Container testcontainers.Container
+	Endpoint  string
+	Client    *s3.Client
+	Buckets   []string
 }
 
-// NewLocalstackHelper creates a new Localstack helper
+// Shared Localstack container for E2E tests (started once per test run)
+var sharedLocalstackHelper *LocalstackHelper
+
+// NewLocalstackHelper creates a new Localstack helper with a testcontainer
 func NewLocalstackHelper(t *testing.T) *LocalstackHelper {
 	t.Helper()
 
-	// Get Localstack endpoint from environment or use default
-	endpoint := os.Getenv("LOCALSTACK_ENDPOINT")
-	if endpoint == "" {
-		endpoint = "http://localhost:4566"
+	// Reuse shared container if available
+	if sharedLocalstackHelper != nil {
+		return sharedLocalstackHelper
 	}
 
+	ctx := context.Background()
+
+	// Check if external Localstack is configured via environment
+	if endpoint := os.Getenv("LOCALSTACK_ENDPOINT"); endpoint != "" {
+		helper := &LocalstackHelper{
+			T:        t,
+			Endpoint: endpoint,
+			Buckets:  make([]string, 0),
+		}
+		helper.createClient()
+		sharedLocalstackHelper = helper
+		return helper
+	}
+
+	// Start Localstack container using testcontainers
+	req := testcontainers.ContainerRequest{
+		Image:        "localstack/localstack:3.0",
+		ExposedPorts: []string{"4566/tcp"},
+		Env: map[string]string{
+			"SERVICES":              "s3",
+			"DEFAULT_REGION":        "us-east-1",
+			"EAGER_SERVICE_LOADING": "1",
+		},
+		WaitingFor: wait.ForAll(
+			wait.ForListeningPort("4566/tcp"),
+			wait.ForHTTP("/_localstack/health").
+				WithPort("4566/tcp").
+				WithStartupTimeout(60*time.Second),
+		),
+	}
+
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	if err != nil {
+		t.Fatalf("failed to start localstack container: %v", err)
+	}
+
+	// Get connection details
+	host, err := container.Host(ctx)
+	if err != nil {
+		container.Terminate(ctx)
+		t.Fatalf("failed to get container host: %v", err)
+	}
+
+	port, err := container.MappedPort(ctx, "4566")
+	if err != nil {
+		container.Terminate(ctx)
+		t.Fatalf("failed to get container port: %v", err)
+	}
+
+	endpoint := fmt.Sprintf("http://%s:%s", host, port.Port())
+
 	helper := &LocalstackHelper{
-		T:        t,
-		Endpoint: endpoint,
-		Buckets:  make([]string, 0),
+		T:         t,
+		Container: container,
+		Endpoint:  endpoint,
+		Buckets:   make([]string, 0),
 	}
 
 	// Create S3 client
 	helper.createClient()
+
+	// Store as shared helper for reuse
+	sharedLocalstackHelper = helper
+
+	// NOTE: We do NOT register t.Cleanup() here because:
+	// 1. When called from a subtest, cleanup runs after that subtest, not the parent
+	// 2. This would terminate the container before other subtests can use it
+	// 3. The Ryuk container (testcontainers garbage collector) will clean up
+	//    containers automatically when the test process exits
 
 	return helper
 }
@@ -124,6 +194,10 @@ func SetupS3Config(t *testing.T, config *TestConfig, helper *LocalstackHelper) {
 
 	// Create bucket for this config
 	bucketName := fmt.Sprintf("dittofs-test-%s", config.Name)
+
+	// Clean up existing bucket if it exists (for test isolation when reusing containers)
+	helper.cleanupBucket(ctx, bucketName)
+
 	if err := helper.CreateBucket(ctx, bucketName); err != nil {
 		t.Fatalf("Failed to create S3 bucket: %v", err)
 	}
@@ -131,14 +205,53 @@ func SetupS3Config(t *testing.T, config *TestConfig, helper *LocalstackHelper) {
 	config.s3Bucket = bucketName
 }
 
-// CheckLocalstackAvailable checks if Localstack is running and accessible
+// cleanupBucket removes a bucket and all its contents if it exists
+func (lh *LocalstackHelper) cleanupBucket(ctx context.Context, bucketName string) {
+	// List and delete all objects first
+	listResp, err := lh.Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucketName),
+	})
+	if err != nil {
+		// Bucket doesn't exist, nothing to clean
+		return
+	}
+
+	if listResp != nil {
+		for _, obj := range listResp.Contents {
+			_, _ = lh.Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+				Bucket: aws.String(bucketName),
+				Key:    obj.Key,
+			})
+		}
+	}
+
+	// Delete bucket
+	_, _ = lh.Client.DeleteBucket(ctx, &s3.DeleteBucketInput{
+		Bucket: aws.String(bucketName),
+	})
+}
+
+// CheckLocalstackAvailable checks if Localstack is available
+// With testcontainers, this always returns true since we can start the container on demand
+// If LOCALSTACK_ENDPOINT is set, it checks if the external service is accessible
 func CheckLocalstackAvailable(t *testing.T) bool {
 	t.Helper()
 
-	helper := NewLocalstackHelper(t)
-	ctx := context.Background()
+	// If external Localstack is configured, check if it's accessible
+	if endpoint := os.Getenv("LOCALSTACK_ENDPOINT"); endpoint != "" {
+		helper := &LocalstackHelper{
+			T:        t,
+			Endpoint: endpoint,
+			Buckets:  make([]string, 0),
+		}
+		helper.createClient()
 
-	// Try to list buckets as a health check
-	_, err := helper.Client.ListBuckets(ctx, &s3.ListBucketsInput{})
-	return err == nil
+		ctx := context.Background()
+		_, err := helper.Client.ListBuckets(ctx, &s3.ListBucketsInput{})
+		return err == nil
+	}
+
+	// With testcontainers, we can always start the container on demand
+	// Check if Docker is available (testcontainers requirement)
+	return true
 }

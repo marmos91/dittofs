@@ -193,8 +193,8 @@ type MetadataGlobalConfig struct {
 // MetadataStoreConfig defines a single metadata store instance.
 type MetadataStoreConfig struct {
 	// Type specifies which metadata store implementation to use
-	// Valid values: memory, badger
-	Type string `mapstructure:"type" validate:"required,oneof=memory badger"`
+	// Valid values: memory, badger, postgres
+	Type string `mapstructure:"type" validate:"required,oneof=memory badger postgres"`
 
 	// Memory contains memory-specific configuration
 	// Only used when Type = "memory"
@@ -203,6 +203,10 @@ type MetadataStoreConfig struct {
 	// Badger contains BadgerDB-specific configuration
 	// Only used when Type = "badger"
 	Badger map[string]any `mapstructure:"badger"`
+
+	// Postgres contains PostgreSQL-specific configuration
+	// Only used when Type = "postgres"
+	Postgres map[string]any `mapstructure:"postgres"`
 }
 
 // CacheConfig specifies cache configuration with named cache instances.

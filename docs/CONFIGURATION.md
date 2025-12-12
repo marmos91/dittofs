@@ -165,11 +165,36 @@ metadata:
       type: badger
       badger:
         db_path: /tmp/dittofs-metadata-isolated
+
+    # PostgreSQL for distributed, horizontally-scalable metadata
+    postgres-production:
+      type: postgres
+      postgres:
+        # Connection settings
+        host: localhost
+        port: 5432
+        database: dittofs
+        user: dittofs
+        password: ${POSTGRES_PASSWORD}  # Use environment variable
+
+        # TLS configuration (recommended for production)
+        sslmode: require  # Options: disable, require, verify-ca, verify-full
+
+        # Connection pool sizing
+        max_conns: 15           # Maximum connections (default: 10)
+        min_conns: 2            # Minimum connections (default: 2)
+        max_idle_time: 30m      # Close idle connections after (default: 30m)
+        health_check_period: 1m # Health check interval (default: 1m)
+
+        # Migration control
+        auto_migrate: false     # Auto-run migrations on startup (default: true)
+        migrations_path: ""     # Use embedded migrations (leave empty)
 ```
 
-> **Persistence**: BadgerDB stores all metadata persistently on disk. File handles, directory structure,
-> permissions, and all metadata survive server restarts. The memory backend loses all data when
-> the server stops.
+> **Persistence Options**:
+> - **Memory**: Fast but ephemeral - all data lost on restart. Ideal for caching and temporary workloads.
+> - **BadgerDB**: Persistent embedded database - single-node deployments. File handles and metadata survive restarts.
+> - **PostgreSQL**: Persistent distributed database - multi-node deployments with horizontal scaling. Survives restarts and supports multiple DittoFS instances sharing the same metadata.
 
 ### 5. Content Configuration
 
