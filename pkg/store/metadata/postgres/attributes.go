@@ -339,23 +339,226 @@ func (s *PostgresMetadataStore) CreateSpecialFile(
 	attr *metadata.FileAttr,
 	deviceMajor, deviceMinor uint32,
 ) (*metadata.File, error) {
+	// Check context cancellation
+	if err := ctx.Context.Err(); err != nil {
+		return nil, err
+	}
+
 	// Validate file type
-	if fileType != metadata.FileTypeCharDevice &&
-		fileType != metadata.FileTypeBlockDevice &&
-		fileType != metadata.FileTypeFIFO &&
-		fileType != metadata.FileTypeSocket {
+	switch fileType {
+	case metadata.FileTypeBlockDevice, metadata.FileTypeCharDevice,
+		metadata.FileTypeSocket, metadata.FileTypeFIFO:
+		// Valid special file types
+	default:
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid special file type",
+			Message: fmt.Sprintf("invalid special file type: %d", fileType),
 		}
 	}
 
-	// TODO: For now, return not supported
-	// Full implementation would be similar to CreateFile but with device_major/device_minor
-	return nil, &metadata.StoreError{
-		Code:    metadata.ErrNotSupported,
-		Message: "special files not yet supported",
+	// Validate name
+	if name == "" || name == "." || name == ".." {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidArgument,
+			Message: "invalid name",
+			Path:    name,
+		}
 	}
+
+	// Check if user is root (required for device files)
+	if fileType == metadata.FileTypeBlockDevice || fileType == metadata.FileTypeCharDevice {
+		if ctx.Identity == nil || ctx.Identity.UID == nil || *ctx.Identity.UID != 0 {
+			return nil, &metadata.StoreError{
+				Code:    metadata.ErrAccessDenied,
+				Message: "only root can create device files",
+			}
+		}
+	}
+
+	// Apply defaults
+	mode := attr.Mode
+	if mode == 0 {
+		mode = 0644
+	}
+
+	uid := attr.UID
+	gid := attr.GID
+	if ctx.Identity != nil {
+		if ctx.Identity.UID != nil && uid == 0 {
+			uid = *ctx.Identity.UID
+		}
+		if ctx.Identity.GID != nil && gid == 0 {
+			gid = *ctx.Identity.GID
+		}
+	}
+
+	// Decode parent handle
+	shareName, parentID, err := decodeFileHandle(parentHandle)
+	if err != nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "invalid parent handle",
+		}
+	}
+
+	// Begin transaction
+	tx, err := s.pool.Begin(ctx.Context)
+	if err != nil {
+		return nil, mapPgError(err, "CreateSpecialFile", name)
+	}
+	defer tx.Rollback(ctx.Context)
+
+	// Get and lock parent directory
+	parent, err := s.getFileByIDTx(ctx.Context, tx, parentID, shareName)
+	if err != nil {
+		return nil, err
+	}
+
+	if parent.Type != metadata.FileTypeDirectory {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrNotDirectory,
+			Message: "parent is not a directory",
+			Path:    parent.Path,
+		}
+	}
+
+	// Check write permission on parent
+	if err := s.checkAccess(parent, ctx, metadata.PermissionWrite); err != nil {
+		return nil, err
+	}
+
+	// Check if child already exists
+	checkQuery := `
+		SELECT EXISTS(
+			SELECT 1 FROM parent_child_map
+			WHERE parent_id = $1 AND child_name = $2
+		)
+	`
+	var exists bool
+	err = tx.QueryRow(ctx.Context, checkQuery, parentID, name).Scan(&exists)
+	if err != nil {
+		return nil, mapPgError(err, "CreateSpecialFile", name)
+	}
+
+	if exists {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrAlreadyExists,
+			Message: "file already exists",
+			Path:    path.Join(parent.Path, name),
+		}
+	}
+
+	// Generate new file ID
+	fileID := uuid.New()
+	filePath := path.Join(parent.Path, name)
+	now := time.Now()
+
+	// Insert special file
+	// Note: Special files have no content_id, but may have device_major/device_minor
+	insertQuery := `
+		INSERT INTO files (
+			id, share_name, path,
+			file_type, mode, uid, gid, size,
+			atime, mtime, ctime,
+			content_id, link_target, device_major, device_minor
+		) VALUES (
+			$1, $2, $3,
+			$4, $5, $6, $7, $8,
+			$9, $10, $11,
+			$12, $13, $14, $15
+		)
+	`
+
+	// Set device numbers only for device files
+	var devMajor, devMinor *int32
+	if fileType == metadata.FileTypeBlockDevice || fileType == metadata.FileTypeCharDevice {
+		major := int32(deviceMajor)
+		minor := int32(deviceMinor)
+		devMajor = &major
+		devMinor = &minor
+	}
+
+	_, err = tx.Exec(ctx.Context, insertQuery,
+		fileID,
+		shareName,
+		filePath,
+		int16(fileType),
+		int32(mode&0o7777),
+		int32(uid),
+		int32(gid),
+		int64(0), // size = 0 for special files
+		now,      // atime
+		now,      // mtime
+		now,      // ctime
+		nil,      // content_id (NULL for special files)
+		nil,      // link_target
+		devMajor, // device_major (NULL for non-device files)
+		devMinor, // device_minor (NULL for non-device files)
+	)
+	if err != nil {
+		return nil, mapPgError(err, "CreateSpecialFile", filePath)
+	}
+
+	// Insert into parent_child_map
+	insertMapQuery := `
+		INSERT INTO parent_child_map (parent_id, child_id, child_name)
+		VALUES ($1, $2, $3)
+	`
+
+	_, err = tx.Exec(ctx.Context, insertMapQuery, parentID, fileID, name)
+	if err != nil {
+		return nil, mapPgError(err, "CreateSpecialFile", filePath)
+	}
+
+	// Insert into link_counts (special files start with link count = 1)
+	insertLinkCountQuery := `
+		INSERT INTO link_counts (file_id, link_count)
+		VALUES ($1, $2)
+	`
+
+	_, err = tx.Exec(ctx.Context, insertLinkCountQuery, fileID, 1)
+	if err != nil {
+		return nil, mapPgError(err, "CreateSpecialFile", filePath)
+	}
+
+	// Update parent directory mtime
+	updateParentQuery := `
+		UPDATE files
+		SET mtime = $1, ctime = $1
+		WHERE id = $2
+	`
+
+	_, err = tx.Exec(ctx.Context, updateParentQuery, now, parentID)
+	if err != nil {
+		return nil, mapPgError(err, "CreateSpecialFile", filePath)
+	}
+
+	// Commit transaction
+	if err := tx.Commit(ctx.Context); err != nil {
+		return nil, mapPgError(err, "CreateSpecialFile", filePath)
+	}
+
+	// Invalidate stats cache
+	s.statsCache.invalidate()
+
+	// Build File
+	file := &metadata.File{
+		ID:        fileID,
+		ShareName: shareName,
+		Path:      filePath,
+		FileAttr: metadata.FileAttr{
+			Type:  fileType,
+			Mode:  mode & 0o7777,
+			UID:   uid,
+			GID:   gid,
+			Size:  0,
+			Atime: now,
+			Mtime: now,
+			Ctime: now,
+		},
+	}
+
+	return file, nil
 }
 
 // CreateHardLink creates a hard link to an existing file
@@ -365,11 +568,166 @@ func (s *PostgresMetadataStore) CreateHardLink(
 	name string,
 	targetHandle metadata.FileHandle,
 ) error {
-	// Hard links not fully supported yet (return not supported like BadgerDB)
-	return &metadata.StoreError{
-		Code:    metadata.ErrNotSupported,
-		Message: "hard links not yet supported",
+	// Validate name
+	if name == "" || name == "." || name == ".." {
+		return &metadata.StoreError{
+			Code:    metadata.ErrInvalidArgument,
+			Message: "invalid name",
+			Path:    name,
+		}
 	}
+
+	// Decode directory handle
+	dirShareName, dirID, err := decodeFileHandle(dirHandle)
+	if err != nil {
+		return &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "invalid directory handle",
+		}
+	}
+
+	// Decode target handle
+	targetShareName, targetID, err := decodeFileHandle(targetHandle)
+	if err != nil {
+		return &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "invalid target handle",
+		}
+	}
+
+	// Verify both are in the same share (hard links cannot cross filesystems)
+	if dirShareName != targetShareName {
+		return &metadata.StoreError{
+			Code:    metadata.ErrNotSupported,
+			Message: "hard links cannot cross filesystems",
+		}
+	}
+
+	// Begin transaction
+	tx, err := s.pool.Begin(ctx.Context)
+	if err != nil {
+		return mapPgError(err, "CreateHardLink", name)
+	}
+	defer tx.Rollback(ctx.Context)
+
+	// Get and verify directory
+	dirFile, err := s.getFileByIDTx(ctx.Context, tx, dirID, dirShareName)
+	if err != nil {
+		return err
+	}
+
+	if dirFile.Type != metadata.FileTypeDirectory {
+		return &metadata.StoreError{
+			Code:    metadata.ErrNotDirectory,
+			Message: "not a directory",
+			Path:    dirFile.Path,
+		}
+	}
+
+	// Check write permission on directory
+	if err := s.checkAccess(dirFile, ctx, metadata.PermissionWrite); err != nil {
+		return err
+	}
+
+	// Get and verify target file
+	targetFile, err := s.getFileByIDTx(ctx.Context, tx, targetID, targetShareName)
+	if err != nil {
+		return err
+	}
+
+	// Cannot hard link directories
+	if targetFile.Type == metadata.FileTypeDirectory {
+		return &metadata.StoreError{
+			Code:    metadata.ErrIsDirectory,
+			Message: "cannot create hard link to directory",
+			Path:    targetFile.Path,
+		}
+	}
+
+	// Check if name already exists in directory
+	checkQuery := `
+		SELECT EXISTS(
+			SELECT 1 FROM parent_child_map
+			WHERE parent_id = $1 AND child_name = $2
+		)
+	`
+	var exists bool
+	err = tx.QueryRow(ctx.Context, checkQuery, dirID, name).Scan(&exists)
+	if err != nil {
+		return mapPgError(err, "CreateHardLink", name)
+	}
+
+	if exists {
+		return &metadata.StoreError{
+			Code:    metadata.ErrAlreadyExists,
+			Message: fmt.Sprintf("name already exists: %s", name),
+			Path:    path.Join(dirFile.Path, name),
+		}
+	}
+
+	// Get current link count
+	var currentLinks int32
+	linkCountQuery := `SELECT link_count FROM link_counts WHERE file_id = $1`
+	err = tx.QueryRow(ctx.Context, linkCountQuery, targetID).Scan(&currentLinks)
+	if err != nil {
+		return mapPgError(err, "CreateHardLink", name)
+	}
+
+	// Check link count limit
+	if uint32(currentLinks) >= s.capabilities.MaxHardLinkCount {
+		return &metadata.StoreError{
+			Code:    metadata.ErrNotSupported,
+			Message: "maximum hard link count reached",
+		}
+	}
+
+	// Add entry in parent_child_map (pointing to the same target file)
+	insertMapQuery := `
+		INSERT INTO parent_child_map (parent_id, child_id, child_name)
+		VALUES ($1, $2, $3)
+	`
+	_, err = tx.Exec(ctx.Context, insertMapQuery, dirID, targetID, name)
+	if err != nil {
+		return mapPgError(err, "CreateHardLink", name)
+	}
+
+	// Increment link count
+	updateLinkCountQuery := `
+		UPDATE link_counts
+		SET link_count = link_count + 1
+		WHERE file_id = $1
+	`
+	_, err = tx.Exec(ctx.Context, updateLinkCountQuery, targetID)
+	if err != nil {
+		return mapPgError(err, "CreateHardLink", name)
+	}
+
+	// Update timestamps
+	now := time.Now()
+
+	// Target file's ctime changed (metadata changed)
+	updateTargetQuery := `UPDATE files SET ctime = $1 WHERE id = $2`
+	_, err = tx.Exec(ctx.Context, updateTargetQuery, now, targetID)
+	if err != nil {
+		return mapPgError(err, "CreateHardLink", name)
+	}
+
+	// Directory's mtime and ctime changed (contents changed)
+	updateDirQuery := `UPDATE files SET mtime = $1, ctime = $1 WHERE id = $2`
+	_, err = tx.Exec(ctx.Context, updateDirQuery, now, dirID)
+	if err != nil {
+		return mapPgError(err, "CreateHardLink", name)
+	}
+
+	// Commit transaction
+	if err := tx.Commit(ctx.Context); err != nil {
+		return mapPgError(err, "CreateHardLink", name)
+	}
+
+	// Invalidate stats cache
+	s.statsCache.invalidate()
+
+	return nil
 }
 
 // Helper function to join strings
