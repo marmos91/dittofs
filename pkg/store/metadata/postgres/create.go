@@ -2,13 +2,13 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 	"path"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/store/metadata/internal"
 )
 
 // Create creates a new file or directory
@@ -113,10 +113,10 @@ func (s *PostgresMetadataStore) createFile(
 		}
 	}
 
-	// Generate new file ID and ContentID
+	// Generate new file ID and ContentID (path-based for S3 interoperability)
 	fileID := uuid.New()
 	filePath := path.Join(parent.Path, name)
-	contentID := fmt.Sprintf("%s:%s", shareName, fileID.String())
+	contentID := internal.BuildContentID(shareName, filePath)
 	now := time.Now()
 
 	// Insert file
@@ -505,8 +505,8 @@ func (s *PostgresMetadataStore) CreateFile(
 		)
 	`
 
-	// Generate content ID for the file
-	contentID := metadata.ContentID(fmt.Sprintf("%s:%s", shareName, fileID.String()))
+	// Generate content ID for the file (path-based for S3 interoperability)
+	contentID := metadata.ContentID(internal.BuildContentID(shareName, filePath))
 
 	_, err = tx.Exec(ctx, insertFileQuery,
 		fileID,

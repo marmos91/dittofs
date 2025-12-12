@@ -272,6 +272,9 @@ func applyCapabilitiesDefaults(cfg *metadata.FilesystemCapabilities) {
 	if cfg.MaxHardLinkCount == 0 {
 		cfg.MaxHardLinkCount = 32767
 	}
+	if cfg.TimestampResolution == 0 {
+		cfg.TimestampResolution = 1 // 1 nanosecond (Go time.Time precision)
+	}
 
 	// Note: Boolean capability fields (SupportsHardLinks, SupportsSymlinks, etc.)
 	// default to false (zero value). This allows users to explicitly disable features.
