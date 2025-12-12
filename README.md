@@ -146,6 +146,7 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - **[Configuration](docs/CONFIGURATION.md)** - Complete configuration guide with examples
 - **[NFS Implementation](docs/NFS.md)** - NFSv3 protocol status and client usage
 - **[Contributing](docs/CONTRIBUTING.md)** - Development guide and contribution guidelines
+- **[Implementing Stores](docs/IMPLEMENTING_STORES.md)** - Guide for implementing custom metadata and content stores
 
 ### Operational Guides
 

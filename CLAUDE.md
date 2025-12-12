@@ -19,6 +19,7 @@ DittoFS has comprehensive documentation organized by topic:
 - **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** - Complete configuration guide with examples
 - **[docs/NFS.md](docs/NFS.md)** - NFSv3 protocol implementation details and client usage
 - **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)** - Development guide and contribution guidelines
+- **[docs/IMPLEMENTING_STORES.md](docs/IMPLEMENTING_STORES.md)** - Guide for implementing custom metadata and content stores
 
 ### Operational Guides
 - **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** - Common issues and solutions
