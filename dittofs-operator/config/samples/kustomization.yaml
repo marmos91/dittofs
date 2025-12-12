@@ -1,4 +1,4 @@
 ## Append samples of your project ##
 resources:
-- ditto.io_v1_dittoserver.yaml
+- ditto.io_v1alpha1_dittoserver.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
