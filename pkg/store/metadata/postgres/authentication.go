@@ -50,7 +50,9 @@ func (s *PostgresMetadataStore) CheckShareAccess(
 	return decision, authCtx, nil
 }
 
-// CheckPermissions performs file-level permission checking
+// CheckPermissions performs file-level permission checking.
+// Returns the intersection of requested and granted permissions (never errors for permission denied).
+// Per RFC 1813, ACCESS procedure should return granted permissions, not error when some are denied.
 func (s *PostgresMetadataStore) CheckPermissions(
 	ctx *metadata.AuthContext,
 	handle metadata.FileHandle,
@@ -67,13 +69,73 @@ func (s *PostgresMetadataStore) CheckPermissions(
 		return 0, err
 	}
 
-	// Delegate to checkAccess helper
-	if err := s.checkAccess(file, ctx, requested); err != nil {
-		return 0, err
+	// Calculate granted permissions
+	granted := s.calculateGrantedPermissions(file, ctx)
+
+	// Return intersection of requested and granted (per RFC 1813)
+	return granted & requested, nil
+}
+
+// calculateGrantedPermissions determines what permissions are granted for a file/user combination
+func (s *PostgresMetadataStore) calculateGrantedPermissions(file *metadata.File, ctx *metadata.AuthContext) metadata.Permission {
+	attr := &file.FileAttr
+	identity := ctx.Identity
+
+	// Handle anonymous/no identity case
+	if identity == nil || identity.UID == nil {
+		// Only grant "other" permissions for anonymous users
+		return calculatePermissionsFromBits(attr.Mode & 0x7)
 	}
 
-	// If checkAccess succeeded, grant all requested permissions
-	return requested, nil
+	uid := *identity.UID
+	gid := identity.GID
+
+	// Root bypass: UID 0 gets all permissions
+	if uid == 0 {
+		return metadata.PermissionRead | metadata.PermissionWrite | metadata.PermissionExecute |
+			metadata.PermissionDelete | metadata.PermissionListDirectory | metadata.PermissionTraverse |
+			metadata.PermissionChangePermissions | metadata.PermissionChangeOwnership
+	}
+
+	// Determine which permission bits apply
+	var permBits uint32
+
+	if uid == attr.UID {
+		// Owner permissions (bits 6-8)
+		permBits = (attr.Mode >> 6) & 0x7
+	} else if gid != nil && (*gid == attr.GID || identity.HasGID(attr.GID)) {
+		// Group permissions (bits 3-5)
+		permBits = (attr.Mode >> 3) & 0x7
+	} else {
+		// Other permissions (bits 0-2)
+		permBits = attr.Mode & 0x7
+	}
+
+	granted := calculatePermissionsFromBits(permBits)
+
+	// Owner gets additional privileges
+	if uid == attr.UID {
+		granted |= metadata.PermissionChangePermissions | metadata.PermissionChangeOwnership
+	}
+
+	return granted
+}
+
+// calculatePermissionsFromBits converts Unix permission bits (rwx) to Permission flags
+func calculatePermissionsFromBits(bits uint32) metadata.Permission {
+	var granted metadata.Permission
+
+	if bits&0x4 != 0 { // Read bit
+		granted |= metadata.PermissionRead | metadata.PermissionListDirectory
+	}
+	if bits&0x2 != 0 { // Write bit
+		granted |= metadata.PermissionWrite | metadata.PermissionDelete
+	}
+	if bits&0x1 != 0 { // Execute bit
+		granted |= metadata.PermissionExecute | metadata.PermissionTraverse
+	}
+
+	return granted
 }
 
 // checkAccess is an internal helper that performs permission checking
