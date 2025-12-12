@@ -70,7 +70,7 @@ Example: "/export:550e8400-e29b-41d4-a716-446655440000"
 - **Human-readable**: Easy to debug and inspect
 - **NFS-compatible**: Under 64-byte limit for most share names
 
-**Implementation Note**: Use `metadata.EncodeShareHandle()` and `metadata.DecodeShareHandle()` for consistent handle encoding/decoding.
+**Implementation Note**: Use `metadata.EncodeShareHandle()` and `metadata.DecodeFileHandle()` for consistent handle encoding/decoding.
 
 ### Content ID Design
 
@@ -157,7 +157,7 @@ type MyMetadataStore struct {
 // GetShareNameForHandle extracts share name from file handle.
 //
 // Implementation strategy:
-// 1. Decode handle using metadata.DecodeShareHandle()
+// 1. Decode handle using metadata.DecodeFileHandle()
 // 2. Extract share name from decoded components
 // 3. Validate handle exists in your backend
 func (s *MyMetadataStore) GetShareNameForHandle(
@@ -399,7 +399,7 @@ func (s *MyMetadataStore) Create(
 // 2. Query backend for entries starting at token position
 // 3. Limit results to fit within maxBytes
 // 4. Generate next token if more entries exist
-// 5. Use HandleToFileID() for inode consistency
+// 5. Use HandleToINode() for inode consistency
 func (s *MyMetadataStore) ReadDirectory(
     ctx *metadata.AuthContext,
     dirHandle metadata.FileHandle,
@@ -451,8 +451,8 @@ func (s *MyMetadataStore) ReadDirectory(
     // Build directory entries
     entries := make([]metadata.DirEntry, 0, len(children))
     for _, child := range children {
-        // CRITICAL: Use HandleToFileID for inode consistency
-        fileID := metadata.HandleToFileID(child.Handle)
+        // CRITICAL: Use HandleToINode for inode consistency
+        fileID := metadata.HandleToINode(child.Handle)
 
         entries = append(entries, metadata.DirEntry{
             ID:     fileID,
@@ -1433,13 +1433,13 @@ func (s *MyStore) ReadDirectory(...) (*ReadDirPage, error) {
     }
 }
 
-// CORRECT: Use HandleToFileID
+// CORRECT: Use HandleToINode
 func (s *MyStore) ReadDirectory(...) (*ReadDirPage, error) {
     // ... query children ...
 
     for _, child := range children {
         entries = append(entries, DirEntry{
-            ID: metadata.HandleToFileID(child.Handle), // ✅ Correct
+            ID: metadata.HandleToINode(child.Handle), // ✅ Correct
             // ...
         })
     }
