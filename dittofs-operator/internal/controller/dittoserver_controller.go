@@ -240,6 +240,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 					AccessModes: []corev1.PersistentVolumeAccessMode{
 						corev1.ReadWriteOnce,
 					},
+					StorageClassName: dittoServer.Spec.Storage.StorageClassName,
 					Resources: corev1.VolumeResourceRequirements{
 						Requests: corev1.ResourceList{
 							corev1.ResourceStorage: resource.MustParse(dittoServer.Spec.Storage.MetadataSize),
@@ -258,6 +259,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 					AccessModes: []corev1.PersistentVolumeAccessMode{
 						corev1.ReadWriteOnce,
 					},
+					StorageClassName: dittoServer.Spec.Storage.StorageClassName,
 					Resources: corev1.VolumeResourceRequirements{
 						Requests: corev1.ResourceList{
 							corev1.ResourceStorage: resource.MustParse(dittoServer.Spec.Storage.ContentSize),
@@ -265,12 +267,6 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 					},
 				},
 			})
-		}
-
-		if dittoServer.Spec.Storage.StorageClassName != nil {
-			for i := range volumeClaimTemplates {
-				volumeClaimTemplates[i].Spec.StorageClassName = dittoServer.Spec.Storage.StorageClassName
-			}
 		}
 
 		statefulSet.Spec = appsv1.StatefulSetSpec{
