@@ -1,0 +1,26 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-dittofs-dittofs-com-v1alpha1-dittoserver
+  failurePolicy: Fail
+  name: vdittoserver.kb.io
+  rules:
+  - apiGroups:
+    - dittofs.dittofs.com
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - dittoservers
+  sideEffects: None
