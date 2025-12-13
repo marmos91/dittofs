@@ -51,7 +51,38 @@ var _ = Describe("DittoServer Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: dittoiov1alpha1.DittoServerSpec{
+						Storage: dittoiov1alpha1.StorageSpec{
+							MetadataSize: "10Gi",
+							ContentSize:  "50Gi",
+						},
+						Config: dittoiov1alpha1.DittoConfig{
+							Backends: []dittoiov1alpha1.BackendConfig{
+								{
+									Name: "test-metadata",
+									Type: "badger",
+									Config: map[string]string{
+										"path": "/data/metadata",
+									},
+								},
+								{
+									Name: "test-content",
+									Type: "local",
+									Config: map[string]string{
+										"path": "/data/content",
+									},
+								},
+							},
+							Shares: []dittoiov1alpha1.ShareConfig{
+								{
+									Name:          "test-share",
+									ExportPath:    "/export",
+									MetadataStore: "test-metadata",
+									ContentStore:  "test-content",
+								},
+							},
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

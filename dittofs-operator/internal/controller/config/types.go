@@ -6,7 +6,8 @@ type DittoFSConfig struct {
 	Server   ServerConfig   `yaml:"server"`
 	Metadata MetadataConfig `yaml:"metadata"`
 	Content  ContentConfig  `yaml:"content"`
-	Shares   []ShareYAML    `yaml:"shares"`
+	Cache    CacheConfig    `yaml:"cache,omitempty"`
+	Shares   []Share        `yaml:"shares"`
 	Adapters AdaptersConfig `yaml:"adapters"`
 }
 
@@ -45,9 +46,9 @@ type FilesystemCapabilities struct {
 }
 
 type MetadataStore struct {
-	Type   string                 `yaml:"type"`
-	Badger *BadgerConfig          `yaml:"badger,omitempty"`
-	Config map[string]interface{} `yaml:",inline,omitempty"`
+	Type   string         `yaml:"type"`
+	Badger *BadgerConfig  `yaml:"badger,omitempty"`
+	Config map[string]any `yaml:",inline,omitempty"`
 }
 
 type BadgerConfig struct {
@@ -55,15 +56,15 @@ type BadgerConfig struct {
 }
 
 type ContentConfig struct {
-	Global map[string]interface{}  `yaml:"global"`
+	Global map[string]any          `yaml:"global"`
 	Stores map[string]ContentStore `yaml:"stores"`
 }
 
 type ContentStore struct {
-	Type       string                 `yaml:"type"`
-	Filesystem *FilesystemConfig      `yaml:"filesystem,omitempty"`
-	S3         *S3Config              `yaml:"s3,omitempty"`
-	Config     map[string]interface{} `yaml:",inline,omitempty"`
+	Type       string            `yaml:"type"`
+	Filesystem *FilesystemConfig `yaml:"filesystem,omitempty"`
+	S3         *S3Config         `yaml:"s3,omitempty"`
+	Config     map[string]any    `yaml:",inline,omitempty"`
 }
 
 type FilesystemConfig struct {
@@ -76,10 +77,34 @@ type S3Config struct {
 	Endpoint string `yaml:"endpoint,omitempty"`
 }
 
-type ShareYAML struct {
+type CacheConfig struct {
+	Stores map[string]CacheStore `yaml:"stores,omitempty"`
+}
+
+type CacheStore struct {
+	Type     string         `yaml:"type"`
+	Memory   map[string]any `yaml:"memory,omitempty"`
+	Prefetch *Prefetch      `yaml:"prefetch,omitempty"`
+	Flusher  *Flusher       `yaml:"flusher,omitempty"`
+}
+
+type Prefetch struct {
+	Enabled     *bool  `yaml:"enabled,omitempty"`
+	MaxFileSize string `yaml:"max_file_size,omitempty"`
+	ChunkSize   string `yaml:"chunk_size,omitempty"`
+}
+
+type Flusher struct {
+	SweepInterval string `yaml:"sweep_interval,omitempty"`
+	FlushTimeout  string `yaml:"flush_timeout,omitempty"`
+	FlushPoolSize *int32 `yaml:"flush_pool_size,omitempty"`
+}
+
+type Share struct {
 	Name                    string              `yaml:"name"`
 	MetadataStore           string              `yaml:"metadata_store"`
 	ContentStore            string              `yaml:"content_store"`
+	Cache                   string              `yaml:"cache,omitempty"`
 	ReadOnly                bool                `yaml:"read_only"`
 	AllowedClients          []string            `yaml:"allowed_clients"`
 	DeniedClients           []string            `yaml:"denied_clients"`

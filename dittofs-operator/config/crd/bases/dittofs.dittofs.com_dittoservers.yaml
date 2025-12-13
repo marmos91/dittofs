@@ -99,6 +99,91 @@ spec:
                       - type
                       type: object
                     type: array
+                  caches:
+                    description: |-
+                      Cache configuration for read/write buffering
+                      Caches are optional and referenced by name in ShareConfig
+                    items:
+                      description: |-
+                        CacheConfig defines a cache instance for read/write buffering
+                        Caches are referenced by name in ShareConfig
+                      properties:
+                        flusher:
+                          description: Flusher configuration for write buffering and
+                            background flush
+                          properties:
+                            flushTimeout:
+                              default: 30s
+                              description: |-
+                                FlushTimeout is how long a file must be idle before flushing
+                                This is the key NFS async write timeout
+                              example: 30s
+                              type: string
+                            interval:
+                              default: 10s
+                              description: SweepInterval is how often to check for
+                                idle files
+                              example: 10s
+                              type: string
+                            workers:
+                              default: 4
+                              description: Workers is the number of parallel flush
+                                workers
+                              format: int32
+                              minimum: 1
+                              type: integer
+                          type: object
+                        memory:
+                          description: Memory cache configuration (only used when
+                            Type=memory)
+                          properties:
+                            maxSize:
+                              description: |-
+                                MaxSize is the maximum cache size in bytes
+                                Use suffixes like "1Gi", "512Mi", etc.
+                                Empty or "0" means unlimited
+                              example: 1Gi
+                              type: string
+                          type: object
+                        name:
+                          description: |-
+                            Unique name for this cache
+                            Used as a reference in ShareConfig.Cache field
+                          example: fast-cache
+                          type: string
+                        prefetch:
+                          description: Prefetch configuration for read optimization
+                          properties:
+                            chunkSize:
+                              default: 512Ki
+                              description: ChunkSize is the size of each chunk read
+                                during prefetch
+                              example: 512Ki
+                              type: string
+                            enabled:
+                              default: true
+                              description: Enabled controls whether prefetch is enabled
+                              type: boolean
+                            maxFileSize:
+                              default: 100Mi
+                              description: |-
+                                MaxFileSize is the maximum file size to prefetch
+                                Files larger than this are not prefetched to avoid cache thrashing
+                                Use suffixes like "100Mi", "1Gi", etc.
+                              example: 100Mi
+                              type: string
+                          type: object
+                        type:
+                          default: memory
+                          description: Type of cache implementation
+                          enum:
+                          - memory
+                          type: string
+                      required:
+                      - name
+                      - type
+                      type: object
+                    type: array
                   shares:
                     description: |-
                       NFS exports/shares configuration
@@ -123,6 +208,11 @@ spec:
                           items:
                             type: string
                           type: array
+                        cache:
+                          description: |-
+                            Reference to a cache in the Caches list (by name)
+                            Cache is optional - if not specified, no caching is used
+                          type: string
                         contentStore:
                           description: |-
                             Reference to a backend in the Backends list (by name)

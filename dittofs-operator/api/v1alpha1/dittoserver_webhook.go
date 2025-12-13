@@ -52,6 +52,11 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 		backendNames[backend.Name] = true
 	}
 
+	cacheNames := make(map[string]bool)
+	for _, cache := range r.Spec.Config.Caches {
+		cacheNames[cache.Name] = true
+	}
+
 	for i, share := range r.Spec.Config.Shares {
 		if share.MetadataStore == "" {
 			return warnings, fmt.Errorf("share[%d] (%s): metadataStore cannot be empty", i, share.Name)
@@ -72,6 +77,12 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 		if share.MetadataStore == share.ContentStore {
 			warnings = append(warnings, fmt.Sprintf("share[%d] (%s): metadataStore and contentStore reference the same backend '%s' - this may not be optimal",
 				i, share.Name, share.MetadataStore))
+		}
+
+		// Validate cache reference if specified
+		if share.Cache != "" && !cacheNames[share.Cache] {
+			return warnings, fmt.Errorf("share[%d] (%s): cache '%s' does not exist in caches list",
+				i, share.Name, share.Cache)
 		}
 	}
 
@@ -101,6 +112,15 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 			return warnings, fmt.Errorf("duplicate backend name '%s' at indices %d and %d", backend.Name, prevIndex, i)
 		}
 		seenBackends[backend.Name] = i
+	}
+
+	// Validate no duplicate cache names
+	seenCaches := make(map[string]int)
+	for i, cache := range r.Spec.Config.Caches {
+		if prevIndex, exists := seenCaches[cache.Name]; exists {
+			return warnings, fmt.Errorf("duplicate cache name '%s' at indices %d and %d", cache.Name, prevIndex, i)
+		}
+		seenCaches[cache.Name] = i
 	}
 
 	// Validate no duplicate share names

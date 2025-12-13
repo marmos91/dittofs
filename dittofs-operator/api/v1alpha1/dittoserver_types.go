@@ -76,6 +76,11 @@ type DittoConfig struct {
 	// Backend storage definitions (metadata and content stores)
 	// These are referenced by name in ShareConfig
 	Backends []BackendConfig `json:"backends,omitempty"`
+
+	// Cache configuration for read/write buffering
+	// Caches are optional and referenced by name in ShareConfig
+	// +optional
+	Caches []CacheConfig `json:"caches,omitempty"`
 }
 
 // ShareConfig defines an NFS export/share
@@ -98,6 +103,11 @@ type ShareConfig struct {
 	// This backend will store file content
 	// +kubebuilder:validation:Required
 	ContentStore string `json:"contentStore"`
+
+	// Reference to a cache in the Caches list (by name)
+	// Cache is optional - if not specified, no caching is used
+	// +optional
+	Cache string `json:"cache,omitempty"`
 
 	// ReadOnly makes the share read-only if true
 	// +kubebuilder:default=false
@@ -183,6 +193,88 @@ type DirectoryAttributesConfig struct {
 	// +kubebuilder:default=0
 	// +optional
 	GID int32 `json:"gid,omitempty"`
+}
+
+// CacheConfig defines a cache instance for read/write buffering
+// Caches are referenced by name in ShareConfig
+type CacheConfig struct {
+	// Unique name for this cache
+	// Used as a reference in ShareConfig.Cache field
+	// +kubebuilder:validation:Required
+	// +kubebuilder:example="fast-cache"
+	Name string `json:"name"`
+
+	// Type of cache implementation
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=memory
+	// +kubebuilder:default="memory"
+	Type string `json:"type"`
+
+	// Memory cache configuration (only used when Type=memory)
+	// +optional
+	Memory *MemoryCacheConfig `json:"memory,omitempty"`
+
+	// Prefetch configuration for read optimization
+	// +optional
+	Prefetch *PrefetchConfig `json:"prefetch,omitempty"`
+
+	// Flusher configuration for write buffering and background flush
+	// +optional
+	Flusher *FlusherConfig `json:"flusher,omitempty"`
+}
+
+// MemoryCacheConfig defines configuration for in-memory cache
+type MemoryCacheConfig struct {
+	// MaxSize is the maximum cache size in bytes
+	// Use suffixes like "1Gi", "512Mi", etc.
+	// Empty or "0" means unlimited
+	// +kubebuilder:example="1Gi"
+	// +optional
+	MaxSize string `json:"maxSize,omitempty"`
+}
+
+// PrefetchConfig defines read prefetch optimization settings
+type PrefetchConfig struct {
+	// Enabled controls whether prefetch is enabled
+	// +kubebuilder:default=true
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// MaxFileSize is the maximum file size to prefetch
+	// Files larger than this are not prefetched to avoid cache thrashing
+	// Use suffixes like "100Mi", "1Gi", etc.
+	// +kubebuilder:example="100Mi"
+	// +kubebuilder:default="100Mi"
+	// +optional
+	MaxFileSize string `json:"maxFileSize,omitempty"`
+
+	// ChunkSize is the size of each chunk read during prefetch
+	// +kubebuilder:example="512Ki"
+	// +kubebuilder:default="512Ki"
+	// +optional
+	ChunkSize string `json:"chunkSize,omitempty"`
+}
+
+// FlusherConfig defines write buffering and background flush settings
+type FlusherConfig struct {
+	// SweepInterval is how often to check for idle files
+	// +kubebuilder:example="10s"
+	// +kubebuilder:default="10s"
+	// +optional
+	Interval string `json:"interval,omitempty"`
+
+	// FlushTimeout is how long a file must be idle before flushing
+	// This is the key NFS async write timeout
+	// +kubebuilder:example="30s"
+	// +kubebuilder:default="30s"
+	// +optional
+	FlushTimeout string `json:"flushTimeout,omitempty"`
+
+	// Workers is the number of parallel flush workers
+	// +kubebuilder:default=4
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	Workers *int32 `json:"workers,omitempty"`
 }
 
 // BackendConfig defines a storage backend (metadata or content store)

@@ -6,6 +6,7 @@ import (
 	dittoiov1alpha1 "github.com/marmos91/dittofs/dittofs-operator/api/v1alpha1"
 
 	"gopkg.in/yaml.v3"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, error) {
@@ -42,7 +43,54 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 		}
 	}
 
-	shares := make([]ShareYAML, 0, len(dittoServer.Spec.Config.Shares))
+	cacheStores := make(map[string]CacheStore)
+	for _, cache := range dittoServer.Spec.Config.Caches {
+		cacheStore := CacheStore{
+			Type: cache.Type,
+		}
+
+		if cache.Memory != nil {
+			memoryConfig := make(map[string]any)
+			if cache.Memory.MaxSize != "" {
+				memoryConfig["max_size"] = parseSizeString(cache.Memory.MaxSize)
+			}
+			if len(memoryConfig) > 0 {
+				cacheStore.Memory = memoryConfig
+			}
+		}
+
+		if cache.Prefetch != nil {
+			prefetch := &Prefetch{}
+			if cache.Prefetch.Enabled != nil {
+				prefetch.Enabled = cache.Prefetch.Enabled
+			}
+			if cache.Prefetch.MaxFileSize != "" {
+				prefetch.MaxFileSize = cache.Prefetch.MaxFileSize
+			}
+			if cache.Prefetch.ChunkSize != "" {
+				prefetch.ChunkSize = cache.Prefetch.ChunkSize
+			}
+			cacheStore.Prefetch = prefetch
+		}
+
+		if cache.Flusher != nil {
+			flusher := &Flusher{}
+			if cache.Flusher.Interval != "" {
+				flusher.SweepInterval = cache.Flusher.Interval
+			}
+			if cache.Flusher.FlushTimeout != "" {
+				flusher.FlushTimeout = cache.Flusher.FlushTimeout
+			}
+			if cache.Flusher.Workers != nil {
+				flusher.FlushPoolSize = cache.Flusher.Workers
+			}
+			cacheStore.Flusher = flusher
+		}
+
+		cacheStores[cache.Name] = cacheStore
+	}
+
+	shares := make([]Share, 0, len(dittoServer.Spec.Config.Shares))
 	for _, share := range dittoServer.Spec.Config.Shares {
 		allowedAuthMethods := share.AllowedAuthMethods
 		if len(allowedAuthMethods) == 0 {
@@ -79,10 +127,11 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 			rootDirAttrs.GID = share.RootDirectoryAttributes.GID
 		}
 
-		shareYAML := ShareYAML{
+		shareYAML := Share{
 			Name:                    share.ExportPath,
 			MetadataStore:           share.MetadataStore,
 			ContentStore:            share.ContentStore,
+			Cache:                   share.Cache,
 			ReadOnly:                share.ReadOnly,
 			AllowedClients:          share.AllowedClients,
 			DeniedClients:           share.DeniedClients,
@@ -126,8 +175,11 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 			Stores: metadataStores,
 		},
 		Content: ContentConfig{
-			Global: map[string]interface{}{},
+			Global: map[string]any{},
 			Stores: contentStores,
+		},
+		Cache: CacheConfig{
+			Stores: cacheStores,
 		},
 		Shares: shares,
 		Adapters: AdaptersConfig{
@@ -159,4 +211,31 @@ func getConfigValue(config map[string]string, key, defaultValue string) string {
 		return val
 	}
 	return defaultValue
+}
+
+// parseSizeString converts Kubernetes-style size strings (e.g., "1Gi", "512Mi", "100Ki")
+// to bytes as uint64 for DittoFS configuration.
+// Returns 0 for empty or "0" strings.
+// Returns the string as-is if parsing fails.
+//
+// TODO: make ditto compliant with kubernetes
+// resources to delete this function
+func parseSizeString(size string) any {
+	if size == "" || size == "0" {
+		return uint64(0)
+	}
+
+	quantity, err := resource.ParseQuantity(size)
+	if err != nil {
+		// If parsing fails, return the string as-is
+		// This allows DittoFS to handle it or fail gracefully
+		return size
+	}
+
+	bytes := quantity.Value()
+	if bytes < 0 {
+		return size // Invalid negative size, return string
+	}
+
+	return uint64(bytes)
 }
