@@ -72,9 +72,12 @@ type FilesystemConfig struct {
 }
 
 type S3Config struct {
-	Bucket   string `yaml:"bucket,omitempty"`
-	Region   string `yaml:"region,omitempty"`
-	Endpoint string `yaml:"endpoint,omitempty"`
+	Bucket          string `yaml:"bucket,omitempty"`
+	Region          string `yaml:"region,omitempty"`
+	Endpoint        string `yaml:"endpoint,omitempty"`
+	AccessKeyID     string `yaml:"access_key_id,omitempty"`
+	SecretAccessKey string `yaml:"secret_access_key,omitempty"`
+	ForcePathStyle  bool   `yaml:"force_path_style,omitempty"`
 }
 
 type CacheConfig struct {
@@ -89,9 +92,9 @@ type CacheStore struct {
 }
 
 type Prefetch struct {
-	Enabled     *bool  `yaml:"enabled,omitempty"`
-	MaxFileSize string `yaml:"max_file_size,omitempty"`
-	ChunkSize   string `yaml:"chunk_size,omitempty"`
+	Enabled     *bool `yaml:"enabled,omitempty"`
+	MaxFileSize any   `yaml:"max_file_size,omitempty"`
+	ChunkSize   any   `yaml:"chunk_size,omitempty"`
 }
 
 type Flusher struct {

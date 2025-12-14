@@ -304,7 +304,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					SecurityContext: dittoServer.Spec.PodSecurityContext,
+					SecurityContext: getPodSecurityContext(dittoServer),
 					Containers: []corev1.Container{
 						{
 							Name:            "dittofs",
@@ -373,4 +373,18 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 	})
 
 	return err
+}
+
+// getPodSecurityContext returns the pod security context with fsGroup set to ensure
+// that mounted volumes are writable by the container user (65532)
+func getPodSecurityContext(dittoServer *dittoiov1alpha1.DittoServer) *corev1.PodSecurityContext {
+	if dittoServer.Spec.PodSecurityContext != nil {
+		return dittoServer.Spec.PodSecurityContext
+	}
+
+	// Default security context with fsGroup to nonroot user (65532)
+	fsGroup := int64(65532)
+	return &corev1.PodSecurityContext{
+		FSGroup: &fsGroup,
+	}
 }

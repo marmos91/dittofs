@@ -33,9 +33,12 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 			contentStores[backend.Name] = ContentStore{
 				Type: "s3",
 				S3: &S3Config{
-					Bucket:   getConfigValue(backend.Config, "bucket", ""),
-					Region:   getConfigValue(backend.Config, "region", "us-east-1"),
-					Endpoint: getConfigValue(backend.Config, "endpoint", ""),
+					Bucket:          getConfigValue(backend.Config, "bucket", ""),
+					Region:          getConfigValue(backend.Config, "region", "us-east-1"),
+					Endpoint:        getConfigValue(backend.Config, "endpoint", ""),
+					AccessKeyID:     getConfigValue(backend.Config, "access_key_id", ""),
+					SecretAccessKey: getConfigValue(backend.Config, "secret_access_key", ""),
+					ForcePathStyle:  getConfigValue(backend.Config, "force_path_style", "") == "true",
 				},
 			}
 		default:
@@ -65,10 +68,10 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 				prefetch.Enabled = cache.Prefetch.Enabled
 			}
 			if cache.Prefetch.MaxFileSize != "" {
-				prefetch.MaxFileSize = cache.Prefetch.MaxFileSize
+				prefetch.MaxFileSize = parseSizeString(cache.Prefetch.MaxFileSize)
 			}
 			if cache.Prefetch.ChunkSize != "" {
-				prefetch.ChunkSize = cache.Prefetch.ChunkSize
+				prefetch.ChunkSize = parseSizeString(cache.Prefetch.ChunkSize)
 			}
 			cacheStore.Prefetch = prefetch
 		}
