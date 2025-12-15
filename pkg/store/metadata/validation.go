@@ -61,7 +61,7 @@ func RequiresRoot(ctx *AuthContext) error {
 	if ctx.Identity == nil || ctx.Identity.UID == nil || *ctx.Identity.UID != 0 {
 		return &StoreError{
 			Code:    ErrAccessDenied,
-			Message: "only root can create device files",
+			Message: "operation requires root privileges",
 		}
 	}
 	return nil
