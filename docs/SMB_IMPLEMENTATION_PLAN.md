@@ -11,6 +11,20 @@
 | **Phase 3** | Pending | Connect to Metadata/Content Stores |
 | **Phase 4** | Pending | Permission Abstraction & Interoperability |
 
+### Phase 1 Testing Results
+
+**macOS Finder mount**: ✅ Working
+```bash
+mount -t smbfs //guest@localhost:12445/export /tmp/smb
+ls /tmp/smb  # Lists directory contents successfully
+```
+
+**Key fixes implemented**:
+- Compound request handling (race condition fixed)
+- FileID injection for related operations (QUERY_INFO, QUERY_DIRECTORY, CLOSE)
+- Credit-based flow control (grants 256 credits)
+- Directory enumeration state tracking (prevents infinite loops)
+
 ### Phase 1 Completed Files
 
 ```
@@ -197,6 +211,12 @@ go test ./pkg/adapter/smb/...
 # Start server (use non-privileged port for testing)
 DITTOFS_ADAPTERS_SMB_PORT=12445 ./dittofs start
 
+# Test with macOS Finder (VERIFIED WORKING)
+mount -t smbfs //guest@localhost:12445/export /tmp/smb
+ls /tmp/smb
+cat /tmp/smb/readme.txt
+umount /tmp/smb
+
 # Test with smbclient
 smbclient //127.0.0.1/export -p 12445 -N -c "ls"
 smbclient //127.0.0.1/export -p 12445 -N -c "get readme.txt -"
@@ -215,6 +235,8 @@ net use X: \\127.0.0.1\export /user:guest "" /port:12445
 - [x] SMB2 READ returns mock file content
 - [x] SMB2 QUERY_DIRECTORY lists mock directory
 - [x] SMB2 CLOSE works correctly
+- [x] macOS Finder can mount share
+- [x] macOS Finder can list directory (`ls /tmp/smb`)
 - [ ] smbclient can list directory (needs testing)
 - [ ] smbclient can read readme.txt (needs testing)
 - [x] Graceful shutdown works
