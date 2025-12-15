@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
+	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -371,6 +372,7 @@ func applyAdaptersDefaults(cfg *AdaptersConfig) {
 	}
 
 	applyNFSDefaults(&cfg.NFS)
+	applySMBDefaults(&cfg.SMB)
 }
 
 // applyNFSDefaults sets NFS adapter defaults.
@@ -380,6 +382,39 @@ func applyNFSDefaults(cfg *nfs.NFSConfig) {
 
 	if cfg.Port == 0 {
 		cfg.Port = 2049
+	}
+
+	// MaxConnections defaults to 0 (unlimited)
+
+	// Apply timeout defaults
+	if cfg.Timeouts.Read == 0 {
+		cfg.Timeouts.Read = 5 * time.Minute
+	}
+
+	if cfg.Timeouts.Write == 0 {
+		cfg.Timeouts.Write = 30 * time.Second
+	}
+
+	if cfg.Timeouts.Idle == 0 {
+		cfg.Timeouts.Idle = 5 * time.Minute
+	}
+
+	if cfg.Timeouts.Shutdown == 0 {
+		cfg.Timeouts.Shutdown = 30 * time.Second
+	}
+
+	if cfg.MetricsLogInterval == 0 {
+		cfg.MetricsLogInterval = 5 * time.Minute
+	}
+}
+
+// applySMBDefaults sets SMB adapter defaults.
+func applySMBDefaults(cfg *smb.SMBConfig) {
+	// Note: SMB adapter is NOT enabled by default.
+	// Users must explicitly enable it in their config.
+
+	if cfg.Port == 0 {
+		cfg.Port = 445
 	}
 
 	// MaxConnections defaults to 0 (unlimited)

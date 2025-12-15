@@ -1,0 +1,451 @@
+package smb
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/smb/v2/handlers"
+	"github.com/marmos91/dittofs/pkg/registry"
+)
+
+// SMBAdapter implements the adapter.Adapter interface for SMB2 protocol.
+//
+// This adapter provides an SMB2 server with:
+//   - Graceful shutdown with configurable timeout
+//   - Connection limiting and resource management
+//   - Context-based request cancellation
+//   - Configurable timeouts for read/write/idle operations
+//   - Thread-safe operation with atomic counters
+//
+// Architecture:
+// SMBAdapter manages the TCP listener and connection lifecycle. Each accepted
+// connection is handled by an SMBConnection instance that manages SMB2 request/response
+// cycles. The adapter coordinates graceful shutdown across all active connections
+// using context cancellation and wait groups.
+//
+// Shutdown flow:
+//  1. Context cancelled or Stop() called
+//  2. Listener closed (no new connections)
+//  3. shutdownCtx cancelled (signals in-flight requests to abort)
+//  4. Wait for active connections to complete (up to ShutdownTimeout)
+//  5. Force-close any remaining connections after timeout
+//
+// Thread safety:
+// All methods are safe for concurrent use. The shutdown mechanism uses sync.Once
+// to ensure idempotent behavior even if Stop() is called multiple times.
+type SMBAdapter struct {
+	// config holds the server configuration (ports, timeouts, limits)
+	config SMBConfig
+
+	// listener is the TCP listener for accepting SMB connections
+	// Closed during shutdown to stop accepting new connections
+	listener net.Listener
+
+	// handler processes SMB2 protocol operations (CREATE, READ, WRITE, etc.)
+	handler *handlers.Handler
+
+	// registry provides access to all stores and shares
+	registry *registry.Registry
+
+	// activeConns tracks all currently active connections for graceful shutdown
+	// Each connection calls Add(1) when starting and Done() when complete
+	activeConns sync.WaitGroup
+
+	// shutdownOnce ensures shutdown is only initiated once
+	// Protects the shutdown channel close and listener cleanup
+	shutdownOnce sync.Once
+
+	// shutdown signals that graceful shutdown has been initiated
+	// Closed by initiateShutdown(), monitored by Serve()
+	shutdown chan struct{}
+
+	// connCount tracks the current number of active connections
+	// Used for metrics and shutdown logging
+	connCount atomic.Int32
+
+	// connSemaphore limits the number of concurrent connections if MaxConnections > 0
+	// Connections must acquire a slot before being accepted
+	// nil if MaxConnections is 0 (unlimited)
+	connSemaphore chan struct{}
+
+	// shutdownCtx is cancelled during shutdown to abort in-flight requests
+	// This context is passed to all request handlers, allowing them to detect
+	// shutdown and gracefully abort long-running operations
+	shutdownCtx context.Context
+
+	// cancelRequests cancels shutdownCtx during shutdown
+	// This triggers request cancellation across all active connections
+	cancelRequests context.CancelFunc
+
+	// activeConnections tracks all active TCP connections for forced closure
+	// Maps connection remote address (string) to net.Conn for forced shutdown
+	// Uses sync.Map for concurrent-safe access optimized for high churn scenarios
+	activeConnections sync.Map
+
+	// listenerReady is closed when the listener is ready to accept connections
+	// Used by tests to synchronize with server startup
+	listenerReady chan struct{}
+
+	// listenerMu protects access to the listener field
+	listenerMu sync.RWMutex
+}
+
+// New creates a new SMBAdapter with the specified configuration.
+//
+// The adapter is created in a stopped state. Call SetRegistry() to inject
+// the backend registry, then call Serve() to start accepting connections.
+//
+// Configuration:
+//   - Zero values in config are replaced with sensible defaults
+//   - Invalid configurations cause a panic (indicates programmer error)
+//
+// Parameters:
+//   - config: Server configuration (ports, timeouts, limits)
+//
+// Returns a configured but not yet started SMBAdapter.
+//
+// Panics if config validation fails.
+func New(config SMBConfig) *SMBAdapter {
+	// Apply defaults for zero values
+	config.applyDefaults()
+
+	// Validate configuration
+	if err := config.validate(); err != nil {
+		panic(fmt.Sprintf("invalid SMB config: %v", err))
+	}
+
+	// Create connection semaphore if MaxConnections is set
+	var connSemaphore chan struct{}
+	if config.MaxConnections > 0 {
+		connSemaphore = make(chan struct{}, config.MaxConnections)
+		logger.Debug("SMB connection limit", "max_connections", config.MaxConnections)
+	} else {
+		logger.Debug("SMB connection limit", "max_connections", "unlimited")
+	}
+
+	// Create shutdown context for request cancellation
+	shutdownCtx, cancelRequests := context.WithCancel(context.Background())
+
+	return &SMBAdapter{
+		config:         config,
+		handler:        handlers.NewHandler(),
+		shutdown:       make(chan struct{}),
+		connSemaphore:  connSemaphore,
+		shutdownCtx:    shutdownCtx,
+		cancelRequests: cancelRequests,
+		listenerReady:  make(chan struct{}),
+	}
+}
+
+// SetRegistry injects the registry containing all stores and shares.
+//
+// This method is called by DittoServer before Serve() is called. The registry
+// provides access to all configured metadata stores, content stores, and shares.
+//
+// Parameters:
+//   - reg: Registry containing all stores and shares
+//
+// Thread safety:
+// Called exactly once before Serve(), no synchronization needed.
+func (s *SMBAdapter) SetRegistry(reg *registry.Registry) {
+	s.registry = reg
+	s.handler.Registry = reg
+	logger.Debug("SMB adapter configured with registry", "shares", reg.CountShares())
+}
+
+// Serve starts the SMB server and blocks until the context is cancelled
+// or an unrecoverable error occurs.
+//
+// Serve accepts incoming TCP connections on the configured port and spawns
+// a goroutine to handle each connection. The connection handler processes
+// SMB2 protocol requests.
+//
+// Graceful shutdown:
+// When the context is cancelled, Serve initiates graceful shutdown:
+//  1. Stops accepting new connections (listener closed)
+//  2. Cancels all in-flight request contexts (shutdownCtx cancelled)
+//  3. Waits for active connections to complete (up to ShutdownTimeout)
+//  4. Forcibly closes any remaining connections after timeout
+//
+// Parameters:
+//   - ctx: Controls the server lifecycle. Cancellation triggers graceful shutdown.
+//
+// Returns:
+//   - nil on graceful shutdown
+//   - context.Canceled if cancelled via context
+//   - error if listener fails to start or shutdown is not graceful
+//
+// Thread safety:
+// Serve() should only be called once per SMBAdapter instance.
+func (s *SMBAdapter) Serve(ctx context.Context) error {
+	// Create TCP listener
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", s.config.Port))
+	if err != nil {
+		return fmt.Errorf("failed to create SMB listener on port %d: %w", s.config.Port, err)
+	}
+
+	// Store listener with mutex protection and signal readiness
+	s.listenerMu.Lock()
+	s.listener = listener
+	s.listenerMu.Unlock()
+	close(s.listenerReady)
+
+	logger.Info("SMB server listening", "port", s.config.Port)
+	logger.Debug("SMB config", "max_connections", s.config.MaxConnections, "read_timeout", s.config.Timeouts.Read, "write_timeout", s.config.Timeouts.Write, "idle_timeout", s.config.Timeouts.Idle)
+
+	// Monitor context cancellation in separate goroutine
+	go func() {
+		<-ctx.Done()
+		logger.Info("SMB shutdown signal received", "error", ctx.Err())
+		s.initiateShutdown()
+	}()
+
+	// Start metrics logging if enabled
+	if s.config.MetricsLogInterval > 0 {
+		go s.logMetrics(ctx)
+	}
+
+	// Accept connections until shutdown
+	for {
+		// Acquire connection semaphore if connection limiting is enabled
+		if s.connSemaphore != nil {
+			select {
+			case s.connSemaphore <- struct{}{}:
+				// Acquired semaphore slot, proceed with accept
+			case <-s.shutdown:
+				// Shutdown initiated while waiting for semaphore
+				return s.gracefulShutdown()
+			}
+		}
+
+		// Accept next connection (blocks until connection arrives or error)
+		tcpConn, err := s.listener.Accept()
+		if err != nil {
+			// Release semaphore on accept error
+			if s.connSemaphore != nil {
+				<-s.connSemaphore
+			}
+
+			// Check if error is due to shutdown (expected) or network error (unexpected)
+			select {
+			case <-s.shutdown:
+				// Expected error during shutdown (listener was closed)
+				return s.gracefulShutdown()
+			default:
+				// Unexpected error - log but continue
+				logger.Debug("Error accepting SMB connection", "error", err)
+				continue
+			}
+		}
+
+		// Enable TCP_NODELAY to disable Nagle's algorithm
+		// This ensures SMB responses are sent immediately without waiting for more data
+		if tcp, ok := tcpConn.(*net.TCPConn); ok {
+			if err := tcp.SetNoDelay(true); err != nil {
+				logger.Debug("Failed to set TCP_NODELAY", "error", err)
+			}
+		}
+
+		// Track connection for graceful shutdown
+		s.activeConns.Add(1)
+		s.connCount.Add(1)
+
+		// Register connection for forced closure capability
+		connAddr := tcpConn.RemoteAddr().String()
+		s.activeConnections.Store(connAddr, tcpConn)
+
+		// Log new connection
+		currentConns := s.connCount.Load()
+		logger.Debug("SMB connection accepted", "address", tcpConn.RemoteAddr(), "active", currentConns)
+
+		// Handle connection in separate goroutine
+		conn := s.newConn(tcpConn)
+		go func(addr string, tcp net.Conn) {
+			defer func() {
+				// Unregister connection from tracking map
+				s.activeConnections.Delete(addr)
+
+				// Cleanup on connection close
+				s.activeConns.Done()
+				s.connCount.Add(-1)
+				if s.connSemaphore != nil {
+					<-s.connSemaphore
+				}
+
+				logger.Debug("SMB connection closed", "address", tcp.RemoteAddr(), "active", s.connCount.Load())
+			}()
+
+			// Handle connection requests
+			conn.Serve(s.shutdownCtx)
+		}(connAddr, tcpConn)
+	}
+}
+
+// initiateShutdown signals the server to begin graceful shutdown.
+//
+// Thread safety:
+// Safe to call multiple times and from multiple goroutines.
+func (s *SMBAdapter) initiateShutdown() {
+	s.shutdownOnce.Do(func() {
+		logger.Debug("SMB shutdown initiated")
+
+		// Close shutdown channel (signals accept loop)
+		close(s.shutdown)
+
+		// Close listener (stops accepting new connections)
+		s.listenerMu.Lock()
+		if s.listener != nil {
+			if err := s.listener.Close(); err != nil {
+				logger.Debug("Error closing SMB listener", "error", err)
+			}
+		}
+		s.listenerMu.Unlock()
+
+		// Cancel all in-flight request contexts
+		s.cancelRequests()
+		logger.Debug("SMB request cancellation signal sent to all in-flight operations")
+	})
+}
+
+// gracefulShutdown waits for active connections to complete or timeout.
+func (s *SMBAdapter) gracefulShutdown() error {
+	activeCount := s.connCount.Load()
+	logger.Info("SMB graceful shutdown: waiting for active connections", "active", activeCount, "timeout", s.config.Timeouts.Shutdown)
+
+	// Create channel that closes when all connections are done
+	done := make(chan struct{})
+	go func() {
+		s.activeConns.Wait()
+		close(done)
+	}()
+
+	// Wait for completion or timeout
+	select {
+	case <-done:
+		logger.Info("SMB graceful shutdown complete: all connections closed")
+		return nil
+
+	case <-time.After(s.config.Timeouts.Shutdown):
+		remaining := s.connCount.Load()
+		logger.Warn("SMB shutdown timeout exceeded - forcing closure", "active", remaining, "timeout", s.config.Timeouts.Shutdown)
+
+		// Force-close all remaining connections
+		s.forceCloseConnections()
+
+		return fmt.Errorf("SMB shutdown timeout: %d connections force-closed", remaining)
+	}
+}
+
+// forceCloseConnections closes all active TCP connections to accelerate shutdown.
+func (s *SMBAdapter) forceCloseConnections() {
+	logger.Info("Force-closing active SMB connections")
+
+	closedCount := 0
+	s.activeConnections.Range(func(key, value any) bool {
+		addr := key.(string)
+		conn := value.(net.Conn)
+
+		if err := conn.Close(); err != nil {
+			logger.Debug("Error force-closing connection", "address", addr, "error", err)
+		} else {
+			closedCount++
+			logger.Debug("Force-closed connection", "address", addr)
+		}
+
+		return true
+	})
+
+	if closedCount == 0 {
+		logger.Debug("No connections to force-close")
+	} else {
+		logger.Info("Force-closed connections", "count", closedCount)
+	}
+}
+
+// Stop initiates graceful shutdown of the SMB server.
+//
+// Stop is safe to call multiple times and safe to call concurrently with Serve().
+func (s *SMBAdapter) Stop(ctx context.Context) error {
+	// Always initiate shutdown first
+	s.initiateShutdown()
+
+	// If no context provided, use gracefulShutdown with configured timeout
+	if ctx == nil {
+		return s.gracefulShutdown()
+	}
+
+	// Wait for graceful shutdown with context timeout
+	activeCount := s.connCount.Load()
+	logger.Info("SMB graceful shutdown: waiting for active connections (context timeout)", "active", activeCount)
+
+	done := make(chan struct{})
+	go func() {
+		s.activeConns.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		logger.Info("SMB graceful shutdown complete: all connections closed")
+		return nil
+
+	case <-ctx.Done():
+		remaining := s.connCount.Load()
+		logger.Warn("SMB shutdown context cancelled", "active", remaining, "error", ctx.Err())
+		return ctx.Err()
+	}
+}
+
+// logMetrics periodically logs server metrics for monitoring.
+func (s *SMBAdapter) logMetrics(ctx context.Context) {
+	ticker := time.NewTicker(s.config.MetricsLogInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			activeConns := s.connCount.Load()
+			logger.Info("SMB metrics", "active_connections", activeConns)
+		}
+	}
+}
+
+// GetActiveConnections returns the current number of active connections.
+func (s *SMBAdapter) GetActiveConnections() int32 {
+	return s.connCount.Load()
+}
+
+// GetListenerAddr returns the address the server is listening on.
+func (s *SMBAdapter) GetListenerAddr() string {
+	<-s.listenerReady
+
+	s.listenerMu.RLock()
+	defer s.listenerMu.RUnlock()
+
+	if s.listener == nil {
+		return ""
+	}
+	return s.listener.Addr().String()
+}
+
+// newConn creates a new connection wrapper for a TCP connection.
+func (s *SMBAdapter) newConn(tcpConn net.Conn) *SMBConnection {
+	return NewSMBConnection(s, tcpConn)
+}
+
+// Port returns the TCP port the SMB server is listening on.
+func (s *SMBAdapter) Port() int {
+	return s.config.Port
+}
+
+// Protocol returns "SMB" as the protocol identifier.
+func (s *SMBAdapter) Protocol() string {
+	return "SMB"
+}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
+	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 	"github.com/spf13/viper"
@@ -365,6 +366,10 @@ type AdaptersConfig struct {
 	// NFS contains NFS protocol configuration.
 	// Uses the nfs.NFSConfig type directly to avoid duplication.
 	NFS nfs.NFSConfig `mapstructure:"nfs"`
+
+	// SMB contains SMB protocol configuration.
+	// Uses the smb.SMBConfig type directly to avoid duplication.
+	SMB smb.SMBConfig `mapstructure:"smb"`
 }
 
 // GCConfig contains garbage collection configuration.
