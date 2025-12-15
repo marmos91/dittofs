@@ -337,19 +337,14 @@ func TestApplyCreateDefaults(t *testing.T) {
 	ctx := &AuthContext{Identity: &Identity{UID: &uid, GID: &gid}}
 
 	t.Run("regular file", func(t *testing.T) {
-		attr := &FileAttr{Type: FileTypeRegular, Mode: 0, UID: 0, GID: 0}
+		// UID/GID must be pre-set by caller (e.g., XDR layer)
+		attr := &FileAttr{Type: FileTypeRegular, Mode: 0, UID: 1000, GID: 1000}
 		before := time.Now()
 		ApplyCreateDefaults(attr, ctx, "")
 		after := time.Now()
 
 		if attr.Mode != 0644 {
 			t.Errorf("Mode = %o, want %o", attr.Mode, 0644)
-		}
-		if attr.UID != 1000 {
-			t.Errorf("UID = %d, want %d", attr.UID, 1000)
-		}
-		if attr.GID != 1000 {
-			t.Errorf("GID = %d, want %d", attr.GID, 1000)
 		}
 		if attr.Size != 0 {
 			t.Errorf("Size = %d, want %d", attr.Size, 0)
@@ -366,7 +361,7 @@ func TestApplyCreateDefaults(t *testing.T) {
 	})
 
 	t.Run("directory", func(t *testing.T) {
-		attr := &FileAttr{Type: FileTypeDirectory, Mode: 0, UID: 0, GID: 0}
+		attr := &FileAttr{Type: FileTypeDirectory, Mode: 0, UID: 1000, GID: 1000}
 		ApplyCreateDefaults(attr, ctx, "")
 
 		if attr.Mode != 0755 {
@@ -378,7 +373,7 @@ func TestApplyCreateDefaults(t *testing.T) {
 	})
 
 	t.Run("symlink", func(t *testing.T) {
-		attr := &FileAttr{Type: FileTypeSymlink, Mode: 0, UID: 0, GID: 0}
+		attr := &FileAttr{Type: FileTypeSymlink, Mode: 0, UID: 1000, GID: 1000}
 		target := "/path/to/target"
 		ApplyCreateDefaults(attr, ctx, target)
 
@@ -391,11 +386,26 @@ func TestApplyCreateDefaults(t *testing.T) {
 	})
 
 	t.Run("explicit mode preserved", func(t *testing.T) {
-		attr := &FileAttr{Type: FileTypeRegular, Mode: 0600, UID: 0, GID: 0}
+		attr := &FileAttr{Type: FileTypeRegular, Mode: 0600, UID: 1000, GID: 1000}
 		ApplyCreateDefaults(attr, ctx, "")
 
 		if attr.Mode != 0600 {
 			t.Errorf("Mode = %o, want %o", attr.Mode, 0600)
+		}
+	})
+
+	t.Run("UID/GID not modified", func(t *testing.T) {
+		// Verify that ApplyCreateDefaults does NOT modify UID/GID
+		// This is important because UID=0 and GID=0 are valid values (root)
+		attr := &FileAttr{Type: FileTypeRegular, Mode: 0, UID: 0, GID: 0}
+		ApplyCreateDefaults(attr, ctx, "")
+
+		// UID/GID should remain 0 (not changed to context values)
+		if attr.UID != 0 {
+			t.Errorf("UID = %d, want 0 (should not be modified)", attr.UID)
+		}
+		if attr.GID != 0 {
+			t.Errorf("GID = %d, want 0 (should not be modified)", attr.GID)
 		}
 	})
 }

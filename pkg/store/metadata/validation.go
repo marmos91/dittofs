@@ -106,23 +106,31 @@ func ApplyOwnerDefaults(attr *FileAttr, ctx *AuthContext) {
 	}
 }
 
-// ApplyCreateDefaults applies all default values to FileAttr for create operations.
-// This is a convenience function that combines mode, owner, and timestamp defaults.
+// ApplyCreateDefaults applies default values to FileAttr for create operations.
+//
+// IMPORTANT: This function does NOT set UID/GID defaults. Callers are responsible
+// for setting UID/GID before calling this function. This is because UID=0 and GID=0
+// are valid values (root), so we cannot use 0 as a sentinel for "not set".
+// The XDR layer (ConvertSetAttrsToMetadata) handles UID/GID defaulting correctly
+// using pointer semantics.
 //
 // Modifies attr in place:
 //   - Sets Mode to default if 0, and masks to valid bits
-//   - Sets UID from ctx.Identity if 0
-//   - Sets GID from ctx.Identity if 0
 //   - Sets Atime, Mtime, Ctime to current time
 //   - Sets Size to 0 (or len(linkTarget) for symlinks)
+//
+// Does NOT modify:
+//   - UID (caller must set)
+//   - GID (caller must set)
 func ApplyCreateDefaults(attr *FileAttr, ctx *AuthContext, linkTarget string) {
 	now := time.Now()
 
 	// Default mode based on type and mask to valid bits
 	attr.Mode = ApplyModeDefault(attr.Mode, attr.Type)
 
-	// Default UID/GID from auth context
-	ApplyOwnerDefaults(attr, ctx)
+	// NOTE: UID/GID defaults are NOT applied here.
+	// The XDR layer handles this correctly using pointer semantics.
+	// See ConvertSetAttrsToMetadata in internal/protocol/nfs/xdr/attributes.go
 
 	// Set timestamps
 	attr.Atime = now
