@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -246,7 +247,7 @@ func (h *Handler) FsStat(
 	// Convert ValidFor duration to seconds for Invarsec
 	invarsec := uint32(stats.ValidFor.Seconds())
 
-	logger.InfoCtx(ctx.Context, "FSSTAT successful", "client", ctx.ClientAddr, "total", stats.TotalBytes, "free", stats.UsedBytes, "avail", stats.AvailableBytes, "tfiles", stats.TotalFiles, "ffiles", stats.UsedFiles, "afiles", stats.AvailableFiles)
+	logger.InfoCtx(ctx.Context, "FSSTAT successful", "client", ctx.ClientAddr, "total", bytesize.ByteSize(stats.TotalBytes), "used", bytesize.ByteSize(stats.UsedBytes), "avail", bytesize.ByteSize(stats.AvailableBytes), "tfiles", stats.TotalFiles, "ffiles", stats.UsedFiles, "afiles", stats.AvailableFiles)
 
 	// Build response with data from store
 	// Note: NFS uses "free bytes" while the interface tracks "used bytes"

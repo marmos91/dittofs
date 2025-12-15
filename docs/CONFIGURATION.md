@@ -263,13 +263,13 @@ cache:
     fast-cache:
       type: memory
       memory:
-        max_size: 1073741824  # 1GB in bytes
+        max_size: "1Gi"  # Human-readable: 1 gibibyte
 
       # Read prefetch configuration
       prefetch:
         enabled: true           # Enable read prefetch (default: true)
-        max_file_size: 104857600  # 100MB - skip prefetch for larger files
-        chunk_size: 524288      # 512KB - prefetch chunk size
+        max_file_size: "100Mi"  # Skip prefetch for files larger than 100 mebibytes
+        chunk_size: "512Ki"     # Prefetch in 512 kibibyte chunks
 
       # Background flusher configuration
       flusher:
@@ -284,15 +284,31 @@ cache:
 >
 > See [CACHE.md](CACHE.md) for detailed cache architecture documentation.
 
+**Human-Readable Size Formats:**
+
+Size fields support Kubernetes-style resource quantities for better readability:
+
+| Format | Meaning | Example |
+|--------|---------|---------|
+| Plain number | Bytes | `1073741824` |
+| `Ki`, `KiB` | Kibibytes (×1024) | `512Ki` = 524,288 bytes |
+| `Mi`, `MiB` | Mebibytes (×1024²) | `100Mi` = 104,857,600 bytes |
+| `Gi`, `GiB` | Gibibytes (×1024³) | `1Gi` = 1,073,741,824 bytes |
+| `Ti`, `TiB` | Tebibytes (×1024⁴) | `1Ti` = 1,099,511,627,776 bytes |
+| `K`, `KB` | Kilobytes (×1000) | `100K` = 100,000 bytes |
+| `M`, `MB` | Megabytes (×1000²) | `100M` = 100,000,000 bytes |
+| `G`, `GB` | Gigabytes (×1000³) | `1G` = 1,000,000,000 bytes |
+| `T`, `TB` | Terabytes (×1000⁴) | `1T` = 1,000,000,000,000 bytes |
+
 **Cache Options:**
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `type` | - | Cache type: `memory` or `filesystem` |
-| `memory.max_size` | `0` | Maximum cache size in bytes (0 = unlimited) |
+| `memory.max_size` | `0` | Maximum cache size (e.g., `"1Gi"`, `"500Mi"`) |
 | `prefetch.enabled` | `true` | Enable/disable read prefetch |
-| `prefetch.max_file_size` | `100MB` | Skip prefetch for files larger than this |
-| `prefetch.chunk_size` | `512KB` | Size of each prefetch chunk |
+| `prefetch.max_file_size` | `100Mi` | Skip prefetch for files larger than this |
+| `prefetch.chunk_size` | `512Ki` | Size of each prefetch chunk |
 | `flusher.sweep_interval` | `10s` | How often to check for idle files |
 | `flusher.flush_timeout` | `30s` | Time since last write before finalizing |
 

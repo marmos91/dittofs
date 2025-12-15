@@ -10,6 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
@@ -241,7 +242,7 @@ func (h *Handler) Read(
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "READ", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.InfoCtx(ctx.Context, "READ", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "count", bytesize.ByteSize(req.Count), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Validate request parameters
@@ -309,7 +310,7 @@ func (h *Handler) Read(
 
 	// If file has no content, return empty data with EOF
 	if file.ContentID == "" || file.Size == 0 {
-		logger.DebugCtx(ctx.Context, "READ: empty file", "handle", fmt.Sprintf("0x%x", req.Handle), "size", file.Size, "client", clientIP)
+		logger.DebugCtx(ctx.Context, "READ: empty file", "handle", fmt.Sprintf("0x%x", req.Handle), "size", bytesize.ByteSize(file.Size), "client", clientIP)
 
 		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
@@ -324,7 +325,7 @@ func (h *Handler) Read(
 
 	// If offset is at or beyond EOF, return empty data with EOF
 	if req.Offset >= file.Size {
-		logger.DebugCtx(ctx.Context, "READ: offset beyond EOF", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "size", file.Size, "client", clientIP)
+		logger.DebugCtx(ctx.Context, "READ: offset beyond EOF", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "size", bytesize.ByteSize(file.Size), "client", clientIP)
 
 		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
@@ -419,9 +420,9 @@ func (h *Handler) Read(
 		cacheSource = "cache"
 	}
 
-	logger.InfoCtx(ctx.Context, "READ successful", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "requested", req.Count, "read", n, "eof", eof, "source", cacheSource, "client", clientIP)
+	logger.InfoCtx(ctx.Context, "READ successful", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "read", bytesize.ByteSize(n), "eof", eof, "source", cacheSource, "client", clientIP)
 
-	logger.DebugCtx(ctx.Context, "READ details", "size", file.Size, "type", nfsAttr.Type, "mode", fmt.Sprintf("%o", file.Mode))
+	logger.DebugCtx(ctx.Context, "READ details", "size", bytesize.ByteSize(file.Size), "type", nfsAttr.Type, "mode", fmt.Sprintf("%o", file.Mode))
 
 	return &ReadResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
@@ -481,14 +482,14 @@ func (h *Handler) tryReadFromCache(
 		// Dirty data in cache - must read from cache (content store may not have it yet)
 		cacheSize := c.Size(contentID)
 		if cacheSize > 0 {
-			logger.DebugCtx(ctx.Context, "READ: reading dirty data from cache", "state", state, "offset", offset, "count", count, "cache_size", cacheSize, "content_id", contentID)
+			logger.DebugCtx(ctx.Context, "READ: reading dirty data from cache", "state", state, "offset", bytesize.ByteSize(offset), "count", bytesize.ByteSize(count), "cache_size", bytesize.ByteSize(cacheSize), "content_id", contentID)
 
 			data := make([]byte, count)
 			n, readErr := c.ReadAt(ctx.Context, contentID, data, offset)
 
 			if readErr == nil || readErr == io.EOF {
 				eof := (readErr == io.EOF) || (offset+uint64(n) >= cacheSize)
-				logger.DebugCtx(ctx.Context, "READ: cache hit (dirty)", "bytes_read", n, "eof", eof, "content_id", contentID)
+				logger.DebugCtx(ctx.Context, "READ: cache hit (dirty)", "bytes_read", bytesize.ByteSize(n), "eof", eof, "content_id", contentID)
 
 				if h.Metrics != nil {
 					h.Metrics.RecordCacheHit(ctx.Share, "dirty", uint64(n))
@@ -510,14 +511,14 @@ func (h *Handler) tryReadFromCache(
 		// Clean data in cache - read from cache
 		cacheSize := c.Size(contentID)
 		if cacheSize > 0 {
-			logger.DebugCtx(ctx.Context, "READ: reading from cache", "offset", offset, "count", count, "cache_size", cacheSize, "content_id", contentID)
+			logger.DebugCtx(ctx.Context, "READ: reading from cache", "offset", bytesize.ByteSize(offset), "count", bytesize.ByteSize(count), "cache_size", bytesize.ByteSize(cacheSize), "content_id", contentID)
 
 			data := make([]byte, count)
 			n, readErr := c.ReadAt(ctx.Context, contentID, data, offset)
 
 			if readErr == nil || readErr == io.EOF {
 				eof := (readErr == io.EOF) || (offset+uint64(n) >= cacheSize)
-				logger.DebugCtx(ctx.Context, "READ: cache hit", "bytes_read", n, "eof", eof, "content_id", contentID)
+				logger.DebugCtx(ctx.Context, "READ: cache hit", "bytes_read", bytesize.ByteSize(n), "eof", eof, "content_id", contentID)
 
 				if h.Metrics != nil {
 					h.Metrics.RecordCacheHit(ctx.Share, "clean", uint64(n))
@@ -537,7 +538,7 @@ func (h *Handler) tryReadFromCache(
 	case cache.StatePrefetching:
 		// Prefetch in progress - wait for the required offset to be available
 		requiredOffset := offset + uint64(count)
-		logger.DebugCtx(ctx.Context, "READ: prefetch in progress, waiting for offset", "required_offset", requiredOffset, "content_id", contentID)
+		logger.DebugCtx(ctx.Context, "READ: prefetch in progress, waiting for offset", "required_offset", bytesize.ByteSize(requiredOffset), "content_id", contentID)
 
 		if err := c.WaitForPrefetchOffset(ctx.Context, contentID, requiredOffset); err != nil {
 			return cacheReadResult{hit: false}, err
@@ -550,7 +551,7 @@ func (h *Handler) tryReadFromCache(
 
 		if readErr == nil || readErr == io.EOF {
 			eof := (readErr == io.EOF) || (offset+uint64(n) >= cacheSize)
-			logger.DebugCtx(ctx.Context, "READ: cache hit after prefetch", "bytes_read", n, "eof", eof, "content_id", contentID)
+			logger.DebugCtx(ctx.Context, "READ: cache hit after prefetch", "bytes_read", bytesize.ByteSize(n), "eof", eof, "content_id", contentID)
 
 			if h.Metrics != nil {
 				h.Metrics.RecordCacheHit(ctx.Share, "prefetch", uint64(n))
@@ -633,7 +634,7 @@ func (h *Handler) startBackgroundPrefetch(
 
 	// Skip large files to avoid cache thrashing
 	if fileSize > uint64(maxFileSize) {
-		logger.DebugCtx(ctx.Context, "READ: skipping prefetch for large file", "content_id", contentID, "size", fileSize, "max", maxFileSize)
+		logger.DebugCtx(ctx.Context, "READ: skipping prefetch for large file", "content_id", contentID, "size", bytesize.ByteSize(fileSize), "max", bytesize.ByteSize(maxFileSize))
 		return
 	}
 
@@ -649,7 +650,7 @@ func (h *Handler) startBackgroundPrefetch(
 		chunkSize = defaultPrefetchChunkSize
 	}
 
-	logger.DebugCtx(ctx.Context, "READ: starting background prefetch", "content_id", contentID, "size", fileSize, "chunk_size", chunkSize)
+	logger.DebugCtx(ctx.Context, "READ: starting background prefetch", "content_id", contentID, "size", bytesize.ByteSize(fileSize), "chunk_size", bytesize.ByteSize(chunkSize))
 
 	// Spawn background goroutine to fetch the file
 	go h.runPrefetch(ctx.Share, contentStore, contentID, fileSize, chunkSize)
@@ -681,7 +682,7 @@ func (h *Handler) runPrefetch(
 	defer func() {
 		c.CompletePrefetch(contentID, success)
 		if success {
-			logger.Debug("READ: prefetch completed", "content_id", contentID, "size", fileSize)
+			logger.Debug("READ: prefetch completed", "content_id", contentID, "size", bytesize.ByteSize(fileSize))
 		} else {
 			logger.Warn("READ: prefetch failed", "content_id", contentID)
 		}
@@ -849,7 +850,7 @@ func seekToOffset(
 	}
 
 	// Reader doesn't support seeking - read and discard bytes
-	logger.DebugCtx(ctx.Context, "READ: reader not seekable, discarding bytes", "bytes", offset)
+	logger.DebugCtx(ctx.Context, "READ: reader not seekable, discarding bytes", "bytes", bytesize.ByteSize(offset))
 
 	// Use chunked discard with cancellation checks for large offsets
 	const discardChunkSize = 64 * 1024 // 64KB chunks

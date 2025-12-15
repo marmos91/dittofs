@@ -218,8 +218,8 @@ func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 				} else {
 					shareConfig.PrefetchConfig.Enabled = true // default
 				}
-				shareConfig.PrefetchConfig.MaxFileSize = cacheCfg.Prefetch.MaxFileSize
-				shareConfig.PrefetchConfig.ChunkSize = cacheCfg.Prefetch.ChunkSize
+				shareConfig.PrefetchConfig.MaxFileSize = cacheCfg.Prefetch.MaxFileSize.Int64()
+				shareConfig.PrefetchConfig.ChunkSize = cacheCfg.Prefetch.ChunkSize.Int64()
 
 				// Copy flusher config
 				shareConfig.FlusherConfig.SweepInterval = cacheCfg.Flusher.SweepInterval
