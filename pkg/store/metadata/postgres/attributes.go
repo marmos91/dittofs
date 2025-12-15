@@ -128,27 +128,17 @@ func (s *PostgresMetadataStore) CreateSymlink(
 	attr *metadata.FileAttr,
 ) (*metadata.File, error) {
 	// Validate input
-	if name == "" {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "symlink name cannot be empty",
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return nil, err
 	}
 
-	if target == "" {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "symlink target cannot be empty",
-		}
+	if err := metadata.ValidateSymlinkTarget(target); err != nil {
+		return nil, err
 	}
 
 	// Apply defaults
-	mode := attr.Mode
-	if mode == 0 {
-		mode = 0o777 // Symlinks typically have 0777 permissions
-	}
-	uid := attr.UID
-	gid := attr.GID
+	attr.Type = metadata.FileTypeSymlink
+	metadata.ApplyCreateDefaults(attr, ctx, target)
 
 	// Decode parent handle
 	shareName, parentID, err := decodeFileHandle(parentHandle)
@@ -209,7 +199,6 @@ func (s *PostgresMetadataStore) CreateSymlink(
 	// Generate new symlink ID
 	symlinkID := uuid.New()
 	symlinkPath := path.Join(parent.Path, name)
-	now := time.Now()
 
 	// Insert symlink
 	insertQuery := `
@@ -231,17 +220,17 @@ func (s *PostgresMetadataStore) CreateSymlink(
 		shareName,
 		symlinkPath,
 		int16(metadata.FileTypeSymlink),
-		int32(mode&0o7777),
-		int32(uid),
-		int32(gid),
-		int64(len(target)), // size is length of target path
-		now,                // atime
-		now,                // mtime
-		now,                // ctime
-		nil,                // content_id (NULL for symlinks)
-		target,             // link_target
-		nil,                // device_major
-		nil,                // device_minor
+		int32(attr.Mode),
+		int32(attr.UID),
+		int32(attr.GID),
+		int64(attr.Size), // size is length of target path (set by ApplyCreateDefaults)
+		attr.Atime,
+		attr.Mtime,
+		attr.Ctime,
+		nil,    // content_id (NULL for symlinks)
+		target, // link_target
+		nil,    // device_major
+		nil,    // device_minor
 	)
 	if err != nil {
 		return nil, mapPgError(err, "CreateSymlink", symlinkPath)
@@ -276,7 +265,7 @@ func (s *PostgresMetadataStore) CreateSymlink(
 		WHERE id = $2
 	`
 
-	_, err = tx.Exec(ctx.Context, updateParentQuery, now, parentID)
+	_, err = tx.Exec(ctx.Context, updateParentQuery, attr.Mtime, parentID)
 	if err != nil {
 		return nil, mapPgError(err, "CreateSymlink", symlinkPath)
 	}
@@ -296,13 +285,13 @@ func (s *PostgresMetadataStore) CreateSymlink(
 		Path:      symlinkPath,
 		FileAttr: metadata.FileAttr{
 			Type:       metadata.FileTypeSymlink,
-			Mode:       mode & 0o7777,
-			UID:        uid,
-			GID:        gid,
-			Size:       uint64(len(target)),
-			Atime:      now,
-			Mtime:      now,
-			Ctime:      now,
+			Mode:       attr.Mode,
+			UID:        attr.UID,
+			GID:        attr.GID,
+			Size:       attr.Size,
+			Atime:      attr.Atime,
+			Mtime:      attr.Mtime,
+			Ctime:      attr.Ctime,
 			LinkTarget: target,
 		},
 	}
@@ -345,52 +334,25 @@ func (s *PostgresMetadataStore) CreateSpecialFile(
 	}
 
 	// Validate file type
-	switch fileType {
-	case metadata.FileTypeBlockDevice, metadata.FileTypeCharDevice,
-		metadata.FileTypeSocket, metadata.FileTypeFIFO:
-		// Valid special file types
-	default:
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: fmt.Sprintf("invalid special file type: %d", fileType),
-		}
+	if err := metadata.ValidateSpecialFileType(fileType); err != nil {
+		return nil, err
 	}
 
 	// Validate name
-	if name == "" || name == "." || name == ".." {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid name",
-			Path:    name,
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return nil, err
 	}
 
 	// Check if user is root (required for device files)
 	if fileType == metadata.FileTypeBlockDevice || fileType == metadata.FileTypeCharDevice {
-		if ctx.Identity == nil || ctx.Identity.UID == nil || *ctx.Identity.UID != 0 {
-			return nil, &metadata.StoreError{
-				Code:    metadata.ErrAccessDenied,
-				Message: "only root can create device files",
-			}
+		if err := metadata.RequiresRoot(ctx); err != nil {
+			return nil, err
 		}
 	}
 
 	// Apply defaults
-	mode := attr.Mode
-	if mode == 0 {
-		mode = 0644
-	}
-
-	uid := attr.UID
-	gid := attr.GID
-	if ctx.Identity != nil {
-		if ctx.Identity.UID != nil && uid == 0 {
-			uid = *ctx.Identity.UID
-		}
-		if ctx.Identity.GID != nil && gid == 0 {
-			gid = *ctx.Identity.GID
-		}
-	}
+	attr.Type = fileType
+	metadata.ApplyCreateDefaults(attr, ctx, "")
 
 	// Decode parent handle
 	shareName, parentID, err := decodeFileHandle(parentHandle)
@@ -451,7 +413,6 @@ func (s *PostgresMetadataStore) CreateSpecialFile(
 	// Generate new file ID
 	fileID := uuid.New()
 	filePath := path.Join(parent.Path, name)
-	now := time.Now()
 
 	// Insert special file
 	// Note: Special files have no content_id, but may have device_major/device_minor
@@ -483,13 +444,13 @@ func (s *PostgresMetadataStore) CreateSpecialFile(
 		shareName,
 		filePath,
 		int16(fileType),
-		int32(mode&0o7777),
-		int32(uid),
-		int32(gid),
-		int64(0), // size = 0 for special files
-		now,      // atime
-		now,      // mtime
-		now,      // ctime
+		int32(attr.Mode),
+		int32(attr.UID),
+		int32(attr.GID),
+		int64(attr.Size), // size = 0 for special files (set by ApplyCreateDefaults)
+		attr.Atime,
+		attr.Mtime,
+		attr.Ctime,
 		nil,      // content_id (NULL for special files)
 		nil,      // link_target
 		devMajor, // device_major (NULL for non-device files)
@@ -528,7 +489,7 @@ func (s *PostgresMetadataStore) CreateSpecialFile(
 		WHERE id = $2
 	`
 
-	_, err = tx.Exec(ctx.Context, updateParentQuery, now, parentID)
+	_, err = tx.Exec(ctx.Context, updateParentQuery, attr.Mtime, parentID)
 	if err != nil {
 		return nil, mapPgError(err, "CreateSpecialFile", filePath)
 	}
@@ -548,13 +509,13 @@ func (s *PostgresMetadataStore) CreateSpecialFile(
 		Path:      filePath,
 		FileAttr: metadata.FileAttr{
 			Type:  fileType,
-			Mode:  mode & 0o7777,
-			UID:   uid,
-			GID:   gid,
-			Size:  0,
-			Atime: now,
-			Mtime: now,
-			Ctime: now,
+			Mode:  attr.Mode,
+			UID:   attr.UID,
+			GID:   attr.GID,
+			Size:  attr.Size,
+			Atime: attr.Atime,
+			Mtime: attr.Mtime,
+			Ctime: attr.Ctime,
 		},
 	}
 
@@ -569,12 +530,8 @@ func (s *PostgresMetadataStore) CreateHardLink(
 	targetHandle metadata.FileHandle,
 ) error {
 	// Validate name
-	if name == "" || name == "." || name == ".." {
-		return &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid name",
-			Path:    name,
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return err
 	}
 
 	// Decode directory handle

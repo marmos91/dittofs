@@ -442,20 +442,13 @@ func (store *MemoryMetadataStore) Create(
 	}
 
 	// Validate type
-	if attr.Type != metadata.FileTypeRegular && attr.Type != metadata.FileTypeDirectory {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "Create only supports regular files and directories",
-		}
+	if err := metadata.ValidateCreateType(attr.Type); err != nil {
+		return nil, err
 	}
 
 	// Validate name
-	if name == "" || name == "." || name == ".." {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid name",
-			Path:    name,
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return nil, err
 	}
 
 	store.mu.Lock()
@@ -512,37 +505,20 @@ func (store *MemoryMetadataStore) Create(
 	// Build full path and generate deterministic handle
 	fullPath := store.buildFullPath(parentHandle, name)
 	handle := store.generateFileHandle(parentData.ShareName, fullPath)
-	now := time.Now()
 
-	// Set defaults if not provided
-	if attr.Mode == 0 {
-		if attr.Type == metadata.FileTypeDirectory {
-			attr.Mode = 0755
-		} else {
-			attr.Mode = 0644
-		}
-	}
-
-	// Use authenticated user's credentials if not provided
-	if ctx.Identity != nil && ctx.Identity.UID != nil {
-		if attr.UID == 0 {
-			attr.UID = *ctx.Identity.UID
-		}
-		if attr.GID == 0 && ctx.Identity.GID != nil {
-			attr.GID = *ctx.Identity.GID
-		}
-	}
+	// Apply defaults for mode, UID/GID, timestamps, and size
+	metadata.ApplyCreateDefaults(attr, ctx, "")
 
 	// Complete file attributes
 	newAttr := &metadata.FileAttr{
 		Type:       attr.Type,
-		Mode:       attr.Mode & 0o7777,
+		Mode:       attr.Mode,
 		UID:        attr.UID,
 		GID:        attr.GID,
-		Size:       0,
-		Atime:      now,
-		Mtime:      now,
-		Ctime:      now,
+		Size:       attr.Size,
+		Atime:      attr.Atime,
+		Mtime:      attr.Mtime,
+		Ctime:      attr.Ctime,
 		LinkTarget: "",
 	}
 
@@ -589,8 +565,8 @@ func (store *MemoryMetadataStore) Create(
 	store.parents[key] = parentHandle
 
 	// Update parent timestamps
-	parentData.Attr.Mtime = now
-	parentData.Attr.Ctime = now
+	parentData.Attr.Mtime = attr.Mtime
+	parentData.Attr.Ctime = attr.Ctime
 
 	// Decode handle to get ID
 	shareName, id, err := metadata.DecodeFileHandle(handle)
@@ -624,20 +600,13 @@ func (store *MemoryMetadataStore) CreateSymlink(
 	}
 
 	// Validate name
-	if name == "" || name == "." || name == ".." {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid name",
-			Path:    name,
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return nil, err
 	}
 
 	// Validate target
-	if target == "" {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "symlink target cannot be empty",
-		}
+	if err := metadata.ValidateSymlinkTarget(target); err != nil {
+		return nil, err
 	}
 
 	store.mu.Lock()
@@ -694,36 +663,21 @@ func (store *MemoryMetadataStore) CreateSymlink(
 	// Build full path and generate deterministic handle
 	fullPath := store.buildFullPath(parentHandle, name)
 	handle := store.generateFileHandle(parentData.ShareName, fullPath)
-	now := time.Now()
 
-	// Set defaults if not provided
-	mode := attr.Mode
-	if mode == 0 {
-		mode = 0777 // Symlinks typically have 0777
-	}
-
-	// Use authenticated user's credentials if not provided
-	uid := attr.UID
-	gid := attr.GID
-	if ctx.Identity != nil && ctx.Identity.UID != nil {
-		if uid == 0 {
-			uid = *ctx.Identity.UID
-		}
-		if gid == 0 && ctx.Identity.GID != nil {
-			gid = *ctx.Identity.GID
-		}
-	}
+	// Set symlink type and apply defaults
+	attr.Type = metadata.FileTypeSymlink
+	metadata.ApplyCreateDefaults(attr, ctx, target)
 
 	// Create symlink attributes
 	newAttr := &metadata.FileAttr{
 		Type:       metadata.FileTypeSymlink,
-		Mode:       mode & 0o7777,
-		UID:        uid,
-		GID:        gid,
-		Size:       uint64(len(target)), // Size is length of target path
-		Atime:      now,
-		Mtime:      now,
-		Ctime:      now,
+		Mode:       attr.Mode,
+		UID:        attr.UID,
+		GID:        attr.GID,
+		Size:       attr.Size,
+		Atime:      attr.Atime,
+		Mtime:      attr.Mtime,
+		Ctime:      attr.Ctime,
 		LinkTarget: target,
 		ContentID:  "", // Symlinks don't have content
 	}
@@ -749,8 +703,8 @@ func (store *MemoryMetadataStore) CreateSymlink(
 	store.parents[key] = parentHandle
 
 	// Update parent timestamps
-	parentData.Attr.Mtime = now
-	parentData.Attr.Ctime = now
+	parentData.Attr.Mtime = attr.Mtime
+	parentData.Attr.Ctime = attr.Ctime
 
 	// Decode handle to get ID
 	shareName, id, err := metadata.DecodeFileHandle(handle)
@@ -785,38 +739,24 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 	}
 
 	// Validate file type
-	switch fileType {
-	case metadata.FileTypeBlockDevice, metadata.FileTypeCharDevice,
-		metadata.FileTypeSocket, metadata.FileTypeFIFO:
-		// Valid special file types
-	default:
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: fmt.Sprintf("invalid special file type: %d", fileType),
-		}
+	if err := metadata.ValidateSpecialFileType(fileType); err != nil {
+		return nil, err
 	}
 
 	// Validate name
-	if name == "" || name == "." || name == ".." {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid name",
-			Path:    name,
+	if err := metadata.ValidateName(name); err != nil {
+		return nil, err
+	}
+
+	// Check if user is root (required for device files)
+	if fileType == metadata.FileTypeBlockDevice || fileType == metadata.FileTypeCharDevice {
+		if err := metadata.RequiresRoot(ctx); err != nil {
+			return nil, err
 		}
 	}
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
-
-	// Check if user is root (required for device files)
-	if fileType == metadata.FileTypeBlockDevice || fileType == metadata.FileTypeCharDevice {
-		if ctx.Identity == nil || ctx.Identity.UID == nil || *ctx.Identity.UID != 0 {
-			return nil, &metadata.StoreError{
-				Code:    metadata.ErrAccessDenied,
-				Message: "only root can create device files",
-			}
-		}
-	}
 
 	// Verify parent exists and is a directory
 	parentKey := handleToKey(parentHandle)
@@ -869,36 +809,21 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 	// Build full path and generate deterministic handle
 	fullPath := store.buildFullPath(parentHandle, name)
 	handle := store.generateFileHandle(parentData.ShareName, fullPath)
-	now := time.Now()
 
-	// Set defaults if not provided
-	mode := attr.Mode
-	if mode == 0 {
-		mode = 0644
-	}
-
-	// Use authenticated user's credentials if not provided
-	uid := attr.UID
-	gid := attr.GID
-	if ctx.Identity != nil && ctx.Identity.UID != nil {
-		if uid == 0 {
-			uid = *ctx.Identity.UID
-		}
-		if gid == 0 && ctx.Identity.GID != nil {
-			gid = *ctx.Identity.GID
-		}
-	}
+	// Set special file type and apply defaults
+	attr.Type = fileType
+	metadata.ApplyCreateDefaults(attr, ctx, "")
 
 	// Create special file attributes
 	newAttr := &metadata.FileAttr{
 		Type:       fileType,
-		Mode:       mode & 0o7777,
-		UID:        uid,
-		GID:        gid,
+		Mode:       attr.Mode,
+		UID:        attr.UID,
+		GID:        attr.GID,
 		Size:       0, // Special files have no size
-		Atime:      now,
-		Mtime:      now,
-		Ctime:      now,
+		Atime:      attr.Atime,
+		Mtime:      attr.Mtime,
+		Ctime:      attr.Ctime,
 		LinkTarget: "",
 		ContentID:  "", // Special files don't have content
 	}
@@ -932,8 +857,8 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 	store.parents[key] = parentHandle
 
 	// Update parent timestamps
-	parentData.Attr.Mtime = now
-	parentData.Attr.Ctime = now
+	parentData.Attr.Mtime = attr.Mtime
+	parentData.Attr.Ctime = attr.Ctime
 
 	// Decode handle to get ID
 	shareName, id, err := metadata.DecodeFileHandle(handle)
@@ -966,12 +891,8 @@ func (store *MemoryMetadataStore) CreateHardLink(
 	}
 
 	// Validate name
-	if name == "" || name == "." || name == ".." {
-		return &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid name",
-			Path:    name,
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return err
 	}
 
 	store.mu.Lock()

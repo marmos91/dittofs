@@ -30,19 +30,11 @@ func (store *MemoryMetadataStore) Move(
 	}
 
 	// Validate names
-	if fromName == "" || fromName == "." || fromName == ".." {
-		return &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid source name",
-			Path:    fromName,
-		}
+	if err := metadata.ValidateName(fromName); err != nil {
+		return err
 	}
-	if toName == "" || toName == "." || toName == ".." {
-		return &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid destination name",
-			Path:    toName,
-		}
+	if err := metadata.ValidateName(toName); err != nil {
+		return err
 	}
 
 	store.mu.Lock()

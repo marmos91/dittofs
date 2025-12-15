@@ -3,7 +3,6 @@ package badger
 import (
 	"fmt"
 	"strconv"
-	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
 	"github.com/google/uuid"
@@ -355,20 +354,13 @@ func (s *BadgerMetadataStore) CreateSymlink(
 	}
 
 	// Validate name
-	if name == "" || name == "." || name == ".." {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid name",
-			Path:    name,
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return nil, err
 	}
 
 	// Validate target
-	if target == "" {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "symlink target cannot be empty",
-		}
+	if err := metadata.ValidateSymlinkTarget(target); err != nil {
+		return nil, err
 	}
 
 	// Check write permission BEFORE acquiring lock to avoid unlock/relock race
@@ -441,24 +433,9 @@ func (s *BadgerMetadataStore) CreateSymlink(
 		fullPath := buildFullPath(parentFile.Path, name)
 		newID := uuid.New()
 
-		now := time.Now()
-
-		// Set defaults
-		mode := attr.Mode
-		if mode == 0 {
-			mode = 0777 // Symlinks typically have 0777
-		}
-
-		uid := attr.UID
-		gid := attr.GID
-		if ctx.Identity != nil && ctx.Identity.UID != nil {
-			if uid == 0 {
-				uid = *ctx.Identity.UID
-			}
-			if gid == 0 && ctx.Identity.GID != nil {
-				gid = *ctx.Identity.GID
-			}
-		}
+		// Set symlink type and apply defaults
+		attr.Type = metadata.FileTypeSymlink
+		metadata.ApplyCreateDefaults(attr, ctx, target)
 
 		// Create complete File struct for symlink
 		newFile := &metadata.File{
@@ -467,13 +444,13 @@ func (s *BadgerMetadataStore) CreateSymlink(
 			Path:      fullPath,
 			FileAttr: metadata.FileAttr{
 				Type:       metadata.FileTypeSymlink,
-				Mode:       mode & 0o7777,
-				UID:        uid,
-				GID:        gid,
-				Size:       uint64(len(target)),
-				Atime:      now,
-				Mtime:      now,
-				Ctime:      now,
+				Mode:       attr.Mode,
+				UID:        attr.UID,
+				GID:        attr.GID,
+				Size:       attr.Size,
+				Atime:      attr.Atime,
+				Mtime:      attr.Mtime,
+				Ctime:      attr.Ctime,
 				LinkTarget: target,
 				ContentID:  "",
 			},
@@ -504,8 +481,8 @@ func (s *BadgerMetadataStore) CreateSymlink(
 		}
 
 		// Update parent timestamps
-		parentFile.Mtime = now
-		parentFile.Ctime = now
+		parentFile.Mtime = attr.Mtime
+		parentFile.Ctime = attr.Ctime
 		parentBytes, err := encodeFile(parentFile)
 		if err != nil {
 			return err
@@ -556,33 +533,19 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 	}
 
 	// Validate file type
-	switch fileType {
-	case metadata.FileTypeBlockDevice, metadata.FileTypeCharDevice,
-		metadata.FileTypeSocket, metadata.FileTypeFIFO:
-		// Valid special file types
-	default:
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: fmt.Sprintf("invalid special file type: %d", fileType),
-		}
+	if err := metadata.ValidateSpecialFileType(fileType); err != nil {
+		return nil, err
 	}
 
 	// Validate name
-	if name == "" || name == "." || name == ".." {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid name",
-			Path:    name,
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return nil, err
 	}
 
 	// Check if user is root (required for device files)
 	if fileType == metadata.FileTypeBlockDevice || fileType == metadata.FileTypeCharDevice {
-		if ctx.Identity == nil || ctx.Identity.UID == nil || *ctx.Identity.UID != 0 {
-			return nil, &metadata.StoreError{
-				Code:    metadata.ErrAccessDenied,
-				Message: "only root can create device files",
-			}
+		if err := metadata.RequiresRoot(ctx); err != nil {
+			return nil, err
 		}
 	}
 
@@ -656,24 +619,9 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 		fullPath := buildFullPath(parentFile.Path, name)
 		newID := uuid.New()
 
-		now := time.Now()
-
-		// Set defaults
-		mode := attr.Mode
-		if mode == 0 {
-			mode = 0644
-		}
-
-		uid := attr.UID
-		gid := attr.GID
-		if ctx.Identity != nil && ctx.Identity.UID != nil {
-			if uid == 0 {
-				uid = *ctx.Identity.UID
-			}
-			if gid == 0 && ctx.Identity.GID != nil {
-				gid = *ctx.Identity.GID
-			}
-		}
+		// Set special file type and apply defaults
+		attr.Type = fileType
+		metadata.ApplyCreateDefaults(attr, ctx, "")
 
 		// Create complete File struct for special file
 		newFile = &metadata.File{
@@ -682,13 +630,13 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 			Path:      fullPath,
 			FileAttr: metadata.FileAttr{
 				Type:       fileType,
-				Mode:       mode & 0o7777,
-				UID:        uid,
-				GID:        gid,
-				Size:       0,
-				Atime:      now,
-				Mtime:      now,
-				Ctime:      now,
+				Mode:       attr.Mode,
+				UID:        attr.UID,
+				GID:        attr.GID,
+				Size:       0, // Special files have no size
+				Atime:      attr.Atime,
+				Mtime:      attr.Mtime,
+				Ctime:      attr.Ctime,
 				LinkTarget: "",
 				ContentID:  "",
 			},
@@ -734,8 +682,8 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 		}
 
 		// Update parent timestamps
-		parentFile.Mtime = now
-		parentFile.Ctime = now
+		parentFile.Mtime = attr.Mtime
+		parentFile.Ctime = attr.Ctime
 		parentBytes, err := encodeFile(parentFile)
 		if err != nil {
 			return err
