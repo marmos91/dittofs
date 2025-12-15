@@ -47,12 +47,8 @@ func (s *BadgerMetadataStore) RemoveFile(
 	}
 
 	// Validate name
-	if name == "" || name == "." || name == ".." {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid name",
-			Path:    name,
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return nil, err
 	}
 
 	// Check write permission BEFORE acquiring lock to avoid unlock/relock race
@@ -297,12 +293,8 @@ func (s *BadgerMetadataStore) RemoveDirectory(
 	}
 
 	// Validate name
-	if name == "" || name == "." || name == ".." {
-		return &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid name",
-			Path:    name,
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return err
 	}
 
 	// Check write permission BEFORE acquiring lock to avoid unlock/relock race

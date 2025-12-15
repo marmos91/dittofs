@@ -19,11 +19,8 @@ func (s *PostgresMetadataStore) Create(
 	attr *metadata.FileAttr,
 ) (*metadata.File, error) {
 	// Validate type
-	if attr.Type != metadata.FileTypeRegular && attr.Type != metadata.FileTypeDirectory {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "Create only supports regular files and directories",
-		}
+	if err := metadata.ValidateCreateType(attr.Type); err != nil {
+		return nil, err
 	}
 
 	// Dispatch based on type
@@ -41,21 +38,13 @@ func (s *PostgresMetadataStore) createFile(
 	attr *metadata.FileAttr,
 ) (*metadata.File, error) {
 	// Validate input
-	if name == "" {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "file name cannot be empty",
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return nil, err
 	}
 
-	// Apply defaults
-	mode := attr.Mode
-	if mode == 0 {
-		mode = 0644
-	}
-
-	uid := attr.UID
-	gid := attr.GID
+	// Apply defaults for mode, UID/GID, timestamps, and size
+	attr.Type = metadata.FileTypeRegular
+	metadata.ApplyCreateDefaults(attr, ctx, "")
 
 	// Decode parent handle
 	shareName, parentID, err := decodeFileHandle(parentHandle)
@@ -117,7 +106,6 @@ func (s *PostgresMetadataStore) createFile(
 	fileID := uuid.New()
 	filePath := path.Join(parent.Path, name)
 	contentID := internal.BuildContentID(shareName, filePath)
-	now := time.Now()
 
 	// Insert file
 	insertQuery := `
@@ -139,13 +127,13 @@ func (s *PostgresMetadataStore) createFile(
 		shareName,
 		filePath,
 		int16(metadata.FileTypeRegular),
-		int32(mode&0o7777),
-		int32(uid),
-		int32(gid),
-		int64(0), // size = 0 for new file
-		now,      // atime
-		now,      // mtime
-		now,      // ctime
+		int32(attr.Mode),
+		int32(attr.UID),
+		int32(attr.GID),
+		int64(attr.Size),
+		attr.Atime,
+		attr.Mtime,
+		attr.Ctime,
 		contentID,
 		nil, // link_target (NULL for regular files)
 		nil, // device_major
@@ -184,7 +172,7 @@ func (s *PostgresMetadataStore) createFile(
 		WHERE id = $2
 	`
 
-	_, err = tx.Exec(ctx.Context, updateParentQuery, now, parentID)
+	_, err = tx.Exec(ctx.Context, updateParentQuery, attr.Mtime, parentID)
 	if err != nil {
 		return nil, mapPgError(err, "createFile", filePath)
 	}
@@ -204,13 +192,13 @@ func (s *PostgresMetadataStore) createFile(
 		Path:      filePath,
 		FileAttr: metadata.FileAttr{
 			Type:      metadata.FileTypeRegular,
-			Mode:      mode & 0o7777,
-			UID:       uid,
-			GID:       gid,
-			Size:      0,
-			Atime:     now,
-			Mtime:     now,
-			Ctime:     now,
+			Mode:      attr.Mode,
+			UID:       attr.UID,
+			GID:       attr.GID,
+			Size:      attr.Size,
+			Atime:     attr.Atime,
+			Mtime:     attr.Mtime,
+			Ctime:     attr.Ctime,
 			ContentID: metadata.ContentID(contentID),
 		},
 	}
@@ -226,21 +214,13 @@ func (s *PostgresMetadataStore) createDirectory(
 	attr *metadata.FileAttr,
 ) (*metadata.File, error) {
 	// Validate input
-	if name == "" {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "directory name cannot be empty",
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return nil, err
 	}
 
-	// Apply defaults
-	mode := attr.Mode
-	if mode == 0 {
-		mode = 0755
-	}
-
-	uid := attr.UID
-	gid := attr.GID
+	// Apply defaults for mode, UID/GID, timestamps, and size
+	attr.Type = metadata.FileTypeDirectory
+	metadata.ApplyCreateDefaults(attr, ctx, "")
 
 	// Decode parent handle
 	shareName, parentID, err := decodeFileHandle(parentHandle)
@@ -301,7 +281,6 @@ func (s *PostgresMetadataStore) createDirectory(
 	// Generate new directory ID
 	dirID := uuid.New()
 	dirPath := path.Join(parent.Path, name)
-	now := time.Now()
 
 	// Insert directory
 	insertQuery := `
@@ -323,17 +302,17 @@ func (s *PostgresMetadataStore) createDirectory(
 		shareName,
 		dirPath,
 		int16(metadata.FileTypeDirectory),
-		int32(mode&0o7777),
-		int32(uid),
-		int32(gid),
-		int64(0), // size = 0 for directory
-		now,      // atime
-		now,      // mtime
-		now,      // ctime
-		nil,      // content_id (NULL for directories)
-		nil,      // link_target
-		nil,      // device_major
-		nil,      // device_minor
+		int32(attr.Mode),
+		int32(attr.UID),
+		int32(attr.GID),
+		int64(attr.Size),
+		attr.Atime,
+		attr.Mtime,
+		attr.Ctime,
+		nil, // content_id (NULL for directories)
+		nil, // link_target
+		nil, // device_major
+		nil, // device_minor
 	)
 	if err != nil {
 		return nil, mapPgError(err, "createDirectory", dirPath)
@@ -368,7 +347,7 @@ func (s *PostgresMetadataStore) createDirectory(
 		WHERE id = $2
 	`
 
-	_, err = tx.Exec(ctx.Context, updateParentQuery, now, parentID)
+	_, err = tx.Exec(ctx.Context, updateParentQuery, attr.Mtime, parentID)
 	if err != nil {
 		return nil, mapPgError(err, "createDirectory", dirPath)
 	}
@@ -388,13 +367,13 @@ func (s *PostgresMetadataStore) createDirectory(
 		Path:      dirPath,
 		FileAttr: metadata.FileAttr{
 			Type:  metadata.FileTypeDirectory,
-			Mode:  mode & 0o7777,
-			UID:   uid,
-			GID:   gid,
-			Size:  0,
-			Atime: now,
-			Mtime: now,
-			Ctime: now,
+			Mode:  attr.Mode,
+			UID:   attr.UID,
+			GID:   attr.GID,
+			Size:  attr.Size,
+			Atime: attr.Atime,
+			Mtime: attr.Mtime,
+			Ctime: attr.Ctime,
 		},
 	}
 
@@ -410,11 +389,8 @@ func (s *PostgresMetadataStore) CreateFile(
 	mode uint32,
 ) (metadata.FileHandle, *metadata.FileAttr, error) {
 	// Validate input
-	if name == "" {
-		return nil, nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "file name cannot be empty",
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return nil, nil, err
 	}
 
 	// Decode parent handle
@@ -605,11 +581,8 @@ func (s *PostgresMetadataStore) CreateDirectory(
 	mode uint32,
 ) (metadata.FileHandle, *metadata.FileAttr, error) {
 	// Validate input
-	if name == "" {
-		return nil, nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "directory name cannot be empty",
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return nil, nil, err
 	}
 
 	// Decode parent handle

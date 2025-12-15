@@ -25,11 +25,8 @@ func (s *PostgresMetadataStore) RemoveFile(
 	parentHandle metadata.FileHandle,
 	name string,
 ) (*metadata.File, error) {
-	if name == "" {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "file name cannot be empty",
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return nil, err
 	}
 
 	// Decode parent handle
@@ -170,11 +167,8 @@ func (s *PostgresMetadataStore) RemoveDirectory(
 	parentHandle metadata.FileHandle,
 	name string,
 ) error {
-	if name == "" {
-		return &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "directory name cannot be empty",
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return err
 	}
 
 	// Decode parent handle
