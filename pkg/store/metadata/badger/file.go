@@ -533,20 +533,13 @@ func (s *BadgerMetadataStore) Create(
 	}
 
 	// Validate type
-	if attr.Type != metadata.FileTypeRegular && attr.Type != metadata.FileTypeDirectory {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "Create only supports regular files and directories",
-		}
+	if err := metadata.ValidateCreateType(attr.Type); err != nil {
+		return nil, err
 	}
 
 	// Validate name
-	if name == "" || name == "." || name == ".." {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid name",
-			Path:    name,
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return nil, err
 	}
 
 	// Decode parent handle
@@ -623,29 +616,8 @@ func (s *BadgerMetadataStore) Create(
 		// Build full path
 		fullPath := buildFullPath(parentFile.Path, name)
 
-		now := time.Now()
-
-		// Set defaults if not provided
-		mode := attr.Mode
-		if mode == 0 {
-			if attr.Type == metadata.FileTypeDirectory {
-				mode = 0755
-			} else {
-				mode = 0644
-			}
-		}
-
-		// Use authenticated user's credentials if not provided
-		uid := attr.UID
-		gid := attr.GID
-		if ctx.Identity != nil && ctx.Identity.UID != nil {
-			if uid == 0 {
-				uid = *ctx.Identity.UID
-			}
-			if gid == 0 && ctx.Identity.GID != nil {
-				gid = *ctx.Identity.GID
-			}
-		}
+		// Apply defaults for mode, UID/GID, timestamps, and size
+		metadata.ApplyCreateDefaults(attr, ctx, "")
 
 		// Create file
 		newFile = &metadata.File{
@@ -654,13 +626,13 @@ func (s *BadgerMetadataStore) Create(
 			Path:      fullPath,
 			FileAttr: metadata.FileAttr{
 				Type:       attr.Type,
-				Mode:       mode & 0o7777,
-				UID:        uid,
-				GID:        gid,
-				Size:       0,
-				Atime:      now,
-				Mtime:      now,
-				Ctime:      now,
+				Mode:       attr.Mode,
+				UID:        attr.UID,
+				GID:        attr.GID,
+				Size:       attr.Size,
+				Atime:      attr.Atime,
+				Mtime:      attr.Mtime,
+				Ctime:      attr.Ctime,
 				LinkTarget: "",
 			},
 		}
@@ -708,8 +680,8 @@ func (s *BadgerMetadataStore) Create(
 		}
 
 		// Update parent timestamps
-		parentFile.Mtime = now
-		parentFile.Ctime = now
+		parentFile.Mtime = attr.Mtime
+		parentFile.Ctime = attr.Ctime
 		parentBytes, err := encodeFile(parentFile)
 		if err != nil {
 			return err
@@ -762,12 +734,8 @@ func (s *BadgerMetadataStore) CreateHardLink(
 	}
 
 	// Validate name
-	if name == "" || name == "." || name == ".." {
-		return &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "invalid name",
-			Path:    name,
-		}
+	if err := metadata.ValidateName(name); err != nil {
+		return err
 	}
 
 	// Decode directory handle
@@ -981,17 +949,11 @@ func (s *BadgerMetadataStore) Move(
 	}
 
 	// Validate names
-	if fromName == "" || toName == "" {
-		return &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "empty filename",
-		}
+	if err := metadata.ValidateName(fromName); err != nil {
+		return err
 	}
-	if fromName == "." || fromName == ".." || toName == "." || toName == ".." {
-		return &metadata.StoreError{
-			Code:    metadata.ErrInvalidArgument,
-			Message: "cannot move . or ..",
-		}
+	if err := metadata.ValidateName(toName); err != nil {
+		return err
 	}
 
 	// Decode handles
