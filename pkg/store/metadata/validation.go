@@ -144,10 +144,3 @@ func ApplyCreateDefaults(attr *FileAttr, ctx *AuthContext, linkTarget string) {
 		attr.Size = 0
 	}
 }
-
-// NowTimestamp returns the current time for use in store operations.
-// This centralizes timestamp generation for consistency and potential future
-// customization (e.g., testing with mock time).
-func NowTimestamp() time.Time {
-	return time.Now()
-}

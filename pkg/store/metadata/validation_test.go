@@ -409,13 +409,3 @@ func TestApplyCreateDefaults(t *testing.T) {
 		}
 	})
 }
-
-func TestNowTimestamp(t *testing.T) {
-	before := time.Now()
-	got := NowTimestamp()
-	after := time.Now()
-
-	if got.Before(before) || got.After(after) {
-		t.Error("NowTimestamp() did not return current time")
-	}
-}
