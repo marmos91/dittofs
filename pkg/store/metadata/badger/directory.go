@@ -633,7 +633,7 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 				Mode:       attr.Mode,
 				UID:        attr.UID,
 				GID:        attr.GID,
-				Size:       0, // Special files have no size
+				Size:       attr.Size,
 				Atime:      attr.Atime,
 				Mtime:      attr.Mtime,
 				Ctime:      attr.Ctime,
