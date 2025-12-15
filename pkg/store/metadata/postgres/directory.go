@@ -37,6 +37,16 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 		"gid", gid,
 	)
 
+	// Check if root directory already exists (idempotent behavior)
+	existingRoot, err := s.getExistingRootDirectory(ctx, shareName)
+	if err == nil && existingRoot != nil {
+		s.logger.Info("Root directory already exists, returning existing",
+			"share", shareName,
+			"root_id", existingRoot.ID,
+		)
+		return existingRoot, nil
+	}
+
 	// Begin transaction
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -137,6 +147,64 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 	}
 
 	return file, nil
+}
+
+// getExistingRootDirectory checks if a root directory already exists for the share
+// and returns it if found. Returns nil, nil if not found.
+func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, shareName string) (*metadata.File, error) {
+	query := `
+		SELECT f.id, f.file_type, f.mode, f.uid, f.gid, f.size,
+			   f.atime, f.mtime, f.ctime
+		FROM files f
+		WHERE f.share_name = $1 AND f.path = '/'
+	`
+
+	var (
+		id       uuid.UUID
+		fileType int16
+		mode     int32
+		uid      int32
+		gid      int32
+		size     int64
+		atime    time.Time
+		mtime    time.Time
+		ctime    time.Time
+	)
+
+	err := s.pool.QueryRow(ctx, query, shareName).Scan(
+		&id,
+		&fileType,
+		&mode,
+		&uid,
+		&gid,
+		&size,
+		&atime,
+		&mtime,
+		&ctime,
+	)
+
+	if err == pgx.ErrNoRows {
+		return nil, nil // Not found, not an error
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &metadata.File{
+		ID:        id,
+		ShareName: shareName,
+		Path:      "/",
+		FileAttr: metadata.FileAttr{
+			Type:  metadata.FileType(fileType),
+			Mode:  uint32(mode),
+			UID:   uint32(uid),
+			GID:   uint32(gid),
+			Size:  uint64(size),
+			Atime: atime,
+			Mtime: mtime,
+			Ctime: ctime,
+		},
+	}, nil
 }
 
 // ReadDirectory reads directory entries with pagination
