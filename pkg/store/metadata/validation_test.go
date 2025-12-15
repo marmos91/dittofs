@@ -275,46 +275,46 @@ func TestApplyOwnerDefaults(t *testing.T) {
 	gid := uint32(1000)
 
 	tests := []struct {
-		name     string
-		attr     *FileAttr
-		ctx      *AuthContext
-		wantUID  uint32
-		wantGID  uint32
+		name    string
+		attr    *FileAttr
+		ctx     *AuthContext
+		wantUID uint32
+		wantGID uint32
 	}{
 		{
-			name:     "nil identity - no change",
-			attr:     &FileAttr{UID: 0, GID: 0},
-			ctx:      &AuthContext{Identity: nil},
-			wantUID:  0,
-			wantGID:  0,
+			name:    "nil identity - no change",
+			attr:    &FileAttr{UID: 0, GID: 0},
+			ctx:     &AuthContext{Identity: nil},
+			wantUID: 0,
+			wantGID: 0,
 		},
 		{
-			name:     "apply from context when zero",
-			attr:     &FileAttr{UID: 0, GID: 0},
-			ctx:      &AuthContext{Identity: &Identity{UID: &uid, GID: &gid}},
-			wantUID:  1000,
-			wantGID:  1000,
+			name:    "apply from context when zero",
+			attr:    &FileAttr{UID: 0, GID: 0},
+			ctx:     &AuthContext{Identity: &Identity{UID: &uid, GID: &gid}},
+			wantUID: 1000,
+			wantGID: 1000,
 		},
 		{
-			name:     "don't override explicit values",
-			attr:     &FileAttr{UID: 500, GID: 500},
-			ctx:      &AuthContext{Identity: &Identity{UID: &uid, GID: &gid}},
-			wantUID:  500,
-			wantGID:  500,
+			name:    "don't override explicit values",
+			attr:    &FileAttr{UID: 500, GID: 500},
+			ctx:     &AuthContext{Identity: &Identity{UID: &uid, GID: &gid}},
+			wantUID: 500,
+			wantGID: 500,
 		},
 		{
-			name:     "apply UID only when GID is set",
-			attr:     &FileAttr{UID: 0, GID: 500},
-			ctx:      &AuthContext{Identity: &Identity{UID: &uid, GID: &gid}},
-			wantUID:  1000,
-			wantGID:  500,
+			name:    "apply UID only when GID is set",
+			attr:    &FileAttr{UID: 0, GID: 500},
+			ctx:     &AuthContext{Identity: &Identity{UID: &uid, GID: &gid}},
+			wantUID: 1000,
+			wantGID: 500,
 		},
 		{
-			name:     "nil GID in context",
-			attr:     &FileAttr{UID: 0, GID: 0},
-			ctx:      &AuthContext{Identity: &Identity{UID: &uid, GID: nil}},
-			wantUID:  1000,
-			wantGID:  0,
+			name:    "nil GID in context",
+			attr:    &FileAttr{UID: 0, GID: 0},
+			ctx:     &AuthContext{Identity: &Identity{UID: &uid, GID: nil}},
+			wantUID: 1000,
+			wantGID: 0,
 		},
 	}
 

@@ -47,7 +47,7 @@ func (s *PostgresMetadataStore) SetFileAttributes(
 
 	// Build update query dynamically
 	query := "UPDATE files SET "
-	params := []interface{}{}
+	params := []any{}
 	paramIndex := 1
 	updates := []string{}
 
