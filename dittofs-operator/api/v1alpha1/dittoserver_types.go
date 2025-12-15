@@ -30,6 +30,13 @@ type DittoServerSpec struct {
 	// Service configuration for the NFS server endpoint
 	Service ServiceSpec `json:"service,omitempty"`
 
+	// NFS port to listen on
+	// +kubebuilder:default=2049
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	NFSPort *int32 `json:"nfsPort,omitempty"`
+
 	// Resource requirements for the DittoFS container (CPU, memory limits/requests)
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`

@@ -188,7 +188,7 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 		Adapters: AdaptersConfig{
 			NFS: NFSAdapter{
 				Enabled:        true,
-				Port:           2049,
+				Port:           getNFSPort(dittoServer),
 				MaxConnections: 0,
 				Timeouts: TimeoutsConfig{
 					Read:     "5m0s",
@@ -207,6 +207,13 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 	}
 
 	return string(yamlBytes), nil
+}
+
+func getNFSPort(dittoServer *dittoiov1alpha1.DittoServer) int32 {
+	if dittoServer.Spec.NFSPort != nil {
+		return *dittoServer.Spec.NFSPort
+	}
+	return 2049
 }
 
 func getConfigValue(config map[string]string, key, defaultValue string) string {

@@ -108,8 +108,8 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		dittoServerCopy.Status.Phase = "Pending"
 	}
 
-	dittoServerCopy.Status.NFSEndpoint = fmt.Sprintf("%s.%s.svc.cluster.local:2049",
-		dittoServer.Name, dittoServer.Namespace)
+	dittoServerCopy.Status.NFSEndpoint = fmt.Sprintf("%s.%s.svc.cluster.local:%d",
+		dittoServer.Name, dittoServer.Namespace, getNFSPort(dittoServer))
 
 	if statefulSet.Status.ReadyReplicas == replicas && replicas > 0 {
 		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
@@ -198,7 +198,7 @@ func (r *DittoServerReconciler) reconcileService(ctx context.Context, dittoServe
 			Ports: []corev1.ServicePort{
 				{
 					Name:     "nfs",
-					Port:     2049,
+					Port:     getNFSPort(dittoServer),
 					Protocol: corev1.ProtocolTCP,
 				},
 				{
@@ -317,7 +317,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "nfs",
-									ContainerPort: 2049,
+									ContainerPort: getNFSPort(dittoServer),
 									Protocol:      corev1.ProtocolTCP,
 								},
 								{
@@ -329,7 +329,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 							LivenessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									TCPSocket: &corev1.TCPSocketAction{
-										Port: intstr.FromInt(2049),
+										Port: intstr.FromInt32(getNFSPort(dittoServer)),
 									},
 								},
 								InitialDelaySeconds: 30,
@@ -341,7 +341,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									TCPSocket: &corev1.TCPSocketAction{
-										Port: intstr.FromInt(2049),
+										Port: intstr.FromInt32(getNFSPort(dittoServer)),
 									},
 								},
 								InitialDelaySeconds: 10,
@@ -387,4 +387,12 @@ func getPodSecurityContext(dittoServer *dittoiov1alpha1.DittoServer) *corev1.Pod
 	return &corev1.PodSecurityContext{
 		FSGroup: &fsGroup,
 	}
+}
+
+// getNFSPort returns the NFS port from the spec or the default (2049)
+func getNFSPort(dittoServer *dittoiov1alpha1.DittoServer) int32 {
+	if dittoServer.Spec.NFSPort != nil {
+		return *dittoServer.Spec.NFSPort
+	}
+	return 2049
 }

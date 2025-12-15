@@ -199,6 +199,11 @@ func (in *DittoServerSpec) DeepCopyInto(out *DittoServerSpec) {
 	in.Storage.DeepCopyInto(&out.Storage)
 	in.Config.DeepCopyInto(&out.Config)
 	in.Service.DeepCopyInto(&out.Service)
+	if in.NFSPort != nil {
+		in, out := &in.NFSPort, &out.NFSPort
+		*out = new(int32)
+		**out = **in
+	}
 	in.Resources.DeepCopyInto(&out.Resources)
 	if in.SecurityContext != nil {
 		in, out := &in.SecurityContext, &out.SecurityContext

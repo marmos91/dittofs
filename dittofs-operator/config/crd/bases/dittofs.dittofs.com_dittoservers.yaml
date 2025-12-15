@@ -320,6 +320,13 @@ spec:
                 default: dittofs/dittofs:latest
                 description: Container image for DittoFS server
                 type: string
+              nfsPort:
+                default: 2049
+                description: NFS port to listen on
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
               podSecurityContext:
                 description: Pod security context for the DittoFS pod
                 properties:
