@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
@@ -463,14 +464,14 @@ func flushCacheToContentStore(
 		// when the file becomes idle (no more writes for flush_timeout duration)
 		c.SetState(contentID, cache.StateUploading)
 
-		logger.InfoCtx(ctx.Context, "COMMIT: flushed incrementally", "bytes", flushed, "content_id", contentID)
+		logger.InfoCtx(ctx.Context, "COMMIT: flushed incrementally", "bytes", bytesize.ByteSize(flushed), "content_id", contentID)
 		return nil
 	}
 
 	// WriteAt-capable store (filesystem, memory): write only new bytes
 	bytesToFlush := cacheSize - flushedOffset
 	if bytesToFlush <= 0 {
-		logger.InfoCtx(ctx.Context, "COMMIT: flushed (already up to date)", "bytes", 0, "content_id", contentID)
+		logger.InfoCtx(ctx.Context, "COMMIT: flushed (already up to date)", "bytes", bytesize.ByteSize(0), "content_id", contentID)
 		return nil
 	}
 
@@ -490,7 +491,7 @@ func flushCacheToContentStore(
 	// Transition to StateUploading so the background flusher can finalize
 	c.SetState(contentID, cache.StateUploading)
 
-	logger.InfoCtx(ctx.Context, "COMMIT: flushed", "bytes", n, "offset", flushedOffset, "content_id", contentID)
+	logger.InfoCtx(ctx.Context, "COMMIT: flushed", "bytes", bytesize.ByteSize(n), "offset", bytesize.ByteSize(flushedOffset), "content_id", contentID)
 
 	return nil
 }

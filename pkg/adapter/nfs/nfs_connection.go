@@ -18,6 +18,7 @@ import (
 	nfs_types "github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/telemetry"
+	"github.com/marmos91/dittofs/pkg/bytesize"
 )
 
 type NFSConnection struct {
@@ -156,12 +157,12 @@ func (c *NFSConnection) readRequest(ctx context.Context) (uint32, []byte, error)
 		}
 		return 0, nil, err
 	}
-	logger.Debug("Read fragment header", "address", c.conn.RemoteAddr().String(), "last", header.IsLast, "length", header.Length)
+	logger.Debug("Read fragment header", "address", c.conn.RemoteAddr().String(), "last", header.IsLast, "length", bytesize.ByteSize(header.Length))
 
 	// Validate fragment size to prevent memory exhaustion
 	const maxFragmentSize = 1 << 20 // 1MB - NFS messages are typically much smaller
 	if header.Length > maxFragmentSize {
-		logger.Warn("Fragment size exceeds maximum", "size", header.Length, "max", maxFragmentSize, "address", c.conn.RemoteAddr().String())
+		logger.Warn("Fragment size exceeds maximum", "size", bytesize.ByteSize(header.Length), "max", bytesize.ByteSize(maxFragmentSize), "address", c.conn.RemoteAddr().String())
 		return 0, nil, fmt.Errorf("fragment too large: %d bytes", header.Length)
 	}
 
@@ -647,7 +648,7 @@ func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
 		return fmt.Errorf("write reply: %w", err)
 	}
 
-	logger.Debug("Sent reply", "xid", fmt.Sprintf("0x%x", xid), "bytes", len(reply))
+	logger.Debug("Sent reply", "xid", fmt.Sprintf("0x%x", xid), "bytes", bytesize.ByteSize(len(reply)))
 	return nil
 }
 

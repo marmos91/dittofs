@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -238,7 +239,7 @@ func (h *Handler) FsInfo(
 	// Build NFS properties bitmask from capabilities
 	properties := buildNFSProperties(capabilities)
 
-	logger.InfoCtx(ctx.Context, "FSINFO successful", "client", ctx.ClientAddr, "rtmax", capabilities.MaxReadSize, "wtmax", capabilities.MaxWriteSize, "maxfilesize", capabilities.MaxFileSize, "properties", fmt.Sprintf("0x%x", properties))
+	logger.InfoCtx(ctx.Context, "FSINFO successful", "client", ctx.ClientAddr, "rtmax", bytesize.ByteSize(capabilities.MaxReadSize), "wtmax", bytesize.ByteSize(capabilities.MaxWriteSize), "maxfilesize", bytesize.ByteSize(capabilities.MaxFileSize), "properties", fmt.Sprintf("0x%x", properties))
 
 	// Build response with data from store
 	// Map the standardized FilesystemCapabilities to NFS wire format

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
@@ -276,7 +277,7 @@ func (f *BackgroundFlusher) shouldFlush(id metadata.ContentID, threshold time.Ti
 	cacheSize := f.cache.Size(id)
 	flushedOffset := f.cache.GetFlushedOffset(id)
 	if flushedOffset < cacheSize {
-		logger.Debug("Flusher: skipping, unflushed cache data", "content_id", id, "flushed", flushedOffset, "size", cacheSize)
+		logger.Debug("Flusher: skipping, unflushed cache data", "content_id", id, "flushed", bytesize.ByteSize(flushedOffset), "size", bytesize.ByteSize(cacheSize))
 		return false
 	}
 
@@ -299,7 +300,7 @@ func (f *BackgroundFlusher) flush(id metadata.ContentID) error {
 	if incStore, ok := f.contentStore.(content.IncrementalWriteStore); ok {
 		state := incStore.GetIncrementalWriteState(id)
 		if state != nil {
-			logger.Debug("Flusher: completing incremental write", "content_id", id, "parts_written", state.PartsWritten, "flushed", state.TotalFlushed)
+			logger.Debug("Flusher: completing incremental write", "content_id", id, "parts_written", state.PartsWritten, "flushed", bytesize.ByteSize(state.TotalFlushed))
 		} else {
 			logger.Debug("Flusher: completing small file write", "content_id", id)
 		}
@@ -315,7 +316,7 @@ func (f *BackgroundFlusher) flush(id metadata.ContentID) error {
 	// Transition to cached state
 	f.cache.SetState(id, cache.StateCached)
 
-	logger.Info("Flusher: flushed", "content_id", id, "size", cacheSize)
+	logger.Info("Flusher: flushed", "content_id", id, "size", bytesize.ByteSize(cacheSize))
 
 	return nil
 }
