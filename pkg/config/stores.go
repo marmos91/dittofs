@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/cache"
 	cachememory "github.com/marmos91/dittofs/pkg/cache/memory"
 	promMetrics "github.com/marmos91/dittofs/pkg/metrics/prometheus"
@@ -29,15 +30,15 @@ type s3RetryConfig struct {
 
 // s3Config represents S3 configuration loaded from YAML files.
 type s3Config struct {
-	Endpoint           string `mapstructure:"endpoint"`
-	Region             string `mapstructure:"region"`
-	Bucket             string `mapstructure:"bucket"`
-	AccessKeyID        string `mapstructure:"access_key_id"`
-	SecretAccessKey    string `mapstructure:"secret_access_key"`
-	KeyPrefix          string `mapstructure:"key_prefix"`
-	ForcePathStyle     bool   `mapstructure:"force_path_style"`
-	PartSize           uint64 `mapstructure:"part_size"`
-	MaxParallelUploads uint   `mapstructure:"max_parallel_uploads"`
+	Endpoint           string            `mapstructure:"endpoint"`
+	Region             string            `mapstructure:"region"`
+	Bucket             string            `mapstructure:"bucket"`
+	AccessKeyID        string            `mapstructure:"access_key_id"`
+	SecretAccessKey    string            `mapstructure:"secret_access_key"`
+	KeyPrefix          string            `mapstructure:"key_prefix"`
+	ForcePathStyle     bool              `mapstructure:"force_path_style"`
+	PartSize           bytesize.ByteSize `mapstructure:"part_size"` // S3 multipart upload part size (e.g., "5Mi", "16Mi")
+	MaxParallelUploads uint              `mapstructure:"max_parallel_uploads"`
 
 	// Retry configuration for transient S3 errors
 	Retry s3RetryConfig `mapstructure:"retry"`
@@ -188,7 +189,7 @@ func createMemoryContentStore(
 ) (content.ContentStore, error) {
 	// Decode memory-specific configuration
 	var memCfg struct {
-		MaxSizeBytes uint64 `mapstructure:"max_size_bytes"`
+		MaxSizeBytes bytesize.ByteSize `mapstructure:"max_size_bytes"` // Maximum store size (e.g., "1Gi", "500Mi")
 	}
 	if err := mapstructure.Decode(cfg.Memory, &memCfg); err != nil {
 		return nil, fmt.Errorf("invalid memory config: %w", err)
@@ -255,7 +256,7 @@ func createS3ContentStore(
 		Client:             client,
 		Bucket:             yamlCfg.Bucket,
 		KeyPrefix:          yamlCfg.KeyPrefix,
-		PartSize:           yamlCfg.PartSize,
+		PartSize:           yamlCfg.PartSize.Uint64(),
 		MaxParallelUploads: yamlCfg.MaxParallelUploads,
 		Metrics:            promMetrics.NewS3Metrics(), // Enable S3 metrics collection
 
@@ -281,7 +282,7 @@ func createS3ContentStore(
 
 // memoryCacheYAMLConfig represents memory cache configuration loaded from YAML files.
 type memoryCacheYAMLConfig struct {
-	MaxSize uint64 `mapstructure:"max_size"` // Maximum cache size in bytes
+	MaxSize bytesize.ByteSize `mapstructure:"max_size"` // Maximum cache size (e.g., "100Mi", "1Gi")
 }
 
 // createCache creates a single cache instance.
@@ -306,7 +307,7 @@ func createMemoryCache(ctx context.Context, cfg CacheStoreConfig) (cache.Cache, 
 	}
 
 	// Apply defaults
-	maxSize := yamlCfg.MaxSize
+	maxSize := yamlCfg.MaxSize.Uint64()
 	if maxSize == 0 {
 		maxSize = 100 * 1024 * 1024 // Default: 100MB
 	}

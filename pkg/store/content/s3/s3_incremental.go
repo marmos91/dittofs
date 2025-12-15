@@ -23,6 +23,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/telemetry"
+	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
@@ -165,7 +166,7 @@ func (s *S3ContentStore) uploadPartsInParallel(
 				return
 			}
 
-			logger.Debug("uploadPartsInParallel: uploaded part", "part", pn, "bytes", n, "content_id", id)
+			logger.Debug("uploadPartsInParallel: uploaded part", "part", pn, "bytes", bytesize.ByteSize(n), "content_id", id)
 			results <- uploadPartResult{pn, uint64(n), nil}
 		}(partNum)
 	}
@@ -333,7 +334,7 @@ func (s *S3ContentStore) FlushIncremental(
 	}
 
 	if totalUploaded > 0 {
-		logger.Info("FlushIncremental: uploaded parts", "parts", len(partsToUpload), "bytes", totalUploaded, "content_id", id)
+		logger.Info("FlushIncremental: uploaded parts", "parts", len(partsToUpload), "bytes", bytesize.ByteSize(totalUploaded), "content_id", id)
 	}
 
 	return totalUploaded, nil
@@ -394,7 +395,7 @@ func (s *S3ContentStore) CompleteIncrementalWrite(ctx context.Context, id metada
 			if err := s.WriteContent(ctx, id, data[:n]); err != nil {
 				return fmt.Errorf("failed to write small file via PutObject: %w", err)
 			}
-			logger.Info("CompleteIncrementalWrite: used PutObject for small file", "content_id", id, "size", n)
+			logger.Info("CompleteIncrementalWrite: used PutObject for small file", "content_id", id, "size", bytesize.ByteSize(n))
 		}
 		// Delete session if it exists (for small files that had an empty session)
 		if exists {

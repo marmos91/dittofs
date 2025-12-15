@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -285,7 +286,7 @@ func (h *Handler) Write(
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "WRITE", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "stable", req.Stable, "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.InfoCtx(ctx.Context, "WRITE", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "count", bytesize.ByteSize(req.Count), "stable", req.Stable, "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Check for context cancellation before starting work
@@ -453,7 +454,7 @@ func (h *Handler) Write(
 			traceError(ctx.Context, err, "WRITE failed: cache write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.ContentID, "client", clientIP)
 			return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 		}
-		logger.DebugCtx(ctx.Context, "WRITE: cached successfully", "content_id", writeIntent.ContentID, "cache_size", cache.Size(writeIntent.ContentID))
+		logger.DebugCtx(ctx.Context, "WRITE: cached successfully", "content_id", writeIntent.ContentID, "cache_size", bytesize.ByteSize(cache.Size(writeIntent.ContentID)))
 	} else {
 		// Sync mode: write directly to content store
 		err = contentStore.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, req.Offset)
@@ -486,7 +487,7 @@ func (h *Handler) Write(
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
 
-	logger.InfoCtx(ctx.Context, "WRITE successful", "file", updatedFile.ContentID, "offset", req.Offset, "requested", req.Count, "written", len(req.Data), "new_size", updatedFile.Size, "client", clientIP)
+	logger.InfoCtx(ctx.Context, "WRITE successful", "file", updatedFile.ContentID, "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "written", bytesize.ByteSize(len(req.Data)), "new_size", bytesize.ByteSize(updatedFile.Size), "client", clientIP)
 
 	// Determine what stability level to return based on whether we're using a cache
 	//
@@ -505,7 +506,7 @@ func (h *Handler) Write(
 		logger.DebugCtx(ctx.Context, "WRITE: returning FILE_SYNC (no cache, data committed)")
 	}
 
-	logger.DebugCtx(ctx.Context, "WRITE details", "stable_requested", req.Stable, "committed", committed, "size", updatedFile.Size, "type", updatedFile.Type, "mode", fmt.Sprintf("%o", updatedFile.Mode))
+	logger.DebugCtx(ctx.Context, "WRITE details", "stable_requested", req.Stable, "committed", committed, "size", bytesize.ByteSize(updatedFile.Size), "type", updatedFile.Type, "mode", fmt.Sprintf("%o", updatedFile.Mode))
 
 	return &WriteResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

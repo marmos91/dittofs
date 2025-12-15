@@ -179,8 +179,9 @@ content:
 		yaml += `
       # Memory configuration
       memory:
-        # Maximum total size of content in bytes (0 = unlimited)
-        max_size_bytes: ` + fmt.Sprintf("%v", contentStore.Memory["max_size_bytes"])
+        # Maximum total size of content (0 = unlimited)
+        # Supports human-readable formats: "1Gi", "500Mi", "100MB", etc.
+        max_size_bytes: "1Gi"  # 1 gibibyte`
 	case "s3":
 		yaml += `
       # S3 configuration

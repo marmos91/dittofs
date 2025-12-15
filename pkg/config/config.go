@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
+	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 	"github.com/spf13/viper"
 )
@@ -242,16 +243,18 @@ type PrefetchConfig struct {
 	// Enabled controls whether prefetch is enabled (default: true)
 	Enabled *bool `mapstructure:"enabled"`
 
-	// MaxFileSize is the maximum file size to prefetch in bytes.
+	// MaxFileSize is the maximum file size to prefetch.
 	// Files larger than this are not prefetched to avoid cache thrashing.
+	// Supports human-readable formats: "100Mi", "1Gi", etc.
 	// Default: 100MB (100 * 1024 * 1024)
-	MaxFileSize int64 `mapstructure:"max_file_size"`
+	MaxFileSize bytesize.ByteSize `mapstructure:"max_file_size"`
 
-	// ChunkSize is the size of each chunk read during prefetch in bytes.
+	// ChunkSize is the size of each chunk read during prefetch.
 	// Larger chunks = fewer requests but longer wait before unblocking reads.
 	// Smaller chunks = more requests but faster unblocking of waiting reads.
+	// Supports human-readable formats: "512Ki", "1Mi", etc.
 	// Default: 512KB (512 * 1024)
-	ChunkSize int64 `mapstructure:"chunk_size"`
+	ChunkSize bytesize.ByteSize `mapstructure:"chunk_size"`
 }
 
 // FlusherConfig configures background flusher behavior.
