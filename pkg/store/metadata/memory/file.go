@@ -820,7 +820,7 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 		Mode:       attr.Mode,
 		UID:        attr.UID,
 		GID:        attr.GID,
-		Size:       attr.Size,
+		Size:       0, // Special files have no size
 		Atime:      attr.Atime,
 		Mtime:      attr.Mtime,
 		Ctime:      attr.Ctime,
