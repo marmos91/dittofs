@@ -263,8 +263,18 @@ func EncodeQueryInfoResponse(resp *QueryInfoResponse) ([]byte, error) {
 }
 
 // DecodeSetInfoRequest parses an SMB2 SET_INFO request body [MS-SMB2] 2.2.39
+// SET_INFO request structure (32 bytes fixed part):
+//   - StructureSize (2 bytes) - always 33
+//   - InfoType (1 byte)
+//   - FileInfoClass (1 byte)
+//   - BufferLength (4 bytes)
+//   - BufferOffset (2 bytes) - offset from header start to buffer
+//   - Reserved (2 bytes)
+//   - AdditionalInfo (4 bytes)
+//   - FileId (16 bytes)
+//   - Buffer (variable)
 func DecodeSetInfoRequest(body []byte) (*SetInfoRequest, error) {
-	if len(body) < 33 {
+	if len(body) < 32 {
 		return nil, fmt.Errorf("SET_INFO request too short: %d bytes", len(body))
 	}
 
@@ -278,9 +288,12 @@ func DecodeSetInfoRequest(body []byte) (*SetInfoRequest, error) {
 	copy(req.FileID[:], body[16:32])
 
 	// Extract buffer
-	bufferStart := int(req.BufferOffset) - 64 // Adjust from header offset
-	if bufferStart < 33 {
-		bufferStart = 33 // Right after fixed part
+	// BufferOffset is relative to the start of SMB2 header (64 bytes)
+	// body starts after the header, so: body offset = BufferOffset - 64
+	// Typical BufferOffset is 96 (64 header + 32 fixed part), giving body offset 32
+	bufferStart := int(req.BufferOffset) - 64
+	if bufferStart < 32 {
+		bufferStart = 32 // Buffer can't start before the fixed part ends
 	}
 	if bufferStart+int(req.BufferLength) <= len(body) {
 		req.Buffer = body[bufferStart : bufferStart+int(req.BufferLength)]
