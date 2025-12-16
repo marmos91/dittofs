@@ -232,7 +232,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 				logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
 				return NewErrorResult(ContentErrorToSMBStatus(err)), nil
 			}
-			defer reader.Close()
+			defer func() { _ = reader.Close() }()
 
 			// Skip to offset
 			if req.Offset > 0 {
