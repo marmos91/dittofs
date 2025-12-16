@@ -192,12 +192,13 @@ func (s *BadgerMetadataStore) ReadDirectory(
 				continue
 			}
 
-			// Create directory entry
+			// Create directory entry with attributes for SMB directory listing
+			attrCopy := childFile.FileAttr // Make a copy to avoid sharing pointers
 			entry := metadata.DirEntry{
 				ID:     fileHandleToID(childHandle),
 				Name:   childName,
 				Handle: childHandle,
-				Attr:   nil, // TODO: Could set to &childFile.FileAttr for optimization
+				Attr:   &attrCopy,
 			}
 
 			// Estimate size (rough estimate: name + some overhead)

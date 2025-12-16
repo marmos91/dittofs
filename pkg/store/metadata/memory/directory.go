@@ -449,10 +449,20 @@ func (store *MemoryMetadataStore) ReadDirectory(
 			break
 		}
 
+		// Get file attributes for directory listing optimization
+		childKey := handleToKey(handle)
+		var attr *metadata.FileAttr
+		if childData, exists := store.files[childKey]; exists && childData.Attr != nil {
+			attrCopy := *childData.Attr // Make a copy to avoid sharing pointers
+			attr = &attrCopy
+		}
+
 		// Add entry
 		entries = append(entries, metadata.DirEntry{
-			ID:   fileID,
-			Name: name,
+			ID:     fileID,
+			Name:   name,
+			Handle: handle,
+			Attr:   attr,
 		})
 
 		currentBytes += entrySize

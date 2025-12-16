@@ -7,13 +7,18 @@ import (
 
 	badger "github.com/dgraph-io/badger/v4"
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
-// CreateRootDirectory creates a root directory for a share without a parent.
+// CreateRootDirectory creates or retrieves the root directory for a share.
 //
-// This is a special operation used during share initialization. The root directory
-// is created with a new UUID and path "/" and has no parent.
+// This is a special operation used during share initialization. If a root directory
+// already exists for this share (from a previous server run), it is returned.
+// Otherwise, a new root directory is created with a new UUID and path "/".
+//
+// This idempotent behavior ensures that metadata persists across server restarts
+// when using a persistent store like BadgerDB.
 //
 // Parameters:
 //   - ctx: Context for cancellation
@@ -21,8 +26,8 @@ import (
 //   - attr: Directory attributes (Type must be FileTypeDirectory)
 //
 // Returns:
-//   - *File: Complete file information for the newly created root directory
-//   - error: ErrAlreadyExists if root exists, ErrInvalidArgument if not a directory
+//   - *File: Complete file information for the root directory (existing or newly created)
+//   - error: ErrInvalidArgument if not a directory, or other errors
 func (s *BadgerMetadataStore) CreateRootDirectory(
 	ctx context.Context,
 	shareName string,
@@ -46,6 +51,58 @@ func (s *BadgerMetadataStore) CreateRootDirectory(
 
 	// Execute in transaction for atomicity
 	err := s.db.Update(func(txn *badger.Txn) error {
+		// First, check if a share mapping already exists
+		item, err := txn.Get(keyShare(shareName))
+		if err == nil {
+			// Share exists - retrieve the existing root directory
+			var existingShareData *shareData
+			err = item.Value(func(val []byte) error {
+				sd, err := decodeShareData(val)
+				if err != nil {
+					return err
+				}
+				existingShareData = sd
+				return nil
+			})
+			if err != nil {
+				return fmt.Errorf("failed to decode existing share data: %w", err)
+			}
+
+			// Decode the root handle to get the root file ID
+			_, rootID, err := metadata.DecodeFileHandle(existingShareData.RootHandle)
+			if err != nil {
+				return fmt.Errorf("failed to decode existing root handle: %w", err)
+			}
+
+			// Get the existing root file
+			rootItem, err := txn.Get(keyFile(rootID))
+			if err != nil {
+				return fmt.Errorf("failed to get existing root file: %w", err)
+			}
+
+			err = rootItem.Value(func(val []byte) error {
+				rf, err := decodeFile(val)
+				if err != nil {
+					return err
+				}
+				rootFile = rf
+				return nil
+			})
+			if err != nil {
+				return fmt.Errorf("failed to decode existing root file: %w", err)
+			}
+
+			logger.Debug("Reusing existing root directory for share",
+				"share", shareName,
+				"rootID", rootFile.ID)
+			return nil
+		} else if err != badger.ErrKeyNotFound {
+			return fmt.Errorf("failed to check for existing share: %w", err)
+		}
+
+		// Share doesn't exist - create a new root directory
+		logger.Debug("Creating new root directory for share", "share", shareName)
+
 		// Complete root directory attributes with defaults
 		rootAttrCopy := *attr
 		if rootAttrCopy.Mode == 0 {
@@ -85,6 +142,27 @@ func (s *BadgerMetadataStore) CreateRootDirectory(
 		// Set link count to 2 (. + share reference)
 		if err := txn.Set(keyLinkCount(rootFile.ID), encodeUint32(2)); err != nil {
 			return fmt.Errorf("failed to store link count: %w", err)
+		}
+
+		// Encode root handle
+		rootHandle, err := metadata.EncodeFileHandle(rootFile)
+		if err != nil {
+			return fmt.Errorf("failed to encode root handle: %w", err)
+		}
+
+		// Store share-to-root mapping for persistence across restarts
+		shareDataObj := &shareData{
+			Share: metadata.Share{
+				Name: shareName,
+			},
+			RootHandle: rootHandle,
+		}
+		shareBytes, err := encodeShareData(shareDataObj)
+		if err != nil {
+			return fmt.Errorf("failed to encode share data: %w", err)
+		}
+		if err := txn.Set(keyShare(shareName), shareBytes); err != nil {
+			return fmt.Errorf("failed to store share data: %w", err)
 		}
 
 		return nil

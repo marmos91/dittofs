@@ -297,8 +297,18 @@ func EncodeSetInfoResponse(_ *SetInfoResponse) ([]byte, error) {
 }
 
 // DecodeQueryDirectoryRequest parses an SMB2 QUERY_DIRECTORY request body [MS-SMB2] 2.2.33
+// QUERY_DIRECTORY request structure (32 bytes fixed part):
+//   - StructureSize (2 bytes) - always 33
+//   - FileInfoClass (1 byte)
+//   - Flags (1 byte)
+//   - FileIndex (4 bytes)
+//   - FileId (16 bytes)
+//   - FileNameOffset (2 bytes) - offset from header start to filename
+//   - FileNameLength (2 bytes)
+//   - OutputBufferLength (4 bytes)
+//   - Buffer (variable) - contains FileName (UTF-16LE)
 func DecodeQueryDirectoryRequest(body []byte) (*QueryDirectoryRequest, error) {
-	if len(body) < 33 {
+	if len(body) < 32 {
 		return nil, fmt.Errorf("QUERY_DIRECTORY request too short: %d bytes", len(body))
 	}
 
@@ -312,14 +322,21 @@ func DecodeQueryDirectoryRequest(body []byte) (*QueryDirectoryRequest, error) {
 	}
 	copy(req.FileID[:], body[8:24])
 
-	// Extract filename pattern
+	// Extract filename pattern (UTF-16LE encoded)
+	// FileNameOffset is relative to the start of SMB2 header (64 bytes)
+	// body starts after the header, so:
+	//   body offset = FileNameOffset - 64
+	// Typical FileNameOffset is 96 (64 header + 32 fixed part), giving body offset 32
 	if req.FileNameLength > 0 {
-		fnStart := int(req.FileNameOffset) - 64 // Adjust from header offset
-		if fnStart < 33 {
-			fnStart = 33 // Right after fixed part
+		bodyOffset := int(req.FileNameOffset) - 64
+
+		// Clamp to valid range (filename can't start before the Buffer field at byte 32)
+		if bodyOffset < 32 {
+			bodyOffset = 32
 		}
-		if fnStart+int(req.FileNameLength) <= len(body) {
-			req.FileName = decodeUTF16LE(body[fnStart : fnStart+int(req.FileNameLength)])
+
+		if bodyOffset+int(req.FileNameLength) <= len(body) {
+			req.FileName = decodeUTF16LE(body[bodyOffset : bodyOffset+int(req.FileNameLength)])
 		}
 	}
 
@@ -327,12 +344,18 @@ func DecodeQueryDirectoryRequest(body []byte) (*QueryDirectoryRequest, error) {
 }
 
 // EncodeQueryDirectoryResponse builds an SMB2 QUERY_DIRECTORY response body [MS-SMB2] 2.2.34
+// Structure:
+//   - StructureSize (2 bytes) - always 9 (per spec, includes 1 byte of buffer conceptually)
+//   - OutputBufferOffset (2 bytes) - offset from SMB2 header to buffer
+//   - OutputBufferLength (4 bytes) - length of buffer data
+//   - Buffer (variable) - directory entries starting at byte 8 of response body
 func EncodeQueryDirectoryResponse(resp *QueryDirectoryResponse) ([]byte, error) {
-	buf := make([]byte, 9+len(resp.Data))
-	binary.LittleEndian.PutUint16(buf[0:2], 9)                      // StructureSize
-	binary.LittleEndian.PutUint16(buf[2:4], uint16(64+9))           // OutputBufferOffset
+	// Fixed response header is 8 bytes, data follows immediately
+	buf := make([]byte, 8+len(resp.Data))
+	binary.LittleEndian.PutUint16(buf[0:2], 9)                      // StructureSize (per spec, always 9)
+	binary.LittleEndian.PutUint16(buf[2:4], uint16(64+8))           // OutputBufferOffset (header + 8 byte response)
 	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(resp.Data))) // OutputBufferLength
-	copy(buf[9:], resp.Data)
+	copy(buf[8:], resp.Data)
 
 	return buf, nil
 }

@@ -3,6 +3,8 @@ package handlers
 import (
 	"encoding/binary"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"unicode/utf16"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -96,11 +98,19 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, body []byte) (*HandlerR
 	}
 
 	// ========================================================================
-	// Step 7: Build directory entries based on info class
+	// Step 7: Filter entries based on filename pattern
 	// ========================================================================
 
-	// For restart scans (first query), add . and ..
-	includeSpecial := restartScans
+	filteredEntries := filterDirEntries(page.Entries, req.FileName)
+
+	// ========================================================================
+	// Step 8: Build directory entries based on info class
+	// ========================================================================
+
+	// For restart scans (first query), add . and .. ONLY when enumerating all files.
+	// When searching for a specific file pattern (not "*"), don't include special entries.
+	isWildcardSearch := req.FileName == "" || req.FileName == "*" || req.FileName == "*.*"
+	includeSpecial := restartScans && isWildcardSearch
 
 	// Convert entries
 	var entries []byte
@@ -108,18 +118,18 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, body []byte) (*HandlerR
 
 	switch fileInfoClass {
 	case types.FileBothDirectoryInformation:
-		entries = h.buildFileBothDirInfoFromStore(page.Entries, includeSpecial)
+		entries = h.buildFileBothDirInfoFromStore(filteredEntries, includeSpecial)
 	case types.FileIdBothDirectoryInformation:
-		entries = h.buildFileIdBothDirInfoFromStore(page.Entries, includeSpecial)
+		entries = h.buildFileIdBothDirInfoFromStore(filteredEntries, includeSpecial)
 	case types.FileFullDirectoryInformation:
-		entries = h.buildFileFullDirInfoFromStore(page.Entries, includeSpecial)
+		entries = h.buildFileFullDirInfoFromStore(filteredEntries, includeSpecial)
 	case types.FileDirectoryInformation:
-		entries = h.buildFileDirInfoFromStore(page.Entries, includeSpecial)
+		entries = h.buildFileDirInfoFromStore(filteredEntries, includeSpecial)
 	case types.FileNamesInformation:
-		entries = h.buildFileNamesInfoFromStore(page.Entries, includeSpecial)
+		entries = h.buildFileNamesInfoFromStore(filteredEntries, includeSpecial)
 	default:
 		// Default to FileBothDirectoryInformation
-		entries = h.buildFileBothDirInfoFromStore(page.Entries, includeSpecial)
+		entries = h.buildFileBothDirInfoFromStore(filteredEntries, includeSpecial)
 	}
 
 	if len(entries) == 0 {
@@ -137,7 +147,9 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, body []byte) (*HandlerR
 
 	logger.Debug("QUERY_DIRECTORY successful",
 		"path", openFile.Path,
-		"entries", len(page.Entries),
+		"pattern", req.FileName,
+		"totalEntries", len(page.Entries),
+		"matchedEntries", len(filteredEntries),
 		"bufferSize", len(entries))
 
 	// ========================================================================
@@ -239,10 +251,12 @@ func (h *Handler) appendBothDirEntryFromAttr(result []byte, prevNextOffset *int,
 	copy(entry[94:], nameBytes)
 
 	// Update previous entry's NextEntryOffset
-	if *prevNextOffset > 0 {
+	// Update previous entry's NextEntryOffset to point to this entry
+	if len(result) > 0 {
 		binary.LittleEndian.PutUint32(result[*prevNextOffset:], uint32(len(result)-*prevNextOffset))
 	}
 
+	// Remember this entry's position for the next iteration
 	*prevNextOffset = len(result)
 	return append(result, entry...)
 }
@@ -323,10 +337,12 @@ func (h *Handler) appendIdBothDirEntryFromAttr(result []byte, prevNextOffset *in
 	binary.LittleEndian.PutUint64(entry[96:104], fileID) // FileId
 	copy(entry[104:], nameBytes)
 
-	if *prevNextOffset > 0 {
+	// Update previous entry's NextEntryOffset to point to this entry
+	if len(result) > 0 {
 		binary.LittleEndian.PutUint32(result[*prevNextOffset:], uint32(len(result)-*prevNextOffset))
 	}
 
+	// Remember this entry's position for the next iteration
 	*prevNextOffset = len(result)
 	return append(result, entry...)
 }
@@ -402,10 +418,12 @@ func (h *Handler) appendFullDirEntryFromAttr(result []byte, prevNextOffset *int,
 	binary.LittleEndian.PutUint32(entry[64:68], 0) // EaSize
 	copy(entry[68:], nameBytes)
 
-	if *prevNextOffset > 0 {
+	// Update previous entry's NextEntryOffset to point to this entry
+	if len(result) > 0 {
 		binary.LittleEndian.PutUint32(result[*prevNextOffset:], uint32(len(result)-*prevNextOffset))
 	}
 
+	// Remember this entry's position for the next iteration
 	*prevNextOffset = len(result)
 	return append(result, entry...)
 }
@@ -480,10 +498,12 @@ func (h *Handler) appendDirEntryFromAttr(result []byte, prevNextOffset *int, nam
 	binary.LittleEndian.PutUint32(entry[60:64], uint32(len(nameBytes)))
 	copy(entry[64:], nameBytes)
 
-	if *prevNextOffset > 0 {
+	// Update previous entry's NextEntryOffset to point to this entry
+	if len(result) > 0 {
 		binary.LittleEndian.PutUint32(result[*prevNextOffset:], uint32(len(result)-*prevNextOffset))
 	}
 
+	// Remember this entry's position for the next iteration
 	*prevNextOffset = len(result)
 	return append(result, entry...)
 }
@@ -529,10 +549,59 @@ func (h *Handler) appendNamesEntryFromStore(result []byte, prevNextOffset *int, 
 	binary.LittleEndian.PutUint32(entry[8:12], uint32(len(nameBytes)))
 	copy(entry[12:], nameBytes)
 
-	if *prevNextOffset > 0 {
+	// Update previous entry's NextEntryOffset to point to this entry
+	if len(result) > 0 {
 		binary.LittleEndian.PutUint32(result[*prevNextOffset:], uint32(len(result)-*prevNextOffset))
 	}
 
+	// Remember this entry's position for the next iteration
 	*prevNextOffset = len(result)
 	return append(result, entry...)
+}
+
+// filterDirEntries filters directory entries based on the SMB2 search pattern.
+// Pattern can be:
+//   - "*" or empty: match all entries
+//   - Exact name: match only that specific entry (case-insensitive on Windows/SMB)
+//   - Wildcard pattern: support basic wildcards like "*.txt", "foo*", etc.
+func filterDirEntries(entries []metadata.DirEntry, pattern string) []metadata.DirEntry {
+	// Empty pattern or "*" means return all entries
+	if pattern == "" || pattern == "*" {
+		return entries
+	}
+
+	// "<" is a special SMB wildcard that matches files with no extension or specific DOS patterns
+	// For simplicity, treat it as match-all for now
+	if pattern == "<" || pattern == "*.*" {
+		return entries
+	}
+
+	var filtered []metadata.DirEntry
+	for _, entry := range entries {
+		if matchSMBPattern(entry.Name, pattern) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+// matchSMBPattern matches a filename against an SMB search pattern.
+// SMB uses DOS-style wildcards:
+//   - * matches zero or more characters
+//   - ? matches exactly one character
+//
+// Matching is case-insensitive (Windows behavior).
+func matchSMBPattern(name, pattern string) bool {
+	// Case-insensitive comparison (SMB/Windows style)
+	nameLower := strings.ToLower(name)
+	patternLower := strings.ToLower(pattern)
+
+	// Use filepath.Match for basic wildcard support
+	// Note: filepath.Match uses Unix-style patterns, which is close enough for most cases
+	matched, err := filepath.Match(patternLower, nameLower)
+	if err != nil {
+		// Invalid pattern - fall back to exact match
+		return nameLower == patternLower
+	}
+	return matched
 }
