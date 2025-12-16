@@ -5,113 +5,218 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/auth/ntlm"
+	"github.com/marmos91/dittofs/internal/auth/spnego"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/protocol/smb/auth"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 )
 
-// SessionSetup handles SMB2 SESSION_SETUP command [MS-SMB2] 2.2.5, 2.2.6
-// Implements NTLM authentication handshake for macOS/Windows client compatibility.
+// =============================================================================
+// SESSION_SETUP Request Parsing
+// =============================================================================
+
+// SESSION_SETUP request structure offsets [MS-SMB2] 2.2.5
+const (
+	sessionSetupStructureSizeOffset     = 0  // 2 bytes: Always 25
+	sessionSetupFlagsOffset             = 2  // 1 byte: Binding flags
+	sessionSetupSecurityModeOffset      = 3  // 1 byte: Security mode
+	sessionSetupCapabilitiesOffset      = 4  // 4 bytes: Client capabilities
+	sessionSetupChannelOffset           = 8  // 4 bytes: Channel (must be 0)
+	sessionSetupSecBufferOffsetOffset   = 12 // 2 bytes: Security buffer offset
+	sessionSetupSecBufferLengthOffset   = 14 // 2 bytes: Security buffer length
+	sessionSetupPreviousSessionIDOffset = 16 // 8 bytes: Previous session ID
+	sessionSetupFixedSize               = 24 // Fixed part size (without buffer)
+	sessionSetupMinSize                 = 25 // Minimum request size (per spec)
+)
+
+// SESSION_SETUP response structure offsets [MS-SMB2] 2.2.6
+const (
+	sessionSetupRespStructureSizeOffset   = 0 // 2 bytes: Always 9
+	sessionSetupRespSessionFlagsOffset    = 2 // 2 bytes: Session flags
+	sessionSetupRespSecBufferOffsetOffset = 4 // 2 bytes: Security buffer offset
+	sessionSetupRespSecBufferLengthOffset = 6 // 2 bytes: Security buffer length
+	sessionSetupRespFixedSize             = 8 // Fixed response size
+	sessionSetupRespStructureSize         = 9 // StructureSize field value (per spec)
+
+	// Security buffer offset is relative to SMB2 header start
+	smb2HeaderSize = 64
+)
+
+// SessionSetupRequest represents a parsed SESSION_SETUP request.
+// [MS-SMB2] Section 2.2.5
+type SessionSetupRequest struct {
+	StructureSize     uint16 // Must be 25
+	Flags             uint8  // Binding flags
+	SecurityMode      uint8  // Security mode
+	Capabilities      uint32 // Client capabilities
+	Channel           uint32 // Channel (must be 0 for first request)
+	SecurityBuffer    []byte // Authentication token (NTLM or SPNEGO)
+	PreviousSessionID uint64 // Previous session for re-authentication
+}
+
+// parseSessionSetupRequest parses the SESSION_SETUP request body.
+// Returns the parsed request or an error if the body is malformed.
+func parseSessionSetupRequest(body []byte) (*SessionSetupRequest, error) {
+	if len(body) < sessionSetupMinSize {
+		return nil, fmt.Errorf("body too short: need %d bytes, got %d",
+			sessionSetupMinSize, len(body))
+	}
+
+	req := &SessionSetupRequest{
+		StructureSize: binary.LittleEndian.Uint16(
+			body[sessionSetupStructureSizeOffset : sessionSetupStructureSizeOffset+2]),
+		Flags:        body[sessionSetupFlagsOffset],
+		SecurityMode: body[sessionSetupSecurityModeOffset],
+		Capabilities: binary.LittleEndian.Uint32(
+			body[sessionSetupCapabilitiesOffset : sessionSetupCapabilitiesOffset+4]),
+		Channel: binary.LittleEndian.Uint32(
+			body[sessionSetupChannelOffset : sessionSetupChannelOffset+4]),
+		PreviousSessionID: binary.LittleEndian.Uint64(
+			body[sessionSetupPreviousSessionIDOffset : sessionSetupPreviousSessionIDOffset+8]),
+	}
+
+	// Extract security buffer
+	// SecurityBufferOffset is relative to the beginning of the SMB2 header
+	// The body we receive starts after the header, so we adjust
+	secBufferOffset := binary.LittleEndian.Uint16(
+		body[sessionSetupSecBufferOffsetOffset : sessionSetupSecBufferOffsetOffset+2])
+	secBufferLength := binary.LittleEndian.Uint16(
+		body[sessionSetupSecBufferLengthOffset : sessionSetupSecBufferLengthOffset+2])
+
+	// Calculate actual offset in body (subtract header size)
+	bufferStart := int(secBufferOffset) - smb2HeaderSize
+	if bufferStart < sessionSetupFixedSize {
+		bufferStart = sessionSetupFixedSize // Buffer starts after fixed fields
+	}
+
+	if secBufferLength > 0 && bufferStart+int(secBufferLength) <= len(body) {
+		req.SecurityBuffer = body[bufferStart : bufferStart+int(secBufferLength)]
+	}
+
+	return req, nil
+}
+
+// =============================================================================
+// SESSION_SETUP Handler
+// =============================================================================
+
+// SessionSetup handles SMB2 SESSION_SETUP command.
+//
+// This handler implements NTLM authentication for SMB2 connections.
+// The authentication flow is:
+//
+//  1. Client sends Type 1 (NEGOTIATE) → handleNTLMNegotiate()
+//     Server responds with Type 2 (CHALLENGE) + STATUS_MORE_PROCESSING_REQUIRED
+//
+//  2. Client sends Type 3 (AUTHENTICATE) → completeNTLMAuth()
+//     Server creates session + STATUS_SUCCESS
+//
+// Both raw NTLM and SPNEGO-wrapped NTLM are supported.
+//
+// [MS-SMB2] Section 2.2.5, 2.2.6, 3.3.5.5
 func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	if len(body) < 25 {
+	// Parse request
+	req, err := parseSessionSetupRequest(body)
+	if err != nil {
+		logger.Debug("SESSION_SETUP parse error", "error", err)
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
-	// Parse request [MS-SMB2] 2.2.5
-	// structureSize := binary.LittleEndian.Uint16(body[0:2]) // Always 25
-	// flags := body[2]
-	// securityMode := body[3]
-	// capabilities := binary.LittleEndian.Uint32(body[4:8])
-	// channel := binary.LittleEndian.Uint32(body[8:12])
-	securityBufferOffset := binary.LittleEndian.Uint16(body[12:14])
-	securityBufferLength := binary.LittleEndian.Uint16(body[14:16])
-	previousSessionID := binary.LittleEndian.Uint64(body[16:24])
-
-	// Extract security buffer
-	// SecurityBufferOffset is relative to the beginning of the SMB2 header (64 bytes)
-	// The body we receive starts after the header, so we subtract 64
-	secBufferStart := int(securityBufferOffset) - 64
-	if secBufferStart < 24 {
-		secBufferStart = 24 // Security buffer starts after fixed 24-byte fields
-	}
-
-	var securityBuffer []byte
-	if securityBufferLength > 0 && secBufferStart+int(securityBufferLength) <= len(body) {
-		securityBuffer = body[secBufferStart : secBufferStart+int(securityBufferLength)]
-	}
-
-	// Debug: log first few bytes of security buffer to see what we're getting
-	if len(securityBuffer) > 0 {
-		prefix := securityBuffer
+	// Log request details
+	if len(req.SecurityBuffer) > 0 {
+		prefix := req.SecurityBuffer
 		if len(prefix) > 16 {
 			prefix = prefix[:16]
 		}
-		logger.Debug("Security buffer content", "prefix", fmt.Sprintf("%x", prefix), "length", len(securityBuffer))
+		logger.Debug("Security buffer content",
+			"prefix", fmt.Sprintf("%x", prefix),
+			"length", len(req.SecurityBuffer))
 	}
 
 	logger.Debug("SESSION_SETUP request",
-		"securityBufferLength", securityBufferLength,
-		"securityBufferOffset", securityBufferOffset,
-		"previousSessionID", previousSessionID,
-		"hasSecurityBuffer", len(securityBuffer) > 0)
+		"securityBufferLength", len(req.SecurityBuffer),
+		"previousSessionID", req.PreviousSessionID,
+		"contextSessionID", ctx.SessionID)
 
-	// Check if this is a continuation of an existing auth (Type 3 message)
+	// Check if this is a continuation of pending authentication
 	if ctx.SessionID != 0 {
-		// This is the second round of NTLM (Type 3 - AUTHENTICATE)
 		if _, ok := h.GetPendingAuth(ctx.SessionID); ok {
-			return h.completeNTLMAuth(ctx, securityBuffer)
+			return h.completeNTLMAuth(ctx, req.SecurityBuffer)
 		}
 	}
 
-	// Check what kind of security token we received
-	if len(securityBuffer) > 0 && auth.IsNTLMSSP(securityBuffer) {
-		msgType := auth.GetNTLMMessageType(securityBuffer)
-		logger.Debug("NTLMSSP message detected", "type", msgType)
+	// Extract NTLM token (unwrap SPNEGO if needed)
+	ntlmToken, isWrapped := extractNTLMToken(req.SecurityBuffer)
+
+	// Process NTLM message
+	if ntlm.IsValid(ntlmToken) {
+		msgType := ntlm.GetMessageType(ntlmToken)
+		logger.Debug("NTLM message detected",
+			"type", msgType,
+			"wrapped", isWrapped)
 
 		switch msgType {
-		case auth.NTLMNegotiate:
-			// Type 1 (NEGOTIATE) - respond with Type 2 (CHALLENGE)
+		case ntlm.Negotiate:
 			return h.handleNTLMNegotiate(ctx)
-		case auth.NTLMAuthenticate:
-			// Type 3 (AUTHENTICATE) - this shouldn't happen without a pending auth
-			// but handle it gracefully as a new guest session
+		case ntlm.Authenticate:
+			// Type 3 without pending auth - create guest session
 			return h.createGuestSession(ctx)
 		}
 	}
 
-	// Check for SPNEGO wrapper
-	if len(securityBuffer) > 0 && isGSSAPI(securityBuffer) {
-		// SPNEGO wrapped - extract inner token
-		innerToken := extractGSSAPIToken(securityBuffer)
-		if auth.IsNTLMSSP(innerToken) {
-			msgType := auth.GetNTLMMessageType(innerToken)
-			logger.Debug("SPNEGO/NTLMSSP message detected", "type", msgType)
-
-			switch msgType {
-			case auth.NTLMNegotiate:
-				return h.handleNTLMNegotiate(ctx)
-			case auth.NTLMAuthenticate:
-				// Complete the authentication
-				if ctx.SessionID != 0 {
-					if _, ok := h.GetPendingAuth(ctx.SessionID); ok {
-						return h.completeNTLMAuth(ctx, innerToken)
-					}
-				}
-				return h.createGuestSession(ctx)
-			}
-		}
-	}
-
-	// No recognized auth - create guest session
+	// No recognized auth mechanism - create guest session
 	return h.createGuestSession(ctx)
 }
 
-// handleNTLMNegotiate handles NTLM Type 1 (NEGOTIATE) message
+// extractNTLMToken extracts the NTLM token from a security buffer.
+// Handles both raw NTLM and SPNEGO-wrapped tokens.
+// Returns the token and whether it was wrapped in SPNEGO.
+func extractNTLMToken(securityBuffer []byte) ([]byte, bool) {
+	if len(securityBuffer) == 0 {
+		return securityBuffer, false
+	}
+
+	// Check if this might be SPNEGO-wrapped (GSSAPI or NegTokenResp)
+	if len(securityBuffer) >= 2 && (securityBuffer[0] == 0x60 || securityBuffer[0] == 0xa0 || securityBuffer[0] == 0xa1) {
+		parsed, err := spnego.Parse(securityBuffer)
+		if err != nil {
+			logger.Debug("SPNEGO parse failed, treating as raw", "error", err)
+			return securityBuffer, false
+		}
+
+		// Check if NTLM is offered
+		if parsed.Type == spnego.TokenTypeInit && !parsed.HasNTLM() {
+			logger.Debug("SPNEGO token does not offer NTLM")
+			return securityBuffer, false
+		}
+
+		if len(parsed.MechToken) > 0 {
+			return parsed.MechToken, true
+		}
+	}
+
+	// Already raw NTLM (or unknown format)
+	return securityBuffer, false
+}
+
+// =============================================================================
+// NTLM Authentication Handlers
+// =============================================================================
+
+// handleNTLMNegotiate handles NTLM Type 1 (NEGOTIATE) message.
+//
+// This starts the NTLM handshake by:
+//  1. Generating a new session ID for this authentication attempt
+//  2. Storing a PendingAuth record to track the handshake state
+//  3. Building and returning a Type 2 (CHALLENGE) message
+//
+// The client will respond with Type 3 (AUTHENTICATE) which completes
+// the handshake in completeNTLMAuth().
 func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext) (*HandlerResult, error) {
-	// Generate session ID for this auth attempt
+	// Generate session ID for this authentication attempt
 	sessionID := h.GenerateSessionID()
 
-	// Store pending auth
+	// Store pending auth to track handshake state
 	pending := &PendingAuth{
 		SessionID:  sessionID,
 		ClientAddr: ctx.ClientAddr,
@@ -119,127 +224,143 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext) (*HandlerResult, e
 	}
 	h.StorePendingAuth(pending)
 
-	// Update context so the response includes the session ID
+	// Update context so response includes the session ID
 	ctx.SessionID = sessionID
 
 	// Build NTLM Type 2 (CHALLENGE) response
-	challengeMsg := auth.BuildNTLMChallenge()
+	challengeMsg := ntlm.BuildChallenge()
 
 	logger.Debug("Sending NTLM CHALLENGE",
 		"sessionID", sessionID,
 		"challengeLength", len(challengeMsg))
 
-	// Build SESSION_SETUP response with STATUS_MORE_PROCESSING_REQUIRED
-	return h.buildSessionSetupResponse(types.StatusMoreProcessingRequired, 0, challengeMsg), nil
+	// Return response with STATUS_MORE_PROCESSING_REQUIRED
+	// Client will send Type 3 (AUTHENTICATE) next
+	return h.buildSessionSetupResponse(
+		types.StatusMoreProcessingRequired,
+		0, // No session flags yet
+		challengeMsg,
+	), nil
 }
 
-// completeNTLMAuth handles NTLM Type 3 (AUTHENTICATE) message
+// completeNTLMAuth handles NTLM Type 3 (AUTHENTICATE) message.
+//
+// This completes the NTLM handshake by:
+//  1. Validating the pending authentication exists
+//  2. Creating a guest session (no credential validation)
+//  3. Cleaning up the pending authentication state
+//
+// Note: This implementation accepts all authentication attempts as guest.
+// For credential validation, implement NTLMv2 response verification here.
 func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte) (*HandlerResult, error) {
-	// Get pending auth
+	// Get and validate pending auth
 	pending, ok := h.GetPendingAuth(ctx.SessionID)
 	if !ok {
+		logger.Debug("No pending auth for session", "sessionID", ctx.SessionID)
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
-	// Remove pending auth
+	// Remove pending auth (handshake complete)
 	h.DeletePendingAuth(ctx.SessionID)
 
-	// For anonymous/guest auth, we don't validate credentials
-	// Just create the session
-	session := &Session{
-		SessionID:  pending.SessionID,
-		IsGuest:    true,
-		IsNull:     false,
-		CreatedAt:  time.Now(),
-		ClientAddr: pending.ClientAddr,
-		Username:   "guest",
-		Domain:     "",
-	}
-
-	h.StoreSession(session)
+	// Create guest session using SessionManager
+	// For credential validation, this is where you would:
+	// 1. Parse the AUTHENTICATE message to extract LmChallengeResponse/NtChallengeResponse
+	// 2. Verify the response against stored credentials
+	// 3. Map the authenticated user to system identity
+	sess := h.CreateSessionWithID(pending.SessionID, pending.ClientAddr, true, "guest", "")
 
 	// Update context
 	ctx.IsGuest = true
 
 	logger.Debug("NTLM authentication complete",
-		"sessionID", session.SessionID,
-		"username", session.Username,
-		"isGuest", session.IsGuest)
+		"sessionID", sess.SessionID,
+		"username", sess.Username,
+		"isGuest", sess.IsGuest)
 
-	// Build success response
-	return h.buildSessionSetupResponse(types.StatusSuccess, types.SMB2SessionFlagIsGuest, nil), nil
+	// Return success with guest flag
+	return h.buildSessionSetupResponse(
+		types.StatusSuccess,
+		types.SMB2SessionFlagIsGuest,
+		nil, // No security buffer needed
+	), nil
 }
 
-// createGuestSession creates a guest session without NTLM handshake
+// createGuestSession creates a guest session without NTLM handshake.
+//
+// This is used when:
+//   - Client sends no authentication token
+//   - Client sends unrecognized authentication mechanism
+//   - Client sends Type 3 without prior Type 1 (graceful handling)
 func (h *Handler) createGuestSession(ctx *SMBHandlerContext) (*HandlerResult, error) {
-	sessionID := h.GenerateSessionID()
+	// Create session using SessionManager (includes credit tracking)
+	sess := h.CreateSession(ctx.ClientAddr, true, "guest", "")
 
-	session := &Session{
-		SessionID:  sessionID,
-		IsGuest:    true,
-		IsNull:     false,
-		CreatedAt:  time.Now(),
-		ClientAddr: ctx.ClientAddr,
-		Username:   "guest",
-		Domain:     "",
-	}
-
-	h.StoreSession(session)
-
-	ctx.SessionID = sessionID
+	ctx.SessionID = sess.SessionID
 	ctx.IsGuest = true
 
-	logger.Debug("Created guest session",
-		"sessionID", sessionID)
+	logger.Debug("Created guest session", "sessionID", sess.SessionID)
 
-	return h.buildSessionSetupResponse(types.StatusSuccess, types.SMB2SessionFlagIsGuest, nil), nil
+	return h.buildSessionSetupResponse(
+		types.StatusSuccess,
+		types.SMB2SessionFlagIsGuest,
+		nil,
+	), nil
 }
 
-// buildSessionSetupResponse builds the SESSION_SETUP response [MS-SMB2] 2.2.6
-func (h *Handler) buildSessionSetupResponse(status uint32, sessionFlags uint16, securityBuffer []byte) *HandlerResult {
-	// Calculate security buffer offset (header + fixed response fields)
-	// SMB2 header (64) + response fixed part (8) = 72
-	securityBufferOffset := uint16(0)
+// =============================================================================
+// Response Building
+// =============================================================================
+
+// buildSessionSetupResponse builds the SESSION_SETUP response.
+//
+// Response structure [MS-SMB2] 2.2.6:
+//
+//	Offset  Size  Field                 Description
+//	------  ----  -------------------   ----------------------------------
+//	0       2     StructureSize         Always 9
+//	2       2     SessionFlags          SMB2_SESSION_FLAG_* flags
+//	4       2     SecurityBufferOffset  Offset from header start
+//	6       2     SecurityBufferLength  Length of security buffer
+//	8       var   Buffer                Security buffer (if present)
+func (h *Handler) buildSessionSetupResponse(
+	status types.Status,
+	sessionFlags uint16,
+	securityBuffer []byte,
+) *HandlerResult {
+	// Calculate security buffer offset
+	// Offset is from start of SMB2 header (64 bytes + 8 byte fixed response)
+	var securityBufferOffset uint16
 	if len(securityBuffer) > 0 {
-		securityBufferOffset = 64 + 8 // Header + fixed response
+		securityBufferOffset = smb2HeaderSize + sessionSetupRespFixedSize
 	}
 
-	// Build response body
-	// StructureSize (2) + SessionFlags (2) + SecurityBufferOffset (2) + SecurityBufferLength (2) + Buffer
-	respLen := 8 + len(securityBuffer)
+	// Allocate response buffer
+	respLen := sessionSetupRespFixedSize + len(securityBuffer)
 	resp := make([]byte, respLen)
 
-	binary.LittleEndian.PutUint16(resp[0:2], 9) // StructureSize (always 9 per spec)
-	binary.LittleEndian.PutUint16(resp[2:4], sessionFlags)
-	binary.LittleEndian.PutUint16(resp[4:6], securityBufferOffset)
-	binary.LittleEndian.PutUint16(resp[6:8], uint16(len(securityBuffer)))
+	// Write fixed fields
+	binary.LittleEndian.PutUint16(
+		resp[sessionSetupRespStructureSizeOffset:sessionSetupRespStructureSizeOffset+2],
+		sessionSetupRespStructureSize,
+	)
+	binary.LittleEndian.PutUint16(
+		resp[sessionSetupRespSessionFlagsOffset:sessionSetupRespSessionFlagsOffset+2],
+		sessionFlags,
+	)
+	binary.LittleEndian.PutUint16(
+		resp[sessionSetupRespSecBufferOffsetOffset:sessionSetupRespSecBufferOffsetOffset+2],
+		securityBufferOffset,
+	)
+	binary.LittleEndian.PutUint16(
+		resp[sessionSetupRespSecBufferLengthOffset:sessionSetupRespSecBufferLengthOffset+2],
+		uint16(len(securityBuffer)),
+	)
 
+	// Copy security buffer
 	if len(securityBuffer) > 0 {
-		copy(resp[8:], securityBuffer)
+		copy(resp[sessionSetupRespFixedSize:], securityBuffer)
 	}
 
 	return NewResult(status, resp)
-}
-
-// isGSSAPI checks if the buffer starts with GSSAPI/SPNEGO wrapper
-func isGSSAPI(buf []byte) bool {
-	// GSSAPI tokens start with 0x60 (APPLICATION 0)
-	// or 0xa1 (CONTEXT SPECIFIC 1) for negTokenResp
-	if len(buf) < 2 {
-		return false
-	}
-	return buf[0] == 0x60 || buf[0] == 0xa1
-}
-
-// extractGSSAPIToken extracts the inner token from a GSSAPI/SPNEGO wrapper
-// This is a simplified extraction that looks for the NTLMSSP signature
-func extractGSSAPIToken(buf []byte) []byte {
-	// Look for NTLMSSP signature within the buffer
-	for i := 0; i < len(buf)-8; i++ {
-		if buf[i] == 'N' && buf[i+1] == 'T' && buf[i+2] == 'L' && buf[i+3] == 'M' &&
-			buf[i+4] == 'S' && buf[i+5] == 'S' && buf[i+6] == 'P' && buf[i+7] == 0 {
-			return buf[i:]
-		}
-	}
-	return buf
 }
