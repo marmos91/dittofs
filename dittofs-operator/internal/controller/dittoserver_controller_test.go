@@ -18,98 +18,414 @@ package controller
 
 import (
 	"context"
+	"testing"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
+	"github.com/marmos91/dittofs/dittofs-operator/api/v1alpha1"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	dittoiov1alpha1 "github.com/marmos91/dittofs/dittofs-operator/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-var _ = Describe("DittoServer Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
+type fields struct {
+	dittoServer *v1alpha1.DittoServer
+	configMap   *corev1.ConfigMap
+	service     *corev1.Service
+	statefulSet *appsv1.StatefulSet
+}
 
-		ctx := context.Background()
+type expectedStatus struct {
+	phase             string
+	conditionReason   string
+	conditionStatus   metav1.ConditionStatus
+	availableReplicas *int32
+}
 
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+func TestReconcileDittoServer(t *testing.T) {
+	tests := []struct {
+		description    string
+		fields         fields
+		request        ctrl.Request
+		expectedStatus *expectedStatus
+		wantErr        error
+	}{
+		{
+			description: "Create DittoServer with all resources",
+			fields: fields{
+				dittoServer: v1alpha1.NewDittoServer(
+					v1alpha1.WithName("hello"),
+					v1alpha1.WithNamespace("default"),
+					v1alpha1.WithSpec(
+						*v1alpha1.NewDittoServerSpec(
+							v1alpha1.WithStorage(
+								v1alpha1.StorageSpec{
+									MetadataSize: "10Gi",
+									ContentSize:  "100Gi",
+								},
+							),
+							v1alpha1.WithResources(
+								corev1.ResourceRequirements{
+									Limits: corev1.ResourceList{
+										"cpu":    resource.MustParse("2"),
+										"memory": resource.MustParse("4Gi"),
+									},
+									Requests: corev1.ResourceList{
+										"cpu":    resource.MustParse("500m"),
+										"memory": resource.MustParse("1Gi"),
+									},
+								},
+							),
+						),
+					),
+				),
+			},
+			expectedStatus: &expectedStatus{
+				phase:           "Pending",
+				conditionReason: "StatefulSetNotReady",
+				conditionStatus: metav1.ConditionFalse,
+			},
+			request: ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: "default",
+					Name:      "hello",
+				},
+			},
+		},
+		{
+			description: "Create DittoServer with multiple replicas and no content storage",
+			fields: fields{
+				dittoServer: func() *v1alpha1.DittoServer {
+					replicas := int32(3)
+					return v1alpha1.NewDittoServer(
+						v1alpha1.WithName("multi-replica"),
+						v1alpha1.WithNamespace("default"),
+						v1alpha1.WithSpec(
+							*v1alpha1.NewDittoServerSpec(
+								v1alpha1.WithReplicas(&replicas),
+								v1alpha1.WithStorage(
+									v1alpha1.StorageSpec{
+										MetadataSize: "5Gi",
+									},
+								),
+							),
+						),
+					)
+				}(),
+			},
+			expectedStatus: &expectedStatus{
+				phase:           "Pending",
+				conditionReason: "StatefulSetNotReady",
+				conditionStatus: metav1.ConditionFalse,
+			},
+			request: ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: "default",
+					Name:      "multi-replica",
+				},
+			},
+		},
+		{
+			description: "Create DittoServer with replicas=0 (Stopped state)",
+			fields: fields{
+				dittoServer: func() *v1alpha1.DittoServer {
+					replicas := int32(0)
+					return v1alpha1.NewDittoServer(
+						v1alpha1.WithName("stopped-server"),
+						v1alpha1.WithNamespace("default"),
+						v1alpha1.WithSpec(
+							*v1alpha1.NewDittoServerSpec(
+								v1alpha1.WithReplicas(&replicas),
+								v1alpha1.WithStorage(
+									v1alpha1.StorageSpec{
+										MetadataSize: "5Gi",
+									},
+								),
+							),
+						),
+					)
+				}(),
+			},
+			expectedStatus: &expectedStatus{
+				phase:           "Stopped",
+				conditionReason: "Stopped",
+				conditionStatus: metav1.ConditionTrue,
+			},
+			request: ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: "default",
+					Name:      "stopped-server",
+				},
+			},
+		},
+		{
+			description: "DittoServer with ready StatefulSet",
+			fields: fields{
+				dittoServer: func() *v1alpha1.DittoServer {
+					replicas := int32(2)
+					return v1alpha1.NewDittoServer(
+						v1alpha1.WithName("ready-server"),
+						v1alpha1.WithNamespace("default"),
+						v1alpha1.WithSpec(
+							*v1alpha1.NewDittoServerSpec(
+								v1alpha1.WithReplicas(&replicas),
+								v1alpha1.WithStorage(
+									v1alpha1.StorageSpec{
+										MetadataSize: "10Gi",
+									},
+								),
+							),
+						),
+					)
+				}(),
+				statefulSet: func() *appsv1.StatefulSet {
+					replicas := int32(2)
+					return &appsv1.StatefulSet{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "ready-server",
+							Namespace: "default",
+						},
+						Spec: appsv1.StatefulSetSpec{
+							Replicas: &replicas,
+						},
+						Status: appsv1.StatefulSetStatus{
+							ReadyReplicas: 2,
+						},
+					}
+				}(),
+			},
+			expectedStatus: &expectedStatus{
+				phase:             "Running",
+				conditionReason:   "StatefulSetReady",
+				conditionStatus:   metav1.ConditionTrue,
+				availableReplicas: func() *int32 { r := int32(2); return &r }(),
+			},
+			request: ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: "default",
+					Name:      "ready-server",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			ctx := context.TODO()
+			r := setupDittoServerReconciler(t, tt.fields)
+
+			_, err := r.Reconcile(ctx, tt.request)
+			if err != nil {
+				t.Fatalf("Reconcile failed: %v", err)
+			}
+
+			verifyConfigMap(t, ctx, r, tt.request)
+			verifyService(t, ctx, r, tt.request)
+			verifyStatefulSet(t, ctx, r, tt.request, tt.fields.dittoServer)
+			verifyDittoServerStatus(t, ctx, r, tt.request, tt.expectedStatus)
+		})
+	}
+}
+
+func verifyConfigMap(t *testing.T, ctx context.Context, r *DittoServerReconciler, req ctrl.Request) {
+	configMap := &corev1.ConfigMap{}
+	configMapKey := types.NamespacedName{
+		Namespace: req.Namespace,
+		Name:      req.Name + "-config",
+	}
+	if err := r.Get(ctx, configMapKey, configMap); err != nil {
+		t.Errorf("Failed to get ConfigMap: %v", err)
+		return
+	}
+
+	if _, ok := configMap.Data["config.yaml"]; !ok {
+		t.Errorf("ConfigMap missing config.yaml key")
+	}
+}
+
+func verifyService(t *testing.T, ctx context.Context, r *DittoServerReconciler, req ctrl.Request) {
+	service := &corev1.Service{}
+	serviceKey := types.NamespacedName{
+		Namespace: req.Namespace,
+		Name:      req.Name,
+	}
+	if err := r.Get(ctx, serviceKey, service); err != nil {
+		t.Errorf("Failed to get Service: %v", err)
+		return
+	}
+
+	if len(service.Spec.Ports) != 2 {
+		t.Errorf("Expected 2 service ports, got %d", len(service.Spec.Ports))
+	}
+
+	hasNFS, hasMetrics := false, false
+	for _, port := range service.Spec.Ports {
+		if port.Name == "nfs" {
+			hasNFS = true
 		}
-		dittoserver := &dittoiov1alpha1.DittoServer{}
+		if port.Name == "metrics" {
+			hasMetrics = true
+		}
+	}
 
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind DittoServer")
-			err := k8sClient.Get(ctx, typeNamespacedName, dittoserver)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &dittoiov1alpha1.DittoServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
-					},
-					Spec: dittoiov1alpha1.DittoServerSpec{
-						Storage: dittoiov1alpha1.StorageSpec{
-							MetadataSize: "10Gi",
-							ContentSize:  "50Gi",
-						},
-						Config: dittoiov1alpha1.DittoConfig{
-							Backends: []dittoiov1alpha1.BackendConfig{
-								{
-									Name: "test-metadata",
-									Type: "badger",
-									Config: map[string]string{
-										"path": "/data/metadata",
-									},
-								},
-								{
-									Name: "test-content",
-									Type: "local",
-									Config: map[string]string{
-										"path": "/data/content",
-									},
-								},
-							},
-							Shares: []dittoiov1alpha1.ShareConfig{
-								{
-									Name:          "test-share",
-									ExportPath:    "/export",
-									MetadataStore: "test-metadata",
-									ContentStore:  "test-content",
-								},
-							},
-						},
-					},
+	if !hasNFS {
+		t.Errorf("Service missing NFS port")
+	}
+	if !hasMetrics {
+		t.Errorf("Service missing metrics port")
+	}
+}
+
+func verifyStatefulSet(t *testing.T, ctx context.Context, r *DittoServerReconciler, req ctrl.Request, dittoServer *v1alpha1.DittoServer) {
+	statefulSet := &appsv1.StatefulSet{}
+	statefulSetKey := types.NamespacedName{
+		Namespace: req.Namespace,
+		Name:      req.Name,
+	}
+	if err := r.Get(ctx, statefulSetKey, statefulSet); err != nil {
+		t.Errorf("Failed to get StatefulSet: %v", err)
+		return
+	}
+
+	expectedReplicas := int32(1)
+	if dittoServer.Spec.Replicas != nil {
+		expectedReplicas = *dittoServer.Spec.Replicas
+	}
+	if statefulSet.Spec.Replicas == nil || *statefulSet.Spec.Replicas != expectedReplicas {
+		t.Errorf("Expected %d replicas, got %v", expectedReplicas, statefulSet.Spec.Replicas)
+	}
+
+	if len(statefulSet.Spec.VolumeClaimTemplates) < 1 {
+		t.Errorf("Expected at least 1 volume claim template (metadata), got %d", len(statefulSet.Spec.VolumeClaimTemplates))
+	}
+
+	hasMetadata := false
+	for _, vct := range statefulSet.Spec.VolumeClaimTemplates {
+		if vct.Name == "metadata" {
+			hasMetadata = true
+			expectedSize := dittoServer.Spec.Storage.MetadataSize
+			if storage, ok := vct.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
+				if storage.String() != expectedSize {
+					t.Errorf("Expected metadata storage %s, got %s", expectedSize, storage.String())
 				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
-		})
+		}
+	}
+	if !hasMetadata {
+		t.Errorf("StatefulSet missing metadata volume claim template")
+	}
 
-		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &dittoiov1alpha1.DittoServer{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
+	if len(statefulSet.Spec.Template.Spec.Containers) != 1 {
+		t.Errorf("Expected 1 container, got %d", len(statefulSet.Spec.Template.Spec.Containers))
+		return
+	}
 
-			By("Cleanup the specific resource instance DittoServer")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &DittoServerReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
+	container := statefulSet.Spec.Template.Spec.Containers[0]
+	if container.Name != "dittofs" {
+		t.Errorf("Expected container name 'dittofs', got %s", container.Name)
+	}
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
-		})
-	})
-})
+	if dittoServer.Spec.Resources.Limits != nil {
+		if !container.Resources.Limits.Cpu().Equal(*dittoServer.Spec.Resources.Limits.Cpu()) {
+			t.Errorf("CPU limit mismatch")
+		}
+		if !container.Resources.Limits.Memory().Equal(*dittoServer.Spec.Resources.Limits.Memory()) {
+			t.Errorf("Memory limit mismatch")
+		}
+	}
+}
+
+func verifyDittoServerStatus(t *testing.T, ctx context.Context, r *DittoServerReconciler, req ctrl.Request, expected *expectedStatus) {
+	dittoServer := &v1alpha1.DittoServer{}
+	dittoServerKey := types.NamespacedName{
+		Namespace: req.Namespace,
+		Name:      req.Name,
+	}
+	if err := r.Get(ctx, dittoServerKey, dittoServer); err != nil {
+		t.Errorf("Failed to get DittoServer: %v", err)
+		return
+	}
+
+	if dittoServer.Status.Phase == "" {
+		t.Errorf("DittoServer status phase is empty")
+	}
+
+	if expected != nil && dittoServer.Status.Phase != expected.phase {
+		t.Errorf("Expected Phase '%s', got '%s'", expected.phase, dittoServer.Status.Phase)
+	}
+
+	if dittoServer.Status.NFSEndpoint == "" {
+		t.Errorf("DittoServer status NFSEndpoint is empty")
+	}
+
+	if len(dittoServer.Status.Conditions) == 0 {
+		t.Errorf("DittoServer status has no conditions")
+		return
+	}
+
+	readyCondition := findCondition(dittoServer.Status.Conditions, "Ready")
+	if readyCondition == nil {
+		t.Errorf("Ready condition not found")
+		return
+	}
+
+	if expected != nil {
+		if readyCondition.Reason != expected.conditionReason {
+			t.Errorf("Expected Ready condition reason '%s', got '%s'", expected.conditionReason, readyCondition.Reason)
+		}
+		if readyCondition.Status != expected.conditionStatus {
+			t.Errorf("Expected Ready condition status %s, got %s", expected.conditionStatus, readyCondition.Status)
+		}
+		if expected.availableReplicas != nil && dittoServer.Status.AvailableReplicas != *expected.availableReplicas {
+			t.Errorf("Expected %d available replicas, got %d", *expected.availableReplicas, dittoServer.Status.AvailableReplicas)
+		}
+	}
+}
+
+func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return &conditions[i]
+		}
+	}
+	return nil
+}
+
+func setupDittoServerReconciler(t *testing.T, fields fields) *DittoServerReconciler {
+	s := runtime.NewScheme()
+	if err := scheme.AddToScheme(s); err != nil {
+		t.Fatalf("failed to add core scheme: %v", err)
+	}
+	if err := v1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("failed to add v1alpha1 scheme: %v", err)
+	}
+
+	var objs []runtime.Object
+	if fields.dittoServer != nil {
+		objs = append(objs, fields.dittoServer)
+	}
+	if fields.configMap != nil {
+		objs = append(objs, fields.configMap)
+	}
+	if fields.service != nil {
+		objs = append(objs, fields.service)
+	}
+	if fields.statefulSet != nil {
+		objs = append(objs, fields.statefulSet)
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithRuntimeObjects(objs...).
+		WithStatusSubresource(&v1alpha1.DittoServer{}).
+		Build()
+
+	return &DittoServerReconciler{
+		Client: fakeClient,
+		Scheme: s,
+	}
+}
