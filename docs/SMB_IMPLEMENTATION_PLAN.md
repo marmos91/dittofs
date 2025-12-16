@@ -28,23 +28,39 @@ ls /tmp/smb  # Lists directory contents successfully
 ### Phase 1 Completed Files
 
 ```
+internal/auth/                     # Shared authentication (SMB + NFSv4)
+├── ntlm/
+│   ├── ntlm.go                    # NTLM message types, building, parsing
+│   └── ntlm_test.go               # NTLM tests
+└── spnego/
+    ├── spnego.go                  # SPNEGO token parsing (gokrb5-based)
+    └── spnego_test.go             # SPNEGO tests
+
 internal/protocol/smb/
 ├── dispatch.go                    # Command dispatch table
 ├── types/
-│   ├── constants.go               # SMB2 command codes, flags, dialects
-│   ├── status.go                  # NT_STATUS codes
+│   ├── constants.go               # Typed enums (Command, HeaderFlags, Dialect, etc.)
+│   ├── status.go                  # NT_STATUS type with severity levels
 │   └── filetime.go                # Windows FILETIME conversion
 ├── header/
-│   ├── header.go                  # SMB2Header struct
+│   ├── header.go                  # SMB2Header struct with documentation
+│   ├── header_test.go             # Header tests
 │   ├── parser.go                  # Parse from wire format
 │   └── encoder.go                 # Encode to wire format
+├── session/                       # Unified session management
+│   ├── session.go                 # Session struct (identity + credits)
+│   ├── credits.go                 # Credit configuration and strategy
+│   ├── manager.go                 # SessionManager with lifecycle management
+│   └── manager_test.go            # Session manager tests
 └── v2/handlers/
-    ├── handler.go                 # Main Handler struct
+    ├── handler.go                 # Main Handler struct (uses SessionManager)
+    ├── handler_test.go            # Handler tests
     ├── context.go                 # SMBHandlerContext
     ├── result.go                  # HandlerResult type
     ├── mock_data.go               # Mock filesystem
     ├── negotiate.go               # SMB2 NEGOTIATE
-    ├── session_setup.go           # SMB2 SESSION_SETUP
+    ├── session_setup.go           # SMB2 SESSION_SETUP (uses internal/auth)
+    ├── session_setup_test.go      # SESSION_SETUP tests
     ├── logoff.go                  # SMB2 LOGOFF
     ├── tree_connect.go            # SMB2 TREE_CONNECT
     ├── tree_disconnect.go         # SMB2 TREE_DISCONNECT
@@ -60,7 +76,7 @@ internal/protocol/smb/
 
 pkg/adapter/smb/
 ├── config.go                      # SMBConfig struct
-├── smb_adapter.go                 # Adapter implementation
+├── smb_adapter.go                 # Adapter implementation (uses SessionManager)
 └── smb_connection.go              # Per-connection handler
 
 pkg/config/
@@ -68,6 +84,26 @@ pkg/config/
 ├── adapters.go                    # CreateAdapters includes SMB
 └── defaults.go                    # SMB defaults
 ```
+
+### Shared Authentication Package
+
+The `internal/auth/` package provides shared authentication components for both SMB and future NFSv4:
+
+**`internal/auth/ntlm/`** - NTLM authentication:
+- Message type detection and parsing
+- Challenge (Type 2) message building
+- Negotiate flags and AV_PAIR handling
+- TODO: Encryption support (advertised but not implemented)
+- TODO: Challenge verification for production auth
+
+**`internal/auth/spnego/`** - SPNEGO token handling:
+- Uses `github.com/jcmturner/gokrb5/v8` for proper ASN.1 parsing
+- NegTokenInit/NegTokenResp parsing and building
+- Mechanism OID detection (NTLM, Kerberos)
+- Foundation for future Kerberos support
+
+**Why shared?** NFSv4 with RPCSEC_GSS will use the same Kerberos/SPNEGO infrastructure.
+The gokrb5 library provides unified support for both protocols.
 
 ### Testing Phase 1
 
@@ -139,6 +175,14 @@ smbclient //localhost/export -p 12445 -N -c "get readme.txt -"
 
 ```
 dittofs/
+├── internal/auth/                        # Shared authentication (SMB + NFSv4)
+│   ├── ntlm/                             # NTLM authentication
+│   │   ├── ntlm.go                       # Message types, building, parsing
+│   │   └── ntlm_test.go                  # Tests
+│   └── spnego/                           # SPNEGO token handling
+│       ├── spnego.go                     # gokrb5-based parsing
+│       └── spnego_test.go                # Tests
+│
 ├── pkg/adapter/smb/                      # Public adapter
 │   ├── smb_adapter.go                    # Adapter interface implementation
 │   ├── smb_connection.go                 # Per-connection handler
@@ -162,7 +206,8 @@ dittofs/
 │       ├── context.go                    # SMBHandlerContext
 │       ├── mock_data.go                  # Mock files/directories
 │       ├── negotiate.go                  # NEGOTIATE
-│       ├── session_setup.go              # SESSION_SETUP
+│       ├── session_setup.go              # SESSION_SETUP (imports internal/auth)
+│       ├── session_setup_test.go         # SESSION_SETUP tests
 │       ├── logoff.go                     # LOGOFF
 │       ├── tree_connect.go               # TREE_CONNECT
 │       ├── tree_disconnect.go            # TREE_DISCONNECT

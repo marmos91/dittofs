@@ -221,7 +221,7 @@ func (c *SMBConnection) readRequest(ctx context.Context) (*header.SMB2Header, []
 	}
 
 	logger.Debug("SMB2 request",
-		"command", types.CommandName(hdr.Command),
+		"command", hdr.Command.String(),
 		"messageId", hdr.MessageID,
 		"sessionId", fmt.Sprintf("0x%x", hdr.SessionID),
 		"treeId", hdr.TreeID,
@@ -263,7 +263,7 @@ func parseCompoundCommand(data []byte) (*header.SMB2Header, []byte, []byte, erro
 	}
 
 	logger.Debug("SMB2 compound request",
-		"command", types.CommandName(hdr.Command),
+		"command", hdr.Command.String(),
 		"messageId", hdr.MessageID,
 		"sessionId", fmt.Sprintf("0x%x", hdr.SessionID),
 		"treeId", hdr.TreeID,
@@ -285,7 +285,7 @@ func (c *SMBConnection) processCompoundRequest(ctx context.Context, firstHeader 
 
 	// Process first command
 	logger.Debug("Processing compound request - first command",
-		"command", types.CommandName(firstHeader.Command),
+		"command", firstHeader.Command.String(),
 		"messageId", firstHeader.MessageID)
 
 	result, fileID := c.processRequestWithFileID(ctx, firstHeader, firstBody)
@@ -317,7 +317,7 @@ func (c *SMBConnection) processCompoundRequest(ctx context.Context, firstHeader 
 		}
 
 		logger.Debug("Processing compound request - command",
-			"command", types.CommandName(hdr.Command),
+			"command", hdr.Command.String(),
 			"messageId", hdr.MessageID,
 			"isRelated", hdr.IsRelated(),
 			"usingFileID", lastFileID != [16]byte{})
@@ -415,13 +415,13 @@ func (c *SMBConnection) processRequestWithInheritedFileID(ctx context.Context, r
 
 // injectFileID injects a FileID into the appropriate position in the request body.
 // Offsets are per [MS-SMB2] specification for each command.
-func (c *SMBConnection) injectFileID(command uint16, body []byte, fileID [16]byte) []byte {
+func (c *SMBConnection) injectFileID(command types.Command, body []byte, fileID [16]byte) []byte {
 	// Make a copy to avoid modifying the original
 	newBody := make([]byte, len(body))
 	copy(newBody, body)
 
 	logger.Debug("Injecting FileID",
-		"command", types.CommandName(command),
+		"command", command.String(),
 		"bodyLen", len(body),
 		"fileID", fmt.Sprintf("%x", fileID))
 
@@ -481,6 +481,10 @@ func (c *SMBConnection) processRequest(ctx context.Context, reqHeader *header.SM
 	default:
 	}
 
+	// Track request for adaptive credit management
+	c.server.sessionManager.RequestStarted(reqHeader.SessionID)
+	defer c.server.sessionManager.RequestCompleted(reqHeader.SessionID)
+
 	clientAddr := c.conn.RemoteAddr().String()
 
 	// Look up command in dispatch table
@@ -536,8 +540,20 @@ func (c *SMBConnection) processRequest(ctx context.Context, reqHeader *header.SM
 
 // sendResponse sends a successful SMB2 response.
 func (c *SMBConnection) sendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *smb.HandlerResult) error {
-	// Build response header
-	respHeader := header.NewResponseHeader(reqHeader, result.Status)
+	// Use session manager for adaptive credit grants
+	sessionID := reqHeader.SessionID
+	if ctx.SessionID != 0 {
+		sessionID = ctx.SessionID
+	}
+
+	credits := c.server.sessionManager.GrantCredits(
+		sessionID,
+		reqHeader.Credits,
+		reqHeader.CreditCharge,
+	)
+
+	// Build response header with calculated credits
+	respHeader := header.NewResponseHeaderWithCredits(reqHeader, result.Status, credits)
 
 	// Update SessionID in response if it was set by handler (SESSION_SETUP)
 	if ctx.SessionID != 0 && reqHeader.SessionID == 0 {
@@ -553,8 +569,15 @@ func (c *SMBConnection) sendResponse(reqHeader *header.SMB2Header, ctx *handlers
 }
 
 // sendErrorResponse sends an SMB2 error response.
-func (c *SMBConnection) sendErrorResponse(reqHeader *header.SMB2Header, status uint32) error {
-	respHeader := header.NewResponseHeader(reqHeader, status)
+func (c *SMBConnection) sendErrorResponse(reqHeader *header.SMB2Header, status types.Status) error {
+	// Use session manager for adaptive credit grants
+	credits := c.server.sessionManager.GrantCredits(
+		reqHeader.SessionID,
+		reqHeader.Credits,
+		reqHeader.CreditCharge,
+	)
+
+	respHeader := header.NewResponseHeaderWithCredits(reqHeader, status, credits)
 
 	// Error response body (8 bytes minimum)
 	// StructureSize (2) + ErrorContextCount (1) + Reserved (1) + ByteCount (4)
@@ -607,8 +630,8 @@ func (c *SMBConnection) sendMessage(hdr *header.SMB2Header, body []byte) error {
 	}
 
 	logger.Debug("Sent SMB2 response",
-		"command", types.CommandName(hdr.Command),
-		"status", types.StatusName(hdr.Status),
+		"command", hdr.Command.String(),
+		"status", hdr.Status.String(),
 		"messageId", hdr.MessageID,
 		"bytes", msgLen)
 
@@ -657,9 +680,9 @@ func (c *SMBConnection) handleSMB1Negotiate(ctx context.Context, message []byte)
 	// Credit Charge: 0
 	binary.LittleEndian.PutUint16(respHeader[6:8], 0)
 	// Status: STATUS_SUCCESS
-	binary.LittleEndian.PutUint32(respHeader[8:12], types.StatusSuccess)
+	binary.LittleEndian.PutUint32(respHeader[8:12], uint32(types.StatusSuccess))
 	// Command: NEGOTIATE
-	binary.LittleEndian.PutUint16(respHeader[12:14], types.SMB2Negotiate)
+	binary.LittleEndian.PutUint16(respHeader[12:14], uint16(types.SMB2Negotiate))
 	// Credits: 1
 	binary.LittleEndian.PutUint16(respHeader[14:16], 1)
 	// Flags: SERVER_TO_REDIR (response)
@@ -686,7 +709,7 @@ func (c *SMBConnection) handleSMB1Negotiate(ctx context.Context, message []byte)
 	// Reserved
 	respBody[3] = 0
 	// DialectRevision: SMB 2.0.2
-	binary.LittleEndian.PutUint16(respBody[4:6], types.SMB2Dialect0202)
+	binary.LittleEndian.PutUint16(respBody[4:6], uint16(types.SMB2Dialect0202))
 	// NegotiateContextCount: 0 (SMB 3.1.1 only)
 	binary.LittleEndian.PutUint16(respBody[6:8], 0)
 	// ServerGUID (16 bytes)

@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/pkg/registry"
 )
 
@@ -17,9 +18,8 @@ type Handler struct {
 	// Server identity
 	ServerGUID [16]byte
 
-	// Session management
-	sessions      sync.Map // sessionID -> *Session
-	nextSessionID atomic.Uint64
+	// Session management (unified with credit tracking)
+	SessionManager *session.Manager
 
 	// Pending auth sessions (mid-handshake)
 	pendingAuth sync.Map // sessionID -> *PendingAuth
@@ -45,17 +45,6 @@ type PendingAuth struct {
 	CreatedAt  time.Time
 }
 
-// Session represents an SMB session
-type Session struct {
-	SessionID  uint64
-	IsGuest    bool
-	IsNull     bool
-	CreatedAt  time.Time
-	ClientAddr string
-	Username   string
-	Domain     string
-}
-
 // TreeConnection represents a tree connection (share)
 type TreeConnection struct {
 	TreeID    uint32
@@ -78,10 +67,19 @@ type OpenFile struct {
 	EnumerationComplete bool // For directories: true if directory listing was returned
 }
 
-// NewHandler creates a new SMB2 handler
+// NewHandler creates a new SMB2 handler with default session manager.
+// For custom session management (e.g., shared across adapters), use
+// NewHandlerWithSessionManager instead.
 func NewHandler() *Handler {
+	return NewHandlerWithSessionManager(session.NewDefaultManager())
+}
+
+// NewHandlerWithSessionManager creates a new SMB2 handler with an external session manager.
+// This allows sharing the session manager with other components (e.g., SMBAdapter for credits).
+func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 	h := &Handler{
 		StartTime:       time.Now(),
+		SessionManager:  sessionManager,
 		MaxTransactSize: 65536,
 		MaxReadSize:     65536,
 		MaxWriteSize:    65536,
@@ -90,26 +88,23 @@ func NewHandler() *Handler {
 	// Generate random server GUID
 	_, _ = rand.Read(h.ServerGUID[:])
 
-	// Start session/tree IDs at 1 (0 is reserved)
-	h.nextSessionID.Store(1)
+	// Start tree/file IDs at 1 (0 is reserved)
 	h.nextTreeID.Store(1)
 	h.nextFileID.Store(1)
 
 	return h
 }
 
-// GetSession retrieves a session by ID
-func (h *Handler) GetSession(sessionID uint64) (*Session, bool) {
-	v, ok := h.sessions.Load(sessionID)
-	if !ok {
-		return nil, false
-	}
-	return v.(*Session), true
+// GetSession retrieves a session by ID.
+// Delegates to SessionManager for unified session/credit management.
+func (h *Handler) GetSession(sessionID uint64) (*session.Session, bool) {
+	return h.SessionManager.GetSession(sessionID)
 }
 
-// DeleteSession removes a session by ID
+// DeleteSession removes a session by ID.
+// This automatically cleans up credit tracking as well.
 func (h *Handler) DeleteSession(sessionID uint64) {
-	h.sessions.Delete(sessionID)
+	h.SessionManager.DeleteSession(sessionID)
 }
 
 // GetTree retrieves a tree connection by ID
@@ -140,9 +135,10 @@ func (h *Handler) DeleteOpenFile(fileID [16]byte) {
 	h.files.Delete(string(fileID[:]))
 }
 
-// GenerateSessionID generates a new unique session ID
+// GenerateSessionID generates a new unique session ID.
+// Delegates to SessionManager for ID generation.
 func (h *Handler) GenerateSessionID() uint64 {
-	return h.nextSessionID.Add(1)
+	return h.SessionManager.GenerateSessionID()
 }
 
 // GenerateTreeID generates a new unique tree ID
@@ -168,9 +164,19 @@ func (h *Handler) GenerateFileID() [16]byte {
 	return fileID
 }
 
-// StoreSession stores a session
-func (h *Handler) StoreSession(session *Session) {
-	h.sessions.Store(session.SessionID, session)
+// CreateSession creates and stores a new session.
+// This replaces the old StoreSession method for unified session/credit management.
+func (h *Handler) CreateSession(clientAddr string, isGuest bool, username, domain string) *session.Session {
+	return h.SessionManager.CreateSession(clientAddr, isGuest, username, domain)
+}
+
+// CreateSessionWithID creates a session with a specific ID (for pending auth flows).
+// The session is created in the SessionManager and returned.
+func (h *Handler) CreateSessionWithID(sessionID uint64, clientAddr string, isGuest bool, username, domain string) *session.Session {
+	sess := session.NewSession(sessionID, clientAddr, isGuest, username, domain)
+	// Store directly - this is used for completing pending auth where we already have the ID
+	h.SessionManager.StoreSession(sess)
+	return sess
 }
 
 // StoreTree stores a tree connection

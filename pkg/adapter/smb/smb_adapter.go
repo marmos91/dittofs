@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/v2/handlers"
 	"github.com/marmos91/dittofs/pkg/registry"
 )
@@ -93,6 +94,9 @@ type SMBAdapter struct {
 
 	// listenerMu protects access to the listener field
 	listenerMu sync.RWMutex
+
+	// sessionManager provides unified session and credit management
+	sessionManager *session.Manager
 }
 
 // New creates a new SMBAdapter with the specified configuration.
@@ -131,14 +135,18 @@ func New(config SMBConfig) *SMBAdapter {
 	// Create shutdown context for request cancellation
 	shutdownCtx, cancelRequests := context.WithCancel(context.Background())
 
+	// Create unified session manager for session and credit tracking
+	sessionManager := session.NewDefaultManager()
+
 	return &SMBAdapter{
 		config:         config,
-		handler:        handlers.NewHandler(),
+		handler:        handlers.NewHandlerWithSessionManager(sessionManager),
 		shutdown:       make(chan struct{}),
 		connSemaphore:  connSemaphore,
 		shutdownCtx:    shutdownCtx,
 		cancelRequests: cancelRequests,
 		listenerReady:  make(chan struct{}),
+		sessionManager: sessionManager,
 	}
 }
 
