@@ -17,6 +17,45 @@ import (
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
+// FlushAndFinalizeCache flushes cache data to the content store AND finalizes the upload.
+//
+// This is used when we need immediate durability (e.g., SMB CLOSE) as opposed to
+// just flushing (NFS COMMIT) which allows the background flusher to finalize.
+//
+// For S3 with IncrementalWriteStore:
+//   - FlushIncremental uploads complete parts
+//   - CompleteIncrementalWrite finalizes (PutObject for small files, CompleteMultipartUpload for large)
+//
+// For other stores (filesystem, memory):
+//   - Just calls FlushCacheToContentStore (already writes data directly)
+func FlushAndFinalizeCache(
+	ctx context.Context,
+	c cache.Cache,
+	contentStore content.ContentStore,
+	contentID metadata.ContentID,
+) (*FlushResult, error) {
+	// First, flush any pending data
+	result, err := FlushCacheToContentStore(ctx, c, contentStore, contentID)
+	if err != nil {
+		return nil, err
+	}
+
+	// For incremental stores (S3), we need to finalize the upload
+	if incStore, ok := contentStore.(content.IncrementalWriteStore); ok {
+		err := incStore.CompleteIncrementalWrite(ctx, contentID, c)
+		if err != nil {
+			return nil, fmt.Errorf("failed to complete incremental write: %w", err)
+		}
+
+		// Transition to StateCached (clean, can be evicted)
+		c.SetState(contentID, cache.StateCached)
+
+		logger.Info("Flush: finalized upload", "content_id", contentID)
+	}
+
+	return result, nil
+}
+
 // FlushResult contains information about a flush operation.
 type FlushResult struct {
 	// BytesFlushed is the number of bytes written to the content store.

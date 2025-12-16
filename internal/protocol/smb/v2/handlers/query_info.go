@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 
@@ -62,7 +63,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	case types.SMB2InfoTypeFile:
 		info, err = h.buildFileInfoFromStore(file, types.FileInfoClass(req.FileInfoClass))
 	case types.SMB2InfoTypeFilesystem:
-		info, err = h.buildFilesystemInfo(types.FileInfoClass(req.FileInfoClass), metadataStore, openFile.MetadataHandle)
+		info, err = h.buildFilesystemInfo(ctx.Context, types.FileInfoClass(req.FileInfoClass), metadataStore, openFile.MetadataHandle)
 	case types.SMB2InfoTypeSecurity:
 		info, err = h.buildSecurityInfo()
 	default:
@@ -182,7 +183,7 @@ func (h *Handler) buildFileAllInformationFromStore(file *metadata.File) []byte {
 }
 
 // buildFilesystemInfo builds filesystem information [MS-FSCC] 2.5
-func (h *Handler) buildFilesystemInfo(class types.FileInfoClass, metadataStore metadata.MetadataStore, handle metadata.FileHandle) ([]byte, error) {
+func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoClass, metadataStore metadata.MetadataStore, handle metadata.FileHandle) ([]byte, error) {
 	switch class {
 	case 1: // FileFsVolumeInformation [MS-FSCC] 2.5.9
 		label := []byte{'D', 0, 'i', 0, 't', 0, 't', 0, 'o', 0, 'F', 0, 'S', 0} // "DittoFS" in UTF-16LE
@@ -198,7 +199,7 @@ func (h *Handler) buildFilesystemInfo(class types.FileInfoClass, metadataStore m
 	case 3: // FileFsSizeInformation [MS-FSCC] 2.5.8
 		// Try to get real filesystem stats
 		blockSize := uint64(4096)
-		stats, err := metadataStore.GetFilesystemStatistics(nil, handle)
+		stats, err := metadataStore.GetFilesystemStatistics(ctx, handle)
 		if err == nil {
 			totalBlocks := stats.TotalBytes / blockSize
 			availBlocks := stats.AvailableBytes / blockSize
@@ -228,7 +229,7 @@ func (h *Handler) buildFilesystemInfo(class types.FileInfoClass, metadataStore m
 
 	case 6: // FileFsFullSizeInformation [MS-FSCC] 2.5.4
 		blockSize := uint64(4096)
-		stats, err := metadataStore.GetFilesystemStatistics(nil, handle)
+		stats, err := metadataStore.GetFilesystemStatistics(ctx, handle)
 		if err == nil {
 			totalBlocks := stats.TotalBytes / blockSize
 			availBlocks := stats.AvailableBytes / blockSize

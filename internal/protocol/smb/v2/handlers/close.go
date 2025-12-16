@@ -5,9 +5,25 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
+	"github.com/marmos91/dittofs/pkg/ops"
 )
 
 // Close handles SMB2 CLOSE command [MS-SMB2] 2.2.15, 2.2.16
+//
+// **Purpose:**
+//
+// CLOSE releases the file handle and ensures all data is persisted to storage.
+// This is a critical durability point - when CLOSE completes, the client
+// expects data to be safely stored.
+//
+// **Process:**
+//
+//  1. Decode request to extract FileID
+//  2. Validate FileID maps to an open file
+//  3. Flush any cached data to content store (ensures durability)
+//  4. Optionally return final file attributes (POSTQUERY_ATTRIB flag)
+//  5. Remove the open file handle
+//  6. Return success response
 func (h *Handler) Close(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	// ========================================================================
 	// Step 1: Decode request
@@ -34,7 +50,31 @@ func (h *Handler) Close(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 	}
 
 	// ========================================================================
-	// Step 3: Build response with optional attributes
+	// Step 3: Flush cached data to content store (ensures durability)
+	// ========================================================================
+
+	// Flush and finalize cached data to ensure durability
+	// Unlike NFS COMMIT which just flushes, SMB CLOSE requires immediate durability
+	if !openFile.IsDirectory && openFile.ContentID != "" {
+		fileCache := h.Registry.GetCacheForShare(openFile.ShareName)
+		if fileCache != nil && fileCache.Size(openFile.ContentID) > 0 {
+			contentStore, err := h.Registry.GetContentStoreForShare(openFile.ShareName)
+			if err == nil {
+				// Use FlushAndFinalizeCache for immediate durability (completes S3 uploads)
+				_, flushErr := ops.FlushAndFinalizeCache(ctx.Context, fileCache, contentStore, openFile.ContentID)
+				if flushErr != nil {
+					logger.Warn("CLOSE: cache flush failed", "path", openFile.Path, "error", flushErr)
+					// Continue with close even if flush fails - data is in cache
+					// and background flusher will eventually persist it
+				} else {
+					logger.Debug("CLOSE: flushed and finalized", "path", openFile.Path, "contentID", openFile.ContentID)
+				}
+			}
+		}
+	}
+
+	// ========================================================================
+	// Step 4: Build response with optional attributes
 	// ========================================================================
 
 	resp := &CloseResponse{
@@ -63,7 +103,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 	}
 
 	// ========================================================================
-	// Step 4: Remove the open file handle
+	// Step 5: Remove the open file handle
 	// ========================================================================
 
 	h.DeleteOpenFile(req.FileID)
@@ -73,7 +113,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 		"path", openFile.Path)
 
 	// ========================================================================
-	// Step 5: Encode response
+	// Step 6: Encode response
 	// ========================================================================
 
 	respBytes, err := EncodeCloseResponse(resp)

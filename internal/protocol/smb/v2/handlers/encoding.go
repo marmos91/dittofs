@@ -9,8 +9,25 @@ import (
 )
 
 // DecodeCreateRequest parses an SMB2 CREATE request body [MS-SMB2] 2.2.13
+// CREATE request structure (56 bytes fixed part):
+//   - StructureSize (2 bytes) - always 57
+//   - SecurityFlags (1 byte)
+//   - RequestedOplockLevel (1 byte)
+//   - ImpersonationLevel (4 bytes)
+//   - SmbCreateFlags (8 bytes)
+//   - Reserved (8 bytes)
+//   - DesiredAccess (4 bytes)
+//   - FileAttributes (4 bytes)
+//   - ShareAccess (4 bytes)
+//   - CreateDisposition (4 bytes)
+//   - CreateOptions (4 bytes)
+//   - NameOffset (2 bytes) - offset from header start to filename
+//   - NameLength (2 bytes)
+//   - CreateContextsOffset (4 bytes)
+//   - CreateContextsLength (4 bytes)
+//   - Buffer (variable) - contains Name (UTF-16LE) and CreateContexts
 func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
-	if len(body) < 57 {
+	if len(body) < 56 {
 		return nil, fmt.Errorf("CREATE request too short: %d bytes", len(body))
 	}
 
@@ -29,19 +46,22 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 
 	// Extract filename (UTF-16LE encoded)
 	// nameOffset is relative to the start of SMB2 header (64 bytes)
-	// body starts after the header, so adjust
-	adjustedOffset := int(nameOffset) - 64 - 56 // header size + fixed request size before variable data
+	// body starts after the header, so:
+	//   body offset = nameOffset - 64
+	// Typical nameOffset is 120 (64 header + 56 fixed part), giving body offset 56
 
 	if nameLength > 0 {
-		// Try multiple offset strategies
-		if adjustedOffset >= 0 && adjustedOffset+int(nameLength) <= len(body) {
-			req.FileName = decodeUTF16LE(body[adjustedOffset : adjustedOffset+int(nameLength)])
-		} else {
-			// Name might be right after the structure
-			startOffset := 56 // After the 56-byte fixed part
-			if len(body) >= startOffset+int(nameLength) {
-				req.FileName = decodeUTF16LE(body[startOffset : startOffset+int(nameLength)])
-			}
+		// Calculate where the name starts in our body buffer
+		bodyOffset := int(nameOffset) - 64
+
+		// Clamp to valid range (name can't start before the Buffer field at byte 56)
+		if bodyOffset < 56 {
+			bodyOffset = 56
+		}
+
+		// Extract the filename
+		if bodyOffset+int(nameLength) <= len(body) {
+			req.FileName = decodeUTF16LE(body[bodyOffset : bodyOffset+int(nameLength)])
 		}
 	}
 
@@ -107,6 +127,18 @@ func EncodeReadResponse(resp *ReadResponse) ([]byte, error) {
 }
 
 // DecodeWriteRequest parses an SMB2 WRITE request body [MS-SMB2] 2.2.21
+// The WRITE request structure is:
+//   - StructureSize (2 bytes) - always 49
+//   - DataOffset (2 bytes) - offset from SMB2 header start to write data
+//   - Length (4 bytes) - length of data being written
+//   - Offset (8 bytes) - offset in file to write
+//   - FileId (16 bytes)
+//   - Channel (4 bytes)
+//   - RemainingBytes (4 bytes)
+//   - WriteChannelInfoOffset (2 bytes)
+//   - WriteChannelInfoLength (2 bytes)
+//   - Flags (4 bytes)
+//   - Buffer (variable) - padding + write data
 func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
 	if len(body) < 49 {
 		return nil, fmt.Errorf("WRITE request too short: %d bytes", len(body))
@@ -123,19 +155,30 @@ func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
 	copy(req.FileID[:], body[16:32])
 
 	// Extract data
-	// DataOffset is relative to the beginning of the SMB2 header
-	// We need to calculate where data starts in the body
-	// SMB2 header is 64 bytes, WRITE request fixed part is 49 bytes
-	// DataOffset typically points to header + request size
-	dataStart := int(req.DataOffset) - 64 // Adjust from header offset to body offset
-	if dataStart < 49 {
-		dataStart = 49 // Data starts after fixed part
-	}
-	if dataStart+int(req.Length) <= len(body) {
-		req.Data = body[dataStart : dataStart+int(req.Length)]
-	} else if int(req.Length) <= len(body)-49 {
-		// Try getting data right after the fixed structure
-		req.Data = body[49 : 49+int(req.Length)]
+	// DataOffset is relative to the beginning of the SMB2 header (64 bytes)
+	// Our body starts after the header, so we subtract 64
+	// The fixed request structure is 48 bytes (StructureSize says 49 but that includes 1 byte of Buffer)
+	// Data typically starts at offset 48 in the body (or wherever DataOffset-64 points)
+
+	if req.Length > 0 {
+		// Calculate where data starts in body
+		dataStart := int(req.DataOffset) - 64
+
+		// Clamp to valid range - data can't start before byte 48 (after fixed fields)
+		if dataStart < 48 {
+			dataStart = 48
+		}
+
+		// Try to extract data from calculated offset
+		if dataStart+int(req.Length) <= len(body) {
+			req.Data = body[dataStart : dataStart+int(req.Length)]
+		} else if len(body) > 48 && int(req.Length) <= len(body)-48 {
+			// Fallback: data might be right after the 48-byte fixed structure
+			req.Data = body[48 : 48+int(req.Length)]
+		} else if len(body) > 49 {
+			// Last resort: take whatever data is available after fixed part
+			req.Data = body[48:]
+		}
 	}
 
 	return req, nil
@@ -186,8 +229,11 @@ func EncodeCloseResponse(resp *CloseResponse) ([]byte, error) {
 }
 
 // DecodeQueryInfoRequest parses an SMB2 QUERY_INFO request body [MS-SMB2] 2.2.37
+// Structure: StructureSize(2) + InfoType(1) + FileInfoClass(1) + OutputBufferLength(4) +
+// InputBufferOffset(2) + Reserved(2) + InputBufferLength(4) + AdditionalInformation(4) +
+// Flags(4) + FileId(16) = 40 bytes
 func DecodeQueryInfoRequest(body []byte) (*QueryInfoRequest, error) {
-	if len(body) < 41 {
+	if len(body) < 40 {
 		return nil, fmt.Errorf("QUERY_INFO request too short: %d bytes", len(body))
 	}
 
