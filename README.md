@@ -25,7 +25,7 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 ```
 ┌──────────────────────────────────────┐
 │       Protocol Adapters              │
-│   NFS ✅  SMB 🚧  WebDAV(TBD)        │
+│   NFS ✅  SMB ✅  WebDAV(TBD)        │
 └──────────────┬───────────────────────┘
                │
                ▼
@@ -48,13 +48,13 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 ## Features
 
 - ✅ **Production-Ready NFSv3**: 28 procedures fully implemented
+- ✅ **SMB2 Support**: Windows/macOS file sharing with NTLM authentication
 - ✅ **No Special Permissions**: Runs entirely in userspace - no FUSE, no kernel modules
 - ✅ **Pluggable Storage**: Mix protocols with any backend (S3, filesystem, custom)
 - ✅ **Cloud-Native**: S3 backend with production optimizations
 - ✅ **Pure Go**: Single binary, easy deployment, cross-platform
 - ✅ **Extensible**: Clean adapter pattern for new protocols
 - ✅ **User Management**: Unified users/groups with share-level permissions (CLI included)
-- 🚧 **SMB2 Support**: Windows file sharing (in development)
 
 ## Quick Start
 
@@ -174,6 +174,7 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - **[Architecture](docs/ARCHITECTURE.md)** - Deep dive into design patterns and internal implementation
 - **[Configuration](docs/CONFIGURATION.md)** - Complete configuration guide with examples
 - **[NFS Implementation](docs/NFS.md)** - NFSv3 protocol status and client usage
+- **[SMB Implementation](docs/SMB_IMPLEMENTATION_PLAN.md)** - SMB2 protocol status, capabilities, and roadmap
 - **[Contributing](docs/CONTRIBUTING.md)** - Development guide and contribution guidelines
 - **[Implementing Stores](docs/IMPLEMENTING_STORES.md)** - Guide for implementing custom metadata and content stores
 
@@ -197,6 +198,20 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - Mount protocol support
 - TCP transport with graceful shutdown
 - Buffer pooling and performance optimizations
+- Read/write caching with background flush
+
+**SMB2 Protocol Adapter**
+- SMB2 dialect 0x0202 negotiation
+- NTLM authentication with SPNEGO
+- Session management with adaptive credit flow control
+- Tree connect with share-level permission checking
+- File operations: CREATE, READ, WRITE, CLOSE, FLUSH
+- Directory operations: QUERY_DIRECTORY
+- Metadata operations: QUERY_INFO, SET_INFO
+- Compound request handling (CREATE+QUERY_INFO+CLOSE)
+- Read/write caching (shared with NFS)
+- Parallel request processing
+- macOS Finder and smbclient compatible
 
 **Storage Backends**
 - In-memory metadata (ephemeral, fast)
@@ -223,16 +238,19 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 
 ### 🚧 In Development
 
-**SMB2 Protocol Adapter**
-- [x] SMB2 negotiation and session setup
-- [x] NTLM authentication
-- [x] Tree connect with permission checking
-- [x] Credit-based flow control
-- [ ] File operations (CREATE, READ, WRITE, CLOSE)
-- [ ] Directory operations
+**SMB Protocol Enhancements**
 - [ ] Windows client compatibility testing
+- [ ] E2E test suite for SMB
+- [ ] SMB-specific metrics
 
 ### 🚀 Roadmap
+
+**SMB Advanced Features**
+- [ ] SMBv3 support (encryption, multichannel)
+- [ ] File locking (oplocks, byte-range locks)
+- [ ] Security descriptors and Windows ACLs
+- [ ] Extended attributes (xattrs) support
+- [ ] Kerberos/LDAP/Active Directory integration
 
 **Kubernetes Integration**
 - [ ] Health check endpoints
@@ -242,7 +260,6 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 
 **Advanced Features**
 - [ ] NFSv4 support
-- [ ] Kerberos/AD authentication
 - [ ] Advanced caching strategies
 - [ ] Multi-region replication
 - [ ] Web dashboard for user management

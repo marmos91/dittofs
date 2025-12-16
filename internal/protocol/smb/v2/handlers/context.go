@@ -1,7 +1,11 @@
 // Package handlers provides SMB2 command handlers and session management.
 package handlers
 
-import "context"
+import (
+	"context"
+
+	"github.com/marmos91/dittofs/pkg/identity"
+)
 
 // SMBHandlerContext carries request context through handlers
 type SMBHandlerContext struct {
@@ -26,9 +30,17 @@ type SMBHandlerContext struct {
 	// IsGuest indicates guest/anonymous session
 	IsGuest bool
 
-	// Username for authenticated sessions (Phase 2+)
+	// Username for authenticated sessions
 	Username string
 	Domain   string
+
+	// User is the authenticated DittoFS user (nil for guest sessions)
+	// This is set from the session during request handling.
+	User *identity.User
+
+	// Permission is the user's permission level for the current share
+	// This is resolved during TREE_CONNECT and used for access control.
+	Permission identity.SharePermission
 }
 
 // NewSMBHandlerContext creates a new context from request parameters
@@ -40,4 +52,16 @@ func NewSMBHandlerContext(ctx context.Context, clientAddr string, sessionID uint
 		TreeID:     treeID,
 		MessageID:  messageID,
 	}
+}
+
+// WithUser returns a copy of the context with user identity populated
+func (c *SMBHandlerContext) WithUser(user *identity.User, permission identity.SharePermission) *SMBHandlerContext {
+	newCtx := *c
+	newCtx.User = user
+	newCtx.Permission = permission
+	if user != nil {
+		newCtx.Username = user.Username
+		newCtx.IsGuest = false
+	}
+	return &newCtx
 }

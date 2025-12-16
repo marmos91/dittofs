@@ -120,6 +120,14 @@ type FileAttr struct {
 	// Ctime is the last change time (metadata changes)
 	Ctime time.Time `json:"ctime"`
 
+	// CreationTime is the file creation time (birth time).
+	// This is the actual time the file was created, distinct from Ctime which tracks
+	// metadata changes. Used by:
+	//   - SMB2 protocol (CreationTime field)
+	//   - NFSv4 protocol (time_create attribute)
+	// Set when file is first created and never updated afterwards.
+	CreationTime time.Time `json:"creation_time"`
+
 	// ContentID is the identifier for retrieving file content from the content repository
 	// Empty for directories, symlinks, and special files
 	ContentID ContentID `json:"content_id"`
@@ -180,6 +188,11 @@ type SetAttrs struct {
 	// Mtime is the new modification time
 	// nil = do not change
 	Mtime *time.Time
+
+	// CreationTime is the new creation time
+	// Only used by Windows/SMB clients that support setting creation time
+	// nil = do not change
+	CreationTime *time.Time
 }
 
 // FileType represents the type of a filesystem object.

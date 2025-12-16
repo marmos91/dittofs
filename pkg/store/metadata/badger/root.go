@@ -61,6 +61,9 @@ func (s *BadgerMetadataStore) CreateRootDirectory(
 		if rootAttrCopy.Ctime.IsZero() {
 			rootAttrCopy.Ctime = now
 		}
+		if rootAttrCopy.CreationTime.IsZero() {
+			rootAttrCopy.CreationTime = now
+		}
 
 		// Create complete File struct for root directory
 		rootFile = &metadata.File{

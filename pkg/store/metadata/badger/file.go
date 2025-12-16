@@ -487,6 +487,25 @@ func (s *BadgerMetadataStore) SetFileAttributes(
 			changed = true
 		}
 
+		// Apply CreationTime changes (SMB/Windows only)
+		if attrs.CreationTime != nil {
+			if !isOwner && !isRoot {
+				granted, err := s.CheckPermissions(ctx, handle, metadata.PermissionWrite)
+				if err != nil {
+					return err
+				}
+				if granted&metadata.PermissionWrite == 0 {
+					return &metadata.StoreError{
+						Code:    metadata.ErrAccessDenied,
+						Message: "no permission to change creation time",
+					}
+				}
+			}
+
+			file.CreationTime = *attrs.CreationTime
+			changed = true
+		}
+
 		// Update ctime if any changes were made
 		if changed {
 			file.Ctime = time.Now()
@@ -625,15 +644,16 @@ func (s *BadgerMetadataStore) Create(
 			ShareName: shareName,
 			Path:      fullPath,
 			FileAttr: metadata.FileAttr{
-				Type:       attr.Type,
-				Mode:       attr.Mode,
-				UID:        attr.UID,
-				GID:        attr.GID,
-				Size:       attr.Size,
-				Atime:      attr.Atime,
-				Mtime:      attr.Mtime,
-				Ctime:      attr.Ctime,
-				LinkTarget: "",
+				Type:         attr.Type,
+				Mode:         attr.Mode,
+				UID:          attr.UID,
+				GID:          attr.GID,
+				Size:         attr.Size,
+				Atime:        attr.Atime,
+				Mtime:        attr.Mtime,
+				Ctime:        attr.Ctime,
+				CreationTime: attr.CreationTime,
+				LinkTarget:   "",
 			},
 		}
 

@@ -7,25 +7,56 @@
 | Phase | Status | Description |
 |-------|--------|-------------|
 | **Phase 1** | **COMPLETED** | Basic SMB2 Infrastructure with mock data |
-| **Phase 2** | Pending | Identity Abstraction (SID-based) |
-| **Phase 3** | Pending | Connect to Metadata/Content Stores |
+| **Phase 2** | **COMPLETED** | Identity System (unified with NFS via `pkg/identity`) |
+| **Phase 3** | **COMPLETED** | Connect to Metadata/Content Stores |
 | **Phase 4** | Pending | Permission Abstraction & Interoperability |
 
-### Phase 1 Testing Results
+### Current Capabilities
+
+**Protocols Supported:**
+- SMB2 dialect 0x0202 (SMB 2.0.2)
+- NTLM authentication with SPNEGO wrapping
+- Guest access support
+
+**File Operations:**
+- CREATE (open/create files and directories)
+- READ (with cache integration)
+- WRITE (with cache integration)
+- CLOSE
+- FLUSH (shared flush logic with NFS COMMIT)
+- QUERY_INFO (FILE_BASIC_INFO, FILE_STANDARD_INFO, FILE_NETWORK_OPEN_INFO)
+- SET_INFO (timestamps, attributes, rename, delete, truncate)
+- QUERY_DIRECTORY (FileBothDirectoryInformation, FileIdBothDirectoryInformation)
+
+**Session Management:**
+- Adaptive credit flow control (configurable strategies)
+- Compound request handling (CREATE+QUERY_INFO+CLOSE)
+- Parallel request processing with configurable concurrency
+
+### Testing Results
 
 **macOS Finder mount**: ✅ Working
 ```bash
 mount -t smbfs //guest@localhost:12445/export /tmp/smb
-ls /tmp/smb  # Lists directory contents successfully
+ls /tmp/smb  # Lists directory contents from real stores
+```
+
+**smbclient**: ✅ Working
+```bash
+smbclient //127.0.0.1/export -p 12445 -N -c "ls"
+smbclient //127.0.0.1/export -p 12445 -N -c "get readme.txt -"
 ```
 
 **Key fixes implemented**:
 - Compound request handling (race condition fixed)
 - FileID injection for related operations (QUERY_INFO, QUERY_DIRECTORY, CLOSE)
-- Credit-based flow control (grants 256 credits)
+- Credit-based flow control (configurable via credits strategy)
 - Directory enumeration state tracking (prevents infinite loops)
+- Real metadata/content store integration (removed mock data)
+- Cache integration for READ and WRITE operations
+- Shared flush logic with NFS (via `pkg/ops`)
 
-### Phase 1 Completed Files
+### Implementation Files
 
 ```
 internal/auth/                     # Shared authentication (SMB + NFSv4)
@@ -57,27 +88,39 @@ internal/protocol/smb/
     ├── handler_test.go            # Handler tests
     ├── context.go                 # SMBHandlerContext
     ├── result.go                  # HandlerResult type
-    ├── mock_data.go               # Mock filesystem
+    ├── requests.go                # Typed request/response structs
+    ├── encoding.go                # Request/response encoding/decoding
+    ├── converters.go              # SMB ↔ metadata type converters
+    ├── auth_helper.go             # SMB auth context builder
     ├── negotiate.go               # SMB2 NEGOTIATE
     ├── session_setup.go           # SMB2 SESSION_SETUP (uses internal/auth)
     ├── session_setup_test.go      # SESSION_SETUP tests
     ├── logoff.go                  # SMB2 LOGOFF
-    ├── tree_connect.go            # SMB2 TREE_CONNECT
+    ├── tree_connect.go            # SMB2 TREE_CONNECT (with permission checking)
     ├── tree_disconnect.go         # SMB2 TREE_DISCONNECT
     ├── echo.go                    # SMB2 ECHO
-    ├── create.go                  # SMB2 CREATE
+    ├── create.go                  # SMB2 CREATE (real store integration)
     ├── close.go                   # SMB2 CLOSE
-    ├── read.go                    # SMB2 READ
-    ├── write.go                   # SMB2 WRITE
-    ├── flush.go                   # SMB2 FLUSH
-    ├── query_directory.go         # SMB2 QUERY_DIRECTORY
+    ├── read.go                    # SMB2 READ (with cache support)
+    ├── write.go                   # SMB2 WRITE (with cache support)
+    ├── flush.go                   # SMB2 FLUSH (uses shared ops.FlushCacheToContentStore)
+    ├── query_directory.go         # SMB2 QUERY_DIRECTORY (real store integration)
     ├── query_info.go              # SMB2 QUERY_INFO
     └── set_info.go                # SMB2 SET_INFO
 
 pkg/adapter/smb/
 ├── config.go                      # SMBConfig struct
 ├── smb_adapter.go                 # Adapter implementation (uses SessionManager)
-└── smb_connection.go              # Per-connection handler
+└── smb_connection.go              # Per-connection handler (parallel requests)
+
+pkg/identity/                      # Shared identity system (NFS + SMB)
+├── user.go                        # User struct with SID, UID/GID
+├── group.go                       # Group struct with permissions
+├── store.go                       # UserStore interface
+└── memory.go                      # In-memory user store
+
+pkg/ops/                           # Shared operations (NFS + SMB)
+└── flush.go                       # FlushCacheToContentStore (used by COMMIT/FLUSH)
 
 pkg/config/
 ├── config.go                      # Added SMB to AdaptersConfig
@@ -288,98 +331,76 @@ net use X: \\127.0.0.1\export /user:guest "" /port:12445
 
 ---
 
-## Phase 2: Identity Abstraction
+## Phase 2: Identity System
 
 ### 2.1 Overview
 
-**Status**: Pending
+**Status**: **COMPLETED**
 
-Enable SID-based identity alongside UID/GID before connecting to stores.
+A unified identity system was implemented in `pkg/identity/` that supports both NFS and SMB.
 
-**Goal**: Create an identity abstraction layer that supports both:
-- Unix identity (UID/GID) for NFS
-- Windows identity (SID) for SMB
+**Implementation Approach**: Instead of SID-based identity mapping, we implemented a unified user management system with:
+- Username/password authentication (bcrypt hashed)
+- UID/GID for Unix compatibility
+- SID for Windows compatibility (auto-generated)
+- Share-level permission resolution
 
-### 2.2 Key Changes
+### 2.2 What Was Implemented
 
-1. **Activate Identity.SID and Identity.GroupSIDs fields**
-   - Currently these fields exist in `pkg/store/metadata/authentication.go` but are unused
-   - Need to populate them from SMB session authentication
+The `pkg/identity/` package provides:
 
-2. **Add identity type detection methods**
-   ```go
-   type Identity struct {
-       // Existing
-       UID      uint32
-       GID      uint32
-       GIDs     []uint32
+```go
+type User struct {
+    Username         string
+    PasswordHash     string            // bcrypt
+    UID              uint32
+    GID              uint32
+    SID              string            // Auto-generated Windows SID
+    Groups           []string
+    SharePermissions map[string]SharePermission
+}
 
-       // Windows identity (activate these)
-       SID      string   // Primary SID
-       GroupSIDs []string // Group SIDs
-   }
+type Group struct {
+    Name             string
+    GID              uint32
+    SID              string
+    SharePermissions map[string]SharePermission
+}
 
-   func (i *Identity) IsUnixIdentity() bool
-   func (i *Identity) IsWindowsIdentity() bool
-   func (i *Identity) HasValidIdentity() bool
-   ```
+type SharePermission int  // None, Read, ReadWrite, Admin
 
-3. **Create SID ↔ UID/GID mapping infrastructure**
-   ```go
-   type IdentityMapper interface {
-       // Map Windows SID to Unix UID/GID
-       SIDToUnix(sid string) (uid, gid uint32, err error)
+type UserStore interface {
+    GetUser(username string) (*User, error)
+    AuthenticateUser(username, password string) (*User, error)
+    ResolveSharePermission(user *User, shareName string, defaultPerm SharePermission) SharePermission
+}
+```
 
-       // Map Unix UID/GID to Windows SID
-       UnixToSID(uid, gid uint32) (sid string, err error)
+**CLI tools for user management**:
+```bash
+./dittofs user add alice          # Add user
+./dittofs user grant alice /export read-write
+./dittofs group add editors
+./dittofs user join alice editors
+```
 
-       // Check if mapping exists
-       HasMapping(sid string) bool
-   }
-   ```
+### 2.3 Files Created
 
-4. **Update share configuration for SID mapping**
-   ```yaml
-   shares:
-     - name: /export
-       identity_mapping:
-         # Existing Unix mapping
-         map_all_to_anonymous: false
-         anonymous_uid: 65534
-         anonymous_gid: 65534
+- `pkg/identity/user.go` - User struct with SID, UID/GID
+- `pkg/identity/group.go` - Group struct with permissions
+- `pkg/identity/store.go` - UserStore interface
+- `pkg/identity/memory.go` - In-memory user store implementation
+- `cmd/dittofs/commands/user.go` - User CLI commands
+- `cmd/dittofs/commands/group.go` - Group CLI commands
 
-         # New Windows mapping
-         sid_mapping:
-           enabled: true
-           default_sid: "S-1-5-21-..."  # Default SID for unmapped users
-           mappings:
-             - sid: "S-1-5-21-...-1000"
-               uid: 1000
-               gid: 1000
-   ```
+### 2.4 Success Criteria
 
-### 2.3 Files to Modify
-
-- `pkg/store/metadata/authentication.go` - Activate SID fields
-- `pkg/registry/share.go` - Add identity mapping configuration
-- `pkg/registry/access.go` - Add SID ↔ UID/GID mapping logic
-- `internal/protocol/smb/v2/handlers/session_setup.go` - Extract SID from auth
-
-### 2.4 Implementation Steps
-
-1. **Define IdentityMapper interface** in `pkg/registry/identity.go`
-2. **Implement StaticIdentityMapper** for configuration-based mapping
-3. **Update ShareConfig** to include SID mapping configuration
-4. **Modify SESSION_SETUP** to create proper Identity with SID
-5. **Update handler context** to carry resolved identity
-6. **Add identity resolution** before store operations
-
-### 2.5 Success Criteria
-
-- [ ] Identity struct supports both Unix and Windows identities
-- [ ] Static SID ↔ UID/GID mapping works from configuration
-- [ ] SMB sessions have valid Identity with SID
-- [ ] Identity can be converted between formats for store operations
+- [x] Unified identity system for NFS and SMB
+- [x] Users with bcrypt password hashing
+- [x] Groups with share-level permissions
+- [x] Permission resolution: user → group → share default
+- [x] CLI tools for user/group management
+- [x] SMB sessions linked to DittoFS users
 
 ---
 
@@ -387,106 +408,90 @@ Enable SID-based identity alongside UID/GID before connecting to stores.
 
 ### 3.1 Overview
 
-**Status**: Pending
+**Status**: **COMPLETED**
 
-Replace mock data with actual metadata and content store integration.
+All SMB handlers now use real metadata and content stores through the registry.
 
-**Goal**: SMB operations work against real DittoFS stores, not mock data.
+**Key Achievement**: SMB operations work against real DittoFS stores with:
+- Full CREATE/READ/WRITE/CLOSE file operations
+- Directory listing via QUERY_DIRECTORY
+- Metadata operations via QUERY_INFO/SET_INFO
+- Cache integration for performance
+- Cross-protocol file visibility (NFS ↔ SMB)
 
-### 3.2 Key Mappings
+### 3.2 Command to Store Mappings (Implemented)
 
 | SMB Command | Metadata Store Method | Content Store Method |
 |-------------|----------------------|---------------------|
-| TREE_CONNECT | `GetRootHandle(shareName)` | - |
-| CREATE | `GetChild()`, `CreateFile()`, `CreateDirectory()` | `Create()` |
-| READ | `GetFile()` | `ReadAt()` |
-| WRITE | `WriteFile()` | `WriteAt()` |
+| TREE_CONNECT | `Registry.GetShare()` | - |
+| CREATE | `Lookup()`, `Create()`, `MkDir()` | `Create()` |
+| READ | `PrepareRead()` | `ReadAt()` or cache |
+| WRITE | `PrepareWrite()`, `CommitWrite()` | `WriteAt()` or cache |
 | CLOSE | - | - |
-| FLUSH | - | `Sync()` |
-| QUERY_INFO | `GetFile()` | `Stat()` |
-| SET_INFO | `SetAttr()` | `Truncate()` |
-| QUERY_DIRECTORY | `ListDirectory()` | - |
+| FLUSH | `GetFile()` | `ops.FlushCacheToContentStore()` |
+| QUERY_INFO | `GetFile()` | - |
+| SET_INFO | `SetFileAttributes()`, `Rename()`, `Remove()` | `Truncate()` |
+| QUERY_DIRECTORY | `ReadDirectory()` | - |
 
-### 3.3 Implementation Steps
+### 3.3 Key Implementation Details
 
-1. **Remove mock_data.go** - Replace with real store calls
+**Two-Phase Write Pattern** (same as NFS):
+```go
+// 1. PrepareWrite - validates permissions, gets ContentID
+writeOp, err := metadataStore.PrepareWrite(authCtx, handle, newSize)
 
-2. **Update Handler struct**
-   ```go
-   type Handler struct {
-       Registry *registry.Registry  // Already exists
-       // Remove mock data fields
-   }
-   ```
+// 2. Write data to cache or content store
+if cache != nil {
+    err = cache.WriteAt(ctx, writeOp.ContentID, data, offset)
+} else {
+    err = contentStore.WriteAt(ctx, writeOp.ContentID, data, offset)
+}
 
-3. **Implement store integration for each command**:
+// 3. CommitWrite - updates metadata (size, mtime)
+_, err = metadataStore.CommitWrite(authCtx, writeOp)
+```
 
-   **TREE_CONNECT**:
-   ```go
-   func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-       // Parse share path
-       shareName := parseSharePath(sharePath)
+**Cache Integration**:
+- READ: Tries cache first (dirty data → cached data → content store)
+- WRITE: Writes to cache if available (async mode), else direct to content store
+- FLUSH: Uses shared `ops.FlushCacheToContentStore()` function
 
-       // Get share from registry
-       share, err := h.Registry.GetShare(shareName)
-       if err != nil {
-           return NewErrorResult(types.StatusBadNetworkName), nil
-       }
+**Path Conversion**:
+- SMB backslashes (`\path\to\file`) converted to forward slashes (`/path/to/file`)
+- Root path is `/` (share root)
 
-       // Get root handle
-       rootHandle, err := share.MetadataStore.GetRootHandle(shareName)
-       // ...
-   }
-   ```
+**Attribute Conversion** (in `converters.go`):
+- `FileAttrToSMBAttributes()` - Unix mode → SMB file attributes
+- `SMBAttributesToFileType()` - SMB attributes → metadata FileType
+- `FileAttrToSMBTimes()` - Unix times → SMB FILETIME
+- `MetadataErrorToSMBStatus()` - Store errors → NT_STATUS codes
 
-   **CREATE**:
-   ```go
-   func (h *Handler) Create(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-       share := h.Registry.GetShareByTreeID(ctx.TreeID)
+### 3.4 Files Created/Modified
 
-       // Convert path (backslash to forward slash)
-       path := convertPath(filename)
+**Created**:
+- `internal/protocol/smb/v2/handlers/requests.go` - Typed request/response structs
+- `internal/protocol/smb/v2/handlers/encoding.go` - Encoding/decoding functions
+- `internal/protocol/smb/v2/handlers/converters.go` - Type conversion helpers
+- `internal/protocol/smb/v2/handlers/auth_helper.go` - SMB auth context builder
+- `pkg/ops/flush.go` - Shared flush logic for NFS COMMIT and SMB FLUSH
 
-       // Resolve to file handle
-       parentHandle, name := splitPath(path)
+**Deleted**:
+- `internal/protocol/smb/v2/handlers/mock_data.go` - No longer needed
 
-       switch createDisposition {
-       case types.FileOpen:
-           handle, err := share.MetadataStore.GetChild(parentHandle, name, identity)
-       case types.FileCreate:
-           handle, err := share.MetadataStore.CreateFile(parentHandle, name, mode, identity)
-           contentID, err := share.ContentStore.Create()
-       // ...
-       }
-   }
-   ```
-
-4. **Handle path conversion**:
-   - SMB uses backslashes: `\path\to\file`
-   - DittoFS stores use forward slashes: `/path/to/file`
-   - Need conversion layer in handlers
-
-5. **Handle attribute conversion**:
-   - SMB uses Windows file attributes (DIRECTORY, HIDDEN, READONLY, etc.)
-   - DittoFS uses Unix mode bits
-   - Need bidirectional conversion
-
-### 3.4 Files to Create/Modify
-
-- `internal/protocol/smb/v2/handlers/store.go` - Store integration helpers
-- `internal/protocol/smb/v2/handlers/path.go` - Path conversion utilities
-- `internal/protocol/smb/v2/handlers/attributes.go` - Attribute conversion
-- Modify all handler files to use stores instead of mock data
+**Modified**:
+- All handler files (create.go, read.go, write.go, etc.) to use real stores
 
 ### 3.5 Success Criteria
 
-- [ ] TREE_CONNECT validates against registry shares
-- [ ] CREATE creates real files in metadata/content stores
-- [ ] READ returns real file content from content store
-- [ ] WRITE persists data to content store
-- [ ] QUERY_DIRECTORY lists real directory contents
-- [ ] Files created via SMB are visible via NFS
-- [ ] Files created via NFS are visible via SMB
+- [x] TREE_CONNECT validates against registry shares
+- [x] CREATE creates real files in metadata/content stores
+- [x] READ returns real file content from content store
+- [x] READ uses cache for dirty/cached data
+- [x] WRITE persists data to content store or cache
+- [x] FLUSH flushes cache to content store
+- [x] QUERY_DIRECTORY lists real directory contents
+- [x] Files created via SMB are visible via NFS
+- [x] Files created via NFS are visible via SMB
 
 ---
 
@@ -660,13 +665,124 @@ adapters:
       idle: 5m
       shutdown: 30s
 
-# Share configuration with identity mapping
+# Share configuration with permissions
 shares:
   - name: /export
     metadata_store: default
     content_store: default
-    identity_mapping:
-      map_all_to_anonymous: false
-      anonymous_uid: 65534
-      anonymous_gid: 65534
+    allow_guest: true
+    default_permission: read-write
+
+# User management
+users:
+  - username: alice
+    password_hash: "$2a$10$..."  # bcrypt hash
+    uid: 1001
+    gid: 1001
+    share_permissions:
+      /export: read-write
 ```
+
+---
+
+## SMB Roadmap
+
+The following features are planned for future releases:
+
+### 1. SMBv3 Support
+
+**Priority**: Medium
+**Complexity**: High
+
+SMB3 adds enterprise features:
+- **Encryption**: End-to-end encryption (AES-128-CCM/GCM)
+- **Multichannel**: Multiple network connections for throughput
+- **Transparent failover**: Seamless reconnection
+- **Secure dialect negotiation**: Prevents downgrade attacks
+
+**Implementation Notes**:
+- Requires signing and encryption infrastructure
+- Session binding for multichannel
+- Persistent handles for failover
+
+### 2. File Locking
+
+**Priority**: High
+**Complexity**: Medium
+
+SMB2 supports two locking mechanisms:
+- **Opportunistic Locks (Oplocks)**: Client-side caching permissions
+- **Byte-Range Locks**: Exclusive or shared locks on file regions
+
+**Implementation Notes**:
+- Need to add `SMB2_LOCK` command handler
+- Oplock break notifications for cache coherency
+- Integration with NFS locking (if NLM is added)
+
+### 3. Security Descriptors and Windows ACLs
+
+**Priority**: Medium
+**Complexity**: High
+
+Full Windows security model:
+- **Security Descriptors (SD)**: Owner, group, DACL, SACL
+- **Access Control Entries (ACE)**: Allow/deny permissions per SID
+- **Inheritance**: ACL propagation to child objects
+
+**Implementation Notes**:
+- Add `SecurityDescriptor` to `FileAttr` struct
+- Implement SD ↔ Unix mode bidirectional conversion
+- Schema migration for persistent metadata stores
+- `QUERY_INFO` / `SET_INFO` for `FileSecurityInformation`
+
+### 4. Extended Attributes (XAttrs) Support
+
+**Priority**: Low
+**Complexity**: Medium
+
+Windows extended attributes and streams:
+- **Named Streams**: Alternate data streams (ADS)
+- **Extended Attributes**: `FILE_FULL_EA_INFORMATION`
+- **Reparse Points**: Symbolic links, junctions
+
+**Implementation Notes**:
+- Need metadata store schema changes
+- `QUERY_INFO` / `SET_INFO` for EA classes
+- Stream enumeration for Finder compatibility
+
+### 5. Kerberos/LDAP/Active Directory Integration
+
+**Priority**: Medium
+**Complexity**: High
+
+Enterprise authentication:
+- **Kerberos**: SPNEGO with Kerberos (currently NTLM only)
+- **LDAP**: User/group lookup from directory
+- **Active Directory**: Domain join, GPO support
+
+**Implementation Notes**:
+- gokrb5 library already in use for SPNEGO parsing
+- Need KDC configuration and keytab support
+- LDAP user store implementation
+- Service principal name (SPN) registration
+
+---
+
+## Testing Roadmap
+
+### Immediate (E2E Test Suite)
+
+- [ ] Set up SMB E2E test infrastructure (smbclient or CIFS mount)
+- [ ] Basic file operations (create, read, write, delete)
+- [ ] Directory operations (mkdir, rmdir, readdir)
+- [ ] Cross-protocol tests (NFS create → SMB read, vice versa)
+- [ ] Permission enforcement tests
+- [ ] Large file tests (>4GB)
+
+### Future
+
+- [ ] Windows client compatibility testing
+- [ ] macOS Finder edge cases
+- [ ] Performance benchmarks vs native SMB
+- [ ] Stress testing (concurrent connections)
+- [ ] Fuzzing for protocol compliance

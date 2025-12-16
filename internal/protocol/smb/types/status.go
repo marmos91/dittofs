@@ -144,6 +144,12 @@ const (
 
 	// StatusNetworkSessionExpired indicates the session expired.
 	StatusNetworkSessionExpired Status = 0xC000035C
+
+	// StatusDiskFull indicates the disk is full.
+	StatusDiskFull Status = 0xC000007F
+
+	// StatusUnexpectedIOError indicates an unexpected I/O error occurred.
+	StatusUnexpectedIOError Status = 0xC00000E9
 )
 
 // String returns a human-readable name for the status code.
@@ -219,6 +225,10 @@ func (s Status) String() string {
 		return "STATUS_BUFFER_TOO_SMALL"
 	case StatusCancelled:
 		return "STATUS_CANCELLED"
+	case StatusDiskFull:
+		return "STATUS_DISK_FULL"
+	case StatusUnexpectedIOError:
+		return "STATUS_UNEXPECTED_IO_ERROR"
 	default:
 		return fmt.Sprintf("STATUS_0x%08X", uint32(s))
 	}

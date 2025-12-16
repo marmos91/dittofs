@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // Handler manages SMB2 protocol handling
@@ -67,6 +68,14 @@ type OpenFile struct {
 	DesiredAccess       uint32
 	IsDirectory         bool
 	EnumerationComplete bool // For directories: true if directory listing was returned
+
+	// Store integration fields
+	MetadataHandle metadata.FileHandle // Link to metadata store file handle
+	ContentID      metadata.ContentID  // Content identifier for read/write operations
+
+	// Directory enumeration state
+	EnumerationCookie []byte // Opaque cookie for resuming directory listing
+	EnumerationIndex  int    // Current index in directory listing
 }
 
 // NewHandler creates a new SMB2 handler with default session manager.

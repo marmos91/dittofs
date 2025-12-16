@@ -136,6 +136,7 @@ func ApplyCreateDefaults(attr *FileAttr, ctx *AuthContext, linkTarget string) {
 	attr.Atime = now
 	attr.Mtime = now
 	attr.Ctime = now
+	attr.CreationTime = now
 
 	// Set size based on type
 	if attr.Type == FileTypeSymlink {

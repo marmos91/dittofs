@@ -64,13 +64,13 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 		INSERT INTO files (
 			id, share_name, path,
 			file_type, mode, uid, gid, size,
-			atime, mtime, ctime,
+			atime, mtime, ctime, creation_time,
 			content_id, link_target, device_major, device_minor
 		) VALUES (
 			$1, $2, $3,
 			$4, $5, $6, $7, $8,
-			$9, $10, $11,
-			$12, $13, $14, $15
+			$9, $10, $11, $12,
+			$13, $14, $15, $16
 		)
 	`
 
@@ -86,6 +86,7 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 		now,                               // atime
 		now,                               // mtime
 		now,                               // ctime
+		now,                               // creation_time
 		nil,                               // content_id (NULL for directories)
 		nil,                               // link_target (NULL)
 		nil,                               // device_major (NULL)
@@ -135,14 +136,15 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 		ShareName: shareName,
 		Path:      "/",
 		FileAttr: metadata.FileAttr{
-			Type:  metadata.FileTypeDirectory,
-			Mode:  mode,
-			UID:   uid,
-			GID:   gid,
-			Size:  0,
-			Atime: now,
-			Mtime: now,
-			Ctime: now,
+			Type:         metadata.FileTypeDirectory,
+			Mode:         mode,
+			UID:          uid,
+			GID:          gid,
+			Size:         0,
+			Atime:        now,
+			Mtime:        now,
+			Ctime:        now,
+			CreationTime: now,
 		},
 	}
 
@@ -154,21 +156,22 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, shareName string) (*metadata.File, error) {
 	query := `
 		SELECT f.id, f.file_type, f.mode, f.uid, f.gid, f.size,
-			   f.atime, f.mtime, f.ctime
+			   f.atime, f.mtime, f.ctime, f.creation_time
 		FROM files f
 		WHERE f.share_name = $1 AND f.path = '/'
 	`
 
 	var (
-		id       uuid.UUID
-		fileType int16
-		mode     int32
-		uid      int32
-		gid      int32
-		size     int64
-		atime    time.Time
-		mtime    time.Time
-		ctime    time.Time
+		id           uuid.UUID
+		fileType     int16
+		mode         int32
+		uid          int32
+		gid          int32
+		size         int64
+		atime        time.Time
+		mtime        time.Time
+		ctime        time.Time
+		creationTime time.Time
 	)
 
 	err := s.pool.QueryRow(ctx, query, shareName).Scan(
@@ -181,6 +184,7 @@ func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, sh
 		&atime,
 		&mtime,
 		&ctime,
+		&creationTime,
 	)
 
 	if err == pgx.ErrNoRows {
@@ -195,14 +199,15 @@ func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, sh
 		ShareName: shareName,
 		Path:      "/",
 		FileAttr: metadata.FileAttr{
-			Type:  metadata.FileType(fileType),
-			Mode:  uint32(mode),
-			UID:   uint32(uid),
-			GID:   uint32(gid),
-			Size:  uint64(size),
-			Atime: atime,
-			Mtime: mtime,
-			Ctime: ctime,
+			Type:         metadata.FileType(fileType),
+			Mode:         uint32(mode),
+			UID:          uint32(uid),
+			GID:          uint32(gid),
+			Size:         uint64(size),
+			Atime:        atime,
+			Mtime:        mtime,
+			Ctime:        ctime,
+			CreationTime: creationTime,
 		},
 	}, nil
 }
@@ -269,7 +274,7 @@ func (s *PostgresMetadataStore) ReadDirectory(
 		SELECT
 			f.id, f.share_name, f.path,
 			f.file_type, f.mode, f.uid, f.gid, f.size,
-			f.atime, f.mtime, f.ctime,
+			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
 			pcm.child_name
 		FROM files f
@@ -345,28 +350,29 @@ func (s *PostgresMetadataStore) ReadDirectory(
 // scanDirectoryEntry scans a directory entry row including the child name
 func scanDirectoryEntry(rows pgx.Rows) (*metadata.File, string, error) {
 	var (
-		id          uuid.UUID
-		shareName   string
-		path        string
-		fileType    int16
-		mode        int32
-		uid         int32
-		gid         int32
-		size        int64
-		atime       time.Time
-		mtime       time.Time
-		ctime       time.Time
-		contentID   *string
-		linkTarget  *string
-		deviceMajor *int32
-		deviceMinor *int32
-		childName   string
+		id           uuid.UUID
+		shareName    string
+		path         string
+		fileType     int16
+		mode         int32
+		uid          int32
+		gid          int32
+		size         int64
+		atime        time.Time
+		mtime        time.Time
+		ctime        time.Time
+		creationTime time.Time
+		contentID    *string
+		linkTarget   *string
+		deviceMajor  *int32
+		deviceMinor  *int32
+		childName    string
 	)
 
 	err := rows.Scan(
 		&id, &shareName, &path,
 		&fileType, &mode, &uid, &gid, &size,
-		&atime, &mtime, &ctime,
+		&atime, &mtime, &ctime, &creationTime,
 		&contentID, &linkTarget, &deviceMajor, &deviceMinor,
 		&childName,
 	)
@@ -379,14 +385,15 @@ func scanDirectoryEntry(rows pgx.Rows) (*metadata.File, string, error) {
 		ShareName: shareName,
 		Path:      path,
 		FileAttr: metadata.FileAttr{
-			Type:  metadata.FileType(fileType),
-			Mode:  uint32(mode),
-			UID:   uint32(uid),
-			GID:   uint32(gid),
-			Size:  uint64(size),
-			Atime: atime,
-			Mtime: mtime,
-			Ctime: ctime,
+			Type:         metadata.FileType(fileType),
+			Mode:         uint32(mode),
+			UID:          uint32(uid),
+			GID:          uint32(gid),
+			Size:         uint64(size),
+			Atime:        atime,
+			Mtime:        mtime,
+			Ctime:        ctime,
+			CreationTime: creationTime,
 		},
 	}
 

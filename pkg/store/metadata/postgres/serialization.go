@@ -12,21 +12,22 @@ import (
 // fileRowToFile converts a database row to a File struct
 func fileRowToFile(row pgx.Row) (*metadata.File, error) {
 	var (
-		id          uuid.UUID
-		shareName   string
-		path        string
-		fileType    int16
-		mode        int32
-		uid         int32
-		gid         int32
-		size        int64
-		atime       time.Time
-		mtime       time.Time
-		ctime       time.Time
-		contentID   sql.NullString
-		linkTarget  sql.NullString
-		deviceMajor sql.NullInt32
-		deviceMinor sql.NullInt32
+		id           uuid.UUID
+		shareName    string
+		path         string
+		fileType     int16
+		mode         int32
+		uid          int32
+		gid          int32
+		size         int64
+		atime        time.Time
+		mtime        time.Time
+		ctime        time.Time
+		creationTime time.Time
+		contentID    sql.NullString
+		linkTarget   sql.NullString
+		deviceMajor  sql.NullInt32
+		deviceMinor  sql.NullInt32
 	)
 
 	err := row.Scan(
@@ -41,6 +42,7 @@ func fileRowToFile(row pgx.Row) (*metadata.File, error) {
 		&atime,
 		&mtime,
 		&ctime,
+		&creationTime,
 		&contentID,
 		&linkTarget,
 		&deviceMajor,
@@ -55,14 +57,15 @@ func fileRowToFile(row pgx.Row) (*metadata.File, error) {
 		ShareName: shareName,
 		Path:      path,
 		FileAttr: metadata.FileAttr{
-			Type:  metadata.FileType(fileType),
-			Mode:  uint32(mode),
-			UID:   uint32(uid),
-			GID:   uint32(gid),
-			Size:  uint64(size),
-			Atime: atime,
-			Mtime: mtime,
-			Ctime: ctime,
+			Type:         metadata.FileType(fileType),
+			Mode:         uint32(mode),
+			UID:          uint32(uid),
+			GID:          uint32(gid),
+			Size:         uint64(size),
+			Atime:        atime,
+			Mtime:        mtime,
+			Ctime:        ctime,
+			CreationTime: creationTime,
 		},
 	}
 

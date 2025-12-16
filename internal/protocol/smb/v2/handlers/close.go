@@ -1,51 +1,86 @@
 package handlers
 
 import (
-	"encoding/binary"
+	"fmt"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 )
 
 // Close handles SMB2 CLOSE command [MS-SMB2] 2.2.15, 2.2.16
 func (h *Handler) Close(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	if len(body) < 24 {
+	// ========================================================================
+	// Step 1: Decode request
+	// ========================================================================
+
+	req, err := DecodeCloseRequest(body)
+	if err != nil {
+		logger.Debug("CLOSE: failed to decode request", "error", err)
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
-	// Parse request [MS-SMB2] 2.2.15
-	// structureSize := binary.LittleEndian.Uint16(body[0:2]) // Always 24
-	flags := types.CloseFlags(binary.LittleEndian.Uint16(body[2:4]))
-	// reserved := binary.LittleEndian.Uint32(body[4:8])
-	var fileID [16]byte
-	copy(fileID[:], body[8:24])
+	logger.Debug("CLOSE request",
+		"fileID", fmt.Sprintf("%x", req.FileID),
+		"flags", req.Flags)
 
-	// Validate and get file handle
-	openFile, ok := h.GetOpenFile(fileID)
+	// ========================================================================
+	// Step 2: Get OpenFile by FileID
+	// ========================================================================
+
+	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
+		logger.Debug("CLOSE: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
 		return NewErrorResult(types.StatusInvalidHandle), nil
 	}
 
-	// Delete the file handle
-	h.DeleteOpenFile(fileID)
+	// ========================================================================
+	// Step 3: Build response with optional attributes
+	// ========================================================================
 
-	// Build response [MS-SMB2] 2.2.16 (60 bytes)
-	resp := make([]byte, 60)
-	binary.LittleEndian.PutUint16(resp[0:2], 60)            // StructureSize
-	binary.LittleEndian.PutUint16(resp[2:4], uint16(flags)) // Echo back the flags
+	resp := &CloseResponse{
+		Flags: req.Flags,
+	}
 
 	// If SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB was set, return file attributes
-	if flags&types.SMB2ClosePostQueryAttrib != 0 {
-		mockFile := h.GetMockFile(openFile.ShareName, openFile.Path)
-		if mockFile != nil {
-			binary.LittleEndian.PutUint64(resp[8:16], types.TimeToFiletime(mockFile.Created))   // CreationTime
-			binary.LittleEndian.PutUint64(resp[16:24], types.TimeToFiletime(mockFile.Accessed)) // LastAccessTime
-			binary.LittleEndian.PutUint64(resp[24:32], types.TimeToFiletime(mockFile.Modified)) // LastWriteTime
-			binary.LittleEndian.PutUint64(resp[32:40], types.TimeToFiletime(mockFile.Modified)) // ChangeTime
-			binary.LittleEndian.PutUint64(resp[40:48], uint64(mockFile.Size))                   // AllocationSize
-			binary.LittleEndian.PutUint64(resp[48:56], uint64(mockFile.Size))                   // EndOfFile
-			binary.LittleEndian.PutUint32(resp[56:60], mockFile.Attributes)                     // FileAttributes
+	if types.CloseFlags(req.Flags)&types.SMB2ClosePostQueryAttrib != 0 {
+		// Get metadata store to retrieve final attributes
+		metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
+		if err == nil {
+			file, err := metadataStore.GetFile(ctx.Context, openFile.MetadataHandle)
+			if err == nil {
+				creation, access, write, change := FileAttrToSMBTimes(&file.FileAttr)
+				allocationSize := ((file.Size + 4095) / 4096) * 4096
+
+				resp.CreationTime = creation
+				resp.LastAccessTime = access
+				resp.LastWriteTime = write
+				resp.ChangeTime = change
+				resp.AllocationSize = allocationSize
+				resp.EndOfFile = file.Size
+				resp.FileAttributes = FileAttrToSMBAttributes(&file.FileAttr)
+			}
 		}
 	}
 
-	return NewResult(types.StatusSuccess, resp), nil
+	// ========================================================================
+	// Step 4: Remove the open file handle
+	// ========================================================================
+
+	h.DeleteOpenFile(req.FileID)
+
+	logger.Debug("CLOSE successful",
+		"fileID", fmt.Sprintf("%x", req.FileID),
+		"path", openFile.Path)
+
+	// ========================================================================
+	// Step 5: Encode response
+	// ========================================================================
+
+	respBytes, err := EncodeCloseResponse(resp)
+	if err != nil {
+		logger.Warn("CLOSE: failed to encode response", "error", err)
+		return NewErrorResult(types.StatusInternalError), nil
+	}
+
+	return NewResult(types.StatusSuccess, respBytes), nil
 }

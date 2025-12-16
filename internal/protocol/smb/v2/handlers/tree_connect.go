@@ -50,23 +50,18 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		"bodyLen", len(body),
 		"bodyHex", fmt.Sprintf("%x", body))
 
-	// Check if share exists in registry (or fall back to mock shares)
+	// Check if share exists in registry
 	share, shareErr := h.Registry.GetShare(shareName)
 	if shareErr != nil {
-		// Fall back to mock shares for Phase 1 compatibility
-		if !h.MockShareExists(shareName) {
-			logger.Debug("Share not found", "shareName", shareName)
-			return NewErrorResult(types.StatusBadNetworkName), nil
-		}
-		// Mock share - allow with full access
-		share = nil
+		logger.Debug("Share not found", "shareName", shareName)
+		return NewErrorResult(types.StatusBadNetworkName), nil
 	}
 
 	// Get session and check permissions
 	sess, _ := h.SessionManager.GetSession(ctx.SessionID)
-	permission := identity.PermissionReadWrite // Default for guests/mock
+	permission := identity.PermissionReadWrite // Default for unauthenticated
 
-	if share != nil && sess != nil {
+	if sess != nil {
 		userStore := h.Registry.GetUserStore()
 
 		if sess.User != nil && userStore != nil {
@@ -194,6 +189,16 @@ func decodeUTF16LE(b []byte) string {
 		u16s = u16s[:len(u16s)-1]
 	}
 	return string(utf16.Decode(u16s))
+}
+
+// encodeUTF16LE encodes a string to UTF-16LE byte slice
+func encodeUTF16LE(s string) []byte {
+	u16s := utf16.Encode([]rune(s))
+	b := make([]byte, len(u16s)*2)
+	for i, u := range u16s {
+		binary.LittleEndian.PutUint16(b[i*2:], u)
+	}
+	return b
 }
 
 // parseSharePath parses \\server\share to /share or just share

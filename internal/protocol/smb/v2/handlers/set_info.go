@@ -1,89 +1,116 @@
 package handlers
 
 import (
-	"encoding/binary"
+	"fmt"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // SetInfo handles SMB2 SET_INFO command [MS-SMB2] 2.2.39, 2.2.40
 func (h *Handler) SetInfo(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	if len(body) < 33 {
+	// ========================================================================
+	// Step 1: Decode request
+	// ========================================================================
+
+	req, err := DecodeSetInfoRequest(body)
+	if err != nil {
+		logger.Debug("SET_INFO: failed to decode request", "error", err)
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
-	// Parse request [MS-SMB2] 2.2.39
-	// structureSize := binary.LittleEndian.Uint16(body[0:2]) // Always 33
-	infoType := body[2]
-	fileInfoClass := types.FileInfoClass(body[3])
-	bufferLength := binary.LittleEndian.Uint32(body[4:8])
-	bufferOffset := binary.LittleEndian.Uint16(body[8:10])
-	// reserved := binary.LittleEndian.Uint16(body[10:12])
-	// additionalInformation := binary.LittleEndian.Uint32(body[12:16])
-	var fileID [16]byte
-	copy(fileID[:], body[16:32])
+	logger.Debug("SET_INFO request",
+		"infoType", req.InfoType,
+		"fileInfoClass", req.FileInfoClass,
+		"fileID", fmt.Sprintf("%x", req.FileID))
 
-	// Validate file handle
-	openFile, ok := h.GetOpenFile(fileID)
+	// ========================================================================
+	// Step 2: Get OpenFile by FileID
+	// ========================================================================
+
+	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
+		logger.Debug("SET_INFO: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
 		return NewErrorResult(types.StatusInvalidHandle), nil
 	}
 
-	// Get mock file
-	mockFile := h.GetMockFile(openFile.ShareName, openFile.Path)
-	if mockFile == nil {
-		return NewErrorResult(types.StatusObjectNameNotFound), nil
+	// ========================================================================
+	// Step 3: Get metadata store
+	// ========================================================================
+
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
+	if err != nil {
+		logger.Warn("SET_INFO: failed to get metadata store", "share", openFile.ShareName, "error", err)
+		return NewErrorResult(types.StatusBadNetworkName), nil
 	}
 
-	// Extract buffer data
-	adjustedOffset := int(bufferOffset) - 64 // Relative to SMB2 header
-	if adjustedOffset < 0 || adjustedOffset+int(bufferLength) > len(body) {
-		// Try offset from start of structure
-		adjustedOffset = 32
+	// ========================================================================
+	// Step 4: Build AuthContext
+	// ========================================================================
+
+	authCtx, err := BuildAuthContext(ctx, h.Registry)
+	if err != nil {
+		logger.Warn("SET_INFO: failed to build auth context", "error", err)
+		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 
-	var buffer []byte
-	if adjustedOffset >= 0 && adjustedOffset+int(bufferLength) <= len(body) {
-		buffer = body[adjustedOffset : adjustedOffset+int(bufferLength)]
-	}
+	// ========================================================================
+	// Step 5: Handle set info based on type
+	// ========================================================================
 
-	switch infoType {
+	switch req.InfoType {
 	case types.SMB2InfoTypeFile:
-		return h.setFileInfo(mockFile, fileInfoClass, buffer)
+		return h.setFileInfoFromStore(authCtx, metadataStore, openFile, types.FileInfoClass(req.FileInfoClass), req.Buffer)
 	case types.SMB2InfoTypeSecurity:
-		// For Phase 1, accept but ignore security updates
+		// Accept but ignore security updates for now
 		return NewResult(types.StatusSuccess, make([]byte, 0)), nil
 	default:
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 }
 
-// setFileInfo handles setting file information
-func (h *Handler) setFileInfo(f *MockFile, class types.FileInfoClass, buffer []byte) (*HandlerResult, error) {
+// setFileInfoFromStore handles setting file information using metadata store
+func (h *Handler) setFileInfoFromStore(
+	authCtx *metadata.AuthContext,
+	metadataStore metadata.MetadataStore,
+	openFile *OpenFile,
+	class types.FileInfoClass,
+	buffer []byte,
+) (*HandlerResult, error) {
 	switch class {
 	case types.FileBasicInformation:
 		// FILE_BASIC_INFORMATION [MS-FSCC] 2.4.7 (40 bytes)
 		if len(buffer) < 36 {
 			return NewErrorResult(types.StatusInvalidParameter), nil
 		}
-		// Parse times (we don't actually update mock data, but validate format)
-		// creationTime := binary.LittleEndian.Uint64(buffer[0:8])
-		// lastAccessTime := binary.LittleEndian.Uint64(buffer[8:16])
-		// lastWriteTime := binary.LittleEndian.Uint64(buffer[16:24])
-		// changeTime := binary.LittleEndian.Uint64(buffer[24:32])
-		attrs := binary.LittleEndian.Uint32(buffer[32:36])
-		if attrs != 0 {
-			f.Attributes = attrs
+
+		basicInfo, err := DecodeFileBasicInfo(buffer)
+		if err != nil {
+			return NewErrorResult(types.StatusInvalidParameter), nil
 		}
+
+		// Convert to SetAttrs
+		setAttrs := SMBTimesToSetAttrs(basicInfo)
+
+		// Apply changes
+		err = metadataStore.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
+		if err != nil {
+			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Path, "error", err)
+			return NewErrorResult(MetadataErrorToSMBStatus(err)), nil
+		}
+
 		return NewResult(types.StatusSuccess, make([]byte, 0)), nil
 
 	case types.FileRenameInformation:
 		// FILE_RENAME_INFORMATION [MS-FSCC] 2.4.34
-		// For Phase 1, accept but ignore
+		// TODO: Implement rename operation using metadataStore.Move()
+		logger.Debug("SET_INFO: rename not implemented", "path", openFile.Path)
 		return NewResult(types.StatusSuccess, make([]byte, 0)), nil
 
 	case 13: // FileDispositionInformation [MS-FSCC] 2.4.11
-		// For Phase 1, accept but ignore delete requests
+		// TODO: Implement delete on close
+		logger.Debug("SET_INFO: delete disposition not implemented", "path", openFile.Path)
 		return NewResult(types.StatusSuccess, make([]byte, 0)), nil
 
 	case 20: // FileEndOfFileInformation [MS-FSCC] 2.4.13
@@ -91,27 +118,38 @@ func (h *Handler) setFileInfo(f *MockFile, class types.FileInfoClass, buffer []b
 		if len(buffer) < 8 {
 			return NewErrorResult(types.StatusInvalidParameter), nil
 		}
-		newSize := binary.LittleEndian.Uint64(buffer[0:8])
-		f.Size = int64(newSize)
-		// Adjust content if needed
-		if int(newSize) < len(f.Content) {
-			f.Content = f.Content[:newSize]
-		} else if int(newSize) > len(f.Content) {
-			newContent := make([]byte, newSize)
-			copy(newContent, f.Content)
-			f.Content = newContent
+
+		newSize, err := decodeEndOfFileInfo(buffer)
+		if err != nil {
+			return NewErrorResult(types.StatusInvalidParameter), nil
 		}
+
+		setAttrs := &metadata.SetAttrs{
+			Size: &newSize,
+		}
+
+		err = metadataStore.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
+		if err != nil {
+			logger.Debug("SET_INFO: failed to set EOF", "path", openFile.Path, "error", err)
+			return NewErrorResult(MetadataErrorToSMBStatus(err)), nil
+		}
+
 		return NewResult(types.StatusSuccess, make([]byte, 0)), nil
 
 	case 19: // FileAllocationInformation [MS-FSCC] 2.4.4
-		// Set allocation size - for Phase 1, treat like EOF
-		if len(buffer) < 8 {
-			return NewErrorResult(types.StatusInvalidParameter), nil
-		}
-		// Accept but don't actually change allocation
+		// Set allocation size - accept but treat as no-op (allocation handled automatically)
 		return NewResult(types.StatusSuccess, make([]byte, 0)), nil
 
 	default:
 		return NewErrorResult(types.StatusNotSupported), nil
 	}
+}
+
+// decodeEndOfFileInfo decodes FILE_END_OF_FILE_INFORMATION
+func decodeEndOfFileInfo(buffer []byte) (uint64, error) {
+	if len(buffer) < 8 {
+		return 0, fmt.Errorf("buffer too short")
+	}
+	return uint64(buffer[0]) | uint64(buffer[1])<<8 | uint64(buffer[2])<<16 | uint64(buffer[3])<<24 |
+		uint64(buffer[4])<<32 | uint64(buffer[5])<<40 | uint64(buffer[6])<<48 | uint64(buffer[7])<<56, nil
 }
