@@ -135,8 +135,17 @@ func New(config SMBConfig) *SMBAdapter {
 	// Create shutdown context for request cancellation
 	shutdownCtx, cancelRequests := context.WithCancel(context.Background())
 
-	// Create unified session manager for session and credit tracking
-	sessionManager := session.NewDefaultManager()
+	// Create unified session manager with configured credit strategy
+	creditConfig := config.Credits.ToSessionConfig()
+	creditStrategy := config.Credits.GetStrategy()
+	sessionManager := session.NewManagerWithStrategy(creditStrategy, creditConfig)
+
+	logger.Debug("SMB credit configuration",
+		"strategy", config.Credits.Strategy,
+		"min_grant", creditConfig.MinGrant,
+		"max_grant", creditConfig.MaxGrant,
+		"initial_grant", creditConfig.InitialGrant,
+		"max_session_credits", creditConfig.MaxSessionCredits)
 
 	return &SMBAdapter{
 		config:         config,

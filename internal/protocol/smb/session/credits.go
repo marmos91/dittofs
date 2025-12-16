@@ -38,6 +38,20 @@ const (
 	StrategyAdaptive
 )
 
+// String returns the string representation of the credit strategy.
+func (s CreditStrategy) String() string {
+	switch s {
+	case StrategyFixed:
+		return "fixed"
+	case StrategyEcho:
+		return "echo"
+	case StrategyAdaptive:
+		return "adaptive"
+	default:
+		return "unknown"
+	}
+}
+
 // CreditConfig configures the credit management behavior.
 type CreditConfig struct {
 	// MinGrant is the minimum credits to grant per response.

@@ -439,6 +439,37 @@ func applySMBDefaults(cfg *smb.SMBConfig) {
 	if cfg.MetricsLogInterval == 0 {
 		cfg.MetricsLogInterval = 5 * time.Minute
 	}
+
+	// Apply credit configuration defaults
+	applySMBCreditsDefaults(&cfg.Credits)
+}
+
+// applySMBCreditsDefaults sets SMB credit configuration defaults.
+func applySMBCreditsDefaults(cfg *smb.SMBCreditsConfig) {
+	if cfg.Strategy == "" {
+		cfg.Strategy = "adaptive"
+	}
+	if cfg.MinGrant == 0 {
+		cfg.MinGrant = 16
+	}
+	if cfg.MaxGrant == 0 {
+		cfg.MaxGrant = 8192
+	}
+	if cfg.InitialGrant == 0 {
+		cfg.InitialGrant = 256
+	}
+	if cfg.MaxSessionCredits == 0 {
+		cfg.MaxSessionCredits = 65535
+	}
+	if cfg.LoadThresholdHigh == 0 {
+		cfg.LoadThresholdHigh = 1000
+	}
+	if cfg.LoadThresholdLow == 0 {
+		cfg.LoadThresholdLow = 100
+	}
+	if cfg.AggressiveClientThreshold == 0 {
+		cfg.AggressiveClientThreshold = 256
+	}
 }
 
 // GetDefaultConfig returns a Config struct with all default values applied.

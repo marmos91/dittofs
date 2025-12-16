@@ -3,6 +3,8 @@ package smb
 import (
 	"fmt"
 	"time"
+
+	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 )
 
 // SMBTimeoutsConfig groups all timeout-related configuration.
@@ -82,6 +84,68 @@ type SMBConfig struct {
 	// 0 disables periodic metrics logging.
 	// Recommended: 5m for production monitoring.
 	MetricsLogInterval time.Duration `mapstructure:"metrics_log_interval" validate:"min=0"`
+
+	// Credits configures SMB2 credit management behavior.
+	// Credits control flow control and parallelism per client.
+	Credits SMBCreditsConfig `mapstructure:"credits"`
+}
+
+// SMBCreditsConfig configures SMB2 credit management.
+//
+// Credits are flow control tokens that limit how many concurrent operations
+// a client can have outstanding. Proper configuration balances throughput
+// (more credits = more parallelism) with protection (fewer credits = less DoS risk).
+//
+// Strategy options:
+//   - "fixed": Always grant InitialGrant credits. Simple but doesn't adapt.
+//   - "echo": Grant what client requests (within bounds). Maintains client pool.
+//   - "adaptive": Adjusts based on server load and client behavior. Recommended.
+//
+// Default values (applied if zero):
+//   - Strategy: "adaptive"
+//   - MinGrant: 16
+//   - MaxGrant: 8192
+//   - InitialGrant: 256
+//   - MaxSessionCredits: 65535
+type SMBCreditsConfig struct {
+	// Strategy is the credit grant strategy.
+	// Valid values: "fixed", "echo", "adaptive" (default: "adaptive")
+	Strategy string `mapstructure:"strategy" validate:"omitempty,oneof=fixed echo adaptive"`
+
+	// MinGrant is the minimum credits to grant per response.
+	// Always granting at least some credits prevents client deadlock.
+	// Default: 16
+	MinGrant uint16 `mapstructure:"min_grant" validate:"min=1"`
+
+	// MaxGrant is the maximum credits to grant per response.
+	// Limits memory exposure from a single client.
+	// Default: 8192
+	MaxGrant uint16 `mapstructure:"max_grant" validate:"min=1"`
+
+	// InitialGrant is credits granted for initial requests (NEGOTIATE, SESSION_SETUP).
+	// Higher values allow faster client startup, lower values are more conservative.
+	// Default: 256
+	InitialGrant uint16 `mapstructure:"initial_grant" validate:"min=1"`
+
+	// MaxSessionCredits limits total outstanding credits per session.
+	// Prevents a single client from monopolizing server resources.
+	// Default: 65535 (~64K credits)
+	MaxSessionCredits uint32 `mapstructure:"max_session_credits" validate:"min=1"`
+
+	// LoadThresholdHigh triggers throttling when active requests exceed this.
+	// Only used by "adaptive" strategy.
+	// Default: 1000
+	LoadThresholdHigh int64 `mapstructure:"load_threshold_high" validate:"min=0"`
+
+	// LoadThresholdLow triggers credit boost when active requests are below this.
+	// Only used by "adaptive" strategy.
+	// Default: 100
+	LoadThresholdLow int64 `mapstructure:"load_threshold_low" validate:"min=0"`
+
+	// AggressiveClientThreshold triggers throttling when a session has this many
+	// outstanding requests. Only used by "adaptive" strategy.
+	// Default: 256
+	AggressiveClientThreshold int64 `mapstructure:"aggressive_client_threshold" validate:"min=0"`
 }
 
 // applyDefaults fills in zero values with sensible defaults.
@@ -106,6 +170,64 @@ func (c *SMBConfig) applyDefaults() {
 	}
 	if c.MetricsLogInterval == 0 {
 		c.MetricsLogInterval = 5 * time.Minute
+	}
+
+	// Apply credit defaults
+	c.Credits.applyDefaults()
+}
+
+// applyDefaults fills in zero values with sensible defaults.
+func (c *SMBCreditsConfig) applyDefaults() {
+	if c.Strategy == "" {
+		c.Strategy = "adaptive"
+	}
+	if c.MinGrant == 0 {
+		c.MinGrant = 16
+	}
+	if c.MaxGrant == 0 {
+		c.MaxGrant = session.MaximumCreditGrant
+	}
+	if c.InitialGrant == 0 {
+		c.InitialGrant = session.DefaultInitialCredits
+	}
+	if c.MaxSessionCredits == 0 {
+		c.MaxSessionCredits = 65535
+	}
+	if c.LoadThresholdHigh == 0 {
+		c.LoadThresholdHigh = 1000
+	}
+	if c.LoadThresholdLow == 0 {
+		c.LoadThresholdLow = 100
+	}
+	if c.AggressiveClientThreshold == 0 {
+		c.AggressiveClientThreshold = 256
+	}
+}
+
+// ToSessionConfig converts to the internal session.CreditConfig type.
+func (c *SMBCreditsConfig) ToSessionConfig() session.CreditConfig {
+	return session.CreditConfig{
+		MinGrant:                  c.MinGrant,
+		MaxGrant:                  c.MaxGrant,
+		InitialGrant:              c.InitialGrant,
+		MaxSessionCredits:         c.MaxSessionCredits,
+		LoadThresholdHigh:         c.LoadThresholdHigh,
+		LoadThresholdLow:          c.LoadThresholdLow,
+		AggressiveClientThreshold: c.AggressiveClientThreshold,
+	}
+}
+
+// GetStrategy returns the CreditStrategy enum for the configured strategy.
+func (c *SMBCreditsConfig) GetStrategy() session.CreditStrategy {
+	switch c.Strategy {
+	case "fixed":
+		return session.StrategyFixed
+	case "echo":
+		return session.StrategyEcho
+	case "adaptive":
+		return session.StrategyAdaptive
+	default:
+		return session.StrategyAdaptive
 	}
 }
 

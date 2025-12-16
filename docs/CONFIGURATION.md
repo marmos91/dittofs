@@ -413,6 +413,65 @@ adapters:
     #   burst: 20000
 ```
 
+**SMB Adapter**:
+
+```yaml
+adapters:
+  smb:
+    enabled: false            # Enable SMB2 protocol (default: false)
+    port: 445                 # Standard SMB port (requires root, use 12445 for testing)
+    max_connections: 0        # 0 = unlimited
+    max_requests_per_connection: 100  # Concurrent requests per connection
+
+    # Grouped timeout configuration
+    timeouts:
+      read: 5m                # Max time to read request
+      write: 30s              # Max time to write response
+      idle: 5m                # Max idle time between requests
+      shutdown: 30s           # Graceful shutdown timeout
+
+    metrics_log_interval: 5m  # Metrics logging interval (0 = disabled)
+
+    # Credit management configuration
+    # Credits control SMB2 flow control and client parallelism
+    credits:
+      strategy: adaptive      # fixed, echo, adaptive (default: adaptive)
+      min_grant: 16           # Minimum credits per response
+      max_grant: 8192         # Maximum credits per response
+      initial_grant: 256      # Credits for initial requests (NEGOTIATE)
+      max_session_credits: 65535  # Max outstanding credits per session
+
+      # Adaptive strategy thresholds (ignored for fixed/echo)
+      load_threshold_high: 1000       # Start throttling above this load
+      load_threshold_low: 100         # Boost credits below this load
+      aggressive_client_threshold: 256 # Throttle clients with this many outstanding
+```
+
+**SMB Credit Strategies:**
+
+| Strategy | Description | Use Case |
+|----------|-------------|----------|
+| `fixed` | Always grants `initial_grant` credits | Simple, predictable behavior |
+| `echo` | Grants what client requests (within bounds) | Maintains client's credit pool |
+| `adaptive` | Adjusts based on server load and client behavior | **Recommended** for production |
+
+**SMB Credit Configuration Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `strategy` | `adaptive` | Credit grant strategy |
+| `min_grant` | `16` | Minimum credits per response (prevents deadlock) |
+| `max_grant` | `8192` | Maximum credits per response |
+| `initial_grant` | `256` | Credits for NEGOTIATE/SESSION_SETUP |
+| `max_session_credits` | `65535` | Max outstanding credits per session |
+| `load_threshold_high` | `1000` | Server load that triggers throttling |
+| `load_threshold_low` | `100` | Server load that triggers boost |
+| `aggressive_client_threshold` | `256` | Outstanding requests that trigger client throttling |
+
+> **Note**: SMB2 credits are flow control tokens that limit concurrent operations per client.
+> Higher credits = more parallelism but more server resource consumption.
+> The adaptive strategy balances throughput and protection automatically.
+
 ## Environment Variables
 
 Override configuration using environment variables with the `DITTOFS_` prefix:
@@ -464,6 +523,17 @@ export DITTOFS_ADAPTERS_NFS_TIMEOUTS_READ=5m
 export DITTOFS_ADAPTERS_NFS_TIMEOUTS_WRITE=30s
 export DITTOFS_ADAPTERS_NFS_TIMEOUTS_IDLE=5m
 export DITTOFS_ADAPTERS_NFS_TIMEOUTS_SHUTDOWN=30s
+
+# SMB adapter
+export DITTOFS_ADAPTERS_SMB_ENABLED=true
+export DITTOFS_ADAPTERS_SMB_PORT=12445
+export DITTOFS_ADAPTERS_SMB_MAX_CONNECTIONS=1000
+
+# SMB credits
+export DITTOFS_ADAPTERS_SMB_CREDITS_STRATEGY=adaptive
+export DITTOFS_ADAPTERS_SMB_CREDITS_MIN_GRANT=16
+export DITTOFS_ADAPTERS_SMB_CREDITS_MAX_GRANT=8192
+export DITTOFS_ADAPTERS_SMB_CREDITS_INITIAL_GRANT=256
 
 # Start server with overrides
 DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
