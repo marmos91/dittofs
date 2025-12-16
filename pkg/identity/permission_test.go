@@ -13,8 +13,8 @@ func TestParseSharePermission(t *testing.T) {
 		{"read", PermissionRead},
 		{"read-write", PermissionReadWrite},
 		{"admin", PermissionAdmin},
-		// Note: ParseSharePermission only accepts lowercase values
-		{"NONE", PermissionNone}, // Uppercase "NONE" happens to match because it's the same as lowercase
+		// Note: ParseSharePermission is case-sensitive and only accepts lowercase values
+		{"NONE", PermissionNone}, // Uppercase is invalid; returns default PermissionNone
 		{"READ", PermissionNone}, // Uppercase not supported
 		{"READ-WRITE", PermissionNone},
 		{"ADMIN", PermissionNone},

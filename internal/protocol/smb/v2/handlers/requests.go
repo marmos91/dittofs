@@ -44,23 +44,23 @@ type CreateResponse struct {
 
 // ReadRequest represents a parsed SMB2 READ request [MS-SMB2] 2.2.19
 type ReadRequest struct {
-	Padding             uint8
-	Flags               uint8
-	Length              uint32
-	Offset              uint64
-	FileID              [16]byte
-	MinimumCount        uint32
-	Channel             uint32
-	RemainingBytes      uint32
-	ReadChannelInfoBuf  []byte
+	Padding            uint8
+	Flags              uint8
+	Length             uint32
+	Offset             uint64
+	FileID             [16]byte
+	MinimumCount       uint32
+	Channel            uint32
+	RemainingBytes     uint32
+	ReadChannelInfoBuf []byte
 }
 
 // ReadResponse represents an SMB2 READ response [MS-SMB2] 2.2.20
 type ReadResponse struct {
-	DataOffset   uint8
-	DataLength   uint32
+	DataOffset    uint8
+	DataLength    uint32
 	DataRemaining uint32
-	Data         []byte
+	Data          []byte
 }
 
 // WriteRequest represents a parsed SMB2 WRITE request [MS-SMB2] 2.2.21
@@ -101,14 +101,14 @@ type CloseResponse struct {
 
 // QueryInfoRequest represents a parsed SMB2 QUERY_INFO request [MS-SMB2] 2.2.37
 type QueryInfoRequest struct {
-	InfoType            uint8
-	FileInfoClass       uint8
-	OutputBufferLength  uint32
-	InputBufferOffset   uint16
-	InputBufferLength   uint32
-	AdditionalInfo      uint32
-	Flags               uint32
-	FileID              [16]byte
+	InfoType           uint8
+	FileInfoClass      uint8
+	OutputBufferLength uint32
+	InputBufferOffset  uint16
+	InputBufferLength  uint32
+	AdditionalInfo     uint32
+	Flags              uint32
+	FileID             [16]byte
 }
 
 // QueryInfoResponse represents an SMB2 QUERY_INFO response [MS-SMB2] 2.2.38
@@ -120,13 +120,13 @@ type QueryInfoResponse struct {
 
 // SetInfoRequest represents a parsed SMB2 SET_INFO request [MS-SMB2] 2.2.39
 type SetInfoRequest struct {
-	InfoType           uint8
-	FileInfoClass      uint8
-	BufferLength       uint32
-	BufferOffset       uint16
-	AdditionalInfo     uint32
-	FileID             [16]byte
-	Buffer             []byte
+	InfoType       uint8
+	FileInfoClass  uint8
+	BufferLength   uint32
+	BufferOffset   uint16
+	AdditionalInfo uint32
+	FileID         [16]byte
+	Buffer         []byte
 }
 
 // SetInfoResponse represents an SMB2 SET_INFO response [MS-SMB2] 2.2.40
@@ -135,14 +135,14 @@ type SetInfoResponse struct{}
 
 // QueryDirectoryRequest represents a parsed SMB2 QUERY_DIRECTORY request [MS-SMB2] 2.2.33
 type QueryDirectoryRequest struct {
-	FileInfoClass       uint8
-	Flags               uint8
-	FileIndex           uint32
-	FileID              [16]byte
-	FileNameOffset      uint16
-	FileNameLength      uint16
-	OutputBufferLength  uint32
-	FileName            string
+	FileInfoClass      uint8
+	Flags              uint8
+	FileIndex          uint32
+	FileID             [16]byte
+	FileNameOffset     uint16
+	FileNameLength     uint16
+	OutputBufferLength uint32
+	FileName           string
 }
 
 // QueryDirectoryResponse represents an SMB2 QUERY_DIRECTORY response [MS-SMB2] 2.2.34
@@ -163,32 +163,32 @@ type FlushResponse struct{}
 
 // File info classes for QUERY_INFO
 const (
-	FileBasicInformation      uint8 = 4
-	FileStandardInformation   uint8 = 5
-	FileInternalInformation   uint8 = 6
-	FileEaInformation         uint8 = 7
-	FileAccessInformation     uint8 = 8
-	FileNameInformation       uint8 = 9
-	FileRenameInformation     uint8 = 10
-	FileDispositionInformation uint8 = 13
-	FilePositionInformation   uint8 = 14
-	FileModeInformation       uint8 = 16
-	FileAlignmentInformation  uint8 = 17
-	FileAllInformation        uint8 = 18
-	FileAllocationInformation uint8 = 19
-	FileEndOfFileInformation  uint8 = 20
-	FileAttributeTagInformation uint8 = 35
-	FileNetworkOpenInformation uint8 = 34
+	FileBasicInformation           uint8 = 4
+	FileStandardInformation        uint8 = 5
+	FileInternalInformation        uint8 = 6
+	FileEaInformation              uint8 = 7
+	FileAccessInformation          uint8 = 8
+	FileNameInformation            uint8 = 9
+	FileRenameInformation          uint8 = 10
+	FileDispositionInformation     uint8 = 13
+	FilePositionInformation        uint8 = 14
+	FileModeInformation            uint8 = 16
+	FileAlignmentInformation       uint8 = 17
+	FileAllInformation             uint8 = 18
+	FileAllocationInformation      uint8 = 19
+	FileEndOfFileInformation       uint8 = 20
+	FileAttributeTagInformation    uint8 = 35
+	FileNetworkOpenInformation     uint8 = 34
 	FileIdBothDirectoryInformation uint8 = 37
 	FileIdFullDirectoryInformation uint8 = 38
 )
 
 // Info types for QUERY_INFO
 const (
-	SMB2InfoFile        uint8 = 1
-	SMB2InfoFilesystem  uint8 = 2
-	SMB2InfoSecurity    uint8 = 3
-	SMB2InfoQuota       uint8 = 4
+	SMB2InfoFile       uint8 = 1
+	SMB2InfoFilesystem uint8 = 2
+	SMB2InfoSecurity   uint8 = 3
+	SMB2InfoQuota      uint8 = 4
 )
 
 // FileBasicInfo represents FILE_BASIC_INFORMATION [MS-FSCC] 2.4.7
@@ -211,15 +211,15 @@ type FileStandardInfo struct {
 
 // FileAllInfo represents FILE_ALL_INFORMATION [MS-FSCC] 2.4.2
 type FileAllInfo struct {
-	BasicInfo        FileBasicInfo
-	StandardInfo     FileStandardInfo
-	InternalInfo     uint64 // FileIndex
-	EaInfo           uint32 // EaSize
-	AccessInfo       uint32 // AccessFlags
-	PositionInfo     uint64 // CurrentByteOffset
-	ModeInfo         uint32 // Mode
-	AlignmentInfo    uint32 // AlignmentRequirement
-	NameInfo         string // FileName
+	BasicInfo     FileBasicInfo
+	StandardInfo  FileStandardInfo
+	InternalInfo  uint64 // FileIndex
+	EaInfo        uint32 // EaSize
+	AccessInfo    uint32 // AccessFlags
+	PositionInfo  uint64 // CurrentByteOffset
+	ModeInfo      uint32 // Mode
+	AlignmentInfo uint32 // AlignmentRequirement
+	NameInfo      string // FileName
 }
 
 // FileNetworkOpenInfo represents FILE_NETWORK_OPEN_INFORMATION [MS-FSCC] 2.4.27

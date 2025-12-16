@@ -72,11 +72,11 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 func EncodeCreateResponse(resp *CreateResponse) ([]byte, error) {
 	// Build response (89 bytes)
 	buf := make([]byte, 89)
-	binary.LittleEndian.PutUint16(buf[0:2], 89)                                      // StructureSize
-	buf[2] = resp.OplockLevel                                                         // OplockLevel
-	buf[3] = resp.Flags                                                               // Flags
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(resp.CreateAction))               // CreateAction
-	binary.LittleEndian.PutUint64(buf[8:16], types.TimeToFiletime(resp.CreationTime)) // CreationTime
+	binary.LittleEndian.PutUint16(buf[0:2], 89)                                          // StructureSize
+	buf[2] = resp.OplockLevel                                                            // OplockLevel
+	buf[3] = resp.Flags                                                                  // Flags
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(resp.CreateAction))                   // CreateAction
+	binary.LittleEndian.PutUint64(buf[8:16], types.TimeToFiletime(resp.CreationTime))    // CreationTime
 	binary.LittleEndian.PutUint64(buf[16:24], types.TimeToFiletime(resp.LastAccessTime)) // LastAccessTime
 	binary.LittleEndian.PutUint64(buf[24:32], types.TimeToFiletime(resp.LastWriteTime))  // LastWriteTime
 	binary.LittleEndian.PutUint64(buf[32:40], types.TimeToFiletime(resp.ChangeTime))     // ChangeTime
@@ -115,12 +115,12 @@ func DecodeReadRequest(body []byte) (*ReadRequest, error) {
 func EncodeReadResponse(resp *ReadResponse) ([]byte, error) {
 	// Response header is 17 bytes, data follows
 	buf := make([]byte, 17+len(resp.Data))
-	binary.LittleEndian.PutUint16(buf[0:2], 17)                      // StructureSize
-	buf[2] = resp.DataOffset                                          // DataOffset (relative to header start)
-	buf[3] = 0                                                        // Reserved
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(resp.Data)))  // DataLength
-	binary.LittleEndian.PutUint32(buf[8:12], resp.DataRemaining)     // DataRemaining
-	binary.LittleEndian.PutUint32(buf[12:16], 0)                     // Reserved2
+	binary.LittleEndian.PutUint16(buf[0:2], 17)                     // StructureSize
+	buf[2] = resp.DataOffset                                        // DataOffset (relative to header start)
+	buf[3] = 0                                                      // Reserved
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(resp.Data))) // DataLength
+	binary.LittleEndian.PutUint32(buf[8:12], resp.DataRemaining)    // DataRemaining
+	binary.LittleEndian.PutUint32(buf[12:16], 0)                    // Reserved2
 	copy(buf[17:], resp.Data)
 
 	return buf, nil
@@ -187,12 +187,12 @@ func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
 // EncodeWriteResponse builds an SMB2 WRITE response body [MS-SMB2] 2.2.22
 func EncodeWriteResponse(resp *WriteResponse) ([]byte, error) {
 	buf := make([]byte, 17)
-	binary.LittleEndian.PutUint16(buf[0:2], 17)             // StructureSize
-	binary.LittleEndian.PutUint16(buf[2:4], 0)              // Reserved
-	binary.LittleEndian.PutUint32(buf[4:8], resp.Count)     // Count
+	binary.LittleEndian.PutUint16(buf[0:2], 17)              // StructureSize
+	binary.LittleEndian.PutUint16(buf[2:4], 0)               // Reserved
+	binary.LittleEndian.PutUint32(buf[4:8], resp.Count)      // Count
 	binary.LittleEndian.PutUint32(buf[8:12], resp.Remaining) // Remaining
-	binary.LittleEndian.PutUint16(buf[12:14], 0)            // WriteChannelInfoOffset
-	binary.LittleEndian.PutUint16(buf[14:16], 0)            // WriteChannelInfoLength
+	binary.LittleEndian.PutUint16(buf[12:14], 0)             // WriteChannelInfoOffset
+	binary.LittleEndian.PutUint16(buf[14:16], 0)             // WriteChannelInfoLength
 
 	return buf, nil
 }
@@ -214,10 +214,10 @@ func DecodeCloseRequest(body []byte) (*CloseRequest, error) {
 // EncodeCloseResponse builds an SMB2 CLOSE response body [MS-SMB2] 2.2.16
 func EncodeCloseResponse(resp *CloseResponse) ([]byte, error) {
 	buf := make([]byte, 60)
-	binary.LittleEndian.PutUint16(buf[0:2], 60)                                        // StructureSize
-	binary.LittleEndian.PutUint16(buf[2:4], resp.Flags)                               // Flags
-	binary.LittleEndian.PutUint32(buf[4:8], 0)                                        // Reserved
-	binary.LittleEndian.PutUint64(buf[8:16], types.TimeToFiletime(resp.CreationTime)) // CreationTime
+	binary.LittleEndian.PutUint16(buf[0:2], 60)                                          // StructureSize
+	binary.LittleEndian.PutUint16(buf[2:4], resp.Flags)                                  // Flags
+	binary.LittleEndian.PutUint32(buf[4:8], 0)                                           // Reserved
+	binary.LittleEndian.PutUint64(buf[8:16], types.TimeToFiletime(resp.CreationTime))    // CreationTime
 	binary.LittleEndian.PutUint64(buf[16:24], types.TimeToFiletime(resp.LastAccessTime)) // LastAccessTime
 	binary.LittleEndian.PutUint64(buf[24:32], types.TimeToFiletime(resp.LastWriteTime))  // LastWriteTime
 	binary.LittleEndian.PutUint64(buf[32:40], types.TimeToFiletime(resp.ChangeTime))     // ChangeTime
@@ -254,9 +254,9 @@ func DecodeQueryInfoRequest(body []byte) (*QueryInfoRequest, error) {
 // EncodeQueryInfoResponse builds an SMB2 QUERY_INFO response body [MS-SMB2] 2.2.38
 func EncodeQueryInfoResponse(resp *QueryInfoResponse) ([]byte, error) {
 	buf := make([]byte, 9+len(resp.Data))
-	binary.LittleEndian.PutUint16(buf[0:2], 9)                                   // StructureSize
-	binary.LittleEndian.PutUint16(buf[2:4], uint16(64+9))                        // OutputBufferOffset (after header + struct)
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(resp.Data)))              // OutputBufferLength
+	binary.LittleEndian.PutUint16(buf[0:2], 9)                      // StructureSize
+	binary.LittleEndian.PutUint16(buf[2:4], uint16(64+9))           // OutputBufferOffset (after header + struct)
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(resp.Data))) // OutputBufferLength
 	copy(buf[9:], resp.Data)
 
 	return buf, nil
@@ -329,8 +329,8 @@ func DecodeQueryDirectoryRequest(body []byte) (*QueryDirectoryRequest, error) {
 // EncodeQueryDirectoryResponse builds an SMB2 QUERY_DIRECTORY response body [MS-SMB2] 2.2.34
 func EncodeQueryDirectoryResponse(resp *QueryDirectoryResponse) ([]byte, error) {
 	buf := make([]byte, 9+len(resp.Data))
-	binary.LittleEndian.PutUint16(buf[0:2], 9)                       // StructureSize
-	binary.LittleEndian.PutUint16(buf[2:4], uint16(64+9))            // OutputBufferOffset
+	binary.LittleEndian.PutUint16(buf[0:2], 9)                      // StructureSize
+	binary.LittleEndian.PutUint16(buf[2:4], uint16(64+9))           // OutputBufferOffset
 	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(resp.Data))) // OutputBufferLength
 	copy(buf[9:], resp.Data)
 
@@ -430,9 +430,9 @@ func EncodeDirectoryEntry(entry *DirectoryEntry, nextOffset uint32) []byte {
 	paddedSize := (totalSize + 7) &^ 7
 
 	buf := make([]byte, paddedSize)
-	binary.LittleEndian.PutUint32(buf[0:4], nextOffset)                                // NextEntryOffset
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(entry.FileIndex))                   // FileIndex
-	binary.LittleEndian.PutUint64(buf[8:16], types.TimeToFiletime(entry.CreationTime)) // CreationTime
+	binary.LittleEndian.PutUint32(buf[0:4], nextOffset)                                   // NextEntryOffset
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(entry.FileIndex))                      // FileIndex
+	binary.LittleEndian.PutUint64(buf[8:16], types.TimeToFiletime(entry.CreationTime))    // CreationTime
 	binary.LittleEndian.PutUint64(buf[16:24], types.TimeToFiletime(entry.LastAccessTime)) // LastAccessTime
 	binary.LittleEndian.PutUint64(buf[24:32], types.TimeToFiletime(entry.LastWriteTime))  // LastWriteTime
 	binary.LittleEndian.PutUint64(buf[32:40], types.TimeToFiletime(entry.ChangeTime))     // ChangeTime

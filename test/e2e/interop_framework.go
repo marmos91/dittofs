@@ -49,10 +49,10 @@ type InteropTestContext struct {
 	SMBPassword  string
 	smbMounted   bool
 
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	tempDirs   []string
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	tempDirs []string
 }
 
 // NewInteropTestContext creates a test environment with both NFS and SMB protocols

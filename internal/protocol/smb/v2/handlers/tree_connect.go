@@ -12,6 +12,10 @@ import (
 	"github.com/marmos91/dittofs/pkg/identity"
 )
 
+// treeConnectFixedSize is the size of the TREE_CONNECT request fixed structure [MS-SMB2] 2.2.9
+// StructureSize(2) + Reserved/Flags(2) + PathOffset(2) + PathLength(2) = 8 bytes
+const treeConnectFixedSize = 8
+
 // TreeConnect handles SMB2 TREE_CONNECT command [MS-SMB2] 2.2.9, 2.2.10
 func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	if len(body) < 9 {
@@ -27,8 +31,8 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	// Path offset is relative to the start of the SMB2 header (64 bytes)
 	// Since we receive body after the header, subtract 64 to get body offset
 	adjustedOffset := int(pathOffset) - 64
-	if adjustedOffset < 8 {
-		adjustedOffset = 8 // Path starts after the 8-byte fixed structure
+	if adjustedOffset < treeConnectFixedSize {
+		adjustedOffset = treeConnectFixedSize // Path starts after the fixed structure
 	}
 
 	// Extract path from body
