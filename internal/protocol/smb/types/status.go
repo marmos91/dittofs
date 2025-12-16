@@ -150,6 +150,9 @@ const (
 
 	// StatusUnexpectedIOError indicates an unexpected I/O error occurred.
 	StatusUnexpectedIOError Status = 0xC00000E9
+
+	// StatusNotAReparsePoint indicates the file is not a reparse point.
+	StatusNotAReparsePoint Status = 0xC0000275
 )
 
 // String returns a human-readable name for the status code.
@@ -229,6 +232,8 @@ func (s Status) String() string {
 		return "STATUS_DISK_FULL"
 	case StatusUnexpectedIOError:
 		return "STATUS_UNEXPECTED_IO_ERROR"
+	case StatusNotAReparsePoint:
+		return "STATUS_NOT_A_REPARSE_POINT"
 	default:
 		return fmt.Sprintf("STATUS_0x%08X", uint32(s))
 	}

@@ -186,6 +186,9 @@ func (h *Handler) Create(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 		IsDirectory:    file.Type == metadata.FileTypeDirectory,
 		MetadataHandle: fileHandle,
 		ContentID:      file.ContentID,
+		// Store parent info for delete-on-close support
+		ParentHandle: parentHandle,
+		FileName:     baseName,
 	}
 	h.StoreOpenFile(openFile)
 

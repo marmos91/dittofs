@@ -486,3 +486,41 @@ func EncodeDirectoryEntry(entry *DirectoryEntry, nextOffset uint32) []byte {
 
 	return buf
 }
+
+// FileRenameInfo represents FILE_RENAME_INFORMATION [MS-FSCC] 2.4.34
+type FileRenameInfo struct {
+	ReplaceIfExists bool
+	FileName        string // New filename (may be full path or just name)
+}
+
+// DecodeFileRenameInfo parses FILE_RENAME_INFORMATION [MS-FSCC] 2.4.34
+// Structure:
+//   - ReplaceIfExists (1 byte) - If TRUE, replace existing file
+//   - Reserved (7 bytes) - Must be ignored
+//   - RootDirectory (8 bytes) - Usually 0 (same volume)
+//   - FileNameLength (4 bytes) - Length of FileName in bytes
+//   - FileName (variable) - New name (UTF-16LE, may be full path or relative)
+func DecodeFileRenameInfo(buffer []byte) (*FileRenameInfo, error) {
+	if len(buffer) < 20 {
+		return nil, fmt.Errorf("buffer too short for FILE_RENAME_INFORMATION: %d bytes", len(buffer))
+	}
+
+	info := &FileRenameInfo{
+		ReplaceIfExists: buffer[0] != 0,
+	}
+
+	// Skip: Reserved (7 bytes at offset 1-7)
+	// Skip: RootDirectory (8 bytes at offset 8-15)
+	fileNameLength := binary.LittleEndian.Uint32(buffer[16:20])
+
+	// FileName starts at offset 20
+	if len(buffer) < 20+int(fileNameLength) {
+		return nil, fmt.Errorf("buffer too short for filename: need %d, have %d", 20+fileNameLength, len(buffer))
+	}
+
+	if fileNameLength > 0 {
+		info.FileName = decodeUTF16LE(buffer[20 : 20+fileNameLength])
+	}
+
+	return info, nil
+}

@@ -103,7 +103,43 @@ func (h *Handler) Close(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 	}
 
 	// ========================================================================
-	// Step 5: Remove the open file handle
+	// Step 5: Handle delete-on-close (FileDispositionInformation)
+	// ========================================================================
+
+	if openFile.DeletePending {
+		metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
+		if err != nil {
+			logger.Warn("CLOSE: failed to get metadata store for delete", "share", openFile.ShareName, "error", err)
+		} else {
+			authCtx, err := BuildAuthContext(ctx, h.Registry)
+			if err != nil {
+				logger.Warn("CLOSE: failed to build auth context for delete", "error", err)
+			} else {
+				if openFile.IsDirectory {
+					// Delete directory
+					err = metadataStore.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName)
+					if err != nil {
+						logger.Debug("CLOSE: failed to delete directory", "path", openFile.Path, "error", err)
+						// Continue with close even if delete fails
+					} else {
+						logger.Debug("CLOSE: directory deleted", "path", openFile.Path)
+					}
+				} else {
+					// Delete file
+					_, err = metadataStore.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName)
+					if err != nil {
+						logger.Debug("CLOSE: failed to delete file", "path", openFile.Path, "error", err)
+						// Continue with close even if delete fails
+					} else {
+						logger.Debug("CLOSE: file deleted", "path", openFile.Path)
+					}
+				}
+			}
+		}
+	}
+
+	// ========================================================================
+	// Step 6: Remove the open file handle
 	// ========================================================================
 
 	h.DeleteOpenFile(req.FileID)
@@ -113,7 +149,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 		"path", openFile.Path)
 
 	// ========================================================================
-	// Step 6: Encode response
+	// Step 7: Encode response
 	// ========================================================================
 
 	respBytes, err := EncodeCloseResponse(resp)

@@ -405,7 +405,7 @@ func (c *SMBConnection) processRequestWithInheritedFileID(ctx context.Context, r
 	// For commands that use FileID, inject the inherited FileID into the request body
 	if reqHeader.Command == types.SMB2QueryInfo || reqHeader.Command == types.SMB2Close ||
 		reqHeader.Command == types.SMB2Read || reqHeader.Command == types.SMB2Write ||
-		reqHeader.Command == types.SMB2QueryDirectory {
+		reqHeader.Command == types.SMB2QueryDirectory || reqHeader.Command == types.SMB2SetInfo {
 		body = c.injectFileID(reqHeader.Command, body, inheritedFileID)
 	}
 
@@ -459,6 +459,14 @@ func (c *SMBConnection) injectFileID(command types.Command, body []byte, fileID 
 			logger.Debug("Injected FileID into QUERY_DIRECTORY at offset 8")
 		} else {
 			logger.Debug("Body too small for QUERY_DIRECTORY FileID injection", "need", 24, "have", len(newBody))
+		}
+	case types.SMB2SetInfo:
+		// FileId is at offset 16-32 in SET_INFO request [MS-SMB2] 2.2.39
+		if len(newBody) >= 32 {
+			copy(newBody[16:32], fileID[:])
+			logger.Debug("Injected FileID into SET_INFO at offset 16")
+		} else {
+			logger.Debug("Body too small for SET_INFO FileID injection", "need", 32, "have", len(newBody))
 		}
 	}
 

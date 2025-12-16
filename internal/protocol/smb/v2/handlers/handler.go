@@ -76,6 +76,11 @@ type OpenFile struct {
 	// Directory enumeration state
 	EnumerationCookie []byte // Opaque cookie for resuming directory listing
 	EnumerationIndex  int    // Current index in directory listing
+
+	// Delete on close support (FileDispositionInformation)
+	DeletePending bool                // If true, delete file/directory when handle is closed
+	ParentHandle  metadata.FileHandle // Parent directory handle for deletion
+	FileName      string              // File name within parent for deletion
 }
 
 // NewHandler creates a new SMB2 handler with default session manager.

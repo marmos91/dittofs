@@ -505,10 +505,13 @@ const (
 	FileNameInformation            FileInfoClass = 9
 	FileRenameInformation          FileInfoClass = 10
 	FileNamesInformation           FileInfoClass = 12
+	FileDispositionInformation     FileInfoClass = 13
 	FileAllInformation             FileInfoClass = 18
+	FileEndOfFileInformation       FileInfoClass = 20
 	FileNetworkOpenInformation     FileInfoClass = 34
 	FileIdBothDirectoryInformation FileInfoClass = 37
 	FileIdFullDirectoryInformation FileInfoClass = 38
+	FileDispositionInformationEx   FileInfoClass = 64
 )
 
 // =============================================================================
