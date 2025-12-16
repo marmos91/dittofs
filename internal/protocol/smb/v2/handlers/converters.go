@@ -12,13 +12,14 @@ import (
 func FileAttrToSMBAttributes(attr *metadata.FileAttr) types.FileAttributes {
 	var attrs types.FileAttributes
 
-	if attr.Type == metadata.FileTypeDirectory {
+	switch attr.Type {
+	case metadata.FileTypeDirectory:
 		attrs |= types.FileAttributeDirectory
-	} else if attr.Type == metadata.FileTypeRegular {
+	case metadata.FileTypeRegular:
 		if attr.Size == 0 {
 			attrs |= types.FileAttributeNormal
 		}
-	} else if attr.Type == metadata.FileTypeSymlink {
+	case metadata.FileTypeSymlink:
 		attrs |= types.FileAttributeReparsePoint
 	}
 

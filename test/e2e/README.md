@@ -1,19 +1,24 @@
 # DittoFS End-to-End Tests
 
-Simplified, modular e2e tests for DittoFS that test real file operations through mounted NFS shares.
+Comprehensive e2e tests for DittoFS that test real file operations through mounted NFS and SMB shares.
 
 ## Overview
 
 The e2e tests validate DittoFS functionality by:
 1. Starting a DittoFS server with specific metadata/content stores
-2. Mounting the NFS share
+2. Mounting shares via NFS and/or SMB protocols
 3. Performing file operations using standard Go `os` package
 4. Verifying results
 5. Cleaning up (unmount, shutdown, cleanup)
 
+**Test Categories:**
+- **NFS Tests**: File operations via NFSv3
+- **SMB Tests**: File operations via SMB2
+- **Interoperability Tests**: Cross-protocol tests (write via NFS, read via SMB and vice versa)
+
 ## Quick Start
 
-**⚠️  Important:** E2E tests require `sudo` to mount NFS shares on both macOS and Linux.
+**⚠️  Important:** E2E tests require `sudo` to mount NFS/SMB shares on both macOS and Linux.
 
 ### Standard Tests (No External Dependencies)
 
@@ -23,10 +28,16 @@ cd test/e2e
 sudo ./run-e2e.sh
 
 # Or directly with go test
-sudo go test -v ./...
+sudo go test -tags=e2e -v ./...
 
-# Run a specific test
-sudo go test -v -run TestCreateFolder
+# Run a specific NFS test
+sudo go test -tags=e2e -v -run TestCreateFolder
+
+# Run SMB tests
+sudo go test -tags=e2e -v -run TestSMB
+
+# Run interoperability tests (NFS ↔ SMB)
+sudo go test -tags=e2e -v -run TestInterop
 ```
 
 ### PostgreSQL Tests (Requires Docker)
@@ -65,11 +76,24 @@ sudo ./run-e2e.sh --s3
 
 ```
 test/e2e/
-├── framework.go           # Server lifecycle and mount management
+├── framework.go           # NFS server lifecycle and mount management
+├── smb_framework.go       # SMB server lifecycle and mount management
+├── interop_framework.go   # Cross-protocol test framework (NFS + SMB)
+├── protocol.go            # Protocol abstraction interface
 ├── config.go              # Configuration matrix (metadata × content stores)
+├── helpers.go             # NFS test helpers
+├── smb_helpers.go         # SMB test helpers
 ├── localstack.go          # Localstack S3 integration
-├── operations_test.go     # Individual operation tests
+├── postgres.go            # PostgreSQL test support
+├── create_test.go         # NFS create operation tests
+├── edit_test.go           # NFS edit operation tests
+├── delete_test.go         # NFS delete operation tests
+├── move_test.go           # NFS move/rename tests
 ├── filesize_test.go       # Parametrized file size tests
+├── smb_create_test.go     # SMB create operation tests
+├── smb_edit_test.go       # SMB edit operation tests
+├── smb_delete_test.go     # SMB delete operation tests
+├── interop_test.go        # Cross-protocol interoperability tests
 ├── docker-compose.yml     # Localstack setup
 ├── run-e2e.sh            # Test orchestration script
 └── README.md             # This file
@@ -177,11 +201,63 @@ go test -v -run TestDeleteFilesBySize
 - 10MB
 - 100MB
 
+### SMB Tests (`smb_*_test.go`)
+
+SMB tests mirror the NFS tests but operate via SMB2 protocol:
+
+```bash
+# Run all SMB tests
+go test -tags=e2e -v -run TestSMB
+
+# Test SMB folder operations
+go test -tags=e2e -v -run TestSMBCreateFolder
+go test -tags=e2e -v -run TestSMBCreateNestedFolders
+
+# Test SMB file operations
+go test -tags=e2e -v -run TestSMBCreateFileWithContent
+go test -tags=e2e -v -run TestSMBEditFile
+go test -tags=e2e -v -run TestSMBDeleteSingleFile
+```
+
+### Interoperability Tests (`interop_test.go`)
+
+Interoperability tests validate cross-protocol consistency - files written via one protocol are correctly readable via the other:
+
+```bash
+# Run all interoperability tests
+go test -tags=e2e -v -run TestInterop
+
+# Test NFS write → SMB read
+go test -tags=e2e -v -run TestInteropNFSWriteSMBRead
+
+# Test SMB write → NFS read
+go test -tags=e2e -v -run TestInteropSMBWriteNFSRead
+
+# Test concurrent access from both protocols
+go test -tags=e2e -v -run TestInteropConcurrentAccess
+
+# Test large file transfer between protocols
+go test -tags=e2e -v -run TestInteropLargeFileTransfer
+
+# Test metadata consistency
+go test -tags=e2e -v -run TestInteropMetadataConsistency
+```
+
+**What interop tests cover:**
+- `TestInteropNFSWriteSMBRead` - Write via NFS, read via SMB
+- `TestInteropSMBWriteNFSRead` - Write via SMB, read via NFS
+- `TestInteropNFSCreateFolderSMBList` - Create folders via NFS, list via SMB
+- `TestInteropSMBCreateFilesNFSDelete` - Create files via SMB, delete via NFS
+- `TestInteropLargeFileTransfer` - 1MB file transfer between protocols
+- `TestInteropConcurrentAccess` - Concurrent writes from both protocols
+- `TestInteropMetadataConsistency` - Verify metadata matches between protocols
+- `TestInteropNestedFolderStructure` - Navigate nested structures across protocols
+
 ### Running Tests on Specific Configurations
 
 ```bash
 # Run only on memory/memory configuration
-go test -v -run "TestCreateFolder/memory-memory"
+go test -tags=e2e -v -run "TestCreateFolder/memory-memory"
 
 # Run only on badger/filesystem configuration
 go test -v -run "TestCreateFile_1MB/badger-filesystem"

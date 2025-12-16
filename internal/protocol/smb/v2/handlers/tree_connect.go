@@ -202,6 +202,7 @@ func encodeUTF16LE(s string) []byte {
 }
 
 // parseSharePath parses \\server\share to /share or just share
+// The share name is normalized to lowercase for case-insensitive matching.
 func parseSharePath(path string) string {
 	// Remove leading backslashes
 	path = strings.TrimPrefix(path, "\\\\")
@@ -209,10 +210,12 @@ func parseSharePath(path string) string {
 	// Split by backslash
 	parts := strings.SplitN(path, "\\", 2)
 	if len(parts) < 2 {
-		// No server part, return as-is
-		return "/" + strings.TrimPrefix(path, "/")
+		// No server part, return as-is with lowercase normalization
+		return "/" + strings.ToLower(strings.TrimPrefix(path, "/"))
 	}
 
-	// Return the share part
-	return "/" + parts[1]
+	// Return the share part, normalized to lowercase
+	// Windows clients often send share names in uppercase (e.g., /EXPORT)
+	// but our shares are typically configured in lowercase (e.g., /export)
+	return "/" + strings.ToLower(parts[1])
 }
