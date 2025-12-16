@@ -135,17 +135,17 @@ func (h *Handler) appendBothDirEntry(result []byte, prevNextOffset *int, name st
 	binary.LittleEndian.PutUint32(entry[4:8], 0) // FileIndex
 
 	now := types.NowFiletime()
-	binary.LittleEndian.PutUint64(entry[8:16], now)           // CreationTime
-	binary.LittleEndian.PutUint64(entry[16:24], now)          // LastAccessTime
-	binary.LittleEndian.PutUint64(entry[24:32], now)          // LastWriteTime
-	binary.LittleEndian.PutUint64(entry[32:40], now)          // ChangeTime
-	binary.LittleEndian.PutUint64(entry[40:48], uint64(size)) // EndOfFile
-	binary.LittleEndian.PutUint64(entry[48:56], uint64(size)) // AllocationSize
-	binary.LittleEndian.PutUint32(entry[56:60], attrs)        // FileAttributes
+	binary.LittleEndian.PutUint64(entry[8:16], now)                     // CreationTime
+	binary.LittleEndian.PutUint64(entry[16:24], now)                    // LastAccessTime
+	binary.LittleEndian.PutUint64(entry[24:32], now)                    // LastWriteTime
+	binary.LittleEndian.PutUint64(entry[32:40], now)                    // ChangeTime
+	binary.LittleEndian.PutUint64(entry[40:48], uint64(size))           // EndOfFile
+	binary.LittleEndian.PutUint64(entry[48:56], uint64(size))           // AllocationSize
+	binary.LittleEndian.PutUint32(entry[56:60], attrs)                  // FileAttributes
 	binary.LittleEndian.PutUint32(entry[60:64], uint32(len(nameBytes))) // FileNameLength
-	binary.LittleEndian.PutUint32(entry[64:68], 0)            // EaSize
-	entry[68] = 0                                              // ShortNameLength
-	entry[69] = 0                                              // Reserved
+	binary.LittleEndian.PutUint32(entry[64:68], 0)                      // EaSize
+	entry[68] = 0                                                       // ShortNameLength
+	entry[69] = 0                                                       // Reserved
 	// ShortName (24 bytes) - leave as zeros (positions 70-93)
 	copy(entry[94:], nameBytes)
 
@@ -206,11 +206,11 @@ func (h *Handler) appendIdBothDirEntry(result []byte, prevNextOffset *int, name 
 	binary.LittleEndian.PutUint64(entry[48:56], uint64(size))
 	binary.LittleEndian.PutUint32(entry[56:60], attrs)
 	binary.LittleEndian.PutUint32(entry[60:64], uint32(len(nameBytes)))
-	binary.LittleEndian.PutUint32(entry[64:68], 0)  // EaSize
-	entry[68] = 0                                    // ShortNameLength
-	entry[69] = 0                                    // Reserved1
+	binary.LittleEndian.PutUint32(entry[64:68], 0) // EaSize
+	entry[68] = 0                                  // ShortNameLength
+	entry[69] = 0                                  // Reserved1
 	// ShortName (24 bytes) - positions 70-93
-	binary.LittleEndian.PutUint16(entry[94:96], 0)  // Reserved2
+	binary.LittleEndian.PutUint16(entry[94:96], 0)       // Reserved2
 	binary.LittleEndian.PutUint64(entry[96:104], fileID) // FileId
 	copy(entry[104:], nameBytes)
 

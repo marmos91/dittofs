@@ -57,10 +57,10 @@ const (
 
 // Error types for SPNEGO parsing.
 var (
-	ErrInvalidToken     = errors.New("spnego: invalid token format")
-	ErrUnsupportedMech  = errors.New("spnego: unsupported mechanism")
-	ErrNoMechToken      = errors.New("spnego: no mechanism token present")
-	ErrUnexpectedToken  = errors.New("spnego: unexpected token type")
+	ErrInvalidToken    = errors.New("spnego: invalid token format")
+	ErrUnsupportedMech = errors.New("spnego: unsupported mechanism")
+	ErrNoMechToken     = errors.New("spnego: no mechanism token present")
+	ErrUnexpectedToken = errors.New("spnego: unexpected token type")
 )
 
 // TokenType indicates whether a token is an init or response token.

@@ -54,6 +54,17 @@ type Config struct {
 	// Cache specifies cache configuration for read and write buffering
 	Cache CacheConfig `mapstructure:"cache"`
 
+	// Groups defines DittoFS groups for permission management
+	// Groups can have share-level permissions that are inherited by members
+	Groups []GroupConfig `mapstructure:"groups"`
+
+	// Users defines DittoFS users for authentication and authorization
+	// Users can belong to groups and have explicit share permissions
+	Users []UserConfig `mapstructure:"users"`
+
+	// Guest configures guest/anonymous access
+	Guest GuestUserConfig `mapstructure:"guest"`
+
 	// Shares defines the list of shares/exports available to clients
 	Shares []ShareConfig `mapstructure:"shares" validate:"dive"`
 
@@ -279,6 +290,79 @@ type FlusherConfig struct {
 	FlushPoolSize int `mapstructure:"flush_pool_size"`
 }
 
+// GroupConfig defines a DittoFS group in configuration.
+type GroupConfig struct {
+	// Name is the unique identifier for the group
+	Name string `mapstructure:"name" validate:"required"`
+
+	// GID is the Unix group ID
+	GID uint32 `mapstructure:"gid" validate:"required"`
+
+	// SID is the Windows Security Identifier (auto-generated if empty)
+	SID string `mapstructure:"sid,omitempty"`
+
+	// SharePermissions maps share names to permission levels
+	SharePermissions map[string]string `mapstructure:"share_permissions"`
+
+	// Description is an optional description of the group
+	Description string `mapstructure:"description,omitempty"`
+}
+
+// UserConfig defines a DittoFS user in configuration.
+type UserConfig struct {
+	// Username is the unique identifier for the user
+	Username string `mapstructure:"username" validate:"required"`
+
+	// PasswordHash is the bcrypt hash of the user's password
+	PasswordHash string `mapstructure:"password_hash" validate:"required"`
+
+	// Enabled indicates whether the user account is active
+	Enabled bool `mapstructure:"enabled"`
+
+	// UID is the Unix user ID
+	UID uint32 `mapstructure:"uid" validate:"required"`
+
+	// GID is the primary Unix group ID
+	GID uint32 `mapstructure:"gid" validate:"required"`
+
+	// GIDs is a list of supplementary Unix group IDs
+	GIDs []uint32 `mapstructure:"gids,omitempty"`
+
+	// SID is the Windows Security Identifier (auto-generated if empty)
+	SID string `mapstructure:"sid,omitempty"`
+
+	// GroupSIDs is a list of Windows group Security Identifiers
+	GroupSIDs []string `mapstructure:"group_sids,omitempty"`
+
+	// Groups is a list of DittoFS group names this user belongs to
+	Groups []string `mapstructure:"groups,omitempty"`
+
+	// SharePermissions maps share names to explicit permission levels
+	// These take precedence over group permissions
+	SharePermissions map[string]string `mapstructure:"share_permissions,omitempty"`
+
+	// DisplayName is the human-readable name for the user
+	DisplayName string `mapstructure:"display_name,omitempty"`
+
+	// Email is the user's email address
+	Email string `mapstructure:"email,omitempty"`
+}
+
+// GuestUserConfig configures guest/anonymous access.
+type GuestUserConfig struct {
+	// Enabled indicates whether guest access is allowed
+	Enabled bool `mapstructure:"enabled"`
+
+	// UID is the Unix user ID for guest operations
+	UID uint32 `mapstructure:"uid"`
+
+	// GID is the Unix group ID for guest operations
+	GID uint32 `mapstructure:"gid"`
+
+	// SharePermissions maps share names to permission levels for guests
+	SharePermissions map[string]string `mapstructure:"share_permissions"`
+}
+
 // ShareConfig defines a single share/export.
 type ShareConfig struct {
 	// Name is the share path (e.g., "/export")
@@ -300,6 +384,15 @@ type ShareConfig struct {
 
 	// ReadOnly makes the share read-only if true
 	ReadOnly bool `mapstructure:"read_only"`
+
+	// AllowGuest allows guest/anonymous access to this share
+	// Guest permissions are determined by the guest configuration
+	AllowGuest bool `mapstructure:"allow_guest"`
+
+	// DefaultPermission is the permission level for users without explicit/group permissions
+	// Valid values: none, read, read-write
+	// Default: none (users need explicit permission to access)
+	DefaultPermission string `mapstructure:"default_permission" validate:"omitempty,oneof=none read read-write"`
 
 	// AllowedClients lists IP addresses or CIDR ranges allowed to access
 	// Empty list means all clients are allowed

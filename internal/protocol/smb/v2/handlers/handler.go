@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
+	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/registry"
 )
 
@@ -47,11 +48,12 @@ type PendingAuth struct {
 
 // TreeConnection represents a tree connection (share)
 type TreeConnection struct {
-	TreeID    uint32
-	SessionID uint64
-	ShareName string
-	ShareType uint8
-	CreatedAt time.Time
+	TreeID     uint32
+	SessionID  uint64
+	ShareName  string
+	ShareType  uint8
+	CreatedAt  time.Time
+	Permission identity.SharePermission // User's permission level for this share
 }
 
 // OpenFile represents an open file handle
@@ -175,6 +177,14 @@ func (h *Handler) CreateSession(clientAddr string, isGuest bool, username, domai
 func (h *Handler) CreateSessionWithID(sessionID uint64, clientAddr string, isGuest bool, username, domain string) *session.Session {
 	sess := session.NewSession(sessionID, clientAddr, isGuest, username, domain)
 	// Store directly - this is used for completing pending auth where we already have the ID
+	h.SessionManager.StoreSession(sess)
+	return sess
+}
+
+// CreateSessionWithUser creates an authenticated session with a DittoFS user.
+// The session is linked to the user for permission checking during share access.
+func (h *Handler) CreateSessionWithUser(sessionID uint64, clientAddr string, user *identity.User, domain string) *session.Session {
+	sess := session.NewSessionWithUser(sessionID, clientAddr, user, domain)
 	h.SessionManager.StoreSession(sess)
 	return sess
 }

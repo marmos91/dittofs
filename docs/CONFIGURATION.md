@@ -6,6 +6,15 @@ DittoFS uses a flexible configuration system with support for YAML/TOML files an
 
 - [Configuration Files](#configuration-files)
 - [Configuration Structure](#configuration-structure)
+  - [Logging](#1-logging)
+  - [Telemetry](#2-telemetry-opentelemetry)
+  - [Server Settings](#3-server-settings)
+  - [Metadata Configuration](#4-metadata-configuration)
+  - [Content Configuration](#5-content-configuration)
+  - [Cache Configuration](#6-cache-configuration)
+  - [Shares (Exports)](#7-shares-exports)
+  - [User Management](#8-user-management)
+  - [Protocol Adapters](#9-protocol-adapters)
 - [Environment Variables](#environment-variables)
 - [Configuration Precedence](#configuration-precedence)
 - [Configuration Examples](#configuration-examples)
@@ -330,6 +339,10 @@ shares:
     allowed_clients: []
     denied_clients: []
 
+    # User management (see Section 8)
+    allow_guest: true              # Allow unauthenticated access
+    default_permission: "read"     # Default for users without explicit permission
+
     # Authentication
     require_auth: false
     allowed_auth_methods: [anonymous, unix]
@@ -375,7 +388,146 @@ shares:
 - **Cache Sharing**: Multiple shares can share a cache (e.g., `/fast` and `/cloud` both use `fast-cache`)
 - **No Cache**: Shares without `cache` field operate in sync mode (direct writes, no read caching)
 
-### 8. Protocol Adapters
+### 8. User Management
+
+DittoFS supports a unified user management system for both NFS and SMB protocols. Users and groups can have share-level permissions, and permission resolution follows a priority order: user explicit permissions > group permissions (highest wins) > share default.
+
+#### Users
+
+Define named users with credentials and permissions:
+
+```yaml
+users:
+  - username: "admin"
+    # Password hash (bcrypt). Generate with: htpasswd -bnBC 10 "" password | tr -d ':\n'
+    password_hash: "$2a$10$..."
+    enabled: true
+    uid: 1000        # Unix UID for NFS mapping
+    gid: 100         # Primary Unix GID
+    groups: ["admins"]  # Group membership (by name)
+    # Optional: explicit share permissions (override group permissions)
+    share_permissions:
+      /private: "admin"
+
+  - username: "editor"
+    password_hash: "$2a$10$..."
+    enabled: true
+    uid: 1001
+    gid: 101
+    groups: ["editors"]
+
+  - username: "viewer"
+    password_hash: "$2a$10$..."
+    enabled: true
+    uid: 1002
+    gid: 102
+    groups: ["viewers"]
+```
+
+**User Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `username` | string | Unique username for authentication |
+| `password_hash` | string | bcrypt password hash (cost 10 recommended) |
+| `enabled` | bool | Whether the user can authenticate |
+| `uid` | uint32 | Unix UID for NFS identity mapping |
+| `gid` | uint32 | Primary Unix GID |
+| `groups` | []string | Group names this user belongs to |
+| `share_permissions` | map | Per-share permissions (optional, overrides group) |
+
+**NFS Authentication**: NFS clients authenticate via AUTH_UNIX. The client's UID is matched against DittoFS user UIDs. If a match is found, the user's permissions are applied.
+
+**SMB Authentication**: SMB clients authenticate via NTLM. The username is matched against DittoFS users, and permissions are applied from the user's configuration.
+
+#### Groups
+
+Define groups with share-level permissions:
+
+```yaml
+groups:
+  - name: "admins"
+    gid: 100
+    share_permissions:
+      /export: "admin"
+      /archive: "admin"
+
+  - name: "editors"
+    gid: 101
+    share_permissions:
+      /export: "read-write"
+      /archive: "read-write"
+
+  - name: "viewers"
+    gid: 102
+    share_permissions:
+      /export: "read"
+      /archive: "read"
+```
+
+**Group Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Unique group name |
+| `gid` | uint32 | Unix GID |
+| `share_permissions` | map | Per-share permissions for all group members |
+
+#### Guest Configuration
+
+Configure anonymous/unauthenticated access:
+
+```yaml
+guest:
+  enabled: true
+  uid: 65534        # nobody
+  gid: 65534        # nogroup
+  share_permissions:
+    /public: "read"
+```
+
+**Guest Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | bool | Allow guest/anonymous access |
+| `uid` | uint32 | Unix UID for guest users |
+| `gid` | uint32 | Unix GID for guest users |
+| `share_permissions` | map | Per-share permissions for guests |
+
+#### Permission Levels
+
+| Permission | Description |
+|------------|-------------|
+| `none` | No access (cannot connect to share) |
+| `read` | Read-only access |
+| `read-write` | Read and write access |
+| `admin` | Full access including delete and ownership |
+
+#### Permission Resolution Order
+
+1. **User explicit permission**: If the user has a direct `share_permissions` entry for the share, use it
+2. **Group permissions**: Check all groups the user belongs to, use the highest permission level
+3. **Share default**: Fall back to the share's `default_permission` setting
+
+**Example:**
+
+```yaml
+groups:
+  - name: "viewers"
+    share_permissions:
+      /archive: "read"
+
+users:
+  - username: "special-viewer"
+    groups: ["viewers"]
+    share_permissions:
+      /archive: "read-write"  # Overrides group's "read" permission
+```
+
+In this example, `special-viewer` gets `read-write` on `/archive` (user explicit), even though the `viewers` group only has `read`.
+
+### 9. Protocol Adapters
 
 Configures protocol-specific settings:
 

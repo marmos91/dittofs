@@ -15,7 +15,7 @@ import (
 // All Manager methods are safe for concurrent use.
 type Manager struct {
 	// Session storage
-	sessions      sync.Map       // sessionID -> *Session
+	sessions      sync.Map // sessionID -> *Session
 	nextSessionID atomic.Uint64
 
 	// Credit configuration

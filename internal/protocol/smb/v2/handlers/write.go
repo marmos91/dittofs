@@ -89,12 +89,12 @@ func (h *Handler) Write(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 
 	// Build response [MS-SMB2] 2.2.22 (17 bytes)
 	resp := make([]byte, 17)
-	binary.LittleEndian.PutUint16(resp[0:2], 17)                 // StructureSize
-	binary.LittleEndian.PutUint16(resp[2:4], 0)                  // Reserved
+	binary.LittleEndian.PutUint16(resp[0:2], 17)                     // StructureSize
+	binary.LittleEndian.PutUint16(resp[2:4], 0)                      // Reserved
 	binary.LittleEndian.PutUint32(resp[4:8], uint32(len(writeData))) // Count (bytes written)
-	binary.LittleEndian.PutUint32(resp[8:12], 0)                 // Remaining
-	binary.LittleEndian.PutUint16(resp[12:14], 0)                // WriteChannelInfoOffset
-	binary.LittleEndian.PutUint16(resp[14:16], 0)                // WriteChannelInfoLength
+	binary.LittleEndian.PutUint32(resp[8:12], 0)                     // Remaining
+	binary.LittleEndian.PutUint16(resp[12:14], 0)                    // WriteChannelInfoOffset
+	binary.LittleEndian.PutUint16(resp[14:16], 0)                    // WriteChannelInfoLength
 
 	return NewResult(types.StatusSuccess, resp), nil
 }

@@ -51,13 +51,13 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	// Note: SecurityBuffer comes after, but we leave it empty for Phase 1 (anonymous auth)
 	resp := make([]byte, 65)
 
-	binary.LittleEndian.PutUint16(resp[0:2], 65)             // StructureSize
-	resp[2] = 0                                               // SecurityMode (no signing required)
-	resp[3] = 0                                               // Reserved
+	binary.LittleEndian.PutUint16(resp[0:2], 65)                      // StructureSize
+	resp[2] = 0                                                       // SecurityMode (no signing required)
+	resp[3] = 0                                                       // Reserved
 	binary.LittleEndian.PutUint16(resp[4:6], uint16(selectedDialect)) // DialectRevision
-	binary.LittleEndian.PutUint16(resp[6:8], 0)               // NegotiateContextCount (SMB 3.1.1 only)
-	copy(resp[8:24], h.ServerGUID[:])                         // ServerGuid
-	binary.LittleEndian.PutUint32(resp[24:28], 0)             // Capabilities (none for Phase 1)
+	binary.LittleEndian.PutUint16(resp[6:8], 0)                       // NegotiateContextCount (SMB 3.1.1 only)
+	copy(resp[8:24], h.ServerGUID[:])                                 // ServerGuid
+	binary.LittleEndian.PutUint32(resp[24:28], 0)                     // Capabilities (none for Phase 1)
 	binary.LittleEndian.PutUint32(resp[28:32], h.MaxTransactSize)
 	binary.LittleEndian.PutUint32(resp[32:36], h.MaxReadSize)
 	binary.LittleEndian.PutUint32(resp[36:40], h.MaxWriteSize)

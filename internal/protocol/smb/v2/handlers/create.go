@@ -210,9 +210,9 @@ func (h *Handler) Create(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 
 	// Build response [MS-SMB2] 2.2.14 (89 bytes)
 	resp := make([]byte, 89)
-	binary.LittleEndian.PutUint16(resp[0:2], 89)              // StructureSize
-	resp[2] = 0                                                // OplockLevel (none)
-	resp[3] = 0                                                // Flags
+	binary.LittleEndian.PutUint16(resp[0:2], 89) // StructureSize
+	resp[2] = 0                                  // OplockLevel (none)
+	resp[3] = 0                                  // Flags
 	binary.LittleEndian.PutUint32(resp[4:8], uint32(createAction))
 	binary.LittleEndian.PutUint64(resp[8:16], types.TimeToFiletime(mockFile.Created))   // CreationTime
 	binary.LittleEndian.PutUint64(resp[16:24], types.TimeToFiletime(mockFile.Accessed)) // LastAccessTime

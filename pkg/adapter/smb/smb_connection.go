@@ -280,8 +280,8 @@ func parseCompoundCommand(data []byte) (*header.SMB2Header, []byte, []byte, erro
 func (c *SMBConnection) processCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header, firstBody []byte, compoundData []byte) {
 	// Track the last FileID for related operations
 	var lastFileID [16]byte
-	var lastSessionID uint64 = firstHeader.SessionID
-	var lastTreeID uint32 = firstHeader.TreeID
+	lastSessionID := firstHeader.SessionID
+	lastTreeID := firstHeader.TreeID
 
 	// Process first command
 	logger.Debug("Processing compound request - first command",
@@ -583,8 +583,8 @@ func (c *SMBConnection) sendErrorResponse(reqHeader *header.SMB2Header, status t
 	// StructureSize (2) + ErrorContextCount (1) + Reserved (1) + ByteCount (4)
 	errorBody := make([]byte, 9)
 	binary.LittleEndian.PutUint16(errorBody[0:2], 9) // StructureSize
-	errorBody[2] = 0                                  // ErrorContextCount
-	errorBody[3] = 0                                  // Reserved
+	errorBody[2] = 0                                 // ErrorContextCount
+	errorBody[3] = 0                                 // Reserved
 	binary.LittleEndian.PutUint32(errorBody[4:8], 0) // ByteCount
 
 	return c.sendMessage(respHeader, errorBody)

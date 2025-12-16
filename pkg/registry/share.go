@@ -61,6 +61,10 @@ type Share struct {
 	RootHandle    metadata.FileHandle // Encoded file handle for the root directory
 	ReadOnly      bool
 
+	// User-based Access Control
+	AllowGuest        bool   // Allow unauthenticated/guest access to this share
+	DefaultPermission string // Default permission for users without explicit permission (none, read, read-write)
+
 	// Access Control
 	AllowedClients     []string // IP addresses or CIDR ranges allowed (empty = all allowed)
 	DeniedClients      []string // IP addresses or CIDR ranges denied (takes precedence)
@@ -88,6 +92,10 @@ type ShareConfig struct {
 	ContentStore  string
 	Cache         string // Unified cache name (optional, empty = no caching)
 	ReadOnly      bool
+
+	// User-based Access Control
+	AllowGuest        bool   // Allow unauthenticated/guest access
+	DefaultPermission string // Default permission for users without explicit permission
 
 	AllowedClients     []string
 	DeniedClients      []string

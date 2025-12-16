@@ -66,16 +66,16 @@ func (h *Handler) Read(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	// DataOffset is relative to start of SMB2 header (64 bytes)
 	// We place data at offset 0x50 (80) from header = 16 bytes after response structure
 
-	respHeaderSize := 16 // Fixed part of response
+	respHeaderSize := 16                  // Fixed part of response
 	dataOffset := 64 + respHeaderSize + 1 // Header + response fixed part + 1 byte padding
 
 	resp := make([]byte, respHeaderSize+1+len(data))
-	binary.LittleEndian.PutUint16(resp[0:2], 17)                     // StructureSize (17)
-	resp[2] = byte(dataOffset)                                       // DataOffset
-	resp[3] = 0                                                       // Reserved
-	binary.LittleEndian.PutUint32(resp[4:8], uint32(len(data)))      // DataLength
-	binary.LittleEndian.PutUint32(resp[8:12], 0)                     // DataRemaining
-	binary.LittleEndian.PutUint32(resp[12:16], 0)                    // Reserved2
+	binary.LittleEndian.PutUint16(resp[0:2], 17)                // StructureSize (17)
+	resp[2] = byte(dataOffset)                                  // DataOffset
+	resp[3] = 0                                                 // Reserved
+	binary.LittleEndian.PutUint32(resp[4:8], uint32(len(data))) // DataLength
+	binary.LittleEndian.PutUint32(resp[8:12], 0)                // DataRemaining
+	binary.LittleEndian.PutUint32(resp[12:16], 0)               // Reserved2
 	// Padding byte at position 16
 	resp[16] = 0
 	// Data starts at position 17

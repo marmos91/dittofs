@@ -41,6 +41,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/identity"
 )
 
 // Session represents an SMB2 session with both identity and credit tracking.
@@ -62,6 +64,11 @@ type Session struct {
 	ClientAddr string
 	Username   string
 	Domain     string
+
+	// DittoFS user (nil for guest sessions)
+	// This links the SMB session to the authenticated DittoFS user
+	// for permission checking and share access control.
+	User *identity.User
 
 	// Credit tracking
 	credits Credits
@@ -102,6 +109,23 @@ func NewSession(sessionID uint64, clientAddr string, isGuest bool, username, dom
 		ClientAddr: clientAddr,
 		Username:   username,
 		Domain:     domain,
+	}
+	s.credits.LastActivity.Store(time.Now().Unix())
+	return s
+}
+
+// NewSessionWithUser creates a new session with the given identity and DittoFS user.
+// Use this when the user has been authenticated against the UserStore.
+func NewSessionWithUser(sessionID uint64, clientAddr string, user *identity.User, domain string) *Session {
+	s := &Session{
+		SessionID:  sessionID,
+		IsGuest:    false,
+		IsNull:     false,
+		CreatedAt:  time.Now(),
+		ClientAddr: clientAddr,
+		Username:   user.Username,
+		Domain:     domain,
+		User:       user,
 	}
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s

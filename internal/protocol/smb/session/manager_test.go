@@ -62,7 +62,7 @@ func TestManager_AnonymousSession(t *testing.T) {
 
 	// Can't delete anonymous session
 	mgr.DeleteSession(0)
-	session, ok = mgr.GetSession(0)
+	_, ok = mgr.GetSession(0)
 	if !ok {
 		t.Error("Anonymous session should not be deletable")
 	}

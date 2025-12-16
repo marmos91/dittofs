@@ -71,6 +71,31 @@ const (
 	challengeBaseSize            = 56 // Minimum size without payload
 )
 
+// NTLM Type 3 (AUTHENTICATE) message offsets
+// [MS-NLMP] Section 2.2.1.3
+const (
+	authLmResponseLenOffset          = 12 // 2 bytes: LmChallengeResponse length
+	authLmResponseMaxOffset          = 14 // 2 bytes: LmChallengeResponse max length
+	authLmResponseOffOffset          = 16 // 4 bytes: LmChallengeResponse buffer offset
+	authNtResponseLenOffset          = 20 // 2 bytes: NtChallengeResponse length
+	authNtResponseMaxOffset          = 22 // 2 bytes: NtChallengeResponse max length
+	authNtResponseOffOffset          = 24 // 4 bytes: NtChallengeResponse buffer offset
+	authDomainNameLenOffset          = 28 // 2 bytes: DomainName length
+	authDomainNameMaxOffset          = 30 // 2 bytes: DomainName max length
+	authDomainNameOffOffset          = 32 // 4 bytes: DomainName buffer offset
+	authUserNameLenOffset            = 36 // 2 bytes: UserName length
+	authUserNameMaxOffset            = 38 // 2 bytes: UserName max length
+	authUserNameOffOffset            = 40 // 4 bytes: UserName buffer offset
+	authWorkstationLenOffset         = 44 // 2 bytes: Workstation length
+	authWorkstationMaxOffset         = 46 // 2 bytes: Workstation max length
+	authWorkstationOffOffset         = 48 // 4 bytes: Workstation buffer offset
+	authEncryptedRandomSessionKeyLen = 52 // 2 bytes: EncryptedRandomSessionKey length
+	authEncryptedRandomSessionKeyMax = 54 // 2 bytes: EncryptedRandomSessionKey max length
+	authEncryptedRandomSessionKeyOff = 56 // 4 bytes: EncryptedRandomSessionKey buffer offset
+	authNegotiateFlagsOffset         = 60 // 4 bytes: NegotiateFlags
+	authBaseSize                     = 64 // Minimum size without payload (not including Version)
+)
+
 // NTLM challenge sizes
 const (
 	serverChallengeSize = 8 // ServerChallenge is always 8 bytes
@@ -239,9 +264,11 @@ const (
 )
 
 // AV_PAIR structure sizes
+// Note: These constants are defined for documentation but not used in current implementation.
+// They would be used if we implement full AV_PAIR parsing in the future.
 const (
-	avPairHeaderSize    = 4 // AvId (2 bytes) + AvLen (2 bytes)
-	avPairTerminatorLen = 4 // MsvAvEOL with AvLen=0 (just the header, no value)
+	_ = 4 // avPairHeaderSize: AvId (2 bytes) + AvLen (2 bytes)
+	_ = 4 // avPairTerminatorLen: MsvAvEOL with AvLen=0 (just the header, no value)
 )
 
 // =============================================================================
@@ -417,3 +444,158 @@ func BuildMinimalTargetInfo() []byte {
 		0x00, 0x00, // AvLen: 0
 	}
 }
+
+// =============================================================================
+// NTLM Authenticate Message Parsing
+// =============================================================================
+
+// AuthenticateMessage contains parsed fields from an NTLM Type 3 message.
+//
+// This structure holds the client's authentication response including:
+//   - Username and domain for user lookup
+//   - Challenge responses for credential validation (if implementing NTLMv2)
+//   - Workstation name for logging/auditing
+//
+// [MS-NLMP] Section 2.2.1.3
+type AuthenticateMessage struct {
+	// LmChallengeResponse contains the LM response to the server challenge.
+	// For NTLMv2, this is typically empty or contains LMv2 response.
+	LmChallengeResponse []byte
+
+	// NtChallengeResponse contains the NT response to the server challenge.
+	// For NTLMv2, this includes the NTProofStr and client blob.
+	NtChallengeResponse []byte
+
+	// Domain is the authentication domain.
+	// May be empty for local authentication.
+	Domain string
+
+	// Username is the account name.
+	// This is the key for looking up the user in DittoFS UserStore.
+	Username string
+
+	// Workstation is the client workstation name.
+	// Used for logging and auditing.
+	Workstation string
+
+	// NegotiateFlags contains the negotiated flags.
+	NegotiateFlags NegotiateFlag
+
+	// IsAnonymous indicates if this is an anonymous authentication request.
+	// Set when FlagAnonymous is present in NegotiateFlags.
+	IsAnonymous bool
+}
+
+// ParseAuthenticate parses an NTLM Type 3 (AUTHENTICATE) message.
+//
+// This function extracts the authentication fields from a Type 3 message:
+//   - Username and domain for user lookup
+//   - Challenge responses for potential credential validation
+//   - Workstation name for logging
+//
+// Note: This implementation extracts the fields but does not validate
+// the NTLMv2 responses. For full credential validation, the server would
+// need to:
+//  1. Store the ServerChallenge from the Type 2 message
+//  2. Compute the expected NTProofStr using the user's NT hash
+//  3. Compare with the client's NtChallengeResponse
+//
+// [MS-NLMP] Section 2.2.1.3
+func ParseAuthenticate(buf []byte) (*AuthenticateMessage, error) {
+	if len(buf) < authBaseSize {
+		return nil, ErrMessageTooShort
+	}
+
+	if !IsValid(buf) {
+		return nil, ErrInvalidSignature
+	}
+
+	if GetMessageType(buf) != Authenticate {
+		return nil, ErrWrongMessageType
+	}
+
+	msg := &AuthenticateMessage{}
+
+	// Parse NegotiateFlags
+	msg.NegotiateFlags = NegotiateFlag(binary.LittleEndian.Uint32(buf[authNegotiateFlagsOffset : authNegotiateFlagsOffset+4]))
+	msg.IsAnonymous = (msg.NegotiateFlags & FlagAnonymous) != 0
+
+	// Parse LmChallengeResponse
+	lmLen := binary.LittleEndian.Uint16(buf[authLmResponseLenOffset : authLmResponseLenOffset+2])
+	lmOff := binary.LittleEndian.Uint32(buf[authLmResponseOffOffset : authLmResponseOffOffset+4])
+	if lmLen > 0 && int(lmOff)+int(lmLen) <= len(buf) {
+		msg.LmChallengeResponse = make([]byte, lmLen)
+		copy(msg.LmChallengeResponse, buf[lmOff:lmOff+uint32(lmLen)])
+	}
+
+	// Parse NtChallengeResponse
+	ntLen := binary.LittleEndian.Uint16(buf[authNtResponseLenOffset : authNtResponseLenOffset+2])
+	ntOff := binary.LittleEndian.Uint32(buf[authNtResponseOffOffset : authNtResponseOffOffset+4])
+	if ntLen > 0 && int(ntOff)+int(ntLen) <= len(buf) {
+		msg.NtChallengeResponse = make([]byte, ntLen)
+		copy(msg.NtChallengeResponse, buf[ntOff:ntOff+uint32(ntLen)])
+	}
+
+	// Determine if strings are Unicode (UTF-16LE) or OEM
+	isUnicode := (msg.NegotiateFlags & FlagUnicode) != 0
+
+	// Parse DomainName
+	domainLen := binary.LittleEndian.Uint16(buf[authDomainNameLenOffset : authDomainNameLenOffset+2])
+	domainOff := binary.LittleEndian.Uint32(buf[authDomainNameOffOffset : authDomainNameOffOffset+4])
+	if domainLen > 0 && int(domainOff)+int(domainLen) <= len(buf) {
+		msg.Domain = decodeString(buf[domainOff:domainOff+uint32(domainLen)], isUnicode)
+	}
+
+	// Parse UserName
+	userLen := binary.LittleEndian.Uint16(buf[authUserNameLenOffset : authUserNameLenOffset+2])
+	userOff := binary.LittleEndian.Uint32(buf[authUserNameOffOffset : authUserNameOffOffset+4])
+	if userLen > 0 && int(userOff)+int(userLen) <= len(buf) {
+		msg.Username = decodeString(buf[userOff:userOff+uint32(userLen)], isUnicode)
+	}
+
+	// Parse Workstation
+	wsLen := binary.LittleEndian.Uint16(buf[authWorkstationLenOffset : authWorkstationLenOffset+2])
+	wsOff := binary.LittleEndian.Uint32(buf[authWorkstationOffOffset : authWorkstationOffOffset+4])
+	if wsLen > 0 && int(wsOff)+int(wsLen) <= len(buf) {
+		msg.Workstation = decodeString(buf[wsOff:wsOff+uint32(wsLen)], isUnicode)
+	}
+
+	return msg, nil
+}
+
+// decodeString decodes a string from either UTF-16LE (Unicode) or OEM encoding.
+func decodeString(buf []byte, isUnicode bool) string {
+	if isUnicode {
+		// UTF-16LE decoding
+		if len(buf)%2 != 0 {
+			buf = buf[:len(buf)-1] // Truncate odd byte
+		}
+		runes := make([]rune, len(buf)/2)
+		for i := 0; i < len(buf); i += 2 {
+			runes[i/2] = rune(binary.LittleEndian.Uint16(buf[i : i+2]))
+		}
+		return string(runes)
+	}
+	// OEM encoding - treat as ASCII/Latin-1
+	return string(buf)
+}
+
+// =============================================================================
+// NTLM Errors
+// =============================================================================
+
+// Error types for NTLM message parsing.
+type Error string
+
+func (e Error) Error() string { return string(e) }
+
+const (
+	// ErrMessageTooShort is returned when the buffer is too small for the message type.
+	ErrMessageTooShort Error = "ntlm: message too short"
+
+	// ErrInvalidSignature is returned when the NTLMSSP signature is missing or invalid.
+	ErrInvalidSignature Error = "ntlm: invalid signature"
+
+	// ErrWrongMessageType is returned when parsing a message of unexpected type.
+	ErrWrongMessageType Error = "ntlm: wrong message type"
+)

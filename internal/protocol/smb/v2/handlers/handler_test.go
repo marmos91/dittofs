@@ -315,6 +315,18 @@ func TestGenerateFileID(t *testing.T) {
 		if len(fileID) != 16 {
 			t.Errorf("FileID should be 16 bytes, got %d", len(fileID))
 		}
+
+		// FileID should have some content (not all zeros after first call)
+		allZeros := true
+		for _, b := range fileID {
+			if b != 0 {
+				allZeros = false
+				break
+			}
+		}
+		if allZeros {
+			t.Error("FileID should not be all zeros")
+		}
 	})
 
 	t.Run("GeneratesUniqueFileIDs", func(t *testing.T) {

@@ -160,6 +160,9 @@ fi
 # Remove trailing |
 SKIP_PATTERNS="${SKIP_PATTERNS%|}"
 
+# Suppress AWS SDK checksum warnings from Localstack
+export AWS_SDK_LOG_LEVEL=ERROR
+
 # Run tests
 echo -e "${BLUE}Running tests...${NC}"
 echo -e "${YELLOW}Test flags: $TEST_FLAGS${NC}"

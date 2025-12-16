@@ -30,7 +30,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 
 	// Build response [MS-SMB2] 2.2.16 (60 bytes)
 	resp := make([]byte, 60)
-	binary.LittleEndian.PutUint16(resp[0:2], 60)           // StructureSize
+	binary.LittleEndian.PutUint16(resp[0:2], 60)            // StructureSize
 	binary.LittleEndian.PutUint16(resp[2:4], uint16(flags)) // Echo back the flags
 
 	// If SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB was set, return file attributes

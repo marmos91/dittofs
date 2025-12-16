@@ -100,20 +100,20 @@ func (h *Handler) buildFileInfo(f *MockFile, class types.FileInfoClass) ([]byte,
 	case types.FileBasicInformation:
 		// FILE_BASIC_INFORMATION [MS-FSCC] 2.4.7 (40 bytes)
 		info := make([]byte, 40)
-		binary.LittleEndian.PutUint64(info[0:8], now)          // CreationTime
-		binary.LittleEndian.PutUint64(info[8:16], now)         // LastAccessTime
-		binary.LittleEndian.PutUint64(info[16:24], now)        // LastWriteTime
-		binary.LittleEndian.PutUint64(info[24:32], now)        // ChangeTime
+		binary.LittleEndian.PutUint64(info[0:8], now)            // CreationTime
+		binary.LittleEndian.PutUint64(info[8:16], now)           // LastAccessTime
+		binary.LittleEndian.PutUint64(info[16:24], now)          // LastWriteTime
+		binary.LittleEndian.PutUint64(info[24:32], now)          // ChangeTime
 		binary.LittleEndian.PutUint32(info[32:36], f.Attributes) // FileAttributes
-		binary.LittleEndian.PutUint32(info[36:40], 0)          // Reserved
+		binary.LittleEndian.PutUint32(info[36:40], 0)            // Reserved
 		return info, nil
 
 	case types.FileStandardInformation:
 		// FILE_STANDARD_INFORMATION [MS-FSCC] 2.4.41 (24 bytes)
 		info := make([]byte, 24)
-		binary.LittleEndian.PutUint64(info[0:8], uint64(f.Size))   // AllocationSize
-		binary.LittleEndian.PutUint64(info[8:16], uint64(f.Size))  // EndOfFile
-		binary.LittleEndian.PutUint32(info[16:20], 1)              // NumberOfLinks
+		binary.LittleEndian.PutUint64(info[0:8], uint64(f.Size))  // AllocationSize
+		binary.LittleEndian.PutUint64(info[8:16], uint64(f.Size)) // EndOfFile
+		binary.LittleEndian.PutUint32(info[16:20], 1)             // NumberOfLinks
 		if f.IsDir {
 			info[20] = 0 // DeletePending
 			info[21] = 1 // Directory
@@ -204,7 +204,7 @@ func (h *Handler) buildFilesystemInfo(class types.FileInfoClass) ([]byte, error)
 		label := []byte{'D', 0, 'i', 0, 't', 0, 't', 0, 'o', 0, 'F', 0, 'S', 0} // "DittoFS" in UTF-16LE
 		info := make([]byte, 18+len(label))
 		binary.LittleEndian.PutUint64(info[0:8], types.NowFiletime())
-		binary.LittleEndian.PutUint32(info[8:12], 0x12345678)       // VolumeSerialNumber
+		binary.LittleEndian.PutUint32(info[8:12], 0x12345678) // VolumeSerialNumber
 		binary.LittleEndian.PutUint32(info[12:16], uint32(len(label)))
 		info[16] = 0 // SupportsObjects
 		info[17] = 0 // Reserved
@@ -213,10 +213,10 @@ func (h *Handler) buildFilesystemInfo(class types.FileInfoClass) ([]byte, error)
 
 	case 3: // FileFsSizeInformation [MS-FSCC] 2.5.8
 		info := make([]byte, 24)
-		binary.LittleEndian.PutUint64(info[0:8], 1000000)    // TotalAllocationUnits
-		binary.LittleEndian.PutUint64(info[8:16], 500000)    // AvailableAllocationUnits
-		binary.LittleEndian.PutUint32(info[16:20], 1)        // SectorsPerAllocationUnit
-		binary.LittleEndian.PutUint32(info[20:24], 4096)     // BytesPerSector
+		binary.LittleEndian.PutUint64(info[0:8], 1000000) // TotalAllocationUnits
+		binary.LittleEndian.PutUint64(info[8:16], 500000) // AvailableAllocationUnits
+		binary.LittleEndian.PutUint32(info[16:20], 1)     // SectorsPerAllocationUnit
+		binary.LittleEndian.PutUint32(info[20:24], 4096)  // BytesPerSector
 		return info, nil
 
 	case 5: // FileFsAttributeInformation [MS-FSCC] 2.5.1
@@ -231,11 +231,11 @@ func (h *Handler) buildFilesystemInfo(class types.FileInfoClass) ([]byte, error)
 
 	case 6: // FileFsFullSizeInformation [MS-FSCC] 2.5.4
 		info := make([]byte, 32)
-		binary.LittleEndian.PutUint64(info[0:8], 1000000)    // TotalAllocationUnits
-		binary.LittleEndian.PutUint64(info[8:16], 500000)    // CallerAvailableAllocationUnits
-		binary.LittleEndian.PutUint64(info[16:24], 500000)   // ActualAvailableAllocationUnits
-		binary.LittleEndian.PutUint32(info[24:28], 1)        // SectorsPerAllocationUnit
-		binary.LittleEndian.PutUint32(info[28:32], 4096)     // BytesPerSector
+		binary.LittleEndian.PutUint64(info[0:8], 1000000)  // TotalAllocationUnits
+		binary.LittleEndian.PutUint64(info[8:16], 500000)  // CallerAvailableAllocationUnits
+		binary.LittleEndian.PutUint64(info[16:24], 500000) // ActualAvailableAllocationUnits
+		binary.LittleEndian.PutUint32(info[24:28], 1)      // SectorsPerAllocationUnit
+		binary.LittleEndian.PutUint32(info[28:32], 4096)   // BytesPerSector
 		return info, nil
 
 	default:
@@ -249,13 +249,13 @@ func (h *Handler) buildSecurityInfo() ([]byte, error) {
 	// For Phase 1, return a basic descriptor that grants everyone access
 	// This is a minimal self-relative security descriptor
 	info := make([]byte, 20)
-	info[0] = 1                                          // Revision
-	info[1] = 0                                          // Sbz1
-	binary.LittleEndian.PutUint16(info[2:4], 0x8004)     // Control (SE_SELF_RELATIVE | SE_DACL_PRESENT)
-	binary.LittleEndian.PutUint32(info[4:8], 0)          // OffsetOwner
-	binary.LittleEndian.PutUint32(info[8:12], 0)         // OffsetGroup
-	binary.LittleEndian.PutUint32(info[12:16], 0)        // OffsetSacl
-	binary.LittleEndian.PutUint32(info[16:20], 0)        // OffsetDacl
+	info[0] = 1                                      // Revision
+	info[1] = 0                                      // Sbz1
+	binary.LittleEndian.PutUint16(info[2:4], 0x8004) // Control (SE_SELF_RELATIVE | SE_DACL_PRESENT)
+	binary.LittleEndian.PutUint32(info[4:8], 0)      // OffsetOwner
+	binary.LittleEndian.PutUint32(info[8:12], 0)     // OffsetGroup
+	binary.LittleEndian.PutUint32(info[12:16], 0)    // OffsetSacl
+	binary.LittleEndian.PutUint32(info[16:20], 0)    // OffsetDacl
 
 	return info, nil
 }

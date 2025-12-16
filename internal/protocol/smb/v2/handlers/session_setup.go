@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/auth/ntlm"
 	"github.com/marmos91/dittofs/internal/auth/spnego"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 )
 
@@ -247,11 +248,14 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext) (*HandlerResult, e
 //
 // This completes the NTLM handshake by:
 //  1. Validating the pending authentication exists
-//  2. Creating a guest session (no credential validation)
-//  3. Cleaning up the pending authentication state
+//  2. Parsing the AUTHENTICATE message to extract username
+//  3. Looking up the user in the UserStore (if configured)
+//  4. Creating an authenticated or guest session
+//  5. Cleaning up the pending authentication state
 //
-// Note: This implementation accepts all authentication attempts as guest.
-// For credential validation, implement NTLMv2 response verification here.
+// Note: This implementation validates users by username lookup only.
+// Full NTLMv2 response verification requires storing the server challenge
+// and computing/comparing NT hashes, which is not yet implemented.
 func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte) (*HandlerResult, error) {
 	// Get and validate pending auth
 	pending, ok := h.GetPendingAuth(ctx.SessionID)
@@ -263,26 +267,82 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 	// Remove pending auth (handshake complete)
 	h.DeletePendingAuth(ctx.SessionID)
 
-	// Create guest session using SessionManager
-	// For credential validation, this is where you would:
-	// 1. Parse the AUTHENTICATE message to extract LmChallengeResponse/NtChallengeResponse
-	// 2. Verify the response against stored credentials
-	// 3. Map the authenticated user to system identity
-	sess := h.CreateSessionWithID(pending.SessionID, pending.ClientAddr, true, "guest", "")
+	// Extract NTLM token (unwrap SPNEGO if needed)
+	ntlmToken, _ := extractNTLMToken(securityBuffer)
 
-	// Update context
+	// Parse the AUTHENTICATE message to extract username and domain
+	authMsg, err := ntlm.ParseAuthenticate(ntlmToken)
+	if err != nil {
+		logger.Debug("Failed to parse NTLM AUTHENTICATE message", "error", err)
+		// Fall back to guest session
+		return h.createGuestSessionWithID(ctx, pending)
+	}
+
+	logger.Debug("NTLM AUTHENTICATE message parsed",
+		"username", authMsg.Username,
+		"domain", authMsg.Domain,
+		"workstation", authMsg.Workstation,
+		"isAnonymous", authMsg.IsAnonymous)
+
+	// If anonymous authentication requested, create guest session
+	if authMsg.IsAnonymous || authMsg.Username == "" {
+		return h.createGuestSessionWithID(ctx, pending)
+	}
+
+	// Try to authenticate against UserStore
+	var sess *session.Session
+	userStore := h.Registry.GetUserStore()
+
+	if userStore != nil {
+		// Look up user by username
+		user, err := userStore.GetUser(authMsg.Username)
+		if err == nil && user != nil && user.Enabled {
+			// User found and enabled - create authenticated session
+			sess = h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
+			ctx.IsGuest = false
+
+			logger.Debug("NTLM authentication complete (authenticated user)",
+				"sessionID", sess.SessionID,
+				"username", sess.Username,
+				"domain", sess.Domain,
+				"isGuest", sess.IsGuest)
+
+			// Return success without guest flag
+			return h.buildSessionSetupResponse(
+				types.StatusSuccess,
+				0, // No guest flag - authenticated user
+				nil,
+			), nil
+		}
+
+		// User not found or disabled - check if guest fallback is allowed
+		if err != nil {
+			logger.Debug("User not found in UserStore", "username", authMsg.Username, "error", err)
+		} else if !user.Enabled {
+			logger.Debug("User account disabled", "username", authMsg.Username)
+			return NewErrorResult(types.StatusLogonFailure), nil
+		}
+	}
+
+	// Fall back to guest session
+	return h.createGuestSessionWithID(ctx, pending)
+}
+
+// createGuestSessionWithID creates a guest session with a specific session ID.
+// Used when completing NTLM authentication as guest.
+func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *PendingAuth) (*HandlerResult, error) {
+	sess := h.CreateSessionWithID(pending.SessionID, pending.ClientAddr, true, "guest", "")
 	ctx.IsGuest = true
 
-	logger.Debug("NTLM authentication complete",
+	logger.Debug("NTLM authentication complete (guest)",
 		"sessionID", sess.SessionID,
 		"username", sess.Username,
 		"isGuest", sess.IsGuest)
 
-	// Return success with guest flag
 	return h.buildSessionSetupResponse(
 		types.StatusSuccess,
 		types.SMB2SessionFlagIsGuest,
-		nil, // No security buffer needed
+		nil,
 	), nil
 }
 

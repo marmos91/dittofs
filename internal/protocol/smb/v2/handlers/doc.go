@@ -37,16 +37,16 @@
 //
 // Sessions track authenticated connections from clients:
 //
-//	1. Client connects (TCP)
-//	2. NEGOTIATE: Protocol version agreed
-//	3. SESSION_SETUP Round 1: Client sends NTLM NEGOTIATE
-//	   → Server stores PendingAuth, returns CHALLENGE
-//	4. SESSION_SETUP Round 2: Client sends NTLM AUTHENTICATE
-//	   → Server creates Session, removes PendingAuth
-//	5. TREE_CONNECT: Client mounts shares
-//	6. File operations: CREATE, READ, WRITE, etc.
-//	7. TREE_DISCONNECT: Client unmounts shares
-//	8. LOGOFF: Session terminated
+//  1. Client connects (TCP)
+//  2. NEGOTIATE: Protocol version agreed
+//  3. SESSION_SETUP Round 1: Client sends NTLM NEGOTIATE
+//     → Server stores PendingAuth, returns CHALLENGE
+//  4. SESSION_SETUP Round 2: Client sends NTLM AUTHENTICATE
+//     → Server creates Session, removes PendingAuth
+//  5. TREE_CONNECT: Client mounts shares
+//  6. File operations: CREATE, READ, WRITE, etc.
+//  7. TREE_DISCONNECT: Client unmounts shares
+//  8. LOGOFF: Session terminated
 //
 // The Session struct tracks:
 //   - SessionID:  Unique identifier for the session
