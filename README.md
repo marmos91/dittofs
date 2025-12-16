@@ -25,7 +25,7 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 ```
 ┌──────────────────────────────────────┐
 │       Protocol Adapters              │
-│   NFS ✅  SMB(soon)  WebDAV(TBD)     │
+│   NFS ✅  SMB 🚧  WebDAV(TBD)        │
 └──────────────┬───────────────────────┘
                │
                ▼
@@ -53,6 +53,8 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 - ✅ **Cloud-Native**: S3 backend with production optimizations
 - ✅ **Pure Go**: Single binary, easy deployment, cross-platform
 - ✅ **Extensible**: Clean adapter pattern for new protocols
+- ✅ **User Management**: Unified users/groups with share-level permissions (CLI included)
+- 🚧 **SMB2 Support**: Windows file sharing (in development)
 
 ## Quick Start
 
@@ -68,6 +70,26 @@ go build -o dittofs cmd/dittofs/main.go
 # Start server
 ./dittofs start
 ```
+
+### User Management
+
+```bash
+# Add a user (prompts for password)
+./dittofs user add alice
+
+# Grant share permission
+./dittofs user grant alice /export read-write
+
+# Create a group and add user
+./dittofs group add editors
+./dittofs user join alice editors
+
+# List users and groups
+./dittofs user list
+./dittofs group list
+```
+
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#cli-management-commands) for all user/group commands.
 
 ### Run with Docker
 
@@ -179,8 +201,16 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 **Storage Backends**
 - In-memory metadata (ephemeral, fast)
 - BadgerDB metadata (persistent, path-based handles)
+- PostgreSQL metadata (persistent, distributed)
 - Filesystem content (local/network storage)
 - S3 content (production-ready with range reads, streaming uploads, stats caching)
+
+**User Management**
+- Unified identity system for NFS and SMB
+- Users with bcrypt password hashing
+- Groups with share-level permissions
+- Permission resolution: user → group → share default
+- CLI tools for user/group management
 
 **Production Features**
 - Prometheus metrics integration
@@ -191,24 +221,31 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - Comprehensive E2E test suite
 - Performance benchmark framework
 
+### 🚧 In Development
+
+**SMB2 Protocol Adapter**
+- [x] SMB2 negotiation and session setup
+- [x] NTLM authentication
+- [x] Tree connect with permission checking
+- [x] Credit-based flow control
+- [ ] File operations (CREATE, READ, WRITE, CLOSE)
+- [ ] Directory operations
+- [ ] Windows client compatibility testing
+
 ### 🚀 Roadmap
 
-**Phase 2: Kubernetes Integration**
+**Kubernetes Integration**
 - [ ] Health check endpoints
 - [ ] CSI driver implementation
 - [ ] Helm charts
 - [ ] Load testing
 
-**Phase 3: SMB Protocol Adapter** (Optional)
-- [ ] SMB2/3 protocol
-- [ ] NTLM authentication
-- [ ] Windows compatibility
-
-**Phase 4: Advanced Features**
+**Advanced Features**
 - [ ] NFSv4 support
-- [ ] Kerberos authentication
+- [ ] Kerberos/AD authentication
 - [ ] Advanced caching strategies
 - [ ] Multi-region replication
+- [ ] Web dashboard for user management
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for complete roadmap.
 
@@ -218,8 +255,6 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for complete roadmap.
 # Define named stores (reusable across shares)
 metadata:
   stores:
-    memory-fast:
-      type: memory
     badger-main:
       type: badger
       badger:
@@ -227,30 +262,46 @@ metadata:
 
 content:
   stores:
-    local-disk:
-      type: filesystem
-      filesystem:
-        path: /var/lib/dittofs/content
     s3-cloud:
       type: s3
       s3:
         region: us-east-1
         bucket: my-dittofs-bucket
 
-# Define shares that reference stores
-shares:
-  - name: /temp
-    metadata_store: memory-fast
-    content_store: local-disk
+# User management
+groups:
+  - name: editors
+    gid: 101
+    share_permissions:
+      /archive: read-write
 
+users:
+  - username: alice
+    password_hash: "$2a$10$..."  # bcrypt hash
+    uid: 1001
+    gid: 101
+    groups: [editors]
+
+guest:
+  enabled: true
+  uid: 65534
+  gid: 65534
+
+# Define shares with permissions
+shares:
   - name: /archive
     metadata_store: badger-main
     content_store: s3-cloud
+    allow_guest: true
+    default_permission: read
 
 adapters:
   nfs:
     enabled: true
     port: 12049
+  smb:
+    enabled: true
+    port: 12445
 ```
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for complete documentation.
