@@ -38,7 +38,7 @@ func (h *Handler) GetMockFiles(shareName, path string) map[string]*MockFile {
 				Created:    now,
 				Modified:   now,
 				Accessed:   now,
-				Attributes: types.FileAttributeNormal,
+				Attributes: uint32(types.FileAttributeNormal),
 			},
 			"subdir": {
 				Name:       "subdir",
@@ -47,7 +47,7 @@ func (h *Handler) GetMockFiles(shareName, path string) map[string]*MockFile {
 				Created:    now,
 				Modified:   now,
 				Accessed:   now,
-				Attributes: types.FileAttributeDirectory,
+				Attributes: uint32(types.FileAttributeDirectory),
 			},
 		}
 	}
@@ -70,7 +70,7 @@ func (h *Handler) GetMockFile(shareName, path string) *MockFile {
 			Created:    time.Now(),
 			Modified:   time.Now(),
 			Accessed:   time.Now(),
-			Attributes: types.FileAttributeDirectory,
+			Attributes: uint32(types.FileAttributeDirectory),
 		}
 	}
 

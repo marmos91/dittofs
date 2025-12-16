@@ -34,9 +34,10 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	}
 
 	// Find highest supported dialect (we only support 0x0202 for Phase 1)
-	selectedDialect := uint16(0)
+	var selectedDialect types.Dialect
 	for _, d := range dialects {
-		if d == types.SMB2Dialect0202 || d == types.SMB2DialectWild {
+		dialect := types.Dialect(d)
+		if dialect == types.SMB2Dialect0202 || dialect == types.SMB2DialectWild {
 			selectedDialect = types.SMB2Dialect0202
 			break
 		}
@@ -53,7 +54,7 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	binary.LittleEndian.PutUint16(resp[0:2], 65)             // StructureSize
 	resp[2] = 0                                               // SecurityMode (no signing required)
 	resp[3] = 0                                               // Reserved
-	binary.LittleEndian.PutUint16(resp[4:6], selectedDialect) // DialectRevision
+	binary.LittleEndian.PutUint16(resp[4:6], uint16(selectedDialect)) // DialectRevision
 	binary.LittleEndian.PutUint16(resp[6:8], 0)               // NegotiateContextCount (SMB 3.1.1 only)
 	copy(resp[8:24], h.ServerGUID[:])                         // ServerGuid
 	binary.LittleEndian.PutUint32(resp[24:28], 0)             // Capabilities (none for Phase 1)

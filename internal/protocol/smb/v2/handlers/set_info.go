@@ -15,7 +15,7 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, body []byte) (*HandlerResult, 
 	// Parse request [MS-SMB2] 2.2.39
 	// structureSize := binary.LittleEndian.Uint16(body[0:2]) // Always 33
 	infoType := body[2]
-	fileInfoClass := body[3]
+	fileInfoClass := types.FileInfoClass(body[3])
 	bufferLength := binary.LittleEndian.Uint32(body[4:8])
 	bufferOffset := binary.LittleEndian.Uint16(body[8:10])
 	// reserved := binary.LittleEndian.Uint16(body[10:12])
@@ -59,7 +59,7 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, body []byte) (*HandlerResult, 
 }
 
 // setFileInfo handles setting file information
-func (h *Handler) setFileInfo(f *MockFile, class uint8, buffer []byte) (*HandlerResult, error) {
+func (h *Handler) setFileInfo(f *MockFile, class types.FileInfoClass, buffer []byte) (*HandlerResult, error) {
 	switch class {
 	case types.FileBasicInformation:
 		// FILE_BASIC_INFORMATION [MS-FSCC] 2.4.7 (40 bytes)

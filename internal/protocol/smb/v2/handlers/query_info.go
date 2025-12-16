@@ -22,7 +22,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	// Parse request [MS-SMB2] 2.2.37
 	// structureSize := binary.LittleEndian.Uint16(body[0:2]) // Always 41
 	infoType := body[2]
-	fileInfoClass := body[3]
+	fileInfoClass := types.FileInfoClass(body[3])
 	outputBufferLength := binary.LittleEndian.Uint32(body[4:8])
 	// inputBufferOffset := binary.LittleEndian.Uint16(body[8:10])
 	// reserved := binary.LittleEndian.Uint16(body[10:12])
@@ -53,7 +53,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 		mockFile = &MockFile{
 			Name:       "",
 			IsDir:      true,
-			Attributes: types.FileAttributeDirectory,
+			Attributes: uint32(types.FileAttributeDirectory),
 		}
 	}
 
@@ -93,7 +93,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 }
 
 // buildFileInfo builds file information based on class [MS-FSCC] 2.4
-func (h *Handler) buildFileInfo(f *MockFile, class uint8) ([]byte, error) {
+func (h *Handler) buildFileInfo(f *MockFile, class types.FileInfoClass) ([]byte, error) {
 	now := types.NowFiletime()
 
 	switch class {
@@ -196,7 +196,7 @@ func (h *Handler) buildFileInfo(f *MockFile, class uint8) ([]byte, error) {
 }
 
 // buildFilesystemInfo builds filesystem information [MS-FSCC] 2.5
-func (h *Handler) buildFilesystemInfo(class uint8) ([]byte, error) {
+func (h *Handler) buildFilesystemInfo(class types.FileInfoClass) ([]byte, error) {
 	switch class {
 	case 1: // FileFsVolumeInformation [MS-FSCC] 2.5.9
 		// VolumeCreationTime (8) + VolumeSerialNumber (4) + VolumeLabelLength (4) +

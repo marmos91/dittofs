@@ -23,10 +23,10 @@ func (h *Handler) Create(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	// smbCreateFlags := binary.LittleEndian.Uint64(body[8:16])
 	// reserved := binary.LittleEndian.Uint64(body[16:24])
 	desiredAccess := binary.LittleEndian.Uint32(body[24:28])
-	fileAttributes := binary.LittleEndian.Uint32(body[28:32])
+	fileAttributes := types.FileAttributes(binary.LittleEndian.Uint32(body[28:32]))
 	// shareAccess := binary.LittleEndian.Uint32(body[32:36])
-	createDisposition := binary.LittleEndian.Uint32(body[36:40])
-	createOptions := binary.LittleEndian.Uint32(body[40:44])
+	createDisposition := types.CreateDisposition(binary.LittleEndian.Uint32(body[36:40]))
+	createOptions := types.CreateOptions(binary.LittleEndian.Uint32(body[40:44]))
 	nameOffset := binary.LittleEndian.Uint16(body[44:46])
 	nameLength := binary.LittleEndian.Uint16(body[46:48])
 	// createContextsOffset := binary.LittleEndian.Uint32(body[48:52])
@@ -64,7 +64,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	mockFile := h.GetMockFile(tree.ShareName, filename)
 
 	// Handle create disposition
-	var createAction uint32
+	var createAction types.CreateAction
 	switch createDisposition {
 	case types.FileOpen:
 		// Open existing only
@@ -93,7 +93,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 			Created:    time.Now(),
 			Modified:   time.Now(),
 			Accessed:   time.Now(),
-			Attributes: attrs,
+			Attributes: uint32(attrs),
 		}
 		createAction = types.FileCreated
 
@@ -114,7 +114,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 				Created:    time.Now(),
 				Modified:   time.Now(),
 				Accessed:   time.Now(),
-				Attributes: attrs,
+				Attributes: uint32(attrs),
 			}
 			createAction = types.FileCreated
 		} else {
@@ -139,7 +139,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 			Created:    time.Now(),
 			Modified:   time.Now(),
 			Accessed:   time.Now(),
-			Attributes: attrs,
+			Attributes: uint32(attrs),
 		}
 
 	case types.FileOverwrite:
@@ -166,7 +166,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 				Created:    time.Now(),
 				Modified:   time.Now(),
 				Accessed:   time.Now(),
-				Attributes: attrs,
+				Attributes: uint32(attrs),
 			}
 			createAction = types.FileCreated
 		} else {
@@ -210,10 +210,10 @@ func (h *Handler) Create(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 
 	// Build response [MS-SMB2] 2.2.14 (89 bytes)
 	resp := make([]byte, 89)
-	binary.LittleEndian.PutUint16(resp[0:2], 89) // StructureSize
-	resp[2] = 0                                   // OplockLevel (none)
-	resp[3] = 0                                   // Flags
-	binary.LittleEndian.PutUint32(resp[4:8], createAction)
+	binary.LittleEndian.PutUint16(resp[0:2], 89)              // StructureSize
+	resp[2] = 0                                                // OplockLevel (none)
+	resp[3] = 0                                                // Flags
+	binary.LittleEndian.PutUint32(resp[4:8], uint32(createAction))
 	binary.LittleEndian.PutUint64(resp[8:16], types.TimeToFiletime(mockFile.Created))   // CreationTime
 	binary.LittleEndian.PutUint64(resp[16:24], types.TimeToFiletime(mockFile.Accessed)) // LastAccessTime
 	binary.LittleEndian.PutUint64(resp[24:32], types.TimeToFiletime(mockFile.Modified)) // LastWriteTime

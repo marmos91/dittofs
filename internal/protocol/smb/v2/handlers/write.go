@@ -49,7 +49,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 			Created:    time.Now(),
 			Modified:   time.Now(),
 			Accessed:   time.Now(),
-			Attributes: types.FileAttributeNormal,
+			Attributes: uint32(types.FileAttributeNormal),
 		}
 	}
 

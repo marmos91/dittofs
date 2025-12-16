@@ -10,48 +10,145 @@ var (
 	ErrNotSupported = errors.New("operation not supported")
 )
 
-// NT_STATUS codes [MS-ERREF] 2.3
+// =============================================================================
+// NT_STATUS Codes
+// =============================================================================
+
+// Status represents an NT_STATUS code returned in SMB2 responses.
+//
+// NT_STATUS codes are 32-bit values divided into:
+//   - Severity (bits 30-31): 00=Success, 01=Informational, 10=Warning, 11=Error
+//   - Customer (bit 29): 0=Microsoft-defined, 1=Customer-defined
+//   - Facility (bits 16-28): Component that generated the status
+//   - Code (bits 0-15): Status code within the facility
+//
+// Common patterns:
+//   - 0x00000000: Success
+//   - 0x80000xxx: Warning (high bit set, bit 30 clear)
+//   - 0xC0000xxx: Error (both high bits set)
+//
+// [MS-ERREF] Section 2.3
+type Status uint32
+
 const (
-	StatusSuccess                uint32 = 0x00000000
-	StatusPending                uint32 = 0x00000103
-	StatusMoreProcessingRequired uint32 = 0xC0000016
-	StatusInvalidParameter       uint32 = 0xC000000D
-	StatusNoSuchFile             uint32 = 0xC000000F
-	StatusEndOfFile              uint32 = 0xC0000011
-	StatusMoreEntries            uint32 = 0x00000105
-	StatusNoMoreFiles            uint32 = 0x80000006
-	StatusAccessDenied           uint32 = 0xC0000022
-	StatusBufferOverflow         uint32 = 0x80000005
-	StatusObjectNameInvalid      uint32 = 0xC0000033
-	StatusObjectNameNotFound     uint32 = 0xC0000034
-	StatusObjectNameCollision    uint32 = 0xC0000035
-	StatusObjectPathNotFound     uint32 = 0xC000003A
-	StatusSharingViolation       uint32 = 0xC0000043
-	StatusDeletePending          uint32 = 0xC0000056
-	StatusFileClosed             uint32 = 0xC0000128
-	StatusInvalidHandle          uint32 = 0xC0000008
-	StatusNotSupported           uint32 = 0xC00000BB
-	StatusDirectoryNotEmpty      uint32 = 0xC0000101
-	StatusNotADirectory          uint32 = 0xC0000103
-	StatusFileIsADirectory       uint32 = 0xC00000BA
-	StatusBadNetworkName         uint32 = 0xC00000CC
-	StatusUserSessionDeleted     uint32 = 0xC0000203
-	StatusNetworkSessionExpired  uint32 = 0xC000035C
-	StatusInvalidDeviceRequest   uint32 = 0xC0000010
-	StatusInternalError          uint32 = 0xC00000E5
-	StatusInsufficientResources  uint32 = 0xC000009A
-	StatusRequestNotAccepted     uint32 = 0xC00000D0
-	StatusLogonFailure           uint32 = 0xC000006D
-	StatusPathNotCovered         uint32 = 0xC0000257
-	StatusNetworkNameDeleted     uint32 = 0xC00000C9
-	StatusInvalidInfoClass       uint32 = 0xC0000003
-	StatusBufferTooSmall         uint32 = 0xC0000023
-	StatusCancelled              uint32 = 0xC0000120
+	// Success codes (severity = 00)
+
+	// StatusSuccess indicates the operation completed successfully.
+	StatusSuccess Status = 0x00000000
+
+	// StatusPending indicates the operation is in progress (async).
+	StatusPending Status = 0x00000103
+
+	// StatusMoreEntries indicates more directory entries are available.
+	StatusMoreEntries Status = 0x00000105
+
+	// Warning codes (severity = 10, high bit set, bit 30 clear)
+
+	// StatusBufferOverflow indicates the buffer was too small;
+	// partial data was returned.
+	StatusBufferOverflow Status = 0x80000005
+
+	// StatusNoMoreFiles indicates directory enumeration is complete.
+	// This is expected at the end of QUERY_DIRECTORY operations.
+	StatusNoMoreFiles Status = 0x80000006
+
+	// Error codes (severity = 11, both high bits set)
+
+	// StatusInvalidInfoClass indicates an invalid information class was requested.
+	StatusInvalidInfoClass Status = 0xC0000003
+
+	// StatusInvalidHandle indicates the file handle is invalid or closed.
+	StatusInvalidHandle Status = 0xC0000008
+
+	// StatusInvalidParameter indicates a parameter is invalid.
+	StatusInvalidParameter Status = 0xC000000D
+
+	// StatusNoSuchFile indicates the file was not found.
+	StatusNoSuchFile Status = 0xC000000F
+
+	// StatusInvalidDeviceRequest indicates the request is not valid for this device.
+	StatusInvalidDeviceRequest Status = 0xC0000010
+
+	// StatusEndOfFile indicates an attempt to read past end of file.
+	StatusEndOfFile Status = 0xC0000011
+
+	// StatusMoreProcessingRequired indicates more authentication steps needed.
+	// Used during NTLM/Kerberos handshake.
+	StatusMoreProcessingRequired Status = 0xC0000016
+
+	// StatusAccessDenied indicates the caller lacks required permissions.
+	StatusAccessDenied Status = 0xC0000022
+
+	// StatusBufferTooSmall indicates the buffer is too small.
+	StatusBufferTooSmall Status = 0xC0000023
+
+	// StatusObjectNameInvalid indicates the object name is malformed.
+	StatusObjectNameInvalid Status = 0xC0000033
+
+	// StatusObjectNameNotFound indicates the named object was not found.
+	StatusObjectNameNotFound Status = 0xC0000034
+
+	// StatusObjectNameCollision indicates the name already exists.
+	StatusObjectNameCollision Status = 0xC0000035
+
+	// StatusObjectPathNotFound indicates a path component was not found.
+	StatusObjectPathNotFound Status = 0xC000003A
+
+	// StatusSharingViolation indicates a sharing conflict.
+	StatusSharingViolation Status = 0xC0000043
+
+	// StatusDeletePending indicates the file is marked for deletion.
+	StatusDeletePending Status = 0xC0000056
+
+	// StatusLogonFailure indicates authentication failed.
+	StatusLogonFailure Status = 0xC000006D
+
+	// StatusInsufficientResources indicates server lacks resources.
+	StatusInsufficientResources Status = 0xC000009A
+
+	// StatusFileIsADirectory indicates a file operation was attempted on a directory.
+	StatusFileIsADirectory Status = 0xC00000BA
+
+	// StatusNotSupported indicates the operation is not supported.
+	StatusNotSupported Status = 0xC00000BB
+
+	// StatusNetworkNameDeleted indicates the share was deleted.
+	StatusNetworkNameDeleted Status = 0xC00000C9
+
+	// StatusBadNetworkName indicates the share name was not found.
+	StatusBadNetworkName Status = 0xC00000CC
+
+	// StatusRequestNotAccepted indicates the server cannot accept the request.
+	StatusRequestNotAccepted Status = 0xC00000D0
+
+	// StatusInternalError indicates an internal server error.
+	StatusInternalError Status = 0xC00000E5
+
+	// StatusDirectoryNotEmpty indicates the directory is not empty.
+	StatusDirectoryNotEmpty Status = 0xC0000101
+
+	// StatusNotADirectory indicates a directory operation was attempted on a file.
+	StatusNotADirectory Status = 0xC0000103
+
+	// StatusCancelled indicates the operation was cancelled.
+	StatusCancelled Status = 0xC0000120
+
+	// StatusFileClosed indicates the file handle was closed.
+	StatusFileClosed Status = 0xC0000128
+
+	// StatusUserSessionDeleted indicates the session was deleted.
+	StatusUserSessionDeleted Status = 0xC0000203
+
+	// StatusPathNotCovered indicates a DFS path is not covered.
+	StatusPathNotCovered Status = 0xC0000257
+
+	// StatusNetworkSessionExpired indicates the session expired.
+	StatusNetworkSessionExpired Status = 0xC000035C
 )
 
-// StatusName returns a human-readable name for NT_STATUS codes
-func StatusName(status uint32) string {
-	switch status {
+// String returns a human-readable name for the status code.
+func (s Status) String() string {
+	switch s {
 	case StatusSuccess:
 		return "STATUS_SUCCESS"
 	case StatusPending:
@@ -123,24 +220,61 @@ func StatusName(status uint32) string {
 	case StatusCancelled:
 		return "STATUS_CANCELLED"
 	default:
-		return fmt.Sprintf("STATUS_0x%08X", status)
+		return fmt.Sprintf("STATUS_0x%08X", uint32(s))
 	}
 }
 
-// IsSuccess returns true if the status indicates success
+// IsSuccess returns true if the status indicates success.
+// NT_STATUS success codes have severity 00 (bits 30-31 are 0).
+func (s Status) IsSuccess() bool {
+	return s == StatusSuccess || (uint32(s)&0x80000000) == 0
+}
+
+// IsError returns true if the status indicates an error.
+// NT_STATUS error codes have severity 11 (bits 30-31 are both set).
+func (s Status) IsError() bool {
+	return (uint32(s) & 0xC0000000) == 0xC0000000
+}
+
+// IsWarning returns true if the status indicates a warning.
+// NT_STATUS warning codes have severity 10 (bit 31 set, bit 30 clear).
+func (s Status) IsWarning() bool {
+	return (uint32(s) & 0xC0000000) == 0x80000000
+}
+
+// Severity returns the severity level (0-3) of the status.
+//   - 0: Success
+//   - 1: Informational
+//   - 2: Warning
+//   - 3: Error
+func (s Status) Severity() int {
+	return int((uint32(s) >> 30) & 0x3)
+}
+
+// =============================================================================
+// Legacy Functions (for backward compatibility)
+// =============================================================================
+
+// StatusName returns a human-readable name for NT_STATUS codes.
+// Deprecated: Use Status.String() instead.
+func StatusName(status uint32) string {
+	return Status(status).String()
+}
+
+// IsSuccess returns true if the status indicates success.
+// Deprecated: Use Status.IsSuccess() instead.
 func IsSuccess(status uint32) bool {
-	// NT_STATUS success codes have the high bit clear
-	return status == StatusSuccess || (status&0x80000000) == 0
+	return Status(status).IsSuccess()
 }
 
-// IsError returns true if the status indicates an error
+// IsError returns true if the status indicates an error.
+// Deprecated: Use Status.IsError() instead.
 func IsError(status uint32) bool {
-	// NT_STATUS error codes have the two high bits set (0xC0000000)
-	return (status & 0xC0000000) == 0xC0000000
+	return Status(status).IsError()
 }
 
-// IsWarning returns true if the status indicates a warning
+// IsWarning returns true if the status indicates a warning.
+// Deprecated: Use Status.IsWarning() instead.
 func IsWarning(status uint32) bool {
-	// NT_STATUS warning codes have bit 31 set but not bit 30 (0x80000000)
-	return (status&0xC0000000) == 0x80000000
+	return Status(status).IsWarning()
 }

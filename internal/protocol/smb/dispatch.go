@@ -27,10 +27,10 @@ type Command struct {
 }
 
 // DispatchTable maps SMB2 command codes to handlers
-var DispatchTable map[uint16]*Command
+var DispatchTable map[types.Command]*Command
 
 func init() {
-	DispatchTable = map[uint16]*Command{
+	DispatchTable = map[types.Command]*Command{
 		types.SMB2Negotiate: {
 			Name:         "NEGOTIATE",
 			Handler:      handleNegotiate,

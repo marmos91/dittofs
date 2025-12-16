@@ -15,8 +15,8 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, body []byte) (*HandlerR
 
 	// Parse request [MS-SMB2] 2.2.33
 	// structureSize := binary.LittleEndian.Uint16(body[0:2]) // Always 33
-	fileInfoClass := body[2]
-	flags := body[3]
+	fileInfoClass := types.FileInfoClass(body[2])
+	flags := types.QueryDirectoryFlags(body[3])
 	// fileIndex := binary.LittleEndian.Uint32(body[4:8])
 	var fileID [16]byte
 	copy(fileID[:], body[8:24])
@@ -102,8 +102,8 @@ func (h *Handler) buildFileBothDirectoryInfo(files map[string]*MockFile, include
 
 	// Add special entries first
 	if includeSpecial {
-		result = h.appendBothDirEntry(result, &prevNextOffset, ".", true, 0, types.FileAttributeDirectory)
-		result = h.appendBothDirEntry(result, &prevNextOffset, "..", true, 0, types.FileAttributeDirectory)
+		result = h.appendBothDirEntry(result, &prevNextOffset, ".", true, 0, uint32(types.FileAttributeDirectory))
+		result = h.appendBothDirEntry(result, &prevNextOffset, "..", true, 0, uint32(types.FileAttributeDirectory))
 	}
 
 	for _, f := range files {
@@ -165,9 +165,9 @@ func (h *Handler) buildFileIdBothDirectoryInfo(files map[string]*MockFile, inclu
 	var fileIndex uint64 = 1
 
 	if includeSpecial {
-		result = h.appendIdBothDirEntry(result, &prevNextOffset, ".", true, 0, types.FileAttributeDirectory, fileIndex)
+		result = h.appendIdBothDirEntry(result, &prevNextOffset, ".", true, 0, uint32(types.FileAttributeDirectory), fileIndex)
 		fileIndex++
-		result = h.appendIdBothDirEntry(result, &prevNextOffset, "..", true, 0, types.FileAttributeDirectory, fileIndex)
+		result = h.appendIdBothDirEntry(result, &prevNextOffset, "..", true, 0, uint32(types.FileAttributeDirectory), fileIndex)
 		fileIndex++
 	}
 
@@ -228,8 +228,8 @@ func (h *Handler) buildFileFullDirectoryInfo(files map[string]*MockFile, include
 	var prevNextOffset int
 
 	if includeSpecial {
-		result = h.appendFullDirEntry(result, &prevNextOffset, ".", true, 0, types.FileAttributeDirectory)
-		result = h.appendFullDirEntry(result, &prevNextOffset, "..", true, 0, types.FileAttributeDirectory)
+		result = h.appendFullDirEntry(result, &prevNextOffset, ".", true, 0, uint32(types.FileAttributeDirectory))
+		result = h.appendFullDirEntry(result, &prevNextOffset, "..", true, 0, uint32(types.FileAttributeDirectory))
 	}
 
 	for _, f := range files {
@@ -283,8 +283,8 @@ func (h *Handler) buildFileDirectoryInfo(files map[string]*MockFile, includeSpec
 	var prevNextOffset int
 
 	if includeSpecial {
-		result = h.appendDirEntry(result, &prevNextOffset, ".", true, 0, types.FileAttributeDirectory)
-		result = h.appendDirEntry(result, &prevNextOffset, "..", true, 0, types.FileAttributeDirectory)
+		result = h.appendDirEntry(result, &prevNextOffset, ".", true, 0, uint32(types.FileAttributeDirectory))
+		result = h.appendDirEntry(result, &prevNextOffset, "..", true, 0, uint32(types.FileAttributeDirectory))
 	}
 
 	for _, f := range files {
