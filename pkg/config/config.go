@@ -545,6 +545,44 @@ func Load(configPath string) (*Config, error) {
 	return &cfg, nil
 }
 
+// SaveConfig saves the configuration to the specified file path.
+// The configuration is saved in YAML format.
+func SaveConfig(cfg *Config, path string) error {
+	// Create parent directory if it doesn't exist
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	// Use viper to save in the same format it was loaded
+	v := viper.New()
+	v.SetConfigFile(path)
+	v.SetConfigType("yaml")
+
+	// Set all config values
+	v.Set("logging", cfg.Logging)
+	v.Set("telemetry", cfg.Telemetry)
+	v.Set("server", cfg.Server)
+	v.Set("metadata", cfg.Metadata)
+	v.Set("content", cfg.Content)
+	v.Set("cache", cfg.Cache)
+	v.Set("shares", cfg.Shares)
+	v.Set("adapters", cfg.Adapters)
+	v.Set("gc", cfg.GC)
+	v.Set("users", cfg.Users)
+	v.Set("groups", cfg.Groups)
+	v.Set("guest", cfg.Guest)
+
+	if err := v.WriteConfig(); err != nil {
+		// WriteConfig fails if file doesn't exist, try SafeWriteConfig
+		if err := v.SafeWriteConfigAs(path); err != nil {
+			return fmt.Errorf("failed to write config: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // setupViper configures viper with environment variables and config file settings.
 func setupViper(v *viper.Viper, configPath string) {
 	// Set up environment variable support

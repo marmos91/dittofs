@@ -527,6 +527,75 @@ users:
 
 In this example, `special-viewer` gets `read-write` on `/archive` (user explicit), even though the `viewers` group only has `read`.
 
+#### CLI Management Commands
+
+DittoFS provides CLI commands to manage users and groups without manually editing the config file.
+
+**User Commands:**
+
+```bash
+# Add a new user (prompts for password)
+dittofs user add alice
+dittofs user add alice --uid 1005 --gid 100 --groups editors,viewers
+
+# Delete a user
+dittofs user delete alice
+
+# List all users
+dittofs user list
+
+# Change password
+dittofs user passwd alice
+
+# Grant share permission
+dittofs user grant alice /export read-write
+
+# Revoke share permission
+dittofs user revoke alice /export
+
+# List user's groups
+dittofs user groups alice
+
+# Add user to group
+dittofs user join alice editors
+
+# Remove user from group
+dittofs user leave alice editors
+```
+
+**Group Commands:**
+
+```bash
+# Add a new group
+dittofs group add editors
+dittofs group add editors --gid 101
+
+# Delete a group
+dittofs group delete editors
+dittofs group delete editors --force  # Delete even if has members
+
+# List all groups
+dittofs group list
+
+# List group members
+dittofs group members editors
+
+# Grant share permission
+dittofs group grant editors /export read-write
+
+# Revoke share permission
+dittofs group revoke editors /export
+```
+
+**Using Custom Config File:**
+
+All user and group commands support the `--config` flag:
+
+```bash
+dittofs user list --config /etc/dittofs/config.yaml
+dittofs group add admins --config /etc/dittofs/config.yaml
+```
+
 ### 9. Protocol Adapters
 
 Configures protocol-specific settings:
