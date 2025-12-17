@@ -6,468 +6,323 @@ Comprehensive e2e tests for DittoFS that test real file operations through mount
 
 The e2e tests validate DittoFS functionality by:
 1. Starting a DittoFS server with specific metadata/content stores
-2. Mounting shares via NFS and/or SMB protocols
+2. Mounting shares via NFS and SMB protocols (both enabled by default)
 3. Performing file operations using standard Go `os` package
 4. Verifying results
 5. Cleaning up (unmount, shutdown, cleanup)
 
-**Test Categories:**
-- **NFS Tests**: File operations via NFSv3
-- **SMB Tests**: File operations via SMB2
-- **Interoperability Tests**: Cross-protocol tests (write via NFS, read via SMB and vice versa)
-
 ## Quick Start
 
-**⚠️  Important:** E2E tests require `sudo` to mount NFS/SMB shares on both macOS and Linux.
-
-### Standard Tests (No External Dependencies)
+**Important:** E2E tests require `sudo` to mount NFS/SMB shares.
 
 ```bash
-# Run all standard tests (requires sudo)
-cd test/e2e
-sudo ./run-e2e.sh
+# Run all tests (Docker required for PostgreSQL/S3)
+sudo go test -tags=e2e -v -timeout 30m ./test/e2e/...
 
-# Or directly with go test
-sudo go test -tags=e2e -v ./...
+# Local tests only (no Docker needed)
+sudo go test -tags=e2e -v ./test/e2e/... -skip "S3|postgres"
 
-# Run a specific NFS test
-sudo go test -tags=e2e -v -run TestCreateFolder
+# Run specific test
+sudo go test -tags=e2e -v -run TestCRUD ./test/e2e/...
 
-# Run SMB tests
-sudo go test -tags=e2e -v -run TestSMB
+# Run with short mode (skip large file tests)
+sudo go test -tags=e2e -v -short ./test/e2e/...
 
-# Run interoperability tests (NFS ↔ SMB)
-sudo go test -tags=e2e -v -run TestInterop
-```
-
-### PostgreSQL Tests (Requires Docker)
-
-```bash
-# Run PostgreSQL tests (requires sudo + Docker)
-# PostgreSQL container is started automatically via testcontainers
-sudo go test -tags=e2e -v ./test/e2e/ -run "postgres"
-
-# Run specific PostgreSQL configuration
-sudo go test -tags=e2e -v -run "TestCreateFolder/postgres-filesystem" ./test/e2e/
-
-# Use external PostgreSQL (instead of testcontainers)
-export POSTGRES_HOST=localhost
-export POSTGRES_PORT=5432
-export POSTGRES_DATABASE=dittofs_e2e
-export POSTGRES_USER=dittofs
-export POSTGRES_PASSWORD=dittofs
-sudo go test -tags=e2e -v ./test/e2e/ -run "postgres"
-```
-
-### S3 Tests (Requires Localstack)
-
-```bash
-# Run all tests including S3 (requires sudo + Docker)
-sudo ./run-e2e.sh --s3
-
-# The script will automatically:
-# 1. Start Localstack via docker-compose
-# 2. Wait for it to be ready
-# 3. Run all tests
-# 4. Clean up Localstack
+# Full CI suite with race detection
+sudo go test -tags=e2e -v -race -timeout 45m ./test/e2e/...
 ```
 
 ## Test Structure
 
 ```
 test/e2e/
-├── framework.go           # NFS server lifecycle and mount management
-├── smb_framework.go       # SMB server lifecycle and mount management
-├── interop_framework.go   # Cross-protocol test framework (NFS + SMB)
-├── protocol.go            # Protocol abstraction interface
-├── config.go              # Configuration matrix (metadata × content stores)
-├── helpers.go             # NFS test helpers
-├── smb_helpers.go         # SMB test helpers
-├── localstack.go          # Localstack S3 integration
-├── postgres.go            # PostgreSQL test support
-├── create_test.go         # NFS create operation tests
-├── edit_test.go           # NFS edit operation tests
-├── delete_test.go         # NFS delete operation tests
-├── move_test.go           # NFS move/rename tests
-├── filesize_test.go       # Parametrized file size tests
-├── smb_create_test.go     # SMB create operation tests
-├── smb_edit_test.go       # SMB edit operation tests
-├── smb_delete_test.go     # SMB delete operation tests
-├── interop_test.go        # Cross-protocol interoperability tests
-├── docker-compose.yml     # Localstack setup
-├── run-e2e.sh            # Test orchestration script
-└── README.md             # This file
+├── framework/                 # Test infrastructure
+│   ├── context.go            # Unified TestContext (NFS + SMB)
+│   ├── config.go             # 8 configurations
+│   ├── mount.go              # NFS/SMB mount helpers
+│   ├── containers.go         # Localstack/PostgreSQL helpers
+│   └── helpers.go            # Utility functions
+│
+├── functional_test.go        # CRUD, permissions, concurrent access
+├── interop_v2_test.go        # NFS<->SMB, store interoperability
+├── advanced_test.go          # Symlinks, hardlinks, special files
+├── scale_test.go             # Large files (up to 1GB), many files
+├── cache_v2_test.go          # Cache-specific tests
+│
+├── main_test.go              # Test lifecycle
+└── README.md                 # This file
 ```
 
 ## Configuration Matrix
 
-Tests run against all combinations of:
+Tests run against 8 configurations:
 
-### Metadata Stores
-- **Memory**: Fast, in-memory metadata (no persistence)
-- **Badger**: Embedded key-value store (persistent)
-- **PostgreSQL**: Distributed database (persistent, horizontally scalable)
-
-### Content Stores
-- **Memory**: Fast, in-memory content storage
-- **Filesystem**: Local filesystem storage
-- **S3**: S3-compatible storage (via Localstack)
-
-### Available Configurations
-
-**Standard (no external dependencies):**
-- `memory/memory` - Both metadata and content in memory
-- `memory/filesystem` - Memory metadata, filesystem content
-- `badger/filesystem` - Badger metadata, filesystem content
-
-**PostgreSQL (requires Docker or external PostgreSQL):**
-- `postgres/memory` - PostgreSQL metadata, memory content
-- `postgres/filesystem` - PostgreSQL metadata, filesystem content
-
-**S3 (requires Localstack):**
-- `memory/s3` - Memory metadata, S3 content
-- `badger/s3` - Badger metadata, S3 content
-
-**PostgreSQL + S3 (requires both PostgreSQL and Localstack):**
-- `postgres/s3` - PostgreSQL metadata, S3 content
-- `postgres/s3-cached` - PostgreSQL metadata, S3 content with cache
+| Name | Metadata | Content | Cache | Docker Required |
+|------|----------|---------|-------|-----------------|
+| `memory-memory` | Memory | Memory | No | No |
+| `memory-filesystem` | Memory | Filesystem | No | No |
+| `badger-filesystem` | BadgerDB | Filesystem | No | No |
+| `memory-memory-cached` | Memory | Memory | Yes | No |
+| `postgres-filesystem` | PostgreSQL | Filesystem | No | Yes |
+| `memory-s3` | Memory | S3 | Yes | Yes |
+| `badger-s3` | BadgerDB | S3 | Yes | Yes |
+| `postgres-s3` | PostgreSQL | S3 | Yes | Yes |
 
 ## Available Tests
 
-### Operation Tests (`operations_test.go`)
+### Functional Tests (`functional_test.go`)
 
-Individual tests that can be run separately:
+Core CRUD operations and concurrent access:
 
 ```bash
-# Test individual operations
-go test -v -run TestCreateFolder
-go test -v -run TestCreateNestedFolders
-go test -v -run TestCreateEmptyFile
-go test -v -run TestCreateEmptyFilesInNestedFolders
-go test -v -run TestDeleteSingleFile
-go test -v -run TestDeleteAllFolders
-go test -v -run TestDeleteAllFiles
-go test -v -run TestEditFile
-go test -v -run TestEditMultipleFiles
-go test -v -run TestUnmount
+# CRUD operations
+sudo go test -tags=e2e -v -run TestCRUD ./test/e2e/...
+
+# Nested folder operations (20 levels deep)
+sudo go test -tags=e2e -v -run TestNestedFolders ./test/e2e/...
+
+# Bulk operations (create/edit/delete many files)
+sudo go test -tags=e2e -v -run TestBulkOperations ./test/e2e/...
+
+# Concurrent access from multiple goroutines
+sudo go test -tags=e2e -v -run TestConcurrentAccess ./test/e2e/...
+
+# File permissions
+sudo go test -tags=e2e -v -run TestFilePermissions ./test/e2e/...
+
+# Directory listing
+sudo go test -tags=e2e -v -run TestListDirectory ./test/e2e/...
 ```
 
-**What each test does:**
+### Interoperability Tests (`interop_v2_test.go`)
 
-- `TestCreateFolder` - Creates a single folder
-- `TestCreateNestedFolders` - Creates 20 nested folders (folder1/folder2/.../folder20)
-- `TestCreateEmptyFile` - Creates a single empty file
-- `TestCreateEmptyFilesInNestedFolders` - Creates 20 nested folders, each with an empty file
-- `TestDeleteSingleFile` - Creates and deletes a single file
-- `TestDeleteAllFolders` - Creates 10 folders and deletes them all
-- `TestDeleteAllFiles` - Creates 20 files and deletes them all
-- `TestEditFile` - Creates a file and overwrites it with new content
-- `TestEditMultipleFiles` - Creates 20 files and edits them all
-- `TestUnmount` - Tests unmounting and remounting the share
-
-### File Size Tests (`filesize_test.go`)
-
-Parametrized tests for different file sizes:
+Cross-protocol and cross-store consistency:
 
 ```bash
-# Test specific file sizes
-go test -v -run TestCreateFile_500KB
-go test -v -run TestCreateFile_1MB
-go test -v -run TestCreateFile_10MB
-go test -v -run TestCreateFile_100MB
+# Protocol interop (NFS write -> SMB read, etc.)
+sudo go test -tags=e2e -v -run TestProtocolInteropV2 ./test/e2e/...
 
-# Test all sizes
-go test -v -run TestCreateFilesBySize
+# Simultaneous access from both protocols
+sudo go test -tags=e2e -v -run TestSimultaneousProtocolAccessV2 ./test/e2e/...
 
-# Test multiple files of each size
-go test -v -run TestCreateMultipleFilesBySize
+# Large file transfer between protocols
+sudo go test -tags=e2e -v -run TestLargeFileInteropV2 ./test/e2e/...
 
-# Test read operations
-go test -v -run TestReadFilesBySize
-
-# Test write-then-read
-go test -v -run TestWriteThenReadBySize
-
-# Test overwrite operations
-go test -v -run TestOverwriteFilesBySize
-
-# Test delete operations
-go test -v -run TestDeleteFilesBySize
+# Store integration (metadata + content stores)
+sudo go test -tags=e2e -v -run TestStoreInteropV2 ./test/e2e/...
 ```
 
-**Available file sizes:**
-- 500KB
-- 1MB
-- 10MB
-- 100MB
+### Advanced Tests (`advanced_test.go`)
 
-### SMB Tests (`smb_*_test.go`)
-
-SMB tests mirror the NFS tests but operate via SMB2 protocol:
+Special file operations:
 
 ```bash
-# Run all SMB tests
-go test -tags=e2e -v -run TestSMB
+# Hard links (create, modify, delete original)
+sudo go test -tags=e2e -v -run TestHardlinks ./test/e2e/...
 
-# Test SMB folder operations
-go test -tags=e2e -v -run TestSMBCreateFolder
-go test -tags=e2e -v -run TestSMBCreateNestedFolders
+# Symlinks (to files, directories, readlink)
+sudo go test -tags=e2e -v -run TestSymlinks ./test/e2e/...
 
-# Test SMB file operations
-go test -tags=e2e -v -run TestSMBCreateFileWithContent
-go test -tags=e2e -v -run TestSMBEditFile
-go test -tags=e2e -v -run TestSMBDeleteSingleFile
+# Rename/move operations
+sudo go test -tags=e2e -v -run TestRename ./test/e2e/...
+
+# Special files (FIFOs, sockets, devices)
+sudo go test -tags=e2e -v -run TestSpecialFiles ./test/e2e/...
 ```
 
-### Interoperability Tests (`interop_test.go`)
+### Scale Tests (`scale_test.go`)
 
-Interoperability tests validate cross-protocol consistency - files written via one protocol are correctly readable via the other:
+Large file and many-file tests:
 
 ```bash
-# Run all interoperability tests
-go test -tags=e2e -v -run TestInterop
+# Large files (1MB, 10MB, 100MB, 1GB)
+sudo go test -tags=e2e -v -run TestLargeFiles ./test/e2e/...
 
-# Test NFS write → SMB read
-go test -tags=e2e -v -run TestInteropNFSWriteSMBRead
+# 1GB file test only (explicit)
+sudo go test -tags=e2e -v -timeout 1h -run "TestLargeFiles/1GB" ./test/e2e/...
 
-# Test SMB write → NFS read
-go test -tags=e2e -v -run TestInteropSMBWriteNFSRead
+# Many files (100, 1000, 10000)
+sudo go test -tags=e2e -v -run TestManyFiles ./test/e2e/...
 
-# Test concurrent access from both protocols
-go test -tags=e2e -v -run TestInteropConcurrentAccess
+# Many directories
+sudo go test -tags=e2e -v -run TestManyDirectories ./test/e2e/...
 
-# Test large file transfer between protocols
-go test -tags=e2e -v -run TestInteropLargeFileTransfer
+# Deep nesting (50 levels)
+sudo go test -tags=e2e -v -run TestDeepNesting ./test/e2e/...
 
-# Test metadata consistency
-go test -tags=e2e -v -run TestInteropMetadataConsistency
+# Mixed content (files + subdirectories)
+sudo go test -tags=e2e -v -run TestMixedContent ./test/e2e/...
 ```
 
-**What interop tests cover:**
-- `TestInteropNFSWriteSMBRead` - Write via NFS, read via SMB
-- `TestInteropSMBWriteNFSRead` - Write via SMB, read via NFS
-- `TestInteropNFSCreateFolderSMBList` - Create folders via NFS, list via SMB
-- `TestInteropSMBCreateFilesNFSDelete` - Create files via SMB, delete via NFS
-- `TestInteropLargeFileTransfer` - 1MB file transfer between protocols
-- `TestInteropConcurrentAccess` - Concurrent writes from both protocols
-- `TestInteropMetadataConsistency` - Verify metadata matches between protocols
-- `TestInteropNestedFolderStructure` - Navigate nested structures across protocols
+### Cache Tests (`cache_v2_test.go`)
 
-### Running Tests on Specific Configurations
+Cache-specific behavior (runs only on cached configurations):
 
 ```bash
-# Run only on memory/memory configuration
-go test -tags=e2e -v -run "TestCreateFolder/memory-memory"
+# Basic cache operations
+sudo go test -tags=e2e -v -run TestCacheBasicOperations ./test/e2e/...
 
-# Run only on badger/filesystem configuration
-go test -tags=e2e -v -run "TestCreateFile_1MB/badger-filesystem"
+# Cache read hits
+sudo go test -tags=e2e -v -run TestCacheReadHits ./test/e2e/...
 
-# Run all tests on S3 configurations
-./run-e2e.sh --s3 --test "s3"
+# Cache coherence (invalidation on writes)
+sudo go test -tags=e2e -v -run TestCacheCoherence ./test/e2e/...
+
+# Cache with many files
+sudo go test -tags=e2e -v -run TestCacheWithManyFiles ./test/e2e/...
+
+# Cache flush
+sudo go test -tags=e2e -v -run TestCacheFlush ./test/e2e/...
+
+# Cache append
+sudo go test -tags=e2e -v -run TestCacheAppend ./test/e2e/...
 ```
 
-## Script Usage
-
-The `run-e2e.sh` script provides convenient test orchestration:
+## Running Tests on Specific Configurations
 
 ```bash
-# Basic usage
-./run-e2e.sh                              # Standard tests only
-./run-e2e.sh --s3                         # Include S3 tests
-./run-e2e.sh --verbose                    # Verbose output
-./run-e2e.sh --test TestCreateFile_1MB   # Run specific test
-./run-e2e.sh --keep-localstack            # Keep Localstack running after tests
+# Run only on memory-memory configuration
+sudo go test -tags=e2e -v -run "/memory-memory" ./test/e2e/...
 
-# Combined options
-./run-e2e.sh --s3 --verbose --test TestCreateFilesBySize
-```
+# Run only on postgres configurations
+sudo go test -tags=e2e -v -run "/postgres" ./test/e2e/...
 
-**Script options:**
-- `--s3` - Run S3 tests (starts Localstack automatically)
-- `--verbose`, `-v` - Enable verbose test output
-- `--test`, `-t NAME` - Run specific test by name
-- `--keep-localstack` - Keep Localstack running after tests (for debugging)
-- `--help`, `-h` - Show help message
+# Run only on S3 configurations
+sudo go test -tags=e2e -v -run "/s3" ./test/e2e/...
 
-## Localstack Setup
-
-### Using the Script (Recommended)
-
-```bash
-# Script handles everything automatically
-./run-e2e.sh --s3
-```
-
-### Manual Setup
-
-```bash
-# Start Localstack
-docker-compose up -d
-
-# Wait for it to be ready
-curl http://localhost:4566/_localstack/health
-
-# Set environment variable
-export LOCALSTACK_ENDPOINT=http://localhost:4566
-
-# Run tests
-go test -v ./...
-
-# Stop Localstack
-docker-compose down -v
-```
-
-### Troubleshooting Localstack
-
-```bash
-# Check if Localstack is running
-docker ps | grep localstack
-
-# View Localstack logs
-docker-compose logs -f
-
-# Check health
-curl http://localhost:4566/_localstack/health
-
-# Restart Localstack
-docker-compose down -v
-docker-compose up -d
+# Run a specific test on a specific configuration
+sudo go test -tags=e2e -v -run "TestCRUD/badger-filesystem" ./test/e2e/...
 ```
 
 ## Writing New Tests
 
-### Adding a New Operation Test
-
-1. Open `operations_test.go`
-2. Add your test function:
+### Adding a Test to an Existing File
 
 ```go
 func TestMyNewOperation(t *testing.T) {
-    runOnAllConfigs(t, func(t *testing.T, tc *TestContext) {
+    framework.RunOnAllConfigs(t, func(t *testing.T, tc *framework.TestContext) {
         // Your test code using tc.Path() for file paths
         filePath := tc.Path("myfile.txt")
-        err := os.WriteFile(filePath, []byte("content"), 0644)
-        if err != nil {
-            t.Fatalf("Failed: %v", err)
+        framework.WriteFile(t, filePath, []byte("content"))
+
+        // Verify
+        content := framework.ReadFile(t, filePath)
+        if !bytes.Equal(content, []byte("content")) {
+            t.Error("Content mismatch")
         }
     })
 }
 ```
 
-### Adding a New File Size Test
-
-1. Open `filesize_test.go`
-2. Define a new size (if needed):
+### Running Only on Local Configurations (No Docker)
 
 ```go
-var Size5MB = FileSize{Name: "5MB", Bytes: 5 * 1024 * 1024}
-```
-
-3. Add to `StandardFileSizes` or create a custom test:
-
-```go
-func TestCreateFile_5MB(t *testing.T) {
-    runOnAllConfigs(t, func(t *testing.T, tc *TestContext) {
-        testCreateFileOfSize(t, tc, Size5MB)
+func TestLocalOnly(t *testing.T) {
+    framework.RunOnLocalConfigs(t, func(t *testing.T, tc *framework.TestContext) {
+        // Your test - runs on memory/filesystem/badger configs only
     })
 }
 ```
 
-### Running Only on Specific Configurations
+### Running Only on Cached Configurations
 
 ```go
-// Run only on S3 configurations
-func TestS3SpecificFeature(t *testing.T) {
-    runOnS3Configs(t, func(t *testing.T, tc *TestContext) {
-        // Your S3-specific test
+func TestCacheSpecific(t *testing.T) {
+    framework.RunOnCachedConfigs(t, func(t *testing.T, tc *framework.TestContext) {
+        if !tc.HasCache() {
+            t.Skip("Cache not enabled")
+        }
+        // Your cache-specific test
+    })
+}
+```
+
+### Testing Cross-Protocol Operations
+
+```go
+func TestCrossProtocol(t *testing.T) {
+    framework.RunOnAllConfigs(t, func(t *testing.T, tc *framework.TestContext) {
+        if !tc.HasNFS() || !tc.HasSMB() {
+            t.Skip("Both NFS and SMB required")
+        }
+
+        // Write via NFS
+        framework.WriteFile(t, tc.NFSPath("file.txt"), []byte("content"))
+
+        // Read via SMB
+        content := framework.ReadFile(t, tc.SMBPath("file.txt"))
     })
 }
 ```
 
 ## TestContext API
 
-The `TestContext` provides helper methods:
-
 ```go
 // Path construction
-tc.Path("file.txt")                      // Absolute path in mount
+tc.Path("file.txt")      // Default path (NFS by default)
+tc.NFSPath("file.txt")   // Explicit NFS path
+tc.SMBPath("file.txt")   // Explicit SMB path
 
-// Access to configuration
-tc.Config.MetadataStore                  // "memory" or "badger"
-tc.Config.ContentStore                   // "memory", "filesystem", or "s3"
+// Protocol checks
+tc.HasNFS()              // Always true (NFS always enabled)
+tc.HasSMB()              // True when SMB is enabled (default: true)
+tc.HasCache()            // True when cache is enabled
 
-// Access to mount point
-tc.MountPath                             // Absolute path to mount
-
-// Access to stores (for advanced tests)
-tc.MetadataStore
-tc.ContentStore
+// Configuration access
+tc.Config.Name           // Configuration name (e.g., "memory-memory")
+tc.Config.MetadataStore  // MetadataStoreType
+tc.Config.ContentStore   // ContentStoreType
 ```
 
-## Common Patterns
-
-### Create and Verify File
+## Framework Helpers
 
 ```go
-filePath := tc.Path("test.txt")
-content := []byte("test content")
+// File operations
+framework.WriteFile(t, path, content)
+framework.ReadFile(t, path) []byte
+framework.WriteRandomFile(t, path, size) string  // Returns checksum
+framework.VerifyFileChecksum(t, path, checksum)
 
-// Write
-err := os.WriteFile(filePath, content, 0644)
-if err != nil {
-    t.Fatalf("Failed to write: %v", err)
-}
+// Directory operations
+framework.CreateDir(t, path)
+framework.ListDir(t, path) []os.DirEntry
+framework.CountFiles(t, path) int
+framework.CountDirs(t, path) int
 
-// Read back
-actualContent, err := os.ReadFile(filePath)
-if err != nil {
-    t.Fatalf("Failed to read: %v", err)
-}
+// Existence checks
+framework.FileExists(path) bool
+framework.DirExists(path) bool
 
-// Verify
-if !bytes.Equal(content, actualContent) {
-    t.Errorf("Content mismatch")
-}
-```
+// Cleanup
+framework.RemoveAll(t, path)
 
-### Create Folder Structure
+// File info
+framework.GetFileInfo(t, path) FileInfo
 
-```go
-basePath := tc.Path("base")
-err := os.MkdirAll(filepath.Join(basePath, "sub1", "sub2"), 0755)
-if err != nil {
-    t.Fatalf("Failed to create folders: %v", err)
-}
-```
-
-### List Directory
-
-```go
-entries, err := os.ReadDir(tc.Path("folder"))
-if err != nil {
-    t.Fatalf("Failed to read dir: %v", err)
-}
-
-for _, entry := range entries {
-    t.Logf("Found: %s (dir=%v)", entry.Name(), entry.IsDir())
-}
+// Test skipping
+framework.SkipIfShort(t, reason)
 ```
 
 ## CI Integration
 
-The tests are designed to run in CI with minimal setup:
-
 ```yaml
 # .github/workflows/e2e.yml
-- name: Run E2E tests (standard)
-  run: |
-    cd test/e2e
-    ./run-e2e.sh
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-- name: Run E2E tests (with S3)
-  run: |
-    cd test/e2e
-    ./run-e2e.sh --s3
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Install NFS client
+        run: sudo apt-get install -y nfs-common
+
+      - name: Run E2E tests
+        run: sudo go test -tags=e2e -v -timeout 30m ./test/e2e/...
 ```
 
 ## Prerequisites
@@ -479,69 +334,62 @@ The tests are designed to run in CI with minimal setup:
   - **Linux**: `sudo apt-get install nfs-common` (Debian/Ubuntu)
   - **Linux**: `sudo yum install nfs-utils` (RHEL/CentOS)
 
-### PostgreSQL Tests
-- Docker (for testcontainers)
-- Or: External PostgreSQL instance with environment variables configured
-
-### S3 Tests
-- Docker
-- docker-compose
+### Docker Tests (PostgreSQL/S3)
+- Docker (testcontainers automatically manages containers)
+- No docker-compose needed
 
 ## Performance Considerations
 
-- **Memory/Memory**: Fastest, use for rapid development
-- **Memory/Filesystem**: Fast, more realistic
-- **Badger/Filesystem**: More realistic, tests persistence
-- **PostgreSQL/Filesystem**: Tests distributed metadata, adds ~1-2ms latency per operation
-- **S3 Configurations**: Slower due to Localstack overhead, use for S3-specific testing
-- **PostgreSQL + S3**: Slowest, but most production-like configuration
+| Configuration | Speed | Use Case |
+|---------------|-------|----------|
+| memory-memory | Fastest | Rapid development |
+| memory-filesystem | Fast | More realistic |
+| badger-filesystem | Medium | Tests persistence |
+| memory-memory-cached | Fast | Cache behavior |
+| postgres-filesystem | Slower | Distributed metadata |
+| *-s3 | Slowest | S3-specific testing |
 
 Typical test times:
 - Single operation test: 100-500ms
 - File size test (1MB): 200-1000ms
-- File size test (100MB): 2-10s (depending on store)
-- Full suite (standard): 2-5 minutes
-- Full suite (with S3): 5-15 minutes
-
-## Tips
-
-1. **Use specific tests during development**: `./run-e2e.sh --test TestCreateFile_1MB`
-2. **Keep Localstack running**: `./run-e2e.sh --s3 --keep-localstack` (then run tests repeatedly with `go test`)
-3. **Verbose output for debugging**: `./run-e2e.sh --verbose`
-4. **Test on specific config**: `go test -v -run "TestName/memory-filesystem"`
+- File size test (100MB): 2-10s
+- Full suite (local): 2-5 minutes
+- Full suite (all configs): 5-15 minutes
 
 ## Troubleshooting
 
 ### Tests fail with "permission denied" on mount
+- E2E tests require `sudo`
 - Ensure NFS client is installed
-- Check that you're not using a reserved port (tests use >1024)
 - On macOS, ensure `resvport` option is used (automatically handled)
 
-### Localstack tests are skipped
-- Ensure Localstack is running: `docker ps | grep localstack`
-- Check endpoint: `curl http://localhost:4566/_localstack/health`
-- Use the script: `./run-e2e.sh --s3`
+### Docker tests fail or are skipped
+- Ensure Docker is running
+- testcontainers will auto-start PostgreSQL/Localstack
+- Check Docker has sufficient resources
 
 ### Tests timeout
-- Increase timeout: `go test -timeout 60m ./...`
-- Large files (100MB) can be slow on some systems
+- Increase timeout: `sudo go test -tags=e2e -v -timeout 60m ./test/e2e/...`
+- Large files (100MB+) can be slow on some systems
+- Use `-short` flag to skip large file tests
 
-### Stuck NFS mounts
+### Stuck NFS/SMB mounts
 ```bash
 # List mounts
-mount | grep dittofs
+mount | grep -E "(nfs|smb|cifs)"
 
-# Force unmount
+# Force unmount NFS
+sudo umount -f /path/to/mount
+
+# Force unmount SMB (macOS)
 sudo umount -f /path/to/mount
 ```
 
-## Future Enhancements
-
-- [ ] Concurrent client tests (multiple mounts)
-- [ ] Stress tests (thousands of operations)
-- [ ] Network failure simulation
-- [ ] Performance benchmarks (throughput, latency)
-- [ ] Cross-platform NFS client testing
+### Run specific configuration for debugging
+```bash
+# Just the fast memory-memory config
+sudo go test -tags=e2e -v -run "/memory-memory" ./test/e2e/...
+```
 
 ## License
 

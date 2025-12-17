@@ -8,6 +8,8 @@ import (
 	"os/signal"
 	"syscall"
 	"testing"
+
+	"github.com/marmos91/dittofs/test/e2e/framework"
 )
 
 // TestMain handles setup and cleanup for all E2E tests
@@ -21,8 +23,9 @@ func TestMain(m *testing.M) {
 
 	go func() {
 		<-sigChan
-		// Cleanup containers on interrupt
-		cleanupSharedContainers()
+		// Cleanup on interrupt
+		framework.CleanupAllContexts()      // Clean up cached test contexts (mounts, servers)
+		framework.CleanupSharedContainers() // Clean up Docker containers
 		cancel()
 		os.Exit(1)
 	}()
@@ -31,7 +34,8 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	// Cleanup after all tests complete
-	cleanupSharedContainers()
+	framework.CleanupAllContexts()      // Clean up cached test contexts (mounts, servers)
+	framework.CleanupSharedContainers() // Clean up Docker containers
 
 	// Exit with context awareness
 	select {
@@ -39,22 +43,5 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	default:
 		os.Exit(code)
-	}
-}
-
-// cleanupSharedContainers terminates all shared test containers
-func cleanupSharedContainers() {
-	ctx := context.Background()
-
-	// Cleanup PostgreSQL container
-	if sharedPostgresHelper != nil && sharedPostgresHelper.Container != nil {
-		_ = sharedPostgresHelper.Container.Terminate(ctx)
-		sharedPostgresHelper = nil
-	}
-
-	// Cleanup Localstack container
-	if sharedLocalstackHelper != nil && sharedLocalstackHelper.Container != nil {
-		_ = sharedLocalstackHelper.Container.Terminate(ctx)
-		sharedLocalstackHelper = nil
 	}
 }
