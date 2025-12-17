@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf16"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
@@ -179,31 +178,7 @@ func calculateMaximalAccess(perm identity.SharePermission) uint32 {
 	}
 }
 
-// decodeUTF16LE decodes a UTF-16LE byte slice to a string
-func decodeUTF16LE(b []byte) string {
-	if len(b) < 2 {
-		return ""
-	}
-	u16s := make([]uint16, len(b)/2)
-	for i := range u16s {
-		u16s[i] = binary.LittleEndian.Uint16(b[i*2:])
-	}
-	// Remove null terminator if present
-	for len(u16s) > 0 && u16s[len(u16s)-1] == 0 {
-		u16s = u16s[:len(u16s)-1]
-	}
-	return string(utf16.Decode(u16s))
-}
-
-// encodeUTF16LE encodes a string to UTF-16LE byte slice
-func encodeUTF16LE(s string) []byte {
-	u16s := utf16.Encode([]rune(s))
-	b := make([]byte, len(u16s)*2)
-	for i, u := range u16s {
-		binary.LittleEndian.PutUint16(b[i*2:], u)
-	}
-	return b
-}
+// Note: decodeUTF16LE and encodeUTF16LE are defined in encoding.go
 
 // parseSharePath parses \\server\share to /share or just share
 // The share name is normalized to lowercase for case-insensitive matching.

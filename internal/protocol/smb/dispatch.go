@@ -158,7 +158,17 @@ func handleSessionSetup(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ 
 }
 
 func handleLogoff(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
-	return h.Logoff(ctx, body)
+	return handleRequest(
+		body,
+		handlers.DecodeLogoffRequest,
+		func(req *handlers.LogoffRequest) (*handlers.LogoffResponse, error) {
+			return h.Logoff(ctx, req)
+		},
+		types.StatusInvalidParameter,
+		func(status types.Status) *handlers.LogoffResponse {
+			return &handlers.LogoffResponse{SMBResponseBase: handlers.SMBResponseBase{Status: status}}
+		},
+	)
 }
 
 func handleTreeConnect(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
@@ -170,39 +180,129 @@ func handleTreeDisconnect(ctx *handlers.SMBHandlerContext, h *handlers.Handler, 
 }
 
 func handleCreate(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
-	return h.Create(ctx, body)
+	return handleRequest(
+		body,
+		handlers.DecodeCreateRequest,
+		func(req *handlers.CreateRequest) (*handlers.CreateResponse, error) {
+			return h.Create(ctx, req)
+		},
+		types.StatusInvalidParameter,
+		func(status types.Status) *handlers.CreateResponse {
+			return &handlers.CreateResponse{SMBResponseBase: handlers.SMBResponseBase{Status: status}}
+		},
+	)
 }
 
 func handleClose(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
-	return h.Close(ctx, body)
+	return handleRequest(
+		body,
+		handlers.DecodeCloseRequest,
+		func(req *handlers.CloseRequest) (*handlers.CloseResponse, error) {
+			return h.Close(ctx, req)
+		},
+		types.StatusInvalidParameter,
+		func(status types.Status) *handlers.CloseResponse {
+			return &handlers.CloseResponse{SMBResponseBase: handlers.SMBResponseBase{Status: status}}
+		},
+	)
 }
 
 func handleFlush(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
-	return h.Flush(ctx, body)
+	return handleRequest(
+		body,
+		handlers.DecodeFlushRequest,
+		func(req *handlers.FlushRequest) (*handlers.FlushResponse, error) {
+			return h.Flush(ctx, req)
+		},
+		types.StatusInvalidParameter,
+		func(status types.Status) *handlers.FlushResponse {
+			return &handlers.FlushResponse{SMBResponseBase: handlers.SMBResponseBase{Status: status}}
+		},
+	)
 }
 
 func handleRead(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
-	return h.Read(ctx, body)
+	return handleRequest(
+		body,
+		handlers.DecodeReadRequest,
+		func(req *handlers.ReadRequest) (*handlers.ReadResponse, error) {
+			return h.Read(ctx, req)
+		},
+		types.StatusInvalidParameter,
+		func(status types.Status) *handlers.ReadResponse {
+			return &handlers.ReadResponse{SMBResponseBase: handlers.SMBResponseBase{Status: status}}
+		},
+	)
 }
 
 func handleWrite(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
-	return h.Write(ctx, body)
+	return handleRequest(
+		body,
+		handlers.DecodeWriteRequest,
+		func(req *handlers.WriteRequest) (*handlers.WriteResponse, error) {
+			return h.Write(ctx, req)
+		},
+		types.StatusInvalidParameter,
+		func(status types.Status) *handlers.WriteResponse {
+			return &handlers.WriteResponse{SMBResponseBase: handlers.SMBResponseBase{Status: status}}
+		},
+	)
 }
 
 func handleQueryDirectory(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
-	return h.QueryDirectory(ctx, body)
+	return handleRequest(
+		body,
+		handlers.DecodeQueryDirectoryRequest,
+		func(req *handlers.QueryDirectoryRequest) (*handlers.QueryDirectoryResponse, error) {
+			return h.QueryDirectory(ctx, req)
+		},
+		types.StatusInvalidParameter,
+		func(status types.Status) *handlers.QueryDirectoryResponse {
+			return &handlers.QueryDirectoryResponse{SMBResponseBase: handlers.SMBResponseBase{Status: status}}
+		},
+	)
 }
 
 func handleQueryInfo(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
-	return h.QueryInfo(ctx, body)
+	return handleRequest(
+		body,
+		handlers.DecodeQueryInfoRequest,
+		func(req *handlers.QueryInfoRequest) (*handlers.QueryInfoResponse, error) {
+			return h.QueryInfo(ctx, req)
+		},
+		types.StatusInvalidParameter,
+		func(status types.Status) *handlers.QueryInfoResponse {
+			return &handlers.QueryInfoResponse{SMBResponseBase: handlers.SMBResponseBase{Status: status}}
+		},
+	)
 }
 
 func handleSetInfo(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
-	return h.SetInfo(ctx, body)
+	return handleRequest(
+		body,
+		handlers.DecodeSetInfoRequest,
+		func(req *handlers.SetInfoRequest) (*handlers.SetInfoResponse, error) {
+			return h.SetInfo(ctx, req)
+		},
+		types.StatusInvalidParameter,
+		func(status types.Status) *handlers.SetInfoResponse {
+			return &handlers.SetInfoResponse{SMBResponseBase: handlers.SMBResponseBase{Status: status}}
+		},
+	)
 }
 
 func handleEcho(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
-	return h.Echo(ctx, body)
+	return handleRequest(
+		body,
+		handlers.DecodeEchoRequest,
+		func(req *handlers.EchoRequest) (*handlers.EchoResponse, error) {
+			return h.Echo(ctx, req)
+		},
+		types.StatusInvalidParameter,
+		func(status types.Status) *handlers.EchoResponse {
+			return &handlers.EchoResponse{SMBResponseBase: handlers.SMBResponseBase{Status: status}}
+		},
+	)
 }
 
 func handleIoctl(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {

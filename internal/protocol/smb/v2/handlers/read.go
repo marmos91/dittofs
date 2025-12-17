@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 
@@ -14,7 +15,205 @@ import (
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
-// Read handles SMB2 READ command [MS-SMB2] 2.2.19, 2.2.20
+// ============================================================================
+// Request and Response Structures
+// ============================================================================
+
+// ReadRequest represents an SMB2 READ request from a client [MS-SMB2] 2.2.19.
+//
+// The client specifies a FileID, offset, and length to read from a file.
+// This structure is decoded from little-endian binary data received over the network.
+//
+// **Wire Format (49 bytes minimum):**
+//
+//	Offset  Size  Field               Description
+//	------  ----  ------------------  ----------------------------------
+//	0       2     StructureSize       Always 49
+//	2       1     Padding             Padding byte
+//	3       1     Flags               Read flags (SMB 3.x)
+//	4       4     Length              Number of bytes to read
+//	8       8     Offset              File offset to start reading
+//	16      16    FileId              SMB2 file identifier
+//	32      4     MinimumCount        Minimum bytes to read (0 = Length)
+//	36      4     Channel             Channel for RDMA (0 = none)
+//	40      4     RemainingBytes      Bytes remaining in file (hint)
+//	44      2     ReadChannelInfoOffset
+//	46      2     ReadChannelInfoLength
+//	48      1     Buffer              Variable padding
+//
+// **Use Cases:**
+//
+//   - Sequential file reads (streaming media, file copies)
+//   - Random access reads (database files, memory-mapped files)
+//   - Large file streaming (client handles chunking)
+//   - MFsymlink reads (symlinks appear as 1067-byte files)
+type ReadRequest struct {
+	// Padding is an alignment byte (ignored by server).
+	Padding uint8
+
+	// Flags controls read behavior (SMB 3.x only).
+	// Common values:
+	//   - 0x00: Normal read
+	//   - 0x01: UNBUFFERED (bypass server cache)
+	Flags uint8
+
+	// Length is the number of bytes the client wants to read.
+	// Maximum is MaxReadSize from NEGOTIATE response (typically 1MB-64MB).
+	Length uint32
+
+	// Offset is the byte offset in the file to start reading from.
+	// Zero-based; offset 0 is the first byte of the file.
+	Offset uint64
+
+	// FileID is the SMB2 file identifier returned by CREATE.
+	// Both persistent (8 bytes) and volatile (8 bytes) parts must match
+	// an open file handle on the server.
+	FileID [16]byte
+
+	// MinimumCount is the minimum bytes the server must return.
+	// 0 means same as Length. Used for network optimization.
+	MinimumCount uint32
+
+	// Channel specifies the RDMA channel (0 for non-RDMA).
+	Channel uint32
+
+	// RemainingBytes is a hint about remaining file size (usually 0).
+	RemainingBytes uint32
+}
+
+// ReadResponse represents an SMB2 READ response [MS-SMB2] 2.2.20.
+//
+// The response contains the data read from the file along with metadata
+// about the read operation.
+//
+// **Wire Format (16 bytes header + variable data):**
+//
+//	Offset  Size  Field           Description
+//	------  ----  --------------  ----------------------------------
+//	0       2     StructureSize   Always 17 (includes 1 byte of buffer)
+//	2       1     DataOffset      Offset to data from header start
+//	3       1     Reserved        Must be ignored
+//	4       4     DataLength      Number of bytes in Buffer
+//	8       4     DataRemaining   Bytes remaining (0 for last chunk)
+//	12      4     Reserved2       Must be ignored
+//	16      N     Buffer          File data
+//
+// **Status Codes:**
+//
+//   - StatusSuccess: Data read successfully
+//   - StatusEndOfFile: Requested offset is at or beyond EOF
+//   - StatusInvalidHandle: The FileID does not refer to a valid open file
+//   - StatusAccessDenied: Read permission denied
+type ReadResponse struct {
+	SMBResponseBase // Embeds Status field and GetStatus() method
+
+	// DataOffset is the offset from the start of the SMB2 header
+	// to the beginning of the Data buffer. Standard value is 0x50 (80).
+	DataOffset uint8
+
+	// Data contains the bytes read from the file.
+	// Length may be less than requested if approaching EOF.
+	Data []byte
+
+	// DataRemaining indicates bytes remaining to be read.
+	// 0 means this is the last chunk of the read operation.
+	DataRemaining uint32
+}
+
+// ============================================================================
+// Encoding and Decoding
+// ============================================================================
+
+// DecodeReadRequest parses an SMB2 READ request from wire format [MS-SMB2] 2.2.19.
+//
+// The decoding extracts all relevant fields from the binary request body.
+// All fields use little-endian byte order per SMB2 specification.
+//
+// **Parameters:**
+//   - body: Raw request bytes (49 bytes minimum)
+//
+// **Returns:**
+//   - *ReadRequest: The decoded request containing file location and size
+//   - error: ErrRequestTooShort if body is less than 49 bytes
+//
+// **Example:**
+//
+//	body := []byte{...} // SMB2 READ request from network
+//	req, err := DecodeReadRequest(body)
+//	if err != nil {
+//	    return NewErrorResult(types.StatusInvalidParameter)
+//	}
+//	// Read req.Length bytes from file at req.Offset
+func DecodeReadRequest(body []byte) (*ReadRequest, error) {
+	if len(body) < 49 {
+		return nil, fmt.Errorf("READ request too short: %d bytes", len(body))
+	}
+
+	req := &ReadRequest{
+		Padding:        body[2],
+		Flags:          body[3],
+		Length:         binary.LittleEndian.Uint32(body[4:8]),
+		Offset:         binary.LittleEndian.Uint64(body[8:16]),
+		MinimumCount:   binary.LittleEndian.Uint32(body[32:36]),
+		Channel:        binary.LittleEndian.Uint32(body[36:40]),
+		RemainingBytes: binary.LittleEndian.Uint32(body[40:44]),
+	}
+	copy(req.FileID[:], body[16:32])
+
+	return req, nil
+}
+
+// Encode serializes the ReadResponse to SMB2 wire format [MS-SMB2] 2.2.20.
+//
+// The response header is 16 bytes, followed by the data buffer.
+// The DataOffset field specifies where the data starts relative to
+// the SMB2 header (typically 0x50 = 80 bytes = 64 header + 16 response).
+//
+// **Wire Format:**
+//
+//	Offset  Size  Field           Value
+//	------  ----  --------------  ------
+//	0       2     StructureSize   17 (per spec, includes 1 byte of buffer)
+//	2       1     DataOffset      Offset from header start to data
+//	3       1     Reserved        0
+//	4       4     DataLength      len(Data)
+//	8       4     DataRemaining   Remaining bytes hint
+//	12      4     Reserved2       0
+//	16      N     Buffer          File data
+//
+// **Returns:**
+//   - []byte: Encoded response body (16 bytes + data)
+//   - error: Always nil (encoding cannot fail for this structure)
+//
+// **Example:**
+//
+//	resp := &ReadResponse{
+//	    SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+//	    DataOffset:      0x50,
+//	    Data:            fileData,
+//	    DataRemaining:   0,
+//	}
+//	data, _ := resp.Encode()
+//	// Send data as response body after SMB2 header
+func (resp *ReadResponse) Encode() ([]byte, error) {
+	// Response header is 16 bytes, data follows at offset 16
+	buf := make([]byte, 16+len(resp.Data))
+	binary.LittleEndian.PutUint16(buf[0:2], 17)                     // StructureSize (17 per spec)
+	buf[2] = resp.DataOffset                                        // DataOffset (relative to header start)
+	buf[3] = 0                                                      // Reserved
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(resp.Data))) // DataLength
+	binary.LittleEndian.PutUint32(buf[8:12], resp.DataRemaining)    // DataRemaining
+	binary.LittleEndian.PutUint32(buf[12:16], 0)                    // Reserved2
+	copy(buf[16:], resp.Data)                                       // Buffer starts at offset 16
+
+	return buf, nil
+}
+
+// ============================================================================
+// Protocol Handler
+// ============================================================================
+
+// Read handles SMB2 READ command [MS-SMB2] 2.2.19, 2.2.20.
 //
 // **Purpose:**
 //
@@ -23,14 +222,14 @@ import (
 //
 // **Process:**
 //
-//  1. Decode request to extract FileID, offset, and length
-//  2. Validate FileID maps to an open file (not a directory)
-//  3. Get session and tree connection for context
-//  4. Get metadata and content stores for the share
-//  5. Build AuthContext and validate read permission via PrepareRead
+//  1. Validate FileID maps to an open file (not a directory)
+//  2. Get session and tree connection for context
+//  3. Get metadata and content stores for the share
+//  4. Build AuthContext and validate read permission via PrepareRead
+//  5. Handle symlink reads (generate MFsymlink content on-the-fly)
 //  6. Handle empty file or offset beyond EOF
 //  7. Calculate actual read range (may be truncated at EOF)
-//  8. Read data from content store (using ReadAt if available)
+//  8. Read data from cache or content store
 //  9. Return success response with data
 //
 // **Cache Integration:**
@@ -54,14 +253,13 @@ import (
 // **Error Handling:**
 //
 // Returns appropriate SMB status codes:
-//   - StatusInvalidParameter: Malformed request
 //   - StatusInvalidHandle: Invalid FileID
 //   - StatusInvalidDeviceRequest: Cannot read from directory
 //   - StatusUserSessionDeleted: Session no longer valid
 //   - StatusAccessDenied: Read permission denied
 //   - StatusBadNetworkName: Share not found
 //   - StatusEndOfFile: Offset beyond file size
-//   - StatusInternalError: Encoding error
+//   - StatusInternalError: Content read or encoding error
 //
 // **Performance Considerations:**
 //
@@ -70,55 +268,53 @@ import (
 //   - Avoids reading entire file when only a portion is needed
 //   - SMB clients typically request 32KB-64KB chunks
 //   - Parallel reads from different clients are supported
-func (h *Handler) Read(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	// ========================================================================
-	// Step 1: Decode request
-	// ========================================================================
-
-	req, err := DecodeReadRequest(body)
-	if err != nil {
-		logger.Debug("READ: failed to decode request", "error", err)
-		return NewErrorResult(types.StatusInvalidParameter), nil
-	}
-
+//
+// **Example:**
+//
+//	req := &ReadRequest{FileID: fileID, Offset: 0, Length: 65536}
+//	resp, err := handler.Read(ctx, req)
+//	if resp.GetStatus() == types.StatusSuccess {
+//	    // Use resp.Data
+//	}
+func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse, error) {
 	logger.Debug("READ request",
 		"fileID", fmt.Sprintf("%x", req.FileID),
 		"offset", req.Offset,
 		"length", req.Length)
 
 	// ========================================================================
-	// Step 2: Get OpenFile by FileID
+	// Step 1: Get OpenFile by FileID
 	// ========================================================================
 
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
 		logger.Debug("READ: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
 	}
 
 	// ========================================================================
-	// Step 3: Validate file type
+	// Step 2: Validate file type
 	// ========================================================================
 
 	if openFile.IsDirectory {
 		logger.Debug("READ: cannot read from directory", "path", openFile.Path)
-		return NewErrorResult(types.StatusInvalidDeviceRequest), nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidDeviceRequest}}, nil
 	}
 
 	// ========================================================================
-	// Step 4: Get session and tree connection
+	// Step 3: Get session and tree connection
 	// ========================================================================
 
 	tree, ok := h.GetTree(openFile.TreeID)
 	if !ok {
 		logger.Debug("READ: invalid tree ID", "treeID", openFile.TreeID)
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
 	}
 
 	sess, ok := h.GetSession(openFile.SessionID)
 	if !ok {
 		logger.Debug("READ: invalid session ID", "sessionID", openFile.SessionID)
-		return NewErrorResult(types.StatusUserSessionDeleted), nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUserSessionDeleted}}, nil
 	}
 
 	// Update context
@@ -128,42 +324,42 @@ func (h *Handler) Read(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	ctx.Permission = tree.Permission
 
 	// ========================================================================
-	// Step 5: Get metadata and content stores
+	// Step 4: Get metadata and content stores
 	// ========================================================================
 
 	metadataStore, err := h.Registry.GetMetadataStoreForShare(tree.ShareName)
 	if err != nil {
 		logger.Warn("READ: failed to get metadata store", "share", tree.ShareName, "error", err)
-		return NewErrorResult(types.StatusBadNetworkName), nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBadNetworkName}}, nil
 	}
 
 	contentStore, err := h.Registry.GetContentStoreForShare(tree.ShareName)
 	if err != nil {
 		logger.Warn("READ: failed to get content store", "share", tree.ShareName, "error", err)
-		return NewErrorResult(types.StatusInternalError), nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
 	}
 
 	// Get cache for share (optional - nil means no caching)
 	fileCache := h.Registry.GetCacheForShare(tree.ShareName)
 
 	// ========================================================================
-	// Step 6: Build AuthContext and validate permissions
+	// Step 5: Build AuthContext and validate permissions
 	// ========================================================================
 
 	authCtx, err := BuildAuthContext(ctx, h.Registry)
 	if err != nil {
 		logger.Warn("READ: failed to build auth context", "error", err)
-		return NewErrorResult(types.StatusAccessDenied), nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 	}
 
 	// ========================================================================
-	// Step 6.5: Check for symlink - generate MFsymlink content on-the-fly
+	// Step 6: Check for symlink - generate MFsymlink content on-the-fly
 	// ========================================================================
 
 	file, err := metadataStore.GetFile(authCtx.Context, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("READ: failed to get file metadata", "path", openFile.Path, "error", err)
-		return NewErrorResult(MetadataErrorToSMBStatus(err)), nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
 	}
 
 	// Handle symlink reads - SMB clients expect MFsymlink content for symlinks
@@ -175,7 +371,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	readMeta, err := metadataStore.PrepareRead(authCtx, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("READ: permission check failed", "path", openFile.Path, "error", err)
-		return NewErrorResult(MetadataErrorToSMBStatus(err)), nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
 	}
 
 	// ========================================================================
@@ -186,18 +382,17 @@ func (h *Handler) Read(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 
 	if readMeta.Attr.ContentID == "" || fileSize == 0 {
 		logger.Debug("READ: empty file", "path", openFile.Path)
-		resp := &ReadResponse{
-			DataOffset:    0x50, // Standard offset
-			Data:          []byte{},
-			DataRemaining: 0,
-		}
-		respBytes, _ := EncodeReadResponse(resp)
-		return NewResult(types.StatusSuccess, respBytes), nil
+		return &ReadResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+			DataOffset:      0x50, // Standard offset
+			Data:            []byte{},
+			DataRemaining:   0,
+		}, nil
 	}
 
 	if req.Offset >= fileSize {
 		logger.Debug("READ: offset beyond EOF", "path", openFile.Path, "offset", req.Offset, "size", fileSize)
-		return NewErrorResult(types.StatusEndOfFile), nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusEndOfFile}}, nil
 	}
 
 	// ========================================================================
@@ -238,7 +433,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			n, err := readAtStore.ReadAt(authCtx.Context, readMeta.Attr.ContentID, data, req.Offset)
 			if err != nil {
 				logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
-				return NewErrorResult(ContentErrorToSMBStatus(err)), nil
+				return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
 			}
 			data = data[:n]
 		} else {
@@ -246,7 +441,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			reader, err := contentStore.ReadContent(authCtx.Context, readMeta.Attr.ContentID)
 			if err != nil {
 				logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
-				return NewErrorResult(ContentErrorToSMBStatus(err)), nil
+				return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
 			}
 			defer func() { _ = reader.Close() }()
 
@@ -261,7 +456,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 					n, err := reader.Read(skipBuf[:toRead])
 					if err != nil {
 						logger.Warn("READ: seek failed", "path", openFile.Path, "error", err)
-						return NewErrorResult(types.StatusInternalError), nil
+						return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
 					}
 					remaining -= uint64(n)
 				}
@@ -294,22 +489,15 @@ func (h *Handler) Read(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 		"source", source)
 
 	// ========================================================================
-	// Step 10: Build and encode response
+	// Step 10: Return success response
 	// ========================================================================
 
-	resp := &ReadResponse{
-		DataOffset:    0x50, // Standard offset (header + response struct)
-		Data:          data,
-		DataRemaining: 0,
-	}
-
-	respBytes, err := EncodeReadResponse(resp)
-	if err != nil {
-		logger.Warn("READ: failed to encode response", "error", err)
-		return NewErrorResult(types.StatusInternalError), nil
-	}
-
-	return NewResult(types.StatusSuccess, respBytes), nil
+	return &ReadResponse{
+		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+		DataOffset:      0x50, // Standard offset (header + response struct)
+		Data:            data,
+		DataRemaining:   0,
+	}, nil
 }
 
 // ============================================================================
@@ -417,7 +605,7 @@ func (h *Handler) handleSymlinkRead(
 	openFile *OpenFile,
 	file *metadata.File,
 	req *ReadRequest,
-) (*HandlerResult, error) {
+) (*ReadResponse, error) {
 	// Generate MFsymlink content from the symlink target
 	mfsymlinkData, err := mfsymlink.Encode(file.LinkTarget)
 	if err != nil {
@@ -425,7 +613,7 @@ func (h *Handler) handleSymlinkRead(
 			"path", openFile.Path,
 			"target", file.LinkTarget,
 			"error", err)
-		return NewErrorResult(types.StatusInternalError), nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
 	}
 
 	fileSize := uint64(len(mfsymlinkData)) // Always 1067 bytes
@@ -436,7 +624,7 @@ func (h *Handler) handleSymlinkRead(
 			"path", openFile.Path,
 			"offset", req.Offset,
 			"size", fileSize)
-		return NewErrorResult(types.StatusEndOfFile), nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusEndOfFile}}, nil
 	}
 
 	// Calculate read range
@@ -456,17 +644,10 @@ func (h *Handler) handleSymlinkRead(
 		"actual", len(data))
 
 	// Build response
-	resp := &ReadResponse{
-		DataOffset:    0x50, // Standard offset
-		Data:          data,
-		DataRemaining: 0,
-	}
-
-	respBytes, err := EncodeReadResponse(resp)
-	if err != nil {
-		logger.Warn("READ: failed to encode symlink response", "error", err)
-		return NewErrorResult(types.StatusInternalError), nil
-	}
-
-	return NewResult(types.StatusSuccess, respBytes), nil
+	return &ReadResponse{
+		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+		DataOffset:      0x50, // Standard offset
+		Data:            data,
+		DataRemaining:   0,
+	}, nil
 }

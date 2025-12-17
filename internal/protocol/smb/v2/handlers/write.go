@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -8,7 +9,228 @@ import (
 	"github.com/marmos91/dittofs/pkg/bytesize"
 )
 
-// Write handles SMB2 WRITE command [MS-SMB2] 2.2.21, 2.2.22
+// ============================================================================
+// Request and Response Structures
+// ============================================================================
+
+// WriteRequest represents an SMB2 WRITE request from a client [MS-SMB2] 2.2.21.
+//
+// The client specifies a FileID, offset, and data to write to a file.
+// This structure is decoded from little-endian binary data received over the network.
+//
+// **Wire Format (49 bytes minimum):**
+//
+//	Offset  Size  Field                    Description
+//	------  ----  -----------------------  ----------------------------------
+//	0       2     StructureSize            Always 49
+//	2       2     DataOffset               Offset from header to data
+//	4       4     Length                   Number of bytes to write
+//	8       8     Offset                   File offset to start writing
+//	16      16    FileId                   SMB2 file identifier
+//	32      4     Channel                  Channel for RDMA (0 = none)
+//	36      4     RemainingBytes           Bytes remaining in write (hint)
+//	40      2     WriteChannelInfoOffset   Offset to channel info
+//	42      2     WriteChannelInfoLength   Length of channel info
+//	44      4     Flags                    Write flags
+//	48      N     Buffer                   Data to write
+//
+// **Flags:**
+//
+//   - SMB2_WRITEFLAG_WRITE_THROUGH (0x00000001): Write-through to disk
+//   - SMB2_WRITEFLAG_WRITE_UNBUFFERED (0x00000002): Unbuffered write
+//
+// **Use Cases:**
+//
+//   - Sequential file writes (file copies, downloads)
+//   - Random access writes (database files)
+//   - Large file uploads (client handles chunking)
+//   - Creating MFsymlink files (symlinks via SMB)
+type WriteRequest struct {
+	// DataOffset is the offset from the start of the SMB2 header
+	// to the write data. Typically 64 (header) + 48 (request) = 112.
+	DataOffset uint16
+
+	// Length is the number of bytes to write.
+	// Maximum is MaxWriteSize from NEGOTIATE response.
+	Length uint32
+
+	// Offset is the byte offset in the file to start writing.
+	// Zero-based; offset 0 is the first byte of the file.
+	Offset uint64
+
+	// FileID is the SMB2 file identifier returned by CREATE.
+	// Both persistent (8 bytes) and volatile (8 bytes) parts must match
+	// an open file handle on the server.
+	FileID [16]byte
+
+	// Channel specifies the RDMA channel (0 for non-RDMA).
+	Channel uint32
+
+	// RemainingBytes is a hint about remaining bytes to write (usually 0).
+	RemainingBytes uint32
+
+	// Flags controls write behavior.
+	// Common values:
+	//   - 0x00000000: Normal buffered write
+	//   - 0x00000001: Write-through (bypass server cache)
+	//   - 0x00000002: Unbuffered write
+	Flags uint32
+
+	// Data contains the bytes to write to the file.
+	Data []byte
+}
+
+// WriteResponse represents an SMB2 WRITE response [MS-SMB2] 2.2.22.
+//
+// The response indicates how many bytes were actually written.
+//
+// **Wire Format (17 bytes):**
+//
+//	Offset  Size  Field                   Description
+//	------  ----  ----------------------  ----------------------------------
+//	0       2     StructureSize           Always 17
+//	2       2     Reserved                Must be ignored
+//	4       4     Count                   Number of bytes written
+//	8       4     Remaining               Bytes remaining (0 for success)
+//	12      2     WriteChannelInfoOffset  Offset to channel info (0)
+//	14      2     WriteChannelInfoLength  Length of channel info (0)
+//
+// **Status Codes:**
+//
+//   - StatusSuccess: Data written successfully
+//   - StatusInvalidHandle: The FileID does not refer to a valid open file
+//   - StatusAccessDenied: Write permission denied
+//   - StatusDiskFull: Not enough space on disk
+type WriteResponse struct {
+	SMBResponseBase // Embeds Status field and GetStatus() method
+
+	// Count is the number of bytes successfully written.
+	// Should match the requested length on success.
+	Count uint32
+
+	// Remaining indicates bytes remaining to be written.
+	// 0 means all data was written successfully.
+	Remaining uint32
+}
+
+// ============================================================================
+// Encoding and Decoding
+// ============================================================================
+
+// DecodeWriteRequest parses an SMB2 WRITE request from wire format [MS-SMB2] 2.2.21.
+//
+// The decoding extracts all fields including the variable-length data buffer.
+// All fields use little-endian byte order per SMB2 specification.
+//
+// The data buffer location is determined by DataOffset (relative to SMB2 header):
+//   - DataOffset - 64 = offset in body
+//   - Typical DataOffset is 112 (64 header + 48 fixed part)
+//
+// **Parameters:**
+//   - body: Raw request bytes (49 bytes minimum)
+//
+// **Returns:**
+//   - *WriteRequest: The decoded request containing offset, length, and data
+//   - error: ErrRequestTooShort if body is less than 49 bytes
+//
+// **Example:**
+//
+//	body := []byte{...} // SMB2 WRITE request from network
+//	req, err := DecodeWriteRequest(body)
+//	if err != nil {
+//	    return NewErrorResult(types.StatusInvalidParameter)
+//	}
+//	// Write req.Data to file at req.Offset
+func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
+	if len(body) < 49 {
+		return nil, fmt.Errorf("WRITE request too short: %d bytes", len(body))
+	}
+
+	req := &WriteRequest{
+		DataOffset:     binary.LittleEndian.Uint16(body[2:4]),
+		Length:         binary.LittleEndian.Uint32(body[4:8]),
+		Offset:         binary.LittleEndian.Uint64(body[8:16]),
+		Channel:        binary.LittleEndian.Uint32(body[32:36]),
+		RemainingBytes: binary.LittleEndian.Uint32(body[36:40]),
+		Flags:          binary.LittleEndian.Uint32(body[44:48]),
+	}
+	copy(req.FileID[:], body[16:32])
+
+	// Extract data
+	// DataOffset is relative to the beginning of the SMB2 header (64 bytes)
+	// Our body starts after the header, so we subtract 64
+	// The fixed request structure is 48 bytes (StructureSize says 49 but that includes 1 byte of Buffer)
+	// Data typically starts at offset 48 in the body (or wherever DataOffset-64 points)
+
+	if req.Length > 0 {
+		// Calculate where data starts in body
+		dataStart := int(req.DataOffset) - 64
+
+		// Clamp to valid range - data can't start before byte 48 (after fixed fields)
+		if dataStart < 48 {
+			dataStart = 48
+		}
+
+		// Try to extract data from calculated offset
+		if dataStart+int(req.Length) <= len(body) {
+			req.Data = body[dataStart : dataStart+int(req.Length)]
+		} else if len(body) > 48 && int(req.Length) <= len(body)-48 {
+			// Fallback: data might be right after the 48-byte fixed structure
+			req.Data = body[48 : 48+int(req.Length)]
+		} else if len(body) > 49 {
+			// Last resort: take whatever data is available after fixed part
+			req.Data = body[48:]
+		}
+	}
+
+	return req, nil
+}
+
+// Encode serializes the WriteResponse to SMB2 wire format [MS-SMB2] 2.2.22.
+//
+// The response indicates the number of bytes successfully written.
+//
+// **Wire Format (17 bytes):**
+//
+//	Offset  Size  Field                   Value
+//	------  ----  ----------------------  ------
+//	0       2     StructureSize           17
+//	2       2     Reserved                0
+//	4       4     Count                   Bytes written
+//	8       4     Remaining               0 (or remaining bytes)
+//	12      2     WriteChannelInfoOffset  0
+//	14      2     WriteChannelInfoLength  0
+//
+// **Returns:**
+//   - []byte: 17-byte encoded response body
+//   - error: Always nil (encoding cannot fail for this structure)
+//
+// **Example:**
+//
+//	resp := &WriteResponse{
+//	    SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+//	    Count:           65536,
+//	    Remaining:       0,
+//	}
+//	data, _ := resp.Encode()
+//	// Send data as response body after SMB2 header
+func (resp *WriteResponse) Encode() ([]byte, error) {
+	buf := make([]byte, 17)
+	binary.LittleEndian.PutUint16(buf[0:2], 17)              // StructureSize
+	binary.LittleEndian.PutUint16(buf[2:4], 0)               // Reserved
+	binary.LittleEndian.PutUint32(buf[4:8], resp.Count)      // Count
+	binary.LittleEndian.PutUint32(buf[8:12], resp.Remaining) // Remaining
+	binary.LittleEndian.PutUint16(buf[12:14], 0)             // WriteChannelInfoOffset
+	binary.LittleEndian.PutUint16(buf[14:16], 0)             // WriteChannelInfoLength
+
+	return buf, nil
+}
+
+// ============================================================================
+// Protocol Handler
+// ============================================================================
+
+// Write handles SMB2 WRITE command [MS-SMB2] 2.2.21, 2.2.22.
 //
 // **Purpose:**
 //
@@ -17,21 +239,20 @@ import (
 //
 // **Process:**
 //
-//  1. Decode request to extract FileID, offset, and data
-//  2. Validate FileID maps to an open file (not a directory)
-//  3. Get session and tree connection for permission checking
-//  4. Verify write permission at share level
-//  5. Get metadata and content stores for the share
-//  6. Build AuthContext for permission validation
-//  7. PrepareWrite - validate permissions and get ContentID
-//  8. Write data to cache (async) or content store (sync)
-//  9. CommitWrite - update file metadata (size, timestamps)
-//  10. Return success response with bytes written
+//  1. Validate FileID maps to an open file (not a directory)
+//  2. Get session and tree connection for permission checking
+//  3. Verify write permission at share level
+//  4. Get metadata and content stores for the share
+//  5. Build AuthContext for permission validation
+//  6. PrepareWrite - validate permissions and get ContentID
+//  7. Write data to cache (async) or content store (sync)
+//  8. CommitWrite - update file metadata (size, timestamps)
+//  9. Return success response with bytes written
 //
 // **Cache Integration:**
 //
 // Write behavior depends on cache configuration:
-//   - With cache (async mode): Writes go to cache first, flushed on FLUSH
+//   - With cache (async mode): Writes go to cache first, flushed on FLUSH/CLOSE
 //   - Without cache (sync mode): Writes go directly to content store
 //
 // Async mode is preferred for performance as it allows batching small writes
@@ -50,14 +271,13 @@ import (
 // **Error Handling:**
 //
 // Returns appropriate SMB status codes:
-//   - StatusInvalidParameter: Malformed request
 //   - StatusInvalidHandle: Invalid FileID
 //   - StatusInvalidDeviceRequest: Cannot write to directory
 //   - StatusUserSessionDeleted: Session no longer valid
 //   - StatusAccessDenied: Write permission denied
 //   - StatusBadNetworkName: Share not found
 //   - StatusUnexpectedIOError: Cache or content store write failed
-//   - StatusInternalError: Metadata or encoding error
+//   - StatusInternalError: Metadata error
 //
 // **Performance Considerations:**
 //
@@ -66,55 +286,53 @@ import (
 //   - SMB clients typically use 32KB write chunks
 //   - ContentID caching in OpenFile reduces metadata lookups
 //   - Parallel writes to different files are supported
-func (h *Handler) Write(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	// ========================================================================
-	// Step 1: Decode request
-	// ========================================================================
-
-	req, err := DecodeWriteRequest(body)
-	if err != nil {
-		logger.Debug("WRITE: failed to decode request", "error", err)
-		return NewErrorResult(types.StatusInvalidParameter), nil
-	}
-
+//
+// **Example:**
+//
+//	req := &WriteRequest{FileID: fileID, Offset: 0, Data: data}
+//	resp, err := handler.Write(ctx, req)
+//	if resp.GetStatus() == types.StatusSuccess {
+//	    // resp.Count bytes were written
+//	}
+func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteResponse, error) {
 	logger.Debug("WRITE request",
 		"fileID", fmt.Sprintf("%x", req.FileID),
 		"offset", req.Offset,
 		"length", req.Length)
 
 	// ========================================================================
-	// Step 2: Get OpenFile by FileID
+	// Step 1: Get OpenFile by FileID
 	// ========================================================================
 
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
 		logger.Debug("WRITE: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
 	}
 
 	// ========================================================================
-	// Step 3: Validate file type
+	// Step 2: Validate file type
 	// ========================================================================
 
 	if openFile.IsDirectory {
 		logger.Debug("WRITE: cannot write to directory", "path", openFile.Path)
-		return NewErrorResult(types.StatusInvalidDeviceRequest), nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidDeviceRequest}}, nil
 	}
 
 	// ========================================================================
-	// Step 4: Get session and tree connection
+	// Step 3: Get session and tree connection
 	// ========================================================================
 
 	tree, ok := h.GetTree(openFile.TreeID)
 	if !ok {
 		logger.Debug("WRITE: invalid tree ID", "treeID", openFile.TreeID)
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
 	}
 
 	sess, ok := h.GetSession(openFile.SessionID)
 	if !ok {
 		logger.Debug("WRITE: invalid session ID", "sessionID", openFile.SessionID)
-		return NewErrorResult(types.StatusUserSessionDeleted), nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUserSessionDeleted}}, nil
 	}
 
 	// Update context
@@ -124,56 +342,56 @@ func (h *Handler) Write(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 	ctx.Permission = tree.Permission
 
 	// ========================================================================
-	// Step 5: Check write permission at share level
+	// Step 4: Check write permission at share level
 	// ========================================================================
 
 	if !HasWritePermission(ctx) {
 		logger.Debug("WRITE: access denied", "path", openFile.Path, "permission", ctx.Permission)
-		return NewErrorResult(types.StatusAccessDenied), nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 	}
 
 	// ========================================================================
-	// Step 6: Get metadata and content stores
+	// Step 5: Get metadata and content stores
 	// ========================================================================
 
 	metadataStore, err := h.Registry.GetMetadataStoreForShare(tree.ShareName)
 	if err != nil {
 		logger.Warn("WRITE: failed to get metadata store", "share", tree.ShareName, "error", err)
-		return NewErrorResult(types.StatusBadNetworkName), nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBadNetworkName}}, nil
 	}
 
 	contentStore, err := h.Registry.GetContentStoreForShare(tree.ShareName)
 	if err != nil {
 		logger.Warn("WRITE: failed to get content store", "share", tree.ShareName, "error", err)
-		return NewErrorResult(types.StatusInternalError), nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
 	}
 
 	// Get unified cache for this share (optional - nil means sync mode)
 	cache := h.Registry.GetCacheForShare(tree.ShareName)
 
 	// ========================================================================
-	// Step 7: Build AuthContext
+	// Step 6: Build AuthContext
 	// ========================================================================
 
 	authCtx, err := BuildAuthContext(ctx, h.Registry)
 	if err != nil {
 		logger.Warn("WRITE: failed to build auth context", "error", err)
-		return NewErrorResult(types.StatusAccessDenied), nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 	}
 
 	// ========================================================================
-	// Step 8: Prepare write operation
+	// Step 7: Prepare write operation
 	// ========================================================================
 
 	newSize := req.Offset + uint64(len(req.Data))
 	writeOp, err := metadataStore.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
 	if err != nil {
 		logger.Debug("WRITE: prepare failed", "path", openFile.Path, "error", err)
-		return NewErrorResult(MetadataErrorToSMBStatus(err)), nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
 	}
 
 	// ========================================================================
-	// Step 9: Write data to storage (cache or direct to content store)
+	// Step 8: Write data to storage (cache or direct to content store)
 	// ========================================================================
 
 	bytesWritten := len(req.Data)
@@ -183,7 +401,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 		err = cache.WriteAt(authCtx.Context, writeOp.ContentID, req.Data, req.Offset)
 		if err != nil {
 			logger.Warn("WRITE: cache write failed", "path", openFile.Path, "error", err)
-			return NewErrorResult(types.StatusUnexpectedIOError), nil
+			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUnexpectedIOError}}, nil
 		}
 		logger.Debug("WRITE: cached successfully",
 			"path", openFile.Path,
@@ -194,12 +412,12 @@ func (h *Handler) Write(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 		err = contentStore.WriteAt(authCtx.Context, writeOp.ContentID, req.Data, req.Offset)
 		if err != nil {
 			logger.Warn("WRITE: content write failed", "path", openFile.Path, "error", err)
-			return NewErrorResult(ContentErrorToSMBStatus(err)), nil
+			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
 		}
 	}
 
 	// ========================================================================
-	// Step 10: Commit write operation
+	// Step 9: Commit write operation
 	// ========================================================================
 
 	_, err = metadataStore.CommitWrite(authCtx, writeOp)
@@ -207,7 +425,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 		logger.Warn("WRITE: commit failed", "path", openFile.Path, "error", err)
 		// Data was written but metadata not updated - this is an inconsistent state
 		// but we still report the error
-		return NewErrorResult(MetadataErrorToSMBStatus(err)), nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
 	}
 
 	// Update cached ContentID in OpenFile
@@ -219,19 +437,12 @@ func (h *Handler) Write(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 		"bytes", bytesWritten)
 
 	// ========================================================================
-	// Step 11: Build and encode response
+	// Step 10: Return success response
 	// ========================================================================
 
-	resp := &WriteResponse{
-		Count:     uint32(bytesWritten),
-		Remaining: 0,
-	}
-
-	respBytes, err := EncodeWriteResponse(resp)
-	if err != nil {
-		logger.Warn("WRITE: failed to encode response", "error", err)
-		return NewErrorResult(types.StatusInternalError), nil
-	}
-
-	return NewResult(types.StatusSuccess, respBytes), nil
+	return &WriteResponse{
+		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+		Count:           uint32(bytesWritten),
+		Remaining:       0,
+	}, nil
 }

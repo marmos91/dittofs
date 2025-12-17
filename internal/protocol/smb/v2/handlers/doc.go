@@ -6,6 +6,25 @@
 // session management, and tree (share) connections. Each handler corresponds
 // to an SMB2 command as defined in [MS-SMB2].
 //
+// # Production Features
+//
+// Connection Management:
+//   - Configurable timeouts for read, write, and idle connections
+//   - Graceful shutdown with configurable timeout for draining
+//   - Automatic cleanup on connection errors or panics
+//
+// Performance Optimization:
+//   - Per-connection parallel request handling via semaphore
+//   - Lock-free session and tree state via sync.Map
+//   - Atomic ID generation with no contention
+//   - Cache integration for read/write operations
+//
+// Security:
+//   - NTLM authentication with SPNEGO wrapping
+//   - Per-share permission validation
+//   - Guest authentication fallback
+//   - Session isolation between clients
+//
 // # Handler Architecture
 //
 // The Handler type is the central coordinator for all SMB2 operations.
