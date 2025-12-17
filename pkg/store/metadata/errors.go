@@ -114,12 +114,10 @@ func NewNotFoundError(path string, entityType string) *StoreError {
 //
 // Parameters:
 //   - path: The path where permission was denied
-//   - uid: The user ID that was denied access
-//   - mode: The file mode that was checked
 //
 // Returns:
 //   - *StoreError with ErrPermissionDenied code
-func NewPermissionDeniedError(path string, uid uint32, mode uint32) *StoreError {
+func NewPermissionDeniedError(path string) *StoreError {
 	return &StoreError{
 		Code:    ErrPermissionDenied,
 		Message: "permission denied",

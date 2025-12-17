@@ -1120,7 +1120,7 @@ DittoFS provides error factory functions in `pkg/store/metadata/errors.go` for c
 ```go
 // Error factory functions available:
 metadata.NewNotFoundError(path, "file")         // ErrNotFound
-metadata.NewPermissionDeniedError(path, uid, mode)  // ErrPermissionDenied
+metadata.NewPermissionDeniedError(path)             // ErrPermissionDenied
 metadata.NewIsDirectoryError(path)              // ErrIsDirectory
 metadata.NewNotDirectoryError(path)             // ErrNotDirectory
 metadata.NewInvalidHandleError()                // ErrInvalidHandle

@@ -26,27 +26,41 @@ var (
 //   - MapAllToAnonymous: All users mapped to anonymous (all_squash in NFS)
 //   - MapPrivilegedToAnonymous: Root/administrator mapped to anonymous (root_squash in NFS)
 //
-// The function returns a copy of the identity with mappings applied, preserving
-// the original identity unchanged.
+// When mapping is nil, returns the original identity pointer unchanged.
+// When mapping is applied, returns a new Identity with the transformations applied.
+// The returned Identity performs a deep copy of slice fields (GIDs, GroupSIDs)
+// to ensure the original identity is not modified.
 //
 // Parameters:
 //   - identity: Original client identity
-//   - mapping: Identity mapping rules to apply
+//   - mapping: Identity mapping rules to apply (nil means no mapping)
 //
 // Returns:
-//   - *Identity: Transformed identity (copy)
+//   - *Identity: Original identity if mapping is nil, otherwise a new transformed identity
 func ApplyIdentityMapping(identity *Identity, mapping *IdentityMapping) *Identity {
 	if mapping == nil {
 		return identity
 	}
 
-	// Create a copy to avoid modifying the original
+	// Create a deep copy to avoid modifying the original
+	var gidsCopy []uint32
+	if identity.GIDs != nil {
+		gidsCopy = make([]uint32, len(identity.GIDs))
+		copy(gidsCopy, identity.GIDs)
+	}
+
+	var groupSIDsCopy []string
+	if identity.GroupSIDs != nil {
+		groupSIDsCopy = make([]string, len(identity.GroupSIDs))
+		copy(groupSIDsCopy, identity.GroupSIDs)
+	}
+
 	result := &Identity{
 		UID:       identity.UID,
 		GID:       identity.GID,
-		GIDs:      identity.GIDs,
+		GIDs:      gidsCopy,
 		SID:       identity.SID,
-		GroupSIDs: identity.GroupSIDs,
+		GroupSIDs: groupSIDsCopy,
 		Username:  identity.Username,
 		Domain:    identity.Domain,
 	}
