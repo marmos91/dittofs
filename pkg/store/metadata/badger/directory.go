@@ -439,7 +439,7 @@ func (s *BadgerMetadataStore) CreateSymlink(
 		metadata.ApplyCreateDefaults(attr, ctx, target)
 
 		// Create complete File struct for symlink
-		newFile := &metadata.File{
+		newFile = &metadata.File{
 			ID:        newID,
 			ShareName: parentFile.ShareName,
 			Path:      fullPath,
