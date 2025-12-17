@@ -5,8 +5,19 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
+	"github.com/marmos91/dittofs/pkg/mfsymlink"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
+
+// getSMBSize returns the appropriate size for SMB reporting.
+// For symlinks, this returns the MFsymlink size (1067 bytes) since SMB clients
+// expect symlinks to be stored as MFsymlink files.
+func getSMBSize(attr *metadata.FileAttr) uint64 {
+	if attr.Type == metadata.FileTypeSymlink {
+		return uint64(mfsymlink.Size)
+	}
+	return attr.Size
+}
 
 // FileAttrToSMBAttributes converts metadata FileAttr to SMB file attributes.
 func FileAttrToSMBAttributes(attr *metadata.FileAttr) types.FileAttributes {
@@ -70,12 +81,14 @@ func FileAttrToFileBasicInfo(attr *metadata.FileAttr) *FileBasicInfo {
 
 // FileAttrToFileStandardInfo converts FileAttr to SMB FILE_STANDARD_INFORMATION.
 func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *FileStandardInfo {
+	// Get appropriate size (MFsymlink size for symlinks)
+	size := getSMBSize(attr)
 	// Allocation size is typically rounded up to cluster size (4KB typical)
-	allocationSize := ((attr.Size + 4095) / 4096) * 4096
+	allocationSize := ((size + 4095) / 4096) * 4096
 
 	return &FileStandardInfo{
 		AllocationSize: allocationSize,
-		EndOfFile:      attr.Size,
+		EndOfFile:      size,
 		NumberOfLinks:  1, // TODO: Track actual link count when available
 		DeletePending:  isDeletePending,
 		Directory:      attr.Type == metadata.FileTypeDirectory,
@@ -85,7 +98,9 @@ func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *
 // FileAttrToFileNetworkOpenInfo converts FileAttr to SMB FILE_NETWORK_OPEN_INFORMATION.
 func FileAttrToFileNetworkOpenInfo(attr *metadata.FileAttr) *FileNetworkOpenInfo {
 	creation, access, write, change := FileAttrToSMBTimes(attr)
-	allocationSize := ((attr.Size + 4095) / 4096) * 4096
+	// Get appropriate size (MFsymlink size for symlinks)
+	size := getSMBSize(attr)
+	allocationSize := ((size + 4095) / 4096) * 4096
 
 	return &FileNetworkOpenInfo{
 		CreationTime:   creation,
@@ -93,7 +108,7 @@ func FileAttrToFileNetworkOpenInfo(attr *metadata.FileAttr) *FileNetworkOpenInfo
 		LastWriteTime:  write,
 		ChangeTime:     change,
 		AllocationSize: allocationSize,
-		EndOfFile:      attr.Size,
+		EndOfFile:      size,
 		FileAttributes: FileAttrToSMBAttributes(attr),
 	}
 }
@@ -101,7 +116,9 @@ func FileAttrToFileNetworkOpenInfo(attr *metadata.FileAttr) *FileNetworkOpenInfo
 // FileAttrToDirectoryEntry converts FileAttr to a directory listing entry.
 func FileAttrToDirectoryEntry(file *metadata.File, name string, fileIndex uint64) *DirectoryEntry {
 	creation, access, write, change := FileAttrToSMBTimes(&file.FileAttr)
-	allocationSize := ((file.Size + 4095) / 4096) * 4096
+	// Get appropriate size (MFsymlink size for symlinks)
+	size := getSMBSize(&file.FileAttr)
+	allocationSize := ((size + 4095) / 4096) * 4096
 
 	return &DirectoryEntry{
 		FileName:       name,
@@ -110,7 +127,7 @@ func FileAttrToDirectoryEntry(file *metadata.File, name string, fileIndex uint64
 		LastAccessTime: access,
 		LastWriteTime:  write,
 		ChangeTime:     change,
-		EndOfFile:      file.Size,
+		EndOfFile:      size,
 		AllocationSize: allocationSize,
 		FileAttributes: FileAttrToSMBAttributes(&file.FileAttr),
 		FileID:         fileIndex, // Use index as FileID for now
@@ -128,13 +145,15 @@ func DirEntryToDirectoryEntry(entry *metadata.DirEntry, fileIndex uint64) *Direc
 
 	if entry.Attr != nil {
 		creation, access, write, change := FileAttrToSMBTimes(entry.Attr)
-		allocationSize := ((entry.Attr.Size + 4095) / 4096) * 4096
+		// Get appropriate size (MFsymlink size for symlinks)
+		size := getSMBSize(entry.Attr)
+		allocationSize := ((size + 4095) / 4096) * 4096
 
 		dirEntry.CreationTime = creation
 		dirEntry.LastAccessTime = access
 		dirEntry.LastWriteTime = write
 		dirEntry.ChangeTime = change
-		dirEntry.EndOfFile = entry.Attr.Size
+		dirEntry.EndOfFile = size
 		dirEntry.AllocationSize = allocationSize
 		dirEntry.FileAttributes = FileAttrToSMBAttributes(entry.Attr)
 	} else {

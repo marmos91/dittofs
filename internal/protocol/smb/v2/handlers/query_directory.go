@@ -224,7 +224,7 @@ func (h *Handler) appendBothDirEntryFromAttr(result []byte, prevNextOffset *int,
 		accessTime = types.TimeToFiletime(access)
 		writeTime = types.TimeToFiletime(write)
 		changeTime = types.TimeToFiletime(change)
-		size = attr.Size
+		size = getSMBSize(attr) // Use MFsymlink size for symlinks
 		attrs = FileAttrToSMBAttributes(attr)
 	} else {
 		// Special entries (. and ..)
@@ -310,7 +310,7 @@ func (h *Handler) appendIdBothDirEntryFromAttr(result []byte, prevNextOffset *in
 		accessTime = types.TimeToFiletime(access)
 		writeTime = types.TimeToFiletime(write)
 		changeTime = types.TimeToFiletime(change)
-		size = attr.Size
+		size = getSMBSize(attr) // Use MFsymlink size for symlinks
 		attrs = FileAttrToSMBAttributes(attr)
 	} else {
 		now := types.NowFiletime()
@@ -396,7 +396,7 @@ func (h *Handler) appendFullDirEntryFromAttr(result []byte, prevNextOffset *int,
 		accessTime = types.TimeToFiletime(access)
 		writeTime = types.TimeToFiletime(write)
 		changeTime = types.TimeToFiletime(change)
-		size = attr.Size
+		size = getSMBSize(attr) // Use MFsymlink size for symlinks
 		attrs = FileAttrToSMBAttributes(attr)
 	} else {
 		now := types.NowFiletime()
@@ -477,7 +477,7 @@ func (h *Handler) appendDirEntryFromAttr(result []byte, prevNextOffset *int, nam
 		accessTime = types.TimeToFiletime(access)
 		writeTime = types.TimeToFiletime(write)
 		changeTime = types.TimeToFiletime(change)
-		size = attr.Size
+		size = getSMBSize(attr) // Use MFsymlink size for symlinks
 		attrs = FileAttrToSMBAttributes(attr)
 	} else {
 		now := types.NowFiletime()

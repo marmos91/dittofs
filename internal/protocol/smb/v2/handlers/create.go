@@ -203,7 +203,9 @@ func (h *Handler) Create(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	// ========================================================================
 
 	creation, access, write, change := FileAttrToSMBTimes(&file.FileAttr)
-	allocationSize := ((file.Size + 4095) / 4096) * 4096
+	// Use MFsymlink size for symlinks
+	size := getSMBSize(&file.FileAttr)
+	allocationSize := ((size + 4095) / 4096) * 4096
 
 	resp := &CreateResponse{
 		OplockLevel:    0, // No oplock
@@ -213,7 +215,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 		LastWriteTime:  write,
 		ChangeTime:     change,
 		AllocationSize: allocationSize,
-		EndOfFile:      file.Size,
+		EndOfFile:      size,
 		FileAttributes: FileAttrToSMBAttributes(&file.FileAttr),
 		FileID:         smbFileID,
 	}

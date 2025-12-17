@@ -5,7 +5,9 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
+	"github.com/marmos91/dittofs/pkg/mfsymlink"
 	"github.com/marmos91/dittofs/pkg/ops"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // Close handles SMB2 CLOSE command [MS-SMB2] 2.2.15, 2.2.16
@@ -70,6 +72,20 @@ func (h *Handler) Close(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 					logger.Debug("CLOSE: flushed and finalized", "path", openFile.Path, "contentID", openFile.ContentID)
 				}
 			}
+		}
+	}
+
+	// ========================================================================
+	// Step 3.5: Check for MFsymlink conversion
+	// ========================================================================
+	//
+	// macOS/Windows SMB clients create symlinks by writing MFsymlink content
+	// (1067-byte files with XSym\n header). On CLOSE, we convert these to
+	// real symlinks in the metadata store for NFS interoperability.
+
+	if !openFile.IsDirectory && openFile.ContentID != "" && !openFile.DeletePending {
+		if converted, _ := h.checkAndConvertMFsymlink(ctx, openFile); converted {
+			logger.Debug("CLOSE: converted MFsymlink to symlink", "path", openFile.Path)
 		}
 	}
 
@@ -159,4 +175,162 @@ func (h *Handler) Close(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 	}
 
 	return NewResult(types.StatusSuccess, respBytes), nil
+}
+
+// checkAndConvertMFsymlink checks if a file is an MFsymlink and converts it to a real symlink.
+//
+// MFsymlinks are 1067-byte files with XSym\n header used by macOS/Windows SMB clients
+// for symlink creation. This function:
+// 1. Checks file size is exactly 1067 bytes
+// 2. Reads content and verifies MFsymlink format
+// 3. Parses the symlink target
+// 4. Removes the regular file
+// 5. Creates a real symlink with the same name
+//
+// Returns (true, nil) if conversion succeeded, (false, nil) if not an MFsymlink,
+// or (false, error) if conversion failed.
+func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *OpenFile) (bool, error) {
+	// Get metadata store
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
+	if err != nil {
+		return false, err
+	}
+
+	// Get file metadata to check size
+	file, err := metadataStore.GetFile(ctx.Context, openFile.MetadataHandle)
+	if err != nil {
+		return false, err
+	}
+
+	// Quick check: must be exactly 1067 bytes
+	if file.Size != mfsymlink.Size {
+		return false, nil
+	}
+
+	// Must be a regular file (not already a symlink)
+	if file.Type != metadata.FileTypeRegular {
+		return false, nil
+	}
+
+	// Read content to verify MFsymlink format
+	content, err := h.readMFsymlinkContent(ctx, openFile)
+	if err != nil {
+		logger.Debug("CLOSE: failed to read MFsymlink content", "path", openFile.Path, "error", err)
+		return false, nil // Not fatal, just don't convert
+	}
+
+	// Verify it's actually an MFsymlink
+	if !mfsymlink.IsMFsymlink(content) {
+		return false, nil
+	}
+
+	// Parse the symlink target
+	target, err := mfsymlink.Decode(content)
+	if err != nil {
+		logger.Debug("CLOSE: invalid MFsymlink format", "path", openFile.Path, "error", err)
+		return false, nil // Don't convert invalid MFsymlinks
+	}
+
+	// Convert to real symlink
+	err = h.convertToRealSymlink(ctx, openFile, target)
+	if err != nil {
+		logger.Warn("CLOSE: failed to convert MFsymlink to symlink",
+			"path", openFile.Path,
+			"target", target,
+			"error", err)
+		return false, err
+	}
+
+	return true, nil
+}
+
+// readMFsymlinkContent reads the content of a potential MFsymlink file.
+// It tries the cache first, then falls back to the content store.
+func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFile) ([]byte, error) {
+	// Try reading from cache first
+	fileCache := h.Registry.GetCacheForShare(openFile.ShareName)
+	if fileCache != nil && fileCache.Size(openFile.ContentID) > 0 {
+		data := make([]byte, mfsymlink.Size)
+		n, err := fileCache.ReadAt(ctx.Context, openFile.ContentID, data, 0)
+		if err == nil && n == mfsymlink.Size {
+			return data, nil
+		}
+	}
+
+	// Fall back to content store
+	contentStore, err := h.Registry.GetContentStoreForShare(openFile.ShareName)
+	if err != nil {
+		return nil, err
+	}
+
+	reader, err := contentStore.ReadContent(ctx.Context, openFile.ContentID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = reader.Close() }()
+
+	data := make([]byte, mfsymlink.Size)
+	totalRead := 0
+	for totalRead < mfsymlink.Size {
+		n, err := reader.Read(data[totalRead:])
+		if err != nil {
+			if totalRead > 0 {
+				break
+			}
+			return nil, err
+		}
+		totalRead += n
+	}
+
+	return data[:totalRead], nil
+}
+
+// convertToRealSymlink removes the regular file and creates a symlink in its place.
+func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFile, target string) error {
+	// Validate required fields
+	if len(openFile.ParentHandle) == 0 || openFile.FileName == "" {
+		return fmt.Errorf("missing parent handle or filename for MFsymlink conversion")
+	}
+
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
+	if err != nil {
+		return err
+	}
+
+	authCtx, err := BuildAuthContext(ctx, h.Registry)
+	if err != nil {
+		return err
+	}
+
+	// Get the parent handle and filename for removal and creation
+	parentHandle := openFile.ParentHandle
+	fileName := openFile.FileName
+
+	// Remove the regular file
+	_, err = metadataStore.RemoveFile(authCtx, parentHandle, fileName)
+	if err != nil {
+		return fmt.Errorf("failed to remove MFsymlink file: %w", err)
+	}
+
+	// Delete content from content store (optional - ignore errors)
+	if openFile.ContentID != "" {
+		contentStore, err := h.Registry.GetContentStoreForShare(openFile.ShareName)
+		if err == nil {
+			_ = contentStore.Delete(ctx.Context, openFile.ContentID)
+		}
+	}
+
+	// Create the real symlink with default attributes
+	// Pass empty FileAttr - CreateSymlink will apply defaults
+	symlinkAttr := &metadata.FileAttr{}
+	_, err = metadataStore.CreateSymlink(authCtx, parentHandle, fileName, target, symlinkAttr)
+	if err != nil {
+		return fmt.Errorf("failed to create symlink: %w", err)
+	}
+
+	logger.Debug("CLOSE: converted MFsymlink",
+		"path", openFile.Path,
+		"target", target)
+
+	return nil
 }

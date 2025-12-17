@@ -112,16 +112,21 @@ func DecodeReadRequest(body []byte) (*ReadRequest, error) {
 }
 
 // EncodeReadResponse builds an SMB2 READ response body [MS-SMB2] 2.2.20
+// Structure: StructureSize(2) + DataOffset(1) + Reserved(1) + DataLength(4) +
+//
+//	DataRemaining(4) + Reserved2(4) + Buffer(variable) = 16 bytes header + data
+//
+// Note: StructureSize is 17 (includes 1 byte of Buffer per MS-SMB2 spec)
 func EncodeReadResponse(resp *ReadResponse) ([]byte, error) {
-	// Response header is 17 bytes, data follows
-	buf := make([]byte, 17+len(resp.Data))
-	binary.LittleEndian.PutUint16(buf[0:2], 17)                     // StructureSize
+	// Response header is 16 bytes, data follows at offset 16
+	buf := make([]byte, 16+len(resp.Data))
+	binary.LittleEndian.PutUint16(buf[0:2], 17)                     // StructureSize (17 per spec)
 	buf[2] = resp.DataOffset                                        // DataOffset (relative to header start)
 	buf[3] = 0                                                      // Reserved
 	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(resp.Data))) // DataLength
 	binary.LittleEndian.PutUint32(buf[8:12], resp.DataRemaining)    // DataRemaining
 	binary.LittleEndian.PutUint32(buf[12:16], 0)                    // Reserved2
-	copy(buf[17:], resp.Data)
+	copy(buf[16:], resp.Data)                                       // Buffer starts at offset 16
 
 	return buf, nil
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/mfsymlink"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
@@ -155,7 +156,22 @@ func (h *Handler) Read(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 
-	// Validate read permission using PrepareRead
+	// ========================================================================
+	// Step 6.5: Check for symlink - generate MFsymlink content on-the-fly
+	// ========================================================================
+
+	file, err := metadataStore.GetFile(authCtx.Context, openFile.MetadataHandle)
+	if err != nil {
+		logger.Debug("READ: failed to get file metadata", "path", openFile.Path, "error", err)
+		return NewErrorResult(MetadataErrorToSMBStatus(err)), nil
+	}
+
+	// Handle symlink reads - SMB clients expect MFsymlink content for symlinks
+	if file.Type == metadata.FileTypeSymlink {
+		return h.handleSymlinkRead(ctx, openFile, file, req)
+	}
+
+	// Validate read permission using PrepareRead (for regular files only)
 	readMeta, err := metadataStore.PrepareRead(authCtx, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("READ: permission check failed", "path", openFile.Path, "error", err)
@@ -379,4 +395,76 @@ func tryReadFromCache(
 	}
 
 	return cacheReadResult{hit: false}
+}
+
+// handleSymlinkRead generates MFsymlink content for a symlink read request.
+//
+// SMB clients (macOS, Windows) expect symlinks to be stored as MFsymlink files -
+// regular files with a special XSym format containing the symlink target.
+// This function generates that content on-the-fly from the symlink's LinkTarget.
+//
+// Parameters:
+//   - ctx: SMB handler context
+//   - openFile: The open file representing the symlink
+//   - file: The file metadata (must have Type == FileTypeSymlink)
+//   - req: The READ request containing offset and length
+//
+// Returns a READ response with the appropriate portion of MFsymlink content.
+func (h *Handler) handleSymlinkRead(
+	ctx *SMBHandlerContext,
+	openFile *OpenFile,
+	file *metadata.File,
+	req *ReadRequest,
+) (*HandlerResult, error) {
+	// Generate MFsymlink content from the symlink target
+	mfsymlinkData, err := mfsymlink.Encode(file.LinkTarget)
+	if err != nil {
+		logger.Warn("READ: failed to encode MFsymlink",
+			"path", openFile.Path,
+			"target", file.LinkTarget,
+			"error", err)
+		return NewErrorResult(types.StatusInternalError), nil
+	}
+
+	fileSize := uint64(len(mfsymlinkData)) // Always 1067 bytes
+
+	// Handle offset beyond EOF
+	if req.Offset >= fileSize {
+		logger.Debug("READ: symlink offset beyond EOF",
+			"path", openFile.Path,
+			"offset", req.Offset,
+			"size", fileSize)
+		return NewErrorResult(types.StatusEndOfFile), nil
+	}
+
+	// Calculate read range
+	readEnd := req.Offset + uint64(req.Length)
+	if readEnd > fileSize {
+		readEnd = fileSize
+	}
+
+	// Extract the requested portion
+	data := mfsymlinkData[req.Offset:readEnd]
+
+	logger.Debug("READ: symlink (MFsymlink)",
+		"path", openFile.Path,
+		"target", file.LinkTarget,
+		"offset", req.Offset,
+		"requested", req.Length,
+		"actual", len(data))
+
+	// Build response
+	resp := &ReadResponse{
+		DataOffset:    0x50, // Standard offset
+		Data:          data,
+		DataRemaining: 0,
+	}
+
+	respBytes, err := EncodeReadResponse(resp)
+	if err != nil {
+		logger.Warn("READ: failed to encode symlink response", "error", err)
+		return NewErrorResult(types.StatusInternalError), nil
+	}
+
+	return NewResult(types.StatusSuccess, respBytes), nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -664,7 +665,12 @@ func (c *SMBConnection) handleRequestPanic(clientAddr string, messageID uint64) 
 	c.wg.Done()
 
 	if r := recover(); r != nil {
-		logger.Error("Panic in SMB request handler", "address", clientAddr, "messageId", messageID, "error", r)
+		stack := string(debug.Stack())
+		logger.Error("Panic in SMB request handler",
+			"address", clientAddr,
+			"messageId", messageID,
+			"error", r,
+			"stack", stack)
 	}
 }
 
