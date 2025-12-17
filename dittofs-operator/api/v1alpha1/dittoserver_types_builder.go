@@ -123,7 +123,7 @@ func NewDittoServer(opts ...func(*DittoServer)) *DittoServer {
 	obj := &DittoServer{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "DittoServer",
-			APIVersion: "stack.civo.com/v1alpha1",
+			APIVersion: "dittofs.dittofs.com/v1alpha1",
 		},
 	}
 
@@ -151,6 +151,9 @@ func WithNamespace(namespace string) func(*DittoServer) {
 // WithLabel sets a label of the DittoServer
 func WithLabel(k, v string) func(*DittoServer) {
 	return func(obj *DittoServer) {
+		if obj.Labels == nil {
+			obj.Labels = make(map[string]string)
+		}
 		obj.Labels[k] = v
 	}
 }
@@ -158,6 +161,9 @@ func WithLabel(k, v string) func(*DittoServer) {
 // WithAnnotation sets an annotation of the DittoServer
 func WithAnnotation(k, v string) func(*DittoServer) {
 	return func(obj *DittoServer) {
+		if obj.Annotations == nil {
+			obj.Annotations = make(map[string]string)
+		}
 		obj.Annotations[k] = v
 	}
 }

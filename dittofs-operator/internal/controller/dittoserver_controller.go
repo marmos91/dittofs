@@ -255,6 +255,11 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 			})
 		}
 
+		metadataSize, err := resource.ParseQuantity(dittoServer.Spec.Storage.MetadataSize)
+		if err != nil {
+			return fmt.Errorf("invalid metadata size: %w", err)
+		}
+
 		volumeClaimTemplates := []corev1.PersistentVolumeClaim{
 			{
 				ObjectMeta: metav1.ObjectMeta{
@@ -267,7 +272,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 					StorageClassName: dittoServer.Spec.Storage.StorageClassName,
 					Resources: corev1.VolumeResourceRequirements{
 						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: resource.MustParse(dittoServer.Spec.Storage.MetadataSize),
+							corev1.ResourceStorage: metadataSize,
 						},
 					},
 				},
@@ -275,6 +280,11 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 		}
 
 		if dittoServer.Spec.Storage.ContentSize != "" {
+			contentSize, err := resource.ParseQuantity(dittoServer.Spec.Storage.ContentSize)
+			if err != nil {
+				return fmt.Errorf("invalid content size: %w", err)
+			}
+
 			volumeClaimTemplates = append(volumeClaimTemplates, corev1.PersistentVolumeClaim{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "content",
@@ -286,7 +296,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 					StorageClassName: dittoServer.Spec.Storage.StorageClassName,
 					Resources: corev1.VolumeResourceRequirements{
 						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: resource.MustParse(dittoServer.Spec.Storage.ContentSize),
+							corev1.ResourceStorage: contentSize,
 						},
 					},
 				},
