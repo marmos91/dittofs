@@ -147,6 +147,7 @@ func GenerateSIDFromUID(uid uint32) string {
 	hashStr := hex.EncodeToString(h[:4])
 
 	// Parse first 4 bytes as uint32 for the sub-authority
+	// Note: Sscanf cannot fail here because hashStr is always 8 hex chars from sha256
 	var subAuth1 uint32
 	_, _ = fmt.Sscanf(hashStr, "%08x", &subAuth1)
 

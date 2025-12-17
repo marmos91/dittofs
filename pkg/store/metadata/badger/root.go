@@ -92,7 +92,7 @@ func (s *BadgerMetadataStore) CreateRootDirectory(
 				return fmt.Errorf("failed to decode existing root file: %w", err)
 			}
 
-			logger.Debug("Reusing existing root directory for share",
+			logger.Debug("Reusing existing root directory for share (persisted from previous server run)",
 				"share", shareName,
 				"rootID", rootFile.ID)
 			return nil

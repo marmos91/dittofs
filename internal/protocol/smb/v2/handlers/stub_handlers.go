@@ -12,16 +12,16 @@ import (
 
 // Common IOCTL/FSCTL codes [MS-FSCC] 2.3
 const (
-	FsctlDfsGetReferrals        uint32 = 0x00060194
-	FsctlPipeWait               uint32 = 0x00110018
-	FsctlValidateNegotiateInfo  uint32 = 0x00140204
-	FsctlQueryNetworkInterfInfo uint32 = 0x001401FC
-	FsctlPipePeek               uint32 = 0x0011400C
-	FsctlSrvEnumerateSnapshots  uint32 = 0x00144064
-	FsctlSrvRequestResumeKey    uint32 = 0x00140078
-	FsctlSrvCopyChunk           uint32 = 0x001440F2
-	FsctlSrvCopyChunkWrite      uint32 = 0x001480F2
-	FsctlGetReparsePoint        uint32 = 0x000900A8 // For readlink [MS-FSCC] 2.3.30
+	FsctlDfsGetReferrals        uint32 = 0x00060194 // [MS-FSCC] 2.3.16
+	FsctlPipeWait               uint32 = 0x00110018 // [MS-FSCC] 2.3.49
+	FsctlValidateNegotiateInfo  uint32 = 0x00140204 // [MS-SMB2] 2.2.31.4
+	FsctlQueryNetworkInterfInfo uint32 = 0x001401FC // [MS-SMB2] 2.2.32.5
+	FsctlPipePeek               uint32 = 0x0011400C // [MS-FSCC] 2.3.48
+	FsctlSrvEnumerateSnapshots  uint32 = 0x00144064 // [MS-SMB2] 2.2.32.2
+	FsctlSrvRequestResumeKey    uint32 = 0x00140078 // [MS-SMB2] 2.2.32.3
+	FsctlSrvCopyChunk           uint32 = 0x001440F2 // [MS-SMB2] 2.2.32.1
+	FsctlSrvCopyChunkWrite      uint32 = 0x001480F2 // [MS-SMB2] 2.2.32.1
+	FsctlGetReparsePoint        uint32 = 0x000900A8 // [MS-FSCC] 2.3.30
 )
 
 // Reparse point constants [MS-FSCC] 2.1.2.1

@@ -260,7 +260,7 @@ go test -tags=e2e -v -run TestInteropMetadataConsistency
 go test -tags=e2e -v -run "TestCreateFolder/memory-memory"
 
 # Run only on badger/filesystem configuration
-go test -v -run "TestCreateFile_1MB/badger-filesystem"
+go test -tags=e2e -v -run "TestCreateFile_1MB/badger-filesystem"
 
 # Run all tests on S3 configurations
 ./run-e2e.sh --s3 --test "s3"

@@ -250,9 +250,11 @@ func (h *Handler) Read(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			}
 			defer func() { _ = reader.Close() }()
 
-			// Skip to offset
+			// Skip to offset by reading and discarding bytes
+			// seekBufferSize is chosen to balance memory usage vs syscall overhead
+			const seekBufferSize = 8192
 			if req.Offset > 0 {
-				skipBuf := make([]byte, min(req.Offset, 8192))
+				skipBuf := make([]byte, min(req.Offset, seekBufferSize))
 				remaining := req.Offset
 				for remaining > 0 {
 					toRead := min(remaining, uint64(len(skipBuf)))
