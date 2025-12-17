@@ -193,6 +193,19 @@ func (s *MyMetadataStore) GetShareNameForHandle(
 
 #### Permission Checking
 
+DittoFS provides shared helper functions in `pkg/store/metadata/helpers.go` for common permission and identity operations:
+
+```go
+// Shared helper functions available:
+metadata.CalculatePermissionsFromBits(bits uint32) Permission  // Convert Unix bits to Permission
+metadata.CheckOtherPermissions(mode, requested) Permission     // Extract "other" permission bits
+metadata.ApplyIdentityMapping(identity, mapping) *Identity     // Apply identity mapping rules
+metadata.IsAdministratorSID(sid string) bool                   // Check Windows admin SID
+metadata.MatchesIPPattern(clientIP, pattern string) bool       // CIDR and exact IP matching
+metadata.GetInitialLinkCount(fileType) uint32                  // Initial link count (1 for files, 2 for dirs)
+metadata.CopyFileAttr(attr *FileAttr) *FileAttr                // Deep copy of FileAttr
+```
+
 ```go
 // CheckPermissions performs Unix-style permission checking.
 //
@@ -212,57 +225,43 @@ func (s *MyMetadataStore) CheckPermissions(
         return 0, err
     }
 
+    identity := ctx.Identity
+
+    // Handle anonymous/no identity case
+    if identity == nil || identity.UID == nil {
+        // Use shared helper for "other" permissions
+        return metadata.CheckOtherPermissions(file.Mode, requested), nil
+    }
+
+    uid := *identity.UID
+
     // Root bypass (UID 0)
-    if ctx.UID == 0 {
+    if uid == 0 {
         return requested, nil
     }
 
-    // Anonymous users only get world permissions
-    if ctx.IsAnonymous {
-        worldPerms := file.Mode & 0007
-        granted := metadata.Permission(0)
-        if worldPerms&0004 != 0 {
-            granted |= metadata.PermissionRead
-        }
-        if worldPerms&0002 != 0 {
-            granted |= metadata.PermissionWrite
-        }
-        if worldPerms&0001 != 0 {
-            granted |= metadata.PermissionExecute
-        }
-        return granted & requested, nil
+    // Determine which permission bits apply
+    var permBits uint32
+    if uid == file.UID {
+        // Owner permissions (bits 6-8)
+        permBits = (file.Mode >> 6) & 0x7
+    } else if identity.GID != nil && (*identity.GID == file.GID || identity.HasGID(file.GID)) {
+        // Group permissions (bits 3-5)
+        permBits = (file.Mode >> 3) & 0x7
+    } else {
+        // Other permissions (bits 0-2)
+        permBits = file.Mode & 0x7
     }
 
-    // Owner permissions
-    if ctx.UID == file.UID {
-        ownerPerms := (file.Mode >> 6) & 0007
-        return s.permsFromMode(ownerPerms) & requested, nil
+    // Use shared helper to convert bits to Permission
+    granted := metadata.CalculatePermissionsFromBits(permBits)
+
+    // Owner gets additional privileges
+    if uid == file.UID {
+        granted |= metadata.PermissionChangePermissions | metadata.PermissionChangeOwnership
     }
 
-    // Group permissions
-    if s.isGroupMember(ctx.UID, file.GID) {
-        groupPerms := (file.Mode >> 3) & 0007
-        return s.permsFromMode(groupPerms) & requested, nil
-    }
-
-    // Other permissions
-    otherPerms := file.Mode & 0007
-    return s.permsFromMode(otherPerms) & requested, nil
-}
-
-// Helper: Convert mode bits to Permission
-func (s *MyMetadataStore) permsFromMode(mode uint32) metadata.Permission {
-    perms := metadata.Permission(0)
-    if mode&0004 != 0 {
-        perms |= metadata.PermissionRead
-    }
-    if mode&0002 != 0 {
-        perms |= metadata.PermissionWrite
-    }
-    if mode&0001 != 0 {
-        perms |= metadata.PermissionExecute
-    }
-    return perms
+    return granted & requested, nil
 }
 ```
 
@@ -1114,23 +1113,32 @@ return &metadata.StoreError{
 return fmt.Errorf("file not found: %s", fullPath)
 ```
 
+**Use error factory functions**:
+
+DittoFS provides error factory functions in `pkg/store/metadata/errors.go` for consistent error creation:
+
+```go
+// Error factory functions available:
+metadata.NewNotFoundError(path, "file")         // ErrNotFound
+metadata.NewPermissionDeniedError(path)             // ErrPermissionDenied
+metadata.NewIsDirectoryError(path)              // ErrIsDirectory
+metadata.NewNotDirectoryError(path)             // ErrNotDirectory
+metadata.NewInvalidHandleError()                // ErrInvalidHandle
+metadata.NewNotEmptyError(path)                 // ErrNotEmpty
+metadata.NewAlreadyExistsError(path)            // ErrAlreadyExists
+metadata.NewInvalidArgumentError(message)       // ErrInvalidArgument
+metadata.NewAccessDeniedError(reason)           // ErrAccessDenied
+```
+
 **Map backend errors to store errors**:
 
 ```go
 func (s *MyStore) handleBackendError(err error, path string) error {
     if isNotFoundError(err) {
-        return &metadata.StoreError{
-            Code:    metadata.ErrNotFound,
-            Message: "file not found",
-            Path:    path,
-        }
+        return metadata.NewNotFoundError(path, "file")
     }
     if isPermissionError(err) {
-        return &metadata.StoreError{
-            Code:    metadata.ErrAccessDenied,
-            Message: "access denied",
-            Path:    path,
-        }
+        return metadata.NewAccessDeniedError("access denied")
     }
     // Default: IO error
     return &metadata.StoreError{
