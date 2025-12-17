@@ -1013,18 +1013,7 @@ func (store *MemoryMetadataStore) checkPermissionsLocked(
 	// Handle anonymous/no identity case
 	if identity == nil || identity.UID == nil {
 		// Only grant "other" permissions
-		otherBits := attr.Mode & 0x7
-		var granted metadata.Permission
-
-		if otherBits&0x4 != 0 { // Read
-			granted |= metadata.PermissionRead | metadata.PermissionListDirectory
-		}
-		if otherBits&0x2 != 0 { // Write
-			granted |= metadata.PermissionWrite | metadata.PermissionDelete
-		}
-		if otherBits&0x1 != 0 { // Execute
-			granted |= metadata.PermissionExecute | metadata.PermissionTraverse
-		}
+		granted := metadata.CheckOtherPermissions(attr.Mode, requested)
 
 		// Apply read-only share restriction for anonymous users
 		if shareData, exists := store.shares[fileData.ShareName]; exists {
@@ -1033,7 +1022,7 @@ func (store *MemoryMetadataStore) checkPermissionsLocked(
 			}
 		}
 
-		return granted & requested, nil
+		return granted, nil
 	}
 
 	uid := *identity.UID
@@ -1059,17 +1048,7 @@ func (store *MemoryMetadataStore) checkPermissionsLocked(
 	}
 
 	// Map Unix permission bits to Permission flags
-	var granted metadata.Permission
-
-	if permBits&0x4 != 0 { // Read
-		granted |= metadata.PermissionRead | metadata.PermissionListDirectory
-	}
-	if permBits&0x2 != 0 { // Write
-		granted |= metadata.PermissionWrite | metadata.PermissionDelete
-	}
-	if permBits&0x1 != 0 { // Execute
-		granted |= metadata.PermissionExecute | metadata.PermissionTraverse
-	}
+	granted := metadata.CalculatePermissionsFromBits(permBits)
 
 	// Owner gets additional privileges
 	if uid == attr.UID {

@@ -87,3 +87,139 @@ const (
 	// Used when a file has been deleted but handle is still in use
 	ErrStaleHandle
 )
+
+// ============================================================================
+// Error Factory Functions
+// ============================================================================
+// These factory functions provide a consistent way to create common errors
+// across all metadata store implementations.
+
+// NewNotFoundError creates a StoreError for when a file, directory, or share is not found.
+//
+// Parameters:
+//   - path: The path that was not found
+//   - entityType: The type of entity (e.g., "file", "directory", "share")
+//
+// Returns:
+//   - *StoreError with ErrNotFound code
+func NewNotFoundError(path string, entityType string) *StoreError {
+	return &StoreError{
+		Code:    ErrNotFound,
+		Message: entityType + " not found",
+		Path:    path,
+	}
+}
+
+// NewPermissionDeniedError creates a StoreError for permission denied errors.
+//
+// Parameters:
+//   - path: The path where permission was denied
+//
+// Returns:
+//   - *StoreError with ErrPermissionDenied code
+func NewPermissionDeniedError(path string) *StoreError {
+	return &StoreError{
+		Code:    ErrPermissionDenied,
+		Message: "permission denied",
+		Path:    path,
+	}
+}
+
+// NewIsDirectoryError creates a StoreError for when a file operation is attempted on a directory.
+//
+// Parameters:
+//   - path: The path that is a directory
+//
+// Returns:
+//   - *StoreError with ErrIsDirectory code
+func NewIsDirectoryError(path string) *StoreError {
+	return &StoreError{
+		Code:    ErrIsDirectory,
+		Message: "is a directory",
+		Path:    path,
+	}
+}
+
+// NewNotDirectoryError creates a StoreError for when a directory operation is attempted on a non-directory.
+//
+// Parameters:
+//   - path: The path that is not a directory
+//
+// Returns:
+//   - *StoreError with ErrNotDirectory code
+func NewNotDirectoryError(path string) *StoreError {
+	return &StoreError{
+		Code:    ErrNotDirectory,
+		Message: "not a directory",
+		Path:    path,
+	}
+}
+
+// NewInvalidHandleError creates a StoreError for invalid file handles.
+//
+// Returns:
+//   - *StoreError with ErrInvalidHandle code
+func NewInvalidHandleError() *StoreError {
+	return &StoreError{
+		Code:    ErrInvalidHandle,
+		Message: "invalid file handle",
+	}
+}
+
+// NewNotEmptyError creates a StoreError for when a directory is not empty.
+//
+// Parameters:
+//   - path: The directory path that is not empty
+//
+// Returns:
+//   - *StoreError with ErrNotEmpty code
+func NewNotEmptyError(path string) *StoreError {
+	return &StoreError{
+		Code:    ErrNotEmpty,
+		Message: "directory not empty",
+		Path:    path,
+	}
+}
+
+// NewAlreadyExistsError creates a StoreError for when a file/directory already exists.
+//
+// Parameters:
+//   - path: The path that already exists
+//
+// Returns:
+//   - *StoreError with ErrAlreadyExists code
+func NewAlreadyExistsError(path string) *StoreError {
+	return &StoreError{
+		Code:    ErrAlreadyExists,
+		Message: "already exists",
+		Path:    path,
+	}
+}
+
+// NewInvalidArgumentError creates a StoreError for invalid arguments.
+//
+// Parameters:
+//   - message: Description of the invalid argument
+//
+// Returns:
+//   - *StoreError with ErrInvalidArgument code
+func NewInvalidArgumentError(message string) *StoreError {
+	return &StoreError{
+		Code:    ErrInvalidArgument,
+		Message: message,
+	}
+}
+
+// NewAccessDeniedError creates a StoreError for share-level access denial.
+//
+// Parameters:
+//   - reason: The reason for access denial
+//
+// Returns:
+//   - *StoreError with ErrAccessDenied code
+func NewAccessDeniedError(reason string) *StoreError {
+	return &StoreError{
+		Code:    ErrAccessDenied,
+		Message: reason,
+	}
+}

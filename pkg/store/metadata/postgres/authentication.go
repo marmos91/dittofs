@@ -84,7 +84,7 @@ func (s *PostgresMetadataStore) calculateGrantedPermissions(file *metadata.File,
 	// Handle anonymous/no identity case
 	if identity == nil || identity.UID == nil {
 		// Only grant "other" permissions for anonymous users
-		return calculatePermissionsFromBits(attr.Mode & 0x7)
+		return metadata.CalculatePermissionsFromBits(attr.Mode & 0x7)
 	}
 
 	uid := *identity.UID
@@ -111,28 +111,11 @@ func (s *PostgresMetadataStore) calculateGrantedPermissions(file *metadata.File,
 		permBits = attr.Mode & 0x7
 	}
 
-	granted := calculatePermissionsFromBits(permBits)
+	granted := metadata.CalculatePermissionsFromBits(permBits)
 
 	// Owner gets additional privileges
 	if uid == attr.UID {
 		granted |= metadata.PermissionChangePermissions | metadata.PermissionChangeOwnership
-	}
-
-	return granted
-}
-
-// calculatePermissionsFromBits converts Unix permission bits (rwx) to Permission flags
-func calculatePermissionsFromBits(bits uint32) metadata.Permission {
-	var granted metadata.Permission
-
-	if bits&0x4 != 0 { // Read bit
-		granted |= metadata.PermissionRead | metadata.PermissionListDirectory
-	}
-	if bits&0x2 != 0 { // Write bit
-		granted |= metadata.PermissionWrite | metadata.PermissionDelete
-	}
-	if bits&0x1 != 0 { // Execute bit
-		granted |= metadata.PermissionExecute | metadata.PermissionTraverse
 	}
 
 	return granted
@@ -147,7 +130,7 @@ func (s *PostgresMetadataStore) checkAccess(file *metadata.File, ctx *metadata.A
 	// Handle anonymous/no identity case
 	if identity == nil || identity.UID == nil {
 		// Only grant "other" permissions for anonymous users
-		granted := checkOtherPermissions(attr.Mode, requested)
+		granted := metadata.CheckOtherPermissions(attr.Mode, requested)
 		if granted != requested {
 			return &metadata.StoreError{
 				Code:    metadata.ErrPermissionDenied,
@@ -182,17 +165,7 @@ func (s *PostgresMetadataStore) checkAccess(file *metadata.File, ctx *metadata.A
 	}
 
 	// Map Unix permission bits to Permission flags
-	var granted metadata.Permission
-
-	if permBits&0x4 != 0 { // Read bit
-		granted |= metadata.PermissionRead | metadata.PermissionListDirectory
-	}
-	if permBits&0x2 != 0 { // Write bit
-		granted |= metadata.PermissionWrite | metadata.PermissionDelete
-	}
-	if permBits&0x1 != 0 { // Execute bit
-		granted |= metadata.PermissionExecute | metadata.PermissionTraverse
-	}
+	granted := metadata.CalculatePermissionsFromBits(permBits)
 
 	// Owner gets additional privileges
 	if uid == attr.UID {
@@ -209,23 +182,4 @@ func (s *PostgresMetadataStore) checkAccess(file *metadata.File, ctx *metadata.A
 	}
 
 	return nil
-}
-
-// checkOtherPermissions checks if "other" permission bits grant the requested access
-func checkOtherPermissions(mode uint32, requested metadata.Permission) metadata.Permission {
-	var granted metadata.Permission
-
-	otherBits := mode & 0x7
-
-	if otherBits&0x4 != 0 { // Read bit
-		granted |= metadata.PermissionRead | metadata.PermissionListDirectory
-	}
-	if otherBits&0x2 != 0 { // Write bit (rare for "other")
-		granted |= metadata.PermissionWrite | metadata.PermissionDelete
-	}
-	if otherBits&0x1 != 0 { // Execute bit
-		granted |= metadata.PermissionExecute | metadata.PermissionTraverse
-	}
-
-	return granted & requested
 }
