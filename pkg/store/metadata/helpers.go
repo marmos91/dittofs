@@ -5,19 +5,16 @@ import (
 	"regexp"
 )
 
-// Pre-compiled regular expressions for Administrator SID validation.
-// These patterns match well-known Windows administrator SID formats to avoid
+// Pre-compiled regular expression for Administrator SID validation.
+// This pattern matches well-known Windows administrator SID formats to avoid
 // false positives from SIDs that merely end in "-500".
 var (
-	// domainAdminSIDPattern matches domain administrator accounts.
+	// domainAdminSIDPattern matches domain/local administrator accounts.
 	// Format: S-1-5-21-<domain identifier (3 parts)>-500
 	// Example: S-1-5-21-3623811015-3361044348-30300820-500
+	// This covers both domain administrators and local machine administrators,
+	// as local accounts also use the S-1-5-21-{machine-SID}-500 format.
 	domainAdminSIDPattern = regexp.MustCompile(`^S-1-5-21-\d+-\d+-\d+-500$`)
-
-	// localAdminSIDPattern matches local administrator accounts.
-	// Format: S-1-5-<authority>-500
-	// Less common but valid for some local administrator accounts
-	localAdminSIDPattern = regexp.MustCompile(`^S-1-5-\d+-500$`)
 )
 
 // ApplyIdentityMapping applies identity transformation rules.
@@ -97,14 +94,13 @@ func ApplyIdentityMapping(identity *Identity, mapping *IdentityMapping) *Identit
 // IsAdministratorSID checks if a Windows SID represents an administrator account.
 //
 // This validates against well-known administrator SID patterns:
-//   - Built-in Administrator: S-1-5-21-<domain>-500 (domain administrator)
-//   - Local Administrator: S-1-5-<authority>-500
+//   - Domain/Local Administrator: S-1-5-21-<3 sub-authorities>-500
 //   - Built-in Administrators group: S-1-5-32-544
 //
 // The function uses proper regex validation to avoid false positives from
 // SIDs that happen to end in "-500" but are not actually administrator accounts.
 //
-// Performance: Uses pre-compiled regex patterns for efficiency on repeated calls.
+// Performance: Uses pre-compiled regex pattern for efficiency on repeated calls.
 //
 // Parameters:
 //   - sid: The Windows SID string to check (e.g., "S-1-5-21-123456789-987654321-111111111-500")
@@ -124,8 +120,8 @@ func IsAdministratorSID(sid string) bool {
 		return true
 	}
 
-	// Check against pre-compiled patterns for domain and local administrators
-	return domainAdminSIDPattern.MatchString(sid) || localAdminSIDPattern.MatchString(sid)
+	// Check against pre-compiled pattern for domain/local administrators
+	return domainAdminSIDPattern.MatchString(sid)
 }
 
 // MatchesIPPattern checks if an IP address matches a pattern (CIDR or exact IP).

@@ -137,10 +137,11 @@ func TestIsAdministratorSID(t *testing.T) {
 		{"empty string", "", false},
 		{"builtin administrators group", "S-1-5-32-544", true},
 		{"domain administrator", "S-1-5-21-3623811015-3361044348-30300820-500", true},
-		{"local administrator", "S-1-5-21-500", true},
+		{"local machine administrator", "S-1-5-21-1234567890-1234567890-1234567890-500", true},
 		{"regular user", "S-1-5-21-3623811015-3361044348-30300820-1001", false},
 		{"fake admin ending in 500", "S-1-5-21-3623811015-3361044348-30300820-1500", false},
 		{"random SID", "S-1-5-18", false},
+		{"malformed SID with only 2 sub-authorities", "S-1-5-21-500", false},
 	}
 
 	for _, tt := range tests {
