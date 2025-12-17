@@ -323,10 +323,36 @@ func (s *SMBAdapter) initiateShutdown() {
 		}
 		s.listenerMu.Unlock()
 
+		// Set a short deadline on all connections to unblock any pending reads
+		// This allows connection loops to notice shutdown quickly instead of
+		// waiting for the full read timeout (which could be minutes)
+		s.interruptBlockingReads()
+
 		// Cancel all in-flight request contexts
 		s.cancelRequests()
 		logger.Debug("SMB request cancellation signal sent to all in-flight operations")
 	})
+}
+
+// interruptBlockingReads sets a short deadline on all active connections
+// to interrupt any blocking read operations during shutdown.
+// This allows connections to notice the shutdown signal quickly.
+func (s *SMBAdapter) interruptBlockingReads() {
+	// Set deadline to 100ms from now - enough time for any in-flight reads to complete
+	// but short enough for quick shutdown
+	deadline := time.Now().Add(100 * time.Millisecond)
+
+	s.activeConnections.Range(func(key, value any) bool {
+		if conn, ok := value.(net.Conn); ok {
+			// Setting deadline will cause any blocked Read() to return with timeout error
+			if err := conn.SetReadDeadline(deadline); err != nil {
+				logger.Debug("Error setting shutdown deadline on connection",
+					"address", key, "error", err)
+			}
+		}
+		return true
+	})
+	logger.Debug("SMB shutdown: interrupted blocking reads on all connections")
 }
 
 // gracefulShutdown waits for active connections to complete or timeout.
