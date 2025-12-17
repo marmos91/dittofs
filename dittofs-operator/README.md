@@ -1,8 +1,76 @@
-# dittofs/dittofs-operator
-// TODO(user): Add simple overview of use/purpose
+# dittofs-operator
+
+A Kubernetes operator for managing DittoFS servers, providing a declarative way to deploy and manage distributed file systems in Kubernetes clusters.
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+
+The DittoFS Operator automates the deployment, configuration, and lifecycle management of DittoFS servers on Kubernetes. It provides a native Kubernetes API through Custom Resource Definitions (CRDs) to manage DittoFS instances, handling StatefulSets, Services, ConfigMaps, and persistent storage automatically.
+
+### Key Features
+
+- **Declarative Management**: Define your DittoFS server configuration as Kubernetes resources
+- **Automatic Resource Management**: Handles StatefulSets, Services, and ConfigMaps automatically
+- **Storage Configuration**: Supports customizable metadata and content storage sizes
+- **NFS Protocol Support**: Exposes NFS endpoints for distributed file access
+- **High Availability**: Support for multiple replicas with proper resource allocation
+- **Status Tracking**: Real-time status updates with condition reporting
+- **Flexible Configuration**: Customize resources, security contexts, and service types
+
+## API Reference
+
+### DittoServer
+
+The `DittoServer` resource represents a managed DittoFS server instance.
+
+#### Spec Fields
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `image` | string | Container image for DittoFS | Yes |
+| `replicas` | int32 | Number of replicas (default: 1) | No |
+| `storage.metadataSize` | string | Size of metadata storage (e.g., "10Gi") | Yes |
+| `storage.contentSize` | string | Size of content storage (e.g., "100Gi") | No |
+| `storage.storageClassName` | string | Storage class for PVCs | No |
+| `resources` | ResourceRequirements | CPU/Memory limits and requests | No |
+| `service.type` | string | Service type (ClusterIP, LoadBalancer, NodePort) | No |
+| `service.annotations` | map[string]string | Service annotations | No |
+| `nfsPort` | int32 | NFS port (default: 2049) | No |
+| `securityContext` | SecurityContext | Container security context | No |
+| `podSecurityContext` | PodSecurityContext | Pod security context | No |
+
+#### Status Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `phase` | string | Current phase (Pending, Running, Stopped) |
+| `nfsEndpoint` | string | NFS endpoint for mounting |
+| `availableReplicas` | int32 | Number of ready replicas |
+| `conditions` | []Condition | Status conditions |
+
+## Architecture
+
+The DittoFS Operator manages the following Kubernetes resources for each DittoServer:
+
+```
+DittoServer (CR)
+    │
+    ├─→ ConfigMap (dittofs configuration)
+    │
+    ├─→ Service (NFS and metrics endpoints)
+    │
+    └─→ StatefulSet
+         ├─→ Pod(s) running DittoFS
+         └─→ PersistentVolumeClaims
+              ├─→ metadata volume
+              └─→ content volume (optional)
+```
+
+### Components
+
+- **ConfigMap**: Contains the generated DittoFS configuration file
+- **Service**: Exposes NFS (default: 2049) and metrics (9090) ports
+- **StatefulSet**: Manages DittoFS pods with stable network identities
+- **PersistentVolumeClaims**: Provides storage for metadata and optionally content
 
 ## Getting Started
 
@@ -17,6 +85,12 @@
 
 ```sh
 make docker-build docker-push IMG=<some-registry>/dittofs/dittofs-operator:tag
+```
+
+or using `kubectl`:
+
+```sh
+kubectl -k config/default/
 ```
 
 **NOTE:** This image ought to be published in the personal registry you specified.
@@ -43,6 +117,45 @@ You can apply the samples (examples) from the config/sample:
 
 ```sh
 kubectl apply -k config/samples/
+```
+
+Or create a custom DittoServer resource:
+
+```yaml
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  name: my-dittofs
+  namespace: default
+spec:
+  image: ghcr.io/marmos91/dittofs:latest
+  replicas: 1
+  storage:
+    metadataSize: "10Gi"
+    contentSize: "100Gi"
+    storageClassName: "standard"
+  resources:
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+  service:
+    type: ClusterIP
+```
+
+Apply the resource:
+
+```sh
+kubectl apply -f my-dittofs.yaml
+```
+
+Check the status:
+
+```sh
+kubectl get dittoserver my-dittofs
+kubectl describe dittoserver my-dittofs
 ```
 
 >**NOTE**: Ensure that the samples has default values to test it out.
@@ -110,8 +223,12 @@ the '--force' flag and manually ensure that any custom configuration
 previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
 is manually re-applied afterwards.
 
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
+### Running Tests
+
+```sh
+# Run all tests
+make test
+```
 
 **NOTE:** Run `make help` for more information on all potential `make` targets
 
