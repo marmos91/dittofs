@@ -545,9 +545,9 @@ func mapMetadataErrorToNFS(err error) uint32 {
 		case metadata.ErrNotFound:
 			return types.NFS3ErrNoEnt
 		case metadata.ErrAccessDenied, metadata.ErrAuthRequired:
-			return types.NFS3ErrAcces
+			return types.NFS3ErrAccess
 		case metadata.ErrPermissionDenied:
-			return types.NFS3ErrAcces
+			return types.NFS3ErrAccess
 		case metadata.ErrAlreadyExists:
 			return types.NFS3ErrExist
 		case metadata.ErrNotEmpty:

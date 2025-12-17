@@ -35,7 +35,7 @@ func NFSStatusToString(status uint32) string {
 		return "NFS3ERR_NOENT"
 	case types.NFS3ErrIO:
 		return "NFS3ERR_IO"
-	case types.NFS3ErrAcces:
+	case types.NFS3ErrAccess:
 		return "NFS3ERR_ACCES"
 	case types.NFS3ErrExist:
 		return "NFS3ERR_EXIST"
