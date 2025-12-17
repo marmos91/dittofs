@@ -11,7 +11,7 @@ import (
 
 // TestSMBDeleteSingleFile tests deleting a single file via SMB
 func TestSMBDeleteSingleFile(t *testing.T) {
-	runSMBOnLocalConfigs(t, func(t *testing.T, tc *SMBTestContext) {
+	runSMBOnAllConfigs(t, func(t *testing.T, tc *SMBTestContext) {
 		filePath := tc.Path("delete_me.txt")
 
 		// Create file
@@ -42,7 +42,7 @@ func TestSMBDeleteSingleFile(t *testing.T) {
 
 // TestSMBDeleteAllFiles tests creating and deleting multiple files via SMB
 func TestSMBDeleteAllFiles(t *testing.T) {
-	runSMBOnLocalConfigs(t, func(t *testing.T, tc *SMBTestContext) {
+	runSMBOnAllConfigs(t, func(t *testing.T, tc *SMBTestContext) {
 		basePath := tc.Path("delete_files")
 
 		// Create folder
@@ -91,7 +91,7 @@ func TestSMBDeleteAllFiles(t *testing.T) {
 
 // TestSMBDeleteAllFolders tests creating and deleting multiple folders via SMB
 func TestSMBDeleteAllFolders(t *testing.T) {
-	runSMBOnLocalConfigs(t, func(t *testing.T, tc *SMBTestContext) {
+	runSMBOnAllConfigs(t, func(t *testing.T, tc *SMBTestContext) {
 		basePath := tc.Path("delete_folders")
 
 		// Create base folder
@@ -140,7 +140,7 @@ func TestSMBDeleteAllFolders(t *testing.T) {
 
 // TestSMBDeleteNestedFolder tests deleting a nested folder structure via SMB
 func TestSMBDeleteNestedFolder(t *testing.T) {
-	runSMBOnLocalConfigs(t, func(t *testing.T, tc *SMBTestContext) {
+	runSMBOnAllConfigs(t, func(t *testing.T, tc *SMBTestContext) {
 		basePath := tc.Path("nested_delete")
 
 		// Create nested structure

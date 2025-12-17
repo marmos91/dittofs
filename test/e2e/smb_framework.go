@@ -159,6 +159,8 @@ func (tc *SMBTestContext) startServer() {
 	}
 
 	// Create share with read-write permission for test user
+	// Note: Root directory must be writable by the test user (UID 1000, GID 1000)
+	// Using mode 0777 to allow all users to write
 	shareConfig := &registry.ShareConfig{
 		Name:              "/export",
 		MetadataStore:     storeName,
@@ -169,7 +171,7 @@ func (tc *SMBTestContext) startServer() {
 		DefaultPermission: string(identity.PermissionReadWrite),
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
-			Mode: 0755,
+			Mode: 0777,
 			UID:  0,
 			GID:  0,
 		},

@@ -161,17 +161,21 @@ func (tc *InteropTestContext) startServer() {
 	}
 
 	// Create share accessible by both protocols
+	// Note: Root directory must be writable by the SMB test user (UID 1000, GID 1000)
+	// Using mode 0777 to allow all users to write
+	// AllowGuest must be true for NFS to work because NFS uses AUTH_UNIX (UID/GID from client)
+	// and those UIDs won't match the SMB user store
 	shareConfig := &registry.ShareConfig{
 		Name:              "/export",
 		MetadataStore:     storeName,
 		ContentStore:      contentStoreName,
 		Cache:             cacheName,
 		ReadOnly:          false,
-		AllowGuest:        false,
+		AllowGuest:        true,
 		DefaultPermission: string(identity.PermissionReadWrite),
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
-			Mode: 0755,
+			Mode: 0777,
 			UID:  0,
 			GID:  0,
 		},

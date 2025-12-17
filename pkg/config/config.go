@@ -561,7 +561,8 @@ func SaveConfig(cfg *Config, path string) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	// Write to file with restricted permissions
+	// Write to file with restricted permissions (0600 = owner read/write only).
+	// This is important because config files may contain sensitive data like password hashes.
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}

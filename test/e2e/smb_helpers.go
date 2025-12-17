@@ -22,40 +22,6 @@ func runSMBOnAllConfigs(t *testing.T, testFunc func(t *testing.T, tc *SMBTestCon
 	}
 }
 
-// runSMBOnLocalConfigs runs a test on local configurations only (no S3)
-func runSMBOnLocalConfigs(t *testing.T, testFunc func(t *testing.T, tc *SMBTestContext)) {
-	t.Helper()
-
-	configs := LocalConfigurations()
-
-	for _, config := range configs {
-		t.Run(config.Name, func(t *testing.T) {
-			tc := NewSMBTestContext(t, config)
-			defer tc.Cleanup()
-
-			testFunc(t, tc)
-		})
-	}
-}
-
-// runSMBOnConfigsWithLargeFileSupport runs a test on configurations that support
-// large file operations efficiently (i.e., local backends + S3 with cache).
-func runSMBOnConfigsWithLargeFileSupport(t *testing.T, testFunc func(t *testing.T, tc *SMBTestContext)) {
-	t.Helper()
-
-	// Local backends + S3 with cache
-	configs := append(LocalConfigurations(), S3CachedConfigurations()...)
-
-	for _, config := range configs {
-		t.Run(config.Name, func(t *testing.T) {
-			tc := NewSMBTestContext(t, config)
-			defer tc.Cleanup()
-
-			testFunc(t, tc)
-		})
-	}
-}
-
 // skipSMBIfS3WithoutCache skips the test if running on S3 without cache
 // and the file size is too large for efficient operation.
 func skipSMBIfS3WithoutCache(t *testing.T, tc *SMBTestContext, sizeBytes int64) {

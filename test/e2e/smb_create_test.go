@@ -11,7 +11,7 @@ import (
 
 // TestSMBCreateFolder tests creating a single folder via SMB
 func TestSMBCreateFolder(t *testing.T) {
-	runSMBOnLocalConfigs(t, func(t *testing.T, tc *SMBTestContext) {
+	runSMBOnAllConfigs(t, func(t *testing.T, tc *SMBTestContext) {
 		folderPath := tc.Path("testfolder")
 
 		err := os.Mkdir(folderPath, 0755)
@@ -33,7 +33,7 @@ func TestSMBCreateFolder(t *testing.T) {
 
 // TestSMBCreateNestedFolders tests creating 20 nested folders via SMB
 func TestSMBCreateNestedFolders(t *testing.T) {
-	runSMBOnLocalConfigs(t, func(t *testing.T, tc *SMBTestContext) {
+	runSMBOnAllConfigs(t, func(t *testing.T, tc *SMBTestContext) {
 		basePath := tc.MountPath
 		currentPath := basePath
 
@@ -60,7 +60,7 @@ func TestSMBCreateNestedFolders(t *testing.T) {
 
 // TestSMBCreateEmptyFile tests creating a single empty file via SMB
 func TestSMBCreateEmptyFile(t *testing.T) {
-	runSMBOnLocalConfigs(t, func(t *testing.T, tc *SMBTestContext) {
+	runSMBOnAllConfigs(t, func(t *testing.T, tc *SMBTestContext) {
 		filePath := tc.Path("empty.txt")
 
 		err := os.WriteFile(filePath, []byte{}, 0644)
@@ -82,7 +82,7 @@ func TestSMBCreateEmptyFile(t *testing.T) {
 
 // TestSMBCreateFileWithContent tests creating a file with content via SMB
 func TestSMBCreateFileWithContent(t *testing.T) {
-	runSMBOnLocalConfigs(t, func(t *testing.T, tc *SMBTestContext) {
+	runSMBOnAllConfigs(t, func(t *testing.T, tc *SMBTestContext) {
 		filePath := tc.Path("content.txt")
 		content := []byte("Hello from SMB test!")
 
@@ -105,7 +105,7 @@ func TestSMBCreateFileWithContent(t *testing.T) {
 
 // TestSMBCreateEmptyFilesInNestedFolders tests creating 20 empty files in nested folders via SMB
 func TestSMBCreateEmptyFilesInNestedFolders(t *testing.T) {
-	runSMBOnLocalConfigs(t, func(t *testing.T, tc *SMBTestContext) {
+	runSMBOnAllConfigs(t, func(t *testing.T, tc *SMBTestContext) {
 		basePath := tc.Path("nested_files")
 
 		// Create base folder

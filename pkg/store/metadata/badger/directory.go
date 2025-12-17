@@ -193,7 +193,8 @@ func (s *BadgerMetadataStore) ReadDirectory(
 			}
 
 			// Create directory entry with attributes for SMB directory listing
-			attrCopy := childFile.FileAttr // Make a copy to avoid sharing pointers
+			// FileAttr is a value-only struct (no pointer fields), so this shallow copy is safe
+			attrCopy := childFile.FileAttr
 			entry := metadata.DirEntry{
 				ID:     fileHandleToID(childHandle),
 				Name:   childName,

@@ -233,6 +233,7 @@ func (c *SMBCreditsConfig) GetStrategy() session.CreditStrategy {
 
 // validate checks that the configuration is valid for production use.
 func (c *SMBConfig) validate() error {
+	// Port 0 is valid - it means OS-assigned port (useful for testing)
 	if c.Port < 0 || c.Port > 65535 {
 		return fmt.Errorf("invalid port %d: must be 0-65535", c.Port)
 	}

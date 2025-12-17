@@ -12,7 +12,7 @@ import (
 
 // TestSMBEditFile tests editing an existing file via SMB
 func TestSMBEditFile(t *testing.T) {
-	runSMBOnLocalConfigs(t, func(t *testing.T, tc *SMBTestContext) {
+	runSMBOnAllConfigs(t, func(t *testing.T, tc *SMBTestContext) {
 		filePath := tc.Path("edit_test.txt")
 
 		// Create initial file
@@ -43,7 +43,7 @@ func TestSMBEditFile(t *testing.T) {
 
 // TestSMBEditMultipleFiles tests editing multiple files via SMB
 func TestSMBEditMultipleFiles(t *testing.T) {
-	runSMBOnLocalConfigs(t, func(t *testing.T, tc *SMBTestContext) {
+	runSMBOnAllConfigs(t, func(t *testing.T, tc *SMBTestContext) {
 		basePath := tc.Path("edit_multi")
 
 		// Create folder
@@ -90,7 +90,7 @@ func TestSMBEditMultipleFiles(t *testing.T) {
 
 // TestSMBAppendFile tests appending to a file via SMB
 func TestSMBAppendFile(t *testing.T) {
-	runSMBOnLocalConfigs(t, func(t *testing.T, tc *SMBTestContext) {
+	runSMBOnAllConfigs(t, func(t *testing.T, tc *SMBTestContext) {
 		filePath := tc.Path("append_test.txt")
 
 		// Create initial file

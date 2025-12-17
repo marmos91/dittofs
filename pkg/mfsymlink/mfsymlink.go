@@ -18,7 +18,7 @@ package mfsymlink
 
 import (
 	"bytes"
-	"crypto/md5"
+	"crypto/md5" //nolint:gosec // MD5 is required by MFsymlink spec, not used for security
 	"encoding/hex"
 	"errors"
 	"fmt"

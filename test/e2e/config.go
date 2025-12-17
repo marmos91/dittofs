@@ -195,7 +195,6 @@ func (tc *TestConfig) CreateContentStore(ctx context.Context, testCtx TestContex
 // AllConfigurations returns all test configurations to run, including S3 and PostgreSQL.
 // S3 tests require Localstack to be running (use run-e2e.sh --s3).
 // PostgreSQL tests require Docker or external PostgreSQL (use run-e2e.sh --postgres).
-// Use LocalConfigurations() to run only non-S3, non-PostgreSQL tests.
 //
 // Note: S3 tests without cache are included for testing fallback behavior
 // with small files. For large file tests (>5MB), use S3CachedConfigurations()
@@ -277,31 +276,6 @@ func AllConfigurations() []*TestConfig {
 			ContentStore:  ContentS3,
 			ShareName:     "/export",
 			UseCache:      true,
-		},
-	}
-}
-
-// LocalConfigurations returns configurations that don't require external services.
-// Use this when Localstack is not available.
-func LocalConfigurations() []*TestConfig {
-	return []*TestConfig{
-		{
-			Name:          "memory-memory",
-			MetadataStore: MetadataMemory,
-			ContentStore:  ContentMemory,
-			ShareName:     "/export",
-		},
-		{
-			Name:          "memory-filesystem",
-			MetadataStore: MetadataMemory,
-			ContentStore:  ContentFilesystem,
-			ShareName:     "/export",
-		},
-		{
-			Name:          "badger-filesystem",
-			MetadataStore: MetadataBadger,
-			ContentStore:  ContentFilesystem,
-			ShareName:     "/export",
 		},
 	}
 }
