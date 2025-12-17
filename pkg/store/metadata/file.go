@@ -135,6 +135,13 @@ type FileAttr struct {
 	// LinkTarget is the target path for symbolic links
 	// Only valid when Type == FileTypeSymlink
 	LinkTarget string `json:"link_target,omitempty"`
+
+	// Hidden indicates if the file should be hidden from directory listings.
+	// This is primarily used for Windows/SMB compatibility where hidden files
+	// are marked with an attribute rather than a dot prefix.
+	// When set via SMB, this persists the FILE_ATTRIBUTE_HIDDEN flag.
+	// Unix dot-prefix files are also treated as hidden in SMB listings.
+	Hidden bool `json:"hidden,omitempty"`
 }
 
 // SetAttrs specifies which attributes to update in a SetFileAttributes call.
@@ -193,6 +200,11 @@ type SetAttrs struct {
 	// Only used by Windows/SMB clients that support setting creation time
 	// nil = do not change
 	CreationTime *time.Time
+
+	// Hidden is the new hidden state
+	// Used by Windows/SMB clients to mark files as hidden
+	// nil = do not change
+	Hidden *bool
 }
 
 // FileType represents the type of a filesystem object.

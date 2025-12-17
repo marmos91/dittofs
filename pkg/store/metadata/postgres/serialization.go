@@ -28,6 +28,7 @@ func fileRowToFile(row pgx.Row) (*metadata.File, error) {
 		linkTarget   sql.NullString
 		deviceMajor  sql.NullInt32
 		deviceMinor  sql.NullInt32
+		hidden       bool
 	)
 
 	err := row.Scan(
@@ -47,6 +48,7 @@ func fileRowToFile(row pgx.Row) (*metadata.File, error) {
 		&linkTarget,
 		&deviceMajor,
 		&deviceMinor,
+		&hidden,
 	)
 	if err != nil {
 		return nil, err
@@ -66,6 +68,7 @@ func fileRowToFile(row pgx.Row) (*metadata.File, error) {
 			Mtime:        mtime,
 			Ctime:        ctime,
 			CreationTime: creationTime,
+			Hidden:       hidden,
 		},
 	}
 

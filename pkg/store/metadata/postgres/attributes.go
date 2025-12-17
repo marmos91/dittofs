@@ -95,6 +95,13 @@ func (s *PostgresMetadataStore) SetFileAttributes(
 		paramIndex++
 	}
 
+	// Hidden (SMB/Windows only)
+	if attrs.Hidden != nil {
+		updates = append(updates, fmt.Sprintf("hidden = $%d", paramIndex))
+		params = append(params, *attrs.Hidden)
+		paramIndex++
+	}
+
 	// Always update ctime when attributes change
 	updates = append(updates, fmt.Sprintf("ctime = $%d", paramIndex))
 	params = append(params, now)

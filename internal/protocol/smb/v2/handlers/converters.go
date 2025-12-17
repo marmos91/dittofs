@@ -2,6 +2,7 @@
 package handlers
 
 import (
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
@@ -19,8 +20,50 @@ func getSMBSize(attr *metadata.FileAttr) uint64 {
 	return attr.Size
 }
 
+// IsSpecialFile returns true if the file type is a Unix special file
+// (FIFO, socket, block device, character device) that should be hidden from SMB.
+// These file types have no meaningful representation in the SMB protocol.
+func IsSpecialFile(fileType metadata.FileType) bool {
+	switch fileType {
+	case metadata.FileTypeFIFO, metadata.FileTypeSocket,
+		metadata.FileTypeBlockDevice, metadata.FileTypeCharDevice:
+		return true
+	}
+	return false
+}
+
+// IsHiddenFile returns true if a file should have the Hidden attribute set.
+// A file is hidden if:
+//   - The filename starts with a dot (Unix convention)
+//   - The Hidden flag is explicitly set in metadata (Windows convention)
+func IsHiddenFile(name string, attr *metadata.FileAttr) bool {
+	// Unix convention: dot-prefix files are hidden
+	if strings.HasPrefix(name, ".") {
+		return true
+	}
+	// Windows convention: explicit Hidden flag
+	if attr != nil && attr.Hidden {
+		return true
+	}
+	return false
+}
+
 // FileAttrToSMBAttributes converts metadata FileAttr to SMB file attributes.
+// This version does not include hidden attribute - use FileAttrToSMBAttributesWithName
+// when the filename is available.
 func FileAttrToSMBAttributes(attr *metadata.FileAttr) types.FileAttributes {
+	return fileAttrToSMBAttributesInternal(attr, false)
+}
+
+// FileAttrToSMBAttributesWithName converts metadata FileAttr to SMB file attributes,
+// including the Hidden attribute based on filename (dot-prefix) and metadata flag.
+func FileAttrToSMBAttributesWithName(attr *metadata.FileAttr, name string) types.FileAttributes {
+	attrs := fileAttrToSMBAttributesInternal(attr, IsHiddenFile(name, attr))
+	return attrs
+}
+
+// fileAttrToSMBAttributesInternal is the internal implementation for attribute conversion.
+func fileAttrToSMBAttributesInternal(attr *metadata.FileAttr, hidden bool) types.FileAttributes {
 	var attrs types.FileAttributes
 
 	switch attr.Type {
@@ -32,11 +75,16 @@ func FileAttrToSMBAttributes(attr *metadata.FileAttr) types.FileAttributes {
 		}
 	case metadata.FileTypeSymlink:
 		attrs |= types.FileAttributeReparsePoint
+	case metadata.FileTypeFIFO, metadata.FileTypeSocket,
+		metadata.FileTypeBlockDevice, metadata.FileTypeCharDevice:
+		// Special files appear as regular files (though they should be filtered out)
+		attrs |= types.FileAttributeNormal
 	}
 
-	// Check for hidden files (Unix convention: starts with dot)
-	// This would need the filename, so we'd typically set this at a higher level
-	// For now, return normal if no special attributes
+	// Set hidden attribute
+	if hidden {
+		attrs |= types.FileAttributeHidden
+	}
 
 	if attrs == 0 {
 		attrs = types.FileAttributeNormal
@@ -175,7 +223,7 @@ func SMBAttributesToFileType(attrs types.FileAttributes) metadata.FileType {
 	return metadata.FileTypeRegular
 }
 
-// SMBTimesToSetAttrs converts SMB time fields to SetAttrs for SETATTR operations.
+// SMBTimesToSetAttrs converts SMB time fields and attributes to SetAttrs for SETATTR operations.
 func SMBTimesToSetAttrs(basicInfo *FileBasicInfo) *metadata.SetAttrs {
 	attrs := &metadata.SetAttrs{}
 
@@ -196,6 +244,13 @@ func SMBTimesToSetAttrs(basicInfo *FileBasicInfo) *metadata.SetAttrs {
 		attrs.Mtime = &t
 	}
 	// Note: ChangeTime (ctime) is typically not settable by clients
+
+	// Handle Hidden attribute from FileAttributes
+	// Only set if FileAttributes is non-zero (0 means "don't change")
+	if basicInfo.FileAttributes != 0 {
+		hidden := basicInfo.FileAttributes&types.FileAttributeHidden != 0
+		attrs.Hidden = &hidden
+	}
 
 	return attrs
 }

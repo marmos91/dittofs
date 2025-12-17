@@ -506,6 +506,26 @@ func (s *BadgerMetadataStore) SetFileAttributes(
 			changed = true
 		}
 
+		// Apply Hidden attribute changes (SMB/Windows only)
+		// Hidden can be set by owner or anyone with write permission
+		if attrs.Hidden != nil {
+			if !isOwner && !isRoot {
+				granted, err := s.CheckPermissions(ctx, handle, metadata.PermissionWrite)
+				if err != nil {
+					return err
+				}
+				if granted&metadata.PermissionWrite == 0 {
+					return &metadata.StoreError{
+						Code:    metadata.ErrAccessDenied,
+						Message: "no permission to change hidden attribute",
+					}
+				}
+			}
+
+			file.Hidden = *attrs.Hidden
+			changed = true
+		}
+
 		// Update ctime if any changes were made
 		if changed {
 			file.Ctime = time.Now()

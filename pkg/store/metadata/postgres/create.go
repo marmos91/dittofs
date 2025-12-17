@@ -775,7 +775,8 @@ func (s *PostgresMetadataStore) getFileByIDTx(ctx context.Context, tx pgx.Tx, id
 			id, share_name, path,
 			file_type, mode, uid, gid, size,
 			atime, mtime, ctime, creation_time,
-			content_id, link_target, device_major, device_minor
+			content_id, link_target, device_major, device_minor,
+			hidden
 		FROM files
 		WHERE id = $1 AND share_name = $2
 		FOR UPDATE

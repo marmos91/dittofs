@@ -435,6 +435,26 @@ func (store *MemoryMetadataStore) SetFileAttributes(
 		changed = true
 	}
 
+	// Apply Hidden attribute changes (SMB/Windows only)
+	// Hidden can be set by owner or anyone with write permission
+	if attrs.Hidden != nil {
+		if !isOwner && !isRoot {
+			granted, err := store.checkPermissionsLocked(ctx, handle, metadata.PermissionWrite)
+			if err != nil {
+				return err
+			}
+			if granted&metadata.PermissionWrite == 0 {
+				return &metadata.StoreError{
+					Code:    metadata.ErrAccessDenied,
+					Message: "no permission to change hidden attribute",
+				}
+			}
+		}
+
+		attr.Hidden = *attrs.Hidden
+		changed = true
+	}
+
 	// Update ctime if any changes were made
 	if changed {
 		attr.Ctime = time.Now()

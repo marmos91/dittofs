@@ -321,6 +321,41 @@ sudo yum install cifs-utils      # RHEL/CentOS
 lsmod | grep cifs
 ```
 
+## Cross-Protocol Behavior
+
+DittoFS supports cross-protocol access between NFS and SMB. This section documents behavior differences.
+
+### Hidden Files
+
+Hidden files are handled differently between Unix and Windows:
+
+- **Unix convention**: Files starting with `.` are hidden
+- **Windows convention**: Files with the Hidden attribute flag are hidden
+
+DittoFS bridges both conventions:
+- Dot-prefix files (`.gitignore`, `.DS_Store`) appear with `FILE_ATTRIBUTE_HIDDEN` in SMB listings
+- The `Hidden` attribute can also be explicitly set via SMB `SET_INFO` (FileBasicInformation)
+- Both conventions are persisted: dot-prefix detection is automatic, explicit Hidden flag is stored in metadata
+
+### Special Files (FIFO, Socket, Device Nodes)
+
+Unix special files (FIFO, socket, block device, character device) have no meaningful representation in SMB:
+
+- **Via NFS**: Full support - MKNOD creates, GETATTR returns correct type
+- **Via SMB**: Hidden from directory listings entirely
+
+This behavior matches commercial NAS devices (Synology, QNAP) which typically don't expose special files via SMB.
+
+### Symlinks
+
+Symlinks are handled transparently via MFsymlink format:
+
+- **NFS-created symlinks**: Appear as MFsymlink files (1067 bytes) when read via SMB
+- **SMB-created symlinks**: MFsymlink files are automatically converted to real symlinks on CLOSE
+- Both NFS and SMB clients can follow symlinks correctly
+
+See the plan file for detailed symlink interoperability design.
+
 ## Known Limitations
 
 1. **SMB2 only**: SMB1 and SMB3 not supported
@@ -329,6 +364,7 @@ lsmod | grep cifs
 4. **No security descriptors**: Windows ACLs not supported
 5. **No DFS**: Distributed File System not supported
 6. **Single dialect**: Only SMB2 0x0202 negotiated
+7. **No Unix special files via SMB**: FIFOs, sockets, and device nodes are hidden from SMB listings
 
 ## Roadmap
 

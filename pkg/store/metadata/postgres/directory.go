@@ -156,7 +156,7 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, shareName string) (*metadata.File, error) {
 	query := `
 		SELECT f.id, f.file_type, f.mode, f.uid, f.gid, f.size,
-			   f.atime, f.mtime, f.ctime, f.creation_time
+			   f.atime, f.mtime, f.ctime, f.creation_time, f.hidden
 		FROM files f
 		WHERE f.share_name = $1 AND f.path = '/'
 	`
@@ -172,6 +172,7 @@ func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, sh
 		mtime        time.Time
 		ctime        time.Time
 		creationTime time.Time
+		hidden       bool
 	)
 
 	err := s.pool.QueryRow(ctx, query, shareName).Scan(
@@ -185,6 +186,7 @@ func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, sh
 		&mtime,
 		&ctime,
 		&creationTime,
+		&hidden,
 	)
 
 	if err == pgx.ErrNoRows {
@@ -208,6 +210,7 @@ func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, sh
 			Mtime:        mtime,
 			Ctime:        ctime,
 			CreationTime: creationTime,
+			Hidden:       hidden,
 		},
 	}, nil
 }

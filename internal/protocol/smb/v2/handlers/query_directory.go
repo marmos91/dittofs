@@ -225,7 +225,8 @@ func (h *Handler) appendBothDirEntryFromAttr(result []byte, prevNextOffset *int,
 		writeTime = types.TimeToFiletime(write)
 		changeTime = types.TimeToFiletime(change)
 		size = getSMBSize(attr) // Use MFsymlink size for symlinks
-		attrs = FileAttrToSMBAttributes(attr)
+		// Use FileAttrToSMBAttributesWithName to include Hidden attribute for dot-prefix files
+		attrs = FileAttrToSMBAttributesWithName(attr, name)
 	} else {
 		// Special entries (. and ..)
 		now := types.NowFiletime()
@@ -250,7 +251,6 @@ func (h *Handler) appendBothDirEntryFromAttr(result []byte, prevNextOffset *int,
 	// ShortName (24 bytes) - leave as zeros (positions 70-93)
 	copy(entry[94:], nameBytes)
 
-	// Update previous entry's NextEntryOffset
 	// Update previous entry's NextEntryOffset to point to this entry
 	if len(result) > 0 {
 		binary.LittleEndian.PutUint32(result[*prevNextOffset:], uint32(len(result)-*prevNextOffset))
@@ -311,7 +311,8 @@ func (h *Handler) appendIdBothDirEntryFromAttr(result []byte, prevNextOffset *in
 		writeTime = types.TimeToFiletime(write)
 		changeTime = types.TimeToFiletime(change)
 		size = getSMBSize(attr) // Use MFsymlink size for symlinks
-		attrs = FileAttrToSMBAttributes(attr)
+		// Use FileAttrToSMBAttributesWithName to include Hidden attribute for dot-prefix files
+		attrs = FileAttrToSMBAttributesWithName(attr, name)
 	} else {
 		now := types.NowFiletime()
 		creationTime = now
@@ -397,7 +398,8 @@ func (h *Handler) appendFullDirEntryFromAttr(result []byte, prevNextOffset *int,
 		writeTime = types.TimeToFiletime(write)
 		changeTime = types.TimeToFiletime(change)
 		size = getSMBSize(attr) // Use MFsymlink size for symlinks
-		attrs = FileAttrToSMBAttributes(attr)
+		// Use FileAttrToSMBAttributesWithName to include Hidden attribute for dot-prefix files
+		attrs = FileAttrToSMBAttributesWithName(attr, name)
 	} else {
 		now := types.NowFiletime()
 		creationTime = now
@@ -478,7 +480,8 @@ func (h *Handler) appendDirEntryFromAttr(result []byte, prevNextOffset *int, nam
 		writeTime = types.TimeToFiletime(write)
 		changeTime = types.TimeToFiletime(change)
 		size = getSMBSize(attr) // Use MFsymlink size for symlinks
-		attrs = FileAttrToSMBAttributes(attr)
+		// Use FileAttrToSMBAttributesWithName to include Hidden attribute for dot-prefix files
+		attrs = FileAttrToSMBAttributesWithName(attr, name)
 	} else {
 		now := types.NowFiletime()
 		creationTime = now
@@ -564,21 +567,23 @@ func (h *Handler) appendNamesEntryFromStore(result []byte, prevNextOffset *int, 
 //   - "*" or empty: match all entries
 //   - Exact name: match only that specific entry (case-insensitive on Windows/SMB)
 //   - Wildcard pattern: support basic wildcards like "*.txt", "foo*", etc.
+//
+// Additionally, Unix special files (FIFO, socket, device nodes) are always filtered
+// out from SMB directory listings since they have no meaningful representation in SMB.
 func filterDirEntries(entries []metadata.DirEntry, pattern string) []metadata.DirEntry {
-	// Empty pattern or "*" means return all entries
-	if pattern == "" || pattern == "*" {
-		return entries
-	}
-
-	// "<" is a special SMB wildcard that matches files with no extension or specific DOS patterns
-	// For simplicity, treat it as match-all for now
-	if pattern == "<" || pattern == "*.*" {
-		return entries
-	}
-
 	var filtered []metadata.DirEntry
+
+	// Check if pattern matches all
+	matchAll := pattern == "" || pattern == "*" || pattern == "<" || pattern == "*.*"
+
 	for _, entry := range entries {
-		if matchSMBPattern(entry.Name, pattern) {
+		// Skip Unix special files (FIFO, socket, block/char device) - they have no SMB equivalent
+		if entry.Attr != nil && IsSpecialFile(entry.Attr.Type) {
+			continue
+		}
+
+		// Include entry if pattern matches all or matches the name
+		if matchAll || matchSMBPattern(entry.Name, pattern) {
 			filtered = append(filtered, entry)
 		}
 	}
