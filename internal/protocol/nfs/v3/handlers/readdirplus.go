@@ -320,7 +320,7 @@ func (h *Handler) ReadDirPlus(
 	// Get metadata store from context
 	// ========================================================================
 
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "READDIRPLUS failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil

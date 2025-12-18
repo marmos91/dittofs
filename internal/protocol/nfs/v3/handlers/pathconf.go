@@ -233,7 +233,7 @@ func (h *Handler) PathConf(
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "PATHCONF failed", "error", err, "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil

@@ -283,7 +283,7 @@ func (h *Handler) Symlink(
 	// Step 2: Get metadata store from context
 	// ========================================================================
 
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "SYMLINK failed", "error", err, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP)
 		return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil

@@ -241,7 +241,7 @@ func (h *Handler) Lookup(
 	// Step 3: Get metadata store from context
 	// ========================================================================
 
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "LOOKUP failed",
 			"error", err,

@@ -182,7 +182,7 @@ func (h *Handler) GetAttr(
 	// Step 2: Get metadata store from context
 	// ========================================================================
 
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "GETATTR failed",
 			"error", err,

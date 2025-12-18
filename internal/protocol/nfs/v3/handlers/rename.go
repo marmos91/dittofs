@@ -255,7 +255,7 @@ func (h *Handler) Rename(
 	// Step 2: Get metadata store from context and validate handles
 	// ========================================================================
 
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "RENAME failed", "error", err, "from_dir", fmt.Sprintf("0x%x", req.FromDirHandle), "to_dir", fmt.Sprintf("0x%x", req.ToDirHandle), "client", clientIP)
 		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil

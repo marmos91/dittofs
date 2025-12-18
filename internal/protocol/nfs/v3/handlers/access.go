@@ -219,7 +219,7 @@ func (h *Handler) Access(
 	// Step 2: Get metadata store from context
 	// ========================================================================
 
-	store, err := h.getMetadataStore(ctx)
+	store, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "ACCESS failed",
 			"error", err,

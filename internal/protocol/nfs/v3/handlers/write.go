@@ -301,14 +301,14 @@ func (h *Handler) Write(
 	// Step 2: Get metadata and content stores from context
 	// ========================================================================
 
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		traceWarn(ctx.Context, err, "WRITE failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get content store for this share
-	contentStore, err := h.getContentStore(ctx)
+	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
 	if err != nil {
 		traceWarn(ctx.Context, err, "WRITE failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
