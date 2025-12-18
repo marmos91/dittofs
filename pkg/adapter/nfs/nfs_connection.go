@@ -301,9 +301,41 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 
 	switch call.Program {
 	case rpc.ProgramNFS:
+		// Validate NFS version (we only support NFSv3)
+		// Per RFC 5531, respond with PROG_MISMATCH for unsupported versions
+		if call.Version != rpc.NFSVersion3 {
+			logger.Debug("Unsupported NFS version",
+				"requested", call.Version,
+				"supported", rpc.NFSVersion3,
+				"xid", fmt.Sprintf("0x%x", call.XID),
+				"client", clientAddr)
+
+			mismatchReply, err := rpc.MakeProgMismatchReply(call.XID, rpc.NFSVersion3, rpc.NFSVersion3)
+			if err != nil {
+				return fmt.Errorf("make version mismatch reply: %w", err)
+			}
+			return c.sendReply(call.XID, mismatchReply)
+		}
 		replyData, err = c.handleNFSProcedure(ctx, call, procedureData, clientAddr)
+
 	case rpc.ProgramMount:
+		// Validate Mount version (we only support version 3)
+		// Per RFC 5531, respond with PROG_MISMATCH for unsupported versions
+		if call.Version != rpc.MountVersion3 {
+			logger.Debug("Unsupported Mount version",
+				"requested", call.Version,
+				"supported", rpc.MountVersion3,
+				"xid", fmt.Sprintf("0x%x", call.XID),
+				"client", clientAddr)
+
+			mismatchReply, err := rpc.MakeProgMismatchReply(call.XID, rpc.MountVersion3, rpc.MountVersion3)
+			if err != nil {
+				return fmt.Errorf("make version mismatch reply: %w", err)
+			}
+			return c.sendReply(call.XID, mismatchReply)
+		}
 		replyData, err = c.handleMountProcedure(ctx, call, procedureData, clientAddr)
+
 	default:
 		logger.Debug("Unknown program", "program", call.Program)
 		// Send PROC_UNAVAIL error reply for unknown programs

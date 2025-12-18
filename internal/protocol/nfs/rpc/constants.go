@@ -27,6 +27,25 @@ const (
 	ProgramMount = 100005
 )
 
+// RPC Program Versions
+//
+// These constants define the supported versions for each RPC program.
+// When a client requests an unsupported version, the server responds
+// with PROG_MISMATCH containing the supported version range, allowing
+// automatic version negotiation.
+//
+// Reference: RFC 1813 (NFS Version 3), RFC 5531 (RPC Protocol)
+const (
+	// NFSVersion3 is the NFSv3 protocol version (RFC 1813).
+	// DittoFS only supports NFSv3; requests for other versions
+	// receive PROG_MISMATCH with low=3, high=3.
+	NFSVersion3 = 3
+
+	// MountVersion3 is the Mount protocol version 3 (RFC 1813 Appendix I).
+	// This version is required for NFSv3 mounts.
+	MountVersion3 = 3
+)
+
 // RPC Message Types
 //
 // These constants identify whether an RPC message is a call (request)

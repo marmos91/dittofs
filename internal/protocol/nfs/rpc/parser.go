@@ -338,6 +338,102 @@ func MakeErrorReply(xid uint32, acceptStat uint32) ([]byte, error) {
 	return result, nil
 }
 
+// MakeProgMismatchReply creates an RPC PROG_MISMATCH reply message.
+//
+// This function constructs a complete RPC reply that indicates the client
+// requested an unsupported version of a supported program. The reply includes
+// the range of versions that the server supports for that program, allowing
+// the client to automatically retry with a supported version.
+//
+// Per RFC 5531 Section 9, when a server supports a program but not the
+// requested version, it must return PROG_MISMATCH (accept_stat=2) along
+// with the lowest and highest version numbers it does support.
+//
+// The reply structure is:
+//  1. RPC Fragment Header (4 bytes):
+//     - High bit set to 1 (indicates last fragment)
+//     - Lower 31 bits contain the fragment length
+//  2. RPC Reply Header (variable, XDR encoded):
+//     - XID (matching the call)
+//     - MsgType = 1 (REPLY)
+//     - ReplyState = 0 (MSG_ACCEPTED)
+//     - Verifier (AUTH_NULL)
+//     - AcceptStat = 2 (PROG_MISMATCH)
+//  3. Mismatch Info (8 bytes, XDR encoded):
+//     - Low: uint32 (lowest supported version)
+//     - High: uint32 (highest supported version)
+//
+// Parameters:
+//   - xid: Transaction ID from the original RPC call (must match)
+//   - low: Lowest version number supported by this program
+//   - high: Highest version number supported by this program
+//
+// Returns:
+//   - []byte: Complete RPC reply ready to send on the wire
+//   - error: Encoding error if reply marshaling fails
+//
+// Example usage:
+//
+//	// Client requested NFSv4 but we only support NFSv3
+//	reply, err := rpc.MakeProgMismatchReply(call.XID, 3, 3)
+//	if err != nil {
+//	    return err
+//	}
+//	conn.Write(reply)
+func MakeProgMismatchReply(xid uint32, low uint32, high uint32) ([]byte, error) {
+	// Construct the RPC reply header with PROG_MISMATCH status
+	reply := RPCReplyMessage{
+		XID:        xid,            // Echo back the transaction ID from the call
+		MsgType:    RPCReply,       // 1 = REPLY
+		ReplyState: RPCMsgAccepted, // 0 = MSG_ACCEPTED (call was accepted)
+
+		// AUTH_NULL verifier (no authentication in reply)
+		Verf: OpaqueAuth{
+			Flavor: AuthNull, // 0 = AUTH_NULL
+			Body:   []byte{},
+		},
+
+		AcceptStat: RPCProgMismatch, // 2 = PROG_MISMATCH
+	}
+
+	// Pre-allocate buffer for reply header + mismatch info
+	// Reply header: ~28 bytes, Mismatch info: 8 bytes (2 uint32s)
+	replyHeaderSize := 28
+	mismatchInfoSize := 8
+	estimatedSize := replyHeaderSize + mismatchInfoSize
+	buf := bytes.NewBuffer(make([]byte, 0, estimatedSize))
+
+	// Marshal the reply header using XDR encoding
+	_, err := xdr.Marshal(buf, &reply)
+	if err != nil {
+		return nil, fmt.Errorf("marshal prog mismatch reply: %w", err)
+	}
+
+	// Append mismatch_info structure (low and high version numbers)
+	// Per RFC 5531, this follows the AcceptStat field when stat = PROG_MISMATCH
+	// XDR encoding: two consecutive uint32 values in network byte order
+	if err := binary.Write(buf, binary.BigEndian, low); err != nil {
+		return nil, fmt.Errorf("write low version: %w", err)
+	}
+	if err := binary.Write(buf, binary.BigEndian, high); err != nil {
+		return nil, fmt.Errorf("write high version: %w", err)
+	}
+
+	// Prepend RPC fragment header (4 bytes)
+	replyData := buf.Bytes()
+	fragmentHeader := make([]byte, 4)
+
+	// Set high bit (0x80000000) to indicate last fragment
+	// OR with length to combine both fields
+	binary.BigEndian.PutUint32(fragmentHeader, 0x80000000|uint32(len(replyData)))
+
+	// Combine fragment header and reply data
+	result := make([]byte, 0, 4+len(replyData))
+	result = append(result, fragmentHeader...)
+	result = append(result, replyData...)
+	return result, nil
+}
+
 // XdrPadding calculates the number of padding bytes needed for XDR alignment.
 //
 // XDR (External Data Representation) requires all data to be aligned on
