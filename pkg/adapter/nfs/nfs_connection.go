@@ -271,6 +271,48 @@ func (c *NFSConnection) readRPCMessage(length uint32) ([]byte, error) {
 	return message, nil
 }
 
+// handleUnsupportedVersion handles version mismatch for NFS/Mount protocols.
+//
+// This method logs a warning about the unsupported version and returns an
+// appropriate response. For NFSv4, it closes the connection to work around
+// a macOS kernel bug. For other versions, it sends an RFC 5531-compliant
+// PROG_MISMATCH reply.
+//
+// Parameters:
+//   - call: The RPC call with the unsupported version
+//   - supportedVersion: The version we support (e.g., 3 for NFSv3)
+//   - programName: Name for logging ("NFS" or "Mount")
+//   - clientAddr: Client address for logging
+//
+// Returns:
+//   - error: Always returns an error (either connection closed or reply sent)
+func (c *NFSConnection) handleUnsupportedVersion(call *rpc.RPCCallMessage, supportedVersion uint32, programName string, clientAddr string) error {
+	logger.Warn("Unsupported "+programName+" version",
+		"requested", call.Version,
+		"supported", supportedVersion,
+		"xid", fmt.Sprintf("0x%x", call.XID),
+		"client", clientAddr)
+
+	// WORKAROUND: macOS's NFS kernel module has a bug that causes a kernel
+	// panic (null pointer dereference in com.apple.filesystems.nfs) when
+	// receiving PROG_MISMATCH replies for NFSv4 requests. To avoid crashing
+	// the client's machine, we close the TCP connection instead of sending
+	// the RFC-compliant PROG_MISMATCH reply for NFSv4.
+	// For other versions (e.g., NFSv2), we send the proper PROG_MISMATCH.
+	if call.Version == rpc.NFSVersion4 {
+		_ = c.conn.Close()
+		return fmt.Errorf("unsupported %s version %d (only version %d supported) - closed connection to avoid macOS kernel bug",
+			programName, call.Version, supportedVersion)
+	}
+
+	// Per RFC 5531, respond with PROG_MISMATCH for unsupported versions
+	mismatchReply, err := rpc.MakeProgMismatchReply(call.XID, supportedVersion, supportedVersion)
+	if err != nil {
+		return fmt.Errorf("make version mismatch reply: %w", err)
+	}
+	return c.writeReply(call.XID, mismatchReply)
+}
+
 // handleRPCCall dispatches an RPC call to the appropriate handler.
 //
 // It routes calls to either NFS or MOUNT handlers based on the program number,
@@ -301,9 +343,19 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 
 	switch call.Program {
 	case rpc.ProgramNFS:
+		// Validate NFS version (we only support NFSv3)
+		if call.Version != rpc.NFSVersion3 {
+			return c.handleUnsupportedVersion(call, rpc.NFSVersion3, "NFS", clientAddr)
+		}
 		replyData, err = c.handleNFSProcedure(ctx, call, procedureData, clientAddr)
+
 	case rpc.ProgramMount:
+		// Validate Mount version (we only support version 3)
+		if call.Version != rpc.MountVersion3 {
+			return c.handleUnsupportedVersion(call, rpc.MountVersion3, "Mount", clientAddr)
+		}
 		replyData, err = c.handleMountProcedure(ctx, call, procedureData, clientAddr)
+
 	default:
 		logger.Debug("Unknown program", "program", call.Program)
 		// Send PROC_UNAVAIL error reply for unknown programs
@@ -311,7 +363,7 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 		if err != nil {
 			return fmt.Errorf("make error reply: %w", err)
 		}
-		return c.sendReply(call.XID, errorReply)
+		return c.writeReply(call.XID, errorReply)
 	}
 
 	if err != nil {
@@ -332,7 +384,7 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 		}
 
 		// Send the error reply to client
-		if sendErr := c.sendReply(call.XID, errorReply); sendErr != nil {
+		if sendErr := c.writeReply(call.XID, errorReply); sendErr != nil {
 			return fmt.Errorf("send error reply: %w", sendErr)
 		}
 
@@ -628,6 +680,33 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 // - Reply construction fails
 // - Network write fails
 func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
+	reply, err := rpc.MakeSuccessReply(xid, data)
+	if err != nil {
+		return fmt.Errorf("make reply: %w", err)
+	}
+
+	return c.writeReply(xid, reply)
+}
+
+// writeReply writes a complete RPC reply to the connection.
+//
+// This is the core method for sending replies. It handles:
+//   - Serializing writes with a mutex to prevent TCP stream corruption
+//   - Setting write deadlines for timeout handling
+//   - Logging the sent reply
+//
+// The reply parameter must be a complete RPC message including the fragment
+// header. Use this for pre-formatted replies from MakeSuccessReply,
+// MakeErrorReply, or MakeProgMismatchReply.
+//
+// Parameters:
+//   - xid: Transaction ID for logging purposes
+//   - reply: Complete RPC reply including fragment header
+//
+// Returns an error if:
+//   - Write deadline cannot be set
+//   - Network write fails
+func (c *NFSConnection) writeReply(xid uint32, reply []byte) error {
 	// Serialize all connection writes to prevent corruption
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -639,12 +718,7 @@ func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
 		}
 	}
 
-	reply, err := rpc.MakeSuccessReply(xid, data)
-	if err != nil {
-		return fmt.Errorf("make reply: %w", err)
-	}
-
-	_, err = c.conn.Write(reply)
+	_, err := c.conn.Write(reply)
 	if err != nil {
 		return fmt.Errorf("write reply: %w", err)
 	}

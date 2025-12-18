@@ -79,6 +79,26 @@ mount.nfs: Connection timed out
 
 ## Mount Issues
 
+### Invalid file system
+
+**Symptoms:**
+```
+mount: /mnt/nfs: invalid file system.
+```
+
+**Cause:** The mount point directory does not exist.
+
+**Solution:** Create the mount point before mounting:
+```bash
+# Linux
+sudo mkdir -p /mnt/nfs
+sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
+
+# macOS (use /tmp since /mnt doesn't exist, sudo not required)
+mkdir -p /tmp/nfs
+mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /tmp/nfs
+```
+
 ### Permission denied when mounting
 
 **Symptoms:**
@@ -95,7 +115,7 @@ mount.nfs: access denied by server while mounting
 
 2. **On macOS, use resvport option:**
    ```bash
-   sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport localhost:/export /mnt/test
+   sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport localhost:/export /mnt/test
    ```
 
 3. **Check export configuration:**

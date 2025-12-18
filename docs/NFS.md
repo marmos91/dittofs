@@ -17,13 +17,19 @@ DittoFS uses a fixed port and does not require portmapper/rpcbind.
 
 ```bash
 # Linux
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
+sudo mkdir -p /mnt/nfs
+sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
 
-# macOS (requires resvport)
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport localhost:/export /mnt/test
+# macOS (sudo not required)
+mkdir -p /tmp/nfs
+mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /tmp/nfs
+
+# macOS may require resvport on some configurations
+mount -t nfs -o tcp,port=12049,mountport=12049,resvport localhost:/export /tmp/nfs
 
 # Unmount
-sudo umount /mnt/test
+sudo umount /mnt/nfs   # Linux
+umount /tmp/nfs        # macOS
 ```
 
 ### Traditional Tools
@@ -147,7 +153,7 @@ Large I/O operations use buffer pools (`internal/protocol/nfs/bufpool.go`):
 ./dittofs start -log-level DEBUG
 
 # Mount and test operations
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
+sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/test
 cd /mnt/test
 
 # Test operations
