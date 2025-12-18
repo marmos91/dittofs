@@ -81,6 +81,9 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	if rootAttrCopy.Ctime.IsZero() {
 		rootAttrCopy.Ctime = now
 	}
+	if rootAttrCopy.CreationTime.IsZero() {
+		rootAttrCopy.CreationTime = now
+	}
 
 	// Create and store fileData for root directory
 	store.files[key] = &fileData{

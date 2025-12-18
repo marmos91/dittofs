@@ -86,8 +86,8 @@ const (
 	// NFS3ErrIO - I/O error
 	NFS3ErrIO = 5
 
-	// NFS3ErrAcces - Permission denied
-	NFS3ErrAcces = 13
+	// NFS3ErrAccess - Permission denied
+	NFS3ErrAccess = 13
 
 	// NFS3ErrExist - File exists
 	NFS3ErrExist = 17

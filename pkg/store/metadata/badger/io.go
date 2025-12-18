@@ -118,16 +118,17 @@ func (s *BadgerMetadataStore) PrepareWrite(
 
 		// Make a copy of current attributes for PreWriteAttr
 		preWriteAttr := &metadata.FileAttr{
-			Type:       file.Type,
-			Mode:       file.Mode,
-			UID:        file.UID,
-			GID:        file.GID,
-			Size:       file.Size,
-			Atime:      file.Atime,
-			Mtime:      file.Mtime,
-			Ctime:      file.Ctime,
-			ContentID:  file.ContentID,
-			LinkTarget: file.LinkTarget,
+			Type:         file.Type,
+			Mode:         file.Mode,
+			UID:          file.UID,
+			GID:          file.GID,
+			Size:         file.Size,
+			Atime:        file.Atime,
+			Mtime:        file.Mtime,
+			Ctime:        file.Ctime,
+			CreationTime: file.CreationTime,
+			ContentID:    file.ContentID,
+			LinkTarget:   file.LinkTarget,
 		}
 
 		// Create write operation

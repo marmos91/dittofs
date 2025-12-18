@@ -38,8 +38,8 @@ go.work.sum
 *.swo
 *~
 
-# Build artifacts
-dittofs
+# Build artifacts (binary at root level only)
+/dittofs
 
 # Temporary files
 tmp/

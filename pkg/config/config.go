@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
+	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 // Config represents the complete DittoFS configuration.
@@ -36,46 +38,57 @@ import (
 // and only the section matching the selected type is used.
 type Config struct {
 	// Logging controls log output behavior
-	Logging LoggingConfig `mapstructure:"logging"`
+	Logging LoggingConfig `mapstructure:"logging" yaml:"logging"`
 
 	// Telemetry controls OpenTelemetry distributed tracing
-	Telemetry TelemetryConfig `mapstructure:"telemetry"`
+	Telemetry TelemetryConfig `mapstructure:"telemetry" yaml:"telemetry"`
 
 	// Server contains server-wide settings
-	Server ServerConfig `mapstructure:"server"`
+	Server ServerConfig `mapstructure:"server" yaml:"server"`
 
 	// Content specifies the content store type and type-specific configuration
-	Content ContentConfig `mapstructure:"content"`
+	Content ContentConfig `mapstructure:"content" yaml:"content"`
 
 	// Metadata specifies the metadata store type and type-specific configuration
-	Metadata MetadataConfig `mapstructure:"metadata"`
+	Metadata MetadataConfig `mapstructure:"metadata" yaml:"metadata"`
 
 	// Cache specifies cache configuration for read and write buffering
-	Cache CacheConfig `mapstructure:"cache"`
+	Cache CacheConfig `mapstructure:"cache" yaml:"cache"`
+
+	// Groups defines DittoFS groups for permission management
+	// Groups can have share-level permissions that are inherited by members
+	Groups []GroupConfig `mapstructure:"groups" yaml:"groups"`
+
+	// Users defines DittoFS users for authentication and authorization
+	// Users can belong to groups and have explicit share permissions
+	Users []UserConfig `mapstructure:"users" yaml:"users"`
+
+	// Guest configures guest/anonymous access
+	Guest GuestUserConfig `mapstructure:"guest" yaml:"guest"`
 
 	// Shares defines the list of shares/exports available to clients
-	Shares []ShareConfig `mapstructure:"shares" validate:"dive"`
+	Shares []ShareConfig `mapstructure:"shares" validate:"dive" yaml:"shares"`
 
 	// Adapters contains protocol adapter configurations
-	Adapters AdaptersConfig `mapstructure:"adapters"`
+	Adapters AdaptersConfig `mapstructure:"adapters" yaml:"adapters"`
 
 	// GC contains garbage collection configuration
-	GC GCConfig `mapstructure:"gc"`
+	GC GCConfig `mapstructure:"gc" yaml:"gc"`
 }
 
 // LoggingConfig controls logging behavior.
 type LoggingConfig struct {
 	// Level is the minimum log level to output
 	// Valid values: DEBUG, INFO, WARN, ERROR (case-insensitive, normalized to uppercase)
-	Level string `mapstructure:"level" validate:"required,oneof=DEBUG INFO WARN ERROR debug info warn error"`
+	Level string `mapstructure:"level" validate:"required,oneof=DEBUG INFO WARN ERROR debug info warn error" yaml:"level"`
 
 	// Format specifies the log output format
 	// Valid values: text, json
-	Format string `mapstructure:"format" validate:"required,oneof=text json"`
+	Format string `mapstructure:"format" validate:"required,oneof=text json" yaml:"format"`
 
 	// Output specifies where logs are written
 	// Valid values: stdout, stderr, or a file path
-	Output string `mapstructure:"output" validate:"required"`
+	Output string `mapstructure:"output" validate:"required" yaml:"output"`
 }
 
 // TelemetryConfig controls OpenTelemetry distributed tracing.
@@ -84,24 +97,24 @@ type LoggingConfig struct {
 type TelemetryConfig struct {
 	// Enabled controls whether distributed tracing is enabled
 	// Default: false (opt-in for telemetry)
-	Enabled bool `mapstructure:"enabled"`
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 
 	// Endpoint is the OTLP collector endpoint (host:port)
 	// Default: "localhost:4317" (standard OTLP gRPC port)
-	Endpoint string `mapstructure:"endpoint"`
+	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
 
 	// Insecure controls whether to use insecure (non-TLS) connection
 	// Default: true (for local development)
 	// Set to false in production with a TLS-enabled collector
-	Insecure bool `mapstructure:"insecure"`
+	Insecure bool `mapstructure:"insecure" yaml:"insecure"`
 
 	// SampleRate controls the trace sampling rate (0.0 to 1.0)
 	// 1.0 = sample all traces, 0.5 = sample 50%, 0.0 = no sampling
 	// Default: 1.0 (sample all)
-	SampleRate float64 `mapstructure:"sample_rate" validate:"omitempty,gte=0,lte=1"`
+	SampleRate float64 `mapstructure:"sample_rate" validate:"omitempty,gte=0,lte=1" yaml:"sample_rate"`
 
 	// Profiling contains Pyroscope continuous profiling configuration
-	Profiling ProfilingConfig `mapstructure:"profiling"`
+	Profiling ProfilingConfig `mapstructure:"profiling" yaml:"profiling"`
 }
 
 // ProfilingConfig controls Pyroscope continuous profiling.
@@ -110,46 +123,46 @@ type TelemetryConfig struct {
 type ProfilingConfig struct {
 	// Enabled controls whether continuous profiling is enabled
 	// Default: false (opt-in for profiling)
-	Enabled bool `mapstructure:"enabled"`
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 
 	// Endpoint is the Pyroscope server endpoint (URL)
 	// Default: "http://localhost:4040" (standard Pyroscope port)
-	Endpoint string `mapstructure:"endpoint"`
+	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
 
 	// ProfileTypes specifies which profile types to collect
 	// Valid values: cpu, alloc_objects, alloc_space, inuse_objects, inuse_space,
 	//               goroutines, mutex_count, mutex_duration, block_count, block_duration
 	// Default: ["cpu", "alloc_objects", "alloc_space", "inuse_objects", "inuse_space", "goroutines"]
-	ProfileTypes []string `mapstructure:"profile_types"`
+	ProfileTypes []string `mapstructure:"profile_types" yaml:"profile_types"`
 }
 
 // ServerConfig contains server-wide settings.
 type ServerConfig struct {
 	// ShutdownTimeout is the maximum time to wait for graceful shutdown
-	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout" validate:"required,gt=0"`
+	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout" validate:"required,gt=0" yaml:"shutdown_timeout"`
 
 	// Metrics contains Prometheus metrics server configuration
-	Metrics MetricsConfig `mapstructure:"metrics"`
+	Metrics MetricsConfig `mapstructure:"metrics" yaml:"metrics"`
 }
 
 // MetricsConfig configures the Prometheus metrics HTTP server.
 // When Enabled is false, no metrics are collected (zero overhead).
 type MetricsConfig struct {
 	// Enabled controls whether metrics collection and HTTP server are enabled
-	Enabled bool `mapstructure:"enabled"`
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 
 	// Port is the HTTP port for the metrics endpoint
 	// Default: 9090
-	Port int `mapstructure:"port" validate:"omitempty,min=1,max=65535"`
+	Port int `mapstructure:"port" validate:"omitempty,min=1,max=65535" yaml:"port"`
 }
 
 // ContentConfig specifies content store configuration with named stores.
 type ContentConfig struct {
 	// Global settings that apply to all content stores
-	Global ContentGlobalConfig `mapstructure:"global"`
+	Global ContentGlobalConfig `mapstructure:"global" yaml:"global"`
 
 	// Named content store instances
-	Stores map[string]ContentStoreConfig `mapstructure:"stores"`
+	Stores map[string]ContentStoreConfig `mapstructure:"stores" yaml:"stores"`
 }
 
 // ContentGlobalConfig contains global settings for all content stores.
@@ -161,100 +174,100 @@ type ContentGlobalConfig struct {
 type ContentStoreConfig struct {
 	// Type specifies which content store implementation to use
 	// Valid values: filesystem, memory, s3
-	Type string `mapstructure:"type" validate:"required,oneof=filesystem memory s3"`
+	Type string `mapstructure:"type" validate:"required,oneof=filesystem memory s3" yaml:"type"`
 
 	// Filesystem contains filesystem-specific configuration
 	// Only used when Type = "filesystem"
-	Filesystem map[string]any `mapstructure:"filesystem"`
+	Filesystem map[string]any `mapstructure:"filesystem" yaml:"filesystem"`
 
 	// Memory contains memory-specific configuration
 	// Only used when Type = "memory"
-	Memory map[string]any `mapstructure:"memory"`
+	Memory map[string]any `mapstructure:"memory" yaml:"memory"`
 
 	// S3 contains S3-specific configuration
 	// Only used when Type = "s3"
-	S3 map[string]any `mapstructure:"s3"`
+	S3 map[string]any `mapstructure:"s3" yaml:"s3"`
 }
 
 // MetadataConfig specifies metadata store configuration with named stores.
 type MetadataConfig struct {
 	// Global settings that apply to all metadata stores
-	Global MetadataGlobalConfig `mapstructure:"global"`
+	Global MetadataGlobalConfig `mapstructure:"global" yaml:"global"`
 
 	// Named metadata store instances
-	Stores map[string]MetadataStoreConfig `mapstructure:"stores"`
+	Stores map[string]MetadataStoreConfig `mapstructure:"stores" yaml:"stores"`
 }
 
 // MetadataGlobalConfig contains global settings for all metadata stores.
 type MetadataGlobalConfig struct {
 	// FilesystemCapabilities defines filesystem capabilities and limits
-	FilesystemCapabilities metadata.FilesystemCapabilities `mapstructure:"filesystem_capabilities"`
+	FilesystemCapabilities metadata.FilesystemCapabilities `mapstructure:"filesystem_capabilities" yaml:"filesystem_capabilities"`
 }
 
 // MetadataStoreConfig defines a single metadata store instance.
 type MetadataStoreConfig struct {
 	// Type specifies which metadata store implementation to use
 	// Valid values: memory, badger, postgres
-	Type string `mapstructure:"type" validate:"required,oneof=memory badger postgres"`
+	Type string `mapstructure:"type" validate:"required,oneof=memory badger postgres" yaml:"type"`
 
 	// Memory contains memory-specific configuration
 	// Only used when Type = "memory"
-	Memory map[string]any `mapstructure:"memory"`
+	Memory map[string]any `mapstructure:"memory" yaml:"memory"`
 
 	// Badger contains BadgerDB-specific configuration
 	// Only used when Type = "badger"
-	Badger map[string]any `mapstructure:"badger"`
+	Badger map[string]any `mapstructure:"badger" yaml:"badger"`
 
 	// Postgres contains PostgreSQL-specific configuration
 	// Only used when Type = "postgres"
-	Postgres map[string]any `mapstructure:"postgres"`
+	Postgres map[string]any `mapstructure:"postgres" yaml:"postgres"`
 }
 
 // CacheConfig specifies cache configuration with named cache instances.
 type CacheConfig struct {
 	// Named cache instances
-	Stores map[string]CacheStoreConfig `mapstructure:"stores"`
+	Stores map[string]CacheStoreConfig `mapstructure:"stores" yaml:"stores"`
 }
 
 // CacheStoreConfig defines a single cache instance.
 type CacheStoreConfig struct {
 	// Type specifies which cache implementation to use
 	// Valid values: memory, filesystem
-	Type string `mapstructure:"type" validate:"required,oneof=memory filesystem"`
+	Type string `mapstructure:"type" validate:"required,oneof=memory filesystem" yaml:"type"`
 
 	// Memory contains memory-specific configuration
 	// Only used when Type = "memory"
-	Memory map[string]any `mapstructure:"memory"`
+	Memory map[string]any `mapstructure:"memory" yaml:"memory"`
 
 	// Filesystem contains filesystem-specific configuration
 	// Only used when Type = "filesystem"
-	Filesystem map[string]any `mapstructure:"filesystem"`
+	Filesystem map[string]any `mapstructure:"filesystem" yaml:"filesystem"`
 
 	// Prefetch contains read prefetch configuration
-	Prefetch PrefetchConfig `mapstructure:"prefetch"`
+	Prefetch PrefetchConfig `mapstructure:"prefetch" yaml:"prefetch"`
 
 	// Flusher contains background flusher configuration
-	Flusher FlusherConfig `mapstructure:"flusher"`
+	Flusher FlusherConfig `mapstructure:"flusher" yaml:"flusher"`
 }
 
 // PrefetchConfig configures read prefetch behavior.
 // Prefetch proactively loads file content into cache on first read.
 type PrefetchConfig struct {
 	// Enabled controls whether prefetch is enabled (default: true)
-	Enabled *bool `mapstructure:"enabled"`
+	Enabled *bool `mapstructure:"enabled" yaml:"enabled"`
 
 	// MaxFileSize is the maximum file size to prefetch.
 	// Files larger than this are not prefetched to avoid cache thrashing.
 	// Supports human-readable formats: "100Mi", "1Gi", etc.
 	// Default: 100MB (100 * 1024 * 1024)
-	MaxFileSize bytesize.ByteSize `mapstructure:"max_file_size"`
+	MaxFileSize bytesize.ByteSize `mapstructure:"max_file_size" yaml:"max_file_size"`
 
 	// ChunkSize is the size of each chunk read during prefetch.
 	// Larger chunks = fewer requests but longer wait before unblocking reads.
 	// Smaller chunks = more requests but faster unblocking of waiting reads.
 	// Supports human-readable formats: "512Ki", "1Mi", etc.
 	// Default: 512KB (512 * 1024)
-	ChunkSize bytesize.ByteSize `mapstructure:"chunk_size"`
+	ChunkSize bytesize.ByteSize `mapstructure:"chunk_size" yaml:"chunk_size"`
 }
 
 // FlusherConfig configures background flusher behavior.
@@ -264,30 +277,103 @@ type PrefetchConfig struct {
 type FlusherConfig struct {
 	// SweepInterval is how often to check for idle files.
 	// Default: 10s
-	SweepInterval time.Duration `mapstructure:"sweep_interval"`
+	SweepInterval time.Duration `mapstructure:"sweep_interval" yaml:"sweep_interval"`
 
 	// FlushTimeout is how long a file must be idle before flushing.
 	// This is the key NFS async write timeout - files are considered "done"
 	// when no writes have occurred for this duration.
 	// Default: 30s
-	FlushTimeout time.Duration `mapstructure:"flush_timeout"`
+	FlushTimeout time.Duration `mapstructure:"flush_timeout" yaml:"flush_timeout"`
 
 	// FlushPoolSize is how many files to flush in parallel.
 	// Higher values improve throughput when many files are idle.
 	// Default: 4
-	FlushPoolSize int `mapstructure:"flush_pool_size"`
+	FlushPoolSize int `mapstructure:"flush_pool_size" yaml:"flush_pool_size"`
+}
+
+// GroupConfig defines a DittoFS group in configuration.
+type GroupConfig struct {
+	// Name is the unique identifier for the group
+	Name string `mapstructure:"name" validate:"required" yaml:"name"`
+
+	// GID is the Unix group ID
+	GID uint32 `mapstructure:"gid" validate:"required" yaml:"gid"`
+
+	// SID is the Windows Security Identifier (auto-generated if empty)
+	SID string `mapstructure:"sid,omitempty" yaml:"sid,omitempty"`
+
+	// SharePermissions maps share names to permission levels
+	SharePermissions map[string]string `mapstructure:"share_permissions" yaml:"share_permissions"`
+
+	// Description is an optional description of the group
+	Description string `mapstructure:"description,omitempty" yaml:"description,omitempty"`
+}
+
+// UserConfig defines a DittoFS user in configuration.
+type UserConfig struct {
+	// Username is the unique identifier for the user
+	Username string `mapstructure:"username" validate:"required" yaml:"username"`
+
+	// PasswordHash is the bcrypt hash of the user's password
+	PasswordHash string `mapstructure:"password_hash" validate:"required" yaml:"password_hash"`
+
+	// Enabled indicates whether the user account is active
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+
+	// UID is the Unix user ID
+	UID uint32 `mapstructure:"uid" validate:"required" yaml:"uid"`
+
+	// GID is the primary Unix group ID
+	GID uint32 `mapstructure:"gid" validate:"required" yaml:"gid"`
+
+	// GIDs is a list of supplementary Unix group IDs
+	GIDs []uint32 `mapstructure:"gids,omitempty" yaml:"gids,omitempty"`
+
+	// SID is the Windows Security Identifier (auto-generated if empty)
+	SID string `mapstructure:"sid,omitempty" yaml:"sid,omitempty"`
+
+	// GroupSIDs is a list of Windows group Security Identifiers
+	GroupSIDs []string `mapstructure:"group_sids,omitempty" yaml:"group_sids,omitempty"`
+
+	// Groups is a list of DittoFS group names this user belongs to
+	Groups []string `mapstructure:"groups,omitempty" yaml:"groups,omitempty"`
+
+	// SharePermissions maps share names to explicit permission levels
+	// These take precedence over group permissions
+	SharePermissions map[string]string `mapstructure:"share_permissions,omitempty" yaml:"share_permissions,omitempty"`
+
+	// DisplayName is the human-readable name for the user
+	DisplayName string `mapstructure:"display_name,omitempty" yaml:"display_name,omitempty"`
+
+	// Email is the user's email address
+	Email string `mapstructure:"email,omitempty" yaml:"email,omitempty"`
+}
+
+// GuestUserConfig configures guest/anonymous access.
+type GuestUserConfig struct {
+	// Enabled indicates whether guest access is allowed
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+
+	// UID is the Unix user ID for guest operations
+	UID uint32 `mapstructure:"uid" yaml:"uid"`
+
+	// GID is the Unix group ID for guest operations
+	GID uint32 `mapstructure:"gid" yaml:"gid"`
+
+	// SharePermissions maps share names to permission levels for guests
+	SharePermissions map[string]string `mapstructure:"share_permissions" yaml:"share_permissions"`
 }
 
 // ShareConfig defines a single share/export.
 type ShareConfig struct {
 	// Name is the share path (e.g., "/export")
-	Name string `mapstructure:"name" validate:"required,startswith=/"`
+	Name string `mapstructure:"name" validate:"required,startswith=/" yaml:"name"`
 
 	// MetadataStore is the name of the metadata store to use for this share
-	MetadataStore string `mapstructure:"metadata_store" validate:"required"`
+	MetadataStore string `mapstructure:"metadata_store" validate:"required" yaml:"metadata_store"`
 
 	// ContentStore is the name of the content store to use for this share
-	ContentStore string `mapstructure:"content_store" validate:"required"`
+	ContentStore string `mapstructure:"content_store" validate:"required" yaml:"content_store"`
 
 	// Cache is the name of the unified cache for this share (optional)
 	// The unified cache serves both reads and writes:
@@ -295,76 +381,89 @@ type ShareConfig struct {
 	// - COMMIT flushes to content store (StateUploading → StateCached)
 	// - Reads check cache first, populate on miss
 	// If empty, caching is disabled (sync writes, no read caching)
-	Cache string `mapstructure:"cache"`
+	Cache string `mapstructure:"cache" yaml:"cache"`
 
 	// ReadOnly makes the share read-only if true
-	ReadOnly bool `mapstructure:"read_only"`
+	ReadOnly bool `mapstructure:"read_only" yaml:"read_only"`
+
+	// AllowGuest allows guest/anonymous access to this share
+	// Guest permissions are determined by the guest configuration
+	AllowGuest bool `mapstructure:"allow_guest" yaml:"allow_guest"`
+
+	// DefaultPermission is the permission level for users without explicit/group permissions
+	// Valid values: none, read, read-write
+	// Default: none (users need explicit permission to access)
+	DefaultPermission string `mapstructure:"default_permission" validate:"omitempty,oneof=none read read-write" yaml:"default_permission"`
 
 	// AllowedClients lists IP addresses or CIDR ranges allowed to access
 	// Empty list means all clients are allowed
-	AllowedClients []string `mapstructure:"allowed_clients"`
+	AllowedClients []string `mapstructure:"allowed_clients" yaml:"allowed_clients"`
 
 	// DeniedClients lists IP addresses or CIDR ranges explicitly denied
 	// Takes precedence over AllowedClients
-	DeniedClients []string `mapstructure:"denied_clients"`
+	DeniedClients []string `mapstructure:"denied_clients" yaml:"denied_clients"`
 
 	// RequireAuth requires authentication if true
-	RequireAuth bool `mapstructure:"require_auth"`
+	RequireAuth bool `mapstructure:"require_auth" yaml:"require_auth"`
 
 	// AllowedAuthMethods lists allowed authentication methods
 	// Valid values: anonymous, unix
-	AllowedAuthMethods []string `mapstructure:"allowed_auth_methods" validate:"dive,oneof=anonymous unix"`
+	AllowedAuthMethods []string `mapstructure:"allowed_auth_methods" validate:"dive,oneof=anonymous unix" yaml:"allowed_auth_methods"`
 
 	// IdentityMapping configures user/group mapping
-	IdentityMapping IdentityMappingConfig `mapstructure:"identity_mapping" validate:"required"`
+	IdentityMapping IdentityMappingConfig `mapstructure:"identity_mapping" validate:"required" yaml:"identity_mapping"`
 
 	// RootDirectoryAttributes specifies attributes for the share root directory
 	// These define the permissions and ownership of the export root
-	RootDirectoryAttributes RootDirectoryAttributesConfig `mapstructure:"root_directory_attributes" validate:"required"`
+	RootDirectoryAttributes RootDirectoryAttributesConfig `mapstructure:"root_directory_attributes" validate:"required" yaml:"root_directory_attributes"`
 
 	// DumpRestricted restricts DUMP operations to allowed clients only
 	// DUMP is a mount protocol operation that lists active mounts for this share
-	DumpRestricted bool `mapstructure:"dump_restricted"`
+	DumpRestricted bool `mapstructure:"dump_restricted" yaml:"dump_restricted"`
 
 	// DumpAllowedClients lists IP addresses or CIDR ranges allowed to use DUMP
 	// Only used if DumpRestricted is true
 	// Empty list with DumpRestricted=true means no clients can use DUMP
-	DumpAllowedClients []string `mapstructure:"dump_allowed_clients"`
+	DumpAllowedClients []string `mapstructure:"dump_allowed_clients" yaml:"dump_allowed_clients"`
 }
 
 // IdentityMappingConfig controls user/group identity mapping.
 type IdentityMappingConfig struct {
 	// MapAllToAnonymous maps all users to anonymous (all_squash)
-	MapAllToAnonymous bool `mapstructure:"map_all_to_anonymous"`
+	MapAllToAnonymous bool `mapstructure:"map_all_to_anonymous" yaml:"map_all_to_anonymous"`
 
 	// MapPrivilegedToAnonymous maps root user to anonymous (root_squash)
-	MapPrivilegedToAnonymous bool `mapstructure:"map_privileged_to_anonymous"`
+	MapPrivilegedToAnonymous bool `mapstructure:"map_privileged_to_anonymous" yaml:"map_privileged_to_anonymous"`
 
 	// AnonymousUID is the UID to use for anonymous users
-	AnonymousUID uint32 `mapstructure:"anonymous_uid"`
+	AnonymousUID uint32 `mapstructure:"anonymous_uid" yaml:"anonymous_uid"`
 
 	// AnonymousGID is the GID to use for anonymous users
-	AnonymousGID uint32 `mapstructure:"anonymous_gid"`
+	AnonymousGID uint32 `mapstructure:"anonymous_gid" yaml:"anonymous_gid"`
 }
 
 // RootDirectoryAttributesConfig specifies the attributes for a share's root directory.
 // These attributes define the permissions and ownership of the export root.
 type RootDirectoryAttributesConfig struct {
 	// Mode is the Unix permission mode (e.g., 0755)
-	Mode uint32 `mapstructure:"mode" validate:"lte=511"` // 511 = 0777 in decimal
+	Mode uint32 `mapstructure:"mode" validate:"lte=511" yaml:"mode"` // 511 = 0777 in decimal
 
 	// UID is the owner user ID
-	UID uint32 `mapstructure:"uid"`
+	UID uint32 `mapstructure:"uid" yaml:"uid"`
 
 	// GID is the owner group ID
-	GID uint32 `mapstructure:"gid"`
+	GID uint32 `mapstructure:"gid" yaml:"gid"`
 }
 
 // AdaptersConfig contains all protocol adapter configurations.
 type AdaptersConfig struct {
 	// NFS contains NFS protocol configuration.
 	// Uses the nfs.NFSConfig type directly to avoid duplication.
-	NFS nfs.NFSConfig `mapstructure:"nfs"`
+	NFS nfs.NFSConfig `mapstructure:"nfs" yaml:"nfs"`
+
+	// SMB contains SMB protocol configuration.
+	// Uses the smb.SMBConfig type directly to avoid duplication.
+	SMB smb.SMBConfig `mapstructure:"smb" yaml:"smb"`
 }
 
 // GCConfig contains garbage collection configuration.
@@ -379,24 +478,24 @@ type AdaptersConfig struct {
 // implementation that supports the required interfaces.
 type GCConfig struct {
 	// Enabled controls whether garbage collection is active (default: false)
-	Enabled bool `mapstructure:"enabled"`
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 
 	// Interval is how often to run garbage collection (default: 24h)
 	// Format: duration string (e.g., "24h", "12h", "30m")
-	Interval time.Duration `mapstructure:"interval"`
+	Interval time.Duration `mapstructure:"interval" yaml:"interval"`
 
 	// Timeout is the maximum duration for a single GC run (default: 10m)
 	// For large deployments with millions of files, increase this value.
 	// Format: duration string (e.g., "10m", "30m", "1h")
-	Timeout time.Duration `mapstructure:"timeout"`
+	Timeout time.Duration `mapstructure:"timeout" yaml:"timeout"`
 
 	// BatchSize is how many orphaned items to delete per batch (default: 1000)
 	// S3 supports up to 1000 objects per DeleteObjects call
-	BatchSize int `mapstructure:"batch_size"`
+	BatchSize int `mapstructure:"batch_size" yaml:"batch_size"`
 
 	// DryRun mode logs what would be deleted without actually deleting (default: false)
 	// Useful for testing and validation
-	DryRun bool `mapstructure:"dry_run"`
+	DryRun bool `mapstructure:"dry_run" yaml:"dry_run"`
 }
 
 // Load loads configuration from file, environment, and defaults.
@@ -445,6 +544,30 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// SaveConfig saves the configuration to the specified file path.
+// The configuration is saved in YAML format using proper yaml tags.
+func SaveConfig(cfg *Config, path string) error {
+	// Create parent directory if it doesn't exist
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	// Use yaml.Marshal directly to respect yaml tags
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	// Write to file with restricted permissions (0600 = owner read/write only).
+	// This is important because config files may contain sensitive data like password hashes.
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("failed to write config file: %w", err)
+	}
+
+	return nil
 }
 
 // setupViper configures viper with environment variables and config file settings.

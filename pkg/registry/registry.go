@@ -8,6 +8,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/cache/flusher"
+	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
@@ -34,12 +35,13 @@ import (
 //	share, _ := reg.GetShare("/export")
 //	metaStore, _ := reg.GetMetadataStoreForShare("/export")
 type Registry struct {
-	mu       sync.RWMutex
-	metadata map[string]metadata.MetadataStore
-	content  map[string]content.ContentStore
-	caches   map[string]cache.Cache
-	shares   map[string]*Share
-	mounts   map[string]*MountInfo // key: clientAddr, value: mount info
+	mu        sync.RWMutex
+	metadata  map[string]metadata.MetadataStore
+	content   map[string]content.ContentStore
+	caches    map[string]cache.Cache
+	shares    map[string]*Share
+	mounts    map[string]*MountInfo // key: clientAddr, value: mount info
+	userStore identity.UserStore    // User/group management for authentication
 }
 
 // MountInfo represents an active NFS mount from a client.
@@ -200,6 +202,8 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 		Cache:                    config.Cache,
 		RootHandle:               rootHandle,
 		ReadOnly:                 config.ReadOnly,
+		AllowGuest:               config.AllowGuest,
+		DefaultPermission:        config.DefaultPermission,
 		AllowedClients:           config.AllowedClients,
 		DeniedClients:            config.DeniedClients,
 		RequireAuth:              config.RequireAuth,
@@ -576,4 +580,20 @@ func (r *Registry) ListMounts() []*MountInfo {
 		})
 	}
 	return mounts
+}
+
+// SetUserStore sets the user store for authentication and authorization.
+// This should be called during server initialization before handling requests.
+func (r *Registry) SetUserStore(store identity.UserStore) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.userStore = store
+}
+
+// GetUserStore returns the user store for authentication and authorization.
+// Returns nil if no user store has been configured.
+func (r *Registry) GetUserStore() identity.UserStore {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.userStore
 }

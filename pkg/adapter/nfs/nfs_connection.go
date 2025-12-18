@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -661,7 +662,11 @@ func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
 func (c *NFSConnection) handleConnectionClose() {
 	// Panic recovery - prevents a single connection from crashing the server
 	if r := recover(); r != nil {
-		logger.Error("Panic in connection handler", "address", c.conn.RemoteAddr().String(), "error", r)
+		stack := string(debug.Stack())
+		logger.Error("Panic in connection handler",
+			"address", c.conn.RemoteAddr().String(),
+			"error", r,
+			"stack", stack)
 	}
 
 	// Wait for all in-flight requests to complete before closing connection
@@ -679,6 +684,11 @@ func (c *NFSConnection) handleRequestPanic(clientAddr string, xid uint32) {
 	c.wg.Done()
 
 	if r := recover(); r != nil {
-		logger.Error("Panic in request handler", "address", clientAddr, "xid", fmt.Sprintf("0x%x", xid), "error", r)
+		stack := string(debug.Stack())
+		logger.Error("Panic in request handler",
+			"address", clientAddr,
+			"xid", fmt.Sprintf("0x%x", xid),
+			"error", r,
+			"stack", stack)
 	}
 }

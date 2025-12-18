@@ -5,6 +5,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
+	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/metrics"
 )
 
@@ -31,11 +32,11 @@ func CreateAdapters(cfg *Config, nfsMetrics metrics.NFSMetrics) ([]adapter.Adapt
 		adapters = append(adapters, nfsAdapter)
 	}
 
-	// Future adapters can be added here:
-	// if cfg.Adapters.SMB.Enabled {
-	//     smbAdapter := smb.New(cfg.Adapters.SMB)
-	//     adapters = append(adapters, smbAdapter)
-	// }
+	// Create SMB adapter if enabled
+	if cfg.Adapters.SMB.Enabled {
+		smbAdapter := smb.New(cfg.Adapters.SMB)
+		adapters = append(adapters, smbAdapter)
+	}
 
 	if len(adapters) == 0 {
 		return nil, fmt.Errorf("no adapters enabled in configuration")

@@ -24,8 +24,9 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 		SELECT
 			id, share_name, path,
 			file_type, mode, uid, gid, size,
-			atime, mtime, ctime,
-			content_id, link_target, device_major, device_minor
+			atime, mtime, ctime, creation_time,
+			content_id, link_target, device_major, device_minor,
+			hidden
 		FROM files
 		WHERE id = $1 AND share_name = $2
 	`
@@ -45,8 +46,9 @@ func (s *PostgresMetadataStore) getFileByID(ctx context.Context, id uuid.UUID, s
 		SELECT
 			id, share_name, path,
 			file_type, mode, uid, gid, size,
-			atime, mtime, ctime,
-			content_id, link_target, device_major, device_minor
+			atime, mtime, ctime, creation_time,
+			content_id, link_target, device_major, device_minor,
+			hidden
 		FROM files
 		WHERE id = $1 AND share_name = $2
 	`
@@ -73,8 +75,9 @@ func (s *PostgresMetadataStore) GetFileByContentID(ctx context.Context, contentI
 		SELECT
 			id, share_name, path,
 			file_type, mode, uid, gid, size,
-			atime, mtime, ctime,
-			content_id, link_target, device_major, device_minor
+			atime, mtime, ctime, creation_time,
+			content_id, link_target, device_major, device_minor,
+			hidden
 		FROM files
 		WHERE content_id = $1
 		LIMIT 1
@@ -139,8 +142,9 @@ func (s *PostgresMetadataStore) Lookup(ctx *metadata.AuthContext, parentHandle m
 		SELECT
 			f.id, f.share_name, f.path,
 			f.file_type, f.mode, f.uid, f.gid, f.size,
-			f.atime, f.mtime, f.ctime,
-			f.content_id, f.link_target, f.device_major, f.device_minor
+			f.atime, f.mtime, f.ctime, f.creation_time,
+			f.content_id, f.link_target, f.device_major, f.device_minor,
+			f.hidden
 		FROM files f
 		INNER JOIN parent_child_map pcm ON f.id = pcm.child_id
 		WHERE pcm.parent_id = $1 AND pcm.child_name = $2

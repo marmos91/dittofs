@@ -24,6 +24,11 @@ type AuthContext struct {
 	// ClientAddr is the network address of the client
 	// Format: "IP:port" or just "IP"
 	ClientAddr string
+
+	// ShareReadOnly indicates whether the user has read-only access to the share
+	// This is determined by share-level user permissions (identity.SharePermission)
+	// When true, all write operations to this share should be denied
+	ShareReadOnly bool
 }
 
 // IdentityMapping defines how client identities are transformed.

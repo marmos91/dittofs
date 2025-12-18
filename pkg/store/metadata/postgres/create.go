@@ -112,13 +112,13 @@ func (s *PostgresMetadataStore) createFile(
 		INSERT INTO files (
 			id, share_name, path,
 			file_type, mode, uid, gid, size,
-			atime, mtime, ctime,
+			atime, mtime, ctime, creation_time,
 			content_id, link_target, device_major, device_minor
 		) VALUES (
 			$1, $2, $3,
 			$4, $5, $6, $7, $8,
-			$9, $10, $11,
-			$12, $13, $14, $15
+			$9, $10, $11, $12,
+			$13, $14, $15, $16
 		)
 	`
 
@@ -134,6 +134,7 @@ func (s *PostgresMetadataStore) createFile(
 		attr.Atime,
 		attr.Mtime,
 		attr.Ctime,
+		attr.CreationTime,
 		contentID,
 		nil, // link_target (NULL for regular files)
 		nil, // device_major
@@ -191,15 +192,16 @@ func (s *PostgresMetadataStore) createFile(
 		ShareName: shareName,
 		Path:      filePath,
 		FileAttr: metadata.FileAttr{
-			Type:      metadata.FileTypeRegular,
-			Mode:      attr.Mode,
-			UID:       attr.UID,
-			GID:       attr.GID,
-			Size:      attr.Size,
-			Atime:     attr.Atime,
-			Mtime:     attr.Mtime,
-			Ctime:     attr.Ctime,
-			ContentID: metadata.ContentID(contentID),
+			Type:         metadata.FileTypeRegular,
+			Mode:         attr.Mode,
+			UID:          attr.UID,
+			GID:          attr.GID,
+			Size:         attr.Size,
+			Atime:        attr.Atime,
+			Mtime:        attr.Mtime,
+			Ctime:        attr.Ctime,
+			CreationTime: attr.CreationTime,
+			ContentID:    metadata.ContentID(contentID),
 		},
 	}
 
@@ -287,13 +289,13 @@ func (s *PostgresMetadataStore) createDirectory(
 		INSERT INTO files (
 			id, share_name, path,
 			file_type, mode, uid, gid, size,
-			atime, mtime, ctime,
+			atime, mtime, ctime, creation_time,
 			content_id, link_target, device_major, device_minor
 		) VALUES (
 			$1, $2, $3,
 			$4, $5, $6, $7, $8,
-			$9, $10, $11,
-			$12, $13, $14, $15
+			$9, $10, $11, $12,
+			$13, $14, $15, $16
 		)
 	`
 
@@ -309,6 +311,7 @@ func (s *PostgresMetadataStore) createDirectory(
 		attr.Atime,
 		attr.Mtime,
 		attr.Ctime,
+		attr.CreationTime,
 		nil, // content_id (NULL for directories)
 		nil, // link_target
 		nil, // device_major
@@ -366,14 +369,15 @@ func (s *PostgresMetadataStore) createDirectory(
 		ShareName: shareName,
 		Path:      dirPath,
 		FileAttr: metadata.FileAttr{
-			Type:  metadata.FileTypeDirectory,
-			Mode:  attr.Mode,
-			UID:   attr.UID,
-			GID:   attr.GID,
-			Size:  attr.Size,
-			Atime: attr.Atime,
-			Mtime: attr.Mtime,
-			Ctime: attr.Ctime,
+			Type:         metadata.FileTypeDirectory,
+			Mode:         attr.Mode,
+			UID:          attr.UID,
+			GID:          attr.GID,
+			Size:         attr.Size,
+			Atime:        attr.Atime,
+			Mtime:        attr.Mtime,
+			Ctime:        attr.Ctime,
+			CreationTime: attr.CreationTime,
 		},
 	}
 
@@ -471,13 +475,13 @@ func (s *PostgresMetadataStore) CreateFile(
 		INSERT INTO files (
 			id, share_name, path,
 			file_type, mode, uid, gid, size,
-			atime, mtime, ctime,
+			atime, mtime, ctime, creation_time,
 			content_id, link_target, device_major, device_minor
 		) VALUES (
 			$1, $2, $3,
 			$4, $5, $6, $7, $8,
-			$9, $10, $11,
-			$12, $13, $14, $15
+			$9, $10, $11, $12,
+			$13, $14, $15, $16
 		)
 	`
 
@@ -496,6 +500,7 @@ func (s *PostgresMetadataStore) CreateFile(
 		now,      // atime
 		now,      // mtime
 		now,      // ctime
+		now,      // creation_time
 		string(contentID),
 		nil, // link_target
 		nil, // device_major
@@ -558,15 +563,16 @@ func (s *PostgresMetadataStore) CreateFile(
 
 	// Build FileAttr
 	attr := &metadata.FileAttr{
-		Type:      metadata.FileTypeRegular,
-		Mode:      mode & 0o7777,
-		UID:       uid,
-		GID:       gid,
-		Size:      0,
-		Atime:     now,
-		Mtime:     now,
-		Ctime:     now,
-		ContentID: contentID,
+		Type:         metadata.FileTypeRegular,
+		Mode:         mode & 0o7777,
+		UID:          uid,
+		GID:          gid,
+		Size:         0,
+		Atime:        now,
+		Mtime:        now,
+		Ctime:        now,
+		CreationTime: now,
+		ContentID:    contentID,
 	}
 
 	return handle, attr, nil
@@ -663,13 +669,13 @@ func (s *PostgresMetadataStore) CreateDirectory(
 		INSERT INTO files (
 			id, share_name, path,
 			file_type, mode, uid, gid, size,
-			atime, mtime, ctime,
+			atime, mtime, ctime, creation_time,
 			content_id, link_target, device_major, device_minor
 		) VALUES (
 			$1, $2, $3,
 			$4, $5, $6, $7, $8,
-			$9, $10, $11,
-			$12, $13, $14, $15
+			$9, $10, $11, $12,
+			$13, $14, $15, $16
 		)
 	`
 
@@ -685,6 +691,7 @@ func (s *PostgresMetadataStore) CreateDirectory(
 		now,      // atime
 		now,      // mtime
 		now,      // ctime
+		now,      // creation_time
 		nil,      // content_id (NULL for directories)
 		nil,      // link_target
 		nil,      // device_major
@@ -747,14 +754,15 @@ func (s *PostgresMetadataStore) CreateDirectory(
 
 	// Build FileAttr
 	attr := &metadata.FileAttr{
-		Type:  metadata.FileTypeDirectory,
-		Mode:  mode & 0o7777,
-		UID:   uid,
-		GID:   gid,
-		Size:  0,
-		Atime: now,
-		Mtime: now,
-		Ctime: now,
+		Type:         metadata.FileTypeDirectory,
+		Mode:         mode & 0o7777,
+		UID:          uid,
+		GID:          gid,
+		Size:         0,
+		Atime:        now,
+		Mtime:        now,
+		Ctime:        now,
+		CreationTime: now,
 	}
 
 	return handle, attr, nil
@@ -766,8 +774,9 @@ func (s *PostgresMetadataStore) getFileByIDTx(ctx context.Context, tx pgx.Tx, id
 		SELECT
 			id, share_name, path,
 			file_type, mode, uid, gid, size,
-			atime, mtime, ctime,
-			content_id, link_target, device_major, device_minor
+			atime, mtime, ctime, creation_time,
+			content_id, link_target, device_major, device_minor,
+			hidden
 		FROM files
 		WHERE id = $1 AND share_name = $2
 		FOR UPDATE

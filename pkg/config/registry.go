@@ -79,6 +79,16 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 	}
 	logger.Info("Registered shares", "count", reg.CountShares())
 
+	// Step 5: Create and register user store (if users/groups configured)
+	if len(cfg.Users) > 0 || len(cfg.Groups) > 0 || cfg.Guest.Enabled {
+		userStore, err := cfg.CreateUserStore()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create user store: %w", err)
+		}
+		reg.SetUserStore(userStore)
+		logger.Info("Registered user store", "users", len(cfg.Users), "groups", len(cfg.Groups), "guest_enabled", cfg.Guest.Enabled)
+	}
+
 	return reg, nil
 }
 
@@ -198,6 +208,8 @@ func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 			ContentStore:             shareCfg.ContentStore,
 			Cache:                    shareCfg.Cache, // Unified cache
 			ReadOnly:                 shareCfg.ReadOnly,
+			AllowGuest:               shareCfg.AllowGuest,
+			DefaultPermission:        shareCfg.DefaultPermission,
 			AllowedClients:           shareCfg.AllowedClients,
 			DeniedClients:            shareCfg.DeniedClients,
 			RequireAuth:              shareCfg.RequireAuth,
