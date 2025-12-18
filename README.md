@@ -126,6 +126,30 @@ For Prometheus and Grafana monitoring stack, see [`monitoring/README.md`](monito
 > - `--profile s3-backend` expects BadgerDB metadata + S3 content
 > - `--profile postgres-backend` expects PostgreSQL metadata + filesystem content
 
+### Deploy with Kubernetes Operator
+
+DittoFS can be deployed on Kubernetes using our official operator:
+
+```bash
+# Install the operator (from the operator directory)
+cd operator
+make deploy
+
+# Create a DittoFS instance
+kubectl apply -f config/samples/dittofs_v1alpha1_dittofs.yaml
+
+# Check status
+kubectl get dittofs
+```
+
+The operator manages:
+- DittoFS deployment lifecycle
+- Configuration via Custom Resources
+- Persistent volume claims for metadata and content stores
+- Service exposure for NFS/SMB protocols
+
+See the [`operator/`](operator/) directory for detailed documentation and configuration options.
+
 ### Mount from Client
 
 ```bash
@@ -253,16 +277,17 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - [ ] Kerberos/LDAP/Active Directory integration
 
 **Kubernetes Integration**
+- [x] Kubernetes Operator for deployment
 - [ ] Health check endpoints
 - [ ] CSI driver implementation
-- [ ] Helm charts
-- [ ] Load testing
 
 **Advanced Features**
+- [ ] Sync between DittoFS replicas
+- [ ] Scan content stores to populate metadata stores
+- [ ] Admin REST API for users/permissions/shares/configs
+- [ ] Web UI for administration
 - [ ] NFSv4 support
 - [ ] Advanced caching strategies
-- [ ] Multi-region replication
-- [ ] Web dashboard for user management
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for complete roadmap.
 
