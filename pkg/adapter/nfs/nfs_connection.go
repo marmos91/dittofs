@@ -299,7 +299,7 @@ func (c *NFSConnection) handleUnsupportedVersion(call *rpc.RPCCallMessage, suppo
 	// the client's machine, we close the TCP connection instead of sending
 	// the RFC-compliant PROG_MISMATCH reply for NFSv4.
 	// For other versions (e.g., NFSv2), we send the proper PROG_MISMATCH.
-	if call.Version == 4 {
+	if call.Version == rpc.NFSVersion4 {
 		_ = c.conn.Close()
 		return fmt.Errorf("unsupported %s version %d (only version %d supported) - closed connection to avoid macOS kernel bug",
 			programName, call.Version, supportedVersion)
