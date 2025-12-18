@@ -305,8 +305,8 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 ```
 ┌─────────────────────────────────────────┐
 │         Protocol Adapters               │
-│   (NFS, SMB future, WebDAV future)      │
-│   pkg/adapter/{nfs,smb}/                │
+│            (NFS, SMB)                   │
+│       pkg/adapter/{nfs,smb}/            │
 └───────────────┬─────────────────────────┘
                 │
                 ▼

@@ -25,7 +25,7 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 ```
 ┌──────────────────────────────────────┐
 │       Protocol Adapters              │
-│   NFS ✅  SMB ✅  WebDAV(TBD)        │
+│         NFS ✅  SMB ✅               │
 └──────────────┬───────────────────────┘
                │
                ▼
@@ -265,8 +265,7 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 
 **SMB Protocol Enhancements**
 - [ ] Windows client compatibility testing
-- [ ] E2E test suite for SMB
-- [ ] SMB-specific metrics
+- [x] E2E test suite for SMB
 
 ### 🚀 Roadmap
 
