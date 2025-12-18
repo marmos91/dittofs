@@ -164,12 +164,6 @@ const (
 	SMB2OplockBreak    = CommandOplockBreak
 )
 
-// CommandName returns the string name of the command (legacy function).
-// Deprecated: Use Command.String() instead.
-func CommandName(cmd uint16) string {
-	return Command(cmd).String()
-}
-
 // =============================================================================
 // Header Flags
 // =============================================================================

@@ -259,18 +259,6 @@ func runStart() {
 	// Create DittoServer with registry and shutdown timeout
 	dittoSrv := dittoServer.New(reg, cfg.Server.ShutdownTimeout)
 
-	// TODO(Phase 4): Update GC to work with Registry and multiple stores
-	// The garbage collector currently expects single stores but we now have
-	// a registry with potentially multiple stores. This needs to be refactored
-	// to either:
-	// 1. Create one GC per store pair, or
-	// 2. Update GC to work with Registry directly
-	//
-	// For now, GC is disabled during the store-per-share refactor.
-	if cfg.GC.Enabled {
-		logger.Warn("Garbage collection temporarily disabled during store-per-share refactor")
-		logger.Warn("GC will be re-enabled in a future phase with multi-store support")
-	}
 	if metricsResult.Server != nil {
 		logger.Info("Metrics enabled", "port", cfg.Server.Metrics.Port)
 		dittoSrv.SetMetricsServer(metricsResult.Server)

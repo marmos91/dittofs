@@ -265,31 +265,3 @@ func (s Status) IsWarning() bool {
 func (s Status) Severity() int {
 	return int((uint32(s) >> 30) & 0x3)
 }
-
-// =============================================================================
-// Legacy Functions (for backward compatibility)
-// =============================================================================
-
-// StatusName returns a human-readable name for NT_STATUS codes.
-// Deprecated: Use Status.String() instead.
-func StatusName(status uint32) string {
-	return Status(status).String()
-}
-
-// IsSuccess returns true if the status indicates success.
-// Deprecated: Use Status.IsSuccess() instead.
-func IsSuccess(status uint32) bool {
-	return Status(status).IsSuccess()
-}
-
-// IsError returns true if the status indicates an error.
-// Deprecated: Use Status.IsError() instead.
-func IsError(status uint32) bool {
-	return Status(status).IsError()
-}
-
-// IsWarning returns true if the status indicates a warning.
-// Deprecated: Use Status.IsWarning() instead.
-func IsWarning(status uint32) bool {
-	return Status(status).IsWarning()
-}
