@@ -18,6 +18,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
+// maxDirectoryReadBytes is the maximum number of bytes to request from the
+// metadata store when reading directory entries. This limits memory usage
+// for directories with many entries. 64KB is sufficient for most directory
+// listings while preventing excessive memory allocation.
+const maxDirectoryReadBytes uint32 = 65536
+
 // ============================================================================
 // Request and Response Structures
 // ============================================================================
@@ -383,10 +389,7 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	// Step 5: Read directory entries from metadata store
 	// ========================================================================
 
-	// Use a reasonable max size for directory entries
-	const maxBytes uint32 = 65536
-
-	page, err := metadataStore.ReadDirectory(authCtx, openFile.MetadataHandle, "", maxBytes)
+	page, err := metadataStore.ReadDirectory(authCtx, openFile.MetadataHandle, "", maxDirectoryReadBytes)
 	if err != nil {
 		logger.Debug("QUERY_DIRECTORY: failed to read directory", "path", openFile.Path, "error", err)
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil

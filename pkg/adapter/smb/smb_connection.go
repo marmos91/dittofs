@@ -158,10 +158,9 @@ func (c *SMBConnection) readRequest(ctx context.Context) (*header.SMB2Header, []
 	// Parse NetBIOS length (24-bit big-endian)
 	msgLen := uint32(nbHeader[1])<<16 | uint32(nbHeader[2])<<8 | uint32(nbHeader[3])
 
-	// Validate message size
-	const maxMessageSize = 64 * 1024 * 1024 // 64MB max (configurable later)
-	if msgLen > maxMessageSize {
-		return nil, nil, nil, fmt.Errorf("SMB message too large: %d bytes", msgLen)
+	// Validate message size (configurable via SMBConfig.MaxMessageSize)
+	if msgLen > uint32(c.server.config.MaxMessageSize) {
+		return nil, nil, nil, fmt.Errorf("SMB message too large: %d bytes (max %d)", msgLen, c.server.config.MaxMessageSize)
 	}
 
 	if msgLen < header.HeaderSize {

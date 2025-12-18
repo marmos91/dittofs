@@ -15,6 +15,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
+// seekBufferSize is the buffer size used when skipping bytes in a reader
+// that doesn't support seeking. This value balances memory usage against
+// the number of syscalls needed to skip large offsets. 8KB is chosen as
+// a reasonable trade-off for typical file read patterns.
+const seekBufferSize = 8192
+
 // ============================================================================
 // Request and Response Structures
 // ============================================================================
@@ -446,8 +452,6 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 			defer func() { _ = reader.Close() }()
 
 			// Skip to offset by reading and discarding bytes
-			// seekBufferSize is chosen to balance memory usage vs syscall overhead
-			const seekBufferSize = 8192
 			if req.Offset > 0 {
 				skipBuf := make([]byte, min(req.Offset, seekBufferSize))
 				remaining := req.Offset

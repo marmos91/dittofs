@@ -7,6 +7,12 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 )
 
+// DefaultMaxMessageSize is the default maximum allowed size for a single SMB2 message (64MB).
+// This provides DoS protection by rejecting oversized messages while allowing
+// large file operations. The SMB2 spec doesn't define a maximum, but 64MB is
+// generous for typical operations (most SMB2 messages are < 1MB).
+const DefaultMaxMessageSize = 64 * 1024 * 1024
+
 // SMBTimeoutsConfig groups all timeout-related configuration.
 type SMBTimeoutsConfig struct {
 	// Read is the maximum duration for reading a complete SMB2 request.
@@ -88,6 +94,12 @@ type SMBConfig struct {
 	// Credits configures SMB2 credit management behavior.
 	// Credits control flow control and parallelism per client.
 	Credits SMBCreditsConfig `mapstructure:"credits"`
+
+	// MaxMessageSize is the maximum allowed size for a single SMB2 message.
+	// This provides DoS protection by rejecting oversized messages.
+	// 0 means use the default (64MB).
+	// Recommended: 64MB for most deployments, lower for constrained environments.
+	MaxMessageSize int `mapstructure:"max_message_size" validate:"min=0"`
 }
 
 // SMBCreditsConfig configures SMB2 credit management.
@@ -170,6 +182,9 @@ func (c *SMBConfig) applyDefaults() {
 	}
 	if c.MetricsLogInterval == 0 {
 		c.MetricsLogInterval = 5 * time.Minute
+	}
+	if c.MaxMessageSize == 0 {
+		c.MaxMessageSize = DefaultMaxMessageSize
 	}
 
 	// Apply credit defaults
