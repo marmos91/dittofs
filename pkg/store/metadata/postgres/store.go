@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -53,25 +54,25 @@ func NewPostgresMetadataStore(
 	// Apply defaults
 	cfg.ApplyDefaults()
 
-	// Create logger
-	logger := slog.Default().With("component", "postgres_metadata_store")
+	// Create logger using internal logger
+	log := logger.With("component", "postgres_metadata_store")
 
 	// Create connection pool
-	pool, err := createConnectionPool(ctx, cfg, logger)
+	pool, err := createConnectionPool(ctx, cfg, log)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
 	// Run migrations if AutoMigrate is enabled
 	if cfg.AutoMigrate {
-		logger.Info("AutoMigrate is enabled, running migrations...")
-		if err := runMigrations(ctx, cfg.ConnectionString(), logger); err != nil {
+		log.Info("AutoMigrate is enabled, running migrations...")
+		if err := runMigrations(ctx, cfg.ConnectionString(), log); err != nil {
 			pool.Close()
 			return nil, fmt.Errorf("failed to run migrations: %w", err)
 		}
 	} else {
-		logger.Info("AutoMigrate is disabled, skipping migrations")
-		logger.Info("Run 'dittofs migrate' to apply migrations manually")
+		log.Info("AutoMigrate is disabled, skipping migrations")
+		log.Info("Run 'dittofs migrate' to apply migrations manually")
 	}
 
 	// Initialize filesystem capabilities in database
@@ -90,12 +91,12 @@ func NewPostgresMetadataStore(
 		statsCache: &statsCache{
 			ttl: cfg.StatsCacheTTL,
 		},
-		logger: logger,
+		logger: log,
 		ctx:    storeCtx,
 		cancel: cancel,
 	}
 
-	logger.Info("PostgreSQL metadata store initialized successfully",
+	log.Info("PostgreSQL metadata store initialized successfully",
 		"host", cfg.Host,
 		"database", cfg.Database,
 		"max_conns", cfg.MaxConns,

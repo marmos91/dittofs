@@ -365,6 +365,15 @@ func (s *BadgerMetadataStore) CreateSymlink(
 		return nil, err
 	}
 
+	// Decode parent handle before acquiring lock
+	_, parentID, err := metadata.DecodeFileHandle(parentHandle)
+	if err != nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "invalid parent handle",
+		}
+	}
+
 	// Check write permission BEFORE acquiring lock to avoid unlock/relock race
 	granted, err := s.CheckPermissions(ctx, parentHandle, metadata.PermissionWrite)
 	if err != nil {
@@ -377,17 +386,14 @@ func (s *BadgerMetadataStore) CreateSymlink(
 		}
 	}
 
+	// Lock parent directory to serialize concurrent operations
+	mu := s.lockDir(parentID.String())
+	defer s.unlockDir(parentID.String(), mu)
+
 	var newFile *metadata.File
 
 	err = s.db.Update(func(txn *badger.Txn) error {
 		// Verify parent exists and is a directory
-		_, parentID, err := metadata.DecodeFileHandle(parentHandle)
-		if err != nil {
-			return &metadata.StoreError{
-				Code:    metadata.ErrInvalidHandle,
-				Message: "invalid parent handle",
-			}
-		}
 		item, err := txn.Get(keyFile(parentID))
 		if err == badger.ErrKeyNotFound {
 			return &metadata.StoreError{
@@ -552,6 +558,15 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 		}
 	}
 
+	// Decode parent handle before acquiring lock
+	_, parentID, err := metadata.DecodeFileHandle(parentHandle)
+	if err != nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "invalid parent handle",
+		}
+	}
+
 	// Check write permission BEFORE acquiring lock to avoid unlock/relock race
 	granted, err := s.CheckPermissions(ctx, parentHandle, metadata.PermissionWrite)
 	if err != nil {
@@ -564,17 +579,14 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 		}
 	}
 
+	// Lock parent directory to serialize concurrent operations
+	mu := s.lockDir(parentID.String())
+	defer s.unlockDir(parentID.String(), mu)
+
 	var newFile *metadata.File
 
 	err = s.db.Update(func(txn *badger.Txn) error {
 		// Verify parent exists and is a directory
-		_, parentID, err := metadata.DecodeFileHandle(parentHandle)
-		if err != nil {
-			return &metadata.StoreError{
-				Code:    metadata.ErrInvalidHandle,
-				Message: "invalid parent handle",
-			}
-		}
 		item, err := txn.Get(keyFile(parentID))
 		if err == badger.ErrKeyNotFound {
 			return &metadata.StoreError{

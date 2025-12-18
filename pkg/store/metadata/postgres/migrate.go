@@ -11,6 +11,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver for database/sql
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/store/metadata/postgres/migrations"
 )
 
@@ -102,9 +103,9 @@ func RunMigrations(ctx context.Context, cfg *PostgresMetadataStoreConfig) error 
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	// Create logger for migration
-	logger := slog.Default()
+	// Create logger for migration using internal logger
+	log := logger.With("component", "postgres_migration")
 
 	// Run migrations
-	return runMigrations(ctx, cfg.ConnectionString(), logger)
+	return runMigrations(ctx, cfg.ConnectionString(), log)
 }

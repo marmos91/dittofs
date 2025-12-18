@@ -2,7 +2,6 @@ package badger
 
 import (
 	"fmt"
-	"sync"
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
@@ -378,18 +377,4 @@ func (s *BadgerMetadataStore) PrepareRead(
 	}
 
 	return readMeta, nil
-}
-
-// lockFile acquires a per-file mutex to serialize writes to the same file.
-// This prevents BadgerDB transaction conflicts when parallel requests modify the same file.
-func (s *BadgerMetadataStore) lockFile(fileID string) *sync.Mutex {
-	mu, _ := s.fileLocks.LoadOrStore(fileID, &sync.Mutex{})
-	fileMu := mu.(*sync.Mutex)
-	fileMu.Lock()
-	return fileMu
-}
-
-// unlockFile releases the per-file mutex.
-func (s *BadgerMetadataStore) unlockFile(_ string, mu *sync.Mutex) {
-	mu.Unlock()
 }
