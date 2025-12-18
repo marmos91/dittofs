@@ -785,11 +785,6 @@ ln file1 file2      # LINK (hard link)
    - No replication (except via S3 bucket replication)
    - Single point of failure
 
-8. **No garbage collection**:
-   - Orphaned content in S3/filesystem is not automatically cleaned up
-   - Manual cleanup may be needed if files are deleted while server is down
-   - Consider using S3 lifecycle policies for automatic cleanup
-
 See [docs/FAQ.md](docs/FAQ.md) and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for workarounds and more details.
 
 ## References

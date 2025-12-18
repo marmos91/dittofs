@@ -30,35 +30,6 @@ func (c *PasswordCredentials) Type() string {
 	return "password"
 }
 
-// NTLMCredentials represents NTLM authentication credentials.
-// Used for SMB SESSION_SETUP with NTLM authentication.
-type NTLMCredentials struct {
-	Username    string
-	Domain      string
-	Workstation string
-	NTResponse  []byte
-	LMResponse  []byte
-	Challenge   []byte
-}
-
-// Type returns "ntlm".
-func (c *NTLMCredentials) Type() string {
-	return "ntlm"
-}
-
-// KerberosCredentials represents Kerberos authentication credentials.
-// Used for future Kerberos/AD integration.
-type KerberosCredentials struct {
-	Principal string
-	Realm     string
-	Ticket    []byte
-}
-
-// Type returns "kerberos".
-func (c *KerberosCredentials) Type() string {
-	return "kerberos"
-}
-
 // UserIdentifier represents different ways to identify a user.
 type UserIdentifier struct {
 	Username string

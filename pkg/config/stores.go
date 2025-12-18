@@ -253,12 +253,13 @@ func createS3ContentStore(
 
 	// Build S3ContentStoreConfig
 	s3Cfg := s3.S3ContentStoreConfig{
-		Client:             client,
-		Bucket:             yamlCfg.Bucket,
-		KeyPrefix:          yamlCfg.KeyPrefix,
-		PartSize:           yamlCfg.PartSize.Uint64(),
-		MaxParallelUploads: yamlCfg.MaxParallelUploads,
-		Metrics:            promMetrics.NewS3Metrics(), // Enable S3 metrics collection
+		Client:                  client,
+		Bucket:                  yamlCfg.Bucket,
+		KeyPrefix:               yamlCfg.KeyPrefix,
+		PartSize:                yamlCfg.PartSize.Uint64(),
+		MaxParallelUploads:      yamlCfg.MaxParallelUploads,
+		Metrics:                 promMetrics.NewS3Metrics(), // Enable S3 metrics collection
+		BufferedDeletionEnabled: true,                       // Enable async deletion for better performance
 
 		// Retry configuration
 		MaxRetries:        yamlCfg.Retry.MaxRetries,

@@ -71,9 +71,6 @@ type Config struct {
 
 	// Adapters contains protocol adapter configurations
 	Adapters AdaptersConfig `mapstructure:"adapters" yaml:"adapters"`
-
-	// GC contains garbage collection configuration
-	GC GCConfig `mapstructure:"gc" yaml:"gc"`
 }
 
 // LoggingConfig controls logging behavior.
@@ -464,38 +461,6 @@ type AdaptersConfig struct {
 	// SMB contains SMB protocol configuration.
 	// Uses the smb.SMBConfig type directly to avoid duplication.
 	SMB smb.SMBConfig `mapstructure:"smb" yaml:"smb"`
-}
-
-// GCConfig contains garbage collection configuration.
-//
-// Garbage collection identifies and removes content that is no longer
-// referenced by any metadata (orphaned content). This can occur due to:
-//   - Server crashes during delete operations
-//   - Failed delete operations
-//   - Buffered deletions lost in memory
-//
-// The collector is generic and works with any MetadataStore and ContentStore
-// implementation that supports the required interfaces.
-type GCConfig struct {
-	// Enabled controls whether garbage collection is active (default: false)
-	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
-
-	// Interval is how often to run garbage collection (default: 24h)
-	// Format: duration string (e.g., "24h", "12h", "30m")
-	Interval time.Duration `mapstructure:"interval" yaml:"interval"`
-
-	// Timeout is the maximum duration for a single GC run (default: 10m)
-	// For large deployments with millions of files, increase this value.
-	// Format: duration string (e.g., "10m", "30m", "1h")
-	Timeout time.Duration `mapstructure:"timeout" yaml:"timeout"`
-
-	// BatchSize is how many orphaned items to delete per batch (default: 1000)
-	// S3 supports up to 1000 objects per DeleteObjects call
-	BatchSize int `mapstructure:"batch_size" yaml:"batch_size"`
-
-	// DryRun mode logs what would be deleted without actually deleting (default: false)
-	// Useful for testing and validation
-	DryRun bool `mapstructure:"dry_run" yaml:"dry_run"`
 }
 
 // Load loads configuration from file, environment, and defaults.
