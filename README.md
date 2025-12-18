@@ -154,11 +154,12 @@ See the [`operator/`](operator/) directory for detailed documentation and config
 
 ```bash
 # Linux
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
+sudo mkdir -p /mnt/nfs
+sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
 
-# macOS
-mkdir /tmp/nfs
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /tmp/nfs
+# macOS (sudo not required)
+mkdir -p /tmp/nfs
+mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /tmp/nfs
 ```
 
 ### Testing

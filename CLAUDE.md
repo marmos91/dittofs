@@ -113,14 +113,11 @@ sudo go test -tags=e2e -v ./test/e2e/ -run TestCreateFile_1MB
 
 ### NFS Client Testing
 ```bash
-# Mount on Linux (default port 12049)
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
-
-# Mount on macOS
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
+# Mount (Linux/macOS, default port 12049)
+sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/test
 
 # Mount with custom port (if configured differently)
-sudo mount -t nfs -o nfsvers=3,tcp,port=2049,mountport=2049 localhost:/export /mnt/test
+sudo mount -t nfs -o tcp,port=2049,mountport=2049 localhost:/export /mnt/test
 
 # Unmount
 sudo umount /mnt/test
@@ -737,7 +734,7 @@ sudo go test -v -run TestWriteThenReadBySize ./test/e2e/
 DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
 
 # Mount and test operations
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
+sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/test
 cd /mnt/test
 ls -la              # READDIR / READDIRPLUS
 cat readme.txt      # READ
