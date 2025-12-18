@@ -304,7 +304,6 @@ func (a *SMBAdapter) Stop(ctx context.Context) error {
 
 ### Future Work
 
-- WebDAV adapter
 - NFSv4 support
 - Advanced caching strategies
 - Multi-region replication

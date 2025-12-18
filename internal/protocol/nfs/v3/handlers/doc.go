@@ -24,7 +24,6 @@ type Handler struct {
 	Metrics metrics.NFSMetrics
 }
 
-
 // convertFileAttrToNFS converts metadata file attributes to NFS wire format.
 // Extracts the file ID from the handle and converts the attributes.
 func (h *Handler) convertFileAttrToNFS(fileHandle metadata.FileHandle, fileAttr *metadata.FileAttr) *types.NFSFileAttr {
