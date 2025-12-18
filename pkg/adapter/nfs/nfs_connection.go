@@ -310,7 +310,7 @@ func (c *NFSConnection) handleUnsupportedVersion(call *rpc.RPCCallMessage, suppo
 	if err != nil {
 		return fmt.Errorf("make version mismatch reply: %w", err)
 	}
-	return c.sendReply(call.XID, mismatchReply)
+	return c.writeReply(call.XID, mismatchReply)
 }
 
 // handleRPCCall dispatches an RPC call to the appropriate handler.
@@ -363,7 +363,7 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 		if err != nil {
 			return fmt.Errorf("make error reply: %w", err)
 		}
-		return c.sendReply(call.XID, errorReply)
+		return c.writeReply(call.XID, errorReply)
 	}
 
 	if err != nil {
@@ -384,7 +384,7 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 		}
 
 		// Send the error reply to client
-		if sendErr := c.sendReply(call.XID, errorReply); sendErr != nil {
+		if sendErr := c.writeReply(call.XID, errorReply); sendErr != nil {
 			return fmt.Errorf("send error reply: %w", sendErr)
 		}
 
@@ -680,6 +680,33 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 // - Reply construction fails
 // - Network write fails
 func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
+	reply, err := rpc.MakeSuccessReply(xid, data)
+	if err != nil {
+		return fmt.Errorf("make reply: %w", err)
+	}
+
+	return c.writeReply(xid, reply)
+}
+
+// writeReply writes a complete RPC reply to the connection.
+//
+// This is the core method for sending replies. It handles:
+//   - Serializing writes with a mutex to prevent TCP stream corruption
+//   - Setting write deadlines for timeout handling
+//   - Logging the sent reply
+//
+// The reply parameter must be a complete RPC message including the fragment
+// header. Use this for pre-formatted replies from MakeSuccessReply,
+// MakeErrorReply, or MakeProgMismatchReply.
+//
+// Parameters:
+//   - xid: Transaction ID for logging purposes
+//   - reply: Complete RPC reply including fragment header
+//
+// Returns an error if:
+//   - Write deadline cannot be set
+//   - Network write fails
+func (c *NFSConnection) writeReply(xid uint32, reply []byte) error {
 	// Serialize all connection writes to prevent corruption
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -691,12 +718,7 @@ func (c *NFSConnection) sendReply(xid uint32, data []byte) error {
 		}
 	}
 
-	reply, err := rpc.MakeSuccessReply(xid, data)
-	if err != nil {
-		return fmt.Errorf("make reply: %w", err)
-	}
-
-	_, err = c.conn.Write(reply)
+	_, err := c.conn.Write(reply)
 	if err != nil {
 		return fmt.Errorf("write reply: %w", err)
 	}
