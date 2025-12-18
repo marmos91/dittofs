@@ -5,10 +5,7 @@ package e2e
 import (
 	"context"
 	"os"
-	"os/exec"
 	"os/signal"
-	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 
@@ -34,7 +31,7 @@ func TestMain(m *testing.M) {
 	}()
 
 	// Cleanup any stale mounts from previous failed runs before starting
-	cleanupStaleMounts()
+	framework.CleanupStaleMounts()
 
 	// Run tests
 	code := m.Run()

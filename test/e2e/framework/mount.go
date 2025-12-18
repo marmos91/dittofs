@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,7 +37,8 @@ func MountNFS(t *testing.T, port int) *Mount {
 	}
 
 	// Build mount command parameters based on platform
-	mountOptions := fmt.Sprintf("nfsvers=3,tcp,port=%d,mountport=%d", port, port)
+	// actimeo=0 disables attribute caching for proper cross-protocol visibility in tests
+	mountOptions := fmt.Sprintf("nfsvers=3,tcp,port=%d,mountport=%d,actimeo=0", port, port)
 	var mountArgs []string
 
 	switch runtime.GOOS {
@@ -267,4 +269,55 @@ func WaitForServer(t *testing.T, port int, timeout time.Duration) {
 			}
 		}
 	}
+}
+
+// CleanupStaleMounts finds and unmounts any stale DittoFS test mounts.
+// This handles cases where tests timeout or panic without proper cleanup.
+func CleanupStaleMounts() {
+	// Find all dittofs test mount directories in /tmp
+	patterns := []string{
+		"/tmp/dittofs-test-*",
+		"/tmp/dittofs-e2e-*",
+		"/tmp/dittofs-interop-nfs-*",
+		"/tmp/dittofs-interop-smb-*",
+		"/tmp/dittofs-smb-*",
+		"/tmp/dittofs-cache-*",
+		"/tmp/dittofs-shared-*",
+	}
+
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+
+		for _, mountPath := range matches {
+			// Check if it's actually mounted
+			if isMounted(mountPath) {
+				// Try normal unmount first
+				cmd := exec.Command("umount", mountPath)
+				if err := cmd.Run(); err != nil {
+					// Force unmount if normal unmount fails
+					cmd = exec.Command("umount", "-f", mountPath)
+					_ = cmd.Run()
+				}
+			}
+
+			// Remove the directory if it exists and is empty
+			_ = os.Remove(mountPath)
+		}
+	}
+}
+
+// isMounted checks if a path is currently mounted
+func isMounted(path string) bool {
+	// Use mount command to check if path is mounted
+	cmd := exec.Command("mount")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	// Check if the path appears in mount output
+	return strings.Contains(string(output), path)
 }

@@ -174,8 +174,13 @@ func (tc *TestContext) setupStores() {
 func (tc *TestContext) startServer() {
 	tc.T.Helper()
 
-	// Initialize logger - use ERROR level for clean test output
-	logger.SetLevel("ERROR")
+	// Always use ERROR level for server logs to keep test output clean.
+	// Use DITTOFS_LOGGING_LEVEL env var to debug specific tests (e.g., DEBUG, INFO).
+	if level := os.Getenv("DITTOFS_LOGGING_LEVEL"); level != "" {
+		logger.SetLevel(level)
+	} else {
+		logger.SetLevel("ERROR")
+	}
 
 	// Create Registry
 	tc.Registry = registry.NewRegistry()

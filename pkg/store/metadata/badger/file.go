@@ -323,6 +323,10 @@ func (s *BadgerMetadataStore) SetFileAttributes(
 		}
 	}
 
+	// Lock file to serialize concurrent attribute modifications
+	mu := s.lockFile(fileID.String())
+	defer s.unlockFile(fileID.String(), mu)
+
 	return s.db.Update(func(txn *badger.Txn) error {
 		// Get file data
 		item, err := txn.Get(keyFile(fileID))
@@ -590,6 +594,10 @@ func (s *BadgerMetadataStore) Create(
 		}
 	}
 
+	// Lock parent directory to serialize concurrent creates in the same directory
+	mu := s.lockDir(parentID.String())
+	defer s.unlockDir(parentID.String(), mu)
+
 	var newFile *metadata.File
 
 	err = s.db.Update(func(txn *badger.Txn) error {
@@ -795,6 +803,10 @@ func (s *BadgerMetadataStore) CreateHardLink(
 			Message: "invalid target handle",
 		}
 	}
+
+	// Lock directory to serialize concurrent hard link operations in the same directory
+	mu := s.lockDir(dirID.String())
+	defer s.unlockDir(dirID.String(), mu)
 
 	return s.db.Update(func(txn *badger.Txn) error {
 		// Verify directory exists and is a directory
@@ -1011,6 +1023,10 @@ func (s *BadgerMetadataStore) Move(
 			Message: "invalid destination directory handle",
 		}
 	}
+
+	// Lock both directories in consistent order to prevent deadlock
+	locks := s.lockDirsOrdered(fromDirID.String(), toDirID.String())
+	defer s.unlockDirs(locks)
 
 	// Perform the move in a transaction
 	err = s.db.Update(func(txn *badger.Txn) error {

@@ -84,6 +84,11 @@ type BadgerMetadataStore struct {
 	// happen concurrently. Without serialization, they cause BadgerDB transaction conflicts.
 	// This map holds a mutex for each file ID that has active writes.
 	fileLocks sync.Map // map[string]*sync.Mutex (file ID -> mutex)
+
+	// dirLocks provides per-directory mutation serialization to prevent BadgerDB transaction conflicts.
+	// Operations that modify directory entries (Create, Remove, Move) acquire the parent directory lock.
+	// This ensures concurrent operations on the same directory are serialized deterministically.
+	dirLocks sync.Map // map[string]*sync.Mutex (directory UUID -> mutex)
 }
 
 // BadgerMetadataStoreConfig contains configuration for creating a BadgerDB metadata store.
