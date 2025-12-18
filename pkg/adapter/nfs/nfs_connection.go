@@ -302,14 +302,26 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 	switch call.Program {
 	case rpc.ProgramNFS:
 		// Validate NFS version (we only support NFSv3)
-		// Per RFC 5531, respond with PROG_MISMATCH for unsupported versions
 		if call.Version != rpc.NFSVersion3 {
-			logger.Debug("Unsupported NFS version",
+			logger.Warn("Unsupported NFS version",
 				"requested", call.Version,
 				"supported", rpc.NFSVersion3,
 				"xid", fmt.Sprintf("0x%x", call.XID),
 				"client", clientAddr)
 
+			// WORKAROUND: macOS's NFS kernel module has a bug that causes a kernel
+			// panic (null pointer dereference in com.apple.filesystems.nfs) when
+			// receiving PROG_MISMATCH replies for NFSv4 requests. To avoid crashing
+			// the client's machine, we close the TCP connection instead of sending
+			// the RFC-compliant PROG_MISMATCH reply for NFSv4.
+			// For other versions (e.g., NFSv2), we send the proper PROG_MISMATCH.
+			if call.Version == 4 {
+				// Close the TCP connection to force client to give up
+				_ = c.conn.Close()
+				return fmt.Errorf("unsupported NFS version %d (only NFSv3 supported) - closed connection to avoid macOS kernel bug", call.Version)
+			}
+
+			// Per RFC 5531, respond with PROG_MISMATCH for unsupported versions
 			mismatchReply, err := rpc.MakeProgMismatchReply(call.XID, rpc.NFSVersion3, rpc.NFSVersion3)
 			if err != nil {
 				return fmt.Errorf("make version mismatch reply: %w", err)
@@ -320,14 +332,20 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 
 	case rpc.ProgramMount:
 		// Validate Mount version (we only support version 3)
-		// Per RFC 5531, respond with PROG_MISMATCH for unsupported versions
 		if call.Version != rpc.MountVersion3 {
-			logger.Debug("Unsupported Mount version",
+			logger.Warn("Unsupported Mount version",
 				"requested", call.Version,
 				"supported", rpc.MountVersion3,
 				"xid", fmt.Sprintf("0x%x", call.XID),
 				"client", clientAddr)
 
+			// Same workaround for NFSv4-related mount requests
+			if call.Version == 4 {
+				_ = c.conn.Close()
+				return fmt.Errorf("unsupported Mount version %d (only version 3 supported) - closed connection to avoid macOS kernel bug", call.Version)
+			}
+
+			// Per RFC 5531, respond with PROG_MISMATCH for unsupported versions
 			mismatchReply, err := rpc.MakeProgMismatchReply(call.XID, rpc.MountVersion3, rpc.MountVersion3)
 			if err != nil {
 				return fmt.Errorf("make version mismatch reply: %w", err)
