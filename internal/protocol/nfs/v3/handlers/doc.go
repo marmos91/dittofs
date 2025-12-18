@@ -8,7 +8,6 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/pkg/metrics"
 	"github.com/marmos91/dittofs/pkg/registry"
-	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -25,49 +24,6 @@ type Handler struct {
 	Metrics metrics.NFSMetrics
 }
 
-// getMetadataStore retrieves the metadata store for the share specified in the context.
-// This helper consolidates the common pattern of:
-//  1. Checking if the share exists
-//  2. Getting the metadata store for the share
-//
-// Returns:
-//   - metadata.MetadataStore: The metadata store for the share
-//   - error: If the share doesn't exist or the store cannot be retrieved
-func (h *Handler) getMetadataStore(ctx *NFSHandlerContext) (metadata.MetadataStore, error) {
-	// Check if share exists
-	if !h.Registry.ShareExists(ctx.Share) {
-		return nil, fmt.Errorf("share not found: %s", ctx.Share)
-	}
-
-	// Get metadata store for this share
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		return nil, fmt.Errorf("cannot get metadata store for share %s: %w", ctx.Share, err)
-	}
-
-	return metadataStore, nil
-}
-
-// getContentStore retrieves the content store for the share specified in the context.
-// This helper is used by handlers that need to access file data (READ, WRITE, REMOVE, etc.).
-//
-// Returns:
-//   - content.ContentStore: The content store for the share
-//   - error: If the share doesn't exist or the store cannot be retrieved
-func (h *Handler) getContentStore(ctx *NFSHandlerContext) (content.ContentStore, error) {
-	// Check if share exists
-	if !h.Registry.ShareExists(ctx.Share) {
-		return nil, fmt.Errorf("share not found: %s", ctx.Share)
-	}
-
-	// Get content store for this share
-	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
-	if err != nil {
-		return nil, fmt.Errorf("cannot get content store for share %s: %w", ctx.Share, err)
-	}
-
-	return contentStore, nil
-}
 
 // convertFileAttrToNFS converts metadata file attributes to NFS wire format.
 // Extracts the file ID from the handle and converts the attributes.
@@ -165,7 +121,7 @@ func (h *Handler) buildAuthContextWithWCCError(
 // Returns MFsymlinkResult with detection result and modified attributes.
 func (h *Handler) checkMFsymlinkByHandle(ctx *NFSHandlerContext, fileHandle metadata.FileHandle) MFsymlinkResult {
 	// Get metadata store to retrieve file info
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		return MFsymlinkResult{IsMFsymlink: false}
 	}

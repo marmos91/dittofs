@@ -286,7 +286,7 @@ func (h *Handler) Commit(
 	// Step 3: Get metadata store from context
 	// ========================================================================
 
-	store, err := h.getMetadataStore(ctx)
+	store, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "COMMIT failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil

@@ -232,7 +232,7 @@ func (h *Handler) ReadLink(
 	// Step 2: Get metadata store from context
 	// ========================================================================
 
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "READLINK failed", "error", err, "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
 		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil

@@ -218,7 +218,7 @@ func (h *Handler) Link(
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrInval}}, nil
 	}
 
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "LINK failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil

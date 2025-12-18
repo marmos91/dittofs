@@ -239,7 +239,7 @@ func (h *Handler) Rmdir(
 	// Step 3: Get metadata store from context
 	// ========================================================================
 
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "RMDIR failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil

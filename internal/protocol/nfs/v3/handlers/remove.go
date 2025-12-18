@@ -225,14 +225,14 @@ func (h *Handler) Remove(
 	// Step 2: Get metadata and content stores from context
 	// ========================================================================
 
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "REMOVE failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
 	// Get content store for this share
-	contentStore, err := h.getContentStore(ctx)
+	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "REMOVE failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil

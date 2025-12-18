@@ -230,7 +230,7 @@ func (h *Handler) Mkdir(
 	// Step 2: Get metadata store from context
 	// ========================================================================
 
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "MKDIR failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return &MkdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil

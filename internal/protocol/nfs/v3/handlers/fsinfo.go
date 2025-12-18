@@ -182,7 +182,7 @@ func (h *Handler) FsInfo(
 	// Get metadata store from context
 	// ========================================================================
 
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "FSINFO failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", xdr.ExtractClientIP(ctx.ClientAddr))
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil

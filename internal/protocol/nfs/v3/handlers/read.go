@@ -257,13 +257,13 @@ func (h *Handler) Read(
 	// Step 2: Get metadata and content stores from context
 	// ========================================================================
 
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "READ failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
-	contentStore, err := h.getContentStore(ctx)
+	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "READ failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil

@@ -168,7 +168,7 @@ func (h *Handler) Create(
 	// Step 2: Get metadata and content stores from context
 	// ========================================================================
 
-	metadataStore, err := h.getMetadataStore(ctx)
+	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "CREATE failed", "error", err, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP)
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
