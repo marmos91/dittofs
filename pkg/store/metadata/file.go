@@ -120,6 +120,14 @@ type FileAttr struct {
 	// Ctime is the last change time (metadata changes)
 	Ctime time.Time `json:"ctime"`
 
+	// CreationTime is the file creation time (birth time).
+	// This is the actual time the file was created, distinct from Ctime which tracks
+	// metadata changes. Used by:
+	//   - SMB2 protocol (CreationTime field)
+	//   - NFSv4 protocol (time_create attribute)
+	// Set when file is first created and never updated afterwards.
+	CreationTime time.Time `json:"creation_time"`
+
 	// ContentID is the identifier for retrieving file content from the content repository
 	// Empty for directories, symlinks, and special files
 	ContentID ContentID `json:"content_id"`
@@ -127,6 +135,13 @@ type FileAttr struct {
 	// LinkTarget is the target path for symbolic links
 	// Only valid when Type == FileTypeSymlink
 	LinkTarget string `json:"link_target,omitempty"`
+
+	// Hidden indicates if the file should be hidden from directory listings.
+	// This is primarily used for Windows/SMB compatibility where hidden files
+	// are marked with an attribute rather than a dot prefix.
+	// When set via SMB, this persists the FILE_ATTRIBUTE_HIDDEN flag.
+	// Unix dot-prefix files are also treated as hidden in SMB listings.
+	Hidden bool `json:"hidden,omitempty"`
 }
 
 // SetAttrs specifies which attributes to update in a SetFileAttributes call.
@@ -180,6 +195,16 @@ type SetAttrs struct {
 	// Mtime is the new modification time
 	// nil = do not change
 	Mtime *time.Time
+
+	// CreationTime is the new creation time
+	// Only used by Windows/SMB clients that support setting creation time
+	// nil = do not change
+	CreationTime *time.Time
+
+	// Hidden is the new hidden state
+	// Used by Windows/SMB clients to mark files as hidden
+	// nil = do not change
+	Hidden *bool
 }
 
 // FileType represents the type of a filesystem object.

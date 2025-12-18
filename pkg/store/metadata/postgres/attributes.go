@@ -95,6 +95,13 @@ func (s *PostgresMetadataStore) SetFileAttributes(
 		paramIndex++
 	}
 
+	// Hidden (SMB/Windows only)
+	if attrs.Hidden != nil {
+		updates = append(updates, fmt.Sprintf("hidden = $%d", paramIndex))
+		params = append(params, *attrs.Hidden)
+		paramIndex++
+	}
+
 	// Always update ctime when attributes change
 	updates = append(updates, fmt.Sprintf("ctime = $%d", paramIndex))
 	params = append(params, now)
@@ -205,13 +212,13 @@ func (s *PostgresMetadataStore) CreateSymlink(
 		INSERT INTO files (
 			id, share_name, path,
 			file_type, mode, uid, gid, size,
-			atime, mtime, ctime,
+			atime, mtime, ctime, creation_time,
 			content_id, link_target, device_major, device_minor
 		) VALUES (
 			$1, $2, $3,
 			$4, $5, $6, $7, $8,
-			$9, $10, $11,
-			$12, $13, $14, $15
+			$9, $10, $11, $12,
+			$13, $14, $15, $16
 		)
 	`
 
@@ -227,6 +234,7 @@ func (s *PostgresMetadataStore) CreateSymlink(
 		attr.Atime,
 		attr.Mtime,
 		attr.Ctime,
+		attr.CreationTime,
 		nil,    // content_id (NULL for symlinks)
 		target, // link_target
 		nil,    // device_major
@@ -284,15 +292,16 @@ func (s *PostgresMetadataStore) CreateSymlink(
 		ShareName: shareName,
 		Path:      symlinkPath,
 		FileAttr: metadata.FileAttr{
-			Type:       metadata.FileTypeSymlink,
-			Mode:       attr.Mode,
-			UID:        attr.UID,
-			GID:        attr.GID,
-			Size:       attr.Size,
-			Atime:      attr.Atime,
-			Mtime:      attr.Mtime,
-			Ctime:      attr.Ctime,
-			LinkTarget: target,
+			Type:         metadata.FileTypeSymlink,
+			Mode:         attr.Mode,
+			UID:          attr.UID,
+			GID:          attr.GID,
+			Size:         attr.Size,
+			Atime:        attr.Atime,
+			Mtime:        attr.Mtime,
+			Ctime:        attr.Ctime,
+			CreationTime: attr.CreationTime,
+			LinkTarget:   target,
 		},
 	}
 
@@ -420,13 +429,13 @@ func (s *PostgresMetadataStore) CreateSpecialFile(
 		INSERT INTO files (
 			id, share_name, path,
 			file_type, mode, uid, gid, size,
-			atime, mtime, ctime,
+			atime, mtime, ctime, creation_time,
 			content_id, link_target, device_major, device_minor
 		) VALUES (
 			$1, $2, $3,
 			$4, $5, $6, $7, $8,
-			$9, $10, $11,
-			$12, $13, $14, $15
+			$9, $10, $11, $12,
+			$13, $14, $15, $16
 		)
 	`
 
@@ -451,6 +460,7 @@ func (s *PostgresMetadataStore) CreateSpecialFile(
 		attr.Atime,
 		attr.Mtime,
 		attr.Ctime,
+		attr.CreationTime,
 		nil,      // content_id (NULL for special files)
 		nil,      // link_target
 		devMajor, // device_major (NULL for non-device files)
@@ -508,14 +518,15 @@ func (s *PostgresMetadataStore) CreateSpecialFile(
 		ShareName: shareName,
 		Path:      filePath,
 		FileAttr: metadata.FileAttr{
-			Type:  fileType,
-			Mode:  attr.Mode,
-			UID:   attr.UID,
-			GID:   attr.GID,
-			Size:  attr.Size,
-			Atime: attr.Atime,
-			Mtime: attr.Mtime,
-			Ctime: attr.Ctime,
+			Type:         fileType,
+			Mode:         attr.Mode,
+			UID:          attr.UID,
+			GID:          attr.GID,
+			Size:         attr.Size,
+			Atime:        attr.Atime,
+			Mtime:        attr.Mtime,
+			Ctime:        attr.Ctime,
+			CreationTime: attr.CreationTime,
 		},
 	}
 

@@ -67,12 +67,12 @@ func MapStoreErrorToNFSStatus(err error, clientIP string, operation string) uint
 	case metadata.ErrAccessDenied, metadata.ErrPermissionDenied:
 		// Permission denied (share-level or file-level)
 		logger.Warn("Operation failed", "operation", operation, "message", storeErr.Message, "client", clientIP)
-		return types.NFS3ErrAcces
+		return types.NFS3ErrAccess
 
 	case metadata.ErrAuthRequired:
 		// Authentication required (map to access denied for NFS)
 		logger.Warn("Operation failed: authentication required", "operation", operation, "client", clientIP)
-		return types.NFS3ErrAcces
+		return types.NFS3ErrAccess
 
 	case metadata.ErrNotDirectory:
 		// Attempting to create/lookup within a non-directory
@@ -182,7 +182,7 @@ func MapContentErrorToNFSStatus(err error) uint32 {
 		return types.NFS3ErrNoEnt
 
 	case containsIgnoreCase(errMsg, "permission denied") || containsIgnoreCase(errMsg, "access denied"):
-		return types.NFS3ErrAcces
+		return types.NFS3ErrAccess
 
 	case containsIgnoreCase(errMsg, "stale") || containsIgnoreCase(errMsg, "invalid handle"):
 		return types.NFS3ErrStale

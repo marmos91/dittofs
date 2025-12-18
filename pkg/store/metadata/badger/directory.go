@@ -192,12 +192,14 @@ func (s *BadgerMetadataStore) ReadDirectory(
 				continue
 			}
 
-			// Create directory entry
+			// Create directory entry with attributes for SMB directory listing
+			// FileAttr is a value-only struct (no pointer fields), so this shallow copy is safe
+			attrCopy := childFile.FileAttr
 			entry := metadata.DirEntry{
 				ID:     fileHandleToID(childHandle),
 				Name:   childName,
 				Handle: childHandle,
-				Attr:   nil, // TODO: Could set to &childFile.FileAttr for optimization
+				Attr:   &attrCopy,
 			}
 
 			// Estimate size (rough estimate: name + some overhead)
@@ -438,21 +440,22 @@ func (s *BadgerMetadataStore) CreateSymlink(
 		metadata.ApplyCreateDefaults(attr, ctx, target)
 
 		// Create complete File struct for symlink
-		newFile := &metadata.File{
+		newFile = &metadata.File{
 			ID:        newID,
 			ShareName: parentFile.ShareName,
 			Path:      fullPath,
 			FileAttr: metadata.FileAttr{
-				Type:       metadata.FileTypeSymlink,
-				Mode:       attr.Mode,
-				UID:        attr.UID,
-				GID:        attr.GID,
-				Size:       attr.Size,
-				Atime:      attr.Atime,
-				Mtime:      attr.Mtime,
-				Ctime:      attr.Ctime,
-				LinkTarget: target,
-				ContentID:  "",
+				Type:         metadata.FileTypeSymlink,
+				Mode:         attr.Mode,
+				UID:          attr.UID,
+				GID:          attr.GID,
+				Size:         attr.Size,
+				Atime:        attr.Atime,
+				Mtime:        attr.Mtime,
+				Ctime:        attr.Ctime,
+				CreationTime: attr.CreationTime,
+				LinkTarget:   target,
+				ContentID:    "",
 			},
 		}
 
@@ -629,16 +632,17 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 			ShareName: parentFile.ShareName,
 			Path:      fullPath,
 			FileAttr: metadata.FileAttr{
-				Type:       fileType,
-				Mode:       attr.Mode,
-				UID:        attr.UID,
-				GID:        attr.GID,
-				Size:       attr.Size,
-				Atime:      attr.Atime,
-				Mtime:      attr.Mtime,
-				Ctime:      attr.Ctime,
-				LinkTarget: "",
-				ContentID:  "",
+				Type:         fileType,
+				Mode:         attr.Mode,
+				UID:          attr.UID,
+				GID:          attr.GID,
+				Size:         attr.Size,
+				Atime:        attr.Atime,
+				Mtime:        attr.Mtime,
+				Ctime:        attr.Ctime,
+				CreationTime: attr.CreationTime,
+				LinkTarget:   "",
+				ContentID:    "",
 			},
 		}
 

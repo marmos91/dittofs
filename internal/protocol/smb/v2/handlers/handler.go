@@ -1,0 +1,233 @@
+package handlers
+
+import (
+	"crypto/rand"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/marmos91/dittofs/internal/protocol/smb/session"
+	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/store/metadata"
+)
+
+// Handler manages SMB2 protocol handling
+type Handler struct {
+	Registry  *registry.Registry
+	StartTime time.Time
+
+	// Server identity
+	ServerGUID [16]byte
+
+	// Session management (unified with credit tracking)
+	SessionManager *session.Manager
+
+	// Pending auth sessions (mid-handshake)
+	pendingAuth sync.Map // sessionID -> *PendingAuth
+
+	// Tree connections
+	trees      sync.Map // treeID -> *TreeConnection
+	nextTreeID atomic.Uint32
+
+	// Open files
+	files      sync.Map // string(fileID) -> *OpenFile
+	nextFileID atomic.Uint64
+
+	// Configuration
+	MaxTransactSize uint32
+	MaxReadSize     uint32
+	MaxWriteSize    uint32
+}
+
+// PendingAuth tracks sessions in the middle of NTLM authentication
+type PendingAuth struct {
+	SessionID  uint64
+	ClientAddr string
+	CreatedAt  time.Time
+}
+
+// TreeConnection represents a tree connection (share)
+type TreeConnection struct {
+	TreeID     uint32
+	SessionID  uint64
+	ShareName  string
+	ShareType  uint8
+	CreatedAt  time.Time
+	Permission identity.SharePermission // User's permission level for this share
+}
+
+// OpenFile represents an open file handle
+type OpenFile struct {
+	FileID              [16]byte
+	TreeID              uint32
+	SessionID           uint64
+	Path                string
+	ShareName           string
+	OpenTime            time.Time
+	DesiredAccess       uint32
+	IsDirectory         bool
+	EnumerationComplete bool // For directories: true if directory listing was returned
+
+	// Store integration fields
+	MetadataHandle metadata.FileHandle // Link to metadata store file handle
+	ContentID      metadata.ContentID  // Content identifier for read/write operations
+
+	// Directory enumeration state
+	EnumerationCookie []byte // Opaque cookie for resuming directory listing
+	EnumerationIndex  int    // Current index in directory listing
+
+	// Delete on close support (FileDispositionInformation)
+	DeletePending bool                // If true, delete file/directory when handle is closed
+	ParentHandle  metadata.FileHandle // Parent directory handle for deletion
+	FileName      string              // File name within parent for deletion
+}
+
+// NewHandler creates a new SMB2 handler with default session manager.
+// For custom session management (e.g., shared across adapters), use
+// NewHandlerWithSessionManager instead.
+func NewHandler() *Handler {
+	return NewHandlerWithSessionManager(session.NewDefaultManager())
+}
+
+// NewHandlerWithSessionManager creates a new SMB2 handler with an external session manager.
+// This allows sharing the session manager with other components (e.g., SMBAdapter for credits).
+func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
+	h := &Handler{
+		StartTime:       time.Now(),
+		SessionManager:  sessionManager,
+		MaxTransactSize: 65536,
+		MaxReadSize:     65536,
+		MaxWriteSize:    65536,
+	}
+
+	// Generate random server GUID
+	_, _ = rand.Read(h.ServerGUID[:])
+
+	// Start tree/file IDs at 1 (0 is reserved)
+	h.nextTreeID.Store(1)
+	h.nextFileID.Store(1)
+
+	return h
+}
+
+// GetSession retrieves a session by ID.
+// Delegates to SessionManager for unified session/credit management.
+func (h *Handler) GetSession(sessionID uint64) (*session.Session, bool) {
+	return h.SessionManager.GetSession(sessionID)
+}
+
+// DeleteSession removes a session by ID.
+// This automatically cleans up credit tracking as well.
+func (h *Handler) DeleteSession(sessionID uint64) {
+	h.SessionManager.DeleteSession(sessionID)
+}
+
+// GetTree retrieves a tree connection by ID
+func (h *Handler) GetTree(treeID uint32) (*TreeConnection, bool) {
+	v, ok := h.trees.Load(treeID)
+	if !ok {
+		return nil, false
+	}
+	return v.(*TreeConnection), true
+}
+
+// DeleteTree removes a tree connection by ID
+func (h *Handler) DeleteTree(treeID uint32) {
+	h.trees.Delete(treeID)
+}
+
+// GetOpenFile retrieves an open file by FileID
+func (h *Handler) GetOpenFile(fileID [16]byte) (*OpenFile, bool) {
+	v, ok := h.files.Load(string(fileID[:]))
+	if !ok {
+		return nil, false
+	}
+	return v.(*OpenFile), true
+}
+
+// DeleteOpenFile removes an open file by FileID
+func (h *Handler) DeleteOpenFile(fileID [16]byte) {
+	h.files.Delete(string(fileID[:]))
+}
+
+// GenerateSessionID generates a new unique session ID.
+// Delegates to SessionManager for ID generation.
+func (h *Handler) GenerateSessionID() uint64 {
+	return h.SessionManager.GenerateSessionID()
+}
+
+// GenerateTreeID generates a new unique tree ID
+func (h *Handler) GenerateTreeID() uint32 {
+	return h.nextTreeID.Add(1)
+}
+
+// GenerateFileID generates a new unique file ID
+func (h *Handler) GenerateFileID() [16]byte {
+	var fileID [16]byte
+	// Use persistent part for the ID counter
+	id := h.nextFileID.Add(1)
+	fileID[0] = byte(id)
+	fileID[1] = byte(id >> 8)
+	fileID[2] = byte(id >> 16)
+	fileID[3] = byte(id >> 24)
+	fileID[4] = byte(id >> 32)
+	fileID[5] = byte(id >> 40)
+	fileID[6] = byte(id >> 48)
+	fileID[7] = byte(id >> 56)
+	// Use volatile part for random data
+	_, _ = rand.Read(fileID[8:16])
+	return fileID
+}
+
+// CreateSession creates and stores a new session.
+// This replaces the old StoreSession method for unified session/credit management.
+func (h *Handler) CreateSession(clientAddr string, isGuest bool, username, domain string) *session.Session {
+	return h.SessionManager.CreateSession(clientAddr, isGuest, username, domain)
+}
+
+// CreateSessionWithID creates a session with a specific ID (for pending auth flows).
+// The session is created in the SessionManager and returned.
+func (h *Handler) CreateSessionWithID(sessionID uint64, clientAddr string, isGuest bool, username, domain string) *session.Session {
+	sess := session.NewSession(sessionID, clientAddr, isGuest, username, domain)
+	// Store directly - this is used for completing pending auth where we already have the ID
+	h.SessionManager.StoreSession(sess)
+	return sess
+}
+
+// CreateSessionWithUser creates an authenticated session with a DittoFS user.
+// The session is linked to the user for permission checking during share access.
+func (h *Handler) CreateSessionWithUser(sessionID uint64, clientAddr string, user *identity.User, domain string) *session.Session {
+	sess := session.NewSessionWithUser(sessionID, clientAddr, user, domain)
+	h.SessionManager.StoreSession(sess)
+	return sess
+}
+
+// StoreTree stores a tree connection
+func (h *Handler) StoreTree(tree *TreeConnection) {
+	h.trees.Store(tree.TreeID, tree)
+}
+
+// StoreOpenFile stores an open file
+func (h *Handler) StoreOpenFile(file *OpenFile) {
+	h.files.Store(string(file.FileID[:]), file)
+}
+
+// StorePendingAuth stores a pending authentication
+func (h *Handler) StorePendingAuth(pending *PendingAuth) {
+	h.pendingAuth.Store(pending.SessionID, pending)
+}
+
+// GetPendingAuth retrieves a pending authentication by session ID
+func (h *Handler) GetPendingAuth(sessionID uint64) (*PendingAuth, bool) {
+	v, ok := h.pendingAuth.Load(sessionID)
+	if !ok {
+		return nil, false
+	}
+	return v.(*PendingAuth), true
+}
+
+// DeletePendingAuth removes a pending authentication
+func (h *Handler) DeletePendingAuth(sessionID uint64) {
+	h.pendingAuth.Delete(sessionID)
+}

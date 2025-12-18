@@ -4,14 +4,11 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"io"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/bytesize"
-	"github.com/marmos91/dittofs/pkg/cache"
-	"github.com/marmos91/dittofs/pkg/store/content"
+	"github.com/marmos91/dittofs/pkg/ops"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -351,12 +348,12 @@ func (h *Handler) Commit(
 	}
 
 	// Get unified cache for this share (may be nil if sync mode)
-	cache := h.Registry.GetCacheForShare(ctx.Share)
+	fileCache := h.Registry.GetCacheForShare(ctx.Share)
 
 	// Convert file attributes for WCC "after" data
 	wccAfter := h.convertFileAttrToNFS(handle, &file.FileAttr)
 
-	if cache == nil {
+	if fileCache == nil {
 		// Sync mode: data was written directly to content store, nothing to flush
 		logger.DebugCtx(ctx.Context, "COMMIT: sync mode (no cache), returning success")
 		logger.InfoCtx(ctx.Context, "COMMIT successful (sync mode)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
@@ -369,7 +366,7 @@ func (h *Handler) Commit(
 	}
 
 	// Async mode: check if there's data to flush
-	if cache.Size(file.ContentID) == 0 {
+	if fileCache.Size(file.ContentID) == 0 {
 		logger.DebugCtx(ctx.Context, "COMMIT: no data in cache, returning success")
 		logger.InfoCtx(ctx.Context, "COMMIT successful (empty cache)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
 		return &CommitResponse{
@@ -389,8 +386,8 @@ func (h *Handler) Commit(
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// Flush cache to content store
-	flushErr := flushCacheToContentStore(ctx, h, cache, contentStore, file, req)
+	// Flush cache to content store using shared flush logic
+	_, flushErr := ops.FlushCacheToContentStore(ctx.Context, fileCache, contentStore, file.ContentID)
 	if flushErr != nil {
 		traceError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "content_id", file.ContentID, "client", clientIP)
 
@@ -421,79 +418,6 @@ func (h *Handler) Commit(
 		AttrAfter:       wccAfter,
 		WriteVerifier:   serverBootTime,
 	}, nil
-}
-
-// ============================================================================
-// Commit Helper Functions
-// ============================================================================
-
-// flushCacheToContentStore flushes the cache to the content store.
-//
-// Strategy depends on content store capabilities:
-//   - IncrementalWriteStore (S3): streaming multipart uploads
-//   - WriteAtStore (filesystem, memory): write only new bytes at offset
-//   - Basic store: write entire file (inefficient fallback)
-//
-// State transitions are handled by the background flusher, not here.
-func flushCacheToContentStore(
-	ctx *NFSHandlerContext,
-	h *Handler,
-	c cache.Cache,
-	contentStore content.ContentStore,
-	file *metadata.File,
-	req *CommitRequest,
-) error {
-	contentID := file.ContentID
-	cacheSize := c.Size(contentID)
-	flushedOffset := c.GetFlushedOffset(contentID)
-
-	// Check for incremental write support first (S3)
-	if incStore, ok := contentStore.(content.IncrementalWriteStore); ok {
-		// Incremental write (S3): parallel multipart uploads
-		// No handler-level lock needed - FlushIncremental handles concurrency internally
-		// using uploadedParts/uploadingParts maps to coordinate parallel uploads
-
-		// Flush to content store - uploads complete parts in parallel
-		// Returns 0 for small files (< partSize) - they'll use PutObject on finalization
-		flushed, err := incStore.FlushIncremental(ctx.Context, contentID, c)
-		if err != nil {
-			return fmt.Errorf("incremental flush error: %w", err)
-		}
-
-		// Transition to StateUploading so the background flusher can complete the upload
-		// when the file becomes idle (no more writes for flush_timeout duration)
-		c.SetState(contentID, cache.StateUploading)
-
-		logger.InfoCtx(ctx.Context, "COMMIT: flushed incrementally", "bytes", bytesize.ByteSize(flushed), "content_id", contentID)
-		return nil
-	}
-
-	// WriteAt-capable store (filesystem, memory): write only new bytes
-	bytesToFlush := cacheSize - flushedOffset
-	if bytesToFlush <= 0 {
-		logger.InfoCtx(ctx.Context, "COMMIT: flushed (already up to date)", "bytes", bytesize.ByteSize(0), "content_id", contentID)
-		return nil
-	}
-
-	buf := make([]byte, bytesToFlush)
-	n, err := c.ReadAt(ctx.Context, contentID, buf, flushedOffset)
-	if err != nil && err != io.EOF {
-		return fmt.Errorf("cache read error: %w", err)
-	}
-
-	err = contentStore.WriteAt(ctx.Context, contentID, buf[:n], flushedOffset)
-	if err != nil {
-		return fmt.Errorf("content store write error: %w", err)
-	}
-
-	c.SetFlushedOffset(contentID, flushedOffset+uint64(n))
-
-	// Transition to StateUploading so the background flusher can finalize
-	c.SetState(contentID, cache.StateUploading)
-
-	logger.InfoCtx(ctx.Context, "COMMIT: flushed", "bytes", bytesize.ByteSize(n), "offset", bytesize.ByteSize(flushedOffset), "content_id", contentID)
-
-	return nil
 }
 
 // ============================================================================

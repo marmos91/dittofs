@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/marmos91/dittofs/cmd/dittofs/commands"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/config"
@@ -26,6 +27,8 @@ Usage:
 Commands:
   init     Initialize a sample configuration file
   start    Start the DittoFS server
+  user     Manage users (add, delete, list, passwd, grant, revoke, groups, join, leave)
+  group    Manage groups (add, delete, list, members, grant, revoke)
 
 Flags:
   --config string    Path to config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)
@@ -40,6 +43,16 @@ Examples:
 
   # Start server with custom config
   dittofs start --config /etc/dittofs/config.yaml
+
+  # User management
+  dittofs user add alice
+  dittofs user grant alice /export read-write
+  dittofs user list
+
+  # Group management
+  dittofs group add editors
+  dittofs group grant editors /export read-write
+  dittofs group list
 
   # Use environment variables to override config
   DITTOFS_LOGGING_LEVEL=DEBUG dittofs start
@@ -69,6 +82,10 @@ func main() {
 		runInit()
 	case "start":
 		runStart()
+	case "user":
+		runUser()
+	case "group":
+		runGroup()
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 		os.Exit(0)
@@ -307,6 +324,24 @@ func runStart() {
 			os.Exit(1)
 		}
 		logger.Info("Server stopped")
+	}
+}
+
+// runUser handles the user subcommand
+func runUser() {
+	cmd := commands.NewUserCommand()
+	if err := cmd.Run(os.Args[2:]); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// runGroup handles the group subcommand
+func runGroup() {
+	cmd := commands.NewGroupCommand()
+	if err := cmd.Run(os.Args[2:]); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 }
 

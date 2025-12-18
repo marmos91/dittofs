@@ -25,7 +25,7 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 ```
 ┌──────────────────────────────────────┐
 │       Protocol Adapters              │
-│   NFS ✅  SMB(soon)  WebDAV(TBD)     │
+│   NFS ✅  SMB ✅  WebDAV(TBD)        │
 └──────────────┬───────────────────────┘
                │
                ▼
@@ -48,11 +48,13 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 ## Features
 
 - ✅ **Production-Ready NFSv3**: 28 procedures fully implemented
+- ✅ **SMB2 Support**: Windows/macOS file sharing with NTLM authentication
 - ✅ **No Special Permissions**: Runs entirely in userspace - no FUSE, no kernel modules
 - ✅ **Pluggable Storage**: Mix protocols with any backend (S3, filesystem, custom)
 - ✅ **Cloud-Native**: S3 backend with production optimizations
 - ✅ **Pure Go**: Single binary, easy deployment, cross-platform
 - ✅ **Extensible**: Clean adapter pattern for new protocols
+- ✅ **User Management**: Unified users/groups with share-level permissions (CLI included)
 
 ## Quick Start
 
@@ -68,6 +70,26 @@ go build -o dittofs cmd/dittofs/main.go
 # Start server
 ./dittofs start
 ```
+
+### User Management
+
+```bash
+# Add a user (prompts for password)
+./dittofs user add alice
+
+# Grant share permission
+./dittofs user grant alice /export read-write
+
+# Create a group and add user
+./dittofs group add editors
+./dittofs user join alice editors
+
+# List users and groups
+./dittofs user list
+./dittofs group list
+```
+
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#cli-management-commands) for all user/group commands.
 
 ### Run with Docker
 
@@ -152,6 +174,7 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - **[Architecture](docs/ARCHITECTURE.md)** - Deep dive into design patterns and internal implementation
 - **[Configuration](docs/CONFIGURATION.md)** - Complete configuration guide with examples
 - **[NFS Implementation](docs/NFS.md)** - NFSv3 protocol status and client usage
+- **[SMB Implementation](docs/SMB_IMPLEMENTATION_PLAN.md)** - SMB2 protocol status, capabilities, and roadmap
 - **[Contributing](docs/CONTRIBUTING.md)** - Development guide and contribution guidelines
 - **[Implementing Stores](docs/IMPLEMENTING_STORES.md)** - Guide for implementing custom metadata and content stores
 
@@ -175,12 +198,34 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - Mount protocol support
 - TCP transport with graceful shutdown
 - Buffer pooling and performance optimizations
+- Read/write caching with background flush
+
+**SMB2 Protocol Adapter**
+- SMB2 dialect 0x0202 negotiation
+- NTLM authentication with SPNEGO
+- Session management with adaptive credit flow control
+- Tree connect with share-level permission checking
+- File operations: CREATE, READ, WRITE, CLOSE, FLUSH
+- Directory operations: QUERY_DIRECTORY
+- Metadata operations: QUERY_INFO, SET_INFO
+- Compound request handling (CREATE+QUERY_INFO+CLOSE)
+- Read/write caching (shared with NFS)
+- Parallel request processing
+- macOS Finder and smbclient compatible
 
 **Storage Backends**
 - In-memory metadata (ephemeral, fast)
 - BadgerDB metadata (persistent, path-based handles)
+- PostgreSQL metadata (persistent, distributed)
 - Filesystem content (local/network storage)
 - S3 content (production-ready with range reads, streaming uploads, stats caching)
+
+**User Management**
+- Unified identity system for NFS and SMB
+- Users with bcrypt password hashing
+- Groups with share-level permissions
+- Permission resolution: user → group → share default
+- CLI tools for user/group management
 
 **Production Features**
 - Prometheus metrics integration
@@ -191,24 +236,33 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - Comprehensive E2E test suite
 - Performance benchmark framework
 
+### 🚧 In Development
+
+**SMB Protocol Enhancements**
+- [ ] Windows client compatibility testing
+- [ ] E2E test suite for SMB
+- [ ] SMB-specific metrics
+
 ### 🚀 Roadmap
 
-**Phase 2: Kubernetes Integration**
+**SMB Advanced Features**
+- [ ] SMBv3 support (encryption, multichannel)
+- [ ] File locking (oplocks, byte-range locks)
+- [ ] Security descriptors and Windows ACLs
+- [ ] Extended attributes (xattrs) support
+- [ ] Kerberos/LDAP/Active Directory integration
+
+**Kubernetes Integration**
 - [ ] Health check endpoints
 - [ ] CSI driver implementation
 - [ ] Helm charts
 - [ ] Load testing
 
-**Phase 3: SMB Protocol Adapter** (Optional)
-- [ ] SMB2/3 protocol
-- [ ] NTLM authentication
-- [ ] Windows compatibility
-
-**Phase 4: Advanced Features**
+**Advanced Features**
 - [ ] NFSv4 support
-- [ ] Kerberos authentication
 - [ ] Advanced caching strategies
 - [ ] Multi-region replication
+- [ ] Web dashboard for user management
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for complete roadmap.
 
@@ -218,8 +272,6 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for complete roadmap.
 # Define named stores (reusable across shares)
 metadata:
   stores:
-    memory-fast:
-      type: memory
     badger-main:
       type: badger
       badger:
@@ -227,30 +279,46 @@ metadata:
 
 content:
   stores:
-    local-disk:
-      type: filesystem
-      filesystem:
-        path: /var/lib/dittofs/content
     s3-cloud:
       type: s3
       s3:
         region: us-east-1
         bucket: my-dittofs-bucket
 
-# Define shares that reference stores
-shares:
-  - name: /temp
-    metadata_store: memory-fast
-    content_store: local-disk
+# User management
+groups:
+  - name: editors
+    gid: 101
+    share_permissions:
+      /archive: read-write
 
+users:
+  - username: alice
+    password_hash: "$2a$10$..."  # bcrypt hash
+    uid: 1001
+    gid: 101
+    groups: [editors]
+
+guest:
+  enabled: true
+  uid: 65534
+  gid: 65534
+
+# Define shares with permissions
+shares:
   - name: /archive
     metadata_store: badger-main
     content_store: s3-cloud
+    allow_guest: true
+    default_permission: read
 
 adapters:
   nfs:
     enabled: true
     port: 12049
+  smb:
+    enabled: true
+    port: 12445
 ```
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for complete documentation.

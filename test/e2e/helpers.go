@@ -22,41 +22,6 @@ func runOnAllConfigs(t *testing.T, testFunc func(t *testing.T, tc *TestContext))
 	}
 }
 
-// runOnLocalConfigs is a helper that runs a test on local configurations only (no S3)
-func runOnLocalConfigs(t *testing.T, testFunc func(t *testing.T, tc *TestContext)) {
-	t.Helper()
-
-	configs := LocalConfigurations()
-
-	for _, config := range configs {
-		t.Run(config.Name, func(t *testing.T) {
-			tc := NewTestContext(t, config)
-			defer tc.Cleanup()
-
-			testFunc(t, tc)
-		})
-	}
-}
-
-// runOnConfigsWithLargeFileSupport is a helper that runs a test on configurations
-// that support large file operations efficiently (i.e., local backends + S3 with cache).
-// S3 without cache is excluded because large file writes would timeout.
-func runOnConfigsWithLargeFileSupport(t *testing.T, testFunc func(t *testing.T, tc *TestContext)) {
-	t.Helper()
-
-	// Local backends + S3 with cache
-	configs := append(LocalConfigurations(), S3CachedConfigurations()...)
-
-	for _, config := range configs {
-		t.Run(config.Name, func(t *testing.T) {
-			tc := NewTestContext(t, config)
-			defer tc.Cleanup()
-
-			testFunc(t, tc)
-		})
-	}
-}
-
 // isLargeFileSize returns true if the file size is considered "large" (>5MB)
 // and requires cache for efficient S3 operations
 func isLargeFileSize(sizeBytes int64) bool {

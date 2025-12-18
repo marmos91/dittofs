@@ -6,6 +6,15 @@ DittoFS uses a flexible configuration system with support for YAML/TOML files an
 
 - [Configuration Files](#configuration-files)
 - [Configuration Structure](#configuration-structure)
+  - [Logging](#1-logging)
+  - [Telemetry](#2-telemetry-opentelemetry)
+  - [Server Settings](#3-server-settings)
+  - [Metadata Configuration](#4-metadata-configuration)
+  - [Content Configuration](#5-content-configuration)
+  - [Cache Configuration](#6-cache-configuration)
+  - [Shares (Exports)](#7-shares-exports)
+  - [User Management](#8-user-management)
+  - [Protocol Adapters](#9-protocol-adapters)
 - [Environment Variables](#environment-variables)
 - [Configuration Precedence](#configuration-precedence)
 - [Configuration Examples](#configuration-examples)
@@ -330,6 +339,10 @@ shares:
     allowed_clients: []
     denied_clients: []
 
+    # User management (see Section 8)
+    allow_guest: true              # Allow unauthenticated access
+    default_permission: "read"     # Default for users without explicit permission
+
     # Authentication
     require_auth: false
     allowed_auth_methods: [anonymous, unix]
@@ -375,7 +388,215 @@ shares:
 - **Cache Sharing**: Multiple shares can share a cache (e.g., `/fast` and `/cloud` both use `fast-cache`)
 - **No Cache**: Shares without `cache` field operate in sync mode (direct writes, no read caching)
 
-### 8. Protocol Adapters
+### 8. User Management
+
+DittoFS supports a unified user management system for both NFS and SMB protocols. Users and groups can have share-level permissions, and permission resolution follows a priority order: user explicit permissions > group permissions (highest wins) > share default.
+
+#### Users
+
+Define named users with credentials and permissions:
+
+```yaml
+users:
+  - username: "admin"
+    # Password hash (bcrypt). Generate with: htpasswd -bnBC 10 "" password | tr -d ':\n'
+    password_hash: "$2a$10$..."
+    enabled: true
+    uid: 1000        # Unix UID for NFS mapping
+    gid: 100         # Primary Unix GID
+    groups: ["admins"]  # Group membership (by name)
+    # Optional: explicit share permissions (override group permissions)
+    share_permissions:
+      /private: "admin"
+
+  - username: "editor"
+    password_hash: "$2a$10$..."
+    enabled: true
+    uid: 1001
+    gid: 101
+    groups: ["editors"]
+
+  - username: "viewer"
+    password_hash: "$2a$10$..."
+    enabled: true
+    uid: 1002
+    gid: 102
+    groups: ["viewers"]
+```
+
+**User Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `username` | string | Unique username for authentication |
+| `password_hash` | string | bcrypt password hash (cost 10 recommended) |
+| `enabled` | bool | Whether the user can authenticate |
+| `uid` | uint32 | Unix UID for NFS identity mapping |
+| `gid` | uint32 | Primary Unix GID |
+| `groups` | []string | Group names this user belongs to |
+| `share_permissions` | map | Per-share permissions (optional, overrides group) |
+
+**NFS Authentication**: NFS clients authenticate via AUTH_UNIX. The client's UID is matched against DittoFS user UIDs. If a match is found, the user's permissions are applied.
+
+**SMB Authentication**: SMB clients authenticate via NTLM. The username is matched against DittoFS users, and permissions are applied from the user's configuration.
+
+#### Groups
+
+Define groups with share-level permissions:
+
+```yaml
+groups:
+  - name: "admins"
+    gid: 100
+    share_permissions:
+      /export: "admin"
+      /archive: "admin"
+
+  - name: "editors"
+    gid: 101
+    share_permissions:
+      /export: "read-write"
+      /archive: "read-write"
+
+  - name: "viewers"
+    gid: 102
+    share_permissions:
+      /export: "read"
+      /archive: "read"
+```
+
+**Group Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Unique group name |
+| `gid` | uint32 | Unix GID |
+| `share_permissions` | map | Per-share permissions for all group members |
+
+#### Guest Configuration
+
+Configure anonymous/unauthenticated access:
+
+```yaml
+guest:
+  enabled: true
+  uid: 65534        # nobody
+  gid: 65534        # nogroup
+  share_permissions:
+    /public: "read"
+```
+
+**Guest Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | bool | Allow guest/anonymous access |
+| `uid` | uint32 | Unix UID for guest users |
+| `gid` | uint32 | Unix GID for guest users |
+| `share_permissions` | map | Per-share permissions for guests |
+
+#### Permission Levels
+
+| Permission | Description |
+|------------|-------------|
+| `none` | No access (cannot connect to share) |
+| `read` | Read-only access |
+| `read-write` | Read and write access |
+| `admin` | Full access including delete and ownership |
+
+#### Permission Resolution Order
+
+1. **User explicit permission**: If the user has a direct `share_permissions` entry for the share, use it
+2. **Group permissions**: Check all groups the user belongs to, use the highest permission level
+3. **Share default**: Fall back to the share's `default_permission` setting
+
+**Example:**
+
+```yaml
+groups:
+  - name: "viewers"
+    share_permissions:
+      /archive: "read"
+
+users:
+  - username: "special-viewer"
+    groups: ["viewers"]
+    share_permissions:
+      /archive: "read-write"  # Overrides group's "read" permission
+```
+
+In this example, `special-viewer` gets `read-write` on `/archive` (user explicit), even though the `viewers` group only has `read`.
+
+#### CLI Management Commands
+
+DittoFS provides CLI commands to manage users and groups without manually editing the config file.
+
+**User Commands:**
+
+```bash
+# Add a new user (prompts for password)
+dittofs user add alice
+dittofs user add alice --uid 1005 --gid 100 --groups editors,viewers
+
+# Delete a user
+dittofs user delete alice
+
+# List all users
+dittofs user list
+
+# Change password
+dittofs user passwd alice
+
+# Grant share permission
+dittofs user grant alice /export read-write
+
+# Revoke share permission
+dittofs user revoke alice /export
+
+# List user's groups
+dittofs user groups alice
+
+# Add user to group
+dittofs user join alice editors
+
+# Remove user from group
+dittofs user leave alice editors
+```
+
+**Group Commands:**
+
+```bash
+# Add a new group
+dittofs group add editors
+dittofs group add editors --gid 101
+
+# Delete a group
+dittofs group delete editors
+dittofs group delete editors --force  # Delete even if has members
+
+# List all groups
+dittofs group list
+
+# List group members
+dittofs group members editors
+
+# Grant share permission
+dittofs group grant editors /export read-write
+
+# Revoke share permission
+dittofs group revoke editors /export
+```
+
+**Using Custom Config File:**
+
+All user and group commands support the `--config` flag:
+
+```bash
+dittofs user list --config /etc/dittofs/config.yaml
+dittofs group add admins --config /etc/dittofs/config.yaml
+```
+
+### 9. Protocol Adapters
 
 Configures protocol-specific settings:
 
@@ -412,6 +633,65 @@ adapters:
     #   requests_per_second: 10000
     #   burst: 20000
 ```
+
+**SMB Adapter**:
+
+```yaml
+adapters:
+  smb:
+    enabled: false            # Enable SMB2 protocol (default: false)
+    port: 445                 # Standard SMB port (requires root, use 12445 for testing)
+    max_connections: 0        # 0 = unlimited
+    max_requests_per_connection: 100  # Concurrent requests per connection
+
+    # Grouped timeout configuration
+    timeouts:
+      read: 5m                # Max time to read request
+      write: 30s              # Max time to write response
+      idle: 5m                # Max idle time between requests
+      shutdown: 30s           # Graceful shutdown timeout
+
+    metrics_log_interval: 5m  # Metrics logging interval (0 = disabled)
+
+    # Credit management configuration
+    # Credits control SMB2 flow control and client parallelism
+    credits:
+      strategy: adaptive      # fixed, echo, adaptive (default: adaptive)
+      min_grant: 16           # Minimum credits per response
+      max_grant: 8192         # Maximum credits per response
+      initial_grant: 256      # Credits for initial requests (NEGOTIATE)
+      max_session_credits: 65535  # Max outstanding credits per session
+
+      # Adaptive strategy thresholds (ignored for fixed/echo)
+      load_threshold_high: 1000       # Start throttling above this load
+      load_threshold_low: 100         # Boost credits below this load
+      aggressive_client_threshold: 256 # Throttle clients with this many outstanding
+```
+
+**SMB Credit Strategies:**
+
+| Strategy | Description | Use Case |
+|----------|-------------|----------|
+| `fixed` | Always grants `initial_grant` credits | Simple, predictable behavior |
+| `echo` | Grants what client requests (within bounds) | Maintains client's credit pool |
+| `adaptive` | Adjusts based on server load and client behavior | **Recommended** for production |
+
+**SMB Credit Configuration Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `strategy` | `adaptive` | Credit grant strategy |
+| `min_grant` | `16` | Minimum credits per response (prevents deadlock) |
+| `max_grant` | `8192` | Maximum credits per response |
+| `initial_grant` | `256` | Credits for NEGOTIATE/SESSION_SETUP |
+| `max_session_credits` | `65535` | Max outstanding credits per session |
+| `load_threshold_high` | `1000` | Server load that triggers throttling |
+| `load_threshold_low` | `100` | Server load that triggers boost |
+| `aggressive_client_threshold` | `256` | Outstanding requests that trigger client throttling |
+
+> **Note**: SMB2 credits are flow control tokens that limit concurrent operations per client.
+> Higher credits = more parallelism but more server resource consumption.
+> The adaptive strategy balances throughput and protection automatically.
 
 ## Environment Variables
 
@@ -464,6 +744,17 @@ export DITTOFS_ADAPTERS_NFS_TIMEOUTS_READ=5m
 export DITTOFS_ADAPTERS_NFS_TIMEOUTS_WRITE=30s
 export DITTOFS_ADAPTERS_NFS_TIMEOUTS_IDLE=5m
 export DITTOFS_ADAPTERS_NFS_TIMEOUTS_SHUTDOWN=30s
+
+# SMB adapter
+export DITTOFS_ADAPTERS_SMB_ENABLED=true
+export DITTOFS_ADAPTERS_SMB_PORT=12445
+export DITTOFS_ADAPTERS_SMB_MAX_CONNECTIONS=1000
+
+# SMB credits
+export DITTOFS_ADAPTERS_SMB_CREDITS_STRATEGY=adaptive
+export DITTOFS_ADAPTERS_SMB_CREDITS_MIN_GRANT=16
+export DITTOFS_ADAPTERS_SMB_CREDITS_MAX_GRANT=8192
+export DITTOFS_ADAPTERS_SMB_CREDITS_INITIAL_GRANT=256
 
 # Start server with overrides
 DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start

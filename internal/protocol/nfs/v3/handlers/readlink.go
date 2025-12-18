@@ -278,6 +278,23 @@ func (h *Handler) ReadLink(
 			return nil, err
 		}
 
+		// ReadSymlink failed - check if this is an unconverted MFsymlink
+		// (SMB-created symlink not yet converted on CLOSE)
+		mfsResult := h.checkMFsymlinkByHandle(ctx, fileHandle)
+		if mfsResult.IsMFsymlink {
+			logger.InfoCtx(ctx.Context, "READLINK successful (MFsymlink)",
+				"handle", fmt.Sprintf("%x", req.Handle),
+				"target", mfsResult.Target,
+				"client", clientIP)
+
+			nfsAttr := h.convertFileAttrToNFS(fileHandle, mfsResult.ModifiedAttr)
+			return &ReadLinkResponse{
+				NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+				Attr:            nfsAttr,
+				Target:          mfsResult.Target,
+			}, nil
+		}
+
 		logger.WarnCtx(ctx.Context, "READLINK failed", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", err)
 
 		// Map store errors to NFS status codes

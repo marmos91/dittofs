@@ -368,7 +368,7 @@ func handleNFSNull(
 		func(req *nfs.NullRequest) (*nfs.NullResponse, error) {
 			return handler.Null(ctx, req)
 		},
-		types.NFS3ErrAcces,
+		types.NFS3ErrAccess,
 		func(status uint32) *nfs.NullResponse {
 			return &nfs.NullResponse{NFSResponseBase: nfs.NFSResponseBase{Status: status}}
 		},
@@ -387,7 +387,7 @@ func handleNFSGetAttr(
 		func(req *nfs.GetAttrRequest) (*nfs.GetAttrResponse, error) {
 			return handler.GetAttr(ctx, req)
 		},
-		types.NFS3ErrAcces,
+		types.NFS3ErrAccess,
 		func(status uint32) *nfs.GetAttrResponse {
 			return &nfs.GetAttrResponse{NFSResponseBase: nfs.NFSResponseBase{Status: status}}
 		},
@@ -406,7 +406,7 @@ func handleNFSSetAttr(
 		func(req *nfs.SetAttrRequest) (*nfs.SetAttrResponse, error) {
 			return handler.SetAttr(ctx, req)
 		},
-		types.NFS3ErrAcces,
+		types.NFS3ErrAccess,
 		func(status uint32) *nfs.SetAttrResponse {
 			return &nfs.SetAttrResponse{NFSResponseBase: nfs.NFSResponseBase{Status: status}}
 		},
@@ -425,7 +425,7 @@ func handleNFSLookup(
 		func(req *nfs.LookupRequest) (*nfs.LookupResponse, error) {
 			return handler.Lookup(ctx, req)
 		},
-		types.NFS3ErrAcces,
+		types.NFS3ErrAccess,
 		func(status uint32) *nfs.LookupResponse {
 			return &nfs.LookupResponse{NFSResponseBase: nfs.NFSResponseBase{Status: status}}
 		},
@@ -444,7 +444,7 @@ func handleNFSAccess(
 		func(req *nfs.AccessRequest) (*nfs.AccessResponse, error) {
 			return handler.Access(ctx, req)
 		},
-		types.NFS3ErrAcces,
+		types.NFS3ErrAccess,
 		func(status uint32) *nfs.AccessResponse {
 			return &nfs.AccessResponse{NFSResponseBase: nfs.NFSResponseBase{Status: status}}
 		},
@@ -699,7 +699,7 @@ func handleNFSReadDir(
 		func(req *nfs.ReadDirRequest) (*nfs.ReadDirResponse, error) {
 			return handler.ReadDir(ctx, req)
 		},
-		types.NFS3ErrAcces,
+		types.NFS3ErrAccess,
 		func(status uint32) *nfs.ReadDirResponse {
 			return &nfs.ReadDirResponse{NFSResponseBase: nfs.NFSResponseBase{Status: status}}
 		},
@@ -718,7 +718,7 @@ func handleNFSReadDirPlus(
 		func(req *nfs.ReadDirPlusRequest) (*nfs.ReadDirPlusResponse, error) {
 			return handler.ReadDirPlus(ctx, req)
 		},
-		types.NFS3ErrAcces,
+		types.NFS3ErrAccess,
 		func(status uint32) *nfs.ReadDirPlusResponse {
 			return &nfs.ReadDirPlusResponse{NFSResponseBase: nfs.NFSResponseBase{Status: status}}
 		},

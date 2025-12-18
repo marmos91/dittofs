@@ -415,6 +415,46 @@ func (store *MemoryMetadataStore) SetFileAttributes(
 		changed = true
 	}
 
+	// Apply CreationTime changes (SMB/Windows only)
+	if attrs.CreationTime != nil {
+		// Check write permission or ownership
+		if !isOwner && !isRoot {
+			granted, err := store.checkPermissionsLocked(ctx, handle, metadata.PermissionWrite)
+			if err != nil {
+				return err
+			}
+			if granted&metadata.PermissionWrite == 0 {
+				return &metadata.StoreError{
+					Code:    metadata.ErrAccessDenied,
+					Message: "no permission to change creation time",
+				}
+			}
+		}
+
+		attr.CreationTime = *attrs.CreationTime
+		changed = true
+	}
+
+	// Apply Hidden attribute changes (SMB/Windows only)
+	// Hidden can be set by owner or anyone with write permission
+	if attrs.Hidden != nil {
+		if !isOwner && !isRoot {
+			granted, err := store.checkPermissionsLocked(ctx, handle, metadata.PermissionWrite)
+			if err != nil {
+				return err
+			}
+			if granted&metadata.PermissionWrite == 0 {
+				return &metadata.StoreError{
+					Code:    metadata.ErrAccessDenied,
+					Message: "no permission to change hidden attribute",
+				}
+			}
+		}
+
+		attr.Hidden = *attrs.Hidden
+		changed = true
+	}
+
 	// Update ctime if any changes were made
 	if changed {
 		attr.Ctime = time.Now()
@@ -511,15 +551,16 @@ func (store *MemoryMetadataStore) Create(
 
 	// Complete file attributes
 	newAttr := &metadata.FileAttr{
-		Type:       attr.Type,
-		Mode:       attr.Mode,
-		UID:        attr.UID,
-		GID:        attr.GID,
-		Size:       attr.Size,
-		Atime:      attr.Atime,
-		Mtime:      attr.Mtime,
-		Ctime:      attr.Ctime,
-		LinkTarget: "",
+		Type:         attr.Type,
+		Mode:         attr.Mode,
+		UID:          attr.UID,
+		GID:          attr.GID,
+		Size:         attr.Size,
+		Atime:        attr.Atime,
+		Mtime:        attr.Mtime,
+		Ctime:        attr.Ctime,
+		CreationTime: attr.CreationTime,
+		LinkTarget:   "",
 	}
 
 	// Type-specific initialization
@@ -670,16 +711,17 @@ func (store *MemoryMetadataStore) CreateSymlink(
 
 	// Create symlink attributes
 	newAttr := &metadata.FileAttr{
-		Type:       metadata.FileTypeSymlink,
-		Mode:       attr.Mode,
-		UID:        attr.UID,
-		GID:        attr.GID,
-		Size:       attr.Size,
-		Atime:      attr.Atime,
-		Mtime:      attr.Mtime,
-		Ctime:      attr.Ctime,
-		LinkTarget: target,
-		ContentID:  "", // Symlinks don't have content
+		Type:         metadata.FileTypeSymlink,
+		Mode:         attr.Mode,
+		UID:          attr.UID,
+		GID:          attr.GID,
+		Size:         attr.Size,
+		Atime:        attr.Atime,
+		Mtime:        attr.Mtime,
+		Ctime:        attr.Ctime,
+		CreationTime: attr.CreationTime,
+		LinkTarget:   target,
+		ContentID:    "", // Symlinks don't have content
 	}
 
 	// Store symlink with ShareName inherited from parent
@@ -816,16 +858,17 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 
 	// Create special file attributes
 	newAttr := &metadata.FileAttr{
-		Type:       fileType,
-		Mode:       attr.Mode,
-		UID:        attr.UID,
-		GID:        attr.GID,
-		Size:       attr.Size,
-		Atime:      attr.Atime,
-		Mtime:      attr.Mtime,
-		Ctime:      attr.Ctime,
-		LinkTarget: "",
-		ContentID:  "", // Special files don't have content
+		Type:         fileType,
+		Mode:         attr.Mode,
+		UID:          attr.UID,
+		GID:          attr.GID,
+		Size:         attr.Size,
+		Atime:        attr.Atime,
+		Mtime:        attr.Mtime,
+		Ctime:        attr.Ctime,
+		CreationTime: attr.CreationTime,
+		LinkTarget:   "",
+		ContentID:    "", // Special files don't have content
 	}
 
 	// Store file with ShareName inherited from parent

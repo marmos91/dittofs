@@ -54,7 +54,7 @@ func validateCustomRules(cfg *Config) error {
 	}
 
 	// Validate at least one adapter is enabled
-	if !cfg.Adapters.NFS.Enabled {
+	if !cfg.Adapters.NFS.Enabled && !cfg.Adapters.SMB.Enabled {
 		return fmt.Errorf("adapters: at least one adapter must be enabled")
 	}
 

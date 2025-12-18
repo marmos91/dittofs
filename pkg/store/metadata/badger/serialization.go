@@ -133,6 +133,22 @@ func decodeShareData(bytes []byte) (*shareData, error) {
 	return &data, nil
 }
 
+// encodeShareData serializes shareData to JSON bytes.
+//
+// Parameters:
+//   - data: The share data to encode
+//
+// Returns:
+//   - []byte: JSON-encoded bytes
+//   - error: Encoding error if serialization fails
+func encodeShareData(data *shareData) ([]byte, error) {
+	bytes, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode share data: %w", err)
+	}
+	return bytes, nil
+}
+
 // encodeDeviceNumber serializes deviceNumber to JSON bytes.
 //
 // Device numbers are only stored for block and character device special files.

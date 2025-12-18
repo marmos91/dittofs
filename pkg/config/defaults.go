@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
+	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -371,6 +372,7 @@ func applyAdaptersDefaults(cfg *AdaptersConfig) {
 	}
 
 	applyNFSDefaults(&cfg.NFS)
+	applySMBDefaults(&cfg.SMB)
 }
 
 // applyNFSDefaults sets NFS adapter defaults.
@@ -403,6 +405,70 @@ func applyNFSDefaults(cfg *nfs.NFSConfig) {
 
 	if cfg.MetricsLogInterval == 0 {
 		cfg.MetricsLogInterval = 5 * time.Minute
+	}
+}
+
+// applySMBDefaults sets SMB adapter defaults.
+func applySMBDefaults(cfg *smb.SMBConfig) {
+	// Note: SMB adapter is NOT enabled by default.
+	// Users must explicitly enable it in their config.
+
+	if cfg.Port == 0 {
+		cfg.Port = 445
+	}
+
+	// MaxConnections defaults to 0 (unlimited)
+
+	// Apply timeout defaults
+	if cfg.Timeouts.Read == 0 {
+		cfg.Timeouts.Read = 5 * time.Minute
+	}
+
+	if cfg.Timeouts.Write == 0 {
+		cfg.Timeouts.Write = 30 * time.Second
+	}
+
+	if cfg.Timeouts.Idle == 0 {
+		cfg.Timeouts.Idle = 5 * time.Minute
+	}
+
+	if cfg.Timeouts.Shutdown == 0 {
+		cfg.Timeouts.Shutdown = 30 * time.Second
+	}
+
+	if cfg.MetricsLogInterval == 0 {
+		cfg.MetricsLogInterval = 5 * time.Minute
+	}
+
+	// Apply credit configuration defaults
+	applySMBCreditsDefaults(&cfg.Credits)
+}
+
+// applySMBCreditsDefaults sets SMB credit configuration defaults.
+func applySMBCreditsDefaults(cfg *smb.SMBCreditsConfig) {
+	if cfg.Strategy == "" {
+		cfg.Strategy = "adaptive"
+	}
+	if cfg.MinGrant == 0 {
+		cfg.MinGrant = 16
+	}
+	if cfg.MaxGrant == 0 {
+		cfg.MaxGrant = 8192
+	}
+	if cfg.InitialGrant == 0 {
+		cfg.InitialGrant = 256
+	}
+	if cfg.MaxSessionCredits == 0 {
+		cfg.MaxSessionCredits = 65535
+	}
+	if cfg.LoadThresholdHigh == 0 {
+		cfg.LoadThresholdHigh = 1000
+	}
+	if cfg.LoadThresholdLow == 0 {
+		cfg.LoadThresholdLow = 100
+	}
+	if cfg.AggressiveClientThreshold == 0 {
+		cfg.AggressiveClientThreshold = 256
 	}
 }
 

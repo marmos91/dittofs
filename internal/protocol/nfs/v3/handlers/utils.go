@@ -6,6 +6,8 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/telemetry"
+	"github.com/marmos91/dittofs/pkg/mfsymlink"
+	"github.com/marmos91/dittofs/pkg/registry"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -65,4 +67,147 @@ func traceWarn(ctx context.Context, err error, msg string, args ...any) {
 		args = append(args, "error", err)
 	}
 	logger.WarnCtx(ctx, msg, args...)
+}
+
+// ============================================================================
+// MFsymlink Detection for NFS/SMB Interoperability
+// ============================================================================
+//
+// MFsymlinks are 1067-byte files with "XSym\n" header used by macOS/Windows
+// SMB clients for symlink creation. When accessed via NFS, these files should
+// appear as symlinks for cross-protocol compatibility.
+//
+// Detection is performed when:
+// - File is regular type (not already a symlink)
+// - File size is exactly 1067 bytes (mfsymlink.Size)
+// - File content starts with "XSym\n" magic marker
+
+// MFsymlinkResult contains the result of MFsymlink detection.
+type MFsymlinkResult struct {
+	// IsMFsymlink indicates if the file is a valid MFsymlink
+	IsMFsymlink bool
+
+	// Target is the symlink target (only valid if IsMFsymlink is true)
+	Target string
+
+	// ModifiedAttr contains modified attributes to present the file as a symlink
+	// (only valid if IsMFsymlink is true)
+	ModifiedAttr *metadata.FileAttr
+}
+
+// checkMFsymlink checks if a file is an unconverted MFsymlink and returns
+// the symlink target if so. This enables NFS clients to see SMB-created
+// symlinks before they are converted on CLOSE.
+//
+// Parameters:
+//   - ctx: Context for cancellation and logging
+//   - reg: Registry to get content store
+//   - share: Share name to get content store
+//   - file: File metadata to check
+//
+// Returns MFsymlinkResult with detection result and modified attributes.
+func checkMFsymlink(
+	ctx context.Context,
+	reg *registry.Registry,
+	share string,
+	file *metadata.File,
+) MFsymlinkResult {
+	// Quick checks first (no I/O)
+	if file.Type != metadata.FileTypeRegular {
+		return MFsymlinkResult{IsMFsymlink: false}
+	}
+
+	if file.Size != uint64(mfsymlink.Size) {
+		return MFsymlinkResult{IsMFsymlink: false}
+	}
+
+	// File has correct size - need to check content
+	// First try cache, then content store
+	content, err := readMFsymlinkContentForNFS(ctx, reg, share, file.ContentID)
+	if err != nil {
+		logger.Debug("checkMFsymlink: failed to read content",
+			"contentID", file.ContentID,
+			"error", err)
+		return MFsymlinkResult{IsMFsymlink: false}
+	}
+
+	// Verify MFsymlink format
+	if !mfsymlink.IsMFsymlink(content) {
+		return MFsymlinkResult{IsMFsymlink: false}
+	}
+
+	// Parse symlink target
+	target, err := mfsymlink.Decode(content)
+	if err != nil {
+		logger.Debug("checkMFsymlink: invalid MFsymlink format",
+			"contentID", file.ContentID,
+			"error", err)
+		return MFsymlinkResult{IsMFsymlink: false}
+	}
+
+	// Create modified attributes to present as symlink
+	modifiedAttr := file.FileAttr // Copy
+	modifiedAttr.Type = metadata.FileTypeSymlink
+	modifiedAttr.Size = uint64(len(target))
+	// Mode: symlinks typically have 0777 permissions
+	modifiedAttr.Mode = modifiedAttr.Mode&^uint32(0777) | 0777
+
+	logger.Debug("checkMFsymlink: detected MFsymlink",
+		"contentID", file.ContentID,
+		"target", target)
+
+	return MFsymlinkResult{
+		IsMFsymlink:  true,
+		Target:       target,
+		ModifiedAttr: &modifiedAttr,
+	}
+}
+
+// readMFsymlinkContentForNFS reads content from cache or content store.
+func readMFsymlinkContentForNFS(
+	ctx context.Context,
+	reg *registry.Registry,
+	share string,
+	contentID metadata.ContentID,
+) ([]byte, error) {
+	if contentID == "" {
+		return nil, nil
+	}
+
+	// Try cache first
+	fileCache := reg.GetCacheForShare(share)
+	if fileCache != nil && fileCache.Size(contentID) > 0 {
+		data := make([]byte, mfsymlink.Size)
+		n, err := fileCache.ReadAt(ctx, contentID, data, 0)
+		if err == nil && n == mfsymlink.Size {
+			return data, nil
+		}
+	}
+
+	// Fall back to content store
+	contentStore, err := reg.GetContentStoreForShare(share)
+	if err != nil {
+		return nil, err
+	}
+
+	reader, err := contentStore.ReadContent(ctx, contentID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = reader.Close() }()
+
+	data := make([]byte, mfsymlink.Size)
+	totalRead := 0
+	for totalRead < mfsymlink.Size {
+		n, err := reader.Read(data[totalRead:])
+		if err != nil {
+			if totalRead > 0 {
+				break
+			}
+			return nil, err
+		}
+		totalRead += n
+	}
+
+	return data[:totalRead], nil
 }

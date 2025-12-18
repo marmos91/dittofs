@@ -153,3 +153,29 @@ func (h *Handler) buildAuthContextWithWCCError(
 
 	return authCtx, nil, nil
 }
+
+// checkMFsymlinkByHandle checks if a file referenced by handle is an unconverted MFsymlink.
+// This is used by READLINK when ReadSymlink fails to check if the file is actually
+// an SMB-created MFsymlink that hasn't been converted yet.
+//
+// Parameters:
+//   - ctx: NFS handler context containing share info
+//   - fileHandle: Handle to the file to check
+//
+// Returns MFsymlinkResult with detection result and modified attributes.
+func (h *Handler) checkMFsymlinkByHandle(ctx *NFSHandlerContext, fileHandle metadata.FileHandle) MFsymlinkResult {
+	// Get metadata store to retrieve file info
+	metadataStore, err := h.getMetadataStore(ctx)
+	if err != nil {
+		return MFsymlinkResult{IsMFsymlink: false}
+	}
+
+	// Get file metadata
+	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
+	if err != nil {
+		return MFsymlinkResult{IsMFsymlink: false}
+	}
+
+	// Use the helper function to check MFsymlink
+	return checkMFsymlink(ctx.Context, h.Registry, ctx.Share, file)
+}
