@@ -366,11 +366,11 @@ func MakeErrorReply(xid uint32, acceptStat uint32) ([]byte, error) {
 // Parameters:
 //   - xid: Transaction ID from the original RPC call (must match)
 //   - low: Lowest version number supported by this program
-//   - high: Highest version number supported by this program
+//   - high: Highest version number supported by this program (must be >= low)
 //
 // Returns:
 //   - []byte: Complete RPC reply ready to send on the wire
-//   - error: Encoding error if reply marshaling fails
+//   - error: Encoding error if reply marshaling fails, or if low > high
 //
 // Example usage:
 //
@@ -381,6 +381,11 @@ func MakeErrorReply(xid uint32, acceptStat uint32) ([]byte, error) {
 //	}
 //	conn.Write(reply)
 func MakeProgMismatchReply(xid uint32, low uint32, high uint32) ([]byte, error) {
+	// Validate that low <= high per RFC 5531
+	if low > high {
+		return nil, fmt.Errorf("invalid version range: low (%d) > high (%d)", low, high)
+	}
+
 	// Construct the RPC reply header with PROG_MISMATCH status
 	reply := RPCReplyMessage{
 		XID:        xid,            // Echo back the transaction ID from the call
