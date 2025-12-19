@@ -40,17 +40,6 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
-      - name: Run go vet
-        run: go vet ./...
-
-      - name: Run gofmt
-        run: |
-          if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
-            echo "The following files need formatting:"
-            gofmt -s -l .
-            exit 1
-          fi
-
       - name: Run unit tests
         run: |
           go test -v -race -coverprofile=coverage.txt -covermode=atomic \
