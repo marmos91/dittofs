@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 )
 
@@ -33,15 +34,29 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 		dialectOffset += 2
 	}
 
-	// Find highest supported dialect (we only support 0x0202 for Phase 1)
+	logger.Debug("SMB2 NEGOTIATE request",
+		"dialectCount", dialectCount,
+		"bodyLen", len(body))
+
+	// Find highest supported dialect
+	// We support SMB 2.0.2 and SMB 2.1 for broader compatibility
 	var selectedDialect types.Dialect
 	for _, d := range dialects {
 		dialect := types.Dialect(d)
-		if dialect == types.SMB2Dialect0202 || dialect == types.SMB2DialectWild {
-			selectedDialect = types.SMB2Dialect0202
-			break
+		switch dialect {
+		case types.SMB2Dialect0210:
+			// Prefer 2.1 if available (better Linux compatibility)
+			selectedDialect = types.SMB2Dialect0210
+		case types.SMB2Dialect0202, types.SMB2DialectWild:
+			if selectedDialect == 0 {
+				selectedDialect = types.SMB2Dialect0202
+			}
 		}
 	}
+
+	logger.Debug("SMB2 NEGOTIATE dialect selection",
+		"dialect", selectedDialect.String(),
+		"supported", selectedDialect != 0)
 
 	if selectedDialect == 0 {
 		return NewErrorResult(types.StatusNotSupported), nil
@@ -52,7 +67,7 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	resp := make([]byte, 65)
 
 	binary.LittleEndian.PutUint16(resp[0:2], 65)                      // StructureSize
-	resp[2] = 0                                                       // SecurityMode (no signing required)
+	resp[2] = 0x01                                                    // SecurityMode: SMB2_NEGOTIATE_SIGNING_ENABLED
 	resp[3] = 0                                                       // Reserved
 	binary.LittleEndian.PutUint16(resp[4:6], uint16(selectedDialect)) // DialectRevision
 	binary.LittleEndian.PutUint16(resp[6:8], 0)                       // NegotiateContextCount (SMB 3.1.1 only)
@@ -63,9 +78,12 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	binary.LittleEndian.PutUint32(resp[36:40], h.MaxWriteSize)
 	binary.LittleEndian.PutUint64(resp[40:48], types.TimeToFiletime(time.Now()))
 	binary.LittleEndian.PutUint64(resp[48:56], types.TimeToFiletime(h.StartTime))
-	binary.LittleEndian.PutUint16(resp[56:58], 0) // SecurityBufferOffset (no security buffer)
-	binary.LittleEndian.PutUint16(resp[58:60], 0) // SecurityBufferLength
-	binary.LittleEndian.PutUint32(resp[60:64], 0) // NegotiateContextOffset (SMB 3.1.1 only)
+	// SecurityBufferOffset: offset from start of SMB2 header to security buffer
+	// This is SMB2_HDR_BODY (64) + fixed_body_size (64) = 128 (0x80)
+	// Even when the buffer is empty, the offset must be correct per MS-SMB2.
+	binary.LittleEndian.PutUint16(resp[56:58], 128) // SecurityBufferOffset (points past fixed body)
+	binary.LittleEndian.PutUint16(resp[58:60], 0)   // SecurityBufferLength (no security blob for Phase 1)
+	binary.LittleEndian.PutUint32(resp[60:64], 0)   // NegotiateContextOffset (SMB 3.1.1 only)
 
 	return NewResult(types.StatusSuccess, resp), nil
 }
