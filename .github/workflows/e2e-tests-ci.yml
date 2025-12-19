@@ -1,0 +1,54 @@
+name: E2E Tests (Fast CI)
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  e2e-tests-fast:
+    name: E2E Tests (Local Backends)
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run E2E tests (fast subset)
+        run: |
+          # Run e2e tests with:
+          # - -short: skip 100MB files and 10K file tests
+          # - Local backends only (no Docker required)
+          # - 10 minute timeout
+          sudo go test -tags=e2e -v -short -timeout 10m ./test/e2e/...
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-logs
+          path: |
+            /tmp/dittofs-*
+            /var/folders/**/dittofs-*
+          retention-days: 3
+          if-no-files-found: ignore
