@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 	"github.com/marmos91/dittofs/internal/ops"
+	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 )
 
 // ============================================================================

@@ -117,6 +117,9 @@ func (u *User) GetExplicitSharePermission(shareName string) (SharePermission, bo
 		return PermissionNone, false
 	}
 	perm, ok := u.SharePermissions[shareName]
+	if !ok {
+		return PermissionNone, false
+	}
 	return perm, ok
 }
 
