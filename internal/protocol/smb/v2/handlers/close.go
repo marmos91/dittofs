@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/cache"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
-	"github.com/marmos91/dittofs/internal/ops"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
@@ -285,7 +285,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			contentStore, err := h.Registry.GetContentStoreForShare(openFile.ShareName)
 			if err == nil {
 				// Use FlushAndFinalizeCache for immediate durability (completes S3 uploads)
-				_, flushErr := ops.FlushAndFinalizeCache(ctx.Context, fileCache, contentStore, openFile.ContentID)
+				_, flushErr := cache.FlushAndFinalizeCache(ctx.Context, fileCache, contentStore, openFile.ContentID)
 				if flushErr != nil {
 					logger.Warn("CLOSE: cache flush failed", "path", openFile.Path, "error", flushErr)
 					// Continue with close even if flush fails - data is in cache
