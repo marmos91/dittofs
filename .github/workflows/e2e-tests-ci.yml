@@ -3,8 +3,18 @@ name: E2E Tests (Fast CI)
 on:
   push:
     branches: [main, develop]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/e2e-tests-ci.yml'
   pull_request:
     branches: [main, develop]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/e2e-tests-ci.yml'
 
 jobs:
   e2e-tests-fast:
