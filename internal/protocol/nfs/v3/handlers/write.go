@@ -527,10 +527,13 @@ func (h *Handler) Write(
 		AttrBefore:      nfsWccAttr,
 		AttrAfter:       nfsAttr,
 		// Count: RFC 1813 specifies this as "The number of bytes of data written".
-		// We return len(req.Data) because our WriteAt implementations are atomic:
-		// they either write all bytes or fail entirely. Partial writes are not
-		// possible with the current content store interface, so len(req.Data)
-		// always equals the actual bytes written on success.
+		// We currently assume that the configured content store implementations
+		// perform WriteAt in an all-or-nothing fashion: they either write all
+		// bytes or fail entirely. Under that assumption, len(req.Data) equals
+		// the actual bytes written on success.
+		// NOTE: If a future content store allows partial writes, this code must
+		// be updated to report the actual number of bytes written instead of
+		// len(req.Data), and the WriteAt contract should document that behavior.
 		Count:     uint32(len(req.Data)),
 		Committed: committed,      // UNSTABLE when using cache, tells client to call COMMIT
 		Verf:      serverBootTime, // Server boot time for restart detection

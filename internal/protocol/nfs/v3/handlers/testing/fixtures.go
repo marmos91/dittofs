@@ -379,7 +379,11 @@ func (f *HandlerTestFixture) ReadContent(path string) []byte {
 	if err != nil {
 		f.t.Fatalf("Failed to read content from %q: %v", path, err)
 	}
-	defer reader.Close()
+	defer func() {
+		if closeErr := reader.Close(); closeErr != nil {
+			f.t.Errorf("Failed to close reader for %q: %v", path, closeErr)
+		}
+	}()
 
 	content, err := io.ReadAll(reader)
 	if err != nil {
