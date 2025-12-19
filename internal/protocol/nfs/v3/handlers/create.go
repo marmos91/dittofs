@@ -288,7 +288,18 @@ func (h *Handler) Create(
 				logger.InfoCtx(ctx.Context, "CREATE EXCLUSIVE retry detected",
 					"file", req.Filename, "token", fmt.Sprintf("0x%016x", req.Verf), "client", clientIP)
 
-				existingHandle, _ := metadata.EncodeFileHandle(existingFile)
+				existingHandle, err := metadata.EncodeFileHandle(existingFile)
+				if err != nil {
+					logger.ErrorCtx(ctx.Context, "failed to encode file handle for CREATE EXCLUSIVE retry",
+						"file", req.Filename, "client", clientIP, "error", err)
+
+					dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
+					return &CreateResponse{
+						NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+						DirBefore:       dirWccBefore,
+						DirAfter:        dirWccAfter,
+					}, nil
+				}
 				dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 				nfsFileAttr := h.convertFileAttrToNFS(existingHandle, &existingFile.FileAttr)
 

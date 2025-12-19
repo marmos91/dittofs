@@ -62,7 +62,7 @@ func TestExclusiveCreate(t *testing.T) {
 			wg.Add(numGoroutines)
 
 			for i := 0; i < numGoroutines; i++ {
-				go func(id int) {
+				go func() {
 					defer wg.Done()
 
 					filePath := tc.Path("concurrent_excl.txt")
@@ -73,7 +73,7 @@ func TestExclusiveCreate(t *testing.T) {
 						successCount++
 						mu.Unlock()
 					}
-				}(i)
+				}()
 			}
 
 			wg.Wait()

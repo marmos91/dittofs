@@ -41,7 +41,7 @@ func TestDirectoryMtimeVerifier(t *testing.T) {
 		assert.NotEqual(t, verf1, verf2, "Nanosecond differences should produce different verifiers")
 	})
 
-	t.Run("ZeroTimeProducesZeroVerifier", func(t *testing.T) {
+	t.Run("ZeroTimeProducesConsistentVerifier", func(t *testing.T) {
 		verf := directoryMtimeVerifier(time.Time{})
 		// Zero time has negative UnixNano, but cast to uint64 it becomes a large number
 		// Just verify it's consistent
@@ -88,10 +88,11 @@ func TestCookieVerifierValidation(t *testing.T) {
 
 	t.Run("MatchingVerifierPasses", func(t *testing.T) {
 		cookie := uint64(100)
-		verifier := uint64(123456789)
+		cookieVerf := uint64(123456789)
+		currentVerf := uint64(123456789) // Same value as cookieVerf
 
 		// Should NOT return error because verifiers match
-		shouldReject := cookie != 0 && verifier != 0 && verifier != verifier
+		shouldReject := cookie != 0 && cookieVerf != 0 && cookieVerf != currentVerf
 		assert.False(t, shouldReject, "Matching verifier should pass")
 	})
 
@@ -124,9 +125,10 @@ func TestIdempotencyTokenValidation(t *testing.T) {
 	})
 
 	t.Run("MatchingNonZeroTokenIsRetry", func(t *testing.T) {
-		token := uint64(0x123456789ABCDEF0)
+		existingToken := uint64(0x123456789ABCDEF0)
+		reqVerf := uint64(0x123456789ABCDEF0) // Same value as existingToken
 
-		isRetry := token == token && token != 0
+		isRetry := existingToken == reqVerf && reqVerf != 0
 		assert.True(t, isRetry, "Matching non-zero token should be treated as retry")
 	})
 
