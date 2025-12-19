@@ -739,8 +739,8 @@ func (c *SMBConnection) handleSMB1Negotiate(ctx context.Context, message []byte)
 	binary.LittleEndian.PutUint64(respBody[40:48], types.TimeToFiletime(time.Now()))
 	// ServerStartTime
 	binary.LittleEndian.PutUint64(respBody[48:56], types.TimeToFiletime(c.server.handler.StartTime))
-	// SecurityBufferOffset: 0
-	binary.LittleEndian.PutUint16(respBody[56:58], 0)
+	// SecurityBufferOffset: offset from start of SMB2 header = 64 (header) + 64 (fixed body) = 128
+	binary.LittleEndian.PutUint16(respBody[56:58], 128)
 	// SecurityBufferLength: 0
 	binary.LittleEndian.PutUint16(respBody[58:60], 0)
 	// NegotiateContextOffset: 0
