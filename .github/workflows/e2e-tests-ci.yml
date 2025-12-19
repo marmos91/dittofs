@@ -8,8 +8,8 @@ on:
 
 jobs:
   e2e-tests-fast:
-    name: E2E Tests (Local Backends)
-    runs-on: macos-latest
+    name: E2E Tests (All Backends)
+    runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
@@ -31,6 +31,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
+      - name: Install NFS and SMB clients
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nfs-common cifs-utils
+
       - name: Download dependencies
         run: go mod download
 
@@ -38,7 +43,7 @@ jobs:
         run: |
           # Run e2e tests with:
           # - -short: skip 100MB files and 10K file tests
-          # - Local backends only (no Docker required)
+          # - All backends (Docker available on Ubuntu)
           # - 10 minute timeout
           sudo go test -tags=e2e -v -short -timeout 10m ./test/e2e/...
 
@@ -47,8 +52,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-test-logs
-          path: |
-            /tmp/dittofs-*
-            /var/folders/**/dittofs-*
+          path: /tmp/dittofs-*
           retention-days: 3
           if-no-files-found: ignore
