@@ -278,11 +278,33 @@ func (h *Handler) Create(
 		fileHandle, fileAttr, err = createNewFile(authCtx, metadataStore, parentHandle, req)
 
 	case types.CreateExclusive:
-		// EXCLUSIVE: Check verifier if file exists
+		// EXCLUSIVE: Check idempotency token if file exists
+		// RFC 1813 Section 3.3.8: If the file exists, compare the stored token
+		// with the client's token. If they match, this is a retry - return success.
 		if fileExists {
-			// TODO: Implement verifier checking for idempotency
-			// For now, treat like GUARDED
-			logger.DebugCtx(ctx.Context, "CREATE failed: file exists (exclusive)", "file", req.Filename, "client", clientIP, "verifier", fmt.Sprintf("0x%016x", req.Verf))
+			// Check if idempotency token matches - this indicates a retry
+			if existingFile.IdempotencyToken == req.Verf && req.Verf != 0 {
+				// Token matches - this is a retry of a successful create
+				logger.InfoCtx(ctx.Context, "CREATE EXCLUSIVE retry detected",
+					"file", req.Filename, "token", fmt.Sprintf("0x%016x", req.Verf), "client", clientIP)
+
+				existingHandle, _ := metadata.EncodeFileHandle(existingFile)
+				dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
+				nfsFileAttr := h.convertFileAttrToNFS(existingHandle, &existingFile.FileAttr)
+
+				return &CreateResponse{
+					NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+					FileHandle:      existingHandle,
+					Attr:            nfsFileAttr,
+					DirBefore:       dirWccBefore,
+					DirAfter:        dirWccAfter,
+				}, nil
+			}
+
+			// Different token - genuine conflict (different client or different request)
+			logger.DebugCtx(ctx.Context, "CREATE EXCLUSIVE failed: file exists with different token",
+				"file", req.Filename, "stored", fmt.Sprintf("0x%016x", existingFile.IdempotencyToken),
+				"requested", fmt.Sprintf("0x%016x", req.Verf), "client", clientIP)
 
 			dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
@@ -293,7 +315,7 @@ func (h *Handler) Create(
 			}, nil
 		}
 
-		// Create new file with verifier
+		// Create new file with idempotency token
 		fileHandle, fileAttr, err = createNewFile(authCtx, metadataStore, parentHandle, req)
 
 	case types.CreateUnchecked:
@@ -421,6 +443,12 @@ func createNewFile(
 	}
 	if authCtx.Identity.GID != nil {
 		fileAttr.GID = *authCtx.Identity.GID
+	}
+
+	// Store idempotency token for EXCLUSIVE mode
+	// This enables clients to safely retry file creation after network failures
+	if req.Mode == types.CreateExclusive && req.Verf != 0 {
+		fileAttr.IdempotencyToken = req.Verf
 	}
 
 	// Apply explicit attributes from request

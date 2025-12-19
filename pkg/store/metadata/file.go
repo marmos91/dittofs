@@ -142,6 +142,14 @@ type FileAttr struct {
 	// When set via SMB, this persists the FILE_ATTRIBUTE_HIDDEN flag.
 	// Unix dot-prefix files are also treated as hidden in SMB listings.
 	Hidden bool `json:"hidden,omitempty"`
+
+	// IdempotencyToken stores a token for detecting duplicate creation requests.
+	// Used by protocols that support idempotent file creation:
+	//   - NFS: CREATE EXCLUSIVE mode verifier (8-byte client-provided value)
+	//   - SMB: Could be used for durable handle reconnection (future)
+	// Empty/0 for normal file creation. Set only on initial exclusive creation.
+	// This enables clients to safely retry file creation after network failures.
+	IdempotencyToken uint64 `json:"idempotency_token,omitempty"`
 }
 
 // SetAttrs specifies which attributes to update in a SetFileAttributes call.
