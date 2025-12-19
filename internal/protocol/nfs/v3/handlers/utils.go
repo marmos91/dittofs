@@ -6,7 +6,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/telemetry"
-	"github.com/marmos91/dittofs/pkg/mfsymlink"
+	"github.com/marmos91/dittofs/internal/mfsymlink"
 	"github.com/marmos91/dittofs/pkg/registry"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
