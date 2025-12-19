@@ -125,6 +125,10 @@ const (
 	// NFS3ErrNotSync - Update synchronization mismatch
 	NFS3ErrNotSync = 10002
 
+	// NFS3ErrBadCookie - Invalid cookie (RFC 1813)
+	// Returned when a READDIR/READDIRPLUS cookie is stale due to directory modification
+	NFS3ErrBadCookie = 10003
+
 	// NFS3ErrNotSupp - Operation not supported
 	NFS3ErrNotSupp = 10004
 )

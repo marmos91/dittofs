@@ -4,12 +4,20 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
+
+// directoryMtimeVerifier generates a cookie verifier from directory mtime.
+// Using mtime ensures the verifier changes when directory contents change.
+// This is a common and efficient implementation per RFC 1813 recommendations.
+func directoryMtimeVerifier(mtime time.Time) uint64 {
+	return uint64(mtime.UnixNano())
+}
 
 // ============================================================================
 // Request and Response Structures
@@ -291,6 +299,28 @@ func (h *Handler) ReadDir(
 	}
 
 	// ========================================================================
+	// Cookie Verifier Validation (RFC 1813 Section 3.3.16)
+	// ========================================================================
+	// Generate verifier from directory mtime - changes when directory is modified
+	currentVerifier := directoryMtimeVerifier(dirFile.Mtime)
+
+	// Validate cookie verifier for non-initial requests
+	// Initial request (cookie=0) or clients that don't use verifiers (verifier=0) bypass this check
+	if req.Cookie != 0 && req.CookieVerf != 0 && req.CookieVerf != currentVerifier {
+		logger.WarnCtx(ctx.Context, "READDIR: directory modified since last read",
+			"handle", fmt.Sprintf("%x", req.DirHandle),
+			"expected_verf", fmt.Sprintf("0x%016x", req.CookieVerf),
+			"current_verf", fmt.Sprintf("0x%016x", currentVerifier),
+			"client", clientIP)
+
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
+		return &ReadDirResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadCookie},
+			DirAttr:         nfsDirAttr,
+		}, nil
+	}
+
+	// ========================================================================
 	// Step 3: Build authentication context for store
 	// ========================================================================
 
@@ -406,7 +436,7 @@ func (h *Handler) ReadDir(
 	return &ReadDirResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 		DirAttr:         nfsDirAttr,
-		CookieVerf:      0, // Simple implementation: no verifier checking
+		CookieVerf:      currentVerifier, // RFC 1813: verifier based on directory mtime
 		Entries:         nfsEntries,
 		Eof:             eof,
 	}, nil
