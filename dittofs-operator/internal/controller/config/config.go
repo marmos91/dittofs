@@ -149,6 +149,88 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 		shares = append(shares, shareYAML)
 	}
 
+	// Build user management configuration
+	var users []User
+	var groups []Group
+	var guest *Guest
+
+	if dittoServer.Spec.Users != nil {
+		for _, u := range dittoServer.Spec.Users.Users {
+			users = append(users, User{
+				Username:         u.Username,
+				PasswordHash:     u.PasswordHash,
+				Enabled:          u.Enabled,
+				UID:              u.UID,
+				GID:              u.GID,
+				Groups:           u.Groups,
+				SharePermissions: u.SharePermissions,
+			})
+		}
+
+		for _, g := range dittoServer.Spec.Users.Groups {
+			groups = append(groups, Group{
+				Name:             g.Name,
+				GID:              g.GID,
+				SharePermissions: g.SharePermissions,
+			})
+		}
+
+		if dittoServer.Spec.Users.Guest != nil {
+			guest = &Guest{
+				Enabled:          dittoServer.Spec.Users.Guest.Enabled,
+				UID:              dittoServer.Spec.Users.Guest.UID,
+				GID:              dittoServer.Spec.Users.Guest.GID,
+				SharePermissions: dittoServer.Spec.Users.Guest.SharePermissions,
+			}
+		}
+	}
+
+	adapters := AdaptersConfig{
+		NFS: NFSAdapter{
+			Enabled:        true,
+			Port:           getNFSPort(dittoServer),
+			MaxConnections: 0,
+			Timeouts: TimeoutsConfig{
+				Read:     "5m0s",
+				Write:    "30s",
+				Idle:     "5m0s",
+				Shutdown: "30s",
+			},
+			MetricsLogInterval: "5m0s",
+		},
+	}
+
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Enabled {
+		smbAdapter := SMBAdapter{
+			Enabled:                  true,
+			Port:                     getSMBPort(dittoServer),
+			MaxConnections:           getSMBMaxConnections(dittoServer),
+			MaxRequestsPerConnection: getSMBMaxRequestsPerConnection(dittoServer),
+			Timeouts: TimeoutsConfig{
+				Read:     getSMBTimeout(dittoServer.Spec.SMB.Timeouts, "read", "5m0s"),
+				Write:    getSMBTimeout(dittoServer.Spec.SMB.Timeouts, "write", "30s"),
+				Idle:     getSMBTimeout(dittoServer.Spec.SMB.Timeouts, "idle", "5m0s"),
+				Shutdown: getSMBTimeout(dittoServer.Spec.SMB.Timeouts, "shutdown", "30s"),
+			},
+			MetricsLogInterval: getSMBMetricsLogInterval(dittoServer),
+		}
+
+		if dittoServer.Spec.SMB.Credits != nil {
+			smbAdapter.Credits = &SMBCredits{
+				Strategy:                  getSMBCreditsStrategy(dittoServer),
+				MinGrant:                  getSMBCreditsMinGrant(dittoServer),
+				MaxGrant:                  getSMBCreditsMaxGrant(dittoServer),
+				InitialGrant:              getSMBCreditsInitialGrant(dittoServer),
+				MaxSessionCredits:         getSMBCreditsMaxSessionCredits(dittoServer),
+				LoadThresholdHigh:         getSMBCreditsLoadThresholdHigh(dittoServer),
+				LoadThresholdLow:          getSMBCreditsLoadThresholdLow(dittoServer),
+				AggressiveClientThreshold: getSMBCreditsAggressiveClientThreshold(dittoServer),
+			}
+		}
+
+		adapters.SMB = smbAdapter
+	}
+
 	config := DittoFSConfig{
 		Logging: LoggingConfig{
 			Level:  "INFO",
@@ -184,21 +266,11 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 		Cache: CacheConfig{
 			Stores: cacheStores,
 		},
-		Shares: shares,
-		Adapters: AdaptersConfig{
-			NFS: NFSAdapter{
-				Enabled:        true,
-				Port:           getNFSPort(dittoServer),
-				MaxConnections: 0,
-				Timeouts: TimeoutsConfig{
-					Read:     "5m0s",
-					Write:    "30s",
-					Idle:     "5m0s",
-					Shutdown: "30s",
-				},
-				MetricsLogInterval: "5m0s",
-			},
-		},
+		Shares:   shares,
+		Users:    users,
+		Groups:   groups,
+		Guest:    guest,
+		Adapters: adapters,
 	}
 
 	yamlBytes, err := yaml.Marshal(&config)
@@ -248,4 +320,114 @@ func parseSizeString(size string) any {
 	}
 
 	return uint64(bytes)
+}
+
+// SMB helper functions
+func getSMBPort(dittoServer *dittoiov1alpha1.DittoServer) int32 {
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Port != nil {
+		return *dittoServer.Spec.SMB.Port
+	}
+	return 445
+}
+
+func getSMBMaxConnections(dittoServer *dittoiov1alpha1.DittoServer) int32 {
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.MaxConnections != nil {
+		return *dittoServer.Spec.SMB.MaxConnections
+	}
+	return 0
+}
+
+func getSMBMaxRequestsPerConnection(dittoServer *dittoiov1alpha1.DittoServer) int32 {
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.MaxRequestsPerConnection != nil {
+		return *dittoServer.Spec.SMB.MaxRequestsPerConnection
+	}
+	return 100
+}
+
+func getSMBTimeout(timeouts *dittoiov1alpha1.SMBTimeoutsSpec, field, defaultValue string) string {
+	if timeouts == nil {
+		return defaultValue
+	}
+	switch field {
+	case "read":
+		if timeouts.Read != "" {
+			return timeouts.Read
+		}
+	case "write":
+		if timeouts.Write != "" {
+			return timeouts.Write
+		}
+	case "idle":
+		if timeouts.Idle != "" {
+			return timeouts.Idle
+		}
+	case "shutdown":
+		if timeouts.Shutdown != "" {
+			return timeouts.Shutdown
+		}
+	}
+	return defaultValue
+}
+
+func getSMBMetricsLogInterval(dittoServer *dittoiov1alpha1.DittoServer) string {
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.MetricsLogInterval != "" {
+		return dittoServer.Spec.SMB.MetricsLogInterval
+	}
+	return "5m0s"
+}
+
+func getSMBCreditsStrategy(dittoServer *dittoiov1alpha1.DittoServer) string {
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Credits != nil && dittoServer.Spec.SMB.Credits.Strategy != "" {
+		return dittoServer.Spec.SMB.Credits.Strategy
+	}
+	return "adaptive"
+}
+
+func getSMBCreditsMinGrant(dittoServer *dittoiov1alpha1.DittoServer) int32 {
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Credits != nil && dittoServer.Spec.SMB.Credits.MinGrant != nil {
+		return *dittoServer.Spec.SMB.Credits.MinGrant
+	}
+	return 16
+}
+
+func getSMBCreditsMaxGrant(dittoServer *dittoiov1alpha1.DittoServer) int32 {
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Credits != nil && dittoServer.Spec.SMB.Credits.MaxGrant != nil {
+		return *dittoServer.Spec.SMB.Credits.MaxGrant
+	}
+	return 8192
+}
+
+func getSMBCreditsInitialGrant(dittoServer *dittoiov1alpha1.DittoServer) int32 {
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Credits != nil && dittoServer.Spec.SMB.Credits.InitialGrant != nil {
+		return *dittoServer.Spec.SMB.Credits.InitialGrant
+	}
+	return 256
+}
+
+func getSMBCreditsMaxSessionCredits(dittoServer *dittoiov1alpha1.DittoServer) int32 {
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Credits != nil && dittoServer.Spec.SMB.Credits.MaxSessionCredits != nil {
+		return *dittoServer.Spec.SMB.Credits.MaxSessionCredits
+	}
+	return 65535
+}
+
+func getSMBCreditsLoadThresholdHigh(dittoServer *dittoiov1alpha1.DittoServer) int32 {
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Credits != nil && dittoServer.Spec.SMB.Credits.LoadThresholdHigh != nil {
+		return *dittoServer.Spec.SMB.Credits.LoadThresholdHigh
+	}
+	return 1000
+}
+
+func getSMBCreditsLoadThresholdLow(dittoServer *dittoiov1alpha1.DittoServer) int32 {
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Credits != nil && dittoServer.Spec.SMB.Credits.LoadThresholdLow != nil {
+		return *dittoServer.Spec.SMB.Credits.LoadThresholdLow
+	}
+	return 100
+}
+
+func getSMBCreditsAggressiveClientThreshold(dittoServer *dittoiov1alpha1.DittoServer) int32 {
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Credits != nil && dittoServer.Spec.SMB.Credits.AggressiveClientThreshold != nil {
+		return *dittoServer.Spec.SMB.Credits.AggressiveClientThreshold
+	}
+	return 256
 }

@@ -838,6 +838,115 @@ spec:
                     - LoadBalancer
                     type: string
                 type: object
+              smb:
+                description: SMB adapter configuration
+                properties:
+                  credits:
+                    description: SMB credit management configuration
+                    properties:
+                      aggressiveClientThreshold:
+                        default: 256
+                        description: Outstanding requests threshold for client throttling
+                          (adaptive strategy only)
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      initialGrant:
+                        default: 256
+                        description: Credits for initial requests (NEGOTIATE)
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      loadThresholdHigh:
+                        default: 1000
+                        description: Server load threshold for throttling (adaptive
+                          strategy only)
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      loadThresholdLow:
+                        default: 100
+                        description: Server load threshold for boosting (adaptive
+                          strategy only)
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      maxGrant:
+                        default: 8192
+                        description: Maximum credits per response
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      maxSessionCredits:
+                        default: 65535
+                        description: Maximum outstanding credits per session
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      minGrant:
+                        default: 16
+                        description: Minimum credits per response
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      strategy:
+                        default: adaptive
+                        description: 'Credit grant strategy: fixed, echo, or adaptive'
+                        enum:
+                        - fixed
+                        - echo
+                        - adaptive
+                        type: string
+                    type: object
+                  enabled:
+                    default: false
+                    description: Enable SMB protocol
+                    type: boolean
+                  maxConnections:
+                    default: 0
+                    description: Maximum number of concurrent SMB connections (0 =
+                      unlimited)
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  maxRequestsPerConnection:
+                    default: 100
+                    description: Maximum number of concurrent requests per SMB connection
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  metricsLogInterval:
+                    default: 5m
+                    description: Metrics logging interval (e.g., "5m", "10m")
+                    type: string
+                  port:
+                    default: 445
+                    description: SMB port to listen on
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  timeouts:
+                    description: Timeout configurations for SMB operations
+                    properties:
+                      idle:
+                        default: 5m
+                        description: Maximum idle time between requests
+                        type: string
+                      read:
+                        default: 5m
+                        description: Maximum time to read request
+                        type: string
+                      shutdown:
+                        default: 30s
+                        description: Graceful shutdown timeout
+                        type: string
+                      write:
+                        default: 30s
+                        description: Maximum time to write response
+                        type: string
+                    type: object
+                type: object
               storage:
                 description: |-
                   Storage configuration for DittoFS server's internal volumes
@@ -865,6 +974,103 @@ spec:
                     type: string
                 required:
                 - metadataSize
+                type: object
+              users:
+                description: User management configuration
+                properties:
+                  groups:
+                    description: List of groups
+                    items:
+                      description: GroupSpec defines a group with share-level permissions
+                      properties:
+                        gid:
+                          description: Unix GID
+                          format: int32
+                          type: integer
+                        name:
+                          description: Unique group name
+                          type: string
+                        sharePermissions:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Per-share permissions for all group members
+                            Map of share path to permission level (none, read, read-write, admin)
+                          type: object
+                      required:
+                      - gid
+                      - name
+                      type: object
+                    type: array
+                  guest:
+                    description: Guest configuration for anonymous access
+                    properties:
+                      enabled:
+                        default: true
+                        description: Enable guest/anonymous access
+                        type: boolean
+                      gid:
+                        default: 65534
+                        description: Unix GID for guest users
+                        format: int32
+                        type: integer
+                      sharePermissions:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          Per-share permissions for guests
+                          Map of share path to permission level (none, read, read-write, admin)
+                        type: object
+                      uid:
+                        default: 65534
+                        description: Unix UID for guest users
+                        format: int32
+                        type: integer
+                    type: object
+                  users:
+                    description: List of users
+                    items:
+                      description: UserSpec defines a user with credentials and permissions
+                      properties:
+                        enabled:
+                          default: true
+                          description: Whether the user is enabled
+                          type: boolean
+                        gid:
+                          description: Primary Unix GID
+                          format: int32
+                          type: integer
+                        groups:
+                          description: Group membership (by group name)
+                          items:
+                            type: string
+                          type: array
+                        passwordHash:
+                          description: |-
+                            Password hash (bcrypt)
+                            Generate with: htpasswd -bnBC 10 "" password | tr -d ':\n'
+                          type: string
+                        sharePermissions:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Per-share permissions (overrides group permissions)
+                            Map of share path to permission level (none, read, read-write, admin)
+                          type: object
+                        uid:
+                          description: Unix UID for NFS identity mapping
+                          format: int32
+                          type: integer
+                        username:
+                          description: Username for authentication
+                          type: string
+                      required:
+                      - gid
+                      - passwordHash
+                      - uid
+                      - username
+                      type: object
+                    type: array
                 type: object
             required:
             - config
