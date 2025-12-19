@@ -5,8 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/cache"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/ops"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
@@ -387,7 +387,7 @@ func (h *Handler) Commit(
 	}
 
 	// Flush cache to content store using shared flush logic
-	_, flushErr := ops.FlushCacheToContentStore(ctx.Context, fileCache, contentStore, file.ContentID)
+	_, flushErr := cache.FlushCacheToContentStore(ctx.Context, fileCache, contentStore, file.ContentID)
 	if flushErr != nil {
 		traceError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "content_id", file.ContentID, "client", clientIP)
 

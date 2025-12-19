@@ -4,8 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/cache"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/ops"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 )
 
@@ -182,7 +182,7 @@ func (resp *FlushResponse) Encode() ([]byte, error) {
 //
 // **Shared Logic:**
 //
-// Uses ops.FlushCacheToContentStore() which is shared with NFS COMMIT handler
+// Uses cache.FlushCacheToContentStore() which is shared with NFS COMMIT handler
 // to ensure consistent flush behavior across protocols.
 //
 // **Example:**
@@ -247,7 +247,7 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	}
 
 	// Flush using shared cache flush logic (same as NFS COMMIT)
-	_, flushErr := ops.FlushCacheToContentStore(ctx.Context, fileCache, contentStore, file.ContentID)
+	_, flushErr := cache.FlushCacheToContentStore(ctx.Context, fileCache, contentStore, file.ContentID)
 	if flushErr != nil {
 		logger.Warn("FLUSH: cache flush failed", "path", openFile.Path, "error", flushErr)
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUnexpectedIOError}}, nil

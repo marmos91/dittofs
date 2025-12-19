@@ -1,9 +1,9 @@
-// Package ops provides shared operations between protocol handlers.
+// Package cache provides shared cache operations between protocol handlers.
 //
 // This package contains business logic that is protocol-agnostic and can be
 // shared between NFS, SMB, and other protocol handlers. It sits above the
 // store packages to avoid import cycles.
-package ops
+package cache
 
 import (
 	"context"
