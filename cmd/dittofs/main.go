@@ -19,6 +19,13 @@ import (
 	_ "github.com/marmos91/dittofs/pkg/metrics/prometheus"
 )
 
+// Build-time variables injected via ldflags
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 const usage = `DittoFS - Modular virtual filesystem
 
 Usage:
@@ -27,6 +34,7 @@ Usage:
 Commands:
   init     Initialize a sample configuration file
   start    Start the DittoFS server
+  version  Show version information
   user     Manage users (add, delete, list, passwd, grant, revoke, groups, join, leave)
   group    Manage groups (add, delete, list, members, grant, revoke)
 
@@ -88,6 +96,9 @@ func main() {
 		runGroup()
 	case "help", "--help", "-h":
 		fmt.Print(usage)
+		os.Exit(0)
+	case "version", "--version", "-v":
+		fmt.Printf("dittofs %s (commit: %s, built: %s)\n", version, commit, date)
 		os.Exit(0)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", command)
@@ -185,7 +196,7 @@ func runStart() {
 	telemetryCfg := telemetry.Config{
 		Enabled:        cfg.Telemetry.Enabled,
 		ServiceName:    "dittofs",
-		ServiceVersion: "dev", // TODO: inject version at build time
+		ServiceVersion: version,
 		Endpoint:       cfg.Telemetry.Endpoint,
 		Insecure:       cfg.Telemetry.Insecure,
 		SampleRate:     cfg.Telemetry.SampleRate,
@@ -204,7 +215,7 @@ func runStart() {
 	profilingCfg := telemetry.ProfilingConfig{
 		Enabled:        cfg.Telemetry.Profiling.Enabled,
 		ServiceName:    "dittofs",
-		ServiceVersion: "dev", // TODO: inject version at build time
+		ServiceVersion: version,
 		Endpoint:       cfg.Telemetry.Profiling.Endpoint,
 		ProfileTypes:   cfg.Telemetry.Profiling.ProfileTypes,
 	}
