@@ -10,7 +10,7 @@
 
 **A modular virtual filesystem written entirely in Go**
 
-Decouple file interfaces from storage backends. NFSv3 server with pluggable metadata and content stores. Designed for easy extension to additional protocols.
+Decouple file interfaces from storage backends. NFSv3 and SMB2 server with pluggable metadata and content stores. Kubernetes-ready with official operator.
 
 [Quick Start](#quick-start) • [Documentation](#documentation) • [Features](#features) • [Use Cases](#use-cases) • [Contributing](docs/CONTRIBUTING.md)
 
@@ -34,7 +34,7 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 │  Metadata Stores  │  Content Stores  │
 │  • Memory         │  • Filesystem    │
 │  • BadgerDB       │  • S3            │
-│  • Custom         │  • Memory        │
+│  • PostgreSQL     │  • Memory        │
 └──────────────────────────────────────┘
 ```
 
