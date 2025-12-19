@@ -20,7 +20,7 @@ jobs:
   e2e-tests-fast:
     name: E2E Tests (All Backends)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 12
 
     steps:
       - name: Checkout code
@@ -53,7 +53,7 @@ jobs:
         run: |
           # Run e2e tests with:
           # - -short: skip 100MB files and 10K file tests
-          # - All 8 backend configurations (local + Docker-based)
+          # - Local backend configurations (no Docker services required)
           sudo go test -tags=e2e -v -short -timeout 10m ./test/e2e/...
 
       - name: Upload test logs on failure

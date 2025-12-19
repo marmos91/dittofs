@@ -45,10 +45,13 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 		dialect := types.Dialect(d)
 		switch dialect {
 		case types.SMB2Dialect0210:
-			// Prefer 2.1 if available (better Linux compatibility)
-			selectedDialect = types.SMB2Dialect0210
+			// SMB 2.1 is our highest supported dialect
+			if selectedDialect < types.SMB2Dialect0210 {
+				selectedDialect = types.SMB2Dialect0210
+			}
 		case types.SMB2Dialect0202, types.SMB2DialectWild:
-			if selectedDialect == 0 {
+			// SMB 2.0.2 is our baseline; wildcard maps to lowest supported
+			if selectedDialect < types.SMB2Dialect0202 {
 				selectedDialect = types.SMB2Dialect0202
 			}
 		}
