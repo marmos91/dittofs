@@ -53,6 +53,12 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		"bodyLen", len(body),
 		"bodyHex", fmt.Sprintf("%x", body))
 
+	// Handle IPC$ virtual share for named pipe operations (RPC, share enumeration)
+	// IPC$ is always available and doesn't require registry configuration
+	if strings.EqualFold(shareName, "/ipc$") {
+		return h.handleIPCShare(ctx)
+	}
+
 	// Check if share exists in registry
 	share, shareErr := h.Registry.GetShare(shareName)
 	if shareErr != nil {
@@ -179,6 +185,43 @@ func calculateMaximalAccess(perm identity.SharePermission) uint32 {
 }
 
 // Note: decodeUTF16LE and encodeUTF16LE are defined in encoding.go
+
+// handleIPCShare handles TREE_CONNECT to the virtual IPC$ share.
+// IPC$ is used for inter-process communication including:
+// - Share enumeration via SRVSVC RPC
+// - Remote registry access
+// - Named pipe operations
+// [MS-SMB2] Section 2.2.10 specifies ShareType 0x02 for pipe shares.
+func (h *Handler) handleIPCShare(ctx *SMBHandlerContext) (*HandlerResult, error) {
+	logger.Debug("TREE_CONNECT to virtual IPC$ share", "sessionID", ctx.SessionID)
+
+	// Create tree connection for IPC$ with PIPE share type
+	treeID := h.GenerateTreeID()
+	tree := &TreeConnection{
+		TreeID:     treeID,
+		SessionID:  ctx.SessionID,
+		ShareName:  "/ipc$",
+		ShareType:  types.SMB2ShareTypePipe, // Named pipe share
+		CreatedAt:  time.Now(),
+		Permission: identity.PermissionReadWrite,
+	}
+	h.StoreTree(tree)
+
+	ctx.TreeID = treeID
+	ctx.ShareName = "/ipc$"
+
+	// Build response with PIPE share type
+	// [MS-SMB2] Section 2.2.10 TREE_CONNECT Response
+	resp := make([]byte, 16)
+	binary.LittleEndian.PutUint16(resp[0:2], 16)     // StructureSize
+	resp[2] = types.SMB2ShareTypePipe                // ShareType: Named pipe
+	resp[3] = 0                                      // Reserved
+	binary.LittleEndian.PutUint32(resp[4:8], 0)      // ShareFlags: none
+	binary.LittleEndian.PutUint32(resp[8:12], 0)     // Capabilities: none
+	binary.LittleEndian.PutUint32(resp[12:16], 0x1F) // MaximalAccess: basic read/write for IPC
+
+	return NewResult(types.StatusSuccess, resp), nil
+}
 
 // parseSharePath parses \\server\share to /share or just share
 // The share name is normalized to lowercase for case-insensitive matching.
