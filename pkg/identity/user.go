@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"golang.org/x/crypto/md4"
+	"golang.org/x/crypto/md4" //nolint:staticcheck // MD4 is required for NTLM protocol compatibility
 )
 
 // User represents a DittoFS user with cross-protocol identity mapping.
