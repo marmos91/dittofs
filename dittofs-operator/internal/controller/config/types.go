@@ -112,6 +112,8 @@ type Share struct {
 	ContentStore            string              `yaml:"content_store"`
 	Cache                   string              `yaml:"cache,omitempty"`
 	ReadOnly                bool                `yaml:"read_only"`
+	AllowGuest              bool                `yaml:"allow_guest"`
+	DefaultPermission       string              `yaml:"default_permission,omitempty"`
 	AllowedClients          []string            `yaml:"allowed_clients"`
 	DeniedClients           []string            `yaml:"denied_clients"`
 	RequireAuth             bool                `yaml:"require_auth"`
