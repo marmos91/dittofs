@@ -130,12 +130,26 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 			rootDirAttrs.GID = share.RootDirectoryAttributes.GID
 		}
 
+		// Set AllowGuest based on configuration, defaulting to true for backward compatibility
+		allowGuest := true
+		if share.AllowGuest != nil {
+			allowGuest = *share.AllowGuest
+		}
+
+		// Set DefaultPermission based on configuration, defaulting to "read"
+		defaultPermission := "read"
+		if share.DefaultPermission != "" {
+			defaultPermission = share.DefaultPermission
+		}
+
 		shareYAML := Share{
 			Name:                    share.ExportPath,
 			MetadataStore:           share.MetadataStore,
 			ContentStore:            share.ContentStore,
 			Cache:                   share.Cache,
 			ReadOnly:                share.ReadOnly,
+			AllowGuest:              allowGuest,
+			DefaultPermission:       defaultPermission,
 			AllowedClients:          share.AllowedClients,
 			DeniedClients:           share.DeniedClients,
 			RequireAuth:             share.RequireAuth,

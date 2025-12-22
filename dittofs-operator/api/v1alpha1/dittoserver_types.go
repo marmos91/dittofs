@@ -150,6 +150,18 @@ type ShareConfig struct {
 	// +optional
 	AllowedAuthMethods []string `json:"allowedAuthMethods,omitempty"`
 
+	// AllowGuest allows guest/anonymous access to this share
+	// +kubebuilder:default=true
+	// +optional
+	AllowGuest *bool `json:"allowGuest,omitempty"`
+
+	// DefaultPermission sets the default permission level for users without explicit permissions
+	// Valid values: none, read, read-write, admin
+	// +kubebuilder:default="read"
+	// +kubebuilder:validation:Enum=none;read;read-write;admin
+	// +optional
+	DefaultPermission string `json:"defaultPermission,omitempty"`
+
 	// IdentityMapping configures user/group mapping for this share
 	// +optional
 	IdentityMapping *IdentityMappingConfig `json:"identityMapping,omitempty"`
