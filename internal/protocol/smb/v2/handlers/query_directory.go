@@ -419,6 +419,8 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		entries = h.buildFileBothDirInfoFromStore(filteredEntries, includeSpecial)
 	case types.FileIdBothDirectoryInformation:
 		entries = h.buildFileIdBothDirInfoFromStore(filteredEntries, includeSpecial)
+	case types.FileIdFullDirectoryInformation:
+		entries = h.buildFileIdFullDirInfoFromStore(filteredEntries, includeSpecial)
 	case types.FileFullDirectoryInformation:
 		entries = h.buildFileFullDirInfoFromStore(filteredEntries, includeSpecial)
 	case types.FileDirectoryInformation:
@@ -630,6 +632,90 @@ func (h *Handler) appendIdBothDirEntryFromAttr(result []byte, prevNextOffset *in
 	binary.LittleEndian.PutUint16(entry[94:96], 0)       // Reserved2
 	binary.LittleEndian.PutUint64(entry[96:104], fileID) // FileId
 	copy(entry[104:], nameBytes)
+
+	// Update previous entry's NextEntryOffset to point to this entry
+	if len(result) > 0 {
+		binary.LittleEndian.PutUint32(result[*prevNextOffset:], uint32(len(result)-*prevNextOffset))
+	}
+
+	// Remember this entry's position for the next iteration
+	*prevNextOffset = len(result)
+	return append(result, entry...)
+}
+
+// buildFileIdFullDirInfoFromStore builds FILE_ID_FULL_DIR_INFORMATION structures [MS-FSCC] 2.4.18.
+func (h *Handler) buildFileIdFullDirInfoFromStore(entries []metadata.DirEntry, includeSpecial bool) []byte {
+	var result []byte
+	var prevNextOffset int
+	var fileIndex uint64 = 1
+
+	if includeSpecial {
+		result = h.appendIdFullDirEntryFromAttr(result, &prevNextOffset, ".", nil, fileIndex, fileIndex)
+		fileIndex++
+		result = h.appendIdFullDirEntryFromAttr(result, &prevNextOffset, "..", nil, fileIndex, fileIndex)
+		fileIndex++
+	}
+
+	for i := range entries {
+		result = h.appendIdFullDirEntryFromAttr(result, &prevNextOffset, entries[i].Name, entries[i].Attr, fileIndex, entries[i].ID)
+		fileIndex++
+	}
+
+	return result
+}
+
+// appendIdFullDirEntryFromAttr appends a FILE_ID_FULL_DIR_INFORMATION entry from FileAttr.
+func (h *Handler) appendIdFullDirEntryFromAttr(result []byte, prevNextOffset *int, name string, attr *metadata.FileAttr, fileIndex uint64, fileID uint64) []byte {
+	nameUTF16 := utf16.Encode([]rune(name))
+	nameBytes := make([]byte, len(nameUTF16)*2)
+	for i, r := range nameUTF16 {
+		binary.LittleEndian.PutUint16(nameBytes[i*2:], r)
+	}
+
+	// FILE_ID_FULL_DIR_INFORMATION structure (80 bytes base + filename)
+	// [MS-FSCC] 2.4.18
+	totalLen := 80 + len(nameBytes)
+	padding := (8 - (totalLen % 8)) % 8
+	totalLen += padding
+
+	entry := make([]byte, totalLen)
+
+	binary.LittleEndian.PutUint32(entry[0:4], 0)                 // NextEntryOffset (set later)
+	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex)) // FileIndex
+
+	var creationTime, accessTime, writeTime, changeTime uint64
+	var size uint64
+	var attrs types.FileAttributes
+
+	if attr != nil {
+		creation, access, write, change := FileAttrToSMBTimes(attr)
+		creationTime = types.TimeToFiletime(creation)
+		accessTime = types.TimeToFiletime(access)
+		writeTime = types.TimeToFiletime(write)
+		changeTime = types.TimeToFiletime(change)
+		size = getSMBSize(attr)
+		attrs = FileAttrToSMBAttributesWithName(attr, name)
+	} else {
+		now := types.NowFiletime()
+		creationTime = now
+		accessTime = now
+		writeTime = now
+		changeTime = now
+		attrs = types.FileAttributeDirectory
+	}
+
+	binary.LittleEndian.PutUint64(entry[8:16], creationTime)
+	binary.LittleEndian.PutUint64(entry[16:24], accessTime)
+	binary.LittleEndian.PutUint64(entry[24:32], writeTime)
+	binary.LittleEndian.PutUint64(entry[32:40], changeTime)
+	binary.LittleEndian.PutUint64(entry[40:48], size)                   // EndOfFile
+	binary.LittleEndian.PutUint64(entry[48:56], size)                   // AllocationSize
+	binary.LittleEndian.PutUint32(entry[56:60], uint32(attrs))          // FileAttributes
+	binary.LittleEndian.PutUint32(entry[60:64], uint32(len(nameBytes))) // FileNameLength
+	binary.LittleEndian.PutUint32(entry[64:68], 0)                      // EaSize
+	binary.LittleEndian.PutUint32(entry[68:72], 0)                      // Reserved
+	binary.LittleEndian.PutUint64(entry[72:80], fileID)                 // FileId
+	copy(entry[80:], nameBytes)                                         // FileName
 
 	// Update previous entry's NextEntryOffset to point to this entry
 	if len(result) > 0 {
