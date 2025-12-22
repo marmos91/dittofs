@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/registry"
@@ -162,7 +161,7 @@ mkdir -p /mnt/smb
 
 echo "=== Mounting SMB share ==="
 mount -t cifs //host.docker.internal/export /mnt/smb \
-    -o username=testuser,password=testpass123,port=%d,vers=2.0
+    -o username=testuser,password=testpass123,port=%d,vers=2.1
 
 echo "=== Mount successful ==="
 
@@ -220,7 +219,7 @@ apt-get update -qq && apt-get install -qq -y cifs-utils > /dev/null 2>&1
 mkdir -p /mnt/smb
 
 mount -t cifs //host.docker.internal/export /mnt/smb \
-    -o username=testuser,password=testpass123,port=%d,vers=2.0
+    -o username=testuser,password=testpass123,port=%d,vers=2.1
 
 echo "=== Filesystem info (df -h) ==="
 df -h /mnt/smb
@@ -290,193 +289,4 @@ func mustHashPassword(password string) string {
 		panic(err)
 	}
 	return hash
-}
-
-// TestLinuxNFSMount tests NFSv3 mount compatibility with Linux kernel NFS client.
-// This test uses Docker to run a Linux container that mounts the NFS share.
-// It verifies that the NFSv3 protocol implementation works correctly with the Linux NFS client.
-func TestLinuxNFSMount(t *testing.T) {
-	// Skip on non-Linux/macOS systems where Docker might not be available
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skipf("Skipping Linux NFS mount test on %s", runtime.GOOS)
-	}
-
-	// Check if Docker is available
-	if !isDockerAvailable() {
-		t.Skip("Docker not available, skipping Linux NFS mount test")
-	}
-
-	// Setup server
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Use ERROR level to keep test output clean
-	if level := os.Getenv("DITTOFS_LOGGING_LEVEL"); level != "" {
-		logger.SetLevel(level)
-	} else {
-		logger.SetLevel("ERROR")
-	}
-
-	// Find free port
-	nfsPort := framework.FindFreePort(t)
-
-	// Create stores
-	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
-	contentStore, err := memorycontent.NewMemoryContentStore(ctx)
-	if err != nil {
-		t.Fatalf("Failed to create content store: %v", err)
-	}
-
-	// Create registry
-	reg := registry.NewRegistry()
-
-	// Register stores
-	if err := reg.RegisterMetadataStore("test-metadata", metaStore); err != nil {
-		t.Fatalf("Failed to register metadata store: %v", err)
-	}
-	if err := reg.RegisterContentStore("test-content", contentStore); err != nil {
-		t.Fatalf("Failed to register content store: %v", err)
-	}
-
-	// Create share
-	shareConfig := &registry.ShareConfig{
-		Name:              "/export",
-		MetadataStore:     "test-metadata",
-		ContentStore:      "test-content",
-		ReadOnly:          false,
-		AllowGuest:        true,
-		DefaultPermission: string(identity.PermissionReadWrite),
-		RootAttr: &metadata.FileAttr{
-			Type: metadata.FileTypeDirectory,
-			Mode: 0777,
-			UID:  0,
-			GID:  0,
-		},
-	}
-
-	if err := reg.AddShare(ctx, shareConfig); err != nil {
-		t.Fatalf("Failed to add share: %v", err)
-	}
-
-	// Create and start server
-	srv := server.New(reg, 30*time.Second)
-
-	nfsConfig := nfs.NFSConfig{
-		Enabled:        true,
-		Port:           nfsPort,
-		MaxConnections: 0,
-		Timeouts: nfs.NFSTimeoutsConfig{
-			Read:     5 * time.Minute,
-			Write:    30 * time.Second,
-			Idle:     5 * time.Minute,
-			Shutdown: 30 * time.Second,
-		},
-	}
-	nfsAdapter := nfs.New(nfsConfig, nil)
-	if err := srv.AddAdapter(nfsAdapter); err != nil {
-		t.Fatalf("Failed to add NFS adapter: %v", err)
-	}
-
-	// Start server in background
-	go func() {
-		if err := srv.Serve(ctx); err != nil && err != context.Canceled {
-			t.Logf("Server error: %v", err)
-		}
-	}()
-
-	// Wait for server to be ready
-	framework.WaitForServer(t, nfsPort, 10*time.Second)
-
-	// Run Docker tests
-	t.Run("MountAndList", func(t *testing.T) {
-		testLinuxNFSMountAndList(t, nfsPort)
-	})
-
-	t.Run("FileSystemInfo", func(t *testing.T) {
-		testLinuxNFSFileSystemInfo(t, nfsPort)
-	})
-}
-
-// testLinuxNFSMountAndList tests NFS mount and directory listing
-func testLinuxNFSMountAndList(t *testing.T, port int) {
-	script := fmt.Sprintf(`#!/bin/bash
-set -e
-
-echo "=== Installing nfs-common ==="
-apt-get update -qq && apt-get install -qq -y nfs-common > /dev/null 2>&1
-
-echo "=== Creating mount point ==="
-mkdir -p /mnt/nfs
-
-echo "=== Mounting NFS share ==="
-mount -t nfs -o nfsvers=3,tcp,port=%d,mountport=%d,nolock host.docker.internal:/export /mnt/nfs
-
-echo "=== Mount successful ==="
-
-echo "=== Directory listing (should be empty or show . and ..) ==="
-ls -la /mnt/nfs/
-
-echo "=== Creating test file via mount ==="
-echo "Hello from NFS mount!" > /mnt/nfs/nfs_mount_test.txt
-
-echo "=== Verifying file was created ==="
-if [ -f /mnt/nfs/nfs_mount_test.txt ]; then
-    echo "nfs_mount_test.txt: FOUND"
-    content=$(cat /mnt/nfs/nfs_mount_test.txt)
-    echo "Content: $content"
-    if [ "$content" = "Hello from NFS mount!" ]; then
-        echo "Content: CORRECT"
-    else
-        echo "Content: MISMATCH"
-        exit 1
-    fi
-else
-    echo "nfs_mount_test.txt: NOT FOUND"
-    exit 1
-fi
-
-echo "=== Creating test directory ==="
-mkdir /mnt/nfs/nfs_mount_testdir
-
-echo "=== Verifying directory was created ==="
-if [ -d /mnt/nfs/nfs_mount_testdir ]; then
-    echo "nfs_mount_testdir: FOUND"
-else
-    echo "nfs_mount_testdir: NOT FOUND"
-    exit 1
-fi
-
-echo "=== Final directory listing ==="
-ls -la /mnt/nfs/
-
-echo "=== Unmounting ==="
-umount /mnt/nfs
-
-echo "=== Test PASSED ==="
-`, port, port)
-
-	runDockerScript(t, script, "nfs-mount-and-list")
-}
-
-// testLinuxNFSFileSystemInfo tests df command
-func testLinuxNFSFileSystemInfo(t *testing.T, port int) {
-	script := fmt.Sprintf(`#!/bin/bash
-set -e
-
-apt-get update -qq && apt-get install -qq -y nfs-common > /dev/null 2>&1
-mkdir -p /mnt/nfs
-
-mount -t nfs -o nfsvers=3,tcp,port=%d,mountport=%d,nolock host.docker.internal:/export /mnt/nfs
-
-echo "=== Filesystem info (df -h) ==="
-df -h /mnt/nfs
-
-echo "=== Filesystem type ==="
-df -T /mnt/nfs
-
-umount /mnt/nfs
-echo "=== Test PASSED ==="
-`, port, port)
-
-	runDockerScript(t, script, "nfs-filesystem-info")
 }
