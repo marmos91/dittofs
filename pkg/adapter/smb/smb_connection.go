@@ -199,6 +199,24 @@ func (c *SMBConnection) readRequest(ctx context.Context) (*header.SMB2Header, []
 		return nil, nil, nil, fmt.Errorf("parse SMB2 header: %w", err)
 	}
 
+	// Verify message signature if the session requires it
+	// Skip verification for messages without a session (SessionID == 0)
+	// and for NEGOTIATE/SESSION_SETUP which may not have signing set up yet
+	if hdr.SessionID != 0 && hdr.Command != types.SMB2Negotiate && hdr.Command != types.SMB2SessionSetup {
+		if sess, ok := c.server.handler.GetSession(hdr.SessionID); ok && sess.ShouldVerify() {
+			if !sess.VerifyMessage(message) {
+				logger.Warn("SMB2 message signature verification failed",
+					"command", hdr.Command.String(),
+					"sessionID", hdr.SessionID,
+					"client", c.conn.RemoteAddr().String())
+				return nil, nil, nil, fmt.Errorf("signature verification failed")
+			}
+			logger.Debug("Verified incoming SMB2 message signature",
+				"command", hdr.Command.String(),
+				"sessionID", hdr.SessionID)
+		}
+	}
+
 	// For compound requests, extract only the body for this command
 	var body []byte
 	var remainingCompound []byte
@@ -612,6 +630,7 @@ func (c *SMBConnection) sendErrorResponse(reqHeader *header.SMB2Header, status t
 }
 
 // sendMessage sends an SMB2 message with NetBIOS framing.
+// If the session has signing enabled, the message is signed before sending.
 func (c *SMBConnection) sendMessage(hdr *header.SMB2Header, body []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -630,6 +649,22 @@ func (c *SMBConnection) sendMessage(hdr *header.SMB2Header, body []byte) error {
 	// Calculate total message length
 	msgLen := len(headerBytes) + len(body)
 
+	// Build the complete SMB2 message (header + body) for signing
+	smbMessage := make([]byte, msgLen)
+	copy(smbMessage[0:len(headerBytes)], headerBytes)
+	copy(smbMessage[len(headerBytes):], body)
+
+	// Sign the message if session has signing enabled
+	// Skip signing for messages without a session (SessionID == 0)
+	if hdr.SessionID != 0 {
+		if sess, ok := c.server.handler.GetSession(hdr.SessionID); ok && sess.ShouldSign() {
+			sess.SignMessage(smbMessage)
+			logger.Debug("Signed outgoing SMB2 message",
+				"command", hdr.Command.String(),
+				"sessionID", hdr.SessionID)
+		}
+	}
+
 	// Build NetBIOS session header (4 bytes)
 	// Type (1 byte) = 0x00 for session message
 	// Length (3 bytes) = message length in big-endian
@@ -642,8 +677,7 @@ func (c *SMBConnection) sendMessage(hdr *header.SMB2Header, body []byte) error {
 	// Write everything in one syscall if possible
 	message := make([]byte, 4+msgLen)
 	copy(message[0:4], nbHeader)
-	copy(message[4:4+len(headerBytes)], headerBytes)
-	copy(message[4+len(headerBytes):], body)
+	copy(message[4:], smbMessage)
 
 	_, err := c.conn.Write(message)
 	if err != nil {

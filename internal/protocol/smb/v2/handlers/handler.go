@@ -8,6 +8,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/protocol/smb/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
+	"github.com/marmos91/dittofs/internal/protocol/smb/signing"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/registry"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
@@ -42,6 +43,9 @@ type Handler struct {
 	MaxTransactSize uint32
 	MaxReadSize     uint32
 	MaxWriteSize    uint32
+
+	// Signing configuration
+	SigningConfig signing.SigningConfig
 }
 
 // PendingAuth tracks sessions in the middle of NTLM authentication
@@ -106,6 +110,7 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		MaxTransactSize: 65536,
 		MaxReadSize:     65536,
 		MaxWriteSize:    65536,
+		SigningConfig:   signing.DefaultSigningConfig(),
 	}
 
 	// Generate random server GUID
