@@ -473,10 +473,15 @@ func (c *SMBConnection) injectFileID(command types.Command, body []byte, fileID 
 	return newBody
 }
 
-// makeErrorBody creates a minimal error response body.
+// makeErrorBody creates a minimal error response body per MS-SMB2 spec.
+// Error response body (8 bytes minimum):
+// StructureSize (2) + ErrorContextCount (1) + Reserved (1) + ByteCount (4)
 func makeErrorBody() []byte {
 	body := make([]byte, 9)
-	binary.LittleEndian.PutUint16(body[0:2], 9)
+	binary.LittleEndian.PutUint16(body[0:2], 9) // StructureSize
+	body[2] = 0                                 // ErrorContextCount
+	body[3] = 0                                 // Reserved
+	binary.LittleEndian.PutUint32(body[4:8], 0) // ByteCount
 	return body
 }
 

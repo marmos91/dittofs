@@ -234,11 +234,11 @@ func (h *Handler) handleIPCShare(ctx *SMBHandlerContext) (*HandlerResult, error)
 	// Build response with PIPE share type
 	// [MS-SMB2] Section 2.2.10 TREE_CONNECT Response
 	resp := make([]byte, 16)
-	binary.LittleEndian.PutUint16(resp[0:2], 16)     // StructureSize
-	resp[2] = types.SMB2ShareTypePipe                // ShareType: Named pipe
-	resp[3] = 0                                      // Reserved
-	binary.LittleEndian.PutUint32(resp[4:8], 0)      // ShareFlags: none
-	binary.LittleEndian.PutUint32(resp[8:12], 0)     // Capabilities: none
+	binary.LittleEndian.PutUint16(resp[0:2], 16)                 // StructureSize
+	resp[2] = types.SMB2ShareTypePipe                            // ShareType: Named pipe
+	resp[3] = 0                                                  // Reserved
+	binary.LittleEndian.PutUint32(resp[4:8], 0)                  // ShareFlags: none
+	binary.LittleEndian.PutUint32(resp[8:12], 0)                 // Capabilities: none
 	binary.LittleEndian.PutUint32(resp[12:16], ipcMaximalAccess) // MaximalAccess: basic read/write for IPC
 
 	return NewResult(types.StatusSuccess, resp), nil
