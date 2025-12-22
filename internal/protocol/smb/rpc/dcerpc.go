@@ -145,7 +145,7 @@ type SyntaxID struct {
 
 // ParseBindRequest parses a Bind PDU
 func ParseBindRequest(data []byte) (*BindRequest, error) {
-	if len(data) < HeaderSize+8 {
+	if len(data) < HeaderSize+9 {
 		return nil, fmt.Errorf("bind request too short")
 	}
 

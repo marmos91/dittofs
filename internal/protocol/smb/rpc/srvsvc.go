@@ -295,8 +295,9 @@ func (h *SRVSVCHandler) buildFault(callID uint32, status uint32) []byte {
 
 // encodeUTF16LE encodes a string as UTF-16LE
 func encodeUTF16LE(s string) []byte {
-	result := make([]byte, len(s)*2)
-	for i, r := range s {
+	runes := []rune(s)
+	result := make([]byte, len(runes)*2)
+	for i, r := range runes {
 		binary.LittleEndian.PutUint16(result[i*2:], uint16(r))
 	}
 	return result

@@ -88,8 +88,19 @@ func (p *PipeState) ProcessRead(maxLen int) []byte {
 		return nil
 	}
 
+	// Validate maxLen to prevent allocation issues
+	if maxLen <= 0 {
+		return nil
+	}
+	// Cap at reasonable maximum (64KB matches SMB protocol limits)
+	const maxReadSize = 65536
+	if maxLen > maxReadSize {
+		maxLen = maxReadSize
+	}
+
 	// Read up to maxLen bytes
 	data := make([]byte, maxLen)
+	// bytes.Buffer.Read only returns io.EOF when empty, which we already checked above
 	n, _ := p.ReadBuffer.Read(data)
 	return data[:n]
 }
@@ -181,8 +192,13 @@ func (pm *PipeManager) CreatePipe(fileID [16]byte, pipeName string) *PipeState {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	// Create handler with current shares
-	handler := NewSRVSVCHandler(pm.shares)
+	// Create a defensive copy of shares to prevent race conditions
+	// if SetShares is called while this handler is active
+	sharesCopy := make([]ShareInfo1, len(pm.shares))
+	copy(sharesCopy, pm.shares)
+
+	// Create handler with copied shares
+	handler := NewSRVSVCHandler(sharesCopy)
 	pipe := NewPipeState(pipeName, handler)
 	pm.pipes[fileID] = pipe
 
@@ -203,11 +219,11 @@ func (pm *PipeManager) ClosePipe(fileID [16]byte) {
 	delete(pm.pipes, fileID)
 }
 
-// IsSupportedPipe returns true if the pipe name is supported
+// IsSupportedPipe returns true if the pipe name is supported.
+// Note: The caller is expected to normalize the pipe name to lowercase before calling.
 func IsSupportedPipe(name string) bool {
-	// Normalize pipe name
 	switch name {
-	case "srvsvc", "\\srvsvc", "\\pipe\\srvsvc", "SRVSVC":
+	case "srvsvc", "\\srvsvc", "\\pipe\\srvsvc":
 		return true
 	default:
 		return false
