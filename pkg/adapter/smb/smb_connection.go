@@ -546,7 +546,8 @@ func (c *SMBConnection) processRequest(ctx context.Context, reqHeader *header.SM
 	return c.sendResponse(reqHeader, handlerCtx, result)
 }
 
-// sendResponse sends a successful SMB2 response.
+// sendResponse sends an SMB2 response.
+// If the result indicates an error status and has no data, a proper error body is added.
 func (c *SMBConnection) sendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *smb.HandlerResult) error {
 	// Use session manager for adaptive credit grants
 	sessionID := reqHeader.SessionID
@@ -573,7 +574,14 @@ func (c *SMBConnection) sendResponse(reqHeader *header.SMB2Header, ctx *handlers
 		respHeader.TreeID = ctx.TreeID
 	}
 
-	return c.sendMessage(respHeader, result.Data)
+	// If result has error status but no data, add proper error body
+	// Error responses must include a valid error body per MS-SMB2 spec
+	body := result.Data
+	if body == nil && result.Status.IsError() {
+		body = makeErrorBody()
+	}
+
+	return c.sendMessage(respHeader, body)
 }
 
 // sendErrorResponse sends an SMB2 error response.
