@@ -299,7 +299,15 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	}
 
 	// ========================================================================
-	// Step 2: Validate file type
+	// Step 2: Handle named pipe reads (IPC$ RPC)
+	// ========================================================================
+
+	if openFile.IsPipe {
+		return h.handlePipeRead(ctx, req, openFile)
+	}
+
+	// ========================================================================
+	// Step 3: Validate file type
 	// ========================================================================
 
 	if openFile.IsDirectory {
@@ -308,7 +316,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	}
 
 	// ========================================================================
-	// Step 3: Get session and tree connection
+	// Step 4: Get session and tree connection
 	// ========================================================================
 
 	tree, ok := h.GetTree(openFile.TreeID)
@@ -651,6 +659,44 @@ func (h *Handler) handleSymlinkRead(
 	return &ReadResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
 		DataOffset:      0x50, // Standard offset
+		Data:            data,
+		DataRemaining:   0,
+	}, nil
+}
+
+// handlePipeRead handles READ from a named pipe for DCE/RPC communication.
+func (h *Handler) handlePipeRead(ctx *SMBHandlerContext, req *ReadRequest, openFile *OpenFile) (*ReadResponse, error) {
+	logger.Debug("READ from named pipe",
+		"pipeName", openFile.PipeName,
+		"requestedLength", req.Length)
+
+	// Get pipe state
+	pipe := h.PipeManager.GetPipe(req.FileID)
+	if pipe == nil {
+		logger.Warn("READ: pipe not found", "fileID", fmt.Sprintf("%x", req.FileID))
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
+	}
+
+	// Read buffered RPC response
+	data := pipe.ProcessRead(int(req.Length))
+	if len(data) == 0 {
+		// No data available - this could be normal if WRITE hasn't happened yet
+		logger.Debug("READ: no data available in pipe", "pipeName", openFile.PipeName)
+		return &ReadResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+			DataOffset:      0x50,
+			Data:            []byte{},
+			DataRemaining:   0,
+		}, nil
+	}
+
+	logger.Debug("READ from pipe successful",
+		"pipeName", openFile.PipeName,
+		"bytesRead", len(data))
+
+	return &ReadResponse{
+		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+		DataOffset:      0x50,
 		Data:            data,
 		DataRemaining:   0,
 	}, nil

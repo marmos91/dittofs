@@ -18,26 +18,26 @@ import (
 // SRVSVC interface UUID: 4b324fc8-1670-01d3-1278-5a47bf6ee188
 var SRVSVCInterfaceUUID = [16]byte{
 	0xc8, 0x4f, 0x32, 0x4b, // 4b324fc8
-	0x70, 0x16,             // 1670
-	0xd3, 0x01,             // 01d3
-	0x12, 0x78,             // 1278
+	0x70, 0x16, // 1670
+	0xd3, 0x01, // 01d3
+	0x12, 0x78, // 1278
 	0x5a, 0x47, 0xbf, 0x6e, 0xe1, 0x88, // 5a47bf6ee188
 }
 
 // NDR Transfer Syntax UUID: 8a885d04-1ceb-11c9-9fe8-08002b104860
 var NDRTransferSyntaxUUID = [16]byte{
 	0x04, 0x5d, 0x88, 0x8a, // 8a885d04
-	0xeb, 0x1c,             // 1ceb
-	0xc9, 0x11,             // 11c9
-	0x9f, 0xe8,             // 9fe8
+	0xeb, 0x1c, // 1ceb
+	0xc9, 0x11, // 11c9
+	0x9f, 0xe8, // 9fe8
 	0x08, 0x00, 0x2b, 0x10, 0x48, 0x60, // 08002b104860
 }
 
 // SRVSVC Operation Numbers [MS-SRVS Section 3.1.4]
 const (
-	OpNetrShareEnum        uint16 = 15 // NetrShareEnum
-	OpNetrShareGetInfo     uint16 = 16 // NetrShareGetInfo
-	OpNetrServerGetInfo    uint16 = 21 // NetrServerGetInfo
+	OpNetrShareEnum     uint16 = 15 // NetrShareEnum
+	OpNetrShareGetInfo  uint16 = 16 // NetrShareGetInfo
+	OpNetrServerGetInfo uint16 = 21 // NetrServerGetInfo
 )
 
 // Share Types [MS-SRVS Section 2.2.2.4]
@@ -52,8 +52,8 @@ const (
 
 // Status Codes
 const (
-	NERR_Success       uint32 = 0x00000000
-	ERROR_MORE_DATA    uint32 = 0x000000EA
+	NERR_Success        uint32 = 0x00000000
+	ERROR_MORE_DATA     uint32 = 0x000000EA
 	ERROR_ACCESS_DENIED uint32 = 0x00000005
 )
 
@@ -285,8 +285,8 @@ func (h *SRVSVCHandler) buildFault(callID uint32, status uint32) []byte {
 	copy(buf[0:16], hdr.Encode())
 	binary.LittleEndian.PutUint32(buf[16:20], 0)      // alloc_hint
 	binary.LittleEndian.PutUint16(buf[20:22], 0)      // context_id
-	buf[22] = 0                                        // cancel_count
-	buf[23] = 0                                        // reserved
+	buf[22] = 0                                       // cancel_count
+	buf[23] = 0                                       // reserved
 	binary.LittleEndian.PutUint32(buf[24:28], status) // status
 	binary.LittleEndian.PutUint32(buf[28:32], 0)      // reserved
 

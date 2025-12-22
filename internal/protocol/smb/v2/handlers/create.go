@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/smb/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
@@ -368,7 +369,15 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	ctx.Permission = tree.Permission
 
 	// ========================================================================
-	// Step 2: Get metadata store from registry
+	// Step 2: Check for IPC$ named pipe operations
+	// ========================================================================
+
+	if tree.ShareName == "/ipc$" {
+		return h.handlePipeCreate(ctx, req, tree)
+	}
+
+	// ========================================================================
+	// Step 3: Get metadata store from registry
 	// ========================================================================
 
 	metadataStore, err := h.Registry.GetMetadataStoreForShare(tree.ShareName)
@@ -534,6 +543,91 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		AllocationSize:  allocationSize,
 		EndOfFile:       size,
 		FileAttributes:  FileAttrToSMBAttributes(&file.FileAttr),
+		FileID:          smbFileID,
+	}, nil
+}
+
+// ============================================================================
+// Named Pipe Handling (IPC$)
+// ============================================================================
+
+// handlePipeCreate handles CREATE on IPC$ for named pipes.
+// Named pipes are used for DCE/RPC communication, e.g., srvsvc for share enumeration.
+func (h *Handler) handlePipeCreate(ctx *SMBHandlerContext, req *CreateRequest, tree *TreeConnection) (*CreateResponse, error) {
+	// Normalize pipe name (remove leading backslashes and "pipe\" prefix)
+	pipeName := strings.ReplaceAll(req.FileName, "\\", "/")
+	pipeName = strings.TrimPrefix(pipeName, "/")
+	pipeName = strings.TrimPrefix(pipeName, "pipe/")
+	pipeName = strings.ToLower(pipeName)
+
+	logger.Debug("CREATE on IPC$ named pipe",
+		"originalName", req.FileName,
+		"normalizedName", pipeName)
+
+	// Check if this is a supported pipe
+	if !rpc.IsSupportedPipe(pipeName) {
+		logger.Debug("CREATE: unsupported pipe", "pipeName", pipeName)
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameNotFound}}, nil
+	}
+
+	// Update pipe manager with current shares from registry
+	if h.Registry != nil {
+		shareNames := h.Registry.ListShares()
+		shares := make([]rpc.ShareInfo1, 0, len(shareNames))
+		for _, name := range shareNames {
+			// Skip IPC$ virtual share
+			if strings.EqualFold(name, "/ipc$") {
+				continue
+			}
+			// Convert to share info
+			displayName := strings.TrimPrefix(name, "/")
+			shares = append(shares, rpc.ShareInfo1{
+				Name:    displayName,
+				Type:    rpc.STYPE_DISKTREE,
+				Comment: "DittoFS share",
+			})
+		}
+		h.PipeManager.SetShares(shares)
+	}
+
+	// Generate file ID for the pipe
+	smbFileID := h.GenerateFileID()
+
+	// Create pipe state
+	h.PipeManager.CreatePipe(smbFileID, pipeName)
+
+	// Store open file entry for the pipe
+	openFile := &OpenFile{
+		FileID:        smbFileID,
+		TreeID:        ctx.TreeID,
+		SessionID:     ctx.SessionID,
+		Path:          req.FileName,
+		ShareName:     tree.ShareName,
+		OpenTime:      time.Now(),
+		DesiredAccess: req.DesiredAccess,
+		IsDirectory:   false,
+		IsPipe:        true,
+		PipeName:      pipeName,
+	}
+	h.StoreOpenFile(openFile)
+
+	logger.Debug("CREATE pipe successful",
+		"fileID", fmt.Sprintf("%x", smbFileID),
+		"pipeName", pipeName)
+
+	// Build success response
+	now := time.Now()
+	return &CreateResponse{
+		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+		OplockLevel:     0,
+		CreateAction:    types.FileOpened,
+		CreationTime:    now,
+		LastAccessTime:  now,
+		LastWriteTime:   now,
+		ChangeTime:      now,
+		AllocationSize:  0,
+		EndOfFile:       0,
+		FileAttributes:  types.FileAttributeNormal,
 		FileID:          smbFileID,
 	}, nil
 }

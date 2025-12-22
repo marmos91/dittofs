@@ -14,11 +14,11 @@ import (
 
 // PipeState represents the state of a named pipe connection
 type PipeState struct {
-	mu           sync.Mutex
-	Name         string        // Pipe name (e.g., "srvsvc")
-	Bound        bool          // Whether RPC bind has completed
-	Handler      *SRVSVCHandler // RPC handler for this pipe
-	ReadBuffer   *bytes.Buffer  // Buffered response data for READ
+	mu         sync.Mutex
+	Name       string         // Pipe name (e.g., "srvsvc")
+	Bound      bool           // Whether RPC bind has completed
+	Handler    *SRVSVCHandler // RPC handler for this pipe
+	ReadBuffer *bytes.Buffer  // Buffered response data for READ
 }
 
 // NewPipeState creates a new pipe state

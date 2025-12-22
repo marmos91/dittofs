@@ -71,14 +71,14 @@ const HeaderSize = 16
 //	10      2     auth_length (auth verifier length)
 //	12      4     call_id (call identifier)
 type Header struct {
-	VersionMajor uint8    // RPC major version (5)
-	VersionMinor uint8    // RPC minor version (0 or 1)
-	PacketType   uint8    // PDU type
-	Flags        uint8    // PDU flags
-	DataRep      [4]byte  // NDR data representation
-	FragLength   uint16   // Total fragment length including header
-	AuthLength   uint16   // Authentication verifier length
-	CallID       uint32   // Call identifier
+	VersionMajor uint8   // RPC major version (5)
+	VersionMinor uint8   // RPC minor version (0 or 1)
+	PacketType   uint8   // PDU type
+	Flags        uint8   // PDU flags
+	DataRep      [4]byte // NDR data representation
+	FragLength   uint16  // Total fragment length including header
+	AuthLength   uint16  // Authentication verifier length
+	CallID       uint32  // Call identifier
 }
 
 // ParseHeader parses a DCE/RPC header from bytes
@@ -121,12 +121,12 @@ func (h *Header) Encode() []byte {
 
 // BindRequest represents a DCE/RPC Bind PDU [C706 Section 12.6.4.3]
 type BindRequest struct {
-	Header         Header
-	MaxXmitFrag    uint16 // Max transmit fragment size
-	MaxRecvFrag    uint16 // Max receive fragment size
-	AssocGroupID   uint32 // Association group ID (0 = new)
-	NumContexts    uint8  // Number of presentation contexts
-	ContextList    []PresentationContext
+	Header       Header
+	MaxXmitFrag  uint16 // Max transmit fragment size
+	MaxRecvFrag  uint16 // Max receive fragment size
+	AssocGroupID uint32 // Association group ID (0 = new)
+	NumContexts  uint8  // Number of presentation contexts
+	ContextList  []PresentationContext
 }
 
 // PresentationContext represents a presentation context in Bind PDU
@@ -285,11 +285,11 @@ func (ba *BindAck) Encode(callID uint32) []byte {
 
 // Request represents a DCE/RPC Request PDU [C706 Section 12.6.4.9]
 type Request struct {
-	Header      Header
-	AllocHint   uint32 // Suggested buffer size
-	ContextID   uint16 // Presentation context ID
-	OpNum       uint16 // Operation number
-	StubData    []byte // Request body
+	Header    Header
+	AllocHint uint32 // Suggested buffer size
+	ContextID uint16 // Presentation context ID
+	OpNum     uint16 // Operation number
+	StubData  []byte // Request body
 }
 
 // ParseRequest parses a Request PDU

@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/protocol/smb/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/registry"
@@ -33,6 +34,9 @@ type Handler struct {
 	// Open files
 	files      sync.Map // string(fileID) -> *OpenFile
 	nextFileID atomic.Uint64
+
+	// Named pipe management (for IPC$ RPC)
+	PipeManager *rpc.PipeManager
 
 	// Configuration
 	MaxTransactSize uint32
@@ -67,7 +71,9 @@ type OpenFile struct {
 	OpenTime            time.Time
 	DesiredAccess       uint32
 	IsDirectory         bool
-	EnumerationComplete bool // For directories: true if directory listing was returned
+	IsPipe              bool   // True if this is a named pipe (IPC$)
+	PipeName            string // Named pipe name (e.g., "srvsvc")
+	EnumerationComplete bool   // For directories: true if directory listing was returned
 
 	// Store integration fields
 	MetadataHandle metadata.FileHandle // Link to metadata store file handle
@@ -96,6 +102,7 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 	h := &Handler{
 		StartTime:       time.Now(),
 		SessionManager:  sessionManager,
+		PipeManager:     rpc.NewPipeManager(),
 		MaxTransactSize: 65536,
 		MaxReadSize:     65536,
 		MaxWriteSize:    65536,
