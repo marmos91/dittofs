@@ -48,11 +48,14 @@ type Handler struct {
 	SigningConfig signing.SigningConfig
 }
 
-// PendingAuth tracks sessions in the middle of NTLM authentication
+// PendingAuth tracks sessions in the middle of NTLM authentication.
+// This stores the server's challenge for NTLMv2 response validation
+// and session key derivation.
 type PendingAuth struct {
-	SessionID  uint64
-	ClientAddr string
-	CreatedAt  time.Time
+	SessionID       uint64
+	ClientAddr      string
+	CreatedAt       time.Time
+	ServerChallenge [8]byte // Random challenge sent in Type 2 message
 }
 
 // TreeConnection represents a tree connection (share)

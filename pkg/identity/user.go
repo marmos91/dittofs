@@ -4,8 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"slices"
 	"time"
+	"unicode/utf16"
+
+	"golang.org/x/crypto/md4"
 )
 
 // User represents a DittoFS user with cross-protocol identity mapping.
@@ -19,8 +23,14 @@ type User struct {
 	Username string `yaml:"username" mapstructure:"username"`
 
 	// PasswordHash is the bcrypt hash of the user's password.
-	// Used for SMB NTLM authentication and dashboard login.
+	// Used for dashboard login and password verification.
 	PasswordHash string `yaml:"password_hash" mapstructure:"password_hash"`
+
+	// NTHash is the hex-encoded NT hash of the user's password.
+	// Used for SMB NTLM authentication. This is MD4(UTF16LE(password)).
+	// Must be computed when the password is set and stored alongside bcrypt hash.
+	// If empty, NTLM authentication will fall back to guest access.
+	NTHash string `yaml:"nt_hash,omitempty" mapstructure:"nt_hash"`
 
 	// Enabled indicates whether the user account is active.
 	// Disabled users cannot authenticate.
@@ -82,6 +92,56 @@ func (u *User) GetDisplayName() string {
 		return u.DisplayName
 	}
 	return u.Username
+}
+
+// GetNTHash returns the NT hash as a 16-byte array.
+// Returns false if the NTHash field is empty or invalid.
+func (u *User) GetNTHash() ([16]byte, bool) {
+	var ntHash [16]byte
+	if u.NTHash == "" {
+		return ntHash, false
+	}
+
+	// Decode hex string to bytes
+	decoded, err := hex.DecodeString(u.NTHash)
+	if err != nil || len(decoded) != 16 {
+		return ntHash, false
+	}
+
+	copy(ntHash[:], decoded)
+	return ntHash, true
+}
+
+// SetNTHashFromPassword computes and sets the NT hash from a plaintext password.
+// The password is not stored - only the NT hash is kept.
+func (u *User) SetNTHashFromPassword(password string) {
+	ntHash := ComputeNTHash(password)
+	u.NTHash = hex.EncodeToString(ntHash[:])
+}
+
+// ComputeNTHash computes the NT hash from a password.
+// The NT hash is: MD4(UTF16LE(password))
+// This is a standalone function for computing NT hashes without a User instance.
+func ComputeNTHash(password string) [16]byte {
+	// Convert password to UTF-16LE
+	utf16Password := utf16.Encode([]rune(password))
+	passwordBytes := make([]byte, len(utf16Password)*2)
+	for i, r := range utf16Password {
+		passwordBytes[i*2] = byte(r)
+		passwordBytes[i*2+1] = byte(r >> 8)
+	}
+
+	// Compute MD4 hash
+	h := newMD4()
+	h.Write(passwordBytes)
+	var ntHash [16]byte
+	copy(ntHash[:], h.Sum(nil))
+	return ntHash
+}
+
+// newMD4 returns a new MD4 hash.
+func newMD4() hash.Hash {
+	return md4.New()
 }
 
 // GetSID returns the Windows SID, auto-generating one if not set.

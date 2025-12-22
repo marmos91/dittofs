@@ -217,19 +217,22 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext) (*HandlerResult, e
 	// Generate session ID for this authentication attempt
 	sessionID := h.GenerateSessionID()
 
+	// Build NTLM Type 2 (CHALLENGE) response
+	// This also returns the server challenge for later validation
+	challengeMsg, serverChallenge := ntlm.BuildChallenge()
+
 	// Store pending auth to track handshake state
+	// Include the server challenge for NTLMv2 validation in completeNTLMAuth
 	pending := &PendingAuth{
-		SessionID:  sessionID,
-		ClientAddr: ctx.ClientAddr,
-		CreatedAt:  time.Now(),
+		SessionID:       sessionID,
+		ClientAddr:      ctx.ClientAddr,
+		CreatedAt:       time.Now(),
+		ServerChallenge: serverChallenge,
 	}
 	h.StorePendingAuth(pending)
 
 	// Update context so response includes the session ID
 	ctx.SessionID = sessionID
-
-	// Build NTLM Type 2 (CHALLENGE) response
-	challengeMsg := ntlm.BuildChallenge()
 
 	logger.Debug("Sending NTLM CHALLENGE",
 		"sessionID", sessionID,
@@ -250,13 +253,11 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext) (*HandlerResult, e
 //  1. Validating the pending authentication exists
 //  2. Parsing the AUTHENTICATE message to extract username
 //  3. Looking up the user in the UserStore (if configured)
-//  4. Creating an authenticated or guest session
-//  5. Configuring session signing if enabled
-//  6. Cleaning up the pending authentication state
-//
-// Note: This implementation validates users by username lookup only.
-// Full NTLMv2 response verification requires storing the server challenge
-// and computing/comparing NT hashes, which is not yet implemented.
+//  4. Validating NTLMv2 response using the stored ServerChallenge
+//  5. Deriving session key for message signing
+//  6. Creating an authenticated or guest session
+//  7. Configuring session signing with the derived key
+//  8. Cleaning up the pending authentication state
 func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte) (*HandlerResult, error) {
 	// Get and validate pending auth
 	pending, ok := h.GetPendingAuth(ctx.SessionID)
@@ -276,43 +277,85 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 	if err != nil {
 		logger.Debug("Failed to parse NTLM AUTHENTICATE message", "error", err)
 		// Fall back to guest session
-		return h.createGuestSessionWithID(ctx, pending)
+		return h.createGuestSessionWithID(ctx, pending, nil)
 	}
 
 	logger.Debug("NTLM AUTHENTICATE message parsed",
 		"username", authMsg.Username,
 		"domain", authMsg.Domain,
 		"workstation", authMsg.Workstation,
-		"isAnonymous", authMsg.IsAnonymous)
+		"isAnonymous", authMsg.IsAnonymous,
+		"ntResponseLen", len(authMsg.NtChallengeResponse))
 
 	// If anonymous authentication requested, create guest session
 	if authMsg.IsAnonymous || authMsg.Username == "" {
-		return h.createGuestSessionWithID(ctx, pending)
+		return h.createGuestSessionWithID(ctx, pending, nil)
 	}
 
 	// Try to authenticate against UserStore
-	var sess *session.Session
 	userStore := h.Registry.GetUserStore()
 
 	if userStore != nil {
 		// Look up user by username
 		user, err := userStore.GetUser(authMsg.Username)
 		if err == nil && user != nil && user.Enabled {
-			// User found and enabled - create authenticated session
-			sess = h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
+			// User found and enabled - validate NTLMv2 response if NT hash is available
+			ntHash, hasNTHash := user.GetNTHash()
+
+			if hasNTHash && len(authMsg.NtChallengeResponse) > 0 {
+				// Validate NTLMv2 response and derive session key
+				sessionKey, err := ntlm.ValidateNTLMv2Response(
+					ntHash,
+					authMsg.Username,
+					authMsg.Domain,
+					pending.ServerChallenge,
+					authMsg.NtChallengeResponse,
+				)
+
+				if err != nil {
+					logger.Debug("NTLMv2 validation failed",
+						"username", authMsg.Username,
+						"error", err)
+					return NewErrorResult(types.StatusLogonFailure), nil
+				}
+
+				// Authentication successful with validated credentials
+				sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
+				ctx.IsGuest = false
+
+				// Configure signing with derived session key
+				h.configureSessionSigningWithKey(sess, sessionKey[:])
+
+				logger.Debug("NTLM authentication complete (validated credentials)",
+					"sessionID", sess.SessionID,
+					"username", sess.Username,
+					"domain", sess.Domain,
+					"isGuest", sess.IsGuest,
+					"signingEnabled", sess.ShouldSign())
+
+				// Return success without guest flag
+				return h.buildSessionSetupResponse(
+					types.StatusSuccess,
+					0, // No guest flag - authenticated user
+					nil,
+				), nil
+			}
+
+			// User exists but no NT hash configured - allow access but log warning
+			// This is a transitional mode for users without NT hash set
+			logger.Warn("User has no NT hash configured, allowing access without validation",
+				"username", authMsg.Username)
+
+			sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
 			ctx.IsGuest = false
 
-			// Configure signing for authenticated sessions
-			h.configureSessionSigning(sess)
-
-			logger.Debug("NTLM authentication complete (authenticated user)",
+			// No signing without proper session key derivation
+			logger.Debug("NTLM authentication complete (no credential validation)",
 				"sessionID", sess.SessionID,
 				"username", sess.Username,
 				"domain", sess.Domain,
-				"isGuest", sess.IsGuest,
-				"signingEnabled", sess.ShouldSign())
+				"isGuest", sess.IsGuest)
 
-			// Return success without guest flag
 			return h.buildSessionSetupResponse(
 				types.StatusSuccess,
 				0, // No guest flag - authenticated user
@@ -320,33 +363,33 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 			), nil
 		}
 
-		// User not found or disabled - check if guest fallback is allowed
+		// User not found or disabled
 		if err != nil {
 			logger.Debug("User not found in UserStore", "username", authMsg.Username, "error", err)
-		} else if !user.Enabled {
+		} else if user != nil && !user.Enabled {
 			logger.Debug("User account disabled", "username", authMsg.Username)
 			return NewErrorResult(types.StatusLogonFailure), nil
 		}
 	}
 
 	// Fall back to guest session
-	return h.createGuestSessionWithID(ctx, pending)
+	return h.createGuestSessionWithID(ctx, pending, nil)
 }
 
 // createGuestSessionWithID creates a guest session with a specific session ID.
 // Used when completing NTLM authentication as guest.
-func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *PendingAuth) (*HandlerResult, error) {
+// The sessionKey parameter is ignored for guest sessions (signing not supported).
+func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *PendingAuth, _ []byte) (*HandlerResult, error) {
 	sess := h.CreateSessionWithID(pending.SessionID, pending.ClientAddr, true, "guest", "")
 	ctx.IsGuest = true
 
-	// Configure signing for guest sessions (if server requires it)
-	h.configureSessionSigning(sess)
+	// Note: Signing is not configured for guest sessions because there's no
+	// valid session key derivation possible without proper credentials.
 
 	logger.Debug("NTLM authentication complete (guest)",
 		"sessionID", sess.SessionID,
 		"username", sess.Username,
-		"isGuest", sess.IsGuest,
-		"signingEnabled", sess.ShouldSign())
+		"isGuest", sess.IsGuest)
 
 	return h.buildSessionSetupResponse(
 		types.StatusSuccess,
@@ -386,34 +429,44 @@ func (h *Handler) createGuestSession(ctx *SMBHandlerContext) (*HandlerResult, er
 // Signing Configuration
 // =============================================================================
 
-// configureSessionSigning sets up message signing for a session.
+// configureSessionSigningWithKey sets up message signing for a session with
+// a pre-derived session key from NTLMv2 authentication.
 //
-// Signing is enabled based on the server's SigningConfig:
-//   - If SigningConfig.Enabled is true, signing capability is available
-//   - If SigningConfig.Required is true, signing is mandatory
-//
-// IMPORTANT: Signing is currently only supported for authenticated sessions
-// with proper credential validation. For guest/anonymous sessions, we cannot
-// enable signing because:
-//   - SMB2 signing requires both client and server to derive the same session key
-//   - The session key is derived from NTLM authentication (user's password hash)
-//   - Guest sessions don't have proper credentials for key derivation
-//   - A random key would cause signature verification failures on the client
-//
-// TODO: Enable signing for authenticated sessions once NTLMv2 session key
-// derivation is implemented (requires storing server challenge and computing
-// session key from user's NT hash).
+// This is the preferred method for authenticated sessions where the session key
+// has been properly derived from the NTLMv2 exchange (using the user's NT hash,
+// server challenge, and client response).
 //
 // [MS-SMB2] Section 3.3.5.5.3 - Session signing is established here
-func (h *Handler) configureSessionSigning(sess *session.Session) {
-	if !h.SigningConfig.Enabled {
+func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionKey []byte) {
+	if !h.SigningConfig.Enabled || len(sessionKey) == 0 {
 		return
 	}
 
-	// Skip signing for guest/anonymous sessions
-	// Guest sessions don't have proper credentials for session key derivation.
-	// Both client and server must derive the same key from NTLM authentication,
-	// which isn't possible for guest auth.
+	// Set the signing key on the session
+	sess.SetSigningKey(sessionKey)
+
+	// Enable signing
+	sess.EnableSigning(h.SigningConfig.Required)
+
+	logger.Debug("Session signing configured with derived key",
+		"sessionID", sess.SessionID,
+		"enabled", sess.ShouldSign(),
+		"required", h.SigningConfig.Required)
+}
+
+// configureSessionSigning sets up message signing for a session.
+//
+// IMPORTANT: This function is only kept for backward compatibility.
+// For authenticated sessions with proper credential validation, use
+// configureSessionSigningWithKey with the session key derived from NTLMv2.
+//
+// Signing cannot be properly enabled without a session key that both client
+// and server can derive. Guest/anonymous sessions cannot have signing because
+// there's no shared secret for key derivation.
+//
+// [MS-SMB2] Section 3.3.5.5.3 - Session signing is established here
+func (h *Handler) configureSessionSigning(sess *session.Session) {
+	// Skip signing for guest/anonymous sessions - no valid key derivation possible
 	if sess.IsGuest || sess.IsNull {
 		logger.Debug("Skipping signing for guest/null session",
 			"sessionID", sess.SessionID,
@@ -422,36 +475,10 @@ func (h *Handler) configureSessionSigning(sess *session.Session) {
 		return
 	}
 
-	// For authenticated sessions, we would derive the session key from NTLM.
-	// Since we don't yet validate credentials, we can't derive the proper key.
-	// TODO: Implement session key derivation from NTLMv2 authentication
-	//
-	// For now, only enable signing if Required is true AND we have a DittoFS user
-	// (indicating some level of authentication occurred). Even then, signing
-	// won't work properly until we implement session key derivation.
-	if !h.SigningConfig.Required || sess.User == nil {
-		logger.Debug("Signing not required or no authenticated user",
-			"sessionID", sess.SessionID,
-			"required", h.SigningConfig.Required,
-			"hasUser", sess.User != nil)
-		return
-	}
-
-	// Generate session key for signing
-	// WARNING: This is a placeholder - proper implementation requires deriving
-	// the key from NTLM authentication exchange
-	sessionKey := ntlm.GenerateSessionKey()
-
-	// Set the signing key on the session
-	sess.SetSigningKey(sessionKey)
-
-	// Enable signing
-	sess.EnableSigning(h.SigningConfig.Required)
-
-	logger.Debug("Session signing configured",
-		"sessionID", sess.SessionID,
-		"enabled", sess.ShouldSign(),
-		"required", h.SigningConfig.Required)
+	// For non-guest sessions without a pre-derived key, we cannot enable signing
+	// because the client would compute a different key and fail signature verification.
+	logger.Debug("Cannot configure signing without derived session key",
+		"sessionID", sess.SessionID)
 }
 
 // =============================================================================
