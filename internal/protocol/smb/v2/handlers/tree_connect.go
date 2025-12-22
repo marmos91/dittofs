@@ -15,6 +15,18 @@ import (
 // StructureSize(2) + Reserved/Flags(2) + PathOffset(2) + PathLength(2) = 8 bytes
 const treeConnectFixedSize = 8
 
+// ipcMaximalAccess defines the access rights for the IPC$ virtual share.
+// [MS-SMB2] Section 2.2.10 - MaximalAccess is a bitmask of allowed operations.
+// Value 0x1F grants the following SMB2 access rights for named pipe operations:
+//   - FILE_READ_DATA   (0x01): Read data from the pipe
+//   - FILE_WRITE_DATA  (0x02): Write data to the pipe
+//   - FILE_APPEND_DATA (0x04): Append data to the pipe
+//   - FILE_READ_EA     (0x08): Read extended attributes
+//   - FILE_WRITE_EA    (0x10): Write extended attributes
+//
+// This is the minimum access required for RPC operations over named pipes.
+const ipcMaximalAccess = 0x1F
+
 // TreeConnect handles SMB2 TREE_CONNECT command [MS-SMB2] 2.2.9, 2.2.10
 func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	if len(body) < 9 {
@@ -52,6 +64,12 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		"parsedShareName", shareName,
 		"bodyLen", len(body),
 		"bodyHex", fmt.Sprintf("%x", body))
+
+	// Handle IPC$ virtual share for named pipe operations (RPC, share enumeration)
+	// IPC$ is always available and doesn't require registry configuration
+	if strings.EqualFold(shareName, "/ipc$") {
+		return h.handleIPCShare(ctx)
+	}
 
 	// Check if share exists in registry
 	share, shareErr := h.Registry.GetShare(shareName)
@@ -179,6 +197,52 @@ func calculateMaximalAccess(perm identity.SharePermission) uint32 {
 }
 
 // Note: decodeUTF16LE and encodeUTF16LE are defined in encoding.go
+
+// handleIPCShare handles TREE_CONNECT to the virtual IPC$ share.
+// IPC$ is used for inter-process communication including:
+// - Share enumeration via SRVSVC RPC
+// - Remote registry access
+// - Named pipe operations
+// [MS-SMB2] Section 2.2.10 specifies ShareType 0x02 for pipe shares.
+func (h *Handler) handleIPCShare(ctx *SMBHandlerContext) (*HandlerResult, error) {
+	logger.Debug("TREE_CONNECT to virtual IPC$ share", "sessionID", ctx.SessionID)
+
+	// Verify that a valid session exists before granting IPC$ access.
+	// While IPC$ is a well-known share that should be accessible to authenticated clients,
+	// we still require a valid session to have been established first.
+	sess, found := h.SessionManager.GetSession(ctx.SessionID)
+	if !found || sess == nil {
+		logger.Debug("IPC$ access denied: no valid session", "sessionID", ctx.SessionID)
+		return NewErrorResult(types.StatusUserSessionDeleted), nil
+	}
+
+	// Create tree connection for IPC$ with PIPE share type
+	treeID := h.GenerateTreeID()
+	tree := &TreeConnection{
+		TreeID:     treeID,
+		SessionID:  ctx.SessionID,
+		ShareName:  "/ipc$",
+		ShareType:  types.SMB2ShareTypePipe, // Named pipe share
+		CreatedAt:  time.Now(),
+		Permission: identity.PermissionReadWrite,
+	}
+	h.StoreTree(tree)
+
+	ctx.TreeID = treeID
+	ctx.ShareName = "/ipc$"
+
+	// Build response with PIPE share type
+	// [MS-SMB2] Section 2.2.10 TREE_CONNECT Response
+	resp := make([]byte, 16)
+	binary.LittleEndian.PutUint16(resp[0:2], 16)                 // StructureSize
+	resp[2] = types.SMB2ShareTypePipe                            // ShareType: Named pipe
+	resp[3] = 0                                                  // Reserved
+	binary.LittleEndian.PutUint32(resp[4:8], 0)                  // ShareFlags: none
+	binary.LittleEndian.PutUint32(resp[8:12], 0)                 // Capabilities: none
+	binary.LittleEndian.PutUint32(resp[12:16], ipcMaximalAccess) // MaximalAccess: basic read/write for IPC
+
+	return NewResult(types.StatusSuccess, resp), nil
+}
 
 // parseSharePath parses \\server\share to /share or just share
 // The share name is normalized to lowercase for case-insensitive matching.

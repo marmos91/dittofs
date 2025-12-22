@@ -473,10 +473,15 @@ func (c *SMBConnection) injectFileID(command types.Command, body []byte, fileID 
 	return newBody
 }
 
-// makeErrorBody creates a minimal error response body.
+// makeErrorBody creates a minimal error response body per MS-SMB2 spec.
+// Error response body (8 bytes minimum):
+// StructureSize (2) + ErrorContextCount (1) + Reserved (1) + ByteCount (4)
 func makeErrorBody() []byte {
 	body := make([]byte, 9)
-	binary.LittleEndian.PutUint16(body[0:2], 9)
+	binary.LittleEndian.PutUint16(body[0:2], 9) // StructureSize
+	body[2] = 0                                 // ErrorContextCount
+	body[3] = 0                                 // Reserved
+	binary.LittleEndian.PutUint32(body[4:8], 0) // ByteCount
 	return body
 }
 
@@ -546,7 +551,8 @@ func (c *SMBConnection) processRequest(ctx context.Context, reqHeader *header.SM
 	return c.sendResponse(reqHeader, handlerCtx, result)
 }
 
-// sendResponse sends a successful SMB2 response.
+// sendResponse sends an SMB2 response.
+// If the result indicates an error status and has no data, a proper error body is added.
 func (c *SMBConnection) sendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *smb.HandlerResult) error {
 	// Use session manager for adaptive credit grants
 	sessionID := reqHeader.SessionID
@@ -573,7 +579,14 @@ func (c *SMBConnection) sendResponse(reqHeader *header.SMB2Header, ctx *handlers
 		respHeader.TreeID = ctx.TreeID
 	}
 
-	return c.sendMessage(respHeader, result.Data)
+	// If result has error status but no data, add proper error body
+	// Error responses must include a valid error body per MS-SMB2 spec
+	body := result.Data
+	if body == nil && result.Status.IsError() {
+		body = makeErrorBody()
+	}
+
+	return c.sendMessage(respHeader, body)
 }
 
 // sendErrorResponse sends an SMB2 error response.
