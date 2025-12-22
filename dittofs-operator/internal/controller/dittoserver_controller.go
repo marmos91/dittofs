@@ -195,18 +195,7 @@ func (r *DittoServerReconciler) reconcileService(ctx context.Context, dittoServe
 				"app":      "dittofs-server",
 				"instance": dittoServer.Name,
 			},
-			Ports: []corev1.ServicePort{
-				{
-					Name:     "nfs",
-					Port:     getNFSPort(dittoServer),
-					Protocol: corev1.ProtocolTCP,
-				},
-				{
-					Name:     "metrics",
-					Port:     9090,
-					Protocol: corev1.ProtocolTCP,
-				},
-			},
+			Ports: buildServicePorts(dittoServer),
 		}
 
 		if dittoServer.Spec.Service.Annotations != nil {
@@ -324,18 +313,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 							VolumeMounts:    volumeMounts,
 							Resources:       dittoServer.Spec.Resources,
 							SecurityContext: dittoServer.Spec.SecurityContext,
-							Ports: []corev1.ContainerPort{
-								{
-									Name:          "nfs",
-									ContainerPort: getNFSPort(dittoServer),
-									Protocol:      corev1.ProtocolTCP,
-								},
-								{
-									Name:          "metrics",
-									ContainerPort: 9090,
-									Protocol:      corev1.ProtocolTCP,
-								},
-							},
+							Ports:           buildContainerPorts(dittoServer),
 							LivenessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									TCPSocket: &corev1.TCPSocketAction{
@@ -405,4 +383,65 @@ func getNFSPort(dittoServer *dittoiov1alpha1.DittoServer) int32 {
 		return *dittoServer.Spec.NFSPort
 	}
 	return 2049
+}
+
+// getSMBPort returns the SMB port from the spec or the default (445)
+func getSMBPort(dittoServer *dittoiov1alpha1.DittoServer) int32 {
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Port != nil {
+		return *dittoServer.Spec.SMB.Port
+	}
+	return 445
+}
+
+// buildServicePorts constructs the service ports based on enabled protocols
+func buildServicePorts(dittoServer *dittoiov1alpha1.DittoServer) []corev1.ServicePort {
+	ports := []corev1.ServicePort{
+		{
+			Name:     "nfs",
+			Port:     getNFSPort(dittoServer),
+			Protocol: corev1.ProtocolTCP,
+		},
+		{
+			Name:     "metrics",
+			Port:     9090,
+			Protocol: corev1.ProtocolTCP,
+		},
+	}
+
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Enabled {
+		ports = append(ports, corev1.ServicePort{
+			Name:     "smb",
+			Port:     getSMBPort(dittoServer),
+			Protocol: corev1.ProtocolTCP,
+		})
+	}
+
+	return ports
+}
+
+// buildContainerPorts constructs the container ports based on enabled protocols
+func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer) []corev1.ContainerPort {
+	ports := []corev1.ContainerPort{
+		{
+			Name:          "nfs",
+			ContainerPort: getNFSPort(dittoServer),
+			Protocol:      corev1.ProtocolTCP,
+		},
+		{
+			Name:          "metrics",
+			ContainerPort: 9090,
+			Protocol:      corev1.ProtocolTCP,
+		},
+	}
+
+	// Add SMB port if SMB is enabled
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Enabled {
+		ports = append(ports, corev1.ContainerPort{
+			Name:          "smb",
+			ContainerPort: getSMBPort(dittoServer),
+			Protocol:      corev1.ProtocolTCP,
+		})
+	}
+
+	return ports
 }

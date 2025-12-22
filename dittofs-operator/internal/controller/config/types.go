@@ -8,6 +8,9 @@ type DittoFSConfig struct {
 	Content  ContentConfig  `yaml:"content"`
 	Cache    CacheConfig    `yaml:"cache,omitempty"`
 	Shares   []Share        `yaml:"shares"`
+	Users    []User         `yaml:"users,omitempty"`
+	Groups   []Group        `yaml:"groups,omitempty"`
+	Guest    *Guest         `yaml:"guest,omitempty"`
 	Adapters AdaptersConfig `yaml:"adapters"`
 }
 
@@ -109,6 +112,8 @@ type Share struct {
 	ContentStore            string              `yaml:"content_store"`
 	Cache                   string              `yaml:"cache,omitempty"`
 	ReadOnly                bool                `yaml:"read_only"`
+	AllowGuest              bool                `yaml:"allow_guest"`
+	DefaultPermission       string              `yaml:"default_permission,omitempty"`
 	AllowedClients          []string            `yaml:"allowed_clients"`
 	DeniedClients           []string            `yaml:"denied_clients"`
 	RequireAuth             bool                `yaml:"require_auth"`
@@ -134,6 +139,7 @@ type DirectoryAttributes struct {
 
 type AdaptersConfig struct {
 	NFS NFSAdapter `yaml:"nfs"`
+	SMB SMBAdapter `yaml:"smb,omitempty"`
 }
 
 type NFSAdapter struct {
@@ -144,9 +150,53 @@ type NFSAdapter struct {
 	MetricsLogInterval string         `yaml:"metrics_log_interval"`
 }
 
+type SMBAdapter struct {
+	Enabled                  bool           `yaml:"enabled"`
+	Port                     int32          `yaml:"port"`
+	MaxConnections           int32          `yaml:"max_connections"`
+	MaxRequestsPerConnection int32          `yaml:"max_requests_per_connection"`
+	Timeouts                 TimeoutsConfig `yaml:"timeouts"`
+	MetricsLogInterval       string         `yaml:"metrics_log_interval"`
+	Credits                  *SMBCredits    `yaml:"credits,omitempty"`
+}
+
+type SMBCredits struct {
+	Strategy                  string `yaml:"strategy"`
+	MinGrant                  int32  `yaml:"min_grant"`
+	MaxGrant                  int32  `yaml:"max_grant"`
+	InitialGrant              int32  `yaml:"initial_grant"`
+	MaxSessionCredits         int32  `yaml:"max_session_credits"`
+	LoadThresholdHigh         int32  `yaml:"load_threshold_high,omitempty"`
+	LoadThresholdLow          int32  `yaml:"load_threshold_low,omitempty"`
+	AggressiveClientThreshold int32  `yaml:"aggressive_client_threshold,omitempty"`
+}
+
 type TimeoutsConfig struct {
 	Read     string `yaml:"read"`
 	Write    string `yaml:"write"`
 	Idle     string `yaml:"idle"`
 	Shutdown string `yaml:"shutdown"`
+}
+
+type User struct {
+	Username         string            `yaml:"username"`
+	PasswordHash     string            `yaml:"password_hash"`
+	Enabled          bool              `yaml:"enabled"`
+	UID              uint32            `yaml:"uid"`
+	GID              uint32            `yaml:"gid"`
+	Groups           []string          `yaml:"groups,omitempty"`
+	SharePermissions map[string]string `yaml:"share_permissions,omitempty"`
+}
+
+type Group struct {
+	Name             string            `yaml:"name"`
+	GID              uint32            `yaml:"gid"`
+	SharePermissions map[string]string `yaml:"share_permissions,omitempty"`
+}
+
+type Guest struct {
+	Enabled          bool              `yaml:"enabled"`
+	UID              uint32            `yaml:"uid"`
+	GID              uint32            `yaml:"gid"`
+	SharePermissions map[string]string `yaml:"share_permissions,omitempty"`
 }
