@@ -14,6 +14,7 @@ import (
 const (
 	FsctlDfsGetReferrals        uint32 = 0x00060194 // [MS-FSCC] 2.3.16
 	FsctlPipeWait               uint32 = 0x00110018 // [MS-FSCC] 2.3.49
+	FsctlPipeTransceive         uint32 = 0x0011C017 // [MS-FSCC] 2.3.50 - Named pipe transact
 	FsctlValidateNegotiateInfo  uint32 = 0x00140204 // [MS-SMB2] 2.2.31.4
 	FsctlQueryNetworkInterfInfo uint32 = 0x001401FC // [MS-SMB2] 2.2.32.5
 	FsctlPipePeek               uint32 = 0x0011400C // [MS-FSCC] 2.3.48
@@ -63,6 +64,11 @@ func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 	case FsctlGetReparsePoint:
 		// FSCTL_GET_REPARSE_POINT - read symlink target [MS-FSCC] 2.3.30
 		return h.handleGetReparsePoint(ctx, body)
+
+	case FsctlPipeTransceive:
+		// FSCTL_PIPE_TRANSCEIVE - named pipe transact [MS-FSCC] 2.3.50
+		// Combined write+read for RPC over named pipes
+		return h.handlePipeTransceive(ctx, body)
 
 	default:
 		logger.Debug("IOCTL unknown control code - not supported",
@@ -233,4 +239,92 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	logger.Debug("OPLOCK_BREAK request (not implemented)")
 	return NewErrorResult(types.StatusNotSupported), nil
+}
+
+// handlePipeTransceive handles FSCTL_PIPE_TRANSCEIVE for RPC over named pipes
+// This is a combined write+read operation used by Windows/Linux clients for RPC [MS-FSCC] 2.3.50
+func (h *Handler) handlePipeTransceive(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
+	// IOCTL request structure [MS-SMB2] 2.2.31:
+	// - StructureSize (2 bytes) - offset 0
+	// - Reserved (2 bytes) - offset 2
+	// - CtlCode (4 bytes) - offset 4
+	// - FileId (16 bytes) - offset 8
+	// - InputOffset (4 bytes) - offset 24
+	// - InputCount (4 bytes) - offset 28
+	// - MaxInputResponse (4 bytes) - offset 32
+	// - OutputOffset (4 bytes) - offset 36
+	// - OutputCount (4 bytes) - offset 40
+	// - MaxOutputResponse (4 bytes) - offset 44
+	// - Flags (4 bytes) - offset 48
+	// - Reserved2 (4 bytes) - offset 52
+	// - Buffer (variable) - offset 56
+	if len(body) < 56 {
+		logger.Debug("IOCTL PIPE_TRANSCEIVE: request too small", "len", len(body))
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	var fileID [16]byte
+	copy(fileID[:], body[8:24])
+
+	inputOffset := binary.LittleEndian.Uint32(body[24:28])
+	inputCount := binary.LittleEndian.Uint32(body[28:32])
+	maxOutputResponse := binary.LittleEndian.Uint32(body[44:48])
+
+	logger.Debug("IOCTL PIPE_TRANSCEIVE",
+		"fileID", fmt.Sprintf("%x", fileID),
+		"inputOffset", inputOffset,
+		"inputCount", inputCount,
+		"maxOutputResponse", maxOutputResponse)
+
+	// Get open file to verify it's a pipe
+	openFile, ok := h.GetOpenFile(fileID)
+	if !ok {
+		logger.Debug("IOCTL PIPE_TRANSCEIVE: invalid file ID")
+		return NewErrorResult(types.StatusInvalidHandle), nil
+	}
+
+	if !openFile.IsPipe {
+		logger.Debug("IOCTL PIPE_TRANSCEIVE: not a pipe",
+			"path", openFile.Path)
+		return NewErrorResult(types.StatusInvalidDeviceRequest), nil
+	}
+
+	// Get pipe state
+	pipe := h.PipeManager.GetPipe(fileID)
+	if pipe == nil {
+		logger.Debug("IOCTL PIPE_TRANSCEIVE: pipe not found")
+		return NewErrorResult(types.StatusInvalidHandle), nil
+	}
+
+	// Extract input data from buffer
+	// InputOffset is relative to the start of the SMB2 header (64 bytes)
+	// We need to adjust for the body offset (body starts after header)
+	var inputData []byte
+	if inputCount > 0 {
+		// The input data is in the buffer portion of the request
+		// InputOffset includes SMB2 header (64 bytes), so buffer data starts at offset 56 in body
+		bufferStart := uint32(56)
+		if uint32(len(body)) >= bufferStart+inputCount {
+			inputData = body[bufferStart : bufferStart+inputCount]
+		} else {
+			logger.Debug("IOCTL PIPE_TRANSCEIVE: input data out of bounds",
+				"bodyLen", len(body), "bufferStart", bufferStart, "inputCount", inputCount)
+			return NewErrorResult(types.StatusInvalidParameter), nil
+		}
+	}
+
+	// Process the RPC transaction
+	outputData, err := pipe.Transact(inputData, int(maxOutputResponse))
+	if err != nil {
+		logger.Debug("IOCTL PIPE_TRANSCEIVE: transact failed", "error", err)
+		return NewErrorResult(types.StatusInternalError), nil
+	}
+
+	logger.Debug("IOCTL PIPE_TRANSCEIVE: response",
+		"inputLen", len(inputData), "outputLen", len(outputData))
+
+	// Build IOCTL response
+	resp := buildIoctlResponse(FsctlPipeTransceive, fileID, outputData)
+
+	return NewResult(types.StatusSuccess, resp), nil
 }

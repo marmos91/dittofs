@@ -401,14 +401,11 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	}
 
 	// Truncate if necessary
+	// Note: We return STATUS_SUCCESS instead of STATUS_BUFFER_OVERFLOW because
+	// Linux kernel CIFS treats STATUS_BUFFER_OVERFLOW as an error, causing I/O failures.
+	// The truncated data is still valid and useful for the client.
 	if uint32(len(info)) > req.OutputBufferLength {
 		info = info[:req.OutputBufferLength]
-		// Return buffer overflow with truncated data
-		resp := &QueryInfoResponse{
-			SMBResponseBase: SMBResponseBase{Status: types.StatusBufferOverflow},
-			Data:            info,
-		}
-		return resp, nil
 	}
 
 	// ========================================================================
@@ -472,7 +469,9 @@ func (h *Handler) buildFileInfoFromStore(file *metadata.File, class types.FileIn
 func (h *Handler) buildFileAllInformationFromStore(file *metadata.File) []byte {
 	// FILE_ALL_INFORMATION [MS-FSCC] 2.4.2 (varies)
 	// Basic (40) + Standard (24) + Internal (8) + EA (4) + Access (4) + Position (8) + Mode (4) + Alignment (4) + Name (variable)
-	info := make([]byte, 100)
+	// Linux kernel's smb2_file_all_info struct requires minimum 101 bytes (100 fixed + 1 byte for FileName)
+	// We allocate 104 bytes to include FileNameLength (4) + minimum padding for FileName
+	info := make([]byte, 104)
 
 	basicInfo := FileAttrToFileBasicInfo(&file.FileAttr)
 	standardInfo := FileAttrToFileStandardInfo(&file.FileAttr, false)
@@ -524,6 +523,13 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 		copy(info[18:], label)
 		return info, nil
 
+	case 2: // FileFsLabelInformation [MS-FSCC] 2.5.5 - used for volume label
+		label := []byte{'D', 0, 'i', 0, 't', 0, 't', 0, 'o', 0, 'F', 0, 'S', 0}
+		info := make([]byte, 4+len(label))
+		binary.LittleEndian.PutUint32(info[0:4], uint32(len(label)))
+		copy(info[4:], label)
+		return info, nil
+
 	case 3: // FileFsSizeInformation [MS-FSCC] 2.5.8
 		// Try to get real filesystem stats
 		blockSize := uint64(4096)
@@ -546,6 +552,13 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 		binary.LittleEndian.PutUint32(info[20:24], 4096)
 		return info, nil
 
+	case 4: // FileFsDeviceInformation [MS-FSCC] 2.5.9
+		// DeviceType (4 bytes) + Characteristics (4 bytes) = 8 bytes
+		info := make([]byte, 8)
+		binary.LittleEndian.PutUint32(info[0:4], 0x00000007) // FILE_DEVICE_DISK
+		binary.LittleEndian.PutUint32(info[4:8], 0x00000000) // No special characteristics
+		return info, nil
+
 	case 5: // FileFsAttributeInformation [MS-FSCC] 2.5.1
 		fsName := []byte{'N', 0, 'T', 0, 'F', 0, 'S', 0} // "NTFS" in UTF-16LE
 		info := make([]byte, 12+len(fsName))
@@ -555,7 +568,7 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 		copy(info[12:], fsName)
 		return info, nil
 
-	case 6: // FileFsFullSizeInformation [MS-FSCC] 2.5.4
+	case 7: // FileFsFullSizeInformation [MS-FSCC] 2.5.4
 		blockSize := uint64(4096)
 		stats, err := metadataStore.GetFilesystemStatistics(ctx, handle)
 		if err == nil {
@@ -576,6 +589,28 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 		binary.LittleEndian.PutUint64(info[16:24], 500000)
 		binary.LittleEndian.PutUint32(info[24:28], 1)
 		binary.LittleEndian.PutUint32(info[28:32], 4096)
+		return info, nil
+
+	case 8: // FileFsObjectIdInformation [MS-FSCC] 2.5.6
+		// Returns the object ID for the file system volume
+		// Structure: ObjectId (16 bytes GUID) + ExtendedInfo (48 bytes)
+		info := make([]byte, 64)
+		// Use handler's ServerGUID as the volume ObjectId
+		copy(info[0:16], h.ServerGUID[:])
+		// ExtendedInfo is left as zeros (not required)
+		return info, nil
+
+	case 11: // FileFsSectorSizeInformation [MS-FSCC] 2.5.8
+		// 28 bytes structure (matching Samba's implementation)
+		info := make([]byte, 28)
+		bps := uint32(512)                                     // bytes per sector
+		binary.LittleEndian.PutUint32(info[0:4], bps)          // LogicalBytesPerSector
+		binary.LittleEndian.PutUint32(info[4:8], bps)          // PhysicalBytesPerSectorForAtomicity
+		binary.LittleEndian.PutUint32(info[8:12], bps)         // PhysicalBytesPerSectorForPerformance
+		binary.LittleEndian.PutUint32(info[12:16], bps)        // FileSystemEffectivePhysicalBytesPerSectorForAtomicity
+		binary.LittleEndian.PutUint32(info[16:20], 0x00000003) // Flags: ALIGNED_DEVICE | PARTITION_ALIGNED
+		binary.LittleEndian.PutUint32(info[20:24], 0)          // ByteOffsetForSectorAlignment
+		binary.LittleEndian.PutUint32(info[24:28], 0)          // ByteOffsetForPartitionAlignment
 		return info, nil
 
 	default:

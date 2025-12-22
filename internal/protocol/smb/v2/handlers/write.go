@@ -311,7 +311,15 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
-	// Step 2: Validate file type
+	// Step 2: Handle named pipe writes (IPC$ RPC)
+	// ========================================================================
+
+	if openFile.IsPipe {
+		return h.handlePipeWrite(ctx, req, openFile)
+	}
+
+	// ========================================================================
+	// Step 3: Validate file type
 	// ========================================================================
 
 	if openFile.IsDirectory {
@@ -443,6 +451,37 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	return &WriteResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
 		Count:           uint32(bytesWritten),
+		Remaining:       0,
+	}, nil
+}
+
+// handlePipeWrite handles WRITE to a named pipe for DCE/RPC communication.
+func (h *Handler) handlePipeWrite(ctx *SMBHandlerContext, req *WriteRequest, openFile *OpenFile) (*WriteResponse, error) {
+	logger.Debug("WRITE to named pipe",
+		"pipeName", openFile.PipeName,
+		"dataLen", len(req.Data))
+
+	// Get pipe state
+	pipe := h.PipeManager.GetPipe(req.FileID)
+	if pipe == nil {
+		logger.Warn("WRITE: pipe not found", "fileID", fmt.Sprintf("%x", req.FileID))
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
+	}
+
+	// Process RPC data
+	err := pipe.ProcessWrite(req.Data)
+	if err != nil {
+		logger.Warn("WRITE: pipe write failed", "error", err)
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
+	}
+
+	logger.Debug("WRITE to pipe successful",
+		"pipeName", openFile.PipeName,
+		"bytesWritten", len(req.Data))
+
+	return &WriteResponse{
+		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+		Count:           uint32(len(req.Data)),
 		Remaining:       0,
 	}, nil
 }

@@ -274,7 +274,23 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 2: Flush cached data to content store (ensures durability)
+	// Step 2: Handle named pipe close
+	// ========================================================================
+
+	if openFile.IsPipe {
+		// Clean up pipe state
+		h.PipeManager.ClosePipe(req.FileID)
+		h.DeleteOpenFile(req.FileID)
+
+		logger.Debug("CLOSE pipe successful", "pipeName", openFile.PipeName)
+		return &CloseResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+			Flags:           req.Flags,
+		}, nil
+	}
+
+	// ========================================================================
+	// Step 3: Flush cached data to content store (ensures durability)
 	// ========================================================================
 
 	// Flush and finalize cached data to ensure durability

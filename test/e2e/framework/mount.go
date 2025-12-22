@@ -127,7 +127,7 @@ func MountSMB(t *testing.T, port int, creds SMBCredentials) *Mount {
 		cmd = exec.Command("mount", "-t", "cifs",
 			"//localhost/export",
 			mountPath,
-			"-o", fmt.Sprintf("port=%d,username=%s,password=%s,vers=2.0",
+			"-o", fmt.Sprintf("port=%d,username=%s,password=%s,vers=2.1",
 				port, creds.Username, creds.Password))
 	default:
 		_ = os.RemoveAll(mountPath)
@@ -160,7 +160,7 @@ func MountSMB(t *testing.T, port int, creds SMBCredentials) *Mount {
 				cmd = exec.Command("mount", "-t", "cifs",
 					"//localhost/export",
 					mountPath,
-					"-o", fmt.Sprintf("port=%d,username=%s,password=%s,vers=2.0",
+					"-o", fmt.Sprintf("port=%d,username=%s,password=%s,vers=2.1",
 						port, creds.Username, creds.Password))
 			}
 		}
