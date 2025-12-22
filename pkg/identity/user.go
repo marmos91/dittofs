@@ -2,6 +2,7 @@ package identity
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"hash"
@@ -121,14 +122,13 @@ func (u *User) SetNTHashFromPassword(password string) {
 
 // ComputeNTHash computes the NT hash from a password.
 // The NT hash is: MD4(UTF16LE(password))
-// This is a standalone function for computing NT hashes without a User instance.
+// This helper is exposed for callers that need the raw NT hash bytes without a User instance.
 func ComputeNTHash(password string) [16]byte {
-	// Convert password to UTF-16LE
+	// Convert password to UTF-16LE using binary.LittleEndian for consistency
 	utf16Password := utf16.Encode([]rune(password))
 	passwordBytes := make([]byte, len(utf16Password)*2)
 	for i, r := range utf16Password {
-		passwordBytes[i*2] = byte(r)
-		passwordBytes[i*2+1] = byte(r >> 8)
+		binary.LittleEndian.PutUint16(passwordBytes[i*2:], r)
 	}
 
 	// Compute MD4 hash

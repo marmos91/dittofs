@@ -588,34 +588,6 @@ func decodeString(buf []byte, isUnicode bool) string {
 }
 
 // =============================================================================
-// Session Key Generation
-// =============================================================================
-
-// GenerateSessionKey generates a random session key for message signing.
-//
-// In a full NTLMv2 implementation, the session key would be derived from:
-//   - The NT hash of the user's password
-//   - The NTProofStr (part of the NTLMv2 response)
-//   - RandomSessionKey (if NTLMSSP_NEGOTIATE_KEY_EXCH is set)
-//
-// Since DittoFS currently performs guest authentication without validating
-// credentials, we generate a cryptographically random session key.
-// This still provides message integrity protection against tampering.
-//
-// The session key is 16 bytes as required by SMB2 signing.
-//
-// TODO: Implement full NTLMv2 session key derivation when credential
-// validation is added. This requires:
-//   - Storing the ServerChallenge from Type 2
-//   - Computing NT hash from user password
-//   - Deriving session key per [MS-NLMP] 3.4.4
-func GenerateSessionKey() []byte {
-	sessionKey := make([]byte, 16)
-	_, _ = rand.Read(sessionKey)
-	return sessionKey
-}
-
-// =============================================================================
 // NTLM Errors
 // =============================================================================
 

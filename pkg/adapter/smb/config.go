@@ -144,17 +144,20 @@ func (c *SMBSigningConfig) applyDefaults() {
 		enabled := true
 		c.Enabled = &enabled
 	}
-	// Required defaults to false (zero value)
+
+	// Ensure logical consistency: signing cannot be required if it is disabled.
+	// If Required is true, force Enabled to true.
+	if c.Required && c.Enabled != nil && !*c.Enabled {
+		enabled := true
+		c.Enabled = &enabled
+	}
 }
 
 // ToSigningConfig converts to the internal signing.SigningConfig type.
+// It assumes applyDefaults has been called to initialize any nil fields.
 func (c *SMBSigningConfig) ToSigningConfig() signing.SigningConfig {
-	enabled := true
-	if c.Enabled != nil {
-		enabled = *c.Enabled
-	}
 	return signing.SigningConfig{
-		Enabled:  enabled,
+		Enabled:  *c.Enabled,
 		Required: c.Required,
 	}
 }
