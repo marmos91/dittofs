@@ -570,7 +570,9 @@ func (h *Handler) handlePipeCreate(ctx *SMBHandlerContext, req *CreateRequest, t
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameNotFound}}, nil
 	}
 
-	// Update pipe manager with current shares from registry
+	// Update pipe manager with current shares from registry.
+	// TODO: This is called on every pipe CREATE which is inefficient under high load.
+	// Consider caching the share list and invalidating on share add/remove events.
 	if h.Registry != nil {
 		shareNames := h.Registry.ListShares()
 		shares := make([]rpc.ShareInfo1, 0, len(shareNames))

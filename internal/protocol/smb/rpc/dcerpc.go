@@ -335,11 +335,19 @@ type Response struct {
 	StubData    []byte
 }
 
+// MaxFragmentSize is the maximum size for a DCE/RPC fragment (uint16 max)
+const MaxFragmentSize = 65535
+
 // Encode serializes a Response PDU
 func (r *Response) Encode(callID uint32) []byte {
 	// Calculate fragment length
 	// Header (16) + alloc_hint(4) + context_id(2) + cancel_count(1) + reserved(1) + stub_data
 	fragLen := HeaderSize + 8 + len(r.StubData)
+
+	// Validate fragment length fits in uint16 to prevent overflow/truncation
+	if fragLen > MaxFragmentSize {
+		fragLen = MaxFragmentSize
+	}
 
 	hdr := Header{
 		VersionMajor: 5,
