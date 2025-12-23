@@ -782,6 +782,7 @@ type MetadataStore interface {
 	// Parameters:
 	//   - ctx: Context for cancellation
 	//   - handle: File handle to test
+	//   - sessionID: Session that would acquire the lock (their own locks don't conflict)
 	//   - offset: Starting byte offset
 	//   - length: Number of bytes
 	//   - exclusive: true for exclusive lock test, false for shared
@@ -790,7 +791,7 @@ type MetadataStore interface {
 	//   - bool: true if lock would succeed, false if conflict exists
 	//   - *LockConflict: Details of conflicting lock if bool is false, nil otherwise
 	//   - error: ErrNotFound if file doesn't exist, or context errors
-	TestLock(ctx context.Context, handle FileHandle, offset uint64, length uint64, exclusive bool) (bool, *LockConflict, error)
+	TestLock(ctx context.Context, handle FileHandle, sessionID uint64, offset uint64, length uint64, exclusive bool) (bool, *LockConflict, error)
 
 	// CheckLockForIO verifies no conflicting locks exist for a read/write operation.
 	//

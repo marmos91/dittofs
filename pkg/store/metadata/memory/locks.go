@@ -52,10 +52,13 @@ func (lm *lockManager) lock(handle string, lock metadata.FileLock) error {
 		if existing[i].SessionID == lock.SessionID &&
 			existing[i].Offset == lock.Offset &&
 			existing[i].Length == lock.Length {
-			// Update existing lock
+			// Update existing lock in place
 			existing[i].Exclusive = lock.Exclusive
 			existing[i].AcquiredAt = time.Now()
 			existing[i].ID = lock.ID
+			// Explicitly store back to map for clarity (slice is a reference type,
+			// so this is technically redundant but makes the map update explicit)
+			lm.locks[handle] = existing
 			return nil
 		}
 	}
@@ -287,7 +290,7 @@ func (s *MemoryMetadataStore) UnlockAllForSession(ctx context.Context, handle me
 }
 
 // TestLock checks whether a lock would succeed without acquiring it.
-func (s *MemoryMetadataStore) TestLock(ctx context.Context, handle metadata.FileHandle, offset uint64, length uint64, exclusive bool) (bool, *metadata.LockConflict, error) {
+func (s *MemoryMetadataStore) TestLock(ctx context.Context, handle metadata.FileHandle, sessionID uint64, offset uint64, length uint64, exclusive bool) (bool, *metadata.LockConflict, error) {
 	if err := ctx.Err(); err != nil {
 		return false, nil, err
 	}
@@ -301,9 +304,7 @@ func (s *MemoryMetadataStore) TestLock(ctx context.Context, handle metadata.File
 		return false, nil, metadata.NewNotFoundError("", "file")
 	}
 
-	// Use sessionID 0 to test as a hypothetical new session
-	// This will detect conflicts with any existing locks
-	ok, conflict := s.lockMgr.testLock(handleKey, 0, offset, length, exclusive)
+	ok, conflict := s.lockMgr.testLock(handleKey, sessionID, offset, length, exclusive)
 	return ok, conflict, nil
 }
 

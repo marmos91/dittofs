@@ -229,6 +229,9 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 
 		if isUnlock {
 			// Unlock operation
+			// Note: Per SMB2 spec, unlock operations are not rolled back if a subsequent
+			// operation in the batch fails. Only lock acquisitions are rolled back.
+			// This means successful unlocks remain in effect even if the request fails.
 			err := metadataStore.UnlockFile(
 				authCtx.Context,
 				openFile.MetadataHandle,
@@ -242,7 +245,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 					"length", lockElem.Length,
 					"error", err)
 				status := lockErrorToStatus(err)
-				// Rollback previously acquired locks
+				// Rollback previously acquired locks (unlocks are not rolled back)
 				rollbackLocks(metadataStore, authCtx, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
 				return NewErrorResult(status), nil
 			}

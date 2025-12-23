@@ -355,7 +355,7 @@ func (s *BadgerMetadataStore) UnlockAllForSession(ctx context.Context, handle me
 }
 
 // TestLock checks whether a lock would succeed without acquiring it.
-func (s *BadgerMetadataStore) TestLock(ctx context.Context, handle metadata.FileHandle, offset uint64, length uint64, exclusive bool) (bool, *metadata.LockConflict, error) {
+func (s *BadgerMetadataStore) TestLock(ctx context.Context, handle metadata.FileHandle, sessionID uint64, offset uint64, length uint64, exclusive bool) (bool, *metadata.LockConflict, error) {
 	if err := ctx.Err(); err != nil {
 		return false, nil, err
 	}
@@ -367,7 +367,7 @@ func (s *BadgerMetadataStore) TestLock(ctx context.Context, handle metadata.File
 	}
 
 	handleKey := string(handle)
-	ok, conflict := s.byteRangeLocks.testLock(handleKey, 0, offset, length, exclusive)
+	ok, conflict := s.byteRangeLocks.testLock(handleKey, sessionID, offset, length, exclusive)
 	return ok, conflict, nil
 }
 

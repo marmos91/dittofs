@@ -20,13 +20,11 @@ type byteRangeLockState struct {
 
 // byteRangeLockManager manages byte-range file locks.
 // Locks are ephemeral (in-memory only) and lost on server restart.
+// Each PostgresMetadataStore instance has its own lock manager to ensure
+// lock isolation between different stores (e.g., different shares).
 type byteRangeLockManager struct {
 	locks sync.Map // handle string -> *byteRangeLockState
 }
-
-// Global lock manager for PostgreSQL store
-// (each PostgreSQL store instance shares this since locks are ephemeral)
-var pgLockManager = &byteRangeLockManager{}
 
 // getOrCreateState gets or creates lock state for a file handle.
 func (m *byteRangeLockManager) getOrCreateState(handle string) *byteRangeLockState {
@@ -239,7 +237,7 @@ func (s *PostgresMetadataStore) LockFile(ctx *metadata.AuthContext, handle metad
 
 	// Acquire the lock
 	handleKey := string(handle)
-	return pgLockManager.lock(handleKey, lock)
+	return s.byteRangeLocks.lock(handleKey, lock)
 }
 
 // UnlockFile releases a specific byte-range lock.
@@ -255,7 +253,7 @@ func (s *PostgresMetadataStore) UnlockFile(ctx context.Context, handle metadata.
 	}
 
 	handleKey := string(handle)
-	return pgLockManager.unlock(handleKey, sessionID, offset, length)
+	return s.byteRangeLocks.unlock(handleKey, sessionID, offset, length)
 }
 
 // UnlockAllForSession releases all locks held by a session on a file.
@@ -265,12 +263,12 @@ func (s *PostgresMetadataStore) UnlockAllForSession(ctx context.Context, handle 
 	}
 
 	handleKey := string(handle)
-	pgLockManager.unlockAllForSession(handleKey, sessionID)
+	s.byteRangeLocks.unlockAllForSession(handleKey, sessionID)
 	return nil
 }
 
 // TestLock checks whether a lock would succeed without acquiring it.
-func (s *PostgresMetadataStore) TestLock(ctx context.Context, handle metadata.FileHandle, offset uint64, length uint64, exclusive bool) (bool, *metadata.LockConflict, error) {
+func (s *PostgresMetadataStore) TestLock(ctx context.Context, handle metadata.FileHandle, sessionID uint64, offset uint64, length uint64, exclusive bool) (bool, *metadata.LockConflict, error) {
 	if err := ctx.Err(); err != nil {
 		return false, nil, err
 	}
@@ -282,7 +280,7 @@ func (s *PostgresMetadataStore) TestLock(ctx context.Context, handle metadata.Fi
 	}
 
 	handleKey := string(handle)
-	ok, conflict := pgLockManager.testLock(handleKey, 0, offset, length, exclusive)
+	ok, conflict := s.byteRangeLocks.testLock(handleKey, sessionID, offset, length, exclusive)
 	return ok, conflict, nil
 }
 
@@ -293,7 +291,7 @@ func (s *PostgresMetadataStore) CheckLockForIO(ctx context.Context, handle metad
 	}
 
 	handleKey := string(handle)
-	conflict := pgLockManager.checkForIO(handleKey, sessionID, offset, length, isWrite)
+	conflict := s.byteRangeLocks.checkForIO(handleKey, sessionID, offset, length, isWrite)
 	if conflict != nil {
 		return metadata.NewLockedError("", conflict)
 	}
@@ -313,7 +311,7 @@ func (s *PostgresMetadataStore) ListLocks(ctx context.Context, handle metadata.F
 	}
 
 	handleKey := string(handle)
-	locks := pgLockManager.listLocks(handleKey)
+	locks := s.byteRangeLocks.listLocks(handleKey)
 	if locks == nil {
 		return []metadata.FileLock{}, nil
 	}
