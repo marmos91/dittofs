@@ -547,7 +547,25 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		"oplock", oplockLevelName(grantedOplock))
 
 	// ========================================================================
-	// Step 9: Build success response
+	// Step 9: Notify change watchers
+	// ========================================================================
+
+	// Notify CHANGE_NOTIFY watchers about file system changes
+	if h.NotifyRegistry != nil {
+		parentPath := GetParentPath(filename)
+
+		switch createAction {
+		case types.FileCreated:
+			// New file or directory created
+			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionAdded)
+		case types.FileOverwritten, types.FileSuperseded:
+			// Existing file was modified/replaced
+			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionModified)
+		}
+	}
+
+	// ========================================================================
+	// Step 10: Build success response
 	// ========================================================================
 
 	creation, access, write, change := FileAttrToSMBTimes(&file.FileAttr)
