@@ -19,20 +19,21 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 		}
 	}
 
-	// Query the file from the database
+	// Query the file from the database, including link count
 	query := `
 		SELECT
-			id, share_name, path,
-			file_type, mode, uid, gid, size,
-			atime, mtime, ctime, creation_time,
-			content_id, link_target, device_major, device_minor,
-			hidden
-		FROM files
-		WHERE id = $1 AND share_name = $2
+			f.id, f.share_name, f.path,
+			f.file_type, f.mode, f.uid, f.gid, f.size,
+			f.atime, f.mtime, f.ctime, f.creation_time,
+			f.content_id, f.link_target, f.device_major, f.device_minor,
+			f.hidden, lc.link_count
+		FROM files f
+		LEFT JOIN link_counts lc ON f.id = lc.file_id
+		WHERE f.id = $1 AND f.share_name = $2
 	`
 
 	row := s.pool.QueryRow(ctx, query, id, shareName)
-	file, err := fileRowToFile(row)
+	file, err := fileRowToFileWithNlink(row)
 	if err != nil {
 		return nil, mapPgError(err, "GetFile", "")
 	}
@@ -44,17 +45,18 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 func (s *PostgresMetadataStore) getFileByID(ctx context.Context, id uuid.UUID, shareName string) (*metadata.File, error) {
 	query := `
 		SELECT
-			id, share_name, path,
-			file_type, mode, uid, gid, size,
-			atime, mtime, ctime, creation_time,
-			content_id, link_target, device_major, device_minor,
-			hidden
-		FROM files
-		WHERE id = $1 AND share_name = $2
+			f.id, f.share_name, f.path,
+			f.file_type, f.mode, f.uid, f.gid, f.size,
+			f.atime, f.mtime, f.ctime, f.creation_time,
+			f.content_id, f.link_target, f.device_major, f.device_minor,
+			f.hidden, lc.link_count
+		FROM files f
+		LEFT JOIN link_counts lc ON f.id = lc.file_id
+		WHERE f.id = $1 AND f.share_name = $2
 	`
 
 	row := s.pool.QueryRow(ctx, query, id, shareName)
-	file, err := fileRowToFile(row)
+	file, err := fileRowToFileWithNlink(row)
 	if err != nil {
 		return nil, mapPgError(err, "getFileByID", "")
 	}
@@ -73,18 +75,19 @@ func (s *PostgresMetadataStore) GetFileByContentID(ctx context.Context, contentI
 
 	query := `
 		SELECT
-			id, share_name, path,
-			file_type, mode, uid, gid, size,
-			atime, mtime, ctime, creation_time,
-			content_id, link_target, device_major, device_minor,
-			hidden
-		FROM files
-		WHERE content_id = $1
+			f.id, f.share_name, f.path,
+			f.file_type, f.mode, f.uid, f.gid, f.size,
+			f.atime, f.mtime, f.ctime, f.creation_time,
+			f.content_id, f.link_target, f.device_major, f.device_minor,
+			f.hidden, lc.link_count
+		FROM files f
+		LEFT JOIN link_counts lc ON f.id = lc.file_id
+		WHERE f.content_id = $1
 		LIMIT 1
 	`
 
 	row := s.pool.QueryRow(ctx, query, string(contentID))
-	file, err := fileRowToFile(row)
+	file, err := fileRowToFileWithNlink(row)
 	if err != nil {
 		return nil, mapPgError(err, "GetFileByContentID", string(contentID))
 	}
@@ -137,21 +140,22 @@ func (s *PostgresMetadataStore) Lookup(ctx *metadata.AuthContext, parentHandle m
 		return nil, err
 	}
 
-	// Query child file
+	// Query child file with link count
 	query := `
 		SELECT
 			f.id, f.share_name, f.path,
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden
+			f.hidden, lc.link_count
 		FROM files f
 		INNER JOIN parent_child_map pcm ON f.id = pcm.child_id
+		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE pcm.parent_id = $1 AND pcm.child_name = $2
 	`
 
 	row := s.pool.QueryRow(ctx.Context, query, parentID, name)
-	child, err := fileRowToFile(row)
+	child, err := fileRowToFileWithNlink(row)
 	if err != nil {
 		return nil, mapPgError(err, "Lookup", fmt.Sprintf("%s/%s", parent.Path, name))
 	}

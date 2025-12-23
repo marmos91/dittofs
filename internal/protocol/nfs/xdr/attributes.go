@@ -70,10 +70,16 @@ func MetadataToNFS(mdAttr *metadata.FileAttr, fileid uint64) *types.NFSFileAttr 
 		}
 	}
 
+	// Use actual link count from metadata, defaulting to 1 for backwards compatibility
+	nlink := mdAttr.Nlink
+	if nlink == 0 {
+		nlink = 1
+	}
+
 	return &types.NFSFileAttr{
 		Type:  metadataTypeToNFSType(mdAttr.Type),
 		Mode:  mdAttr.Mode,
-		Nlink: 1, // Simplified: real implementation should track hard links
+		Nlink: nlink,
 		UID:   mdAttr.UID,
 		GID:   mdAttr.GID,
 		Size:  mdAttr.Size,

@@ -445,7 +445,7 @@ func (s *BadgerMetadataStore) CreateSymlink(
 		attr.Type = metadata.FileTypeSymlink
 		metadata.ApplyCreateDefaults(attr, ctx, target)
 
-		// Create complete File struct for symlink
+		// Create complete File struct for symlink (with Nlink = 1)
 		newFile = &metadata.File{
 			ID:        newID,
 			ShareName: parentFile.ShareName,
@@ -455,6 +455,7 @@ func (s *BadgerMetadataStore) CreateSymlink(
 				Mode:         attr.Mode,
 				UID:          attr.UID,
 				GID:          attr.GID,
+				Nlink:        1,
 				Size:         attr.Size,
 				Atime:        attr.Atime,
 				Mtime:        attr.Mtime,
@@ -474,7 +475,7 @@ func (s *BadgerMetadataStore) CreateSymlink(
 			return fmt.Errorf("failed to store symlink: %w", err)
 		}
 
-		// Set link count
+		// Also store link count separately for efficient updates
 		if err := txn.Set(keyLinkCount(newID), encodeUint32(1)); err != nil {
 			return fmt.Errorf("failed to store link count: %w", err)
 		}
@@ -638,7 +639,7 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 		attr.Type = fileType
 		metadata.ApplyCreateDefaults(attr, ctx, "")
 
-		// Create complete File struct for special file
+		// Create complete File struct for special file (with Nlink = 1)
 		newFile = &metadata.File{
 			ID:        newID,
 			ShareName: parentFile.ShareName,
@@ -648,6 +649,7 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 				Mode:         attr.Mode,
 				UID:          attr.UID,
 				GID:          attr.GID,
+				Nlink:        1,
 				Size:         attr.Size,
 				Atime:        attr.Atime,
 				Mtime:        attr.Mtime,
@@ -682,7 +684,7 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 			}
 		}
 
-		// Set link count
+		// Also store link count separately for efficient updates
 		if err := txn.Set(keyLinkCount(newID), encodeUint32(1)); err != nil {
 			return fmt.Errorf("failed to store link count: %w", err)
 		}

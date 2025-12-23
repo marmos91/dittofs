@@ -193,7 +193,7 @@ func (s *BadgerMetadataStore) RemoveFile(
 			return err
 		}
 
-		// Make a copy of file to return
+		// Make a copy of file to return (with current link count)
 		returnFile = &metadata.File{
 			ID:        file.ID,
 			ShareName: file.ShareName,
@@ -203,6 +203,7 @@ func (s *BadgerMetadataStore) RemoveFile(
 				Mode:         file.Mode,
 				UID:          file.UID,
 				GID:          file.GID,
+				Nlink:        linkCount,
 				Size:         file.Size,
 				Atime:        file.Atime,
 				Mtime:        file.Mtime,
@@ -221,6 +222,15 @@ func (s *BadgerMetadataStore) RemoveFile(
 			linkCount--
 			if err := txn.Set(keyLinkCount(fileID), encodeUint32(linkCount)); err != nil {
 				return fmt.Errorf("failed to update link count: %w", err)
+			}
+			// Also update the stored file's Nlink
+			file.Nlink = linkCount
+			fileBytes, err := encodeFile(file)
+			if err != nil {
+				return err
+			}
+			if err := txn.Set(keyFile(fileID), fileBytes); err != nil {
+				return fmt.Errorf("failed to update file nlink: %w", err)
 			}
 		} else {
 			// This was the last link, remove all metadata
@@ -570,6 +580,8 @@ func (s *BadgerMetadataStore) attemptRemoveDirectory(
 				if err := txn.Set(keyLinkCount(parentID), encodeUint32(parentLinkCount)); err != nil {
 					return fmt.Errorf("failed to update parent link count: %w", err)
 				}
+				// Also update the parent's Nlink field
+				parentFile.Nlink = parentLinkCount
 			}
 		}
 

@@ -201,6 +201,7 @@ func (store *MemoryMetadataStore) Move(
 		if hasOtherLinks {
 			// Has other links, just decrement
 			store.linkCounts[destKey]--
+			destData.Attr.Nlink = store.linkCounts[destKey]
 		} else {
 			// Last link (or only link for directories), remove all metadata
 			delete(store.files, destKey)
@@ -211,6 +212,7 @@ func (store *MemoryMetadataStore) Move(
 				// Decrement destination directory's link count (removing subdirectory)
 				if store.linkCounts[toDirKey] > 0 {
 					store.linkCounts[toDirKey]--
+					toDirData.Attr.Nlink = store.linkCounts[toDirKey]
 				}
 			}
 		}
@@ -238,9 +240,11 @@ func (store *MemoryMetadataStore) Move(
 			// Decrement source directory link count (losing ".." reference)
 			if store.linkCounts[fromDirKey] > 0 {
 				store.linkCounts[fromDirKey]--
+				fromDirData.Attr.Nlink = store.linkCounts[fromDirKey]
 			}
 			// Increment destination directory link count (gaining ".." reference)
 			store.linkCounts[toDirKey]++
+			toDirData.Attr.Nlink = store.linkCounts[toDirKey]
 		}
 	}
 

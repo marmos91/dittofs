@@ -697,6 +697,15 @@ func (s *BadgerMetadataStore) Create(
 			newFile.ContentID = ""
 		}
 
+		// Set link count (store in both File.Nlink and separate key for consistency)
+		var linkCount uint32
+		if attr.Type == metadata.FileTypeDirectory {
+			linkCount = 2 // "." and parent entry
+		} else {
+			linkCount = 1
+		}
+		newFile.Nlink = linkCount
+
 		// Store file
 		fileBytes, err := encodeFile(newFile)
 		if err != nil {
@@ -706,13 +715,7 @@ func (s *BadgerMetadataStore) Create(
 			return fmt.Errorf("failed to store file: %w", err)
 		}
 
-		// Set link count
-		var linkCount uint32
-		if attr.Type == metadata.FileTypeDirectory {
-			linkCount = 2 // "." and parent entry
-		} else {
-			linkCount = 1
-		}
+		// Also store link count separately for efficient updates
 		if err := txn.Set(keyLinkCount(newID), encodeUint32(linkCount)); err != nil {
 			return fmt.Errorf("failed to store link count: %w", err)
 		}
@@ -938,8 +941,9 @@ func (s *BadgerMetadataStore) CreateHardLink(
 		// Update timestamps
 		now := time.Now()
 
-		// Target file's metadata changed (ctime)
+		// Target file's metadata changed (ctime and Nlink)
 		targetFile.Ctime = now
+		targetFile.Nlink = newLinkCount
 		targetBytes, err := encodeFile(targetFile)
 		if err != nil {
 			return err

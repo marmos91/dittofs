@@ -98,6 +98,7 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	// - 1 for "." (self-reference)
 	// - 1 for the share's reference to this root
 	store.linkCounts[key] = 2
+	rootAttrCopy.Nlink = 2
 
 	// Root directories have no parent (they are top-level)
 	// So we don't add an entry to store.parents
