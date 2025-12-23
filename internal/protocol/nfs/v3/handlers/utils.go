@@ -19,6 +19,112 @@ func safeAdd(a, b uint64) (uint64, bool) {
 	return sum, overflow
 }
 
+// ============================================================================
+// Transient Error Retry Logic
+// ============================================================================
+//
+// The Linux kernel NFS server (fs/nfsd) implements retry logic for transient
+// errors like EAGAIN. While NFSv3 doesn't have delegations, retry logic is
+// still useful for:
+//   - Backend transient errors (S3 throttling, temporary unavailability)
+//   - Lock conflicts when NLM is implemented
+//   - Temporary resource exhaustion
+//
+// Example from Linux kernel fs/nfsd/vfs.c:
+//   for (retries = 1;;) {
+//       host_err = vfs_rename(&rd);
+//       if (host_err != -EAGAIN || !retries--) break;
+//       if (!nfsd_wait_for_delegreturn(...)) break;
+//   }
+
+// RetryConfig configures retry behavior for transient errors.
+type RetryConfig struct {
+	// MaxRetries is the maximum number of retry attempts (default: 1)
+	MaxRetries int
+
+	// RetryableErrors is a function that returns true if the error is retryable
+	RetryableErrors func(error) bool
+}
+
+// DefaultRetryConfig provides sensible defaults for retry behavior.
+var DefaultRetryConfig = RetryConfig{
+	MaxRetries:      1,
+	RetryableErrors: isTransientError,
+}
+
+// isTransientError checks if an error is transient and worth retrying.
+// This matches the errors that Linux kernel NFS retries.
+func isTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check for metadata store errors that indicate transient conditions
+	if storeErr, ok := err.(*metadata.StoreError); ok {
+		switch storeErr.Code {
+		case metadata.ErrLocked:
+			// Lock conflict - retry may succeed if lock is released
+			return true
+		case metadata.ErrIOError:
+			// Some I/O errors may be transient (e.g., temporary network issues)
+			// Be conservative here - only retry on specific patterns
+			return false
+		}
+	}
+
+	// Could also check for context.DeadlineExceeded for timeout-based retries
+	// but we generally want to respect timeouts, not retry them
+
+	return false
+}
+
+// withRetry executes an operation with retry logic for transient errors.
+// The operation function returns a result and an error.
+// On transient errors, the operation is retried up to MaxRetries times.
+//
+// Usage:
+//
+//	result, err := withRetry(ctx, DefaultRetryConfig, func() (*Result, error) {
+//	    return store.SomeOperation(...)
+//	})
+func withRetry[T any](ctx context.Context, cfg RetryConfig, op func() (T, error)) (T, error) {
+	var zero T
+	retries := cfg.MaxRetries
+	if retries < 0 {
+		retries = 0
+	}
+
+	for attempt := 0; attempt <= retries; attempt++ {
+		// Check context before each attempt
+		if ctx.Err() != nil {
+			return zero, ctx.Err()
+		}
+
+		result, err := op()
+		if err == nil {
+			return result, nil
+		}
+
+		// Check if error is retryable
+		if !cfg.RetryableErrors(err) {
+			return result, err
+		}
+
+		// Last attempt failed - return error
+		if attempt >= retries {
+			return result, err
+		}
+
+		// Log retry attempt
+		logger.Debug("Retrying operation due to transient error",
+			"attempt", attempt+1,
+			"maxRetries", retries,
+			"error", err)
+	}
+
+	return zero, nil // Should not reach here
+}
+
 // buildWccAttr builds WCC (Weak Cache Consistency) attributes from FileAttr.
 // Used in WRITE, COMMIT, and other procedures to help clients detect concurrent modifications.
 //
