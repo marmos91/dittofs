@@ -163,11 +163,28 @@ func NewNotifyRegistry() *NotifyRegistry {
 }
 
 // Register adds a pending notification request.
+// If a request with the same FileID already exists, it is replaced.
 func (r *NotifyRegistry) Register(notify *PendingNotify) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	fileIDKey := string(notify.FileID[:])
+
+	// If there's already a registration for this FileID, remove the old entry
+	// from the pending map to keep data structures consistent.
+	if old, ok := r.byFileID[fileIDKey]; ok {
+		pending := r.pending[old.WatchPath]
+		for i, p := range pending {
+			if string(p.FileID[:]) == fileIDKey {
+				r.pending[old.WatchPath] = append(pending[:i], pending[i+1:]...)
+				break
+			}
+		}
+		if len(r.pending[old.WatchPath]) == 0 {
+			delete(r.pending, old.WatchPath)
+		}
+	}
+
 	r.byFileID[fileIDKey] = notify
 	r.pending[notify.WatchPath] = append(r.pending[notify.WatchPath], notify)
 
@@ -366,26 +383,42 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// Get watchers for this path
-	watchers := r.pending[parentPath]
-	if len(watchers) == 0 {
-		return
-	}
+	// Walk up the directory hierarchy to support recursive (WatchTree) watchers.
+	// This checks the exact parentPath first, then ancestor directories.
+	currentPath := parentPath
+	for {
+		watchers := r.pending[currentPath]
 
-	// Log for debugging (full implementation would send async responses)
-	for _, w := range watchers {
-		if w.ShareName != shareName {
-			continue
-		}
-		if !MatchesFilter(action, w.CompletionFilter) {
-			continue
+		// Log for debugging (full implementation would send async responses)
+		for _, w := range watchers {
+			// Only notify watchers on the same share
+			if w.ShareName != shareName {
+				continue
+			}
+
+			// For ancestor paths (recursive watch), require WatchTree flag
+			if currentPath != parentPath && !w.WatchTree {
+				continue
+			}
+
+			if !MatchesFilter(action, w.CompletionFilter) {
+				continue
+			}
+
+			logger.Debug("CHANGE_NOTIFY: would notify watcher",
+				"watchPath", w.WatchPath,
+				"fileName", fileName,
+				"action", actionToString(action),
+				"messageID", w.MessageID)
 		}
 
-		logger.Debug("CHANGE_NOTIFY: would notify watcher",
-			"watchPath", w.WatchPath,
-			"fileName", fileName,
-			"action", actionToString(action),
-			"messageID", w.MessageID)
+		// Stop after processing the root directory
+		if currentPath == "/" || currentPath == "" {
+			break
+		}
+
+		// Move to the parent directory for recursive watcher lookup
+		currentPath = GetParentPath(currentPath)
 	}
 }
 
