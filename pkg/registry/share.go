@@ -81,6 +81,15 @@ type Share struct {
 	PrefetchConfig PrefetchConfig // Read prefetch settings
 	FlusherConfig  FlusherConfig  // Background flusher settings
 
+	// NFS-specific options
+	// DisableReaddirplus prevents READDIRPLUS from being used on this share.
+	// When enabled, clients must use READDIR + LOOKUP + GETATTR separately.
+	// Per RFC 1813, this may be useful for:
+	// - Shares with very large directories where READDIRPLUS is too expensive
+	// - Compatibility with older clients
+	// - Reducing server memory pressure from large responses
+	DisableReaddirplus bool
+
 	// Background flusher for this share (nil if no cache configured)
 	Flusher *flusher.BackgroundFlusher
 }
@@ -114,4 +123,7 @@ type ShareConfig struct {
 	// Cache behavior configuration
 	PrefetchConfig PrefetchConfig // Read prefetch settings
 	FlusherConfig  FlusherConfig  // Background flusher settings
+
+	// NFS-specific options
+	DisableReaddirplus bool // Prevent READDIRPLUS, forcing clients to use READDIR + LOOKUP + GETATTR
 }
