@@ -429,11 +429,67 @@ func (h *Handler) SetAttr(
 	// - Updating ctime automatically
 	// - Ensuring atomicity of updates
 	// - Respecting context cancellation (especially for size changes)
+	//
+	// IMPORTANT: Per RFC 5661 Section 18.30.4, size changes should be applied
+	// separately from other attribute changes because filesystems may not
+	// expect size mixed with other attributes. This matches Linux kernel
+	// behavior in fs/nfsd/vfs.c (nfsd_setattr).
+	//
+	// If both size and other attributes are being set:
+	//   1. First apply size change (truncation/extension)
+	//   2. Then apply other attributes (mode, uid, gid, atime, mtime)
 
 	// Log which attributes are being set (for debugging)
 	logSetAttrRequest(req, clientIP)
 
-	err = metadataStore.SetFileAttributes(authCtx, fileHandle, &req.NewAttr)
+	// Check if we have both size and other attributes to set
+	hasSize := req.NewAttr.Size != nil
+	hasOtherAttrs := req.NewAttr.Mode != nil || req.NewAttr.UID != nil ||
+		req.NewAttr.GID != nil || req.NewAttr.Atime != nil || req.NewAttr.Mtime != nil
+
+	if hasSize && hasOtherAttrs {
+		// Apply size change first (separate call per RFC 5661)
+		sizeOnlyAttrs := metadata.SetAttrs{Size: req.NewAttr.Size}
+		err = metadataStore.SetFileAttributes(authCtx, fileHandle, &sizeOnlyAttrs)
+		if err != nil {
+			// Handle size change error
+			if err == context.Canceled || err == context.DeadlineExceeded {
+				logger.DebugCtx(ctx.Context, "SETATTR: size change cancelled",
+					"handle", fmt.Sprintf("%x", req.Handle),
+					"client", clientIP)
+				return nil, err
+			}
+
+			traceError(ctx.Context, err, "SETATTR failed: size change error",
+				"handle", fmt.Sprintf("%x", req.Handle),
+				"client", clientIP)
+
+			var wccAfter *types.NFSFileAttr
+			if file, getErr := metadataStore.GetFile(ctx.Context, fileHandle); getErr == nil {
+				wccAfter = h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
+			}
+
+			status := xdr.MapStoreErrorToNFSStatus(err, clientIP, "SETATTR")
+			return &SetAttrResponse{
+				NFSResponseBase: NFSResponseBase{Status: status},
+				AttrBefore:      wccBefore,
+				AttrAfter:       wccAfter,
+			}, nil
+		}
+
+		// Now apply other attributes (without size)
+		otherAttrs := metadata.SetAttrs{
+			Mode:  req.NewAttr.Mode,
+			UID:   req.NewAttr.UID,
+			GID:   req.NewAttr.GID,
+			Atime: req.NewAttr.Atime,
+			Mtime: req.NewAttr.Mtime,
+		}
+		err = metadataStore.SetFileAttributes(authCtx, fileHandle, &otherAttrs)
+	} else {
+		// Only size or only other attributes - single call is fine
+		err = metadataStore.SetFileAttributes(authCtx, fileHandle, &req.NewAttr)
+	}
 	if err != nil {
 		// Check if error is due to context cancellation
 		if err == context.Canceled || err == context.DeadlineExceeded {
