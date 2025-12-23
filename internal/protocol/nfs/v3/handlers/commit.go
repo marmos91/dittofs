@@ -385,6 +385,23 @@ func (h *Handler) Commit(
 	}
 
 	// Flush cache to content store using shared flush logic
+	//
+	// NOTE: Intentional deviation from Linux behavior - we flush the entire file
+	// rather than just the range specified by req.Offset and req.Count.
+	//
+	// Per RFC 1813 Section 3.3.21, the server MAY flush more than requested:
+	// "The server will write to stable storage all data for the specified file
+	// that is still uncommitted." The offset/count parameters are a hint, not
+	// a mandate - the server can always choose to flush more for simplicity.
+	//
+	// This approach is:
+	//   - RFC compliant (server can flush more than requested)
+	//   - Simpler to implement (no range tracking in cache)
+	//   - More conservative (ensures data durability)
+	//   - Less efficient for partial commits from large files
+	//
+	// Linux's vfs_fsync_range() approach is an optimization; our approach
+	// prioritizes correctness and simplicity over performance here.
 	_, flushErr := cache.FlushCacheToContentStore(ctx.Context, fileCache, contentStore, file.ContentID)
 	if flushErr != nil {
 		traceError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "content_id", file.ContentID, "client", clientIP)

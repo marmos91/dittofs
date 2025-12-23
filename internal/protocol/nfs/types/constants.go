@@ -131,6 +131,31 @@ const (
 
 	// NFS3ErrNotSupp - Operation not supported
 	NFS3ErrNotSupp = 10004
+
+	// NFS3ErrJukebox - Resource temporarily unavailable, retry later
+	// Used for transient errors like file locks or delegation conflicts
+	NFS3ErrJukebox = 10008
+)
+
+// ============================================================================
+// Protocol Limits (RFC 1813)
+// ============================================================================
+
+// These constants define the maximum values for various NFS protocol parameters
+// as specified in RFC 1813 and matching Linux kernel NFS server behavior.
+const (
+	// OffsetMax is the maximum file offset per RFC 1813 (signed 64-bit max).
+	// Used to clamp READ offsets and validate WRITE offset+length.
+	// Matches Linux kernel's OFFSET_MAX behavior in fs/nfsd/nfs3proc.c
+	OffsetMax = int64(1<<63 - 1)
+
+	// NFS3MaxPathLen is the maximum symlink target length per RFC 1813.
+	// This matches NFS3_MAXPATHLEN in the Linux kernel (1024 bytes).
+	NFS3MaxPathLen = 1024
+
+	// NFS3MaxNameLen is the maximum filename component length per RFC 1813.
+	// Individual path components (directory/file names) are limited to 255 bytes.
+	NFS3MaxNameLen = 255
 )
 
 // FSInfo property flags (RFC 1813 Section 3.3.19)

@@ -628,5 +628,28 @@ func validateMknodRequest(req *MknodRequest) *mknodValidationError {
 		}
 	}
 
+	// Validate device numbers for block/char devices
+	// Linux uses 8-bit major and 8-bit minor on older kernels, 12-bit major and 20-bit minor on newer.
+	// We enforce reasonable limits to catch obvious errors and match Linux behavior.
+	// Linux kernel fs/nfsd/nfs3proc.c validates: MAJOR(rdev) != specdata1 || MINOR(rdev) != specdata2
+	if req.Type == types.NF3CHR || req.Type == types.NF3BLK {
+		// Major device number should be in reasonable range (0-4095 covers most systems)
+		// This matches Linux's 12-bit major number on modern systems
+		if req.Spec.SpecData1 > 0xFFF {
+			return &mknodValidationError{
+				message:   fmt.Sprintf("major device number out of range: %d (max 4095)", req.Spec.SpecData1),
+				nfsStatus: types.NFS3ErrInval,
+			}
+		}
+		// Minor device number should be in reasonable range (0-1048575 for 20-bit minor)
+		// This matches Linux's 20-bit minor number on modern systems
+		if req.Spec.SpecData2 > 0xFFFFF {
+			return &mknodValidationError{
+				message:   fmt.Sprintf("minor device number out of range: %d (max 1048575)", req.Spec.SpecData2),
+				nfsStatus: types.NFS3ErrInval,
+			}
+		}
+	}
+
 	return nil
 }

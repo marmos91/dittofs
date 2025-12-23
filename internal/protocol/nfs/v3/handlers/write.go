@@ -376,6 +376,14 @@ func (h *Handler) Write(
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrInval}}, nil
 	}
 
+	// Validate offset + length doesn't exceed OffsetMax (match Linux nfs3proc.c behavior)
+	// Linux returns EFBIG (File too large) in this case per RFC 1813
+	if newSize > uint64(types.OffsetMax) {
+		logger.WarnCtx(ctx.Context, "WRITE failed: offset + length exceeds OffsetMax",
+			"offset", req.Offset, "dataLen", dataLen, "newSize", newSize, "client", clientIP)
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrFBig}}, nil
+	}
+
 	// ========================================================================
 	// Step 5: Build AuthContext with share-level identity mapping
 	// ========================================================================
