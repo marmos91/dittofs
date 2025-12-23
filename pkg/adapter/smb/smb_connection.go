@@ -15,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/header"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 	"github.com/marmos91/dittofs/internal/protocol/smb/v2/handlers"
+	"github.com/marmos91/dittofs/pkg/bufpool"
 )
 
 // SMBConnection handles a single SMB2 client connection.
@@ -650,8 +651,22 @@ func (c *SMBConnection) sendMessage(hdr *header.SMB2Header, body []byte) error {
 	// Calculate total message length
 	msgLen := len(headerBytes) + len(body)
 
-	// Build the complete SMB2 message (header + body) for signing
-	smbMessage := make([]byte, msgLen)
+	// Get a pooled buffer for the complete message (NetBIOS header + SMB2 message)
+	// Buffer layout: [4-byte NetBIOS header][SMB2 header + body]
+	totalLen := 4 + msgLen
+	message := bufpool.Get(totalLen)
+	defer bufpool.Put(message)
+
+	// Build NetBIOS session header at the start
+	// Type (1 byte) = 0x00 for session message
+	// Length (3 bytes) = message length in big-endian
+	message[0] = 0x00 // Session message type
+	message[1] = byte(msgLen >> 16)
+	message[2] = byte(msgLen >> 8)
+	message[3] = byte(msgLen)
+
+	// Copy SMB2 header and body after NetBIOS header
+	smbMessage := message[4 : 4+msgLen]
 	copy(smbMessage[0:len(headerBytes)], headerBytes)
 	copy(smbMessage[len(headerBytes):], body)
 
@@ -665,20 +680,6 @@ func (c *SMBConnection) sendMessage(hdr *header.SMB2Header, body []byte) error {
 				"sessionID", hdr.SessionID)
 		}
 	}
-
-	// Build NetBIOS session header (4 bytes)
-	// Type (1 byte) = 0x00 for session message
-	// Length (3 bytes) = message length in big-endian
-	nbHeader := make([]byte, 4)
-	nbHeader[0] = 0x00 // Session message type
-	nbHeader[1] = byte(msgLen >> 16)
-	nbHeader[2] = byte(msgLen >> 8)
-	nbHeader[3] = byte(msgLen)
-
-	// Write everything in one syscall if possible
-	message := make([]byte, 4+msgLen)
-	copy(message[0:4], nbHeader)
-	copy(message[4:], smbMessage)
 
 	_, err := c.conn.Write(message)
 	if err != nil {
@@ -814,16 +815,18 @@ func (c *SMBConnection) sendRawMessage(headerBytes, body []byte) error {
 	// Calculate total message length
 	msgLen := len(headerBytes) + len(body)
 
-	// Build NetBIOS session header (4 bytes)
-	nbHeader := make([]byte, 4)
-	nbHeader[0] = 0x00 // Session message type
-	nbHeader[1] = byte(msgLen >> 16)
-	nbHeader[2] = byte(msgLen >> 8)
-	nbHeader[3] = byte(msgLen)
+	// Get a pooled buffer for the complete message (NetBIOS header + SMB2 message)
+	totalLen := 4 + msgLen
+	message := bufpool.Get(totalLen)
+	defer bufpool.Put(message)
 
-	// Write everything in one syscall if possible
-	message := make([]byte, 4+msgLen)
-	copy(message[0:4], nbHeader)
+	// Build NetBIOS session header at the start
+	message[0] = 0x00 // Session message type
+	message[1] = byte(msgLen >> 16)
+	message[2] = byte(msgLen >> 8)
+	message[3] = byte(msgLen)
+
+	// Copy header and body after NetBIOS header
 	copy(message[4:4+len(headerBytes)], headerBytes)
 	copy(message[4+len(headerBytes):], body)
 
