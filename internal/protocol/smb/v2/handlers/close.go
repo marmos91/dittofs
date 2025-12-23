@@ -394,6 +394,11 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 						// Continue with close even if delete fails
 					} else {
 						logger.Debug("CLOSE: directory deleted", "path", openFile.Path)
+						// Notify watchers about deletion
+						if h.NotifyRegistry != nil {
+							parentPath := GetParentPath(openFile.Path)
+							h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved)
+						}
 					}
 				} else {
 					// Delete file
@@ -403,6 +408,11 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 						// Continue with close even if delete fails
 					} else {
 						logger.Debug("CLOSE: file deleted", "path", openFile.Path)
+						// Notify watchers about deletion
+						if h.NotifyRegistry != nil {
+							parentPath := GetParentPath(openFile.Path)
+							h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved)
+						}
 					}
 				}
 			}
@@ -419,7 +429,22 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 8: Remove the open file handle
+	// Step 8: Unregister any pending CHANGE_NOTIFY watches
+	// ========================================================================
+	//
+	// If this is a directory with pending CHANGE_NOTIFY requests, unregister them.
+	// The watches are keyed by FileID, so closing the handle invalidates them.
+
+	if openFile.IsDirectory && h.NotifyRegistry != nil {
+		if notify := h.NotifyRegistry.Unregister(req.FileID); notify != nil {
+			logger.Debug("CLOSE: unregistered pending CHANGE_NOTIFY",
+				"path", openFile.Path,
+				"messageID", notify.MessageID)
+		}
+	}
+
+	// ========================================================================
+	// Step 9: Remove the open file handle
 	// ========================================================================
 
 	h.DeleteOpenFile(req.FileID)
@@ -429,7 +454,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		"path", openFile.Path)
 
 	// ========================================================================
-	// Step 9: Return success response
+	// Step 10: Return success response
 	// ========================================================================
 
 	return resp, nil

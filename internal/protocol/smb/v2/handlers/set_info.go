@@ -403,6 +403,11 @@ func (h *Handler) setFileInfoFromStore(
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 		}
 
+		// Save old path info for notification before modification
+		oldPath := openFile.Path
+		oldFileName := openFile.FileName
+		oldParentPath := GetParentPath(oldPath)
+
 		// Perform the rename/move
 		err = metadataStore.Move(authCtx, openFile.ParentHandle, openFile.FileName, toDir, toName)
 		if err != nil {
@@ -411,6 +416,22 @@ func (h *Handler) setFileInfoFromStore(
 				"to", newPath,
 				"error", err)
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+		}
+
+		// Notify watchers about the rename
+		if h.NotifyRegistry != nil {
+			// Get tree for share name
+			tree, ok := h.GetTree(openFile.TreeID)
+			if ok {
+				// Notify old location
+				h.NotifyRegistry.NotifyChange(tree.ShareName, oldParentPath, oldFileName, FileActionRenamedOldName)
+				// Notify new location
+				newParentPath := GetParentPath(newPath)
+				if newParentPath == "" || newParentPath == "." {
+					newParentPath = "/"
+				}
+				h.NotifyRegistry.NotifyChange(tree.ShareName, newParentPath, toName, FileActionRenamedNewName)
+			}
 		}
 
 		// Update open file state

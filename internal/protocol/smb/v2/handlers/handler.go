@@ -45,6 +45,9 @@ type Handler struct {
 	// Oplock management
 	OplockManager *OplockManager
 
+	// Change notification management
+	NotifyRegistry *NotifyRegistry
+
 	// Configuration
 	MaxTransactSize uint32
 	MaxReadSize     uint32
@@ -125,6 +128,7 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		SessionManager:  sessionManager,
 		PipeManager:     rpc.NewPipeManager(),
 		OplockManager:   NewOplockManager(),
+		NotifyRegistry:  NewNotifyRegistry(),
 		MaxTransactSize: 65536,
 		MaxReadSize:     65536,
 		MaxWriteSize:    65536,

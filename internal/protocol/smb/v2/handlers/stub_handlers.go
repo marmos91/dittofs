@@ -212,19 +212,105 @@ func buildIoctlResponse(ctlCode uint32, fileID [16]byte, output []byte) []byte {
 	return buf
 }
 
-// Cancel handles SMB2 CANCEL command [MS-SMB2] 2.2.30
-// Used to cancel pending operations.
+// Cancel handles SMB2 CANCEL command [MS-SMB2] 2.2.30.
+//
+// Used to cancel pending operations, particularly CHANGE_NOTIFY requests.
+// Per the spec, CANCEL does not send a response - the cancelled request
+// is completed with STATUS_CANCELLED.
 func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	logger.Debug("CANCEL request (not implemented)")
-	// Cancel doesn't send a response in most cases
+	// CANCEL request body is just 4 bytes:
+	// - StructureSize (2 bytes) = 4
+	// - Reserved (2 bytes)
+	if len(body) < 4 {
+		logger.Debug("CANCEL: request too short", "len", len(body))
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	logger.Debug("CANCEL request received",
+		"sessionID", ctx.SessionID,
+		"messageID", ctx.MessageID)
+
+	// Note: CANCEL is typically used to cancel a pending CHANGE_NOTIFY
+	// The MessageID in the CANCEL header identifies which request to cancel.
+	// For MVP, we don't track message IDs for pending requests,
+	// so we can't cancel specific requests. The watches will be cleaned up
+	// when the directory handle is closed.
+
+	// Per [MS-SMB2] 3.3.5.16: The server MUST NOT send a response to the CANCEL request
+	// Instead, the cancelled request should be completed with STATUS_CANCELLED
+	// For now, we return STATUS_CANCELLED to acknowledge the cancel
 	return NewErrorResult(types.StatusCancelled), nil
 }
 
-// ChangeNotify handles SMB2 CHANGE_NOTIFY command [MS-SMB2] 2.2.35
-// Returns STATUS_NOT_SUPPORTED for Phase 1.
+// ChangeNotify handles SMB2 CHANGE_NOTIFY command [MS-SMB2] 2.2.35.
+//
+// This command allows clients to watch directories for changes.
+// For MVP, we register the watch and immediately return STATUS_PENDING.
+// When changes occur (via CREATE/CLOSE/SET_INFO), we can notify watchers.
 func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	logger.Debug("CHANGE_NOTIFY request (not implemented)")
-	return NewErrorResult(types.StatusNotSupported), nil
+	// Parse the request
+	req, err := DecodeChangeNotifyRequest(body)
+	if err != nil {
+		logger.Debug("CHANGE_NOTIFY: failed to decode request", "error", err)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// Get the open file (must be a directory)
+	openFile, ok := h.GetOpenFile(req.FileID)
+	if !ok {
+		logger.Debug("CHANGE_NOTIFY: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
+		return NewErrorResult(types.StatusInvalidHandle), nil
+	}
+
+	// Verify it's a directory
+	if !openFile.IsDirectory {
+		logger.Debug("CHANGE_NOTIFY: not a directory", "path", openFile.Path)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// Verify session and tree match
+	if openFile.SessionID != ctx.SessionID || openFile.TreeID != ctx.TreeID {
+		logger.Debug("CHANGE_NOTIFY: session/tree mismatch")
+		return NewErrorResult(types.StatusInvalidHandle), nil
+	}
+
+	// Build the watch path (share-relative)
+	watchPath := openFile.Path
+	if watchPath == "" {
+		watchPath = "/"
+	}
+
+	// Register the pending notification
+	notify := &PendingNotify{
+		FileID:           req.FileID,
+		SessionID:        ctx.SessionID,
+		MessageID:        ctx.MessageID,
+		WatchPath:        watchPath,
+		ShareName:        openFile.ShareName,
+		CompletionFilter: req.CompletionFilter,
+		WatchTree:        req.Flags&SMB2WatchTree != 0,
+		MaxOutputLength:  req.OutputBufferLength,
+	}
+
+	h.NotifyRegistry.Register(notify)
+
+	logger.Debug("CHANGE_NOTIFY: registered watch",
+		"path", watchPath,
+		"share", openFile.ShareName,
+		"filter", fmt.Sprintf("0x%08X", req.CompletionFilter),
+		"recursive", notify.WatchTree,
+		"messageID", ctx.MessageID)
+
+	// For MVP, return STATUS_PENDING
+	// The SMB protocol expects us to hold this request and respond asynchronously
+	// when changes occur. For now, we just track it - actual notification sending
+	// requires async response infrastructure.
+	//
+	// Note: Real async responses would require the connection to send SMB2
+	// responses back to the client when NotifyChange detects changes.
+	// For MVP, clients will see STATUS_PENDING and the watch will be registered
+	// but no notifications will be sent until we add async response support.
+	return NewErrorResult(types.StatusPending), nil
 }
 
 // OplockBreak handles SMB2 OPLOCK_BREAK acknowledgment [MS-SMB2] 2.2.24.

@@ -78,6 +78,7 @@ smbclient //localhost/export -p 12445 -U testuser -c "put localfile.txt"
 | QUERY_INFO | ✅ | Multiple info classes |
 | SET_INFO | ✅ | Attributes, timestamps, rename, delete |
 | QUERY_DIRECTORY | ✅ | With pagination |
+| CHANGE_NOTIFY | ⚠️ | Accepts watches, no async delivery |
 
 ### SMB2 Advanced Features
 
@@ -89,6 +90,7 @@ smbclient //localhost/export -p 12445 -U testuser -c "put localfile.txt"
 | Byte-Range Locking | ✅ | Shared/exclusive locks |
 | Message Signing | ✅ | HMAC-SHA256 |
 | Oplocks | ✅ | Level II, Exclusive, Batch |
+| Change Notifications | ⚠️ | Registered only (no async delivery) |
 | SMB3 Encryption | ❌ | Planned |
 
 **Total**: Core file operations, locking, and oplocks fully implemented
@@ -285,6 +287,55 @@ an oplock immediately. It must retry after the break acknowledgment.
 - **In-memory tracking**: Oplock state is lost on server restart
 - **No async break delivery**: Oplock break notifications require notifier setup
 - **Single holder tracking**: Only tracks one Level II holder (others coexist but aren't tracked)
+
+### Change Notifications (CHANGE_NOTIFY)
+
+DittoFS implements partial CHANGE_NOTIFY support per [MS-SMB2] 2.2.35/2.2.36.
+
+#### Current Status
+
+The implementation accepts CHANGE_NOTIFY requests and tracks pending watches, but **does not deliver async notifications** to clients. This is an MVP implementation with the following characteristics:
+
+- **Watch Registration**: ✅ Clients can register directory watches with completion filters
+- **Change Detection**: ✅ CREATE, CLOSE (delete-on-close), and SET_INFO (rename) trigger change events
+- **Async Delivery**: ❌ Changes are logged but not delivered asynchronously to clients
+
+#### What Works
+
+```go
+// Client opens directory and requests notification
+// Server registers watch and returns STATUS_PENDING
+CHANGE_NOTIFY request accepted → STATUS_PENDING
+
+// When changes occur (file created, deleted, renamed):
+// Server logs the event but doesn't send async response
+[DEBUG] CHANGE_NOTIFY: would notify watcher path=/watched-dir fileName=new-file.txt action=ADDED
+```
+
+#### Limitations
+
+1. **No Async Response**: Clients wait indefinitely for notifications that won't arrive
+2. **Polling Required**: Clients must manually poll (QUERY_DIRECTORY) for changes
+3. **Watch Cleanup**: Watches are properly cleaned up when directory handles are closed
+
+#### Completion Filter Support
+
+The following filters are recognized (but not delivered):
+
+| Filter | Value | Description |
+|--------|-------|-------------|
+| FILE_NOTIFY_CHANGE_FILE_NAME | 0x0001 | File create/delete/rename |
+| FILE_NOTIFY_CHANGE_DIR_NAME | 0x0002 | Directory create/delete/rename |
+| FILE_NOTIFY_CHANGE_ATTRIBUTES | 0x0004 | Attribute changes |
+| FILE_NOTIFY_CHANGE_SIZE | 0x0008 | File size changes |
+| FILE_NOTIFY_CHANGE_LAST_WRITE | 0x0010 | Last write time changes |
+
+#### Future Work
+
+Full async notification delivery requires:
+1. Connection-level async response infrastructure
+2. Message ID tracking for pending requests
+3. Proper SMB2 async response framing
 
 ## Authentication
 
