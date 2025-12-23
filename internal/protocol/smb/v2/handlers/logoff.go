@@ -120,7 +120,11 @@ func (resp *LogoffResponse) Encode() ([]byte, error) {
 //
 //  1. Validate the request
 //  2. Verify the session exists
-//  3. Delete the session (closes trees and files)
+//  3. Perform full session cleanup:
+//     - Close all open files (releases locks, flushes caches)
+//     - Delete all tree connections
+//     - Clean up pending auth state
+//     - Delete the session
 //  4. Return success response
 //
 // **Error Handling:**
@@ -147,20 +151,19 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 	}
 
 	// ========================================================================
-	// Step 2: Release all byte-range locks held by this session
+	// Step 2: Perform full session cleanup
 	// ========================================================================
+	//
+	// CleanupSession handles all resource cleanup in the correct order:
+	// 1. Close all open files (releases locks, flushes caches)
+	// 2. Delete all tree connections
+	// 3. Clean up pending auth state
+	// 4. Delete the session itself
 
-	// Iterate through all open files and release locks for this session
-	h.ReleaseAllLocksForSession(ctx.Context, ctx.SessionID)
+	h.CleanupSession(ctx.Context, ctx.SessionID)
 
 	// ========================================================================
-	// Step 3: Delete the session
-	// ========================================================================
-
-	h.DeleteSession(ctx.SessionID)
-
-	// ========================================================================
-	// Step 4: Return success response
+	// Step 3: Return success response
 	// ========================================================================
 
 	return &LogoffResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
