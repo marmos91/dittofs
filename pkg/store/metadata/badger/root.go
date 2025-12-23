@@ -95,7 +95,7 @@ func (s *BadgerMetadataStore) CreateRootDirectory(
 			// Check if root directory attributes need to be updated from config
 			// This handles the case where the config changed since the share was first created
 			needsUpdate := false
-			if attr.Mode != 0 && rootFile.Mode != attr.Mode {
+			if rootFile.Mode != attr.Mode {
 				logger.Info("Updating root directory mode from config",
 					"share", shareName,
 					"oldMode", fmt.Sprintf("%o", rootFile.Mode),
