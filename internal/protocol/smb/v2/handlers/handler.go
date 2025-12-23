@@ -42,6 +42,9 @@ type Handler struct {
 	// Named pipe management (for IPC$ RPC)
 	PipeManager *rpc.PipeManager
 
+	// Oplock management
+	OplockManager *OplockManager
+
 	// Configuration
 	MaxTransactSize uint32
 	MaxReadSize     uint32
@@ -97,6 +100,9 @@ type OpenFile struct {
 	DeletePending bool                // If true, delete file/directory when handle is closed
 	ParentHandle  metadata.FileHandle // Parent directory handle for deletion
 	FileName      string              // File name within parent for deletion
+
+	// Oplock state
+	OplockLevel uint8 // Current oplock level for this handle
 }
 
 // NewHandler creates a new SMB2 handler with default session manager.
@@ -113,6 +119,7 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		StartTime:       time.Now(),
 		SessionManager:  sessionManager,
 		PipeManager:     rpc.NewPipeManager(),
+		OplockManager:   NewOplockManager(),
 		MaxTransactSize: 65536,
 		MaxReadSize:     65536,
 		MaxWriteSize:    65536,

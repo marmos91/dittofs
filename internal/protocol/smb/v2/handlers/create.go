@@ -500,6 +500,26 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	smbFileID := h.GenerateFileID()
 
+	// ========================================================================
+	// Step 8b: Request oplock if applicable
+	// ========================================================================
+	//
+	// Oplocks are only granted for regular files, not directories.
+	// The client's requested oplock level may be downgraded if there
+	// are conflicting opens.
+
+	var grantedOplock uint8
+	if file.Type == metadata.FileTypeRegular && req.OplockLevel != OplockLevelNone {
+		// Build the oplock path (share-relative)
+		oplockPath := path.Join(tree.ShareName, filename)
+		grantedOplock = h.OplockManager.RequestOplock(
+			oplockPath,
+			smbFileID,
+			ctx.SessionID,
+			req.OplockLevel,
+		)
+	}
+
 	openFile := &OpenFile{
 		FileID:         smbFileID,
 		TreeID:         ctx.TreeID,
@@ -514,6 +534,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		// Store parent info for delete-on-close support
 		ParentHandle: parentHandle,
 		FileName:     baseName,
+		// Store oplock level
+		OplockLevel: grantedOplock,
 	}
 	h.StoreOpenFile(openFile)
 
@@ -521,7 +543,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		"fileID", fmt.Sprintf("%x", smbFileID),
 		"filename", filename,
 		"action", createAction,
-		"isDirectory", openFile.IsDirectory)
+		"isDirectory", openFile.IsDirectory,
+		"oplock", grantedOplock)
 
 	// ========================================================================
 	// Step 9: Build success response
@@ -534,7 +557,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	return &CreateResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-		OplockLevel:     0, // No oplock
+		OplockLevel:     grantedOplock,
 		CreateAction:    createAction,
 		CreationTime:    creation,
 		LastAccessTime:  access,

@@ -410,7 +410,16 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 7: Remove the open file handle
+	// Step 7: Release oplock if held
+	// ========================================================================
+
+	if openFile.OplockLevel != OplockLevelNone {
+		oplockPath := openFile.ShareName + "/" + openFile.Path
+		h.OplockManager.ReleaseOplock(oplockPath, req.FileID)
+	}
+
+	// ========================================================================
+	// Step 8: Remove the open file handle
 	// ========================================================================
 
 	h.DeleteOpenFile(req.FileID)
@@ -420,7 +429,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		"path", openFile.Path)
 
 	// ========================================================================
-	// Step 8: Return success response
+	// Step 9: Return success response
 	// ========================================================================
 
 	return resp, nil
