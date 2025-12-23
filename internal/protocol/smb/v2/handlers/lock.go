@@ -259,10 +259,21 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			"exclusive", isExclusive)
 
 		if isUnlock {
-			// Unlock operation
-			// Note: Per SMB2 spec, unlock operations are not rolled back if a subsequent
-			// operation in the batch fails. Only lock acquisitions are rolled back.
-			// This means successful unlocks remain in effect even if the request fails.
+			// Unlock operation.
+			//
+			// NOTE: Per SMB2 spec ([MS-SMB2] 2.2.26), successful unlock operations in a
+			// compound/batched LOCK request are NOT rolled back if a subsequent lock
+			// operation in the same batch fails. Only newly acquired locks are subject
+			// to rollback.
+			//
+			// As a consequence, a multi-element LOCK request that includes unlocks is
+			// not fully atomic with respect to the file's lock state: an unlock may
+			// succeed and permanently release a range even if the overall LOCK request
+			// eventually returns an error because of a later element in the batch.
+			//
+			// This handler intentionally preserves that SMB2-specified behavior. Callers
+			// MUST NOT assume that all prior operations (particularly unlocks) are
+			// reverted when a batched LOCK request fails.
 			err := metadataStore.UnlockFile(
 				authCtx.Context,
 				openFile.MetadataHandle,
@@ -331,6 +342,18 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 }
 
 // rollbackLocks releases locks that were acquired during a failed request.
+//
+// LIMITATION: Lock type changes (e.g., shared → exclusive on the same range by the
+// same session) are implemented as in-place updates in the lock manager. When such
+// an "upgraded" lock is rolled back, it is completely removed rather than reverted
+// to its original type. This means lock type changes in batch requests are not
+// fully atomic: if a later operation in the batch fails, the lock type change
+// persists as a removal rather than reverting to the previous lock type.
+//
+// This is an acceptable trade-off because:
+//  1. Lock type changes in batched requests are rare in practice
+//  2. Tracking original lock state would add significant complexity
+//  3. The client can re-acquire the lock with the desired type if needed
 func rollbackLocks(
 	ctx context.Context,
 	store metadata.MetadataStore,

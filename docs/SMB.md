@@ -86,11 +86,12 @@ smbclient //localhost/export -p 12445 -U testuser -c "put localfile.txt"
 | Compound Requests | ✅ | CREATE+QUERY_INFO+CLOSE |
 | Credit Management | ✅ | Adaptive flow control |
 | Parallel Requests | ✅ | Per-connection concurrency |
-| File Locking | ❌ | Planned |
+| Byte-Range Locking | ✅ | Shared/exclusive locks |
+| Message Signing | ✅ | HMAC-SHA256 |
 | Oplocks | ❌ | Planned |
 | SMB3 Encryption | ❌ | Planned |
 
-**Total**: Core file operations fully implemented
+**Total**: Core file operations and locking fully implemented
 
 ## Implementation Details
 
@@ -130,6 +131,7 @@ for {
 - `QUERY_INFO`: Get file/directory attributes
 - `SET_INFO`: Modify attributes, rename, delete
 - `QUERY_DIRECTORY`: List directory contents
+- `LOCK`: Acquire/release byte-range locks
 
 ### Two-Phase Write Pattern
 
@@ -183,6 +185,59 @@ Strategies:
 - **Fixed**: Always grant InitialGrant credits
 - **Echo**: Grant what client requests (within bounds)
 - **Adaptive**: Adjust based on server load (default)
+
+### Byte-Range Locking
+
+DittoFS implements SMB2 byte-range locking per [MS-SMB2] 2.2.26/2.2.27:
+
+#### Lock Types
+
+- **Shared (Read) Locks**: Multiple clients can hold shared locks on overlapping ranges
+- **Exclusive (Write) Locks**: Only one client can hold an exclusive lock on a range
+
+#### Lock Behavior
+
+```go
+// Lock request processing
+for each lockElement in request.Locks {
+    if lockElement.Flags & UNLOCK {
+        // Release lock - NOT rolled back on batch failure
+        store.UnlockFile(handle, sessionID, offset, length)
+    } else {
+        // Acquire lock - rolled back if later operation fails
+        store.LockFile(handle, lock)
+        acquiredLocks = append(acquiredLocks, lockElement)
+    }
+}
+```
+
+#### Lock Enforcement
+
+Locks are enforced on READ/WRITE operations:
+- **READ**: Blocked by another session's exclusive lock on overlapping range
+- **WRITE**: Blocked by any other session's lock (shared or exclusive) on overlapping range
+
+Same-session locks never block the owning session's I/O operations.
+
+#### Lock Lifetime
+
+Locks are ephemeral (in-memory only) and persist until:
+- Explicitly released via LOCK with SMB2_LOCKFLAG_UNLOCK
+- File handle is closed (CLOSE command)
+- Session disconnects (LOGOFF or connection drop)
+- Server restarts (all locks lost)
+
+#### Atomicity Limitations
+
+Per SMB2 specification ([MS-SMB2] 2.2.26):
+
+1. **Unlock operations are NOT rolled back**: If a batch LOCK request includes unlocks and a later lock acquisition fails, the successful unlocks remain in effect.
+
+2. **Lock type changes**: When re-locking an existing range with a different type (shared → exclusive), rollback removes the lock entirely rather than reverting to the original type.
+
+#### Configuration
+
+Locking is automatically enabled with no additional configuration required. Locks are stored in-memory per metadata store instance.
 
 ## Authentication
 
@@ -359,22 +414,25 @@ See the plan file for detailed symlink interoperability design.
 ## Known Limitations
 
 1. **SMB2 only**: SMB1 and SMB3 not supported
-2. **No file locking**: Oplocks and byte-range locks not implemented
+2. **No oplocks**: Opportunistic locks not implemented (byte-range locks are supported)
 3. **No encryption**: SMB3 encryption not supported
 4. **No security descriptors**: Windows ACLs not supported
 5. **No DFS**: Distributed File System not supported
 6. **Single dialect**: Only SMB2 0x0202 negotiated
 7. **No Unix special files via SMB**: FIFOs, sockets, and device nodes are hidden from SMB listings
+8. **Ephemeral locks**: Byte-range locks are in-memory only, lost on server restart
+9. **No blocking locks**: Lock requests always fail immediately if conflicting lock exists
 
 ## Roadmap
 
 See [SMB_IMPLEMENTATION_PLAN.md](SMB_IMPLEMENTATION_PLAN.md) for detailed roadmap:
 
 1. **SMBv3 Support**: Encryption, multichannel
-2. **File Locking**: Oplocks, byte-range locks
+2. **Oplocks**: Opportunistic locks for caching
 3. **Security Descriptors**: Windows ACLs
 4. **Extended Attributes**: xattr support
 5. **Kerberos/LDAP/AD**: Enterprise authentication
+6. **Blocking Locks**: Wait for lock availability (with timeout)
 
 ## References
 

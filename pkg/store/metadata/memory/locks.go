@@ -52,13 +52,10 @@ func (lm *lockManager) lock(handle string, lock metadata.FileLock) error {
 		if existing[i].SessionID == lock.SessionID &&
 			existing[i].Offset == lock.Offset &&
 			existing[i].Length == lock.Length {
-			// Update existing lock in place
+			// Update existing lock in place; the slice stored in the map is modified directly.
 			existing[i].Exclusive = lock.Exclusive
 			existing[i].AcquiredAt = time.Now()
 			existing[i].ID = lock.ID
-			// Explicitly store back to map for clarity (slice is a reference type,
-			// so this is technically redundant but makes the map update explicit)
-			lm.locks[handle] = existing
 			return nil
 		}
 	}
