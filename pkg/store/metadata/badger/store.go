@@ -89,6 +89,11 @@ type BadgerMetadataStore struct {
 	// Operations that modify directory entries (Create, Remove, Move) acquire the parent directory lock.
 	// This ensures concurrent operations on the same directory are serialized deterministically.
 	dirLocks sync.Map // map[string]*sync.Mutex (directory UUID -> mutex)
+
+	// byteRangeLocks manages byte-range file locks for SMB/NLM protocol support.
+	// These locks are ephemeral (in-memory only) and are lost on server restart.
+	// They are separate from the fileLocks/dirLocks which are for BadgerDB transaction serialization.
+	byteRangeLocks byteRangeLockManager
 }
 
 // BadgerMetadataStoreConfig contains configuration for creating a BadgerDB metadata store.

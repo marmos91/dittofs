@@ -702,6 +702,132 @@ type MetadataStore interface {
 	PrepareRead(ctx *AuthContext, handle FileHandle) (*ReadMetadata, error)
 
 	// ========================================================================
+	// File Locking (SMB/NLM support)
+	// ========================================================================
+
+	// LockFile acquires a byte-range lock on a file.
+	//
+	// This implements advisory file locking as required by SMB2 and NLM protocols.
+	// Byte-range locks control what portions of a file can be read/written while
+	// locked by other clients.
+	//
+	// Lock Types:
+	//   - Exclusive (write): No other locks allowed on overlapping range
+	//   - Shared (read): Multiple shared locks allowed, no exclusive locks
+	//
+	// Lock Conflict Rules:
+	//   - Shared locks don't conflict with other shared locks
+	//   - Exclusive locks conflict with all other locks on overlapping ranges
+	//   - Same session's locks don't conflict (allows upgrade/downgrade)
+	//
+	// Lock Lifetime:
+	// Locks are ephemeral (in-memory only) and persist until:
+	//   - Explicitly released via UnlockFile
+	//   - File is closed (UnlockAllForSession)
+	//   - Session disconnects (cleanup all session locks)
+	//   - Server restarts (all locks lost)
+	//
+	// Permission Requirements:
+	//   - Exclusive locks require write permission on the file
+	//   - Shared locks require read permission on the file
+	//
+	// Parameters:
+	//   - ctx: Authentication context for permission checking
+	//   - handle: File handle to lock
+	//   - lock: Lock details (ID, SessionID, Offset, Length, Exclusive, ClientAddr)
+	//
+	// Returns:
+	//   - error: ErrPermissionDenied if no permission, ErrLocked if conflict,
+	//     ErrNotFound if file doesn't exist, ErrIsDirectory if trying to lock
+	//     a directory, or context errors
+	LockFile(ctx *AuthContext, handle FileHandle, lock FileLock) error
+
+	// UnlockFile releases a specific byte-range lock.
+	//
+	// This removes a lock that was previously acquired with LockFile. The lock
+	// is identified by session, offset, and length - all must match exactly.
+	//
+	// Parameters:
+	//   - ctx: Context for cancellation
+	//   - handle: File handle that was locked
+	//   - sessionID: The session that holds the lock
+	//   - offset: Starting byte offset (must match original)
+	//   - length: Number of bytes (must match original)
+	//
+	// Returns:
+	//   - error: ErrLockNotFound if lock doesn't exist, ErrNotFound if file
+	//     doesn't exist, or context errors
+	UnlockFile(ctx context.Context, handle FileHandle, sessionID uint64, offset uint64, length uint64) error
+
+	// UnlockAllForSession releases all locks held by a session on a file.
+	//
+	// This is called when a client closes a file or disconnects. It atomically
+	// removes all locks associated with the given session, avoiding the need
+	// for per-lock release calls.
+	//
+	// Parameters:
+	//   - ctx: Context for cancellation
+	//   - handle: File handle to unlock completely
+	//   - sessionID: Session identifier
+	//
+	// Returns:
+	//   - error: ErrNotFound if file doesn't exist, or context errors
+	UnlockAllForSession(ctx context.Context, handle FileHandle, sessionID uint64) error
+
+	// TestLock checks whether a lock would succeed without acquiring it.
+	//
+	// This allows clients to query if a lock is available without blocking or
+	// actually acquiring the lock. Used by SMB2 for lock testing.
+	//
+	// Parameters:
+	//   - ctx: Context for cancellation
+	//   - handle: File handle to test
+	//   - offset: Starting byte offset
+	//   - length: Number of bytes
+	//   - exclusive: true for exclusive lock test, false for shared
+	//
+	// Returns:
+	//   - bool: true if lock would succeed, false if conflict exists
+	//   - *LockConflict: Details of conflicting lock if bool is false, nil otherwise
+	//   - error: ErrNotFound if file doesn't exist, or context errors
+	TestLock(ctx context.Context, handle FileHandle, offset uint64, length uint64, exclusive bool) (bool, *LockConflict, error)
+
+	// CheckLockForIO verifies no conflicting locks exist for a read/write operation.
+	//
+	// This is called before READ/WRITE operations to enforce lock semantics:
+	//   - READ is blocked by another session's exclusive lock
+	//   - WRITE is blocked by any other session's lock (shared or exclusive)
+	//
+	// The caller's session is passed so their own locks don't block their I/O.
+	//
+	// Parameters:
+	//   - ctx: Context for cancellation
+	//   - handle: File handle to check
+	//   - sessionID: Caller's session (their locks don't block them)
+	//   - offset: Starting byte offset of the I/O
+	//   - length: Number of bytes in the I/O
+	//   - isWrite: true for write operations, false for reads
+	//
+	// Returns:
+	//   - error: nil if I/O is allowed, ErrLocked if blocked by another
+	//     session's lock, ErrNotFound if file doesn't exist, or context errors
+	CheckLockForIO(ctx context.Context, handle FileHandle, sessionID uint64, offset uint64, length uint64, isWrite bool) error
+
+	// ListLocks returns all active locks on a file.
+	//
+	// This is used for debugging, monitoring, and by protocols that need to
+	// report lock information back to clients.
+	//
+	// Parameters:
+	//   - ctx: Context for cancellation
+	//   - handle: File handle to query locks for
+	//
+	// Returns:
+	//   - []FileLock: All active locks on the file (empty slice if none)
+	//   - error: ErrNotFound if file doesn't exist, or context errors
+	ListLocks(ctx context.Context, handle FileHandle) ([]FileLock, error)
+
+	// ========================================================================
 	// Filesystem Information
 	// ========================================================================
 

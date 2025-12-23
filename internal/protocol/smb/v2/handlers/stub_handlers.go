@@ -227,13 +227,6 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	return NewErrorResult(types.StatusNotSupported), nil
 }
 
-// Lock handles SMB2 LOCK command [MS-SMB2] 2.2.26
-// Returns STATUS_NOT_SUPPORTED for Phase 1.
-func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	logger.Debug("LOCK request (not implemented)")
-	return NewErrorResult(types.StatusNotSupported), nil
-}
-
 // OplockBreak handles SMB2 OPLOCK_BREAK command [MS-SMB2] 2.2.23, 2.2.24
 // Returns STATUS_NOT_SUPPORTED for Phase 1.
 func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {

@@ -389,6 +389,23 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	}
 
 	// ========================================================================
+	// Step 6.5: Check for conflicting byte-range locks
+	// ========================================================================
+
+	// Reads are blocked by another session's exclusive locks
+	if err := metadataStore.CheckLockForIO(
+		authCtx.Context,
+		openFile.MetadataHandle,
+		ctx.SessionID,
+		req.Offset,
+		uint64(req.Length),
+		false, // isWrite = false for read operations
+	); err != nil {
+		logger.Debug("READ: blocked by lock", "path", openFile.Path, "offset", req.Offset, "length", req.Length)
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusLockNotGranted}}, nil
+	}
+
+	// ========================================================================
 	// Step 7: Handle empty file or offset beyond EOF
 	// ========================================================================
 

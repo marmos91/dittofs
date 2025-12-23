@@ -199,6 +199,12 @@ type MemoryMetadataStore struct {
 	// Value: sorted slice of child names
 	// Note: Cache is lazy-populated on first read and cleared on modifications
 	sortedDirCache map[string][]string
+
+	// lockMgr manages byte-range file locks.
+	// Locks are ephemeral (in-memory only) and lost on server restart.
+	// Key: string representation of FileHandle
+	// Value: slice of FileLock entries for that file
+	lockMgr *lockManager
 }
 
 // MemoryMetadataStoreConfig contains configuration for creating a memory metadata store.
@@ -260,6 +266,7 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		maxFiles:        config.MaxFiles,
 		sessions:        make(map[string]*metadata.ShareSession),
 		sortedDirCache:  make(map[string][]string),
+		lockMgr:         newLockManager(),
 	}
 
 	// Initialize the sync.Pool for FileAttr allocations

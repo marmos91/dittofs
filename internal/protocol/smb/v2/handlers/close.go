@@ -394,6 +394,20 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
+	// Step 5.5: Release any byte-range locks held by this session on this file
+	// ========================================================================
+
+	if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
+		metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
+		if err == nil {
+			if unlockErr := metadataStore.UnlockAllForSession(ctx.Context, openFile.MetadataHandle, ctx.SessionID); unlockErr != nil {
+				logger.Warn("CLOSE: failed to release locks", "path", openFile.Path, "error", unlockErr)
+				// Continue with close even if unlock fails
+			}
+		}
+	}
+
+	// ========================================================================
 	// Step 6: Remove the open file handle
 	// ========================================================================
 

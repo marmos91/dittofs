@@ -86,6 +86,14 @@ const (
 	// ErrStaleHandle indicates the file handle is valid but stale
 	// Used when a file has been deleted but handle is still in use
 	ErrStaleHandle
+
+	// ErrLocked indicates a lock conflict exists
+	// Used when a lock cannot be acquired due to an existing conflicting lock
+	ErrLocked
+
+	// ErrLockNotFound indicates the requested lock doesn't exist
+	// Used when trying to unlock a range that wasn't locked
+	ErrLockNotFound
 )
 
 // ============================================================================
@@ -221,5 +229,40 @@ func NewAccessDeniedError(reason string) *StoreError {
 	return &StoreError{
 		Code:    ErrAccessDenied,
 		Message: reason,
+	}
+}
+
+// NewLockedError creates a StoreError for lock conflicts.
+//
+// Parameters:
+//   - path: The path of the file that is locked
+//   - conflict: Optional conflict details (may be nil)
+//
+// Returns:
+//   - *StoreError with ErrLocked code
+func NewLockedError(path string, conflict *LockConflict) *StoreError {
+	msg := "file is locked"
+	if conflict != nil {
+		msg = "file is locked by another session"
+	}
+	return &StoreError{
+		Code:    ErrLocked,
+		Message: msg,
+		Path:    path,
+	}
+}
+
+// NewLockNotFoundError creates a StoreError for unlock operations on non-existent locks.
+//
+// Parameters:
+//   - path: The path of the file
+//
+// Returns:
+//   - *StoreError with ErrLockNotFound code
+func NewLockNotFoundError(path string) *StoreError {
+	return &StoreError{
+		Code:    ErrLockNotFound,
+		Message: "lock not found",
+		Path:    path,
 	}
 }
