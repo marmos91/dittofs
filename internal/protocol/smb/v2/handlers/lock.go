@@ -28,6 +28,9 @@ const (
 
 	// SMB2LockFlagFailImmediately means don't wait for the lock.
 	// Return immediately if the lock cannot be acquired.
+	// NOTE: This implementation always uses fail-immediately semantics.
+	// Blocking lock requests (without this flag) are not supported and
+	// will behave as if this flag were set.
 	SMB2LockFlagFailImmediately uint32 = 0x00000010
 )
 
@@ -217,7 +220,34 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	// Process each lock element
 	for i, lockElem := range req.Locks {
 		isUnlock := (lockElem.Flags & SMB2LockFlagUnlock) != 0
+		isShared := (lockElem.Flags & SMB2LockFlagSharedLock) != 0
 		isExclusive := (lockElem.Flags & SMB2LockFlagExclusiveLock) != 0
+
+		// Validate flag combinations per MS-SMB2 2.2.26:
+		// - SharedLock and ExclusiveLock are mutually exclusive
+		// - Unlock must not be combined with lock type flags
+		// - Lock operations must specify either SharedLock or ExclusiveLock
+		if isShared && isExclusive {
+			logger.Debug("LOCK: invalid flags - shared and exclusive both set",
+				"index", i,
+				"flags", fmt.Sprintf("0x%08X", lockElem.Flags))
+			rollbackLocks(metadataStore, authCtx, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
+			return NewErrorResult(types.StatusInvalidParameter), nil
+		}
+		if isUnlock && (isShared || isExclusive) {
+			logger.Debug("LOCK: invalid flags - unlock combined with lock type",
+				"index", i,
+				"flags", fmt.Sprintf("0x%08X", lockElem.Flags))
+			rollbackLocks(metadataStore, authCtx, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
+			return NewErrorResult(types.StatusInvalidParameter), nil
+		}
+		if !isUnlock && !isShared && !isExclusive {
+			logger.Debug("LOCK: invalid flags - lock operation without lock type",
+				"index", i,
+				"flags", fmt.Sprintf("0x%08X", lockElem.Flags))
+			rollbackLocks(metadataStore, authCtx, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
+			return NewErrorResult(types.StatusInvalidParameter), nil
+		}
 
 		logger.Debug("LOCK: processing element",
 			"index", i,

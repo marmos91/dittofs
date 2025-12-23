@@ -358,7 +358,23 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 5: Handle delete-on-close (FileDispositionInformation)
+	// Step 5: Release any byte-range locks held by this session on this file
+	// Note: This must happen before delete-on-close so locks are released
+	// while the file still exists in the metadata store.
+	// ========================================================================
+
+	if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
+		metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
+		if err == nil {
+			if unlockErr := metadataStore.UnlockAllForSession(ctx.Context, openFile.MetadataHandle, ctx.SessionID); unlockErr != nil {
+				logger.Warn("CLOSE: failed to release locks", "path", openFile.Path, "error", unlockErr)
+				// Continue with close even if unlock fails
+			}
+		}
+	}
+
+	// ========================================================================
+	// Step 6: Handle delete-on-close (FileDispositionInformation)
 	// ========================================================================
 
 	if openFile.DeletePending {
@@ -394,21 +410,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 5.5: Release any byte-range locks held by this session on this file
-	// ========================================================================
-
-	if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
-		metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
-		if err == nil {
-			if unlockErr := metadataStore.UnlockAllForSession(ctx.Context, openFile.MetadataHandle, ctx.SessionID); unlockErr != nil {
-				logger.Warn("CLOSE: failed to release locks", "path", openFile.Path, "error", unlockErr)
-				// Continue with close even if unlock fails
-			}
-		}
-	}
-
-	// ========================================================================
-	// Step 6: Remove the open file handle
+	// Step 7: Remove the open file handle
 	// ========================================================================
 
 	h.DeleteOpenFile(req.FileID)
@@ -418,7 +420,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		"path", openFile.Path)
 
 	// ========================================================================
-	// Step 7: Return success response
+	// Step 8: Return success response
 	// ========================================================================
 
 	return resp, nil

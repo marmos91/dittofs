@@ -10,3 +10,9 @@ import (
 func decodeFileHandle(handle metadata.FileHandle) (shareName string, id uuid.UUID, err error) {
 	return metadata.DecodeFileHandle(handle)
 }
+
+// encodeFileHandle creates a file handle from share name and UUID
+func encodeFileHandle(shareName string, id uuid.UUID) metadata.FileHandle {
+	encoded := shareName + ":" + id.String()
+	return metadata.FileHandle([]byte(encoded))
+}

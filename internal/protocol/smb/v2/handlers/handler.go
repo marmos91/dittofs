@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/smb/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/signing"
@@ -185,11 +186,20 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 		// Release locks for this file
 		metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
 		if err != nil {
+			logger.Warn("ReleaseAllLocksForSession: failed to get metadata store",
+				"share", openFile.ShareName,
+				"path", openFile.Path,
+				"error", err)
 			return true // Continue despite error
 		}
 
 		// UnlockAllForSession doesn't return errors for missing locks
-		_ = metadataStore.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID)
+		if unlockErr := metadataStore.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID); unlockErr != nil {
+			logger.Warn("ReleaseAllLocksForSession: failed to release locks",
+				"share", openFile.ShareName,
+				"path", openFile.Path,
+				"error", unlockErr)
+		}
 
 		return true
 	})

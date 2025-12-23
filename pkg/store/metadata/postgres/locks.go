@@ -199,6 +199,11 @@ func (m *byteRangeLockManager) listLocks(handle string) []metadata.FileLock {
 	return result
 }
 
+// removeFile removes all locks for a file (called when file is deleted).
+func (m *byteRangeLockManager) removeFile(handle string) {
+	m.locks.Delete(handle)
+}
+
 // ============================================================================
 // MetadataStore Interface Implementation
 // ============================================================================

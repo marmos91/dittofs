@@ -1,5 +1,7 @@
 package metadata
 
+import "fmt"
+
 // StoreError represents a domain error from repository operations.
 //
 // These are business logic errors (file not found, permission denied, etc.)
@@ -236,14 +238,19 @@ func NewAccessDeniedError(reason string) *StoreError {
 //
 // Parameters:
 //   - path: The path of the file that is locked
-//   - conflict: Optional conflict details (may be nil)
+//   - conflict: Optional conflict details describing the conflicting lock.
+//     When provided, the error message includes session info.
+//     When nil, a generic "file is locked" message is used.
 //
 // Returns:
 //   - *StoreError with ErrLocked code
 func NewLockedError(path string, conflict *LockConflict) *StoreError {
-	msg := "file is locked"
+	var msg string
 	if conflict != nil {
-		msg = "file is locked by another session"
+		msg = fmt.Sprintf("file is locked by session %d (offset=%d, length=%d, exclusive=%v)",
+			conflict.OwnerSessionID, conflict.Offset, conflict.Length, conflict.Exclusive)
+	} else {
+		msg = "file is locked"
 	}
 	return &StoreError{
 		Code:    ErrLocked,
