@@ -791,3 +791,5 @@ See [docs/FAQ.md](docs/FAQ.md) and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTIN
 - [RFC 4506 - XDR](https://tools.ietf.org/html/rfc4506)
 - See README.md for detailed architecture documentation
 - See CONTRIBUTING for contribution guidelines
+- Keep in mind the official NFS implementation here: https://github.com/torvalds/linux/tree/master/fs/nfs. Always compare our implementation with the official one to make sure it's correct
+- Keep in mind the official SMB implementation here: https://github.com/samba-team/samba. Always compare our implementation with the official source code, to make sure it's correct
