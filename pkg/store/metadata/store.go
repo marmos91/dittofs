@@ -718,7 +718,7 @@ type MetadataStore interface {
 	// Lock Conflict Rules:
 	//   - Shared locks don't conflict with other shared locks
 	//   - Exclusive locks conflict with all other locks on overlapping ranges
-	//   - Same session's locks don't conflict (allows upgrade/downgrade)
+	//   - Same session's locks don't conflict (allows re-locking with different type)
 	//
 	// Lock Lifetime:
 	// Locks are ephemeral (in-memory only) and persist until:

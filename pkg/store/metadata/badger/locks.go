@@ -170,6 +170,11 @@ func (m *byteRangeLockManager) unlock(handle string, sessionID, offset, length u
 			state.locks[i].Length == length {
 			// Remove this lock
 			state.locks = append(state.locks[:i], state.locks[i+1:]...)
+
+			// Clean up empty entries to prevent memory leak
+			if len(state.locks) == 0 {
+				m.locks.Delete(handle)
+			}
 			return nil
 		}
 	}
@@ -199,6 +204,12 @@ func (m *byteRangeLockManager) unlockAllForSession(handle string, sessionID uint
 	}
 
 	state.locks = remaining
+
+	// Clean up empty entries to prevent memory leak
+	if len(state.locks) == 0 {
+		m.locks.Delete(handle)
+	}
+
 	return removed
 }
 

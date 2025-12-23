@@ -116,10 +116,14 @@ func RangesOverlap(offset1, length1, offset2, length2 uint64) bool {
 // Conflict rules:
 //   - Shared locks don't conflict with other shared locks (multiple readers)
 //   - Exclusive locks conflict with all other locks
-//   - Locks from the same session don't conflict (can upgrade/downgrade)
+//   - Locks from the same session don't conflict (allows re-locking same range)
 //   - Ranges must overlap for a conflict to occur
+//
+// Same-session re-locking: When a session requests a lock on a range it already
+// holds, there is no conflict. This enables changing lock type on a range
+// (e.g., shared → exclusive) by acquiring a new lock that replaces the old one.
 func IsLockConflicting(existing, requested *FileLock) bool {
-	// Same session - no conflict (allows lock upgrade/downgrade)
+	// Same session - no conflict (allows re-locking same range with different type)
 	if existing.SessionID == requested.SessionID {
 		return false
 	}
