@@ -324,6 +324,18 @@ func (h *Handler) ReadDirPlus(
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 
+	// ========================================================================
+	// Check if READDIRPLUS is disabled for this share
+	// ========================================================================
+	// Per RFC 1813, servers may refuse READDIRPLUS for operational reasons.
+	// This matches Linux kernel's NFSEXP_NOREADDIRPLUS flag behavior.
+
+	share, err := h.Registry.GetShare(ctx.Share)
+	if err == nil && share != nil && share.DisableReaddirplus {
+		logger.WarnCtx(ctx.Context, "READDIRPLUS not supported on this share", "share", ctx.Share, "client", clientIP)
+		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotSupp}}, nil
+	}
+
 	dirHandle := metadata.FileHandle(req.DirHandle)
 
 	logger.DebugCtx(ctx.Context, "READDIRPLUS", "share", ctx.Share)
