@@ -159,11 +159,15 @@ func (c *UserCommand) runAdd(args []string) error {
 		return fmt.Errorf("invalid password: %w", err)
 	}
 
-	// Hash password
+	// Hash password (bcrypt for general auth)
 	hash, err := identity.HashPassword(password)
 	if err != nil {
 		return fmt.Errorf("failed to hash password: %w", err)
 	}
+
+	// Compute NT hash for SMB NTLM authentication
+	ntHash := identity.ComputeNTHash(password)
+	ntHashHex := fmt.Sprintf("%x", ntHash)
 
 	// Generate UID if not specified
 	userUID := uint32(*uid)
@@ -190,6 +194,7 @@ func (c *UserCommand) runAdd(args []string) error {
 	newUser := config.UserConfig{
 		Username:     username,
 		PasswordHash: hash,
+		NTHash:       ntHashHex,
 		Enabled:      true,
 		UID:          userUID,
 		GID:          userGID,
@@ -336,7 +341,12 @@ func (c *UserCommand) runPasswd(args []string) error {
 		return fmt.Errorf("failed to hash password: %w", err)
 	}
 
+	// Compute NT hash for SMB NTLM authentication
+	ntHash := identity.ComputeNTHash(password)
+	ntHashHex := fmt.Sprintf("%x", ntHash)
+
 	cfg.Users[userIdx].PasswordHash = hash
+	cfg.Users[userIdx].NTHash = ntHashHex
 
 	if err := c.saveConfig(cfg); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)

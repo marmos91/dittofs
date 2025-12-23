@@ -2,10 +2,14 @@ package identity
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"slices"
 	"time"
+	"unicode/utf16"
+
+	"golang.org/x/crypto/md4" //nolint:staticcheck // MD4 is required for NTLM protocol compatibility
 )
 
 // User represents a DittoFS user with cross-protocol identity mapping.
@@ -19,8 +23,23 @@ type User struct {
 	Username string `yaml:"username" mapstructure:"username"`
 
 	// PasswordHash is the bcrypt hash of the user's password.
-	// Used for SMB NTLM authentication and dashboard login.
+	// Used for dashboard login and password verification.
 	PasswordHash string `yaml:"password_hash" mapstructure:"password_hash"`
+
+	// NTHash is the hex-encoded NT hash of the user's password.
+	// Used for SMB NTLM authentication. This is MD4(UTF16LE(password)).
+	// Must be computed when the password is set and stored alongside bcrypt hash.
+	// If empty, NTLM authentication will allow access without password validation
+	// (insecure transitional mode - should only be used for explicit guest accounts).
+	//
+	// SECURITY WARNING:
+	//   - This value is highly sensitive and can be used for pass-the-hash attacks
+	//     without knowing the original password.
+	//   - Any configuration file or storage that contains NTHash MUST be treated as
+	//     secret material and restricted to root/administrator access only.
+	//   - Operators should ensure that on-disk config files are readable only by the
+	//     service account (for example, chmod 600 on Unix-like systems).
+	NTHash string `yaml:"nt_hash,omitempty" mapstructure:"nt_hash"`
 
 	// Enabled indicates whether the user account is active.
 	// Disabled users cannot authenticate.
@@ -82,6 +101,50 @@ func (u *User) GetDisplayName() string {
 		return u.DisplayName
 	}
 	return u.Username
+}
+
+// GetNTHash returns the NT hash as a 16-byte array.
+// Returns false if the NTHash field is empty or invalid.
+func (u *User) GetNTHash() ([16]byte, bool) {
+	var ntHash [16]byte
+	if u.NTHash == "" {
+		return ntHash, false
+	}
+
+	// Decode hex string to bytes
+	decoded, err := hex.DecodeString(u.NTHash)
+	if err != nil || len(decoded) != 16 {
+		return ntHash, false
+	}
+
+	copy(ntHash[:], decoded)
+	return ntHash, true
+}
+
+// SetNTHashFromPassword computes and sets the NT hash from a plaintext password.
+// The password is not stored - only the NT hash is kept.
+func (u *User) SetNTHashFromPassword(password string) {
+	ntHash := ComputeNTHash(password)
+	u.NTHash = hex.EncodeToString(ntHash[:])
+}
+
+// ComputeNTHash computes the NT hash from a password.
+// The NT hash is: MD4(UTF16LE(password))
+// This helper is exposed for callers that need the raw NT hash bytes without a User instance.
+func ComputeNTHash(password string) [16]byte {
+	// Convert password to UTF-16LE using binary.LittleEndian for consistency
+	utf16Password := utf16.Encode([]rune(password))
+	passwordBytes := make([]byte, len(utf16Password)*2)
+	for i, r := range utf16Password {
+		binary.LittleEndian.PutUint16(passwordBytes[i*2:], r)
+	}
+
+	// Compute MD4 hash
+	h := md4.New()
+	h.Write(passwordBytes)
+	var ntHash [16]byte
+	copy(ntHash[:], h.Sum(nil))
+	return ntHash
 }
 
 // GetSID returns the Windows SID, auto-generating one if not set.

@@ -19,6 +19,7 @@ import (
 	nfs_types "github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/telemetry"
+	"github.com/marmos91/dittofs/pkg/bufpool"
 	"github.com/marmos91/dittofs/pkg/bytesize"
 )
 
@@ -179,7 +180,7 @@ func (c *NFSConnection) readRequest(ctx context.Context) (uint32, []byte, error)
 	if err != nil {
 		return 0, nil, fmt.Errorf("read RPC message: %w", err)
 	}
-	defer nfs.PutBuffer(message) // Return buffer after extracting data
+	defer bufpool.Put(message) // Return buffer after extracting data
 
 	// Parse RPC call to get XID for tracking
 	call, err := rpc.ReadCall(message)
@@ -258,13 +259,13 @@ func (c *NFSConnection) readFragmentHeader() (*fragmentHeader, error) {
 // Returns the message buffer or an error if reading fails.
 func (c *NFSConnection) readRPCMessage(length uint32) ([]byte, error) {
 	// Get buffer from pool
-	message := nfs.GetBuffer(length)
+	message := bufpool.GetUint32(length)
 
 	// Read directly into pooled buffer
 	_, err := io.ReadFull(c.conn, message)
 	if err != nil {
 		// Return buffer to pool on error
-		nfs.PutBuffer(message)
+		bufpool.Put(message)
 		return nil, fmt.Errorf("read message: %w", err)
 	}
 

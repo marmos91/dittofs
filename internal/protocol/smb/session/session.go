@@ -42,6 +42,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/protocol/smb/signing"
 	"github.com/marmos91/dittofs/pkg/identity"
 )
 
@@ -51,6 +52,7 @@ import (
 // connection close. Each session has:
 //   - Identity: username, guest/null status, creation info
 //   - Credits: adaptive flow control accounting
+//   - Signing: message signing state and key
 //
 // Thread safety:
 // Session fields are read-only after creation, except for credit fields
@@ -69,6 +71,10 @@ type Session struct {
 	// This links the SMB session to the authenticated DittoFS user
 	// for permission checking and share access control.
 	User *identity.User
+
+	// Signing state for message integrity
+	// This tracks whether signing is enabled and holds the signing key.
+	Signing *signing.SessionSigningState
 
 	// Credit tracking
 	credits Credits
@@ -109,6 +115,7 @@ func NewSession(sessionID uint64, clientAddr string, isGuest bool, username, dom
 		ClientAddr: clientAddr,
 		Username:   username,
 		Domain:     domain,
+		Signing:    signing.NewSessionSigningState(),
 	}
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
@@ -126,6 +133,7 @@ func NewSessionWithUser(sessionID uint64, clientAddr string, user *identity.User
 		Username:   user.Username,
 		Domain:     domain,
 		User:       user,
+		Signing:    signing.NewSessionSigningState(),
 	}
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
@@ -216,4 +224,53 @@ type SessionStats struct {
 	OutstandingRequests int64
 	TotalRequests       uint64
 	HighWaterMark       uint32
+}
+
+// =============================================================================
+// Signing Methods
+// =============================================================================
+
+// SetSigningKey sets the signing key from the session key.
+// This should be called after successful authentication when the session key
+// is derived from the NTLM authentication exchange.
+func (s *Session) SetSigningKey(sessionKey []byte) {
+	if s.Signing != nil {
+		s.Signing.SetSessionKey(sessionKey)
+	}
+}
+
+// EnableSigning enables message signing for this session.
+// After calling this, all messages should be signed/verified.
+func (s *Session) EnableSigning(required bool) {
+	if s.Signing != nil {
+		s.Signing.SigningEnabled = true
+		s.Signing.SigningRequired = required
+	}
+}
+
+// ShouldSign returns true if outgoing messages should be signed.
+func (s *Session) ShouldSign() bool {
+	return s.Signing != nil && s.Signing.ShouldSign()
+}
+
+// ShouldVerify returns true if incoming messages should have signatures verified.
+func (s *Session) ShouldVerify() bool {
+	return s.Signing != nil && s.Signing.ShouldVerify()
+}
+
+// SignMessage signs an SMB2 message in place using the session's signing key.
+// This should be called before sending a message if signing is enabled.
+func (s *Session) SignMessage(message []byte) {
+	if s.Signing != nil && s.Signing.ShouldSign() && s.Signing.SigningKey != nil {
+		s.Signing.SigningKey.SignMessage(message)
+	}
+}
+
+// VerifyMessage verifies the signature of an SMB2 message.
+// Returns true if the signature is valid or if signing is not enabled.
+func (s *Session) VerifyMessage(message []byte) bool {
+	if s.Signing == nil || !s.Signing.ShouldVerify() || s.Signing.SigningKey == nil {
+		return true // No verification needed
+	}
+	return s.Signing.SigningKey.Verify(message)
 }

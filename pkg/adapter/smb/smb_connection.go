@@ -15,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/header"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 	"github.com/marmos91/dittofs/internal/protocol/smb/v2/handlers"
+	"github.com/marmos91/dittofs/pkg/bufpool"
 )
 
 // SMBConnection handles a single SMB2 client connection.
@@ -197,6 +198,30 @@ func (c *SMBConnection) readRequest(ctx context.Context) (*header.SMB2Header, []
 	hdr, err := header.Parse(message[:header.HeaderSize])
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("parse SMB2 header: %w", err)
+	}
+
+	// Verify message signature if the session requires it
+	// Skip verification for messages without a session (SessionID == 0)
+	// and for NEGOTIATE/SESSION_SETUP which may not have signing set up yet.
+	//
+	// Note: This is intentionally asymmetric with response signing (which signs
+	// SESSION_SETUP responses after authentication). The asymmetry is correct:
+	// - Incoming SESSION_SETUP: Client hasn't established signing yet
+	// - Outgoing SESSION_SETUP response: Server has just enabled signing
+	if hdr.SessionID != 0 && hdr.Command != types.SMB2Negotiate && hdr.Command != types.SMB2SessionSetup {
+		if sess, ok := c.server.handler.GetSession(hdr.SessionID); ok && sess.ShouldVerify() {
+			if !sess.VerifyMessage(message) {
+				logger.Warn("SMB2 message signature verification failed",
+					"command", hdr.Command.String(),
+					"sessionID", hdr.SessionID,
+					"client", c.conn.RemoteAddr().String())
+				// Per MS-SMB2, signature verification failures should return STATUS_ACCESS_DENIED
+				return nil, nil, nil, fmt.Errorf("STATUS_ACCESS_DENIED: signature verification failed")
+			}
+			logger.Debug("Verified incoming SMB2 message signature",
+				"command", hdr.Command.String(),
+				"sessionID", hdr.SessionID)
+		}
 	}
 
 	// For compound requests, extract only the body for this command
@@ -612,6 +637,7 @@ func (c *SMBConnection) sendErrorResponse(reqHeader *header.SMB2Header, status t
 }
 
 // sendMessage sends an SMB2 message with NetBIOS framing.
+// If the session has signing enabled, the message is signed before sending.
 func (c *SMBConnection) sendMessage(hdr *header.SMB2Header, body []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -630,20 +656,35 @@ func (c *SMBConnection) sendMessage(hdr *header.SMB2Header, body []byte) error {
 	// Calculate total message length
 	msgLen := len(headerBytes) + len(body)
 
-	// Build NetBIOS session header (4 bytes)
+	// Get a pooled buffer for the complete message (NetBIOS header + SMB2 message)
+	// Buffer layout: [4-byte NetBIOS header][SMB2 header + body]
+	totalLen := 4 + msgLen
+	message := bufpool.Get(totalLen)
+	defer bufpool.Put(message)
+
+	// Build NetBIOS session header at the start
 	// Type (1 byte) = 0x00 for session message
 	// Length (3 bytes) = message length in big-endian
-	nbHeader := make([]byte, 4)
-	nbHeader[0] = 0x00 // Session message type
-	nbHeader[1] = byte(msgLen >> 16)
-	nbHeader[2] = byte(msgLen >> 8)
-	nbHeader[3] = byte(msgLen)
+	message[0] = 0x00 // Session message type
+	message[1] = byte(msgLen >> 16)
+	message[2] = byte(msgLen >> 8)
+	message[3] = byte(msgLen)
 
-	// Write everything in one syscall if possible
-	message := make([]byte, 4+msgLen)
-	copy(message[0:4], nbHeader)
-	copy(message[4:4+len(headerBytes)], headerBytes)
-	copy(message[4+len(headerBytes):], body)
+	// Copy SMB2 header and body after NetBIOS header
+	smbMessage := message[4 : 4+msgLen]
+	copy(smbMessage[0:len(headerBytes)], headerBytes)
+	copy(smbMessage[len(headerBytes):], body)
+
+	// Sign the message if session has signing enabled
+	// Skip signing for messages without a session (SessionID == 0)
+	if hdr.SessionID != 0 {
+		if sess, ok := c.server.handler.GetSession(hdr.SessionID); ok && sess.ShouldSign() {
+			sess.SignMessage(smbMessage)
+			logger.Debug("Signed outgoing SMB2 message",
+				"command", hdr.Command.String(),
+				"sessionID", hdr.SessionID)
+		}
+	}
 
 	_, err := c.conn.Write(message)
 	if err != nil {
@@ -779,16 +820,18 @@ func (c *SMBConnection) sendRawMessage(headerBytes, body []byte) error {
 	// Calculate total message length
 	msgLen := len(headerBytes) + len(body)
 
-	// Build NetBIOS session header (4 bytes)
-	nbHeader := make([]byte, 4)
-	nbHeader[0] = 0x00 // Session message type
-	nbHeader[1] = byte(msgLen >> 16)
-	nbHeader[2] = byte(msgLen >> 8)
-	nbHeader[3] = byte(msgLen)
+	// Get a pooled buffer for the complete message (NetBIOS header + SMB2 message)
+	totalLen := 4 + msgLen
+	message := bufpool.Get(totalLen)
+	defer bufpool.Put(message)
 
-	// Write everything in one syscall if possible
-	message := make([]byte, 4+msgLen)
-	copy(message[0:4], nbHeader)
+	// Build NetBIOS session header at the start
+	message[0] = 0x00 // Session message type
+	message[1] = byte(msgLen >> 16)
+	message[2] = byte(msgLen >> 8)
+	message[3] = byte(msgLen)
+
+	// Copy header and body after NetBIOS header
 	copy(message[4:4+len(headerBytes)], headerBytes)
 	copy(message[4+len(headerBytes):], body)
 

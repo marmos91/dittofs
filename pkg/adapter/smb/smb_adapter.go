@@ -147,9 +147,18 @@ func New(config SMBConfig) *SMBAdapter {
 		"initial_grant", creditConfig.InitialGrant,
 		"max_session_credits", creditConfig.MaxSessionCredits)
 
+	// Create handler with session manager
+	handler := handlers.NewHandlerWithSessionManager(sessionManager)
+
+	// Apply signing configuration to handler
+	handler.SigningConfig = config.Signing.ToSigningConfig()
+	logger.Debug("SMB signing configuration",
+		"enabled", handler.SigningConfig.Enabled,
+		"required", handler.SigningConfig.Required)
+
 	return &SMBAdapter{
 		config:         config,
-		handler:        handlers.NewHandlerWithSessionManager(sessionManager),
+		handler:        handler,
 		shutdown:       make(chan struct{}),
 		connSemaphore:  connSemaphore,
 		shutdownCtx:    shutdownCtx,

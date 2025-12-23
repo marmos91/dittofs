@@ -12,8 +12,14 @@ package ntlm
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/md5" //nolint:gosec // MD5 is required for NTLM protocol compatibility (HMAC-MD5 in NTLMv2)
 	"crypto/rand"
 	"encoding/binary"
+	"strings"
+	"unicode/utf16"
+
+	"github.com/marmos91/dittofs/pkg/identity"
 )
 
 // =============================================================================
@@ -300,10 +306,11 @@ func GetMessageType(buf []byte) MessageType {
 // NTLM Message Building
 // =============================================================================
 
-// BuildChallenge creates an NTLM Type 2 (CHALLENGE) message for guest authentication.
+// BuildChallenge creates an NTLM Type 2 (CHALLENGE) message.
 //
-// This function builds a minimal challenge message that allows any client to
-// authenticate as a guest. No credential validation is performed.
+// Returns the challenge message and the 8-byte server challenge that was
+// embedded in the message. The server challenge must be stored to validate
+// the client's NTLMv2 response and derive the session key.
 //
 // The returned message has the following structure:
 //
@@ -320,13 +327,13 @@ func GetMessageType(buf []byte) MessageType {
 //	56      var   Payload            TargetInfo terminator
 //
 // [MS-NLMP] Section 2.2.1.2
-func BuildChallenge() []byte {
+func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 	// Generate random 8-byte challenge
-	// This challenge would normally be used to validate the client's response,
-	// but for guest authentication we don't verify it.
-	// TODO: Verify the challenge for production credential validation
+	// This challenge is used to validate the client's NTLMv2 response
+	// and derive the session key for message signing.
 	challenge := make([]byte, serverChallengeSize)
 	_, _ = rand.Read(challenge)
+	copy(serverChallenge[:], challenge)
 
 	// Target name: empty for anonymous/guest authentication
 	targetName := []byte{}
@@ -413,7 +420,7 @@ func BuildChallenge() []byte {
 	copy(msg[targetNameOffset:], targetName)
 	copy(msg[targetInfoOffset:], targetInfo)
 
-	return msg
+	return msg, serverChallenge
 }
 
 // BuildMinimalTargetInfo creates a minimal AV_PAIR list with just the terminator.
@@ -598,4 +605,114 @@ const (
 
 	// ErrWrongMessageType is returned when parsing a message of unexpected type.
 	ErrWrongMessageType Error = "ntlm: wrong message type"
+
+	// ErrAuthenticationFailed is returned when NTLMv2 validation fails.
+	ErrAuthenticationFailed Error = "ntlm: authentication failed"
+
+	// ErrResponseTooShort is returned when NT response is too short.
+	ErrResponseTooShort Error = "ntlm: response too short"
 )
+
+// =============================================================================
+// NTLMv2 Authentication
+// =============================================================================
+
+// ComputeNTHash computes the NT hash from a password.
+//
+// The NT hash is computed as: MD4(UTF16LE(password))
+//
+// This is the fundamental credential used in NTLM authentication.
+// The NT hash should be stored securely (it's equivalent to a password).
+//
+// [MS-NLMP] Section 3.3.1
+//
+// This function delegates to identity.ComputeNTHash to avoid code duplication.
+func ComputeNTHash(password string) [16]byte {
+	return identity.ComputeNTHash(password)
+}
+
+// ComputeNTLMv2Hash computes the NTLMv2 response key.
+//
+// The NTLMv2 hash is computed as:
+//
+//	HMAC-MD5(NT_Hash, UPPERCASE(username) + domain)
+//
+// where username and domain are encoded as UTF-16LE.
+//
+// [MS-NLMP] Section 3.3.2
+func ComputeNTLMv2Hash(ntHash [16]byte, username, domain string) [16]byte {
+	// Uppercase username, keep domain as-is
+	userUpper := strings.ToUpper(username)
+
+	// Convert to UTF-16LE
+	combined := userUpper + domain
+	utf16Combined := utf16.Encode([]rune(combined))
+	combinedBytes := make([]byte, len(utf16Combined)*2)
+	for i, r := range utf16Combined {
+		binary.LittleEndian.PutUint16(combinedBytes[i*2:], r)
+	}
+
+	// Compute HMAC-MD5
+	mac := hmac.New(md5.New, ntHash[:])
+	mac.Write(combinedBytes)
+
+	var ntlmv2Hash [16]byte
+	copy(ntlmv2Hash[:], mac.Sum(nil))
+	return ntlmv2Hash
+}
+
+// ValidateNTLMv2Response validates the client's NTLMv2 response and returns the session key.
+//
+// The NTLMv2 response structure is:
+//   - NTProofStr (16 bytes): HMAC-MD5(NTLMv2Hash, ServerChallenge + ClientBlob)
+//   - ClientBlob (variable): Contains timestamp, nonce, and target info
+//
+// Validation process:
+//  1. Extract NTProofStr (first 16 bytes) and ClientBlob (rest) from response
+//  2. Compute expected NTProofStr = HMAC-MD5(NTLMv2Hash, ServerChallenge + ClientBlob)
+//  3. Compare with provided NTProofStr
+//  4. If match, compute session key = HMAC-MD5(NTLMv2Hash, NTProofStr)
+//
+// Returns the 16-byte session key on success, or error on failure.
+//
+// [MS-NLMP] Section 3.3.2
+func ValidateNTLMv2Response(
+	ntHash [16]byte,
+	username, domain string,
+	serverChallenge [8]byte,
+	ntResponse []byte,
+) ([16]byte, error) {
+	var sessionKey [16]byte
+
+	// NTLMv2 response must be at least 16 bytes (NTProofStr) + some client blob
+	if len(ntResponse) < 24 {
+		return sessionKey, ErrResponseTooShort
+	}
+
+	// Extract NTProofStr (first 16 bytes) and ClientBlob (rest)
+	ntProofStr := ntResponse[:16]
+	clientBlob := ntResponse[16:]
+
+	// Compute NTLMv2 hash
+	ntlmv2Hash := ComputeNTLMv2Hash(ntHash, username, domain)
+
+	// Compute expected NTProofStr
+	// NTProofStr = HMAC-MD5(NTLMv2Hash, ServerChallenge + ClientBlob)
+	mac := hmac.New(md5.New, ntlmv2Hash[:])
+	mac.Write(serverChallenge[:])
+	mac.Write(clientBlob)
+	expectedNTProofStr := mac.Sum(nil)
+
+	// Compare NTProofStr (constant time comparison for security)
+	if !hmac.Equal(ntProofStr, expectedNTProofStr) {
+		return sessionKey, ErrAuthenticationFailed
+	}
+
+	// Compute session key
+	// SessionKey = HMAC-MD5(NTLMv2Hash, NTProofStr)
+	mac = hmac.New(md5.New, ntlmv2Hash[:])
+	mac.Write(ntProofStr)
+	copy(sessionKey[:], mac.Sum(nil))
+
+	return sessionKey, nil
+}
