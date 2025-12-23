@@ -40,10 +40,61 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 	// Check if root directory already exists (idempotent behavior)
 	existingRoot, err := s.getExistingRootDirectory(ctx, shareName)
 	if err == nil && existingRoot != nil {
-		s.logger.Info("Root directory already exists, returning existing",
-			"share", shareName,
-			"root_id", existingRoot.ID,
-		)
+		// Check if root directory attributes need to be updated from config
+		// This handles the case where the config changed since the share was first created
+		needsUpdate := false
+		if mode != 0 && existingRoot.Mode != mode {
+			s.logger.Info("Updating root directory mode from config",
+				"share", shareName,
+				"oldMode", fmt.Sprintf("%o", existingRoot.Mode),
+				"newMode", fmt.Sprintf("%o", mode))
+			existingRoot.Mode = mode
+			needsUpdate = true
+		}
+		if existingRoot.UID != uid {
+			s.logger.Info("Updating root directory UID from config",
+				"share", shareName,
+				"oldUID", existingRoot.UID,
+				"newUID", uid)
+			existingRoot.UID = uid
+			needsUpdate = true
+		}
+		if existingRoot.GID != gid {
+			s.logger.Info("Updating root directory GID from config",
+				"share", shareName,
+				"oldGID", existingRoot.GID,
+				"newGID", gid)
+			existingRoot.GID = gid
+			needsUpdate = true
+		}
+
+		if needsUpdate {
+			now := time.Now()
+			updateQuery := `
+				UPDATE files
+				SET mode = $1, uid = $2, gid = $3, ctime = $4
+				WHERE id = $5
+			`
+			_, err := s.pool.Exec(ctx, updateQuery,
+				int32(existingRoot.Mode),
+				int32(existingRoot.UID),
+				int32(existingRoot.GID),
+				now,
+				existingRoot.ID,
+			)
+			if err != nil {
+				return nil, mapPgError(err, "UpdateRootDirectory", shareName)
+			}
+			existingRoot.Ctime = now
+			s.logger.Info("Root directory attributes updated from config",
+				"share", shareName,
+				"root_id", existingRoot.ID)
+		} else {
+			s.logger.Info("Root directory already exists, returning existing",
+				"share", shareName,
+				"root_id", existingRoot.ID,
+			)
+		}
 		return existingRoot, nil
 	}
 

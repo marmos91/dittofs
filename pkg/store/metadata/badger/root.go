@@ -92,9 +92,51 @@ func (s *BadgerMetadataStore) CreateRootDirectory(
 				return fmt.Errorf("failed to decode existing root file: %w", err)
 			}
 
-			logger.Debug("Reusing existing root directory for share (persisted from previous server run)",
-				"share", shareName,
-				"rootID", rootFile.ID)
+			// Check if root directory attributes need to be updated from config
+			// This handles the case where the config changed since the share was first created
+			needsUpdate := false
+			if rootFile.Mode != attr.Mode {
+				logger.Info("Updating root directory mode from config",
+					"share", shareName,
+					"oldMode", fmt.Sprintf("%o", rootFile.Mode),
+					"newMode", fmt.Sprintf("%o", attr.Mode))
+				rootFile.Mode = attr.Mode
+				needsUpdate = true
+			}
+			if rootFile.UID != attr.UID {
+				logger.Info("Updating root directory UID from config",
+					"share", shareName,
+					"oldUID", rootFile.UID,
+					"newUID", attr.UID)
+				rootFile.UID = attr.UID
+				needsUpdate = true
+			}
+			if rootFile.GID != attr.GID {
+				logger.Info("Updating root directory GID from config",
+					"share", shareName,
+					"oldGID", rootFile.GID,
+					"newGID", attr.GID)
+				rootFile.GID = attr.GID
+				needsUpdate = true
+			}
+
+			if needsUpdate {
+				rootFile.Ctime = time.Now()
+				fileBytes, err := encodeFile(rootFile)
+				if err != nil {
+					return fmt.Errorf("failed to encode updated root file: %w", err)
+				}
+				if err := txn.Set(keyFile(rootID), fileBytes); err != nil {
+					return fmt.Errorf("failed to update root file: %w", err)
+				}
+				logger.Info("Root directory attributes updated from config",
+					"share", shareName,
+					"rootID", rootFile.ID)
+			} else {
+				logger.Debug("Reusing existing root directory for share (persisted from previous server run)",
+					"share", shareName,
+					"rootID", rootFile.ID)
+			}
 			return nil
 		} else if err != badger.ErrKeyNotFound {
 			return fmt.Errorf("failed to check for existing share: %w", err)
