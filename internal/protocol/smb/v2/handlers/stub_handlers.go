@@ -227,11 +227,66 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	return NewErrorResult(types.StatusNotSupported), nil
 }
 
-// OplockBreak handles SMB2 OPLOCK_BREAK command [MS-SMB2] 2.2.23, 2.2.24
-// Returns STATUS_NOT_SUPPORTED for Phase 1.
+// OplockBreak handles SMB2 OPLOCK_BREAK acknowledgment [MS-SMB2] 2.2.24.
+//
+// This is called when a client acknowledges an oplock break that was initiated
+// by the server due to a conflicting open by another client.
+//
+// **Process:**
+//
+//  1. Decode the break acknowledgment request
+//  2. Look up the open file by FileID
+//  3. Build the oplock path and acknowledge the break
+//  4. Return success response
 func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	logger.Debug("OPLOCK_BREAK request (not implemented)")
-	return NewErrorResult(types.StatusNotSupported), nil
+	// Decode the request
+	req, err := DecodeOplockBreakRequest(body)
+	if err != nil {
+		logger.Debug("OPLOCK_BREAK: decode error", "error", err)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	logger.Debug("OPLOCK_BREAK acknowledgment",
+		"fileID", fmt.Sprintf("%x", req.FileID),
+		"newLevel", req.OplockLevel)
+
+	// Look up the open file
+	openFile, ok := h.GetOpenFile(req.FileID)
+	if !ok {
+		logger.Debug("OPLOCK_BREAK: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
+		return NewErrorResult(types.StatusInvalidHandle), nil
+	}
+
+	// Build oplock path and acknowledge the break
+	oplockPath := BuildOplockPath(openFile.ShareName, openFile.Path)
+	if err := h.OplockManager.AcknowledgeBreak(oplockPath, req.FileID, req.OplockLevel); err != nil {
+		logger.Warn("OPLOCK_BREAK: acknowledgment failed",
+			"path", openFile.Path,
+			"error", err)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// Update the open file's oplock level
+	openFile.OplockLevel = req.OplockLevel
+
+	// Build success response
+	resp := &OplockBreakResponse{
+		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+		OplockLevel:     req.OplockLevel,
+		FileID:          req.FileID,
+	}
+
+	respBytes, err := resp.Encode()
+	if err != nil {
+		logger.Error("OPLOCK_BREAK: encode error", "error", err)
+		return NewErrorResult(types.StatusInternalError), nil
+	}
+
+	logger.Debug("OPLOCK_BREAK: acknowledged",
+		"path", openFile.Path,
+		"newLevel", req.OplockLevel)
+
+	return NewResult(types.StatusSuccess, respBytes), nil
 }
 
 // handlePipeTransceive handles FSCTL_PIPE_TRANSCEIVE for RPC over named pipes

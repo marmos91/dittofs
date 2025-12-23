@@ -88,10 +88,10 @@ smbclient //localhost/export -p 12445 -U testuser -c "put localfile.txt"
 | Parallel Requests | ✅ | Per-connection concurrency |
 | Byte-Range Locking | ✅ | Shared/exclusive locks |
 | Message Signing | ✅ | HMAC-SHA256 |
-| Oplocks | ❌ | Planned |
+| Oplocks | ✅ | Level II, Exclusive, Batch |
 | SMB3 Encryption | ❌ | Planned |
 
-**Total**: Core file operations and locking fully implemented
+**Total**: Core file operations, locking, and oplocks fully implemented
 
 ## Implementation Details
 
@@ -238,6 +238,53 @@ Per SMB2 specification ([MS-SMB2] 2.2.26):
 #### Configuration
 
 Locking is automatically enabled with no additional configuration required. Locks are stored in-memory per metadata store instance.
+
+### Opportunistic Locks (Oplocks)
+
+DittoFS implements SMB2 opportunistic locks per [MS-SMB2] 2.2.14, 2.2.23, 2.2.24:
+
+#### Oplock Levels
+
+- **None (0x00)**: No caching allowed
+- **Level II (0x01)**: Shared read caching - multiple clients can cache read data
+- **Exclusive (0x08)**: Exclusive read/write caching - single client can cache reads and writes
+- **Batch (0x09)**: Like Exclusive with handle caching - client can delay close operations
+
+#### How Oplocks Work
+
+1. **Grant**: Client requests oplock level in CREATE request
+2. **Cache**: Client caches file data according to granted level
+3. **Break**: When another client opens the file, server sends OPLOCK_BREAK notification
+4. **Acknowledge**: Original client flushes cached data and acknowledges break
+
+#### Oplock Behavior
+
+```go
+// Level II allows multiple readers (first holder tracked)
+clientA opens file → granted Level II
+clientB opens file (Level II) → granted Level II (coexistence)
+
+// Exclusive/Batch requires break on conflict
+clientA opens file → granted Exclusive
+clientB opens file → server initiates break to Level II
+                   → clientB gets None (must retry after break)
+```
+
+**Note**: When an oplock break is initiated, the conflicting client is not granted
+an oplock immediately. It must retry after the break acknowledgment.
+
+#### Benefits
+
+- **Reduced network traffic**: Clients cache reads locally
+- **Better write performance**: Exclusive oplock allows write caching
+- **Handle caching**: Batch oplock reduces CREATE/CLOSE round trips
+
+#### Current Limitations
+
+- **No lease support**: SMB2.1+ leases (0xFF) are downgraded to traditional oplocks
+- **In-memory tracking**: Oplock state is lost on server restart
+- **No async break delivery**: Oplock break notifications require notifier setup
+- **Single holder tracking**: Only tracks one Level II holder (others coexist but aren't tracked)
 
 ## Authentication
 
@@ -414,21 +461,21 @@ See the plan file for detailed symlink interoperability design.
 ## Known Limitations
 
 1. **SMB2 only**: SMB1 and SMB3 not supported
-2. **No oplocks**: Opportunistic locks not implemented (byte-range locks are supported)
-3. **No encryption**: SMB3 encryption not supported
-4. **No security descriptors**: Windows ACLs not supported
-5. **No DFS**: Distributed File System not supported
-6. **Single dialect**: Only SMB2 0x0202 negotiated
-7. **No Unix special files via SMB**: FIFOs, sockets, and device nodes are hidden from SMB listings
-8. **Ephemeral locks**: Byte-range locks are in-memory only, lost on server restart
-9. **No blocking locks**: Lock requests always fail immediately if conflicting lock exists
+2. **No encryption**: SMB3 encryption not supported
+3. **No security descriptors**: Windows ACLs not supported
+4. **No DFS**: Distributed File System not supported
+5. **Single dialect**: Only SMB2 0x0202 negotiated
+6. **No Unix special files via SMB**: FIFOs, sockets, and device nodes are hidden from SMB listings
+7. **Ephemeral locks and oplocks**: Both byte-range locks and oplocks are in-memory only, lost on server restart
+8. **No blocking locks**: Lock requests always fail immediately if conflicting lock exists
+9. **No lease support**: SMB2.1+ leases are downgraded to traditional oplocks
 
 ## Roadmap
 
 See [SMB_IMPLEMENTATION_PLAN.md](SMB_IMPLEMENTATION_PLAN.md) for detailed roadmap:
 
 1. **SMBv3 Support**: Encryption, multichannel
-2. **Oplocks**: Opportunistic locks for caching
+2. **Leases**: SMB2.1+ directory leases for better caching
 3. **Security Descriptors**: Windows ACLs
 4. **Extended Attributes**: xattr support
 5. **Kerberos/LDAP/AD**: Enterprise authentication
