@@ -11,8 +11,14 @@ func decodeFileHandle(handle metadata.FileHandle) (shareName string, id uuid.UUI
 	return metadata.DecodeFileHandle(handle)
 }
 
-// encodeFileHandle creates a file handle from share name and UUID
+// encodeFileHandle creates a file handle from share name and UUID.
+// This is a convenience wrapper around metadata.EncodeShareHandle that
+// returns nil on error (share names are validated at configuration time,
+// so encoding errors should not occur in practice).
 func encodeFileHandle(shareName string, id uuid.UUID) metadata.FileHandle {
-	encoded := shareName + ":" + id.String()
-	return metadata.FileHandle([]byte(encoded))
+	handle, err := metadata.EncodeShareHandle(shareName, id)
+	if err != nil {
+		return nil
+	}
+	return handle
 }
