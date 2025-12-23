@@ -209,7 +209,8 @@ func (c *SMBConnection) readRequest(ctx context.Context) (*header.SMB2Header, []
 					"command", hdr.Command.String(),
 					"sessionID", hdr.SessionID,
 					"client", c.conn.RemoteAddr().String())
-				return nil, nil, nil, fmt.Errorf("signature verification failed")
+				// Per MS-SMB2, signature verification failures should return STATUS_ACCESS_DENIED
+				return nil, nil, nil, fmt.Errorf("STATUS_ACCESS_DENIED: signature verification failed")
 			}
 			logger.Debug("Verified incoming SMB2 message signature",
 				"command", hdr.Command.String(),

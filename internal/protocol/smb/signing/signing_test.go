@@ -42,6 +42,13 @@ func TestNewSigningKey(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sk := NewSigningKey(tt.sessionKey)
+			// NewSigningKey returns nil for empty/nil keys
+			if sk == nil {
+				if tt.wantValid {
+					t.Error("NewSigningKey() returned nil for valid key")
+				}
+				return
+			}
 			if got := sk.IsValid(); got != tt.wantValid {
 				t.Errorf("IsValid() = %v, want %v", got, tt.wantValid)
 			}

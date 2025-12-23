@@ -147,7 +147,8 @@ func (c *SMBSigningConfig) applyDefaults() {
 
 	// Ensure logical consistency: signing cannot be required if it is disabled.
 	// If Required is true, force Enabled to true.
-	if c.Required && c.Enabled != nil && !*c.Enabled {
+	// Note: c.Enabled is guaranteed non-nil at this point from the above check.
+	if c.Required && !*c.Enabled {
 		enabled := true
 		c.Enabled = &enabled
 	}

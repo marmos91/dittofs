@@ -54,7 +54,13 @@ type SigningKey struct {
 
 // NewSigningKey creates a signing key from a session key.
 // The session key is padded or truncated to 16 bytes as required.
+//
+// Returns nil if sessionKey is empty or nil, as an empty key would fail
+// the IsValid() check and cannot be used for signing.
 func NewSigningKey(sessionKey []byte) *SigningKey {
+	if len(sessionKey) == 0 {
+		return nil
+	}
 	sk := &SigningKey{}
 	if len(sessionKey) >= KeySize {
 		copy(sk.key[:], sessionKey[:KeySize])
@@ -74,7 +80,7 @@ func (sk *SigningKey) IsValid() bool {
 // Sign computes the HMAC-SHA256 signature for an SMB2 message.
 //
 // The message parameter should contain the complete SMB2 message (header + body).
-// The signature field (bytes 48-64) should be zeroed before calling this function.
+// The signature field (bytes 48-63) should be zeroed before calling this function.
 //
 // Returns the 16-byte signature.
 func (sk *SigningKey) Sign(message []byte) [SignatureSize]byte {
@@ -112,7 +118,9 @@ func (sk *SigningKey) Verify(message []byte) bool {
 		return false
 	}
 
-	// Extract the provided signature
+	// Extract the provided signature from bytes 48-63.
+	// This is safe because we already verified len(message) >= SMB2HeaderSize (64),
+	// and SignatureOffset (48) + SignatureSize (16) = 64 <= SMB2HeaderSize.
 	var providedSig [SignatureSize]byte
 	copy(providedSig[:], message[SignatureOffset:SignatureOffset+SignatureSize])
 
@@ -127,7 +135,7 @@ func (sk *SigningKey) Verify(message []byte) bool {
 // It sets the signed flag in the header and computes the signature.
 //
 // The message must be at least SMB2HeaderSize bytes.
-// The signature is written to bytes 48-64 of the message.
+// The signature is written to bytes 48-63 of the message (16 bytes starting at offset 48).
 func (sk *SigningKey) SignMessage(message []byte) {
 	if len(message) < SMB2HeaderSize {
 		return

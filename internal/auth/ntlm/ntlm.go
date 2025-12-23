@@ -19,7 +19,7 @@ import (
 	"strings"
 	"unicode/utf16"
 
-	"golang.org/x/crypto/md4" //nolint:staticcheck // MD4 is required for NTLM protocol compatibility
+	"github.com/marmos91/dittofs/pkg/identity"
 )
 
 // =============================================================================
@@ -625,20 +625,10 @@ const (
 // The NT hash should be stored securely (it's equivalent to a password).
 //
 // [MS-NLMP] Section 3.3.1
+//
+// This function delegates to identity.ComputeNTHash to avoid code duplication.
 func ComputeNTHash(password string) [16]byte {
-	// Convert password to UTF-16LE
-	utf16Password := utf16.Encode([]rune(password))
-	passwordBytes := make([]byte, len(utf16Password)*2)
-	for i, r := range utf16Password {
-		binary.LittleEndian.PutUint16(passwordBytes[i*2:], r)
-	}
-
-	// Compute MD4 hash
-	h := md4.New()
-	h.Write(passwordBytes)
-	var ntHash [16]byte
-	copy(ntHash[:], h.Sum(nil))
-	return ntHash
+	return identity.ComputeNTHash(password)
 }
 
 // ComputeNTLMv2Hash computes the NTLMv2 response key.

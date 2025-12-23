@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"hash"
 	"slices"
 	"time"
 	"unicode/utf16"
@@ -30,7 +29,16 @@ type User struct {
 	// NTHash is the hex-encoded NT hash of the user's password.
 	// Used for SMB NTLM authentication. This is MD4(UTF16LE(password)).
 	// Must be computed when the password is set and stored alongside bcrypt hash.
-	// If empty, NTLM authentication will fall back to guest access.
+	// If empty, NTLM authentication will allow access without password validation
+	// (insecure transitional mode - should only be used for explicit guest accounts).
+	//
+	// SECURITY WARNING:
+	//   - This value is highly sensitive and can be used for pass-the-hash attacks
+	//     without knowing the original password.
+	//   - Any configuration file or storage that contains NTHash MUST be treated as
+	//     secret material and restricted to root/administrator access only.
+	//   - Operators should ensure that on-disk config files are readable only by the
+	//     service account (for example, chmod 600 on Unix-like systems).
 	NTHash string `yaml:"nt_hash,omitempty" mapstructure:"nt_hash"`
 
 	// Enabled indicates whether the user account is active.
@@ -132,16 +140,11 @@ func ComputeNTHash(password string) [16]byte {
 	}
 
 	// Compute MD4 hash
-	h := newMD4()
+	h := md4.New()
 	h.Write(passwordBytes)
 	var ntHash [16]byte
 	copy(ntHash[:], h.Sum(nil))
 	return ntHash
-}
-
-// newMD4 returns a new MD4 hash.
-func newMD4() hash.Hash {
-	return md4.New()
 }
 
 // GetSID returns the Windows SID, auto-generating one if not set.
