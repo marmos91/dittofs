@@ -202,7 +202,12 @@ func (c *SMBConnection) readRequest(ctx context.Context) (*header.SMB2Header, []
 
 	// Verify message signature if the session requires it
 	// Skip verification for messages without a session (SessionID == 0)
-	// and for NEGOTIATE/SESSION_SETUP which may not have signing set up yet
+	// and for NEGOTIATE/SESSION_SETUP which may not have signing set up yet.
+	//
+	// Note: This is intentionally asymmetric with response signing (which signs
+	// SESSION_SETUP responses after authentication). The asymmetry is correct:
+	// - Incoming SESSION_SETUP: Client hasn't established signing yet
+	// - Outgoing SESSION_SETUP response: Server has just enabled signing
 	if hdr.SessionID != 0 && hdr.Command != types.SMB2Negotiate && hdr.Command != types.SMB2SessionSetup {
 		if sess, ok := c.server.handler.GetSession(hdr.SessionID); ok && sess.ShouldVerify() {
 			if !sess.VerifyMessage(message) {
