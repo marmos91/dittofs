@@ -388,6 +388,23 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
+	// Step 6.5: Check for conflicting byte-range locks
+	// ========================================================================
+
+	// Writes are blocked by any other session's lock (shared or exclusive)
+	if err := metadataStore.CheckLockForIO(
+		authCtx.Context,
+		openFile.MetadataHandle,
+		ctx.SessionID,
+		req.Offset,
+		uint64(len(req.Data)),
+		true, // isWrite = true for write operations
+	); err != nil {
+		logger.Debug("WRITE: blocked by lock", "path", openFile.Path, "offset", req.Offset, "length", len(req.Data))
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusLockNotGranted}}, nil
+	}
+
+	// ========================================================================
 	// Step 7: Prepare write operation
 	// ========================================================================
 

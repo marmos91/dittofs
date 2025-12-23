@@ -34,6 +34,9 @@ type PostgresMetadataStore struct {
 
 	// cancel cancels the store context
 	cancel context.CancelFunc
+
+	// byteRangeLocks manages in-memory byte-range file locks (SMB/NLM support)
+	byteRangeLocks byteRangeLockManager
 }
 
 // statsCache holds cached filesystem statistics

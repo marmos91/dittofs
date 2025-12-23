@@ -153,6 +153,14 @@ const (
 
 	// StatusNotAReparsePoint indicates the file is not a reparse point.
 	StatusNotAReparsePoint Status = 0xC0000275
+
+	// StatusLockNotGranted indicates the byte-range lock could not be acquired.
+	// Used when a lock request conflicts with an existing lock.
+	StatusLockNotGranted Status = 0xC0000054
+
+	// StatusRangeNotLocked indicates no lock exists for the specified range.
+	// Used when trying to unlock a range that was not locked.
+	StatusRangeNotLocked Status = 0xC000007E
 )
 
 // String returns a human-readable name for the status code.
@@ -234,6 +242,10 @@ func (s Status) String() string {
 		return "STATUS_UNEXPECTED_IO_ERROR"
 	case StatusNotAReparsePoint:
 		return "STATUS_NOT_A_REPARSE_POINT"
+	case StatusLockNotGranted:
+		return "STATUS_LOCK_NOT_GRANTED"
+	case StatusRangeNotLocked:
+		return "STATUS_RANGE_NOT_LOCKED"
 	default:
 		return fmt.Sprintf("STATUS_0x%08X", uint32(s))
 	}

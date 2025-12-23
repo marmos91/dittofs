@@ -1,92 +1,12 @@
-package badger
+package postgres
 
 import (
 	"context"
-	"sort"
 	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
-
-// lockFile acquires a per-file mutex to serialize writes to the same file.
-// This prevents BadgerDB transaction conflicts when parallel requests modify the same file.
-func (s *BadgerMetadataStore) lockFile(fileID string) *sync.Mutex {
-	mu, _ := s.fileLocks.LoadOrStore(fileID, &sync.Mutex{})
-	fileMu := mu.(*sync.Mutex)
-	fileMu.Lock()
-	return fileMu
-}
-
-// unlockFile releases the per-file mutex.
-func (s *BadgerMetadataStore) unlockFile(_ string, mu *sync.Mutex) {
-	mu.Unlock()
-}
-
-// lockDir acquires a per-directory mutex to serialize mutations to the same directory.
-// This prevents BadgerDB transaction conflicts when parallel operations modify directory entries.
-//
-// Operations that should use this lock:
-//   - Create (creates child entry in parent directory)
-//   - Remove (removes child entry from parent directory)
-//   - Move (modifies entries in source and/or destination directories)
-//   - CreateSymlink, CreateSpecialFile, CreateHardLink (create entries in directories)
-func (s *BadgerMetadataStore) lockDir(dirID string) *sync.Mutex {
-	mu, _ := s.dirLocks.LoadOrStore(dirID, &sync.Mutex{})
-	dirMu := mu.(*sync.Mutex)
-	dirMu.Lock()
-	return dirMu
-}
-
-// unlockDir releases the per-directory mutex.
-func (s *BadgerMetadataStore) unlockDir(_ string, mu *sync.Mutex) {
-	mu.Unlock()
-}
-
-// lockDirsOrdered acquires locks on multiple directories in consistent order.
-// This prevents deadlock when operations touch multiple directories (e.g., Move).
-//
-// The locks are acquired in lexicographic order of directory IDs, ensuring that
-// two concurrent operations that need locks on directories A and B will always
-// acquire them in the same order (A then B), preventing circular wait.
-//
-// Returns the locks in the same order as the input dirIDs for proper unlocking.
-func (s *BadgerMetadataStore) lockDirsOrdered(dirIDs ...string) []*sync.Mutex {
-	if len(dirIDs) == 0 {
-		return nil
-	}
-
-	// Remove duplicates (e.g., move within same directory)
-	unique := make(map[string]bool)
-	for _, id := range dirIDs {
-		unique[id] = true
-	}
-
-	// Sort for consistent ordering
-	sorted := make([]string, 0, len(unique))
-	for id := range unique {
-		sorted = append(sorted, id)
-	}
-	sort.Strings(sorted)
-
-	// Acquire locks in sorted order
-	locks := make([]*sync.Mutex, len(sorted))
-	for i, id := range sorted {
-		locks[i] = s.lockDir(id)
-	}
-
-	return locks
-}
-
-// unlockDirs releases multiple directory locks.
-// The locks slice should be from lockDirsOrdered.
-func (s *BadgerMetadataStore) unlockDirs(locks []*sync.Mutex) {
-	for _, mu := range locks {
-		if mu != nil {
-			mu.Unlock()
-		}
-	}
-}
 
 // ============================================================================
 // Byte-Range File Locking (SMB/NLM support)
@@ -100,6 +20,8 @@ type byteRangeLockState struct {
 
 // byteRangeLockManager manages byte-range file locks.
 // Locks are ephemeral (in-memory only) and lost on server restart.
+// Each PostgresMetadataStore instance has its own lock manager to ensure
+// lock isolation between different stores (e.g., different shares).
 type byteRangeLockManager struct {
 	locks sync.Map // handle string -> *byteRangeLockState
 }
@@ -130,7 +52,6 @@ func (m *byteRangeLockManager) lock(handle string, lock metadata.FileLock) error
 	}
 
 	// Check if this exact lock already exists (same session, offset, length)
-	// If so, update it (allows changing exclusive flag)
 	for i := range state.locks {
 		if state.locks[i].SessionID == lock.SessionID &&
 			state.locks[i].Offset == lock.Offset &&
@@ -168,13 +89,7 @@ func (m *byteRangeLockManager) unlock(handle string, sessionID, offset, length u
 		if state.locks[i].SessionID == sessionID &&
 			state.locks[i].Offset == offset &&
 			state.locks[i].Length == length {
-			// Remove this lock
 			state.locks = append(state.locks[:i], state.locks[i+1:]...)
-
-			// Clean up empty entries to prevent memory leak
-			if len(state.locks) == 0 {
-				m.locks.Delete(handle)
-			}
 			return nil
 		}
 	}
@@ -204,12 +119,6 @@ func (m *byteRangeLockManager) unlockAllForSession(handle string, sessionID uint
 	}
 
 	state.locks = remaining
-
-	// Clean up empty entries to prevent memory leak
-	if len(state.locks) == 0 {
-		m.locks.Delete(handle)
-	}
-
 	return removed
 }
 
@@ -290,10 +199,9 @@ func (m *byteRangeLockManager) listLocks(handle string) []metadata.FileLock {
 	return result
 }
 
-// RemoveFileLocks removes all locks for a file.
-// Called when a file is deleted to clean up any stale lock entries.
-func (s *BadgerMetadataStore) RemoveFileLocks(handle metadata.FileHandle) {
-	s.byteRangeLocks.locks.Delete(string(handle))
+// removeFile removes all locks for a file (called when file is deleted).
+func (m *byteRangeLockManager) removeFile(handle string) {
+	m.locks.Delete(handle)
 }
 
 // ============================================================================
@@ -301,7 +209,7 @@ func (s *BadgerMetadataStore) RemoveFileLocks(handle metadata.FileHandle) {
 // ============================================================================
 
 // LockFile acquires a byte-range lock on a file.
-func (s *BadgerMetadataStore) LockFile(ctx *metadata.AuthContext, handle metadata.FileHandle, lock metadata.FileLock) error {
+func (s *PostgresMetadataStore) LockFile(ctx *metadata.AuthContext, handle metadata.FileHandle, lock metadata.FileLock) error {
 	if err := ctx.Context.Err(); err != nil {
 		return err
 	}
@@ -338,7 +246,7 @@ func (s *BadgerMetadataStore) LockFile(ctx *metadata.AuthContext, handle metadat
 }
 
 // UnlockFile releases a specific byte-range lock.
-func (s *BadgerMetadataStore) UnlockFile(ctx context.Context, handle metadata.FileHandle, sessionID uint64, offset uint64, length uint64) error {
+func (s *PostgresMetadataStore) UnlockFile(ctx context.Context, handle metadata.FileHandle, sessionID uint64, offset uint64, length uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -354,19 +262,18 @@ func (s *BadgerMetadataStore) UnlockFile(ctx context.Context, handle metadata.Fi
 }
 
 // UnlockAllForSession releases all locks held by a session on a file.
-func (s *BadgerMetadataStore) UnlockAllForSession(ctx context.Context, handle metadata.FileHandle, sessionID uint64) error {
+func (s *PostgresMetadataStore) UnlockAllForSession(ctx context.Context, handle metadata.FileHandle, sessionID uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	// Note: We don't check if file exists - it may have been deleted
 	handleKey := string(handle)
 	s.byteRangeLocks.unlockAllForSession(handleKey, sessionID)
 	return nil
 }
 
 // TestLock checks whether a lock would succeed without acquiring it.
-func (s *BadgerMetadataStore) TestLock(ctx context.Context, handle metadata.FileHandle, sessionID uint64, offset uint64, length uint64, exclusive bool) (bool, *metadata.LockConflict, error) {
+func (s *PostgresMetadataStore) TestLock(ctx context.Context, handle metadata.FileHandle, sessionID uint64, offset uint64, length uint64, exclusive bool) (bool, *metadata.LockConflict, error) {
 	if err := ctx.Err(); err != nil {
 		return false, nil, err
 	}
@@ -383,7 +290,7 @@ func (s *BadgerMetadataStore) TestLock(ctx context.Context, handle metadata.File
 }
 
 // CheckLockForIO verifies no conflicting locks exist for a read/write operation.
-func (s *BadgerMetadataStore) CheckLockForIO(ctx context.Context, handle metadata.FileHandle, sessionID uint64, offset uint64, length uint64, isWrite bool) error {
+func (s *PostgresMetadataStore) CheckLockForIO(ctx context.Context, handle metadata.FileHandle, sessionID uint64, offset uint64, length uint64, isWrite bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -397,7 +304,7 @@ func (s *BadgerMetadataStore) CheckLockForIO(ctx context.Context, handle metadat
 }
 
 // ListLocks returns all active locks on a file.
-func (s *BadgerMetadataStore) ListLocks(ctx context.Context, handle metadata.FileHandle) ([]metadata.FileLock, error) {
+func (s *PostgresMetadataStore) ListLocks(ctx context.Context, handle metadata.FileHandle) ([]metadata.FileLock, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

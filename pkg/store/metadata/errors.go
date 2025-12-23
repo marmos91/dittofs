@@ -1,5 +1,7 @@
 package metadata
 
+import "fmt"
+
 // StoreError represents a domain error from repository operations.
 //
 // These are business logic errors (file not found, permission denied, etc.)
@@ -86,6 +88,14 @@ const (
 	// ErrStaleHandle indicates the file handle is valid but stale
 	// Used when a file has been deleted but handle is still in use
 	ErrStaleHandle
+
+	// ErrLocked indicates a lock conflict exists
+	// Used when a lock cannot be acquired due to an existing conflicting lock
+	ErrLocked
+
+	// ErrLockNotFound indicates the requested lock doesn't exist
+	// Used when trying to unlock a range that wasn't locked
+	ErrLockNotFound
 )
 
 // ============================================================================
@@ -221,5 +231,45 @@ func NewAccessDeniedError(reason string) *StoreError {
 	return &StoreError{
 		Code:    ErrAccessDenied,
 		Message: reason,
+	}
+}
+
+// NewLockedError creates a StoreError for lock conflicts.
+//
+// Parameters:
+//   - path: The path of the file that is locked
+//   - conflict: Optional conflict details describing the conflicting lock.
+//     When provided, the error message includes session info.
+//     When nil, a generic "file is locked" message is used.
+//
+// Returns:
+//   - *StoreError with ErrLocked code
+func NewLockedError(path string, conflict *LockConflict) *StoreError {
+	var msg string
+	if conflict != nil {
+		msg = fmt.Sprintf("file is locked by session %d (offset=%d, length=%d, exclusive=%v)",
+			conflict.OwnerSessionID, conflict.Offset, conflict.Length, conflict.Exclusive)
+	} else {
+		msg = "file is locked"
+	}
+	return &StoreError{
+		Code:    ErrLocked,
+		Message: msg,
+		Path:    path,
+	}
+}
+
+// NewLockNotFoundError creates a StoreError for unlock operations on non-existent locks.
+//
+// Parameters:
+//   - path: The path of the file
+//
+// Returns:
+//   - *StoreError with ErrLockNotFound code
+func NewLockNotFoundError(path string) *StoreError {
+	return &StoreError{
+		Code:    ErrLockNotFound,
+		Message: "lock not found",
+		Path:    path,
 	}
 }

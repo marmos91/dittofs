@@ -163,6 +163,7 @@ func (store *MemoryMetadataStore) RemoveFile(
 		delete(store.linkCounts, fileKey)
 		delete(store.parents, fileKey)
 		delete(store.deviceNumbers, fileKey) // Clean up device numbers if present
+		store.lockMgr.removeFile(fileKey)    // Clean up any locks on this file
 		// Note: File doesn't have children (it's not a directory)
 	}
 

@@ -147,13 +147,20 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 	}
 
 	// ========================================================================
-	// Step 2: Delete the session
+	// Step 2: Release all byte-range locks held by this session
+	// ========================================================================
+
+	// Iterate through all open files and release locks for this session
+	h.ReleaseAllLocksForSession(ctx.Context, ctx.SessionID)
+
+	// ========================================================================
+	// Step 3: Delete the session
 	// ========================================================================
 
 	h.DeleteSession(ctx.SessionID)
 
 	// ========================================================================
-	// Step 3: Return success response
+	// Step 4: Return success response
 	// ========================================================================
 
 	return &LogoffResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil

@@ -262,6 +262,11 @@ func (s *BadgerMetadataStore) RemoveFile(
 		return nil, err
 	}
 
+	// Clean up any byte-range locks for this file (only if last link was removed)
+	if returnFile.ContentID != "" && removedHandle != nil {
+		s.RemoveFileLocks(removedHandle)
+	}
+
 	logger.Debug("REMOVE succeeded", "name", name, "parent_handle", parentHandle, "file_handle", removedHandle)
 
 	return returnFile, nil
