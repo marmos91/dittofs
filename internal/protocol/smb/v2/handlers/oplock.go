@@ -299,40 +299,6 @@ func (m *OplockManager) ReleaseOplock(path string, fileID [16]byte) {
 		"level", oplockLevelName(state.Level))
 }
 
-// CheckConflict checks if opening a file would conflict with existing oplocks.
-// This is used to determine if we need to wait for an oplock break.
-//
-// Parameters:
-//   - path: the file path
-//   - desiredAccess: the access rights requested
-//   - shareAccess: the sharing mode
-//
-// Returns (needsBreak bool, breakTo uint8).
-func (m *OplockManager) CheckConflict(path string, desiredAccess uint32, shareAccess uint32) (bool, uint8) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	state := m.locks[path]
-	if state == nil || state.Level == OplockLevelNone {
-		return false, OplockLevelNone
-	}
-
-	// Write access always conflicts with exclusive oplocks
-	if desiredAccess&0x2 != 0 { // FILE_WRITE_DATA
-		if state.Level == OplockLevelExclusive || state.Level == OplockLevelBatch {
-			return true, OplockLevelNone
-		}
-	}
-
-	// Level II allows shared read, so no conflict for read-only
-	if state.Level == OplockLevelII {
-		return false, OplockLevelNone
-	}
-
-	// Exclusive/Batch - any open that doesn't share appropriately conflicts
-	return true, OplockLevelII
-}
-
 // GetOplockLevel returns the current oplock level for a file.
 func (m *OplockManager) GetOplockLevel(path string) uint8 {
 	m.mu.RLock()
@@ -400,8 +366,15 @@ func DecodeOplockBreakRequest(body []byte) (*OplockBreakRequest, error) {
 		return nil, fmt.Errorf("invalid OPLOCK_BREAK structure size: %d", structSize)
 	}
 
+	oplockLevel := body[2]
+	// Per MS-SMB2 2.2.24.1, valid acknowledgment levels are OplockLevelNone (0x00)
+	// and OplockLevelII (0x01). Clients cannot acknowledge with Exclusive/Batch.
+	if oplockLevel != OplockLevelNone && oplockLevel != OplockLevelII {
+		return nil, fmt.Errorf("invalid OPLOCK_BREAK acknowledgment level: 0x%02X", oplockLevel)
+	}
+
 	req := &OplockBreakRequest{
-		OplockLevel: body[2],
+		OplockLevel: oplockLevel,
 	}
 	copy(req.FileID[:], body[8:24])
 

@@ -544,7 +544,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		"filename", filename,
 		"action", createAction,
 		"isDirectory", openFile.IsDirectory,
-		"oplock", grantedOplock)
+		"oplock", oplockLevelName(grantedOplock))
 
 	// ========================================================================
 	// Step 9: Build success response
