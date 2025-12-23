@@ -29,7 +29,7 @@ type SMBConnection struct {
 	writeMu    sync.Mutex     // Protects connection writes (replies must be serialized)
 
 	// Session tracking for cleanup on disconnect
-	sessionsMu sync.Mutex     // Protects sessions map
+	sessionsMu sync.Mutex          // Protects sessions map
 	sessions   map[uint64]struct{} // Sessions created on this connection
 }
 
@@ -614,9 +614,11 @@ func (c *SMBConnection) processRequest(ctx context.Context, reqHeader *header.SM
 func (c *SMBConnection) trackSessionLifecycle(command types.Command, reqSessionID, ctxSessionID uint64, status types.Status) {
 	switch command {
 	case types.SMB2SessionSetup:
-		// Track newly created sessions on successful SESSION_SETUP
-		// The session ID is returned in the context after creation
-		if status == types.StatusSuccess || status == types.StatusMoreProcessingRequired {
+		// Track newly created sessions on successful SESSION_SETUP completion.
+		// Note: StatusMoreProcessingRequired indicates NTLM handshake in progress -
+		// at that point only PendingAuth exists, not a real session. We only track
+		// on StatusSuccess when the session is fully established.
+		if status == types.StatusSuccess {
 			if ctxSessionID != 0 {
 				c.TrackSession(ctxSessionID)
 			}

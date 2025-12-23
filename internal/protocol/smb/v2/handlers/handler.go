@@ -207,11 +207,14 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 }
 
 // CloseAllFilesForSession closes all open files for a session.
-// This releases locks, flushes caches, and removes file handles.
+// This releases locks, flushes caches, handles delete-on-close, and removes file handles.
 // Returns the number of files closed.
 func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64) int {
 	var closed int
 	var toDelete [][16]byte
+
+	// Get session for auth context (may be nil if session already deleted)
+	sess, _ := h.GetSession(sessionID)
 
 	// First pass: collect files to close and release locks
 	h.files.Range(func(key, value any) bool {
@@ -228,17 +231,44 @@ func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64)
 			return true
 		}
 
+		metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
+		if err != nil {
+			logger.Warn("CloseAllFilesForSession: failed to get metadata store",
+				"share", openFile.ShareName,
+				"error", err)
+			toDelete = append(toDelete, openFile.FileID)
+			closed++
+			return true
+		}
+
 		// Release locks for this file
 		if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
-			metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
-			if err == nil {
-				_ = metadataStore.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID)
-			}
+			_ = metadataStore.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID)
 		}
 
 		// Flush cache if needed
 		if !openFile.IsDirectory && openFile.ContentID != "" {
 			h.flushFileCache(ctx, openFile)
+		}
+
+		// Handle delete-on-close (FileDispositionInformation)
+		if openFile.DeletePending && len(openFile.ParentHandle) > 0 && openFile.FileName != "" {
+			authCtx := h.buildCleanupAuthContext(ctx, sess)
+			if openFile.IsDirectory {
+				if err := metadataStore.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
+					logger.Debug("CloseAllFilesForSession: failed to delete directory",
+						"path", openFile.Path, "error", err)
+				} else {
+					logger.Debug("CloseAllFilesForSession: directory deleted", "path", openFile.Path)
+				}
+			} else {
+				if _, err := metadataStore.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
+					logger.Debug("CloseAllFilesForSession: failed to delete file",
+						"path", openFile.Path, "error", err)
+				} else {
+					logger.Debug("CloseAllFilesForSession: file deleted", "path", openFile.Path)
+				}
+			}
 		}
 
 		toDelete = append(toDelete, openFile.FileID)
@@ -261,11 +291,14 @@ func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64)
 }
 
 // CloseAllFilesForTree closes all open files for a tree connection.
-// This releases locks, flushes caches, and removes file handles.
+// This releases locks, flushes caches, handles delete-on-close, and removes file handles.
 // Returns the number of files closed.
 func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessionID uint64) int {
 	var closed int
 	var toDelete [][16]byte
+
+	// Get session for auth context (may be nil if session already deleted)
+	sess, _ := h.GetSession(sessionID)
 
 	// First pass: collect files to close and release locks
 	h.files.Range(func(key, value any) bool {
@@ -282,17 +315,44 @@ func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessi
 			return true
 		}
 
+		metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
+		if err != nil {
+			logger.Warn("CloseAllFilesForTree: failed to get metadata store",
+				"share", openFile.ShareName,
+				"error", err)
+			toDelete = append(toDelete, openFile.FileID)
+			closed++
+			return true
+		}
+
 		// Release locks for this file
 		if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
-			metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
-			if err == nil {
-				_ = metadataStore.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID)
-			}
+			_ = metadataStore.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID)
 		}
 
 		// Flush cache if needed
 		if !openFile.IsDirectory && openFile.ContentID != "" {
 			h.flushFileCache(ctx, openFile)
+		}
+
+		// Handle delete-on-close (FileDispositionInformation)
+		if openFile.DeletePending && len(openFile.ParentHandle) > 0 && openFile.FileName != "" {
+			authCtx := h.buildCleanupAuthContext(ctx, sess)
+			if openFile.IsDirectory {
+				if err := metadataStore.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
+					logger.Debug("CloseAllFilesForTree: failed to delete directory",
+						"path", openFile.Path, "error", err)
+				} else {
+					logger.Debug("CloseAllFilesForTree: directory deleted", "path", openFile.Path)
+				}
+			} else {
+				if _, err := metadataStore.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
+					logger.Debug("CloseAllFilesForTree: failed to delete file",
+						"path", openFile.Path, "error", err)
+				} else {
+					logger.Debug("CloseAllFilesForTree: file deleted", "path", openFile.Path)
+				}
+			}
 		}
 
 		toDelete = append(toDelete, openFile.FileID)
@@ -397,6 +457,34 @@ func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
 			"path", openFile.Path,
 			"contentID", openFile.ContentID)
 	}
+}
+
+// buildCleanupAuthContext creates an AuthContext for cleanup operations.
+// This is used during session/tree cleanup when we need to perform file operations
+// (like delete-on-close) but don't have a full SMBHandlerContext.
+// If the session is available, it uses the session's user credentials.
+// Otherwise, it falls back to root credentials for cleanup operations.
+func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Session) *metadata.AuthContext {
+	authCtx := &metadata.AuthContext{
+		Context:  ctx,
+		Identity: &metadata.Identity{},
+	}
+
+	if sess != nil && sess.User != nil {
+		// Use session user's credentials
+		authCtx.Identity.UID = &sess.User.UID
+		authCtx.Identity.GID = &sess.User.GID
+		authCtx.ClientAddr = sess.ClientAddr
+	} else {
+		// Fallback to root for cleanup operations
+		// This ensures cleanup can proceed even if session info is unavailable
+		rootUID := uint32(0)
+		rootGID := uint32(0)
+		authCtx.Identity.UID = &rootUID
+		authCtx.Identity.GID = &rootGID
+	}
+
+	return authCtx
 }
 
 // GenerateSessionID generates a new unique session ID.
