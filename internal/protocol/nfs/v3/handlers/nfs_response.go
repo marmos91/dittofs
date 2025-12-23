@@ -45,3 +45,12 @@ type NFSResponseBase struct {
 func (r *NFSResponseBase) GetStatus() uint32 {
 	return r.Status
 }
+
+// Releaser is an optional interface for responses that hold pooled resources.
+// If a response implements this interface, Release() will be called after
+// the response has been encoded, allowing pooled buffers to be returned.
+type Releaser interface {
+	// Release returns any pooled resources held by the response.
+	// Must be safe to call multiple times (subsequent calls should be no-ops).
+	Release()
+}

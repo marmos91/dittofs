@@ -314,6 +314,10 @@ type UserConfig struct {
 	// PasswordHash is the bcrypt hash of the user's password
 	PasswordHash string `mapstructure:"password_hash" validate:"required" yaml:"password_hash"`
 
+	// NTHash is the hex-encoded NT hash for SMB NTLM authentication
+	// This is automatically generated when creating/updating user passwords
+	NTHash string `mapstructure:"nt_hash,omitempty" yaml:"nt_hash,omitempty"`
+
 	// Enabled indicates whether the user account is active
 	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 

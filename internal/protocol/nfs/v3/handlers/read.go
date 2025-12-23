@@ -7,6 +7,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	"github.com/marmos91/dittofs/pkg/bufpool"
 	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
@@ -50,6 +51,9 @@ type ReadRequest struct {
 // It contains the status, optional file attributes, and the data read.
 //
 // The response is encoded in XDR format before being sent back to the client.
+//
+// ReadResponse implements the Releaser interface. After encoding, Release()
+// must be called to return any pooled buffers to the buffer pool.
 type ReadResponse struct {
 	NFSResponseBase // Embeds Status field and GetStatus() method
 
@@ -75,6 +79,20 @@ type ReadResponse struct {
 	// Length matches Count field.
 	// Empty if Count == 0 or Status != types.NFS3OK.
 	Data []byte
+
+	// pooled indicates the Data buffer came from bufpool and should be returned.
+	pooled bool
+}
+
+// Release returns the Data buffer to the pool if it was pooled.
+// Implements the Releaser interface.
+// Safe to call multiple times - subsequent calls are no-ops.
+func (r *ReadResponse) Release() {
+	if r.pooled && r.Data != nil {
+		bufpool.Put(r.Data)
+		r.Data = nil
+		r.pooled = false
+	}
 }
 
 // ============================================================================
@@ -347,6 +365,7 @@ func (h *Handler) Read(
 	var n int
 	var eof bool
 	var cacheHit bool
+	var pooled bool
 
 	// Try reading from cache first
 	cacheResult, err := h.tryReadFromCache(ctx, file.ContentID, req.Offset, req.Count)
@@ -394,6 +413,7 @@ func (h *Handler) Read(
 		data = readResult.data
 		n = readResult.bytesRead
 		eof = readResult.eof
+		pooled = readResult.pooled
 
 		// Start background prefetch to cache the entire file for future reads
 		h.startBackgroundPrefetch(ctx, contentStore, file.ContentID, file.Size)
@@ -426,5 +446,6 @@ func (h *Handler) Read(
 		Count:           uint32(n),
 		Eof:             eof,
 		Data:            data,
+		pooled:          pooled,
 	}, nil
 }

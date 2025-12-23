@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
+	"github.com/marmos91/dittofs/internal/protocol/smb/signing"
 )
 
 // DefaultMaxMessageSize is the default maximum allowed size for a single SMB2 message (64MB).
@@ -100,6 +101,66 @@ type SMBConfig struct {
 	// 0 means use the default (64MB).
 	// Recommended: 64MB for most deployments, lower for constrained environments.
 	MaxMessageSize int `mapstructure:"max_message_size" validate:"min=0"`
+
+	// Signing configures SMB2 message signing behavior.
+	// Signing provides message integrity protection using HMAC-SHA256.
+	Signing SMBSigningConfig `mapstructure:"signing"`
+}
+
+// SMBSigningConfig configures SMB2 message signing.
+//
+// Message signing provides integrity protection using HMAC-SHA256, preventing
+// man-in-the-middle attacks and message tampering. Per MS-SMB2, signing is:
+//   - Advertised during NEGOTIATE based on Enabled flag
+//   - Configured per-session during SESSION_SETUP based on Required flag
+//
+// When Required is true, all authenticated sessions must use signing and
+// unsigned messages will be rejected. When Enabled is true but Required is
+// false, signing is available but not mandatory.
+//
+// Default values (applied if not specified):
+//   - Enabled: true (signing capability is advertised)
+//   - Required: false (signing is optional)
+//
+// Production recommendations:
+//   - Set Required: true for security-sensitive environments
+//   - Keep Enabled: true for client compatibility
+type SMBSigningConfig struct {
+	// Enabled controls whether signing capability is advertised to clients.
+	// When true, SMB2_NEGOTIATE_SIGNING_ENABLED is set in NEGOTIATE response.
+	// Default: true
+	Enabled *bool `mapstructure:"enabled"`
+
+	// Required controls whether signing is mandatory for all sessions.
+	// When true, SMB2_NEGOTIATE_SIGNING_REQUIRED is set and unsigned
+	// messages from established sessions will be rejected.
+	// Default: false
+	Required bool `mapstructure:"required"`
+}
+
+// applyDefaults fills in nil values with sensible defaults.
+func (c *SMBSigningConfig) applyDefaults() {
+	if c.Enabled == nil {
+		enabled := true
+		c.Enabled = &enabled
+	}
+
+	// Ensure logical consistency: signing cannot be required if it is disabled.
+	// If Required is true, force Enabled to true.
+	// Note: c.Enabled is guaranteed non-nil at this point from the above check.
+	if c.Required && !*c.Enabled {
+		enabled := true
+		c.Enabled = &enabled
+	}
+}
+
+// ToSigningConfig converts to the internal signing.SigningConfig type.
+// It assumes applyDefaults has been called to initialize any nil fields.
+func (c *SMBSigningConfig) ToSigningConfig() signing.SigningConfig {
+	return signing.SigningConfig{
+		Enabled:  *c.Enabled,
+		Required: c.Required,
+	}
 }
 
 // SMBCreditsConfig configures SMB2 credit management.
@@ -189,6 +250,9 @@ func (c *SMBConfig) applyDefaults() {
 
 	// Apply credit defaults
 	c.Credits.applyDefaults()
+
+	// Apply signing defaults
+	c.Signing.applyDefaults()
 }
 
 // applyDefaults fills in zero values with sensible defaults.

@@ -74,6 +74,7 @@ func convertUserConfig(uc *UserConfig) (*identity.User, error) {
 	return &identity.User{
 		Username:         uc.Username,
 		PasswordHash:     uc.PasswordHash,
+		NTHash:           uc.NTHash,
 		Enabled:          uc.Enabled,
 		UID:              uc.UID,
 		GID:              uc.GID,

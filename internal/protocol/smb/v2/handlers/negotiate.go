@@ -69,8 +69,19 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	// Note: SecurityBuffer comes after, but we leave it empty for Phase 1 (anonymous auth)
 	resp := make([]byte, 65)
 
+	// Set SecurityMode based on signing configuration [MS-SMB2 2.2.4]
+	// Bit 0 (0x01): SMB2_NEGOTIATE_SIGNING_ENABLED
+	// Bit 1 (0x02): SMB2_NEGOTIATE_SIGNING_REQUIRED
+	var securityMode byte
+	if h.SigningConfig.Enabled {
+		securityMode |= 0x01 // SMB2_NEGOTIATE_SIGNING_ENABLED
+	}
+	if h.SigningConfig.Required {
+		securityMode |= 0x02 // SMB2_NEGOTIATE_SIGNING_REQUIRED
+	}
+
 	binary.LittleEndian.PutUint16(resp[0:2], 65)                      // StructureSize
-	resp[2] = 0x01                                                    // SecurityMode: SMB2_NEGOTIATE_SIGNING_ENABLED
+	resp[2] = securityMode                                            // SecurityMode
 	resp[3] = 0                                                       // Reserved
 	binary.LittleEndian.PutUint16(resp[4:6], uint16(selectedDialect)) // DialectRevision
 	binary.LittleEndian.PutUint16(resp[6:8], 0)                       // NegotiateContextCount (SMB 3.1.1 only)
