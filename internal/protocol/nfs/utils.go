@@ -106,6 +106,13 @@ func handleRequest[Req rpcRequest, Resp rpcResponse](
 
 	// Encode response
 	encoded, err := resp.Encode()
+
+	// Release pooled resources after encoding (if response implements Releaser)
+	// This must happen after encoding because the pooled data is needed during encode
+	if releaser, ok := any(resp).(nfs.Releaser); ok {
+		releaser.Release()
+	}
+
 	if err != nil {
 		logger.Debug("Error encoding response", "error", err)
 		errorResp := makeErrorResp(errorStatus)

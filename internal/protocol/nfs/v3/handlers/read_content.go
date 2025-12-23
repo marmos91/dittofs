@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/bufpool"
 	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
@@ -20,10 +21,24 @@ type contentStoreReadResult struct {
 	data      []byte
 	bytesRead int
 	eof       bool
+	pooled    bool // true if data buffer came from bufpool and should be returned
+}
+
+// Release returns the data buffer to the pool if it was pooled.
+// Must be called after the data is no longer needed (e.g., after encoding).
+func (r *contentStoreReadResult) Release() {
+	if r.pooled && r.data != nil {
+		bufpool.Put(r.data)
+		r.data = nil
+		r.pooled = false
+	}
 }
 
 // readFromContentStoreWithReadAt reads data using the ReadAt interface for efficient range reads.
 // This is dramatically more efficient for backends like S3.
+//
+// The returned result uses a pooled buffer. The caller MUST call result.Release()
+// after the data is no longer needed (typically after encoding the response).
 //
 // Parameters:
 //   - ctx: Handler context with cancellation support
@@ -35,7 +50,7 @@ type contentStoreReadResult struct {
 //   - handle: File handle for logging
 //
 // Returns:
-//   - contentStoreReadResult: Result with data
+//   - contentStoreReadResult: Result with data (caller must call Release())
 //   - error: Error if read failed
 func readFromContentStoreWithReadAt(
 	ctx *NFSHandlerContext,
@@ -48,7 +63,8 @@ func readFromContentStoreWithReadAt(
 ) (contentStoreReadResult, error) {
 	logger.DebugCtx(ctx.Context, "READ: using content store ReadAt path", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count, "content_id", contentID)
 
-	data := make([]byte, count)
+	// Get a pooled buffer for the read
+	data := bufpool.Get(int(count))
 	n, readErr := readAtStore.ReadAt(ctx.Context, contentID, data, offset)
 
 	// Handle ReadAt results
@@ -57,15 +73,20 @@ func readFromContentStoreWithReadAt(
 			data:      data[:n],
 			bytesRead: n,
 			eof:       true,
+			pooled:    true,
 		}, nil
 	}
 
 	if readErr == context.Canceled || readErr == context.DeadlineExceeded {
+		// Return buffer to pool on error
+		bufpool.Put(data)
 		logger.DebugCtx(ctx.Context, "READ: request cancelled during ReadAt", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "read", n, "client", clientIP)
 		return contentStoreReadResult{}, readErr
 	}
 
 	if readErr != nil {
+		// Return buffer to pool on error
+		bufpool.Put(data)
 		return contentStoreReadResult{}, fmt.Errorf("ReadAt error: %w", readErr)
 	}
 
@@ -73,6 +94,7 @@ func readFromContentStoreWithReadAt(
 		data:      data,
 		bytesRead: n,
 		eof:       false,
+		pooled:    true,
 	}, nil
 }
 
@@ -151,6 +173,9 @@ func seekToOffset(
 // readFromContentStoreSequential reads data using sequential ReadContent + Seek + Read.
 // This is a fallback for content stores that don't support ReadAt.
 //
+// The returned result uses a pooled buffer. The caller MUST call result.Release()
+// after the data is no longer needed (typically after encoding the response).
+//
 // Parameters:
 //   - ctx: Handler context with cancellation support
 //   - contentStore: Content store to read from
@@ -161,7 +186,7 @@ func seekToOffset(
 //   - handle: File handle for logging
 //
 // Returns:
-//   - contentStoreReadResult: Result with data
+//   - contentStoreReadResult: Result with data (caller must call Release())
 //   - error: Error if read failed
 func readFromContentStoreSequential(
 	ctx *NFSHandlerContext,
@@ -183,19 +208,20 @@ func readFromContentStoreSequential(
 	// Seek to requested offset
 	if err := seekToOffset(ctx, reader, offset, clientIP, handle); err != nil {
 		if err == io.EOF {
-			// EOF reached while seeking - return empty with EOF
+			// EOF reached while seeking - return empty with EOF (no buffer needed)
 			logger.DebugCtx(ctx.Context, "READ: EOF reached while seeking", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "client", clientIP)
 			return contentStoreReadResult{
 				data:      []byte{},
 				bytesRead: 0,
 				eof:       true,
+				pooled:    false,
 			}, nil
 		}
 		return contentStoreReadResult{}, err
 	}
 
-	// Read requested data
-	data := make([]byte, count)
+	// Get a pooled buffer for the read
+	data := bufpool.Get(int(count))
 
 	// For large reads (>1MB), use chunked reading with cancellation checks
 	const largeReadThreshold = 1024 * 1024 // 1MB
@@ -214,15 +240,20 @@ func readFromContentStoreSequential(
 			data:      data[:n],
 			bytesRead: n,
 			eof:       true,
+			pooled:    true,
 		}, nil
 	}
 
 	if readErr == context.Canceled || readErr == context.DeadlineExceeded {
+		// Return buffer to pool on error
+		bufpool.Put(data)
 		logger.DebugCtx(ctx.Context, "READ: request cancelled during data read", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "read", n, "client", clientIP)
 		return contentStoreReadResult{}, readErr
 	}
 
 	if readErr != nil {
+		// Return buffer to pool on error
+		bufpool.Put(data)
 		return contentStoreReadResult{}, fmt.Errorf("I/O error: %w", readErr)
 	}
 
@@ -230,6 +261,7 @@ func readFromContentStoreSequential(
 		data:      data,
 		bytesRead: n,
 		eof:       false,
+		pooled:    true,
 	}, nil
 }
 
