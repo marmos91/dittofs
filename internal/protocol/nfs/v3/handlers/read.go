@@ -267,6 +267,12 @@ func (h *Handler) Read(
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
+	// Clamp offset to OffsetMax per RFC 1813 (match Linux nfs3proc.c behavior)
+	// This prevents issues with large offsets on certain platforms or backends
+	if req.Offset > uint64(types.OffsetMax) {
+		req.Offset = uint64(types.OffsetMax)
+	}
+
 	// ========================================================================
 	// Step 2: Get metadata and content stores from context
 	// ========================================================================

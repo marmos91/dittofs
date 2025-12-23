@@ -129,6 +129,14 @@ func MapStoreErrorToNFSStatus(err error, clientIP string, operation string) uint
 		logger.Error("Operation failed: I/O error", "operation", operation, "message", storeErr.Message, "client", clientIP)
 		return types.NFS3ErrIO
 
+	case metadata.ErrLocked:
+		// File is locked/busy - map to JUKEBOX (retry later) per RFC 8881 Section 18.9.4
+		// This is used for transient errors like lock conflicts or delegation conflicts.
+		// Clients receiving JUKEBOX should retry the operation after a short delay.
+		// This matches Linux kernel behavior for -EBUSY on non-directories.
+		logger.Warn("Operation failed: file locked", "operation", operation, "message", storeErr.Message, "client", clientIP)
+		return types.NFS3ErrJukebox
+
 	default:
 		// Unknown error code
 		logger.Error("Operation failed: unknown error code", "operation", operation, "code", storeErr.Code, "message", storeErr.Message, "client", clientIP)
