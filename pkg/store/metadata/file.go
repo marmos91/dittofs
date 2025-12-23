@@ -86,21 +86,25 @@ type FileAttr struct {
 	// GID is the owner group ID
 	GID uint32 `json:"gid"`
 
-	// TODO: Add Nlink (link count) field to track hard links properly
-	// Currently we hardcode Nlink=1 in protocol layers, which is incorrect for:
-	// - Directories: should be 2 + number of subdirectories (., .., and each subdir)
-	// - Files with hard links: should reflect actual number of hard links
-	// - This affects:
-	//   - Move/Rename operations (should update parent directory link counts)
-	//   - MKDIR (should increment parent link count)
-	//   - RMDIR (should decrement parent link count)
-	//   - LINK operations (should increment file link count)
-	//   - Accurate NFS GETATTR responses
-	// When implementing:
-	// - Add: Nlink uint32 `json:"nlink"`
-	// - Initialize to 1 for files, 2 for new directories
-	// - Update in CreateDirectory, DeleteDirectory, Move, Link operations
-	// - Update protocol conversion in internal/protocol/nfs/xdr/attributes.go:76
+	// Nlink is the number of hard links (directory entries) referencing this file.
+	//
+	// For regular files:
+	//   - Starts at 1 when created
+	//   - Incremented when hard links are created
+	//   - Decremented when any link (including the original) is removed
+	//   - File content is deleted when Nlink reaches 0
+	//
+	// For directories:
+	//   - Starts at 2 when created (. and parent's entry)
+	//   - Incremented when subdirectories are created (each subdir adds ..)
+	//   - Decremented when subdirectories are removed
+	//
+	// For other types (symlinks, devices, sockets, FIFOs):
+	//   - Always 1 (hard links to these types are typically not supported)
+	//
+	// This field is populated by metadata stores from their internal link tracking.
+	// If 0, protocol layers should default to 1 for backwards compatibility.
+	Nlink uint32 `json:"nlink"`
 
 	// TODO: Extended attributes for protocol-specific data. Useful, for example, to map Windows ACLs
 	// Extended map[string][]byte

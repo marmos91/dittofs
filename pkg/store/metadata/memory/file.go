@@ -111,22 +111,8 @@ func (store *MemoryMetadataStore) Lookup(
 		}
 	}
 
-	// Decode handle to get ID
-	shareName, id, err := metadata.DecodeFileHandle(targetHandle)
-	if err != nil {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidHandle,
-			Message: "failed to decode target handle",
-		}
-	}
-
-	// Return full File information
-	return &metadata.File{
-		ID:        id,
-		ShareName: shareName,
-		Path:      "", // TODO: Memory store doesn't track full paths yet
-		FileAttr:  *targetData.Attr,
-	}, nil
+	// Return full File information with link count
+	return store.buildFileWithNlink(targetHandle, targetData)
 }
 
 // GetFile retrieves file attributes by handle.
@@ -175,23 +161,8 @@ func (s *MemoryMetadataStore) GetFile(
 		}
 	}
 
-	// Decode handle to get ID
-	shareName, id, err := metadata.DecodeFileHandle(handle)
-	if err != nil {
-		return nil, &metadata.StoreError{
-			Code:    metadata.ErrInvalidHandle,
-			Message: "failed to decode file handle",
-		}
-	}
-
-	// Return full File information
-	// Note: Path is not tracked in memory store currently, using empty string
-	return &metadata.File{
-		ID:        id,
-		ShareName: shareName,
-		Path:      "", // TODO: Memory store doesn't track full paths yet
-		FileAttr:  *fileData.Attr,
-	}, nil
+	// Return full File information with link count
+	return s.buildFileWithNlink(handle, fileData)
 }
 
 // GetShareNameForHandle returns the share name for a given file handle.
@@ -586,11 +557,13 @@ func (store *MemoryMetadataStore) Create(
 	if attr.Type == metadata.FileTypeDirectory {
 		// Directories start at 2 ("." and parent entry)
 		store.linkCounts[key] = 2
+		newAttr.Nlink = 2
 		// Initialize empty children map
 		store.children[key] = make(map[string]metadata.FileHandle)
 	} else {
 		// Regular files start at 1
 		store.linkCounts[key] = 1
+		newAttr.Nlink = 1
 	}
 
 	// Add to parent's children
@@ -731,6 +704,7 @@ func (store *MemoryMetadataStore) CreateSymlink(
 		ShareName: parentData.ShareName, // Inherit from parent
 	}
 	store.linkCounts[key] = 1
+	newAttr.Nlink = 1
 
 	// Add to parent's children
 	if !hasChildren {
@@ -878,6 +852,7 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 		ShareName: parentData.ShareName, // Inherit from parent
 	}
 	store.linkCounts[key] = 1
+	newAttr.Nlink = 1
 
 	// Store device numbers for block and character devices
 	if fileType == metadata.FileTypeBlockDevice || fileType == metadata.FileTypeCharDevice {
@@ -1019,6 +994,7 @@ func (store *MemoryMetadataStore) CreateHardLink(
 
 	// Increment link count
 	store.linkCounts[targetKey]++
+	targetData.Attr.Nlink = store.linkCounts[targetKey]
 
 	// Update timestamps
 	now := time.Now()

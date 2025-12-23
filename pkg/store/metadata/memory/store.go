@@ -374,6 +374,42 @@ func handleToKey(handle metadata.FileHandle) string {
 	return unsafe.String(unsafe.SliceData(handle), len(handle))
 }
 
+// buildFileWithNlink creates a File struct with the Nlink field populated from linkCounts.
+// This helper ensures all returned File objects have accurate link count information.
+// Thread Safety: Must be called with lock held (read or write).
+func (store *MemoryMetadataStore) buildFileWithNlink(
+	handle metadata.FileHandle,
+	fileData *fileData,
+) (*metadata.File, error) {
+	// Decode handle to get ID
+	shareName, id, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidHandle,
+			Message: "failed to decode file handle",
+		}
+	}
+
+	// Get link count from internal tracking
+	key := handleToKey(handle)
+	nlink := store.linkCounts[key]
+	if nlink == 0 {
+		// Default to 1 if not tracked (shouldn't happen normally)
+		nlink = 1
+	}
+
+	// Copy attributes and set Nlink
+	attr := *fileData.Attr
+	attr.Nlink = nlink
+
+	return &metadata.File{
+		ID:        id,
+		ShareName: shareName,
+		Path:      "", // Memory store doesn't track full paths yet
+		FileAttr:  attr,
+	}, nil
+}
+
 // buildFullPath constructs the full path for a file by walking up the parent chain.
 // This is used to generate deterministic file handles.
 // Thread Safety: Must be called with lock held (read or write).

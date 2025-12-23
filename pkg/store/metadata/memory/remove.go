@@ -129,6 +129,9 @@ func (store *MemoryMetadataStore) RemoveFile(
 		}
 	}
 
+	// Get current link count
+	linkCount := store.linkCounts[fileKey]
+
 	// Make a copy of file to return (before we delete it)
 	returnFile := &metadata.File{
 		ID:        id,
@@ -139,6 +142,7 @@ func (store *MemoryMetadataStore) RemoveFile(
 			Mode:       fileData.Attr.Mode,
 			UID:        fileData.Attr.UID,
 			GID:        fileData.Attr.GID,
+			Nlink:      linkCount, // Include current link count
 			Size:       fileData.Attr.Size,
 			Atime:      fileData.Attr.Atime,
 			Mtime:      fileData.Attr.Mtime,
@@ -149,13 +153,13 @@ func (store *MemoryMetadataStore) RemoveFile(
 	}
 
 	// Decrement link count
-	linkCount := store.linkCounts[fileKey]
 	if linkCount > 1 {
 		// File has other hard links, just decrement count
 		// Empty ContentID signals to the caller that content should NOT be deleted
 		// because other hard links still reference it
 		returnFile.ContentID = ""
 		store.linkCounts[fileKey]--
+		fileData.Attr.Nlink = store.linkCounts[fileKey]
 	} else {
 		// This was the last link, remove all metadata
 		// ContentID is returned so caller can delete content
@@ -309,6 +313,7 @@ func (store *MemoryMetadataStore) RemoveDirectory(
 	// (removing a subdirectory removes one ".." reference to parent)
 	if store.linkCounts[parentKey] > 0 {
 		store.linkCounts[parentKey]--
+		parentData.Attr.Nlink = store.linkCounts[parentKey]
 	}
 
 	// Update parent timestamps

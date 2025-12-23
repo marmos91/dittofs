@@ -165,6 +165,8 @@ func (s *BadgerMetadataStore) CreateRootDirectory(
 		}
 
 		// Create complete File struct for root directory
+		// Set Nlink to 2 (. + share reference)
+		rootAttrCopy.Nlink = 2
 		rootFile = &metadata.File{
 			ID:        uuid.New(),
 			ShareName: shareName,
@@ -181,7 +183,7 @@ func (s *BadgerMetadataStore) CreateRootDirectory(
 			return fmt.Errorf("failed to store root file data: %w", err)
 		}
 
-		// Set link count to 2 (. + share reference)
+		// Also store link count separately for efficient updates
 		if err := txn.Set(keyLinkCount(rootFile.ID), encodeUint32(2)); err != nil {
 			return fmt.Errorf("failed to store link count: %w", err)
 		}
