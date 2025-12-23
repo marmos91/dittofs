@@ -27,6 +27,10 @@ type SMBConnection struct {
 	requestSem chan struct{}  // Semaphore to limit concurrent requests
 	wg         sync.WaitGroup // Track active requests for graceful shutdown
 	writeMu    sync.Mutex     // Protects connection writes (replies must be serialized)
+
+	// Session tracking for cleanup on disconnect
+	sessionsMu sync.Mutex     // Protects sessions map
+	sessions   map[uint64]struct{} // Sessions created on this connection
 }
 
 // NewSMBConnection creates a new SMB connection handler.
@@ -35,7 +39,30 @@ func NewSMBConnection(server *SMBAdapter, conn net.Conn) *SMBConnection {
 		server:     server,
 		conn:       conn,
 		requestSem: make(chan struct{}, server.config.MaxRequestsPerConnection),
+		sessions:   make(map[uint64]struct{}),
 	}
+}
+
+// TrackSession records a session as belonging to this connection.
+// Called when SESSION_SETUP completes successfully.
+func (c *SMBConnection) TrackSession(sessionID uint64) {
+	c.sessionsMu.Lock()
+	defer c.sessionsMu.Unlock()
+	c.sessions[sessionID] = struct{}{}
+	logger.Debug("Tracking session on connection",
+		"sessionID", sessionID,
+		"address", c.conn.RemoteAddr().String())
+}
+
+// UntrackSession removes a session from this connection's tracking.
+// Called when LOGOFF is processed.
+func (c *SMBConnection) UntrackSession(sessionID uint64) {
+	c.sessionsMu.Lock()
+	defer c.sessionsMu.Unlock()
+	delete(c.sessions, sessionID)
+	logger.Debug("Untracking session from connection",
+		"sessionID", sessionID,
+		"address", c.conn.RemoteAddr().String())
 }
 
 // Serve handles all SMB2 requests for this connection.
@@ -417,6 +444,9 @@ func (c *SMBConnection) processRequestWithFileID(ctx context.Context, reqHeader 
 		return &smb.HandlerResult{Status: types.StatusInternalError, Data: makeErrorBody()}, fileID
 	}
 
+	// Track session lifecycle for connection cleanup
+	c.trackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status)
+
 	// Extract FileID from CREATE response (bytes 64-80)
 	if reqHeader.Command == types.SMB2Create && result.Status == types.StatusSuccess && len(result.Data) >= 80 {
 		copy(fileID[:], result.Data[64:80])
@@ -572,8 +602,31 @@ func (c *SMBConnection) processRequest(ctx context.Context, reqHeader *header.SM
 		return c.sendErrorResponse(reqHeader, types.StatusInternalError)
 	}
 
+	// Track session lifecycle for connection cleanup
+	c.trackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status)
+
 	// Send response
 	return c.sendResponse(reqHeader, handlerCtx, result)
+}
+
+// trackSessionLifecycle tracks session creation/deletion for connection cleanup.
+// This ensures proper cleanup when connections close ungracefully.
+func (c *SMBConnection) trackSessionLifecycle(command types.Command, reqSessionID, ctxSessionID uint64, status types.Status) {
+	switch command {
+	case types.SMB2SessionSetup:
+		// Track newly created sessions on successful SESSION_SETUP
+		// The session ID is returned in the context after creation
+		if status == types.StatusSuccess || status == types.StatusMoreProcessingRequired {
+			if ctxSessionID != 0 {
+				c.TrackSession(ctxSessionID)
+			}
+		}
+	case types.SMB2Logoff:
+		// Untrack sessions on LOGOFF (they are already cleaned up by the handler)
+		if status == types.StatusSuccess && reqSessionID != 0 {
+			c.UntrackSession(reqSessionID)
+		}
+	}
 }
 
 // sendResponse sends an SMB2 response.
@@ -701,15 +754,68 @@ func (c *SMBConnection) sendMessage(hdr *header.SMB2Header, body []byte) error {
 }
 
 // handleConnectionClose handles cleanup and panic recovery for the connection.
+//
+// This performs full cleanup of all resources associated with the connection:
+// 1. Wait for all in-flight requests to complete
+// 2. Clean up all sessions created on this connection (files, trees, locks)
+// 3. Close the TCP connection
+//
+// This ensures proper resource cleanup even when clients disconnect ungracefully
+// (network failure, client crash, etc.) without sending LOGOFF.
 func (c *SMBConnection) handleConnectionClose() {
+	clientAddr := c.conn.RemoteAddr().String()
+
 	// Panic recovery
 	if r := recover(); r != nil {
-		logger.Error("Panic in SMB connection handler", "address", c.conn.RemoteAddr().String(), "error", r)
+		logger.Error("Panic in SMB connection handler", "address", clientAddr, "error", r)
 	}
 
-	// Wait for all in-flight requests to complete before closing connection
+	// Wait for all in-flight requests to complete before cleanup
 	c.wg.Wait()
+
+	// Clean up all sessions created on this connection
+	c.cleanupSessions()
+
+	// Close the TCP connection
 	_ = c.conn.Close()
+	logger.Debug("SMB connection closed", "address", clientAddr)
+}
+
+// cleanupSessions cleans up all sessions that were created on this connection.
+// This is called when the connection closes (gracefully or ungracefully) to ensure
+// all resources (open files, locks, tree connections) are properly released.
+func (c *SMBConnection) cleanupSessions() {
+	c.sessionsMu.Lock()
+	sessions := make([]uint64, 0, len(c.sessions))
+	for sessionID := range c.sessions {
+		sessions = append(sessions, sessionID)
+	}
+	c.sessions = make(map[uint64]struct{}) // Clear immediately to avoid duplicate cleanup
+	c.sessionsMu.Unlock()
+
+	if len(sessions) == 0 {
+		return
+	}
+
+	logger.Debug("Cleaning up sessions on connection close",
+		"address", c.conn.RemoteAddr().String(),
+		"sessionCount", len(sessions))
+
+	// Use a background context since the connection's context may be cancelled
+	ctx := context.Background()
+
+	for _, sessionID := range sessions {
+		// CleanupSession handles all resource cleanup:
+		// - Close all open files (releases locks, flushes caches)
+		// - Delete all tree connections
+		// - Clean up pending auth state
+		// - Delete the session itself
+		c.server.handler.CleanupSession(ctx, sessionID)
+	}
+
+	logger.Debug("Session cleanup complete",
+		"address", c.conn.RemoteAddr().String(),
+		"sessionCount", len(sessions))
 }
 
 // handleRequestPanic handles cleanup and panic recovery for individual requests.

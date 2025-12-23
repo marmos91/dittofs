@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/cache"
 	"github.com/marmos91/dittofs/internal/protocol/smb/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/signing"
@@ -203,6 +204,199 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 
 		return true
 	})
+}
+
+// CloseAllFilesForSession closes all open files for a session.
+// This releases locks, flushes caches, and removes file handles.
+// Returns the number of files closed.
+func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64) int {
+	var closed int
+	var toDelete [][16]byte
+
+	// First pass: collect files to close and release locks
+	h.files.Range(func(key, value any) bool {
+		openFile := value.(*OpenFile)
+		if openFile.SessionID != sessionID {
+			return true // Continue iterating
+		}
+
+		// Handle pipe close
+		if openFile.IsPipe {
+			h.PipeManager.ClosePipe(openFile.FileID)
+			toDelete = append(toDelete, openFile.FileID)
+			closed++
+			return true
+		}
+
+		// Release locks for this file
+		if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
+			metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
+			if err == nil {
+				_ = metadataStore.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID)
+			}
+		}
+
+		// Flush cache if needed
+		if !openFile.IsDirectory && openFile.ContentID != "" {
+			h.flushFileCache(ctx, openFile)
+		}
+
+		toDelete = append(toDelete, openFile.FileID)
+		closed++
+		return true
+	})
+
+	// Second pass: delete collected file handles
+	for _, fileID := range toDelete {
+		h.DeleteOpenFile(fileID)
+	}
+
+	if closed > 0 {
+		logger.Debug("CloseAllFilesForSession: closed files",
+			"sessionID", sessionID,
+			"count", closed)
+	}
+
+	return closed
+}
+
+// CloseAllFilesForTree closes all open files for a tree connection.
+// This releases locks, flushes caches, and removes file handles.
+// Returns the number of files closed.
+func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessionID uint64) int {
+	var closed int
+	var toDelete [][16]byte
+
+	// First pass: collect files to close and release locks
+	h.files.Range(func(key, value any) bool {
+		openFile := value.(*OpenFile)
+		if openFile.TreeID != treeID {
+			return true // Continue iterating
+		}
+
+		// Handle pipe close
+		if openFile.IsPipe {
+			h.PipeManager.ClosePipe(openFile.FileID)
+			toDelete = append(toDelete, openFile.FileID)
+			closed++
+			return true
+		}
+
+		// Release locks for this file
+		if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
+			metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
+			if err == nil {
+				_ = metadataStore.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID)
+			}
+		}
+
+		// Flush cache if needed
+		if !openFile.IsDirectory && openFile.ContentID != "" {
+			h.flushFileCache(ctx, openFile)
+		}
+
+		toDelete = append(toDelete, openFile.FileID)
+		closed++
+		return true
+	})
+
+	// Second pass: delete collected file handles
+	for _, fileID := range toDelete {
+		h.DeleteOpenFile(fileID)
+	}
+
+	if closed > 0 {
+		logger.Debug("CloseAllFilesForTree: closed files",
+			"treeID", treeID,
+			"count", closed)
+	}
+
+	return closed
+}
+
+// DeleteAllTreesForSession removes all tree connections for a session.
+// Returns the number of trees deleted.
+func (h *Handler) DeleteAllTreesForSession(sessionID uint64) int {
+	var deleted int
+	var toDelete []uint32
+
+	// First pass: collect trees to delete
+	h.trees.Range(func(key, value any) bool {
+		tree := value.(*TreeConnection)
+		if tree.SessionID == sessionID {
+			toDelete = append(toDelete, tree.TreeID)
+			deleted++
+		}
+		return true
+	})
+
+	// Second pass: delete collected trees
+	for _, treeID := range toDelete {
+		h.DeleteTree(treeID)
+	}
+
+	if deleted > 0 {
+		logger.Debug("DeleteAllTreesForSession: deleted trees",
+			"sessionID", sessionID,
+			"count", deleted)
+	}
+
+	return deleted
+}
+
+// CleanupSession performs full cleanup for a session.
+// This closes all files, releases all locks, removes all tree connections,
+// and deletes the session. Called on LOGOFF or connection close.
+func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64) {
+	logger.Debug("CleanupSession: starting cleanup", "sessionID", sessionID)
+
+	// 1. Close all open files (this also releases locks and flushes caches)
+	filesClosed := h.CloseAllFilesForSession(ctx, sessionID)
+
+	// 2. Delete all tree connections
+	treesDeleted := h.DeleteAllTreesForSession(sessionID)
+
+	// 3. Clean up any pending auth state
+	h.DeletePendingAuth(sessionID)
+
+	// 4. Delete the session itself
+	h.DeleteSession(sessionID)
+
+	logger.Debug("CleanupSession: completed",
+		"sessionID", sessionID,
+		"filesClosed", filesClosed,
+		"treesDeleted", treesDeleted)
+}
+
+// flushFileCache flushes cached data for an open file.
+// This is a helper used during cleanup to ensure data durability.
+func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
+	fileCache := h.Registry.GetCacheForShare(openFile.ShareName)
+	if fileCache == nil || fileCache.Size(openFile.ContentID) == 0 {
+		return
+	}
+
+	contentStore, err := h.Registry.GetContentStoreForShare(openFile.ShareName)
+	if err != nil {
+		logger.Warn("flushFileCache: failed to get content store",
+			"share", openFile.ShareName,
+			"error", err)
+		return
+	}
+
+	// Use FlushAndFinalizeCache for immediate durability (completes S3 uploads)
+	_, flushErr := cache.FlushAndFinalizeCache(ctx, fileCache, contentStore, openFile.ContentID)
+	if flushErr != nil {
+		logger.Warn("flushFileCache: cache flush failed",
+			"path", openFile.Path,
+			"contentID", openFile.ContentID,
+			"error", flushErr)
+		// Continue despite error - background flusher will eventually persist
+	} else {
+		logger.Debug("flushFileCache: flushed and finalized",
+			"path", openFile.Path,
+			"contentID", openFile.ContentID)
+	}
 }
 
 // GenerateSessionID generates a new unique session ID.
