@@ -454,7 +454,14 @@ func (h *Handler) Write(
 	// Write to storage (cache or direct to content store)
 	if cache != nil {
 		// Async mode: write to cache, will be flushed on COMMIT
+		//
+		// Track active writers for write gathering optimization.
+		// This enables the COMMIT handler to detect concurrent writes and
+		// delay flushing briefly to allow writes to accumulate.
+		// See: Linux kernel fs/nfsd/vfs.c wait_for_concurrent_writes()
+		cache.BeginWrite(writeIntent.ContentID)
 		err = cache.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, req.Offset)
+		cache.EndWrite(writeIntent.ContentID)
 		if err != nil {
 			traceError(ctx.Context, err, "WRITE failed: cache write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.ContentID, "client", clientIP)
 			return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil

@@ -10,17 +10,19 @@ import (
 
 // nfsMetrics is the Prometheus implementation of metrics.NFSMetrics.
 type nfsMetrics struct {
-	requestsTotal          *prometheus.CounterVec
-	requestDuration        *prometheus.HistogramVec
-	requestsInFlight       *prometheus.GaugeVec
-	bytesTransferred       *prometheus.CounterVec
-	operationSize          *prometheus.HistogramVec
-	activeConnections      prometheus.Gauge
-	connectionsAccepted    prometheus.Counter
-	connectionsClosed      prometheus.Counter
-	connectionsForceClosed prometheus.Counter
-	cacheHits              *prometheus.CounterVec
-	cacheMisses            *prometheus.CounterVec
+	requestsTotal            *prometheus.CounterVec
+	requestDuration          *prometheus.HistogramVec
+	requestsInFlight         *prometheus.GaugeVec
+	bytesTransferred         *prometheus.CounterVec
+	operationSize            *prometheus.HistogramVec
+	activeConnections        prometheus.Gauge
+	connectionsAccepted      prometheus.Counter
+	connectionsClosed        prometheus.Counter
+	connectionsForceClosed   prometheus.Counter
+	cacheHits                *prometheus.CounterVec
+	cacheMisses              *prometheus.CounterVec
+	writeGatheringTriggered  *prometheus.CounterVec
+	writeGatheringDelayTotal *prometheus.CounterVec
 }
 
 // NewNFSMetrics creates a new Prometheus-backed NFSMetrics instance.
@@ -120,6 +122,20 @@ func NewNFSMetrics() metrics.NFSMetrics {
 			},
 			[]string{"share"},
 		),
+		writeGatheringTriggered: promauto.With(reg).NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "dittofs_nfs_write_gathering_triggered_total",
+				Help: "Total number of times write gathering delayed a COMMIT operation",
+			},
+			[]string{"share"},
+		),
+		writeGatheringDelayTotal: promauto.With(reg).NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "dittofs_nfs_write_gathering_delay_milliseconds_total",
+				Help: "Total delay added by write gathering in milliseconds",
+			},
+			[]string{"share"},
+		),
 	}
 }
 
@@ -171,4 +187,9 @@ func (m *nfsMetrics) RecordCacheHit(share string, cacheType string, bytes uint64
 
 func (m *nfsMetrics) RecordCacheMiss(share string, bytes uint64) {
 	m.cacheMisses.WithLabelValues(share).Add(float64(bytes))
+}
+
+func (m *nfsMetrics) RecordWriteGatheringTriggered(share string, delay time.Duration) {
+	m.writeGatheringTriggered.WithLabelValues(share).Inc()
+	m.writeGatheringDelayTotal.WithLabelValues(share).Add(float64(delay.Milliseconds()))
 }

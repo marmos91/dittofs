@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/cache"
@@ -373,6 +374,50 @@ func (h *Handler) Commit(
 			AttrAfter:       wccAfter,
 			WriteVerifier:   serverBootTime,
 		}, nil
+	}
+
+	// ========================================================================
+	// Step 5: Write Gathering Optimization (Linux kernel "wdelay")
+	// ========================================================================
+	//
+	// Write gathering delays the flush briefly when concurrent writes are detected.
+	// This allows additional writes to accumulate, reducing S3 API calls and improving
+	// throughput for bulk write scenarios (e.g., file copies, build outputs).
+	//
+	// Based on Linux kernel's wait_for_concurrent_writes() in fs/nfsd/vfs.c.
+
+	share, shareErr := h.Registry.GetShare(ctx.Share)
+	if shareErr == nil && share.WriteGatheringConfig.Enabled {
+		// Check if writes are actively happening
+		if fileCache.ShouldGatherWrites(file.ContentID, share.WriteGatheringConfig.ActiveThreshold) {
+			gatherDelay := share.WriteGatheringConfig.GatherDelay
+			logger.DebugCtx(ctx.Context, "COMMIT: write gathering detected, delaying flush",
+				"content_id", file.ContentID,
+				"delay", gatherDelay,
+				"active_writers", fileCache.GetActiveWriters(file.ContentID))
+
+			// Record metrics for write gathering
+			if h.Metrics != nil {
+				h.Metrics.RecordWriteGatheringTriggered(ctx.Share, gatherDelay)
+			}
+
+			// Wait for the gather delay, but respect context cancellation
+			select {
+			case <-time.After(gatherDelay):
+				// Delay complete, proceed with flush
+			case <-ctx.Context.Done():
+				// Context cancelled during gather delay
+				logger.WarnCtx(ctx.Context, "COMMIT cancelled during write gathering delay",
+					"handle", fmt.Sprintf("0x%x", req.Handle),
+					"client", clientIP,
+					"error", ctx.Context.Err())
+				return &CommitResponse{
+					NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+					AttrBefore:      wccBefore,
+					AttrAfter:       wccAfter,
+				}, nil
+			}
+		}
 	}
 
 	// Flush cache to content store

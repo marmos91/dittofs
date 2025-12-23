@@ -214,6 +214,7 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 		AnonymousGID:             config.AnonymousGID,
 		PrefetchConfig:           config.PrefetchConfig,
 		FlusherConfig:            config.FlusherConfig,
+		WriteGatheringConfig:     config.WriteGatheringConfig,
 		DisableReaddirplus:       config.DisableReaddirplus,
 	}
 
