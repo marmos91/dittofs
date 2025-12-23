@@ -479,8 +479,16 @@ func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Ses
 		authCtx.Identity.GID = &sess.User.GID
 		authCtx.ClientAddr = sess.ClientAddr
 	} else {
-		// Fallback to root for cleanup operations
-		// This ensures cleanup can proceed even if session info is unavailable
+		// Fallback to root for cleanup operations when session info is unavailable.
+		//
+		// SECURITY NOTE: Using root credentials bypasses normal permission checks.
+		// This is acceptable because:
+		// 1. Delete-on-close can only be set via SET_INFO with FileDispositionInformation,
+		//    which requires the file to have been opened with DELETE access.
+		// 2. The cleanup is completing an operation the user was already authorized
+		//    to perform when they opened the file.
+		// 3. Without this fallback, files marked for deletion during ungraceful
+		//    disconnect would remain orphaned in the metadata store.
 		rootUID := uint32(0)
 		rootGID := uint32(0)
 		authCtx.Identity.UID = &rootUID
