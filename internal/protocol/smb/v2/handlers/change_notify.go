@@ -7,6 +7,7 @@ package handlers
 import (
 	"encoding/binary"
 	"fmt"
+	"path"
 	"sync"
 	"unicode/utf16"
 
@@ -450,29 +451,15 @@ func actionToString(action uint32) string {
 //   - "/foo/bar/file.txt" -> "/foo/bar"
 //   - "/file.txt" -> "/"
 //   - "/" -> "/"
-func GetParentPath(path string) string {
-	if path == "" || path == "/" {
+func GetParentPath(p string) string {
+	if p == "" || p == "/" {
 		return "/"
 	}
-
-	// Remove trailing slash if present
-	if path[len(path)-1] == '/' {
-		path = path[:len(path)-1]
-	}
-
-	// Find last separator
-	lastSlash := -1
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' {
-			lastSlash = i
-			break
-		}
-	}
-
-	if lastSlash <= 0 {
+	parent := path.Dir(p)
+	if parent == "." {
 		return "/"
 	}
-	return path[:lastSlash]
+	return parent
 }
 
 // GetFileName returns the file name from a full path.
@@ -480,27 +467,9 @@ func GetParentPath(path string) string {
 //   - "/foo/bar/file.txt" -> "file.txt"
 //   - "/file.txt" -> "file.txt"
 //   - "/" -> ""
-func GetFileName(path string) string {
-	if path == "" || path == "/" {
+func GetFileName(p string) string {
+	if p == "" || p == "/" {
 		return ""
 	}
-
-	// Remove trailing slash if present
-	if path[len(path)-1] == '/' {
-		path = path[:len(path)-1]
-	}
-
-	// Find last separator
-	lastSlash := -1
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' {
-			lastSlash = i
-			break
-		}
-	}
-
-	if lastSlash < 0 {
-		return path
-	}
-	return path[lastSlash+1:]
+	return path.Base(p)
 }
