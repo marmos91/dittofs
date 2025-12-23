@@ -510,8 +510,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	var grantedOplock uint8
 	if file.Type == metadata.FileTypeRegular && req.OplockLevel != OplockLevelNone {
-		// Build the oplock path (share-relative)
-		oplockPath := path.Join(tree.ShareName, filename)
+		// Build the oplock path using consistent helper
+		oplockPath := BuildOplockPath(tree.ShareName, filename)
 		grantedOplock = h.OplockManager.RequestOplock(
 			oplockPath,
 			smbFileID,

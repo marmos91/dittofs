@@ -210,11 +210,18 @@ func (m *OplockManager) initiateBreak(path string, state *OplockState, breakTo u
 		"to", oplockLevelName(breakTo),
 		"sessionID", state.HolderSessionID)
 
+	// Capture values needed by the asynchronous notification to avoid races.
+	// The goroutine must not access state after the mutex is released.
+	holderSessionID := state.HolderSessionID
+	holderFileID := state.HolderFileID
+	targetLevel := breakTo
+	opPath := path
+
 	// Send break notification asynchronously
 	go func() {
-		if err := m.notify.SendOplockBreak(state.HolderSessionID, state.HolderFileID, breakTo); err != nil {
+		if err := m.notify.SendOplockBreak(holderSessionID, holderFileID, targetLevel); err != nil {
 			logger.Warn("Oplock: failed to send break notification",
-				"path", path,
+				"path", opPath,
 				"error", err)
 		}
 	}()
