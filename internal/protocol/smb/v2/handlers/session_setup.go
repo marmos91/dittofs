@@ -341,15 +341,19 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				), nil
 			}
 
-			// User exists but no valid NT hash - allow access but log warning
-			// This is a transitional mode for users without NT hash set
+			// SECURITY: User exists but no valid NT hash configured.
+			// This is a transitional mode that allows authentication without password validation.
+			// Any client knowing the username can authenticate - this bypasses credential checks entirely.
+			// To fix: run 'dittofs user passwd <username>' to set an NT hash for this user.
 			if len(authMsg.NtChallengeResponse) > 0 {
 				// Client presented NTLM response but we can't verify it
-				logger.Warn("User presented NTLM response but has no valid NT hash configured, allowing access without validation",
-					"username", authMsg.Username)
+				logger.Warn("SECURITY: User authenticated without credential validation (no NT hash configured)",
+					"username", authMsg.Username,
+					"action", "run 'dittofs user passwd' to fix")
 			} else {
-				logger.Warn("User has no NT hash configured, allowing access without validation",
-					"username", authMsg.Username)
+				logger.Warn("SECURITY: User authenticated without credential validation (no NT hash configured)",
+					"username", authMsg.Username,
+					"action", "run 'dittofs user passwd' to fix")
 			}
 
 			sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)

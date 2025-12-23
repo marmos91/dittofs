@@ -3,7 +3,7 @@ package ntlm
 import (
 	"bytes"
 	"crypto/hmac"
-	"crypto/md5"
+	"crypto/md5" //nolint:gosec // MD5 is required for NTLM protocol testing
 	"encoding/binary"
 	"testing"
 )
