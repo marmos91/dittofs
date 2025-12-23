@@ -431,6 +431,11 @@ func (h *Handler) setFileInfoFromStore(
 					newParentPath = "/"
 				}
 				h.NotifyRegistry.NotifyChange(tree.ShareName, newParentPath, toName, FileActionRenamedNewName)
+			} else {
+				logger.Debug("SET_INFO: rename notifications skipped, tree lookup failed",
+					"treeID", openFile.TreeID,
+					"from", openFile.Path,
+					"to", newPath)
 			}
 		}
 
