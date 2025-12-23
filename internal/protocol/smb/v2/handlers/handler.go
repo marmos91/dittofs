@@ -290,8 +290,10 @@ func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64)
 	return closed
 }
 
-// CloseAllFilesForTree closes all open files for a tree connection.
+// CloseAllFilesForTree closes all open files associated with a tree connection.
 // This releases locks, flushes caches, handles delete-on-close, and removes file handles.
+// The sessionID parameter is used for authorization context during delete-on-close
+// and lock release operations. Files are filtered by both treeID and sessionID for safety.
 // Returns the number of files closed.
 func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessionID uint64) int {
 	var closed int
@@ -303,7 +305,8 @@ func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessi
 	// First pass: collect files to close and release locks
 	h.files.Range(func(key, value any) bool {
 		openFile := value.(*OpenFile)
-		if openFile.TreeID != treeID {
+		// Filter by both treeID and sessionID for safety
+		if openFile.TreeID != treeID || openFile.SessionID != sessionID {
 			return true // Continue iterating
 		}
 

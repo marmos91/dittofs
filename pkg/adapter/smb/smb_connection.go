@@ -787,6 +787,9 @@ func (c *SMBConnection) handleConnectionClose() {
 // This is called when the connection closes (gracefully or ungracefully) to ensure
 // all resources (open files, locks, tree connections) are properly released.
 func (c *SMBConnection) cleanupSessions() {
+	// Capture client address early since connection may be closed
+	clientAddr := c.conn.RemoteAddr().String()
+
 	c.sessionsMu.Lock()
 	sessions := make([]uint64, 0, len(c.sessions))
 	for sessionID := range c.sessions {
@@ -800,11 +803,13 @@ func (c *SMBConnection) cleanupSessions() {
 	}
 
 	logger.Debug("Cleaning up sessions on connection close",
-		"address", c.conn.RemoteAddr().String(),
+		"address", clientAddr,
 		"sessionCount", len(sessions))
 
-	// Use a background context since the connection's context may be cancelled
-	ctx := context.Background()
+	// Use a context with timeout to prevent cleanup from blocking indefinitely
+	// if storage operations hang (e.g., slow S3, network issues)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	for _, sessionID := range sessions {
 		// CleanupSession handles all resource cleanup:
@@ -816,7 +821,7 @@ func (c *SMBConnection) cleanupSessions() {
 	}
 
 	logger.Debug("Session cleanup complete",
-		"address", c.conn.RemoteAddr().String(),
+		"address", clientAddr,
 		"sessionCount", len(sessions))
 }
 
