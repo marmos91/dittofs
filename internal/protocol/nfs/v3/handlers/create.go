@@ -456,7 +456,38 @@ func createNewFile(
 	}
 
 	// Store idempotency token for EXCLUSIVE mode
-	// This enables clients to safely retry file creation after network failures
+	// This enables clients to safely retry file creation after network failures.
+	//
+	// DESIGN NOTE: Intentional deviation from Linux kernel implementation
+	// ====================================================================
+	// Linux's fs/nfsd stores the verifier in atime/mtime fields:
+	//   attrs->ia_atime.tv_sec = verf[0];
+	//   attrs->ia_mtime.tv_sec = verf[1];
+	//
+	// We use a dedicated IdempotencyToken field instead because:
+	//
+	// 1. Cleaner semantics: The verifier is stored explicitly rather than
+	//    overloading timestamp fields with non-timestamp data.
+	//
+	// 2. Better timestamp preservation: RFC 1813 allows clients to set
+	//    atime/mtime in CREATE EXCLUSIVE mode. Our approach allows this
+	//    without conflict.
+	//
+	// 3. Easier debugging: The verifier is visible in metadata stores as
+	//    a separate field rather than being hidden in timestamps.
+	//
+	// 4. No ext2 compatibility hacks: Linux clears high bits for ext2
+	//    compatibility; we don't need this complexity.
+	//
+	// Trade-off: Tools expecting Linux-style verifier storage in timestamps
+	// won't find it there. This is acceptable since:
+	//   - The verifier is only used for idempotency during CREATE retries
+	//   - NFS clients interact via protocol, not by inspecting timestamps
+	//   - Recovery tools should use our IdempotencyToken field instead
+	//
+	// Per RFC 1813, the verifier comparison is opaque - how it's stored
+	// is implementation-defined as long as the same verifier can be
+	// retrieved on CREATE retry to detect duplicate requests.
 	if req.Mode == types.CreateExclusive && req.Verf != 0 {
 		fileAttr.IdempotencyToken = req.Verf
 	}
