@@ -92,4 +92,13 @@ type NFSMetrics interface {
 	//   - share: Share name
 	//   - bytes: Number of bytes that will be read from content store
 	RecordCacheMiss(share string, bytes uint64)
+
+	// RecordWriteGatheringTriggered records when write gathering delays a COMMIT.
+	// Write gathering is the Linux kernel's "wdelay" optimization that delays
+	// flushing when concurrent writes are detected.
+	//
+	// Parameters:
+	//   - share: Share name
+	//   - delay: The delay duration before flushing
+	RecordWriteGatheringTriggered(share string, delay time.Duration)
 }

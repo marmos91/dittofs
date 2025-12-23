@@ -245,6 +245,9 @@ type CacheStoreConfig struct {
 
 	// Flusher contains background flusher configuration
 	Flusher FlusherConfig `mapstructure:"flusher" yaml:"flusher"`
+
+	// WriteGathering contains write gathering optimization configuration
+	WriteGathering WriteGatheringConfig `mapstructure:"write_gathering" yaml:"write_gathering"`
 }
 
 // PrefetchConfig configures read prefetch behavior.
@@ -286,6 +289,32 @@ type FlusherConfig struct {
 	// Higher values improve throughput when many files are idle.
 	// Default: 4
 	FlushPoolSize int `mapstructure:"flush_pool_size" yaml:"flush_pool_size"`
+}
+
+// WriteGatheringConfig configures the write gathering optimization.
+//
+// Write gathering is based on the Linux kernel's "wdelay" optimization (fs/nfsd/vfs.c).
+// When multiple writes are happening to the same file, COMMIT operations wait
+// briefly to allow additional writes to accumulate before flushing.
+//
+// This optimization:
+//   - Reduces S3 API calls by batching writes
+//   - Improves throughput for bulk write scenarios
+//   - Trades small latency increase (GatherDelay) for better efficiency
+type WriteGatheringConfig struct {
+	// Enabled controls whether write gathering is active.
+	// Default: true
+	Enabled *bool `mapstructure:"enabled" yaml:"enabled"`
+
+	// GatherDelay is how long COMMIT waits when recent writes are detected.
+	// Similar to Linux kernel's 10ms delay in wait_for_concurrent_writes().
+	// Default: 10ms. Range: 1ms to 100ms.
+	GatherDelay time.Duration `mapstructure:"gather_delay" yaml:"gather_delay"`
+
+	// ActiveThreshold is how recent a write must be to trigger gathering.
+	// If last write was within this duration, COMMIT will wait GatherDelay.
+	// Default: 10ms (same as GatherDelay for symmetry).
+	ActiveThreshold time.Duration `mapstructure:"active_threshold" yaml:"active_threshold"`
 }
 
 // GroupConfig defines a DittoFS group in configuration.

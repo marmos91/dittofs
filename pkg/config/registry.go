@@ -237,6 +237,15 @@ func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 				shareConfig.FlusherConfig.SweepInterval = cacheCfg.Flusher.SweepInterval
 				shareConfig.FlusherConfig.FlushTimeout = cacheCfg.Flusher.FlushTimeout
 				shareConfig.FlusherConfig.FlushPoolSize = cacheCfg.Flusher.FlushPoolSize
+
+				// Copy write gathering config
+				if cacheCfg.WriteGathering.Enabled != nil {
+					shareConfig.WriteGatheringConfig.Enabled = *cacheCfg.WriteGathering.Enabled
+				} else {
+					shareConfig.WriteGatheringConfig.Enabled = true // default: enabled
+				}
+				shareConfig.WriteGatheringConfig.GatherDelay = cacheCfg.WriteGathering.GatherDelay
+				shareConfig.WriteGatheringConfig.ActiveThreshold = cacheCfg.WriteGathering.ActiveThreshold
 			}
 		}
 

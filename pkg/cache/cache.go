@@ -105,6 +105,48 @@ func (s CacheState) CanEvict() bool {
 	return s == StateCached
 }
 
+// ============================================================================
+// Write Gathering Configuration
+// ============================================================================
+
+// WriteGatheringConfig configures the write gathering optimization.
+//
+// Write gathering is based on Linux kernel's "wdelay" optimization (fs/nfsd/vfs.c).
+// When multiple writes are happening to the same file, COMMIT operations wait
+// briefly to allow additional writes to accumulate before flushing.
+//
+// This optimization:
+//   - Reduces S3 API calls by batching writes
+//   - Improves throughput for bulk write scenarios
+//   - Trades small latency increase (GatherDelay) for better efficiency
+type WriteGatheringConfig struct {
+	// Enabled controls whether write gathering is active.
+	// Default: true
+	Enabled bool
+
+	// GatherDelay is how long COMMIT waits when recent writes are detected.
+	// Similar to Linux kernel's 10ms delay in wait_for_concurrent_writes().
+	// Default: 10ms. Range: 1ms to 100ms.
+	GatherDelay time.Duration
+
+	// ActiveThreshold is how recent a write must be to trigger gathering.
+	// If last write was within this duration, COMMIT will wait GatherDelay.
+	// Default: 10ms (same as GatherDelay for symmetry).
+	ActiveThreshold time.Duration
+}
+
+// DefaultWriteGatheringConfig returns sensible defaults for write gathering.
+//
+// These values are based on Linux kernel's NFS implementation which uses
+// a 10ms delay in wait_for_concurrent_writes() (fs/nfsd/vfs.c).
+func DefaultWriteGatheringConfig() WriteGatheringConfig {
+	return WriteGatheringConfig{
+		Enabled:         true,
+		GatherDelay:     10 * time.Millisecond,
+		ActiveThreshold: 10 * time.Millisecond,
+	}
+}
+
 // Cache provides a generic buffering layer for content.
 //
 // The cache is protocol-agnostic and can be used with any content store backend.
@@ -614,4 +656,62 @@ type Cache interface {
 	// Returns:
 	//   - time.Time: Last access timestamp
 	LastAccess(id metadata.ContentID) time.Time
+
+	// ====================================================================
+	// Write Gathering (Concurrent Write Optimization)
+	// ====================================================================
+
+	// BeginWrite increments the active writer count for a content ID.
+	//
+	// Call this before starting a write operation. The count is used by
+	// ShouldGatherWrites to detect concurrent write activity.
+	//
+	// IMPORTANT: Always pair with EndWrite in a defer statement:
+	//
+	//	cache.BeginWrite(id)
+	//	defer cache.EndWrite(id)
+	//	// ... perform write ...
+	//
+	// Parameters:
+	//   - id: Content identifier
+	BeginWrite(id metadata.ContentID)
+
+	// EndWrite decrements the active writer count for a content ID.
+	//
+	// Call this after a write operation completes (success or failure).
+	// Must be paired with BeginWrite.
+	//
+	// Parameters:
+	//   - id: Content identifier
+	EndWrite(id metadata.ContentID)
+
+	// GetActiveWriters returns the number of active writers for a content ID.
+	//
+	// This is used by write gathering logic to detect concurrent writes.
+	// Returns 0 if the content ID doesn't exist.
+	//
+	// Parameters:
+	//   - id: Content identifier
+	//
+	// Returns:
+	//   - int: Number of active writers (0 if no entry or no active writers)
+	GetActiveWriters(id metadata.ContentID) int
+
+	// ShouldGatherWrites checks if a flush should be delayed for write gathering.
+	//
+	// This implements the Linux kernel's "wait_for_concurrent_writes" logic.
+	// Returns true if any of these conditions are met:
+	//   - There are multiple active writers (concurrent writes in progress)
+	//   - The last write was very recent (within activeThreshold)
+	//
+	// When true, the caller (COMMIT handler) should wait briefly before flushing
+	// to allow additional writes to accumulate.
+	//
+	// Parameters:
+	//   - id: Content identifier
+	//   - activeThreshold: How recent a write must be to trigger gathering
+	//
+	// Returns:
+	//   - bool: True if flush should be delayed for write gathering
+	ShouldGatherWrites(id metadata.ContentID, activeThreshold time.Duration) bool
 }

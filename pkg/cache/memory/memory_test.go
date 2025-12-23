@@ -408,3 +408,164 @@ func TestEvictLRU(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// Write Gathering Tests
+// =============================================================================
+//
+// Write gathering is based on Linux kernel's "wdelay" optimization (fs/nfsd/vfs.c).
+// These tests verify that the cache correctly tracks active writers and detects
+// when write gathering should delay COMMIT operations.
+
+// TestWriteGathering_BeginEndWrite tests the BeginWrite/EndWrite tracking.
+func TestWriteGathering_BeginEndWrite(t *testing.T) {
+	ctx := context.Background()
+	mc := NewMemoryCache(1024*1024, nil)
+	defer func() { _ = mc.Close() }()
+
+	contentID := metadata.ContentID("test/file.txt")
+
+	t.Run("NoActiveWritersInitially", func(t *testing.T) {
+		// BeginWrite on non-existent entry should be a no-op
+		mc.BeginWrite(contentID)
+		if got := mc.GetActiveWriters(contentID); got != 0 {
+			t.Errorf("Expected 0 active writers for non-existent entry, got %d", got)
+		}
+	})
+
+	// Create the entry
+	err := mc.WriteAt(ctx, contentID, []byte("test data"), 0)
+	if err != nil {
+		t.Fatalf("Failed to write: %v", err)
+	}
+
+	t.Run("SingleWriter", func(t *testing.T) {
+		mc.BeginWrite(contentID)
+		if got := mc.GetActiveWriters(contentID); got != 1 {
+			t.Errorf("Expected 1 active writer after BeginWrite, got %d", got)
+		}
+
+		mc.EndWrite(contentID)
+		if got := mc.GetActiveWriters(contentID); got != 0 {
+			t.Errorf("Expected 0 active writers after EndWrite, got %d", got)
+		}
+	})
+
+	t.Run("MultipleWriters", func(t *testing.T) {
+		mc.BeginWrite(contentID)
+		mc.BeginWrite(contentID)
+		mc.BeginWrite(contentID)
+		if got := mc.GetActiveWriters(contentID); got != 3 {
+			t.Errorf("Expected 3 active writers, got %d", got)
+		}
+
+		mc.EndWrite(contentID)
+		if got := mc.GetActiveWriters(contentID); got != 2 {
+			t.Errorf("Expected 2 active writers after one EndWrite, got %d", got)
+		}
+
+		mc.EndWrite(contentID)
+		mc.EndWrite(contentID)
+		if got := mc.GetActiveWriters(contentID); got != 0 {
+			t.Errorf("Expected 0 active writers after all EndWrite, got %d", got)
+		}
+	})
+
+	t.Run("EndWriteDoesNotGoNegative", func(t *testing.T) {
+		// Extra EndWrite calls should not go negative
+		mc.EndWrite(contentID)
+		mc.EndWrite(contentID)
+		if got := mc.GetActiveWriters(contentID); got != 0 {
+			t.Errorf("Expected 0 active writers (not negative), got %d", got)
+		}
+	})
+}
+
+// TestWriteGathering_ShouldGatherWrites tests the ShouldGatherWrites detection.
+func TestWriteGathering_ShouldGatherWrites(t *testing.T) {
+	ctx := context.Background()
+	mc := NewMemoryCache(1024*1024, nil)
+	defer func() { _ = mc.Close() }()
+
+	contentID := metadata.ContentID("test/file.txt")
+
+	t.Run("NonExistentEntry", func(t *testing.T) {
+		if mc.ShouldGatherWrites(contentID, 10*time.Millisecond) {
+			t.Error("Expected ShouldGatherWrites to return false for non-existent entry")
+		}
+	})
+
+	// Create the entry
+	err := mc.WriteAt(ctx, contentID, []byte("test data"), 0)
+	if err != nil {
+		t.Fatalf("Failed to write: %v", err)
+	}
+
+	t.Run("RecentWriteTriggersGathering", func(t *testing.T) {
+		// Write just happened, so it should trigger gathering
+		if !mc.ShouldGatherWrites(contentID, 1*time.Second) {
+			t.Error("Expected ShouldGatherWrites to return true immediately after write")
+		}
+	})
+
+	t.Run("OldWriteDoesNotTriggerGathering", func(t *testing.T) {
+		// Wait longer than the threshold
+		time.Sleep(50 * time.Millisecond)
+		if mc.ShouldGatherWrites(contentID, 10*time.Millisecond) {
+			t.Error("Expected ShouldGatherWrites to return false after threshold passed")
+		}
+	})
+
+	t.Run("MultipleWritersTriggersGathering", func(t *testing.T) {
+		// Even with old write time, multiple active writers should trigger gathering
+		mc.BeginWrite(contentID)
+		mc.BeginWrite(contentID)
+		defer func() {
+			mc.EndWrite(contentID)
+			mc.EndWrite(contentID)
+		}()
+
+		if !mc.ShouldGatherWrites(contentID, 1*time.Nanosecond) {
+			t.Error("Expected ShouldGatherWrites to return true with multiple active writers")
+		}
+	})
+}
+
+// TestWriteGathering_ConcurrentAccess tests thread safety of write gathering.
+func TestWriteGathering_ConcurrentAccess(t *testing.T) {
+	ctx := context.Background()
+	mc := NewMemoryCache(1024*1024, nil)
+	defer func() { _ = mc.Close() }()
+
+	contentID := metadata.ContentID("test/concurrent.txt")
+
+	// Create the entry
+	err := mc.WriteAt(ctx, contentID, []byte("initial data"), 0)
+	if err != nil {
+		t.Fatalf("Failed to write: %v", err)
+	}
+
+	// Simulate concurrent writers
+	const numWriters = 100
+	done := make(chan bool, numWriters)
+
+	for i := 0; i < numWriters; i++ {
+		go func() {
+			mc.BeginWrite(contentID)
+			// Simulate some work
+			time.Sleep(time.Millisecond)
+			mc.EndWrite(contentID)
+			done <- true
+		}()
+	}
+
+	// Wait for all goroutines to finish
+	for i := 0; i < numWriters; i++ {
+		<-done
+	}
+
+	// After all goroutines finish, active writers should be 0
+	if got := mc.GetActiveWriters(contentID); got != 0 {
+		t.Errorf("Expected 0 active writers after all goroutines finish, got %d", got)
+	}
+}

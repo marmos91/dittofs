@@ -40,6 +40,10 @@ type buffer struct {
 	// Prefetch support
 	prefetchedOffset uint64 // How many bytes have been prefetched (only valid in StatePrefetching)
 	prefetchExpected uint64 // Expected total size of the file being prefetched
+
+	// Write gathering support (Linux kernel wdelay optimization)
+	// Tracks concurrent writers to detect bulk write scenarios
+	activeWriters int32 // Number of active writers (atomic via buffer.mu)
 }
 
 // hasMetadata returns true if cached metadata has been set.
@@ -1048,4 +1052,111 @@ func (c *MemoryCache) CompletePrefetch(id metadata.ContentID, success bool) {
 		buf.state = cache.StateCached
 		buf.prefetchedOffset = uint64(len(buf.data))
 	}
+}
+
+// ============================================================================
+// Write Gathering Support
+// ============================================================================
+//
+// Write gathering is based on the Linux kernel's "wdelay" optimization
+// (fs/nfsd/vfs.c, wait_for_concurrent_writes). It detects when multiple
+// writes are happening to the same file and delays COMMIT operations
+// briefly to allow writes to accumulate before flushing.
+//
+// This optimization reduces S3 API calls and improves throughput for
+// bulk write scenarios (e.g., file copies, build outputs).
+
+// BeginWrite increments the active writer count for a content ID.
+//
+// Call this before starting a write operation and pair with EndWrite:
+//
+//	cache.BeginWrite(id)
+//	defer cache.EndWrite(id)
+//	// ... perform write ...
+//
+// If the entry doesn't exist, this is a no-op (entry will be created by WriteAt).
+func (c *MemoryCache) BeginWrite(id metadata.ContentID) {
+	buf, exists := c.getBuffer(id)
+	if !exists {
+		// Entry doesn't exist yet - BeginWrite called before WriteAt
+		// The write will create the entry, no need to track yet
+		return
+	}
+
+	buf.mu.Lock()
+	buf.activeWriters++
+	buf.mu.Unlock()
+}
+
+// EndWrite decrements the active writer count for a content ID.
+//
+// Must be paired with BeginWrite. If the entry doesn't exist or count
+// is already 0, this is a no-op.
+func (c *MemoryCache) EndWrite(id metadata.ContentID) {
+	buf, exists := c.getBuffer(id)
+	if !exists {
+		return
+	}
+
+	buf.mu.Lock()
+	if buf.activeWriters > 0 {
+		buf.activeWriters--
+	}
+	buf.mu.Unlock()
+}
+
+// GetActiveWriters returns the number of active writers for a content ID.
+//
+// Returns 0 if the entry doesn't exist.
+func (c *MemoryCache) GetActiveWriters(id metadata.ContentID) int {
+	buf, exists := c.getBuffer(id)
+	if !exists {
+		return 0
+	}
+
+	buf.mu.Lock()
+	defer buf.mu.Unlock()
+
+	return int(buf.activeWriters)
+}
+
+// ShouldGatherWrites checks if a flush should be delayed for write gathering.
+//
+// This implements the Linux kernel's "wait_for_concurrent_writes" logic
+// (fs/nfsd/vfs.c). Returns true if:
+//   - There are multiple active writers (concurrent writes in progress), OR
+//   - The last write was very recent (within activeThreshold)
+//
+// When true, the COMMIT handler should wait briefly (typically 10ms) before
+// flushing to allow additional writes to accumulate.
+//
+// Parameters:
+//   - id: Content identifier
+//   - activeThreshold: How recent a write must be to trigger gathering (e.g., 10ms)
+//
+// Returns:
+//   - bool: True if flush should be delayed for write gathering
+func (c *MemoryCache) ShouldGatherWrites(id metadata.ContentID, activeThreshold time.Duration) bool {
+	buf, exists := c.getBuffer(id)
+	if !exists {
+		return false
+	}
+
+	buf.mu.Lock()
+	defer buf.mu.Unlock()
+
+	// Condition 1: Multiple concurrent writers
+	// Similar to Linux: atomic_read(&inode->i_writecount) > 1
+	if buf.activeWriters > 1 {
+		return true
+	}
+
+	// Condition 2: Recent write activity (file is "hot")
+	// Similar to Linux: checking if this is the same inode as last write
+	timeSinceLastWrite := time.Since(buf.lastWrite)
+	if timeSinceLastWrite < activeThreshold {
+		return true
+	}
+
+	return false
 }

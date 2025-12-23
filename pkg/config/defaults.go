@@ -143,6 +143,9 @@ func applyCacheDefaults(cfg *CacheConfig) {
 		// Apply flusher defaults
 		applyFlusherDefaults(&store.Flusher)
 
+		// Apply write gathering defaults
+		applyWriteGatheringDefaults(&store.WriteGathering)
+
 		cfg.Stores[name] = store
 	}
 }
@@ -176,6 +179,28 @@ func applyFlusherDefaults(cfg *FlusherConfig) {
 	// FlushTimeout defaults to 30 seconds
 	if cfg.FlushTimeout == 0 {
 		cfg.FlushTimeout = 30 * time.Second
+	}
+}
+
+// applyWriteGatheringDefaults sets write gathering optimization defaults.
+//
+// Write gathering is based on the Linux kernel's "wdelay" optimization (fs/nfsd/vfs.c).
+// The 10ms delay matches the Linux kernel's wait_for_concurrent_writes() behavior.
+func applyWriteGatheringDefaults(cfg *WriteGatheringConfig) {
+	// Enabled defaults to true (optimization on by default)
+	if cfg.Enabled == nil {
+		enabled := true
+		cfg.Enabled = &enabled
+	}
+
+	// GatherDelay defaults to 10ms (matches Linux kernel's 10ms delay)
+	if cfg.GatherDelay == 0 {
+		cfg.GatherDelay = 10 * time.Millisecond
+	}
+
+	// ActiveThreshold defaults to 10ms (same as GatherDelay for symmetry)
+	if cfg.ActiveThreshold == 0 {
+		cfg.ActiveThreshold = 10 * time.Millisecond
 	}
 }
 

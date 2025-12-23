@@ -37,6 +37,32 @@ type FlusherConfig struct {
 	FlushPoolSize int
 }
 
+// WriteGatheringConfig configures the write gathering optimization.
+//
+// Write gathering is based on the Linux kernel's "wdelay" optimization (fs/nfsd/vfs.c).
+// When multiple writes are happening to the same file, COMMIT operations wait
+// briefly to allow additional writes to accumulate before flushing.
+//
+// This optimization:
+//   - Reduces S3 API calls by batching writes
+//   - Improves throughput for bulk write scenarios
+//   - Trades small latency increase (GatherDelay) for better efficiency
+type WriteGatheringConfig struct {
+	// Enabled controls whether write gathering is active.
+	// Default: true
+	Enabled bool
+
+	// GatherDelay is how long COMMIT waits when recent writes are detected.
+	// Similar to Linux kernel's 10ms delay in wait_for_concurrent_writes().
+	// Default: 10ms. Range: 1ms to 100ms.
+	GatherDelay time.Duration
+
+	// ActiveThreshold is how recent a write must be to trigger gathering.
+	// If last write was within this duration, COMMIT will wait GatherDelay.
+	// Default: 10ms (same as GatherDelay for symmetry).
+	ActiveThreshold time.Duration
+}
+
 // Share represents a configured share that binds together:
 // - A share name (export path for NFS, share name for SMB)
 // - A metadata store instance (for file/directory structure)
@@ -78,8 +104,9 @@ type Share struct {
 	AnonymousGID             uint32 // GID for anonymous users
 
 	// Cache behavior configuration
-	PrefetchConfig PrefetchConfig // Read prefetch settings
-	FlusherConfig  FlusherConfig  // Background flusher settings
+	PrefetchConfig       PrefetchConfig       // Read prefetch settings
+	FlusherConfig        FlusherConfig        // Background flusher settings
+	WriteGatheringConfig WriteGatheringConfig // Write gathering optimization settings
 
 	// NFS-specific options
 	// DisableReaddirplus prevents READDIRPLUS from being used on this share.
@@ -121,8 +148,9 @@ type ShareConfig struct {
 	RootAttr *metadata.FileAttr
 
 	// Cache behavior configuration
-	PrefetchConfig PrefetchConfig // Read prefetch settings
-	FlusherConfig  FlusherConfig  // Background flusher settings
+	PrefetchConfig       PrefetchConfig       // Read prefetch settings
+	FlusherConfig        FlusherConfig        // Background flusher settings
+	WriteGatheringConfig WriteGatheringConfig // Write gathering optimization settings
 
 	// NFS-specific options
 	DisableReaddirplus bool // Prevent READDIRPLUS, forcing clients to use READDIR + LOOKUP + GETATTR
