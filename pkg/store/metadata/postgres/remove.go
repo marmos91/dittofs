@@ -128,6 +128,10 @@ func (s *PostgresMetadataStore) RemoveFile(
 		if err != nil {
 			return nil, mapPgError(err, "RemoveFile", child.Path)
 		}
+
+		// Clean up any byte-range locks for this file
+		childHandle := encodeFileHandle(shareName, childID)
+		s.byteRangeLocks.removeFile(string(childHandle))
 	}
 
 	// Update parent directory mtime

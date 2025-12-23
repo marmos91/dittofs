@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"context"
 	"crypto/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/smb/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/signing"
@@ -164,6 +166,43 @@ func (h *Handler) GetOpenFile(fileID [16]byte) (*OpenFile, bool) {
 // DeleteOpenFile removes an open file by FileID
 func (h *Handler) DeleteOpenFile(fileID [16]byte) {
 	h.files.Delete(string(fileID[:]))
+}
+
+// ReleaseAllLocksForSession releases all byte-range locks held by a session.
+// This is called during LOGOFF or connection cleanup to ensure locks are released
+// even if CLOSE was not called for all open files.
+func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint64) {
+	h.files.Range(func(key, value any) bool {
+		openFile := value.(*OpenFile)
+		if openFile.SessionID != sessionID {
+			return true // Continue iterating
+		}
+
+		// Skip directories and pipes
+		if openFile.IsDirectory || openFile.IsPipe || len(openFile.MetadataHandle) == 0 {
+			return true
+		}
+
+		// Release locks for this file
+		metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
+		if err != nil {
+			logger.Warn("ReleaseAllLocksForSession: failed to get metadata store",
+				"share", openFile.ShareName,
+				"path", openFile.Path,
+				"error", err)
+			return true // Continue despite error
+		}
+
+		// UnlockAllForSession doesn't return errors for missing locks
+		if unlockErr := metadataStore.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID); unlockErr != nil {
+			logger.Warn("ReleaseAllLocksForSession: failed to release locks",
+				"share", openFile.ShareName,
+				"path", openFile.Path,
+				"error", unlockErr)
+		}
+
+		return true
+	})
 }
 
 // GenerateSessionID generates a new unique session ID.
