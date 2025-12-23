@@ -236,10 +236,10 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	// so we can't cancel specific requests. The watches will be cleaned up
 	// when the directory handle is closed.
 
-	// Per [MS-SMB2] 3.3.5.16: The server MUST NOT send a response to the CANCEL request
-	// Instead, the cancelled request should be completed with STATUS_CANCELLED
-	// For now, we return STATUS_CANCELLED to acknowledge the cancel
-	return NewErrorResult(types.StatusCancelled), nil
+	// Per [MS-SMB2] 3.3.5.16: The server MUST NOT send a response to the CANCEL request.
+	// The cancelled request itself should be completed with STATUS_CANCELLED by the server.
+	// Returning nil ensures no SMB2 response is sent for the CANCEL command itself.
+	return nil, nil
 }
 
 // ChangeNotify handles SMB2 CHANGE_NOTIFY command [MS-SMB2] 2.2.35.
@@ -280,7 +280,12 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		watchPath = "/"
 	}
 
-	// Register the pending notification
+	// Register the pending notification if registry is available
+	if h.NotifyRegistry == nil {
+		logger.Debug("CHANGE_NOTIFY: NotifyRegistry not initialized")
+		return NewErrorResult(types.StatusNotSupported), nil
+	}
+
 	notify := &PendingNotify{
 		FileID:           req.FileID,
 		SessionID:        ctx.SessionID,

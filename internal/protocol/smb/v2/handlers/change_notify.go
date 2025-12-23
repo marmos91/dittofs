@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sync"
+	"unicode/utf16"
 
 	"github.com/marmos91/dittofs/internal/logger"
 )
@@ -302,16 +303,20 @@ func (resp *ChangeNotifyResponse) Encode() ([]byte, error) {
 }
 
 // EncodeFileNotifyInformation encodes a list of change notifications.
+// Uses proper UTF-16LE encoding to handle surrogate pairs for characters
+// outside the Basic Multilingual Plane (codepoints > U+FFFF).
 func EncodeFileNotifyInformation(changes []FileNotifyInformation) []byte {
 	if len(changes) == 0 {
 		return nil
 	}
 
-	// Calculate total size
+	// Pre-encode all filenames to UTF-16 to get accurate sizes
+	encodedNames := make([][]uint16, len(changes))
 	totalSize := 0
-	for _, c := range changes {
-		// 12 bytes header + UTF-16LE filename (2 bytes per char)
-		entrySize := 12 + len(c.FileName)*2
+	for i, c := range changes {
+		encodedNames[i] = utf16.Encode([]rune(c.FileName))
+		// 12 bytes header + UTF-16LE filename (2 bytes per uint16)
+		entrySize := 12 + len(encodedNames[i])*2
 		// Align to 4 bytes
 		if entrySize%4 != 0 {
 			entrySize += 4 - (entrySize % 4)
@@ -333,13 +338,13 @@ func EncodeFileNotifyInformation(changes []FileNotifyInformation) []byte {
 		offset += 4
 
 		// FileNameLength (in bytes, UTF-16LE)
-		nameLen := len(c.FileName) * 2
+		nameLen := len(encodedNames[i]) * 2
 		binary.LittleEndian.PutUint32(buf[offset:], uint32(nameLen))
 		offset += 4
 
-		// FileName (UTF-16LE)
-		for _, r := range c.FileName {
-			binary.LittleEndian.PutUint16(buf[offset:], uint16(r))
+		// FileName (UTF-16LE) - using pre-encoded UTF-16
+		for _, u := range encodedNames[i] {
+			binary.LittleEndian.PutUint16(buf[offset:], u)
 			offset += 2
 		}
 
