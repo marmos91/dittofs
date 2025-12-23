@@ -619,8 +619,17 @@ func (c *SMBConnection) trackSessionLifecycle(command types.Command, reqSessionI
 		// at that point only PendingAuth exists, not a real session. We only track
 		// on StatusSuccess when the session is fully established.
 		if status == types.StatusSuccess {
-			if ctxSessionID != 0 {
-				c.TrackSession(ctxSessionID)
+			// Prefer the session ID explicitly set by the handler (ctxSessionID),
+			// but fall back to the request's SessionID when ctxSessionID is not set.
+			// This handles NTLM Type 3 (AUTHENTICATE) completion where the session
+			// is created with the pending auth's sessionID but ctx.SessionID may
+			// not be explicitly set by all code paths.
+			sessionIDToTrack := ctxSessionID
+			if sessionIDToTrack == 0 {
+				sessionIDToTrack = reqSessionID
+			}
+			if sessionIDToTrack != 0 {
+				c.TrackSession(sessionIDToTrack)
 			}
 		}
 	case types.SMB2Logoff:
