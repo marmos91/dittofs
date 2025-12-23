@@ -102,7 +102,12 @@ type OpenFile struct {
 	FileName      string              // File name within parent for deletion
 
 	// Oplock state
-	OplockLevel uint8 // Current oplock level for this handle
+	// OplockLevel is the current oplock level for this handle.
+	// Thread safety: This field is written during CREATE (before storing in sync.Map)
+	// and during OPLOCK_BREAK (for a specific FileID). Since file handles are session-
+	// specific and OPLOCK_BREAK targets a specific FileID, concurrent access is not
+	// expected. If this changes, consider using atomic operations.
+	OplockLevel uint8
 }
 
 // NewHandler creates a new SMB2 handler with default session manager.

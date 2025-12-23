@@ -258,7 +258,7 @@ func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	}
 
 	// Build oplock path and acknowledge the break
-	oplockPath := openFile.ShareName + "/" + openFile.Path
+	oplockPath := BuildOplockPath(openFile.ShareName, openFile.Path)
 	if err := h.OplockManager.AcknowledgeBreak(oplockPath, req.FileID, req.OplockLevel); err != nil {
 		logger.Warn("OPLOCK_BREAK: acknowledgment failed",
 			"path", openFile.Path,

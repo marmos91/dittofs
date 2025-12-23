@@ -414,7 +414,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// ========================================================================
 
 	if openFile.OplockLevel != OplockLevelNone {
-		oplockPath := openFile.ShareName + "/" + openFile.Path
+		oplockPath := BuildOplockPath(openFile.ShareName, openFile.Path)
 		h.OplockManager.ReleaseOplock(oplockPath, req.FileID)
 	}
 

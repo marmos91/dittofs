@@ -260,15 +260,18 @@ DittoFS implements SMB2 opportunistic locks per [MS-SMB2] 2.2.14, 2.2.23, 2.2.24
 #### Oplock Behavior
 
 ```go
-// Level II allows multiple readers
+// Level II allows multiple readers (first holder tracked)
 clientA opens file → granted Level II
-clientB opens file → granted Level II (no break needed)
+clientB opens file (Level II) → granted Level II (coexistence)
 
 // Exclusive/Batch requires break on conflict
 clientA opens file → granted Exclusive
-clientB opens file → server breaks clientA to Level II
-                   → clientB granted Level II
+clientB opens file → server initiates break to Level II
+                   → clientB gets None (must retry after break)
 ```
+
+**Note**: When an oplock break is initiated, the conflicting client is not granted
+an oplock immediately. It must retry after the break acknowledgment.
 
 #### Benefits
 
@@ -276,11 +279,12 @@ clientB opens file → server breaks clientA to Level II
 - **Better write performance**: Exclusive oplock allows write caching
 - **Handle caching**: Batch oplock reduces CREATE/CLOSE round trips
 
-#### Limitations
+#### Current Limitations
 
 - **No lease support**: SMB2.1+ leases (0xFF) are downgraded to traditional oplocks
 - **In-memory tracking**: Oplock state is lost on server restart
-- **No blocking breaks**: Oplock breaks are non-blocking (fail immediately if client unavailable)
+- **No async break delivery**: Oplock break notifications require notifier setup
+- **Single holder tracking**: Only tracks one Level II holder (others coexist but aren't tracked)
 
 ## Authentication
 

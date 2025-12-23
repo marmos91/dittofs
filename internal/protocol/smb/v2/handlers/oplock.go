@@ -7,6 +7,7 @@ package handlers
 import (
 	"encoding/binary"
 	"fmt"
+	"path"
 	"sync"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -158,6 +159,10 @@ func (m *OplockManager) RequestOplock(path string, fileID [16]byte, sessionID ui
 		// Exclusive/Batch request conflicts with Level II - break existing
 		if m.notify != nil {
 			m.initiateBreak(path, existing, OplockLevelNone)
+		} else {
+			logger.Warn("Oplock: cannot send break notification (notifier not set)",
+				"path", path,
+				"conflictingLevel", oplockLevelName(existing.Level))
 		}
 		// Don't grant exclusive until break completes
 		return OplockLevelNone
@@ -171,14 +176,18 @@ func (m *OplockManager) RequestOplock(path string, fileID [16]byte, sessionID ui
 			breakTo = OplockLevelNone
 		}
 
-		if m.notify != nil && !existing.BreakPending {
-			m.initiateBreak(path, existing, breakTo)
+		if !existing.BreakPending {
+			if m.notify != nil {
+				m.initiateBreak(path, existing, breakTo)
+			} else {
+				logger.Warn("Oplock: cannot send break notification (notifier not set)",
+					"path", path,
+					"conflictingLevel", oplockLevelName(existing.Level))
+			}
 		}
 
-		// Grant Level II if breaking to II, otherwise none
-		if breakTo == OplockLevelII {
-			return OplockLevelII
-		}
+		// Don't grant a new oplock until the break has completed
+		// The caller can retry after the break acknowledgment
 		return OplockLevelNone
 	}
 
@@ -457,4 +466,10 @@ func oplockLevelName(level uint8) string {
 	default:
 		return fmt.Sprintf("Unknown(0x%02X)", level)
 	}
+}
+
+// BuildOplockPath constructs a normalized oplock path from share name and file path.
+// This ensures consistent path construction across all handlers.
+func BuildOplockPath(shareName, filePath string) string {
+	return path.Join(shareName, filePath)
 }
