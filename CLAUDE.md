@@ -753,31 +753,26 @@ ln file1 file2      # LINK (hard link)
    - BadgerDB provides full persistence with path-based handles
 
 2. **Hard link support varies by backend**:
-   - **Memory store**: Full hard link support with proper link count tracking
+   - **Memory store**: Full hard link support with proper link count tracking and NFS LINK procedure
    - **BadgerDB store**: Link counts tracked internally but `LINK` procedure returns NFS3ERR_NOTSUPP
-   - **Both stores**: Link counts not exposed in `FileAttr` struct, always reported as 1 to NFS clients
-   - See TODO in `pkg/store/metadata/file.go:89` and `pkg/store/metadata/badger/file.go:734`
+   - **Both stores**: Link counts are properly tracked and exposed to NFS clients via `FileAttr.Nlink`
+   - Directory link counts include "." and ".." entries (2 + subdirectory count)
+   - See `pkg/store/metadata/file.go:89` for Nlink field documentation
 
-3. **Inaccurate link counts in NFS responses**:
-   - Always reported as 1 for all files/directories
-   - Incorrect for directories (should be 2 + subdirectory count)
-   - Incorrect for files with multiple hard links
-   - Internally tracked but not exposed to protocol layer
-
-4. **No file locking**: NLM (Network Lock Manager) protocol not implemented
+3. **No file locking**: NLM (Network Lock Manager) protocol not implemented
    - Applications requiring file locks may not work correctly
    - No protection against concurrent writes from multiple clients
 
-5. **No NFSv4**: Only NFSv3 is supported
+4. **No NFSv4**: Only NFSv3 is supported
    - No ACLs, no named attributes, no delegations
    - Use NFSv3-compatible clients only
 
-6. **Limited security**: Basic AUTH_UNIX only
+5. **Limited security**: Basic AUTH_UNIX only
    - No Kerberos authentication
    - No built-in encryption (use VPN or network-level encryption)
    - See [docs/SECURITY.md](docs/SECURITY.md) for recommendations
 
-7. **Single-node only**: No distributed/HA support
+6. **Single-node only**: No distributed/HA support
    - No clustering or high availability
    - No replication (except via S3 bucket replication)
    - Single point of failure
