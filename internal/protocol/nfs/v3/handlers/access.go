@@ -511,15 +511,18 @@ func validateAccessRequest(req *AccessRequest) *accessValidationError {
 		}
 	}
 
-	// Validate access bitmap - only defined bits should be set
-	// Valid bits: AccessRead | AccessLookup | AccessModify | AccessExtend | AccessDelete | AccessExecute
-	validBits := uint32(0x003F) // Bits 0-5
-	if req.Access&^validBits != 0 {
-		return &accessValidationError{
-			message:   fmt.Sprintf("invalid access bitmap: 0x%x (invalid bits set)", req.Access),
-			nfsStatus: types.NFS3ErrInval,
-		}
-	}
+	// RFC 1813 Section 3.3.4 states:
+	// "The client may request access rights for additional operations not
+	// defined in this protocol by setting bits in the access argument other
+	// than those defined in this section."
+	//
+	// Therefore, we do NOT reject unknown access bits. Instead, we accept
+	// the request and simply don't grant those unknown permissions in the
+	// response. This allows for forward compatibility with future protocol
+	// extensions.
+	//
+	// The valid bits we understand: AccessRead | AccessLookup | AccessModify |
+	// AccessExtend | AccessDelete | AccessExecute (bits 0-5, 0x003F)
 
 	return nil
 }
