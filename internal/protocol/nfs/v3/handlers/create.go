@@ -629,6 +629,8 @@ func mapMetadataErrorToNFS(err error) uint32 {
 			return types.NFS3ErrInval
 		case metadata.ErrNoSpace:
 			return types.NFS3ErrNoSpc
+		case metadata.ErrQuotaExceeded:
+			return types.NFS3ErrDquot
 		case metadata.ErrReadOnly:
 			return types.NFS3ErrRofs
 		case metadata.ErrNotSupported:

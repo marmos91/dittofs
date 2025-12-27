@@ -74,6 +74,10 @@ const (
 	// Used when filesystem is full (bytes or inodes)
 	ErrNoSpace
 
+	// ErrQuotaExceeded indicates user's disk quota is exceeded
+	// Used when a write would exceed the user's allocated quota
+	ErrQuotaExceeded
+
 	// ErrReadOnly indicates operation failed because filesystem is read-only
 	ErrReadOnly
 
@@ -270,6 +274,21 @@ func NewLockNotFoundError(path string) *StoreError {
 	return &StoreError{
 		Code:    ErrLockNotFound,
 		Message: "lock not found",
+		Path:    path,
+	}
+}
+
+// NewQuotaExceededError creates a StoreError for quota exceeded errors.
+//
+// Parameters:
+//   - path: The path where the quota was exceeded
+//
+// Returns:
+//   - *StoreError with ErrQuotaExceeded code
+func NewQuotaExceededError(path string) *StoreError {
+	return &StoreError{
+		Code:    ErrQuotaExceeded,
+		Message: "disk quota exceeded",
 		Path:    path,
 	}
 }

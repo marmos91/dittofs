@@ -116,6 +116,10 @@ const (
 	// NFS3ErrNotEmpty - Directory not empty
 	NFS3ErrNotEmpty = 66
 
+	// NFS3ErrDquot - Disk quota exceeded
+	// Returned when a write operation would exceed the user's disk quota
+	NFS3ErrDquot = 69
+
 	// NFS3ErrStale - Stale file handle
 	NFS3ErrStale = 70
 
