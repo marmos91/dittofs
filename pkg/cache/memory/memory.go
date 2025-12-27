@@ -1154,9 +1154,5 @@ func (c *MemoryCache) ShouldGatherWrites(id metadata.ContentID, activeThreshold 
 	// Condition 2: Recent write activity (file is "hot")
 	// Similar to Linux: checking if this is the same inode as last write
 	timeSinceLastWrite := time.Since(buf.lastWrite)
-	if timeSinceLastWrite < activeThreshold {
-		return true
-	}
-
-	return false
+	return timeSinceLastWrite < activeThreshold
 }
