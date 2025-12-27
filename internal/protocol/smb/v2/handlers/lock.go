@@ -29,10 +29,16 @@ const (
 
 	// SMB2LockFlagFailImmediately means don't wait for the lock.
 	// Return immediately if the lock cannot be acquired.
-	// NOTE: This implementation always uses fail-immediately semantics.
-	// Blocking lock requests (without this flag) are not supported and
-	// will behave as if this flag were set.
+	// When this flag is NOT set, the server will retry acquiring the lock
+	// for up to BlockingLockTimeout before giving up.
 	SMB2LockFlagFailImmediately uint32 = 0x00000010
+
+	// BlockingLockTimeout is the maximum time to wait for a blocking lock.
+	// This is used when SMB2LockFlagFailImmediately is NOT set.
+	BlockingLockTimeout = 5 * time.Second
+
+	// BlockingLockRetryInterval is how often to retry acquiring a blocking lock.
+	BlockingLockRetryInterval = 50 * time.Millisecond
 )
 
 // ============================================================================
@@ -293,6 +299,8 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			}
 		} else {
 			// Lock operation
+			failImmediately := (lockElem.Flags & SMB2LockFlagFailImmediately) != 0
+
 			lock := metadata.FileLock{
 				ID:         0, // SMB doesn't use lock IDs in this implementation
 				SessionID:  ctx.SessionID,
@@ -303,12 +311,13 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 				ClientAddr: ctx.ClientAddr,
 			}
 
-			err := metadataStore.LockFile(authCtx, openFile.MetadataHandle, lock)
+			err := h.acquireLockWithRetry(authCtx, metadataStore, openFile.MetadataHandle, lock, failImmediately)
 			if err != nil {
 				logger.Debug("LOCK: lock failed",
 					"offset", lockElem.Offset,
 					"length", lockElem.Length,
 					"exclusive", isExclusive,
+					"failImmediately", failImmediately,
 					"error", err)
 				status := lockErrorToStatus(err)
 				// Rollback previously acquired locks
@@ -339,6 +348,87 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	}
 
 	return NewResult(types.StatusSuccess, respBytes), nil
+}
+
+// acquireLockWithRetry attempts to acquire a lock, retrying for blocking requests.
+//
+// For fail-immediately requests (failImmediately=true), this returns immediately
+// on conflict. For blocking requests, it retries up to BlockingLockTimeout.
+//
+// This implements a polling-based approach which, while not as efficient as a
+// true event-driven wait, provides reasonable blocking lock semantics without
+// requiring changes to the metadata store interface.
+func (h *Handler) acquireLockWithRetry(
+	authCtx *metadata.AuthContext,
+	store metadata.MetadataStore,
+	handle metadata.FileHandle,
+	lock metadata.FileLock,
+	failImmediately bool,
+) error {
+	// First attempt
+	err := store.LockFile(authCtx, handle, lock)
+	if err == nil {
+		return nil
+	}
+
+	// Check if it's a lock conflict error
+	storeErr, isStoreErr := err.(*metadata.StoreError)
+	if !isStoreErr || storeErr.Code != metadata.ErrLocked {
+		// Not a lock conflict - return immediately
+		return err
+	}
+
+	// For fail-immediately, return the error
+	if failImmediately {
+		return err
+	}
+
+	// Blocking lock request - retry until timeout
+	logger.Debug("LOCK: blocking lock requested, will retry",
+		"offset", lock.Offset,
+		"length", lock.Length,
+		"exclusive", lock.Exclusive,
+		"timeout", BlockingLockTimeout)
+
+	deadline := time.Now().Add(BlockingLockTimeout)
+	ticker := time.NewTicker(BlockingLockRetryInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-authCtx.Context.Done():
+			// Context cancelled (e.g., client disconnected or CANCEL request)
+			return authCtx.Context.Err()
+
+		case <-ticker.C:
+			// Check if we've exceeded the deadline
+			if time.Now().After(deadline) {
+				logger.Debug("LOCK: blocking lock timed out",
+					"offset", lock.Offset,
+					"length", lock.Length)
+				return err // Return the original lock conflict error
+			}
+
+			// Update AcquiredAt for fresh timestamp
+			lock.AcquiredAt = time.Now()
+
+			// Try again
+			err = store.LockFile(authCtx, handle, lock)
+			if err == nil {
+				logger.Debug("LOCK: blocking lock acquired after retry",
+					"offset", lock.Offset,
+					"length", lock.Length)
+				return nil
+			}
+
+			// If it's not a lock conflict anymore, return the error
+			storeErr, isStoreErr := err.(*metadata.StoreError)
+			if !isStoreErr || storeErr.Code != metadata.ErrLocked {
+				return err
+			}
+			// Still locked, continue retrying
+		}
+	}
 }
 
 // rollbackLocks releases locks that were acquired during a failed request.

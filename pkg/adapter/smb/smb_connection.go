@@ -571,6 +571,13 @@ func (c *SMBConnection) processRequest(ctx context.Context, reqHeader *header.SM
 		MessageID:  reqHeader.MessageID,
 	}
 
+	// For CHANGE_NOTIFY, set up async callback so notifications can be sent
+	if reqHeader.Command == types.SMB2ChangeNotify {
+		handlerCtx.AsyncNotifyCallback = func(sessionID, messageID uint64, response *handlers.ChangeNotifyResponse) error {
+			return c.SendAsyncChangeNotifyResponse(sessionID, messageID, response)
+		}
+	}
+
 	// Validate session if required
 	if cmd.NeedsSession && reqHeader.SessionID != 0 {
 		session, ok := c.server.handler.GetSession(reqHeader.SessionID)
@@ -924,6 +931,41 @@ func (c *SMBConnection) handleSMB1Negotiate(ctx context.Context, message []byte)
 
 	// Send the response
 	return c.sendRawMessage(respHeader, respBody)
+}
+
+// SendAsyncChangeNotifyResponse sends an asynchronous CHANGE_NOTIFY response.
+// This is called when a filesystem change matches a pending watch.
+//
+// Parameters:
+//   - sessionID: The session that registered the watch
+//   - messageID: The original CHANGE_NOTIFY request's message ID
+//   - response: The change notification data
+//
+// Returns an error if the response could not be sent (e.g., connection closed).
+func (c *SMBConnection) SendAsyncChangeNotifyResponse(sessionID, messageID uint64, response *handlers.ChangeNotifyResponse) error {
+	// Encode the response body
+	body, err := response.Encode()
+	if err != nil {
+		return fmt.Errorf("encode change notify response: %w", err)
+	}
+
+	// Build async response header
+	respHeader := &header.SMB2Header{
+		Command:   types.SMB2ChangeNotify,
+		Status:    types.StatusSuccess,
+		Flags:     types.FlagResponse | types.FlagAsync,
+		MessageID: messageID,
+		SessionID: sessionID,
+		TreeID:    0, // Not used in async responses
+		Credits:   1, // Grant 1 credit with async response
+	}
+
+	logger.Debug("Sending async CHANGE_NOTIFY response",
+		"sessionID", sessionID,
+		"messageID", messageID,
+		"bufferLen", len(response.Buffer))
+
+	return c.sendMessage(respHeader, body)
 }
 
 // sendRawMessage sends an SMB2 message with NetBIOS framing (without building from SMB2Header struct).
