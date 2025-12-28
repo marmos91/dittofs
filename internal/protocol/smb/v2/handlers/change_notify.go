@@ -479,6 +479,9 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 					"maxOutputLength", w.MaxOutputLength,
 					"messageID", w.MessageID,
 					"sessionID", w.SessionID)
+				// Unregister the watcher to avoid repeated failures
+				// (the client's buffer is too small for this path's notifications)
+				r.Unregister(w.FileID)
 				continue
 			}
 
@@ -500,12 +503,12 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 				logger.Warn("CHANGE_NOTIFY: failed to send async response",
 					"messageID", w.MessageID,
 					"error", err)
-				// Don't unregister on failure - allow retry on next change event
-			} else {
-				// Unregister the watcher after successful notification
-				// (CHANGE_NOTIFY is one-shot per request)
-				r.Unregister(w.FileID)
 			}
+			// Always unregister the watcher after notification attempt.
+			// CHANGE_NOTIFY is one-shot per request - the client must re-issue
+			// the request for more notifications. If the callback failed, the
+			// connection is likely broken and the watcher would be useless anyway.
+			r.Unregister(w.FileID)
 		} else {
 			// No callback - just log for debugging
 			logger.Debug("CHANGE_NOTIFY: would notify watcher (no callback)",
