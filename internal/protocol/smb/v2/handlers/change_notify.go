@@ -468,14 +468,22 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 			}
 			buffer := EncodeFileNotifyInformation(changes)
 
-			// Ensure we don't exceed the max output length
+			// Ensure we don't exceed the max output length. We must not truncate the
+			// FILE_NOTIFY_INFORMATION structure, as that would corrupt it.
 			if uint32(len(buffer)) > w.MaxOutputLength {
-				buffer = buffer[:w.MaxOutputLength]
+				logger.Warn("CHANGE_NOTIFY: encoded notification exceeds MaxOutputLength; skipping",
+					"watchPath", w.WatchPath,
+					"fileName", match.relativePath,
+					"action", actionToString(action),
+					"encodedLength", len(buffer),
+					"maxOutputLength", w.MaxOutputLength,
+					"messageID", w.MessageID,
+					"sessionID", w.SessionID)
+				continue
 			}
 
 			response := &ChangeNotifyResponse{
 				SMBResponseBase:    SMBResponseBase{},
-				OutputBufferOffset: 72, // After SMB2 header (64) + fixed response body (8)
 				OutputBufferLength: uint32(len(buffer)),
 				Buffer:             buffer,
 			}
@@ -492,11 +500,12 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 				logger.Warn("CHANGE_NOTIFY: failed to send async response",
 					"messageID", w.MessageID,
 					"error", err)
+				// Don't unregister on failure - allow retry on next change event
+			} else {
+				// Unregister the watcher after successful notification
+				// (CHANGE_NOTIFY is one-shot per request)
+				r.Unregister(w.FileID)
 			}
-
-			// Unregister the watcher after successful notification
-			// (CHANGE_NOTIFY is one-shot per request)
-			r.Unregister(w.FileID)
 		} else {
 			// No callback - just log for debugging
 			logger.Debug("CHANGE_NOTIFY: would notify watcher (no callback)",

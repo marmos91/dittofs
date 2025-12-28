@@ -395,20 +395,21 @@ func (h *Handler) acquireLockWithRetry(
 	defer ticker.Stop()
 
 	for {
+		// Check remaining time before blocking to avoid overshooting the deadline.
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			logger.Debug("LOCK: blocking lock timed out",
+				"offset", lock.Offset,
+				"length", lock.Length)
+			return err // Return the original lock conflict error
+		}
+
 		select {
 		case <-authCtx.Context.Done():
 			// Context cancelled (e.g., client disconnected or CANCEL request)
 			return authCtx.Context.Err()
 
 		case <-ticker.C:
-			// Check if we've exceeded the deadline
-			if time.Now().After(deadline) {
-				logger.Debug("LOCK: blocking lock timed out",
-					"offset", lock.Offset,
-					"length", lock.Length)
-				return err // Return the original lock conflict error
-			}
-
 			// Update AcquiredAt for fresh timestamp
 			lock.AcquiredAt = time.Now()
 

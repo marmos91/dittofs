@@ -511,6 +511,14 @@ func (h *Handler) handleValidateNegotiateInfo(ctx *SMBHandlerContext, body []byt
 	var fileID [16]byte
 	copy(fileID[:], body[8:24])
 
+	// Per [MS-SMB2] 2.2.31.4, FSCTL_VALIDATE_NEGOTIATE_INFO MUST use a NULL file identifier.
+	for _, b := range fileID {
+		if b != 0 {
+			logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: non-NULL FileId", "fileID", fileID)
+			return NewErrorResult(types.StatusInvalidParameter), nil
+		}
+	}
+
 	inputCount := binary.LittleEndian.Uint32(body[28:32])
 
 	// Minimum input size: 24 bytes (Capabilities + Guid + SecurityMode + DialectCount)
