@@ -46,10 +46,9 @@ func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 	// Handle specific IOCTLs
 	switch ctlCode {
 	case FsctlValidateNegotiateInfo:
-		// This validates the negotiation - return NOT_SUPPORTED to skip validation
-		// macOS will proceed without it
-		logger.Debug("IOCTL FSCTL_VALIDATE_NEGOTIATE_INFO - not supported")
-		return NewErrorResult(types.StatusNotSupported), nil
+		// Validate negotiation parameters [MS-SMB2] 2.2.31.4
+		// This prevents man-in-the-middle attacks that could downgrade the connection
+		return h.handleValidateNegotiateInfo(ctx, body)
 
 	case FsctlQueryNetworkInterfInfo:
 		// Query network interfaces - not critical, return NOT_SUPPORTED
@@ -295,26 +294,22 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		CompletionFilter: req.CompletionFilter,
 		WatchTree:        req.Flags&SMB2WatchTree != 0,
 		MaxOutputLength:  req.OutputBufferLength,
+		AsyncCallback:    ctx.AsyncNotifyCallback,
 	}
 
 	h.NotifyRegistry.Register(notify)
 
+	hasAsyncCallback := ctx.AsyncNotifyCallback != nil
 	logger.Debug("CHANGE_NOTIFY: registered watch",
 		"path", watchPath,
 		"share", openFile.ShareName,
 		"filter", fmt.Sprintf("0x%08X", req.CompletionFilter),
 		"recursive", notify.WatchTree,
-		"messageID", ctx.MessageID)
+		"messageID", ctx.MessageID,
+		"asyncEnabled", hasAsyncCallback)
 
-	// For MVP, return STATUS_PENDING
-	// The SMB protocol expects us to hold this request and respond asynchronously
-	// when changes occur. For now, we just track it - actual notification sending
-	// requires async response infrastructure.
-	//
-	// Note: Real async responses would require the connection to send SMB2
-	// responses back to the client when NotifyChange detects changes.
-	// For MVP, clients will see STATUS_PENDING and the watch will be registered
-	// but no notifications will be sent until we add async response support.
+	// Return STATUS_PENDING - the client will receive an async response when
+	// a matching change occurs (if AsyncNotifyCallback is set).
 	return NewErrorResult(types.StatusPending), nil
 }
 
@@ -464,6 +459,149 @@ func (h *Handler) handlePipeTransceive(ctx *SMBHandlerContext, body []byte) (*Ha
 
 	// Build IOCTL response
 	resp := buildIoctlResponse(FsctlPipeTransceive, fileID, outputData)
+
+	return NewResult(types.StatusSuccess, resp), nil
+}
+
+// handleValidateNegotiateInfo validates the negotiation parameters [MS-SMB2] 2.2.31.4.
+//
+// This FSCTL is used by SMB 3.x clients to verify that the negotiation wasn't
+// tampered with by a man-in-the-middle attack. The client sends its view of
+// the negotiation parameters, and the server responds with its values.
+// If they don't match, the client will terminate the connection.
+//
+// **Request format (VALIDATE_NEGOTIATE_INFO Request):**
+//
+//	Offset  Size  Field
+//	------  ----  ------------------
+//	0       4     Capabilities
+//	4       16    Guid (ClientGuid)
+//	20      2     SecurityMode
+//	22      2     DialectCount
+//	24      2*N   Dialects
+//
+// **Response format (VALIDATE_NEGOTIATE_INFO Response):**
+//
+//	Offset  Size  Field
+//	------  ----  ------------------
+//	0       4     Capabilities
+//	4       16    Guid (ServerGuid)
+//	20      2     SecurityMode
+//	22      2     Dialect (selected)
+func (h *Handler) handleValidateNegotiateInfo(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
+	// IOCTL request structure [MS-SMB2] 2.2.31:
+	// - StructureSize (2 bytes) - offset 0
+	// - Reserved (2 bytes) - offset 2
+	// - CtlCode (4 bytes) - offset 4
+	// - FileId (16 bytes) - offset 8
+	// - InputOffset (4 bytes) - offset 24
+	// - InputCount (4 bytes) - offset 28
+	// - MaxInputResponse (4 bytes) - offset 32
+	// - OutputOffset (4 bytes) - offset 36
+	// - OutputCount (4 bytes) - offset 40
+	// - MaxOutputResponse (4 bytes) - offset 44
+	// - Flags (4 bytes) - offset 48
+	// - Reserved2 (4 bytes) - offset 52
+	// - Buffer (variable) - offset 56
+	if len(body) < 56 {
+		logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: request too small", "len", len(body))
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	var fileID [16]byte
+	copy(fileID[:], body[8:24])
+
+	// Per [MS-SMB2] 2.2.31.4, FSCTL_VALIDATE_NEGOTIATE_INFO MUST use a NULL file identifier.
+	for _, b := range fileID {
+		if b != 0 {
+			logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: non-NULL FileId", "fileID", fileID)
+			return NewErrorResult(types.StatusInvalidParameter), nil
+		}
+	}
+
+	inputCount := binary.LittleEndian.Uint32(body[28:32])
+
+	// Minimum input size: 24 bytes (Capabilities + Guid + SecurityMode + DialectCount)
+	if inputCount < 24 {
+		logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: input too small", "inputCount", inputCount)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// Extract input data from buffer portion
+	bufferStart := uint32(56)
+	if uint32(len(body)) < bufferStart+inputCount {
+		logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: input data out of bounds",
+			"bodyLen", len(body), "bufferStart", bufferStart, "inputCount", inputCount)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	inputData := body[bufferStart : bufferStart+inputCount]
+
+	// Parse VALIDATE_NEGOTIATE_INFO request
+	// clientCapabilities := binary.LittleEndian.Uint32(inputData[0:4])
+	// clientGuid := inputData[4:20]
+	// clientSecurityMode := binary.LittleEndian.Uint16(inputData[20:22])
+	dialectCount := binary.LittleEndian.Uint16(inputData[22:24])
+
+	// Validate dialect count
+	expectedSize := 24 + (int(dialectCount) * 2)
+	if int(inputCount) < expectedSize {
+		logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: not enough dialects",
+			"dialectCount", dialectCount, "inputCount", inputCount, "expectedSize", expectedSize)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// Parse dialects and re-determine what we would negotiate
+	// This uses the same logic as Negotiate handler
+	var selectedDialect types.Dialect
+	for i := uint16(0); i < dialectCount; i++ {
+		offset := 24 + (int(i) * 2)
+		dialect := types.Dialect(binary.LittleEndian.Uint16(inputData[offset : offset+2]))
+
+		switch dialect {
+		case types.SMB2Dialect0210:
+			// SMB 2.1 is our highest supported dialect
+			if selectedDialect < types.SMB2Dialect0210 {
+				selectedDialect = types.SMB2Dialect0210
+			}
+		case types.SMB2Dialect0202, types.SMB2DialectWild:
+			// SMB 2.0.2 is our baseline
+			if selectedDialect < types.SMB2Dialect0202 {
+				selectedDialect = types.SMB2Dialect0202
+			}
+		}
+	}
+
+	if selectedDialect == 0 {
+		// No common dialect found - this shouldn't happen if negotiation succeeded
+		logger.Warn("IOCTL VALIDATE_NEGOTIATE_INFO: no common dialect")
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// Build SecurityMode based on signing configuration
+	// Bit 0 (0x01): SMB2_NEGOTIATE_SIGNING_ENABLED
+	// Bit 1 (0x02): SMB2_NEGOTIATE_SIGNING_REQUIRED
+	var securityMode uint16
+	if h.SigningConfig.Enabled {
+		securityMode |= 0x01
+	}
+	if h.SigningConfig.Required {
+		securityMode |= 0x02
+	}
+
+	// Build VALIDATE_NEGOTIATE_INFO response (24 bytes)
+	output := make([]byte, 24)
+	binary.LittleEndian.PutUint32(output[0:4], 0) // Capabilities (none)
+	copy(output[4:20], h.ServerGUID[:])           // ServerGuid
+	binary.LittleEndian.PutUint16(output[20:22], securityMode)
+	binary.LittleEndian.PutUint16(output[22:24], uint16(selectedDialect))
+
+	logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: success",
+		"dialect", selectedDialect.String(),
+		"securityMode", fmt.Sprintf("0x%02X", securityMode))
+
+	// Build IOCTL response
+	resp := buildIoctlResponse(FsctlValidateNegotiateInfo, fileID, output)
 
 	return NewResult(types.StatusSuccess, resp), nil
 }
