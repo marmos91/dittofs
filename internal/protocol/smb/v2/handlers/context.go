@@ -41,6 +41,11 @@ type SMBHandlerContext struct {
 	// Permission is the user's permission level for the current share
 	// This is resolved during TREE_CONNECT and used for access control.
 	Permission identity.SharePermission
+
+	// AsyncNotifyCallback is used for sending async CHANGE_NOTIFY responses.
+	// Set by the connection layer to enable async notification delivery.
+	// If nil, notifications are logged but not sent.
+	AsyncNotifyCallback AsyncResponseCallback
 }
 
 // NewSMBHandlerContext creates a new context from request parameters

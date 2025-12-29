@@ -131,6 +131,11 @@ type FileNotifyInformation struct {
 // Pending Notify Registry
 // ============================================================================
 
+// AsyncResponseCallback is called when an async CHANGE_NOTIFY response is ready.
+// The callback receives the session ID, message ID, and response data.
+// Returns an error if the response could not be sent (e.g., connection closed).
+type AsyncResponseCallback func(sessionID, messageID uint64, response *ChangeNotifyResponse) error
+
 // PendingNotify tracks a pending CHANGE_NOTIFY request waiting for events.
 type PendingNotify struct {
 	// Request identification
@@ -145,8 +150,10 @@ type PendingNotify struct {
 	WatchTree        bool // Recursive watching
 	MaxOutputLength  uint32
 
-	// Connection for async response
-	// Note: For MVP, we don't send async responses - just complete on next matching event
+	// AsyncCallback is called when a matching change is detected.
+	// If nil, the change is logged but no response is sent.
+	// The callback is responsible for sending the async SMB2 response.
+	AsyncCallback AsyncResponseCallback
 }
 
 // NotifyRegistry manages pending CHANGE_NOTIFY requests.
@@ -369,8 +376,8 @@ func EncodeFileNotifyInformation(changes []FileNotifyInformation) []byte {
 // ============================================================================
 
 // NotifyChange records a filesystem change that may trigger pending CHANGE_NOTIFY
-// requests. For MVP, we only log the notification - actual async responses
-// require connection-level async response support.
+// requests. When a matching watcher has an AsyncCallback set, it sends the
+// async response. Otherwise, the change is logged for debugging.
 //
 // Parameters:
 //   - shareName: The share where the change occurred
@@ -378,16 +385,22 @@ func EncodeFileNotifyInformation(changes []FileNotifyInformation) []byte {
 //   - fileName: Name of the changed file/directory
 //   - action: One of FileAction* constants
 //
-// Note: For full CHANGE_NOTIFY support, this would need to:
-// 1. Find all pending notifies watching parentPath (or ancestors if recursive)
-// 2. Check if the action matches the CompletionFilter
-// 3. Build an async response with the change information
-// 4. Send the response on the appropriate connection
-//
-// For MVP, we log the potential notification for debugging.
+// The function walks up the directory hierarchy to support recursive (WatchTree)
+// watchers. When a matching watcher is found:
+//  1. Builds a FileNotifyInformation structure with the change details
+//  2. Encodes it into the response format
+//  3. Calls the AsyncCallback to send the response
+//  4. Unregisters the watcher (CHANGE_NOTIFY is one-shot per request)
 func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, action uint32) {
+	// First, collect matching watchers while holding read lock
 	r.mu.RLock()
-	defer r.mu.RUnlock()
+
+	// Build list of watchers to notify
+	type matchedWatcher struct {
+		notify       *PendingNotify
+		relativePath string // Path relative to watch directory
+	}
+	var toNotify []matchedWatcher
 
 	// Walk up the directory hierarchy to support recursive (WatchTree) watchers.
 	// This checks the exact parentPath first, then ancestor directories.
@@ -395,7 +408,6 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 	for {
 		watchers := r.pending[currentPath]
 
-		// Log for debugging (full implementation would send async responses)
 		for _, w := range watchers {
 			// Only notify watchers on the same share
 			if w.ShareName != shareName {
@@ -411,11 +423,24 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 				continue
 			}
 
-			logger.Debug("CHANGE_NOTIFY: would notify watcher",
-				"watchPath", w.WatchPath,
-				"fileName", fileName,
-				"action", actionToString(action),
-				"messageID", w.MessageID)
+			// Calculate the relative path from the watch directory
+			relativePath := fileName
+			if currentPath != parentPath {
+				// For recursive watchers, include the relative directory path
+				// e.g., watching "/" for change in "/subdir/file.txt" -> "subdir/file.txt"
+				relDir := parentPath[len(currentPath):]
+				if len(relDir) > 0 && relDir[0] == '/' {
+					relDir = relDir[1:]
+				}
+				if relDir != "" {
+					relativePath = relDir + "/" + fileName
+				}
+			}
+
+			toNotify = append(toNotify, matchedWatcher{
+				notify:       w,
+				relativePath: relativePath,
+			})
 		}
 
 		// Stop after processing the root directory
@@ -425,6 +450,73 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 
 		// Move to the parent directory for recursive watcher lookup
 		currentPath = GetParentPath(currentPath)
+	}
+
+	r.mu.RUnlock()
+
+	// Now process the notifications outside the lock
+	for _, match := range toNotify {
+		w := match.notify
+
+		if w.AsyncCallback != nil {
+			// Build the change notification
+			changes := []FileNotifyInformation{
+				{
+					Action:   action,
+					FileName: match.relativePath,
+				},
+			}
+			buffer := EncodeFileNotifyInformation(changes)
+
+			// Ensure we don't exceed the max output length. We must not truncate the
+			// FILE_NOTIFY_INFORMATION structure, as that would corrupt it.
+			if uint32(len(buffer)) > w.MaxOutputLength {
+				logger.Warn("CHANGE_NOTIFY: encoded notification exceeds MaxOutputLength; skipping",
+					"watchPath", w.WatchPath,
+					"fileName", match.relativePath,
+					"action", actionToString(action),
+					"encodedLength", len(buffer),
+					"maxOutputLength", w.MaxOutputLength,
+					"messageID", w.MessageID,
+					"sessionID", w.SessionID)
+				// Unregister the watcher to avoid repeated failures
+				// (the client's buffer is too small for this path's notifications)
+				r.Unregister(w.FileID)
+				continue
+			}
+
+			response := &ChangeNotifyResponse{
+				SMBResponseBase:    SMBResponseBase{},
+				OutputBufferLength: uint32(len(buffer)),
+				Buffer:             buffer,
+			}
+
+			logger.Debug("CHANGE_NOTIFY: sending async response",
+				"watchPath", w.WatchPath,
+				"fileName", match.relativePath,
+				"action", actionToString(action),
+				"messageID", w.MessageID,
+				"sessionID", w.SessionID)
+
+			// Send the async response
+			if err := w.AsyncCallback(w.SessionID, w.MessageID, response); err != nil {
+				logger.Warn("CHANGE_NOTIFY: failed to send async response",
+					"messageID", w.MessageID,
+					"error", err)
+			}
+			// Always unregister the watcher after notification attempt.
+			// CHANGE_NOTIFY is one-shot per request - the client must re-issue
+			// the request for more notifications. If the callback failed, the
+			// connection is likely broken and the watcher would be useless anyway.
+			r.Unregister(w.FileID)
+		} else {
+			// No callback - just log for debugging
+			logger.Debug("CHANGE_NOTIFY: would notify watcher (no callback)",
+				"watchPath", w.WatchPath,
+				"fileName", match.relativePath,
+				"action", actionToString(action),
+				"messageID", w.MessageID)
+		}
 	}
 }
 
