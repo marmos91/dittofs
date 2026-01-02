@@ -195,10 +195,9 @@ func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 		response.Caches = append(response.Caches, health)
 	}
 
-	status := http.StatusOK
-	if !allHealthy {
-		status = http.StatusServiceUnavailable
+	if allHealthy {
+		writeJSON(w, http.StatusOK, healthyResponse(response))
+	} else {
+		writeJSON(w, http.StatusServiceUnavailable, unhealthyResponseWithData(response))
 	}
-
-	writeJSON(w, status, healthyResponse(response))
 }
