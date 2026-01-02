@@ -275,3 +275,50 @@ func TestStores_ChecksMetadataStoreHealth(t *testing.T) {
 		t.Error("Expected latency to be set")
 	}
 }
+
+func TestStores_ChecksContentStoreHealth(t *testing.T) {
+	ctx := context.Background()
+	reg := registry.NewRegistry()
+
+	// Register a healthy content store
+	contentStore, err := memoryContent.NewMemoryContentStore(ctx)
+	if err != nil {
+		t.Fatalf("Failed to create content store: %v", err)
+	}
+	if err := reg.RegisterContentStore("test-content", contentStore); err != nil {
+		t.Fatalf("Failed to register content store: %v", err)
+	}
+
+	handler := NewHealthHandler(reg)
+	req := httptest.NewRequest("GET", "/health/stores", nil)
+	w := httptest.NewRecorder()
+
+	handler.Stores(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	var resp Response
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	data := resp.Data.(map[string]interface{})
+	contentStores := data["content_stores"].([]interface{})
+
+	if len(contentStores) != 1 {
+		t.Fatalf("Expected 1 content store, got %d", len(contentStores))
+	}
+
+	store := contentStores[0].(map[string]interface{})
+	if store["name"] != "test-content" {
+		t.Errorf("Expected store name 'test-content', got '%s'", store["name"])
+	}
+	if store["status"] != "healthy" {
+		t.Errorf("Expected store status 'healthy', got '%s'", store["status"])
+	}
+	if store["latency"] == nil || store["latency"] == "" {
+		t.Error("Expected latency to be set")
+	}
+}

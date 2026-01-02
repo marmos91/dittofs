@@ -151,3 +151,26 @@ func (r *FSContentStore) GetStorageStats(ctx context.Context) (*content.StorageS
 func (r *FSContentStore) Close() error {
 	return r.fdCache.Close()
 }
+
+// Healthcheck performs a lightweight health check on the filesystem content store.
+//
+// This verifies that the base directory exists and is accessible by attempting
+// to stat it. This is a quick operation that validates the store is operational.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeouts
+//
+// Returns:
+//   - error: Returns error if base directory is inaccessible or context is cancelled
+func (r *FSContentStore) Healthcheck(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	_, err := os.Stat(r.basePath)
+	if err != nil {
+		return fmt.Errorf("base directory inaccessible: %w", err)
+	}
+
+	return nil
+}

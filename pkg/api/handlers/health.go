@@ -84,7 +84,7 @@ type StoresResponse struct {
 //
 // Checks the health of all registered stores:
 //   - Metadata stores: Calls Healthcheck() method
-//   - Content stores: Verifies they exist (no Healthcheck method yet)
+//   - Content stores: Calls Healthcheck() method
 //   - Caches: Verifies they exist
 //
 // Returns 200 OK if all stores are healthy, 503 Service Unavailable if any
@@ -141,12 +141,28 @@ func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 		response.MetadataStores = append(response.MetadataStores, health)
 	}
 
-	// Check content stores - they don't have Healthcheck yet, just verify they exist
+	// Check content stores
 	for _, name := range h.registry.ListContentStores() {
-		_, err := h.registry.GetContentStore(name)
+		store, err := h.registry.GetContentStore(name)
+		if err != nil {
+			response.ContentStores = append(response.ContentStores, StoreHealth{
+				Name:   name,
+				Type:   "content",
+				Status: "unhealthy",
+				Error:  err.Error(),
+			})
+			allHealthy = false
+			continue
+		}
+
+		start := time.Now()
+		err = store.Healthcheck(ctx)
+		latency := time.Since(start)
+
 		health := StoreHealth{
-			Name: name,
-			Type: "content",
+			Name:    name,
+			Type:    "content",
+			Latency: latency.String(),
 		}
 
 		if err != nil {
