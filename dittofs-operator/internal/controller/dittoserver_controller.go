@@ -158,7 +158,7 @@ func (r *DittoServerReconciler) reconcileConfigMap(ctx context.Context, dittoSer
 			return err
 		}
 
-		configYAML, err := config.GenerateDittoFSConfig(dittoServer)
+		configYAML, err := config.GenerateDittoFSConfig(ctx, r.Client, dittoServer)
 		if err != nil {
 			return fmt.Errorf("failed to generate config: %w", err)
 		}

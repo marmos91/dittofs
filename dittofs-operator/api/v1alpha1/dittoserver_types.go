@@ -322,6 +322,11 @@ type BackendConfig struct {
 	// The structure depends on the Type field
 	// +kubebuilder:example={"bucket":"my-bucket","region":"us-east-1"}
 	Config map[string]string `json:"config,omitempty"`
+
+	// Secret references for sensitive configuration values
+	// Keys should match the expected config keys (e.g., "access_key_id", "secret_access_key")
+	// +optional
+	SecretRefs map[string]corev1.SecretKeySelector `json:"secretRefs,omitempty"`
 }
 
 // SMBAdapterSpec defines SMB protocol configuration
@@ -459,10 +464,16 @@ type UserSpec struct {
 	// +kubebuilder:validation:Required
 	Username string `json:"username"`
 
-	// Password hash (bcrypt)
+	// Password hash (bcrypt) - DEPRECATED: Use passwordSecretRef instead
 	// Generate with: htpasswd -bnBC 10 "" password | tr -d ':\n'
-	// +kubebuilder:validation:Required
-	PasswordHash string `json:"passwordHash"`
+	// +optional
+	PasswordHash string `json:"passwordHash,omitempty"`
+
+	// Reference to a Secret containing the password hash
+	// The secret should contain a key "passwordHash" with the bcrypt hash value
+	// This is the preferred way to store user passwords
+	// +optional
+	PasswordSecretRef *corev1.SecretKeySelector `json:"passwordSecretRef,omitempty"`
 
 	// Whether the user is enabled
 	// +kubebuilder:default=true
@@ -577,7 +588,7 @@ type DittoServer struct {
 // DittoServerList contains a list of DittoServer
 type DittoServerList struct {
 	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
+	metav1.ListMeta `json:"metadata"`
 	Items           []DittoServer `json:"items"`
 }
 

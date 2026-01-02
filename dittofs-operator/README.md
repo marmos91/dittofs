@@ -168,6 +168,15 @@ kubectl get dittoserver my-dittofs
 kubectl describe dittoserver my-dittofs
 ```
 
+### Security Best Practices
+
+**⚠️ IMPORTANT: Never store credentials directly in YAML files!**
+
+- Always use Kubernetes Secrets for storing sensitive data like passwords, API keys, and access tokens
+- Use `passwordSecretRef` instead of `passwordHash` for user credentials
+- Use `secretRefs` instead of direct `config` values for S3 credentials
+- Ensure secrets are created in the same namespace as your DittoServer
+
 ### SMB Configuration Examples
 
 #### Basic SMB Server
@@ -236,10 +245,12 @@ spec:
   smb:
     enabled: true
   users:
-    # Define users with bcrypt password hashes
+    # Define users with bcrypt password hashes stored in secrets (recommended)
     users:
       - username: "alice"
-        passwordHash: "$2y$10$rEKx.8vhUWJ1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c" # testpass
+        passwordSecretRef:
+          name: "user-passwords"
+          key: "alice-hash"
         uid: 1001
         gid: 1001
         groups: ["developers"]
@@ -247,7 +258,9 @@ spec:
           "/": "read-write"
           "/readonly": "read"
       - username: "bob"
-        passwordHash: "$2y$10$aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890abcdefghijklmnop" # testpass123
+        passwordSecretRef:
+          name: "user-passwords" 
+          key: "bob-hash"
         uid: 1002
         gid: 1002
         sharePermissions:
@@ -271,9 +284,69 @@ spec:
       gid: 65534
       sharePermissions:
         "/public": "read"
+
+---
+# Secret containing user password hashes
+apiVersion: v1
+kind: Secret
+metadata:
+  name: user-passwords
+type: Opaque
+data:
+  # Base64 encoded bcrypt hashes
+  alice-hash: JDJ5JDEwJHJFS3guOHZoVVdKMWMxYzFjMWMxYzE=  # testpass
+  bob-hash: JDJ5JDEwJGFCY0RlRmdIaUprTG1Ob1BxUnNUdVY=      # testpass123
 ```
 
-#### Generate Password Hash
+#### S3 Backend with Secret Credentials
+
+```yaml
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  name: my-s3-server
+  namespace: default
+spec:
+  image: ghcr.io/marmos91/dittofs:latest
+  storage:
+    metadataSize: "10Gi"
+  config:
+    backends:
+      - name: s3-backend
+        type: s3
+        config:
+          bucket: "my-bucket"
+          region: "us-east-1"
+        # Store credentials securely in secrets
+        secretRefs:
+          access_key_id:
+            name: "s3-credentials"
+            key: "access-key"
+          secret_access_key:
+            name: "s3-credentials"
+            key: "secret-key"
+    shares:
+      - name: s3-share
+        exportPath: /s3
+        metadataStore: metadata-backend
+        contentStore: s3-backend
+
+---
+# Secret for S3 credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: s3-credentials
+type: Opaque
+data:
+  # Base64 encoded AWS credentials - REPLACE WITH YOUR ACTUAL VALUES
+  # echo -n "YOUR_ACCESS_KEY_ID" | base64
+  access-key: WU9VUl9BQ0NFU1NfS0VZX0lE
+  # echo -n "YOUR_SECRET_ACCESS_KEY" | base64
+  secret-key: WU9VUl9TRUNSRVRfQUNDRVNTX0tFWQ==
+```
+
+#### Generate Password Hash and Secrets
 
 To generate a bcrypt password hash for user configuration:
 
@@ -285,6 +358,23 @@ htpasswd -bnBC 10 "" "your-password" | tr -d ':\n'
 python3 -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt(rounds=10)).decode())"
 
 # Using online bcrypt generator (ensure it uses cost factor 10+)
+```
+
+To create secrets for storing credentials:
+
+```sh
+# Create secret for S3 credentials - REPLACE WITH YOUR ACTUAL CREDENTIALS
+kubectl create secret generic s3-credentials \
+  --from-literal=access-key="YOUR_AWS_ACCESS_KEY_ID" \
+  --from-literal=secret-key="YOUR_AWS_SECRET_ACCESS_KEY"
+
+# Create secret for user password hashes
+kubectl create secret generic user-passwords \
+  --from-literal=alice-hash='$2y$10$rEKx.8vhUWJ1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c' \
+  --from-literal=bob-hash='$2y$10$aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890abcdefghijklmnop'
+
+# Or encode manually and create YAML
+echo -n 'YOUR_ACTUAL_PASSWORD_HASH' | base64
 ```
 
 #### Connecting to SMB Share
