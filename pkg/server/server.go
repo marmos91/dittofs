@@ -370,7 +370,7 @@ func (s *DittoServer) serve(ctx context.Context) error {
 
 	logger.Debug("All adapters launched", "count", len(adapters), "duration", time.Since(startTime))
 
-	// Wait for either context cancellation or adapter error
+	// Wait for either context cancellation, adapter error, or auxiliary server error
 	var shutdownErr error
 	select {
 	case <-ctx.Done():
@@ -382,6 +382,16 @@ func (s *DittoServer) serve(ctx context.Context) error {
 		logger.Error("Adapter failed - initiating shutdown of all adapters", "protocol", adapterErr.protocol, "error", adapterErr.err)
 		s.stopAllAdapters(adapters)
 		shutdownErr = fmt.Errorf("%s adapter error: %w", adapterErr.protocol, adapterErr.err)
+
+	case err := <-metricsErrChan:
+		logger.Error("Metrics server failed - initiating shutdown", "error", err)
+		s.stopAllAdapters(adapters)
+		shutdownErr = fmt.Errorf("metrics server error: %w", err)
+
+	case err := <-apiErrChan:
+		logger.Error("API server failed - initiating shutdown", "error", err)
+		s.stopAllAdapters(adapters)
+		shutdownErr = fmt.Errorf("API server error: %w", err)
 	}
 
 	// Wait for all adapter goroutines to complete
