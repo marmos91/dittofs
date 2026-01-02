@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
+	"github.com/marmos91/dittofs/pkg/api"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -109,6 +110,9 @@ func applyServerDefaults(cfg *ServerConfig) {
 
 	// Apply metrics defaults
 	applyMetricsDefaults(&cfg.Metrics)
+
+	// Apply API defaults
+	applyAPIDefaults(&cfg.API)
 }
 
 // applyMetricsDefaults sets metrics defaults.
@@ -118,6 +122,23 @@ func applyMetricsDefaults(cfg *MetricsConfig) {
 	if cfg.Enabled && cfg.Port == 0 {
 		cfg.Port = 9090
 	}
+}
+
+// applyAPIDefaults sets API server defaults.
+func applyAPIDefaults(cfg *api.APIConfig) {
+	// API server is enabled by default
+	// nil means "not set" -> default to true
+	if cfg.Enabled == nil {
+		enabled := true
+		cfg.Enabled = &enabled
+	}
+
+	// Port defaults to 8080
+	if cfg.Port == 0 {
+		cfg.Port = 8080
+	}
+	// Other defaults (timeouts) are applied in api.APIConfig.applyDefaults()
+	// when the server is created
 }
 
 // applyCacheDefaults sets cache defaults.

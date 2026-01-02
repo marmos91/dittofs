@@ -1,0 +1,224 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"testing"
+	"time"
+)
+
+func TestAPIServer_Lifecycle(t *testing.T) {
+	// Use a random high port to avoid conflicts
+	enabled := true
+	cfg := APIConfig{
+		Enabled:      &enabled,
+		Port:         18080, // High port unlikely to be in use
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+		IdleTimeout:  10 * time.Second,
+	}
+
+	server := NewServer(cfg, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Start server in background
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- server.Start(ctx)
+	}()
+
+	// Give server time to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Make request to health endpoint
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", cfg.Port))
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, resp.StatusCode)
+	}
+
+	// Verify response content type
+	contentType := resp.Header.Get("Content-Type")
+	if contentType != "application/json" {
+		t.Errorf("Expected Content-Type 'application/json', got '%s'", contentType)
+	}
+
+	// Shutdown
+	cancel()
+
+	// Wait for server to stop
+	select {
+	case err := <-errChan:
+		if err != nil && err != context.Canceled {
+			t.Errorf("Unexpected error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Server did not shutdown in time")
+	}
+}
+
+func TestAPIServer_Port(t *testing.T) {
+	enabled := true
+	cfg := APIConfig{
+		Enabled: &enabled,
+		Port:    9999,
+	}
+
+	server := NewServer(cfg, nil)
+
+	if server.Port() != 9999 {
+		t.Errorf("Expected port 9999, got %d", server.Port())
+	}
+}
+
+func TestAPIServer_DefaultConfig(t *testing.T) {
+	enabled := true
+	cfg := APIConfig{
+		Enabled: &enabled,
+		// Port and timeouts not set - should use defaults
+	}
+
+	server := NewServer(cfg, nil)
+
+	// After applyDefaults, port should be 8080
+	if server.Port() != 8080 {
+		t.Errorf("Expected default port 8080, got %d", server.Port())
+	}
+}
+
+func TestAPIServer_HealthEndpoint_NoRegistry(t *testing.T) {
+	enabled := true
+	cfg := APIConfig{
+		Enabled: &enabled,
+		Port:    18081,
+	}
+
+	server := NewServer(cfg, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start server in background
+	go func() {
+		_ = server.Start(ctx)
+	}()
+
+	// Give server time to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Test liveness endpoint (should always be OK)
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", cfg.Port))
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, resp.StatusCode)
+	}
+
+	// Test readiness endpoint (should be 503 with no registry)
+	resp2, err := http.Get(fmt.Sprintf("http://localhost:%d/health/ready", cfg.Port))
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("Expected status %d, got %d", http.StatusServiceUnavailable, resp2.StatusCode)
+	}
+}
+
+func TestAPIServer_RootRedirectsToHealth(t *testing.T) {
+	enabled := true
+	cfg := APIConfig{
+		Enabled: &enabled,
+		Port:    18082,
+	}
+
+	server := NewServer(cfg, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start server in background
+	go func() {
+		_ = server.Start(ctx)
+	}()
+
+	// Give server time to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Create a client that doesn't follow redirects
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/", cfg.Port))
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Errorf("Expected status %d, got %d", http.StatusTemporaryRedirect, resp.StatusCode)
+	}
+
+	location := resp.Header.Get("Location")
+	if location != "/health" {
+		t.Errorf("Expected redirect to '/health', got '%s'", location)
+	}
+}
+
+func TestAPIServer_StoresEndpoint(t *testing.T) {
+	enabled := true
+	cfg := APIConfig{
+		Enabled: &enabled,
+		Port:    18083,
+	}
+
+	server := NewServer(cfg, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start server in background
+	go func() {
+		_ = server.Start(ctx)
+	}()
+
+	// Give server time to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Test stores endpoint (should be 503 with no registry)
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health/stores", cfg.Port))
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("Expected status %d, got %d", http.StatusServiceUnavailable, resp.StatusCode)
+	}
+
+	var response struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if response.Status != "unhealthy" {
+		t.Errorf("Expected status 'unhealthy', got '%s'", response.Status)
+	}
+}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
+	"github.com/marmos91/dittofs/pkg/api"
 	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 	"github.com/spf13/viper"
@@ -140,6 +141,9 @@ type ServerConfig struct {
 
 	// Metrics contains Prometheus metrics server configuration
 	Metrics MetricsConfig `mapstructure:"metrics" yaml:"metrics"`
+
+	// API contains REST API server configuration
+	API api.APIConfig `mapstructure:"api" yaml:"api"`
 }
 
 // MetricsConfig configures the Prometheus metrics HTTP server.

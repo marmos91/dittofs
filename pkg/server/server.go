@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter"
+	"github.com/marmos91/dittofs/pkg/api"
 	"github.com/marmos91/dittofs/pkg/metrics"
 	"github.com/marmos91/dittofs/pkg/registry"
 )
@@ -55,6 +56,9 @@ type DittoServer struct {
 
 	// metricsServer is the HTTP server exposing Prometheus metrics (optional)
 	metricsServer *metrics.Server
+
+	// apiServer is the HTTP server for the REST API (optional)
+	apiServer *api.Server
 
 	// shutdownTimeout is the maximum time to wait for adapter shutdown
 	shutdownTimeout time.Duration
@@ -133,6 +137,31 @@ func (s *DittoServer) SetMetricsServer(metricsServer *metrics.Server) {
 
 	if metricsServer != nil {
 		logger.Info("Metrics server registered", "port", metricsServer.Port())
+	}
+}
+
+// SetAPIServer sets the optional REST API HTTP server.
+//
+// The API server provides health check endpoints and will be extended with
+// management APIs in future phases.
+//
+// This method must be called before Serve(). Calling it after Serve()
+// will panic.
+//
+// Parameters:
+//   - apiServer: The API server to register, or nil to disable
+func (s *DittoServer) SetAPIServer(apiServer *api.Server) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.served {
+		panic("cannot set API server after Serve() has been called")
+	}
+
+	s.apiServer = apiServer
+
+	if apiServer != nil {
+		logger.Info("API server registered", "port", apiServer.Port())
 	}
 }
 
@@ -294,6 +323,17 @@ func (s *DittoServer) serve(ctx context.Context) error {
 		}()
 	}
 
+	// Start API server if configured
+	apiErrChan := make(chan error, 1)
+	if s.apiServer != nil {
+		go func() {
+			if err := s.apiServer.Start(ctx); err != nil {
+				logger.Error("API server error", "error", err)
+				apiErrChan <- err
+			}
+		}()
+	}
+
 	// Channel to collect errors from adapter goroutines
 	// Buffered to prevent goroutine leaks if multiple adapters fail simultaneously
 	errChan := make(chan adapterError, len(adapters))
@@ -394,6 +434,17 @@ func (s *DittoServer) serve(ctx context.Context) error {
 
 		if err := s.metricsServer.Stop(metricsCtx); err != nil {
 			logger.Error("Metrics server shutdown error", "error", err)
+		}
+	}
+
+	// Stop API server
+	if s.apiServer != nil {
+		logger.Debug("Stopping API server")
+		apiCtx, apiCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer apiCancel()
+
+		if err := s.apiServer.Stop(apiCtx); err != nil {
+			logger.Error("API server shutdown error", "error", err)
 		}
 	}
 
