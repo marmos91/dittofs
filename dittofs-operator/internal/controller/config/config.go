@@ -1,46 +1,57 @@
 package config
 
 import (
+	"context"
 	"fmt"
+	"maps"
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/dittofs-operator/api/v1alpha1"
 	"github.com/marmos91/dittofs/dittofs-operator/utils/nfs"
 	"github.com/marmos91/dittofs/dittofs-operator/utils/smb"
 
 	"gopkg.in/yaml.v3"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, error) {
+func GenerateDittoFSConfig(ctx context.Context, client client.Client, dittoServer *dittoiov1alpha1.DittoServer) (string, error) {
 	metadataStores := make(map[string]MetadataStore)
 	contentStores := make(map[string]ContentStore)
 
 	for _, backend := range dittoServer.Spec.Config.Backends {
+		// Resolve config values from both direct config and secret references
+		resolvedConfig, err := resolveBackendConfig(ctx, client, dittoServer.Namespace, backend)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve config for backend %s: %w", backend.Name, err)
+		}
+
 		switch backend.Type {
 		case "badger":
 			metadataStores[backend.Name] = MetadataStore{
 				Type: "badger",
 				Badger: &BadgerConfig{
-					DBPath: getConfigValue(backend.Config, "path", "/data/metadata"),
+					DBPath: getConfigValue(resolvedConfig, "path", "/data/metadata"),
 				},
 			}
 		case "local":
 			contentStores[backend.Name] = ContentStore{
 				Type: "filesystem",
 				Filesystem: &FilesystemConfig{
-					Path: getConfigValue(backend.Config, "path", "/data/content"),
+					Path: getConfigValue(resolvedConfig, "path", "/data/content"),
 				},
 			}
 		case "s3":
 			contentStores[backend.Name] = ContentStore{
 				Type: "s3",
 				S3: &S3Config{
-					Bucket:          getConfigValue(backend.Config, "bucket", ""),
-					Region:          getConfigValue(backend.Config, "region", "us-east-1"),
-					Endpoint:        getConfigValue(backend.Config, "endpoint", ""),
-					AccessKeyID:     getConfigValue(backend.Config, "access_key_id", ""),
-					SecretAccessKey: getConfigValue(backend.Config, "secret_access_key", ""),
-					ForcePathStyle:  getConfigValue(backend.Config, "force_path_style", "") == "true",
+					Bucket:          getConfigValue(resolvedConfig, "bucket", ""),
+					Region:          getConfigValue(resolvedConfig, "region", "us-east-1"),
+					Endpoint:        getConfigValue(resolvedConfig, "endpoint", ""),
+					AccessKeyID:     getConfigValue(resolvedConfig, "access_key_id", ""),
+					SecretAccessKey: getConfigValue(resolvedConfig, "secret_access_key", ""),
+					ForcePathStyle:  getConfigValue(resolvedConfig, "force_path_style", "") == "true",
 				},
 			}
 		default:
@@ -175,16 +186,13 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 	var guest *Guest
 
 	if dittoServer.Spec.Users != nil {
-		for _, u := range dittoServer.Spec.Users.Users {
-			users = append(users, User{
-				Username:         u.Username,
-				PasswordHash:     u.PasswordHash,
-				Enabled:          u.Enabled,
-				UID:              u.UID,
-				GID:              u.GID,
-				Groups:           u.Groups,
-				SharePermissions: u.SharePermissions,
-			})
+		// Resolve users with secret support
+		for _, userSpec := range dittoServer.Spec.Users.Users {
+			user, err := resolveUserConfig(ctx, client, dittoServer.Namespace, userSpec)
+			if err != nil {
+				return "", fmt.Errorf("failed to resolve config for user %s: %w", userSpec.Username, err)
+			}
+			users = append(users, user)
 		}
 
 		for _, g := range dittoServer.Spec.Users.Groups {
@@ -306,6 +314,77 @@ func getConfigValue(config map[string]string, key, defaultValue string) string {
 		return val
 	}
 	return defaultValue
+}
+
+// resolveBackendConfig resolves configuration values from both direct config and secret references
+func resolveBackendConfig(ctx context.Context, client client.Client, namespace string, backend dittoiov1alpha1.BackendConfig) (map[string]string, error) {
+	resolved := make(map[string]string)
+
+	// Copy direct config values
+	maps.Copy(resolved, backend.Config)
+
+	// Resolve secret references (they override direct config values)
+	for key, secretRef := range backend.SecretRefs {
+		secret := &corev1.Secret{}
+		secretKey := types.NamespacedName{
+			Name:      secretRef.Name,
+			Namespace: namespace,
+		}
+
+		if err := client.Get(ctx, secretKey, secret); err != nil {
+			return nil, fmt.Errorf("failed to get secret %s: %w", secretRef.Name, err)
+		}
+
+		if secretValue, ok := secret.Data[secretRef.Key]; ok {
+			resolved[key] = string(secretValue)
+		} else {
+			return nil, fmt.Errorf("key %s not found in secret %s", secretRef.Key, secretRef.Name)
+		}
+	}
+
+	return resolved, nil
+}
+
+// resolveUserConfig resolves user configuration including password from secrets
+func resolveUserConfig(ctx context.Context, client client.Client, namespace string, userSpec dittoiov1alpha1.UserSpec) (User, error) {
+	user := User{
+		Username:         userSpec.Username,
+		Enabled:          userSpec.Enabled,
+		UID:              userSpec.UID,
+		GID:              userSpec.GID,
+		Groups:           userSpec.Groups,
+		SharePermissions: make(map[string]string),
+	}
+
+	// Copy share permissions
+	maps.Copy(user.SharePermissions, userSpec.SharePermissions)
+
+	// Resolve password hash
+	if userSpec.PasswordSecretRef != nil {
+		// Use secret reference
+		secret := &corev1.Secret{}
+		secretKey := types.NamespacedName{
+			Name:      userSpec.PasswordSecretRef.Name,
+			Namespace: namespace,
+		}
+
+		if err := client.Get(ctx, secretKey, secret); err != nil {
+			return user, fmt.Errorf("failed to get secret %s: %w", userSpec.PasswordSecretRef.Name, err)
+		}
+
+		if passwordHash, ok := secret.Data[userSpec.PasswordSecretRef.Key]; ok {
+			user.PasswordHash = string(passwordHash)
+		} else {
+			return user, fmt.Errorf("key %s not found in secret %s", userSpec.PasswordSecretRef.Key, userSpec.PasswordSecretRef.Name)
+		}
+	} else if userSpec.PasswordHash != "" {
+		// Use direct password hash (deprecated but still supported)
+		user.PasswordHash = userSpec.PasswordHash
+	} else {
+		return user, fmt.Errorf("no password hash provided for user %s (use either passwordHash or passwordSecretRef)", userSpec.Username)
+	}
+
+	return user, nil
 }
 
 // parseSizeString converts Kubernetes-style size strings (e.g., "1Gi", "512Mi", "100Ki")
