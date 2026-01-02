@@ -33,6 +33,10 @@ type Server struct {
 //
 // The server is created in a stopped state. Call Start() to begin serving requests.
 //
+// Defaults are applied here to ensure the server works correctly even when
+// created directly (e.g., in tests). This is idempotent with the defaults
+// applied during config loading.
+//
 // Parameters:
 //   - config: Server configuration (port, timeouts)
 //   - registry: Registry for store health checks (may be nil for basic health only)

@@ -137,8 +137,17 @@ func applyAPIDefaults(cfg *api.APIConfig) {
 	if cfg.Port == 0 {
 		cfg.Port = 8080
 	}
-	// Other defaults (timeouts) are applied in api.APIConfig.applyDefaults()
-	// when the server is created
+
+	// Timeout defaults
+	if cfg.ReadTimeout == 0 {
+		cfg.ReadTimeout = 10 * time.Second
+	}
+	if cfg.WriteTimeout == 0 {
+		cfg.WriteTimeout = 10 * time.Second
+	}
+	if cfg.IdleTimeout == 0 {
+		cfg.IdleTimeout = 60 * time.Second
+	}
 }
 
 // applyCacheDefaults sets cache defaults.
