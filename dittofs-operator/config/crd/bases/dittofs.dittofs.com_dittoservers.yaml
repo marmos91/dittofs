@@ -1097,8 +1097,9 @@ spec:
                           type: string
                         passwordSecretRef:
                           description: |-
-                            Reference to a Secret containing the password hash
-                            The secret should contain a key "passwordHash" with the bcrypt hash value
+                            Reference to a Secret key containing the bcrypt password hash
+                            The Secret name and key are specified via the SecretKeySelector
+                            For example, you may store the hash under a key such as "passwordHash"
                             This is the preferred way to store user passwords
                           properties:
                             key:
