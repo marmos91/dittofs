@@ -8,6 +8,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/registry"
 )
 
+// HealthCheckTimeout is the maximum time allowed for health check operations.
+// This timeout applies to store health checks to prevent slow stores from
+// blocking health probes indefinitely.
+const HealthCheckTimeout = 5 * time.Second
+
 // HealthHandler handles health check endpoints.
 //
 // Health endpoints are unauthenticated and provide:
@@ -95,7 +100,7 @@ func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
 	defer cancel()
 
 	response := StoresResponse{

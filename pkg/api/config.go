@@ -45,7 +45,7 @@ func (c *APIConfig) IsEnabled() bool {
 
 // applyDefaults fills in zero values with sensible defaults.
 func (c *APIConfig) applyDefaults() {
-	if c.Port <= 0 {
+	if c.Port == 0 {
 		c.Port = 8080
 	}
 	if c.ReadTimeout == 0 {
