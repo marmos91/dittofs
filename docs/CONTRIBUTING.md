@@ -13,7 +13,38 @@ DittoFS is in active development and welcomes contributions! This guide will hel
 
 ## Getting Started
 
-### Prerequisites
+### Using Nix (Recommended)
+
+The easiest way to get a complete development environment is using [Nix](https://nixos.org/):
+
+```bash
+# Clone repository
+git clone https://github.com/marmos91/dittofs.git
+cd dittofs
+
+# Enter development shell (installs all dependencies automatically)
+nix develop
+
+# Or with direnv (auto-activates when entering directory)
+direnv allow
+
+# Build and run
+go build -o dittofs cmd/dittofs/main.go
+./dittofs init
+./dittofs start
+```
+
+The Nix flake provides:
+- Go 1.25 with gopls, delve debugger
+- golangci-lint for code quality
+- NFS utilities for E2E testing (Linux)
+- ACL libraries for POSIX compliance testing
+
+### Manual Setup (Alternative)
+
+If you prefer not to use Nix, install dependencies manually:
+
+#### Prerequisites
 
 - Go 1.25 or higher
 - NFS client tools (for E2E testing)
