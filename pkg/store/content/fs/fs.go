@@ -157,16 +157,25 @@ func (r *FSContentStore) Close() error {
 // This verifies that the base directory exists and is accessible by attempting
 // to stat it. This is a quick operation that validates the store is operational.
 //
+// Note: The os.Stat syscall is blocking and doesn't respect context cancellation.
+// For network filesystems (NFS, CIFS), this could potentially hang if the remote
+// server is unresponsive. Callers should ensure appropriate timeouts are set
+// at the context level, and the health check framework should handle slow responses.
+//
 // Parameters:
-//   - ctx: Context for cancellation and timeouts
+//   - ctx: Context for cancellation and timeouts (checked before syscall)
 //
 // Returns:
 //   - error: Returns error if base directory is inaccessible or context is cancelled
 func (r *FSContentStore) Healthcheck(ctx context.Context) error {
+	// Check context before potentially blocking syscall
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
+	// Note: os.Stat is a blocking syscall that doesn't respect context.
+	// For local filesystems this is typically fast (<1ms).
+	// For network filesystems, ensure caller uses appropriate timeouts.
 	_, err := os.Stat(r.basePath)
 	if err != nil {
 		return fmt.Errorf("base directory inaccessible: %w", err)

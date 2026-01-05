@@ -56,8 +56,8 @@ func TestAPIServer_Lifecycle(t *testing.T) {
 	// Wait for server to stop
 	select {
 	case err := <-errChan:
-		if err != nil && err != context.Canceled {
-			t.Errorf("Unexpected error: %v", err)
+		if err != nil {
+			t.Errorf("Expected nil on graceful shutdown, got: %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Server did not shutdown in time")

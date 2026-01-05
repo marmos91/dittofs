@@ -74,7 +74,6 @@ func NewServer(config APIConfig, registry *registry.Registry) *Server {
 //
 // Returns:
 //   - nil on graceful shutdown
-//   - http.ErrServerClosed on normal shutdown
 //   - error if the server fails to start or shutdown encounters an error
 func (s *Server) Start(ctx context.Context) error {
 	// Start server in goroutine
