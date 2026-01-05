@@ -3,6 +3,7 @@
 # DittoFS
 
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Nix Flake](https://img.shields.io/badge/Nix-flake-5277C3?style=flat&logo=nixos)](https://nixos.org/)
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen?style=flat)](https://github.com/marmos91/dittofs)
 [![Go Report Card](https://goreportcard.com/badge/github.com/marmos91/dittofs)](https://goreportcard.com/report/github.com/marmos91/dittofs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat)](LICENSE)
@@ -60,8 +61,27 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 
 ### Installation
 
+#### Using Nix (Recommended)
+
 ```bash
-# Build from source
+# Run directly without installation
+nix run github:marmos91/dittofs -- init
+nix run github:marmos91/dittofs -- start
+
+# Or install to your profile
+nix profile install github:marmos91/dittofs
+dittofs init && dittofs start
+
+# Development environment with all tools
+nix develop github:marmos91/dittofs
+```
+
+#### Build from Source
+
+```bash
+# Clone and build
+git clone https://github.com/marmos91/dittofs.git
+cd dittofs
 go build -o dittofs cmd/dittofs/main.go
 
 # Initialize configuration (creates ~/.config/dittofs/config.yaml)
