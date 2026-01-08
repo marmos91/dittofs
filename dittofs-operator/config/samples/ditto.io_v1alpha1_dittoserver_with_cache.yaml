@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: dittoserver-with-cache
 spec:
-  image: fulviodenza/dittofs:latest
+  image: dittofs:latest
   replicas: 1
   
   # Storage for server's internal volumes
