@@ -134,6 +134,20 @@ func NewDittoServer(opts ...func(*DittoServer)) *DittoServer {
 	return obj
 }
 
+// WithSMB sets the SMB of a DittoServerSpec
+func WithSMB(smb *SMBAdapterSpec) func(*DittoServerSpec) {
+	return func(obj *DittoServerSpec) {
+		obj.SMB = smb
+	}
+}
+
+// WithUsers sets the Users of a DittoServerSpec
+func WithUsers(users *UserManagementSpec) func(*DittoServerSpec) {
+	return func(obj *DittoServerSpec) {
+		obj.Users = users
+	}
+}
+
 // WithName sets the name of the DittoServer
 func WithName(name string) func(*DittoServer) {
 	return func(obj *DittoServer) {

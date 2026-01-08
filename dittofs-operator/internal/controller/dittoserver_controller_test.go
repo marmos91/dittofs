@@ -37,6 +37,7 @@ type fields struct {
 	configMap   *corev1.ConfigMap
 	service     *corev1.Service
 	statefulSet *appsv1.StatefulSet
+	secrets     []*corev1.Secret
 }
 
 type expectedStatus struct {
@@ -211,6 +212,361 @@ func TestReconcileDittoServer(t *testing.T) {
 				},
 			},
 		},
+		{
+			description: "Create DittoServer with SMB enabled (default port)",
+			fields: fields{
+				dittoServer: v1alpha1.NewDittoServer(
+					v1alpha1.WithName("smb-enabled-server"),
+					v1alpha1.WithNamespace("default"),
+					v1alpha1.WithSpec(
+						*v1alpha1.NewDittoServerSpec(
+							v1alpha1.WithStorage(
+								v1alpha1.StorageSpec{
+									MetadataSize: "5Gi",
+								},
+							),
+							v1alpha1.WithSMB(&v1alpha1.SMBAdapterSpec{
+								Enabled: true,
+							}),
+						),
+					),
+				),
+			},
+			expectedStatus: &expectedStatus{
+				phase:           "Pending",
+				conditionReason: "StatefulSetNotReady",
+				conditionStatus: metav1.ConditionFalse,
+			},
+			request: ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: "default",
+					Name:      "smb-enabled-server",
+				},
+			},
+		},
+		{
+			description: "Create DittoServer with SMB enabled and custom port",
+			fields: fields{
+				dittoServer: func() *v1alpha1.DittoServer {
+					customPort := int32(8445)
+					return v1alpha1.NewDittoServer(
+						v1alpha1.WithName("smb-custom-port-server"),
+						v1alpha1.WithNamespace("default"),
+						v1alpha1.WithSpec(
+							*v1alpha1.NewDittoServerSpec(
+								v1alpha1.WithStorage(
+									v1alpha1.StorageSpec{
+										MetadataSize: "5Gi",
+									},
+								),
+								v1alpha1.WithSMB(&v1alpha1.SMBAdapterSpec{
+									Enabled: true,
+									Port:    &customPort,
+								}),
+							),
+						),
+					)
+				}(),
+			},
+			expectedStatus: &expectedStatus{
+				phase:           "Pending",
+				conditionReason: "StatefulSetNotReady",
+				conditionStatus: metav1.ConditionFalse,
+			},
+			request: ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: "default",
+					Name:      "smb-custom-port-server",
+				},
+			},
+		},
+		{
+			description: "Create DittoServer with SMB disabled explicitly",
+			fields: fields{
+				dittoServer: v1alpha1.NewDittoServer(
+					v1alpha1.WithName("smb-disabled-server"),
+					v1alpha1.WithNamespace("default"),
+					v1alpha1.WithSpec(
+						*v1alpha1.NewDittoServerSpec(
+							v1alpha1.WithStorage(
+								v1alpha1.StorageSpec{
+									MetadataSize: "5Gi",
+								},
+							),
+							v1alpha1.WithSMB(&v1alpha1.SMBAdapterSpec{
+								Enabled: false,
+							}),
+						),
+					),
+				),
+			},
+			expectedStatus: &expectedStatus{
+				phase:           "Pending",
+				conditionReason: "StatefulSetNotReady",
+				conditionStatus: metav1.ConditionFalse,
+			},
+			request: ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: "default",
+					Name:      "smb-disabled-server",
+				},
+			},
+		},
+		{
+			description: "Create DittoServer with SMB enabled and comprehensive configuration",
+			fields: fields{
+				dittoServer: func() *v1alpha1.DittoServer {
+					customPort := int32(9445)
+					maxConnections := int32(100)
+					minGrant := int32(16)
+					maxGrant := int32(8192)
+					initialGrant := int32(256)
+					maxSessionCredits := int32(65535)
+					loadThresholdHigh := int32(1000)
+					loadThresholdLow := int32(100)
+					aggressiveClientThreshold := int32(256)
+
+					return v1alpha1.NewDittoServer(
+						v1alpha1.WithName("smb-full-config-server"),
+						v1alpha1.WithNamespace("default"),
+						v1alpha1.WithSpec(
+							*v1alpha1.NewDittoServerSpec(
+								v1alpha1.WithStorage(
+									v1alpha1.StorageSpec{
+										MetadataSize: "5Gi",
+									},
+								),
+								v1alpha1.WithSMB(&v1alpha1.SMBAdapterSpec{
+									Enabled:        true,
+									Port:           &customPort,
+									MaxConnections: &maxConnections,
+									Timeouts: &v1alpha1.SMBTimeoutsSpec{
+										Read:     "60s",
+										Write:    "60s",
+										Idle:     "300s",
+										Shutdown: "30s",
+									},
+									Credits: &v1alpha1.SMBCreditsSpec{
+										MinGrant:                  &minGrant,
+										MaxGrant:                  &maxGrant,
+										InitialGrant:              &initialGrant,
+										MaxSessionCredits:         &maxSessionCredits,
+										LoadThresholdHigh:         &loadThresholdHigh,
+										LoadThresholdLow:          &loadThresholdLow,
+										AggressiveClientThreshold: &aggressiveClientThreshold,
+									},
+								}),
+							),
+						),
+					)
+				}(),
+			},
+			expectedStatus: &expectedStatus{
+				phase:           "Pending",
+				conditionReason: "StatefulSetNotReady",
+				conditionStatus: metav1.ConditionFalse,
+			},
+			request: ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: "default",
+					Name:      "smb-full-config-server",
+				},
+			},
+		},
+		{
+			description: "Create DittoServer with SMB and user management using secrets",
+			fields: fields{
+				dittoServer: func() *v1alpha1.DittoServer {
+					return v1alpha1.NewDittoServer(
+						v1alpha1.WithName("smb-with-users-server"),
+						v1alpha1.WithNamespace("default"),
+						v1alpha1.WithSpec(
+							*v1alpha1.NewDittoServerSpec(
+								v1alpha1.WithStorage(
+									v1alpha1.StorageSpec{
+										MetadataSize: "5Gi",
+									},
+								),
+								v1alpha1.WithSMB(&v1alpha1.SMBAdapterSpec{
+									Enabled: true,
+								}),
+								v1alpha1.WithUsers(&v1alpha1.UserManagementSpec{
+									Users: []v1alpha1.UserSpec{
+										{
+											Username: "testuser",
+											PasswordSecretRef: &corev1.SecretKeySelector{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: "user-credentials",
+												},
+												Key: "testuser-password-hash",
+											},
+											UID: 1001,
+											GID: 1001,
+											SharePermissions: map[string]string{
+												"/": "read-write",
+											},
+										},
+									},
+									Groups: []v1alpha1.GroupSpec{
+										{
+											Name: "testgroup",
+											GID:  1001,
+											SharePermissions: map[string]string{
+												"/": "read",
+											},
+										},
+									},
+									Guest: &v1alpha1.GuestSpec{
+										Enabled: true,
+										UID:     65534,
+										GID:     65534,
+										SharePermissions: map[string]string{
+											"/": "read",
+										},
+									},
+								}),
+							),
+						),
+					)
+				}(),
+				secrets: []*corev1.Secret{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "user-credentials",
+							Namespace: "default",
+						},
+						Data: map[string][]byte{
+							"testuser-password-hash": []byte("$2y$10$rEKx.8vhUWJ1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c"), // bcrypt hash for "testpass"
+						},
+					},
+				},
+			},
+			expectedStatus: &expectedStatus{
+				phase:           "Pending",
+				conditionReason: "StatefulSetNotReady",
+				conditionStatus: metav1.ConditionFalse,
+			},
+			request: ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: "default",
+					Name:      "smb-with-users-server",
+				},
+			},
+		},
+		{
+			description: "Create DittoServer with S3 backend and SMB using secrets",
+			fields: fields{
+				dittoServer: func() *v1alpha1.DittoServer {
+					return v1alpha1.NewDittoServer(
+						v1alpha1.WithName("s3-smb-secrets-server"),
+						v1alpha1.WithNamespace("default"),
+						v1alpha1.WithSpec(
+							*v1alpha1.NewDittoServerSpec(
+								v1alpha1.WithStorage(
+									v1alpha1.StorageSpec{
+										MetadataSize: "5Gi",
+									},
+								),
+								v1alpha1.WithConfig(v1alpha1.DittoConfig{
+									Backends: []v1alpha1.BackendConfig{
+										{
+											Name: "badger-metadata",
+											Type: "badger",
+											Config: map[string]string{
+												"path": "/data/metadata",
+											},
+										},
+										{
+											Name: "s3-content",
+											Type: "s3",
+											Config: map[string]string{
+												"bucket": "dittofs-bucket",
+												"region": "us-east-1",
+											},
+											SecretRefs: map[string]corev1.SecretKeySelector{
+												"access_key_id": {
+													LocalObjectReference: corev1.LocalObjectReference{
+														Name: "s3-credentials",
+													},
+													Key: "access-key-id",
+												},
+												"secret_access_key": {
+													LocalObjectReference: corev1.LocalObjectReference{
+														Name: "s3-credentials",
+													},
+													Key: "secret-access-key",
+												},
+											},
+										},
+									},
+									Shares: []v1alpha1.ShareConfig{
+										{
+											Name:          "s3-share",
+											ExportPath:    "/s3",
+											MetadataStore: "badger-metadata",
+											ContentStore:  "s3-content",
+										},
+									},
+								}),
+								v1alpha1.WithSMB(&v1alpha1.SMBAdapterSpec{
+									Enabled: true,
+								}),
+								v1alpha1.WithUsers(&v1alpha1.UserManagementSpec{
+									Users: []v1alpha1.UserSpec{
+										{
+											Username: "s3user",
+											PasswordSecretRef: &corev1.SecretKeySelector{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: "user-credentials",
+												},
+												Key: "s3user-password-hash",
+											},
+											UID: 1002,
+											GID: 1002,
+											SharePermissions: map[string]string{
+												"/s3": "read-write",
+											},
+										},
+									},
+								}),
+							),
+						),
+					)
+				}(),
+				secrets: []*corev1.Secret{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "s3-credentials",
+							Namespace: "default",
+						},
+						Data: map[string][]byte{
+							"access-key-id":     []byte("access_key"),
+							"secret-access-key": []byte("aws_secret_example"),
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "user-credentials",
+							Namespace: "default",
+						},
+						Data: map[string][]byte{
+							"s3user-password-hash": []byte("$2y$10$anotherHashForS3User1234567890abcdefghijklmnopqr"),
+						},
+					},
+				},
+			},
+			expectedStatus: &expectedStatus{
+				phase:           "Pending",
+				conditionReason: "StatefulSetNotReady",
+				conditionStatus: metav1.ConditionFalse,
+			},
+			request: ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: "default",
+					Name:      "s3-smb-secrets-server",
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -224,7 +580,7 @@ func TestReconcileDittoServer(t *testing.T) {
 			}
 
 			verifyConfigMap(t, ctx, r, tt.request)
-			verifyService(t, ctx, r, tt.request)
+			verifyService(t, ctx, r, tt.request, tt.fields.dittoServer)
 			verifyStatefulSet(t, ctx, r, tt.request, tt.fields.dittoServer)
 			verifyDittoServerStatus(t, ctx, r, tt.request, tt.expectedStatus)
 		})
@@ -247,7 +603,7 @@ func verifyConfigMap(t *testing.T, ctx context.Context, r *DittoServerReconciler
 	}
 }
 
-func verifyService(t *testing.T, ctx context.Context, r *DittoServerReconciler, req ctrl.Request) {
+func verifyService(t *testing.T, ctx context.Context, r *DittoServerReconciler, req ctrl.Request, dittoServer *v1alpha1.DittoServer) {
 	service := &corev1.Service{}
 	serviceKey := types.NamespacedName{
 		Namespace: req.Namespace,
@@ -258,17 +614,16 @@ func verifyService(t *testing.T, ctx context.Context, r *DittoServerReconciler, 
 		return
 	}
 
-	if len(service.Spec.Ports) != 2 {
-		t.Errorf("Expected 2 service ports, got %d", len(service.Spec.Ports))
-	}
-
-	hasNFS, hasMetrics := false, false
+	hasNFS, hasMetrics, hasSMB := false, false, false
 	for _, port := range service.Spec.Ports {
 		if port.Name == "nfs" {
 			hasNFS = true
 		}
 		if port.Name == "metrics" {
 			hasMetrics = true
+		}
+		if port.Name == "smb" {
+			hasSMB = true
 		}
 	}
 
@@ -277,6 +632,16 @@ func verifyService(t *testing.T, ctx context.Context, r *DittoServerReconciler, 
 	}
 	if !hasMetrics {
 		t.Errorf("Service missing metrics port")
+	}
+
+	// Check SMB port only if SMB is enabled
+	if dittoServer != nil && dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Enabled && !hasSMB {
+		t.Errorf("Service missing SMB port when SMB is enabled")
+	}
+
+	// Check that SMB port is NOT present when SMB is disabled
+	if (dittoServer == nil || dittoServer.Spec.SMB == nil || !dittoServer.Spec.SMB.Enabled) && hasSMB {
+		t.Errorf("Service has SMB port when SMB is disabled")
 	}
 }
 
@@ -416,6 +781,11 @@ func setupDittoServerReconciler(t *testing.T, fields fields) *DittoServerReconci
 	}
 	if fields.statefulSet != nil {
 		objs = append(objs, fields.statefulSet)
+	}
+	for _, secret := range fields.secrets {
+		if secret != nil {
+			objs = append(objs, secret)
+		}
 	}
 
 	fakeClient := fake.NewClientBuilder().

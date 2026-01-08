@@ -37,6 +37,14 @@ type DittoServerSpec struct {
 	// +optional
 	NFSPort *int32 `json:"nfsPort,omitempty"`
 
+	// SMB adapter configuration
+	// +optional
+	SMB *SMBAdapterSpec `json:"smb,omitempty"`
+
+	// User management configuration
+	// +optional
+	Users *UserManagementSpec `json:"users,omitempty"`
+
 	// Resource requirements for the DittoFS container (CPU, memory limits/requests)
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
@@ -141,6 +149,18 @@ type ShareConfig struct {
 	// +kubebuilder:default={"anonymous","unix"}
 	// +optional
 	AllowedAuthMethods []string `json:"allowedAuthMethods,omitempty"`
+
+	// AllowGuest allows guest/anonymous access to this share
+	// +kubebuilder:default=false
+	// +optional
+	AllowGuest *bool `json:"allowGuest,omitempty"`
+
+	// DefaultPermission sets the default permission level for users without explicit permissions
+	// Valid values: none, read, read-write, admin
+	// +kubebuilder:default="read"
+	// +kubebuilder:validation:Enum=none;read;read-write;admin
+	// +optional
+	DefaultPermission string `json:"defaultPermission,omitempty"`
 
 	// IdentityMapping configures user/group mapping for this share
 	// +optional
@@ -302,6 +322,220 @@ type BackendConfig struct {
 	// The structure depends on the Type field
 	// +kubebuilder:example={"bucket":"my-bucket","region":"us-east-1"}
 	Config map[string]string `json:"config,omitempty"`
+
+	// Secret references for sensitive configuration values
+	// Keys should match the expected config keys (e.g., "access_key_id", "secret_access_key")
+	// +optional
+	SecretRefs map[string]corev1.SecretKeySelector `json:"secretRefs,omitempty"`
+}
+
+// SMBAdapterSpec defines SMB protocol configuration
+type SMBAdapterSpec struct {
+	// Enable SMB protocol
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// SMB port to listen on
+	// +kubebuilder:default=445
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Port *int32 `json:"port,omitempty"`
+
+	// Maximum number of concurrent SMB connections (0 = unlimited)
+	// +kubebuilder:default=0
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxConnections *int32 `json:"maxConnections,omitempty"`
+
+	// Maximum number of concurrent requests per SMB connection
+	// +kubebuilder:default=100
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxRequestsPerConnection *int32 `json:"maxRequestsPerConnection,omitempty"`
+
+	// Timeout configurations for SMB operations
+	// +optional
+	Timeouts *SMBTimeoutsSpec `json:"timeouts,omitempty"`
+
+	// SMB credit management configuration
+	// +optional
+	Credits *SMBCreditsSpec `json:"credits,omitempty"`
+
+	// Metrics logging interval (e.g., "5m", "10m")
+	// +kubebuilder:default="5m"
+	// +optional
+	MetricsLogInterval string `json:"metricsLogInterval,omitempty"`
+}
+
+// SMBTimeoutsSpec defines timeout configurations for SMB operations
+type SMBTimeoutsSpec struct {
+	// Maximum time to read request
+	// +kubebuilder:default="5m"
+	// +optional
+	Read string `json:"read,omitempty"`
+
+	// Maximum time to write response
+	// +kubebuilder:default="30s"
+	// +optional
+	Write string `json:"write,omitempty"`
+
+	// Maximum idle time between requests
+	// +kubebuilder:default="5m"
+	// +optional
+	Idle string `json:"idle,omitempty"`
+
+	// Graceful shutdown timeout
+	// +kubebuilder:default="30s"
+	// +optional
+	Shutdown string `json:"shutdown,omitempty"`
+}
+
+// SMBCreditsSpec defines SMB credit management configuration
+type SMBCreditsSpec struct {
+	// Credit grant strategy: fixed, echo, or adaptive
+	// +kubebuilder:default="adaptive"
+	// +kubebuilder:validation:Enum=fixed;echo;adaptive
+	// +optional
+	Strategy string `json:"strategy,omitempty"`
+
+	// Minimum credits per response
+	// +kubebuilder:default=16
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MinGrant *int32 `json:"minGrant,omitempty"`
+
+	// Maximum credits per response
+	// +kubebuilder:default=8192
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxGrant *int32 `json:"maxGrant,omitempty"`
+
+	// Credits for initial requests (NEGOTIATE)
+	// +kubebuilder:default=256
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	InitialGrant *int32 `json:"initialGrant,omitempty"`
+
+	// Maximum outstanding credits per session
+	// +kubebuilder:default=65535
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxSessionCredits *int32 `json:"maxSessionCredits,omitempty"`
+
+	// Server load threshold for throttling (adaptive strategy only)
+	// +kubebuilder:default=1000
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	LoadThresholdHigh *int32 `json:"loadThresholdHigh,omitempty"`
+
+	// Server load threshold for boosting (adaptive strategy only)
+	// +kubebuilder:default=100
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	LoadThresholdLow *int32 `json:"loadThresholdLow,omitempty"`
+
+	// Outstanding requests threshold for client throttling (adaptive strategy only)
+	// +kubebuilder:default=256
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	AggressiveClientThreshold *int32 `json:"aggressiveClientThreshold,omitempty"`
+}
+
+// UserManagementSpec defines user and group management configuration
+type UserManagementSpec struct {
+	// List of users
+	// +optional
+	Users []UserSpec `json:"users,omitempty"`
+
+	// List of groups
+	// +optional
+	Groups []GroupSpec `json:"groups,omitempty"`
+
+	// Guest configuration for anonymous access
+	// +optional
+	Guest *GuestSpec `json:"guest,omitempty"`
+}
+
+// UserSpec defines a user with credentials and permissions
+type UserSpec struct {
+	// Username for authentication
+	// +kubebuilder:validation:Required
+	Username string `json:"username"`
+
+	// Password hash (bcrypt) - DEPRECATED: Use passwordSecretRef instead
+	// Generate with: htpasswd -bnBC 10 "" password | tr -d ':\n'
+	// +optional
+	PasswordHash string `json:"passwordHash,omitempty"`
+
+	// Reference to a Secret key containing the bcrypt password hash
+	// The Secret name and key are specified via the SecretKeySelector
+	// For example, you may store the hash under a key such as "passwordHash"
+	// This is the preferred way to store user passwords
+	// +optional
+	PasswordSecretRef *corev1.SecretKeySelector `json:"passwordSecretRef,omitempty"`
+
+	// Whether the user is enabled
+	// +kubebuilder:default=true
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Unix UID for NFS identity mapping
+	// +kubebuilder:validation:Required
+	UID uint32 `json:"uid"`
+
+	// Primary Unix GID
+	// +kubebuilder:validation:Required
+	GID uint32 `json:"gid"`
+
+	// Group membership (by group name)
+	// +optional
+	Groups []string `json:"groups,omitempty"`
+
+	// Per-share permissions (overrides group permissions)
+	// Map of share path to permission level (none, read, read-write, admin)
+	// +optional
+	SharePermissions map[string]string `json:"sharePermissions,omitempty"`
+}
+
+// GroupSpec defines a group with share-level permissions
+type GroupSpec struct {
+	// Unique group name
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Unix GID
+	// +kubebuilder:validation:Required
+	GID uint32 `json:"gid"`
+
+	// Per-share permissions for all group members
+	// Map of share path to permission level (none, read, read-write, admin)
+	// +optional
+	SharePermissions map[string]string `json:"sharePermissions,omitempty"`
+}
+
+// GuestSpec defines guest/anonymous access configuration
+type GuestSpec struct {
+	// Enable guest/anonymous access
+	// +kubebuilder:default=true
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Unix UID for guest users
+	// +kubebuilder:default=65534
+	// +optional
+	UID uint32 `json:"uid,omitempty"`
+
+	// Unix GID for guest users
+	// +kubebuilder:default=65534
+	// +optional
+	GID uint32 `json:"gid,omitempty"`
+
+	// Per-share permissions for guests
+	// Map of share path to permission level (none, read, read-write, admin)
+	// +optional
+	SharePermissions map[string]string `json:"sharePermissions,omitempty"`
 }
 
 // ServiceSpec defines the Kubernetes Service for the NFS server
@@ -355,7 +589,7 @@ type DittoServer struct {
 // DittoServerList contains a list of DittoServer
 type DittoServerList struct {
 	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
+	metav1.ListMeta `json:"metadata"`
 	Items           []DittoServer `json:"items"`
 }
 

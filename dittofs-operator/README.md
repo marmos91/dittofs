@@ -12,6 +12,9 @@ The DittoFS Operator automates the deployment, configuration, and lifecycle mana
 - **Automatic Resource Management**: Handles StatefulSets, Services, and ConfigMaps automatically
 - **Storage Configuration**: Supports customizable metadata and content storage sizes
 - **NFS Protocol Support**: Exposes NFS endpoints for distributed file access
+- **SMB Protocol Support**: Built-in SMB/CIFS server with authentication and access control
+- **User Management**: Integrated user authentication with bcrypt password hashing
+- **Permission Control**: Fine-grained share-level permissions for users, groups, and guests
 - **High Availability**: Support for multiple replicas with proper resource allocation
 - **Status Tracking**: Real-time status updates with condition reporting
 - **Flexible Configuration**: Customize resources, security contexts, and service types
@@ -35,6 +38,12 @@ The `DittoServer` resource represents a managed DittoFS server instance.
 | `service.type` | string | Service type (ClusterIP, LoadBalancer, NodePort) | No |
 | `service.annotations` | map[string]string | Service annotations | No |
 | `nfsPort` | int32 | NFS port (default: 2049) | No |
+| `smb.enabled` | bool | Enable SMB protocol (default: false) | No |
+| `smb.port` | int32 | SMB port (default: 445) | No |
+| `smb.maxConnections` | int32 | Max concurrent SMB connections (0 = unlimited) | No |
+| `smb.timeouts` | SMBTimeoutsSpec | SMB operation timeouts | No |
+| `smb.credits` | SMBCreditsSpec | SMB credit management configuration | No |
+| `users` | UserManagementSpec | User authentication and permissions | No |
 | `securityContext` | SecurityContext | Container security context | No |
 | `podSecurityContext` | PodSecurityContext | Pod security context | No |
 
@@ -44,6 +53,7 @@ The `DittoServer` resource represents a managed DittoFS server instance.
 |-------|------|-------------|
 | `phase` | string | Current phase (Pending, Running, Stopped) |
 | `nfsEndpoint` | string | NFS endpoint for mounting |
+| `smbEndpoint` | string | SMB endpoint for connections |
 | `availableReplicas` | int32 | Number of ready replicas |
 | `conditions` | []Condition | Status conditions |
 
@@ -68,7 +78,7 @@ DittoServer (CR)
 ### Components
 
 - **ConfigMap**: Contains the generated DittoFS configuration file
-- **Service**: Exposes NFS (default: 2049) and metrics (9090) ports
+- **Service**: Exposes NFS (default: 2049), SMB (default: 445), and metrics (9090) ports
 - **StatefulSet**: Manages DittoFS pods with stable network identities
 - **PersistentVolumeClaims**: Provides storage for metadata and optionally content
 
@@ -157,6 +167,251 @@ Check the status:
 kubectl get dittoserver my-dittofs
 kubectl describe dittoserver my-dittofs
 ```
+
+### Security Best Practices
+
+**⚠️ IMPORTANT: Never store credentials directly in YAML files!**
+
+- Always use Kubernetes Secrets for storing sensitive data like passwords, API keys, and access tokens
+- Use `passwordSecretRef` instead of `passwordHash` for user credentials
+- Use `secretRefs` instead of direct `config` values for S3 credentials
+- Ensure secrets are created in the same namespace as your DittoServer
+
+### SMB Configuration Examples
+
+#### Basic SMB Server
+
+Enable SMB protocol with default settings:
+
+```yaml
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  name: my-smb-server
+  namespace: default
+spec:
+  image: ghcr.io/marmos91/dittofs:latest
+  storage:
+    metadataSize: "10Gi"
+    contentSize: "100Gi"
+  smb:
+    enabled: true
+    # Uses default port 445
+```
+
+#### SMB with Custom Port and Limits
+
+```yaml
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  name: my-custom-smb-server
+  namespace: default
+spec:
+  image: ghcr.io/marmos91/dittofs:latest
+  storage:
+    metadataSize: "10Gi"
+  smb:
+    enabled: true
+    port: 8445
+    maxConnections: 100
+    maxRequestsPerConnection: 50
+    timeouts:
+      read: "2m"
+      write: "30s"
+      idle: "10m"
+      shutdown: "30s"
+    credits:
+      strategy: "adaptive"
+      minGrant: 16
+      maxGrant: 8192
+      initialGrant: 256
+      maxSessionCredits: 65535
+```
+
+#### SMB with User Authentication
+
+```yaml
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  name: my-authenticated-smb-server
+  namespace: default
+spec:
+  image: ghcr.io/marmos91/dittofs:latest
+  storage:
+    metadataSize: "10Gi"
+    contentSize: "100Gi"
+  smb:
+    enabled: true
+  users:
+    # Define users with bcrypt password hashes stored in secrets (recommended)
+    users:
+      - username: "alice"
+        passwordSecretRef:
+          name: "user-passwords"
+          key: "alice-hash"
+        uid: 1001
+        gid: 1001
+        groups: ["developers"]
+        sharePermissions:
+          "/": "read-write"
+          "/readonly": "read"
+      - username: "bob"
+        passwordSecretRef:
+          name: "user-passwords" 
+          key: "bob-hash"
+        uid: 1002
+        gid: 1002
+        sharePermissions:
+          "/": "read"
+    
+    # Define groups
+    groups:
+      - name: "developers"
+        gid: 1001
+        sharePermissions:
+          "/": "read-write"
+      - name: "readonly-users"
+        gid: 1003
+        sharePermissions:
+          "/": "read"
+    
+    # Configure guest access
+    guest:
+      enabled: true
+      uid: 65534
+      gid: 65534
+      sharePermissions:
+        "/public": "read"
+
+---
+# Secret containing user password hashes
+apiVersion: v1
+kind: Secret
+metadata:
+  name: user-passwords
+type: Opaque
+data:
+  # Base64 encoded bcrypt hashes
+  alice-hash: JDJ5JDEwJHJFS3guOHZoVVdKMWMxYzFjMWMxYzE=  # testpass
+  bob-hash: JDJ5JDEwJGFCY0RlRmdIaUprTG1Ob1BxUnNUdVY=      # testpass123
+```
+
+#### S3 Backend with Secret Credentials
+
+```yaml
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  name: my-s3-server
+  namespace: default
+spec:
+  image: ghcr.io/marmos91/dittofs:latest
+  storage:
+    metadataSize: "10Gi"
+  config:
+    backends:
+      - name: s3-backend
+        type: s3
+        config:
+          bucket: "my-bucket"
+          region: "us-east-1"
+        # Store credentials securely in secrets
+        secretRefs:
+          access_key_id:
+            name: "s3-credentials"
+            key: "access-key"
+          secret_access_key:
+            name: "s3-credentials"
+            key: "secret-key"
+    shares:
+      - name: s3-share
+        exportPath: /s3
+        metadataStore: metadata-backend
+        contentStore: s3-backend
+
+---
+# Secret for S3 credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: s3-credentials
+type: Opaque
+data:
+  # Base64 encoded AWS credentials - REPLACE WITH YOUR ACTUAL VALUES
+  # echo -n "YOUR_ACCESS_KEY_ID" | base64
+  access-key: WU9VUl9BQ0NFU1NfS0VZX0lE
+  # echo -n "YOUR_SECRET_ACCESS_KEY" | base64
+  secret-key: WU9VUl9TRUNSRVRfQUNDRVNTX0tFWQ==
+```
+
+#### Generate Password Hash and Secrets
+
+To generate a bcrypt password hash for user configuration:
+
+```sh
+# Using htpasswd (if available)
+htpasswd -bnBC 10 "" "your-password" | tr -d ':\n'
+
+# Using Python
+python3 -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt(rounds=10)).decode())"
+
+# Using online bcrypt generator (ensure it uses cost factor 10+)
+```
+
+To create secrets for storing credentials:
+
+```sh
+# Create secret for S3 credentials - REPLACE WITH YOUR ACTUAL CREDENTIALS
+kubectl create secret generic s3-credentials \
+  --from-literal=access-key="YOUR_AWS_ACCESS_KEY_ID" \
+  --from-literal=secret-key="YOUR_AWS_SECRET_ACCESS_KEY"
+
+# Create secret for user password hashes
+kubectl create secret generic user-passwords \
+  --from-literal=alice-hash='$2y$10$rEKx.8vhUWJ1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c' \
+  --from-literal=bob-hash='$2y$10$aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890abcdefghijklmnop'
+
+# Or encode manually and create YAML
+echo -n 'YOUR_ACTUAL_PASSWORD_HASH' | base64
+```
+
+#### Connecting to SMB Share
+
+Once deployed, you can connect to the SMB share:
+
+```sh
+# Get the service endpoint
+kubectl get service my-smb-server
+
+# Mount the share (Linux/macOS)
+mkdir -p /mnt/dittofs
+sudo mount -t smbfs //alice:your-password@SERVICE_IP:445/s3 /mnt/dittofs
+
+# Windows
+net use Z: \\SERVICE_IP\s3 /user:alice your-password
+```
+
+For guest access (if enabled):
+```sh
+sudo mount -t smbfs //guest@SERVICE_IP:445/s3 /mnt/dittofs -o guest
+```
+
+#### Share Permissions
+
+The `sharePermissions` field supports the following permission levels:
+
+- `none`: No access
+- `read`: Read-only access
+- `read-write`: Read and write access
+- `admin`: Full administrative access
+
+Permission hierarchy (most restrictive wins):
+1. User-specific permissions override group permissions
+2. Group permissions apply to group members
+3. Guest permissions apply to unauthenticated users
+4. Share-level `defaultPermission` applies when no specific permission is set
 
 >**NOTE**: Ensure that the samples has default values to test it out.
 
