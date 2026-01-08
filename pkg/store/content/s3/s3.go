@@ -536,3 +536,29 @@ func (s *S3ContentStore) GetStorageStats(ctx context.Context) (stats *content.St
 
 	return &computedStats, nil
 }
+
+// Healthcheck performs a lightweight health check on the S3 content store.
+//
+// This verifies bucket access by performing a HeadBucket operation, which
+// checks that the bucket exists and is accessible with current credentials.
+// This is a quick operation (~50-200ms) suitable for health probes.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeouts
+//
+// Returns:
+//   - error: Returns error if bucket is inaccessible or context is cancelled
+func (s *S3ContentStore) Healthcheck(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: aws.String(s.bucket),
+	})
+	if err != nil {
+		return fmt.Errorf("S3 bucket inaccessible: %w", err)
+	}
+
+	return nil
+}

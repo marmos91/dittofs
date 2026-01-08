@@ -12,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/cmd/dittofs/commands"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/telemetry"
+	"github.com/marmos91/dittofs/pkg/api"
 	"github.com/marmos91/dittofs/pkg/config"
 	dittoServer "github.com/marmos91/dittofs/pkg/server"
 
@@ -275,6 +276,15 @@ func runStart() {
 		dittoSrv.SetMetricsServer(metricsResult.Server)
 	} else {
 		logger.Info("Metrics collection disabled")
+	}
+
+	// Initialize API server (if enabled - defaults to true)
+	if cfg.Server.API.IsEnabled() {
+		apiServer := api.NewServer(cfg.Server.API, reg)
+		dittoSrv.SetAPIServer(apiServer)
+		logger.Info("API server enabled", "port", cfg.Server.API.Port)
+	} else {
+		logger.Info("API server disabled")
 	}
 
 	// Create all enabled adapters using the factory
