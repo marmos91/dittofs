@@ -126,3 +126,17 @@ func (s *MemoryContentStore) GetStorageStats(ctx context.Context) (*content.Stor
 		AverageSize:   averageSize,
 	}, nil
 }
+
+// Healthcheck performs a lightweight health check on the memory content store.
+//
+// For in-memory storage, the store is always healthy if the process is running.
+// This simply checks that the context is not cancelled.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeouts
+//
+// Returns:
+//   - error: Only returns error if context is cancelled
+func (s *MemoryContentStore) Healthcheck(ctx context.Context) error {
+	return ctx.Err()
+}

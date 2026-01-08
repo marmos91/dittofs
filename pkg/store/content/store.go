@@ -183,6 +183,37 @@ type ContentStore interface {
 	GetStorageStats(ctx context.Context) (*StorageStats, error)
 
 	// ========================================================================
+	// Health Check
+	// ========================================================================
+
+	// Healthcheck performs a lightweight health check on the content store.
+	//
+	// This method verifies that the store is accessible and operational.
+	// The check should be quick (ideally <1s) to avoid blocking health probes.
+	//
+	// What to check (implementation-specific):
+	//   - Memory: Return nil (always healthy if process is running)
+	//   - Filesystem: Check base directory exists and is accessible
+	//   - S3: Perform HeadBucket to verify bucket access
+	//
+	// What NOT to check:
+	//   - Full storage scans (use GetStorageStats for that)
+	//   - Content integrity
+	//   - Performance benchmarks
+	//
+	// Use Cases:
+	//   - Kubernetes readiness/liveness probes
+	//   - Load balancer health checks
+	//   - Monitoring and alerting
+	//
+	// Parameters:
+	//   - ctx: Context for cancellation and timeouts
+	//
+	// Returns:
+	//   - error: Returns error if store is unhealthy, nil if healthy
+	Healthcheck(ctx context.Context) error
+
+	// ========================================================================
 	// Content Writing
 	// ========================================================================
 
