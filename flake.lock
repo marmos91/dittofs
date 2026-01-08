@@ -34,10 +34,27 @@
         "type": "github"
       }
     },
+    "pjdfstest-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1766876143,
+        "narHash": "sha256-CUl9Hlz8Y/6mGTnm5CHNJOOJjda0sv7yPp1meoaJEN8=",
+        "owner": "pjd",
+        "repo": "pjdfstest",
+        "rev": "03eb25706d8dbf3611c3f820b45b7a5e09a36c06",
+        "type": "github"
+      },
+      "original": {
+        "owner": "pjd",
+        "repo": "pjdfstest",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "pjdfstest-src": "pjdfstest-src"
       }
     },
     "systems": {

@@ -507,9 +507,9 @@ func TestCreateSpecialFile_DeviceRequiresRoot(t *testing.T) {
 		GID:  *ctx.Identity.GID,
 	}
 
-	// Non-root user trying to create device should fail
+	// Non-root user trying to create device should fail with privilege error
 	_, err := store.CreateSpecialFile(ctx, rootHandle, "device", metadata.FileTypeCharDevice, attr, 1, 3)
-	assertError(t, err, metadata.ErrAccessDenied, "create device as non-root")
+	assertError(t, err, metadata.ErrPrivilegeRequired, "create device as non-root")
 }
 
 func TestCreateSpecialFile_InvalidType(t *testing.T) {

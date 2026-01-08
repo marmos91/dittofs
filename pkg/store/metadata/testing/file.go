@@ -745,12 +745,12 @@ func (suite *StoreTestSuite) testCreateSpecialFile(t *testing.T) {
 		store := suite.NewStore()
 		share, rootHandle := createTestShare(t, store, "test")
 
-		// Non-root user tries to create device
+		// Non-root user tries to create device - should return ErrPrivilegeRequired
 		userAuthCtx := createUserAuthContext(share, 1000, 1000)
 		attr := &metadata.FileAttr{Mode: 0600}
 		_, err := store.CreateSpecialFile(userAuthCtx, rootHandle, "sda1",
 			metadata.FileTypeBlockDevice, attr, 8, 1)
-		AssertErrorCode(t, metadata.ErrAccessDenied, err)
+		AssertErrorCode(t, metadata.ErrPrivilegeRequired, err)
 	})
 
 	t.Run("CreateSocketDoesNotRequireRoot", func(t *testing.T) {

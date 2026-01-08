@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -92,6 +93,12 @@ func (s *PostgresMetadataStore) RemoveFile(
 		}
 	}
 
+	// Check sticky bit restriction on parent directory
+	// When the directory has the sticky bit set, only certain users can delete files
+	if err := metadata.CheckStickyBitRestriction(ctx, &parent.FileAttr, &child.FileAttr); err != nil {
+		return nil, err
+	}
+
 	// Delete parent_child_map entry
 	// NOTE: We delete by parent_id AND child_name, NOT child_id
 	// This is critical for hard link support - multiple entries can have the same child_id
@@ -101,15 +108,28 @@ func (s *PostgresMetadataStore) RemoveFile(
 		WHERE parent_id = $1 AND child_name = $2
 	`
 
-	_, err = tx.Exec(ctx.Context, deleteMapQuery, parentID, name)
+	result, err := tx.Exec(ctx.Context, deleteMapQuery, parentID, name)
 	if err != nil {
 		return nil, mapPgError(err, "RemoveFile", child.Path)
 	}
 
-	// Decrement link count
+	// Verify that exactly one row was deleted
+	rowsAffected := result.RowsAffected()
+	if rowsAffected == 0 {
+		// This should never happen since we just looked up the entry
+		logger.Warn("RemoveFile: no rows deleted from parent_child_map", "name", name, "parent_id", parentID)
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrNotFound,
+			Message: "file entry not found in parent directory",
+			Path:    name,
+		}
+	}
+
+	// Decrement link count, but don't go below 0
+	// For silly-renamed files, link_count is already 0, so we use GREATEST to prevent negative values
 	updateLinkCountQuery := `
 		UPDATE link_counts
-		SET link_count = link_count - 1
+		SET link_count = GREATEST(link_count - 1, 0)
 		WHERE file_id = $1
 		RETURNING link_count
 	`
@@ -120,22 +140,25 @@ func (s *PostgresMetadataStore) RemoveFile(
 		return nil, mapPgError(err, "RemoveFile", child.Path)
 	}
 
-	// If link count reaches 0, delete the file
-	if linkCount == 0 {
-		// Delete from files table (CASCADE will delete link_counts entry)
-		deleteFileQuery := `DELETE FROM files WHERE id = $1`
-		_, err = tx.Exec(ctx.Context, deleteFileQuery, childID)
-		if err != nil {
-			return nil, mapPgError(err, "RemoveFile", child.Path)
-		}
-
-		// Clean up any byte-range locks for this file
-		childHandle := encodeFileHandle(shareName, childID)
-		s.byteRangeLocks.removeFile(string(childHandle))
+	// Update file's ctime and nlink
+	now := time.Now()
+	updateFileCtimeQuery := `
+		UPDATE files
+		SET ctime = $1, nlink = $2
+		WHERE id = $3
+	`
+	_, err = tx.Exec(ctx.Context, updateFileCtimeQuery, now, linkCount, childID)
+	if err != nil {
+		return nil, mapPgError(err, "RemoveFile", child.Path)
 	}
 
+	// Update the returned child's ctime to reflect the change
+	child.Ctime = now
+
+	// Keep file metadata with nlink=0 so GETATTR works on open file handles.
+	// ContentID is returned so caller can delete content data.
+
 	// Update parent directory mtime
-	now := time.Now()
 	updateParentQuery := `
 		UPDATE files
 		SET mtime = $1, ctime = $1
@@ -154,6 +177,9 @@ func (s *PostgresMetadataStore) RemoveFile(
 
 	// Invalidate stats cache
 	s.statsCache.invalidate()
+
+	// Update the returned Nlink to reflect the new link count
+	child.Nlink = uint32(linkCount)
 
 	// If link count > 0, other hard links still reference this content.
 	// Clear ContentID to signal to the caller that content should NOT be deleted.
@@ -238,6 +264,12 @@ func (s *PostgresMetadataStore) RemoveDirectory(
 		}
 	}
 
+	// Check sticky bit restriction on parent directory
+	// When the directory has the sticky bit set, only certain users can delete directories
+	if err := metadata.CheckStickyBitRestriction(ctx, &parent.FileAttr, &child.FileAttr); err != nil {
+		return err
+	}
+
 	// Check if directory is empty
 	checkEmptyQuery := `
 		SELECT EXISTS(
@@ -254,6 +286,23 @@ func (s *PostgresMetadataStore) RemoveDirectory(
 	}
 
 	if hasChildren {
+		// Log what children are in the directory for debugging
+		listChildrenQuery := `
+			SELECT child_name FROM parent_child_map WHERE parent_id = $1 LIMIT 10
+		`
+		rows, listErr := tx.Query(ctx.Context, listChildrenQuery, childID)
+		if listErr == nil {
+			var children []string
+			for rows.Next() {
+				var childName string
+				if scanErr := rows.Scan(&childName); scanErr == nil {
+					children = append(children, childName)
+				}
+			}
+			rows.Close()
+			logger.Warn("RemoveDirectory: directory not empty", "dir", name, "dir_id", childID, "children", children)
+		}
+
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotEmpty,
 			Message: "directory not empty",

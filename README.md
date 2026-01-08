@@ -225,6 +225,7 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 
 ### Operational Guides
 
+- **[Known Limitations](docs/KNOWN_LIMITATIONS.md)** - NFS protocol and implementation limitations
 - **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
 - **[Security](docs/SECURITY.md)** - Security considerations and best practices
 - **[FAQ](docs/FAQ.md)** - Frequently asked questions
@@ -264,6 +265,12 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - PostgreSQL metadata (persistent, distributed)
 - Filesystem content (local/network storage)
 - S3 content (production-ready with range reads, streaming uploads, stats caching)
+
+**POSIX Compliance**
+- 99.99% pass rate on pjdfstest (8,788/8,789 tests)
+- All metadata stores (Memory, BadgerDB, PostgreSQL) achieve parity
+- Single expected failure due to NFSv3 32-bit timestamp limitation (year 2106)
+- See [Known Limitations](docs/KNOWN_LIMITATIONS.md) for details
 
 **User Management**
 - Unified identity system for NFS and SMB

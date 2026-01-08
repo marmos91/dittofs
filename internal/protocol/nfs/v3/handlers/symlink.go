@@ -557,9 +557,9 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 		}
 	}
 
-	// Check target path length per RFC 1813 (NFS3_MAXPATHLEN = 1024 bytes)
-	// This matches the Linux kernel NFS server implementation in nfs3proc.c
-	// which validates: if (argp->tlen > NFS3_MAXPATHLEN)
+	// Check target path length (using POSIX PATH_MAX = 4096 bytes)
+	// While RFC 1813 specifies NFS3_MAXPATHLEN as 1024, we use PATH_MAX
+	// for POSIX compliance - symlink targets can be up to 4095 bytes
 	if len(req.Target) > types.NFS3MaxPathLen {
 		return &symlinkValidationError{
 			message:   fmt.Sprintf("target path too long: %d bytes (max %d)", len(req.Target), types.NFS3MaxPathLen),

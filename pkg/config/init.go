@@ -231,8 +231,10 @@ shares:
       # Unix permission mode (octal)
       mode: ` + fmt.Sprintf("0%o", cfg.Shares[0].RootDirectoryAttributes.Mode) + `
       # Owner user ID
+      # Note: For POSIX compliance testing with anonymous access, set this to anonymous_uid (65534)
       uid: ` + fmt.Sprintf("%d", cfg.Shares[0].RootDirectoryAttributes.UID) + `
       # Owner group ID
+      # Note: For POSIX compliance testing with anonymous access, set this to anonymous_gid (65534)
       gid: ` + fmt.Sprintf("%d", cfg.Shares[0].RootDirectoryAttributes.GID) + `
     # Restrict DUMP operations to allowed clients only
     dump_restricted: ` + fmt.Sprintf("%t", cfg.Shares[0].DumpRestricted) + `

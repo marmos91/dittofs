@@ -182,6 +182,7 @@ func DecodeSetAttrs(reader io.Reader) (*metadata.SetAttrs, error) {
 	case 1: // SET_TO_SERVER_TIME
 		t := time.Now()
 		attr.Atime = &t
+		attr.AtimeNow = true // UTIME_NOW semantics - write permission is sufficient
 	case 2: // SET_TO_CLIENT_TIME
 		var seconds, nseconds uint32
 		if err := binary.Read(reader, binary.BigEndian, &seconds); err != nil {
@@ -207,6 +208,7 @@ func DecodeSetAttrs(reader io.Reader) (*metadata.SetAttrs, error) {
 	case 1: // SET_TO_SERVER_TIME
 		t := time.Now()
 		attr.Mtime = &t
+		attr.MtimeNow = true // UTIME_NOW semantics - write permission is sufficient
 	case 2: // SET_TO_CLIENT_TIME
 		var seconds, nseconds uint32
 		if err := binary.Read(reader, binary.BigEndian, &seconds); err != nil {

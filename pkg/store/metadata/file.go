@@ -140,6 +140,13 @@ type FileAttr struct {
 	// Only valid when Type == FileTypeSymlink
 	LinkTarget string `json:"link_target,omitempty"`
 
+	// Rdev contains the device major and minor numbers for device files.
+	// Only valid when Type == FileTypeBlockDevice or FileTypeCharDevice.
+	// For other file types, this should be 0.
+	// The value is encoded as: (major << 8) | minor (for compatibility)
+	// or stored as separate fields depending on implementation.
+	Rdev uint64 `json:"rdev,omitempty"`
+
 	// Hidden indicates if the file should be hidden from directory listings.
 	// This is primarily used for Windows/SMB compatibility where hidden files
 	// are marked with an attribute rather than a dot prefix.
@@ -208,6 +215,18 @@ type SetAttrs struct {
 	// nil = do not change
 	Mtime *time.Time
 
+	// AtimeNow indicates that Atime should be set to current time (UTIME_NOW semantics).
+	// When true, users with write permission can set atime.
+	// When false (arbitrary time), only owner or root can set atime.
+	// This field is only meaningful when Atime is non-nil.
+	AtimeNow bool
+
+	// MtimeNow indicates that Mtime should be set to current time (UTIME_NOW semantics).
+	// When true, users with write permission can set mtime.
+	// When false (arbitrary time), only owner or root can set mtime.
+	// This field is only meaningful when Mtime is non-nil.
+	MtimeNow bool
+
 	// CreationTime is the new creation time
 	// Only used by Windows/SMB clients that support setting creation time
 	// nil = do not change
@@ -258,3 +277,20 @@ const (
 //   - Hash: "sha256:abcdef123456..."
 //   - Path-based: "content/2024/01/15/abc123"
 type ContentID string
+
+// MakeRdev encodes major and minor device numbers into a single Rdev value.
+// This follows the Linux convention: MKDEV(major, minor) = (major << 20) | minor
+// for the extended device number format supporting 12-bit major and 20-bit minor.
+func MakeRdev(major, minor uint32) uint64 {
+	return (uint64(major) << 20) | uint64(minor&0xFFFFF)
+}
+
+// RdevMajor extracts the major device number from an Rdev value.
+func RdevMajor(rdev uint64) uint32 {
+	return uint32(rdev >> 20)
+}
+
+// RdevMinor extracts the minor device number from an Rdev value.
+func RdevMinor(rdev uint64) uint32 {
+	return uint32(rdev & 0xFFFFF)
+}
