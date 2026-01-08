@@ -353,5 +353,5 @@ func TestSetFileAttributes_PermissionDenied(t *testing.T) {
 	}
 
 	err := store.SetFileAttributes(userCtx, fileHandle, attrs)
-	assertError(t, err, metadata.ErrPermissionDenied, "change attributes without ownership")
+	assertError(t, err, metadata.ErrPrivilegeRequired, "change attributes without ownership")
 }

@@ -34,6 +34,9 @@ jobs:
       - name: Setup Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@main
 
+      - name: Install NFS client utilities
+        run: sudo apt-get update && sudo apt-get install -y nfs-common
+
       - name: Build DittoFS
         run: nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go
 
@@ -109,6 +112,9 @@ jobs:
       - name: Setup Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@main
 
+      - name: Install NFS client utilities
+        run: sudo apt-get update && sudo apt-get install -y nfs-common
+
       - name: Build DittoFS
         run: nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go
 
@@ -183,6 +189,9 @@ jobs:
 
       - name: Setup Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Install NFS client utilities
+        run: sudo apt-get update && sudo apt-get install -y nfs-common
 
       - name: Build DittoFS
         run: nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go

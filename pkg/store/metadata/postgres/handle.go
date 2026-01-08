@@ -10,4 +10,3 @@ import (
 func decodeFileHandle(handle metadata.FileHandle) (shareName string, id uuid.UUID, err error) {
 	return metadata.DecodeFileHandle(handle)
 }
-
