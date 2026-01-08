@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -608,8 +609,10 @@ func applySetAttrsToFileAttr(fileAttr *metadata.FileAttr, setAttrs *metadata.Set
 }
 
 // mapMetadataErrorToNFS maps metadata repository errors to NFS status codes.
+// Uses errors.As to handle wrapped errors (e.g., from fmt.Errorf).
 func mapMetadataErrorToNFS(err error) uint32 {
-	if storeErr, ok := err.(*metadata.StoreError); ok {
+	var storeErr *metadata.StoreError
+	if errors.As(err, &storeErr) {
 		switch storeErr.Code {
 		case metadata.ErrNotFound:
 			return types.NFS3ErrNoEnt
@@ -617,6 +620,9 @@ func mapMetadataErrorToNFS(err error) uint32 {
 			return types.NFS3ErrAccess
 		case metadata.ErrPermissionDenied:
 			return types.NFS3ErrAccess
+		case metadata.ErrPrivilegeRequired:
+			// RFC 1813: EPERM for privilege violations (e.g., creating device files as non-root)
+			return types.NFS3ErrPerm
 		case metadata.ErrAlreadyExists:
 			return types.NFS3ErrExist
 		case metadata.ErrNotEmpty:
@@ -637,6 +643,8 @@ func mapMetadataErrorToNFS(err error) uint32 {
 			return types.NFS3ErrNotSupp
 		case metadata.ErrInvalidHandle, metadata.ErrStaleHandle:
 			return types.NFS3ErrStale
+		case metadata.ErrNameTooLong:
+			return types.NFS3ErrNameTooLong
 		case metadata.ErrIOError:
 			return types.NFS3ErrIO
 		default:

@@ -70,11 +70,12 @@ func MetadataToNFS(mdAttr *metadata.FileAttr, fileid uint64) *types.NFSFileAttr 
 		}
 	}
 
-	// Use actual link count from metadata, defaulting to 1 for backwards compatibility
+	// Use actual link count from metadata.
+	// IMPORTANT: nlink=0 is valid and required for POSIX compliance.
+	// After unlink() on an open file, fstat() must return nlink=0.
+	// This matches Linux kernel behavior where the inode stays accessible
+	// with nlink=0 after the last link is removed.
 	nlink := mdAttr.Nlink
-	if nlink == 0 {
-		nlink = 1
-	}
 
 	return &types.NFSFileAttr{
 		Type:  metadataTypeToNFSType(mdAttr.Type),
@@ -85,8 +86,8 @@ func MetadataToNFS(mdAttr *metadata.FileAttr, fileid uint64) *types.NFSFileAttr 
 		Size:  mdAttr.Size,
 		Used:  mdAttr.Size, // Used space equals size (no sparse files)
 		Rdev: types.SpecData{
-			Major: 0, // Device major number (0 for regular files)
-			Minor: 0, // Device minor number (0 for regular files)
+			Major: metadata.RdevMajor(mdAttr.Rdev),
+			Minor: metadata.RdevMinor(mdAttr.Rdev),
 		},
 		Fsid:   0,      // Filesystem ID (0 = single filesystem)
 		Fileid: fileid, // Unique file identifier

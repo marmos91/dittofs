@@ -439,6 +439,12 @@ func (s *BadgerMetadataStore) CreateSymlink(
 
 		// Build full path and generate new UUID
 		fullPath := buildFullPath(parentFile.Path, name)
+
+		// Validate path length (POSIX PATH_MAX = 4096)
+		if err := metadata.ValidatePath(fullPath); err != nil {
+			return err
+		}
+
 		newID := uuid.New()
 
 		// Set symlink type and apply defaults
@@ -633,11 +639,23 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 
 		// Build full path and generate new UUID
 		fullPath := buildFullPath(parentFile.Path, name)
+
+		// Validate path length (POSIX PATH_MAX = 4096)
+		if err := metadata.ValidatePath(fullPath); err != nil {
+			return err
+		}
+
 		newID := uuid.New()
 
 		// Set special file type and apply defaults
 		attr.Type = fileType
 		metadata.ApplyCreateDefaults(attr, ctx, "")
+
+		// Compute Rdev for device files
+		var rdev uint64
+		if fileType == metadata.FileTypeBlockDevice || fileType == metadata.FileTypeCharDevice {
+			rdev = metadata.MakeRdev(deviceMajor, deviceMinor)
+		}
 
 		// Create complete File struct for special file (with Nlink = 1)
 		newFile = &metadata.File{
@@ -657,6 +675,7 @@ func (s *BadgerMetadataStore) CreateSpecialFile(
 				CreationTime: attr.CreationTime,
 				LinkTarget:   "",
 				ContentID:    "",
+				Rdev:         rdev,
 			},
 		}
 

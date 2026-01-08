@@ -282,14 +282,20 @@ func TestRemoveFile(t *testing.T) {
 		t.Errorf("expected same file ID")
 	}
 
-	// File should not exist anymore
+	// File should not exist in directory anymore (Lookup should fail)
 	_, err = store.Lookup(ctx, rootHandle, "testfile.txt")
-	assertError(t, err, metadata.ErrNotFound, "file should be removed")
+	assertError(t, err, metadata.ErrNotFound, "file should be removed from directory")
 
-	// GetFile should also fail
+	// GetFile should still succeed with nlink=0 (POSIX compliance:
+	// fstat() on an open fd after unlink() should return nlink=0, not ESTALE)
 	fileHandle := getFileHandle(file)
-	_, err = store.GetFile(ctx.Context, fileHandle)
-	assertError(t, err, metadata.ErrNotFound, "file should not be retrievable")
+	orphanedFile, err := store.GetFile(ctx.Context, fileHandle)
+	if err != nil {
+		t.Errorf("GetFile after removal should succeed: %v", err)
+	}
+	if orphanedFile.Nlink != 0 {
+		t.Errorf("expected nlink=0 for orphaned file, got %d", orphanedFile.Nlink)
+	}
 }
 
 func TestRemoveFile_NotFile(t *testing.T) {

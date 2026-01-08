@@ -15,6 +15,13 @@ func mapPgError(err error, operation, path string) error {
 		return nil
 	}
 
+	// If it's already a StoreError, return it as-is
+	// This preserves errors from validation functions like ValidateName
+	var storeErr *metadata.StoreError
+	if errors.As(err, &storeErr) {
+		return storeErr
+	}
+
 	// Handle pgx.ErrNoRows (not found)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return &metadata.StoreError{
@@ -127,6 +134,15 @@ func mapPgErrorCode(pgErr *pgconn.PgError, operation, path string) error {
 		return &metadata.StoreError{
 			Code:    metadata.ErrIOError,
 			Message: fmt.Sprintf("%s: database connection error", operation),
+			Path:    path,
+		}
+
+	// 54000: program_limit_exceeded - often triggered by index row size limits
+	// when paths are too long for PostgreSQL's btree index (max 2704 bytes)
+	case "54000":
+		return &metadata.StoreError{
+			Code:    metadata.ErrNameTooLong,
+			Message: fmt.Sprintf("%s: path too long for database index", operation),
 			Path:    path,
 		}
 

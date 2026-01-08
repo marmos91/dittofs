@@ -67,24 +67,53 @@ func (s *PostgresMetadataStore) CommitWrite(
 		}
 	}
 
+	// Clear SUID/SGID bits when non-root user writes to a file (security measure)
+	clearSuidSgid := false
+	identity := ctx.Identity
+	if identity != nil && identity.UID != nil && *identity.UID != 0 {
+		clearSuidSgid = true
+	}
+
 	// Update file with new size and mtime
 	// Use GREATEST to handle concurrent writes - only grow the file size, never shrink
 	// This prevents race conditions where out-of-order write completions could
 	// incorrectly reduce the file size
 	now := time.Now()
-	updateQuery := `
-		UPDATE files
-		SET size = GREATEST(size, $1), mtime = $2, ctime = $3
-		WHERE id = $4 AND share_name = $5
-	`
 
-	_, err = s.pool.Exec(ctx.Context, updateQuery,
-		int64(intent.NewSize),
-		intent.NewMtime,
-		now,
-		fileID,
-		shareName,
-	)
+	var updateQuery string
+	var params []any
+
+	if clearSuidSgid {
+		// Clear SUID (04000=2048) and SGID (02000=1024) bits using bitwise AND with inverse mask
+		// ~3072 clears both SUID and SGID while preserving all other bits
+		updateQuery = `
+			UPDATE files
+			SET size = GREATEST(size, $1), mtime = $2, ctime = $3, mode = mode & ~3072
+			WHERE id = $4 AND share_name = $5
+		`
+		params = []any{
+			int64(intent.NewSize),
+			intent.NewMtime,
+			now,
+			fileID,
+			shareName,
+		}
+	} else {
+		updateQuery = `
+			UPDATE files
+			SET size = GREATEST(size, $1), mtime = $2, ctime = $3
+			WHERE id = $4 AND share_name = $5
+		`
+		params = []any{
+			int64(intent.NewSize),
+			intent.NewMtime,
+			now,
+			fileID,
+			shareName,
+		}
+	}
+
+	_, err = s.pool.Exec(ctx.Context, updateQuery, params...)
 	if err != nil {
 		return nil, mapPgError(err, "CommitWrite", "")
 	}

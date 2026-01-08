@@ -105,6 +105,11 @@ func (s *PostgresMetadataStore) createFile(
 	// Generate new file ID and ContentID (path-based for S3 interoperability)
 	fileID := uuid.New()
 	filePath := path.Join(parent.Path, name)
+
+	// Note: We don't validate PATH_MAX here because NFS uses file handles,
+	// not paths. PATH_MAX only applies to paths passed to syscalls, but NFS
+	// operations traverse component by component via LOOKUP.
+
 	contentID := internal.BuildContentID(shareName, filePath)
 
 	// Insert file
@@ -284,6 +289,10 @@ func (s *PostgresMetadataStore) createDirectory(
 	dirID := uuid.New()
 	dirPath := path.Join(parent.Path, name)
 
+	// Note: We don't validate PATH_MAX here because NFS uses file handles,
+	// not paths. PATH_MAX only applies to paths passed to syscalls, but NFS
+	// operations traverse component by component via LOOKUP.
+
 	// Insert directory
 	insertQuery := `
 		INSERT INTO files (
@@ -339,6 +348,18 @@ func (s *PostgresMetadataStore) createDirectory(
 	`
 
 	_, err = tx.Exec(ctx.Context, insertLinkCountQuery, dirID, 2)
+	if err != nil {
+		return nil, mapPgError(err, "createDirectory", dirPath)
+	}
+
+	// Increment parent's link count (new subdirectory adds ".." reference to parent)
+	updateParentLinkCountQuery := `
+		UPDATE link_counts
+		SET link_count = link_count + 1
+		WHERE file_id = $1
+	`
+
+	_, err = tx.Exec(ctx.Context, updateParentLinkCountQuery, parentID)
 	if err != nil {
 		return nil, mapPgError(err, "createDirectory", dirPath)
 	}
@@ -457,6 +478,10 @@ func (s *PostgresMetadataStore) CreateFile(
 	fileID := uuid.New()
 	filePath := path.Join(parent.Path, name)
 	now := time.Now()
+
+	// Note: We don't validate PATH_MAX here because NFS uses file handles,
+	// not paths. PATH_MAX only applies to paths passed to syscalls, but NFS
+	// operations traverse component by component via LOOKUP.
 
 	// Get effective UID/GID from auth context
 	uid := uint32(0)
@@ -651,6 +676,10 @@ func (s *PostgresMetadataStore) CreateDirectory(
 	dirID := uuid.New()
 	dirPath := path.Join(parent.Path, name)
 	now := time.Now()
+
+	// Note: We don't validate PATH_MAX here because NFS uses file handles,
+	// not paths. PATH_MAX only applies to paths passed to syscalls, but NFS
+	// operations traverse component by component via LOOKUP.
 
 	// Get effective UID/GID from auth context
 	uid := uint32(0)

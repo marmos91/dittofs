@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -330,28 +329,21 @@ func validateFileHandle(handle []byte) error {
 }
 
 // ExtractFileIDFromHandle extracts a file ID from a file handle.
-// The file ID is derived from the first 8 bytes of the handle.
 //
-// This is a protocol-layer utility used to generate NFS file IDs
-// from opaque file handles. The store defines the handle format,
-// but the protocol layer needs to extract identifiers for wire protocol.
+// This is a thin wrapper around metadata.HandleToINode() which provides the
+// canonical implementation for converting file handles to inode numbers.
+//
+// IMPORTANT: All code that needs to convert handles to file IDs MUST use
+// metadata.HandleToINode() to ensure consistent inode generation across
+// the system. Using different methods will cause "fileid changed" errors
+// from NFS clients.
 //
 // Parameters:
-//   - handle: The file handle (must be at least 8 bytes)
+//   - handle: The file handle
 //
 // Returns:
-//   - uint64: The extracted file ID
-//   - error: If the handle is too short or invalid
+//   - uint64: The extracted file ID (SHA-256 hash of handle)
+//   - error: Always nil (kept for API compatibility)
 func ExtractFileIDFromHandle(handle []byte) (uint64, error) {
-	// Validate handle length
-	// This check is defensive; validateFileHandle should have already caught this
-	if len(handle) < 8 {
-		return 0, fmt.Errorf("handle too short for file ID extraction: %d bytes (need 8)", len(handle))
-	}
-
-	// Extract the first 8 bytes as a big-endian uint64
-	// This matches the NFS convention of using the handle's prefix as an identifier
-	fileid := binary.BigEndian.Uint64(handle[:8])
-
-	return fileid, nil
+	return metadata.HandleToINode(handle), nil
 }

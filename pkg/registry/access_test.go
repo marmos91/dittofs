@@ -278,6 +278,48 @@ func TestGetShareNameForHandle_ShareNotInRegistry(t *testing.T) {
 	}
 }
 
+func TestApplyIdentityMapping_AnonymousAccess(t *testing.T) {
+	reg := NewRegistry()
+	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
+	contentStore, _ := contentMemory.NewMemoryContentStore(context.Background())
+
+	_ = reg.RegisterMetadataStore("meta1", metaStore)
+	_ = reg.RegisterContentStore("content1", contentStore)
+	_ = reg.AddShare(context.Background(), &ShareConfig{
+		Name:          "/export",
+		MetadataStore: "meta1",
+		ContentStore:  "content1",
+		RootAttr:      &metadata.FileAttr{},
+		AnonymousUID:  65534,
+		AnonymousGID:  65534,
+		// No squashing - but nil UID should still map to anonymous
+	})
+
+	// Test nil UID (AUTH_NULL / anonymous access)
+	identity := &metadata.Identity{
+		UID:      nil, // No credentials provided
+		GID:      nil,
+		GIDs:     nil,
+		Username: "",
+	}
+
+	effective, err := reg.ApplyIdentityMapping("/export", identity)
+	if err != nil {
+		t.Fatalf("ApplyIdentityMapping failed: %v", err)
+	}
+
+	// Anonymous access should map to configured anonymous UID/GID
+	if *effective.UID != 65534 {
+		t.Errorf("Expected anonymous UID 65534 for nil UID, got %d", *effective.UID)
+	}
+	if *effective.GID != 65534 {
+		t.Errorf("Expected anonymous GID 65534 for nil GID, got %d", *effective.GID)
+	}
+	if len(effective.GIDs) != 1 || effective.GIDs[0] != 65534 {
+		t.Errorf("Expected GIDs [65534] for anonymous, got %v", effective.GIDs)
+	}
+}
+
 func TestApplyIdentityMapping_PreservesOriginalIdentity(t *testing.T) {
 	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()

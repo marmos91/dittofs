@@ -152,6 +152,8 @@ func (store *MemoryMetadataStore) RemoveFile(
 		},
 	}
 
+	now := time.Now()
+
 	// Decrement link count
 	if linkCount > 1 {
 		// File has other hard links, just decrement count
@@ -160,15 +162,32 @@ func (store *MemoryMetadataStore) RemoveFile(
 		returnFile.ContentID = ""
 		store.linkCounts[fileKey]--
 		fileData.Attr.Nlink = store.linkCounts[fileKey]
+		returnFile.Nlink = store.linkCounts[fileKey] // Update return value
+		// POSIX: ctime must be updated when link count changes
+		fileData.Attr.Ctime = now
+		returnFile.Ctime = now
 	} else {
-		// This was the last link, remove all metadata
-		// ContentID is returned so caller can delete content
-		delete(store.files, fileKey)
-		delete(store.linkCounts, fileKey)
+		// Last link removed - set nlink=0 but KEEP the file metadata.
+		// This matches Linux kernel behavior where the inode stays in the
+		// icache with nlink=0, allowing GETATTR to return valid attributes.
+		// This is required for POSIX compliance: fstat() on an open fd
+		// after unlink() should return nlink=0, not ESTALE.
+		//
+		// ContentID is returned so caller can delete the content data.
+		// The metadata will be garbage collected later.
+		store.linkCounts[fileKey] = 0
+		fileData.Attr.Nlink = 0
+		returnFile.Nlink = 0
+		// POSIX: ctime must be updated when link count changes
+		fileData.Attr.Ctime = now
+		returnFile.Ctime = now
+
+		// Remove parent reference since file is now orphaned
 		delete(store.parents, fileKey)
-		delete(store.deviceNumbers, fileKey) // Clean up device numbers if present
-		store.lockMgr.removeFile(fileKey)    // Clean up any locks on this file
-		// Note: File doesn't have children (it's not a directory)
+
+		// Note: We keep store.files[fileKey] so GETATTR still works with nlink=0
+		// Note: We keep deviceNumbers in case of stat on orphaned file
+		// Note: Locks are kept until client releases them
 	}
 
 	// Remove from parent's children
@@ -178,7 +197,6 @@ func (store *MemoryMetadataStore) RemoveFile(
 	store.invalidateDirCache(parentHandle)
 
 	// Update parent timestamps
-	now := time.Now()
 	parentData.Attr.Mtime = now
 	parentData.Attr.Ctime = now
 

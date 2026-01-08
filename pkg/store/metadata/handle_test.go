@@ -330,4 +330,26 @@ func TestHandleToINode(t *testing.T) {
 			t.Error("HandleToINode() returned 0 for valid handle")
 		}
 	})
+
+	// Test that HandleToINode produces SHA-256 based hash, not raw bytes
+	// This is a regression test for the "fileid changed" NFS bug where
+	// different code paths computed fileids differently.
+	//
+	// Bug: fsinfo.go extracted first 8 bytes of handle as fileid (wrong)
+	//      while other code used SHA-256 hash (correct)
+	// Result: NFS client saw different fileids for same file and rejected mount
+	t.Run("not_raw_bytes", func(t *testing.T) {
+		// Create a handle where first 8 bytes are known: "/export:"
+		handle, _ := EncodeShareHandle("/export", id1)
+		inode := HandleToINode(handle)
+
+		// If someone accidentally uses first 8 bytes as fileid, they'd get:
+		// "/export:" = 0x2f6578706f72743a (big-endian)
+		rawBytesFileID := uint64(0x2f6578706f72743a)
+
+		if inode == rawBytesFileID {
+			t.Errorf("HandleToINode() returned raw bytes (0x%x) instead of hash - "+
+				"this will cause 'fileid changed' NFS errors", inode)
+		}
+	})
 }

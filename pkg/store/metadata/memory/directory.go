@@ -3,6 +3,7 @@ package memory
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/store/metadata"
@@ -78,6 +79,10 @@ func (store *MemoryMetadataStore) Move(
 		}
 	}
 
+	// Note: We don't validate PATH_MAX here because NFS uses file handles,
+	// not paths. PATH_MAX only applies to paths passed to syscalls, but NFS
+	// operations receive (parent_handle, name) pairs.
+
 	// Check write permission on source directory
 	granted, err := store.checkPermissionsLocked(ctx, fromDir, metadata.PermissionWrite)
 	if err != nil {
@@ -131,6 +136,32 @@ func (store *MemoryMetadataStore) Move(
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
 			Message: "source file not found",
+		}
+	}
+
+	// Check sticky bit restriction on source directory
+	// When the directory has the sticky bit set, only certain users can rename/delete
+	if err := metadata.CheckStickyBitRestriction(ctx, fromDirData.Attr, sourceData.Attr); err != nil {
+		return err
+	}
+
+	// POSIX: When moving a directory to a different parent, updating the ".."
+	// entry requires write permission to the source directory itself. Only the
+	// directory owner or root can perform this operation. This is separate from
+	// the sticky bit check above.
+	if sourceData.Attr.Type == metadata.FileTypeDirectory && fromDirKey != toDirKey {
+		callerUID := ^uint32(0) // Default to invalid
+		if ctx.Identity != nil && ctx.Identity.UID != nil {
+			callerUID = *ctx.Identity.UID
+		}
+
+		// Root (UID 0) can always move directories
+		// Otherwise, caller must own the source directory
+		if callerUID != 0 && callerUID != sourceData.Attr.UID {
+			return &metadata.StoreError{
+				Code:    metadata.ErrAccessDenied,
+				Message: "cannot move directory to different parent: not owner",
+			}
 		}
 	}
 
@@ -199,9 +230,10 @@ func (store *MemoryMetadataStore) Move(
 		}
 
 		if hasOtherLinks {
-			// Has other links, just decrement
+			// Has other links, just decrement and update ctime
 			store.linkCounts[destKey]--
 			destData.Attr.Nlink = store.linkCounts[destKey]
+			destData.Attr.Ctime = time.Now() // POSIX: ctime changes when link count changes
 		} else {
 			// Last link (or only link for directories), remove all metadata
 			delete(store.files, destKey)
@@ -246,6 +278,17 @@ func (store *MemoryMetadataStore) Move(
 			store.linkCounts[toDirKey]++
 			toDirData.Attr.Nlink = store.linkCounts[toDirKey]
 		}
+	}
+
+	// Detect NFS "silly rename" pattern: RENAME to ".nfs*"
+	// When the NFS client renames a file to .nfs* instead of unlinking it
+	// (because the file is still open), we should set nlink=0 to match
+	// POSIX semantics where fstat() on an unlinked open file returns nlink=0.
+	// This is how the Linux kernel inode cache behaves - the inode remains
+	// accessible but reports nlink=0 after unlink.
+	if strings.HasPrefix(toName, ".nfs") && sourceData.Attr.Type != metadata.FileTypeDirectory {
+		store.linkCounts[sourceKey] = 0
+		sourceData.Attr.Nlink = 0
 	}
 
 	// Update timestamps

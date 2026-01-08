@@ -153,9 +153,11 @@ const (
 	// Matches Linux kernel's OFFSET_MAX behavior in fs/nfsd/nfs3proc.c
 	OffsetMax = int64(1<<63 - 1)
 
-	// NFS3MaxPathLen is the maximum symlink target length per RFC 1813.
-	// This matches NFS3_MAXPATHLEN in the Linux kernel (1024 bytes).
-	NFS3MaxPathLen = 1024
+	// NFS3MaxPathLen is the maximum symlink target length.
+	// While RFC 1813 specifies NFS3_MAXPATHLEN as 1024 bytes, we use POSIX PATH_MAX (4096)
+	// for compatibility with pjdfstest and other POSIX compliance tests that expect
+	// symlink targets up to PATH_MAX-1 (4095) bytes to work.
+	NFS3MaxPathLen = 4096
 
 	// NFS3MaxNameLen is the maximum filename component length per RFC 1813.
 	// Individual path components (directory/file names) are limited to 255 bytes.

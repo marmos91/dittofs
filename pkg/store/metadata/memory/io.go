@@ -166,6 +166,15 @@ func (s *MemoryMetadataStore) CommitWrite(
 	fileData.Attr.Mtime = now // Mtime is set when the write is committed
 	fileData.Attr.Ctime = now // Ctime always uses current time (metadata change time)
 
+	// POSIX: Clear setuid/setgid bits when a non-root user writes to a file
+	// This is a security measure to prevent privilege escalation.
+	// Per POSIX, if a process without appropriate privileges writes to a file,
+	// the set-user-ID and set-group-ID bits are cleared.
+	identity := ctx.Identity
+	if identity != nil && identity.UID != nil && *identity.UID != 0 {
+		fileData.Attr.Mode &= ^uint32(0o6000) // Clear both setuid (04000) and setgid (02000)
+	}
+
 	// Decode handle to get ID and other info
 	shareName, id, err := metadata.DecodeFileHandle(intent.Handle)
 	if err != nil {
