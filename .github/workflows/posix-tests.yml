@@ -70,17 +70,16 @@ jobs:
 
       - name: Verify pass rate
         run: |
-          # Check for expected pass rate (8788/8789 = 99.99%)
-          PASSED=$(grep -E "^Result: PASS" ~/posix-memory.log | wc -l || echo "0")
-          FAILED=$(grep -E "^Result: FAIL" ~/posix-memory.log | wc -l || echo "0")
-
-          # Alternative: parse prove output
+          # Expected: 8788/8789 pass (1 known failure: utimensat/09.t test 5 - NFSv3 timestamp limit)
           if grep -q "All tests successful" ~/posix-memory.log; then
-            echo "All tests passed!"
-          elif grep -q "Failed 1/8789" ~/posix-memory.log || grep -q "8788.*ok" ~/posix-memory.log; then
-            echo "Expected failure count (1 test - NFSv3 timestamp limit)"
+            echo "✓ All tests passed!"
+          elif grep -q "Failed 1/" ~/posix-memory.log; then
+            echo "✓ Expected failure count (1 test - NFSv3 timestamp limit)"
           else
-            echo "::warning::Unexpected test failures detected"
+            echo "✗ Unexpected test failures detected!"
+            echo "::error::POSIX tests failed with more than 1 expected failure"
+            tail -50 ~/posix-memory.log
+            exit 1
           fi
 
       - name: Cleanup
@@ -144,6 +143,20 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           tail -30 ~/posix-badger.log >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Verify pass rate
+        run: |
+          # Expected: 8788/8789 pass (1 known failure: utimensat/09.t test 5 - NFSv3 timestamp limit)
+          if grep -q "All tests successful" ~/posix-badger.log; then
+            echo "✓ All tests passed!"
+          elif grep -q "Failed 1/" ~/posix-badger.log; then
+            echo "✓ Expected failure count (1 test - NFSv3 timestamp limit)"
+          else
+            echo "✗ Unexpected test failures detected!"
+            echo "::error::POSIX tests failed with more than 1 expected failure"
+            tail -50 ~/posix-badger.log
+            exit 1
+          fi
 
       - name: Cleanup
         if: always()
@@ -222,6 +235,20 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           tail -30 ~/posix-postgres.log >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Verify pass rate
+        run: |
+          # Expected: 8788/8789 pass (1 known failure: utimensat/09.t test 5 - NFSv3 timestamp limit)
+          if grep -q "All tests successful" ~/posix-postgres.log; then
+            echo "✓ All tests passed!"
+          elif grep -q "Failed 1/" ~/posix-postgres.log; then
+            echo "✓ Expected failure count (1 test - NFSv3 timestamp limit)"
+          else
+            echo "✗ Unexpected test failures detected!"
+            echo "::error::POSIX tests failed with more than 1 expected failure"
+            tail -50 ~/posix-postgres.log
+            exit 1
+          fi
 
       - name: Cleanup
         if: always()
