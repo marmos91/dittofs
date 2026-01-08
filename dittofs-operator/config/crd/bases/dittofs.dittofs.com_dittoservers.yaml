@@ -221,7 +221,7 @@ spec:
                       description: ShareConfig defines an NFS export/share
                       properties:
                         allowGuest:
-                          default: true
+                          default: false
                           description: AllowGuest allows guest/anonymous access to
                             this share
                           type: boolean

@@ -151,7 +151,7 @@ type ShareConfig struct {
 	AllowedAuthMethods []string `json:"allowedAuthMethods,omitempty"`
 
 	// AllowGuest allows guest/anonymous access to this share
-	// +kubebuilder:default=true
+	// +kubebuilder:default=false
 	// +optional
 	AllowGuest *bool `json:"allowGuest,omitempty"`
 

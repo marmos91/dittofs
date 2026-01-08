@@ -143,8 +143,8 @@ func GenerateDittoFSConfig(ctx context.Context, client client.Client, dittoServe
 			rootDirAttrs.GID = share.RootDirectoryAttributes.GID
 		}
 
-		// Set AllowGuest based on configuration, defaulting to true for backward compatibility
-		allowGuest := true
+		// Set AllowGuest based on configuration, defaulting to false
+		allowGuest := false
 		if share.AllowGuest != nil {
 			allowGuest = *share.AllowGuest
 		}
