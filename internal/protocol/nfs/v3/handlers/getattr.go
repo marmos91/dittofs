@@ -218,6 +218,7 @@ func (h *Handler) GetAttr(
 		"type", nfsAttr.Type,
 		"mode", fmt.Sprintf("%o", nfsAttr.Mode),
 		"size", nfsAttr.Size,
+		"nlink", nfsAttr.Nlink,
 		"client", clientIP)
 
 	logger.DebugCtx(ctx.Context, "GETATTR details",

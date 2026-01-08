@@ -214,6 +214,8 @@ func (s *BadgerMetadataStore) RemoveFile(
 			},
 		}
 
+		now := time.Now()
+
 		// Decrement link count
 		if linkCount > 1 {
 			// File has other hard links, just decrement count
@@ -223,8 +225,12 @@ func (s *BadgerMetadataStore) RemoveFile(
 			if err := txn.Set(keyLinkCount(fileID), encodeUint32(linkCount)); err != nil {
 				return fmt.Errorf("failed to update link count: %w", err)
 			}
-			// Also update the stored file's Nlink
+			// Also update the stored file's Nlink and Ctime
+			// POSIX: ctime must be updated when link count changes
 			file.Nlink = linkCount
+			file.Ctime = now
+			returnFile.Nlink = linkCount // Update return value
+			returnFile.Ctime = now
 			fileBytes, err := encodeFile(file)
 			if err != nil {
 				return err
@@ -233,19 +239,41 @@ func (s *BadgerMetadataStore) RemoveFile(
 				return fmt.Errorf("failed to update file nlink: %w", err)
 			}
 		} else {
-			// This was the last link, remove all metadata
-			// ContentID is returned so caller can delete content
-			if err := txn.Delete(keyFile(fileID)); err != nil {
-				return fmt.Errorf("failed to delete file: %w", err)
+			// Last link removed - set nlink=0 but KEEP the file metadata.
+			// This matches Linux kernel behavior where the inode stays in the
+			// icache with nlink=0, allowing GETATTR to return valid attributes.
+			// This is required for POSIX compliance: fstat() on an open fd
+			// after unlink() should return nlink=0, not ESTALE.
+			//
+			// ContentID is returned so caller can delete the content data.
+			// The metadata will be garbage collected later.
+			returnFile.Nlink = 0
+			file.Nlink = 0
+			// POSIX: ctime must be updated when link count changes
+			file.Ctime = now
+			returnFile.Ctime = now
+
+			// Update link count to 0
+			if err := txn.Set(keyLinkCount(fileID), encodeUint32(0)); err != nil {
+				return fmt.Errorf("failed to update link count: %w", err)
 			}
-			if err := txn.Delete(keyLinkCount(fileID)); err != nil {
-				return fmt.Errorf("failed to delete link count: %w", err)
+
+			// Update file metadata with nlink=0 and ctime
+			fileBytes, err := encodeFile(file)
+			if err != nil {
+				return err
 			}
+			if err := txn.Set(keyFile(fileID), fileBytes); err != nil {
+				return fmt.Errorf("failed to update file nlink: %w", err)
+			}
+
+			// Remove parent reference since file is now orphaned
 			if err := txn.Delete(keyParent(fileID)); err != nil && err != badger.ErrKeyNotFound {
 				return fmt.Errorf("failed to delete parent: %w", err)
 			}
-			// Clean up device numbers if present (ignore not found)
-			_ = txn.Delete(keyDeviceNumber(fileID))
+
+			// Note: We keep keyFile and keyLinkCount so GETATTR still works
+			// Note: We keep deviceNumbers in case of stat on orphaned file
 		}
 
 		// Remove from parent's children
@@ -254,7 +282,6 @@ func (s *BadgerMetadataStore) RemoveFile(
 		}
 
 		// Update parent timestamps
-		now := time.Now()
 		parentFile.Mtime = now
 		parentFile.Ctime = now
 		parentBytes, err := encodeFile(parentFile)

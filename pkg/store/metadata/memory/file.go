@@ -256,66 +256,131 @@ func (store *MemoryMetadataStore) SetFileAttributes(
 
 	// Validate and apply mode changes
 	if attrs.Mode != nil {
-		// Only owner or root can change mode (ownership check, not Unix permissions)
+		// Only owner or root can change mode (EPERM per POSIX)
+		// This is a privilege check, not a Unix permission check
 		if !isOwner && !isRoot {
 			return &metadata.StoreError{
-				Code:    metadata.ErrPermissionDenied,
+				Code:    metadata.ErrPrivilegeRequired,
 				Message: "only owner or root can change mode",
 			}
 		}
 
 		// Validate mode (only lower 12 bits)
 		newMode := *attrs.Mode & 0o7777
+
+		// POSIX: If the calling process does not have appropriate privileges, and
+		// if the group ID of the file does not match the effective group ID or one
+		// of the supplementary group IDs, bit S_ISGID (set-group-ID on execution)
+		// in the file's mode shall be cleared upon successful return from chmod().
+		// Note: This only applies to non-root users on regular files.
+		if !isRoot && attr.Type == metadata.FileTypeRegular {
+			// Check if user is a member of the file's group
+			isMemberOfFileGroup := false
+			if identity.GID != nil && *identity.GID == attr.GID {
+				isMemberOfFileGroup = true
+			}
+			if !isMemberOfFileGroup && identity.HasGID(attr.GID) {
+				isMemberOfFileGroup = true
+			}
+
+			// Clear setgid bit if user is not a member of the file's group
+			if !isMemberOfFileGroup {
+				newMode &= ^uint32(0o2000) // Clear S_ISGID
+			}
+		}
+
 		attr.Mode = newMode
 		changed = true
 	}
 
 	// Validate and apply UID changes
 	if attrs.UID != nil {
-		// Only root can change ownership (capability check, not Unix permissions)
+		newUID := *attrs.UID
+		// Per POSIX chown(2): only root can change UID
+		// A non-owner cannot call chown at all, even to the same values
 		if !isRoot {
-			return &metadata.StoreError{
-				Code:    metadata.ErrPermissionDenied,
-				Message: "only root can change ownership",
+			// Non-root: only owner can attempt chown (for GID changes via chgrp)
+			// but UID changes require root privileges
+			if newUID != attr.UID {
+				return &metadata.StoreError{
+					Code:    metadata.ErrPrivilegeRequired,
+					Message: "only root can change ownership",
+				}
+			}
+			// Non-root, same UID: check if user is owner
+			// A non-owner cannot call chown at all (EPERM), even to same values
+			if !isOwner {
+				return &metadata.StoreError{
+					Code:    metadata.ErrPrivilegeRequired,
+					Message: "only owner or root can change ownership",
+				}
+			}
+			// Owner setting UID to same value: allowed (no-op)
+		} else {
+			// Root can change to any UID
+			if newUID != attr.UID {
+				attr.UID = newUID
+				changed = true
 			}
 		}
-
-		attr.UID = *attrs.UID
-		changed = true
 	}
 
 	// Validate and apply GID changes
 	if attrs.GID != nil {
-		// Root can change to any group
-		// Owner can change only if member of target group (capability check, not Unix permissions)
+		newGID := *attrs.GID
+		// Per POSIX chown(2): only owner or root can change GID
+		// A non-owner cannot call chown/chgrp at all, even to the same values
 		if !isRoot {
+			// Non-root: must be owner to call chown/chgrp
 			if !isOwner {
 				return &metadata.StoreError{
-					Code:    metadata.ErrPermissionDenied,
+					Code:    metadata.ErrPrivilegeRequired,
 					Message: "only owner or root can change group",
 				}
 			}
 
-			// Check if owner is member of target group
-			targetGID := *attrs.GID
-			isMember := false
-			if identity.GID != nil && *identity.GID == targetGID {
-				isMember = true
-			}
-			if !isMember && slices.Contains(identity.GIDs, targetGID) {
-				isMember = true
-			}
-
-			if !isMember {
-				return &metadata.StoreError{
-					Code:    metadata.ErrPermissionDenied,
-					Message: "owner must be member of target group",
+			// Owner changing GID: must be member of target group (if different)
+			if newGID != attr.GID {
+				// Check if owner is member of target group
+				isMember := false
+				if identity.GID != nil && *identity.GID == newGID {
+					isMember = true
 				}
+				if !isMember && slices.Contains(identity.GIDs, newGID) {
+					isMember = true
+				}
+
+				if !isMember {
+					return &metadata.StoreError{
+						Code:    metadata.ErrPrivilegeRequired,
+						Message: "owner must be member of target group",
+					}
+				}
+
+				attr.GID = newGID
+				changed = true
+			}
+			// Owner setting GID to same value: allowed (no-op)
+		} else {
+			// Root can change to any group
+			if newGID != attr.GID {
+				attr.GID = newGID
+				changed = true
 			}
 		}
+	}
 
-		attr.GID = *attrs.GID
-		changed = true
+	// POSIX: Clear setuid/setgid bits when non-root user performs chown
+	// This is a security measure to prevent privilege escalation.
+	// Per POSIX, ANY chown operation by a non-privileged user should clear
+	// these bits, even if the ownership values don't actually change.
+	// This applies to all file types except directories (and symlinks have fixed mode).
+	// Directories retain setgid for inheritance semantics.
+	if !isRoot && (attrs.UID != nil || attrs.GID != nil) {
+		if attr.Type != metadata.FileTypeDirectory && attr.Type != metadata.FileTypeSymlink {
+			attr.Mode &= ^uint32(0o6000) // Clear both setuid (04000) and setgid (02000)
+			changed = true
+		}
 	}
 
 	// Validate and apply size changes
@@ -347,17 +412,28 @@ func (store *MemoryMetadataStore) SetFileAttributes(
 	}
 
 	// Apply atime changes
+	// Per POSIX utimensat(2):
+	// - UTIME_NOW (AtimeNow=true): owner, root, OR write permission
+	// - Arbitrary time (AtimeNow=false): owner OR root ONLY
 	if attrs.Atime != nil {
-		// Check write permission or ownership
 		if !isOwner && !isRoot {
-			granted, err := store.checkPermissionsLocked(ctx, handle, metadata.PermissionWrite)
-			if err != nil {
-				return err
-			}
-			if granted&metadata.PermissionWrite == 0 {
+			if attrs.AtimeNow {
+				// UTIME_NOW: write permission is sufficient
+				granted, err := store.checkPermissionsLocked(ctx, handle, metadata.PermissionWrite)
+				if err != nil {
+					return err
+				}
+				if granted&metadata.PermissionWrite == 0 {
+					return &metadata.StoreError{
+						Code:    metadata.ErrAccessDenied,
+						Message: "no permission to change atime",
+					}
+				}
+			} else {
+				// Arbitrary time: only owner or root can set (EPERM)
 				return &metadata.StoreError{
-					Code:    metadata.ErrAccessDenied,
-					Message: "no permission to change atime",
+					Code:    metadata.ErrPrivilegeRequired,
+					Message: "only owner can set arbitrary timestamps",
 				}
 			}
 		}
@@ -367,17 +443,28 @@ func (store *MemoryMetadataStore) SetFileAttributes(
 	}
 
 	// Apply mtime changes
+	// Per POSIX utimensat(2):
+	// - UTIME_NOW (MtimeNow=true): owner, root, OR write permission
+	// - Arbitrary time (MtimeNow=false): owner OR root ONLY
 	if attrs.Mtime != nil {
-		// Check write permission or ownership
 		if !isOwner && !isRoot {
-			granted, err := store.checkPermissionsLocked(ctx, handle, metadata.PermissionWrite)
-			if err != nil {
-				return err
-			}
-			if granted&metadata.PermissionWrite == 0 {
+			if attrs.MtimeNow {
+				// UTIME_NOW: write permission is sufficient
+				granted, err := store.checkPermissionsLocked(ctx, handle, metadata.PermissionWrite)
+				if err != nil {
+					return err
+				}
+				if granted&metadata.PermissionWrite == 0 {
+					return &metadata.StoreError{
+						Code:    metadata.ErrAccessDenied,
+						Message: "no permission to change mtime",
+					}
+				}
+			} else {
+				// Arbitrary time: only owner or root can set (EPERM)
 				return &metadata.StoreError{
-					Code:    metadata.ErrAccessDenied,
-					Message: "no permission to change mtime",
+					Code:    metadata.ErrPrivilegeRequired,
+					Message: "only owner can set arbitrary timestamps",
 				}
 			}
 		}
@@ -514,6 +601,11 @@ func (store *MemoryMetadataStore) Create(
 	}
 
 	// Build full path and generate deterministic handle
+	// Build full path for handle generation.
+	// Note: We don't validate PATH_MAX here because NFS uses file handles,
+	// not paths. PATH_MAX only applies to paths passed to syscalls, but NFS
+	// operations receive (parent_handle, name) pairs. Deeply nested directories
+	// are valid as long as each name component is <= NAME_MAX.
 	fullPath := store.buildFullPath(parentHandle, name)
 	handle := store.generateFileHandle(parentData.ShareName, fullPath)
 
@@ -560,6 +652,9 @@ func (store *MemoryMetadataStore) Create(
 		newAttr.Nlink = 2
 		// Initialize empty children map
 		store.children[key] = make(map[string]metadata.FileHandle)
+		// Increment parent's link count (new subdirectory adds ".." reference to parent)
+		store.linkCounts[parentKey]++
+		parentData.Attr.Nlink = store.linkCounts[parentKey]
 	} else {
 		// Regular files start at 1
 		store.linkCounts[key] = 1
@@ -675,6 +770,11 @@ func (store *MemoryMetadataStore) CreateSymlink(
 	}
 
 	// Build full path and generate deterministic handle
+	// Build full path for handle generation.
+	// Note: We don't validate PATH_MAX here because NFS uses file handles,
+	// not paths. PATH_MAX only applies to paths passed to syscalls, but NFS
+	// operations receive (parent_handle, name) pairs. Deeply nested directories
+	// are valid as long as each name component is <= NAME_MAX.
 	fullPath := store.buildFullPath(parentHandle, name)
 	handle := store.generateFileHandle(parentData.ShareName, fullPath)
 
@@ -823,6 +923,11 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 	}
 
 	// Build full path and generate deterministic handle
+	// Build full path for handle generation.
+	// Note: We don't validate PATH_MAX here because NFS uses file handles,
+	// not paths. PATH_MAX only applies to paths passed to syscalls, but NFS
+	// operations receive (parent_handle, name) pairs. Deeply nested directories
+	// are valid as long as each name component is <= NAME_MAX.
 	fullPath := store.buildFullPath(parentHandle, name)
 	handle := store.generateFileHandle(parentData.ShareName, fullPath)
 
@@ -843,6 +948,11 @@ func (store *MemoryMetadataStore) CreateSpecialFile(
 		CreationTime: attr.CreationTime,
 		LinkTarget:   "",
 		ContentID:    "", // Special files don't have content
+	}
+
+	// Set device numbers for block and character devices
+	if fileType == metadata.FileTypeBlockDevice || fileType == metadata.FileTypeCharDevice {
+		newAttr.Rdev = metadata.MakeRdev(deviceMajor, deviceMinor)
 	}
 
 	// Store file with ShareName inherited from parent
@@ -949,6 +1059,10 @@ func (store *MemoryMetadataStore) CreateHardLink(
 			Message: "cannot create hard link to directory",
 		}
 	}
+
+	// Note: We don't validate PATH_MAX here because NFS uses file handles,
+	// not paths. PATH_MAX only applies to paths passed to syscalls, but NFS
+	// operations receive (parent_handle, name) pairs.
 
 	// Check write permission on directory
 	granted, err := store.checkPermissionsLocked(ctx, dirHandle, metadata.PermissionWrite)

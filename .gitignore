@@ -50,6 +50,12 @@ temp/
 benchmark_results/
 *.prof
 
+# POSIX test results
+test/posix/results/*.txt
+test/posix/results/*.log
+test/posix/results/*.json
+test/posix/test-config.yaml
+
 # OS
 .DS_Store
 Thumbs.db

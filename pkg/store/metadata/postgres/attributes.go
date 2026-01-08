@@ -38,10 +38,118 @@ func (s *PostgresMetadataStore) SetFileAttributes(
 	}
 
 	// Check permissions for different updates
-	if attrs.Mode != nil || attrs.UID != nil || attrs.GID != nil {
-		// Changing ownership or permissions requires ownership
-		if err := s.checkAccess(file, ctx, metadata.PermissionChangeOwnership); err != nil {
-			return err
+	identity := ctx.Identity
+	if identity == nil || identity.UID == nil {
+		return &metadata.StoreError{
+			Code:    metadata.ErrAccessDenied,
+			Message: "authentication required to modify attributes",
+			Path:    file.Path,
+		}
+	}
+
+	uid := *identity.UID
+	isOwner := uid == file.UID
+	isRoot := uid == 0
+
+	// Mode changes: only owner or root
+	if attrs.Mode != nil {
+		if !isOwner && !isRoot {
+			return &metadata.StoreError{
+				Code:    metadata.ErrPrivilegeRequired,
+				Message: "only owner or root can change mode",
+				Path:    file.Path,
+			}
+		}
+	}
+
+	// UID changes: only root can change UID
+	if attrs.UID != nil {
+		newUID := *attrs.UID
+		if !isRoot {
+			// Non-root can't change UID to a different value
+			if newUID != file.UID {
+				return &metadata.StoreError{
+					Code:    metadata.ErrPrivilegeRequired,
+					Message: "only root can change ownership",
+					Path:    file.Path,
+				}
+			}
+			// Non-owner cannot call chown
+			if !isOwner {
+				return &metadata.StoreError{
+					Code:    metadata.ErrPrivilegeRequired,
+					Message: "only owner or root can change ownership",
+					Path:    file.Path,
+				}
+			}
+		}
+	}
+
+	// GID changes: only owner or root
+	if attrs.GID != nil {
+		newGID := *attrs.GID
+		if !isRoot {
+			// Non-root must be owner
+			if !isOwner {
+				return &metadata.StoreError{
+					Code:    metadata.ErrPrivilegeRequired,
+					Message: "only owner or root can change group",
+					Path:    file.Path,
+				}
+			}
+
+			// Owner changing GID: must be member of target group (if different)
+			if newGID != file.GID {
+				// Check if owner is member of target group
+				isMember := false
+				if identity.GID != nil && *identity.GID == newGID {
+					isMember = true
+				}
+				if !isMember && identity.HasGID(newGID) {
+					isMember = true
+				}
+
+				if !isMember {
+					return &metadata.StoreError{
+						Code:    metadata.ErrPrivilegeRequired,
+						Message: "owner must be member of target group",
+						Path:    file.Path,
+					}
+				}
+			}
+		}
+	}
+
+	// Timestamp changes: UTIME_NOW allows write permission; arbitrary time requires owner/root
+	// Check atime permissions
+	if attrs.Atime != nil && !isOwner && !isRoot {
+		if attrs.AtimeNow {
+			// UTIME_NOW: write permission is sufficient
+			if err := s.checkAccess(file, ctx, metadata.PermissionWrite); err != nil {
+				return err
+			}
+		} else {
+			return &metadata.StoreError{
+				Code:    metadata.ErrPrivilegeRequired,
+				Message: "only owner can set arbitrary timestamps",
+				Path:    file.Path,
+			}
+		}
+	}
+
+	// Check mtime permissions
+	if attrs.Mtime != nil && !isOwner && !isRoot {
+		if attrs.MtimeNow {
+			// UTIME_NOW: write permission is sufficient
+			if err := s.checkAccess(file, ctx, metadata.PermissionWrite); err != nil {
+				return err
+			}
+		} else {
+			return &metadata.StoreError{
+				Code:    metadata.ErrPrivilegeRequired,
+				Message: "only owner can set arbitrary timestamps",
+				Path:    file.Path,
+			}
 		}
 	}
 
@@ -55,8 +163,27 @@ func (s *PostgresMetadataStore) SetFileAttributes(
 
 	// Mode
 	if attrs.Mode != nil {
+		newMode := *attrs.Mode & 0o7777
+
+		// Clear SGID bit if non-root user is not a member of the file's group
+		if !isRoot && file.Type == metadata.FileTypeRegular && (newMode&0o2000) != 0 {
+			// Check if user is member of file's group
+			isMemberOfFileGroup := false
+			if identity.GID != nil && *identity.GID == file.GID {
+				isMemberOfFileGroup = true
+			}
+			if !isMemberOfFileGroup && identity.HasGID(file.GID) {
+				isMemberOfFileGroup = true
+			}
+
+			// If not a member of the file's group, clear SGID bit
+			if !isMemberOfFileGroup {
+				newMode &= ^uint32(0o2000)
+			}
+		}
+
 		updates = append(updates, fmt.Sprintf("mode = $%d", paramIndex))
-		params = append(params, int32(*attrs.Mode&0o7777))
+		params = append(params, int32(newMode))
 		paramIndex++
 	}
 
@@ -72,6 +199,17 @@ func (s *PostgresMetadataStore) SetFileAttributes(
 		updates = append(updates, fmt.Sprintf("gid = $%d", paramIndex))
 		params = append(params, int32(*attrs.GID))
 		paramIndex++
+	}
+
+	// Clear SUID/SGID bits when non-root user performs chown (security measure)
+	if !isRoot && (attrs.UID != nil || attrs.GID != nil) {
+		if file.Type != metadata.FileTypeDirectory && file.Type != metadata.FileTypeSymlink {
+			// Only add mode clearing if we're not already setting mode explicitly
+			if attrs.Mode == nil {
+				// Clear SUID (04000=2048) and SGID (02000=1024) using bitwise AND
+				updates = append(updates, "mode = mode & ~3072")
+			}
+		}
 	}
 
 	// Size (truncate)
@@ -206,6 +344,10 @@ func (s *PostgresMetadataStore) CreateSymlink(
 	// Generate new symlink ID
 	symlinkID := uuid.New()
 	symlinkPath := path.Join(parent.Path, name)
+
+	// Note: We don't validate PATH_MAX here because NFS uses file handles,
+	// not paths. PATH_MAX only applies to paths passed to syscalls, but NFS
+	// operations traverse component by component via LOOKUP.
 
 	// Insert symlink
 	insertQuery := `
@@ -423,6 +565,10 @@ func (s *PostgresMetadataStore) CreateSpecialFile(
 	fileID := uuid.New()
 	filePath := path.Join(parent.Path, name)
 
+	// Note: We don't validate PATH_MAX here because NFS uses file handles,
+	// not paths. PATH_MAX only applies to paths passed to syscalls, but NFS
+	// operations traverse component by component via LOOKUP.
+
 	// Insert special file
 	// Note: Special files have no content_id, but may have device_major/device_minor
 	insertQuery := `
@@ -512,6 +658,12 @@ func (s *PostgresMetadataStore) CreateSpecialFile(
 	// Invalidate stats cache
 	s.statsCache.invalidate()
 
+	// Compute Rdev for device files
+	var rdev uint64
+	if fileType == metadata.FileTypeBlockDevice || fileType == metadata.FileTypeCharDevice {
+		rdev = metadata.MakeRdev(deviceMajor, deviceMinor)
+	}
+
 	// Build File
 	file := &metadata.File{
 		ID:        fileID,
@@ -527,6 +679,7 @@ func (s *PostgresMetadataStore) CreateSpecialFile(
 			Mtime:        attr.Mtime,
 			Ctime:        attr.Ctime,
 			CreationTime: attr.CreationTime,
+			Rdev:         rdev,
 		},
 	}
 
@@ -611,6 +764,10 @@ func (s *PostgresMetadataStore) CreateHardLink(
 			Path:    targetFile.Path,
 		}
 	}
+
+	// Note: We don't validate PATH_MAX here because NFS uses file handles,
+	// not paths. PATH_MAX only applies to paths passed to syscalls, but NFS
+	// operations traverse component by component via LOOKUP.
 
 	// Check if name already exists in directory
 	checkQuery := `

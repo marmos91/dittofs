@@ -5,14 +5,57 @@ import (
 	"time"
 )
 
+// Mode bits for special permission checks
+const (
+	// ModeSticky is the sticky bit (01000 in octal).
+	// When set on a directory, only the file owner, directory owner, or root
+	// can delete or rename files within that directory.
+	ModeSticky = 0o1000
+)
+
+// Filesystem path limits (POSIX standard values)
+const (
+	// MaxNameLen is the maximum length of a filename component (NAME_MAX)
+	MaxNameLen = 255
+	// MaxPathLen is the maximum length of a full path (PATH_MAX)
+	MaxPathLen = 4096
+)
+
 // ValidateName validates a filename for creation/move operations.
 // Returns ErrInvalidArgument if name is empty, ".", or "..".
+// Returns ErrNameTooLong if name exceeds MaxNameLen (255 bytes).
 func ValidateName(name string) error {
 	if name == "" || name == "." || name == ".." {
 		return &StoreError{
 			Code:    ErrInvalidArgument,
 			Message: "invalid name",
 			Path:    name,
+		}
+	}
+	if len(name) > MaxNameLen {
+		return &StoreError{
+			Code:    ErrNameTooLong,
+			Message: "filename too long",
+			Path:    name,
+		}
+	}
+	return nil
+}
+
+// ValidatePath validates a full path for POSIX compliance.
+// Returns ErrNameTooLong if path exceeds MaxPathLen (4096 bytes).
+//
+// Internal paths start with "/" (e.g., "/dir/file"), while client paths are
+// relative to the mount point (e.g., "dir/file"). POSIX PATH_MAX (4096) includes
+// the null terminator, so client paths can be up to 4095 characters. However,
+// our internal paths add a leading "/" making them up to 4096 characters.
+// This function validates the internal path length using > MaxPathLen.
+func ValidatePath(path string) error {
+	if len(path) > MaxPathLen {
+		return &StoreError{
+			Code:    ErrNameTooLong,
+			Message: "path too long",
+			Path:    path,
 		}
 	}
 	return nil
@@ -56,11 +99,12 @@ func ValidateSymlinkTarget(target string) error {
 }
 
 // RequiresRoot checks if the operation requires root privileges.
-// Returns ErrAccessDenied if the user is not root (UID 0).
+// Returns ErrPrivilegeRequired if the user is not root (UID 0).
+// This maps to NFS3ErrPerm (EPERM) per RFC 1813 for privilege violations.
 func RequiresRoot(ctx *AuthContext) error {
 	if ctx.Identity == nil || ctx.Identity.UID == nil || *ctx.Identity.UID != 0 {
 		return &StoreError{
-			Code:    ErrAccessDenied,
+			Code:    ErrPrivilegeRequired,
 			Message: "operation requires root privileges",
 		}
 	}
@@ -143,5 +187,56 @@ func ApplyCreateDefaults(attr *FileAttr, ctx *AuthContext, linkTarget string) {
 		attr.Size = uint64(len(linkTarget))
 	} else {
 		attr.Size = 0
+	}
+}
+
+// CheckStickyBitRestriction checks if an operation is allowed under sticky bit semantics.
+//
+// When a directory has the sticky bit set (mode & 01000), only certain users can
+// delete or rename files in that directory:
+//   - Root (UID 0) can always delete/rename
+//   - The owner of the file/directory being deleted/renamed
+//   - The owner of the sticky directory
+//
+// Parameters:
+//   - ctx: Authentication context with the user's identity
+//   - dirAttr: Attributes of the directory containing the file
+//   - fileAttr: Attributes of the file being deleted/renamed
+//
+// Returns:
+//   - nil if the operation is allowed
+//   - ErrAccessDenied if the sticky bit restriction blocks the operation
+func CheckStickyBitRestriction(ctx *AuthContext, dirAttr *FileAttr, fileAttr *FileAttr) error {
+	// Check if the directory has the sticky bit set
+	if dirAttr.Mode&ModeSticky == 0 {
+		// No sticky bit, no restriction
+		return nil
+	}
+
+	// Get the effective UID of the caller
+	callerUID := ^uint32(0) // Default to max (invalid)
+	if ctx.Identity != nil && ctx.Identity.UID != nil {
+		callerUID = *ctx.Identity.UID
+	}
+
+	// Root (UID 0) can always delete/rename in sticky directories
+	if callerUID == 0 {
+		return nil
+	}
+
+	// Check if the caller owns the file being deleted/renamed
+	if fileAttr.UID == callerUID {
+		return nil
+	}
+
+	// Check if the caller owns the sticky directory
+	if dirAttr.UID == callerUID {
+		return nil
+	}
+
+	// Sticky bit restriction applies - deny the operation
+	return &StoreError{
+		Code:    ErrAccessDenied,
+		Message: "sticky bit set: operation not permitted",
 	}
 }

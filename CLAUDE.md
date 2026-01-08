@@ -752,12 +752,10 @@ ln file1 file2      # LINK (hard link)
    - Use BadgerDB backend for persistence
    - BadgerDB provides full persistence with path-based handles
 
-2. **Hard link support varies by backend**:
-   - **Memory store**: Full hard link support with proper link count tracking and NFS LINK procedure
-   - **BadgerDB store**: Link counts tracked internally but `LINK` procedure returns NFS3ERR_NOTSUPP
-   - **Both stores**: Link counts are properly tracked and exposed to NFS clients via `FileAttr.Nlink`
-   - Directory link counts include "." and ".." entries (2 + subdirectory count)
-   - See `pkg/store/metadata/file.go:89` for Nlink field documentation
+2. **ETXTBSY not enforced**: Writing to executing files is allowed (NFS protocol limitation)
+   - NFS servers cannot know if clients are executing files
+   - This affects ALL NFS implementations, not a DittoFS bug
+   - See [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) for details
 
 3. **No file locking**: NLM (Network Lock Manager) protocol not implemented
    - Applications requiring file locks may not work correctly
@@ -777,7 +775,7 @@ ln file1 file2      # LINK (hard link)
    - No replication (except via S3 bucket replication)
    - Single point of failure
 
-See [docs/FAQ.md](docs/FAQ.md) and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for workarounds and more details.
+See [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) for comprehensive documentation of all limitations, including POSIX compliance details.
 
 ## References
 

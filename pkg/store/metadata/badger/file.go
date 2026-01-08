@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
@@ -370,61 +371,131 @@ func (s *BadgerMetadataStore) SetFileAttributes(
 
 		// Validate and apply mode changes
 		if attrs.Mode != nil {
+			// Only owner or root can change mode (EPERM per POSIX)
+			// This is a privilege check, not a Unix permission check
 			if !isOwner && !isRoot {
 				return &metadata.StoreError{
-					Code:    metadata.ErrPermissionDenied,
+					Code:    metadata.ErrPrivilegeRequired,
 					Message: "only owner or root can change mode",
 				}
 			}
 
+			// Validate mode (only lower 12 bits)
 			newMode := *attrs.Mode & 0o7777
+
+			// POSIX: If the calling process does not have appropriate privileges, and
+			// if the group ID of the file does not match the effective group ID or one
+			// of the supplementary group IDs, bit S_ISGID (set-group-ID on execution)
+			// in the file's mode shall be cleared upon successful return from chmod().
+			// Note: This only applies to non-root users on regular files.
+			if !isRoot && file.Type == metadata.FileTypeRegular {
+				// Check if user is a member of the file's group
+				isMemberOfFileGroup := false
+				if identity.GID != nil && *identity.GID == file.GID {
+					isMemberOfFileGroup = true
+				}
+				if !isMemberOfFileGroup && identity.HasGID(file.GID) {
+					isMemberOfFileGroup = true
+				}
+
+				// Clear setgid bit if user is not a member of the file's group
+				if !isMemberOfFileGroup {
+					newMode &= ^uint32(0o2000) // Clear S_ISGID
+				}
+			}
+
 			file.Mode = newMode
 			changed = true
 		}
 
 		// Validate and apply UID changes
 		if attrs.UID != nil {
+			newUID := *attrs.UID
+			// Per POSIX chown(2): only root can change UID
+			// A non-owner cannot call chown at all, even to the same values
 			if !isRoot {
-				return &metadata.StoreError{
-					Code:    metadata.ErrPermissionDenied,
-					Message: "only root can change ownership",
+				// Non-root: only owner can attempt chown (for GID changes via chgrp)
+				// but UID changes require root privileges
+				if newUID != file.UID {
+					return &metadata.StoreError{
+						Code:    metadata.ErrPrivilegeRequired,
+						Message: "only root can change ownership",
+					}
+				}
+				// Non-root, same UID: check if user is owner
+				// A non-owner cannot call chown at all (EPERM), even to same values
+				if !isOwner {
+					return &metadata.StoreError{
+						Code:    metadata.ErrPrivilegeRequired,
+						Message: "only owner or root can change ownership",
+					}
+				}
+				// Owner setting UID to same value: allowed (no-op)
+			} else {
+				// Root can change to any UID
+				if newUID != file.UID {
+					file.UID = newUID
+					changed = true
 				}
 			}
-
-			file.UID = *attrs.UID
-			changed = true
 		}
 
 		// Validate and apply GID changes
 		if attrs.GID != nil {
+			newGID := *attrs.GID
+			// Per POSIX chown(2): only owner or root can change GID
+			// A non-owner cannot call chown/chgrp at all, even to the same values
 			if !isRoot {
+				// Non-root: must be owner to call chown/chgrp
 				if !isOwner {
 					return &metadata.StoreError{
-						Code:    metadata.ErrPermissionDenied,
+						Code:    metadata.ErrPrivilegeRequired,
 						Message: "only owner or root can change group",
 					}
 				}
 
-				// Check if owner is member of target group
-				targetGID := *attrs.GID
-				isMember := false
-				if identity.GID != nil && *identity.GID == targetGID {
-					isMember = true
-				}
-				if !isMember && slices.Contains(identity.GIDs, targetGID) {
-					isMember = true
-				}
-
-				if !isMember {
-					return &metadata.StoreError{
-						Code:    metadata.ErrPermissionDenied,
-						Message: "owner must be member of target group",
+				// Owner changing GID: must be member of target group (if different)
+				if newGID != file.GID {
+					// Check if owner is member of target group
+					isMember := false
+					if identity.GID != nil && *identity.GID == newGID {
+						isMember = true
 					}
+					if !isMember && slices.Contains(identity.GIDs, newGID) {
+						isMember = true
+					}
+
+					if !isMember {
+						return &metadata.StoreError{
+							Code:    metadata.ErrPrivilegeRequired,
+							Message: "owner must be member of target group",
+						}
+					}
+
+					file.GID = newGID
+					changed = true
+				}
+				// Owner setting GID to same value: allowed (no-op)
+			} else {
+				// Root can change to any group
+				if newGID != file.GID {
+					file.GID = newGID
+					changed = true
 				}
 			}
+		}
 
-			file.GID = *attrs.GID
-			changed = true
+		// POSIX: Clear setuid/setgid bits when non-root user performs chown
+		// This is a security measure to prevent privilege escalation.
+		// Per POSIX, ANY chown operation by a non-privileged user should clear
+		// these bits, even if the ownership values don't actually change.
+		// This applies to all file types except directories (and symlinks have fixed mode).
+		// Directories retain setgid for inheritance semantics.
+		if !isRoot && (attrs.UID != nil || attrs.GID != nil) {
+			if file.Type != metadata.FileTypeDirectory && file.Type != metadata.FileTypeSymlink {
+				file.Mode &= ^uint32(0o6000) // Clear both setuid (04000) and setgid (02000)
+				changed = true
+			}
 		}
 
 		// Validate and apply size changes
@@ -454,16 +525,28 @@ func (s *BadgerMetadataStore) SetFileAttributes(
 		}
 
 		// Apply atime changes
+		// Per POSIX utimensat(2):
+		// - UTIME_NOW (AtimeNow=true): owner, root, OR write permission
+		// - Arbitrary time (AtimeNow=false): owner OR root ONLY
 		if attrs.Atime != nil {
 			if !isOwner && !isRoot {
-				granted, err := s.CheckPermissions(ctx, handle, metadata.PermissionWrite)
-				if err != nil {
-					return err
-				}
-				if granted&metadata.PermissionWrite == 0 {
+				if attrs.AtimeNow {
+					// UTIME_NOW: write permission is sufficient
+					granted, err := s.CheckPermissions(ctx, handle, metadata.PermissionWrite)
+					if err != nil {
+						return err
+					}
+					if granted&metadata.PermissionWrite == 0 {
+						return &metadata.StoreError{
+							Code:    metadata.ErrAccessDenied,
+							Message: "no permission to change atime",
+						}
+					}
+				} else {
+					// Arbitrary time: only owner or root can set (EPERM)
 					return &metadata.StoreError{
-						Code:    metadata.ErrAccessDenied,
-						Message: "no permission to change atime",
+						Code:    metadata.ErrPrivilegeRequired,
+						Message: "only owner can set arbitrary timestamps",
 					}
 				}
 			}
@@ -473,16 +556,28 @@ func (s *BadgerMetadataStore) SetFileAttributes(
 		}
 
 		// Apply mtime changes
+		// Per POSIX utimensat(2):
+		// - UTIME_NOW (MtimeNow=true): owner, root, OR write permission
+		// - Arbitrary time (MtimeNow=false): owner OR root ONLY
 		if attrs.Mtime != nil {
 			if !isOwner && !isRoot {
-				granted, err := s.CheckPermissions(ctx, handle, metadata.PermissionWrite)
-				if err != nil {
-					return err
-				}
-				if granted&metadata.PermissionWrite == 0 {
+				if attrs.MtimeNow {
+					// UTIME_NOW: write permission is sufficient
+					granted, err := s.CheckPermissions(ctx, handle, metadata.PermissionWrite)
+					if err != nil {
+						return err
+					}
+					if granted&metadata.PermissionWrite == 0 {
+						return &metadata.StoreError{
+							Code:    metadata.ErrAccessDenied,
+							Message: "no permission to change mtime",
+						}
+					}
+				} else {
+					// Arbitrary time: only owner or root can set (EPERM)
 					return &metadata.StoreError{
-						Code:    metadata.ErrAccessDenied,
-						Message: "no permission to change mtime",
+						Code:    metadata.ErrPrivilegeRequired,
+						Message: "only owner can set arbitrary timestamps",
 					}
 				}
 			}
@@ -663,6 +758,11 @@ func (s *BadgerMetadataStore) Create(
 		// Build full path
 		fullPath := buildFullPath(parentFile.Path, name)
 
+		// Validate path length (POSIX PATH_MAX = 4096)
+		if err := metadata.ValidatePath(fullPath); err != nil {
+			return err
+		}
+
 		// Apply defaults for mode, UID/GID, timestamps, and size
 		metadata.ApplyCreateDefaults(attr, ctx, "")
 
@@ -701,6 +801,8 @@ func (s *BadgerMetadataStore) Create(
 		var linkCount uint32
 		if attr.Type == metadata.FileTypeDirectory {
 			linkCount = 2 // "." and parent entry
+			// Increment parent's link count (new subdirectory adds ".." reference to parent)
+			parentFile.Nlink++
 		} else {
 			linkCount = 1
 		}
@@ -718,6 +820,13 @@ func (s *BadgerMetadataStore) Create(
 		// Also store link count separately for efficient updates
 		if err := txn.Set(keyLinkCount(newID), encodeUint32(linkCount)); err != nil {
 			return fmt.Errorf("failed to store link count: %w", err)
+		}
+
+		// Update parent link count if we created a directory
+		if attr.Type == metadata.FileTypeDirectory {
+			if err := txn.Set(keyLinkCount(parentID), encodeUint32(parentFile.Nlink)); err != nil {
+				return fmt.Errorf("failed to update parent link count: %w", err)
+			}
 		}
 
 		// Add to parent's children (store UUID bytes)
@@ -875,6 +984,12 @@ func (s *BadgerMetadataStore) CreateHardLink(
 				Code:    metadata.ErrIsDirectory,
 				Message: "cannot create hard link to directory",
 			}
+		}
+
+		// Validate path length (POSIX PATH_MAX = 4096)
+		linkPath := buildFullPath(dirFile.Path, name)
+		if err := metadata.ValidatePath(linkPath); err != nil {
+			return err
 		}
 
 		// Check write permission on directory
@@ -1110,6 +1225,12 @@ func (s *BadgerMetadataStore) Move(
 			}
 		}
 
+		// Validate destination path length (POSIX PATH_MAX = 4096)
+		destPath := buildFullPath(toDirFile.Path, toName)
+		if err := metadata.ValidatePath(destPath); err != nil {
+			return err
+		}
+
 		// Check write permission on destination directory
 		granted, err = s.CheckPermissions(ctx, toDir, metadata.PermissionWrite)
 		if err != nil {
@@ -1164,6 +1285,32 @@ func (s *BadgerMetadataStore) Move(
 		})
 		if err != nil {
 			return err
+		}
+
+		// Check sticky bit restriction on source directory
+		// When the directory has the sticky bit set, only certain users can rename/delete
+		if err := metadata.CheckStickyBitRestriction(ctx, &fromDirFile.FileAttr, &sourceFile.FileAttr); err != nil {
+			return err
+		}
+
+		// POSIX: When moving a directory to a different parent, updating the ".."
+		// entry requires write permission to the source directory itself. Only the
+		// directory owner or root can perform this operation. This is separate from
+		// the sticky bit check above.
+		if sourceFile.Type == metadata.FileTypeDirectory && fromDirID != toDirID {
+			callerUID := ^uint32(0) // Default to invalid
+			if ctx.Identity != nil && ctx.Identity.UID != nil {
+				callerUID = *ctx.Identity.UID
+			}
+
+			// Root (UID 0) can always move directories
+			// Otherwise, caller must own the source directory
+			if callerUID != 0 && callerUID != sourceFile.UID {
+				return &metadata.StoreError{
+					Code:    metadata.ErrAccessDenied,
+					Message: "cannot move directory to different parent: not owner",
+				}
+			}
 		}
 
 		// 4. Check if destination exists
@@ -1236,12 +1383,58 @@ func (s *BadgerMetadataStore) Move(
 				}
 			}
 
-			// Remove destination file
+			// Handle destination file replacement
+			// First, get the link count to check if it has other hard links
+			destLinkItem, err := txn.Get(keyLinkCount(destID))
+			if err != nil && err != badger.ErrKeyNotFound {
+				return fmt.Errorf("failed to get destination link count: %w", err)
+			}
+
+			var destLinkCount uint32 = 1 // Default if not found
+			if err == nil {
+				err = destLinkItem.Value(func(val []byte) error {
+					lc, decErr := decodeUint32(val)
+					if decErr != nil {
+						return decErr
+					}
+					destLinkCount = lc
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+			}
+
+			// Remove the directory entry for the destination
 			if err := txn.Delete(keyChild(toDirID, toName)); err != nil {
 				return fmt.Errorf("failed to delete destination child entry: %w", err)
 			}
-			if err := txn.Delete(keyFile(destID)); err != nil {
-				return fmt.Errorf("failed to delete destination file: %w", err)
+
+			// Handle based on link count
+			if destLinkCount > 1 {
+				// File has other hard links - just decrement count, don't delete
+				destLinkCount--
+				if err := txn.Set(keyLinkCount(destID), encodeUint32(destLinkCount)); err != nil {
+					return fmt.Errorf("failed to update destination link count: %w", err)
+				}
+				// Update the file's Nlink and Ctime
+				destFile.Nlink = destLinkCount
+				destFile.Ctime = time.Now()
+				destBytes, err := encodeFile(destFile)
+				if err != nil {
+					return err
+				}
+				if err := txn.Set(keyFile(destID), destBytes); err != nil {
+					return fmt.Errorf("failed to update destination file: %w", err)
+				}
+			} else {
+				// Last link - delete the file metadata
+				if err := txn.Delete(keyFile(destID)); err != nil {
+					return fmt.Errorf("failed to delete destination file: %w", err)
+				}
+				if err := txn.Delete(keyLinkCount(destID)); err != nil && err != badger.ErrKeyNotFound {
+					return fmt.Errorf("failed to delete destination link count: %w", err)
+				}
 			}
 		} else if err != badger.ErrKeyNotFound {
 			return fmt.Errorf("failed to check destination: %w", err)
@@ -1262,12 +1455,54 @@ func (s *BadgerMetadataStore) Move(
 			return fmt.Errorf("failed to set destination child entry: %w", err)
 		}
 
-		// 6. Update timestamps
-		// TODO: When Nlink is added to FileAttr (see pkg/store/metadata/file.go:89),
-		// update link counts here:
-		// - Decrement fromDirFile.Nlink if sourceFile is a directory
-		// - Increment toDirFile.Nlink if sourceFile is a directory
+		// 6. Update timestamps and link counts
 		now := time.Now()
+
+		// If moving a directory to a different parent, update parent link counts
+		// (the ".." entry in the moved directory changes its target)
+		if sourceFile.Type == metadata.FileTypeDirectory && fromDirID != toDirID {
+			// Decrement source directory's link count (losing ".." reference)
+			fromLinkItem, err := txn.Get(keyLinkCount(fromDirID))
+			if err == nil {
+				var fromLinkCount uint32
+				err = fromLinkItem.Value(func(val []byte) error {
+					lc, decErr := decodeUint32(val)
+					if decErr != nil {
+						return decErr
+					}
+					fromLinkCount = lc
+					return nil
+				})
+				if err == nil && fromLinkCount > 0 {
+					fromLinkCount--
+					if err := txn.Set(keyLinkCount(fromDirID), encodeUint32(fromLinkCount)); err != nil {
+						return fmt.Errorf("failed to update source directory link count: %w", err)
+					}
+					fromDirFile.Nlink = fromLinkCount
+				}
+			}
+
+			// Increment destination directory's link count (gaining ".." reference)
+			toLinkItem, err := txn.Get(keyLinkCount(toDirID))
+			var toLinkCount uint32 = 2 // Default for directory
+			if err == nil {
+				err = toLinkItem.Value(func(val []byte) error {
+					lc, decErr := decodeUint32(val)
+					if decErr != nil {
+						return decErr
+					}
+					toLinkCount = lc
+					return nil
+				})
+			}
+			if err == nil || err == badger.ErrKeyNotFound {
+				toLinkCount++
+				if err := txn.Set(keyLinkCount(toDirID), encodeUint32(toLinkCount)); err != nil {
+					return fmt.Errorf("failed to update destination directory link count: %w", err)
+				}
+				toDirFile.Nlink = toLinkCount
+			}
+		}
 
 		// Update source directory (lost a child)
 		fromDirFile.Ctime = now
@@ -1289,6 +1524,17 @@ func (s *BadgerMetadataStore) Move(
 		}
 		if err := txn.Set(keyFile(toDirID), toDirBytes); err != nil {
 			return fmt.Errorf("failed to update destination directory: %w", err)
+		}
+
+		// Detect NFS "silly rename" pattern: RENAME to ".nfs*"
+		// When the NFS client renames a file to .nfs* instead of unlinking it
+		// (because the file is still open), we should set nlink=0 to match
+		// POSIX semantics where fstat() on an unlinked open file returns nlink=0.
+		if strings.HasPrefix(toName, ".nfs") && sourceFile.Type != metadata.FileTypeDirectory {
+			sourceFile.Nlink = 0
+			if err := txn.Set(keyLinkCount(sourceID), encodeUint32(0)); err != nil {
+				return fmt.Errorf("failed to update link count for silly rename: %w", err)
+			}
 		}
 
 		// Update moved file's ctime

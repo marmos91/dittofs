@@ -5,6 +5,7 @@
 
 # Documentation
 *.md
+!test/posix/*.md
 docs/
 LICENSE
 CONTRIBUTING
@@ -19,6 +20,7 @@ CONTRIBUTING
 
 # Test files and directories
 test/
+!test/posix/
 *_test.go
 *.test
 
@@ -47,6 +49,7 @@ config.yaml
 *.yaml
 *.yml
 *.toml
+!test/posix/*.toml
 
 # Data directories
 /data/

@@ -84,11 +84,10 @@ func fileRowToFile(row pgx.Row) (*metadata.File, error) {
 		file.LinkTarget = linkTarget.String
 	}
 
-	// Device numbers stored inline in FileAttr aren't standard
-	// We'll need to handle these separately if CreateSpecialFile is used
-	// For now, they're stored in the DB but not populated in FileAttr
-	_ = deviceMajor
-	_ = deviceMinor
+	// Populate Rdev for device files
+	if deviceMajor.Valid && deviceMinor.Valid {
+		file.Rdev = metadata.MakeRdev(uint32(deviceMajor.Int32), uint32(deviceMinor.Int32))
+	}
 
 	return file, nil
 }
@@ -176,11 +175,10 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		file.LinkTarget = linkTarget.String
 	}
 
-	// Device numbers stored inline in FileAttr aren't standard
-	// We'll need to handle these separately if CreateSpecialFile is used
-	// For now, they're stored in the DB but not populated in FileAttr
-	_ = deviceMajor
-	_ = deviceMinor
+	// Populate Rdev for device files
+	if deviceMajor.Valid && deviceMinor.Valid {
+		file.Rdev = metadata.MakeRdev(uint32(deviceMajor.Int32), uint32(deviceMinor.Int32))
+	}
 
 	return file, nil
 }

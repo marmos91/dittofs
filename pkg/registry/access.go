@@ -10,6 +10,7 @@ import (
 // ApplyIdentityMapping applies share-level identity mapping rules to create effective credentials.
 //
 // This implements:
+//   - anonymous access: Maps nil UID/GID (AUTH_NULL) to anonymous credentials
 //   - all_squash: Maps all users to anonymous
 //   - root_squash: Maps root (UID 0) to anonymous
 //
@@ -37,6 +38,20 @@ func (r *Registry) ApplyIdentityMapping(shareName string, identity *metadata.Ide
 		GID:      identity.GID,
 		GIDs:     identity.GIDs,
 		Username: identity.Username,
+	}
+
+	// Handle anonymous access (AUTH_NULL - nil UID/GID)
+	// When the client doesn't provide credentials, use the configured anonymous UID/GID.
+	// This is essential for POSIX compliance: files created via anonymous access
+	// should be owned by the anonymous user, not root (UID 0).
+	if identity.UID == nil {
+		anonUID := share.AnonymousUID
+		anonGID := share.AnonymousGID
+		effective.UID = &anonUID
+		effective.GID = &anonGID
+		effective.GIDs = []uint32{anonGID}
+		effective.Username = fmt.Sprintf("anonymous(%d)", anonUID)
+		return effective, nil
 	}
 
 	// Apply all_squash (map all users to anonymous)

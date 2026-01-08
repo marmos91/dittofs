@@ -205,6 +205,7 @@ func (lm *lockManager) listLocks(handle string) []metadata.FileLock {
 }
 
 // removeFile removes all locks for a file (called when file is deleted).
+// nolint:unused // Reserved for future NLM (file locking) implementation
 func (lm *lockManager) removeFile(handle string) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()

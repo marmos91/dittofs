@@ -137,6 +137,17 @@ func MapStoreErrorToNFSStatus(err error, clientIP string, operation string) uint
 		logger.Warn("Operation failed: file locked", "operation", operation, "message", storeErr.Message, "client", clientIP)
 		return types.NFS3ErrJukebox
 
+	case metadata.ErrPrivilegeRequired:
+		// Operation requires elevated privileges (e.g., setting arbitrary timestamps as non-owner)
+		// Maps to EPERM per POSIX - "Operation not permitted"
+		logger.Warn("Operation failed: privilege required", "operation", operation, "message", storeErr.Message, "client", clientIP)
+		return types.NFS3ErrPerm
+
+	case metadata.ErrNameTooLong:
+		// Path or filename exceeds limits
+		logger.Warn("Operation failed: name too long", "operation", operation, "path", storeErr.Path, "client", clientIP)
+		return types.NFS3ErrNameTooLong
+
 	default:
 		// Unknown error code
 		logger.Error("Operation failed: unknown error code", "operation", operation, "code", storeErr.Code, "message", storeErr.Message, "client", clientIP)

@@ -392,11 +392,13 @@ func (store *MemoryMetadataStore) buildFileWithNlink(
 
 	// Get link count from internal tracking
 	key := handleToKey(handle)
-	nlink := store.linkCounts[key]
-	if nlink == 0 {
+	nlink, exists := store.linkCounts[key]
+	if !exists {
 		// Default to 1 if not tracked (shouldn't happen normally)
 		nlink = 1
 	}
+	// Note: nlink=0 is valid for files that have been unlinked but are still open
+	// (NFS "silly rename" pattern where files are renamed to .nfs* instead of deleted)
 
 	// Copy attributes and set Nlink
 	attr := *fileData.Attr
@@ -521,47 +523,21 @@ func (store *MemoryMetadataStore) generateFileHandle(shareName, fullPath string)
 
 // extractFileIDFromHandle derives a 64-bit file ID from a file handle.
 //
-// Some protocols (like NFS and SMB) require numeric file IDs in addition to
-// or instead of opaque file handles. This function computes a stable 64-bit
-// identifier from the handle using FNV-1a hashing.
+// This is a thin wrapper around metadata.HandleToINode() which provides the
+// canonical implementation for converting file handles to inode numbers.
 //
-// Properties:
-//   - Stable: Same handle always produces the same file ID
-//   - Unique: Different handles produce different IDs (with high probability)
-//   - Efficient: Fast non-cryptographic hash
+// IMPORTANT: All MetadataStore implementations MUST use metadata.HandleToINode()
+// to ensure consistent inode generation across the system. Using different hash
+// algorithms will cause "fileid changed" errors from NFS clients.
 //
 // The file ID is used for:
 //   - Directory entry listings (NFS READDIR, SMB directory queries)
+//   - File attributes (NFS GETATTR)
 //   - Client-side caching and reference
-//   - Debugging and logging
 //
-// Note: File IDs are not guaranteed to be sequential or have any particular
-// ordering. They are simply unique identifiers derived from handles.
-//
-// This matches the approach used in badger/handle.go:fileHandleToID to ensure
-// consistent file IDs across different metadata store implementations.
-//
-// Parameters:
-//   - handle: The file handle to compute ID from
-//
-// Returns:
-//   - uint64: The computed file ID, or 0 if handle is empty
+// See: metadata.HandleToINode() for implementation details
 func extractFileIDFromHandle(handle metadata.FileHandle) uint64 {
-	if len(handle) == 0 {
-		return 0
-	}
-
-	// FNV-1a hash (same as badger implementation)
-	const offset64 = 14695981039346656037
-	const prime64 = 1099511628211
-
-	hash := uint64(offset64)
-	for _, b := range handle {
-		hash ^= uint64(b)
-		hash *= prime64
-	}
-
-	return hash
+	return metadata.HandleToINode(handle)
 }
 
 // invalidateDirCache removes cached sorted entries for a directory.

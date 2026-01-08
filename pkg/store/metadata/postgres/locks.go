@@ -200,6 +200,7 @@ func (m *byteRangeLockManager) listLocks(handle string) []metadata.FileLock {
 }
 
 // removeFile removes all locks for a file (called when file is deleted).
+// nolint:unused // Reserved for future NLM (file locking) implementation
 func (m *byteRangeLockManager) removeFile(handle string) {
 	m.locks.Delete(handle)
 }

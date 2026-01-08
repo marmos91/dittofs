@@ -249,6 +249,15 @@ func (s *BadgerMetadataStore) CommitWrite(
 		file.Mtime = now // Mtime is set when the write is committed
 		file.Ctime = now // Ctime always uses current time (metadata change time)
 
+		// POSIX: Clear setuid/setgid bits when a non-root user writes to a file
+		// This is a security measure to prevent privilege escalation.
+		// Per POSIX, if a process without appropriate privileges writes to a file,
+		// the set-user-ID and set-group-ID bits are cleared.
+		identity := ctx.Identity
+		if identity != nil && identity.UID != nil && *identity.UID != 0 {
+			file.Mode &= ^uint32(0o6000) // Clear both setuid (04000) and setgid (02000)
+		}
+
 		// Store updated file data
 		fileBytes, err := encodeFile(file)
 		if err != nil {

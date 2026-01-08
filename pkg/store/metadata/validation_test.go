@@ -208,8 +208,8 @@ func TestRequiresRoot(t *testing.T) {
 					t.Errorf("RequiresRoot() error is not *StoreError")
 					return
 				}
-				if storeErr.Code != ErrAccessDenied {
-					t.Errorf("RequiresRoot() error code = %v, want %v", storeErr.Code, ErrAccessDenied)
+				if storeErr.Code != ErrPrivilegeRequired {
+					t.Errorf("RequiresRoot() error code = %v, want %v", storeErr.Code, ErrPrivilegeRequired)
 				}
 			} else {
 				if err != nil {

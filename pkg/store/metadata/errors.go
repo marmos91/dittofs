@@ -100,6 +100,15 @@ const (
 	// ErrLockNotFound indicates the requested lock doesn't exist
 	// Used when trying to unlock a range that wasn't locked
 	ErrLockNotFound
+
+	// ErrPrivilegeRequired indicates the operation requires elevated privileges
+	// Used for operations that require root (UID 0), like creating device files.
+	// Maps to NFS3ErrPerm (EPERM) rather than NFS3ErrAccess (EACCES).
+	ErrPrivilegeRequired
+
+	// ErrNameTooLong indicates the path or filename exceeds system limits
+	// Used when path length exceeds MAX_PATH or filename exceeds MAX_NAME
+	ErrNameTooLong
 )
 
 // ============================================================================
@@ -289,6 +298,35 @@ func NewQuotaExceededError(path string) *StoreError {
 	return &StoreError{
 		Code:    ErrQuotaExceeded,
 		Message: "disk quota exceeded",
+		Path:    path,
+	}
+}
+
+// NewPrivilegeRequiredError creates a StoreError for operations requiring root.
+//
+// Parameters:
+//   - operation: Description of the operation requiring privileges
+//
+// Returns:
+//   - *StoreError with ErrPrivilegeRequired code
+func NewPrivilegeRequiredError(operation string) *StoreError {
+	return &StoreError{
+		Code:    ErrPrivilegeRequired,
+		Message: fmt.Sprintf("operation requires root privileges: %s", operation),
+	}
+}
+
+// NewNameTooLongError creates a StoreError for paths/names exceeding limits.
+//
+// Parameters:
+//   - path: The path that is too long
+//
+// Returns:
+//   - *StoreError with ErrNameTooLong code
+func NewNameTooLongError(path string) *StoreError {
+	return &StoreError{
+		Code:    ErrNameTooLong,
+		Message: "name too long",
 		Path:    path,
 	}
 }
