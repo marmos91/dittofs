@@ -173,6 +173,52 @@
           echo "Cleanup complete"
         '';
 
+        # Helper script for running e2e tests with sudo
+        dittofs-e2e = pkgs.writeShellScriptBin "dittofs-e2e" ''
+          # E2E tests require sudo for NFS mounting
+          # This script preserves the nix shell's PATH for go binary access
+
+          # Get the directory of the dittofs project (assume we're in it)
+          PROJECT_DIR="$(pwd)"
+
+          # Verify we're in the right directory
+          if [[ ! -f "$PROJECT_DIR/go.mod" ]] || ! grep -q "dittofs" "$PROJECT_DIR/go.mod"; then
+            echo "Error: Must run from dittofs project root"
+            exit 1
+          fi
+
+          echo "Running DittoFS E2E tests..."
+          echo "Project: $PROJECT_DIR"
+          echo ""
+
+          # Build first (without sudo)
+          echo "Building dittofs..."
+          go build -o "$PROJECT_DIR/dittofs" "$PROJECT_DIR/cmd/dittofs/main.go" || exit 1
+          echo ""
+
+          # Run e2e tests with sudo, preserving PATH for go binary
+          # Also preserve GOPATH, GOMODCACHE, GOCACHE for go test to work
+          if [[ $# -gt 0 ]]; then
+            # Run specific test pattern
+            sudo env \
+              PATH="$PATH" \
+              GOPATH="$GOPATH" \
+              GOMODCACHE="$GOMODCACHE" \
+              GOCACHE="$GOCACHE" \
+              HOME="$HOME" \
+              go test -tags=e2e -v -timeout 30m "$@" ./test/e2e/...
+          else
+            # Run all e2e tests
+            sudo env \
+              PATH="$PATH" \
+              GOPATH="$GOPATH" \
+              GOMODCACHE="$GOMODCACHE" \
+              GOCACHE="$GOCACHE" \
+              HOME="$HOME" \
+              go test -tags=e2e -v -timeout 30m ./test/e2e/...
+          fi
+        '';
+
         # Helper script for running pjdfstest
         dittofs-posix = pkgs.writeShellScriptBin "dittofs-posix" ''
           mount_point="''${DITTOFS_MOUNT:-/tmp/dittofs-test}"
@@ -239,6 +285,7 @@
             dittofs-mount
             dittofs-umount
             dittofs-posix
+            dittofs-e2e
             dittofs-postgres-start
             dittofs-postgres-stop
           ];
@@ -294,6 +341,10 @@
               echo "PostgreSQL testing:"
               echo "  dittofs-postgres-start      Start PostgreSQL container"
               echo "  dittofs-postgres-stop       Stop and remove container"
+              echo ""
+              echo "E2E testing (requires sudo for NFS mounts):"
+              echo "  dittofs-e2e                 Run all E2E tests"
+              echo "  dittofs-e2e -run TestName   Run specific test"
             fi
             echo ""
 
