@@ -4,6 +4,12 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # Original C-based pjdfstest (used by JuiceFS, FreeBSD, and others)
+    # This is the authoritative POSIX compliance test suite
+    pjdfstest-src = {
+      url = "github:pjd/pjdfstest";
+      flake = false;
+    };
   };
 
   outputs =
@@ -11,6 +17,7 @@
       self,
       nixpkgs,
       flake-utils,
+      pjdfstest-src,
     }:
     let
       # Version configuration - update this for releases
@@ -23,6 +30,180 @@
 
         # Git revision for build info (use "dirty" if uncommitted changes)
         gitRev = self.shortRev or self.dirtyShortRev or "unknown";
+
+        # Helper scripts for DittoFS development (works in any shell)
+        dittofs-mount = pkgs.writeShellScriptBin "dittofs-mount" ''
+          mount_point="''${1:-/tmp/dittofs-test}"
+          sudo mkdir -p "$mount_point" 2>/dev/null || true
+          sudo ${pkgs.nfs-utils}/bin/mount.nfs -o nfsvers=3,tcp,port=12049,mountport=12049,nolock,actimeo=0 \
+            localhost:/export "$mount_point"
+          echo "Mounted at $mount_point"
+        '';
+
+        dittofs-umount = pkgs.writeShellScriptBin "dittofs-umount" ''
+          mount_point="''${1:-/tmp/dittofs-test}"
+          sudo ${pkgs.util-linux}/bin/umount "$mount_point"
+          echo "Unmounted $mount_point"
+        '';
+
+        # Original C-based pjdfstest (used by JuiceFS, FreeBSD, and others)
+        # This is the authoritative POSIX compliance test suite with 8,789 tests
+        pjdfstest = pkgs.stdenv.mkDerivation {
+          pname = "pjdfstest";
+          version = "2025-01-07";
+          src = pjdfstest-src;
+
+          nativeBuildInputs = with pkgs; [
+            autoconf
+            automake
+            pkg-config
+          ];
+
+          buildInputs = with pkgs; [
+            acl
+          ];
+
+          # Build the pjdfstest binary
+          buildPhase = ''
+            autoreconf -ifs
+            ./configure --prefix=$out
+            make pjdfstest
+          '';
+
+          # Install binary and tests
+          # Note: binary must be in share/pjdfstest/ because misc.sh walks up
+          # from tests/ looking for it in parent directories
+          installPhase = ''
+            mkdir -p $out/bin $out/share/pjdfstest
+            cp pjdfstest $out/bin/
+            cp pjdfstest $out/share/pjdfstest/
+            cp -r tests $out/share/pjdfstest/
+          '';
+
+          meta = with pkgs.lib; {
+            description = "POSIX filesystem test suite (C version, used by JuiceFS/FreeBSD)";
+            homepage = "https://github.com/pjd/pjdfstest";
+            license = licenses.bsd2;
+            platforms = platforms.linux;
+          };
+        };
+
+        # Helper script to start PostgreSQL for testing
+        # Uses sudo for docker commands to avoid docker group requirement
+        dittofs-postgres-start = pkgs.writeShellScriptBin "dittofs-postgres-start" ''
+          container_name="dittofs-postgres-test"
+
+          # Check if docker is available
+          if ! command -v docker &>/dev/null; then
+            echo "Error: docker not found in PATH."
+            exit 1
+          fi
+
+          # Check if docker daemon is running (using sudo)
+          if ! sudo docker info &>/dev/null; then
+            echo "Error: Cannot connect to Docker daemon."
+            echo "Make sure Docker daemon is running: sudo systemctl start docker"
+            exit 1
+          fi
+
+          # Check if container already exists
+          if sudo docker ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
+            # Check if it's running
+            if sudo docker ps --format '{{.Names}}' | grep -q "^$container_name$"; then
+              echo "PostgreSQL container already running"
+              exit 0
+            else
+              echo "Starting existing PostgreSQL container..."
+              sudo docker start "$container_name"
+            fi
+          else
+            echo "Creating PostgreSQL container for DittoFS testing..."
+            sudo docker run -d \
+              --name "$container_name" \
+              -e POSTGRES_USER=dittofs \
+              -e POSTGRES_PASSWORD=dittofs \
+              -e POSTGRES_DB=dittofs_test \
+              -p 5432:5432 \
+              postgres:16-alpine
+          fi
+
+          echo "Waiting for PostgreSQL to be ready..."
+          for i in $(seq 1 30); do
+            if sudo docker exec "$container_name" pg_isready -U dittofs -d dittofs_test &>/dev/null; then
+              echo "PostgreSQL is ready!"
+              echo ""
+              echo "Connection details:"
+              echo "  Host:     localhost"
+              echo "  Port:     5432"
+              echo "  User:     dittofs"
+              echo "  Password: dittofs"
+              echo "  Database: dittofs_test"
+              echo ""
+              echo "Start DittoFS with: ./dittofs start --config test/posix/configs/config-postgres.yaml"
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "Error: PostgreSQL failed to start within 30 seconds"
+          exit 1
+        '';
+
+        # Helper script to stop PostgreSQL test container
+        # Uses sudo for docker commands to avoid docker group requirement
+        dittofs-postgres-stop = pkgs.writeShellScriptBin "dittofs-postgres-stop" ''
+          container_name="dittofs-postgres-test"
+
+          if sudo docker ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
+            echo "Stopping PostgreSQL container..."
+            sudo docker stop "$container_name" 2>/dev/null || true
+            echo "Removing PostgreSQL container..."
+            sudo docker rm "$container_name" 2>/dev/null || true
+            echo "PostgreSQL container removed"
+          else
+            echo "PostgreSQL container not found"
+          fi
+
+          # Also clean up content store
+          if [ -d "/tmp/dittofs-content-postgres" ]; then
+            echo "Cleaning up content store..."
+            sudo rm -rf /tmp/dittofs-content-postgres
+          fi
+
+          echo "Cleanup complete"
+        '';
+
+        # Helper script for running pjdfstest
+        dittofs-posix = pkgs.writeShellScriptBin "dittofs-posix" ''
+          mount_point="''${DITTOFS_MOUNT:-/tmp/dittofs-test}"
+
+          # Check if mounted using /proc/mounts (more reliable than mountpoint for NFS)
+          if ! grep -q " $mount_point " /proc/mounts 2>/dev/null; then
+            echo "Error: $mount_point not mounted. Run: dittofs-mount"
+            exit 1
+          fi
+
+          cd "$mount_point"
+
+          # Set up pjdfstest binary path for the tests
+          export PATH="${pjdfstest}/bin:$PATH"
+
+          tests_dir="${pjdfstest}/share/pjdfstest/tests"
+
+          echo "Running pjdfstest POSIX compliance suite..."
+          echo "Mount point: $mount_point"
+          echo "Tests directory: $tests_dir"
+          echo ""
+
+          if [[ $# -gt 0 ]]; then
+            # Run specific test pattern - use eval to expand globs
+            # shellcheck disable=SC2086
+            sudo env PATH="$PATH" ${pkgs.perl}/bin/prove -rv --timer --merge -o $tests_dir/$1
+          else
+            # Run all tests
+            sudo env PATH="$PATH" ${pkgs.perl}/bin/prove -rv --timer --merge -o "$tests_dir"
+          fi
+        '';
 
         # Common build inputs for both development and CI
         commonBuildInputs = with pkgs; [
@@ -48,12 +229,25 @@
             nfs-utils
             # ACL support for POSIX compliance testing
             acl
+            # Perl for pjdfstest (prove is included in base perl)
+            perl
+            # POSIX filesystem compliance testing (C version - authoritative)
+            pjdfstest
+            # Docker client for PostgreSQL testing (daemon must be running on host)
+            docker-client
+            # Helper scripts (work in any shell - bash, zsh, etc.)
+            dittofs-mount
+            dittofs-umount
+            dittofs-posix
+            dittofs-postgres-start
+            dittofs-postgres-stop
           ];
 
         darwinInputs =
           with pkgs;
           lib.optionals stdenv.isDarwin [
-            # macOS uses built-in NFS client, no extra packages needed
+            # macOS uses built-in NFS client
+            # For pjdfstest on macOS, use Docker: see test/posix/README.md
           ];
 
       in
@@ -80,8 +274,27 @@
             echo "  go test -race ./...         Run tests with race detection"
             echo "  golangci-lint run           Run linters"
             echo ""
-            echo "NFS testing (Linux only, requires root):"
-            echo "  sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test"
+            if [[ "$(uname)" == "Darwin" ]]; then
+              echo "NFS mount (macOS):"
+              echo "  sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport,nolock localhost:/export /tmp/dittofs-test"
+              echo ""
+              echo "POSIX compliance testing (via Docker):"
+              echo "  docker build -t dittofs-pjdfstest -f test/posix/Dockerfile.pjdfstest ."
+              echo "  docker run --rm -v /tmp/dittofs-test:/mnt/test dittofs-pjdfstest"
+            else
+              echo "NFS helper commands:"
+              echo "  dittofs-mount [path]        Mount NFS (default: /tmp/dittofs-test)"
+              echo "  dittofs-umount [path]       Unmount NFS"
+              echo ""
+              echo "POSIX compliance testing (pjdfstest - 8,789 tests):"
+              echo "  dittofs-posix               Run all tests"
+              echo "  dittofs-posix chmod         Run chmod tests only"
+              echo "  dittofs-posix chown         Run chown tests only"
+              echo ""
+              echo "PostgreSQL testing:"
+              echo "  dittofs-postgres-start      Start PostgreSQL container"
+              echo "  dittofs-postgres-stop       Stop and remove container"
+            fi
             echo ""
 
             # Use zsh if available and not already in zsh
@@ -130,6 +343,10 @@
             platforms = platforms.unix;
           };
         };
+
+      } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+        # Export pjdfstest package (Linux only - uses Linux-specific syscalls)
+        packages.pjdfstest = pjdfstest;
       }
     );
 }

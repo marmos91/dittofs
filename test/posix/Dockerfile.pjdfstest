@@ -1,0 +1,53 @@
+# Minimal pjdfstest container for running tests on externally mounted filesystems
+#
+# Usage (macOS):
+#   1. Run DittoFS: ./dittofs start
+#   2. Mount NFS:   sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport,nolock localhost:/export /tmp/dittofs-test
+#   3. Run tests:   docker run --rm -v /tmp/dittofs-test:/mnt/test dittofs-pjdfstest
+#
+# Build:
+#   docker build -t dittofs-pjdfstest -f test/posix/Dockerfile.pjdfstest .
+
+FROM debian:bookworm-slim AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    autoconf \
+    automake \
+    pkg-config \
+    libacl1-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build pjdfstest from source (original Perl/C version)
+RUN git clone --depth 1 https://github.com/pjd/pjdfstest.git /tmp/pjdfstest && \
+    cd /tmp/pjdfstest && \
+    autoreconf -ifs && \
+    ./configure && \
+    make pjdfstest
+
+# Runtime image
+FROM debian:bookworm-slim
+
+# Install runtime dependencies (Perl and TAP::Harness for prove)
+RUN apt-get update && apt-get install -y \
+    acl \
+    perl \
+    libtap-harness-archive-perl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create test users for permission tests
+RUN useradd -u 65533 -M -s /bin/false tests && \
+    useradd -u 65532 -M -s /bin/false pjdfstest && \
+    useradd -u 65534 -M -s /bin/false nobody || true
+
+# Copy pjdfstest binary and tests
+COPY --from=builder /tmp/pjdfstest/pjdfstest /usr/local/bin/
+COPY --from=builder /tmp/pjdfstest/tests /usr/local/share/pjdfstest/tests
+
+WORKDIR /mnt/test
+
+# Run tests using prove (Perl TAP harness)
+ENTRYPOINT ["prove", "-rv", "/usr/local/share/pjdfstest/tests/"]
+CMD []

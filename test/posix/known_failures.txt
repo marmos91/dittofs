@@ -1,0 +1,147 @@
+# Known POSIX Compliance Failures for DittoFS
+# ============================================
+#
+# This file documents expected test failures due to intentional limitations
+# or features not yet implemented in DittoFS.
+#
+# Format: <test_pattern>|<reason>
+#
+# The test runner will:
+# 1. Run all tests
+# 2. Check failures against this list
+# 3. Report unexpected failures as errors
+# 4. Allow expected failures to pass CI
+#
+# To add a new entry:
+# 1. Run the full test suite
+# 2. Identify the failing test pattern
+# 3. Document the reason for the expected failure
+# 4. Add the entry below
+#
+# ===========================================
+
+# ---------------------------------------------
+# ETXTBSY (NFS Protocol Limitation)
+# ---------------------------------------------
+# ETXTBSY ("text file busy") should prevent writing to an executing file.
+# This is IMPOSSIBLE to implement over NFS:
+# - The NFS server has no way to know if any client is executing a file
+# - NFS clients don't enforce it either (removed in SVR4 for consistency)
+# - This is a well-documented, fundamental NFS protocol limitation
+#
+# See: https://lwn.net/Articles/866493/
+# See: https://utcc.utoronto.ca/~cks/space/blog/unix/WhyTextFileBusyError
+
+open/etxtbsy|ETXTBSY cannot be enforced over NFS - server has no execution visibility
+open::etxtbsy|ETXTBSY cannot be enforced over NFS - server has no execution visibility
+
+# ---------------------------------------------
+# File Locking (NLM Protocol Not Implemented)
+# ---------------------------------------------
+# DittoFS does not implement the NFS Lock Manager (NLM) protocol.
+# This is a significant feature gap vs. full NFS implementations.
+# See: docs/FUTURE_IMPROVEMENTS.md
+
+flock/*|NLM protocol not implemented - no file locking support
+fcntl/lock*|NLM protocol not implemented - no record locking support
+lockf/*|NLM protocol not implemented
+
+# ---------------------------------------------
+# Extended Attributes (Not Implemented)
+# ---------------------------------------------
+# Extended attributes are not part of NFSv3 base specification.
+# They would require NFS extensions or NFSv4.
+
+xattr/*|Extended attributes not supported in NFSv3
+getxattr/*|Extended attributes not supported
+setxattr/*|Extended attributes not supported
+listxattr/*|Extended attributes not supported
+removexattr/*|Extended attributes not supported
+
+# ---------------------------------------------
+# BSD File Flags (FreeBSD-specific)
+# ---------------------------------------------
+# File flags (chflags) are a BSD-specific feature not in POSIX.
+
+chflags/*|BSD-specific feature, not implemented
+lchflags/*|BSD-specific feature, not implemented
+
+# ---------------------------------------------
+# ACLs (NFSv4 Feature)
+# ---------------------------------------------
+# Access Control Lists require NFSv4 support.
+
+acl/*|ACLs require NFSv4, DittoFS only supports NFSv3
+getfacl/*|ACLs require NFSv4
+setfacl/*|ACLs require NFSv4
+
+# ---------------------------------------------
+# fallocate/posix_fallocate (Not Implemented)
+# ---------------------------------------------
+# NFSv3 has no ALLOCATE procedure. Space allocation happens on write.
+
+fallocate/*|No ALLOCATE procedure in NFSv3
+posix_fallocate/*|No ALLOCATE procedure in NFSv3
+
+# ---------------------------------------------
+# Hard Links (Full Support)
+# ---------------------------------------------
+# Hard links are fully supported in all metadata stores:
+# - Memory: Full support with link count tracking
+# - BadgerDB: Full support with link count tracking
+# - PostgreSQL: Full support with link count tracking
+#
+# No expected failures for hard link tests.
+
+# ---------------------------------------------
+# Special Files (Metadata Only)
+# ---------------------------------------------
+# DittoFS can create special file entries (MKNOD) but they don't
+# function as actual devices/sockets/FIFOs.
+
+# mknod may fail for certain device types on some systems
+# mknod/chr/*|Character devices - metadata only, no functionality
+# mknod/blk/*|Block devices - metadata only, no functionality
+
+# ---------------------------------------------
+# Timestamp Edge Cases (NFSv3 Protocol Limitation)
+# ---------------------------------------------
+# NFSv3's nfstime3 structure uses uint32 for seconds, limiting
+# timestamps to max 4294967295 (year 2106). Timestamps >= 2^32
+# are clamped to max uint32 by the Linux VFS layer before NFS
+# even receives them.
+#
+# Wire format per RFC 1813 Section 2.2:
+#   struct nfstime3 {
+#       uint32 seconds;   // Max: 4294967295
+#       uint32 nseconds;
+#   };
+#
+# Linux kernel behavior (fs/nfs/super.c):
+#   NFSv3: sb->s_time_max = U32_MAX;  (4294967295)
+#   NFSv4: sb->s_time_max = S64_MAX;  (full 64-bit range)
+#
+# POSIX requirement (futimens/utimensat):
+#   "The file's relevant timestamp shall be set to the greatest
+#    value supported by the file system that is not greater than
+#    the specified time."
+#
+# The Linux VFS correctly implements this by clamping timestamps
+# to the filesystem's declared s_time_max before sending to NFS.
+#
+# Y2038 (2^31 = 2147483648) works fine - fits in uint32.
+# Y2106 (2^32 = 4294967296) exceeds uint32 max - clamped to 4294967295.
+#
+# This is unfixable without NFSv4 support.
+#
+# See: RFC 1813 Section 2.2 - https://tools.ietf.org/html/rfc1813#section-2.2
+# See: Linux fs/nfs/super.c - https://github.com/torvalds/linux/blob/master/fs/nfs/super.c
+# See: VFS timestamp clamping - https://patchwork.kernel.org/patch/9581399/
+
+utimensat/09.t:test5|NFSv3 uint32 timestamp cannot represent values >= 2^32 (year 2106)
+
+# ---------------------------------------------
+# Potential Future Additions
+# ---------------------------------------------
+# Add new patterns here as they are discovered during testing.
+# Always include a clear explanation of why the failure is expected.

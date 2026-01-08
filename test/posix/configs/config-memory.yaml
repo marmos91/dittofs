@@ -1,0 +1,72 @@
+# DittoFS Configuration - Memory Metadata Store
+# For POSIX compliance testing
+
+logging:
+  level: "INFO"
+  format: "text"
+  output: "stdout"
+
+telemetry:
+  enabled: false
+
+server:
+  shutdown_timeout: 30s
+
+metadata:
+  global:
+    filesystem_capabilities:
+      max_read_size: 1048576
+      preferred_read_size: 65536
+      max_write_size: 1048576
+      preferred_write_size: 65536
+      max_file_size: 9223372036854775807
+      max_filename_len: 255
+      max_path_len: 4096
+      max_hard_link_count: 32767
+      supports_hard_links: true
+      supports_symlinks: true
+      case_sensitive: true
+      case_preserving: true
+  stores:
+    default:
+      type: "memory"
+
+content:
+  stores:
+    default:
+      type: "filesystem"
+      filesystem:
+        path: "/tmp/dittofs-content-memory"
+
+shares:
+  - name: "/export"
+    metadata_store: "default"
+    content_store: "default"
+    read_only: false
+    allowed_clients: []
+    denied_clients: []
+    require_auth: false
+    allowed_auth_methods:
+      - "anonymous"
+      - "unix"
+    identity_mapping:
+      map_all_to_anonymous: false
+      map_privileged_to_anonymous: false
+      anonymous_uid: 65534
+      anonymous_gid: 65534
+    root_directory_attributes:
+      mode: 0755
+      uid: 0
+      gid: 0
+    dump_restricted: false
+
+adapters:
+  nfs:
+    enabled: true
+    port: 12049
+    max_connections: 0
+    timeouts:
+      read: 5m0s
+      write: 30s
+      idle: 5m0s
+      shutdown: 30s
