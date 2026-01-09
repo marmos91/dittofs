@@ -13,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/api"
+	"github.com/marmos91/dittofs/pkg/api/auth"
 	"github.com/marmos91/dittofs/pkg/config"
 	dittoServer "github.com/marmos91/dittofs/pkg/server"
 
@@ -280,7 +281,30 @@ func runStart() {
 
 	// Initialize API server (if enabled - defaults to true)
 	if cfg.Server.API.IsEnabled() {
-		apiServer := api.NewServer(cfg.Server.API, reg)
+		// Initialize identity store for user management
+		identityStore, initialPassword, err := cfg.InitializeIdentityStore(ctx)
+		if err != nil {
+			log.Fatalf("Failed to initialize identity store: %v", err)
+		}
+		if initialPassword != "" {
+			// Password was logged with WARN level in InitializeIdentityStore
+			// No additional action needed here
+		}
+
+		// Create JWT service
+		jwtConfig := auth.JWTConfig{
+			Secret:               cfg.Server.API.GetJWTSecret(),
+			Issuer:               "dittofs",
+			AccessTokenDuration:  cfg.Server.API.JWT.AccessTokenDuration,
+			RefreshTokenDuration: cfg.Server.API.JWT.RefreshTokenDuration,
+		}
+		jwtService, err := auth.NewJWTService(jwtConfig)
+		if err != nil {
+			log.Fatalf("Failed to create JWT service: %v", err)
+		}
+
+		// Create API server with JWT and identity store
+		apiServer := api.NewServer(cfg.Server.API, reg, jwtService, identityStore)
 		dittoSrv.SetAPIServer(apiServer)
 		logger.Info("API server enabled", "port", cfg.Server.API.Port)
 	} else {

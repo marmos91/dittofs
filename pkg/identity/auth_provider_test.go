@@ -16,18 +16,18 @@ func createTestUserStore(t *testing.T) *ConfigUserStore {
 
 	users := []*User{
 		{
+			ID:           "user-1",
 			Username:     "testuser",
 			PasswordHash: hash,
 			Enabled:      true,
-			UID:          1000,
-			GID:          1000,
+			Role:         RoleUser,
 		},
 		{
+			ID:           "user-2",
 			Username:     "disabled",
 			PasswordHash: hash,
 			Enabled:      false,
-			UID:          1001,
-			GID:          1000,
+			Role:         RoleUser,
 		},
 	}
 
@@ -173,20 +173,9 @@ func TestLocalAuthProvider_LookupUser_ByUsername(t *testing.T) {
 	}
 }
 
-func TestLocalAuthProvider_LookupUser_ByUID(t *testing.T) {
-	store := createTestUserStore(t)
-	provider := NewLocalAuthProvider(store)
-	ctx := context.Background()
-
-	uid := uint32(1000)
-	user, err := provider.LookupUser(ctx, UserIdentifier{UID: &uid})
-	if err != nil {
-		t.Fatalf("LookupUser() error = %v", err)
-	}
-	if user.UID != 1000 {
-		t.Errorf("LookupUser() UID = %d, want 1000", user.UID)
-	}
-}
+// TestLocalAuthProvider_LookupUser_ByUID is removed because UID lookup is no longer supported.
+// Protocol-specific identity (UID/GID/SID) is now per-share via ShareIdentityMapping.
+// Use IdentityStore.GetShareIdentityMapping() for UID/SID resolution.
 
 func TestLocalAuthProvider_LookupUser_NotFound(t *testing.T) {
 	store := createTestUserStore(t)
