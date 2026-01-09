@@ -282,13 +282,9 @@ func runStart() {
 	// Initialize API server (if enabled - defaults to true)
 	if cfg.Server.API.IsEnabled() {
 		// Initialize identity store for user management
-		identityStore, initialPassword, err := cfg.InitializeIdentityStore(ctx)
+		identityStore, _, err := cfg.InitializeIdentityStore(ctx)
 		if err != nil {
 			log.Fatalf("Failed to initialize identity store: %v", err)
-		}
-		if initialPassword != "" {
-			// Password was logged with WARN level in InitializeIdentityStore
-			// No additional action needed here
 		}
 
 		// Create JWT service

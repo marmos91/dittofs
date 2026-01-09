@@ -142,7 +142,7 @@ func (c *Config) InitializeIdentityStore(ctx context.Context) (identity.Identity
 	// Ensure admin user exists
 	initialPassword, err := store.EnsureAdminUser(ctx)
 	if err != nil {
-		store.Close()
+		_ = store.Close()
 		return nil, "", fmt.Errorf("failed to initialize admin user: %w", err)
 	}
 

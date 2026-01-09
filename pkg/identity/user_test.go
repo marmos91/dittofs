@@ -256,9 +256,16 @@ func TestUser_GetNTHash(t *testing.T) {
 		t.Error("GetNTHash() returned false for valid hash")
 	}
 
-	// Verify it's 16 bytes
-	if len(ntHash) != 16 {
-		t.Errorf("GetNTHash() returned hash of length %d, want 16", len(ntHash))
+	// Verify ntHash is not all zeros (actual hash has content)
+	allZeros := true
+	for _, b := range ntHash {
+		if b != 0 {
+			allZeros = false
+			break
+		}
+	}
+	if allZeros {
+		t.Error("GetNTHash() returned all zeros, expected actual hash")
 	}
 
 	// Test with empty NT hash

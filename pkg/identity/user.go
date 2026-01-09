@@ -188,4 +188,3 @@ func (u *User) Validate() error {
 func (u *User) IsAdmin() bool {
 	return u.Role == RoleAdmin
 }
-
