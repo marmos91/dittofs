@@ -147,9 +147,8 @@ func (c *Config) InitializeIdentityStore(ctx context.Context) (identity.Identity
 	}
 
 	if initialPassword != "" {
-		logger.Warn("Admin user created with initial password",
+		logger.Warn("Admin user created - password change required on first login",
 			"username", identity.AdminUsername,
-			"password", initialPassword,
 			"action", "CHANGE PASSWORD IMMEDIATELY")
 	}
 

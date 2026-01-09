@@ -5,6 +5,7 @@ package memory
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"sync"
 	"time"
 
@@ -193,6 +194,8 @@ func (s *MemoryIdentityStore) CreateUser(ctx context.Context, user *identity.Use
 }
 
 // UpdateUser updates an existing user.
+// Note: Username changes are not supported. The user is looked up by Username,
+// and attempting to change it would leave orphaned entries.
 func (s *MemoryIdentityStore) UpdateUser(ctx context.Context, user *identity.User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -200,6 +203,11 @@ func (s *MemoryIdentityStore) UpdateUser(ctx context.Context, user *identity.Use
 	existing, ok := s.users[user.Username]
 	if !ok {
 		return identity.ErrUserNotFound
+	}
+
+	// Prevent username changes - they would cause inconsistencies
+	if user.Username != existing.Username {
+		return identity.ErrInvalidOperation
 	}
 
 	// Store a copy, preserving the ID
@@ -227,7 +235,9 @@ func (s *MemoryIdentityStore) DeleteUser(ctx context.Context, username string) e
 	delete(s.users, username)
 	delete(s.usersByID, user.ID)
 
-	// Remove all share mappings for this user
+	// Remove all share mappings for this user.
+	// Note: In-memory map deletion is atomic and cannot fail in Go.
+	// For persistent stores, this should be done transactionally.
 	for key := range s.shareMappings {
 		if len(key) > len(username)+1 && key[:len(username)+1] == username+":" {
 			delete(s.shareMappings, key)
@@ -584,7 +594,10 @@ func (s *MemoryIdentityStore) EnsureAdminUser(ctx context.Context) (string, erro
 	}
 
 	// Get or generate password
-	password := identity.GetOrGenerateAdminPassword()
+	password, err := identity.GetOrGenerateAdminPassword()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate admin password: %w", err)
+	}
 
 	// Hash the password
 	passwordHash, err := identity.HashPassword(password)

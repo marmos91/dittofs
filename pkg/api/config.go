@@ -3,6 +3,8 @@ package api
 import (
 	"os"
 	"time"
+
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // Environment variable for JWT secret
@@ -94,8 +96,14 @@ func (c *APIConfig) applyDefaults() {
 
 // GetJWTSecret returns the JWT secret, preferring the environment variable.
 // Returns empty string if neither env var nor config secret is set.
+// Logs a warning if the environment variable overrides a config file value.
 func (c *APIConfig) GetJWTSecret() string {
-	if envSecret := os.Getenv(EnvJWTSecret); envSecret != "" {
+	envSecret := os.Getenv(EnvJWTSecret)
+	if envSecret != "" {
+		if c.JWT.Secret != "" && c.JWT.Secret != envSecret {
+			logger.Warn("JWT secret from environment variable overrides config file value",
+				"env_var", EnvJWTSecret)
+		}
 		return envSecret
 	}
 	return c.JWT.Secret

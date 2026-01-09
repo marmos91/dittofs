@@ -7,12 +7,13 @@ import (
 
 // Common errors for UserStore operations.
 var (
-	ErrUserNotFound   = errors.New("user not found")
-	ErrGroupNotFound  = errors.New("group not found")
-	ErrUserDisabled   = errors.New("user account is disabled")
-	ErrGuestDisabled  = errors.New("guest access is disabled")
-	ErrDuplicateUser  = errors.New("user already exists")
-	ErrDuplicateGroup = errors.New("group already exists")
+	ErrUserNotFound     = errors.New("user not found")
+	ErrGroupNotFound    = errors.New("group not found")
+	ErrUserDisabled     = errors.New("user account is disabled")
+	ErrGuestDisabled    = errors.New("guest access is disabled")
+	ErrDuplicateUser    = errors.New("user already exists")
+	ErrDuplicateGroup   = errors.New("group already exists")
+	ErrInvalidOperation = errors.New("invalid operation")
 )
 
 // UserStore provides user and group management operations.

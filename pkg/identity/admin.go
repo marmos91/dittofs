@@ -41,23 +41,24 @@ func DefaultAdminUser(passwordHash, ntHash string) *User {
 // GetOrGenerateAdminPassword returns the admin password from the environment
 // variable if set, otherwise generates a cryptographically secure random password.
 // The generated password is 24 characters of URL-safe base64.
-func GetOrGenerateAdminPassword() string {
+// Returns an error if random password generation fails.
+func GetOrGenerateAdminPassword() (string, error) {
 	if pw := os.Getenv(EnvAdminInitialPassword); pw != "" {
-		return pw
+		return pw, nil
 	}
 	return GenerateRandomPassword()
 }
 
 // GenerateRandomPassword generates a cryptographically secure random password.
 // Returns a 24-character URL-safe base64 string (18 bytes of randomness).
-func GenerateRandomPassword() string {
+// Returns an error if the system's random number generator fails.
+func GenerateRandomPassword() (string, error) {
 	b := make([]byte, 18)
 	_, err := rand.Read(b)
 	if err != nil {
-		// This should never happen on a properly functioning system
-		panic("failed to generate random password: " + err.Error())
+		return "", err
 	}
-	return base64.URLEncoding.EncodeToString(b)
+	return base64.URLEncoding.EncodeToString(b), nil
 }
 
 // IsAdminUsername checks if the given username is the reserved admin username.

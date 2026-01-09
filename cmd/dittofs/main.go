@@ -284,7 +284,7 @@ func runStart() {
 		// Validate JWT secret is configured with helpful error message
 		jwtSecret := cfg.Server.API.GetJWTSecret()
 		if len(jwtSecret) < 32 {
-			log.Fatalf("JWT secret must be at least 32 characters. "+
+			log.Fatalf("JWT secret must be at least 32 bytes. "+
 				"Set via environment variable %s or in config file under server.api.jwt.secret",
 				api.EnvJWTSecret)
 		}

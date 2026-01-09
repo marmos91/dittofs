@@ -16,6 +16,10 @@ const claimsContextKey contextKey = "claims"
 
 // GetClaimsFromContext retrieves JWT claims from the request context.
 // Returns nil if no claims are present.
+//
+// This function should only be called within API handler code that runs
+// after the JWTAuth middleware has processed the request. If called before
+// authentication, or in routes without JWTAuth middleware, it will return nil.
 func GetClaimsFromContext(ctx context.Context) *auth.Claims {
 	claims, ok := ctx.Value(claimsContextKey).(*auth.Claims)
 	if !ok {
@@ -84,10 +88,19 @@ func RequireAdmin() func(http.Handler) http.Handler {
 // RequirePasswordChange is a middleware that blocks users who must change their password.
 // Allows access to specified paths even when password change is required.
 // Must be used after JWTAuth middleware.
+//
+// Note: Path matching uses exact string comparison against r.URL.Path.
+// Paths should not include trailing slashes unless the route explicitly has them.
+// If the router is mounted at a sub-path, provide the full path including the prefix.
 func RequirePasswordChange(allowedPaths ...string) func(http.Handler) http.Handler {
 	allowedSet := make(map[string]bool)
 	for _, path := range allowedPaths {
-		allowedSet[path] = true
+		// Normalize by removing trailing slash (except for root "/")
+		normalized := strings.TrimSuffix(path, "/")
+		if normalized == "" {
+			normalized = "/"
+		}
+		allowedSet[normalized] = true
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -98,8 +111,14 @@ func RequirePasswordChange(allowedPaths ...string) func(http.Handler) http.Handl
 				return
 			}
 
+			// Normalize request path by removing trailing slash
+			requestPath := strings.TrimSuffix(r.URL.Path, "/")
+			if requestPath == "" {
+				requestPath = "/"
+			}
+
 			// Check if this path is allowed regardless of password change requirement
-			if allowedSet[r.URL.Path] {
+			if allowedSet[requestPath] {
 				next.ServeHTTP(w, r)
 				return
 			}
