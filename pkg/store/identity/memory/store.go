@@ -4,6 +4,7 @@ package memory
 
 import (
 	"context"
+	"encoding/hex"
 	"sync"
 	"time"
 
@@ -595,7 +596,7 @@ func (s *MemoryIdentityStore) EnsureAdminUser(ctx context.Context) (string, erro
 	ntHash := identity.ComputeNTHash(password)
 
 	// Create admin user
-	admin := identity.DefaultAdminUser(passwordHash, string(ntHash[:]))
+	admin := identity.DefaultAdminUser(passwordHash, hex.EncodeToString(ntHash[:]))
 	s.users[admin.Username] = admin
 	s.usersByID[admin.ID] = admin
 	s.adminInitialized = true

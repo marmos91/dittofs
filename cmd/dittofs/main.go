@@ -281,6 +281,14 @@ func runStart() {
 
 	// Initialize API server (if enabled - defaults to true)
 	if cfg.Server.API.IsEnabled() {
+		// Validate JWT secret is configured with helpful error message
+		jwtSecret := cfg.Server.API.GetJWTSecret()
+		if len(jwtSecret) < 32 {
+			log.Fatalf("JWT secret must be at least 32 characters. "+
+				"Set via environment variable %s or in config file under server.api.jwt.secret",
+				api.EnvJWTSecret)
+		}
+
 		// Initialize identity store for user management
 		identityStore, _, err := cfg.InitializeIdentityStore(ctx)
 		if err != nil {
@@ -289,7 +297,7 @@ func runStart() {
 
 		// Create JWT service
 		jwtConfig := auth.JWTConfig{
-			Secret:               cfg.Server.API.GetJWTSecret(),
+			Secret:               jwtSecret,
 			Issuer:               "dittofs",
 			AccessTokenDuration:  cfg.Server.API.JWT.AccessTokenDuration,
 			RefreshTokenDuration: cfg.Server.API.JWT.RefreshTokenDuration,

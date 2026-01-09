@@ -3,6 +3,8 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/marmos91/dittofs/pkg/identity"
@@ -11,6 +13,22 @@ import (
 // ShareMappingHandler handles share identity mapping API endpoints.
 type ShareMappingHandler struct {
 	identityStore identity.IdentityStore
+}
+
+// decodeShareName URL-decodes the share name and ensures it starts with a slash.
+// Share names like "/export" may be passed as "export" or "%2Fexport" in URLs.
+func decodeShareName(encodedName string) string {
+	// URL-decode the share name (handles %2F -> /)
+	decoded, err := url.PathUnescape(encodedName)
+	if err != nil {
+		// If decoding fails, use the original value
+		decoded = encodedName
+	}
+	// Ensure share name starts with a slash
+	if !strings.HasPrefix(decoded, "/") {
+		decoded = "/" + decoded
+	}
+	return decoded
 }
 
 // NewShareMappingHandler creates a new ShareMappingHandler.
@@ -76,8 +94,8 @@ func (h *ShareMappingHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// URL-decode the share name (handles slashes like /export -> %2Fexport)
-	shareName = "/" + shareName // Prepend slash since it's a path
+	// URL-decode and normalize the share name
+	shareName = decodeShareName(shareName)
 
 	mapping, err := h.identityStore.GetShareIdentityMapping(username, shareName)
 	if err != nil {
@@ -108,8 +126,8 @@ func (h *ShareMappingHandler) Set(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// URL-decode the share name
-	shareName = "/" + shareName
+	// URL-decode and normalize the share name
+	shareName = decodeShareName(shareName)
 
 	var req ShareMappingRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -150,8 +168,8 @@ func (h *ShareMappingHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// URL-decode the share name
-	shareName = "/" + shareName
+	// URL-decode and normalize the share name
+	shareName = decodeShareName(shareName)
 
 	if err := h.identityStore.DeleteShareIdentityMapping(r.Context(), username, shareName); err != nil {
 		if err == identity.ErrUserNotFound {

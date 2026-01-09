@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -286,7 +287,7 @@ func (h *UserHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	ntHash := identity.ComputeNTHash(req.NewPassword)
 
 	// Update password and set must change flag
-	if err := h.identityStore.UpdatePassword(r.Context(), username, passwordHash, string(ntHash[:])); err != nil {
+	if err := h.identityStore.UpdatePassword(r.Context(), username, passwordHash, hex.EncodeToString(ntHash[:])); err != nil {
 		InternalServerError(w, "Failed to update password")
 		return
 	}
@@ -358,7 +359,7 @@ func (h *UserHandler) ChangeOwnPassword(w http.ResponseWriter, r *http.Request) 
 	ntHash := identity.ComputeNTHash(req.NewPassword)
 
 	// Update password
-	if err := h.identityStore.UpdatePassword(r.Context(), claims.Username, passwordHash, string(ntHash[:])); err != nil {
+	if err := h.identityStore.UpdatePassword(r.Context(), claims.Username, passwordHash, hex.EncodeToString(ntHash[:])); err != nil {
 		InternalServerError(w, "Failed to update password")
 		return
 	}
