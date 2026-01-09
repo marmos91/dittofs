@@ -47,13 +47,12 @@ type ReadMetadata struct {
 }
 
 // ============================================================================
-// File I/O Operations
+// File I/O Operations (MetadataService methods)
 // ============================================================================
 
 // PrepareWrite validates a write operation and returns a write intent.
 //
-// This is the centralized implementation of write preparation that all stores
-// should delegate to. It handles:
+// This handles:
 //   - File type validation (must be regular file)
 //   - Permission checking (write permission)
 //   - Building WriteOperation with pre-operation attributes
@@ -65,22 +64,12 @@ type ReadMetadata struct {
 //  1. PrepareWrite - validates and creates intent
 //  2. ContentStore.WriteAt - writes actual content
 //  3. CommitWrite - updates metadata (size, mtime, ctime)
-//
-// Parameters:
-//   - store: MetadataStore for CRUD operations
-//   - ctx: Authentication context
-//   - handle: File handle to write to
-//   - newSize: New file size after write (offset + data length)
-//
-// Returns:
-//   - *WriteOperation: Intent containing ContentID and pre-write attributes
-//   - error: ErrNotFound, ErrAccessDenied, ErrIsDirectory, etc.
-func PrepareWrite(
-	store MetadataStore,
-	ctx *AuthContext,
-	handle FileHandle,
-	newSize uint64,
-) (*WriteOperation, error) {
+func (s *MetadataService) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint64) (*WriteOperation, error) {
+	store, err := s.storeForHandle(handle)
+	if err != nil {
+		return nil, err
+	}
+
 	// Check context
 	if err := ctx.Context.Err(); err != nil {
 		return nil, err
@@ -115,7 +104,7 @@ func PrepareWrite(
 
 	if !isOwner {
 		// Non-owner: check permissions using normal Unix permission bits
-		if err := CheckWritePermission(store, ctx, handle); err != nil {
+		if err := s.checkWritePermission(ctx, handle); err != nil {
 			return nil, err
 		}
 	}
@@ -137,8 +126,7 @@ func PrepareWrite(
 
 // CommitWrite applies metadata changes after a successful content write.
 //
-// This is the centralized implementation of write commit that all stores
-// should delegate to. It handles:
+// This handles:
 //   - File size update (max of current and new size)
 //   - Timestamp updates (mtime, ctime)
 //   - POSIX: clearing setuid/setgid bits for non-root users
@@ -148,20 +136,12 @@ func PrepareWrite(
 // If this fails after content was written, the file is in an inconsistent
 // state (content newer than metadata). This can be detected by consistency
 // checkers.
-//
-// Parameters:
-//   - store: MetadataStore for CRUD operations
-//   - ctx: Authentication context
-//   - intent: The write intent from PrepareWrite
-//
-// Returns:
-//   - *File: Updated file with new attributes
-//   - error: ErrNotFound if file was deleted, etc.
-func CommitWrite(
-	store MetadataStore,
-	ctx *AuthContext,
-	intent *WriteOperation,
-) (*File, error) {
+func (s *MetadataService) CommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
+	store, err := s.storeForHandle(intent.Handle)
+	if err != nil {
+		return nil, err
+	}
+
 	// Check context
 	if err := ctx.Context.Err(); err != nil {
 		return nil, err
@@ -210,28 +190,19 @@ func CommitWrite(
 
 // PrepareRead validates a read operation and returns file metadata.
 //
-// This is the centralized implementation of read preparation that all stores
-// should delegate to. It handles:
+// This handles:
 //   - File type validation (must be regular file)
 //   - Permission checking (read permission)
 //   - Returning metadata including ContentID for content store
 //
 // The method does NOT perform actual data reading. The protocol handler
 // coordinates between metadata and content stores.
-//
-// Parameters:
-//   - store: MetadataStore for CRUD operations
-//   - ctx: Authentication context
-//   - handle: File handle to read from
-//
-// Returns:
-//   - *ReadMetadata: Contains file attributes including ContentID
-//   - error: ErrNotFound, ErrAccessDenied, ErrIsDirectory, etc.
-func PrepareRead(
-	store MetadataStore,
-	ctx *AuthContext,
-	handle FileHandle,
-) (*ReadMetadata, error) {
+func (s *MetadataService) PrepareRead(ctx *AuthContext, handle FileHandle) (*ReadMetadata, error) {
+	store, err := s.storeForHandle(handle)
+	if err != nil {
+		return nil, err
+	}
+
 	// Check context
 	if err := ctx.Context.Err(); err != nil {
 		return nil, err
@@ -260,7 +231,7 @@ func PrepareRead(
 	}
 
 	// Check read permission
-	if err := CheckReadPermission(store, ctx, handle); err != nil {
+	if err := s.checkReadPermission(ctx, handle); err != nil {
 		return nil, err
 	}
 

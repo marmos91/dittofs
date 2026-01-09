@@ -11,10 +11,10 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
-	"github.com/marmos91/dittofs/pkg/registry"
-	contentmemory "github.com/marmos91/dittofs/pkg/store/content/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	"github.com/marmos91/dittofs/pkg/registry"
+	contentmemory "github.com/marmos91/dittofs/pkg/store/content/memory"
 )
 
 // DefaultShareName is the default share name used in test fixtures.
@@ -29,7 +29,7 @@ const DefaultGID = uint32(1000)
 // HandlerTestFixture provides a complete test environment for NFS v3 handlers.
 //
 // It sets up:
-//   - A real memory metadata store
+//   - A real memory metadata store (owned by MetadataService)
 //   - A real memory content store
 //   - A registry with a configured share
 //   - A Handler instance ready for testing
@@ -44,8 +44,9 @@ type HandlerTestFixture struct {
 	// Registry manages stores and shares.
 	Registry *registry.Registry
 
-	// MetadataStore is the memory-backed metadata store.
-	MetadataStore *metadatamemory.MemoryMetadataStore
+	// MetadataService provides high-level metadata operations.
+	// It owns the memory-backed metadata store.
+	MetadataService *metadata.MetadataService
 
 	// ContentStore is the memory-backed content store.
 	ContentStore *contentmemory.MemoryContentStore
@@ -110,13 +111,13 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 	}
 
 	return &HandlerTestFixture{
-		t:             t,
-		Handler:       handler,
-		Registry:      reg,
-		MetadataStore: metaStore,
-		ContentStore:  contentStore,
-		ShareName:     DefaultShareName,
-		RootHandle:    share.RootHandle,
+		t:               t,
+		Handler:         handler,
+		Registry:        reg,
+		MetadataService: reg.GetMetadataService(),
+		ContentStore:    contentStore,
+		ShareName:       DefaultShareName,
+		RootHandle:      share.RootHandle,
 	}
 }
 
@@ -193,7 +194,7 @@ func (f *HandlerTestFixture) CreateDirectory(path string) metadata.FileHandle {
 	parentHandle := f.RootHandle
 	for _, name := range components {
 		// Check if already exists
-		existing, err := metadata.Lookup(f.MetadataStore, authCtx, parentHandle, name)
+		existing, err := f.MetadataService.Lookup(authCtx, parentHandle, name)
 		if err == nil {
 			handle, err := metadata.EncodeFileHandle(existing)
 			if err != nil {
@@ -204,7 +205,7 @@ func (f *HandlerTestFixture) CreateDirectory(path string) metadata.FileHandle {
 		}
 
 		// Create directory
-		dir, err := metadata.CreateDirectory(f.MetadataStore, authCtx, parentHandle, name, &metadata.FileAttr{
+		dir, err := f.MetadataService.CreateDirectory(authCtx, parentHandle, name, &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0755,
 			UID:  DefaultUID,
@@ -247,7 +248,7 @@ func (f *HandlerTestFixture) CreateFile(path string, content []byte) metadata.Fi
 
 	// Create the file
 	name := filepath.Base(path)
-	file, err := metadata.CreateFile(f.MetadataStore, authCtx, parentHandle, name, &metadata.FileAttr{
+	file, err := f.MetadataService.CreateFile(authCtx, parentHandle, name, &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0644,
 		UID:  DefaultUID,
@@ -265,7 +266,7 @@ func (f *HandlerTestFixture) CreateFile(path string, content []byte) metadata.Fi
 
 		// Update file size in metadata
 		newSize := uint64(len(content))
-		err := metadata.SetFileAttributes(f.MetadataStore, authCtx, mustEncodeHandle(f.t, file), &metadata.SetAttrs{
+		err := f.MetadataService.SetFileAttributes(authCtx, mustEncodeHandle(f.t, file), &metadata.SetAttrs{
 			Size: &newSize,
 		})
 		if err != nil {
@@ -295,7 +296,7 @@ func (f *HandlerTestFixture) CreateSymlink(path, target string) metadata.FileHan
 
 	// Create the symlink
 	name := filepath.Base(path)
-	symlink, err := metadata.CreateSymlink(f.MetadataStore, authCtx, parentHandle, name, target, &metadata.FileAttr{
+	symlink, err := f.MetadataService.CreateSymlink(authCtx, parentHandle, name, target, &metadata.FileAttr{
 		Mode: 0777,
 		UID:  DefaultUID,
 		GID:  DefaultGID,
@@ -323,7 +324,7 @@ func (f *HandlerTestFixture) GetHandle(path string) metadata.FileHandle {
 
 	currentHandle := f.RootHandle
 	for _, name := range components {
-		file, err := metadata.Lookup(f.MetadataStore, authCtx, currentHandle, name)
+		file, err := f.MetadataService.Lookup(authCtx, currentHandle, name)
 		if err != nil {
 			return nil
 		}
@@ -359,7 +360,7 @@ func (f *HandlerTestFixture) GetFile(path string) *metadata.File {
 		return nil
 	}
 
-	file, err := f.MetadataStore.GetFile(context.Background(), handle)
+	file, err := f.MetadataService.GetFile(context.Background(), handle)
 	if err != nil {
 		return nil
 	}

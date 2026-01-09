@@ -1,6 +1,9 @@
 package metadata
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // ============================================================================
 // File Locking Types (SMB/NLM support)
@@ -70,6 +73,10 @@ type LockConflict struct {
 	// OwnerSessionID identifies the client holding the conflicting lock.
 	OwnerSessionID uint64
 }
+
+// ============================================================================
+// Lock Range Utilities
+// ============================================================================
 
 // RangesOverlap checks if two byte ranges overlap.
 //
@@ -177,111 +184,221 @@ func CheckIOConflict(existing *FileLock, sessionID uint64, offset, length uint64
 }
 
 // ============================================================================
-// Business Logic Functions for File Locking
+// Lock Manager
 // ============================================================================
-//
-// These functions implement file locking operations with proper business logic:
-// - Permission checking
-// - File type validation
-// - Error handling
-//
-// Locks are managed by LockManager (one per share) at the MetadataService level.
-// The store is only used for file existence checks and permission verification.
 
-// lockFileWithManager acquires a byte-range lock on a file.
+// LockManager manages byte-range file locks for SMB/NLM protocols.
 //
-// Business logic:
-//   - Verifies file exists
-//   - Verifies file is not a directory (directories cannot be locked)
-//   - Checks user has appropriate permission (read for shared, write for exclusive)
+// This is a shared, in-memory implementation that can be embedded in any
+// metadata store. Locks are ephemeral and lost on server restart.
 //
-// Returns:
-//   - error: ErrLocked if conflict exists, ErrNotFound if file doesn't exist,
-//     ErrIsDirectory if target is a directory, ErrPermissionDenied if no permission
-func lockFileWithManager(store MetadataStore, lm *LockManager, ctx *AuthContext, handle FileHandle, lock FileLock) error {
-	if err := ctx.Context.Err(); err != nil {
-		return err
+// Thread Safety:
+// LockManager is safe for concurrent use by multiple goroutines.
+type LockManager struct {
+	mu    sync.RWMutex
+	locks map[string][]FileLock // handle key -> locks
+}
+
+// NewLockManager creates a new lock manager.
+func NewLockManager() *LockManager {
+	return &LockManager{
+		locks: make(map[string][]FileLock),
+	}
+}
+
+// Lock attempts to acquire a byte-range lock on a file.
+//
+// This is a low-level CRUD operation with no permission checking.
+// Business logic (permission checks, file type validation) should be
+// performed by the caller.
+//
+// Returns nil on success, or ErrLocked if a conflict exists.
+func (lm *LockManager) Lock(handleKey string, lock FileLock) error {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	existing := lm.locks[handleKey]
+
+	// Check for conflicts with existing locks
+	for i := range existing {
+		if IsLockConflicting(&existing[i], &lock) {
+			conflict := &LockConflict{
+				Offset:         existing[i].Offset,
+				Length:         existing[i].Length,
+				Exclusive:      existing[i].Exclusive,
+				OwnerSessionID: existing[i].SessionID,
+			}
+			return NewLockedError("", conflict)
+		}
 	}
 
-	// Verify file exists and is not a directory
-	file, err := store.GetFile(ctx.Context, handle)
-	if err != nil {
-		return err
+	// Check if this exact lock already exists (same session, offset, length)
+	// If so, update it (allows changing exclusive flag)
+	for i := range existing {
+		if existing[i].SessionID == lock.SessionID &&
+			existing[i].Offset == lock.Offset &&
+			existing[i].Length == lock.Length {
+			// Update existing lock in place
+			existing[i].Exclusive = lock.Exclusive
+			existing[i].AcquiredAt = time.Now()
+			existing[i].ID = lock.ID
+			return nil
+		}
 	}
 
-	if file.Type == FileTypeDirectory {
-		return NewIsDirectoryError("")
+	// Set acquisition time if not set
+	if lock.AcquiredAt.IsZero() {
+		lock.AcquiredAt = time.Now()
 	}
 
-	// Check permissions
-	var requiredPerm Permission
-	if lock.Exclusive {
-		requiredPerm = PermissionWrite
+	// Add new lock
+	lm.locks[handleKey] = append(existing, lock)
+	return nil
+}
+
+// Unlock releases a specific byte-range lock.
+//
+// The lock is identified by session, offset, and length - all must match exactly.
+//
+// Returns nil on success, or ErrLockNotFound if the lock wasn't found.
+func (lm *LockManager) Unlock(handleKey string, sessionID, offset, length uint64) error {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	existing := lm.locks[handleKey]
+	if len(existing) == 0 {
+		return NewLockNotFoundError("")
+	}
+
+	// Find and remove the matching lock
+	for i := range existing {
+		if existing[i].SessionID == sessionID &&
+			existing[i].Offset == offset &&
+			existing[i].Length == length {
+			// Remove this lock
+			lm.locks[handleKey] = append(existing[:i], existing[i+1:]...)
+
+			// Clean up empty entries to prevent memory leak
+			if len(lm.locks[handleKey]) == 0 {
+				delete(lm.locks, handleKey)
+			}
+			return nil
+		}
+	}
+
+	return NewLockNotFoundError("")
+}
+
+// UnlockAllForSession releases all locks held by a session on a file.
+//
+// Returns the number of locks released.
+func (lm *LockManager) UnlockAllForSession(handleKey string, sessionID uint64) int {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	existing := lm.locks[handleKey]
+	if len(existing) == 0 {
+		return 0
+	}
+
+	// Filter out locks belonging to this session
+	remaining := make([]FileLock, 0, len(existing))
+	removed := 0
+	for i := range existing {
+		if existing[i].SessionID == sessionID {
+			removed++
+		} else {
+			remaining = append(remaining, existing[i])
+		}
+	}
+
+	// Update or clean up
+	if len(remaining) == 0 {
+		delete(lm.locks, handleKey)
 	} else {
-		requiredPerm = PermissionRead
+		lm.locks[handleKey] = remaining
 	}
 
-	granted, err := CheckFilePermissions(store, ctx, handle, requiredPerm)
-	if err != nil {
-		return err
-	}
-	if granted&requiredPerm == 0 {
-		return NewPermissionDeniedError("")
-	}
-
-	// Acquire the lock via LockManager
-	handleKey := string(handle)
-	return lm.Lock(handleKey, lock)
+	return removed
 }
 
-// testFileLockWithManager checks whether a lock would succeed without acquiring it.
+// TestLock checks if a lock would succeed without acquiring it.
 //
-// Business logic:
-//   - Verifies file exists
-//
-// Returns:
-//   - bool: true if lock would succeed, false if conflict exists
-//   - *LockConflict: Details of conflicting lock if bool is false
-//   - error: ErrNotFound if file doesn't exist
-func testFileLockWithManager(store MetadataStore, lm *LockManager, ctx *AuthContext, handle FileHandle, sessionID, offset, length uint64, exclusive bool) (bool, *LockConflict, error) {
-	if err := ctx.Context.Err(); err != nil {
-		return false, nil, err
+// Returns (true, nil) if lock would succeed, (false, conflict) if conflict exists.
+func (lm *LockManager) TestLock(handleKey string, sessionID, offset, length uint64, exclusive bool) (bool, *LockConflict) {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	existing := lm.locks[handleKey]
+
+	// Create a test lock to check conflicts
+	testLock := &FileLock{
+		SessionID: sessionID,
+		Offset:    offset,
+		Length:    length,
+		Exclusive: exclusive,
 	}
 
-	// Verify file exists
-	_, err := store.GetFile(ctx.Context, handle)
-	if err != nil {
-		return false, nil, err
+	for i := range existing {
+		if IsLockConflicting(&existing[i], testLock) {
+			return false, &LockConflict{
+				Offset:         existing[i].Offset,
+				Length:         existing[i].Length,
+				Exclusive:      existing[i].Exclusive,
+				OwnerSessionID: existing[i].SessionID,
+			}
+		}
 	}
 
-	handleKey := string(handle)
-	ok, conflict := lm.TestLock(handleKey, sessionID, offset, length, exclusive)
-	return ok, conflict, nil
+	return true, nil
 }
 
-// listFileLocksWithManager returns all active locks on a file.
+// CheckForIO checks if an I/O operation would conflict with existing locks.
 //
-// Business logic:
-//   - Verifies file exists
-//
-// Returns:
-//   - []FileLock: All active locks on the file (empty slice if none)
-//   - error: ErrNotFound if file doesn't exist
-func listFileLocksWithManager(store MetadataStore, lm *LockManager, ctx *AuthContext, handle FileHandle) ([]FileLock, error) {
-	if err := ctx.Context.Err(); err != nil {
-		return nil, err
+// Returns nil if I/O is allowed, or conflict details if blocked.
+func (lm *LockManager) CheckForIO(handleKey string, sessionID, offset, length uint64, isWrite bool) *LockConflict {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	existing := lm.locks[handleKey]
+
+	for i := range existing {
+		if CheckIOConflict(&existing[i], sessionID, offset, length, isWrite) {
+			return &LockConflict{
+				Offset:         existing[i].Offset,
+				Length:         existing[i].Length,
+				Exclusive:      existing[i].Exclusive,
+				OwnerSessionID: existing[i].SessionID,
+			}
+		}
 	}
 
-	// Verify file exists
-	_, err := store.GetFile(ctx.Context, handle)
-	if err != nil {
-		return nil, err
+	return nil
+}
+
+// ListLocks returns all active locks on a file.
+//
+// Returns nil if no locks exist.
+func (lm *LockManager) ListLocks(handleKey string) []FileLock {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	existing := lm.locks[handleKey]
+	if len(existing) == 0 {
+		return nil
 	}
 
-	handleKey := string(handle)
-	locks := lm.ListLocks(handleKey)
-	if locks == nil {
-		return []FileLock{}, nil
-	}
-	return locks, nil
+	// Return a copy to avoid race conditions
+	result := make([]FileLock, len(existing))
+	copy(result, existing)
+	return result
+}
+
+// RemoveFileLocks removes all locks for a file.
+//
+// Called when a file is deleted to clean up any stale lock entries.
+func (lm *LockManager) RemoveFileLocks(handleKey string) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	delete(lm.locks, handleKey)
 }

@@ -138,11 +138,7 @@ func (s *MetadataService) GetFile(ctx context.Context, handle FileHandle) (*File
 //   - Other: Check other permission bits
 //   - Anonymous: Only world permissions
 func (s *MetadataService) CheckPermissions(ctx *AuthContext, handle FileHandle, requested Permission) (Permission, error) {
-	store, err := s.storeForHandle(handle)
-	if err != nil {
-		return 0, err
-	}
-	return CheckFilePermissions(store, ctx, handle, requested)
+	return s.checkFilePermissions(ctx, handle, requested)
 }
 
 // GetChild retrieves a child's handle from a directory.
@@ -152,15 +148,6 @@ func (s *MetadataService) GetChild(ctx context.Context, dirHandle FileHandle, na
 		return nil, err
 	}
 	return store.GetChild(ctx, dirHandle, name)
-}
-
-// ReadDirectory reads directory entries with pagination.
-func (s *MetadataService) ReadDirectory(ctx *AuthContext, dirHandle FileHandle, cursor string, limit uint32) (*ReadDirPage, error) {
-	store, err := s.storeForHandle(dirHandle)
-	if err != nil {
-		return nil, err
-	}
-	return ReadDirectory(store, ctx, dirHandle, cursor, limit)
 }
 
 // GetRootHandle returns the root handle for a share.
@@ -231,9 +218,15 @@ func (s *MetadataService) CheckLockForIO(ctx context.Context, handle FileHandle,
 
 // LockFile acquires a byte-range lock on a file.
 //
-// Business logic (permission checking, file type validation) is handled here.
-// See LockFile function in locks.go for details.
+// Business logic:
+//   - Verifies file exists
+//   - Verifies file is not a directory (directories cannot be locked)
+//   - Checks user has appropriate permission (read for shared, write for exclusive)
 func (s *MetadataService) LockFile(ctx *AuthContext, handle FileHandle, lock FileLock) error {
+	if err := ctx.Context.Err(); err != nil {
+		return err
+	}
+
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return err
@@ -244,8 +237,38 @@ func (s *MetadataService) LockFile(ctx *AuthContext, handle FileHandle, lock Fil
 		return err
 	}
 
-	// Use business logic function which handles permission checking
-	return lockFileWithManager(store, lm, ctx, handle, lock)
+	// Verify file exists and is not a directory
+	file, err := store.GetFile(ctx.Context, handle)
+	if err != nil {
+		return err
+	}
+
+	if file.Type == FileTypeDirectory {
+		return NewIsDirectoryError("")
+	}
+
+	// Check permissions
+	var requiredPerm Permission
+	if lock.Exclusive {
+		requiredPerm = PermissionWrite
+	} else {
+		requiredPerm = PermissionRead
+	}
+
+	// Get share options for permission check
+	shareOpts, err := store.GetShareOptions(ctx.Context, file.ShareName)
+	if err != nil {
+		shareOpts = nil // Continue without share options if unavailable
+	}
+
+	granted := calculatePermissions(file, ctx.Identity, shareOpts, requiredPerm)
+	if granted&requiredPerm == 0 {
+		return NewPermissionDeniedError("")
+	}
+
+	// Acquire the lock via LockManager
+	handleKey := string(handle)
+	return lm.Lock(handleKey, lock)
 }
 
 // UnlockFile releases a byte-range lock on a file.
@@ -296,7 +319,18 @@ func (s *MetadataService) UnlockAllForSession(ctx context.Context, handle FileHa
 }
 
 // TestLock tests if a lock would conflict with existing locks.
+//
+// Business logic:
+//   - Verifies file exists
+//
+// Returns:
+//   - bool: true if lock would succeed, false if conflict exists
+//   - *LockConflict: Details of conflicting lock if bool is false
 func (s *MetadataService) TestLock(ctx *AuthContext, handle FileHandle, sessionID, offset, length uint64, exclusive bool) (bool, *LockConflict, error) {
+	if err := ctx.Context.Err(); err != nil {
+		return false, nil, err
+	}
+
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return false, nil, err
@@ -307,12 +341,29 @@ func (s *MetadataService) TestLock(ctx *AuthContext, handle FileHandle, sessionI
 		return false, nil, err
 	}
 
-	// Use business logic function which verifies file exists
-	return testFileLockWithManager(store, lm, ctx, handle, sessionID, offset, length, exclusive)
+	// Verify file exists
+	_, err = store.GetFile(ctx.Context, handle)
+	if err != nil {
+		return false, nil, err
+	}
+
+	handleKey := string(handle)
+	ok, conflict := lm.TestLock(handleKey, sessionID, offset, length, exclusive)
+	return ok, conflict, nil
 }
 
 // ListLocks lists all locks on a file.
+//
+// Business logic:
+//   - Verifies file exists
+//
+// Returns:
+//   - []FileLock: All active locks on the file (empty slice if none)
 func (s *MetadataService) ListLocks(ctx *AuthContext, handle FileHandle) ([]FileLock, error) {
+	if err := ctx.Context.Err(); err != nil {
+		return nil, err
+	}
+
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return nil, err
@@ -323,8 +374,18 @@ func (s *MetadataService) ListLocks(ctx *AuthContext, handle FileHandle) ([]File
 		return nil, err
 	}
 
-	// Use business logic function which verifies file exists
-	return listFileLocksWithManager(store, lm, ctx, handle)
+	// Verify file exists
+	_, err = store.GetFile(ctx.Context, handle)
+	if err != nil {
+		return nil, err
+	}
+
+	handleKey := string(handle)
+	locks := lm.ListLocks(handleKey)
+	if locks == nil {
+		return []FileLock{}, nil
+	}
+	return locks, nil
 }
 
 // RemoveFileLocks removes all locks for a file.
@@ -361,174 +422,3 @@ func (s *MetadataService) GetShareOptions(ctx context.Context, shareName string)
 	return store.GetShareOptions(ctx, shareName)
 }
 
-// CheckShareAccess verifies if a client can access a share and returns effective credentials.
-// See CheckShareAccess function for detailed documentation.
-func (s *MetadataService) CheckShareAccess(ctx context.Context, shareName, clientAddr, authMethod string, identity *Identity) (*AccessDecision, *AuthContext, error) {
-	store, err := s.GetStoreForShare(shareName)
-	if err != nil {
-		return nil, nil, err
-	}
-	return CheckShareAccess(store, ctx, shareName, clientAddr, authMethod, identity)
-}
-
-// ============================================================================
-// High-Level File Operations (with business logic)
-// ============================================================================
-
-// RemoveFile removes a file from its parent directory.
-// See RemoveFile function for detailed documentation.
-func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name string) (*File, error) {
-	store, err := s.storeForHandle(parentHandle)
-	if err != nil {
-		return nil, err
-	}
-	return RemoveFile(store, ctx, parentHandle, name)
-}
-
-// Lookup resolves a name in a directory to a file.
-// See Lookup function for detailed documentation.
-func (s *MetadataService) Lookup(ctx *AuthContext, parentHandle FileHandle, name string) (*File, error) {
-	store, err := s.storeForHandle(parentHandle)
-	if err != nil {
-		return nil, err
-	}
-	return Lookup(store, ctx, parentHandle, name)
-}
-
-// CreateFile creates a new regular file.
-// See CreateFile function for detailed documentation.
-func (s *MetadataService) CreateFile(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, error) {
-	store, err := s.storeForHandle(parentHandle)
-	if err != nil {
-		return nil, err
-	}
-	return CreateFile(store, ctx, parentHandle, name, attr)
-}
-
-// CreateSymlink creates a symbolic link.
-// See CreateSymlink function for detailed documentation.
-func (s *MetadataService) CreateSymlink(ctx *AuthContext, parentHandle FileHandle, name string, target string, attr *FileAttr) (*File, error) {
-	store, err := s.storeForHandle(parentHandle)
-	if err != nil {
-		return nil, err
-	}
-	return CreateSymlink(store, ctx, parentHandle, name, target, attr)
-}
-
-// CreateSpecialFile creates a special file (device, socket, FIFO).
-// See CreateSpecialFile function for detailed documentation.
-func (s *MetadataService) CreateSpecialFile(ctx *AuthContext, parentHandle FileHandle, name string, fileType FileType, attr *FileAttr, major, minor uint32) (*File, error) {
-	store, err := s.storeForHandle(parentHandle)
-	if err != nil {
-		return nil, err
-	}
-	return CreateSpecialFile(store, ctx, parentHandle, name, fileType, attr, major, minor)
-}
-
-// CreateHardLink creates a hard link to an existing file.
-// See CreateHardLink function for detailed documentation.
-func (s *MetadataService) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name string, targetHandle FileHandle) error {
-	store, err := s.storeForHandle(dirHandle)
-	if err != nil {
-		return err
-	}
-	return CreateHardLink(store, ctx, dirHandle, name, targetHandle)
-}
-
-// ReadSymlink reads the target of a symbolic link.
-// See ReadSymlink function for detailed documentation.
-func (s *MetadataService) ReadSymlink(ctx *AuthContext, handle FileHandle) (string, *File, error) {
-	store, err := s.storeForHandle(handle)
-	if err != nil {
-		return "", nil, err
-	}
-	return ReadSymlink(store, ctx, handle)
-}
-
-// SetFileAttributes updates file attributes.
-// See SetFileAttributes function for detailed documentation.
-func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *SetAttrs) error {
-	store, err := s.storeForHandle(handle)
-	if err != nil {
-		return err
-	}
-	return SetFileAttributes(store, ctx, handle, attrs)
-}
-
-// Move renames or moves a file/directory.
-// See Move function for detailed documentation.
-func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName string, toDir FileHandle, toName string) error {
-	store, err := s.storeForHandle(fromDir)
-	if err != nil {
-		return err
-	}
-	return Move(store, ctx, fromDir, fromName, toDir, toName)
-}
-
-// MarkFileAsOrphaned marks a file as orphaned (unlinked but still open).
-// See MarkFileAsOrphaned function for detailed documentation.
-func (s *MetadataService) MarkFileAsOrphaned(ctx *AuthContext, handle FileHandle) error {
-	store, err := s.storeForHandle(handle)
-	if err != nil {
-		return err
-	}
-	return MarkFileAsOrphaned(store, ctx, handle)
-}
-
-// ============================================================================
-// Directory Operations
-// ============================================================================
-
-// RemoveDirectory removes an empty directory.
-// See RemoveDirectory function for detailed documentation.
-func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, name string) error {
-	store, err := s.storeForHandle(parentHandle)
-	if err != nil {
-		return err
-	}
-	return RemoveDirectory(store, ctx, parentHandle, name)
-}
-
-// CreateDirectory creates a new directory.
-// See CreateDirectory function for detailed documentation.
-func (s *MetadataService) CreateDirectory(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, error) {
-	store, err := s.storeForHandle(parentHandle)
-	if err != nil {
-		return nil, err
-	}
-	return CreateDirectory(store, ctx, parentHandle, name, attr)
-}
-
-// ============================================================================
-// I/O Operations
-// ============================================================================
-
-// PrepareWrite prepares a write operation.
-// See PrepareWrite function for detailed documentation.
-func (s *MetadataService) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint64) (*WriteOperation, error) {
-	store, err := s.storeForHandle(handle)
-	if err != nil {
-		return nil, err
-	}
-	return PrepareWrite(store, ctx, handle, newSize)
-}
-
-// CommitWrite commits a write operation after content is written.
-// See CommitWrite function for detailed documentation.
-func (s *MetadataService) CommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
-	store, err := s.storeForHandle(intent.Handle)
-	if err != nil {
-		return nil, err
-	}
-	return CommitWrite(store, ctx, intent)
-}
-
-// PrepareRead prepares a read operation.
-// See PrepareRead function for detailed documentation.
-func (s *MetadataService) PrepareRead(ctx *AuthContext, handle FileHandle) (*ReadMetadata, error) {
-	store, err := s.storeForHandle(handle)
-	if err != nil {
-		return nil, err
-	}
-	return PrepareRead(store, ctx, handle)
-}

@@ -7,13 +7,12 @@ import (
 )
 
 // ============================================================================
-// File Operations
+// File Operations (MetadataService methods)
 // ============================================================================
 
 // RemoveFile removes a file from its parent directory.
 //
-// This is the centralized implementation of file removal that all stores
-// should delegate to. It handles:
+// This handles:
 //   - Input validation
 //   - Permission checking (write on parent)
 //   - Sticky bit enforcement
@@ -27,22 +26,12 @@ import (
 // POSIX Compliance:
 //   - When last link is removed, nlink is set to 0 (not deleted)
 //   - This allows fstat() on open file descriptors to return nlink=0
-//
-// Parameters:
-//   - store: MetadataStore for CRUD operations
-//   - ctx: Authentication context
-//   - parentHandle: Handle of parent directory
-//   - name: Name of file to remove
-//
-// Returns:
-//   - *File: Removed file's metadata (ContentID empty if other links exist)
-//   - error: Various errors for validation, permission, not found, etc.
-func RemoveFile(
-	store MetadataStore,
-	ctx *AuthContext,
-	parentHandle FileHandle,
-	name string,
-) (*File, error) {
+func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name string) (*File, error) {
+	store, err := s.storeForHandle(parentHandle)
+	if err != nil {
+		return nil, err
+	}
+
 	// Validate name
 	if err := ValidateName(name); err != nil {
 		return nil, err
@@ -64,7 +53,7 @@ func RemoveFile(
 	}
 
 	// Check write permission on parent
-	if err := CheckWritePermission(store, ctx, parentHandle); err != nil {
+	if err := s.checkWritePermission(ctx, parentHandle); err != nil {
 		return nil, err
 	}
 
@@ -145,9 +134,6 @@ func RemoveFile(
 		if err := store.PutFile(ctx.Context, file); err != nil {
 			return nil, err
 		}
-
-		// Note: We don't delete the entry - it stays with nlink=0 for POSIX compliance
-		// (fstat on open fd should return nlink=0, not ESTALE)
 	}
 
 	// Remove from parent's children
@@ -167,27 +153,16 @@ func RemoveFile(
 
 // Lookup resolves a name within a directory to a file handle and attributes.
 //
-// This is the centralized implementation of name lookup that all stores
-// should delegate to. It handles:
+// This handles:
 //   - Special names: "." (current dir), ".." (parent dir)
 //   - Permission checking (execute on directory for search)
 //   - Name resolution in directory
-//
-// Parameters:
-//   - store: MetadataStore for CRUD operations
-//   - ctx: Authentication context
-//   - dirHandle: Directory to search in
-//   - name: Name to resolve (can be ".", "..", or regular name)
-//
-// Returns:
-//   - *File: Resolved file's complete metadata
-//   - error: ErrNotFound, ErrNotDirectory, ErrAccessDenied, etc.
-func Lookup(
-	store MetadataStore,
-	ctx *AuthContext,
-	dirHandle FileHandle,
-	name string,
-) (*File, error) {
+func (s *MetadataService) Lookup(ctx *AuthContext, dirHandle FileHandle, name string) (*File, error) {
+	store, err := s.storeForHandle(dirHandle)
+	if err != nil {
+		return nil, err
+	}
+
 	// Get directory entry
 	dir, err := store.GetFile(ctx.Context, dirHandle)
 	if err != nil {
@@ -204,7 +179,7 @@ func Lookup(
 	}
 
 	// Check execute/search permission on directory
-	if err := CheckExecutePermission(store, ctx, dirHandle); err != nil {
+	if err := s.checkExecutePermission(ctx, dirHandle); err != nil {
 		return nil, err
 	}
 
@@ -232,95 +207,22 @@ func Lookup(
 }
 
 // CreateFile creates a new regular file in a directory.
-//
-// This is the centralized implementation of file creation that all stores
-// should delegate to. It handles:
-//   - Input validation
-//   - Permission checking (write on parent)
-//   - Name collision detection
-//   - Default attribute application
-//   - Parent timestamp updates
-//
-// Parameters:
-//   - store: MetadataStore for CRUD operations
-//   - ctx: Authentication context
-//   - parentHandle: Handle of parent directory
-//   - name: Name for the new file
-//   - attr: Initial attributes (Mode, UID, GID)
-//
-// Returns:
-//   - *File: Created file's complete metadata
-//   - error: ErrAlreadyExists, ErrAccessDenied, etc.
-func CreateFile(
-	store MetadataStore,
-	ctx *AuthContext,
-	parentHandle FileHandle,
-	name string,
-	attr *FileAttr,
-) (*File, error) {
-	return createEntry(store, ctx, parentHandle, name, attr, FileTypeRegular, "", 0, 0)
+func (s *MetadataService) CreateFile(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, error) {
+	return s.createEntry(ctx, parentHandle, name, attr, FileTypeRegular, "", 0, 0)
 }
 
 // CreateSymlink creates a new symbolic link in a directory.
-//
-// Parameters:
-//   - store: MetadataStore for CRUD operations
-//   - ctx: Authentication context
-//   - parentHandle: Handle of parent directory
-//   - name: Name for the new symlink
-//   - target: Target path the symlink points to
-//   - attr: Initial attributes (Mode, UID, GID)
-//
-// Returns:
-//   - *File: Created symlink's complete metadata
-//   - error: ErrAlreadyExists, ErrAccessDenied, etc.
-func CreateSymlink(
-	store MetadataStore,
-	ctx *AuthContext,
-	parentHandle FileHandle,
-	name string,
-	target string,
-	attr *FileAttr,
-) (*File, error) {
+func (s *MetadataService) CreateSymlink(ctx *AuthContext, parentHandle FileHandle, name string, target string, attr *FileAttr) (*File, error) {
 	// Validate symlink target
 	if err := ValidateSymlinkTarget(target); err != nil {
 		return nil, err
 	}
 
-	return createEntry(store, ctx, parentHandle, name, attr, FileTypeSymlink, target, 0, 0)
+	return s.createEntry(ctx, parentHandle, name, attr, FileTypeSymlink, target, 0, 0)
 }
 
 // CreateSpecialFile creates a special file (device, socket, or FIFO).
-//
-// This is the centralized implementation of special file creation that all stores
-// should delegate to. It handles:
-//   - Special file type validation (block device, char device, FIFO, socket)
-//   - Root requirement for device files
-//   - Permission checking (write on parent)
-//   - Device number encoding for block/char devices
-//
-// Parameters:
-//   - store: MetadataStore for CRUD operations
-//   - ctx: Authentication context
-//   - parentHandle: Handle of parent directory
-//   - name: Name for the new special file
-//   - fileType: Type of special file (FileTypeBlockDevice, FileTypeCharDevice, FileTypeFIFO, FileTypeSocket)
-//   - attr: Initial attributes (Mode, UID, GID)
-//   - deviceMajor: Major device number (for device files)
-//   - deviceMinor: Minor device number (for device files)
-//
-// Returns:
-//   - *File: Created special file's complete metadata
-//   - error: ErrAccessDenied, ErrInvalidArgument, etc.
-func CreateSpecialFile(
-	store MetadataStore,
-	ctx *AuthContext,
-	parentHandle FileHandle,
-	name string,
-	fileType FileType,
-	attr *FileAttr,
-	deviceMajor, deviceMinor uint32,
-) (*File, error) {
+func (s *MetadataService) CreateSpecialFile(ctx *AuthContext, parentHandle FileHandle, name string, fileType FileType, attr *FileAttr, deviceMajor, deviceMinor uint32) (*File, error) {
 	// Validate special file type
 	if err := ValidateSpecialFileType(fileType); err != nil {
 		return nil, err
@@ -333,30 +235,16 @@ func CreateSpecialFile(
 		}
 	}
 
-	return createEntry(store, ctx, parentHandle, name, attr, fileType, "", deviceMajor, deviceMinor)
+	return s.createEntry(ctx, parentHandle, name, attr, fileType, "", deviceMajor, deviceMinor)
 }
 
 // CreateHardLink creates a hard link to an existing file.
-//
-// This is the centralized implementation of hard link creation that all stores
-// should delegate to.
-//
-// Parameters:
-//   - store: MetadataStore for CRUD operations
-//   - ctx: Authentication context
-//   - dirHandle: Directory where the link will be created
-//   - name: Name for the new link
-//   - targetHandle: File to link to
-//
-// Returns:
-//   - error: ErrIsDirectory if target is a directory, ErrAlreadyExists, etc.
-func CreateHardLink(
-	store MetadataStore,
-	ctx *AuthContext,
-	dirHandle FileHandle,
-	name string,
-	targetHandle FileHandle,
-) error {
+func (s *MetadataService) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name string, targetHandle FileHandle) error {
+	store, err := s.storeForHandle(dirHandle)
+	if err != nil {
+		return err
+	}
+
 	// Validate name
 	if err := ValidateName(name); err != nil {
 		return err
@@ -375,7 +263,7 @@ func CreateHardLink(
 	}
 
 	// Check write permission on directory
-	if err := CheckWritePermission(store, ctx, dirHandle); err != nil {
+	if err := s.checkWritePermission(ctx, dirHandle); err != nil {
 		return err
 	}
 
@@ -432,24 +320,12 @@ func CreateHardLink(
 }
 
 // ReadSymlink reads the target path of a symbolic link.
-//
-// This is the centralized implementation of symlink reading that all stores
-// should delegate to.
-//
-// Parameters:
-//   - store: MetadataStore for CRUD operations
-//   - ctx: Authentication context
-//   - handle: Symlink handle
-//
-// Returns:
-//   - string: Target path
-//   - *File: Symlink's file metadata
-//   - error: ErrInvalidArgument if not a symlink, etc.
-func ReadSymlink(
-	store MetadataStore,
-	ctx *AuthContext,
-	handle FileHandle,
-) (string, *File, error) {
+func (s *MetadataService) ReadSymlink(ctx *AuthContext, handle FileHandle) (string, *File, error) {
+	store, err := s.storeForHandle(handle)
+	if err != nil {
+		return "", nil, err
+	}
+
 	// Get file entry
 	file, err := store.GetFile(ctx.Context, handle)
 	if err != nil {
@@ -470,28 +346,13 @@ func ReadSymlink(
 
 // SetFileAttributes updates file attributes with validation and access control.
 //
-// This is the centralized implementation of attribute setting that all stores
-// should delegate to. It handles:
-//   - Permission checking (owner or root)
-//   - Attribute validation
-//   - Timestamp updates
-//
 // Only attributes with non-nil pointers in attrs are modified.
-//
-// Parameters:
-//   - store: MetadataStore for CRUD operations
-//   - ctx: Authentication context
-//   - handle: File handle
-//   - attrs: Attributes to set (only non-nil fields are updated)
-//
-// Returns:
-//   - error: ErrAccessDenied, ErrNotFound, etc.
-func SetFileAttributes(
-	store MetadataStore,
-	ctx *AuthContext,
-	handle FileHandle,
-	attrs *SetAttrs,
-) error {
+func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *SetAttrs) error {
+	store, err := s.storeForHandle(handle)
+	if err != nil {
+		return err
+	}
+
 	// Get file entry
 	file, err := store.GetFile(ctx.Context, handle)
 	if err != nil {
@@ -559,7 +420,7 @@ func SetFileAttributes(
 
 	if attrs.Size != nil {
 		// Size change requires write permission
-		if err := CheckWritePermission(store, ctx, handle); err != nil {
+		if err := s.checkWritePermission(ctx, handle); err != nil {
 			return err
 		}
 		file.Size = *attrs.Size
@@ -586,34 +447,12 @@ func SetFileAttributes(
 }
 
 // Move moves or renames a file or directory atomically.
-//
-// This is the centralized implementation of move/rename that all stores
-// should delegate to. It handles:
-//   - Input validation
-//   - Permission checking (write on both directories)
-//   - Sticky bit enforcement
-//   - Type compatibility (file over file, dir over empty dir)
-//   - Atomic replacement of destination
-//   - Timestamp updates
-//
-// Parameters:
-//   - store: MetadataStore for CRUD operations
-//   - ctx: Authentication context
-//   - fromDir: Source directory handle
-//   - fromName: Source name
-//   - toDir: Destination directory handle
-//   - toName: Destination name
-//
-// Returns:
-//   - error: Various errors for validation, permission, type mismatch, etc.
-func Move(
-	store MetadataStore,
-	ctx *AuthContext,
-	fromDir FileHandle,
-	fromName string,
-	toDir FileHandle,
-	toName string,
-) error {
+func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName string, toDir FileHandle, toName string) error {
+	store, err := s.storeForHandle(fromDir)
+	if err != nil {
+		return err
+	}
+
 	// Validate names
 	if err := ValidateName(fromName); err != nil {
 		return err
@@ -647,10 +486,10 @@ func Move(
 	}
 
 	// Check write permission on both directories
-	if err := CheckWritePermission(store, ctx, fromDir); err != nil {
+	if err := s.checkWritePermission(ctx, fromDir); err != nil {
 		return err
 	}
-	if err := CheckWritePermission(store, ctx, toDir); err != nil {
+	if err := s.checkWritePermission(ctx, toDir); err != nil {
 		return err
 	}
 
@@ -692,8 +531,8 @@ func Move(
 				}
 			}
 			// Check if destination directory is empty
-			page, err := ReadDirectory(store, ctx, dstHandle, "", 1)
-			if err == nil && len(page.Entries) > 0 {
+			entries, _, err := store.ListChildren(ctx.Context, dstHandle, "", 1)
+			if err == nil && len(entries) > 0 {
 				return &StoreError{
 					Code:    ErrNotEmpty,
 					Message: "destination directory not empty",
@@ -786,27 +625,13 @@ func Move(
 
 // MarkFileAsOrphaned sets a file's link count to 0, marking it as orphaned.
 //
-// This function is used by NFS handlers for "silly rename" behavior. When an
-// NFS client deletes a file that's still open, the server renames it to a
-// `.nfsXXXX` temporary name. The file is marked as orphaned (nlink=0) so that:
-//   - fstat() on open file descriptors correctly returns nlink=0
-//   - The file can be garbage collected when all file descriptors are closed
-//
-// This is an NFS-specific behavior and should only be called from NFS handlers.
-// POSIX filesystems don't have silly rename - they just set nlink=0 on unlink.
-//
-// Parameters:
-//   - store: MetadataStore for CRUD operations
-//   - ctx: Context for the operation
-//   - handle: Handle of the file to mark as orphaned
-//
-// Returns:
-//   - error: ErrNotFound if file doesn't exist, ErrIsDirectory if it's a directory
-func MarkFileAsOrphaned(
-	store MetadataStore,
-	ctx *AuthContext,
-	handle FileHandle,
-) error {
+// This is used by NFS handlers for "silly rename" behavior.
+func (s *MetadataService) MarkFileAsOrphaned(ctx *AuthContext, handle FileHandle) error {
+	store, err := s.storeForHandle(handle)
+	if err != nil {
+		return err
+	}
+
 	// Get file entry
 	file, err := store.GetFile(ctx.Context, handle)
 	if err != nil {
@@ -831,8 +656,7 @@ func MarkFileAsOrphaned(
 }
 
 // createEntry is the internal implementation for creating files, directories, symlinks, and special files.
-func createEntry(
-	store MetadataStore,
+func (s *MetadataService) createEntry(
 	ctx *AuthContext,
 	parentHandle FileHandle,
 	name string,
@@ -841,6 +665,11 @@ func createEntry(
 	linkTarget string,
 	deviceMajor, deviceMinor uint32,
 ) (*File, error) {
+	store, err := s.storeForHandle(parentHandle)
+	if err != nil {
+		return nil, err
+	}
+
 	// Validate name
 	if err := ValidateName(name); err != nil {
 		return nil, err
@@ -862,7 +691,7 @@ func createEntry(
 	}
 
 	// Check write permission on parent
-	if err := CheckWritePermission(store, ctx, parentHandle); err != nil {
+	if err := s.checkWritePermission(ctx, parentHandle); err != nil {
 		return nil, err
 	}
 
@@ -977,17 +806,6 @@ func buildContentID(shareName, path string) string {
 }
 
 // File represents a file's complete identity and attributes.
-//
-// This structure combines file identity (ID, ShareName, Path) with attributes
-// (permissions, size, timestamps, etc.) for efficient handling across the system.
-//
-// The File struct embeds FileAttr for convenient access to attributes directly
-// on the File object (e.g., file.Mode instead of file.Attr.Mode).
-//
-// Protocol Handle Format:
-//
-//	Handle = "shareName:uuid" (e.g., "/export:550e8400-e29b-41d4-a716-446655440000")
-//	Maximum size: 45 bytes (well under NFS RFC 1813's 64-byte limit)
 type File struct {
 	// ID is a unique identifier for this file.
 	ID uuid.UUID `json:"id"`
@@ -1003,11 +821,6 @@ type File struct {
 }
 
 // FileAttr contains the complete metadata for a file or directory.
-//
-// Time Semantics:
-//   - Atime (access time): Updated when file is read
-//   - Mtime (modification time): Updated when file content changes
-//   - Ctime (change time): Updated when metadata changes (size, permissions, etc.)
 type FileAttr struct {
 	// Type is the file type (regular, directory, symlink, etc.)
 	Type FileType `json:"type"`
@@ -1056,7 +869,6 @@ type FileAttr struct {
 }
 
 // SetAttrs specifies which attributes to update in a SetFileAttributes call.
-// Each field is a pointer. A nil pointer means "do not change this attribute".
 type SetAttrs struct {
 	Mode         *uint32
 	UID          *uint32

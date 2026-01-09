@@ -153,19 +153,3 @@ func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context, han
 	return &stats, nil
 }
 
-// ============================================================================
-// Health Check
-// ============================================================================
-
-// Healthcheck verifies the PostgreSQL connection is healthy
-func (s *PostgresMetadataStore) Healthcheck(ctx context.Context) error {
-	// Simple ping to verify connection
-	if err := s.pool.Ping(ctx); err != nil {
-		return &metadata.StoreError{
-			Code:    metadata.ErrIOError,
-			Message: "PostgreSQL health check failed",
-		}
-	}
-
-	return nil
-}
