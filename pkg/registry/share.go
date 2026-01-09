@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/cache/flusher"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // PrefetchConfig configures read prefetch behavior for a share.

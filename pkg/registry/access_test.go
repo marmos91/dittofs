@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	contentMemory "github.com/marmos91/dittofs/pkg/store/content/memory"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
-	metadataMemory "github.com/marmos91/dittofs/pkg/store/metadata/memory"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	metadataMemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 func TestApplyIdentityMapping_NoMapping(t *testing.T) {

@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/store/metadata"
-	"github.com/marmos91/dittofs/pkg/store/metadata/badger"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
 
 // TestGuestPermissionWithMode511 tests that a guest user (UID 65534)

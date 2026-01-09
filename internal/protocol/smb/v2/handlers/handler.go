@@ -14,7 +14,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/signing"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/registry"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // Handler manages SMB2 protocol handling

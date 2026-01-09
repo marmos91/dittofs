@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/store/metadata"
-	"github.com/marmos91/dittofs/pkg/store/metadata/badger"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
 
 // TestBadgerMetadataStore_Integration runs integration tests for BadgerDB metadata store.

@@ -15,7 +15,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/cache"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // Default buffer capacity per file (5MB - matches S3 multipart threshold)

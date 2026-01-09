@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/mfsymlink"
 	"github.com/marmos91/dittofs/internal/protocol/cache"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================

@@ -19,8 +19,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/registry"
 	"github.com/marmos91/dittofs/pkg/server"
 	memorycontent "github.com/marmos91/dittofs/pkg/store/content/memory"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
-	memorymeta "github.com/marmos91/dittofs/pkg/store/metadata/memory"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/test/e2e/framework"
 )
 

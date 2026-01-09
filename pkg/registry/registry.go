@@ -10,7 +10,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/cache/flusher"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/store/content"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // Registry manages all named resources: metadata stores, content stores, caches, and shares.

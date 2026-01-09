@@ -13,10 +13,10 @@ import (
 	contentfs "github.com/marmos91/dittofs/pkg/store/content/fs"
 	contentmemory "github.com/marmos91/dittofs/pkg/store/content/memory"
 	"github.com/marmos91/dittofs/pkg/store/content/s3"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
-	"github.com/marmos91/dittofs/pkg/store/metadata/badger"
-	metadatamemory "github.com/marmos91/dittofs/pkg/store/metadata/memory"
-	"github.com/marmos91/dittofs/pkg/store/metadata/postgres"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
 	"github.com/mitchellh/mapstructure"
 )
 

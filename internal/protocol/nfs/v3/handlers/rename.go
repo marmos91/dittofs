@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -405,6 +405,28 @@ func (h *Handler) Rename(
 	// The store should respect context internally for its operations.
 
 	err = metadataStore.Move(authCtx, fromDirHandle, req.FromName, toDirHandle, req.ToName)
+	if err == nil {
+		// ====================================================================
+		// NFS-specific: Handle silly rename (.nfs* pattern)
+		// ====================================================================
+		// When an NFS client deletes a file that's still open, it renames the
+		// file to a temporary name starting with ".nfs". We mark such files as
+		// orphaned (nlink=0) so that fstat() returns the correct link count.
+		// This is NFS protocol behavior, not general POSIX semantics.
+		if strings.HasPrefix(req.ToName, ".nfs") {
+			if renamedHandle, childErr := metadataStore.GetChild(ctx.Context, toDirHandle, req.ToName); childErr == nil {
+				// Use a minimal auth context for the orphan operation
+				orphanCtx := &metadata.AuthContext{
+					Context:  ctx.Context,
+					Identity: authCtx.Identity,
+				}
+				if markErr := metadata.MarkFileAsOrphaned(metadataStore, orphanCtx, renamedHandle); markErr != nil {
+					// Log but don't fail the rename - the rename itself succeeded
+					logger.DebugCtx(ctx.Context, "RENAME: failed to mark silly-renamed file as orphaned", "name", req.ToName, "error", markErr)
+				}
+			}
+		}
+	}
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {

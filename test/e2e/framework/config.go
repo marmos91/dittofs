@@ -16,10 +16,10 @@ import (
 	contentfs "github.com/marmos91/dittofs/pkg/store/content/fs"
 	contentmemory "github.com/marmos91/dittofs/pkg/store/content/memory"
 	contents3 "github.com/marmos91/dittofs/pkg/store/content/s3"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
-	metadatabadger "github.com/marmos91/dittofs/pkg/store/metadata/badger"
-	metadatamemory "github.com/marmos91/dittofs/pkg/store/metadata/memory"
-	metadatapostgres "github.com/marmos91/dittofs/pkg/store/metadata/postgres"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
+	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	metadatapostgres "github.com/marmos91/dittofs/pkg/metadata/store/postgres"
 )
 
 // MetadataStoreType represents the type of metadata store.
