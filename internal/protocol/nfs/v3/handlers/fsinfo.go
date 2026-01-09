@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/pkg/bytesize"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // FsInfoRequest represents an FSINFO request from an NFS client.
@@ -177,14 +177,10 @@ func (h *Handler) FsInfo(
 	}
 
 	// ========================================================================
-	// Get metadata store from context
+	// Get metadata from registry
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "FSINFO failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", xdr.ExtractClientIP(ctx.ClientAddr))
-		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
@@ -197,7 +193,7 @@ func (h *Handler) FsInfo(
 
 	// Verify the file handle exists and is valid in the store
 	// The store is responsible for validating handle format and existence
-	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "FSINFO", req.Handle)
+	file, status, err := h.getFileOrError(ctx, fileHandle, "FSINFO", req.Handle)
 	if file == nil {
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
@@ -208,7 +204,7 @@ func (h *Handler) FsInfo(
 	// All business logic about filesystem limits is handled by the store
 	// Note: We don't check cancellation here since GetFilesystemCapabilities is typically
 	// a fast in-memory operation returning static configuration
-	capabilities, err := metadataStore.GetFilesystemCapabilities(ctx.Context, metadata.FileHandle(req.Handle))
+	capabilities, err := metaSvc.GetFilesystemCapabilities(ctx.Context, metadata.FileHandle(req.Handle))
 	if err != nil {
 		traceError(ctx.Context, err, "FSINFO failed to retrieve capabilities", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr)
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil

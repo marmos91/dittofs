@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/cache"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // RunStateManagementTests tests the state management methods of the Cache interface.

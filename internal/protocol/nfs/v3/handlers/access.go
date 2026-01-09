@@ -6,7 +6,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -80,9 +80,9 @@ type AccessResponse struct {
 //  1. Check for context cancellation (early exit if client disconnected)
 //  2. Validate request parameters (handle format and length)
 //  3. Extract client IP and authentication credentials from context
-//  4. Verify file handle exists via store.GetFile()
+//  4. Verify file handle exists via metaSvc.GetFile()
 //  5. Check for cancellation before expensive permission check
-//  6. Delegate permission checking to store.CheckPermissions()
+//  6. Delegate permission checking to metaSvc.CheckPermissions()
 //  7. Retrieve file attributes for cache consistency
 //  8. Return granted permissions bitmap to client
 //
@@ -97,7 +97,7 @@ type AccessResponse struct {
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
 //   - All business logic (permission checking) is delegated to store
-//   - File handle validation is performed by store.GetFile()
+//   - File handle validation is performed by metaSvc.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //
 // **Authentication:**
@@ -214,17 +214,10 @@ func (h *Handler) Access(
 	}
 
 	// ========================================================================
-	// Step 2: Get metadata store from context
+	// Step 2: Get metadata service
 	// ========================================================================
 
-	store, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "ACCESS failed",
-			"error", err,
-			"handle", fmt.Sprintf("%x", req.Handle),
-			"client", clientIP)
-		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
@@ -234,7 +227,7 @@ func (h *Handler) Access(
 	// Step 3: Verify file handle exists and is valid
 	// ========================================================================
 
-	file, err := store.GetFile(ctx.Context, fileHandle)
+	file, err := metaSvc.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -298,7 +291,7 @@ func (h *Handler) Access(
 	// Step 5: Check permissions via store
 	// ========================================================================
 
-	grantedPerms, err := store.CheckPermissions(authCtx, fileHandle, requestedPerms)
+	grantedPerms, err := metaSvc.CheckPermissions(authCtx, fileHandle, requestedPerms)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {

@@ -7,7 +7,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -223,11 +223,7 @@ func (h *Handler) Remove(
 	// Step 2: Get metadata and content stores from context
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "REMOVE failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
-		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	// Get content store for this share
 	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
@@ -244,7 +240,7 @@ func (h *Handler) Remove(
 	// Step 3: Capture pre-operation directory attributes for WCC
 	// ========================================================================
 
-	dirFile, status, err := h.getFileOrError(ctx, metadataStore, dirHandle, "REMOVE", req.DirHandle)
+	dirFile, status, err := h.getFileOrError(ctx, dirHandle, "REMOVE", req.DirHandle)
 	if dirFile == nil {
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
@@ -295,7 +291,7 @@ func (h *Handler) Remove(
 	// We don't check for cancellation inside RemoveFile to maintain atomicity.
 	// The store should respect context internally for its operations.
 
-	removedFileAttr, err := metadataStore.RemoveFile(authCtx, dirHandle, req.Filename)
+	removedFileAttr, err := metaSvc.RemoveFile(authCtx, dirHandle, req.Filename)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -303,7 +299,7 @@ func (h *Handler) Remove(
 
 			// Get updated directory attributes for WCC data (best effort)
 			var wccAfter *types.NFSFileAttr
-			if dirFile, getErr := metadataStore.GetFile(ctx.Context, dirHandle); getErr == nil {
+			if dirFile, getErr := metaSvc.GetFile(ctx.Context, dirHandle); getErr == nil {
 				wccAfter = h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 			}
 
@@ -319,7 +315,7 @@ func (h *Handler) Remove(
 
 		// Get updated directory attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
-		if dirFile, getErr := metadataStore.GetFile(ctx.Context, dirHandle); getErr == nil {
+		if dirFile, getErr := metaSvc.GetFile(ctx.Context, dirHandle); getErr == nil {
 			wccAfter = h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 		}
 
@@ -358,7 +354,7 @@ func (h *Handler) Remove(
 	// ========================================================================
 
 	// Get updated directory attributes for WCC data
-	dirFile, err = metadataStore.GetFile(ctx.Context, dirHandle)
+	dirFile, err = metaSvc.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "REMOVE: file removed but cannot get updated directory attributes", "handle", fmt.Sprintf("%x", req.DirHandle), "error", err)
 		// Continue with nil WccAfter rather than failing the entire operation

@@ -61,17 +61,17 @@
 //
 // # Usage
 //
-//	// Create manager with configuration
-//	manager := NewManager(config, StrategyAdaptive)
+//	// Create metaSvc with configuration
+//	metaSvc := NewManager(config, StrategyAdaptive)
 //
 //	// Create session after authentication
-//	session := manager.CreateSession(clientAddr, isGuest, username, domain)
+//	session := metaSvc.CreateSession(clientAddr, isGuest, username, domain)
 //
 //	// Track credits for a request
-//	grant := manager.CalculateGrant(sessionID, creditRequest, creditCharge)
+//	grant := metaSvc.CalculateGrant(sessionID, creditRequest, creditCharge)
 //
 //	// Clean up
-//	manager.DeleteSession(sessionID)
+//	metaSvc.DeleteSession(sessionID)
 //
 // # References
 //

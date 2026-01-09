@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/pkg/bytesize"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -195,18 +195,14 @@ func (h *Handler) FsStat(
 	}
 
 	// ========================================================================
-	// Get metadata store from context
+	// Get metadata from registry
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "FSSTAT failed", "error", err, "handle", fmt.Sprintf("%x", req.Handle), "client", xdr.ExtractClientIP(ctx.ClientAddr))
-		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "FSSTAT", req.Handle)
+	file, status, err := h.getFileOrError(ctx, fileHandle, "FSSTAT", req.Handle)
 	if file == nil {
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
@@ -223,7 +219,7 @@ func (h *Handler) FsStat(
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	stats, err := metadataStore.GetFilesystemStatistics(ctx.Context, metadata.FileHandle(req.Handle))
+	stats, err := metaSvc.GetFilesystemStatistics(ctx.Context, metadata.FileHandle(req.Handle))
 	if err != nil {
 		traceError(ctx.Context, err, "FSSTAT failed: error retrieving statistics", "client", ctx.ClientAddr)
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil

@@ -7,8 +7,8 @@ import (
 	"io"
 	"sync"
 
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/store/content"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ChunkedMemoryContentStore implements an in-memory content store using page-based storage.

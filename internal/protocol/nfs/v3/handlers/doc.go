@@ -6,9 +6,9 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metrics"
 	"github.com/marmos91/dittofs/pkg/registry"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // Handler is the concrete implementation for NFS v3 protocol handlers.
@@ -40,14 +40,14 @@ func (h *Handler) convertFileAttrToNFS(fileHandle metadata.FileHandle, fileAttr 
 //   - error: Context error if cancelled, nil otherwise
 func (h *Handler) getFileOrError(
 	ctx *NFSHandlerContext,
-	metadataStore metadata.MetadataStore,
 	fileHandle metadata.FileHandle,
 	operationName string,
 	handleBytes []byte,
 ) (*metadata.File, uint32, error) {
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	metaSvc := h.Registry.GetMetadataService()
 
-	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
+	file, err := metaSvc.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -119,14 +119,10 @@ func (h *Handler) buildAuthContextWithWCCError(
 //
 // Returns MFsymlinkResult with detection result and modified attributes.
 func (h *Handler) checkMFsymlinkByHandle(ctx *NFSHandlerContext, fileHandle metadata.FileHandle) MFsymlinkResult {
-	// Get metadata store to retrieve file info
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		return MFsymlinkResult{IsMFsymlink: false}
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	// Get file metadata
-	file, err := metadataStore.GetFile(ctx.Context, fileHandle)
+	file, err := metaSvc.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		return MFsymlinkResult{IsMFsymlink: false}
 	}

@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -254,11 +254,7 @@ func (h *Handler) Rename(
 	// Step 2: Get metadata store from context and validate handles
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "RENAME failed", "error", err, "from_dir", fmt.Sprintf("0x%x", req.FromDirHandle), "to_dir", fmt.Sprintf("0x%x", req.ToDirHandle), "client", clientIP)
-		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	fromDirHandle := metadata.FileHandle(req.FromDirHandle)
 	toDirHandle := metadata.FileHandle(req.ToDirHandle)
@@ -283,7 +279,7 @@ func (h *Handler) Rename(
 	// Step 3: Verify source directory exists and is valid
 	// ========================================================================
 
-	fromDirFile, status, err := h.getFileOrError(ctx, metadataStore, fromDirHandle, "RENAME", req.FromDirHandle)
+	fromDirFile, status, err := h.getFileOrError(ctx, fromDirHandle, "RENAME", req.FromDirHandle)
 	if fromDirFile == nil {
 		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
@@ -321,7 +317,7 @@ func (h *Handler) Rename(
 	// Step 3: Verify destination directory exists and is valid
 	// ========================================================================
 
-	toDirFile, status, err := h.getFileOrError(ctx, metadataStore, toDirHandle, "RENAME", req.ToDirHandle)
+	toDirFile, status, err := h.getFileOrError(ctx, toDirHandle, "RENAME", req.ToDirHandle)
 	if toDirFile == nil {
 		// Return WCC for source directory
 		fromDirWccAfter := h.convertFileAttrToNFS(fromDirHandle, &fromDirFile.FileAttr)
@@ -404,7 +400,29 @@ func (h *Handler) Rename(
 	// We don't check for cancellation inside RenameFile to maintain atomicity.
 	// The store should respect context internally for its operations.
 
-	err = metadataStore.Move(authCtx, fromDirHandle, req.FromName, toDirHandle, req.ToName)
+	err = metaSvc.Move(authCtx, fromDirHandle, req.FromName, toDirHandle, req.ToName)
+	if err == nil {
+		// ====================================================================
+		// NFS-specific: Handle silly rename (.nfs* pattern)
+		// ====================================================================
+		// When an NFS client deletes a file that's still open, it renames the
+		// file to a temporary name starting with ".nfs". We mark such files as
+		// orphaned (nlink=0) so that fstat() returns the correct link count.
+		// This is NFS protocol behavior, not general POSIX semantics.
+		if strings.HasPrefix(req.ToName, ".nfs") {
+			if renamedHandle, childErr := metaSvc.GetChild(ctx.Context, toDirHandle, req.ToName); childErr == nil {
+				// Use a minimal auth context for the orphan operation
+				orphanCtx := &metadata.AuthContext{
+					Context:  ctx.Context,
+					Identity: authCtx.Identity,
+				}
+				if markErr := metaSvc.MarkFileAsOrphaned(orphanCtx, renamedHandle); markErr != nil {
+					// Log but don't fail the rename - the rename itself succeeded
+					logger.DebugCtx(ctx.Context, "RENAME: failed to mark silly-renamed file as orphaned", "name", req.ToName, "error", markErr)
+				}
+			}
+		}
+	}
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -412,12 +430,12 @@ func (h *Handler) Rename(
 
 			// Get updated directory attributes for WCC data (best effort)
 			var fromDirWccAfter *types.NFSFileAttr
-			if updatedFromDirFile, getErr := metadataStore.GetFile(ctx.Context, fromDirHandle); getErr == nil {
+			if updatedFromDirFile, getErr := metaSvc.GetFile(ctx.Context, fromDirHandle); getErr == nil {
 				fromDirWccAfter = h.convertFileAttrToNFS(fromDirHandle, &updatedFromDirFile.FileAttr)
 			}
 
 			var toDirWccAfter *types.NFSFileAttr
-			if updatedToDirFile, getErr := metadataStore.GetFile(ctx.Context, toDirHandle); getErr == nil {
+			if updatedToDirFile, getErr := metaSvc.GetFile(ctx.Context, toDirHandle); getErr == nil {
 				toDirWccAfter = h.convertFileAttrToNFS(toDirHandle, &updatedToDirFile.FileAttr)
 			}
 
@@ -434,12 +452,12 @@ func (h *Handler) Rename(
 
 		// Get updated directory attributes for WCC data
 		var fromDirWccAfter *types.NFSFileAttr
-		if updatedFromDirFile, getErr := metadataStore.GetFile(ctx.Context, fromDirHandle); getErr == nil {
+		if updatedFromDirFile, getErr := metaSvc.GetFile(ctx.Context, fromDirHandle); getErr == nil {
 			fromDirWccAfter = h.convertFileAttrToNFS(fromDirHandle, &updatedFromDirFile.FileAttr)
 		}
 
 		var toDirWccAfter *types.NFSFileAttr
-		if updatedToDirFile, getErr := metadataStore.GetFile(ctx.Context, toDirHandle); getErr == nil {
+		if updatedToDirFile, getErr := metaSvc.GetFile(ctx.Context, toDirHandle); getErr == nil {
 			toDirWccAfter = h.convertFileAttrToNFS(toDirHandle, &updatedToDirFile.FileAttr)
 		}
 
@@ -460,7 +478,7 @@ func (h *Handler) Rename(
 	// ========================================================================
 
 	// Get updated source directory attributes
-	if updatedFromDirFile, getErr := metadataStore.GetFile(ctx.Context, fromDirHandle); getErr != nil {
+	if updatedFromDirFile, getErr := metaSvc.GetFile(ctx.Context, fromDirHandle); getErr != nil {
 		logger.WarnCtx(ctx.Context, "RENAME: successful but cannot get updated source directory attributes", "dir", fmt.Sprintf("0x%x", req.FromDirHandle), "error", getErr)
 		fromDirWccAfter = nil
 	} else {
@@ -469,7 +487,7 @@ func (h *Handler) Rename(
 
 	// Get updated destination directory attributes
 	var toDirWccAfter *types.NFSFileAttr
-	if updatedToDirFile, getErr := metadataStore.GetFile(ctx.Context, toDirHandle); getErr != nil {
+	if updatedToDirFile, getErr := metaSvc.GetFile(ctx.Context, toDirHandle); getErr != nil {
 		logger.WarnCtx(ctx.Context, "RENAME: successful but cannot get updated destination directory attributes", "dir", fmt.Sprintf("0x%x", req.ToDirHandle), "error", getErr)
 		// toDirWccAfter will be nil
 	} else {

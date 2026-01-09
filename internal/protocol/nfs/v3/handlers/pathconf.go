@@ -6,7 +6,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -231,17 +231,13 @@ func (h *Handler) PathConf(
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "PATHCONF failed", "error", err, "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
-		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
 	logger.DebugCtx(ctx.Context, "PATHCONF", "share", ctx.Share)
 
-	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "PATHCONF", req.Handle)
+	file, status, err := h.getFileOrError(ctx, fileHandle, "PATHCONF", req.Handle)
 	if file == nil {
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
@@ -258,7 +254,7 @@ func (h *Handler) PathConf(
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	caps, err := metadataStore.GetFilesystemCapabilities(ctx.Context, fileHandle)
+	caps, err := metaSvc.GetFilesystemCapabilities(ctx.Context, fileHandle)
 	if err != nil {
 		traceError(ctx.Context, err, "PATHCONF failed: could not get filesystem capabilities", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil

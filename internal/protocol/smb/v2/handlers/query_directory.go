@@ -15,7 +15,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // maxDirectoryReadBytes is the maximum number of bytes to request from the
@@ -351,11 +351,7 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	// Step 2: Get metadata store
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
-	if err != nil {
-		logger.Warn("QUERY_DIRECTORY: failed to get metadata store", "share", openFile.ShareName, "error", err)
-		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBadNetworkName}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	// ========================================================================
 	// Step 3: Build AuthContext
@@ -389,7 +385,7 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	// Step 5: Read directory entries from metadata store
 	// ========================================================================
 
-	page, err := metadataStore.ReadDirectory(authCtx, openFile.MetadataHandle, "", maxDirectoryReadBytes)
+	page, err := metaSvc.ReadDirectory(authCtx, openFile.MetadataHandle, "", maxDirectoryReadBytes)
 	if err != nil {
 		logger.Debug("QUERY_DIRECTORY: failed to read directory", "path", openFile.Path, "error", err)
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil

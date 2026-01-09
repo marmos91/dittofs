@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // RunReadTests tests read operations (Read and ReadAt).

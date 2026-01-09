@@ -26,7 +26,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================

@@ -13,10 +13,10 @@ import (
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/store/content"
 	s3store "github.com/marmos91/dittofs/pkg/store/content/s3"
 	contenttesting "github.com/marmos91/dittofs/pkg/store/content/testing"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )

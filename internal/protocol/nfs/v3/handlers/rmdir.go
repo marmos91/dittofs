@@ -7,7 +7,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -237,11 +237,7 @@ func (h *Handler) Rmdir(
 	// Step 3: Get metadata store from context
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "RMDIR failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
-		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
 
@@ -257,7 +253,7 @@ func (h *Handler) Rmdir(
 		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	parentFile, err := metadataStore.GetFile(ctx.Context, parentHandle)
+	parentFile, err := metaSvc.GetFile(ctx.Context, parentHandle)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "RMDIR failed: parent not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
 		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
@@ -310,7 +306,7 @@ func (h *Handler) Rmdir(
 		logger.WarnCtx(ctx.Context, "RMDIR cancelled before RemoveDirectory", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 
 		// Get updated parent attributes for WCC data
-		parentFile, _ = metadataStore.GetFile(ctx.Context, parentHandle)
+		parentFile, _ = metaSvc.GetFile(ctx.Context, parentHandle)
 		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 		return &RmdirResponse{
@@ -320,13 +316,13 @@ func (h *Handler) Rmdir(
 		}, nil
 	}
 
-	// Delegate to store for directory removal
-	err = metadataStore.RemoveDirectory(authCtx, parentHandle, req.Name)
+	// Delegate to metaSvc for directory removal
+	err = metaSvc.RemoveDirectory(authCtx, parentHandle, req.Name)
 	if err != nil {
 		logger.DebugCtx(ctx.Context, "RMDIR failed: store error", "name", req.Name, "client", clientIP, "error", err)
 
 		// Get updated parent attributes for WCC data
-		parentFile, _ = metadataStore.GetFile(ctx.Context, parentHandle)
+		parentFile, _ = metaSvc.GetFile(ctx.Context, parentHandle)
 		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 		// Map store errors to NFS status codes
@@ -344,7 +340,7 @@ func (h *Handler) Rmdir(
 	// ========================================================================
 
 	// Get updated parent directory attributes
-	parentFile, _ = metadataStore.GetFile(ctx.Context, parentHandle)
+	parentFile, _ = metaSvc.GetFile(ctx.Context, parentHandle)
 	wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
 	logger.InfoCtx(ctx.Context, "RMDIR successful", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)

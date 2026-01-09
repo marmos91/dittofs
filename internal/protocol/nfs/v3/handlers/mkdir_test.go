@@ -6,7 +6,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
 	handlertesting "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers/testing"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
