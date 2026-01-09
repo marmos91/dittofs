@@ -375,7 +375,8 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 	}
 
 	query := `
-		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size, f.atime, f.mtime, f.ctime
+		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
+		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden
 		FROM parent_child_map dc
 		LEFT JOIN files f ON dc.child_id = f.id
 		WHERE dc.parent_id = $1 AND dc.child_name > $2
@@ -392,12 +393,14 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 	var entries []metadata.DirEntry
 	for rows.Next() && len(entries) < limit {
 		var name, childIDStr string
-		var fileType metadata.FileType
-		var mode, uid, gid uint32
-		var size uint64
-		var atime, mtime, ctime interface{}
+		var fileType int16
+		var mode, uid, gid int32
+		var size int64
+		var atime, mtime, ctime, creationTime time.Time
+		var hidden bool
 
-		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size, &atime, &mtime, &ctime)
+		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size,
+			&atime, &mtime, &ctime, &creationTime, &hidden)
 		if err != nil {
 			return nil, "", err
 		}
@@ -411,6 +414,18 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 			ID:     metadata.HandleToINode(childHandle),
 			Name:   name,
 			Handle: childHandle,
+			Attr: &metadata.FileAttr{
+				Type:         metadata.FileType(fileType),
+				Mode:         uint32(mode),
+				UID:          uint32(uid),
+				GID:          uint32(gid),
+				Size:         uint64(size),
+				Atime:        atime,
+				Mtime:        mtime,
+				Ctime:        ctime,
+				CreationTime: creationTime,
+				Hidden:       hidden,
+			},
 		}
 
 		entries = append(entries, entry)
