@@ -119,6 +119,14 @@ func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.File
 		return nil, mapPgError(err, "GetFile", "")
 	}
 
+	// Debug logging to trace file type issues
+	tx.store.logger.Debug("GetFile retrieved",
+		"id", id.String(),
+		"share", shareName,
+		"path", file.Path,
+		"file_type", int(file.Type),
+		"size", file.Size)
+
 	return file, nil
 }
 
@@ -205,6 +213,14 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		if err != nil {
 			return mapPgError(err, "PutFile", "")
 		}
+
+		// Debug logging for new file inserts
+		tx.store.logger.Debug("PutFile inserted",
+			"id", file.ID.String(),
+			"share", file.ShareName,
+			"path", file.Path,
+			"file_type", int(file.Type),
+			"size", file.Size)
 	}
 
 	return nil
@@ -267,6 +283,13 @@ func (tx *postgresTransaction) GetChild(ctx context.Context, dirHandle metadata.
 	if err != nil {
 		return nil, mapPgError(err, "GetChild", name)
 	}
+
+	// Debug logging to trace child lookup
+	tx.store.logger.Debug("GetChild found",
+		"parent_id", parentID.String(),
+		"child_name", name,
+		"child_id", childID,
+		"share", shareName)
 
 	return encodeFileHandle(shareName, childID)
 }
@@ -467,6 +490,7 @@ func (tx *postgresTransaction) SetLinkCount(ctx context.Context, handle metadata
 		}
 	}
 
+	// Update link_counts table
 	query := `
 		INSERT INTO link_counts (file_id, link_count)
 		VALUES ($1, $2)
@@ -476,6 +500,15 @@ func (tx *postgresTransaction) SetLinkCount(ctx context.Context, handle metadata
 	_, err = tx.tx.Exec(ctx, query, fileID, count)
 	if err != nil {
 		return mapPgError(err, "SetLinkCount", "")
+	}
+
+	// Also update files.nlink column for the partial unique constraint
+	// The unique index on (share_name, path_hash) WHERE nlink > 0 requires
+	// the nlink column to be kept in sync with link_counts table.
+	nlinkQuery := `UPDATE files SET nlink = $1 WHERE id = $2`
+	_, err = tx.tx.Exec(ctx, nlinkQuery, count, fileID)
+	if err != nil {
+		return mapPgError(err, "SetLinkCount (nlink update)", "")
 	}
 
 	return nil

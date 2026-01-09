@@ -498,6 +498,14 @@ func createNewFile(
 		return nil, nil, fmt.Errorf("create file: %w", err)
 	}
 
+	// Debug logging to trace file creation
+	logger.Debug("NFS CREATE file created",
+		"filename", req.Filename,
+		"fileType", int(createdFile.Type),
+		"fileID", createdFile.ID.String(),
+		"filePath", createdFile.Path,
+		"inputType", int(fileAttr.Type))
+
 	// Encode the file handle for return
 	fileHandle, err := metadata.EncodeFileHandle(createdFile)
 	if err != nil {

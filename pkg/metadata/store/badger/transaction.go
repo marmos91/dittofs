@@ -21,7 +21,8 @@ type badgerTransaction struct {
 }
 
 // Maximum number of retries for conflict errors
-const maxTransactionRetries = 5
+// Set high because concurrent writes to the same file can cause many conflicts
+const maxTransactionRetries = 20
 
 // WithTransaction executes fn within a BadgerDB transaction.
 //
@@ -47,8 +48,11 @@ func (s *BadgerMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 		// Check if this is a retryable conflict error
 		if err == badgerdb.ErrConflict {
 			lastErr = err
-			// Small exponential backoff before retry
-			time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+			// Exponential backoff with jitter before retry
+			// Base: 1-5ms, grows exponentially up to ~50ms
+			baseDelay := time.Duration(1+attempt) * time.Millisecond
+			jitter := time.Duration(attempt) * time.Millisecond
+			time.Sleep(baseDelay + jitter)
 			continue
 		}
 

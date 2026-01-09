@@ -428,6 +428,16 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	existingFile, lookupErr := metaSvc.Lookup(authCtx, parentHandle, baseName)
 	fileExists := (lookupErr == nil)
 
+	// Debug logging to trace file type issues in Lookup
+	if fileExists {
+		logger.Debug("CREATE Lookup result",
+			"filename", filename,
+			"fileType", int(existingFile.Type),
+			"fileSize", existingFile.Size,
+			"fileID", existingFile.ID.String(),
+			"filePath", existingFile.Path)
+	}
+
 	// Check create options constraints
 	isDirectoryRequest := req.CreateOptions&types.FileDirectoryFile != 0
 	isNonDirectoryRequest := req.CreateOptions&types.FileNonDirectoryFile != 0
@@ -535,6 +545,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		"filename", filename,
 		"action", createAction,
 		"isDirectory", openFile.IsDirectory,
+		"fileType", int(file.Type),
+		"fileSize", file.Size,
 		"oplock", oplockLevelName(grantedOplock))
 
 	// ========================================================================
