@@ -33,7 +33,7 @@ func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx) // No-op if committed
+	defer func() { _ = tx.Rollback(ctx) }() // No-op if committed
 
 	ptx := &postgresTransaction{store: s, tx: tx}
 	if err := fn(ptx); err != nil {
@@ -422,7 +422,7 @@ func (tx *postgresTransaction) GetFilesystemMeta(ctx context.Context, shareName 
 		return nil, err
 	}
 
-	query := `SELECT metaSvc FROM filesystem_meta WHERE share_name = $1`
+	query := `SELECT meta FROM filesystem_meta WHERE share_name = $1`
 
 	var data []byte
 	err := tx.tx.QueryRow(ctx, query, shareName).Scan(&data)
@@ -433,28 +433,28 @@ func (tx *postgresTransaction) GetFilesystemMeta(ctx context.Context, shareName 
 		}, nil
 	}
 
-	var metaSvc metadata.FilesystemMeta
-	if err := json.Unmarshal(data, &metaSvc); err != nil {
+	var meta metadata.FilesystemMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
 		return nil, err
 	}
 
-	return &metaSvc, nil
+	return &meta, nil
 }
 
-func (tx *postgresTransaction) PutFilesystemMeta(ctx context.Context, shareName string, metaSvc *metadata.FilesystemMeta) error {
+func (tx *postgresTransaction) PutFilesystemMeta(ctx context.Context, shareName string, meta *metadata.FilesystemMeta) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	data, err := json.Marshal(metaSvc)
+	data, err := json.Marshal(meta)
 	if err != nil {
 		return err
 	}
 
 	query := `
-		INSERT INTO filesystem_meta (share_name, metaSvc)
+		INSERT INTO filesystem_meta (share_name, meta)
 		VALUES ($1, $2)
-		ON CONFLICT (share_name) DO UPDATE SET metaSvc = EXCLUDED.metaSvc
+		ON CONFLICT (share_name) DO UPDATE SET meta = EXCLUDED.meta
 	`
 
 	_, err = tx.tx.Exec(ctx, query, shareName, data)
@@ -483,15 +483,15 @@ func (tx *postgresTransaction) GetRootHandle(ctx context.Context, shareName stri
 		return nil, err
 	}
 
-	query := `SELECT root_dir_id FROM shares WHERE name = $1`
+	query := `SELECT root_file_id FROM shares WHERE share_name = $1`
 
-	var rootID string
+	var rootID uuid.UUID
 	err := tx.tx.QueryRow(ctx, query, shareName).Scan(&rootID)
 	if err != nil {
 		return nil, mapPgError(err, "GetRootHandle", shareName)
 	}
 
-	return encodeFileHandle(shareName, rootID)
+	return metadata.EncodeShareHandle(shareName, rootID)
 }
 
 func (tx *postgresTransaction) GetShareOptions(ctx context.Context, shareName string) (*metadata.ShareOptions, error) {
@@ -499,43 +499,22 @@ func (tx *postgresTransaction) GetShareOptions(ctx context.Context, shareName st
 		return nil, err
 	}
 
-	query := `
-		SELECT
-			read_only,
-			require_auth,
-			allowed_clients,
-			denied_clients,
-			allowed_auth_methods
-		FROM shares
-		WHERE name = $1
-	`
+	query := `SELECT options FROM shares WHERE share_name = $1`
 
-	var (
-		readOnly           bool
-		requireAuth        bool
-		allowedClients     []string
-		deniedClients      []string
-		allowedAuthMethods []string
-	)
-
-	err := tx.tx.QueryRow(ctx, query, shareName).Scan(
-		&readOnly,
-		&requireAuth,
-		&allowedClients,
-		&deniedClients,
-		&allowedAuthMethods,
-	)
+	var optionsJSON []byte
+	err := tx.tx.QueryRow(ctx, query, shareName).Scan(&optionsJSON)
 	if err != nil {
 		return nil, mapPgError(err, "GetShareOptions", shareName)
 	}
 
-	return &metadata.ShareOptions{
-		ReadOnly:           readOnly,
-		RequireAuth:        requireAuth,
-		AllowedClients:     allowedClients,
-		DeniedClients:      deniedClients,
-		AllowedAuthMethods: allowedAuthMethods,
-	}, nil
+	var options metadata.ShareOptions
+	if len(optionsJSON) > 0 {
+		if err := json.Unmarshal(optionsJSON, &options); err != nil {
+			return nil, mapPgError(err, "GetShareOptions", shareName)
+		}
+	}
+
+	return &options, nil
 }
 
 func (tx *postgresTransaction) CreateShare(ctx context.Context, share *metadata.Share) error {
@@ -543,17 +522,14 @@ func (tx *postgresTransaction) CreateShare(ctx context.Context, share *metadata.
 		return err
 	}
 
-	query := `
-		INSERT INTO shares (name, options)
-		VALUES ($1, $2)
-	`
-
 	optionsData, err := json.Marshal(share.Options)
 	if err != nil {
 		return err
 	}
 
-	_, err = tx.tx.Exec(ctx, query, share.Name, optionsData)
+	// Update options for existing share (created by CreateRootDirectory)
+	query := `UPDATE shares SET options = $1 WHERE share_name = $2`
+	_, err = tx.tx.Exec(ctx, query, optionsData, share.Name)
 	if err != nil {
 		return mapPgError(err, "CreateShare", share.Name)
 	}
@@ -566,24 +542,13 @@ func (tx *postgresTransaction) UpdateShareOptions(ctx context.Context, shareName
 		return err
 	}
 
-	query := `
-		UPDATE shares
-		SET read_only = $1,
-		    require_auth = $2,
-		    allowed_clients = $3,
-		    denied_clients = $4,
-		    allowed_auth_methods = $5
-		WHERE name = $6
-	`
+	optionsData, err := json.Marshal(options)
+	if err != nil {
+		return err
+	}
 
-	result, err := tx.tx.Exec(ctx, query,
-		options.ReadOnly,
-		options.RequireAuth,
-		options.AllowedClients,
-		options.DeniedClients,
-		options.AllowedAuthMethods,
-		shareName,
-	)
+	query := `UPDATE shares SET options = $1 WHERE share_name = $2`
+	result, err := tx.tx.Exec(ctx, query, optionsData, shareName)
 	if err != nil {
 		return mapPgError(err, "UpdateShareOptions", shareName)
 	}
@@ -604,7 +569,7 @@ func (tx *postgresTransaction) DeleteShare(ctx context.Context, shareName string
 		return err
 	}
 
-	result, err := tx.tx.Exec(ctx, `DELETE FROM shares WHERE name = $1`, shareName)
+	result, err := tx.tx.Exec(ctx, `DELETE FROM shares WHERE share_name = $1`, shareName)
 	if err != nil {
 		return mapPgError(err, "DeleteShare", shareName)
 	}
@@ -625,7 +590,7 @@ func (tx *postgresTransaction) ListShares(ctx context.Context) ([]string, error)
 		return nil, err
 	}
 
-	rows, err := tx.tx.Query(ctx, `SELECT name FROM shares`)
+	rows, err := tx.tx.Query(ctx, `SELECT share_name FROM shares`)
 	if err != nil {
 		return nil, mapPgError(err, "ListShares", "")
 	}

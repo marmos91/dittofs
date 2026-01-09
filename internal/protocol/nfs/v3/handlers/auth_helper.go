@@ -6,8 +6,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/identity"
-	"github.com/marmos91/dittofs/pkg/registry"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/registry"
 )
 
 // ErrShareAccessDenied is returned when a user doesn't have permission to access a share.

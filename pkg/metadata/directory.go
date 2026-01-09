@@ -163,9 +163,8 @@ func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHan
 	// Update parent's link count (removing ".." reference)
 	parentLinkCount, err := store.GetLinkCount(ctx.Context, parentHandle)
 	if err == nil && parentLinkCount > 0 {
-		if err := store.SetLinkCount(ctx.Context, parentHandle, parentLinkCount-1); err != nil {
-			// Non-fatal, continue
-		}
+		// Non-fatal error, ignore
+		_ = store.SetLinkCount(ctx.Context, parentHandle, parentLinkCount-1)
 	}
 
 	// Update parent timestamps

@@ -2,7 +2,6 @@ package badger
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -126,12 +125,18 @@ func (s *BadgerMetadataStore) CreateShare(ctx context.Context, share *metadata.S
 			return err
 		}
 
-		data, err := json.Marshal(share)
+		// Store as shareData for consistency with GetRootHandle and CreateRootDirectory
+		shareDataValue := &shareData{
+			Share: *share,
+			// RootHandle will be set by CreateRootDirectory
+		}
+
+		encoded, err := encodeShareData(shareDataValue)
 		if err != nil {
 			return err
 		}
 
-		return txn.Set(keyShare(share.Name), data)
+		return txn.Set(keyShare(share.Name), encoded)
 	})
 }
 

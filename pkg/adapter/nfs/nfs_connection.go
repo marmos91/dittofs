@@ -351,8 +351,11 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 		replyData, err = c.handleNFSProcedure(ctx, call, procedureData, clientAddr)
 
 	case rpc.ProgramMount:
-		// Validate Mount version (we only support version 3)
-		if call.Version != rpc.MountVersion3 {
+		// Mount protocol version handling:
+		// - MNT requires v3 (returns v3 file handle format)
+		// - Other procedures (NULL, DUMP, UMNT, UMNTALL, EXPORT) are version-agnostic
+		// macOS umount uses mount v1 for UMNT, so we accept v1/v2/v3 for those procedures
+		if call.Procedure == mount_handlers.MountProcMnt && call.Version != rpc.MountVersion3 {
 			return c.handleUnsupportedVersion(call, rpc.MountVersion3, "Mount", clientAddr)
 		}
 		replyData, err = c.handleMountProcedure(ctx, call, procedureData, clientAddr)

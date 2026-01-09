@@ -152,4 +152,3 @@ func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context, han
 
 	return &stats, nil
 }
-

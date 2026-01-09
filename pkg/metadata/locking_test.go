@@ -16,10 +16,10 @@ func TestRangesOverlap(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                           string
-		offset1, length1               uint64
-		offset2, length2               uint64
-		want                           bool
+		name             string
+		offset1, length1 uint64
+		offset2, length2 uint64
+		want             bool
 	}{
 		// Non-overlapping cases
 		{"disjoint ranges", 0, 10, 20, 10, false},

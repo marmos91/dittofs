@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 
-	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -144,29 +143,6 @@ func (s *PostgresMetadataStore) PutFilesystemMeta(ctx context.Context, shareName
 // ============================================================================
 // Content ID Operations
 // ============================================================================
-
-// getFileByID retrieves a file by its UUID (internal use)
-func (s *PostgresMetadataStore) getFileByID(ctx context.Context, id uuid.UUID, shareName string) (*metadata.File, error) {
-	query := `
-		SELECT
-			f.id, f.share_name, f.path,
-			f.file_type, f.mode, f.uid, f.gid, f.size,
-			f.atime, f.mtime, f.ctime, f.creation_time,
-			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, lc.link_count
-		FROM files f
-		LEFT JOIN link_counts lc ON f.id = lc.file_id
-		WHERE f.id = $1 AND f.share_name = $2
-	`
-
-	row := s.pool.QueryRow(ctx, query, id, shareName)
-	file, err := fileRowToFileWithNlink(row)
-	if err != nil {
-		return nil, mapPgError(err, "getFileByID", "")
-	}
-
-	return file, nil
-}
 
 // GetFileByContentID retrieves a file by its content ID (used by cache flusher)
 func (s *PostgresMetadataStore) GetFileByContentID(ctx context.Context, contentID metadata.ContentID) (*metadata.File, error) {

@@ -3,8 +3,8 @@ package handlers
 
 import (
 	"github.com/marmos91/dittofs/pkg/identity"
-	"github.com/marmos91/dittofs/pkg/registry"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/registry"
 )
 
 // BuildAuthContext creates a metadata.AuthContext from SMB handler context.

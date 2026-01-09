@@ -3,7 +3,6 @@ package memory
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"unsafe"
 
@@ -404,73 +403,6 @@ func (store *MemoryMetadataStore) buildFileWithNlink(
 	}, nil
 }
 
-// buildFullPath constructs the full path for a file by walking up the parent chain.
-// This is used to generate deterministic file handles.
-// Thread Safety: Must be called with lock held (read or write).
-func (store *MemoryMetadataStore) buildFullPath(handle metadata.FileHandle, name string) string {
-	if len(handle) == 0 {
-		return "/" + name
-	}
-
-	// Walk up to build path components
-	var components []string
-	if name != "" {
-		components = append(components, name)
-	}
-
-	currentHandle := handle
-	for {
-		currentKey := handleToKey(currentHandle)
-		parentHandle, hasParent := store.parents[currentKey]
-		if !hasParent {
-			// Reached root of share
-			break
-		}
-
-		// Find the name of current handle in parent's children
-		parentKey := handleToKey(parentHandle)
-		if childrenMap, exists := store.children[parentKey]; exists {
-			for childName, childHandle := range childrenMap {
-				if handleToKey(childHandle) == currentKey {
-					components = append([]string{childName}, components...)
-					break
-				}
-			}
-		}
-
-		currentHandle = parentHandle
-	}
-
-	// Build path
-	if len(components) == 0 {
-		return "/"
-	}
-
-	// Use strings.Builder for efficient path construction
-	// Pre-allocate approximate capacity to avoid reallocations
-	var builder strings.Builder
-	totalLen := len(components) // For the "/" separators
-	for _, comp := range components {
-		totalLen += len(comp)
-	}
-	builder.Grow(totalLen + 1) // +1 for leading "/"
-
-	builder.WriteByte('/')
-	for i, comp := range components {
-		if i > 0 {
-			builder.WriteByte('/')
-		}
-		builder.WriteString(comp)
-	}
-	return builder.String()
-}
-
-// buildContentID is a convenience wrapper around metadata.BuildContentID.
-// See metadata.BuildContentID for full documentation.
-func buildContentID(shareName, fullPath string) string {
-	return metadata.BuildContentID(shareName, fullPath)
-}
-
 // generateFileHandle creates a UUID-based file handle from a share name.
 //
 // This function generates a new UUID for each file and encodes it with the
@@ -511,25 +443,6 @@ func (store *MemoryMetadataStore) generateFileHandle(shareName, fullPath string)
 	}
 
 	return handle
-}
-
-// extractFileIDFromHandle derives a 64-bit file ID from a file handle.
-//
-// This is a thin wrapper around metadata.HandleToINode() which provides the
-// canonical implementation for converting file handles to inode numbers.
-//
-// IMPORTANT: All MetadataStore implementations MUST use metadata.HandleToINode()
-// to ensure consistent inode generation across the system. Using different hash
-// algorithms will cause "fileid changed" errors from NFS clients.
-//
-// The file ID is used for:
-//   - Directory entry listings (NFS READDIR, SMB directory queries)
-//   - File attributes (NFS GETATTR)
-//   - Client-side caching and reference
-//
-// See: metadata.HandleToINode() for implementation details
-func extractFileIDFromHandle(handle metadata.FileHandle) uint64 {
-	return metadata.HandleToINode(handle)
 }
 
 // invalidateDirCache removes cached sorted entries for a directory.

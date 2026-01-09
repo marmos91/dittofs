@@ -32,7 +32,7 @@ func (s *PostgresMetadataStore) GetRootHandle(ctx context.Context, shareName str
 		return nil, err
 	}
 
-	query := `SELECT root_dir_id FROM shares WHERE name = $1`
+	query := `SELECT root_file_id FROM shares WHERE share_name = $1`
 
 	var rootID uuid.UUID
 	err := s.pool.QueryRow(ctx, query, shareName).Scan(&rootID)
@@ -50,43 +50,22 @@ func (s *PostgresMetadataStore) GetShareOptions(ctx context.Context, shareName s
 		return nil, err
 	}
 
-	query := `
-		SELECT
-			read_only,
-			require_auth,
-			allowed_clients,
-			denied_clients,
-			allowed_auth_methods
-		FROM shares
-		WHERE name = $1
-	`
+	query := `SELECT options FROM shares WHERE share_name = $1`
 
-	var (
-		readOnly           bool
-		requireAuth        bool
-		allowedClients     []string
-		deniedClients      []string
-		allowedAuthMethods []string
-	)
-
-	err := s.pool.QueryRow(ctx, query, shareName).Scan(
-		&readOnly,
-		&requireAuth,
-		&allowedClients,
-		&deniedClients,
-		&allowedAuthMethods,
-	)
+	var optionsJSON []byte
+	err := s.pool.QueryRow(ctx, query, shareName).Scan(&optionsJSON)
 	if err != nil {
 		return nil, mapPgError(err, "GetShareOptions", shareName)
 	}
 
-	return &metadata.ShareOptions{
-		ReadOnly:           readOnly,
-		RequireAuth:        requireAuth,
-		AllowedClients:     allowedClients,
-		DeniedClients:      deniedClients,
-		AllowedAuthMethods: allowedAuthMethods,
-	}, nil
+	var options metadata.ShareOptions
+	if len(optionsJSON) > 0 {
+		if err := json.Unmarshal(optionsJSON, &options); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal share options: %w", err)
+		}
+	}
+
+	return &options, nil
 }
 
 // ============================================================================
@@ -100,7 +79,7 @@ func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata
 	}
 
 	query := `
-		INSERT INTO shares (name, options)
+		INSERT INTO shares (share_name, options)
 		VALUES ($1, $2)
 	`
 
@@ -123,24 +102,13 @@ func (s *PostgresMetadataStore) UpdateShareOptions(ctx context.Context, shareNam
 		return err
 	}
 
-	query := `
-		UPDATE shares
-		SET read_only = $1,
-		    require_auth = $2,
-		    allowed_clients = $3,
-		    denied_clients = $4,
-		    allowed_auth_methods = $5
-		WHERE name = $6
-	`
+	optionsData, err := json.Marshal(options)
+	if err != nil {
+		return fmt.Errorf("failed to marshal share options: %w", err)
+	}
 
-	result, err := s.pool.Exec(ctx, query,
-		options.ReadOnly,
-		options.RequireAuth,
-		options.AllowedClients,
-		options.DeniedClients,
-		options.AllowedAuthMethods,
-		shareName,
-	)
+	query := `UPDATE shares SET options = $1 WHERE share_name = $2`
+	result, err := s.pool.Exec(ctx, query, optionsData, shareName)
 	if err != nil {
 		return mapPgError(err, "UpdateShareOptions", shareName)
 	}
@@ -162,7 +130,7 @@ func (s *PostgresMetadataStore) DeleteShare(ctx context.Context, shareName strin
 		return err
 	}
 
-	result, err := s.pool.Exec(ctx, `DELETE FROM shares WHERE name = $1`, shareName)
+	result, err := s.pool.Exec(ctx, `DELETE FROM shares WHERE share_name = $1`, shareName)
 	if err != nil {
 		return mapPgError(err, "DeleteShare", shareName)
 	}
@@ -184,7 +152,7 @@ func (s *PostgresMetadataStore) ListShares(ctx context.Context) ([]string, error
 		return nil, err
 	}
 
-	rows, err := s.pool.Query(ctx, `SELECT name FROM shares`)
+	rows, err := s.pool.Query(ctx, `SELECT share_name FROM shares`)
 	if err != nil {
 		return nil, mapPgError(err, "ListShares", "")
 	}
@@ -461,4 +429,3 @@ func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, sh
 		},
 	}, nil
 }
-

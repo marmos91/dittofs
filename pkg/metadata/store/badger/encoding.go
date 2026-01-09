@@ -86,11 +86,6 @@ func keyLinkCount(id uuid.UUID) []byte {
 	return []byte(prefixLinkCount + id.String())
 }
 
-// keyDeviceNumber generates a key for device numbers: "d:<uuid>"
-func keyDeviceNumber(id uuid.UUID) []byte {
-	return []byte(prefixDeviceNumber + id.String())
-}
-
 // keyServerConfig generates the key for server configuration: "cfg:server"
 func keyServerConfig() []byte {
 	return []byte(prefixConfig + "server")
@@ -109,12 +104,6 @@ func keyFilesystemCapabilities() []byte {
 type shareData struct {
 	Share      metadata.Share      `json:"share"`
 	RootHandle metadata.FileHandle `json:"root_handle"`
-}
-
-// deviceNumber stores major and minor device numbers for special files.
-type deviceNumber struct {
-	Major uint32 `json:"major"`
-	Minor uint32 `json:"minor"`
 }
 
 // ============================================================================
@@ -151,14 +140,6 @@ func decodeShareData(bytes []byte) (*shareData, error) {
 		return nil, fmt.Errorf("failed to decode share data: %w", err)
 	}
 	return &data, nil
-}
-
-func encodeDeviceNumber(dev *deviceNumber) ([]byte, error) {
-	bytes, err := json.Marshal(dev)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode device number: %w", err)
-	}
-	return bytes, nil
 }
 
 func encodeServerConfig(config *metadata.MetadataServerConfig) ([]byte, error) {

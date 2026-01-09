@@ -4,8 +4,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/content"
 )
 
 // MemoryContentStore implements ContentStore using in-memory storage.

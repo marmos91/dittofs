@@ -684,8 +684,8 @@ func TestCalculatePermissions(t *testing.T) {
 		}
 		identity := &Identity{
 			UID:  Uint32Ptr(3000),
-			GID:  Uint32Ptr(3000),       // Different primary group
-			GIDs: []uint32{2000, 4000},  // Supplementary includes file GID
+			GID:  Uint32Ptr(3000),      // Different primary group
+			GIDs: []uint32{2000, 4000}, // Supplementary includes file GID
 		}
 
 		// Request all the permissions we expect to get back

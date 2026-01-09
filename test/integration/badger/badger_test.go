@@ -13,33 +13,16 @@ import (
 )
 
 // TestBadgerMetadataStore_Integration runs integration tests for BadgerDB metadata store.
-//
-// Prerequisites:
-//   - None (BadgerDB is embedded, no external services needed)
-//   - Run with: go test -tags=integration ./test/integration/badger/...
-//
-// These tests verify that BadgerDB metadata store:
-//   - Can be created and initialized
-//   - Persists data across restarts
-//   - Handles basic file/directory operations
 func TestBadgerMetadataStore_Integration(t *testing.T) {
 	ctx := context.Background()
 
-	// ========================================================================
-	// Setup: Create temporary directory for test database
-	// ========================================================================
-
-	tempDir, err := os.MkdirTemp("", "dittofs-badger-metaSvc-*")
+	tempDir, err := os.MkdirTemp("", "dittofs-badger-meta-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
 
 	dbPath := filepath.Join(tempDir, "metadata.db")
-
-	// ========================================================================
-	// Test: Create store and verify healthcheck
-	// ========================================================================
 
 	t.Run("CreateStoreAndHealthcheck", func(t *testing.T) {
 		store, err := badger.NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
@@ -48,16 +31,11 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 		}
 		defer store.Close()
 
-		// Verify store can perform healthcheck
 		err = store.Healthcheck(ctx)
 		if err != nil {
 			t.Fatalf("Healthcheck failed: %v", err)
 		}
 	})
-
-	// ========================================================================
-	// Test: Create root directory
-	// ========================================================================
 
 	t.Run("CreateRootDirectory", func(t *testing.T) {
 		store, err := badger.NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
@@ -66,7 +44,6 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 		}
 		defer store.Close()
 
-		// Create a root directory for a share
 		rootAttr := &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0755,
@@ -79,18 +56,15 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 			t.Fatalf("Failed to create root directory: %v", err)
 		}
 
-		// Verify root file was created
 		if rootFile == nil {
 			t.Fatal("Root file should not be nil")
 		}
 
-		// Encode the file handle
 		rootHandle, err := metadata.EncodeFileHandle(rootFile)
 		if err != nil {
 			t.Fatalf("Failed to encode file handle: %v", err)
 		}
 
-		// Get the file attributes back
 		fileAttr, err := store.GetFile(ctx, rootHandle)
 		if err != nil {
 			t.Fatalf("Failed to get file: %v", err)
@@ -104,10 +78,6 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 		}
 	})
 
-	// ========================================================================
-	// Test: Persistence across restarts
-	// ========================================================================
-
 	t.Run("Persistence", func(t *testing.T) {
 		var rootHandle metadata.FileHandle
 
@@ -118,7 +88,6 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 				t.Fatalf("Failed to create BadgerMetadataStore: %v", err)
 			}
 
-			// Create root directory
 			rootAttr := &metadata.FileAttr{
 				Type: metadata.FileTypeDirectory,
 				Mode: 0755,
@@ -131,13 +100,11 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 				t.Fatalf("Failed to create root directory: %v", err)
 			}
 
-			// Encode the file handle for persistence check
 			rootHandle, err = metadata.EncodeFileHandle(rootFile)
 			if err != nil {
 				t.Fatalf("Failed to encode file handle: %v", err)
 			}
 
-			// Close store
 			if err := store.Close(); err != nil {
 				t.Fatalf("Failed to close store: %v", err)
 			}
@@ -151,7 +118,6 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 			}
 			defer store.Close()
 
-			// Try to get the file we created
 			fileAttr, err := store.GetFile(ctx, rootHandle)
 			if err != nil {
 				t.Fatalf("Failed to get persisted file: %v", err)
@@ -161,7 +127,6 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 				t.Errorf("Expected directory type, got %v", fileAttr.Type)
 			}
 
-			// Verify share name (decode directly from handle)
 			shareName, _, err := metadata.DecodeFileHandle(rootHandle)
 			if err != nil {
 				t.Fatalf("Failed to decode share name from handle: %v", err)
@@ -173,15 +138,11 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 	})
 }
 
-// TestBadgerMetadataStore_FileOperations tests basic file and directory operations.
-func TestBadgerMetadataStore_FileOperations(t *testing.T) {
+// TestBadgerMetadataStore_CRUD tests basic CRUD operations on the store.
+func TestBadgerMetadataStore_CRUD(t *testing.T) {
 	ctx := context.Background()
 
-	// ========================================================================
-	// Setup
-	// ========================================================================
-
-	tempDir, err := os.MkdirTemp("", "dittofs-badger-files-*")
+	tempDir, err := os.MkdirTemp("", "dittofs-badger-crud-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -195,6 +156,8 @@ func TestBadgerMetadataStore_FileOperations(t *testing.T) {
 	}
 	defer store.Close()
 
+	shareName := "/files"
+
 	// Create root directory
 	rootAttr := &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
@@ -203,150 +166,133 @@ func TestBadgerMetadataStore_FileOperations(t *testing.T) {
 		GID:  1000,
 	}
 
-	rootFile, err := store.CreateRootDirectory(ctx, "files", rootAttr)
+	rootFile, err := store.CreateRootDirectory(ctx, shareName, rootAttr)
 	if err != nil {
 		t.Fatalf("Failed to create root directory: %v", err)
 	}
 
-	// Encode the file handle
 	rootHandle, err := metadata.EncodeFileHandle(rootFile)
 	if err != nil {
 		t.Fatalf("Failed to encode root file handle: %v", err)
 	}
 
-	// Create auth context
-	uid := uint32(1000)
-	gid := uint32(1000)
-	authCtx := &metadata.AuthContext{
-		Context:    ctx,
-		AuthMethod: "unix",
-		Identity: &metadata.Identity{
-			UID:  &uid,
-			GID:  &gid,
-			GIDs: []uint32{1000},
-		},
-	}
-
-	// ========================================================================
-	// Test: Create directory
-	// ========================================================================
-
-	t.Run("CreateDirectory", func(t *testing.T) {
-		dirAttr := &metadata.FileAttr{
-			Type: metadata.FileTypeDirectory,
-			Mode: 0755,
-			UID:  1000,
-			GID:  1000,
-		}
-
-		dirFile, err := metadata.CreateDirectory(store, authCtx, rootHandle, "testdir", dirAttr)
+	t.Run("PutFile", func(t *testing.T) {
+		handle, err := store.GenerateHandle(ctx, shareName, "/testfile.txt")
 		if err != nil {
-			t.Fatalf("Failed to create directory: %v", err)
+			t.Fatalf("Failed to generate handle: %v", err)
 		}
 
-		// Encode the directory handle
-		dirHandle, err := metadata.EncodeFileHandle(dirFile)
+		// Decode handle to get the UUID
+		_, id, err := metadata.DecodeFileHandle(handle)
 		if err != nil {
-			t.Fatalf("Failed to encode directory handle: %v", err)
+			t.Fatalf("Failed to decode handle: %v", err)
 		}
 
-		// Verify directory exists
-		attr, err := store.GetFile(ctx, dirHandle)
+		file := &metadata.File{
+			ID:        id,
+			ShareName: shareName,
+			FileAttr: metadata.FileAttr{
+				Type: metadata.FileTypeRegular,
+				Mode: 0644,
+				UID:  1000,
+				GID:  1000,
+			},
+		}
+
+		err = store.PutFile(ctx, file)
 		if err != nil {
-			t.Fatalf("Failed to get directory attributes: %v", err)
-		}
-		if attr.Type != metadata.FileTypeDirectory {
-			t.Errorf("Expected directory type, got %v", attr.Type)
-		}
-	})
-
-	// ========================================================================
-	// Test: Create file
-	// ========================================================================
-
-	t.Run("CreateFile", func(t *testing.T) {
-		fileAttr := &metadata.FileAttr{
-			Type: metadata.FileTypeRegular,
-			Mode: 0644,
-			UID:  1000,
-			GID:  1000,
-		}
-
-		createdFile, err := metadata.CreateFile(store, authCtx, rootHandle, "testfile.txt", fileAttr)
-		if err != nil {
-			t.Fatalf("Failed to create file: %v", err)
-		}
-
-		// Encode the file handle
-		fileHandle, err := metadata.EncodeFileHandle(createdFile)
-		if err != nil {
-			t.Fatalf("Failed to encode file handle: %v", err)
+			t.Fatalf("Failed to put file: %v", err)
 		}
 
 		// Verify file exists
-		attr, err := store.GetFile(ctx, fileHandle)
+		retrieved, err := store.GetFile(ctx, handle)
 		if err != nil {
-			t.Fatalf("Failed to get file attributes: %v", err)
+			t.Fatalf("Failed to get file: %v", err)
 		}
-		if attr.Type != metadata.FileTypeRegular {
-			t.Errorf("Expected regular file type, got %v", attr.Type)
+
+		if retrieved.Type != metadata.FileTypeRegular {
+			t.Errorf("Expected regular file type, got %v", retrieved.Type)
 		}
 	})
 
-	// ========================================================================
-	// Test: Lookup
-	// ========================================================================
-
-	t.Run("Lookup", func(t *testing.T) {
-		// Lookup the file we just created
-		lookedUpFile, err := metadata.Lookup(store,authCtx, rootHandle, "testfile.txt")
+	t.Run("SetChild_GetChild", func(t *testing.T) {
+		// Create a child file
+		childHandle, err := store.GenerateHandle(ctx, shareName, "/child.txt")
 		if err != nil {
-			t.Fatalf("Failed to lookup file: %v", err)
+			t.Fatalf("Failed to generate handle: %v", err)
 		}
 
-		if lookedUpFile == nil {
-			t.Fatal("Looked up file should not be nil")
+		// Decode handle to get the UUID
+		_, childID, err := metadata.DecodeFileHandle(childHandle)
+		if err != nil {
+			t.Fatalf("Failed to decode handle: %v", err)
 		}
 
-		if lookedUpFile.Type != metadata.FileTypeRegular {
-			t.Errorf("Expected regular file type, got %v", lookedUpFile.Type)
+		childFile := &metadata.File{
+			ID:        childID,
+			ShareName: shareName,
+			FileAttr: metadata.FileAttr{
+				Type: metadata.FileTypeRegular,
+				Mode: 0644,
+				UID:  1000,
+				GID:  1000,
+			},
+		}
+
+		err = store.PutFile(ctx, childFile)
+		if err != nil {
+			t.Fatalf("Failed to put child file: %v", err)
+		}
+
+		// Set child relationship
+		err = store.SetChild(ctx, rootHandle, "child.txt", childHandle)
+		if err != nil {
+			t.Fatalf("Failed to set child: %v", err)
+		}
+
+		// Get child back
+		retrievedHandle, err := store.GetChild(ctx, rootHandle, "child.txt")
+		if err != nil {
+			t.Fatalf("Failed to get child: %v", err)
+		}
+
+		if string(retrievedHandle) != string(childHandle) {
+			t.Errorf("Handle mismatch")
 		}
 	})
 
-	// ========================================================================
-	// Test: List directory
-	// ========================================================================
-
-	t.Run("ListDirectory", func(t *testing.T) {
-		result, err := metadata.ReadDirectory(store,authCtx, rootHandle, "", 4096)
+	t.Run("ListChildren", func(t *testing.T) {
+		entries, _, err := store.ListChildren(ctx, rootHandle, "", 100)
 		if err != nil {
-			t.Fatalf("Failed to read directory: %v", err)
+			t.Fatalf("Failed to list children: %v", err)
 		}
 
-		entries := result.Entries
-
-		// Should have at least 2 entries (testdir and testfile.txt)
-		if len(entries) < 2 {
-			t.Errorf("Expected at least 2 entries, got %d", len(entries))
+		if len(entries) == 0 {
+			t.Error("Expected at least one child entry")
 		}
 
-		// Verify entries
-		foundDir := false
-		foundFile := false
+		found := false
 		for _, entry := range entries {
-			if entry.Name == "testdir" {
-				foundDir = true
-			}
-			if entry.Name == "testfile.txt" {
-				foundFile = true
+			if entry.Name == "child.txt" {
+				found = true
+				break
 			}
 		}
 
-		if !foundDir {
-			t.Error("Directory 'testdir' not found in listing")
+		if !found {
+			t.Error("child.txt not found in listing")
 		}
-		if !foundFile {
-			t.Error("File 'testfile.txt' not found in listing")
+	})
+
+	t.Run("DeleteChild", func(t *testing.T) {
+		err := store.DeleteChild(ctx, rootHandle, "child.txt")
+		if err != nil {
+			t.Fatalf("Failed to delete child: %v", err)
+		}
+
+		_, err = store.GetChild(ctx, rootHandle, "child.txt")
+		if err == nil {
+			t.Error("Expected error getting deleted child")
 		}
 	})
 }
@@ -369,16 +315,13 @@ func TestBadgerMetadataStore_Healthcheck(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Test healthcheck
 	err = store.Healthcheck(ctx)
 	if err != nil {
 		t.Fatalf("Healthcheck should succeed: %v", err)
 	}
 
-	// Close store
 	store.Close()
 
-	// Healthcheck after close should fail
 	err = store.Healthcheck(ctx)
 	if err == nil {
 		t.Error("Healthcheck should fail after close")

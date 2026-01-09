@@ -6,9 +6,9 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/cache"
 	cacheMemory "github.com/marmos91/dittofs/pkg/cache/memory"
-	contentMemory "github.com/marmos91/dittofs/pkg/store/content/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadataMemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	contentMemory "github.com/marmos91/dittofs/pkg/store/content/memory"
 )
 
 // Helper to create memory content store for testing
@@ -73,7 +73,7 @@ func TestRegisterMetadataStore(t *testing.T) {
 	store := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	// Test successful registration
-	err := reg.RegisterMetadataStore("test-metaSvc", store)
+	err := reg.RegisterMetadataStore("test-meta", store)
 	if err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestRegisterMetadataStore(t *testing.T) {
 	}
 
 	// Test duplicate registration
-	err = reg.RegisterMetadataStore("test-metaSvc", store)
+	err = reg.RegisterMetadataStore("test-meta", store)
 	if err == nil {
 		t.Error("Expected error when registering duplicate metadata store")
 	}
@@ -433,13 +433,13 @@ func TestMultipleSharesSameStore(t *testing.T) {
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 	contentStore := mustCreateMemoryContentStore()
 
-	_ = reg.RegisterMetadataStore("shared-metaSvc", metaStore)
+	_ = reg.RegisterMetadataStore("shared-meta", metaStore)
 	_ = reg.RegisterContentStore("shared-content", contentStore)
 
 	// Create multiple shares using the same stores
-	_ = reg.AddShare(context.Background(), testShareConfig("/export1", "shared-metaSvc", "shared-content", false))
-	_ = reg.AddShare(context.Background(), testShareConfig("/export2", "shared-metaSvc", "shared-content", true))
-	_ = reg.AddShare(context.Background(), testShareConfig("/export3", "shared-metaSvc", "shared-content", false))
+	_ = reg.AddShare(context.Background(), testShareConfig("/export1", "shared-meta", "shared-content", false))
+	_ = reg.AddShare(context.Background(), testShareConfig("/export2", "shared-meta", "shared-content", true))
+	_ = reg.AddShare(context.Background(), testShareConfig("/export3", "shared-meta", "shared-content", false))
 
 	if reg.CountShares() != 3 {
 		t.Errorf("Expected 3 shares, got %d", reg.CountShares())
@@ -461,8 +461,8 @@ func TestMultipleSharesSameStore(t *testing.T) {
 	}
 
 	// Verify all point to same store names
-	if share1.MetadataStore != "shared-metaSvc" || share2.MetadataStore != "shared-metaSvc" || share3.MetadataStore != "shared-metaSvc" {
-		t.Error("All shares should use 'shared-metaSvc' metadata store")
+	if share1.MetadataStore != "shared-meta" || share2.MetadataStore != "shared-meta" || share3.MetadataStore != "shared-meta" {
+		t.Error("All shares should use 'shared-meta' metadata store")
 	}
 }
 

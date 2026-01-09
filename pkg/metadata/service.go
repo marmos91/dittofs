@@ -421,4 +421,3 @@ func (s *MetadataService) GetShareOptions(ctx context.Context, shareName string)
 	}
 	return store.GetShareOptions(ctx, shareName)
 }
-

@@ -289,10 +289,10 @@ func (tx *badgerTransaction) ListChildren(ctx context.Context, dirHandle metadat
 			Handle: childHandle,
 		}
 
-		// Try to get attributes
+		// Try to get attributes (errors are intentionally ignored - attributes are optional)
 		fileItem, err := tx.txn.Get(keyFile(childID))
 		if err == nil {
-			err = fileItem.Value(func(val []byte) error {
+			_ = fileItem.Value(func(val []byte) error {
 				file, decErr := decodeFile(val)
 				if decErr != nil {
 					return decErr
@@ -583,12 +583,18 @@ func (tx *badgerTransaction) CreateShare(ctx context.Context, share *metadata.Sh
 		return err
 	}
 
-	data, err := json.Marshal(share)
+	// Store as shareData for consistency with GetRootHandle and CreateRootDirectory
+	shareDataValue := &shareData{
+		Share: *share,
+		// RootHandle will be set by CreateRootDirectory
+	}
+
+	encoded, err := encodeShareData(shareDataValue)
 	if err != nil {
 		return err
 	}
 
-	return tx.txn.Set(keyShare(share.Name), data)
+	return tx.txn.Set(keyShare(share.Name), encoded)
 }
 
 func (tx *badgerTransaction) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {

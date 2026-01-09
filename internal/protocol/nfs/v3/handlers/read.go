@@ -9,8 +9,8 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/pkg/bufpool"
 	"github.com/marmos91/dittofs/pkg/bytesize"
-	"github.com/marmos91/dittofs/pkg/store/content"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/store/content"
 )
 
 // ============================================================================

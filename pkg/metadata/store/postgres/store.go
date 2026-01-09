@@ -201,11 +201,3 @@ func (sc *statsCache) set(stats metadata.FilesystemStatistics) {
 	sc.hasStats = true
 	sc.timestamp = time.Now()
 }
-
-// Helper method to invalidate stats cache
-func (sc *statsCache) invalidate() {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-
-	sc.hasStats = false
-}

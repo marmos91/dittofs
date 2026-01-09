@@ -587,9 +587,8 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 
 	// Update parent reference if directories are different
 	if string(fromDir) != string(toDir) {
-		if err := store.SetParent(ctx.Context, srcHandle, toDir); err != nil {
-			// Non-fatal
-		}
+		// Non-fatal error, ignore
+		_ = store.SetParent(ctx.Context, srcHandle, toDir)
 
 		// Update link counts for directory moves
 		if srcFile.Type == FileTypeDirectory {
@@ -604,25 +603,20 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 		}
 	}
 
-	// Update timestamps
+	// Update timestamps (non-fatal errors, ignore)
 	now := time.Now()
 	srcFile.Ctime = now
-	if err := store.PutFile(ctx.Context, srcFile); err != nil {
-		// Non-fatal
-	}
+	_ = store.PutFile(ctx.Context, srcFile)
 
 	srcDir.Mtime = now
 	srcDir.Ctime = now
-	if err := store.PutFile(ctx.Context, srcDir); err != nil {
-		// Non-fatal
-	}
+	_ = store.PutFile(ctx.Context, srcDir)
 
 	if string(fromDir) != string(toDir) {
 		dstDir.Mtime = now
 		dstDir.Ctime = now
-		if err := store.PutFile(ctx.Context, dstDir); err != nil {
-			// Non-fatal
-		}
+		// Non-fatal error, ignore
+		_ = store.PutFile(ctx.Context, dstDir)
 	}
 
 	return nil
@@ -757,6 +751,13 @@ func (s *MetadataService) createEntry(
 		return nil, err
 	}
 
+	// Initialize link count in the store (required for hard link management)
+	if err := store.SetLinkCount(ctx.Context, newHandle, newFile.Nlink); err != nil {
+		// Cleanup on failure
+		_ = store.DeleteFile(ctx.Context, newHandle)
+		return nil, err
+	}
+
 	// Set parent reference
 	if err := store.SetParent(ctx.Context, newHandle, parentHandle); err != nil {
 		// Cleanup on failure
@@ -783,9 +784,8 @@ func (s *MetadataService) createEntry(
 	now := time.Now()
 	parent.Mtime = now
 	parent.Ctime = now
-	if err := store.PutFile(ctx.Context, parent); err != nil {
-		// Non-fatal, file was created
-	}
+	// Non-fatal, file was created
+	_ = store.PutFile(ctx.Context, parent)
 
 	return newFile, nil
 }
