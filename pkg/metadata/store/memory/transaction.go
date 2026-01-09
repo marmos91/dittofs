@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -44,7 +45,7 @@ func (store *MemoryMetadataStore) WithTransaction(ctx context.Context, fn func(t
 // ============================================================================
 // These methods operate on the store while the lock is held by WithTransaction.
 
-func (tx *memoryTransaction) GetEntry(ctx context.Context, handle metadata.FileHandle) (*metadata.File, error) {
+func (tx *memoryTransaction) GetFile(ctx context.Context, handle metadata.FileHandle) (*metadata.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -61,7 +62,7 @@ func (tx *memoryTransaction) GetEntry(ctx context.Context, handle metadata.FileH
 	return tx.store.buildFileWithNlink(handle, fileData)
 }
 
-func (tx *memoryTransaction) PutEntry(ctx context.Context, file *metadata.File) error {
+func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -93,7 +94,7 @@ func (tx *memoryTransaction) PutEntry(ctx context.Context, file *metadata.File) 
 	return nil
 }
 
-func (tx *memoryTransaction) DeleteEntry(ctx context.Context, handle metadata.FileHandle) error {
+func (tx *memoryTransaction) DeleteFile(ctx context.Context, handle metadata.FileHandle) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -307,153 +308,95 @@ func (tx *memoryTransaction) GetFilesystemMeta(ctx context.Context, shareName st
 	}, nil
 }
 
-func (tx *memoryTransaction) PutFilesystemMeta(ctx context.Context, shareName string, meta *metadata.FilesystemMeta) error {
+func (tx *memoryTransaction) PutFilesystemMeta(ctx context.Context, shareName string, metaSvc *metadata.FilesystemMeta) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	// For memory store, update capabilities
-	tx.store.capabilities = meta.Capabilities
+	tx.store.capabilities = metaSvc.Capabilities
 	return nil
 }
 
-// ============================================================================
-// Additional Store Methods
-// ============================================================================
-
-// ListChildren implements the Transaction interface for non-transactional calls.
-func (store *MemoryMetadataStore) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int) ([]metadata.DirEntry, string, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, "", err
-	}
-
-	store.mu.RLock()
-	defer store.mu.RUnlock()
-
-	dirKey := handleToKey(dirHandle)
-	childrenMap, exists := store.children[dirKey]
-	if !exists {
-		return []metadata.DirEntry{}, "", nil
-	}
-
-	sortedNames := store.getSortedDirEntries(dirHandle, childrenMap)
-
-	startIdx := 0
-	if cursor != "" {
-		for i, name := range sortedNames {
-			if name == cursor {
-				startIdx = i + 1
-				break
-			}
-		}
-	}
-
-	if limit <= 0 {
-		limit = 1000
-	}
-
-	var entries []metadata.DirEntry
-	for i := startIdx; i < len(sortedNames) && len(entries) < limit; i++ {
-		name := sortedNames[i]
-		childHandle := childrenMap[name]
-
-		entry := metadata.DirEntry{
-			ID:     metadata.HandleToINode(childHandle),
-			Name:   name,
-			Handle: childHandle,
-		}
-
-		childKey := handleToKey(childHandle)
-		if fileData, exists := store.files[childKey]; exists {
-			entry.Attr = fileData.Attr
-		}
-
-		entries = append(entries, entry)
-	}
-
-	nextCursor := ""
-	if startIdx+len(entries) < len(sortedNames) {
-		nextCursor = entries[len(entries)-1].Name
-	}
-
-	return entries, nextCursor, nil
-}
-
-// GetFilesystemMeta retrieves filesystem metadata for a share.
-func (store *MemoryMetadataStore) GetFilesystemMeta(ctx context.Context, shareName string) (*metadata.FilesystemMeta, error) {
+func (tx *memoryTransaction) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	store.mu.RLock()
-	defer store.mu.RUnlock()
-
-	return &metadata.FilesystemMeta{
-		Capabilities: store.capabilities,
-		Statistics:   store.computeStatistics(),
-	}, nil
+	return metadata.GenerateNewHandle(shareName)
 }
 
-// PutFilesystemMeta stores filesystem metadata for a share.
-func (store *MemoryMetadataStore) PutFilesystemMeta(ctx context.Context, shareName string, meta *metadata.FilesystemMeta) error {
+func (tx *memoryTransaction) GetFileByContentID(ctx context.Context, contentID metadata.ContentID) (*metadata.File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Search through all files for matching content ID
+	for key, fd := range tx.store.files {
+		if fd.Attr == nil || fd.Attr.ContentID == "" {
+			continue
+		}
+		if fd.Attr.ContentID == contentID {
+			handle := []byte(key)
+			file, err := tx.store.buildFileWithNlink(handle, fd)
+			if err != nil {
+				continue
+			}
+			return file, nil
+		}
+	}
+
+	return nil, &metadata.StoreError{
+		Code:    metadata.ErrNotFound,
+		Message: "file with content ID not found",
+	}
+}
+
+// ============================================================================
+// Transaction Shares Operations
+// ============================================================================
+
+func (tx *memoryTransaction) GetRootHandle(ctx context.Context, shareName string) (metadata.FileHandle, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	shareData, exists := tx.store.shares[shareName]
+	if !exists {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrNotFound,
+			Message: "share not found",
+			Path:    shareName,
+		}
+	}
+
+	return shareData.RootHandle, nil
+}
+
+func (tx *memoryTransaction) GetShareOptions(ctx context.Context, shareName string) (*metadata.ShareOptions, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	shareData, exists := tx.store.shares[shareName]
+	if !exists {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrNotFound,
+			Message: "share not found",
+			Path:    shareName,
+		}
+	}
+
+	optsCopy := shareData.Share.Options
+	return &optsCopy, nil
+}
+
+func (tx *memoryTransaction) CreateShare(ctx context.Context, share *metadata.Share) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	store.mu.Lock()
-	defer store.mu.Unlock()
-
-	store.capabilities = meta.Capabilities
-	return nil
-}
-
-// computeStatistics calculates current filesystem statistics.
-// Must be called with at least a read lock held.
-func (store *MemoryMetadataStore) computeStatistics() metadata.FilesystemStatistics {
-	var totalSize uint64
-	fileCount := uint64(len(store.files))
-
-	for _, fd := range store.files {
-		totalSize += fd.Attr.Size
-	}
-
-	// Report storage limits or defaults
-	totalBytes := store.maxStorageBytes
-	if totalBytes == 0 {
-		totalBytes = 1099511627776 // 1TB default
-	}
-
-	maxFiles := store.maxFiles
-	if maxFiles == 0 {
-		maxFiles = 1000000 // 1 million default
-	}
-
-	return metadata.FilesystemStatistics{
-		TotalBytes:     totalBytes,
-		UsedBytes:      totalSize,
-		AvailableBytes: totalBytes - totalSize,
-		TotalFiles:     maxFiles,
-		UsedFiles:      fileCount,
-		AvailableFiles: maxFiles - fileCount,
-	}
-}
-
-// Close releases any resources held by the store.
-// For memory store, this is a no-op.
-func (store *MemoryMetadataStore) Close() error {
-	return nil
-}
-
-// CreateShare creates a new share with the given configuration.
-func (store *MemoryMetadataStore) CreateShare(ctx context.Context, share *metadata.Share) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	store.mu.Lock()
-	defer store.mu.Unlock()
-
-	if _, exists := store.shares[share.Name]; exists {
+	if _, exists := tx.store.shares[share.Name]; exists {
 		return &metadata.StoreError{
 			Code:    metadata.ErrAlreadyExists,
 			Message: "share already exists",
@@ -461,10 +404,8 @@ func (store *MemoryMetadataStore) CreateShare(ctx context.Context, share *metada
 		}
 	}
 
-	// Generate root handle
-	rootHandle := store.generateFileHandle(share.Name, "/")
-
-	store.shares[share.Name] = &shareData{
+	rootHandle := tx.store.generateFileHandle(share.Name, "/")
+	tx.store.shares[share.Name] = &shareData{
 		Share:      *share,
 		RootHandle: rootHandle,
 	}
@@ -472,16 +413,30 @@ func (store *MemoryMetadataStore) CreateShare(ctx context.Context, share *metada
 	return nil
 }
 
-// DeleteShare removes a share and all its metadata.
-func (store *MemoryMetadataStore) DeleteShare(ctx context.Context, shareName string) error {
+func (tx *memoryTransaction) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	store.mu.Lock()
-	defer store.mu.Unlock()
+	shareData, exists := tx.store.shares[shareName]
+	if !exists {
+		return &metadata.StoreError{
+			Code:    metadata.ErrNotFound,
+			Message: "share not found",
+			Path:    shareName,
+		}
+	}
 
-	if _, exists := store.shares[shareName]; !exists {
+	shareData.Share.Options = *options
+	return nil
+}
+
+func (tx *memoryTransaction) DeleteShare(ctx context.Context, shareName string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if _, exists := tx.store.shares[shareName]; !exists {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
 			Message: "share not found",
@@ -490,34 +445,156 @@ func (store *MemoryMetadataStore) DeleteShare(ctx context.Context, shareName str
 	}
 
 	// Remove all files belonging to this share
-	for key, fd := range store.files {
+	for key, fd := range tx.store.files {
 		if fd.ShareName == shareName {
-			delete(store.files, key)
-			delete(store.parents, key)
-			delete(store.children, key)
-			delete(store.linkCounts, key)
-			delete(store.deviceNumbers, key)
-			delete(store.sortedDirCache, key)
+			delete(tx.store.files, key)
+			delete(tx.store.parents, key)
+			delete(tx.store.children, key)
+			delete(tx.store.linkCounts, key)
+			delete(tx.store.deviceNumbers, key)
+			delete(tx.store.sortedDirCache, key)
 		}
 	}
 
-	delete(store.shares, shareName)
+	delete(tx.store.shares, shareName)
 	return nil
 }
 
-// ListShares returns the names of all shares.
-func (store *MemoryMetadataStore) ListShares(ctx context.Context) ([]string, error) {
+func (tx *memoryTransaction) ListShares(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	store.mu.RLock()
-	defer store.mu.RUnlock()
-
-	names := make([]string, 0, len(store.shares))
-	for name := range store.shares {
+	names := make([]string, 0, len(tx.store.shares))
+	for name := range tx.store.shares {
 		names = append(names, name)
 	}
 
 	return names, nil
+}
+
+func (tx *memoryTransaction) CreateRootDirectory(ctx context.Context, shareName string, attr *metadata.FileAttr) (*metadata.File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Validate attributes
+	if attr.Type != metadata.FileTypeDirectory {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidArgument,
+			Message: "root must be a directory",
+			Path:    shareName,
+		}
+	}
+
+	// Generate deterministic handle for root directory based on share name
+	rootHandle := tx.store.generateFileHandle(shareName, "/")
+	key := handleToKey(rootHandle)
+
+	// Check if root already exists - if so, just return success (idempotent)
+	if existingData, exists := tx.store.files[key]; exists {
+		_, id, err := metadata.DecodeFileHandle(rootHandle)
+		if err != nil {
+			return nil, &metadata.StoreError{
+				Code:    metadata.ErrIOError,
+				Message: "failed to decode root handle",
+			}
+		}
+		return &metadata.File{
+			ID:        id,
+			ShareName: shareName,
+			Path:      "/",
+			FileAttr:  *existingData.Attr,
+		}, nil
+	}
+
+	// Complete root directory attributes with defaults
+	rootAttrCopy := *attr
+	if rootAttrCopy.Mode == 0 {
+		rootAttrCopy.Mode = 0755
+	}
+	now := time.Now()
+	if rootAttrCopy.Atime.IsZero() {
+		rootAttrCopy.Atime = now
+	}
+	if rootAttrCopy.Mtime.IsZero() {
+		rootAttrCopy.Mtime = now
+	}
+	if rootAttrCopy.Ctime.IsZero() {
+		rootAttrCopy.Ctime = now
+	}
+	if rootAttrCopy.CreationTime.IsZero() {
+		rootAttrCopy.CreationTime = now
+	}
+
+	// Create and store fileData for root directory
+	tx.store.files[key] = &fileData{
+		Attr:      &rootAttrCopy,
+		ShareName: shareName,
+	}
+
+	// Initialize children map for root directory (empty initially)
+	tx.store.children[key] = make(map[string]metadata.FileHandle)
+
+	// Set link count to 2
+	tx.store.linkCounts[key] = 2
+	rootAttrCopy.Nlink = 2
+
+	_, id, err := metadata.DecodeFileHandle(rootHandle)
+	if err != nil {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrIOError,
+			Message: "failed to decode root handle",
+		}
+	}
+
+	return &metadata.File{
+		ID:        id,
+		ShareName: shareName,
+		Path:      "/",
+		FileAttr:  rootAttrCopy,
+	}, nil
+}
+
+// ============================================================================
+// Transaction ServerConfig Operations
+// ============================================================================
+
+func (tx *memoryTransaction) SetServerConfig(ctx context.Context, config metadata.MetadataServerConfig) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	tx.store.serverConfig = config
+	return nil
+}
+
+func (tx *memoryTransaction) GetServerConfig(ctx context.Context) (metadata.MetadataServerConfig, error) {
+	if err := ctx.Err(); err != nil {
+		return metadata.MetadataServerConfig{}, err
+	}
+
+	return tx.store.serverConfig, nil
+}
+
+func (tx *memoryTransaction) GetFilesystemCapabilities(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemCapabilities, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	capsCopy := tx.store.capabilities
+	return &capsCopy, nil
+}
+
+func (tx *memoryTransaction) SetFilesystemCapabilities(capabilities metadata.FilesystemCapabilities) {
+	tx.store.capabilities = capabilities
+}
+
+func (tx *memoryTransaction) GetFilesystemStatistics(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemStatistics, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	stats := tx.store.computeStatistics()
+	return &stats, nil
 }

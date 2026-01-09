@@ -3,7 +3,9 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -45,7 +47,7 @@ func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx 
 // Transaction CRUD Operations
 // ============================================================================
 
-func (tx *postgresTransaction) GetEntry(ctx context.Context, handle metadata.FileHandle) (*metadata.File, error) {
+func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.FileHandle) (*metadata.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -73,13 +75,13 @@ func (tx *postgresTransaction) GetEntry(ctx context.Context, handle metadata.Fil
 	row := tx.tx.QueryRow(ctx, query, id, shareName)
 	file, err := fileRowToFileWithNlink(row)
 	if err != nil {
-		return nil, mapPgError(err, "GetEntry", "")
+		return nil, mapPgError(err, "GetFile", "")
 	}
 
 	return file, nil
 }
 
-func (tx *postgresTransaction) PutEntry(ctx context.Context, file *metadata.File) error {
+func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -138,13 +140,13 @@ func (tx *postgresTransaction) PutEntry(ctx context.Context, file *metadata.File
 		file.Hidden,
 	)
 	if err != nil {
-		return mapPgError(err, "PutEntry", "")
+		return mapPgError(err, "PutFile", "")
 	}
 
 	return nil
 }
 
-func (tx *postgresTransaction) DeleteEntry(ctx context.Context, handle metadata.FileHandle) error {
+func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.FileHandle) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -165,7 +167,7 @@ func (tx *postgresTransaction) DeleteEntry(ctx context.Context, handle metadata.
 	// Delete the file
 	result, err := tx.tx.Exec(ctx, `DELETE FROM files WHERE id = $1 AND share_name = $2`, id, shareName)
 	if err != nil {
-		return mapPgError(err, "DeleteEntry", "")
+		return mapPgError(err, "DeleteFile", "")
 	}
 
 	if result.RowsAffected() == 0 {
@@ -420,7 +422,7 @@ func (tx *postgresTransaction) GetFilesystemMeta(ctx context.Context, shareName 
 		return nil, err
 	}
 
-	query := `SELECT meta FROM filesystem_meta WHERE share_name = $1`
+	query := `SELECT metaSvc FROM filesystem_meta WHERE share_name = $1`
 
 	var data []byte
 	err := tx.tx.QueryRow(ctx, query, shareName).Scan(&data)
@@ -431,28 +433,28 @@ func (tx *postgresTransaction) GetFilesystemMeta(ctx context.Context, shareName 
 		}, nil
 	}
 
-	var meta metadata.FilesystemMeta
-	if err := json.Unmarshal(data, &meta); err != nil {
+	var metaSvc metadata.FilesystemMeta
+	if err := json.Unmarshal(data, &metaSvc); err != nil {
 		return nil, err
 	}
 
-	return &meta, nil
+	return &metaSvc, nil
 }
 
-func (tx *postgresTransaction) PutFilesystemMeta(ctx context.Context, shareName string, meta *metadata.FilesystemMeta) error {
+func (tx *postgresTransaction) PutFilesystemMeta(ctx context.Context, shareName string, metaSvc *metadata.FilesystemMeta) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	data, err := json.Marshal(meta)
+	data, err := json.Marshal(metaSvc)
 	if err != nil {
 		return err
 	}
 
 	query := `
-		INSERT INTO filesystem_meta (share_name, meta)
+		INSERT INTO filesystem_meta (share_name, metaSvc)
 		VALUES ($1, $2)
-		ON CONFLICT (share_name) DO UPDATE SET meta = EXCLUDED.meta
+		ON CONFLICT (share_name) DO UPDATE SET metaSvc = EXCLUDED.metaSvc
 	`
 
 	_, err = tx.tx.Exec(ctx, query, shareName, data)
@@ -463,46 +465,80 @@ func (tx *postgresTransaction) PutFilesystemMeta(ctx context.Context, shareName 
 	return nil
 }
 
+func (tx *postgresTransaction) GenerateHandle(ctx context.Context, shareName string, path string) (metadata.FileHandle, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// PostgreSQL uses UUID-based handles, path is stored in File struct
+	return metadata.GenerateNewHandle(shareName)
+}
+
 // ============================================================================
-// Additional Store Methods
+// Transaction Shares Operations
 // ============================================================================
 
-// ListChildren implements the Transaction interface for non-transactional calls.
-func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int) ([]metadata.DirEntry, string, error) {
-	var entries []metadata.DirEntry
-	var nextCursor string
+func (tx *postgresTransaction) GetRootHandle(ctx context.Context, shareName string) (metadata.FileHandle, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
-	err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		var err error
-		entries, nextCursor, err = tx.ListChildren(ctx, dirHandle, cursor, limit)
-		return err
-	})
+	query := `SELECT root_dir_id FROM shares WHERE name = $1`
 
-	return entries, nextCursor, err
+	var rootID string
+	err := tx.tx.QueryRow(ctx, query, shareName).Scan(&rootID)
+	if err != nil {
+		return nil, mapPgError(err, "GetRootHandle", shareName)
+	}
+
+	return encodeFileHandle(shareName, rootID)
 }
 
-// GetFilesystemMeta retrieves filesystem metadata for a share.
-func (s *PostgresMetadataStore) GetFilesystemMeta(ctx context.Context, shareName string) (*metadata.FilesystemMeta, error) {
-	var meta *metadata.FilesystemMeta
+func (tx *postgresTransaction) GetShareOptions(ctx context.Context, shareName string) (*metadata.ShareOptions, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
-	err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		var err error
-		meta, err = tx.GetFilesystemMeta(ctx, shareName)
-		return err
-	})
+	query := `
+		SELECT
+			read_only,
+			require_auth,
+			allowed_clients,
+			denied_clients,
+			allowed_auth_methods
+		FROM shares
+		WHERE name = $1
+	`
 
-	return meta, err
+	var (
+		readOnly           bool
+		requireAuth        bool
+		allowedClients     []string
+		deniedClients      []string
+		allowedAuthMethods []string
+	)
+
+	err := tx.tx.QueryRow(ctx, query, shareName).Scan(
+		&readOnly,
+		&requireAuth,
+		&allowedClients,
+		&deniedClients,
+		&allowedAuthMethods,
+	)
+	if err != nil {
+		return nil, mapPgError(err, "GetShareOptions", shareName)
+	}
+
+	return &metadata.ShareOptions{
+		ReadOnly:           readOnly,
+		RequireAuth:        requireAuth,
+		AllowedClients:     allowedClients,
+		DeniedClients:      deniedClients,
+		AllowedAuthMethods: allowedAuthMethods,
+	}, nil
 }
 
-// PutFilesystemMeta stores filesystem metadata for a share.
-func (s *PostgresMetadataStore) PutFilesystemMeta(ctx context.Context, shareName string, meta *metadata.FilesystemMeta) error {
-	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return tx.PutFilesystemMeta(ctx, shareName, meta)
-	})
-}
-
-// CreateShare creates a new share with the given configuration.
-func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata.Share) error {
+func (tx *postgresTransaction) CreateShare(ctx context.Context, share *metadata.Share) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -517,7 +553,7 @@ func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata
 		return err
 	}
 
-	_, err = s.pool.Exec(ctx, query, share.Name, optionsData)
+	_, err = tx.tx.Exec(ctx, query, share.Name, optionsData)
 	if err != nil {
 		return mapPgError(err, "CreateShare", share.Name)
 	}
@@ -525,13 +561,50 @@ func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata
 	return nil
 }
 
-// DeleteShare removes a share and all its metadata.
-func (s *PostgresMetadataStore) DeleteShare(ctx context.Context, shareName string) error {
+func (tx *postgresTransaction) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	result, err := s.pool.Exec(ctx, `DELETE FROM shares WHERE name = $1`, shareName)
+	query := `
+		UPDATE shares
+		SET read_only = $1,
+		    require_auth = $2,
+		    allowed_clients = $3,
+		    denied_clients = $4,
+		    allowed_auth_methods = $5
+		WHERE name = $6
+	`
+
+	result, err := tx.tx.Exec(ctx, query,
+		options.ReadOnly,
+		options.RequireAuth,
+		options.AllowedClients,
+		options.DeniedClients,
+		options.AllowedAuthMethods,
+		shareName,
+	)
+	if err != nil {
+		return mapPgError(err, "UpdateShareOptions", shareName)
+	}
+
+	if result.RowsAffected() == 0 {
+		return &metadata.StoreError{
+			Code:    metadata.ErrNotFound,
+			Message: "share not found",
+			Path:    shareName,
+		}
+	}
+
+	return nil
+}
+
+func (tx *postgresTransaction) DeleteShare(ctx context.Context, shareName string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	result, err := tx.tx.Exec(ctx, `DELETE FROM shares WHERE name = $1`, shareName)
 	if err != nil {
 		return mapPgError(err, "DeleteShare", shareName)
 	}
@@ -547,13 +620,12 @@ func (s *PostgresMetadataStore) DeleteShare(ctx context.Context, shareName strin
 	return nil
 }
 
-// ListShares returns the names of all shares.
-func (s *PostgresMetadataStore) ListShares(ctx context.Context) ([]string, error) {
+func (tx *postgresTransaction) ListShares(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	rows, err := s.pool.Query(ctx, `SELECT name FROM shares`)
+	rows, err := tx.tx.Query(ctx, `SELECT name FROM shares`)
 	if err != nil {
 		return nil, mapPgError(err, "ListShares", "")
 	}
@@ -569,4 +641,281 @@ func (s *PostgresMetadataStore) ListShares(ctx context.Context) ([]string, error
 	}
 
 	return names, nil
+}
+
+func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareName string, attr *metadata.FileAttr) (*metadata.File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if shareName == "" {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidArgument,
+			Message: "share name cannot be empty",
+		}
+	}
+
+	// Apply defaults
+	uid := attr.UID
+	gid := attr.GID
+	mode := attr.Mode
+	if mode == 0 {
+		mode = 0o755
+	}
+
+	// Check if root directory already exists (idempotent behavior)
+	checkQuery := `
+		SELECT f.id, f.file_type, f.mode, f.uid, f.gid, f.size,
+			   f.atime, f.mtime, f.ctime, f.creation_time, f.hidden
+		FROM files f
+		WHERE f.share_name = $1 AND f.path = '/'
+	`
+
+	var (
+		id           string
+		fileType     int16
+		existingMode int32
+		existingUID  int32
+		existingGID  int32
+		size         int64
+		atime        time.Time
+		mtime        time.Time
+		ctime        time.Time
+		creationTime time.Time
+		hidden       bool
+	)
+
+	err := tx.tx.QueryRow(ctx, checkQuery, shareName).Scan(
+		&id, &fileType, &existingMode, &existingUID, &existingGID, &size,
+		&atime, &mtime, &ctime, &creationTime, &hidden,
+	)
+
+	if err == nil {
+		// Root exists - return it
+		return &metadata.File{
+			ID:        uuid.MustParse(id),
+			ShareName: shareName,
+			Path:      "/",
+			FileAttr: metadata.FileAttr{
+				Type:         metadata.FileType(fileType),
+				Mode:         uint32(existingMode),
+				UID:          uint32(existingUID),
+				GID:          uint32(existingGID),
+				Size:         uint64(size),
+				Atime:        atime,
+				Mtime:        mtime,
+				Ctime:        ctime,
+				CreationTime: creationTime,
+				Hidden:       hidden,
+			},
+		}, nil
+	}
+	if err != pgx.ErrNoRows {
+		return nil, mapPgError(err, "CreateRootDirectory", shareName)
+	}
+
+	// Create new root directory
+	rootID := uuid.New()
+	now := time.Now()
+
+	insertFileQuery := `
+		INSERT INTO files (
+			id, share_name, path,
+			file_type, mode, uid, gid, size,
+			atime, mtime, ctime, creation_time,
+			content_id, link_target, device_major, device_minor
+		) VALUES (
+			$1, $2, $3,
+			$4, $5, $6, $7, $8,
+			$9, $10, $11, $12,
+			$13, $14, $15, $16
+		)
+	`
+
+	_, err = tx.tx.Exec(ctx, insertFileQuery,
+		rootID,                            // id
+		shareName,                         // share_name
+		"/",                               // path (root)
+		int16(metadata.FileTypeDirectory), // file_type
+		int32(mode),                       // mode
+		int32(uid),                        // uid
+		int32(gid),                        // gid
+		int64(0),                          // size
+		now,                               // atime
+		now,                               // mtime
+		now,                               // ctime
+		now,                               // creation_time
+		nil,                               // content_id (NULL for directories)
+		nil,                               // link_target (NULL)
+		nil,                               // device_major (NULL)
+		nil,                               // device_minor (NULL)
+	)
+	if err != nil {
+		return nil, mapPgError(err, "CreateRootDirectory", shareName)
+	}
+
+	// Insert into link_counts
+	insertLinkCountQuery := `
+		INSERT INTO link_counts (file_id, link_count)
+		VALUES ($1, $2)
+	`
+
+	_, err = tx.tx.Exec(ctx, insertLinkCountQuery, rootID, 2)
+	if err != nil {
+		return nil, mapPgError(err, "CreateRootDirectory", shareName)
+	}
+
+	// Insert into shares table
+	insertShareQuery := `
+		INSERT INTO shares (share_name, root_file_id)
+		VALUES ($1, $2)
+		ON CONFLICT (share_name) DO UPDATE
+		SET root_file_id = EXCLUDED.root_file_id
+	`
+
+	_, err = tx.tx.Exec(ctx, insertShareQuery, shareName, rootID)
+	if err != nil {
+		return nil, mapPgError(err, "CreateRootDirectory", shareName)
+	}
+
+	return &metadata.File{
+		ID:        rootID,
+		ShareName: shareName,
+		Path:      "/",
+		FileAttr: metadata.FileAttr{
+			Type:         metadata.FileTypeDirectory,
+			Mode:         mode,
+			UID:          uid,
+			GID:          gid,
+			Size:         0,
+			Atime:        now,
+			Mtime:        now,
+			Ctime:        now,
+			CreationTime: now,
+		},
+	}, nil
+}
+
+// ============================================================================
+// Transaction ServerConfig Operations
+// ============================================================================
+
+func (tx *postgresTransaction) SetServerConfig(ctx context.Context, config metadata.MetadataServerConfig) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	query := `
+		INSERT INTO server_config (id, config)
+		VALUES (1, $1)
+		ON CONFLICT (id) DO UPDATE
+		SET config = EXCLUDED.config, updated_at = NOW()
+	`
+
+	_, err := tx.tx.Exec(ctx, query, config.CustomSettings)
+	if err != nil {
+		return mapPgError(err, "SetServerConfig", "")
+	}
+
+	return nil
+}
+
+func (tx *postgresTransaction) GetServerConfig(ctx context.Context) (metadata.MetadataServerConfig, error) {
+	if err := ctx.Err(); err != nil {
+		return metadata.MetadataServerConfig{}, err
+	}
+
+	query := `SELECT config FROM server_config WHERE id = 1`
+
+	var customSettings map[string]any
+	err := tx.tx.QueryRow(ctx, query).Scan(&customSettings)
+	if err != nil {
+		return metadata.MetadataServerConfig{}, mapPgError(err, "GetServerConfig", "")
+	}
+
+	return metadata.MetadataServerConfig{
+		CustomSettings: customSettings,
+	}, nil
+}
+
+func (tx *postgresTransaction) GetFilesystemCapabilities(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemCapabilities, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Return cached capabilities
+	caps := tx.store.capabilities
+	return &caps, nil
+}
+
+func (tx *postgresTransaction) SetFilesystemCapabilities(capabilities metadata.FilesystemCapabilities) {
+	tx.store.capabilities = capabilities
+}
+
+func (tx *postgresTransaction) GetFilesystemStatistics(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemStatistics, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	query := `
+		SELECT
+			COALESCE(SUM(size), 0) AS total_bytes_used,
+			COUNT(*) AS total_files_used
+		FROM files
+	`
+
+	var bytesUsed, filesUsed int64
+	err := tx.tx.QueryRow(ctx, query).Scan(&bytesUsed, &filesUsed)
+	if err != nil {
+		return nil, mapPgError(err, "GetFilesystemStatistics", "")
+	}
+
+	stats := metadata.FilesystemStatistics{
+		TotalBytes:     1 << 50, // 1 PB (effectively unlimited)
+		AvailableBytes: (1 << 50) - uint64(bytesUsed),
+		UsedBytes:      uint64(bytesUsed),
+		TotalFiles:     1 << 32, // 4 billion files
+		AvailableFiles: (1 << 32) - uint64(filesUsed),
+		UsedFiles:      uint64(filesUsed),
+	}
+
+	return &stats, nil
+}
+
+// ============================================================================
+// Transaction Files Operations (additional)
+// ============================================================================
+
+func (tx *postgresTransaction) GetFileByContentID(ctx context.Context, contentID metadata.ContentID) (*metadata.File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if contentID == "" {
+		return nil, &metadata.StoreError{
+			Code:    metadata.ErrInvalidArgument,
+			Message: "content ID cannot be empty",
+		}
+	}
+
+	query := `
+		SELECT
+			f.id, f.share_name, f.path,
+			f.file_type, f.mode, f.uid, f.gid, f.size,
+			f.atime, f.mtime, f.ctime, f.creation_time,
+			f.content_id, f.link_target, f.device_major, f.device_minor,
+			f.hidden, lc.link_count
+		FROM files f
+		LEFT JOIN link_counts lc ON f.id = lc.file_id
+		WHERE f.content_id = $1
+		LIMIT 1
+	`
+
+	row := tx.tx.QueryRow(ctx, query, string(contentID))
+	file, err := fileRowToFileWithNlink(row)
+	if err != nil {
+		return nil, mapPgError(err, "GetFileByContentID", string(contentID))
+	}
+
+	return file, nil
 }

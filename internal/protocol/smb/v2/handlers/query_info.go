@@ -367,13 +367,9 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	// Step 2: Get metadata store and file attributes
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
-	if err != nil {
-		logger.Warn("QUERY_INFO: failed to get metadata store", "share", openFile.ShareName, "error", err)
-		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBadNetworkName}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
-	file, err := metadataStore.GetFile(ctx.Context, openFile.MetadataHandle)
+	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("QUERY_INFO: failed to get file", "path", openFile.Path, "error", err)
 		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
@@ -389,7 +385,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	case types.SMB2InfoTypeFile:
 		info, err = h.buildFileInfoFromStore(file, types.FileInfoClass(req.FileInfoClass))
 	case types.SMB2InfoTypeFilesystem:
-		info, err = h.buildFilesystemInfo(ctx.Context, types.FileInfoClass(req.FileInfoClass), metadataStore, openFile.MetadataHandle)
+		info, err = h.buildFilesystemInfo(ctx.Context, types.FileInfoClass(req.FileInfoClass), metaSvc, openFile.MetadataHandle)
 	case types.SMB2InfoTypeSecurity:
 		info, err = h.buildSecurityInfo()
 	default:
@@ -510,7 +506,7 @@ func (h *Handler) buildFileAllInformationFromStore(file *metadata.File) []byte {
 }
 
 // buildFilesystemInfo builds filesystem information [MS-FSCC] 2.5.
-func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoClass, metadataStore metadata.MetadataStore, handle metadata.FileHandle) ([]byte, error) {
+func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoClass, metaSvc *metadata.MetadataService, handle metadata.FileHandle) ([]byte, error) {
 	switch class {
 	case 1: // FileFsVolumeInformation [MS-FSCC] 2.5.9
 		label := []byte{'D', 0, 'i', 0, 't', 0, 't', 0, 'o', 0, 'F', 0, 'S', 0} // "DittoFS" in UTF-16LE
@@ -533,7 +529,7 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 	case 3: // FileFsSizeInformation [MS-FSCC] 2.5.8
 		// Try to get real filesystem stats
 		blockSize := uint64(4096)
-		stats, err := metadataStore.GetFilesystemStatistics(ctx, handle)
+		stats, err := metaSvc.GetFilesystemStatistics(ctx, handle)
 		if err == nil {
 			totalBlocks := stats.TotalBytes / blockSize
 			availBlocks := stats.AvailableBytes / blockSize
@@ -570,7 +566,7 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 
 	case 7: // FileFsFullSizeInformation [MS-FSCC] 2.5.4
 		blockSize := uint64(4096)
-		stats, err := metadataStore.GetFilesystemStatistics(ctx, handle)
+		stats, err := metaSvc.GetFilesystemStatistics(ctx, handle)
 		if err == nil {
 			totalBlocks := stats.TotalBytes / blockSize
 			availBlocks := stats.AvailableBytes / blockSize

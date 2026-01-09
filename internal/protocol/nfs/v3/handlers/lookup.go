@@ -237,17 +237,10 @@ func (h *Handler) Lookup(
 	}
 
 	// ========================================================================
-	// Step 3: Get metadata store from context
+	// Step 3: Get metadata from registry
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "LOOKUP failed",
-			"error", err,
-			"handle", fmt.Sprintf("%x", req.DirHandle),
-			"client", clientIP)
-		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 	logger.DebugCtx(ctx.Context, "LOOKUP",
@@ -268,7 +261,7 @@ func (h *Handler) Lookup(
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	dirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
+	dirFile, err := metaSvc.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "LOOKUP failed: directory not found",
 			"handle", fmt.Sprintf("%x", req.DirHandle),
@@ -348,7 +341,8 @@ func (h *Handler) Lookup(
 		}, nil
 	}
 
-	childFile, err := metadataStore.Lookup(authCtx, dirHandle, req.Filename)
+	metaSvc = h.Registry.GetMetadataService()
+	childFile, err := metaSvc.Lookup(authCtx, dirHandle, req.Filename)
 	if err != nil {
 		logger.DebugCtx(ctx.Context, "LOOKUP failed: child not found or access denied",
 			"name", req.Filename,

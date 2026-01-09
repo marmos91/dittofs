@@ -113,15 +113,15 @@ type OpenFile struct {
 	OplockLevel uint8
 }
 
-// NewHandler creates a new SMB2 handler with default session manager.
+// NewHandler creates a new SMB2 handler with default session metaSvc.
 // For custom session management (e.g., shared across adapters), use
 // NewHandlerWithSessionManager instead.
 func NewHandler() *Handler {
 	return NewHandlerWithSessionManager(session.NewDefaultManager())
 }
 
-// NewHandlerWithSessionManager creates a new SMB2 handler with an external session manager.
-// This allows sharing the session manager with other components (e.g., SMBAdapter for credits).
+// NewHandlerWithSessionManager creates a new SMB2 handler with an external session metaSvc.
+// This allows sharing the session metaSvc with other components (e.g., SMBAdapter for credits).
 func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 	h := &Handler{
 		StartTime:       time.Now(),
@@ -201,17 +201,10 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 		}
 
 		// Release locks for this file
-		metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
-		if err != nil {
-			logger.Warn("ReleaseAllLocksForSession: failed to get metadata store",
-				"share", openFile.ShareName,
-				"path", openFile.Path,
-				"error", err)
-			return true // Continue despite error
-		}
+		metaSvc := h.Registry.GetMetadataService()
 
 		// UnlockAllForSession doesn't return errors for missing locks
-		if unlockErr := metadataStore.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID); unlockErr != nil {
+		if unlockErr := metaSvc.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID); unlockErr != nil {
 			logger.Warn("ReleaseAllLocksForSession: failed to release locks",
 				"share", openFile.ShareName,
 				"path", openFile.Path,
@@ -247,19 +240,11 @@ func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64)
 			return true
 		}
 
-		metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
-		if err != nil {
-			logger.Warn("CloseAllFilesForSession: failed to get metadata store",
-				"share", openFile.ShareName,
-				"error", err)
-			toDelete = append(toDelete, openFile.FileID)
-			closed++
-			return true
-		}
+		metaSvc := h.Registry.GetMetadataService()
 
 		// Release locks for this file
 		if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
-			_ = metadataStore.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID)
+			_ = metaSvc.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID)
 		}
 
 		// Flush cache if needed
@@ -270,15 +255,16 @@ func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64)
 		// Handle delete-on-close (FileDispositionInformation)
 		if openFile.DeletePending && len(openFile.ParentHandle) > 0 && openFile.FileName != "" {
 			authCtx := h.buildCleanupAuthContext(ctx, sess)
+			metaSvc := h.Registry.GetMetadataService()
 			if openFile.IsDirectory {
-				if err := metadataStore.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
+				if err := metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
 					logger.Debug("CloseAllFilesForSession: failed to delete directory",
 						"path", openFile.Path, "error", err)
 				} else {
 					logger.Debug("CloseAllFilesForSession: directory deleted", "path", openFile.Path)
 				}
 			} else {
-				if _, err := metadataStore.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
+				if _, err := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
 					logger.Debug("CloseAllFilesForSession: failed to delete file",
 						"path", openFile.Path, "error", err)
 				} else {
@@ -334,19 +320,11 @@ func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessi
 			return true
 		}
 
-		metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
-		if err != nil {
-			logger.Warn("CloseAllFilesForTree: failed to get metadata store",
-				"share", openFile.ShareName,
-				"error", err)
-			toDelete = append(toDelete, openFile.FileID)
-			closed++
-			return true
-		}
+		metaSvc := h.Registry.GetMetadataService()
 
 		// Release locks for this file
 		if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
-			_ = metadataStore.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID)
+			_ = metaSvc.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID)
 		}
 
 		// Flush cache if needed
@@ -357,15 +335,16 @@ func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessi
 		// Handle delete-on-close (FileDispositionInformation)
 		if openFile.DeletePending && len(openFile.ParentHandle) > 0 && openFile.FileName != "" {
 			authCtx := h.buildCleanupAuthContext(ctx, sess)
+			metaSvc := h.Registry.GetMetadataService()
 			if openFile.IsDirectory {
-				if err := metadataStore.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
+				if err := metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
 					logger.Debug("CloseAllFilesForTree: failed to delete directory",
 						"path", openFile.Path, "error", err)
 				} else {
 					logger.Debug("CloseAllFilesForTree: directory deleted", "path", openFile.Path)
 				}
 			} else {
-				if _, err := metadataStore.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
+				if _, err := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
 					logger.Debug("CloseAllFilesForTree: failed to delete file",
 						"path", openFile.Path, "error", err)
 				} else {

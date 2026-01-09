@@ -175,3 +175,113 @@ func CheckIOConflict(existing *FileLock, sessionID uint64, offset, length uint64
 	// For reads: only exclusive locks block
 	return existing.Exclusive
 }
+
+// ============================================================================
+// Business Logic Functions for File Locking
+// ============================================================================
+//
+// These functions implement file locking operations with proper business logic:
+// - Permission checking
+// - File type validation
+// - Error handling
+//
+// Locks are managed by LockManager (one per share) at the MetadataService level.
+// The store is only used for file existence checks and permission verification.
+
+// lockFileWithManager acquires a byte-range lock on a file.
+//
+// Business logic:
+//   - Verifies file exists
+//   - Verifies file is not a directory (directories cannot be locked)
+//   - Checks user has appropriate permission (read for shared, write for exclusive)
+//
+// Returns:
+//   - error: ErrLocked if conflict exists, ErrNotFound if file doesn't exist,
+//     ErrIsDirectory if target is a directory, ErrPermissionDenied if no permission
+func lockFileWithManager(store MetadataStore, lm *LockManager, ctx *AuthContext, handle FileHandle, lock FileLock) error {
+	if err := ctx.Context.Err(); err != nil {
+		return err
+	}
+
+	// Verify file exists and is not a directory
+	file, err := store.GetFile(ctx.Context, handle)
+	if err != nil {
+		return err
+	}
+
+	if file.Type == FileTypeDirectory {
+		return NewIsDirectoryError("")
+	}
+
+	// Check permissions
+	var requiredPerm Permission
+	if lock.Exclusive {
+		requiredPerm = PermissionWrite
+	} else {
+		requiredPerm = PermissionRead
+	}
+
+	granted, err := CheckFilePermissions(store, ctx, handle, requiredPerm)
+	if err != nil {
+		return err
+	}
+	if granted&requiredPerm == 0 {
+		return NewPermissionDeniedError("")
+	}
+
+	// Acquire the lock via LockManager
+	handleKey := string(handle)
+	return lm.Lock(handleKey, lock)
+}
+
+// testFileLockWithManager checks whether a lock would succeed without acquiring it.
+//
+// Business logic:
+//   - Verifies file exists
+//
+// Returns:
+//   - bool: true if lock would succeed, false if conflict exists
+//   - *LockConflict: Details of conflicting lock if bool is false
+//   - error: ErrNotFound if file doesn't exist
+func testFileLockWithManager(store MetadataStore, lm *LockManager, ctx *AuthContext, handle FileHandle, sessionID, offset, length uint64, exclusive bool) (bool, *LockConflict, error) {
+	if err := ctx.Context.Err(); err != nil {
+		return false, nil, err
+	}
+
+	// Verify file exists
+	_, err := store.GetFile(ctx.Context, handle)
+	if err != nil {
+		return false, nil, err
+	}
+
+	handleKey := string(handle)
+	ok, conflict := lm.TestLock(handleKey, sessionID, offset, length, exclusive)
+	return ok, conflict, nil
+}
+
+// listFileLocksWithManager returns all active locks on a file.
+//
+// Business logic:
+//   - Verifies file exists
+//
+// Returns:
+//   - []FileLock: All active locks on the file (empty slice if none)
+//   - error: ErrNotFound if file doesn't exist
+func listFileLocksWithManager(store MetadataStore, lm *LockManager, ctx *AuthContext, handle FileHandle) ([]FileLock, error) {
+	if err := ctx.Context.Err(); err != nil {
+		return nil, err
+	}
+
+	// Verify file exists
+	_, err := store.GetFile(ctx.Context, handle)
+	if err != nil {
+		return nil, err
+	}
+
+	handleKey := string(handle)
+	locks := lm.ListLocks(handleKey)
+	if locks == nil {
+		return []FileLock{}, nil
+	}
+	return locks, nil
+}

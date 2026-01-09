@@ -80,7 +80,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 
 	// Create registry and register stores
 	reg := registry.NewRegistry()
-	if err := reg.RegisterMetadataStore("test-meta", metaStore); err != nil {
+	if err := reg.RegisterMetadataStore("test-metaSvc", metaStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}
 	if err := reg.RegisterContentStore("test-content", contentStore); err != nil {
@@ -90,7 +90,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 	// Add share
 	shareConfig := &registry.ShareConfig{
 		Name:          DefaultShareName,
-		MetadataStore: "test-meta",
+		MetadataStore: "test-metaSvc",
 		ContentStore:  "test-content",
 		RootAttr:      &metadata.FileAttr{}, // Empty attr, AddShare will apply defaults
 	}
@@ -193,7 +193,7 @@ func (f *HandlerTestFixture) CreateDirectory(path string) metadata.FileHandle {
 	parentHandle := f.RootHandle
 	for _, name := range components {
 		// Check if already exists
-		existing, err := f.MetadataStore.Lookup(authCtx, parentHandle, name)
+		existing, err := metadata.Lookup(f.MetadataStore, authCtx, parentHandle, name)
 		if err == nil {
 			handle, err := metadata.EncodeFileHandle(existing)
 			if err != nil {
@@ -204,7 +204,7 @@ func (f *HandlerTestFixture) CreateDirectory(path string) metadata.FileHandle {
 		}
 
 		// Create directory
-		dir, err := f.MetadataStore.Create(authCtx, parentHandle, name, &metadata.FileAttr{
+		dir, err := metadata.CreateDirectory(f.MetadataStore, authCtx, parentHandle, name, &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0755,
 			UID:  DefaultUID,
@@ -247,7 +247,7 @@ func (f *HandlerTestFixture) CreateFile(path string, content []byte) metadata.Fi
 
 	// Create the file
 	name := filepath.Base(path)
-	file, err := f.MetadataStore.Create(authCtx, parentHandle, name, &metadata.FileAttr{
+	file, err := metadata.CreateFile(f.MetadataStore, authCtx, parentHandle, name, &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0644,
 		UID:  DefaultUID,
@@ -265,7 +265,7 @@ func (f *HandlerTestFixture) CreateFile(path string, content []byte) metadata.Fi
 
 		// Update file size in metadata
 		newSize := uint64(len(content))
-		err := f.MetadataStore.SetFileAttributes(authCtx, mustEncodeHandle(f.t, file), &metadata.SetAttrs{
+		err := metadata.SetFileAttributes(f.MetadataStore, authCtx, mustEncodeHandle(f.t, file), &metadata.SetAttrs{
 			Size: &newSize,
 		})
 		if err != nil {
@@ -295,7 +295,7 @@ func (f *HandlerTestFixture) CreateSymlink(path, target string) metadata.FileHan
 
 	// Create the symlink
 	name := filepath.Base(path)
-	symlink, err := f.MetadataStore.CreateSymlink(authCtx, parentHandle, name, target, &metadata.FileAttr{
+	symlink, err := metadata.CreateSymlink(f.MetadataStore, authCtx, parentHandle, name, target, &metadata.FileAttr{
 		Mode: 0777,
 		UID:  DefaultUID,
 		GID:  DefaultGID,
@@ -323,7 +323,7 @@ func (f *HandlerTestFixture) GetHandle(path string) metadata.FileHandle {
 
 	currentHandle := f.RootHandle
 	for _, name := range components {
-		file, err := f.MetadataStore.Lookup(authCtx, currentHandle, name)
+		file, err := metadata.Lookup(f.MetadataStore, authCtx, currentHandle, name)
 		if err != nil {
 			return nil
 		}

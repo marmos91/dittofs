@@ -275,17 +275,7 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 	}
 
 	// ========================================================================
-	// Step 2: Get metadata store
-	// ========================================================================
-
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
-	if err != nil {
-		logger.Warn("SET_INFO: failed to get metadata store", "share", openFile.ShareName, "error", err)
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBadNetworkName}}, nil
-	}
-
-	// ========================================================================
-	// Step 3: Build AuthContext
+	// Step 2: Build AuthContext
 	// ========================================================================
 
 	authCtx, err := BuildAuthContext(ctx, h.Registry)
@@ -300,7 +290,7 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 
 	switch req.InfoType {
 	case types.SMB2InfoTypeFile:
-		return h.setFileInfoFromStore(authCtx, metadataStore, openFile, types.FileInfoClass(req.FileInfoClass), req.Buffer)
+		return h.setFileInfoFromStore(authCtx, openFile, types.FileInfoClass(req.FileInfoClass), req.Buffer)
 	case types.SMB2InfoTypeSecurity:
 		// Accept but ignore security updates for now
 		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
@@ -316,7 +306,6 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 // setFileInfoFromStore handles setting file information using metadata store.
 func (h *Handler) setFileInfoFromStore(
 	authCtx *metadata.AuthContext,
-	metadataStore metadata.MetadataStore,
 	openFile *OpenFile,
 	class types.FileInfoClass,
 	buffer []byte,
@@ -337,7 +326,8 @@ func (h *Handler) setFileInfoFromStore(
 		setAttrs := SMBTimesToSetAttrs(basicInfo)
 
 		// Apply changes
-		err = metadataStore.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
+		metaSvc := h.Registry.GetMetadataService()
+		err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 		if err != nil {
 			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Path, "error", err)
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
@@ -385,7 +375,7 @@ func (h *Handler) setFileInfoFromStore(
 			if dirPath == "." || dirPath == "" {
 				toDir = rootHandle
 			} else {
-				toDir, err = h.walkPath(authCtx, metadataStore, rootHandle, dirPath)
+				toDir, err = h.walkPath(authCtx, rootHandle, dirPath)
 				if err != nil {
 					logger.Debug("SET_INFO: destination path not found", "path", dirPath, "error", err)
 					return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectPathNotFound}}, nil
@@ -409,7 +399,8 @@ func (h *Handler) setFileInfoFromStore(
 		oldParentPath := GetParentPath(oldPath)
 
 		// Perform the rename/move
-		err = metadataStore.Move(authCtx, openFile.ParentHandle, openFile.FileName, toDir, toName)
+		metaSvc := h.Registry.GetMetadataService()
+		err = metaSvc.Move(authCtx, openFile.ParentHandle, openFile.FileName, toDir, toName)
 		if err != nil {
 			logger.Debug("SET_INFO: rename failed",
 				"from", openFile.Path,
@@ -514,7 +505,8 @@ func (h *Handler) setFileInfoFromStore(
 			Size: &newSize,
 		}
 
-		err = metadataStore.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
+		metaSvc := h.Registry.GetMetadataService()
+		err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 		if err != nil {
 			logger.Debug("SET_INFO: failed to set EOF", "path", openFile.Path, "error", err)
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil

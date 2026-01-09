@@ -341,11 +341,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 4: Get metadata and content stores
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(tree.ShareName)
-	if err != nil {
-		logger.Warn("READ: failed to get metadata store", "share", tree.ShareName, "error", err)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBadNetworkName}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	contentStore, err := h.Registry.GetContentStoreForShare(tree.ShareName)
 	if err != nil {
@@ -370,7 +366,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 6: Check for symlink - generate MFsymlink content on-the-fly
 	// ========================================================================
 
-	file, err := metadataStore.GetFile(authCtx.Context, openFile.MetadataHandle)
+	file, err := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("READ: failed to get file metadata", "path", openFile.Path, "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
@@ -382,7 +378,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	}
 
 	// Validate read permission using PrepareRead (for regular files only)
-	readMeta, err := metadataStore.PrepareRead(authCtx, openFile.MetadataHandle)
+	readMeta, err := metaSvc.PrepareRead(authCtx, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("READ: permission check failed", "path", openFile.Path, "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
@@ -393,7 +389,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// ========================================================================
 
 	// Reads are blocked by another session's exclusive locks
-	if err := metadataStore.CheckLockForIO(
+	if err := metaSvc.CheckLockForIO(
 		authCtx.Context,
 		openFile.MetadataHandle,
 		ctx.SessionID,

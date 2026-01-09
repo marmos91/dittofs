@@ -78,22 +78,6 @@ type BadgerMetadataStore struct {
 		ttl       time.Duration
 		mu        sync.RWMutex
 	}
-
-	// fileLocks provides per-file write serialization to prevent BadgerDB transaction conflicts.
-	// When parallel NFS request handling is enabled, multiple WRITEs to the same file can
-	// happen concurrently. Without serialization, they cause BadgerDB transaction conflicts.
-	// This map holds a mutex for each file ID that has active writes.
-	fileLocks sync.Map // map[string]*sync.Mutex (file ID -> mutex)
-
-	// dirLocks provides per-directory mutation serialization to prevent BadgerDB transaction conflicts.
-	// Operations that modify directory entries (Create, Remove, Move) acquire the parent directory lock.
-	// This ensures concurrent operations on the same directory are serialized deterministically.
-	dirLocks sync.Map // map[string]*sync.Mutex (directory UUID -> mutex)
-
-	// byteRangeLocks manages byte-range file locks for SMB/NLM protocol support.
-	// These locks are ephemeral (in-memory only) and are lost on server restart.
-	// They are separate from the fileLocks/dirLocks which are for BadgerDB transaction serialization.
-	byteRangeLocks byteRangeLockManager
 }
 
 // BadgerMetadataStoreConfig contains configuration for creating a BadgerDB metadata store.

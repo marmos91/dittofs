@@ -1,5 +1,9 @@
 package metadata
 
+import (
+	"time"
+)
+
 // ReadDirPage represents one page of directory entries returned by ReadDirectory.
 //
 // This structure supports paginated directory reading, which is essential for:
@@ -129,4 +133,234 @@ type ReadDirPage struct {
 	//   - If NextToken is empty, HasMore must be false
 	//   - If NextToken is non-empty, HasMore must be true
 	HasMore bool
+}
+
+// ============================================================================
+// Directory Operations
+// ============================================================================
+
+// ReadDirectory reads one page of directory entries with permission checking.
+//
+// This is the centralized implementation of directory reading that all stores
+// should delegate to. It handles:
+//   - Permission checking (read + traverse on directory)
+//   - Delegation to store's ListChildren CRUD operation
+//
+// Parameters:
+//   - store: MetadataStore for CRUD operations
+//   - ctx: Authentication context
+//   - dirHandle: Handle of directory to read
+//   - token: Pagination token (empty for first page)
+//   - maxBytes: Maximum response size hint
+//
+// Returns:
+//   - *ReadDirPage: Page of directory entries
+//   - error: ErrNotDirectory, ErrAccessDenied, etc.
+func ReadDirectory(
+	store MetadataStore,
+	ctx *AuthContext,
+	dirHandle FileHandle,
+	token string,
+	maxBytes uint32,
+) (*ReadDirPage, error) {
+	// Check context
+	if err := ctx.Context.Err(); err != nil {
+		return nil, err
+	}
+
+	// Get directory entry to verify type
+	dir, err := store.GetFile(ctx.Context, dirHandle)
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify it's a directory
+	if dir.Type != FileTypeDirectory {
+		return nil, &StoreError{
+			Code:    ErrNotDirectory,
+			Message: "not a directory",
+			Path:    dir.Path,
+		}
+	}
+
+	// Check read and traverse permissions
+	granted, err := CheckFilePermissions(store, ctx, dirHandle, PermissionRead|PermissionTraverse)
+	if err != nil {
+		return nil, err
+	}
+	if granted&PermissionRead == 0 || granted&PermissionTraverse == 0 {
+		return nil, &StoreError{
+			Code:    ErrAccessDenied,
+			Message: "no read or execute permission on directory",
+			Path:    dir.Path,
+		}
+	}
+
+	// Estimate max entries from maxBytes (rough estimate: ~200 bytes per entry)
+	limit := 1000
+	if maxBytes > 0 {
+		limit = int(maxBytes / 200)
+		if limit < 10 {
+			limit = 10
+		}
+	}
+
+	// Call store's CRUD ListChildren method
+	entries, nextToken, err := store.ListChildren(ctx.Context, dirHandle, token, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ReadDirPage{
+		Entries:   entries,
+		NextToken: nextToken,
+		HasMore:   nextToken != "",
+	}, nil
+}
+
+// RemoveDirectory removes an empty directory from its parent.
+//
+// This is the centralized implementation of directory removal that all stores
+// should delegate to. It handles:
+//   - Input validation
+//   - Permission checking (write on parent)
+//   - Sticky bit enforcement
+//   - Empty check (directory must have no children)
+//   - Parent link count update (removing ".." reference)
+//   - Parent timestamp updates
+//
+// Parameters:
+//   - store: MetadataStore for CRUD operations
+//   - ctx: Authentication context
+//   - parentHandle: Handle of parent directory
+//   - name: Name of directory to remove
+//
+// Returns:
+//   - error: Various errors for validation, permission, not empty, etc.
+func RemoveDirectory(
+	store MetadataStore,
+	ctx *AuthContext,
+	parentHandle FileHandle,
+	name string,
+) error {
+	// Validate name
+	if err := ValidateName(name); err != nil {
+		return err
+	}
+
+	// Get parent entry
+	parent, err := store.GetFile(ctx.Context, parentHandle)
+	if err != nil {
+		return err
+	}
+
+	// Verify parent is a directory
+	if parent.Type != FileTypeDirectory {
+		return &StoreError{
+			Code:    ErrNotDirectory,
+			Message: "parent is not a directory",
+			Path:    parent.Path,
+		}
+	}
+
+	// Check write permission on parent
+	if err := CheckWritePermission(store, ctx, parentHandle); err != nil {
+		return err
+	}
+
+	// Get child handle
+	dirHandle, err := store.GetChild(ctx.Context, parentHandle, name)
+	if err != nil {
+		return err
+	}
+
+	// Get directory entry
+	dir, err := store.GetFile(ctx.Context, dirHandle)
+	if err != nil {
+		return err
+	}
+
+	// Verify it's a directory
+	if dir.Type != FileTypeDirectory {
+		return &StoreError{
+			Code:    ErrNotDirectory,
+			Message: "not a directory",
+			Path:    name,
+		}
+	}
+
+	// Check sticky bit restriction
+	if err := CheckStickyBitRestriction(ctx, &parent.FileAttr, &dir.FileAttr); err != nil {
+		return err
+	}
+
+	// Check if directory is empty by trying to list children (using CRUD directly)
+	// We use limit=1 to just check if any children exist
+	entries, _, err := store.ListChildren(ctx.Context, dirHandle, "", 1)
+	if err == nil && len(entries) > 0 {
+		return &StoreError{
+			Code:    ErrNotEmpty,
+			Message: "directory not empty",
+			Path:    name,
+		}
+	}
+
+	// Remove directory entry
+	if err := store.DeleteFile(ctx.Context, dirHandle); err != nil {
+		return err
+	}
+
+	// Remove from parent's children
+	if err := store.DeleteChild(ctx.Context, parentHandle, name); err != nil {
+		return err
+	}
+
+	// Update parent's link count (removing ".." reference)
+	parentLinkCount, err := store.GetLinkCount(ctx.Context, parentHandle)
+	if err == nil && parentLinkCount > 0 {
+		if err := store.SetLinkCount(ctx.Context, parentHandle, parentLinkCount-1); err != nil {
+			// Non-fatal, continue
+		}
+	}
+
+	// Update parent timestamps
+	now := time.Now()
+	parent.Mtime = now
+	parent.Ctime = now
+	if err := store.PutFile(ctx.Context, parent); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// CreateDirectory creates a new directory in a parent directory.
+//
+// This is the centralized implementation of directory creation that all stores
+// should delegate to. It handles:
+//   - Input validation
+//   - Permission checking (write on parent)
+//   - Name collision detection
+//   - Default attribute application
+//   - Parent link count update (new ".." reference)
+//   - Parent timestamp updates
+//
+// Parameters:
+//   - store: MetadataStore for CRUD operations
+//   - ctx: Authentication context
+//   - parentHandle: Handle of parent directory
+//   - name: Name for the new directory
+//   - attr: Initial attributes (Mode, UID, GID)
+//
+// Returns:
+//   - *File: Created directory's complete metadata
+//   - error: ErrAlreadyExists, ErrAccessDenied, etc.
+func CreateDirectory(
+	store MetadataStore,
+	ctx *AuthContext,
+	parentHandle FileHandle,
+	name string,
+	attr *FileAttr,
+) (*File, error) {
+	return createEntry(store, ctx, parentHandle, name, attr, FileTypeDirectory, "", 0, 0)
 }

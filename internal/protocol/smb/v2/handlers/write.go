@@ -362,11 +362,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Step 5: Get metadata and content stores
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(tree.ShareName)
-	if err != nil {
-		logger.Warn("WRITE: failed to get metadata store", "share", tree.ShareName, "error", err)
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBadNetworkName}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	contentStore, err := h.Registry.GetContentStoreForShare(tree.ShareName)
 	if err != nil {
@@ -392,7 +388,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// ========================================================================
 
 	// Writes are blocked by any other session's lock (shared or exclusive)
-	if err := metadataStore.CheckLockForIO(
+	if err := metaSvc.CheckLockForIO(
 		authCtx.Context,
 		openFile.MetadataHandle,
 		ctx.SessionID,
@@ -409,7 +405,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// ========================================================================
 
 	newSize := req.Offset + uint64(len(req.Data))
-	writeOp, err := metadataStore.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
+	writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
 	if err != nil {
 		logger.Debug("WRITE: prepare failed", "path", openFile.Path, "error", err)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
@@ -445,7 +441,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Step 9: Commit write operation
 	// ========================================================================
 
-	_, err = metadataStore.CommitWrite(authCtx, writeOp)
+	_, err = metaSvc.CommitWrite(authCtx, writeOp)
 	if err != nil {
 		logger.Warn("WRITE: commit failed", "path", openFile.Path, "error", err)
 		// Data was written but metadata not updated - this is an inconsistent state

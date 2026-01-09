@@ -177,17 +177,10 @@ func (h *Handler) GetAttr(
 	}
 
 	// ========================================================================
-	// Step 2: Get metadata store from context
+	// Step 2: Get metadata from registry
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "GETATTR failed",
-			"error", err,
-			"handle", fmt.Sprintf("%x", req.Handle),
-			"client", clientIP)
-		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	_ = h.Registry.GetMetadataService() // metaSvc available if needed later
 
 	// ========================================================================
 	// Step 3: Verify file handle exists and retrieve attributes
@@ -195,7 +188,7 @@ func (h *Handler) GetAttr(
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "GETATTR", req.Handle)
+	file, status, err := h.getFileOrError(ctx, fileHandle, "GETATTR", req.Handle)
 	if file == nil {
 		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}

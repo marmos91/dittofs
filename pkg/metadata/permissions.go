@@ -197,7 +197,7 @@ func CheckFilePermissions(
 	}
 
 	// Get file data using CRUD method
-	file, err := store.GetEntry(ctx.Context, handle)
+	file, err := store.GetFile(ctx.Context, handle)
 	if err != nil {
 		return 0, err
 	}
@@ -279,7 +279,7 @@ func CheckWritePermission(store MetadataStore, ctx *AuthContext, handle FileHand
 
 	if granted&PermissionWrite == 0 {
 		return &StoreError{
-			Code:    ErrAccessDenied,
+			Code:    ErrPermissionDenied,
 			Message: "write permission denied",
 		}
 	}
@@ -296,7 +296,7 @@ func CheckReadPermission(store MetadataStore, ctx *AuthContext, handle FileHandl
 
 	if granted&PermissionRead == 0 {
 		return &StoreError{
-			Code:    ErrAccessDenied,
+			Code:    ErrPermissionDenied,
 			Message: "read permission denied",
 		}
 	}
@@ -313,7 +313,7 @@ func CheckExecutePermission(store MetadataStore, ctx *AuthContext, handle FileHa
 
 	if granted&PermissionExecute == 0 {
 		return &StoreError{
-			Code:    ErrAccessDenied,
+			Code:    ErrPermissionDenied,
 			Message: "execute permission denied",
 		}
 	}
@@ -324,7 +324,7 @@ func CheckExecutePermission(store MetadataStore, ctx *AuthContext, handle FileHa
 // CheckDirectoryWritePermission checks write permission on a directory.
 func CheckDirectoryWritePermission(store MetadataStore, ctx *AuthContext, dirHandle FileHandle) error {
 	// Get directory entry
-	dir, err := store.GetEntry(ctx.Context, dirHandle)
+	dir, err := store.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		return err
 	}

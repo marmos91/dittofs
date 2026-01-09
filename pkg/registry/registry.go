@@ -42,6 +42,7 @@ type Registry struct {
 	shares    map[string]*Share
 	mounts    map[string]*MountInfo // key: clientAddr, value: mount info
 	userStore identity.UserStore    // User/group management for authentication
+	metaSvc      *metadata.MetadataService    // High-level metadata operations
 }
 
 // MountInfo represents an active NFS mount from a client.
@@ -59,11 +60,13 @@ func NewRegistry() *Registry {
 		caches:   make(map[string]cache.Cache),
 		shares:   make(map[string]*Share),
 		mounts:   make(map[string]*MountInfo),
+		metaSvc:     metadata.New(),
 	}
 }
 
 // RegisterMetadataStore adds a named metadata store to the registry.
 // Returns an error if a store with the same name already exists.
+// Note: The store will be associated with shares via AddShare.
 func (r *Registry) RegisterMetadataStore(name string, store metadata.MetadataStore) error {
 	if store == nil {
 		return fmt.Errorf("cannot register nil metadata store")
@@ -235,6 +238,12 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 
 	r.shares[config.Name] = share
 
+	// Register the store with the Metadata instance for this share
+	if err := r.metaSvc.RegisterStoreForShare(config.Name, metadataStore); err != nil {
+		delete(r.shares, config.Name)
+		return fmt.Errorf("failed to configure metadata for share: %w", err)
+	}
+
 	return nil
 }
 
@@ -343,6 +352,13 @@ func (r *Registry) GetMetadataStoreForShare(shareName string) (metadata.Metadata
 	}
 
 	return store, nil
+}
+
+// GetMetadata returns the Metadata instance for high-level operations.
+// Metadata provides methods like Lookup, CreateFile, RemoveFile, etc.
+// that handle business logic and automatically route to the correct store based on share.
+func (r *Registry) GetMetadataService() *metadata.MetadataService {
+	return r.metaSvc
 }
 
 // GetContentStoreForShare retrieves the content store used by the specified share.

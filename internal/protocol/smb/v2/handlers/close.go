@@ -338,22 +338,20 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 	// If SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB was set, return file attributes
 	if types.CloseFlags(req.Flags)&types.SMB2ClosePostQueryAttrib != 0 {
-		// Get metadata store to retrieve final attributes
-		metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
+		// Get metadata to retrieve final attributes
+		metaSvc := h.Registry.GetMetadataService()
+		file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
 		if err == nil {
-			file, err := metadataStore.GetFile(ctx.Context, openFile.MetadataHandle)
-			if err == nil {
-				creation, access, write, change := FileAttrToSMBTimes(&file.FileAttr)
-				allocationSize := ((file.Size + 4095) / 4096) * 4096
+			creation, access, write, change := FileAttrToSMBTimes(&file.FileAttr)
+			allocationSize := ((file.Size + 4095) / 4096) * 4096
 
-				resp.CreationTime = creation
-				resp.LastAccessTime = access
-				resp.LastWriteTime = write
-				resp.ChangeTime = change
-				resp.AllocationSize = allocationSize
-				resp.EndOfFile = file.Size
-				resp.FileAttributes = FileAttrToSMBAttributes(&file.FileAttr)
-			}
+			resp.CreationTime = creation
+			resp.LastAccessTime = access
+			resp.LastWriteTime = write
+			resp.ChangeTime = change
+			resp.AllocationSize = allocationSize
+			resp.EndOfFile = file.Size
+			resp.FileAttributes = FileAttrToSMBAttributes(&file.FileAttr)
 		}
 	}
 
@@ -364,12 +362,10 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// ========================================================================
 
 	if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
-		metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
-		if err == nil {
-			if unlockErr := metadataStore.UnlockAllForSession(ctx.Context, openFile.MetadataHandle, ctx.SessionID); unlockErr != nil {
-				logger.Warn("CLOSE: failed to release locks", "path", openFile.Path, "error", unlockErr)
-				// Continue with close even if unlock fails
-			}
+		metaSvc := h.Registry.GetMetadataService()
+		if unlockErr := metaSvc.UnlockAllForSession(ctx.Context, openFile.MetadataHandle, ctx.SessionID); unlockErr != nil {
+			logger.Warn("CLOSE: failed to release locks", "path", openFile.Path, "error", unlockErr)
+			// Continue with close even if unlock fails
 		}
 	}
 
@@ -378,41 +374,37 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// ========================================================================
 
 	if openFile.DeletePending {
-		metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
+		authCtx, err := BuildAuthContext(ctx, h.Registry)
 		if err != nil {
-			logger.Warn("CLOSE: failed to get metadata store for delete", "share", openFile.ShareName, "error", err)
+			logger.Warn("CLOSE: failed to build auth context for delete", "error", err)
 		} else {
-			authCtx, err := BuildAuthContext(ctx, h.Registry)
-			if err != nil {
-				logger.Warn("CLOSE: failed to build auth context for delete", "error", err)
-			} else {
-				if openFile.IsDirectory {
-					// Delete directory
-					err = metadataStore.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName)
-					if err != nil {
-						logger.Debug("CLOSE: failed to delete directory", "path", openFile.Path, "error", err)
-						// Continue with close even if delete fails
-					} else {
-						logger.Debug("CLOSE: directory deleted", "path", openFile.Path)
-						// Notify watchers about deletion
-						if h.NotifyRegistry != nil {
-							parentPath := GetParentPath(openFile.Path)
-							h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved)
-						}
-					}
+			metaSvc := h.Registry.GetMetadataService()
+			if openFile.IsDirectory {
+				// Delete directory
+				err = metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName)
+				if err != nil {
+					logger.Debug("CLOSE: failed to delete directory", "path", openFile.Path, "error", err)
+					// Continue with close even if delete fails
 				} else {
-					// Delete file
-					_, err = metadataStore.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName)
-					if err != nil {
-						logger.Debug("CLOSE: failed to delete file", "path", openFile.Path, "error", err)
-						// Continue with close even if delete fails
-					} else {
-						logger.Debug("CLOSE: file deleted", "path", openFile.Path)
-						// Notify watchers about deletion
-						if h.NotifyRegistry != nil {
-							parentPath := GetParentPath(openFile.Path)
-							h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved)
-						}
+					logger.Debug("CLOSE: directory deleted", "path", openFile.Path)
+					// Notify watchers about deletion
+					if h.NotifyRegistry != nil {
+						parentPath := GetParentPath(openFile.Path)
+						h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved)
+					}
+				}
+			} else {
+				// Delete file
+				_, err = metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName)
+				if err != nil {
+					logger.Debug("CLOSE: failed to delete file", "path", openFile.Path, "error", err)
+					// Continue with close even if delete fails
+				} else {
+					logger.Debug("CLOSE: file deleted", "path", openFile.Path)
+					// Notify watchers about deletion
+					if h.NotifyRegistry != nil {
+						parentPath := GetParentPath(openFile.Path)
+						h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved)
 					}
 				}
 			}
@@ -478,13 +470,10 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 // or (false, error) if conversion failed.
 func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *OpenFile) (bool, error) {
 	// Get metadata store
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
-	if err != nil {
-		return false, err
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	// Get file metadata to check size
-	file, err := metadataStore.GetFile(ctx.Context, openFile.MetadataHandle)
+	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
 		return false, err
 	}
@@ -579,11 +568,6 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 		return fmt.Errorf("missing parent handle or filename for MFsymlink conversion")
 	}
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
-	if err != nil {
-		return err
-	}
-
 	authCtx, err := BuildAuthContext(ctx, h.Registry)
 	if err != nil {
 		return err
@@ -594,7 +578,8 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 	fileName := openFile.FileName
 
 	// Remove the regular file
-	_, err = metadataStore.RemoveFile(authCtx, parentHandle, fileName)
+	metaSvc := h.Registry.GetMetadataService()
+	_, err = metaSvc.RemoveFile(authCtx, parentHandle, fileName)
 	if err != nil {
 		return fmt.Errorf("failed to remove MFsymlink file: %w", err)
 	}
@@ -610,7 +595,7 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 	// Create the real symlink with default attributes
 	// Pass empty FileAttr - CreateSymlink will apply defaults
 	symlinkAttr := &metadata.FileAttr{}
-	_, err = metadataStore.CreateSymlink(authCtx, parentHandle, fileName, target, symlinkAttr)
+	_, err = metaSvc.CreateSymlink(authCtx, parentHandle, fileName, target, symlinkAttr)
 	if err != nil {
 		return fmt.Errorf("failed to create symlink: %w", err)
 	}

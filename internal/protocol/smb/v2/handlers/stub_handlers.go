@@ -97,13 +97,6 @@ func (h *Handler) handleGetReparsePoint(ctx *SMBHandlerContext, body []byte) (*H
 		return NewErrorResult(types.StatusInvalidHandle), nil
 	}
 
-	// Get metadata store
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
-	if err != nil {
-		logger.Warn("IOCTL GET_REPARSE_POINT: failed to get metadata store", "error", err)
-		return NewErrorResult(types.StatusBadNetworkName), nil
-	}
-
 	// Build auth context
 	authCtx, err := BuildAuthContext(ctx, h.Registry)
 	if err != nil {
@@ -112,7 +105,8 @@ func (h *Handler) handleGetReparsePoint(ctx *SMBHandlerContext, body []byte) (*H
 	}
 
 	// Read symlink target
-	target, _, err := metadataStore.ReadSymlink(authCtx, openFile.MetadataHandle)
+	metaSvc := h.Registry.GetMetadataService()
+	target, _, err := metaSvc.ReadSymlink(authCtx, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("IOCTL GET_REPARSE_POINT: not a symlink or read failed",
 			"path", openFile.Path, "error", err)

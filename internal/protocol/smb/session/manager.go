@@ -28,12 +28,12 @@ type Manager struct {
 	totalOperations atomic.Uint64 // Total requests processed
 }
 
-// NewManager creates a new session manager with the given credit configuration.
+// NewManager creates a new session metaSvc with the given credit configuration.
 func NewManager(config CreditConfig) *Manager {
 	return NewManagerWithStrategy(StrategyAdaptive, config)
 }
 
-// NewManagerWithStrategy creates a new session manager with explicit strategy.
+// NewManagerWithStrategy creates a new session metaSvc with explicit strategy.
 func NewManagerWithStrategy(strategy CreditStrategy, config CreditConfig) *Manager {
 	m := &Manager{
 		config:   config,
@@ -50,7 +50,7 @@ func NewManagerWithStrategy(strategy CreditStrategy, config CreditConfig) *Manag
 	return m
 }
 
-// NewDefaultManager creates a session manager with adaptive strategy and default config.
+// NewDefaultManager creates a session metaSvc with adaptive strategy and default config.
 func NewDefaultManager() *Manager {
 	return NewManager(DefaultCreditConfig())
 }

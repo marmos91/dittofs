@@ -217,11 +217,7 @@ func (h *Handler) Link(
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrInval}}, nil
 	}
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "LINK failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
-		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 	logger.DebugCtx(ctx.Context, "LINK", "share", ctx.Share, "name", req.Name)
@@ -255,7 +251,7 @@ func (h *Handler) Link(
 	// Step 5: Verify source file exists and is a regular file
 	// ========================================================================
 
-	fileAttr, err := metadataStore.GetFile(ctx.Context, fileHandle)
+	fileAttr, err := metaSvc.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "LINK failed: source file not found", "file_handle", fmt.Sprintf("%x", req.FileHandle), "client", clientIP, "error", err)
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
@@ -280,7 +276,7 @@ func (h *Handler) Link(
 	// Step 7: Verify target directory exists and is a directory
 	// ========================================================================
 
-	dirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
+	dirFile, err := metaSvc.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "LINK failed: target directory not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
@@ -316,13 +312,14 @@ func (h *Handler) Link(
 	// Step 9: Check if name already exists in target directory using Lookup
 	// ========================================================================
 
-	_, err = metadataStore.Lookup(authCtx, dirHandle, req.Name)
+	metaSvc = h.Registry.GetMetadataService()
+	_, err = metaSvc.Lookup(authCtx, dirHandle, req.Name)
 	if err == nil {
 		// No error means file exists
 		logger.DebugCtx(ctx.Context, "LINK failed: name already exists", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		// Get updated directory attributes for WCC
-		updatedDirFile, _ := metadataStore.GetFile(ctx.Context, dirHandle)
+		updatedDirFile, _ := metaSvc.GetFile(ctx.Context, dirHandle)
 		dirWccAfter := h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
 
 		return &LinkResponse{
@@ -352,12 +349,12 @@ func (h *Handler) Link(
 	// - Incrementing the link count (nlink) on the file
 	// - Updating directory timestamps
 
-	err = metadataStore.CreateHardLink(authCtx, dirHandle, req.Name, fileHandle)
+	err = metaSvc.CreateHardLink(authCtx, dirHandle, req.Name, fileHandle)
 	if err != nil {
 		traceError(ctx.Context, err, "LINK failed: store error", "name", req.Name, "client", clientIP)
 
 		// Get updated directory attributes for WCC
-		updatedDirFile, _ := metadataStore.GetFile(ctx.Context, dirHandle)
+		updatedDirFile, _ := metaSvc.GetFile(ctx.Context, dirHandle)
 		dirWccAfter := h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
 
 		// Map store errors to NFS status codes
@@ -377,7 +374,7 @@ func (h *Handler) Link(
 	// is best-effort for cache consistency
 
 	// Get updated file attributes (nlink should be incremented)
-	updatedFile, err := metadataStore.GetFile(ctx.Context, fileHandle)
+	updatedFile, err := metaSvc.GetFile(ctx.Context, fileHandle)
 	if err != nil {
 		traceError(ctx.Context, err, "LINK: failed to get file attributes after link", "file_handle", fmt.Sprintf("%x", req.FileHandle))
 		// Continue with cached attributes - this shouldn't happen but handle gracefully
@@ -386,7 +383,7 @@ func (h *Handler) Link(
 	nfsFileAttr := h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
 
 	// Get updated directory attributes
-	updatedDirFile, _ := metadataStore.GetFile(ctx.Context, dirHandle)
+	updatedDirFile, _ := metaSvc.GetFile(ctx.Context, dirHandle)
 	nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
 
 	logger.InfoCtx(ctx.Context, "LINK successful", "name", req.Name, "file_handle", fmt.Sprintf("%x", req.FileHandle), "nlink", nfsFileAttr.Nlink, "client", clientIP)

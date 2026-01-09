@@ -29,7 +29,7 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 	// Setup: Create temporary directory for test database
 	// ========================================================================
 
-	tempDir, err := os.MkdirTemp("", "dittofs-badger-meta-*")
+	tempDir, err := os.MkdirTemp("", "dittofs-badger-metaSvc-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -161,10 +161,10 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 				t.Errorf("Expected directory type, got %v", fileAttr.Type)
 			}
 
-			// Verify share name
-			shareName, err := store.GetShareNameForHandle(ctx, rootHandle)
+			// Verify share name (decode directly from handle)
+			shareName, _, err := metadata.DecodeFileHandle(rootHandle)
 			if err != nil {
-				t.Fatalf("Failed to get share name: %v", err)
+				t.Fatalf("Failed to decode share name from handle: %v", err)
 			}
 			if shareName != "persistshare" {
 				t.Errorf("Expected share name 'persistshare', got '%s'", shareName)
@@ -239,7 +239,7 @@ func TestBadgerMetadataStore_FileOperations(t *testing.T) {
 			GID:  1000,
 		}
 
-		dirFile, err := store.Create(authCtx, rootHandle, "testdir", dirAttr)
+		dirFile, err := metadata.CreateDirectory(store, authCtx, rootHandle, "testdir", dirAttr)
 		if err != nil {
 			t.Fatalf("Failed to create directory: %v", err)
 		}
@@ -272,7 +272,7 @@ func TestBadgerMetadataStore_FileOperations(t *testing.T) {
 			GID:  1000,
 		}
 
-		createdFile, err := store.Create(authCtx, rootHandle, "testfile.txt", fileAttr)
+		createdFile, err := metadata.CreateFile(store, authCtx, rootHandle, "testfile.txt", fileAttr)
 		if err != nil {
 			t.Fatalf("Failed to create file: %v", err)
 		}
@@ -299,7 +299,7 @@ func TestBadgerMetadataStore_FileOperations(t *testing.T) {
 
 	t.Run("Lookup", func(t *testing.T) {
 		// Lookup the file we just created
-		lookedUpFile, err := store.Lookup(authCtx, rootHandle, "testfile.txt")
+		lookedUpFile, err := metadata.Lookup(store,authCtx, rootHandle, "testfile.txt")
 		if err != nil {
 			t.Fatalf("Failed to lookup file: %v", err)
 		}
@@ -318,7 +318,7 @@ func TestBadgerMetadataStore_FileOperations(t *testing.T) {
 	// ========================================================================
 
 	t.Run("ListDirectory", func(t *testing.T) {
-		result, err := store.ReadDirectory(authCtx, rootHandle, "", 4096)
+		result, err := metadata.ReadDirectory(store,authCtx, rootHandle, "", 4096)
 		if err != nil {
 			t.Fatalf("Failed to read directory: %v", err)
 		}

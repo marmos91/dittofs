@@ -172,7 +172,7 @@ type PipeManager struct {
 	shares []ShareInfo1            // Available shares for enumeration
 }
 
-// NewPipeManager creates a new pipe manager
+// NewPipeManager creates a new pipe metaSvc
 func NewPipeManager() *PipeManager {
 	return &PipeManager{
 		pipes:  make(map[[16]byte]*PipeState),

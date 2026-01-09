@@ -12,7 +12,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver for database/sql
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/store/metadata/postgres/migrations"
+	"github.com/marmos91/dittofs/pkg/metadata/store/postgres/migrations"
 )
 
 // runMigrations executes database migrations using golang-migrate

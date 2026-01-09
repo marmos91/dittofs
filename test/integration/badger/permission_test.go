@@ -75,7 +75,7 @@ func TestGuestPermissionWithMode511(t *testing.T) {
 		}
 
 		// Check if guest has write permission on root directory
-		perms, err := store.CheckPermissions(guestAuthCtx, rootHandle, metadata.PermissionWrite)
+		perms, err := metadata.CheckFilePermissions(store,guestAuthCtx, rootHandle, metadata.PermissionWrite)
 		if err != nil {
 			t.Fatalf("CheckPermissions failed: %v", err)
 		}
@@ -94,7 +94,7 @@ func TestGuestPermissionWithMode511(t *testing.T) {
 			GID:  guestGID,
 		}
 
-		file, err := store.Create(guestAuthCtx, rootHandle, "guest_test.txt", fileAttr)
+		file, err := metadata.CreateFile(store,guestAuthCtx, rootHandle, "guest_test.txt", fileAttr)
 		if err != nil {
 			t.Errorf("Guest failed to create file: %v", err)
 		} else {
@@ -116,7 +116,7 @@ func TestGuestPermissionWithMode511(t *testing.T) {
 		}
 
 		// Check if user has write permission on root directory
-		perms, err := store.CheckPermissions(userAuthCtx, rootHandle, metadata.PermissionWrite)
+		perms, err := metadata.CheckFilePermissions(store,userAuthCtx, rootHandle, metadata.PermissionWrite)
 		if err != nil {
 			t.Fatalf("CheckPermissions failed: %v", err)
 		}
@@ -135,7 +135,7 @@ func TestGuestPermissionWithMode511(t *testing.T) {
 			GID:  userGID,
 		}
 
-		file, err := store.Create(userAuthCtx, rootHandle, "user_test.txt", fileAttr)
+		file, err := metadata.CreateFile(store,userAuthCtx, rootHandle, "user_test.txt", fileAttr)
 		if err != nil {
 			t.Errorf("User failed to create file: %v", err)
 		} else {
@@ -228,7 +228,7 @@ func TestRootDirectoryModeUpdate(t *testing.T) {
 			ClientAddr: "127.0.0.1",
 		}
 
-		perms, err := store2.CheckPermissions(guestAuthCtx, rootHandle, metadata.PermissionWrite)
+		perms, err := metadata.CheckFilePermissions(store2,guestAuthCtx, rootHandle, metadata.PermissionWrite)
 		if err != nil {
 			t.Fatalf("CheckPermissions failed: %v", err)
 		}
@@ -295,7 +295,7 @@ func TestPermissionWithMode755(t *testing.T) {
 			ClientAddr: "127.0.0.1",
 		}
 
-		perms, err := store.CheckPermissions(guestAuthCtx, rootHandle, metadata.PermissionWrite)
+		perms, err := metadata.CheckFilePermissions(store,guestAuthCtx, rootHandle, metadata.PermissionWrite)
 		if err != nil {
 			t.Fatalf("CheckPermissions failed: %v", err)
 		}
@@ -320,7 +320,7 @@ func TestPermissionWithMode755(t *testing.T) {
 			ClientAddr: "127.0.0.1",
 		}
 
-		perms, err := store.CheckPermissions(rootAuthCtx, rootHandle, metadata.PermissionWrite)
+		perms, err := metadata.CheckFilePermissions(store,rootAuthCtx, rootHandle, metadata.PermissionWrite)
 		if err != nil {
 			t.Fatalf("CheckPermissions failed: %v", err)
 		}

@@ -377,16 +377,6 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	}
 
 	// ========================================================================
-	// Step 3: Get metadata store from registry
-	// ========================================================================
-
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(tree.ShareName)
-	if err != nil {
-		logger.Warn("CREATE: failed to get metadata store", "share", tree.ShareName, "error", err)
-		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBadNetworkName}}, nil
-	}
-
-	// ========================================================================
 	// Step 3: Build AuthContext from SMB session
 	// ========================================================================
 
@@ -413,7 +403,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	// Handle root directory case
 	if filename == "" {
-		return h.handleOpenRootCreate(ctx, req, metadataStore, authCtx, rootHandle, tree)
+		return h.handleOpenRootCreate(ctx, req, authCtx, rootHandle, tree)
 	}
 
 	// Split path into directory and name components
@@ -423,7 +413,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// Walk to parent directory
 	parentHandle := rootHandle
 	if dirPath != "." && dirPath != "" {
-		parentHandle, err = h.walkPath(authCtx, metadataStore, rootHandle, dirPath)
+		parentHandle, err = h.walkPath(authCtx, rootHandle, dirPath)
 		if err != nil {
 			logger.Debug("CREATE: parent path not found", "path", dirPath, "error", err)
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectPathNotFound}}, nil
@@ -434,7 +424,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// Step 5: Check if file exists
 	// ========================================================================
 
-	existingFile, lookupErr := metadataStore.Lookup(authCtx, parentHandle, baseName)
+	metaSvc := h.Registry.GetMetadataService()
+	existingFile, lookupErr := metaSvc.Lookup(authCtx, parentHandle, baseName)
 	fileExists := (lookupErr == nil)
 
 	// Check create options constraints
@@ -479,7 +470,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	case types.FileCreated:
 		// Create new file or directory
-		file, fileHandle, err = h.createNewFile(authCtx, metadataStore, parentHandle, baseName, req, isDirectoryRequest)
+		file, fileHandle, err = h.createNewFile(authCtx, parentHandle, baseName, req, isDirectoryRequest)
 		if err != nil {
 			logger.Warn("CREATE: failed to create file", "name", baseName, "error", err)
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
@@ -487,7 +478,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	case types.FileOverwritten, types.FileSuperseded:
 		// Open and truncate/replace existing file
-		file, fileHandle, err = h.overwriteFile(authCtx, metadataStore, existingFile, req)
+		file, fileHandle, err = h.overwriteFile(authCtx, existingFile, req)
 		if err != nil {
 			logger.Warn("CREATE: failed to overwrite file", "name", baseName, "error", err)
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
@@ -611,7 +602,7 @@ func (h *Handler) handlePipeCreate(ctx *SMBHandlerContext, req *CreateRequest, t
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameNotFound}}, nil
 	}
 
-	// Update pipe manager with current shares from registry.
+	// Update pipe metaSvc with current shares from registry.
 	// TODO: This is called on every pipe CREATE which is inefficient under high load.
 	// Consider caching the share list and invalidating on share add/remove events.
 	if h.Registry != nil {
@@ -683,7 +674,6 @@ func (h *Handler) handlePipeCreate(ctx *SMBHandlerContext, req *CreateRequest, t
 func (h *Handler) handleOpenRootCreate(
 	ctx *SMBHandlerContext,
 	req *CreateRequest,
-	metadataStore metadata.MetadataStore,
 	authCtx *metadata.AuthContext,
 	rootHandle metadata.FileHandle,
 	tree *TreeConnection,
@@ -694,7 +684,8 @@ func (h *Handler) handleOpenRootCreate(
 	}
 
 	// Get root file attributes
-	rootFile, err := metadataStore.GetFile(authCtx.Context, rootHandle)
+	metaSvc := h.Registry.GetMetadataService()
+	rootFile, err := metaSvc.GetFile(authCtx.Context, rootHandle)
 	if err != nil {
 		logger.Warn("CREATE: failed to get root file", "error", err)
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameNotFound}}, nil
@@ -735,11 +726,11 @@ func (h *Handler) handleOpenRootCreate(
 // walkPath walks a path from a starting handle, returning the final handle.
 func (h *Handler) walkPath(
 	authCtx *metadata.AuthContext,
-	metadataStore metadata.MetadataStore,
 	startHandle metadata.FileHandle,
 	pathStr string,
 ) (metadata.FileHandle, error) {
 	currentHandle := startHandle
+	metaSvc := h.Registry.GetMetadataService()
 
 	// Split path into components
 	parts := strings.Split(pathStr, "/")
@@ -752,7 +743,7 @@ func (h *Handler) walkPath(
 			continue
 		}
 
-		file, err := metadataStore.Lookup(authCtx, currentHandle, part)
+		file, err := metaSvc.Lookup(authCtx, currentHandle, part)
 		if err != nil {
 			return nil, err
 		}
@@ -776,7 +767,6 @@ func (h *Handler) walkPath(
 // createNewFile creates a new file or directory in the metadata store.
 func (h *Handler) createNewFile(
 	authCtx *metadata.AuthContext,
-	metadataStore metadata.MetadataStore,
 	parentHandle metadata.FileHandle,
 	name string,
 	req *CreateRequest,
@@ -802,8 +792,15 @@ func (h *Handler) createNewFile(
 		fileAttr.Size = 0
 	}
 
-	// Create() handles both files and directories based on fileAttr.Type
-	file, err := metadataStore.Create(authCtx, parentHandle, name, fileAttr)
+	// Create appropriate file type based on fileAttr.Type
+	metaSvc := h.Registry.GetMetadataService()
+	var file *metadata.File
+	var err error
+	if isDirectory {
+		file, err = metaSvc.CreateDirectory(authCtx, parentHandle, name, fileAttr)
+	} else {
+		file, err = metaSvc.CreateFile(authCtx, parentHandle, name, fileAttr)
+	}
 
 	if err != nil {
 		return nil, nil, err
@@ -820,7 +817,6 @@ func (h *Handler) createNewFile(
 // overwriteFile truncates an existing file for OVERWRITE/SUPERSEDE operations.
 func (h *Handler) overwriteFile(
 	authCtx *metadata.AuthContext,
-	metadataStore metadata.MetadataStore,
 	existingFile *metadata.File,
 	req *CreateRequest,
 ) (*metadata.File, metadata.FileHandle, error) {
@@ -835,13 +831,14 @@ func (h *Handler) overwriteFile(
 		Size: &zeroSize,
 	}
 
-	err = metadataStore.SetFileAttributes(authCtx, fileHandle, setAttrs)
+	metaSvc := h.Registry.GetMetadataService()
+	err = metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	// Get updated file
-	updatedFile, err := metadataStore.GetFile(authCtx.Context, fileHandle)
+	updatedFile, err := metaSvc.GetFile(authCtx.Context, fileHandle)
 	if err != nil {
 		return nil, nil, err
 	}

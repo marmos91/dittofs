@@ -2,7 +2,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/metaSvc/v1"
 )
 
 // NewDittoServerSpec returns a DittoServerSpec object with the given options

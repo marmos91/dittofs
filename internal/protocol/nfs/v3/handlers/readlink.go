@@ -226,16 +226,6 @@ func (h *Handler) ReadLink(
 		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
-	// ========================================================================
-	// Step 2: Get metadata store from context
-	// ========================================================================
-
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "READLINK failed", "error", err, "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
-		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
-
 	fileHandle := metadata.FileHandle(req.Handle)
 
 	// Symlink file resolved in store
@@ -268,7 +258,8 @@ func (h *Handler) ReadLink(
 	// - Handling any I/O errors
 	// - Respecting context cancellation
 
-	target, file, err := metadataStore.ReadSymlink(authCtx, fileHandle)
+	metaSvc := h.Registry.GetMetadataService()
+	target, file, err := metaSvc.ReadSymlink(authCtx, fileHandle)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if err == context.Canceled || err == context.DeadlineExceeded {

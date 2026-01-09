@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/metaSvc/v1"
 )
 
 func TestDittoServerValidation(t *testing.T) {
@@ -28,14 +28,14 @@ func TestDittoServerValidation(t *testing.T) {
 					},
 					Config: DittoConfig{
 						Backends: []BackendConfig{
-							{Name: "badger-meta", Type: "badger"},
+							{Name: "badger-metaSvc", Type: "badger"},
 							{Name: "local-content", Type: "local"},
 						},
 						Shares: []ShareConfig{
 							{
 								Name:          "test-share",
 								ExportPath:    "/export",
-								MetadataStore: "badger-meta",
+								MetadataStore: "badger-metaSvc",
 								ContentStore:  "local-content",
 							},
 						},
@@ -63,7 +63,7 @@ func TestDittoServerValidation(t *testing.T) {
 							{
 								Name:          "test-share",
 								ExportPath:    "/export",
-								MetadataStore: "badger-meta", // Does not exist
+								MetadataStore: "badger-metaSvc", // Does not exist
 								ContentStore:  "local-content",
 							},
 						},
@@ -71,7 +71,7 @@ func TestDittoServerValidation(t *testing.T) {
 				},
 			},
 			wantErr:     true,
-			errContains: "metadataStore 'badger-meta' does not exist in backends list",
+			errContains: "metadataStore 'badger-metaSvc' does not exist in backends list",
 		},
 		{
 			name: "missing content store reference",
@@ -86,13 +86,13 @@ func TestDittoServerValidation(t *testing.T) {
 					},
 					Config: DittoConfig{
 						Backends: []BackendConfig{
-							{Name: "badger-meta", Type: "badger"},
+							{Name: "badger-metaSvc", Type: "badger"},
 						},
 						Shares: []ShareConfig{
 							{
 								Name:          "test-share",
 								ExportPath:    "/export",
-								MetadataStore: "badger-meta",
+								MetadataStore: "badger-metaSvc",
 								ContentStore:  "missing-store", // Does not exist
 							},
 						},
@@ -115,22 +115,22 @@ func TestDittoServerValidation(t *testing.T) {
 					},
 					Config: DittoConfig{
 						Backends: []BackendConfig{
-							{Name: "badger-meta", Type: "badger"},
-							{Name: "badger-meta", Type: "badger"}, // Duplicate
+							{Name: "badger-metaSvc", Type: "badger"},
+							{Name: "badger-metaSvc", Type: "badger"}, // Duplicate
 						},
 						Shares: []ShareConfig{
 							{
 								Name:          "test-share",
 								ExportPath:    "/export",
-								MetadataStore: "badger-meta",
-								ContentStore:  "badger-meta",
+								MetadataStore: "badger-metaSvc",
+								ContentStore:  "badger-metaSvc",
 							},
 						},
 					},
 				},
 			},
 			wantErr:     true,
-			errContains: "duplicate backend name 'badger-meta'",
+			errContains: "duplicate backend name 'badger-metaSvc'",
 		},
 		{
 			name: "duplicate share names",
@@ -145,20 +145,20 @@ func TestDittoServerValidation(t *testing.T) {
 					},
 					Config: DittoConfig{
 						Backends: []BackendConfig{
-							{Name: "badger-meta", Type: "badger"},
+							{Name: "badger-metaSvc", Type: "badger"},
 							{Name: "local-content", Type: "local"},
 						},
 						Shares: []ShareConfig{
 							{
 								Name:          "test-share",
 								ExportPath:    "/export",
-								MetadataStore: "badger-meta",
+								MetadataStore: "badger-metaSvc",
 								ContentStore:  "local-content",
 							},
 							{
 								Name:          "test-share", // Duplicate
 								ExportPath:    "/data",
-								MetadataStore: "badger-meta",
+								MetadataStore: "badger-metaSvc",
 								ContentStore:  "local-content",
 							},
 						},
@@ -181,20 +181,20 @@ func TestDittoServerValidation(t *testing.T) {
 					},
 					Config: DittoConfig{
 						Backends: []BackendConfig{
-							{Name: "badger-meta", Type: "badger"},
+							{Name: "badger-metaSvc", Type: "badger"},
 							{Name: "local-content", Type: "local"},
 						},
 						Shares: []ShareConfig{
 							{
 								Name:          "share1",
 								ExportPath:    "/export",
-								MetadataStore: "badger-meta",
+								MetadataStore: "badger-metaSvc",
 								ContentStore:  "local-content",
 							},
 							{
 								Name:          "share2",
 								ExportPath:    "/export", // Duplicate
-								MetadataStore: "badger-meta",
+								MetadataStore: "badger-metaSvc",
 								ContentStore:  "local-content",
 							},
 						},

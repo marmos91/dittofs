@@ -208,11 +208,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	}
 
 	// Get metadata store
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
-	if err != nil {
-		logger.Warn("LOCK: failed to get metadata store", "error", err)
-		return NewErrorResult(types.StatusBadNetworkName), nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	// Build auth context
 	authCtx, err := BuildAuthContext(ctx, h.Registry)
@@ -238,21 +234,21 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			logger.Debug("LOCK: invalid flags - shared and exclusive both set",
 				"index", i,
 				"flags", fmt.Sprintf("0x%08X", lockElem.Flags))
-			rollbackLocks(authCtx.Context, metadataStore, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
+			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
 			return NewErrorResult(types.StatusInvalidParameter), nil
 		}
 		if isUnlock && (isShared || isExclusive) {
 			logger.Debug("LOCK: invalid flags - unlock combined with lock type",
 				"index", i,
 				"flags", fmt.Sprintf("0x%08X", lockElem.Flags))
-			rollbackLocks(authCtx.Context, metadataStore, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
+			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
 			return NewErrorResult(types.StatusInvalidParameter), nil
 		}
 		if !isUnlock && !isShared && !isExclusive {
 			logger.Debug("LOCK: invalid flags - lock operation without lock type",
 				"index", i,
 				"flags", fmt.Sprintf("0x%08X", lockElem.Flags))
-			rollbackLocks(authCtx.Context, metadataStore, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
+			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
 			return NewErrorResult(types.StatusInvalidParameter), nil
 		}
 
@@ -280,7 +276,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			// This handler intentionally preserves that SMB2-specified behavior. Callers
 			// MUST NOT assume that all prior operations (particularly unlocks) are
 			// reverted when a batched LOCK request fails.
-			err := metadataStore.UnlockFile(
+			err := metaSvc.UnlockFile(
 				authCtx.Context,
 				openFile.MetadataHandle,
 				ctx.SessionID,
@@ -294,7 +290,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 					"error", err)
 				status := lockErrorToStatus(err)
 				// Rollback previously acquired locks (unlocks are not rolled back)
-				rollbackLocks(authCtx.Context, metadataStore, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
+				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
 				return NewErrorResult(status), nil
 			}
 		} else {
@@ -311,7 +307,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 				ClientAddr: ctx.ClientAddr,
 			}
 
-			err := h.acquireLockWithRetry(authCtx, metadataStore, openFile.MetadataHandle, lock, failImmediately)
+			err := h.acquireLockWithRetry(authCtx, metaSvc, openFile.MetadataHandle, lock, failImmediately)
 			if err != nil {
 				logger.Debug("LOCK: lock failed",
 					"offset", lockElem.Offset,
@@ -321,7 +317,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 					"error", err)
 				status := lockErrorToStatus(err)
 				// Rollback previously acquired locks
-				rollbackLocks(authCtx.Context, metadataStore, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
+				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
 				return NewErrorResult(status), nil
 			}
 
@@ -360,13 +356,13 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 // requiring changes to the metadata store interface.
 func (h *Handler) acquireLockWithRetry(
 	authCtx *metadata.AuthContext,
-	store metadata.MetadataStore,
+	metaSvc *metadata.MetadataService,
 	handle metadata.FileHandle,
 	lock metadata.FileLock,
 	failImmediately bool,
 ) error {
 	// First attempt
-	err := store.LockFile(authCtx, handle, lock)
+	err := metaSvc.LockFile(authCtx, handle, lock)
 	if err == nil {
 		return nil
 	}
@@ -414,7 +410,7 @@ func (h *Handler) acquireLockWithRetry(
 			lock.AcquiredAt = time.Now()
 
 			// Try again
-			err = store.LockFile(authCtx, handle, lock)
+			err = metaSvc.LockFile(authCtx, handle, lock)
 			if err == nil {
 				logger.Debug("LOCK: blocking lock acquired after retry",
 					"offset", lock.Offset,
@@ -435,7 +431,7 @@ func (h *Handler) acquireLockWithRetry(
 // rollbackLocks releases locks that were acquired during a failed request.
 //
 // LIMITATION: Lock type changes (e.g., shared → exclusive on the same range by the
-// same session) are implemented as in-place updates in the lock manager. When such
+// same session) are implemented as in-place updates in the lock metaSvc. When such
 // an "upgraded" lock is rolled back, it is completely removed rather than reverted
 // to its original type. This means lock type changes in batch requests are not
 // fully atomic: if a later operation in the batch fails, the lock type change
@@ -447,13 +443,13 @@ func (h *Handler) acquireLockWithRetry(
 //  3. The client can re-acquire the lock with the desired type if needed
 func rollbackLocks(
 	ctx context.Context,
-	store metadata.MetadataStore,
+	metaSvc *metadata.MetadataService,
 	handle metadata.FileHandle,
 	sessionID uint64,
 	locks []LockElement,
 ) {
 	for _, lock := range locks {
-		if err := store.UnlockFile(ctx, handle, sessionID, lock.Offset, lock.Length); err != nil {
+		if err := metaSvc.UnlockFile(ctx, handle, sessionID, lock.Offset, lock.Length); err != nil {
 			logger.Warn("LOCK: rollback failed",
 				"offset", lock.Offset,
 				"length", lock.Length,

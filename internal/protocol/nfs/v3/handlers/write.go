@@ -298,11 +298,7 @@ func (h *Handler) Write(
 	// Step 2: Get metadata and content stores from context
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		traceWarn(ctx.Context, err, "WRITE failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	// Get content store for this share
 	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
@@ -326,7 +322,7 @@ func (h *Handler) Write(
 	// Step 3: Validate request parameters
 	// ========================================================================
 
-	caps, err := metadataStore.GetFilesystemCapabilities(ctx.Context, fileHandle)
+	caps, err := metaSvc.GetFilesystemCapabilities(ctx.Context, fileHandle)
 	if err != nil {
 		traceWarn(ctx.Context, err, "WRITE failed: cannot get capabilities", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
@@ -347,7 +343,7 @@ func (h *Handler) Write(
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "WRITE", req.Handle)
+	file, status, err := h.getFileOrError(ctx, fileHandle, "WRITE", req.Handle)
 	if file == nil {
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
@@ -424,7 +420,7 @@ func (h *Handler) Write(
 		}, nil
 	}
 
-	writeIntent, err := metadataStore.PrepareWrite(authCtx, fileHandle, newSize)
+	writeIntent, err := metaSvc.PrepareWrite(authCtx, fileHandle, newSize)
 	if err != nil {
 		// Map store error to NFS status
 		status := mapMetadataErrorToNFS(err)
@@ -482,7 +478,7 @@ func (h *Handler) Write(
 	// Step 8: Commit metadata changes after successful content write
 	// ========================================================================
 
-	updatedFile, err := metadataStore.CommitWrite(authCtx, writeIntent)
+	updatedFile, err := metaSvc.CommitWrite(authCtx, writeIntent)
 	if err != nil {
 		traceError(ctx.Context, err, "WRITE failed: CommitWrite error (content written but metadata not updated)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP)
 

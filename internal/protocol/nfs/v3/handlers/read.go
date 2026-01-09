@@ -274,14 +274,8 @@ func (h *Handler) Read(
 	}
 
 	// ========================================================================
-	// Step 2: Get metadata and content stores from context
+	// Step 2: Get content store from context
 	// ========================================================================
-
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "READ failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
-		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
 
 	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
 	if err != nil {
@@ -297,7 +291,7 @@ func (h *Handler) Read(
 	// Step 3: Verify file exists and is a regular file
 	// ========================================================================
 
-	file, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "READ", req.Handle)
+	file, status, err := h.getFileOrError(ctx, fileHandle, "READ", req.Handle)
 	if file == nil {
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}

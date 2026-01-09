@@ -172,6 +172,135 @@ type AccessDecision struct {
 	ReadOnly bool
 }
 
+// CheckShareAccess verifies if a client can access a share and returns effective credentials.
+//
+// This implements share-level access control including:
+//   - Authentication method validation
+//   - IP-based access control (allowed/denied clients)
+//   - Identity mapping (squashing, anonymous access)
+//
+// Parameters:
+//   - store: The metadata store to retrieve share options from
+//   - ctx: Context for cancellation
+//   - shareName: Name of the share being accessed
+//   - clientAddr: IP address of the client
+//   - authMethod: Authentication method used (e.g., "unix", "anonymous")
+//   - identity: Client's claimed identity (before mapping)
+//
+// Returns:
+//   - *AccessDecision: Contains allowed status, reason, and share properties
+//   - *AuthContext: Contains effective identity after mapping (use for subsequent operations)
+//   - error: ErrNotFound if share doesn't exist, or context errors
+func CheckShareAccess(
+	store MetadataStore,
+	ctx context.Context,
+	shareName string,
+	clientAddr string,
+	authMethod string,
+	identity *Identity,
+) (*AccessDecision, *AuthContext, error) {
+	// Check context cancellation
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	// Get share options using CRUD operation
+	opts, err := store.GetShareOptions(ctx, shareName)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Step 1: Check authentication requirements
+	if opts.RequireAuth && authMethod == "anonymous" {
+		return &AccessDecision{
+			Allowed: false,
+			Reason:  "authentication required but anonymous access attempted",
+		}, nil, nil
+	}
+
+	// Step 2: Validate authentication method
+	if len(opts.AllowedAuthMethods) > 0 {
+		methodAllowed := false
+		for _, allowed := range opts.AllowedAuthMethods {
+			if authMethod == allowed {
+				methodAllowed = true
+				break
+			}
+		}
+		if !methodAllowed {
+			return &AccessDecision{
+				Allowed:            false,
+				Reason:             "authentication method '" + authMethod + "' not allowed",
+				AllowedAuthMethods: opts.AllowedAuthMethods,
+			}, nil, nil
+		}
+	}
+
+	// Step 3: Check denied list first (deny takes precedence)
+	for _, denied := range opts.DeniedClients {
+		// Check context during iteration for large lists
+		if len(opts.DeniedClients) > 10 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+		}
+
+		if MatchesIPPattern(clientAddr, denied) {
+			return &AccessDecision{
+				Allowed: false,
+				Reason:  "client " + clientAddr + " is explicitly denied",
+			}, nil, nil
+		}
+	}
+
+	// Step 4: Check allowed list (if specified)
+	if len(opts.AllowedClients) > 0 {
+		allowed := false
+		for _, allowedPattern := range opts.AllowedClients {
+			// Check context during iteration for large lists
+			if len(opts.AllowedClients) > 10 {
+				if err := ctx.Err(); err != nil {
+					return nil, nil, err
+				}
+			}
+
+			if MatchesIPPattern(clientAddr, allowedPattern) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return &AccessDecision{
+				Allowed: false,
+				Reason:  "client " + clientAddr + " not in allowed list",
+			}, nil, nil
+		}
+	}
+
+	// Step 5: Apply identity mapping
+	effectiveIdentity := identity
+	if identity != nil && opts.IdentityMapping != nil {
+		effectiveIdentity = ApplyIdentityMapping(identity, opts.IdentityMapping)
+	}
+
+	// Step 6: Build successful access decision
+	decision := &AccessDecision{
+		Allowed:            true,
+		Reason:             "",
+		AllowedAuthMethods: opts.AllowedAuthMethods,
+		ReadOnly:           opts.ReadOnly,
+	}
+
+	authCtx := &AuthContext{
+		Context:    ctx,
+		AuthMethod: authMethod,
+		Identity:   effectiveIdentity,
+		ClientAddr: clientAddr,
+	}
+
+	return decision, authCtx, nil
+}
+
 // Permission represents filesystem permission flags.
 //
 // These are generic permission flags that map to different protocol-specific
