@@ -147,8 +147,8 @@ func TestCreate_ExclusiveIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, types.NFS3OK, resp1.Status)
 
-	// Second create with same verifier
-	// Implementation behavior: Returns NFS3ErrExist (as expected per implementation)
+	// Second create with same verifier - idempotent retry
+	// RFC 1813 Section 3.3.8: If the file exists and verifiers match, return success
 	req2 := &handlers.CreateRequest{
 		DirHandle: fx.RootHandle,
 		Filename:  "exclusive.txt",
@@ -157,8 +157,10 @@ func TestCreate_ExclusiveIdempotent(t *testing.T) {
 	}
 	resp2, err := fx.Handler.Create(fx.ContextWithUID(0, 0), req2)
 	require.NoError(t, err)
-	// Implementation doesn't track verifier - returns EXIST for all retries
-	assert.EqualValues(t, types.NFS3ErrExist, resp2.Status)
+	// Matching verifier indicates idempotent retry - return success with existing file
+	assert.EqualValues(t, types.NFS3OK, resp2.Status)
+	assert.NotNil(t, resp2.FileHandle, "Should return existing file handle")
+	assert.NotNil(t, resp2.Attr, "Should return file attributes")
 }
 
 // TestCreate_ExclusiveDifferentVerifier tests EXCLUSIVE fails with different verifier.

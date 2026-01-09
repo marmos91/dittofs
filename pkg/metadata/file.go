@@ -461,6 +461,11 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 		return err
 	}
 
+	// Same directory and same name - no-op (POSIX rename semantics)
+	if string(fromDir) == string(toDir) && fromName == toName {
+		return nil
+	}
+
 	// Get source directory
 	srcDir, err := store.GetFile(ctx.Context, fromDir)
 	if err != nil {
