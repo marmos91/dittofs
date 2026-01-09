@@ -161,8 +161,8 @@ func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.F
 
 	// Delete related records first
 	_, _ = tx.tx.Exec(ctx, `DELETE FROM link_counts WHERE file_id = $1`, id)
-	_, _ = tx.tx.Exec(ctx, `DELETE FROM directory_children WHERE child_id = $1`, id)
-	_, _ = tx.tx.Exec(ctx, `DELETE FROM directory_children WHERE parent_id = $1`, id)
+	_, _ = tx.tx.Exec(ctx, `DELETE FROM parent_child_map WHERE child_id = $1`, id)
+	_, _ = tx.tx.Exec(ctx, `DELETE FROM parent_child_map WHERE parent_id = $1`, id)
 
 	// Delete the file
 	result, err := tx.tx.Exec(ctx, `DELETE FROM files WHERE id = $1 AND share_name = $2`, id, shareName)
@@ -194,7 +194,7 @@ func (tx *postgresTransaction) GetChild(ctx context.Context, dirHandle metadata.
 	}
 
 	query := `
-		SELECT dc.child_id FROM directory_children dc
+		SELECT dc.child_id FROM parent_child_map dc
 		WHERE dc.parent_id = $1 AND dc.child_name = $2
 	`
 
@@ -229,7 +229,7 @@ func (tx *postgresTransaction) SetChild(ctx context.Context, dirHandle metadata.
 	}
 
 	query := `
-		INSERT INTO directory_children (parent_id, child_name, child_id)
+		INSERT INTO parent_child_map (parent_id, child_name, child_id)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (parent_id, child_name) DO UPDATE SET child_id = EXCLUDED.child_id
 	`
@@ -255,7 +255,7 @@ func (tx *postgresTransaction) DeleteChild(ctx context.Context, dirHandle metada
 		}
 	}
 
-	result, err := tx.tx.Exec(ctx, `DELETE FROM directory_children WHERE parent_id = $1 AND child_name = $2`, parentID, name)
+	result, err := tx.tx.Exec(ctx, `DELETE FROM parent_child_map WHERE parent_id = $1 AND child_name = $2`, parentID, name)
 	if err != nil {
 		return mapPgError(err, "DeleteChild", name)
 	}
@@ -289,7 +289,7 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 
 	query := `
 		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size, f.atime, f.mtime, f.ctime
-		FROM directory_children dc
+		FROM parent_child_map dc
 		LEFT JOIN files f ON dc.child_id = f.id
 		WHERE dc.parent_id = $1 AND dc.child_name > $2
 		ORDER BY dc.child_name
@@ -350,7 +350,7 @@ func (tx *postgresTransaction) GetParent(ctx context.Context, handle metadata.Fi
 		}
 	}
 
-	query := `SELECT parent_id FROM directory_children WHERE child_id = $1 LIMIT 1`
+	query := `SELECT parent_id FROM parent_child_map WHERE child_id = $1 LIMIT 1`
 
 	var parentIDStr string
 	err = tx.tx.QueryRow(ctx, query, childID).Scan(&parentIDStr)
@@ -362,7 +362,7 @@ func (tx *postgresTransaction) GetParent(ctx context.Context, handle metadata.Fi
 }
 
 func (tx *postgresTransaction) SetParent(ctx context.Context, handle metadata.FileHandle, parentHandle metadata.FileHandle) error {
-	// In PostgreSQL, parent is tracked via directory_children table
+	// In PostgreSQL, parent is tracked via parent_child_map table
 	// This is already handled by SetChild
 	return nil
 }
