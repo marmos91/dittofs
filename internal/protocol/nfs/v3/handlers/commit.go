@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/cache"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -109,7 +109,7 @@ type CommitResponse struct {
 //
 //   - Protocol layer handles only XDR encoding/decoding and validation
 //   - Business logic (actual flushing) will be delegated to store
-//   - File handle validation performed by store.GetFile()
+//   - File handle validation performed by metaSvc.GetFile()
 //   - Comprehensive logging at INFO level for operations, DEBUG for details
 //   - Respects context cancellation for graceful shutdown and timeouts
 //
@@ -282,14 +282,10 @@ func (h *Handler) Commit(
 	}
 
 	// ========================================================================
-	// Step 3: Get metadata store from context
+	// Step 3: Get metadata service
 	// ========================================================================
 
-	store, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "COMMIT failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
-		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	handle := metadata.FileHandle(req.Handle)
 
@@ -303,7 +299,7 @@ func (h *Handler) Commit(
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	file, err := store.GetFile(ctx.Context, handle)
+	file, err := metaSvc.GetFile(ctx.Context, handle)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "COMMIT failed: file not found", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", err)
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
@@ -335,7 +331,7 @@ func (h *Handler) Commit(
 
 		// Get updated attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
-		if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
+		if updatedFile, getErr := metaSvc.GetFile(ctx.Context, handle); getErr == nil {
 			wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 		}
 
@@ -452,7 +448,7 @@ func (h *Handler) Commit(
 		traceError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "content_id", file.ContentID, "client", clientIP)
 
 		// Try to get updated attributes for error response
-		if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
+		if updatedFile, getErr := metaSvc.GetFile(ctx.Context, handle); getErr == nil {
 			wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 		}
 
@@ -464,7 +460,7 @@ func (h *Handler) Commit(
 	}
 
 	// Get updated file attributes for WCC data (file may have changed after flush)
-	if updatedFile, getErr := store.GetFile(ctx.Context, handle); getErr == nil {
+	if updatedFile, getErr := metaSvc.GetFile(ctx.Context, handle); getErr == nil {
 		wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
 		logger.DebugCtx(ctx.Context, "COMMIT details", "file_size", updatedFile.Size, "file_type", wccAfter.Type)
 	} else {

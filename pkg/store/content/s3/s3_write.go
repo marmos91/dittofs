@@ -16,8 +16,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/telemetry"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/store/content"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // WriteContent writes the entire content in one operation.

@@ -6,9 +6,9 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/cache"
 	cacheMemory "github.com/marmos91/dittofs/pkg/cache/memory"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	metadataMemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	contentMemory "github.com/marmos91/dittofs/pkg/store/content/memory"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
-	metadataMemory "github.com/marmos91/dittofs/pkg/store/metadata/memory"
 )
 
 // Helper to create memory content store for testing

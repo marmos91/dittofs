@@ -8,8 +8,8 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/store/content"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================
@@ -129,9 +129,7 @@ type CreateResponse struct {
 //   - Context cancelled → types.NFS3ErrIO with error return
 //
 // **Parameters:**
-//   - ctx: Context with cancellation, client address and authentication credentials
-//   - contentStore: Content store for file data operations
-//   - metadataStore: Metadata store for file system structure
+//   - ctx: Handler context with cancellation, client address and authentication credentials
 //   - req: Create request with parent handle, filename, mode, attributes
 //
 // **Returns:**
@@ -165,14 +163,8 @@ func (h *Handler) Create(
 	}
 
 	// ========================================================================
-	// Step 2: Get metadata and content stores from context
+	// Step 2: Get content store for this share
 	// ========================================================================
-
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "CREATE failed", "error", err, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP)
-		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
 
 	// Get content store for this share
 	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
@@ -188,7 +180,7 @@ func (h *Handler) Create(
 	// Step 3: Verify parent directory exists and is valid
 	// ========================================================================
 
-	parentFile, status, err := h.getFileOrError(ctx, metadataStore, parentHandle, "CREATE", req.DirHandle)
+	parentFile, status, err := h.getFileOrError(ctx, parentHandle, "CREATE", req.DirHandle)
 	if parentFile == nil {
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
@@ -234,7 +226,8 @@ func (h *Handler) Create(
 	// Step 4: Check if file already exists using Lookup
 	// ========================================================================
 
-	existingFile, err := metadataStore.Lookup(authCtx, parentHandle, req.Filename)
+	metaSvc := h.Registry.GetMetadataService()
+	existingFile, err := metaSvc.Lookup(authCtx, parentHandle, req.Filename)
 	if err != nil && ctx.Context.Err() != nil {
 		// Context was cancelled during Lookup
 		logger.DebugCtx(ctx.Context, "CREATE cancelled during existence check", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
@@ -275,7 +268,7 @@ func (h *Handler) Create(
 		}
 
 		// Create new file
-		fileHandle, fileAttr, err = createNewFile(authCtx, metadataStore, parentHandle, req)
+		fileHandle, fileAttr, err = createNewFile(authCtx, metaSvc, parentHandle, req)
 
 	case types.CreateExclusive:
 		// EXCLUSIVE: Check idempotency token if file exists
@@ -327,7 +320,7 @@ func (h *Handler) Create(
 		}
 
 		// Create new file with idempotency token
-		fileHandle, fileAttr, err = createNewFile(authCtx, metadataStore, parentHandle, req)
+		fileHandle, fileAttr, err = createNewFile(authCtx, metaSvc, parentHandle, req)
 
 	case types.CreateUnchecked:
 		// UNCHECKED: Create or truncate existing
@@ -335,10 +328,10 @@ func (h *Handler) Create(
 			// Truncate existing file
 			existingHandle, _ := metadata.EncodeFileHandle(existingFile)
 			fileHandle = existingHandle
-			fileAttr, err = truncateExistingFile(authCtx, contentStore, metadataStore, existingFile, req)
+			fileAttr, err = truncateExistingFile(authCtx, contentStore, metaSvc, existingFile, req)
 		} else {
 			// Create new file
-			fileHandle, fileAttr, err = createNewFile(authCtx, metadataStore, parentHandle, req)
+			fileHandle, fileAttr, err = createNewFile(authCtx, metaSvc, parentHandle, req)
 		}
 
 	default:
@@ -393,7 +386,7 @@ func (h *Handler) Create(
 	nfsFileAttr := h.convertFileAttrToNFS(fileHandle, fileAttr)
 
 	// Get updated parent directory attributes
-	updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
+	updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
 	nfsDirAttr := h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
 
 	logger.InfoCtx(ctx.Context, "CREATE successful", "file", req.Filename, "handle", fmt.Sprintf("0x%x", fileHandle), "mode", fmt.Sprintf("0%o", fileAttr.Mode), "size", fileAttr.Size, "client", clientIP)
@@ -426,7 +419,7 @@ func (h *Handler) Create(
 //
 // Parameters:
 //   - authCtx: Authentication context for permission checking
-//   - metadataStore: Metadata store
+//   - metaSvc: Metadata service for file operations
 //   - parentHandle: Parent directory handle
 //   - req: Create request with filename and attributes
 //
@@ -434,7 +427,7 @@ func (h *Handler) Create(
 //   - File handle, file attributes, and error
 func createNewFile(
 	authCtx *metadata.AuthContext,
-	metadataStore metadata.MetadataStore,
+	metaSvc *metadata.MetadataService,
 	parentHandle metadata.FileHandle,
 	req *CreateRequest,
 ) (metadata.FileHandle, *metadata.FileAttr, error) {
@@ -498,12 +491,20 @@ func createNewFile(
 		applySetAttrsToFileAttr(fileAttr, req.Attr)
 	}
 
-	// Call store's atomic Create operation
+	// Call metaSvc's atomic Create operation
 	// This handles file creation, parent linking, and permission checking
-	createdFile, err := metadataStore.Create(authCtx, parentHandle, req.Filename, fileAttr)
+	createdFile, err := metaSvc.CreateFile(authCtx, parentHandle, req.Filename, fileAttr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create file: %w", err)
 	}
+
+	// Debug logging to trace file creation
+	logger.Debug("NFS CREATE file created",
+		"filename", req.Filename,
+		"fileType", int(createdFile.Type),
+		"fileID", createdFile.ID.String(),
+		"filePath", createdFile.Path,
+		"inputType", int(fileAttr.Type))
 
 	// Encode the file handle for return
 	fileHandle, err := metadata.EncodeFileHandle(createdFile)
@@ -524,7 +525,7 @@ func createNewFile(
 // Parameters:
 //   - authCtx: Authentication context for permission checking
 //   - contentStore: Content store for truncation
-//   - metadataStore: Metadata store
+//   - metaSvc: Metadata service for file operations
 //   - existingFile: Existing file to truncate
 //   - req: Create request with attributes
 //
@@ -533,7 +534,7 @@ func createNewFile(
 func truncateExistingFile(
 	authCtx *metadata.AuthContext,
 	contentStore content.ContentStore,
-	metadataStore metadata.MetadataStore,
+	metaSvc *metadata.MetadataService,
 	existingFile *metadata.File,
 	req *CreateRequest,
 ) (*metadata.FileAttr, error) {
@@ -567,9 +568,9 @@ func truncateExistingFile(
 		}
 	}
 
-	// Update file metadata using store
+	// Update file metadata using metaSvc
 	// This includes permission checking
-	if err := metadataStore.SetFileAttributes(authCtx, fileHandle, setAttrs); err != nil {
+	if err := metaSvc.SetFileAttributes(authCtx, fileHandle, setAttrs); err != nil {
 		return nil, fmt.Errorf("update file metadata: %w", err)
 	}
 
@@ -582,7 +583,7 @@ func truncateExistingFile(
 	}
 
 	// Get updated attributes
-	updatedFile, err := metadataStore.GetFile(authCtx.Context, fileHandle)
+	updatedFile, err := metaSvc.GetFile(authCtx.Context, fileHandle)
 	if err != nil {
 		return nil, fmt.Errorf("get updated attributes: %w", err)
 	}

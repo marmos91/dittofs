@@ -7,7 +7,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -318,11 +318,7 @@ func (h *Handler) ReadDirPlus(
 	// Get metadata store from context
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "READDIRPLUS failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
-		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	// ========================================================================
 	// Check if READDIRPLUS is disabled for this share
@@ -340,7 +336,7 @@ func (h *Handler) ReadDirPlus(
 
 	logger.DebugCtx(ctx.Context, "READDIRPLUS", "share", ctx.Share)
 
-	dirFile, err := metadataStore.GetFile(ctx.Context, dirHandle)
+	dirFile, err := metaSvc.GetFile(ctx.Context, dirHandle)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "READDIRPLUS failed: directory not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
@@ -436,7 +432,7 @@ func (h *Handler) ReadDirPlus(
 
 	// Use DirCount as maxBytes hint for ReadDirectory
 	// ReadDirectory handles retries internally to ensure consistent snapshots
-	page, err := metadataStore.ReadDirectory(authCtx, dirHandle, token, req.DirCount)
+	page, err := metaSvc.ReadDirectory(authCtx, dirHandle, token, req.DirCount)
 	if err != nil {
 		traceError(ctx.Context, err, "READDIRPLUS failed: error retrieving entries", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
@@ -486,7 +482,7 @@ func (h *Handler) ReadDirPlus(
 			// Fallback: Handle not populated, use Lookup (shouldn't happen with proper implementation)
 			logger.WarnCtx(ctx.Context, "READDIRPLUS: entry.Handle not populated, falling back to Lookup", "name", entry.Name)
 			var err error
-			lookupFile, err := metadataStore.Lookup(authCtx, dirHandle, entry.Name)
+			lookupFile, err := metaSvc.Lookup(authCtx, dirHandle, entry.Name)
 			if err != nil {
 				logger.WarnCtx(ctx.Context, "READDIRPLUS: failed to lookup", "name", entry.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "error", err)
 				// Skip this entry on error rather than failing entire operation
@@ -497,7 +493,7 @@ func (h *Handler) ReadDirPlus(
 
 		// Get attributes for the entry
 		// TODO: Use entry.Attr if populated to avoid this GetFile() call
-		entryFile, err := metadataStore.GetFile(ctx.Context, entryHandle)
+		entryFile, err := metaSvc.GetFile(ctx.Context, entryHandle)
 		if err != nil {
 			logger.WarnCtx(ctx.Context, "READDIRPLUS: failed to get attributes", "name", entry.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "entry_handle", fmt.Sprintf("%x", entryHandle), "error", err)
 			// Skip this entry on error - file may have been deleted during iteration

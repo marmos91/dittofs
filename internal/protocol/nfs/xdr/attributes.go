@@ -2,7 +2,7 @@ package xdr
 
 import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // metadataTypeToNFSType converts internal FileType to NFS protocol type constants.

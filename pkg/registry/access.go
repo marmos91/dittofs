@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ApplyIdentityMapping applies share-level identity mapping rules to create effective credentials.

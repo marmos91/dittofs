@@ -209,14 +209,10 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	// Step 2: Get stores and cache
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(openFile.ShareName)
-	if err != nil {
-		logger.Warn("FLUSH: failed to get metadata store", "share", openFile.ShareName, "error", err)
-		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusBadNetworkName}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	// Verify file exists
-	file, err := metadataStore.GetFile(ctx.Context, openFile.MetadataHandle)
+	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("FLUSH: file not found", "path", openFile.Path, "error", err)
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil

@@ -69,7 +69,7 @@ type OplockState struct {
 // OplockManager manages oplocks across all files.
 //
 // Oplocks are stored per-path (normalized, share-relative path).
-// The manager handles oplock grants, conflicts, and breaks.
+// The metaSvc handles oplock grants, conflicts, and breaks.
 type OplockManager struct {
 	mu     sync.RWMutex
 	locks  map[string]*OplockState // path -> oplock state
@@ -84,7 +84,7 @@ type OplockBreakNotifier interface {
 	SendOplockBreak(sessionID uint64, fileID [16]byte, newLevel uint8) error
 }
 
-// NewOplockManager creates a new oplock manager.
+// NewOplockManager creates a new oplock metaSvc.
 func NewOplockManager() *OplockManager {
 	return &OplockManager{
 		locks: make(map[string]*OplockState),

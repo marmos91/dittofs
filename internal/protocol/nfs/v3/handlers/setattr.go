@@ -7,7 +7,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -305,14 +305,7 @@ func (h *Handler) SetAttr(
 	// Step 2: Get metadata store from context
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "SETATTR failed",
-			"error", err,
-			"handle", fmt.Sprintf("%x", req.Handle),
-			"client", clientIP)
-		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
@@ -323,7 +316,7 @@ func (h *Handler) SetAttr(
 	// Step 3: Get current file attributes for WCC and guard check
 	// ========================================================================
 
-	currentFile, status, err := h.getFileOrError(ctx, metadataStore, fileHandle, "SETATTR", req.Handle)
+	currentFile, status, err := h.getFileOrError(ctx, fileHandle, "SETATTR", req.Handle)
 	if currentFile == nil {
 		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
@@ -389,7 +382,7 @@ func (h *Handler) SetAttr(
 
 			// Get updated attributes for WCC data (best effort)
 			var wccAfter *types.NFSFileAttr
-			if file, err := metadataStore.GetFile(ctx.Context, fileHandle); err == nil {
+			if file, err := metaSvc.GetFile(ctx.Context, fileHandle); err == nil {
 				wccAfter = h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 			}
 
@@ -450,7 +443,7 @@ func (h *Handler) SetAttr(
 	if hasSize && hasOtherAttrs {
 		// Apply size change first (separate call per RFC 5661)
 		sizeOnlyAttrs := metadata.SetAttrs{Size: req.NewAttr.Size}
-		err = metadataStore.SetFileAttributes(authCtx, fileHandle, &sizeOnlyAttrs)
+		err = metaSvc.SetFileAttributes(authCtx, fileHandle, &sizeOnlyAttrs)
 		if err != nil {
 			// Handle size change error
 			if err == context.Canceled || err == context.DeadlineExceeded {
@@ -465,7 +458,7 @@ func (h *Handler) SetAttr(
 				"client", clientIP)
 
 			var wccAfter *types.NFSFileAttr
-			if file, getErr := metadataStore.GetFile(ctx.Context, fileHandle); getErr == nil {
+			if file, getErr := metaSvc.GetFile(ctx.Context, fileHandle); getErr == nil {
 				wccAfter = h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 			}
 
@@ -485,10 +478,10 @@ func (h *Handler) SetAttr(
 			Atime: req.NewAttr.Atime,
 			Mtime: req.NewAttr.Mtime,
 		}
-		err = metadataStore.SetFileAttributes(authCtx, fileHandle, &otherAttrs)
+		err = metaSvc.SetFileAttributes(authCtx, fileHandle, &otherAttrs)
 	} else {
 		// Only size or only other attributes - single call is fine
-		err = metadataStore.SetFileAttributes(authCtx, fileHandle, &req.NewAttr)
+		err = metaSvc.SetFileAttributes(authCtx, fileHandle, &req.NewAttr)
 	}
 	if err != nil {
 		// Check if error is due to context cancellation
@@ -505,7 +498,7 @@ func (h *Handler) SetAttr(
 
 		// Get updated attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
-		if file, getErr := metadataStore.GetFile(ctx.Context, fileHandle); getErr == nil {
+		if file, getErr := metaSvc.GetFile(ctx.Context, fileHandle); getErr == nil {
 			wccAfter = h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 		}
 
@@ -524,7 +517,7 @@ func (h *Handler) SetAttr(
 	// ========================================================================
 
 	// Get updated file attributes for WCC data
-	updatedFile, _, err := h.getFileOrError(ctx, metadataStore, fileHandle, "SETATTR", req.Handle)
+	updatedFile, _, err := h.getFileOrError(ctx, fileHandle, "SETATTR", req.Handle)
 	if updatedFile == nil && err != nil {
 		// Context cancelled
 		return nil, err

@@ -7,8 +7,8 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/cache/memory"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	contentMemory "github.com/marmos91/dittofs/pkg/store/content/memory"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 func TestNew_DefaultConfig(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // directoryMtimeVerifier generates a cookie verifier from directory mtime.
@@ -264,11 +264,7 @@ func (h *Handler) ReadDir(
 	// Step 2: Get metadata store from context
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "READDIR failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
-		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 
@@ -278,7 +274,7 @@ func (h *Handler) ReadDir(
 	// Step 3: Verify directory handle exists and is valid
 	// ========================================================================
 
-	dirFile, status, err := h.getFileOrError(ctx, metadataStore, dirHandle, "READDIR", req.DirHandle)
+	dirFile, status, err := h.getFileOrError(ctx, dirHandle, "READDIR", req.DirHandle)
 	if dirFile == nil {
 		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
@@ -374,7 +370,7 @@ func (h *Handler) ReadDir(
 	// - Respecting count limits
 	// - Respecting context cancellation internally during iteration
 
-	page, err := metadataStore.ReadDirectory(authCtx, dirHandle, "", req.Count)
+	page, err := metaSvc.ReadDirectory(authCtx, dirHandle, "", req.Count)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {

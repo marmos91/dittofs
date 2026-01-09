@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/store/content"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // ============================================================================

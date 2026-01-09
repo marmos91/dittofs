@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // RunBasicTests tests basic cache operations like existence checks, size queries, and lifecycle.

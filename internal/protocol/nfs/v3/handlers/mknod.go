@@ -7,7 +7,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -270,11 +270,7 @@ func (h *Handler) Mknod(
 	// Step 2: Decode share name from directory file handle
 	// ========================================================================
 
-	metadataStore, err := h.Registry.GetMetadataStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "MKNOD failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
-		return &MknodResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
-	}
+	metaSvc := h.Registry.GetMetadataService()
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
 
@@ -284,7 +280,7 @@ func (h *Handler) Mknod(
 	// Step 3: Verify parent directory exists and is valid
 	// ========================================================================
 
-	parentFile, status, err := h.getFileOrError(ctx, metadataStore, parentHandle, "MKNOD", req.DirHandle)
+	parentFile, status, err := h.getFileOrError(ctx, parentHandle, "MKNOD", req.DirHandle)
 	if parentFile == nil {
 		return &MknodResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
@@ -332,13 +328,13 @@ func (h *Handler) Mknod(
 	// Step 4: Check if special file name already exists using Lookup
 	// ========================================================================
 
-	_, err = metadataStore.Lookup(authCtx, parentHandle, req.Name)
+	_, err = metaSvc.Lookup(authCtx, parentHandle, req.Name)
 	if err == nil {
 		// Child exists (no error from Lookup)
 		logger.DebugCtx(ctx.Context, "MKNOD failed: file already exists", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		// Get updated parent attributes for WCC data
-		updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
+		updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
 		wccAfter := h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
 
 		return &MknodResponse{
@@ -393,7 +389,7 @@ func (h *Handler) Mknod(
 	}
 
 	// Create the special file
-	newFile, err := metadataStore.CreateSpecialFile(
+	newFile, err := metaSvc.CreateSpecialFile(
 		authCtx,
 		parentHandle,
 		req.Name,
@@ -412,7 +408,7 @@ func (h *Handler) Mknod(
 		traceError(ctx.Context, err, "MKNOD failed: store error", "name", req.Name, "type", req.Type, "client", clientIP)
 
 		// Get updated parent attributes for WCC data
-		updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
+		updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
 		wccAfter := h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
 
 		// Map store errors to NFS status codes
@@ -440,7 +436,7 @@ func (h *Handler) Mknod(
 	nfsAttr := h.convertFileAttrToNFS(newHandle, &newFile.FileAttr)
 
 	// Get updated parent attributes for WCC data
-	updatedParentFile, _ := metadataStore.GetFile(ctx.Context, parentHandle)
+	updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
 	wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
 
 	logger.InfoCtx(ctx.Context, "MKNOD successful", "name", req.Name, "type", specialFileTypeName(req.Type), "handle", fmt.Sprintf("%x", newHandle), "mode", fmt.Sprintf("%o", newFile.Mode), "major", req.Spec.SpecData1, "minor", req.Spec.SpecData2, "client", clientIP)

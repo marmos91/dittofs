@@ -11,7 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/api"
 	"github.com/marmos91/dittofs/pkg/bytesize"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )

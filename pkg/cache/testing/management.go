@@ -3,7 +3,7 @@ package testing
 import (
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // RunManagementTests tests cache management operations (Remove, RemoveAll, Close).

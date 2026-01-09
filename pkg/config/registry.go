@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/registry"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
 // InitializeRegistry creates a fully configured Registry from the provided configuration.

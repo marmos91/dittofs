@@ -5,8 +5,8 @@ import (
 	"io"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/store/content"
-	"github.com/marmos91/dittofs/pkg/store/metadata"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

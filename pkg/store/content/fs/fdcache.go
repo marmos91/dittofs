@@ -6,7 +6,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/marmos91/dittofs/pkg/store/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // FDCache provides an LRU cache for open file descriptors.
