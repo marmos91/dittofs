@@ -136,6 +136,10 @@ func (s *MetadataService) PrepareWrite(ctx *AuthContext, handle FileHandle, newS
 // If this fails after content was written, the file is in an inconsistent
 // state (content newer than metadata). This can be detected by consistency
 // checkers.
+//
+// CONCURRENCY: Uses a transaction to ensure atomic read-modify-write.
+// This prevents race conditions where concurrent writes would result in
+// the smaller size being stored if it commits last.
 func (s *MetadataService) CommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
 	store, err := s.storeForHandle(intent.Handle)
 	if err != nil {
@@ -147,45 +151,57 @@ func (s *MetadataService) CommitWrite(ctx *AuthContext, intent *WriteOperation) 
 		return nil, err
 	}
 
-	// Get current file state
-	file, err := store.GetFile(ctx.Context, intent.Handle)
+	// Use transaction for atomic read-modify-write
+	// This ensures max(size) is calculated and applied atomically
+	var resultFile *File
+	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Get current file state
+		file, err := tx.GetFile(ctx.Context, intent.Handle)
+		if err != nil {
+			return err
+		}
+
+		// Verify it's still a regular file
+		if file.Type != FileTypeRegular {
+			return &StoreError{
+				Code:    ErrIsDirectory,
+				Message: "file type changed after prepare",
+				Path:    file.Path,
+			}
+		}
+
+		// Apply metadata changes
+		now := time.Now()
+
+		// Use max(current_size, new_size) to handle concurrent writes completing out of order
+		// This prevents a write at an earlier offset from shrinking the file
+		if intent.NewSize > file.Size {
+			file.Size = intent.NewSize
+		}
+		file.Mtime = now
+		file.Ctime = now
+
+		// POSIX: Clear setuid/setgid bits when a non-root user writes to a file
+		// This is a security measure to prevent privilege escalation.
+		identity := ctx.Identity
+		if identity != nil && identity.UID != nil && *identity.UID != 0 {
+			file.Mode &= ^uint32(0o6000) // Clear both setuid (04000) and setgid (02000)
+		}
+
+		// Store updated file
+		if err := tx.PutFile(ctx.Context, file); err != nil {
+			return err
+		}
+
+		resultFile = file
+		return nil
+	})
+
 	if err != nil {
 		return nil, err
 	}
 
-	// Verify it's still a regular file
-	if file.Type != FileTypeRegular {
-		return nil, &StoreError{
-			Code:    ErrIsDirectory,
-			Message: "file type changed after prepare",
-			Path:    file.Path,
-		}
-	}
-
-	// Apply metadata changes
-	now := time.Now()
-
-	// Use max(current_size, new_size) to handle concurrent writes completing out of order
-	// This prevents a write at an earlier offset from shrinking the file
-	if intent.NewSize > file.Size {
-		file.Size = intent.NewSize
-	}
-	file.Mtime = now
-	file.Ctime = now
-
-	// POSIX: Clear setuid/setgid bits when a non-root user writes to a file
-	// This is a security measure to prevent privilege escalation.
-	identity := ctx.Identity
-	if identity != nil && identity.UID != nil && *identity.UID != 0 {
-		file.Mode &= ^uint32(0o6000) // Clear both setuid (04000) and setgid (02000)
-	}
-
-	// Store updated file
-	if err := store.PutFile(ctx.Context, file); err != nil {
-		return nil, err
-	}
-
-	return file, nil
+	return resultFile, nil
 }
 
 // PrepareRead validates a read operation and returns file metadata.

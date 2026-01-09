@@ -20,19 +20,44 @@ type badgerTransaction struct {
 	txn   *badgerdb.Txn
 }
 
+// Maximum number of retries for conflict errors
+const maxTransactionRetries = 5
+
 // WithTransaction executes fn within a BadgerDB transaction.
 //
 // If fn returns an error, the transaction is rolled back (discarded).
 // If fn returns nil, the transaction is committed.
+// Retries automatically on transaction conflicts (ErrConflict).
 func (s *BadgerMetadataStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	return s.db.Update(func(txn *badgerdb.Txn) error {
-		tx := &badgerTransaction{store: s, txn: txn}
-		return fn(tx)
-	})
+	var lastErr error
+	for attempt := 0; attempt < maxTransactionRetries; attempt++ {
+		err := s.db.Update(func(txn *badgerdb.Txn) error {
+			tx := &badgerTransaction{store: s, txn: txn}
+			return fn(tx)
+		})
+
+		if err == nil {
+			return nil // Success
+		}
+
+		// Check if this is a retryable conflict error
+		if err == badgerdb.ErrConflict {
+			lastErr = err
+			// Small exponential backoff before retry
+			time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+			continue
+		}
+
+		// Non-retryable error
+		return err
+	}
+
+	// All retries exhausted
+	return lastErr
 }
 
 // ============================================================================

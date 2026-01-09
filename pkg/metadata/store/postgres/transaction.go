@@ -3,12 +3,17 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// Maximum number of retries for retryable errors (deadlock, serialization failure)
+const maxTransactionRetries = 3
 
 // ============================================================================
 // Transaction Support
@@ -20,27 +25,63 @@ type postgresTransaction struct {
 	tx    pgx.Tx
 }
 
+// isRetryableError checks if a PostgreSQL error is retryable (deadlock or serialization failure)
+func isRetryableError(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "40P01": // deadlock_detected
+			return true
+		case "40001": // serialization_failure
+			return true
+		}
+	}
+	return false
+}
+
 // WithTransaction executes fn within a PostgreSQL transaction.
 //
 // If fn returns an error, the transaction is rolled back.
 // If fn returns nil, the transaction is committed.
+// Retries automatically on deadlock or serialization failures.
 func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }() // No-op if committed
+	var lastErr error
+	for attempt := 0; attempt < maxTransactionRetries; attempt++ {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
 
-	ptx := &postgresTransaction{store: s, tx: tx}
-	if err := fn(ptx); err != nil {
-		return err
+		ptx := &postgresTransaction{store: s, tx: tx}
+		if err := fn(ptx); err != nil {
+			_ = tx.Rollback(ctx)
+			if isRetryableError(err) {
+				lastErr = err
+				// Small backoff before retry
+				time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+				continue
+			}
+			return err
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			if isRetryableError(err) {
+				lastErr = err
+				time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+				continue
+			}
+			return err
+		}
+
+		return nil // Success
 	}
 
-	return tx.Commit(ctx)
+	// All retries exhausted
+	return mapPgError(lastErr, "WithTransaction", "")
 }
 
 // ============================================================================
@@ -86,31 +127,29 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		return err
 	}
 
-	query := `
-		INSERT INTO files (
-			id, share_name, path, file_type, mode, uid, gid, size,
-			atime, mtime, ctime, creation_time, content_id, link_target,
-			device_major, device_minor, hidden
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
-		)
-		ON CONFLICT (id) DO UPDATE SET
-			share_name = EXCLUDED.share_name,
-			path = EXCLUDED.path,
-			file_type = EXCLUDED.file_type,
-			mode = EXCLUDED.mode,
-			uid = EXCLUDED.uid,
-			gid = EXCLUDED.gid,
-			size = EXCLUDED.size,
-			atime = EXCLUDED.atime,
-			mtime = EXCLUDED.mtime,
-			ctime = EXCLUDED.ctime,
-			creation_time = EXCLUDED.creation_time,
-			content_id = EXCLUDED.content_id,
-			link_target = EXCLUDED.link_target,
-			device_major = EXCLUDED.device_major,
-			device_minor = EXCLUDED.device_minor,
-			hidden = EXCLUDED.hidden
+	// For existing files (updates), use UPDATE directly to avoid unique constraint issues.
+	// This is more efficient and handles concurrent updates properly.
+	//
+	// The unique constraint on (share_name, path_hash) WHERE nlink > 0 can cause
+	// spurious "already exists" errors when using INSERT ... ON CONFLICT (id)
+	// because that clause doesn't handle conflicts on the path_hash constraint.
+	updateQuery := `
+		UPDATE files SET
+			file_type = $1,
+			mode = $2,
+			uid = $3,
+			gid = $4,
+			size = $5,
+			atime = $6,
+			mtime = $7,
+			ctime = $8,
+			creation_time = $9,
+			content_id = $10,
+			link_target = $11,
+			device_major = $12,
+			device_minor = $13,
+			hidden = $14
+		WHERE id = $15 AND share_name = $16
 	`
 
 	var deviceMajor, deviceMinor *int32
@@ -132,15 +171,40 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		linkTargetPtr = &file.LinkTarget
 	}
 
-	_, err := tx.tx.Exec(ctx, query,
-		file.ID, file.ShareName, file.Path,
+	// Try UPDATE first (most common case for existing files)
+	result, err := tx.tx.Exec(ctx, updateQuery,
 		file.Type, file.Mode, file.UID, file.GID, file.Size,
 		file.Atime, file.Mtime, file.Ctime, file.CreationTime,
 		contentIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 		file.Hidden,
+		file.ID, file.ShareName,
 	)
 	if err != nil {
 		return mapPgError(err, "PutFile", "")
+	}
+
+	// If no rows were updated, the file doesn't exist - do an INSERT
+	if result.RowsAffected() == 0 {
+		insertQuery := `
+			INSERT INTO files (
+				id, share_name, path, file_type, mode, uid, gid, size,
+				atime, mtime, ctime, creation_time, content_id, link_target,
+				device_major, device_minor, hidden
+			) VALUES (
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+			)
+		`
+
+		_, err = tx.tx.Exec(ctx, insertQuery,
+			file.ID, file.ShareName, file.Path,
+			file.Type, file.Mode, file.UID, file.GID, file.Size,
+			file.Atime, file.Mtime, file.Ctime, file.CreationTime,
+			contentIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
+			file.Hidden,
+		)
+		if err != nil {
+			return mapPgError(err, "PutFile", "")
+		}
 	}
 
 	return nil
