@@ -69,7 +69,7 @@ func (store *MemoryMetadataStore) GetChild(ctx context.Context, dirHandle metada
 	if !exists {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
-			Message: "directory has no children",
+			Message: "child not found",
 		}
 	}
 

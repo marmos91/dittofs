@@ -496,8 +496,10 @@ func (s *MemoryMetadataStore) getSortedDirEntries(dirHandle metadata.FileHandle,
 
 // getSortedDirEntriesWithCache returns a sorted list of child names with proper cache management.
 //
-// This is a thread-safe version that properly manages the cache even with read locks.
-// It uses atomic operations to safely update the cache from read-locked contexts.
+// This function reads from sortedDirCache while holding a read lock. This is safe because
+// Go's sync.RWMutex guarantees mutual exclusion between readers and writers - when any
+// goroutine holds RLock(), no other goroutine can hold Lock(), so no concurrent writes
+// to sortedDirCache can occur.
 //
 // Thread Safety: Must be called with at least a read lock held.
 //
