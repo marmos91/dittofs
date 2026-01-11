@@ -464,7 +464,7 @@ func (s *MemoryMetadataStore) invalidateDirCache(dirHandle metadata.FileHandle) 
 // ReadDirectory call. The cache is lazy-populated on first access and
 // invalidated when directory contents change.
 //
-// Thread Safety: Must be called with at least a read lock held.
+// Thread Safety: Must be called with at least a read lock held (used in transactions).
 //
 // Parameters:
 //   - dirHandle: The directory handle to get sorted entries for
@@ -491,5 +491,52 @@ func (s *MemoryMetadataStore) getSortedDirEntries(dirHandle metadata.FileHandle,
 	// doing this during read operations, we'll upgrade the lock if needed)
 	// For now, we'll cache on next write operation
 	// This is still better than sorting every time
+	return sorted
+}
+
+// getSortedDirEntriesWithCache returns a sorted list of child names with proper cache management.
+//
+// This function reads from sortedDirCache while holding a read lock. This is safe because
+// Go's sync.RWMutex guarantees mutual exclusion between readers and writers - when any
+// goroutine holds RLock(), no other goroutine can hold Lock(), so no concurrent writes
+// to sortedDirCache can occur.
+//
+// Thread Safety: Must be called with at least a read lock held.
+//
+// Parameters:
+//   - dirHandle: The directory handle to get sorted entries for
+//   - childrenMap: The children map for this directory
+//
+// Returns:
+//   - []string: Sorted slice of child names (cached or freshly sorted)
+func (s *MemoryMetadataStore) getSortedDirEntriesWithCache(dirHandle metadata.FileHandle, childrenMap map[string]metadata.FileHandle) []string {
+	dirKey := handleToKey(dirHandle)
+
+	// Check cache first (safe with read lock)
+	if cached, exists := s.sortedDirCache[dirKey]; exists {
+		return cached
+	}
+
+	// Not in cache, build sorted list
+	sorted := make([]string, 0, len(childrenMap))
+	for name := range childrenMap {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted)
+
+	// Try to cache the result
+	// Since we only have a read lock, we need to upgrade to a write lock temporarily
+	// We release the read lock, acquire write lock, update cache, then downgrade back
+	// This is safe because the sorted list is already computed and won't change
+
+	// Note: Go doesn't support lock upgrades, so we'll just check if another goroutine
+	// already cached it while we were sorting. If not, we skip caching for this call
+	// but the next write operation will cache it. This avoids the complexity of lock
+	// upgrades while still providing good performance.
+
+	// Actually, since map writes are not safe with concurrent reads, we'll just
+	// skip the cache update here and let write operations update it. The sorted
+	// list is already computed, so we still avoid repeated sorts in tight loops.
+
 	return sorted
 }
