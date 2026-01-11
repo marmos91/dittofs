@@ -31,6 +31,15 @@ DittoFS has comprehensive documentation organized by topic:
 - **[test/e2e/BENCHMARKS.md](test/e2e/BENCHMARKS.md)** - Performance benchmark documentation
 - **[test/e2e/COMPARISON_GUIDE.md](test/e2e/COMPARISON_GUIDE.md)** - Comparing with other NFS implementations
 
+### Submodule Documentation
+Each major subsystem has its own CLAUDE.md with non-obvious conventions and gotchas:
+- **[pkg/metadata/CLAUDE.md](pkg/metadata/CLAUDE.md)** - Metadata service layer, file handles, locking
+- **[pkg/content/CLAUDE.md](pkg/content/CLAUDE.md)** - Content service layer, S3 async behavior
+- **[pkg/adapter/CLAUDE.md](pkg/adapter/CLAUDE.md)** - Protocol adapter lifecycle
+- **[pkg/cache/CLAUDE.md](pkg/cache/CLAUDE.md)** - Cache state machine, flusher
+- **[pkg/config/CLAUDE.md](pkg/config/CLAUDE.md)** - Named stores pattern, env overrides
+- **[internal/protocol/CLAUDE.md](internal/protocol/CLAUDE.md)** - NFS/SMB wire formats, handler rules
+
 ## Essential Commands
 
 ### Building
