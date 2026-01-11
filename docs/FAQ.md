@@ -69,8 +69,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
 
 Absolutely! Implement either or both of these interfaces:
 
-- **Metadata Store**: `pkg/store/metadata/Store` interface
-- **Content Store**: `pkg/store/content/Store` interface
+- **Metadata Store**: `pkg/metadata/Store` interface
+- **Content Store**: `pkg/content/Store` interface
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for implementation guidelines.
 

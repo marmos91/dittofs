@@ -123,7 +123,7 @@ go test -cover ./...
 go test -race ./...
 
 # Run specific package
-go test ./pkg/store/metadata/memory/
+go test ./pkg/metadata/store/memory/
 ```
 
 ### Integration Tests
@@ -255,50 +255,61 @@ func HandleMyProc(ctx context.Context, call *rpc.Call, metadata metadata.Store) 
 
 ### Adding a New Store Backend
 
+DittoFS uses a Service-oriented architecture where **stores are simple CRUD interfaces**. Business logic (permission checking, caching, locking) lives in the Service layer (`MetadataService`, `ContentService`).
+
 **Metadata Store:**
 
-1. Implement `pkg/store/metadata/Store` interface
+1. Implement `pkg/metadata/MetadataStore` interface (simple CRUD operations)
 2. Handle file handle generation (must be unique and stable)
 3. Implement root directory creation (`CreateRootDirectory`)
-4. Implement permission checking in `CheckAccess()`
-5. Ensure thread safety (concurrent access across shares)
-6. Consider persistence strategy for handles
+4. Ensure thread safety (concurrent access across shares)
+5. Consider persistence strategy for handles
+6. **Note**: Permission checking is handled by `MetadataService`, not stores
 
 **Content Store:**
 
-1. Implement `pkg/store/content/Store` interface
+1. Implement `pkg/content/ContentStore` interface (simple CRUD operations)
 2. Support random-access reads/writes (`ReadAt`/`WriteAt`)
 3. Handle sparse files and truncation
-4. Consider implementing `ReadAtContentStore` for efficient partial reads
-5. Test with the integration test suite in `test/integration/`
+4. Consider implementing optional interfaces for efficiency (`IncrementalWriteStore`)
+5. **Note**: Caching is handled by `ContentService`, not stores
+6. Test with the integration test suite in `test/integration/`
 
 Example:
 ```go
-// pkg/store/content/mybackend/store.go
+// pkg/content/store/mybackend/store.go
 type MyContentStore struct {
-    // Your implementation
+    // Your implementation - just CRUD, no business logic
 }
 
-func (s *MyContentStore) ReadAt(ctx context.Context, id string, offset int64, size int64) ([]byte, error) {
-    // Implement random-access read
+func (s *MyContentStore) ReadAt(ctx context.Context, id content.ContentID, offset int64, size int64) ([]byte, error) {
+    // Simple read from your backend
 }
 
-func (s *MyContentStore) WriteAt(ctx context.Context, id string, data []byte, offset int64) error {
-    // Implement random-access write
+func (s *MyContentStore) WriteAt(ctx context.Context, id content.ContentID, data []byte, offset int64) error {
+    // Simple write to your backend
 }
+
+// Register with ContentService (which handles caching, routing)
+contentSvc.RegisterStoreForShare("/myshare", myContentStore)
 ```
 
+See [IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for detailed implementation guide.
+
 ### Adding a New Protocol Adapter
+
+Adapters receive a registry reference and **interact with services, not stores directly**.
 
 1. Create new package in `pkg/adapter/`
 2. Implement `Adapter` interface:
    - `Serve(ctx)`: Start protocol server
    - `Stop(ctx)`: Graceful shutdown
-   - `SetRegistry()`: Receive store registry reference
+   - `SetRegistry()`: Receive registry reference (provides access to services)
    - `Protocol()`: Return name
    - `Port()`: Return listen port
-3. Register in `cmd/dittofs/main.go`
-4. Update README with usage instructions
+3. Use `registry.MetadataService()` and `registry.ContentService()` for operations
+4. Register in `cmd/dittofs/main.go`
+5. Update README with usage instructions
 
 Example:
 ```go
@@ -306,6 +317,15 @@ Example:
 type SMBAdapter struct {
     config   SMBConfig
     registry *registry.Registry
+}
+
+func (a *SMBAdapter) SetRegistry(r *registry.Registry) {
+    a.registry = r
+}
+
+func (a *SMBAdapter) handleRead(ctx context.Context, shareName string, contentID content.ContentID) ([]byte, error) {
+    // Use ContentService (handles caching automatically)
+    return a.registry.ContentService().ReadAt(ctx, shareName, contentID, 0, size)
 }
 
 func (a *SMBAdapter) Serve(ctx context.Context) error {
