@@ -717,7 +717,7 @@ AUTH_UNIX credentials are **not cryptographically secured**. They can be easily 
 Internal errors are mapped to NFS status codes:
 
 ```go
-// pkg/store/metadata/errors.go
+// pkg/metadata/errors.go
 var (
     ErrNotDirectory = ExportError{Code: NFS3ErrNotDir}
     ErrNoEntity     = ExportError{Code: NFS3ErrNoEnt}

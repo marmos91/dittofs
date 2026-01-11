@@ -3,8 +3,8 @@ package prometheus
 import (
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/content/store/s3"
 	"github.com/marmos91/dittofs/pkg/metrics"
-	"github.com/marmos91/dittofs/pkg/store/content/s3"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/store/content"
-	contenttesting "github.com/marmos91/dittofs/pkg/store/content/testing"
+	"github.com/marmos91/dittofs/pkg/content"
+	contenttesting "github.com/marmos91/dittofs/pkg/content/store/testing"
 )
 
 // TestMemoryContentStore runs the complete ContentStore test suite

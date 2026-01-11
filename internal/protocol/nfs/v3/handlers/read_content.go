@@ -8,8 +8,8 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/bufpool"
 	"github.com/marmos91/dittofs/pkg/bytesize"
+	"github.com/marmos91/dittofs/pkg/content"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/store/content"
 )
 
 // ============================================================================
@@ -34,7 +34,7 @@ func (r *contentStoreReadResult) Release() {
 	}
 }
 
-// readFromContentStoreWithReadAt reads data using the ReadAt interface for efficient range reads.
+// readFromContentServiceWithReadAt reads data using the ContentService ReadAt method.
 // This is dramatically more efficient for backends like S3.
 //
 // The returned result uses a pooled buffer. The caller MUST call result.Release()
@@ -42,7 +42,7 @@ func (r *contentStoreReadResult) Release() {
 //
 // Parameters:
 //   - ctx: Handler context with cancellation support
-//   - readAtStore: Content store that supports ReadAt
+//   - contentSvc: Content service for reading
 //   - contentID: Content identifier to read
 //   - offset: Byte offset to read from
 //   - count: Number of bytes to read
@@ -52,20 +52,20 @@ func (r *contentStoreReadResult) Release() {
 // Returns:
 //   - contentStoreReadResult: Result with data (caller must call Release())
 //   - error: Error if read failed
-func readFromContentStoreWithReadAt(
+func readFromContentServiceWithReadAt(
 	ctx *NFSHandlerContext,
-	readAtStore content.ReadAtContentStore,
+	contentSvc *content.ContentService,
 	contentID metadata.ContentID,
 	offset uint64,
 	count uint32,
 	clientIP string,
 	handle []byte,
 ) (contentStoreReadResult, error) {
-	logger.DebugCtx(ctx.Context, "READ: using content store ReadAt path", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count, "content_id", contentID)
+	logger.DebugCtx(ctx.Context, "READ: using ContentService ReadAt path", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count, "content_id", contentID)
 
 	// Get a pooled buffer for the read
 	data := bufpool.Get(int(count))
-	n, readErr := readAtStore.ReadAt(ctx.Context, contentID, data, offset)
+	n, readErr := contentSvc.ReadAt(ctx.Context, ctx.Share, contentID, data, offset)
 
 	// Handle ReadAt results
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
@@ -170,7 +170,7 @@ func seekToOffset(
 	return nil
 }
 
-// readFromContentStoreSequential reads data using sequential ReadContent + Seek + Read.
+// readFromContentServiceSequential reads data using sequential ReadContent + Seek + Read.
 // This is a fallback for content stores that don't support ReadAt.
 //
 // The returned result uses a pooled buffer. The caller MUST call result.Release()
@@ -178,7 +178,7 @@ func seekToOffset(
 //
 // Parameters:
 //   - ctx: Handler context with cancellation support
-//   - contentStore: Content store to read from
+//   - contentSvc: Content service to read from
 //   - contentID: Content identifier to read
 //   - offset: Byte offset to read from
 //   - count: Number of bytes to read
@@ -188,9 +188,9 @@ func seekToOffset(
 // Returns:
 //   - contentStoreReadResult: Result with data (caller must call Release())
 //   - error: Error if read failed
-func readFromContentStoreSequential(
+func readFromContentServiceSequential(
 	ctx *NFSHandlerContext,
-	contentStore content.ContentStore,
+	contentSvc *content.ContentService,
 	contentID metadata.ContentID,
 	offset uint64,
 	count uint32,
@@ -199,7 +199,7 @@ func readFromContentStoreSequential(
 ) (contentStoreReadResult, error) {
 	logger.DebugCtx(ctx.Context, "READ: using sequential read path (no ReadAt support)", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count)
 
-	reader, err := contentStore.ReadContent(ctx.Context, contentID)
+	reader, err := contentSvc.ReadContent(ctx.Context, ctx.Share, contentID)
 	if err != nil {
 		return contentStoreReadResult{}, fmt.Errorf("cannot open content: %w", err)
 	}

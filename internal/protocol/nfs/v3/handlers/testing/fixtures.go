@@ -11,10 +11,10 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
+	contentmemory "github.com/marmos91/dittofs/pkg/content/store/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/registry"
-	contentmemory "github.com/marmos91/dittofs/pkg/store/content/memory"
 )
 
 // DefaultShareName is the default share name used in test fixtures.

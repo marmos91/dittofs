@@ -7,10 +7,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	memoryContent "github.com/marmos91/dittofs/pkg/content/store/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memoryMeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/registry"
-	memoryContent "github.com/marmos91/dittofs/pkg/store/content/memory"
 )
 
 func TestLiveness_ReturnsOK(t *testing.T) {

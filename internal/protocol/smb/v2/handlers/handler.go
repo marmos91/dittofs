@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/protocol/cache"
 	"github.com/marmos91/dittofs/internal/protocol/smb/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/signing"
@@ -434,16 +433,10 @@ func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
 		return
 	}
 
-	contentStore, err := h.Registry.GetContentStoreForShare(openFile.ShareName)
-	if err != nil {
-		logger.Warn("flushFileCache: failed to get content store",
-			"share", openFile.ShareName,
-			"error", err)
-		return
-	}
+	contentSvc := h.Registry.GetContentService()
 
-	// Use FlushAndFinalizeCache for immediate durability (completes S3 uploads)
-	_, flushErr := cache.FlushAndFinalizeCache(ctx, fileCache, contentStore, openFile.ContentID)
+	// Use FlushAndFinalize for immediate durability (completes S3 uploads)
+	_, flushErr := contentSvc.FlushAndFinalize(ctx, openFile.ShareName, openFile.ContentID)
 	if flushErr != nil {
 		logger.Warn("flushFileCache: cache flush failed",
 			"path", openFile.Path,

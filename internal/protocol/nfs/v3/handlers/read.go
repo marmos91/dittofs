@@ -10,7 +10,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/bufpool"
 	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/store/content"
 )
 
 // ============================================================================
@@ -274,14 +273,10 @@ func (h *Handler) Read(
 	}
 
 	// ========================================================================
-	// Step 2: Get content store from context
+	// Step 2: Get content service from registry
 	// ========================================================================
 
-	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "READ failed", "error", err, "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
-		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
+	contentSvc := h.Registry.GetContentService()
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
@@ -381,17 +376,17 @@ func (h *Handler) Read(
 		eof = cacheResult.eof
 		cacheHit = true
 	} else {
-		// Cache miss - read from content store
+		// Cache miss - read from content store via ContentService
 		var readResult contentStoreReadResult
 		var readErr error
 
 		// Check if content store supports efficient random-access reads
-		if readAtStore, ok := contentStore.(content.ReadAtContentStore); ok {
+		if contentSvc.SupportsReadAt(ctx.Share) {
 			// FAST PATH: Use ReadAt for efficient range reads (S3, etc.)
-			readResult, readErr = readFromContentStoreWithReadAt(ctx, readAtStore, file.ContentID, req.Offset, req.Count, clientIP, req.Handle)
+			readResult, readErr = readFromContentServiceWithReadAt(ctx, contentSvc, file.ContentID, req.Offset, req.Count, clientIP, req.Handle)
 		} else {
 			// FALLBACK PATH: Use sequential ReadContent + Seek + Read
-			readResult, readErr = readFromContentStoreSequential(ctx, contentStore, file.ContentID, req.Offset, req.Count, clientIP, req.Handle)
+			readResult, readErr = readFromContentServiceSequential(ctx, contentSvc, file.ContentID, req.Offset, req.Count, clientIP, req.Handle)
 		}
 
 		// Handle content store errors
@@ -416,7 +411,7 @@ func (h *Handler) Read(
 		pooled = readResult.pooled
 
 		// Start background prefetch to cache the entire file for future reads
-		h.startBackgroundPrefetch(ctx, contentStore, file.ContentID, file.Size)
+		h.startBackgroundPrefetch(ctx, contentSvc, file.ContentID, file.Size)
 	}
 
 	// Even if read succeeded, check if we're at or past EOF

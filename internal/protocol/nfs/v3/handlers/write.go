@@ -295,19 +295,16 @@ func (h *Handler) Write(
 	}
 
 	// ========================================================================
-	// Step 2: Get metadata and content stores from context
+	// Step 2: Get metadata and content services from registry
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
 
-	// Get content store for this share
-	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
-	if err != nil {
-		traceWarn(ctx.Context, err, "WRITE failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
+	// Get content service for this share
+	contentSvc := h.Registry.GetContentService()
 
 	// Get unified cache for this share (optional - nil means sync mode)
+	// Cache is accessed directly for write gathering tracking (BeginWrite/EndWrite)
 	cache := h.Registry.GetCacheForShare(ctx.Share)
 
 	fileHandle := metadata.FileHandle(req.Handle)
@@ -447,16 +444,16 @@ func (h *Handler) Write(
 		return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
 
-	// Write to storage (cache or direct to content store)
+	// Write to storage via ContentService (handles cache or direct store)
 	if cache != nil {
-		// Async mode: write to cache, will be flushed on COMMIT
+		// Async mode: ContentService will write to cache, will be flushed on COMMIT
 		//
 		// Track active writers for write gathering optimization.
 		// This enables the COMMIT handler to detect concurrent writes and
 		// delay flushing briefly to allow writes to accumulate.
 		// See: Linux kernel fs/nfsd/vfs.c wait_for_concurrent_writes()
 		cache.BeginWrite(writeIntent.ContentID)
-		err = cache.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, req.Offset)
+		err = contentSvc.WriteAt(ctx.Context, ctx.Share, writeIntent.ContentID, req.Data, req.Offset)
 		cache.EndWrite(writeIntent.ContentID)
 		if err != nil {
 			traceError(ctx.Context, err, "WRITE failed: cache write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.ContentID, "client", clientIP)
@@ -464,8 +461,8 @@ func (h *Handler) Write(
 		}
 		logger.DebugCtx(ctx.Context, "WRITE: cached successfully", "content_id", writeIntent.ContentID, "cache_size", bytesize.ByteSize(cache.Size(writeIntent.ContentID)))
 	} else {
-		// Sync mode: write directly to content store
-		err = contentStore.WriteAt(ctx.Context, writeIntent.ContentID, req.Data, req.Offset)
+		// Sync mode: ContentService writes directly to content store
+		err = contentSvc.WriteAt(ctx.Context, ctx.Share, writeIntent.ContentID, req.Data, req.Offset)
 		if err != nil {
 			traceError(ctx.Context, err, "WRITE failed: content write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.ContentID, "client", clientIP)
 			status := xdr.MapContentErrorToNFSStatus(err)

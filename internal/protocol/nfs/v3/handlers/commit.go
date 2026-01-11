@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/protocol/cache"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -416,16 +415,12 @@ func (h *Handler) Commit(
 		}
 	}
 
-	// Flush cache to content store
+	// Flush cache to content store via ContentService
 	logger.InfoCtx(ctx.Context, "COMMIT: flushing cache to content store", "share", ctx.Share)
 
-	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
-	if err != nil {
-		traceError(ctx.Context, err, "COMMIT failed: cannot get content store", "share", ctx.Share, "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
-		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
+	contentSvc := h.Registry.GetContentService()
 
-	// Flush cache to content store using shared flush logic
+	// Flush cache to content store using ContentService
 	//
 	// NOTE: Intentional deviation from Linux behavior - we flush the entire file
 	// rather than just the range specified by req.Offset and req.Count.
@@ -443,7 +438,7 @@ func (h *Handler) Commit(
 	//
 	// Linux's vfs_fsync_range() approach is an optimization; our approach
 	// prioritizes correctness and simplicity over performance here.
-	_, flushErr := cache.FlushCacheToContentStore(ctx.Context, fileCache, contentStore, file.ContentID)
+	_, flushErr := contentSvc.Flush(ctx.Context, ctx.Share, file.ContentID)
 	if flushErr != nil {
 		traceError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "content_id", file.ContentID, "client", clientIP)
 

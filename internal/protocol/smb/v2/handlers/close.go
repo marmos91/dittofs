@@ -7,7 +7,6 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
-	"github.com/marmos91/dittofs/internal/protocol/cache"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -298,17 +297,15 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	if !openFile.IsDirectory && openFile.ContentID != "" {
 		fileCache := h.Registry.GetCacheForShare(openFile.ShareName)
 		if fileCache != nil && fileCache.Size(openFile.ContentID) > 0 {
-			contentStore, err := h.Registry.GetContentStoreForShare(openFile.ShareName)
-			if err == nil {
-				// Use FlushAndFinalizeCache for immediate durability (completes S3 uploads)
-				_, flushErr := cache.FlushAndFinalizeCache(ctx.Context, fileCache, contentStore, openFile.ContentID)
-				if flushErr != nil {
-					logger.Warn("CLOSE: cache flush failed", "path", openFile.Path, "error", flushErr)
-					// Continue with close even if flush fails - data is in cache
-					// and background flusher will eventually persist it
-				} else {
-					logger.Debug("CLOSE: flushed and finalized", "path", openFile.Path, "contentID", openFile.ContentID)
-				}
+			contentSvc := h.Registry.GetContentService()
+			// Use FlushAndFinalize for immediate durability (completes S3 uploads)
+			_, flushErr := contentSvc.FlushAndFinalize(ctx.Context, openFile.ShareName, openFile.ContentID)
+			if flushErr != nil {
+				logger.Warn("CLOSE: cache flush failed", "path", openFile.Path, "error", flushErr)
+				// Continue with close even if flush fails - data is in cache
+				// and background flusher will eventually persist it
+			} else {
+				logger.Debug("CLOSE: flushed and finalized", "path", openFile.Path, "contentID", openFile.ContentID)
 			}
 		}
 	}
@@ -521,7 +518,7 @@ func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *Ope
 }
 
 // readMFsymlinkContent reads the content of a potential MFsymlink file.
-// It tries the cache first, then falls back to the content store.
+// It tries the cache first, then falls back to the content store via ContentService.
 func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFile) ([]byte, error) {
 	// Try reading from cache first
 	fileCache := h.Registry.GetCacheForShare(openFile.ShareName)
@@ -533,13 +530,10 @@ func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFil
 		}
 	}
 
-	// Fall back to content store
-	contentStore, err := h.Registry.GetContentStoreForShare(openFile.ShareName)
-	if err != nil {
-		return nil, err
-	}
+	// Fall back to content store via ContentService
+	contentSvc := h.Registry.GetContentService()
 
-	reader, err := contentStore.ReadContent(ctx.Context, openFile.ContentID)
+	reader, err := contentSvc.ReadContent(ctx.Context, openFile.ShareName, openFile.ContentID)
 	if err != nil {
 		return nil, err
 	}
@@ -584,12 +578,10 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 		return fmt.Errorf("failed to remove MFsymlink file: %w", err)
 	}
 
-	// Delete content from content store (optional - ignore errors)
+	// Delete content from content store via ContentService (optional - ignore errors)
 	if openFile.ContentID != "" {
-		contentStore, err := h.Registry.GetContentStoreForShare(openFile.ShareName)
-		if err == nil {
-			_ = contentStore.Delete(ctx.Context, openFile.ContentID)
-		}
+		contentSvc := h.Registry.GetContentService()
+		_ = contentSvc.Delete(ctx.Context, openFile.ShareName, openFile.ContentID)
 	}
 
 	// Create the real symlink with default attributes
