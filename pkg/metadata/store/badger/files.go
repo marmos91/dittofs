@@ -16,9 +16,15 @@ var errFound = fmt.Errorf("found")
 // ============================================================================
 
 // GetFile retrieves file metadata by handle.
+// Uses a read-only transaction for better concurrency.
 func (s *BadgerMetadataStore) GetFile(ctx context.Context, handle metadata.FileHandle) (*metadata.File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	var result *metadata.File
-	err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+	err := s.db.View(func(txn *badgerdb.Txn) error {
+		tx := &badgerTransaction{store: s, txn: txn}
 		var err error
 		result, err = tx.GetFile(ctx, handle)
 		return err
@@ -106,8 +112,13 @@ func (s *BadgerMetadataStore) GetFileByContentID(ctx context.Context, contentID 
 
 // GetChild resolves a name in a directory to a file handle.
 func (s *BadgerMetadataStore) GetChild(ctx context.Context, dirHandle metadata.FileHandle, name string) (metadata.FileHandle, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	var result metadata.FileHandle
-	err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+	err := s.db.View(func(txn *badgerdb.Txn) error {
+		tx := &badgerTransaction{store: s, txn: txn}
 		var err error
 		result, err = tx.GetChild(ctx, dirHandle, name)
 		return err
@@ -130,10 +141,16 @@ func (s *BadgerMetadataStore) DeleteChild(ctx context.Context, dirHandle metadat
 }
 
 // ListChildren returns directory entries with pagination support.
+// Uses a read-only transaction for better concurrency.
 func (s *BadgerMetadataStore) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int) ([]metadata.DirEntry, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+
 	var entries []metadata.DirEntry
 	var nextCursor string
-	err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+	err := s.db.View(func(txn *badgerdb.Txn) error {
+		tx := &badgerTransaction{store: s, txn: txn}
 		var err error
 		entries, nextCursor, err = tx.ListChildren(ctx, dirHandle, cursor, limit)
 		return err
@@ -146,9 +163,15 @@ func (s *BadgerMetadataStore) ListChildren(ctx context.Context, dirHandle metada
 // ============================================================================
 
 // GetParent returns the parent handle for a file/directory.
+// Uses a read-only transaction for better concurrency.
 func (s *BadgerMetadataStore) GetParent(ctx context.Context, handle metadata.FileHandle) (metadata.FileHandle, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	var result metadata.FileHandle
-	err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+	err := s.db.View(func(txn *badgerdb.Txn) error {
+		tx := &badgerTransaction{store: s, txn: txn}
 		var err error
 		result, err = tx.GetParent(ctx, handle)
 		return err
@@ -164,9 +187,15 @@ func (s *BadgerMetadataStore) SetParent(ctx context.Context, handle metadata.Fil
 }
 
 // GetLinkCount returns the hard link count for a file.
+// Uses a read-only transaction for better concurrency.
 func (s *BadgerMetadataStore) GetLinkCount(ctx context.Context, handle metadata.FileHandle) (uint32, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
 	var result uint32
-	err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+	err := s.db.View(func(txn *badgerdb.Txn) error {
+		tx := &badgerTransaction{store: s, txn: txn}
 		var err error
 		result, err = tx.GetLinkCount(ctx, handle)
 		return err
@@ -187,8 +216,13 @@ func (s *BadgerMetadataStore) SetLinkCount(ctx context.Context, handle metadata.
 
 // GetFilesystemMeta retrieves filesystem metadata for a share.
 func (s *BadgerMetadataStore) GetFilesystemMeta(ctx context.Context, shareName string) (*metadata.FilesystemMeta, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	var meta *metadata.FilesystemMeta
-	err := s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+	err := s.db.View(func(txn *badgerdb.Txn) error {
+		tx := &badgerTransaction{store: s, txn: txn}
 		var err error
 		meta, err = tx.GetFilesystemMeta(ctx, shareName)
 		return err
