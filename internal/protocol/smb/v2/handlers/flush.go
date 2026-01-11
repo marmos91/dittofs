@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/protocol/cache"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 )
 
@@ -233,17 +232,13 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	}
 
 	// ========================================================================
-	// Step 3: Flush cache to content store using shared flush logic
+	// Step 3: Flush cache to content store using ContentService
 	// ========================================================================
 
-	contentStore, err := h.Registry.GetContentStoreForShare(openFile.ShareName)
-	if err != nil {
-		logger.Warn("FLUSH: failed to get content store", "share", openFile.ShareName, "error", err)
-		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
-	}
+	contentSvc := h.Registry.GetContentService()
 
-	// Flush using shared cache flush logic (same as NFS COMMIT)
-	_, flushErr := cache.FlushCacheToContentStore(ctx.Context, fileCache, contentStore, file.ContentID)
+	// Flush using ContentService (same as NFS COMMIT)
+	_, flushErr := contentSvc.Flush(ctx.Context, openFile.ShareName, file.ContentID)
 	if flushErr != nil {
 		logger.Warn("FLUSH: cache flush failed", "path", openFile.Path, "error", flushErr)
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUnexpectedIOError}}, nil

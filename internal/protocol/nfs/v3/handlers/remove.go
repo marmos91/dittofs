@@ -220,17 +220,13 @@ func (h *Handler) Remove(
 	}
 
 	// ========================================================================
-	// Step 2: Get metadata and content stores from context
+	// Step 2: Get metadata and content services from registry
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
 
-	// Get content store for this share
-	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
-	if err != nil {
-		logger.WarnCtx(ctx.Context, "REMOVE failed", "error", err, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
-		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
+	// Get content service for this share
+	contentSvc := h.Registry.GetContentService()
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 
@@ -339,7 +335,7 @@ func (h *Handler) Remove(
 	// Any unflushed cache data will be cleaned up by cache eviction.
 
 	if removedFileAttr.ContentID != "" {
-		if err := contentStore.Delete(ctx.Context, removedFileAttr.ContentID); err != nil {
+		if err := contentSvc.Delete(ctx.Context, ctx.Share, removedFileAttr.ContentID); err != nil {
 			// Log but don't fail the operation - metadata is already removed
 			logger.WarnCtx(ctx.Context, "REMOVE: failed to delete content", "name", req.Filename, "content_id", removedFileAttr.ContentID, "error", err)
 			// This is non-fatal - the file is successfully removed from metadata

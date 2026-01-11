@@ -3,7 +3,7 @@ package metrics
 import (
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/store/content/s3"
+	"github.com/marmos91/dittofs/pkg/content/store/s3"
 )
 
 // NewS3Metrics creates a new Prometheus-backed S3Metrics instance.

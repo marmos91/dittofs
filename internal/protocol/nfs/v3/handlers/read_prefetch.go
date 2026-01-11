@@ -6,8 +6,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/bytesize"
+	"github.com/marmos91/dittofs/pkg/content"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/store/content"
 )
 
 // ============================================================================
@@ -39,7 +39,7 @@ const (
 //   - Prefetch is already in progress for this content ID
 func (h *Handler) startBackgroundPrefetch(
 	ctx *NFSHandlerContext,
-	contentStore content.ContentStore,
+	contentSvc *content.ContentService,
 	contentID metadata.ContentID,
 	fileSize uint64,
 ) {
@@ -86,7 +86,7 @@ func (h *Handler) startBackgroundPrefetch(
 	logger.DebugCtx(ctx.Context, "READ: starting background prefetch", "content_id", contentID, "size", bytesize.ByteSize(fileSize), "chunk_size", bytesize.ByteSize(chunkSize))
 
 	// Spawn background goroutine to fetch the file
-	go h.runPrefetch(ctx.Share, contentStore, contentID, fileSize, chunkSize)
+	go h.runPrefetch(ctx.Share, contentSvc, contentID, fileSize, chunkSize)
 }
 
 // runPrefetch fetches the entire file content and writes it to cache.
@@ -96,7 +96,7 @@ func (h *Handler) startBackgroundPrefetch(
 // READ requests can be served as soon as their bytes are available.
 func (h *Handler) runPrefetch(
 	share string,
-	contentStore content.ContentStore,
+	contentSvc *content.ContentService,
 	contentID metadata.ContentID,
 	fileSize uint64,
 	chunkSize int64,
@@ -122,7 +122,7 @@ func (h *Handler) runPrefetch(
 	}()
 
 	// Check if content store supports ReadAt for efficient chunked reads
-	readAtStore, hasReadAt := contentStore.(content.ReadAtContentStore)
+	hasReadAt := contentSvc.SupportsReadAt(share)
 
 	if hasReadAt {
 		// Efficient path: read in chunks using ReadAt
@@ -131,7 +131,7 @@ func (h *Handler) runPrefetch(
 			readSize := min(remaining, uint64(chunkSize))
 
 			chunk := make([]byte, readSize)
-			n, err := readAtStore.ReadAt(ctx, contentID, chunk, offset)
+			n, err := contentSvc.ReadAt(ctx, share, contentID, chunk, offset)
 			if err != nil && err != io.EOF {
 				logger.Warn("READ: prefetch chunk read failed", "content_id", contentID, "offset", offset, "error", err)
 				return
@@ -154,7 +154,7 @@ func (h *Handler) runPrefetch(
 		}
 	} else {
 		// Fallback: read entire content using streaming reader
-		reader, err := contentStore.ReadContent(ctx, contentID)
+		reader, err := contentSvc.ReadContent(ctx, share, contentID)
 		if err != nil {
 			logger.Warn("READ: prefetch read failed", "content_id", contentID, "error", err)
 			return

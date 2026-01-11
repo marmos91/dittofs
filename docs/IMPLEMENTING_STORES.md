@@ -699,7 +699,7 @@ import (
     "io"
     "sync"
 
-    "github.com/marmos91/dittofs/pkg/store/content"
+    "github.com/marmos91/dittofs/pkg/content"
     "github.com/marmos91/dittofs/pkg/store/metadata"
 )
 
@@ -992,7 +992,7 @@ func (s *MyContentStore) ReadAt(
 
 #### IncrementalWriteStore (For Large Files)
 
-This is complex and primarily needed for S3-like stores with multipart upload. See `pkg/store/content/s3/s3_incremental.go` for a complete implementation example.
+This is complex and primarily needed for S3-like stores with multipart upload. See `pkg/content/s3/s3_incremental.go` for a complete implementation example.
 
 **Key Concepts**:
 - Part-based uploads (5MB+ parts)
@@ -1333,7 +1333,7 @@ package mystore_test
 import (
     "testing"
 
-    "github.com/marmos91/dittofs/pkg/store/content/testing"
+    "github.com/marmos91/dittofs/pkg/content/testing"
     "github.com/yourorg/dittofs-mystore"
 )
 
@@ -1700,12 +1700,12 @@ By following this guide, you can create production-ready store implementations t
 
 ## Additional Resources
 
-- **Interface Definitions**: `pkg/store/metadata/store.go`, `pkg/store/content/store.go`
+- **Interface Definitions**: `pkg/store/metadata/store.go`, `pkg/content/store.go`
 - **Reference Implementations**:
-  - Memory: `pkg/store/metadata/memory/`, `pkg/store/content/memory/`
+  - Memory: `pkg/store/metadata/memory/`, `pkg/content/memory/`
   - BadgerDB: `pkg/store/metadata/badger/`
-  - S3: `pkg/store/content/s3/`
-- **Test Suites**: `pkg/store/metadata/testing/`, `pkg/store/content/testing/`
+  - S3: `pkg/content/s3/`
+- **Test Suites**: `pkg/store/metadata/testing/`, `pkg/content/testing/`
 - **Architecture**: `docs/ARCHITECTURE.md`
 - **Configuration**: `docs/CONFIGURATION.md`
 - **Contributing**: `docs/CONTRIBUTING.md`

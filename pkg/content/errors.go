@@ -30,12 +30,6 @@ import "errors"
 var (
 	// ErrContentNotFound indicates the requested content does not exist.
 	//
-	// This error is returned when:
-	//   - ReadContent() called with non-existent ContentID
-	//   - GetContentSize() called with non-existent ContentID
-	//   - Truncate() called with non-existent ContentID
-	//   - Operations that require existing content
-	//
 	// Protocol Mapping:
 	//   - NFS: NFS3ErrNoEnt (2)
 	//   - SMB: STATUS_OBJECT_NAME_NOT_FOUND
@@ -43,10 +37,6 @@ var (
 	ErrContentNotFound = errors.New("content not found")
 
 	// ErrContentExists indicates content with this ID already exists.
-	//
-	// This error is returned when:
-	//   - Creating new content with explicit "must not exist" semantics
-	//   - Exclusive create operations
 	//
 	// Note: Most write operations overwrite existing content and do NOT
 	// return this error. This is only for explicit "create new" operations.
@@ -59,14 +49,6 @@ var (
 
 	// ErrInvalidOffset indicates the offset is invalid for the operation.
 	//
-	// This error is returned when:
-	//   - Offset is negative
-	//   - Offset would cause integer overflow
-	//   - Offset exceeds implementation limits
-	//
-	// Note: Offset beyond current size is typically NOT an error for WriteAt
-	// (sparse file semantics apply). This is for truly invalid offsets.
-	//
 	// Protocol Mapping:
 	//   - NFS: NFS3ErrInval (22)
 	//   - SMB: STATUS_INVALID_PARAMETER
@@ -75,23 +57,12 @@ var (
 
 	// ErrInvalidSize indicates the size parameter is invalid.
 	//
-	// This error is returned when:
-	//   - Size is negative (if using signed integers)
-	//   - Size would cause integer overflow
-	//   - Size exceeds implementation limits
-	//   - Size is invalid for the operation
-	//
 	// Protocol Mapping:
 	//   - NFS: NFS3ErrInval (22)
 	//   - SMB: STATUS_INVALID_PARAMETER
 	ErrInvalidSize = errors.New("invalid size")
 
 	// ErrStorageFull indicates the storage backend has no available space.
-	//
-	// This error is returned when:
-	//   - Filesystem is full (disk space exhausted)
-	//   - Storage quota is reached
-	//   - No more storage can be allocated
 	//
 	// This is a transient error - it may succeed after cleanup.
 	//
@@ -103,14 +74,6 @@ var (
 
 	// ErrQuotaExceeded indicates a storage quota has been exceeded.
 	//
-	// This error is returned when:
-	//   - User quota exceeded
-	//   - Group quota exceeded
-	//   - Project quota exceeded
-	//   - Per-content limits exceeded
-	//
-	// Similar to ErrStorageFull but specifically for quota enforcement.
-	//
 	// Protocol Mapping:
 	//   - NFS: NFS3ErrDQuot (69)
 	//   - SMB: STATUS_QUOTA_EXCEEDED
@@ -118,14 +81,6 @@ var (
 	ErrQuotaExceeded = errors.New("quota exceeded")
 
 	// ErrIntegrityCheckFailed indicates content integrity verification failed.
-	//
-	// This error is returned when:
-	//   - Checksum mismatch detected
-	//   - Hash verification failed
-	//   - Content corruption detected
-	//   - Cryptographic signature invalid
-	//
-	// This indicates data corruption or tampering.
 	//
 	// Protocol Mapping:
 	//   - NFS: NFS3ErrIO (5)
@@ -135,11 +90,6 @@ var (
 
 	// ErrReadOnly indicates the content store is read-only.
 	//
-	// This error is returned when:
-	//   - Attempting write operations on read-only store
-	//   - Storage is mounted read-only
-	//   - Storage is in maintenance mode
-	//
 	// Protocol Mapping:
 	//   - NFS: NFS3ErrRoFs (30)
 	//   - SMB: STATUS_MEDIA_WRITE_PROTECTED
@@ -147,11 +97,6 @@ var (
 	ErrReadOnly = errors.New("content store is read-only")
 
 	// ErrNotSupported indicates the operation is not supported.
-	//
-	// This error is returned when:
-	//   - Backend doesn't implement optional interface
-	//   - Operation not supported by storage type
-	//   - Feature not enabled
 	//
 	// This is a permanent error - retrying won't help.
 	//
@@ -163,11 +108,6 @@ var (
 
 	// ErrConcurrentModification indicates content was modified concurrently.
 	//
-	// This error is returned when:
-	//   - Optimistic locking detected conflict
-	//   - ETag/version mismatch
-	//   - Concurrent write detected
-	//
 	// Callers should retry with fresh data.
 	//
 	// Protocol Mapping:
@@ -178,11 +118,6 @@ var (
 
 	// ErrInvalidContentID indicates the ContentID format is invalid.
 	//
-	// This error is returned when:
-	//   - ContentID contains invalid characters
-	//   - ContentID format doesn't match expected pattern
-	//   - ContentID is malformed
-	//
 	// Protocol Mapping:
 	//   - NFS: NFS3ErrBadHandle (10001)
 	//   - SMB: STATUS_INVALID_PARAMETER
@@ -190,11 +125,6 @@ var (
 	ErrInvalidContentID = errors.New("invalid content ID")
 
 	// ErrTooLarge indicates the content or operation is too large.
-	//
-	// This error is returned when:
-	//   - Content size exceeds maximum supported size
-	//   - Write size exceeds maximum write size
-	//   - Operation would exceed implementation limits
 	//
 	// Protocol Mapping:
 	//   - NFS: NFS3ErrFBig (27)
@@ -204,12 +134,6 @@ var (
 
 	// ErrUnavailable indicates the storage backend is temporarily unavailable.
 	//
-	// This error is returned when:
-	//   - Storage backend is offline
-	//   - Network connection to storage failed
-	//   - Storage is in maintenance mode
-	//   - Too many concurrent requests
-	//
 	// This is a transient error - retrying may succeed.
 	//
 	// Protocol Mapping:
@@ -217,4 +141,10 @@ var (
 	//   - SMB: STATUS_DEVICE_NOT_READY
 	//   - HTTP: 503 Service Unavailable
 	ErrUnavailable = errors.New("storage unavailable")
+
+	// ErrNoStoreForShare indicates no content store is configured for the share.
+	ErrNoStoreForShare = errors.New("no content store configured for share")
+
+	// ErrNoCacheForShare indicates no cache is configured for the share.
+	ErrNoCacheForShare = errors.New("no cache configured for share")
 )
