@@ -1,0 +1,183 @@
+# End-to-End Tests for DittoFS
+#
+# Tests aspects NOT covered by pjdfstest POSIX compliance:
+# - Scalability (large files, many files)
+# - Store interoperability (all 8 configurations)
+# - Protocol interoperability (NFS↔SMB)
+# - Cache behavior
+# - Server configurations
+#
+# See test/e2e/README.md for test philosophy and structure.
+
+name: E2E Tests
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Test mode'
+        required: true
+        default: 'quick'
+        type: choice
+        options:
+          - quick
+          - full
+
+jobs:
+  # Quick e2e tests - runs on every PR (skip when full mode explicitly requested)
+  e2e-quick:
+    name: E2E Quick (Local Configs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.mode == 'quick'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nfs-common cifs-utils smbclient
+
+      - name: Build DittoFS
+        run: nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go
+
+      - name: Run E2E tests (Quick mode)
+        run: |
+          # Quick mode: local configs only, smaller file sizes
+          sudo nix develop .#ci --command go test -tags=e2e -v -short -timeout 10m ./test/e2e/... \
+            2>&1 | tee "$GITHUB_WORKSPACE/e2e-quick.log"
+
+      - name: Generate summary
+        if: always()
+        run: |
+          echo "## E2E Quick Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if grep -qE "^ok[[:space:]]" "$GITHUB_WORKSPACE/e2e-quick.log" && ! grep -qE "^FAIL" "$GITHUB_WORKSPACE/e2e-quick.log"; then
+            echo ":white_check_mark: All tests passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo ":x: Some tests failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>Test Output (last 100 lines)</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -100 "$GITHUB_WORKSPACE/e2e-quick.log" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-quick-logs
+          path: ${{ github.workspace }}/e2e-quick.log
+          retention-days: 7
+
+  # Full e2e tests - runs on demand or for main branch
+  e2e-full:
+    name: E2E Full (All Configs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full') || github.ref == 'refs/heads/main'
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: dittofs
+          POSTGRES_PASSWORD: dittofs
+          POSTGRES_DB: dittofs_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      localstack:
+        image: localstack/localstack:latest
+        env:
+          SERVICES: s3
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "wget -qO- http://localhost:4566/_localstack/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nfs-common cifs-utils smbclient
+
+      - name: Build DittoFS
+        run: nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go
+
+      - name: Run E2E tests (Full mode)
+        run: |
+          # Full mode: all configurations including Docker-based stores
+          sudo nix develop .#ci --command go test -tags=e2e -v -timeout 30m ./test/e2e/... \
+            2>&1 | tee "$GITHUB_WORKSPACE/e2e-full.log"
+
+      - name: Generate summary
+        if: always()
+        run: |
+          echo "## E2E Full Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if grep -qE "^ok[[:space:]]" "$GITHUB_WORKSPACE/e2e-full.log" && ! grep -qE "^FAIL" "$GITHUB_WORKSPACE/e2e-full.log"; then
+            echo ":white_check_mark: All tests passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo ":x: Some tests failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Categories" >> $GITHUB_STEP_SUMMARY
+          echo "| Category | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
+          for category in Store Scale Protocol Cache Server; do
+            if grep -q "Test${category}.*PASS" "$GITHUB_WORKSPACE/e2e-full.log"; then
+              echo "| ${category} | :white_check_mark: |" >> $GITHUB_STEP_SUMMARY
+            elif grep -q "Test${category}.*FAIL" "$GITHUB_WORKSPACE/e2e-full.log"; then
+              echo "| ${category} | :x: |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| ${category} | :grey_question: |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat "$GITHUB_WORKSPACE/e2e-full.log" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-full-logs
+          path: ${{ github.workspace }}/e2e-full.log
+          retention-days: 30
