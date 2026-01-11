@@ -12,7 +12,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/store/content"
 )
 
 // seekBufferSize is the buffer size used when skipping bytes in a reader
@@ -338,16 +337,12 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	ctx.Permission = tree.Permission
 
 	// ========================================================================
-	// Step 4: Get metadata and content stores
+	// Step 4: Get metadata and content services
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
 
-	contentStore, err := h.Registry.GetContentStoreForShare(tree.ShareName)
-	if err != nil {
-		logger.Warn("READ: failed to get content store", "share", tree.ShareName, "error", err)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
-	}
+	contentSvc := h.Registry.GetContentService()
 
 	// Get cache for share (optional - nil means no caching)
 	fileCache := h.Registry.GetCacheForShare(tree.ShareName)
@@ -452,12 +447,12 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		}
 	}
 
-	// Cache miss - read from content store
+	// Cache miss - read from content store via ContentService
 	if !cacheHit {
-		// Try ReadAt if available (more efficient for partial reads)
-		if readAtStore, ok := contentStore.(content.ReadAtContentStore); ok {
+		// Use ContentService for reading (handles ReadAt capability internally)
+		if contentSvc.SupportsReadAt(tree.ShareName) {
 			data = make([]byte, actualLength)
-			n, err := readAtStore.ReadAt(authCtx.Context, readMeta.Attr.ContentID, data, req.Offset)
+			n, err := contentSvc.ReadAt(authCtx.Context, tree.ShareName, readMeta.Attr.ContentID, data, req.Offset)
 			if err != nil {
 				logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
 				return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
@@ -465,7 +460,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 			data = data[:n]
 		} else {
 			// Fallback to ReadContent (reads entire file)
-			reader, err := contentStore.ReadContent(authCtx.Context, readMeta.Attr.ContentID)
+			reader, err := contentSvc.ReadContent(authCtx.Context, tree.ShareName, readMeta.Attr.ContentID)
 			if err != nil {
 				logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
 				return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil

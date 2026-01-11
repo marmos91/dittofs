@@ -13,7 +13,7 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 
 ## Core Abstraction Layers
 
-DittoFS uses the **Registry pattern** to enable named, reusable stores that can be shared across multiple NFS exports:
+DittoFS uses a **Service-oriented architecture** with the Registry pattern to enable named, reusable stores that can be shared across multiple NFS exports:
 
 ```
 ┌─────────────────────────────────────────┐
@@ -39,16 +39,34 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 │  - "fast-memory" → Memory stores        │
 │  - "persistent"  → BadgerDB + FS        │
 │  - "s3-archive"  → BadgerDB + S3        │
-└───────┬───────────────────┬─────────────┘
-        │                   │
-        ▼                   ▼
+└───────┬─────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────┐
+│            Services                     │
+│   (Business logic & coordination)       │
+│                                         │
+│  ┌─────────────────┐ ┌────────────────┐ │
+│  │ MetadataService │ │ ContentService │ │
+│  │ pkg/metadata/   │ │ pkg/content/   │ │
+│  │ service.go      │ │ service.go     │ │
+│  └────────┬────────┘ └───────┬────────┘ │
+│           │                  │          │
+│           │    ┌─────────┐   │          │
+│           │    │  Cache  │◄──┤          │
+│           │    │  Layer  │   │          │
+│           │    └─────────┘   │          │
+└───────────┼──────────────────┼──────────┘
+            │                  │
+            ▼                  ▼
 ┌────────────────┐  ┌────────────────────┐
 │   Metadata     │  │   Content          │
 │     Stores     │  │     Stores         │
+│    (CRUD)      │  │    (CRUD)          │
 │                │  │                    │
 │  - Memory      │  │  - Memory          │
 │  - BadgerDB    │  │  - Filesystem      │
-│                │  │  - S3              │
+│  - PostgreSQL  │  │  - S3              │
 └────────────────┘  └────────────────────┘
 ```
 
@@ -60,30 +78,45 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 - Enables flexible configurations (e.g., "fast-memory", "s3-archive", "persistent")
 - Handles store lifecycle and identity resolution
 - Maps file handles to their originating share for proper store routing
+- Owns and coordinates Services (MetadataService, ContentService)
 
 **2. Adapter Interface** (`pkg/adapter/adapter.go`)
 - Each protocol implements the `Adapter` interface
-- Adapters receive a registry reference to resolve stores per-share
+- Adapters receive a registry reference to access services
 - Lifecycle: `SetRegistry() → Serve() → Stop()`
 - Multiple adapters can share the same registry
 - Thread-safe, supports graceful shutdown
 
-**3. Metadata Store** (`pkg/store/metadata/store.go`)
-- Stores file/directory structure, attributes, permissions
-- Handles access control and root directory creation
+**3. MetadataService** (`pkg/metadata/service.go`)
+- **Central service for all metadata operations**
+- Routes operations to the correct store based on share name
+- Owns LockManager per share (for SMB/NLM byte-range locking)
+- Provides high-level operations with business logic
+- Protocol handlers should use this instead of stores directly
+
+**4. ContentService** (`pkg/content/service.go`)
+- **Central service for all content operations**
+- Routes operations to the correct store based on share name
+- Owns cache coordination (writes to cache, flushed on COMMIT, reads from cache)
+- Provides high-level operations with caching integration
+- Protocol handlers should use this instead of stores directly
+
+**5. Metadata Store** (`pkg/metadata/store.go`)
+- **Simple CRUD interface** for file/directory metadata
+- Stores file structure, attributes, permissions
 - Implementations:
-  - `pkg/store/metadata/memory/`: In-memory (fast, ephemeral, full hard link support)
-  - `pkg/store/metadata/badger/`: BadgerDB (persistent, embedded, path-based handles)
-  - `pkg/store/metadata/postgres/`: PostgreSQL (persistent, distributed, UUID-based handles)
+  - `pkg/metadata/store/memory/`: In-memory (fast, ephemeral, full hard link support)
+  - `pkg/metadata/store/badger/`: BadgerDB (persistent, embedded, path-based handles)
+  - `pkg/metadata/store/postgres/`: PostgreSQL (persistent, distributed, UUID-based handles)
 - File handles are opaque identifiers (implementation-specific format)
 
-**4. Content Store** (`pkg/store/content/store.go`)
-- Stores actual file data
+**6. Content Store** (`pkg/content/store.go`)
+- **Simple CRUD interface** for file data
 - Supports read, write-at, truncate operations
 - Implementations:
-  - `pkg/store/content/memory/`: In-memory (fast, ephemeral)
-  - `pkg/store/content/fs/`: Filesystem-backed storage
-  - `pkg/store/content/s3/`: S3-backed storage (multipart, streaming)
+  - `pkg/content/store/memory/`: In-memory (fast, ephemeral)
+  - `pkg/content/store/fs/`: Filesystem-backed storage
+  - `pkg/content/store/s3/`: S3-backed storage (multipart, streaming)
 
 ## Adapter Pattern
 
@@ -96,19 +129,25 @@ type Adapter interface {
     Stop(ctx context.Context) error
     Protocol() string
     Port() int
+    SetRegistry(registry *Registry)  // Receive registry for service access
 }
 
-// Example: NFS Adapter
+// Example: NFS Adapter accesses services via registry
 type NFSAdapter struct {
-    config         NFSConfig
-    metadataStore  metadata.MetadataStore
-    content        content.ContentStore
+    config   NFSConfig
+    registry *Registry  // Access to MetadataService and ContentService
 }
 
-// Multiple adapters can run concurrently
-server := dittofs.New(metadataRepo, contentRepo)
+func (a *NFSAdapter) handleRead(ctx context.Context, req *ReadRequest) {
+    // Use ContentService for reads (handles caching automatically)
+    data, err := a.registry.ContentService().ReadAt(ctx, shareName, contentID, offset, size)
+    // ...
+}
+
+// Multiple adapters can run concurrently, sharing the same services
+server := dittofs.NewServer(config)
 server.AddAdapter(nfs.New(nfsConfig))
-server.AddAdapter(smb.New(smbConfig)) // Future
+server.AddAdapter(smb.New(smbConfig))
 server.Serve(ctx)
 ```
 
@@ -164,36 +203,77 @@ shares:
 - **Isolated Testing**: Each share can use different backends
 - **Future Multi-Tenancy**: Foundation for per-tenant store isolation
 
-## Repository Interfaces
+## Service Layer
 
-### Metadata Repository
+The service layer provides business logic and coordination between stores and caches.
 
-Handles file structure:
+### MetadataService
+
+Handles all metadata operations with share-based routing:
 
 ```go
-type Repository interface {
-    // File operations
-    GetFile(ctx context.Context, handle FileHandle) (*FileAttr, error)
-    CreateFile(ctx context.Context, parent FileHandle, name string) (*FileAttr, error)
-
-    // Directory operations
-    Lookup(ctx context.Context, dir FileHandle, name string) (*FileAttr, error)
-    ReadDir(ctx context.Context, dir FileHandle) ([]*DirEntry, error)
-
-    // Attribute operations
-    SetAttr(ctx context.Context, handle FileHandle, attr *SetAttr) error
+// MetadataService - central service for metadata operations
+type MetadataService struct {
+    stores       map[string]MetadataStore  // shareName -> store
+    lockManagers map[string]*LockManager   // shareName -> lock manager
 }
+
+// Usage by protocol handlers
+metaSvc := metadata.New()
+metaSvc.RegisterStoreForShare("/export", memoryStore)
+metaSvc.RegisterStoreForShare("/archive", badgerStore)
+
+// High-level operations (with business logic)
+file, err := metaSvc.CreateFile(authCtx, parentHandle, "test.txt", fileAttr)
+entries, err := metaSvc.ReadDir(ctx, dirHandle)
+
+// Byte-range locking (SMB/NLM)
+lock, err := metaSvc.AcquireLock(ctx, shareName, handle, offset, length, exclusive)
 ```
 
-### Content Repository
+### ContentService
 
-Handles file data:
+Handles all content operations with caching:
 
 ```go
-type Repository interface {
-    ReadContent(ctx context.Context, id ContentID, offset int64, size uint32) ([]byte, error)
-    WriteContent(ctx context.Context, id ContentID, offset int64, data []byte) error
-    GetSize(ctx context.Context, id ContentID) (int64, error)
+// ContentService - central service for content operations
+type ContentService struct {
+    stores map[string]ContentStore  // shareName -> store
+    caches map[string]cache.Cache   // shareName -> cache (optional)
+}
+
+// Usage by protocol handlers
+contentSvc := content.New()
+contentSvc.RegisterStoreForShare("/export", memoryStore)
+contentSvc.RegisterCacheForShare("/export", memoryCache)
+
+// High-level operations (cache-aware)
+data, err := contentSvc.ReadAt(ctx, shareName, contentID, offset, size)  // Checks cache first
+err := contentSvc.WriteAt(ctx, shareName, contentID, data, offset)       // Writes to cache
+err := contentSvc.Flush(ctx, shareName, contentID)                       // Flushes cache to store
+```
+
+### Store Interfaces (CRUD)
+
+Stores are now simple CRUD interfaces, with business logic in services:
+
+```go
+// MetadataStore - simple CRUD for metadata
+type MetadataStore interface {
+    GetFile(ctx context.Context, handle FileHandle) (*FileAttr, error)
+    CreateFile(ctx context.Context, parent FileHandle, name string, attr *FileAttr) (*FileAttr, error)
+    DeleteFile(ctx context.Context, handle FileHandle) error
+    UpdateFile(ctx context.Context, handle FileHandle, attr *FileAttr) error
+    ListDir(ctx context.Context, handle FileHandle) ([]*DirEntry, error)
+}
+
+// ContentStore - simple CRUD for content
+type ContentStore interface {
+    ReadAt(ctx context.Context, id ContentID, offset int64, size int64) ([]byte, error)
+    WriteAt(ctx context.Context, id ContentID, data []byte, offset int64) error
+    Delete(ctx context.Context, id ContentID) error
+    Truncate(ctx context.Context, id ContentID, size int64) error
+    Stats(ctx context.Context, id ContentID) (*ContentStats, error)
 }
 ```
 
@@ -201,50 +281,84 @@ type Repository interface {
 
 ### Using Built-In Backends
 
-No custom code required:
+No custom code required - configure via YAML:
 
-```go
-// Memory backend (ephemeral)
-metadataStore := memory.NewMemoryMetadataStoreWithDefaults()
+```yaml
+# config.yaml
+metadata:
+  stores:
+    default-meta:
+      type: memory  # or badger, postgres
 
-// BadgerDB backend (persistent)
-metadataStore, err := badger.NewBadgerMetadataStoreWithDefaults(ctx, "/var/lib/dittofs/metadata.db")
-if err != nil {
-    log.Fatal(err)
-}
+content:
+  stores:
+    default-content:
+      type: memory  # or fs, s3
 
-// Wire to server
-server := dittofs.New(metadataStore, contentStore)
+shares:
+  - name: /export
+    metadata_store: default-meta
+    content_store: default-content
 ```
 
-### Implementing Custom Backends
+Or programmatically:
 
 ```go
-// 1. Implement metadata backend (e.g., PostgreSQL)
-type PostgresRepository struct {
+// Create stores
+metadataStore := memory.NewMemoryMetadataStoreWithDefaults()
+contentStore := fscontent.New("/data/content")
+
+// Create services
+metaSvc := metadata.New()
+metaSvc.RegisterStoreForShare("/export", metadataStore)
+
+contentSvc := content.New()
+contentSvc.RegisterStoreForShare("/export", contentStore)
+
+// Create registry and wire services
+registry := registry.New()
+registry.SetMetadataService(metaSvc)
+registry.SetContentService(contentSvc)
+
+// Start server
+server := server.New(registry)
+server.Serve(ctx)
+```
+
+### Implementing Custom Store Backends
+
+Stores are simple CRUD interfaces - implement only what's needed:
+
+```go
+// 1. Implement metadata store (simple CRUD)
+type PostgresStore struct {
     db *sql.DB
 }
 
-func (r *PostgresRepository) GetFile(ctx context.Context, handle FileHandle) (*FileAttr, error) {
-    var attr FileAttr
-    err := r.db.QueryRowContext(ctx,
+func (s *PostgresStore) GetFile(ctx context.Context, handle FileHandle) (*metadata.FileAttr, error) {
+    var attr metadata.FileAttr
+    err := s.db.QueryRowContext(ctx,
         "SELECT size, mtime, mode FROM files WHERE handle = $1",
         handle,
     ).Scan(&attr.Size, &attr.MTime, &attr.Mode)
     return &attr, err
 }
 
-// 2. Implement content backend (e.g., S3)
-type S3ContentRepository struct {
+func (s *PostgresStore) CreateFile(ctx context.Context, parent FileHandle, name string, attr *metadata.FileAttr) (*metadata.FileAttr, error) {
+    // Simple INSERT - no business logic needed
+}
+
+// 2. Implement content store (simple CRUD)
+type S3Store struct {
     client *s3.Client
     bucket string
 }
 
-func (r *S3ContentRepository) ReadContent(ctx context.Context, id ContentID, offset int64, size uint32) ([]byte, error) {
-    result, err := r.client.GetObject(ctx, &s3.GetObjectInput{
-        Bucket: aws.String(r.bucket),
-        Key:    aws.String(id.String()),
-        Range:  aws.String(fmt.Sprintf("bytes=%d-%d", offset, offset+int64(size)-1)),
+func (s *S3Store) ReadAt(ctx context.Context, id content.ContentID, offset, size int64) ([]byte, error) {
+    result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+        Bucket: aws.String(s.bucket),
+        Key:    aws.String(string(id)),
+        Range:  aws.String(fmt.Sprintf("bytes=%d-%d", offset, offset+size-1)),
     })
     if err != nil {
         return nil, err
@@ -253,20 +367,9 @@ func (r *S3ContentRepository) ReadContent(ctx context.Context, id ContentID, off
     return io.ReadAll(result.Body)
 }
 
-// 3. Wire everything together
-func main() {
-    // Initialize repositories
-    metadataRepo := NewPostgresRepository(dbConn)
-    contentRepo := NewS3Repository(s3Client, "my-bucket")
-
-    // Create and configure adapter
-    nfsAdapter := nfs.New(nfs.NFSConfig{Port: 12049})
-
-    // Start server
-    server := dittofs.New(metadataRepo, contentRepo)
-    server.AddAdapter(nfsAdapter)
-    server.Serve(ctx)
-}
+// 3. Register with services (business logic is in services, not stores)
+metaSvc.RegisterStoreForShare("/archive", postgresStore)
+contentSvc.RegisterStoreForShare("/archive", s3Store)
 ```
 
 ## Directory Structure
@@ -279,26 +382,43 @@ dittofs/
 ├── pkg/                      # Public API (stable interfaces)
 │   ├── adapter/              # Protocol adapter interface
 │   │   ├── adapter.go        # Core Adapter interface
-│   │   └── nfs/              # NFS adapter implementation
+│   │   ├── nfs/              # NFS adapter implementation
+│   │   └── smb/              # SMB adapter implementation
+│   │
+│   ├── metadata/             # Metadata layer
+│   │   ├── service.go        # MetadataService (business logic, routing)
+│   │   ├── store.go          # MetadataStore interface (CRUD)
+│   │   ├── types.go          # FileAttr, DirEntry, etc.
+│   │   ├── errors.go         # Metadata-specific errors
+│   │   ├── locking.go        # LockManager for byte-range locks
+│   │   └── store/            # Store implementations
+│   │       ├── memory/       # In-memory (ephemeral)
+│   │       ├── badger/       # BadgerDB (persistent)
+│   │       └── postgres/     # PostgreSQL (distributed)
+│   │
+│   ├── content/              # Content layer
+│   │   ├── service.go        # ContentService (caching, routing)
+│   │   ├── store.go          # ContentStore interface (CRUD)
+│   │   ├── types.go          # ContentID, ContentStats, etc.
+│   │   ├── errors.go         # Content-specific errors
+│   │   └── store/            # Store implementations
+│   │       ├── memory/       # In-memory (ephemeral)
+│   │       ├── fs/           # Filesystem-backed
+│   │       └── s3/           # S3-backed (multipart)
+│   │
+│   ├── cache/                # Cache layer
+│   │   ├── cache.go          # Cache interface
+│   │   └── memory/           # In-memory cache implementation
+│   │
 │   ├── registry/             # Store registry
-│   │   ├── registry.go       # Central store registry
+│   │   ├── registry.go       # Central registry (owns services)
 │   │   ├── share.go          # Share configuration
-│   │   └── access.go         # Identity mapping and handle resolution
-│   ├── store/                # Storage layer
-│   │   ├── metadata/         # Metadata store interface
-│   │   │   ├── store.go      # Store interface
-│   │   │   ├── memory/       # In-memory implementation
-│   │   │   ├── badger/       # BadgerDB implementation
-│   │   │   └── postgres/     # PostgreSQL implementation
-│   │   └── content/          # Content store interface
-│   │       ├── store.go      # Store interface
-│   │       ├── memory/       # In-memory implementation
-│   │       ├── fs/           # Filesystem implementation
-│   │       └── s3/           # S3 implementation
+│   │   └── access.go         # Identity mapping
+│   │
 │   ├── config/               # Configuration parsing
 │   │   ├── config.go         # Main config struct
-│   │   ├── stores.go         # Store configuration
 │   │   └── registry.go       # Registry initialization
+│   │
 │   └── server/               # DittoServer orchestration
 │       └── server.go         # Multi-adapter server management
 │

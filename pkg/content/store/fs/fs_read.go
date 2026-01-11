@@ -10,8 +10,8 @@ import (
 	"io"
 	"os"
 
+	"github.com/marmos91/dittofs/pkg/content"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/store/content"
 )
 
 // ============================================================================

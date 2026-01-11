@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/store/content"
+	"github.com/marmos91/dittofs/pkg/content"
 )
 
 // StoreTestSuite is a comprehensive test suite for ContentStore implementations.

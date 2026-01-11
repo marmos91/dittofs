@@ -16,16 +16,20 @@ This guide provides comprehensive instructions for implementing custom metadata 
 
 ## Overview
 
-DittoFS separates filesystem concerns into two distinct layers:
+DittoFS uses a **Service-oriented architecture** with three distinct layers:
 
-- **Metadata Stores**: Manage file/directory structure, attributes, permissions, and relationships
-- **Content Stores**: Manage actual file data (bytes)
+- **Services** (`MetadataService`, `ContentService`): Business logic, coordination, caching
+- **Metadata Stores**: Simple CRUD operations for file/directory structure, attributes, permissions
+- **Content Stores**: Simple CRUD operations for actual file data (bytes)
+
+**Key Design Principle**: Stores are simple CRUD interfaces. Business logic (permission checking, cache coordination, locking) lives in the Service layer. This makes implementing custom stores much simpler.
 
 This separation enables:
 - Independent scaling of metadata and content
 - Content deduplication (multiple files sharing same data)
 - Flexible storage backends (databases, object storage, distributed systems)
 - Different storage tiers (hot/cold storage, SSD/HDD)
+- **Simple store implementations** (just implement CRUD, services handle the rest)
 
 ## When to Implement Custom Stores
 
@@ -90,26 +94,32 @@ Use `internal.BuildContentID(shareName, fullPath)` for consistent generation.
 
 ### Store Coordination
 
-Metadata and content stores work together:
+Services coordinate between metadata and content stores. **Protocol handlers interact with services, not stores directly.**
 
-1. **Create File**: Metadata store generates ContentID, returns it to protocol handler
-2. **Write Data**: Protocol handler uses ContentID to write to content store
-3. **Read Data**: Protocol handler gets ContentID from metadata, reads from content store
-4. **Delete File**: Protocol handler deletes metadata, then content using ContentID
-
-**Two-Phase Write Pattern**:
-```go
-// Phase 1: Prepare metadata
-intent, err := metadataStore.PrepareWrite(authCtx, handle, newSize)
-
-// Phase 2: Write content
-err = contentStore.WriteAt(intent.ContentID, data, offset)
-
-// Phase 3: Commit metadata
-err = metadataStore.CommitWrite(authCtx, intent)
+```
+Protocol Handler → Service → Store
+                     ↓
+                   Cache
 ```
 
-This ensures consistency: if content write fails, metadata is unchanged.
+**Write Flow** (handled by `ContentService`):
+1. Protocol handler calls `ContentService.WriteAt(shareName, contentID, data, offset)`
+2. ContentService checks if cache is configured for this share
+3. If cached: writes to cache, marks dirty for later flush
+4. If not cached: writes directly to store
+
+**Read Flow** (handled by `ContentService`):
+1. Protocol handler calls `ContentService.ReadAt(shareName, contentID, offset, size)`
+2. ContentService checks cache first (if configured)
+3. On cache hit: returns cached data
+4. On cache miss: reads from store, optionally caches result
+
+**Metadata Flow** (handled by `MetadataService`):
+1. Protocol handler calls `MetadataService.CreateFile(authCtx, parentHandle, name, attr)`
+2. MetadataService routes to correct store based on share name
+3. Store performs simple CRUD operation (no business logic)
+
+**Key Point**: As a store implementer, you only need to implement CRUD operations. The services handle caching, routing, locking, and coordination.
 
 ## Implementing Metadata Stores
 
@@ -124,7 +134,7 @@ import (
     "sync"
 
     lru "github.com/hashicorp/golang-lru/v2"
-    "github.com/marmos91/dittofs/pkg/store/metadata"
+    "github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // MyMetadataStore implements metadata.MetadataStore.
@@ -193,7 +203,7 @@ func (s *MyMetadataStore) GetShareNameForHandle(
 
 #### Permission Checking
 
-DittoFS provides shared helper functions in `pkg/store/metadata/helpers.go` for common permission and identity operations:
+DittoFS provides shared helper functions in `pkg/metadata/` for common permission and identity operations:
 
 ```go
 // Shared helper functions available:
@@ -699,8 +709,8 @@ import (
     "io"
     "sync"
 
-    "github.com/marmos91/dittofs/pkg/store/content"
-    "github.com/marmos91/dittofs/pkg/store/metadata"
+    "github.com/marmos91/dittofs/pkg/content"
+    "github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // MyContentStore implements content.ContentStore.
@@ -992,7 +1002,7 @@ func (s *MyContentStore) ReadAt(
 
 #### IncrementalWriteStore (For Large Files)
 
-This is complex and primarily needed for S3-like stores with multipart upload. See `pkg/store/content/s3/s3_incremental.go` for a complete implementation example.
+This is complex and primarily needed for S3-like stores with multipart upload. See `pkg/content/store/s3/s3_incremental.go` for a complete implementation example.
 
 **Key Concepts**:
 - Part-based uploads (5MB+ parts)
@@ -1115,7 +1125,7 @@ return fmt.Errorf("file not found: %s", fullPath)
 
 **Use error factory functions**:
 
-DittoFS provides error factory functions in `pkg/store/metadata/errors.go` for consistent error creation:
+DittoFS provides error factory functions in `pkg/metadata/errors.go` for consistent error creation:
 
 ```go
 // Error factory functions available:
@@ -1295,7 +1305,7 @@ package mystore_test
 import (
     "testing"
 
-    "github.com/marmos91/dittofs/pkg/store/metadata/testing"
+    "github.com/marmos91/dittofs/pkg/metadata/testing"
     "github.com/yourorg/dittofs-mystore"
 )
 
@@ -1333,7 +1343,7 @@ package mystore_test
 import (
     "testing"
 
-    "github.com/marmos91/dittofs/pkg/store/content/testing"
+    "github.com/marmos91/dittofs/pkg/content/store/testing"
     "github.com/yourorg/dittofs-mystore"
 )
 
@@ -1700,12 +1710,12 @@ By following this guide, you can create production-ready store implementations t
 
 ## Additional Resources
 
-- **Interface Definitions**: `pkg/store/metadata/store.go`, `pkg/store/content/store.go`
+- **Interface Definitions**: `pkg/metadata/store.go`, `pkg/content/store.go`
 - **Reference Implementations**:
-  - Memory: `pkg/store/metadata/memory/`, `pkg/store/content/memory/`
-  - BadgerDB: `pkg/store/metadata/badger/`
-  - S3: `pkg/store/content/s3/`
-- **Test Suites**: `pkg/store/metadata/testing/`, `pkg/store/content/testing/`
+  - Memory: `pkg/metadata/store/memory/`, `pkg/content/store/memory/`
+  - BadgerDB: `pkg/metadata/store/badger/`
+  - S3: `pkg/content/store/s3/`
+- **Test Suites**: `pkg/content/store/testing/`
 - **Architecture**: `docs/ARCHITECTURE.md`
 - **Configuration**: `docs/CONFIGURATION.md`
 - **Contributing**: `docs/CONTRIBUTING.md`

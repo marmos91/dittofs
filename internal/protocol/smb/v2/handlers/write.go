@@ -359,16 +359,11 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
-	// Step 5: Get metadata and content stores
+	// Step 5: Get metadata and content services
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-
-	contentStore, err := h.Registry.GetContentStoreForShare(tree.ShareName)
-	if err != nil {
-		logger.Warn("WRITE: failed to get content store", "share", tree.ShareName, "error", err)
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
-	}
+	contentSvc := h.Registry.GetContentService()
 
 	// Get unified cache for this share (optional - nil means sync mode)
 	cache := h.Registry.GetCacheForShare(tree.ShareName)
@@ -429,8 +424,8 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 			"content_id", writeOp.ContentID,
 			"cache_size", bytesize.ByteSize(cache.Size(writeOp.ContentID)))
 	} else {
-		// Sync mode: write directly to content store
-		err = contentStore.WriteAt(authCtx.Context, writeOp.ContentID, req.Data, req.Offset)
+		// Sync mode: write directly to content store via ContentService
+		err = contentSvc.WriteAt(authCtx.Context, tree.ShareName, writeOp.ContentID, req.Data, req.Offset)
 		if err != nil {
 			logger.Warn("WRITE: content write failed", "path", openFile.Path, "error", err)
 			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil

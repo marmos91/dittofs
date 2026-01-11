@@ -8,8 +8,8 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	"github.com/marmos91/dittofs/pkg/content"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/store/content"
 )
 
 // ============================================================================
@@ -163,15 +163,11 @@ func (h *Handler) Create(
 	}
 
 	// ========================================================================
-	// Step 2: Get content store for this share
+	// Step 2: Get content service from registry
 	// ========================================================================
 
-	// Get content store for this share
-	contentStore, err := h.Registry.GetContentStoreForShare(ctx.Share)
-	if err != nil {
-		traceError(ctx.Context, err, "CREATE failed: cannot get content store", "share", ctx.Share, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP)
-		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
+	// Get content service for this share
+	contentSvc := h.Registry.GetContentService()
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
 	logger.DebugCtx(ctx.Context, "CREATE", "share", ctx.Share, "file", req.Filename)
@@ -328,7 +324,7 @@ func (h *Handler) Create(
 			// Truncate existing file
 			existingHandle, _ := metadata.EncodeFileHandle(existingFile)
 			fileHandle = existingHandle
-			fileAttr, err = truncateExistingFile(authCtx, contentStore, metaSvc, existingFile, req)
+			fileAttr, err = truncateExistingFile(authCtx, contentSvc, ctx.Share, metaSvc, existingFile, req)
 		} else {
 			// Create new file
 			fileHandle, fileAttr, err = createNewFile(authCtx, metaSvc, parentHandle, req)
@@ -524,7 +520,8 @@ func createNewFile(
 //
 // Parameters:
 //   - authCtx: Authentication context for permission checking
-//   - contentStore: Content store for truncation
+//   - contentSvc: Content service for truncation
+//   - shareName: Share name for content service routing
 //   - metaSvc: Metadata service for file operations
 //   - existingFile: Existing file to truncate
 //   - req: Create request with attributes
@@ -533,7 +530,8 @@ func createNewFile(
 //   - Updated file attributes and error
 func truncateExistingFile(
 	authCtx *metadata.AuthContext,
-	contentStore content.ContentStore,
+	contentSvc *content.ContentService,
+	shareName string,
 	metaSvc *metadata.MetadataService,
 	existingFile *metadata.File,
 	req *CreateRequest,
@@ -576,7 +574,7 @@ func truncateExistingFile(
 
 	// Truncate content if file has content
 	if existingFile.ContentID != "" {
-		if err := contentStore.Truncate(authCtx.Context, existingFile.ContentID, targetSize); err != nil {
+		if err := contentSvc.Truncate(authCtx.Context, shareName, existingFile.ContentID, targetSize); err != nil {
 			logger.Warn("Failed to truncate content", "size", targetSize, "error", err)
 			// Non-fatal: metadata is already updated
 		}

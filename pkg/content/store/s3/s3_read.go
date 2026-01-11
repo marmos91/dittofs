@@ -19,8 +19,8 @@ import (
 	"github.com/aws/smithy-go"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/telemetry"
+	"github.com/marmos91/dittofs/pkg/content"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/store/content"
 )
 
 // isRetryableError returns true if the error is transient and the operation should be retried.

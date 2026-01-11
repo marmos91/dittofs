@@ -8,9 +8,9 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/cache/flusher"
+	"github.com/marmos91/dittofs/pkg/content"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/store/content"
 )
 
 // Registry manages all named resources: metadata stores, content stores, caches, and shares.
@@ -37,12 +37,13 @@ import (
 type Registry struct {
 	mu              sync.RWMutex
 	metadata        map[string]metadata.MetadataStore
-	content         map[string]content.ContentStore
+	contentStores   map[string]content.ContentStore
 	caches          map[string]cache.Cache
 	shares          map[string]*Share
 	mounts          map[string]*MountInfo     // key: clientAddr, value: mount info
 	userStore       identity.UserStore        // User/group management for authentication
 	metadataService *metadata.MetadataService // High-level metadata operations
+	contentService  *content.ContentService   // High-level content operations
 }
 
 // MountInfo represents an active NFS mount from a client.
@@ -56,11 +57,12 @@ type MountInfo struct {
 func NewRegistry() *Registry {
 	return &Registry{
 		metadata:        make(map[string]metadata.MetadataStore),
-		content:         make(map[string]content.ContentStore),
+		contentStores:   make(map[string]content.ContentStore),
 		caches:          make(map[string]cache.Cache),
 		shares:          make(map[string]*Share),
 		mounts:          make(map[string]*MountInfo),
 		metadataService: metadata.New(),
+		contentService:  content.New(),
 	}
 }
 
@@ -99,11 +101,11 @@ func (r *Registry) RegisterContentStore(name string, store content.ContentStore)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, exists := r.content[name]; exists {
+	if _, exists := r.contentStores[name]; exists {
 		return fmt.Errorf("content store %q already registered", name)
 	}
 
-	r.content[name] = store
+	r.contentStores[name] = store
 	return nil
 }
 
@@ -158,7 +160,7 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 	if !exists {
 		return fmt.Errorf("metadata store %q not found", config.MetadataStore)
 	}
-	if _, exists := r.content[config.ContentStore]; !exists {
+	if _, exists := r.contentStores[config.ContentStore]; !exists {
 		return fmt.Errorf("content store %q not found", config.ContentStore)
 	}
 
@@ -224,7 +226,7 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 	// Create and start background flusher if cache is configured
 	if config.Cache != "" {
 		shareCache := r.caches[config.Cache]
-		contentStore := r.content[config.ContentStore]
+		contentStore := r.contentStores[config.ContentStore]
 
 		// Use flusher config from share config
 		flusherCfg := &flusher.Config{
@@ -242,6 +244,22 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 	if err := r.metadataService.RegisterStoreForShare(config.Name, metadataStore); err != nil {
 		delete(r.shares, config.Name)
 		return fmt.Errorf("failed to configure metadata for share: %w", err)
+	}
+
+	// Register the content store with the Content service for this share
+	contentStore := r.contentStores[config.ContentStore]
+	if err := r.contentService.RegisterStoreForShare(config.Name, contentStore); err != nil {
+		delete(r.shares, config.Name)
+		return fmt.Errorf("failed to configure content for share: %w", err)
+	}
+
+	// Register the cache with the Content service if configured
+	if config.Cache != "" {
+		shareCache := r.caches[config.Cache]
+		if err := r.contentService.RegisterCacheForShare(config.Name, shareCache); err != nil {
+			delete(r.shares, config.Name)
+			return fmt.Errorf("failed to configure cache for share: %w", err)
+		}
 	}
 
 	return nil
@@ -315,7 +333,7 @@ func (r *Registry) GetContentStore(name string) (content.ContentStore, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	store, exists := r.content[name]
+	store, exists := r.contentStores[name]
 	if !exists {
 		return nil, fmt.Errorf("content store %q not found", name)
 	}
@@ -361,6 +379,13 @@ func (r *Registry) GetMetadataService() *metadata.MetadataService {
 	return r.metadataService
 }
 
+// GetContentService returns the Content instance for high-level content operations.
+// Content provides methods like ReadAt, WriteAt, Flush, etc. that handle
+// cache coordination and automatically route to the correct store based on share.
+func (r *Registry) GetContentService() *content.ContentService {
+	return r.contentService
+}
+
 // GetContentStoreForShare retrieves the content store used by the specified share.
 // Returns nil, error if the share or store doesn't exist.
 func (r *Registry) GetContentStoreForShare(shareName string) (content.ContentStore, error) {
@@ -372,7 +397,7 @@ func (r *Registry) GetContentStoreForShare(shareName string) (content.ContentSto
 		return nil, fmt.Errorf("share %q not found", shareName)
 	}
 
-	store, exists := r.content[share.ContentStore]
+	store, exists := r.contentStores[share.ContentStore]
 	if !exists {
 		return nil, fmt.Errorf("content store %q not found for share %q", share.ContentStore, shareName)
 	}
@@ -441,8 +466,8 @@ func (r *Registry) ListContentStores() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	names := make([]string, 0, len(r.content))
-	for name := range r.content {
+	names := make([]string, 0, len(r.contentStores))
+	for name := range r.contentStores {
 		names = append(names, name)
 	}
 	return names
@@ -524,7 +549,7 @@ func (r *Registry) CountMetadataStores() int {
 func (r *Registry) CountContentStores() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return len(r.content)
+	return len(r.contentStores)
 }
 
 // CountCaches returns the number of registered caches.
