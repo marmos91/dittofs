@@ -3,11 +3,13 @@ package registry
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/cache/flusher"
+	"github.com/marmos91/dittofs/pkg/cache/memory"
 	"github.com/marmos91/dittofs/pkg/content"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -259,6 +261,16 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 		if err := r.contentService.RegisterCacheForShare(config.Name, shareCache); err != nil {
 			delete(r.shares, config.Name)
 			return fmt.Errorf("failed to configure cache for share: %w", err)
+		}
+	}
+
+	// HACK: Create and register a SliceCache for testing the new chunk/slice/block model
+	// Enable with DITTOFS_SLICE_CACHE=1 - remove once proper config support is added
+	if os.Getenv("DITTOFS_SLICE_CACHE") == "1" {
+		sliceCache := memory.NewMemorySliceCache(0) // 0 = unlimited size
+		if err := r.contentService.RegisterSliceCacheForShare(config.Name, sliceCache); err != nil {
+			delete(r.shares, config.Name)
+			return fmt.Errorf("failed to configure slice cache for share: %w", err)
 		}
 	}
 
