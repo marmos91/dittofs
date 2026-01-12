@@ -2,7 +2,6 @@ package content
 
 import (
 	"context"
-	"io"
 
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -12,108 +11,79 @@ import (
 //
 // This interface documents the complete API available to protocol handlers
 // and other consumers of the content layer. All methods handle business logic
-// including cache coordination, error mapping, and store routing.
+// including cache coordination and share routing.
 //
 // The interface is organized into logical groups:
-//   - Store Management: Register and retrieve content stores per share
-//   - Cache Management: Register and retrieve caches per share
-//   - Read Operations: Cache-aware content reading
-//   - Write Operations: Cache-aware content writing
-//   - Flush Operations: Cache to content store synchronization
-//   - Capability Detection: Check for optional store features
+//   - Cache Management: Register and retrieve slice caches per share
+//   - Read Operations: Content reading via Cache
+//   - Write Operations: Content writing via Cache
+//   - Flush Operations: Write coalescing and future block store flush
+//   - Capability Detection: Check for optional features
 //   - Statistics and Health: Storage metrics and health checks
 type ContentServiceInterface interface {
-	// ========================================================================
-	// Store Management
-	// ========================================================================
-
-	// RegisterStoreForShare associates a content store with a share.
-	// Each share must have exactly one store. Calling this again for the same
-	// share will replace the previous store.
-	RegisterStoreForShare(shareName string, store ContentStore) error
-
-	// GetStoreForShare returns the content store for a specific share.
-	// This is primarily for internal use and testing; protocol handlers
-	// should use the high-level methods instead.
-	GetStoreForShare(shareName string) (ContentStore, error)
-
 	// ========================================================================
 	// Cache Management
 	// ========================================================================
 
-	// RegisterCacheForShare associates a cache with a share.
-	// Caches are optional - if not registered, operations go directly to the store.
-	RegisterCacheForShare(shareName string, c cache.Cache) error
+	// RegisterCacheForShare associates a slice cache with a share.
+	// Each share must have exactly one Cache.
+	RegisterCacheForShare(shareName string, sc *cache.Cache) error
 
-	// GetCacheForShare returns the cache for a share.
-	// Returns nil if no cache is configured for the share.
-	GetCacheForShare(shareName string) cache.Cache
+	// GetCacheForShare returns the slice cache for a share.
+	// Returns nil if no slice cache is configured for the share.
+	GetCacheForShare(shareName string) *cache.Cache
+
+	// HasCache returns true if a slice cache is registered for the share.
+	HasCache(shareName string) bool
 
 	// ========================================================================
-	// Read Operations (cache-aware)
+	// Read Operations
 	// ========================================================================
 
-	// ReadContent reads from cache or content store.
-	// Priority: write cache -> read cache -> content store
-	//
-	// If cache contains the content (and is valid), returns cached data.
-	// Otherwise, reads from content store.
-	ReadContent(ctx context.Context, shareName string, id metadata.ContentID) (io.ReadCloser, error)
-
-	// ReadAt reads at offset, using cache or ReadAtContentStore if available.
+	// ReadAt reads at offset from the slice cache.
 	// This is the preferred method for random-access reads (e.g., NFS READ).
-	//
-	// Priority: cache -> ReadAtContentStore -> fallback to sequential read
 	ReadAt(ctx context.Context, shareName string, id metadata.ContentID, p []byte, offset uint64) (int, error)
 
-	// GetContentSize returns content size (from cache or store).
+	// GetContentSize returns content size from slice cache.
 	GetContentSize(ctx context.Context, shareName string, id metadata.ContentID) (uint64, error)
 
-	// ContentExists checks if content exists in cache or store.
+	// ContentExists checks if content exists in slice cache.
 	ContentExists(ctx context.Context, shareName string, id metadata.ContentID) (bool, error)
 
 	// ========================================================================
-	// Write Operations (cache-aware)
+	// Write Operations
 	// ========================================================================
 
-	// WriteAt writes to cache (if configured) or directly to content store.
+	// WriteAt writes to slice cache.
 	// This is the preferred method for random-access writes (e.g., NFS WRITE).
 	WriteAt(ctx context.Context, shareName string, id metadata.ContentID, data []byte, offset uint64) error
 
-	// WriteContent writes complete content to cache or store.
-	WriteContent(ctx context.Context, shareName string, id metadata.ContentID, data []byte) error
-
-	// Truncate truncates content in cache or store.
+	// Truncate truncates content in slice cache.
 	Truncate(ctx context.Context, shareName string, id metadata.ContentID, newSize uint64) error
 
-	// Delete removes content from store (and cache if present).
+	// Delete removes content from slice cache.
 	Delete(ctx context.Context, shareName string, id metadata.ContentID) error
 
 	// ========================================================================
-	// Flush Operations (Cache -> Store)
+	// Flush Operations
 	// ========================================================================
 
-	// Flush flushes cached data to content store.
-	// This is typically called on NFS COMMIT to persist cached writes.
-	// The content may not be fully finalized (for S3, multipart may still be in progress).
+	// Flush flushes cached data (coalesces writes in Phase 1).
+	// This is typically called on NFS COMMIT.
 	Flush(ctx context.Context, shareName string, id metadata.ContentID) (*FlushResult, error)
 
 	// FlushAndFinalize flushes and finalizes for immediate durability.
-	// This ensures all data is persisted and the upload is complete.
-	// For S3, this includes completing the multipart upload.
+	// Phase 1: Same as Flush (coalesces writes).
+	// Phase 2: Will flush to block store and finalize.
 	FlushAndFinalize(ctx context.Context, shareName string, id metadata.ContentID) (*FlushResult, error)
 
 	// ========================================================================
 	// Capability Detection
 	// ========================================================================
 
-	// SupportsReadAt returns true if the store supports efficient random reads.
-	// When true, ReadAt uses the store's native range-read capability.
+	// SupportsReadAt returns true if the share supports efficient random reads.
+	// Always true when Cache is registered.
 	SupportsReadAt(shareName string) bool
-
-	// SupportsIncrementalWrite returns true if the store supports incremental writes.
-	// When true, Flush uses incremental upload (S3 multipart) instead of full write.
-	SupportsIncrementalWrite(shareName string) bool
 
 	// ========================================================================
 	// Statistics and Health
@@ -122,7 +92,7 @@ type ContentServiceInterface interface {
 	// GetStorageStats returns storage statistics for a share.
 	GetStorageStats(ctx context.Context, shareName string) (*StorageStats, error)
 
-	// Healthcheck performs health check for a share's content store.
+	// Healthcheck performs health check for a share.
 	Healthcheck(ctx context.Context, shareName string) error
 }
 

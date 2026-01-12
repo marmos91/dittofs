@@ -1,60 +1,104 @@
 # pkg/content
 
-Content service layer - handles raw file bytes, coordinates caches and stores.
+Content service layer - handles raw file bytes using the Cache layer.
 
 ## Architecture
 
 ```
 ContentServiceInterface (interface.go)
          ↓
-ContentService (service.go) - coordinates store + cache
+ContentService (service.go) - coordinates with cache
          ↓
-ContentStore (store.go) - base interface
-    + ReadAtContentStore (optional)
-    + IncrementalWriteStore (optional)
+cache.Cache (pkg/cache/cache.go) - Chunk/Slice/Block model
          ↓
-store/{memory,fs,s3}/ - implementations
+cache.Store (pkg/cache/store.go) - persistence layer
+         ↓
+store/memory/ - implementation
+```
+
+## Key Design Changes (Phase 1.5)
+
+### Cache-Only Storage Model
+- **No ContentStore layer** - Cache IS the storage for Phase 1
+- All reads/writes go through `cache.Cache` interface
+- Data is volatile (lives only in memory cache)
+- Future phases will add BlockStore for persistence
+
+### Single Global Cache
+- One cache serves ALL shares
+- ContentID (file handle) uniqueness ensures data isolation
+- Registered once in `registry.NewRegistry()`
+
+## ContentService Methods
+
+### Read Operations
+```go
+ReadAt(ctx, shareName, contentID, buf, offset) (int, error)
+GetContentSize(ctx, shareName, contentID) (uint64, error)
+ContentExists(ctx, shareName, contentID) (bool, error)
+```
+
+### Write Operations
+```go
+WriteAt(ctx, shareName, contentID, data, offset) error
+Truncate(ctx, shareName, contentID, newSize) error
+Delete(ctx, shareName, contentID) error
+```
+
+### Flush Operations
+```go
+Flush(ctx, shareName, contentID) (*FlushResult, error)
+FlushAndFinalize(ctx, shareName, contentID) (*FlushResult, error)
 ```
 
 ## Critical Conventions
 
-### ContentID Is Opaque
-- Format varies: UUID (memory/fs), S3 key path (s3), SHA256 (content-addressable)
-- Never parse or construct ContentIDs - let stores generate them
+### ContentID Is File Handle
+- ContentID = `metadata.ContentID` = opaque file identifier
+- Used directly as cache key (converted to `[]byte`)
+- Unique per file, provides data isolation between files/shares
 
-### Store Knows Only Bytes
-Content stores don't know about:
-- File metadata (attributes, permissions)
-- Directory hierarchy
-- Access control
-- File handles
+### Cache Operations Are Chunk-Aware
+- Large reads/writes are split across chunk boundaries (64MB chunks)
+- `cache.ChunkRange()` calculates which chunks a range spans
+- Each chunk is addressed independently
 
-### Optional Interface Pattern
+### FlushResult for Phase 1
 ```go
-// Check at runtime, fall back gracefully
-if ras, ok := store.(ReadAtContentStore); ok {
-    return ras.ReadAt(...)  // Efficient partial read
+type FlushResult struct {
+    AlreadyFlushed bool  // true (Phase 1: cache-only)
+    Finalized      bool  // true (Phase 1: cache-only)
 }
-// Fall back to sequential read
 ```
 
-## Store Implementation Notes
+## Common Patterns
 
-### S3 Store - Most Complex
-- **Path-based keys**: `export/path/to/file` - mirrors filesystem for disaster recovery
-- **Buffered deletion**: `Delete()` returns nil but may not complete immediately
-- **Call `Close()` before shutdown** to flush pending deletions
-- Range reads via HTTP Range header (~100x faster for small reads of large files)
-- Multipart: 5MB min part size, max 10,000 parts
+### Read with Chunk Spanning
+```go
+// Calculate chunk range
+startChunk, endChunk := cache.ChunkRange(offset, uint64(len(buf)))
 
-### Filesystem Store
-- Random access via `ReadAt`/`WriteAt`
-- Sparse file support via seeking
-- UUIDs as filenames in configured directory
+// Read from each chunk
+for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
+    data, found, err := cache.ReadSlice(ctx, fileHandle, chunkIdx, offsetInChunk, length)
+    // Handle not-found as zeros (sparse file behavior)
+}
+```
+
+### Write with Chunk Spanning
+```go
+// Calculate chunk range
+startChunk, endChunk := cache.ChunkRange(offset, uint64(len(data)))
+
+// Write to each chunk
+for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
+    err := cache.WriteSlice(ctx, fileHandle, chunkIdx, data[dataStart:dataEnd], offsetInChunk)
+}
+```
 
 ## Common Mistakes
 
-1. **Concurrent writes to same ContentID** - undefined behavior (last-write-wins, corruption, or error)
-2. **Assuming S3 Delete is synchronous** - it's batched async
-3. **Not checking optional interfaces** - fall back to base behavior
-4. **Writing beyond file size** - fills gap with zeros (sparse behavior), not an error
+1. **Checking for ContentStore** - There is no ContentStore in Phase 1, only Cache
+2. **Per-share cache registration** - Use single global cache via `SetCache()`
+3. **Forgetting ErrNoCacheConfigured** - All methods return this if cache not set
+4. **Assuming persistence** - Phase 1 is cache-only (volatile)

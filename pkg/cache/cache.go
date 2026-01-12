@@ -1,717 +1,829 @@
 // Package cache implements buffering for content stores.
 //
-// This package provides a unified caching layer that acts as a buffer between
-// protocol handlers (NFS) and content stores (S3, filesystem, etc.). The cache
-// is content-store agnostic and handles both reads and writes.
+// Cache provides a slice-aware caching layer for the Chunk/Slice/Block
+// storage model. It buffers writes as slices and serves reads by merging
+// slices (newest-wins semantics).
 //
 // Key Design Principles:
-//   - One unified cache per share (serves both reads and writes)
-//   - Content-store agnostic (no S3 multipart knowledge, no fsync knowledge)
-//   - Three states: Buffering (dirty), Uploading (flush in progress), Cached (clean)
-//   - Context-aware for cancellation and timeouts
-//   - Thread-safe for concurrent operations
-//   - LRU eviction with dirty entry protection
-//   - Read cache coherency via mtime/size validation
+//   - Slice-aware: WriteSlice/ReadSlice API maps directly to data model
+//   - Storage-backend agnostic: Cache doesn't know about S3/filesystem/etc.
+//   - Mandatory: All content operations go through the cache
+//   - Write coalescing: Adjacent writes merged before flush
+//   - Newest-wins reads: Overlapping slices resolved by creation time
 //
-// The cache enables:
-//   - Async write mode: WRITE goes to cache, COMMIT triggers flush
-//   - Read caching: READ populates cache, subsequent reads served from cache
-//   - Inactivity-based finalization: Background sweeper detects idle files
-//   - Efficient memory usage: Evict clean entries when cache is full
+// Architecture:
 //
-// See docs/CACHE.md for detailed design documentation.
+//	Cache (business logic + storage)
+//	    - In-memory data structures
+//	    - Optional mmap backing (future)
+//
+// See docs/ARCHITECTURE.md for the full Chunk/Slice/Block model.
 package cache
 
 import (
 	"context"
+	"sort"
+	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/google/uuid"
 )
 
 // ============================================================================
-// Cache State
+// Helper Functions
 // ============================================================================
 
-// CacheState represents the state of a cache entry.
-//
-// The state machine is:
-//
-//	(not in cache) → StateNone
-//	WRITE (new)    → StateBuffering
-//	COMMIT         → StateUploading (flush in progress)
-//	Finalize       → StateCached (clean, can be evicted)
-//	READ (miss)    → StatePrefetching (background fetch started)
-//	Prefetch done  → StateCached (populated from content store)
-//	WRITE          → StateBuffering (if was Cached/Prefetching, restart cycle)
-//	Eviction       → StateNone
-type CacheState int
+// ChunkIndexForOffset calculates the chunk index for a file offset.
+func ChunkIndexForOffset(offset uint64) uint32 {
+	return uint32(offset / ChunkSize)
+}
 
-const (
-	// StateNone indicates the entry does not exist in the cache.
-	// This is the zero value and is returned when looking up non-existent entries.
-	StateNone CacheState = iota
+// OffsetWithinChunk calculates the offset within a chunk.
+func OffsetWithinChunk(offset uint64) uint32 {
+	return uint32(offset % ChunkSize)
+}
 
-	// StateBuffering indicates writes are accumulating in the cache buffer.
-	// This is the initial state when a new write begins.
-	// Entry is dirty and cannot be evicted.
-	StateBuffering
-
-	// StateUploading indicates a flush is in progress to the content store.
-	// The content store may be doing multipart upload, streaming write, etc.
-	// Entry is dirty and cannot be evicted.
-	StateUploading
-
-	// StateCached indicates the entry contains clean data.
-	// Either finalized from writes, or populated from a read.
-	// Entry can be evicted. Needs validation on read hit (mtime/size check).
-	StateCached
-
-	// StatePrefetching indicates a background fetch is in progress.
-	// The READ handler spawned a goroutine to fetch the entire file.
-	// Entry cannot be evicted until prefetch completes.
-	// Concurrent READs should read from content store directly.
-	StatePrefetching
-)
-
-// String returns the string representation of the cache state.
-func (s CacheState) String() string {
-	switch s {
-	case StateNone:
-		return "None"
-	case StateBuffering:
-		return "Buffering"
-	case StateUploading:
-		return "Uploading"
-	case StateCached:
-		return "Cached"
-	case StatePrefetching:
-		return "Prefetching"
-	default:
-		return "Unknown"
+// ChunkRange calculates the range of chunks that a byte range spans.
+// Returns startChunk and endChunk (inclusive).
+func ChunkRange(offset, length uint64) (startChunk, endChunk uint32) {
+	if length == 0 {
+		return ChunkIndexForOffset(offset), ChunkIndexForOffset(offset)
 	}
-}
-
-// IsDirty returns true if the entry has unflushed data.
-// Dirty entries cannot be evicted.
-func (s CacheState) IsDirty() bool {
-	return s == StateBuffering || s == StateUploading
-}
-
-// CanEvict returns true if the entry can be safely evicted.
-// Only StateCached entries can be evicted. Dirty entries (Buffering, Uploading)
-// and entries being prefetched cannot be evicted.
-func (s CacheState) CanEvict() bool {
-	return s == StateCached
+	startChunk = ChunkIndexForOffset(offset)
+	endChunk = ChunkIndexForOffset(offset + length - 1)
+	return startChunk, endChunk
 }
 
 // ============================================================================
-// Write Gathering Configuration
+// Internal Types
 // ============================================================================
 
-// WriteGatheringConfig configures the write gathering optimization.
-//
-// Write gathering is based on Linux kernel's "wdelay" optimization (fs/nfsd/vfs.c).
-// When multiple writes are happening to the same file, COMMIT operations wait
-// briefly to allow additional writes to accumulate before flushing.
-//
-// This optimization:
-//   - Reduces S3 API calls by batching writes
-//   - Improves throughput for bulk write scenarios
-//   - Trades small latency increase (GatherDelay) for better efficiency
-type WriteGatheringConfig struct {
-	// Enabled controls whether write gathering is active.
-	// Default: true
-	Enabled bool
-
-	// GatherDelay is how long COMMIT waits when recent writes are detected.
-	// Similar to Linux kernel's 10ms delay in wait_for_concurrent_writes().
-	// Default: 10ms. Range: 1ms to 100ms.
-	GatherDelay time.Duration
-
-	// ActiveThreshold is how recent a write must be to trigger gathering.
-	// If last write was within this duration, COMMIT will wait GatherDelay.
-	// Default: 10ms (same as GatherDelay for symmetry).
-	ActiveThreshold time.Duration
+// chunkEntry holds all slices for a single chunk.
+type chunkEntry struct {
+	slices []Slice // Ordered newest-first (prepended on add)
 }
 
-// DefaultWriteGatheringConfig returns sensible defaults for write gathering.
-//
-// These values are based on Linux kernel's NFS implementation which uses
-// a 10ms delay in wait_for_concurrent_writes() (fs/nfsd/vfs.c).
-func DefaultWriteGatheringConfig() WriteGatheringConfig {
-	return WriteGatheringConfig{
-		Enabled:         true,
-		GatherDelay:     10 * time.Millisecond,
-		ActiveThreshold: 10 * time.Millisecond,
-	}
+// fileEntry holds all cached data for a single file.
+type fileEntry struct {
+	mu     sync.RWMutex
+	chunks map[uint32]*chunkEntry // chunkIndex -> chunkEntry
 }
 
-// Cache provides a generic buffering layer for content.
+// ============================================================================
+// Cache Implementation
+// ============================================================================
+
+// Cache is the mandatory cache layer for all content operations.
 //
-// The cache is protocol-agnostic and can be used with any content store backend.
-// It buffers writes in memory (or disk, depending on implementation) and allows
-// reading back that data before it's flushed to the underlying storage.
-//
-// Separation of Concerns:
-// The cache does NOT handle flushing logic. That responsibility belongs to the
-// protocol handlers (e.g., NFS COMMIT handler). This keeps the cache interface
-// simple and focused on buffering.
-//
-// Use Cases:
-//   - NFS async write mode: Buffer writes, flush on COMMIT
-//   - S3 incremental uploads: Buffer until 5MB, upload incrementally
-//   - Filesystem optimization: Buffer small writes, flush large batches
-//   - Testing: In-memory buffer for fast tests
+// It understands slices as first-class citizens and stores them directly
+// in memory. Optional mmap backing can be enabled for persistence.
 //
 // Thread Safety:
-// Implementations must be safe for concurrent use by multiple goroutines.
-// Operations on different content IDs should not block each other.
-type Cache interface {
-	// ====================================================================
-	// Write Operations
-	// ====================================================================
+// Uses two-level locking for efficiency:
+//   - globalMu: Protects the files map
+//   - per-file mutexes: Protect individual file operations
+//
+// This allows concurrent operations on different files.
+type Cache struct {
+	globalMu  sync.RWMutex
+	files     map[string]*fileEntry
+	maxSize   uint64
+	totalSize atomic.Uint64
+	closed    bool
 
-	// Write replaces the entire content for a content ID.
-	//
-	// This is a full-file write operation. Any existing cached data for
-	// this content ID is completely replaced.
-	//
-	// Use Cases:
-	//   - Initial file creation
-	//   - Complete file replacement
-	//   - Flushing from another cache
-	//
-	// For partial updates, use WriteAt instead.
-	//
-	// Context Cancellation:
-	// For large writes, implementations should periodically check context
-	// to ensure responsive cancellation.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - id: Content identifier
-	//   - data: Complete content data
-	//
-	// Returns:
-	//   - error: Returns error if write fails or context is cancelled
-	//
-	// Example:
-	//
-	//	err := cache.Write(ctx, contentID, []byte("Hello, World!"))
-	//	if err != nil {
-	//	    return fmt.Errorf("cache write failed: %w", err)
-	//	}
-	Write(ctx context.Context, id metadata.ContentID, data []byte) error
+	// mmap backing (optional, nil when not enabled)
+	mmap *mmapState
+}
 
-	// WriteAt writes data at the specified offset for a content ID.
-	//
-	// This implements random-access writes for protocols like NFS that
-	// write files in arbitrary order. If no cached data exists for this
-	// content ID, it's created automatically.
-	//
-	// Sparse File Behavior:
-	//   - If offset > current size, the gap is filled with zeros
-	//   - If offset < current size, existing data is overwritten
-	//   - If offset == current size, data is appended
-	//
-	// Context Cancellation:
-	// For large writes, implementations should periodically check context
-	// to ensure responsive cancellation.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - id: Content identifier (created if doesn't exist)
-	//   - data: Data to write
-	//   - offset: Byte offset where writing begins (0-based, unsigned)
-	//
-	// Returns:
-	//   - error: Returns error if write fails or context is cancelled
-	//
-	// Example (NFS WRITE):
-	//
-	//	// Write 4KB at offset 8192
-	//	err := cache.WriteAt(ctx, contentID, data, 8192)
-	//	if err != nil {
-	//	    return fmt.Errorf("cache write failed: %w", err)
-	//	}
-	WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset uint64) error
+// New creates a new in-memory cache.
+//
+// Parameters:
+//   - maxSize: Maximum total cache size in bytes. Use 0 for unlimited.
+func New(maxSize uint64) *Cache {
+	return &Cache{
+		files:   make(map[string]*fileEntry),
+		maxSize: maxSize,
+	}
+}
 
-	// ====================================================================
-	// Read Operations
-	// ====================================================================
+// getFileEntry returns or creates a file entry with its mutex.
+func (c *Cache) getFileEntry(fileHandle []byte) *fileEntry {
+	key := string(fileHandle)
 
-	// Read returns all cached data for a content ID.
-	//
-	// This returns the complete cached data for the content ID. The data
-	// is NOT removed from the cache - call Remove() after successful flush.
-	//
-	// If no cached data exists, returns empty slice and nil error.
-	//
-	// Context Cancellation:
-	// The method checks context before reading. For very large cached data,
-	// implementations may check context during the copy operation.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - []byte: All cached data (empty if no data cached)
-	//   - error: Returns error if read fails or context is cancelled
-	//
-	// Example (flushing to store):
-	//
-	//	data, err := cache.Read(ctx, contentID)
-	//	if err != nil {
-	//	    return err
-	//	}
-	//	err = store.WriteContent(ctx, contentID, data)
-	//	if err != nil {
-	//	    return err
-	//	}
-	//	cache.Remove(contentID)  // Clear after successful flush
-	Read(ctx context.Context, id metadata.ContentID) ([]byte, error)
+	c.globalMu.RLock()
+	entry, exists := c.files[key]
+	c.globalMu.RUnlock()
 
-	// ReadAt reads data from the cache at the specified offset.
-	//
-	// This implements io.ReaderAt pattern for reading partial cache data.
-	// Useful for incremental flushing (e.g., S3 multipart uploads) where
-	// you want to read chunks without loading the entire cached file.
-	//
-	// Semantics follow io.ReaderAt:
-	//   - Reads len(buf) bytes into buf starting at offset
-	//   - Returns n bytes read and error
-	//   - If n < len(buf), error explains why (io.EOF, etc.)
-	//   - Does not modify cache state
-	//
-	// Context Cancellation:
-	// The method checks context before reading.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - id: Content identifier
-	//   - buf: Buffer to read into
-	//   - offset: Byte offset to start reading from (0-based, unsigned)
-	//
-	// Returns:
-	//   - int: Number of bytes read
-	//   - error: io.EOF if offset >= size, error on failure
-	//
-	// Example (reading 5MB chunks for S3 upload):
-	//
-	//	chunk := make([]byte, 5*1024*1024)
-	//	n, err := cache.ReadAt(ctx, contentID, chunk, offset)
-	//	if err != nil && err != io.EOF {
-	//	    return err
-	//	}
-	//	// Upload chunk[:n] to S3
-	ReadAt(ctx context.Context, id metadata.ContentID, buf []byte, offset uint64) (int, error)
+	if exists {
+		return entry
+	}
 
-	// ====================================================================
-	// Metadata
-	// ====================================================================
+	c.globalMu.Lock()
+	defer c.globalMu.Unlock()
 
-	// Size returns the size of cached data for a content ID.
-	//
-	// This returns the current size in bytes. Returns 0 if no cached data
-	// exists for the content ID.
-	//
-	// Use Cases:
-	//   - Check if cache threshold reached (for flushing)
-	//   - Calculate how much to read for multipart upload
-	//   - Monitor cache growth
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - uint64: Size in bytes (0 if no cached data)
-	Size(id metadata.ContentID) uint64
+	// Double-check after acquiring write lock
+	if entry, exists = c.files[key]; exists {
+		return entry
+	}
 
-	// LastWrite returns the timestamp of the last write for a content ID.
-	//
-	// This is used for timeout-based operations like:
-	//   - Auto-flush idle files (last write > 30 seconds ago)
-	//   - LRU eviction (evict oldest last-write time)
-	//   - Monitoring write patterns
-	//
-	// Returns zero time if no cached data exists.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - time.Time: Last write timestamp (zero if no cached data)
-	LastWrite(id metadata.ContentID) time.Time
+	entry = &fileEntry{
+		chunks: make(map[uint32]*chunkEntry),
+	}
+	c.files[key] = entry
+	return entry
+}
 
-	// Exists checks if cached data exists for a content ID.
-	//
-	// This is a lightweight existence check without reading the data.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - bool: True if cached data exists, false otherwise
-	Exists(id metadata.ContentID) bool
+// ============================================================================
+// Write Operations
+// ============================================================================
 
-	// List returns all content IDs with cached data.
-	//
-	// This is used for:
-	//   - Auto-flush workers iterating over all cached files
-	//   - Server shutdown (flush all before exit)
-	//   - Monitoring and debugging
-	//
-	// Returns:
-	//   - []metadata.ContentID: List of content IDs with cached data
-	List() []metadata.ContentID
+// WriteSlice writes a slice to the cache.
+//
+// Optimization: If the write is adjacent to an existing pending slice (sequential write),
+// we extend that slice instead of creating a new one. This is critical for performance
+// since NFS clients write in 16KB-32KB chunks, so a 10MB file = 320 writes.
+// Without this optimization, we'd create 320 slices instead of 1.
+func (c *Cache) WriteSlice(ctx context.Context, fileHandle []byte, chunkIdx uint32, data []byte, offset uint32) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
-	// ====================================================================
-	// Cache Management
-	// ====================================================================
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return ErrCacheClosed
+	}
+	c.globalMu.RUnlock()
 
-	// Remove clears the cached data for a specific content ID.
-	//
-	// This deletes the cached data from the cache. Typically called after
-	// successfully flushing to the underlying content store.
-	//
-	// The operation is idempotent - removing non-existent data succeeds.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - error: Returns error if removal fails (implementation-specific)
-	//
-	// Example (after flush):
-	//
-	//	// Flush to store
-	//	data, _ := cache.Read(ctx, contentID)
-	//	store.WriteContent(ctx, contentID, data)
-	//
-	//	// Remove from cache
-	//	cache.Remove(contentID)
-	Remove(id metadata.ContentID) error
+	// Validate parameters
+	if offset+uint32(len(data)) > ChunkSize {
+		return ErrInvalidOffset
+	}
 
-	// RemoveAll clears all cached data for all content IDs.
-	//
-	// This is useful for:
-	//   - Server shutdown (after flushing all data)
-	//   - Testing (clean slate between tests)
-	//   - Emergency cleanup
-	//
-	// Returns:
-	//   - error: Returns error if cleanup fails
-	//
-	// Example (server shutdown):
-	//
-	//	// Flush all cached data first
-	//	for _, id := range cache.List() {
-	//	    // ... flush logic ...
-	//	}
-	//
-	//	// Clear cache
-	//	cache.RemoveAll()
-	RemoveAll() error
+	entry := c.getFileEntry(fileHandle)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
 
-	// ====================================================================
-	// Cache Statistics
-	// ====================================================================
+	// Ensure chunk exists
+	chunk, exists := entry.chunks[chunkIdx]
+	if !exists {
+		chunk = &chunkEntry{
+			slices: make([]Slice, 0),
+		}
+		entry.chunks[chunkIdx] = chunk
+	}
 
-	// TotalSize returns the total size of all cached data across all files.
-	//
-	// This is the sum of all cached data sizes. Used for:
-	//   - Cache utilization monitoring
-	//   - Eviction decisions (is cache full?)
-	//   - Memory pressure detection
-	//
-	// Returns:
-	//   - uint64: Total cached size in bytes
-	TotalSize() uint64
+	// Try to extend an existing adjacent pending slice (sequential write optimization)
+	if c.tryExtendAdjacentSlice(chunk, offset, data) {
+		return nil
+	}
 
-	// MaxSize returns the maximum cache size configured for this cache.
-	//
-	// This is the cache size limit. When TotalSize() approaches MaxSize(),
-	// eviction should occur.
-	//
-	// Returns 0 if there's no size limit (unlimited cache).
-	//
-	// Returns:
-	//   - uint64: Maximum cache size in bytes (0 = unlimited)
-	MaxSize() uint64
+	// Create new slice
+	slice := Slice{
+		ID:        uuid.New().String(),
+		Offset:    offset,
+		Length:    uint32(len(data)),
+		Data:      make([]byte, len(data)),
+		State:     SliceStatePending,
+		CreatedAt: time.Now(),
+	}
+	copy(slice.Data, data)
 
-	// ====================================================================
-	// Lifecycle
-	// ====================================================================
+	// Prepend to slices (newest first)
+	chunk.slices = append([]Slice{slice}, chunk.slices...)
+	c.totalSize.Add(uint64(len(data)))
 
-	// Close releases all resources and clears all cached data.
-	//
-	// After Close, the cache cannot be used. All subsequent operations
-	// will fail.
-	//
-	// Typically called during:
-	//   - Server shutdown
-	//   - Share unmount
-	//   - Testing cleanup
-	//
-	// Returns:
-	//   - error: Returns error if cleanup fails
-	//
-	// Example (server shutdown):
-	//
-	//	defer cache.Close()
-	Close() error
+	// Persist to mmap if enabled
+	if c.mmap != nil && c.mmap.enabled {
+		// Note: We release the file lock before mmap write to avoid deadlock
+		// This is safe because mmap has its own mutex
+		entry.mu.Unlock()
+		err := c.appendSliceEntry(fileHandle, chunkIdx, &slice)
+		entry.mu.Lock() // Re-acquire for deferred unlock
+		if err != nil {
+			return err
+		}
+	}
 
-	// ====================================================================
-	// State Management (Unified Cache)
-	// ====================================================================
+	return nil
+}
 
-	// GetState returns the current state of a cache entry.
-	//
-	// Returns StateNone if the entry does not exist in the cache.
-	// This makes it safe to check state without first calling Exists():
-	//
-	//	state := cache.GetState(id)
-	//	if state == cache.StateNone {
-	//	    // Entry doesn't exist
-	//	}
-	//	if state.IsDirty() {
-	//	    // Entry has unflushed data
-	//	}
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - CacheState: Current state (None, Buffering, Uploading, or Cached)
-	GetState(id metadata.ContentID) CacheState
+// tryExtendAdjacentSlice attempts to extend an existing pending slice.
+// Uses Go's append() for amortized O(1) growth on sequential appends.
+// Returns true if extended, false if no adjacent slice found.
+func (c *Cache) tryExtendAdjacentSlice(chunk *chunkEntry, offset uint32, data []byte) bool {
+	writeEnd := offset + uint32(len(data))
 
-	// SetState updates the state of a cache entry.
-	//
-	// This is a no-op if the entry doesn't exist. Use Write/WriteAt to create
-	// entries (which start in StateBuffering automatically).
-	//
-	// Valid state transitions:
-	//   - StateBuffering → StateUploading (when flush starts)
-	//   - StateUploading → StateCached (when finalization completes)
-	//   - StateCached → StateBuffering (automatically on new Write/WriteAt)
-	//
-	// Note: To transition to StateNone (remove entry), use Remove() instead.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//   - state: New state (should not be StateNone)
-	SetState(id metadata.ContentID, state CacheState)
+	for i := range chunk.slices {
+		slice := &chunk.slices[i]
+		if slice.State != SliceStatePending {
+			continue
+		}
 
-	// GetFlushedOffset returns how many bytes have been flushed to the content store.
-	//
-	// This is used to track progress during incremental flushes.
-	// Returns 0 if no cached data exists.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - uint64: Number of bytes successfully flushed
-	GetFlushedOffset(id metadata.ContentID) uint64
+		sliceEnd := slice.Offset + slice.Length
 
-	// SetFlushedOffset updates the flushed offset for a cache entry.
-	//
-	// Called by the flush coordinator after successfully flushing data
-	// to the content store.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//   - offset: New flushed offset (bytes, unsigned)
-	SetFlushedOffset(id metadata.ContentID, offset uint64)
+		// Case 1: Appending (write starts where slice ends)
+		if offset == sliceEnd {
+			oldLen := len(slice.Data)
+			slice.Data = append(slice.Data, data...)
+			slice.Length += uint32(len(data))
+			c.totalSize.Add(uint64(len(slice.Data) - oldLen))
+			return true
+		}
 
-	// ====================================================================
-	// Prefetch Support
-	// ====================================================================
+		// Case 2: Prepending (write ends where slice starts)
+		if writeEnd == slice.Offset {
+			oldLen := len(slice.Data)
+			newData := make([]byte, len(data)+len(slice.Data))
+			copy(newData, data)
+			copy(newData[len(data):], slice.Data)
+			slice.Data = newData
+			slice.Offset = offset
+			slice.Length += uint32(len(data))
+			c.totalSize.Add(uint64(len(newData) - oldLen))
+			return true
+		}
+	}
 
-	// StartPrefetch marks an entry as being prefetched and returns whether this call started it.
-	//
-	// If prefetch is already in progress (StatePrefetching), returns false (already started).
-	// If entry already exists in a non-prefetching state (Buffering, Uploading, Cached),
-	// returns false (no prefetch needed).
-	//
-	// The caller should:
-	//  1. Check if started is true
-	//  2. If true, spawn a goroutine to populate cache using WriteAt + UpdatePrefetchedOffset
-	//  3. Call CompletePrefetch when done (success or failure)
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//   - expectedSize: Expected total file size (for pre-allocation and progress tracking)
-	//
-	// Returns:
-	//   - bool: True if this call started the prefetch, false if already in progress or not needed
-	StartPrefetch(id metadata.ContentID, expectedSize uint64) (started bool)
+	return false
+}
 
-	// WaitForPrefetchOffset waits until the prefetch has fetched at least up to the required offset.
-	//
-	// This allows READ requests to be served as soon as their byte range is available,
-	// without waiting for the entire file to be prefetched.
-	//
-	// Returns immediately if:
-	//   - No prefetch is in progress (state != StatePrefetching)
-	//   - The required offset has already been prefetched
-	//   - Context is cancelled
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation
-	//   - id: Content identifier
-	//   - requiredOffset: The byte offset that must be available (typically offset + count)
-	//
-	// Returns:
-	//   - error: Context error if cancelled, nil otherwise
-	WaitForPrefetchOffset(ctx context.Context, id metadata.ContentID, requiredOffset uint64) error
+// ============================================================================
+// Read Operations
+// ============================================================================
 
-	// GetPrefetchedOffset returns how many bytes have been prefetched so far.
-	//
-	// Returns 0 if entry doesn't exist or is not in prefetching state.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - uint64: Number of bytes prefetched so far
-	GetPrefetchedOffset(id metadata.ContentID) uint64
+// ReadSlice reads data from cache with slice merging (newest-wins).
+func (c *Cache) ReadSlice(ctx context.Context, fileHandle []byte, chunkIdx uint32, offset, length uint32) ([]byte, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 
-	// SetPrefetchedOffset updates the prefetched offset as data is fetched.
-	//
-	// Called by the prefetch goroutine after writing each chunk to the cache.
-	// This wakes up any waiters blocked in WaitForPrefetchOffset.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//   - offset: New prefetched offset (should only increase)
-	SetPrefetchedOffset(id metadata.ContentID, offset uint64)
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return nil, false, ErrCacheClosed
+	}
+	c.globalMu.RUnlock()
 
-	// CompletePrefetch marks a prefetch as complete and transitions to StateCached.
-	//
-	// This wakes up all waiters blocked in WaitForPrefetchOffset.
-	// If success is false, the entry is removed (prefetch failed).
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//   - success: True if prefetch succeeded, false if failed
-	CompletePrefetch(id metadata.ContentID, success bool)
+	entry := c.getFileEntry(fileHandle)
+	entry.mu.RLock()
+	defer entry.mu.RUnlock()
 
-	// ====================================================================
-	// Cache Coherency (Read Validation)
-	// ====================================================================
+	chunk, exists := entry.chunks[chunkIdx]
+	if !exists || len(chunk.slices) == 0 {
+		return nil, false, nil
+	}
 
-	// GetCachedMetadata returns the metadata snapshot stored when the entry was cached.
-	//
-	// This is used to validate cached data against current file metadata.
-	// Returns ok=false if no metadata is stored or entry doesn't exist.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - mtime: File modification time when cached
-	//   - size: File size when cached
-	//   - ok: True if metadata exists
-	GetCachedMetadata(id metadata.ContentID) (mtime time.Time, size uint64, ok bool)
+	// Merge slices using newest-wins algorithm
+	result := c.mergeSlicesForRead(chunk.slices, offset, length)
 
-	// SetCachedMetadata stores a metadata snapshot for cache validation.
-	//
-	// Should be called:
-	//   - After populating cache from a READ (store current mtime/size)
-	//   - After finalization (store post-write mtime/size)
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//   - mtime: File modification time
-	//   - size: File size
-	SetCachedMetadata(id metadata.ContentID, mtime time.Time, size uint64)
+	return result, true, nil
+}
 
-	// IsValid checks if cached data is still valid against current metadata.
-	//
-	// Validation logic:
-	//   - Dirty entries (Buffering, Uploading) are always valid
-	//   - Clean entries (Cached) compare mtime and size
-	//   - Returns false if mtime or size changed (file was modified)
-	//   - May also check TTL if configured
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//   - currentMtime: Current file modification time from metadata
-	//   - currentSize: Current file size from metadata
-	//
-	// Returns:
-	//   - bool: True if cached data is valid, false if stale
-	IsValid(id metadata.ContentID, currentMtime time.Time, currentSize uint64) bool
+// mergeSlicesForRead implements the newest-wins slice merge algorithm.
+func (c *Cache) mergeSlicesForRead(slices []Slice, offset, length uint32) []byte {
+	result := make([]byte, length)
+	covered := make([]bool, length)
+	coveredCount := uint32(0)
 
-	// LastAccess returns the timestamp of the last access (read or write).
-	//
-	// Used for LRU eviction ordering. Returns zero time if no cached data exists.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - time.Time: Last access timestamp
-	LastAccess(id metadata.ContentID) time.Time
+	requestEnd := offset + length
 
-	// ====================================================================
-	// Write Gathering (Concurrent Write Optimization)
-	// ====================================================================
+	for _, slice := range slices {
+		if coveredCount >= length {
+			break
+		}
 
-	// BeginWrite increments the active writer count for a content ID.
-	//
-	// Call this before starting a write operation. The count is used by
-	// ShouldGatherWrites to detect concurrent write activity.
-	//
-	// IMPORTANT: Always pair with EndWrite in a defer statement:
-	//
-	//	cache.BeginWrite(id)
-	//	defer cache.EndWrite(id)
-	//	// ... perform write ...
-	//
-	// Parameters:
-	//   - id: Content identifier
-	BeginWrite(id metadata.ContentID)
+		sliceEnd := slice.Offset + slice.Length
 
-	// EndWrite decrements the active writer count for a content ID.
-	//
-	// Call this after a write operation completes (success or failure).
-	// Must be paired with BeginWrite.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	EndWrite(id metadata.ContentID)
+		if slice.Offset >= requestEnd || sliceEnd <= offset {
+			continue
+		}
 
-	// GetActiveWriters returns the number of active writers for a content ID.
-	//
-	// This is used by write gathering logic to detect concurrent writes.
-	// Returns 0 if the content ID doesn't exist.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - int: Number of active writers (0 if no entry or no active writers)
-	GetActiveWriters(id metadata.ContentID) int
+		overlapStart := max(offset, slice.Offset)
+		overlapEnd := min(requestEnd, sliceEnd)
 
-	// ShouldGatherWrites checks if a flush should be delayed for write gathering.
-	//
-	// This implements the Linux kernel's "wait_for_concurrent_writes" logic.
-	// Returns true if any of these conditions are met:
-	//   - There are multiple active writers (concurrent writes in progress)
-	//   - The last write was very recent (within activeThreshold)
-	//
-	// When true, the caller (COMMIT handler) should wait briefly before flushing
-	// to allow additional writes to accumulate.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//   - activeThreshold: How recent a write must be to trigger gathering
-	//
-	// Returns:
-	//   - bool: True if flush should be delayed for write gathering
-	ShouldGatherWrites(id metadata.ContentID, activeThreshold time.Duration) bool
+		for i := overlapStart; i < overlapEnd; i++ {
+			resultIdx := i - offset
+			if !covered[resultIdx] {
+				sliceIdx := i - slice.Offset
+				result[resultIdx] = slice.Data[sliceIdx]
+				covered[resultIdx] = true
+				coveredCount++
+			}
+		}
+	}
+
+	return result
+}
+
+// ============================================================================
+// Flush Coordination
+// ============================================================================
+
+// GetDirtySlices returns all pending slices for a file.
+func (c *Cache) GetDirtySlices(ctx context.Context, fileHandle []byte) ([]PendingSlice, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return nil, ErrCacheClosed
+	}
+	c.globalMu.RUnlock()
+
+	if err := c.CoalesceWrites(ctx, fileHandle); err != nil && err != ErrFileNotInCache {
+		return nil, err
+	}
+
+	entry := c.getFileEntry(fileHandle)
+	entry.mu.RLock()
+	defer entry.mu.RUnlock()
+
+	if len(entry.chunks) == 0 {
+		return nil, ErrFileNotInCache
+	}
+
+	var result []PendingSlice
+
+	for chunkIdx, chunk := range entry.chunks {
+		for _, slice := range chunk.slices {
+			if slice.State == SliceStatePending {
+				result = append(result, PendingSlice{
+					ID:         slice.ID,
+					ChunkIndex: chunkIdx,
+					Offset:     slice.Offset,
+					Length:     slice.Length,
+					Data:       slice.Data,
+					CreatedAt:  slice.CreatedAt,
+				})
+			}
+		}
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].ChunkIndex != result[j].ChunkIndex {
+			return result[i].ChunkIndex < result[j].ChunkIndex
+		}
+		return result[i].Offset < result[j].Offset
+	})
+
+	return result, nil
+}
+
+// MarkSliceFlushed marks a slice as successfully flushed.
+func (c *Cache) MarkSliceFlushed(ctx context.Context, fileHandle []byte, sliceID string, blockRefs []BlockRef) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return ErrCacheClosed
+	}
+	c.globalMu.RUnlock()
+
+	entry := c.getFileEntry(fileHandle)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	// Find the slice
+	for _, chunk := range entry.chunks {
+		for i := range chunk.slices {
+			if chunk.slices[i].ID == sliceID {
+				chunk.slices[i].State = SliceStateFlushed
+				if blockRefs != nil {
+					chunk.slices[i].BlockRefs = make([]BlockRef, len(blockRefs))
+					copy(chunk.slices[i].BlockRefs, blockRefs)
+				}
+				return nil
+			}
+		}
+	}
+
+	return ErrSliceNotFound
+}
+
+// ============================================================================
+// Write Optimization
+// ============================================================================
+
+// CoalesceWrites merges adjacent pending writes into fewer slices.
+func (c *Cache) CoalesceWrites(ctx context.Context, fileHandle []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return ErrCacheClosed
+	}
+	c.globalMu.RUnlock()
+
+	entry := c.getFileEntry(fileHandle)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	if len(entry.chunks) == 0 {
+		return ErrFileNotInCache
+	}
+
+	for chunkIdx := range entry.chunks {
+		if err := c.coalesceChunk(entry.chunks[chunkIdx]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// coalesceChunk merges adjacent pending slices within a chunk.
+func (c *Cache) coalesceChunk(chunk *chunkEntry) error {
+	if len(chunk.slices) <= 1 {
+		return nil
+	}
+
+	var pending []Slice
+	var other []Slice
+
+	for _, slice := range chunk.slices {
+		if slice.State == SliceStatePending {
+			pending = append(pending, slice)
+		} else {
+			other = append(other, slice)
+		}
+	}
+
+	if len(pending) <= 1 {
+		return nil
+	}
+
+	sort.Slice(pending, func(i, j int) bool {
+		return pending[i].Offset < pending[j].Offset
+	})
+
+	merged := make([]Slice, 0)
+	var current *Slice
+
+	for _, slice := range pending {
+		if current == nil {
+			newSlice := Slice{
+				ID:        uuid.New().String(),
+				Offset:    slice.Offset,
+				Length:    slice.Length,
+				Data:      make([]byte, slice.Length),
+				State:     SliceStatePending,
+				CreatedAt: time.Now(),
+			}
+			copy(newSlice.Data, slice.Data)
+			current = &newSlice
+			continue
+		}
+
+		currentEnd := current.Offset + current.Length
+
+		if slice.Offset <= currentEnd {
+			sliceEnd := slice.Offset + slice.Length
+			newEnd := max(currentEnd, sliceEnd)
+			newLength := newEnd - current.Offset
+
+			if newLength > uint32(len(current.Data)) {
+				newData := make([]byte, newLength)
+				copy(newData, current.Data)
+				current.Data = newData
+				current.Length = newLength
+			}
+
+			dstOffset := slice.Offset - current.Offset
+			copy(current.Data[dstOffset:], slice.Data)
+		} else {
+			merged = append(merged, *current)
+			newSlice := Slice{
+				ID:        uuid.New().String(),
+				Offset:    slice.Offset,
+				Length:    slice.Length,
+				Data:      make([]byte, slice.Length),
+				State:     SliceStatePending,
+				CreatedAt: time.Now(),
+			}
+			copy(newSlice.Data, slice.Data)
+			current = &newSlice
+		}
+	}
+
+	if current != nil {
+		merged = append(merged, *current)
+	}
+
+	chunk.slices = append(merged, other...)
+	return nil
+}
+
+// ============================================================================
+// Cache Management
+// ============================================================================
+
+// Evict removes flushed data for a file.
+func (c *Cache) Evict(ctx context.Context, fileHandle []byte) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return 0, ErrCacheClosed
+	}
+	c.globalMu.RUnlock()
+
+	entry := c.getFileEntry(fileHandle)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	var evicted uint64
+
+	for chunkIdx, chunk := range entry.chunks {
+		var remaining []Slice
+		for _, slice := range chunk.slices {
+			if slice.State == SliceStateFlushed {
+				evicted += uint64(len(slice.Data))
+				c.totalSize.Add(^(uint64(len(slice.Data)) - 1)) // Subtract
+			} else {
+				remaining = append(remaining, slice)
+			}
+		}
+
+		if len(remaining) == 0 {
+			delete(entry.chunks, chunkIdx)
+		} else if len(remaining) != len(chunk.slices) {
+			chunk.slices = remaining
+		}
+	}
+
+	return evicted, nil
+}
+
+// EvictAll removes all flushed data from cache.
+func (c *Cache) EvictAll(ctx context.Context) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return 0, ErrCacheClosed
+	}
+	handles := make([][]byte, 0, len(c.files))
+	for k := range c.files {
+		handles = append(handles, []byte(k))
+	}
+	c.globalMu.RUnlock()
+
+	var total uint64
+	for _, handle := range handles {
+		evicted, err := c.Evict(ctx, handle)
+		if err != nil {
+			return total, err
+		}
+		total += evicted
+	}
+
+	return total, nil
+}
+
+// Remove completely removes all cached data for a file.
+func (c *Cache) Remove(ctx context.Context, fileHandle []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	c.globalMu.Lock()
+	defer c.globalMu.Unlock()
+
+	if c.closed {
+		return ErrCacheClosed
+	}
+
+	key := string(fileHandle)
+	entry, exists := c.files[key]
+	if !exists {
+		return nil // Idempotent
+	}
+
+	// Calculate size to subtract
+	var size uint64
+	for _, chunk := range entry.chunks {
+		for _, slice := range chunk.slices {
+			size += uint64(len(slice.Data))
+		}
+	}
+
+	delete(c.files, key)
+
+	if size > 0 {
+		c.totalSize.Add(^(size - 1)) // Subtract
+	}
+
+	// Persist removal to mmap if enabled
+	if c.mmap != nil && c.mmap.enabled {
+		if err := c.appendRemoveEntry(fileHandle); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Truncate changes the size of cached data for a file.
+func (c *Cache) Truncate(ctx context.Context, fileHandle []byte, newSize uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return ErrCacheClosed
+	}
+	c.globalMu.RUnlock()
+
+	entry := c.getFileEntry(fileHandle)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	if len(entry.chunks) == 0 {
+		return nil
+	}
+
+	currentSize := c.getFileSizeUnlocked(entry)
+	if newSize >= currentSize {
+		return nil
+	}
+
+	newEndChunk := ChunkIndexForOffset(newSize)
+	newOffsetInEndChunk := OffsetWithinChunk(newSize)
+
+	for chunkIdx, chunk := range entry.chunks {
+		if chunkIdx > newEndChunk {
+			// Calculate size to subtract
+			var size uint64
+			for _, slice := range chunk.slices {
+				size += uint64(len(slice.Data))
+			}
+			if size > 0 {
+				c.totalSize.Add(^(size - 1)) // Subtract
+			}
+			delete(entry.chunks, chunkIdx)
+		} else if chunkIdx == newEndChunk {
+			var newSlices []Slice
+			var removedSize uint64
+
+			for _, slice := range chunk.slices {
+				sliceEnd := slice.Offset + slice.Length
+
+				if slice.Offset >= newOffsetInEndChunk {
+					removedSize += uint64(len(slice.Data))
+					continue
+				}
+
+				if sliceEnd <= newOffsetInEndChunk {
+					newSlices = append(newSlices, slice)
+					continue
+				}
+
+				newLength := newOffsetInEndChunk - slice.Offset
+				truncatedSlice := slice
+				truncatedSlice.Data = slice.Data[:newLength]
+				truncatedSlice.Length = newLength
+				removedSize += uint64(slice.Length - newLength)
+				newSlices = append(newSlices, truncatedSlice)
+			}
+
+			if removedSize > 0 {
+				c.totalSize.Add(^(removedSize - 1)) // Subtract
+			}
+
+			if len(newSlices) == 0 {
+				delete(entry.chunks, chunkIdx)
+			} else {
+				chunk.slices = newSlices
+			}
+		}
+	}
+
+	return nil
+}
+
+// ============================================================================
+// File State
+// ============================================================================
+
+// HasDirtyData returns true if the file has pending slices.
+func (c *Cache) HasDirtyData(fileHandle []byte) bool {
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return false
+	}
+	c.globalMu.RUnlock()
+
+	entry := c.getFileEntry(fileHandle)
+	entry.mu.RLock()
+	defer entry.mu.RUnlock()
+
+	for _, chunk := range entry.chunks {
+		for _, slice := range chunk.slices {
+			if slice.State == SliceStatePending {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// GetFileSize returns the maximum extent of cached data.
+func (c *Cache) GetFileSize(fileHandle []byte) uint64 {
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return 0
+	}
+	c.globalMu.RUnlock()
+
+	entry := c.getFileEntry(fileHandle)
+	entry.mu.RLock()
+	defer entry.mu.RUnlock()
+
+	return c.getFileSizeUnlocked(entry)
+}
+
+func (c *Cache) getFileSizeUnlocked(entry *fileEntry) uint64 {
+	var maxChunk uint32
+	var maxOffsetInChunk uint32
+
+	for chunkIdx, chunk := range entry.chunks {
+		for _, slice := range chunk.slices {
+			if chunkIdx > maxChunk || (chunkIdx == maxChunk && slice.Offset+slice.Length > maxOffsetInChunk) {
+				maxChunk = chunkIdx
+				maxOffsetInChunk = slice.Offset + slice.Length
+			}
+		}
+	}
+
+	return uint64(maxChunk)*ChunkSize + uint64(maxOffsetInChunk)
+}
+
+// ListFiles returns all file handles with cached data.
+func (c *Cache) ListFiles() [][]byte {
+	c.globalMu.RLock()
+	defer c.globalMu.RUnlock()
+
+	if c.closed {
+		return [][]byte{}
+	}
+
+	result := make([][]byte, 0, len(c.files))
+	for key := range c.files {
+		result = append(result, []byte(key))
+	}
+
+	return result
+}
+
+// GetTotalSize returns the total bytes stored in the cache.
+func (c *Cache) GetTotalSize() uint64 {
+	return c.totalSize.Load()
+}
+
+// ============================================================================
+// Lifecycle
+// ============================================================================
+
+// Close releases all cache resources.
+func (c *Cache) Close() error {
+	c.globalMu.Lock()
+	defer c.globalMu.Unlock()
+
+	if c.closed {
+		return nil
+	}
+
+	c.closed = true
+	c.files = nil
+	c.totalSize.Store(0)
+
+	// Close mmap if enabled
+	if c.mmap != nil && c.mmap.enabled {
+		if err := c.closeMmap(); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
