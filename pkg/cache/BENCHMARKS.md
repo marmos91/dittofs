@@ -116,3 +116,55 @@ The ~25x gap between direct cache (4000 MB/s) and NFS cold writes (160 MB/s) is 
 - Direct cache concurrent writes: > 2000 MB/s
 - NFS sequential writes: > 80 MB/s
 - NFS sequential reads: > 500 MB/s
+
+---
+
+## NFS + S3 Performance (Remote Block Store)
+
+**Date**: 2026-01-13
+**S3 Endpoint**: Cubbit DS3 (eu-west-1)
+**Cache**: mmap, 256MB limit
+**Flusher**: 4 parallel uploads, 4 parallel downloads
+
+### Current Results (Blocking COMMIT)
+
+| Operation | Throughput | Notes |
+|-----------|------------|-------|
+| Sequential Write (100MB, cold) | **~1 MB/s** | S3 upload blocks COMMIT |
+| Sequential Write (100MB, warm) | ~1 MB/s | Same - S3 is bottleneck |
+| Sequential Read (100MB, cached) | **745 MB/s** | Served from mmap cache |
+| Sequential Read (100MB, S3) | TBD | After cache eviction |
+
+### LRU Eviction Test
+
+| Test | Result |
+|------|--------|
+| Cache size | 256 MB |
+| Total data written | 300 MB (3 x 100MB files) |
+| Files readable after eviction | Yes - all 3 files |
+| S3 blocks created | 75 blocks (~300MB) |
+
+### Issues Identified
+
+1. **Blocking COMMIT**: `FlushRemaining()` waits for all S3 uploads synchronously
+   - Causes "Server connections interrupted" in macOS Finder
+   - NFS NULL (keepalive) requests not processed during long uploads
+   - Write throughput limited by S3 latency (~1 MB/s)
+
+2. **Underutilized bandwidth**: Despite `parallel_uploads=4`, not saturating network
+   - S3 PUT latency dominates
+   - Sequential slice uploads within each file
+
+### Planned Improvements
+
+1. **Hybrid flush**: COMMIT ensures data in mmap (fast), S3 upload in background
+2. **Crash recovery**: Re-upload unflushed mmap slices on startup
+3. **Non-blocking uploads**: Decouple S3 uploads from NFS request path
+
+### Target Performance (After Optimization)
+
+| Operation | Current | Target | Improvement |
+|-----------|---------|--------|-------------|
+| Sequential Write | ~1 MB/s | ~100+ MB/s | 100x |
+| COMMIT latency | seconds | <100ms | Async S3 |
+| NULL responsiveness | Blocked | Always | Non-blocking |

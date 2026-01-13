@@ -66,8 +66,9 @@ type chunkEntry struct {
 
 // fileEntry holds all cached data for a single file.
 type fileEntry struct {
-	mu     sync.RWMutex
-	chunks map[uint32]*chunkEntry // chunkIndex -> chunkEntry
+	mu         sync.RWMutex
+	chunks     map[uint32]*chunkEntry // chunkIndex -> chunkEntry
+	lastAccess time.Time              // LRU tracking
 }
 
 // ============================================================================
@@ -128,10 +129,17 @@ func (c *Cache) getFileEntry(fileHandle []byte) *fileEntry {
 	}
 
 	entry = &fileEntry{
-		chunks: make(map[uint32]*chunkEntry),
+		chunks:     make(map[uint32]*chunkEntry),
+		lastAccess: time.Now(),
 	}
 	c.files[key] = entry
 	return entry
+}
+
+// touchFile updates the last access time for LRU tracking.
+// Must be called with entry.mu held (read or write lock).
+func (c *Cache) touchFile(entry *fileEntry) {
+	entry.lastAccess = time.Now()
 }
 
 // ============================================================================
@@ -161,9 +169,20 @@ func (c *Cache) WriteSlice(ctx context.Context, fileHandle []byte, chunkIdx uint
 		return ErrInvalidOffset
 	}
 
+	// Enforce maxSize by evicting LRU flushed data if needed
+	if c.maxSize > 0 {
+		dataLen := uint64(len(data))
+		if c.totalSize.Load()+dataLen > c.maxSize {
+			c.evictLRUUntilFits(dataLen)
+		}
+	}
+
 	entry := c.getFileEntry(fileHandle)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
+
+	// Update LRU access time
+	c.touchFile(entry)
 
 	// Ensure chunk exists
 	chunk, exists := entry.chunks[chunkIdx]
@@ -180,8 +199,10 @@ func (c *Cache) WriteSlice(ctx context.Context, fileHandle []byte, chunkIdx uint
 	}
 
 	// Create new slice
+	sliceID := uuid.New().String()
+
 	slice := Slice{
-		ID:        uuid.New().String(),
+		ID:        sliceID,
 		Offset:    offset,
 		Length:    uint32(len(data)),
 		Data:      make([]byte, len(data)),
@@ -276,13 +297,15 @@ func (c *Cache) ReadSlice(ctx context.Context, fileHandle []byte, chunkIdx uint3
 	}
 
 	// Merge slices using newest-wins algorithm
-	result := c.mergeSlicesForRead(chunk.slices, offset, length)
+	result, fullyCovered := c.mergeSlicesForRead(chunk.slices, offset, length)
+	_ = fullyCovered // Not used for reads - sparse files may have gaps
 
 	return result, true, nil
 }
 
 // mergeSlicesForRead implements the newest-wins slice merge algorithm.
-func (c *Cache) mergeSlicesForRead(slices []Slice, offset, length uint32) []byte {
+// Returns the merged data and whether the entire range is covered.
+func (c *Cache) mergeSlicesForRead(slices []Slice, offset, length uint32) ([]byte, bool) {
 	result := make([]byte, length)
 	covered := make([]bool, length)
 	coveredCount := uint32(0)
@@ -314,7 +337,53 @@ func (c *Cache) mergeSlicesForRead(slices []Slice, offset, length uint32) []byte
 		}
 	}
 
-	return result
+	return result, coveredCount == length
+}
+
+// IsRangeCovered checks if a byte range is fully covered by cached slices.
+// This is used by the flusher to determine if a block is ready for upload.
+func (c *Cache) IsRangeCovered(ctx context.Context, fileHandle []byte, chunkIdx uint32, offset, length uint32) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return false, ErrCacheClosed
+	}
+	c.globalMu.RUnlock()
+
+	entry := c.getFileEntry(fileHandle)
+	entry.mu.RLock()
+	defer entry.mu.RUnlock()
+
+	chunk, exists := entry.chunks[chunkIdx]
+	if !exists || len(chunk.slices) == 0 {
+		return false, nil
+	}
+
+	// Check coverage without allocating result buffer
+	coveredCount := uint32(0)
+	requestEnd := offset + length
+
+	for _, slice := range chunk.slices {
+		if coveredCount >= length {
+			break
+		}
+
+		sliceEnd := slice.Offset + slice.Length
+
+		if slice.Offset >= requestEnd || sliceEnd <= offset {
+			continue
+		}
+
+		overlapStart := max(offset, slice.Offset)
+		overlapEnd := min(requestEnd, sliceEnd)
+		coveredCount += overlapEnd - overlapStart
+	}
+
+	return coveredCount >= length, nil
 }
 
 // ============================================================================
@@ -526,6 +595,124 @@ func (c *Cache) coalesceChunk(chunk *chunkEntry) error {
 // ============================================================================
 // Cache Management
 // ============================================================================
+
+// lruEntry holds file handle and last access time for LRU sorting.
+type lruEntry struct {
+	handle     string
+	lastAccess time.Time
+}
+
+// evictLRUUntilFits evicts flushed slices from least recently used files
+// until the cache has room for neededBytes.
+// Only flushed slices can be evicted - dirty (pending/uploading) slices are protected.
+func (c *Cache) evictLRUUntilFits(neededBytes uint64) {
+	if c.maxSize == 0 {
+		return // Unlimited cache, no eviction needed
+	}
+	targetSize := c.maxSize - neededBytes
+	c.evictLRUToTarget(targetSize)
+}
+
+// evictLRUToTarget evicts flushed slices from LRU files until size <= target.
+func (c *Cache) evictLRUToTarget(targetSize uint64) {
+	// Collect files with their access times
+	c.globalMu.RLock()
+	entries := make([]lruEntry, 0, len(c.files))
+	for handle, entry := range c.files {
+		entry.mu.RLock()
+		entries = append(entries, lruEntry{
+			handle:     handle,
+			lastAccess: entry.lastAccess,
+		})
+		entry.mu.RUnlock()
+	}
+	c.globalMu.RUnlock()
+
+	// Sort by last access (oldest first)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].lastAccess.Before(entries[j].lastAccess)
+	})
+
+	// Evict flushed slices from LRU files until we reach target size
+	for _, lru := range entries {
+		currentSize := c.totalSize.Load()
+		if currentSize <= targetSize {
+			break
+		}
+
+		// Evict flushed slices from this file
+		c.evictFlushedFromFile(lru.handle)
+	}
+}
+
+// evictFlushedFromFile removes flushed slices from a specific file.
+// This is an internal helper that doesn't check context.
+func (c *Cache) evictFlushedFromFile(handle string) uint64 {
+	c.globalMu.RLock()
+	entry, exists := c.files[handle]
+	c.globalMu.RUnlock()
+
+	if !exists {
+		return 0
+	}
+
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	var evicted uint64
+
+	for chunkIdx, chunk := range entry.chunks {
+		var remaining []Slice
+		for _, slice := range chunk.slices {
+			if slice.State == SliceStateFlushed {
+				evicted += uint64(len(slice.Data))
+				c.totalSize.Add(^(uint64(len(slice.Data)) - 1)) // Subtract
+			} else {
+				remaining = append(remaining, slice)
+			}
+		}
+
+		if len(remaining) == 0 {
+			delete(entry.chunks, chunkIdx)
+		} else if len(remaining) != len(chunk.slices) {
+			chunk.slices = remaining
+		}
+	}
+
+	return evicted
+}
+
+// EvictLRU evicts flushed slices from least recently used files to free up space.
+// Returns the total bytes evicted. Only flushed slices are evicted - dirty data is protected.
+// The targetFreeBytes parameter specifies how much space to free.
+func (c *Cache) EvictLRU(ctx context.Context, targetFreeBytes uint64) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return 0, ErrCacheClosed
+	}
+	c.globalMu.RUnlock()
+
+	startSize := c.totalSize.Load()
+
+	// For explicit eviction, calculate target size based on current size
+	if startSize > targetFreeBytes {
+		c.evictLRUToTarget(startSize - targetFreeBytes)
+	} else {
+		// Need to evict everything possible
+		c.evictLRUToTarget(0)
+	}
+
+	endSize := c.totalSize.Load()
+	if startSize > endSize {
+		return startSize - endSize, nil
+	}
+	return 0, nil
+}
 
 // Evict removes flushed data for a file.
 func (c *Cache) Evict(ctx context.Context, fileHandle []byte) (uint64, error) {
@@ -799,6 +986,40 @@ func (c *Cache) ListFiles() [][]byte {
 // GetTotalSize returns the total bytes stored in the cache.
 func (c *Cache) GetTotalSize() uint64 {
 	return c.totalSize.Load()
+}
+
+// Stats returns current cache statistics for observability.
+func (c *Cache) Stats() Stats {
+	c.globalMu.RLock()
+	defer c.globalMu.RUnlock()
+
+	if c.closed {
+		return Stats{}
+	}
+
+	stats := Stats{
+		TotalSize: c.totalSize.Load(),
+		MaxSize:   c.maxSize,
+		FileCount: len(c.files),
+	}
+
+	for _, entry := range c.files {
+		entry.mu.RLock()
+		for _, chunk := range entry.chunks {
+			for _, slice := range chunk.slices {
+				stats.SliceCount++
+				size := uint64(len(slice.Data))
+				if slice.State == SliceStateFlushed {
+					stats.FlushedBytes += size
+				} else {
+					stats.DirtyBytes += size
+				}
+			}
+		}
+		entry.mu.RUnlock()
+	}
+
+	return stats
 }
 
 // ============================================================================

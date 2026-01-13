@@ -79,6 +79,7 @@ type StoreHealth struct {
 // StoresResponse represents the detailed store health response.
 type StoresResponse struct {
 	MetadataStores []StoreHealth `json:"metadata_stores"`
+	BlockStore     *StoreHealth  `json:"block_store,omitempty"`
 }
 
 // Stores handles GET /health/stores - detailed store health.
@@ -136,6 +137,33 @@ func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 		}
 
 		response.MetadataStores = append(response.MetadataStores, health)
+	}
+
+	// Check block store (via flusher)
+	contentSvc := h.registry.GetContentService()
+	if contentSvc != nil {
+		flusher := contentSvc.GetFlusher()
+		if flusher != nil {
+			start := time.Now()
+			err := flusher.HealthCheck(ctx)
+			latency := time.Since(start)
+
+			blockHealth := &StoreHealth{
+				Name:    "s3",
+				Type:    "block",
+				Latency: latency.String(),
+			}
+
+			if err != nil {
+				blockHealth.Status = "unhealthy"
+				blockHealth.Error = err.Error()
+				allHealthy = false
+			} else {
+				blockHealth.Status = "healthy"
+			}
+
+			response.BlockStore = blockHealth
+		}
 	}
 
 	if allHealthy {

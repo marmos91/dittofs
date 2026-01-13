@@ -196,8 +196,8 @@ func TestWrite_EmptyHandle(t *testing.T) {
 	resp, err := fx.Handler.Write(fx.Context(), req)
 
 	require.NoError(t, err)
-	// Implementation returns NFS3ErrNoEnt for empty/invalid handles
-	assert.EqualValues(t, types.NFS3ErrNoEnt, resp.Status, "Empty handle should return error")
+	// RFC 1813: NFS3ErrBadHandle for invalid file handles
+	assert.EqualValues(t, types.NFS3ErrBadHandle, resp.Status, "Empty handle should return NFS3ErrBadHandle")
 }
 
 // TestWrite_HandleTooShort tests that WRITE returns error for short handles.
@@ -214,8 +214,8 @@ func TestWrite_HandleTooShort(t *testing.T) {
 	resp, err := fx.Handler.Write(fx.Context(), req)
 
 	require.NoError(t, err)
-	// Implementation returns NFS3ErrNoEnt for unrecognized handles
-	assert.EqualValues(t, types.NFS3ErrNoEnt, resp.Status, "Handle too short should return error")
+	// RFC 1813: NFS3ErrBadHandle for invalid file handles
+	assert.EqualValues(t, types.NFS3ErrBadHandle, resp.Status, "Handle too short should return NFS3ErrBadHandle")
 }
 
 // TestWrite_HandleTooLong tests that WRITE returns error for long handles.
@@ -232,8 +232,8 @@ func TestWrite_HandleTooLong(t *testing.T) {
 	resp, err := fx.Handler.Write(fx.Context(), req)
 
 	require.NoError(t, err)
-	// Implementation returns NFS3ErrNoEnt for unrecognized handles
-	assert.EqualValues(t, types.NFS3ErrNoEnt, resp.Status, "Handle too long should return error")
+	// RFC 1813: NFS3ErrBadHandle for invalid file handles
+	assert.EqualValues(t, types.NFS3ErrBadHandle, resp.Status, "Handle too long should return NFS3ErrBadHandle")
 }
 
 // TestWrite_ContextCancellation tests that WRITE respects context cancellation.

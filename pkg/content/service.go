@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/flusher"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -20,17 +21,18 @@ import (
 // Cache Model:
 //   - All writes go to Cache using WriteSlice API
 //   - Reads merge slices using newest-wins semantics
-//   - Phase 1: Cache IS the storage (cache-only, volatile)
-//   - Phase 2: Will add BlockStore for persistent storage
+//   - Flusher handles cache-to-S3 persistence (optional)
 //
 // Usage:
 //
 //	contentSvc := content.New()
 //	contentSvc.SetCache(sliceCache)
+//	contentSvc.SetFlusher(flusherInstance) // Optional: enables S3 persistence
 //	err := contentSvc.WriteAt(ctx, shareName, contentID, data, offset)
 type ContentService struct {
-	mu    sync.RWMutex
-	cache *cache.Cache // Single global cache for all shares
+	mu      sync.RWMutex
+	cache   *cache.Cache     // Single global cache for all shares
+	flusher *flusher.Flusher // Optional: handles cache-to-S3 persistence
 }
 
 // New creates a new empty ContentService instance.
@@ -68,6 +70,27 @@ func (s *ContentService) GetCache() *cache.Cache {
 	return s.cache
 }
 
+// SetFlusher sets the flusher for cache-to-S3 persistence.
+//
+// When a flusher is configured:
+//   - Writes trigger eager block uploads (4MB blocks uploaded as they become ready)
+//   - Flush() waits for in-flight uploads and flushes remaining data to S3
+//   - ReadAt() falls back to S3 on cache miss
+//
+// This is optional - without a flusher, the service operates in cache-only mode.
+func (s *ContentService) SetFlusher(f *flusher.Flusher) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flusher = f
+}
+
+// GetFlusher returns the flusher, or nil if not configured.
+func (s *ContentService) GetFlusher() *flusher.Flusher {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.flusher
+}
+
 // RegisterCacheForShare associates a cache with a share.
 // Since we use a single global cache, the shareName is ignored.
 func (s *ContentService) RegisterCacheForShare(shareName string, sc *cache.Cache) error {
@@ -98,6 +121,10 @@ func (s *ContentService) HasCache(shareName string) bool {
 // Data is read from Cache using the Chunk/Slice/Block model.
 // Reads span multiple chunks if the range crosses chunk boundaries,
 // with slices merged using newest-wins semantics.
+//
+// When flusher is configured and data is not in cache:
+//   - Falls back to S3 to fetch the data
+//   - Downloaded blocks are cached for future reads
 func (s *ContentService) ReadAt(ctx context.Context, shareName string, id metadata.ContentID, p []byte, offset uint64) (int, error) {
 	sc := s.GetCache()
 	if sc == nil {
@@ -110,6 +137,8 @@ func (s *ContentService) ReadAt(ctx context.Context, shareName string, id metada
 
 	// Use ContentID as file handle
 	fileHandle := []byte(id)
+	contentID := string(id)
+	f := s.GetFlusher()
 
 	// Calculate which chunks this read spans
 	startChunk, endChunk := cache.ChunkRange(offset, uint64(len(p)))
@@ -136,10 +165,23 @@ func (s *ContentService) ReadAt(ctx context.Context, shareName string, id metada
 		}
 
 		if !found {
-			// No data in cache for this range - fill with zeros
-			// (sparse file behavior for cache-only mode)
-			for i := bufStart; i < bufStart+int(length); i++ {
-				p[i] = 0
+			// Cache miss - try to fetch from S3 if flusher is configured
+			if f != nil {
+				s3Data, err := f.ReadBlocks(ctx, shareName, fileHandle, contentID, chunkIdx, offsetInChunk, length)
+				if err != nil {
+					// S3 fetch failed - fall back to zeros (sparse file behavior)
+					logger.Debug("S3 fetch failed, using zeros", "chunk", chunkIdx, "error", err)
+					for i := bufStart; i < bufStart+int(length); i++ {
+						p[i] = 0
+					}
+				} else {
+					copy(p[bufStart:], s3Data)
+				}
+			} else {
+				// No flusher - fill with zeros (sparse file behavior for cache-only mode)
+				for i := bufStart; i < bufStart+int(length); i++ {
+					p[i] = 0
+				}
 			}
 		} else {
 			// Copy data to buffer
@@ -183,6 +225,7 @@ func (s *ContentService) ContentExists(ctx context.Context, shareName string, id
 //
 // Writes go to Cache using the Chunk/Slice/Block model.
 // Data is split across chunk boundaries and stored as slices within each chunk.
+// S3 uploads are triggered on Flush() via background worker pool.
 func (s *ContentService) WriteAt(ctx context.Context, shareName string, id metadata.ContentID, data []byte, offset uint64) error {
 	sc := s.GetCache()
 	if sc == nil {
@@ -254,8 +297,12 @@ func (s *ContentService) Delete(ctx context.Context, shareName string, id metada
 
 // Flush flushes cached data for a file.
 //
-// Phase 1 (cache-only): Coalesces writes to optimize slice count.
-// Phase 2 (with BlockStore): Will flush slices to block store.
+// When flusher is configured (hybrid flush):
+//   - Syncs cache to disk (fast, local) for crash recovery
+//   - Enqueues remaining data for background S3 upload (non-blocking)
+//
+// When cache-only (no flusher):
+//   - Coalesces writes to optimize slice count
 func (s *ContentService) Flush(ctx context.Context, shareName string, id metadata.ContentID) (*FlushResult, error) {
 	sc := s.GetCache()
 	if sc == nil {
@@ -263,8 +310,22 @@ func (s *ContentService) Flush(ctx context.Context, shareName string, id metadat
 	}
 
 	fileHandle := []byte(id)
+	f := s.GetFlusher()
+
+	// If flusher is configured, enqueue background upload
+	// Data is in mmap cache (crash-safe), S3 upload is async
+	if f != nil {
+		contentID := string(id)
+		// Non-blocking enqueue - uploads happen in background worker pool
+		_ = f.FlushRemainingAsync(ctx, shareName, fileHandle, contentID)
+		return &FlushResult{
+			AlreadyFlushed: false,
+			Finalized:      true,
+		}, nil
+	}
+
+	// Cache-only mode: coalesce writes for optimization
 	if sc.HasDirtyData(fileHandle) {
-		// Coalesce writes to optimize for future flush (Phase 2)
 		if err := sc.CoalesceWrites(ctx, fileHandle); err != nil {
 			logger.Warn("Failed to coalesce writes", "file", string(fileHandle), "error", err)
 		}
@@ -278,11 +339,47 @@ func (s *ContentService) Flush(ctx context.Context, shareName string, id metadat
 
 // FlushAndFinalize flushes and finalizes for immediate durability.
 //
-// Phase 1 (cache-only): Coalesces writes but data stays in cache.
-// Phase 2 (with BlockStore): Will flush to block store and finalize.
+// This is called by SMB CLOSE which requires full durability before returning.
+// Unlike Flush(), this BLOCKS until all data is persisted to S3.
 func (s *ContentService) FlushAndFinalize(ctx context.Context, shareName string, id metadata.ContentID) (*FlushResult, error) {
-	// For Phase 1, Flush and FlushAndFinalize are equivalent
-	return s.Flush(ctx, shareName, id)
+	sc := s.GetCache()
+	if sc == nil {
+		return nil, ErrNoCacheConfigured
+	}
+
+	fileHandle := []byte(id)
+	contentID := string(id)
+	f := s.GetFlusher()
+
+	// If flusher is configured, use blocking flush for full durability
+	if f != nil {
+		// Wait for any in-flight eager uploads
+		if err := f.WaitForUploads(ctx, contentID); err != nil {
+			return nil, fmt.Errorf("wait for uploads: %w", err)
+		}
+
+		// Flush remaining blocks (blocking)
+		if err := f.FlushRemaining(ctx, shareName, fileHandle, contentID); err != nil {
+			return nil, fmt.Errorf("flush remaining: %w", err)
+		}
+
+		return &FlushResult{
+			AlreadyFlushed: false,
+			Finalized:      true,
+		}, nil
+	}
+
+	// Cache-only mode: coalesce writes
+	if sc.HasDirtyData(fileHandle) {
+		if err := sc.CoalesceWrites(ctx, fileHandle); err != nil {
+			logger.Warn("Failed to coalesce writes", "file", string(fileHandle), "error", err)
+		}
+	}
+
+	return &FlushResult{
+		AlreadyFlushed: true,
+		Finalized:      true,
+	}, nil
 }
 
 // ============================================================================

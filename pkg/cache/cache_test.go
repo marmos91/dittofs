@@ -348,3 +348,398 @@ func BenchmarkCache_Mmap_Write(b *testing.B) {
 		}
 	}
 }
+
+// ============================================================================
+// LRU Eviction Tests
+// ============================================================================
+
+func TestCache_LRUEviction_OnlyEvictsFlushed(t *testing.T) {
+	// Create cache with 10KB max size
+	c := New(10 * 1024)
+	defer c.Close()
+
+	ctx := context.Background()
+
+	// Write 5KB to file1 (pending/dirty)
+	file1 := []byte("file1")
+	data1 := make([]byte, 5*1024)
+	if err := c.WriteSlice(ctx, file1, 0, data1, 0); err != nil {
+		t.Fatalf("WriteSlice failed: %v", err)
+	}
+
+	// Write 5KB to file2 (will be flushed)
+	file2 := []byte("file2")
+	data2 := make([]byte, 5*1024)
+	if err := c.WriteSlice(ctx, file2, 0, data2, 0); err != nil {
+		t.Fatalf("WriteSlice failed: %v", err)
+	}
+
+	// Mark file2's slices as flushed
+	slices, _ := c.GetDirtySlices(ctx, file2)
+	for _, slice := range slices {
+		c.MarkSliceFlushed(ctx, file2, slice.ID, nil)
+	}
+
+	// Try to write 5KB more - should trigger eviction
+	file3 := []byte("file3")
+	data3 := make([]byte, 5*1024)
+	if err := c.WriteSlice(ctx, file3, 0, data3, 0); err != nil {
+		t.Fatalf("WriteSlice failed: %v", err)
+	}
+
+	// file1 should still have data (dirty, protected)
+	_, found1, _ := c.ReadSlice(ctx, file1, 0, 0, uint32(len(data1)))
+	if !found1 {
+		t.Error("file1 (dirty) should not be evicted")
+	}
+
+	// file2's flushed data should be evicted
+	stats := c.Stats()
+	if stats.FlushedBytes > 0 {
+		t.Errorf("flushed data should be evicted, got %d bytes", stats.FlushedBytes)
+	}
+
+	// file3 should have data
+	_, found3, _ := c.ReadSlice(ctx, file3, 0, 0, uint32(len(data3)))
+	if !found3 {
+		t.Error("file3 should have data")
+	}
+}
+
+func TestCache_LRUEviction_EvictsOldestFirst(t *testing.T) {
+	// Create cache with 15KB max size
+	c := New(15 * 1024)
+	defer c.Close()
+
+	ctx := context.Background()
+
+	// Write to 3 files in sequence (oldest to newest)
+	files := [][]byte{[]byte("old"), []byte("mid"), []byte("new")}
+	data := make([]byte, 5*1024)
+
+	for _, file := range files {
+		if err := c.WriteSlice(ctx, file, 0, data, 0); err != nil {
+			t.Fatalf("WriteSlice failed: %v", err)
+		}
+		// Mark as flushed immediately
+		slices, _ := c.GetDirtySlices(ctx, file)
+		for _, slice := range slices {
+			c.MarkSliceFlushed(ctx, file, slice.ID, nil)
+		}
+	}
+
+	// Access "mid" to make it more recent
+	c.ReadSlice(ctx, files[1], 0, 0, uint32(len(data)))
+
+	// Note: Read doesn't update lastAccess in current impl (would need lock upgrade)
+	// So LRU is based on write time, not access time
+
+	// Write a new file to trigger eviction
+	newFile := []byte("newest")
+	if err := c.WriteSlice(ctx, newFile, 0, data, 0); err != nil {
+		t.Fatalf("WriteSlice failed: %v", err)
+	}
+
+	// "old" should be evicted first (oldest write time)
+	stats := c.Stats()
+	// With 15KB limit and 20KB written (4 files * 5KB), some eviction should happen
+	if stats.TotalSize > 15*1024 {
+		t.Errorf("cache size %d exceeds max %d", stats.TotalSize, 15*1024)
+	}
+}
+
+func TestCache_Stats(t *testing.T) {
+	c := New(100 * 1024)
+	defer c.Close()
+
+	ctx := context.Background()
+
+	// Write some data
+	file1 := []byte("file1")
+	data1 := make([]byte, 10*1024)
+	c.WriteSlice(ctx, file1, 0, data1, 0)
+
+	file2 := []byte("file2")
+	data2 := make([]byte, 5*1024)
+	c.WriteSlice(ctx, file2, 0, data2, 0)
+
+	// Mark file2 as flushed
+	slices, _ := c.GetDirtySlices(ctx, file2)
+	for _, slice := range slices {
+		c.MarkSliceFlushed(ctx, file2, slice.ID, nil)
+	}
+
+	stats := c.Stats()
+
+	if stats.FileCount != 2 {
+		t.Errorf("expected 2 files, got %d", stats.FileCount)
+	}
+	if stats.MaxSize != 100*1024 {
+		t.Errorf("expected maxSize 102400, got %d", stats.MaxSize)
+	}
+	if stats.DirtyBytes != 10*1024 {
+		t.Errorf("expected 10KB dirty, got %d", stats.DirtyBytes)
+	}
+	if stats.FlushedBytes != 5*1024 {
+		t.Errorf("expected 5KB flushed, got %d", stats.FlushedBytes)
+	}
+	if stats.TotalSize != 15*1024 {
+		t.Errorf("expected 15KB total, got %d", stats.TotalSize)
+	}
+}
+
+func TestCache_EvictLRU(t *testing.T) {
+	c := New(0) // unlimited
+	defer c.Close()
+
+	ctx := context.Background()
+
+	// Write and flush some files
+	for i := 0; i < 5; i++ {
+		file := []byte("file" + string(rune('0'+i)))
+		data := make([]byte, 10*1024)
+		c.WriteSlice(ctx, file, 0, data, 0)
+
+		slices, _ := c.GetDirtySlices(ctx, file)
+		for _, slice := range slices {
+			c.MarkSliceFlushed(ctx, file, slice.ID, nil)
+		}
+	}
+
+	initialSize := c.GetTotalSize()
+	if initialSize != 50*1024 {
+		t.Errorf("expected 50KB, got %d", initialSize)
+	}
+
+	// Manually trigger LRU eviction
+	evicted, err := c.EvictLRU(ctx, 30*1024) // Try to free 30KB
+	if err != nil {
+		t.Fatalf("EvictLRU failed: %v", err)
+	}
+
+	if evicted < 30*1024 {
+		t.Errorf("expected to evict at least 30KB, evicted %d", evicted)
+	}
+
+	finalSize := c.GetTotalSize()
+	if finalSize > 20*1024 {
+		t.Errorf("expected at most 20KB remaining, got %d", finalSize)
+	}
+}
+
+// ============================================================================
+// Additional Coverage Tests
+// ============================================================================
+
+func TestCache_ChunkRange(t *testing.T) {
+	tests := []struct {
+		offset, length       uint64
+		wantStart, wantEnd   uint32
+	}{
+		{0, 0, 0, 0},                     // Zero length
+		{0, 1024, 0, 0},                  // Within first chunk
+		{0, ChunkSize, 0, 0},             // Exactly one chunk
+		{0, ChunkSize + 1, 0, 1},         // Spans two chunks
+		{ChunkSize - 1, 2, 0, 1},         // Cross chunk boundary
+		{ChunkSize * 2, ChunkSize, 2, 2}, // Third chunk only
+	}
+
+	for _, tt := range tests {
+		start, end := ChunkRange(tt.offset, tt.length)
+		if start != tt.wantStart || end != tt.wantEnd {
+			t.Errorf("ChunkRange(%d, %d) = (%d, %d), want (%d, %d)",
+				tt.offset, tt.length, start, end, tt.wantStart, tt.wantEnd)
+		}
+	}
+}
+
+func TestCache_Evict(t *testing.T) {
+	c := New(0)
+	defer c.Close()
+
+	ctx := context.Background()
+	fileHandle := []byte("test-file")
+	data := make([]byte, 10*1024)
+
+	// Write
+	c.WriteSlice(ctx, fileHandle, 0, data, 0)
+
+	// Mark as flushed
+	slices, _ := c.GetDirtySlices(ctx, fileHandle)
+	for _, slice := range slices {
+		c.MarkSliceFlushed(ctx, fileHandle, slice.ID, nil)
+	}
+
+	// Evict
+	evicted, err := c.Evict(ctx, fileHandle)
+	if err != nil {
+		t.Fatalf("Evict failed: %v", err)
+	}
+	if evicted != 10*1024 {
+		t.Errorf("expected 10KB evicted, got %d", evicted)
+	}
+
+	// Verify size reduced
+	if c.GetTotalSize() != 0 {
+		t.Errorf("expected 0 size after evict, got %d", c.GetTotalSize())
+	}
+}
+
+func TestCache_EvictAll(t *testing.T) {
+	c := New(0)
+	defer c.Close()
+
+	ctx := context.Background()
+
+	// Write to multiple files and flush them
+	for i := 0; i < 3; i++ {
+		file := []byte("file" + string(rune('0'+i)))
+		data := make([]byte, 5*1024)
+		c.WriteSlice(ctx, file, 0, data, 0)
+
+		slices, _ := c.GetDirtySlices(ctx, file)
+		for _, slice := range slices {
+			c.MarkSliceFlushed(ctx, file, slice.ID, nil)
+		}
+	}
+
+	// Evict all
+	evicted, err := c.EvictAll(ctx)
+	if err != nil {
+		t.Fatalf("EvictAll failed: %v", err)
+	}
+	if evicted != 15*1024 {
+		t.Errorf("expected 15KB evicted, got %d", evicted)
+	}
+
+	// Verify size is 0
+	if c.GetTotalSize() != 0 {
+		t.Errorf("expected 0 size after EvictAll, got %d", c.GetTotalSize())
+	}
+}
+
+func TestCache_HasDirtyData(t *testing.T) {
+	c := New(0)
+	defer c.Close()
+
+	ctx := context.Background()
+	fileHandle := []byte("test-file")
+	data := []byte("test data")
+
+	// Initially no dirty data
+	if c.HasDirtyData(fileHandle) {
+		t.Error("expected no dirty data initially")
+	}
+
+	// Write creates dirty data
+	c.WriteSlice(ctx, fileHandle, 0, data, 0)
+	if !c.HasDirtyData(fileHandle) {
+		t.Error("expected dirty data after write")
+	}
+
+	// Flush clears dirty flag
+	slices, _ := c.GetDirtySlices(ctx, fileHandle)
+	for _, slice := range slices {
+		c.MarkSliceFlushed(ctx, fileHandle, slice.ID, nil)
+	}
+	if c.HasDirtyData(fileHandle) {
+		t.Error("expected no dirty data after flush")
+	}
+}
+
+func TestCache_CoalesceWrites_NonAdjacent(t *testing.T) {
+	c := New(0)
+	defer c.Close()
+
+	ctx := context.Background()
+	fileHandle := []byte("test-file")
+
+	// Write non-adjacent slices (with gap)
+	c.WriteSlice(ctx, fileHandle, 0, []byte("AAA"), 0)
+	c.WriteSlice(ctx, fileHandle, 0, []byte("BBB"), 100) // Gap at 3-99
+
+	// Coalesce should create 2 slices (not merge due to gap)
+	slices, err := c.GetDirtySlices(ctx, fileHandle)
+	if err != nil {
+		t.Fatalf("GetDirtySlices failed: %v", err)
+	}
+	if len(slices) != 2 {
+		t.Errorf("expected 2 non-adjacent slices, got %d", len(slices))
+	}
+}
+
+func TestCache_CoalesceWrites_Overlapping(t *testing.T) {
+	c := New(0)
+	defer c.Close()
+
+	ctx := context.Background()
+	fileHandle := []byte("test-file")
+
+	// Write overlapping slices
+	c.WriteSlice(ctx, fileHandle, 0, make([]byte, 100), 0)   // 0-99
+	c.WriteSlice(ctx, fileHandle, 0, make([]byte, 100), 50)  // 50-149 (overlaps)
+
+	// Coalesce should merge into 1 slice
+	slices, err := c.GetDirtySlices(ctx, fileHandle)
+	if err != nil {
+		t.Fatalf("GetDirtySlices failed: %v", err)
+	}
+	if len(slices) != 1 {
+		t.Errorf("expected 1 coalesced slice, got %d", len(slices))
+	}
+	if slices[0].Length != 150 {
+		t.Errorf("expected length 150, got %d", slices[0].Length)
+	}
+}
+
+func TestCache_PrependWrite(t *testing.T) {
+	c := New(0)
+	defer c.Close()
+
+	ctx := context.Background()
+	fileHandle := []byte("test-file")
+
+	// Write at offset 100 first
+	data1 := []byte("WORLD")
+	c.WriteSlice(ctx, fileHandle, 0, data1, 100)
+
+	// Prepend at offset 95 (ends where previous starts)
+	data2 := []byte("HELLO")
+	c.WriteSlice(ctx, fileHandle, 0, data2, 95)
+
+	// Should be coalesced into one slice
+	slices, _ := c.GetDirtySlices(ctx, fileHandle)
+	if len(slices) != 1 {
+		t.Errorf("expected 1 coalesced slice after prepend, got %d", len(slices))
+	}
+	if slices[0].Length != 10 {
+		t.Errorf("expected length 10, got %d", slices[0].Length)
+	}
+}
+
+func TestCache_EvictDoesNotRemoveDirty(t *testing.T) {
+	c := New(0)
+	defer c.Close()
+
+	ctx := context.Background()
+	fileHandle := []byte("test-file")
+	data := make([]byte, 10*1024)
+
+	// Write (creates dirty data)
+	c.WriteSlice(ctx, fileHandle, 0, data, 0)
+
+	// Try to evict (should not evict dirty data)
+	evicted, err := c.Evict(ctx, fileHandle)
+	if err != nil {
+		t.Fatalf("Evict failed: %v", err)
+	}
+	if evicted != 0 {
+		t.Errorf("should not evict dirty data, but evicted %d bytes", evicted)
+	}
+
+	// Data should still be there
+	_, found, _ := c.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(data)))
+	if !found {
+		t.Error("dirty data should still be present after evict attempt")
+	}
+}

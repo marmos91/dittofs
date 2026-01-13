@@ -27,6 +27,8 @@ func ApplyDefaults(cfg *Config) {
 	applyMetadataDefaults(&cfg.Metadata)
 	applyContentDefaults(&cfg.Content)
 	applyCacheDefaults(&cfg.Cache)
+	applyBlockStoreDefaults(&cfg.BlockStore)
+	applyFlusherDefaults(&cfg.Flusher)
 	applyShareDefaults(cfg.Shares)
 	applyAdaptersDefaults(&cfg.Adapters)
 
@@ -188,6 +190,35 @@ func applyFlusherDefaults(cfg *FlusherConfig) {
 	// FlushTimeout defaults to 30 seconds
 	if cfg.FlushTimeout == 0 {
 		cfg.FlushTimeout = 30 * time.Second
+	}
+
+	// ParallelUploads defaults to 4
+	if cfg.ParallelUploads == 0 {
+		cfg.ParallelUploads = 4
+	}
+
+	// ParallelDownloads defaults to 4
+	if cfg.ParallelDownloads == 0 {
+		cfg.ParallelDownloads = 4
+	}
+}
+
+// applyBlockStoreDefaults sets block store configuration defaults.
+func applyBlockStoreDefaults(cfg *BlockStoreConfig) {
+	// Type defaults to "" (disabled - cache-only mode)
+	// No default type - user must explicitly enable block store
+
+	// Apply S3-specific defaults if S3 is configured
+	if cfg.Type == "s3" {
+		// KeyPrefix defaults to "blocks/"
+		if cfg.S3.KeyPrefix == "" {
+			cfg.S3.KeyPrefix = "blocks/"
+		}
+
+		// MaxRetries defaults to 3
+		if cfg.S3.MaxRetries == 0 {
+			cfg.S3.MaxRetries = 3
+		}
 	}
 }
 
