@@ -54,21 +54,22 @@ go test -bench="BenchmarkCache_" -benchmem ./pkg/cache/
 
 Measured with mmap cache enabled, memory metadata store, and ERROR logging level.
 
-#### Throughput (After Optimizations)
+#### Throughput (Final)
 
 | Operation | Cold | Warm (Cached) |
 |-----------|------|---------------|
-| Sequential Write (100MB, 1M blocks) | ~150 MB/s | **~850 MB/s** |
+| Sequential Write (100MB, 1M blocks) | **~160 MB/s** | **~1 GB/s** |
 | Sequential Read (100MB) | ~720 MB/s | ~720 MB/s |
 
-**Note**: "Cold" is first write to a file (cache miss). "Warm" is subsequent writes to the same file (all caches hot).
+**Note**: "Cold" is first write to a new file. "Warm" is re-writing an existing file (NFS client caches writes).
 
 #### Optimization Impact
 
-| Benchmark | Baseline | Cold | Warm | Improvement |
-|-----------|----------|------|------|-------------|
-| Sequential Write | 89 MB/s | 150 MB/s | 850 MB/s | +68% / +855% |
-| Sequential Read | 626 MB/s | 720 MB/s | 720 MB/s | +15% |
+| Benchmark | Baseline | Final | Improvement |
+|-----------|----------|-------|-------------|
+| Sequential Write (cold) | 89 MB/s | 160 MB/s | **+80%** |
+| Sequential Write (warm) | 89 MB/s | 1 GB/s | **+1024%** |
+| Sequential Read | 626 MB/s | 720 MB/s | +15% |
 
 #### Logging Level Impact
 
@@ -82,7 +83,7 @@ Measured with mmap cache enabled, memory metadata store, and ERROR logging level
 
 ### Why NFS is slower than direct cache
 
-The ~30x gap between direct cache (4000 MB/s) and NFS (125 MB/s) is due to:
+The ~25x gap between direct cache (4000 MB/s) and NFS cold writes (160 MB/s) is due to:
 
 1. **Metadata operations per WRITE** - Each NFS WRITE triggers ~3 metadata operations:
    - PrepareWrite/GetFile (1 read + validation)
@@ -101,12 +102,13 @@ The ~30x gap between direct cache (4000 MB/s) and NFS (125 MB/s) is due to:
 5. **Deferred metadata commits** - CommitWrite batches updates until NFS COMMIT
 6. **File metadata caching** - PrepareWrite caches file metadata for sequential writes
 7. **Auth context caching** - Cache per (share, UID, GID) to avoid registry lookups
+8. **Pre-warm caches on CREATE** - Populate auth and file metadata caches after file creation
 
 ### Future Optimization Opportunities
 
-1. **Warm cache on file open** - Pre-populate caches on CREATE/LOOKUP
-2. **Use sync.Map for pending writes** - Reduce mutex contention for concurrent writes
-3. **Batch multiple files in COMMIT** - Single transaction for multi-file commits
+1. **Use sync.Map for pending writes** - Reduce mutex contention for concurrent writes
+2. **Batch multiple files in COMMIT** - Single transaction for multi-file commits
+3. **Pre-warm on LOOKUP** - Also warm caches when looking up existing files
 
 ## Requirements
 
