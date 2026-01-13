@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
@@ -22,6 +23,56 @@ type Handler struct {
 	// Metrics collects observability data for NFS operations
 	// Optional - may be nil to disable metrics with zero overhead
 	Metrics metrics.NFSMetrics
+
+	// authCache caches auth contexts per (share, UID, GID) to avoid
+	// repeated registry lookups on every WRITE request.
+	// Key: "share:uid:gid", Value: *metadata.AuthContext
+	authCache sync.Map
+}
+
+// authCacheKey generates a cache key for auth context caching.
+func authCacheKey(share string, uid, gid *uint32) string {
+	uidVal := uint32(0xFFFFFFFF) // sentinel for nil
+	gidVal := uint32(0xFFFFFFFF)
+	if uid != nil {
+		uidVal = *uid
+	}
+	if gid != nil {
+		gidVal = *gid
+	}
+	return fmt.Sprintf("%s:%d:%d", share, uidVal, gidVal)
+}
+
+// GetCachedAuthContext returns a cached auth context or builds a new one.
+// This avoids repeated BuildAuthContextWithMapping calls for the same client.
+func (h *Handler) GetCachedAuthContext(
+	ctx *NFSHandlerContext,
+) (*metadata.AuthContext, error) {
+	key := authCacheKey(ctx.Share, ctx.UID, ctx.GID)
+
+	// Fast path: check cache
+	if cached, ok := h.authCache.Load(key); ok {
+		authCtx := cached.(*metadata.AuthContext)
+		// Return a copy with the current request's context
+		return &metadata.AuthContext{
+			Context:       ctx.Context,
+			ClientAddr:    ctx.ClientAddr,
+			AuthMethod:    authCtx.AuthMethod,
+			Identity:      authCtx.Identity,
+			ShareReadOnly: authCtx.ShareReadOnly,
+		}, nil
+	}
+
+	// Slow path: build auth context
+	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache for future requests
+	h.authCache.Store(key, authCtx)
+
+	return authCtx, nil
 }
 
 // convertFileAttrToNFS converts metadata file attributes to NFS wire format.

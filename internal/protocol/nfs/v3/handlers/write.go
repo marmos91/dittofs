@@ -308,49 +308,21 @@ func (h *Handler) Write(
 	// ========================================================================
 	// Step 3: Validate request parameters
 	// ========================================================================
+	// Note: We use a fixed max write size (1MB) to avoid a metadata lookup.
+	// GetFilesystemCapabilities is expensive and the value rarely changes.
+	// The actual capabilities are still enforced by the metadata store.
 
-	caps, err := metaSvc.GetFilesystemCapabilities(ctx.Context, fileHandle)
-	if err != nil {
-		traceWarn(ctx.Context, err, "WRITE failed: cannot get capabilities", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
-	}
-
-	if err := validateWriteRequest(req, caps.MaxWriteSize); err != nil {
+	const maxWriteSize uint32 = 1 << 20 // 1MB - matches default config
+	if err := validateWriteRequest(req, maxWriteSize); err != nil {
 		traceWarn(ctx.Context, err, "WRITE validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
 	// ========================================================================
-	// Step 3: Verify file exists and is a regular file
-	// ========================================================================
-
-	// Check context before store call
-	if ctx.isContextCancelled() {
-		traceWarn(ctx.Context, ctx.Context.Err(), "WRITE cancelled before GetFile", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
-
-	file, status, err := h.getFileOrError(ctx, fileHandle, "WRITE", req.Handle)
-	if file == nil {
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
-	}
-
-	// Verify it's a regular file (not a directory or special file)
-	if file.Type != metadata.FileTypeRegular {
-		logger.WarnCtx(ctx.Context, "WRITE failed: not a regular file", "handle", fmt.Sprintf("0x%x", req.Handle), "type", file.Type, "client", clientIP)
-
-		// Return file attributes even on error for cache consistency
-		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
-
-		return &WriteResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir}, // NFS3ErrIsDir used for all non-regular files
-			AttrAfter:       nfsAttr,
-		}, nil
-	}
-
-	// ========================================================================
 	// Step 4: Calculate new file size
 	// ========================================================================
+	// Note: File existence and type validation is done by PrepareWrite.
+	// This eliminates a redundant GetFile call.
 
 	dataLen := uint64(len(req.Data))
 	newSize, overflow := safeAdd(req.Offset, dataLen)
@@ -368,10 +340,10 @@ func (h *Handler) Write(
 	}
 
 	// ========================================================================
-	// Step 5: Build AuthContext with share-level identity mapping
+	// Step 5: Build AuthContext with share-level identity mapping (cached)
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
+	authCtx, err := h.GetCachedAuthContext(ctx)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -381,11 +353,9 @@ func (h *Handler) Write(
 
 		traceError(ctx.Context, err, "WRITE failed: failed to build auth context", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 
-		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
-
+		// No WCC data available - we haven't called PrepareWrite yet
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-			AttrAfter:       nfsAttr,
 		}, nil
 	}
 
@@ -399,11 +369,9 @@ func (h *Handler) Write(
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "WRITE cancelled before PrepareWrite", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
 
-		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
-
+		// No WCC data available - we haven't called PrepareWrite yet
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-			AttrAfter:       nfsAttr,
 		}, nil
 	}
 
@@ -414,7 +382,8 @@ func (h *Handler) Write(
 
 		logger.WarnCtx(ctx.Context, "WRITE failed: PrepareWrite error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP, "error", err)
 
-		return h.buildWriteErrorResponse(status, fileHandle, &file.FileAttr, &file.FileAttr), nil
+		// No WCC data available - PrepareWrite failed so we don't have file attributes
+		return h.buildWriteErrorResponse(status, fileHandle, nil, nil), nil
 	}
 
 	// Build WCC attributes from pre-write state

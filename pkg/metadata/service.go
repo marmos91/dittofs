@@ -29,18 +29,32 @@ import (
 //	// Low-level operations (direct store access)
 //	file, err := metaSvc.GetFile(ctx, handle)
 type MetadataService struct {
-	mu           sync.RWMutex
-	stores       map[string]MetadataStore // shareName -> store
-	lockManagers map[string]*LockManager  // shareName -> lock manager (ephemeral, per-share)
+	mu             sync.RWMutex
+	stores         map[string]MetadataStore // shareName -> store
+	lockManagers   map[string]*LockManager  // shareName -> lock manager (ephemeral, per-share)
+	pendingWrites  *PendingWritesTracker    // deferred metadata commits for performance
+	deferredCommit bool                     // if true, use deferred commits (default: true)
 }
 
 // New creates a new empty MetadataService instance.
 // Use RegisterStoreForShare to configure stores for each share.
+// By default, deferred commits are enabled for better write performance.
 func New() *MetadataService {
 	return &MetadataService{
-		stores:       make(map[string]MetadataStore),
-		lockManagers: make(map[string]*LockManager),
+		stores:         make(map[string]MetadataStore),
+		lockManagers:   make(map[string]*LockManager),
+		pendingWrites:  NewPendingWritesTracker(),
+		deferredCommit: true, // Enable deferred commits by default
 	}
+}
+
+// SetDeferredCommit enables or disables deferred metadata commits.
+// When enabled, CommitWrite batches updates until FlushPendingWrites is called.
+// This significantly improves write performance for sequential workloads.
+func (s *MetadataService) SetDeferredCommit(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deferredCommit = enabled
 }
 
 // RegisterStoreForShare associates a metadata store with a share.
