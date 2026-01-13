@@ -13,11 +13,11 @@ import (
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/marmos91/dittofs/pkg/blocks/store"
+	blockmemory "github.com/marmos91/dittofs/pkg/blocks/store/memory"
+	blocks3 "github.com/marmos91/dittofs/pkg/blocks/store/s3"
 	"github.com/marmos91/dittofs/pkg/cache"
-	"github.com/marmos91/dittofs/pkg/flusher"
-	"github.com/marmos91/dittofs/pkg/store/block"
-	blockmemory "github.com/marmos91/dittofs/pkg/store/block/memory"
-	blocks3 "github.com/marmos91/dittofs/pkg/store/block/s3"
+	"github.com/marmos91/dittofs/pkg/transfer"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -162,24 +162,24 @@ func TestS3BlockStore_Integration(t *testing.T) {
 	defer helper.cleanupBucket(bucketName)
 
 	// Create block store
-	store := blocks3.New(helper.client, blocks3.Config{
+	blockStore := blocks3.New(helper.client, blocks3.Config{
 		Bucket:    bucketName,
 		KeyPrefix: "blocks/",
 	})
-	defer store.Close()
+	defer blockStore.Close()
 
 	t.Run("WriteAndReadBlock", func(t *testing.T) {
 		blockKey := "share1/content123/chunk-0/block-0"
 		data := []byte("hello world from block store")
 
 		// Write block
-		err := store.WriteBlock(ctx, blockKey, data)
+		err := blockStore.WriteBlock(ctx, blockKey, data)
 		if err != nil {
 			t.Fatalf("WriteBlock failed: %v", err)
 		}
 
 		// Read block back
-		readData, err := store.ReadBlock(ctx, blockKey)
+		readData, err := blockStore.ReadBlock(ctx, blockKey)
 		if err != nil {
 			t.Fatalf("ReadBlock failed: %v", err)
 		}
@@ -194,13 +194,13 @@ func TestS3BlockStore_Integration(t *testing.T) {
 		data := []byte("0123456789abcdefghij")
 
 		// Write block
-		err := store.WriteBlock(ctx, blockKey, data)
+		err := blockStore.WriteBlock(ctx, blockKey, data)
 		if err != nil {
 			t.Fatalf("WriteBlock failed: %v", err)
 		}
 
 		// Read partial range
-		rangeData, err := store.ReadBlockRange(ctx, blockKey, 5, 10)
+		rangeData, err := blockStore.ReadBlockRange(ctx, blockKey, 5, 10)
 		if err != nil {
 			t.Fatalf("ReadBlockRange failed: %v", err)
 		}
@@ -216,20 +216,20 @@ func TestS3BlockStore_Integration(t *testing.T) {
 		data := []byte("to be deleted")
 
 		// Write block
-		err := store.WriteBlock(ctx, blockKey, data)
+		err := blockStore.WriteBlock(ctx, blockKey, data)
 		if err != nil {
 			t.Fatalf("WriteBlock failed: %v", err)
 		}
 
 		// Delete block
-		err = store.DeleteBlock(ctx, blockKey)
+		err = blockStore.DeleteBlock(ctx, blockKey)
 		if err != nil {
 			t.Fatalf("DeleteBlock failed: %v", err)
 		}
 
 		// Try to read - should fail
-		_, err = store.ReadBlock(ctx, blockKey)
-		if err != block.ErrBlockNotFound {
+		_, err = blockStore.ReadBlock(ctx, blockKey)
+		if err != store.ErrBlockNotFound {
 			t.Errorf("Expected ErrBlockNotFound, got: %v", err)
 		}
 	})
@@ -240,14 +240,14 @@ func TestS3BlockStore_Integration(t *testing.T) {
 		// Write multiple blocks
 		for i := 0; i < 3; i++ {
 			blockKey := fmt.Sprintf("%schunk-0/block-%d", prefix, i)
-			err := store.WriteBlock(ctx, blockKey, []byte(fmt.Sprintf("block %d", i)))
+			err := blockStore.WriteBlock(ctx, blockKey, []byte(fmt.Sprintf("block %d", i)))
 			if err != nil {
 				t.Fatalf("WriteBlock failed: %v", err)
 			}
 		}
 
 		// List blocks
-		keys, err := store.ListByPrefix(ctx, prefix)
+		keys, err := blockStore.ListByPrefix(ctx, prefix)
 		if err != nil {
 			t.Fatalf("ListByPrefix failed: %v", err)
 		}
@@ -263,20 +263,20 @@ func TestS3BlockStore_Integration(t *testing.T) {
 		// Write multiple blocks
 		for i := 0; i < 3; i++ {
 			blockKey := fmt.Sprintf("%schunk-0/block-%d", prefix, i)
-			err := store.WriteBlock(ctx, blockKey, []byte(fmt.Sprintf("block %d", i)))
+			err := blockStore.WriteBlock(ctx, blockKey, []byte(fmt.Sprintf("block %d", i)))
 			if err != nil {
 				t.Fatalf("WriteBlock failed: %v", err)
 			}
 		}
 
 		// Delete all by prefix
-		err := store.DeleteByPrefix(ctx, prefix)
+		err := blockStore.DeleteByPrefix(ctx, prefix)
 		if err != nil {
 			t.Fatalf("DeleteByPrefix failed: %v", err)
 		}
 
 		// List - should be empty
-		keys, err := store.ListByPrefix(ctx, prefix)
+		keys, err := blockStore.ListByPrefix(ctx, prefix)
 		if err != nil {
 			t.Fatalf("ListByPrefix failed: %v", err)
 		}
@@ -310,7 +310,7 @@ func TestFlusher_Integration(t *testing.T) {
 	defer c.Close()
 
 	// Create flusher
-	f := flusher.New(c, blockStore, flusher.Config{
+	f := transfer.New(c, blockStore, transfer.Config{
 		ParallelUploads:   4,
 		ParallelDownloads: 4,
 	})
@@ -416,7 +416,7 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 	defer c.Close()
 
 	// Create flusher
-	f := flusher.New(c, blockStore, flusher.Config{
+	f := transfer.New(c, blockStore, transfer.Config{
 		ParallelUploads:   4,
 		ParallelDownloads: 4,
 	})

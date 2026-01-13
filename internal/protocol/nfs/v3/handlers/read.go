@@ -276,7 +276,7 @@ func (h *Handler) Read(
 	// Step 2: Get content service from registry
 	// ========================================================================
 
-	contentSvc := h.Registry.GetContentService()
+	contentSvc := h.Registry.GetBlockService()
 
 	fileHandle := metadata.FileHandle(req.Handle)
 

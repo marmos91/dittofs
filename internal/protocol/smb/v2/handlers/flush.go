@@ -209,7 +209,7 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	contentSvc := h.Registry.GetContentService()
+	contentSvc := h.Registry.GetBlockService()
 
 	// Verify file exists
 	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)

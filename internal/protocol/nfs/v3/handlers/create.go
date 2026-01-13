@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/content"
+	"github.com/marmos91/dittofs/pkg/blocks"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -167,7 +167,7 @@ func (h *Handler) Create(
 	// ========================================================================
 
 	// Get content service for this share
-	contentSvc := h.Registry.GetContentService()
+	contentSvc := h.Registry.GetBlockService()
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
 	logger.DebugCtx(ctx.Context, "CREATE", "share", ctx.Share, "file", req.Filename)
@@ -551,7 +551,7 @@ func createNewFile(
 //   - Updated file attributes and error
 func truncateExistingFile(
 	authCtx *metadata.AuthContext,
-	contentSvc *content.ContentService,
+	contentSvc *blocks.BlockService,
 	shareName string,
 	metaSvc *metadata.MetadataService,
 	existingFile *metadata.File,

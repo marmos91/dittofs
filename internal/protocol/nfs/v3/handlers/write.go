@@ -299,7 +299,7 @@ func (h *Handler) Write(
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	contentSvc := h.Registry.GetContentService()
+	contentSvc := h.Registry.GetBlockService()
 
 	fileHandle := metadata.FileHandle(req.Handle)
 

@@ -361,7 +361,7 @@ func (h *Handler) Commit(
 
 	logger.InfoCtx(ctx.Context, "COMMIT: flushing data", "share", ctx.Share)
 
-	contentSvc := h.Registry.GetContentService()
+	contentSvc := h.Registry.GetBlockService()
 
 	// Flush cache to content store using ContentService
 	//

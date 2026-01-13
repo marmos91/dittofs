@@ -32,10 +32,21 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
                ▼
 ┌──────────────────────────────────────┐
 │         Store Registry               │
-│  Metadata Stores  │  Content Stores  │
-│  • Memory         │  • Filesystem    │
-│  • BadgerDB       │  • S3            │
-│  • PostgreSQL     │  • Memory        │
+│                                      │
+│  Metadata Stores │  Block Storage    │
+│  • Memory        │  ┌─────────────┐  │
+│  • BadgerDB      │  │ Cache + WAL │  │
+│  • PostgreSQL    │  └──────┬──────┘  │
+│                  │         │         │
+│                  │  ┌──────▼──────┐  │
+│                  │  │ Transfer Mgr│  │
+│                  │  └──────┬──────┘  │
+│                  │         │         │
+│                  │  ┌──────▼──────┐  │
+│                  │  │ Block Store │  │
+│                  │  │ • Memory    │  │
+│                  │  │ • S3        │  │
+│                  │  └─────────────┘  │
 └──────────────────────────────────────┘
 ```
 
@@ -263,8 +274,13 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - In-memory metadata (ephemeral, fast)
 - BadgerDB metadata (persistent, path-based handles)
 - PostgreSQL metadata (persistent, distributed)
-- Filesystem content (local/network storage)
-- S3 content (production-ready with range reads, streaming uploads, stats caching)
+- In-memory block store (ephemeral, testing)
+- S3 block store (production-ready with range reads, streaming uploads, stats caching)
+
+**Caching & Persistence**
+- Slice-aware cache with sequential write optimization
+- WAL (Write-Ahead Log) persistence for crash recovery
+- Transfer manager for async cache-to-block-store flushing
 
 **POSIX Compliance**
 - 99.99% pass rate on pjdfstest (8,788/8,789 tests)
@@ -329,7 +345,7 @@ metadata:
       badger:
         db_path: /var/lib/dittofs/metadata
 
-content:
+blocks:
   stores:
     s3-cloud:
       type: s3
@@ -360,7 +376,7 @@ guest:
 shares:
   - name: /archive
     metadata_store: badger-main
-    content_store: s3-cloud
+    blocks_store: s3-cloud
     allow_guest: true
     default_permission: read
 

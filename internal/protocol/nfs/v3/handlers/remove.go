@@ -226,7 +226,7 @@ func (h *Handler) Remove(
 	metaSvc := h.Registry.GetMetadataService()
 
 	// Get content service for this share
-	contentSvc := h.Registry.GetContentService()
+	contentSvc := h.Registry.GetBlockService()
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 

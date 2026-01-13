@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/blocks/store"
 	"github.com/marmos91/dittofs/pkg/cache"
-	"github.com/marmos91/dittofs/pkg/store/block"
 )
 
 // BlockSize is the size of a single block (4MB).
@@ -57,7 +57,7 @@ type blockKey struct {
 // TransferManager handles eager upload and parallel download for cache-to-block-store integration.
 type TransferManager struct {
 	cache      *cache.Cache
-	blockStore block.Store
+	blockStore store.BlockStore
 	config     Config
 
 	// Per-file upload tracking
@@ -78,7 +78,7 @@ type TransferManager struct {
 //   - c: The cache to transfer from/to
 //   - store: The block store to transfer to
 //   - config: TransferManager configuration
-func New(c *cache.Cache, store block.Store, config Config) *TransferManager {
+func New(c *cache.Cache, store store.BlockStore, config Config) *TransferManager {
 	if config.ParallelUploads <= 0 {
 		config.ParallelUploads = DefaultParallelUploads
 	}

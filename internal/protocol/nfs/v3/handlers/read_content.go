@@ -7,7 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/bufpool"
-	"github.com/marmos91/dittofs/pkg/content"
+	"github.com/marmos91/dittofs/pkg/blocks"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -53,7 +53,7 @@ func (r *contentReadResult) Release() {
 //   - error: Error if read failed
 func readFromContentService(
 	ctx *NFSHandlerContext,
-	contentSvc *content.ContentService,
+	contentSvc *blocks.BlockService,
 	contentID metadata.ContentID,
 	offset uint64,
 	count uint32,

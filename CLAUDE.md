@@ -34,9 +34,11 @@ DittoFS has comprehensive documentation organized by topic:
 ### Submodule Documentation
 Each major subsystem has its own CLAUDE.md with non-obvious conventions and gotchas:
 - **[pkg/metadata/CLAUDE.md](pkg/metadata/CLAUDE.md)** - Metadata service layer, file handles, locking
-- **[pkg/content/CLAUDE.md](pkg/content/CLAUDE.md)** - Content service layer, S3 async behavior
+- **[pkg/blocks/CLAUDE.md](pkg/blocks/CLAUDE.md)** - Block service layer, S3 async behavior
 - **[pkg/adapter/CLAUDE.md](pkg/adapter/CLAUDE.md)** - Protocol adapter lifecycle
-- **[pkg/cache/CLAUDE.md](pkg/cache/CLAUDE.md)** - Cache state machine, flusher
+- **[pkg/cache/CLAUDE.md](pkg/cache/CLAUDE.md)** - Slice-aware cache, WAL persistence
+- **[pkg/transfer/CLAUDE.md](pkg/transfer/CLAUDE.md)** - Transfer manager, background queue
+- **[pkg/wal/CLAUDE.md](pkg/wal/CLAUDE.md)** - WAL persistence layer
 - **[pkg/config/CLAUDE.md](pkg/config/CLAUDE.md)** - Named stores pattern, env overrides
 - **[internal/protocol/CLAUDE.md](internal/protocol/CLAUDE.md)** - NFS/SMB wire formats, handler rules
 
@@ -339,12 +341,24 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
         │                   │
         ▼                   ▼
 ┌────────────────┐  ┌────────────────────┐
-│   Metadata     │  │   Content          │
-│     Stores     │  │     Stores         │
-│                │  │                    │
-│  - Memory      │  │  - Memory          │
-│  - BadgerDB    │  │  - Filesystem      │
-│                │  │  - S3              │
+│   Metadata     │  │   Block Storage    │
+│     Stores     │  │                    │
+│                │  │  ┌──────────────┐  │
+│  - Memory      │  │  │ Cache + WAL  │  │
+│  - BadgerDB    │  │  │ pkg/cache/   │  │
+│  - PostgreSQL  │  │  │ pkg/wal/     │  │
+│                │  │  └──────┬───────┘  │
+│                │  │         │          │
+│                │  │  ┌──────▼───────┐  │
+│                │  │  │ Transfer Mgr │  │
+│                │  │  │ pkg/transfer/│  │
+│                │  │  └──────┬───────┘  │
+│                │  │         │          │
+│                │  │  ┌──────▼───────┐  │
+│                │  │  │ Block Stores │  │
+│                │  │  │ - Memory     │  │
+│                │  │  │ - S3         │  │
+│                │  │  └──────────────┘  │
 └────────────────┘  └────────────────────┘
 ```
 
@@ -364,24 +378,23 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 - Multiple adapters can share the same registry
 - Thread-safe, supports graceful shutdown
 
-**3. Metadata Store** (`pkg/store/metadata/store.go`)
+**3. Metadata Store** (`pkg/metadata/store/`)
 - Stores file/directory structure, attributes, permissions
 - Handles access control and root directory creation
 - Implementations:
-  - `pkg/store/metadata/memory/`: In-memory (fast, ephemeral, full hard link support)
-  - `pkg/store/metadata/badger/`: BadgerDB (persistent, embedded, path-based handles)
-  - `pkg/store/metadata/postgres/`: PostgreSQL (persistent, distributed, UUID-based handles)
+  - `pkg/metadata/store/memory/`: In-memory (fast, ephemeral, full hard link support)
+  - `pkg/metadata/store/badger/`: BadgerDB (persistent, embedded, path-based handles)
+  - `pkg/metadata/store/postgres/`: PostgreSQL (persistent, distributed, UUID-based handles)
 - File handles are opaque identifiers (format varies by implementation)
 - BadgerDB handles are path-based, enabling metadata recovery from content store
 - PostgreSQL handles encode shareName + UUID for multi-share, distributed deployments
 
-**4. Content Store** (`pkg/store/content/store.go`)
-- Stores actual file data
+**4. Block Store** (`pkg/blocks/store/`)
+- Stores actual file data as blocks
 - Supports read, write-at, truncate operations
 - Implementations:
-  - `pkg/store/content/memory/`: In-memory (fast, ephemeral, testing)
-  - `pkg/store/content/fs/`: Filesystem-backed (local/network storage)
-  - `pkg/store/content/s3/`: **Production-ready** S3 storage with:
+  - `pkg/blocks/store/memory/`: In-memory (fast, ephemeral, testing)
+  - `pkg/blocks/store/s3/`: **Production-ready** S3 storage with:
     - **Range Reads**: Efficient byte-range requests (100x faster for small reads from large files)
     - **Streaming Multipart Uploads**: Automatic multipart for large files (98% memory reduction)
     - **Configurable Retry**: Exponential backoff for transient errors (network, throttling, 5xx)
@@ -390,25 +403,31 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
     - **Path-Based Keys**: Objects stored as `export/path/to/file` for easy inspection
 
 **5. Cache Layer** (`pkg/cache/`)
-- Optional unified caching layer for read/write performance
-- **One cache per share** serving both reads and writes
-- **Content-store agnostic**: Cache doesn't know about S3 multipart, fsync, etc.
-- **Three states**: Buffering (dirty), Uploading (flush in progress), Cached (clean)
+- Slice-aware caching for the Chunk/Slice/Block storage model
+- Uses **WAL persistence** (`pkg/wal/`) for crash recovery
 - **Key features**:
-  - Buffers writes before flushing to content store on COMMIT
-  - Serves reads from cache when available
-  - LRU eviction with dirty entry protection
-  - Read cache coherency via mtime/size validation
-  - Inactivity-based finalization for write completion detection
-- Implementations:
-  - `pkg/cache/memory/`: In-memory cache with size limits
-- **Configuration** (per share):
-  - `cache.enabled`: Enable/disable caching
-  - `cache.max_size`: Maximum cache size
-  - `cache.finalize_timeout`: Inactivity before finalizing writes
-  - `cache.read_ttl`: Max age for cached reads (optional)
-- **Metrics**: Cache hits/misses/invalidations exposed via Prometheus
-- **Documentation**: See [docs/CACHE.md](docs/CACHE.md) for detailed design
+  - Sequential write optimization (merges 16KB-32KB NFS writes into single slices)
+  - Newest-wins read merging for overlapping slices
+  - LRU eviction with dirty data protection
+  - Three states: Pending (dirty) → Uploading → Flushed (safe to evict)
+- **Configuration**:
+  - `cache.max_size`: Maximum cache size (LRU eviction)
+  - WAL persistence via `NewWithMmap()` or `NewWithPersister()`
+- **Metrics**: Cache hits/misses/evictions exposed via Prometheus
+
+**6. WAL Persistence** (`pkg/wal/`)
+- Write-Ahead Log for cache crash recovery
+- `Persister` interface for pluggable implementations:
+  - `MmapPersister`: Memory-mapped file for high performance
+  - `NullPersister`: No-op for in-memory only deployments
+- Enables cache data survival across server restarts
+
+**7. Transfer Manager** (`pkg/transfer/`)
+- Async cache-to-block-store transfer orchestration
+- `TransferManager`: Coordinates flush operations on NFS COMMIT
+- `TransferQueue`: Background upload queue with priority
+- `TransferQueueEntry`: Generic interface for transfer operations
+- Handles startup recovery from WAL
 
 ### Directory Structure
 
@@ -420,25 +439,50 @@ dittofs/
 ├── pkg/                      # Public API (stable interfaces)
 │   ├── adapter/              # Protocol adapter interface
 │   │   ├── adapter.go        # Core Adapter interface
-│   │   └── nfs/              # NFS adapter implementation
+│   │   ├── nfs/              # NFS adapter implementation
+│   │   └── smb/              # SMB adapter implementation
+│   │
+│   ├── metadata/             # Metadata layer
+│   │   ├── service.go        # MetadataService (business logic, routing)
+│   │   ├── store.go          # MetadataStore interface (CRUD)
+│   │   └── store/            # Store implementations
+│   │       ├── memory/       # In-memory (ephemeral)
+│   │       ├── badger/       # BadgerDB (persistent)
+│   │       └── postgres/     # PostgreSQL (distributed)
+│   │
+│   ├── blocks/               # Block storage layer
+│   │   ├── service.go        # BlockService (caching, routing, flush)
+│   │   ├── types.go          # StorageStats, FlushResult, etc.
+│   │   └── store/            # Block store implementations
+│   │       ├── store.go      # BlockStore interface (CRUD)
+│   │       ├── memory/       # In-memory (ephemeral)
+│   │       └── s3/           # S3-backed (multipart, streaming)
+│   │
+│   ├── cache/                # Slice-aware cache layer
+│   │   ├── cache.go          # Cache implementation (LRU, dirty tracking)
+│   │   └── types.go          # Slice, SliceState, BlockRef types
+│   │
+│   ├── wal/                  # Write-Ahead Log persistence
+│   │   ├── persister.go      # Persister interface + NullPersister
+│   │   ├── mmap.go           # MmapPersister implementation
+│   │   └── types.go          # SliceEntry, WAL record types
+│   │
+│   ├── transfer/             # Cache-to-store transfer orchestration
+│   │   ├── manager.go        # TransferManager (flush coordination)
+│   │   ├── queue.go          # TransferQueue (background uploads)
+│   │   ├── entry.go          # TransferQueueEntry interface
+│   │   └── recovery.go       # WAL recovery on startup
+│   │
 │   ├── registry/             # Store registry
 │   │   ├── registry.go       # Central store registry
 │   │   ├── share.go          # Share configuration
 │   │   └── access.go         # Identity mapping and handle resolution
-│   ├── store/                # Storage layer
-│   │   ├── metadata/         # Metadata store interface
-│   │   │   ├── store.go      # Store interface
-│   │   │   ├── memory/       # In-memory implementation
-│   │   │   └── badger/       # BadgerDB implementation
-│   │   └── content/          # Content store interface
-│   │       ├── store.go      # Store interface
-│   │       ├── memory/       # In-memory implementation
-│   │       ├── fs/           # Filesystem implementation
-│   │       └── s3/           # S3 implementation
+│   │
 │   ├── config/               # Configuration parsing
 │   │   ├── config.go         # Main config struct
-│   │   ├── stores.go         # Store configuration
+│   │   ├── stores.go         # Store and transfer manager creation
 │   │   └── registry.go       # Registry initialization
+│   │
 │   └── server/               # DittoServer orchestration
 │       └── server.go         # Multi-adapter server management
 │
@@ -658,18 +702,18 @@ Large I/O operations use buffer pools (`internal/protocol/nfs/bufpool.go`):
 ### Adding a New Store Backend
 
 **Metadata Store:**
-1. Implement `pkg/store/metadata/Store` interface
+1. Implement `pkg/metadata/Store` interface
 2. Handle file handle generation (must be unique and stable)
 3. Implement root directory creation (`CreateRootDirectory`)
 4. Implement permission checking in `CheckAccess()`
 5. Ensure thread safety (concurrent access across shares)
 6. Consider persistence strategy for handles
 
-**Content Store:**
-1. Implement `pkg/store/content/Store` interface
+**Block Store:**
+1. Implement `pkg/blocks/store.BlockStore` interface
 2. Support random-access reads/writes (`ReadAt`/`WriteAt`)
 3. Handle sparse files and truncation
-4. Consider implementing `ReadAtContentStore` for efficient partial reads
+4. Consider implementing `ReadAtBlockStore` for efficient partial reads
 5. Test with the integration test suite in `test/integration/`
 
 ### Adding a New Protocol Adapter

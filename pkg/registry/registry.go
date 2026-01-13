@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/blocks"
 	"github.com/marmos91/dittofs/pkg/cache"
-	"github.com/marmos91/dittofs/pkg/content"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -41,7 +41,7 @@ type Registry struct {
 	mounts          map[string]*MountInfo     // key: clientAddr, value: mount info
 	userStore       identity.UserStore        // User/group management for authentication
 	metadataService *metadata.MetadataService // High-level metadata operations
-	contentService  *content.ContentService   // High-level content operations (uses Cache)
+	blockService    *blocks.BlockService      // High-level content operations (uses Cache)
 }
 
 // MountInfo represents an active NFS mount from a client.
@@ -59,14 +59,14 @@ func NewRegistry(c *cache.Cache) *Registry {
 		shares:          make(map[string]*Share),
 		mounts:          make(map[string]*MountInfo),
 		metadataService: metadata.New(),
-		contentService:  content.New(),
+		blockService:    blocks.New(),
 	}
 
 	// Use provided cache or create default in-memory cache
 	if c == nil {
 		c = cache.New(0) // 0 = unlimited size
 	}
-	_ = reg.contentService.SetCache(c)
+	_ = reg.blockService.SetCache(c)
 
 	return reg
 }
@@ -269,11 +269,11 @@ func (r *Registry) GetMetadataService() *metadata.MetadataService {
 	return r.metadataService
 }
 
-// GetContentService returns the ContentService instance for high-level content operations.
-// ContentService provides methods like ReadAt, WriteAt, Flush, etc. that use
+// GetBlockService returns the BlockService instance for high-level content operations.
+// BlockService provides methods like ReadAt, WriteAt, Flush, etc. that use
 // the Cache and automatically route operations based on share.
-func (r *Registry) GetContentService() *content.ContentService {
-	return r.contentService
+func (r *Registry) GetBlockService() *blocks.BlockService {
+	return r.blockService
 }
 
 // ListShares returns all registered share names.

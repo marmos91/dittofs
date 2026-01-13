@@ -67,12 +67,12 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 		logger.Info("No block store configured - cache-only mode")
 	}
 
-	// Step 2: Create flusher (if block store is configured)
-	flusher := CreateFlusher(globalCache, blockStore, cfg.Flusher)
-	if flusher != nil {
-		// Wire flusher to content service for block store persistence
-		reg.GetContentService().SetFlusher(flusher)
-		logger.Info("Created flusher for cache-to-block-store persistence",
+	// Step 2: Create transfer manager (if block store is configured)
+	transferMgr := CreateTransferManager(globalCache, blockStore, cfg.Flusher)
+	if transferMgr != nil {
+		// Wire transfer manager to block service for block store persistence
+		reg.GetBlockService().SetTransferManager(transferMgr)
+		logger.Info("Created transfer manager for cache-to-block-store persistence",
 			"parallel_uploads", cfg.Flusher.ParallelUploads,
 			"parallel_downloads", cfg.Flusher.ParallelDownloads)
 
@@ -82,7 +82,7 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 		// uploaded on next access or can be manually recovered later
 		// if globalCache != nil {
 		// 	logger.Info("Checking for unflushed cache data to recover...")
-		// 	stats, err := flusher.RecoverUnflushedSlices(ctx)
+		// 	stats, err := transfer.RecoverUnflushedSlices(ctx, transferMgr)
 		// 	if err != nil {
 		// 		logger.Error("Cache recovery failed", "error", err)
 		// 	} else if stats.SlicesFound > 0 {
@@ -93,7 +93,7 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 		// }
 
 		// Start background uploader for async block store uploads
-		flusher.Start(ctx)
+		transferMgr.Start(ctx)
 	}
 
 	// Step 3: Register all metadata stores
