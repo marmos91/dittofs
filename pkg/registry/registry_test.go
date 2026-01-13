@@ -19,7 +19,7 @@ func testShareConfig(name, metadataStore string, readOnly bool) *ShareConfig {
 }
 
 func TestNewRegistry(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	if reg == nil {
 		t.Fatal("NewRegistry returned nil")
 	}
@@ -32,7 +32,7 @@ func TestNewRegistry(t *testing.T) {
 }
 
 func TestRegisterMetadataStore(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	store := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	// Test successful registration
@@ -65,7 +65,7 @@ func TestRegisterMetadataStore(t *testing.T) {
 }
 
 func TestAddShare(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -101,7 +101,7 @@ func TestAddShare(t *testing.T) {
 }
 
 func TestRemoveShare(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
@@ -126,7 +126,7 @@ func TestRemoveShare(t *testing.T) {
 }
 
 func TestGetShare(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -158,7 +158,7 @@ func TestGetShare(t *testing.T) {
 }
 
 func TestGetMetadataStore(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	store := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", store)
@@ -180,7 +180,7 @@ func TestGetMetadataStore(t *testing.T) {
 }
 
 func TestGetMetadataStoreForShare(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -203,7 +203,7 @@ func TestGetMetadataStoreForShare(t *testing.T) {
 }
 
 func TestListShares(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -235,7 +235,7 @@ func TestListShares(t *testing.T) {
 }
 
 func TestListMetadataStores(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 
 	// Add metadata stores
 	_ = reg.RegisterMetadataStore("meta1", metadataMemory.NewMemoryMetadataStoreWithDefaults())
@@ -248,7 +248,7 @@ func TestListMetadataStores(t *testing.T) {
 }
 
 func TestListSharesUsingMetadataStore(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore1 := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 	metaStore2 := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
@@ -279,7 +279,7 @@ func TestListSharesUsingMetadataStore(t *testing.T) {
 }
 
 func TestMultipleSharesSameStore(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("shared-meta", metaStore)
@@ -315,7 +315,7 @@ func TestMultipleSharesSameStore(t *testing.T) {
 }
 
 func TestConcurrentAccess(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -339,7 +339,7 @@ func TestConcurrentAccess(t *testing.T) {
 }
 
 func TestContentServiceCreation(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -359,7 +359,7 @@ func TestContentServiceCreation(t *testing.T) {
 }
 
 func TestShareExists(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)

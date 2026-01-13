@@ -60,7 +60,7 @@ func TestLinuxSMBMount(t *testing.T) {
 	}
 
 	// Create registry
-	reg := registry.NewRegistry()
+	reg := registry.NewRegistry(nil)
 
 	// Create test user with authentication
 	testUser := &identity.User{

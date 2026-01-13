@@ -152,32 +152,11 @@ func applyAPIDefaults(cfg *api.APIConfig) {
 
 // applyCacheDefaults sets cache defaults.
 func applyCacheDefaults(cfg *CacheConfig) {
-	// Initialize stores map if nil
-	if cfg.Stores == nil {
-		cfg.Stores = make(map[string]CacheStoreConfig)
+	// Default to in-memory cache
+	if cfg.Type == "" {
+		cfg.Type = "memory"
 	}
-
-	// Apply defaults to each store
-	for name, store := range cfg.Stores {
-		// Initialize maps if nil
-		if store.Memory == nil {
-			store.Memory = make(map[string]any)
-		}
-		if store.Filesystem == nil {
-			store.Filesystem = make(map[string]any)
-		}
-
-		// Apply prefetch defaults
-		applyPrefetchDefaults(&store.Prefetch)
-
-		// Apply flusher defaults
-		applyFlusherDefaults(&store.Flusher)
-
-		// Apply write gathering defaults
-		applyWriteGatheringDefaults(&store.WriteGathering)
-
-		cfg.Stores[name] = store
-	}
+	// MaxSize defaults to 0 (unlimited)
 }
 
 // applyPrefetchDefaults sets prefetch configuration defaults.

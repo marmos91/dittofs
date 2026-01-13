@@ -224,34 +224,29 @@ type MetadataStoreConfig struct {
 	Postgres map[string]any `mapstructure:"postgres" yaml:"postgres"`
 }
 
-// CacheConfig specifies cache configuration with named cache instances.
+// CacheConfig specifies the global cache configuration.
+// All shares use a single global cache - ContentID uniqueness ensures data isolation.
 type CacheConfig struct {
-	// Named cache instances
-	Stores map[string]CacheStoreConfig `mapstructure:"stores" yaml:"stores"`
+	// Type specifies which cache implementation to use
+	// Valid values: memory, mmap
+	// - memory: Pure in-memory cache (volatile, fastest)
+	// - mmap: Memory-mapped file cache (persistent across restarts)
+	// Default: memory
+	Type string `mapstructure:"type" validate:"omitempty,oneof=memory mmap" yaml:"type"`
+
+	// MaxSize is the maximum cache size in bytes (0 = unlimited)
+	MaxSize uint64 `mapstructure:"max_size" yaml:"max_size"`
+
+	// Mmap contains mmap-specific configuration
+	// Only used when Type = "mmap"
+	Mmap MmapCacheConfig `mapstructure:"mmap" yaml:"mmap"`
 }
 
-// CacheStoreConfig defines a single cache instance.
-type CacheStoreConfig struct {
-	// Type specifies which cache implementation to use
-	// Valid values: memory, filesystem
-	Type string `mapstructure:"type" validate:"required,oneof=memory filesystem" yaml:"type"`
-
-	// Memory contains memory-specific configuration
-	// Only used when Type = "memory"
-	Memory map[string]any `mapstructure:"memory" yaml:"memory"`
-
-	// Filesystem contains filesystem-specific configuration
-	// Only used when Type = "filesystem"
-	Filesystem map[string]any `mapstructure:"filesystem" yaml:"filesystem"`
-
-	// Prefetch contains read prefetch configuration
-	Prefetch PrefetchConfig `mapstructure:"prefetch" yaml:"prefetch"`
-
-	// Flusher contains background flusher configuration
-	Flusher FlusherConfig `mapstructure:"flusher" yaml:"flusher"`
-
-	// WriteGathering contains write gathering optimization configuration
-	WriteGathering WriteGatheringConfig `mapstructure:"write_gathering" yaml:"write_gathering"`
+// MmapCacheConfig contains configuration for mmap-backed cache.
+type MmapCacheConfig struct {
+	// Path is the directory for the cache file
+	// The cache will create a cache.dat file in this directory
+	Path string `mapstructure:"path" yaml:"path"`
 }
 
 // PrefetchConfig configures read prefetch behavior.

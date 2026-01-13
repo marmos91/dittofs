@@ -375,7 +375,28 @@ func (h *Handler) Create(
 	}
 
 	// ========================================================================
-	// Step 7: Build success response
+	// Step 7: Pre-warm caches for subsequent WRITE operations
+	// ========================================================================
+	// This eliminates cold-start penalty on the first WRITE to this file.
+	// We already have the file metadata and auth context, so caching is free.
+
+	// Pre-warm auth context cache (avoids registry lookups on WRITE)
+	h.GetCachedAuthContext(ctx)
+
+	// Pre-warm file metadata cache (avoids store.GetFile on WRITE)
+	// Build a File struct from the fileAttr for caching
+	if fileAttr.Type == metadata.FileTypeRegular {
+		shareName, id, _ := metadata.DecodeFileHandle(fileHandle)
+		cachedFile := &metadata.File{
+			ID:        id,
+			ShareName: shareName,
+			FileAttr:  *fileAttr,
+		}
+		metaSvc.PrewarmWriteCache(fileHandle, cachedFile)
+	}
+
+	// ========================================================================
+	// Step 8: Build success response
 	// ========================================================================
 
 	// Convert metadata to NFS attributes

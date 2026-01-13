@@ -397,6 +397,23 @@ func (h *Handler) Commit(
 		}, nil
 	}
 
+	// ========================================================================
+	// Step 6: Flush pending metadata writes (deferred commit optimization)
+	// ========================================================================
+
+	// Build auth context for metadata flush
+	authCtx, authErr := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
+	if authErr == nil {
+		// Flush pending metadata for this specific file
+		flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, handle)
+		if metaErr != nil {
+			logger.WarnCtx(ctx.Context, "COMMIT: metadata flush failed", "handle", fmt.Sprintf("0x%x", req.Handle), "error", metaErr)
+			// Continue - content is flushed, metadata will be fixed eventually
+		} else if flushed {
+			logger.DebugCtx(ctx.Context, "COMMIT: flushed pending metadata", "handle", fmt.Sprintf("0x%x", req.Handle))
+		}
+	}
+
 	// Get updated file attributes for WCC data (file may have changed after flush)
 	if updatedFile, getErr := metaSvc.GetFile(ctx.Context, handle); getErr == nil {
 		wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)

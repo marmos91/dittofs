@@ -25,7 +25,7 @@ import (
 //
 // Example usage:
 //
-//	reg := NewRegistry()
+//	reg := NewRegistry(nil)
 //	reg.RegisterMetadataStore("badger-main", badgerStore)
 //	reg.AddShare(ctx, &ShareConfig{
 //	    Name: "/export",
@@ -51,8 +51,9 @@ type MountInfo struct {
 	MountTime  int64  // Unix timestamp when mounted
 }
 
-// NewRegistry creates an empty registry with a global cache.
-func NewRegistry() *Registry {
+// NewRegistry creates an empty registry with the provided cache.
+// If cache is nil, an in-memory cache with unlimited size is created.
+func NewRegistry(c *cache.Cache) *Registry {
 	reg := &Registry{
 		metadata:        make(map[string]metadata.MetadataStore),
 		shares:          make(map[string]*Share),
@@ -61,10 +62,11 @@ func NewRegistry() *Registry {
 		contentService:  content.New(),
 	}
 
-	// Create and register the global cache
-	// All shares use this single cache - ContentID uniqueness ensures data isolation
-	globalCache := cache.New(0) // 0 = unlimited size
-	_ = reg.contentService.SetCache(globalCache)
+	// Use provided cache or create default in-memory cache
+	if c == nil {
+		c = cache.New(0) // 0 = unlimited size
+	}
+	_ = reg.contentService.SetCache(c)
 
 	return reg
 }
@@ -179,7 +181,7 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 		return fmt.Errorf("failed to configure metadata for share: %w", err)
 	}
 
-	// Content storage uses the global cache created in NewRegistry()
+	// Content storage uses the global cache created in NewRegistry(nil)
 	// ContentID uniqueness ensures data isolation between shares
 
 	return nil

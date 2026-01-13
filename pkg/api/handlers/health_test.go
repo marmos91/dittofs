@@ -68,7 +68,7 @@ func TestReadiness_NoRegistry_Returns503(t *testing.T) {
 }
 
 func TestReadiness_NoShares_Returns503(t *testing.T) {
-	reg := registry.NewRegistry()
+	reg := registry.NewRegistry(nil)
 	handler := NewHealthHandler(reg)
 	req := httptest.NewRequest("GET", "/health/ready", nil)
 	w := httptest.NewRecorder()
@@ -95,7 +95,7 @@ func TestReadiness_NoShares_Returns503(t *testing.T) {
 
 func TestReadiness_WithShares_ReturnsOK(t *testing.T) {
 	ctx := context.Background()
-	reg := registry.NewRegistry()
+	reg := registry.NewRegistry(nil)
 
 	// Register metadata store
 	metaStore := memoryMeta.NewMemoryMetadataStoreWithDefaults()
@@ -164,7 +164,7 @@ func TestStores_NoRegistry_Returns503(t *testing.T) {
 }
 
 func TestStores_WithHealthyStores_ReturnsOK(t *testing.T) {
-	reg := registry.NewRegistry()
+	reg := registry.NewRegistry(nil)
 
 	// Register a healthy metadata store
 	metaStore := memoryMeta.NewMemoryMetadataStoreWithDefaults()
@@ -207,7 +207,7 @@ func TestStores_WithHealthyStores_ReturnsOK(t *testing.T) {
 }
 
 func TestStores_ChecksMetadataStoreHealth(t *testing.T) {
-	reg := registry.NewRegistry()
+	reg := registry.NewRegistry(nil)
 
 	// Register a healthy metadata store
 	metaStore := memoryMeta.NewMemoryMetadataStoreWithDefaults()
