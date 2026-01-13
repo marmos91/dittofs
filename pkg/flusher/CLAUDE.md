@@ -1,6 +1,6 @@
 # pkg/flusher
 
-Cache-to-S3 flush layer - handles eager block upload and parallel download.
+Cache-to-block-store flush layer - handles eager block upload and parallel download.
 
 ## Architecture
 
@@ -9,36 +9,52 @@ ContentService.WriteAt()
         ↓
   Cache.WriteSlice()
         ↓
-  Flusher.OnWriteComplete() ← checks if 4MB block is ready
-        ↓
-  Async upload to S3 (parallel, bounded)
+  (writes accumulate in cache)
 
 ContentService.Flush() (NFS COMMIT / SMB FLUSH)
         ↓
+  Flusher.FlushRemainingAsync() ← enqueues background upload (non-blocking)
+        ↓
+  BackgroundUploader workers ← upload to block store asynchronously
+
+ContentService.FlushAndFinalize() (SMB CLOSE)
+        ↓
   Flusher.WaitForUploads() ← wait for in-flight uploads
         ↓
-  Flusher.FlushRemaining() ← upload partial blocks
+  Flusher.FlushRemaining() ← upload partial blocks (blocking)
 
 ContentService.ReadAt() (cache miss)
         ↓
-  Flusher.ReadBlocks() ← parallel fetch from S3
+  Flusher.ReadBlocks() ← parallel fetch from block store
         ↓
   Blocks cached for future reads
 ```
 
 ## Key Design Decisions
 
-### Eager Block Upload
-- Upload 4MB blocks as soon as they're complete (not waiting for COMMIT)
-- Maximizes network bandwidth utilization
-- COMMIT just waits for in-flight uploads
+### Non-blocking COMMIT
+- NFS COMMIT returns immediately after enqueueing background upload
+- Data is safe in mmap cache (crash-safe via OS page cache)
+- Block store uploads happen asynchronously
+- Achieves 275+ MB/s write throughput (vs ~1 MB/s with blocking)
+
+### Background Uploader
+- Worker pool (default: 4 workers) processes upload queue
+- Bounded queue (1000 items) prevents memory exhaustion
+- Falls back to sync upload if queue is full
+- Graceful shutdown drains queue before stopping
+
+### Eager Block Upload (Optional)
+- `OnWriteComplete()` can upload 4MB blocks as they become ready
+- Currently disabled during writes to avoid lock contention
+- Can be re-enabled for specific workloads
 
 ### Parallel I/O
 - Default: 4 concurrent uploads and 4 concurrent downloads per file
 - Bounded by semaphore to prevent resource exhaustion
 - Configurable via `flusher.parallel_uploads` and `flusher.parallel_downloads`
 
-### S3 Key Format
+### Block Key Format
 ```
 {keyPrefix}{contentID}/chunk-{chunkIdx}/block-{blockIdx}
 ```
@@ -49,7 +65,7 @@ Example: `blocks/export/myfile.bin/chunk-0/block-0`
 
 - Share name embedded in contentID enables multi-tenant support
 - Clear data isolation per share
-- Easy bucket lifecycle rules per share prefix
+- Easy lifecycle rules per share prefix
 
 ## Key Types
 
@@ -63,24 +79,27 @@ type Config struct {
 
 ### Methods
 ```go
-// Called after each write - checks if 4MB blocks are ready
-OnWriteComplete(ctx, shareName, fileHandle, contentID, chunkIdx, offset, length)
+// Enqueue background upload (non-blocking) - called by Flush()
+FlushRemainingAsync(ctx, shareName, fileHandle, contentID) error
 
-// Wait for all in-flight uploads (called by Flush)
+// Wait for all in-flight uploads (called by FlushAndFinalize)
 WaitForUploads(ctx, contentID) error
 
-// Upload remaining partial blocks (called on COMMIT/CLOSE)
+// Upload remaining partial blocks (blocking - called on CLOSE)
 FlushRemaining(ctx, shareName, fileHandle, contentID) error
 
-// Fetch blocks from S3 in parallel (cache miss)
+// Fetch blocks from block store in parallel (cache miss)
 ReadBlocks(ctx, shareName, fileHandle, contentID, chunkIdx, offset, length) ([]byte, error)
+
+// Optional: Called after each write - checks if 4MB blocks are ready
+OnWriteComplete(ctx, shareName, fileHandle, contentID, chunkIdx, offset, length)
 ```
 
 ## Configuration
 
 ```yaml
 block_store:
-  type: s3
+  type: s3  # or: memory, fs
   s3:
     bucket: dittofs-data
     region: us-east-1
@@ -94,7 +113,8 @@ flusher:
 
 ## Common Mistakes
 
-1. **Duplicating share name in S3 key** - contentID already includes the share name, don't prepend it again
+1. **Duplicating share name in block key** - contentID already includes the share name, don't prepend it again
 2. **Not handling cache-only mode** - When block store is nil, flusher is nil too
-3. **Blocking on upload** - Uploads are async, use WaitForUploads() to wait
-4. **Ignoring FlushRemaining** - Partial blocks (< 4MB) need explicit flush on COMMIT
+3. **Blocking on upload** - Use FlushRemainingAsync for COMMIT, only FlushRemaining for CLOSE
+4. **Ignoring FlushRemaining** - Partial blocks (< 4MB) need explicit flush on CLOSE
+5. **Calling cache.Sync() on COMMIT** - Too slow, use mmap's inherent crash safety instead

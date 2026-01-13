@@ -225,7 +225,7 @@ func (s *ContentService) ContentExists(ctx context.Context, shareName string, id
 //
 // Writes go to Cache using the Chunk/Slice/Block model.
 // Data is split across chunk boundaries and stored as slices within each chunk.
-// If a flusher is configured, it's notified after each chunk write for eager upload.
+// S3 uploads are triggered on Flush() via background worker pool.
 func (s *ContentService) WriteAt(ctx context.Context, shareName string, id metadata.ContentID, data []byte, offset uint64) error {
 	sc := s.GetCache()
 	if sc == nil {
@@ -238,10 +238,6 @@ func (s *ContentService) WriteAt(ctx context.Context, shareName string, id metad
 
 	// Use ContentID as file handle
 	fileHandle := []byte(id)
-	contentID := string(id)
-
-	// Get flusher (may be nil)
-	f := s.GetFlusher()
 
 	// Calculate which chunks this write spans
 	startChunk, endChunk := cache.ChunkRange(offset, uint64(len(data)))
@@ -260,17 +256,11 @@ func (s *ContentService) WriteAt(ctx context.Context, shareName string, id metad
 		offsetInChunk := uint32(writeStart - chunkStart)
 		dataStart := int(writeStart - offset)
 		dataEnd := int(writeEnd - offset)
-		length := uint32(dataEnd - dataStart)
 
 		// Write slice to this chunk
 		err := sc.WriteSlice(ctx, fileHandle, chunkIdx, data[dataStart:dataEnd], offsetInChunk)
 		if err != nil {
 			return fmt.Errorf("write slice to chunk %d failed: %w", chunkIdx, err)
-		}
-
-		// Notify flusher of write completion (triggers eager upload check)
-		if f != nil {
-			f.OnWriteComplete(ctx, shareName, fileHandle, contentID, chunkIdx, offsetInChunk, length)
 		}
 
 		dataOffset = dataEnd
@@ -307,9 +297,9 @@ func (s *ContentService) Delete(ctx context.Context, shareName string, id metada
 
 // Flush flushes cached data for a file.
 //
-// When flusher is configured:
-//   - Waits for any in-flight eager uploads to complete
-//   - Flushes remaining data (partial blocks) to S3
+// When flusher is configured (hybrid flush):
+//   - Syncs cache to disk (fast, local) for crash recovery
+//   - Enqueues remaining data for background S3 upload (non-blocking)
 //
 // When cache-only (no flusher):
 //   - Coalesces writes to optimize slice count
@@ -320,21 +310,14 @@ func (s *ContentService) Flush(ctx context.Context, shareName string, id metadat
 	}
 
 	fileHandle := []byte(id)
-	contentID := string(id)
 	f := s.GetFlusher()
 
-	// If flusher is configured, use it for S3 persistence
+	// If flusher is configured, enqueue background upload
+	// Data is in mmap cache (crash-safe), S3 upload is async
 	if f != nil {
-		// Wait for any in-flight eager uploads
-		if err := f.WaitForUploads(ctx, contentID); err != nil {
-			return nil, fmt.Errorf("wait for uploads: %w", err)
-		}
-
-		// Flush any remaining partial blocks
-		if err := f.FlushRemaining(ctx, shareName, fileHandle, contentID); err != nil {
-			return nil, fmt.Errorf("flush remaining: %w", err)
-		}
-
+		contentID := string(id)
+		// Non-blocking enqueue - uploads happen in background worker pool
+		_ = f.FlushRemainingAsync(ctx, shareName, fileHandle, contentID)
 		return &FlushResult{
 			AlreadyFlushed: false,
 			Finalized:      true,
@@ -357,9 +340,46 @@ func (s *ContentService) Flush(ctx context.Context, shareName string, id metadat
 // FlushAndFinalize flushes and finalizes for immediate durability.
 //
 // This is called by SMB CLOSE which requires full durability before returning.
-// With eager upload, this is equivalent to Flush() since data is uploaded incrementally.
+// Unlike Flush(), this BLOCKS until all data is persisted to S3.
 func (s *ContentService) FlushAndFinalize(ctx context.Context, shareName string, id metadata.ContentID) (*FlushResult, error) {
-	return s.Flush(ctx, shareName, id)
+	sc := s.GetCache()
+	if sc == nil {
+		return nil, ErrNoCacheConfigured
+	}
+
+	fileHandle := []byte(id)
+	contentID := string(id)
+	f := s.GetFlusher()
+
+	// If flusher is configured, use blocking flush for full durability
+	if f != nil {
+		// Wait for any in-flight eager uploads
+		if err := f.WaitForUploads(ctx, contentID); err != nil {
+			return nil, fmt.Errorf("wait for uploads: %w", err)
+		}
+
+		// Flush remaining blocks (blocking)
+		if err := f.FlushRemaining(ctx, shareName, fileHandle, contentID); err != nil {
+			return nil, fmt.Errorf("flush remaining: %w", err)
+		}
+
+		return &FlushResult{
+			AlreadyFlushed: false,
+			Finalized:      true,
+		}, nil
+	}
+
+	// Cache-only mode: coalesce writes
+	if sc.HasDirtyData(fileHandle) {
+		if err := sc.CoalesceWrites(ctx, fileHandle); err != nil {
+			logger.Warn("Failed to coalesce writes", "file", string(fileHandle), "error", err)
+		}
+	}
+
+	return &FlushResult{
+		AlreadyFlushed: true,
+		Finalized:      true,
+	}, nil
 }
 
 // ============================================================================

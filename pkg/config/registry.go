@@ -56,7 +56,7 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 	// Create registry with cache
 	reg := registry.NewRegistry(globalCache)
 
-	// Step 1: Create block store (optional - for S3 persistence)
+	// Step 1: Create block store (optional - for persistent storage)
 	blockStore, err := CreateBlockStore(ctx, cfg.BlockStore)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create block store: %w", err)
@@ -70,11 +70,30 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 	// Step 2: Create flusher (if block store is configured)
 	flusher := CreateFlusher(globalCache, blockStore, cfg.Flusher)
 	if flusher != nil {
-		// Wire flusher to content service for S3 persistence
+		// Wire flusher to content service for block store persistence
 		reg.GetContentService().SetFlusher(flusher)
-		logger.Info("Created flusher for cache-to-S3 persistence",
+		logger.Info("Created flusher for cache-to-block-store persistence",
 			"parallel_uploads", cfg.Flusher.ParallelUploads,
 			"parallel_downloads", cfg.Flusher.ParallelDownloads)
+
+		// Step 2.5: Recover unflushed cache data from previous run
+		// TODO: Make recovery async so it doesn't block startup
+		// For now, skip recovery - data remains in mmap cache and will be
+		// uploaded on next access or can be manually recovered later
+		// if globalCache != nil {
+		// 	logger.Info("Checking for unflushed cache data to recover...")
+		// 	stats, err := flusher.RecoverUnflushedSlices(ctx)
+		// 	if err != nil {
+		// 		logger.Error("Cache recovery failed", "error", err)
+		// 	} else if stats.SlicesFound > 0 {
+		// 		logger.Info("Cache recovery completed",
+		// 			"slicesRecovered", stats.SlicesUploaded,
+		// 			"bytesRecovered", stats.BytesUploaded)
+		// 	}
+		// }
+
+		// Start background uploader for async block store uploads
+		flusher.Start(ctx)
 	}
 
 	// Step 3: Register all metadata stores

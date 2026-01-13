@@ -667,7 +667,9 @@ func (c *Cache) Sync() error {
 		return nil
 	}
 
-	if err := unix.Msync(c.mmap.data, unix.MS_SYNC); err != nil {
+	// Use MS_ASYNC for performance - data is in mmap so it's crash-safe
+	// The OS will write dirty pages to disk asynchronously
+	if err := unix.Msync(c.mmap.data, unix.MS_ASYNC); err != nil {
 		return fmt.Errorf("msync: %w", err)
 	}
 

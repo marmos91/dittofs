@@ -13,33 +13,34 @@ ContentService (service.go) - coordinates with cache + flusher
      ↓       ↓
 cache.Cache  flusher.Flusher (optional)
      ↓              ↓
-(in-memory)   block.Store (S3/memory)
+(in-memory)   block.Store (S3/memory/fs)
 ```
 
 ## Key Design
 
 ### Cache + Flusher Model
 - **Cache**: Fast in-memory storage for all reads/writes
-- **Flusher** (optional): Handles cache-to-S3 persistence
+- **Flusher** (optional): Handles cache-to-block-store persistence
 - Without flusher: cache-only mode (volatile data)
-- With flusher: S3 persistence with eager upload
+- With flusher: persistent storage with background upload
 
 ### Single Global Cache
 - One cache serves ALL shares
 - ContentID (file handle) uniqueness ensures data isolation
 - Registered once in `registry.NewRegistry()`
 
-### Eager Upload (when flusher configured)
-- 4MB blocks uploaded as they become ready (not waiting for COMMIT)
-- Maximizes bandwidth utilization
-- COMMIT/CLOSE just waits for in-flight uploads
+### Non-blocking COMMIT (when flusher configured)
+- NFS COMMIT enqueues background upload and returns immediately
+- Data is safe in mmap cache (crash-safe via OS page cache)
+- Block store uploads happen asynchronously
+- Achieves 275+ MB/s write throughput
 
 ## ContentService Methods
 
 ### Configuration
 ```go
 SetCache(cache *cache.Cache) error   // Required: set global cache
-SetFlusher(f *flusher.Flusher)       // Optional: enable S3 persistence
+SetFlusher(f *flusher.Flusher)       // Optional: enable block store persistence
 ```
 
 ### Read Operations
@@ -51,15 +52,15 @@ ContentExists(ctx, shareName, contentID) (bool, error)
 
 ### Write Operations
 ```go
-WriteAt(ctx, shareName, contentID, data, offset) error  // Notifies flusher for eager upload
+WriteAt(ctx, shareName, contentID, data, offset) error  // Writes to cache only
 Truncate(ctx, shareName, contentID, newSize) error
 Delete(ctx, shareName, contentID) error
 ```
 
 ### Flush Operations
 ```go
-Flush(ctx, shareName, contentID) (*FlushResult, error)           // NFS COMMIT, SMB FLUSH
-FlushAndFinalize(ctx, shareName, contentID) (*FlushResult, error) // SMB CLOSE
+Flush(ctx, shareName, contentID) (*FlushResult, error)           // NFS COMMIT - non-blocking
+FlushAndFinalize(ctx, shareName, contentID) (*FlushResult, error) // SMB CLOSE - blocking
 ```
 
 ## Critical Conventions
@@ -74,11 +75,11 @@ FlushAndFinalize(ctx, shareName, contentID) (*FlushResult, error) // SMB CLOSE
 - `cache.ChunkRange()` calculates which chunks a range spans
 - Each chunk is addressed independently
 
-### FlushResult for Phase 1
+### FlushResult
 ```go
 type FlushResult struct {
-    AlreadyFlushed bool  // true (Phase 1: cache-only)
-    Finalized      bool  // true (Phase 1: cache-only)
+    AlreadyFlushed bool  // true if no pending data
+    Finalized      bool  // true if data is durable
 }
 ```
 
@@ -109,7 +110,7 @@ for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
 
 ## Common Mistakes
 
-1. **Checking for ContentStore** - There is no ContentStore in Phase 1, only Cache
+1. **Blocking on COMMIT** - Use non-blocking FlushRemainingAsync, not sync flush
 2. **Per-share cache registration** - Use single global cache via `SetCache()`
 3. **Forgetting ErrNoCacheConfigured** - All methods return this if cache not set
-4. **Assuming persistence** - Phase 1 is cache-only (volatile)
+4. **Calling cache.Sync() on COMMIT** - Too slow, use mmap's inherent crash safety

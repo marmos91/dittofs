@@ -199,8 +199,10 @@ func (c *Cache) WriteSlice(ctx context.Context, fileHandle []byte, chunkIdx uint
 	}
 
 	// Create new slice
+	sliceID := uuid.New().String()
+
 	slice := Slice{
-		ID:        uuid.New().String(),
+		ID:        sliceID,
 		Offset:    offset,
 		Length:    uint32(len(data)),
 		Data:      make([]byte, len(data)),
@@ -295,13 +297,15 @@ func (c *Cache) ReadSlice(ctx context.Context, fileHandle []byte, chunkIdx uint3
 	}
 
 	// Merge slices using newest-wins algorithm
-	result := c.mergeSlicesForRead(chunk.slices, offset, length)
+	result, fullyCovered := c.mergeSlicesForRead(chunk.slices, offset, length)
+	_ = fullyCovered // Not used for reads - sparse files may have gaps
 
 	return result, true, nil
 }
 
 // mergeSlicesForRead implements the newest-wins slice merge algorithm.
-func (c *Cache) mergeSlicesForRead(slices []Slice, offset, length uint32) []byte {
+// Returns the merged data and whether the entire range is covered.
+func (c *Cache) mergeSlicesForRead(slices []Slice, offset, length uint32) ([]byte, bool) {
 	result := make([]byte, length)
 	covered := make([]bool, length)
 	coveredCount := uint32(0)
@@ -333,7 +337,53 @@ func (c *Cache) mergeSlicesForRead(slices []Slice, offset, length uint32) []byte
 		}
 	}
 
-	return result
+	return result, coveredCount == length
+}
+
+// IsRangeCovered checks if a byte range is fully covered by cached slices.
+// This is used by the flusher to determine if a block is ready for upload.
+func (c *Cache) IsRangeCovered(ctx context.Context, fileHandle []byte, chunkIdx uint32, offset, length uint32) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return false, ErrCacheClosed
+	}
+	c.globalMu.RUnlock()
+
+	entry := c.getFileEntry(fileHandle)
+	entry.mu.RLock()
+	defer entry.mu.RUnlock()
+
+	chunk, exists := entry.chunks[chunkIdx]
+	if !exists || len(chunk.slices) == 0 {
+		return false, nil
+	}
+
+	// Check coverage without allocating result buffer
+	coveredCount := uint32(0)
+	requestEnd := offset + length
+
+	for _, slice := range chunk.slices {
+		if coveredCount >= length {
+			break
+		}
+
+		sliceEnd := slice.Offset + slice.Length
+
+		if slice.Offset >= requestEnd || sliceEnd <= offset {
+			continue
+		}
+
+		overlapStart := max(offset, slice.Offset)
+		overlapEnd := min(requestEnd, sliceEnd)
+		coveredCount += overlapEnd - overlapStart
+	}
+
+	return coveredCount >= length, nil
 }
 
 // ============================================================================
