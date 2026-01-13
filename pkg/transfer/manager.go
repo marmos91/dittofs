@@ -1,16 +1,4 @@
-// Package flusher implements eager block upload and parallel download for the cache-to-block-store integration.
-//
-// The flusher is responsible for:
-//   - Eager upload: Upload 4MB blocks as soon as they're ready (don't wait for COMMIT)
-//   - Flush: Wait for in-flight uploads and flush remaining partial blocks on COMMIT/CLOSE
-//   - Download: Fetch blocks from block store on cache miss, cache them for future reads
-//
-// Key Design Principles:
-//   - Maximize bandwidth: Upload blocks as soon as 4MB is available
-//   - Parallel I/O: Upload/download multiple blocks concurrently
-//   - Protocol agnostic: Works with both NFS COMMIT and SMB CLOSE
-//   - Share-aware keys: Block keys include share name for multi-tenant support
-package flusher
+package transfer
 
 import (
 	"context"
@@ -18,8 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/blocks/store"
 	"github.com/marmos91/dittofs/pkg/cache"
-	"github.com/marmos91/dittofs/pkg/store/block"
 )
 
 // BlockSize is the size of a single block (4MB).
@@ -31,7 +19,7 @@ const DefaultParallelUploads = 4
 // DefaultParallelDownloads is the default number of concurrent downloads per file.
 const DefaultParallelDownloads = 4
 
-// Config holds configuration for the Flusher.
+// Config holds configuration for the TransferManager.
 type Config struct {
 	// ParallelUploads is the number of concurrent block uploads per file.
 	// Default: 4
@@ -42,7 +30,7 @@ type Config struct {
 	ParallelDownloads int
 }
 
-// DefaultConfig returns the default flusher configuration.
+// DefaultConfig returns the default transfer manager configuration.
 func DefaultConfig() Config {
 	return Config{
 		ParallelUploads:   DefaultParallelUploads,
@@ -52,12 +40,12 @@ func DefaultConfig() Config {
 
 // fileUploadState tracks in-flight uploads for a single file.
 type fileUploadState struct {
-	inFlight sync.WaitGroup       // Tracks in-flight uploads
-	errors   []error              // Accumulated errors
-	errorsMu sync.Mutex           // Protects errors
-	sem      chan struct{}        // Bounded parallelism
-	blocksMu sync.Mutex           // Protects uploadedBlocks
-	uploaded map[blockKey]bool    // Tracks which blocks have been uploaded
+	inFlight sync.WaitGroup    // Tracks in-flight uploads
+	errors   []error           // Accumulated errors
+	errorsMu sync.Mutex        // Protects errors
+	sem      chan struct{}     // Bounded parallelism
+	blocksMu sync.Mutex        // Protects uploadedBlocks
+	uploaded map[blockKey]bool // Tracks which blocks have been uploaded
 }
 
 // blockKey uniquely identifies a block within a file.
@@ -66,31 +54,31 @@ type blockKey struct {
 	blockIdx uint32
 }
 
-// Flusher handles eager upload and parallel download for cache-to-S3 integration.
-type Flusher struct {
+// TransferManager handles eager upload and parallel download for cache-to-block-store integration.
+type TransferManager struct {
 	cache      *cache.Cache
-	blockStore block.Store
+	blockStore store.BlockStore
 	config     Config
 
 	// Per-file upload tracking
 	uploads   map[string]*fileUploadState // contentID -> state
 	uploadsMu sync.Mutex
 
-	// Background uploader for non-blocking COMMIT
-	bgUploader *BackgroundUploader
+	// Transfer queue for non-blocking COMMIT
+	queue *TransferQueue
 
 	// Shutdown
 	closed bool
 	mu     sync.RWMutex
 }
 
-// New creates a new Flusher.
+// New creates a new TransferManager.
 //
 // Parameters:
-//   - c: The cache to flush from/to
-//   - store: The block store to flush to
-//   - config: Flusher configuration
-func New(c *cache.Cache, store block.Store, config Config) *Flusher {
+//   - c: The cache to transfer from/to
+//   - store: The block store to transfer to
+//   - config: TransferManager configuration
+func New(c *cache.Cache, store store.BlockStore, config Config) *TransferManager {
 	if config.ParallelUploads <= 0 {
 		config.ParallelUploads = DefaultParallelUploads
 	}
@@ -98,49 +86,49 @@ func New(c *cache.Cache, store block.Store, config Config) *Flusher {
 		config.ParallelDownloads = DefaultParallelDownloads
 	}
 
-	f := &Flusher{
+	m := &TransferManager{
 		cache:      c,
 		blockStore: store,
 		config:     config,
 		uploads:    make(map[string]*fileUploadState),
 	}
 
-	// Initialize background uploader
-	bgConfig := DefaultBackgroundUploaderConfig()
-	bgConfig.Workers = config.ParallelUploads
-	f.bgUploader = NewBackgroundUploader(f, bgConfig)
+	// Initialize transfer queue
+	queueConfig := DefaultTransferQueueConfig()
+	queueConfig.Workers = config.ParallelUploads
+	m.queue = NewTransferQueue(m, queueConfig)
 
-	return f
+	return m
 }
 
 // getOrCreateUploadState returns the upload state for a file, creating it if needed.
-func (f *Flusher) getOrCreateUploadState(contentID string) *fileUploadState {
-	f.uploadsMu.Lock()
-	defer f.uploadsMu.Unlock()
+func (m *TransferManager) getOrCreateUploadState(contentID string) *fileUploadState {
+	m.uploadsMu.Lock()
+	defer m.uploadsMu.Unlock()
 
-	state, exists := f.uploads[contentID]
+	state, exists := m.uploads[contentID]
 	if !exists {
 		state = &fileUploadState{
-			sem:      make(chan struct{}, f.config.ParallelUploads),
+			sem:      make(chan struct{}, m.config.ParallelUploads),
 			uploaded: make(map[blockKey]bool),
 		}
-		f.uploads[contentID] = state
+		m.uploads[contentID] = state
 	}
 	return state
 }
 
 // getUploadState returns the upload state for a file, or nil if not found.
-func (f *Flusher) getUploadState(contentID string) *fileUploadState {
-	f.uploadsMu.Lock()
-	defer f.uploadsMu.Unlock()
-	return f.uploads[contentID]
+func (m *TransferManager) getUploadState(contentID string) *fileUploadState {
+	m.uploadsMu.Lock()
+	defer m.uploadsMu.Unlock()
+	return m.uploads[contentID]
 }
 
 // cleanupUploadState removes the upload state for a file.
-func (f *Flusher) cleanupUploadState(contentID string) {
-	f.uploadsMu.Lock()
-	defer f.uploadsMu.Unlock()
-	delete(f.uploads, contentID)
+func (m *TransferManager) cleanupUploadState(contentID string) {
+	m.uploadsMu.Lock()
+	defer m.uploadsMu.Unlock()
+	delete(m.uploads, contentID)
 }
 
 // ============================================================================
@@ -157,14 +145,14 @@ func (f *Flusher) cleanupUploadState(contentID string) {
 //   - chunkIdx: The chunk index that was written to
 //   - offset: The offset within the chunk
 //   - length: The length of data written
-func (f *Flusher) OnWriteComplete(ctx context.Context, shareName string, fileHandle []byte,
+func (m *TransferManager) OnWriteComplete(ctx context.Context, shareName string, fileHandle []byte,
 	contentID string, chunkIdx uint32, offset, length uint32) {
-	f.mu.RLock()
-	if f.closed {
-		f.mu.RUnlock()
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
 		return
 	}
-	f.mu.RUnlock()
+	m.mu.RUnlock()
 
 	// Calculate which blocks might be complete after this write
 	endOffset := offset + length
@@ -185,26 +173,26 @@ func (f *Flusher) OnWriteComplete(ctx context.Context, shareName string, fileHan
 
 		// Check if the block is fully covered by cached data
 		// This prevents uploading blocks with zero-filled gaps
-		covered, err := f.cache.IsRangeCovered(ctx, fileHandle, chunkIdx, blockStart, BlockSize)
+		covered, err := m.cache.IsRangeCovered(ctx, fileHandle, chunkIdx, blockStart, BlockSize)
 		if err != nil || !covered {
 			continue
 		}
 
 		// Read the complete block data
-		data, found, err := f.cache.ReadSlice(ctx, fileHandle, chunkIdx, blockStart, BlockSize)
+		data, found, err := m.cache.ReadSlice(ctx, fileHandle, chunkIdx, blockStart, BlockSize)
 		if err != nil || !found {
 			continue
 		}
 
 		// Start async upload for this block
-		f.startBlockUpload(ctx, shareName, fileHandle, contentID, chunkIdx, blockIdx, data)
+		m.startBlockUpload(ctx, shareName, fileHandle, contentID, chunkIdx, blockIdx, data)
 	}
 }
 
 // startBlockUpload uploads a block asynchronously with bounded parallelism.
-func (f *Flusher) startBlockUpload(ctx context.Context, shareName string, _ []byte,
+func (m *TransferManager) startBlockUpload(ctx context.Context, _ string, _ []byte,
 	contentID string, chunkIdx, blockIdx uint32, data []byte) {
-	state := f.getOrCreateUploadState(contentID)
+	state := m.getOrCreateUploadState(contentID)
 
 	// Check if already uploaded
 	key := blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx}
@@ -230,7 +218,7 @@ func (f *Flusher) startBlockUpload(ctx context.Context, shareName string, _ []by
 		// Note: contentID already includes the share name (e.g., "export/path/to/file")
 		blockKeyStr := fmt.Sprintf("%s/chunk-%d/block-%d", contentID, chunkIdx, blockIdx)
 
-		if err := f.blockStore.WriteBlock(ctx, blockKeyStr, data); err != nil {
+		if err := m.blockStore.WriteBlock(ctx, blockKeyStr, data); err != nil {
 			state.errorsMu.Lock()
 			state.errors = append(state.errors, fmt.Errorf("upload block %s: %w", blockKeyStr, err))
 			state.errorsMu.Unlock()
@@ -251,16 +239,16 @@ func (f *Flusher) startBlockUpload(ctx context.Context, shareName string, _ []by
 // ============================================================================
 
 // WaitForUploads waits for all in-flight uploads for a file to complete.
-// Called by ContentService.FlushAndFinalize().
-func (f *Flusher) WaitForUploads(ctx context.Context, contentID string) error {
-	f.mu.RLock()
-	if f.closed {
-		f.mu.RUnlock()
-		return fmt.Errorf("flusher is closed")
+// Called by BlockService.FlushAndFinalize().
+func (m *TransferManager) WaitForUploads(ctx context.Context, contentID string) error {
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return fmt.Errorf("transfer manager is closed")
 	}
-	f.mu.RUnlock()
+	m.mu.RUnlock()
 
-	state := f.getUploadState(contentID)
+	state := m.getUploadState(contentID)
 	if state == nil {
 		return nil // No uploads for this file
 	}
@@ -293,25 +281,26 @@ func (f *Flusher) WaitForUploads(ctx context.Context, contentID string) error {
 // Use FlushRemainingAsync for non-blocking behavior.
 //
 // Deprecated: Use FlushRemainingAsync for better performance.
-func (f *Flusher) FlushRemaining(ctx context.Context, shareName string, fileHandle []byte, contentID string) error {
-	return f.flushRemainingSync(ctx, shareName, fileHandle, contentID)
+func (m *TransferManager) FlushRemaining(ctx context.Context, shareName string, fileHandle []byte, contentID string) error {
+	return m.flushRemainingSync(ctx, shareName, fileHandle, contentID)
 }
 
 // FlushRemainingAsync enqueues remaining data for background upload.
 // Returns immediately after enqueuing - does NOT wait for block store uploads.
 // The cache should be synced before calling this to ensure crash recovery.
-func (f *Flusher) FlushRemainingAsync(ctx context.Context, shareName string, fileHandle []byte, contentID string) error {
-	f.mu.RLock()
-	if f.closed {
-		f.mu.RUnlock()
-		return fmt.Errorf("flusher is closed")
+func (m *TransferManager) FlushRemainingAsync(ctx context.Context, shareName string, fileHandle []byte, contentID string) error {
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return fmt.Errorf("transfer manager is closed")
 	}
-	f.mu.RUnlock()
+	m.mu.RUnlock()
 
-	// Enqueue for background upload (non-blocking)
-	if !f.bgUploader.Enqueue(shareName, fileHandle, contentID) {
+	// Create entry and enqueue for background upload (non-blocking)
+	entry := NewDefaultEntry(shareName, fileHandle, contentID)
+	if !m.queue.Enqueue(entry) {
 		// Queue full - fall back to sync upload
-		return f.flushRemainingSync(ctx, shareName, fileHandle, contentID)
+		return m.flushRemainingSync(ctx, shareName, fileHandle, contentID)
 	}
 
 	return nil
@@ -319,22 +308,21 @@ func (f *Flusher) FlushRemainingAsync(ctx context.Context, shareName string, fil
 
 // flushRemainingSync is the internal synchronous implementation.
 // Called by FlushRemaining (blocking) and by background uploader.
-// Set markFlushed=false to skip marking slices as flushed (avoids lock contention).
-func (f *Flusher) flushRemainingSync(ctx context.Context, shareName string, fileHandle []byte, contentID string) error {
-	return f.flushRemainingSyncInternal(ctx, shareName, fileHandle, contentID, true)
+func (m *TransferManager) flushRemainingSync(ctx context.Context, shareName string, fileHandle []byte, contentID string) error {
+	return m.flushRemainingSyncInternal(ctx, shareName, fileHandle, contentID, true)
 }
 
 // flushRemainingSyncInternal is the internal implementation with markFlushed option.
-func (f *Flusher) flushRemainingSyncInternal(ctx context.Context, shareName string, fileHandle []byte, contentID string, markFlushed bool) error {
-	f.mu.RLock()
-	if f.closed {
-		f.mu.RUnlock()
-		return fmt.Errorf("flusher is closed")
+func (m *TransferManager) flushRemainingSyncInternal(ctx context.Context, shareName string, fileHandle []byte, contentID string, markFlushed bool) error {
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return fmt.Errorf("transfer manager is closed")
 	}
-	f.mu.RUnlock()
+	m.mu.RUnlock()
 
 	// Get all pending slices
-	pending, err := f.cache.GetDirtySlices(ctx, fileHandle)
+	pending, err := m.cache.GetDirtySlices(ctx, fileHandle)
 	if err != nil {
 		if err == cache.ErrFileNotInCache {
 			return nil // No data to flush
@@ -349,7 +337,7 @@ func (f *Flusher) flushRemainingSyncInternal(ctx context.Context, shareName stri
 	// Upload slices as blocks
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(pending))
-	sem := make(chan struct{}, f.config.ParallelUploads)
+	sem := make(chan struct{}, m.config.ParallelUploads)
 
 	for _, slice := range pending {
 		wg.Add(1)
@@ -362,7 +350,7 @@ func (f *Flusher) flushRemainingSyncInternal(ctx context.Context, shareName stri
 			}()
 
 			// Upload slice data as blocks
-			blockRefs, err := f.uploadSliceAsBlocks(ctx, shareName, contentID, s)
+			blockRefs, err := m.uploadSliceAsBlocks(ctx, shareName, contentID, s)
 			if err != nil {
 				errCh <- err
 				return
@@ -371,8 +359,8 @@ func (f *Flusher) flushRemainingSyncInternal(ctx context.Context, shareName stri
 			// Mark slice as flushed in cache (optional - skip during active writes to avoid lock contention)
 			if markFlushed {
 				// Note: ErrSliceNotFound is OK - slice may have been flushed by another
-				// worker and then evicted by LRU. The data is safely in S3.
-				if err := f.cache.MarkSliceFlushed(ctx, fileHandle, s.ID, blockRefs); err != nil {
+				// worker and then evicted by LRU. The data is safely in the block store.
+				if err := m.cache.MarkSliceFlushed(ctx, fileHandle, s.ID, blockRefs); err != nil {
 					if err != cache.ErrSliceNotFound {
 						errCh <- err
 					}
@@ -396,13 +384,13 @@ func (f *Flusher) flushRemainingSyncInternal(ctx context.Context, shareName stri
 	}
 
 	// Cleanup upload state
-	f.cleanupUploadState(contentID)
+	m.cleanupUploadState(contentID)
 
 	return nil
 }
 
 // uploadSliceAsBlocks splits a slice into blocks and uploads each.
-func (f *Flusher) uploadSliceAsBlocks(ctx context.Context, shareName, contentID string, slice cache.PendingSlice) ([]cache.BlockRef, error) {
+func (m *TransferManager) uploadSliceAsBlocks(ctx context.Context, _, contentID string, slice cache.PendingSlice) ([]cache.BlockRef, error) {
 	var blockRefs []cache.BlockRef
 	data := slice.Data
 
@@ -432,7 +420,7 @@ func (f *Flusher) uploadSliceAsBlocks(ctx context.Context, shareName, contentID 
 		blockKeyStr := fmt.Sprintf("%s/chunk-%d/block-%d", contentID, slice.ChunkIndex, blockIdx)
 
 		// Upload block
-		if err := f.blockStore.WriteBlock(ctx, blockKeyStr, blockData); err != nil {
+		if err := m.blockStore.WriteBlock(ctx, blockKeyStr, blockData); err != nil {
 			return nil, fmt.Errorf("upload block %s: %w", blockKeyStr, err)
 		}
 
@@ -451,14 +439,14 @@ func (f *Flusher) uploadSliceAsBlocks(ctx context.Context, shareName, contentID 
 
 // ReadBlocks fetches blocks from the block store in parallel and caches them.
 // Called when ReadAt() encounters a cache miss.
-func (f *Flusher) ReadBlocks(ctx context.Context, shareName string, fileHandle []byte,
+func (m *TransferManager) ReadBlocks(ctx context.Context, shareName string, fileHandle []byte,
 	contentID string, chunkIdx uint32, offset, length uint32) ([]byte, error) {
-	f.mu.RLock()
-	if f.closed {
-		f.mu.RUnlock()
-		return nil, fmt.Errorf("flusher is closed")
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return nil, fmt.Errorf("transfer manager is closed")
 	}
-	f.mu.RUnlock()
+	m.mu.RUnlock()
 
 	// Calculate which blocks we need
 	startBlockIdx := offset / BlockSize
@@ -469,7 +457,7 @@ func (f *Flusher) ReadBlocks(ctx context.Context, shareName string, fileHandle [
 	blocks := make([][]byte, numBlocks)
 	var wg sync.WaitGroup
 	errCh := make(chan error, numBlocks)
-	sem := make(chan struct{}, f.config.ParallelDownloads)
+	sem := make(chan struct{}, m.config.ParallelDownloads)
 
 	for i := startBlockIdx; i <= endBlockIdx; i++ {
 		wg.Add(1)
@@ -485,7 +473,7 @@ func (f *Flusher) ReadBlocks(ctx context.Context, shareName string, fileHandle [
 			// Note: contentID already includes the share name
 			blockKeyStr := fmt.Sprintf("%s/chunk-%d/block-%d", contentID, chunkIdx, blockIdx)
 
-			data, err := f.blockStore.ReadBlock(ctx, blockKeyStr)
+			data, err := m.blockStore.ReadBlock(ctx, blockKeyStr)
 			if err != nil {
 				errCh <- fmt.Errorf("read block %s: %w", blockKeyStr, err)
 				return
@@ -496,12 +484,8 @@ func (f *Flusher) ReadBlocks(ctx context.Context, shareName string, fileHandle [
 			// Cache the downloaded block as flushed (evictable)
 			// We create a new slice for this block
 			blockOffset := blockIdx * BlockSize
-			if err := f.cache.WriteSlice(ctx, fileHandle, chunkIdx, data, blockOffset); err != nil {
+			if err := m.cache.WriteSlice(ctx, fileHandle, chunkIdx, data, blockOffset); err != nil {
 				// Non-fatal: block was read successfully, just not cached
-			} else {
-				// Mark as flushed since it's already in block store
-				// Note: This is a simplification - ideally we'd have a method to add
-				// an already-flushed slice to the cache
 			}
 		}(i, int(i-startBlockIdx))
 	}
@@ -558,45 +542,45 @@ func assembleBlocks(blocks [][]byte, offset, length, startBlockIdx uint32) []byt
 
 // Start begins background upload processing.
 // Must be called after New() to enable async uploads.
-func (f *Flusher) Start(ctx context.Context) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+func (m *TransferManager) Start(ctx context.Context) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	if f.bgUploader != nil {
-		f.bgUploader.Start(ctx)
+	if m.queue != nil {
+		m.queue.Start(ctx)
 	}
 }
 
-// Close shuts down the flusher and waits for pending uploads.
-func (f *Flusher) Close() error {
-	f.mu.Lock()
-	if f.closed {
-		f.mu.Unlock()
+// Close shuts down the transfer manager and waits for pending uploads.
+func (m *TransferManager) Close() error {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
 		return nil
 	}
-	f.closed = true
-	f.mu.Unlock()
+	m.closed = true
+	m.mu.Unlock()
 
-	// Stop background uploader with 30 second timeout
-	if f.bgUploader != nil {
-		f.bgUploader.Stop(30 * time.Second)
+	// Stop transfer queue with 30 second timeout
+	if m.queue != nil {
+		m.queue.Stop(30 * time.Second)
 	}
 
 	return nil
 }
 
 // HealthCheck verifies the block store is accessible.
-func (f *Flusher) HealthCheck(ctx context.Context) error {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
+func (m *TransferManager) HealthCheck(ctx context.Context) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
-	if f.closed {
-		return fmt.Errorf("flusher is closed")
+	if m.closed {
+		return fmt.Errorf("transfer manager is closed")
 	}
 
-	if f.blockStore == nil {
+	if m.blockStore == nil {
 		return fmt.Errorf("no block store configured")
 	}
 
-	return f.blockStore.HealthCheck(ctx)
+	return m.blockStore.HealthCheck(ctx)
 }

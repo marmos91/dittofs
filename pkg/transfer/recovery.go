@@ -1,5 +1,4 @@
-// Package flusher implements startup recovery for unflushed cache data.
-package flusher
+package transfer
 
 import (
 	"context"
@@ -24,22 +23,22 @@ type RecoveryStats struct {
 // Called on startup to ensure crash recovery.
 //
 // This is safe to call even if there are no pending slices - it will return quickly.
-func (f *Flusher) RecoverUnflushedSlices(ctx context.Context) (*RecoveryStats, error) {
-	f.mu.RLock()
-	if f.closed {
-		f.mu.RUnlock()
-		return nil, fmt.Errorf("flusher is closed")
+func (m *TransferManager) RecoverUnflushedSlices(ctx context.Context) (*RecoveryStats, error) {
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return nil, fmt.Errorf("transfer manager is closed")
 	}
-	f.mu.RUnlock()
+	m.mu.RUnlock()
 
-	if f.cache == nil {
+	if m.cache == nil {
 		return nil, fmt.Errorf("no cache configured")
 	}
 
 	stats := &RecoveryStats{}
 
 	// Get all file handles from cache
-	fileHandles := f.cache.ListFiles()
+	fileHandles := m.cache.ListFiles()
 	stats.FilesScanned = len(fileHandles)
 
 	if len(fileHandles) == 0 {
@@ -51,13 +50,13 @@ func (f *Flusher) RecoverUnflushedSlices(ctx context.Context) (*RecoveryStats, e
 
 	// Process files with bounded parallelism
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, f.config.ParallelUploads)
+	sem := make(chan struct{}, m.config.ParallelUploads)
 	var uploadedCount, failedCount int64
 	var bytesUploaded int64
 
 	for _, handle := range fileHandles {
 		// Get pending (dirty) slices for this file
-		pending, err := f.cache.GetDirtySlices(ctx, handle)
+		pending, err := m.cache.GetDirtySlices(ctx, handle)
 		if err != nil {
 			logger.Debug("Recovery: no dirty slices for file", "error", err)
 			continue
@@ -87,7 +86,7 @@ func (f *Flusher) RecoverUnflushedSlices(ctx context.Context) (*RecoveryStats, e
 				contentID := string(fileHandle)
 
 				// Upload slice as blocks
-				blockRefs, err := f.uploadSliceAsBlocks(ctx, "", contentID, s)
+				blockRefs, err := m.uploadSliceAsBlocks(ctx, "", contentID, s)
 				if err != nil {
 					logger.Error("Recovery: failed to upload slice",
 						"file", string(fileHandle),
@@ -98,7 +97,7 @@ func (f *Flusher) RecoverUnflushedSlices(ctx context.Context) (*RecoveryStats, e
 				}
 
 				// Mark as flushed in cache
-				if err := f.cache.MarkSliceFlushed(ctx, fileHandle, s.ID, blockRefs); err != nil {
+				if err := m.cache.MarkSliceFlushed(ctx, fileHandle, s.ID, blockRefs); err != nil {
 					logger.Error("Recovery: failed to mark slice flushed",
 						"file", string(fileHandle),
 						"sliceID", s.ID,

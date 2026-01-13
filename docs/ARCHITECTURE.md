@@ -47,26 +47,34 @@ DittoFS uses a **Service-oriented architecture** with the Registry pattern to en
 │   (Business logic & coordination)       │
 │                                         │
 │  ┌─────────────────┐ ┌────────────────┐ │
-│  │ MetadataService │ │ ContentService │ │
-│  │ pkg/metadata/   │ │ pkg/content/   │ │
-│  │ service.go      │ │ service.go     │ │
+│  │ MetadataService │ │  BlockService  │ │
+│  │ pkg/metadata/   │ │  pkg/blocks/   │ │
+│  │ service.go      │ │  service.go    │ │
 │  └────────┬────────┘ └───────┬────────┘ │
 │           │                  │          │
-│           │    ┌─────────┐   │          │
-│           │    │  Cache  │◄──┤          │
-│           │    │  Layer  │   │          │
-│           │    └─────────┘   │          │
-└───────────┼──────────────────┼──────────┘
-            │                  │
-            ▼                  ▼
+│           │    ┌─────────────┼────────┐ │
+│           │    │         ┌───▼──────┐ │ │
+│           │    │ Cache   │ Transfer │ │ │
+│           │    │ Layer   │ Manager  │ │ │
+│           │    │ pkg/    │ pkg/     │ │ │
+│           │    │ cache/  │transfer/ │ │ │
+│           │    │    │    └────┬─────┘ │ │
+│           │    │    │ ┌──────▼──────┐ │ │
+│           │    │    │ │     WAL     │ │ │
+│           │    │    │ │  pkg/wal/   │ │ │
+│           │    │    └─┴─────────────┘ │ │
+│           │    └─────────────────────┘ │
+└───────────┼────────────────────────────┘
+            │
+            ▼
 ┌────────────────┐  ┌────────────────────┐
-│   Metadata     │  │   Content          │
+│   Metadata     │  │   Block            │
 │     Stores     │  │     Stores         │
 │    (CRUD)      │  │    (CRUD)          │
 │                │  │                    │
 │  - Memory      │  │  - Memory          │
-│  - BadgerDB    │  │  - Filesystem      │
-│  - PostgreSQL  │  │  - S3              │
+│  - BadgerDB    │  │  - S3              │
+│  - PostgreSQL  │  │                    │
 └────────────────┘  └────────────────────┘
 ```
 
@@ -78,7 +86,7 @@ DittoFS uses a **Service-oriented architecture** with the Registry pattern to en
 - Enables flexible configurations (e.g., "fast-memory", "s3-archive", "persistent")
 - Handles store lifecycle and identity resolution
 - Maps file handles to their originating share for proper store routing
-- Owns and coordinates Services (MetadataService, ContentService)
+- Owns and coordinates Services (MetadataService, BlockService)
 
 **2. Adapter Interface** (`pkg/adapter/adapter.go`)
 - Each protocol implements the `Adapter` interface
@@ -94,7 +102,7 @@ DittoFS uses a **Service-oriented architecture** with the Registry pattern to en
 - Provides high-level operations with business logic
 - Protocol handlers should use this instead of stores directly
 
-**4. ContentService** (`pkg/content/service.go`)
+**4. BlockService** (`pkg/blocks/service.go`)
 - **Central service for all content operations**
 - Routes operations to the correct store based on share name
 - Owns cache coordination (writes to cache, flushed on COMMIT, reads from cache)
@@ -110,13 +118,33 @@ DittoFS uses a **Service-oriented architecture** with the Registry pattern to en
   - `pkg/metadata/store/postgres/`: PostgreSQL (persistent, distributed, UUID-based handles)
 - File handles are opaque identifiers (implementation-specific format)
 
-**6. Content Store** (`pkg/content/store.go`)
+**6. Block Store** (`pkg/blocks/store/store.go`)
 - **Simple CRUD interface** for file data
 - Supports read, write-at, truncate operations
 - Implementations:
-  - `pkg/content/store/memory/`: In-memory (fast, ephemeral)
-  - `pkg/content/store/fs/`: Filesystem-backed storage
-  - `pkg/content/store/s3/`: S3-backed storage (multipart, streaming)
+  - `pkg/blocks/store/memory/`: In-memory (fast, ephemeral)
+  - `pkg/blocks/store/s3/`: S3-backed storage (multipart, streaming)
+
+**7. Cache Layer** (`pkg/cache/`)
+- Slice-aware caching for the Chunk/Slice/Block storage model
+- Sequential write optimization (merges 16KB-32KB NFS writes)
+- Newest-wins read merging for overlapping slices
+- LRU eviction with dirty data protection
+- Uses `wal.Persister` interface for crash recovery
+
+**8. WAL Persistence** (`pkg/wal/`)
+- Write-Ahead Log for cache crash recovery
+- `Persister` interface for pluggable implementations
+- `MmapPersister`: Memory-mapped file persistence
+- `NullPersister`: No-op for in-memory only deployments
+- Enables cache data survival across restarts
+
+**9. Transfer Manager** (`pkg/transfer/`)
+- Async cache-to-block-store transfer orchestration
+- `TransferManager`: Coordinates flush operations
+- `TransferQueue`: Background upload queue with priority
+- `TransferQueueEntry`: Generic interface for transfer operations
+- Handles startup recovery from WAL
 
 ## Adapter Pattern
 
@@ -135,12 +163,12 @@ type Adapter interface {
 // Example: NFS Adapter accesses services via registry
 type NFSAdapter struct {
     config   NFSConfig
-    registry *Registry  // Access to MetadataService and ContentService
+    registry *Registry  // Access to MetadataService and BlockService
 }
 
 func (a *NFSAdapter) handleRead(ctx context.Context, req *ReadRequest) {
-    // Use ContentService for reads (handles caching automatically)
-    data, err := a.registry.ContentService().ReadAt(ctx, shareName, contentID, offset, size)
+    // Use BlockService for reads (handles caching automatically)
+    data, err := a.registry.BlockService().ReadAt(ctx, shareName, contentID, offset, size)
     // ...
 }
 
@@ -231,13 +259,13 @@ entries, err := metaSvc.ReadDir(ctx, dirHandle)
 lock, err := metaSvc.AcquireLock(ctx, shareName, handle, offset, length, exclusive)
 ```
 
-### ContentService
+### BlockService
 
 Handles all content operations with caching:
 
 ```go
-// ContentService - central service for content operations
-type ContentService struct {
+// BlockService - central service for content operations
+type BlockService struct {
     stores map[string]ContentStore  // shareName -> store
     caches map[string]cache.Cache   // shareName -> cache (optional)
 }
@@ -318,7 +346,7 @@ contentSvc.RegisterStoreForShare("/export", contentStore)
 // Create registry and wire services
 registry := registry.New()
 registry.SetMetadataService(metaSvc)
-registry.SetContentService(contentSvc)
+registry.SetBlockService(contentSvc)
 
 // Start server
 server := server.New(registry)
@@ -396,19 +424,29 @@ dittofs/
 │   │       ├── badger/       # BadgerDB (persistent)
 │   │       └── postgres/     # PostgreSQL (distributed)
 │   │
-│   ├── content/              # Content layer
-│   │   ├── service.go        # ContentService (caching, routing)
-│   │   ├── store.go          # ContentStore interface (CRUD)
-│   │   ├── types.go          # ContentID, ContentStats, etc.
-│   │   ├── errors.go         # Content-specific errors
-│   │   └── store/            # Store implementations
+│   ├── blocks/               # Block storage layer
+│   │   ├── service.go        # BlockService (caching, routing, flush coordination)
+│   │   ├── types.go          # StorageStats, FlushResult, etc.
+│   │   ├── errors.go         # Block-specific errors
+│   │   └── store/            # Block store implementations
+│   │       ├── store.go      # BlockStore interface (CRUD)
 │   │       ├── memory/       # In-memory (ephemeral)
-│   │       ├── fs/           # Filesystem-backed
-│   │       └── s3/           # S3-backed (multipart)
+│   │       └── s3/           # S3-backed (multipart, streaming)
 │   │
-│   ├── cache/                # Cache layer
-│   │   ├── cache.go          # Cache interface
-│   │   └── memory/           # In-memory cache implementation
+│   ├── cache/                # Slice-aware cache layer
+│   │   ├── cache.go          # Cache implementation (LRU, dirty tracking)
+│   │   └── types.go          # Slice, SliceState, BlockRef types
+│   │
+│   ├── wal/                  # Write-Ahead Log persistence
+│   │   ├── persister.go      # Persister interface + NullPersister
+│   │   ├── mmap.go           # MmapPersister implementation
+│   │   └── types.go          # SliceEntry, WAL record types
+│   │
+│   ├── transfer/             # Cache-to-store transfer orchestration
+│   │   ├── manager.go        # TransferManager (flush coordination)
+│   │   ├── queue.go          # TransferQueue (background uploads)
+│   │   ├── entry.go          # TransferQueueEntry interface
+│   │   └── recovery.go       # WAL recovery on startup
 │   │
 │   ├── registry/             # Store registry
 │   │   ├── registry.go       # Central registry (owns services)
@@ -417,6 +455,7 @@ dittofs/
 │   │
 │   ├── config/               # Configuration parsing
 │   │   ├── config.go         # Main config struct
+│   │   ├── stores.go         # Store and transfer manager creation
 │   │   └── registry.go       # Registry initialization
 │   │
 │   └── server/               # DittoServer orchestration
@@ -435,6 +474,135 @@ dittofs/
 └── test/                     # Test suites
     ├── integration/          # Integration tests (S3, BadgerDB)
     └── e2e/                  # End-to-end tests (real NFS mounts)
+```
+
+## Cache, WAL, and Transfer Architecture
+
+The caching subsystem provides high-performance writes with crash recovery guarantees.
+
+### Data Flow
+
+```
+NFS WRITE Request
+        │
+        ▼
+┌───────────────────┐
+│   BlockService    │──────────────────────────────┐
+│  pkg/blocks/      │                              │
+└────────┬──────────┘                              │
+         │                                         │
+         ▼                                         │
+┌───────────────────┐      ┌──────────────────┐   │
+│      Cache        │─────►│       WAL        │   │
+│   pkg/cache/      │      │    pkg/wal/      │   │
+│                   │      │                  │   │
+│ • Write buffering │      │ • MmapPersister  │   │
+│ • LRU eviction    │      │ • Crash recovery │   │
+│ • Slice merging   │      │ • Append-only    │   │
+└────────┬──────────┘      └──────────────────┘   │
+         │                                         │
+         │ NFS COMMIT                              │
+         ▼                                         │
+┌───────────────────┐                              │
+│ TransferManager   │                              │
+│  pkg/transfer/    │                              │
+│                   │                              │
+│ • Flush dirty     │                              │
+│ • Priority queue  │                              │
+│ • Background      │                              │
+└────────┬──────────┘                              │
+         │                                         │
+         ▼                                         │
+┌───────────────────┐                              │
+│    BlockStore     │◄─────────────────────────────┘
+│ pkg/blocks/store/ │         (Direct reads bypass cache)
+│                   │
+│ • Memory          │
+│ • S3              │
+└───────────────────┘
+```
+
+### Cache Layer (`pkg/cache/`)
+
+The cache uses a **Chunk/Slice/Block model**:
+
+- **Chunks**: 64MB logical regions of a file
+- **Slices**: Variable-size writes within a chunk (cached in memory)
+- **Blocks**: 4MB units flushed to block store
+
+**Key Features**:
+
+```go
+// Sequential write optimization - extends existing slices
+// Instead of 320 slices for a 10MB file written in 32KB chunks:
+// -> 1 slice (sequential writes merged automatically)
+c.WriteSlice(ctx, fileHandle, chunkIdx, data, offset)
+
+// Newest-wins read merging - overlapping slices resolved by creation time
+data, found, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offset, length)
+
+// LRU eviction - only flushed slices can be evicted
+evicted, err := c.EvictLRU(ctx, targetFreeBytes)
+```
+
+**Slice States**:
+```
+SliceStatePending → SliceStateUploading → SliceStateFlushed
+     (dirty)           (flush in progress)    (safe to evict)
+```
+
+### WAL Persistence (`pkg/wal/`)
+
+The WAL ensures cache data survives crashes:
+
+```go
+// Persister interface - pluggable WAL implementations
+type Persister interface {
+    AppendSlice(entry *SliceEntry) error  // Log a write
+    AppendRemove(fileHandle []byte) error // Log a delete
+    Sync() error                          // Fsync to disk
+    Recover() ([]SliceEntry, error)       // Replay on startup
+    Close() error
+    IsEnabled() bool
+}
+
+// MmapPersister - memory-mapped file for high performance
+persister, err := wal.NewMmapPersister("/var/lib/dittofs/wal")
+
+// NullPersister - no-op for testing/in-memory deployments
+persister := wal.NewNullPersister()
+
+// Create cache with WAL
+cache, err := cache.NewWithPersister(maxSize, persister)
+// Or convenience constructor:
+cache, err := cache.NewWithMmap("/var/lib/dittofs/wal", maxSize)
+```
+
+### Transfer Manager (`pkg/transfer/`)
+
+Orchestrates async cache-to-block-store transfers:
+
+```go
+// TransferQueueEntry - generic transfer operation
+type TransferQueueEntry interface {
+    ShareName() string
+    FileHandle() []byte
+    ContentID() string
+    Execute(ctx context.Context, manager *TransferManager) error
+    Priority() int
+}
+
+// TransferManager - coordinates flush operations
+tm := transfer.New(cache, blockStore, config)
+
+// Flush dirty slices for a file
+result, err := tm.FlushFile(ctx, shareName, fileHandle, contentID)
+
+// Background queue for async uploads
+tm.EnqueueTransfer(entry)
+
+// Startup recovery from WAL
+recovery.RecoverFromWAL(ctx, persister, cache, tm)
 ```
 
 ## Horizontal Scaling with PostgreSQL

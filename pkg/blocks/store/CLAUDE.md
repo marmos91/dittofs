@@ -1,10 +1,10 @@
-# pkg/store/block
+# pkg/blocks/store
 
-Block store interface for S3 persistence layer.
+Block store interface for persistent storage layer (S3, memory, etc.).
 
 ## Overview
 
-Block stores persist cache data to durable storage (S3). The 4MB block size balances:
+Block stores persist cache data to durable storage. The 4MB block size balances:
 - S3 PUT efficiency (larger objects = better throughput)
 - Memory usage (reasonable chunk size)
 - Latency (partial blocks on COMMIT are small)
@@ -12,7 +12,7 @@ Block stores persist cache data to durable storage (S3). The 4MB block size bala
 ## Interface
 
 ```go
-type Store interface {
+type BlockStore interface {
     WriteBlock(ctx, blockKey string, data []byte) error
     ReadBlock(ctx, blockKey string) ([]byte, error)
     ReadBlockRange(ctx, blockKey string, offset, length int64) ([]byte, error)
@@ -20,6 +20,7 @@ type Store interface {
     DeleteByPrefix(ctx, prefix string) error
     ListByPrefix(ctx, prefix string) ([]string, error)
     Close() error
+    HealthCheck(ctx) error
 }
 ```
 
@@ -59,6 +60,28 @@ block_store:
     max_retries: 3
     force_path_style: false  # true for Localstack/MinIO
 ```
+
+## BlockRef Types
+
+There are multiple `BlockRef` types in the codebase with different purposes:
+
+| Package | Fields | Purpose |
+|---------|--------|---------|
+| `pkg/blocks/store` | Key, Size | S3-style path reference for block store |
+| `pkg/cache` | ID, Size | Cache's record of flushed block |
+| `pkg/wal` | ID, Size | WAL entry tracking flushed blocks |
+
+The store's `BlockRef` uses "Key" to emphasize the S3 key path format, while cache/wal use "ID" for the block identifier.
+
+## Migration from pkg/store/block
+
+| Old (pkg/store/block) | New (pkg/blocks/store) |
+|-----------------------|------------------------|
+| `block.Store` | `store.BlockStore` |
+| `block.ErrBlockNotFound` | `store.ErrBlockNotFound` |
+| `block.ErrStoreClosed` | `store.ErrStoreClosed` |
+| `block.BlockSize` | `store.BlockSize` |
+| `block.BlockRef` | `store.BlockRef` |
 
 ## Common Mistakes
 

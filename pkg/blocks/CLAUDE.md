@@ -1,46 +1,50 @@
-# pkg/content
+# pkg/blocks
 
-Content service layer - handles raw file bytes using the Cache layer.
+Block service layer - handles raw file bytes using the Cache layer.
+
+## Overview
+
+The blocks package provides the main entry point for file content operations.
+It coordinates between the Cache (fast in-memory storage) and TransferManager
+(optional background persistence to block store).
 
 ## Architecture
 
 ```
-ContentServiceInterface (interface.go)
+BlockService (service.go) - coordinates with cache + transfer manager
          ↓
-ContentService (service.go) - coordinates with cache + flusher
-         ↓
-     ┌───┴───┐
-     ↓       ↓
-cache.Cache  flusher.Flusher (optional)
-     ↓              ↓
-(in-memory)   block.Store (S3/memory/fs)
+     ┌───┴───────────┐
+     ↓               ↓
+cache.Cache    transfer.TransferManager (optional)
+     ↓                    ↓
+(in-memory)        block.Store (S3/memory/fs)
 ```
 
 ## Key Design
 
-### Cache + Flusher Model
+### Cache + TransferManager Model
 - **Cache**: Fast in-memory storage for all reads/writes
-- **Flusher** (optional): Handles cache-to-block-store persistence
-- Without flusher: cache-only mode (volatile data)
-- With flusher: persistent storage with background upload
+- **TransferManager** (optional): Handles cache-to-block-store persistence
+- Without TransferManager: cache-only mode (volatile data)
+- With TransferManager: persistent storage with background upload
 
 ### Single Global Cache
 - One cache serves ALL shares
 - ContentID (file handle) uniqueness ensures data isolation
 - Registered once in `registry.NewRegistry()`
 
-### Non-blocking COMMIT (when flusher configured)
+### Non-blocking COMMIT (when TransferManager configured)
 - NFS COMMIT enqueues background upload and returns immediately
 - Data is safe in mmap cache (crash-safe via OS page cache)
 - Block store uploads happen asynchronously
 - Achieves 275+ MB/s write throughput
 
-## ContentService Methods
+## BlockService Methods
 
 ### Configuration
 ```go
-SetCache(cache *cache.Cache) error   // Required: set global cache
-SetFlusher(f *flusher.Flusher)       // Optional: enable block store persistence
+SetCache(cache *cache.Cache) error           // Required: set global cache
+SetTransferManager(tm *transfer.TransferManager)  // Optional: enable block store persistence
 ```
 
 ### Read Operations
@@ -107,6 +111,18 @@ for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
     err := cache.WriteSlice(ctx, fileHandle, chunkIdx, data[dataStart:dataEnd], offsetInChunk)
 }
 ```
+
+## Migration from pkg/content
+
+| Old (pkg/content) | New (pkg/blocks) |
+|-------------------|------------------|
+| `ContentService` | `BlockService` |
+| `content.New()` | `blocks.New()` |
+| `SetFlusher(f)` | `SetTransferManager(tm)` |
+| `GetFlusher()` | `GetTransferManager()` |
+| `ErrNoCacheConfigured` | `ErrNoCacheConfigured` |
+| `FlushResult` | `FlushResult` |
+| `StorageStats` | `StorageStats` |
 
 ## Common Mistakes
 

@@ -175,7 +175,7 @@ func readMFsymlinkContentForNFS(
 	}
 
 	// Use ContentService.ReadAt (Cache handles caching automatically)
-	contentSvc := reg.GetContentService()
+	contentSvc := reg.GetBlockService()
 
 	data := make([]byte, mfsymlink.Size)
 	n, err := contentSvc.ReadAt(ctx, share, contentID, data, 0)

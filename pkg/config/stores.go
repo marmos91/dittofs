@@ -4,15 +4,15 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/marmos91/dittofs/pkg/blocks/store"
+	blockmemory "github.com/marmos91/dittofs/pkg/blocks/store/memory"
+	blocks3 "github.com/marmos91/dittofs/pkg/blocks/store/s3"
 	"github.com/marmos91/dittofs/pkg/cache"
-	"github.com/marmos91/dittofs/pkg/flusher"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
-	"github.com/marmos91/dittofs/pkg/store/block"
-	blockmemory "github.com/marmos91/dittofs/pkg/store/block/memory"
-	blocks3 "github.com/marmos91/dittofs/pkg/store/block/s3"
+	"github.com/marmos91/dittofs/pkg/transfer"
 	"github.com/mitchellh/mapstructure"
 )
 
@@ -128,7 +128,7 @@ func createPostgresMetadataStore(
 
 // CreateBlockStore creates a block store instance from configuration.
 // Returns nil, nil if block store is not configured (cache-only mode).
-func CreateBlockStore(ctx context.Context, cfg BlockStoreConfig) (block.Store, error) {
+func CreateBlockStore(ctx context.Context, cfg BlockStoreConfig) (store.BlockStore, error) {
 	switch cfg.Type {
 	case "":
 		// No block store configured - cache-only mode
@@ -143,7 +143,7 @@ func CreateBlockStore(ctx context.Context, cfg BlockStoreConfig) (block.Store, e
 }
 
 // createS3BlockStore creates an S3-backed block store.
-func createS3BlockStore(ctx context.Context, cfg BlockStoreS3Config) (block.Store, error) {
+func createS3BlockStore(ctx context.Context, cfg BlockStoreS3Config) (store.BlockStore, error) {
 	if cfg.Bucket == "" {
 		return nil, fmt.Errorf("S3 block store requires bucket to be set")
 	}
@@ -160,18 +160,18 @@ func createS3BlockStore(ctx context.Context, cfg BlockStoreS3Config) (block.Stor
 	return blocks3.NewFromConfig(ctx, s3Cfg)
 }
 
-// CreateFlusher creates a flusher instance from configuration.
+// CreateTransferManager creates a transfer manager instance from configuration.
 // Returns nil if block store is nil (cache-only mode, no S3 persistence).
-func CreateFlusher(c *cache.Cache, blockStore block.Store, cfg FlusherConfig) *flusher.Flusher {
+func CreateTransferManager(c *cache.Cache, blockStore store.BlockStore, cfg FlusherConfig) *transfer.TransferManager {
 	if blockStore == nil {
-		// No block store - cache-only mode, no flusher needed
+		// No block store - cache-only mode, no transfer manager needed
 		return nil
 	}
 
-	flusherCfg := flusher.Config{
+	tmCfg := transfer.Config{
 		ParallelUploads:   cfg.ParallelUploads,
 		ParallelDownloads: cfg.ParallelDownloads,
 	}
 
-	return flusher.New(c, blockStore, flusherCfg)
+	return transfer.New(c, blockStore, tmCfg)
 }

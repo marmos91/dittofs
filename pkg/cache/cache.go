@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/pkg/wal"
 )
 
 // ============================================================================
@@ -78,7 +79,7 @@ type fileEntry struct {
 // Cache is the mandatory cache layer for all content operations.
 //
 // It understands slices as first-class citizens and stores them directly
-// in memory. Optional mmap backing can be enabled for persistence.
+// in memory. Optional WAL persistence can be enabled via a Persister.
 //
 // Thread Safety:
 // Uses two-level locking for efficiency:
@@ -93,19 +94,111 @@ type Cache struct {
 	totalSize atomic.Uint64
 	closed    bool
 
-	// mmap backing (optional, nil when not enabled)
-	mmap *mmapState
+	// WAL persistence (optional, nil uses NullPersister)
+	persister wal.Persister
 }
 
-// New creates a new in-memory cache.
+// New creates a new in-memory cache with no persistence.
 //
 // Parameters:
 //   - maxSize: Maximum total cache size in bytes. Use 0 for unlimited.
 func New(maxSize uint64) *Cache {
 	return &Cache{
-		files:   make(map[string]*fileEntry),
-		maxSize: maxSize,
+		files:     make(map[string]*fileEntry),
+		maxSize:   maxSize,
+		persister: wal.NewNullPersister(),
 	}
+}
+
+// NewWithMmap creates a new cache with mmap-backed persistence.
+//
+// The cache data is stored in an append-only log file at the given path.
+// On startup, existing data is recovered from the log.
+//
+// Parameters:
+//   - path: Directory path for the cache file (cache.dat will be created)
+//   - maxSize: Maximum cache size in bytes (0 = unlimited)
+func NewWithMmap(path string, maxSize uint64) (*Cache, error) {
+	persister, err := wal.NewMmapPersister(path)
+	if err != nil {
+		return nil, err
+	}
+	return NewWithPersister(maxSize, persister)
+}
+
+// NewWithPersister creates a new cache with WAL persistence.
+//
+// The persister is used to persist cache operations for crash recovery.
+// On creation, existing data is recovered from the persister.
+//
+// Parameters:
+//   - maxSize: Maximum total cache size in bytes. Use 0 for unlimited.
+//   - persister: WAL persister for crash recovery
+func NewWithPersister(maxSize uint64, persister wal.Persister) (*Cache, error) {
+	c := &Cache{
+		files:     make(map[string]*fileEntry),
+		maxSize:   maxSize,
+		persister: persister,
+	}
+
+	// Recover existing data if persister is enabled
+	if persister.IsEnabled() {
+		if err := c.recoverFromPersister(); err != nil {
+			return nil, err
+		}
+	}
+
+	return c, nil
+}
+
+// recoverFromPersister recovers cache state from the WAL persister.
+func (c *Cache) recoverFromPersister() error {
+	entries, err := c.persister.Recover()
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		fileEntry := c.getFileEntry(entry.FileHandle)
+		fileEntry.mu.Lock()
+
+		chunk, exists := fileEntry.chunks[entry.ChunkIdx]
+		if !exists {
+			chunk = &chunkEntry{
+				slices: make([]Slice, 0),
+			}
+			fileEntry.chunks[entry.ChunkIdx] = chunk
+		}
+
+		// Convert wal.SliceEntry to cache.Slice
+		slice := Slice{
+			ID:        entry.SliceID,
+			Offset:    entry.Offset,
+			Length:    entry.Length,
+			Data:      entry.Data,
+			State:     SliceState(entry.State), // Same enum values
+			CreatedAt: entry.CreatedAt,
+		}
+
+		// Convert wal.BlockRef to cache.BlockRef
+		if len(entry.BlockRefs) > 0 {
+			slice.BlockRefs = make([]BlockRef, len(entry.BlockRefs))
+			for i, ref := range entry.BlockRefs {
+				slice.BlockRefs[i] = BlockRef{
+					ID:   ref.ID,
+					Size: ref.Size,
+				}
+			}
+		}
+
+		// Prepend to slices (newest first)
+		chunk.slices = append([]Slice{slice}, chunk.slices...)
+		c.totalSize.Add(uint64(entry.Length))
+
+		fileEntry.mu.Unlock()
+	}
+
+	return nil
 }
 
 // getFileEntry returns or creates a file entry with its mutex.
@@ -215,12 +308,13 @@ func (c *Cache) WriteSlice(ctx context.Context, fileHandle []byte, chunkIdx uint
 	chunk.slices = append([]Slice{slice}, chunk.slices...)
 	c.totalSize.Add(uint64(len(data)))
 
-	// Persist to mmap if enabled
-	if c.mmap != nil && c.mmap.enabled {
-		// Note: We release the file lock before mmap write to avoid deadlock
-		// This is safe because mmap has its own mutex
+	// Persist to WAL if enabled
+	if c.persister.IsEnabled() {
+		// Note: We release the file lock before persister write to avoid deadlock
+		// This is safe because persister has its own mutex
 		entry.mu.Unlock()
-		err := c.appendSliceEntry(fileHandle, chunkIdx, &slice)
+		walEntry := c.sliceToWALEntry(fileHandle, chunkIdx, &slice)
+		err := c.persister.AppendSlice(walEntry)
 		entry.mu.Lock() // Re-acquire for deferred unlock
 		if err != nil {
 			return err
@@ -228,6 +322,32 @@ func (c *Cache) WriteSlice(ctx context.Context, fileHandle []byte, chunkIdx uint
 	}
 
 	return nil
+}
+
+// sliceToWALEntry converts a cache.Slice to wal.SliceEntry.
+func (c *Cache) sliceToWALEntry(fileHandle []byte, chunkIdx uint32, slice *Slice) *wal.SliceEntry {
+	entry := &wal.SliceEntry{
+		FileHandle: fileHandle,
+		ChunkIdx:   chunkIdx,
+		SliceID:    slice.ID,
+		Offset:     slice.Offset,
+		Length:     slice.Length,
+		Data:       slice.Data,
+		State:      wal.SliceState(slice.State), // Same enum values
+		CreatedAt:  slice.CreatedAt,
+	}
+
+	if len(slice.BlockRefs) > 0 {
+		entry.BlockRefs = make([]wal.BlockRef, len(slice.BlockRefs))
+		for i, ref := range slice.BlockRefs {
+			entry.BlockRefs[i] = wal.BlockRef{
+				ID:   ref.ID,
+				Size: ref.Size,
+			}
+		}
+	}
+
+	return entry
 }
 
 // tryExtendAdjacentSlice attempts to extend an existing pending slice.
@@ -816,9 +936,9 @@ func (c *Cache) Remove(ctx context.Context, fileHandle []byte) error {
 		c.totalSize.Add(^(size - 1)) // Subtract
 	}
 
-	// Persist removal to mmap if enabled
-	if c.mmap != nil && c.mmap.enabled {
-		if err := c.appendRemoveEntry(fileHandle); err != nil {
+	// Persist removal to WAL if enabled
+	if c.persister.IsEnabled() {
+		if err := c.persister.AppendRemove(fileHandle); err != nil {
 			return err
 		}
 	}
@@ -1039,12 +1159,28 @@ func (c *Cache) Close() error {
 	c.files = nil
 	c.totalSize.Store(0)
 
-	// Close mmap if enabled
-	if c.mmap != nil && c.mmap.enabled {
-		if err := c.closeMmap(); err != nil {
+	// Close persister if enabled
+	if c.persister != nil && c.persister.IsEnabled() {
+		if err := c.persister.Close(); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// Sync forces pending writes to durable storage.
+func (c *Cache) Sync() error {
+	c.globalMu.RLock()
+	defer c.globalMu.RUnlock()
+
+	if c.closed {
+		return ErrCacheClosed
+	}
+
+	if c.persister == nil {
+		return nil
+	}
+
+	return c.persister.Sync()
 }

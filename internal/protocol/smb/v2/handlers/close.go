@@ -295,7 +295,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// Flush and finalize cached data to ensure durability
 	// Unlike NFS COMMIT which just flushes, SMB CLOSE requires immediate durability
 	if !openFile.IsDirectory && openFile.ContentID != "" {
-		contentSvc := h.Registry.GetContentService()
+		contentSvc := h.Registry.GetBlockService()
 		// Use FlushAndFinalize for immediate durability
 		_, flushErr := contentSvc.FlushAndFinalize(ctx.Context, openFile.ShareName, openFile.ContentID)
 		if flushErr != nil {
@@ -516,7 +516,7 @@ func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *Ope
 // readMFsymlinkContent reads the content of a potential MFsymlink file.
 // It reads from ContentService which uses Cache internally.
 func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFile) ([]byte, error) {
-	contentSvc := h.Registry.GetContentService()
+	contentSvc := h.Registry.GetBlockService()
 
 	// Read the MFsymlink content (always 1067 bytes)
 	data := make([]byte, mfsymlink.Size)
@@ -553,7 +553,7 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 
 	// Delete content from content store via ContentService (optional - ignore errors)
 	if openFile.ContentID != "" {
-		contentSvc := h.Registry.GetContentService()
+		contentSvc := h.Registry.GetBlockService()
 		_ = contentSvc.Delete(ctx.Context, openFile.ShareName, openFile.ContentID)
 	}
 

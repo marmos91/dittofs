@@ -7,10 +7,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/marmos91/dittofs/pkg/store/block"
+	"github.com/marmos91/dittofs/pkg/blocks/store"
 )
 
-// Store is an in-memory implementation of block.Store for testing.
+// Store is an in-memory implementation of store.BlockStore for testing.
 type Store struct {
 	mu     sync.RWMutex
 	blocks map[string][]byte
@@ -30,7 +30,7 @@ func (s *Store) WriteBlock(ctx context.Context, blockKey string, data []byte) er
 	defer s.mu.Unlock()
 
 	if s.closed {
-		return block.ErrStoreClosed
+		return store.ErrStoreClosed
 	}
 
 	// Make a copy of the data to prevent mutation
@@ -47,12 +47,12 @@ func (s *Store) ReadBlock(ctx context.Context, blockKey string) ([]byte, error) 
 	defer s.mu.RUnlock()
 
 	if s.closed {
-		return nil, block.ErrStoreClosed
+		return nil, store.ErrStoreClosed
 	}
 
 	data, ok := s.blocks[blockKey]
 	if !ok {
-		return nil, block.ErrBlockNotFound
+		return nil, store.ErrBlockNotFound
 	}
 
 	// Return a copy to prevent mutation
@@ -67,17 +67,17 @@ func (s *Store) ReadBlockRange(ctx context.Context, blockKey string, offset, len
 	defer s.mu.RUnlock()
 
 	if s.closed {
-		return nil, block.ErrStoreClosed
+		return nil, store.ErrStoreClosed
 	}
 
 	data, ok := s.blocks[blockKey]
 	if !ok {
-		return nil, block.ErrBlockNotFound
+		return nil, store.ErrBlockNotFound
 	}
 
 	// Bounds checking
 	if offset < 0 || offset >= int64(len(data)) {
-		return nil, block.ErrBlockNotFound
+		return nil, store.ErrBlockNotFound
 	}
 
 	end := min(offset+length, int64(len(data)))
@@ -94,7 +94,7 @@ func (s *Store) DeleteBlock(ctx context.Context, blockKey string) error {
 	defer s.mu.Unlock()
 
 	if s.closed {
-		return block.ErrStoreClosed
+		return store.ErrStoreClosed
 	}
 
 	delete(s.blocks, blockKey)
@@ -107,7 +107,7 @@ func (s *Store) DeleteByPrefix(ctx context.Context, prefix string) error {
 	defer s.mu.Unlock()
 
 	if s.closed {
-		return block.ErrStoreClosed
+		return store.ErrStoreClosed
 	}
 
 	for key := range s.blocks {
@@ -125,7 +125,7 @@ func (s *Store) ListByPrefix(ctx context.Context, prefix string) ([]string, erro
 	defer s.mu.RUnlock()
 
 	if s.closed {
-		return nil, block.ErrStoreClosed
+		return nil, store.ErrStoreClosed
 	}
 
 	var keys []string
@@ -156,7 +156,7 @@ func (s *Store) HealthCheck(ctx context.Context) error {
 	defer s.mu.RUnlock()
 
 	if s.closed {
-		return block.ErrStoreClosed
+		return store.ErrStoreClosed
 	}
 	return nil
 }
@@ -180,5 +180,5 @@ func (s *Store) TotalSize() int64 {
 	return total
 }
 
-// Ensure Store implements block.Store.
-var _ block.Store = (*Store)(nil)
+// Ensure Store implements store.BlockStore.
+var _ store.BlockStore = (*Store)(nil)

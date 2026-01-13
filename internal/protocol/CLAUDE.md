@@ -10,7 +10,7 @@ Low-level protocol implementations - NFS and SMB wire formats and handlers.
 - Procedure dispatch
 - Wire type ↔ internal type conversion
 
-**Business logic belongs in pkg/metadata and pkg/content.**
+**Business logic belongs in pkg/metadata and pkg/blocks.**
 
 ## NFS (`nfs/`)
 

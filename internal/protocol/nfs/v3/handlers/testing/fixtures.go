@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
-	"github.com/marmos91/dittofs/pkg/content"
+	"github.com/marmos91/dittofs/pkg/blocks"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/registry"
@@ -49,7 +49,7 @@ type HandlerTestFixture struct {
 
 	// ContentService provides high-level content operations.
 	// It uses Cache for content storage.
-	ContentService *content.ContentService
+	ContentService *blocks.BlockService
 
 	// ShareName is the name of the test share.
 	ShareName string
@@ -107,7 +107,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 		Handler:         handler,
 		Registry:        reg,
 		MetadataService: reg.GetMetadataService(),
-		ContentService:  reg.GetContentService(),
+		ContentService:  reg.GetBlockService(),
 		ShareName:       DefaultShareName,
 		RootHandle:      share.RootHandle,
 	}

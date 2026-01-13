@@ -1,13 +1,13 @@
-package content
+package blocks
 
 import "errors"
 
 // ============================================================================
-// Standard Content Errors
+// Standard Block Service Errors
 // ============================================================================
 
 // These errors provide a consistent way to indicate common failure conditions
-// across content operations. Protocol handlers should check for these errors
+// across block operations. Protocol handlers should check for these errors
 // and map them to appropriate protocol-specific error codes.
 
 var (
@@ -124,6 +124,6 @@ var (
 	// Deprecated: Use ErrNoCacheConfigured instead.
 	ErrNoSliceCacheForShare = errors.New("no slice cache configured for share")
 
-	// ErrNoCacheConfigured indicates no cache is configured for the content service.
+	// ErrNoCacheConfigured indicates no cache is configured for the block service.
 	ErrNoCacheConfigured = errors.New("no cache configured")
 )

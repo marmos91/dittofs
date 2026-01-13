@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/store/block"
+	"github.com/marmos91/dittofs/pkg/blocks/store"
 )
 
 func TestStore_WriteAndRead(t *testing.T) {
@@ -37,8 +37,8 @@ func TestStore_ReadBlockNotFound(t *testing.T) {
 	defer s.Close()
 
 	_, err := s.ReadBlock(ctx, "nonexistent")
-	if err != block.ErrBlockNotFound {
-		t.Errorf("ReadBlock returned error %v, want %v", err, block.ErrBlockNotFound)
+	if err != store.ErrBlockNotFound {
+		t.Errorf("ReadBlock returned error %v, want %v", err, store.ErrBlockNotFound)
 	}
 }
 
@@ -104,8 +104,8 @@ func TestStore_DeleteBlock(t *testing.T) {
 
 	// Verify block is deleted
 	_, err := s.ReadBlock(ctx, blockKey)
-	if err != block.ErrBlockNotFound {
-		t.Errorf("ReadBlock after delete returned error %v, want %v", err, block.ErrBlockNotFound)
+	if err != store.ErrBlockNotFound {
+		t.Errorf("ReadBlock after delete returned error %v, want %v", err, store.ErrBlockNotFound)
 	}
 }
 
@@ -137,8 +137,8 @@ func TestStore_DeleteByPrefix(t *testing.T) {
 	for key := range blocks {
 		_, err := s.ReadBlock(ctx, key)
 		if key[:17] == "share1/content123" {
-			if err != block.ErrBlockNotFound {
-				t.Errorf("ReadBlock(%s) after delete returned error %v, want %v", key, err, block.ErrBlockNotFound)
+			if err != store.ErrBlockNotFound {
+				t.Errorf("ReadBlock(%s) after delete returned error %v, want %v", key, err, store.ErrBlockNotFound)
 			}
 		} else {
 			if err != nil {
@@ -208,20 +208,20 @@ func TestStore_ClosedOperations(t *testing.T) {
 	}
 
 	// All operations should return ErrStoreClosed
-	if _, err := s.ReadBlock(ctx, "key"); err != block.ErrStoreClosed {
-		t.Errorf("ReadBlock on closed store returned %v, want %v", err, block.ErrStoreClosed)
+	if _, err := s.ReadBlock(ctx, "key"); err != store.ErrStoreClosed {
+		t.Errorf("ReadBlock on closed store returned %v, want %v", err, store.ErrStoreClosed)
 	}
 
-	if err := s.WriteBlock(ctx, "key", []byte("data")); err != block.ErrStoreClosed {
-		t.Errorf("WriteBlock on closed store returned %v, want %v", err, block.ErrStoreClosed)
+	if err := s.WriteBlock(ctx, "key", []byte("data")); err != store.ErrStoreClosed {
+		t.Errorf("WriteBlock on closed store returned %v, want %v", err, store.ErrStoreClosed)
 	}
 
-	if err := s.DeleteBlock(ctx, "key"); err != block.ErrStoreClosed {
-		t.Errorf("DeleteBlock on closed store returned %v, want %v", err, block.ErrStoreClosed)
+	if err := s.DeleteBlock(ctx, "key"); err != store.ErrStoreClosed {
+		t.Errorf("DeleteBlock on closed store returned %v, want %v", err, store.ErrStoreClosed)
 	}
 
-	if _, err := s.ListByPrefix(ctx, ""); err != block.ErrStoreClosed {
-		t.Errorf("ListByPrefix on closed store returned %v, want %v", err, block.ErrStoreClosed)
+	if _, err := s.ListByPrefix(ctx, ""); err != store.ErrStoreClosed {
+		t.Errorf("ListByPrefix on closed store returned %v, want %v", err, store.ErrStoreClosed)
 	}
 }
 

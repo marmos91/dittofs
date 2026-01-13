@@ -331,7 +331,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	contentSvc := h.Registry.GetContentService()
+	contentSvc := h.Registry.GetBlockService()
 
 	// ========================================================================
 	// Step 5: Build AuthContext and validate permissions

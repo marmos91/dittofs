@@ -432,7 +432,7 @@ func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
 		return
 	}
 
-	contentSvc := h.Registry.GetContentService()
+	contentSvc := h.Registry.GetBlockService()
 
 	// Use FlushAndFinalize for immediate durability
 	_, flushErr := contentSvc.FlushAndFinalize(ctx, openFile.ShareName, openFile.ContentID)

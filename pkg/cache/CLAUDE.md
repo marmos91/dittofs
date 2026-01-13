@@ -8,7 +8,7 @@ Slice-aware cache layer for the Chunk/Slice/Block storage model.
 Cache (cache.go)
     - Business logic: merging, coalescing, optimization
     - In-memory storage (integrated)
-    - Optional mmap backing (future)
+    - Optional WAL persistence via wal.Persister interface
 ```
 
 ## Package Structure
@@ -16,6 +16,13 @@ Cache (cache.go)
 - `cache.go` - Cache implementation (business logic + storage)
 - `types.go` - Slice, SliceState, SliceUpdate, BlockRef types
 - `benchmark_test.go` - Performance benchmarks
+
+## WAL Persistence
+
+The cache uses the `wal.Persister` interface for crash recovery:
+- `NewWithPersister(maxSize, persister)` - Create cache with WAL persistence
+- `NewWithMmap(path, maxSize)` - Convenience constructor for mmap-backed persistence
+- `New(maxSize)` - Create in-memory cache (no persistence)
 
 ## Key Design Decisions
 
@@ -108,10 +115,20 @@ Result:
 ## Usage Example
 
 ```go
-import "github.com/marmos91/dittofs/pkg/cache"
+import (
+    "github.com/marmos91/dittofs/pkg/cache"
+    "github.com/marmos91/dittofs/pkg/wal"
+)
 
-// Create cache (in-memory)
+// Create cache (in-memory only, no persistence)
 c := cache.New(0) // 0 = unlimited size
+
+// Create cache with WAL persistence (crash recovery)
+c, err := cache.NewWithMmap("/var/lib/dittofs/wal", 1<<30) // 1GB max
+
+// Or with custom persister
+persister, _ := wal.NewMmapPersister("/var/lib/dittofs/wal")
+c, err := cache.NewWithPersister(1<<30, persister)
 
 // Write (auto-extends sequential writes)
 c.WriteSlice(ctx, fileHandle, chunkIdx, data, offset)
@@ -122,8 +139,11 @@ data, found, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offset, length)
 // Get dirty slices for flush (auto-coalesces)
 pending, err := c.GetDirtySlices(ctx, fileHandle)
 
-// Mark flushed after upload to S3
+// Mark flushed after upload to block store
 c.MarkSliceFlushed(ctx, fileHandle, sliceID, blockRefs)
+
+// Sync WAL to disk (if persistence enabled)
+c.Sync()
 ```
 
 ## Performance Requirements

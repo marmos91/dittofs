@@ -1,5 +1,5 @@
-// Package block provides the block store interface for persistent storage.
-package block
+// Package store provides the block store interface for persistent storage.
+package store
 
 import (
 	"context"
@@ -18,12 +18,12 @@ var (
 	ErrStoreClosed = errors.New("store is closed")
 )
 
-// Store defines the interface for block storage backends.
+// BlockStore defines the interface for block storage backends.
 // Blocks are immutable 4MB chunks of data stored with a string key.
 //
 // Key format: "{shareName}/{contentID}/chunk-{chunkIdx}/block-{blockIdx}"
 // Example: "archive/abc123/chunk-0/block-0"
-type Store interface {
+type BlockStore interface {
 	// WriteBlock writes a single block to storage.
 	// The block key uniquely identifies the block.
 	// Data should be <= BlockSize (4MB).

@@ -13,7 +13,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/marmos91/dittofs/pkg/store/block"
+	"github.com/marmos91/dittofs/pkg/blocks/store"
 )
 
 // Config holds configuration for the S3 block store.
@@ -38,7 +38,7 @@ type Config struct {
 	ForcePathStyle bool
 }
 
-// Store is an S3-backed implementation of block.Store.
+// Store is an S3-backed implementation of store.BlockStore.
 type Store struct {
 	client    *s3.Client
 	bucket    string
@@ -103,7 +103,7 @@ func (s *Store) WriteBlock(ctx context.Context, blockKey string, data []byte) er
 	s.mu.RLock()
 	if s.closed {
 		s.mu.RUnlock()
-		return block.ErrStoreClosed
+		return store.ErrStoreClosed
 	}
 	s.mu.RUnlock()
 
@@ -125,7 +125,7 @@ func (s *Store) ReadBlock(ctx context.Context, blockKey string) ([]byte, error) 
 	s.mu.RLock()
 	if s.closed {
 		s.mu.RUnlock()
-		return nil, block.ErrStoreClosed
+		return nil, store.ErrStoreClosed
 	}
 	s.mu.RUnlock()
 
@@ -136,7 +136,7 @@ func (s *Store) ReadBlock(ctx context.Context, blockKey string) ([]byte, error) 
 	})
 	if err != nil {
 		if isNotFoundError(err) {
-			return nil, block.ErrBlockNotFound
+			return nil, store.ErrBlockNotFound
 		}
 		return nil, fmt.Errorf("s3 get object: %w", err)
 	}
@@ -155,7 +155,7 @@ func (s *Store) ReadBlockRange(ctx context.Context, blockKey string, offset, len
 	s.mu.RLock()
 	if s.closed {
 		s.mu.RUnlock()
-		return nil, block.ErrStoreClosed
+		return nil, store.ErrStoreClosed
 	}
 	s.mu.RUnlock()
 
@@ -169,7 +169,7 @@ func (s *Store) ReadBlockRange(ctx context.Context, blockKey string, offset, len
 	})
 	if err != nil {
 		if isNotFoundError(err) {
-			return nil, block.ErrBlockNotFound
+			return nil, store.ErrBlockNotFound
 		}
 		return nil, fmt.Errorf("s3 get object range: %w", err)
 	}
@@ -188,7 +188,7 @@ func (s *Store) DeleteBlock(ctx context.Context, blockKey string) error {
 	s.mu.RLock()
 	if s.closed {
 		s.mu.RUnlock()
-		return block.ErrStoreClosed
+		return store.ErrStoreClosed
 	}
 	s.mu.RUnlock()
 
@@ -209,7 +209,7 @@ func (s *Store) DeleteByPrefix(ctx context.Context, prefix string) error {
 	s.mu.RLock()
 	if s.closed {
 		s.mu.RUnlock()
-		return block.ErrStoreClosed
+		return store.ErrStoreClosed
 	}
 	s.mu.RUnlock()
 
@@ -254,7 +254,7 @@ func (s *Store) ListByPrefix(ctx context.Context, prefix string) ([]string, erro
 	s.mu.RLock()
 	if s.closed {
 		s.mu.RUnlock()
-		return nil, block.ErrStoreClosed
+		return nil, store.ErrStoreClosed
 	}
 	s.mu.RUnlock()
 
@@ -300,7 +300,7 @@ func (s *Store) HealthCheck(ctx context.Context) error {
 	s.mu.RLock()
 	if s.closed {
 		s.mu.RUnlock()
-		return block.ErrStoreClosed
+		return store.ErrStoreClosed
 	}
 	s.mu.RUnlock()
 
@@ -327,5 +327,5 @@ func isNotFoundError(err error) bool {
 		strings.Contains(errStr, "404")
 }
 
-// Ensure Store implements block.Store.
-var _ block.Store = (*Store)(nil)
+// Ensure Store implements store.BlockStore.
+var _ store.BlockStore = (*Store)(nil)

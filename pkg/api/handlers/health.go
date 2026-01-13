@@ -140,9 +140,9 @@ func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check block store (via flusher)
-	contentSvc := h.registry.GetContentService()
+	contentSvc := h.registry.GetBlockService()
 	if contentSvc != nil {
-		flusher := contentSvc.GetFlusher()
+		flusher := contentSvc.GetTransferManager()
 		if flusher != nil {
 			start := time.Now()
 			err := flusher.HealthCheck(ctx)

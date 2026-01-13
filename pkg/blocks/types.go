@@ -1,10 +1,30 @@
-package content
+package blocks
+
+// ============================================================================
+// Type Notes
+// ============================================================================
+//
+// BlockRef, Slice, SliceState, and Chunk-related types are defined in pkg/cache
+// because:
+// 1. The cache package owns these concepts (it's the in-memory representation)
+// 2. Circular dependency: blocks imports cache, so cache cannot import blocks
+//
+// The WAL package (pkg/wal) defines its own SliceEntry and BlockRef for
+// persistence format independence - this is standard practice for persistence
+// layers that may need to version or migrate data formats.
+//
+// Type locations:
+// - cache.BlockRef    - canonical block reference type
+// - cache.Slice       - in-memory slice representation
+// - cache.SliceState  - slice lifecycle states
+// - wal.SliceEntry    - WAL persistence format
+// - wal.BlockRef      - WAL's copy (for format independence)
 
 // ============================================================================
 // Supporting Types
 // ============================================================================
 
-// StorageStats contains statistics about content storage.
+// StorageStats contains statistics about block storage.
 //
 // This provides information about storage capacity, usage, and health.
 type StorageStats struct {
