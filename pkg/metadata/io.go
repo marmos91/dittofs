@@ -337,6 +337,16 @@ func (s *MetadataService) GetPendingSize(handle FileHandle) (uint64, bool) {
 	return s.pendingWrites.GetPendingSize(handle)
 }
 
+// PrewarmWriteCache pre-populates the file metadata cache for a file.
+// Call this after CREATE to eliminate cold-start penalty on first WRITE.
+// The file parameter should be the newly created file with its attributes.
+func (s *MetadataService) PrewarmWriteCache(handle FileHandle, file *File) {
+	if file == nil || file.Type != FileTypeRegular {
+		return
+	}
+	s.pendingWrites.SetCachedFile(handle, file)
+}
+
 // PrepareRead validates a read operation and returns file metadata.
 //
 // This handles:
