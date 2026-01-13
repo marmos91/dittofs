@@ -443,20 +443,13 @@ func (s *Store) ExtendAdjacentSlice(ctx context.Context, fileHandle []byte, chun
 
 		// Case 1: Appending (write starts where slice ends)
 		if offset == sliceEnd {
-			// Extend the slice in place
-			oldSize := uint64(len(slice.Data))
-			newData := make([]byte, len(slice.Data)+len(data))
-			copy(newData, slice.Data)
-			copy(newData[len(slice.Data):], data)
-
-			slice.Data = newData
+			// Extend using Go's append for amortized O(1) growth
+			oldLen := len(slice.Data)
+			slice.Data = append(slice.Data, data...)
 			slice.Length = slice.Length + uint32(len(data))
 
 			// Update size tracking
-			newSize := uint64(len(newData))
-			if newSize > oldSize {
-				s.totalSize.Add(newSize - oldSize)
-			}
+			s.totalSize.Add(uint64(len(slice.Data) - oldLen))
 			return true
 		}
 
