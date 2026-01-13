@@ -38,10 +38,13 @@ S3-backed implementation with:
 ## Block Key Format
 
 ```
-{shareName}/{contentID}/chunk-{chunkIdx}/block-{blockIdx}
+{contentID}/chunk-{chunkIdx}/block-{blockIdx}
 ```
 
-Note: The flusher prepends the configured `key_prefix` (e.g., "blocks/").
+Where `contentID` already includes the share name (e.g., `export/path/to/file`).
+
+Full S3 path: `{key_prefix}{contentID}/chunk-{n}/block-{n}`
+Example: `blocks/export/myfile.bin/chunk-0/block-0`
 
 ## Configuration
 

@@ -213,8 +213,9 @@ func (f *Flusher) startBlockUpload(ctx context.Context, shareName string, _ []by
 			state.inFlight.Done()
 		}()
 
-		// Generate S3 key: {shareName}/{contentID}/chunk-{n}/block-{n}
-		blockKey := fmt.Sprintf("%s/%s/chunk-%d/block-%d", shareName, contentID, chunkIdx, blockIdx)
+		// Generate S3 key: {contentID}/chunk-{n}/block-{n}
+		// Note: contentID already includes the share name (e.g., "export/path/to/file")
+		blockKey := fmt.Sprintf("%s/chunk-%d/block-%d", contentID, chunkIdx, blockIdx)
 
 		if err := f.blockStore.WriteBlock(ctx, blockKey, data); err != nil {
 			state.errorsMu.Lock()
@@ -372,8 +373,9 @@ func (f *Flusher) uploadSliceAsBlocks(ctx context.Context, shareName, contentID 
 			data = data[blockSize:]
 		}
 
-		// Generate S3 key
-		blockKey := fmt.Sprintf("%s/%s/chunk-%d/block-%d", shareName, contentID, slice.ChunkIndex, blockIdx)
+		// Generate S3 key: {contentID}/chunk-{n}/block-{n}
+		// Note: contentID already includes the share name
+		blockKey := fmt.Sprintf("%s/chunk-%d/block-%d", contentID, slice.ChunkIndex, blockIdx)
 
 		// Upload block
 		if err := f.blockStore.WriteBlock(ctx, blockKey, blockData); err != nil {
@@ -425,8 +427,9 @@ func (f *Flusher) ReadBlocks(ctx context.Context, shareName string, fileHandle [
 				wg.Done()
 			}()
 
-			// Generate S3 key
-			blockKey := fmt.Sprintf("%s/%s/chunk-%d/block-%d", shareName, contentID, chunkIdx, blockIdx)
+			// Generate S3 key: {contentID}/chunk-{n}/block-{n}
+			// Note: contentID already includes the share name
+			blockKey := fmt.Sprintf("%s/chunk-%d/block-%d", contentID, chunkIdx, blockIdx)
 
 			data, err := f.blockStore.ReadBlock(ctx, blockKey)
 			if err != nil {

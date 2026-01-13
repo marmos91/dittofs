@@ -20,7 +20,7 @@ func TestFlusher_FlushRemaining_EmptyCache(t *testing.T) {
 	defer f.Close()
 
 	// Flush empty cache should not error
-	err := f.FlushRemaining(ctx, "share1", []byte("file1"), "content123")
+	err := f.FlushRemaining(ctx, "share1", []byte("file1"), "share1/content123")
 	if err != nil {
 		t.Errorf("FlushRemaining on empty cache returned error: %v", err)
 	}
@@ -45,7 +45,8 @@ func TestFlusher_FlushRemaining_SmallFile(t *testing.T) {
 	}
 
 	// Flush the file
-	err := f.FlushRemaining(ctx, "share1", fileHandle, "content123")
+	// Note: contentID already includes share name (e.g., "share1/path/to/file")
+	err := f.FlushRemaining(ctx, "share1", fileHandle, "share1/content123")
 	if err != nil {
 		t.Fatalf("FlushRemaining failed: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestFlusher_FlushRemaining_LargeFile(t *testing.T) {
 	}
 
 	// Flush the file
-	err := f.FlushRemaining(ctx, "share1", fileHandle, "content123")
+	err := f.FlushRemaining(ctx, "share1", fileHandle, "share1/content123")
 	if err != nil {
 		t.Fatalf("FlushRemaining failed: %v", err)
 	}
@@ -128,7 +129,7 @@ func TestFlusher_WaitForUploads_NoUploads(t *testing.T) {
 	defer f.Close()
 
 	// Wait for uploads on file with no uploads should not error
-	err := f.WaitForUploads(ctx, "content123")
+	err := f.WaitForUploads(ctx, "share1/content123")
 	if err != nil {
 		t.Errorf("WaitForUploads with no uploads returned error: %v", err)
 	}
@@ -153,7 +154,7 @@ func TestFlusher_ReadBlocks_SingleBlock(t *testing.T) {
 	}
 
 	// Read through flusher
-	result, err := f.ReadBlocks(ctx, "share1", []byte("file1"), "content123", 0, 0, uint32(len(data)))
+	result, err := f.ReadBlocks(ctx, "share1", []byte("file1"), "share1/content123", 0, 0, uint32(len(data)))
 	if err != nil {
 		t.Fatalf("ReadBlocks failed: %v", err)
 	}
@@ -187,7 +188,7 @@ func TestFlusher_ReadBlocks_PartialBlock(t *testing.T) {
 	// Read partial range
 	offset := uint32(100)
 	length := uint32(1000)
-	result, err := f.ReadBlocks(ctx, "share1", []byte("file1"), "content123", 0, offset, length)
+	result, err := f.ReadBlocks(ctx, "share1", []byte("file1"), "share1/content123", 0, offset, length)
 	if err != nil {
 		t.Fatalf("ReadBlocks failed: %v", err)
 	}
@@ -235,7 +236,7 @@ func TestFlusher_ReadBlocks_MultipleBlocks(t *testing.T) {
 	}
 
 	// Read entire range
-	result, err := f.ReadBlocks(ctx, "share1", []byte("file1"), "content123", 0, 0, uint32(totalSize))
+	result, err := f.ReadBlocks(ctx, "share1", []byte("file1"), "share1/content123", 0, 0, uint32(totalSize))
 	if err != nil {
 		t.Fatalf("ReadBlocks failed: %v", err)
 	}
@@ -275,7 +276,7 @@ func TestFlusher_Close(t *testing.T) {
 
 	// Operations after close should fail
 	ctx := context.Background()
-	err := f.FlushRemaining(ctx, "share1", []byte("file1"), "content123")
+	err := f.FlushRemaining(ctx, "share1", []byte("file1"), "share1/content123")
 	if err == nil {
 		t.Error("FlushRemaining after Close should return error")
 	}

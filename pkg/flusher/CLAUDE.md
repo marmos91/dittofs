@@ -40,13 +40,16 @@ ContentService.ReadAt() (cache miss)
 
 ### S3 Key Format
 ```
-{keyPrefix}/{shareName}/{contentID}/chunk-{chunkIdx}/block-{blockIdx}
+{keyPrefix}{contentID}/chunk-{chunkIdx}/block-{blockIdx}
 ```
-Example: `blocks/archive/abc123/chunk-0/block-0`
 
-- Share name in path enables multi-tenant support in single bucket
+Where `contentID` already includes the share name (e.g., `export/path/to/file`).
+
+Example: `blocks/export/myfile.bin/chunk-0/block-0`
+
+- Share name embedded in contentID enables multi-tenant support
 - Clear data isolation per share
-- Easy bucket lifecycle rules per share
+- Easy bucket lifecycle rules per share prefix
 
 ## Key Types
 
@@ -91,7 +94,7 @@ flusher:
 
 ## Common Mistakes
 
-1. **Forgetting share name in S3 key** - Keys must include share name for multi-tenant isolation
+1. **Duplicating share name in S3 key** - contentID already includes the share name, don't prepend it again
 2. **Not handling cache-only mode** - When block store is nil, flusher is nil too
 3. **Blocking on upload** - Uploads are async, use WaitForUploads() to wait
 4. **Ignoring FlushRemaining** - Partial blocks (< 4MB) need explicit flush on COMMIT
