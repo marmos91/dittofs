@@ -3,7 +3,6 @@ package registry
 import (
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/cache/flusher"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -22,21 +21,6 @@ type PrefetchConfig struct {
 	ChunkSize int64
 }
 
-// FlusherConfig configures background flusher behavior for a share.
-type FlusherConfig struct {
-	// SweepInterval is how often to check for idle files.
-	// Default: 10s
-	SweepInterval time.Duration
-
-	// FlushTimeout is how long a file must be idle before flushing.
-	// Default: 30s
-	FlushTimeout time.Duration
-
-	// FlushPoolSize is how many files to flush in parallel.
-	// Default: 4
-	FlushPoolSize int
-}
-
 // WriteGatheringConfig configures the write gathering optimization.
 //
 // Write gathering is based on the Linux kernel's "wdelay" optimization (fs/nfsd/vfs.c).
@@ -44,7 +28,7 @@ type FlusherConfig struct {
 // briefly to allow additional writes to accumulate before flushing.
 //
 // This optimization:
-//   - Reduces S3 API calls by batching writes
+//   - Reduces storage API calls by batching writes
 //   - Improves throughput for bulk write scenarios
 //   - Trades small latency increase (GatherDelay) for better efficiency
 type WriteGatheringConfig struct {
@@ -66,24 +50,21 @@ type WriteGatheringConfig struct {
 // Share represents a configured share that binds together:
 // - A share name (export path for NFS, share name for SMB)
 // - A metadata store instance (for file/directory structure)
-// - A content store instance (for file data)
-// - Optional unified cache for read/write buffering
+// - A SliceCache for content buffering (mandatory, auto-created)
 // - Access control rules (IP-based, authentication)
 // - Identity mapping rules (squashing)
 //
-// Multiple shares can reference the same store instances.
+// Multiple shares can reference the same metadata store instance.
 //
-// Caching:
-// The unified cache serves both reads and writes:
-// - Writes accumulate in cache (StateBuffering)
-// - COMMIT flushes to content store (StateUploading → StateCached)
-// - Reads check cache first, populate on miss
-// - Cache is optional (empty = sync writes, no read caching)
+// Content Model:
+// All content operations go through a mandatory SliceCache that implements
+// the Chunk/Slice/Block storage model:
+// - WriteSlice: Creates new slices (no read-modify-write)
+// - ReadSlice: Merges slices (newest-wins semantics)
+// - Flush: Coalesces and persists slices to block storage
 type Share struct {
 	Name          string
 	MetadataStore string              // Name of the metadata store
-	ContentStore  string              // Name of the content store
-	Cache         string              // Name of the unified cache (optional, empty = no caching)
 	RootHandle    metadata.FileHandle // Encoded file handle for the root directory
 	ReadOnly      bool
 
@@ -105,7 +86,6 @@ type Share struct {
 
 	// Cache behavior configuration
 	PrefetchConfig       PrefetchConfig       // Read prefetch settings
-	FlusherConfig        FlusherConfig        // Background flusher settings
 	WriteGatheringConfig WriteGatheringConfig // Write gathering optimization settings
 
 	// NFS-specific options
@@ -116,17 +96,12 @@ type Share struct {
 	// - Compatibility with older clients
 	// - Reducing server memory pressure from large responses
 	DisableReaddirplus bool
-
-	// Background flusher for this share (nil if no cache configured)
-	Flusher *flusher.BackgroundFlusher
 }
 
 // ShareConfig contains all configuration needed to create a share.
 type ShareConfig struct {
 	Name          string
 	MetadataStore string
-	ContentStore  string
-	Cache         string // Unified cache name (optional, empty = no caching)
 	ReadOnly      bool
 
 	// User-based Access Control
@@ -149,7 +124,6 @@ type ShareConfig struct {
 
 	// Cache behavior configuration
 	PrefetchConfig       PrefetchConfig       // Read prefetch settings
-	FlusherConfig        FlusherConfig        // Background flusher settings
 	WriteGatheringConfig WriteGatheringConfig // Write gathering optimization settings
 
 	// NFS-specific options

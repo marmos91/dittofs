@@ -344,6 +344,10 @@ func TestWrite_DataSyncStability(t *testing.T) {
 }
 
 // TestWrite_FileSyncStability tests WRITE with FILE_SYNC stability.
+// NOTE: Since Cache is always enabled, we always return UNSTABLE regardless
+// of what the client requested. This is RFC 1813 compliant - the server is allowed
+// to return a less stable commitment than requested. Clients must call COMMIT
+// if they need durability guarantees.
 func TestWrite_FileSyncStability(t *testing.T) {
 	fx := handlertesting.NewHandlerFixture(t)
 
@@ -361,8 +365,9 @@ func TestWrite_FileSyncStability(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, types.NFS3OK, resp.Status)
 	assert.EqualValues(t, uint32(5), resp.Count)
-	// With FILE_SYNC, committed should be FILE_SYNC
-	assert.EqualValues(t, uint32(2), resp.Committed)
+	// With Cache always enabled, we always return UNSTABLE (0)
+	// Server is allowed to return less stable than requested per RFC 1813
+	assert.EqualValues(t, uint32(0), resp.Committed)
 }
 
 // TestWrite_InvalidStability tests WRITE with invalid stability level.

@@ -6,7 +6,6 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
-	"github.com/marmos91/dittofs/pkg/bytesize"
 )
 
 // ============================================================================
@@ -365,9 +364,6 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	metaSvc := h.Registry.GetMetadataService()
 	contentSvc := h.Registry.GetContentService()
 
-	// Get unified cache for this share (optional - nil means sync mode)
-	cache := h.Registry.GetCacheForShare(tree.ShareName)
-
 	// ========================================================================
 	// Step 6: Build AuthContext
 	// ========================================================================
@@ -407,29 +403,15 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
-	// Step 8: Write data to storage (cache or direct to content store)
+	// Step 8: Write data to ContentService (uses Cache internally)
 	// ========================================================================
 
 	bytesWritten := len(req.Data)
 
-	if cache != nil {
-		// Async mode: write to cache, will be flushed on FLUSH
-		err = cache.WriteAt(authCtx.Context, writeOp.ContentID, req.Data, req.Offset)
-		if err != nil {
-			logger.Warn("WRITE: cache write failed", "path", openFile.Path, "error", err)
-			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUnexpectedIOError}}, nil
-		}
-		logger.Debug("WRITE: cached successfully",
-			"path", openFile.Path,
-			"content_id", writeOp.ContentID,
-			"cache_size", bytesize.ByteSize(cache.Size(writeOp.ContentID)))
-	} else {
-		// Sync mode: write directly to content store via ContentService
-		err = contentSvc.WriteAt(authCtx.Context, tree.ShareName, writeOp.ContentID, req.Data, req.Offset)
-		if err != nil {
-			logger.Warn("WRITE: content write failed", "path", openFile.Path, "error", err)
-			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
-		}
+	err = contentSvc.WriteAt(authCtx.Context, tree.ShareName, writeOp.ContentID, req.Data, req.Offset)
+	if err != nil {
+		logger.Warn("WRITE: content write failed", "path", openFile.Path, "error", err)
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
 	}
 
 	// ========================================================================

@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	contentMemory "github.com/marmos91/dittofs/pkg/content/store/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadataMemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -12,14 +11,11 @@ import (
 func TestApplyIdentityMapping_NoMapping(t *testing.T) {
 	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
-	contentStore, _ := contentMemory.NewMemoryContentStore(context.Background())
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
-	_ = reg.RegisterContentStore("content1", contentStore)
 	_ = reg.AddShare(context.Background(), &ShareConfig{
 		Name:          "/export",
 		MetadataStore: "meta1",
-		ContentStore:  "content1",
 		RootAttr:      &metadata.FileAttr{},
 		// No squashing configured
 	})
@@ -53,14 +49,11 @@ func TestApplyIdentityMapping_NoMapping(t *testing.T) {
 func TestApplyIdentityMapping_AllSquash(t *testing.T) {
 	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
-	contentStore, _ := contentMemory.NewMemoryContentStore(context.Background())
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
-	_ = reg.RegisterContentStore("content1", contentStore)
 	_ = reg.AddShare(context.Background(), &ShareConfig{
 		Name:              "/export",
 		MetadataStore:     "meta1",
-		ContentStore:      "content1",
 		RootAttr:          &metadata.FileAttr{},
 		MapAllToAnonymous: true,
 		AnonymousUID:      65534,
@@ -96,14 +89,11 @@ func TestApplyIdentityMapping_AllSquash(t *testing.T) {
 func TestApplyIdentityMapping_RootSquash(t *testing.T) {
 	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
-	contentStore, _ := contentMemory.NewMemoryContentStore(context.Background())
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
-	_ = reg.RegisterContentStore("content1", contentStore)
 	_ = reg.AddShare(context.Background(), &ShareConfig{
 		Name:                     "/export",
 		MetadataStore:            "meta1",
-		ContentStore:             "content1",
 		RootAttr:                 &metadata.FileAttr{},
 		MapPrivilegedToAnonymous: true,
 		AnonymousUID:             65534,
@@ -160,14 +150,11 @@ func TestApplyIdentityMapping_RootSquash(t *testing.T) {
 func TestApplyIdentityMapping_AllSquashTakesPrecedence(t *testing.T) {
 	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
-	contentStore, _ := contentMemory.NewMemoryContentStore(context.Background())
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
-	_ = reg.RegisterContentStore("content1", contentStore)
 	_ = reg.AddShare(context.Background(), &ShareConfig{
 		Name:                     "/export",
 		MetadataStore:            "meta1",
-		ContentStore:             "content1",
 		RootAttr:                 &metadata.FileAttr{},
 		MapAllToAnonymous:        true, // all_squash
 		MapPrivilegedToAnonymous: true, // root_squash (should be ignored)
@@ -211,14 +198,11 @@ func TestApplyIdentityMapping_ShareNotFound(t *testing.T) {
 func TestGetShareNameForHandle(t *testing.T) {
 	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
-	contentStore, _ := contentMemory.NewMemoryContentStore(context.Background())
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
-	_ = reg.RegisterContentStore("content1", contentStore)
 	_ = reg.AddShare(context.Background(), &ShareConfig{
 		Name:          "/export",
 		MetadataStore: "meta1",
-		ContentStore:  "content1",
 		RootAttr:      &metadata.FileAttr{},
 	})
 
@@ -254,14 +238,11 @@ func TestGetShareNameForHandle_InvalidHandle(t *testing.T) {
 func TestGetShareNameForHandle_ShareNotInRegistry(t *testing.T) {
 	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
-	contentStore, _ := contentMemory.NewMemoryContentStore(context.Background())
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
-	_ = reg.RegisterContentStore("content1", contentStore)
 	_ = reg.AddShare(context.Background(), &ShareConfig{
 		Name:          "/export",
 		MetadataStore: "meta1",
-		ContentStore:  "content1",
 		RootAttr:      &metadata.FileAttr{},
 	})
 
@@ -281,14 +262,11 @@ func TestGetShareNameForHandle_ShareNotInRegistry(t *testing.T) {
 func TestApplyIdentityMapping_AnonymousAccess(t *testing.T) {
 	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
-	contentStore, _ := contentMemory.NewMemoryContentStore(context.Background())
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
-	_ = reg.RegisterContentStore("content1", contentStore)
 	_ = reg.AddShare(context.Background(), &ShareConfig{
 		Name:          "/export",
 		MetadataStore: "meta1",
-		ContentStore:  "content1",
 		RootAttr:      &metadata.FileAttr{},
 		AnonymousUID:  65534,
 		AnonymousGID:  65534,
@@ -323,14 +301,11 @@ func TestApplyIdentityMapping_AnonymousAccess(t *testing.T) {
 func TestApplyIdentityMapping_PreservesOriginalIdentity(t *testing.T) {
 	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
-	contentStore, _ := contentMemory.NewMemoryContentStore(context.Background())
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
-	_ = reg.RegisterContentStore("content1", contentStore)
 	_ = reg.AddShare(context.Background(), &ShareConfig{
 		Name:              "/export",
 		MetadataStore:     "meta1",
-		ContentStore:      "content1",
 		RootAttr:          &metadata.FileAttr{},
 		MapAllToAnonymous: true,
 		AnonymousUID:      65534,

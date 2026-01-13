@@ -163,7 +163,7 @@ func checkMFsymlink(
 	}
 }
 
-// readMFsymlinkContentForNFS reads content from cache or content store via ContentService.
+// readMFsymlinkContentForNFS reads content from ContentService (uses Cache internally).
 func readMFsymlinkContentForNFS(
 	ctx context.Context,
 	reg *registry.Registry,
@@ -174,27 +174,14 @@ func readMFsymlinkContentForNFS(
 		return nil, nil
 	}
 
-	// Use ContentService for reading content (handles cache automatically)
+	// Use ContentService.ReadAt (Cache handles caching automatically)
 	contentSvc := reg.GetContentService()
 
-	reader, err := contentSvc.ReadContent(ctx, share, contentID)
+	data := make([]byte, mfsymlink.Size)
+	n, err := contentSvc.ReadAt(ctx, share, contentID, data, 0)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = reader.Close() }()
 
-	data := make([]byte, mfsymlink.Size)
-	totalRead := 0
-	for totalRead < mfsymlink.Size {
-		n, err := reader.Read(data[totalRead:])
-		if err != nil {
-			if totalRead > 0 {
-				break
-			}
-			return nil, err
-		}
-		totalRead += n
-	}
-
-	return data[:totalRead], nil
+	return data[:n], nil
 }

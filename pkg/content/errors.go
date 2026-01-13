@@ -3,29 +3,12 @@ package content
 import "errors"
 
 // ============================================================================
-// Standard Content Store Errors
+// Standard Content Errors
 // ============================================================================
 
 // These errors provide a consistent way to indicate common failure conditions
-// across all content store implementations. Protocol handlers should check for
-// these errors and map them to appropriate protocol-specific error codes.
-//
-// Usage Pattern:
-//
-//	content, err := store.ReadContent(ctx, id)
-//	if err != nil {
-//	    if errors.Is(err, content.ErrContentNotFound) {
-//	        return nfs.NFS3ErrNoEnt
-//	    }
-//	    return nfs.NFS3ErrIO
-//	}
-//
-// Error Wrapping:
-// Implementations should wrap these errors with additional context:
-//
-//	if !fileExists {
-//	    return fmt.Errorf("content %s: %w", id, content.ErrContentNotFound)
-//	}
+// across content operations. Protocol handlers should check for these errors
+// and map them to appropriate protocol-specific error codes.
 
 var (
 	// ErrContentNotFound indicates the requested content does not exist.
@@ -37,9 +20,6 @@ var (
 	ErrContentNotFound = errors.New("content not found")
 
 	// ErrContentExists indicates content with this ID already exists.
-	//
-	// Note: Most write operations overwrite existing content and do NOT
-	// return this error. This is only for explicit "create new" operations.
 	//
 	// Protocol Mapping:
 	//   - NFS: NFS3ErrExist (17)
@@ -98,8 +78,6 @@ var (
 
 	// ErrNotSupported indicates the operation is not supported.
 	//
-	// This is a permanent error - retrying won't help.
-	//
 	// Protocol Mapping:
 	//   - NFS: NFS3ErrNotSupp (10004)
 	//   - SMB: STATUS_NOT_SUPPORTED
@@ -142,9 +120,10 @@ var (
 	//   - HTTP: 503 Service Unavailable
 	ErrUnavailable = errors.New("storage unavailable")
 
-	// ErrNoStoreForShare indicates no content store is configured for the share.
-	ErrNoStoreForShare = errors.New("no content store configured for share")
+	// ErrNoSliceCacheForShare indicates no slice cache is configured for the share.
+	// Deprecated: Use ErrNoCacheConfigured instead.
+	ErrNoSliceCacheForShare = errors.New("no slice cache configured for share")
 
-	// ErrNoCacheForShare indicates no cache is configured for the share.
-	ErrNoCacheForShare = errors.New("no cache configured for share")
+	// ErrNoCacheConfigured indicates no cache is configured for the content service.
+	ErrNoCacheConfigured = errors.New("no cache configured")
 )

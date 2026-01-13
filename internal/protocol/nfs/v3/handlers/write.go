@@ -299,21 +299,11 @@ func (h *Handler) Write(
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-
-	// Get content service for this share
 	contentSvc := h.Registry.GetContentService()
-
-	// Get unified cache for this share (optional - nil means sync mode)
-	// Cache is accessed directly for write gathering tracking (BeginWrite/EndWrite)
-	cache := h.Registry.GetCacheForShare(ctx.Share)
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	if cache != nil {
-		logger.InfoCtx(ctx.Context, "WRITE", "share", ctx.Share, "mode", "async (using cache)")
-	} else {
-		logger.InfoCtx(ctx.Context, "WRITE", "share", ctx.Share, "mode", "sync (no cache)")
-	}
+	logger.InfoCtx(ctx.Context, "WRITE", "share", ctx.Share)
 
 	// ========================================================================
 	// Step 3: Validate request parameters
@@ -431,45 +421,23 @@ func (h *Handler) Write(
 	nfsWccAttr := buildWccAttr(writeIntent.PreWriteAttr)
 
 	// ========================================================================
-	// Step 6: Write data to cache or content store
+	// Step 6: Write data to ContentService (uses Cache internally)
 	// ========================================================================
-	// Write modes:
-	//   1. Cached mode (if WriteCache available): Write to cache first
-	//   2. Direct mode (no cache): Write directly to content store
 
 	// Check context before write operation
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "WRITE cancelled before write", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
-
 		return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
 
-	// Write to storage via ContentService (handles cache or direct store)
-	if cache != nil {
-		// Async mode: ContentService will write to cache, will be flushed on COMMIT
-		//
-		// Track active writers for write gathering optimization.
-		// This enables the COMMIT handler to detect concurrent writes and
-		// delay flushing briefly to allow writes to accumulate.
-		// See: Linux kernel fs/nfsd/vfs.c wait_for_concurrent_writes()
-		cache.BeginWrite(writeIntent.ContentID)
-		err = contentSvc.WriteAt(ctx.Context, ctx.Share, writeIntent.ContentID, req.Data, req.Offset)
-		cache.EndWrite(writeIntent.ContentID)
-		if err != nil {
-			traceError(ctx.Context, err, "WRITE failed: cache write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.ContentID, "client", clientIP)
-			return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
-		}
-		logger.DebugCtx(ctx.Context, "WRITE: cached successfully", "content_id", writeIntent.ContentID, "cache_size", bytesize.ByteSize(cache.Size(writeIntent.ContentID)))
-	} else {
-		// Sync mode: ContentService writes directly to content store
-		err = contentSvc.WriteAt(ctx.Context, ctx.Share, writeIntent.ContentID, req.Data, req.Offset)
-		if err != nil {
-			traceError(ctx.Context, err, "WRITE failed: content write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.ContentID, "client", clientIP)
-			status := xdr.MapContentErrorToNFSStatus(err)
-			return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
-		}
-		logger.DebugCtx(ctx.Context, "WRITE: direct write successful", "content_id", writeIntent.ContentID)
+	// Write to ContentService (uses Cache, will be flushed on COMMIT)
+	err = contentSvc.WriteAt(ctx.Context, ctx.Share, writeIntent.ContentID, req.Data, req.Offset)
+	if err != nil {
+		traceError(ctx.Context, err, "WRITE failed: content write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.ContentID, "client", clientIP)
+		status := xdr.MapContentErrorToNFSStatus(err)
+		return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
+	logger.DebugCtx(ctx.Context, "WRITE: cached successfully", "content_id", writeIntent.ContentID)
 
 	// ========================================================================
 	// Step 8: Commit metadata changes after successful content write
@@ -498,8 +466,8 @@ func (h *Handler) Write(
 	// Stability Level Design Decision (RFC 1813 Section 3.3.7)
 	// ========================================================================
 	//
-	// We intentionally ALWAYS return UNSTABLE when cache is enabled, regardless
-	// of what the client requested in req.Stable. This is RFC-compliant because:
+	// We always return UNSTABLE because Cache is always enabled.
+	// This is RFC-compliant because:
 	//
 	// RFC 1813 says: "The server may choose to write the data to stable storage
 	// or may hold it in the server's internal buffers to be written later."
@@ -516,17 +484,8 @@ func (h *Handler) Write(
 	//   - Client compatibility: All NFS clients handle UNSTABLE correctly and
 	//     will call COMMIT before closing files or when fsync() is called.
 	//
-	// If you need synchronous writes (e.g., for a local filesystem backend),
-	// disable the cache for that share in the configuration.
-	//
-	var committed uint32
-	if cache != nil {
-		committed = uint32(UnstableWrite)
-		logger.DebugCtx(ctx.Context, "WRITE: returning UNSTABLE (cache enabled, flush on COMMIT)")
-	} else {
-		committed = uint32(FileSyncWrite)
-		logger.DebugCtx(ctx.Context, "WRITE: returning FILE_SYNC (no cache, data committed)")
-	}
+	committed := uint32(UnstableWrite)
+	logger.DebugCtx(ctx.Context, "WRITE: returning UNSTABLE (flush on COMMIT)")
 
 	logger.DebugCtx(ctx.Context, "WRITE details", "stable_requested", req.Stable, "committed", committed, "size", bytesize.ByteSize(updatedFile.Size), "type", updatedFile.Type, "mode", fmt.Sprintf("%o", updatedFile.Mode))
 

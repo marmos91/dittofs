@@ -1,48 +1,114 @@
 # pkg/cache
 
-Unified read/write cache layer - content-store agnostic.
+Slice-aware cache layer for the Chunk/Slice/Block storage model.
 
-## State Machine
+## Architecture
 
 ```
-StateNone → StateBuffering (write) → StateUploading (flush) → StateCached (clean)
-StateNone → StatePrefetching (read) → StateCached
+Cache Interface (cache.go)
+    - Business logic: merging, coalescing, optimization
+         ↓
+Store Interface (store.go)
+    - Persistence: add/get/update slices
+         ↓
+store/memory/ (implementations)
 ```
+
+## Package Structure
+
+Following the metadata package pattern:
+- `cache.go` - Cache interface (business logic layer)
+- `store.go` - Store interface (persistence layer)
+- `store/memory/store.go` - Memory Store implementation
+- `store/memory/cache.go` - MemoryCache implementation (wraps Store)
 
 ## Key Design Decisions
 
-### One Cache Per Share
-- Serves both reads AND writes
-- Content-store agnostic (doesn't know about S3 multipart, fsync, etc.)
-- LRU eviction with dirty entry protection
+### Single Global Cache
+- One cache serves ALL shares (not per-share)
+- ContentID uniqueness guarantees data isolation
+- Reduces memory overhead from multiple cache instances
 
-### Three Data States
-1. **Buffering** (dirty): Accumulating writes, cannot evict
-2. **Uploading** (dirty): Flush in progress, cannot evict
-3. **Cached** (clean): Can evict, needs mtime/size validation on read hit
+### Slice-Aware API
+- `WriteSlice(fileHandle, chunkIdx, data, offset)` - direct slice writes
+- `ReadSlice(fileHandle, chunkIdx, offset, length)` - merge reads
+- No translation between "bytes" and "slices"
 
-### Inactivity-Based Finalization
-- Background sweeper detects idle files
-- Files finalized after `finalize_timeout` of no writes
-- Enables async write completion detection
+### Business Logic in Cache Layer
+The Cache handles:
+1. **Sequential write optimization** - extends existing slices instead of creating new ones
+2. **Newest-wins read merging** - overlapping slices resolved by creation time
+3. **Write coalescing** - merges adjacent pending slices before flush
 
-## Write Gathering
+### Persistence in Store Layer
+The Store interface handles:
+1. **Slice storage** - add/get/update/replace slices
+2. **File/chunk management** - create/remove files and chunks
+3. **Size tracking** - total bytes stored
 
-Linux kernel's "wdelay" optimization implemented in protocol handlers (not here):
-- COMMIT waits briefly if recent writes detected
-- Default: 10ms delay with 10ms active threshold
-- Reduces S3 API calls by batching
+## Slice States
 
-## Flusher (`flusher/`)
+```
+SliceStatePending → SliceStateUploading → SliceStateFlushed
+```
 
-Background goroutine that:
-- Sweeps for idle dirty entries
-- Flushes to content store
-- Handles S3 multipart completion via `IncrementalWriteStore`
+1. **Pending**: Unflushed writes, cannot evict
+2. **Uploading**: Flush in progress, cannot evict
+3. **Flushed**: Safe in block storage, can evict
+
+## Sequential Write Optimization
+
+NFS clients write in 16KB-32KB chunks. Without optimization:
+- 10MB file = 320 writes = 320 slices (bad)
+
+With `tryExtendSlice()`:
+- Sequential writes extend existing pending slice
+- 10MB file = 320 writes = 1 slice (good)
+
+## Newest-Wins Algorithm
+
+When reading overlapping slices:
+```
+Slices (newest first): [Slice2: 2-3MB] [Slice1: 0-4MB] [Slice0: 0-64MB]
+Read range: 1-5MB
+Result:
+  - 1-2MB: from Slice1 (no newer covers it)
+  - 2-3MB: from Slice2 (newest)
+  - 3-4MB: from Slice1
+  - 4-5MB: from Slice0 (oldest still needed)
+```
+
+## Implementations
+
+| Implementation | Location | Use Case |
+|----------------|----------|----------|
+| MemoryCache | `store/memory/cache.go` | Default, volatile, development |
+| (Filesystem) | Future | Persistence across restarts |
 
 ## Common Mistakes
 
-1. **Assuming cache required** - it's optional, direct writes work fine
-2. **Evicting dirty entries** - only clean entries can be evicted
-3. **Cache knowing about multipart** - that's content store's concern
-4. **Blocking on flush** - flusher runs async, use COMMIT semantics
+1. **Per-share caches** - Use single global cache, ContentID isolates data
+2. **Evicting dirty entries** - Only flushed slices can be evicted
+3. **Parsing slices in store** - Store just persists, cache handles logic
+4. **Creating many slices** - Sequential optimization should merge them
+
+## Usage Example
+
+```go
+import storeMemory "github.com/marmos91/dittofs/pkg/cache/store/memory"
+
+// Create cache with memory store
+cache := storeMemory.NewCache(0) // 0 = unlimited
+
+// Write (auto-extends sequential writes)
+cache.WriteSlice(ctx, fileHandle, chunkIdx, data, offset)
+
+// Read (auto-merges with newest-wins)
+data, found, err := cache.ReadSlice(ctx, fileHandle, chunkIdx, offset, length)
+
+// Get dirty slices for flush (auto-coalesces)
+pending, err := cache.GetDirtySlices(ctx, fileHandle)
+
+// Mark flushed after upload
+cache.MarkSliceFlushed(ctx, fileHandle, sliceID, blockRefs)
+```

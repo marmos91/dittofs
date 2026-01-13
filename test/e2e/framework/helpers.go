@@ -24,12 +24,6 @@ func RunOnLocalConfigs(t *testing.T, testFunc func(t *testing.T, tc *TestContext
 	RunOnConfigs(t, LocalConfigurations(), testFunc)
 }
 
-// RunOnCachedConfigs runs a test function on configurations with cache enabled.
-func RunOnCachedConfigs(t *testing.T, testFunc func(t *testing.T, tc *TestContext)) {
-	t.Helper()
-	RunOnConfigs(t, CachedConfigurations(), testFunc)
-}
-
 // RunOnConfigs runs a test function on the specified configurations.
 // Each test gets a fresh context with its own server and mounts.
 func RunOnConfigs(t *testing.T, configs []*TestConfig, testFunc func(t *testing.T, tc *TestContext)) {
@@ -87,16 +81,6 @@ func SkipIfShort(t *testing.T, reason string) {
 	t.Helper()
 	if testing.Short() {
 		t.Skipf("Skipping in short mode: %s", reason)
-	}
-}
-
-// SkipLargeFileOnS3 skips large file tests on S3 configurations without cache.
-// Since we now always enable cache for S3, this is mostly for documentation.
-func SkipLargeFileOnS3(t *testing.T, tc *TestContext, sizeBytes int64) {
-	t.Helper()
-
-	if tc.Config.ContentStore == ContentS3 && !tc.Config.UseCache && IsLargeFile(sizeBytes) {
-		t.Skipf("Skipping large file test (%d bytes) on S3 without cache", sizeBytes)
 	}
 }
 

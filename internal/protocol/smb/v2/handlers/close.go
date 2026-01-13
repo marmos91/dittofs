@@ -295,18 +295,14 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// Flush and finalize cached data to ensure durability
 	// Unlike NFS COMMIT which just flushes, SMB CLOSE requires immediate durability
 	if !openFile.IsDirectory && openFile.ContentID != "" {
-		fileCache := h.Registry.GetCacheForShare(openFile.ShareName)
-		if fileCache != nil && fileCache.Size(openFile.ContentID) > 0 {
-			contentSvc := h.Registry.GetContentService()
-			// Use FlushAndFinalize for immediate durability (completes S3 uploads)
-			_, flushErr := contentSvc.FlushAndFinalize(ctx.Context, openFile.ShareName, openFile.ContentID)
-			if flushErr != nil {
-				logger.Warn("CLOSE: cache flush failed", "path", openFile.Path, "error", flushErr)
-				// Continue with close even if flush fails - data is in cache
-				// and background flusher will eventually persist it
-			} else {
-				logger.Debug("CLOSE: flushed and finalized", "path", openFile.Path, "contentID", openFile.ContentID)
-			}
+		contentSvc := h.Registry.GetContentService()
+		// Use FlushAndFinalize for immediate durability
+		_, flushErr := contentSvc.FlushAndFinalize(ctx.Context, openFile.ShareName, openFile.ContentID)
+		if flushErr != nil {
+			logger.Warn("CLOSE: flush failed", "path", openFile.Path, "error", flushErr)
+			// Continue with close even if flush fails
+		} else {
+			logger.Debug("CLOSE: flushed and finalized", "path", openFile.Path, "contentID", openFile.ContentID)
 		}
 	}
 
@@ -518,41 +514,18 @@ func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *Ope
 }
 
 // readMFsymlinkContent reads the content of a potential MFsymlink file.
-// It tries the cache first, then falls back to the content store via ContentService.
+// It reads from ContentService which uses Cache internally.
 func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFile) ([]byte, error) {
-	// Try reading from cache first
-	fileCache := h.Registry.GetCacheForShare(openFile.ShareName)
-	if fileCache != nil && fileCache.Size(openFile.ContentID) > 0 {
-		data := make([]byte, mfsymlink.Size)
-		n, err := fileCache.ReadAt(ctx.Context, openFile.ContentID, data, 0)
-		if err == nil && n == mfsymlink.Size {
-			return data, nil
-		}
-	}
-
-	// Fall back to content store via ContentService
 	contentSvc := h.Registry.GetContentService()
 
-	reader, err := contentSvc.ReadContent(ctx.Context, openFile.ShareName, openFile.ContentID)
+	// Read the MFsymlink content (always 1067 bytes)
+	data := make([]byte, mfsymlink.Size)
+	n, err := contentSvc.ReadAt(ctx.Context, openFile.ShareName, openFile.ContentID, data, 0)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = reader.Close() }()
 
-	data := make([]byte, mfsymlink.Size)
-	totalRead := 0
-	for totalRead < mfsymlink.Size {
-		n, err := reader.Read(data[totalRead:])
-		if err != nil {
-			if totalRead > 0 {
-				break
-			}
-			return nil, err
-		}
-		totalRead += n
-	}
-
-	return data[:totalRead], nil
+	return data[:n], nil
 }
 
 // convertToRealSymlink removes the regular file and creates a symlink in its place.

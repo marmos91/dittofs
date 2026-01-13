@@ -6,17 +6,17 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/cache"
-	"github.com/marmos91/dittofs/pkg/cache/memory"
+	storeMemory "github.com/marmos91/dittofs/pkg/cache/store/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 func TestContentService_SliceCache_WriteAndRead(t *testing.T) {
 	svc := New()
-	sc := memory.NewMemorySliceCache(0)
+	sc := storeMemory.NewCache(0)
 	defer sc.Close()
 
 	shareName := "/export"
-	if err := svc.RegisterSliceCacheForShare(shareName, sc); err != nil {
+	if err := svc.RegisterCacheForShare(shareName, sc); err != nil {
 		t.Fatalf("RegisterSliceCacheForShare failed: %v", err)
 	}
 
@@ -46,11 +46,11 @@ func TestContentService_SliceCache_WriteAndRead(t *testing.T) {
 
 func TestContentService_SliceCache_WriteAtOffset(t *testing.T) {
 	svc := New()
-	sc := memory.NewMemorySliceCache(0)
+	sc := storeMemory.NewCache(0)
 	defer sc.Close()
 
 	shareName := "/export"
-	_ = svc.RegisterSliceCacheForShare(shareName, sc)
+	_ = svc.RegisterCacheForShare(shareName, sc)
 
 	ctx := context.Background()
 	contentID := metadata.ContentID("test-file-2")
@@ -87,11 +87,11 @@ func TestContentService_SliceCache_WriteAtOffset(t *testing.T) {
 
 func TestContentService_SliceCache_MultipleWrites(t *testing.T) {
 	svc := New()
-	sc := memory.NewMemorySliceCache(0)
+	sc := storeMemory.NewCache(0)
 	defer sc.Close()
 
 	shareName := "/export"
-	_ = svc.RegisterSliceCacheForShare(shareName, sc)
+	_ = svc.RegisterCacheForShare(shareName, sc)
 
 	ctx := context.Background()
 	contentID := metadata.ContentID("test-file-3")
@@ -114,11 +114,11 @@ func TestContentService_SliceCache_MultipleWrites(t *testing.T) {
 
 func TestContentService_SliceCache_GetContentSize(t *testing.T) {
 	svc := New()
-	sc := memory.NewMemorySliceCache(0)
+	sc := storeMemory.NewCache(0)
 	defer sc.Close()
 
 	shareName := "/export"
-	_ = svc.RegisterSliceCacheForShare(shareName, sc)
+	_ = svc.RegisterCacheForShare(shareName, sc)
 
 	ctx := context.Background()
 	contentID := metadata.ContentID("test-file-4")
@@ -148,11 +148,11 @@ func TestContentService_SliceCache_GetContentSize(t *testing.T) {
 
 func TestContentService_SliceCache_ContentExists(t *testing.T) {
 	svc := New()
-	sc := memory.NewMemorySliceCache(0)
+	sc := storeMemory.NewCache(0)
 	defer sc.Close()
 
 	shareName := "/export"
-	_ = svc.RegisterSliceCacheForShare(shareName, sc)
+	_ = svc.RegisterCacheForShare(shareName, sc)
 
 	ctx := context.Background()
 	contentID := metadata.ContentID("test-file-5")
@@ -181,11 +181,11 @@ func TestContentService_SliceCache_ContentExists(t *testing.T) {
 
 func TestContentService_SliceCache_Delete(t *testing.T) {
 	svc := New()
-	sc := memory.NewMemorySliceCache(0)
+	sc := storeMemory.NewCache(0)
 	defer sc.Close()
 
 	shareName := "/export"
-	_ = svc.RegisterSliceCacheForShare(shareName, sc)
+	_ = svc.RegisterCacheForShare(shareName, sc)
 
 	ctx := context.Background()
 	contentID := metadata.ContentID("test-file-6")
@@ -214,11 +214,11 @@ func TestContentService_SliceCache_Delete(t *testing.T) {
 
 func TestContentService_SliceCache_Flush(t *testing.T) {
 	svc := New()
-	sc := memory.NewMemorySliceCache(0)
+	sc := storeMemory.NewCache(0)
 	defer sc.Close()
 
 	shareName := "/export"
-	_ = svc.RegisterSliceCacheForShare(shareName, sc)
+	_ = svc.RegisterCacheForShare(shareName, sc)
 
 	ctx := context.Background()
 	contentID := metadata.ContentID("test-file-7")
@@ -251,11 +251,11 @@ func TestContentService_SliceCache_Flush(t *testing.T) {
 
 func TestContentService_SliceCache_FlushAndFinalize(t *testing.T) {
 	svc := New()
-	sc := memory.NewMemorySliceCache(0)
+	sc := storeMemory.NewCache(0)
 	defer sc.Close()
 
 	shareName := "/export"
-	_ = svc.RegisterSliceCacheForShare(shareName, sc)
+	_ = svc.RegisterCacheForShare(shareName, sc)
 
 	ctx := context.Background()
 	contentID := metadata.ContentID("test-file-8")
@@ -275,11 +275,11 @@ func TestContentService_SliceCache_FlushAndFinalize(t *testing.T) {
 
 func TestContentService_SliceCache_CrossChunkWrite(t *testing.T) {
 	svc := New()
-	sc := memory.NewMemorySliceCache(0)
+	sc := storeMemory.NewCache(0)
 	defer sc.Close()
 
 	shareName := "/export"
-	_ = svc.RegisterSliceCacheForShare(shareName, sc)
+	_ = svc.RegisterCacheForShare(shareName, sc)
 
 	ctx := context.Background()
 	contentID := metadata.ContentID("test-file-9")
@@ -314,23 +314,23 @@ func TestContentService_SliceCache_CrossChunkWrite(t *testing.T) {
 	}
 }
 
-func TestContentService_SliceCache_HasSliceCache(t *testing.T) {
+func TestContentService_SliceCache_HasCache(t *testing.T) {
 	svc := New()
-	sc := memory.NewMemorySliceCache(0)
+	sc := storeMemory.NewCache(0)
 	defer sc.Close()
 
 	shareName := "/export"
 
 	// Initially no slice cache
-	if svc.HasSliceCache(shareName) {
-		t.Error("Expected HasSliceCache=false initially")
+	if svc.HasCache(shareName) {
+		t.Error("Expected HasCache=false initially")
 	}
 
 	// Register slice cache
-	_ = svc.RegisterSliceCacheForShare(shareName, sc)
+	_ = svc.RegisterCacheForShare(shareName, sc)
 
 	// Now should have slice cache
-	if !svc.HasSliceCache(shareName) {
-		t.Error("Expected HasSliceCache=true after registration")
+	if !svc.HasCache(shareName) {
+		t.Error("Expected HasCache=true after registration")
 	}
 }

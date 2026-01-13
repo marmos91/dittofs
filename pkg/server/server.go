@@ -398,27 +398,7 @@ func (s *DittoServer) serve(ctx context.Context) error {
 	logger.Debug("Waiting for all adapters to complete shutdown")
 	wg.Wait()
 
-	// Close all content stores first to flush pending deletions before stopping GC
-	// This order prevents race conditions where GC tries to delete while stores are closing
-	logger.Debug("Closing content stores")
-	contentStores := s.registry.ListContentStores()
-	for _, storeName := range contentStores {
-		store, err := s.registry.GetContentStore(storeName)
-		if err != nil {
-			logger.Error("Failed to get content store during shutdown", "store", storeName, "error", err)
-			continue
-		}
-
-		if closer, ok := store.(io.Closer); ok {
-			logger.Debug("Closing content store", "store", storeName)
-			if err := closer.Close(); err != nil {
-				logger.Error("Content store shutdown error", "store", storeName, "error", err)
-			}
-		}
-	}
-
 	// Close all metadata stores
-	// Done after GC stops since GC queries metadata to find orphaned content
 	logger.Debug("Closing metadata stores")
 	metadataStores := s.registry.ListMetadataStores()
 	for _, storeName := range metadataStores {

@@ -428,21 +428,19 @@ func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64) {
 // flushFileCache flushes cached data for an open file.
 // This is a helper used during cleanup to ensure data durability.
 func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
-	fileCache := h.Registry.GetCacheForShare(openFile.ShareName)
-	if fileCache == nil || fileCache.Size(openFile.ContentID) == 0 {
+	if openFile.ContentID == "" {
 		return
 	}
 
 	contentSvc := h.Registry.GetContentService()
 
-	// Use FlushAndFinalize for immediate durability (completes S3 uploads)
+	// Use FlushAndFinalize for immediate durability
 	_, flushErr := contentSvc.FlushAndFinalize(ctx, openFile.ShareName, openFile.ContentID)
 	if flushErr != nil {
-		logger.Warn("flushFileCache: cache flush failed",
+		logger.Warn("flushFileCache: flush failed",
 			"path", openFile.Path,
 			"contentID", openFile.ContentID,
 			"error", flushErr)
-		// Continue despite error - background flusher will eventually persist
 	} else {
 		logger.Debug("flushFileCache: flushed and finalized",
 			"path", openFile.Path,

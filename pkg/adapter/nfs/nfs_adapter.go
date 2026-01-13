@@ -11,7 +11,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	mount "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	v3 "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
-	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metrics"
 	"github.com/marmos91/dittofs/pkg/registry"
 )
@@ -57,10 +56,6 @@ type NFSAdapter struct {
 
 	// registry provides access to all stores and shares
 	registry *registry.Registry
-
-	// writeCache is the auto-flush write cache (if enabled)
-	// Stored for graceful shutdown
-	writeCache cache.Cache
 
 	// metrics provides optional Prometheus metrics collection
 	// If nil, no metrics are collected (zero overhead)
@@ -602,19 +597,6 @@ func (s *NFSAdapter) gracefulShutdown() error {
 		err = fmt.Errorf("NFS shutdown timeout: %d connections force-closed", remaining)
 	}
 
-	// Close write cache (releases resources)
-	if s.writeCache != nil {
-		logger.Debug("Closing write cache")
-		if closeErr := s.writeCache.Close(); closeErr != nil {
-			logger.Error("Error closing write cache", "error", closeErr)
-			if err == nil {
-				err = closeErr
-			}
-		} else {
-			logger.Debug("Write cache closed successfully")
-		}
-	}
-
 	return err
 }
 
@@ -722,19 +704,6 @@ func (s *NFSAdapter) Stop(ctx context.Context) error {
 		remaining := s.connCount.Load()
 		logger.Warn("NFS shutdown context cancelled", "active", remaining, "error", ctx.Err())
 		err = ctx.Err()
-	}
-
-	// Close write cache (releases resources)
-	if s.writeCache != nil {
-		logger.Debug("Closing write cache")
-		if closeErr := s.writeCache.Close(); closeErr != nil {
-			logger.Error("Error closing write cache", "error", closeErr)
-			if err == nil {
-				err = closeErr
-			}
-		} else {
-			logger.Debug("Write cache closed successfully")
-		}
 	}
 
 	return err

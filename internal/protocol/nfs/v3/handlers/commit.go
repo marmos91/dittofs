@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
@@ -341,28 +340,13 @@ func (h *Handler) Commit(
 		}, nil
 	}
 
-	// Get unified cache for this share (may be nil if sync mode)
-	fileCache := h.Registry.GetCacheForShare(ctx.Share)
-
 	// Convert file attributes for WCC "after" data
 	wccAfter := h.convertFileAttrToNFS(handle, &file.FileAttr)
 
-	if fileCache == nil {
-		// Sync mode: data was written directly to content store, nothing to flush
-		logger.DebugCtx(ctx.Context, "COMMIT: sync mode (no cache), returning success")
-		logger.InfoCtx(ctx.Context, "COMMIT successful (sync mode)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
-		return &CommitResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
-			AttrBefore:      wccBefore,
-			AttrAfter:       wccAfter,
-			WriteVerifier:   serverBootTime,
-		}, nil
-	}
-
-	// Async mode: check if there's data to flush
-	if fileCache.Size(file.ContentID) == 0 {
-		logger.DebugCtx(ctx.Context, "COMMIT: no data in cache, returning success")
-		logger.InfoCtx(ctx.Context, "COMMIT successful (empty cache)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
+	// Check if there's content to flush
+	if file.ContentID == "" {
+		logger.DebugCtx(ctx.Context, "COMMIT: no content to flush")
+		logger.InfoCtx(ctx.Context, "COMMIT successful (no content)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
 		return &CommitResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 			AttrBefore:      wccBefore,
@@ -372,51 +356,10 @@ func (h *Handler) Commit(
 	}
 
 	// ========================================================================
-	// Step 5: Write Gathering Optimization (Linux kernel "wdelay")
+	// Step 5: Flush data to ContentService (uses Cache internally)
 	// ========================================================================
-	//
-	// Write gathering delays the flush briefly when concurrent writes are detected.
-	// This allows additional writes to accumulate, reducing S3 API calls and improving
-	// throughput for bulk write scenarios (e.g., file copies, build outputs).
-	//
-	// Based on Linux kernel's wait_for_concurrent_writes() in fs/nfsd/vfs.c.
 
-	share, shareErr := h.Registry.GetShare(ctx.Share)
-	if shareErr == nil && share.WriteGatheringConfig.Enabled {
-		// Check if writes are actively happening
-		if fileCache.ShouldGatherWrites(file.ContentID, share.WriteGatheringConfig.ActiveThreshold) {
-			gatherDelay := share.WriteGatheringConfig.GatherDelay
-			logger.DebugCtx(ctx.Context, "COMMIT: write gathering detected, delaying flush",
-				"content_id", file.ContentID,
-				"delay", gatherDelay,
-				"active_writers", fileCache.GetActiveWriters(file.ContentID))
-
-			// Record metrics for write gathering
-			if h.Metrics != nil {
-				h.Metrics.RecordWriteGatheringTriggered(ctx.Share, gatherDelay)
-			}
-
-			// Wait for the gather delay, but respect context cancellation
-			select {
-			case <-time.After(gatherDelay):
-				// Delay complete, proceed with flush
-			case <-ctx.Context.Done():
-				// Context cancelled during gather delay
-				logger.WarnCtx(ctx.Context, "COMMIT cancelled during write gathering delay",
-					"handle", fmt.Sprintf("0x%x", req.Handle),
-					"client", clientIP,
-					"error", ctx.Context.Err())
-				return &CommitResponse{
-					NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-					AttrBefore:      wccBefore,
-					AttrAfter:       wccAfter,
-				}, nil
-			}
-		}
-	}
-
-	// Flush cache to content store via ContentService
-	logger.InfoCtx(ctx.Context, "COMMIT: flushing cache to content store", "share", ctx.Share)
+	logger.InfoCtx(ctx.Context, "COMMIT: flushing data", "share", ctx.Share)
 
 	contentSvc := h.Registry.GetContentService()
 

@@ -347,91 +347,52 @@ func (h *Handler) Read(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 4: Read content data (with read-through cache)
-	// ========================================================================
-	// Four read paths (in priority order):
-	//   1. Write cache (if available and has data) - fastest, handles files being written
-	//   2. Read cache (if available and has data) - fast, handles recently read files
-	//   3. ReadAt (if content store supports it) - efficient for range reads
-	//   4. ReadContent (fallback) - sequential read
-
-	var data []byte
-	var n int
-	var eof bool
-	var cacheHit bool
-	var pooled bool
-
-	// Try reading from cache first
-	cacheResult, err := h.tryReadFromCache(ctx, file.ContentID, req.Offset, req.Count)
-	if err != nil {
-		traceError(ctx.Context, err, "READ failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
-		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	// Calculate actual read length (clamped to file size)
+	readEnd := req.Offset + uint64(req.Count)
+	if readEnd > file.Size {
+		readEnd = file.Size
 	}
+	actualLength := uint32(readEnd - req.Offset)
 
-	if cacheResult.hit {
-		// Cache hit - use cached data
-		data = cacheResult.data
-		n = cacheResult.bytesRead
-		eof = cacheResult.eof
-		cacheHit = true
-	} else {
-		// Cache miss - read from content store via ContentService
-		var readResult contentStoreReadResult
-		var readErr error
+	// ========================================================================
+	// Step 4: Read content data from Cache
+	// ========================================================================
+	// All reads go through ContentService.ReadAt which reads from Cache.
+	// Cache handles slice merging (newest-wins semantics).
 
-		// Check if content store supports efficient random-access reads
-		if contentSvc.SupportsReadAt(ctx.Share) {
-			// FAST PATH: Use ReadAt for efficient range reads (S3, etc.)
-			readResult, readErr = readFromContentServiceWithReadAt(ctx, contentSvc, file.ContentID, req.Offset, req.Count, clientIP, req.Handle)
-		} else {
-			// FALLBACK PATH: Use sequential ReadContent + Seek + Read
-			readResult, readErr = readFromContentServiceSequential(ctx, contentSvc, file.ContentID, req.Offset, req.Count, clientIP, req.Handle)
+	readResult, readErr := readFromContentService(ctx, contentSvc, file.ContentID, req.Offset, actualLength, clientIP, req.Handle)
+	if readErr != nil {
+		// Check if cancellation error
+		if readErr == context.Canceled || readErr == context.DeadlineExceeded {
+			return nil, readErr
 		}
 
-		// Handle content store errors
-		if readErr != nil {
-			// Check if cancellation error
-			if readErr == context.Canceled || readErr == context.DeadlineExceeded {
-				return nil, readErr
-			}
-
-			// I/O error
-			traceError(ctx.Context, readErr, "READ failed", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "client", clientIP)
-			nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
-			return &ReadResponse{
-				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-				Attr:            nfsAttr,
-			}, nil
-		}
-
-		data = readResult.data
-		n = readResult.bytesRead
-		eof = readResult.eof
-		pooled = readResult.pooled
-
-		// Start background prefetch to cache the entire file for future reads
-		h.startBackgroundPrefetch(ctx, contentSvc, file.ContentID, file.Size)
+		// I/O error
+		traceError(ctx.Context, readErr, "READ failed", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "client", clientIP)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
+		return &ReadResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			Attr:            nfsAttr,
+		}, nil
 	}
 
-	// Even if read succeeded, check if we're at or past EOF
+	data := readResult.data
+	n := readResult.bytesRead
+	eof := readResult.eof
+	pooled := readResult.pooled
+
+	// Check if we're at or past EOF
 	if req.Offset+uint64(n) >= file.Size {
 		eof = true
 	}
 
 	// ========================================================================
-	// Step 7: Build success response
+	// Step 5: Build success response
 	// ========================================================================
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
-	// Log cache hit/miss for performance monitoring
-	cacheSource := "content_store"
-	if cacheHit {
-		cacheSource = "cache"
-	}
-
-	logger.InfoCtx(ctx.Context, "READ successful", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "read", bytesize.ByteSize(n), "eof", eof, "source", cacheSource, "client", clientIP)
+	logger.InfoCtx(ctx.Context, "READ successful", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "read", bytesize.ByteSize(n), "eof", eof, "client", clientIP)
 
 	logger.DebugCtx(ctx.Context, "READ details", "size", bytesize.ByteSize(file.Size), "type", nfsAttr.Type, "mode", fmt.Sprintf("%o", file.Mode))
 

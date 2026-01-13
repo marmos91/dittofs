@@ -1,717 +1,422 @@
 // Package cache implements buffering for content stores.
 //
-// This package provides a unified caching layer that acts as a buffer between
-// protocol handlers (NFS) and content stores (S3, filesystem, etc.). The cache
-// is content-store agnostic and handles both reads and writes.
+// Cache provides a slice-aware caching layer for the Chunk/Slice/Block
+// storage model. It buffers writes as slices and serves reads by merging
+// slices (newest-wins semantics).
 //
 // Key Design Principles:
-//   - One unified cache per share (serves both reads and writes)
-//   - Content-store agnostic (no S3 multipart knowledge, no fsync knowledge)
-//   - Three states: Buffering (dirty), Uploading (flush in progress), Cached (clean)
-//   - Context-aware for cancellation and timeouts
-//   - Thread-safe for concurrent operations
-//   - LRU eviction with dirty entry protection
-//   - Read cache coherency via mtime/size validation
+//   - Slice-aware: WriteSlice/ReadSlice API maps directly to data model
+//   - Storage-backend agnostic: Cache doesn't know about S3/filesystem/etc.
+//   - Mandatory: All content operations go through the cache
+//   - Write coalescing: Adjacent writes merged before flush
+//   - Newest-wins reads: Overlapping slices resolved by creation time
 //
-// The cache enables:
-//   - Async write mode: WRITE goes to cache, COMMIT triggers flush
-//   - Read caching: READ populates cache, subsequent reads served from cache
-//   - Inactivity-based finalization: Background sweeper detects idle files
-//   - Efficient memory usage: Evict clean entries when cache is full
+// Architecture:
 //
-// See docs/CACHE.md for detailed design documentation.
+//	Cache (interface, business logic)
+//	    ↓
+//	store.Store (interface, persistence)
+//	    ↓
+//	store/memory/ or store/fs/ (implementations)
+//
+// See docs/ARCHITECTURE.md for the full Chunk/Slice/Block model.
 package cache
 
 import (
 	"context"
+	"errors"
 	"time"
-
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
-// Cache State
+// Constants
 // ============================================================================
-
-// CacheState represents the state of a cache entry.
-//
-// The state machine is:
-//
-//	(not in cache) → StateNone
-//	WRITE (new)    → StateBuffering
-//	COMMIT         → StateUploading (flush in progress)
-//	Finalize       → StateCached (clean, can be evicted)
-//	READ (miss)    → StatePrefetching (background fetch started)
-//	Prefetch done  → StateCached (populated from content store)
-//	WRITE          → StateBuffering (if was Cached/Prefetching, restart cycle)
-//	Eviction       → StateNone
-type CacheState int
 
 const (
-	// StateNone indicates the entry does not exist in the cache.
-	// This is the zero value and is returned when looking up non-existent entries.
-	StateNone CacheState = iota
+	// ChunkSize is the size of a chunk in bytes (64MB).
+	// Files are divided into chunks for metadata organization.
+	ChunkSize = 64 * 1024 * 1024
 
-	// StateBuffering indicates writes are accumulating in the cache buffer.
-	// This is the initial state when a new write begins.
-	// Entry is dirty and cannot be evicted.
-	StateBuffering
+	// DefaultBlockSize is the default block size for storage (4MB).
+	// Each block becomes a single object in the block store.
+	DefaultBlockSize = 4 * 1024 * 1024
 
-	// StateUploading indicates a flush is in progress to the content store.
-	// The content store may be doing multipart upload, streaming write, etc.
-	// Entry is dirty and cannot be evicted.
-	StateUploading
+	// MinBlockSize is the minimum allowed block size (1MB).
+	MinBlockSize = 1 * 1024 * 1024
 
-	// StateCached indicates the entry contains clean data.
-	// Either finalized from writes, or populated from a read.
-	// Entry can be evicted. Needs validation on read hit (mtime/size check).
-	StateCached
+	// MaxBlockSize is the maximum allowed block size (16MB).
+	MaxBlockSize = 16 * 1024 * 1024
 
-	// StatePrefetching indicates a background fetch is in progress.
-	// The READ handler spawned a goroutine to fetch the entire file.
-	// Entry cannot be evicted until prefetch completes.
-	// Concurrent READs should read from content store directly.
-	StatePrefetching
+	// DefaultMaxSlicesPerChunk is when compaction is triggered.
+	DefaultMaxSlicesPerChunk = 16
 )
 
-// String returns the string representation of the cache state.
-func (s CacheState) String() string {
+// ============================================================================
+// Errors
+// ============================================================================
+
+var (
+	// ErrCacheClosed is returned when operations are attempted on a closed cache.
+	ErrCacheClosed = errors.New("cache is closed")
+
+	// ErrSliceNotFound is returned when a requested slice doesn't exist.
+	ErrSliceNotFound = errors.New("slice not found")
+
+	// ErrFileNotInCache is returned when a file has no cached data.
+	ErrFileNotInCache = errors.New("file not in cache")
+
+	// ErrInvalidChunkIndex is returned for out-of-range chunk indices.
+	ErrInvalidChunkIndex = errors.New("invalid chunk index")
+
+	// ErrInvalidOffset is returned for invalid slice offsets.
+	ErrInvalidOffset = errors.New("invalid offset")
+)
+
+// ============================================================================
+// Slice State
+// ============================================================================
+
+// SliceState represents the state of a slice in the cache.
+type SliceState int
+
+const (
+	// SliceStatePending indicates the slice has unflushed data.
+	SliceStatePending SliceState = iota
+
+	// SliceStateFlushed indicates the slice has been persisted to block storage.
+	SliceStateFlushed
+
+	// SliceStateUploading indicates the slice is currently being uploaded.
+	SliceStateUploading
+)
+
+// String returns the string representation of SliceState.
+func (s SliceState) String() string {
 	switch s {
-	case StateNone:
-		return "None"
-	case StateBuffering:
-		return "Buffering"
-	case StateUploading:
+	case SliceStatePending:
+		return "Pending"
+	case SliceStateFlushed:
+		return "Flushed"
+	case SliceStateUploading:
 		return "Uploading"
-	case StateCached:
-		return "Cached"
-	case StatePrefetching:
-		return "Prefetching"
 	default:
 		return "Unknown"
 	}
 }
 
-// IsDirty returns true if the entry has unflushed data.
-// Dirty entries cannot be evicted.
-func (s CacheState) IsDirty() bool {
-	return s == StateBuffering || s == StateUploading
-}
-
-// CanEvict returns true if the entry can be safely evicted.
-// Only StateCached entries can be evicted. Dirty entries (Buffering, Uploading)
-// and entries being prefetched cannot be evicted.
-func (s CacheState) CanEvict() bool {
-	return s == StateCached
+// IsDirty returns true if the slice has unflushed data.
+func (s SliceState) IsDirty() bool {
+	return s == SliceStatePending || s == SliceStateUploading
 }
 
 // ============================================================================
-// Write Gathering Configuration
+// Block Reference
 // ============================================================================
 
-// WriteGatheringConfig configures the write gathering optimization.
-//
-// Write gathering is based on Linux kernel's "wdelay" optimization (fs/nfsd/vfs.c).
-// When multiple writes are happening to the same file, COMMIT operations wait
-// briefly to allow additional writes to accumulate before flushing.
-//
-// This optimization:
-//   - Reduces S3 API calls by batching writes
-//   - Improves throughput for bulk write scenarios
-//   - Trades small latency increase (GatherDelay) for better efficiency
-type WriteGatheringConfig struct {
-	// Enabled controls whether write gathering is active.
-	// Default: true
-	Enabled bool
+// BlockRef references an immutable block in the block store.
+type BlockRef struct {
+	// ID is the block's unique identifier in the block store.
+	ID string
 
-	// GatherDelay is how long COMMIT waits when recent writes are detected.
-	// Similar to Linux kernel's 10ms delay in wait_for_concurrent_writes().
-	// Default: 10ms. Range: 1ms to 100ms.
-	GatherDelay time.Duration
-
-	// ActiveThreshold is how recent a write must be to trigger gathering.
-	// If last write was within this duration, COMMIT will wait GatherDelay.
-	// Default: 10ms (same as GatherDelay for symmetry).
-	ActiveThreshold time.Duration
+	// Size is the actual size of this block (may be < BlockSize for last block).
+	Size uint32
 }
 
-// DefaultWriteGatheringConfig returns sensible defaults for write gathering.
+// ============================================================================
+// Slice Types
+// ============================================================================
+
+// CachedSlice represents a slice stored in the cache.
 //
-// These values are based on Linux kernel's NFS implementation which uses
-// a 10ms delay in wait_for_concurrent_writes() (fs/nfsd/vfs.c).
-func DefaultWriteGatheringConfig() WriteGatheringConfig {
-	return WriteGatheringConfig{
-		Enabled:         true,
-		GatherDelay:     10 * time.Millisecond,
-		ActiveThreshold: 10 * time.Millisecond,
-	}
+// Slices are ordered by CreatedAt (newest first) within a chunk.
+// On reads, newer slices take precedence for overlapping ranges.
+type CachedSlice struct {
+	// ID uniquely identifies this slice (used for flush tracking).
+	ID string
+
+	// ChunkIndex is the chunk this slice belongs to (offset / ChunkSize).
+	ChunkIndex uint32
+
+	// Offset is the byte offset within the chunk (0 to ChunkSize-1).
+	Offset uint32
+
+	// Length is the size of this slice in bytes.
+	Length uint32
+
+	// Data contains the actual slice content.
+	// For flushed slices, this may be nil (data is in block storage).
+	Data []byte
+
+	// State indicates whether this slice is pending, uploading, or flushed.
+	State SliceState
+
+	// CreatedAt is when this slice was created (for newest-wins ordering).
+	CreatedAt time.Time
+
+	// BlockRefs contains references to blocks after flushing.
+	// Empty for pending slices.
+	BlockRefs []BlockRef
 }
 
-// Cache provides a generic buffering layer for content.
+// PendingSlice represents an unflushed write ready for upload.
+type PendingSlice struct {
+	// ID uniquely identifies this slice.
+	ID string
+
+	// ChunkIndex is the chunk this slice belongs to.
+	ChunkIndex uint32
+
+	// Offset within the chunk.
+	Offset uint32
+
+	// Length of the slice data.
+	Length uint32
+
+	// Data contains the actual bytes to upload.
+	Data []byte
+
+	// CreatedAt for ordering.
+	CreatedAt time.Time
+}
+
+// ============================================================================
+// Cache Interface
+// ============================================================================
+
+// Cache is the mandatory cache layer for all content operations.
 //
-// The cache is protocol-agnostic and can be used with any content store backend.
-// It buffers writes in memory (or disk, depending on implementation) and allows
-// reading back that data before it's flushed to the underlying storage.
+// It understands slices as first-class citizens but is agnostic to the
+// underlying storage backend (S3, filesystem, memory, Redis).
 //
-// Separation of Concerns:
-// The cache does NOT handle flushing logic. That responsibility belongs to the
-// protocol handlers (e.g., NFS COMMIT handler). This keeps the cache interface
-// simple and focused on buffering.
-//
-// Use Cases:
-//   - NFS async write mode: Buffer writes, flush on COMMIT
-//   - S3 incremental uploads: Buffer until 5MB, upload incrementally
-//   - Filesystem optimization: Buffer small writes, flush large batches
-//   - Testing: In-memory buffer for fast tests
+// The Cache handles business logic (slice merging, coalescing,
+// sequential write optimization) while delegating persistence to a
+// store.Store implementation.
 //
 // Thread Safety:
-// Implementations must be safe for concurrent use by multiple goroutines.
-// Operations on different content IDs should not block each other.
+// All methods must be safe for concurrent use by multiple goroutines.
+// Operations on different files should not block each other.
 type Cache interface {
-	// ====================================================================
+	// ========================================================================
 	// Write Operations
-	// ====================================================================
+	// ========================================================================
 
-	// Write replaces the entire content for a content ID.
+	// WriteSlice writes a slice to the cache (pending until flushed).
 	//
-	// This is a full-file write operation. Any existing cached data for
-	// this content ID is completely replaced.
+	// This creates a new slice at the specified position within the chunk.
+	// The slice is marked as pending and will be included in GetDirtySlices.
 	//
-	// Use Cases:
-	//   - Initial file creation
-	//   - Complete file replacement
-	//   - Flushing from another cache
-	//
-	// For partial updates, use WriteAt instead.
-	//
-	// Context Cancellation:
-	// For large writes, implementations should periodically check context
-	// to ensure responsive cancellation.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - id: Content identifier
-	//   - data: Complete content data
-	//
-	// Returns:
-	//   - error: Returns error if write fails or context is cancelled
-	//
-	// Example:
-	//
-	//	err := cache.Write(ctx, contentID, []byte("Hello, World!"))
-	//	if err != nil {
-	//	    return fmt.Errorf("cache write failed: %w", err)
-	//	}
-	Write(ctx context.Context, id metadata.ContentID, data []byte) error
-
-	// WriteAt writes data at the specified offset for a content ID.
-	//
-	// This implements random-access writes for protocols like NFS that
-	// write files in arbitrary order. If no cached data exists for this
-	// content ID, it's created automatically.
-	//
-	// Sparse File Behavior:
-	//   - If offset > current size, the gap is filled with zeros
-	//   - If offset < current size, existing data is overwritten
-	//   - If offset == current size, data is appended
-	//
-	// Context Cancellation:
-	// For large writes, implementations should periodically check context
-	// to ensure responsive cancellation.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - id: Content identifier (created if doesn't exist)
-	//   - data: Data to write
-	//   - offset: Byte offset where writing begins (0-based, unsigned)
-	//
-	// Returns:
-	//   - error: Returns error if write fails or context is cancelled
-	//
-	// Example (NFS WRITE):
-	//
-	//	// Write 4KB at offset 8192
-	//	err := cache.WriteAt(ctx, contentID, data, 8192)
-	//	if err != nil {
-	//	    return fmt.Errorf("cache write failed: %w", err)
-	//	}
-	WriteAt(ctx context.Context, id metadata.ContentID, data []byte, offset uint64) error
-
-	// ====================================================================
-	// Read Operations
-	// ====================================================================
-
-	// Read returns all cached data for a content ID.
-	//
-	// This returns the complete cached data for the content ID. The data
-	// is NOT removed from the cache - call Remove() after successful flush.
-	//
-	// If no cached data exists, returns empty slice and nil error.
-	//
-	// Context Cancellation:
-	// The method checks context before reading. For very large cached data,
-	// implementations may check context during the copy operation.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - []byte: All cached data (empty if no data cached)
-	//   - error: Returns error if read fails or context is cancelled
-	//
-	// Example (flushing to store):
-	//
-	//	data, err := cache.Read(ctx, contentID)
-	//	if err != nil {
-	//	    return err
-	//	}
-	//	err = store.WriteContent(ctx, contentID, data)
-	//	if err != nil {
-	//	    return err
-	//	}
-	//	cache.Remove(contentID)  // Clear after successful flush
-	Read(ctx context.Context, id metadata.ContentID) ([]byte, error)
-
-	// ReadAt reads data from the cache at the specified offset.
-	//
-	// This implements io.ReaderAt pattern for reading partial cache data.
-	// Useful for incremental flushing (e.g., S3 multipart uploads) where
-	// you want to read chunks without loading the entire cached file.
-	//
-	// Semantics follow io.ReaderAt:
-	//   - Reads len(buf) bytes into buf starting at offset
-	//   - Returns n bytes read and error
-	//   - If n < len(buf), error explains why (io.EOF, etc.)
-	//   - Does not modify cache state
-	//
-	// Context Cancellation:
-	// The method checks context before reading.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - id: Content identifier
-	//   - buf: Buffer to read into
-	//   - offset: Byte offset to start reading from (0-based, unsigned)
-	//
-	// Returns:
-	//   - int: Number of bytes read
-	//   - error: io.EOF if offset >= size, error on failure
-	//
-	// Example (reading 5MB chunks for S3 upload):
-	//
-	//	chunk := make([]byte, 5*1024*1024)
-	//	n, err := cache.ReadAt(ctx, contentID, chunk, offset)
-	//	if err != nil && err != io.EOF {
-	//	    return err
-	//	}
-	//	// Upload chunk[:n] to S3
-	ReadAt(ctx context.Context, id metadata.ContentID, buf []byte, offset uint64) (int, error)
-
-	// ====================================================================
-	// Metadata
-	// ====================================================================
-
-	// Size returns the size of cached data for a content ID.
-	//
-	// This returns the current size in bytes. Returns 0 if no cached data
-	// exists for the content ID.
-	//
-	// Use Cases:
-	//   - Check if cache threshold reached (for flushing)
-	//   - Calculate how much to read for multipart upload
-	//   - Monitor cache growth
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - uint64: Size in bytes (0 if no cached data)
-	Size(id metadata.ContentID) uint64
-
-	// LastWrite returns the timestamp of the last write for a content ID.
-	//
-	// This is used for timeout-based operations like:
-	//   - Auto-flush idle files (last write > 30 seconds ago)
-	//   - LRU eviction (evict oldest last-write time)
-	//   - Monitoring write patterns
-	//
-	// Returns zero time if no cached data exists.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - time.Time: Last write timestamp (zero if no cached data)
-	LastWrite(id metadata.ContentID) time.Time
-
-	// Exists checks if cached data exists for a content ID.
-	//
-	// This is a lightweight existence check without reading the data.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - bool: True if cached data exists, false otherwise
-	Exists(id metadata.ContentID) bool
-
-	// List returns all content IDs with cached data.
-	//
-	// This is used for:
-	//   - Auto-flush workers iterating over all cached files
-	//   - Server shutdown (flush all before exit)
-	//   - Monitoring and debugging
-	//
-	// Returns:
-	//   - []metadata.ContentID: List of content IDs with cached data
-	List() []metadata.ContentID
-
-	// ====================================================================
-	// Cache Management
-	// ====================================================================
-
-	// Remove clears the cached data for a specific content ID.
-	//
-	// This deletes the cached data from the cache. Typically called after
-	// successfully flushing to the underlying content store.
-	//
-	// The operation is idempotent - removing non-existent data succeeds.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - error: Returns error if removal fails (implementation-specific)
-	//
-	// Example (after flush):
-	//
-	//	// Flush to store
-	//	data, _ := cache.Read(ctx, contentID)
-	//	store.WriteContent(ctx, contentID, data)
-	//
-	//	// Remove from cache
-	//	cache.Remove(contentID)
-	Remove(id metadata.ContentID) error
-
-	// RemoveAll clears all cached data for all content IDs.
-	//
-	// This is useful for:
-	//   - Server shutdown (after flushing all data)
-	//   - Testing (clean slate between tests)
-	//   - Emergency cleanup
-	//
-	// Returns:
-	//   - error: Returns error if cleanup fails
-	//
-	// Example (server shutdown):
-	//
-	//	// Flush all cached data first
-	//	for _, id := range cache.List() {
-	//	    // ... flush logic ...
-	//	}
-	//
-	//	// Clear cache
-	//	cache.RemoveAll()
-	RemoveAll() error
-
-	// ====================================================================
-	// Cache Statistics
-	// ====================================================================
-
-	// TotalSize returns the total size of all cached data across all files.
-	//
-	// This is the sum of all cached data sizes. Used for:
-	//   - Cache utilization monitoring
-	//   - Eviction decisions (is cache full?)
-	//   - Memory pressure detection
-	//
-	// Returns:
-	//   - uint64: Total cached size in bytes
-	TotalSize() uint64
-
-	// MaxSize returns the maximum cache size configured for this cache.
-	//
-	// This is the cache size limit. When TotalSize() approaches MaxSize(),
-	// eviction should occur.
-	//
-	// Returns 0 if there's no size limit (unlimited cache).
-	//
-	// Returns:
-	//   - uint64: Maximum cache size in bytes (0 = unlimited)
-	MaxSize() uint64
-
-	// ====================================================================
-	// Lifecycle
-	// ====================================================================
-
-	// Close releases all resources and clears all cached data.
-	//
-	// After Close, the cache cannot be used. All subsequent operations
-	// will fail.
-	//
-	// Typically called during:
-	//   - Server shutdown
-	//   - Share unmount
-	//   - Testing cleanup
-	//
-	// Returns:
-	//   - error: Returns error if cleanup fails
-	//
-	// Example (server shutdown):
-	//
-	//	defer cache.Close()
-	Close() error
-
-	// ====================================================================
-	// State Management (Unified Cache)
-	// ====================================================================
-
-	// GetState returns the current state of a cache entry.
-	//
-	// Returns StateNone if the entry does not exist in the cache.
-	// This makes it safe to check state without first calling Exists():
-	//
-	//	state := cache.GetState(id)
-	//	if state == cache.StateNone {
-	//	    // Entry doesn't exist
-	//	}
-	//	if state.IsDirty() {
-	//	    // Entry has unflushed data
-	//	}
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - CacheState: Current state (None, Buffering, Uploading, or Cached)
-	GetState(id metadata.ContentID) CacheState
-
-	// SetState updates the state of a cache entry.
-	//
-	// This is a no-op if the entry doesn't exist. Use Write/WriteAt to create
-	// entries (which start in StateBuffering automatically).
-	//
-	// Valid state transitions:
-	//   - StateBuffering → StateUploading (when flush starts)
-	//   - StateUploading → StateCached (when finalization completes)
-	//   - StateCached → StateBuffering (automatically on new Write/WriteAt)
-	//
-	// Note: To transition to StateNone (remove entry), use Remove() instead.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//   - state: New state (should not be StateNone)
-	SetState(id metadata.ContentID, state CacheState)
-
-	// GetFlushedOffset returns how many bytes have been flushed to the content store.
-	//
-	// This is used to track progress during incremental flushes.
-	// Returns 0 if no cached data exists.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//
-	// Returns:
-	//   - uint64: Number of bytes successfully flushed
-	GetFlushedOffset(id metadata.ContentID) uint64
-
-	// SetFlushedOffset updates the flushed offset for a cache entry.
-	//
-	// Called by the flush coordinator after successfully flushing data
-	// to the content store.
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//   - offset: New flushed offset (bytes, unsigned)
-	SetFlushedOffset(id metadata.ContentID, offset uint64)
-
-	// ====================================================================
-	// Prefetch Support
-	// ====================================================================
-
-	// StartPrefetch marks an entry as being prefetched and returns whether this call started it.
-	//
-	// If prefetch is already in progress (StatePrefetching), returns false (already started).
-	// If entry already exists in a non-prefetching state (Buffering, Uploading, Cached),
-	// returns false (no prefetch needed).
-	//
-	// The caller should:
-	//  1. Check if started is true
-	//  2. If true, spawn a goroutine to populate cache using WriteAt + UpdatePrefetchedOffset
-	//  3. Call CompletePrefetch when done (success or failure)
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//   - expectedSize: Expected total file size (for pre-allocation and progress tracking)
-	//
-	// Returns:
-	//   - bool: True if this call started the prefetch, false if already in progress or not needed
-	StartPrefetch(id metadata.ContentID, expectedSize uint64) (started bool)
-
-	// WaitForPrefetchOffset waits until the prefetch has fetched at least up to the required offset.
-	//
-	// This allows READ requests to be served as soon as their byte range is available,
-	// without waiting for the entire file to be prefetched.
-	//
-	// Returns immediately if:
-	//   - No prefetch is in progress (state != StatePrefetching)
-	//   - The required offset has already been prefetched
-	//   - Context is cancelled
+	// Optimization: Sequential writes are automatically coalesced by extending
+	// existing pending slices rather than creating new ones.
 	//
 	// Parameters:
 	//   - ctx: Context for cancellation
-	//   - id: Content identifier
-	//   - requiredOffset: The byte offset that must be available (typically offset + count)
+	//   - fileHandle: Identifies the file (opaque bytes)
+	//   - chunkIdx: Which chunk (0, 1, 2, ...) based on file offset / ChunkSize
+	//   - data: The bytes to write
+	//   - offset: Offset within the chunk (0 to ChunkSize-1)
+	//
+	// The offset + len(data) must not exceed ChunkSize.
+	// Returns error if cache is closed or parameters are invalid.
+	WriteSlice(ctx context.Context, fileHandle []byte, chunkIdx uint32, data []byte, offset uint32) error
+
+	// ========================================================================
+	// Read Operations
+	// ========================================================================
+
+	// ReadSlice reads data from cache, merging pending slices with flushed ones.
+	//
+	// Reads data from the cache for the specified chunk and byte range.
+	// Returns ErrFileNotInCache if the file has no cached data.
+	//
+	// The returned data may be:
+	//   - Fully from pending slices (not yet flushed)
+	//   - Fully from flushed slices (still in cache)
+	//   - A merge of both (newest wins for overlaps)
+	//   - Zeros for unwritten regions
+	//
+	// Parameters:
+	//   - ctx: Context for cancellation
+	//   - fileHandle: Identifies the file
+	//   - chunkIdx: Which chunk to read from
+	//   - offset: Offset within the chunk
+	//   - length: Number of bytes to read
 	//
 	// Returns:
-	//   - error: Context error if cancelled, nil otherwise
-	WaitForPrefetchOffset(ctx context.Context, id metadata.ContentID, requiredOffset uint64) error
+	//   - []byte: The requested data (may include zeros for sparse regions)
+	//   - bool: True if data was found in cache, false if cache miss
+	//   - error: ErrFileNotInCache, ErrCacheClosed, or context error
+	ReadSlice(ctx context.Context, fileHandle []byte, chunkIdx uint32, offset, length uint32) ([]byte, bool, error)
 
-	// GetPrefetchedOffset returns how many bytes have been prefetched so far.
+	// ========================================================================
+	// Flush Coordination
+	// ========================================================================
+
+	// GetDirtySlices returns all pending (unflushed) slices for a file.
 	//
-	// Returns 0 if entry doesn't exist or is not in prefetching state.
+	// This is called before flushing to get all data that needs to be uploaded.
+	// The returned slices have been coalesced (adjacent writes merged).
 	//
 	// Parameters:
-	//   - id: Content identifier
+	//   - ctx: Context for cancellation
+	//   - fileHandle: Identifies the file
 	//
 	// Returns:
-	//   - uint64: Number of bytes prefetched so far
-	GetPrefetchedOffset(id metadata.ContentID) uint64
+	//   - []PendingSlice: Slices ordered by chunk index, then offset
+	//   - error: ErrFileNotInCache if no cached data, ErrCacheClosed if closed
+	GetDirtySlices(ctx context.Context, fileHandle []byte) ([]PendingSlice, error)
 
-	// SetPrefetchedOffset updates the prefetched offset as data is fetched.
+	// MarkSliceFlushed marks a slice as successfully flushed to block storage.
 	//
-	// Called by the prefetch goroutine after writing each chunk to the cache.
-	// This wakes up any waiters blocked in WaitForPrefetchOffset.
+	// After a slice is uploaded to the block store, call this to:
+	//   - Transition the slice from pending to flushed state
+	//   - Store the block references for future reads
+	//   - Allow the slice to be evicted from cache
 	//
 	// Parameters:
-	//   - id: Content identifier
-	//   - offset: New prefetched offset (should only increase)
-	SetPrefetchedOffset(id metadata.ContentID, offset uint64)
-
-	// CompletePrefetch marks a prefetch as complete and transitions to StateCached.
+	//   - ctx: Context for cancellation
+	//   - fileHandle: Identifies the file
+	//   - sliceID: The ID of the slice that was flushed
+	//   - blockRefs: References to the blocks where data was stored
 	//
-	// This wakes up all waiters blocked in WaitForPrefetchOffset.
-	// If success is false, the entry is removed (prefetch failed).
+	// Returns error if slice not found or cache is closed.
+	MarkSliceFlushed(ctx context.Context, fileHandle []byte, sliceID string, blockRefs []BlockRef) error
+
+	// ========================================================================
+	// Write Optimization
+	// ========================================================================
+
+	// CoalesceWrites merges adjacent pending writes into fewer slices.
+	//
+	// Called before flush to optimize by combining adjacent writes.
+	// For example, writes at offsets [0, 1024, 2048] with length 1024 each
+	// become a single slice at offset 0 with length 3072.
+	//
+	// This is called automatically by GetDirtySlices, but can be called
+	// explicitly for optimization.
 	//
 	// Parameters:
-	//   - id: Content identifier
-	//   - success: True if prefetch succeeded, false if failed
-	CompletePrefetch(id metadata.ContentID, success bool)
-
-	// ====================================================================
-	// Cache Coherency (Read Validation)
-	// ====================================================================
-
-	// GetCachedMetadata returns the metadata snapshot stored when the entry was cached.
+	//   - ctx: Context for cancellation
+	//   - fileHandle: Identifies the file
 	//
-	// This is used to validate cached data against current file metadata.
-	// Returns ok=false if no metadata is stored or entry doesn't exist.
+	// Returns error if file not in cache or cache is closed.
+	CoalesceWrites(ctx context.Context, fileHandle []byte) error
+
+	// ========================================================================
+	// Cache Management
+	// ========================================================================
+
+	// Evict removes cached data for a file (only flushed slices).
+	//
+	// This removes all flushed slices from the cache. Pending (dirty) slices
+	// are protected and cannot be evicted.
 	//
 	// Parameters:
-	//   - id: Content identifier
+	//   - ctx: Context for cancellation
+	//   - fileHandle: Identifies the file
 	//
 	// Returns:
-	//   - mtime: File modification time when cached
-	//   - size: File size when cached
-	//   - ok: True if metadata exists
-	GetCachedMetadata(id metadata.ContentID) (mtime time.Time, size uint64, ok bool)
+	//   - uint64: Number of bytes evicted
+	//   - error: ErrCacheClosed if closed
+	Evict(ctx context.Context, fileHandle []byte) (uint64, error)
 
-	// SetCachedMetadata stores a metadata snapshot for cache validation.
+	// EvictAll removes all flushed data from the cache.
 	//
-	// Should be called:
-	//   - After populating cache from a READ (store current mtime/size)
-	//   - After finalization (store post-write mtime/size)
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//   - mtime: File modification time
-	//   - size: File size
-	SetCachedMetadata(id metadata.ContentID, mtime time.Time, size uint64)
-
-	// IsValid checks if cached data is still valid against current metadata.
-	//
-	// Validation logic:
-	//   - Dirty entries (Buffering, Uploading) are always valid
-	//   - Clean entries (Cached) compare mtime and size
-	//   - Returns false if mtime or size changed (file was modified)
-	//   - May also check TTL if configured
-	//
-	// Parameters:
-	//   - id: Content identifier
-	//   - currentMtime: Current file modification time from metadata
-	//   - currentSize: Current file size from metadata
+	// Used for cache pressure relief. Dirty slices are protected.
 	//
 	// Returns:
-	//   - bool: True if cached data is valid, false if stale
-	IsValid(id metadata.ContentID, currentMtime time.Time, currentSize uint64) bool
+	//   - uint64: Number of bytes evicted
+	//   - error: ErrCacheClosed if closed
+	EvictAll(ctx context.Context) (uint64, error)
 
-	// LastAccess returns the timestamp of the last access (read or write).
+	// Remove completely removes all cached data for a file.
 	//
-	// Used for LRU eviction ordering. Returns zero time if no cached data exists.
+	// Unlike Evict, this removes both pending and flushed slices.
+	// Use this when a file is deleted.
 	//
 	// Parameters:
-	//   - id: Content identifier
+	//   - ctx: Context for cancellation
+	//   - fileHandle: Identifies the file
 	//
-	// Returns:
-	//   - time.Time: Last access timestamp
-	LastAccess(id metadata.ContentID) time.Time
+	// Returns error if cache is closed.
+	Remove(ctx context.Context, fileHandle []byte) error
 
-	// ====================================================================
-	// Write Gathering (Concurrent Write Optimization)
-	// ====================================================================
-
-	// BeginWrite increments the active writer count for a content ID.
+	// Truncate changes the size of cached data for a file.
 	//
-	// Call this before starting a write operation. The count is used by
-	// ShouldGatherWrites to detect concurrent write activity.
-	//
-	// IMPORTANT: Always pair with EndWrite in a defer statement:
-	//
-	//	cache.BeginWrite(id)
-	//	defer cache.EndWrite(id)
-	//	// ... perform write ...
+	// If newSize < currentSize: Data beyond newSize is removed.
+	// If newSize > currentSize: No change (sparse file semantics).
+	// If newSize == currentSize: No-op.
 	//
 	// Parameters:
-	//   - id: Content identifier
-	BeginWrite(id metadata.ContentID)
-
-	// EndWrite decrements the active writer count for a content ID.
+	//   - ctx: Context for cancellation
+	//   - fileHandle: Identifies the file
+	//   - newSize: The new file size in bytes
 	//
-	// Call this after a write operation completes (success or failure).
-	// Must be paired with BeginWrite.
+	// Returns error if cache is closed.
+	Truncate(ctx context.Context, fileHandle []byte, newSize uint64) error
+
+	// ========================================================================
+	// File State
+	// ========================================================================
+
+	// HasDirtyData returns true if the file has any pending (unflushed) slices.
 	//
 	// Parameters:
-	//   - id: Content identifier
-	EndWrite(id metadata.ContentID)
-
-	// GetActiveWriters returns the number of active writers for a content ID.
+	//   - fileHandle: Identifies the file
 	//
-	// This is used by write gathering logic to detect concurrent writes.
-	// Returns 0 if the content ID doesn't exist.
+	// Returns false if file is not in cache or has no dirty data.
+	HasDirtyData(fileHandle []byte) bool
+
+	// GetFileSize returns the size of cached data for a file.
+	//
+	// This returns the maximum extent of all cached slices.
+	// May not represent the actual file size (sparse files, partial cache).
 	//
 	// Parameters:
-	//   - id: Content identifier
+	//   - fileHandle: Identifies the file
 	//
-	// Returns:
-	//   - int: Number of active writers (0 if no entry or no active writers)
-	GetActiveWriters(id metadata.ContentID) int
+	// Returns 0 if file is not in cache.
+	GetFileSize(fileHandle []byte) uint64
 
-	// ShouldGatherWrites checks if a flush should be delayed for write gathering.
+	// ListFiles returns all file handles with cached data.
 	//
-	// This implements the Linux kernel's "wait_for_concurrent_writes" logic.
-	// Returns true if any of these conditions are met:
-	//   - There are multiple active writers (concurrent writes in progress)
-	//   - The last write was very recent (within activeThreshold)
+	// Returns empty slice if no files are cached or cache is closed.
+	ListFiles() [][]byte
+
+	// ========================================================================
+	// Lifecycle
+	// ========================================================================
+
+	// Close releases all cache resources.
 	//
-	// When true, the caller (COMMIT handler) should wait briefly before flushing
-	// to allow additional writes to accumulate.
+	// After Close:
+	//   - All pending data is lost (not flushed!)
+	//   - All operations return ErrCacheClosed
 	//
-	// Parameters:
-	//   - id: Content identifier
-	//   - activeThreshold: How recent a write must be to trigger gathering
-	//
-	// Returns:
-	//   - bool: True if flush should be delayed for write gathering
-	ShouldGatherWrites(id metadata.ContentID, activeThreshold time.Duration) bool
+	// Callers should flush dirty data before calling Close.
+	Close() error
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+// ChunkIndexForOffset calculates the chunk index for a file offset.
+func ChunkIndexForOffset(offset uint64) uint32 {
+	return uint32(offset / ChunkSize)
+}
+
+// OffsetWithinChunk calculates the offset within a chunk.
+func OffsetWithinChunk(offset uint64) uint32 {
+	return uint32(offset % ChunkSize)
+}
+
+// ChunkRange calculates the range of chunks that a byte range spans.
+// Returns startChunk and endChunk (inclusive).
+func ChunkRange(offset, length uint64) (startChunk, endChunk uint32) {
+	if length == 0 {
+		return ChunkIndexForOffset(offset), ChunkIndexForOffset(offset)
+	}
+	startChunk = ChunkIndexForOffset(offset)
+	endChunk = ChunkIndexForOffset(offset + length - 1)
+	return startChunk, endChunk
 }
