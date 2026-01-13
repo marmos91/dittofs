@@ -14,7 +14,9 @@ import (
 	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/api"
 	"github.com/marmos91/dittofs/pkg/config"
+	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
 	dittoServer "github.com/marmos91/dittofs/pkg/server"
+	"github.com/mitchellh/mapstructure"
 
 	// Import prometheus metrics to register init() functions
 	_ "github.com/marmos91/dittofs/pkg/metrics/prometheus"
@@ -35,6 +37,7 @@ Usage:
 Commands:
   init     Initialize a sample configuration file
   start    Start the DittoFS server
+  migrate  Run PostgreSQL database migrations
   version  Show version information
   user     Manage users (add, delete, list, passwd, grant, revoke, groups, join, leave)
   group    Manage groups (add, delete, list, members, grant, revoke)
@@ -52,6 +55,9 @@ Examples:
 
   # Start server with custom config
   dittofs start --config /etc/dittofs/config.yaml
+
+  # Run PostgreSQL migrations
+  dittofs migrate --config /etc/dittofs/config.yaml
 
   # User management
   dittofs user add alice
@@ -91,6 +97,8 @@ func main() {
 		runInit()
 	case "start":
 		runStart()
+	case "migrate":
+		runMigrate()
 	case "user":
 		runUser()
 	case "group":
@@ -352,6 +360,97 @@ func runGroup() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runMigrate handles the migrate subcommand for PostgreSQL database migrations
+func runMigrate() {
+	// Parse flags for migrate command
+	migrateFlags := flag.NewFlagSet("migrate", flag.ExitOnError)
+	configFile := migrateFlags.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)")
+
+	if err := migrateFlags.Parse(os.Args[2:]); err != nil {
+		log.Fatalf("Failed to parse flags: %v", err)
+	}
+
+	// Check if config exists
+	if *configFile == "" {
+		// Check default location
+		if !config.DefaultConfigExists() {
+			fmt.Fprintf(os.Stderr, "Error: No configuration file found at default location: %s\n\n", config.GetDefaultConfigPath())
+			fmt.Fprintln(os.Stderr, "Please initialize a configuration file first:")
+			fmt.Fprintln(os.Stderr, "  dittofs init")
+			fmt.Fprintln(os.Stderr, "\nOr specify a custom config file:")
+			fmt.Fprintln(os.Stderr, "  dittofs migrate --config /path/to/config.yaml")
+			os.Exit(1)
+		}
+	} else {
+		// Check explicitly specified path
+		if _, err := os.Stat(*configFile); os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Error: Configuration file not found: %s\n\n", *configFile)
+			fmt.Fprintln(os.Stderr, "Please create the configuration file:")
+			fmt.Fprintf(os.Stderr, "  dittofs init --config %s\n", *configFile)
+			os.Exit(1)
+		}
+	}
+
+	// Load configuration
+	cfg, err := config.Load(*configFile)
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Initialize the structured logger
+	loggerCfg := logger.Config{
+		Level:  cfg.Logging.Level,
+		Format: cfg.Logging.Format,
+		Output: cfg.Logging.Output,
+	}
+	if err := logger.Init(loggerCfg); err != nil {
+		log.Fatalf("Failed to initialize logger: %v", err)
+	}
+
+	// Find PostgreSQL metadata store configuration
+	var postgresCfg *postgres.PostgresMetadataStoreConfig
+	for name, storeCfg := range cfg.Metadata.Stores {
+		if storeCfg.Type == "postgres" {
+			var pgCfg postgres.PostgresMetadataStoreConfig
+			if err := mapstructure.Decode(storeCfg.Postgres, &pgCfg); err != nil {
+				log.Fatalf("Invalid postgres config: %v", err)
+			}
+			pgCfg.ApplyDefaults()
+			postgresCfg = &pgCfg
+			logger.Info("Found PostgreSQL metadata store", "name", name)
+			break
+		}
+	}
+
+	if postgresCfg == nil {
+		fmt.Fprintln(os.Stderr, "Error: No PostgreSQL metadata store configured")
+		fmt.Fprintln(os.Stderr, "\nTo use migrations, configure a PostgreSQL metadata store in your config:")
+		fmt.Fprint(os.Stderr, `
+metadata:
+  stores:
+    postgres:
+      type: postgres
+      postgres:
+        host: localhost
+        port: 5432
+        database: dittofs
+        user: postgres
+        password: secret
+`)
+		os.Exit(1)
+	}
+
+	// Run migrations
+	ctx := context.Background()
+	fmt.Println("Running PostgreSQL database migrations...")
+
+	if err := postgres.RunMigrations(ctx, postgresCfg); err != nil {
+		log.Fatalf("Migration failed: %v", err)
+	}
+
+	fmt.Println("Migrations completed successfully")
 }
 
 // getConfigSource returns a description of where the config was loaded from
