@@ -134,12 +134,36 @@ func (s *MetadataService) lockManagerForHandle(handle FileHandle) (*LockManager,
 
 // GetFile retrieves file metadata by handle.
 // This is a convenience method that calls GetFile from the Base interface.
+// When deferred commits are enabled, it merges pending write state (size, mtime, ctime)
+// with the stored file metadata.
 func (s *MetadataService) GetFile(ctx context.Context, handle FileHandle) (*File, error) {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return nil, err
 	}
-	return store.GetFile(ctx, handle)
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check for pending write state (when deferred commits are enabled)
+	if pending, ok := s.pendingWrites.GetPending(handle); ok {
+		// Merge pending state with stored state
+		if pending.MaxSize > file.Size {
+			file.Size = pending.MaxSize
+		}
+		// Update timestamps from pending state
+		if pending.LastMtime.After(file.Mtime) {
+			file.Mtime = pending.LastMtime
+			file.Ctime = pending.LastMtime
+		}
+		// Apply setuid/setgid clearing
+		if pending.ClearSetuidSetgid {
+			file.Mode &= ^uint32(0o6000)
+		}
+	}
+
+	return file, nil
 }
 
 // CheckPermissions performs file-level permission checking.

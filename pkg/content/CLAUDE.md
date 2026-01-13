@@ -7,29 +7,40 @@ Content service layer - handles raw file bytes using the Cache layer.
 ```
 ContentServiceInterface (interface.go)
          ↓
-ContentService (service.go) - coordinates with cache
+ContentService (service.go) - coordinates with cache + flusher
          ↓
-cache.Cache (pkg/cache/cache.go) - Chunk/Slice/Block model
-         ↓
-cache.Store (pkg/cache/store.go) - persistence layer
-         ↓
-store/memory/ - implementation
+     ┌───┴───┐
+     ↓       ↓
+cache.Cache  flusher.Flusher (optional)
+     ↓              ↓
+(in-memory)   block.Store (S3/memory)
 ```
 
-## Key Design Changes (Phase 1.5)
+## Key Design
 
-### Cache-Only Storage Model
-- **No ContentStore layer** - Cache IS the storage for Phase 1
-- All reads/writes go through `cache.Cache` interface
-- Data is volatile (lives only in memory cache)
-- Future phases will add BlockStore for persistence
+### Cache + Flusher Model
+- **Cache**: Fast in-memory storage for all reads/writes
+- **Flusher** (optional): Handles cache-to-S3 persistence
+- Without flusher: cache-only mode (volatile data)
+- With flusher: S3 persistence with eager upload
 
 ### Single Global Cache
 - One cache serves ALL shares
 - ContentID (file handle) uniqueness ensures data isolation
 - Registered once in `registry.NewRegistry()`
 
+### Eager Upload (when flusher configured)
+- 4MB blocks uploaded as they become ready (not waiting for COMMIT)
+- Maximizes bandwidth utilization
+- COMMIT/CLOSE just waits for in-flight uploads
+
 ## ContentService Methods
+
+### Configuration
+```go
+SetCache(cache *cache.Cache) error   // Required: set global cache
+SetFlusher(f *flusher.Flusher)       // Optional: enable S3 persistence
+```
 
 ### Read Operations
 ```go
@@ -40,15 +51,15 @@ ContentExists(ctx, shareName, contentID) (bool, error)
 
 ### Write Operations
 ```go
-WriteAt(ctx, shareName, contentID, data, offset) error
+WriteAt(ctx, shareName, contentID, data, offset) error  // Notifies flusher for eager upload
 Truncate(ctx, shareName, contentID, newSize) error
 Delete(ctx, shareName, contentID) error
 ```
 
 ### Flush Operations
 ```go
-Flush(ctx, shareName, contentID) (*FlushResult, error)
-FlushAndFinalize(ctx, shareName, contentID) (*FlushResult, error)
+Flush(ctx, shareName, contentID) (*FlushResult, error)           // NFS COMMIT, SMB FLUSH
+FlushAndFinalize(ctx, shareName, contentID) (*FlushResult, error) // SMB CLOSE
 ```
 
 ## Critical Conventions

@@ -56,6 +56,13 @@ type Config struct {
 	// Cache specifies cache configuration for read and write buffering
 	Cache CacheConfig `mapstructure:"cache" yaml:"cache"`
 
+	// BlockStore specifies the block store configuration for S3 persistence
+	// When configured, cache data is flushed to S3 for durability
+	BlockStore BlockStoreConfig `mapstructure:"block_store" yaml:"block_store"`
+
+	// Flusher specifies flusher configuration for cache-to-S3 uploads
+	Flusher FlusherConfig `mapstructure:"flusher" yaml:"flusher"`
+
 	// Groups defines DittoFS groups for permission management
 	// Groups can have share-level permissions that are inherited by members
 	Groups []GroupConfig `mapstructure:"groups" yaml:"groups"`
@@ -249,6 +256,55 @@ type MmapCacheConfig struct {
 	Path string `mapstructure:"path" yaml:"path"`
 }
 
+// BlockStoreConfig specifies the block store configuration for S3 persistence.
+// Block stores are used to persist cache data to durable storage (S3).
+// When configured, the flusher uploads 4MB blocks to the block store.
+type BlockStoreConfig struct {
+	// Type specifies which block store implementation to use
+	// Valid values: s3, memory
+	// Default: "" (disabled - cache-only mode)
+	Type string `mapstructure:"type" validate:"omitempty,oneof=s3 memory" yaml:"type"`
+
+	// S3 contains S3-specific configuration
+	// Only used when Type = "s3"
+	S3 BlockStoreS3Config `mapstructure:"s3" yaml:"s3"`
+
+	// Memory contains memory-specific configuration
+	// Only used when Type = "memory" (primarily for testing)
+	Memory BlockStoreMemoryConfig `mapstructure:"memory" yaml:"memory"`
+}
+
+// BlockStoreS3Config contains S3-specific block store configuration.
+type BlockStoreS3Config struct {
+	// Bucket is the S3 bucket name (required for S3 block store)
+	Bucket string `mapstructure:"bucket" validate:"required_if=Type s3" yaml:"bucket"`
+
+	// Region is the AWS region (optional, uses SDK default if empty)
+	Region string `mapstructure:"region" yaml:"region"`
+
+	// Endpoint is the S3 endpoint URL (optional, for S3-compatible services like Localstack)
+	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
+
+	// KeyPrefix is the prefix for all block keys in the bucket
+	// Default: "blocks/"
+	// Final key format: {key_prefix}{shareName}/{contentID}/chunk-{n}/block-{n}
+	KeyPrefix string `mapstructure:"key_prefix" yaml:"key_prefix"`
+
+	// MaxRetries is the maximum number of retries for S3 operations
+	// Default: 3
+	MaxRetries int `mapstructure:"max_retries" yaml:"max_retries"`
+
+	// ForcePathStyle forces path-style addressing (required for Localstack/MinIO)
+	// Default: false
+	ForcePathStyle bool `mapstructure:"force_path_style" yaml:"force_path_style"`
+}
+
+// BlockStoreMemoryConfig contains memory-specific block store configuration.
+// This is primarily used for testing.
+type BlockStoreMemoryConfig struct {
+	// No additional configuration needed for memory block store
+}
+
 // PrefetchConfig configures read prefetch behavior.
 // Prefetch proactively loads file content into cache on first read.
 type PrefetchConfig struct {
@@ -288,6 +344,16 @@ type FlusherConfig struct {
 	// Higher values improve throughput when many files are idle.
 	// Default: 4
 	FlushPoolSize int `mapstructure:"flush_pool_size" yaml:"flush_pool_size"`
+
+	// ParallelUploads is the number of concurrent block uploads per file.
+	// Higher values improve upload throughput for large files.
+	// Default: 4
+	ParallelUploads int `mapstructure:"parallel_uploads" yaml:"parallel_uploads"`
+
+	// ParallelDownloads is the number of concurrent block downloads per file.
+	// Higher values improve download throughput for cache miss reads.
+	// Default: 4
+	ParallelDownloads int `mapstructure:"parallel_downloads" yaml:"parallel_downloads"`
 }
 
 // WriteGatheringConfig configures the write gathering optimization.

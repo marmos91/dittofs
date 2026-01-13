@@ -5,10 +5,14 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/flusher"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
+	"github.com/marmos91/dittofs/pkg/store/block"
+	blockmemory "github.com/marmos91/dittofs/pkg/store/block/memory"
+	blocks3 "github.com/marmos91/dittofs/pkg/store/block/s3"
 	"github.com/mitchellh/mapstructure"
 )
 
@@ -120,4 +124,54 @@ func createPostgresMetadataStore(
 	}
 
 	return store, nil
+}
+
+// CreateBlockStore creates a block store instance from configuration.
+// Returns nil, nil if block store is not configured (cache-only mode).
+func CreateBlockStore(ctx context.Context, cfg BlockStoreConfig) (block.Store, error) {
+	switch cfg.Type {
+	case "":
+		// No block store configured - cache-only mode
+		return nil, nil
+	case "memory":
+		return blockmemory.New(), nil
+	case "s3":
+		return createS3BlockStore(ctx, cfg.S3)
+	default:
+		return nil, fmt.Errorf("unknown block store type: %q", cfg.Type)
+	}
+}
+
+// createS3BlockStore creates an S3-backed block store.
+func createS3BlockStore(ctx context.Context, cfg BlockStoreS3Config) (block.Store, error) {
+	if cfg.Bucket == "" {
+		return nil, fmt.Errorf("S3 block store requires bucket to be set")
+	}
+
+	s3Cfg := blocks3.Config{
+		Bucket:         cfg.Bucket,
+		Region:         cfg.Region,
+		Endpoint:       cfg.Endpoint,
+		KeyPrefix:      cfg.KeyPrefix,
+		MaxRetries:     cfg.MaxRetries,
+		ForcePathStyle: cfg.ForcePathStyle,
+	}
+
+	return blocks3.NewFromConfig(ctx, s3Cfg)
+}
+
+// CreateFlusher creates a flusher instance from configuration.
+// Returns nil if block store is nil (cache-only mode, no S3 persistence).
+func CreateFlusher(c *cache.Cache, blockStore block.Store, cfg FlusherConfig) *flusher.Flusher {
+	if blockStore == nil {
+		// No block store - cache-only mode, no flusher needed
+		return nil
+	}
+
+	flusherCfg := flusher.Config{
+		ParallelUploads:   cfg.ParallelUploads,
+		ParallelDownloads: cfg.ParallelDownloads,
+	}
+
+	return flusher.New(c, blockStore, flusherCfg)
 }
