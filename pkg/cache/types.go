@@ -166,3 +166,28 @@ type PendingSlice struct {
 	// CreatedAt for ordering.
 	CreatedAt time.Time
 }
+
+// ============================================================================
+// Cache Statistics
+// ============================================================================
+
+// Stats contains cache statistics for observability.
+type Stats struct {
+	// TotalSize is the current total size of cached data in bytes.
+	TotalSize uint64
+
+	// MaxSize is the configured maximum cache size (0 = unlimited).
+	MaxSize uint64
+
+	// FileCount is the number of files with cached data.
+	FileCount int
+
+	// DirtyBytes is the size of pending (unflushed) data.
+	DirtyBytes uint64
+
+	// FlushedBytes is the size of flushed (evictable) data.
+	FlushedBytes uint64
+
+	// SliceCount is the total number of slices across all files.
+	SliceCount int
+}

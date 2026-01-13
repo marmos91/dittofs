@@ -50,6 +50,31 @@ SliceStatePending → SliceStateUploading → SliceStateFlushed
 2. **Uploading**: Flush in progress, cannot evict
 3. **Flushed**: Safe in block storage (S3), can evict
 
+## LRU Eviction
+
+Cache enforces `maxSize` using LRU eviction with dirty data protection:
+
+1. **Automatic eviction** - On `WriteSlice`, if cache would exceed maxSize, evicts flushed slices from LRU files
+2. **LRU tracking** - Each file tracks `lastAccess` time (updated on writes)
+3. **Dirty protection** - Only `SliceStateFlushed` slices can be evicted; pending/uploading are protected
+4. **Manual eviction** - `EvictLRU(ctx, targetFreeBytes)` for explicit eviction
+
+```go
+// Create cache with 1GB limit
+c := cache.New(1 << 30)
+
+// Automatic eviction happens on WriteSlice when full
+c.WriteSlice(ctx, handle, chunkIdx, data, offset)
+
+// Manual eviction to free 100MB
+evicted, err := c.EvictLRU(ctx, 100*1024*1024)
+
+// Get cache stats
+stats := c.Stats()
+// stats.DirtyBytes - protected, cannot evict
+// stats.FlushedBytes - can be evicted
+```
+
 ## Sequential Write Optimization
 
 NFS clients write in 16KB-32KB chunks. Without optimization:
