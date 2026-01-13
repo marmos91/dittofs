@@ -54,6 +54,10 @@ type Store interface {
 
 	// Close releases any resources held by the store.
 	Close() error
+
+	// HealthCheck verifies the store is accessible and operational.
+	// Returns nil if healthy, error describing the issue otherwise.
+	HealthCheck(ctx context.Context) error
 }
 
 // BlockRef references a single block in storage.

@@ -294,6 +294,26 @@ func (s *Store) Close() error {
 	return nil
 }
 
+// HealthCheck verifies the S3 bucket is accessible.
+// Performs a HeadBucket call to check connectivity and permissions.
+func (s *Store) HealthCheck(ctx context.Context) error {
+	s.mu.RLock()
+	if s.closed {
+		s.mu.RUnlock()
+		return block.ErrStoreClosed
+	}
+	s.mu.RUnlock()
+
+	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: aws.String(s.bucket),
+	})
+	if err != nil {
+		return fmt.Errorf("S3 health check failed: %w", err)
+	}
+
+	return nil
+}
+
 // isNotFoundError checks if an error is an S3 not found error.
 func isNotFoundError(err error) bool {
 	if err == nil {

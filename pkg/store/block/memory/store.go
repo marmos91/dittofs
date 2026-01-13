@@ -150,6 +150,17 @@ func (s *Store) Close() error {
 	return nil
 }
 
+// HealthCheck verifies the store is accessible and operational.
+func (s *Store) HealthCheck(ctx context.Context) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return block.ErrStoreClosed
+	}
+	return nil
+}
+
 // BlockCount returns the number of blocks stored (for testing).
 func (s *Store) BlockCount() int {
 	s.mu.RLock()

@@ -511,3 +511,19 @@ func (f *Flusher) Close() error {
 	f.closed = true
 	return nil
 }
+
+// HealthCheck verifies the block store is accessible.
+func (f *Flusher) HealthCheck(ctx context.Context) error {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	if f.closed {
+		return fmt.Errorf("flusher is closed")
+	}
+
+	if f.blockStore == nil {
+		return fmt.Errorf("no block store configured")
+	}
+
+	return f.blockStore.HealthCheck(ctx)
+}
