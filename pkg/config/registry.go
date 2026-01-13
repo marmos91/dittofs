@@ -46,8 +46,15 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 		return nil, err
 	}
 
-	// Create empty registry
-	reg := registry.NewRegistry()
+	// Create cache from configuration
+	globalCache, err := CreateCache(cfg.Cache)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cache: %w", err)
+	}
+	logger.Info("Created cache", "type", cfg.Cache.Type)
+
+	// Create registry with cache
+	reg := registry.NewRegistry(globalCache)
 
 	// Step 1: Register all metadata stores
 	if err := registerMetadataStores(ctx, reg, cfg); err != nil {

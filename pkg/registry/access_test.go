@@ -9,7 +9,7 @@ import (
 )
 
 func TestApplyIdentityMapping_NoMapping(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -47,7 +47,7 @@ func TestApplyIdentityMapping_NoMapping(t *testing.T) {
 }
 
 func TestApplyIdentityMapping_AllSquash(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -87,7 +87,7 @@ func TestApplyIdentityMapping_AllSquash(t *testing.T) {
 }
 
 func TestApplyIdentityMapping_RootSquash(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -148,7 +148,7 @@ func TestApplyIdentityMapping_RootSquash(t *testing.T) {
 }
 
 func TestApplyIdentityMapping_AllSquashTakesPrecedence(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -182,7 +182,7 @@ func TestApplyIdentityMapping_AllSquashTakesPrecedence(t *testing.T) {
 }
 
 func TestApplyIdentityMapping_ShareNotFound(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 
 	uid := uint32(1000)
 	identity := &metadata.Identity{
@@ -196,7 +196,7 @@ func TestApplyIdentityMapping_ShareNotFound(t *testing.T) {
 }
 
 func TestGetShareNameForHandle(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -224,7 +224,7 @@ func TestGetShareNameForHandle(t *testing.T) {
 }
 
 func TestGetShareNameForHandle_InvalidHandle(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 
 	// Invalid handle
 	invalidHandle := metadata.FileHandle([]byte("invalid"))
@@ -236,7 +236,7 @@ func TestGetShareNameForHandle_InvalidHandle(t *testing.T) {
 }
 
 func TestGetShareNameForHandle_ShareNotInRegistry(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -260,7 +260,7 @@ func TestGetShareNameForHandle_ShareNotInRegistry(t *testing.T) {
 }
 
 func TestApplyIdentityMapping_AnonymousAccess(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -299,7 +299,7 @@ func TestApplyIdentityMapping_AnonymousAccess(t *testing.T) {
 }
 
 func TestApplyIdentityMapping_PreservesOriginalIdentity(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(nil)
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)

@@ -76,7 +76,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
 	// Create registry and register stores
-	reg := registry.NewRegistry()
+	reg := registry.NewRegistry(nil)
 	if err := reg.RegisterMetadataStore("test-metaSvc", metaStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}

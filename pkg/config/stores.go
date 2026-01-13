@@ -4,12 +4,28 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
 	"github.com/mitchellh/mapstructure"
 )
+
+// CreateCache creates a cache instance from configuration.
+func CreateCache(cfg CacheConfig) (*cache.Cache, error) {
+	switch cfg.Type {
+	case "memory", "":
+		return cache.New(cfg.MaxSize), nil
+	case "mmap":
+		if cfg.Mmap.Path == "" {
+			return nil, fmt.Errorf("mmap cache requires path to be set")
+		}
+		return cache.NewWithMmap(cfg.Mmap.Path, cfg.MaxSize)
+	default:
+		return nil, fmt.Errorf("unknown cache type: %q", cfg.Type)
+	}
+}
 
 // createMetadataStore creates a single metadata store instance.
 // The capabilities parameter contains global filesystem settings that apply to all metadata stores.

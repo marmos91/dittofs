@@ -172,7 +172,7 @@ func (tc *TestContext) startServer() {
 	}
 
 	// Create Registry (auto-creates global SliceCache for content storage)
-	tc.Registry = registry.NewRegistry()
+	tc.Registry = registry.NewRegistry(nil)
 
 	// Setup user store for SMB if enabled
 	if tc.options.EnableSMB {
