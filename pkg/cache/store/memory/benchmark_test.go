@@ -8,6 +8,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/cache"
 )
 
+// newTestCache creates a cache with a memory store for benchmarking.
+func newTestCache() *cache.Cache {
+	return cache.NewWithStore(New(), 0)
+}
+
 // ============================================================================
 // Write Benchmarks
 // ============================================================================
@@ -19,7 +24,7 @@ func BenchmarkWriteSlice_Sequential(b *testing.B) {
 
 	for _, size := range sizes {
 		b.Run(fmt.Sprintf("size=%dKB", size/1024), func(b *testing.B) {
-			c := NewCache(0)
+			c := newTestCache()
 			defer c.Close()
 
 			ctx := context.Background()
@@ -45,7 +50,7 @@ func BenchmarkWriteSlice_Sequential(b *testing.B) {
 // BenchmarkWriteSlice_Random measures random write performance.
 // This simulates database-like workloads with scattered writes.
 func BenchmarkWriteSlice_Random(b *testing.B) {
-	c := NewCache(0)
+	c := newTestCache()
 	defer c.Close()
 
 	ctx := context.Background()
@@ -78,7 +83,7 @@ func BenchmarkWriteSlice_Random(b *testing.B) {
 // BenchmarkWriteSlice_Concurrent measures concurrent write performance.
 // This simulates multiple NFS clients writing to different files.
 func BenchmarkWriteSlice_Concurrent(b *testing.B) {
-	c := NewCache(0)
+	c := newTestCache()
 	defer c.Close()
 
 	ctx := context.Background()
@@ -113,7 +118,7 @@ func BenchmarkReadSlice(b *testing.B) {
 
 	for _, size := range sizes {
 		b.Run(fmt.Sprintf("size=%dKB", size/1024), func(b *testing.B) {
-			c := NewCache(0)
+			c := newTestCache()
 			defer c.Close()
 
 			ctx := context.Background()
@@ -151,7 +156,7 @@ func BenchmarkReadSlice_ManySlices(b *testing.B) {
 
 	for _, count := range sliceCounts {
 		b.Run(fmt.Sprintf("slices=%d", count), func(b *testing.B) {
-			c := NewCache(0)
+			c := newTestCache()
 			defer c.Close()
 
 			ctx := context.Background()
@@ -179,154 +184,63 @@ func BenchmarkReadSlice_ManySlices(b *testing.B) {
 }
 
 // ============================================================================
-// Coalesce Benchmarks
+// Store Benchmarks
 // ============================================================================
 
-// BenchmarkCoalesceChunk measures coalescing performance.
-func BenchmarkCoalesceChunk(b *testing.B) {
-	sliceCounts := []int{2, 5, 10, 20, 50, 100}
-
-	for _, count := range sliceCounts {
-		b.Run(fmt.Sprintf("slices=%d", count), func(b *testing.B) {
-			store := New()
-			ctx := context.Background()
-			fileHandle := []byte("benchmark-file")
-
-			b.ResetTimer()
-
-			for i := 0; i < b.N; i++ {
-				b.StopTimer()
-				// Setup: create many non-adjacent slices
-				for j := 0; j < count; j++ {
-					slice := cache.Slice{
-						ID:     fmt.Sprintf("slice-%d", j),
-						Offset: uint32(j * 4 * 1024), // 4KB each, non-adjacent
-						Length: uint32(2 * 1024),    // 2KB data (2KB gap between)
-						Data:   make([]byte, 2*1024),
-						State:  cache.SliceStatePending,
-					}
-					_ = store.AddSlice(ctx, fileHandle, 0, slice)
-				}
-				b.StartTimer()
-
-				if err := store.CoalesceChunk(ctx, fileHandle, 0); err != nil {
-					b.Fatal(err)
-				}
-
-				b.StopTimer()
-				_ = store.RemoveFile(ctx, fileHandle)
-			}
-		})
-	}
-}
-
-// BenchmarkCoalesceChunk_Adjacent measures coalescing with adjacent slices.
-func BenchmarkCoalesceChunk_Adjacent(b *testing.B) {
-	sliceCounts := []int{2, 5, 10, 20, 50, 100}
-
-	for _, count := range sliceCounts {
-		b.Run(fmt.Sprintf("slices=%d", count), func(b *testing.B) {
-			store := New()
-			ctx := context.Background()
-			fileHandle := []byte("benchmark-file")
-
-			b.ResetTimer()
-
-			for i := 0; i < b.N; i++ {
-				b.StopTimer()
-				// Setup: create adjacent slices (will merge into one)
-				for j := 0; j < count; j++ {
-					slice := cache.Slice{
-						ID:     fmt.Sprintf("slice-%d", j),
-						Offset: uint32(j * 4 * 1024), // Adjacent 4KB slices
-						Length: uint32(4 * 1024),
-						Data:   make([]byte, 4*1024),
-						State:  cache.SliceStatePending,
-					}
-					_ = store.AddSlice(ctx, fileHandle, 0, slice)
-				}
-				b.StartTimer()
-
-				if err := store.CoalesceChunk(ctx, fileHandle, 0); err != nil {
-					b.Fatal(err)
-				}
-
-				b.StopTimer()
-				_ = store.RemoveFile(ctx, fileHandle)
-			}
-		})
-	}
-}
-
-// ============================================================================
-// ExtendAdjacentSlice Benchmarks
-// ============================================================================
-
-// BenchmarkExtendAdjacentSlice measures the sequential write optimization.
-func BenchmarkExtendAdjacentSlice(b *testing.B) {
+// BenchmarkStore_AddSlice measures raw store add performance.
+func BenchmarkStore_AddSlice(b *testing.B) {
 	store := New()
 	defer store.Close()
 
 	ctx := context.Background()
 	fileHandle := []byte("benchmark-file")
-	data := make([]byte, 32*1024) // 32KB writes
-
-	// Create initial slice
-	initialSlice := cache.Slice{
-		ID:     "initial",
-		Offset: 0,
-		Length: 32 * 1024,
-		Data:   make([]byte, 32*1024),
-		State:  cache.SliceStatePending,
-	}
-	_ = store.AddSlice(ctx, fileHandle, 0, initialSlice)
+	data := make([]byte, 32*1024)
 
 	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 
-	currentOffset := uint32(32 * 1024) // Start after initial slice
 	for i := 0; i < b.N; i++ {
-		if currentOffset+uint32(len(data)) > cache.ChunkSize {
-			// Reset for next chunk cycle
-			b.StopTimer()
-			_ = store.RemoveFile(ctx, fileHandle)
-			_ = store.AddSlice(ctx, fileHandle, 0, initialSlice)
-			currentOffset = 32 * 1024
-			b.StartTimer()
+		slice := cache.Slice{
+			ID:     fmt.Sprintf("slice-%d", i),
+			Offset: uint32(i * 32 * 1024 % cache.ChunkSize),
+			Length: uint32(len(data)),
+			Data:   data,
+			State:  cache.SliceStatePending,
 		}
-
-		if !store.ExtendAdjacentSlice(ctx, fileHandle, 0, currentOffset, data) {
-			b.Fatalf("ExtendAdjacentSlice should succeed at offset %d", currentOffset)
+		if err := store.AddSlice(ctx, fileHandle, 0, slice); err != nil {
+			b.Fatal(err)
 		}
-		currentOffset += uint32(len(data))
 	}
 }
 
-// BenchmarkExtendAdjacentSlice_Miss measures performance when no adjacent slice exists.
-func BenchmarkExtendAdjacentSlice_Miss(b *testing.B) {
+// BenchmarkStore_GetSlices measures raw store retrieval performance.
+func BenchmarkStore_GetSlices(b *testing.B) {
 	store := New()
 	defer store.Close()
 
 	ctx := context.Background()
 	fileHandle := []byte("benchmark-file")
-	data := make([]byte, 4*1024)
+	data := make([]byte, 32*1024)
 
-	// Create a slice that won't be adjacent to our writes
-	slice := cache.Slice{
-		ID:     "far-away",
-		Offset: 1024 * 1024, // 1MB offset
-		Length: 4 * 1024,
-		Data:   data,
-		State:  cache.SliceStatePending,
+	// Pre-populate with 100 slices
+	for i := 0; i < 100; i++ {
+		slice := cache.Slice{
+			ID:     fmt.Sprintf("slice-%d", i),
+			Offset: uint32(i * 1024),
+			Length: uint32(len(data)),
+			Data:   data,
+			State:  cache.SliceStatePending,
+		}
+		_ = store.AddSlice(ctx, fileHandle, 0, slice)
 	}
-	_ = store.AddSlice(ctx, fileHandle, 0, slice)
 
-	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		// Try to extend at offset 0 - should always miss
-		_ = store.ExtendAdjacentSlice(ctx, fileHandle, 0, 0, data)
+		slices := store.GetSlices(ctx, fileHandle, 0)
+		if len(slices) == 0 {
+			b.Fatal("expected slices")
+		}
 	}
 }
 
@@ -340,7 +254,7 @@ func BenchmarkE2E_SequentialWrite(b *testing.B) {
 
 	for _, sizeMB := range fileSizes {
 		b.Run(fmt.Sprintf("size=%dMB", sizeMB), func(b *testing.B) {
-			c := NewCache(0)
+			c := newTestCache()
 			ctx := context.Background()
 
 			writeSize := 32 * 1024 // 32KB per write (typical NFS)
@@ -364,12 +278,9 @@ func BenchmarkE2E_SequentialWrite(b *testing.B) {
 					}
 				}
 
-				// Simulate COMMIT
-				chunkIndices := c.store.GetChunkIndices(ctx, fileHandle)
-				for _, chunkIdx := range chunkIndices {
-					if err := c.store.CoalesceChunk(ctx, fileHandle, chunkIdx); err != nil {
-						b.Fatal(err)
-					}
+				// Simulate COMMIT (coalesce)
+				if err := c.CoalesceWrites(ctx, fileHandle); err != nil {
+					b.Fatal(err)
 				}
 			}
 
@@ -380,7 +291,7 @@ func BenchmarkE2E_SequentialWrite(b *testing.B) {
 
 // BenchmarkE2E_ReadAfterWrite simulates write then read pattern.
 func BenchmarkE2E_ReadAfterWrite(b *testing.B) {
-	c := NewCache(0)
+	c := newTestCache()
 	defer c.Close()
 
 	ctx := context.Background()
@@ -397,10 +308,7 @@ func BenchmarkE2E_ReadAfterWrite(b *testing.B) {
 	}
 
 	// Coalesce
-	chunkIndices := c.store.GetChunkIndices(ctx, fileHandle)
-	for _, chunkIdx := range chunkIndices {
-		_ = c.store.CoalesceChunk(ctx, fileHandle, chunkIdx)
-	}
+	_ = c.CoalesceWrites(ctx, fileHandle)
 
 	readSize := uint32(64 * 1024) // 64KB reads
 	b.SetBytes(int64(readSize))

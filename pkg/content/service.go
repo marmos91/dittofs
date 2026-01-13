@@ -30,7 +30,7 @@ import (
 //	err := contentSvc.WriteAt(ctx, shareName, contentID, data, offset)
 type ContentService struct {
 	mu    sync.RWMutex
-	cache cache.Cache // Single global cache for all shares
+	cache *cache.Cache // Single global cache for all shares
 }
 
 // New creates a new empty ContentService instance.
@@ -47,7 +47,7 @@ func New() *ContentService {
 //   - Write coalescing for better performance
 //
 // This should be called once during initialization.
-func (s *ContentService) SetCache(sc cache.Cache) error {
+func (s *ContentService) SetCache(sc *cache.Cache) error {
 	if sc == nil {
 		return fmt.Errorf("cannot set nil cache")
 	}
@@ -61,7 +61,7 @@ func (s *ContentService) SetCache(sc cache.Cache) error {
 
 // GetCache returns the global cache.
 // Returns nil if no cache is configured.
-func (s *ContentService) GetCache() cache.Cache {
+func (s *ContentService) GetCache() *cache.Cache {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -70,13 +70,13 @@ func (s *ContentService) GetCache() cache.Cache {
 
 // RegisterCacheForShare associates a cache with a share.
 // Since we use a single global cache, the shareName is ignored.
-func (s *ContentService) RegisterCacheForShare(shareName string, sc cache.Cache) error {
+func (s *ContentService) RegisterCacheForShare(shareName string, sc *cache.Cache) error {
 	return s.SetCache(sc)
 }
 
 // GetCacheForShare returns the cache for a share.
 // Since we use a single global cache, the shareName is ignored.
-func (s *ContentService) GetCacheForShare(shareName string) cache.Cache {
+func (s *ContentService) GetCacheForShare(shareName string) *cache.Cache {
 	return s.GetCache()
 }
 

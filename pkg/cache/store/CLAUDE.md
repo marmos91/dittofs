@@ -5,12 +5,12 @@ Persistence layer for the slice cache. Handles low-level storage operations.
 ## Architecture
 
 ```
-store.Store Interface (store.go)
+cache.Store Interface (pkg/cache/store.go)
     - Defines persistence operations
          ↓
 Implementations:
-    memory/ - In-memory storage (volatile)
-    fs/     - Filesystem storage (future)
+    store/memory/ - In-memory storage (volatile)
+    store/fs/     - Filesystem storage (future)
 ```
 
 ## Design Principle
@@ -94,7 +94,7 @@ type Store interface {
 
 Located in `memory/store.go`:
 
-- **Thread-safe**: Two-level locking (file map + per-file)
+- **Thread-safe**: Uses `sync.RWMutex` for map-level thread safety
 - **Deep copies**: All returned slices are copies (prevents external mutation)
 - **Size tracking**: Atomic uint64 for total size
 - **Idempotent**: RemoveFile/RemoveChunk succeed even if not found
@@ -102,9 +102,9 @@ Located in `memory/store.go`:
 ## Adding a New Implementation
 
 1. Create `pkg/cache/store/<name>/store.go`
-2. Implement `store.Store` interface
-3. Add compile-time check: `var _ store.Store = (*Store)(nil)`
-4. Use the store with: `memory.NewMemoryCacheWithStore(yourStore, maxSize)`
+2. Implement `cache.Store` interface
+3. Add compile-time check: `var _ cache.Store = (*Store)(nil)`
+4. Use the store with: `cache.NewWithStore(yourStore, maxSize)`
 
 ## Common Mistakes
 

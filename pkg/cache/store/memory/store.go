@@ -5,16 +5,17 @@
 //   - Testing
 //   - Development
 //   - Cache-only configurations (Phase 1)
+//
+// Thread Safety:
+// This store provides basic thread-safety for map operations. The Cache
+// layer provides additional per-file locking for finer-grained concurrency.
 package memory
 
 import (
 	"context"
-	"sort"
 	"sync"
 	"sync/atomic"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/cache"
 )
 
@@ -27,7 +28,6 @@ var _ cache.Store = (*Store)(nil)
 
 // fileEntry holds all stored data for a single file.
 type fileEntry struct {
-	mu     sync.RWMutex
 	chunks map[uint32]*chunkEntry // chunkIndex -> chunkEntry
 }
 
@@ -40,14 +40,13 @@ type chunkEntry struct {
 // Store
 // ============================================================================
 
-// Store implements store.Store with in-memory storage.
+// Store implements cache.Store with in-memory storage.
 //
 // Thread Safety:
-// Two-level locking for efficiency:
-//   - s.mu (RWMutex): Protects the files map structure
-//   - file.mu (RWMutex): Protects individual file's chunks and slices
-//
-// This allows concurrent operations on different files without contention.
+// The Store uses a simple mutex to protect its files map. This allows
+// concurrent access from multiple goroutines while keeping the implementation
+// simple. The Cache layer provides additional per-file locking for finer-grained
+// concurrency control on individual file operations.
 type Store struct {
 	mu        sync.RWMutex
 	files     map[string]*fileEntry // fileHandle (as string) -> fileEntry
@@ -72,8 +71,6 @@ func (s *Store) CreateFile(ctx context.Context, fileHandle []byte) error {
 		return err
 	}
 
-	key := string(fileHandle)
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -81,6 +78,7 @@ func (s *Store) CreateFile(ctx context.Context, fileHandle []byte) error {
 		return cache.ErrStoreClosed
 	}
 
+	key := string(fileHandle)
 	if _, exists := s.files[key]; !exists {
 		s.files[key] = &fileEntry{
 			chunks: make(map[uint32]*chunkEntry),
@@ -92,8 +90,6 @@ func (s *Store) CreateFile(ctx context.Context, fileHandle []byte) error {
 
 // FileExists returns true if the file has any stored data.
 func (s *Store) FileExists(ctx context.Context, fileHandle []byte) bool {
-	key := string(fileHandle)
-
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -101,6 +97,7 @@ func (s *Store) FileExists(ctx context.Context, fileHandle []byte) bool {
 		return false
 	}
 
+	key := string(fileHandle)
 	_, exists := s.files[key]
 	return exists
 }
@@ -111,8 +108,6 @@ func (s *Store) RemoveFile(ctx context.Context, fileHandle []byte) error {
 		return err
 	}
 
-	key := string(fileHandle)
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -120,20 +115,19 @@ func (s *Store) RemoveFile(ctx context.Context, fileHandle []byte) error {
 		return cache.ErrStoreClosed
 	}
 
+	key := string(fileHandle)
 	file, exists := s.files[key]
 	if !exists {
 		return nil // Idempotent
 	}
 
 	// Calculate size to subtract
-	file.mu.Lock()
 	var size uint64
 	for _, chunk := range file.chunks {
 		for _, slice := range chunk.slices {
 			size += uint64(len(slice.Data))
 		}
 	}
-	file.mu.Unlock()
 
 	delete(s.files, key)
 
@@ -167,13 +161,14 @@ func (s *Store) ListFiles(ctx context.Context) [][]byte {
 
 // GetChunkIndices returns all chunk indices for a file.
 func (s *Store) GetChunkIndices(ctx context.Context, fileHandle []byte) []uint32 {
-	file := s.getFile(fileHandle)
-	if file == nil {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	key := string(fileHandle)
+	file, exists := s.files[key]
+	if !exists {
 		return []uint32{}
 	}
-
-	file.mu.RLock()
-	defer file.mu.RUnlock()
 
 	result := make([]uint32, 0, len(file.chunks))
 	for idx := range file.chunks {
@@ -189,16 +184,17 @@ func (s *Store) RemoveChunk(ctx context.Context, fileHandle []byte, chunkIdx uin
 		return err
 	}
 
-	file := s.getFile(fileHandle)
-	if file == nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := string(fileHandle)
+	file, exists := s.files[key]
+	if !exists {
 		return nil // Idempotent
 	}
 
-	file.mu.Lock()
-	defer file.mu.Unlock()
-
-	chunk, exists := file.chunks[chunkIdx]
-	if !exists {
+	chunk, chunkExists := file.chunks[chunkIdx]
+	if !chunkExists {
 		return nil // Idempotent
 	}
 
@@ -223,13 +219,14 @@ func (s *Store) RemoveChunk(ctx context.Context, fileHandle []byte, chunkIdx uin
 
 // GetSlices returns all slices for a chunk.
 func (s *Store) GetSlices(ctx context.Context, fileHandle []byte, chunkIdx uint32) []cache.Slice {
-	file := s.getFile(fileHandle)
-	if file == nil {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	key := string(fileHandle)
+	file, exists := s.files[key]
+	if !exists {
 		return []cache.Slice{}
 	}
-
-	file.mu.RLock()
-	defer file.mu.RUnlock()
 
 	chunk, exists := file.chunks[chunkIdx]
 	if !exists {
@@ -251,13 +248,21 @@ func (s *Store) AddSlice(ctx context.Context, fileHandle []byte, chunkIdx uint32
 		return err
 	}
 
-	file, err := s.getOrCreateFile(fileHandle)
-	if err != nil {
-		return err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return cache.ErrStoreClosed
 	}
 
-	file.mu.Lock()
-	defer file.mu.Unlock()
+	key := string(fileHandle)
+	file, exists := s.files[key]
+	if !exists {
+		file = &fileEntry{
+			chunks: make(map[uint32]*chunkEntry),
+		}
+		s.files[key] = file
+	}
 
 	chunk, exists := file.chunks[chunkIdx]
 	if !exists {
@@ -285,13 +290,14 @@ func (s *Store) UpdateSlice(ctx context.Context, fileHandle []byte, chunkIdx uin
 		return err
 	}
 
-	file := s.getFile(fileHandle)
-	if file == nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := string(fileHandle)
+	file, exists := s.files[key]
+	if !exists {
 		return cache.ErrFileNotFound
 	}
-
-	file.mu.Lock()
-	defer file.mu.Unlock()
 
 	chunk, exists := file.chunks[chunkIdx]
 	if !exists {
@@ -344,13 +350,21 @@ func (s *Store) SetSlices(ctx context.Context, fileHandle []byte, chunkIdx uint3
 		return err
 	}
 
-	file, err := s.getOrCreateFile(fileHandle)
-	if err != nil {
-		return err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return cache.ErrStoreClosed
 	}
 
-	file.mu.Lock()
-	defer file.mu.Unlock()
+	key := string(fileHandle)
+	file, exists := s.files[key]
+	if !exists {
+		file = &fileEntry{
+			chunks: make(map[uint32]*chunkEntry),
+		}
+		s.files[key] = file
+	}
 
 	// Calculate old size
 	var oldSize uint64
@@ -387,13 +401,14 @@ func (s *Store) FindSlice(ctx context.Context, fileHandle []byte, sliceID string
 		return 0, nil, err
 	}
 
-	file := s.getFile(fileHandle)
-	if file == nil {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	key := string(fileHandle)
+	file, exists := s.files[key]
+	if !exists {
 		return 0, nil, cache.ErrFileNotFound
 	}
-
-	file.mu.RLock()
-	defer file.mu.RUnlock()
 
 	for chunkIdx, chunk := range file.chunks {
 		for _, slice := range chunk.slices {
@@ -407,24 +422,73 @@ func (s *Store) FindSlice(ctx context.Context, fileHandle []byte, sliceID string
 	return 0, nil, cache.ErrStoreSliceNotFound
 }
 
-// ExtendAdjacentSlice atomically attempts to extend a pending slice that is adjacent
-// to the new write. This avoids the TOCTOU race condition by holding the lock during
-// the entire read-check-extend operation.
-//
-// Returns true if an adjacent slice was found and extended, false otherwise.
-// When false is returned, the caller should create a new slice.
-func (s *Store) ExtendAdjacentSlice(ctx context.Context, fileHandle []byte, chunkIdx uint32, offset uint32, data []byte) bool {
+// ExtendSliceData efficiently extends a slice's data in place.
+// Uses Go's append() for amortized O(1) growth on appends.
+func (s *Store) ExtendSliceData(ctx context.Context, fileHandle []byte, chunkIdx uint32, sliceID string, data []byte, appendMode bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := string(fileHandle)
+	file, exists := s.files[key]
+	if !exists {
+		return cache.ErrFileNotFound
+	}
+
+	chunk, exists := file.chunks[chunkIdx]
+	if !exists {
+		return cache.ErrChunkNotFound
+	}
+
+	for i := range chunk.slices {
+		if chunk.slices[i].ID == sliceID {
+			oldLen := len(chunk.slices[i].Data)
+
+			if appendMode {
+				// Append: use Go's append for amortized O(1) growth
+				chunk.slices[i].Data = append(chunk.slices[i].Data, data...)
+				chunk.slices[i].Length += uint32(len(data))
+			} else {
+				// Prepend: need to allocate new slice
+				newData := make([]byte, len(data)+len(chunk.slices[i].Data))
+				copy(newData, data)
+				copy(newData[len(data):], chunk.slices[i].Data)
+				chunk.slices[i].Data = newData
+				chunk.slices[i].Offset -= uint32(len(data))
+				chunk.slices[i].Length += uint32(len(data))
+			}
+
+			// Update size tracking
+			newLen := len(chunk.slices[i].Data)
+			if newLen > oldLen {
+				s.totalSize.Add(uint64(newLen - oldLen))
+			}
+
+			return nil
+		}
+	}
+
+	return cache.ErrStoreSliceNotFound
+}
+
+// TryExtendAdjacentSlice atomically finds and extends an adjacent pending slice.
+// Uses Go's append() for amortized O(1) growth on sequential appends.
+func (s *Store) TryExtendAdjacentSlice(ctx context.Context, fileHandle []byte, chunkIdx uint32, offset uint32, data []byte) bool {
 	if ctx.Err() != nil {
 		return false
 	}
 
-	file := s.getFile(fileHandle)
-	if file == nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := string(fileHandle)
+	file, exists := s.files[key]
+	if !exists {
 		return false
 	}
-
-	file.mu.Lock()
-	defer file.mu.Unlock()
 
 	chunk, exists := file.chunks[chunkIdx]
 	if !exists {
@@ -443,167 +507,28 @@ func (s *Store) ExtendAdjacentSlice(ctx context.Context, fileHandle []byte, chun
 
 		// Case 1: Appending (write starts where slice ends)
 		if offset == sliceEnd {
-			// Extend using Go's append for amortized O(1) growth
 			oldLen := len(slice.Data)
 			slice.Data = append(slice.Data, data...)
-			slice.Length = slice.Length + uint32(len(data))
-
-			// Update size tracking
+			slice.Length += uint32(len(data))
 			s.totalSize.Add(uint64(len(slice.Data) - oldLen))
 			return true
 		}
 
 		// Case 2: Prepending (write ends where slice starts)
 		if writeEnd == slice.Offset {
-			// Prepend the data in place
-			oldSize := uint64(len(slice.Data))
+			oldLen := len(slice.Data)
 			newData := make([]byte, len(data)+len(slice.Data))
 			copy(newData, data)
 			copy(newData[len(data):], slice.Data)
-
 			slice.Data = newData
 			slice.Offset = offset
-			slice.Length = slice.Length + uint32(len(data))
-
-			// Update size tracking
-			newSize := uint64(len(newData))
-			if newSize > oldSize {
-				s.totalSize.Add(newSize - oldSize)
-			}
+			slice.Length += uint32(len(data))
+			s.totalSize.Add(uint64(len(newData) - oldLen))
 			return true
 		}
 	}
 
 	return false
-}
-
-// CoalesceChunk atomically merges adjacent pending slices within a chunk.
-// This holds the lock during the entire operation to avoid TOCTOU races.
-func (s *Store) CoalesceChunk(ctx context.Context, fileHandle []byte, chunkIdx uint32) error {
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-
-	file := s.getFile(fileHandle)
-	if file == nil {
-		return nil // No-op for non-existent file
-	}
-
-	file.mu.Lock()
-	defer file.mu.Unlock()
-
-	chunk, exists := file.chunks[chunkIdx]
-	if !exists || len(chunk.slices) <= 1 {
-		return nil // Nothing to coalesce
-	}
-
-	// Separate pending and non-pending slices
-	var pending []cache.Slice
-	var other []cache.Slice
-
-	for _, slice := range chunk.slices {
-		if slice.State == cache.SliceStatePending {
-			pending = append(pending, slice)
-		} else {
-			other = append(other, slice)
-		}
-	}
-
-	if len(pending) <= 1 {
-		return nil // Nothing to coalesce
-	}
-
-	// Sort pending slices by offset for coalescing
-	sort.Slice(pending, func(i, j int) bool {
-		return pending[i].Offset < pending[j].Offset
-	})
-
-	// Merge adjacent or overlapping pending slices
-	merged := make([]cache.Slice, 0)
-	var current *cache.Slice
-
-	for _, slice := range pending {
-		if current == nil {
-			// Start new merged slice
-			newSlice := cache.Slice{
-				ID:        uuid.New().String(),
-				Offset:    slice.Offset,
-				Length:    slice.Length,
-				Data:      make([]byte, slice.Length),
-				State:     cache.SliceStatePending,
-				CreatedAt: time.Now(),
-			}
-			copy(newSlice.Data, slice.Data)
-			current = &newSlice
-			continue
-		}
-
-		currentEnd := current.Offset + current.Length
-
-		if slice.Offset <= currentEnd {
-			// Adjacent or overlapping - merge
-			sliceEnd := slice.Offset + slice.Length
-			newEnd := max(currentEnd, sliceEnd)
-			newLength := newEnd - current.Offset
-
-			// Extend data buffer if needed
-			if newLength > uint32(len(current.Data)) {
-				newData := make([]byte, newLength)
-				copy(newData, current.Data)
-				current.Data = newData
-				current.Length = newLength
-			}
-
-			// Copy slice data (handles overlaps correctly since we process in offset order)
-			dstOffset := slice.Offset - current.Offset
-			copy(current.Data[dstOffset:], slice.Data)
-		} else {
-			// Gap - save current and start new
-			merged = append(merged, *current)
-			newSlice := cache.Slice{
-				ID:        uuid.New().String(),
-				Offset:    slice.Offset,
-				Length:    slice.Length,
-				Data:      make([]byte, slice.Length),
-				State:     cache.SliceStatePending,
-				CreatedAt: time.Now(),
-			}
-			copy(newSlice.Data, slice.Data)
-			current = &newSlice
-		}
-	}
-
-	// Don't forget the last one
-	if current != nil {
-		merged = append(merged, *current)
-	}
-
-	// Calculate old total size
-	var oldSize uint64
-	for _, slice := range chunk.slices {
-		oldSize += uint64(len(slice.Data))
-	}
-
-	// Rebuild slices list: merged pending first (newest), then other slices
-	newSlices := append(merged, other...)
-
-	// Calculate new total size
-	var newSize uint64
-	for _, slice := range newSlices {
-		newSize += uint64(len(slice.Data))
-	}
-
-	// Update chunk
-	chunk.slices = newSlices
-
-	// Update size tracking
-	if newSize > oldSize {
-		s.totalSize.Add(newSize - oldSize)
-	} else if oldSize > newSize {
-		s.totalSize.Add(^(oldSize - newSize - 1)) // Subtract
-	}
-
-	return nil
 }
 
 // ============================================================================
@@ -654,55 +579,6 @@ func (s *Store) Close() error {
 // ============================================================================
 // Helper Methods
 // ============================================================================
-
-// getFile retrieves an existing file entry.
-func (s *Store) getFile(fileHandle []byte) *fileEntry {
-	key := string(fileHandle)
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return nil
-	}
-
-	return s.files[key]
-}
-
-// getOrCreateFile retrieves or creates a file entry.
-func (s *Store) getOrCreateFile(fileHandle []byte) (*fileEntry, error) {
-	key := string(fileHandle)
-
-	s.mu.RLock()
-	if s.closed {
-		s.mu.RUnlock()
-		return nil, cache.ErrStoreClosed
-	}
-	file, exists := s.files[key]
-	s.mu.RUnlock()
-
-	if exists {
-		return file, nil
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return nil, cache.ErrStoreClosed
-	}
-
-	// Double-check after acquiring write lock
-	file, exists = s.files[key]
-	if !exists {
-		file = &fileEntry{
-			chunks: make(map[uint32]*chunkEntry),
-		}
-		s.files[key] = file
-	}
-
-	return file, nil
-}
 
 // copySlice creates a deep copy of a slice.
 func copySlice(src cache.Slice) cache.Slice {

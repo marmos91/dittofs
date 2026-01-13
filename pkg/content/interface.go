@@ -27,11 +27,11 @@ type ContentServiceInterface interface {
 
 	// RegisterCacheForShare associates a slice cache with a share.
 	// Each share must have exactly one Cache.
-	RegisterCacheForShare(shareName string, sc cache.Cache) error
+	RegisterCacheForShare(shareName string, sc *cache.Cache) error
 
 	// GetCacheForShare returns the slice cache for a share.
 	// Returns nil if no slice cache is configured for the share.
-	GetCacheForShare(shareName string) cache.Cache
+	GetCacheForShare(shareName string) *cache.Cache
 
 	// HasCache returns true if a slice cache is registered for the share.
 	HasCache(shareName string) bool

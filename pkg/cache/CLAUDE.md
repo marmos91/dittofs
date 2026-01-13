@@ -17,10 +17,10 @@ store/memory/ (implementations)
 ## Package Structure
 
 Following the metadata package pattern:
-- `cache.go` - Cache interface (business logic layer)
+- `cache.go` - Cache interface AND implementation (business logic layer)
 - `store.go` - Store interface (persistence layer)
 - `store/memory/store.go` - Memory Store implementation
-- `store/memory/cache.go` - MemoryCache implementation (wraps Store)
+- `store/memory/benchmark_test.go` - Performance benchmarks
 
 ## Key Design Decisions
 
@@ -80,10 +80,11 @@ Result:
 
 ## Implementations
 
-| Implementation | Location | Use Case |
-|----------------|----------|----------|
-| MemoryCache | `store/memory/cache.go` | Default, volatile, development |
-| (Filesystem) | Future | Persistence across restarts |
+| Component | Location | Use Case |
+|-----------|----------|----------|
+| Cache | `cache.go` | Business logic: merging, coalescing, locking |
+| Memory Store | `store/memory/store.go` | Volatile storage, development, testing |
+| (Filesystem Store) | Future | Persistence across restarts |
 
 ## Common Mistakes
 
@@ -95,20 +96,23 @@ Result:
 ## Usage Example
 
 ```go
-import storeMemory "github.com/marmos91/dittofs/pkg/cache/store/memory"
+import (
+    "github.com/marmos91/dittofs/pkg/cache"
+    "github.com/marmos91/dittofs/pkg/cache/store/memory"
+)
 
 // Create cache with memory store
-cache := storeMemory.NewCache(0) // 0 = unlimited
+c := cache.NewWithStore(memory.New(), 0) // 0 = unlimited
 
 // Write (auto-extends sequential writes)
-cache.WriteSlice(ctx, fileHandle, chunkIdx, data, offset)
+c.WriteSlice(ctx, fileHandle, chunkIdx, data, offset)
 
 // Read (auto-merges with newest-wins)
-data, found, err := cache.ReadSlice(ctx, fileHandle, chunkIdx, offset, length)
+data, found, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offset, length)
 
 // Get dirty slices for flush (auto-coalesces)
-pending, err := cache.GetDirtySlices(ctx, fileHandle)
+pending, err := c.GetDirtySlices(ctx, fileHandle)
 
 // Mark flushed after upload
-cache.MarkSliceFlushed(ctx, fileHandle, sliceID, blockRefs)
+c.MarkSliceFlushed(ctx, fileHandle, sliceID, blockRefs)
 ```
