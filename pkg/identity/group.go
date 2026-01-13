@@ -1,46 +1,27 @@
 package identity
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 )
 
 // Group represents a DittoFS group for organizing users and permissions.
 //
+// Groups are abstract permission containers without protocol-specific identity
+// (no Unix GID or Windows SID). Protocol-specific identity is resolved per-share
+// via ShareIdentityMapping.
+//
 // Groups can have share-level permissions that are inherited by all members.
 // When a user belongs to multiple groups, the highest permission level wins.
 type Group struct {
 	// Name is the unique identifier for the group.
-	Name string `yaml:"name" mapstructure:"name"`
-
-	// GID is the Unix group ID.
-	// Used for NFS group membership checks.
-	GID uint32 `yaml:"gid" mapstructure:"gid"`
-
-	// SID is the Windows Security Identifier for the group.
-	// If empty, a SID will be auto-generated from the GID.
-	SID string `yaml:"sid,omitempty" mapstructure:"sid"`
+	Name string `json:"name" yaml:"name" mapstructure:"name"`
 
 	// SharePermissions maps share names to permission levels.
 	// All group members inherit these permissions.
-	SharePermissions map[string]SharePermission `yaml:"share_permissions" mapstructure:"share_permissions"`
+	SharePermissions map[string]SharePermission `json:"share_permissions,omitempty" yaml:"share_permissions" mapstructure:"share_permissions"`
 
 	// Description is an optional human-readable description of the group.
-	Description string `yaml:"description,omitempty" mapstructure:"description"`
-}
-
-// GetSID returns the Windows SID, auto-generating one if not set.
-//
-// The auto-generated SID follows the format:
-// S-1-5-21-dittofs-{hash}-{gid}
-//
-// This ensures consistent SID generation across restarts.
-func (g *Group) GetSID() string {
-	if g.SID != "" {
-		return g.SID
-	}
-	return GenerateGroupSIDFromGID(g.GID)
+	Description string `json:"description,omitempty" yaml:"description,omitempty" mapstructure:"description"`
 }
 
 // GetSharePermission returns the group's permission for a share.
@@ -69,26 +50,9 @@ func (g *Group) Validate() error {
 	return nil
 }
 
-// GenerateGroupSIDFromGID creates a deterministic Windows group SID from a Unix GID.
-//
-// Format: S-1-5-21-{dittofs-hash}-1-{gid}
-// The "-1-" distinguishes group SIDs from user SIDs (which use "-0-").
-func GenerateGroupSIDFromGID(gid uint32) string {
-	// Use a hash of "dittofs" as the identifier authority
-	h := sha256.Sum256([]byte("dittofs"))
-	hashStr := hex.EncodeToString(h[:4])
-
-	var subAuth1 uint32
-	_, _ = fmt.Sscanf(hashStr, "%08x", &subAuth1)
-
-	// S-1-5-21-{subAuth1}-1-{gid}
-	// The "-1-" distinguishes group SIDs from user SIDs
-	return fmt.Sprintf("S-1-5-21-%d-1-%d", subAuth1, gid)
-}
-
-// WellKnownGroups defines standard group names and GIDs.
-var WellKnownGroups = map[string]uint32{
-	"admins":  100,
-	"editors": 101,
-	"viewers": 102,
+// WellKnownGroups defines standard group names.
+var WellKnownGroups = []string{
+	"admins",
+	"editors",
+	"viewers",
 }

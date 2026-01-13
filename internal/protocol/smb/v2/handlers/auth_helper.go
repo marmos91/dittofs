@@ -11,11 +11,15 @@ import (
 //
 // This bridges the SMB authentication model to the protocol-agnostic
 // metadata store authentication context. It maps:
-//   - SMB session user → Unix UID/GID
+//   - SMB session user → Unix UID/GID (via ShareIdentityMapping)
 //   - SMB share permission → metadata store permission checks
 //
-// For authenticated users, UID/GID come from the identity.User.
-// For guest sessions, a default guest identity is used.
+// NOTE: In the new identity model, users don't have global UID/GID.
+// Instead, Unix identity is resolved per-share via ShareIdentityMapping.
+// Until IdentityStore integration is complete, authenticated users use
+// a default UID/GID (1000/1000).
+//
+// TODO: Integrate with IdentityStore to resolve ShareIdentityMapping for the current share.
 func BuildAuthContext(ctx *SMBHandlerContext, _ *registry.Registry) (*metadata.AuthContext, error) {
 	authCtx := &metadata.AuthContext{
 		Context:    ctx.Context,
@@ -23,13 +27,18 @@ func BuildAuthContext(ctx *SMBHandlerContext, _ *registry.Registry) (*metadata.A
 		Identity:   &metadata.Identity{},
 	}
 
-	// Build identity from SMB session user
+	// Build identity from SMB session
+	// NOTE: Users no longer have direct UID/GID fields.
+	// Unix identity is now per-share (via ShareIdentityMapping).
+	// For now, we use default values until IdentityStore integration is complete.
 	if ctx.User != nil {
-		// Authenticated user - use their Unix identity
-		authCtx.Identity.UID = &ctx.User.UID
-		authCtx.Identity.GID = &ctx.User.GID
-		// Note: Supplementary groups would need to be resolved from UserStore
-		// For now, we only use primary UID/GID
+		// Authenticated user - use default Unix identity
+		// TODO: Look up ShareIdentityMapping for ctx.ShareName to get proper UID/GID
+		defaultUID := uint32(1000)
+		defaultGID := uint32(1000)
+		authCtx.Identity.UID = &defaultUID
+		authCtx.Identity.GID = &defaultGID
+		authCtx.Identity.Username = ctx.User.Username
 	} else if ctx.IsGuest {
 		// Guest session - use nobody/nogroup
 		guestUID := uint32(65534) // nobody
@@ -50,6 +59,9 @@ func BuildAuthContext(ctx *SMBHandlerContext, _ *registry.Registry) (*metadata.A
 
 // BuildAuthContextFromUser creates an AuthContext from a User.
 // This is useful when the handler has direct access to a User object.
+//
+// NOTE: In the new identity model, users don't have global UID/GID.
+// This function uses default values until ShareIdentityMapping integration is complete.
 func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *identity.User) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
 		Context:    ctx.Context,
@@ -58,8 +70,13 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *identity.User) *meta
 	}
 
 	if user != nil {
-		authCtx.Identity.UID = &user.UID
-		authCtx.Identity.GID = &user.GID
+		// Users no longer have direct UID/GID - use defaults
+		// TODO: Look up ShareIdentityMapping for ctx.ShareName
+		defaultUID := uint32(1000)
+		defaultGID := uint32(1000)
+		authCtx.Identity.UID = &defaultUID
+		authCtx.Identity.GID = &defaultGID
+		authCtx.Identity.Username = user.Username
 	}
 
 	return authCtx

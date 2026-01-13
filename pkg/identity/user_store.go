@@ -7,17 +7,19 @@ import (
 
 // Common errors for UserStore operations.
 var (
-	ErrUserNotFound   = errors.New("user not found")
-	ErrGroupNotFound  = errors.New("group not found")
-	ErrUserDisabled   = errors.New("user account is disabled")
-	ErrGuestDisabled  = errors.New("guest access is disabled")
-	ErrDuplicateUser  = errors.New("user already exists")
-	ErrDuplicateGroup = errors.New("group already exists")
-	ErrDuplicateUID   = errors.New("UID already in use")
-	ErrDuplicateGID   = errors.New("GID already in use")
+	ErrUserNotFound     = errors.New("user not found")
+	ErrGroupNotFound    = errors.New("group not found")
+	ErrUserDisabled     = errors.New("user account is disabled")
+	ErrGuestDisabled    = errors.New("guest access is disabled")
+	ErrDuplicateUser    = errors.New("user already exists")
+	ErrDuplicateGroup   = errors.New("group already exists")
+	ErrInvalidOperation = errors.New("invalid operation")
 )
 
 // UserStore provides user and group management operations.
+//
+// This interface is DEPRECATED. Use IdentityStore instead for full
+// user management capabilities including CRUD operations.
 //
 // Implementations must be thread-safe as methods may be called
 // concurrently from multiple protocol handlers.
@@ -27,10 +29,6 @@ type UserStore interface {
 	// GetUser returns a user by username.
 	// Returns ErrUserNotFound if the user doesn't exist.
 	GetUser(username string) (*User, error)
-
-	// GetUserByUID returns a user by Unix UID.
-	// Returns ErrUserNotFound if no user has this UID.
-	GetUserByUID(uid uint32) (*User, error)
 
 	// ValidateCredentials verifies username/password credentials.
 	// Returns ErrInvalidCredentials if the credentials are invalid.
@@ -49,10 +47,6 @@ type UserStore interface {
 	// GetGroup returns a group by name.
 	// Returns ErrGroupNotFound if the group doesn't exist.
 	GetGroup(name string) (*Group, error)
-
-	// GetGroupByGID returns a group by Unix GID.
-	// Returns ErrGroupNotFound if no group has this GID.
-	GetGroupByGID(gid uint32) (*Group, error)
 
 	// ListGroups returns all groups.
 	ListGroups() ([]*Group, error)
@@ -84,22 +78,18 @@ type GuestConfig struct {
 
 // ConfigUserStore implements UserStore using in-memory data loaded from configuration.
 //
-// This is the default implementation suitable for small deployments.
-// Data is loaded from the configuration file at startup.
+// DEPRECATED: This implementation is for backward compatibility with config-based
+// user definitions. Use IdentityStore implementations for new deployments.
+//
+// Data is loaded from the configuration file at startup and is read-only.
 type ConfigUserStore struct {
 	mu sync.RWMutex
 
 	// Users indexed by username
 	users map[string]*User
 
-	// Users indexed by UID
-	usersByUID map[uint32]*User
-
 	// Groups indexed by name
 	groups map[string]*Group
-
-	// Groups indexed by GID
-	groupsByGID map[uint32]*Group
 
 	// Guest configuration
 	guest *GuestConfig
@@ -108,11 +98,9 @@ type ConfigUserStore struct {
 // NewConfigUserStore creates a new ConfigUserStore with the given users, groups, and guest config.
 func NewConfigUserStore(users []*User, groups []*Group, guest *GuestConfig) (*ConfigUserStore, error) {
 	store := &ConfigUserStore{
-		users:       make(map[string]*User),
-		usersByUID:  make(map[uint32]*User),
-		groups:      make(map[string]*Group),
-		groupsByGID: make(map[uint32]*Group),
-		guest:       guest,
+		users:  make(map[string]*User),
+		groups: make(map[string]*Group),
+		guest:  guest,
 	}
 
 	// Index groups first (users reference groups)
@@ -123,11 +111,7 @@ func NewConfigUserStore(users []*User, groups []*Group, guest *GuestConfig) (*Co
 		if _, exists := store.groups[g.Name]; exists {
 			return nil, ErrDuplicateGroup
 		}
-		if _, exists := store.groupsByGID[g.GID]; exists {
-			return nil, ErrDuplicateGID
-		}
 		store.groups[g.Name] = g
-		store.groupsByGID[g.GID] = g
 	}
 
 	// Index users
@@ -138,11 +122,7 @@ func NewConfigUserStore(users []*User, groups []*Group, guest *GuestConfig) (*Co
 		if _, exists := store.users[u.Username]; exists {
 			return nil, ErrDuplicateUser
 		}
-		if _, exists := store.usersByUID[u.UID]; exists {
-			return nil, ErrDuplicateUID
-		}
 		store.users[u.Username] = u
-		store.usersByUID[u.UID] = u
 	}
 
 	return store, nil
@@ -154,18 +134,6 @@ func (s *ConfigUserStore) GetUser(username string) (*User, error) {
 	defer s.mu.RUnlock()
 
 	user, ok := s.users[username]
-	if !ok {
-		return nil, ErrUserNotFound
-	}
-	return user, nil
-}
-
-// GetUserByUID returns a user by Unix UID.
-func (s *ConfigUserStore) GetUserByUID(uid uint32) (*User, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	user, ok := s.usersByUID[uid]
 	if !ok {
 		return nil, ErrUserNotFound
 	}
@@ -206,6 +174,8 @@ func (s *ConfigUserStore) ListUsers() ([]*User, error) {
 }
 
 // GetGuestUser returns the guest user if guest access is enabled.
+// Note: The returned User does not have UID/GID. Protocol handlers should
+// use GuestConfig.UID/GID for Unix identity in file operations.
 func (s *ConfigUserStore) GetGuestUser() (*User, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -217,8 +187,7 @@ func (s *ConfigUserStore) GetGuestUser() (*User, error) {
 	return &User{
 		Username:         "guest",
 		Enabled:          true,
-		UID:              s.guest.UID,
-		GID:              s.guest.GID,
+		Role:             RoleUser,
 		SharePermissions: s.guest.SharePermissions,
 		DisplayName:      "Guest",
 	}, nil
@@ -230,18 +199,6 @@ func (s *ConfigUserStore) GetGroup(name string) (*Group, error) {
 	defer s.mu.RUnlock()
 
 	group, ok := s.groups[name]
-	if !ok {
-		return nil, ErrGroupNotFound
-	}
-	return group, nil
-}
-
-// GetGroupByGID returns a group by Unix GID.
-func (s *ConfigUserStore) GetGroupByGID(gid uint32) (*Group, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	group, ok := s.groupsByGID[gid]
 	if !ok {
 		return nil, ErrGroupNotFound
 	}

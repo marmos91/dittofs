@@ -8,25 +8,32 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/api/auth"
+	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/registry"
 )
 
 // Server provides an HTTP server for the REST API.
 //
-// The server exposes health check endpoints and will be extended
-// with management APIs in future phases.
+// The server exposes health check endpoints and authentication APIs.
 //
 // Endpoints:
 //   - GET /health: Liveness probe
 //   - GET /health/ready: Readiness probe
 //   - GET /health/stores: Detailed store health
+//   - POST /api/v1/auth/login: User authentication
+//   - POST /api/v1/auth/refresh: Token refresh
+//   - GET /api/v1/auth/me: Current user info
+//   - /api/v1/users/*: User management (admin only)
 //
 // The server supports graceful shutdown with configurable timeout.
 type Server struct {
-	server       *http.Server
-	registry     *registry.Registry
-	config       APIConfig
-	shutdownOnce sync.Once
+	server        *http.Server
+	registry      *registry.Registry
+	jwtService    *auth.JWTService
+	identityStore identity.IdentityStore
+	config        APIConfig
+	shutdownOnce  sync.Once
 }
 
 // NewServer creates a new API HTTP server.
@@ -38,14 +45,16 @@ type Server struct {
 // applied during config loading.
 //
 // Parameters:
-//   - config: Server configuration (port, timeouts)
+//   - config: Server configuration (port, timeouts, JWT config)
 //   - registry: Registry for store health checks (may be nil for basic health only)
+//   - jwtService: JWT service for token generation/validation
+//   - identityStore: Identity store for user authentication
 //
 // Returns a configured but not yet started Server.
-func NewServer(config APIConfig, registry *registry.Registry) *Server {
+func NewServer(config APIConfig, registry *registry.Registry, jwtService *auth.JWTService, identityStore identity.IdentityStore) *Server {
 	config.applyDefaults()
 
-	router := NewRouter(registry)
+	router := NewRouter(registry, jwtService, identityStore)
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.Port),
@@ -56,9 +65,11 @@ func NewServer(config APIConfig, registry *registry.Registry) *Server {
 	}
 
 	return &Server{
-		server:   server,
-		registry: registry,
-		config:   config,
+		server:        server,
+		registry:      registry,
+		jwtService:    jwtService,
+		identityStore: identityStore,
+		config:        config,
 	}
 }
 
