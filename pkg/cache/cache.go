@@ -13,11 +13,9 @@
 //
 // Architecture:
 //
-//	Cache (business logic)
-//	    ↓
-//	Store (interface, persistence)
-//	    ↓
-//	store/memory/ or store/filesystem/ (implementations)
+//	Cache (business logic + storage)
+//	    - In-memory data structures
+//	    - Optional mmap backing (future)
 //
 // See docs/ARCHITECTURE.md for the full Chunk/Slice/Block model.
 package cache
@@ -26,6 +24,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -57,41 +56,52 @@ func ChunkRange(offset, length uint64) (startChunk, endChunk uint32) {
 }
 
 // ============================================================================
+// Internal Types
+// ============================================================================
+
+// chunkEntry holds all slices for a single chunk.
+type chunkEntry struct {
+	slices []Slice // Ordered newest-first (prepended on add)
+}
+
+// fileEntry holds all cached data for a single file.
+type fileEntry struct {
+	mu     sync.RWMutex
+	chunks map[uint32]*chunkEntry // chunkIndex -> chunkEntry
+}
+
+// ============================================================================
 // Cache Implementation
 // ============================================================================
 
-// fileEntry holds per-file data with a mutex for concurrent access.
-type fileEntry struct {
-	mu sync.RWMutex
-}
-
 // Cache is the mandatory cache layer for all content operations.
 //
-// It understands slices as first-class citizens but is agnostic to the
-// underlying storage backend (S3, filesystem, memory, Redis).
+// It understands slices as first-class citizens and stores them directly
+// in memory. Optional mmap backing can be enabled for persistence.
 //
 // Thread Safety:
 // Uses two-level locking for efficiency:
-//   - globalMu: Protects the files map and store
+//   - globalMu: Protects the files map
 //   - per-file mutexes: Protect individual file operations
 //
 // This allows concurrent operations on different files.
 type Cache struct {
-	globalMu sync.RWMutex
-	store    Store
-	files    map[string]*fileEntry
-	maxSize  uint64
-	closed   bool
+	globalMu  sync.RWMutex
+	files     map[string]*fileEntry
+	maxSize   uint64
+	totalSize atomic.Uint64
+	closed    bool
+
+	// mmap backing (optional, nil when not enabled)
+	mmap *mmapState
 }
 
-// NewWithStore creates a cache with a custom store.
+// New creates a new in-memory cache.
 //
 // Parameters:
-//   - store: The persistence layer for slices
 //   - maxSize: Maximum total cache size in bytes. Use 0 for unlimited.
-func NewWithStore(store Store, maxSize uint64) *Cache {
+func New(maxSize uint64) *Cache {
 	return &Cache{
-		store:   store,
 		files:   make(map[string]*fileEntry),
 		maxSize: maxSize,
 	}
@@ -117,10 +127,9 @@ func (c *Cache) getFileEntry(fileHandle []byte) *fileEntry {
 		return entry
 	}
 
-	// Create the file entry in the Store
-	_ = c.store.CreateFile(context.Background(), fileHandle)
-
-	entry = &fileEntry{}
+	entry = &fileEntry{
+		chunks: make(map[uint32]*chunkEntry),
+	}
 	c.files[key] = entry
 	return entry
 }
@@ -156,8 +165,17 @@ func (c *Cache) WriteSlice(ctx context.Context, fileHandle []byte, chunkIdx uint
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
+	// Ensure chunk exists
+	chunk, exists := entry.chunks[chunkIdx]
+	if !exists {
+		chunk = &chunkEntry{
+			slices: make([]Slice, 0),
+		}
+		entry.chunks[chunkIdx] = chunk
+	}
+
 	// Try to extend an existing adjacent pending slice (sequential write optimization)
-	if c.store.TryExtendAdjacentSlice(ctx, fileHandle, chunkIdx, offset, data) {
+	if c.tryExtendAdjacentSlice(chunk, offset, data) {
 		return nil
 	}
 
@@ -172,7 +190,63 @@ func (c *Cache) WriteSlice(ctx context.Context, fileHandle []byte, chunkIdx uint
 	}
 	copy(slice.Data, data)
 
-	return c.store.AddSlice(ctx, fileHandle, chunkIdx, slice)
+	// Prepend to slices (newest first)
+	chunk.slices = append([]Slice{slice}, chunk.slices...)
+	c.totalSize.Add(uint64(len(data)))
+
+	// Persist to mmap if enabled
+	if c.mmap != nil && c.mmap.enabled {
+		// Note: We release the file lock before mmap write to avoid deadlock
+		// This is safe because mmap has its own mutex
+		entry.mu.Unlock()
+		err := c.appendSliceEntry(fileHandle, chunkIdx, &slice)
+		entry.mu.Lock() // Re-acquire for deferred unlock
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// tryExtendAdjacentSlice attempts to extend an existing pending slice.
+// Uses Go's append() for amortized O(1) growth on sequential appends.
+// Returns true if extended, false if no adjacent slice found.
+func (c *Cache) tryExtendAdjacentSlice(chunk *chunkEntry, offset uint32, data []byte) bool {
+	writeEnd := offset + uint32(len(data))
+
+	for i := range chunk.slices {
+		slice := &chunk.slices[i]
+		if slice.State != SliceStatePending {
+			continue
+		}
+
+		sliceEnd := slice.Offset + slice.Length
+
+		// Case 1: Appending (write starts where slice ends)
+		if offset == sliceEnd {
+			oldLen := len(slice.Data)
+			slice.Data = append(slice.Data, data...)
+			slice.Length += uint32(len(data))
+			c.totalSize.Add(uint64(len(slice.Data) - oldLen))
+			return true
+		}
+
+		// Case 2: Prepending (write ends where slice starts)
+		if writeEnd == slice.Offset {
+			oldLen := len(slice.Data)
+			newData := make([]byte, len(data)+len(slice.Data))
+			copy(newData, data)
+			copy(newData[len(data):], slice.Data)
+			slice.Data = newData
+			slice.Offset = offset
+			slice.Length += uint32(len(data))
+			c.totalSize.Add(uint64(len(newData) - oldLen))
+			return true
+		}
+	}
+
+	return false
 }
 
 // ============================================================================
@@ -192,21 +266,17 @@ func (c *Cache) ReadSlice(ctx context.Context, fileHandle []byte, chunkIdx uint3
 	}
 	c.globalMu.RUnlock()
 
-	if !c.store.FileExists(ctx, fileHandle) {
-		return nil, false, ErrFileNotInCache
-	}
-
 	entry := c.getFileEntry(fileHandle)
 	entry.mu.RLock()
 	defer entry.mu.RUnlock()
 
-	slices := c.store.GetSlices(ctx, fileHandle, chunkIdx)
-	if len(slices) == 0 {
+	chunk, exists := entry.chunks[chunkIdx]
+	if !exists || len(chunk.slices) == 0 {
 		return nil, false, nil
 	}
 
 	// Merge slices using newest-wins algorithm
-	result := c.mergeSlicesForRead(slices, offset, length)
+	result := c.mergeSlicesForRead(chunk.slices, offset, length)
 
 	return result, true, nil
 }
@@ -268,20 +338,18 @@ func (c *Cache) GetDirtySlices(ctx context.Context, fileHandle []byte) ([]Pendin
 		return nil, err
 	}
 
-	if !c.store.FileExists(ctx, fileHandle) {
-		return nil, ErrFileNotInCache
-	}
-
 	entry := c.getFileEntry(fileHandle)
 	entry.mu.RLock()
 	defer entry.mu.RUnlock()
 
+	if len(entry.chunks) == 0 {
+		return nil, ErrFileNotInCache
+	}
+
 	var result []PendingSlice
 
-	chunkIndices := c.store.GetChunkIndices(ctx, fileHandle)
-	for _, chunkIdx := range chunkIndices {
-		slices := c.store.GetSlices(ctx, fileHandle, chunkIdx)
-		for _, slice := range slices {
+	for chunkIdx, chunk := range entry.chunks {
+		for _, slice := range chunk.slices {
 			if slice.State == SliceStatePending {
 				result = append(result, PendingSlice{
 					ID:         slice.ID,
@@ -322,24 +390,21 @@ func (c *Cache) MarkSliceFlushed(ctx context.Context, fileHandle []byte, sliceID
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	chunkIdx, _, err := c.store.FindSlice(ctx, fileHandle, sliceID)
-	if err != nil {
-		if err == ErrStoreSliceNotFound {
-			return ErrSliceNotFound
+	// Find the slice
+	for _, chunk := range entry.chunks {
+		for i := range chunk.slices {
+			if chunk.slices[i].ID == sliceID {
+				chunk.slices[i].State = SliceStateFlushed
+				if blockRefs != nil {
+					chunk.slices[i].BlockRefs = make([]BlockRef, len(blockRefs))
+					copy(chunk.slices[i].BlockRefs, blockRefs)
+				}
+				return nil
+			}
 		}
-		if err == ErrFileNotFound {
-			return ErrFileNotInCache
-		}
-		return err
 	}
 
-	state := SliceStateFlushed
-	update := SliceUpdate{
-		State:     &state,
-		BlockRefs: blockRefs,
-	}
-
-	return c.store.UpdateSlice(ctx, fileHandle, chunkIdx, sliceID, update)
+	return ErrSliceNotFound
 }
 
 // ============================================================================
@@ -359,17 +424,16 @@ func (c *Cache) CoalesceWrites(ctx context.Context, fileHandle []byte) error {
 	}
 	c.globalMu.RUnlock()
 
-	if !c.store.FileExists(ctx, fileHandle) {
-		return ErrFileNotInCache
-	}
-
 	entry := c.getFileEntry(fileHandle)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	chunkIndices := c.store.GetChunkIndices(ctx, fileHandle)
-	for _, chunkIdx := range chunkIndices {
-		if err := c.coalesceChunk(ctx, fileHandle, chunkIdx); err != nil {
+	if len(entry.chunks) == 0 {
+		return ErrFileNotInCache
+	}
+
+	for chunkIdx := range entry.chunks {
+		if err := c.coalesceChunk(entry.chunks[chunkIdx]); err != nil {
 			return err
 		}
 	}
@@ -378,16 +442,15 @@ func (c *Cache) CoalesceWrites(ctx context.Context, fileHandle []byte) error {
 }
 
 // coalesceChunk merges adjacent pending slices within a chunk.
-func (c *Cache) coalesceChunk(ctx context.Context, fileHandle []byte, chunkIdx uint32) error {
-	slices := c.store.GetSlices(ctx, fileHandle, chunkIdx)
-	if len(slices) <= 1 {
+func (c *Cache) coalesceChunk(chunk *chunkEntry) error {
+	if len(chunk.slices) <= 1 {
 		return nil
 	}
 
 	var pending []Slice
 	var other []Slice
 
-	for _, slice := range slices {
+	for _, slice := range chunk.slices {
 		if slice.State == SliceStatePending {
 			pending = append(pending, slice)
 		} else {
@@ -456,9 +519,8 @@ func (c *Cache) coalesceChunk(ctx context.Context, fileHandle []byte, chunkIdx u
 		merged = append(merged, *current)
 	}
 
-	newSlices := append(merged, other...)
-
-	return c.store.SetSlices(ctx, fileHandle, chunkIdx, newSlices)
+	chunk.slices = append(merged, other...)
+	return nil
 }
 
 // ============================================================================
@@ -478,33 +540,27 @@ func (c *Cache) Evict(ctx context.Context, fileHandle []byte) (uint64, error) {
 	}
 	c.globalMu.RUnlock()
 
-	if !c.store.FileExists(ctx, fileHandle) {
-		return 0, nil
-	}
-
 	entry := c.getFileEntry(fileHandle)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
 	var evicted uint64
 
-	chunkIndices := c.store.GetChunkIndices(ctx, fileHandle)
-	for _, chunkIdx := range chunkIndices {
-		slices := c.store.GetSlices(ctx, fileHandle, chunkIdx)
-
+	for chunkIdx, chunk := range entry.chunks {
 		var remaining []Slice
-		for _, slice := range slices {
+		for _, slice := range chunk.slices {
 			if slice.State == SliceStateFlushed {
 				evicted += uint64(len(slice.Data))
+				c.totalSize.Add(^(uint64(len(slice.Data)) - 1)) // Subtract
 			} else {
 				remaining = append(remaining, slice)
 			}
 		}
 
 		if len(remaining) == 0 {
-			_ = c.store.RemoveChunk(ctx, fileHandle, chunkIdx)
-		} else if len(remaining) != len(slices) {
-			_ = c.store.SetSlices(ctx, fileHandle, chunkIdx, remaining)
+			delete(entry.chunks, chunkIdx)
+		} else if len(remaining) != len(chunk.slices) {
+			chunk.slices = remaining
 		}
 	}
 
@@ -522,9 +578,11 @@ func (c *Cache) EvictAll(ctx context.Context) (uint64, error) {
 		c.globalMu.RUnlock()
 		return 0, ErrCacheClosed
 	}
+	handles := make([][]byte, 0, len(c.files))
+	for k := range c.files {
+		handles = append(handles, []byte(k))
+	}
 	c.globalMu.RUnlock()
-
-	handles := c.store.ListFiles(ctx)
 
 	var total uint64
 	for _, handle := range handles {
@@ -544,18 +602,41 @@ func (c *Cache) Remove(ctx context.Context, fileHandle []byte) error {
 		return err
 	}
 
-	c.globalMu.RLock()
+	c.globalMu.Lock()
+	defer c.globalMu.Unlock()
+
 	if c.closed {
-		c.globalMu.RUnlock()
 		return ErrCacheClosed
 	}
-	c.globalMu.RUnlock()
 
-	entry := c.getFileEntry(fileHandle)
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
+	key := string(fileHandle)
+	entry, exists := c.files[key]
+	if !exists {
+		return nil // Idempotent
+	}
 
-	return c.store.RemoveFile(ctx, fileHandle)
+	// Calculate size to subtract
+	var size uint64
+	for _, chunk := range entry.chunks {
+		for _, slice := range chunk.slices {
+			size += uint64(len(slice.Data))
+		}
+	}
+
+	delete(c.files, key)
+
+	if size > 0 {
+		c.totalSize.Add(^(size - 1)) // Subtract
+	}
+
+	// Persist removal to mmap if enabled
+	if c.mmap != nil && c.mmap.enabled {
+		if err := c.appendRemoveEntry(fileHandle); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // Truncate changes the size of cached data for a file.
@@ -571,15 +652,15 @@ func (c *Cache) Truncate(ctx context.Context, fileHandle []byte, newSize uint64)
 	}
 	c.globalMu.RUnlock()
 
-	if !c.store.FileExists(ctx, fileHandle) {
-		return nil
-	}
-
 	entry := c.getFileEntry(fileHandle)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	currentSize := c.getFileSizeUnlocked(ctx, fileHandle)
+	if len(entry.chunks) == 0 {
+		return nil
+	}
+
+	currentSize := c.getFileSizeUnlocked(entry)
 	if newSize >= currentSize {
 		return nil
 	}
@@ -587,18 +668,26 @@ func (c *Cache) Truncate(ctx context.Context, fileHandle []byte, newSize uint64)
 	newEndChunk := ChunkIndexForOffset(newSize)
 	newOffsetInEndChunk := OffsetWithinChunk(newSize)
 
-	chunkIndices := c.store.GetChunkIndices(ctx, fileHandle)
-	for _, chunkIdx := range chunkIndices {
+	for chunkIdx, chunk := range entry.chunks {
 		if chunkIdx > newEndChunk {
-			_ = c.store.RemoveChunk(ctx, fileHandle, chunkIdx)
+			// Calculate size to subtract
+			var size uint64
+			for _, slice := range chunk.slices {
+				size += uint64(len(slice.Data))
+			}
+			if size > 0 {
+				c.totalSize.Add(^(size - 1)) // Subtract
+			}
+			delete(entry.chunks, chunkIdx)
 		} else if chunkIdx == newEndChunk {
-			slices := c.store.GetSlices(ctx, fileHandle, chunkIdx)
 			var newSlices []Slice
+			var removedSize uint64
 
-			for _, slice := range slices {
+			for _, slice := range chunk.slices {
 				sliceEnd := slice.Offset + slice.Length
 
 				if slice.Offset >= newOffsetInEndChunk {
+					removedSize += uint64(len(slice.Data))
 					continue
 				}
 
@@ -611,13 +700,18 @@ func (c *Cache) Truncate(ctx context.Context, fileHandle []byte, newSize uint64)
 				truncatedSlice := slice
 				truncatedSlice.Data = slice.Data[:newLength]
 				truncatedSlice.Length = newLength
+				removedSize += uint64(slice.Length - newLength)
 				newSlices = append(newSlices, truncatedSlice)
 			}
 
+			if removedSize > 0 {
+				c.totalSize.Add(^(removedSize - 1)) // Subtract
+			}
+
 			if len(newSlices) == 0 {
-				_ = c.store.RemoveChunk(ctx, fileHandle, chunkIdx)
+				delete(entry.chunks, chunkIdx)
 			} else {
-				_ = c.store.SetSlices(ctx, fileHandle, chunkIdx, newSlices)
+				chunk.slices = newSlices
 			}
 		}
 	}
@@ -638,19 +732,12 @@ func (c *Cache) HasDirtyData(fileHandle []byte) bool {
 	}
 	c.globalMu.RUnlock()
 
-	ctx := context.Background()
-	if !c.store.FileExists(ctx, fileHandle) {
-		return false
-	}
-
 	entry := c.getFileEntry(fileHandle)
 	entry.mu.RLock()
 	defer entry.mu.RUnlock()
 
-	chunkIndices := c.store.GetChunkIndices(ctx, fileHandle)
-	for _, chunkIdx := range chunkIndices {
-		slices := c.store.GetSlices(ctx, fileHandle, chunkIdx)
-		for _, slice := range slices {
+	for _, chunk := range entry.chunks {
+		for _, slice := range chunk.slices {
 			if slice.State == SliceStatePending {
 				return true
 			}
@@ -669,26 +756,19 @@ func (c *Cache) GetFileSize(fileHandle []byte) uint64 {
 	}
 	c.globalMu.RUnlock()
 
-	ctx := context.Background()
-	if !c.store.FileExists(ctx, fileHandle) {
-		return 0
-	}
-
 	entry := c.getFileEntry(fileHandle)
 	entry.mu.RLock()
 	defer entry.mu.RUnlock()
 
-	return c.getFileSizeUnlocked(ctx, fileHandle)
+	return c.getFileSizeUnlocked(entry)
 }
 
-func (c *Cache) getFileSizeUnlocked(ctx context.Context, fileHandle []byte) uint64 {
+func (c *Cache) getFileSizeUnlocked(entry *fileEntry) uint64 {
 	var maxChunk uint32
 	var maxOffsetInChunk uint32
 
-	chunkIndices := c.store.GetChunkIndices(ctx, fileHandle)
-	for _, chunkIdx := range chunkIndices {
-		slices := c.store.GetSlices(ctx, fileHandle, chunkIdx)
-		for _, slice := range slices {
+	for chunkIdx, chunk := range entry.chunks {
+		for _, slice := range chunk.slices {
 			if chunkIdx > maxChunk || (chunkIdx == maxChunk && slice.Offset+slice.Length > maxOffsetInChunk) {
 				maxChunk = chunkIdx
 				maxOffsetInChunk = slice.Offset + slice.Length
@@ -702,13 +782,23 @@ func (c *Cache) getFileSizeUnlocked(ctx context.Context, fileHandle []byte) uint
 // ListFiles returns all file handles with cached data.
 func (c *Cache) ListFiles() [][]byte {
 	c.globalMu.RLock()
+	defer c.globalMu.RUnlock()
+
 	if c.closed {
-		c.globalMu.RUnlock()
 		return [][]byte{}
 	}
-	c.globalMu.RUnlock()
 
-	return c.store.ListFiles(context.Background())
+	result := make([][]byte, 0, len(c.files))
+	for key := range c.files {
+		result = append(result, []byte(key))
+	}
+
+	return result
+}
+
+// GetTotalSize returns the total bytes stored in the cache.
+func (c *Cache) GetTotalSize() uint64 {
+	return c.totalSize.Load()
 }
 
 // ============================================================================
@@ -726,6 +816,14 @@ func (c *Cache) Close() error {
 
 	c.closed = true
 	c.files = nil
+	c.totalSize.Store(0)
 
-	return c.store.Close()
+	// Close mmap if enabled
+	if c.mmap != nil && c.mmap.enabled {
+		if err := c.closeMmap(); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

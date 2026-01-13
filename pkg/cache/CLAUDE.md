@@ -5,22 +5,17 @@ Slice-aware cache layer for the Chunk/Slice/Block storage model.
 ## Architecture
 
 ```
-Cache Interface (cache.go)
+Cache (cache.go)
     - Business logic: merging, coalescing, optimization
-         ↓
-Store Interface (store.go)
-    - Persistence: add/get/update slices
-         ↓
-store/memory/ (implementations)
+    - In-memory storage (integrated)
+    - Optional mmap backing (future)
 ```
 
 ## Package Structure
 
-Following the metadata package pattern:
-- `cache.go` - Cache interface AND implementation (business logic layer)
-- `store.go` - Store interface (persistence layer)
-- `store/memory/store.go` - Memory Store implementation
-- `store/memory/benchmark_test.go` - Performance benchmarks
+- `cache.go` - Cache implementation (business logic + storage)
+- `types.go` - Slice, SliceState, SliceUpdate, BlockRef types
+- `benchmark_test.go` - Performance benchmarks
 
 ## Key Design Decisions
 
@@ -29,22 +24,21 @@ Following the metadata package pattern:
 - ContentID uniqueness guarantees data isolation
 - Reduces memory overhead from multiple cache instances
 
+### Simplified Architecture
+- No Store interface - storage integrated directly into Cache
+- Prepares for optional mmap backing without abstraction overhead
+- S3 is the real persistence layer (blocks flushed there)
+
 ### Slice-Aware API
 - `WriteSlice(fileHandle, chunkIdx, data, offset)` - direct slice writes
 - `ReadSlice(fileHandle, chunkIdx, offset, length)` - merge reads
 - No translation between "bytes" and "slices"
 
-### Business Logic in Cache Layer
+### Business Logic
 The Cache handles:
 1. **Sequential write optimization** - extends existing slices instead of creating new ones
 2. **Newest-wins read merging** - overlapping slices resolved by creation time
 3. **Write coalescing** - merges adjacent pending slices before flush
-
-### Persistence in Store Layer
-The Store interface handles:
-1. **Slice storage** - add/get/update/replace slices
-2. **File/chunk management** - create/remove files and chunks
-3. **Size tracking** - total bytes stored
 
 ## Slice States
 
@@ -54,16 +48,18 @@ SliceStatePending → SliceStateUploading → SliceStateFlushed
 
 1. **Pending**: Unflushed writes, cannot evict
 2. **Uploading**: Flush in progress, cannot evict
-3. **Flushed**: Safe in block storage, can evict
+3. **Flushed**: Safe in block storage (S3), can evict
 
 ## Sequential Write Optimization
 
 NFS clients write in 16KB-32KB chunks. Without optimization:
 - 10MB file = 320 writes = 320 slices (bad)
 
-With `tryExtendSlice()`:
+With `tryExtendAdjacentSlice()`:
 - Sequential writes extend existing pending slice
 - 10MB file = 320 writes = 1 slice (good)
+
+Uses Go's `append()` for amortized O(1) growth.
 
 ## Newest-Wins Algorithm
 
@@ -78,31 +74,19 @@ Result:
   - 4-5MB: from Slice0 (oldest still needed)
 ```
 
-## Implementations
-
-| Component | Location | Use Case |
-|-----------|----------|----------|
-| Cache | `cache.go` | Business logic: merging, coalescing, locking |
-| Memory Store | `store/memory/store.go` | Volatile storage, development, testing |
-| (Filesystem Store) | Future | Persistence across restarts |
-
 ## Common Mistakes
 
 1. **Per-share caches** - Use single global cache, ContentID isolates data
 2. **Evicting dirty entries** - Only flushed slices can be evicted
-3. **Parsing slices in store** - Store just persists, cache handles logic
-4. **Creating many slices** - Sequential optimization should merge them
+3. **Creating many slices** - Sequential optimization should merge them
 
 ## Usage Example
 
 ```go
-import (
-    "github.com/marmos91/dittofs/pkg/cache"
-    "github.com/marmos91/dittofs/pkg/cache/store/memory"
-)
+import "github.com/marmos91/dittofs/pkg/cache"
 
-// Create cache with memory store
-c := cache.NewWithStore(memory.New(), 0) // 0 = unlimited
+// Create cache (in-memory)
+c := cache.New(0) // 0 = unlimited size
 
 // Write (auto-extends sequential writes)
 c.WriteSlice(ctx, fileHandle, chunkIdx, data, offset)
@@ -113,6 +97,13 @@ data, found, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offset, length)
 // Get dirty slices for flush (auto-coalesces)
 pending, err := c.GetDirtySlices(ctx, fileHandle)
 
-// Mark flushed after upload
+// Mark flushed after upload to S3
 c.MarkSliceFlushed(ctx, fileHandle, sliceID, blockRefs)
 ```
+
+## Performance Requirements
+
+Sequential 32KB writes MUST achieve > 3000 MB/s.
+This is critical for NFS file copy performance.
+
+See BENCHMARKS.md for current baseline measurements.

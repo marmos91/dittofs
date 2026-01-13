@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/cache"
-	storeMemory "github.com/marmos91/dittofs/pkg/cache/store/memory"
 	"github.com/marmos91/dittofs/pkg/content"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -62,9 +61,9 @@ func NewRegistry() *Registry {
 		contentService:  content.New(),
 	}
 
-	// Create and register the global cache (Cache)
+	// Create and register the global cache
 	// All shares use this single cache - ContentID uniqueness ensures data isolation
-	globalCache := cache.NewWithStore(storeMemory.New(), 0) // 0 = unlimited size
+	globalCache := cache.New(0) // 0 = unlimited size
 	_ = reg.contentService.SetCache(globalCache)
 
 	return reg

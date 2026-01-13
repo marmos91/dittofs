@@ -6,13 +6,12 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/cache"
-	"github.com/marmos91/dittofs/pkg/cache/store/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 func TestContentService_SliceCache_WriteAndRead(t *testing.T) {
 	svc := New()
-	sc := cache.NewWithStore(memory.New(), 0)
+	sc := cache.New(0)
 	defer sc.Close()
 
 	shareName := "/export"
@@ -46,7 +45,7 @@ func TestContentService_SliceCache_WriteAndRead(t *testing.T) {
 
 func TestContentService_SliceCache_WriteAtOffset(t *testing.T) {
 	svc := New()
-	sc := cache.NewWithStore(memory.New(), 0)
+	sc := cache.New(0)
 	defer sc.Close()
 
 	shareName := "/export"
@@ -87,7 +86,7 @@ func TestContentService_SliceCache_WriteAtOffset(t *testing.T) {
 
 func TestContentService_SliceCache_MultipleWrites(t *testing.T) {
 	svc := New()
-	sc := cache.NewWithStore(memory.New(), 0)
+	sc := cache.New(0)
 	defer sc.Close()
 
 	shareName := "/export"
@@ -114,7 +113,7 @@ func TestContentService_SliceCache_MultipleWrites(t *testing.T) {
 
 func TestContentService_SliceCache_GetContentSize(t *testing.T) {
 	svc := New()
-	sc := cache.NewWithStore(memory.New(), 0)
+	sc := cache.New(0)
 	defer sc.Close()
 
 	shareName := "/export"
@@ -148,7 +147,7 @@ func TestContentService_SliceCache_GetContentSize(t *testing.T) {
 
 func TestContentService_SliceCache_ContentExists(t *testing.T) {
 	svc := New()
-	sc := cache.NewWithStore(memory.New(), 0)
+	sc := cache.New(0)
 	defer sc.Close()
 
 	shareName := "/export"
@@ -181,7 +180,7 @@ func TestContentService_SliceCache_ContentExists(t *testing.T) {
 
 func TestContentService_SliceCache_Delete(t *testing.T) {
 	svc := New()
-	sc := cache.NewWithStore(memory.New(), 0)
+	sc := cache.New(0)
 	defer sc.Close()
 
 	shareName := "/export"
@@ -214,7 +213,7 @@ func TestContentService_SliceCache_Delete(t *testing.T) {
 
 func TestContentService_SliceCache_Flush(t *testing.T) {
 	svc := New()
-	sc := cache.NewWithStore(memory.New(), 0)
+	sc := cache.New(0)
 	defer sc.Close()
 
 	shareName := "/export"
@@ -251,7 +250,7 @@ func TestContentService_SliceCache_Flush(t *testing.T) {
 
 func TestContentService_SliceCache_FlushAndFinalize(t *testing.T) {
 	svc := New()
-	sc := cache.NewWithStore(memory.New(), 0)
+	sc := cache.New(0)
 	defer sc.Close()
 
 	shareName := "/export"
@@ -275,7 +274,7 @@ func TestContentService_SliceCache_FlushAndFinalize(t *testing.T) {
 
 func TestContentService_SliceCache_CrossChunkWrite(t *testing.T) {
 	svc := New()
-	sc := cache.NewWithStore(memory.New(), 0)
+	sc := cache.New(0)
 	defer sc.Close()
 
 	shareName := "/export"
@@ -316,7 +315,7 @@ func TestContentService_SliceCache_CrossChunkWrite(t *testing.T) {
 
 func TestContentService_SliceCache_HasCache(t *testing.T) {
 	svc := New()
-	sc := cache.NewWithStore(memory.New(), 0)
+	sc := cache.New(0)
 	defer sc.Close()
 
 	shareName := "/export"

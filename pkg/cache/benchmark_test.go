@@ -1,17 +1,10 @@
-package memory
+package cache
 
 import (
 	"context"
 	"fmt"
 	"testing"
-
-	"github.com/marmos91/dittofs/pkg/cache"
 )
-
-// newTestCache creates a cache with a memory store for benchmarking.
-func newTestCache() *cache.Cache {
-	return cache.NewWithStore(New(), 0)
-}
 
 // ============================================================================
 // Write Benchmarks
@@ -24,7 +17,7 @@ func BenchmarkWriteSlice_Sequential(b *testing.B) {
 
 	for _, size := range sizes {
 		b.Run(fmt.Sprintf("size=%dKB", size/1024), func(b *testing.B) {
-			c := newTestCache()
+			c := New(0)
 			defer c.Close()
 
 			ctx := context.Background()
@@ -36,8 +29,8 @@ func BenchmarkWriteSlice_Sequential(b *testing.B) {
 
 			for i := 0; i < b.N; i++ {
 				offset := uint32(i * size)
-				chunkIdx := offset / cache.ChunkSize
-				offsetInChunk := offset % cache.ChunkSize
+				chunkIdx := offset / ChunkSize
+				offsetInChunk := offset % ChunkSize
 
 				if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
 					b.Fatal(err)
@@ -50,7 +43,7 @@ func BenchmarkWriteSlice_Sequential(b *testing.B) {
 // BenchmarkWriteSlice_Random measures random write performance.
 // This simulates database-like workloads with scattered writes.
 func BenchmarkWriteSlice_Random(b *testing.B) {
-	c := newTestCache()
+	c := New(0)
 	defer c.Close()
 
 	ctx := context.Background()
@@ -60,8 +53,8 @@ func BenchmarkWriteSlice_Random(b *testing.B) {
 	// Pre-populate with some data to create multiple slices
 	for i := 0; i < 100; i++ {
 		offset := uint32(i * 64 * 1024) // 64KB apart
-		chunkIdx := offset / cache.ChunkSize
-		offsetInChunk := offset % cache.ChunkSize
+		chunkIdx := offset / ChunkSize
+		offsetInChunk := offset % ChunkSize
 		_ = c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk)
 	}
 
@@ -71,8 +64,8 @@ func BenchmarkWriteSlice_Random(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Random offset within first 10MB
 		offset := uint32((i * 7919) % (10 * 1024 * 1024)) // Prime for distribution
-		chunkIdx := offset / cache.ChunkSize
-		offsetInChunk := offset % cache.ChunkSize
+		chunkIdx := offset / ChunkSize
+		offsetInChunk := offset % ChunkSize
 
 		if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
 			b.Fatal(err)
@@ -83,7 +76,7 @@ func BenchmarkWriteSlice_Random(b *testing.B) {
 // BenchmarkWriteSlice_Concurrent measures concurrent write performance.
 // This simulates multiple NFS clients writing to different files.
 func BenchmarkWriteSlice_Concurrent(b *testing.B) {
-	c := newTestCache()
+	c := New(0)
 	defer c.Close()
 
 	ctx := context.Background()
@@ -97,8 +90,8 @@ func BenchmarkWriteSlice_Concurrent(b *testing.B) {
 		for pb.Next() {
 			fileHandle := []byte(fmt.Sprintf("file-%d", i%100)) // 100 different files
 			offset := uint32((i * 32 * 1024) % (64 * 1024 * 1024))
-			chunkIdx := offset / cache.ChunkSize
-			offsetInChunk := offset % cache.ChunkSize
+			chunkIdx := offset / ChunkSize
+			offsetInChunk := offset % ChunkSize
 
 			if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
 				b.Fatal(err)
@@ -118,7 +111,7 @@ func BenchmarkReadSlice(b *testing.B) {
 
 	for _, size := range sizes {
 		b.Run(fmt.Sprintf("size=%dKB", size/1024), func(b *testing.B) {
-			c := newTestCache()
+			c := New(0)
 			defer c.Close()
 
 			ctx := context.Background()
@@ -128,8 +121,8 @@ func BenchmarkReadSlice(b *testing.B) {
 			data := make([]byte, size)
 			for i := 0; i < 10*1024*1024/size; i++ {
 				offset := uint32(i * size)
-				chunkIdx := offset / cache.ChunkSize
-				offsetInChunk := offset % cache.ChunkSize
+				chunkIdx := offset / ChunkSize
+				offsetInChunk := offset % ChunkSize
 				_ = c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk)
 			}
 
@@ -138,8 +131,8 @@ func BenchmarkReadSlice(b *testing.B) {
 
 			for i := 0; i < b.N; i++ {
 				offset := uint32((i * size) % (10 * 1024 * 1024))
-				chunkIdx := offset / cache.ChunkSize
-				offsetInChunk := offset % cache.ChunkSize
+				chunkIdx := offset / ChunkSize
+				offsetInChunk := offset % ChunkSize
 
 				_, _, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offsetInChunk, uint32(size))
 				if err != nil {
@@ -156,7 +149,7 @@ func BenchmarkReadSlice_ManySlices(b *testing.B) {
 
 	for _, count := range sliceCounts {
 		b.Run(fmt.Sprintf("slices=%d", count), func(b *testing.B) {
-			c := newTestCache()
+			c := New(0)
 			defer c.Close()
 
 			ctx := context.Background()
@@ -184,67 +177,6 @@ func BenchmarkReadSlice_ManySlices(b *testing.B) {
 }
 
 // ============================================================================
-// Store Benchmarks
-// ============================================================================
-
-// BenchmarkStore_AddSlice measures raw store add performance.
-func BenchmarkStore_AddSlice(b *testing.B) {
-	store := New()
-	defer store.Close()
-
-	ctx := context.Background()
-	fileHandle := []byte("benchmark-file")
-	data := make([]byte, 32*1024)
-
-	b.SetBytes(int64(len(data)))
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		slice := cache.Slice{
-			ID:     fmt.Sprintf("slice-%d", i),
-			Offset: uint32(i * 32 * 1024 % cache.ChunkSize),
-			Length: uint32(len(data)),
-			Data:   data,
-			State:  cache.SliceStatePending,
-		}
-		if err := store.AddSlice(ctx, fileHandle, 0, slice); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-// BenchmarkStore_GetSlices measures raw store retrieval performance.
-func BenchmarkStore_GetSlices(b *testing.B) {
-	store := New()
-	defer store.Close()
-
-	ctx := context.Background()
-	fileHandle := []byte("benchmark-file")
-	data := make([]byte, 32*1024)
-
-	// Pre-populate with 100 slices
-	for i := 0; i < 100; i++ {
-		slice := cache.Slice{
-			ID:     fmt.Sprintf("slice-%d", i),
-			Offset: uint32(i * 1024),
-			Length: uint32(len(data)),
-			Data:   data,
-			State:  cache.SliceStatePending,
-		}
-		_ = store.AddSlice(ctx, fileHandle, 0, slice)
-	}
-
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		slices := store.GetSlices(ctx, fileHandle, 0)
-		if len(slices) == 0 {
-			b.Fatal("expected slices")
-		}
-	}
-}
-
-// ============================================================================
 // End-to-End Benchmarks
 // ============================================================================
 
@@ -254,7 +186,7 @@ func BenchmarkE2E_SequentialWrite(b *testing.B) {
 
 	for _, sizeMB := range fileSizes {
 		b.Run(fmt.Sprintf("size=%dMB", sizeMB), func(b *testing.B) {
-			c := newTestCache()
+			c := New(0)
 			ctx := context.Background()
 
 			writeSize := 32 * 1024 // 32KB per write (typical NFS)
@@ -270,8 +202,8 @@ func BenchmarkE2E_SequentialWrite(b *testing.B) {
 				// Simulate sequential writes
 				for j := 0; j < totalWrites; j++ {
 					offset := uint32(j * writeSize)
-					chunkIdx := offset / cache.ChunkSize
-					offsetInChunk := offset % cache.ChunkSize
+					chunkIdx := offset / ChunkSize
+					offsetInChunk := offset % ChunkSize
 
 					if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
 						b.Fatal(err)
@@ -291,7 +223,7 @@ func BenchmarkE2E_SequentialWrite(b *testing.B) {
 
 // BenchmarkE2E_ReadAfterWrite simulates write then read pattern.
 func BenchmarkE2E_ReadAfterWrite(b *testing.B) {
-	c := newTestCache()
+	c := New(0)
 	defer c.Close()
 
 	ctx := context.Background()
@@ -302,8 +234,8 @@ func BenchmarkE2E_ReadAfterWrite(b *testing.B) {
 	// Write 10MB
 	for i := 0; i < 320; i++ {
 		offset := uint32(i * writeSize)
-		chunkIdx := offset / cache.ChunkSize
-		offsetInChunk := offset % cache.ChunkSize
+		chunkIdx := offset / ChunkSize
+		offsetInChunk := offset % ChunkSize
 		_ = c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk)
 	}
 
@@ -316,8 +248,8 @@ func BenchmarkE2E_ReadAfterWrite(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		offset := uint32((i * int(readSize)) % (10 * 1024 * 1024))
-		chunkIdx := offset / cache.ChunkSize
-		offsetInChunk := offset % cache.ChunkSize
+		chunkIdx := offset / ChunkSize
+		offsetInChunk := offset % ChunkSize
 
 		_, _, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offsetInChunk, readSize)
 		if err != nil {
