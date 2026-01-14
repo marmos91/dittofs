@@ -30,7 +30,8 @@ ClipToChunk(chunkIdx, fileOffset, length)      // clip range to chunk boundaries
 ### Slices Iterator
 ```go
 // Iterate over chunks that a byte range spans
-for slice := range chunk.Slices(offset, length) {
+// fileOffset is uint64 (supports large files), length is int (buffer size)
+for slice := range chunk.Slices(offset, len(buf)) {
     // slice.ChunkIndex - which chunk this slice belongs to
     // slice.Offset     - offset within the chunk
     // slice.Length     - length of data in this chunk
@@ -50,10 +51,9 @@ for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
     // ...
 }
 
-// New pattern (Slices iterator)
-for slice := range chunk.Slices(offset, length) {
-    data := cache.ReadSlice(ctx, handle, slice.ChunkIndex, slice.Offset, slice.Length)
-    copy(buf[slice.BufOffset:], data)
+// New pattern (Slices iterator) - zero-copy with dest buffer
+for slice := range chunk.Slices(offset, len(buf)) {
+    cache.ReadSlice(ctx, handle, slice.ChunkIndex, slice.Offset, slice.Length, buf[slice.BufOffset:])
 }
 ```
 

@@ -33,7 +33,7 @@ func TestSlices_SingleChunk(t *testing.T) {
 func TestSlices_SpansTwoChunks(t *testing.T) {
 	// Range spans two chunks: starts 1000 bytes before chunk boundary
 	offset := uint64(Size - 1000)
-	length := uint64(2000) // 1000 in chunk 0, 1000 in chunk 1
+	length := 2000 // 1000 in chunk 0, 1000 in chunk 1
 
 	var slices []Slice
 	for s := range Slices(offset, length) {
@@ -78,7 +78,7 @@ func TestSlices_SpansTwoChunks(t *testing.T) {
 func TestSlices_SpansThreeChunks(t *testing.T) {
 	// Range spans three chunks
 	offset := uint64(Size - 100)
-	length := uint64(Size + 200) // 100 in chunk 0, full chunk 1, 100 in chunk 2
+	length := Size + 200 // 100 in chunk 0, full chunk 1, 100 in chunk 2
 
 	var slices []Slice
 	for s := range Slices(offset, length) {
@@ -136,7 +136,7 @@ func TestSlices_ZeroLength(t *testing.T) {
 func TestSlices_ExactChunkBoundary(t *testing.T) {
 	// Start exactly at chunk 1 boundary
 	offset := uint64(Size)
-	length := uint64(1000)
+	length := 1000
 
 	var slices []Slice
 	for s := range Slices(offset, length) {
@@ -158,7 +158,7 @@ func TestSlices_ExactChunkBoundary(t *testing.T) {
 func TestSlices_FullChunk(t *testing.T) {
 	// Exactly one full chunk
 	offset := uint64(0)
-	length := uint64(Size)
+	length := Size
 
 	var slices []Slice
 	for s := range Slices(offset, length) {
@@ -177,7 +177,7 @@ func TestSlices_FullChunk(t *testing.T) {
 func TestSlices_EarlyBreak(t *testing.T) {
 	// Test that the iterator respects early termination
 	offset := uint64(Size - 100)
-	length := uint64(Size + 200) // Would span 3 chunks
+	length := Size + 200 // Would span 3 chunks
 
 	var count int
 	for range Slices(offset, length) {

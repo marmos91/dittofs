@@ -151,21 +151,21 @@ type Slice struct {
 //
 // Usage:
 //
-//	for slice := range chunk.Slices(offset, uint64(len(buf))) {
-//	    data, _, _ := cache.ReadSlice(ctx, handle, slice.ChunkIndex, slice.Offset, slice.Length)
-//	    copy(buf[slice.BufOffset:], data)
+//	for slice := range chunk.Slices(offset, len(buf)) {
+//	    cache.ReadSlice(ctx, handle, slice.ChunkIndex, slice.Offset, slice.Length, buf[slice.BufOffset:])
 //	}
-func Slices(fileOffset, length uint64) func(yield func(Slice) bool) {
+func Slices(fileOffset uint64, length int) func(yield func(Slice) bool) {
 	return func(yield func(Slice) bool) {
 		if length == 0 {
 			return
 		}
 
-		startChunk, endChunk := Range(fileOffset, length)
+		len64 := uint64(length)
+		startChunk, endChunk := Range(fileOffset, len64)
 		bufOffset := 0
 
 		for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
-			offsetInChunk, sliceLen := ClipToChunk(chunkIdx, fileOffset+uint64(bufOffset), length-uint64(bufOffset))
+			offsetInChunk, sliceLen := ClipToChunk(chunkIdx, fileOffset+uint64(bufOffset), len64-uint64(bufOffset))
 			if sliceLen == 0 {
 				continue
 			}
