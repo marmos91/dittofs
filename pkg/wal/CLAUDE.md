@@ -98,7 +98,7 @@ if err != nil {
 defer persister.Close()
 
 // Used by cache
-cache, err := cache.NewWithPersister(maxSize, persister)
+cache, err := cache.NewWithWal(maxSize, persister)
 ```
 
 **Features:**
@@ -130,14 +130,14 @@ import (
     "github.com/marmos91/dittofs/pkg/wal"
 )
 
-// Option 1: Convenience constructor
-c, err := cache.NewWithMmap("/var/lib/dittofs/wal", maxSize)
-
-// Option 2: Custom persister
+// Option 1: With WAL persistence (create persister externally)
 persister, err := wal.NewMmapPersister("/var/lib/dittofs/wal")
-c, err := cache.NewWithPersister(maxSize, persister)
+if err != nil {
+    return err
+}
+c, err := cache.NewWithWal(maxSize, persister)
 
-// Option 3: No persistence
+// Option 2: No persistence (in-memory only)
 c := cache.New(maxSize)
 ```
 

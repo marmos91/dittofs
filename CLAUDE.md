@@ -412,7 +412,7 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
   - Three states: Pending (dirty) → Uploading → Flushed (safe to evict)
 - **Configuration**:
   - `cache.max_size`: Maximum cache size (LRU eviction)
-  - WAL persistence via `NewWithMmap()` or `NewWithPersister()`
+  - WAL persistence via `NewWithWal()` (pass persister created externally)
 - **Metrics**: Cache hits/misses/evictions exposed via Prometheus
 
 **6. WAL Persistence** (`pkg/wal/`)

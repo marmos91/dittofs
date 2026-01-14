@@ -20,9 +20,10 @@ Cache (cache.go)
 ## WAL Persistence
 
 The cache uses the `wal.Persister` interface for crash recovery:
-- `NewWithPersister(maxSize, persister)` - Create cache with WAL persistence
-- `NewWithMmap(path, maxSize)` - Convenience constructor for mmap-backed persistence
+- `NewWithWal(maxSize, persister)` - Create cache with WAL persistence
 - `New(maxSize)` - Create in-memory cache (no persistence)
+
+Create the WAL persister externally for better separation of concerns:
 
 ## Key Design Decisions
 
@@ -124,17 +125,18 @@ import (
 c := cache.New(0) // 0 = unlimited size
 
 // Create cache with WAL persistence (crash recovery)
-c, err := cache.NewWithMmap("/var/lib/dittofs/wal", 1<<30) // 1GB max
-
-// Or with custom persister
-persister, _ := wal.NewMmapPersister("/var/lib/dittofs/wal")
-c, err := cache.NewWithPersister(1<<30, persister)
+persister, err := wal.NewMmapPersister("/var/lib/dittofs/wal")
+if err != nil {
+    return err
+}
+c, err := cache.NewWithWal(1<<30, persister) // 1GB max
 
 // Write (auto-extends sequential writes)
 c.WriteSlice(ctx, fileHandle, chunkIdx, data, offset)
 
 // Read (auto-merges with newest-wins)
-data, found, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offset, length)
+dest := make([]byte, length)
+found, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offset, length, dest)
 
 // Get dirty slices for flush (auto-coalesces)
 pending, err := c.GetDirtySlices(ctx, fileHandle)

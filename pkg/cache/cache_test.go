@@ -5,7 +5,23 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/marmos91/dittofs/pkg/wal"
 )
+
+// newTestCacheWithWal creates a cache with WAL persistence for testing.
+func newTestCacheWithWal(t testing.TB, dir string, maxSize uint64) *Cache {
+	t.Helper()
+	persister, err := wal.NewMmapPersister(dir)
+	if err != nil {
+		t.Fatalf("NewMmapPersister failed: %v", err)
+	}
+	c, err := NewWithWal(maxSize, persister)
+	if err != nil {
+		t.Fatalf("NewWithWal failed: %v", err)
+	}
+	return c
+}
 
 // ============================================================================
 // Basic Cache Tests
@@ -123,17 +139,14 @@ func TestCache_Truncate(t *testing.T) {
 }
 
 // ============================================================================
-// mmap Tests
+// WAL Persistence Tests
 // ============================================================================
 
-func TestCache_MmapPersistence(t *testing.T) {
+func TestCache_WalPersistence(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create cache with mmap
-	c, err := NewWithMmap(dir, 0)
-	if err != nil {
-		t.Fatalf("NewWithMmap failed: %v", err)
-	}
+	// Create cache with WAL
+	c := newTestCacheWithWal(t, dir, 0)
 
 	ctx := context.Background()
 	fileHandle := "test-file"
@@ -144,10 +157,10 @@ func TestCache_MmapPersistence(t *testing.T) {
 		t.Fatalf("WriteSlice failed: %v", err)
 	}
 
-	// Verify mmap file exists
-	mmapFile := filepath.Join(dir, "cache.dat")
-	if _, err := os.Stat(mmapFile); os.IsNotExist(err) {
-		t.Fatal("mmap file should exist")
+	// Verify WAL file exists
+	walFile := filepath.Join(dir, "cache.dat")
+	if _, err := os.Stat(walFile); os.IsNotExist(err) {
+		t.Fatal("WAL file should exist")
 	}
 
 	// Close
@@ -156,10 +169,7 @@ func TestCache_MmapPersistence(t *testing.T) {
 	}
 
 	// Reopen
-	c2, err := NewWithMmap(dir, 0)
-	if err != nil {
-		t.Fatalf("NewWithMmap (reopen) failed: %v", err)
-	}
+	c2 := newTestCacheWithWal(t, dir, 0)
 	defer c2.Close()
 
 	// Read - should recover the data
@@ -176,14 +186,11 @@ func TestCache_MmapPersistence(t *testing.T) {
 	}
 }
 
-func TestCache_MmapRemovePersistence(t *testing.T) {
+func TestCache_WalRemovePersistence(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create cache with mmap
-	c, err := NewWithMmap(dir, 0)
-	if err != nil {
-		t.Fatalf("NewWithMmap failed: %v", err)
-	}
+	// Create cache with WAL
+	c := newTestCacheWithWal(t, dir, 0)
 
 	ctx := context.Background()
 	fileHandle := "test-file"
@@ -205,10 +212,7 @@ func TestCache_MmapRemovePersistence(t *testing.T) {
 	}
 
 	// Reopen
-	c2, err := NewWithMmap(dir, 0)
-	if err != nil {
-		t.Fatalf("NewWithMmap (reopen) failed: %v", err)
-	}
+	c2 := newTestCacheWithWal(t, dir, 0)
 	defer c2.Close()
 
 	// Read - should not find data
@@ -222,13 +226,10 @@ func TestCache_MmapRemovePersistence(t *testing.T) {
 	}
 }
 
-func TestCache_MmapSync(t *testing.T) {
+func TestCache_WalSync(t *testing.T) {
 	dir := t.TempDir()
 
-	c, err := NewWithMmap(dir, 0)
-	if err != nil {
-		t.Fatalf("NewWithMmap failed: %v", err)
-	}
+	c := newTestCacheWithWal(t, dir, 0)
 	defer c.Close()
 
 	ctx := context.Background()
@@ -248,13 +249,10 @@ func TestCache_MmapSync(t *testing.T) {
 	// No assertion here, just verify it doesn't panic
 }
 
-func TestCache_MmapMultipleFiles(t *testing.T) {
+func TestCache_WalMultipleFiles(t *testing.T) {
 	dir := t.TempDir()
 
-	c, err := NewWithMmap(dir, 0)
-	if err != nil {
-		t.Fatalf("NewWithMmap failed: %v", err)
-	}
+	c := newTestCacheWithWal(t, dir, 0)
 
 	ctx := context.Background()
 
@@ -273,10 +271,7 @@ func TestCache_MmapMultipleFiles(t *testing.T) {
 	}
 
 	// Reopen
-	c2, err := NewWithMmap(dir, 0)
-	if err != nil {
-		t.Fatalf("NewWithMmap (reopen) failed: %v", err)
-	}
+	c2 := newTestCacheWithWal(t, dir, 0)
 	defer c2.Close()
 
 	// Verify all files recovered
@@ -305,7 +300,7 @@ func TestCache_MmapMultipleFiles(t *testing.T) {
 }
 
 // ============================================================================
-// Benchmark comparison: In-memory vs mmap
+// Benchmark comparison: In-memory vs WAL
 // ============================================================================
 
 func BenchmarkCache_InMemory_Write(b *testing.B) {
@@ -319,7 +314,7 @@ func BenchmarkCache_InMemory_Write(b *testing.B) {
 	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		offset := uint32(i * len(data))
 		chunkIdx := offset / ChunkSize
 		offsetInChunk := offset % ChunkSize
@@ -329,12 +324,9 @@ func BenchmarkCache_InMemory_Write(b *testing.B) {
 	}
 }
 
-func BenchmarkCache_Mmap_Write(b *testing.B) {
+func BenchmarkCache_Wal_Write(b *testing.B) {
 	dir := b.TempDir()
-	c, err := NewWithMmap(dir, 0)
-	if err != nil {
-		b.Fatalf("NewWithMmap failed: %v", err)
-	}
+	c := newTestCacheWithWal(b, dir, 0)
 	defer c.Close()
 
 	ctx := context.Background()
@@ -344,7 +336,7 @@ func BenchmarkCache_Mmap_Write(b *testing.B) {
 	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		offset := uint32(i * len(data))
 		chunkIdx := offset / ChunkSize
 		offsetInChunk := offset % ChunkSize
@@ -538,28 +530,6 @@ func TestCache_EvictLRU(t *testing.T) {
 // ============================================================================
 // Additional Coverage Tests
 // ============================================================================
-
-func TestCache_ChunkRange(t *testing.T) {
-	tests := []struct {
-		offset, length       uint64
-		wantStart, wantEnd   uint32
-	}{
-		{0, 0, 0, 0},                     // Zero length
-		{0, 1024, 0, 0},                  // Within first chunk
-		{0, ChunkSize, 0, 0},             // Exactly one chunk
-		{0, ChunkSize + 1, 0, 1},         // Spans two chunks
-		{ChunkSize - 1, 2, 0, 1},         // Cross chunk boundary
-		{ChunkSize * 2, ChunkSize, 2, 2}, // Third chunk only
-	}
-
-	for _, tt := range tests {
-		start, end := ChunkRange(tt.offset, tt.length)
-		if start != tt.wantStart || end != tt.wantEnd {
-			t.Errorf("ChunkRange(%d, %d) = (%d, %d), want (%d, %d)",
-				tt.offset, tt.length, start, end, tt.wantStart, tt.wantEnd)
-		}
-	}
-}
 
 func TestCache_Evict(t *testing.T) {
 	c := New(0)

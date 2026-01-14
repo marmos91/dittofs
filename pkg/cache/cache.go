@@ -33,29 +33,6 @@ import (
 )
 
 // ============================================================================
-// Helper Functions (delegating to chunk package)
-// ============================================================================
-
-// ChunkIndexForOffset calculates the chunk index for a file offset.
-// Deprecated: Use chunk.IndexForOffset directly.
-func ChunkIndexForOffset(offset uint64) uint32 {
-	return chunk.IndexForOffset(offset)
-}
-
-// OffsetWithinChunk calculates the offset within a chunk.
-// Deprecated: Use chunk.OffsetInChunk directly.
-func OffsetWithinChunk(offset uint64) uint32 {
-	return chunk.OffsetInChunk(offset)
-}
-
-// ChunkRange calculates the range of chunks that a byte range spans.
-// Returns startChunk and endChunk (inclusive).
-// Deprecated: Use chunk.Range directly.
-func ChunkRange(offset, length uint64) (startChunk, endChunk uint32) {
-	return chunk.Range(offset, length)
-}
-
-// ============================================================================
 // Internal Types
 // ============================================================================
 
@@ -109,31 +86,23 @@ func New(maxSize uint64) *Cache {
 	}
 }
 
-// NewWithMmap creates a new cache with mmap-backed persistence.
+// NewWithWal creates a new cache with WAL persistence for crash recovery.
 //
-// The cache data is stored in an append-only log file at the given path.
-// On startup, existing data is recovered from the log.
+// The persister is used to persist cache operations. On creation, existing
+// data is recovered from the persister.
 //
-// Parameters:
-//   - path: Directory path for the cache file (cache.dat will be created)
-//   - maxSize: Maximum cache size in bytes (0 = unlimited)
-func NewWithMmap(path string, maxSize uint64) (*Cache, error) {
-	persister, err := wal.NewMmapPersister(path)
-	if err != nil {
-		return nil, err
-	}
-	return NewWithPersister(maxSize, persister)
-}
-
-// NewWithPersister creates a new cache with WAL persistence.
+// Example:
 //
-// The persister is used to persist cache operations for crash recovery.
-// On creation, existing data is recovered from the persister.
+//	persister, err := wal.NewMmapPersister("/var/lib/dittofs/wal")
+//	if err != nil {
+//	    return err
+//	}
+//	cache, err := cache.NewWithWal(1<<30, persister)
 //
 // Parameters:
 //   - maxSize: Maximum total cache size in bytes. Use 0 for unlimited.
-//   - persister: WAL persister for crash recovery
-func NewWithPersister(maxSize uint64, persister wal.Persister) (*Cache, error) {
+//   - persister: WAL persister for crash recovery (create externally)
+func NewWithWal(maxSize uint64, persister wal.Persister) (*Cache, error) {
 	c := &Cache{
 		files:     make(map[string]*fileEntry),
 		maxSize:   maxSize,
@@ -142,7 +111,7 @@ func NewWithPersister(maxSize uint64, persister wal.Persister) (*Cache, error) {
 
 	// Recover existing data if persister is enabled
 	if persister.IsEnabled() {
-		if err := c.recoverFromPersister(); err != nil {
+		if err := c.recoverFromWal(); err != nil {
 			return nil, err
 		}
 	}
@@ -150,8 +119,8 @@ func NewWithPersister(maxSize uint64, persister wal.Persister) (*Cache, error) {
 	return c, nil
 }
 
-// recoverFromPersister recovers cache state from the WAL persister.
-func (c *Cache) recoverFromPersister() error {
+// recoverFromWal recovers cache state from the WAL persister.
+func (c *Cache) recoverFromWal() error {
 	entries, err := c.persister.Recover()
 	if err != nil {
 		return err
@@ -970,8 +939,8 @@ func (c *Cache) Truncate(ctx context.Context, fileHandle string, newSize uint64)
 		return nil
 	}
 
-	newEndChunk := ChunkIndexForOffset(newSize)
-	newOffsetInEndChunk := OffsetWithinChunk(newSize)
+	newEndChunk := chunk.IndexForOffset(newSize)
+	newOffsetInEndChunk := chunk.OffsetInChunk(newSize)
 
 	for chunkIdx, chunk := range entry.chunks {
 		if chunkIdx > newEndChunk {

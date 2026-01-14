@@ -235,23 +235,23 @@ type MetadataStoreConfig struct {
 // All shares use a single global cache - PayloadID uniqueness ensures data isolation.
 type CacheConfig struct {
 	// Type specifies which cache implementation to use
-	// Valid values: memory, mmap
+	// Valid values: memory, wal
 	// - memory: Pure in-memory cache (volatile, fastest)
-	// - mmap: Memory-mapped file cache (persistent across restarts)
+	// - wal: WAL-backed cache (persistent across restarts via Write-Ahead Log)
 	// Default: memory
-	Type string `mapstructure:"type" validate:"omitempty,oneof=memory mmap" yaml:"type"`
+	Type string `mapstructure:"type" validate:"omitempty,oneof=memory wal" yaml:"type"`
 
 	// MaxSize is the maximum cache size in bytes (0 = unlimited)
 	MaxSize uint64 `mapstructure:"max_size" yaml:"max_size"`
 
-	// Mmap contains mmap-specific configuration
-	// Only used when Type = "mmap"
-	Mmap MmapCacheConfig `mapstructure:"mmap" yaml:"mmap"`
+	// Wal contains WAL-specific configuration
+	// Only used when Type = "wal"
+	Wal WalCacheConfig `mapstructure:"wal" yaml:"wal"`
 }
 
-// MmapCacheConfig contains configuration for mmap-backed cache.
-type MmapCacheConfig struct {
-	// Path is the directory for the cache file
+// WalCacheConfig contains configuration for WAL-backed cache.
+type WalCacheConfig struct {
+	// Path is the directory for the WAL file
 	// The cache will create a cache.dat file in this directory
 	Path string `mapstructure:"path" yaml:"path"`
 }

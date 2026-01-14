@@ -568,14 +568,15 @@ type Persister interface {
 
 // MmapPersister - memory-mapped file for high performance
 persister, err := wal.NewMmapPersister("/var/lib/dittofs/wal")
+if err != nil {
+    return err
+}
 
 // NullPersister - no-op for testing/in-memory deployments
 persister := wal.NewNullPersister()
 
-// Create cache with WAL
-cache, err := cache.NewWithPersister(maxSize, persister)
-// Or convenience constructor:
-cache, err := cache.NewWithMmap("/var/lib/dittofs/wal", maxSize)
+// Create cache with WAL (pass persister created externally)
+cache, err := cache.NewWithWal(maxSize, persister)
 ```
 
 ### Transfer Manager (`pkg/transfer/`)
