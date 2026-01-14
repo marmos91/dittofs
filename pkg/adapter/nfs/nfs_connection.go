@@ -19,8 +19,8 @@ import (
 	nfs_types "github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/telemetry"
-	"github.com/marmos91/dittofs/pkg/bufpool"
-	"github.com/marmos91/dittofs/pkg/bytesize"
+	"github.com/marmos91/dittofs/internal/bufpool"
+	"github.com/marmos91/dittofs/internal/bytesize"
 )
 
 type NFSConnection struct {

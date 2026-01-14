@@ -61,7 +61,7 @@ DittoFS uses a **Service-oriented architecture** with the Registry pattern to en
 │           │    │    │    └────┬─────┘ │ │
 │           │    │    │ ┌──────▼──────┐ │ │
 │           │    │    │ │     WAL     │ │ │
-│           │    │    │ │  pkg/wal/   │ │ │
+│           │    │    │ │  pkg/cache/wal/   │ │ │
 │           │    │    └─┴─────────────┘ │ │
 │           │    └─────────────────────┘ │
 └───────────┼────────────────────────────┘
@@ -132,7 +132,7 @@ DittoFS uses a **Service-oriented architecture** with the Registry pattern to en
 - LRU eviction with dirty data protection
 - Uses `wal.Persister` interface for crash recovery
 
-**8. WAL Persistence** (`pkg/wal/`)
+**8. WAL Persistence** (`pkg/cache/wal/`)
 - Write-Ahead Log for cache crash recovery
 - `Persister` interface for pluggable implementations
 - `MmapPersister`: Memory-mapped file persistence
@@ -494,7 +494,7 @@ NFS WRITE Request
          ▼                                         │
 ┌───────────────────┐      ┌──────────────────┐   │
 │      Cache        │─────►│       WAL        │   │
-│   pkg/cache/      │      │    pkg/wal/      │   │
+│   pkg/cache/      │      │    pkg/cache/wal/      │   │
 │                   │      │                  │   │
 │ • Write buffering │      │ • MmapPersister  │   │
 │ • LRU eviction    │      │ • Crash recovery │   │
@@ -551,7 +551,7 @@ SliceStatePending → SliceStateUploading → SliceStateFlushed
      (dirty)           (flush in progress)    (safe to evict)
 ```
 
-### WAL Persistence (`pkg/wal/`)
+### WAL Persistence (`pkg/cache/wal/`)
 
 The WAL ensures cache data survives crashes:
 
@@ -568,14 +568,15 @@ type Persister interface {
 
 // MmapPersister - memory-mapped file for high performance
 persister, err := wal.NewMmapPersister("/var/lib/dittofs/wal")
+if err != nil {
+    return err
+}
 
 // NullPersister - no-op for testing/in-memory deployments
 persister := wal.NewNullPersister()
 
-// Create cache with WAL
-cache, err := cache.NewWithPersister(maxSize, persister)
-// Or convenience constructor:
-cache, err := cache.NewWithMmap("/var/lib/dittofs/wal", maxSize)
+// Create cache with WAL (pass persister created externally)
+cache, err := cache.NewWithWal(maxSize, persister)
 ```
 
 ### Transfer Manager (`pkg/transfer/`)

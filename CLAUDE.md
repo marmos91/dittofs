@@ -38,7 +38,7 @@ Each major subsystem has its own CLAUDE.md with non-obvious conventions and gotc
 - **[pkg/adapter/CLAUDE.md](pkg/adapter/CLAUDE.md)** - Protocol adapter lifecycle
 - **[pkg/cache/CLAUDE.md](pkg/cache/CLAUDE.md)** - Slice-aware cache, WAL persistence
 - **[pkg/transfer/CLAUDE.md](pkg/transfer/CLAUDE.md)** - Transfer manager, background queue
-- **[pkg/wal/CLAUDE.md](pkg/wal/CLAUDE.md)** - WAL persistence layer
+- **[pkg/cache/wal/CLAUDE.md](pkg/cache/wal/CLAUDE.md)** - WAL persistence layer
 - **[pkg/config/CLAUDE.md](pkg/config/CLAUDE.md)** - Named stores pattern, env overrides
 - **[internal/protocol/CLAUDE.md](internal/protocol/CLAUDE.md)** - NFS/SMB wire formats, handler rules
 
@@ -346,7 +346,7 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 │                │  │  ┌──────────────┐  │
 │  - Memory      │  │  │ Cache + WAL  │  │
 │  - BadgerDB    │  │  │ pkg/cache/   │  │
-│  - PostgreSQL  │  │  │ pkg/wal/     │  │
+│  - PostgreSQL  │  │  │ pkg/cache/wal/     │  │
 │                │  │  └──────┬───────┘  │
 │                │  │         │          │
 │                │  │  ┌──────▼───────┐  │
@@ -404,7 +404,7 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 
 **5. Cache Layer** (`pkg/cache/`)
 - Slice-aware caching for the Chunk/Slice/Block storage model
-- Uses **WAL persistence** (`pkg/wal/`) for crash recovery
+- Uses **WAL persistence** (`pkg/cache/wal/`) for crash recovery
 - **Key features**:
   - Sequential write optimization (merges 16KB-32KB NFS writes into single slices)
   - Newest-wins read merging for overlapping slices
@@ -412,10 +412,10 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
   - Three states: Pending (dirty) → Uploading → Flushed (safe to evict)
 - **Configuration**:
   - `cache.max_size`: Maximum cache size (LRU eviction)
-  - WAL persistence via `NewWithMmap()` or `NewWithPersister()`
+  - WAL persistence via `NewWithWal()` (pass persister created externally)
 - **Metrics**: Cache hits/misses/evictions exposed via Prometheus
 
-**6. WAL Persistence** (`pkg/wal/`)
+**6. WAL Persistence** (`pkg/cache/wal/`)
 - Write-Ahead Log for cache crash recovery
 - `Persister` interface for pluggable implementations:
   - `MmapPersister`: Memory-mapped file for high performance

@@ -57,8 +57,16 @@ const (
 // Entry types for the append-only log
 const (
 	entryTypeSlice  uint8 = 0
-	entryTypeDelete uint8 = 1
 	entryTypeRemove uint8 = 3
+)
+
+// Header field offsets
+const (
+	headerOffsetMagic         = 0
+	headerOffsetVersion       = 4
+	headerOffsetEntryCount    = 6
+	headerOffsetNextOffset    = 10
+	headerOffsetTotalDataSize = 18
 )
 
 // mmapHeader represents the header of the mmap file
@@ -199,11 +207,11 @@ func (p *MmapPersister) openExisting(filePath string) error {
 
 	// Read and validate header
 	header := &mmapHeader{}
-	copy(header.Magic[:], data[0:4])
-	header.Version = binary.LittleEndian.Uint16(data[4:6])
-	header.EntryCount = binary.LittleEndian.Uint32(data[6:10])
-	header.NextOffset = binary.LittleEndian.Uint64(data[10:18])
-	header.TotalDataSize = binary.LittleEndian.Uint64(data[18:26])
+	copy(header.Magic[:], data[headerOffsetMagic:headerOffsetVersion])
+	header.Version = binary.LittleEndian.Uint16(data[headerOffsetVersion:headerOffsetEntryCount])
+	header.EntryCount = binary.LittleEndian.Uint32(data[headerOffsetEntryCount:headerOffsetNextOffset])
+	header.NextOffset = binary.LittleEndian.Uint64(data[headerOffsetNextOffset:headerOffsetTotalDataSize])
+	header.TotalDataSize = binary.LittleEndian.Uint64(data[headerOffsetTotalDataSize:])
 
 	if string(header.Magic[:]) != mmapMagic {
 		p.closeLocked()
@@ -267,7 +275,7 @@ func (p *MmapPersister) AppendSlice(entry *SliceEntry) error {
 	offset += 4
 
 	// Write slice ID (pad to 36 bytes)
-	idBytes := []byte(entry.SliceID)
+	idBytes := []byte(entry.ID)
 	if len(idBytes) > 36 {
 		idBytes = idBytes[:36]
 	}
@@ -379,6 +387,10 @@ func (p *MmapPersister) Sync() error {
 }
 
 // Recover replays the WAL and returns all slice entries.
+//
+// The WAL is scanned sequentially. Remove entries mark files for exclusion,
+// and slice entries for non-removed files are returned. This allows the cache
+// to be reconstructed from the WAL after a crash.
 func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -387,14 +399,13 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 		return nil, ErrPersisterClosed
 	}
 
-	var entries []SliceEntry
+	// First pass: collect all removed file handles
 	removedFiles := make(map[string]bool)
-
 	offset := uint64(mmapHeaderSize)
 	endOffset := p.header.NextOffset
 
 	for offset < endOffset {
-		if offset+1 > p.size {
+		if offset >= p.size {
 			return nil, ErrCorrupted
 		}
 
@@ -403,18 +414,8 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 
 		switch entryType {
 		case entryTypeSlice:
-			entry, newOffset, err := p.readSliceEntry(offset)
-			if err != nil {
-				return nil, err
-			}
-			// Only add if file wasn't removed later
-			if !removedFiles[entry.FileHandle] {
-				entries = append(entries, *entry)
-			}
-			offset = newOffset
-
-		case entryTypeDelete:
-			newOffset, err := p.skipDeleteEntry(offset)
+			// Skip slice entry (we'll read it in second pass)
+			newOffset, err := p.skipSliceEntry(offset)
 			if err != nil {
 				return nil, err
 			}
@@ -433,15 +434,35 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 		}
 	}
 
-	// Filter out entries for removed files
-	var filteredEntries []SliceEntry
-	for _, entry := range entries {
-		if !removedFiles[entry.FileHandle] {
-			filteredEntries = append(filteredEntries, entry)
+	// Second pass: collect slice entries for non-removed files
+	var entries []SliceEntry
+	offset = uint64(mmapHeaderSize)
+
+	for offset < endOffset {
+		entryType := p.data[offset]
+		offset++
+
+		switch entryType {
+		case entryTypeSlice:
+			entry, newOffset, err := p.readSliceEntry(offset)
+			if err != nil {
+				return nil, err
+			}
+			if !removedFiles[entry.FileHandle] {
+				entries = append(entries, *entry)
+			}
+			offset = newOffset
+
+		case entryTypeRemove:
+			_, newOffset, err := p.readRemoveEntry(offset)
+			if err != nil {
+				return nil, err
+			}
+			offset = newOffset
 		}
 	}
 
-	return filteredEntries, nil
+	return entries, nil
 }
 
 // readSliceEntry reads a slice entry from the log.
@@ -473,7 +494,7 @@ func (p *MmapPersister) readSliceEntry(offset uint64) (*SliceEntry, uint64, erro
 	if offset+36 > p.size {
 		return nil, 0, ErrCorrupted
 	}
-	entry.SliceID = string(p.data[offset : offset+36])
+	entry.ID = string(p.data[offset : offset+36])
 	offset += 36
 
 	// Read offset in chunk
@@ -514,7 +535,7 @@ func (p *MmapPersister) readSliceEntry(offset uint64) (*SliceEntry, uint64, erro
 
 	// Read block refs
 	entry.BlockRefs = make([]BlockRef, blockRefCount)
-	for i := uint16(0); i < blockRefCount; i++ {
+	for i := range blockRefCount {
 		if offset+1 > p.size {
 			return nil, 0, ErrCorrupted
 		}
@@ -545,29 +566,43 @@ func (p *MmapPersister) readSliceEntry(offset uint64) (*SliceEntry, uint64, erro
 	return entry, offset, nil
 }
 
-// skipDeleteEntry skips a delete entry in the log.
-func (p *MmapPersister) skipDeleteEntry(offset uint64) (uint64, error) {
-	// Read file handle length
+// skipSliceEntry skips a slice entry without reading its data.
+// Used in the first pass of recovery to find removed files.
+func (p *MmapPersister) skipSliceEntry(offset uint64) (uint64, error) {
+	// Skip file handle
 	if offset+2 > p.size {
 		return 0, ErrCorrupted
 	}
 	handleLen := binary.LittleEndian.Uint16(p.data[offset:])
+	offset += 2 + uint64(handleLen)
+
+	// Skip chunk index (4) + slice ID (36) + offset (4) + length (4) + state (1) + created at (8)
+	fixedSize := uint64(4 + 36 + 4 + 4 + 1 + 8)
+	if offset+fixedSize > p.size {
+		return 0, ErrCorrupted
+	}
+
+	// Read length to know how much data to skip
+	dataLen := binary.LittleEndian.Uint32(p.data[offset+4+36+4:])
+	offset += fixedSize
+
+	// Skip block refs
+	if offset+2 > p.size {
+		return 0, ErrCorrupted
+	}
+	blockRefCount := binary.LittleEndian.Uint16(p.data[offset:])
 	offset += 2
 
-	// Skip file handle
-	offset += uint64(handleLen)
-
-	// Skip slice ID (36 bytes)
-	if offset+36 > p.size {
-		return 0, ErrCorrupted
+	for range blockRefCount {
+		if offset+1 > p.size {
+			return 0, ErrCorrupted
+		}
+		idLen := p.data[offset]
+		offset += 1 + uint64(idLen) + 4 // ID length + ID + Size
 	}
-	offset += 36
 
-	// Skip new state (1 byte)
-	if offset+1 > p.size {
-		return 0, ErrCorrupted
-	}
-	offset++
+	// Skip data
+	offset += uint64(dataLen)
 
 	return offset, nil
 }
@@ -634,11 +669,11 @@ func (p *MmapPersister) IsEnabled() bool {
 
 // writeHeader writes the current header to the mmap file.
 func (p *MmapPersister) writeHeader() {
-	copy(p.data[0:4], p.header.Magic[:])
-	binary.LittleEndian.PutUint16(p.data[4:6], p.header.Version)
-	binary.LittleEndian.PutUint32(p.data[6:10], p.header.EntryCount)
-	binary.LittleEndian.PutUint64(p.data[10:18], p.header.NextOffset)
-	binary.LittleEndian.PutUint64(p.data[18:26], p.header.TotalDataSize)
+	copy(p.data[headerOffsetMagic:], p.header.Magic[:])
+	binary.LittleEndian.PutUint16(p.data[headerOffsetVersion:], p.header.Version)
+	binary.LittleEndian.PutUint32(p.data[headerOffsetEntryCount:], p.header.EntryCount)
+	binary.LittleEndian.PutUint64(p.data[headerOffsetNextOffset:], p.header.NextOffset)
+	binary.LittleEndian.PutUint64(p.data[headerOffsetTotalDataSize:], p.header.TotalDataSize)
 }
 
 // ensureSpace ensures there's enough space in the mmap region.
@@ -674,6 +709,3 @@ func (p *MmapPersister) ensureSpace(needed uint64) error {
 
 	return nil
 }
-
-// Ensure MmapPersister implements Persister.
-var _ Persister = (*MmapPersister)(nil)

@@ -3,8 +3,8 @@ package cache
 
 import (
 	"errors"
-	"time"
 
+	"github.com/marmos91/dittofs/pkg/cache/wal"
 	"github.com/marmos91/dittofs/pkg/payload/block"
 	"github.com/marmos91/dittofs/pkg/payload/chunk"
 )
@@ -41,120 +41,39 @@ var (
 )
 
 // ============================================================================
-// Slice State
+// Re-exported WAL Types
 // ============================================================================
 
 // SliceState represents the state of a slice in the cache.
-type SliceState int
+// Defined in wal package for persistence format independence.
+type SliceState = wal.SliceState
 
+// SliceState constants - re-exported from wal package.
 const (
-	// SliceStatePending indicates the slice has unflushed data.
-	SliceStatePending SliceState = iota
-
-	// SliceStateFlushed indicates the slice has been persisted to block storage.
-	SliceStateFlushed
-
-	// SliceStateUploading indicates the slice is currently being uploaded.
-	SliceStateUploading
+	SliceStatePending   = wal.SliceStatePending
+	SliceStateFlushed   = wal.SliceStateFlushed
+	SliceStateUploading = wal.SliceStateUploading
 )
 
-// String returns the string representation of SliceState.
-func (s SliceState) String() string {
-	switch s {
-	case SliceStatePending:
-		return "Pending"
-	case SliceStateFlushed:
-		return "Flushed"
-	case SliceStateUploading:
-		return "Uploading"
-	default:
-		return "Unknown"
-	}
-}
-
-// IsDirty returns true if the slice has unflushed data.
-func (s SliceState) IsDirty() bool {
-	return s == SliceStatePending || s == SliceStateUploading
-}
-
-// ============================================================================
-// Block Reference
-// ============================================================================
-
 // BlockRef references an immutable block in the block store.
-type BlockRef struct {
-	// ID is the block's unique identifier in the block store.
-	ID string
-
-	// Size is the actual size of this block (may be < BlockSize for last block).
-	Size uint32
-}
+// Defined in wal package for persistence format independence.
+type BlockRef = wal.BlockRef
 
 // ============================================================================
 // Slice Types
 // ============================================================================
 
 // Slice represents a slice stored in the cache/store.
-type Slice struct {
-	// ID uniquely identifies this slice.
-	ID string
-
-	// Offset is the byte offset within the chunk (0 to ChunkSize-1).
-	Offset uint32
-
-	// Length is the size of this slice in bytes.
-	Length uint32
-
-	// Data contains the actual slice content.
-	Data []byte
-
-	// State indicates whether this slice is pending, uploading, or flushed.
-	State SliceState
-
-	// CreatedAt is when this slice was created (for newest-wins ordering).
-	CreatedAt time.Time
-
-	// BlockRefs contains references to blocks after flushing.
-	BlockRefs []BlockRef
-}
-
-// SliceUpdate contains fields that can be updated on an existing slice.
-type SliceUpdate struct {
-	// State is the new state (optional).
-	State *SliceState
-
-	// BlockRefs is the new block references (optional).
-	BlockRefs []BlockRef
-
-	// Data is new data for the slice (optional, used for extending).
-	Data []byte
-
-	// Length is the new length (optional, used for extending/truncating).
-	Length *uint32
-
-	// Offset is the new offset (optional, used for prepending).
-	Offset *uint32
-}
+// Defined in wal package - re-exported here for convenience.
+type Slice = wal.Slice
 
 // PendingSlice represents an unflushed write ready for upload.
+// Embeds Slice and adds ChunkIndex context for the transfer manager.
 type PendingSlice struct {
-	// ID uniquely identifies this slice.
-	ID string
+	Slice
 
 	// ChunkIndex is the chunk this slice belongs to.
 	ChunkIndex uint32
-
-	// Offset within the chunk.
-	Offset uint32
-
-	// Length of the slice data.
-	Length uint32
-
-	// Data contains the actual bytes to upload.
-	Data []byte
-
-	// CreatedAt for ordering.
-	CreatedAt time.Time
 }
 
 // ============================================================================

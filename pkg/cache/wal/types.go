@@ -46,22 +46,16 @@ type BlockRef struct {
 	Size uint32
 }
 
-// SliceEntry represents a slice entry in the WAL.
-// This is the serialization format for persisting slices to disk.
-type SliceEntry struct {
-	// FileHandle identifies the file this slice belongs to.
-	FileHandle string
+// Slice represents a slice of data within a chunk.
+// This is the canonical slice type used by both cache and WAL.
+type Slice struct {
+	// ID uniquely identifies this slice.
+	ID string
 
-	// ChunkIdx is the chunk index within the file.
-	ChunkIdx uint32
-
-	// SliceID uniquely identifies this slice.
-	SliceID string
-
-	// Offset is the byte offset within the chunk.
+	// Offset is the byte offset within the chunk (0 to ChunkSize-1).
 	Offset uint32
 
-	// Length is the size of the slice data.
+	// Length is the size of this slice in bytes.
 	Length uint32
 
 	// Data contains the actual slice content.
@@ -70,9 +64,22 @@ type SliceEntry struct {
 	// State indicates whether this slice is pending, uploading, or flushed.
 	State SliceState
 
-	// CreatedAt is when this slice was created.
+	// CreatedAt is when this slice was created (for newest-wins ordering).
 	CreatedAt time.Time
 
 	// BlockRefs contains references to blocks after flushing.
 	BlockRefs []BlockRef
+}
+
+// SliceEntry represents a slice entry in the WAL.
+// It embeds Slice and adds context fields needed for recovery.
+type SliceEntry struct {
+	// FileHandle identifies the file this slice belongs to.
+	FileHandle string
+
+	// ChunkIdx is the chunk index within the file.
+	ChunkIdx uint32
+
+	// Slice is the embedded slice data.
+	Slice
 }

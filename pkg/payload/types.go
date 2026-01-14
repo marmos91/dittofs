@@ -4,21 +4,19 @@ package payload
 // Type Notes
 // ============================================================================
 //
-// BlockRef, Slice, SliceState, and Chunk-related types are defined in pkg/cache
-// because:
-// 1. The cache package owns these concepts (it's the in-memory representation)
-// 2. Circular dependency: blocks imports cache, so cache cannot import blocks
-//
-// The WAL package (pkg/wal) defines its own SliceEntry and BlockRef for
-// persistence format independence - this is standard practice for persistence
-// layers that may need to version or migrate data formats.
+// Slice-related types are organized as follows:
 //
 // Type locations:
-// - cache.BlockRef    - canonical block reference type
-// - cache.Slice       - in-memory slice representation
-// - cache.SliceState  - slice lifecycle states
-// - wal.SliceEntry    - WAL persistence format
-// - wal.BlockRef      - WAL's copy (for format independence)
+// - wal.SliceState      - slice lifecycle states (canonical definition)
+// - wal.BlockRef        - block reference type (canonical definition)
+// - wal.SliceEntry      - WAL persistence format (includes FileHandle, ChunkIdx)
+// - cache.SliceState    - type alias for wal.SliceState
+// - cache.BlockRef      - type alias for wal.BlockRef
+// - cache.Slice         - in-memory slice representation (uses wal types)
+//
+// This type unification eliminates conversion overhead between cache and WAL
+// operations. The wal package owns the canonical type definitions because it
+// handles persistence and must maintain format stability.
 
 // ============================================================================
 // Supporting Types

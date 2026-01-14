@@ -5,15 +5,16 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/marmos91/dittofs/pkg/payload/store"
-	blockfs "github.com/marmos91/dittofs/pkg/payload/store/fs"
-	blockmemory "github.com/marmos91/dittofs/pkg/payload/store/memory"
-	blocks3 "github.com/marmos91/dittofs/pkg/payload/store/s3"
 	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/cache/wal"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
+	"github.com/marmos91/dittofs/pkg/payload/store"
+	blockfs "github.com/marmos91/dittofs/pkg/payload/store/fs"
+	blockmemory "github.com/marmos91/dittofs/pkg/payload/store/memory"
+	blocks3 "github.com/marmos91/dittofs/pkg/payload/store/s3"
 	"github.com/marmos91/dittofs/pkg/transfer"
 	"github.com/mitchellh/mapstructure"
 )
@@ -23,11 +24,15 @@ func CreateCache(cfg CacheConfig) (*cache.Cache, error) {
 	switch cfg.Type {
 	case "memory", "":
 		return cache.New(cfg.MaxSize), nil
-	case "mmap":
-		if cfg.Mmap.Path == "" {
-			return nil, fmt.Errorf("mmap cache requires path to be set")
+	case "wal":
+		if cfg.Wal.Path == "" {
+			return nil, fmt.Errorf("wal cache requires path to be set")
 		}
-		return cache.NewWithMmap(cfg.Mmap.Path, cfg.MaxSize)
+		persister, err := wal.NewMmapPersister(cfg.Wal.Path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create WAL persister: %w", err)
+		}
+		return cache.NewWithWal(cfg.MaxSize, persister)
 	default:
 		return nil, fmt.Errorf("unknown cache type: %q", cfg.Type)
 	}

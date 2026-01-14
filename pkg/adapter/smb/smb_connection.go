@@ -15,7 +15,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/header"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 	"github.com/marmos91/dittofs/internal/protocol/smb/v2/handlers"
-	"github.com/marmos91/dittofs/pkg/bufpool"
+	"github.com/marmos91/dittofs/internal/bufpool"
 )
 
 // SMBConnection handles a single SMB2 client connection.

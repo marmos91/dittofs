@@ -8,21 +8,36 @@ Slice-aware cache layer for the Chunk/Slice/Block storage model.
 Cache (cache.go)
     - Business logic: merging, coalescing, optimization
     - In-memory storage (integrated)
-    - Optional WAL persistence via wal.Persister interface
+    - Optional WAL persistence via wal.MmapPersister
 ```
 
 ## Package Structure
 
-- `cache.go` - Cache implementation (business logic + storage)
-- `types.go` - Slice, SliceState, SliceUpdate, BlockRef types
+- `cache.go` - Core types (Cache, fileEntry, chunkEntry), constructors, helpers
+- `write.go` - WriteSlice, sequential write optimization
+- `read.go` - ReadSlice, newest-wins merging, IsRangeCovered
+- `flush.go` - GetDirtySlices, MarkSliceFlushed, CoalesceWrites
+- `eviction.go` - LRU eviction (EvictLRU, Evict, EvictAll)
+- `state.go` - Remove, Truncate, HasDirtyData, GetFileSize, Stats, Close, Sync
+- `types.go` - Slice, PendingSlice, Stats types; re-exports SliceState and BlockRef from wal
+- `wal/` - WAL persistence layer (SliceState, BlockRef, SliceEntry defined here)
 - `benchmark_test.go` - Performance benchmarks
+
+## Type Unification
+
+SliceState and BlockRef are defined in `pkg/cache/wal` and re-exported by `pkg/cache`:
+- `cache.SliceState` = `wal.SliceState` (type alias)
+- `cache.BlockRef` = `wal.BlockRef` (type alias)
+
+This eliminates conversion overhead between cache and WAL operations.
 
 ## WAL Persistence
 
-The cache uses the `wal.Persister` interface for crash recovery:
-- `NewWithPersister(maxSize, persister)` - Create cache with WAL persistence
-- `NewWithMmap(path, maxSize)` - Convenience constructor for mmap-backed persistence
+The cache uses `*wal.MmapPersister` for crash recovery:
+- `NewWithWal(maxSize, persister)` - Create cache with WAL persistence
 - `New(maxSize)` - Create in-memory cache (no persistence)
+
+Create the WAL persister externally for better separation of concerns.
 
 ## Key Design Decisions
 
@@ -87,7 +102,7 @@ stats := c.Stats()
 NFS clients write in 16KB-32KB chunks. Without optimization:
 - 10MB file = 320 writes = 320 slices (bad)
 
-With `tryExtendAdjacentSlice()`:
+With `extendAdjacentSlice()`:
 - Sequential writes extend existing pending slice
 - 10MB file = 320 writes = 1 slice (good)
 
@@ -117,24 +132,25 @@ Result:
 ```go
 import (
     "github.com/marmos91/dittofs/pkg/cache"
-    "github.com/marmos91/dittofs/pkg/wal"
+    "github.com/marmos91/dittofs/pkg/cache/wal"
 )
 
 // Create cache (in-memory only, no persistence)
 c := cache.New(0) // 0 = unlimited size
 
 // Create cache with WAL persistence (crash recovery)
-c, err := cache.NewWithMmap("/var/lib/dittofs/wal", 1<<30) // 1GB max
-
-// Or with custom persister
-persister, _ := wal.NewMmapPersister("/var/lib/dittofs/wal")
-c, err := cache.NewWithPersister(1<<30, persister)
+persister, err := wal.NewMmapPersister("/var/lib/dittofs/wal")
+if err != nil {
+    return err
+}
+c, err := cache.NewWithWal(1<<30, persister) // 1GB max
 
 // Write (auto-extends sequential writes)
 c.WriteSlice(ctx, fileHandle, chunkIdx, data, offset)
 
 // Read (auto-merges with newest-wins)
-data, found, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offset, length)
+dest := make([]byte, length)
+found, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offset, length, dest)
 
 // Get dirty slices for flush (auto-coalesces)
 pending, err := c.GetDirtySlices(ctx, fileHandle)
