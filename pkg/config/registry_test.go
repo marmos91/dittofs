@@ -20,6 +20,9 @@ func TestInitializeRegistry_Success(t *testing.T) {
 				},
 			},
 		},
+		BlockStore: BlockStoreConfig{
+			Type: "memory",
+		},
 		Shares: []ShareConfig{
 			{
 				Name:          "/export",
@@ -73,6 +76,9 @@ func TestInitializeRegistry_MultipleStoresAndShares(t *testing.T) {
 				"meta1": {Type: "memory"},
 				"meta2": {Type: "memory"},
 			},
+		},
+		BlockStore: BlockStoreConfig{
+			Type: "memory",
 		},
 		Shares: []ShareConfig{
 			{

@@ -4,8 +4,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadataMemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	"github.com/marmos91/dittofs/pkg/payload"
+	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
+	"github.com/marmos91/dittofs/pkg/transfer"
 )
 
 // Helper to create a basic ShareConfig for testing
@@ -19,7 +23,7 @@ func testShareConfig(name, metadataStore string, readOnly bool) *ShareConfig {
 }
 
 func TestNewRegistry(t *testing.T) {
-	reg := NewRegistry(nil)
+	reg := NewRegistry()
 	if reg == nil {
 		t.Fatal("NewRegistry returned nil")
 	}
@@ -32,7 +36,7 @@ func TestNewRegistry(t *testing.T) {
 }
 
 func TestRegisterMetadataStore(t *testing.T) {
-	reg := NewRegistry(nil)
+	reg := NewRegistry()
 	store := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	// Test successful registration
@@ -65,7 +69,7 @@ func TestRegisterMetadataStore(t *testing.T) {
 }
 
 func TestAddShare(t *testing.T) {
-	reg := NewRegistry(nil)
+	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -101,7 +105,7 @@ func TestAddShare(t *testing.T) {
 }
 
 func TestRemoveShare(t *testing.T) {
-	reg := NewRegistry(nil)
+	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
@@ -126,7 +130,7 @@ func TestRemoveShare(t *testing.T) {
 }
 
 func TestGetShare(t *testing.T) {
-	reg := NewRegistry(nil)
+	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -158,7 +162,7 @@ func TestGetShare(t *testing.T) {
 }
 
 func TestGetMetadataStore(t *testing.T) {
-	reg := NewRegistry(nil)
+	reg := NewRegistry()
 	store := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", store)
@@ -180,7 +184,7 @@ func TestGetMetadataStore(t *testing.T) {
 }
 
 func TestGetMetadataStoreForShare(t *testing.T) {
-	reg := NewRegistry(nil)
+	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -203,7 +207,7 @@ func TestGetMetadataStoreForShare(t *testing.T) {
 }
 
 func TestListShares(t *testing.T) {
-	reg := NewRegistry(nil)
+	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -235,7 +239,7 @@ func TestListShares(t *testing.T) {
 }
 
 func TestListMetadataStores(t *testing.T) {
-	reg := NewRegistry(nil)
+	reg := NewRegistry()
 
 	// Add metadata stores
 	_ = reg.RegisterMetadataStore("meta1", metadataMemory.NewMemoryMetadataStoreWithDefaults())
@@ -248,7 +252,7 @@ func TestListMetadataStores(t *testing.T) {
 }
 
 func TestListSharesUsingMetadataStore(t *testing.T) {
-	reg := NewRegistry(nil)
+	reg := NewRegistry()
 	metaStore1 := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 	metaStore2 := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
@@ -279,7 +283,7 @@ func TestListSharesUsingMetadataStore(t *testing.T) {
 }
 
 func TestMultipleSharesSameStore(t *testing.T) {
-	reg := NewRegistry(nil)
+	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("shared-meta", metaStore)
@@ -315,7 +319,7 @@ func TestMultipleSharesSameStore(t *testing.T) {
 }
 
 func TestConcurrentAccess(t *testing.T) {
-	reg := NewRegistry(nil)
+	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
@@ -339,16 +343,26 @@ func TestConcurrentAccess(t *testing.T) {
 }
 
 func TestContentServiceCreation(t *testing.T) {
-	reg := NewRegistry(nil)
-	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
+	reg := NewRegistry()
 
+	// Set up payload service
+	c := cache.New(10 * 1024 * 1024)
+	blockStore := storemem.New()
+	tm := transfer.New(c, blockStore, transfer.DefaultConfig())
+	payloadSvc, err := payload.New(c, tm)
+	if err != nil {
+		t.Fatalf("Failed to create payload service: %v", err)
+	}
+	reg.SetPayloadService(payloadSvc)
+
+	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
 	_ = reg.AddShare(context.Background(), testShareConfig("/export", "meta1", false))
 
-	// Verify ContentService is available
+	// Verify ContentService is available (now explicitly set)
 	contentSvc := reg.GetBlockService()
 	if contentSvc == nil {
-		t.Fatal("ContentService should be created automatically")
+		t.Fatal("ContentService should be available after SetPayloadService")
 	}
 
 	// Verify MetadataService is available
@@ -359,7 +373,7 @@ func TestContentServiceCreation(t *testing.T) {
 }
 
 func TestShareExists(t *testing.T) {
-	reg := NewRegistry(nil)
+	reg := NewRegistry()
 	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 
 	_ = reg.RegisterMetadataStore("meta1", metaStore)

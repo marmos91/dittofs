@@ -6,10 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/payload"
-	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/payload"
 )
 
 // Registry manages all named resources: metadata stores and shares.
@@ -25,7 +24,8 @@ import (
 //
 // Example usage:
 //
-//	reg := NewRegistry(nil)
+//	reg := NewRegistry()
+//	reg.SetPayloadService(payloadService)  // Created with cache + transfer manager
 //	reg.RegisterMetadataStore("badger-main", badgerStore)
 //	reg.AddShare(ctx, &ShareConfig{
 //	    Name: "/export",
@@ -51,24 +51,26 @@ type MountInfo struct {
 	MountTime  int64  // Unix timestamp when mounted
 }
 
-// NewRegistry creates an empty registry with the provided cache.
-// If cache is nil, an in-memory cache with unlimited size is created.
-func NewRegistry(c *cache.Cache) *Registry {
-	reg := &Registry{
+// NewRegistry creates an empty registry.
+//
+// The PayloadService for content operations must be set separately
+// via SetPayloadService() after creating the cache and transfer manager.
+func NewRegistry() *Registry {
+	return &Registry{
 		metadata:        make(map[string]metadata.MetadataStore),
 		shares:          make(map[string]*Share),
 		mounts:          make(map[string]*MountInfo),
 		metadataService: metadata.New(),
-		blockService:    payload.New(),
 	}
+}
 
-	// Use provided cache or create default in-memory cache
-	if c == nil {
-		c = cache.New(0) // 0 = unlimited size
-	}
-	_ = reg.blockService.SetCache(c)
-
-	return reg
+// SetPayloadService sets the PayloadService for content operations.
+// This should be called during initialization after creating the cache
+// and transfer manager.
+func (r *Registry) SetPayloadService(ps *payload.PayloadService) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.blockService = ps
 }
 
 // RegisterMetadataStore adds a named metadata store to the registry.
@@ -181,7 +183,7 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 		return fmt.Errorf("failed to configure metadata for share: %w", err)
 	}
 
-	// Content storage uses the global cache created in NewRegistry(nil)
+	// Content storage is handled by the PayloadService set via SetPayloadService()
 	// PayloadID uniqueness ensures data isolation between shares
 
 	return nil

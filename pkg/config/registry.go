@@ -6,6 +6,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/payload"
 	"github.com/marmos91/dittofs/pkg/registry"
 )
 
@@ -46,69 +47,64 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 		return nil, err
 	}
 
-	// Create cache from configuration
+	// Create registry
+	reg := registry.NewRegistry()
+
+	// Step 1: Create cache from configuration
 	globalCache, err := CreateCache(cfg.Cache)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create cache: %w", err)
 	}
 	logger.Info("Created cache", "type", cfg.Cache.Type)
 
-	// Create registry with cache
-	reg := registry.NewRegistry(globalCache)
-
-	// Step 1: Create block store (optional - for persistent storage)
+	// Step 2: Create block store (required for persistent storage)
 	blockStore, err := CreateBlockStore(ctx, cfg.BlockStore)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create block store: %w", err)
 	}
-	if blockStore != nil {
-		logger.Info("Created block store", "type", cfg.BlockStore.Type)
-	} else {
-		logger.Info("No block store configured - cache-only mode")
+	if blockStore == nil {
+		return nil, fmt.Errorf("block store is required")
 	}
+	logger.Info("Created block store", "type", cfg.BlockStore.Type)
 
-	// Step 2: Create transfer manager (if block store is configured)
+	// Step 3: Create transfer manager (required)
 	transferMgr := CreateTransferManager(globalCache, blockStore, cfg.Flusher)
-	if transferMgr != nil {
-		// Wire transfer manager to block service for block store persistence
-		reg.GetBlockService().SetTransferManager(transferMgr)
-		logger.Info("Created transfer manager for cache-to-block-store persistence",
-			"parallel_uploads", cfg.Flusher.ParallelUploads,
-			"parallel_downloads", cfg.Flusher.ParallelDownloads)
-
-		// Step 2.5: Recover unflushed cache data from previous run
-		// TODO: Make recovery async so it doesn't block startup
-		// For now, skip recovery - data remains in mmap cache and will be
-		// uploaded on next access or can be manually recovered later
-		// if globalCache != nil {
-		// 	logger.Info("Checking for unflushed cache data to recover...")
-		// 	stats, err := transfer.RecoverUnflushedSlices(ctx, transferMgr)
-		// 	if err != nil {
-		// 		logger.Error("Cache recovery failed", "error", err)
-		// 	} else if stats.SlicesFound > 0 {
-		// 		logger.Info("Cache recovery completed",
-		// 			"slicesRecovered", stats.SlicesUploaded,
-		// 			"bytesRecovered", stats.BytesUploaded)
-		// 	}
-		// }
-
-		// Start background uploader for async block store uploads
-		transferMgr.Start(ctx)
+	if transferMgr == nil {
+		return nil, fmt.Errorf("failed to create transfer manager")
 	}
+	logger.Info("Created transfer manager for cache-to-block-store persistence",
+		"parallel_uploads", cfg.Flusher.ParallelUploads,
+		"parallel_downloads", cfg.Flusher.ParallelDownloads)
 
-	// Step 3: Register all metadata stores
+	// Step 4: Create PayloadService with cache and transfer manager
+	payloadSvc, err := payload.New(globalCache, transferMgr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create payload service: %w", err)
+	}
+	reg.SetPayloadService(payloadSvc)
+	logger.Info("Created payload service")
+
+	// Step 4.5: Recover unflushed cache data from previous run
+	// TODO: Make recovery async so it doesn't block startup
+	// For now, skip recovery - data remains in mmap cache and will be
+	// uploaded on next access or can be manually recovered later
+
+	// Start background uploader for async block store uploads
+	transferMgr.Start(ctx)
+
+	// Step 5: Register all metadata stores
 	if err := registerMetadataStores(ctx, reg, cfg); err != nil {
 		return nil, fmt.Errorf("failed to register metadata stores: %w", err)
 	}
 	logger.Info("Registered metadata stores", "count", reg.CountMetadataStores())
 
-	// Step 4: Add all shares (each share gets its own Cache automatically)
+	// Step 6: Add all shares
 	if err := addShares(ctx, reg, cfg); err != nil {
 		return nil, fmt.Errorf("failed to add shares: %w", err)
 	}
 	logger.Info("Registered shares", "count", reg.CountShares())
 
-	// Step 5: Create and register user store (if users/groups configured)
+	// Step 7: Create and register user store (if users/groups configured)
 	if len(cfg.Users) > 0 || len(cfg.Groups) > 0 || cfg.Guest.Enabled {
 		userStore, err := cfg.CreateUserStore()
 		if err != nil {
