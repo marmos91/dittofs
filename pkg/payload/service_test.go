@@ -6,120 +6,61 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
+	"github.com/marmos91/dittofs/pkg/transfer"
 )
 
+// newTestService creates a PayloadService for testing with in-memory stores.
+func newTestService(t *testing.T) *PayloadService {
+	t.Helper()
+
+	c := cache.New(10 * 1024 * 1024) // 10MB cache
+	blockStore := storemem.New()
+	tm := transfer.New(c, blockStore, transfer.DefaultConfig())
+
+	svc, err := New(c, tm)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return svc
+}
+
 func TestPayloadService_New(t *testing.T) {
-	svc := New()
+	c := cache.New(10 * 1024 * 1024)
+	blockStore := storemem.New()
+	tm := transfer.New(c, blockStore, transfer.DefaultConfig())
+
+	svc, err := New(c, tm)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	if svc == nil {
 		t.Fatal("New() returned nil")
 	}
-
-	if svc.GetCache() != nil {
-		t.Error("new service should have nil cache")
-	}
-
-	if svc.GetTransferManager() != nil {
-		t.Error("new service should have nil transfer manager")
-	}
 }
 
-func TestPayloadService_SetCache(t *testing.T) {
-	svc := New()
-
-	// Setting nil should fail
-	if err := svc.SetCache(nil); err == nil {
-		t.Error("SetCache(nil) should return error")
-	}
-
-	// Create a real cache
-	c := cache.New(10 * 1024 * 1024) // 10MB
-
-	if err := svc.SetCache(c); err != nil {
-		t.Errorf("SetCache() error = %v", err)
-	}
-
-	if svc.GetCache() != c {
-		t.Error("GetCache() returned wrong cache")
-	}
-}
-
-func TestPayloadService_HasCache(t *testing.T) {
-	svc := New()
-
-	if svc.HasCache("any") {
-		t.Error("HasCache() should return false without cache")
-	}
-
+func TestPayloadService_New_NilCache(t *testing.T) {
+	blockStore := storemem.New()
 	c := cache.New(10 * 1024 * 1024)
-	_ = svc.SetCache(c)
+	tm := transfer.New(c, blockStore, transfer.DefaultConfig())
 
-	if !svc.HasCache("any") {
-		t.Error("HasCache() should return true with cache")
+	_, err := New(nil, tm)
+	if err == nil {
+		t.Error("New(nil, tm) should return error")
 	}
 }
 
-func TestPayloadService_NoCacheErrors(t *testing.T) {
-	svc := New()
-	ctx := context.Background()
-	payloadID := metadata.PayloadID("test-file")
+func TestPayloadService_New_NilTransferManager(t *testing.T) {
+	c := cache.New(10 * 1024 * 1024)
 
-	// All operations should return ErrNoCacheConfigured
-	buf := make([]byte, 10)
-	_, err := svc.ReadAt(ctx, "share", payloadID, buf, 0)
-	if err != ErrNoCacheConfigured {
-		t.Errorf("ReadAt() error = %v, want ErrNoCacheConfigured", err)
-	}
-
-	err = svc.WriteAt(ctx, "share", payloadID, []byte("data"), 0)
-	if err != ErrNoCacheConfigured {
-		t.Errorf("WriteAt() error = %v, want ErrNoCacheConfigured", err)
-	}
-
-	_, err = svc.GetContentSize(ctx, "share", payloadID)
-	if err != ErrNoCacheConfigured {
-		t.Errorf("GetContentSize() error = %v, want ErrNoCacheConfigured", err)
-	}
-
-	_, err = svc.ContentExists(ctx, "share", payloadID)
-	if err != ErrNoCacheConfigured {
-		t.Errorf("ContentExists() error = %v, want ErrNoCacheConfigured", err)
-	}
-
-	err = svc.Truncate(ctx, "share", payloadID, 0)
-	if err != ErrNoCacheConfigured {
-		t.Errorf("Truncate() error = %v, want ErrNoCacheConfigured", err)
-	}
-
-	err = svc.Delete(ctx, "share", payloadID)
-	if err != ErrNoCacheConfigured {
-		t.Errorf("Delete() error = %v, want ErrNoCacheConfigured", err)
-	}
-
-	_, err = svc.Flush(ctx, "share", payloadID)
-	if err != ErrNoCacheConfigured {
-		t.Errorf("Flush() error = %v, want ErrNoCacheConfigured", err)
-	}
-
-	_, err = svc.FlushAndFinalize(ctx, "share", payloadID)
-	if err != ErrNoCacheConfigured {
-		t.Errorf("FlushAndFinalize() error = %v, want ErrNoCacheConfigured", err)
-	}
-
-	_, err = svc.GetStorageStats(ctx, "share")
-	if err != ErrNoCacheConfigured {
-		t.Errorf("GetStorageStats() error = %v, want ErrNoCacheConfigured", err)
-	}
-
-	err = svc.Healthcheck(ctx, "share")
-	if err != ErrNoCacheConfigured {
-		t.Errorf("Healthcheck() error = %v, want ErrNoCacheConfigured", err)
+	_, err := New(c, nil)
+	if err == nil {
+		t.Error("New(c, nil) should return error")
 	}
 }
 
 func TestPayloadService_WriteAndRead(t *testing.T) {
-	svc := New()
-	c := cache.New(10 * 1024 * 1024)
-	_ = svc.SetCache(c)
+	svc := newTestService(t)
 
 	ctx := context.Background()
 	payloadID := metadata.PayloadID("test-file")
@@ -145,9 +86,7 @@ func TestPayloadService_WriteAndRead(t *testing.T) {
 }
 
 func TestPayloadService_WriteEmpty(t *testing.T) {
-	svc := New()
-	c := cache.New(10 * 1024 * 1024)
-	_ = svc.SetCache(c)
+	svc := newTestService(t)
 
 	ctx := context.Background()
 	payloadID := metadata.PayloadID("test-file")
@@ -159,9 +98,7 @@ func TestPayloadService_WriteEmpty(t *testing.T) {
 }
 
 func TestPayloadService_ReadEmpty(t *testing.T) {
-	svc := New()
-	c := cache.New(10 * 1024 * 1024)
-	_ = svc.SetCache(c)
+	svc := newTestService(t)
 
 	ctx := context.Background()
 	payloadID := metadata.PayloadID("test-file")
@@ -176,25 +113,65 @@ func TestPayloadService_ReadEmpty(t *testing.T) {
 	}
 }
 
-func TestPayloadService_SupportsReadAt(t *testing.T) {
-	svc := New()
+func TestPayloadService_GetSize(t *testing.T) {
+	svc := newTestService(t)
 
-	if svc.SupportsReadAt("share") {
-		t.Error("SupportsReadAt() should return false without cache")
+	ctx := context.Background()
+	payloadID := metadata.PayloadID("test-file")
+
+	// Initially size should be 0
+	size, err := svc.GetSize(ctx, "share", payloadID)
+	if err != nil {
+		t.Fatalf("GetSize() error = %v", err)
+	}
+	if size != 0 {
+		t.Errorf("GetSize() = %d, want 0", size)
 	}
 
-	c := cache.New(10 * 1024 * 1024)
-	_ = svc.SetCache(c)
+	// Write some data
+	data := []byte("hello world")
+	_ = svc.WriteAt(ctx, "share", payloadID, data, 0)
 
-	if !svc.SupportsReadAt("share") {
-		t.Error("SupportsReadAt() should return true with cache")
+	// Size should now be data length
+	size, err = svc.GetSize(ctx, "share", payloadID)
+	if err != nil {
+		t.Fatalf("GetSize() error = %v", err)
+	}
+	if size != uint64(len(data)) {
+		t.Errorf("GetSize() = %d, want %d", size, len(data))
 	}
 }
 
-func TestPayloadService_FlushCacheOnly(t *testing.T) {
-	svc := New()
-	c := cache.New(10 * 1024 * 1024)
-	_ = svc.SetCache(c)
+func TestPayloadService_Exists(t *testing.T) {
+	svc := newTestService(t)
+
+	ctx := context.Background()
+	payloadID := metadata.PayloadID("test-file")
+
+	// Initially should not exist (no data written)
+	exists, err := svc.Exists(ctx, "share", payloadID)
+	if err != nil {
+		t.Fatalf("Exists() error = %v", err)
+	}
+	if exists {
+		t.Error("Exists() = true, want false for new file")
+	}
+
+	// Write some data
+	_ = svc.WriteAt(ctx, "share", payloadID, []byte("data"), 0)
+
+	// Now should exist
+	exists, err = svc.Exists(ctx, "share", payloadID)
+	if err != nil {
+		t.Fatalf("Exists() error = %v", err)
+	}
+	if !exists {
+		t.Error("Exists() = false, want true after write")
+	}
+}
+
+func TestPayloadService_FlushAsync(t *testing.T) {
+	svc := newTestService(t)
 
 	ctx := context.Background()
 	payloadID := metadata.PayloadID("test-file")
@@ -202,36 +179,40 @@ func TestPayloadService_FlushCacheOnly(t *testing.T) {
 	// Write some data
 	_ = svc.WriteAt(ctx, "share", payloadID, []byte("test data"), 0)
 
-	// Flush in cache-only mode
+	// FlushAsync (non-blocking)
+	result, err := svc.FlushAsync(ctx, "share", payloadID)
+	if err != nil {
+		t.Fatalf("FlushAsync() error = %v", err)
+	}
+	if !result.Finalized {
+		t.Error("FlushAsync() Finalized = false, want true")
+	}
+}
+
+func TestPayloadService_Flush(t *testing.T) {
+	svc := newTestService(t)
+
+	ctx := context.Background()
+	payloadID := metadata.PayloadID("test-file")
+
+	// Write some data
+	_ = svc.WriteAt(ctx, "share", payloadID, []byte("test data"), 0)
+
+	// Flush (blocking)
 	result, err := svc.Flush(ctx, "share", payloadID)
 	if err != nil {
 		t.Fatalf("Flush() error = %v", err)
-	}
-	if !result.AlreadyFlushed {
-		t.Error("Flush() AlreadyFlushed = false, want true (cache-only mode)")
 	}
 	if !result.Finalized {
 		t.Error("Flush() Finalized = false, want true")
 	}
 }
 
-func TestPayloadService_FlushAndFinalizeCacheOnly(t *testing.T) {
-	svc := New()
-	c := cache.New(10 * 1024 * 1024)
-	_ = svc.SetCache(c)
+func TestPayloadService_HealthCheck(t *testing.T) {
+	svc := newTestService(t)
 
 	ctx := context.Background()
-	payloadID := metadata.PayloadID("test-file")
-
-	// Write some data
-	_ = svc.WriteAt(ctx, "share", payloadID, []byte("test data"), 0)
-
-	// FlushAndFinalize in cache-only mode
-	result, err := svc.FlushAndFinalize(ctx, "share", payloadID)
-	if err != nil {
-		t.Fatalf("FlushAndFinalize() error = %v", err)
-	}
-	if !result.Finalized {
-		t.Error("FlushAndFinalize() Finalized = false, want true")
+	if err := svc.HealthCheck(ctx); err != nil {
+		t.Errorf("HealthCheck() error = %v", err)
 	}
 }

@@ -10,10 +10,13 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
-	"github.com/marmos91/dittofs/pkg/payload"
+	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	"github.com/marmos91/dittofs/pkg/payload"
+	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/transfer"
 )
 
 // DefaultShareName is the default share name used in test fixtures.
@@ -75,13 +78,26 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 	// Create stores
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
-	// Create registry and register stores
-	reg := registry.NewRegistry(nil)
+	// Create cache, block store, and transfer manager for content operations
+	testCache := cache.New(0) // 0 = unlimited size
+	blockStore := storemem.New()
+	transferMgr := transfer.New(testCache, blockStore, transfer.DefaultConfig())
+
+	// Create PayloadService with cache and transfer manager
+	payloadSvc, err := payload.New(testCache, transferMgr)
+	if err != nil {
+		t.Fatalf("Failed to create payload service: %v", err)
+	}
+
+	// Create registry and set up payload service
+	reg := registry.NewRegistry()
+	reg.SetPayloadService(payloadSvc)
+
 	if err := reg.RegisterMetadataStore("test-metaSvc", metaStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}
 
-	// Add share (Cache is auto-created by registry)
+	// Add share
 	shareConfig := &registry.ShareConfig{
 		Name:          DefaultShareName,
 		MetadataStore: "test-metaSvc",
@@ -371,7 +387,7 @@ func (f *HandlerTestFixture) ReadContent(path string) []byte {
 	ctx := context.Background()
 
 	// Get content size
-	size, err := f.ContentService.GetContentSize(ctx, f.ShareName, file.PayloadID)
+	size, err := f.ContentService.GetSize(ctx, f.ShareName, file.PayloadID)
 	if err != nil {
 		f.t.Fatalf("Failed to get content size for %q: %v", path, err)
 	}

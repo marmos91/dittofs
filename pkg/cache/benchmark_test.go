@@ -21,7 +21,7 @@ func BenchmarkWriteSlice_Sequential(b *testing.B) {
 			defer c.Close()
 
 			ctx := context.Background()
-			fileHandle := []byte("benchmark-file")
+			fileHandle := "benchmark-file"
 			data := make([]byte, size)
 
 			b.SetBytes(int64(size))
@@ -47,7 +47,7 @@ func BenchmarkWriteSlice_Random(b *testing.B) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := []byte("benchmark-file")
+	fileHandle := "benchmark-file"
 	data := make([]byte, 4*1024) // 4KB writes
 
 	// Pre-populate with some data to create multiple slices
@@ -88,7 +88,7 @@ func BenchmarkWriteSlice_Concurrent(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			fileHandle := []byte(fmt.Sprintf("file-%d", i%100)) // 100 different files
+			fileHandle := fmt.Sprintf("file-%d", i%100) // 100 different files
 			offset := uint32((i * 32 * 1024) % (64 * 1024 * 1024))
 			chunkIdx := offset / ChunkSize
 			offsetInChunk := offset % ChunkSize
@@ -115,7 +115,7 @@ func BenchmarkReadSlice(b *testing.B) {
 			defer c.Close()
 
 			ctx := context.Background()
-			fileHandle := []byte("benchmark-file")
+			fileHandle := "benchmark-file"
 
 			// Pre-populate with 10MB of data
 			data := make([]byte, size)
@@ -129,12 +129,13 @@ func BenchmarkReadSlice(b *testing.B) {
 			b.SetBytes(int64(size))
 			b.ResetTimer()
 
+			dest := make([]byte, size)
 			for i := 0; i < b.N; i++ {
 				offset := uint32((i * size) % (10 * 1024 * 1024))
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
 
-				_, _, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offsetInChunk, uint32(size))
+				_, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offsetInChunk, uint32(size), dest)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -153,7 +154,7 @@ func BenchmarkReadSlice_ManySlices(b *testing.B) {
 			defer c.Close()
 
 			ctx := context.Background()
-			fileHandle := []byte("benchmark-file")
+			fileHandle := "benchmark-file"
 
 			// Create overlapping slices
 			for i := 0; i < count; i++ {
@@ -163,11 +164,12 @@ func BenchmarkReadSlice_ManySlices(b *testing.B) {
 			}
 
 			readSize := uint32(32 * 1024)
+			dest := make([]byte, readSize)
 			b.SetBytes(int64(readSize))
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				_, _, err := c.ReadSlice(ctx, fileHandle, 0, 0, readSize)
+				_, err := c.ReadSlice(ctx, fileHandle, 0, 0, readSize, dest)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -197,7 +199,7 @@ func BenchmarkE2E_SequentialWrite(b *testing.B) {
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				fileHandle := []byte(fmt.Sprintf("file-%d", i))
+				fileHandle := fmt.Sprintf("file-%d", i)
 
 				// Simulate sequential writes
 				for j := 0; j < totalWrites; j++ {
@@ -227,7 +229,7 @@ func BenchmarkE2E_ReadAfterWrite(b *testing.B) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := []byte("benchmark-file")
+	fileHandle := "benchmark-file"
 	writeSize := 32 * 1024
 	data := make([]byte, writeSize)
 
@@ -243,6 +245,7 @@ func BenchmarkE2E_ReadAfterWrite(b *testing.B) {
 	_ = c.CoalesceWrites(ctx, fileHandle)
 
 	readSize := uint32(64 * 1024) // 64KB reads
+	dest := make([]byte, readSize)
 	b.SetBytes(int64(readSize))
 	b.ResetTimer()
 
@@ -251,7 +254,7 @@ func BenchmarkE2E_ReadAfterWrite(b *testing.B) {
 		chunkIdx := offset / ChunkSize
 		offsetInChunk := offset % ChunkSize
 
-		_, _, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offsetInChunk, readSize)
+		_, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offsetInChunk, readSize, dest)
 		if err != nil {
 			b.Fatal(err)
 		}

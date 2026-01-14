@@ -317,7 +317,7 @@ func TestFlusher_Integration(t *testing.T) {
 	defer f.Close()
 
 	t.Run("FlushSmallFile", func(t *testing.T) {
-		fileHandle := []byte("file1")
+		fileHandle := "file1"
 		payloadID := "content-small"
 		shareName := "share1"
 		data := []byte("hello world from flusher test")
@@ -346,7 +346,7 @@ func TestFlusher_Integration(t *testing.T) {
 	})
 
 	t.Run("FlushLargeFile", func(t *testing.T) {
-		fileHandle := []byte("file2")
+		fileHandle := "file2"
 		payloadID := "content-large"
 		shareName := "share1"
 
@@ -378,10 +378,10 @@ func TestFlusher_Integration(t *testing.T) {
 		}
 	})
 
-	t.Run("ReadBlocksFromS3", func(t *testing.T) {
+	t.Run("ReadSliceFromS3", func(t *testing.T) {
 		payloadID := "content-read"
 		shareName := "share1"
-		fileHandle := []byte("file-read")
+		fileHandle := "file-read"
 
 		// Pre-populate S3 with a block
 		blockKey := fmt.Sprintf("%s/%s/chunk-0/block-0", shareName, payloadID)
@@ -392,9 +392,10 @@ func TestFlusher_Integration(t *testing.T) {
 		}
 
 		// Read through flusher (cache miss -> S3 fetch)
-		readData, err := f.ReadBlocks(ctx, shareName, fileHandle, payloadID, 0, 0, uint32(len(originalData)))
+		readData := make([]byte, len(originalData))
+		err = f.ReadSlice(ctx, shareName, fileHandle, payloadID, 0, 0, uint32(len(originalData)), readData)
 		if err != nil {
-			t.Fatalf("ReadBlocks failed: %v", err)
+			t.Fatalf("ReadSlice failed: %v", err)
 		}
 
 		if string(readData) != string(originalData) {
@@ -423,7 +424,7 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 	defer f.Close()
 
 	t.Run("FlushAndRead", func(t *testing.T) {
-		fileHandle := []byte("file1")
+		fileHandle := "file1"
 		payloadID := "content1"
 		shareName := "share1"
 		data := []byte("test data for memory store")
@@ -444,9 +445,10 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 		c.Remove(ctx, fileHandle)
 
 		// Read back through flusher
-		readData, err := f.ReadBlocks(ctx, shareName, []byte("file2"), payloadID, 0, 0, uint32(len(data)))
+		readData := make([]byte, len(data))
+		err = f.ReadSlice(ctx, shareName, "file2", payloadID, 0, 0, uint32(len(data)), readData)
 		if err != nil {
-			t.Fatalf("ReadBlocks failed: %v", err)
+			t.Fatalf("ReadSlice failed: %v", err)
 		}
 
 		if string(readData) != string(data) {

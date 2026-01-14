@@ -139,31 +139,28 @@ func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 		response.MetadataStores = append(response.MetadataStores, health)
 	}
 
-	// Check block store (via flusher)
+	// Check block store (via payload service)
 	contentSvc := h.registry.GetBlockService()
 	if contentSvc != nil {
-		flusher := contentSvc.GetTransferManager()
-		if flusher != nil {
-			start := time.Now()
-			err := flusher.HealthCheck(ctx)
-			latency := time.Since(start)
+		start := time.Now()
+		err := contentSvc.HealthCheck(ctx)
+		latency := time.Since(start)
 
-			blockHealth := &StoreHealth{
-				Name:    "s3",
-				Type:    "block",
-				Latency: latency.String(),
-			}
-
-			if err != nil {
-				blockHealth.Status = "unhealthy"
-				blockHealth.Error = err.Error()
-				allHealthy = false
-			} else {
-				blockHealth.Status = "healthy"
-			}
-
-			response.BlockStore = blockHealth
+		blockHealth := &StoreHealth{
+			Name:    "block-store",
+			Type:    "block",
+			Latency: latency.String(),
 		}
+
+		if err != nil {
+			blockHealth.Status = "unhealthy"
+			blockHealth.Error = err.Error()
+			allHealthy = false
+		} else {
+			blockHealth.Status = "healthy"
+		}
+
+		response.BlockStore = blockHealth
 	}
 
 	if allHealthy {

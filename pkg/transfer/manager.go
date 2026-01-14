@@ -148,7 +148,7 @@ func (m *TransferManager) cleanupUploadState(payloadID string) {
 //   - chunkIdx: The chunk index that was written to
 //   - offset: The offset within the chunk
 //   - length: The length of data written
-func (m *TransferManager) OnWriteComplete(ctx context.Context, shareName string, fileHandle []byte,
+func (m *TransferManager) OnWriteComplete(ctx context.Context, shareName string, fileHandle string,
 	payloadID string, chunkIdx uint32, offset, length uint32) {
 	m.mu.RLock()
 	if m.closed {
@@ -182,7 +182,8 @@ func (m *TransferManager) OnWriteComplete(ctx context.Context, shareName string,
 		}
 
 		// Read the complete block data
-		data, found, err := m.cache.ReadSlice(ctx, fileHandle, chunkIdx, blockStart, BlockSize)
+		data := make([]byte, BlockSize)
+		found, err := m.cache.ReadSlice(ctx, fileHandle, chunkIdx, blockStart, BlockSize, data)
 		if err != nil || !found {
 			continue
 		}
@@ -193,7 +194,7 @@ func (m *TransferManager) OnWriteComplete(ctx context.Context, shareName string,
 }
 
 // startBlockUpload uploads a block asynchronously with bounded parallelism.
-func (m *TransferManager) startBlockUpload(ctx context.Context, _ string, _ []byte,
+func (m *TransferManager) startBlockUpload(ctx context.Context, _ string, _ string,
 	payloadID string, chunkIdx, blockIdx uint32, data []byte) {
 	state := m.getOrCreateUploadState(payloadID)
 
@@ -284,14 +285,14 @@ func (m *TransferManager) WaitForUploads(ctx context.Context, payloadID string) 
 // Use FlushRemainingAsync for non-blocking behavior.
 //
 // Deprecated: Use FlushRemainingAsync for better performance.
-func (m *TransferManager) FlushRemaining(ctx context.Context, shareName string, fileHandle []byte, payloadID string) error {
+func (m *TransferManager) FlushRemaining(ctx context.Context, shareName string, fileHandle string, payloadID string) error {
 	return m.flushRemainingSync(ctx, shareName, fileHandle, payloadID)
 }
 
 // FlushRemainingAsync enqueues remaining data for background upload.
 // Returns immediately after enqueuing - does NOT wait for block store uploads.
 // The cache should be synced before calling this to ensure crash recovery.
-func (m *TransferManager) FlushRemainingAsync(ctx context.Context, shareName string, fileHandle []byte, payloadID string) error {
+func (m *TransferManager) FlushRemainingAsync(ctx context.Context, shareName string, fileHandle string, payloadID string) error {
 	m.mu.RLock()
 	if m.closed {
 		m.mu.RUnlock()
@@ -311,12 +312,12 @@ func (m *TransferManager) FlushRemainingAsync(ctx context.Context, shareName str
 
 // flushRemainingSync is the internal synchronous implementation.
 // Called by FlushRemaining (blocking) and by background uploader.
-func (m *TransferManager) flushRemainingSync(ctx context.Context, shareName string, fileHandle []byte, payloadID string) error {
+func (m *TransferManager) flushRemainingSync(ctx context.Context, shareName string, fileHandle string, payloadID string) error {
 	return m.flushRemainingSyncInternal(ctx, shareName, fileHandle, payloadID, true)
 }
 
 // flushRemainingSyncInternal is the internal implementation with markFlushed option.
-func (m *TransferManager) flushRemainingSyncInternal(ctx context.Context, shareName string, fileHandle []byte, payloadID string, markFlushed bool) error {
+func (m *TransferManager) flushRemainingSyncInternal(ctx context.Context, shareName string, fileHandle string, payloadID string, markFlushed bool) error {
 	m.mu.RLock()
 	if m.closed {
 		m.mu.RUnlock()
@@ -440,14 +441,14 @@ func (m *TransferManager) uploadSliceAsBlocks(ctx context.Context, _, payloadID 
 // Parallel Download (Cache Miss)
 // ============================================================================
 
-// ReadBlocks fetches blocks from the block store in parallel and caches them.
-// Called when ReadAt() encounters a cache miss.
-func (m *TransferManager) ReadBlocks(ctx context.Context, shareName string, fileHandle []byte,
-	payloadID string, chunkIdx uint32, offset, length uint32) ([]byte, error) {
+// ReadSlice fetches blocks from the block store in parallel and caches them.
+// Called when ReadAt() encounters a cache miss. Data is written directly into dest.
+func (m *TransferManager) ReadSlice(ctx context.Context, shareName string, fileHandle string,
+	payloadID string, chunkIdx uint32, offset, length uint32, dest []byte) error {
 	m.mu.RLock()
 	if m.closed {
 		m.mu.RUnlock()
-		return nil, fmt.Errorf("transfer manager is closed")
+		return fmt.Errorf("transfer manager is closed")
 	}
 	m.mu.RUnlock()
 
@@ -498,18 +499,16 @@ func (m *TransferManager) ReadBlocks(ctx context.Context, shareName string, file
 
 	// Check for errors
 	for err := range errCh {
-		return nil, err
+		return err
 	}
 
-	// Assemble result from blocks
-	return assembleBlocks(blocks, offset, length, startBlockIdx), nil
+	// Assemble result from blocks directly into dest
+	assembleBlocks(blocks, offset, length, startBlockIdx, dest)
+	return nil
 }
 
-// assembleBlocks combines block data into the requested byte range.
-func assembleBlocks(blocks [][]byte, offset, length, startBlockIdx uint32) []byte {
-	result := make([]byte, length)
-	written := uint32(0)
-
+// assembleBlocks combines block data into the destination buffer.
+func assembleBlocks(blocks [][]byte, offset, length, startBlockIdx uint32, dest []byte) {
 	for i, blockData := range blocks {
 		if blockData == nil {
 			continue
@@ -527,16 +526,13 @@ func assembleBlocks(blocks [][]byte, offset, length, startBlockIdx uint32) []byt
 			continue
 		}
 
-		// Copy overlapping data
+		// Copy overlapping data directly into dest
 		srcStart := overlapStart - blockStart
 		srcEnd := overlapEnd - blockStart
 		dstStart := overlapStart - offset
 
-		copy(result[dstStart:], blockData[srcStart:srcEnd])
-		written += overlapEnd - overlapStart
+		copy(dest[dstStart:], blockData[srcStart:srcEnd])
 	}
-
-	return result[:written]
 }
 
 // ============================================================================

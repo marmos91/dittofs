@@ -3,7 +3,6 @@ package payload
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -35,7 +34,6 @@ import (
 //	err := svc.FlushAsync(ctx, shareName, payloadID)  // NFS COMMIT
 //	err := svc.Flush(ctx, shareName, payloadID)       // SMB CLOSE
 type PayloadService struct {
-	mu              sync.RWMutex
 	cache           *cache.Cache
 	transferManager *transfer.TransferManager
 }
@@ -73,31 +71,26 @@ func (s *PayloadService) ReadAt(ctx context.Context, shareName string, id metada
 		return 0, nil
 	}
 
-	s.mu.RLock()
-	c := s.cache
-	tm := s.transferManager
-	s.mu.RUnlock()
-
 	// PayloadID is used directly as cache key
-	fileHandle := []byte(id)
+	fileHandle := string(id)
 
 	totalRead := 0
-	for slice := range chunk.Slices(offset, uint64(len(p))) {
+	for slice := range chunk.Slices(offset, len(p)) {
+		// Destination slice within p for this chunk's data
+		dest := p[slice.BufOffset : slice.BufOffset+int(slice.Length)]
+
 		// Try to read from cache first
-		data, found, err := c.ReadSlice(ctx, fileHandle, slice.ChunkIndex, slice.Offset, slice.Length)
+		found, err := s.cache.ReadSlice(ctx, fileHandle, slice.ChunkIndex, slice.Offset, slice.Length, dest)
 		if err != nil && err != cache.ErrFileNotInCache {
 			return totalRead, fmt.Errorf("read slice from chunk %d failed: %w", slice.ChunkIndex, err)
 		}
 
-		if found {
-			copy(p[slice.BufOffset:], data)
-		} else {
+		if !found {
 			// Cache miss - fetch from block store
-			blockData, err := tm.ReadBlocks(ctx, shareName, fileHandle, string(id), slice.ChunkIndex, slice.Offset, slice.Length)
+			err := s.transferManager.ReadSlice(ctx, shareName, fileHandle, fileHandle, slice.ChunkIndex, slice.Offset, slice.Length, dest)
 			if err != nil {
 				return totalRead, fmt.Errorf("read blocks from chunk %d failed: %w", slice.ChunkIndex, err)
 			}
-			copy(p[slice.BufOffset:], blockData)
 		}
 
 		totalRead += int(slice.Length)
@@ -110,41 +103,31 @@ func (s *PayloadService) ReadAt(ctx context.Context, shareName string, id metada
 //
 // Checks cache first, falls back to block store metadata.
 func (s *PayloadService) GetSize(ctx context.Context, shareName string, id metadata.PayloadID) (uint64, error) {
-	s.mu.RLock()
-	c := s.cache
-	tm := s.transferManager
-	s.mu.RUnlock()
-
-	fileHandle := []byte(id)
+	fileHandle := string(id)
 
 	// Check cache first
-	size := c.GetFileSize(fileHandle)
+	size := s.cache.GetFileSize(fileHandle)
 	if size > 0 {
 		return size, nil
 	}
 
 	// Fall back to block store
-	return tm.GetFileSize(ctx, shareName, string(id))
+	return s.transferManager.GetFileSize(ctx, shareName, string(id))
 }
 
 // Exists checks if payload exists for the file.
 //
 // Checks cache first, falls back to block store.
 func (s *PayloadService) Exists(ctx context.Context, shareName string, id metadata.PayloadID) (bool, error) {
-	s.mu.RLock()
-	c := s.cache
-	tm := s.transferManager
-	s.mu.RUnlock()
-
-	fileHandle := []byte(id)
+	fileHandle := string(id)
 
 	// Check cache first
-	if c.GetFileSize(fileHandle) > 0 {
+	if s.cache.GetFileSize(fileHandle) > 0 {
 		return true, nil
 	}
 
 	// Fall back to block store
-	return tm.Exists(ctx, shareName, string(id))
+	return s.transferManager.Exists(ctx, shareName, string(id))
 }
 
 // ============================================================================
@@ -156,22 +139,18 @@ func (s *PayloadService) Exists(ctx context.Context, shareName string, id metada
 // Writes go to cache using the Chunk/Slice/Block model.
 // Data is split across chunk boundaries and stored as slices within each chunk.
 // Block store uploads are triggered on Flush() via background worker pool.
-func (s *PayloadService) WriteAt(ctx context.Context, shareName string, id metadata.PayloadID, data []byte, offset uint64) error {
+func (s *PayloadService) WriteAt(ctx context.Context, _ string, id metadata.PayloadID, data []byte, offset uint64) error {
 	if len(data) == 0 {
 		return nil
 	}
 
-	s.mu.RLock()
-	c := s.cache
-	s.mu.RUnlock()
+	fileHandle := string(id)
 
-	fileHandle := []byte(id)
-
-	for slice := range chunk.Slices(offset, uint64(len(data))) {
+	for slice := range chunk.Slices(offset, len(data)) {
 		dataEnd := slice.BufOffset + int(slice.Length)
 
 		// Write slice to this chunk
-		err := c.WriteSlice(ctx, fileHandle, slice.ChunkIndex, data[slice.BufOffset:dataEnd], slice.Offset)
+		err := s.cache.WriteSlice(ctx, fileHandle, slice.ChunkIndex, data[slice.BufOffset:dataEnd], slice.Offset)
 		if err != nil {
 			return fmt.Errorf("write slice to chunk %d failed: %w", slice.ChunkIndex, err)
 		}
@@ -184,40 +163,30 @@ func (s *PayloadService) WriteAt(ctx context.Context, shareName string, id metad
 //
 // Updates cache and schedules block store cleanup.
 func (s *PayloadService) Truncate(ctx context.Context, shareName string, id metadata.PayloadID, newSize uint64) error {
-	s.mu.RLock()
-	c := s.cache
-	tm := s.transferManager
-	s.mu.RUnlock()
-
-	fileHandle := []byte(id)
+	fileHandle := string(id)
 
 	// Truncate in cache
-	if err := c.Truncate(ctx, fileHandle, newSize); err != nil {
+	if err := s.cache.Truncate(ctx, fileHandle, newSize); err != nil {
 		return fmt.Errorf("cache truncate failed: %w", err)
 	}
 
 	// Schedule block store cleanup
-	return tm.Truncate(ctx, shareName, string(id), newSize)
+	return s.transferManager.Truncate(ctx, shareName, string(id), newSize)
 }
 
 // Delete removes payload for a file.
 //
 // Removes from cache and schedules block store cleanup.
 func (s *PayloadService) Delete(ctx context.Context, shareName string, id metadata.PayloadID) error {
-	s.mu.RLock()
-	c := s.cache
-	tm := s.transferManager
-	s.mu.RUnlock()
-
-	fileHandle := []byte(id)
+	fileHandle := string(id)
 
 	// Remove from cache
-	if err := c.Remove(ctx, fileHandle); err != nil {
+	if err := s.cache.Remove(ctx, fileHandle); err != nil {
 		return fmt.Errorf("cache remove failed: %w", err)
 	}
 
 	// Schedule block store cleanup
-	return tm.Delete(ctx, shareName, string(id))
+	return s.transferManager.Delete(ctx, shareName, string(id))
 }
 
 // ============================================================================
@@ -233,14 +202,10 @@ func (s *PayloadService) Delete(ctx context.Context, shareName string, id metada
 //
 // Returns FlushResult indicating the operation status.
 func (s *PayloadService) FlushAsync(ctx context.Context, shareName string, id metadata.PayloadID) (*FlushResult, error) {
-	s.mu.RLock()
-	tm := s.transferManager
-	s.mu.RUnlock()
-
-	fileHandle := []byte(id)
+	fileHandle := string(id)
 
 	// Non-blocking enqueue - uploads happen in background worker pool
-	err := tm.FlushRemainingAsync(ctx, shareName, fileHandle, string(id))
+	err := s.transferManager.FlushRemainingAsync(ctx, shareName, fileHandle, string(id))
 	if err != nil {
 		return nil, fmt.Errorf("flush async failed: %w", err)
 	}
@@ -260,20 +225,16 @@ func (s *PayloadService) FlushAsync(ctx context.Context, shareName string, id me
 //
 // Returns FlushResult indicating the operation status.
 func (s *PayloadService) Flush(ctx context.Context, shareName string, id metadata.PayloadID) (*FlushResult, error) {
-	s.mu.RLock()
-	tm := s.transferManager
-	s.mu.RUnlock()
-
-	fileHandle := []byte(id)
+	fileHandle := string(id)
 	payloadID := string(id)
 
 	// Wait for any in-flight eager uploads
-	if err := tm.WaitForUploads(ctx, payloadID); err != nil {
+	if err := s.transferManager.WaitForUploads(ctx, payloadID); err != nil {
 		return nil, fmt.Errorf("wait for uploads: %w", err)
 	}
 
 	// Flush remaining blocks (blocking)
-	if err := tm.FlushRemaining(ctx, shareName, fileHandle, payloadID); err != nil {
+	if err := s.transferManager.FlushRemaining(ctx, shareName, fileHandle, payloadID); err != nil {
 		return nil, fmt.Errorf("flush remaining: %w", err)
 	}
 
@@ -291,13 +252,9 @@ func (s *PayloadService) Flush(ctx context.Context, shareName string, id metadat
 //
 // Note: This is inefficient as it lists all files. Consider caching this
 // information in the metadata store for production use.
-func (s *PayloadService) GetStorageStats(ctx context.Context, shareName string) (*StorageStats, error) {
-	s.mu.RLock()
-	c := s.cache
-	s.mu.RUnlock()
-
+func (s *PayloadService) GetStorageStats(_ context.Context, _ string) (*StorageStats, error) {
 	// Count files in cache
-	files := c.ListFiles()
+	files := s.cache.ListFiles()
 	return &StorageStats{
 		UsedSize:     0, // TODO: Implement proper stats tracking
 		ContentCount: uint64(len(files)),
@@ -306,10 +263,6 @@ func (s *PayloadService) GetStorageStats(ctx context.Context, shareName string) 
 
 // HealthCheck performs health check on cache and transfer manager.
 func (s *PayloadService) HealthCheck(ctx context.Context) error {
-	s.mu.RLock()
-	tm := s.transferManager
-	s.mu.RUnlock()
-
 	// Check transfer manager (which checks block store)
-	return tm.HealthCheck(ctx)
+	return s.transferManager.HealthCheck(ctx)
 }

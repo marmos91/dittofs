@@ -201,8 +201,8 @@ func (c *Cache) recoverFromPersister() error {
 }
 
 // getFileEntry returns or creates a file entry with its mutex.
-func (c *Cache) getFileEntry(fileHandle []byte) *fileEntry {
-	key := string(fileHandle)
+func (c *Cache) getFileEntry(fileHandle string) *fileEntry {
+	key := fileHandle
 
 	c.globalMu.RLock()
 	entry, exists := c.files[key]
@@ -244,7 +244,7 @@ func (c *Cache) touchFile(entry *fileEntry) {
 // we extend that slice instead of creating a new one. This is critical for performance
 // since NFS clients write in 16KB-32KB chunks, so a 10MB file = 320 writes.
 // Without this optimization, we'd create 320 slices instead of 1.
-func (c *Cache) WriteSlice(ctx context.Context, fileHandle []byte, chunkIdx uint32, data []byte, offset uint32) error {
+func (c *Cache) WriteSlice(ctx context.Context, fileHandle string, chunkIdx uint32, data []byte, offset uint32) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -324,7 +324,7 @@ func (c *Cache) WriteSlice(ctx context.Context, fileHandle []byte, chunkIdx uint
 }
 
 // sliceToWALEntry converts a cache.Slice to wal.SliceEntry.
-func (c *Cache) sliceToWALEntry(fileHandle []byte, chunkIdx uint32, slice *Slice) *wal.SliceEntry {
+func (c *Cache) sliceToWALEntry(fileHandle string, chunkIdx uint32, slice *Slice) *wal.SliceEntry {
 	entry := &wal.SliceEntry{
 		FileHandle: fileHandle,
 		ChunkIdx:   chunkIdx,
@@ -394,15 +394,16 @@ func (c *Cache) tryExtendAdjacentSlice(chunk *chunkEntry, offset uint32, data []
 // ============================================================================
 
 // ReadSlice reads data from cache with slice merging (newest-wins).
-func (c *Cache) ReadSlice(ctx context.Context, fileHandle []byte, chunkIdx uint32, offset, length uint32) ([]byte, bool, error) {
+// Data is written directly into dest buffer. Returns true if data was found.
+func (c *Cache) ReadSlice(ctx context.Context, fileHandle string, chunkIdx uint32, offset, length uint32, dest []byte) (bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, false, err
+		return false, err
 	}
 
 	c.globalMu.RLock()
 	if c.closed {
 		c.globalMu.RUnlock()
-		return nil, false, ErrCacheClosed
+		return false, ErrCacheClosed
 	}
 	c.globalMu.RUnlock()
 
@@ -412,20 +413,18 @@ func (c *Cache) ReadSlice(ctx context.Context, fileHandle []byte, chunkIdx uint3
 
 	chunk, exists := entry.chunks[chunkIdx]
 	if !exists || len(chunk.slices) == 0 {
-		return nil, false, nil
+		return false, nil
 	}
 
-	// Merge slices using newest-wins algorithm
-	result, fullyCovered := c.mergeSlicesForRead(chunk.slices, offset, length)
-	_ = fullyCovered // Not used for reads - sparse files may have gaps
+	// Merge slices using newest-wins algorithm directly into dest
+	c.mergeSlicesForRead(chunk.slices, offset, length, dest)
 
-	return result, true, nil
+	return true, nil
 }
 
 // mergeSlicesForRead implements the newest-wins slice merge algorithm.
-// Returns the merged data and whether the entire range is covered.
-func (c *Cache) mergeSlicesForRead(slices []Slice, offset, length uint32) ([]byte, bool) {
-	result := make([]byte, length)
+// Writes directly into dest buffer. Returns true if entire range is covered.
+func (c *Cache) mergeSlicesForRead(slices []Slice, offset, length uint32, dest []byte) bool {
 	covered := make([]bool, length)
 	coveredCount := uint32(0)
 
@@ -449,19 +448,19 @@ func (c *Cache) mergeSlicesForRead(slices []Slice, offset, length uint32) ([]byt
 			resultIdx := i - offset
 			if !covered[resultIdx] {
 				sliceIdx := i - slice.Offset
-				result[resultIdx] = slice.Data[sliceIdx]
+				dest[resultIdx] = slice.Data[sliceIdx]
 				covered[resultIdx] = true
 				coveredCount++
 			}
 		}
 	}
 
-	return result, coveredCount == length
+	return coveredCount == length
 }
 
 // IsRangeCovered checks if a byte range is fully covered by cached slices.
 // This is used by the flusher to determine if a block is ready for upload.
-func (c *Cache) IsRangeCovered(ctx context.Context, fileHandle []byte, chunkIdx uint32, offset, length uint32) (bool, error) {
+func (c *Cache) IsRangeCovered(ctx context.Context, fileHandle string, chunkIdx uint32, offset, length uint32) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -510,7 +509,7 @@ func (c *Cache) IsRangeCovered(ctx context.Context, fileHandle []byte, chunkIdx 
 // ============================================================================
 
 // GetDirtySlices returns all pending slices for a file.
-func (c *Cache) GetDirtySlices(ctx context.Context, fileHandle []byte) ([]PendingSlice, error) {
+func (c *Cache) GetDirtySlices(ctx context.Context, fileHandle string) ([]PendingSlice, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -562,7 +561,7 @@ func (c *Cache) GetDirtySlices(ctx context.Context, fileHandle []byte) ([]Pendin
 }
 
 // MarkSliceFlushed marks a slice as successfully flushed.
-func (c *Cache) MarkSliceFlushed(ctx context.Context, fileHandle []byte, sliceID string, blockRefs []BlockRef) error {
+func (c *Cache) MarkSliceFlushed(ctx context.Context, fileHandle string, sliceID string, blockRefs []BlockRef) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -600,7 +599,7 @@ func (c *Cache) MarkSliceFlushed(ctx context.Context, fileHandle []byte, sliceID
 // ============================================================================
 
 // CoalesceWrites merges adjacent pending writes into fewer slices.
-func (c *Cache) CoalesceWrites(ctx context.Context, fileHandle []byte) error {
+func (c *Cache) CoalesceWrites(ctx context.Context, fileHandle string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -834,7 +833,7 @@ func (c *Cache) EvictLRU(ctx context.Context, targetFreeBytes uint64) (uint64, e
 }
 
 // Evict removes flushed data for a file.
-func (c *Cache) Evict(ctx context.Context, fileHandle []byte) (uint64, error) {
+func (c *Cache) Evict(ctx context.Context, fileHandle string) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -884,9 +883,9 @@ func (c *Cache) EvictAll(ctx context.Context) (uint64, error) {
 		c.globalMu.RUnlock()
 		return 0, ErrCacheClosed
 	}
-	handles := make([][]byte, 0, len(c.files))
+	handles := make([]string, 0, len(c.files))
 	for k := range c.files {
-		handles = append(handles, []byte(k))
+		handles = append(handles, k)
 	}
 	c.globalMu.RUnlock()
 
@@ -903,7 +902,7 @@ func (c *Cache) EvictAll(ctx context.Context) (uint64, error) {
 }
 
 // Remove completely removes all cached data for a file.
-func (c *Cache) Remove(ctx context.Context, fileHandle []byte) error {
+func (c *Cache) Remove(ctx context.Context, fileHandle string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -915,7 +914,7 @@ func (c *Cache) Remove(ctx context.Context, fileHandle []byte) error {
 		return ErrCacheClosed
 	}
 
-	key := string(fileHandle)
+	key := fileHandle
 	entry, exists := c.files[key]
 	if !exists {
 		return nil // Idempotent
@@ -946,7 +945,7 @@ func (c *Cache) Remove(ctx context.Context, fileHandle []byte) error {
 }
 
 // Truncate changes the size of cached data for a file.
-func (c *Cache) Truncate(ctx context.Context, fileHandle []byte, newSize uint64) error {
+func (c *Cache) Truncate(ctx context.Context, fileHandle string, newSize uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1030,7 +1029,7 @@ func (c *Cache) Truncate(ctx context.Context, fileHandle []byte, newSize uint64)
 // ============================================================================
 
 // HasDirtyData returns true if the file has pending slices.
-func (c *Cache) HasDirtyData(fileHandle []byte) bool {
+func (c *Cache) HasDirtyData(fileHandle string) bool {
 	c.globalMu.RLock()
 	if c.closed {
 		c.globalMu.RUnlock()
@@ -1054,7 +1053,7 @@ func (c *Cache) HasDirtyData(fileHandle []byte) bool {
 }
 
 // GetFileSize returns the maximum extent of cached data.
-func (c *Cache) GetFileSize(fileHandle []byte) uint64 {
+func (c *Cache) GetFileSize(fileHandle string) uint64 {
 	c.globalMu.RLock()
 	if c.closed {
 		c.globalMu.RUnlock()
@@ -1086,17 +1085,17 @@ func (c *Cache) getFileSizeUnlocked(entry *fileEntry) uint64 {
 }
 
 // ListFiles returns all file handles with cached data.
-func (c *Cache) ListFiles() [][]byte {
+func (c *Cache) ListFiles() []string {
 	c.globalMu.RLock()
 	defer c.globalMu.RUnlock()
 
 	if c.closed {
-		return [][]byte{}
+		return []string{}
 	}
 
-	result := make([][]byte, 0, len(c.files))
+	result := make([]string, 0, len(c.files))
 	for key := range c.files {
-		result = append(result, []byte(key))
+		result = append(result, key)
 	}
 
 	return result

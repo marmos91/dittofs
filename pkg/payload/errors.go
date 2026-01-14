@@ -120,10 +120,4 @@ var (
 	//   - HTTP: 503 Service Unavailable
 	ErrUnavailable = errors.New("storage unavailable")
 
-	// ErrNoSliceCacheForShare indicates no slice cache is configured for the share.
-	// Deprecated: Use ErrNoCacheConfigured instead.
-	ErrNoSliceCacheForShare = errors.New("no slice cache configured for share")
-
-	// ErrNoCacheConfigured indicates no cache is configured for the block service.
-	ErrNoCacheConfigured = errors.New("no cache configured")
 )

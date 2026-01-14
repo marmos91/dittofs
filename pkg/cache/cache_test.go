@@ -16,7 +16,7 @@ func TestCache_WriteAndRead(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := []byte("test-file")
+	fileHandle := "test-file"
 	data := []byte("hello world")
 
 	// Write
@@ -26,7 +26,8 @@ func TestCache_WriteAndRead(t *testing.T) {
 	}
 
 	// Read
-	result, found, err := c.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(data)))
+	result := make([]byte, len(data))
+	found, err := c.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(data)), result)
 	if err != nil {
 		t.Fatalf("ReadSlice failed: %v", err)
 	}
@@ -43,7 +44,7 @@ func TestCache_SequentialWriteOptimization(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := []byte("test-file")
+	fileHandle := "test-file"
 
 	// Write sequential chunks
 	for i := 0; i < 10; i++ {
@@ -72,7 +73,7 @@ func TestCache_Remove(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := []byte("test-file")
+	fileHandle := "test-file"
 	data := []byte("test data")
 
 	// Write
@@ -86,7 +87,8 @@ func TestCache_Remove(t *testing.T) {
 	}
 
 	// Read should return not found
-	_, found, err := c.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(data)))
+	result := make([]byte, len(data))
+	found, err := c.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(data)), result)
 	if err != nil {
 		t.Fatalf("ReadSlice failed: %v", err)
 	}
@@ -100,7 +102,7 @@ func TestCache_Truncate(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := []byte("test-file")
+	fileHandle := "test-file"
 	data := make([]byte, 10*1024) // 10KB
 
 	// Write
@@ -134,7 +136,7 @@ func TestCache_MmapPersistence(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	fileHandle := []byte("test-file")
+	fileHandle := "test-file"
 	data := []byte("persistent data")
 
 	// Write
@@ -161,7 +163,8 @@ func TestCache_MmapPersistence(t *testing.T) {
 	defer c2.Close()
 
 	// Read - should recover the data
-	result, found, err := c2.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(data)))
+	result := make([]byte, len(data))
+	found, err := c2.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(data)), result)
 	if err != nil {
 		t.Fatalf("ReadSlice failed: %v", err)
 	}
@@ -183,7 +186,7 @@ func TestCache_MmapRemovePersistence(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	fileHandle := []byte("test-file")
+	fileHandle := "test-file"
 	data := []byte("to be removed")
 
 	// Write
@@ -209,7 +212,8 @@ func TestCache_MmapRemovePersistence(t *testing.T) {
 	defer c2.Close()
 
 	// Read - should not find data
-	_, found, err := c2.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(data)))
+	result := make([]byte, len(data))
+	found, err := c2.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(data)), result)
 	if err != nil {
 		t.Fatalf("ReadSlice failed: %v", err)
 	}
@@ -228,7 +232,7 @@ func TestCache_MmapSync(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := []byte("test-file")
+	fileHandle := "test-file"
 	data := []byte("sync test")
 
 	// Write
@@ -256,7 +260,7 @@ func TestCache_MmapMultipleFiles(t *testing.T) {
 
 	// Write to multiple files
 	for i := 0; i < 5; i++ {
-		fileHandle := []byte("file-" + string(rune('0'+i)))
+		fileHandle := "file-" + string(rune('0'+i))
 		data := []byte("data for file " + string(rune('0'+i)))
 		if err := c.WriteSlice(ctx, fileHandle, 0, data, 0); err != nil {
 			t.Fatalf("WriteSlice failed: %v", err)
@@ -283,9 +287,10 @@ func TestCache_MmapMultipleFiles(t *testing.T) {
 
 	// Verify data
 	for i := 0; i < 5; i++ {
-		fileHandle := []byte("file-" + string(rune('0'+i)))
+		fileHandle := "file-" + string(rune('0'+i))
 		expected := "data for file " + string(rune('0'+i))
-		result, found, err := c2.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(expected)))
+		result := make([]byte, len(expected))
+		found, err := c2.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(expected)), result)
 		if err != nil {
 			t.Fatalf("ReadSlice failed: %v", err)
 		}
@@ -308,7 +313,7 @@ func BenchmarkCache_InMemory_Write(b *testing.B) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := []byte("benchmark-file")
+	fileHandle := "benchmark-file"
 	data := make([]byte, 32*1024)
 
 	b.SetBytes(int64(len(data)))
@@ -333,7 +338,7 @@ func BenchmarkCache_Mmap_Write(b *testing.B) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := []byte("benchmark-file")
+	fileHandle := "benchmark-file"
 	data := make([]byte, 32*1024)
 
 	b.SetBytes(int64(len(data)))
@@ -361,14 +366,14 @@ func TestCache_LRUEviction_OnlyEvictsFlushed(t *testing.T) {
 	ctx := context.Background()
 
 	// Write 5KB to file1 (pending/dirty)
-	file1 := []byte("file1")
+	file1 := "file1"
 	data1 := make([]byte, 5*1024)
 	if err := c.WriteSlice(ctx, file1, 0, data1, 0); err != nil {
 		t.Fatalf("WriteSlice failed: %v", err)
 	}
 
 	// Write 5KB to file2 (will be flushed)
-	file2 := []byte("file2")
+	file2 := "file2"
 	data2 := make([]byte, 5*1024)
 	if err := c.WriteSlice(ctx, file2, 0, data2, 0); err != nil {
 		t.Fatalf("WriteSlice failed: %v", err)
@@ -381,14 +386,15 @@ func TestCache_LRUEviction_OnlyEvictsFlushed(t *testing.T) {
 	}
 
 	// Try to write 5KB more - should trigger eviction
-	file3 := []byte("file3")
+	file3 := "file3"
 	data3 := make([]byte, 5*1024)
 	if err := c.WriteSlice(ctx, file3, 0, data3, 0); err != nil {
 		t.Fatalf("WriteSlice failed: %v", err)
 	}
 
 	// file1 should still have data (dirty, protected)
-	_, found1, _ := c.ReadSlice(ctx, file1, 0, 0, uint32(len(data1)))
+	result1 := make([]byte, len(data1))
+	found1, _ := c.ReadSlice(ctx, file1, 0, 0, uint32(len(data1)), result1)
 	if !found1 {
 		t.Error("file1 (dirty) should not be evicted")
 	}
@@ -400,7 +406,8 @@ func TestCache_LRUEviction_OnlyEvictsFlushed(t *testing.T) {
 	}
 
 	// file3 should have data
-	_, found3, _ := c.ReadSlice(ctx, file3, 0, 0, uint32(len(data3)))
+	result3 := make([]byte, len(data3))
+	found3, _ := c.ReadSlice(ctx, file3, 0, 0, uint32(len(data3)), result3)
 	if !found3 {
 		t.Error("file3 should have data")
 	}
@@ -414,7 +421,7 @@ func TestCache_LRUEviction_EvictsOldestFirst(t *testing.T) {
 	ctx := context.Background()
 
 	// Write to 3 files in sequence (oldest to newest)
-	files := [][]byte{[]byte("old"), []byte("mid"), []byte("new")}
+	files := []string{"old", "mid", "new"}
 	data := make([]byte, 5*1024)
 
 	for _, file := range files {
@@ -429,13 +436,14 @@ func TestCache_LRUEviction_EvictsOldestFirst(t *testing.T) {
 	}
 
 	// Access "mid" to make it more recent
-	c.ReadSlice(ctx, files[1], 0, 0, uint32(len(data)))
+	resultMid := make([]byte, len(data))
+	c.ReadSlice(ctx, files[1], 0, 0, uint32(len(data)), resultMid)
 
 	// Note: Read doesn't update lastAccess in current impl (would need lock upgrade)
 	// So LRU is based on write time, not access time
 
 	// Write a new file to trigger eviction
-	newFile := []byte("newest")
+	newFile := "newest"
 	if err := c.WriteSlice(ctx, newFile, 0, data, 0); err != nil {
 		t.Fatalf("WriteSlice failed: %v", err)
 	}
@@ -455,11 +463,11 @@ func TestCache_Stats(t *testing.T) {
 	ctx := context.Background()
 
 	// Write some data
-	file1 := []byte("file1")
+	file1 := "file1"
 	data1 := make([]byte, 10*1024)
 	c.WriteSlice(ctx, file1, 0, data1, 0)
 
-	file2 := []byte("file2")
+	file2 := "file2"
 	data2 := make([]byte, 5*1024)
 	c.WriteSlice(ctx, file2, 0, data2, 0)
 
@@ -496,7 +504,7 @@ func TestCache_EvictLRU(t *testing.T) {
 
 	// Write and flush some files
 	for i := 0; i < 5; i++ {
-		file := []byte("file" + string(rune('0'+i)))
+		file := "file" + string(rune('0'+i))
 		data := make([]byte, 10*1024)
 		c.WriteSlice(ctx, file, 0, data, 0)
 
@@ -558,7 +566,7 @@ func TestCache_Evict(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := []byte("test-file")
+	fileHandle := "test-file"
 	data := make([]byte, 10*1024)
 
 	// Write
@@ -593,7 +601,7 @@ func TestCache_EvictAll(t *testing.T) {
 
 	// Write to multiple files and flush them
 	for i := 0; i < 3; i++ {
-		file := []byte("file" + string(rune('0'+i)))
+		file := "file" + string(rune('0'+i))
 		data := make([]byte, 5*1024)
 		c.WriteSlice(ctx, file, 0, data, 0)
 
@@ -623,7 +631,7 @@ func TestCache_HasDirtyData(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := []byte("test-file")
+	fileHandle := "test-file"
 	data := []byte("test data")
 
 	// Initially no dirty data
@@ -652,7 +660,7 @@ func TestCache_CoalesceWrites_NonAdjacent(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := []byte("test-file")
+	fileHandle := "test-file"
 
 	// Write non-adjacent slices (with gap)
 	c.WriteSlice(ctx, fileHandle, 0, []byte("AAA"), 0)
@@ -673,7 +681,7 @@ func TestCache_CoalesceWrites_Overlapping(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := []byte("test-file")
+	fileHandle := "test-file"
 
 	// Write overlapping slices
 	c.WriteSlice(ctx, fileHandle, 0, make([]byte, 100), 0)   // 0-99
@@ -697,7 +705,7 @@ func TestCache_PrependWrite(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := []byte("test-file")
+	fileHandle := "test-file"
 
 	// Write at offset 100 first
 	data1 := []byte("WORLD")
@@ -722,7 +730,7 @@ func TestCache_EvictDoesNotRemoveDirty(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := []byte("test-file")
+	fileHandle := "test-file"
 	data := make([]byte, 10*1024)
 
 	// Write (creates dirty data)
@@ -738,7 +746,8 @@ func TestCache_EvictDoesNotRemoveDirty(t *testing.T) {
 	}
 
 	// Data should still be there
-	_, found, _ := c.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(data)))
+	result := make([]byte, len(data))
+	found, _ := c.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(data)), result)
 	if !found {
 		t.Error("dirty data should still be present after evict attempt")
 	}
