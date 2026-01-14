@@ -1,4 +1,4 @@
-# pkg/blocks/store
+# pkg/payload/store
 
 Block store interface for persistent storage layer (S3, filesystem, memory).
 
@@ -27,8 +27,19 @@ type BlockStore interface {
 
 ## Implementations
 
+| Store | Throughput | Use Case |
+|-------|------------|----------|
+| memory | ~15-38 GB/s | Unit tests, ephemeral data |
+| filesystem | ~2-10 GB/s | Local dev, NAS/SAN, single-server |
+| s3 | ~100-300 MB/s | Production, durability required |
+
+See [BENCHMARKS.md](BENCHMARKS.md) for detailed performance comparison.
+
 ### memory
 In-memory implementation for testing. Thread-safe with data isolation (copies on read/write).
+- Single allocation per operation
+- No external dependencies
+- Data lost on restart
 
 ### s3
 S3-backed implementation with:
@@ -36,6 +47,7 @@ S3-backed implementation with:
 - Configurable endpoint (Localstack/MinIO support)
 - Path-style addressing option
 - Batch delete via DeleteObjects API
+- HTTP connection pooling
 
 ### filesystem (fs)
 Local filesystem-backed implementation with:
@@ -44,11 +56,6 @@ Local filesystem-backed implementation with:
 - Automatic empty directory cleanup on delete
 - Range reads via seek (efficient for partial reads)
 - No external dependencies
-
-Ideal for:
-- Local development and testing
-- NAS/SAN storage backends
-- Single-server deployments without S3
 
 ## Block Key Format
 
@@ -96,30 +103,25 @@ block_store:
   type: memory  # No additional configuration
 ```
 
-## BlockRef Types
+## Testing
 
-There are multiple `BlockRef` types in the codebase with different purposes:
+```bash
+# Memory store (unit tests, no special flags)
+go test ./pkg/payload/store/memory/
 
-| Package | Fields | Purpose |
-|---------|--------|---------|
-| `pkg/blocks/store` | Key, Size | S3-style path reference for block store |
-| `pkg/cache` | ID, Size | Cache's record of flushed block |
-| `pkg/wal` | ID, Size | WAL entry tracking flushed blocks |
+# Filesystem store (integration tests)
+go test -tags=integration ./pkg/payload/store/fs/
 
-The store's `BlockRef` uses "Key" to emphasize the S3 key path format, while cache/wal use "ID" for the block identifier.
+# S3 store (integration tests, requires Docker)
+go test -tags=integration ./pkg/payload/store/s3/
 
-## Migration from pkg/store/block
-
-| Old (pkg/store/block) | New (pkg/blocks/store) |
-|-----------------------|------------------------|
-| `block.Store` | `store.BlockStore` |
-| `block.ErrBlockNotFound` | `store.ErrBlockNotFound` |
-| `block.ErrStoreClosed` | `store.ErrStoreClosed` |
-| `block.BlockSize` | `store.BlockSize` |
-| `block.BlockRef` | `store.BlockRef` |
+# Run benchmarks
+go test -tags=integration -bench=. -benchmem ./pkg/payload/store/...
+```
 
 ## Common Mistakes
 
 1. **Not handling ErrBlockNotFound** - ReadBlock returns this for missing blocks
 2. **Missing endpoint for Localstack** - Set endpoint: "http://localhost:4566"
 3. **Missing force_path_style** - Localstack/MinIO require path-style addressing
+4. **Forgetting -tags=integration** - fs and s3 tests won't run without it

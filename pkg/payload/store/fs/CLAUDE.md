@@ -1,4 +1,4 @@
-# pkg/blocks/store/fs
+# pkg/payload/store/fs
 
 Filesystem-backed block store implementation.
 
@@ -6,6 +6,16 @@ Filesystem-backed block store implementation.
 
 Stores blocks as files on the local filesystem with the block key as the path.
 Ideal for local development, NAS/SAN storage, or single-server deployments.
+
+## Performance
+
+| Operation | Throughput | Notes |
+|-----------|------------|-------|
+| Write 4MB | 4,173 MB/s | Atomic write (temp + rename) |
+| Read 4MB | 10,367 MB/s | Approaches memory bandwidth |
+| Range read | Same as full | Seek is O(1) |
+
+See [../BENCHMARKS.md](../BENCHMARKS.md) for detailed benchmarks.
 
 ## Key Features
 
@@ -97,8 +107,19 @@ block_store:
     file_mode: 0644                   # Default: 0644
 ```
 
+## Testing
+
+```bash
+# Run tests (requires integration tag)
+go test -tags=integration ./pkg/payload/store/fs/
+
+# Run benchmarks
+go test -tags=integration -bench=. -benchmem ./pkg/payload/store/fs/
+```
+
 ## Common Mistakes
 
 1. **Empty base_path** - Required, validation will fail
 2. **Permission denied** - Ensure process has write access to base_path
 3. **NFS-mounted base_path** - Works but atomic rename may not be guaranteed on all NFS implementations
+4. **Forgetting -tags=integration** - Tests won't run without it
