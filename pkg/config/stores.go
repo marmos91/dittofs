@@ -3,8 +3,10 @@ package config
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/marmos91/dittofs/pkg/blocks/store"
+	blockfs "github.com/marmos91/dittofs/pkg/blocks/store/fs"
 	blockmemory "github.com/marmos91/dittofs/pkg/blocks/store/memory"
 	blocks3 "github.com/marmos91/dittofs/pkg/blocks/store/s3"
 	"github.com/marmos91/dittofs/pkg/cache"
@@ -137,6 +139,8 @@ func CreateBlockStore(ctx context.Context, cfg BlockStoreConfig) (store.BlockSto
 		return blockmemory.New(), nil
 	case "s3":
 		return createS3BlockStore(ctx, cfg.S3)
+	case "filesystem":
+		return createFSBlockStore(ctx, cfg.Filesystem)
 	default:
 		return nil, fmt.Errorf("unknown block store type: %q", cfg.Type)
 	}
@@ -158,6 +162,23 @@ func createS3BlockStore(ctx context.Context, cfg BlockStoreS3Config) (store.Bloc
 	}
 
 	return blocks3.NewFromConfig(ctx, s3Cfg)
+}
+
+// createFSBlockStore creates a filesystem-backed block store.
+func createFSBlockStore(_ context.Context, cfg BlockStoreFSConfig) (store.BlockStore, error) {
+	if cfg.BasePath == "" {
+		return nil, fmt.Errorf("filesystem block store requires base_path to be set")
+	}
+
+	// Build config - fs.New() applies defaults for zero values
+	fsCfg := blockfs.Config{
+		BasePath:  cfg.BasePath,
+		CreateDir: cfg.CreateDir,
+		DirMode:   os.FileMode(cfg.DirMode),
+		FileMode:  os.FileMode(cfg.FileMode),
+	}
+
+	return blockfs.New(fsCfg)
 }
 
 // CreateTransferManager creates a transfer manager instance from configuration.
