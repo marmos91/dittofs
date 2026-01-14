@@ -4,10 +4,13 @@ package store
 import (
 	"context"
 	"errors"
+
+	"github.com/marmos91/dittofs/pkg/payload/chunk"
 )
 
 // BlockSize is the size of a single block (4MB).
-const BlockSize = 4 * 1024 * 1024
+// Re-exported from chunk package for convenience.
+const BlockSize = chunk.BlockSize
 
 // Common errors returned by BlockStore implementations.
 var (

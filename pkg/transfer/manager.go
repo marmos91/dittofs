@@ -6,12 +6,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/payload/store"
 	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/payload/chunk"
+	"github.com/marmos91/dittofs/pkg/payload/store"
 )
 
 // BlockSize is the size of a single block (4MB).
-const BlockSize = 4 * 1024 * 1024
+// Re-exported from chunk package for convenience.
+const BlockSize = chunk.BlockSize
 
 // DefaultParallelUploads is the default number of concurrent uploads per file.
 const DefaultParallelUploads = 4
