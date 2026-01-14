@@ -292,17 +292,17 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// Step 3: Flush cached data to content store (ensures durability)
 	// ========================================================================
 
-	// Flush and finalize cached data to ensure durability
-	// Unlike NFS COMMIT which just flushes, SMB CLOSE requires immediate durability
+	// Flush cached data to ensure durability
+	// Unlike NFS COMMIT which is non-blocking, SMB CLOSE requires immediate durability
 	if !openFile.IsDirectory && openFile.PayloadID != "" {
 		contentSvc := h.Registry.GetBlockService()
-		// Use FlushAndFinalize for immediate durability
-		_, flushErr := contentSvc.FlushAndFinalize(ctx.Context, openFile.ShareName, openFile.PayloadID)
+		// Use blocking Flush for immediate durability
+		_, flushErr := contentSvc.Flush(ctx.Context, openFile.ShareName, openFile.PayloadID)
 		if flushErr != nil {
 			logger.Warn("CLOSE: flush failed", "path", openFile.Path, "error", flushErr)
 			// Continue with close even if flush fails
 		} else {
-			logger.Debug("CLOSE: flushed and finalized", "path", openFile.Path, "payloadID", openFile.PayloadID)
+			logger.Debug("CLOSE: flushed", "path", openFile.Path, "payloadID", openFile.PayloadID)
 		}
 	}
 
