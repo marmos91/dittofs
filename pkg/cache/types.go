@@ -65,28 +65,8 @@ type BlockRef = wal.BlockRef
 // ============================================================================
 
 // Slice represents a slice stored in the cache/store.
-type Slice struct {
-	// ID uniquely identifies this slice.
-	ID string
-
-	// Offset is the byte offset within the chunk (0 to ChunkSize-1).
-	Offset uint32
-
-	// Length is the size of this slice in bytes.
-	Length uint32
-
-	// Data contains the actual slice content.
-	Data []byte
-
-	// State indicates whether this slice is pending, uploading, or flushed.
-	State SliceState
-
-	// CreatedAt is when this slice was created (for newest-wins ordering).
-	CreatedAt time.Time
-
-	// BlockRefs contains references to blocks after flushing.
-	BlockRefs []BlockRef
-}
+// Defined in wal package - re-exported here for convenience.
+type Slice = wal.Slice
 
 // SliceUpdate contains fields that can be updated on an existing slice.
 type SliceUpdate struct {

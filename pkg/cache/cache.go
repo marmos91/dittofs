@@ -134,19 +134,8 @@ func (c *Cache) recoverFromWal() error {
 			fileEntry.chunks[entry.ChunkIdx] = chunk
 		}
 
-		// Create cache.Slice from wal.SliceEntry (types unified via aliases)
-		slice := Slice{
-			ID:        entry.SliceID,
-			Offset:    entry.Offset,
-			Length:    entry.Length,
-			Data:      entry.Data,
-			State:     entry.State,
-			CreatedAt: entry.CreatedAt,
-			BlockRefs: entry.BlockRefs, // Direct assignment - same type via alias
-		}
-
-		// Prepend to slices (newest first)
-		chunk.slices = append([]Slice{slice}, chunk.slices...)
+		// SliceEntry embeds Slice - use directly, no conversion needed
+		chunk.slices = append([]Slice{entry.Slice}, chunk.slices...)
 		c.totalSize.Add(uint64(entry.Length))
 
 		fileEntry.mu.Unlock()

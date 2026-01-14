@@ -39,13 +39,15 @@ func TestMmapPersister_AppendSlice(t *testing.T) {
 	entry := &SliceEntry{
 		FileHandle: "test-file",
 		ChunkIdx:   0,
-		SliceID:    "12345678-1234-1234-1234-123456789012",
-		Offset:     0,
-		Length:     10,
-		Data:       []byte("0123456789"),
-		State:      SliceStatePending,
-		CreatedAt:  time.Now(),
-		BlockRefs:  nil,
+		Slice: Slice{
+			ID:        "12345678-1234-1234-1234-123456789012",
+			Offset:    0,
+			Length:    10,
+			Data:      []byte("0123456789"),
+			State:     SliceStatePending,
+			CreatedAt: time.Now(),
+			BlockRefs: nil,
+		},
 	}
 
 	if err := p.AppendSlice(entry); err != nil {
@@ -71,34 +73,40 @@ func TestMmapPersister_AppendAndRecover(t *testing.T) {
 		{
 			FileHandle: "file1",
 			ChunkIdx:   0,
-			SliceID:    "11111111-1111-1111-1111-111111111111",
-			Offset:     0,
-			Length:     5,
-			Data:       []byte("hello"),
-			State:      SliceStatePending,
-			CreatedAt:  now,
+			Slice: Slice{
+				ID:        "11111111-1111-1111-1111-111111111111",
+				Offset:    0,
+				Length:    5,
+				Data:      []byte("hello"),
+				State:     SliceStatePending,
+				CreatedAt: now,
+			},
 		},
 		{
 			FileHandle: "file1",
 			ChunkIdx:   0,
-			SliceID:    "22222222-2222-2222-2222-222222222222",
-			Offset:     5,
-			Length:     5,
-			Data:       []byte("world"),
-			State:      SliceStatePending,
-			CreatedAt:  now.Add(time.Second),
+			Slice: Slice{
+				ID:        "22222222-2222-2222-2222-222222222222",
+				Offset:    5,
+				Length:    5,
+				Data:      []byte("world"),
+				State:     SliceStatePending,
+				CreatedAt: now.Add(time.Second),
+			},
 		},
 		{
 			FileHandle: "file2",
 			ChunkIdx:   1,
-			SliceID:    "33333333-3333-3333-3333-333333333333",
-			Offset:     100,
-			Length:     4,
-			Data:       []byte("test"),
-			State:      SliceStateFlushed,
-			CreatedAt:  now.Add(2 * time.Second),
-			BlockRefs: []BlockRef{
-				{ID: "block-1", Size: 4},
+			Slice: Slice{
+				ID:        "33333333-3333-3333-3333-333333333333",
+				Offset:    100,
+				Length:    4,
+				Data:      []byte("test"),
+				State:     SliceStateFlushed,
+				CreatedAt: now.Add(2 * time.Second),
+				BlockRefs: []BlockRef{
+					{ID: "block-1", Size: 4},
+				},
 			},
 		},
 	}
@@ -162,22 +170,26 @@ func TestMmapPersister_AppendRemove(t *testing.T) {
 	entry1 := &SliceEntry{
 		FileHandle: "file1",
 		ChunkIdx:   0,
-		SliceID:    "11111111-1111-1111-1111-111111111111",
-		Offset:     0,
-		Length:     5,
-		Data:       []byte("hello"),
-		State:      SliceStatePending,
-		CreatedAt:  time.Now(),
+		Slice: Slice{
+			ID:        "11111111-1111-1111-1111-111111111111",
+			Offset:    0,
+			Length:    5,
+			Data:      []byte("hello"),
+			State:     SliceStatePending,
+			CreatedAt: time.Now(),
+		},
 	}
 	entry2 := &SliceEntry{
 		FileHandle: "file2",
 		ChunkIdx:   0,
-		SliceID:    "22222222-2222-2222-2222-222222222222",
-		Offset:     0,
-		Length:     5,
-		Data:       []byte("world"),
-		State:      SliceStatePending,
-		CreatedAt:  time.Now(),
+		Slice: Slice{
+			ID:        "22222222-2222-2222-2222-222222222222",
+			Offset:    0,
+			Length:    5,
+			Data:      []byte("world"),
+			State:     SliceStatePending,
+			CreatedAt: time.Now(),
+		},
 	}
 
 	if err := p.AppendSlice(entry1); err != nil {
@@ -233,8 +245,10 @@ func TestMmapPersister_ClosedOperations(t *testing.T) {
 	// All operations should fail after close
 	entry := &SliceEntry{
 		FileHandle: "test",
-		SliceID:    "12345678-1234-1234-1234-123456789012",
-		Data:       []byte("data"),
+		Slice: Slice{
+			ID:   "12345678-1234-1234-1234-123456789012",
+			Data: []byte("data"),
+		},
 	}
 
 	if err := p.AppendSlice(entry); err != ErrPersisterClosed {
@@ -273,12 +287,14 @@ func TestMmapPersister_GrowFile(t *testing.T) {
 		entry := &SliceEntry{
 			FileHandle: "large-file",
 			ChunkIdx:   uint32(i),
-			SliceID:    "12345678-1234-1234-1234-123456789012",
-			Offset:     0,
-			Length:     uint32(len(largeData)),
-			Data:       largeData,
-			State:      SliceStatePending,
-			CreatedAt:  time.Now(),
+			Slice: Slice{
+				ID:        "12345678-1234-1234-1234-123456789012",
+				Offset:    0,
+				Length:    uint32(len(largeData)),
+				Data:      largeData,
+				State:     SliceStatePending,
+				CreatedAt: time.Now(),
+			},
 		}
 
 		if err := p.AppendSlice(entry); err != nil {
@@ -297,8 +313,10 @@ func TestNullPersister(t *testing.T) {
 	// All operations should succeed silently
 	entry := &SliceEntry{
 		FileHandle: "test",
-		SliceID:    "12345678-1234-1234-1234-123456789012",
-		Data:       []byte("data"),
+		Slice: Slice{
+			ID:   "12345678-1234-1234-1234-123456789012",
+			Data: []byte("data"),
+		},
 	}
 
 	if err := p.AppendSlice(entry); err != nil {

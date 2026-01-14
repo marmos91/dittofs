@@ -97,18 +97,12 @@ func (c *Cache) WriteSlice(ctx context.Context, fileHandle string, chunkIdx uint
 	return nil
 }
 
-// sliceToWALEntry converts a cache.Slice to wal.SliceEntry (types unified via aliases).
+// sliceToWALEntry wraps a Slice with WAL context (no field copying needed).
 func (c *Cache) sliceToWALEntry(fileHandle string, chunkIdx uint32, slice *Slice) *wal.SliceEntry {
 	return &wal.SliceEntry{
 		FileHandle: fileHandle,
 		ChunkIdx:   chunkIdx,
-		SliceID:    slice.ID,
-		Offset:     slice.Offset,
-		Length:     slice.Length,
-		Data:       slice.Data,
-		State:      slice.State,     // Same type via alias
-		CreatedAt:  slice.CreatedAt,
-		BlockRefs:  slice.BlockRefs, // Direct assignment - same type via alias
+		Slice:      *slice, // Embed directly - same type
 	}
 }
 

@@ -267,7 +267,7 @@ func (p *MmapPersister) AppendSlice(entry *SliceEntry) error {
 	offset += 4
 
 	// Write slice ID (pad to 36 bytes)
-	idBytes := []byte(entry.SliceID)
+	idBytes := []byte(entry.ID)
 	if len(idBytes) > 36 {
 		idBytes = idBytes[:36]
 	}
@@ -473,7 +473,7 @@ func (p *MmapPersister) readSliceEntry(offset uint64) (*SliceEntry, uint64, erro
 	if offset+36 > p.size {
 		return nil, 0, ErrCorrupted
 	}
-	entry.SliceID = string(p.data[offset : offset+36])
+	entry.ID = string(p.data[offset : offset+36])
 	offset += 36
 
 	// Read offset in chunk
