@@ -1,41 +1,163 @@
 //go:build integration
 
-package fs
+package s3
 
 import (
 	"context"
+	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/marmos91/dittofs/pkg/payload/store"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-func newTestStore(t *testing.T) *Store {
+// localstackHelper manages the Localstack container for S3 integration tests.
+type localstackHelper struct {
+	container testcontainers.Container
+	endpoint  string
+	client    *s3.Client
+}
+
+// newLocalstackHelper starts a Localstack container or connects to an existing one.
+func newLocalstackHelper(t *testing.T) *localstackHelper {
+	t.Helper()
+	ctx := context.Background()
+
+	// Check if external Localstack is configured via environment
+	if endpoint := os.Getenv("LOCALSTACK_ENDPOINT"); endpoint != "" {
+		helper := &localstackHelper{endpoint: endpoint}
+		helper.createClient(t)
+		return helper
+	}
+
+	// Start Localstack container using testcontainers
+	req := testcontainers.ContainerRequest{
+		Image:        "localstack/localstack:3.0",
+		ExposedPorts: []string{"4566/tcp"},
+		Env: map[string]string{
+			"SERVICES":              "s3",
+			"DEFAULT_REGION":        "us-east-1",
+			"EAGER_SERVICE_LOADING": "1",
+		},
+		WaitingFor: wait.ForAll(
+			wait.ForListeningPort("4566/tcp"),
+			wait.ForHTTP("/_localstack/health").
+				WithPort("4566/tcp").
+				WithStartupTimeout(60*time.Second),
+		),
+	}
+
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	if err != nil {
+		t.Fatalf("failed to start localstack container: %v", err)
+	}
+
+	host, err := container.Host(ctx)
+	if err != nil {
+		_ = container.Terminate(ctx)
+		t.Fatalf("failed to get container host: %v", err)
+	}
+
+	port, err := container.MappedPort(ctx, "4566")
+	if err != nil {
+		_ = container.Terminate(ctx)
+		t.Fatalf("failed to get container port: %v", err)
+	}
+
+	helper := &localstackHelper{
+		container: container,
+		endpoint:  fmt.Sprintf("http://%s:%s", host, port.Port()),
+	}
+	helper.createClient(t)
+
+	return helper
+}
+
+// createClient creates an S3 client configured for Localstack.
+func (lh *localstackHelper) createClient(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+
+	cfg, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion("us-east-1"),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			"test", "test", "",
+		)),
+	)
+	if err != nil {
+		t.Fatalf("failed to load AWS config: %v", err)
+	}
+
+	lh.client = s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = &lh.endpoint
+		o.UsePathStyle = true
+	})
+}
+
+// createBucket creates a new S3 bucket.
+func (lh *localstackHelper) createBucket(t *testing.T, bucketName string) {
+	t.Helper()
+	ctx := context.Background()
+
+	_, err := lh.client.CreateBucket(ctx, &s3.CreateBucketInput{
+		Bucket: aws.String(bucketName),
+	})
+	if err != nil {
+		t.Fatalf("failed to create test bucket: %v", err)
+	}
+}
+
+// cleanup terminates the container if we started one.
+func (lh *localstackHelper) cleanup() {
+	if lh.container != nil {
+		ctx := context.Background()
+		_ = lh.container.Terminate(ctx)
+	}
+}
+
+// testStore holds the test store and cleanup function.
+type testStore struct {
+	*Store
+	bucketName string
+	helper     *localstackHelper
+}
+
+// newTestStore creates a new S3 store for testing.
+func newTestStore(t *testing.T, helper *localstackHelper) *testStore {
 	t.Helper()
 
-	tmpDir, err := os.MkdirTemp("", "blockstore-fs-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
+	bucketName := fmt.Sprintf("test-bucket-%d", time.Now().UnixNano())
+	helper.createBucket(t, bucketName)
 
-	s, err := NewWithPath(tmpDir)
-	if err != nil {
-		os.RemoveAll(tmpDir)
-		t.Fatalf("NewWithPath failed: %v", err)
-	}
-
-	t.Cleanup(func() {
-		s.Close()
-		os.RemoveAll(tmpDir)
+	s := New(helper.client, Config{
+		Bucket:    bucketName,
+		KeyPrefix: "blocks/",
 	})
 
-	return s
+	return &testStore{
+		Store:      s,
+		bucketName: bucketName,
+		helper:     helper,
+	}
 }
 
 func TestStore_WriteAndRead(t *testing.T) {
+	helper := newLocalstackHelper(t)
+	defer helper.cleanup()
+
 	ctx := context.Background()
-	s := newTestStore(t)
+	s := newTestStore(t, helper)
+	defer s.Close()
 
 	blockKey := "share1/content123/chunk-0/block-0"
 	data := []byte("hello world")
@@ -54,17 +176,15 @@ func TestStore_WriteAndRead(t *testing.T) {
 	if string(read) != string(data) {
 		t.Errorf("ReadBlock returned %q, want %q", read, data)
 	}
-
-	// Verify file exists on disk
-	path := filepath.Join(s.BasePath(), "share1", "content123", "chunk-0", "block-0")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Errorf("Block file not found at %s", path)
-	}
 }
 
 func TestStore_ReadBlockNotFound(t *testing.T) {
+	helper := newLocalstackHelper(t)
+	defer helper.cleanup()
+
 	ctx := context.Background()
-	s := newTestStore(t)
+	s := newTestStore(t, helper)
+	defer s.Close()
 
 	_, err := s.ReadBlock(ctx, "nonexistent")
 	if err != store.ErrBlockNotFound {
@@ -73,8 +193,12 @@ func TestStore_ReadBlockNotFound(t *testing.T) {
 }
 
 func TestStore_ReadBlockRange(t *testing.T) {
+	helper := newLocalstackHelper(t)
+	defer helper.cleanup()
+
 	ctx := context.Background()
-	s := newTestStore(t)
+	s := newTestStore(t, helper)
+	defer s.Close()
 
 	blockKey := "share1/content123/chunk-0/block-0"
 	data := []byte("hello world")
@@ -102,21 +226,29 @@ func TestStore_ReadBlockRange(t *testing.T) {
 	if string(read) != "world" {
 		t.Errorf("ReadBlockRange returned %q, want %q", read, "world")
 	}
+}
 
-	// Read range that exceeds length (should truncate)
-	read, err = s.ReadBlockRange(ctx, blockKey, 6, 100)
-	if err != nil {
-		t.Fatalf("ReadBlockRange failed: %v", err)
-	}
+func TestStore_ReadBlockRangeNotFound(t *testing.T) {
+	helper := newLocalstackHelper(t)
+	defer helper.cleanup()
 
-	if string(read) != "world" {
-		t.Errorf("ReadBlockRange returned %q, want %q", read, "world")
+	ctx := context.Background()
+	s := newTestStore(t, helper)
+	defer s.Close()
+
+	_, err := s.ReadBlockRange(ctx, "nonexistent", 0, 10)
+	if err != store.ErrBlockNotFound {
+		t.Errorf("ReadBlockRange returned error %v, want %v", err, store.ErrBlockNotFound)
 	}
 }
 
 func TestStore_DeleteBlock(t *testing.T) {
+	helper := newLocalstackHelper(t)
+	defer helper.cleanup()
+
 	ctx := context.Background()
-	s := newTestStore(t)
+	s := newTestStore(t, helper)
+	defer s.Close()
 
 	blockKey := "share1/content123/chunk-0/block-0"
 	data := []byte("hello world")
@@ -135,17 +267,15 @@ func TestStore_DeleteBlock(t *testing.T) {
 	if err != store.ErrBlockNotFound {
 		t.Errorf("ReadBlock after delete returned error %v, want %v", err, store.ErrBlockNotFound)
 	}
-
-	// Verify empty directories were cleaned up
-	chunkDir := filepath.Join(s.BasePath(), "share1", "content123", "chunk-0")
-	if _, err := os.Stat(chunkDir); !os.IsNotExist(err) {
-		t.Errorf("Empty chunk directory should be removed: %s", chunkDir)
-	}
 }
 
 func TestStore_DeleteByPrefix(t *testing.T) {
+	helper := newLocalstackHelper(t)
+	defer helper.cleanup()
+
 	ctx := context.Background()
-	s := newTestStore(t)
+	s := newTestStore(t, helper)
+	defer s.Close()
 
 	// Write multiple blocks
 	blocks := map[string][]byte{
@@ -191,8 +321,12 @@ func TestStore_DeleteByPrefix(t *testing.T) {
 }
 
 func TestStore_ListByPrefix(t *testing.T) {
+	helper := newLocalstackHelper(t)
+	defer helper.cleanup()
+
 	ctx := context.Background()
-	s := newTestStore(t)
+	s := newTestStore(t, helper)
+	defer s.Close()
 
 	// Write multiple blocks
 	blocks := map[string][]byte{
@@ -240,8 +374,12 @@ func TestStore_ListByPrefix(t *testing.T) {
 }
 
 func TestStore_ListByPrefix_Empty(t *testing.T) {
+	helper := newLocalstackHelper(t)
+	defer helper.cleanup()
+
 	ctx := context.Background()
-	s := newTestStore(t)
+	s := newTestStore(t, helper)
+	defer s.Close()
 
 	// List non-existent prefix
 	keys, err := s.ListByPrefix(ctx, "nonexistent")
@@ -255,8 +393,11 @@ func TestStore_ListByPrefix_Empty(t *testing.T) {
 }
 
 func TestStore_ClosedOperations(t *testing.T) {
+	helper := newLocalstackHelper(t)
+	defer helper.cleanup()
+
 	ctx := context.Background()
-	s := newTestStore(t)
+	s := newTestStore(t, helper)
 
 	// Close the store
 	if err := s.Close(); err != nil {
@@ -286,8 +427,12 @@ func TestStore_ClosedOperations(t *testing.T) {
 }
 
 func TestStore_HealthCheck(t *testing.T) {
+	helper := newLocalstackHelper(t)
+	defer helper.cleanup()
+
 	ctx := context.Background()
-	s := newTestStore(t)
+	s := newTestStore(t, helper)
+	defer s.Close()
 
 	// Should be healthy
 	if err := s.HealthCheck(ctx); err != nil {
@@ -296,8 +441,12 @@ func TestStore_HealthCheck(t *testing.T) {
 }
 
 func TestStore_OverwriteBlock(t *testing.T) {
+	helper := newLocalstackHelper(t)
+	defer helper.cleanup()
+
 	ctx := context.Background()
-	s := newTestStore(t)
+	s := newTestStore(t, helper)
+	defer s.Close()
 
 	blockKey := "share1/content123/chunk-0/block-0"
 
@@ -323,8 +472,12 @@ func TestStore_OverwriteBlock(t *testing.T) {
 }
 
 func TestStore_LargeBlock(t *testing.T) {
+	helper := newLocalstackHelper(t)
+	defer helper.cleanup()
+
 	ctx := context.Background()
-	s := newTestStore(t)
+	s := newTestStore(t, helper)
+	defer s.Close()
 
 	blockKey := "share1/content123/chunk-0/block-0"
 
@@ -368,28 +521,15 @@ func TestStore_LargeBlock(t *testing.T) {
 	}
 }
 
-func TestStore_InvalidBasePath(t *testing.T) {
-	// Empty base path
-	_, err := New(Config{BasePath: ""})
-	if err == nil {
-		t.Error("New with empty base path should fail")
-	}
-
-	// Non-existent path without CreateDir
-	_, err = New(Config{
-		BasePath:  "/nonexistent/path/that/does/not/exist",
-		CreateDir: false,
-	})
-	if err == nil {
-		t.Error("New with non-existent path should fail")
-	}
-}
-
 func TestStore_DeleteNonExistent(t *testing.T) {
-	ctx := context.Background()
-	s := newTestStore(t)
+	helper := newLocalstackHelper(t)
+	defer helper.cleanup()
 
-	// Delete non-existent block should not error
+	ctx := context.Background()
+	s := newTestStore(t, helper)
+	defer s.Close()
+
+	// Delete non-existent block should not error (S3 behavior)
 	if err := s.DeleteBlock(ctx, "nonexistent/block"); err != nil {
 		t.Errorf("DeleteBlock on non-existent block returned error: %v", err)
 	}
@@ -400,30 +540,158 @@ func TestStore_DeleteNonExistent(t *testing.T) {
 	}
 }
 
+func TestStore_KeyPrefix(t *testing.T) {
+	helper := newLocalstackHelper(t)
+	defer helper.cleanup()
+
+	ctx := context.Background()
+	bucketName := fmt.Sprintf("test-bucket-%d", time.Now().UnixNano())
+	helper.createBucket(t, bucketName)
+
+	// Create store with custom prefix
+	s := New(helper.client, Config{
+		Bucket:    bucketName,
+		KeyPrefix: "custom/prefix/",
+	})
+	defer s.Close()
+
+	blockKey := "share1/block-0"
+	data := []byte("test data")
+
+	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
+		t.Fatalf("WriteBlock failed: %v", err)
+	}
+
+	// Verify key includes prefix by listing directly from S3
+	resp, err := helper.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucketName),
+	})
+	if err != nil {
+		t.Fatalf("ListObjectsV2 failed: %v", err)
+	}
+
+	if len(resp.Contents) != 1 {
+		t.Fatalf("Expected 1 object, got %d", len(resp.Contents))
+	}
+
+	expectedKey := "custom/prefix/share1/block-0"
+	if *resp.Contents[0].Key != expectedKey {
+		t.Errorf("S3 key = %q, want %q", *resp.Contents[0].Key, expectedKey)
+	}
+
+	// Read should still work with block key (without prefix)
+	read, err := s.ReadBlock(ctx, blockKey)
+	if err != nil {
+		t.Fatalf("ReadBlock failed: %v", err)
+	}
+
+	if string(read) != string(data) {
+		t.Errorf("ReadBlock returned %q, want %q", read, data)
+	}
+}
+
 // ============================================================================
 // Benchmarks
 // ============================================================================
 
-func newBenchStore(b *testing.B) *Store {
+// benchmarkHelper is a shared helper for benchmark tests.
+// It uses a package-level container to avoid restarting for each benchmark.
+type benchmarkHelper struct {
+	helper *localstackHelper
+	store  *Store
+}
+
+// newBenchmarkHelper creates a benchmark helper with a shared Localstack container.
+func newBenchmarkHelper(b *testing.B) *benchmarkHelper {
 	b.Helper()
 
-	tmpDir, err := os.MkdirTemp("", "blockstore-fs-bench-*")
-	if err != nil {
-		b.Fatalf("failed to create temp dir: %v", err)
+	// Create localstack helper (reuses existing container if LOCALSTACK_ENDPOINT is set)
+	ctx := context.Background()
+
+	// Check if external Localstack is configured via environment
+	endpoint := os.Getenv("LOCALSTACK_ENDPOINT")
+	if endpoint == "" {
+		// Start Localstack container using testcontainers
+		req := testcontainers.ContainerRequest{
+			Image:        "localstack/localstack:3.0",
+			ExposedPorts: []string{"4566/tcp"},
+			Env: map[string]string{
+				"SERVICES":              "s3",
+				"DEFAULT_REGION":        "us-east-1",
+				"EAGER_SERVICE_LOADING": "1",
+			},
+			WaitingFor: wait.ForAll(
+				wait.ForListeningPort("4566/tcp"),
+				wait.ForHTTP("/_localstack/health").
+					WithPort("4566/tcp").
+					WithStartupTimeout(60*time.Second),
+			),
+		}
+
+		container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+			ContainerRequest: req,
+			Started:          true,
+		})
+		if err != nil {
+			b.Fatalf("failed to start localstack container: %v", err)
+		}
+
+		host, err := container.Host(ctx)
+		if err != nil {
+			_ = container.Terminate(ctx)
+			b.Fatalf("failed to get container host: %v", err)
+		}
+
+		port, err := container.MappedPort(ctx, "4566")
+		if err != nil {
+			_ = container.Terminate(ctx)
+			b.Fatalf("failed to get container port: %v", err)
+		}
+
+		endpoint = fmt.Sprintf("http://%s:%s", host, port.Port())
+
+		b.Cleanup(func() {
+			_ = container.Terminate(ctx)
+		})
 	}
 
-	s, err := NewWithPath(tmpDir)
+	// Create S3 client
+	cfg, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion("us-east-1"),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			"test", "test", "",
+		)),
+	)
 	if err != nil {
-		os.RemoveAll(tmpDir)
-		b.Fatalf("NewWithPath failed: %v", err)
+		b.Fatalf("failed to load AWS config: %v", err)
 	}
 
-	b.Cleanup(func() {
-		s.Close()
-		os.RemoveAll(tmpDir)
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = &endpoint
+		o.UsePathStyle = true
 	})
 
-	return s
+	// Create bucket
+	bucketName := fmt.Sprintf("bench-bucket-%d", time.Now().UnixNano())
+	_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{
+		Bucket: aws.String(bucketName),
+	})
+	if err != nil {
+		b.Fatalf("failed to create test bucket: %v", err)
+	}
+
+	store := New(client, Config{
+		Bucket:    bucketName,
+		KeyPrefix: "blocks/",
+	})
+
+	b.Cleanup(func() {
+		store.Close()
+	})
+
+	return &benchmarkHelper{
+		store: store,
+	}
 }
 
 func BenchmarkWriteBlock(b *testing.B) {
@@ -439,16 +707,16 @@ func BenchmarkWriteBlock(b *testing.B) {
 
 	for _, sz := range sizes {
 		b.Run(sz.name, func(b *testing.B) {
+			bh := newBenchmarkHelper(b)
 			ctx := context.Background()
-			s := newBenchStore(b)
 			data := make([]byte, sz.size)
 
 			b.SetBytes(int64(sz.size))
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				blockKey := filepath.Join("bench", "chunk-0", "block-"+string(rune('0'+i%10)))
-				if err := s.WriteBlock(ctx, blockKey, data); err != nil {
+				blockKey := fmt.Sprintf("bench/chunk-0/block-%d", i)
+				if err := bh.store.WriteBlock(ctx, blockKey, data); err != nil {
 					b.Fatalf("WriteBlock failed: %v", err)
 				}
 			}
@@ -469,13 +737,13 @@ func BenchmarkReadBlock(b *testing.B) {
 
 	for _, sz := range sizes {
 		b.Run(sz.name, func(b *testing.B) {
+			bh := newBenchmarkHelper(b)
 			ctx := context.Background()
-			s := newBenchStore(b)
 			data := make([]byte, sz.size)
 			blockKey := "bench/chunk-0/block-0"
 
 			// Pre-write the block
-			if err := s.WriteBlock(ctx, blockKey, data); err != nil {
+			if err := bh.store.WriteBlock(ctx, blockKey, data); err != nil {
 				b.Fatalf("WriteBlock failed: %v", err)
 			}
 
@@ -483,7 +751,7 @@ func BenchmarkReadBlock(b *testing.B) {
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				if _, err := s.ReadBlock(ctx, blockKey); err != nil {
+				if _, err := bh.store.ReadBlock(ctx, blockKey); err != nil {
 					b.Fatalf("ReadBlock failed: %v", err)
 				}
 			}
@@ -492,13 +760,13 @@ func BenchmarkReadBlock(b *testing.B) {
 }
 
 func BenchmarkReadBlockRange(b *testing.B) {
+	bh := newBenchmarkHelper(b)
 	ctx := context.Background()
-	s := newBenchStore(b)
 
 	// Write a 4MB block
 	blockKey := "bench/chunk-0/block-0"
 	data := make([]byte, 4*1024*1024)
-	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
+	if err := bh.store.WriteBlock(ctx, blockKey, data); err != nil {
 		b.Fatalf("WriteBlock failed: %v", err)
 	}
 
@@ -519,7 +787,7 @@ func BenchmarkReadBlockRange(b *testing.B) {
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				if _, err := s.ReadBlockRange(ctx, blockKey, r.offset, r.length); err != nil {
+				if _, err := bh.store.ReadBlockRange(ctx, blockKey, r.offset, r.length); err != nil {
 					b.Fatalf("ReadBlockRange failed: %v", err)
 				}
 			}
@@ -528,8 +796,8 @@ func BenchmarkReadBlockRange(b *testing.B) {
 }
 
 func BenchmarkWriteBlock_Parallel(b *testing.B) {
+	bh := newBenchmarkHelper(b)
 	ctx := context.Background()
-	s := newBenchStore(b)
 	data := make([]byte, 64*1024) // 64KB blocks
 
 	b.SetBytes(int64(len(data)))
@@ -538,8 +806,8 @@ func BenchmarkWriteBlock_Parallel(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			blockKey := filepath.Join("bench", "parallel", "block-"+string(rune('0'+i%100)))
-			if err := s.WriteBlock(ctx, blockKey, data); err != nil {
+			blockKey := fmt.Sprintf("bench/parallel/block-%d", i)
+			if err := bh.store.WriteBlock(ctx, blockKey, data); err != nil {
 				b.Fatalf("WriteBlock failed: %v", err)
 			}
 			i++
