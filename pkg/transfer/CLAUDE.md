@@ -33,7 +33,7 @@ BlockService.FlushAndFinalize() (SMB CLOSE)
 
 BlockService.ReadAt() (cache miss)
         ↓
-  TransferManager.ReadBlocks() ← parallel fetch from block store
+  TransferManager.ReadSlice() ← parallel fetch from block store
         ↓
   Blocks cached for future reads
 ```
@@ -58,7 +58,7 @@ Generic interface for transfer entries - enables specialized implementations.
 ```go
 type TransferQueueEntry interface {
     ShareName() string
-    FileHandle() []byte
+    FileHandle() string
     ContentID() string
     Execute(ctx context.Context, manager *TransferManager) error
     Priority() int
@@ -131,8 +131,9 @@ WaitForUploads(ctx, contentID) error
 // Upload remaining partial blocks (blocking - called on CLOSE)
 FlushRemaining(ctx, shareName, fileHandle, contentID) error
 
-// Fetch blocks from block store in parallel (cache miss)
-ReadBlocks(ctx, shareName, fileHandle, contentID, chunkIdx, offset, length) ([]byte, error)
+// Fetch slice from block store in parallel (cache miss)
+// Writes directly into dest buffer (zero-copy)
+ReadSlice(ctx, shareName, fileHandle, contentID, chunkIdx, offset, length, dest) error
 
 // Optional: Called after each write - checks if 4MB blocks are ready
 OnWriteComplete(ctx, shareName, fileHandle, contentID, chunkIdx, offset, length)
