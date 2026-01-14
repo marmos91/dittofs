@@ -5,16 +5,17 @@ import (
 	"errors"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/payload/block"
 	"github.com/marmos91/dittofs/pkg/payload/chunk"
 )
 
 // Re-export chunk constants for backward compatibility.
-// New code should import pkg/payload/chunk directly.
+// New code should import pkg/payload/chunk and pkg/payload/block directly.
 const (
-	ChunkSize                = chunk.ChunkSize
-	DefaultBlockSize         = chunk.BlockSize
-	MinBlockSize             = chunk.MinBlockSize
-	MaxBlockSize             = chunk.MaxBlockSize
+	ChunkSize                = chunk.Size
+	DefaultBlockSize         = block.Size
+	MinBlockSize             = block.MinSize
+	MaxBlockSize             = block.MaxSize
 	DefaultMaxSlicesPerChunk = chunk.DefaultMaxSlicesPerChunk
 )
 

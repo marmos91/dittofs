@@ -1,20 +1,19 @@
 # pkg/payload/chunk
 
-Constants and helpers for the Chunk/Slice/Block storage model.
+Constants and helpers for chunk-level file segmentation.
 
 ## Overview
 
-This is the single source of truth for chunk/slice/block constants.
-All packages should import from here rather than defining their own.
+Chunks are 64MB segments of a file used for metadata organization and lazy loading.
+This package provides chunk-level calculations and the Slices iterator.
+
+For block-level operations (4MB storage units), see `pkg/payload/block`.
 
 ## Constants
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `ChunkSize` | 64MB | File segmentation unit for metadata organization |
-| `BlockSize` | 4MB | Storage unit (one S3 object or filesystem file) |
-| `MinBlockSize` | 1MB | Minimum allowed block size |
-| `MaxBlockSize` | 16MB | Maximum allowed block size |
+| `Size` | 64MB | File segmentation unit for metadata organization |
 | `DefaultMaxSlicesPerChunk` | 16 | Compaction trigger threshold |
 
 ## Key Functions
@@ -24,21 +23,19 @@ All packages should import from here rather than defining their own.
 IndexForOffset(offset uint64) uint32           // chunk index for file offset
 OffsetInChunk(offset uint64) uint32            // offset within chunk
 Range(offset, length uint64) (start, end)      // chunk range for byte range
-ChunkBounds(chunkIdx uint32) (start, end)      // file-level bounds
+Bounds(chunkIdx uint32) (start, end)           // file-level bounds (exclusive end)
+ClipToChunk(chunkIdx, fileOffset, length)      // clip range to chunk boundaries
 ```
 
-### Block Calculations
+### Slices Iterator
 ```go
-BlockIndexForOffset(offsetInChunk uint32) uint32  // block index within chunk
-OffsetInBlock(offsetInChunk uint32) uint32        // offset within block
-BlockRange(offset, length uint32) (start, end)    // block range for chunk range
-BlockBounds(blockIdx uint32) (start, end)         // chunk-level bounds
-BlocksPerChunk() uint32                           // blocks in a full chunk (16)
-```
-
-### Range Helpers
-```go
-ClipToChunk(chunkIdx, fileOffset, length) (offsetInChunk, clippedLength)
+// Iterate over chunks that a byte range spans
+for slice := range chunk.Slices(offset, length) {
+    // slice.ChunkIndex - which chunk this slice belongs to
+    // slice.Offset     - offset within the chunk
+    // slice.Length     - length of data in this chunk
+    // slice.BufOffset  - offset into caller's buffer
+}
 ```
 
 ## Usage
@@ -46,23 +43,36 @@ ClipToChunk(chunkIdx, fileOffset, length) (offsetInChunk, clippedLength)
 ```go
 import "github.com/marmos91/dittofs/pkg/payload/chunk"
 
-// Calculate which chunks a read spans
+// Old pattern (manual iteration)
 startChunk, endChunk := chunk.Range(offset, length)
+for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
+    offsetInChunk, len := chunk.ClipToChunk(chunkIdx, offset+processed, remaining)
+    // ...
+}
 
-// Get chunk-local offset
-offsetInChunk := chunk.OffsetInChunk(fileOffset)
-
-// Calculate block range within chunk
-startBlock, endBlock := chunk.BlockRange(offsetInChunk, length)
+// New pattern (Slices iterator)
+for slice := range chunk.Slices(offset, length) {
+    data := cache.ReadSlice(ctx, handle, slice.ChunkIndex, slice.Offset, slice.Length)
+    copy(buf[slice.BufOffset:], data)
+}
 ```
 
-## Why This Package Exists
+## Package Split
 
-Previously constants were duplicated across:
-- `pkg/cache/types.go`
-- `pkg/metadata/chunks.go`
-- `pkg/transfer/manager.go`
-- `pkg/payload/store/store.go`
+The chunk package was split to separate concerns:
+- `pkg/payload/chunk/` - Chunk-level constants and helpers (this package)
+- `pkg/payload/block/` - Block-level constants and helpers
 
-This package centralizes them to avoid drift and circular imports.
-Other packages re-export these for backward compatibility.
+Import both when you need both:
+```go
+import (
+    "github.com/marmos91/dittofs/pkg/payload/block"
+    "github.com/marmos91/dittofs/pkg/payload/chunk"
+)
+
+// Chunk-level calculation
+chunkIdx := chunk.IndexForOffset(fileOffset)
+
+// Block-level calculation within chunk
+blockIdx := block.IndexForOffset(offsetInChunk)
+```

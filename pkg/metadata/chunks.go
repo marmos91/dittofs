@@ -3,18 +3,19 @@ package metadata
 import (
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/payload/block"
 	"github.com/marmos91/dittofs/pkg/payload/chunk"
 )
 
 // ============================================================================
-// Chunk/Slice/Block Constants (re-exported from chunk package)
+// Chunk/Slice/Block Constants (re-exported from chunk and block packages)
 // ============================================================================
 
 const (
-	ChunkSize                = chunk.ChunkSize
-	DefaultBlockSize         = chunk.BlockSize
-	MinBlockSize             = chunk.MinBlockSize
-	MaxBlockSize             = chunk.MaxBlockSize
+	ChunkSize                = chunk.Size
+	DefaultBlockSize         = block.Size
+	MinBlockSize             = block.MinSize
+	MaxBlockSize             = block.MaxSize
 	DefaultMaxSlicesPerChunk = chunk.DefaultMaxSlicesPerChunk
 )
 

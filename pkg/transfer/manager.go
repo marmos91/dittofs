@@ -7,13 +7,14 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/payload/block"
 	"github.com/marmos91/dittofs/pkg/payload/chunk"
 	"github.com/marmos91/dittofs/pkg/payload/store"
 )
 
 // BlockSize is the size of a single block (4MB).
-// Re-exported from chunk package for convenience.
-const BlockSize = chunk.BlockSize
+// Re-exported from block package for convenience.
+const BlockSize = block.Size
 
 // DefaultParallelUploads is the default number of concurrent uploads per file.
 const DefaultParallelUploads = 4
@@ -536,6 +537,171 @@ func assembleBlocks(blocks [][]byte, offset, length, startBlockIdx uint32) []byt
 	}
 
 	return result[:written]
+}
+
+// ============================================================================
+// Block Store Queries
+// ============================================================================
+
+// GetFileSize returns the total size of a file from the block store.
+// This is used as a fallback when the cache doesn't have the file.
+func (m *TransferManager) GetFileSize(ctx context.Context, shareName, payloadID string) (uint64, error) {
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return 0, fmt.Errorf("transfer manager is closed")
+	}
+	blockStore := m.blockStore
+	m.mu.RUnlock()
+
+	if blockStore == nil {
+		return 0, fmt.Errorf("no block store configured")
+	}
+
+	// List all blocks for this file
+	prefix := payloadID + "/"
+	blocks, err := blockStore.ListByPrefix(ctx, prefix)
+	if err != nil {
+		return 0, fmt.Errorf("list blocks: %w", err)
+	}
+
+	if len(blocks) == 0 {
+		return 0, nil
+	}
+
+	// Calculate total size from blocks
+	// Block key format: {payloadID}/chunk-{chunkIdx}/block-{blockIdx}
+	var maxChunkIdx, maxBlockIdx uint32
+	blockSizes := make(map[string]uint32) // blockKey -> size
+
+	for _, blockKey := range blocks {
+		var chunkIdx, blockIdx uint32
+		// Parse chunk and block index from key
+		_, err := fmt.Sscanf(blockKey, payloadID+"/chunk-%d/block-%d", &chunkIdx, &blockIdx)
+		if err != nil {
+			continue
+		}
+
+		// Track highest chunk/block for size calculation
+		if chunkIdx > maxChunkIdx || (chunkIdx == maxChunkIdx && blockIdx > maxBlockIdx) {
+			maxChunkIdx = chunkIdx
+			maxBlockIdx = blockIdx
+		}
+
+		// Read block to get actual size (last block may be partial)
+		data, err := blockStore.ReadBlock(ctx, blockKey)
+		if err != nil {
+			continue
+		}
+		blockSizes[blockKey] = uint32(len(data))
+	}
+
+	// Calculate total size
+	// Full chunks: maxChunkIdx * ChunkSize
+	// Last chunk: (maxBlockIdx * BlockSize) + last block size
+	lastBlockKey := fmt.Sprintf("%s/chunk-%d/block-%d", payloadID, maxChunkIdx, maxBlockIdx)
+	lastBlockSize := blockSizes[lastBlockKey]
+	if lastBlockSize == 0 {
+		lastBlockSize = BlockSize // Assume full block if we couldn't read it
+	}
+
+	totalSize := uint64(maxChunkIdx)*uint64(chunk.Size) +
+		uint64(maxBlockIdx)*uint64(BlockSize) +
+		uint64(lastBlockSize)
+
+	return totalSize, nil
+}
+
+// Exists checks if any blocks exist for a file in the block store.
+func (m *TransferManager) Exists(ctx context.Context, shareName, payloadID string) (bool, error) {
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return false, fmt.Errorf("transfer manager is closed")
+	}
+	blockStore := m.blockStore
+	m.mu.RUnlock()
+
+	if blockStore == nil {
+		return false, fmt.Errorf("no block store configured")
+	}
+
+	// List blocks for this file
+	prefix := payloadID + "/"
+	blocks, err := blockStore.ListByPrefix(ctx, prefix)
+	if err != nil {
+		return false, fmt.Errorf("list blocks: %w", err)
+	}
+
+	return len(blocks) > 0, nil
+}
+
+// Truncate removes blocks beyond the new size from the block store.
+func (m *TransferManager) Truncate(ctx context.Context, shareName, payloadID string, newSize uint64) error {
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return fmt.Errorf("transfer manager is closed")
+	}
+	blockStore := m.blockStore
+	m.mu.RUnlock()
+
+	if blockStore == nil {
+		return fmt.Errorf("no block store configured")
+	}
+
+	// Calculate which chunk/block the new size falls into
+	newChunkIdx := chunk.IndexForOffset(newSize)
+	offsetInChunk := chunk.OffsetInChunk(newSize)
+	newBlockIdx := block.IndexForOffset(offsetInChunk)
+
+	// List all blocks for this file
+	prefix := payloadID + "/"
+	blocks, err := blockStore.ListByPrefix(ctx, prefix)
+	if err != nil {
+		return fmt.Errorf("list blocks: %w", err)
+	}
+
+	// Delete blocks beyond the new size
+	for _, blockKey := range blocks {
+		var chunkIdx, blockIdx uint32
+		_, err := fmt.Sscanf(blockKey, payloadID+"/chunk-%d/block-%d", &chunkIdx, &blockIdx)
+		if err != nil {
+			continue
+		}
+
+		// Delete if beyond new size
+		if chunkIdx > newChunkIdx || (chunkIdx == newChunkIdx && blockIdx > newBlockIdx) {
+			if err := blockStore.DeleteBlock(ctx, blockKey); err != nil {
+				return fmt.Errorf("delete block %s: %w", blockKey, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// Delete removes all blocks for a file from the block store.
+func (m *TransferManager) Delete(ctx context.Context, shareName, payloadID string) error {
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return fmt.Errorf("transfer manager is closed")
+	}
+	blockStore := m.blockStore
+	m.mu.RUnlock()
+
+	if blockStore == nil {
+		return fmt.Errorf("no block store configured")
+	}
+
+	// Delete all blocks with this prefix
+	prefix := payloadID + "/"
+	if err := blockStore.DeleteByPrefix(ctx, prefix); err != nil {
+		return fmt.Errorf("delete blocks: %w", err)
+	}
+
+	return nil
 }
 
 // ============================================================================

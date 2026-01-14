@@ -5,111 +5,58 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/payload/chunk"
 	"github.com/marmos91/dittofs/pkg/transfer"
 )
 
-// PayloadService provides all block operations for the filesystem.
+// PayloadService is the persistence layer for file payload (content) data.
 //
-// It manages a single global Cache that serves all shares.
-// PayloadID uniqueness guarantees data isolation between files.
-// All protocol handlers should interact with PayloadService rather than
-// accessing the cache directly.
+// It coordinates between the Cache (fast in-memory/mmap storage) and
+// TransferManager (durable block store persistence). Both are required.
 //
-// Cache Model:
-//   - All writes go to Cache using WriteSlice API
-//   - Reads merge slices using newest-wins semantics
-//   - TransferManager handles cache-to-block-store persistence (optional)
+// Architecture:
+//
+//	PayloadService
+//	     ├── Cache: In-memory buffer with optional mmap backing
+//	     └── TransferManager: Background upload to block store (S3, filesystem)
+//
+// Key responsibilities:
+//   - Read/write file content using the Chunk/Slice/Block model
+//   - Coordinate cache and block store for durability
+//   - Handle chunk boundary calculations transparently
 //
 // Usage:
 //
-//	blockSvc := blocks.New()
-//	blockSvc.SetCache(sliceCache)
-//	blockSvc.SetTransferManager(transferMgr) // Optional: enables block store persistence
-//	err := blockSvc.WriteAt(ctx, shareName, payloadID, data, offset)
+//	svc := payload.New(cache, transferManager)
+//	err := svc.WriteAt(ctx, shareName, payloadID, data, offset)
+//	n, err := svc.ReadAt(ctx, shareName, payloadID, buf, offset)
+//	err := svc.FlushAsync(ctx, shareName, payloadID)  // NFS COMMIT
+//	err := svc.Flush(ctx, shareName, payloadID)       // SMB CLOSE
 type PayloadService struct {
 	mu              sync.RWMutex
-	cache           *cache.Cache            // Single global cache for all shares
-	transferManager *transfer.TransferManager // Optional: handles cache-to-block-store persistence
+	cache           *cache.Cache
+	transferManager *transfer.TransferManager
 }
 
-// New creates a new empty PayloadService instance.
-// Use SetCache to configure the global cache.
-func New() *PayloadService {
-	return &PayloadService{}
-}
-
-// SetCache sets the global Cache for the service.
+// New creates a new PayloadService with the required cache and transfer manager.
 //
-// Cache is the Chunk/Slice/Block model that provides:
-//   - Slice-aware caching with newest-wins merge semantics
-//   - Efficient random writes (no read-modify-write on block store)
-//   - Write coalescing for better performance
-//
-// This should be called once during initialization.
-func (s *PayloadService) SetCache(sc *cache.Cache) error {
-	if sc == nil {
-		return fmt.Errorf("cannot set nil cache")
+// Both parameters are required:
+//   - cache: In-memory buffer for reads/writes
+//   - transferManager: Handles persistence to block store
+func New(c *cache.Cache, tm *transfer.TransferManager) (*PayloadService, error) {
+	if c == nil {
+		return nil, fmt.Errorf("cache is required")
+	}
+	if tm == nil {
+		return nil, fmt.Errorf("transfer manager is required")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.cache = sc
-	return nil
-}
-
-// GetCache returns the global cache.
-// Returns nil if no cache is configured.
-func (s *PayloadService) GetCache() *cache.Cache {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	return s.cache
-}
-
-// SetTransferManager sets the transfer manager for cache-to-block-store persistence.
-//
-// When a transfer manager is configured:
-//   - Writes trigger eager block uploads (4MB blocks uploaded as they become ready)
-//   - Flush() waits for in-flight uploads and flushes remaining data to block store
-//   - ReadAt() falls back to block store on cache miss
-//
-// This is optional - without a transfer manager, the service operates in cache-only mode.
-func (s *PayloadService) SetTransferManager(tm *transfer.TransferManager) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.transferManager = tm
-}
-
-// GetTransferManager returns the transfer manager, or nil if not configured.
-func (s *PayloadService) GetTransferManager() *transfer.TransferManager {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.transferManager
-}
-
-// RegisterCacheForShare associates a cache with a share.
-// Since we use a single global cache, the shareName is ignored.
-func (s *PayloadService) RegisterCacheForShare(shareName string, sc *cache.Cache) error {
-	return s.SetCache(sc)
-}
-
-// GetCacheForShare returns the cache for a share.
-// Since we use a single global cache, the shareName is ignored.
-func (s *PayloadService) GetCacheForShare(shareName string) *cache.Cache {
-	return s.GetCache()
-}
-
-// HasCache returns true if a cache is configured for the share.
-// Since we use a single global cache, the shareName is ignored.
-func (s *PayloadService) HasCache(shareName string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	return s.cache != nil
+	return &PayloadService{
+		cache:           c,
+		transferManager: tm,
+	}, nil
 }
 
 // ============================================================================
@@ -118,103 +65,86 @@ func (s *PayloadService) HasCache(shareName string) bool {
 
 // ReadAt reads data at the specified offset.
 //
-// Data is read from Cache using the Chunk/Slice/Block model.
+// Data is read from cache first, falling back to block store on cache miss.
 // Reads span multiple chunks if the range crosses chunk boundaries,
 // with slices merged using newest-wins semantics.
-//
-// When transfer manager is configured and data is not in cache:
-//   - Falls back to block store to fetch the data
-//   - Downloaded blocks are cached for future reads
 func (s *PayloadService) ReadAt(ctx context.Context, shareName string, id metadata.PayloadID, p []byte, offset uint64) (int, error) {
-	sc := s.GetCache()
-	if sc == nil {
-		return 0, ErrNoCacheConfigured
-	}
-
 	if len(p) == 0 {
 		return 0, nil
 	}
 
-	// Use PayloadID as file handle
-	fileHandle := []byte(id)
-	payloadID := string(id)
-	tm := s.GetTransferManager()
+	s.mu.RLock()
+	c := s.cache
+	tm := s.transferManager
+	s.mu.RUnlock()
 
-	// Calculate which chunks this read spans
-	startChunk, endChunk := cache.ChunkRange(offset, uint64(len(p)))
+	// PayloadID is used directly as cache key
+	fileHandle := []byte(id)
 
 	totalRead := 0
-	for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
-		// Calculate the portion of buffer for this chunk
-		chunkStart := uint64(chunkIdx) * cache.ChunkSize
-		chunkEnd := chunkStart + cache.ChunkSize
-
-		// Calculate read range within this chunk
-		readStart := max(offset+uint64(totalRead), chunkStart)
-		readEnd := min(offset+uint64(len(p)), chunkEnd)
-
-		// Calculate offsets
-		offsetInChunk := uint32(readStart - chunkStart)
-		length := uint32(readEnd - readStart)
-		bufStart := int(readStart - offset)
-
-		// Read from this chunk
-		data, found, err := sc.ReadSlice(ctx, fileHandle, chunkIdx, offsetInChunk, length)
+	for slice := range chunk.Slices(offset, uint64(len(p))) {
+		// Try to read from cache first
+		data, found, err := c.ReadSlice(ctx, fileHandle, slice.ChunkIndex, slice.Offset, slice.Length)
 		if err != nil && err != cache.ErrFileNotInCache {
-			return totalRead, fmt.Errorf("read slice from chunk %d failed: %w", chunkIdx, err)
+			return totalRead, fmt.Errorf("read slice from chunk %d failed: %w", slice.ChunkIndex, err)
 		}
 
-		if !found {
-			// Cache miss - try to fetch from block store if transfer manager is configured
-			if tm != nil {
-				blockData, err := tm.ReadBlocks(ctx, shareName, fileHandle, payloadID, chunkIdx, offsetInChunk, length)
-				if err != nil {
-					// Block store fetch failed - fall back to zeros (sparse file behavior)
-					logger.Debug("Block store fetch failed, using zeros", "chunk", chunkIdx, "error", err)
-					for i := bufStart; i < bufStart+int(length); i++ {
-						p[i] = 0
-					}
-				} else {
-					copy(p[bufStart:], blockData)
-				}
-			} else {
-				// No transfer manager - fill with zeros (sparse file behavior for cache-only mode)
-				for i := bufStart; i < bufStart+int(length); i++ {
-					p[i] = 0
-				}
-			}
+		if found {
+			copy(p[slice.BufOffset:], data)
 		} else {
-			// Copy data to buffer
-			copy(p[bufStart:], data)
+			// Cache miss - fetch from block store
+			blockData, err := tm.ReadBlocks(ctx, shareName, fileHandle, string(id), slice.ChunkIndex, slice.Offset, slice.Length)
+			if err != nil {
+				return totalRead, fmt.Errorf("read blocks from chunk %d failed: %w", slice.ChunkIndex, err)
+			}
+			copy(p[slice.BufOffset:], blockData)
 		}
 
-		totalRead = bufStart + int(length)
+		totalRead += int(slice.Length)
 	}
 
 	return totalRead, nil
 }
 
-// GetContentSize returns the size of content for a file.
-func (s *PayloadService) GetContentSize(ctx context.Context, shareName string, id metadata.PayloadID) (uint64, error) {
-	sc := s.GetCache()
-	if sc == nil {
-		return 0, ErrNoCacheConfigured
-	}
+// GetSize returns the size of payload for a file.
+//
+// Checks cache first, falls back to block store metadata.
+func (s *PayloadService) GetSize(ctx context.Context, shareName string, id metadata.PayloadID) (uint64, error) {
+	s.mu.RLock()
+	c := s.cache
+	tm := s.transferManager
+	s.mu.RUnlock()
 
 	fileHandle := []byte(id)
-	return sc.GetFileSize(fileHandle), nil
+
+	// Check cache first
+	size := c.GetFileSize(fileHandle)
+	if size > 0 {
+		return size, nil
+	}
+
+	// Fall back to block store
+	return tm.GetFileSize(ctx, shareName, string(id))
 }
 
-// ContentExists checks if content exists for the file.
-func (s *PayloadService) ContentExists(ctx context.Context, shareName string, id metadata.PayloadID) (bool, error) {
-	sc := s.GetCache()
-	if sc == nil {
-		return false, ErrNoCacheConfigured
-	}
+// Exists checks if payload exists for the file.
+//
+// Checks cache first, falls back to block store.
+func (s *PayloadService) Exists(ctx context.Context, shareName string, id metadata.PayloadID) (bool, error) {
+	s.mu.RLock()
+	c := s.cache
+	tm := s.transferManager
+	s.mu.RUnlock()
 
 	fileHandle := []byte(id)
-	// File exists if it has any cached data
-	return sc.GetFileSize(fileHandle) > 0, nil
+
+	// Check cache first
+	if c.GetFileSize(fileHandle) > 0 {
+		return true, nil
+	}
+
+	// Fall back to block store
+	return tm.Exists(ctx, shareName, string(id))
 }
 
 // ============================================================================
@@ -223,173 +153,134 @@ func (s *PayloadService) ContentExists(ctx context.Context, shareName string, id
 
 // WriteAt writes data at the specified offset.
 //
-// Writes go to Cache using the Chunk/Slice/Block model.
+// Writes go to cache using the Chunk/Slice/Block model.
 // Data is split across chunk boundaries and stored as slices within each chunk.
 // Block store uploads are triggered on Flush() via background worker pool.
 func (s *PayloadService) WriteAt(ctx context.Context, shareName string, id metadata.PayloadID, data []byte, offset uint64) error {
-	sc := s.GetCache()
-	if sc == nil {
-		return ErrNoCacheConfigured
-	}
-
 	if len(data) == 0 {
 		return nil
 	}
 
-	// Use PayloadID as file handle
+	s.mu.RLock()
+	c := s.cache
+	s.mu.RUnlock()
+
 	fileHandle := []byte(id)
 
-	// Calculate which chunks this write spans
-	startChunk, endChunk := cache.ChunkRange(offset, uint64(len(data)))
-
-	dataOffset := 0
-	for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
-		// Calculate the portion of data that goes into this chunk
-		chunkStart := uint64(chunkIdx) * cache.ChunkSize
-		chunkEnd := chunkStart + cache.ChunkSize
-
-		// Calculate write range within this chunk
-		writeStart := max(offset+uint64(dataOffset), chunkStart)
-		writeEnd := min(offset+uint64(len(data)), chunkEnd)
-
-		// Calculate offsets
-		offsetInChunk := uint32(writeStart - chunkStart)
-		dataStart := int(writeStart - offset)
-		dataEnd := int(writeEnd - offset)
+	for slice := range chunk.Slices(offset, uint64(len(data))) {
+		dataEnd := slice.BufOffset + int(slice.Length)
 
 		// Write slice to this chunk
-		err := sc.WriteSlice(ctx, fileHandle, chunkIdx, data[dataStart:dataEnd], offsetInChunk)
+		err := c.WriteSlice(ctx, fileHandle, slice.ChunkIndex, data[slice.BufOffset:dataEnd], slice.Offset)
 		if err != nil {
-			return fmt.Errorf("write slice to chunk %d failed: %w", chunkIdx, err)
+			return fmt.Errorf("write slice to chunk %d failed: %w", slice.ChunkIndex, err)
 		}
-
-		dataOffset = dataEnd
 	}
 
 	return nil
 }
 
-// Truncate truncates content to the specified size.
+// Truncate truncates payload to the specified size.
+//
+// Updates cache and schedules block store cleanup.
 func (s *PayloadService) Truncate(ctx context.Context, shareName string, id metadata.PayloadID, newSize uint64) error {
-	sc := s.GetCache()
-	if sc == nil {
-		return ErrNoCacheConfigured
-	}
+	s.mu.RLock()
+	c := s.cache
+	tm := s.transferManager
+	s.mu.RUnlock()
 
 	fileHandle := []byte(id)
-	return sc.Truncate(ctx, fileHandle, newSize)
+
+	// Truncate in cache
+	if err := c.Truncate(ctx, fileHandle, newSize); err != nil {
+		return fmt.Errorf("cache truncate failed: %w", err)
+	}
+
+	// Schedule block store cleanup
+	return tm.Truncate(ctx, shareName, string(id), newSize)
 }
 
-// Delete removes content for a file.
+// Delete removes payload for a file.
+//
+// Removes from cache and schedules block store cleanup.
 func (s *PayloadService) Delete(ctx context.Context, shareName string, id metadata.PayloadID) error {
-	sc := s.GetCache()
-	if sc == nil {
-		return ErrNoCacheConfigured
-	}
+	s.mu.RLock()
+	c := s.cache
+	tm := s.transferManager
+	s.mu.RUnlock()
 
 	fileHandle := []byte(id)
-	return sc.Remove(ctx, fileHandle)
+
+	// Remove from cache
+	if err := c.Remove(ctx, fileHandle); err != nil {
+		return fmt.Errorf("cache remove failed: %w", err)
+	}
+
+	// Schedule block store cleanup
+	return tm.Delete(ctx, shareName, string(id))
 }
 
 // ============================================================================
 // Flush Operations
 // ============================================================================
 
-// Flush flushes cached data for a file.
+// FlushAsync flushes cached data for a file (non-blocking).
 //
-// When transfer manager is configured (hybrid flush):
-//   - Syncs cache to disk (fast, local) for crash recovery
-//   - Enqueues remaining data for background block store upload (non-blocking)
+// This is called by NFS COMMIT:
+//   - Enqueues remaining data for background block store upload
+//   - Returns immediately (non-blocking)
+//   - Data is safe in mmap cache (crash-safe via OS page cache)
 //
-// When cache-only (no transfer manager):
-//   - Coalesces writes to optimize slice count
-func (s *PayloadService) Flush(ctx context.Context, shareName string, id metadata.PayloadID) (*FlushResult, error) {
-	sc := s.GetCache()
-	if sc == nil {
-		return nil, ErrNoCacheConfigured
-	}
+// Returns FlushResult indicating the operation status.
+func (s *PayloadService) FlushAsync(ctx context.Context, shareName string, id metadata.PayloadID) (*FlushResult, error) {
+	s.mu.RLock()
+	tm := s.transferManager
+	s.mu.RUnlock()
 
 	fileHandle := []byte(id)
-	tm := s.GetTransferManager()
 
-	// If transfer manager is configured, enqueue background upload
-	// Data is in mmap cache (crash-safe), block store upload is async
-	if tm != nil {
-		payloadID := string(id)
-		// Non-blocking enqueue - uploads happen in background worker pool
-		_ = tm.FlushRemainingAsync(ctx, shareName, fileHandle, payloadID)
-		return &FlushResult{
-			AlreadyFlushed: false,
-			Finalized:      true,
-		}, nil
-	}
-
-	// Cache-only mode: coalesce writes for optimization
-	if sc.HasDirtyData(fileHandle) {
-		if err := sc.CoalesceWrites(ctx, fileHandle); err != nil {
-			logger.Warn("Failed to coalesce writes", "file", string(fileHandle), "error", err)
-		}
+	// Non-blocking enqueue - uploads happen in background worker pool
+	err := tm.FlushRemainingAsync(ctx, shareName, fileHandle, string(id))
+	if err != nil {
+		return nil, fmt.Errorf("flush async failed: %w", err)
 	}
 
 	return &FlushResult{
-		AlreadyFlushed: true,
+		AlreadyFlushed: false,
 		Finalized:      true,
 	}, nil
 }
 
-// FlushAndFinalize flushes and finalizes for immediate durability.
+// Flush flushes and finalizes for immediate durability (blocking).
 //
-// This is called by SMB CLOSE which requires full durability before returning.
-// Unlike Flush(), this BLOCKS until all data is persisted to block store.
-func (s *PayloadService) FlushAndFinalize(ctx context.Context, shareName string, id metadata.PayloadID) (*FlushResult, error) {
-	sc := s.GetCache()
-	if sc == nil {
-		return nil, ErrNoCacheConfigured
-	}
+// This is called by SMB CLOSE which requires full durability before returning:
+//   - Waits for in-flight uploads to complete
+//   - Uploads remaining partial blocks
+//   - Blocks until all data is persisted to block store
+//
+// Returns FlushResult indicating the operation status.
+func (s *PayloadService) Flush(ctx context.Context, shareName string, id metadata.PayloadID) (*FlushResult, error) {
+	s.mu.RLock()
+	tm := s.transferManager
+	s.mu.RUnlock()
 
 	fileHandle := []byte(id)
 	payloadID := string(id)
-	tm := s.GetTransferManager()
 
-	// If transfer manager is configured, use blocking flush for full durability
-	if tm != nil {
-		// Wait for any in-flight eager uploads
-		if err := tm.WaitForUploads(ctx, payloadID); err != nil {
-			return nil, fmt.Errorf("wait for uploads: %w", err)
-		}
-
-		// Flush remaining blocks (blocking)
-		if err := tm.FlushRemaining(ctx, shareName, fileHandle, payloadID); err != nil {
-			return nil, fmt.Errorf("flush remaining: %w", err)
-		}
-
-		return &FlushResult{
-			AlreadyFlushed: false,
-			Finalized:      true,
-		}, nil
+	// Wait for any in-flight eager uploads
+	if err := tm.WaitForUploads(ctx, payloadID); err != nil {
+		return nil, fmt.Errorf("wait for uploads: %w", err)
 	}
 
-	// Cache-only mode: coalesce writes
-	if sc.HasDirtyData(fileHandle) {
-		if err := sc.CoalesceWrites(ctx, fileHandle); err != nil {
-			logger.Warn("Failed to coalesce writes", "file", string(fileHandle), "error", err)
-		}
+	// Flush remaining blocks (blocking)
+	if err := tm.FlushRemaining(ctx, shareName, fileHandle, payloadID); err != nil {
+		return nil, fmt.Errorf("flush remaining: %w", err)
 	}
 
 	return &FlushResult{
-		AlreadyFlushed: true,
+		AlreadyFlushed: false,
 		Finalized:      true,
 	}, nil
-}
-
-// ============================================================================
-// Capability Detection
-// ============================================================================
-
-// SupportsReadAt returns true if the service supports efficient random reads.
-// Always true when a cache is configured.
-func (s *PayloadService) SupportsReadAt(shareName string) bool {
-	return s.HasCache(shareName)
 }
 
 // ============================================================================
@@ -397,24 +288,28 @@ func (s *PayloadService) SupportsReadAt(shareName string) bool {
 // ============================================================================
 
 // GetStorageStats returns storage statistics.
+//
+// Note: This is inefficient as it lists all files. Consider caching this
+// information in the metadata store for production use.
 func (s *PayloadService) GetStorageStats(ctx context.Context, shareName string) (*StorageStats, error) {
-	sc := s.GetCache()
-	if sc == nil {
-		return nil, ErrNoCacheConfigured
-	}
+	s.mu.RLock()
+	c := s.cache
+	s.mu.RUnlock()
 
 	// Count files in cache
-	files := sc.ListFiles()
+	files := c.ListFiles()
 	return &StorageStats{
-		UsedSize:     0, // Stats tracking removed for simplicity
+		UsedSize:     0, // TODO: Implement proper stats tracking
 		ContentCount: uint64(len(files)),
 	}, nil
 }
 
-// Healthcheck performs health check.
-func (s *PayloadService) Healthcheck(ctx context.Context, shareName string) error {
-	if !s.HasCache(shareName) {
-		return ErrNoCacheConfigured
-	}
-	return nil
+// HealthCheck performs health check on cache and transfer manager.
+func (s *PayloadService) HealthCheck(ctx context.Context) error {
+	s.mu.RLock()
+	tm := s.transferManager
+	s.mu.RUnlock()
+
+	// Check transfer manager (which checks block store)
+	return tm.HealthCheck(ctx)
 }
