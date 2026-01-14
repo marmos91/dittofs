@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/cache/wal"
 	"github.com/marmos91/dittofs/pkg/payload/block"
 	"github.com/marmos91/dittofs/pkg/payload/chunk"
 )
@@ -41,54 +42,23 @@ var (
 )
 
 // ============================================================================
-// Slice State
+// Re-exported WAL Types
 // ============================================================================
 
 // SliceState represents the state of a slice in the cache.
-type SliceState int
+// Defined in wal package for persistence format independence.
+type SliceState = wal.SliceState
 
+// SliceState constants - re-exported from wal package.
 const (
-	// SliceStatePending indicates the slice has unflushed data.
-	SliceStatePending SliceState = iota
-
-	// SliceStateFlushed indicates the slice has been persisted to block storage.
-	SliceStateFlushed
-
-	// SliceStateUploading indicates the slice is currently being uploaded.
-	SliceStateUploading
+	SliceStatePending   = wal.SliceStatePending
+	SliceStateFlushed   = wal.SliceStateFlushed
+	SliceStateUploading = wal.SliceStateUploading
 )
 
-// String returns the string representation of SliceState.
-func (s SliceState) String() string {
-	switch s {
-	case SliceStatePending:
-		return "Pending"
-	case SliceStateFlushed:
-		return "Flushed"
-	case SliceStateUploading:
-		return "Uploading"
-	default:
-		return "Unknown"
-	}
-}
-
-// IsDirty returns true if the slice has unflushed data.
-func (s SliceState) IsDirty() bool {
-	return s == SliceStatePending || s == SliceStateUploading
-}
-
-// ============================================================================
-// Block Reference
-// ============================================================================
-
 // BlockRef references an immutable block in the block store.
-type BlockRef struct {
-	// ID is the block's unique identifier in the block store.
-	ID string
-
-	// Size is the actual size of this block (may be < BlockSize for last block).
-	Size uint32
-}
+// Defined in wal package for persistence format independence.
+type BlockRef = wal.BlockRef
 
 // ============================================================================
 // Slice Types

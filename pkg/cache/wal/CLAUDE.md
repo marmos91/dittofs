@@ -1,6 +1,6 @@
-# pkg/wal
+# pkg/cache/wal
 
-Write-Ahead Log persistence layer for crash recovery.
+Write-Ahead Log persistence layer for cache crash recovery.
 
 ## Overview
 
@@ -28,6 +28,11 @@ Server Crash → Restart
 
 ## Key Types
 
+This package defines the canonical types used by both WAL and cache:
+- `SliceState` - re-exported by cache as `cache.SliceState`
+- `BlockRef` - re-exported by cache as `cache.BlockRef`
+- `SliceEntry` - WAL persistence format (includes FileHandle, ChunkIdx for context)
+
 ### Persister (Interface)
 
 Pluggable interface for WAL implementations.
@@ -38,7 +43,7 @@ type Persister interface {
     AppendSlice(entry *SliceEntry) error
 
     // Log a file removal (clear all slices)
-    AppendRemove(fileHandle []byte) error
+    AppendRemove(fileHandle string) error
 
     // Fsync WAL to disk
     Sync() error
@@ -54,21 +59,16 @@ type Persister interface {
 }
 ```
 
-### SliceEntry
-
-WAL record for a single slice write.
+### SliceState
 
 ```go
-type SliceEntry struct {
-    FileHandle []byte
-    ChunkIdx   uint32
-    SliceID    uint64
-    Offset     uint32
-    Data       []byte
-    State      uint8       // SliceStatePending, etc.
-    CreatedAt  int64       // Unix nano
-    BlockRefs  []BlockRef  // For flushed slices
-}
+type SliceState int
+
+const (
+    SliceStatePending   SliceState = iota  // Unflushed data
+    SliceStateFlushed                       // Safe in block storage
+    SliceStateUploading                     // Flush in progress
+)
 ```
 
 ### BlockRef
@@ -77,9 +77,26 @@ Reference to a block in the block store.
 
 ```go
 type BlockRef struct {
-    BlockKey string
-    Offset   uint32
-    Length   uint32
+    ID   string  // Block's unique identifier
+    Size uint32  // Actual size (may be < BlockSize for last block)
+}
+```
+
+### SliceEntry
+
+WAL record for a single slice write.
+
+```go
+type SliceEntry struct {
+    FileHandle string      // File this slice belongs to
+    ChunkIdx   uint32      // Chunk index within file
+    SliceID    string      // Unique slice identifier
+    Offset     uint32      // Byte offset within chunk
+    Length     uint32      // Size of slice data
+    Data       []byte      // Actual content
+    State      SliceState  // Pending/Flushed/Uploading
+    CreatedAt  time.Time   // Creation timestamp
+    BlockRefs  []BlockRef  // Block references (for flushed slices)
 }
 ```
 
@@ -127,7 +144,7 @@ persister := wal.NewNullPersister()
 ```go
 import (
     "github.com/marmos91/dittofs/pkg/cache"
-    "github.com/marmos91/dittofs/pkg/wal"
+    "github.com/marmos91/dittofs/pkg/cache/wal"
 )
 
 // Option 1: With WAL persistence (create persister externally)

@@ -13,9 +13,23 @@ Cache (cache.go)
 
 ## Package Structure
 
-- `cache.go` - Cache implementation (business logic + storage)
-- `types.go` - Slice, SliceState, SliceUpdate, BlockRef types
+- `cache.go` - Core types (Cache, fileEntry, chunkEntry), constructors, helpers
+- `write.go` - WriteSlice, sequential write optimization
+- `read.go` - ReadSlice, newest-wins merging, IsRangeCovered
+- `flush.go` - GetDirtySlices, MarkSliceFlushed, CoalesceWrites
+- `eviction.go` - LRU eviction (EvictLRU, Evict, EvictAll)
+- `state.go` - Remove, Truncate, HasDirtyData, GetFileSize, Stats, Close, Sync
+- `types.go` - Slice, SliceUpdate, PendingSlice types; re-exports SliceState and BlockRef from wal
+- `wal/` - WAL persistence layer (SliceState, BlockRef, SliceEntry defined here)
 - `benchmark_test.go` - Performance benchmarks
+
+## Type Unification
+
+SliceState and BlockRef are defined in `pkg/cache/wal` and re-exported by `pkg/cache`:
+- `cache.SliceState` = `wal.SliceState` (type alias)
+- `cache.BlockRef` = `wal.BlockRef` (type alias)
+
+This eliminates conversion overhead between cache and WAL operations.
 
 ## WAL Persistence
 
@@ -118,7 +132,7 @@ Result:
 ```go
 import (
     "github.com/marmos91/dittofs/pkg/cache"
-    "github.com/marmos91/dittofs/pkg/wal"
+    "github.com/marmos91/dittofs/pkg/cache/wal"
 )
 
 // Create cache (in-memory only, no persistence)

@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/cache/wal"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -15,7 +16,6 @@ import (
 	blockmemory "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	blocks3 "github.com/marmos91/dittofs/pkg/payload/store/s3"
 	"github.com/marmos91/dittofs/pkg/transfer"
-	"github.com/marmos91/dittofs/pkg/wal"
 	"github.com/mitchellh/mapstructure"
 )
 
