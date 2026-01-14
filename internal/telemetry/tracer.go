@@ -94,7 +94,7 @@ const (
 	// ========================================================================
 	// Storage backend attributes
 	// ========================================================================
-	AttrContentID = "content.id"
+	AttrPayloadID = "content.id"
 	AttrStoreName = "store.name"
 	AttrStoreType = "store.type"
 	AttrBucket    = "storage.bucket"
@@ -277,9 +277,9 @@ func CacheSource(source string) attribute.KeyValue {
 	return attribute.String(AttrCacheSource, source)
 }
 
-// ContentID returns an attribute for content ID
-func ContentID(id string) attribute.KeyValue {
-	return attribute.String(AttrContentID, id)
+// PayloadID returns an attribute for content ID
+func PayloadID(id string) attribute.KeyValue {
+	return attribute.String(AttrPayloadID, id)
 }
 
 // Bucket returns an attribute for S3 bucket name
@@ -315,9 +315,9 @@ func StartNFSSpan(ctx context.Context, procedure string, handle []byte, attrs ..
 }
 
 // StartContentSpan starts a span for a content store operation.
-func StartContentSpan(ctx context.Context, operation string, contentID string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+func StartContentSpan(ctx context.Context, operation string, payloadID string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
 	allAttrs := []attribute.KeyValue{
-		ContentID(contentID),
+		PayloadID(payloadID),
 	}
 	allAttrs = append(allAttrs, attrs...)
 

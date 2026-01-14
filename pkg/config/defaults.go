@@ -220,6 +220,27 @@ func applyBlockStoreDefaults(cfg *BlockStoreConfig) {
 			cfg.S3.MaxRetries = 3
 		}
 	}
+
+	// Apply filesystem-specific defaults if filesystem is configured
+	if cfg.Type == "filesystem" {
+		// CreateDir defaults to true (create base directory if it doesn't exist)
+		// Note: Go bool defaults to false, so we set it to true here
+		// We can't distinguish "explicitly false" from "not set", so we always
+		// set to true unless basePath is not configured (validation will catch that)
+		if cfg.Filesystem.BasePath != "" && !cfg.Filesystem.CreateDir {
+			cfg.Filesystem.CreateDir = true
+		}
+
+		// DirMode defaults to 0755
+		if cfg.Filesystem.DirMode == 0 {
+			cfg.Filesystem.DirMode = 0755
+		}
+
+		// FileMode defaults to 0644
+		if cfg.Filesystem.FileMode == 0 {
+			cfg.Filesystem.FileMode = 0644
+		}
+	}
 }
 
 // applyWriteGatheringDefaults sets write gathering optimization defaults.

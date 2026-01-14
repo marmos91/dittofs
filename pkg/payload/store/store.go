@@ -4,10 +4,13 @@ package store
 import (
 	"context"
 	"errors"
+
+	"github.com/marmos91/dittofs/pkg/payload/block"
 )
 
 // BlockSize is the size of a single block (4MB).
-const BlockSize = 4 * 1024 * 1024
+// Re-exported from block package for convenience.
+const BlockSize = block.Size
 
 // Common errors returned by BlockStore implementations.
 var (
@@ -21,7 +24,7 @@ var (
 // BlockStore defines the interface for block storage backends.
 // Blocks are immutable 4MB chunks of data stored with a string key.
 //
-// Key format: "{shareName}/{contentID}/chunk-{chunkIdx}/block-{blockIdx}"
+// Key format: "{shareName}/{payloadID}/chunk-{chunkIdx}/block-{blockIdx}"
 // Example: "archive/abc123/chunk-0/block-0"
 type BlockStore interface {
 	// WriteBlock writes a single block to storage.
@@ -44,7 +47,7 @@ type BlockStore interface {
 
 	// DeleteByPrefix removes all blocks with a given prefix.
 	// Use cases:
-	// - DeleteByPrefix("shareName/contentID/") removes all blocks for a file
+	// - DeleteByPrefix("shareName/payloadID/") removes all blocks for a file
 	// - DeleteByPrefix("shareName/") removes all blocks for a share
 	DeleteByPrefix(ctx context.Context, prefix string) error
 
@@ -63,7 +66,7 @@ type BlockStore interface {
 // BlockRef references a single block in storage.
 type BlockRef struct {
 	// Key is the full block key in storage.
-	// Format: "{shareName}/{contentID}/chunk-{chunkIdx}/block-{blockIdx}"
+	// Format: "{shareName}/{payloadID}/chunk-{chunkIdx}/block-{blockIdx}"
 	Key string
 
 	// Size is the actual size of this block (may be < BlockSize for last block).

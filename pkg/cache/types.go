@@ -4,29 +4,19 @@ package cache
 import (
 	"errors"
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/payload/block"
+	"github.com/marmos91/dittofs/pkg/payload/chunk"
 )
 
-// ============================================================================
-// Constants
-// ============================================================================
-
+// Re-export chunk constants for backward compatibility.
+// New code should import pkg/payload/chunk and pkg/payload/block directly.
 const (
-	// ChunkSize is the size of a chunk in bytes (64MB).
-	// Files are divided into chunks for metadata organization.
-	ChunkSize = 64 * 1024 * 1024
-
-	// DefaultBlockSize is the default block size for storage (4MB).
-	// Each block becomes a single object in the block store.
-	DefaultBlockSize = 4 * 1024 * 1024
-
-	// MinBlockSize is the minimum allowed block size (1MB).
-	MinBlockSize = 1 * 1024 * 1024
-
-	// MaxBlockSize is the maximum allowed block size (16MB).
-	MaxBlockSize = 16 * 1024 * 1024
-
-	// DefaultMaxSlicesPerChunk is when compaction is triggered.
-	DefaultMaxSlicesPerChunk = 16
+	ChunkSize                = chunk.Size
+	DefaultBlockSize         = block.Size
+	MinBlockSize             = block.MinSize
+	MaxBlockSize             = block.MaxSize
+	DefaultMaxSlicesPerChunk = chunk.DefaultMaxSlicesPerChunk
 )
 
 // ============================================================================

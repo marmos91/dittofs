@@ -916,7 +916,7 @@ func TestMetadataService_PrepareWrite(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotNil(t, intent)
 		assert.Equal(t, uint64(1024), intent.NewSize)
-		assert.NotEmpty(t, intent.ContentID)
+		assert.NotEmpty(t, intent.PayloadID)
 		assert.NotNil(t, intent.PreWriteAttr)
 	})
 

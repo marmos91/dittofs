@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/blocks"
+	"github.com/marmos91/dittofs/pkg/payload"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -449,7 +449,7 @@ func createNewFile(
 	req *CreateRequest,
 ) (metadata.FileHandle, *metadata.FileAttr, error) {
 	// Build file attributes for the new file
-	// The repository will complete these with timestamps and ContentID
+	// The repository will complete these with timestamps and PayloadID
 	fileAttr := &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0644, // Default: rw-r--r--
@@ -551,7 +551,7 @@ func createNewFile(
 //   - Updated file attributes and error
 func truncateExistingFile(
 	authCtx *metadata.AuthContext,
-	contentSvc *blocks.BlockService,
+	contentSvc *payload.PayloadService,
 	shareName string,
 	metaSvc *metadata.MetadataService,
 	existingFile *metadata.File,
@@ -594,8 +594,8 @@ func truncateExistingFile(
 	}
 
 	// Truncate content if file has content
-	if existingFile.ContentID != "" {
-		if err := contentSvc.Truncate(authCtx.Context, shareName, existingFile.ContentID, targetSize); err != nil {
+	if existingFile.PayloadID != "" {
+		if err := contentSvc.Truncate(authCtx.Context, shareName, existingFile.PayloadID, targetSize); err != nil {
 			logger.Warn("Failed to truncate content", "size", targetSize, "error", err)
 			// Non-fatal: metadata is already updated
 		}

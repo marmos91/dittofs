@@ -13,9 +13,9 @@ import (
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/marmos91/dittofs/pkg/blocks/store"
-	blockmemory "github.com/marmos91/dittofs/pkg/blocks/store/memory"
-	blocks3 "github.com/marmos91/dittofs/pkg/blocks/store/s3"
+	"github.com/marmos91/dittofs/pkg/payload/store"
+	blockmemory "github.com/marmos91/dittofs/pkg/payload/store/memory"
+	blocks3 "github.com/marmos91/dittofs/pkg/payload/store/s3"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/transfer"
 	"github.com/testcontainers/testcontainers-go"
@@ -318,7 +318,7 @@ func TestFlusher_Integration(t *testing.T) {
 
 	t.Run("FlushSmallFile", func(t *testing.T) {
 		fileHandle := []byte("file1")
-		contentID := "content-small"
+		payloadID := "content-small"
 		shareName := "share1"
 		data := []byte("hello world from flusher test")
 
@@ -329,13 +329,13 @@ func TestFlusher_Integration(t *testing.T) {
 		}
 
 		// Flush remaining data
-		err = f.FlushRemaining(ctx, shareName, fileHandle, contentID)
+		err = f.FlushRemaining(ctx, shareName, fileHandle, payloadID)
 		if err != nil {
 			t.Fatalf("FlushRemaining failed: %v", err)
 		}
 
 		// Verify data is in S3
-		keys, err := blockStore.ListByPrefix(ctx, fmt.Sprintf("%s/%s/", shareName, contentID))
+		keys, err := blockStore.ListByPrefix(ctx, fmt.Sprintf("%s/%s/", shareName, payloadID))
 		if err != nil {
 			t.Fatalf("ListByPrefix failed: %v", err)
 		}
@@ -347,7 +347,7 @@ func TestFlusher_Integration(t *testing.T) {
 
 	t.Run("FlushLargeFile", func(t *testing.T) {
 		fileHandle := []byte("file2")
-		contentID := "content-large"
+		payloadID := "content-large"
 		shareName := "share1"
 
 		// Write 10MB of data (will create 3 blocks: 4MB + 4MB + 2MB)
@@ -362,13 +362,13 @@ func TestFlusher_Integration(t *testing.T) {
 		}
 
 		// Flush remaining data
-		err = f.FlushRemaining(ctx, shareName, fileHandle, contentID)
+		err = f.FlushRemaining(ctx, shareName, fileHandle, payloadID)
 		if err != nil {
 			t.Fatalf("FlushRemaining failed: %v", err)
 		}
 
 		// Verify blocks are in S3
-		keys, err := blockStore.ListByPrefix(ctx, fmt.Sprintf("%s/%s/", shareName, contentID))
+		keys, err := blockStore.ListByPrefix(ctx, fmt.Sprintf("%s/%s/", shareName, payloadID))
 		if err != nil {
 			t.Fatalf("ListByPrefix failed: %v", err)
 		}
@@ -379,12 +379,12 @@ func TestFlusher_Integration(t *testing.T) {
 	})
 
 	t.Run("ReadBlocksFromS3", func(t *testing.T) {
-		contentID := "content-read"
+		payloadID := "content-read"
 		shareName := "share1"
 		fileHandle := []byte("file-read")
 
 		// Pre-populate S3 with a block
-		blockKey := fmt.Sprintf("%s/%s/chunk-0/block-0", shareName, contentID)
+		blockKey := fmt.Sprintf("%s/%s/chunk-0/block-0", shareName, payloadID)
 		originalData := []byte("data from S3 for read test")
 		err := blockStore.WriteBlock(ctx, blockKey, originalData)
 		if err != nil {
@@ -392,7 +392,7 @@ func TestFlusher_Integration(t *testing.T) {
 		}
 
 		// Read through flusher (cache miss -> S3 fetch)
-		readData, err := f.ReadBlocks(ctx, shareName, fileHandle, contentID, 0, 0, uint32(len(originalData)))
+		readData, err := f.ReadBlocks(ctx, shareName, fileHandle, payloadID, 0, 0, uint32(len(originalData)))
 		if err != nil {
 			t.Fatalf("ReadBlocks failed: %v", err)
 		}
@@ -424,7 +424,7 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 
 	t.Run("FlushAndRead", func(t *testing.T) {
 		fileHandle := []byte("file1")
-		contentID := "content1"
+		payloadID := "content1"
 		shareName := "share1"
 		data := []byte("test data for memory store")
 
@@ -435,7 +435,7 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 		}
 
 		// Flush
-		err = f.FlushRemaining(ctx, shareName, fileHandle, contentID)
+		err = f.FlushRemaining(ctx, shareName, fileHandle, payloadID)
 		if err != nil {
 			t.Fatalf("FlushRemaining failed: %v", err)
 		}
@@ -444,7 +444,7 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 		c.Remove(ctx, fileHandle)
 
 		// Read back through flusher
-		readData, err := f.ReadBlocks(ctx, shareName, []byte("file2"), contentID, 0, 0, uint32(len(data)))
+		readData, err := f.ReadBlocks(ctx, shareName, []byte("file2"), payloadID, 0, 0, uint32(len(data)))
 		if err != nil {
 			t.Fatalf("ReadBlocks failed: %v", err)
 		}

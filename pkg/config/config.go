@@ -232,7 +232,7 @@ type MetadataStoreConfig struct {
 }
 
 // CacheConfig specifies the global cache configuration.
-// All shares use a single global cache - ContentID uniqueness ensures data isolation.
+// All shares use a single global cache - PayloadID uniqueness ensures data isolation.
 type CacheConfig struct {
 	// Type specifies which cache implementation to use
 	// Valid values: memory, mmap
@@ -256,14 +256,14 @@ type MmapCacheConfig struct {
 	Path string `mapstructure:"path" yaml:"path"`
 }
 
-// BlockStoreConfig specifies the block store configuration for S3 persistence.
-// Block stores are used to persist cache data to durable storage (S3).
+// BlockStoreConfig specifies the block store configuration for persistent storage.
+// Block stores are used to persist cache data to durable storage (S3, filesystem).
 // When configured, the flusher uploads 4MB blocks to the block store.
 type BlockStoreConfig struct {
 	// Type specifies which block store implementation to use
-	// Valid values: s3, memory
+	// Valid values: s3, memory, filesystem
 	// Default: "" (disabled - cache-only mode)
-	Type string `mapstructure:"type" validate:"omitempty,oneof=s3 memory" yaml:"type"`
+	Type string `mapstructure:"type" validate:"omitempty,oneof=s3 memory filesystem" yaml:"type"`
 
 	// S3 contains S3-specific configuration
 	// Only used when Type = "s3"
@@ -272,6 +272,10 @@ type BlockStoreConfig struct {
 	// Memory contains memory-specific configuration
 	// Only used when Type = "memory" (primarily for testing)
 	Memory BlockStoreMemoryConfig `mapstructure:"memory" yaml:"memory"`
+
+	// Filesystem contains filesystem-specific configuration
+	// Only used when Type = "filesystem"
+	Filesystem BlockStoreFSConfig `mapstructure:"filesystem" yaml:"filesystem"`
 }
 
 // BlockStoreS3Config contains S3-specific block store configuration.
@@ -287,7 +291,7 @@ type BlockStoreS3Config struct {
 
 	// KeyPrefix is the prefix for all block keys in the bucket
 	// Default: "blocks/"
-	// Final key format: {key_prefix}{shareName}/{contentID}/chunk-{n}/block-{n}
+	// Final key format: {key_prefix}{shareName}/{payloadID}/chunk-{n}/block-{n}
 	KeyPrefix string `mapstructure:"key_prefix" yaml:"key_prefix"`
 
 	// MaxRetries is the maximum number of retries for S3 operations
@@ -303,6 +307,27 @@ type BlockStoreS3Config struct {
 // This is primarily used for testing.
 type BlockStoreMemoryConfig struct {
 	// No additional configuration needed for memory block store
+}
+
+// BlockStoreFSConfig contains filesystem-specific block store configuration.
+type BlockStoreFSConfig struct {
+	// BasePath is the root directory for block storage (required)
+	// Block keys are stored as paths relative to this directory
+	// Example: if base_path is "/data/blocks" and block key is "share/content/chunk-0/block-0",
+	// the block will be stored at "/data/blocks/share/content/chunk-0/block-0"
+	BasePath string `mapstructure:"base_path" validate:"required_if=Type filesystem" yaml:"base_path"`
+
+	// CreateDir creates the base directory if it doesn't exist
+	// Default: true
+	CreateDir bool `mapstructure:"create_dir" yaml:"create_dir"`
+
+	// DirMode is the permission mode for created directories
+	// Default: 0755
+	DirMode uint32 `mapstructure:"dir_mode" yaml:"dir_mode"`
+
+	// FileMode is the permission mode for created block files
+	// Default: 0644
+	FileMode uint32 `mapstructure:"file_mode" yaml:"file_mode"`
 }
 
 // PrefetchConfig configures read prefetch behavior.

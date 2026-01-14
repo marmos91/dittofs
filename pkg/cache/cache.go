@@ -28,32 +28,31 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/pkg/payload/chunk"
 	"github.com/marmos91/dittofs/pkg/wal"
 )
 
 // ============================================================================
-// Helper Functions
+// Helper Functions (delegating to chunk package)
 // ============================================================================
 
 // ChunkIndexForOffset calculates the chunk index for a file offset.
+// Deprecated: Use chunk.IndexForOffset directly.
 func ChunkIndexForOffset(offset uint64) uint32 {
-	return uint32(offset / ChunkSize)
+	return chunk.IndexForOffset(offset)
 }
 
 // OffsetWithinChunk calculates the offset within a chunk.
+// Deprecated: Use chunk.OffsetInChunk directly.
 func OffsetWithinChunk(offset uint64) uint32 {
-	return uint32(offset % ChunkSize)
+	return chunk.OffsetInChunk(offset)
 }
 
 // ChunkRange calculates the range of chunks that a byte range spans.
 // Returns startChunk and endChunk (inclusive).
+// Deprecated: Use chunk.Range directly.
 func ChunkRange(offset, length uint64) (startChunk, endChunk uint32) {
-	if length == 0 {
-		return ChunkIndexForOffset(offset), ChunkIndexForOffset(offset)
-	}
-	startChunk = ChunkIndexForOffset(offset)
-	endChunk = ChunkIndexForOffset(offset + length - 1)
-	return startChunk, endChunk
+	return chunk.Range(offset, length)
 }
 
 // ============================================================================

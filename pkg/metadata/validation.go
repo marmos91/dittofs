@@ -54,9 +54,9 @@ func BoolPtr(v bool) *bool { return &v }
 // Content ID Helpers
 // ============================================================================
 
-// BuildContentID constructs a ContentID from share name and full path.
+// BuildPayloadID constructs a PayloadID from share name and full path.
 //
-// This creates a path-based ContentID suitable for S3 storage that:
+// This creates a path-based PayloadID suitable for S3 storage that:
 //   - Removes leading "/" from both shareName and path
 //   - Results in keys like "export/docs/report.pdf"
 //
@@ -70,12 +70,12 @@ func BoolPtr(v bool) *bool { return &v }
 //   - fullPath: Full path with leading "/" (e.g., "/docs/report.pdf")
 //
 // Returns:
-//   - string: ContentID in format "shareName/path" (e.g., "export/docs/report.pdf")
+//   - string: PayloadID in format "shareName/path" (e.g., "export/docs/report.pdf")
 //
 // Examples:
-//   - BuildContentID("/export", "/file.txt") -> "export/file.txt"
-//   - BuildContentID("/export", "/docs/report.pdf") -> "export/docs/report.pdf"
-func BuildContentID(shareName, fullPath string) string {
+//   - BuildPayloadID("/export", "/file.txt") -> "export/file.txt"
+//   - BuildPayloadID("/export", "/docs/report.pdf") -> "export/docs/report.pdf"
+func BuildPayloadID(shareName, fullPath string) string {
 	// Remove leading "/" from shareName
 	share := shareName
 	if len(share) > 0 && share[0] == '/' {

@@ -388,7 +388,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 
 	fileSize := readMeta.Attr.Size
 
-	if readMeta.Attr.ContentID == "" || fileSize == 0 {
+	if readMeta.Attr.PayloadID == "" || fileSize == 0 {
 		logger.Debug("READ: empty file", "path", openFile.Path)
 		return &ReadResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
@@ -418,7 +418,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// ========================================================================
 
 	data := make([]byte, actualLength)
-	n, err := contentSvc.ReadAt(authCtx.Context, tree.ShareName, readMeta.Attr.ContentID, data, req.Offset)
+	n, err := contentSvc.ReadAt(authCtx.Context, tree.ShareName, readMeta.Attr.PayloadID, data, req.Offset)
 	if err != nil {
 		logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil

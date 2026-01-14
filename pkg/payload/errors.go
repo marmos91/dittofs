@@ -1,4 +1,4 @@
-package blocks
+package payload
 
 import "errors"
 
@@ -94,13 +94,13 @@ var (
 	//   - HTTP: 409 Conflict or 412 Precondition Failed
 	ErrConcurrentModification = errors.New("concurrent modification detected")
 
-	// ErrInvalidContentID indicates the ContentID format is invalid.
+	// ErrInvalidPayloadID indicates the PayloadID format is invalid.
 	//
 	// Protocol Mapping:
 	//   - NFS: NFS3ErrBadHandle (10001)
 	//   - SMB: STATUS_INVALID_PARAMETER
 	//   - HTTP: 400 Bad Request
-	ErrInvalidContentID = errors.New("invalid content ID")
+	ErrInvalidPayloadID = errors.New("invalid content ID")
 
 	// ErrTooLarge indicates the content or operation is too large.
 	//

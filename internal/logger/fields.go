@@ -78,7 +78,7 @@ const (
 	// ========================================================================
 	// Storage Backend (Content Store)
 	// ========================================================================
-	KeyContentID  = "content_id"  // Content identifier in content store
+	KeyPayloadID  = "content_id"  // Content identifier in content store
 	KeyStoreName  = "store_name"  // Named store identifier from registry
 	KeyStoreType  = "store_type"  // Store type: memory, filesystem, s3, azure, gcs
 	KeyBucket     = "bucket"      // Cloud bucket name (S3, GCS)
@@ -376,9 +376,9 @@ func Operation(op string) slog.Attr {
 // Storage Backend (Content Store)
 // ----------------------------------------------------------------------------
 
-// ContentID returns a slog.Attr for content identifier
-func ContentID(id string) slog.Attr {
-	return slog.String(KeyContentID, id)
+// PayloadID returns a slog.Attr for content identifier
+func PayloadID(id string) slog.Attr {
+	return slog.String(KeyPayloadID, id)
 }
 
 // StoreName returns a slog.Attr for named store identifier

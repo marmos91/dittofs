@@ -37,7 +37,7 @@ func TestMmapPersister_AppendSlice(t *testing.T) {
 	defer p.Close()
 
 	entry := &SliceEntry{
-		FileHandle: []byte("test-file"),
+		FileHandle: "test-file",
 		ChunkIdx:   0,
 		SliceID:    "12345678-1234-1234-1234-123456789012",
 		Offset:     0,
@@ -69,7 +69,7 @@ func TestMmapPersister_AppendAndRecover(t *testing.T) {
 	now := time.Now()
 	entries := []*SliceEntry{
 		{
-			FileHandle: []byte("file1"),
+			FileHandle: "file1",
 			ChunkIdx:   0,
 			SliceID:    "11111111-1111-1111-1111-111111111111",
 			Offset:     0,
@@ -79,7 +79,7 @@ func TestMmapPersister_AppendAndRecover(t *testing.T) {
 			CreatedAt:  now,
 		},
 		{
-			FileHandle: []byte("file1"),
+			FileHandle: "file1",
 			ChunkIdx:   0,
 			SliceID:    "22222222-2222-2222-2222-222222222222",
 			Offset:     5,
@@ -89,7 +89,7 @@ func TestMmapPersister_AppendAndRecover(t *testing.T) {
 			CreatedAt:  now.Add(time.Second),
 		},
 		{
-			FileHandle: []byte("file2"),
+			FileHandle: "file2",
 			ChunkIdx:   1,
 			SliceID:    "33333333-3333-3333-3333-333333333333",
 			Offset:     100,
@@ -132,7 +132,7 @@ func TestMmapPersister_AppendAndRecover(t *testing.T) {
 	// Verify entries
 	for i, got := range recovered {
 		want := entries[i]
-		if string(got.FileHandle) != string(want.FileHandle) {
+		if got.FileHandle != want.FileHandle {
 			t.Errorf("entry[%d].FileHandle = %s, want %s", i, got.FileHandle, want.FileHandle)
 		}
 		if got.ChunkIdx != want.ChunkIdx {
@@ -160,7 +160,7 @@ func TestMmapPersister_AppendRemove(t *testing.T) {
 
 	// Add some entries
 	entry1 := &SliceEntry{
-		FileHandle: []byte("file1"),
+		FileHandle: "file1",
 		ChunkIdx:   0,
 		SliceID:    "11111111-1111-1111-1111-111111111111",
 		Offset:     0,
@@ -170,7 +170,7 @@ func TestMmapPersister_AppendRemove(t *testing.T) {
 		CreatedAt:  time.Now(),
 	}
 	entry2 := &SliceEntry{
-		FileHandle: []byte("file2"),
+		FileHandle: "file2",
 		ChunkIdx:   0,
 		SliceID:    "22222222-2222-2222-2222-222222222222",
 		Offset:     0,
@@ -188,7 +188,7 @@ func TestMmapPersister_AppendRemove(t *testing.T) {
 	}
 
 	// Remove file1
-	if err := p.AppendRemove([]byte("file1")); err != nil {
+	if err := p.AppendRemove("file1"); err != nil {
 		t.Fatalf("AppendRemove() error = %v", err)
 	}
 
@@ -232,7 +232,7 @@ func TestMmapPersister_ClosedOperations(t *testing.T) {
 
 	// All operations should fail after close
 	entry := &SliceEntry{
-		FileHandle: []byte("test"),
+		FileHandle: "test",
 		SliceID:    "12345678-1234-1234-1234-123456789012",
 		Data:       []byte("data"),
 	}
@@ -241,7 +241,7 @@ func TestMmapPersister_ClosedOperations(t *testing.T) {
 		t.Errorf("AppendSlice() after close = %v, want ErrPersisterClosed", err)
 	}
 
-	if err := p.AppendRemove([]byte("test")); err != ErrPersisterClosed {
+	if err := p.AppendRemove("test"); err != ErrPersisterClosed {
 		t.Errorf("AppendRemove() after close = %v, want ErrPersisterClosed", err)
 	}
 
@@ -271,7 +271,7 @@ func TestMmapPersister_GrowFile(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		entry := &SliceEntry{
-			FileHandle: []byte("large-file"),
+			FileHandle: "large-file",
 			ChunkIdx:   uint32(i),
 			SliceID:    "12345678-1234-1234-1234-123456789012",
 			Offset:     0,
@@ -296,7 +296,7 @@ func TestNullPersister(t *testing.T) {
 
 	// All operations should succeed silently
 	entry := &SliceEntry{
-		FileHandle: []byte("test"),
+		FileHandle: "test",
 		SliceID:    "12345678-1234-1234-1234-123456789012",
 		Data:       []byte("data"),
 	}
@@ -305,7 +305,7 @@ func TestNullPersister(t *testing.T) {
 		t.Errorf("AppendSlice() error = %v, want nil", err)
 	}
 
-	if err := p.AppendRemove([]byte("test")); err != nil {
+	if err := p.AppendRemove("test"); err != nil {
 		t.Errorf("AppendRemove() error = %v, want nil", err)
 	}
 

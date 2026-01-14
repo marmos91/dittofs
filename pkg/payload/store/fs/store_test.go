@@ -1,16 +1,39 @@
-package memory
+package fs
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blocks/store"
+	"github.com/marmos91/dittofs/pkg/payload/store"
 )
+
+func newTestStore(t *testing.T) *Store {
+	t.Helper()
+
+	tmpDir, err := os.MkdirTemp("", "blockstore-fs-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+
+	s, err := NewWithPath(tmpDir)
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		t.Fatalf("NewWithPath failed: %v", err)
+	}
+
+	t.Cleanup(func() {
+		s.Close()
+		os.RemoveAll(tmpDir)
+	})
+
+	return s
+}
 
 func TestStore_WriteAndRead(t *testing.T) {
 	ctx := context.Background()
-	s := New()
-	defer s.Close()
+	s := newTestStore(t)
 
 	blockKey := "share1/content123/chunk-0/block-0"
 	data := []byte("hello world")
@@ -29,12 +52,17 @@ func TestStore_WriteAndRead(t *testing.T) {
 	if string(read) != string(data) {
 		t.Errorf("ReadBlock returned %q, want %q", read, data)
 	}
+
+	// Verify file exists on disk
+	path := filepath.Join(s.BasePath(), "share1", "content123", "chunk-0", "block-0")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Errorf("Block file not found at %s", path)
+	}
 }
 
 func TestStore_ReadBlockNotFound(t *testing.T) {
 	ctx := context.Background()
-	s := New()
-	defer s.Close()
+	s := newTestStore(t)
 
 	_, err := s.ReadBlock(ctx, "nonexistent")
 	if err != store.ErrBlockNotFound {
@@ -44,8 +72,7 @@ func TestStore_ReadBlockNotFound(t *testing.T) {
 
 func TestStore_ReadBlockRange(t *testing.T) {
 	ctx := context.Background()
-	s := New()
-	defer s.Close()
+	s := newTestStore(t)
 
 	blockKey := "share1/content123/chunk-0/block-0"
 	data := []byte("hello world")
@@ -54,7 +81,7 @@ func TestStore_ReadBlockRange(t *testing.T) {
 		t.Fatalf("WriteBlock failed: %v", err)
 	}
 
-	// Read range
+	// Read range from start
 	read, err := s.ReadBlockRange(ctx, blockKey, 0, 5)
 	if err != nil {
 		t.Fatalf("ReadBlockRange failed: %v", err)
@@ -87,8 +114,7 @@ func TestStore_ReadBlockRange(t *testing.T) {
 
 func TestStore_DeleteBlock(t *testing.T) {
 	ctx := context.Background()
-	s := New()
-	defer s.Close()
+	s := newTestStore(t)
 
 	blockKey := "share1/content123/chunk-0/block-0"
 	data := []byte("hello world")
@@ -107,12 +133,17 @@ func TestStore_DeleteBlock(t *testing.T) {
 	if err != store.ErrBlockNotFound {
 		t.Errorf("ReadBlock after delete returned error %v, want %v", err, store.ErrBlockNotFound)
 	}
+
+	// Verify empty directories were cleaned up
+	chunkDir := filepath.Join(s.BasePath(), "share1", "content123", "chunk-0")
+	if _, err := os.Stat(chunkDir); !os.IsNotExist(err) {
+		t.Errorf("Empty chunk directory should be removed: %s", chunkDir)
+	}
 }
 
 func TestStore_DeleteByPrefix(t *testing.T) {
 	ctx := context.Background()
-	s := New()
-	defer s.Close()
+	s := newTestStore(t)
 
 	// Write multiple blocks
 	blocks := map[string][]byte{
@@ -129,7 +160,7 @@ func TestStore_DeleteByPrefix(t *testing.T) {
 	}
 
 	// Delete all blocks for share1/content123
-	if err := s.DeleteByPrefix(ctx, "share1/content123/"); err != nil {
+	if err := s.DeleteByPrefix(ctx, "share1/content123"); err != nil {
 		t.Fatalf("DeleteByPrefix failed: %v", err)
 	}
 
@@ -146,12 +177,20 @@ func TestStore_DeleteByPrefix(t *testing.T) {
 			}
 		}
 	}
+
+	// Verify share2 is untouched
+	read, err := s.ReadBlock(ctx, "share2/content456/chunk-0/block-0")
+	if err != nil {
+		t.Fatalf("ReadBlock failed: %v", err)
+	}
+	if string(read) != "data3" {
+		t.Errorf("ReadBlock returned %q, want %q", read, "data3")
+	}
 }
 
 func TestStore_ListByPrefix(t *testing.T) {
 	ctx := context.Background()
-	s := New()
-	defer s.Close()
+	s := newTestStore(t)
 
 	// Write multiple blocks
 	blocks := map[string][]byte{
@@ -168,23 +207,23 @@ func TestStore_ListByPrefix(t *testing.T) {
 	}
 
 	// List all blocks for share1/content123
-	keys, err := s.ListByPrefix(ctx, "share1/content123/")
+	keys, err := s.ListByPrefix(ctx, "share1/content123")
 	if err != nil {
 		t.Fatalf("ListByPrefix failed: %v", err)
 	}
 
 	if len(keys) != 3 {
-		t.Errorf("ListByPrefix returned %d keys, want 3", len(keys))
+		t.Errorf("ListByPrefix returned %d keys, want 3: %v", len(keys), keys)
 	}
 
 	// List all blocks for share1
-	keys, err = s.ListByPrefix(ctx, "share1/")
+	keys, err = s.ListByPrefix(ctx, "share1")
 	if err != nil {
 		t.Fatalf("ListByPrefix failed: %v", err)
 	}
 
 	if len(keys) != 3 {
-		t.Errorf("ListByPrefix returned %d keys, want 3", len(keys))
+		t.Errorf("ListByPrefix returned %d keys, want 3: %v", len(keys), keys)
 	}
 
 	// List all blocks
@@ -194,13 +233,28 @@ func TestStore_ListByPrefix(t *testing.T) {
 	}
 
 	if len(keys) != 4 {
-		t.Errorf("ListByPrefix returned %d keys, want 4", len(keys))
+		t.Errorf("ListByPrefix returned %d keys, want 4: %v", len(keys), keys)
+	}
+}
+
+func TestStore_ListByPrefix_Empty(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	// List non-existent prefix
+	keys, err := s.ListByPrefix(ctx, "nonexistent")
+	if err != nil {
+		t.Fatalf("ListByPrefix failed: %v", err)
+	}
+
+	if len(keys) != 0 {
+		t.Errorf("ListByPrefix returned %d keys, want 0", len(keys))
 	}
 }
 
 func TestStore_ClosedOperations(t *testing.T) {
 	ctx := context.Background()
-	s := New()
+	s := newTestStore(t)
 
 	// Close the store
 	if err := s.Close(); err != nil {
@@ -223,88 +277,123 @@ func TestStore_ClosedOperations(t *testing.T) {
 	if _, err := s.ListByPrefix(ctx, ""); err != store.ErrStoreClosed {
 		t.Errorf("ListByPrefix on closed store returned %v, want %v", err, store.ErrStoreClosed)
 	}
+
+	if err := s.HealthCheck(ctx); err != store.ErrStoreClosed {
+		t.Errorf("HealthCheck on closed store returned %v, want %v", err, store.ErrStoreClosed)
+	}
 }
 
-func TestStore_DataIsolation(t *testing.T) {
+func TestStore_HealthCheck(t *testing.T) {
 	ctx := context.Background()
-	s := New()
-	defer s.Close()
+	s := newTestStore(t)
+
+	// Should be healthy
+	if err := s.HealthCheck(ctx); err != nil {
+		t.Errorf("HealthCheck failed: %v", err)
+	}
+}
+
+func TestStore_OverwriteBlock(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
 
 	blockKey := "share1/content123/chunk-0/block-0"
-	data := []byte("hello world")
 
-	// Write block
-	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
+	// Write initial data
+	if err := s.WriteBlock(ctx, blockKey, []byte("initial")); err != nil {
 		t.Fatalf("WriteBlock failed: %v", err)
 	}
 
-	// Modify original data
-	data[0] = 'X'
+	// Overwrite with new data
+	if err := s.WriteBlock(ctx, blockKey, []byte("updated")); err != nil {
+		t.Fatalf("WriteBlock failed: %v", err)
+	}
 
-	// Read block - should not be affected by modification
+	// Read and verify
 	read, err := s.ReadBlock(ctx, blockKey)
 	if err != nil {
 		t.Fatalf("ReadBlock failed: %v", err)
 	}
 
-	if read[0] != 'h' {
-		t.Errorf("WriteBlock did not copy data: got %c, want 'h'", read[0])
+	if string(read) != "updated" {
+		t.Errorf("ReadBlock returned %q, want %q", read, "updated")
+	}
+}
+
+func TestStore_LargeBlock(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	blockKey := "share1/content123/chunk-0/block-0"
+
+	// Write 4MB block (BlockSize)
+	data := make([]byte, store.BlockSize)
+	for i := range data {
+		data[i] = byte(i % 256)
 	}
 
-	// Modify read data
-	read[0] = 'Y'
+	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
+		t.Fatalf("WriteBlock failed: %v", err)
+	}
 
-	// Read again - should not be affected
-	read2, err := s.ReadBlock(ctx, blockKey)
+	// Read full block
+	read, err := s.ReadBlock(ctx, blockKey)
 	if err != nil {
 		t.Fatalf("ReadBlock failed: %v", err)
 	}
 
-	if read2[0] != 'h' {
-		t.Errorf("ReadBlock did not copy data: got %c, want 'h'", read2[0])
+	if len(read) != store.BlockSize {
+		t.Errorf("ReadBlock returned %d bytes, want %d", len(read), store.BlockSize)
+	}
+
+	// Verify some bytes
+	for i := 0; i < 100; i++ {
+		if read[i] != byte(i%256) {
+			t.Errorf("ReadBlock[%d] = %d, want %d", i, read[i], byte(i%256))
+		}
+	}
+
+	// Read range from middle
+	offset := int64(store.BlockSize / 2)
+	length := int64(1024)
+	rangeData, err := s.ReadBlockRange(ctx, blockKey, offset, length)
+	if err != nil {
+		t.Fatalf("ReadBlockRange failed: %v", err)
+	}
+
+	if len(rangeData) != int(length) {
+		t.Errorf("ReadBlockRange returned %d bytes, want %d", len(rangeData), length)
 	}
 }
 
-func TestStore_BlockCount(t *testing.T) {
-	ctx := context.Background()
-	s := New()
-	defer s.Close()
-
-	if s.BlockCount() != 0 {
-		t.Errorf("BlockCount on empty store returned %d, want 0", s.BlockCount())
+func TestStore_InvalidBasePath(t *testing.T) {
+	// Empty base path
+	_, err := New(Config{BasePath: ""})
+	if err == nil {
+		t.Error("New with empty base path should fail")
 	}
 
-	// Write blocks
-	if err := s.WriteBlock(ctx, "key1", []byte("data1")); err != nil {
-		t.Fatalf("WriteBlock failed: %v", err)
-	}
-	if err := s.WriteBlock(ctx, "key2", []byte("data2")); err != nil {
-		t.Fatalf("WriteBlock failed: %v", err)
-	}
-
-	if s.BlockCount() != 2 {
-		t.Errorf("BlockCount returned %d, want 2", s.BlockCount())
+	// Non-existent path without CreateDir
+	_, err = New(Config{
+		BasePath:  "/nonexistent/path/that/does/not/exist",
+		CreateDir: false,
+	})
+	if err == nil {
+		t.Error("New with non-existent path should fail")
 	}
 }
 
-func TestStore_TotalSize(t *testing.T) {
+func TestStore_DeleteNonExistent(t *testing.T) {
 	ctx := context.Background()
-	s := New()
-	defer s.Close()
+	s := newTestStore(t)
 
-	if s.TotalSize() != 0 {
-		t.Errorf("TotalSize on empty store returned %d, want 0", s.TotalSize())
+	// Delete non-existent block should not error
+	if err := s.DeleteBlock(ctx, "nonexistent/block"); err != nil {
+		t.Errorf("DeleteBlock on non-existent block returned error: %v", err)
 	}
 
-	// Write blocks
-	if err := s.WriteBlock(ctx, "key1", []byte("hello")); err != nil {
-		t.Fatalf("WriteBlock failed: %v", err)
-	}
-	if err := s.WriteBlock(ctx, "key2", []byte("world")); err != nil {
-		t.Fatalf("WriteBlock failed: %v", err)
-	}
-
-	if s.TotalSize() != 10 {
-		t.Errorf("TotalSize returned %d, want 10", s.TotalSize())
+	// DeleteByPrefix on non-existent prefix should not error
+	if err := s.DeleteByPrefix(ctx, "nonexistent/prefix"); err != nil {
+		t.Errorf("DeleteByPrefix on non-existent prefix returned error: %v", err)
 	}
 }

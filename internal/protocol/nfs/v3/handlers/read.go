@@ -318,7 +318,7 @@ func (h *Handler) Read(
 	// ========================================================================
 
 	// If file has no content, return empty data with EOF
-	if file.ContentID == "" || file.Size == 0 {
+	if file.PayloadID == "" || file.Size == 0 {
 		logger.DebugCtx(ctx.Context, "READ: empty file", "handle", fmt.Sprintf("0x%x", req.Handle), "size", bytesize.ByteSize(file.Size), "client", clientIP)
 
 		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
@@ -360,7 +360,7 @@ func (h *Handler) Read(
 	// All reads go through ContentService.ReadAt which reads from Cache.
 	// Cache handles slice merging (newest-wins semantics).
 
-	readResult, readErr := readFromContentService(ctx, contentSvc, file.ContentID, req.Offset, actualLength, clientIP, req.Handle)
+	readResult, readErr := readFromContentService(ctx, contentSvc, file.PayloadID, req.Offset, actualLength, clientIP, req.Handle)
 	if readErr != nil {
 		// Check if cancellation error
 		if readErr == context.Canceled || readErr == context.DeadlineExceeded {

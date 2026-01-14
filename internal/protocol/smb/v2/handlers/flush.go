@@ -219,7 +219,7 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	}
 
 	// Check if there's content to flush
-	if file.ContentID == "" {
+	if file.PayloadID == "" {
 		logger.Debug("FLUSH: no content to flush", "path", openFile.Path)
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
 	}
@@ -228,7 +228,7 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	// Step 3: Flush data using ContentService (same as NFS COMMIT)
 	// ========================================================================
 
-	_, flushErr := contentSvc.Flush(ctx.Context, openFile.ShareName, file.ContentID)
+	_, flushErr := contentSvc.Flush(ctx.Context, openFile.ShareName, file.PayloadID)
 	if flushErr != nil {
 		logger.Warn("FLUSH: failed", "path", openFile.Path, "error", flushErr)
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUnexpectedIOError}}, nil

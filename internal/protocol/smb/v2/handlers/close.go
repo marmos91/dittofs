@@ -294,15 +294,15 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 	// Flush and finalize cached data to ensure durability
 	// Unlike NFS COMMIT which just flushes, SMB CLOSE requires immediate durability
-	if !openFile.IsDirectory && openFile.ContentID != "" {
+	if !openFile.IsDirectory && openFile.PayloadID != "" {
 		contentSvc := h.Registry.GetBlockService()
 		// Use FlushAndFinalize for immediate durability
-		_, flushErr := contentSvc.FlushAndFinalize(ctx.Context, openFile.ShareName, openFile.ContentID)
+		_, flushErr := contentSvc.FlushAndFinalize(ctx.Context, openFile.ShareName, openFile.PayloadID)
 		if flushErr != nil {
 			logger.Warn("CLOSE: flush failed", "path", openFile.Path, "error", flushErr)
 			// Continue with close even if flush fails
 		} else {
-			logger.Debug("CLOSE: flushed and finalized", "path", openFile.Path, "contentID", openFile.ContentID)
+			logger.Debug("CLOSE: flushed and finalized", "path", openFile.Path, "payloadID", openFile.PayloadID)
 		}
 	}
 
@@ -314,7 +314,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// (1067-byte files with XSym\n header). On CLOSE, we convert these to
 	// real symlinks in the metadata store for NFS interoperability.
 
-	if !openFile.IsDirectory && openFile.ContentID != "" && !openFile.DeletePending {
+	if !openFile.IsDirectory && openFile.PayloadID != "" && !openFile.DeletePending {
 		if converted, _ := h.checkAndConvertMFsymlink(ctx, openFile); converted {
 			logger.Debug("CLOSE: converted MFsymlink to symlink", "path", openFile.Path)
 		}
@@ -520,7 +520,7 @@ func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFil
 
 	// Read the MFsymlink content (always 1067 bytes)
 	data := make([]byte, mfsymlink.Size)
-	n, err := contentSvc.ReadAt(ctx.Context, openFile.ShareName, openFile.ContentID, data, 0)
+	n, err := contentSvc.ReadAt(ctx.Context, openFile.ShareName, openFile.PayloadID, data, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -552,9 +552,9 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 	}
 
 	// Delete content from content store via ContentService (optional - ignore errors)
-	if openFile.ContentID != "" {
+	if openFile.PayloadID != "" {
 		contentSvc := h.Registry.GetBlockService()
-		_ = contentSvc.Delete(ctx.Context, openFile.ShareName, openFile.ContentID)
+		_ = contentSvc.Delete(ctx.Context, openFile.ShareName, openFile.PayloadID)
 	}
 
 	// Create the real symlink with default attributes

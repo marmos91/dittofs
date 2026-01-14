@@ -326,17 +326,17 @@ func (tx *memoryTransaction) GenerateHandle(ctx context.Context, shareName strin
 	return metadata.GenerateNewHandle(shareName)
 }
 
-func (tx *memoryTransaction) GetFileByContentID(ctx context.Context, contentID metadata.ContentID) (*metadata.File, error) {
+func (tx *memoryTransaction) GetFileByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (*metadata.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
 	// Search through all files for matching content ID
 	for key, fd := range tx.store.files {
-		if fd.Attr == nil || fd.Attr.ContentID == "" {
+		if fd.Attr == nil || fd.Attr.PayloadID == "" {
 			continue
 		}
-		if fd.Attr.ContentID == contentID {
+		if fd.Attr.PayloadID == payloadID {
 			handle := []byte(key)
 			file, err := tx.store.buildFileWithNlink(handle, fd)
 			if err != nil {

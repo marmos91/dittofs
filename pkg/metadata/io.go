@@ -17,7 +17,7 @@ import (
 //
 // Lifecycle:
 //   - PrepareWrite validates and creates intent (no metadata changes)
-//   - Protocol handler writes content using ContentID from intent
+//   - Protocol handler writes content using PayloadID from intent
 //   - CommitWrite updates metadata after successful content write
 //   - If content write fails, no rollback needed (metadata unchanged)
 type WriteOperation struct {
@@ -30,8 +30,8 @@ type WriteOperation struct {
 	// NewMtime is the modification time to set after write
 	NewMtime time.Time
 
-	// ContentID is the identifier for writing to content repository
-	ContentID ContentID
+	// PayloadID is the identifier for writing to content repository
+	PayloadID PayloadID
 
 	// PreWriteAttr contains the file attributes before the write
 	// Used for protocol responses (e.g., NFS WCC data)
@@ -43,8 +43,8 @@ type WriteOperation struct {
 // This provides the protocol handler with the information needed to read
 // file content from the content repository.
 type ReadMetadata struct {
-	// Attr contains the file attributes including the ContentID
-	// The protocol handler uses ContentID to read from the content repository
+	// Attr contains the file attributes including the PayloadID
+	// The protocol handler uses PayloadID to read from the content repository
 	Attr *FileAttr
 }
 
@@ -132,7 +132,7 @@ func (s *MetadataService) PrepareWrite(ctx *AuthContext, handle FileHandle, newS
 		Handle:       handle,
 		NewSize:      newSize,
 		NewMtime:     time.Now(),
-		ContentID:    file.ContentID,
+		PayloadID:    file.PayloadID,
 		PreWriteAttr: preWriteAttr,
 	}
 
@@ -352,7 +352,7 @@ func (s *MetadataService) PrewarmWriteCache(handle FileHandle, file *File) {
 // This handles:
 //   - File type validation (must be regular file)
 //   - Permission checking (read permission)
-//   - Returning metadata including ContentID for content store
+//   - Returning metadata including PayloadID for content store
 //
 // The method does NOT perform actual data reading. The protocol handler
 // coordinates between metadata and content stores.

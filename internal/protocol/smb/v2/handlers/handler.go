@@ -92,7 +92,7 @@ type OpenFile struct {
 
 	// Store integration fields
 	MetadataHandle metadata.FileHandle // Link to metadata store file handle
-	ContentID      metadata.ContentID  // Content identifier for read/write operations
+	PayloadID      metadata.PayloadID  // Content identifier for read/write operations
 
 	// Directory enumeration state
 	EnumerationCookie []byte // Opaque cookie for resuming directory listing
@@ -247,7 +247,7 @@ func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64)
 		}
 
 		// Flush cache if needed
-		if !openFile.IsDirectory && openFile.ContentID != "" {
+		if !openFile.IsDirectory && openFile.PayloadID != "" {
 			h.flushFileCache(ctx, openFile)
 		}
 
@@ -327,7 +327,7 @@ func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessi
 		}
 
 		// Flush cache if needed
-		if !openFile.IsDirectory && openFile.ContentID != "" {
+		if !openFile.IsDirectory && openFile.PayloadID != "" {
 			h.flushFileCache(ctx, openFile)
 		}
 
@@ -428,23 +428,23 @@ func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64) {
 // flushFileCache flushes cached data for an open file.
 // This is a helper used during cleanup to ensure data durability.
 func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
-	if openFile.ContentID == "" {
+	if openFile.PayloadID == "" {
 		return
 	}
 
 	contentSvc := h.Registry.GetBlockService()
 
 	// Use FlushAndFinalize for immediate durability
-	_, flushErr := contentSvc.FlushAndFinalize(ctx, openFile.ShareName, openFile.ContentID)
+	_, flushErr := contentSvc.FlushAndFinalize(ctx, openFile.ShareName, openFile.PayloadID)
 	if flushErr != nil {
 		logger.Warn("flushFileCache: flush failed",
 			"path", openFile.Path,
-			"contentID", openFile.ContentID,
+			"payloadID", openFile.PayloadID,
 			"error", flushErr)
 	} else {
 		logger.Debug("flushFileCache: flushed and finalized",
 			"path", openFile.Path,
-			"contentID", openFile.ContentID)
+			"payloadID", openFile.PayloadID)
 	}
 }
 

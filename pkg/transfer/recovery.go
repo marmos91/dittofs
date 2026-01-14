@@ -68,7 +68,7 @@ func (m *TransferManager) RecoverUnflushedSlices(ctx context.Context) (*Recovery
 
 		stats.SlicesFound += len(pending)
 		logger.Info("Recovery: found pending slices",
-			"file", string(handle),
+			"file", handle,
 			"slices", len(pending))
 
 		// Upload each pending slice
@@ -76,20 +76,20 @@ func (m *TransferManager) RecoverUnflushedSlices(ctx context.Context) (*Recovery
 			wg.Add(1)
 			sem <- struct{}{}
 
-			go func(fileHandle []byte, s cache.PendingSlice) {
+			go func(fileHandle string, s cache.PendingSlice) {
 				defer func() {
 					<-sem
 					wg.Done()
 				}()
 
 				// Use file handle as content ID (they're the same in our model)
-				contentID := string(fileHandle)
+				payloadID := fileHandle
 
 				// Upload slice as blocks
-				blockRefs, err := m.uploadSliceAsBlocks(ctx, "", contentID, s)
+				blockRefs, err := m.uploadSliceAsBlocks(ctx, "", payloadID, s)
 				if err != nil {
 					logger.Error("Recovery: failed to upload slice",
-						"file", string(fileHandle),
+						"file", fileHandle,
 						"sliceID", s.ID,
 						"error", err)
 					atomic.AddInt64(&failedCount, 1)
@@ -99,7 +99,7 @@ func (m *TransferManager) RecoverUnflushedSlices(ctx context.Context) (*Recovery
 				// Mark as flushed in cache
 				if err := m.cache.MarkSliceFlushed(ctx, fileHandle, s.ID, blockRefs); err != nil {
 					logger.Error("Recovery: failed to mark slice flushed",
-						"file", string(fileHandle),
+						"file", fileHandle,
 						"sliceID", s.ID,
 						"error", err)
 					atomic.AddInt64(&failedCount, 1)
@@ -110,7 +110,7 @@ func (m *TransferManager) RecoverUnflushedSlices(ctx context.Context) (*Recovery
 				atomic.AddInt64(&bytesUploaded, int64(len(s.Data)))
 
 				logger.Debug("Recovery: uploaded slice",
-					"file", string(fileHandle),
+					"file", fileHandle,
 					"sliceID", s.ID,
 					"bytes", len(s.Data))
 			}(handle, slice)

@@ -259,7 +259,7 @@ func (p *MmapPersister) AppendSlice(entry *SliceEntry) error {
 	// Write file handle
 	binary.LittleEndian.PutUint16(p.data[offset:], uint16(len(entry.FileHandle)))
 	offset += 2
-	copy(p.data[offset:], entry.FileHandle)
+	copy(p.data[offset:], []byte(entry.FileHandle))
 	offset += uint64(len(entry.FileHandle))
 
 	// Write chunk index
@@ -320,7 +320,7 @@ func (p *MmapPersister) AppendSlice(entry *SliceEntry) error {
 }
 
 // AppendRemove appends a file removal entry to the WAL.
-func (p *MmapPersister) AppendRemove(fileHandle []byte) error {
+func (p *MmapPersister) AppendRemove(fileHandle string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -343,7 +343,7 @@ func (p *MmapPersister) AppendRemove(fileHandle []byte) error {
 	// Write file handle
 	binary.LittleEndian.PutUint16(p.data[offset:], uint16(len(fileHandle)))
 	offset += 2
-	copy(p.data[offset:], fileHandle)
+	copy(p.data[offset:], []byte(fileHandle))
 	offset += uint64(len(fileHandle))
 
 	// Update header
@@ -408,7 +408,7 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 				return nil, err
 			}
 			// Only add if file wasn't removed later
-			if !removedFiles[string(entry.FileHandle)] {
+			if !removedFiles[entry.FileHandle] {
 				entries = append(entries, *entry)
 			}
 			offset = newOffset
@@ -425,7 +425,7 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 			if err != nil {
 				return nil, err
 			}
-			removedFiles[string(fileHandle)] = true
+			removedFiles[fileHandle] = true
 			offset = newOffset
 
 		default:
@@ -436,7 +436,7 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 	// Filter out entries for removed files
 	var filteredEntries []SliceEntry
 	for _, entry := range entries {
-		if !removedFiles[string(entry.FileHandle)] {
+		if !removedFiles[entry.FileHandle] {
 			filteredEntries = append(filteredEntries, entry)
 		}
 	}
@@ -459,8 +459,7 @@ func (p *MmapPersister) readSliceEntry(offset uint64) (*SliceEntry, uint64, erro
 	if offset+uint64(handleLen) > p.size {
 		return nil, 0, ErrCorrupted
 	}
-	entry.FileHandle = make([]byte, handleLen)
-	copy(entry.FileHandle, p.data[offset:offset+uint64(handleLen)])
+	entry.FileHandle = string(p.data[offset : offset+uint64(handleLen)])
 	offset += uint64(handleLen)
 
 	// Read chunk index
@@ -574,20 +573,19 @@ func (p *MmapPersister) skipDeleteEntry(offset uint64) (uint64, error) {
 }
 
 // readRemoveEntry reads a file removal entry from the log.
-func (p *MmapPersister) readRemoveEntry(offset uint64) ([]byte, uint64, error) {
+func (p *MmapPersister) readRemoveEntry(offset uint64) (string, uint64, error) {
 	// Read file handle length
 	if offset+2 > p.size {
-		return nil, 0, ErrCorrupted
+		return "", 0, ErrCorrupted
 	}
 	handleLen := binary.LittleEndian.Uint16(p.data[offset:])
 	offset += 2
 
 	// Read file handle
 	if offset+uint64(handleLen) > p.size {
-		return nil, 0, ErrCorrupted
+		return "", 0, ErrCorrupted
 	}
-	fileHandle := make([]byte, handleLen)
-	copy(fileHandle, p.data[offset:offset+uint64(handleLen)])
+	fileHandle := string(p.data[offset : offset+uint64(handleLen)])
 	offset += uint64(handleLen)
 
 	return fileHandle, offset, nil

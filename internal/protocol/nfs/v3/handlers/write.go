@@ -400,13 +400,13 @@ func (h *Handler) Write(
 	}
 
 	// Write to ContentService (uses Cache, will be flushed on COMMIT)
-	err = contentSvc.WriteAt(ctx.Context, ctx.Share, writeIntent.ContentID, req.Data, req.Offset)
+	err = contentSvc.WriteAt(ctx.Context, ctx.Share, writeIntent.PayloadID, req.Data, req.Offset)
 	if err != nil {
-		traceError(ctx.Context, err, "WRITE failed: content write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.ContentID, "client", clientIP)
+		traceError(ctx.Context, err, "WRITE failed: content write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.PayloadID, "client", clientIP)
 		status := xdr.MapContentErrorToNFSStatus(err)
 		return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
-	logger.DebugCtx(ctx.Context, "WRITE: cached successfully", "content_id", writeIntent.ContentID)
+	logger.DebugCtx(ctx.Context, "WRITE: cached successfully", "content_id", writeIntent.PayloadID)
 
 	// ========================================================================
 	// Step 8: Commit metadata changes after successful content write
@@ -429,7 +429,7 @@ func (h *Handler) Write(
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
 
-	logger.InfoCtx(ctx.Context, "WRITE successful", "file", updatedFile.ContentID, "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "written", bytesize.ByteSize(len(req.Data)), "new_size", bytesize.ByteSize(updatedFile.Size), "client", clientIP)
+	logger.InfoCtx(ctx.Context, "WRITE successful", "file", updatedFile.PayloadID, "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "written", bytesize.ByteSize(len(req.Data)), "new_size", bytesize.ByteSize(updatedFile.Size), "client", clientIP)
 
 	// ========================================================================
 	// Stability Level Design Decision (RFC 1813 Section 3.3.7)

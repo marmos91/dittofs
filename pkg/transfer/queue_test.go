@@ -10,16 +10,16 @@ import (
 // mockEntry is a test implementation of TransferQueueEntry.
 type mockEntry struct {
 	shareName  string
-	fileHandle []byte
-	contentID  string
+	fileHandle string
+	payloadID  string
 	priority   int
 	executed   atomic.Bool
 	executeErr error
 }
 
 func (e *mockEntry) ShareName() string     { return e.shareName }
-func (e *mockEntry) FileHandle() []byte    { return e.fileHandle }
-func (e *mockEntry) ContentID() string     { return e.contentID }
+func (e *mockEntry) FileHandle() string    { return e.fileHandle }
+func (e *mockEntry) PayloadID() string     { return e.payloadID }
 func (e *mockEntry) Priority() int         { return e.priority }
 func (e *mockEntry) Execute(ctx context.Context, m *TransferManager) error {
 	e.executed.Store(true)
@@ -43,8 +43,8 @@ func TestTransferQueue_EnqueueAndProcess(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		entries[i] = &mockEntry{
 			shareName:  "export",
-			fileHandle: []byte("handle"),
-			contentID:  "test-content",
+			fileHandle: "handle",
+			payloadID:  "test-content",
 		}
 		if !q.Enqueue(entries[i]) {
 			t.Errorf("Enqueue(%d) returned false", i)
@@ -85,9 +85,9 @@ func TestTransferQueue_QueueFull(t *testing.T) {
 	q := NewTransferQueue(nil, cfg)
 
 	// Fill the queue (but don't process)
-	entry1 := &mockEntry{contentID: "1"}
-	entry2 := &mockEntry{contentID: "2"}
-	entry3 := &mockEntry{contentID: "3"}
+	entry1 := &mockEntry{payloadID: "1"}
+	entry2 := &mockEntry{payloadID: "2"}
+	entry3 := &mockEntry{payloadID: "3"}
 
 	if !q.Enqueue(entry1) {
 		t.Error("Enqueue(1) should succeed")

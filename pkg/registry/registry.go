@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blocks"
+	"github.com/marmos91/dittofs/pkg/payload"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -41,7 +41,7 @@ type Registry struct {
 	mounts          map[string]*MountInfo     // key: clientAddr, value: mount info
 	userStore       identity.UserStore        // User/group management for authentication
 	metadataService *metadata.MetadataService // High-level metadata operations
-	blockService    *blocks.BlockService      // High-level content operations (uses Cache)
+	blockService    *payload.PayloadService      // High-level content operations (uses Cache)
 }
 
 // MountInfo represents an active NFS mount from a client.
@@ -59,7 +59,7 @@ func NewRegistry(c *cache.Cache) *Registry {
 		shares:          make(map[string]*Share),
 		mounts:          make(map[string]*MountInfo),
 		metadataService: metadata.New(),
-		blockService:    blocks.New(),
+		blockService:    payload.New(),
 	}
 
 	// Use provided cache or create default in-memory cache
@@ -182,7 +182,7 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 	}
 
 	// Content storage uses the global cache created in NewRegistry(nil)
-	// ContentID uniqueness ensures data isolation between shares
+	// PayloadID uniqueness ensures data isolation between shares
 
 	return nil
 }
@@ -272,7 +272,7 @@ func (r *Registry) GetMetadataService() *metadata.MetadataService {
 // GetBlockService returns the BlockService instance for high-level content operations.
 // BlockService provides methods like ReadAt, WriteAt, Flush, etc. that use
 // the Cache and automatically route operations based on share.
-func (r *Registry) GetBlockService() *blocks.BlockService {
+func (r *Registry) GetBlockService() *payload.PayloadService {
 	return r.blockService
 }
 

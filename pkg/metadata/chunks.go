@@ -2,29 +2,21 @@ package metadata
 
 import (
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/payload/block"
+	"github.com/marmos91/dittofs/pkg/payload/chunk"
 )
 
 // ============================================================================
-// Chunk/Slice/Block Constants
+// Chunk/Slice/Block Constants (re-exported from chunk and block packages)
 // ============================================================================
 
 const (
-	// ChunkSize is the size of a chunk in bytes (64MB).
-	// Files are divided into chunks for metadata organization and lazy loading.
-	ChunkSize = 64 * 1024 * 1024
-
-	// DefaultBlockSize is the default block size for storage (4MB).
-	// Each block becomes a single object in the block store (S3, filesystem).
-	DefaultBlockSize = 4 * 1024 * 1024
-
-	// MinBlockSize is the minimum allowed block size (1MB).
-	MinBlockSize = 1 * 1024 * 1024
-
-	// MaxBlockSize is the maximum allowed block size (16MB).
-	MaxBlockSize = 16 * 1024 * 1024
-
-	// DefaultMaxSlicesPerChunk triggers compaction when exceeded.
-	DefaultMaxSlicesPerChunk = 16
+	ChunkSize                = chunk.Size
+	DefaultBlockSize         = block.Size
+	MinBlockSize             = block.MinSize
+	MaxBlockSize             = block.MaxSize
+	DefaultMaxSlicesPerChunk = chunk.DefaultMaxSlicesPerChunk
 )
 
 // ============================================================================
@@ -79,7 +71,7 @@ type SliceInfo struct {
 
 	// Blocks contains references to the blocks holding this slice's data.
 	// For small slices, this is typically a single block.
-	// For large slices (>BlockSize), data is split across multiple blocks.
+	// For large slices (>BlockSize), data is split across multiple payload.
 	Blocks []BlockRef
 
 	// CreatedAt determines newest-wins ordering for overlapping slices.
@@ -132,28 +124,26 @@ type FileChunkMeta struct {
 }
 
 // ============================================================================
-// Helper Functions
+// Helper Functions (delegating to chunk package)
 // ============================================================================
 
 // ChunkIndexForOffset calculates the chunk index for a file offset.
+// Deprecated: Use chunk.IndexForOffset directly.
 func ChunkIndexForOffset(offset uint64) uint32 {
-	return uint32(offset / ChunkSize)
+	return chunk.IndexForOffset(offset)
 }
 
 // OffsetWithinChunk calculates the offset within a chunk.
+// Deprecated: Use chunk.OffsetInChunk directly.
 func OffsetWithinChunk(offset uint64) uint32 {
-	return uint32(offset % ChunkSize)
+	return chunk.OffsetInChunk(offset)
 }
 
 // ChunkRange calculates the range of chunks that a byte range spans.
 // Returns startChunk and endChunk (inclusive).
+// Deprecated: Use chunk.Range directly.
 func ChunkRange(offset, length uint64) (startChunk, endChunk uint32) {
-	if length == 0 {
-		return ChunkIndexForOffset(offset), ChunkIndexForOffset(offset)
-	}
-	startChunk = ChunkIndexForOffset(offset)
-	endChunk = ChunkIndexForOffset(offset + length - 1)
-	return startChunk, endChunk
+	return chunk.Range(offset, length)
 }
 
 // NewChunkInfo creates a new empty ChunkInfo for a file.

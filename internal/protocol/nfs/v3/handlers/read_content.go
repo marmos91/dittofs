@@ -7,7 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/bufpool"
-	"github.com/marmos91/dittofs/pkg/blocks"
+	"github.com/marmos91/dittofs/pkg/payload"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -42,7 +42,7 @@ func (r *contentReadResult) Release() {
 // Parameters:
 //   - ctx: Handler context with cancellation support
 //   - contentSvc: Content service for reading (backed by Cache)
-//   - contentID: Content identifier to read
+//   - payloadID: Content identifier to read
 //   - offset: Byte offset to read from
 //   - count: Number of bytes to read
 //   - clientIP: Client IP for logging
@@ -53,18 +53,18 @@ func (r *contentReadResult) Release() {
 //   - error: Error if read failed
 func readFromContentService(
 	ctx *NFSHandlerContext,
-	contentSvc *blocks.BlockService,
-	contentID metadata.ContentID,
+	contentSvc *payload.PayloadService,
+	payloadID metadata.PayloadID,
 	offset uint64,
 	count uint32,
 	clientIP string,
 	handle []byte,
 ) (contentReadResult, error) {
-	logger.DebugCtx(ctx.Context, "READ: reading from Cache", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count, "content_id", contentID)
+	logger.DebugCtx(ctx.Context, "READ: reading from Cache", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count, "content_id", payloadID)
 
 	// Get a pooled buffer for the read
 	data := bufpool.Get(int(count))
-	n, readErr := contentSvc.ReadAt(ctx.Context, ctx.Share, contentID, data, offset)
+	n, readErr := contentSvc.ReadAt(ctx.Context, ctx.Share, payloadID, data, offset)
 
 	// Handle ReadAt results
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
