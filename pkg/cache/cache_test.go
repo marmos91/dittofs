@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/wal"
+	"github.com/marmos91/dittofs/pkg/cache/wal"
 )
 
 // newTestCacheWithWal creates a cache with WAL persistence for testing.
