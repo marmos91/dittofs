@@ -399,3 +399,150 @@ func TestStore_DeleteNonExistent(t *testing.T) {
 		t.Errorf("DeleteByPrefix on non-existent prefix returned error: %v", err)
 	}
 }
+
+// ============================================================================
+// Benchmarks
+// ============================================================================
+
+func newBenchStore(b *testing.B) *Store {
+	b.Helper()
+
+	tmpDir, err := os.MkdirTemp("", "blockstore-fs-bench-*")
+	if err != nil {
+		b.Fatalf("failed to create temp dir: %v", err)
+	}
+
+	s, err := NewWithPath(tmpDir)
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		b.Fatalf("NewWithPath failed: %v", err)
+	}
+
+	b.Cleanup(func() {
+		s.Close()
+		os.RemoveAll(tmpDir)
+	})
+
+	return s
+}
+
+func BenchmarkWriteBlock(b *testing.B) {
+	sizes := []struct {
+		name string
+		size int
+	}{
+		{"1KB", 1024},
+		{"64KB", 64 * 1024},
+		{"1MB", 1024 * 1024},
+		{"4MB", 4 * 1024 * 1024},
+	}
+
+	for _, sz := range sizes {
+		b.Run(sz.name, func(b *testing.B) {
+			ctx := context.Background()
+			s := newBenchStore(b)
+			data := make([]byte, sz.size)
+
+			b.SetBytes(int64(sz.size))
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				blockKey := filepath.Join("bench", "chunk-0", "block-"+string(rune('0'+i%10)))
+				if err := s.WriteBlock(ctx, blockKey, data); err != nil {
+					b.Fatalf("WriteBlock failed: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkReadBlock(b *testing.B) {
+	sizes := []struct {
+		name string
+		size int
+	}{
+		{"1KB", 1024},
+		{"64KB", 64 * 1024},
+		{"1MB", 1024 * 1024},
+		{"4MB", 4 * 1024 * 1024},
+	}
+
+	for _, sz := range sizes {
+		b.Run(sz.name, func(b *testing.B) {
+			ctx := context.Background()
+			s := newBenchStore(b)
+			data := make([]byte, sz.size)
+			blockKey := "bench/chunk-0/block-0"
+
+			// Pre-write the block
+			if err := s.WriteBlock(ctx, blockKey, data); err != nil {
+				b.Fatalf("WriteBlock failed: %v", err)
+			}
+
+			b.SetBytes(int64(sz.size))
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				if _, err := s.ReadBlock(ctx, blockKey); err != nil {
+					b.Fatalf("ReadBlock failed: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkReadBlockRange(b *testing.B) {
+	ctx := context.Background()
+	s := newBenchStore(b)
+
+	// Write a 4MB block
+	blockKey := "bench/chunk-0/block-0"
+	data := make([]byte, 4*1024*1024)
+	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
+		b.Fatalf("WriteBlock failed: %v", err)
+	}
+
+	ranges := []struct {
+		name   string
+		offset int64
+		length int64
+	}{
+		{"1KB_start", 0, 1024},
+		{"1KB_middle", 2 * 1024 * 1024, 1024},
+		{"64KB_start", 0, 64 * 1024},
+		{"64KB_middle", 2 * 1024 * 1024, 64 * 1024},
+	}
+
+	for _, r := range ranges {
+		b.Run(r.name, func(b *testing.B) {
+			b.SetBytes(r.length)
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				if _, err := s.ReadBlockRange(ctx, blockKey, r.offset, r.length); err != nil {
+					b.Fatalf("ReadBlockRange failed: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkWriteBlock_Parallel(b *testing.B) {
+	ctx := context.Background()
+	s := newBenchStore(b)
+	data := make([]byte, 64*1024) // 64KB blocks
+
+	b.SetBytes(int64(len(data)))
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			blockKey := filepath.Join("bench", "parallel", "block-"+string(rune('0'+i%100)))
+			if err := s.WriteBlock(ctx, blockKey, data); err != nil {
+				b.Fatalf("WriteBlock failed: %v", err)
+			}
+			i++
+		}
+	})
+}

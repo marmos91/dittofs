@@ -589,3 +589,228 @@ func TestStore_KeyPrefix(t *testing.T) {
 		t.Errorf("ReadBlock returned %q, want %q", read, data)
 	}
 }
+
+// ============================================================================
+// Benchmarks
+// ============================================================================
+
+// benchmarkHelper is a shared helper for benchmark tests.
+// It uses a package-level container to avoid restarting for each benchmark.
+type benchmarkHelper struct {
+	helper *localstackHelper
+	store  *Store
+}
+
+// newBenchmarkHelper creates a benchmark helper with a shared Localstack container.
+func newBenchmarkHelper(b *testing.B) *benchmarkHelper {
+	b.Helper()
+
+	// Create localstack helper (reuses existing container if LOCALSTACK_ENDPOINT is set)
+	ctx := context.Background()
+
+	// Check if external Localstack is configured via environment
+	endpoint := os.Getenv("LOCALSTACK_ENDPOINT")
+	if endpoint == "" {
+		// Start Localstack container using testcontainers
+		req := testcontainers.ContainerRequest{
+			Image:        "localstack/localstack:3.0",
+			ExposedPorts: []string{"4566/tcp"},
+			Env: map[string]string{
+				"SERVICES":              "s3",
+				"DEFAULT_REGION":        "us-east-1",
+				"EAGER_SERVICE_LOADING": "1",
+			},
+			WaitingFor: wait.ForAll(
+				wait.ForListeningPort("4566/tcp"),
+				wait.ForHTTP("/_localstack/health").
+					WithPort("4566/tcp").
+					WithStartupTimeout(60*time.Second),
+			),
+		}
+
+		container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+			ContainerRequest: req,
+			Started:          true,
+		})
+		if err != nil {
+			b.Fatalf("failed to start localstack container: %v", err)
+		}
+
+		host, err := container.Host(ctx)
+		if err != nil {
+			_ = container.Terminate(ctx)
+			b.Fatalf("failed to get container host: %v", err)
+		}
+
+		port, err := container.MappedPort(ctx, "4566")
+		if err != nil {
+			_ = container.Terminate(ctx)
+			b.Fatalf("failed to get container port: %v", err)
+		}
+
+		endpoint = fmt.Sprintf("http://%s:%s", host, port.Port())
+
+		b.Cleanup(func() {
+			_ = container.Terminate(ctx)
+		})
+	}
+
+	// Create S3 client
+	cfg, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion("us-east-1"),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			"test", "test", "",
+		)),
+	)
+	if err != nil {
+		b.Fatalf("failed to load AWS config: %v", err)
+	}
+
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = &endpoint
+		o.UsePathStyle = true
+	})
+
+	// Create bucket
+	bucketName := fmt.Sprintf("bench-bucket-%d", time.Now().UnixNano())
+	_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{
+		Bucket: aws.String(bucketName),
+	})
+	if err != nil {
+		b.Fatalf("failed to create test bucket: %v", err)
+	}
+
+	store := New(client, Config{
+		Bucket:    bucketName,
+		KeyPrefix: "blocks/",
+	})
+
+	b.Cleanup(func() {
+		store.Close()
+	})
+
+	return &benchmarkHelper{
+		store: store,
+	}
+}
+
+func BenchmarkWriteBlock(b *testing.B) {
+	sizes := []struct {
+		name string
+		size int
+	}{
+		{"1KB", 1024},
+		{"64KB", 64 * 1024},
+		{"1MB", 1024 * 1024},
+		{"4MB", 4 * 1024 * 1024},
+	}
+
+	for _, sz := range sizes {
+		b.Run(sz.name, func(b *testing.B) {
+			bh := newBenchmarkHelper(b)
+			ctx := context.Background()
+			data := make([]byte, sz.size)
+
+			b.SetBytes(int64(sz.size))
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				blockKey := fmt.Sprintf("bench/chunk-0/block-%d", i)
+				if err := bh.store.WriteBlock(ctx, blockKey, data); err != nil {
+					b.Fatalf("WriteBlock failed: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkReadBlock(b *testing.B) {
+	sizes := []struct {
+		name string
+		size int
+	}{
+		{"1KB", 1024},
+		{"64KB", 64 * 1024},
+		{"1MB", 1024 * 1024},
+		{"4MB", 4 * 1024 * 1024},
+	}
+
+	for _, sz := range sizes {
+		b.Run(sz.name, func(b *testing.B) {
+			bh := newBenchmarkHelper(b)
+			ctx := context.Background()
+			data := make([]byte, sz.size)
+			blockKey := "bench/chunk-0/block-0"
+
+			// Pre-write the block
+			if err := bh.store.WriteBlock(ctx, blockKey, data); err != nil {
+				b.Fatalf("WriteBlock failed: %v", err)
+			}
+
+			b.SetBytes(int64(sz.size))
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				if _, err := bh.store.ReadBlock(ctx, blockKey); err != nil {
+					b.Fatalf("ReadBlock failed: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkReadBlockRange(b *testing.B) {
+	bh := newBenchmarkHelper(b)
+	ctx := context.Background()
+
+	// Write a 4MB block
+	blockKey := "bench/chunk-0/block-0"
+	data := make([]byte, 4*1024*1024)
+	if err := bh.store.WriteBlock(ctx, blockKey, data); err != nil {
+		b.Fatalf("WriteBlock failed: %v", err)
+	}
+
+	ranges := []struct {
+		name   string
+		offset int64
+		length int64
+	}{
+		{"1KB_start", 0, 1024},
+		{"1KB_middle", 2 * 1024 * 1024, 1024},
+		{"64KB_start", 0, 64 * 1024},
+		{"64KB_middle", 2 * 1024 * 1024, 64 * 1024},
+	}
+
+	for _, r := range ranges {
+		b.Run(r.name, func(b *testing.B) {
+			b.SetBytes(r.length)
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				if _, err := bh.store.ReadBlockRange(ctx, blockKey, r.offset, r.length); err != nil {
+					b.Fatalf("ReadBlockRange failed: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkWriteBlock_Parallel(b *testing.B) {
+	bh := newBenchmarkHelper(b)
+	ctx := context.Background()
+	data := make([]byte, 64*1024) // 64KB blocks
+
+	b.SetBytes(int64(len(data)))
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			blockKey := fmt.Sprintf("bench/parallel/block-%d", i)
+			if err := bh.store.WriteBlock(ctx, blockKey, data); err != nil {
+				b.Fatalf("WriteBlock failed: %v", err)
+			}
+			i++
+		}
+	})
+}
