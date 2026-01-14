@@ -232,7 +232,7 @@ type MetadataStoreConfig struct {
 }
 
 // CacheConfig specifies the global cache configuration.
-// All shares use a single global cache - ContentID uniqueness ensures data isolation.
+// All shares use a single global cache - PayloadID uniqueness ensures data isolation.
 type CacheConfig struct {
 	// Type specifies which cache implementation to use
 	// Valid values: memory, mmap
@@ -291,7 +291,7 @@ type BlockStoreS3Config struct {
 
 	// KeyPrefix is the prefix for all block keys in the bucket
 	// Default: "blocks/"
-	// Final key format: {key_prefix}{shareName}/{contentID}/chunk-{n}/block-{n}
+	// Final key format: {key_prefix}{shareName}/{payloadID}/chunk-{n}/block-{n}
 	KeyPrefix string `mapstructure:"key_prefix" yaml:"key_prefix"`
 
 	// MaxRetries is the maximum number of retries for S3 operations

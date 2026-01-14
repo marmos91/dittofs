@@ -15,7 +15,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
-	memorycontent "github.com/marmos91/dittofs/pkg/blocks/store/memory"
+	memorycontent "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"

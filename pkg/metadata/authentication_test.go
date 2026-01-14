@@ -482,7 +482,7 @@ func TestCopyFileAttr(t *testing.T) {
 			Mtime:        now,
 			Ctime:        now,
 			CreationTime: now,
-			ContentID:    "content-123",
+			PayloadID:    "content-123",
 			LinkTarget:   "/path/to/target",
 			Rdev:         0,
 			Hidden:       true,
@@ -502,7 +502,7 @@ func TestCopyFileAttr(t *testing.T) {
 		assert.Equal(t, original.Mtime, result.Mtime)
 		assert.Equal(t, original.Ctime, result.Ctime)
 		assert.Equal(t, original.CreationTime, result.CreationTime)
-		assert.Equal(t, original.ContentID, result.ContentID)
+		assert.Equal(t, original.PayloadID, result.PayloadID)
 		assert.Equal(t, original.LinkTarget, result.LinkTarget)
 		assert.Equal(t, original.Rdev, result.Rdev)
 		assert.Equal(t, original.Hidden, result.Hidden)

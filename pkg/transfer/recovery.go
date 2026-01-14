@@ -83,10 +83,10 @@ func (m *TransferManager) RecoverUnflushedSlices(ctx context.Context) (*Recovery
 				}()
 
 				// Use file handle as content ID (they're the same in our model)
-				contentID := string(fileHandle)
+				payloadID := string(fileHandle)
 
 				// Upload slice as blocks
-				blockRefs, err := m.uploadSliceAsBlocks(ctx, "", contentID, s)
+				blockRefs, err := m.uploadSliceAsBlocks(ctx, "", payloadID, s)
 				if err != nil {
 					logger.Error("Recovery: failed to upload slice",
 						"file", string(fileHandle),

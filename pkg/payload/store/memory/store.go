@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/marmos91/dittofs/pkg/blocks/store"
+	"github.com/marmos91/dittofs/pkg/payload/store"
 )
 
 // Store is an in-memory implementation of store.BlockStore for testing.

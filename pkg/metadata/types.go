@@ -1,7 +1,7 @@
 // Package metadata provides the core metadata types and operations for DittoFS.
 //
 // This package contains:
-//   - Core types: File, FileAttr, FileHandle, ContentID
+//   - Core types: File, FileAttr, FileHandle, PayloadID
 //   - Store interface: MetadataStore, Transaction, Transactor
 //   - Business logic: RemoveFile, Move, Create, Lookup operations
 //   - Permissions: Unix-style permission checking

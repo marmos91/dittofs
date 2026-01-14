@@ -101,9 +101,9 @@ type Files interface {
 	// Content ID Operations
 	// ========================================================================
 
-	// GetFileByContentID retrieves file metadata by its content identifier.
+	// GetFileByPayloadID retrieves file metadata by its content identifier.
 	// Used by the background flusher to validate cached data.
-	GetFileByContentID(ctx context.Context, contentID ContentID) (*File, error)
+	GetFileByPayloadID(ctx context.Context, payloadID PayloadID) (*File, error)
 
 	// ========================================================================
 	// Filesystem Metadata Operations

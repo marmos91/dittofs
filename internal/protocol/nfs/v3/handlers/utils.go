@@ -123,10 +123,10 @@ func checkMFsymlink(
 
 	// File has correct size - need to check content
 	// First try cache, then content store
-	content, err := readMFsymlinkContentForNFS(ctx, reg, share, file.ContentID)
+	content, err := readMFsymlinkContentForNFS(ctx, reg, share, file.PayloadID)
 	if err != nil {
 		logger.Debug("checkMFsymlink: failed to read content",
-			"contentID", file.ContentID,
+			"payloadID", file.PayloadID,
 			"error", err)
 		return MFsymlinkResult{IsMFsymlink: false}
 	}
@@ -140,7 +140,7 @@ func checkMFsymlink(
 	target, err := mfsymlink.Decode(content)
 	if err != nil {
 		logger.Debug("checkMFsymlink: invalid MFsymlink format",
-			"contentID", file.ContentID,
+			"payloadID", file.PayloadID,
 			"error", err)
 		return MFsymlinkResult{IsMFsymlink: false}
 	}
@@ -153,7 +153,7 @@ func checkMFsymlink(
 	modifiedAttr.Mode = modifiedAttr.Mode&^uint32(0777) | 0777
 
 	logger.Debug("checkMFsymlink: detected MFsymlink",
-		"contentID", file.ContentID,
+		"payloadID", file.PayloadID,
 		"target", target)
 
 	return MFsymlinkResult{
@@ -168,9 +168,9 @@ func readMFsymlinkContentForNFS(
 	ctx context.Context,
 	reg *registry.Registry,
 	share string,
-	contentID metadata.ContentID,
+	payloadID metadata.PayloadID,
 ) ([]byte, error) {
-	if contentID == "" {
+	if payloadID == "" {
 		return nil, nil
 	}
 
@@ -178,7 +178,7 @@ func readMFsymlinkContentForNFS(
 	contentSvc := reg.GetBlockService()
 
 	data := make([]byte, mfsymlink.Size)
-	n, err := contentSvc.ReadAt(ctx, share, contentID, data, 0)
+	n, err := contentSvc.ReadAt(ctx, share, payloadID, data, 0)
 	if err != nil {
 		return nil, err
 	}

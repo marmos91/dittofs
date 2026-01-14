@@ -13,7 +13,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/marmos91/dittofs/pkg/blocks/store"
+	"github.com/marmos91/dittofs/pkg/payload/store"
 )
 
 // Config holds configuration for the S3 block store.

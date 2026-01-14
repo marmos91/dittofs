@@ -168,10 +168,10 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		deviceMinor = &minor
 	}
 
-	var contentIDPtr *string
-	if file.ContentID != "" {
-		str := string(file.ContentID)
-		contentIDPtr = &str
+	var payloadIDPtr *string
+	if file.PayloadID != "" {
+		str := string(file.PayloadID)
+		payloadIDPtr = &str
 	}
 
 	var linkTargetPtr *string
@@ -183,7 +183,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	result, err := tx.tx.Exec(ctx, updateQuery,
 		file.Type, file.Mode, file.UID, file.GID, file.Size,
 		file.Atime, file.Mtime, file.Ctime, file.CreationTime,
-		contentIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
+		payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 		file.Hidden,
 		file.ID, file.ShareName,
 	)
@@ -207,7 +207,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			file.ID, file.ShareName, file.Path,
 			file.Type, file.Mode, file.UID, file.GID, file.Size,
 			file.Atime, file.Mtime, file.Ctime, file.CreationTime,
-			contentIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
+			payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 			file.Hidden,
 		)
 		if err != nil {
@@ -963,12 +963,12 @@ func (tx *postgresTransaction) GetFilesystemStatistics(ctx context.Context, hand
 // Transaction Files Operations (additional)
 // ============================================================================
 
-func (tx *postgresTransaction) GetFileByContentID(ctx context.Context, contentID metadata.ContentID) (*metadata.File, error) {
+func (tx *postgresTransaction) GetFileByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (*metadata.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	if contentID == "" {
+	if payloadID == "" {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrInvalidArgument,
 			Message: "content ID cannot be empty",
@@ -988,10 +988,10 @@ func (tx *postgresTransaction) GetFileByContentID(ctx context.Context, contentID
 		LIMIT 1
 	`
 
-	row := tx.tx.QueryRow(ctx, query, string(contentID))
+	row := tx.tx.QueryRow(ctx, query, string(payloadID))
 	file, err := fileRowToFileWithNlink(row)
 	if err != nil {
-		return nil, mapPgError(err, "GetFileByContentID", string(contentID))
+		return nil, mapPgError(err, "GetFileByPayloadID", string(payloadID))
 	}
 
 	return file, nil

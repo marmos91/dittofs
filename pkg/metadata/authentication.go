@@ -508,7 +508,7 @@ func CopyFileAttr(attr *FileAttr) *FileAttr {
 		Mtime:        attr.Mtime,
 		Ctime:        attr.Ctime,
 		CreationTime: attr.CreationTime,
-		ContentID:    attr.ContentID,
+		PayloadID:    attr.PayloadID,
 		LinkTarget:   attr.LinkTarget,
 		Rdev:         attr.Rdev,
 		Hidden:       attr.Hidden,

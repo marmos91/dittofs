@@ -1,4 +1,4 @@
-package blocks
+package payload
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-func TestBlockService_New(t *testing.T) {
+func TestPayloadService_New(t *testing.T) {
 	svc := New()
 	if svc == nil {
 		t.Fatal("New() returned nil")
@@ -23,7 +23,7 @@ func TestBlockService_New(t *testing.T) {
 	}
 }
 
-func TestBlockService_SetCache(t *testing.T) {
+func TestPayloadService_SetCache(t *testing.T) {
 	svc := New()
 
 	// Setting nil should fail
@@ -43,7 +43,7 @@ func TestBlockService_SetCache(t *testing.T) {
 	}
 }
 
-func TestBlockService_HasCache(t *testing.T) {
+func TestPayloadService_HasCache(t *testing.T) {
 	svc := New()
 
 	if svc.HasCache("any") {
@@ -58,49 +58,49 @@ func TestBlockService_HasCache(t *testing.T) {
 	}
 }
 
-func TestBlockService_NoCacheErrors(t *testing.T) {
+func TestPayloadService_NoCacheErrors(t *testing.T) {
 	svc := New()
 	ctx := context.Background()
-	contentID := metadata.ContentID("test-file")
+	payloadID := metadata.PayloadID("test-file")
 
 	// All operations should return ErrNoCacheConfigured
 	buf := make([]byte, 10)
-	_, err := svc.ReadAt(ctx, "share", contentID, buf, 0)
+	_, err := svc.ReadAt(ctx, "share", payloadID, buf, 0)
 	if err != ErrNoCacheConfigured {
 		t.Errorf("ReadAt() error = %v, want ErrNoCacheConfigured", err)
 	}
 
-	err = svc.WriteAt(ctx, "share", contentID, []byte("data"), 0)
+	err = svc.WriteAt(ctx, "share", payloadID, []byte("data"), 0)
 	if err != ErrNoCacheConfigured {
 		t.Errorf("WriteAt() error = %v, want ErrNoCacheConfigured", err)
 	}
 
-	_, err = svc.GetContentSize(ctx, "share", contentID)
+	_, err = svc.GetContentSize(ctx, "share", payloadID)
 	if err != ErrNoCacheConfigured {
 		t.Errorf("GetContentSize() error = %v, want ErrNoCacheConfigured", err)
 	}
 
-	_, err = svc.ContentExists(ctx, "share", contentID)
+	_, err = svc.ContentExists(ctx, "share", payloadID)
 	if err != ErrNoCacheConfigured {
 		t.Errorf("ContentExists() error = %v, want ErrNoCacheConfigured", err)
 	}
 
-	err = svc.Truncate(ctx, "share", contentID, 0)
+	err = svc.Truncate(ctx, "share", payloadID, 0)
 	if err != ErrNoCacheConfigured {
 		t.Errorf("Truncate() error = %v, want ErrNoCacheConfigured", err)
 	}
 
-	err = svc.Delete(ctx, "share", contentID)
+	err = svc.Delete(ctx, "share", payloadID)
 	if err != ErrNoCacheConfigured {
 		t.Errorf("Delete() error = %v, want ErrNoCacheConfigured", err)
 	}
 
-	_, err = svc.Flush(ctx, "share", contentID)
+	_, err = svc.Flush(ctx, "share", payloadID)
 	if err != ErrNoCacheConfigured {
 		t.Errorf("Flush() error = %v, want ErrNoCacheConfigured", err)
 	}
 
-	_, err = svc.FlushAndFinalize(ctx, "share", contentID)
+	_, err = svc.FlushAndFinalize(ctx, "share", payloadID)
 	if err != ErrNoCacheConfigured {
 		t.Errorf("FlushAndFinalize() error = %v, want ErrNoCacheConfigured", err)
 	}
@@ -116,23 +116,23 @@ func TestBlockService_NoCacheErrors(t *testing.T) {
 	}
 }
 
-func TestBlockService_WriteAndRead(t *testing.T) {
+func TestPayloadService_WriteAndRead(t *testing.T) {
 	svc := New()
 	c := cache.New(10 * 1024 * 1024)
 	_ = svc.SetCache(c)
 
 	ctx := context.Background()
-	contentID := metadata.ContentID("test-file")
+	payloadID := metadata.PayloadID("test-file")
 	data := []byte("hello world")
 
 	// Write data
-	if err := svc.WriteAt(ctx, "share", contentID, data, 0); err != nil {
+	if err := svc.WriteAt(ctx, "share", payloadID, data, 0); err != nil {
 		t.Fatalf("WriteAt() error = %v", err)
 	}
 
 	// Read data back
 	buf := make([]byte, len(data))
-	n, err := svc.ReadAt(ctx, "share", contentID, buf, 0)
+	n, err := svc.ReadAt(ctx, "share", payloadID, buf, 0)
 	if err != nil {
 		t.Fatalf("ReadAt() error = %v", err)
 	}
@@ -144,30 +144,30 @@ func TestBlockService_WriteAndRead(t *testing.T) {
 	}
 }
 
-func TestBlockService_WriteEmpty(t *testing.T) {
+func TestPayloadService_WriteEmpty(t *testing.T) {
 	svc := New()
 	c := cache.New(10 * 1024 * 1024)
 	_ = svc.SetCache(c)
 
 	ctx := context.Background()
-	contentID := metadata.ContentID("test-file")
+	payloadID := metadata.PayloadID("test-file")
 
 	// Writing empty data should be a no-op
-	if err := svc.WriteAt(ctx, "share", contentID, []byte{}, 0); err != nil {
+	if err := svc.WriteAt(ctx, "share", payloadID, []byte{}, 0); err != nil {
 		t.Errorf("WriteAt(empty) error = %v", err)
 	}
 }
 
-func TestBlockService_ReadEmpty(t *testing.T) {
+func TestPayloadService_ReadEmpty(t *testing.T) {
 	svc := New()
 	c := cache.New(10 * 1024 * 1024)
 	_ = svc.SetCache(c)
 
 	ctx := context.Background()
-	contentID := metadata.ContentID("test-file")
+	payloadID := metadata.PayloadID("test-file")
 
 	// Reading with empty buffer should be a no-op
-	n, err := svc.ReadAt(ctx, "share", contentID, []byte{}, 0)
+	n, err := svc.ReadAt(ctx, "share", payloadID, []byte{}, 0)
 	if err != nil {
 		t.Errorf("ReadAt(empty) error = %v", err)
 	}
@@ -176,7 +176,7 @@ func TestBlockService_ReadEmpty(t *testing.T) {
 	}
 }
 
-func TestBlockService_SupportsReadAt(t *testing.T) {
+func TestPayloadService_SupportsReadAt(t *testing.T) {
 	svc := New()
 
 	if svc.SupportsReadAt("share") {
@@ -191,19 +191,19 @@ func TestBlockService_SupportsReadAt(t *testing.T) {
 	}
 }
 
-func TestBlockService_FlushCacheOnly(t *testing.T) {
+func TestPayloadService_FlushCacheOnly(t *testing.T) {
 	svc := New()
 	c := cache.New(10 * 1024 * 1024)
 	_ = svc.SetCache(c)
 
 	ctx := context.Background()
-	contentID := metadata.ContentID("test-file")
+	payloadID := metadata.PayloadID("test-file")
 
 	// Write some data
-	_ = svc.WriteAt(ctx, "share", contentID, []byte("test data"), 0)
+	_ = svc.WriteAt(ctx, "share", payloadID, []byte("test data"), 0)
 
 	// Flush in cache-only mode
-	result, err := svc.Flush(ctx, "share", contentID)
+	result, err := svc.Flush(ctx, "share", payloadID)
 	if err != nil {
 		t.Fatalf("Flush() error = %v", err)
 	}
@@ -215,19 +215,19 @@ func TestBlockService_FlushCacheOnly(t *testing.T) {
 	}
 }
 
-func TestBlockService_FlushAndFinalizeCacheOnly(t *testing.T) {
+func TestPayloadService_FlushAndFinalizeCacheOnly(t *testing.T) {
 	svc := New()
 	c := cache.New(10 * 1024 * 1024)
 	_ = svc.SetCache(c)
 
 	ctx := context.Background()
-	contentID := metadata.ContentID("test-file")
+	payloadID := metadata.PayloadID("test-file")
 
 	// Write some data
-	_ = svc.WriteAt(ctx, "share", contentID, []byte("test data"), 0)
+	_ = svc.WriteAt(ctx, "share", payloadID, []byte("test data"), 0)
 
 	// FlushAndFinalize in cache-only mode
-	result, err := svc.FlushAndFinalize(ctx, "share", contentID)
+	result, err := svc.FlushAndFinalize(ctx, "share", payloadID)
 	if err != nil {
 		t.Fatalf("FlushAndFinalize() error = %v", err)
 	}

@@ -13,9 +13,9 @@ import (
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/marmos91/dittofs/pkg/blocks"
-	s3store "github.com/marmos91/dittofs/pkg/blocks/store/s3"
-	contenttesting "github.com/marmos91/dittofs/pkg/blocks/store/testing"
+	"github.com/marmos91/dittofs/pkg/payload"
+	s3store "github.com/marmos91/dittofs/pkg/payload/store/s3"
+	contenttesting "github.com/marmos91/dittofs/pkg/payload/store/testing"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -206,10 +206,10 @@ func TestS3ContentStore_Multipart(t *testing.T) {
 	}
 
 	t.Run("MultipartUpload", func(t *testing.T) {
-		contentID := metadata.ContentID("multipart-test-content")
+		payloadID := metadata.PayloadID("multipart-test-content")
 
 		// Begin multipart upload
-		uploadID, err := store.BeginMultipartUpload(ctx, contentID)
+		uploadID, err := store.BeginMultipartUpload(ctx, payloadID)
 		if err != nil {
 			t.Fatalf("Failed to begin multipart upload: %v", err)
 		}
@@ -222,20 +222,20 @@ func TestS3ContentStore_Multipart(t *testing.T) {
 				data[j] = byte(i) // Fill with part number
 			}
 
-			err = store.UploadPart(ctx, contentID, uploadID, i, data)
+			err = store.UploadPart(ctx, payloadID, uploadID, i, data)
 			if err != nil {
 				t.Fatalf("Failed to upload part %d: %v", i, err)
 			}
 		}
 
 		// Complete multipart upload
-		err = store.CompleteMultipartUpload(ctx, contentID, uploadID, []int{1, 2, 3})
+		err = store.CompleteMultipartUpload(ctx, payloadID, uploadID, []int{1, 2, 3})
 		if err != nil {
 			t.Fatalf("Failed to complete multipart upload: %v", err)
 		}
 
 		// Verify content size
-		size, err := store.GetContentSize(ctx, contentID)
+		size, err := store.GetContentSize(ctx, payloadID)
 		if err != nil {
 			t.Fatalf("Failed to get content size: %v", err)
 		}
@@ -246,7 +246,7 @@ func TestS3ContentStore_Multipart(t *testing.T) {
 		}
 
 		// Verify content exists
-		exists, err := store.ContentExists(ctx, contentID)
+		exists, err := store.ContentExists(ctx, payloadID)
 		if err != nil {
 			t.Fatalf("Failed to check content exists: %v", err)
 		}
@@ -256,29 +256,29 @@ func TestS3ContentStore_Multipart(t *testing.T) {
 	})
 
 	t.Run("AbortMultipartUpload", func(t *testing.T) {
-		contentID := metadata.ContentID("abort-test-content")
+		payloadID := metadata.PayloadID("abort-test-content")
 
 		// Begin multipart upload
-		uploadID, err := store.BeginMultipartUpload(ctx, contentID)
+		uploadID, err := store.BeginMultipartUpload(ctx, payloadID)
 		if err != nil {
 			t.Fatalf("Failed to begin multipart upload: %v", err)
 		}
 
 		// Upload one part
 		data := make([]byte, 5*1024*1024)
-		err = store.UploadPart(ctx, contentID, uploadID, 1, data)
+		err = store.UploadPart(ctx, payloadID, uploadID, 1, data)
 		if err != nil {
 			t.Fatalf("Failed to upload part: %v", err)
 		}
 
 		// Abort multipart upload
-		err = store.AbortMultipartUpload(ctx, contentID, uploadID)
+		err = store.AbortMultipartUpload(ctx, payloadID, uploadID)
 		if err != nil {
 			t.Fatalf("Failed to abort multipart upload: %v", err)
 		}
 
 		// Verify content doesn't exist
-		exists, err := store.ContentExists(ctx, contentID)
+		exists, err := store.ContentExists(ctx, payloadID)
 		if err != nil {
 			t.Fatalf("Failed to check content exists: %v", err)
 		}

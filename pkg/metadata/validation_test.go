@@ -392,10 +392,10 @@ func TestCheckStickyBitRestriction(t *testing.T) {
 }
 
 // ============================================================================
-// BuildContentID Tests
+// BuildPayloadID Tests
 // ============================================================================
 
-func TestBuildContentID(t *testing.T) {
+func TestBuildPayloadID(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -418,7 +418,7 @@ func TestBuildContentID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := BuildContentID(tt.shareName, tt.fullPath)
+			got := BuildPayloadID(tt.shareName, tt.fullPath)
 			assert.Equal(t, tt.want, got)
 		})
 	}

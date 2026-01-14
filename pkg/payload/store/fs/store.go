@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/marmos91/dittofs/pkg/blocks/store"
+	"github.com/marmos91/dittofs/pkg/payload/store"
 )
 
 // Store is a filesystem-backed implementation of store.BlockStore.

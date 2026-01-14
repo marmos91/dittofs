@@ -131,7 +131,7 @@ func (q *TransferQueue) Enqueue(entry TransferQueueEntry) bool {
 	default:
 		// Queue full
 		logger.Warn("Transfer queue full, dropping request",
-			"contentID", entry.ContentID())
+			"payloadID", entry.PayloadID())
 		return false
 	}
 }
@@ -210,11 +210,11 @@ func (q *TransferQueue) processEntry(_ context.Context, entry TransferQueueEntry
 		q.lastError = err
 		q.lastErrorAt = time.Now()
 		logger.Error("Transfer failed",
-			"contentID", entry.ContentID(),
+			"payloadID", entry.PayloadID(),
 			"error", err)
 	} else {
 		q.completed++
-		logger.Debug("Transfer completed", "contentID", entry.ContentID())
+		logger.Debug("Transfer completed", "payloadID", entry.PayloadID())
 	}
 	q.mu.Unlock()
 }

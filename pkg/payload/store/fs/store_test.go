@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marmos91/dittofs/pkg/blocks/store"
+	"github.com/marmos91/dittofs/pkg/payload/store"
 )
 
 func newTestStore(t *testing.T) *Store {

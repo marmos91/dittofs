@@ -243,7 +243,7 @@ func (resp *WriteResponse) Encode() ([]byte, error) {
 //  3. Verify write permission at share level
 //  4. Get metadata and content stores for the share
 //  5. Build AuthContext for permission validation
-//  6. PrepareWrite - validate permissions and get ContentID
+//  6. PrepareWrite - validate permissions and get PayloadID
 //  7. Write data to cache (async) or content store (sync)
 //  8. CommitWrite - update file metadata (size, timestamps)
 //  9. Return success response with bytes written
@@ -283,7 +283,7 @@ func (resp *WriteResponse) Encode() ([]byte, error) {
 // WRITE is frequently called and performance-critical:
 //   - Uses cache for async writes (reduces latency)
 //   - SMB clients typically use 32KB write chunks
-//   - ContentID caching in OpenFile reduces metadata lookups
+//   - PayloadID caching in OpenFile reduces metadata lookups
 //   - Parallel writes to different files are supported
 //
 // **Example:**
@@ -408,7 +408,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 
 	bytesWritten := len(req.Data)
 
-	err = contentSvc.WriteAt(authCtx.Context, tree.ShareName, writeOp.ContentID, req.Data, req.Offset)
+	err = contentSvc.WriteAt(authCtx.Context, tree.ShareName, writeOp.PayloadID, req.Data, req.Offset)
 	if err != nil {
 		logger.Warn("WRITE: content write failed", "path", openFile.Path, "error", err)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
@@ -426,8 +426,8 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
 	}
 
-	// Update cached ContentID in OpenFile
-	openFile.ContentID = writeOp.ContentID
+	// Update cached PayloadID in OpenFile
+	openFile.PayloadID = writeOp.PayloadID
 
 	logger.Debug("WRITE successful",
 		"path", openFile.Path,

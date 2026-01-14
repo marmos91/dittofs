@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/blocks/store"
+	"github.com/marmos91/dittofs/pkg/payload/store"
 	"github.com/marmos91/dittofs/pkg/cache"
 )
 
@@ -61,7 +61,7 @@ type TransferManager struct {
 	config     Config
 
 	// Per-file upload tracking
-	uploads   map[string]*fileUploadState // contentID -> state
+	uploads   map[string]*fileUploadState // payloadID -> state
 	uploadsMu sync.Mutex
 
 	// Transfer queue for non-blocking COMMIT
@@ -102,33 +102,33 @@ func New(c *cache.Cache, store store.BlockStore, config Config) *TransferManager
 }
 
 // getOrCreateUploadState returns the upload state for a file, creating it if needed.
-func (m *TransferManager) getOrCreateUploadState(contentID string) *fileUploadState {
+func (m *TransferManager) getOrCreateUploadState(payloadID string) *fileUploadState {
 	m.uploadsMu.Lock()
 	defer m.uploadsMu.Unlock()
 
-	state, exists := m.uploads[contentID]
+	state, exists := m.uploads[payloadID]
 	if !exists {
 		state = &fileUploadState{
 			sem:      make(chan struct{}, m.config.ParallelUploads),
 			uploaded: make(map[blockKey]bool),
 		}
-		m.uploads[contentID] = state
+		m.uploads[payloadID] = state
 	}
 	return state
 }
 
 // getUploadState returns the upload state for a file, or nil if not found.
-func (m *TransferManager) getUploadState(contentID string) *fileUploadState {
+func (m *TransferManager) getUploadState(payloadID string) *fileUploadState {
 	m.uploadsMu.Lock()
 	defer m.uploadsMu.Unlock()
-	return m.uploads[contentID]
+	return m.uploads[payloadID]
 }
 
 // cleanupUploadState removes the upload state for a file.
-func (m *TransferManager) cleanupUploadState(contentID string) {
+func (m *TransferManager) cleanupUploadState(payloadID string) {
 	m.uploadsMu.Lock()
 	defer m.uploadsMu.Unlock()
-	delete(m.uploads, contentID)
+	delete(m.uploads, payloadID)
 }
 
 // ============================================================================
@@ -141,12 +141,12 @@ func (m *TransferManager) cleanupUploadState(contentID string) {
 // Parameters:
 //   - shareName: The share name (used in block key prefix)
 //   - fileHandle: The file handle in the cache
-//   - contentID: The content ID for block key generation
+//   - payloadID: The content ID for block key generation
 //   - chunkIdx: The chunk index that was written to
 //   - offset: The offset within the chunk
 //   - length: The length of data written
 func (m *TransferManager) OnWriteComplete(ctx context.Context, shareName string, fileHandle []byte,
-	contentID string, chunkIdx uint32, offset, length uint32) {
+	payloadID string, chunkIdx uint32, offset, length uint32) {
 	m.mu.RLock()
 	if m.closed {
 		m.mu.RUnlock()
@@ -185,14 +185,14 @@ func (m *TransferManager) OnWriteComplete(ctx context.Context, shareName string,
 		}
 
 		// Start async upload for this block
-		m.startBlockUpload(ctx, shareName, fileHandle, contentID, chunkIdx, blockIdx, data)
+		m.startBlockUpload(ctx, shareName, fileHandle, payloadID, chunkIdx, blockIdx, data)
 	}
 }
 
 // startBlockUpload uploads a block asynchronously with bounded parallelism.
 func (m *TransferManager) startBlockUpload(ctx context.Context, _ string, _ []byte,
-	contentID string, chunkIdx, blockIdx uint32, data []byte) {
-	state := m.getOrCreateUploadState(contentID)
+	payloadID string, chunkIdx, blockIdx uint32, data []byte) {
+	state := m.getOrCreateUploadState(payloadID)
 
 	// Check if already uploaded
 	key := blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx}
@@ -214,9 +214,9 @@ func (m *TransferManager) startBlockUpload(ctx context.Context, _ string, _ []by
 			state.inFlight.Done()
 		}()
 
-		// Generate block key: {contentID}/chunk-{n}/block-{n}
-		// Note: contentID already includes the share name (e.g., "export/path/to/file")
-		blockKeyStr := fmt.Sprintf("%s/chunk-%d/block-%d", contentID, chunkIdx, blockIdx)
+		// Generate block key: {payloadID}/chunk-{n}/block-{n}
+		// Note: payloadID already includes the share name (e.g., "export/path/to/file")
+		blockKeyStr := fmt.Sprintf("%s/chunk-%d/block-%d", payloadID, chunkIdx, blockIdx)
 
 		if err := m.blockStore.WriteBlock(ctx, blockKeyStr, data); err != nil {
 			state.errorsMu.Lock()
@@ -240,7 +240,7 @@ func (m *TransferManager) startBlockUpload(ctx context.Context, _ string, _ []by
 
 // WaitForUploads waits for all in-flight uploads for a file to complete.
 // Called by BlockService.FlushAndFinalize().
-func (m *TransferManager) WaitForUploads(ctx context.Context, contentID string) error {
+func (m *TransferManager) WaitForUploads(ctx context.Context, payloadID string) error {
 	m.mu.RLock()
 	if m.closed {
 		m.mu.RUnlock()
@@ -248,7 +248,7 @@ func (m *TransferManager) WaitForUploads(ctx context.Context, contentID string) 
 	}
 	m.mu.RUnlock()
 
-	state := m.getUploadState(contentID)
+	state := m.getUploadState(payloadID)
 	if state == nil {
 		return nil // No uploads for this file
 	}
@@ -281,14 +281,14 @@ func (m *TransferManager) WaitForUploads(ctx context.Context, contentID string) 
 // Use FlushRemainingAsync for non-blocking behavior.
 //
 // Deprecated: Use FlushRemainingAsync for better performance.
-func (m *TransferManager) FlushRemaining(ctx context.Context, shareName string, fileHandle []byte, contentID string) error {
-	return m.flushRemainingSync(ctx, shareName, fileHandle, contentID)
+func (m *TransferManager) FlushRemaining(ctx context.Context, shareName string, fileHandle []byte, payloadID string) error {
+	return m.flushRemainingSync(ctx, shareName, fileHandle, payloadID)
 }
 
 // FlushRemainingAsync enqueues remaining data for background upload.
 // Returns immediately after enqueuing - does NOT wait for block store uploads.
 // The cache should be synced before calling this to ensure crash recovery.
-func (m *TransferManager) FlushRemainingAsync(ctx context.Context, shareName string, fileHandle []byte, contentID string) error {
+func (m *TransferManager) FlushRemainingAsync(ctx context.Context, shareName string, fileHandle []byte, payloadID string) error {
 	m.mu.RLock()
 	if m.closed {
 		m.mu.RUnlock()
@@ -297,10 +297,10 @@ func (m *TransferManager) FlushRemainingAsync(ctx context.Context, shareName str
 	m.mu.RUnlock()
 
 	// Create entry and enqueue for background upload (non-blocking)
-	entry := NewDefaultEntry(shareName, fileHandle, contentID)
+	entry := NewDefaultEntry(shareName, fileHandle, payloadID)
 	if !m.queue.Enqueue(entry) {
 		// Queue full - fall back to sync upload
-		return m.flushRemainingSync(ctx, shareName, fileHandle, contentID)
+		return m.flushRemainingSync(ctx, shareName, fileHandle, payloadID)
 	}
 
 	return nil
@@ -308,12 +308,12 @@ func (m *TransferManager) FlushRemainingAsync(ctx context.Context, shareName str
 
 // flushRemainingSync is the internal synchronous implementation.
 // Called by FlushRemaining (blocking) and by background uploader.
-func (m *TransferManager) flushRemainingSync(ctx context.Context, shareName string, fileHandle []byte, contentID string) error {
-	return m.flushRemainingSyncInternal(ctx, shareName, fileHandle, contentID, true)
+func (m *TransferManager) flushRemainingSync(ctx context.Context, shareName string, fileHandle []byte, payloadID string) error {
+	return m.flushRemainingSyncInternal(ctx, shareName, fileHandle, payloadID, true)
 }
 
 // flushRemainingSyncInternal is the internal implementation with markFlushed option.
-func (m *TransferManager) flushRemainingSyncInternal(ctx context.Context, shareName string, fileHandle []byte, contentID string, markFlushed bool) error {
+func (m *TransferManager) flushRemainingSyncInternal(ctx context.Context, shareName string, fileHandle []byte, payloadID string, markFlushed bool) error {
 	m.mu.RLock()
 	if m.closed {
 		m.mu.RUnlock()
@@ -350,7 +350,7 @@ func (m *TransferManager) flushRemainingSyncInternal(ctx context.Context, shareN
 			}()
 
 			// Upload slice data as blocks
-			blockRefs, err := m.uploadSliceAsBlocks(ctx, shareName, contentID, s)
+			blockRefs, err := m.uploadSliceAsBlocks(ctx, shareName, payloadID, s)
 			if err != nil {
 				errCh <- err
 				return
@@ -384,13 +384,13 @@ func (m *TransferManager) flushRemainingSyncInternal(ctx context.Context, shareN
 	}
 
 	// Cleanup upload state
-	m.cleanupUploadState(contentID)
+	m.cleanupUploadState(payloadID)
 
 	return nil
 }
 
 // uploadSliceAsBlocks splits a slice into blocks and uploads each.
-func (m *TransferManager) uploadSliceAsBlocks(ctx context.Context, _, contentID string, slice cache.PendingSlice) ([]cache.BlockRef, error) {
+func (m *TransferManager) uploadSliceAsBlocks(ctx context.Context, _, payloadID string, slice cache.PendingSlice) ([]cache.BlockRef, error) {
 	var blockRefs []cache.BlockRef
 	data := slice.Data
 
@@ -415,9 +415,9 @@ func (m *TransferManager) uploadSliceAsBlocks(ctx context.Context, _, contentID 
 			data = data[blockSize:]
 		}
 
-		// Generate block key: {contentID}/chunk-{n}/block-{n}
-		// Note: contentID already includes the share name
-		blockKeyStr := fmt.Sprintf("%s/chunk-%d/block-%d", contentID, slice.ChunkIndex, blockIdx)
+		// Generate block key: {payloadID}/chunk-{n}/block-{n}
+		// Note: payloadID already includes the share name
+		blockKeyStr := fmt.Sprintf("%s/chunk-%d/block-%d", payloadID, slice.ChunkIndex, blockIdx)
 
 		// Upload block
 		if err := m.blockStore.WriteBlock(ctx, blockKeyStr, blockData); err != nil {
@@ -440,7 +440,7 @@ func (m *TransferManager) uploadSliceAsBlocks(ctx context.Context, _, contentID 
 // ReadBlocks fetches blocks from the block store in parallel and caches them.
 // Called when ReadAt() encounters a cache miss.
 func (m *TransferManager) ReadBlocks(ctx context.Context, shareName string, fileHandle []byte,
-	contentID string, chunkIdx uint32, offset, length uint32) ([]byte, error) {
+	payloadID string, chunkIdx uint32, offset, length uint32) ([]byte, error) {
 	m.mu.RLock()
 	if m.closed {
 		m.mu.RUnlock()
@@ -469,9 +469,9 @@ func (m *TransferManager) ReadBlocks(ctx context.Context, shareName string, file
 				wg.Done()
 			}()
 
-			// Generate block key: {contentID}/chunk-{n}/block-{n}
-			// Note: contentID already includes the share name
-			blockKeyStr := fmt.Sprintf("%s/chunk-%d/block-%d", contentID, chunkIdx, blockIdx)
+			// Generate block key: {payloadID}/chunk-{n}/block-{n}
+			// Note: payloadID already includes the share name
+			blockKeyStr := fmt.Sprintf("%s/chunk-%d/block-%d", payloadID, chunkIdx, blockIdx)
 
 			data, err := m.blockStore.ReadBlock(ctx, blockKeyStr)
 			if err != nil {

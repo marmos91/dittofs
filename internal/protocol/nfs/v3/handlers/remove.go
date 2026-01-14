@@ -334,14 +334,14 @@ func (h *Handler) Remove(
 	// REMOVE should only delete what's already in the content store.
 	// Any unflushed cache data will be cleaned up by cache eviction.
 
-	if removedFileAttr.ContentID != "" {
-		if err := contentSvc.Delete(ctx.Context, ctx.Share, removedFileAttr.ContentID); err != nil {
+	if removedFileAttr.PayloadID != "" {
+		if err := contentSvc.Delete(ctx.Context, ctx.Share, removedFileAttr.PayloadID); err != nil {
 			// Log but don't fail the operation - metadata is already removed
-			logger.WarnCtx(ctx.Context, "REMOVE: failed to delete content", "name", req.Filename, "content_id", removedFileAttr.ContentID, "error", err)
+			logger.WarnCtx(ctx.Context, "REMOVE: failed to delete content", "name", req.Filename, "content_id", removedFileAttr.PayloadID, "error", err)
 			// This is non-fatal - the file is successfully removed from metadata
 			// The orphaned content can be cleaned up later via garbage collection
 		} else {
-			logger.DebugCtx(ctx.Context, "REMOVE: deleted content", "name", req.Filename, "content_id", removedFileAttr.ContentID)
+			logger.DebugCtx(ctx.Context, "REMOVE: deleted content", "name", req.Filename, "content_id", removedFileAttr.PayloadID)
 		}
 	}
 

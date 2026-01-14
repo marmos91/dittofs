@@ -25,8 +25,8 @@ type TransferQueueEntry interface {
 	// FileHandle returns the file handle for this entry.
 	FileHandle() []byte
 
-	// ContentID returns the content ID for block key generation.
-	ContentID() string
+	// PayloadID returns the content ID for block key generation.
+	PayloadID() string
 
 	// Execute performs the actual transfer operation.
 	// The manager is provided to access the cache and block store.
@@ -42,16 +42,16 @@ type TransferQueueEntry interface {
 type DefaultEntry struct {
 	shareName  string
 	fileHandle []byte
-	contentID  string
+	payloadID  string
 	priority   int
 }
 
 // NewDefaultEntry creates a new default transfer entry.
-func NewDefaultEntry(shareName string, fileHandle []byte, contentID string) *DefaultEntry {
+func NewDefaultEntry(shareName string, fileHandle []byte, payloadID string) *DefaultEntry {
 	return &DefaultEntry{
 		shareName:  shareName,
 		fileHandle: fileHandle,
-		contentID:  contentID,
+		payloadID:  payloadID,
 		priority:   0,
 	}
 }
@@ -66,14 +66,14 @@ func (e *DefaultEntry) FileHandle() []byte {
 	return e.fileHandle
 }
 
-// ContentID returns the content ID.
-func (e *DefaultEntry) ContentID() string {
-	return e.contentID
+// PayloadID returns the content ID.
+func (e *DefaultEntry) PayloadID() string {
+	return e.payloadID
 }
 
 // Execute performs the transfer by flushing remaining cache data.
 func (e *DefaultEntry) Execute(ctx context.Context, manager *TransferManager) error {
-	return manager.flushRemainingSyncInternal(ctx, e.shareName, e.fileHandle, e.contentID, true)
+	return manager.flushRemainingSyncInternal(ctx, e.shareName, e.fileHandle, e.payloadID, true)
 }
 
 // Priority returns the entry priority.
@@ -86,7 +86,7 @@ func (e *DefaultEntry) WithPriority(priority int) *DefaultEntry {
 	return &DefaultEntry{
 		shareName:  e.shareName,
 		fileHandle: e.fileHandle,
-		contentID:  e.contentID,
+		payloadID:  e.payloadID,
 		priority:   priority,
 	}
 }

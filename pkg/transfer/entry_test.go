@@ -15,8 +15,8 @@ func TestDefaultEntry_Interface(t *testing.T) {
 		t.Errorf("FileHandle() = %s, want test-handle", entry.FileHandle())
 	}
 
-	if entry.ContentID() != "export/test.txt" {
-		t.Errorf("ContentID() = %s, want export/test.txt", entry.ContentID())
+	if entry.PayloadID() != "export/test.txt" {
+		t.Errorf("PayloadID() = %s, want export/test.txt", entry.PayloadID())
 	}
 
 	if entry.Priority() != 0 {
@@ -42,8 +42,8 @@ func TestDefaultEntry_WithPriority(t *testing.T) {
 	if highPriority.ShareName() != entry.ShareName() {
 		t.Errorf("ShareName mismatch after WithPriority")
 	}
-	if highPriority.ContentID() != entry.ContentID() {
-		t.Errorf("ContentID mismatch after WithPriority")
+	if highPriority.PayloadID() != entry.PayloadID() {
+		t.Errorf("PayloadID mismatch after WithPriority")
 	}
 }
 

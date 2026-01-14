@@ -226,9 +226,9 @@ func TestAttributeHelpers(t *testing.T) {
 		assert.Equal(t, "dirty", attr.Value.AsString())
 	})
 
-	t.Run("ContentID", func(t *testing.T) {
-		attr := ContentID("abc123")
-		assert.Equal(t, AttrContentID, string(attr.Key))
+	t.Run("PayloadID", func(t *testing.T) {
+		attr := PayloadID("abc123")
+		assert.Equal(t, AttrPayloadID, string(attr.Key))
 		assert.Equal(t, "abc123", attr.Value.AsString())
 	})
 

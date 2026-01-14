@@ -14,8 +14,8 @@ type PendingWriteState struct {
 	// LastMtime is the most recent modification time
 	LastMtime time.Time
 
-	// ContentID for the file (needed for commit)
-	ContentID ContentID
+	// PayloadID for the file (needed for commit)
+	PayloadID PayloadID
 
 	// PreWriteAttr from the first write (for WCC data)
 	PreWriteAttr *FileAttr
@@ -61,7 +61,7 @@ func (t *PendingWritesTracker) RecordWrite(handle FileHandle, intent *WriteOpera
 		state = &PendingWriteState{
 			MaxSize:           intent.NewSize,
 			LastMtime:         intent.NewMtime,
-			ContentID:         intent.ContentID,
+			PayloadID:         intent.PayloadID,
 			PreWriteAttr:      intent.PreWriteAttr,
 			ClearSetuidSetgid: clearSetuid,
 		}

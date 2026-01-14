@@ -344,7 +344,7 @@ func (h *Handler) Commit(
 	wccAfter := h.convertFileAttrToNFS(handle, &file.FileAttr)
 
 	// Check if there's content to flush
-	if file.ContentID == "" {
+	if file.PayloadID == "" {
 		logger.DebugCtx(ctx.Context, "COMMIT: no content to flush")
 		logger.InfoCtx(ctx.Context, "COMMIT successful (no content)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
 		return &CommitResponse{
@@ -381,9 +381,9 @@ func (h *Handler) Commit(
 	//
 	// Linux's vfs_fsync_range() approach is an optimization; our approach
 	// prioritizes correctness and simplicity over performance here.
-	_, flushErr := contentSvc.Flush(ctx.Context, ctx.Share, file.ContentID)
+	_, flushErr := contentSvc.Flush(ctx.Context, ctx.Share, file.PayloadID)
 	if flushErr != nil {
-		traceError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "content_id", file.ContentID, "client", clientIP)
+		traceError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "content_id", file.PayloadID, "client", clientIP)
 
 		// Try to get updated attributes for error response
 		if updatedFile, getErr := metaSvc.GetFile(ctx.Context, handle); getErr == nil {
@@ -422,7 +422,7 @@ func (h *Handler) Commit(
 		logger.WarnCtx(ctx.Context, "COMMIT: successful but cannot get updated file attributes", "handle", fmt.Sprintf("0x%x", req.Handle), "error", getErr)
 	}
 
-	logger.InfoCtx(ctx.Context, "COMMIT successful", "file", file.ContentID, "offset", req.Offset, "count", req.Count, "client", clientIP)
+	logger.InfoCtx(ctx.Context, "COMMIT successful", "file", file.PayloadID, "offset", req.Offset, "count", req.Count, "client", clientIP)
 	return &CommitResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 		AttrBefore:      wccBefore,

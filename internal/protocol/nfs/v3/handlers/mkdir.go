@@ -149,7 +149,7 @@ type MkdirResponse struct {
 //   - Size: Implementation-dependent (typically 4096 bytes)
 //   - Timestamps: Current time for atime, mtime, ctime
 //   - Nlink: Initially 2 (. and ..)
-//   - ContentID: Empty for directories
+//   - PayloadID: Empty for directories
 //
 // **Naming Restrictions:**
 //

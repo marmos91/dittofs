@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
-	"github.com/marmos91/dittofs/pkg/blocks"
+	"github.com/marmos91/dittofs/pkg/payload"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/registry"
@@ -49,7 +49,7 @@ type HandlerTestFixture struct {
 
 	// ContentService provides high-level content operations.
 	// It uses Cache for content storage.
-	ContentService *blocks.BlockService
+	ContentService *payload.PayloadService
 
 	// ShareName is the name of the test share.
 	ShareName string
@@ -252,7 +252,7 @@ func (f *HandlerTestFixture) CreateFile(path string, content []byte) metadata.Fi
 
 	// Write content if provided (using ContentService with Cache)
 	if len(content) > 0 {
-		if err := f.ContentService.WriteAt(ctx, f.ShareName, file.ContentID, content, 0); err != nil {
+		if err := f.ContentService.WriteAt(ctx, f.ShareName, file.PayloadID, content, 0); err != nil {
 			f.t.Fatalf("Failed to write content to file %q: %v", path, err)
 		}
 
@@ -371,14 +371,14 @@ func (f *HandlerTestFixture) ReadContent(path string) []byte {
 	ctx := context.Background()
 
 	// Get content size
-	size, err := f.ContentService.GetContentSize(ctx, f.ShareName, file.ContentID)
+	size, err := f.ContentService.GetContentSize(ctx, f.ShareName, file.PayloadID)
 	if err != nil {
 		f.t.Fatalf("Failed to get content size for %q: %v", path, err)
 	}
 
 	// Read content using ContentService (backed by Cache)
 	content := make([]byte, size)
-	n, err := f.ContentService.ReadAt(ctx, f.ShareName, file.ContentID, content, 0)
+	n, err := f.ContentService.ReadAt(ctx, f.ShareName, file.PayloadID, content, 0)
 	if err != nil {
 		f.t.Fatalf("Failed to read content from %q: %v", path, err)
 	}

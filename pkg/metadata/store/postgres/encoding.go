@@ -49,7 +49,7 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		mtime        time.Time
 		ctime        time.Time
 		creationTime time.Time
-		contentID    sql.NullString
+		payloadID    sql.NullString
 		linkTarget   sql.NullString
 		deviceMajor  sql.NullInt32
 		deviceMinor  sql.NullInt32
@@ -70,7 +70,7 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		&mtime,
 		&ctime,
 		&creationTime,
-		&contentID,
+		&payloadID,
 		&linkTarget,
 		&deviceMajor,
 		&deviceMinor,
@@ -107,8 +107,8 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 	}
 
 	// Handle nullable fields
-	if contentID.Valid {
-		file.ContentID = metadata.ContentID(contentID.String)
+	if payloadID.Valid {
+		file.PayloadID = metadata.PayloadID(payloadID.String)
 	}
 
 	if linkTarget.Valid {

@@ -79,7 +79,7 @@ type SliceInfo struct {
 
 	// Blocks contains references to the blocks holding this slice's data.
 	// For small slices, this is typically a single block.
-	// For large slices (>BlockSize), data is split across multiple blocks.
+	// For large slices (>BlockSize), data is split across multiple payload.
 	Blocks []BlockRef
 
 	// CreatedAt determines newest-wins ordering for overlapping slices.
