@@ -50,7 +50,7 @@ type BlockRef struct {
 // This is the serialization format for persisting slices to disk.
 type SliceEntry struct {
 	// FileHandle identifies the file this slice belongs to.
-	FileHandle []byte
+	FileHandle string
 
 	// ChunkIdx is the chunk index within the file.
 	ChunkIdx uint32

@@ -23,7 +23,7 @@ type TransferQueueEntry interface {
 	ShareName() string
 
 	// FileHandle returns the file handle for this entry.
-	FileHandle() []byte
+	FileHandle() string
 
 	// PayloadID returns the content ID for block key generation.
 	PayloadID() string
@@ -41,13 +41,13 @@ type TransferQueueEntry interface {
 // It flushes cache data to the block store.
 type DefaultEntry struct {
 	shareName  string
-	fileHandle []byte
+	fileHandle string
 	payloadID  string
 	priority   int
 }
 
 // NewDefaultEntry creates a new default transfer entry.
-func NewDefaultEntry(shareName string, fileHandle []byte, payloadID string) *DefaultEntry {
+func NewDefaultEntry(shareName string, fileHandle string, payloadID string) *DefaultEntry {
 	return &DefaultEntry{
 		shareName:  shareName,
 		fileHandle: fileHandle,
@@ -62,7 +62,7 @@ func (e *DefaultEntry) ShareName() string {
 }
 
 // FileHandle returns the file handle.
-func (e *DefaultEntry) FileHandle() []byte {
+func (e *DefaultEntry) FileHandle() string {
 	return e.fileHandle
 }
 

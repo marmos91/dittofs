@@ -30,7 +30,7 @@ type Persister interface {
 
 	// AppendRemove appends a file removal entry to the WAL.
 	// This is called when a file is removed from the cache.
-	AppendRemove(fileHandle []byte) error
+	AppendRemove(fileHandle string) error
 
 	// Sync forces pending writes to durable storage.
 	// Uses async semantics - the OS handles actual disk flush.
@@ -64,7 +64,7 @@ func (p *NullPersister) AppendSlice(entry *SliceEntry) error {
 }
 
 // AppendRemove is a no-op.
-func (p *NullPersister) AppendRemove(fileHandle []byte) error {
+func (p *NullPersister) AppendRemove(fileHandle string) error {
 	return nil
 }
 

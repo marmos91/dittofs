@@ -10,7 +10,7 @@ import (
 // mockEntry is a test implementation of TransferQueueEntry.
 type mockEntry struct {
 	shareName  string
-	fileHandle []byte
+	fileHandle string
 	payloadID  string
 	priority   int
 	executed   atomic.Bool
@@ -18,7 +18,7 @@ type mockEntry struct {
 }
 
 func (e *mockEntry) ShareName() string     { return e.shareName }
-func (e *mockEntry) FileHandle() []byte    { return e.fileHandle }
+func (e *mockEntry) FileHandle() string    { return e.fileHandle }
 func (e *mockEntry) PayloadID() string     { return e.payloadID }
 func (e *mockEntry) Priority() int         { return e.priority }
 func (e *mockEntry) Execute(ctx context.Context, m *TransferManager) error {
@@ -43,7 +43,7 @@ func TestTransferQueue_EnqueueAndProcess(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		entries[i] = &mockEntry{
 			shareName:  "export",
-			fileHandle: []byte("handle"),
+			fileHandle: "handle",
 			payloadID:  "test-content",
 		}
 		if !q.Enqueue(entries[i]) {

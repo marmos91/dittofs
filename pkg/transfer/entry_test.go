@@ -5,13 +5,13 @@ import (
 )
 
 func TestDefaultEntry_Interface(t *testing.T) {
-	entry := NewDefaultEntry("export", []byte("test-handle"), "export/test.txt")
+	entry := NewDefaultEntry("export", "test-handle", "export/test.txt")
 
 	if entry.ShareName() != "export" {
 		t.Errorf("ShareName() = %s, want export", entry.ShareName())
 	}
 
-	if string(entry.FileHandle()) != "test-handle" {
+	if entry.FileHandle() != "test-handle" {
 		t.Errorf("FileHandle() = %s, want test-handle", entry.FileHandle())
 	}
 
@@ -25,7 +25,7 @@ func TestDefaultEntry_Interface(t *testing.T) {
 }
 
 func TestDefaultEntry_WithPriority(t *testing.T) {
-	entry := NewDefaultEntry("export", []byte("handle"), "content-id")
+	entry := NewDefaultEntry("export", "handle", "content-id")
 	highPriority := entry.WithPriority(10)
 
 	// Original should be unchanged
