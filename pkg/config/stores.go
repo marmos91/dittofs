@@ -19,23 +19,17 @@ import (
 	"github.com/mitchellh/mapstructure"
 )
 
-// CreateCache creates a cache instance from configuration.
+// CreateCache creates a WAL-backed cache instance from configuration.
+// WAL is mandatory for crash recovery - all writes go through the WAL cache.
 func CreateCache(cfg CacheConfig) (*cache.Cache, error) {
-	switch cfg.Type {
-	case "memory", "":
-		return cache.New(cfg.MaxSize), nil
-	case "wal":
-		if cfg.Wal.Path == "" {
-			return nil, fmt.Errorf("wal cache requires path to be set")
-		}
-		persister, err := wal.NewMmapPersister(cfg.Wal.Path)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create WAL persister: %w", err)
-		}
-		return cache.NewWithWal(cfg.MaxSize, persister)
-	default:
-		return nil, fmt.Errorf("unknown cache type: %q", cfg.Type)
+	if cfg.Path == "" {
+		return nil, fmt.Errorf("cache path is required (cache.path)")
 	}
+	persister, err := wal.NewMmapPersister(cfg.Path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create WAL persister: %w", err)
+	}
+	return cache.NewWithWal(uint64(cfg.Size), persister)
 }
 
 // createMetadataStore creates a single metadata store instance.
@@ -134,17 +128,19 @@ func createPostgresMetadataStore(
 }
 
 // CreateBlockStore creates a block store instance from configuration.
-// Returns nil, nil if block store is not configured (cache-only mode).
-func CreateBlockStore(ctx context.Context, cfg BlockStoreConfig) (store.BlockStore, error) {
+func CreateBlockStore(ctx context.Context, cfg PayloadStoreConfig) (store.BlockStore, error) {
 	switch cfg.Type {
-	case "":
-		// No block store configured - cache-only mode
-		return nil, nil
 	case "memory":
 		return blockmemory.New(), nil
 	case "s3":
+		if cfg.S3 == nil {
+			return nil, fmt.Errorf("S3 block store requires s3 configuration")
+		}
 		return createS3BlockStore(ctx, cfg.S3)
 	case "filesystem":
+		if cfg.Filesystem == nil {
+			return nil, fmt.Errorf("filesystem block store requires filesystem configuration")
+		}
 		return createFSBlockStore(ctx, cfg.Filesystem)
 	default:
 		return nil, fmt.Errorf("unknown block store type: %q", cfg.Type)
@@ -152,7 +148,7 @@ func CreateBlockStore(ctx context.Context, cfg BlockStoreConfig) (store.BlockSto
 }
 
 // createS3BlockStore creates an S3-backed block store.
-func createS3BlockStore(ctx context.Context, cfg BlockStoreS3Config) (store.BlockStore, error) {
+func createS3BlockStore(ctx context.Context, cfg *PayloadS3Config) (store.BlockStore, error) {
 	if cfg.Bucket == "" {
 		return nil, fmt.Errorf("S3 block store requires bucket to be set")
 	}
@@ -161,9 +157,9 @@ func createS3BlockStore(ctx context.Context, cfg BlockStoreS3Config) (store.Bloc
 		Bucket:         cfg.Bucket,
 		Region:         cfg.Region,
 		Endpoint:       cfg.Endpoint,
-		AccessKey:      cfg.AccessKey,
-		SecretKey:      cfg.SecretKey,
-		KeyPrefix:      cfg.KeyPrefix,
+		AccessKey:      cfg.AccessKeyID,
+		SecretKey:      cfg.SecretAccessKey,
+		KeyPrefix:      cfg.Prefix,
 		MaxRetries:     cfg.MaxRetries,
 		ForcePathStyle: cfg.ForcePathStyle,
 	}
@@ -172,15 +168,19 @@ func createS3BlockStore(ctx context.Context, cfg BlockStoreS3Config) (store.Bloc
 }
 
 // createFSBlockStore creates a filesystem-backed block store.
-func createFSBlockStore(_ context.Context, cfg BlockStoreFSConfig) (store.BlockStore, error) {
+func createFSBlockStore(_ context.Context, cfg *PayloadFSConfig) (store.BlockStore, error) {
 	if cfg.BasePath == "" {
 		return nil, fmt.Errorf("filesystem block store requires base_path to be set")
 	}
 
 	// Build config - fs.New() applies defaults for zero values
+	createDir := true
+	if cfg.CreateDir != nil {
+		createDir = *cfg.CreateDir
+	}
 	fsCfg := blockfs.Config{
 		BasePath:  cfg.BasePath,
-		CreateDir: cfg.CreateDir,
+		CreateDir: createDir,
 		DirMode:   os.FileMode(cfg.DirMode),
 		FileMode:  os.FileMode(cfg.FileMode),
 	}
@@ -189,16 +189,10 @@ func createFSBlockStore(_ context.Context, cfg BlockStoreFSConfig) (store.BlockS
 }
 
 // CreateTransferManager creates a transfer manager instance from configuration.
-// Returns nil if block store is nil (cache-only mode, no S3 persistence).
-func CreateTransferManager(c *cache.Cache, blockStore store.BlockStore, cfg FlusherConfig) *transfer.TransferManager {
-	if blockStore == nil {
-		// No block store - cache-only mode, no transfer manager needed
-		return nil
-	}
-
+func CreateTransferManager(c *cache.Cache, blockStore store.BlockStore, cfg TransferConfig) *transfer.TransferManager {
 	tmCfg := transfer.Config{
-		ParallelUploads:   cfg.ParallelUploads,
-		ParallelDownloads: cfg.ParallelDownloads,
+		ParallelUploads:   cfg.Workers.Uploads,
+		ParallelDownloads: cfg.Workers.Downloads,
 	}
 
 	return transfer.New(c, blockStore, tmCfg)

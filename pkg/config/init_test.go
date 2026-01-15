@@ -48,7 +48,8 @@ func TestInitConfig_Success(t *testing.T) {
 	expectedSections := []string{
 		"# DittoFS Configuration File",
 		"logging:",
-		"content:",
+		"cache:",
+		"payload:",
 		"metadata:",
 		"shares:",
 		"adapters:",
@@ -231,7 +232,8 @@ func TestGenerateYAMLWithComments_ValidConfig(t *testing.T) {
 	sections := []string{
 		"logging:",
 		"server:",
-		"content:",
+		"cache:",
+		"payload:",
 		"metadata:",
 		"shares:",
 		"adapters:",
