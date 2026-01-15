@@ -16,7 +16,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/payload"
 	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	"github.com/marmos91/dittofs/pkg/registry"
-	"github.com/marmos91/dittofs/pkg/transfer"
+	"github.com/marmos91/dittofs/pkg/payload/transfer"
 )
 
 // DefaultShareName is the default share name used in test fixtures.

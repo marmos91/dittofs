@@ -9,7 +9,7 @@ import (
 	metadataMemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/payload"
 	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
-	"github.com/marmos91/dittofs/pkg/transfer"
+	"github.com/marmos91/dittofs/pkg/payload/transfer"
 )
 
 // Helper to create a basic ShareConfig for testing

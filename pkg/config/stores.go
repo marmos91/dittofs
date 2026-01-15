@@ -15,7 +15,7 @@ import (
 	blockfs "github.com/marmos91/dittofs/pkg/payload/store/fs"
 	blockmemory "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	blocks3 "github.com/marmos91/dittofs/pkg/payload/store/s3"
-	"github.com/marmos91/dittofs/pkg/transfer"
+	"github.com/marmos91/dittofs/pkg/payload/transfer"
 	"github.com/mitchellh/mapstructure"
 )
 
