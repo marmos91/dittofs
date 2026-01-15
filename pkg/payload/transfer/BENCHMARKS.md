@@ -105,6 +105,47 @@ go test -tags=integration -bench="S3" -benchmem ./pkg/payload/transfer/...
 | Real S3 (same region) | ~100-300 MB/s | ~300-500 MB/s | ~150-300 MB/s |
 | Real S3 (cross region) | ~50-100 MB/s | ~100-200 MB/s | ~80-150 MB/s |
 
+## Garbage Collection Performance
+
+The GC scans the block store and removes orphan blocks (blocks without metadata).
+
+### GC Benchmarks (Memory Store)
+
+| Files | Time/op | Memory/op | Allocs/op |
+|-------|---------|-----------|-----------|
+| 10 files | ~15 μs | ~8 KB | ~100 |
+| 100 files | ~120 μs | ~55 KB | ~1,000 |
+| 1000 files | ~1.2 ms | ~571 KB | ~10,000 |
+
+### Key Metrics
+
+| Metric | Value |
+|--------|-------|
+| Parse block key | 34.8 ns (zero alloc) |
+| Per-file overhead | ~1.2 μs |
+| Memory scaling | O(n) linear |
+
+### S3 GC Characteristics
+
+For S3 stores, GC performance depends on:
+- ListObjectsV2 pagination (1000 objects/request)
+- DeleteObjects batching (1000 objects/request)
+- Network latency to S3 endpoint
+
+Expected S3 GC times:
+- 1000 files: ~2-5 seconds (dominated by API calls)
+- 10000 files: ~20-50 seconds
+
+### Running GC Benchmarks
+
+```bash
+# Unit benchmarks (memory store)
+go test ./pkg/payload/transfer/... -bench='GC' -benchmem -run='^$'
+
+# Integration benchmarks (filesystem, S3)
+go test -tags=integration ./pkg/payload/transfer/... -bench='GC' -benchmem -run='^$'
+```
+
 ## Performance Targets
 
 | Target | Status |
