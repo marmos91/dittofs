@@ -118,33 +118,43 @@ DittoFS uses a **Service-oriented architecture** with the Registry pattern to en
   - `pkg/metadata/store/postgres/`: PostgreSQL (persistent, distributed, UUID-based handles)
 - File handles are opaque identifiers (implementation-specific format)
 
-**6. Block Store** (`pkg/blocks/store/store.go`)
-- **Simple CRUD interface** for file data
-- Supports read, write-at, truncate operations
-- Implementations:
-  - `pkg/blocks/store/memory/`: In-memory (fast, ephemeral)
-  - `pkg/blocks/store/s3/`: S3-backed storage (multipart, streaming)
+**6. Payload Service** (`pkg/payload/service.go`)
+- **Central service for all file content operations**
+- Uses Chunk/Slice/Block model for efficient storage
+- Coordinates between cache and transfer manager
+- Provides ReadAt, WriteAt, Flush, Delete operations
 
-**7. Cache Layer** (`pkg/cache/`)
+**7. Block Store** (`pkg/payload/store/store.go`)
+- **Simple CRUD interface** for block data (4MB units)
+- Supports put, get, delete, list operations
+- Implementations:
+  - `pkg/payload/store/memory/`: In-memory (fast, ephemeral)
+  - `pkg/payload/store/fs/`: Filesystem storage
+  - `pkg/payload/store/s3/`: S3-backed storage (range reads, multipart uploads)
+
+**8. Cache Layer** (`pkg/cache/`)
 - Slice-aware caching for the Chunk/Slice/Block storage model
-- Sequential write optimization (merges 16KB-32KB NFS writes)
+- Sequential write optimization (merges 16KB-32KB NFS writes into single slices)
 - Newest-wins read merging for overlapping slices
 - LRU eviction with dirty data protection
 - Uses `wal.Persister` interface for crash recovery
+- See [CACHE.md](CACHE.md) for detailed architecture
 
-**8. WAL Persistence** (`pkg/cache/wal/`)
+**9. WAL Persistence** (`pkg/cache/wal/`)
 - Write-Ahead Log for cache crash recovery
 - `Persister` interface for pluggable implementations
-- `MmapPersister`: Memory-mapped file persistence
+- `MmapPersister`: Memory-mapped file for high performance
 - `NullPersister`: No-op for in-memory only deployments
 - Enables cache data survival across restarts
 
-**9. Transfer Manager** (`pkg/transfer/`)
+**10. Transfer Manager** (`pkg/payload/transfer/`)
 - Async cache-to-block-store transfer orchestration
-- `TransferManager`: Coordinates flush operations
-- `TransferQueue`: Background upload queue with priority
-- `TransferQueueEntry`: Generic interface for transfer operations
-- Handles startup recovery from WAL
+- **Eager upload**: Uploads complete 4MB blocks immediately
+- **Download priority**: Downloads pause uploads for read latency
+- **Prefetch**: Speculatively fetches upcoming blocks
+- **Non-blocking flush**: COMMIT returns immediately (data safe in WAL)
+- Handles crash recovery from WAL on startup
+- See [PAYLOAD.md](PAYLOAD.md) for detailed architecture
 
 ## Adapter Pattern
 
@@ -416,6 +426,7 @@ dittofs/
 │   ├── metadata/             # Metadata layer
 │   │   ├── service.go        # MetadataService (business logic, routing)
 │   │   ├── store.go          # MetadataStore interface (CRUD)
+│   │   ├── cookies.go        # CookieManager (NFS/SMB pagination)
 │   │   ├── types.go          # FileAttr, DirEntry, etc.
 │   │   ├── errors.go         # Metadata-specific errors
 │   │   ├── locking.go        # LockManager for byte-range locks
@@ -424,29 +435,35 @@ dittofs/
 │   │       ├── badger/       # BadgerDB (persistent)
 │   │       └── postgres/     # PostgreSQL (distributed)
 │   │
-│   ├── blocks/               # Block storage layer
-│   │   ├── service.go        # BlockService (caching, routing, flush coordination)
-│   │   ├── types.go          # StorageStats, FlushResult, etc.
-│   │   ├── errors.go         # Block-specific errors
-│   │   └── store/            # Block store implementations
-│   │       ├── store.go      # BlockStore interface (CRUD)
-│   │       ├── memory/       # In-memory (ephemeral)
-│   │       └── s3/           # S3-backed (multipart, streaming)
+│   ├── payload/              # Payload storage layer (Chunk/Slice/Block)
+│   │   ├── service.go        # PayloadService (main entry point)
+│   │   ├── types.go          # PayloadID, FlushResult, etc.
+│   │   ├── errors.go         # Payload-specific errors
+│   │   ├── chunk/            # 64MB chunk calculations
+│   │   │   └── chunk.go
+│   │   ├── block/            # 4MB block calculations
+│   │   │   └── block.go
+│   │   ├── store/            # Block store implementations
+│   │   │   ├── store.go      # BlockStore interface
+│   │   │   ├── memory/       # In-memory (ephemeral)
+│   │   │   ├── fs/           # Filesystem
+│   │   │   └── s3/           # S3-backed (range reads, multipart)
+│   │   └── transfer/         # Transfer orchestration
+│   │       ├── manager.go    # TransferManager (eager upload, download)
+│   │       ├── queue.go      # TransferQueue (priority workers)
+│   │       ├── recovery.go   # WAL crash recovery
+│   │       └── gc.go         # Block garbage collection
 │   │
 │   ├── cache/                # Slice-aware cache layer
 │   │   ├── cache.go          # Cache implementation (LRU, dirty tracking)
-│   │   └── types.go          # Slice, SliceState, BlockRef types
-│   │
-│   ├── wal/                  # Write-Ahead Log persistence
-│   │   ├── persister.go      # Persister interface + NullPersister
-│   │   ├── mmap.go           # MmapPersister implementation
-│   │   └── types.go          # SliceEntry, WAL record types
-│   │
-│   ├── transfer/             # Cache-to-store transfer orchestration
-│   │   ├── manager.go        # TransferManager (flush coordination)
-│   │   ├── queue.go          # TransferQueue (background uploads)
-│   │   ├── entry.go          # TransferQueueEntry interface
-│   │   └── recovery.go       # WAL recovery on startup
+│   │   ├── read.go           # Read with newest-wins merge
+│   │   ├── write.go          # Write with sequential optimization
+│   │   ├── flush.go          # Flush coordination
+│   │   ├── eviction.go       # LRU eviction
+│   │   ├── types.go          # Slice, SliceState types
+│   │   └── wal/              # WAL persistence
+│   │       ├── mmap.go       # MmapPersister implementation
+│   │       └── types.go      # SliceEntry, WAL record types
 │   │
 │   ├── registry/             # Store registry
 │   │   ├── registry.go       # Central registry (owns services)
@@ -469,7 +486,16 @@ dittofs/
 │   │   ├── types/            # NFS constants and types
 │   │   ├── mount/handlers/   # Mount protocol procedures
 │   │   └── v3/handlers/      # NFSv3 procedures (READ, WRITE, etc.)
+│   ├── protocol/smb/         # SMB protocol implementation
+│   │   └── v2/handlers/      # SMB2 command handlers
 │   └── logger/               # Logging utilities
+│
+├── docs/                     # Documentation
+│   ├── ARCHITECTURE.md       # This file
+│   ├── CACHE.md              # Cache design documentation
+│   ├── PAYLOAD.md            # Payload module documentation
+│   ├── CONFIGURATION.md      # Configuration guide
+│   └── ...
 │
 └── test/                     # Test suites
     ├── integration/          # Integration tests (S3, BadgerDB)
