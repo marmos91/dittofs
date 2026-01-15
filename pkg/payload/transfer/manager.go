@@ -300,9 +300,9 @@ func (m *TransferManager) FlushRemainingAsync(ctx context.Context, shareName str
 	}
 	m.mu.RUnlock()
 
-	// Create entry and enqueue for background upload (non-blocking)
-	entry := NewDefaultEntry(shareName, fileHandle, payloadID)
-	if !m.queue.Enqueue(entry) {
+	// Create request and enqueue for background upload (non-blocking)
+	req := NewTransferRequest(shareName, fileHandle, payloadID)
+	if !m.queue.Enqueue(req) {
 		// Queue full - fall back to sync upload
 		return m.flushRemainingSync(ctx, shareName, fileHandle, payloadID)
 	}

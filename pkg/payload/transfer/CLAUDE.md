@@ -52,16 +52,15 @@ type TransferManager struct {
 }
 ```
 
-### TransferQueueEntry (Interface)
-Generic interface for transfer entries - enables specialized implementations.
+### TransferRequest
+Simple data struct for transfer operations. The queue calls the manager directly.
 
 ```go
-type TransferQueueEntry interface {
-    ShareName() string
-    FileHandle() string
-    ContentID() string
-    Execute(ctx context.Context, manager *TransferManager) error
-    Priority() int
+type TransferRequest struct {
+    ShareName  string
+    FileHandle string
+    PayloadID  string
+    Priority   int
 }
 ```
 
@@ -71,7 +70,7 @@ Background worker pool for async uploads.
 ```go
 type TransferQueue struct {
     manager *TransferManager
-    queue   chan TransferQueueEntry
+    queue   chan TransferRequest
     workers int
 }
 ```
@@ -84,11 +83,10 @@ type TransferQueue struct {
 - Block store uploads happen asynchronously
 - Achieves 275+ MB/s write throughput (vs ~1 MB/s with blocking)
 
-### TransferQueueEntry Interface
-Enables specialized implementations:
-- `DefaultEntry`: Standard cache flush
-- Future: `S3MultipartEntry` for optimized multipart uploads
-- Future: `FSEntry` for filesystem-specific sync modes
+### Simple Request Struct
+TransferRequest is a simple data struct - no interface abstraction needed:
+- Queue calls `manager.flushRemainingSyncInternal()` directly
+- Specialized upload logic (S3 multipart, etc.) lives in the block store implementations
 
 ### Parallel I/O
 - Default: 4 concurrent uploads and 4 concurrent downloads per file
@@ -151,7 +149,7 @@ HealthCheck(ctx) error
 ```go
 Start(ctx)
 Stop(timeout)
-Enqueue(entry TransferQueueEntry) bool
+Enqueue(req TransferRequest) bool
 Pending() int
 Stats() (pending, completed, failed int)
 ```
@@ -171,6 +169,6 @@ Stats() (pending, completed, failed int)
 | `Flusher` | `TransferManager` |
 | `BackgroundUploader` | `TransferQueue` |
 | `BackgroundUploaderConfig` | `TransferQueueConfig` |
-| `uploadRequest` | `TransferQueueEntry` (interface) |
+| `uploadRequest` | `TransferRequest` |
 | `flusher.New()` | `transfer.New()` |
 | `flusher.Config` | `transfer.Config` |

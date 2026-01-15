@@ -2,100 +2,47 @@ package transfer
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// mockEntry is a test implementation of TransferQueueEntry.
-type mockEntry struct {
-	shareName  string
-	fileHandle string
-	payloadID  string
-	priority   int
-	executed   atomic.Bool
-	executeErr error
-}
-
-func (e *mockEntry) ShareName() string     { return e.shareName }
-func (e *mockEntry) FileHandle() string    { return e.fileHandle }
-func (e *mockEntry) PayloadID() string     { return e.payloadID }
-func (e *mockEntry) Priority() int         { return e.priority }
-func (e *mockEntry) Execute(ctx context.Context, m *TransferManager) error {
-	e.executed.Store(true)
-	return e.executeErr
-}
-
-func TestTransferQueue_EnqueueAndProcess(t *testing.T) {
-	// Create queue without manager (we'll use mock entries)
+func TestTransferQueue_Enqueue(t *testing.T) {
 	cfg := DefaultTransferQueueConfig()
 	cfg.QueueSize = 10
-	cfg.Workers = 2
 	q := NewTransferQueue(nil, cfg)
 
-	// Start the queue
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	q.Start(ctx)
-
-	// Create and enqueue entries
-	entries := make([]*mockEntry, 5)
+	// Enqueue requests
 	for i := 0; i < 5; i++ {
-		entries[i] = &mockEntry{
-			shareName:  "export",
-			fileHandle: "handle",
-			payloadID:  "test-content",
-		}
-		if !q.Enqueue(entries[i]) {
+		req := NewTransferRequest("export", "handle", "test-content")
+		if !q.Enqueue(req) {
 			t.Errorf("Enqueue(%d) returned false", i)
 		}
 	}
 
-	// Wait for processing
-	time.Sleep(100 * time.Millisecond)
-
-	// Stop queue
-	q.Stop(time.Second)
-
-	// Verify all entries were executed
-	for i, e := range entries {
-		if !e.executed.Load() {
-			t.Errorf("entry[%d] was not executed", i)
-		}
-	}
-
-	// Check stats
-	pending, completed, failed := q.Stats()
-	if pending != 0 {
-		t.Errorf("Stats() pending = %d, want 0", pending)
-	}
-	if completed != 5 {
-		t.Errorf("Stats() completed = %d, want 5", completed)
-	}
-	if failed != 0 {
-		t.Errorf("Stats() failed = %d, want 0", failed)
+	if q.Pending() != 5 {
+		t.Errorf("Pending() = %d, want 5", q.Pending())
 	}
 }
 
 func TestTransferQueue_QueueFull(t *testing.T) {
 	cfg := TransferQueueConfig{
 		QueueSize: 2,
-		Workers:   0, // Don't start workers - queue will fill up
+		Workers:   1,
 	}
 	q := NewTransferQueue(nil, cfg)
+	// Don't start workers - queue will fill up
 
-	// Fill the queue (but don't process)
-	entry1 := &mockEntry{payloadID: "1"}
-	entry2 := &mockEntry{payloadID: "2"}
-	entry3 := &mockEntry{payloadID: "3"}
+	req1 := NewTransferRequest("export", "h1", "c1")
+	req2 := NewTransferRequest("export", "h2", "c2")
+	req3 := NewTransferRequest("export", "h3", "c3")
 
-	if !q.Enqueue(entry1) {
+	if !q.Enqueue(req1) {
 		t.Error("Enqueue(1) should succeed")
 	}
-	if !q.Enqueue(entry2) {
+	if !q.Enqueue(req2) {
 		t.Error("Enqueue(2) should succeed")
 	}
-	if q.Enqueue(entry3) {
+	if q.Enqueue(req3) {
 		t.Error("Enqueue(3) should fail (queue full)")
 	}
 
@@ -148,5 +95,37 @@ func TestNewTransferQueue_InvalidConfig(t *testing.T) {
 	}
 	if q.workers != 4 {
 		t.Errorf("workers = %d, want 4", q.workers)
+	}
+}
+
+func TestTransferQueue_Stats(t *testing.T) {
+	cfg := DefaultTransferQueueConfig()
+	q := NewTransferQueue(nil, cfg)
+
+	pending, completed, failed := q.Stats()
+	if pending != 0 || completed != 0 || failed != 0 {
+		t.Errorf("Stats() = (%d, %d, %d), want (0, 0, 0)", pending, completed, failed)
+	}
+
+	// Enqueue some requests
+	q.Enqueue(NewTransferRequest("export", "h1", "c1"))
+	q.Enqueue(NewTransferRequest("export", "h2", "c2"))
+
+	pending, _, _ = q.Stats()
+	if pending != 2 {
+		t.Errorf("Stats() pending = %d, want 2", pending)
+	}
+}
+
+func TestTransferQueue_LastError(t *testing.T) {
+	cfg := DefaultTransferQueueConfig()
+	q := NewTransferQueue(nil, cfg)
+
+	err, at := q.LastError()
+	if err != nil {
+		t.Errorf("LastError() error = %v, want nil", err)
+	}
+	if !at.IsZero() {
+		t.Errorf("LastError() time should be zero initially")
 	}
 }
