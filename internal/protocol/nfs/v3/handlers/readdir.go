@@ -370,7 +370,7 @@ func (h *Handler) ReadDir(
 	// - Respecting count limits
 	// - Respecting context cancellation internally during iteration
 
-	page, err := metaSvc.ReadDirectory(authCtx, dirHandle, "", req.Count)
+	page, err := metaSvc.ReadDirectory(authCtx, dirHandle, req.Cookie, req.Count)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -405,11 +405,11 @@ func (h *Handler) ReadDir(
 	// No cancellation check here - this is fast pure computation
 
 	nfsEntries := make([]*types.DirEntry, 0, len(page.Entries))
-	for i, entry := range page.Entries {
+	for _, entry := range page.Entries {
 		nfsEntries = append(nfsEntries, &types.DirEntry{
 			Fileid: entry.ID,
 			Name:   entry.Name,
-			Cookie: uint64(i + 1), // Sequential cookies for entries
+			Cookie: entry.Cookie, // Cookie from MetadataService
 		})
 	}
 

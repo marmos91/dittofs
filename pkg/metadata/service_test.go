@@ -1036,7 +1036,7 @@ func TestMetadataService_ReadDirectory(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
 
-		page, err := fx.service.ReadDirectory(fx.rootContext(), fx.rootHandle, "", 0)
+		page, err := fx.service.ReadDirectory(fx.rootContext(), fx.rootHandle, 0, 0)
 
 		require.NoError(t, err)
 		assert.NotNil(t, page)
@@ -1053,7 +1053,7 @@ func TestMetadataService_ReadDirectory(t *testing.T) {
 		_, _ = fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "file2.txt", &metadata.FileAttr{Mode: 0644})
 		_, _ = fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "subdir", &metadata.FileAttr{Mode: 0755})
 
-		page, err := fx.service.ReadDirectory(fx.rootContext(), fx.rootHandle, "", 0)
+		page, err := fx.service.ReadDirectory(fx.rootContext(), fx.rootHandle, 0, 0)
 
 		require.NoError(t, err)
 		assert.Len(t, page.Entries, 3)
@@ -1074,7 +1074,7 @@ func TestMetadataService_ReadDirectory(t *testing.T) {
 		require.NoError(t, err)
 
 		// Try to read as directory
-		_, err = fx.service.ReadDirectory(fx.rootContext(), handle, "", 0)
+		_, err = fx.service.ReadDirectory(fx.rootContext(), handle, 0, 0)
 
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
@@ -1370,7 +1370,7 @@ func TestMetadataService_ContextCancellation(t *testing.T) {
 			},
 		}
 
-		_, err := fx.service.ReadDirectory(authCtx, fx.rootHandle, "", 0)
+		_, err := fx.service.ReadDirectory(authCtx, fx.rootHandle, 0, 0)
 
 		require.Error(t, err)
 	})

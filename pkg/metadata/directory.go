@@ -7,10 +7,13 @@ import (
 // ReadDirPage represents one page of directory entries returned by ReadDirectory.
 type ReadDirPage struct {
 	// Entries contains the directory entries for this page.
+	// Each entry includes a Cookie field for pagination.
 	Entries []DirEntry
 
-	// NextToken is the pagination token to use for retrieving the next page.
-	NextToken string
+	// NextCookie is the NFS cookie to use for retrieving the next page.
+	// Pass this as the cookie parameter in the next ReadDirectory call.
+	// Value of 0 means no more entries (or start of directory).
+	NextCookie uint64
 
 	// HasMore indicates whether more entries are available after this page.
 	HasMore bool
@@ -21,7 +24,15 @@ type ReadDirPage struct {
 // ============================================================================
 
 // ReadDirectory reads one page of directory entries with permission checking.
-func (s *MetadataService) ReadDirectory(ctx *AuthContext, dirHandle FileHandle, token string, maxBytes uint32) (*ReadDirPage, error) {
+//
+// The cookie parameter is an opaque uint64 value:
+//   - 0: Start from the beginning of the directory
+//   - Non-zero: Resume from the position after the entry with this cookie
+//
+// Each returned entry includes a Cookie field that can be used to resume
+// listing from that point. The NextCookie field indicates the cookie to
+// use for the next page (0 if no more entries).
+func (s *MetadataService) ReadDirectory(ctx *AuthContext, dirHandle FileHandle, cookie uint64, maxBytes uint32) (*ReadDirPage, error) {
 	store, err := s.storeForHandle(dirHandle)
 	if err != nil {
 		return nil, err
@@ -69,16 +80,30 @@ func (s *MetadataService) ReadDirectory(ctx *AuthContext, dirHandle FileHandle, 
 		}
 	}
 
+	// Convert cookie to store token using cookie manager
+	token := s.cookies.GetToken(cookie)
+
 	// Call store's CRUD ListChildren method
 	entries, nextToken, err := store.ListChildren(ctx.Context, dirHandle, token, limit)
 	if err != nil {
 		return nil, err
 	}
 
+	// Generate cookies for each entry
+	for i := range entries {
+		entries[i].Cookie = s.cookies.GenerateCookie(dirHandle, entries[i].Name)
+	}
+
+	// Generate next cookie from next token
+	var nextCookie uint64
+	if nextToken != "" {
+		nextCookie = s.cookies.GenerateCookie(dirHandle, nextToken)
+	}
+
 	return &ReadDirPage{
-		Entries:   entries,
-		NextToken: nextToken,
-		HasMore:   nextToken != "",
+		Entries:    entries,
+		NextCookie: nextCookie,
+		HasMore:    nextToken != "",
 	}, nil
 }
 

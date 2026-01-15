@@ -385,7 +385,7 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	// Step 5: Read directory entries from metadata store
 	// ========================================================================
 
-	page, err := metaSvc.ReadDirectory(authCtx, openFile.MetadataHandle, "", maxDirectoryReadBytes)
+	page, err := metaSvc.ReadDirectory(authCtx, openFile.MetadataHandle, 0, maxDirectoryReadBytes)
 	if err != nil {
 		logger.Debug("QUERY_DIRECTORY: failed to read directory", "path", openFile.Path, "error", err)
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil

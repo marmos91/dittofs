@@ -34,6 +34,7 @@ type MetadataService struct {
 	lockManagers   map[string]*LockManager  // shareName -> lock manager (ephemeral, per-share)
 	pendingWrites  *PendingWritesTracker    // deferred metadata commits for performance
 	deferredCommit bool                     // if true, use deferred commits (default: true)
+	cookies        *CookieManager           // NFS/SMB cookie ↔ store token translation
 }
 
 // New creates a new empty MetadataService instance.
@@ -45,6 +46,7 @@ func New() *MetadataService {
 		lockManagers:   make(map[string]*LockManager),
 		pendingWrites:  NewPendingWritesTracker(),
 		deferredCommit: true, // Enable deferred commits by default
+		cookies:        NewCookieManager(),
 	}
 }
 
