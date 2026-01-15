@@ -13,28 +13,32 @@ The transfer package manages data movement between the cache and block store:
 ## Architecture
 
 ```
-BlockService.WriteAt()
+PayloadService.WriteAt()
         ↓
   Cache.WriteSlice()
         ↓
-  (writes accumulate in cache)
-
-BlockService.Flush() (NFS COMMIT / SMB FLUSH)
+  TransferManager.OnWriteComplete() ← checks for complete 4MB blocks
         ↓
-  TransferManager.FlushRemainingAsync() ← enqueues background upload (non-blocking)
+  startBlockUpload() ← spawns goroutine for each complete block (non-blocking)
+        ↓
+  (goroutine waits for downloads, then uploads to block store)
+
+PayloadService.FlushAsync() (NFS COMMIT)
+        ↓
+  TransferManager.FlushRemainingAsync() ← enqueues remaining partial blocks
         ↓
   TransferQueue workers ← upload to block store asynchronously
 
-BlockService.FlushAndFinalize() (SMB CLOSE)
+PayloadService.Flush() (SMB CLOSE)
         ↓
-  TransferManager.WaitForUploads() ← wait for in-flight uploads
+  TransferManager.WaitForUploads() ← wait for in-flight eager uploads
         ↓
-  TransferManager.FlushRemaining() ← upload partial blocks (blocking)
+  TransferManager.FlushRemaining() ← upload remaining partial blocks (blocking)
 
-BlockService.ReadAt() (cache miss)
+PayloadService.ReadAt() (cache miss)
         ↓
   TransferManager.ReadSlice() ← parallel fetch from block store
-        ↓
+        ↓                        (pauses upload goroutines via ioCond)
   Blocks cached for future reads
 ```
 
@@ -49,19 +53,26 @@ type TransferManager struct {
     blockStore block.Store
     config     Config
     queue      *TransferQueue
+
+    // Per-file upload tracking (for eager upload deduplication)
+    uploads   map[string]*fileUploadState
+    uploadsMu sync.Mutex
+
+    // Download priority coordination
+    ioCond           *sync.Cond  // Condition variable
+    downloadsPending int         // Protected by ioCond.L
 }
 ```
 
-### TransferQueueEntry (Interface)
-Generic interface for transfer entries - enables specialized implementations.
+### TransferRequest
+Simple data struct for transfer operations. The queue calls the manager directly.
 
 ```go
-type TransferQueueEntry interface {
-    ShareName() string
-    FileHandle() string
-    ContentID() string
-    Execute(ctx context.Context, manager *TransferManager) error
-    Priority() int
+type TransferRequest struct {
+    ShareName  string
+    FileHandle string
+    PayloadID  string
+    Priority   int
 }
 ```
 
@@ -71,7 +82,7 @@ Background worker pool for async uploads.
 ```go
 type TransferQueue struct {
     manager *TransferManager
-    queue   chan TransferQueueEntry
+    queue   chan TransferRequest
     workers int
 }
 ```
@@ -84,11 +95,26 @@ type TransferQueue struct {
 - Block store uploads happen asynchronously
 - Achieves 275+ MB/s write throughput (vs ~1 MB/s with blocking)
 
-### TransferQueueEntry Interface
-Enables specialized implementations:
-- `DefaultEntry`: Standard cache flush
-- Future: `S3MultipartEntry` for optimized multipart uploads
-- Future: `FSEntry` for filesystem-specific sync modes
+### Eager Upload
+Complete 4MB blocks are uploaded immediately after writes:
+- `OnWriteComplete()` is called after each slice write
+- Checks if any blocks are fully covered by cached data
+- Spawns background goroutine to upload each complete block
+- Uses `sync.Pool` for 4MB buffers to reduce GC pressure
+- Non-blocking to the write path (goroutine does the actual I/O)
+
+### Download Priority
+Downloads (cache misses) have priority over uploads:
+- Uses `sync.Cond` for efficient waiting without polling
+- When `ReadSlice()` runs, it increments `downloadsPending`
+- Upload goroutines call `waitForDownloads()` before doing I/O
+- When downloads complete, `Broadcast()` wakes waiting upload goroutines
+- Result: reads are never blocked by background uploads
+
+### Simple Request Struct
+TransferRequest is a simple data struct - no interface abstraction needed:
+- Queue calls `manager.flushRemainingSyncInternal()` directly
+- Specialized upload logic (S3 multipart, etc.) lives in the block store implementations
 
 ### Parallel I/O
 - Default: 4 concurrent uploads and 4 concurrent downloads per file
@@ -151,7 +177,7 @@ HealthCheck(ctx) error
 ```go
 Start(ctx)
 Stop(timeout)
-Enqueue(entry TransferQueueEntry) bool
+Enqueue(req TransferRequest) bool
 Pending() int
 Stats() (pending, completed, failed int)
 ```
@@ -171,6 +197,6 @@ Stats() (pending, completed, failed int)
 | `Flusher` | `TransferManager` |
 | `BackgroundUploader` | `TransferQueue` |
 | `BackgroundUploaderConfig` | `TransferQueueConfig` |
-| `uploadRequest` | `TransferQueueEntry` (interface) |
+| `uploadRequest` | `TransferRequest` |
 | `flusher.New()` | `transfer.New()` |
 | `flusher.Config` | `transfer.Config` |

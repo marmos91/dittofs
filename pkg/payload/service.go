@@ -7,7 +7,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/payload/chunk"
-	"github.com/marmos91/dittofs/pkg/transfer"
+	"github.com/marmos91/dittofs/pkg/payload/transfer"
 )
 
 // PayloadService is the persistence layer for file payload (content) data.
@@ -138,13 +138,17 @@ func (s *PayloadService) Exists(ctx context.Context, shareName string, id metada
 //
 // Writes go to cache using the Chunk/Slice/Block model.
 // Data is split across chunk boundaries and stored as slices within each chunk.
-// Block store uploads are triggered on Flush() via background worker pool.
-func (s *PayloadService) WriteAt(ctx context.Context, _ string, id metadata.PayloadID, data []byte, offset uint64) error {
+//
+// Eager upload: After each slice write, complete 4MB blocks are uploaded
+// immediately in background goroutines. This reduces data remaining for
+// Flush() and improves SMB CLOSE latency.
+func (s *PayloadService) WriteAt(ctx context.Context, shareName string, id metadata.PayloadID, data []byte, offset uint64) error {
 	if len(data) == 0 {
 		return nil
 	}
 
 	fileHandle := string(id)
+	payloadID := string(id)
 
 	for slice := range chunk.Slices(offset, len(data)) {
 		dataEnd := slice.BufOffset + int(slice.Length)
@@ -154,6 +158,12 @@ func (s *PayloadService) WriteAt(ctx context.Context, _ string, id metadata.Payl
 		if err != nil {
 			return fmt.Errorf("write slice to chunk %d failed: %w", slice.ChunkIndex, err)
 		}
+
+		// Trigger eager upload for any complete 4MB blocks (non-blocking)
+		s.transferManager.OnWriteComplete(
+			ctx, shareName, fileHandle, payloadID,
+			slice.ChunkIndex, slice.Offset, slice.Length,
+		)
 	}
 
 	return nil

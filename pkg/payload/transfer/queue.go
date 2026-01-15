@@ -15,7 +15,7 @@ type TransferQueue struct {
 	manager *TransferManager
 
 	// Upload queue with bounded capacity
-	queue chan TransferQueueEntry
+	queue chan TransferRequest
 
 	// Worker management
 	workers   int
@@ -63,7 +63,7 @@ func NewTransferQueue(m *TransferManager, cfg TransferQueueConfig) *TransferQueu
 
 	return &TransferQueue{
 		manager:   m,
-		queue:     make(chan TransferQueueEntry, cfg.QueueSize),
+		queue:     make(chan TransferRequest, cfg.QueueSize),
 		workers:   cfg.Workers,
 		stopCh:    make(chan struct{}),
 		stoppedCh: make(chan struct{}),
@@ -119,11 +119,11 @@ func (q *TransferQueue) Stop(timeout time.Duration) {
 	}
 }
 
-// Enqueue adds a transfer entry to the queue.
+// Enqueue adds a transfer request to the queue.
 // Returns false if the queue is full (non-blocking).
-func (q *TransferQueue) Enqueue(entry TransferQueueEntry) bool {
+func (q *TransferQueue) Enqueue(req TransferRequest) bool {
 	select {
-	case q.queue <- entry:
+	case q.queue <- req:
 		q.mu.Lock()
 		q.pending++
 		q.mu.Unlock()
@@ -131,7 +131,7 @@ func (q *TransferQueue) Enqueue(entry TransferQueueEntry) bool {
 	default:
 		// Queue full
 		logger.Warn("Transfer queue full, dropping request",
-			"payloadID", entry.PayloadID())
+			"payloadID", req.PayloadID)
 		return false
 	}
 }
@@ -171,11 +171,11 @@ func (q *TransferQueue) worker(ctx context.Context, _ int) {
 		case <-ctx.Done():
 			return
 
-		case entry, ok := <-q.queue:
+		case req, ok := <-q.queue:
 			if !ok {
 				return
 			}
-			q.processEntry(ctx, entry)
+			q.processRequest(ctx, req)
 		}
 	}
 }
@@ -184,24 +184,25 @@ func (q *TransferQueue) worker(ctx context.Context, _ int) {
 func (q *TransferQueue) drainQueue(ctx context.Context) {
 	for {
 		select {
-		case entry, ok := <-q.queue:
+		case req, ok := <-q.queue:
 			if !ok {
 				return
 			}
-			q.processEntry(ctx, entry)
+			q.processRequest(ctx, req)
 		default:
 			return
 		}
 	}
 }
 
-// processEntry handles a single transfer entry.
-func (q *TransferQueue) processEntry(_ context.Context, entry TransferQueueEntry) {
+// processRequest handles a single transfer request.
+func (q *TransferQueue) processRequest(_ context.Context, req TransferRequest) {
 	// Use a fresh context with timeout for block store operations
 	uploadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	err := entry.Execute(uploadCtx, q.manager)
+	// Execute the transfer via the manager
+	err := q.manager.flushRemainingSyncInternal(uploadCtx, req.ShareName, req.FileHandle, req.PayloadID, true)
 
 	q.mu.Lock()
 	q.pending--
@@ -210,11 +211,11 @@ func (q *TransferQueue) processEntry(_ context.Context, entry TransferQueueEntry
 		q.lastError = err
 		q.lastErrorAt = time.Now()
 		logger.Error("Transfer failed",
-			"payloadID", entry.PayloadID(),
+			"payloadID", req.PayloadID,
 			"error", err)
 	} else {
 		q.completed++
-		logger.Debug("Transfer completed", "payloadID", entry.PayloadID())
+		logger.Debug("Transfer completed", "payloadID", req.PayloadID)
 	}
 	q.mu.Unlock()
 }

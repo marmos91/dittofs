@@ -7,7 +7,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
-	"github.com/marmos91/dittofs/pkg/transfer"
+	"github.com/marmos91/dittofs/pkg/payload/transfer"
 )
 
 // newTestService creates a PayloadService for testing with in-memory stores.

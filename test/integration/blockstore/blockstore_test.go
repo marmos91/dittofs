@@ -17,7 +17,7 @@ import (
 	blockmemory "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	blocks3 "github.com/marmos91/dittofs/pkg/payload/store/s3"
 	"github.com/marmos91/dittofs/pkg/cache"
-	"github.com/marmos91/dittofs/pkg/transfer"
+	"github.com/marmos91/dittofs/pkg/payload/transfer"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )

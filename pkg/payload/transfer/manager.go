@@ -22,6 +22,11 @@ const DefaultParallelUploads = 4
 // DefaultParallelDownloads is the default number of concurrent downloads per file.
 const DefaultParallelDownloads = 4
 
+// blockPool reuses 4MB buffers for block uploads to reduce GC pressure.
+var blockPool = sync.Pool{
+	New: func() interface{} { return make([]byte, BlockSize) },
+}
+
 // Config holds configuration for the TransferManager.
 type Config struct {
 	// ParallelUploads is the number of concurrent block uploads per file.
@@ -58,6 +63,12 @@ type blockKey struct {
 }
 
 // TransferManager handles eager upload and parallel download for cache-to-block-store integration.
+//
+// Key features:
+//   - Eager upload: Uploads complete 4MB blocks immediately in background goroutines
+//   - Download priority: Downloads pause uploads to minimize read latency
+//   - Parallel I/O: Configurable concurrency for both uploads and downloads
+//   - Non-blocking: All operations return immediately, I/O happens in background
 type TransferManager struct {
 	cache      *cache.Cache
 	blockStore store.BlockStore
@@ -69,6 +80,10 @@ type TransferManager struct {
 
 	// Transfer queue for non-blocking COMMIT
 	queue *TransferQueue
+
+	// Download priority: uploads pause when downloads are active
+	ioCond           *sync.Cond // Condition variable for upload/download coordination
+	downloadsPending int        // Count of active downloads (protected by ioCond.L)
 
 	// Shutdown
 	closed bool
@@ -94,6 +109,7 @@ func New(c *cache.Cache, store store.BlockStore, config Config) *TransferManager
 		blockStore: store,
 		config:     config,
 		uploads:    make(map[string]*fileUploadState),
+		ioCond:     sync.NewCond(&sync.Mutex{}),
 	}
 
 	// Initialize transfer queue
@@ -135,6 +151,20 @@ func (m *TransferManager) cleanupUploadState(payloadID string) {
 }
 
 // ============================================================================
+// Download Priority
+// ============================================================================
+
+// waitForDownloads blocks until no downloads are pending.
+// Called by upload goroutines to yield to downloads.
+func (m *TransferManager) waitForDownloads() {
+	m.ioCond.L.Lock()
+	for m.downloadsPending > 0 {
+		m.ioCond.Wait()
+	}
+	m.ioCond.L.Unlock()
+}
+
+// ============================================================================
 // Eager Upload
 // ============================================================================
 
@@ -150,6 +180,11 @@ func (m *TransferManager) cleanupUploadState(payloadID string) {
 //   - length: The length of data written
 func (m *TransferManager) OnWriteComplete(ctx context.Context, shareName string, fileHandle string,
 	payloadID string, chunkIdx uint32, offset, length uint32) {
+	// Check context cancellation early to avoid unnecessary work
+	if ctx.Err() != nil {
+		return
+	}
+
 	m.mu.RLock()
 	if m.closed {
 		m.mu.RUnlock()
@@ -181,28 +216,36 @@ func (m *TransferManager) OnWriteComplete(ctx context.Context, shareName string,
 			continue
 		}
 
-		// Read the complete block data
-		data := make([]byte, BlockSize)
+		// Get buffer from pool to reduce GC pressure
+		data := blockPool.Get().([]byte)
+
 		found, err := m.cache.ReadSlice(ctx, fileHandle, chunkIdx, blockStart, BlockSize, data)
 		if err != nil || !found {
+			blockPool.Put(data)
 			continue
 		}
 
-		// Start async upload for this block
-		m.startBlockUpload(ctx, shareName, fileHandle, payloadID, chunkIdx, blockIdx, data)
+		// Start async upload for this block (takes ownership of data buffer)
+		m.startBlockUpload(ctx, payloadID, chunkIdx, blockIdx, data)
 	}
 }
 
 // startBlockUpload uploads a block asynchronously with bounded parallelism.
-func (m *TransferManager) startBlockUpload(ctx context.Context, _ string, _ string,
+//
+// The data buffer is owned by this function and will be returned to blockPool
+// after the upload completes or fails.
+//
+// Upload goroutines yield to downloads (download priority) before performing I/O.
+func (m *TransferManager) startBlockUpload(ctx context.Context,
 	payloadID string, chunkIdx, blockIdx uint32, data []byte) {
 	state := m.getOrCreateUploadState(payloadID)
 
-	// Check if already uploaded
+	// Check if already uploaded (deduplication)
 	key := blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx}
 	state.blocksMu.Lock()
 	if state.uploaded[key] {
 		state.blocksMu.Unlock()
+		blockPool.Put(data) // Return unused buffer
 		return
 	}
 	state.uploaded[key] = true // Mark as in-progress
@@ -214,9 +257,13 @@ func (m *TransferManager) startBlockUpload(ctx context.Context, _ string, _ stri
 
 	go func() {
 		defer func() {
+			blockPool.Put(data) // Return buffer to pool
 			<-state.sem
 			state.inFlight.Done()
 		}()
+
+		// Yield to any pending downloads (download priority)
+		m.waitForDownloads()
 
 		// Generate block key: {payloadID}/chunk-{n}/block-{n}
 		// Note: payloadID already includes the share name (e.g., "export/path/to/file")
@@ -300,9 +347,9 @@ func (m *TransferManager) FlushRemainingAsync(ctx context.Context, shareName str
 	}
 	m.mu.RUnlock()
 
-	// Create entry and enqueue for background upload (non-blocking)
-	entry := NewDefaultEntry(shareName, fileHandle, payloadID)
-	if !m.queue.Enqueue(entry) {
+	// Create request and enqueue for background upload (non-blocking)
+	req := NewTransferRequest(shareName, fileHandle, payloadID)
+	if !m.queue.Enqueue(req) {
 		// Queue full - fall back to sync upload
 		return m.flushRemainingSync(ctx, shareName, fileHandle, payloadID)
 	}
@@ -443,6 +490,9 @@ func (m *TransferManager) uploadSliceAsBlocks(ctx context.Context, _, payloadID 
 
 // ReadSlice fetches blocks from the block store in parallel and caches them.
 // Called when ReadAt() encounters a cache miss. Data is written directly into dest.
+//
+// Downloads have priority over uploads - when this function runs, any pending
+// upload goroutines will pause until the download completes.
 func (m *TransferManager) ReadSlice(ctx context.Context, shareName string, fileHandle string,
 	payloadID string, chunkIdx uint32, offset, length uint32, dest []byte) error {
 	m.mu.RLock()
@@ -451,6 +501,20 @@ func (m *TransferManager) ReadSlice(ctx context.Context, shareName string, fileH
 		return fmt.Errorf("transfer manager is closed")
 	}
 	m.mu.RUnlock()
+
+	// Signal that a download is active (pauses uploads)
+	m.ioCond.L.Lock()
+	m.downloadsPending++
+	m.ioCond.L.Unlock()
+
+	defer func() {
+		m.ioCond.L.Lock()
+		m.downloadsPending--
+		if m.downloadsPending == 0 {
+			m.ioCond.Broadcast() // Wake up waiting uploads
+		}
+		m.ioCond.L.Unlock()
+	}()
 
 	// Calculate which blocks we need
 	startBlockIdx := offset / BlockSize
