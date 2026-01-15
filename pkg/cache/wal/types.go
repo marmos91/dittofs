@@ -74,8 +74,9 @@ type Slice struct {
 // SliceEntry represents a slice entry in the WAL.
 // It embeds Slice and adds context fields needed for recovery.
 type SliceEntry struct {
-	// FileHandle identifies the file this slice belongs to.
-	FileHandle string
+	// PayloadID identifies the file this slice belongs to.
+	// This is the sole identifier for file content.
+	PayloadID string
 
 	// ChunkIdx is the chunk index within the file.
 	ChunkIdx uint32

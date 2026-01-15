@@ -17,7 +17,7 @@ import (
 //
 // Coalesces adjacent writes first, then returns slices sorted by (ChunkIndex, Offset).
 // The returned PendingSlice.Data references the cache's internal buffer - do not modify.
-func (c *Cache) GetDirtySlices(ctx context.Context, fileHandle string) ([]PendingSlice, error) {
+func (c *Cache) GetDirtySlices(ctx context.Context, payloadID string) ([]PendingSlice, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -29,7 +29,7 @@ func (c *Cache) GetDirtySlices(ctx context.Context, fileHandle string) ([]Pendin
 	}
 	c.globalMu.RUnlock()
 
-	entry := c.getFileEntry(fileHandle)
+	entry := c.getFileEntry(payloadID)
 
 	// Coalesce under write lock, then collect under read lock
 	entry.mu.Lock()
@@ -72,6 +72,7 @@ func (c *Cache) GetDirtySlices(ctx context.Context, fileHandle string) ([]Pendin
 // for LRU eviction when cache pressure requires freeing memory.
 //
 // Parameters:
+//   - payloadID: Unique identifier for the file content
 //   - sliceID: The ID from PendingSlice returned by GetDirtySlices
 //   - blockRefs: Block references from the block store (used for future reads)
 //
@@ -79,7 +80,7 @@ func (c *Cache) GetDirtySlices(ctx context.Context, fileHandle string) ([]Pendin
 //   - ErrSliceNotFound: slice ID doesn't exist (possibly already evicted or removed)
 //   - ErrCacheClosed: cache has been closed
 //   - context.Canceled/DeadlineExceeded: context was cancelled
-func (c *Cache) MarkSliceFlushed(ctx context.Context, fileHandle string, sliceID string, blockRefs []BlockRef) error {
+func (c *Cache) MarkSliceFlushed(ctx context.Context, payloadID string, sliceID string, blockRefs []BlockRef) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -91,7 +92,7 @@ func (c *Cache) MarkSliceFlushed(ctx context.Context, fileHandle string, sliceID
 	}
 	c.globalMu.RUnlock()
 
-	entry := c.getFileEntry(fileHandle)
+	entry := c.getFileEntry(payloadID)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
@@ -125,7 +126,7 @@ func (c *Cache) MarkSliceFlushed(ctx context.Context, fileHandle string, sliceID
 //   - ErrFileNotInCache: file has no cached data
 //   - ErrCacheClosed: cache has been closed
 //   - context.Canceled/DeadlineExceeded: context was cancelled
-func (c *Cache) CoalesceWrites(ctx context.Context, fileHandle string) error {
+func (c *Cache) CoalesceWrites(ctx context.Context, payloadID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -137,7 +138,7 @@ func (c *Cache) CoalesceWrites(ctx context.Context, fileHandle string) error {
 	}
 	c.globalMu.RUnlock()
 
-	entry := c.getFileEntry(fileHandle)
+	entry := c.getFileEntry(payloadID)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 

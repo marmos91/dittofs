@@ -11,19 +11,19 @@ func TestEvict_FlushedData(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := "test-file"
+	payloadID := "test-file"
 	data := make([]byte, 10*1024)
 
-	c.WriteSlice(ctx, fileHandle, 0, data, 0)
+	c.WriteSlice(ctx, payloadID, 0, data, 0)
 
 	// Mark as flushed
-	slices, _ := c.GetDirtySlices(ctx, fileHandle)
+	slices, _ := c.GetDirtySlices(ctx, payloadID)
 	for _, slice := range slices {
-		c.MarkSliceFlushed(ctx, fileHandle, slice.ID, nil)
+		c.MarkSliceFlushed(ctx, payloadID, slice.ID, nil)
 	}
 
 	// Evict
-	evicted, err := c.Evict(ctx, fileHandle)
+	evicted, err := c.Evict(ctx, payloadID)
 	if err != nil {
 		t.Fatalf("Evict failed: %v", err)
 	}
@@ -41,13 +41,13 @@ func TestEvict_DirtyDataProtected(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := "test-file"
+	payloadID := "test-file"
 	data := make([]byte, 10*1024)
 
-	c.WriteSlice(ctx, fileHandle, 0, data, 0)
+	c.WriteSlice(ctx, payloadID, 0, data, 0)
 
 	// Try to evict dirty data - should not evict
-	evicted, err := c.Evict(ctx, fileHandle)
+	evicted, err := c.Evict(ctx, payloadID)
 	if err != nil {
 		t.Fatalf("Evict failed: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestEvict_DirtyDataProtected(t *testing.T) {
 
 	// Data should still be there
 	result := make([]byte, len(data))
-	found, _ := c.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(data)), result)
+	found, _ := c.ReadSlice(ctx, payloadID, 0, 0, uint32(len(data)), result)
 	if !found {
 		t.Error("dirty data should still be present")
 	}
@@ -259,13 +259,13 @@ func BenchmarkEvictLRU(b *testing.B) {
 	// Fill cache with flushed data
 	data := make([]byte, 32*1024)
 	for i := 0; i < 1000; i++ {
-		fileHandle := fmt.Sprintf("file-%d", i)
-		_ = c.WriteSlice(ctx, fileHandle, 0, data, 0)
+		payloadID := fmt.Sprintf("file-%d", i)
+		_ = c.WriteSlice(ctx, payloadID, 0, data, 0)
 
 		// Mark as flushed so it can be evicted
-		slices, _ := c.GetDirtySlices(ctx, fileHandle)
+		slices, _ := c.GetDirtySlices(ctx, payloadID)
 		for _, s := range slices {
-			c.MarkSliceFlushed(ctx, fileHandle, s.ID, nil)
+			c.MarkSliceFlushed(ctx, payloadID, s.ID, nil)
 		}
 	}
 

@@ -11,17 +11,17 @@ func TestWriteSlice_Basic(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := "test-file"
+	payloadID := "test-file"
 	data := []byte("hello world")
 
-	err := c.WriteSlice(ctx, fileHandle, 0, data, 0)
+	err := c.WriteSlice(ctx, payloadID, 0, data, 0)
 	if err != nil {
 		t.Fatalf("WriteSlice failed: %v", err)
 	}
 
 	// Verify data was written
 	result := make([]byte, len(data))
-	found, err := c.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(data)), result)
+	found, err := c.ReadSlice(ctx, payloadID, 0, 0, uint32(len(data)), result)
 	if err != nil {
 		t.Fatalf("ReadSlice failed: %v", err)
 	}
@@ -38,19 +38,19 @@ func TestWriteSlice_SequentialOptimization(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := "test-file"
+	payloadID := "test-file"
 
 	// Write sequential chunks (simulating NFS 32KB writes)
 	for i := 0; i < 10; i++ {
 		data := make([]byte, 1024)
 		offset := uint32(i * 1024)
-		if err := c.WriteSlice(ctx, fileHandle, 0, data, offset); err != nil {
+		if err := c.WriteSlice(ctx, payloadID, 0, data, offset); err != nil {
 			t.Fatalf("WriteSlice failed: %v", err)
 		}
 	}
 
 	// Get dirty slices - should be coalesced into 1 due to sequential optimization
-	slices, err := c.GetDirtySlices(ctx, fileHandle)
+	slices, err := c.GetDirtySlices(ctx, payloadID)
 	if err != nil {
 		t.Fatalf("GetDirtySlices failed: %v", err)
 	}
@@ -67,18 +67,18 @@ func TestWriteSlice_Prepend(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := "test-file"
+	payloadID := "test-file"
 
 	// Write at offset 100 first
 	data1 := []byte("WORLD")
-	c.WriteSlice(ctx, fileHandle, 0, data1, 100)
+	c.WriteSlice(ctx, payloadID, 0, data1, 100)
 
 	// Prepend at offset 95 (ends where previous starts)
 	data2 := []byte("HELLO")
-	c.WriteSlice(ctx, fileHandle, 0, data2, 95)
+	c.WriteSlice(ctx, payloadID, 0, data2, 95)
 
 	// Should be coalesced into one slice by tryExtendAdjacentSlice
-	slices, _ := c.GetDirtySlices(ctx, fileHandle)
+	slices, _ := c.GetDirtySlices(ctx, payloadID)
 	if len(slices) != 1 {
 		t.Errorf("expected 1 coalesced slice after prepend, got %d", len(slices))
 	}
@@ -92,11 +92,11 @@ func TestWriteSlice_InvalidOffset(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := "test-file"
+	payloadID := "test-file"
 
 	// Try to write past chunk boundary
 	data := make([]byte, 100)
-	err := c.WriteSlice(ctx, fileHandle, 0, data, ChunkSize-50)
+	err := c.WriteSlice(ctx, payloadID, 0, data, ChunkSize-50)
 	if err != ErrInvalidOffset {
 		t.Errorf("expected ErrInvalidOffset, got %v", err)
 	}
@@ -130,14 +130,14 @@ func TestWriteSlice_MultipleChunks(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := "test-file"
+	payloadID := "test-file"
 
 	// Write to different chunks
-	c.WriteSlice(ctx, fileHandle, 0, []byte("chunk0"), 0)
-	c.WriteSlice(ctx, fileHandle, 1, []byte("chunk1"), 0)
-	c.WriteSlice(ctx, fileHandle, 2, []byte("chunk2"), 0)
+	c.WriteSlice(ctx, payloadID, 0, []byte("chunk0"), 0)
+	c.WriteSlice(ctx, payloadID, 1, []byte("chunk1"), 0)
+	c.WriteSlice(ctx, payloadID, 2, []byte("chunk2"), 0)
 
-	slices, _ := c.GetDirtySlices(ctx, fileHandle)
+	slices, _ := c.GetDirtySlices(ctx, payloadID)
 	if len(slices) != 3 {
 		t.Errorf("expected 3 slices (one per chunk), got %d", len(slices))
 	}
@@ -174,7 +174,7 @@ func BenchmarkWriteSlice_Sequential(b *testing.B) {
 			defer c.Close()
 
 			ctx := context.Background()
-			fileHandle := "bench-file"
+			payloadID := "bench-file"
 			data := make([]byte, s.size)
 			for i := range data {
 				data[i] = byte(i % 256)
@@ -188,7 +188,7 @@ func BenchmarkWriteSlice_Sequential(b *testing.B) {
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
 
-				if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
+				if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -203,7 +203,7 @@ func BenchmarkWriteSlice_SequentialExtend(b *testing.B) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := "bench-file"
+	payloadID := "bench-file"
 	data := make([]byte, 32*1024) // 32KB writes
 
 	b.SetBytes(int64(len(data)))
@@ -215,7 +215,7 @@ func BenchmarkWriteSlice_SequentialExtend(b *testing.B) {
 		chunkIdx := offset / ChunkSize
 		offsetInChunk := offset % ChunkSize
 
-		if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
+		if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -234,7 +234,7 @@ func BenchmarkWriteSlice_Random(b *testing.B) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := "bench-file"
+	payloadID := "bench-file"
 	dataSize := 4 * 1024 // 4KB writes
 	data := make([]byte, dataSize)
 
@@ -249,7 +249,7 @@ func BenchmarkWriteSlice_Random(b *testing.B) {
 		chunkIdx := uint32((i * 7919) % 1000) // Spread across 1000 chunks
 		offsetInChunk := uint32((i * 7907) % int(maxOffsetInChunk))
 
-		if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
+		if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -272,12 +272,12 @@ func BenchmarkWriteSlice_MultiFile(b *testing.B) {
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				fileHandle := fmt.Sprintf("file-%d", i%fileCount)
+				payloadID := fmt.Sprintf("file-%d", i%fileCount)
 				offset := uint32((i / fileCount) * len(data))
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
 
-				if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
+				if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -300,12 +300,12 @@ func BenchmarkWriteSlice_Concurrent(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			fileHandle := fmt.Sprintf("file-%d", i%100)
+			payloadID := fmt.Sprintf("file-%d", i%100)
 			offset := uint32((i / 100) * len(data))
 			chunkIdx := offset / ChunkSize
 			offsetInChunk := offset % ChunkSize
 
-			if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
+			if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 				b.Fatal(err)
 			}
 			i++
@@ -325,8 +325,8 @@ func BenchmarkMemory_SliceAllocation(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		fileHandle := fmt.Sprintf("file-%d", i)
-		if err := c.WriteSlice(ctx, fileHandle, 0, data, 0); err != nil {
+		payloadID := fmt.Sprintf("file-%d", i)
+		if err := c.WriteSlice(ctx, payloadID, 0, data, 0); err != nil {
 			b.Fatal(err)
 		}
 	}

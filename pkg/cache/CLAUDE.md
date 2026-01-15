@@ -52,8 +52,8 @@ Create the WAL persister externally for better separation of concerns.
 - S3 is the real persistence layer (blocks flushed there)
 
 ### Slice-Aware API
-- `WriteSlice(fileHandle, chunkIdx, data, offset)` - direct slice writes
-- `ReadSlice(fileHandle, chunkIdx, offset, length)` - merge reads
+- `WriteSlice(payloadID, chunkIdx, data, offset)` - direct slice writes
+- `ReadSlice(payloadID, chunkIdx, offset, length)` - merge reads
 - No translation between "bytes" and "slices"
 
 ### Business Logic
@@ -146,17 +146,17 @@ if err != nil {
 c, err := cache.NewWithWal(1<<30, persister) // 1GB max
 
 // Write (auto-extends sequential writes)
-c.WriteSlice(ctx, fileHandle, chunkIdx, data, offset)
+c.WriteSlice(ctx, payloadID, chunkIdx, data, offset)
 
 // Read (auto-merges with newest-wins)
 dest := make([]byte, length)
-found, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offset, length, dest)
+found, err := c.ReadSlice(ctx, payloadID, chunkIdx, offset, length, dest)
 
 // Get dirty slices for flush (auto-coalesces)
-pending, err := c.GetDirtySlices(ctx, fileHandle)
+pending, err := c.GetDirtySlices(ctx, payloadID)
 
 // Mark flushed after upload to block store
-c.MarkSliceFlushed(ctx, fileHandle, sliceID, blockRefs)
+c.MarkSliceFlushed(ctx, payloadID, sliceID, blockRefs)
 
 // Sync WAL to disk (if persistence enabled)
 c.Sync()
