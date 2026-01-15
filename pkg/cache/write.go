@@ -80,7 +80,28 @@ func (c *Cache) WriteSlice(ctx context.Context, payloadID string, chunkIdx uint3
 	}
 
 	// Extend an existing adjacent pending slice if possible (sequential write optimization)
-	if c.extendAdjacentSlice(chunk, offset, data) {
+	extResult := c.extendAdjacentSlice(chunk, offset, data)
+	if extResult.extended {
+		// Log extension to WAL if enabled
+		// We log the NEW data portion as a separate slice entry for crash recovery.
+		// On recovery, multiple overlapping slices are merged with newest-wins semantics.
+		if c.persister != nil {
+			extSlice := Slice{
+				ID:        uuid.New().String(),
+				Offset:    offset,
+				Length:    uint32(len(data)),
+				Data:      data, // Note: uses original data, not a copy
+				State:     SliceStatePending,
+				CreatedAt: time.Now(),
+			}
+			entry.mu.Unlock()
+			walEntry := c.sliceToWALEntry(payloadID, chunkIdx, &extSlice)
+			err := c.persister.AppendSlice(walEntry)
+			entry.mu.Lock()
+			if err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 
@@ -134,6 +155,12 @@ func (c *Cache) sliceToWALEntry(payloadID string, chunkIdx uint32, slice *Slice)
 	}
 }
 
+// extendResult contains information about a slice extension for WAL logging.
+type extendResult struct {
+	extended bool   // Whether a slice was extended
+	sliceID  string // ID of the extended slice
+}
+
 // extendAdjacentSlice extends an existing pending slice if the new write is adjacent.
 //
 // This implements the sequential write optimization. When NFS clients write
@@ -147,8 +174,8 @@ func (c *Cache) sliceToWALEntry(payloadID string, chunkIdx uint32, slice *Slice)
 //
 // Uses Go's append() for amortized O(1) growth on sequential appends.
 //
-// Returns true if a slice was extended, false if no adjacent slice was found.
-func (c *Cache) extendAdjacentSlice(chunk *chunkEntry, offset uint32, data []byte) bool {
+// Returns extendResult with extended=true and the slice ID if extended.
+func (c *Cache) extendAdjacentSlice(chunk *chunkEntry, offset uint32, data []byte) extendResult {
 	writeEnd := offset + uint32(len(data))
 
 	for i := range chunk.slices {
@@ -177,7 +204,7 @@ func (c *Cache) extendAdjacentSlice(chunk *chunkEntry, offset uint32, data []byt
 			slice.Data = append(slice.Data, data...)
 			slice.Length += uint32(len(data))
 			c.totalSize.Add(uint64(len(slice.Data) - oldLen))
-			return true
+			return extendResult{extended: true, sliceID: slice.ID}
 		}
 
 		// Case 2: Prepending (write ends where slice starts)
@@ -190,9 +217,9 @@ func (c *Cache) extendAdjacentSlice(chunk *chunkEntry, offset uint32, data []byt
 			slice.Offset = offset
 			slice.Length += uint32(len(data))
 			c.totalSize.Add(uint64(len(newData) - oldLen))
-			return true
+			return extendResult{extended: true, sliceID: slice.ID}
 		}
 	}
 
-	return false
+	return extendResult{extended: false}
 }

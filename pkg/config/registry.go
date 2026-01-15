@@ -84,13 +84,21 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 	reg.SetPayloadService(payloadSvc)
 	logger.Info("Created payload service")
 
-	// Step 4.5: Recover unflushed cache data from previous run
-	// TODO: Make recovery async so it doesn't block startup
-	// For now, skip recovery - data remains in mmap cache and will be
-	// uploaded on next access or can be manually recovered later
-
 	// Start background uploader for async block store uploads
 	transferMgr.Start(ctx)
+
+	// Step 4.5: Recover unflushed cache data from previous run (async)
+	go func() {
+		stats := transferMgr.RecoverUnflushedSlices(context.Background())
+		if stats.SlicesFound > 0 {
+			logger.Info("Recovery: started background upload of unflushed data",
+				"files", stats.FilesScanned,
+				"slices", stats.SlicesFound,
+				"bytes", stats.BytesPending)
+		} else {
+			logger.Info("Recovery: no unflushed data found")
+		}
+	}()
 
 	// Step 5: Register all metadata stores
 	if err := registerMetadataStores(ctx, reg, cfg); err != nil {

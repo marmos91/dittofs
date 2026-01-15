@@ -316,11 +316,14 @@ func (p *MmapPersister) AppendSlice(entry *SliceEntry) error {
 	copy(p.data[offset:], entry.Data)
 	offset += uint64(len(entry.Data))
 
-	// Update header in memory (written to disk on Sync or Close)
+	// Update header in memory and persist to mmap region immediately
+	// This ensures crash safety - even without explicit Sync(), the header
+	// is always consistent with the data in the mmap file.
 	p.header.NextOffset = offset
 	p.header.EntryCount++
 	p.header.TotalDataSize += uint64(len(entry.Data))
-	p.dirty = true
+	p.writeHeader() // Write header to mmap region immediately for crash safety
+	p.dirty = false // Header is now in sync with mmap region
 
 	return nil
 }
@@ -352,10 +355,11 @@ func (p *MmapPersister) AppendRemove(payloadID string) error {
 	copy(p.data[offset:], []byte(payloadID))
 	offset += uint64(len(payloadID))
 
-	// Update header in memory (written to disk on Sync or Close)
+	// Update header in memory and persist to mmap region immediately
 	p.header.NextOffset = offset
 	p.header.EntryCount++
-	p.dirty = true
+	p.writeHeader() // Write header to mmap region immediately for crash safety
+	p.dirty = false
 
 	return nil
 }

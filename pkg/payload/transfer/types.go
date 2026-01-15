@@ -10,8 +10,9 @@ import "github.com/marmos91/dittofs/pkg/payload/block"
 // Re-exported from block package for convenience.
 const BlockSize = block.Size
 
-// DefaultParallelUploads is the default number of concurrent uploads per file.
-const DefaultParallelUploads = 4
+// DefaultParallelUploads is the default number of concurrent uploads.
+// At ~4 MB/s per S3 connection, 16 connections yields ~64 MB/s upload bandwidth.
+const DefaultParallelUploads = 16
 
 // DefaultParallelDownloads is the default number of concurrent downloads per file.
 const DefaultParallelDownloads = 4
@@ -55,9 +56,16 @@ func (t TransferType) String() string {
 
 // Config holds configuration for the TransferManager.
 type Config struct {
-	// ParallelUploads is the number of concurrent block uploads per file.
+	// ParallelUploads is the initial number of concurrent block uploads.
+	// The adaptive congestion control will start from this value.
 	// Default: 4
 	ParallelUploads int
+
+	// MaxParallelUploads caps the maximum concurrent uploads.
+	// Use this to limit bandwidth consumption.
+	// Set to 0 for unlimited (congestion control will find optimal).
+	// Default: 0 (unlimited, auto-tuned)
+	MaxParallelUploads int
 
 	// ParallelDownloads is the number of concurrent block downloads per file.
 	// Default: 4
@@ -72,9 +80,10 @@ type Config struct {
 // DefaultConfig returns the default transfer manager configuration.
 func DefaultConfig() Config {
 	return Config{
-		ParallelUploads:   DefaultParallelUploads,
-		ParallelDownloads: DefaultParallelDownloads,
-		PrefetchBlocks:    DefaultPrefetchBlocks,
+		ParallelUploads:    DefaultParallelUploads,
+		MaxParallelUploads: 0, // Unlimited, auto-tuned
+		ParallelDownloads:  DefaultParallelDownloads,
+		PrefetchBlocks:     DefaultPrefetchBlocks,
 	}
 }
 

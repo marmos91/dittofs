@@ -11,7 +11,7 @@ import (
 // RecoverUnflushedSlices scans the cache for pending slices and starts background uploads.
 // Called on startup to ensure crash recovery.
 //
-// This is non-blocking - uploads run in the background via flushRemaining goroutines.
+// This is non-blocking - uploads are enqueued to the background transfer queue.
 // Returns immediately after scanning and enqueueing work.
 //
 // The returned RecoveryStats includes RecoveredFileSizes which maps payloadID to actual
@@ -66,15 +66,15 @@ func (m *TransferManager) RecoverUnflushedSlices(ctx context.Context) *RecoveryS
 			stats.BytesPending += int64(len(s.Data))
 		}
 
-		logger.Info("Recovery: starting background flush",
+		logger.Info("Recovery: uploading recovered slices",
 			"payloadID", payloadID,
 			"slices", sliceCount,
 			"recoveredSize", recoveredSize)
 
-		// Start background flush (non-blocking)
+		// Upload remaining slices in background goroutine
 		go func(pID string) {
-			if err := m.flushRemaining(ctx, pID); err != nil {
-				logger.Error("Recovery: background flush failed",
+			if err := m.uploadRemainingSlices(ctx, pID); err != nil {
+				logger.Error("Recovery: failed to upload recovered slices",
 					"payloadID", pID,
 					"error", err)
 			}

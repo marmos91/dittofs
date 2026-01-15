@@ -8,7 +8,7 @@ The transfer package manages data movement between the cache and block store:
 - **Eager upload**: Upload 4MB blocks as soon as they're ready (don't wait for COMMIT)
 - **Download with prefetch**: Fetch blocks from block store on cache miss, prefetch upcoming blocks
 - **Priority scheduling**: Downloads > Uploads > Prefetch
-- **Sync flush**: FlushAsync/Flush both use synchronous flush for simplicity
+- **Non-blocking flush**: FlushAsync/Flush return immediately - data is safe in WAL mmap cache
 - **In-flight deduplication**: Avoid duplicate downloads for the same block
 
 ## Architecture
@@ -30,15 +30,11 @@ PayloadService.ReadAt() (cache miss)
         ↓
   PayloadService reads from cache
 
-PayloadService.FlushAsync() (NFS COMMIT)
+PayloadService.Flush() (NFS COMMIT / SMB CLOSE)
         ↓
-  TransferManager.FlushAsync() ← flushes remaining partial blocks synchronously
-        ↓                         (partial blocks are small, so sync is fast)
-  Returns immediately after flush
-
-PayloadService.Flush() (SMB CLOSE)
-        ↓
-  TransferManager.Flush() ← wait for in-flight + flush remaining (blocking)
+  TransferManager.Flush() ← enqueues remaining blocks for background upload
+        ↓                    returns immediately (data safe in WAL cache)
+  Returns immediately
 ```
 
 ## Key Types
@@ -150,13 +146,13 @@ When `EnsureAvailable` downloads a block, it also enqueues prefetch for N+1, N+2
 - Caller waits only on downloads, prefetch runs async
 - Improves sequential read performance significantly
 
-### Synchronous Flush (FlushAsync/Flush)
-Both `FlushAsync` and `Flush` use synchronous flush internally:
+### Non-Blocking Flush (FlushAsync/Flush)
+Both `FlushAsync` and `Flush` return immediately without waiting for S3:
+- Data durability is provided by the **WAL-backed mmap cache** (OS syncs to disk)
 - The main performance win comes from **eager upload** of complete 4MB blocks
-- By the time COMMIT is called, most data is already uploaded
-- Only partial blocks (< 4MB at end of file) need flushing
-- These are small, so sync flush is fast and simpler than async
-- Data is still safe in mmap cache during the brief flush
+- Remaining partial blocks are enqueued for background upload
+- NFS COMMIT semantics only require data to be on stable storage - mmap provides this
+- This achieves maximum throughput by decoupling NFS operations from S3 latency
 
 ### PayloadID as Sole Identifier
 The `payloadID` is the sole identifier for file content:
@@ -189,10 +185,7 @@ type TransferQueueConfig struct {
 // Download blocks and prefetch (called on cache miss)
 EnsureAvailable(ctx, payloadID, chunkIdx, offset, length) error
 
-// Flush - called by NFS COMMIT (sync flush, but fast since partial blocks are small)
-FlushAsync(ctx, payloadID) (*FlushResult, error)
-
-// Flush - called by SMB CLOSE (blocking)
+// Flush - called by NFS COMMIT and SMB CLOSE (non-blocking, enqueues remaining blocks)
 Flush(ctx, payloadID) (*FlushResult, error)
 
 // Called after each write - checks if 4MB blocks are ready for eager upload

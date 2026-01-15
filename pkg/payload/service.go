@@ -31,8 +31,7 @@ import (
 //	svc := payload.New(cache, transferManager)
 //	err := svc.WriteAt(ctx, shareName, payloadID, data, offset)
 //	n, err := svc.ReadAt(ctx, shareName, payloadID, buf, offset)
-//	err := svc.FlushAsync(ctx, shareName, payloadID)  // NFS COMMIT
-//	err := svc.Flush(ctx, shareName, payloadID)       // SMB CLOSE
+//	err := svc.Flush(ctx, shareName, payloadID)  // NFS COMMIT / SMB CLOSE
 type PayloadService struct {
 	cache           *cache.Cache
 	transferManager *transfer.TransferManager
@@ -209,36 +208,12 @@ func (s *PayloadService) Delete(ctx context.Context, shareName string, id metada
 // Flush Operations
 // ============================================================================
 
-// FlushAsync flushes cached data for a file (non-blocking).
+// Flush enqueues remaining dirty data for background upload and returns immediately.
 //
-// This is called by NFS COMMIT:
+// Used by both NFS COMMIT and SMB CLOSE:
 //   - Enqueues remaining data for background block store upload
 //   - Returns immediately (non-blocking)
 //   - Data is safe in mmap cache (crash-safe via OS page cache)
-//
-// Returns FlushResult indicating the operation status.
-func (s *PayloadService) FlushAsync(ctx context.Context, _ string, id metadata.PayloadID) (*FlushResult, error) {
-	payloadID := string(id)
-
-	// Delegate to TransferManager
-	result, err := s.transferManager.FlushAsync(ctx, payloadID)
-	if err != nil {
-		return nil, fmt.Errorf("flush async failed: %w", err)
-	}
-
-	return &FlushResult{
-		BytesFlushed:   result.BytesFlushed,
-		AlreadyFlushed: result.AlreadyFlushed,
-		Finalized:      result.Finalized,
-	}, nil
-}
-
-// Flush flushes and finalizes for immediate durability (blocking).
-//
-// This is called by SMB CLOSE which requires full durability before returning:
-//   - Waits for in-flight uploads to complete
-//   - Uploads remaining partial blocks
-//   - Blocks until all data is persisted to block store
 //
 // Returns FlushResult indicating the operation status.
 func (s *PayloadService) Flush(ctx context.Context, _ string, id metadata.PayloadID) (*FlushResult, error) {
