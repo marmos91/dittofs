@@ -55,11 +55,11 @@ func TestOffsetInBlock(t *testing.T) {
 
 func TestRange(t *testing.T) {
 	tests := []struct {
-		name       string
-		offset     uint32
-		length     uint32
-		wantStart  uint32
-		wantEnd    uint32
+		name      string
+		offset    uint32
+		length    uint32
+		wantStart uint32
+		wantEnd   uint32
 	}{
 		{"zero length", 1000, 0, 0, 0},
 		{"single block", 0, 1000, 0, 0},

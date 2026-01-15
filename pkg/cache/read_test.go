@@ -295,8 +295,8 @@ func TestIsRangeCovered_PartialOverlap(t *testing.T) {
 	payloadID := "test-file"
 
 	// Write partially overlapping slices
-	c.WriteSlice(ctx, payloadID, 0, make([]byte, 10), 0)  // bytes 0-10
-	c.WriteSlice(ctx, payloadID, 0, make([]byte, 10), 5)  // bytes 5-15
+	c.WriteSlice(ctx, payloadID, 0, make([]byte, 10), 0) // bytes 0-10
+	c.WriteSlice(ctx, payloadID, 0, make([]byte, 10), 5) // bytes 5-15
 
 	// Together they cover 0-15
 	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 15)

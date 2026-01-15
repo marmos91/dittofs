@@ -98,10 +98,10 @@ type MetadataReconciler interface {
 
 // ReconciliationStats holds statistics about the metadata reconciliation.
 type ReconciliationStats struct {
-	FilesChecked    int   // Number of files compared
-	FilesTruncated  int   // Number of files truncated to match recovered size
-	BytesTruncated  int64 // Total bytes removed from metadata
-	Errors          int   // Number of errors encountered (non-fatal)
+	FilesChecked   int   // Number of files compared
+	FilesTruncated int   // Number of files truncated to match recovered size
+	BytesTruncated int64 // Total bytes removed from metadata
+	Errors         int   // Number of errors encountered (non-fatal)
 }
 
 // ReconcileMetadata compares recovered file sizes with metadata and truncates

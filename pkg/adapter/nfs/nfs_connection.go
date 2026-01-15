@@ -12,6 +12,8 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/marmos91/dittofs/internal/bufpool"
+	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
 	nfs "github.com/marmos91/dittofs/internal/protocol/nfs"
 	mount_handlers "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
@@ -19,8 +21,6 @@ import (
 	nfs_types "github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/telemetry"
-	"github.com/marmos91/dittofs/internal/bufpool"
-	"github.com/marmos91/dittofs/internal/bytesize"
 )
 
 type NFSConnection struct {

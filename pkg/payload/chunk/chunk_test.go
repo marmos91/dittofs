@@ -198,9 +198,9 @@ func TestSlices_EarlyBreak(t *testing.T) {
 
 func TestIndexForOffset(t *testing.T) {
 	tests := []struct {
-		name       string
-		offset     uint64
-		wantIndex  uint32
+		name      string
+		offset    uint64
+		wantIndex uint32
 	}{
 		{"zero offset", 0, 0},
 		{"within first chunk", 1000, 0},
@@ -302,12 +302,12 @@ func TestBounds(t *testing.T) {
 
 func TestClipToChunk(t *testing.T) {
 	tests := []struct {
-		name          string
-		chunkIdx      uint32
-		fileOffset    uint64
-		length        uint64
-		wantOffset    uint32
-		wantLength    uint32
+		name       string
+		chunkIdx   uint32
+		fileOffset uint64
+		length     uint64
+		wantOffset uint32
+		wantLength uint32
 	}{
 		{"entirely within chunk 0", 0, 1000, 5000, 1000, 5000},
 		{"entire first chunk", 0, 0, Size, 0, Size},

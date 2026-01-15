@@ -125,9 +125,9 @@ type FlushResult struct {
 // RecoveryStats holds statistics about the recovery scan.
 // Note: Uploads happen asynchronously after scan completes.
 type RecoveryStats struct {
-	FilesScanned  int   // Number of files in cache
-	SlicesFound   int   // Number of dirty slices found
-	BytesPending  int64 // Bytes of dirty data to upload
+	FilesScanned int   // Number of files in cache
+	SlicesFound  int   // Number of dirty slices found
+	BytesPending int64 // Bytes of dirty data to upload
 
 	// RecoveredFileSizes maps payloadID to the actual file size recovered from WAL.
 	// This allows consumers to reconcile metadata with actual cached data.

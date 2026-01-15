@@ -612,6 +612,12 @@ func testConcurrentOperations(t *testing.T, env *testEnv) {
 				return
 			}
 
+			// Wait for eager uploads to complete before verification
+			if err := env.manager.WaitForEagerUploads(ctx, payloadID); err != nil {
+				errors <- fmt.Errorf("file %d: WaitForEagerUploads failed: %w", fileIdx, err)
+				return
+			}
+
 			// Verify
 			exists, err := env.manager.Exists(ctx, "", payloadID)
 			if err != nil {
