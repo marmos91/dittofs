@@ -1,805 +1,470 @@
 # DittoFS Cache Design
 
-This document describes the unified cache architecture for DittoFS, designed to efficiently handle NFS read and write operations with any content store backend.
+This document describes the Chunk/Slice/Block cache architecture for DittoFS, designed for high-throughput NFS operations with crash recovery via WAL persistence.
 
 ## Table of Contents
 
 - [Overview](#overview)
-- [Design Principles](#design-principles)
+- [Chunk/Slice/Block Model](#chunksliceblock-model)
 - [Cache Architecture](#cache-architecture)
-- [State Machine](#state-machine)
-- [NFS Operation Flow](#nfs-operation-flow)
-- [Read Cache Coherency](#read-cache-coherency)
-- [Flush Coordination](#flush-coordination)
+- [Write Path](#write-path)
+- [Read Path](#read-path)
+- [Flush and Transfer](#flush-and-transfer)
+- [WAL Persistence](#wal-persistence)
 - [Configuration](#configuration)
-- [Implementation Details](#implementation-details)
+- [Performance Characteristics](#performance-characteristics)
 
 ## Overview
 
-DittoFS uses a **unified cache per share** that serves both read and write operations. This design eliminates the complexity of coordinating separate read/write caches while providing efficient buffering for all content store backends.
+DittoFS uses a **three-tier storage model** (Chunk/Slice/Block) with a **WAL-backed cache** for durability. This design provides:
+
+- **High write throughput**: Non-blocking flush returns immediately (~275+ MB/s)
+- **Crash recovery**: WAL persistence survives server restarts
+- **Efficient S3 usage**: 4MB block uploads minimize API calls
+- **Sequential write optimization**: Adjacent writes merge into single slices
 
 ### Key Insights
 
-1. **Written data becomes readable data**: A unified cache reflects this naturally - data written via NFS WRITE is immediately readable via NFS READ from the same buffer.
+1. **Slices buffer variable-size writes**: NFS WRITE operations (typically 32KB) accumulate as slices in cache
+2. **Blocks are the upload unit**: 4MB blocks are uploaded to S3/storage independently
+3. **Eager upload**: Complete blocks are uploaded immediately, not waiting for COMMIT
+4. **Non-blocking COMMIT**: Flush returns immediately; durability provided by WAL
 
-2. **Cache is content-store agnostic**: The cache only buffers data and tracks state. It doesn't know about S3 multipart uploads or filesystem fsync - that's the content store's responsibility.
-
-3. **Dirty vs Clean distinction**: Dirty entries (being written) are authoritative. Clean entries (read-cached) need validation against metadata.
-
-### The NFS Challenge
-
-NFSv3 is stateless and has no "file close" operation:
+## Chunk/Slice/Block Model
 
 ```
-NFS Client                    DittoFS
-    │                            │
-    ├── WRITE(0, 32KB) ─────────►│  ← Write 32KB at offset 0
-    ├── WRITE(32KB, 32KB) ──────►│  ← Write 32KB at offset 32KB
-    ├── COMMIT ─────────────────►│  ← Persist data (but file may not be complete!)
-    ├── WRITE(64KB, 32KB) ──────►│  ← More writes after COMMIT
-    ├── COMMIT ─────────────────►│  ← Another COMMIT
-    │                            │
-    │  [client closes file]      │
-    │  [NO RPC SENT TO SERVER!]  │  ← Server never knows file is "done"
+File (arbitrary size)
+  │
+  ├── Chunk 0 (64MB)
+  │     ├── Slice A (offset=0, len=32KB)     ← NFS WRITE #1
+  │     ├── Slice B (offset=32KB, len=32KB)  ← NFS WRITE #2 (may merge with A)
+  │     └── ...
+  │     │
+  │     └── When flushed, becomes:
+  │           ├── Block 0 (4MB) → S3 key: {payloadID}/chunk-0/block-0
+  │           ├── Block 1 (4MB) → S3 key: {payloadID}/chunk-0/block-1
+  │           └── ... (16 blocks per chunk)
+  │
+  ├── Chunk 1 (64MB)
+  │     └── ...
+  │
+  └── ...
 ```
 
-This creates challenges for backends like S3 where we need to call `CompleteMultipartUpload` to finalize a file. We solve this with **inactivity-based finalization**.
+### Terminology
 
-## Design Principles
+| Term | Size | Description |
+|------|------|-------------|
+| **Chunk** | 64MB | Logical file region for organization |
+| **Slice** | Variable | Cached write data (pending upload) |
+| **Block** | 4MB | Physical storage unit uploaded to S3 |
 
-### 1. One Cache Per Share
-
-Each NFS share has its own cache instance:
-
-- **Isolation**: One busy share cannot evict another share's data
-- **Predictability**: Per-share cache sizing and tuning
-- **Simplicity**: No complex cross-share coordination
-
-### 2. Cache is a Smart Buffer (Content-Store Agnostic)
-
-The cache buffers data and tracks state, but delegates all persistence to the content store:
-
-- **No S3 knowledge**: Cache doesn't know about multipart uploads, ETags, etc.
-- **No filesystem knowledge**: Cache doesn't know about fsync, file descriptors, etc.
-- **Simple interface**: Write, Read, track state, track what's been flushed
-
-### 3. Cache States
+### Size Constants
 
 ```go
-type CacheState int
+// pkg/payload/chunk/chunk.go
+const Size = 64 * 1024 * 1024  // 64MB chunks
 
-const (
-    StateNone        CacheState = iota  // Not in cache
-    StateBuffering                       // Writes accumulating, not yet flushed
-    StateUploading                       // Flush in progress to content store
-    StateCached                          // Clean data (finalized writes OR read-cached)
-    StatePrefetching                     // Background prefetch in progress
-)
+// pkg/payload/block/block.go
+const Size = 4 * 1024 * 1024   // 4MB blocks
+const PerChunk = 16            // 64MB / 4MB = 16 blocks per chunk
 ```
-
-- **None**: Entry doesn't exist in cache
-- **Buffering**: Dirty, actively receiving writes
-- **Uploading**: Dirty, flush in progress (content store may be doing multipart)
-- **Cached**: Clean, can be evicted, needs validation on read
-- **Prefetching**: Background prefetch in progress, reads can wait for specific offsets
-
-### 4. Dirty Entry Protection
-
-Entries with unflushed data cannot be evicted:
-
-- LRU eviction skips dirty entries (Buffering, Uploading)
-- Prevents data loss under memory pressure
-- Cache may temporarily exceed max size to protect dirty data
-
-### 5. Read Cache Coherency
-
-Clean cached data needs validation against current metadata:
-
-- Store `mtime` and `size` when caching data
-- On cache hit, compare with current metadata
-- Invalidate if metadata changed (file was modified)
 
 ## Cache Architecture
 
-### Cache Entry Structure
+### Slice Structure
 
 ```go
-type CacheEntry struct {
-    ContentID      string
-    Buffer         []byte
-
-    // Size tracking
-    BufferSize     int64    // total bytes in buffer
-    FlushedOffset  int64    // bytes that have been flushed to content store
-
-    // Timing
-    LastWriteTime  time.Time  // last WRITE operation
-    LastAccessTime time.Time  // last read or write (for LRU)
-    CachedAt       time.Time  // when first cached (for TTL)
-
-    // Validity (for read cache coherency)
-    CachedMtime    time.Time  // file mtime when data was cached
-    CachedSize     uint64     // file size when data was cached
-
-    // State
-    State          CacheState
+// pkg/cache/wal/types.go
+type Slice struct {
+    ID        string      // Unique slice identifier
+    Offset    int64       // Offset within chunk
+    Length    int64       // Data length
+    Data      []byte      // Actual bytes
+    State     SliceState  // Pending, Uploading, or Flushed
+    CreatedAt time.Time   // For newest-wins ordering
 }
 ```
 
-**Note**: No `UploadID`, `PartNumber`, or any S3-specific fields. The content store tracks its own upload state internally via `GetIncrementalWriteState()`.
+### Slice States
 
-### Cache Interface
+```
+┌─────────────────┐     Eager upload or     ┌─────────────────┐     Upload complete    ┌─────────────────┐
+│ SliceStatePending│─────────────────────────►│SliceStateUploading│───────────────────────►│ SliceStateFlushed│
+│   (dirty data)   │      COMMIT/Flush       │  (upload active)  │     Mark flushed      │  (safe to evict) │
+└─────────────────┘                          └─────────────────┘                        └─────────────────┘
+       ▲                                                                                        │
+       │                                                                                        │
+       └────────────────────── New WRITE operation ─────────────────────────────────────────────┘
+                               (creates new slice)
+```
+
+- **Pending**: Dirty data, source of truth, cannot evict
+- **Uploading**: Upload in progress, cannot evict
+- **Flushed**: Safe to evict, data is in block store
+
+### Cache Entry (Per-Chunk)
 
 ```go
-type Cache interface {
-    // Write operations
-    WriteAt(ctx context.Context, id ContentID, data []byte, offset int64) error
-
-    // Read operations
-    ReadAt(ctx context.Context, id ContentID, buf []byte, offset int64) (int, error)
-    Read(ctx context.Context, id ContentID) ([]byte, error)
-
-    // State management
-    GetState(id ContentID) CacheState
-    SetState(id ContentID, state CacheState)
-    GetFlushedOffset(id ContentID) int64
-    SetFlushedOffset(id ContentID, offset int64)
-
-    // Validity (for read cache coherency)
-    GetCachedMetadata(id ContentID) (mtime time.Time, size uint64, ok bool)
-    SetCachedMetadata(id ContentID, mtime time.Time, size uint64)
-    IsValid(id ContentID, currentMtime time.Time, currentSize uint64) bool
-
-    // Size and timing
-    Size(id ContentID) int64
-    LastWrite(id ContentID) time.Time
-    LastAccess(id ContentID) time.Time
-    Exists(id ContentID) bool
-    List() []ContentID
-
-    // Cache management
-    Remove(id ContentID) error
-    RemoveAll() error
-    TotalSize() int64
-    MaxSize() int64
-
-    // Lifecycle
-    Close() error
+// pkg/cache/types.go
+type chunkEntry struct {
+    slices     []*wal.Slice  // All slices for this chunk
+    totalSize  int64         // Sum of slice data
+    lastAccess time.Time     // For LRU eviction
 }
 ```
 
-## State Machine
+## Write Path
+
+### NFS WRITE → Cache
 
 ```
-                          WRITE (new entry)
-                                │
-                                ▼
-              ┌─────────────────────────────────┐
-              │           BUFFERING             │
-              │   (dirty, accumulating writes)  │◄─────────────┐
-              └────────────────┬────────────────┘              │
-                               │                               │
-                    COMMIT triggers flush                      │
-                    (content store decides how)                │
-                               │                               │
-                               ▼                               │
-              ┌─────────────────────────────────┐              │
-              │           UPLOADING             │              │
-              │    (dirty, flush in progress)   │              │
-              └────────────────┬────────────────┘              │
-                               │                               │
-                     Finalization complete                     │
-                     (inactivity timeout)                      │
-                               │                               │
-                               ▼                               │
-              ┌─────────────────────────────────┐              │
-     ┌───────►│            CACHED               │──── WRITE ───┘
-     │        │  (clean, can be evicted)        │   (restart)
-     │        └────────────────┬────────────────┘
-     │                         │
-     │                    Eviction
-READ │                    (LRU)
-(miss)                         │
-     │                         ▼
-     │                    [removed]
-     │
-     └─── READ populates cache directly as CACHED
-```
-
-### State: BUFFERING
-
-Initial state when writes begin. Data accumulates in the cache buffer.
-
-**Characteristics:**
-- Dirty (source of truth)
-- Cannot be evicted
-- `FlushedOffset` may be 0 or behind `BufferSize`
-
-**Transitions:**
-- **WRITE** → Stay in BUFFERING
-- **COMMIT** triggers flush → Transition to UPLOADING
-
-### State: UPLOADING
-
-Flush in progress. The content store is persisting data (may be doing multipart upload, streaming write, etc.).
-
-**Characteristics:**
-- Dirty (flush not complete)
-- Cannot be evicted
-- `FlushedOffset` increases as content store confirms persistence
-
-**Transitions:**
-- **WRITE** → Stay in UPLOADING (more data to flush)
-- **Finalization** (inactivity timeout + all data flushed) → Transition to CACHED
-
-### State: CACHED
-
-Clean data. Either finalized from writes, or populated from a read.
-
-**Characteristics:**
-- Clean (content store is source of truth)
-- Can be evicted
-- Needs validation on read hit (compare mtime/size)
-
-**Transitions:**
-- **WRITE** → Transition to BUFFERING (new version)
-- **Eviction** → Remove from cache
-- **Invalidation** (metadata changed) → Remove from cache
-
-## NFS Operation Flow
-
-### WRITE Handler
-
-```
-WRITE(handle, offset, data)
+NFS WRITE(handle, offset, data)
     │
     ▼
-┌─────────────────────────────────┐
-│ Get file metadata (contentID)   │
-└───────────────┬─────────────────┘
-                │
-                ▼
-┌─────────────────────────────────┐
-│ Get/create cache entry          │
-│                                 │
-│ If state == CACHED:             │
-│   → Reset to BUFFERING          │
-│   → Clear FlushedOffset         │
-└───────────────┬─────────────────┘
-                │
-                ▼
-┌─────────────────────────────────┐
-│ cache.WriteAt(contentID,        │
-│               data, offset)     │
-│                                 │
-│ Update LastWriteTime            │
-│ Update LastAccessTime           │
-└───────────────┬─────────────────┘
-                │
-                ▼
-          Return SUCCESS
-          (no content store calls)
-```
-
-### COMMIT Handler
-
-```
-COMMIT(handle, offset, count)
+PayloadService.WriteAt()
+    │
+    ├── Calculate chunk index: chunkIdx = offset / 64MB
+    ├── Calculate offset within chunk
     │
     ▼
-┌─────────────────────────────────┐
-│ Get cache entry                 │
-│ (return OK if not found)        │
-└───────────────┬─────────────────┘
-                │
-                ▼
-┌─────────────────────────────────┐
-│ Calculate unflushed:            │
-│ unflushed = BufferSize -        │
-│             FlushedOffset       │
-└───────────────┬─────────────────┘
-                │
-                ▼
-┌─────────────────────────────────┐
-│ Flush to content store          │
-│ (content store decides how:     │
-│  - S3: multipart if ≥5MB        │
-│  - FS: WriteAt + fsync          │
-│  - Memory: WriteContent)        │
-│                                 │
-│ Update FlushedOffset            │
-│ Set state = UPLOADING           │
-└───────────────┬─────────────────┘
-                │
-                ▼
-          Return SUCCESS
-```
-
-### READ Handler
-
-```
-READ(handle, offset, size)
+Cache.WriteSlice(fileHandle, chunkIdx, data, offset)
+    │
+    ├── Check sequential write optimization:
+    │   │
+    │   ├── If last slice ends at current offset:
+    │   │   └── Extend existing slice (append data)
+    │   │
+    │   └── Otherwise:
+    │       └── Create new slice
+    │
+    ├── Persist to WAL (if enabled)
+    │
+    └── Return success
     │
     ▼
-┌─────────────────────────────────┐
-│ Get file metadata               │
-│ (mtime, size, contentID)        │
-└───────────────┬─────────────────┘
-                │
-                ▼
-┌─────────────────────────────────┐
-│ Check cache for contentID       │
-└───────────────┬─────────────────┘
-                │
-        ┌───────┴───────┐
-        │               │
-    Cache hit       Cache miss
-        │               │
-        ▼               │
-┌───────────────┐       │
-│ Validate:     │       │
-│ - Dirty? OK   │       │
-│ - mtime match?│       │
-│ - size match? │       │
-│ - TTL ok?     │       │
-└───────┬───────┘       │
-        │               │
-   ┌────┴────┐          │
-   │         │          │
- Valid    Invalid       │
-   │         │          │
-   ▼         ▼          ▼
-┌───────┐ ┌─────────────────┐
-│ Serve │ │ Invalidate      │
-│ from  │ │ Read from store │
-│ cache │ │ Populate cache  │
-│       │ │ as CACHED       │
-└───────┘ └─────────────────┘
+TransferManager.OnWriteComplete()
+    │
+    ├── Calculate which 4MB blocks overlap the write
+    │
+    ├── For each complete block:
+    │   ├── Check if already uploaded (deduplication)
+    │   ├── Check if cache covers entire block
+    │   └── If covered → Start async block upload
+    │
+    └── Return immediately (non-blocking)
 ```
 
-## Read Cache Coherency
+### Sequential Write Optimization
 
-### The Problem
+Adjacent writes merge into a single slice:
 
-Cached read data can become stale:
-1. Another NFS client modifies the file
-2. Direct backend modification (e.g., S3 console)
-3. File deleted and recreated with same name
+```
+WRITE(offset=0, 32KB)     → Slice A: [0, 32KB]
+WRITE(offset=32KB, 32KB)  → Extend A: [0, 64KB]  (not a new slice!)
+WRITE(offset=64KB, 32KB)  → Extend A: [0, 96KB]
+...
+WRITE(offset=10MB, 32KB)  → Extend A: [0, 10MB+32KB]
 
-### Solution: Metadata Validation
-
-Store metadata snapshot when caching, validate on hit:
-
-```go
-func (c *Cache) IsValid(id ContentID, currentMtime time.Time, currentSize uint64) bool {
-    entry := c.getEntry(id)
-    if entry == nil {
-        return false
-    }
-
-    // Dirty entries are always valid (we're the source of truth)
-    if entry.State == StateBuffering || entry.State == StateUploading {
-        return true
-    }
-
-    // Clean entries: validate against current metadata
-    if entry.CachedMtime != currentMtime || entry.CachedSize != currentSize {
-        return false  // File was modified, invalidate
-    }
-
-    // Optional: TTL check for extra safety
-    if c.readTTL > 0 && time.Since(entry.CachedAt) > c.readTTL {
-        return false  // Expired
-    }
-
-    return true
-}
+Result: 1 slice instead of 320+ slices for a 10MB sequential write
 ```
 
-### Dirty vs Clean
+## Read Path
 
-| State | Source of Truth | Validation Required |
-|-------|-----------------|---------------------|
-| Buffering | Cache (dirty) | No - always valid |
-| Uploading | Cache (dirty) | No - always valid |
-| Cached | Content Store | Yes - check mtime/size |
+### NFS READ → Cache/Block Store
 
-### Handling External Modifications
-
-If someone modifies the content store directly (bypassing DittoFS):
-
-1. **Metadata updated** (normal NFS flow): mtime/size check catches it
-2. **Metadata NOT updated** (direct S3 access): TTL provides eventual consistency
-3. **Disable caching**: For shares with expected direct access, disable cache
-
-## Flush Coordination
-
-### Separation of Concerns
-
-| Component | Responsibility |
-|-----------|---------------|
-| **Cache** | Buffer data, track state, track flushed offset |
-| **Content Store** | Persist data, manage upload sessions internally |
-| **Flush Coordinator** | Orchestrate flush timing, call content store APIs |
-| **Background Flusher** | Detect idle files, trigger finalization |
-
-### Flush Coordinator (in handlers)
-
-```go
-func flushToContentStore(ctx context.Context, cache Cache, contentStore ContentStore, contentID ContentID) error {
-    // Check if content store supports incremental writes
-    if incStore, ok := contentStore.(IncrementalWriteStore); ok {
-        // S3: content store reads directly from cache and manages multipart internally
-        // For small files (< partSize), this returns 0 - finalization uses PutObject
-        // For large files, this uploads complete parts in parallel
-        flushed, err := incStore.FlushIncremental(ctx, contentID, cache)
-        if err != nil {
-            return err
-        }
-        if flushed > 0 {
-            cache.SetState(contentID, StateUploading)
-        }
-        return nil
-    }
-
-    // Simple store: write unflushed data at offset
-    cacheSize := cache.Size(contentID)
-    flushedOffset := cache.GetFlushedOffset(contentID)
-    unflushed := cacheSize - flushedOffset
-
-    if unflushed == 0 {
-        return nil  // Nothing to flush
-    }
-
-    data := make([]byte, unflushed)
-    cache.ReadAt(ctx, contentID, data, flushedOffset)
-
-    err := contentStore.WriteAt(ctx, contentID, data, flushedOffset)
-    if err != nil {
-        return err
-    }
-    cache.SetFlushedOffset(contentID, flushedOffset + int64(len(data)))
-    cache.SetState(contentID, StateUploading)
-    return nil
-}
+```
+NFS READ(handle, offset, size)
+    │
+    ▼
+PayloadService.ReadAt()
+    │
+    ├── Calculate chunk index
+    │
+    ▼
+Cache.ReadSlice(fileHandle, chunkIdx, offset, length)
+    │
+    ├── Find all overlapping slices
+    │
+    ├── Merge using newest-wins algorithm:
+    │   │
+    │   ├── Fast path: Single slice covers entire range → O(1)
+    │   │
+    │   └── Slow path: Multiple overlapping slices
+    │       ├── Build coverage bitmap
+    │       ├── For each byte position, use newest slice
+    │       └── Return merged data
+    │
+    └── Return (data, found, error)
+    │
+    ▼
+If cache miss:
+    │
+    ├── TransferManager.EnsureAvailable()
+    │   │
+    │   ├── Calculate which blocks are needed
+    │   ├── Download missing blocks from block store
+    │   ├── Enqueue speculative prefetch (next N blocks)
+    │   └── Wait for downloads to complete
+    │
+    └── Re-read from cache
 ```
 
-### Background Flusher
+### Newest-Wins Merge
 
-Runs periodically to finalize idle files:
+When slices overlap, the most recent write wins:
+
+```
+Time 0: WRITE(offset=0, data="AAAA")   → Slice 1: [0,4] = "AAAA"
+Time 1: WRITE(offset=2, data="BB")     → Slice 2: [2,4] = "BB"
+
+READ(offset=0, size=4):
+  - Byte 0: Slice 1 (only option) → 'A'
+  - Byte 1: Slice 1 (only option) → 'A'
+  - Byte 2: Slice 2 (newer) → 'B'
+  - Byte 3: Slice 2 (newer) → 'B'
+
+Result: "AABB"
+```
+
+## Flush and Transfer
+
+### Non-Blocking Flush (COMMIT)
+
+```
+NFS COMMIT(handle)
+    │
+    ▼
+PayloadService.Flush()
+    │
+    ├── TransferManager.Flush(fileHandle)
+    │   │
+    │   ├── Identify remaining dirty blocks
+    │   ├── Enqueue for background upload
+    │   └── Return immediately (non-blocking!)
+    │
+    └── Return success to client
+```
+
+**Key insight**: COMMIT returns immediately. Data durability is provided by:
+1. WAL persistence (survives crash)
+2. Background upload queue (eventual S3 persistence)
+
+### Eager Upload (On Write Complete)
 
 ```go
-func (f *BackgroundFlusher) sweep() {
-    threshold := time.Now().Add(-f.flushTimeout)
+// pkg/payload/transfer/manager.go
+func (tm *TransferManager) OnWriteComplete(ctx context.Context, fileHandle []byte,
+    payloadID string, chunkIdx int, writeOffset, writeLength int64) {
 
-    for _, id := range f.cache.List() {
-        state := f.cache.GetState(id)
+    // Calculate which 4MB blocks were affected
+    startBlock := writeOffset / block.Size
+    endBlock := (writeOffset + writeLength - 1) / block.Size
 
-        // Skip entries that don't need flushing
-        if state != StateUploading {
+    for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
+        // Check if block is already uploaded (deduplication)
+        if tm.isBlockUploaded(fileHandle, chunkIdx, blockIdx) {
             continue
         }
 
-        // Skip if not idle
-        lastWrite := f.cache.LastWrite(id)
-        if lastWrite.After(threshold) {
-            continue  // Still active
+        // Check if cache fully covers this block
+        blockStart := blockIdx * block.Size
+        blockEnd := blockStart + block.Size
+        if tm.cache.IsRangeCovered(fileHandle, chunkIdx, blockStart, blockEnd) {
+            // Start async upload
+            go tm.uploadBlock(ctx, fileHandle, payloadID, chunkIdx, blockIdx)
         }
-
-        // For incremental stores, check if any parts still uploading
-        if incStore, ok := f.contentStore.(IncrementalWriteStore); ok {
-            if writeState := incStore.GetIncrementalWriteState(id); writeState != nil {
-                if writeState.PartsUploading > 0 {
-                    continue  // Parts still uploading
-                }
-            }
-        }
-
-        // Finalize this entry
-        f.flush(id)
     }
 }
+```
 
-func (f *BackgroundFlusher) flush(id ContentID) error {
-    // Complete any in-progress upload (S3 multipart or PutObject for small files)
-    if incStore, ok := f.contentStore.(IncrementalWriteStore); ok {
-        // CompleteIncrementalWrite handles both:
-        // - Small files: PutObject directly from cache
-        // - Large files: upload remaining parts + CompleteMultipartUpload
-        if err := incStore.CompleteIncrementalWrite(f.ctx, id, f.cache); err != nil {
-            return err
-        }
+### Transfer Queue Priority
+
+```
+Priority 1 (Highest): Downloads (cache misses)
+Priority 2: Uploads (dirty data)
+Priority 3 (Lowest): Prefetch (speculative reads)
+```
+
+Downloads pause uploads to ensure read latency is minimized.
+
+## WAL Persistence
+
+### Architecture
+
+```
+┌─────────────────┐
+│     Cache       │
+│  pkg/cache/     │
+└────────┬────────┘
+         │
+         │ WriteSlice()
+         ▼
+┌─────────────────┐
+│   Persister     │  ← Interface
+│ pkg/cache/wal/  │
+└────────┬────────┘
+         │
+    ┌────┴────┐
+    │         │
+    ▼         ▼
+┌───────┐ ┌──────────┐
+│ Mmap  │ │   Null   │
+│Persist│ │ Persist  │
+└───────┘ └──────────┘
+ (Prod)    (Test/Dev)
+```
+
+### Persister Interface
+
+```go
+// pkg/cache/wal/persister.go
+type Persister interface {
+    AppendSlice(entry *SliceEntry) error  // Log a write
+    AppendRemove(fileHandle []byte) error // Log a delete
+    Sync() error                          // Fsync to disk
+    Recover() ([]SliceEntry, error)       // Replay on startup
+    Close() error
+    IsEnabled() bool
+}
+```
+
+### MmapPersister
+
+Memory-mapped file for high-performance persistence:
+
+```go
+// Create WAL persister
+persister, err := wal.NewMmapPersister("/var/lib/dittofs/cache.wal", wal.MmapConfig{
+    InitialSize: 64 * 1024 * 1024,  // 64MB initial allocation
+})
+
+// Create cache with WAL
+cache := cache.New(maxSize, cache.WithPersister(persister))
+```
+
+### Crash Recovery
+
+On startup, the transfer manager recovers from WAL:
+
+```go
+// pkg/payload/transfer/recovery.go
+func (tm *TransferManager) RecoverFromWAL(ctx context.Context) error {
+    // Load all slices from WAL
+    entries, err := tm.persister.Recover()
+
+    // Restore to cache
+    for _, entry := range entries {
+        tm.cache.RestoreSlice(entry)
     }
 
-    // Mark as cached (clean)
-    f.cache.SetState(id, StateCached)
+    // Re-enqueue pending uploads
+    for _, fileHandle := range tm.cache.GetDirtyFiles() {
+        tm.EnqueueFlush(fileHandle)
+    }
+
     return nil
 }
 ```
 
 ## Configuration
 
-### Cache Store Configuration
-
-Caches are defined as named stores and referenced by shares:
+### Cache Settings
 
 ```yaml
 cache:
   stores:
-    my-cache:
+    main-cache:
       type: memory
       memory:
-        max_size: 1073741824  # 1GB in bytes
-      prefetch:
-        enabled: true           # Enable read prefetch (default: true)
-        max_file_size: 104857600  # 100MB - skip prefetch for larger files
-        chunk_size: 524288      # 512KB - prefetch chunk size
-      flusher:
-        sweep_interval: 10s     # How often to check for finalization
-        flush_timeout: 30s      # Inactivity before finalizing writes
+        max_size: "1Gi"  # Maximum cache size
 
-shares:
-  - name: /data
-    metadata_store: badger-meta
-    content_store: s3-content
-    cache: my-cache             # Reference the cache store
+      # WAL persistence (optional but recommended)
+      wal:
+        enabled: true
+        path: /var/lib/dittofs/cache.wal
+        initial_size: "64Mi"
+        sync_on_write: false  # OS page cache provides durability
 ```
 
-### Cache Store Options
+### Transfer Manager Settings
+
+```yaml
+transfer:
+  # Parallel upload/download limits
+  max_parallel_uploads: 16
+  max_parallel_downloads: 8
+
+  # Prefetch configuration
+  prefetch:
+    enabled: true
+    blocks_ahead: 4  # Prefetch next N blocks on sequential read
+```
+
+### Configuration Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `type` | - | Cache type: `memory` or `filesystem` |
-| `memory.max_size` | `0` | Maximum cache size in bytes (0 = unlimited) |
+| `cache.max_size` | `1Gi` | Maximum cache memory usage |
+| `wal.enabled` | `true` | Enable WAL persistence |
+| `wal.path` | `/tmp/dittofs-cache.wal` | WAL file location |
+| `transfer.max_parallel_uploads` | `16` | Concurrent block uploads |
+| `transfer.max_parallel_downloads` | `8` | Concurrent block downloads |
+| `prefetch.blocks_ahead` | `4` | Speculative prefetch depth |
 
-### Prefetch Options
+## Performance Characteristics
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `enabled` | `true` | Enable/disable read prefetch |
-| `max_file_size` | `100MB` | Skip prefetch for files larger than this |
-| `chunk_size` | `512KB` | Size of each prefetch chunk |
+### Benchmarks (Apple M1, 1GB cache, S3 backend)
 
-### Flusher Options
+| Operation | Throughput | Notes |
+|-----------|------------|-------|
+| Sequential write | ~395 MB/s | To cache, non-blocking |
+| Sequential read (cache hit) | ~295 MB/s | From memory |
+| Sequential read (cache miss) | ~50-100 MB/s | S3 download |
+| Small files write (1MB each) | ~118 MB/s | Per-file overhead |
+| Small files read (1MB each) | ~209 MB/s | From cache |
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `sweep_interval` | `10s` | How often to check for idle files |
-| `flush_timeout` | `30s` | Time since last write before finalizing |
+### Why Non-Blocking Flush?
 
-## Implementation Details
-
-### Dirty Entry Protection
-
-```go
-func (c *Cache) canEvict(entry *CacheEntry) bool {
-    // Cannot evict dirty entries
-    if entry.State == StateBuffering || entry.State == StateUploading {
-        return false
-    }
-    // Clean entries can be evicted
-    return true
-}
+Traditional NFS COMMIT:
+```
+COMMIT → Upload to S3 → Wait 200ms+ → Return
+Throughput: Limited by S3 latency (~5 MB/s)
 ```
 
-### Eviction Strategy
-
-LRU eviction with dirty entry protection:
-
-1. Sort entries by `LastAccessTime` (oldest first)
-2. Skip entries where `canEvict() == false`
-3. Evict until `TotalSize <= MaxSize * 0.9` (hysteresis)
-4. If all entries are dirty, allow temporary overflow
-
-### Graceful Shutdown
-
-1. Stop accepting new operations
-2. For each dirty entry:
-   - Flush remaining data to content store
-   - Complete any in-progress uploads
-3. Clear cache
-
-### Thread Safety
-
-- Per-entry mutex for buffer operations
-- Cache-level RWMutex for entry map
-- Atomic operations for `TotalSize` tracking
-- Background flusher uses separate goroutine with context cancellation
-
-## Metrics
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `dittofs_cache_size_bytes` | Gauge | Current cache size per share |
-| `dittofs_cache_entries` | Gauge | Number of cached entries |
-| `dittofs_cache_hits_total` | Counter | Cache read hits |
-| `dittofs_cache_misses_total` | Counter | Cache read misses |
-| `dittofs_cache_invalidations_total` | Counter | Cache invalidations (stale data) |
-| `dittofs_cache_writes_total` | Counter | Total write operations |
-| `dittofs_cache_flushes_total` | Counter | Flush operations |
-| `dittofs_cache_finalizations_total` | Counter | File finalizations |
-| `dittofs_cache_evictions_total` | Counter | LRU evictions |
-
-## S3 Parallel Incremental Uploads
-
-For S3-backed content stores, we use a parallel multipart upload strategy that maximizes throughput while handling the stateless nature of NFS.
-
-### Design Goals
-
-1. **Parallel uploads**: Multiple concurrent COMMITs can upload different parts simultaneously
-2. **No wasted API calls**: Only create multipart upload when we have enough data for a part
-3. **Small file optimization**: Files < 5MB use simple PutObject (1 API call vs 3)
-4. **No blocking**: S3 uploads happen outside of locks
-
-### Part Number Calculation
-
-Part numbers are deterministic based on offset:
-
+DittoFS non-blocking COMMIT:
 ```
-partNumber = (offset / partSize) + 1
+COMMIT → Enqueue upload → Return immediately (~1ms)
+Durability: WAL on local disk (mmap + OS page cache)
+Throughput: Limited only by memory bandwidth (~400 MB/s)
 ```
 
-This means:
-- Part 1 = bytes [0, partSize)
-- Part 2 = bytes [partSize, 2*partSize)
-- Part 3 = bytes [2*partSize, 3*partSize)
-- etc.
+### Memory Usage
 
-Each COMMIT knows exactly which part(s) it's responsible for without coordination.
+- **Slice overhead**: ~100 bytes per slice (ID, offset, state, timestamps)
+- **Sequential optimization**: 10MB file = 1 slice vs 320 slices (32KB writes)
+- **LRU eviction**: Only flushed slices can be evicted
 
-### Session State
+### S3 API Efficiency
 
-```go
-type incrementalWriteSession struct {
-    uploadID       string          // Empty until first part upload
-    uploadedParts  map[int]bool    // Parts that completed successfully
-    uploadingParts map[int]bool    // Parts currently being uploaded
-    mu             sync.Mutex      // Protects maps only, NOT held during upload
-}
-```
-
-Three states per part:
-- **Not in either map**: Needs to be uploaded
-- **In uploadingParts**: Another COMMIT is uploading this part
-- **In uploadedParts**: Successfully uploaded
-
-### FlushIncremental Flow
-
-```
-FlushIncremental(contentID, cache):
-    1. cacheSize = cache.Size(contentID)
-
-    2. if cacheSize < partSize:
-       - Return 0 (not enough data for even one part)
-       - Background flusher will use PutObject later
-
-    3. Get or create session
-       - Lazily call CreateMultipartUpload on first actual part upload
-
-    4. Lock session briefly:
-       - Calculate complete parts: floor(cacheSize / partSize)
-       - Find parts where: NOT uploaded AND NOT uploading
-       - Mark selected parts as "uploading"
-       - Unlock
-
-    5. Upload selected parts in parallel (outside lock):
-       - Read directly from cache at calculated offset
-       - Upload to S3
-
-    6. Lock session briefly:
-       - Move successful parts: uploading → uploaded
-       - Remove failed parts from uploading (can be retried)
-       - Unlock
-
-    7. Update flushedOffset to highest contiguous uploaded position
-```
-
-### CompleteIncrementalWrite Flow
-
-```
-CompleteIncrementalWrite(contentID, cache):
-    1. cacheSize = cache.Size(contentID)
-
-    2. If cacheSize < partSize (small file):
-       - No multipart was ever started
-       - Use simple PutObject from cache
-       - Done
-
-    3. If multipart was started:
-       - Upload any remaining parts (including final partial part < 5MB)
-       - Call CompleteMultipartUpload with list of part numbers
-```
-
-### Concurrent COMMIT Example
-
-```
-Time 0: Cache has 20MB (4 complete 5MB parts)
-
-COMMIT #1:                              COMMIT #2:
-├─ Lock                                 │
-├─ Parts 1,2,3,4 not uploaded          │
-├─ Parts 1,2,3,4 not uploading         │
-├─ Mark 1,2 as uploading               │
-├─ Unlock                               ├─ Lock
-├─ Upload Part 1 ──────────────────┐   ├─ Parts 3,4 not uploaded
-├─ Upload Part 2 ──────────────┐   │   ├─ Parts 1,2 ARE uploading (skip)
-│                              │   │   ├─ Mark 3,4 as uploading
-│                              │   │   ├─ Unlock
-│                              │   │   ├─ Upload Part 3 ─────────┐
-│                              │   │   ├─ Upload Part 4 ─────┐   │
-│                              │   │   │                     │   │
-│                              ▼   ▼   │                     ▼   ▼
-├─ Lock                                 ├─ Lock
-├─ Move 1,2 to uploaded                 ├─ Move 3,4 to uploaded
-├─ Unlock                               ├─ Unlock
-
-Result: All 4 parts uploaded in parallel by 2 COMMITs
-```
-
-### Small File Example
-
-```
-WRITE 3KB → cache has 3KB
-COMMIT → FlushIncremental: 3KB < 5MB partSize, return 0
-... file idle for flush_timeout ...
-Flusher → CompleteIncrementalWrite:
-          cacheSize (3KB) < partSize, no session exists
-          → Use PutObject(3KB) directly from cache
-```
-
-### Large File Example
-
-```
-WRITE 12MB → cache has 12MB
-COMMIT #1 → FlushIncremental:
-            - 12MB / 5MB = 2 complete parts
-            - Parts 1,2 not uploaded, not uploading
-            - Mark 1,2 as uploading
-            - Upload Parts 1,2 in parallel
-            - Move 1,2 to uploaded
-            - flushedOffset = 10MB (2 complete parts)
-
-... more writes ...
-WRITE 3MB → cache has 15MB
-
-COMMIT #2 → FlushIncremental:
-            - 15MB / 5MB = 3 complete parts
-            - Parts 1,2 uploaded, Part 3 not uploaded
-            - Mark 3 as uploading
-            - Upload Part 3
-            - Move 3 to uploaded
-            - flushedOffset = 15MB
-
-... file idle for flush_timeout ...
-Flusher → CompleteIncrementalWrite:
-          - All 3 parts uploaded
-          - Call CompleteMultipartUpload([1, 2, 3])
-```
-
-### Error Handling
-
-If an upload fails:
-- Remove part from `uploadingParts`
-- Don't add to `uploadedParts`
-- Return error from FlushIncremental
-- Next COMMIT will retry the failed part
-
-### Configuration
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `s3.part_size` | `5MB` | Size of each multipart part (min 5MB per S3) |
-| `s3.max_parallel_uploads` | `4` | Max concurrent part uploads per file |
+- **Block size**: 4MB = good balance of parallelism vs API calls
+- **Deduplication**: Same block never uploaded twice per session
+- **Batch uploads**: Multiple blocks upload concurrently (16 default)
 
 ## Summary
 
-| Operation | Cache Action | Content Store Action |
-|-----------|--------------|----------------------|
-| WRITE | Buffer data, state=Buffering | None |
-| COMMIT | Trigger flush, state=Uploading | Persist data (method varies by backend) |
-| READ (dirty hit) | Serve from buffer | None |
-| READ (clean hit) | Validate → Serve or invalidate | None or GET on invalidation |
-| READ (miss) | Populate as Cached | GET object |
-| Finalization | state=Cached, store metadata | Complete upload (if applicable) |
-| Eviction | Remove clean entry | None |
-| Shutdown | Flush all dirty entries | Complete all uploads |
+| Component | Responsibility |
+|-----------|---------------|
+| **Cache** | Buffer slices, LRU eviction, sequential merge |
+| **WAL** | Crash recovery, slice persistence |
+| **TransferManager** | Eager upload, download, prefetch, queue |
+| **BlockStore** | S3/filesystem storage of 4MB blocks |
+
+| Operation | Cache Action | Block Store Action |
+|-----------|--------------|-------------------|
+| WRITE | Create/extend slice, WAL append | None (immediate) |
+| COMMIT | Enqueue flush, return immediately | Background upload |
+| READ (hit) | Merge slices, return data | None |
+| READ (miss) | Wait for download, return data | Download blocks |
+| Eviction | Remove flushed slices | None |
+| Recovery | Restore from WAL | Re-upload pending |
