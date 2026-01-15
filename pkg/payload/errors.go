@@ -119,5 +119,4 @@ var (
 	//   - SMB: STATUS_DEVICE_NOT_READY
 	//   - HTTP: 503 Service Unavailable
 	ErrUnavailable = errors.New("storage unavailable")
-
 )

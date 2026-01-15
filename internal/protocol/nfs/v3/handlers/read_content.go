@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/bufpool"
-	"github.com/marmos91/dittofs/pkg/payload"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/payload"
 )
 
 // ============================================================================

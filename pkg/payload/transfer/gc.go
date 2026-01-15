@@ -15,12 +15,12 @@ import (
 
 // GCStats holds statistics about the garbage collection run.
 type GCStats struct {
-	SharesScanned int   // Number of shares processed
-	BlocksScanned int   // Total blocks examined
-	OrphanFiles   int   // Files with orphan blocks (no metadata)
-	OrphanBlocks  int   // Total orphan blocks deleted
+	SharesScanned  int   // Number of shares processed
+	BlocksScanned  int   // Total blocks examined
+	OrphanFiles    int   // Files with orphan blocks (no metadata)
+	OrphanBlocks   int   // Total orphan blocks deleted
 	BytesReclaimed int64 // Estimated bytes freed (block count * BlockSize)
-	Errors        int   // Non-fatal errors encountered
+	Errors         int   // Non-fatal errors encountered
 }
 
 // GCOptions configures the garbage collection behavior.

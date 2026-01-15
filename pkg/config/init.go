@@ -56,18 +56,19 @@ func generateYAMLWithComments(cfg *Config) (string, error) {
 	// This is more maintainable than trying to preserve comments through yaml.Marshal
 
 	// Get first store names for the example
-	var metadataStoreName, contentStoreName string
+	var metadataStoreName string
 	var metadataStore MetadataStoreConfig
-	var contentStore ContentStoreConfig
+	var payloadStoreName string
+	var payloadStore PayloadStoreConfig
 
 	for name, store := range cfg.Metadata.Stores {
 		metadataStoreName = name
 		metadataStore = store
 		break
 	}
-	for name, store := range cfg.Content.Stores {
-		contentStoreName = name
-		contentStore = store
+	for name, store := range cfg.Payload.Stores {
+		payloadStoreName = name
+		payloadStore = store
 		break
 	}
 
@@ -103,36 +104,96 @@ server:
   # Maximum time to wait for graceful shutdown
   shutdown_timeout: ` + cfg.Server.ShutdownTimeout.String() + `
 
+# Cache configuration (WAL-backed, mandatory for crash recovery)
+# All writes go through the WAL cache for durability
+cache:
+  # Directory path for the cache WAL file (required)
+  path: "` + cfg.Cache.Path + `"
+  # Maximum cache size (supports human-readable formats: "1GB", "512MB", "10Gi")
+  size: 1Gi
+
+# Payload store configuration (block storage for persistent data)
+# Stores persist cache data to durable storage (S3, filesystem)
+payload:
+  # Named payload store instances
+  # Shares reference these by name
+  stores:
+    ` + payloadStoreName + `:
+      # Payload store type: s3, filesystem, memory
+      type: "` + payloadStore.Type + `"`
+
+	// Add type-specific configuration for payload store
+	switch payloadStore.Type {
+	case "filesystem":
+		if payloadStore.Filesystem != nil {
+			yaml += `
+      # Filesystem configuration
+      filesystem:
+        # Directory path for block storage
+        base_path: "` + payloadStore.Filesystem.BasePath + `"`
+		}
+	case "s3":
+		if payloadStore.S3 != nil {
+			yaml += `
+      # S3 configuration
+      s3:
+        # S3 bucket name (required)
+        bucket: "` + payloadStore.S3.Bucket + `"
+        # AWS region (optional, uses SDK default if empty)
+        region: "` + payloadStore.S3.Region + `"
+        # S3 endpoint URL (optional, for S3-compatible services like MinIO)
+        # endpoint: "http://localhost:9000"
+        # Access credentials (optional, uses AWS SDK default chain if empty)
+        # access_key_id: ""
+        # secret_access_key: ""
+        # Key prefix for all blocks
+        prefix: "` + payloadStore.S3.Prefix + `"
+        # Force path-style addressing (required for MinIO/Localstack)
+        force_path_style: ` + fmt.Sprintf("%t", payloadStore.S3.ForcePathStyle)
+		}
+	case "memory":
+		yaml += `
+      # Memory store has no specific configuration (ephemeral, for testing)`
+	}
+
+	yaml += `
+
+  # Transfer manager configuration (uploads/downloads to block store)
+  transfer:
+    workers:
+      # Number of parallel upload workers
+      uploads: ` + fmt.Sprintf("%d", cfg.Payload.Transfer.Workers.Uploads) + `
+      # Number of parallel download workers
+      downloads: ` + fmt.Sprintf("%d", cfg.Payload.Transfer.Workers.Downloads) + `
+
 # Metadata store configuration
 metadata:
-  # Global settings for all metadata stores
-  global:
-    # Filesystem capabilities and limits
-    filesystem_capabilities:
-      # Maximum size of a single read operation (bytes)
-      max_read_size: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.MaxReadSize) + `
-      # Preferred read size for optimal performance (bytes)
-      preferred_read_size: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.PreferredReadSize) + `
-      # Maximum size of a single write operation (bytes)
-      max_write_size: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.MaxWriteSize) + `
-      # Preferred write size for optimal performance (bytes)
-      preferred_write_size: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.PreferredWriteSize) + `
-      # Maximum file size supported (bytes)
-      max_file_size: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.MaxFileSize) + `
-      # Maximum filename length (characters)
-      max_filename_len: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.MaxFilenameLen) + `
-      # Maximum path length (characters)
-      max_path_len: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.MaxPathLen) + `
-      # Maximum number of hard links per file
-      max_hard_link_count: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.MaxHardLinkCount) + `
-      # Whether hard links are supported
-      supports_hard_links: ` + fmt.Sprintf("%t", cfg.Metadata.Global.FilesystemCapabilities.SupportsHardLinks) + `
-      # Whether symbolic links are supported
-      supports_symlinks: ` + fmt.Sprintf("%t", cfg.Metadata.Global.FilesystemCapabilities.SupportsSymlinks) + `
-      # Whether filenames are case-sensitive
-      case_sensitive: ` + fmt.Sprintf("%t", cfg.Metadata.Global.FilesystemCapabilities.CaseSensitive) + `
-      # Whether filename case is preserved
-      case_preserving: ` + fmt.Sprintf("%t", cfg.Metadata.Global.FilesystemCapabilities.CasePreserving) + `
+  # Filesystem capabilities and limits
+  filesystem_capabilities:
+    # Maximum size of a single read operation (bytes)
+    max_read_size: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxReadSize) + `
+    # Preferred read size for optimal performance (bytes)
+    preferred_read_size: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.PreferredReadSize) + `
+    # Maximum size of a single write operation (bytes)
+    max_write_size: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxWriteSize) + `
+    # Preferred write size for optimal performance (bytes)
+    preferred_write_size: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.PreferredWriteSize) + `
+    # Maximum file size supported (bytes)
+    max_file_size: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxFileSize) + `
+    # Maximum filename length (characters)
+    max_filename_len: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxFilenameLen) + `
+    # Maximum path length (characters)
+    max_path_len: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxPathLen) + `
+    # Maximum number of hard links per file
+    max_hard_link_count: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxHardLinkCount) + `
+    # Whether hard links are supported
+    supports_hard_links: ` + fmt.Sprintf("%t", cfg.Metadata.FilesystemCapabilities.SupportsHardLinks) + `
+    # Whether symbolic links are supported
+    supports_symlinks: ` + fmt.Sprintf("%t", cfg.Metadata.FilesystemCapabilities.SupportsSymlinks) + `
+    # Whether filenames are case-sensitive
+    case_sensitive: ` + fmt.Sprintf("%t", cfg.Metadata.FilesystemCapabilities.CaseSensitive) + `
+    # Whether filename case is preserved
+    case_preserving: ` + fmt.Sprintf("%t", cfg.Metadata.FilesystemCapabilities.CasePreserving) + `
 
   # Named metadata store instances
   stores:
@@ -140,7 +201,7 @@ metadata:
       # Metadata store type: memory, badger
       type: "` + metadataStore.Type + `"`
 
-	// Add type-specific configuration
+	// Add type-specific configuration for metadata
 	switch metadataStore.Type {
 	case "badger":
 		yaml += `
@@ -156,54 +217,14 @@ metadata:
 
 	yaml += `
 
-# Content store configuration
-content:
-  # Global settings for all content stores
-  global: {}
-
-  # Named content store instances
-  stores:
-    ` + contentStoreName + `:
-      # Content store type: filesystem, memory, s3
-      type: "` + contentStore.Type + `"`
-
-	// Add type-specific configuration
-	switch contentStore.Type {
-	case "filesystem":
-		yaml += `
-      # Filesystem configuration
-      filesystem:
-        # Directory path for storing file content
-        path: "` + fmt.Sprintf("%v", contentStore.Filesystem["path"]) + `"`
-	case "memory":
-		yaml += `
-      # Memory configuration
-      memory:
-        # Maximum total size of content (0 = unlimited)
-        # Supports human-readable formats: "1Gi", "500Mi", "100MB", etc.
-        max_size_bytes: "1Gi"  # 1 gibibyte`
-	case "s3":
-		yaml += `
-      # S3 configuration
-      s3:
-        region: "` + fmt.Sprintf("%v", contentStore.S3["region"]) + `"
-        bucket: "` + fmt.Sprintf("%v", contentStore.S3["bucket"]) + `"`
-	}
-
-	yaml += `
-
 # Shares/Exports configuration
 shares:
   - # Share path (must start with /)
     name: "` + cfg.Shares[0].Name + `"
     # Reference to metadata store by name
-    metadata_store: "` + cfg.Shares[0].MetadataStore + `"
-    # Reference to content store by name
-    content_store: "` + cfg.Shares[0].ContentStore + `"
-    # Optional write cache for async writes (empty = sync mode)
-    # write_cache: "fast-write"
-    # Optional read cache for caching reads (empty = no caching)
-    # read_cache: "disk-read"
+    metadata: "` + cfg.Shares[0].Metadata + `"
+    # Reference to payload store by name (defaults to first if empty)
+    payload: "` + cfg.Shares[0].Payload + `"
     # Make share read-only
     read_only: ` + fmt.Sprintf("%t", cfg.Shares[0].ReadOnly) + `
     # IP addresses or CIDR ranges allowed to access (empty = all)
@@ -263,6 +284,37 @@ adapters:
       shutdown: ` + cfg.Adapters.NFS.Timeouts.Shutdown.String() + `
     # Metrics logging interval (0 = disabled)
     metrics_log_interval: ` + cfg.Adapters.NFS.MetricsLogInterval.String() + `
+
+  # SMB adapter configuration
+  smb:
+    # Enable SMB adapter
+    enabled: ` + fmt.Sprintf("%t", cfg.Adapters.SMB.Enabled) + `
+    # TCP port to listen on (standard SMB port)
+    port: ` + fmt.Sprintf("%d", cfg.Adapters.SMB.Port) + `
+    # Maximum concurrent connections (0 = unlimited)
+    max_connections: ` + fmt.Sprintf("%d", cfg.Adapters.SMB.MaxConnections) + `
+    # Timeout configuration
+    timeouts:
+      # Maximum time to read a request
+      read: ` + cfg.Adapters.SMB.Timeouts.Read.String() + `
+      # Maximum time to write a response
+      write: ` + cfg.Adapters.SMB.Timeouts.Write.String() + `
+      # Maximum idle time between requests
+      idle: ` + cfg.Adapters.SMB.Timeouts.Idle.String() + `
+      # Graceful shutdown timeout
+      shutdown: ` + cfg.Adapters.SMB.Timeouts.Shutdown.String() + `
+    # Metrics logging interval (0 = disabled)
+    metrics_log_interval: ` + cfg.Adapters.SMB.MetricsLogInterval.String() + `
+    # SMB credit configuration for flow control
+    credits:
+      # Credit grant strategy: adaptive, fixed
+      strategy: "` + cfg.Adapters.SMB.Credits.Strategy + `"
+      # Minimum credits granted per request
+      min_grant: ` + fmt.Sprintf("%d", cfg.Adapters.SMB.Credits.MinGrant) + `
+      # Maximum credits granted per request
+      max_grant: ` + fmt.Sprintf("%d", cfg.Adapters.SMB.Credits.MaxGrant) + `
+      # Initial credits granted on session setup
+      initial_grant: ` + fmt.Sprintf("%d", cfg.Adapters.SMB.Credits.InitialGrant) + `
 `
 
 	return yaml, nil

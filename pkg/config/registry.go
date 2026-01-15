@@ -13,9 +13,11 @@ import (
 // InitializeRegistry creates a fully configured Registry from the provided configuration.
 //
 // This function orchestrates the complete initialization process:
-//  1. Creates and registers all metadata stores from cfg.Metadata.Stores
-//  2. Validates and adds all shares from cfg.Shares
-//  3. Each share automatically gets a Cache for content storage
+//  1. Creates cache (WAL-backed, mandatory for crash recovery)
+//  2. Creates block store from payload configuration
+//  3. Creates transfer manager for cache-to-block-store persistence
+//  4. Creates and registers all metadata stores from cfg.Metadata.Stores
+//  5. Validates and adds all shares from cfg.Shares
 //
 // The resulting Registry contains all stores and shares ready for use by the DittoServer.
 //
@@ -50,31 +52,38 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 	// Create registry
 	reg := registry.NewRegistry()
 
-	// Step 1: Create cache from configuration
+	// Step 1: Create cache from configuration (WAL-backed, mandatory)
 	globalCache, err := CreateCache(cfg.Cache)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create cache: %w", err)
 	}
-	logger.Info("Created cache", "type", cfg.Cache.Type)
+	logger.Info("Created WAL-backed cache", "path", cfg.Cache.Path, "size", cfg.Cache.Size)
 
-	// Step 2: Create block store (required for persistent storage)
-	blockStore, err := CreateBlockStore(ctx, cfg.BlockStore)
+	// Step 2: Create block store from first payload store (required)
+	if len(cfg.Payload.Stores) == 0 {
+		return nil, fmt.Errorf("at least one payload store must be configured")
+	}
+
+	// Get first payload store (or the one specified by name)
+	var blockStoreName string
+	var blockStoreCfg PayloadStoreConfig
+	for name, storeCfg := range cfg.Payload.Stores {
+		blockStoreName = name
+		blockStoreCfg = storeCfg
+		break
+	}
+
+	blockStore, err := CreateBlockStore(ctx, blockStoreCfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create block store: %w", err)
+		return nil, fmt.Errorf("failed to create block store %q: %w", blockStoreName, err)
 	}
-	if blockStore == nil {
-		return nil, fmt.Errorf("block store is required")
-	}
-	logger.Info("Created block store", "type", cfg.BlockStore.Type)
+	logger.Info("Created block store", "name", blockStoreName, "type", blockStoreCfg.Type)
 
 	// Step 3: Create transfer manager (required)
-	transferMgr := CreateTransferManager(globalCache, blockStore, cfg.Flusher)
-	if transferMgr == nil {
-		return nil, fmt.Errorf("failed to create transfer manager")
-	}
+	transferMgr := CreateTransferManager(globalCache, blockStore, cfg.Payload.Transfer)
 	logger.Info("Created transfer manager for cache-to-block-store persistence",
-		"parallel_uploads", cfg.Flusher.ParallelUploads,
-		"parallel_downloads", cfg.Flusher.ParallelDownloads)
+		"uploads", cfg.Payload.Transfer.Workers.Uploads,
+		"downloads", cfg.Payload.Transfer.Workers.Downloads)
 
 	// Step 4: Create PayloadService with cache and transfer manager
 	payloadSvc, err := payload.New(globalCache, transferMgr)
@@ -144,8 +153,8 @@ func validateRegistryConfig(cfg *Config) error {
 
 // registerMetadataStores creates and registers all configured metadata stores.
 func registerMetadataStores(ctx context.Context, reg *registry.Registry, cfg *Config) error {
-	// Get global filesystem capabilities that apply to all metadata stores
-	capabilities := cfg.Metadata.Global.FilesystemCapabilities
+	// Get filesystem capabilities that apply to all metadata stores
+	capabilities := cfg.Metadata.FilesystemCapabilities
 
 	for name, storeCfg := range cfg.Metadata.Stores {
 		logger.Debug("Creating metadata store", "name", name, "type", storeCfg.Type)
@@ -169,21 +178,21 @@ func registerMetadataStores(ctx context.Context, reg *registry.Registry, cfg *Co
 // Each share automatically gets a Cache for content storage.
 func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 	for i, shareCfg := range cfg.Shares {
-		logger.Debug("Adding share", "name", shareCfg.Name, "metadata", shareCfg.MetadataStore, "read_only", shareCfg.ReadOnly)
+		logger.Debug("Adding share", "name", shareCfg.Name, "metadata", shareCfg.Metadata, "read_only", shareCfg.ReadOnly)
 
 		// Validate share configuration
 		if shareCfg.Name == "" {
 			return fmt.Errorf("share #%d: name cannot be empty", i+1)
 		}
-		if shareCfg.MetadataStore == "" {
-			return fmt.Errorf("share %q: metadata_store cannot be empty", shareCfg.Name)
+		if shareCfg.Metadata == "" {
+			return fmt.Errorf("share %q: metadata cannot be empty", shareCfg.Name)
 		}
 
 		// Create ShareConfig from configuration
 		// Note: ContentStore and Cache fields were removed - Cache is auto-created
 		shareConfig := &registry.ShareConfig{
 			Name:                     shareCfg.Name,
-			MetadataStore:            shareCfg.MetadataStore,
+			MetadataStore:            shareCfg.Metadata,
 			ReadOnly:                 shareCfg.ReadOnly,
 			AllowGuest:               shareCfg.AllowGuest,
 			DefaultPermission:        shareCfg.DefaultPermission,

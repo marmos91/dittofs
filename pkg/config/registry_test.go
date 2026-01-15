@@ -9,8 +9,22 @@ func TestInitializeRegistry_Success(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &Config{
+		Cache: CacheConfig{
+			Path: t.TempDir() + "/cache",
+			Size: 1024 * 1024 * 100, // 100MB
+		},
+		Payload: PayloadConfig{
+			Stores: map[string]PayloadStoreConfig{
+				"default": {Type: "memory"},
+			},
+			Transfer: TransferConfig{
+				Workers: TransferWorkersConfig{
+					Uploads:   4,
+					Downloads: 4,
+				},
+			},
+		},
 		Metadata: MetadataConfig{
-			Global: MetadataGlobalConfig{},
 			Stores: map[string]MetadataStoreConfig{
 				"meta1": {
 					Type: "memory",
@@ -20,14 +34,12 @@ func TestInitializeRegistry_Success(t *testing.T) {
 				},
 			},
 		},
-		BlockStore: BlockStoreConfig{
-			Type: "memory",
-		},
 		Shares: []ShareConfig{
 			{
-				Name:          "/export",
-				MetadataStore: "meta1",
-				ReadOnly:      false,
+				Name:     "/export",
+				Metadata: "meta1",
+				Payload:  "default",
+				ReadOnly: false,
 			},
 		},
 	}
@@ -71,30 +83,45 @@ func TestInitializeRegistry_MultipleStoresAndShares(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &Config{
+		Cache: CacheConfig{
+			Path: t.TempDir() + "/cache",
+			Size: 1024 * 1024 * 100, // 100MB
+		},
+		Payload: PayloadConfig{
+			Stores: map[string]PayloadStoreConfig{
+				"default": {Type: "memory"},
+			},
+			Transfer: TransferConfig{
+				Workers: TransferWorkersConfig{
+					Uploads:   4,
+					Downloads: 4,
+				},
+			},
+		},
 		Metadata: MetadataConfig{
 			Stores: map[string]MetadataStoreConfig{
 				"meta1": {Type: "memory"},
 				"meta2": {Type: "memory"},
 			},
 		},
-		BlockStore: BlockStoreConfig{
-			Type: "memory",
-		},
 		Shares: []ShareConfig{
 			{
-				Name:          "/export1",
-				MetadataStore: "meta1",
-				ReadOnly:      false,
+				Name:     "/export1",
+				Metadata: "meta1",
+				Payload:  "default",
+				ReadOnly: false,
 			},
 			{
-				Name:          "/export2",
-				MetadataStore: "meta2",
-				ReadOnly:      true,
+				Name:     "/export2",
+				Metadata: "meta2",
+				Payload:  "default",
+				ReadOnly: true,
 			},
 			{
-				Name:          "/export3",
-				MetadataStore: "meta1", // Reuse store
-				ReadOnly:      false,
+				Name:     "/export3",
+				Metadata: "meta1", // Reuse store
+				Payload:  "default",
+				ReadOnly: false,
 			},
 		},
 	}
@@ -122,11 +149,20 @@ func TestInitializeRegistry_NoMetadataStores(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &Config{
+		Cache: CacheConfig{
+			Path: t.TempDir() + "/cache",
+			Size: 1024 * 1024 * 100,
+		},
+		Payload: PayloadConfig{
+			Stores: map[string]PayloadStoreConfig{
+				"default": {Type: "memory"},
+			},
+		},
 		Metadata: MetadataConfig{
 			Stores: map[string]MetadataStoreConfig{}, // Empty
 		},
 		Shares: []ShareConfig{
-			{Name: "/export", MetadataStore: "meta1"},
+			{Name: "/export", Metadata: "meta1"},
 		},
 	}
 
@@ -140,6 +176,15 @@ func TestInitializeRegistry_NoShares(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &Config{
+		Cache: CacheConfig{
+			Path: t.TempDir() + "/cache",
+			Size: 1024 * 1024 * 100,
+		},
+		Payload: PayloadConfig{
+			Stores: map[string]PayloadStoreConfig{
+				"default": {Type: "memory"},
+			},
+		},
 		Metadata: MetadataConfig{
 			Stores: map[string]MetadataStoreConfig{
 				"meta1": {Type: "memory"},
@@ -158,6 +203,15 @@ func TestInitializeRegistry_ShareReferencesNonexistentMetadataStore(t *testing.T
 	ctx := context.Background()
 
 	cfg := &Config{
+		Cache: CacheConfig{
+			Path: t.TempDir() + "/cache",
+			Size: 1024 * 1024 * 100,
+		},
+		Payload: PayloadConfig{
+			Stores: map[string]PayloadStoreConfig{
+				"default": {Type: "memory"},
+			},
+		},
 		Metadata: MetadataConfig{
 			Stores: map[string]MetadataStoreConfig{
 				"meta1": {Type: "memory"},
@@ -165,8 +219,9 @@ func TestInitializeRegistry_ShareReferencesNonexistentMetadataStore(t *testing.T
 		},
 		Shares: []ShareConfig{
 			{
-				Name:          "/export",
-				MetadataStore: "nonexistent", // References non-existent store
+				Name:     "/export",
+				Metadata: "nonexistent", // References non-existent store
+				Payload:  "default",
 			},
 		},
 	}
@@ -181,6 +236,15 @@ func TestInitializeRegistry_EmptyShareName(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &Config{
+		Cache: CacheConfig{
+			Path: t.TempDir() + "/cache",
+			Size: 1024 * 1024 * 100,
+		},
+		Payload: PayloadConfig{
+			Stores: map[string]PayloadStoreConfig{
+				"default": {Type: "memory"},
+			},
+		},
 		Metadata: MetadataConfig{
 			Stores: map[string]MetadataStoreConfig{
 				"meta1": {Type: "memory"},
@@ -188,8 +252,9 @@ func TestInitializeRegistry_EmptyShareName(t *testing.T) {
 		},
 		Shares: []ShareConfig{
 			{
-				Name:          "", // Empty name
-				MetadataStore: "meta1",
+				Name:     "", // Empty name
+				Metadata: "meta1",
+				Payload:  "default",
 			},
 		},
 	}
@@ -204,6 +269,15 @@ func TestInitializeRegistry_DuplicateShareName(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &Config{
+		Cache: CacheConfig{
+			Path: t.TempDir() + "/cache",
+			Size: 1024 * 1024 * 100,
+		},
+		Payload: PayloadConfig{
+			Stores: map[string]PayloadStoreConfig{
+				"default": {Type: "memory"},
+			},
+		},
 		Metadata: MetadataConfig{
 			Stores: map[string]MetadataStoreConfig{
 				"meta1": {Type: "memory"},
@@ -211,12 +285,14 @@ func TestInitializeRegistry_DuplicateShareName(t *testing.T) {
 		},
 		Shares: []ShareConfig{
 			{
-				Name:          "/export",
-				MetadataStore: "meta1",
+				Name:     "/export",
+				Metadata: "meta1",
+				Payload:  "default",
 			},
 			{
-				Name:          "/export", // Duplicate
-				MetadataStore: "meta1",
+				Name:     "/export", // Duplicate
+				Metadata: "meta1",
+				Payload:  "default",
 			},
 		},
 	}
@@ -231,13 +307,22 @@ func TestInitializeRegistry_InvalidMetadataStoreType(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &Config{
+		Cache: CacheConfig{
+			Path: t.TempDir() + "/cache",
+			Size: 1024 * 1024 * 100,
+		},
+		Payload: PayloadConfig{
+			Stores: map[string]PayloadStoreConfig{
+				"default": {Type: "memory"},
+			},
+		},
 		Metadata: MetadataConfig{
 			Stores: map[string]MetadataStoreConfig{
 				"meta1": {Type: "invalid_type"},
 			},
 		},
 		Shares: []ShareConfig{
-			{Name: "/export", MetadataStore: "meta1"},
+			{Name: "/export", Metadata: "meta1", Payload: "default"},
 		},
 	}
 

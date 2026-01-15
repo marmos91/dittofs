@@ -15,12 +15,13 @@ import (
 
 // blockPool reuses 4MB buffers for block uploads to reduce GC pressure.
 var blockPool = sync.Pool{
-	New: func() interface{} { return make([]byte, BlockSize) },
+	New: func() any { return make([]byte, BlockSize) },
 }
 
 // fileUploadState tracks in-flight uploads for a single file.
 type fileUploadState struct {
-	inFlight sync.WaitGroup    // Tracks in-flight uploads
+	inFlight sync.WaitGroup    // Tracks in-flight eager uploads
+	flush    sync.WaitGroup    // Tracks in-flight flush operations
 	errors   []error           // Accumulated errors
 	errorsMu sync.Mutex        // Protects errors
 	blocksMu sync.Mutex        // Protects uploadedBlocks
@@ -330,10 +331,15 @@ func (m *TransferManager) Flush(ctx context.Context, payloadID string) (*FlushRe
 		return nil, fmt.Errorf("transfer manager is closed")
 	}
 
+	// Get or create upload state for tracking
+	state := m.getOrCreateUploadState(payloadID)
+	state.flush.Add(1)
+
 	// Upload remaining dirty slices (partial blocks not covered by eager upload)
 	// in background. No blocking - data is safe in mmap cache.
 	// IMPORTANT: Use context.Background() since request context is cancelled when COMMIT returns.
 	go func() {
+		defer state.flush.Done()
 		if err := m.uploadRemainingSlices(context.Background(), payloadID); err != nil {
 			logger.Warn("Failed to upload remaining slices",
 				"payloadID", payloadID,
@@ -344,8 +350,9 @@ func (m *TransferManager) Flush(ctx context.Context, payloadID string) (*FlushRe
 	return &FlushResult{Finalized: true}, nil
 }
 
-// waitForEagerUploads waits for in-flight eager uploads to complete.
-func (m *TransferManager) waitForEagerUploads(ctx context.Context, payloadID string) error {
+// WaitForEagerUploads waits for in-flight eager uploads to complete.
+// This is useful in tests to ensure uploads complete before checking results.
+func (m *TransferManager) WaitForEagerUploads(ctx context.Context, payloadID string) error {
 	state := m.getUploadState(payloadID)
 	if state == nil {
 		return nil
@@ -354,6 +361,32 @@ func (m *TransferManager) waitForEagerUploads(ctx context.Context, payloadID str
 	done := make(chan struct{})
 	go func() {
 		state.inFlight.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// WaitForAllUploads waits for both eager uploads AND flush operations to complete.
+// FOR TESTING ONLY - this method is used in integration tests to verify data was uploaded
+// before checking block store contents. Production code should NOT call this method;
+// production uses non-blocking Flush() which returns immediately (data safety is
+// guaranteed by the WAL-backed mmap cache).
+func (m *TransferManager) WaitForAllUploads(ctx context.Context, payloadID string) error {
+	state := m.getUploadState(payloadID)
+	if state == nil {
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		state.inFlight.Wait() // Wait for eager uploads
+		state.flush.Wait()    // Wait for flush operations
 		close(done)
 	}()
 

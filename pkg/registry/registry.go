@@ -41,7 +41,7 @@ type Registry struct {
 	mounts          map[string]*MountInfo     // key: clientAddr, value: mount info
 	userStore       identity.UserStore        // User/group management for authentication
 	metadataService *metadata.MetadataService // High-level metadata operations
-	blockService    *payload.PayloadService      // High-level content operations (uses Cache)
+	blockService    *payload.PayloadService   // High-level content operations (uses Cache)
 }
 
 // MountInfo represents an active NFS mount from a client.

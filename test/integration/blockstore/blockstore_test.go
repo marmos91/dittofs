@@ -317,25 +317,31 @@ func TestFlusher_Integration(t *testing.T) {
 	defer f.Close()
 
 	t.Run("FlushSmallFile", func(t *testing.T) {
-		fileHandle := "file1"
-		payloadID := "content-small"
-		shareName := "share1"
+		payloadID := "share1/content-small"
 		data := []byte("hello world from flusher test")
 
 		// Write data to cache
-		err := c.WriteSlice(ctx, fileHandle, 0, data, 0)
+		err := c.WriteSlice(ctx, payloadID, 0, data, 0)
 		if err != nil {
 			t.Fatalf("WriteSlice failed: %v", err)
 		}
 
+		// Notify transfer manager of write completion
+		f.OnWriteComplete(ctx, payloadID, 0, 0, uint32(len(data)))
+
 		// Flush remaining data
-		err = f.FlushRemaining(ctx, shareName, fileHandle, payloadID)
+		_, err = f.Flush(ctx, payloadID)
 		if err != nil {
-			t.Fatalf("FlushRemaining failed: %v", err)
+			t.Fatalf("Flush failed: %v", err)
+		}
+
+		// Wait for eager uploads to complete
+		if err := f.WaitForAllUploads(ctx, payloadID); err != nil {
+			t.Fatalf("WaitForAllUploads failed: %v", err)
 		}
 
 		// Verify data is in S3
-		keys, err := blockStore.ListByPrefix(ctx, fmt.Sprintf("%s/%s/", shareName, payloadID))
+		keys, err := blockStore.ListByPrefix(ctx, payloadID+"/")
 		if err != nil {
 			t.Fatalf("ListByPrefix failed: %v", err)
 		}
@@ -346,9 +352,7 @@ func TestFlusher_Integration(t *testing.T) {
 	})
 
 	t.Run("FlushLargeFile", func(t *testing.T) {
-		fileHandle := "file2"
-		payloadID := "content-large"
-		shareName := "share1"
+		payloadID := "share1/content-large"
 
 		// Write 10MB of data (will create 3 blocks: 4MB + 4MB + 2MB)
 		data := make([]byte, 10*1024*1024)
@@ -356,19 +360,27 @@ func TestFlusher_Integration(t *testing.T) {
 			data[i] = byte(i % 256)
 		}
 
-		err := c.WriteSlice(ctx, fileHandle, 0, data, 0)
+		err := c.WriteSlice(ctx, payloadID, 0, data, 0)
 		if err != nil {
 			t.Fatalf("WriteSlice failed: %v", err)
 		}
 
+		// Notify transfer manager of write completion
+		f.OnWriteComplete(ctx, payloadID, 0, 0, uint32(len(data)))
+
 		// Flush remaining data
-		err = f.FlushRemaining(ctx, shareName, fileHandle, payloadID)
+		_, err = f.Flush(ctx, payloadID)
 		if err != nil {
-			t.Fatalf("FlushRemaining failed: %v", err)
+			t.Fatalf("Flush failed: %v", err)
+		}
+
+		// Wait for eager uploads to complete
+		if err := f.WaitForAllUploads(ctx, payloadID); err != nil {
+			t.Fatalf("WaitForAllUploads failed: %v", err)
 		}
 
 		// Verify blocks are in S3
-		keys, err := blockStore.ListByPrefix(ctx, fmt.Sprintf("%s/%s/", shareName, payloadID))
+		keys, err := blockStore.ListByPrefix(ctx, payloadID+"/")
 		if err != nil {
 			t.Fatalf("ListByPrefix failed: %v", err)
 		}
@@ -379,21 +391,19 @@ func TestFlusher_Integration(t *testing.T) {
 	})
 
 	t.Run("ReadSliceFromS3", func(t *testing.T) {
-		payloadID := "content-read"
-		shareName := "share1"
-		fileHandle := "file-read"
+		payloadID := "share1/content-read"
 
 		// Pre-populate S3 with a block
-		blockKey := fmt.Sprintf("%s/%s/chunk-0/block-0", shareName, payloadID)
+		blockKey := payloadID + "/chunk-0/block-0"
 		originalData := []byte("data from S3 for read test")
 		err := blockStore.WriteBlock(ctx, blockKey, originalData)
 		if err != nil {
 			t.Fatalf("WriteBlock failed: %v", err)
 		}
 
-		// Read through flusher (cache miss -> S3 fetch)
+		// Read through transfer manager (cache miss -> S3 fetch)
 		readData := make([]byte, len(originalData))
-		err = f.ReadSlice(ctx, shareName, fileHandle, payloadID, 0, 0, uint32(len(originalData)), readData)
+		err = f.ReadSlice(ctx, payloadID, 0, 0, uint32(len(originalData)), readData)
 		if err != nil {
 			t.Fatalf("ReadSlice failed: %v", err)
 		}
@@ -404,7 +414,7 @@ func TestFlusher_Integration(t *testing.T) {
 	})
 }
 
-// TestFlusher_WithMemoryStore tests flusher with in-memory block store (fast).
+// TestFlusher_WithMemoryStore tests transfer manager with in-memory block store (fast).
 func TestFlusher_WithMemoryStore(t *testing.T) {
 	ctx := context.Background()
 
@@ -416,7 +426,7 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 	c := cache.New(0)
 	defer c.Close()
 
-	// Create flusher
+	// Create transfer manager
 	f := transfer.New(c, blockStore, transfer.Config{
 		ParallelUploads:   4,
 		ParallelDownloads: 4,
@@ -424,29 +434,35 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 	defer f.Close()
 
 	t.Run("FlushAndRead", func(t *testing.T) {
-		fileHandle := "file1"
-		payloadID := "content1"
-		shareName := "share1"
+		payloadID := "share1/content1"
 		data := []byte("test data for memory store")
 
 		// Write to cache
-		err := c.WriteSlice(ctx, fileHandle, 0, data, 0)
+		err := c.WriteSlice(ctx, payloadID, 0, data, 0)
 		if err != nil {
 			t.Fatalf("WriteSlice failed: %v", err)
 		}
 
+		// Notify transfer manager of write completion
+		f.OnWriteComplete(ctx, payloadID, 0, 0, uint32(len(data)))
+
 		// Flush
-		err = f.FlushRemaining(ctx, shareName, fileHandle, payloadID)
+		_, err = f.Flush(ctx, payloadID)
 		if err != nil {
-			t.Fatalf("FlushRemaining failed: %v", err)
+			t.Fatalf("Flush failed: %v", err)
 		}
 
-		// Clear cache to force S3 read
-		c.Remove(ctx, fileHandle)
+		// Wait for eager uploads to complete
+		if err := f.WaitForAllUploads(ctx, payloadID); err != nil {
+			t.Fatalf("WaitForAllUploads failed: %v", err)
+		}
 
-		// Read back through flusher
+		// Clear cache to force block store read
+		c.Remove(ctx, payloadID)
+
+		// Read back through transfer manager
 		readData := make([]byte, len(data))
-		err = f.ReadSlice(ctx, shareName, "file2", payloadID, 0, 0, uint32(len(data)), readData)
+		err = f.ReadSlice(ctx, payloadID, 0, 0, uint32(len(data)), readData)
 		if err != nil {
 			t.Fatalf("ReadSlice failed: %v", err)
 		}

@@ -17,7 +17,7 @@ import (
 // Store is a filesystem-backed implementation of store.BlockStore.
 // Blocks are stored as files with the block key as the path.
 type Store struct {
-	mu      sync.RWMutex
+	mu       sync.RWMutex
 	basePath string
 	closed   bool
 }

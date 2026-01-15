@@ -51,7 +51,7 @@ const (
 	mmapVersion      = uint16(1)
 	mmapHeaderSize   = 64
 	mmapInitialSize  = 64 * 1024 * 1024 // 64MB initial file size
-	mmapGrowthFactor = 2                 // Double size when growing
+	mmapGrowthFactor = 2                // Double size when growing
 )
 
 // Entry types for the append-only log
@@ -80,14 +80,14 @@ type mmapHeader struct {
 
 // MmapPersister implements the Persister interface using memory-mapped files.
 type MmapPersister struct {
-	mu      sync.Mutex
-	path    string
-	file    *os.File
-	data    []byte // mmap'd region
-	size    uint64 // current file/mmap size
-	header  *mmapHeader
-	dirty   bool
-	closed  bool
+	mu     sync.Mutex
+	path   string
+	file   *os.File
+	data   []byte // mmap'd region
+	size   uint64 // current file/mmap size
+	header *mmapHeader
+	dirty  bool
+	closed bool
 }
 
 // NewMmapPersister creates a new mmap-backed persister.
