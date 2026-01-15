@@ -14,12 +14,10 @@ import (
 )
 
 // TestCacheBasicOperations tests basic cache functionality.
+// Note: Cache is now always enabled as part of the core architecture.
 func TestCacheBasicOperations(t *testing.T) {
-	// Run on cached configurations only
-	framework.RunOnCachedConfigs(t, func(t *testing.T, tc *framework.TestContext) {
-		if !tc.HasCache() {
-			t.Skip("Cache not enabled for this configuration")
-		}
+	// Run on all local configurations (cache is always enabled)
+	framework.RunOnLocalConfigs(t, func(t *testing.T, tc *framework.TestContext) {
 
 		// Basic write and read
 		t.Run("WriteAndRead", func(t *testing.T) {
@@ -86,11 +84,7 @@ func TestCacheBasicOperations(t *testing.T) {
 
 // TestCacheReadHits tests that reads from cache are faster than disk.
 func TestCacheReadHits(t *testing.T) {
-	framework.RunOnCachedConfigs(t, func(t *testing.T, tc *framework.TestContext) {
-		if !tc.HasCache() {
-			t.Skip("Cache not enabled")
-		}
-
+	framework.RunOnLocalConfigs(t, func(t *testing.T, tc *framework.TestContext) {
 		filePath := tc.Path("cache_read_hit.txt")
 		content := []byte("Content for cache read test")
 		framework.WriteFile(t, filePath, content)
@@ -110,11 +104,7 @@ func TestCacheReadHits(t *testing.T) {
 
 // TestCacheCoherence tests that cache is invalidated on writes.
 func TestCacheCoherence(t *testing.T) {
-	framework.RunOnCachedConfigs(t, func(t *testing.T, tc *framework.TestContext) {
-		if !tc.HasCache() {
-			t.Skip("Cache not enabled")
-		}
-
+	framework.RunOnLocalConfigs(t, func(t *testing.T, tc *framework.TestContext) {
 		filePath := tc.Path("cache_coherence.txt")
 
 		// Write initial content
@@ -147,11 +137,7 @@ func TestCacheCoherence(t *testing.T) {
 
 // TestCacheWithManyFiles tests cache behavior with many small files.
 func TestCacheWithManyFiles(t *testing.T) {
-	framework.RunOnCachedConfigs(t, func(t *testing.T, tc *framework.TestContext) {
-		if !tc.HasCache() {
-			t.Skip("Cache not enabled")
-		}
-
+	framework.RunOnLocalConfigs(t, func(t *testing.T, tc *framework.TestContext) {
 		basePath := tc.Path("cache_many_files")
 		framework.CreateDir(t, basePath)
 
@@ -178,11 +164,7 @@ func TestCacheWithManyFiles(t *testing.T) {
 
 // TestCacheFlush tests that cache is flushed properly on close.
 func TestCacheFlush(t *testing.T) {
-	framework.RunOnCachedConfigs(t, func(t *testing.T, tc *framework.TestContext) {
-		if !tc.HasCache() {
-			t.Skip("Cache not enabled")
-		}
-
+	framework.RunOnLocalConfigs(t, func(t *testing.T, tc *framework.TestContext) {
 		filePath := tc.Path("cache_flush.txt")
 
 		// Create file and write data
@@ -220,11 +202,7 @@ func TestCacheFlush(t *testing.T) {
 
 // TestCacheAppend tests appending to files with cache.
 func TestCacheAppend(t *testing.T) {
-	framework.RunOnCachedConfigs(t, func(t *testing.T, tc *framework.TestContext) {
-		if !tc.HasCache() {
-			t.Skip("Cache not enabled")
-		}
-
+	framework.RunOnLocalConfigs(t, func(t *testing.T, tc *framework.TestContext) {
 		filePath := tc.Path("cache_append.txt")
 
 		// Create initial file
