@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
@@ -423,16 +422,9 @@ func (h *Handler) ReadDirPlus(
 		}, nil
 	}
 
-	// Convert cookie to string token for ReadDirectory pagination
-	// Cookie represents the position to resume from (0 = start from beginning)
-	token := ""
-	if req.Cookie > 0 {
-		token = strconv.FormatUint(req.Cookie, 10)
-	}
-
 	// Use DirCount as maxBytes hint for ReadDirectory
-	// ReadDirectory handles retries internally to ensure consistent snapshots
-	page, err := metaSvc.ReadDirectory(authCtx, dirHandle, token, req.DirCount)
+	// Cookie is now properly handled by MetadataService's cookie manager
+	page, err := metaSvc.ReadDirectory(authCtx, dirHandle, req.Cookie, req.DirCount)
 	if err != nil {
 		traceError(ctx.Context, err, "READDIRPLUS failed: error retrieving entries", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
@@ -456,9 +448,6 @@ func (h *Handler) ReadDirPlus(
 
 	// Build entries list - look up each entry to get handle and full attributes
 	entries := make([]*DirPlusEntry, 0, len(page.Entries))
-
-	// Starting offset for cookie calculation (cookies must be absolute positions)
-	startOffset := req.Cookie
 
 	for i, entry := range page.Entries {
 		// Check context periodically (every 50 entries) for large directories
@@ -503,21 +492,18 @@ func (h *Handler) ReadDirPlus(
 		// Convert attributes to NFS format
 		nfsEntryAttr := h.convertFileAttrToNFS(entryHandle, &entryFile.FileAttr)
 
-		// Create directory entry with absolute cookie position
-		// Cookie = startOffset + i + 1 (absolute position in directory)
-		absoluteCookie := startOffset + uint64(i+1)
-
+		// Use cookie from entry (set by MetadataService.ReadDirectory)
 		plusEntry := &DirPlusEntry{
 			Fileid:     entry.ID,
 			Name:       entry.Name,
-			Cookie:     absoluteCookie,
+			Cookie:     entry.Cookie,
 			Attr:       nfsEntryAttr,
 			FileHandle: []byte(entryHandle),
 		}
 
 		entries = append(entries, plusEntry)
 
-		logger.DebugCtx(ctx.Context, "READDIRPLUS: added entry", "name", entry.Name, "cookie", absoluteCookie, "fileid", entry.ID)
+		logger.DebugCtx(ctx.Context, "READDIRPLUS: added entry", "name", entry.Name, "cookie", entry.Cookie, "fileid", entry.ID)
 	}
 
 	// ========================================================================

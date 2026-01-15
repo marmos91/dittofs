@@ -23,6 +23,11 @@ type DirEntry struct {
 	// Does not include the parent path
 	Name string
 
+	// Cookie is the NFS/SMB pagination cookie for this entry
+	// Used to resume directory listing from this position
+	// Set by MetadataService.ReadDirectory, not by store implementations
+	Cookie uint64
+
 	// Handle is the file handle for this entry
 	// This avoids expensive Lookup() calls in READDIRPLUS
 	// Implementations MUST populate this field for performance

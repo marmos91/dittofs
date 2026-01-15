@@ -73,7 +73,8 @@ type MetadataServiceInterface interface {
 	// ========================================================================
 
 	// ReadDirectory reads directory entries with pagination.
-	ReadDirectory(ctx *AuthContext, dirHandle FileHandle, token string, maxBytes uint32) (*ReadDirPage, error)
+	// Cookie is an opaque uint64 value (0 = start from beginning).
+	ReadDirectory(ctx *AuthContext, dirHandle FileHandle, cookie uint64, maxBytes uint32) (*ReadDirPage, error)
 
 	// CreateDirectory creates a new directory.
 	CreateDirectory(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, error)
