@@ -1,8 +1,9 @@
 package cache
 
 import (
+	"cmp"
 	"context"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,7 +13,10 @@ import (
 // Flush Coordination
 // ============================================================================
 
-// GetDirtySlices returns all pending slices for a file.
+// GetDirtySlices returns all pending (unflushed) slices for a file, ready for upload.
+//
+// Coalesces adjacent writes first, then returns slices sorted by (ChunkIndex, Offset).
+// The returned PendingSlice.Data references the cache's internal buffer - do not modify.
 func (c *Cache) GetDirtySlices(ctx context.Context, fileHandle string) ([]PendingSlice, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -25,46 +29,56 @@ func (c *Cache) GetDirtySlices(ctx context.Context, fileHandle string) ([]Pendin
 	}
 	c.globalMu.RUnlock()
 
-	if err := c.CoalesceWrites(ctx, fileHandle); err != nil && err != ErrFileNotInCache {
-		return nil, err
-	}
-
 	entry := c.getFileEntry(fileHandle)
+
+	// Coalesce under write lock, then collect under read lock
+	entry.mu.Lock()
+	if len(entry.chunks) == 0 {
+		entry.mu.Unlock()
+		return nil, ErrFileNotInCache
+	}
+	for _, chunk := range entry.chunks {
+		coalesceChunk(chunk)
+	}
+	entry.mu.Unlock()
+
 	entry.mu.RLock()
 	defer entry.mu.RUnlock()
 
-	if len(entry.chunks) == 0 {
-		return nil, ErrFileNotInCache
-	}
-
 	var result []PendingSlice
-
 	for chunkIdx, chunk := range entry.chunks {
-		for _, slice := range chunk.slices {
-			if slice.State == SliceStatePending {
-				result = append(result, PendingSlice{
-					ID:         slice.ID,
-					ChunkIndex: chunkIdx,
-					Offset:     slice.Offset,
-					Length:     slice.Length,
-					Data:       slice.Data,
-					CreatedAt:  slice.CreatedAt,
-				})
+		for _, s := range chunk.slices {
+			if s.State != SliceStatePending {
+				continue
 			}
+			result = append(result, PendingSlice{
+				Slice:      s,
+				ChunkIndex: chunkIdx,
+			})
 		}
 	}
 
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].ChunkIndex != result[j].ChunkIndex {
-			return result[i].ChunkIndex < result[j].ChunkIndex
-		}
-		return result[i].Offset < result[j].Offset
+	slices.SortFunc(result, func(a, b PendingSlice) int {
+		return cmp.Or(cmp.Compare(a.ChunkIndex, b.ChunkIndex), cmp.Compare(a.Offset, b.Offset))
 	})
 
 	return result, nil
 }
 
-// MarkSliceFlushed marks a slice as successfully flushed.
+// MarkSliceFlushed marks a slice as successfully flushed to the block store.
+//
+// This should be called by the TransferManager after successfully uploading a slice's data.
+// The slice transitions from SliceStatePending to SliceStateFlushed, making it eligible
+// for LRU eviction when cache pressure requires freeing memory.
+//
+// Parameters:
+//   - sliceID: The ID from PendingSlice returned by GetDirtySlices
+//   - blockRefs: Block references from the block store (used for future reads)
+//
+// Errors:
+//   - ErrSliceNotFound: slice ID doesn't exist (possibly already evicted or removed)
+//   - ErrCacheClosed: cache has been closed
+//   - context.Canceled/DeadlineExceeded: context was cancelled
 func (c *Cache) MarkSliceFlushed(ctx context.Context, fileHandle string, sliceID string, blockRefs []BlockRef) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -103,6 +117,14 @@ func (c *Cache) MarkSliceFlushed(ctx context.Context, fileHandle string, sliceID
 // ============================================================================
 
 // CoalesceWrites merges adjacent pending writes into fewer slices.
+//
+// Called automatically by GetDirtySlices before returning pending slices.
+// Reduces the number of block store uploads by combining adjacent writes.
+//
+// Errors:
+//   - ErrFileNotInCache: file has no cached data
+//   - ErrCacheClosed: cache has been closed
+//   - context.Canceled/DeadlineExceeded: context was cancelled
 func (c *Cache) CoalesceWrites(ctx context.Context, fileHandle string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -123,93 +145,84 @@ func (c *Cache) CoalesceWrites(ctx context.Context, fileHandle string) error {
 		return ErrFileNotInCache
 	}
 
-	for chunkIdx := range entry.chunks {
-		if err := c.coalesceChunk(entry.chunks[chunkIdx]); err != nil {
-			return err
-		}
+	for _, chunk := range entry.chunks {
+		coalesceChunk(chunk)
 	}
 
 	return nil
 }
 
-// coalesceChunk merges adjacent pending slices within a chunk.
-func (c *Cache) coalesceChunk(chunk *chunkEntry) error {
-	if len(chunk.slices) <= 1 {
-		return nil
-	}
-
-	var pending []Slice
-	var other []Slice
-
-	for _, slice := range chunk.slices {
-		if slice.State == SliceStatePending {
-			pending = append(pending, slice)
-		} else {
-			other = append(other, slice)
-		}
-	}
-
+// coalesceChunk merges adjacent/overlapping pending slices within a chunk.
+//
+// Only pending slices are merged - flushed slices are preserved as-is.
+// After merging, the chunk contains fewer, larger slices which reduces
+// the number of block store operations needed during flush.
+func coalesceChunk(chunk *chunkEntry) {
+	pending, flushed := partitionByState(chunk.slices, SliceStatePending)
 	if len(pending) <= 1 {
-		return nil
+		return
 	}
 
-	sort.Slice(pending, func(i, j int) bool {
-		return pending[i].Offset < pending[j].Offset
+	slices.SortFunc(pending, func(a, b Slice) int {
+		return cmp.Compare(a.Offset, b.Offset)
 	})
 
-	merged := make([]Slice, 0)
-	var current *Slice
+	chunk.slices = append(mergeAdjacent(pending), flushed...)
+}
 
-	for _, slice := range pending {
-		if current == nil {
-			newSlice := Slice{
-				ID:        uuid.New().String(),
-				Offset:    slice.Offset,
-				Length:    slice.Length,
-				Data:      make([]byte, slice.Length),
-				State:     SliceStatePending,
-				CreatedAt: time.Now(),
-			}
-			copy(newSlice.Data, slice.Data)
-			current = &newSlice
-			continue
-		}
-
-		currentEnd := current.Offset + current.Length
-
-		if slice.Offset <= currentEnd {
-			sliceEnd := slice.Offset + slice.Length
-			newEnd := max(currentEnd, sliceEnd)
-			newLength := newEnd - current.Offset
-
-			if newLength > uint32(len(current.Data)) {
-				newData := make([]byte, newLength)
-				copy(newData, current.Data)
-				current.Data = newData
-				current.Length = newLength
-			}
-
-			dstOffset := slice.Offset - current.Offset
-			copy(current.Data[dstOffset:], slice.Data)
+// partitionByState splits slices into matching and non-matching groups.
+func partitionByState(slices []Slice, state SliceState) (matching, other []Slice) {
+	for _, s := range slices {
+		if s.State == state {
+			matching = append(matching, s)
 		} else {
-			merged = append(merged, *current)
-			newSlice := Slice{
-				ID:        uuid.New().String(),
-				Offset:    slice.Offset,
-				Length:    slice.Length,
-				Data:      make([]byte, slice.Length),
-				State:     SliceStatePending,
-				CreatedAt: time.Now(),
-			}
-			copy(newSlice.Data, slice.Data)
-			current = &newSlice
+			other = append(other, s)
 		}
 	}
+	return
+}
 
-	if current != nil {
-		merged = append(merged, *current)
+// mergeAdjacent combines overlapping/adjacent slices into fewer slices.
+// Input must be sorted by offset.
+func mergeAdjacent(slices []Slice) []Slice {
+	result := []Slice{newSliceFrom(slices[0])}
+
+	for _, s := range slices[1:] {
+		last := &result[len(result)-1]
+		if s.Offset <= last.Offset+last.Length {
+			extendSlice(last, &s)
+		} else {
+			result = append(result, newSliceFrom(s))
+		}
+	}
+	return result
+}
+
+// newSliceFrom creates a deep copy with a new ID.
+func newSliceFrom(s Slice) Slice {
+	data := make([]byte, len(s.Data))
+	copy(data, s.Data)
+	return Slice{
+		ID:        uuid.New().String(),
+		Offset:    s.Offset,
+		Length:    s.Length,
+		Data:      data,
+		State:     SliceStatePending,
+		CreatedAt: time.Now(),
+	}
+}
+
+// extendSlice merges src data into dst, growing the buffer if needed.
+func extendSlice(dst, src *Slice) {
+	newEnd := max(dst.Offset+dst.Length, src.Offset+src.Length)
+	newLen := newEnd - dst.Offset
+
+	if newLen > uint32(len(dst.Data)) {
+		grown := make([]byte, newLen)
+		copy(grown, dst.Data)
+		dst.Data = grown
+		dst.Length = newLen
 	}
 
-	chunk.slices = append(merged, other...)
-	return nil
+	copy(dst.Data[src.Offset-dst.Offset:], src.Data)
 }

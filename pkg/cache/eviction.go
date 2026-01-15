@@ -9,59 +9,59 @@ import (
 // ============================================================================
 // Cache Management (LRU Eviction)
 // ============================================================================
+//
+// The cache uses LRU (Least Recently Used) eviction to stay within maxSize.
+// Only flushed slices can be evicted - dirty data (pending/uploading) is protected.
+// This ensures data durability: unflushed writes are never lost due to cache pressure.
+//
+// Eviction is triggered automatically on WriteSlice when the cache would exceed
+// maxSize, or manually via EvictLRU/Evict/EvictAll.
 
-// lruEntry holds file handle and last access time for LRU sorting.
-type lruEntry struct {
-	handle     string
-	lastAccess time.Time
-}
-
-// evictLRUUntilFits evicts flushed slices from least recently used files
-// until the cache has room for neededBytes.
-// Only flushed slices can be evicted - dirty (pending/uploading) slices are protected.
+// evictLRUUntilFits evicts flushed slices to make room for new data.
+//
+// Called automatically by WriteSlice when cache would exceed maxSize.
+// Evicts from least recently used files first.
 func (c *Cache) evictLRUUntilFits(neededBytes uint64) {
 	if c.maxSize == 0 {
-		return // Unlimited cache, no eviction needed
+		return
 	}
-	targetSize := c.maxSize - neededBytes
-	c.evictLRUToTarget(targetSize)
+	c.evictLRUToTarget(c.maxSize - neededBytes)
 }
 
 // evictLRUToTarget evicts flushed slices from LRU files until size <= target.
 func (c *Cache) evictLRUToTarget(targetSize uint64) {
-	// Collect files with their access times
+	type fileAccess struct {
+		handle     string
+		lastAccess time.Time
+	}
+
+	// Snapshot file access times under lock
 	c.globalMu.RLock()
-	entries := make([]lruEntry, 0, len(c.files))
+	files := make([]fileAccess, 0, len(c.files))
 	for handle, entry := range c.files {
 		entry.mu.RLock()
-		entries = append(entries, lruEntry{
-			handle:     handle,
-			lastAccess: entry.lastAccess,
-		})
+		files = append(files, fileAccess{handle, entry.lastAccess})
 		entry.mu.RUnlock()
 	}
 	c.globalMu.RUnlock()
 
-	// Sort by last access (oldest first)
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].lastAccess.Before(entries[j].lastAccess)
+	// Sort oldest first
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].lastAccess.Before(files[j].lastAccess)
 	})
 
-	// Evict flushed slices from LRU files until we reach target size
-	for _, lru := range entries {
-		currentSize := c.totalSize.Load()
-		if currentSize <= targetSize {
+	// Evict until target reached
+	for _, f := range files {
+		if c.totalSize.Load() <= targetSize {
 			break
 		}
-
-		// Evict flushed slices from this file
-		c.evictFlushedFromFile(lru.handle)
+		c.evictFlushedFromEntry(f.handle)
 	}
 }
 
-// evictFlushedFromFile removes flushed slices from a specific file.
-// This is an internal helper that doesn't check context.
-func (c *Cache) evictFlushedFromFile(handle string) uint64 {
+// evictFlushedFromEntry removes flushed slices from a file entry.
+// Returns bytes evicted. Caller must NOT hold any locks.
+func (c *Cache) evictFlushedFromEntry(handle string) uint64 {
 	c.globalMu.RLock()
 	entry, exists := c.files[handle]
 	c.globalMu.RUnlock()
@@ -73,32 +73,43 @@ func (c *Cache) evictFlushedFromFile(handle string) uint64 {
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
+	return c.evictFlushedSlices(entry)
+}
+
+// evictFlushedSlices removes flushed slices from an entry.
+// Caller must hold entry.mu write lock.
+func (c *Cache) evictFlushedSlices(entry *fileEntry) uint64 {
 	var evicted uint64
 
 	for chunkIdx, chunk := range entry.chunks {
-		var remaining []Slice
-		for _, slice := range chunk.slices {
-			if slice.State == SliceStateFlushed {
-				evicted += uint64(len(slice.Data))
-				c.totalSize.Add(^(uint64(len(slice.Data)) - 1)) // Subtract
-			} else {
-				remaining = append(remaining, slice)
-			}
+		// partitionByState returns (matching, other) - flushed slices are to evict
+		toEvict, toKeep := partitionByState(chunk.slices, SliceStateFlushed)
+		if len(toEvict) == 0 {
+			continue
 		}
 
-		if len(remaining) == 0 {
+		for _, s := range toEvict {
+			size := uint64(len(s.Data))
+			evicted += size
+			c.totalSize.Add(^(size - 1)) // Atomic subtract
+		}
+
+		if len(toKeep) == 0 {
 			delete(entry.chunks, chunkIdx)
-		} else if len(remaining) != len(chunk.slices) {
-			chunk.slices = remaining
+		} else {
+			chunk.slices = toKeep
 		}
 	}
 
 	return evicted
 }
 
-// EvictLRU evicts flushed slices from least recently used files to free up space.
-// Returns the total bytes evicted. Only flushed slices are evicted - dirty data is protected.
-// The targetFreeBytes parameter specifies how much space to free.
+// EvictLRU evicts flushed slices from least recently used files to free space.
+//
+// Use this for explicit cache management, e.g., before a large operation or
+// during low-activity periods. Automatic eviction via WriteSlice is usually sufficient.
+//
+// Only flushed slices are evicted - dirty data is protected.
 func (c *Cache) EvictLRU(ctx context.Context, targetFreeBytes uint64) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -112,23 +123,23 @@ func (c *Cache) EvictLRU(ctx context.Context, targetFreeBytes uint64) (uint64, e
 	c.globalMu.RUnlock()
 
 	startSize := c.totalSize.Load()
-
-	// For explicit eviction, calculate target size based on current size
+	targetSize := uint64(0)
 	if startSize > targetFreeBytes {
-		c.evictLRUToTarget(startSize - targetFreeBytes)
-	} else {
-		// Need to evict everything possible
-		c.evictLRUToTarget(0)
+		targetSize = startSize - targetFreeBytes
 	}
 
-	endSize := c.totalSize.Load()
-	if startSize > endSize {
+	c.evictLRUToTarget(targetSize)
+
+	if endSize := c.totalSize.Load(); startSize > endSize {
 		return startSize - endSize, nil
 	}
 	return 0, nil
 }
 
-// Evict removes flushed data for a file.
+// Evict removes all flushed slices for a specific file.
+//
+// Use this when a file is closed or deleted to free its cache space immediately.
+// Only flushed slices are removed - dirty data is protected.
 func (c *Cache) Evict(ctx context.Context, fileHandle string) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -145,30 +156,18 @@ func (c *Cache) Evict(ctx context.Context, fileHandle string) (uint64, error) {
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	var evicted uint64
-
-	for chunkIdx, chunk := range entry.chunks {
-		var remaining []Slice
-		for _, slice := range chunk.slices {
-			if slice.State == SliceStateFlushed {
-				evicted += uint64(len(slice.Data))
-				c.totalSize.Add(^(uint64(len(slice.Data)) - 1)) // Subtract
-			} else {
-				remaining = append(remaining, slice)
-			}
-		}
-
-		if len(remaining) == 0 {
-			delete(entry.chunks, chunkIdx)
-		} else if len(remaining) != len(chunk.slices) {
-			chunk.slices = remaining
-		}
-	}
-
-	return evicted, nil
+	return c.evictFlushedSlices(entry), nil
 }
 
-// EvictAll removes all flushed data from cache.
+// EvictAll removes all flushed slices from all files in the cache.
+//
+// Use this for aggressive cache clearing, e.g., during shutdown preparation
+// or when switching storage backends. Only flushed slices are removed - dirty
+// data is protected.
+//
+// Returns:
+//   - evicted: Total bytes evicted across all files
+//   - error: Context errors or ErrCacheClosed
 func (c *Cache) EvictAll(ctx context.Context) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err

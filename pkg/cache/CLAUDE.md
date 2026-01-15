@@ -8,7 +8,7 @@ Slice-aware cache layer for the Chunk/Slice/Block storage model.
 Cache (cache.go)
     - Business logic: merging, coalescing, optimization
     - In-memory storage (integrated)
-    - Optional WAL persistence via wal.Persister interface
+    - Optional WAL persistence via wal.MmapPersister
 ```
 
 ## Package Structure
@@ -19,7 +19,7 @@ Cache (cache.go)
 - `flush.go` - GetDirtySlices, MarkSliceFlushed, CoalesceWrites
 - `eviction.go` - LRU eviction (EvictLRU, Evict, EvictAll)
 - `state.go` - Remove, Truncate, HasDirtyData, GetFileSize, Stats, Close, Sync
-- `types.go` - Slice, SliceUpdate, PendingSlice types; re-exports SliceState and BlockRef from wal
+- `types.go` - Slice, PendingSlice, Stats types; re-exports SliceState and BlockRef from wal
 - `wal/` - WAL persistence layer (SliceState, BlockRef, SliceEntry defined here)
 - `benchmark_test.go` - Performance benchmarks
 
@@ -33,11 +33,11 @@ This eliminates conversion overhead between cache and WAL operations.
 
 ## WAL Persistence
 
-The cache uses the `wal.Persister` interface for crash recovery:
+The cache uses `*wal.MmapPersister` for crash recovery:
 - `NewWithWal(maxSize, persister)` - Create cache with WAL persistence
 - `New(maxSize)` - Create in-memory cache (no persistence)
 
-Create the WAL persister externally for better separation of concerns:
+Create the WAL persister externally for better separation of concerns.
 
 ## Key Design Decisions
 
@@ -102,7 +102,7 @@ stats := c.Stats()
 NFS clients write in 16KB-32KB chunks. Without optimization:
 - 10MB file = 320 writes = 320 slices (bad)
 
-With `tryExtendAdjacentSlice()`:
+With `extendAdjacentSlice()`:
 - Sequential writes extend existing pending slice
 - 10MB file = 320 writes = 1 slice (good)
 

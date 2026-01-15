@@ -51,7 +51,7 @@ type fileEntry struct {
 // Cache is the mandatory cache layer for all content operations.
 //
 // It understands slices as first-class citizens and stores them directly
-// in memory. Optional WAL persistence can be enabled via a Persister.
+// in memory. Optional WAL persistence can be enabled via MmapPersister.
 //
 // Thread Safety:
 // Uses two-level locking for efficiency:
@@ -66,8 +66,8 @@ type Cache struct {
 	totalSize atomic.Uint64
 	closed    bool
 
-	// WAL persistence (optional, nil uses NullPersister)
-	persister wal.Persister
+	// WAL persistence (nil = disabled)
+	persister *wal.MmapPersister
 }
 
 // New creates a new in-memory cache with no persistence.
@@ -76,9 +76,8 @@ type Cache struct {
 //   - maxSize: Maximum total cache size in bytes. Use 0 for unlimited.
 func New(maxSize uint64) *Cache {
 	return &Cache{
-		files:     make(map[string]*fileEntry),
-		maxSize:   maxSize,
-		persister: wal.NewNullPersister(),
+		files:   make(map[string]*fileEntry),
+		maxSize: maxSize,
 	}
 }
 
@@ -97,25 +96,27 @@ func New(maxSize uint64) *Cache {
 //
 // Parameters:
 //   - maxSize: Maximum total cache size in bytes. Use 0 for unlimited.
-//   - persister: WAL persister for crash recovery (create externally)
-func NewWithWal(maxSize uint64, persister wal.Persister) (*Cache, error) {
+//   - persister: MmapPersister for crash recovery
+func NewWithWal(maxSize uint64, persister *wal.MmapPersister) (*Cache, error) {
 	c := &Cache{
 		files:     make(map[string]*fileEntry),
 		maxSize:   maxSize,
 		persister: persister,
 	}
 
-	// Recover existing data if persister is enabled
-	if persister.IsEnabled() {
-		if err := c.recoverFromWal(); err != nil {
-			return nil, err
-		}
+	// Recover existing data
+	if err := c.recoverFromWal(); err != nil {
+		return nil, err
 	}
 
 	return c, nil
 }
 
 // recoverFromWal recovers cache state from the WAL persister.
+//
+// Called automatically during NewWithWal. Replays all WAL entries to restore
+// slices to their pre-crash state. After recovery, unflushed slices can be
+// re-uploaded via the TransferManager.
 func (c *Cache) recoverFromWal() error {
 	entries, err := c.persister.Recover()
 	if err != nil {
@@ -144,7 +145,12 @@ func (c *Cache) recoverFromWal() error {
 	return nil
 }
 
-// getFileEntry returns or creates a file entry with its mutex.
+// getFileEntry returns or creates a file entry for the given file handle.
+//
+// Thread-safe: Uses double-checked locking for efficiency. First attempts
+// a read lock, then upgrades to write lock only if the entry doesn't exist.
+//
+// The returned entry has its own mutex for fine-grained locking.
 func (c *Cache) getFileEntry(fileHandle string) *fileEntry {
 	key := fileHandle
 

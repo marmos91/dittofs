@@ -11,6 +11,16 @@ import (
 // ============================================================================
 
 // Remove completely removes all cached data for a file.
+//
+// This should be called when a file is deleted from the filesystem.
+// Unlike Evict, Remove deletes ALL data including dirty/pending slices.
+// The removal is also persisted to WAL if enabled.
+//
+// Idempotent: Returns nil if file doesn't exist.
+//
+// Errors:
+//   - ErrCacheClosed: cache has been closed
+//   - context.Canceled/DeadlineExceeded: context was cancelled
 func (c *Cache) Remove(ctx context.Context, fileHandle string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -23,28 +33,20 @@ func (c *Cache) Remove(ctx context.Context, fileHandle string) error {
 		return ErrCacheClosed
 	}
 
-	key := fileHandle
-	entry, exists := c.files[key]
+	entry, exists := c.files[fileHandle]
 	if !exists {
 		return nil // Idempotent
 	}
 
-	// Calculate size to subtract
-	var size uint64
-	for _, chunk := range entry.chunks {
-		for _, slice := range chunk.slices {
-			size += uint64(len(slice.Data))
-		}
-	}
-
-	delete(c.files, key)
+	size := entryDataSize(entry)
+	delete(c.files, fileHandle)
 
 	if size > 0 {
 		c.totalSize.Add(^(size - 1)) // Subtract
 	}
 
 	// Persist removal to WAL if enabled
-	if c.persister.IsEnabled() {
+	if c.persister != nil {
 		if err := c.persister.AppendRemove(fileHandle); err != nil {
 			return err
 		}
@@ -53,7 +55,20 @@ func (c *Cache) Remove(ctx context.Context, fileHandle string) error {
 	return nil
 }
 
-// Truncate changes the size of cached data for a file.
+// Truncate reduces the size of cached data for a file.
+//
+// This should be called when a file is truncated in the filesystem.
+// Removes all slices beyond the new size, and trims slices that span
+// the truncation point.
+//
+// Note: Truncate only reduces size, never extends. Extending a file
+// is done via WriteSlice.
+//
+// Idempotent: Returns nil if file doesn't exist or if newSize >= current size.
+//
+// Errors:
+//   - ErrCacheClosed: cache has been closed
+//   - context.Canceled/DeadlineExceeded: context was cancelled
 func (c *Cache) Truncate(ctx context.Context, fileHandle string, newSize uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -74,7 +89,7 @@ func (c *Cache) Truncate(ctx context.Context, fileHandle string, newSize uint64)
 		return nil
 	}
 
-	currentSize := c.getFileSizeUnlocked(entry)
+	currentSize := getFileSizeUnlocked(entry)
 	if newSize >= currentSize {
 		return nil
 	}
@@ -84,12 +99,8 @@ func (c *Cache) Truncate(ctx context.Context, fileHandle string, newSize uint64)
 
 	for chunkIdx, chk := range entry.chunks {
 		if chunkIdx > newEndChunk {
-			// Calculate size to subtract
-			var size uint64
-			for _, slice := range chk.slices {
-				size += uint64(len(slice.Data))
-			}
-			if size > 0 {
+			// Remove entire chunk beyond truncation point
+			if size := chunkDataSize(chk); size > 0 {
 				c.totalSize.Add(^(size - 1)) // Subtract
 			}
 			delete(entry.chunks, chunkIdx)
@@ -137,7 +148,13 @@ func (c *Cache) Truncate(ctx context.Context, fileHandle string, newSize uint64)
 // File State Queries
 // ============================================================================
 
-// HasDirtyData returns true if the file has pending slices.
+// HasDirtyData returns true if the file has any unflushed (pending) slices.
+//
+// Use this to check if a file needs flushing before close, or to prevent
+// eviction of files with dirty data. A file with dirty data should not
+// be removed until its slices are flushed to the block store.
+//
+// Thread-safe. Returns false if cache is closed or file doesn't exist.
 func (c *Cache) HasDirtyData(fileHandle string) bool {
 	c.globalMu.RLock()
 	if c.closed {
@@ -161,7 +178,12 @@ func (c *Cache) HasDirtyData(fileHandle string) bool {
 	return false
 }
 
-// GetFileSize returns the maximum extent of cached data.
+// GetFileSize returns the maximum byte offset covered by cached slices.
+//
+// This represents the size of the file as known to the cache. Note that
+// this may differ from the actual file size if not all data is cached.
+//
+// Returns 0 if the file doesn't exist in cache or cache is closed.
 func (c *Cache) GetFileSize(fileHandle string) uint64 {
 	c.globalMu.RLock()
 	if c.closed {
@@ -174,26 +196,50 @@ func (c *Cache) GetFileSize(fileHandle string) uint64 {
 	entry.mu.RLock()
 	defer entry.mu.RUnlock()
 
-	return c.getFileSizeUnlocked(entry)
+	return getFileSizeUnlocked(entry)
 }
 
-func (c *Cache) getFileSizeUnlocked(entry *fileEntry) uint64 {
-	var maxChunk uint32
-	var maxOffsetInChunk uint32
+// getFileSizeUnlocked returns the maximum byte offset covered by cached slices.
+// Caller must hold entry.mu (read or write lock).
+func getFileSizeUnlocked(entry *fileEntry) uint64 {
+	var maxOffset uint64
 
 	for chunkIdx, chunk := range entry.chunks {
+		chunkBase := uint64(chunkIdx) * ChunkSize
 		for _, slice := range chunk.slices {
-			if chunkIdx > maxChunk || (chunkIdx == maxChunk && slice.Offset+slice.Length > maxOffsetInChunk) {
-				maxChunk = chunkIdx
-				maxOffsetInChunk = slice.Offset + slice.Length
+			if end := chunkBase + uint64(slice.Offset+slice.Length); end > maxOffset {
+				maxOffset = end
 			}
 		}
 	}
 
-	return uint64(maxChunk)*ChunkSize + uint64(maxOffsetInChunk)
+	return maxOffset
 }
 
-// ListFiles returns all file handles with cached data.
+// entryDataSize returns total bytes stored in a file entry's slices.
+func entryDataSize(entry *fileEntry) uint64 {
+	var size uint64
+	for _, chunk := range entry.chunks {
+		size += chunkDataSize(chunk)
+	}
+	return size
+}
+
+// chunkDataSize returns total bytes stored in a chunk's slices.
+func chunkDataSize(chunk *chunkEntry) uint64 {
+	var size uint64
+	for _, slice := range chunk.slices {
+		size += uint64(len(slice.Data))
+	}
+	return size
+}
+
+// ListFiles returns all file handles that have cached data.
+//
+// Use this for debugging, cache inspection, or iterating over cached files.
+// The returned order is not guaranteed.
+//
+// Returns empty slice if cache is closed.
 func (c *Cache) ListFiles() []string {
 	c.globalMu.RLock()
 	defer c.globalMu.RUnlock()
@@ -210,12 +256,25 @@ func (c *Cache) ListFiles() []string {
 	return result
 }
 
-// GetTotalSize returns the total bytes stored in the cache.
+// GetTotalSize returns the total bytes currently stored in the cache.
+//
+// This includes both dirty (pending) and flushed data. Use Stats() for
+// a breakdown by state.
 func (c *Cache) GetTotalSize() uint64 {
 	return c.totalSize.Load()
 }
 
 // Stats returns current cache statistics for observability.
+//
+// Returns:
+//   - TotalSize: Current total bytes in cache
+//   - MaxSize: Configured maximum (0 = unlimited)
+//   - FileCount: Number of files with cached data
+//   - DirtyBytes: Bytes in pending/uploading state (protected from eviction)
+//   - FlushedBytes: Bytes in flushed state (can be evicted)
+//   - SliceCount: Total number of slices
+//
+// Returns zero Stats if cache is closed.
 func (c *Cache) Stats() Stats {
 	c.globalMu.RLock()
 	defer c.globalMu.RUnlock()
@@ -253,7 +312,12 @@ func (c *Cache) Stats() Stats {
 // Lifecycle
 // ============================================================================
 
-// Close releases all cache resources.
+// Close releases all cache resources and closes the WAL persister.
+//
+// After Close, all operations return ErrCacheClosed. Any unflushed data
+// will be lost unless it was persisted to WAL and the cache is reopened.
+//
+// Idempotent: Safe to call multiple times.
 func (c *Cache) Close() error {
 	c.globalMu.Lock()
 	defer c.globalMu.Unlock()
@@ -267,7 +331,7 @@ func (c *Cache) Close() error {
 	c.totalSize.Store(0)
 
 	// Close persister if enabled
-	if c.persister != nil && c.persister.IsEnabled() {
+	if c.persister != nil {
 		if err := c.persister.Close(); err != nil {
 			return err
 		}
@@ -276,7 +340,17 @@ func (c *Cache) Close() error {
 	return nil
 }
 
-// Sync forces pending writes to durable storage.
+// Sync forces WAL data to durable storage (fsync).
+//
+// Call this when durability is required, e.g., on NFS COMMIT or before
+// reporting success to the client. Without Sync, WAL data may be buffered
+// by the OS page cache.
+//
+// No-op if WAL persistence is not enabled.
+//
+// Errors:
+//   - ErrCacheClosed: cache has been closed
+//   - I/O errors from the underlying persister
 func (c *Cache) Sync() error {
 	c.globalMu.RLock()
 	defer c.globalMu.RUnlock()

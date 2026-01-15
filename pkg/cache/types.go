@@ -3,7 +3,6 @@ package cache
 
 import (
 	"errors"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/cache/wal"
 	"github.com/marmos91/dittofs/pkg/payload/block"
@@ -68,43 +67,13 @@ type BlockRef = wal.BlockRef
 // Defined in wal package - re-exported here for convenience.
 type Slice = wal.Slice
 
-// SliceUpdate contains fields that can be updated on an existing slice.
-type SliceUpdate struct {
-	// State is the new state (optional).
-	State *SliceState
-
-	// BlockRefs is the new block references (optional).
-	BlockRefs []BlockRef
-
-	// Data is new data for the slice (optional, used for extending).
-	Data []byte
-
-	// Length is the new length (optional, used for extending/truncating).
-	Length *uint32
-
-	// Offset is the new offset (optional, used for prepending).
-	Offset *uint32
-}
-
 // PendingSlice represents an unflushed write ready for upload.
+// Embeds Slice and adds ChunkIndex context for the transfer manager.
 type PendingSlice struct {
-	// ID uniquely identifies this slice.
-	ID string
+	Slice
 
 	// ChunkIndex is the chunk this slice belongs to.
 	ChunkIndex uint32
-
-	// Offset within the chunk.
-	Offset uint32
-
-	// Length of the slice data.
-	Length uint32
-
-	// Data contains the actual bytes to upload.
-	Data []byte
-
-	// CreatedAt for ordering.
-	CreatedAt time.Time
 }
 
 // ============================================================================

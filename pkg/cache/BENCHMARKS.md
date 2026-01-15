@@ -1,170 +1,227 @@
-# Cache Benchmarks
+# Cache & WAL Benchmarks
 
-## How to Run
+Performance benchmarks for the cache and WAL modules.
 
-```bash
-# Full benchmark suite
-go test -bench=. -benchmem ./pkg/cache/
+**Test Environment:**
+- CPU: Apple M1 Max
+- OS: macOS (darwin/arm64)
+- Go: 1.23+
+- Date: 2026-01-15
 
-# Sequential writes only
-go test -bench=BenchmarkWriteSlice_Sequential -benchmem ./pkg/cache/
-
-# Compare in-memory vs mmap
-go test -bench="BenchmarkCache_" -benchmem ./pkg/cache/
-```
-
-## Results
-
-**Hardware**: Apple M1 Max
-**Date**: 2026-01-13
-
-### Direct Cache Performance
-
-#### Sequential Writes
-
-| Size | Throughput | Allocs |
-|------|------------|--------|
-| 4KB | ~2953 MB/s | 1 |
-| 32KB | ~3936 MB/s | 1 |
-| 64KB | ~4252 MB/s | 1 |
-| 128KB | ~3926 MB/s | 1 |
-
-#### In-Memory vs mmap
-
-| Mode | Sequential 32KB |
-|------|-----------------|
-| In-memory | ~3479 MB/s |
-| mmap | ~4789 MB/s |
-
-#### E2E Sequential Write
-
-| Size | Throughput |
-|------|------------|
-| 1MB | ~2204 MB/s |
-| 10MB | ~3221 MB/s |
-| 100MB | ~4532 MB/s |
-
-#### Concurrent Writes
-
-| Benchmark | Throughput |
-|-----------|------------|
-| 32KB, 100 files | ~2264 MB/s |
-
-### NFS Performance (via localhost)
-
-Measured with mmap cache enabled, memory metadata store, and ERROR logging level.
-
-#### Throughput (Final)
-
-| Operation | Cold | Warm (Cached) |
-|-----------|------|---------------|
-| Sequential Write (100MB, 1M blocks) | **~160 MB/s** | **~1 GB/s** |
-| Sequential Read (100MB) | ~720 MB/s | ~720 MB/s |
-
-**Note**: "Cold" is first write to a new file. "Warm" is re-writing an existing file (NFS client caches writes).
-
-#### Optimization Impact
-
-| Benchmark | Baseline | Final | Improvement |
-|-----------|----------|-------|-------------|
-| Sequential Write (cold) | 89 MB/s | 160 MB/s | **+80%** |
-| Sequential Write (warm) | 89 MB/s | 1 GB/s | **+1024%** |
-| Sequential Read | 626 MB/s | 720 MB/s | +15% |
-
-#### Logging Level Impact
-
-| Benchmark | DEBUG | ERROR | Improvement |
-|-----------|-------|-------|-------------|
-| Sequential Write | 70 MB/s | 89 MB/s | +27% |
-| Sequential Read | 350 MB/s | 626 MB/s | +79% |
-| Concurrent Write | 213 MB/s | 275 MB/s | +29% |
-
-## NFS Performance Analysis
-
-### Why NFS is slower than direct cache
-
-The ~25x gap between direct cache (4000 MB/s) and NFS cold writes (160 MB/s) is due to:
-
-1. **Metadata operations per WRITE** - Each NFS WRITE triggers ~3 metadata operations:
-   - PrepareWrite/GetFile (1 read + validation)
-   - CommitWrite (1 transaction + 1 read + 1 write)
-
-2. **Protocol overhead** - XDR encoding, RPC framing, TCP/IP stack
-
-3. **Userspace vs kernel** - Context switches, syscall overhead
-
-### Optimizations Applied
-
-1. **Eliminated buffer copy** - Pooled buffer passed directly to worker goroutine
-2. **Removed double RPC parsing** - RPC header parsed once in readRequest, reused in processRequest
-3. **Removed GetFilesystemCapabilities call** - Use fixed max write size (1MB)
-4. **Removed redundant getFileOrError** - PrepareWrite does same validation
-5. **Deferred metadata commits** - CommitWrite batches updates until NFS COMMIT
-6. **File metadata caching** - PrepareWrite caches file metadata for sequential writes
-7. **Auth context caching** - Cache per (share, UID, GID) to avoid registry lookups
-8. **Pre-warm caches on CREATE** - Populate auth and file metadata caches after file creation
-
-### Future Optimization Opportunities
-
-1. **Use sync.Map for pending writes** - Reduce mutex contention for concurrent writes
-2. **Batch multiple files in COMMIT** - Single transaction for multi-file commits
-3. **Pre-warm on LOOKUP** - Also warm caches when looking up existing files
-
-## Requirements
-
-- Direct cache sequential 32KB writes: > 3000 MB/s
-- Direct cache concurrent writes: > 2000 MB/s
-- NFS sequential writes: > 80 MB/s
-- NFS sequential reads: > 500 MB/s
-
----
-
-## NFS + S3 Performance (Remote Block Store)
-
-**Date**: 2026-01-13
-**S3 Endpoint**: Cubbit DS3 (eu-west-1)
-**Cache**: mmap, 256MB limit
-**Flusher**: 4 parallel uploads, 4 parallel downloads
-
-### Current Results (Blocking COMMIT)
+## Summary
 
 | Operation | Throughput | Notes |
 |-----------|------------|-------|
-| Sequential Write (100MB, cold) | **~1 MB/s** | S3 upload blocks COMMIT |
-| Sequential Write (100MB, warm) | ~1 MB/s | Same - S3 is bottleneck |
-| Sequential Read (100MB, cached) | **745 MB/s** | Served from mmap cache |
-| Sequential Read (100MB, S3) | TBD | After cache eviction |
+| Sequential Write (32KB) | **5.0 GB/s** | Zero allocations |
+| File Copy (100MB) | **4.8 GB/s** | End-to-end with coalesce |
+| Concurrent File Copies | **8.6 GB/s** | Multi-threaded |
+| WAL Append (32KB) | **1.9 GB/s** | mmap-backed, zero allocs |
+| WAL vs In-Memory | ~3% overhead | Negligible WAL cost |
 
-### LRU Eviction Test
+## Write Benchmarks
 
-| Test | Result |
-|------|--------|
-| Cache size | 256 MB |
-| Total data written | 300 MB (3 x 100MB files) |
-| Files readable after eviction | Yes - all 3 files |
-| S3 blocks created | 75 blocks (~300MB) |
+### Sequential Writes
 
-### Issues Identified
+Sequential writes benefit from the slice extension optimization, achieving near-memory-copy speeds.
 
-1. **Blocking COMMIT**: `FlushRemaining()` waits for all S3 uploads synchronously
-   - Causes "Server connections interrupted" in macOS Finder
-   - NFS NULL (keepalive) requests not processed during long uploads
-   - Write throughput limited by S3 latency (~1 MB/s)
+| Size | Throughput | Allocs/op |
+|------|------------|-----------|
+| 4KB | 4.1 GB/s | 0 |
+| 16KB | 5.1 GB/s | 0 |
+| 32KB | 5.0 GB/s | 0 |
+| 64KB | 4.6 GB/s | 0 |
+| 128KB | 5.2 GB/s | 0 |
 
-2. **Underutilized bandwidth**: Despite `parallel_uploads=4`, not saturating network
-   - S3 PUT latency dominates
-   - Sequential slice uploads within each file
+The sequential extension optimization merges 32KB NFS writes into single growing slices:
+- **96K iterations** produced only **47 slices** (not 96K slices)
+- This is critical for NFS file copy performance
 
-### Planned Improvements
+### Random Writes
 
-1. **Hybrid flush**: COMMIT ensures data in mmap (fast), S3 upload in background
-2. **Crash recovery**: Re-upload unflushed mmap slices on startup
-3. **Non-blocking uploads**: Decouple S3 uploads from NFS request path
+Random writes create more slices due to non-adjacent offsets:
 
-### Target Performance (After Optimization)
+| Pattern | Throughput | Allocs/op |
+|---------|------------|-----------|
+| Random 4KB | 1.1 GB/s | 5 |
 
-| Operation | Current | Target | Improvement |
-|-----------|---------|--------|-------------|
-| Sequential Write | ~1 MB/s | ~100+ MB/s | 100x |
-| COMMIT latency | seconds | <100ms | Async S3 |
-| NULL responsiveness | Blocked | Always | Non-blocking |
+### Multi-File Writes
+
+Writing to multiple files concurrently:
+
+| Files | Throughput | Allocs/op |
+|-------|------------|-----------|
+| 10 | 4.9 GB/s | 1 |
+| 100 | 4.9 GB/s | 1 |
+| 1000 | 4.9 GB/s | 2 |
+
+Excellent scalability - throughput remains constant as file count increases.
+
+### Concurrent Writes
+
+Multi-threaded write performance (GOMAXPROCS=10):
+
+| Benchmark | Throughput | Notes |
+|-----------|------------|-------|
+| Concurrent 32KB | 4.6 GB/s | Minimal lock contention |
+
+## Read Benchmarks
+
+### Sequential Reads
+
+| Size | Throughput | Allocs/op |
+|------|------------|-----------|
+| 4KB | 365 MB/s | 1 |
+| 32KB | 370 MB/s | 1 |
+| 64KB | 369 MB/s | 1 |
+| 128KB | 372 MB/s | 1 |
+
+Read performance is consistent across sizes.
+
+### Slice Merging (Newest-Wins Algorithm)
+
+Performance when reading ranges covered by overlapping slices:
+
+| Overlapping Slices | Throughput |
+|--------------------|------------|
+| 1 | 2.3 GB/s |
+| 5 | 812 MB/s |
+| 10 | 459 MB/s |
+| 25 | 312 MB/s |
+| 50 | 313 MB/s |
+
+The merge algorithm scales sub-linearly with slice count.
+
+## Flush Benchmarks
+
+### GetDirtySlices
+
+Retrieving dirty slices for upload:
+
+| Chunks | Latency | Allocs |
+|--------|---------|--------|
+| 1 | 175 ns | 2 |
+| 10 | 2.1 us | 15 |
+| 100 | 23.5 us | 108 |
+
+### CoalesceWrites
+
+Merging adjacent slices before flush:
+
+| Slices | Latency | Allocs |
+|--------|---------|--------|
+| 10 | 11.7 us | 40 |
+| 50 | 37.8 us | 164 |
+| 100 | 72.8 us | 316 |
+
+## Eviction Benchmarks
+
+LRU eviction with dirty data protection:
+
+| Operation | Latency | Notes |
+|-----------|---------|-------|
+| EvictLRU (1MB) | 122 us | From 100MB cache |
+
+## End-to-End Benchmarks
+
+### File Copy Simulation
+
+Simulates complete NFS file copy (sequential 32KB writes + coalesce):
+
+| File Size | Throughput | Total Time |
+|-----------|------------|------------|
+| 1MB | 4.5 GB/s | 235 us |
+| 10MB | 4.8 GB/s | 2.2 ms |
+| 100MB | 4.8 GB/s | 21.7 ms |
+
+### Concurrent File Copies
+
+Multiple files being copied simultaneously:
+
+| Benchmark | Throughput |
+|-----------|------------|
+| Concurrent 1MB files | 8.6 GB/s |
+
+Excellent parallel scaling with multiple goroutines.
+
+### Mixed Read/Write
+
+Write-Read-Write pattern:
+
+| Operation | Throughput |
+|-----------|------------|
+| Write+Read+Write | 973 MB/s |
+
+## WAL Benchmarks
+
+### Append Performance
+
+| Data Size | Throughput | Allocs/op |
+|-----------|------------|-----------|
+| 512B | 1.0 GB/s | 0 |
+| 32KB | 1.9 GB/s | 0 |
+| 1MB | 2.7 GB/s | 0 |
+
+Zero-allocation writes via mmap.
+
+### Recovery Performance
+
+| Entries | Latency | Allocs |
+|---------|---------|--------|
+| 100 | 66 us | 419 |
+| 1000 | 345 us | 4022 |
+| 500 (with removes) | 181 us | 2050 |
+
+Recovery is fast even with thousands of entries.
+
+### WAL Operations
+
+| Operation | Latency |
+|-----------|---------|
+| AppendRemove | 80 ns |
+| Sync (MS_ASYNC) | 14 ns |
+
+## WAL vs In-Memory Comparison
+
+Direct comparison of cache performance with and without WAL persistence:
+
+| Benchmark | In-Memory | With WAL | Overhead |
+|-----------|-----------|----------|----------|
+| Sequential 32KB | 5.9 GB/s | 5.7 GB/s | ~3% |
+| File Copy 10MB | 4.7 GB/s | 4.8 GB/s | ~0% |
+
+**Key Finding:** WAL persistence adds negligible overhead (~3%) to write operations.
+
+## Memory Allocation
+
+| Operation | Allocs/op | Notes |
+|-----------|-----------|-------|
+| WriteSlice (new file) | 10 | Creates file/chunk entries |
+| WriteSlice (extend) | 0 | Zero-alloc slice extension |
+| ReadSlice | 1 | Destination buffer |
+| WAL Append | 0 | Direct mmap write |
+
+## Performance Requirements
+
+The cache must achieve **>3 GB/s** sequential write throughput for acceptable NFS file copy performance. Current benchmarks show:
+
+- Sequential writes: **5.0 GB/s** (67% above requirement)
+- File copy E2E: **4.8 GB/s** (60% above requirement)
+- Concurrent copies: **8.6 GB/s** (187% above requirement)
+
+All performance requirements are met with significant headroom.
+
+## Running Benchmarks
+
+```bash
+# Run all cache benchmarks
+go test -bench=. -benchmem ./pkg/cache
+
+# Run all WAL benchmarks
+go test -bench=. -benchmem ./pkg/cache/wal
+
+# Run specific benchmark
+go test -bench=BenchmarkWriteSlice_Sequential -benchmem ./pkg/cache
+
+# Run with longer duration for stability
+go test -bench=. -benchmem -benchtime=1s ./pkg/cache
+```
