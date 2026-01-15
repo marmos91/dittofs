@@ -289,6 +289,12 @@ type BlockStoreS3Config struct {
 	// Endpoint is the S3 endpoint URL (optional, for S3-compatible services like Localstack)
 	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
 
+	// AccessKey is the S3 access key ID (optional, uses AWS SDK default chain if empty)
+	AccessKey string `mapstructure:"access_key" yaml:"access_key"`
+
+	// SecretKey is the S3 secret access key (optional, uses AWS SDK default chain if empty)
+	SecretKey string `mapstructure:"secret_key" yaml:"secret_key"`
+
 	// KeyPrefix is the prefix for all block keys in the bucket
 	// Default: "blocks/"
 	// Final key format: {key_prefix}{shareName}/{payloadID}/chunk-{n}/block-{n}
@@ -370,10 +376,16 @@ type FlusherConfig struct {
 	// Default: 4
 	FlushPoolSize int `mapstructure:"flush_pool_size" yaml:"flush_pool_size"`
 
-	// ParallelUploads is the number of concurrent block uploads per file.
-	// Higher values improve upload throughput for large files.
+	// ParallelUploads is the initial number of concurrent block uploads.
+	// The adaptive congestion control starts from this value and auto-tunes.
 	// Default: 4
 	ParallelUploads int `mapstructure:"parallel_uploads" yaml:"parallel_uploads"`
+
+	// MaxParallelUploads caps the maximum concurrent uploads.
+	// Use this to limit bandwidth consumption if needed.
+	// Set to 0 for unlimited (congestion control finds optimal automatically).
+	// Default: 0 (unlimited, auto-tuned by congestion control)
+	MaxParallelUploads int `mapstructure:"max_parallel_uploads" yaml:"max_parallel_uploads"`
 
 	// ParallelDownloads is the number of concurrent block downloads per file.
 	// Higher values improve download throughput for cache miss reads.

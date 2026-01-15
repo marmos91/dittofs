@@ -38,10 +38,10 @@ func TestCache_WalPersistence(t *testing.T) {
 	c := newTestCacheWithWal(t, dir, 0)
 
 	ctx := context.Background()
-	fileHandle := "test-file"
+	payloadID := "test-file"
 	data := []byte("persistent data")
 
-	if err := c.WriteSlice(ctx, fileHandle, 0, data, 0); err != nil {
+	if err := c.WriteSlice(ctx, payloadID, 0, data, 0); err != nil {
 		t.Fatalf("WriteSlice failed: %v", err)
 	}
 
@@ -60,7 +60,7 @@ func TestCache_WalPersistence(t *testing.T) {
 	defer c2.Close()
 
 	result := make([]byte, len(data))
-	found, err := c2.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(data)), result)
+	found, err := c2.ReadSlice(ctx, payloadID, 0, 0, uint32(len(data)), result)
 	if err != nil {
 		t.Fatalf("ReadSlice failed: %v", err)
 	}
@@ -78,14 +78,14 @@ func TestCache_WalRemovePersistence(t *testing.T) {
 	c := newTestCacheWithWal(t, dir, 0)
 
 	ctx := context.Background()
-	fileHandle := "test-file"
+	payloadID := "test-file"
 	data := []byte("to be removed")
 
-	if err := c.WriteSlice(ctx, fileHandle, 0, data, 0); err != nil {
+	if err := c.WriteSlice(ctx, payloadID, 0, data, 0); err != nil {
 		t.Fatalf("WriteSlice failed: %v", err)
 	}
 
-	if err := c.Remove(ctx, fileHandle); err != nil {
+	if err := c.Remove(ctx, payloadID); err != nil {
 		t.Fatalf("Remove failed: %v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestCache_WalRemovePersistence(t *testing.T) {
 	defer c2.Close()
 
 	result := make([]byte, len(data))
-	found, _ := c2.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(data)), result)
+	found, _ := c2.ReadSlice(ctx, payloadID, 0, 0, uint32(len(data)), result)
 	if found {
 		t.Error("expected data to be removed after recovery")
 	}
@@ -130,9 +130,9 @@ func TestCache_WalMultipleFiles(t *testing.T) {
 
 	// Write to multiple files
 	for i := 0; i < 5; i++ {
-		fileHandle := "file-" + string(rune('0'+i))
+		payloadID := "file-" + string(rune('0'+i))
 		data := []byte("data for file " + string(rune('0'+i)))
-		if err := c.WriteSlice(ctx, fileHandle, 0, data, 0); err != nil {
+		if err := c.WriteSlice(ctx, payloadID, 0, data, 0); err != nil {
 			t.Fatalf("WriteSlice failed: %v", err)
 		}
 	}
@@ -152,10 +152,10 @@ func TestCache_WalMultipleFiles(t *testing.T) {
 
 	// Verify data
 	for i := 0; i < 5; i++ {
-		fileHandle := "file-" + string(rune('0'+i))
+		payloadID := "file-" + string(rune('0'+i))
 		expected := "data for file " + string(rune('0'+i))
 		result := make([]byte, len(expected))
-		found, err := c2.ReadSlice(ctx, fileHandle, 0, 0, uint32(len(expected)), result)
+		found, err := c2.ReadSlice(ctx, payloadID, 0, 0, uint32(len(expected)), result)
 		if err != nil {
 			t.Fatalf("ReadSlice failed: %v", err)
 		}
@@ -197,7 +197,7 @@ func BenchmarkE2E_FileCopy(b *testing.B) {
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				fileHandle := fmt.Sprintf("file-%d", i)
+				payloadID := fmt.Sprintf("file-%d", i)
 
 				// Sequential writes (file copy)
 				for j := 0; j < totalWrites; j++ {
@@ -205,13 +205,13 @@ func BenchmarkE2E_FileCopy(b *testing.B) {
 					chunkIdx := offset / ChunkSize
 					offsetInChunk := offset % ChunkSize
 
-					if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
+					if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 						b.Fatal(err)
 					}
 				}
 
 				// COMMIT (coalesce)
-				if err := c.CoalesceWrites(ctx, fileHandle); err != nil {
+				if err := c.CoalesceWrites(ctx, payloadID); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -228,7 +228,7 @@ func BenchmarkE2E_WriteReadWrite(b *testing.B) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := "bench-file"
+	payloadID := "bench-file"
 	data := make([]byte, 32*1024)
 	dest := make([]byte, 32*1024)
 
@@ -237,7 +237,7 @@ func BenchmarkE2E_WriteReadWrite(b *testing.B) {
 		offset := uint32(i * len(data))
 		chunkIdx := offset / ChunkSize
 		offsetInChunk := offset % ChunkSize
-		_ = c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk)
+		_ = c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk)
 	}
 
 	b.SetBytes(int64(len(data) * 3)) // write + read + write
@@ -249,17 +249,17 @@ func BenchmarkE2E_WriteReadWrite(b *testing.B) {
 		offsetInChunk := offset % ChunkSize
 
 		// Write
-		if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
+		if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 			b.Fatal(err)
 		}
 
 		// Read
-		if _, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offsetInChunk, uint32(len(dest)), dest); err != nil {
+		if _, err := c.ReadSlice(ctx, payloadID, chunkIdx, offsetInChunk, uint32(len(dest)), dest); err != nil {
 			b.Fatal(err)
 		}
 
 		// Write again
-		if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
+		if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -282,19 +282,19 @@ func BenchmarkE2E_ConcurrentFileCopies(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		fileNum := 0
 		for pb.Next() {
-			fileHandle := fmt.Sprintf("file-%d-%d", b.N, fileNum)
+			payloadID := fmt.Sprintf("file-%d-%d", b.N, fileNum)
 
 			for j := 0; j < totalWrites; j++ {
 				offset := uint32(j * writeSize)
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
 
-				if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
+				if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 					b.Fatal(err)
 				}
 			}
 
-			if err := c.CoalesceWrites(ctx, fileHandle); err != nil {
+			if err := c.CoalesceWrites(ctx, payloadID); err != nil {
 				b.Fatal(err)
 			}
 
@@ -313,7 +313,7 @@ func BenchmarkWAL_InMemory_Write(b *testing.B) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := "bench-file"
+	payloadID := "bench-file"
 	data := make([]byte, 32*1024)
 
 	b.SetBytes(int64(len(data)))
@@ -323,7 +323,7 @@ func BenchmarkWAL_InMemory_Write(b *testing.B) {
 		offset := uint32(i * len(data))
 		chunkIdx := offset / ChunkSize
 		offsetInChunk := offset % ChunkSize
-		if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
+		if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -343,7 +343,7 @@ func BenchmarkWAL_Mmap_Write(b *testing.B) {
 	defer c.Close()
 
 	ctx := context.Background()
-	fileHandle := "bench-file"
+	payloadID := "bench-file"
 	data := make([]byte, 32*1024)
 
 	b.SetBytes(int64(len(data)))
@@ -353,7 +353,7 @@ func BenchmarkWAL_Mmap_Write(b *testing.B) {
 		offset := uint32(i * len(data))
 		chunkIdx := offset / ChunkSize
 		offsetInChunk := offset % ChunkSize
-		if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
+		if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -374,16 +374,16 @@ func BenchmarkWAL_FileCopy_Comparison(b *testing.B) {
 		b.ResetTimer()
 
 		for i := 0; i < b.N; i++ {
-			fileHandle := fmt.Sprintf("file-%d", i)
+			payloadID := fmt.Sprintf("file-%d", i)
 			for j := 0; j < totalWrites; j++ {
 				offset := uint32(j * writeSize)
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
-				if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
+				if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 					b.Fatal(err)
 				}
 			}
-			_ = c.CoalesceWrites(ctx, fileHandle)
+			_ = c.CoalesceWrites(ctx, payloadID)
 		}
 		c.Close()
 	})
@@ -404,16 +404,16 @@ func BenchmarkWAL_FileCopy_Comparison(b *testing.B) {
 		b.ResetTimer()
 
 		for i := 0; i < b.N; i++ {
-			fileHandle := fmt.Sprintf("file-%d", i)
+			payloadID := fmt.Sprintf("file-%d", i)
 			for j := 0; j < totalWrites; j++ {
 				offset := uint32(j * writeSize)
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
-				if err := c.WriteSlice(ctx, fileHandle, chunkIdx, data, offsetInChunk); err != nil {
+				if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 					b.Fatal(err)
 				}
 			}
-			_ = c.CoalesceWrites(ctx, fileHandle)
+			_ = c.CoalesceWrites(ctx, payloadID)
 		}
 		c.Close()
 	})

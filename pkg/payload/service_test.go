@@ -170,25 +170,6 @@ func TestPayloadService_Exists(t *testing.T) {
 	}
 }
 
-func TestPayloadService_FlushAsync(t *testing.T) {
-	svc := newTestService(t)
-
-	ctx := context.Background()
-	payloadID := metadata.PayloadID("test-file")
-
-	// Write some data
-	_ = svc.WriteAt(ctx, "share", payloadID, []byte("test data"), 0)
-
-	// FlushAsync (non-blocking)
-	result, err := svc.FlushAsync(ctx, "share", payloadID)
-	if err != nil {
-		t.Fatalf("FlushAsync() error = %v", err)
-	}
-	if !result.Finalized {
-		t.Error("FlushAsync() Finalized = false, want true")
-	}
-}
-
 func TestPayloadService_Flush(t *testing.T) {
 	svc := newTestService(t)
 
@@ -198,7 +179,7 @@ func TestPayloadService_Flush(t *testing.T) {
 	// Write some data
 	_ = svc.WriteAt(ctx, "share", payloadID, []byte("test data"), 0)
 
-	// Flush (blocking)
+	// Flush (non-blocking - enqueues for background upload)
 	result, err := svc.Flush(ctx, "share", payloadID)
 	if err != nil {
 		t.Fatalf("Flush() error = %v", err)

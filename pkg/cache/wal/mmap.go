@@ -239,7 +239,7 @@ func (p *MmapPersister) AppendSlice(entry *SliceEntry) error {
 
 	// Calculate entry size
 	entrySize := 1 + // entry type
-		2 + len(entry.FileHandle) + // file handle
+		2 + len(entry.PayloadID) + // payload ID
 		4 + // chunk index
 		36 + // slice ID
 		4 + // offset
@@ -264,11 +264,11 @@ func (p *MmapPersister) AppendSlice(entry *SliceEntry) error {
 	p.data[offset] = entryTypeSlice
 	offset++
 
-	// Write file handle
-	binary.LittleEndian.PutUint16(p.data[offset:], uint16(len(entry.FileHandle)))
+	// Write payload ID
+	binary.LittleEndian.PutUint16(p.data[offset:], uint16(len(entry.PayloadID)))
 	offset += 2
-	copy(p.data[offset:], []byte(entry.FileHandle))
-	offset += uint64(len(entry.FileHandle))
+	copy(p.data[offset:], []byte(entry.PayloadID))
+	offset += uint64(len(entry.PayloadID))
 
 	// Write chunk index
 	binary.LittleEndian.PutUint32(p.data[offset:], entry.ChunkIdx)
@@ -316,19 +316,20 @@ func (p *MmapPersister) AppendSlice(entry *SliceEntry) error {
 	copy(p.data[offset:], entry.Data)
 	offset += uint64(len(entry.Data))
 
-	// Update header
+	// Update header in memory and persist to mmap region immediately
+	// This ensures crash safety - even without explicit Sync(), the header
+	// is always consistent with the data in the mmap file.
 	p.header.NextOffset = offset
 	p.header.EntryCount++
 	p.header.TotalDataSize += uint64(len(entry.Data))
-	p.writeHeader()
-
-	p.dirty = true
+	p.writeHeader() // Write header to mmap region immediately for crash safety
+	p.dirty = false // Header is now in sync with mmap region
 
 	return nil
 }
 
 // AppendRemove appends a file removal entry to the WAL.
-func (p *MmapPersister) AppendRemove(fileHandle string) error {
+func (p *MmapPersister) AppendRemove(payloadID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -336,7 +337,7 @@ func (p *MmapPersister) AppendRemove(fileHandle string) error {
 		return ErrPersisterClosed
 	}
 
-	entrySize := 1 + 2 + len(fileHandle)
+	entrySize := 1 + 2 + len(payloadID)
 
 	if err := p.ensureSpace(uint64(entrySize)); err != nil {
 		return err
@@ -348,18 +349,17 @@ func (p *MmapPersister) AppendRemove(fileHandle string) error {
 	p.data[offset] = entryTypeRemove
 	offset++
 
-	// Write file handle
-	binary.LittleEndian.PutUint16(p.data[offset:], uint16(len(fileHandle)))
+	// Write payload ID
+	binary.LittleEndian.PutUint16(p.data[offset:], uint16(len(payloadID)))
 	offset += 2
-	copy(p.data[offset:], []byte(fileHandle))
-	offset += uint64(len(fileHandle))
+	copy(p.data[offset:], []byte(payloadID))
+	offset += uint64(len(payloadID))
 
-	// Update header
+	// Update header in memory and persist to mmap region immediately
 	p.header.NextOffset = offset
 	p.header.EntryCount++
-	p.writeHeader()
-
-	p.dirty = true
+	p.writeHeader() // Write header to mmap region immediately for crash safety
+	p.dirty = false
 
 	return nil
 }
@@ -376,6 +376,9 @@ func (p *MmapPersister) Sync() error {
 	if !p.dirty {
 		return nil
 	}
+
+	// Write header to mmap region before sync
+	p.writeHeader()
 
 	// Use MS_ASYNC for performance - data is in mmap so it's crash-safe
 	if err := unix.Msync(p.data, unix.MS_ASYNC); err != nil {
@@ -399,7 +402,7 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 		return nil, ErrPersisterClosed
 	}
 
-	// First pass: collect all removed file handles
+	// First pass: collect all removed payload IDs
 	removedFiles := make(map[string]bool)
 	offset := uint64(mmapHeaderSize)
 	endOffset := p.header.NextOffset
@@ -422,11 +425,11 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 			offset = newOffset
 
 		case entryTypeRemove:
-			fileHandle, newOffset, err := p.readRemoveEntry(offset)
+			payloadID, newOffset, err := p.readRemoveEntry(offset)
 			if err != nil {
 				return nil, err
 			}
-			removedFiles[fileHandle] = true
+			removedFiles[payloadID] = true
 			offset = newOffset
 
 		default:
@@ -448,7 +451,7 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 			if err != nil {
 				return nil, err
 			}
-			if !removedFiles[entry.FileHandle] {
+			if !removedFiles[entry.PayloadID] {
 				entries = append(entries, *entry)
 			}
 			offset = newOffset
@@ -469,18 +472,18 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 func (p *MmapPersister) readSliceEntry(offset uint64) (*SliceEntry, uint64, error) {
 	entry := &SliceEntry{}
 
-	// Read file handle length
+	// Read payload ID length
 	if offset+2 > p.size {
 		return nil, 0, ErrCorrupted
 	}
 	handleLen := binary.LittleEndian.Uint16(p.data[offset:])
 	offset += 2
 
-	// Read file handle
+	// Read payload ID
 	if offset+uint64(handleLen) > p.size {
 		return nil, 0, ErrCorrupted
 	}
-	entry.FileHandle = string(p.data[offset : offset+uint64(handleLen)])
+	entry.PayloadID = string(p.data[offset : offset+uint64(handleLen)])
 	offset += uint64(handleLen)
 
 	// Read chunk index
@@ -569,7 +572,7 @@ func (p *MmapPersister) readSliceEntry(offset uint64) (*SliceEntry, uint64, erro
 // skipSliceEntry skips a slice entry without reading its data.
 // Used in the first pass of recovery to find removed files.
 func (p *MmapPersister) skipSliceEntry(offset uint64) (uint64, error) {
-	// Skip file handle
+	// Skip payload ID
 	if offset+2 > p.size {
 		return 0, ErrCorrupted
 	}
@@ -609,21 +612,21 @@ func (p *MmapPersister) skipSliceEntry(offset uint64) (uint64, error) {
 
 // readRemoveEntry reads a file removal entry from the log.
 func (p *MmapPersister) readRemoveEntry(offset uint64) (string, uint64, error) {
-	// Read file handle length
+	// Read payload ID length
 	if offset+2 > p.size {
 		return "", 0, ErrCorrupted
 	}
-	handleLen := binary.LittleEndian.Uint16(p.data[offset:])
+	idLen := binary.LittleEndian.Uint16(p.data[offset:])
 	offset += 2
 
-	// Read file handle
-	if offset+uint64(handleLen) > p.size {
+	// Read payload ID
+	if offset+uint64(idLen) > p.size {
 		return "", 0, ErrCorrupted
 	}
-	fileHandle := string(p.data[offset : offset+uint64(handleLen)])
-	offset += uint64(handleLen)
+	payloadID := string(p.data[offset : offset+uint64(idLen)])
+	offset += uint64(idLen)
 
-	return fileHandle, offset, nil
+	return payloadID, offset, nil
 }
 
 // Close releases resources held by the persister.
@@ -643,6 +646,11 @@ func (p *MmapPersister) closeLocked() error {
 	p.closed = true
 
 	if p.data != nil {
+		// Write header before final sync
+		if p.dirty {
+			p.writeHeader()
+		}
+
 		// Sync before close
 		_ = unix.Msync(p.data, unix.MS_SYNC)
 

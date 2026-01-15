@@ -39,7 +39,7 @@ func TestMmapPersister_AppendSlice(t *testing.T) {
 	defer p.Close()
 
 	entry := &SliceEntry{
-		FileHandle: "test-file",
+		PayloadID: "test-file",
 		ChunkIdx:   0,
 		Slice: Slice{
 			ID:        "12345678-1234-1234-1234-123456789012",
@@ -73,7 +73,7 @@ func TestMmapPersister_AppendAndRecover(t *testing.T) {
 	now := time.Now()
 	entries := []*SliceEntry{
 		{
-			FileHandle: "file1",
+			PayloadID: "file1",
 			ChunkIdx:   0,
 			Slice: Slice{
 				ID:        "11111111-1111-1111-1111-111111111111",
@@ -85,7 +85,7 @@ func TestMmapPersister_AppendAndRecover(t *testing.T) {
 			},
 		},
 		{
-			FileHandle: "file1",
+			PayloadID: "file1",
 			ChunkIdx:   0,
 			Slice: Slice{
 				ID:        "22222222-2222-2222-2222-222222222222",
@@ -97,7 +97,7 @@ func TestMmapPersister_AppendAndRecover(t *testing.T) {
 			},
 		},
 		{
-			FileHandle: "file2",
+			PayloadID: "file2",
 			ChunkIdx:   1,
 			Slice: Slice{
 				ID:        "33333333-3333-3333-3333-333333333333",
@@ -142,8 +142,8 @@ func TestMmapPersister_AppendAndRecover(t *testing.T) {
 	// Verify entries
 	for i, got := range recovered {
 		want := entries[i]
-		if got.FileHandle != want.FileHandle {
-			t.Errorf("entry[%d].FileHandle = %s, want %s", i, got.FileHandle, want.FileHandle)
+		if got.PayloadID != want.PayloadID {
+			t.Errorf("entry[%d].PayloadID = %s, want %s", i, got.PayloadID, want.PayloadID)
 		}
 		if got.ChunkIdx != want.ChunkIdx {
 			t.Errorf("entry[%d].ChunkIdx = %d, want %d", i, got.ChunkIdx, want.ChunkIdx)
@@ -170,7 +170,7 @@ func TestMmapPersister_AppendRemove(t *testing.T) {
 
 	// Add some entries
 	entry1 := &SliceEntry{
-		FileHandle: "file1",
+		PayloadID: "file1",
 		ChunkIdx:   0,
 		Slice: Slice{
 			ID:        "11111111-1111-1111-1111-111111111111",
@@ -182,7 +182,7 @@ func TestMmapPersister_AppendRemove(t *testing.T) {
 		},
 	}
 	entry2 := &SliceEntry{
-		FileHandle: "file2",
+		PayloadID: "file2",
 		ChunkIdx:   0,
 		Slice: Slice{
 			ID:        "22222222-2222-2222-2222-222222222222",
@@ -227,8 +227,8 @@ func TestMmapPersister_AppendRemove(t *testing.T) {
 		t.Fatalf("Recover() got %d entries, want 1", len(recovered))
 	}
 
-	if string(recovered[0].FileHandle) != "file2" {
-		t.Errorf("recovered[0].FileHandle = %s, want file2", recovered[0].FileHandle)
+	if string(recovered[0].PayloadID) != "file2" {
+		t.Errorf("recovered[0].PayloadID = %s, want file2", recovered[0].PayloadID)
 	}
 }
 
@@ -246,7 +246,7 @@ func TestMmapPersister_ClosedOperations(t *testing.T) {
 
 	// All operations should fail after close
 	entry := &SliceEntry{
-		FileHandle: "test",
+		PayloadID: "test",
 		Slice: Slice{
 			ID:   "12345678-1234-1234-1234-123456789012",
 			Data: []byte("data"),
@@ -287,7 +287,7 @@ func TestMmapPersister_GrowFile(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		entry := &SliceEntry{
-			FileHandle: "large-file",
+			PayloadID: "large-file",
 			ChunkIdx:   uint32(i),
 			Slice: Slice{
 				ID:        "12345678-1234-1234-1234-123456789012",
@@ -348,7 +348,7 @@ func TestMmapPersister_EmptyRecover(t *testing.T) {
 	}
 }
 
-func TestMmapPersister_LargeFileHandle(t *testing.T) {
+func TestMmapPersister_LargePayloadID(t *testing.T) {
 	dir := t.TempDir()
 
 	p, err := NewMmapPersister(dir)
@@ -364,7 +364,7 @@ func TestMmapPersister_LargeFileHandle(t *testing.T) {
 	}
 
 	entry := &SliceEntry{
-		FileHandle: string(largeHandle),
+		PayloadID: string(largeHandle),
 		ChunkIdx:   0,
 		Slice: Slice{
 			ID:        "12345678-1234-1234-1234-123456789012",
@@ -400,8 +400,8 @@ func TestMmapPersister_LargeFileHandle(t *testing.T) {
 		t.Fatalf("Recover() got %d entries, want 1", len(recovered))
 	}
 
-	if recovered[0].FileHandle != string(largeHandle) {
-		t.Errorf("FileHandle mismatch after recovery")
+	if recovered[0].PayloadID != string(largeHandle) {
+		t.Errorf("PayloadID mismatch after recovery")
 	}
 }
 
@@ -424,7 +424,7 @@ func TestMmapPersister_ManyBlockRefs(t *testing.T) {
 	}
 
 	entry := &SliceEntry{
-		FileHandle: "test-file",
+		PayloadID: "test-file",
 		ChunkIdx:   0,
 		Slice: Slice{
 			ID:        "12345678-1234-1234-1234-123456789012",
@@ -484,7 +484,7 @@ func TestMmapPersister_ZeroLengthData(t *testing.T) {
 	defer p.Close()
 
 	entry := &SliceEntry{
-		FileHandle: "empty-file",
+		PayloadID: "empty-file",
 		ChunkIdx:   0,
 		Slice: Slice{
 			ID:        "12345678-1234-1234-1234-123456789012",
@@ -649,7 +649,7 @@ func TestMmapPersister_MultiFileRecovery(t *testing.T) {
 	for _, f := range files {
 		for chunk := 0; chunk < f.chunks; chunk++ {
 			entry := &SliceEntry{
-				FileHandle: f.handle,
+				PayloadID: f.handle,
 				ChunkIdx:   uint32(chunk),
 				Slice: Slice{
 					ID:        fmt.Sprintf("%s-chunk%d", f.handle, chunk),
@@ -692,8 +692,8 @@ func TestMmapPersister_MultiFileRecovery(t *testing.T) {
 	for _, f := range files {
 		for chunk := 0; chunk < f.chunks; chunk++ {
 			got := recovered[idx]
-			if got.FileHandle != f.handle {
-				t.Errorf("entry[%d].FileHandle = %s, want %s", idx, got.FileHandle, f.handle)
+			if got.PayloadID != f.handle {
+				t.Errorf("entry[%d].PayloadID = %s, want %s", idx, got.PayloadID, f.handle)
 			}
 			if got.ChunkIdx != uint32(chunk) {
 				t.Errorf("entry[%d].ChunkIdx = %d, want %d", idx, got.ChunkIdx, chunk)
@@ -744,7 +744,7 @@ func TestMmapPersister_RemoveInterleavedWithSlices(t *testing.T) {
 	for i, op := range operations {
 		if op.op == "slice" {
 			entry := &SliceEntry{
-				FileHandle: op.handle,
+				PayloadID: op.handle,
 				ChunkIdx:   op.chunk,
 				Slice: Slice{
 					ID:        fmt.Sprintf("slice-%d", i),
@@ -787,8 +787,8 @@ func TestMmapPersister_RemoveInterleavedWithSlices(t *testing.T) {
 	}
 
 	for _, entry := range recovered {
-		if entry.FileHandle != "file3" {
-			t.Errorf("Unexpected file handle: %s (expected file3)", entry.FileHandle)
+		if entry.PayloadID != "file3" {
+			t.Errorf("Unexpected file handle: %s (expected file3)", entry.PayloadID)
 		}
 	}
 }
@@ -806,7 +806,7 @@ func TestMmapPersister_RecoverPreservesState(t *testing.T) {
 	states := []SliceState{SliceStatePending, SliceStateUploading, SliceStateFlushed}
 	for i, state := range states {
 		entry := &SliceEntry{
-			FileHandle: "test-file",
+			PayloadID: "test-file",
 			ChunkIdx:   uint32(i),
 			Slice: Slice{
 				ID:        fmt.Sprintf("slice-%d", i),
@@ -861,7 +861,7 @@ func TestMmapPersister_RecoverPreservesTimestamp(t *testing.T) {
 	createdAt := time.Date(2025, 6, 15, 10, 30, 45, 123456789, time.UTC)
 
 	entry := &SliceEntry{
-		FileHandle: "test-file",
+		PayloadID: "test-file",
 		ChunkIdx:   0,
 		Slice: Slice{
 			ID:        "test-slice",
@@ -914,7 +914,7 @@ func TestMmapPersister_AppendAfterRecovery(t *testing.T) {
 	now := time.Now()
 	for i := 0; i < 3; i++ {
 		entry := &SliceEntry{
-			FileHandle: "test-file",
+			PayloadID: "test-file",
 			ChunkIdx:   uint32(i),
 			Slice: Slice{
 				ID:        fmt.Sprintf("slice-%d", i),
@@ -948,7 +948,7 @@ func TestMmapPersister_AppendAfterRecovery(t *testing.T) {
 	// Append more entries
 	for i := 3; i < 6; i++ {
 		entry := &SliceEntry{
-			FileHandle: "test-file",
+			PayloadID: "test-file",
 			ChunkIdx:   uint32(i),
 			Slice: Slice{
 				ID:        fmt.Sprintf("slice-%d", i),
@@ -1019,7 +1019,7 @@ func BenchmarkMmapPersister_AppendSlice_Small(b *testing.B) {
 	}
 
 	entry := &SliceEntry{
-		FileHandle: "bench-file",
+		PayloadID: "bench-file",
 		ChunkIdx:   0,
 		Slice: Slice{
 			ID:        "12345678-1234-1234-1234-123456789012",
@@ -1058,7 +1058,7 @@ func BenchmarkMmapPersister_AppendSlice_Medium(b *testing.B) {
 	}
 
 	entry := &SliceEntry{
-		FileHandle: "bench-file",
+		PayloadID: "bench-file",
 		ChunkIdx:   0,
 		Slice: Slice{
 			ID:        "12345678-1234-1234-1234-123456789012",
@@ -1097,7 +1097,7 @@ func BenchmarkMmapPersister_AppendSlice_Large(b *testing.B) {
 	}
 
 	entry := &SliceEntry{
-		FileHandle: "bench-file",
+		PayloadID: "bench-file",
 		ChunkIdx:   0,
 		Slice: Slice{
 			ID:        "12345678-1234-1234-1234-123456789012",
@@ -1133,7 +1133,7 @@ func BenchmarkMmapPersister_Recover_100Entries(b *testing.B) {
 	data := make([]byte, 1024)
 	for i := 0; i < 100; i++ {
 		entry := &SliceEntry{
-			FileHandle: fmt.Sprintf("file-%d", i%10),
+			PayloadID: fmt.Sprintf("file-%d", i%10),
 			ChunkIdx:   uint32(i),
 			Slice: Slice{
 				ID:        fmt.Sprintf("slice-%04d", i),
@@ -1179,7 +1179,7 @@ func BenchmarkMmapPersister_Recover_1000Entries(b *testing.B) {
 	data := make([]byte, 1024)
 	for i := 0; i < 1000; i++ {
 		entry := &SliceEntry{
-			FileHandle: fmt.Sprintf("file-%d", i%10),
+			PayloadID: fmt.Sprintf("file-%d", i%10),
 			ChunkIdx:   uint32(i),
 			Slice: Slice{
 				ID:        fmt.Sprintf("slice-%04d", i),
@@ -1228,7 +1228,7 @@ func BenchmarkMmapPersister_Recover_WithRemoves(b *testing.B) {
 	for file := 0; file < 50; file++ {
 		for chunk := 0; chunk < 10; chunk++ {
 			entry := &SliceEntry{
-				FileHandle: fmt.Sprintf("file-%02d", file),
+				PayloadID: fmt.Sprintf("file-%02d", file),
 				ChunkIdx:   uint32(chunk),
 				Slice: Slice{
 					ID:        fmt.Sprintf("slice-%02d-%02d", file, chunk),
@@ -1304,7 +1304,7 @@ func BenchmarkMmapPersister_Sync(b *testing.B) {
 	// Write some data first
 	data := make([]byte, 1024)
 	entry := &SliceEntry{
-		FileHandle: "bench-file",
+		PayloadID: "bench-file",
 		ChunkIdx:   0,
 		Slice: Slice{
 			ID:        "12345678-1234-1234-1234-123456789012",
@@ -1347,7 +1347,7 @@ func BenchmarkMmapPersister_Throughput(b *testing.B) {
 	}
 
 	entry := &SliceEntry{
-		FileHandle: "throughput-test",
+		PayloadID: "throughput-test",
 		Slice: Slice{
 			ID:        "12345678-1234-1234-1234-123456789012",
 			Length:    uint32(len(data)),

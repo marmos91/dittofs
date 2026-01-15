@@ -6,44 +6,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/payload/block"
 	"github.com/marmos91/dittofs/pkg/payload/chunk"
 	"github.com/marmos91/dittofs/pkg/payload/store"
 )
 
-// BlockSize is the size of a single block (4MB).
-// Re-exported from block package for convenience.
-const BlockSize = block.Size
-
-// DefaultParallelUploads is the default number of concurrent uploads per file.
-const DefaultParallelUploads = 4
-
-// DefaultParallelDownloads is the default number of concurrent downloads per file.
-const DefaultParallelDownloads = 4
-
 // blockPool reuses 4MB buffers for block uploads to reduce GC pressure.
 var blockPool = sync.Pool{
 	New: func() interface{} { return make([]byte, BlockSize) },
-}
-
-// Config holds configuration for the TransferManager.
-type Config struct {
-	// ParallelUploads is the number of concurrent block uploads per file.
-	// Default: 4
-	ParallelUploads int
-
-	// ParallelDownloads is the number of concurrent block downloads per file.
-	// Default: 4
-	ParallelDownloads int
-}
-
-// DefaultConfig returns the default transfer manager configuration.
-func DefaultConfig() Config {
-	return Config{
-		ParallelUploads:   DefaultParallelUploads,
-		ParallelDownloads: DefaultParallelDownloads,
-	}
 }
 
 // fileUploadState tracks in-flight uploads for a single file.
@@ -51,7 +23,6 @@ type fileUploadState struct {
 	inFlight sync.WaitGroup    // Tracks in-flight uploads
 	errors   []error           // Accumulated errors
 	errorsMu sync.Mutex        // Protects errors
-	sem      chan struct{}     // Bounded parallelism
 	blocksMu sync.Mutex        // Protects uploadedBlocks
 	uploaded map[blockKey]bool // Tracks which blocks have been uploaded
 }
@@ -67,7 +38,9 @@ type blockKey struct {
 // Key features:
 //   - Eager upload: Uploads complete 4MB blocks immediately in background goroutines
 //   - Download priority: Downloads pause uploads to minimize read latency
-//   - Parallel I/O: Configurable concurrency for both uploads and downloads
+//   - Prefetch: Speculatively fetches upcoming blocks for sequential reads
+//   - Configurable parallelism: Set max concurrent uploads via config
+//   - In-flight deduplication: Avoids duplicate downloads for the same block
 //   - Non-blocking: All operations return immediately, I/O happens in background
 type TransferManager struct {
 	cache      *cache.Cache
@@ -78,12 +51,19 @@ type TransferManager struct {
 	uploads   map[string]*fileUploadState // payloadID -> state
 	uploadsMu sync.Mutex
 
-	// Transfer queue for non-blocking COMMIT
+	// Global upload semaphore - limits total concurrent uploads
+	uploadSem chan struct{}
+
+	// Transfer queue for non-blocking operations
 	queue *TransferQueue
 
 	// Download priority: uploads pause when downloads are active
 	ioCond           *sync.Cond // Condition variable for upload/download coordination
 	downloadsPending int        // Count of active downloads (protected by ioCond.L)
+
+	// In-flight download tracking: prevents duplicate downloads
+	inFlight   map[string]chan error // blockKey -> completion channel
+	inFlightMu sync.Mutex
 
 	// Shutdown
 	closed bool
@@ -104,12 +84,23 @@ func New(c *cache.Cache, store store.BlockStore, config Config) *TransferManager
 		config.ParallelDownloads = DefaultParallelDownloads
 	}
 
+	// Calculate semaphore size - use MaxParallelUploads if set, otherwise ParallelUploads
+	semSize := config.ParallelUploads
+	if config.MaxParallelUploads > 0 {
+		semSize = config.MaxParallelUploads
+	}
+	if semSize < 1 {
+		semSize = DefaultParallelUploads
+	}
+
 	m := &TransferManager{
 		cache:      c,
 		blockStore: store,
 		config:     config,
 		uploads:    make(map[string]*fileUploadState),
 		ioCond:     sync.NewCond(&sync.Mutex{}),
+		inFlight:   make(map[string]chan error),
+		uploadSem:  make(chan struct{}, semSize),
 	}
 
 	// Initialize transfer queue
@@ -128,7 +119,6 @@ func (m *TransferManager) getOrCreateUploadState(payloadID string) *fileUploadSt
 	state, exists := m.uploads[payloadID]
 	if !exists {
 		state = &fileUploadState{
-			sem:      make(chan struct{}, m.config.ParallelUploads),
 			uploaded: make(map[blockKey]bool),
 		}
 		m.uploads[payloadID] = state
@@ -172,62 +162,70 @@ func (m *TransferManager) waitForDownloads() {
 // It checks if any 4MB blocks are ready for upload and starts async uploads.
 //
 // Parameters:
-//   - shareName: The share name (used in block key prefix)
-//   - fileHandle: The file handle in the cache
-//   - payloadID: The content ID for block key generation
+//   - payloadID: The content ID (used for cache key and block key generation)
 //   - chunkIdx: The chunk index that was written to
 //   - offset: The offset within the chunk
 //   - length: The length of data written
-func (m *TransferManager) OnWriteComplete(ctx context.Context, shareName string, fileHandle string,
-	payloadID string, chunkIdx uint32, offset, length uint32) {
-	// Check context cancellation early to avoid unnecessary work
+func (m *TransferManager) OnWriteComplete(ctx context.Context, payloadID string, chunkIdx uint32, offset, length uint32) {
+	if !m.canProcess(ctx) {
+		return
+	}
+
+	startBlock, endBlock := blockRange(offset, length)
+	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
+		m.tryEagerUpload(ctx, payloadID, chunkIdx, blockIdx)
+	}
+}
+
+// canProcess returns false if the manager is closed or context is cancelled.
+func (m *TransferManager) canProcess(ctx context.Context) bool {
 	if ctx.Err() != nil {
-		return
+		return false
 	}
-
 	m.mu.RLock()
-	if m.closed {
-		m.mu.RUnlock()
+	defer m.mu.RUnlock()
+	return !m.closed
+}
+
+// blockRange returns the range of block indices that overlap with [offset, offset+length).
+func blockRange(offset, length uint32) (start, end uint32) {
+	start = offset / BlockSize
+	end = (offset + length - 1) / BlockSize
+	return
+}
+
+// tryEagerUpload checks if a block is complete and starts an async upload if ready.
+// Only complete 4MB blocks are uploaded; partial blocks are flushed during Flush().
+func (m *TransferManager) tryEagerUpload(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) {
+	blockStart := blockIdx * BlockSize
+	blockEnd := blockStart + BlockSize
+
+	// Skip blocks that extend beyond chunk boundary
+	if blockEnd > cache.ChunkSize {
 		return
 	}
-	m.mu.RUnlock()
 
-	// Calculate which blocks might be complete after this write
-	endOffset := offset + length
-	startBlockIdx := offset / BlockSize
-	endBlockIdx := (endOffset - 1) / BlockSize
-
-	// Check each potentially affected block
-	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
-		// Only upload complete 4MB blocks (not partial blocks)
-		blockStart := blockIdx * BlockSize
-		blockEnd := blockStart + BlockSize
-
-		// For eager upload, we only upload when we have a complete 4MB block
-		// The last partial block is uploaded during Flush()
-		if blockEnd > cache.ChunkSize {
-			continue // Block extends beyond chunk boundary
-		}
-
-		// Check if the block is fully covered by cached data
-		// This prevents uploading blocks with zero-filled gaps
-		covered, err := m.cache.IsRangeCovered(ctx, fileHandle, chunkIdx, blockStart, BlockSize)
-		if err != nil || !covered {
-			continue
-		}
-
-		// Get buffer from pool to reduce GC pressure
-		data := blockPool.Get().([]byte)
-
-		found, err := m.cache.ReadSlice(ctx, fileHandle, chunkIdx, blockStart, BlockSize, data)
-		if err != nil || !found {
-			blockPool.Put(data)
-			continue
-		}
-
-		// Start async upload for this block (takes ownership of data buffer)
-		m.startBlockUpload(ctx, payloadID, chunkIdx, blockIdx, data)
+	// Check if fully covered (no zero-filled gaps)
+	covered, err := m.cache.IsRangeCovered(ctx, payloadID, chunkIdx, blockStart, BlockSize)
+	if err != nil || !covered {
+		return
 	}
+
+	logger.Info("Eager upload triggered",
+		"payloadID", payloadID,
+		"chunkIdx", chunkIdx,
+		"blockIdx", blockIdx)
+
+	// Read block data from cache
+	data := blockPool.Get().([]byte)
+	found, err := m.cache.ReadSlice(ctx, payloadID, chunkIdx, blockStart, BlockSize, data)
+	if err != nil || !found {
+		blockPool.Put(data)
+		return
+	}
+
+	// Start async upload (takes ownership of data buffer)
+	m.startBlockUpload(ctx, payloadID, chunkIdx, blockIdx, data)
 }
 
 // startBlockUpload uploads a block asynchronously with bounded parallelism.
@@ -251,25 +249,47 @@ func (m *TransferManager) startBlockUpload(ctx context.Context,
 	state.uploaded[key] = true // Mark as in-progress
 	state.blocksMu.Unlock()
 
-	// Acquire semaphore slot (blocks if at parallel limit)
-	state.sem <- struct{}{}
+	// Try to acquire semaphore slot (non-blocking)
+	// If all slots are taken, skip eager upload - block will be uploaded during Flush
+	select {
+	case m.uploadSem <- struct{}{}:
+		// Got slot, proceed with upload
+	default:
+		// All slots taken, skip eager upload
+		state.blocksMu.Lock()
+		state.uploaded[key] = false // Unmark so Flush will upload it
+		state.blocksMu.Unlock()
+		blockPool.Put(data)
+		return
+	}
 	state.inFlight.Add(1)
 
 	go func() {
 		defer func() {
 			blockPool.Put(data) // Return buffer to pool
-			<-state.sem
+			<-m.uploadSem       // Release semaphore slot
 			state.inFlight.Done()
 		}()
 
 		// Yield to any pending downloads (download priority)
 		m.waitForDownloads()
 
-		// Generate block key: {payloadID}/chunk-{n}/block-{n}
-		// Note: payloadID already includes the share name (e.g., "export/path/to/file")
-		blockKeyStr := fmt.Sprintf("%s/chunk-%d/block-%d", payloadID, chunkIdx, blockIdx)
+		blockKeyStr := FormatBlockKey(payloadID, chunkIdx, blockIdx)
+		startTime := time.Now()
+
+		logger.Info("Eager upload starting",
+			"payloadID", payloadID,
+			"blockKey", blockKeyStr,
+			"activeUploads", len(m.uploadSem),
+			"maxUploads", cap(m.uploadSem))
 
 		if err := m.blockStore.WriteBlock(ctx, blockKeyStr, data); err != nil {
+			logger.Error("Eager upload failed",
+				"payloadID", payloadID,
+				"blockKey", blockKeyStr,
+				"duration", time.Since(startTime),
+				"error", err)
+
 			state.errorsMu.Lock()
 			state.errors = append(state.errors, fmt.Errorf("upload block %s: %w", blockKeyStr, err))
 			state.errorsMu.Unlock()
@@ -281,30 +301,56 @@ func (m *TransferManager) startBlockUpload(ctx context.Context,
 			return
 		}
 
-		// Block uploaded successfully - the slice will be marked as flushed during Flush()
+		logger.Info("Eager upload complete",
+			"payloadID", payloadID,
+			"blockKey", blockKeyStr,
+			"duration", time.Since(startTime),
+			"size", len(data))
 	}()
 }
 
 // ============================================================================
-// Flush Operations
+// Flush API (Returns FlushResult)
 // ============================================================================
 
-// WaitForUploads waits for all in-flight uploads for a file to complete.
-// Called by BlockService.FlushAndFinalize().
-func (m *TransferManager) WaitForUploads(ctx context.Context, payloadID string) error {
-	m.mu.RLock()
-	if m.closed {
-		m.mu.RUnlock()
-		return fmt.Errorf("transfer manager is closed")
+// Flush enqueues remaining dirty data for background upload and returns immediately.
+//
+// This method does NOT wait for S3 uploads to complete because:
+// 1. Data is already safe in WAL-backed mmap cache (crash-safe via OS page cache)
+// 2. Eager upload handles complete 4MB blocks asynchronously
+// 3. Remaining partial blocks are enqueued for background upload
+//
+// Both NFS COMMIT and SMB CLOSE use this method. NFS/SMB semantics only require
+// data to be durable on stable storage - the mmap WAL provides this guarantee.
+//
+// Deduplication: Blocks already uploaded by eager upload are tracked in state.uploaded
+// and skipped by uploadRemainingSlices. No need to wait for eager uploads to complete.
+func (m *TransferManager) Flush(ctx context.Context, payloadID string) (*FlushResult, error) {
+	if !m.canProcess(ctx) {
+		return nil, fmt.Errorf("transfer manager is closed")
 	}
-	m.mu.RUnlock()
 
+	// Upload remaining dirty slices (partial blocks not covered by eager upload)
+	// in background. No blocking - data is safe in mmap cache.
+	// IMPORTANT: Use context.Background() since request context is cancelled when COMMIT returns.
+	go func() {
+		if err := m.uploadRemainingSlices(context.Background(), payloadID); err != nil {
+			logger.Warn("Failed to upload remaining slices",
+				"payloadID", payloadID,
+				"error", err)
+		}
+	}()
+
+	return &FlushResult{Finalized: true}, nil
+}
+
+// waitForEagerUploads waits for in-flight eager uploads to complete.
+func (m *TransferManager) waitForEagerUploads(ctx context.Context, payloadID string) error {
 	state := m.getUploadState(payloadID)
 	if state == nil {
-		return nil // No uploads for this file
+		return nil
 	}
 
-	// Wait for all in-flight uploads
 	done := make(chan struct{})
 	go func() {
 		state.inFlight.Wait()
@@ -313,67 +359,18 @@ func (m *TransferManager) WaitForUploads(ctx context.Context, payloadID string) 
 
 	select {
 	case <-done:
-		// Check for accumulated errors
-		state.errorsMu.Lock()
-		errs := state.errors
-		state.errorsMu.Unlock()
-
-		if len(errs) > 0 {
-			return fmt.Errorf("upload errors: %v", errs[0])
-		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-// FlushRemaining uploads any remaining data that hasn't been uploaded yet.
-// This is the BLOCKING version - waits for block store uploads to complete.
-// Use FlushRemainingAsync for non-blocking behavior.
-//
-// Deprecated: Use FlushRemainingAsync for better performance.
-func (m *TransferManager) FlushRemaining(ctx context.Context, shareName string, fileHandle string, payloadID string) error {
-	return m.flushRemainingSync(ctx, shareName, fileHandle, payloadID)
-}
-
-// FlushRemainingAsync enqueues remaining data for background upload.
-// Returns immediately after enqueuing - does NOT wait for block store uploads.
-// The cache should be synced before calling this to ensure crash recovery.
-func (m *TransferManager) FlushRemainingAsync(ctx context.Context, shareName string, fileHandle string, payloadID string) error {
-	m.mu.RLock()
-	if m.closed {
-		m.mu.RUnlock()
-		return fmt.Errorf("transfer manager is closed")
-	}
-	m.mu.RUnlock()
-
-	// Create request and enqueue for background upload (non-blocking)
-	req := NewTransferRequest(shareName, fileHandle, payloadID)
-	if !m.queue.Enqueue(req) {
-		// Queue full - fall back to sync upload
-		return m.flushRemainingSync(ctx, shareName, fileHandle, payloadID)
-	}
-
-	return nil
-}
-
-// flushRemainingSync is the internal synchronous implementation.
-// Called by FlushRemaining (blocking) and by background uploader.
-func (m *TransferManager) flushRemainingSync(ctx context.Context, shareName string, fileHandle string, payloadID string) error {
-	return m.flushRemainingSyncInternal(ctx, shareName, fileHandle, payloadID, true)
-}
-
-// flushRemainingSyncInternal is the internal implementation with markFlushed option.
-func (m *TransferManager) flushRemainingSyncInternal(ctx context.Context, shareName string, fileHandle string, payloadID string, markFlushed bool) error {
-	m.mu.RLock()
-	if m.closed {
-		m.mu.RUnlock()
-		return fmt.Errorf("transfer manager is closed")
-	}
-	m.mu.RUnlock()
-
-	// Get all pending slices
-	pending, err := m.cache.GetDirtySlices(ctx, fileHandle)
+// uploadRemainingSlices uploads dirty blocks to the block store in parallel.
+// This handles blocks that weren't eagerly uploaded (partial blocks or when semaphore was full).
+// It reads merged data from cache to ensure all overlapping writes are combined.
+func (m *TransferManager) uploadRemainingSlices(ctx context.Context, payloadID string) error {
+	// Get all pending slices to find which blocks need uploading
+	pending, err := m.cache.GetDirtySlices(ctx, payloadID)
 	if err != nil {
 		if err == cache.ErrFileNotInCache {
 			return nil // No data to flush
@@ -385,103 +382,130 @@ func (m *TransferManager) flushRemainingSyncInternal(ctx context.Context, shareN
 		return nil
 	}
 
-	// Upload slices as blocks
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(pending))
-	sem := make(chan struct{}, m.config.ParallelUploads)
+	// Get upload state for deduplication
+	state := m.getUploadState(payloadID)
+
+	// Collect unique blocks that need uploading with their max extent
+	type blockCoord struct {
+		chunkIdx uint32
+		blockIdx uint32
+	}
+	blocksToUpload := make(map[blockCoord]uint32) // maps to max data extent within block
 
 	for _, slice := range pending {
-		wg.Add(1)
-		sem <- struct{}{}
+		startBlockIdx := slice.Offset / BlockSize
+		endBlockIdx := (slice.Offset + slice.Length - 1) / BlockSize
 
-		go func(s cache.PendingSlice) {
+		for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
+			// Check if already uploaded by eager upload
+			if state != nil {
+				key := blockKey{chunkIdx: slice.ChunkIndex, blockIdx: blockIdx}
+				state.blocksMu.Lock()
+				alreadyUploaded := state.uploaded[key]
+				state.blocksMu.Unlock()
+				if alreadyUploaded {
+					continue
+				}
+			}
+
+			// Calculate max data extent in this block from this slice
+			coord := blockCoord{chunkIdx: slice.ChunkIndex, blockIdx: blockIdx}
+			blockStart := blockIdx * BlockSize
+			sliceEnd := slice.Offset + slice.Length
+			blockEnd := blockStart + BlockSize
+			if sliceEnd < blockEnd {
+				// Slice ends within this block
+				extent := sliceEnd - blockStart
+				if extent > blocksToUpload[coord] {
+					blocksToUpload[coord] = extent
+				}
+			} else {
+				// Slice extends beyond this block - full block
+				blocksToUpload[coord] = BlockSize
+			}
+		}
+	}
+
+	if len(blocksToUpload) == 0 {
+		// Mark slices as flushed since all blocks were already uploaded
+		for _, slice := range pending {
+			m.cache.MarkSliceFlushed(ctx, payloadID, slice.ID, nil)
+		}
+		logger.Info("Flush: all blocks already uploaded",
+			"payloadID", payloadID,
+			"slices", len(pending))
+		return nil
+	}
+
+	logger.Info("Flush: uploading remaining blocks",
+		"payloadID", payloadID,
+		"blocksToUpload", len(blocksToUpload),
+		"activeUploads", len(m.uploadSem),
+		"maxUploads", cap(m.uploadSem))
+
+	// Upload all blocks in parallel using semaphore
+	var wg sync.WaitGroup
+
+	for coord, extent := range blocksToUpload {
+		wg.Add(1)
+
+		// Acquire semaphore slot (blocking for flush)
+		m.uploadSem <- struct{}{}
+
+		go func(chunkIdx, blockIdx, dataLen uint32) {
 			defer func() {
-				<-sem
+				<-m.uploadSem // Release semaphore slot
 				wg.Done()
 			}()
 
-			// Upload slice data as blocks
-			blockRefs, err := m.uploadSliceAsBlocks(ctx, shareName, payloadID, s)
-			if err != nil {
-				errCh <- err
+			// Read merged block data from cache
+			blockOffset := blockIdx * BlockSize
+			blockData := make([]byte, dataLen)
+			found, err := m.cache.ReadSlice(ctx, payloadID, chunkIdx, blockOffset, dataLen, blockData)
+			if err != nil || !found {
+				logger.Error("Flush upload: failed to read block from cache",
+					"payloadID", payloadID,
+					"chunkIdx", chunkIdx,
+					"blockIdx", blockIdx,
+					"error", err)
 				return
 			}
 
-			// Mark slice as flushed in cache (optional - skip during active writes to avoid lock contention)
-			if markFlushed {
-				// Note: ErrSliceNotFound is OK - slice may have been flushed by another
-				// worker and then evicted by LRU. The data is safely in the block store.
-				if err := m.cache.MarkSliceFlushed(ctx, fileHandle, s.ID, blockRefs); err != nil {
-					if err != cache.ErrSliceNotFound {
-						errCh <- err
-					}
-					// ErrSliceNotFound is expected in race conditions - ignore it
-				}
+			blockKeyStr := FormatBlockKey(payloadID, chunkIdx, blockIdx)
+			startTime := time.Now()
+
+			logger.Info("Flush upload starting",
+				"payloadID", payloadID,
+				"blockKey", blockKeyStr,
+				"size", dataLen,
+				"activeUploads", len(m.uploadSem),
+				"maxUploads", cap(m.uploadSem))
+
+			if err := m.blockStore.WriteBlock(ctx, blockKeyStr, blockData); err != nil {
+				logger.Error("Flush upload failed",
+					"payloadID", payloadID,
+					"blockKey", blockKeyStr,
+					"duration", time.Since(startTime),
+					"error", err)
+				return
 			}
-		}(slice)
+
+			logger.Info("Flush upload complete",
+				"payloadID", payloadID,
+				"blockKey", blockKeyStr,
+				"duration", time.Since(startTime),
+				"size", dataLen)
+		}(coord.chunkIdx, coord.blockIdx, extent)
 	}
 
 	wg.Wait()
-	close(errCh)
 
-	// Collect errors
-	var errs []error
-	for err := range errCh {
-		errs = append(errs, err)
+	// Mark all slices as flushed
+	for _, slice := range pending {
+		m.cache.MarkSliceFlushed(ctx, payloadID, slice.ID, nil)
 	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("flush errors: %v", errs[0])
-	}
-
-	// Cleanup upload state
-	m.cleanupUploadState(payloadID)
 
 	return nil
-}
-
-// uploadSliceAsBlocks splits a slice into blocks and uploads each.
-func (m *TransferManager) uploadSliceAsBlocks(ctx context.Context, _, payloadID string, slice cache.PendingSlice) ([]cache.BlockRef, error) {
-	var blockRefs []cache.BlockRef
-	data := slice.Data
-
-	// Calculate the starting block index for this slice
-	startBlockIdx := slice.Offset / BlockSize
-
-	for blockIdx := startBlockIdx; len(data) > 0; blockIdx++ {
-		// Calculate how much data goes into this block
-		blockOffset := blockIdx * BlockSize
-		var blockData []byte
-
-		if slice.Offset > blockOffset {
-			// Slice starts in the middle of this block
-			offsetInBlock := slice.Offset - blockOffset
-			blockSize := min(uint32(len(data)), BlockSize-offsetInBlock)
-			blockData = data[:blockSize]
-			data = data[blockSize:]
-		} else {
-			// Slice starts at or before this block
-			blockSize := min(uint32(len(data)), BlockSize)
-			blockData = data[:blockSize]
-			data = data[blockSize:]
-		}
-
-		// Generate block key: {payloadID}/chunk-{n}/block-{n}
-		// Note: payloadID already includes the share name
-		blockKeyStr := fmt.Sprintf("%s/chunk-%d/block-%d", payloadID, slice.ChunkIndex, blockIdx)
-
-		// Upload block
-		if err := m.blockStore.WriteBlock(ctx, blockKeyStr, blockData); err != nil {
-			return nil, fmt.Errorf("upload block %s: %w", blockKeyStr, err)
-		}
-
-		blockRefs = append(blockRefs, cache.BlockRef{
-			ID:   blockKeyStr,
-			Size: uint32(len(blockData)),
-		})
-	}
-
-	return blockRefs, nil
 }
 
 // ============================================================================
@@ -493,8 +517,10 @@ func (m *TransferManager) uploadSliceAsBlocks(ctx context.Context, _, payloadID 
 //
 // Downloads have priority over uploads - when this function runs, any pending
 // upload goroutines will pause until the download completes.
-func (m *TransferManager) ReadSlice(ctx context.Context, shareName string, fileHandle string,
-	payloadID string, chunkIdx uint32, offset, length uint32, dest []byte) error {
+//
+// Deprecated: Use EnsureAvailable instead, which provides better priority scheduling
+// and prefetch support.
+func (m *TransferManager) ReadSlice(ctx context.Context, payloadID string, chunkIdx uint32, offset, length uint32, dest []byte) error {
 	m.mu.RLock()
 	if m.closed {
 		m.mu.RUnlock()
@@ -537,10 +563,7 @@ func (m *TransferManager) ReadSlice(ctx context.Context, shareName string, fileH
 				wg.Done()
 			}()
 
-			// Generate block key: {payloadID}/chunk-{n}/block-{n}
-			// Note: payloadID already includes the share name
-			blockKeyStr := fmt.Sprintf("%s/chunk-%d/block-%d", payloadID, chunkIdx, blockIdx)
-
+			blockKeyStr := FormatBlockKey(payloadID, chunkIdx, blockIdx)
 			data, err := m.blockStore.ReadBlock(ctx, blockKeyStr)
 			if err != nil {
 				errCh <- fmt.Errorf("read block %s: %w", blockKeyStr, err)
@@ -552,7 +575,7 @@ func (m *TransferManager) ReadSlice(ctx context.Context, shareName string, fileH
 			// Cache the downloaded block as flushed (evictable)
 			// We create a new slice for this block
 			blockOffset := blockIdx * BlockSize
-			if err := m.cache.WriteSlice(ctx, fileHandle, chunkIdx, data, blockOffset); err != nil {
+			if err := m.cache.WriteSlice(ctx, payloadID, chunkIdx, data, blockOffset); err != nil {
 				// Non-fatal: block was read successfully, just not cached
 			}
 		}(i, int(i-startBlockIdx))
@@ -600,6 +623,212 @@ func assembleBlocks(blocks [][]byte, offset, length, startBlockIdx uint32, dest 
 }
 
 // ============================================================================
+// Block-Level Operations (called by queue workers)
+// ============================================================================
+
+// downloadBlock downloads a single block from the block store and caches it.
+// Called by queue workers for download and prefetch requests.
+func (m *TransferManager) downloadBlock(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) error {
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return fmt.Errorf("transfer manager is closed")
+	}
+	m.mu.RUnlock()
+
+	blockKeyStr := FormatBlockKey(payloadID, chunkIdx, blockIdx)
+
+	// Download from block store
+	data, err := m.blockStore.ReadBlock(ctx, blockKeyStr)
+	if err != nil {
+		return fmt.Errorf("download block %s: %w", blockKeyStr, err)
+	}
+
+	// Write to cache as a flushed slice (evictable)
+	// PayloadID is the sole identifier for file content
+	blockOffset := blockIdx * BlockSize
+	if err := m.cache.WriteSlice(ctx, payloadID, chunkIdx, data, blockOffset); err != nil {
+		// Non-fatal: block was read successfully, just not cached
+	}
+
+	return nil
+}
+
+// uploadBlock uploads a single block from cache to block store.
+// Called by queue workers for block-level upload requests (eager upload).
+func (m *TransferManager) uploadBlock(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) error {
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return fmt.Errorf("transfer manager is closed")
+	}
+	m.mu.RUnlock()
+
+	// Read block data from cache
+	blockOffset := blockIdx * BlockSize
+	data := blockPool.Get().([]byte)
+	defer blockPool.Put(data)
+
+	found, err := m.cache.ReadSlice(ctx, payloadID, chunkIdx, blockOffset, BlockSize, data)
+	if err != nil || !found {
+		return fmt.Errorf("block not in cache: chunk=%d block=%d", chunkIdx, blockIdx)
+	}
+
+	// Upload to block store
+	blockKeyStr := FormatBlockKey(payloadID, chunkIdx, blockIdx)
+	if err := m.blockStore.WriteBlock(ctx, blockKeyStr, data); err != nil {
+		return fmt.Errorf("upload block %s: %w", blockKeyStr, err)
+	}
+
+	return nil
+}
+
+// ============================================================================
+// EnsureAvailable
+// ============================================================================
+
+// EnsureAvailable ensures the requested data range is in cache, downloading if needed.
+// Blocks until data is available. Also triggers prefetch for upcoming blocks.
+//
+// This is the preferred method for handling cache misses - it uses the queue
+// for downloads with proper priority scheduling and prefetch support.
+func (m *TransferManager) EnsureAvailable(ctx context.Context, payloadID string, chunkIdx uint32, offset, length uint32) error {
+	if !m.canProcess(ctx) {
+		return fmt.Errorf("transfer manager is closed")
+	}
+
+	// Check if range is already in cache
+	if m.isRangeInCache(ctx, payloadID, chunkIdx, offset, length) {
+		return nil
+	}
+
+	// Calculate which blocks we need
+	startBlockIdx := offset / BlockSize
+	endBlockIdx := (offset + length - 1) / BlockSize
+
+	// Enqueue ALL requests at once: downloads + prefetch (parallel)
+	var doneChannels []chan error
+
+	// 1. Enqueue requested blocks (with Done channels to wait on)
+	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
+		done := m.enqueueDownload(payloadID, chunkIdx, blockIdx)
+		if done != nil {
+			doneChannels = append(doneChannels, done)
+		}
+	}
+
+	// 2. Enqueue prefetch blocks (no Done channel, fire-and-forget)
+	//    This happens IN PARALLEL with the downloads above
+	if m.config.PrefetchBlocks > 0 {
+		blocksPerChunk := uint32(cache.ChunkSize / BlockSize)
+		for i := 0; i < m.config.PrefetchBlocks; i++ {
+			prefetchBlockIdx := endBlockIdx + 1 + uint32(i)
+			// Calculate actual chunk/block for blocks that span chunk boundaries
+			actualChunk := chunkIdx + prefetchBlockIdx/blocksPerChunk
+			actualBlock := prefetchBlockIdx % blocksPerChunk
+			m.enqueuePrefetch(payloadID, actualChunk, actualBlock)
+		}
+	}
+
+	// 3. Wait for all requested blocks to complete
+	for _, done := range doneChannels {
+		select {
+		case err := <-done:
+			if err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	return nil
+}
+
+// enqueueDownload enqueues a download, handling in-flight deduplication.
+// Returns channel to wait on, or nil if already in cache.
+func (m *TransferManager) enqueueDownload(payloadID string, chunkIdx, blockIdx uint32) chan error {
+	// Check cache first (fast path)
+	if m.isBlockInCache(payloadID, chunkIdx, blockIdx) {
+		return nil
+	}
+
+	key := FormatBlockKey(payloadID, chunkIdx, blockIdx)
+
+	m.inFlightMu.Lock()
+	defer m.inFlightMu.Unlock()
+
+	// Check if already in-flight (wait on existing channel)
+	if existing, ok := m.inFlight[key]; ok {
+		// Create waiter that receives from existing download
+		waiter := make(chan error, 1)
+		go func() {
+			waiter <- <-existing
+		}()
+		return waiter
+	}
+
+	// Create new completion channel and enqueue
+	done := make(chan error, 1)
+	m.inFlight[key] = done
+
+	req := NewDownloadRequest(payloadID, chunkIdx, blockIdx, nil)
+	req.Done = m.wrapDoneChannel(key, done)
+	m.queue.EnqueueDownload(req)
+
+	return done
+}
+
+// wrapDoneChannel creates a channel that cleans up in-flight tracking when signaled.
+func (m *TransferManager) wrapDoneChannel(key string, original chan error) chan error {
+	wrapped := make(chan error, 1)
+	go func() {
+		err := <-wrapped
+		// Cleanup in-flight tracking
+		m.inFlightMu.Lock()
+		delete(m.inFlight, key)
+		m.inFlightMu.Unlock()
+		// Forward to original
+		original <- err
+		close(original)
+	}()
+	return wrapped
+}
+
+// enqueuePrefetch enqueues a prefetch request (non-blocking, best effort).
+func (m *TransferManager) enqueuePrefetch(payloadID string, chunkIdx, blockIdx uint32) {
+	// Skip if in cache
+	if m.isBlockInCache(payloadID, chunkIdx, blockIdx) {
+		return
+	}
+
+	// Skip if already in-flight
+	key := FormatBlockKey(payloadID, chunkIdx, blockIdx)
+	m.inFlightMu.Lock()
+	if _, ok := m.inFlight[key]; ok {
+		m.inFlightMu.Unlock()
+		return
+	}
+	m.inFlightMu.Unlock()
+
+	// Non-blocking enqueue (drop if full - prefetch is best effort)
+	m.queue.EnqueuePrefetch(NewPrefetchRequest(payloadID, chunkIdx, blockIdx))
+}
+
+// isBlockInCache checks if a block is fully in cache.
+func (m *TransferManager) isBlockInCache(payloadID string, chunkIdx, blockIdx uint32) bool {
+	blockOffset := blockIdx * BlockSize
+	covered, err := m.cache.IsRangeCovered(context.Background(), payloadID, chunkIdx, blockOffset, BlockSize)
+	return err == nil && covered
+}
+
+// isRangeInCache checks if a range is fully in cache.
+func (m *TransferManager) isRangeInCache(ctx context.Context, payloadID string, chunkIdx uint32, offset, length uint32) bool {
+	covered, err := m.cache.IsRangeCovered(ctx, payloadID, chunkIdx, offset, length)
+	return err == nil && covered
+}
+
+// ============================================================================
 // Block Store Queries
 // ============================================================================
 
@@ -618,7 +847,7 @@ func (m *TransferManager) GetFileSize(ctx context.Context, shareName, payloadID 
 		return 0, fmt.Errorf("no block store configured")
 	}
 
-	// List all blocks for this file
+	// List all blocks to find the highest chunk/block indices
 	prefix := payloadID + "/"
 	blocks, err := blockStore.ListByPrefix(ctx, prefix)
 	if err != nil {
@@ -629,84 +858,67 @@ func (m *TransferManager) GetFileSize(ctx context.Context, shareName, payloadID 
 		return 0, nil
 	}
 
-	// Calculate total size from blocks
-	// Block key format: {payloadID}/chunk-{chunkIdx}/block-{blockIdx}
+	// Find the last block (highest chunk/block indices)
 	var maxChunkIdx, maxBlockIdx uint32
-	blockSizes := make(map[string]uint32) // blockKey -> size
-
 	for _, blockKey := range blocks {
 		var chunkIdx, blockIdx uint32
-		// Parse chunk and block index from key
-		_, err := fmt.Sscanf(blockKey, payloadID+"/chunk-%d/block-%d", &chunkIdx, &blockIdx)
-		if err != nil {
+		if _, err := fmt.Sscanf(blockKey, payloadID+"/chunk-%d/block-%d", &chunkIdx, &blockIdx); err != nil {
 			continue
 		}
-
-		// Track highest chunk/block for size calculation
 		if chunkIdx > maxChunkIdx || (chunkIdx == maxChunkIdx && blockIdx > maxBlockIdx) {
 			maxChunkIdx = chunkIdx
 			maxBlockIdx = blockIdx
 		}
-
-		// Read block to get actual size (last block may be partial)
-		data, err := blockStore.ReadBlock(ctx, blockKey)
-		if err != nil {
-			continue
-		}
-		blockSizes[blockKey] = uint32(len(data))
 	}
 
-	// Calculate total size
-	// Full chunks: maxChunkIdx * ChunkSize
-	// Last chunk: (maxBlockIdx * BlockSize) + last block size
-	lastBlockKey := fmt.Sprintf("%s/chunk-%d/block-%d", payloadID, maxChunkIdx, maxBlockIdx)
-	lastBlockSize := blockSizes[lastBlockKey]
-	if lastBlockSize == 0 {
-		lastBlockSize = BlockSize // Assume full block if we couldn't read it
+	// Only read the last block to get its size (may be partial)
+	lastBlockKey := FormatBlockKey(payloadID, maxChunkIdx, maxBlockIdx)
+	lastBlockData, err := blockStore.ReadBlock(ctx, lastBlockKey)
+	lastBlockSize := uint64(BlockSize)
+	if err == nil {
+		lastBlockSize = uint64(len(lastBlockData))
 	}
 
+	// Total = full chunks + full blocks in last chunk + last block size
 	totalSize := uint64(maxChunkIdx)*uint64(chunk.Size) +
 		uint64(maxBlockIdx)*uint64(BlockSize) +
-		uint64(lastBlockSize)
+		lastBlockSize
 
 	return totalSize, nil
 }
 
 // Exists checks if any blocks exist for a file in the block store.
 func (m *TransferManager) Exists(ctx context.Context, shareName, payloadID string) (bool, error) {
-	m.mu.RLock()
-	if m.closed {
-		m.mu.RUnlock()
+	if !m.canProcess(ctx) {
 		return false, fmt.Errorf("transfer manager is closed")
 	}
-	blockStore := m.blockStore
-	m.mu.RUnlock()
 
-	if blockStore == nil {
+	if m.blockStore == nil {
 		return false, fmt.Errorf("no block store configured")
 	}
 
-	// List blocks for this file
-	prefix := payloadID + "/"
-	blocks, err := blockStore.ListByPrefix(ctx, prefix)
-	if err != nil {
-		return false, fmt.Errorf("list blocks: %w", err)
+	// Check if the first block exists (fast path)
+	firstBlockKey := FormatBlockKey(payloadID, 0, 0)
+	_, err := m.blockStore.ReadBlock(ctx, firstBlockKey)
+	if err == nil {
+		return true, nil
 	}
-
-	return len(blocks) > 0, nil
+	if err == store.ErrBlockNotFound {
+		return false, nil
+	}
+	return false, fmt.Errorf("check block: %w", err)
 }
 
 // Truncate removes blocks beyond the new size from the block store.
+// Note: This deletes whole blocks only. Partial block truncation (e.g., truncating
+// to middle of a block) is not supported - the last block retains its original size.
+// Future optimization: Add TruncateBlock to BlockStore interface using S3 CopyObjectWithRange.
 func (m *TransferManager) Truncate(ctx context.Context, shareName, payloadID string, newSize uint64) error {
-	m.mu.RLock()
-	if m.closed {
-		m.mu.RUnlock()
+	if !m.canProcess(ctx) {
 		return fmt.Errorf("transfer manager is closed")
 	}
-	blockStore := m.blockStore
-	m.mu.RUnlock()
 
-	if blockStore == nil {
+	if m.blockStore == nil {
 		return fmt.Errorf("no block store configured")
 	}
 
@@ -715,24 +927,20 @@ func (m *TransferManager) Truncate(ctx context.Context, shareName, payloadID str
 	offsetInChunk := chunk.OffsetInChunk(newSize)
 	newBlockIdx := block.IndexForOffset(offsetInChunk)
 
-	// List all blocks for this file
+	// List and delete blocks beyond the new size
 	prefix := payloadID + "/"
-	blocks, err := blockStore.ListByPrefix(ctx, prefix)
+	blocks, err := m.blockStore.ListByPrefix(ctx, prefix)
 	if err != nil {
 		return fmt.Errorf("list blocks: %w", err)
 	}
 
-	// Delete blocks beyond the new size
 	for _, blockKey := range blocks {
 		var chunkIdx, blockIdx uint32
-		_, err := fmt.Sscanf(blockKey, payloadID+"/chunk-%d/block-%d", &chunkIdx, &blockIdx)
-		if err != nil {
+		if _, err := fmt.Sscanf(blockKey, payloadID+"/chunk-%d/block-%d", &chunkIdx, &blockIdx); err != nil {
 			continue
 		}
-
-		// Delete if beyond new size
 		if chunkIdx > newChunkIdx || (chunkIdx == newChunkIdx && blockIdx > newBlockIdx) {
-			if err := blockStore.DeleteBlock(ctx, blockKey); err != nil {
+			if err := m.blockStore.DeleteBlock(ctx, blockKey); err != nil {
 				return fmt.Errorf("delete block %s: %w", blockKey, err)
 			}
 		}
@@ -743,25 +951,15 @@ func (m *TransferManager) Truncate(ctx context.Context, shareName, payloadID str
 
 // Delete removes all blocks for a file from the block store.
 func (m *TransferManager) Delete(ctx context.Context, shareName, payloadID string) error {
-	m.mu.RLock()
-	if m.closed {
-		m.mu.RUnlock()
+	if !m.canProcess(ctx) {
 		return fmt.Errorf("transfer manager is closed")
 	}
-	blockStore := m.blockStore
-	m.mu.RUnlock()
 
-	if blockStore == nil {
+	if m.blockStore == nil {
 		return fmt.Errorf("no block store configured")
 	}
 
-	// Delete all blocks with this prefix
-	prefix := payloadID + "/"
-	if err := blockStore.DeleteByPrefix(ctx, prefix); err != nil {
-		return fmt.Errorf("delete blocks: %w", err)
-	}
-
-	return nil
+	return m.blockStore.DeleteByPrefix(ctx, payloadID+"/")
 }
 
 // ============================================================================

@@ -32,7 +32,7 @@ This package defines the canonical types used by both WAL and cache:
 - `SliceState` - re-exported by cache as `cache.SliceState`
 - `BlockRef` - re-exported by cache as `cache.BlockRef`
 - `Slice` - canonical slice type (re-exported by cache)
-- `SliceEntry` - WAL persistence format (FileHandle + ChunkIdx + embedded Slice)
+- `SliceEntry` - WAL persistence format (PayloadID + ChunkIdx + embedded Slice)
 
 ### SliceState
 
@@ -63,9 +63,9 @@ WAL record for a single slice write. Embeds Slice for zero-copy efficiency.
 
 ```go
 type SliceEntry struct {
-    FileHandle string  // File this slice belongs to
-    ChunkIdx   uint32  // Chunk index within file
-    Slice              // Embedded slice (ID, Offset, Length, Data, State, CreatedAt, BlockRefs)
+    PayloadID string  // Identifies the file this slice belongs to
+    ChunkIdx  uint32  // Chunk index within file
+    Slice             // Embedded slice (ID, Offset, Length, Data, State, CreatedAt, BlockRefs)
 }
 ```
 
@@ -93,7 +93,7 @@ cache, err := cache.NewWithWal(maxSize, persister)
 
 **Methods:**
 - `AppendSlice(entry *SliceEntry) error` - Log a slice write
-- `AppendRemove(fileHandle string) error` - Log a file removal
+- `AppendRemove(payloadID string) error` - Log a file removal
 - `Sync() error` - Fsync WAL to disk
 - `Recover() ([]SliceEntry, error)` - Replay WAL entries on startup
 - `Close() error` - Cleanup resources
@@ -158,8 +158,8 @@ c := cache.New(maxSize)
 
 [Slice Entry: variable]
   - Type: 1 byte (0=slice)
-  - File handle length: uint16 (2 bytes)
-  - File handle: variable
+  - Payload ID length: uint16 (2 bytes)
+  - Payload ID: variable
   - Chunk index: uint32 (4 bytes)
   - Slice ID: 36 bytes (UUID string)
   - Offset in chunk: uint32 (4 bytes)
@@ -172,8 +172,8 @@ c := cache.New(maxSize)
 
 [Remove Entry: variable]
   - Type: 1 byte (3=remove)
-  - File handle length: uint16 (2 bytes)
-  - File handle: variable
+  - Payload ID length: uint16 (2 bytes)
+  - Payload ID: variable
 ```
 
 ## Package Structure

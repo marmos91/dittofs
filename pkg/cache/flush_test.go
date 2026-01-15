@@ -544,18 +544,18 @@ func BenchmarkGetDirtySlices(b *testing.B) {
 			defer c.Close()
 
 			ctx := context.Background()
-			fileHandle := "bench-file"
+			payloadID := "bench-file"
 
 			// Create dirty slices across multiple chunks
 			data := make([]byte, 32*1024)
 			for i := 0; i < chunks; i++ {
-				_ = c.WriteSlice(ctx, fileHandle, uint32(i), data, 0)
+				_ = c.WriteSlice(ctx, payloadID, uint32(i), data, 0)
 			}
 
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				_, err := c.GetDirtySlices(ctx, fileHandle)
+				_, err := c.GetDirtySlices(ctx, payloadID)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -579,17 +579,17 @@ func BenchmarkCoalesceWrites(b *testing.B) {
 
 			for i := 0; i < b.N; i++ {
 				b.StopTimer()
-				fileHandle := fmt.Sprintf("file-%d", i)
+				payloadID := fmt.Sprintf("file-%d", i)
 
 				// Create many small non-adjacent slices
 				for j := 0; j < slices; j++ {
 					data := make([]byte, 1024)
 					offset := uint32(j * 2048) // 1KB gap between slices
-					_ = c.WriteSlice(ctx, fileHandle, 0, data, offset)
+					_ = c.WriteSlice(ctx, payloadID, 0, data, offset)
 				}
 				b.StartTimer()
 
-				if err := c.CoalesceWrites(ctx, fileHandle); err != nil {
+				if err := c.CoalesceWrites(ctx, payloadID); err != nil {
 					b.Fatal(err)
 				}
 			}

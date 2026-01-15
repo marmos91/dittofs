@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/marmos91/dittofs/pkg/payload/store"
@@ -26,6 +27,12 @@ type Config struct {
 
 	// Endpoint is the S3 endpoint URL (optional, for S3-compatible services).
 	Endpoint string
+
+	// AccessKey is the S3 access key ID (optional, uses AWS SDK default chain if empty).
+	AccessKey string
+
+	// SecretKey is the S3 secret access key (optional, uses AWS SDK default chain if empty).
+	SecretKey string
 
 	// KeyPrefix is prepended to all block keys (e.g., "blocks/").
 	// Should end with "/" if non-empty.
@@ -64,6 +71,13 @@ func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
 
 	if config.Region != "" {
 		opts = append(opts, awsconfig.WithRegion(config.Region))
+	}
+
+	// Use static credentials if provided
+	if config.AccessKey != "" && config.SecretKey != "" {
+		opts = append(opts, awsconfig.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(config.AccessKey, config.SecretKey, ""),
+		))
 	}
 
 	// Load AWS configuration

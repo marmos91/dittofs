@@ -21,7 +21,7 @@ import (
 // Errors:
 //   - ErrCacheClosed: cache has been closed
 //   - context.Canceled/DeadlineExceeded: context was cancelled
-func (c *Cache) Remove(ctx context.Context, fileHandle string) error {
+func (c *Cache) Remove(ctx context.Context, payloadID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -33,13 +33,13 @@ func (c *Cache) Remove(ctx context.Context, fileHandle string) error {
 		return ErrCacheClosed
 	}
 
-	entry, exists := c.files[fileHandle]
+	entry, exists := c.files[payloadID]
 	if !exists {
 		return nil // Idempotent
 	}
 
 	size := entryDataSize(entry)
-	delete(c.files, fileHandle)
+	delete(c.files, payloadID)
 
 	if size > 0 {
 		c.totalSize.Add(^(size - 1)) // Subtract
@@ -47,7 +47,7 @@ func (c *Cache) Remove(ctx context.Context, fileHandle string) error {
 
 	// Persist removal to WAL if enabled
 	if c.persister != nil {
-		if err := c.persister.AppendRemove(fileHandle); err != nil {
+		if err := c.persister.AppendRemove(payloadID); err != nil {
 			return err
 		}
 	}
@@ -69,7 +69,7 @@ func (c *Cache) Remove(ctx context.Context, fileHandle string) error {
 // Errors:
 //   - ErrCacheClosed: cache has been closed
 //   - context.Canceled/DeadlineExceeded: context was cancelled
-func (c *Cache) Truncate(ctx context.Context, fileHandle string, newSize uint64) error {
+func (c *Cache) Truncate(ctx context.Context, payloadID string, newSize uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func (c *Cache) Truncate(ctx context.Context, fileHandle string, newSize uint64)
 	}
 	c.globalMu.RUnlock()
 
-	entry := c.getFileEntry(fileHandle)
+	entry := c.getFileEntry(payloadID)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
@@ -155,7 +155,7 @@ func (c *Cache) Truncate(ctx context.Context, fileHandle string, newSize uint64)
 // be removed until its slices are flushed to the block store.
 //
 // Thread-safe. Returns false if cache is closed or file doesn't exist.
-func (c *Cache) HasDirtyData(fileHandle string) bool {
+func (c *Cache) HasDirtyData(payloadID string) bool {
 	c.globalMu.RLock()
 	if c.closed {
 		c.globalMu.RUnlock()
@@ -163,7 +163,7 @@ func (c *Cache) HasDirtyData(fileHandle string) bool {
 	}
 	c.globalMu.RUnlock()
 
-	entry := c.getFileEntry(fileHandle)
+	entry := c.getFileEntry(payloadID)
 	entry.mu.RLock()
 	defer entry.mu.RUnlock()
 
@@ -184,7 +184,7 @@ func (c *Cache) HasDirtyData(fileHandle string) bool {
 // this may differ from the actual file size if not all data is cached.
 //
 // Returns 0 if the file doesn't exist in cache or cache is closed.
-func (c *Cache) GetFileSize(fileHandle string) uint64 {
+func (c *Cache) GetFileSize(payloadID string) uint64 {
 	c.globalMu.RLock()
 	if c.closed {
 		c.globalMu.RUnlock()
@@ -192,7 +192,7 @@ func (c *Cache) GetFileSize(fileHandle string) uint64 {
 	}
 	c.globalMu.RUnlock()
 
-	entry := c.getFileEntry(fileHandle)
+	entry := c.getFileEntry(payloadID)
 	entry.mu.RLock()
 	defer entry.mu.RUnlock()
 
@@ -251,6 +251,31 @@ func (c *Cache) ListFiles() []string {
 	result := make([]string, 0, len(c.files))
 	for key := range c.files {
 		result = append(result, key)
+	}
+
+	return result
+}
+
+// ListFilesWithSizes returns all cached files with their calculated sizes.
+//
+// For each file in cache, the size is calculated as the maximum byte offset
+// covered by any slice. This is used during crash recovery to reconcile
+// metadata with actual recovered data.
+//
+// Returns nil if cache is closed.
+func (c *Cache) ListFilesWithSizes() map[string]uint64 {
+	c.globalMu.RLock()
+	defer c.globalMu.RUnlock()
+
+	if c.closed {
+		return nil
+	}
+
+	result := make(map[string]uint64, len(c.files))
+	for key, entry := range c.files {
+		entry.mu.RLock()
+		result[key] = getFileSizeUnlocked(entry)
+		entry.mu.RUnlock()
 	}
 
 	return result

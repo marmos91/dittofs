@@ -26,11 +26,11 @@ Sequential writes benefit from the slice extension optimization, achieving near-
 
 | Size | Throughput | Allocs/op |
 |------|------------|-----------|
-| 4KB | 4.1 GB/s | 0 |
-| 16KB | 5.1 GB/s | 0 |
-| 32KB | 5.0 GB/s | 0 |
-| 64KB | 4.6 GB/s | 0 |
-| 128KB | 5.2 GB/s | 0 |
+| 4KB | 4.0 GB/s | 0 |
+| 16KB | 5.0 GB/s | 0 |
+| 32KB | 6.6 GB/s | 0 |
+| 64KB | 4.8 GB/s | 0 |
+| 128KB | 5.4 GB/s | 0 |
 
 The sequential extension optimization merges 32KB NFS writes into single growing slices:
 - **96K iterations** produced only **47 slices** (not 96K slices)
@@ -81,15 +81,19 @@ Read performance is consistent across sizes.
 
 Performance when reading ranges covered by overlapping slices:
 
-| Overlapping Slices | Throughput |
-|--------------------|------------|
-| 1 | 2.3 GB/s |
-| 5 | 812 MB/s |
-| 10 | 459 MB/s |
-| 25 | 312 MB/s |
-| 50 | 313 MB/s |
+| Overlapping Slices | Throughput | Allocs/op |
+|--------------------|------------|-----------|
+| 1 | 41 GB/s | 4KB |
+| 5 | 28 GB/s | 4KB |
+| 10 | 27 GB/s | 4KB |
+| 25 | 22 GB/s | 4KB |
+| 50 | 22 GB/s | 4KB |
 
-The merge algorithm scales sub-linearly with slice count.
+**Optimizations:**
+- Fast path for single-slice coverage (most common case)
+- Bitset-based coverage tracking (8x less memory than bool array)
+- Word-level bit operations for O(64) byte scanning instead of O(1)
+- `math/bits.TrailingZeros64` for fast bit position detection
 
 ## Flush Benchmarks
 

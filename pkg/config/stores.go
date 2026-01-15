@@ -161,6 +161,8 @@ func createS3BlockStore(ctx context.Context, cfg BlockStoreS3Config) (store.Bloc
 		Bucket:         cfg.Bucket,
 		Region:         cfg.Region,
 		Endpoint:       cfg.Endpoint,
+		AccessKey:      cfg.AccessKey,
+		SecretKey:      cfg.SecretKey,
 		KeyPrefix:      cfg.KeyPrefix,
 		MaxRetries:     cfg.MaxRetries,
 		ForcePathStyle: cfg.ForcePathStyle,

@@ -31,16 +31,16 @@ func (c *Cache) evictLRUUntilFits(neededBytes uint64) {
 // evictLRUToTarget evicts flushed slices from LRU files until size <= target.
 func (c *Cache) evictLRUToTarget(targetSize uint64) {
 	type fileAccess struct {
-		handle     string
+		payloadID  string
 		lastAccess time.Time
 	}
 
 	// Snapshot file access times under lock
 	c.globalMu.RLock()
 	files := make([]fileAccess, 0, len(c.files))
-	for handle, entry := range c.files {
+	for payloadID, entry := range c.files {
 		entry.mu.RLock()
-		files = append(files, fileAccess{handle, entry.lastAccess})
+		files = append(files, fileAccess{payloadID, entry.lastAccess})
 		entry.mu.RUnlock()
 	}
 	c.globalMu.RUnlock()
@@ -55,15 +55,15 @@ func (c *Cache) evictLRUToTarget(targetSize uint64) {
 		if c.totalSize.Load() <= targetSize {
 			break
 		}
-		c.evictFlushedFromEntry(f.handle)
+		c.evictFlushedFromEntry(f.payloadID)
 	}
 }
 
 // evictFlushedFromEntry removes flushed slices from a file entry.
 // Returns bytes evicted. Caller must NOT hold any locks.
-func (c *Cache) evictFlushedFromEntry(handle string) uint64 {
+func (c *Cache) evictFlushedFromEntry(payloadID string) uint64 {
 	c.globalMu.RLock()
-	entry, exists := c.files[handle]
+	entry, exists := c.files[payloadID]
 	c.globalMu.RUnlock()
 
 	if !exists {
@@ -140,7 +140,7 @@ func (c *Cache) EvictLRU(ctx context.Context, targetFreeBytes uint64) (uint64, e
 //
 // Use this when a file is closed or deleted to free its cache space immediately.
 // Only flushed slices are removed - dirty data is protected.
-func (c *Cache) Evict(ctx context.Context, fileHandle string) (uint64, error) {
+func (c *Cache) Evict(ctx context.Context, payloadID string) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -152,7 +152,7 @@ func (c *Cache) Evict(ctx context.Context, fileHandle string) (uint64, error) {
 	}
 	c.globalMu.RUnlock()
 
-	entry := c.getFileEntry(fileHandle)
+	entry := c.getFileEntry(payloadID)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
@@ -178,15 +178,15 @@ func (c *Cache) EvictAll(ctx context.Context) (uint64, error) {
 		c.globalMu.RUnlock()
 		return 0, ErrCacheClosed
 	}
-	handles := make([]string, 0, len(c.files))
+	payloadIDs := make([]string, 0, len(c.files))
 	for k := range c.files {
-		handles = append(handles, k)
+		payloadIDs = append(payloadIDs, k)
 	}
 	c.globalMu.RUnlock()
 
 	var total uint64
-	for _, handle := range handles {
-		evicted, err := c.Evict(ctx, handle)
+	for _, payloadID := range payloadIDs {
+		evicted, err := c.Evict(ctx, payloadID)
 		if err != nil {
 			return total, err
 		}

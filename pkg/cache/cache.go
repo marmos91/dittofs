@@ -124,7 +124,7 @@ func (c *Cache) recoverFromWal() error {
 	}
 
 	for _, entry := range entries {
-		fileEntry := c.getFileEntry(entry.FileHandle)
+		fileEntry := c.getFileEntry(entry.PayloadID)
 		fileEntry.mu.Lock()
 
 		chunk, exists := fileEntry.chunks[entry.ChunkIdx]
@@ -145,14 +145,14 @@ func (c *Cache) recoverFromWal() error {
 	return nil
 }
 
-// getFileEntry returns or creates a file entry for the given file handle.
+// getFileEntry returns or creates a file entry for the given payload ID.
 //
 // Thread-safe: Uses double-checked locking for efficiency. First attempts
 // a read lock, then upgrades to write lock only if the entry doesn't exist.
 //
 // The returned entry has its own mutex for fine-grained locking.
-func (c *Cache) getFileEntry(fileHandle string) *fileEntry {
-	key := fileHandle
+func (c *Cache) getFileEntry(payloadID string) *fileEntry {
+	key := payloadID
 
 	c.globalMu.RLock()
 	entry, exists := c.files[key]

@@ -31,8 +31,7 @@ import (
 //	svc := payload.New(cache, transferManager)
 //	err := svc.WriteAt(ctx, shareName, payloadID, data, offset)
 //	n, err := svc.ReadAt(ctx, shareName, payloadID, buf, offset)
-//	err := svc.FlushAsync(ctx, shareName, payloadID)  // NFS COMMIT
-//	err := svc.Flush(ctx, shareName, payloadID)       // SMB CLOSE
+//	err := svc.Flush(ctx, shareName, payloadID)  // NFS COMMIT / SMB CLOSE
 type PayloadService struct {
 	cache           *cache.Cache
 	transferManager *transfer.TransferManager
@@ -66,13 +65,16 @@ func New(c *cache.Cache, tm *transfer.TransferManager) (*PayloadService, error) 
 // Data is read from cache first, falling back to block store on cache miss.
 // Reads span multiple chunks if the range crosses chunk boundaries,
 // with slices merged using newest-wins semantics.
+//
+// On cache miss, uses EnsureAvailable which downloads required blocks and
+// triggers prefetch for sequential read optimization.
 func (s *PayloadService) ReadAt(ctx context.Context, shareName string, id metadata.PayloadID, p []byte, offset uint64) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
 
-	// PayloadID is used directly as cache key
-	fileHandle := string(id)
+	// PayloadID is the sole identifier for file content
+	payloadID := string(id)
 
 	totalRead := 0
 	for slice := range chunk.Slices(offset, len(p)) {
@@ -80,16 +82,22 @@ func (s *PayloadService) ReadAt(ctx context.Context, shareName string, id metada
 		dest := p[slice.BufOffset : slice.BufOffset+int(slice.Length)]
 
 		// Try to read from cache first
-		found, err := s.cache.ReadSlice(ctx, fileHandle, slice.ChunkIndex, slice.Offset, slice.Length, dest)
+		found, err := s.cache.ReadSlice(ctx, payloadID, slice.ChunkIndex, slice.Offset, slice.Length, dest)
 		if err != nil && err != cache.ErrFileNotInCache {
 			return totalRead, fmt.Errorf("read slice from chunk %d failed: %w", slice.ChunkIndex, err)
 		}
 
 		if !found {
-			// Cache miss - fetch from block store
-			err := s.transferManager.ReadSlice(ctx, shareName, fileHandle, fileHandle, slice.ChunkIndex, slice.Offset, slice.Length, dest)
+			// Cache miss - ensure data is available (downloads + prefetch)
+			err := s.transferManager.EnsureAvailable(ctx, payloadID, slice.ChunkIndex, slice.Offset, slice.Length)
 			if err != nil {
-				return totalRead, fmt.Errorf("read blocks from chunk %d failed: %w", slice.ChunkIndex, err)
+				return totalRead, fmt.Errorf("ensure available for chunk %d failed: %w", slice.ChunkIndex, err)
+			}
+
+			// Now read from cache
+			found, err = s.cache.ReadSlice(ctx, payloadID, slice.ChunkIndex, slice.Offset, slice.Length, dest)
+			if err != nil || !found {
+				return totalRead, fmt.Errorf("data not in cache after download for chunk %d", slice.ChunkIndex)
 			}
 		}
 
@@ -103,31 +111,31 @@ func (s *PayloadService) ReadAt(ctx context.Context, shareName string, id metada
 //
 // Checks cache first, falls back to block store metadata.
 func (s *PayloadService) GetSize(ctx context.Context, shareName string, id metadata.PayloadID) (uint64, error) {
-	fileHandle := string(id)
+	payloadID := string(id)
 
 	// Check cache first
-	size := s.cache.GetFileSize(fileHandle)
+	size := s.cache.GetFileSize(payloadID)
 	if size > 0 {
 		return size, nil
 	}
 
 	// Fall back to block store
-	return s.transferManager.GetFileSize(ctx, shareName, string(id))
+	return s.transferManager.GetFileSize(ctx, shareName, payloadID)
 }
 
 // Exists checks if payload exists for the file.
 //
 // Checks cache first, falls back to block store.
 func (s *PayloadService) Exists(ctx context.Context, shareName string, id metadata.PayloadID) (bool, error) {
-	fileHandle := string(id)
+	payloadID := string(id)
 
 	// Check cache first
-	if s.cache.GetFileSize(fileHandle) > 0 {
+	if s.cache.GetFileSize(payloadID) > 0 {
 		return true, nil
 	}
 
 	// Fall back to block store
-	return s.transferManager.Exists(ctx, shareName, string(id))
+	return s.transferManager.Exists(ctx, shareName, payloadID)
 }
 
 // ============================================================================
@@ -147,23 +155,20 @@ func (s *PayloadService) WriteAt(ctx context.Context, shareName string, id metad
 		return nil
 	}
 
-	fileHandle := string(id)
+	// PayloadID is the sole identifier for file content
 	payloadID := string(id)
 
 	for slice := range chunk.Slices(offset, len(data)) {
 		dataEnd := slice.BufOffset + int(slice.Length)
 
 		// Write slice to this chunk
-		err := s.cache.WriteSlice(ctx, fileHandle, slice.ChunkIndex, data[slice.BufOffset:dataEnd], slice.Offset)
+		err := s.cache.WriteSlice(ctx, payloadID, slice.ChunkIndex, data[slice.BufOffset:dataEnd], slice.Offset)
 		if err != nil {
 			return fmt.Errorf("write slice to chunk %d failed: %w", slice.ChunkIndex, err)
 		}
 
 		// Trigger eager upload for any complete 4MB blocks (non-blocking)
-		s.transferManager.OnWriteComplete(
-			ctx, shareName, fileHandle, payloadID,
-			slice.ChunkIndex, slice.Offset, slice.Length,
-		)
+		s.transferManager.OnWriteComplete(ctx, payloadID, slice.ChunkIndex, slice.Offset, slice.Length)
 	}
 
 	return nil
@@ -173,84 +178,57 @@ func (s *PayloadService) WriteAt(ctx context.Context, shareName string, id metad
 //
 // Updates cache and schedules block store cleanup.
 func (s *PayloadService) Truncate(ctx context.Context, shareName string, id metadata.PayloadID, newSize uint64) error {
-	fileHandle := string(id)
+	payloadID := string(id)
 
 	// Truncate in cache
-	if err := s.cache.Truncate(ctx, fileHandle, newSize); err != nil {
+	if err := s.cache.Truncate(ctx, payloadID, newSize); err != nil {
 		return fmt.Errorf("cache truncate failed: %w", err)
 	}
 
 	// Schedule block store cleanup
-	return s.transferManager.Truncate(ctx, shareName, string(id), newSize)
+	return s.transferManager.Truncate(ctx, shareName, payloadID, newSize)
 }
 
 // Delete removes payload for a file.
 //
 // Removes from cache and schedules block store cleanup.
 func (s *PayloadService) Delete(ctx context.Context, shareName string, id metadata.PayloadID) error {
-	fileHandle := string(id)
+	payloadID := string(id)
 
 	// Remove from cache
-	if err := s.cache.Remove(ctx, fileHandle); err != nil {
+	if err := s.cache.Remove(ctx, payloadID); err != nil {
 		return fmt.Errorf("cache remove failed: %w", err)
 	}
 
 	// Schedule block store cleanup
-	return s.transferManager.Delete(ctx, shareName, string(id))
+	return s.transferManager.Delete(ctx, shareName, payloadID)
 }
 
 // ============================================================================
 // Flush Operations
 // ============================================================================
 
-// FlushAsync flushes cached data for a file (non-blocking).
+// Flush enqueues remaining dirty data for background upload and returns immediately.
 //
-// This is called by NFS COMMIT:
+// Used by both NFS COMMIT and SMB CLOSE:
 //   - Enqueues remaining data for background block store upload
 //   - Returns immediately (non-blocking)
 //   - Data is safe in mmap cache (crash-safe via OS page cache)
 //
 // Returns FlushResult indicating the operation status.
-func (s *PayloadService) FlushAsync(ctx context.Context, shareName string, id metadata.PayloadID) (*FlushResult, error) {
-	fileHandle := string(id)
-
-	// Non-blocking enqueue - uploads happen in background worker pool
-	err := s.transferManager.FlushRemainingAsync(ctx, shareName, fileHandle, string(id))
-	if err != nil {
-		return nil, fmt.Errorf("flush async failed: %w", err)
-	}
-
-	return &FlushResult{
-		AlreadyFlushed: false,
-		Finalized:      true,
-	}, nil
-}
-
-// Flush flushes and finalizes for immediate durability (blocking).
-//
-// This is called by SMB CLOSE which requires full durability before returning:
-//   - Waits for in-flight uploads to complete
-//   - Uploads remaining partial blocks
-//   - Blocks until all data is persisted to block store
-//
-// Returns FlushResult indicating the operation status.
-func (s *PayloadService) Flush(ctx context.Context, shareName string, id metadata.PayloadID) (*FlushResult, error) {
-	fileHandle := string(id)
+func (s *PayloadService) Flush(ctx context.Context, _ string, id metadata.PayloadID) (*FlushResult, error) {
 	payloadID := string(id)
 
-	// Wait for any in-flight eager uploads
-	if err := s.transferManager.WaitForUploads(ctx, payloadID); err != nil {
-		return nil, fmt.Errorf("wait for uploads: %w", err)
-	}
-
-	// Flush remaining blocks (blocking)
-	if err := s.transferManager.FlushRemaining(ctx, shareName, fileHandle, payloadID); err != nil {
-		return nil, fmt.Errorf("flush remaining: %w", err)
+	// Delegate to TransferManager
+	result, err := s.transferManager.Flush(ctx, payloadID)
+	if err != nil {
+		return nil, fmt.Errorf("flush failed: %w", err)
 	}
 
 	return &FlushResult{
-		AlreadyFlushed: false,
-		Finalized:      true,
+		BytesFlushed:   result.BytesFlushed,
+		AlreadyFlushed: result.AlreadyFlushed,
+		Finalized:      result.Finalized,
 	}, nil
 }
 
