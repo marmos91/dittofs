@@ -612,7 +612,7 @@ adapters:
 adapters:
   smb:
     enabled: false            # Enable SMB2 protocol (default: false)
-    port: 445                 # Standard SMB port (requires root, use 12445 for testing)
+    port: 12445               # Default SMB port (standard 445 requires root)
     max_connections: 0        # 0 = unlimited
     max_requests_per_connection: 100  # Concurrent requests per connection
 
