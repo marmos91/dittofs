@@ -152,7 +152,7 @@ type Slice struct {
 // Usage:
 //
 //	for slice := range chunk.Slices(offset, len(buf)) {
-//	    cache.ReadSlice(ctx, handle, slice.ChunkIndex, slice.Offset, slice.Length, buf[slice.BufOffset:])
+//	    cache.Read(ctx, handle, slice.ChunkIndex, slice.Offset, slice.Length, buf[slice.BufOffset:])
 //	}
 func Slices(fileOffset uint64, length int) func(yield func(Slice) bool) {
 	return func(yield func(Slice) bool) {

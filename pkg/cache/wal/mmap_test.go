@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 func TestMmapPersister_CreateNew(t *testing.T) {
@@ -31,7 +30,7 @@ func TestMmapPersister_CreateNew(t *testing.T) {
 	}
 }
 
-func TestMmapPersister_AppendSlice(t *testing.T) {
+func TestMmapPersister_AppendBlockWrite(t *testing.T) {
 	dir := t.TempDir()
 
 	p, err := NewMmapPersister(dir)
@@ -40,22 +39,16 @@ func TestMmapPersister_AppendSlice(t *testing.T) {
 	}
 	defer func() { _ = p.Close() }()
 
-	entry := &SliceEntry{
-		PayloadID: "test-file",
-		ChunkIdx:  0,
-		Slice: Slice{
-			ID:        "12345678-1234-1234-1234-123456789012",
-			Offset:    0,
-			Length:    10,
-			Data:      []byte("0123456789"),
-			State:     SliceStatePending,
-			CreatedAt: time.Now(),
-			BlockRefs: nil,
-		},
+	entry := &BlockWriteEntry{
+		PayloadID:     "test-file",
+		ChunkIdx:      0,
+		BlockIdx:      0,
+		OffsetInBlock: 0,
+		Data:          []byte("0123456789"),
 	}
 
-	if err := p.AppendSlice(entry); err != nil {
-		t.Fatalf("AppendSlice() error = %v", err)
+	if err := p.AppendBlockWrite(entry); err != nil {
+		t.Fatalf("AppendBlockWrite() error = %v", err)
 	}
 
 	if err := p.Sync(); err != nil {
@@ -72,52 +65,33 @@ func TestMmapPersister_AppendAndRecover(t *testing.T) {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
 
-	now := time.Now()
-	entries := []*SliceEntry{
+	entries := []*BlockWriteEntry{
 		{
-			PayloadID: "file1",
-			ChunkIdx:  0,
-			Slice: Slice{
-				ID:        "11111111-1111-1111-1111-111111111111",
-				Offset:    0,
-				Length:    5,
-				Data:      []byte("hello"),
-				State:     SliceStatePending,
-				CreatedAt: now,
-			},
+			PayloadID:     "file1",
+			ChunkIdx:      0,
+			BlockIdx:      0,
+			OffsetInBlock: 0,
+			Data:          []byte("hello"),
 		},
 		{
-			PayloadID: "file1",
-			ChunkIdx:  0,
-			Slice: Slice{
-				ID:        "22222222-2222-2222-2222-222222222222",
-				Offset:    5,
-				Length:    5,
-				Data:      []byte("world"),
-				State:     SliceStatePending,
-				CreatedAt: now.Add(time.Second),
-			},
+			PayloadID:     "file1",
+			ChunkIdx:      0,
+			BlockIdx:      0,
+			OffsetInBlock: 5,
+			Data:          []byte("world"),
 		},
 		{
-			PayloadID: "file2",
-			ChunkIdx:  1,
-			Slice: Slice{
-				ID:        "33333333-3333-3333-3333-333333333333",
-				Offset:    100,
-				Length:    4,
-				Data:      []byte("test"),
-				State:     SliceStateFlushed,
-				CreatedAt: now.Add(2 * time.Second),
-				BlockRefs: []BlockRef{
-					{ID: "block-1", Size: 4},
-				},
-			},
+			PayloadID:     "file2",
+			ChunkIdx:      1,
+			BlockIdx:      2,
+			OffsetInBlock: 100,
+			Data:          []byte("test"),
 		},
 	}
 
 	for _, e := range entries {
-		if err := p1.AppendSlice(e); err != nil {
-			t.Fatalf("AppendSlice() error = %v", err)
+		if err := p1.AppendBlockWrite(e); err != nil {
+			t.Fatalf("AppendBlockWrite() error = %v", err)
 		}
 	}
 
@@ -137,12 +111,12 @@ func TestMmapPersister_AppendAndRecover(t *testing.T) {
 		t.Fatalf("Recover() error = %v", err)
 	}
 
-	if len(recovered) != len(entries) {
-		t.Fatalf("Recover() got %d entries, want %d", len(recovered), len(entries))
+	if len(recovered.Entries) != len(entries) {
+		t.Fatalf("Recover() got %d entries, want %d", len(recovered.Entries), len(entries))
 	}
 
 	// Verify entries
-	for i, got := range recovered {
+	for i, got := range recovered.Entries {
 		want := entries[i]
 		if got.PayloadID != want.PayloadID {
 			t.Errorf("entry[%d].PayloadID = %s, want %s", i, got.PayloadID, want.PayloadID)
@@ -150,14 +124,14 @@ func TestMmapPersister_AppendAndRecover(t *testing.T) {
 		if got.ChunkIdx != want.ChunkIdx {
 			t.Errorf("entry[%d].ChunkIdx = %d, want %d", i, got.ChunkIdx, want.ChunkIdx)
 		}
+		if got.BlockIdx != want.BlockIdx {
+			t.Errorf("entry[%d].BlockIdx = %d, want %d", i, got.BlockIdx, want.BlockIdx)
+		}
+		if got.OffsetInBlock != want.OffsetInBlock {
+			t.Errorf("entry[%d].OffsetInBlock = %d, want %d", i, got.OffsetInBlock, want.OffsetInBlock)
+		}
 		if string(got.Data) != string(want.Data) {
 			t.Errorf("entry[%d].Data = %s, want %s", i, got.Data, want.Data)
-		}
-		if got.State != want.State {
-			t.Errorf("entry[%d].State = %v, want %v", i, got.State, want.State)
-		}
-		if len(got.BlockRefs) != len(want.BlockRefs) {
-			t.Errorf("entry[%d].BlockRefs len = %d, want %d", i, len(got.BlockRefs), len(want.BlockRefs))
 		}
 	}
 }
@@ -171,36 +145,26 @@ func TestMmapPersister_AppendRemove(t *testing.T) {
 	}
 
 	// Add some entries
-	entry1 := &SliceEntry{
-		PayloadID: "file1",
-		ChunkIdx:  0,
-		Slice: Slice{
-			ID:        "11111111-1111-1111-1111-111111111111",
-			Offset:    0,
-			Length:    5,
-			Data:      []byte("hello"),
-			State:     SliceStatePending,
-			CreatedAt: time.Now(),
-		},
+	entry1 := &BlockWriteEntry{
+		PayloadID:     "file1",
+		ChunkIdx:      0,
+		BlockIdx:      0,
+		OffsetInBlock: 0,
+		Data:          []byte("hello"),
 	}
-	entry2 := &SliceEntry{
-		PayloadID: "file2",
-		ChunkIdx:  0,
-		Slice: Slice{
-			ID:        "22222222-2222-2222-2222-222222222222",
-			Offset:    0,
-			Length:    5,
-			Data:      []byte("world"),
-			State:     SliceStatePending,
-			CreatedAt: time.Now(),
-		},
+	entry2 := &BlockWriteEntry{
+		PayloadID:     "file2",
+		ChunkIdx:      0,
+		BlockIdx:      0,
+		OffsetInBlock: 0,
+		Data:          []byte("world"),
 	}
 
-	if err := p.AppendSlice(entry1); err != nil {
-		t.Fatalf("AppendSlice(entry1) error = %v", err)
+	if err := p.AppendBlockWrite(entry1); err != nil {
+		t.Fatalf("AppendBlockWrite(entry1) error = %v", err)
 	}
-	if err := p.AppendSlice(entry2); err != nil {
-		t.Fatalf("AppendSlice(entry2) error = %v", err)
+	if err := p.AppendBlockWrite(entry2); err != nil {
+		t.Fatalf("AppendBlockWrite(entry2) error = %v", err)
 	}
 
 	// Remove file1
@@ -225,12 +189,12 @@ func TestMmapPersister_AppendRemove(t *testing.T) {
 	}
 
 	// Should only have file2 (file1 was removed)
-	if len(recovered) != 1 {
-		t.Fatalf("Recover() got %d entries, want 1", len(recovered))
+	if len(recovered.Entries) != 1 {
+		t.Fatalf("Recover() got %d entries, want 1", len(recovered.Entries))
 	}
 
-	if string(recovered[0].PayloadID) != "file2" {
-		t.Errorf("recovered[0].PayloadID = %s, want file2", recovered[0].PayloadID)
+	if string(recovered.Entries[0].PayloadID) != "file2" {
+		t.Errorf("recovered[0].PayloadID = %s, want file2", recovered.Entries[0].PayloadID)
 	}
 }
 
@@ -247,16 +211,13 @@ func TestMmapPersister_ClosedOperations(t *testing.T) {
 	}
 
 	// All operations should fail after close
-	entry := &SliceEntry{
+	entry := &BlockWriteEntry{
 		PayloadID: "test",
-		Slice: Slice{
-			ID:   "12345678-1234-1234-1234-123456789012",
-			Data: []byte("data"),
-		},
+		Data:      []byte("data"),
 	}
 
-	if err := p.AppendSlice(entry); err != ErrPersisterClosed {
-		t.Errorf("AppendSlice() after close = %v, want ErrPersisterClosed", err)
+	if err := p.AppendBlockWrite(entry); err != ErrPersisterClosed {
+		t.Errorf("AppendBlockWrite() after close = %v, want ErrPersisterClosed", err)
 	}
 
 	if err := p.AppendRemove("test"); err != ErrPersisterClosed {
@@ -288,39 +249,16 @@ func TestMmapPersister_GrowFile(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		entry := &SliceEntry{
-			PayloadID: "large-file",
-			ChunkIdx:  uint32(i),
-			Slice: Slice{
-				ID:        "12345678-1234-1234-1234-123456789012",
-				Offset:    0,
-				Length:    uint32(len(largeData)),
-				Data:      largeData,
-				State:     SliceStatePending,
-				CreatedAt: time.Now(),
-			},
+		entry := &BlockWriteEntry{
+			PayloadID:     "large-file",
+			ChunkIdx:      uint32(i),
+			BlockIdx:      0,
+			OffsetInBlock: 0,
+			Data:          largeData,
 		}
 
-		if err := p.AppendSlice(entry); err != nil {
-			t.Fatalf("AppendSlice(%d) error = %v", i, err)
-		}
-	}
-}
-
-func TestSliceState_String(t *testing.T) {
-	tests := []struct {
-		state SliceState
-		want  string
-	}{
-		{SliceStatePending, "Pending"},
-		{SliceStateFlushed, "Flushed"},
-		{SliceStateUploading, "Uploading"},
-		{SliceState(99), "Unknown"},
-	}
-
-	for _, tt := range tests {
-		if got := tt.state.String(); got != tt.want {
-			t.Errorf("SliceState(%d).String() = %s, want %s", tt.state, got, tt.want)
+		if err := p.AppendBlockWrite(entry); err != nil {
+			t.Fatalf("AppendBlockWrite(%d) error = %v", i, err)
 		}
 	}
 }
@@ -338,14 +276,14 @@ func TestMmapPersister_EmptyRecover(t *testing.T) {
 	}
 	defer func() { _ = p.Close() }()
 
-	// Recover from empty WAL should return empty slice
-	entries, err := p.Recover()
+	// Recover from empty WAL should return empty result
+	result, err := p.Recover()
 	if err != nil {
 		t.Fatalf("Recover() error = %v", err)
 	}
 
-	if len(entries) != 0 {
-		t.Errorf("Recover() got %d entries, want 0", len(entries))
+	if len(result.Entries) != 0 {
+		t.Errorf("Recover() got %d entries, want 0", len(result.Entries))
 	}
 }
 
@@ -364,21 +302,16 @@ func TestMmapPersister_LargePayloadID(t *testing.T) {
 		largeHandle[i] = byte('a' + i%26)
 	}
 
-	entry := &SliceEntry{
-		PayloadID: string(largeHandle),
-		ChunkIdx:  0,
-		Slice: Slice{
-			ID:        "12345678-1234-1234-1234-123456789012",
-			Offset:    0,
-			Length:    5,
-			Data:      []byte("hello"),
-			State:     SliceStatePending,
-			CreatedAt: time.Now(),
-		},
+	entry := &BlockWriteEntry{
+		PayloadID:     string(largeHandle),
+		ChunkIdx:      0,
+		BlockIdx:      0,
+		OffsetInBlock: 0,
+		Data:          []byte("hello"),
 	}
 
-	if err := p.AppendSlice(entry); err != nil {
-		t.Fatalf("AppendSlice() error = %v", err)
+	if err := p.AppendBlockWrite(entry); err != nil {
+		t.Fatalf("AppendBlockWrite() error = %v", err)
 	}
 
 	if err := p.Close(); err != nil {
@@ -397,81 +330,12 @@ func TestMmapPersister_LargePayloadID(t *testing.T) {
 		t.Fatalf("Recover() error = %v", err)
 	}
 
-	if len(recovered) != 1 {
-		t.Fatalf("Recover() got %d entries, want 1", len(recovered))
+	if len(recovered.Entries) != 1 {
+		t.Fatalf("Recover() got %d entries, want 1", len(recovered.Entries))
 	}
 
-	if recovered[0].PayloadID != string(largeHandle) {
+	if recovered.Entries[0].PayloadID != string(largeHandle) {
 		t.Errorf("PayloadID mismatch after recovery")
-	}
-}
-
-func TestMmapPersister_ManyBlockRefs(t *testing.T) {
-	dir := t.TempDir()
-
-	p, err := NewMmapPersister(dir)
-	if err != nil {
-		t.Fatalf("NewMmapPersister() error = %v", err)
-	}
-	defer func() { _ = p.Close() }()
-
-	// Create entry with many block refs
-	blockRefs := make([]BlockRef, 100)
-	for i := range blockRefs {
-		blockRefs[i] = BlockRef{
-			ID:   fmt.Sprintf("block-%04d", i),
-			Size: uint32(1024 * (i + 1)),
-		}
-	}
-
-	entry := &SliceEntry{
-		PayloadID: "test-file",
-		ChunkIdx:  0,
-		Slice: Slice{
-			ID:        "12345678-1234-1234-1234-123456789012",
-			Offset:    0,
-			Length:    5,
-			Data:      []byte("hello"),
-			State:     SliceStateFlushed,
-			CreatedAt: time.Now(),
-			BlockRefs: blockRefs,
-		},
-	}
-
-	if err := p.AppendSlice(entry); err != nil {
-		t.Fatalf("AppendSlice() error = %v", err)
-	}
-
-	if err := p.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-
-	// Reopen and recover
-	p2, err := NewMmapPersister(dir)
-	if err != nil {
-		t.Fatalf("NewMmapPersister() reopen error = %v", err)
-	}
-	defer func() { _ = p2.Close() }()
-
-	recovered, err := p2.Recover()
-	if err != nil {
-		t.Fatalf("Recover() error = %v", err)
-	}
-
-	if len(recovered) != 1 {
-		t.Fatalf("Recover() got %d entries, want 1", len(recovered))
-	}
-
-	if len(recovered[0].BlockRefs) != 100 {
-		t.Fatalf("BlockRefs count = %d, want 100", len(recovered[0].BlockRefs))
-	}
-
-	for i, ref := range recovered[0].BlockRefs {
-		wantID := fmt.Sprintf("block-%04d", i)
-		wantSize := uint32(1024 * (i + 1))
-		if ref.ID != wantID || ref.Size != wantSize {
-			t.Errorf("BlockRef[%d] = {%s, %d}, want {%s, %d}", i, ref.ID, ref.Size, wantID, wantSize)
-		}
 	}
 }
 
@@ -484,21 +348,16 @@ func TestMmapPersister_ZeroLengthData(t *testing.T) {
 	}
 	defer func() { _ = p.Close() }()
 
-	entry := &SliceEntry{
-		PayloadID: "empty-file",
-		ChunkIdx:  0,
-		Slice: Slice{
-			ID:        "12345678-1234-1234-1234-123456789012",
-			Offset:    0,
-			Length:    0,
-			Data:      []byte{},
-			State:     SliceStatePending,
-			CreatedAt: time.Now(),
-		},
+	entry := &BlockWriteEntry{
+		PayloadID:     "empty-file",
+		ChunkIdx:      0,
+		BlockIdx:      0,
+		OffsetInBlock: 0,
+		Data:          []byte{},
 	}
 
-	if err := p.AppendSlice(entry); err != nil {
-		t.Fatalf("AppendSlice() error = %v", err)
+	if err := p.AppendBlockWrite(entry); err != nil {
+		t.Fatalf("AppendBlockWrite() error = %v", err)
 	}
 
 	if err := p.Close(); err != nil {
@@ -517,11 +376,11 @@ func TestMmapPersister_ZeroLengthData(t *testing.T) {
 		t.Fatalf("Recover() error = %v", err)
 	}
 
-	if len(recovered) != 1 {
-		t.Fatalf("Recover() got %d entries, want 1", len(recovered))
+	if len(recovered.Entries) != 1 {
+		t.Fatalf("Recover() got %d entries, want 1", len(recovered.Entries))
 	}
 
-	if recovered[0].Length != 0 || len(recovered[0].Data) != 0 {
+	if len(recovered.Entries[0].Data) != 0 {
 		t.Errorf("Expected zero-length data")
 	}
 }
@@ -634,12 +493,10 @@ func TestMmapPersister_MultiFileRecovery(t *testing.T) {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
 
-	now := time.Now()
-
-	// Write entries for multiple files with multiple chunks
+	// Write entries for multiple files with multiple blocks
 	files := []struct {
 		handle string
-		chunks int
+		blocks int
 	}{
 		{"file1", 3},
 		{"file2", 5},
@@ -648,21 +505,16 @@ func TestMmapPersister_MultiFileRecovery(t *testing.T) {
 
 	totalEntries := 0
 	for _, f := range files {
-		for chunk := 0; chunk < f.chunks; chunk++ {
-			entry := &SliceEntry{
-				PayloadID: f.handle,
-				ChunkIdx:  uint32(chunk),
-				Slice: Slice{
-					ID:        fmt.Sprintf("%s-chunk%d", f.handle, chunk),
-					Offset:    uint32(chunk * 1024),
-					Length:    uint32(len(fmt.Sprintf("data-%s-%d", f.handle, chunk))),
-					Data:      []byte(fmt.Sprintf("data-%s-%d", f.handle, chunk)),
-					State:     SliceStatePending,
-					CreatedAt: now.Add(time.Duration(totalEntries) * time.Second),
-				},
+		for blockIdx := 0; blockIdx < f.blocks; blockIdx++ {
+			entry := &BlockWriteEntry{
+				PayloadID:     f.handle,
+				ChunkIdx:      0,
+				BlockIdx:      uint32(blockIdx),
+				OffsetInBlock: 0,
+				Data:          []byte(fmt.Sprintf("data-%s-%d", f.handle, blockIdx)),
 			}
-			if err := p.AppendSlice(entry); err != nil {
-				t.Fatalf("AppendSlice() error = %v", err)
+			if err := p.AppendBlockWrite(entry); err != nil {
+				t.Fatalf("AppendBlockWrite() error = %v", err)
 			}
 			totalEntries++
 		}
@@ -684,22 +536,22 @@ func TestMmapPersister_MultiFileRecovery(t *testing.T) {
 		t.Fatalf("Recover() error = %v", err)
 	}
 
-	if len(recovered) != totalEntries {
-		t.Fatalf("Recover() got %d entries, want %d", len(recovered), totalEntries)
+	if len(recovered.Entries) != totalEntries {
+		t.Fatalf("Recover() got %d entries, want %d", len(recovered.Entries), totalEntries)
 	}
 
 	// Verify data integrity
 	idx := 0
 	for _, f := range files {
-		for chunk := 0; chunk < f.chunks; chunk++ {
-			got := recovered[idx]
+		for blockIdx := 0; blockIdx < f.blocks; blockIdx++ {
+			got := recovered.Entries[idx]
 			if got.PayloadID != f.handle {
 				t.Errorf("entry[%d].PayloadID = %s, want %s", idx, got.PayloadID, f.handle)
 			}
-			if got.ChunkIdx != uint32(chunk) {
-				t.Errorf("entry[%d].ChunkIdx = %d, want %d", idx, got.ChunkIdx, chunk)
+			if got.BlockIdx != uint32(blockIdx) {
+				t.Errorf("entry[%d].BlockIdx = %d, want %d", idx, got.BlockIdx, blockIdx)
 			}
-			wantData := fmt.Sprintf("data-%s-%d", f.handle, chunk)
+			wantData := fmt.Sprintf("data-%s-%d", f.handle, blockIdx)
 			if string(got.Data) != wantData {
 				t.Errorf("entry[%d].Data = %s, want %s", idx, got.Data, wantData)
 			}
@@ -708,7 +560,7 @@ func TestMmapPersister_MultiFileRecovery(t *testing.T) {
 	}
 }
 
-func TestMmapPersister_RemoveInterleavedWithSlices(t *testing.T) {
+func TestMmapPersister_RemoveInterleavedWithWrites(t *testing.T) {
 	dir := t.TempDir()
 
 	p, err := NewMmapPersister(dir)
@@ -716,52 +568,37 @@ func TestMmapPersister_RemoveInterleavedWithSlices(t *testing.T) {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
 
-	now := time.Now()
-
-	// Interleave slice and remove operations
-	// file1: slice, slice
-	// file2: slice
-	// remove file1
-	// file3: slice
-	// file2: slice
-	// remove file2
-	// file3: slice
-
+	// Interleave write and remove operations
 	operations := []struct {
-		op     string
-		handle string
-		chunk  uint32
+		op       string
+		handle   string
+		blockIdx uint32
 	}{
-		{"slice", "file1", 0},
-		{"slice", "file1", 1},
-		{"slice", "file2", 0},
+		{"write", "file1", 0},
+		{"write", "file1", 1},
+		{"write", "file2", 0},
 		{"remove", "file1", 0},
-		{"slice", "file3", 0},
-		{"slice", "file2", 1},
+		{"write", "file3", 0},
+		{"write", "file2", 1},
 		{"remove", "file2", 0},
-		{"slice", "file3", 1},
+		{"write", "file3", 1},
 	}
 
 	for i, op := range operations {
-		if op.op == "slice" {
-			entry := &SliceEntry{
-				PayloadID: op.handle,
-				ChunkIdx:  op.chunk,
-				Slice: Slice{
-					ID:        fmt.Sprintf("slice-%d", i),
-					Offset:    0,
-					Length:    5,
-					Data:      []byte("hello"),
-					State:     SliceStatePending,
-					CreatedAt: now.Add(time.Duration(i) * time.Second),
-				},
+		if op.op == "write" {
+			entry := &BlockWriteEntry{
+				PayloadID:     op.handle,
+				ChunkIdx:      0,
+				BlockIdx:      op.blockIdx,
+				OffsetInBlock: 0,
+				Data:          []byte("hello"),
 			}
-			if err := p.AppendSlice(entry); err != nil {
-				t.Fatalf("AppendSlice() error = %v", err)
+			if err := p.AppendBlockWrite(entry); err != nil {
+				t.Fatalf("AppendBlockWrite() error = %v", err)
 			}
 		} else {
 			if err := p.AppendRemove(op.handle); err != nil {
-				t.Fatalf("AppendRemove() error = %v", err)
+				t.Fatalf("AppendRemove() error = %v (op %d)", err, i)
 			}
 		}
 	}
@@ -783,18 +620,18 @@ func TestMmapPersister_RemoveInterleavedWithSlices(t *testing.T) {
 	}
 
 	// Should only have 2 entries (both for file3)
-	if len(recovered) != 2 {
-		t.Fatalf("Recover() got %d entries, want 2", len(recovered))
+	if len(recovered.Entries) != 2 {
+		t.Fatalf("Recover() got %d entries, want 2", len(recovered.Entries))
 	}
 
-	for _, entry := range recovered {
+	for _, entry := range recovered.Entries {
 		if entry.PayloadID != "file3" {
 			t.Errorf("Unexpected file handle: %s (expected file3)", entry.PayloadID)
 		}
 	}
 }
 
-func TestMmapPersister_RecoverPreservesState(t *testing.T) {
+func TestMmapPersister_BlockUploadedTracking(t *testing.T) {
 	dir := t.TempDir()
 
 	p, err := NewMmapPersister(dir)
@@ -802,55 +639,70 @@ func TestMmapPersister_RecoverPreservesState(t *testing.T) {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
 
-	now := time.Now()
+	// Write some blocks
+	entries := []*BlockWriteEntry{
+		{PayloadID: "file1", ChunkIdx: 0, BlockIdx: 0, OffsetInBlock: 0, Data: []byte("hello")},
+		{PayloadID: "file1", ChunkIdx: 0, BlockIdx: 1, OffsetInBlock: 0, Data: []byte("world")},
+		{PayloadID: "file1", ChunkIdx: 0, BlockIdx: 2, OffsetInBlock: 0, Data: []byte("test")},
+	}
 
-	states := []SliceState{SliceStatePending, SliceStateUploading, SliceStateFlushed}
-	for i, state := range states {
-		entry := &SliceEntry{
-			PayloadID: "test-file",
-			ChunkIdx:  uint32(i),
-			Slice: Slice{
-				ID:        fmt.Sprintf("slice-%d", i),
-				Offset:    0,
-				Length:    5,
-				Data:      []byte("hello"),
-				State:     state,
-				CreatedAt: now.Add(time.Duration(i) * time.Second),
-			},
+	for _, e := range entries {
+		if err := p.AppendBlockWrite(e); err != nil {
+			t.Fatalf("AppendBlockWrite() error = %v", err)
 		}
-		if err := p.AppendSlice(entry); err != nil {
-			t.Fatalf("AppendSlice() error = %v", err)
-		}
+	}
+
+	// Mark block 0 and block 2 as uploaded
+	if err := p.AppendBlockUploaded("file1", 0, 0); err != nil {
+		t.Fatalf("AppendBlockUploaded(0,0) error = %v", err)
+	}
+	if err := p.AppendBlockUploaded("file1", 0, 2); err != nil {
+		t.Fatalf("AppendBlockUploaded(0,2) error = %v", err)
 	}
 
 	if err := p.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	// Reopen and verify states are preserved
+	// Reopen and recover
 	p2, err := NewMmapPersister(dir)
 	if err != nil {
 		t.Fatalf("NewMmapPersister() reopen error = %v", err)
 	}
 	defer func() { _ = p2.Close() }()
 
-	recovered, err := p2.Recover()
+	result, err := p2.Recover()
 	if err != nil {
 		t.Fatalf("Recover() error = %v", err)
 	}
 
-	if len(recovered) != len(states) {
-		t.Fatalf("Recover() got %d entries, want %d", len(recovered), len(states))
+	// Should have all 3 entries
+	if len(result.Entries) != 3 {
+		t.Fatalf("Recover() got %d entries, want 3", len(result.Entries))
 	}
 
-	for i, entry := range recovered {
-		if entry.State != states[i] {
-			t.Errorf("entry[%d].State = %v, want %v", i, entry.State, states[i])
-		}
+	// Should have 2 uploaded blocks
+	if len(result.UploadedBlocks) != 2 {
+		t.Fatalf("Recover() got %d uploaded blocks, want 2", len(result.UploadedBlocks))
+	}
+
+	// Verify uploaded blocks
+	key0 := BlockKey{PayloadID: "file1", ChunkIdx: 0, BlockIdx: 0}
+	key1 := BlockKey{PayloadID: "file1", ChunkIdx: 0, BlockIdx: 1}
+	key2 := BlockKey{PayloadID: "file1", ChunkIdx: 0, BlockIdx: 2}
+
+	if !result.UploadedBlocks[key0] {
+		t.Error("Block 0 should be marked as uploaded")
+	}
+	if result.UploadedBlocks[key1] {
+		t.Error("Block 1 should NOT be marked as uploaded")
+	}
+	if !result.UploadedBlocks[key2] {
+		t.Error("Block 2 should be marked as uploaded")
 	}
 }
 
-func TestMmapPersister_RecoverPreservesTimestamp(t *testing.T) {
+func TestMmapPersister_RemoveClearsUploadedBlocks(t *testing.T) {
 	dir := t.TempDir()
 
 	p, err := NewMmapPersister(dir)
@@ -858,48 +710,52 @@ func TestMmapPersister_RecoverPreservesTimestamp(t *testing.T) {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
 
-	// Use a specific timestamp (nanosecond precision)
-	createdAt := time.Date(2025, 6, 15, 10, 30, 45, 123456789, time.UTC)
-
-	entry := &SliceEntry{
-		PayloadID: "test-file",
-		ChunkIdx:  0,
-		Slice: Slice{
-			ID:        "test-slice",
-			Offset:    0,
-			Length:    5,
-			Data:      []byte("hello"),
-			State:     SliceStatePending,
-			CreatedAt: createdAt,
-		},
+	// Write blocks for file1
+	entry := &BlockWriteEntry{
+		PayloadID:     "file1",
+		ChunkIdx:      0,
+		BlockIdx:      0,
+		OffsetInBlock: 0,
+		Data:          []byte("hello"),
+	}
+	if err := p.AppendBlockWrite(entry); err != nil {
+		t.Fatalf("AppendBlockWrite() error = %v", err)
 	}
 
-	if err := p.AppendSlice(entry); err != nil {
-		t.Fatalf("AppendSlice() error = %v", err)
+	// Mark block as uploaded
+	if err := p.AppendBlockUploaded("file1", 0, 0); err != nil {
+		t.Fatalf("AppendBlockUploaded() error = %v", err)
+	}
+
+	// Remove file1
+	if err := p.AppendRemove("file1"); err != nil {
+		t.Fatalf("AppendRemove() error = %v", err)
 	}
 
 	if err := p.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	// Reopen and verify timestamp is preserved
+	// Reopen and recover
 	p2, err := NewMmapPersister(dir)
 	if err != nil {
 		t.Fatalf("NewMmapPersister() reopen error = %v", err)
 	}
 	defer func() { _ = p2.Close() }()
 
-	recovered, err := p2.Recover()
+	result, err := p2.Recover()
 	if err != nil {
 		t.Fatalf("Recover() error = %v", err)
 	}
 
-	if len(recovered) != 1 {
-		t.Fatalf("Recover() got %d entries, want 1", len(recovered))
+	// Should have no entries (file was removed)
+	if len(result.Entries) != 0 {
+		t.Fatalf("Recover() got %d entries, want 0", len(result.Entries))
 	}
 
-	if !recovered[0].CreatedAt.Equal(createdAt) {
-		t.Errorf("CreatedAt = %v, want %v", recovered[0].CreatedAt, createdAt)
+	// Should have no uploaded blocks (file was removed)
+	if len(result.UploadedBlocks) != 0 {
+		t.Fatalf("Recover() got %d uploaded blocks, want 0", len(result.UploadedBlocks))
 	}
 }
 
@@ -912,22 +768,16 @@ func TestMmapPersister_AppendAfterRecovery(t *testing.T) {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
 
-	now := time.Now()
 	for i := 0; i < 3; i++ {
-		entry := &SliceEntry{
-			PayloadID: "test-file",
-			ChunkIdx:  uint32(i),
-			Slice: Slice{
-				ID:        fmt.Sprintf("slice-%d", i),
-				Offset:    0,
-				Length:    5,
-				Data:      []byte("hello"),
-				State:     SliceStatePending,
-				CreatedAt: now.Add(time.Duration(i) * time.Second),
-			},
+		entry := &BlockWriteEntry{
+			PayloadID:     "test-file",
+			ChunkIdx:      0,
+			BlockIdx:      uint32(i),
+			OffsetInBlock: 0,
+			Data:          []byte("hello"),
 		}
-		if err := p1.AppendSlice(entry); err != nil {
-			t.Fatalf("AppendSlice() error = %v", err)
+		if err := p1.AppendBlockWrite(entry); err != nil {
+			t.Fatalf("AppendBlockWrite() error = %v", err)
 		}
 	}
 
@@ -948,20 +798,15 @@ func TestMmapPersister_AppendAfterRecovery(t *testing.T) {
 
 	// Append more entries
 	for i := 3; i < 6; i++ {
-		entry := &SliceEntry{
-			PayloadID: "test-file",
-			ChunkIdx:  uint32(i),
-			Slice: Slice{
-				ID:        fmt.Sprintf("slice-%d", i),
-				Offset:    0,
-				Length:    5,
-				Data:      []byte("world"),
-				State:     SliceStatePending,
-				CreatedAt: now.Add(time.Duration(i) * time.Second),
-			},
+		entry := &BlockWriteEntry{
+			PayloadID:     "test-file",
+			ChunkIdx:      0,
+			BlockIdx:      uint32(i),
+			OffsetInBlock: 0,
+			Data:          []byte("world"),
 		}
-		if err := p2.AppendSlice(entry); err != nil {
-			t.Fatalf("AppendSlice() error = %v", err)
+		if err := p2.AppendBlockWrite(entry); err != nil {
+			t.Fatalf("AppendBlockWrite() error = %v", err)
 		}
 	}
 
@@ -981,14 +826,14 @@ func TestMmapPersister_AppendAfterRecovery(t *testing.T) {
 		t.Fatalf("Recover() error = %v", err)
 	}
 
-	if len(recovered) != 6 {
-		t.Fatalf("Recover() got %d entries, want 6", len(recovered))
+	if len(recovered.Entries) != 6 {
+		t.Fatalf("Recover() got %d entries, want 6", len(recovered.Entries))
 	}
 
 	// Verify data from both sessions
-	for i, entry := range recovered {
-		if entry.ChunkIdx != uint32(i) {
-			t.Errorf("entry[%d].ChunkIdx = %d, want %d", i, entry.ChunkIdx, i)
+	for i, entry := range recovered.Entries {
+		if entry.BlockIdx != uint32(i) {
+			t.Errorf("entry[%d].BlockIdx = %d, want %d", i, entry.BlockIdx, i)
 		}
 		wantData := "hello"
 		if i >= 3 {
@@ -1004,7 +849,7 @@ func TestMmapPersister_AppendAfterRecovery(t *testing.T) {
 // Benchmark Tests - Performance
 // ============================================================================
 
-func BenchmarkMmapPersister_AppendSlice_Small(b *testing.B) {
+func BenchmarkMmapPersister_AppendBlockWrite_Small(b *testing.B) {
 	dir := b.TempDir()
 
 	p, err := NewMmapPersister(dir)
@@ -1013,37 +858,32 @@ func BenchmarkMmapPersister_AppendSlice_Small(b *testing.B) {
 	}
 	defer func() { _ = p.Close() }()
 
-	// Small slice (512 bytes)
+	// Small write (512 bytes)
 	data := make([]byte, 512)
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
 
-	entry := &SliceEntry{
-		PayloadID: "bench-file",
-		ChunkIdx:  0,
-		Slice: Slice{
-			ID:        "12345678-1234-1234-1234-123456789012",
-			Offset:    0,
-			Length:    uint32(len(data)),
-			Data:      data,
-			State:     SliceStatePending,
-			CreatedAt: time.Now(),
-		},
+	entry := &BlockWriteEntry{
+		PayloadID:     "bench-file",
+		ChunkIdx:      0,
+		BlockIdx:      0,
+		OffsetInBlock: 0,
+		Data:          data,
 	}
 
 	b.ResetTimer()
 	b.SetBytes(int64(len(data)))
 
 	for i := 0; i < b.N; i++ {
-		entry.ChunkIdx = uint32(i)
-		if err := p.AppendSlice(entry); err != nil {
-			b.Fatalf("AppendSlice() error = %v", err)
+		entry.BlockIdx = uint32(i)
+		if err := p.AppendBlockWrite(entry); err != nil {
+			b.Fatalf("AppendBlockWrite() error = %v", err)
 		}
 	}
 }
 
-func BenchmarkMmapPersister_AppendSlice_Medium(b *testing.B) {
+func BenchmarkMmapPersister_AppendBlockWrite_Medium(b *testing.B) {
 	dir := b.TempDir()
 
 	p, err := NewMmapPersister(dir)
@@ -1052,37 +892,32 @@ func BenchmarkMmapPersister_AppendSlice_Medium(b *testing.B) {
 	}
 	defer func() { _ = p.Close() }()
 
-	// Medium slice (32KB - typical NFS write size)
+	// Medium write (32KB - typical NFS write size)
 	data := make([]byte, 32*1024)
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
 
-	entry := &SliceEntry{
-		PayloadID: "bench-file",
-		ChunkIdx:  0,
-		Slice: Slice{
-			ID:        "12345678-1234-1234-1234-123456789012",
-			Offset:    0,
-			Length:    uint32(len(data)),
-			Data:      data,
-			State:     SliceStatePending,
-			CreatedAt: time.Now(),
-		},
+	entry := &BlockWriteEntry{
+		PayloadID:     "bench-file",
+		ChunkIdx:      0,
+		BlockIdx:      0,
+		OffsetInBlock: 0,
+		Data:          data,
 	}
 
 	b.ResetTimer()
 	b.SetBytes(int64(len(data)))
 
 	for i := 0; i < b.N; i++ {
-		entry.ChunkIdx = uint32(i)
-		if err := p.AppendSlice(entry); err != nil {
-			b.Fatalf("AppendSlice() error = %v", err)
+		entry.BlockIdx = uint32(i)
+		if err := p.AppendBlockWrite(entry); err != nil {
+			b.Fatalf("AppendBlockWrite() error = %v", err)
 		}
 	}
 }
 
-func BenchmarkMmapPersister_AppendSlice_Large(b *testing.B) {
+func BenchmarkMmapPersister_AppendBlockWrite_Large(b *testing.B) {
 	dir := b.TempDir()
 
 	p, err := NewMmapPersister(dir)
@@ -1091,32 +926,27 @@ func BenchmarkMmapPersister_AppendSlice_Large(b *testing.B) {
 	}
 	defer func() { _ = p.Close() }()
 
-	// Large slice (1MB)
+	// Large write (1MB)
 	data := make([]byte, 1*1024*1024)
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
 
-	entry := &SliceEntry{
-		PayloadID: "bench-file",
-		ChunkIdx:  0,
-		Slice: Slice{
-			ID:        "12345678-1234-1234-1234-123456789012",
-			Offset:    0,
-			Length:    uint32(len(data)),
-			Data:      data,
-			State:     SliceStatePending,
-			CreatedAt: time.Now(),
-		},
+	entry := &BlockWriteEntry{
+		PayloadID:     "bench-file",
+		ChunkIdx:      0,
+		BlockIdx:      0,
+		OffsetInBlock: 0,
+		Data:          data,
 	}
 
 	b.ResetTimer()
 	b.SetBytes(int64(len(data)))
 
 	for i := 0; i < b.N; i++ {
-		entry.ChunkIdx = uint32(i)
-		if err := p.AppendSlice(entry); err != nil {
-			b.Fatalf("AppendSlice() error = %v", err)
+		entry.BlockIdx = uint32(i)
+		if err := p.AppendBlockWrite(entry); err != nil {
+			b.Fatalf("AppendBlockWrite() error = %v", err)
 		}
 	}
 }
@@ -1130,23 +960,17 @@ func BenchmarkMmapPersister_Recover_100Entries(b *testing.B) {
 		b.Fatalf("NewMmapPersister() error = %v", err)
 	}
 
-	now := time.Now()
 	data := make([]byte, 1024)
 	for i := 0; i < 100; i++ {
-		entry := &SliceEntry{
-			PayloadID: fmt.Sprintf("file-%d", i%10),
-			ChunkIdx:  uint32(i),
-			Slice: Slice{
-				ID:        fmt.Sprintf("slice-%04d", i),
-				Offset:    0,
-				Length:    uint32(len(data)),
-				Data:      data,
-				State:     SliceStatePending,
-				CreatedAt: now,
-			},
+		entry := &BlockWriteEntry{
+			PayloadID:     fmt.Sprintf("file-%d", i%10),
+			ChunkIdx:      0,
+			BlockIdx:      uint32(i),
+			OffsetInBlock: 0,
+			Data:          data,
 		}
-		if err := p.AppendSlice(entry); err != nil {
-			b.Fatalf("AppendSlice() error = %v", err)
+		if err := p.AppendBlockWrite(entry); err != nil {
+			b.Fatalf("AppendBlockWrite() error = %v", err)
 		}
 	}
 	_ = p.Close()
@@ -1176,23 +1000,17 @@ func BenchmarkMmapPersister_Recover_1000Entries(b *testing.B) {
 		b.Fatalf("NewMmapPersister() error = %v", err)
 	}
 
-	now := time.Now()
 	data := make([]byte, 1024)
 	for i := 0; i < 1000; i++ {
-		entry := &SliceEntry{
-			PayloadID: fmt.Sprintf("file-%d", i%10),
-			ChunkIdx:  uint32(i),
-			Slice: Slice{
-				ID:        fmt.Sprintf("slice-%04d", i),
-				Offset:    0,
-				Length:    uint32(len(data)),
-				Data:      data,
-				State:     SliceStatePending,
-				CreatedAt: now,
-			},
+		entry := &BlockWriteEntry{
+			PayloadID:     fmt.Sprintf("file-%d", i%10),
+			ChunkIdx:      0,
+			BlockIdx:      uint32(i),
+			OffsetInBlock: 0,
+			Data:          data,
 		}
-		if err := p.AppendSlice(entry); err != nil {
-			b.Fatalf("AppendSlice() error = %v", err)
+		if err := p.AppendBlockWrite(entry); err != nil {
+			b.Fatalf("AppendBlockWrite() error = %v", err)
 		}
 	}
 	_ = p.Close()
@@ -1222,26 +1040,20 @@ func BenchmarkMmapPersister_Recover_WithRemoves(b *testing.B) {
 		b.Fatalf("NewMmapPersister() error = %v", err)
 	}
 
-	now := time.Now()
 	data := make([]byte, 1024)
 
 	// Write entries for 50 files (10 entries each)
 	for file := 0; file < 50; file++ {
-		for chunk := 0; chunk < 10; chunk++ {
-			entry := &SliceEntry{
-				PayloadID: fmt.Sprintf("file-%02d", file),
-				ChunkIdx:  uint32(chunk),
-				Slice: Slice{
-					ID:        fmt.Sprintf("slice-%02d-%02d", file, chunk),
-					Offset:    0,
-					Length:    uint32(len(data)),
-					Data:      data,
-					State:     SliceStatePending,
-					CreatedAt: now,
-				},
+		for blockIdx := 0; blockIdx < 10; blockIdx++ {
+			entry := &BlockWriteEntry{
+				PayloadID:     fmt.Sprintf("file-%02d", file),
+				ChunkIdx:      0,
+				BlockIdx:      uint32(blockIdx),
+				OffsetInBlock: 0,
+				Data:          data,
 			}
-			if err := p.AppendSlice(entry); err != nil {
-				b.Fatalf("AppendSlice() error = %v", err)
+			if err := p.AppendBlockWrite(entry); err != nil {
+				b.Fatalf("AppendBlockWrite() error = %v", err)
 			}
 		}
 	}
@@ -1262,14 +1074,14 @@ func BenchmarkMmapPersister_Recover_WithRemoves(b *testing.B) {
 			b.Fatalf("NewMmapPersister() error = %v", err)
 		}
 
-		entries, err := p2.Recover()
+		result, err := p2.Recover()
 		if err != nil {
 			b.Fatalf("Recover() error = %v", err)
 		}
 
 		// Verify we got 250 entries (half the files removed)
-		if len(entries) != 250 {
-			b.Fatalf("Expected 250 entries, got %d", len(entries))
+		if len(result.Entries) != 250 {
+			b.Fatalf("Expected 250 entries, got %d", len(result.Entries))
 		}
 		_ = p2.Close()
 	}
@@ -1304,21 +1116,16 @@ func BenchmarkMmapPersister_Sync(b *testing.B) {
 
 	// Write some data first
 	data := make([]byte, 1024)
-	entry := &SliceEntry{
-		PayloadID: "bench-file",
-		ChunkIdx:  0,
-		Slice: Slice{
-			ID:        "12345678-1234-1234-1234-123456789012",
-			Offset:    0,
-			Length:    uint32(len(data)),
-			Data:      data,
-			State:     SliceStatePending,
-			CreatedAt: time.Now(),
-		},
+	entry := &BlockWriteEntry{
+		PayloadID:     "bench-file",
+		ChunkIdx:      0,
+		BlockIdx:      0,
+		OffsetInBlock: 0,
+		Data:          data,
 	}
 
-	if err := p.AppendSlice(entry); err != nil {
-		b.Fatalf("AppendSlice() error = %v", err)
+	if err := p.AppendBlockWrite(entry); err != nil {
+		b.Fatalf("AppendBlockWrite() error = %v", err)
 	}
 
 	b.ResetTimer()
@@ -1347,15 +1154,9 @@ func BenchmarkMmapPersister_Throughput(b *testing.B) {
 		data[i] = byte(i % 256)
 	}
 
-	entry := &SliceEntry{
+	entry := &BlockWriteEntry{
 		PayloadID: "throughput-test",
-		Slice: Slice{
-			ID:        "12345678-1234-1234-1234-123456789012",
-			Length:    uint32(len(data)),
-			Data:      data,
-			State:     SliceStatePending,
-			CreatedAt: time.Now(),
-		},
+		Data:      data,
 	}
 
 	b.ResetTimer()
@@ -1363,9 +1164,10 @@ func BenchmarkMmapPersister_Throughput(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		entry.ChunkIdx = uint32(i / 2048) // ~64MB per chunk
-		entry.Offset = uint32((i % 2048) * 32 * 1024)
-		if err := p.AppendSlice(entry); err != nil {
-			b.Fatalf("AppendSlice() error = %v", err)
+		entry.BlockIdx = uint32(i % 16)   // 16 blocks per chunk
+		entry.OffsetInBlock = uint32((i % 128) * 32 * 1024)
+		if err := p.AppendBlockWrite(entry); err != nil {
+			b.Fatalf("AppendBlockWrite() error = %v", err)
 		}
 	}
 

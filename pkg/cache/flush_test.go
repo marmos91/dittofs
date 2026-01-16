@@ -4,529 +4,528 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 )
 
 // ============================================================================
-// Helper Function Tests
+// Coverage Bitmap Helper Tests
 // ============================================================================
 
-func TestPartitionByState(t *testing.T) {
-	slices := []Slice{
-		{ID: "1", State: SliceStatePending},
-		{ID: "2", State: SliceStateFlushed},
-		{ID: "3", State: SliceStatePending},
-		{ID: "4", State: SliceStateUploading},
+func TestMarkCoverage(t *testing.T) {
+	coverage := newCoverageBitmap()
+
+	// Mark first 64 bytes (bit 0)
+	markCoverage(coverage, 0, 64)
+	if coverage[0]&1 == 0 {
+		t.Error("bit 0 should be set")
 	}
 
-	pending, other := partitionByState(slices, SliceStatePending)
-
-	if len(pending) != 2 {
-		t.Errorf("expected 2 pending, got %d", len(pending))
-	}
-	if len(other) != 2 {
-		t.Errorf("expected 2 other, got %d", len(other))
+	// Mark bytes 128-192 (bit 2)
+	markCoverage(coverage, 128, 64)
+	if coverage[0]&(1<<2) == 0 {
+		t.Error("bit 2 should be set")
 	}
 
-	for _, s := range pending {
-		if s.State != SliceStatePending {
-			t.Errorf("expected pending state, got %v", s.State)
+	// Mark a range spanning multiple bits (0-256 bytes = bits 0-3)
+	coverage2 := newCoverageBitmap()
+	markCoverage(coverage2, 0, 256)
+	for bit := 0; bit < 4; bit++ {
+		if coverage2[0]&(1<<bit) == 0 {
+			t.Errorf("bit %d should be set", bit)
 		}
 	}
 }
 
-func TestPartitionByState_Empty(t *testing.T) {
-	pending, other := partitionByState(nil, SliceStatePending)
+func TestMarkCoverage_Empty(t *testing.T) {
+	coverage := newCoverageBitmap()
 
-	if len(pending) != 0 || len(other) != 0 {
-		t.Error("expected empty results for nil input")
-	}
-}
-
-func TestPartitionByState_AllMatch(t *testing.T) {
-	slices := []Slice{
-		{ID: "1", State: SliceStatePending},
-		{ID: "2", State: SliceStatePending},
-	}
-
-	pending, other := partitionByState(slices, SliceStatePending)
-
-	if len(pending) != 2 {
-		t.Errorf("expected 2 pending, got %d", len(pending))
-	}
-	if len(other) != 0 {
-		t.Errorf("expected 0 other, got %d", len(other))
-	}
-}
-
-func TestNewSliceFrom(t *testing.T) {
-	original := Slice{
-		ID:        "original-id",
-		Offset:    100,
-		Length:    50,
-		Data:      []byte("test data"),
-		State:     SliceStateFlushed,
-		CreatedAt: time.Now().Add(-time.Hour),
-	}
-
-	copied := newSliceFrom(original)
-
-	// Should have new ID
-	if copied.ID == original.ID {
-		t.Error("copied slice should have new ID")
-	}
-
-	// Should preserve offset and length
-	if copied.Offset != original.Offset {
-		t.Errorf("offset mismatch: got %d, want %d", copied.Offset, original.Offset)
-	}
-	if copied.Length != original.Length {
-		t.Errorf("length mismatch: got %d, want %d", copied.Length, original.Length)
-	}
-
-	// Should deep copy data
-	if string(copied.Data) != string(original.Data) {
-		t.Error("data content should match")
-	}
-	copied.Data[0] = 'X'
-	if original.Data[0] == 'X' {
-		t.Error("data should be deep copied, not shared")
-	}
-
-	// Should reset state to pending
-	if copied.State != SliceStatePending {
-		t.Errorf("state should be pending, got %v", copied.State)
-	}
-
-	// Should have fresh timestamp
-	if copied.CreatedAt.Before(original.CreatedAt) {
-		t.Error("copied slice should have newer timestamp")
-	}
-}
-
-func TestExtendSlice_NoGrowth(t *testing.T) {
-	dst := Slice{
-		Offset: 0,
-		Length: 100,
-		Data:   make([]byte, 100),
-	}
-	src := Slice{
-		Offset: 50,
-		Length: 30,
-		Data:   []byte("inserted"),
-	}
-
-	extendSlice(&dst, &src)
-
-	if dst.Length != 100 {
-		t.Errorf("length should stay 100, got %d", dst.Length)
-	}
-	if string(dst.Data[50:58]) != "inserted" {
-		t.Error("data not copied at correct offset")
-	}
-}
-
-func TestExtendSlice_WithGrowth(t *testing.T) {
-	dst := Slice{
-		Offset: 0,
-		Length: 50,
-		Data:   make([]byte, 50),
-	}
-	for i := range dst.Data {
-		dst.Data[i] = 'A'
-	}
-
-	src := Slice{
-		Offset: 40,
-		Length: 30,
-		Data:   []byte("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"), // 30 B's
-	}
-
-	extendSlice(&dst, &src)
-
-	if dst.Length != 70 {
-		t.Errorf("length should be 70, got %d", dst.Length)
-	}
-	// First 40 bytes should be A's
-	for i := 0; i < 40; i++ {
-		if dst.Data[i] != 'A' {
-			t.Errorf("byte %d should be A, got %c", i, dst.Data[i])
-			break
+	// Zero length should not modify anything
+	markCoverage(coverage, 0, 0)
+	for _, word := range coverage {
+		if word != 0 {
+			t.Error("coverage should be empty for zero length")
 		}
 	}
-	// Bytes 40-69 should be B's
-	for i := 40; i < 70; i++ {
-		if dst.Data[i] != 'B' {
-			t.Errorf("byte %d should be B, got %c", i, dst.Data[i])
-			break
-		}
+
+	// Nil coverage should not panic
+	markCoverage(nil, 0, 64)
+}
+
+func TestIsRangeCovered(t *testing.T) {
+	coverage := newCoverageBitmap()
+
+	// Empty coverage - nothing is covered
+	if isRangeCovered(coverage, 0, 64) {
+		t.Error("empty coverage should not cover any range")
+	}
+
+	// Mark first 64 bytes
+	markCoverage(coverage, 0, 64)
+	if !isRangeCovered(coverage, 0, 64) {
+		t.Error("marked range should be covered")
+	}
+
+	// Check partial coverage
+	if isRangeCovered(coverage, 0, 128) {
+		t.Error("only partially marked range should not be fully covered")
+	}
+
+	// Zero length is always covered
+	if !isRangeCovered(coverage, 0, 0) {
+		t.Error("zero length should always be covered")
 	}
 }
 
-func TestMergeAdjacent_Single(t *testing.T) {
-	slices := []Slice{
-		{Offset: 0, Length: 10, Data: make([]byte, 10)},
+func TestIsRangeCovered_Nil(t *testing.T) {
+	if isRangeCovered(nil, 0, 64) {
+		t.Error("nil coverage should not cover any range")
 	}
 
-	result := mergeAdjacent(slices)
-
-	if len(result) != 1 {
-		t.Errorf("expected 1 slice, got %d", len(result))
-	}
-}
-
-func TestMergeAdjacent_NoOverlap(t *testing.T) {
-	slices := []Slice{
-		{Offset: 0, Length: 10, Data: make([]byte, 10)},
-		{Offset: 100, Length: 10, Data: make([]byte, 10)},
-	}
-
-	result := mergeAdjacent(slices)
-
-	if len(result) != 2 {
-		t.Errorf("expected 2 slices (gap), got %d", len(result))
+	// Zero length is covered even with nil coverage
+	if !isRangeCovered(nil, 0, 0) {
+		t.Error("zero length should be covered even with nil coverage")
 	}
 }
 
-func TestMergeAdjacent_Adjacent(t *testing.T) {
-	slices := []Slice{
-		{Offset: 0, Length: 10, Data: make([]byte, 10)},
-		{Offset: 10, Length: 10, Data: make([]byte, 10)},
+func TestIsFullyCovered(t *testing.T) {
+	// Empty coverage
+	coverage := newCoverageBitmap()
+	if isFullyCovered(coverage) {
+		t.Error("empty coverage should not be fully covered")
 	}
 
-	result := mergeAdjacent(slices)
-
-	if len(result) != 1 {
-		t.Errorf("expected 1 merged slice, got %d", len(result))
+	// Partially covered
+	markCoverage(coverage, 0, 1024*1024) // 1MB
+	if isFullyCovered(coverage) {
+		t.Error("partially covered block should not be fully covered")
 	}
-	if result[0].Length != 20 {
-		t.Errorf("expected length 20, got %d", result[0].Length)
+
+	// Fully covered (all bits set)
+	fullCoverage := make([]uint64, CoverageWordsPerBlock)
+	for i := range fullCoverage {
+		fullCoverage[i] = ^uint64(0) // All bits set
+	}
+	if !isFullyCovered(fullCoverage) {
+		t.Error("fully covered block should be fully covered")
+	}
+
+	// Nil coverage
+	if isFullyCovered(nil) {
+		t.Error("nil coverage should not be fully covered")
 	}
 }
 
-func TestMergeAdjacent_Overlapping(t *testing.T) {
-	slices := []Slice{
-		{Offset: 0, Length: 50, Data: make([]byte, 50)},
-		{Offset: 30, Length: 50, Data: make([]byte, 50)},
+func TestGetCoveredSize(t *testing.T) {
+	coverage := newCoverageBitmap()
+
+	// Empty coverage
+	if size := getCoveredSize(coverage); size != 0 {
+		t.Errorf("empty coverage should have size 0, got %d", size)
 	}
 
-	result := mergeAdjacent(slices)
-
-	if len(result) != 1 {
-		t.Errorf("expected 1 merged slice, got %d", len(result))
-	}
-	if result[0].Length != 80 {
-		t.Errorf("expected length 80, got %d", result[0].Length)
-	}
-}
-
-func TestMergeAdjacent_MultipleGroups(t *testing.T) {
-	slices := []Slice{
-		{Offset: 0, Length: 10, Data: make([]byte, 10)},
-		{Offset: 10, Length: 10, Data: make([]byte, 10)},
-		{Offset: 100, Length: 10, Data: make([]byte, 10)},
-		{Offset: 110, Length: 10, Data: make([]byte, 10)},
+	// Mark first 64 bytes
+	markCoverage(coverage, 0, 64)
+	if size := getCoveredSize(coverage); size != 64 {
+		t.Errorf("expected covered size 64, got %d", size)
 	}
 
-	result := mergeAdjacent(slices)
+	// Mark more bytes
+	markCoverage(coverage, 64, 64) // Now 0-128 covered
+	if size := getCoveredSize(coverage); size != 128 {
+		t.Errorf("expected covered size 128, got %d", size)
+	}
 
-	if len(result) != 2 {
-		t.Errorf("expected 2 merged groups, got %d", len(result))
-	}
-	if result[0].Length != 20 {
-		t.Errorf("first group length should be 20, got %d", result[0].Length)
-	}
-	if result[1].Length != 20 {
-		t.Errorf("second group length should be 20, got %d", result[1].Length)
+	// Nil coverage
+	if size := getCoveredSize(nil); size != 0 {
+		t.Errorf("nil coverage should have size 0, got %d", size)
 	}
 }
 
 // ============================================================================
-// GetDirtySlices Tests
+// GetDirtyBlocks Tests
 // ============================================================================
 
-func TestGetDirtySlices_Empty(t *testing.T) {
+func TestGetDirtyBlocks_Empty(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
-	_, err := c.GetDirtySlices(context.Background(), "nonexistent")
+	_, err := c.GetDirtyBlocks(context.Background(), "nonexistent")
 	if err != ErrFileNotInCache {
 		t.Errorf("expected ErrFileNotInCache, got %v", err)
 	}
 }
 
-func TestGetDirtySlices_SortedByChunkAndOffset(t *testing.T) {
+func TestGetDirtyBlocks_SortedByChunkAndBlock(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
-	handle := "test-file"
+	payloadID := "test-file"
 
-	// Write in random order
-	_ = c.WriteSlice(ctx, handle, 1, []byte("chunk1-offset100"), 100)
-	_ = c.WriteSlice(ctx, handle, 0, []byte("chunk0-offset50"), 50)
-	_ = c.WriteSlice(ctx, handle, 1, []byte("chunk1-offset0"), 0)
-	_ = c.WriteSlice(ctx, handle, 0, []byte("chunk0-offset0"), 0)
+	// Write to different chunks and blocks in random order
+	// Chunk 1, block 2
+	_ = c.Write(ctx, payloadID, 1, []byte("chunk1-block2"), 2*BlockSize)
+	// Chunk 0, block 1
+	_ = c.Write(ctx, payloadID, 0, []byte("chunk0-block1"), 1*BlockSize)
+	// Chunk 1, block 0
+	_ = c.Write(ctx, payloadID, 1, []byte("chunk1-block0"), 0)
+	// Chunk 0, block 0
+	_ = c.Write(ctx, payloadID, 0, []byte("chunk0-block0"), 0)
 
-	slices, err := c.GetDirtySlices(ctx, handle)
+	blocks, err := c.GetDirtyBlocks(ctx, payloadID)
 	if err != nil {
-		t.Fatalf("GetDirtySlices failed: %v", err)
+		t.Fatalf("GetDirtyBlocks failed: %v", err)
 	}
 
-	// Should be sorted: chunk0-offset0, chunk0-offset50, chunk1-offset0, chunk1-offset100
-	if len(slices) != 4 {
-		t.Fatalf("expected 4 slices, got %d", len(slices))
-	}
-
+	// Should be sorted: chunk0-block0, chunk0-block1, chunk1-block0, chunk1-block2
 	expected := []struct {
-		chunk  uint32
-		offset uint32
+		chunkIdx uint32
+		blockIdx uint32
 	}{
 		{0, 0},
-		{0, 50},
+		{0, 1},
 		{1, 0},
-		{1, 100},
+		{1, 2},
+	}
+
+	if len(blocks) != len(expected) {
+		t.Fatalf("expected %d blocks, got %d", len(expected), len(blocks))
 	}
 
 	for i, exp := range expected {
-		if slices[i].ChunkIndex != exp.chunk || slices[i].Offset != exp.offset {
-			t.Errorf("slice[%d]: got chunk=%d offset=%d, want chunk=%d offset=%d",
-				i, slices[i].ChunkIndex, slices[i].Offset, exp.chunk, exp.offset)
+		if blocks[i].ChunkIndex != exp.chunkIdx || blocks[i].BlockIndex != exp.blockIdx {
+			t.Errorf("block[%d]: got chunk=%d block=%d, want chunk=%d block=%d",
+				i, blocks[i].ChunkIndex, blocks[i].BlockIndex, exp.chunkIdx, exp.blockIdx)
 		}
 	}
 }
 
-func TestGetDirtySlices_OnlyReturnsPending(t *testing.T) {
+func TestGetDirtyBlocks_OnlyReturnsPending(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
-	handle := "test-file"
+	payloadID := "test-file"
 
-	// Write two slices
-	_ = c.WriteSlice(ctx, handle, 0, []byte("pending"), 0)
-	_ = c.WriteSlice(ctx, handle, 0, []byte("will-be-flushed"), 100)
+	// Write two blocks
+	_ = c.Write(ctx, payloadID, 0, []byte("block0"), 0)
+	_ = c.Write(ctx, payloadID, 0, []byte("block1"), BlockSize)
 
-	// Mark second as flushed
-	slices, _ := c.GetDirtySlices(ctx, handle)
-	for _, s := range slices {
-		if s.Offset == 100 {
-			_ = c.MarkSliceFlushed(ctx, handle, s.ID, nil)
-		}
-	}
+	// Mark second block as uploaded
+	c.MarkBlockUploaded(ctx, payloadID, 0, 1)
 
 	// Get dirty again - should only have the pending one
-	slices, err := c.GetDirtySlices(ctx, handle)
+	blocks, err := c.GetDirtyBlocks(ctx, payloadID)
 	if err != nil {
-		t.Fatalf("GetDirtySlices failed: %v", err)
+		t.Fatalf("GetDirtyBlocks failed: %v", err)
 	}
 
-	if len(slices) != 1 {
-		t.Errorf("expected 1 pending slice, got %d", len(slices))
+	if len(blocks) != 1 {
+		t.Errorf("expected 1 pending block, got %d", len(blocks))
 	}
-	if slices[0].Offset != 0 {
-		t.Errorf("expected pending slice at offset 0, got %d", slices[0].Offset)
+	if blocks[0].BlockIndex != 0 {
+		t.Errorf("expected pending block at index 0, got %d", blocks[0].BlockIndex)
 	}
 }
 
-func TestGetDirtySlices_ContextCancelled(t *testing.T) {
+func TestGetDirtyBlocks_ContextCancelled(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := c.GetDirtySlices(ctx, "test")
+	_, err := c.GetDirtyBlocks(ctx, "test")
 	if err != context.Canceled {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
 }
 
-func TestGetDirtySlices_CacheClosed(t *testing.T) {
+func TestGetDirtyBlocks_CacheClosed(t *testing.T) {
 	c := New(0)
-	_ = c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.Write(context.Background(), "test", 0, []byte("data"), 0)
 	_ = c.Close()
 
-	_, err := c.GetDirtySlices(context.Background(), "test")
+	_, err := c.GetDirtyBlocks(context.Background(), "test")
 	if err != ErrCacheClosed {
 		t.Errorf("expected ErrCacheClosed, got %v", err)
 	}
 }
 
 // ============================================================================
-// MarkSliceFlushed Tests
+// MarkBlockUploaded Tests
 // ============================================================================
 
-func TestMarkSliceFlushed_Success(t *testing.T) {
+func TestMarkBlockUploaded_Success(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
-	handle := "test-file"
+	payloadID := "test-file"
 
-	_ = c.WriteSlice(ctx, handle, 0, []byte("data"), 0)
+	_ = c.Write(ctx, payloadID, 0, []byte("data"), 0)
 
-	slices, _ := c.GetDirtySlices(ctx, handle)
-	if len(slices) != 1 {
-		t.Fatalf("expected 1 slice, got %d", len(slices))
+	// Verify we have pending blocks
+	blocks, _ := c.GetDirtyBlocks(ctx, payloadID)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
 	}
 
-	blockRefs := []BlockRef{{ID: "block-1", Size: 4}}
-	err := c.MarkSliceFlushed(ctx, handle, slices[0].ID, blockRefs)
-	if err != nil {
-		t.Fatalf("MarkSliceFlushed failed: %v", err)
+	// Mark as uploaded
+	marked := c.MarkBlockUploaded(ctx, payloadID, 0, 0)
+	if !marked {
+		t.Error("MarkBlockUploaded should return true")
 	}
 
-	// Should have no more dirty slices
-	slices, _ = c.GetDirtySlices(ctx, handle)
-	if len(slices) != 0 {
-		t.Errorf("expected 0 dirty slices after flush, got %d", len(slices))
+	// Should have no more dirty blocks
+	blocks, _ = c.GetDirtyBlocks(ctx, payloadID)
+	if len(blocks) != 0 {
+		t.Errorf("expected 0 dirty blocks after upload, got %d", len(blocks))
 	}
 }
 
-func TestMarkSliceFlushed_NotFound(t *testing.T) {
+func TestMarkBlockUploaded_NotFound(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
-	handle := "test-file"
+	payloadID := "test-file"
 
-	_ = c.WriteSlice(ctx, handle, 0, []byte("data"), 0)
+	_ = c.Write(ctx, payloadID, 0, []byte("data"), 0)
 
-	err := c.MarkSliceFlushed(ctx, handle, "nonexistent-id", nil)
-	if err != ErrSliceNotFound {
-		t.Errorf("expected ErrSliceNotFound, got %v", err)
+	// Try to mark a nonexistent block
+	marked := c.MarkBlockUploaded(ctx, payloadID, 99, 99)
+	if marked {
+		t.Error("MarkBlockUploaded should return false for nonexistent block")
 	}
 }
 
-func TestMarkSliceFlushed_ContextCancelled(t *testing.T) {
+func TestMarkBlockUploaded_AlreadyUploaded(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	payloadID := "test-file"
+
+	_ = c.Write(ctx, payloadID, 0, []byte("data"), 0)
+
+	// Mark as uploaded twice
+	c.MarkBlockUploaded(ctx, payloadID, 0, 0)
+	marked := c.MarkBlockUploaded(ctx, payloadID, 0, 0)
+
+	// Second call should return false (already uploaded)
+	if marked {
+		t.Error("MarkBlockUploaded should return false for already uploaded block")
+	}
+}
+
+func TestMarkBlockUploaded_ContextCancelled(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	_ = c.Write(context.Background(), "test", 0, []byte("data"), 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := c.MarkSliceFlushed(ctx, "test", "id", nil)
+	marked := c.MarkBlockUploaded(ctx, "test", 0, 0)
+	if marked {
+		t.Error("MarkBlockUploaded should return false for cancelled context")
+	}
+}
+
+func TestMarkBlockUploaded_CacheClosed(t *testing.T) {
+	c := New(0)
+	_ = c.Write(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.Close()
+
+	marked := c.MarkBlockUploaded(context.Background(), "test", 0, 0)
+	if marked {
+		t.Error("MarkBlockUploaded should return false for closed cache")
+	}
+}
+
+// ============================================================================
+// MarkBlockUploading Tests
+// ============================================================================
+
+func TestMarkBlockUploading_Success(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	payloadID := "test-file"
+
+	_ = c.Write(ctx, payloadID, 0, []byte("data"), 0)
+
+	// Mark as uploading
+	marked := c.MarkBlockUploading(ctx, payloadID, 0, 0)
+	if !marked {
+		t.Error("MarkBlockUploading should return true")
+	}
+
+	// Block should still be returned by GetDirtyBlocks? No - uploading is not pending
+	// Actually let me check the implementation - it only returns BlockStatePending
+	blocks, _ := c.GetDirtyBlocks(ctx, payloadID)
+	if len(blocks) != 0 {
+		t.Errorf("expected 0 dirty blocks (uploading is not pending), got %d", len(blocks))
+	}
+}
+
+func TestMarkBlockUploading_NotFound(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	payloadID := "test-file"
+
+	_ = c.Write(ctx, payloadID, 0, []byte("data"), 0)
+
+	// Try to mark a nonexistent block
+	marked := c.MarkBlockUploading(ctx, payloadID, 99, 99)
+	if marked {
+		t.Error("MarkBlockUploading should return false for nonexistent block")
+	}
+}
+
+func TestMarkBlockUploading_AlreadyUploading(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	payloadID := "test-file"
+
+	_ = c.Write(ctx, payloadID, 0, []byte("data"), 0)
+
+	// Mark as uploading twice
+	c.MarkBlockUploading(ctx, payloadID, 0, 0)
+	marked := c.MarkBlockUploading(ctx, payloadID, 0, 0)
+
+	// Second call should return false (not pending anymore)
+	if marked {
+		t.Error("MarkBlockUploading should return false for already uploading block")
+	}
+}
+
+// ============================================================================
+// GetBlockData Tests
+// ============================================================================
+
+func TestGetBlockData_Success(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	payloadID := "test-file"
+	testData := []byte("test data content")
+
+	_ = c.Write(ctx, payloadID, 0, testData, 0)
+
+	data, size, err := c.GetBlockData(ctx, payloadID, 0, 0)
+	if err != nil {
+		t.Fatalf("GetBlockData failed: %v", err)
+	}
+
+	if size != uint32(len(testData)) {
+		t.Errorf("expected size %d, got %d", len(testData), size)
+	}
+
+	if string(data[:len(testData)]) != string(testData) {
+		t.Errorf("data mismatch: got %q, want %q", data[:len(testData)], testData)
+	}
+}
+
+func TestGetBlockData_NotFound(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+
+	// File doesn't exist
+	_, _, err := c.GetBlockData(ctx, "nonexistent", 0, 0)
+	if err != ErrBlockNotFound {
+		t.Errorf("expected ErrBlockNotFound, got %v", err)
+	}
+
+	// File exists but block doesn't
+	_ = c.Write(ctx, "test", 0, []byte("data"), 0)
+	_, _, err = c.GetBlockData(ctx, "test", 99, 99)
+	if err != ErrBlockNotFound {
+		t.Errorf("expected ErrBlockNotFound for nonexistent block, got %v", err)
+	}
+}
+
+func TestGetBlockData_ContextCancelled(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	_ = c.Write(context.Background(), "test", 0, []byte("data"), 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err := c.GetBlockData(ctx, "test", 0, 0)
 	if err != context.Canceled {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
 }
 
-func TestMarkSliceFlushed_CacheClosed(t *testing.T) {
+func TestGetBlockData_CacheClosed(t *testing.T) {
 	c := New(0)
-	_ = c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.Write(context.Background(), "test", 0, []byte("data"), 0)
 	_ = c.Close()
 
-	err := c.MarkSliceFlushed(context.Background(), "test", "id", nil)
+	_, _, err := c.GetBlockData(context.Background(), "test", 0, 0)
 	if err != ErrCacheClosed {
 		t.Errorf("expected ErrCacheClosed, got %v", err)
 	}
 }
 
 // ============================================================================
-// CoalesceWrites Tests
+// Backpressure (ErrCacheFull) Tests
 // ============================================================================
 
-func TestCoalesceWrites_MergesAdjacentPending(t *testing.T) {
-	c := New(0)
+func TestWrite_CacheFull_ReturnsError(t *testing.T) {
+	// Create a cache with small max size
+	// Block buffers are 4MB, so we need at least one block to fit
+	// Use a size that allows one block but not two
+	c := New(BlockSize + 1024) // Just over one block
 	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
-	handle := "test-file"
+	payloadID := "test-file"
 
-	// Write sequential small chunks (simulating NFS writes)
-	for i := 0; i < 10; i++ {
-		_ = c.WriteSlice(ctx, handle, 0, make([]byte, 32*1024), uint32(i*32*1024))
-	}
-
-	slices, _ := c.GetDirtySlices(ctx, handle)
-
-	// Sequential writes should be merged by tryExtendAdjacentSlice,
-	// but even if not, CoalesceWrites should merge them
-	if len(slices) != 1 {
-		t.Errorf("expected 1 coalesced slice, got %d", len(slices))
-	}
-	if slices[0].Length != 320*1024 {
-		t.Errorf("expected length %d, got %d", 320*1024, slices[0].Length)
-	}
-}
-
-func TestCoalesceWrites_PreservesFlushed(t *testing.T) {
-	c := New(0)
-	defer func() { _ = c.Close() }()
-
-	ctx := context.Background()
-	handle := "test-file"
-
-	// Write and flush first slice
-	_ = c.WriteSlice(ctx, handle, 0, []byte("first"), 0)
-	slices, _ := c.GetDirtySlices(ctx, handle)
-	_ = c.MarkSliceFlushed(ctx, handle, slices[0].ID, nil)
-
-	// Write adjacent pending slice
-	_ = c.WriteSlice(ctx, handle, 0, []byte("second"), 5)
-
-	// Coalesce should not merge flushed with pending
-	err := c.CoalesceWrites(ctx, handle)
+	// Write data that creates a block (all pending, can't be evicted)
+	err := c.Write(ctx, payloadID, 0, make([]byte, 1024), 0)
 	if err != nil {
-		t.Fatalf("CoalesceWrites failed: %v", err)
+		t.Fatalf("first write should succeed: %v", err)
 	}
 
-	// Should still have one pending
-	slices, _ = c.GetDirtySlices(ctx, handle)
-	if len(slices) != 1 {
-		t.Errorf("expected 1 pending slice, got %d", len(slices))
-	}
-}
-
-func TestCoalesceWrites_FileNotInCache(t *testing.T) {
-	c := New(0)
-	defer func() { _ = c.Close() }()
-
-	err := c.CoalesceWrites(context.Background(), "nonexistent")
-	if err != ErrFileNotInCache {
-		t.Errorf("expected ErrFileNotInCache, got %v", err)
+	// Try to write to a different block that would exceed cache size
+	// Since all data is pending (not uploaded), eviction can't free space
+	err = c.Write(ctx, payloadID, 0, make([]byte, 1024), BlockSize)
+	if err != ErrCacheFull {
+		t.Errorf("expected ErrCacheFull when cache is full of pending data, got %v", err)
 	}
 }
 
-func TestCoalesceWrites_ContextCancelled(t *testing.T) {
-	c := New(0)
-	defer func() { _ = c.Close() }()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	err := c.CoalesceWrites(ctx, "test")
-	if err != context.Canceled {
-		t.Errorf("expected context.Canceled, got %v", err)
-	}
-}
-
-func TestCoalesceWrites_DataIntegrity(t *testing.T) {
-	c := New(0)
+func TestWrite_CacheFull_SucceedsAfterUpload(t *testing.T) {
+	// Create a cache with small max size
+	c := New(BlockSize + 1024) // Just over one block
 	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
-	handle := "test-file"
+	payloadID := "test-file"
 
-	// Write overlapping data with specific patterns
-	data1 := []byte("AAAAAAAAAA") // 10 bytes at offset 0
-	data2 := []byte("BBBBB")      // 5 bytes at offset 5 (overlaps)
-	data3 := []byte("CCC")        // 3 bytes at offset 10 (adjacent)
+	// Fill cache with pending data
+	_ = c.Write(ctx, payloadID, 0, make([]byte, 1024), 0)
 
-	_ = c.WriteSlice(ctx, handle, 0, data1, 0)
-	_ = c.WriteSlice(ctx, handle, 0, data2, 5)
-	_ = c.WriteSlice(ctx, handle, 0, data3, 10)
+	// Mark block as uploaded so it can be evicted
+	c.MarkBlockUploaded(ctx, payloadID, 0, 0)
 
-	slices, _ := c.GetDirtySlices(ctx, handle)
-	if len(slices) != 1 {
-		t.Fatalf("expected 1 coalesced slice, got %d", len(slices))
-	}
-
-	// Expected: AAAAABBBBBCCC (13 bytes)
-	expected := "AAAAABBBBBCCC"
-	if string(slices[0].Data) != expected {
-		t.Errorf("data mismatch: got %q, want %q", slices[0].Data, expected)
+	// Now write should succeed because eviction can free space
+	err := c.Write(ctx, payloadID, 0, make([]byte, 1024), BlockSize)
+	if err != nil {
+		t.Errorf("write should succeed after upload (eviction possible), got %v", err)
 	}
 }
 
@@ -534,8 +533,8 @@ func TestCoalesceWrites_DataIntegrity(t *testing.T) {
 // Flush Benchmarks
 // ============================================================================
 
-// BenchmarkGetDirtySlices measures dirty slice retrieval performance.
-func BenchmarkGetDirtySlices(b *testing.B) {
+// BenchmarkGetDirtyBlocks measures dirty block retrieval performance.
+func BenchmarkGetDirtyBlocks(b *testing.B) {
 	chunkCounts := []int{1, 10, 100}
 
 	for _, chunks := range chunkCounts {
@@ -546,16 +545,16 @@ func BenchmarkGetDirtySlices(b *testing.B) {
 			ctx := context.Background()
 			payloadID := "bench-file"
 
-			// Create dirty slices across multiple chunks
+			// Create dirty blocks across multiple chunks
 			data := make([]byte, 32*1024)
 			for i := 0; i < chunks; i++ {
-				_ = c.WriteSlice(ctx, payloadID, uint32(i), data, 0)
+				_ = c.Write(ctx, payloadID, uint32(i), data, 0)
 			}
 
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				_, err := c.GetDirtySlices(ctx, payloadID)
+				_, err := c.GetDirtyBlocks(ctx, payloadID)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -564,35 +563,28 @@ func BenchmarkGetDirtySlices(b *testing.B) {
 	}
 }
 
-// BenchmarkCoalesceWrites measures write coalescing performance.
-func BenchmarkCoalesceWrites(b *testing.B) {
-	slicesPerChunk := []int{10, 50, 100}
+// BenchmarkMarkBlockUploaded measures block upload marking performance.
+// Pre-creates many blocks, then marks them all as uploaded.
+func BenchmarkMarkBlockUploaded(b *testing.B) {
+	// Use a fixed number of blocks to avoid excessive memory usage
+	// (each block allocates 4MB)
+	const maxBlocks = 100
 
-	for _, slices := range slicesPerChunk {
-		b.Run(fmt.Sprintf("slices=%d", slices), func(b *testing.B) {
-			c := New(0)
-			defer func() { _ = c.Close() }()
+	c := New(0)
+	defer func() { _ = c.Close() }()
 
-			ctx := context.Background()
+	ctx := context.Background()
 
-			b.ResetTimer()
+	// Pre-create blocks across multiple files
+	for i := 0; i < maxBlocks; i++ {
+		payloadID := fmt.Sprintf("file-%d", i)
+		_ = c.Write(ctx, payloadID, 0, make([]byte, 1024), 0)
+	}
 
-			for i := 0; i < b.N; i++ {
-				b.StopTimer()
-				payloadID := fmt.Sprintf("file-%d", i)
+	b.ResetTimer()
 
-				// Create many small non-adjacent slices
-				for j := 0; j < slices; j++ {
-					data := make([]byte, 1024)
-					offset := uint32(j * 2048) // 1KB gap between slices
-					_ = c.WriteSlice(ctx, payloadID, 0, data, offset)
-				}
-				b.StartTimer()
-
-				if err := c.CoalesceWrites(ctx, payloadID); err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
+	for i := 0; i < b.N; i++ {
+		payloadID := fmt.Sprintf("file-%d", i%maxBlocks)
+		c.MarkBlockUploaded(ctx, payloadID, 0, 0)
 	}
 }

@@ -5,7 +5,7 @@ Performance benchmarks for the transfer manager with different block store backe
 ## Test Environment
 
 - Platform: darwin/arm64 (Apple Silicon)
-- Date: 2026-01-15
+- Date: 2026-01-16
 - Go version: go1.23
 - CPU: Apple M1 Max
 
@@ -121,7 +121,7 @@ The GC scans the block store and removes orphan blocks (blocks without metadata)
 
 | Metric | Value |
 |--------|-------|
-| Parse block key | 34.8 ns (zero alloc) |
+| Parse block key | 34.6 ns (zero alloc) |
 | Per-file overhead | ~1.2 μs |
 | Memory scaling | O(n) linear |
 

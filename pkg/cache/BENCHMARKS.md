@@ -6,43 +6,39 @@ Performance benchmarks for the cache and WAL modules.
 - CPU: Apple M1 Max
 - OS: macOS (darwin/arm64)
 - Go: 1.23+
-- Date: 2026-01-15
+- Date: 2025-01-16
 
 ## Summary
 
 | Operation | Throughput | Notes |
 |-----------|------------|-------|
-| Sequential Write (32KB) | **5.0 GB/s** | Zero allocations |
-| File Copy (100MB) | **4.8 GB/s** | End-to-end with coalesce |
-| Concurrent File Copies | **8.6 GB/s** | Multi-threaded |
-| WAL Append (32KB) | **1.9 GB/s** | mmap-backed, zero allocs |
-| WAL vs In-Memory | ~3% overhead | Negligible WAL cost |
+| Sequential Write (128KB) | **15.8 GB/s** | Zero allocations |
+| File Copy (100MB) | **12.4 GB/s** | End-to-end block buffer model |
+| Concurrent File Copies | **32.3 GB/s** | Multi-threaded |
+| Read (128KB) | **29.9 GB/s** | Zero allocations |
+| WAL Append (1MB) | **2.9 GB/s** | mmap-backed, zero allocs |
+
+## Architecture
+
+The cache uses a **Block Buffer Model** where data is written directly to 4MB block buffers:
+- Each block has a coverage bitmap tracking which bytes are written
+- Writes go directly to the target position (no slice coalescing needed)
+- Memory tracking uses BlockSize (4MB) per buffer for accurate OOM prevention
+- Immediate eviction possible after block upload
 
 ## Write Benchmarks
 
 ### Sequential Writes
 
-Sequential writes benefit from the slice extension optimization, achieving near-memory-copy speeds.
+Sequential writes directly to block buffers achieve excellent throughput:
 
 | Size | Throughput | Allocs/op |
 |------|------------|-----------|
-| 4KB | 4.0 GB/s | 0 |
-| 16KB | 5.0 GB/s | 0 |
-| 32KB | 6.6 GB/s | 0 |
-| 64KB | 4.8 GB/s | 0 |
-| 128KB | 5.4 GB/s | 0 |
-
-The sequential extension optimization merges 32KB NFS writes into single growing slices:
-- **96K iterations** produced only **47 slices** (not 96K slices)
-- This is critical for NFS file copy performance
-
-### Random Writes
-
-Random writes create more slices due to non-adjacent offsets:
-
-| Pattern | Throughput | Allocs/op |
-|---------|------------|-----------|
-| Random 4KB | 1.1 GB/s | 5 |
+| 4KB | 11.0 GB/s | 0 |
+| 16KB | 14.1 GB/s | 0 |
+| 32KB | 14.3 GB/s | 0 |
+| 64KB | 15.3 GB/s | 0 |
+| 128KB | 15.8 GB/s | 0 |
 
 ### Multi-File Writes
 
@@ -50,9 +46,9 @@ Writing to multiple files concurrently:
 
 | Files | Throughput | Allocs/op |
 |-------|------------|-----------|
-| 10 | 4.9 GB/s | 1 |
-| 100 | 4.9 GB/s | 1 |
-| 1000 | 4.9 GB/s | 2 |
+| 10 | 8.2 GB/s | 1 |
+| 100 | 8.2 GB/s | 1 |
+| 1000 | 8.2 GB/s | 2 |
 
 Excellent scalability - throughput remains constant as file count increases.
 
@@ -62,7 +58,7 @@ Multi-threaded write performance (GOMAXPROCS=10):
 
 | Benchmark | Throughput | Notes |
 |-----------|------------|-------|
-| Concurrent 32KB | 4.6 GB/s | Minimal lock contention |
+| Concurrent 32KB | 67.9 GB/s | Minimal lock contention |
 
 ## Read Benchmarks
 
@@ -70,52 +66,57 @@ Multi-threaded write performance (GOMAXPROCS=10):
 
 | Size | Throughput | Allocs/op |
 |------|------------|-----------|
-| 4KB | 365 MB/s | 1 |
-| 32KB | 370 MB/s | 1 |
-| 64KB | 369 MB/s | 1 |
-| 128KB | 372 MB/s | 1 |
+| 4KB | 22.9 GB/s | 0 |
+| 32KB | 29.4 GB/s | 0 |
+| 64KB | 30.3 GB/s | 0 |
+| 128KB | 29.9 GB/s | 0 |
 
-Read performance is consistent across sizes.
+Zero-allocation reads with excellent throughput.
 
-### Slice Merging (Newest-Wins Algorithm)
+### Overlapping Writes
 
-Performance when reading ranges covered by overlapping slices:
+Performance when reading ranges with overlapping writes (newest-wins):
 
-| Overlapping Slices | Throughput | Allocs/op |
+| Overlapping Writes | Throughput | Allocs/op |
 |--------------------|------------|-----------|
-| 1 | 41 GB/s | 4KB |
-| 5 | 28 GB/s | 4KB |
-| 10 | 27 GB/s | 4KB |
-| 25 | 22 GB/s | 4KB |
-| 50 | 22 GB/s | 4KB |
+| 1 | 57.8 GB/s | 0 |
+| 5 | 58.2 GB/s | 0 |
+| 10 | 61.7 GB/s | 0 |
+| 25 | 58.6 GB/s | 0 |
+| 50 | 59.1 GB/s | 0 |
 
 **Optimizations:**
-- Fast path for single-slice coverage (most common case)
-- Bitset-based coverage tracking (8x less memory than bool array)
-- Word-level bit operations for O(64) byte scanning instead of O(1)
-- `math/bits.TrailingZeros64` for fast bit position detection
+- Direct block buffer access (no merge needed)
+- Coverage bitmap for sparse file support
+- Zero allocations in hot path
+
+### IsRangeCovered
+
+Checking if a byte range is covered in cache:
+
+| Benchmark | Latency |
+|-----------|---------|
+| IsRangeCovered | 369 ns |
 
 ## Flush Benchmarks
 
-### GetDirtySlices
+### GetDirtyBlocks
 
-Retrieving dirty slices for upload:
+Retrieving dirty blocks for upload:
 
 | Chunks | Latency | Allocs |
 |--------|---------|--------|
-| 1 | 175 ns | 2 |
-| 10 | 2.1 us | 15 |
-| 100 | 23.5 us | 108 |
+| 1 | 126 ns | 1 |
+| 10 | 1.1 us | 5 |
+| 100 | 12.5 us | 8 |
 
-### CoalesceWrites
+### MarkBlockUploaded
 
-Merging adjacent slices before flush:
+Marking blocks as uploaded after S3 transfer:
 
-| Slices | Latency | Allocs |
-|--------|---------|--------|
-| 10 | 11.7 us | 40 |
-| 50 | 37.8 us | 164 |
-| 100 | 72.8 us | 316 |
+| Benchmark | Latency | Allocs |
+|-----------|---------|--------|
+| MarkBlockUploaded | 78 ns | 1 |
 
 ## Eviction Benchmarks
 
@@ -123,19 +124,19 @@ LRU eviction with dirty data protection:
 
 | Operation | Latency | Notes |
 |-----------|---------|-------|
-| EvictLRU (1MB) | 122 us | From 100MB cache |
+| EvictLRU | 146 us | Evicts uploaded blocks only |
 
 ## End-to-End Benchmarks
 
 ### File Copy Simulation
 
-Simulates complete NFS file copy (sequential 32KB writes + coalesce):
+Simulates complete NFS file copy (sequential writes + flush):
 
 | File Size | Throughput | Total Time |
 |-----------|------------|------------|
-| 1MB | 4.5 GB/s | 235 us |
-| 10MB | 4.8 GB/s | 2.2 ms |
-| 100MB | 4.8 GB/s | 21.7 ms |
+| 1MB | 6.0 GB/s | 176 us |
+| 10MB | 8.7 GB/s | 1.2 ms |
+| 100MB | 12.4 GB/s | 8.4 ms |
 
 ### Concurrent File Copies
 
@@ -143,7 +144,7 @@ Multiple files being copied simultaneously:
 
 | Benchmark | Throughput |
 |-----------|------------|
-| Concurrent 1MB files | 8.6 GB/s |
+| Concurrent 1MB files | 32.3 GB/s |
 
 Excellent parallel scaling with multiple goroutines.
 
@@ -153,7 +154,7 @@ Write-Read-Write pattern:
 
 | Operation | Throughput |
 |-----------|------------|
-| Write+Read+Write | 973 MB/s |
+| Write+Read+Write | 22.6 GB/s |
 
 ## WAL Benchmarks
 
@@ -161,9 +162,9 @@ Write-Read-Write pattern:
 
 | Data Size | Throughput | Allocs/op |
 |-----------|------------|-----------|
-| 512B | 1.0 GB/s | 0 |
-| 32KB | 1.9 GB/s | 0 |
-| 1MB | 2.7 GB/s | 0 |
+| 512B | 2.5 GB/s | 0 |
+| 32KB | 2.8 GB/s | 0 |
+| 1MB | 2.9 GB/s | 0 |
 
 Zero-allocation writes via mmap.
 
@@ -171,9 +172,9 @@ Zero-allocation writes via mmap.
 
 | Entries | Latency | Allocs |
 |---------|---------|--------|
-| 100 | 66 us | 419 |
-| 1000 | 345 us | 4022 |
-| 500 (with removes) | 181 us | 2050 |
+| 100 | 54 us | 319 |
+| 1000 | 276 us | 3022 |
+| 500 (with removes) | 161 us | 1550 |
 
 Recovery is fast even with thousands of entries.
 
@@ -184,33 +185,46 @@ Recovery is fast even with thousands of entries.
 | AppendRemove | 80 ns |
 | Sync (MS_ASYNC) | 14 ns |
 
+### Sustained Throughput
+
+| Benchmark | Throughput |
+|-----------|------------|
+| WAL Throughput | 8.5 GB/s |
+
 ## WAL vs In-Memory Comparison
 
 Direct comparison of cache performance with and without WAL persistence:
 
 | Benchmark | In-Memory | With WAL | Overhead |
 |-----------|-----------|----------|----------|
-| Sequential 32KB | 5.9 GB/s | 5.7 GB/s | ~3% |
-| File Copy 10MB | 4.7 GB/s | 4.8 GB/s | ~0% |
+| Sequential 32KB | 14.7 GB/s | 2.2 GB/s | WAL I/O bound |
+| File Copy 10MB | 11.0 GB/s | 1.9 GB/s | WAL I/O bound |
 
-**Key Finding:** WAL persistence adds negligible overhead (~3%) to write operations.
+**Note:** WAL overhead is dominated by disk I/O. For in-memory workloads without durability requirements, use `cache.New()` instead of `cache.NewWithWal()`.
 
 ## Memory Allocation
 
 | Operation | Allocs/op | Notes |
 |-----------|-----------|-------|
-| WriteSlice (new file) | 10 | Creates file/chunk entries |
-| WriteSlice (extend) | 0 | Zero-alloc slice extension |
-| ReadSlice | 1 | Destination buffer |
+| Write (new block) | 10 | Creates file/chunk/block entries |
+| Write (existing block) | 0 | Direct buffer write |
+| Read | 0 | Zero-allocation read |
 | WAL Append | 0 | Direct mmap write |
+
+### Memory Tracking
+
+The cache tracks actual memory allocation (BlockSize = 4MB per block buffer), not bytes written:
+- Prevents OOM by providing accurate backpressure
+- Returns `ErrCacheFull` when pending blocks exceed `maxSize`
+- Only uploaded blocks can be evicted
 
 ## Performance Requirements
 
 The cache must achieve **>3 GB/s** sequential write throughput for acceptable NFS file copy performance. Current benchmarks show:
 
-- Sequential writes: **5.0 GB/s** (67% above requirement)
-- File copy E2E: **4.8 GB/s** (60% above requirement)
-- Concurrent copies: **8.6 GB/s** (187% above requirement)
+- Sequential writes: **15.8 GB/s** (427% above requirement)
+- File copy E2E: **12.4 GB/s** (313% above requirement)
+- Concurrent copies: **32.3 GB/s** (977% above requirement)
 
 All performance requirements are met with significant headroom.
 
@@ -224,7 +238,7 @@ go test -bench=. -benchmem ./pkg/cache
 go test -bench=. -benchmem ./pkg/cache/wal
 
 # Run specific benchmark
-go test -bench=BenchmarkWriteSlice_Sequential -benchmem ./pkg/cache
+go test -bench=BenchmarkWrite_Sequential -benchmem ./pkg/cache
 
 # Run with longer duration for stability
 go test -bench=. -benchmem -benchtime=1s ./pkg/cache

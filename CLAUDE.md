@@ -36,7 +36,7 @@ Each major subsystem has its own CLAUDE.md with non-obvious conventions and gotc
 - **[pkg/metadata/CLAUDE.md](pkg/metadata/CLAUDE.md)** - Metadata service layer, file handles, locking
 - **[pkg/blocks/CLAUDE.md](pkg/blocks/CLAUDE.md)** - Block service layer, S3 async behavior
 - **[pkg/adapter/CLAUDE.md](pkg/adapter/CLAUDE.md)** - Protocol adapter lifecycle
-- **[pkg/cache/CLAUDE.md](pkg/cache/CLAUDE.md)** - Slice-aware cache, WAL persistence
+- **[pkg/cache/CLAUDE.md](pkg/cache/CLAUDE.md)** - Block-aware cache, WAL persistence
 - **[pkg/transfer/CLAUDE.md](pkg/transfer/CLAUDE.md)** - Transfer manager, background queue
 - **[pkg/cache/wal/CLAUDE.md](pkg/cache/wal/CLAUDE.md)** - WAL persistence layer
 - **[pkg/config/CLAUDE.md](pkg/config/CLAUDE.md)** - Named stores pattern, env overrides
@@ -403,13 +403,13 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
     - **Path-Based Keys**: Objects stored as `export/path/to/file` for easy inspection
 
 **5. Cache Layer** (`pkg/cache/`)
-- Slice-aware caching for the Chunk/Slice/Block storage model
+- Block-aware caching for the Chunk/Block storage model
 - Uses **WAL persistence** (`pkg/cache/wal/`) for crash recovery
 - **Key features**:
-  - Sequential write optimization (merges 16KB-32KB NFS writes into single slices)
-  - Newest-wins read merging for overlapping slices
+  - Block buffer model (4MB buffers with coverage bitmaps)
+  - Direct writes to target position (no coalescing needed)
   - LRU eviction with dirty data protection
-  - Three states: Pending (dirty) → Uploading → Flushed (safe to evict)
+  - Three states: Pending (dirty) → Uploading → Uploaded (safe to evict)
 - **Configuration**:
   - `cache.max_size`: Maximum cache size (LRU eviction)
   - WAL persistence via `NewWithWal()` (pass persister created externally)
@@ -458,14 +458,14 @@ dittofs/
 │   │       ├── memory/       # In-memory (ephemeral)
 │   │       └── s3/           # S3-backed (multipart, streaming)
 │   │
-│   ├── cache/                # Slice-aware cache layer
+│   ├── cache/                # Block-aware cache layer
 │   │   ├── cache.go          # Cache implementation (LRU, dirty tracking)
-│   │   └── types.go          # Slice, SliceState, BlockRef types
+│   │   └── types.go          # BlockState, PendingBlock types
 │   │
 │   ├── wal/                  # Write-Ahead Log persistence
 │   │   ├── persister.go      # Persister interface + NullPersister
 │   │   ├── mmap.go           # MmapPersister implementation
-│   │   └── types.go          # SliceEntry, WAL record types
+│   │   └── types.go          # BlockWriteEntry, WAL record types
 │   │
 │   ├── transfer/             # Cache-to-store transfer orchestration
 │   │   ├── manager.go        # TransferManager (flush coordination)

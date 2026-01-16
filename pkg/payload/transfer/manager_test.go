@@ -483,8 +483,8 @@ func testWriteAndFlush(t *testing.T, env *testEnv) {
 		}
 		chunk := data[offset:end]
 
-		if err := env.cache.WriteSlice(ctx, payloadID, chunkIdx, chunk, uint32(offset)); err != nil {
-			t.Fatalf("WriteSlice failed: %v", err)
+		if err := env.cache.Write(ctx, payloadID, chunkIdx, chunk, uint32(offset)); err != nil {
+			t.Fatalf("Write failed: %v", err)
 		}
 
 		// Notify transfer manager of write
@@ -560,9 +560,9 @@ func testDownloadOnCacheMiss(t *testing.T, env *testEnv) {
 
 	// Verify data is now in cache
 	dest := make([]byte, BlockSize)
-	found, err := env.cache.ReadSlice(ctx, payloadID, 0, 0, BlockSize, dest)
+	found, err := env.cache.Read(ctx, payloadID, 0, 0, BlockSize, dest)
 	if err != nil {
-		t.Fatalf("ReadSlice failed: %v", err)
+		t.Fatalf("Read failed: %v", err)
 	}
 	if !found {
 		t.Error("Data should be in cache after EnsureAvailable")
@@ -600,8 +600,8 @@ func testConcurrentOperations(t *testing.T, env *testEnv) {
 			data := randomData(fileSize)
 
 			// Write to cache
-			if err := env.cache.WriteSlice(ctx, payloadID, 0, data, 0); err != nil {
-				errors <- fmt.Errorf("file %d: WriteSlice failed: %w", fileIdx, err)
+			if err := env.cache.Write(ctx, payloadID, 0, data, 0); err != nil {
+				errors <- fmt.Errorf("file %d: Write failed: %w", fileIdx, err)
 				return
 			}
 
@@ -750,8 +750,8 @@ func benchmarkUpload(b *testing.B, env *testEnv) {
 		payloadID := fmt.Sprintf("export/bench-upload-%d.bin", i)
 
 		// Write to cache
-		if err := env.cache.WriteSlice(ctx, payloadID, 0, data, 0); err != nil {
-			b.Fatalf("WriteSlice failed: %v", err)
+		if err := env.cache.Write(ctx, payloadID, 0, data, 0); err != nil {
+			b.Fatalf("Write failed: %v", err)
 		}
 
 		// Trigger upload and wait
@@ -797,8 +797,8 @@ func benchmarkFlush(b *testing.B, env *testEnv) {
 		payloadID := fmt.Sprintf("export/bench-flush-%d.bin", i)
 
 		// Write to cache (partial block to ensure flush uploads it)
-		if err := env.cache.WriteSlice(ctx, payloadID, 0, data[:BlockSize/2], 0); err != nil {
-			b.Fatalf("WriteSlice failed: %v", err)
+		if err := env.cache.Write(ctx, payloadID, 0, data[:BlockSize/2], 0); err != nil {
+			b.Fatalf("Write failed: %v", err)
 		}
 
 		// Flush
@@ -825,7 +825,7 @@ func benchmarkConcurrentUpload(b *testing.B, env *testEnv, parallelism int) {
 
 				payloadID := fmt.Sprintf("export/bench-concurrent-%d-%d.bin", i, fileIdx)
 
-				if err := env.cache.WriteSlice(ctx, payloadID, 0, data, 0); err != nil {
+				if err := env.cache.Write(ctx, payloadID, 0, data, 0); err != nil {
 					return
 				}
 
@@ -884,8 +884,8 @@ func benchmarkLargeFile(b *testing.B, env *testEnv, fileSize int) {
 				end = fileSize
 			}
 
-			if err := env.cache.WriteSlice(ctx, payloadID, 0, data[offset:end], uint32(offset)); err != nil {
-				b.Fatalf("WriteSlice failed: %v", err)
+			if err := env.cache.Write(ctx, payloadID, 0, data[offset:end], uint32(offset)); err != nil {
+				b.Fatalf("Write failed: %v", err)
 			}
 			env.manager.OnWriteComplete(ctx, payloadID, 0, uint32(offset), uint32(end-offset))
 		}
@@ -934,8 +934,8 @@ func benchmarkSequentialWrite(b *testing.B, env *testEnv, writeSize int) {
 		chunkIdx := uint32(fileOffset / uint64(cache.ChunkSize))
 		offsetInChunk := uint32(fileOffset % uint64(cache.ChunkSize))
 
-		if err := env.cache.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
-			b.Fatalf("WriteSlice failed: %v", err)
+		if err := env.cache.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+			b.Fatalf("Write failed: %v", err)
 		}
 		env.manager.OnWriteComplete(ctx, payloadID, chunkIdx, offsetInChunk, uint32(writeSize))
 	}

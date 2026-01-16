@@ -206,6 +206,11 @@ func MapContentErrorToNFSStatus(err error) uint32 {
 	case containsIgnoreCase(errMsg, "stale") || containsIgnoreCase(errMsg, "invalid handle"):
 		return types.NFS3ErrStale
 
+	case containsIgnoreCase(errMsg, "cache full"):
+		// Cache full - return JUKEBOX to tell client to retry after flushing
+		// This provides backpressure to prevent OOM conditions
+		return types.NFS3ErrJukebox
+
 	default:
 		// Generic I/O error for unrecognized errors
 		return types.NFS3ErrIO

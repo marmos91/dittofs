@@ -3,84 +3,46 @@
 // The WAL (Write-Ahead Log) ensures crash recovery for cached data.
 // It uses an append-only log format where operations are recorded
 // before being applied, allowing reconstruction of state on restart.
+//
+// Block-Level WAL Format:
+// The WAL records individual block writes with their coordinates:
+// (payloadID, chunkIdx, blockIdx, offsetInBlock, data)
+// On recovery, writes are replayed into block buffers.
 package wal
 
-import (
-	"time"
-)
-
-// SliceState represents the state of a slice in the cache.
-type SliceState int
-
-const (
-	// SliceStatePending indicates the slice has unflushed data.
-	SliceStatePending SliceState = iota
-
-	// SliceStateFlushed indicates the slice has been persisted to block storage.
-	SliceStateFlushed
-
-	// SliceStateUploading indicates the slice is currently being uploaded.
-	SliceStateUploading
-)
-
-// String returns the string representation of SliceState.
-func (s SliceState) String() string {
-	switch s {
-	case SliceStatePending:
-		return "Pending"
-	case SliceStateFlushed:
-		return "Flushed"
-	case SliceStateUploading:
-		return "Uploading"
-	default:
-		return "Unknown"
-	}
-}
-
-// BlockRef references an immutable block in the block store.
-type BlockRef struct {
-	// ID is the block's unique identifier in the block store.
-	ID string
-
-	// Size is the actual size of this block (may be < BlockSize for last block).
-	Size uint32
-}
-
-// Slice represents a slice of data within a chunk.
-// This is the canonical slice type used by both cache and WAL.
-type Slice struct {
-	// ID uniquely identifies this slice.
-	ID string
-
-	// Offset is the byte offset within the chunk (0 to ChunkSize-1).
-	Offset uint32
-
-	// Length is the size of this slice in bytes.
-	Length uint32
-
-	// Data contains the actual slice content.
-	Data []byte
-
-	// State indicates whether this slice is pending, uploading, or flushed.
-	State SliceState
-
-	// CreatedAt is when this slice was created (for newest-wins ordering).
-	CreatedAt time.Time
-
-	// BlockRefs contains references to blocks after flushing.
-	BlockRefs []BlockRef
-}
-
-// SliceEntry represents a slice entry in the WAL.
-// It embeds Slice and adds context fields needed for recovery.
-type SliceEntry struct {
-	// PayloadID identifies the file this slice belongs to.
-	// This is the sole identifier for file content.
+// BlockWriteEntry represents a single write operation in the WAL.
+// Each entry records a write to a specific location within a block.
+type BlockWriteEntry struct {
+	// PayloadID identifies the file this write belongs to.
 	PayloadID string
 
 	// ChunkIdx is the chunk index within the file.
 	ChunkIdx uint32
 
-	// Slice is the embedded slice data.
-	Slice
+	// BlockIdx is the block index within the chunk.
+	BlockIdx uint32
+
+	// OffsetInBlock is the byte offset within the block (0 to BlockSize-1).
+	OffsetInBlock uint32
+
+	// Data contains the bytes written.
+	Data []byte
+}
+
+// BlockKey uniquely identifies a block within a file.
+type BlockKey struct {
+	PayloadID string
+	ChunkIdx  uint32
+	BlockIdx  uint32
+}
+
+// RecoveryResult contains all data recovered from the WAL.
+type RecoveryResult struct {
+	// Entries contains all block write entries to replay.
+	Entries []BlockWriteEntry
+
+	// UploadedBlocks contains block keys for blocks that were already
+	// uploaded to S3 before the crash. These should be marked as Uploaded
+	// (not Pending) during recovery to avoid re-uploading.
+	UploadedBlocks map[BlockKey]bool
 }

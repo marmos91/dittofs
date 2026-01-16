@@ -159,7 +159,7 @@ func (h *Handler) GetAttr(
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "GETATTR",
+	logger.DebugCtx(ctx.Context, "GETATTR",
 		"handle", fmt.Sprintf("%x", req.Handle),
 		"client", clientIP,
 		"auth", ctx.AuthFlavor)
@@ -206,7 +206,7 @@ func (h *Handler) GetAttr(
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
-	logger.InfoCtx(ctx.Context, "GETATTR successful",
+	logger.DebugCtx(ctx.Context, "GETATTR successful",
 		"handle", fmt.Sprintf("%x", req.Handle),
 		"type", nfsAttr.Type,
 		"mode", fmt.Sprintf("%o", nfsAttr.Mode),

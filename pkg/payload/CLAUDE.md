@@ -96,7 +96,7 @@ startChunk, endChunk := cache.ChunkRange(offset, uint64(len(buf)))
 
 // Read from each chunk
 for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
-    data, found, err := cache.ReadSlice(ctx, fileHandle, chunkIdx, offsetInChunk, length)
+    found, err := cache.Read(ctx, fileHandle, chunkIdx, offsetInChunk, length, dest)
     // Handle not-found as zeros (sparse file behavior)
 }
 ```
@@ -108,7 +108,7 @@ startChunk, endChunk := cache.ChunkRange(offset, uint64(len(data)))
 
 // Write to each chunk
 for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
-    err := cache.WriteSlice(ctx, fileHandle, chunkIdx, data[dataStart:dataEnd], offsetInChunk)
+    err := cache.Write(ctx, fileHandle, chunkIdx, data[dataStart:dataEnd], offsetInChunk)
 }
 ```
 

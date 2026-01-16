@@ -283,7 +283,7 @@ func (h *Handler) Write(
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "WRITE", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "count", bytesize.ByteSize(req.Count), "stable", req.Stable, "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "WRITE", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "count", bytesize.ByteSize(req.Count), "stable", req.Stable, "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Check for context cancellation before starting work
@@ -303,7 +303,7 @@ func (h *Handler) Write(
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	logger.InfoCtx(ctx.Context, "WRITE", "share", ctx.Share)
+	logger.DebugCtx(ctx.Context, "WRITE", "share", ctx.Share)
 
 	// ========================================================================
 	// Step 3: Validate request parameters
@@ -429,7 +429,7 @@ func (h *Handler) Write(
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
 
-	logger.InfoCtx(ctx.Context, "WRITE successful", "file", updatedFile.PayloadID, "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "written", bytesize.ByteSize(len(req.Data)), "new_size", bytesize.ByteSize(updatedFile.Size), "client", clientIP)
+	logger.DebugCtx(ctx.Context, "WRITE successful", "file", updatedFile.PayloadID, "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "written", bytesize.ByteSize(len(req.Data)), "new_size", bytesize.ByteSize(updatedFile.Size), "client", clientIP)
 
 	// ========================================================================
 	// Stability Level Design Decision (RFC 1813 Section 3.3.7)

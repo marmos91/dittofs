@@ -82,7 +82,7 @@ func (s *PayloadService) ReadAt(ctx context.Context, _ /* shareName */ string, i
 		dest := p[slice.BufOffset : slice.BufOffset+int(slice.Length)]
 
 		// Try to read from cache first
-		found, err := s.cache.ReadSlice(ctx, payloadID, slice.ChunkIndex, slice.Offset, slice.Length, dest)
+		found, err := s.cache.Read(ctx, payloadID, slice.ChunkIndex, slice.Offset, slice.Length, dest)
 		if err != nil && err != cache.ErrFileNotInCache {
 			return totalRead, fmt.Errorf("read slice from chunk %d failed: %w", slice.ChunkIndex, err)
 		}
@@ -95,7 +95,7 @@ func (s *PayloadService) ReadAt(ctx context.Context, _ /* shareName */ string, i
 			}
 
 			// Now read from cache
-			found, err = s.cache.ReadSlice(ctx, payloadID, slice.ChunkIndex, slice.Offset, slice.Length, dest)
+			found, err = s.cache.Read(ctx, payloadID, slice.ChunkIndex, slice.Offset, slice.Length, dest)
 			if err != nil || !found {
 				return totalRead, fmt.Errorf("data not in cache after download for chunk %d", slice.ChunkIndex)
 			}
@@ -162,7 +162,7 @@ func (s *PayloadService) WriteAt(ctx context.Context, _ /* shareName */ string, 
 		dataEnd := slice.BufOffset + int(slice.Length)
 
 		// Write slice to this chunk
-		err := s.cache.WriteSlice(ctx, payloadID, slice.ChunkIndex, data[slice.BufOffset:dataEnd], slice.Offset)
+		err := s.cache.Write(ctx, payloadID, slice.ChunkIndex, data[slice.BufOffset:dataEnd], slice.Offset)
 		if err != nil {
 			return fmt.Errorf("write slice to chunk %d failed: %w", slice.ChunkIndex, err)
 		}

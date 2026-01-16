@@ -6,20 +6,21 @@ Performance comparison of the three BlockStore implementations.
 - OS: macOS (Darwin)
 - Architecture: arm64
 - CPU: Apple M1 Max
-- Go version: 1.25.5
+- Go version: 1.23+
+- Date: 2025-01-16
 
 ## Summary
 
 | Operation | Memory | Filesystem | S3 (Localstack) |
 |-----------|--------|------------|-----------------|
-| Write 1KB | 7,779 MB/s | 5.77 MB/s | 0.30 MB/s |
-| Write 64KB | 14,019 MB/s | 362.75 MB/s | 17.73 MB/s |
-| Write 1MB | 18,291 MB/s | 2,165 MB/s | 106.66 MB/s |
-| Write 4MB | 38,401 MB/s | 4,173 MB/s | 165.77 MB/s |
-| Read 1KB | 8,243 MB/s | 71.30 MB/s | 0.31 MB/s |
-| Read 64KB | 14,052 MB/s | 2,961 MB/s | 16.21 MB/s |
-| Read 1MB | 16,213 MB/s | 10,219 MB/s | 154.56 MB/s |
-| Read 4MB | 36,813 MB/s | 10,367 MB/s | 291.75 MB/s |
+| Write 1KB | 7.0 GB/s | 5.77 MB/s | 0.30 MB/s |
+| Write 64KB | 13.3 GB/s | 362.75 MB/s | 17.73 MB/s |
+| Write 1MB | 19.5 GB/s | 2,165 MB/s | 106.66 MB/s |
+| Write 4MB | 37.5 GB/s | 4,173 MB/s | 165.77 MB/s |
+| Read 1KB | 8.2 GB/s | 71.30 MB/s | 0.31 MB/s |
+| Read 64KB | 14.3 GB/s | 2,961 MB/s | 16.21 MB/s |
+| Read 1MB | 16.0 GB/s | 10,219 MB/s | 154.56 MB/s |
+| Read 4MB | 31.0 GB/s | 10,367 MB/s | 291.75 MB/s |
 
 ## Detailed Results
 
@@ -28,22 +29,22 @@ Performance comparison of the three BlockStore implementations.
 Pure in-memory storage using `sync.Map`. Fastest option, ideal for testing and ephemeral data.
 
 ```
-BenchmarkWriteBlock/1KB-10           8959516       131.6 ns/op   7779.04 MB/s    1024 B/op    1 allocs/op
-BenchmarkWriteBlock/64KB-10           285841      4675 ns/op    14019.40 MB/s   65536 B/op    1 allocs/op
-BenchmarkWriteBlock/1MB-10             21045     57325 ns/op    18291.64 MB/s 1048579 B/op    1 allocs/op
-BenchmarkWriteBlock/4MB-10             10982    109221 ns/op    38401.85 MB/s 4194311 B/op    1 allocs/op
+BenchmarkWriteBlock/1KB-10           854547        147.0 ns/op   6965.58 MB/s    1024 B/op    1 allocs/op
+BenchmarkWriteBlock/64KB-10           26378       4945 ns/op    13251.67 MB/s   65536 B/op    1 allocs/op
+BenchmarkWriteBlock/1MB-10             1900      53649 ns/op    19545.08 MB/s 1048581 B/op    1 allocs/op
+BenchmarkWriteBlock/4MB-10             1063     111849 ns/op    37499.84 MB/s 4194311 B/op    1 allocs/op
 
-BenchmarkReadBlock/1KB-10            8886727       124.2 ns/op   8243.39 MB/s    1024 B/op    1 allocs/op
-BenchmarkReadBlock/64KB-10            262910      4664 ns/op    14052.07 MB/s   65536 B/op    1 allocs/op
-BenchmarkReadBlock/1MB-10              18434     64674 ns/op    16213.14 MB/s 1048580 B/op    1 allocs/op
-BenchmarkReadBlock/4MB-10               9268    113935 ns/op    36813.16 MB/s 4194310 B/op    1 allocs/op
+BenchmarkReadBlock/1KB-10            967903        125.0 ns/op   8194.79 MB/s    1024 B/op    1 allocs/op
+BenchmarkReadBlock/64KB-10            25744       4567 ns/op    14349.83 MB/s   65536 B/op    1 allocs/op
+BenchmarkReadBlock/1MB-10              1652      65443 ns/op    16022.76 MB/s 1048580 B/op    1 allocs/op
+BenchmarkReadBlock/4MB-10              1054     135089 ns/op    31048.50 MB/s 4194317 B/op    1 allocs/op
 
-BenchmarkReadBlockRange/1KB_start-10    10239274     119.9 ns/op   8543.54 MB/s    1024 B/op    1 allocs/op
-BenchmarkReadBlockRange/1KB_middle-10    9485768     119.9 ns/op   8542.99 MB/s    1024 B/op    1 allocs/op
-BenchmarkReadBlockRange/64KB_start-10     300465    4061 ns/op    16138.53 MB/s   65536 B/op    1 allocs/op
-BenchmarkReadBlockRange/64KB_middle-10    301113    4072 ns/op    16095.43 MB/s   65536 B/op    1 allocs/op
+BenchmarkReadBlockRange/1KB_start-10     923608     126.3 ns/op   8110.54 MB/s    1024 B/op    1 allocs/op
+BenchmarkReadBlockRange/1KB_middle-10    929511     131.3 ns/op   7796.14 MB/s    1024 B/op    1 allocs/op
+BenchmarkReadBlockRange/64KB_start-10     28768    4085 ns/op    16041.82 MB/s   65536 B/op    1 allocs/op
+BenchmarkReadBlockRange/64KB_middle-10    30403    4099 ns/op    15986.56 MB/s   65536 B/op    1 allocs/op
 
-BenchmarkWriteBlock_Parallel-10         336319      3549 ns/op    18464.55 MB/s   65560 B/op    2 allocs/op
+BenchmarkWriteBlock_Parallel-10          31699     4136 ns/op    15846.40 MB/s   65560 B/op    2 allocs/op
 ```
 
 **Key characteristics:**

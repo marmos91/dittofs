@@ -255,7 +255,7 @@ func (h *Handler) Read(
 	// Extract client IP for logging
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "READ", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "count", bytesize.ByteSize(req.Count), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "READ", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "count", bytesize.ByteSize(req.Count), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Step 1: Validate request parameters
@@ -392,7 +392,7 @@ func (h *Handler) Read(
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
-	logger.InfoCtx(ctx.Context, "READ successful", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "read", bytesize.ByteSize(n), "eof", eof, "client", clientIP)
+	logger.DebugCtx(ctx.Context, "READ successful", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "read", bytesize.ByteSize(n), "eof", eof, "client", clientIP)
 
 	logger.DebugCtx(ctx.Context, "READ details", "size", bytesize.ByteSize(file.Size), "type", nfsAttr.Type, "mode", fmt.Sprintf("%o", file.Mode))
 
