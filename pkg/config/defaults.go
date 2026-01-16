@@ -273,8 +273,8 @@ func applyMetadataDefaults(cfg *MetadataConfig) {
 		cfg.Stores[name] = store
 	}
 
-	// Apply global settings defaults
-	applyCapabilitiesDefaults(&cfg.Global.FilesystemCapabilities)
+	// Apply filesystem capabilities defaults
+	applyCapabilitiesDefaults(&cfg.FilesystemCapabilities)
 }
 
 // applyCapabilitiesDefaults sets filesystem capabilities defaults.
@@ -537,13 +537,11 @@ func GetDefaultConfig() *Config {
 			},
 		},
 		Metadata: MetadataConfig{
-			Global: MetadataGlobalConfig{
-				FilesystemCapabilities: metadata.FilesystemCapabilities{
-					SupportsHardLinks: true,
-					SupportsSymlinks:  true,
-					CaseSensitive:     true,
-					CasePreserving:    true,
-				},
+			FilesystemCapabilities: metadata.FilesystemCapabilities{
+				SupportsHardLinks: true,
+				SupportsSymlinks:  true,
+				CaseSensitive:     true,
+				CasePreserving:    true,
 			},
 			Stores: map[string]MetadataStoreConfig{
 				"default": {
@@ -554,9 +552,9 @@ func GetDefaultConfig() *Config {
 		},
 		Shares: []ShareConfig{
 			{
-				Name:          "/export",
-				MetadataStore: "default",
-				Payload:       "default",
+				Name:     "/export",
+				Metadata: "default",
+				Payload:  "default",
 				ReadOnly:      false,
 				IdentityMapping: IdentityMappingConfig{
 					MapAllToAnonymous:        false, // Don't squash by default

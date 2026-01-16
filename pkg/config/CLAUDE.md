@@ -24,7 +24,7 @@ content:
 
 shares:
   - name: /archive
-    metadata_store: persistent-meta   # reference by name
+    metadata: persistent-meta   # reference by name
     content_store: s3-content
 ```
 

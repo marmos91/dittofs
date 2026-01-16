@@ -33,7 +33,7 @@ metadata:
 
 shares:
   - name: "/export"
-    metadata_store: "default"
+    metadata: "default"
     payload: "default"
 
 adapters:
@@ -136,7 +136,7 @@ type = "memory"
 
 [[shares]]
 name = "/export"
-metadata_store = "default"
+metadata = "default"
 payload = "default"
 
 [adapters.nfs]
@@ -260,7 +260,7 @@ metadata:
 
 shares:
   - name: "/export"
-    metadata_store: "default"
+    metadata: "default"
     payload: "default"
 
 adapters:

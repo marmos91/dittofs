@@ -25,7 +25,6 @@ func TestInitializeRegistry_Success(t *testing.T) {
 			},
 		},
 		Metadata: MetadataConfig{
-			Global: MetadataGlobalConfig{},
 			Stores: map[string]MetadataStoreConfig{
 				"meta1": {
 					Type: "memory",
@@ -38,7 +37,7 @@ func TestInitializeRegistry_Success(t *testing.T) {
 		Shares: []ShareConfig{
 			{
 				Name:          "/export",
-				MetadataStore: "meta1",
+				Metadata: "meta1",
 				Payload:       "default",
 				ReadOnly:      false,
 			},
@@ -108,19 +107,19 @@ func TestInitializeRegistry_MultipleStoresAndShares(t *testing.T) {
 		Shares: []ShareConfig{
 			{
 				Name:          "/export1",
-				MetadataStore: "meta1",
+				Metadata: "meta1",
 				Payload:       "default",
 				ReadOnly:      false,
 			},
 			{
 				Name:          "/export2",
-				MetadataStore: "meta2",
+				Metadata: "meta2",
 				Payload:       "default",
 				ReadOnly:      true,
 			},
 			{
 				Name:          "/export3",
-				MetadataStore: "meta1", // Reuse store
+				Metadata: "meta1", // Reuse store
 				Payload:       "default",
 				ReadOnly:      false,
 			},
@@ -163,7 +162,7 @@ func TestInitializeRegistry_NoMetadataStores(t *testing.T) {
 			Stores: map[string]MetadataStoreConfig{}, // Empty
 		},
 		Shares: []ShareConfig{
-			{Name: "/export", MetadataStore: "meta1"},
+			{Name: "/export", Metadata: "meta1"},
 		},
 	}
 
@@ -221,7 +220,7 @@ func TestInitializeRegistry_ShareReferencesNonexistentMetadataStore(t *testing.T
 		Shares: []ShareConfig{
 			{
 				Name:          "/export",
-				MetadataStore: "nonexistent", // References non-existent store
+				Metadata: "nonexistent", // References non-existent store
 				Payload:       "default",
 			},
 		},
@@ -254,7 +253,7 @@ func TestInitializeRegistry_EmptyShareName(t *testing.T) {
 		Shares: []ShareConfig{
 			{
 				Name:          "", // Empty name
-				MetadataStore: "meta1",
+				Metadata: "meta1",
 				Payload:       "default",
 			},
 		},
@@ -287,12 +286,12 @@ func TestInitializeRegistry_DuplicateShareName(t *testing.T) {
 		Shares: []ShareConfig{
 			{
 				Name:          "/export",
-				MetadataStore: "meta1",
+				Metadata: "meta1",
 				Payload:       "default",
 			},
 			{
 				Name:          "/export", // Duplicate
-				MetadataStore: "meta1",
+				Metadata: "meta1",
 				Payload:       "default",
 			},
 		},
@@ -323,7 +322,7 @@ func TestInitializeRegistry_InvalidMetadataStoreType(t *testing.T) {
 			},
 		},
 		Shares: []ShareConfig{
-			{Name: "/export", MetadataStore: "meta1", Payload: "default"},
+			{Name: "/export", Metadata: "meta1", Payload: "default"},
 		},
 	}
 

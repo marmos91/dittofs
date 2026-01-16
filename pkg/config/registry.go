@@ -153,8 +153,8 @@ func validateRegistryConfig(cfg *Config) error {
 
 // registerMetadataStores creates and registers all configured metadata stores.
 func registerMetadataStores(ctx context.Context, reg *registry.Registry, cfg *Config) error {
-	// Get global filesystem capabilities that apply to all metadata stores
-	capabilities := cfg.Metadata.Global.FilesystemCapabilities
+	// Get filesystem capabilities that apply to all metadata stores
+	capabilities := cfg.Metadata.FilesystemCapabilities
 
 	for name, storeCfg := range cfg.Metadata.Stores {
 		logger.Debug("Creating metadata store", "name", name, "type", storeCfg.Type)
@@ -178,21 +178,21 @@ func registerMetadataStores(ctx context.Context, reg *registry.Registry, cfg *Co
 // Each share automatically gets a Cache for content storage.
 func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 	for i, shareCfg := range cfg.Shares {
-		logger.Debug("Adding share", "name", shareCfg.Name, "metadata", shareCfg.MetadataStore, "read_only", shareCfg.ReadOnly)
+		logger.Debug("Adding share", "name", shareCfg.Name, "metadata", shareCfg.Metadata, "read_only", shareCfg.ReadOnly)
 
 		// Validate share configuration
 		if shareCfg.Name == "" {
 			return fmt.Errorf("share #%d: name cannot be empty", i+1)
 		}
-		if shareCfg.MetadataStore == "" {
-			return fmt.Errorf("share %q: metadata_store cannot be empty", shareCfg.Name)
+		if shareCfg.Metadata == "" {
+			return fmt.Errorf("share %q: metadata cannot be empty", shareCfg.Name)
 		}
 
 		// Create ShareConfig from configuration
 		// Note: ContentStore and Cache fields were removed - Cache is auto-created
 		shareConfig := &registry.ShareConfig{
 			Name:                     shareCfg.Name,
-			MetadataStore:            shareCfg.MetadataStore,
+			MetadataStore:            shareCfg.Metadata,
 			ReadOnly:                 shareCfg.ReadOnly,
 			AllowGuest:               shareCfg.AllowGuest,
 			DefaultPermission:        shareCfg.DefaultPermission,

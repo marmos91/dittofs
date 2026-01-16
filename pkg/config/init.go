@@ -168,34 +168,32 @@ payload:
 
 # Metadata store configuration
 metadata:
-  # Global settings for all metadata stores
-  global:
-    # Filesystem capabilities and limits
-    filesystem_capabilities:
-      # Maximum size of a single read operation (bytes)
-      max_read_size: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.MaxReadSize) + `
-      # Preferred read size for optimal performance (bytes)
-      preferred_read_size: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.PreferredReadSize) + `
-      # Maximum size of a single write operation (bytes)
-      max_write_size: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.MaxWriteSize) + `
-      # Preferred write size for optimal performance (bytes)
-      preferred_write_size: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.PreferredWriteSize) + `
-      # Maximum file size supported (bytes)
-      max_file_size: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.MaxFileSize) + `
-      # Maximum filename length (characters)
-      max_filename_len: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.MaxFilenameLen) + `
-      # Maximum path length (characters)
-      max_path_len: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.MaxPathLen) + `
-      # Maximum number of hard links per file
-      max_hard_link_count: ` + fmt.Sprintf("%d", cfg.Metadata.Global.FilesystemCapabilities.MaxHardLinkCount) + `
-      # Whether hard links are supported
-      supports_hard_links: ` + fmt.Sprintf("%t", cfg.Metadata.Global.FilesystemCapabilities.SupportsHardLinks) + `
-      # Whether symbolic links are supported
-      supports_symlinks: ` + fmt.Sprintf("%t", cfg.Metadata.Global.FilesystemCapabilities.SupportsSymlinks) + `
-      # Whether filenames are case-sensitive
-      case_sensitive: ` + fmt.Sprintf("%t", cfg.Metadata.Global.FilesystemCapabilities.CaseSensitive) + `
-      # Whether filename case is preserved
-      case_preserving: ` + fmt.Sprintf("%t", cfg.Metadata.Global.FilesystemCapabilities.CasePreserving) + `
+  # Filesystem capabilities and limits
+  filesystem_capabilities:
+    # Maximum size of a single read operation (bytes)
+    max_read_size: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxReadSize) + `
+    # Preferred read size for optimal performance (bytes)
+    preferred_read_size: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.PreferredReadSize) + `
+    # Maximum size of a single write operation (bytes)
+    max_write_size: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxWriteSize) + `
+    # Preferred write size for optimal performance (bytes)
+    preferred_write_size: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.PreferredWriteSize) + `
+    # Maximum file size supported (bytes)
+    max_file_size: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxFileSize) + `
+    # Maximum filename length (characters)
+    max_filename_len: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxFilenameLen) + `
+    # Maximum path length (characters)
+    max_path_len: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxPathLen) + `
+    # Maximum number of hard links per file
+    max_hard_link_count: ` + fmt.Sprintf("%d", cfg.Metadata.FilesystemCapabilities.MaxHardLinkCount) + `
+    # Whether hard links are supported
+    supports_hard_links: ` + fmt.Sprintf("%t", cfg.Metadata.FilesystemCapabilities.SupportsHardLinks) + `
+    # Whether symbolic links are supported
+    supports_symlinks: ` + fmt.Sprintf("%t", cfg.Metadata.FilesystemCapabilities.SupportsSymlinks) + `
+    # Whether filenames are case-sensitive
+    case_sensitive: ` + fmt.Sprintf("%t", cfg.Metadata.FilesystemCapabilities.CaseSensitive) + `
+    # Whether filename case is preserved
+    case_preserving: ` + fmt.Sprintf("%t", cfg.Metadata.FilesystemCapabilities.CasePreserving) + `
 
   # Named metadata store instances
   stores:
@@ -224,7 +222,7 @@ shares:
   - # Share path (must start with /)
     name: "` + cfg.Shares[0].Name + `"
     # Reference to metadata store by name
-    metadata_store: "` + cfg.Shares[0].MetadataStore + `"
+    metadata: "` + cfg.Shares[0].Metadata + `"
     # Reference to payload store by name (defaults to first if empty)
     payload: "` + cfg.Shares[0].Payload + `"
     # Make share read-only

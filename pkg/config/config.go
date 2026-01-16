@@ -254,17 +254,12 @@ type TransferWorkersConfig struct {
 
 // MetadataConfig specifies metadata store configuration with named stores.
 type MetadataConfig struct {
-	// Global settings that apply to all metadata stores
-	Global MetadataGlobalConfig `mapstructure:"global" yaml:"global"`
+	// FilesystemCapabilities defines filesystem capabilities and limits
+	// These apply to all metadata stores
+	FilesystemCapabilities metadata.FilesystemCapabilities `mapstructure:"filesystem_capabilities" yaml:"filesystem_capabilities"`
 
 	// Named metadata store instances
 	Stores map[string]MetadataStoreConfig `mapstructure:"stores" yaml:"stores"`
-}
-
-// MetadataGlobalConfig contains global settings for all metadata stores.
-type MetadataGlobalConfig struct {
-	// FilesystemCapabilities defines filesystem capabilities and limits
-	FilesystemCapabilities metadata.FilesystemCapabilities `mapstructure:"filesystem_capabilities" yaml:"filesystem_capabilities"`
 }
 
 // MetadataStoreConfig defines a single metadata store instance.
@@ -409,9 +404,9 @@ type ShareConfig struct {
 	// Name is the share path (e.g., "/export")
 	Name string `mapstructure:"name" validate:"required,startswith=/" yaml:"name"`
 
-	// MetadataStore is the name of the metadata store to use for this share
+	// Metadata is the name of the metadata store to use for this share
 	// References a store defined in metadata.stores
-	MetadataStore string `mapstructure:"metadata_store" validate:"required" yaml:"metadata_store"`
+	Metadata string `mapstructure:"metadata" validate:"required" yaml:"metadata"`
 
 	// Payload is the name of the payload store to use for this share
 	// References a store defined in payload.stores

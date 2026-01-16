@@ -202,7 +202,7 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 			{
 				Name:           "/export",
 				DumpRestricted: true,
-				MetadataStore:  "default",
+				Metadata:  "default",
 				Payload:        "custom",
 			},
 		},
