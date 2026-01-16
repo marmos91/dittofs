@@ -35,6 +35,7 @@ builds:
     ignore:
       - goos: windows
         goarch: arm
+
     ldflags:
       # Inject version info
       - -s -w  # Strip debug info
@@ -91,6 +92,71 @@ changelog:
     - title: Others
       order: 999
 
+# Docker images configuration
+dockers:
+  # AMD64 image
+  - id: dittofs-amd64
+    goos: linux
+    goarch: amd64
+    use: buildx
+    image_templates:
+      - "marmos91c/dittofs:{{ .Tag }}-amd64"
+      - "marmos91c/dittofs:latest-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=DittoFS"
+      - "--label=org.opencontainers.image.description=Modular virtual filesystem with pluggable storage backends"
+      - "--label=org.opencontainers.image.url=https://github.com/marmos91/dittofs"
+      - "--label=org.opencontainers.image.source=https://github.com/marmos91/dittofs"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+    dockerfile: Dockerfile.goreleaser
+
+  # ARM64 image
+  - id: dittofs-arm64
+    goos: linux
+    goarch: arm64
+    use: buildx
+    image_templates:
+      - "marmos91c/dittofs:{{ .Tag }}-arm64"
+      - "marmos91c/dittofs:latest-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=DittoFS"
+      - "--label=org.opencontainers.image.description=Modular virtual filesystem with pluggable storage backends"
+      - "--label=org.opencontainers.image.url=https://github.com/marmos91/dittofs"
+      - "--label=org.opencontainers.image.source=https://github.com/marmos91/dittofs"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+    dockerfile: Dockerfile.goreleaser
+
+# Docker manifest for multi-arch images
+docker_manifests:
+  - name_template: "marmos91c/dittofs:{{ .Tag }}"
+    image_templates:
+      - "marmos91c/dittofs:{{ .Tag }}-amd64"
+      - "marmos91c/dittofs:{{ .Tag }}-arm64"
+
+  - name_template: "marmos91c/dittofs:latest"
+    image_templates:
+      - "marmos91c/dittofs:latest-amd64"
+      - "marmos91c/dittofs:latest-arm64"
+
+  # Version-specific manifests for major and minor versions
+  - name_template: "marmos91c/dittofs:v{{ .Major }}"
+    image_templates:
+      - "marmos91c/dittofs:{{ .Tag }}-amd64"
+      - "marmos91c/dittofs:{{ .Tag }}-arm64"
+
+  - name_template: "marmos91c/dittofs:v{{ .Major }}.{{ .Minor }}"
+    image_templates:
+      - "marmos91c/dittofs:{{ .Tag }}-amd64"
+      - "marmos91c/dittofs:{{ .Tag }}-arm64"
+
 release:
   github:
     owner: marmos91
@@ -107,8 +173,7 @@ release:
 
     ### Installation
 
-    Download the appropriate binary for your platform below, or use:
-
+    **Binary Download:**
     ```bash
     # Linux (x86_64)
     curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dittofs_{{ .Version }}_Linux_x86_64.tar.gz | tar xz
@@ -118,6 +183,21 @@ release:
 
     # macOS (Intel)
     curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dittofs_{{ .Version }}_Darwin_x86_64.tar.gz | tar xz
+    ```
+
+    **Docker:**
+    ```bash
+    # Pull the latest image
+    docker pull marmos91c/dittofs:{{ .Tag }}
+
+    # Run with a config file
+    docker run -d \
+      -p 12049:12049 \
+      -p 12445:12445 \
+      -p 8080:8080 \
+      -v /path/to/config.yaml:/config/config.yaml:ro \
+      -v dittofs-data:/data \
+      marmos91c/dittofs:{{ .Tag }}
     ```
 
   footer: |
@@ -130,3 +210,11 @@ release:
     ```bash
     sha256sum -c checksums.txt
     ```
+
+    ### Docker Images
+
+    Multi-architecture images are available for `linux/amd64` and `linux/arm64`:
+    - `marmos91c/dittofs:{{ .Tag }}` - This specific version
+    - `marmos91c/dittofs:latest` - Latest stable release
+    - `marmos91c/dittofs:v{{ .Major }}` - Latest v{{ .Major }}.x.x
+    - `marmos91c/dittofs:v{{ .Major }}.{{ .Minor }}` - Latest v{{ .Major }}.{{ .Minor }}.x
