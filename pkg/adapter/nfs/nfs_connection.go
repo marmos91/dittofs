@@ -12,6 +12,8 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/marmos91/dittofs/internal/bufpool"
+	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
 	nfs "github.com/marmos91/dittofs/internal/protocol/nfs"
 	mount_handlers "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
@@ -19,8 +21,6 @@ import (
 	nfs_types "github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/telemetry"
-	"github.com/marmos91/dittofs/pkg/bufpool"
-	"github.com/marmos91/dittofs/pkg/bytesize"
 )
 
 type NFSConnection struct {
@@ -87,7 +87,7 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 
 		// Read the request (blocks until data available)
 		// This is done synchronously to maintain request order on the wire
-		xid, procData, err := c.readRequest(ctx)
+		call, rawMessage, err := c.readRequest(ctx)
 		if err != nil {
 			if err == io.EOF {
 				logger.Debug("Connection closed by client", "address", clientAddr)
@@ -105,15 +105,17 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 		c.requestSem <- struct{}{}
 
 		// Process request in parallel goroutine
+		// NOTE: rawMessage is a pooled buffer - goroutine must return it via bufpool.Put()
 		c.wg.Add(1)
-		go func(xid uint32, procData []byte) {
-			defer c.handleRequestPanic(clientAddr, xid)
+		go func(call *rpc.RPCCallMessage, rawMessage []byte) {
+			defer c.handleRequestPanic(clientAddr, call.XID)
+			defer bufpool.Put(rawMessage) // Return pooled buffer after processing
 
 			// Process and send reply
-			if err := c.processRequest(ctx, xid, procData); err != nil {
-				logger.Debug("Error processing request", "address", clientAddr, "xid", fmt.Sprintf("0x%x", xid), "error", err)
+			if err := c.processRequest(ctx, call, rawMessage); err != nil {
+				logger.Debug("Error processing request", "address", clientAddr, "xid", fmt.Sprintf("0x%x", call.XID), "error", err)
 			}
-		}(xid, procData)
+		}(call, rawMessage)
 
 		// Reset idle timeout after reading request
 		if c.server.config.Timeouts.Idle > 0 {
@@ -127,18 +129,18 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 // readRequest reads and parses an RPC request from the connection.
 //
 // This reads the fragment header, validates the message size, reads the RPC message,
-// and extracts both the call information and procedure data. Both are copied so they
-// can be safely processed in a separate goroutine.
+// and parses the RPC header. The pooled buffer is NOT returned to the pool here -
+// the caller is responsible for returning it via bufpool.Put() after processing.
 //
 // Returns:
-//   - XID: The RPC transaction ID (for logging/tracking)
-//   - rawMessage: The complete raw RPC message (copied from pool)
+//   - call: The parsed RPC call message (for routing and XID)
+//   - rawMessage: The complete raw RPC message (pooled buffer - caller must Put)
 //   - error: Any error that occurred during reading
-func (c *NFSConnection) readRequest(ctx context.Context) (uint32, []byte, error) {
+func (c *NFSConnection) readRequest(ctx context.Context) (*rpc.RPCCallMessage, []byte, error) {
 	// Check context before starting request processing
 	select {
 	case <-ctx.Done():
-		return 0, nil, ctx.Err()
+		return nil, nil, ctx.Err()
 	default:
 	}
 
@@ -146,7 +148,7 @@ func (c *NFSConnection) readRequest(ctx context.Context) (uint32, []byte, error)
 	if c.server.config.Timeouts.Read > 0 {
 		deadline := time.Now().Add(c.server.config.Timeouts.Read)
 		if err := c.conn.SetReadDeadline(deadline); err != nil {
-			return 0, nil, fmt.Errorf("set read deadline: %w", err)
+			return nil, nil, fmt.Errorf("set read deadline: %w", err)
 		}
 	}
 
@@ -157,7 +159,7 @@ func (c *NFSConnection) readRequest(ctx context.Context) (uint32, []byte, error)
 		if err != io.EOF {
 			logger.Debug("Error reading fragment header", "address", c.conn.RemoteAddr().String(), "error", err)
 		}
-		return 0, nil, err
+		return nil, nil, err
 	}
 	logger.Debug("Read fragment header", "address", c.conn.RemoteAddr().String(), "last", header.IsLast, "length", bytesize.ByteSize(header.Length))
 
@@ -165,47 +167,46 @@ func (c *NFSConnection) readRequest(ctx context.Context) (uint32, []byte, error)
 	const maxFragmentSize = 1 << 20 // 1MB - NFS messages are typically much smaller
 	if header.Length > maxFragmentSize {
 		logger.Warn("Fragment size exceeds maximum", "size", bytesize.ByteSize(header.Length), "max", bytesize.ByteSize(maxFragmentSize), "address", c.conn.RemoteAddr().String())
-		return 0, nil, fmt.Errorf("fragment too large: %d bytes", header.Length)
+		return nil, nil, fmt.Errorf("fragment too large: %d bytes", header.Length)
 	}
 
 	// Check context before reading potentially large message
 	select {
 	case <-ctx.Done():
-		return 0, nil, ctx.Err()
+		return nil, nil, ctx.Err()
 	default:
 	}
 
 	// Read RPC message (uses buffer pool)
+	// NOTE: Caller is responsible for returning buffer via bufpool.Put()
 	message, err := c.readRPCMessage(header.Length)
 	if err != nil {
-		return 0, nil, fmt.Errorf("read RPC message: %w", err)
+		return nil, nil, fmt.Errorf("read RPC message: %w", err)
 	}
-	defer bufpool.Put(message) // Return buffer after extracting data
 
-	// Parse RPC call to get XID for tracking
+	// Parse RPC call header
 	call, err := rpc.ReadCall(message)
 	if err != nil {
+		bufpool.Put(message) // Return buffer on error
 		logger.Debug("Error parsing RPC call", "error", err)
-		return 0, nil, err
+		return nil, nil, err
 	}
 
 	logger.Debug("RPC Call", "xid", fmt.Sprintf("0x%x", call.XID), "program", call.Program, "version", call.Version, "procedure", call.Procedure)
 
-	// Copy the entire message since it will be processed in a separate goroutine
-	// This allows the pooled buffer to be returned immediately
-	messageCopy := make([]byte, len(message))
-	copy(messageCopy, message)
-
-	return call.XID, messageCopy, nil
+	// Return pooled buffer directly - no copy needed
+	// Caller must return buffer to pool via bufpool.Put() after processing
+	return call, message, nil
 }
 
 // processRequest processes an RPC request and sends the reply.
 //
-// This takes a raw RPC message (already read from network), parses it,
+// This takes a pre-parsed RPC call and raw message, extracts procedure data,
 // dispatches to the appropriate handler, and sends the reply.
 //
 // This method is designed to be called in a goroutine for parallel processing.
-func (c *NFSConnection) processRequest(ctx context.Context, xid uint32, rawMessage []byte) error {
+// The RPC header has already been parsed by readRequest to avoid double parsing.
+func (c *NFSConnection) processRequest(ctx context.Context, call *rpc.RPCCallMessage, rawMessage []byte) error {
 	// Check context before processing
 	select {
 	case <-ctx.Done():
@@ -213,14 +214,7 @@ func (c *NFSConnection) processRequest(ctx context.Context, xid uint32, rawMessa
 	default:
 	}
 
-	// Parse RPC call from raw message
-	call, err := rpc.ReadCall(rawMessage)
-	if err != nil {
-		logger.Debug("Error parsing RPC call in worker", "xid", fmt.Sprintf("0x%x", xid), "error", err)
-		return nil
-	}
-
-	// Extract procedure data
+	// Extract procedure data (RPC header already parsed)
 	procedureData, err := rpc.ReadData(rawMessage, call)
 	if err != nil {
 		return fmt.Errorf("extract procedure data: %w", err)

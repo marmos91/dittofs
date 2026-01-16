@@ -13,35 +13,38 @@ server:
   shutdown_timeout: 30s
 
 metadata:
-  global:
-    filesystem_capabilities:
-      max_read_size: 1048576
-      preferred_read_size: 65536
-      max_write_size: 1048576
-      preferred_write_size: 65536
-      max_file_size: 9223372036854775807
-      max_filename_len: 255
-      max_path_len: 4096
-      max_hard_link_count: 32767
-      supports_hard_links: true
-      supports_symlinks: true
-      case_sensitive: true
-      case_preserving: true
+  filesystem_capabilities:
+    max_read_size: 1048576
+    preferred_read_size: 65536
+    max_write_size: 1048576
+    preferred_write_size: 65536
+    max_file_size: 9223372036854775807
+    max_filename_len: 255
+    max_path_len: 4096
+    max_hard_link_count: 32767
+    supports_hard_links: true
+    supports_symlinks: true
+    case_sensitive: true
+    case_preserving: true
   stores:
     default:
       type: "memory"
 
-content:
+payload:
   stores:
     default:
       type: "filesystem"
       filesystem:
-        path: "/tmp/dittofs-content-memory"
+        base_path: "/tmp/dittofs-content-memory"
+
+cache:
+  path: "/tmp/dittofs-cache-memory"
+  size: "512MB"
 
 shares:
   - name: "/export"
-    metadata_store: "default"
-    content_store: "default"
+    metadata: "default"
+    payload: "default"
     read_only: false
     allowed_clients: []
     denied_clients: []

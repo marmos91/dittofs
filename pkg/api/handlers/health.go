@@ -64,8 +64,6 @@ func (h *HealthHandler) Readiness(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, healthyResponse(map[string]interface{}{
 		"shares":          shareCount,
 		"metadata_stores": h.registry.CountMetadataStores(),
-		"content_stores":  h.registry.CountContentStores(),
-		"caches":          h.registry.CountCaches(),
 	}))
 }
 
@@ -81,16 +79,13 @@ type StoreHealth struct {
 // StoresResponse represents the detailed store health response.
 type StoresResponse struct {
 	MetadataStores []StoreHealth `json:"metadata_stores"`
-	ContentStores  []StoreHealth `json:"content_stores"`
-	Caches         []StoreHealth `json:"caches"`
+	BlockStore     *StoreHealth  `json:"block_store,omitempty"`
 }
 
 // Stores handles GET /health/stores - detailed store health.
 //
 // Checks the health of all registered stores:
 //   - Metadata stores: Calls Healthcheck() method
-//   - Content stores: Calls Healthcheck() method
-//   - Caches: Verifies they exist
 //
 // Returns 200 OK if all stores are healthy, 503 Service Unavailable if any
 // store is unhealthy.
@@ -105,8 +100,6 @@ func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 
 	response := StoresResponse{
 		MetadataStores: make([]StoreHealth, 0),
-		ContentStores:  make([]StoreHealth, 0),
-		Caches:         make([]StoreHealth, 0),
 	}
 
 	allHealthy := true
@@ -146,58 +139,28 @@ func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 		response.MetadataStores = append(response.MetadataStores, health)
 	}
 
-	// Check content stores
-	for _, name := range h.registry.ListContentStores() {
-		store, err := h.registry.GetContentStore(name)
-		if err != nil {
-			response.ContentStores = append(response.ContentStores, StoreHealth{
-				Name:   name,
-				Type:   "content",
-				Status: "unhealthy",
-				Error:  err.Error(),
-			})
-			allHealthy = false
-			continue
-		}
-
+	// Check block store (via payload service)
+	contentSvc := h.registry.GetBlockService()
+	if contentSvc != nil {
 		start := time.Now()
-		err = store.Healthcheck(ctx)
+		err := contentSvc.HealthCheck(ctx)
 		latency := time.Since(start)
 
-		health := StoreHealth{
-			Name:    name,
-			Type:    "content",
+		blockHealth := &StoreHealth{
+			Name:    "block-store",
+			Type:    "block",
 			Latency: latency.String(),
 		}
 
 		if err != nil {
-			health.Status = "unhealthy"
-			health.Error = err.Error()
+			blockHealth.Status = "unhealthy"
+			blockHealth.Error = err.Error()
 			allHealthy = false
 		} else {
-			health.Status = "healthy"
+			blockHealth.Status = "healthy"
 		}
 
-		response.ContentStores = append(response.ContentStores, health)
-	}
-
-	// Check caches - just verify they exist
-	for _, name := range h.registry.ListCaches() {
-		_, err := h.registry.GetCache(name)
-		health := StoreHealth{
-			Name: name,
-			Type: "cache",
-		}
-
-		if err != nil {
-			health.Status = "unhealthy"
-			health.Error = err.Error()
-			allHealthy = false
-		} else {
-			health.Status = "healthy"
-		}
-
-		response.Caches = append(response.Caches, health)
+		response.BlockStore = blockHealth
 	}
 
 	if allHealthy {

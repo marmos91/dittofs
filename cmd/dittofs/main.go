@@ -255,7 +255,6 @@ func runStart() {
 	}
 	logger.Info("Registry initialized",
 		"metadata_stores", reg.CountMetadataStores(),
-		"content_stores", reg.CountContentStores(),
 		"shares", reg.CountShares())
 
 	// Log share details
@@ -264,7 +263,6 @@ func runStart() {
 		logger.Info("Share configured",
 			"name", share.Name,
 			"metadata_store", share.MetadataStore,
-			"content_store", share.ContentStore,
 			"read_only", share.ReadOnly)
 	}
 

@@ -196,8 +196,8 @@ func TestWrite_EmptyHandle(t *testing.T) {
 	resp, err := fx.Handler.Write(fx.Context(), req)
 
 	require.NoError(t, err)
-	// Implementation returns NFS3ErrNoEnt for empty/invalid handles
-	assert.EqualValues(t, types.NFS3ErrNoEnt, resp.Status, "Empty handle should return error")
+	// RFC 1813: NFS3ErrBadHandle for invalid file handles
+	assert.EqualValues(t, types.NFS3ErrBadHandle, resp.Status, "Empty handle should return NFS3ErrBadHandle")
 }
 
 // TestWrite_HandleTooShort tests that WRITE returns error for short handles.
@@ -214,8 +214,8 @@ func TestWrite_HandleTooShort(t *testing.T) {
 	resp, err := fx.Handler.Write(fx.Context(), req)
 
 	require.NoError(t, err)
-	// Implementation returns NFS3ErrNoEnt for unrecognized handles
-	assert.EqualValues(t, types.NFS3ErrNoEnt, resp.Status, "Handle too short should return error")
+	// RFC 1813: NFS3ErrBadHandle for invalid file handles
+	assert.EqualValues(t, types.NFS3ErrBadHandle, resp.Status, "Handle too short should return NFS3ErrBadHandle")
 }
 
 // TestWrite_HandleTooLong tests that WRITE returns error for long handles.
@@ -232,8 +232,8 @@ func TestWrite_HandleTooLong(t *testing.T) {
 	resp, err := fx.Handler.Write(fx.Context(), req)
 
 	require.NoError(t, err)
-	// Implementation returns NFS3ErrNoEnt for unrecognized handles
-	assert.EqualValues(t, types.NFS3ErrNoEnt, resp.Status, "Handle too long should return error")
+	// RFC 1813: NFS3ErrBadHandle for invalid file handles
+	assert.EqualValues(t, types.NFS3ErrBadHandle, resp.Status, "Handle too long should return NFS3ErrBadHandle")
 }
 
 // TestWrite_ContextCancellation tests that WRITE respects context cancellation.
@@ -344,6 +344,10 @@ func TestWrite_DataSyncStability(t *testing.T) {
 }
 
 // TestWrite_FileSyncStability tests WRITE with FILE_SYNC stability.
+// NOTE: Since Cache is always enabled, we always return UNSTABLE regardless
+// of what the client requested. This is RFC 1813 compliant - the server is allowed
+// to return a less stable commitment than requested. Clients must call COMMIT
+// if they need durability guarantees.
 func TestWrite_FileSyncStability(t *testing.T) {
 	fx := handlertesting.NewHandlerFixture(t)
 
@@ -361,8 +365,9 @@ func TestWrite_FileSyncStability(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, types.NFS3OK, resp.Status)
 	assert.EqualValues(t, uint32(5), resp.Count)
-	// With FILE_SYNC, committed should be FILE_SYNC
-	assert.EqualValues(t, uint32(2), resp.Committed)
+	// With Cache always enabled, we always return UNSTABLE (0)
+	// Server is allowed to return less stable than requested per RFC 1813
+	assert.EqualValues(t, uint32(0), resp.Committed)
 }
 
 // TestWrite_InvalidStability tests WRITE with invalid stability level.

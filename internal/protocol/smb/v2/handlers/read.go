@@ -1,24 +1,14 @@
 package handlers
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
-	"io"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
-	"github.com/marmos91/dittofs/pkg/bytesize"
-	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
-
-// seekBufferSize is the buffer size used when skipping bytes in a reader
-// that doesn't support seeking. This value balances memory usage against
-// the number of syscalls needed to skip large offsets. 8KB is chosen as
-// a reasonable trade-off for typical file read patterns.
-const seekBufferSize = 8192
 
 // ============================================================================
 // Request and Response Structures
@@ -341,11 +331,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-
-	contentSvc := h.Registry.GetContentService()
-
-	// Get cache for share (optional - nil means no caching)
-	fileCache := h.Registry.GetCacheForShare(tree.ShareName)
+	contentSvc := h.Registry.GetBlockService()
 
 	// ========================================================================
 	// Step 5: Build AuthContext and validate permissions
@@ -402,7 +388,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 
 	fileSize := readMeta.Attr.Size
 
-	if readMeta.Attr.ContentID == "" || fileSize == 0 {
+	if readMeta.Attr.PayloadID == "" || fileSize == 0 {
 		logger.Debug("READ: empty file", "path", openFile.Path)
 		return &ReadResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
@@ -428,85 +414,22 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	actualLength := uint32(readEnd - req.Offset)
 
 	// ========================================================================
-	// Step 9: Read data (try cache first, then content store)
+	// Step 9: Read data from ContentService (uses Cache internally)
 	// ========================================================================
 
-	var data []byte
-	var cacheHit bool
-
-	// Try reading from cache first (if available)
-	if fileCache != nil {
-		cacheResult := tryReadFromCache(ctx.Context, fileCache, readMeta.Attr.ContentID, req.Offset, actualLength)
-		if cacheResult.hit {
-			data = cacheResult.data
-			cacheHit = true
-			logger.Debug("READ: cache hit",
-				"path", openFile.Path,
-				"state", cacheResult.state,
-				"bytes", len(data))
-		}
+	data := make([]byte, actualLength)
+	n, err := contentSvc.ReadAt(authCtx.Context, tree.ShareName, readMeta.Attr.PayloadID, data, req.Offset)
+	if err != nil {
+		logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
 	}
+	data = data[:n]
 
-	// Cache miss - read from content store via ContentService
-	if !cacheHit {
-		// Use ContentService for reading (handles ReadAt capability internally)
-		if contentSvc.SupportsReadAt(tree.ShareName) {
-			data = make([]byte, actualLength)
-			n, err := contentSvc.ReadAt(authCtx.Context, tree.ShareName, readMeta.Attr.ContentID, data, req.Offset)
-			if err != nil {
-				logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
-				return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
-			}
-			data = data[:n]
-		} else {
-			// Fallback to ReadContent (reads entire file)
-			reader, err := contentSvc.ReadContent(authCtx.Context, tree.ShareName, readMeta.Attr.ContentID)
-			if err != nil {
-				logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
-				return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
-			}
-			defer func() { _ = reader.Close() }()
-
-			// Skip to offset by reading and discarding bytes
-			if req.Offset > 0 {
-				skipBuf := make([]byte, min(req.Offset, seekBufferSize))
-				remaining := req.Offset
-				for remaining > 0 {
-					toRead := min(remaining, uint64(len(skipBuf)))
-					n, err := reader.Read(skipBuf[:toRead])
-					if err != nil {
-						logger.Warn("READ: seek failed", "path", openFile.Path, "error", err)
-						return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
-					}
-					remaining -= uint64(n)
-				}
-			}
-
-			// Read requested data
-			data = make([]byte, actualLength)
-			totalRead := 0
-			for totalRead < int(actualLength) {
-				n, err := reader.Read(data[totalRead:])
-				if err != nil && n == 0 {
-					break
-				}
-				totalRead += n
-			}
-			data = data[:totalRead]
-		}
-	}
-
-	// Log read result
-	source := "content_store"
-	if cacheHit {
-		source = "cache"
-	}
 	logger.Debug("READ successful",
 		"path", openFile.Path,
 		"offset", req.Offset,
 		"requested", req.Length,
-		"actual", len(data),
-		"source", source)
+		"actual", len(data))
 
 	// ========================================================================
 	// Step 10: Return success response
@@ -518,93 +441,6 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		Data:            data,
 		DataRemaining:   0,
 	}, nil
-}
-
-// ============================================================================
-// Read Helper Functions
-// ============================================================================
-
-// cacheReadResult holds the result of attempting to read from cache.
-type cacheReadResult struct {
-	data  []byte
-	state string
-	hit   bool
-}
-
-// tryReadFromCache attempts to read data from the unified cache.
-//
-// Cache state handling:
-//   - StateBuffering/StateUploading: Must read from cache (dirty data)
-//   - StateCached: Read from cache (clean data)
-//   - StatePrefetching/StateNone: Cache miss
-//
-// Parameters:
-//   - ctx: Context for cancellation
-//   - c: Cache instance
-//   - contentID: Content identifier to read
-//   - offset: Byte offset to read from
-//   - length: Number of bytes to read
-//
-// Returns cacheReadResult with hit=true if data found, hit=false otherwise.
-func tryReadFromCache(
-	ctx context.Context,
-	c cache.Cache,
-	contentID metadata.ContentID,
-	offset uint64,
-	length uint32,
-) cacheReadResult {
-	state := c.GetState(contentID)
-
-	switch state {
-	case cache.StateBuffering, cache.StateUploading:
-		// Dirty data in cache - must read from cache (content store may not have it yet)
-		cacheSize := c.Size(contentID)
-		if cacheSize > 0 {
-			data := make([]byte, length)
-			n, readErr := c.ReadAt(ctx, contentID, data, offset)
-
-			if readErr == nil || readErr == io.EOF {
-				logger.Debug("READ: cache hit (dirty)",
-					"state", state.String(),
-					"bytes_read", bytesize.ByteSize(n),
-					"content_id", contentID)
-
-				return cacheReadResult{
-					data:  data[:n],
-					state: state.String(),
-					hit:   true,
-				}
-			}
-		}
-
-	case cache.StateCached:
-		// Clean cached data - read from cache
-		cacheSize := c.Size(contentID)
-		if cacheSize > 0 {
-			data := make([]byte, length)
-			n, readErr := c.ReadAt(ctx, contentID, data, offset)
-
-			if readErr == nil || readErr == io.EOF {
-				logger.Debug("READ: cache hit (cached)",
-					"bytes_read", bytesize.ByteSize(n),
-					"content_id", contentID)
-
-				return cacheReadResult{
-					data:  data[:n],
-					state: state.String(),
-					hit:   true,
-				}
-			}
-		}
-
-	case cache.StatePrefetching, cache.StateNone:
-		// Cache miss - data not available in cache
-		logger.Debug("READ: cache miss",
-			"state", state.String(),
-			"content_id", contentID)
-	}
-
-	return cacheReadResult{hit: false}
 }
 
 // handleSymlinkRead generates MFsymlink content for a symlink read request.

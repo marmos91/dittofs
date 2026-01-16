@@ -362,7 +362,7 @@ spec:
                 - shares
                 type: object
               image:
-                default: dittofs/dittofs:latest
+                default: marmos91c/dittofs:latest
                 description: Container image for DittoFS server
                 type: string
               nfsPort:

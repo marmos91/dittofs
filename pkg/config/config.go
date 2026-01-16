@@ -4,14 +4,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect" // Used in mapstructure decode hooks for runtime type inspection
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/api"
-	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/mitchellh/mapstructure"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
@@ -22,8 +24,9 @@ import (
 //   - Logging configuration
 //   - Telemetry/tracing configuration
 //   - Server-wide settings
-//   - Content store selection and configuration (store-specific)
-//   - Metadata store selection and configuration (store-specific)
+//   - Payload store configuration (block stores for S3/filesystem persistence)
+//   - Metadata store selection and configuration
+//   - Cache configuration (WAL-backed, mandatory for crash recovery)
 //   - Share/export definitions
 //   - Protocol adapter configurations
 //
@@ -35,8 +38,7 @@ import (
 //
 // Store Configuration Pattern:
 // Each store implementation defines its own configuration type and factory function.
-// The Config struct contains type-specific sections (e.g., content.filesystem, content.memory)
-// and only the section matching the selected type is used.
+// Shares reference stores by name, enabling resource sharing across shares.
 type Config struct {
 	// Logging controls log output behavior
 	Logging LoggingConfig `mapstructure:"logging" yaml:"logging"`
@@ -47,14 +49,16 @@ type Config struct {
 	// Server contains server-wide settings
 	Server ServerConfig `mapstructure:"server" yaml:"server"`
 
-	// Content specifies the content store type and type-specific configuration
-	Content ContentConfig `mapstructure:"content" yaml:"content"`
+	// Payload specifies block store configuration for persistent storage
+	// Block stores persist cache data to durable storage (S3, filesystem)
+	Payload PayloadConfig `mapstructure:"payload" yaml:"payload"`
+
+	// Cache specifies the WAL-backed cache configuration
+	// Cache is mandatory for crash recovery - all writes go through cache
+	Cache CacheConfig `mapstructure:"cache" yaml:"cache"`
 
 	// Metadata specifies the metadata store type and type-specific configuration
 	Metadata MetadataConfig `mapstructure:"metadata" yaml:"metadata"`
-
-	// Cache specifies cache configuration for read and write buffering
-	Cache CacheConfig `mapstructure:"cache" yaml:"cache"`
 
 	// Groups defines DittoFS groups for permission management
 	// Groups can have share-level permissions that are inherited by members
@@ -157,52 +161,105 @@ type MetricsConfig struct {
 	Port int `mapstructure:"port" validate:"omitempty,min=1,max=65535" yaml:"port"`
 }
 
-// ContentConfig specifies content store configuration with named stores.
-type ContentConfig struct {
-	// Global settings that apply to all content stores
-	Global ContentGlobalConfig `mapstructure:"global" yaml:"global"`
+// PayloadConfig specifies block store configuration for persistent storage.
+// Block stores persist cache data to durable storage (S3, filesystem).
+type PayloadConfig struct {
+	// Stores contains named block store instances
+	// Shares reference these by name
+	Stores map[string]PayloadStoreConfig `mapstructure:"stores" yaml:"stores"`
 
-	// Named content store instances
-	Stores map[string]ContentStoreConfig `mapstructure:"stores" yaml:"stores"`
+	// Transfer configures the transfer manager (uploads/downloads)
+	Transfer TransferConfig `mapstructure:"transfer" yaml:"transfer"`
 }
 
-// ContentGlobalConfig contains global settings for all content stores.
-type ContentGlobalConfig struct {
-	// Future: cache settings, compression, encryption
-}
-
-// ContentStoreConfig defines a single content store instance.
-type ContentStoreConfig struct {
-	// Type specifies which content store implementation to use
-	// Valid values: filesystem, memory, s3
-	Type string `mapstructure:"type" validate:"required,oneof=filesystem memory s3" yaml:"type"`
-
-	// Filesystem contains filesystem-specific configuration
-	// Only used when Type = "filesystem"
-	Filesystem map[string]any `mapstructure:"filesystem" yaml:"filesystem"`
-
-	// Memory contains memory-specific configuration
-	// Only used when Type = "memory"
-	Memory map[string]any `mapstructure:"memory" yaml:"memory"`
+// PayloadStoreConfig defines a single block store instance.
+type PayloadStoreConfig struct {
+	// Type specifies which block store implementation to use
+	// Valid values: s3, memory, filesystem
+	Type string `mapstructure:"type" validate:"required,oneof=s3 memory filesystem" yaml:"type"`
 
 	// S3 contains S3-specific configuration
 	// Only used when Type = "s3"
-	S3 map[string]any `mapstructure:"s3" yaml:"s3"`
+	S3 *PayloadS3Config `mapstructure:"s3" yaml:"s3,omitempty"`
+
+	// Filesystem contains filesystem-specific configuration
+	// Only used when Type = "filesystem"
+	Filesystem *PayloadFSConfig `mapstructure:"filesystem" yaml:"filesystem,omitempty"`
+}
+
+// PayloadS3Config contains S3-specific block store configuration.
+type PayloadS3Config struct {
+	// Bucket is the S3 bucket name (required)
+	Bucket string `mapstructure:"bucket" validate:"required" yaml:"bucket"`
+
+	// Region is the AWS region (optional, uses SDK default if empty)
+	Region string `mapstructure:"region" yaml:"region,omitempty"`
+
+	// Endpoint is the S3 endpoint URL (optional, for S3-compatible services)
+	Endpoint string `mapstructure:"endpoint" yaml:"endpoint,omitempty"`
+
+	// AccessKeyID is the S3 access key ID (optional, uses AWS SDK default chain if empty)
+	AccessKeyID string `mapstructure:"access_key_id" yaml:"access_key_id,omitempty"`
+
+	// SecretAccessKey is the S3 secret access key (optional, uses AWS SDK default chain if empty)
+	SecretAccessKey string `mapstructure:"secret_access_key" yaml:"secret_access_key,omitempty"`
+
+	// Prefix is the prefix for all block keys in the bucket
+	// Default: "blocks/"
+	Prefix string `mapstructure:"prefix" yaml:"prefix,omitempty"`
+
+	// MaxRetries is the maximum number of retries for S3 operations
+	// Default: 3
+	MaxRetries int `mapstructure:"max_retries" yaml:"max_retries,omitempty"`
+
+	// ForcePathStyle forces path-style addressing (required for Localstack/MinIO)
+	// Default: false
+	ForcePathStyle bool `mapstructure:"force_path_style" yaml:"force_path_style,omitempty"`
+}
+
+// PayloadFSConfig contains filesystem-specific block store configuration.
+type PayloadFSConfig struct {
+	// BasePath is the root directory for block storage (required)
+	BasePath string `mapstructure:"base_path" validate:"required" yaml:"base_path"`
+
+	// CreateDir creates the base directory if it doesn't exist
+	// Default: true
+	CreateDir *bool `mapstructure:"create_dir" yaml:"create_dir,omitempty"`
+
+	// DirMode is the permission mode for created directories
+	// Default: 0755
+	DirMode uint32 `mapstructure:"dir_mode" yaml:"dir_mode,omitempty"`
+
+	// FileMode is the permission mode for created block files
+	// Default: 0644
+	FileMode uint32 `mapstructure:"file_mode" yaml:"file_mode,omitempty"`
+}
+
+// TransferConfig configures the transfer manager for uploads/downloads.
+type TransferConfig struct {
+	// Workers configures worker counts
+	Workers TransferWorkersConfig `mapstructure:"workers" yaml:"workers"`
+}
+
+// TransferWorkersConfig configures worker counts for transfers.
+type TransferWorkersConfig struct {
+	// Uploads is the number of parallel upload workers
+	// Default: 4
+	Uploads int `mapstructure:"uploads" yaml:"uploads,omitempty"`
+
+	// Downloads is the number of parallel download workers
+	// Default: 4
+	Downloads int `mapstructure:"downloads" yaml:"downloads,omitempty"`
 }
 
 // MetadataConfig specifies metadata store configuration with named stores.
 type MetadataConfig struct {
-	// Global settings that apply to all metadata stores
-	Global MetadataGlobalConfig `mapstructure:"global" yaml:"global"`
+	// FilesystemCapabilities defines filesystem capabilities and limits
+	// These apply to all metadata stores
+	FilesystemCapabilities metadata.FilesystemCapabilities `mapstructure:"filesystem_capabilities" yaml:"filesystem_capabilities"`
 
 	// Named metadata store instances
 	Stores map[string]MetadataStoreConfig `mapstructure:"stores" yaml:"stores"`
-}
-
-// MetadataGlobalConfig contains global settings for all metadata stores.
-type MetadataGlobalConfig struct {
-	// FilesystemCapabilities defines filesystem capabilities and limits
-	FilesystemCapabilities metadata.FilesystemCapabilities `mapstructure:"filesystem_capabilities" yaml:"filesystem_capabilities"`
 }
 
 // MetadataStoreConfig defines a single metadata store instance.
@@ -224,75 +281,19 @@ type MetadataStoreConfig struct {
 	Postgres map[string]any `mapstructure:"postgres" yaml:"postgres"`
 }
 
-// CacheConfig specifies cache configuration with named cache instances.
+// CacheConfig specifies the WAL-backed cache configuration.
+// Cache is mandatory for crash recovery - all writes go through the WAL cache.
+// The WAL (Write-Ahead Log) ensures data durability via mmap.
 type CacheConfig struct {
-	// Named cache instances
-	Stores map[string]CacheStoreConfig `mapstructure:"stores" yaml:"stores"`
-}
+	// Path is the directory for the cache WAL file (required)
+	// The cache will create a cache.dat file in this directory
+	// Example: /var/lib/dittofs/cache or /tmp/dittofs-cache
+	Path string `mapstructure:"path" validate:"required" yaml:"path"`
 
-// CacheStoreConfig defines a single cache instance.
-type CacheStoreConfig struct {
-	// Type specifies which cache implementation to use
-	// Valid values: memory, filesystem
-	Type string `mapstructure:"type" validate:"required,oneof=memory filesystem" yaml:"type"`
-
-	// Memory contains memory-specific configuration
-	// Only used when Type = "memory"
-	Memory map[string]any `mapstructure:"memory" yaml:"memory"`
-
-	// Filesystem contains filesystem-specific configuration
-	// Only used when Type = "filesystem"
-	Filesystem map[string]any `mapstructure:"filesystem" yaml:"filesystem"`
-
-	// Prefetch contains read prefetch configuration
-	Prefetch PrefetchConfig `mapstructure:"prefetch" yaml:"prefetch"`
-
-	// Flusher contains background flusher configuration
-	Flusher FlusherConfig `mapstructure:"flusher" yaml:"flusher"`
-
-	// WriteGathering contains write gathering optimization configuration
-	WriteGathering WriteGatheringConfig `mapstructure:"write_gathering" yaml:"write_gathering"`
-}
-
-// PrefetchConfig configures read prefetch behavior.
-// Prefetch proactively loads file content into cache on first read.
-type PrefetchConfig struct {
-	// Enabled controls whether prefetch is enabled (default: true)
-	Enabled *bool `mapstructure:"enabled" yaml:"enabled"`
-
-	// MaxFileSize is the maximum file size to prefetch.
-	// Files larger than this are not prefetched to avoid cache thrashing.
-	// Supports human-readable formats: "100Mi", "1Gi", etc.
-	// Default: 100MB (100 * 1024 * 1024)
-	MaxFileSize bytesize.ByteSize `mapstructure:"max_file_size" yaml:"max_file_size"`
-
-	// ChunkSize is the size of each chunk read during prefetch.
-	// Larger chunks = fewer requests but longer wait before unblocking reads.
-	// Smaller chunks = more requests but faster unblocking of waiting reads.
-	// Supports human-readable formats: "512Ki", "1Mi", etc.
-	// Default: 512KB (512 * 1024)
-	ChunkSize bytesize.ByteSize `mapstructure:"chunk_size" yaml:"chunk_size"`
-}
-
-// FlusherConfig configures background flusher behavior.
-// The flusher detects idle cache entries and completes their upload to content store.
-// The flusher is always enabled when a cache is configured - it's essential for NFS
-// since there's no "close" operation and files need to be flushed after idle timeout.
-type FlusherConfig struct {
-	// SweepInterval is how often to check for idle files.
-	// Default: 10s
-	SweepInterval time.Duration `mapstructure:"sweep_interval" yaml:"sweep_interval"`
-
-	// FlushTimeout is how long a file must be idle before flushing.
-	// This is the key NFS async write timeout - files are considered "done"
-	// when no writes have occurred for this duration.
-	// Default: 30s
-	FlushTimeout time.Duration `mapstructure:"flush_timeout" yaml:"flush_timeout"`
-
-	// FlushPoolSize is how many files to flush in parallel.
-	// Higher values improve throughput when many files are idle.
-	// Default: 4
-	FlushPoolSize int `mapstructure:"flush_pool_size" yaml:"flush_pool_size"`
+	// Size is the maximum cache size
+	// Supports human-readable formats: "1GB", "512MB", "10Gi"
+	// Default: 1GB
+	Size bytesize.ByteSize `mapstructure:"size" yaml:"size,omitempty"`
 }
 
 // WriteGatheringConfig configures the write gathering optimization.
@@ -403,19 +404,14 @@ type ShareConfig struct {
 	// Name is the share path (e.g., "/export")
 	Name string `mapstructure:"name" validate:"required,startswith=/" yaml:"name"`
 
-	// MetadataStore is the name of the metadata store to use for this share
-	MetadataStore string `mapstructure:"metadata_store" validate:"required" yaml:"metadata_store"`
+	// Metadata is the name of the metadata store to use for this share
+	// References a store defined in metadata.stores
+	Metadata string `mapstructure:"metadata" validate:"required" yaml:"metadata"`
 
-	// ContentStore is the name of the content store to use for this share
-	ContentStore string `mapstructure:"content_store" validate:"required" yaml:"content_store"`
-
-	// Cache is the name of the unified cache for this share (optional)
-	// The unified cache serves both reads and writes:
-	// - Writes accumulate in cache (StateBuffering)
-	// - COMMIT flushes to content store (StateUploading → StateCached)
-	// - Reads check cache first, populate on miss
-	// If empty, caching is disabled (sync writes, no read caching)
-	Cache string `mapstructure:"cache" yaml:"cache"`
+	// Payload is the name of the payload store to use for this share
+	// References a store defined in payload.stores
+	// If empty, uses the default payload store (first one defined)
+	Payload string `mapstructure:"payload" yaml:"payload"`
 
 	// ReadOnly makes the share read-only if true
 	ReadOnly bool `mapstructure:"read_only" yaml:"read_only"`
@@ -531,9 +527,9 @@ func Load(configPath string) (*Config, error) {
 		return cfg, nil
 	}
 
-	// Unmarshal into config struct
+	// Unmarshal into config struct with custom decode hooks
 	var cfg Config
-	if err := v.Unmarshal(&cfg); err != nil {
+	if err := v.Unmarshal(&cfg, viper.DecodeHook(configDecodeHooks())); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
@@ -613,6 +609,72 @@ func readConfigFile(v *viper.Viper) (bool, error) {
 	}
 
 	return true, nil
+}
+
+// configDecodeHooks returns a combined decode hook for all custom types.
+// This includes ByteSize and time.Duration parsing.
+func configDecodeHooks() mapstructure.DecodeHookFunc {
+	return mapstructure.ComposeDecodeHookFunc(
+		byteSizeDecodeHook(),
+		durationDecodeHook(),
+	)
+}
+
+// byteSizeDecodeHook returns a mapstructure decode hook that converts strings
+// and integers to bytesize.ByteSize. This enables config files to use human-readable
+// sizes like "1Gi", "500Mi", "100MB", or plain numbers.
+func byteSizeDecodeHook() mapstructure.DecodeHookFunc {
+	return func(from reflect.Type, to reflect.Type, data interface{}) (interface{}, error) {
+		// Only handle conversion to ByteSize
+		if to != reflect.TypeOf(bytesize.ByteSize(0)) {
+			return data, nil
+		}
+
+		switch v := data.(type) {
+		case string:
+			// Parse human-readable string like "1Gi", "500Mi", "100MB"
+			return bytesize.ParseByteSize(v)
+		case int:
+			return bytesize.ByteSize(v), nil
+		case int64:
+			return bytesize.ByteSize(v), nil
+		case uint64:
+			return bytesize.ByteSize(v), nil
+		case float64:
+			// YAML often deserializes numbers as float64
+			return bytesize.ByteSize(v), nil
+		default:
+			return data, nil
+		}
+	}
+}
+
+// durationDecodeHook returns a mapstructure decode hook that converts strings
+// to time.Duration. This enables config files to use human-readable durations
+// like "30s", "5m", "1h".
+func durationDecodeHook() mapstructure.DecodeHookFunc {
+	return func(from reflect.Type, to reflect.Type, data interface{}) (interface{}, error) {
+		// Only handle conversion to time.Duration
+		if to != reflect.TypeOf(time.Duration(0)) {
+			return data, nil
+		}
+
+		switch v := data.(type) {
+		case string:
+			// Parse duration string like "30s", "5m", "1h"
+			return time.ParseDuration(v)
+		case int:
+			// Assume nanoseconds for raw integers
+			return time.Duration(v), nil
+		case int64:
+			return time.Duration(v), nil
+		case float64:
+			// YAML often deserializes numbers as float64
+			return time.Duration(v), nil
+		default:
+			return data, nil
+		}
+	}
 }
 
 // getConfigDir returns the configuration directory path.

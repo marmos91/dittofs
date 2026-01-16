@@ -2,6 +2,8 @@ package metadata
 
 import (
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // WriteOperation represents a validated intent to write to a file.
@@ -15,7 +17,7 @@ import (
 //
 // Lifecycle:
 //   - PrepareWrite validates and creates intent (no metadata changes)
-//   - Protocol handler writes content using ContentID from intent
+//   - Protocol handler writes content using PayloadID from intent
 //   - CommitWrite updates metadata after successful content write
 //   - If content write fails, no rollback needed (metadata unchanged)
 type WriteOperation struct {
@@ -28,8 +30,8 @@ type WriteOperation struct {
 	// NewMtime is the modification time to set after write
 	NewMtime time.Time
 
-	// ContentID is the identifier for writing to content repository
-	ContentID ContentID
+	// PayloadID is the identifier for writing to content repository
+	PayloadID PayloadID
 
 	// PreWriteAttr contains the file attributes before the write
 	// Used for protocol responses (e.g., NFS WCC data)
@@ -41,8 +43,8 @@ type WriteOperation struct {
 // This provides the protocol handler with the information needed to read
 // file content from the content repository.
 type ReadMetadata struct {
-	// Attr contains the file attributes including the ContentID
-	// The protocol handler uses ContentID to read from the content repository
+	// Attr contains the file attributes including the PayloadID
+	// The protocol handler uses PayloadID to read from the content repository
 	Attr *FileAttr
 }
 
@@ -65,20 +67,33 @@ type ReadMetadata struct {
 //  2. ContentStore.WriteAt - writes actual content
 //  3. CommitWrite - updates metadata (size, mtime, ctime)
 func (s *MetadataService) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint64) (*WriteOperation, error) {
-	store, err := s.storeForHandle(handle)
-	if err != nil {
-		return nil, err
-	}
-
 	// Check context
 	if err := ctx.Context.Err(); err != nil {
 		return nil, err
 	}
 
-	// Get file entry
-	file, err := store.GetFile(ctx.Context, handle)
-	if err != nil {
-		return nil, err
+	// Fast path: check if we have cached file metadata from a previous write
+	// This avoids store.GetFile for sequential writes to the same file
+	var file *File
+	if cachedFile := s.pendingWrites.GetCachedFile(handle); cachedFile != nil {
+		file = cachedFile
+	} else {
+		// Slow path: fetch from store
+		store, err := s.storeForHandle(handle)
+		if err != nil {
+			return nil, err
+		}
+
+		fetchedFile, err := store.GetFile(ctx.Context, handle)
+		if err != nil {
+			return nil, err
+		}
+		file = fetchedFile
+
+		// Cache for subsequent writes (only for regular files)
+		if file.Type == FileTypeRegular {
+			s.pendingWrites.SetCachedFile(handle, file)
+		}
 	}
 
 	// Verify it's a regular file
@@ -117,7 +132,7 @@ func (s *MetadataService) PrepareWrite(ctx *AuthContext, handle FileHandle, newS
 		Handle:       handle,
 		NewSize:      newSize,
 		NewMtime:     time.Now(),
-		ContentID:    file.ContentID,
+		PayloadID:    file.PayloadID,
 		PreWriteAttr: preWriteAttr,
 	}
 
@@ -141,6 +156,53 @@ func (s *MetadataService) PrepareWrite(ctx *AuthContext, handle FileHandle, newS
 // This prevents race conditions where concurrent writes would result in
 // the smaller size being stored if it commits last.
 func (s *MetadataService) CommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
+	// Check if deferred commits are enabled
+	s.mu.RLock()
+	deferredCommit := s.deferredCommit
+	s.mu.RUnlock()
+
+	if deferredCommit {
+		return s.deferredCommitWrite(ctx, intent)
+	}
+	return s.immediateCommitWrite(ctx, intent)
+}
+
+// deferredCommitWrite records the write in pending state without touching the store.
+// The actual commit happens on FlushPendingWrites (called by NFS COMMIT).
+func (s *MetadataService) deferredCommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
+	// Determine if we need to clear setuid/setgid
+	clearSetuid := ctx.Identity != nil && ctx.Identity.UID != nil && *ctx.Identity.UID != 0
+
+	// Record in pending writes tracker (lock-free for the hot path)
+	state := s.pendingWrites.RecordWrite(intent.Handle, intent, clearSetuid)
+
+	// Build a synthetic File response with the pending state
+	// This avoids a store read on the hot path
+	resultAttr := *intent.PreWriteAttr
+	resultAttr.Size = state.MaxSize
+	resultAttr.Mtime = state.LastMtime
+	resultAttr.Ctime = state.LastMtime
+	if state.ClearSetuidSetgid {
+		resultAttr.Mode &= ^uint32(0o6000)
+	}
+
+	// Extract share name and ID from handle for File struct
+	shareName, id, err := DecodeFileHandle(intent.Handle)
+	if err != nil {
+		// Fallback to empty values - the caller mainly needs the attrs
+		shareName = ""
+		id = uuid.Nil
+	}
+
+	return &File{
+		ID:        id,
+		ShareName: shareName,
+		FileAttr:  resultAttr,
+	}, nil
+}
+
+// immediateCommitWrite performs the traditional synchronous commit.
+func (s *MetadataService) immediateCommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
 	store, err := s.storeForHandle(intent.Handle)
 	if err != nil {
 		return nil, err
@@ -204,12 +266,90 @@ func (s *MetadataService) CommitWrite(ctx *AuthContext, intent *WriteOperation) 
 	return resultFile, nil
 }
 
+// FlushPendingWrites commits all pending metadata changes to the store.
+// This should be called on NFS COMMIT or when closing a file.
+// Returns the number of files flushed and any error encountered.
+func (s *MetadataService) FlushPendingWrites(ctx *AuthContext) (int, error) {
+	entries := s.pendingWrites.PopAllPending()
+	if len(entries) == 0 {
+		return 0, nil
+	}
+
+	flushed := 0
+	var lastErr error
+
+	for _, entry := range entries {
+		if err := s.flushPendingWrite(ctx, entry.Handle, entry.State); err != nil {
+			lastErr = err
+			// Continue flushing other files
+		} else {
+			flushed++
+		}
+	}
+
+	return flushed, lastErr
+}
+
+// FlushPendingWriteForFile commits pending metadata for a specific file.
+// Returns true if there was pending data to flush.
+func (s *MetadataService) FlushPendingWriteForFile(ctx *AuthContext, handle FileHandle) (bool, error) {
+	state, exists := s.pendingWrites.PopPending(handle)
+	if !exists {
+		return false, nil
+	}
+
+	return true, s.flushPendingWrite(ctx, handle, state)
+}
+
+// flushPendingWrite applies a single pending write to the store.
+func (s *MetadataService) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *PendingWriteState) error {
+	store, err := s.storeForHandle(handle)
+	if err != nil {
+		return err
+	}
+
+	return store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		file, err := tx.GetFile(ctx.Context, handle)
+		if err != nil {
+			return err
+		}
+
+		// Apply pending changes
+		if state.MaxSize > file.Size {
+			file.Size = state.MaxSize
+		}
+		file.Mtime = state.LastMtime
+		file.Ctime = state.LastMtime
+		if state.ClearSetuidSetgid {
+			file.Mode &= ^uint32(0o6000)
+		}
+
+		return tx.PutFile(ctx.Context, file)
+	})
+}
+
+// GetPendingSize returns the pending size for a file if there are uncommitted writes.
+// Used by GETATTR to return accurate file size before flush.
+func (s *MetadataService) GetPendingSize(handle FileHandle) (uint64, bool) {
+	return s.pendingWrites.GetPendingSize(handle)
+}
+
+// PrewarmWriteCache pre-populates the file metadata cache for a file.
+// Call this after CREATE to eliminate cold-start penalty on first WRITE.
+// The file parameter should be the newly created file with its attributes.
+func (s *MetadataService) PrewarmWriteCache(handle FileHandle, file *File) {
+	if file == nil || file.Type != FileTypeRegular {
+		return
+	}
+	s.pendingWrites.SetCachedFile(handle, file)
+}
+
 // PrepareRead validates a read operation and returns file metadata.
 //
 // This handles:
 //   - File type validation (must be regular file)
 //   - Permission checking (read permission)
-//   - Returning metadata including ContentID for content store
+//   - Returning metadata including PayloadID for content store
 //
 // The method does NOT perform actual data reading. The protocol handler
 // coordinates between metadata and content stores.

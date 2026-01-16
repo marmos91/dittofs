@@ -29,18 +29,34 @@ import (
 //	// Low-level operations (direct store access)
 //	file, err := metaSvc.GetFile(ctx, handle)
 type MetadataService struct {
-	mu           sync.RWMutex
-	stores       map[string]MetadataStore // shareName -> store
-	lockManagers map[string]*LockManager  // shareName -> lock manager (ephemeral, per-share)
+	mu             sync.RWMutex
+	stores         map[string]MetadataStore // shareName -> store
+	lockManagers   map[string]*LockManager  // shareName -> lock manager (ephemeral, per-share)
+	pendingWrites  *PendingWritesTracker    // deferred metadata commits for performance
+	deferredCommit bool                     // if true, use deferred commits (default: true)
+	cookies        *CookieManager           // NFS/SMB cookie ↔ store token translation
 }
 
 // New creates a new empty MetadataService instance.
 // Use RegisterStoreForShare to configure stores for each share.
+// By default, deferred commits are enabled for better write performance.
 func New() *MetadataService {
 	return &MetadataService{
-		stores:       make(map[string]MetadataStore),
-		lockManagers: make(map[string]*LockManager),
+		stores:         make(map[string]MetadataStore),
+		lockManagers:   make(map[string]*LockManager),
+		pendingWrites:  NewPendingWritesTracker(),
+		deferredCommit: true, // Enable deferred commits by default
+		cookies:        NewCookieManager(),
 	}
+}
+
+// SetDeferredCommit enables or disables deferred metadata commits.
+// When enabled, CommitWrite batches updates until FlushPendingWrites is called.
+// This significantly improves write performance for sequential workloads.
+func (s *MetadataService) SetDeferredCommit(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deferredCommit = enabled
 }
 
 // RegisterStoreForShare associates a metadata store with a share.
@@ -120,12 +136,36 @@ func (s *MetadataService) lockManagerForHandle(handle FileHandle) (*LockManager,
 
 // GetFile retrieves file metadata by handle.
 // This is a convenience method that calls GetFile from the Base interface.
+// When deferred commits are enabled, it merges pending write state (size, mtime, ctime)
+// with the stored file metadata.
 func (s *MetadataService) GetFile(ctx context.Context, handle FileHandle) (*File, error) {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return nil, err
 	}
-	return store.GetFile(ctx, handle)
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check for pending write state (when deferred commits are enabled)
+	if pending, ok := s.pendingWrites.GetPending(handle); ok {
+		// Merge pending state with stored state
+		if pending.MaxSize > file.Size {
+			file.Size = pending.MaxSize
+		}
+		// Update timestamps from pending state
+		if pending.LastMtime.After(file.Mtime) {
+			file.Mtime = pending.LastMtime
+			file.Ctime = pending.LastMtime
+		}
+		// Apply setuid/setgid clearing
+		if pending.ClearSetuidSetgid {
+			file.Mode &= ^uint32(0o6000)
+		}
+	}
+
+	return file, nil
 }
 
 // CheckPermissions performs file-level permission checking.

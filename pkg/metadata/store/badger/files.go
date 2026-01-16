@@ -46,9 +46,9 @@ func (s *BadgerMetadataStore) DeleteFile(ctx context.Context, handle metadata.Fi
 	})
 }
 
-// GetFileByContentID retrieves file metadata by its content identifier.
+// GetFileByPayloadID retrieves file metadata by its content identifier.
 // Note: This is O(n) and may be slow for large filesystems.
-func (s *BadgerMetadataStore) GetFileByContentID(ctx context.Context, contentID metadata.ContentID) (*metadata.File, error) {
+func (s *BadgerMetadataStore) GetFileByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (*metadata.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -74,7 +74,7 @@ func (s *BadgerMetadataStore) GetFileByContentID(ctx context.Context, contentID 
 					return nil // Skip corrupted entries
 				}
 
-				if file.ContentID == contentID {
+				if file.PayloadID == payloadID {
 					result = file
 					return errFound
 				}
@@ -99,7 +99,7 @@ func (s *BadgerMetadataStore) GetFileByContentID(ctx context.Context, contentID 
 	if result == nil {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
-			Message: fmt.Sprintf("no file found with content ID: %s", contentID),
+			Message: fmt.Sprintf("no file found with content ID: %s", payloadID),
 		}
 	}
 

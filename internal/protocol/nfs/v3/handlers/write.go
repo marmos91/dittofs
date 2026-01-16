@@ -3,10 +3,10 @@ package handlers
 import (
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -299,68 +299,30 @@ func (h *Handler) Write(
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-
-	// Get content service for this share
-	contentSvc := h.Registry.GetContentService()
-
-	// Get unified cache for this share (optional - nil means sync mode)
-	// Cache is accessed directly for write gathering tracking (BeginWrite/EndWrite)
-	cache := h.Registry.GetCacheForShare(ctx.Share)
+	contentSvc := h.Registry.GetBlockService()
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	if cache != nil {
-		logger.InfoCtx(ctx.Context, "WRITE", "share", ctx.Share, "mode", "async (using cache)")
-	} else {
-		logger.InfoCtx(ctx.Context, "WRITE", "share", ctx.Share, "mode", "sync (no cache)")
-	}
+	logger.InfoCtx(ctx.Context, "WRITE", "share", ctx.Share)
 
 	// ========================================================================
 	// Step 3: Validate request parameters
 	// ========================================================================
+	// Note: We use a fixed max write size (1MB) to avoid a metadata lookup.
+	// GetFilesystemCapabilities is expensive and the value rarely changes.
+	// The actual capabilities are still enforced by the metadata store.
 
-	caps, err := metaSvc.GetFilesystemCapabilities(ctx.Context, fileHandle)
-	if err != nil {
-		traceWarn(ctx.Context, err, "WRITE failed: cannot get capabilities", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
-	}
-
-	if err := validateWriteRequest(req, caps.MaxWriteSize); err != nil {
+	const maxWriteSize uint32 = 1 << 20 // 1MB - matches default config
+	if err := validateWriteRequest(req, maxWriteSize); err != nil {
 		traceWarn(ctx.Context, err, "WRITE validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
 	// ========================================================================
-	// Step 3: Verify file exists and is a regular file
-	// ========================================================================
-
-	// Check context before store call
-	if ctx.isContextCancelled() {
-		traceWarn(ctx.Context, ctx.Context.Err(), "WRITE cancelled before GetFile", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
-
-	file, status, err := h.getFileOrError(ctx, fileHandle, "WRITE", req.Handle)
-	if file == nil {
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
-	}
-
-	// Verify it's a regular file (not a directory or special file)
-	if file.Type != metadata.FileTypeRegular {
-		logger.WarnCtx(ctx.Context, "WRITE failed: not a regular file", "handle", fmt.Sprintf("0x%x", req.Handle), "type", file.Type, "client", clientIP)
-
-		// Return file attributes even on error for cache consistency
-		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
-
-		return &WriteResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir}, // NFS3ErrIsDir used for all non-regular files
-			AttrAfter:       nfsAttr,
-		}, nil
-	}
-
-	// ========================================================================
 	// Step 4: Calculate new file size
 	// ========================================================================
+	// Note: File existence and type validation is done by PrepareWrite.
+	// This eliminates a redundant GetFile call.
 
 	dataLen := uint64(len(req.Data))
 	newSize, overflow := safeAdd(req.Offset, dataLen)
@@ -378,10 +340,10 @@ func (h *Handler) Write(
 	}
 
 	// ========================================================================
-	// Step 5: Build AuthContext with share-level identity mapping
+	// Step 5: Build AuthContext with share-level identity mapping (cached)
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
+	authCtx, err := h.GetCachedAuthContext(ctx)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -391,11 +353,9 @@ func (h *Handler) Write(
 
 		traceError(ctx.Context, err, "WRITE failed: failed to build auth context", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 
-		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
-
+		// No WCC data available - we haven't called PrepareWrite yet
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-			AttrAfter:       nfsAttr,
 		}, nil
 	}
 
@@ -409,11 +369,9 @@ func (h *Handler) Write(
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "WRITE cancelled before PrepareWrite", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
 
-		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
-
+		// No WCC data available - we haven't called PrepareWrite yet
 		return &WriteResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
-			AttrAfter:       nfsAttr,
 		}, nil
 	}
 
@@ -424,52 +382,31 @@ func (h *Handler) Write(
 
 		logger.WarnCtx(ctx.Context, "WRITE failed: PrepareWrite error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP, "error", err)
 
-		return h.buildWriteErrorResponse(status, fileHandle, &file.FileAttr, &file.FileAttr), nil
+		// No WCC data available - PrepareWrite failed so we don't have file attributes
+		return h.buildWriteErrorResponse(status, fileHandle, nil, nil), nil
 	}
 
 	// Build WCC attributes from pre-write state
 	nfsWccAttr := buildWccAttr(writeIntent.PreWriteAttr)
 
 	// ========================================================================
-	// Step 6: Write data to cache or content store
+	// Step 6: Write data to ContentService (uses Cache internally)
 	// ========================================================================
-	// Write modes:
-	//   1. Cached mode (if WriteCache available): Write to cache first
-	//   2. Direct mode (no cache): Write directly to content store
 
 	// Check context before write operation
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "WRITE cancelled before write", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
-
 		return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
 
-	// Write to storage via ContentService (handles cache or direct store)
-	if cache != nil {
-		// Async mode: ContentService will write to cache, will be flushed on COMMIT
-		//
-		// Track active writers for write gathering optimization.
-		// This enables the COMMIT handler to detect concurrent writes and
-		// delay flushing briefly to allow writes to accumulate.
-		// See: Linux kernel fs/nfsd/vfs.c wait_for_concurrent_writes()
-		cache.BeginWrite(writeIntent.ContentID)
-		err = contentSvc.WriteAt(ctx.Context, ctx.Share, writeIntent.ContentID, req.Data, req.Offset)
-		cache.EndWrite(writeIntent.ContentID)
-		if err != nil {
-			traceError(ctx.Context, err, "WRITE failed: cache write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.ContentID, "client", clientIP)
-			return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
-		}
-		logger.DebugCtx(ctx.Context, "WRITE: cached successfully", "content_id", writeIntent.ContentID, "cache_size", bytesize.ByteSize(cache.Size(writeIntent.ContentID)))
-	} else {
-		// Sync mode: ContentService writes directly to content store
-		err = contentSvc.WriteAt(ctx.Context, ctx.Share, writeIntent.ContentID, req.Data, req.Offset)
-		if err != nil {
-			traceError(ctx.Context, err, "WRITE failed: content write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.ContentID, "client", clientIP)
-			status := xdr.MapContentErrorToNFSStatus(err)
-			return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
-		}
-		logger.DebugCtx(ctx.Context, "WRITE: direct write successful", "content_id", writeIntent.ContentID)
+	// Write to ContentService (uses Cache, will be flushed on COMMIT)
+	err = contentSvc.WriteAt(ctx.Context, ctx.Share, writeIntent.PayloadID, req.Data, req.Offset)
+	if err != nil {
+		traceError(ctx.Context, err, "WRITE failed: content write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.PayloadID, "client", clientIP)
+		status := xdr.MapContentErrorToNFSStatus(err)
+		return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
+	logger.DebugCtx(ctx.Context, "WRITE: cached successfully", "content_id", writeIntent.PayloadID)
 
 	// ========================================================================
 	// Step 8: Commit metadata changes after successful content write
@@ -492,14 +429,14 @@ func (h *Handler) Write(
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
 
-	logger.InfoCtx(ctx.Context, "WRITE successful", "file", updatedFile.ContentID, "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "written", bytesize.ByteSize(len(req.Data)), "new_size", bytesize.ByteSize(updatedFile.Size), "client", clientIP)
+	logger.InfoCtx(ctx.Context, "WRITE successful", "file", updatedFile.PayloadID, "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "written", bytesize.ByteSize(len(req.Data)), "new_size", bytesize.ByteSize(updatedFile.Size), "client", clientIP)
 
 	// ========================================================================
 	// Stability Level Design Decision (RFC 1813 Section 3.3.7)
 	// ========================================================================
 	//
-	// We intentionally ALWAYS return UNSTABLE when cache is enabled, regardless
-	// of what the client requested in req.Stable. This is RFC-compliant because:
+	// We always return UNSTABLE because Cache is always enabled.
+	// This is RFC-compliant because:
 	//
 	// RFC 1813 says: "The server may choose to write the data to stable storage
 	// or may hold it in the server's internal buffers to be written later."
@@ -516,17 +453,8 @@ func (h *Handler) Write(
 	//   - Client compatibility: All NFS clients handle UNSTABLE correctly and
 	//     will call COMMIT before closing files or when fsync() is called.
 	//
-	// If you need synchronous writes (e.g., for a local filesystem backend),
-	// disable the cache for that share in the configuration.
-	//
-	var committed uint32
-	if cache != nil {
-		committed = uint32(UnstableWrite)
-		logger.DebugCtx(ctx.Context, "WRITE: returning UNSTABLE (cache enabled, flush on COMMIT)")
-	} else {
-		committed = uint32(FileSyncWrite)
-		logger.DebugCtx(ctx.Context, "WRITE: returning FILE_SYNC (no cache, data committed)")
-	}
+	committed := uint32(UnstableWrite)
+	logger.DebugCtx(ctx.Context, "WRITE: returning UNSTABLE (flush on COMMIT)")
 
 	logger.DebugCtx(ctx.Context, "WRITE details", "stable_requested", req.Stable, "committed", committed, "size", bytesize.ByteSize(updatedFile.Size), "type", updatedFile.Type, "mode", fmt.Sprintf("%o", updatedFile.Mode))
 

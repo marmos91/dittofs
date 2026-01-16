@@ -255,7 +255,7 @@ func HandleMyProc(ctx context.Context, call *rpc.Call, metadata metadata.Store) 
 
 ### Adding a New Store Backend
 
-DittoFS uses a Service-oriented architecture where **stores are simple CRUD interfaces**. Business logic (permission checking, caching, locking) lives in the Service layer (`MetadataService`, `ContentService`).
+DittoFS uses a Service-oriented architecture where **stores are simple CRUD interfaces**. Business logic (permission checking, caching, locking) lives in the Service layer (`MetadataService`, `BlockService`).
 
 **Metadata Store:**
 
@@ -268,16 +268,16 @@ DittoFS uses a Service-oriented architecture where **stores are simple CRUD inte
 
 **Content Store:**
 
-1. Implement `pkg/content/ContentStore` interface (simple CRUD operations)
+1. Implement `pkg/blocks/ContentStore` interface (simple CRUD operations)
 2. Support random-access reads/writes (`ReadAt`/`WriteAt`)
 3. Handle sparse files and truncation
 4. Consider implementing optional interfaces for efficiency (`IncrementalWriteStore`)
-5. **Note**: Caching is handled by `ContentService`, not stores
+5. **Note**: Caching is handled by `BlockService`, not stores
 6. Test with the integration test suite in `test/integration/`
 
 Example:
 ```go
-// pkg/content/store/mybackend/store.go
+// pkg/blocks/store/mybackend/store.go
 type MyContentStore struct {
     // Your implementation - just CRUD, no business logic
 }
@@ -290,7 +290,7 @@ func (s *MyContentStore) WriteAt(ctx context.Context, id content.ContentID, data
     // Simple write to your backend
 }
 
-// Register with ContentService (which handles caching, routing)
+// Register with BlockService (which handles caching, routing)
 contentSvc.RegisterStoreForShare("/myshare", myContentStore)
 ```
 
@@ -307,7 +307,7 @@ Adapters receive a registry reference and **interact with services, not stores d
    - `SetRegistry()`: Receive registry reference (provides access to services)
    - `Protocol()`: Return name
    - `Port()`: Return listen port
-3. Use `registry.MetadataService()` and `registry.ContentService()` for operations
+3. Use `registry.MetadataService()` and `registry.BlockService()` for operations
 4. Register in `cmd/dittofs/main.go`
 5. Update README with usage instructions
 
@@ -324,8 +324,8 @@ func (a *SMBAdapter) SetRegistry(r *registry.Registry) {
 }
 
 func (a *SMBAdapter) handleRead(ctx context.Context, shareName string, contentID content.ContentID) ([]byte, error) {
-    // Use ContentService (handles caching automatically)
-    return a.registry.ContentService().ReadAt(ctx, shareName, contentID, 0, size)
+    // Use BlockService (handles caching automatically)
+    return a.registry.BlockService().ReadAt(ctx, shareName, contentID, 0, size)
 }
 
 func (a *SMBAdapter) Serve(ctx context.Context) error {

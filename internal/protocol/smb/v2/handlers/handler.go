@@ -92,7 +92,7 @@ type OpenFile struct {
 
 	// Store integration fields
 	MetadataHandle metadata.FileHandle // Link to metadata store file handle
-	ContentID      metadata.ContentID  // Content identifier for read/write operations
+	PayloadID      metadata.PayloadID  // Content identifier for read/write operations
 
 	// Directory enumeration state
 	EnumerationCookie []byte // Opaque cookie for resuming directory listing
@@ -247,7 +247,7 @@ func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64)
 		}
 
 		// Flush cache if needed
-		if !openFile.IsDirectory && openFile.ContentID != "" {
+		if !openFile.IsDirectory && openFile.PayloadID != "" {
 			h.flushFileCache(ctx, openFile)
 		}
 
@@ -327,7 +327,7 @@ func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessi
 		}
 
 		// Flush cache if needed
-		if !openFile.IsDirectory && openFile.ContentID != "" {
+		if !openFile.IsDirectory && openFile.PayloadID != "" {
 			h.flushFileCache(ctx, openFile)
 		}
 
@@ -428,25 +428,23 @@ func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64) {
 // flushFileCache flushes cached data for an open file.
 // This is a helper used during cleanup to ensure data durability.
 func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
-	fileCache := h.Registry.GetCacheForShare(openFile.ShareName)
-	if fileCache == nil || fileCache.Size(openFile.ContentID) == 0 {
+	if openFile.PayloadID == "" {
 		return
 	}
 
-	contentSvc := h.Registry.GetContentService()
+	contentSvc := h.Registry.GetBlockService()
 
-	// Use FlushAndFinalize for immediate durability (completes S3 uploads)
-	_, flushErr := contentSvc.FlushAndFinalize(ctx, openFile.ShareName, openFile.ContentID)
+	// Use blocking Flush for immediate durability
+	_, flushErr := contentSvc.Flush(ctx, openFile.ShareName, openFile.PayloadID)
 	if flushErr != nil {
-		logger.Warn("flushFileCache: cache flush failed",
+		logger.Warn("flushFileCache: flush failed",
 			"path", openFile.Path,
-			"contentID", openFile.ContentID,
+			"payloadID", openFile.PayloadID,
 			"error", flushErr)
-		// Continue despite error - background flusher will eventually persist
 	} else {
-		logger.Debug("flushFileCache: flushed and finalized",
+		logger.Debug("flushFileCache: flushed",
 			"path", openFile.Path,
-			"contentID", openFile.ContentID)
+			"payloadID", openFile.PayloadID)
 	}
 }
 

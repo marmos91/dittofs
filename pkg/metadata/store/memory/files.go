@@ -246,13 +246,13 @@ func (store *MemoryMetadataStore) PutFilesystemMeta(ctx context.Context, shareNa
 	})
 }
 
-// GetFileByContentID retrieves file metadata by its content identifier.
+// GetFileByPayloadID retrieves file metadata by its content identifier.
 //
-// This scans all files to find one matching the given ContentID.
+// This scans all files to find one matching the given PayloadID.
 // Note: This is O(n) and may be slow for large filesystems.
-func (store *MemoryMetadataStore) GetFileByContentID(
+func (store *MemoryMetadataStore) GetFileByPayloadID(
 	ctx context.Context,
-	contentID metadata.ContentID,
+	payloadID metadata.PayloadID,
 ) (*metadata.File, error) {
 	// Check context before acquiring lock
 	if err := ctx.Err(); err != nil {
@@ -262,9 +262,9 @@ func (store *MemoryMetadataStore) GetFileByContentID(
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
-	// Scan all files for matching ContentID
+	// Scan all files for matching PayloadID
 	for _, fileData := range store.files {
-		if fileData.Attr.ContentID == contentID {
+		if fileData.Attr.PayloadID == payloadID {
 			// Return File with just the attributes we need
 			// ID and Path aren't needed by the flusher (only Size is used)
 			return &metadata.File{
@@ -276,6 +276,6 @@ func (store *MemoryMetadataStore) GetFileByContentID(
 
 	return nil, &metadata.StoreError{
 		Code:    metadata.ErrNotFound,
-		Message: fmt.Sprintf("no file found with content ID: %s", contentID),
+		Message: fmt.Sprintf("no file found with content ID: %s", payloadID),
 	}
 }

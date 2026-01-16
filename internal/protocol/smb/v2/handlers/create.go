@@ -531,7 +531,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		DesiredAccess:  req.DesiredAccess,
 		IsDirectory:    file.Type == metadata.FileTypeDirectory,
 		MetadataHandle: fileHandle,
-		ContentID:      file.ContentID,
+		PayloadID:      file.PayloadID,
 		// Store parent info for delete-on-close support
 		ParentHandle: parentHandle,
 		FileName:     baseName,

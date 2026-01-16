@@ -8,7 +8,7 @@ import (
 // DittoServerSpec defines the desired state of DittoServer
 type DittoServerSpec struct {
 	// Container image for DittoFS server
-	// +kubebuilder:default="dittofs/dittofs:latest"
+	// +kubebuilder:default="marmos91c/dittofs:latest"
 	Image string `json:"image,omitempty"`
 
 	// Number of server replicas

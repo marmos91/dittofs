@@ -40,9 +40,9 @@ func TestValidate_InvalidLogFormat(t *testing.T) {
 	}
 }
 
-// TestValidate_InvalidContentType skipped - store type validation happens
+// TestValidate_InvalidPayloadType skipped - store type validation happens
 // at runtime during store initialization, not during config validation
-func TestValidate_InvalidContentType(t *testing.T) {
+func TestValidate_InvalidPayloadType(t *testing.T) {
 	t.Skip("Store type validation occurs at runtime, not during config validation")
 }
 
@@ -88,9 +88,13 @@ func TestValidate_ShareNameMustStartWithSlash(t *testing.T) {
 		Server: ServerConfig{
 			ShutdownTimeout: 30,
 		},
-		Content: ContentConfig{
-			Stores: map[string]ContentStoreConfig{
-				"default": {Type: "filesystem"},
+		Cache: CacheConfig{
+			Path: "/tmp/test-cache",
+			Size: 1024 * 1024 * 100,
+		},
+		Payload: PayloadConfig{
+			Stores: map[string]PayloadStoreConfig{
+				"default": {Type: "memory"},
 			},
 		},
 		Metadata: MetadataConfig{
@@ -101,8 +105,8 @@ func TestValidate_ShareNameMustStartWithSlash(t *testing.T) {
 		Shares: []ShareConfig{
 			{
 				Name:               "export", // Missing leading slash
-				MetadataStore:      "default",
-				ContentStore:       "default",
+				Metadata:           "default",
+				Payload:            "default",
 				AllowedAuthMethods: []string{"anonymous"},
 				IdentityMapping: IdentityMappingConfig{
 					AnonymousUID: 65534,
@@ -144,9 +148,13 @@ func TestValidate_InvalidAuthMethod(t *testing.T) {
 		Server: ServerConfig{
 			ShutdownTimeout: 30,
 		},
-		Content: ContentConfig{
-			Stores: map[string]ContentStoreConfig{
-				"default": {Type: "filesystem"},
+		Cache: CacheConfig{
+			Path: "/tmp/test-cache",
+			Size: 1024 * 1024 * 100,
+		},
+		Payload: PayloadConfig{
+			Stores: map[string]PayloadStoreConfig{
+				"default": {Type: "memory"},
 			},
 		},
 		Metadata: MetadataConfig{
@@ -157,8 +165,8 @@ func TestValidate_InvalidAuthMethod(t *testing.T) {
 		Shares: []ShareConfig{
 			{
 				Name:               "/export",
-				MetadataStore:      "default",
-				ContentStore:       "default",
+				Metadata:           "default",
+				Payload:            "default",
 				AllowedAuthMethods: []string{"kerberos"}, // Invalid
 				IdentityMapping: IdentityMappingConfig{
 					AnonymousUID: 65534,
@@ -245,6 +253,7 @@ func TestValidate_NegativeTimeout(t *testing.T) {
 func TestValidate_NoAdaptersEnabled(t *testing.T) {
 	cfg := GetDefaultConfig()
 	cfg.Adapters.NFS.Enabled = false
+	cfg.Adapters.SMB.Enabled = false
 
 	err := Validate(cfg)
 	if err == nil {
@@ -314,8 +323,8 @@ func TestValidate_MultipleValidShares(t *testing.T) {
 	cfg := GetDefaultConfig()
 	cfg.Shares = append(cfg.Shares, ShareConfig{
 		Name:               "/data",
-		MetadataStore:      "default",
-		ContentStore:       "default",
+		Metadata:           "default",
+		Payload:            "default",
 		ReadOnly:           true,
 		AllowedAuthMethods: []string{"unix"},
 		IdentityMapping: IdentityMappingConfig{
@@ -346,9 +355,13 @@ func TestValidate_EmptyShareName(t *testing.T) {
 		Server: ServerConfig{
 			ShutdownTimeout: 30,
 		},
-		Content: ContentConfig{
-			Stores: map[string]ContentStoreConfig{
-				"default": {Type: "filesystem"},
+		Cache: CacheConfig{
+			Path: "/tmp/test-cache",
+			Size: 1024 * 1024 * 100,
+		},
+		Payload: PayloadConfig{
+			Stores: map[string]PayloadStoreConfig{
+				"default": {Type: "memory"},
 			},
 		},
 		Metadata: MetadataConfig{
@@ -359,8 +372,8 @@ func TestValidate_EmptyShareName(t *testing.T) {
 		Shares: []ShareConfig{
 			{
 				Name:               "", // Empty name
-				MetadataStore:      "default",
-				ContentStore:       "default",
+				Metadata:           "default",
+				Payload:            "default",
 				AllowedAuthMethods: []string{"anonymous"},
 				IdentityMapping: IdentityMappingConfig{
 					AnonymousUID: 65534,

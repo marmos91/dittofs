@@ -205,10 +205,11 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	}
 
 	// ========================================================================
-	// Step 2: Get stores and cache
+	// Step 2: Get services and verify file exists
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
+	contentSvc := h.Registry.GetBlockService()
 
 	// Verify file exists
 	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
@@ -217,30 +218,19 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
 	}
 
-	// Get cache for share
-	fileCache := h.Registry.GetCacheForShare(openFile.ShareName)
-	if fileCache == nil {
-		// No cache configured - writes go directly to store, nothing to flush
-		logger.Debug("FLUSH: no cache configured (sync mode)", "path", openFile.Path)
-		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
-	}
-
-	// Check if there's data to flush
-	if file.ContentID == "" || fileCache.Size(file.ContentID) == 0 {
-		logger.Debug("FLUSH: no cached data to flush", "path", openFile.Path)
+	// Check if there's content to flush
+	if file.PayloadID == "" {
+		logger.Debug("FLUSH: no content to flush", "path", openFile.Path)
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
 	}
 
 	// ========================================================================
-	// Step 3: Flush cache to content store using ContentService
+	// Step 3: Flush data using ContentService (same as NFS COMMIT)
 	// ========================================================================
 
-	contentSvc := h.Registry.GetContentService()
-
-	// Flush using ContentService (same as NFS COMMIT)
-	_, flushErr := contentSvc.Flush(ctx.Context, openFile.ShareName, file.ContentID)
+	_, flushErr := contentSvc.Flush(ctx.Context, openFile.ShareName, file.PayloadID)
 	if flushErr != nil {
-		logger.Warn("FLUSH: cache flush failed", "path", openFile.Path, "error", flushErr)
+		logger.Warn("FLUSH: failed", "path", openFile.Path, "error", flushErr)
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUnexpectedIOError}}, nil
 	}
 

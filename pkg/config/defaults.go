@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/api"
@@ -25,15 +26,15 @@ func ApplyDefaults(cfg *Config) {
 	applyTelemetryDefaults(&cfg.Telemetry)
 	applyServerDefaults(&cfg.Server)
 	applyMetadataDefaults(&cfg.Metadata)
-	applyContentDefaults(&cfg.Content)
 	applyCacheDefaults(&cfg.Cache)
+	applyPayloadDefaults(&cfg.Payload)
 	applyShareDefaults(cfg.Shares)
 	applyAdaptersDefaults(&cfg.Adapters)
 
 	// Note: No defaults for stores, shares, or adapters themselves
 	// User must configure at least:
 	// - One metadata store
-	// - One content store
+	// - One payload store (unless using memory only)
 	// - One share
 	// - One adapter
 }
@@ -151,122 +152,73 @@ func applyAPIDefaults(cfg *api.APIConfig) {
 }
 
 // applyCacheDefaults sets cache defaults.
+// Cache path is required (WAL is mandatory for crash recovery).
 func applyCacheDefaults(cfg *CacheConfig) {
+	// Default size to 1GB
+	if cfg.Size == 0 {
+		cfg.Size = bytesize.ByteSize(bytesize.GiB) // 1 GiB
+	}
+	// Path has no default - it's required and must be configured by user
+}
+
+// applyPayloadDefaults sets payload configuration defaults.
+func applyPayloadDefaults(cfg *PayloadConfig) {
 	// Initialize stores map if nil
 	if cfg.Stores == nil {
-		cfg.Stores = make(map[string]CacheStoreConfig)
+		cfg.Stores = make(map[string]PayloadStoreConfig)
 	}
 
 	// Apply defaults to each store
-	for name, store := range cfg.Stores {
-		// Initialize maps if nil
-		if store.Memory == nil {
-			store.Memory = make(map[string]any)
+	for name, storeCfg := range cfg.Stores {
+		applyPayloadStoreDefaults(&storeCfg)
+		cfg.Stores[name] = storeCfg
+	}
+
+	// Apply transfer defaults
+	applyTransferDefaults(&cfg.Transfer)
+}
+
+// applyPayloadStoreDefaults sets defaults for individual payload stores.
+func applyPayloadStoreDefaults(cfg *PayloadStoreConfig) {
+	// Apply S3-specific defaults if S3 is configured
+	if cfg.Type == "s3" && cfg.S3 != nil {
+		// Prefix defaults to "blocks/"
+		if cfg.S3.Prefix == "" {
+			cfg.S3.Prefix = "blocks/"
 		}
-		if store.Filesystem == nil {
-			store.Filesystem = make(map[string]any)
+		// MaxRetries defaults to 3
+		if cfg.S3.MaxRetries == 0 {
+			cfg.S3.MaxRetries = 3
 		}
+	}
 
-		// Apply prefetch defaults
-		applyPrefetchDefaults(&store.Prefetch)
-
-		// Apply flusher defaults
-		applyFlusherDefaults(&store.Flusher)
-
-		// Apply write gathering defaults
-		applyWriteGatheringDefaults(&store.WriteGathering)
-
-		cfg.Stores[name] = store
+	// Apply filesystem-specific defaults if filesystem is configured
+	if cfg.Type == "filesystem" && cfg.Filesystem != nil {
+		// CreateDir defaults to true
+		if cfg.Filesystem.CreateDir == nil {
+			createDir := true
+			cfg.Filesystem.CreateDir = &createDir
+		}
+		// DirMode defaults to 0755
+		if cfg.Filesystem.DirMode == 0 {
+			cfg.Filesystem.DirMode = 0755
+		}
+		// FileMode defaults to 0644
+		if cfg.Filesystem.FileMode == 0 {
+			cfg.Filesystem.FileMode = 0644
+		}
 	}
 }
 
-// applyPrefetchDefaults sets prefetch configuration defaults.
-func applyPrefetchDefaults(cfg *PrefetchConfig) {
-	// Enabled defaults to true
-	if cfg.Enabled == nil {
-		enabled := true
-		cfg.Enabled = &enabled
+// applyTransferDefaults sets transfer manager defaults.
+func applyTransferDefaults(cfg *TransferConfig) {
+	// Uploads defaults to 16 (reasonable for S3 concurrent operations)
+	if cfg.Workers.Uploads == 0 {
+		cfg.Workers.Uploads = 16
 	}
-
-	// MaxFileSize defaults to 100MB
-	if cfg.MaxFileSize == 0 {
-		cfg.MaxFileSize = 100 * 1024 * 1024 // 100MB
-	}
-
-	// ChunkSize defaults to 512KB
-	if cfg.ChunkSize == 0 {
-		cfg.ChunkSize = 512 * 1024 // 512KB
-	}
-}
-
-// applyFlusherDefaults sets background flusher configuration defaults.
-func applyFlusherDefaults(cfg *FlusherConfig) {
-	// SweepInterval defaults to 10 seconds
-	if cfg.SweepInterval == 0 {
-		cfg.SweepInterval = 10 * time.Second
-	}
-
-	// FlushTimeout defaults to 30 seconds
-	if cfg.FlushTimeout == 0 {
-		cfg.FlushTimeout = 30 * time.Second
-	}
-}
-
-// applyWriteGatheringDefaults sets write gathering optimization defaults.
-//
-// Write gathering is based on the Linux kernel's "wdelay" optimization (fs/nfsd/vfs.c).
-// The 10ms delay matches the Linux kernel's wait_for_concurrent_writes() behavior.
-func applyWriteGatheringDefaults(cfg *WriteGatheringConfig) {
-	// Enabled defaults to true (optimization on by default)
-	if cfg.Enabled == nil {
-		enabled := true
-		cfg.Enabled = &enabled
-	}
-
-	// GatherDelay defaults to 10ms (matches Linux kernel's 10ms delay)
-	if cfg.GatherDelay == 0 {
-		cfg.GatherDelay = 10 * time.Millisecond
-	}
-
-	// ActiveThreshold defaults to 10ms (same as GatherDelay for symmetry)
-	if cfg.ActiveThreshold == 0 {
-		cfg.ActiveThreshold = 10 * time.Millisecond
-	}
-}
-
-// applyContentDefaults sets content store defaults.
-func applyContentDefaults(cfg *ContentConfig) {
-	// Initialize stores map if nil
-	if cfg.Stores == nil {
-		cfg.Stores = make(map[string]ContentStoreConfig)
-	}
-
-	// Apply defaults to each store
-	for name, store := range cfg.Stores {
-		// Initialize maps if nil
-		if store.Filesystem == nil {
-			store.Filesystem = make(map[string]any)
-		}
-		if store.Memory == nil {
-			store.Memory = make(map[string]any)
-		}
-		if store.S3 == nil {
-			store.S3 = make(map[string]any)
-		}
-
-		// Apply type-specific defaults
-		switch store.Type {
-		case "filesystem":
-			if _, ok := store.Filesystem["path"]; !ok {
-				store.Filesystem["path"] = "/tmp/dittofs-content"
-			}
-		case "memory":
-			if _, ok := store.Memory["max_size_bytes"]; !ok {
-				store.Memory["max_size_bytes"] = uint64(1073741824) // 1GB
-			}
-		}
-
-		cfg.Stores[name] = store
+	// Downloads defaults to 16 (reasonable for S3 concurrent operations)
+	if cfg.Workers.Downloads == 0 {
+		cfg.Workers.Downloads = 16
 	}
 }
 
@@ -298,8 +250,8 @@ func applyMetadataDefaults(cfg *MetadataConfig) {
 		cfg.Stores[name] = store
 	}
 
-	// Apply global settings defaults
-	applyCapabilitiesDefaults(&cfg.Global.FilesystemCapabilities)
+	// Apply filesystem capabilities defaults
+	applyCapabilitiesDefaults(&cfg.FilesystemCapabilities)
 }
 
 // applyCapabilitiesDefaults sets filesystem capabilities defaults.
@@ -534,25 +486,39 @@ func applySMBCreditsDefaults(cfg *smb.SMBCreditsConfig) {
 //   - Testing
 //   - Documentation
 func GetDefaultConfig() *Config {
+	createDir := true
 	cfg := &Config{
 		Logging: LoggingConfig{},
 		Server:  ServerConfig{},
-		Content: ContentConfig{
-			Stores: map[string]ContentStoreConfig{
+		Cache: CacheConfig{
+			Path: "/tmp/dittofs-cache",
+			Size: bytesize.ByteSize(bytesize.GiB), // 1 GiB
+		},
+		Payload: PayloadConfig{
+			Stores: map[string]PayloadStoreConfig{
 				"default": {
-					Type:       "filesystem",
-					Filesystem: map[string]any{"path": "/tmp/dittofs-content"},
+					Type: "filesystem",
+					Filesystem: &PayloadFSConfig{
+						BasePath:  "/tmp/dittofs-blocks",
+						CreateDir: &createDir,
+						DirMode:   0755,
+						FileMode:  0644,
+					},
+				},
+			},
+			Transfer: TransferConfig{
+				Workers: TransferWorkersConfig{
+					Uploads:   16,
+					Downloads: 16,
 				},
 			},
 		},
 		Metadata: MetadataConfig{
-			Global: MetadataGlobalConfig{
-				FilesystemCapabilities: metadata.FilesystemCapabilities{
-					SupportsHardLinks: true,
-					SupportsSymlinks:  true,
-					CaseSensitive:     true,
-					CasePreserving:    true,
-				},
+			FilesystemCapabilities: metadata.FilesystemCapabilities{
+				SupportsHardLinks: true,
+				SupportsSymlinks:  true,
+				CaseSensitive:     true,
+				CasePreserving:    true,
 			},
 			Stores: map[string]MetadataStoreConfig{
 				"default": {
@@ -563,11 +529,10 @@ func GetDefaultConfig() *Config {
 		},
 		Shares: []ShareConfig{
 			{
-				Name:          "/export",
-				MetadataStore: "default",
-				ContentStore:  "default",
-				ReadOnly:      false,
-				// Cache is empty by default (sync mode, no caching)
+				Name:     "/export",
+				Metadata: "default",
+				Payload:  "default",
+				ReadOnly: false,
 				IdentityMapping: IdentityMappingConfig{
 					MapAllToAnonymous:        false, // Don't squash by default
 					MapPrivilegedToAnonymous: false, // root_squash disabled by default
@@ -579,6 +544,9 @@ func GetDefaultConfig() *Config {
 		Adapters: AdaptersConfig{
 			NFS: nfs.NFSConfig{
 				Enabled: true, // NFS adapter enabled by default
+			},
+			SMB: smb.SMBConfig{
+				Enabled: true, // SMB adapter enabled by default
 			},
 		},
 	}

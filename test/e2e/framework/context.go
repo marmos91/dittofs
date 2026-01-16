@@ -13,8 +13,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
-	"github.com/marmos91/dittofs/pkg/cache"
-	"github.com/marmos91/dittofs/pkg/content"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/registry"
@@ -26,14 +24,15 @@ import (
 // - NFS mount (always available)
 // - SMB mount (when EnableSMB is true, default: true)
 // - Cleanup mechanisms
+//
+// Note: Content storage is handled by the Registry's auto-created SliceCache.
+// The cache implements the Chunk/Slice/Block model for efficient writes.
 type TestContext struct {
 	T             *testing.T
 	Config        *TestConfig
 	Server        *server.DittoServer
 	Registry      *registry.Registry
 	MetadataStore metadata.MetadataStore
-	ContentStore  content.ContentStore
-	Cache         cache.Cache
 
 	// Protocol mounts
 	NFS *Mount // Always available
@@ -57,19 +56,17 @@ type TestContext struct {
 
 // TestContextOptions configures the test context.
 type TestContextOptions struct {
-	EnableNFS   bool // default: true
-	EnableSMB   bool // default: true
-	EnableCache bool // default: from config
-	ShareCount  int  // default: 1 (for multi-share tests)
+	EnableNFS  bool // default: true
+	EnableSMB  bool // default: true
+	ShareCount int  // default: 1 (for multi-share tests)
 }
 
 // DefaultOptions returns the default test context options.
 func DefaultOptions() TestContextOptions {
 	return TestContextOptions{
-		EnableNFS:   true,
-		EnableSMB:   true,
-		EnableCache: false, // Inherit from config
-		ShareCount:  1,
+		EnableNFS:  true,
+		EnableSMB:  true,
+		ShareCount: 1,
 	}
 }
 
@@ -138,7 +135,8 @@ func setupDependencies(t *testing.T, config *TestConfig) {
 		SetupPostgresConfig(t, config, helper)
 	}
 
-	// S3 setup
+	// S3 setup - currently not used in cache-only model
+	// Will be needed when block storage is implemented
 	if config.RequiresS3() {
 		if !CheckLocalstackAvailable(t) {
 			t.Skip("Localstack not available, skipping S3 test")
@@ -148,7 +146,8 @@ func setupDependencies(t *testing.T, config *TestConfig) {
 	}
 }
 
-// setupStores initializes metadata and content stores.
+// setupStores initializes metadata store.
+// Note: Content storage is handled by the Registry's auto-created SliceCache.
 func (tc *TestContext) setupStores() {
 	tc.T.Helper()
 
@@ -157,16 +156,6 @@ func (tc *TestContext) setupStores() {
 	tc.MetadataStore, err = tc.Config.CreateMetadataStore(tc.ctx, tc)
 	if err != nil {
 		tc.T.Fatalf("Failed to create metadata store: %v", err)
-	}
-
-	tc.ContentStore, err = tc.Config.CreateContentStore(tc.ctx, tc)
-	if err != nil {
-		tc.T.Fatalf("Failed to create content store: %v", err)
-	}
-
-	// Create cache if enabled in config or options
-	if tc.Config.UseCache || tc.options.EnableCache {
-		tc.Cache = tc.Config.CreateCache()
 	}
 }
 
@@ -182,7 +171,7 @@ func (tc *TestContext) startServer() {
 		logger.SetLevel("ERROR")
 	}
 
-	// Create Registry
+	// Create Registry (auto-creates global SliceCache for content storage)
 	tc.Registry = registry.NewRegistry()
 
 	// Setup user store for SMB if enabled
@@ -191,7 +180,7 @@ func (tc *TestContext) startServer() {
 		tc.Registry.SetUserStore(userStore)
 	}
 
-	// Register stores
+	// Register metadata store
 	port := tc.NFSPort
 	if port == 0 {
 		port = tc.SMBPort
@@ -202,21 +191,8 @@ func (tc *TestContext) startServer() {
 		tc.T.Fatalf("Failed to register metadata store: %v", err)
 	}
 
-	contentStoreName := fmt.Sprintf("test-content-%d", port)
-	if err := tc.Registry.RegisterContentStore(contentStoreName, tc.ContentStore); err != nil {
-		tc.T.Fatalf("Failed to register content store: %v", err)
-	}
-
-	// Register cache if enabled
-	cacheName := ""
-	if tc.Cache != nil {
-		cacheName = fmt.Sprintf("test-cache-%d", port)
-		if err := tc.Registry.RegisterCache(cacheName, tc.Cache); err != nil {
-			tc.T.Fatalf("Failed to register cache: %v", err)
-		}
-	}
-
 	// Create share with appropriate permissions
+	// Note: No content store or cache registration needed - Registry handles it
 	mode := uint32(0755)
 	if tc.options.EnableSMB {
 		mode = 0777 // Allow SMB test user to write
@@ -225,8 +201,6 @@ func (tc *TestContext) startServer() {
 	shareConfig := &registry.ShareConfig{
 		Name:              "/export",
 		MetadataStore:     storeName,
-		ContentStore:      contentStoreName,
-		Cache:             cacheName,
 		ReadOnly:          false,
 		AllowGuest:        tc.options.EnableSMB, // Allow guest for interop tests
 		DefaultPermission: string(identity.PermissionReadWrite),
@@ -364,19 +338,11 @@ func (tc *TestContext) Cleanup() {
 	// Wait for server to stop
 	tc.wg.Wait()
 
-	// Close stores and cache
+	// Close metadata store
 	if tc.MetadataStore != nil {
 		if closer, ok := tc.MetadataStore.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
-	}
-	if tc.ContentStore != nil {
-		if closer, ok := tc.ContentStore.(interface{ Close() error }); ok {
-			_ = closer.Close()
-		}
-	}
-	if tc.Cache != nil {
-		_ = tc.Cache.Close()
 	}
 
 	// Remove temporary directories
@@ -447,11 +413,6 @@ func (tc *TestContext) HasNFS() bool {
 // HasSMB returns true if SMB is enabled.
 func (tc *TestContext) HasSMB() bool {
 	return tc.SMB != nil
-}
-
-// HasCache returns true if cache is enabled.
-func (tc *TestContext) HasCache() bool {
-	return tc.Cache != nil
 }
 
 // CleanupAllContexts is a no-op kept for compatibility with TestMain.

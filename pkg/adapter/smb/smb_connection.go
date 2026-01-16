@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/bufpool"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/smb"
 	"github.com/marmos91/dittofs/internal/protocol/smb/header"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 	"github.com/marmos91/dittofs/internal/protocol/smb/v2/handlers"
-	"github.com/marmos91/dittofs/pkg/bufpool"
 )
 
 // SMBConnection handles a single SMB2 client connection.

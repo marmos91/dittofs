@@ -156,7 +156,7 @@ shares:
 ### Implementation Sketch
 
 ```go
-// pkg/content/compression.go
+// pkg/blocks/compression.go
 
 type CompressionAlgorithm string
 
@@ -292,7 +292,7 @@ shares:
 ### Implementation Sketch
 
 ```go
-// pkg/content/encryption.go
+// pkg/blocks/encryption.go
 
 type EncryptedContentStore struct {
     inner      ContentStore
@@ -793,7 +793,7 @@ Delete request → Mark as "pending deletion" → Add to queue → Background wo
 
 ### Current DittoFS Implementation
 
-Already has buffered deletion in S3 store (`pkg/content/store/s3/s3_delete.go`):
+Already has buffered deletion in S3 store (`pkg/blocks/store/s3/s3_delete.go`):
 ```yaml
 content:
   stores:
