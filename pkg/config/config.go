@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
+	"reflect" // Used in mapstructure decode hooks for runtime type inspection
 	"strings"
 	"time"
 
