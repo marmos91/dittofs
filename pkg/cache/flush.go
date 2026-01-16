@@ -38,6 +38,11 @@ func (c *Cache) GetDirtySlices(ctx context.Context, payloadID string) ([]Pending
 		return nil, ErrFileNotInCache
 	}
 	for _, chunk := range entry.chunks {
+		// Check context between chunks to allow cancellation during large files
+		if err := ctx.Err(); err != nil {
+			entry.mu.Unlock()
+			return nil, err
+		}
 		coalesceChunk(chunk)
 	}
 	entry.mu.Unlock()

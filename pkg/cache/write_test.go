@@ -8,7 +8,7 @@ import (
 
 func TestWriteSlice_Basic(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
@@ -35,7 +35,7 @@ func TestWriteSlice_Basic(t *testing.T) {
 
 func TestWriteSlice_SequentialOptimization(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
@@ -64,18 +64,18 @@ func TestWriteSlice_SequentialOptimization(t *testing.T) {
 
 func TestWriteSlice_Prepend(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
 	// Write at offset 100 first
 	data1 := []byte("WORLD")
-	c.WriteSlice(ctx, payloadID, 0, data1, 100)
+	_ = c.WriteSlice(ctx, payloadID, 0, data1, 100)
 
 	// Prepend at offset 95 (ends where previous starts)
 	data2 := []byte("HELLO")
-	c.WriteSlice(ctx, payloadID, 0, data2, 95)
+	_ = c.WriteSlice(ctx, payloadID, 0, data2, 95)
 
 	// Should be coalesced into one slice by tryExtendAdjacentSlice
 	slices, _ := c.GetDirtySlices(ctx, payloadID)
@@ -89,7 +89,7 @@ func TestWriteSlice_Prepend(t *testing.T) {
 
 func TestWriteSlice_InvalidOffset(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
@@ -104,7 +104,7 @@ func TestWriteSlice_InvalidOffset(t *testing.T) {
 
 func TestWriteSlice_ContextCancelled(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -117,7 +117,7 @@ func TestWriteSlice_ContextCancelled(t *testing.T) {
 
 func TestWriteSlice_CacheClosed(t *testing.T) {
 	c := New(0)
-	c.Close()
+	_ = c.Close()
 
 	err := c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
 	if err != ErrCacheClosed {
@@ -127,15 +127,15 @@ func TestWriteSlice_CacheClosed(t *testing.T) {
 
 func TestWriteSlice_MultipleChunks(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
 	// Write to different chunks
-	c.WriteSlice(ctx, payloadID, 0, []byte("chunk0"), 0)
-	c.WriteSlice(ctx, payloadID, 1, []byte("chunk1"), 0)
-	c.WriteSlice(ctx, payloadID, 2, []byte("chunk2"), 0)
+	_ = c.WriteSlice(ctx, payloadID, 0, []byte("chunk0"), 0)
+	_ = c.WriteSlice(ctx, payloadID, 1, []byte("chunk1"), 0)
+	_ = c.WriteSlice(ctx, payloadID, 2, []byte("chunk2"), 0)
 
 	slices, _ := c.GetDirtySlices(ctx, payloadID)
 	if len(slices) != 3 {
@@ -171,7 +171,7 @@ func BenchmarkWriteSlice_Sequential(b *testing.B) {
 	for _, s := range sizes {
 		b.Run(s.name, func(b *testing.B) {
 			c := New(0)
-			defer c.Close()
+			defer func() { _ = c.Close() }()
 
 			ctx := context.Background()
 			payloadID := "bench-file"
@@ -200,7 +200,7 @@ func BenchmarkWriteSlice_Sequential(b *testing.B) {
 // Tests how well adjacent writes are coalesced into single slices.
 func BenchmarkWriteSlice_SequentialExtend(b *testing.B) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "bench-file"
@@ -231,7 +231,7 @@ func BenchmarkWriteSlice_SequentialExtend(b *testing.B) {
 // Simulates database workloads with scattered writes.
 func BenchmarkWriteSlice_Random(b *testing.B) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "bench-file"
@@ -263,7 +263,7 @@ func BenchmarkWriteSlice_MultiFile(b *testing.B) {
 	for _, fileCount := range fileCounts {
 		b.Run(fmt.Sprintf("files=%d", fileCount), func(b *testing.B) {
 			c := New(0)
-			defer c.Close()
+			defer func() { _ = c.Close() }()
 
 			ctx := context.Background()
 			data := make([]byte, 32*1024)
@@ -289,7 +289,7 @@ func BenchmarkWriteSlice_MultiFile(b *testing.B) {
 // Tests lock contention under parallel access.
 func BenchmarkWriteSlice_Concurrent(b *testing.B) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	data := make([]byte, 32*1024)
@@ -316,7 +316,7 @@ func BenchmarkWriteSlice_Concurrent(b *testing.B) {
 // BenchmarkMemory_SliceAllocation measures slice allocation overhead.
 func BenchmarkMemory_SliceAllocation(b *testing.B) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	data := make([]byte, 32*1024)

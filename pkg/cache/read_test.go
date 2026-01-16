@@ -8,13 +8,13 @@ import (
 
 func TestReadSlice_Basic(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 	data := []byte("hello world")
 
-	c.WriteSlice(ctx, payloadID, 0, data, 0)
+	_ = c.WriteSlice(ctx, payloadID, 0, data, 0)
 
 	result := make([]byte, len(data))
 	found, err := c.ReadSlice(ctx, payloadID, 0, 0, uint32(len(data)), result)
@@ -31,7 +31,7 @@ func TestReadSlice_Basic(t *testing.T) {
 
 func TestReadSlice_NotFound(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	result := make([]byte, 10)
 	found, err := c.ReadSlice(context.Background(), "nonexistent", 0, 0, 10, result)
@@ -45,13 +45,13 @@ func TestReadSlice_NotFound(t *testing.T) {
 
 func TestReadSlice_PartialRead(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 	data := []byte("hello world")
 
-	c.WriteSlice(ctx, payloadID, 0, data, 0)
+	_ = c.WriteSlice(ctx, payloadID, 0, data, 0)
 
 	// Read only "world"
 	result := make([]byte, 5)
@@ -69,14 +69,14 @@ func TestReadSlice_PartialRead(t *testing.T) {
 
 func TestReadSlice_NewestWins(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
 	// Write overlapping data (newer overwrites older)
-	c.WriteSlice(ctx, payloadID, 0, []byte("AAAAAAAAAA"), 0) // 10 A's at offset 0
-	c.WriteSlice(ctx, payloadID, 0, []byte("BBB"), 3)        // 3 B's at offset 3
+	_ = c.WriteSlice(ctx, payloadID, 0, []byte("AAAAAAAAAA"), 0) // 10 A's at offset 0
+	_ = c.WriteSlice(ctx, payloadID, 0, []byte("BBB"), 3)        // 3 B's at offset 3
 
 	// Read full range - should be AAABBBAAAA
 	result := make([]byte, 10)
@@ -92,17 +92,17 @@ func TestReadSlice_NewestWins(t *testing.T) {
 
 func TestReadSlice_MultipleOverlaps(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
 	// Write multiple overlapping slices (in order: oldest to newest)
 	// Each newer write overwrites older data at the same positions
-	c.WriteSlice(ctx, payloadID, 0, []byte("1111111111"), 0) // Base: 1111111111
-	c.WriteSlice(ctx, payloadID, 0, []byte("22"), 2)         // Now:  1122111111
-	c.WriteSlice(ctx, payloadID, 0, []byte("33"), 5)         // Now:  1122133111
-	c.WriteSlice(ctx, payloadID, 0, []byte("4"), 3)          // Now:  1124133111
+	_ = c.WriteSlice(ctx, payloadID, 0, []byte("1111111111"), 0) // Base: 1111111111
+	_ = c.WriteSlice(ctx, payloadID, 0, []byte("22"), 2)         // Now:  1122111111
+	_ = c.WriteSlice(ctx, payloadID, 0, []byte("33"), 5)         // Now:  1122133111
+	_ = c.WriteSlice(ctx, payloadID, 0, []byte("4"), 3)          // Now:  1124133111
 
 	result := make([]byte, 10)
 	found, _ := c.ReadSlice(ctx, payloadID, 0, 0, 10, result)
@@ -117,7 +117,7 @@ func TestReadSlice_MultipleOverlaps(t *testing.T) {
 
 func TestReadSlice_ContextCancelled(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -131,8 +131,8 @@ func TestReadSlice_ContextCancelled(t *testing.T) {
 
 func TestReadSlice_CacheClosed(t *testing.T) {
 	c := New(0)
-	c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
-	c.Close()
+	_ = c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.Close()
 
 	result := make([]byte, 4)
 	_, err := c.ReadSlice(context.Background(), "test", 0, 0, 4, result)
@@ -143,12 +143,12 @@ func TestReadSlice_CacheClosed(t *testing.T) {
 
 func TestReadSlice_WrongChunk(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	c.WriteSlice(ctx, payloadID, 0, []byte("chunk0"), 0)
+	_ = c.WriteSlice(ctx, payloadID, 0, []byte("chunk0"), 0)
 
 	// Try to read from chunk 1 (empty)
 	result := make([]byte, 6)
@@ -164,12 +164,12 @@ func TestReadSlice_WrongChunk(t *testing.T) {
 
 func TestIsRangeCovered_FullyCovered(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	c.WriteSlice(ctx, payloadID, 0, make([]byte, 100), 0)
+	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 100), 0)
 
 	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 100)
 	if err != nil {
@@ -182,12 +182,12 @@ func TestIsRangeCovered_FullyCovered(t *testing.T) {
 
 func TestIsRangeCovered_PartiallyCovered(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	c.WriteSlice(ctx, payloadID, 0, make([]byte, 50), 0)
+	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 50), 0)
 
 	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 100)
 	if err != nil {
@@ -200,7 +200,7 @@ func TestIsRangeCovered_PartiallyCovered(t *testing.T) {
 
 func TestIsRangeCovered_NotCovered(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	covered, err := c.IsRangeCovered(context.Background(), "nonexistent", 0, 0, 100)
 	if err != nil {
@@ -213,14 +213,14 @@ func TestIsRangeCovered_NotCovered(t *testing.T) {
 
 func TestIsRangeCovered_MultipleSlices(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
 	// Write non-adjacent slices
-	c.WriteSlice(ctx, payloadID, 0, make([]byte, 50), 0)
-	c.WriteSlice(ctx, payloadID, 0, make([]byte, 50), 50)
+	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 50), 0)
+	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 50), 50)
 
 	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 100)
 	if err != nil {
@@ -233,7 +233,7 @@ func TestIsRangeCovered_MultipleSlices(t *testing.T) {
 
 func TestIsRangeCovered_ContextCancelled(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -246,7 +246,7 @@ func TestIsRangeCovered_ContextCancelled(t *testing.T) {
 
 func TestIsRangeCovered_CacheClosed(t *testing.T) {
 	c := New(0)
-	c.Close()
+	_ = c.Close()
 
 	_, err := c.IsRangeCovered(context.Background(), "test", 0, 0, 100)
 	if err != ErrCacheClosed {
@@ -256,7 +256,7 @@ func TestIsRangeCovered_CacheClosed(t *testing.T) {
 
 func TestIsRangeCovered_OverlappingSlices(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
@@ -264,8 +264,8 @@ func TestIsRangeCovered_OverlappingSlices(t *testing.T) {
 	// Write two completely overlapping slices at offset 0
 	// This tests the bug fix: the old implementation would sum overlaps
 	// and incorrectly report coverage for bytes beyond the slices
-	c.WriteSlice(ctx, payloadID, 0, make([]byte, 5), 0) // bytes 0-5
-	c.WriteSlice(ctx, payloadID, 0, make([]byte, 5), 0) // bytes 0-5 (overlap)
+	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 5), 0) // bytes 0-5
+	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 5), 0) // bytes 0-5 (overlap)
 
 	// The old buggy code would count 5+5=10 bytes of overlap
 	// and incorrectly report bytes 0-10 as covered
@@ -289,14 +289,14 @@ func TestIsRangeCovered_OverlappingSlices(t *testing.T) {
 
 func TestIsRangeCovered_PartialOverlap(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
 	// Write partially overlapping slices
-	c.WriteSlice(ctx, payloadID, 0, make([]byte, 10), 0) // bytes 0-10
-	c.WriteSlice(ctx, payloadID, 0, make([]byte, 10), 5) // bytes 5-15
+	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 10), 0) // bytes 0-10
+	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 10), 5) // bytes 5-15
 
 	// Together they cover 0-15
 	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 15)
@@ -336,7 +336,7 @@ func BenchmarkReadSlice(b *testing.B) {
 	for _, s := range sizes {
 		b.Run(s.name, func(b *testing.B) {
 			c := New(0)
-			defer c.Close()
+			defer func() { _ = c.Close() }()
 
 			ctx := context.Background()
 			payloadID := "bench-file"
@@ -375,7 +375,7 @@ func BenchmarkReadSlice_SliceMerging(b *testing.B) {
 	for _, count := range sliceCounts {
 		b.Run(fmt.Sprintf("slices=%d", count), func(b *testing.B) {
 			c := New(0)
-			defer c.Close()
+			defer func() { _ = c.Close() }()
 
 			ctx := context.Background()
 			payloadID := "bench-file"
@@ -407,7 +407,7 @@ func BenchmarkReadSlice_SliceMerging(b *testing.B) {
 // BenchmarkIsRangeCovered measures cache hit detection performance.
 func BenchmarkIsRangeCovered(b *testing.B) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "bench-file"

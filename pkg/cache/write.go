@@ -59,7 +59,7 @@ func (c *Cache) WriteSlice(ctx context.Context, payloadID string, chunkIdx uint3
 	if c.maxSize > 0 {
 		dataLen := uint64(len(data))
 		if c.totalSize.Load()+dataLen > c.maxSize {
-			c.evictLRUUntilFits(dataLen)
+			c.evictLRUUntilFits(ctx, dataLen)
 		}
 	}
 

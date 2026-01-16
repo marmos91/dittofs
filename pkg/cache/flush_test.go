@@ -331,7 +331,7 @@ func TestGetDirtySlices_OnlyReturnsPending(t *testing.T) {
 
 func TestGetDirtySlices_ContextCancelled(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -344,8 +344,8 @@ func TestGetDirtySlices_ContextCancelled(t *testing.T) {
 
 func TestGetDirtySlices_CacheClosed(t *testing.T) {
 	c := New(0)
-	c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
-	c.Close()
+	_ = c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.Close()
 
 	_, err := c.GetDirtySlices(context.Background(), "test")
 	if err != ErrCacheClosed {
@@ -359,12 +359,12 @@ func TestGetDirtySlices_CacheClosed(t *testing.T) {
 
 func TestMarkSliceFlushed_Success(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	handle := "test-file"
 
-	c.WriteSlice(ctx, handle, 0, []byte("data"), 0)
+	_ = c.WriteSlice(ctx, handle, 0, []byte("data"), 0)
 
 	slices, _ := c.GetDirtySlices(ctx, handle)
 	if len(slices) != 1 {
@@ -386,12 +386,12 @@ func TestMarkSliceFlushed_Success(t *testing.T) {
 
 func TestMarkSliceFlushed_NotFound(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	handle := "test-file"
 
-	c.WriteSlice(ctx, handle, 0, []byte("data"), 0)
+	_ = c.WriteSlice(ctx, handle, 0, []byte("data"), 0)
 
 	err := c.MarkSliceFlushed(ctx, handle, "nonexistent-id", nil)
 	if err != ErrSliceNotFound {
@@ -401,7 +401,7 @@ func TestMarkSliceFlushed_NotFound(t *testing.T) {
 
 func TestMarkSliceFlushed_ContextCancelled(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -414,8 +414,8 @@ func TestMarkSliceFlushed_ContextCancelled(t *testing.T) {
 
 func TestMarkSliceFlushed_CacheClosed(t *testing.T) {
 	c := New(0)
-	c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
-	c.Close()
+	_ = c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.Close()
 
 	err := c.MarkSliceFlushed(context.Background(), "test", "id", nil)
 	if err != ErrCacheClosed {
@@ -429,14 +429,14 @@ func TestMarkSliceFlushed_CacheClosed(t *testing.T) {
 
 func TestCoalesceWrites_MergesAdjacentPending(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	handle := "test-file"
 
 	// Write sequential small chunks (simulating NFS writes)
 	for i := 0; i < 10; i++ {
-		c.WriteSlice(ctx, handle, 0, make([]byte, 32*1024), uint32(i*32*1024))
+		_ = c.WriteSlice(ctx, handle, 0, make([]byte, 32*1024), uint32(i*32*1024))
 	}
 
 	slices, _ := c.GetDirtySlices(ctx, handle)
@@ -481,7 +481,7 @@ func TestCoalesceWrites_PreservesFlushed(t *testing.T) {
 
 func TestCoalesceWrites_FileNotInCache(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	err := c.CoalesceWrites(context.Background(), "nonexistent")
 	if err != ErrFileNotInCache {
@@ -491,7 +491,7 @@ func TestCoalesceWrites_FileNotInCache(t *testing.T) {
 
 func TestCoalesceWrites_ContextCancelled(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -504,7 +504,7 @@ func TestCoalesceWrites_ContextCancelled(t *testing.T) {
 
 func TestCoalesceWrites_DataIntegrity(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	handle := "test-file"
@@ -514,9 +514,9 @@ func TestCoalesceWrites_DataIntegrity(t *testing.T) {
 	data2 := []byte("BBBBB")      // 5 bytes at offset 5 (overlaps)
 	data3 := []byte("CCC")        // 3 bytes at offset 10 (adjacent)
 
-	c.WriteSlice(ctx, handle, 0, data1, 0)
-	c.WriteSlice(ctx, handle, 0, data2, 5)
-	c.WriteSlice(ctx, handle, 0, data3, 10)
+	_ = c.WriteSlice(ctx, handle, 0, data1, 0)
+	_ = c.WriteSlice(ctx, handle, 0, data2, 5)
+	_ = c.WriteSlice(ctx, handle, 0, data3, 10)
 
 	slices, _ := c.GetDirtySlices(ctx, handle)
 	if len(slices) != 1 {
@@ -541,7 +541,7 @@ func BenchmarkGetDirtySlices(b *testing.B) {
 	for _, chunks := range chunkCounts {
 		b.Run(fmt.Sprintf("chunks=%d", chunks), func(b *testing.B) {
 			c := New(0)
-			defer c.Close()
+			defer func() { _ = c.Close() }()
 
 			ctx := context.Background()
 			payloadID := "bench-file"
@@ -571,7 +571,7 @@ func BenchmarkCoalesceWrites(b *testing.B) {
 	for _, slices := range slicesPerChunk {
 		b.Run(fmt.Sprintf("slices=%d", slices), func(b *testing.B) {
 			c := New(0)
-			defer c.Close()
+			defer func() { _ = c.Close() }()
 
 			ctx := context.Background()
 

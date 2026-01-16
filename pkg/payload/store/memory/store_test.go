@@ -228,7 +228,7 @@ func TestStore_ClosedOperations(t *testing.T) {
 func TestStore_DataIsolation(t *testing.T) {
 	ctx := context.Background()
 	s := New()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	blockKey := "share1/content123/chunk-0/block-0"
 	data := []byte("hello world")
@@ -268,7 +268,7 @@ func TestStore_DataIsolation(t *testing.T) {
 func TestStore_BlockCount(t *testing.T) {
 	ctx := context.Background()
 	s := New()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if s.BlockCount() != 0 {
 		t.Errorf("BlockCount on empty store returned %d, want 0", s.BlockCount())
@@ -290,7 +290,7 @@ func TestStore_BlockCount(t *testing.T) {
 func TestStore_TotalSize(t *testing.T) {
 	ctx := context.Background()
 	s := New()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if s.TotalSize() != 0 {
 		t.Errorf("TotalSize on empty store returned %d, want 0", s.TotalSize())
@@ -328,7 +328,7 @@ func BenchmarkWriteBlock(b *testing.B) {
 		b.Run(sz.name, func(b *testing.B) {
 			ctx := context.Background()
 			s := New()
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			data := make([]byte, sz.size)
 
 			b.SetBytes(int64(sz.size))
@@ -359,7 +359,7 @@ func BenchmarkReadBlock(b *testing.B) {
 		b.Run(sz.name, func(b *testing.B) {
 			ctx := context.Background()
 			s := New()
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			data := make([]byte, sz.size)
 			blockKey := "bench/chunk-0/block-0"
 
@@ -383,7 +383,7 @@ func BenchmarkReadBlock(b *testing.B) {
 func BenchmarkReadBlockRange(b *testing.B) {
 	ctx := context.Background()
 	s := New()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	// Write a 4MB block
 	blockKey := "bench/chunk-0/block-0"
@@ -420,7 +420,7 @@ func BenchmarkReadBlockRange(b *testing.B) {
 func BenchmarkWriteBlock_Parallel(b *testing.B) {
 	ctx := context.Background()
 	s := New()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	data := make([]byte, 64*1024) // 64KB blocks
 
 	b.SetBytes(int64(len(data)))

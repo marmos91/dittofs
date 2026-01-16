@@ -336,7 +336,17 @@ func (m *TransferManager) Flush(ctx context.Context, payloadID string) (*FlushRe
 
 	// Upload remaining dirty slices (partial blocks not covered by eager upload)
 	// in background. No blocking - data is safe in mmap cache.
-	// IMPORTANT: Use context.Background() since request context is cancelled when COMMIT returns.
+	//
+	// IMPORTANT: We use context.Background() here because the request context is
+	// cancelled when COMMIT returns. The background upload should continue regardless.
+	//
+	// Server shutdown is handled separately by TransferManager.Close() which:
+	// 1. Stops accepting new work via canProcess() check
+	// 2. Drains the transfer queue with a timeout
+	// 3. uploadRemainingSlices checks canProcess() before each block upload
+	//
+	// Data durability is guaranteed by the mmap WAL cache - uploads are best-effort
+	// for performance, not required for durability.
 	go func() {
 		defer state.flush.Done()
 		if err := m.uploadRemainingSlices(context.Background(), payloadID); err != nil {

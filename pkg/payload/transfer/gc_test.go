@@ -362,7 +362,7 @@ func TestCollectGarbage_SharePrefix(t *testing.T) {
 func TestCollectGarbage_MaxOrphansLimit(t *testing.T) {
 	ctx := context.Background()
 	blockStore := memory.New()
-	defer blockStore.Close()
+	defer func() { _ = blockStore.Close() }()
 
 	// Create 10 orphan files
 	reconciler := newGCTestReconciler()
@@ -382,7 +382,7 @@ func TestCollectGarbage_MaxOrphansLimit(t *testing.T) {
 func TestCollectGarbage_ProgressCallback(t *testing.T) {
 	ctx := context.Background()
 	blockStore := memory.New()
-	defer blockStore.Close()
+	defer func() { _ = blockStore.Close() }()
 
 	// Create orphan files
 	reconciler := newGCTestReconciler()
@@ -413,7 +413,7 @@ func TestCollectGarbage_ProgressCallback(t *testing.T) {
 func TestCollectGarbage_ShareNotFound(t *testing.T) {
 	ctx := context.Background()
 	blockStore := memory.New()
-	defer blockStore.Close()
+	defer func() { _ = blockStore.Close() }()
 
 	// Create blocks for a share that doesn't exist in reconciler
 	payloadID := "unknownshare/file.txt"
@@ -432,7 +432,7 @@ func TestCollectGarbage_ShareNotFound(t *testing.T) {
 func TestCollectGarbage_InvalidBlockKey(t *testing.T) {
 	ctx := context.Background()
 	blockStore := memory.New()
-	defer blockStore.Close()
+	defer func() { _ = blockStore.Close() }()
 
 	// Create a block with invalid key format (no chunk marker)
 	require.NoError(t, blockStore.WriteBlock(ctx, "invalid-key-no-chunk", make([]byte, 1024)))
@@ -463,7 +463,7 @@ func BenchmarkCollectGarbage_Memory(b *testing.B) {
 		b.Run(size.name, func(b *testing.B) {
 			ctx := context.Background()
 			blockStore := memory.New()
-			defer blockStore.Close()
+			defer func() { _ = blockStore.Close() }()
 
 			// Set up reconciler with half the files (50% orphans)
 			reconciler := newGCTestReconciler()

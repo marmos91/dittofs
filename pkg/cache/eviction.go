@@ -21,15 +21,16 @@ import (
 //
 // Called automatically by WriteSlice when cache would exceed maxSize.
 // Evicts from least recently used files first.
-func (c *Cache) evictLRUUntilFits(neededBytes uint64) {
+func (c *Cache) evictLRUUntilFits(ctx context.Context, neededBytes uint64) {
 	if c.maxSize == 0 {
 		return
 	}
-	c.evictLRUToTarget(c.maxSize - neededBytes)
+	c.evictLRUToTarget(ctx, c.maxSize-neededBytes)
 }
 
 // evictLRUToTarget evicts flushed slices from LRU files until size <= target.
-func (c *Cache) evictLRUToTarget(targetSize uint64) {
+// Checks context cancellation between file evictions.
+func (c *Cache) evictLRUToTarget(ctx context.Context, targetSize uint64) {
 	type fileAccess struct {
 		payloadID  string
 		lastAccess time.Time
@@ -50,8 +51,12 @@ func (c *Cache) evictLRUToTarget(targetSize uint64) {
 		return files[i].lastAccess.Before(files[j].lastAccess)
 	})
 
-	// Evict until target reached
+	// Evict until target reached, respecting context cancellation
 	for _, f := range files {
+		// Check context between file evictions
+		if ctx.Err() != nil {
+			return
+		}
 		if c.totalSize.Load() <= targetSize {
 			break
 		}
@@ -128,7 +133,7 @@ func (c *Cache) EvictLRU(ctx context.Context, targetFreeBytes uint64) (uint64, e
 		targetSize = startSize - targetFreeBytes
 	}
 
-	c.evictLRUToTarget(targetSize)
+	c.evictLRUToTarget(ctx, targetSize)
 
 	if endSize := c.totalSize.Load(); startSize > endSize {
 		return startSize - endSize, nil

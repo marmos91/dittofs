@@ -12,13 +12,13 @@ import (
 
 func TestRemove_ExistingFile(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 	data := []byte("test data")
 
-	c.WriteSlice(ctx, payloadID, 0, data, 0)
+	_ = c.WriteSlice(ctx, payloadID, 0, data, 0)
 
 	if err := c.Remove(ctx, payloadID); err != nil {
 		t.Fatalf("Remove failed: %v", err)
@@ -34,7 +34,7 @@ func TestRemove_ExistingFile(t *testing.T) {
 
 func TestRemove_Idempotent(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 
@@ -46,7 +46,7 @@ func TestRemove_Idempotent(t *testing.T) {
 
 func TestRemove_UpdatesTotalSize(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
@@ -69,7 +69,7 @@ func TestRemove_UpdatesTotalSize(t *testing.T) {
 
 func TestRemove_ContextCancelled(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -82,7 +82,7 @@ func TestRemove_ContextCancelled(t *testing.T) {
 
 func TestRemove_CacheClosed(t *testing.T) {
 	c := New(0)
-	c.Close()
+	_ = c.Close()
 
 	err := c.Remove(context.Background(), "test")
 	if err != ErrCacheClosed {
@@ -96,13 +96,13 @@ func TestRemove_CacheClosed(t *testing.T) {
 
 func TestTruncate_ReducesSize(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 	data := make([]byte, 10*1024)
 
-	c.WriteSlice(ctx, payloadID, 0, data, 0)
+	_ = c.WriteSlice(ctx, payloadID, 0, data, 0)
 
 	if err := c.Truncate(ctx, payloadID, 5*1024); err != nil {
 		t.Fatalf("Truncate failed: %v", err)
@@ -116,12 +116,12 @@ func TestTruncate_ReducesSize(t *testing.T) {
 
 func TestTruncate_ToZero(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	c.WriteSlice(ctx, payloadID, 0, make([]byte, 1024), 0)
+	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 1024), 0)
 
 	if err := c.Truncate(ctx, payloadID, 0); err != nil {
 		t.Fatalf("Truncate to 0 failed: %v", err)
@@ -135,13 +135,13 @@ func TestTruncate_ToZero(t *testing.T) {
 
 func TestTruncate_ExtendNoOp(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 	data := make([]byte, 1024)
 
-	c.WriteSlice(ctx, payloadID, 0, data, 0)
+	_ = c.WriteSlice(ctx, payloadID, 0, data, 0)
 
 	// Try to extend - should be no-op
 	if err := c.Truncate(ctx, payloadID, 2048); err != nil {
@@ -157,7 +157,7 @@ func TestTruncate_ExtendNoOp(t *testing.T) {
 
 func TestTruncate_NonexistentFile(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	// Should not error for nonexistent file
 	if err := c.Truncate(context.Background(), "nonexistent", 100); err != nil {
@@ -167,7 +167,7 @@ func TestTruncate_NonexistentFile(t *testing.T) {
 
 func TestTruncate_ContextCancelled(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -180,7 +180,7 @@ func TestTruncate_ContextCancelled(t *testing.T) {
 
 func TestTruncate_CacheClosed(t *testing.T) {
 	c := New(0)
-	c.Close()
+	_ = c.Close()
 
 	err := c.Truncate(context.Background(), "test", 100)
 	if err != ErrCacheClosed {
@@ -194,7 +194,7 @@ func TestTruncate_CacheClosed(t *testing.T) {
 
 func TestHasDirtyData_InitiallyFalse(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if c.HasDirtyData("nonexistent") {
 		t.Error("expected no dirty data for nonexistent file")
@@ -203,12 +203,12 @@ func TestHasDirtyData_InitiallyFalse(t *testing.T) {
 
 func TestHasDirtyData_TrueAfterWrite(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	c.WriteSlice(ctx, payloadID, 0, []byte("data"), 0)
+	_ = c.WriteSlice(ctx, payloadID, 0, []byte("data"), 0)
 
 	if !c.HasDirtyData(payloadID) {
 		t.Error("expected dirty data after write")
@@ -217,7 +217,7 @@ func TestHasDirtyData_TrueAfterWrite(t *testing.T) {
 
 func TestHasDirtyData_FalseAfterFlush(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
@@ -244,12 +244,12 @@ func TestHasDirtyData_FalseAfterFlush(t *testing.T) {
 
 func TestGetFileSize_Basic(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	c.WriteSlice(ctx, payloadID, 0, make([]byte, 1024), 0)
+	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 1024), 0)
 
 	if size := c.GetFileSize(payloadID); size != 1024 {
 		t.Errorf("expected size 1024, got %d", size)
@@ -258,7 +258,7 @@ func TestGetFileSize_Basic(t *testing.T) {
 
 func TestGetFileSize_NonexistentFile(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if size := c.GetFileSize("nonexistent"); size != 0 {
 		t.Errorf("expected size 0 for nonexistent, got %d", size)
@@ -267,14 +267,14 @@ func TestGetFileSize_NonexistentFile(t *testing.T) {
 
 func TestGetFileSize_MultipleChunks(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
 	// Write to chunk 0 and chunk 1
-	c.WriteSlice(ctx, payloadID, 0, make([]byte, 1000), 0)
-	c.WriteSlice(ctx, payloadID, 1, make([]byte, 500), 0)
+	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 1000), 0)
+	_ = c.WriteSlice(ctx, payloadID, 1, make([]byte, 500), 0)
 
 	// Size should be: chunk_1_offset + 500 = ChunkSize + 500
 	expected := uint64(ChunkSize) + 500
@@ -289,7 +289,7 @@ func TestGetFileSize_MultipleChunks(t *testing.T) {
 
 func TestListFiles_Empty(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	files := c.ListFiles()
 	if len(files) != 0 {
@@ -299,13 +299,13 @@ func TestListFiles_Empty(t *testing.T) {
 
 func TestListFiles_MultipleFiles(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 
-	c.WriteSlice(ctx, "file1", 0, []byte("data1"), 0)
-	c.WriteSlice(ctx, "file2", 0, []byte("data2"), 0)
-	c.WriteSlice(ctx, "file3", 0, []byte("data3"), 0)
+	_ = c.WriteSlice(ctx, "file1", 0, []byte("data1"), 0)
+	_ = c.WriteSlice(ctx, "file2", 0, []byte("data2"), 0)
+	_ = c.WriteSlice(ctx, "file3", 0, []byte("data3"), 0)
 
 	files := c.ListFiles()
 	if len(files) != 3 {
@@ -315,8 +315,8 @@ func TestListFiles_MultipleFiles(t *testing.T) {
 
 func TestListFiles_CacheClosed(t *testing.T) {
 	c := New(0)
-	c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
-	c.Close()
+	_ = c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.Close()
 
 	files := c.ListFiles()
 	if len(files) != 0 {
@@ -330,7 +330,7 @@ func TestListFiles_CacheClosed(t *testing.T) {
 
 func TestListFilesWithSizes_Empty(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	sizes := c.ListFilesWithSizes()
 	if len(sizes) != 0 {
@@ -340,11 +340,11 @@ func TestListFilesWithSizes_Empty(t *testing.T) {
 
 func TestListFilesWithSizes_SingleFile(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	ctx := context.Background()
 
 	// Write 32KB to file
-	c.WriteSlice(ctx, "file1", 0, make([]byte, 32*1024), 0)
+	_ = c.WriteSlice(ctx, "file1", 0, make([]byte, 32*1024), 0)
 
 	sizes := c.ListFilesWithSizes()
 	if len(sizes) != 1 {
@@ -357,13 +357,13 @@ func TestListFilesWithSizes_SingleFile(t *testing.T) {
 
 func TestListFilesWithSizes_MultipleFiles(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	ctx := context.Background()
 
 	// Write different sizes to different files
-	c.WriteSlice(ctx, "small", 0, make([]byte, 1024), 0)
-	c.WriteSlice(ctx, "medium", 0, make([]byte, 10*1024), 0)
-	c.WriteSlice(ctx, "large", 0, make([]byte, 100*1024), 0)
+	_ = c.WriteSlice(ctx, "small", 0, make([]byte, 1024), 0)
+	_ = c.WriteSlice(ctx, "medium", 0, make([]byte, 10*1024), 0)
+	_ = c.WriteSlice(ctx, "large", 0, make([]byte, 100*1024), 0)
 
 	sizes := c.ListFilesWithSizes()
 	if len(sizes) != 3 {
@@ -382,12 +382,12 @@ func TestListFilesWithSizes_MultipleFiles(t *testing.T) {
 
 func TestListFilesWithSizes_SparseFile(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	ctx := context.Background()
 
 	// Write at offset 0 and at offset 1MB (sparse file)
-	c.WriteSlice(ctx, "sparse", 0, make([]byte, 1024), 0)
-	c.WriteSlice(ctx, "sparse", 0, make([]byte, 1024), 1024*1024) // 1MB offset
+	_ = c.WriteSlice(ctx, "sparse", 0, make([]byte, 1024), 0)
+	_ = c.WriteSlice(ctx, "sparse", 0, make([]byte, 1024), 1024*1024) // 1MB offset
 
 	sizes := c.ListFilesWithSizes()
 	// Size should be max offset + length = 1MB + 1KB
@@ -399,13 +399,13 @@ func TestListFilesWithSizes_SparseFile(t *testing.T) {
 
 func TestListFilesWithSizes_MultipleChunks(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	ctx := context.Background()
 
 	// Write to chunk 0 and chunk 1 (each chunk is 64MB)
 	// Offset parameter is offset within the chunk, not global offset
-	c.WriteSlice(ctx, "multiChunk", 0, make([]byte, 1024), 0) // Chunk 0, offset 0
-	c.WriteSlice(ctx, "multiChunk", 1, make([]byte, 1024), 0) // Chunk 1, offset 0 within chunk
+	_ = c.WriteSlice(ctx, "multiChunk", 0, make([]byte, 1024), 0) // Chunk 0, offset 0
+	_ = c.WriteSlice(ctx, "multiChunk", 1, make([]byte, 1024), 0) // Chunk 1, offset 0 within chunk
 
 	sizes := c.ListFilesWithSizes()
 	// Size should be: chunk1_base + offset + length = 64MB + 0 + 1024
@@ -417,8 +417,8 @@ func TestListFilesWithSizes_MultipleChunks(t *testing.T) {
 
 func TestListFilesWithSizes_CacheClosed(t *testing.T) {
 	c := New(0)
-	c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
-	c.Close()
+	_ = c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.Close()
 
 	sizes := c.ListFilesWithSizes()
 	if sizes != nil {
@@ -432,7 +432,7 @@ func TestListFilesWithSizes_CacheClosed(t *testing.T) {
 
 func TestStats_Basic(t *testing.T) {
 	c := New(100 * 1024)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 
@@ -473,8 +473,8 @@ func TestStats_Basic(t *testing.T) {
 
 func TestStats_CacheClosed(t *testing.T) {
 	c := New(0)
-	c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
-	c.Close()
+	_ = c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.Close()
 
 	stats := c.Stats()
 	if stats.FileCount != 0 || stats.TotalSize != 0 {
@@ -502,9 +502,9 @@ func TestClose_ReleasesResources(t *testing.T) {
 	c := New(0)
 
 	ctx := context.Background()
-	c.WriteSlice(ctx, "test", 0, make([]byte, 1024), 0)
+	_ = c.WriteSlice(ctx, "test", 0, make([]byte, 1024), 0)
 
-	c.Close()
+	_ = c.Close()
 
 	if c.GetTotalSize() != 0 {
 		t.Errorf("expected 0 size after close, got %d", c.GetTotalSize())
@@ -517,7 +517,7 @@ func TestClose_ReleasesResources(t *testing.T) {
 
 func TestSync_NoWal(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	// Sync without WAL should not error
 	if err := c.Sync(); err != nil {
@@ -527,7 +527,7 @@ func TestSync_NoWal(t *testing.T) {
 
 func TestSync_CacheClosed(t *testing.T) {
 	c := New(0)
-	c.Close()
+	_ = c.Close()
 
 	if err := c.Sync(); err != ErrCacheClosed {
 		t.Errorf("expected ErrCacheClosed, got %v", err)
@@ -559,9 +559,9 @@ func BenchmarkListFilesWithSizes(b *testing.B) {
 			for i := 0; i < size.fileCount; i++ {
 				// Each file has 3 chunks with varying slices
 				payloadID := fmt.Sprintf("file-%d", i)
-				c.WriteSlice(ctx, payloadID, 0, make([]byte, 32*1024), 0)
-				c.WriteSlice(ctx, payloadID, 0, make([]byte, 16*1024), 32*1024)
-				c.WriteSlice(ctx, payloadID, 1, make([]byte, 64*1024), 0)
+				_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 32*1024), 0)
+				_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 16*1024), 32*1024)
+				_ = c.WriteSlice(ctx, payloadID, 1, make([]byte, 64*1024), 0)
 			}
 
 			b.ResetTimer()
@@ -572,7 +572,7 @@ func BenchmarkListFilesWithSizes(b *testing.B) {
 			}
 
 			b.StopTimer()
-			c.Close()
+			_ = c.Close()
 		})
 	}
 }
@@ -596,7 +596,7 @@ func BenchmarkGetFileSize(b *testing.B) {
 			// Create a file with many slices (simulates sequential writes)
 			for i := 0; i < size.slices; i++ {
 				offset := uint32(i * 32 * 1024)
-				c.WriteSlice(ctx, "test-file", uint32(offset/ChunkSize), make([]byte, 32*1024), offset%ChunkSize)
+				_ = c.WriteSlice(ctx, "test-file", uint32(offset/ChunkSize), make([]byte, 32*1024), offset%ChunkSize)
 			}
 
 			b.ResetTimer()
@@ -607,7 +607,7 @@ func BenchmarkGetFileSize(b *testing.B) {
 			}
 
 			b.StopTimer()
-			c.Close()
+			_ = c.Close()
 		})
 	}
 }
