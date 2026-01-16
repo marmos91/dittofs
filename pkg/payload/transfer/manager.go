@@ -879,7 +879,7 @@ func (m *TransferManager) isRangeInCache(ctx context.Context, payloadID string, 
 
 // GetFileSize returns the total size of a file from the block store.
 // This is used as a fallback when the cache doesn't have the file.
-func (m *TransferManager) GetFileSize(ctx context.Context, shareName, payloadID string) (uint64, error) {
+func (m *TransferManager) GetFileSize(ctx context.Context, _ /* shareName */, payloadID string) (uint64, error) {
 	m.mu.RLock()
 	if m.closed {
 		m.mu.RUnlock()
@@ -933,7 +933,7 @@ func (m *TransferManager) GetFileSize(ctx context.Context, shareName, payloadID 
 }
 
 // Exists checks if any blocks exist for a file in the block store.
-func (m *TransferManager) Exists(ctx context.Context, shareName, payloadID string) (bool, error) {
+func (m *TransferManager) Exists(ctx context.Context, _ /* shareName */, payloadID string) (bool, error) {
 	if !m.canProcess(ctx) {
 		return false, fmt.Errorf("transfer manager is closed")
 	}
@@ -958,7 +958,7 @@ func (m *TransferManager) Exists(ctx context.Context, shareName, payloadID strin
 // Note: This deletes whole blocks only. Partial block truncation (e.g., truncating
 // to middle of a block) is not supported - the last block retains its original size.
 // Future optimization: Add TruncateBlock to BlockStore interface using S3 CopyObjectWithRange.
-func (m *TransferManager) Truncate(ctx context.Context, shareName, payloadID string, newSize uint64) error {
+func (m *TransferManager) Truncate(ctx context.Context, _ /* shareName */, payloadID string, newSize uint64) error {
 	if !m.canProcess(ctx) {
 		return fmt.Errorf("transfer manager is closed")
 	}
@@ -995,7 +995,7 @@ func (m *TransferManager) Truncate(ctx context.Context, shareName, payloadID str
 }
 
 // Delete removes all blocks for a file from the block store.
-func (m *TransferManager) Delete(ctx context.Context, shareName, payloadID string) error {
+func (m *TransferManager) Delete(ctx context.Context, _ /* shareName */, payloadID string) error {
 	if !m.canProcess(ctx) {
 		return fmt.Errorf("transfer manager is closed")
 	}

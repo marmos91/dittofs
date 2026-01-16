@@ -155,10 +155,9 @@ func (c *Cache) sliceToWALEntry(payloadID string, chunkIdx uint32, slice *Slice)
 	}
 }
 
-// extendResult contains information about a slice extension for WAL logging.
+// extendResult indicates whether a slice was extended.
 type extendResult struct {
-	extended bool   // Whether a slice was extended
-	sliceID  string // ID of the extended slice
+	extended bool // Whether a slice was extended
 }
 
 // extendAdjacentSlice extends an existing pending slice if the new write is adjacent.
@@ -204,7 +203,7 @@ func (c *Cache) extendAdjacentSlice(chunk *chunkEntry, offset uint32, data []byt
 			slice.Data = append(slice.Data, data...)
 			slice.Length += uint32(len(data))
 			c.totalSize.Add(uint64(len(slice.Data) - oldLen))
-			return extendResult{extended: true, sliceID: slice.ID}
+			return extendResult{extended: true}
 		}
 
 		// Case 2: Prepending (write ends where slice starts)
@@ -217,7 +216,7 @@ func (c *Cache) extendAdjacentSlice(chunk *chunkEntry, offset uint32, data []byt
 			slice.Offset = offset
 			slice.Length += uint32(len(data))
 			c.totalSize.Add(uint64(len(newData) - oldLen))
-			return extendResult{extended: true, sliceID: slice.ID}
+			return extendResult{extended: true}
 		}
 	}
 

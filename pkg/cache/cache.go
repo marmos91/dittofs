@@ -152,10 +152,8 @@ func (c *Cache) recoverFromWal() error {
 //
 // The returned entry has its own mutex for fine-grained locking.
 func (c *Cache) getFileEntry(payloadID string) *fileEntry {
-	key := payloadID
-
 	c.globalMu.RLock()
-	entry, exists := c.files[key]
+	entry, exists := c.files[payloadID]
 	c.globalMu.RUnlock()
 
 	if exists {
@@ -166,7 +164,7 @@ func (c *Cache) getFileEntry(payloadID string) *fileEntry {
 	defer c.globalMu.Unlock()
 
 	// Double-check after acquiring write lock
-	if entry, exists = c.files[key]; exists {
+	if entry, exists = c.files[payloadID]; exists {
 		return entry
 	}
 
@@ -174,7 +172,7 @@ func (c *Cache) getFileEntry(payloadID string) *fileEntry {
 		chunks:     make(map[uint32]*chunkEntry),
 		lastAccess: time.Now(),
 	}
-	c.files[key] = entry
+	c.files[payloadID] = entry
 	return entry
 }
 

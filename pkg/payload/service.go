@@ -68,7 +68,7 @@ func New(c *cache.Cache, tm *transfer.TransferManager) (*PayloadService, error) 
 //
 // On cache miss, uses EnsureAvailable which downloads required blocks and
 // triggers prefetch for sequential read optimization.
-func (s *PayloadService) ReadAt(ctx context.Context, shareName string, id metadata.PayloadID, p []byte, offset uint64) (int, error) {
+func (s *PayloadService) ReadAt(ctx context.Context, _ /* shareName */ string, id metadata.PayloadID, p []byte, offset uint64) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
@@ -150,7 +150,7 @@ func (s *PayloadService) Exists(ctx context.Context, shareName string, id metada
 // Eager upload: After each slice write, complete 4MB blocks are uploaded
 // immediately in background goroutines. This reduces data remaining for
 // Flush() and improves SMB CLOSE latency.
-func (s *PayloadService) WriteAt(ctx context.Context, shareName string, id metadata.PayloadID, data []byte, offset uint64) error {
+func (s *PayloadService) WriteAt(ctx context.Context, _ /* shareName */ string, id metadata.PayloadID, data []byte, offset uint64) error {
 	if len(data) == 0 {
 		return nil
 	}
@@ -225,11 +225,7 @@ func (s *PayloadService) Flush(ctx context.Context, _ string, id metadata.Payloa
 		return nil, fmt.Errorf("flush failed: %w", err)
 	}
 
-	return &FlushResult{
-		BytesFlushed:   result.BytesFlushed,
-		AlreadyFlushed: result.AlreadyFlushed,
-		Finalized:      result.Finalized,
-	}, nil
+	return result, nil
 }
 
 // ============================================================================

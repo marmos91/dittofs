@@ -1,5 +1,7 @@
 package payload
 
+import "github.com/marmos91/dittofs/pkg/payload/transfer"
+
 // ============================================================================
 // Type Notes
 // ============================================================================
@@ -43,14 +45,6 @@ type StorageStats struct {
 	AverageSize uint64
 }
 
-// FlushResult contains information about a flush operation.
-type FlushResult struct {
-	// BytesFlushed is the number of bytes written.
-	BytesFlushed uint64
-
-	// AlreadyFlushed indicates all data was already flushed (no-op).
-	AlreadyFlushed bool
-
-	// Finalized indicates whether the content was finalized (complete and durable).
-	Finalized bool
-}
+// FlushResult is an alias to transfer.FlushResult for API compatibility.
+// The canonical definition is in pkg/payload/transfer/types.go.
+type FlushResult = transfer.FlushResult
