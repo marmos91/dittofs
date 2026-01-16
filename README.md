@@ -225,15 +225,33 @@ See the [`operator/`](operator/) directory for detailed documentation and config
 
 ### Mount from Client
 
+**NFS:**
 ```bash
 # Linux
 sudo mkdir -p /mnt/nfs
 sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
 
-# macOS (sudo not required)
+# macOS
 mkdir -p /tmp/nfs
-mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /tmp/nfs
+sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock localhost:/export /tmp/nfs
 ```
+
+**SMB** (requires user authentication):
+```bash
+# First, create a user with the CLI
+./dittofs user add alice
+./dittofs user grant alice /export read-write
+
+# Linux
+sudo mkdir -p /mnt/smb
+sudo mount -t cifs //localhost/export /mnt/smb -o port=12445,username=alice,password=yourpassword,vers=2.0
+
+# macOS
+mkdir -p /tmp/smb
+mount -t smbfs //alice:yourpassword@localhost:12445/export /tmp/smb
+```
+
+See [docs/SMB.md](docs/SMB.md) for detailed SMB client usage.
 
 ### Testing
 

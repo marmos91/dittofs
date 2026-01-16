@@ -49,7 +49,7 @@ type SMBTimeoutsConfig struct {
 // and resource management.
 //
 // Default values (applied by New if zero):
-//   - Port: 445 (standard SMB port)
+//   - Port: 12445 (non-privileged port, standard is 445)
 //   - MaxConnections: 0 (unlimited)
 //   - Timeouts.Read: 5m
 //   - Timeouts.Write: 30s
@@ -66,8 +66,8 @@ type SMBConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 
 	// Port is the TCP port to listen on for SMB connections.
-	// Standard SMB port is 445. Must be > 0.
-	// If 0, defaults to 445.
+	// Standard SMB port is 445, but requires root. Must be > 0.
+	// If 0, defaults to 12445.
 	Port int `mapstructure:"port" validate:"min=0,max=65535"`
 
 	// MaxConnections limits the number of concurrent client connections.
@@ -224,7 +224,7 @@ type SMBCreditsConfig struct {
 // applyDefaults fills in zero values with sensible defaults.
 func (c *SMBConfig) applyDefaults() {
 	if c.Port <= 0 {
-		c.Port = 445
+		c.Port = 12445
 	}
 	if c.MaxRequestsPerConnection == 0 {
 		c.MaxRequestsPerConnection = 100
