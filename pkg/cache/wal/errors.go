@@ -14,4 +14,7 @@ var (
 
 	// ErrVersionMismatch is returned when the WAL file version doesn't match.
 	ErrVersionMismatch = errors.New("WAL file version mismatch")
+
+	// ErrUnsupportedPlatform is returned when mmap persistence is not supported on the platform.
+	ErrUnsupportedPlatform = errors.New("mmap persistence is not supported on this platform")
 )
