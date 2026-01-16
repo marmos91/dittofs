@@ -247,7 +247,7 @@ func TestMergeAdjacent_MultipleGroups(t *testing.T) {
 
 func TestGetDirtySlices_Empty(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	_, err := c.GetDirtySlices(context.Background(), "nonexistent")
 	if err != ErrFileNotInCache {
@@ -257,16 +257,16 @@ func TestGetDirtySlices_Empty(t *testing.T) {
 
 func TestGetDirtySlices_SortedByChunkAndOffset(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	handle := "test-file"
 
 	// Write in random order
-	c.WriteSlice(ctx, handle, 1, []byte("chunk1-offset100"), 100)
-	c.WriteSlice(ctx, handle, 0, []byte("chunk0-offset50"), 50)
-	c.WriteSlice(ctx, handle, 1, []byte("chunk1-offset0"), 0)
-	c.WriteSlice(ctx, handle, 0, []byte("chunk0-offset0"), 0)
+	_ = c.WriteSlice(ctx, handle, 1, []byte("chunk1-offset100"), 100)
+	_ = c.WriteSlice(ctx, handle, 0, []byte("chunk0-offset50"), 50)
+	_ = c.WriteSlice(ctx, handle, 1, []byte("chunk1-offset0"), 0)
+	_ = c.WriteSlice(ctx, handle, 0, []byte("chunk0-offset0"), 0)
 
 	slices, err := c.GetDirtySlices(ctx, handle)
 	if err != nil {
@@ -298,20 +298,20 @@ func TestGetDirtySlices_SortedByChunkAndOffset(t *testing.T) {
 
 func TestGetDirtySlices_OnlyReturnsPending(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	handle := "test-file"
 
 	// Write two slices
-	c.WriteSlice(ctx, handle, 0, []byte("pending"), 0)
-	c.WriteSlice(ctx, handle, 0, []byte("will-be-flushed"), 100)
+	_ = c.WriteSlice(ctx, handle, 0, []byte("pending"), 0)
+	_ = c.WriteSlice(ctx, handle, 0, []byte("will-be-flushed"), 100)
 
 	// Mark second as flushed
 	slices, _ := c.GetDirtySlices(ctx, handle)
 	for _, s := range slices {
 		if s.Offset == 100 {
-			c.MarkSliceFlushed(ctx, handle, s.ID, nil)
+			_ = c.MarkSliceFlushed(ctx, handle, s.ID, nil)
 		}
 	}
 
@@ -453,18 +453,18 @@ func TestCoalesceWrites_MergesAdjacentPending(t *testing.T) {
 
 func TestCoalesceWrites_PreservesFlushed(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	handle := "test-file"
 
 	// Write and flush first slice
-	c.WriteSlice(ctx, handle, 0, []byte("first"), 0)
+	_ = c.WriteSlice(ctx, handle, 0, []byte("first"), 0)
 	slices, _ := c.GetDirtySlices(ctx, handle)
-	c.MarkSliceFlushed(ctx, handle, slices[0].ID, nil)
+	_ = c.MarkSliceFlushed(ctx, handle, slices[0].ID, nil)
 
 	// Write adjacent pending slice
-	c.WriteSlice(ctx, handle, 0, []byte("second"), 5)
+	_ = c.WriteSlice(ctx, handle, 0, []byte("second"), 5)
 
 	// Coalesce should not merge flushed with pending
 	err := c.CoalesceWrites(ctx, handle)

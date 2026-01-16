@@ -88,7 +88,7 @@ func TestStore_ReadBlockRange(t *testing.T) {
 func TestStore_DeleteBlock(t *testing.T) {
 	ctx := context.Background()
 	s := New()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	blockKey := "share1/content123/chunk-0/block-0"
 	data := []byte("hello world")
@@ -112,7 +112,7 @@ func TestStore_DeleteBlock(t *testing.T) {
 func TestStore_DeleteByPrefix(t *testing.T) {
 	ctx := context.Background()
 	s := New()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	// Write multiple blocks
 	blocks := map[string][]byte{
@@ -151,7 +151,7 @@ func TestStore_DeleteByPrefix(t *testing.T) {
 func TestStore_ListByPrefix(t *testing.T) {
 	ctx := context.Background()
 	s := New()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	// Write multiple blocks
 	blocks := map[string][]byte{

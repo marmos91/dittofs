@@ -291,7 +291,7 @@ func TestCollectGarbage_WithOrphans(t *testing.T) {
 func TestCollectGarbage_DryRun(t *testing.T) {
 	ctx := context.Background()
 	blockStore := memory.New()
-	defer blockStore.Close()
+	defer func() { _ = blockStore.Close() }()
 
 	// Create orphan blocks
 	orphanPayloadID := "export/orphan-file.txt"
@@ -316,7 +316,7 @@ func TestCollectGarbage_DryRun(t *testing.T) {
 func TestCollectGarbage_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	blockStore := memory.New()
-	defer blockStore.Close()
+	defer func() { _ = blockStore.Close() }()
 
 	// Create many orphan files
 	reconciler := newGCTestReconciler()
@@ -341,7 +341,7 @@ func TestCollectGarbage_ContextCancellation(t *testing.T) {
 func TestCollectGarbage_SharePrefix(t *testing.T) {
 	ctx := context.Background()
 	blockStore := memory.New()
-	defer blockStore.Close()
+	defer func() { _ = blockStore.Close() }()
 
 	// Create blocks in two shares
 	require.NoError(t, blockStore.WriteBlock(ctx, "share1/file.txt/chunk-0/block-0", make([]byte, 1024)))

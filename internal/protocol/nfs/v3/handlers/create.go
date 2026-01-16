@@ -381,7 +381,7 @@ func (h *Handler) Create(
 	// We already have the file metadata and auth context, so caching is free.
 
 	// Pre-warm auth context cache (avoids registry lookups on WRITE)
-	h.GetCachedAuthContext(ctx)
+	_, _ = h.GetCachedAuthContext(ctx)
 
 	// Pre-warm file metadata cache (avoids store.GetFile on WRITE)
 	// Build a File struct from the fileAttr for caching
