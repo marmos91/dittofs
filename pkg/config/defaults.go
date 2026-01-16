@@ -421,7 +421,7 @@ func applySMBDefaults(cfg *smb.SMBConfig) {
 	// Users must explicitly enable it in their config.
 
 	if cfg.Port == 0 {
-		cfg.Port = 445
+		cfg.Port = 12445
 	}
 
 	// MaxConnections defaults to 0 (unlimited)
