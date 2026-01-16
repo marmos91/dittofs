@@ -107,6 +107,8 @@ func (c *Cache) MarkBlockUploaded(ctx context.Context, payloadID string, chunkId
 
 	if blk.state == BlockStatePending || blk.state == BlockStateUploading {
 		blk.state = BlockStateUploaded
+		// Decrement pending size - block is no longer pending
+		c.pendingSize.Add(^uint64(BlockSize - 1)) // Atomic subtract
 		return true
 	}
 

@@ -98,6 +98,17 @@ func (c *Cache) Write(ctx context.Context, payloadID string, chunkIdx uint32, da
 		}
 	}
 
+	// Backpressure on pending data (applies even when maxSize=0).
+	// This prevents OOM when uploads can't keep up with writes.
+	maxPending := c.maxPendingSize
+	if maxPending == 0 {
+		maxPending = DefaultMaxPendingSize
+	}
+	if newMemory > 0 && c.pendingSize.Load()+newMemory > maxPending {
+		entry.mu.Unlock()
+		return ErrCacheFull
+	}
+
 	defer entry.mu.Unlock()
 
 	// Update LRU access time
@@ -111,6 +122,7 @@ func (c *Cache) Write(ctx context.Context, payloadID string, chunkIdx uint32, da
 		// Track memory for new block buffers
 		if isNew {
 			c.totalSize.Add(BlockSize)
+			c.pendingSize.Add(BlockSize) // New blocks start as pending
 		}
 
 		// Calculate offsets within this block
@@ -138,9 +150,10 @@ func (c *Cache) Write(ctx context.Context, payloadID string, chunkIdx uint32, da
 			blk.dataSize = end
 		}
 
-		// Mark block as dirty if it was uploaded
+		// Mark block as dirty if it was uploaded (re-dirty)
 		if blk.state == BlockStateUploaded {
 			blk.state = BlockStatePending
+			c.pendingSize.Add(BlockSize) // Re-dirtied block becomes pending again
 		}
 
 		// Persist to WAL if enabled

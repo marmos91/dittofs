@@ -27,6 +27,12 @@ const (
 	CoverageWordsPerBlock = BlockSize / CoverageGranularity / CoverageBitsPerWord // 1024
 )
 
+// Backpressure constants.
+// MaxPendingSize limits pending (dirty) data to prevent OOM even when cache is unlimited.
+const (
+	DefaultMaxPendingSize = 512 * 1024 * 1024 // 512MB default limit for pending data
+)
+
 // ============================================================================
 // Errors
 // ============================================================================
@@ -245,4 +251,3 @@ func getCoveredSize(coverage []uint64) uint32 {
 
 	return 0
 }
-

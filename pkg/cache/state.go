@@ -39,10 +39,14 @@ func (c *Cache) Remove(ctx context.Context, payloadID string) error {
 	}
 
 	size := entryMemorySize(entry)
+	pendingSize := entryPendingSize(entry)
 	delete(c.files, payloadID)
 
 	if size > 0 {
 		c.totalSize.Add(^(size - 1)) // Subtract
+	}
+	if pendingSize > 0 {
+		c.pendingSize.Add(^(pendingSize - 1)) // Subtract
 	}
 
 	// Persist removal to WAL if enabled
@@ -239,6 +243,20 @@ func chunkMemorySize(chunk *chunkEntry) uint64 {
 	for _, blk := range chunk.blocks {
 		if blk.data != nil {
 			count++
+		}
+	}
+	return count * BlockSize
+}
+
+// entryPendingSize returns total memory allocated by pending blocks.
+// Returns BlockSize per pending block buffer.
+func entryPendingSize(entry *fileEntry) uint64 {
+	var count uint64
+	for _, chunk := range entry.chunks {
+		for _, blk := range chunk.blocks {
+			if blk.data != nil && blk.state != BlockStateUploaded {
+				count++
+			}
 		}
 	}
 	return count * BlockSize

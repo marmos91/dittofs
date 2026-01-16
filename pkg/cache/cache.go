@@ -67,6 +67,11 @@ type Cache struct {
 	totalSize atomic.Uint64
 	closed    bool
 
+	// Pending size tracking for backpressure
+	// Pending = blocks that haven't been uploaded yet (can't be evicted)
+	pendingSize    atomic.Uint64
+	maxPendingSize uint64 // 0 = use default (256MB)
+
 	// WAL persistence (nil = disabled)
 	persister *wal.MmapPersister
 }
