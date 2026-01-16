@@ -21,7 +21,7 @@
     }:
     let
       # Version configuration - update this for releases
-      version = "0.1.0";
+      version = "0.3.0";
     in
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -376,7 +376,7 @@
           src = ./.;
 
           # To update: set to "", run `nix build`, copy hash from error
-          vendorHash = "sha256-vY9q02votXhfLN7KlkxQphWE+z7jhOhFtj5we9jOQ00=";
+          vendorHash = "sha256-ObvJ0kEBS+DM+SOrY0D8qwOsbIsmQCWgpLXXf6oRdqQ=";
 
           subPackages = [ "cmd/dittofs" ];
 
