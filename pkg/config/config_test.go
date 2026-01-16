@@ -12,15 +12,19 @@ func TestLoad_DefaultConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
 
-	// Write minimal config with new store structure
+	// Write minimal config with new payload structure
 	configContent := `
 logging:
   level: "INFO"
 
-content:
+cache:
+  path: "` + tmpDir + `/cache"
+  size: 100Mi
+
+payload:
   stores:
     default:
-      type: "filesystem"
+      type: "memory"
 
 metadata:
   stores:
@@ -29,8 +33,8 @@ metadata:
 
 shares:
   - name: "/export"
-    metadata_store: "default"
-    content_store: "default"
+    metadata: "default"
+    payload: "default"
 
 adapters:
   nfs:
@@ -120,16 +124,20 @@ func TestLoad_TOML(t *testing.T) {
 level = "WARN"
 format = "json"
 
-[content.stores.default]
-type = "filesystem"
+[cache]
+path = "` + tmpDir + `/cache"
+size = "100Mi"
+
+[payload.stores.default]
+type = "memory"
 
 [metadata.stores.default]
 type = "memory"
 
 [[shares]]
 name = "/export"
-metadata_store = "default"
-content_store = "default"
+metadata = "default"
+payload = "default"
 
 [adapters.nfs]
 enabled = true
@@ -169,8 +177,8 @@ func TestGetDefaultConfig(t *testing.T) {
 		t.Errorf("Expected default shutdown timeout 30s, got %v", cfg.Server.ShutdownTimeout)
 	}
 	// Check stores are configured
-	if len(cfg.Content.Stores) == 0 {
-		t.Error("Expected at least one content store")
+	if len(cfg.Payload.Stores) == 0 {
+		t.Error("Expected at least one payload store")
 	}
 	if len(cfg.Metadata.Stores) == 0 {
 		t.Error("Expected at least one metadata store")
@@ -236,10 +244,14 @@ func TestLoad_EnvironmentVariables(t *testing.T) {
 logging:
   level: "INFO"
 
-content:
+cache:
+  path: "` + tmpDir + `/cache"
+  size: 100Mi
+
+payload:
   stores:
     default:
-      type: "filesystem"
+      type: "memory"
 
 metadata:
   stores:
@@ -248,8 +260,8 @@ metadata:
 
 shares:
   - name: "/export"
-    metadata_store: "default"
-    content_store: "default"
+    metadata: "default"
+    payload: "default"
 
 adapters:
   nfs:

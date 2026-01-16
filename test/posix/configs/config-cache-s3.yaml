@@ -1,4 +1,4 @@
-# DittoFS Configuration - Memory Metadata + Cache + S3 Content Store
+# DittoFS Configuration - Memory Metadata + Cache + S3 Payload Store
 # For POSIX compliance testing with caching and S3 backend
 # Requires Localstack or S3-compatible endpoint running at localhost:4566
 
@@ -14,25 +14,24 @@ server:
   shutdown_timeout: 30s
 
 metadata:
-  global:
-    filesystem_capabilities:
-      max_read_size: 1048576
-      preferred_read_size: 65536
-      max_write_size: 1048576
-      preferred_write_size: 65536
-      max_file_size: 9223372036854775807
-      max_filename_len: 255
-      max_path_len: 4096
-      max_hard_link_count: 32767
-      supports_hard_links: true
-      supports_symlinks: true
-      case_sensitive: true
-      case_preserving: true
+  filesystem_capabilities:
+    max_read_size: 1048576
+    preferred_read_size: 65536
+    max_write_size: 1048576
+    preferred_write_size: 65536
+    max_file_size: 9223372036854775807
+    max_filename_len: 255
+    max_path_len: 4096
+    max_hard_link_count: 32767
+    supports_hard_links: true
+    supports_symlinks: true
+    case_sensitive: true
+    case_preserving: true
   stores:
     default:
       type: "memory"
 
-content:
+payload:
   stores:
     default:
       type: "s3"
@@ -41,12 +40,15 @@ content:
         bucket: "dittofs-posix-test"
         endpoint: "http://localhost:4566"
         force_path_style: true
-        disable_ssl: true
+
+cache:
+  path: "/tmp/dittofs-cache-s3"
+  size: "512MB"
 
 shares:
   - name: "/export"
-    metadata_store: "default"
-    content_store: "default"
+    metadata: "default"
+    payload: "default"
     read_only: false
     allowed_clients: []
     denied_clients: []
@@ -64,11 +66,6 @@ shares:
       uid: 0
       gid: 0
     dump_restricted: false
-    cache:
-      enabled: true
-      max_size: 536870912  # 512MB
-      finalize_timeout: 5s
-      read_ttl: 60s
 
 adapters:
   nfs:

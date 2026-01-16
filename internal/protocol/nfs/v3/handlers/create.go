@@ -8,8 +8,8 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/content"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/payload"
 )
 
 // ============================================================================
@@ -167,7 +167,7 @@ func (h *Handler) Create(
 	// ========================================================================
 
 	// Get content service for this share
-	contentSvc := h.Registry.GetContentService()
+	contentSvc := h.Registry.GetBlockService()
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
 	logger.DebugCtx(ctx.Context, "CREATE", "share", ctx.Share, "file", req.Filename)
@@ -375,7 +375,28 @@ func (h *Handler) Create(
 	}
 
 	// ========================================================================
-	// Step 7: Build success response
+	// Step 7: Pre-warm caches for subsequent WRITE operations
+	// ========================================================================
+	// This eliminates cold-start penalty on the first WRITE to this file.
+	// We already have the file metadata and auth context, so caching is free.
+
+	// Pre-warm auth context cache (avoids registry lookups on WRITE)
+	_, _ = h.GetCachedAuthContext(ctx)
+
+	// Pre-warm file metadata cache (avoids store.GetFile on WRITE)
+	// Build a File struct from the fileAttr for caching
+	if fileAttr.Type == metadata.FileTypeRegular {
+		shareName, id, _ := metadata.DecodeFileHandle(fileHandle)
+		cachedFile := &metadata.File{
+			ID:        id,
+			ShareName: shareName,
+			FileAttr:  *fileAttr,
+		}
+		metaSvc.PrewarmWriteCache(fileHandle, cachedFile)
+	}
+
+	// ========================================================================
+	// Step 8: Build success response
 	// ========================================================================
 
 	// Convert metadata to NFS attributes
@@ -428,7 +449,7 @@ func createNewFile(
 	req *CreateRequest,
 ) (metadata.FileHandle, *metadata.FileAttr, error) {
 	// Build file attributes for the new file
-	// The repository will complete these with timestamps and ContentID
+	// The repository will complete these with timestamps and PayloadID
 	fileAttr := &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0644, // Default: rw-r--r--
@@ -530,7 +551,7 @@ func createNewFile(
 //   - Updated file attributes and error
 func truncateExistingFile(
 	authCtx *metadata.AuthContext,
-	contentSvc *content.ContentService,
+	contentSvc *payload.PayloadService,
 	shareName string,
 	metaSvc *metadata.MetadataService,
 	existingFile *metadata.File,
@@ -573,8 +594,8 @@ func truncateExistingFile(
 	}
 
 	// Truncate content if file has content
-	if existingFile.ContentID != "" {
-		if err := contentSvc.Truncate(authCtx.Context, shareName, existingFile.ContentID, targetSize); err != nil {
+	if existingFile.PayloadID != "" {
+		if err := contentSvc.Truncate(authCtx.Context, shareName, existingFile.PayloadID, targetSize); err != nil {
 			logger.Warn("Failed to truncate content", "size", targetSize, "error", err)
 			// Non-fatal: metadata is already updated
 		}

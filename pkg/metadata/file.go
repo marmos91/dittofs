@@ -20,8 +20,8 @@ import (
 //   - Parent timestamp updates
 //
 // Important: This method does NOT delete the file's content data.
-// The returned File includes ContentID for caller to coordinate content deletion.
-// ContentID is empty if other hard links still reference the content.
+// The returned File includes PayloadID for caller to coordinate content deletion.
+// PayloadID is empty if other hard links still reference the content.
 //
 // POSIX Compliance:
 //   - When last link is removed, nlink is set to 0 (not deleted)
@@ -103,8 +103,8 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 	// Handle link count
 	if linkCount > 1 {
 		// File has other hard links, just decrement count
-		// Empty ContentID signals caller NOT to delete content
-		returnFile.ContentID = ""
+		// Empty PayloadID signals caller NOT to delete content
+		returnFile.PayloadID = ""
 		returnFile.Nlink = linkCount - 1
 		returnFile.Ctime = now
 
@@ -729,7 +729,7 @@ func (s *MetadataService) createEntry(
 
 	// Set content ID for regular files
 	if fileType == FileTypeRegular {
-		newAttr.ContentID = ContentID(buildContentID(parent.ShareName, buildPath(parent.Path, name)))
+		newAttr.PayloadID = PayloadID(buildPayloadID(parent.ShareName, buildPath(parent.Path, name)))
 	}
 
 	// Set device numbers for block/char devices
@@ -798,8 +798,8 @@ func buildPath(parentPath, childName string) string {
 	return parentPath + "/" + childName
 }
 
-// buildContentID constructs a content ID from share name and path.
-func buildContentID(shareName, path string) string {
+// buildPayloadID constructs a content ID from share name and path.
+func buildPayloadID(shareName, path string) string {
 	// Remove leading "/" from path and combine with share name
 	if len(path) > 0 && path[0] == '/' {
 		path = path[1:]
@@ -857,8 +857,8 @@ type FileAttr struct {
 	// CreationTime is the file creation time (birth time).
 	CreationTime time.Time `json:"creation_time"`
 
-	// ContentID is the identifier for retrieving file content
-	ContentID ContentID `json:"content_id"`
+	// PayloadID is the identifier for retrieving file content
+	PayloadID PayloadID `json:"content_id"`
 
 	// LinkTarget is the target path for symbolic links
 	LinkTarget string `json:"link_target,omitempty"`
@@ -900,8 +900,8 @@ const (
 	FileTypeFIFO
 )
 
-// ContentID is an identifier for retrieving file content from the content repository.
-type ContentID string
+// PayloadID is an identifier for retrieving file content from the content repository.
+type PayloadID string
 
 // ============================================================================
 // Device Number Helpers

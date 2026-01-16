@@ -131,7 +131,7 @@ func MetadataToNFS(mdAttr *metadata.FileAttr, fileid uint64) *types.NFSFileAttr 
 //
 // Returns:
 //   - *metadata.FileAttr: Partial attributes with type, mode, uid, gid set
-//     Repository will complete with timestamps, size, and ContentID
+//     Repository will complete with timestamps, size, and PayloadID
 func ConvertSetAttrsToMetadata(fileType metadata.FileType, setAttrs *metadata.SetAttrs, authCtx *metadata.AuthContext) *metadata.FileAttr {
 	if authCtx == nil {
 		// Defensive: should not happen in production
@@ -186,11 +186,11 @@ func ConvertSetAttrsToMetadata(fileType metadata.FileType, setAttrs *metadata.Se
 		attr.GID = 0 // Fallback: root
 	}
 
-	// Note: Size, timestamps, and ContentID are set by the repository
+	// Note: Size, timestamps, and PayloadID are set by the repository
 	// The repository will populate:
 	// - Size: based on actual content
 	// - Atime, Mtime, Ctime: current time or from setAttrs
-	// - ContentID: generated based on implementation
+	// - PayloadID: generated based on implementation
 
 	return attr
 }

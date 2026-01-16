@@ -6,7 +6,6 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
-	"github.com/marmos91/dittofs/pkg/bytesize"
 )
 
 // ============================================================================
@@ -244,7 +243,7 @@ func (resp *WriteResponse) Encode() ([]byte, error) {
 //  3. Verify write permission at share level
 //  4. Get metadata and content stores for the share
 //  5. Build AuthContext for permission validation
-//  6. PrepareWrite - validate permissions and get ContentID
+//  6. PrepareWrite - validate permissions and get PayloadID
 //  7. Write data to cache (async) or content store (sync)
 //  8. CommitWrite - update file metadata (size, timestamps)
 //  9. Return success response with bytes written
@@ -284,7 +283,7 @@ func (resp *WriteResponse) Encode() ([]byte, error) {
 // WRITE is frequently called and performance-critical:
 //   - Uses cache for async writes (reduces latency)
 //   - SMB clients typically use 32KB write chunks
-//   - ContentID caching in OpenFile reduces metadata lookups
+//   - PayloadID caching in OpenFile reduces metadata lookups
 //   - Parallel writes to different files are supported
 //
 // **Example:**
@@ -363,10 +362,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	contentSvc := h.Registry.GetContentService()
-
-	// Get unified cache for this share (optional - nil means sync mode)
-	cache := h.Registry.GetCacheForShare(tree.ShareName)
+	contentSvc := h.Registry.GetBlockService()
 
 	// ========================================================================
 	// Step 6: Build AuthContext
@@ -407,29 +403,15 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
-	// Step 8: Write data to storage (cache or direct to content store)
+	// Step 8: Write data to ContentService (uses Cache internally)
 	// ========================================================================
 
 	bytesWritten := len(req.Data)
 
-	if cache != nil {
-		// Async mode: write to cache, will be flushed on FLUSH
-		err = cache.WriteAt(authCtx.Context, writeOp.ContentID, req.Data, req.Offset)
-		if err != nil {
-			logger.Warn("WRITE: cache write failed", "path", openFile.Path, "error", err)
-			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUnexpectedIOError}}, nil
-		}
-		logger.Debug("WRITE: cached successfully",
-			"path", openFile.Path,
-			"content_id", writeOp.ContentID,
-			"cache_size", bytesize.ByteSize(cache.Size(writeOp.ContentID)))
-	} else {
-		// Sync mode: write directly to content store via ContentService
-		err = contentSvc.WriteAt(authCtx.Context, tree.ShareName, writeOp.ContentID, req.Data, req.Offset)
-		if err != nil {
-			logger.Warn("WRITE: content write failed", "path", openFile.Path, "error", err)
-			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
-		}
+	err = contentSvc.WriteAt(authCtx.Context, tree.ShareName, writeOp.PayloadID, req.Data, req.Offset)
+	if err != nil {
+		logger.Warn("WRITE: content write failed", "path", openFile.Path, "error", err)
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
 	}
 
 	// ========================================================================
@@ -444,8 +426,8 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
 	}
 
-	// Update cached ContentID in OpenFile
-	openFile.ContentID = writeOp.ContentID
+	// Update cached PayloadID in OpenFile
+	openFile.PayloadID = writeOp.PayloadID
 
 	logger.Debug("WRITE successful",
 		"path", openFile.Path,

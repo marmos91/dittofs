@@ -9,9 +9,9 @@ DittoFS uses a flexible configuration system with support for YAML/TOML files an
   - [Logging](#1-logging)
   - [Telemetry](#2-telemetry-opentelemetry)
   - [Server Settings](#3-server-settings)
-  - [Metadata Configuration](#4-metadata-configuration)
-  - [Content Configuration](#5-content-configuration)
-  - [Cache Configuration](#6-cache-configuration)
+  - [Cache Configuration](#4-cache-configuration)
+  - [Metadata Configuration](#5-metadata-configuration)
+  - [Payload Configuration](#6-payload-configuration)
   - [Shares (Exports)](#7-shares-exports)
   - [User Management](#8-user-management)
   - [Protocol Adapters](#9-protocol-adapters)
@@ -129,32 +129,52 @@ server:
     burst: 10000
 ```
 
-### 4. Metadata Configuration
+### 4. Cache Configuration
+
+DittoFS uses a WAL-backed (Write-Ahead Log) cache for all file operations. The cache is mandatory for crash recovery and performance.
+
+```yaml
+cache:
+  # Directory path for the cache WAL file (required)
+  path: "/var/lib/dittofs/cache"
+  # Maximum cache size (supports human-readable formats: "1GB", "512MB", "10Gi")
+  size: "1Gi"
+```
+
+**Cache Features:**
+
+- **WAL Persistence**: All writes are logged to disk via mmap for crash recovery
+- **LRU Eviction**: Least-recently-used entries are evicted when cache is full
+- **Dirty Protection**: Entries with unflushed data cannot be evicted
+- **Chunk/Slice/Block Model**: Efficient storage model for large files
+
+**Configuration Options:**
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `path` | Yes | Directory for cache WAL file |
+| `size` | No | Maximum cache size (default: 1GB) |
+
+### 5. Metadata Configuration
 
 Define named metadata store instances that shares can reference:
 
 ```yaml
 metadata:
-  # Global settings that apply to all metadata stores
-  global:
-    # Filesystem capabilities and limits
-    filesystem_capabilities:
-      max_read_size: 1048576        # 1MB
-      preferred_read_size: 65536    # 64KB
-      max_write_size: 1048576       # 1MB
-      preferred_write_size: 65536   # 64KB
-      max_file_size: 9223372036854775807  # ~8EB
-      max_filename_len: 255
-      max_path_len: 4096
-      max_hard_link_count: 32767
-      supports_hard_links: true
-      supports_symlinks: true
-      case_sensitive: true
-      case_preserving: true
-
-    # DUMP operation restrictions
-    dump_restricted: false
-    dump_allowed_clients: []
+  # Filesystem capabilities and limits (applies to all stores)
+  filesystem_capabilities:
+    max_read_size: 1048576        # 1MB
+    preferred_read_size: 65536    # 64KB
+    max_write_size: 1048576       # 1MB
+    preferred_write_size: 65536   # 64KB
+    max_file_size: 9223372036854775807  # ~8EB
+    max_filename_len: 255
+    max_path_len: 4096
+    max_hard_link_count: 32767
+    supports_hard_links: true
+    supports_symlinks: true
+    case_sensitive: true
+    case_preserving: true
 
   # Named metadata store instances
   stores:
@@ -205,23 +225,19 @@ metadata:
 > - **BadgerDB**: Persistent embedded database - single-node deployments. File handles and metadata survive restarts.
 > - **PostgreSQL**: Persistent distributed database - multi-node deployments with horizontal scaling. Survives restarts and supports multiple DittoFS instances sharing the same metadata.
 
-### 5. Content Configuration
+### 6. Payload Configuration
 
-Define named content store instances that shares can reference:
+Define named payload store instances (block stores) that shares can reference for persistent storage:
 
 ```yaml
-content:
-  # Global settings that apply to all content stores
-  global:
-    # Future: cache settings, compression, encryption
-
-  # Named content store instances
+payload:
+  # Named payload store instances
   stores:
     # Local filesystem storage for fast access
     local-disk:
       type: filesystem
       filesystem:
-        path: /tmp/dittofs-content
+        base_path: /var/lib/dittofs/blocks
 
     # S3 storage for cloud-backed shares
     s3-production:
@@ -229,111 +245,72 @@ content:
       s3:
         region: us-east-1
         bucket: dittofs-production
-        key_prefix: ""
-        endpoint: ""
-        access_key_id: ""
-        secret_access_key: ""
-        part_size: 10485760  # 10MB
-        max_parallel_uploads: 4  # Concurrent part uploads
-        # Retry configuration for transient S3 errors (network, throttling, 5xx)
-        retry:
-          max_retries: 3           # Max retry attempts (default: 3)
-          initial_backoff: 100ms   # Initial backoff duration (default: 100ms)
-          max_backoff: 2s          # Max backoff duration (default: 2s)
-          backoff_multiplier: 2.0  # Exponential backoff multiplier (default: 2.0)
+        prefix: "blocks/"
+        endpoint: ""           # Optional, for S3-compatible services
+        access_key_id: ""      # Optional, uses AWS SDK default chain
+        secret_access_key: ""  # Optional, uses AWS SDK default chain
+        force_path_style: false  # true for Localstack/MinIO
+        max_retries: 3
 
-    # In-memory storage for caching/testing
-    memory-cache:
+    # In-memory storage for testing
+    memory-test:
       type: memory
-      memory: {}
+
+  # Transfer manager configuration (uploads/downloads to block store)
+  transfer:
+    workers:
+      uploads: 4      # Number of parallel upload workers
+      downloads: 4    # Number of parallel download workers
 ```
 
-> **S3 Path Design**: The S3 store uses path-based object keys (e.g., `export/docs/report.pdf`)
-> that mirror the filesystem structure. This enables easy bucket inspection and metadata
-> reconstruction for disaster recovery.
+> **Payload Stores**: Payload stores persist cache data to durable storage using the Chunk/Slice/Block model.
+> Each file is split into 64MB chunks, each chunk into slices, and slices into 4MB blocks.
 >
-> **S3 Production Features**: The S3 content store includes production-ready optimizations:
+> **S3 Production Features**:
 >
-> - **Range Reads**: Efficient partial reads using S3 byte-range requests (100x faster for small reads from large files)
-> - **Streaming Multipart Uploads**: Automatic multipart uploads for large files (98% memory reduction)
-> - **Stats Caching**: Intelligent caching reduces expensive S3 ListObjects calls by 99%+
-> - **Metrics Support**: Optional instrumentation for Prometheus/observability
-> - **Configurable Retry**: Automatic retry with exponential backoff for transient S3 errors (network issues, throttling, 5xx errors)
+> - **Range Reads**: Efficient partial reads using S3 byte-range requests
+> - **Configurable Retry**: Automatic retry with exponential backoff for transient S3 errors
+> - **Path-Based Keys**: Objects stored as `{prefix}{contentID}/chunk-{n}/block-{n}` for easy inspection
 
-### 6. Cache Configuration
+**Payload Store Types:**
 
-Define named cache instances that shares can reference for read/write buffering:
+| Type | Description | Use Case |
+|------|-------------|----------|
+| `memory` | In-memory storage (ephemeral) | Testing, development |
+| `filesystem` | Local filesystem storage | Single-server, local storage |
+| `s3` | AWS S3 or S3-compatible storage | Production, cloud deployments |
 
-```yaml
-cache:
-  # Named cache instances
-  stores:
-    # Memory cache for fast read/write buffering
-    fast-cache:
-      type: memory
-      memory:
-        max_size: "1Gi"  # Human-readable: 1 gibibyte
+**Filesystem Configuration:**
 
-      # Read prefetch configuration
-      prefetch:
-        enabled: true           # Enable read prefetch (default: true)
-        max_file_size: "100Mi"  # Skip prefetch for files larger than 100 mebibytes
-        chunk_size: "512Ki"     # Prefetch in 512 kibibyte chunks
+| Option | Required | Description |
+|--------|----------|-------------|
+| `base_path` | Yes | Root directory for block storage |
+| `create_dir` | No | Create directory if missing (default: true) |
+| `dir_mode` | No | Permission mode for directories (default: 0755) |
+| `file_mode` | No | Permission mode for files (default: 0644) |
 
-      # Background flusher configuration
-      flusher:
-        sweep_interval: 10s     # How often to check for finalization
-        flush_timeout: 30s      # Inactivity before finalizing writes
-```
+**S3 Configuration:**
 
-> **Unified Cache**: Each cache instance serves both reads and writes:
-> - **Writes** accumulate in cache (StateBuffering), then flush on COMMIT (StateUploading → StateCached)
-> - **Reads** check cache first, populate on miss
-> - **Dirty Protection**: Entries with unflushed data cannot be evicted
->
-> See [CACHE.md](CACHE.md) for detailed cache architecture documentation.
-
-**Human-Readable Size Formats:**
-
-Size fields support Kubernetes-style resource quantities for better readability:
-
-| Format | Meaning | Example |
-|--------|---------|---------|
-| Plain number | Bytes | `1073741824` |
-| `Ki`, `KiB` | Kibibytes (×1024) | `512Ki` = 524,288 bytes |
-| `Mi`, `MiB` | Mebibytes (×1024²) | `100Mi` = 104,857,600 bytes |
-| `Gi`, `GiB` | Gibibytes (×1024³) | `1Gi` = 1,073,741,824 bytes |
-| `Ti`, `TiB` | Tebibytes (×1024⁴) | `1Ti` = 1,099,511,627,776 bytes |
-| `K`, `KB` | Kilobytes (×1000) | `100K` = 100,000 bytes |
-| `M`, `MB` | Megabytes (×1000²) | `100M` = 100,000,000 bytes |
-| `G`, `GB` | Gigabytes (×1000³) | `1G` = 1,000,000,000 bytes |
-| `T`, `TB` | Terabytes (×1000⁴) | `1T` = 1,000,000,000,000 bytes |
-
-**Cache Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `type` | - | Cache type: `memory` or `filesystem` |
-| `memory.max_size` | `0` | Maximum cache size (e.g., `"1Gi"`, `"500Mi"`) |
-| `prefetch.enabled` | `true` | Enable/disable read prefetch |
-| `prefetch.max_file_size` | `100Mi` | Skip prefetch for files larger than this |
-| `prefetch.chunk_size` | `512Ki` | Size of each prefetch chunk |
-| `flusher.sweep_interval` | `10s` | How often to check for idle files |
-| `flusher.flush_timeout` | `30s` | Time since last write before finalizing |
+| Option | Required | Description |
+|--------|----------|-------------|
+| `bucket` | Yes | S3 bucket name |
+| `region` | No | AWS region (uses SDK default if empty) |
+| `endpoint` | No | S3 endpoint URL (for S3-compatible services) |
+| `prefix` | No | Key prefix for all blocks (default: "blocks/") |
+| `force_path_style` | No | Use path-style addressing (required for Localstack/MinIO) |
+| `max_retries` | No | Maximum retry attempts (default: 3) |
 
 ### 7. Shares (Exports)
 
-Each share explicitly references metadata and content stores by name. Multiple shares can reference the same store instances for resource sharing:
+Each share explicitly references metadata and payload stores by name. Multiple shares can reference the same store instances for resource sharing:
 
 ```yaml
 shares:
   # Fast local share using in-memory metadata and local disk
   - name: /fast
-    metadata_store: memory-fast    # References metadata.stores.memory-fast
-    content_store: local-disk      # References content.stores.local-disk
-    cache: fast-cache              # References cache.stores.fast-cache (optional)
+    metadata: memory-fast      # References metadata.stores.memory-fast
+    payload: local-disk        # References payload.stores.local-disk
     read_only: false
-    async: true
 
     # Access control
     allowed_clients: []
@@ -355,27 +332,23 @@ shares:
       anonymous_gid: 65534                    # nogroup
 
     # Root directory attributes
-    root_attr:
+    root_directory_attributes:
       mode: 0755
       uid: 0
       gid: 0
 
-  # Cloud-backed share with persistent metadata and caching
+  # Cloud-backed share with persistent metadata
   - name: /cloud
-    metadata_store: badger-main
-    content_store: s3-production
-    cache: fast-cache              # Cache for S3 performance
+    metadata: badger-main      # References metadata.stores.badger-main
+    payload: s3-production     # References payload.stores.s3-production
     read_only: false
-    async: false
     # ... (same access control options as above)
 
   # Archive share sharing metadata with /cloud
   - name: /archive
-    metadata_store: badger-main      # Shares metadata with /cloud
-    content_store: s3-archive        # Different content backend
-    # No cache - direct S3 access
+    metadata: badger-main      # Shares metadata with /cloud
+    payload: s3-archive        # Different payload backend
     read_only: false
-    async: false
     # ... (same access control options as above)
 ```
 
@@ -385,8 +358,7 @@ shares:
 - **Performance Tiering**: Different shares use different storage backends (memory, local disk, S3)
 - **Isolation**: Different shares can use completely separate stores for security boundaries
 - **Resource Efficiency**: Multiple shares can reference the same store instance (no duplication)
-- **Cache Sharing**: Multiple shares can share a cache (e.g., `/fast` and `/cloud` both use `fast-cache`)
-- **No Cache**: Shares without `cache` field operate in sync mode (direct writes, no read caching)
+- **Global Cache**: All shares use the single global cache configured in the top-level `cache:` section
 
 ### 8. User Management
 
@@ -719,9 +691,9 @@ export DITTOFS_TELEMETRY_SAMPLE_RATE=0.5
 # Server
 export DITTOFS_SERVER_SHUTDOWN_TIMEOUT=60s
 
-# Content store
-export DITTOFS_CONTENT_TYPE=filesystem
-export DITTOFS_CONTENT_FILESYSTEM_PATH=/data/dittofs
+# Cache
+export DITTOFS_CACHE_PATH=/var/lib/dittofs/cache
+export DITTOFS_CACHE_SIZE=2Gi
 
 # Server-level configuration
 export DITTOFS_SERVER_SHUTDOWN_TIMEOUT=60s
@@ -786,22 +758,26 @@ Single share with minimal settings:
 logging:
   level: INFO
 
+cache:
+  path: /tmp/dittofs-cache
+  size: "512MB"
+
 metadata:
   stores:
     default:
       type: memory
 
-content:
+payload:
   stores:
     default:
       type: filesystem
       filesystem:
-        path: /tmp/dittofs-content
+        base_path: /tmp/dittofs-blocks
 
 shares:
   - name: /export
-    metadata_store: default
-    content_store: default
+    metadata: default
+    payload: default
 
 adapters:
   nfs:
@@ -817,21 +793,24 @@ logging:
   level: DEBUG
   format: text
 
+cache:
+  path: /tmp/dittofs-dev-cache
+  size: "256MB"
+
 metadata:
   stores:
     dev-memory:
       type: memory
 
-content:
+payload:
   stores:
     dev-memory:
       type: memory
 
 shares:
   - name: /export
-    metadata_store: dev-memory
-    content_store: dev-memory
-    async: true
+    metadata: dev-memory
+    payload: dev-memory
     identity_mapping:
       map_all_to_anonymous: true
 
@@ -863,35 +842,33 @@ server:
     enabled: true
     port: 9090
 
+cache:
+  path: /var/lib/dittofs/cache
+  size: "4Gi"
+
 metadata:
-  global:
-    filesystem_capabilities:
-      max_read_size: 1048576
-      max_write_size: 1048576
-    dump_restricted: true
-    dump_allowed_clients:
-      - 127.0.0.1
-      - 10.0.0.0/8
+  filesystem_capabilities:
+    max_read_size: 1048576
+    max_write_size: 1048576
 
   stores:
     prod-badger:
       type: badger
       badger:
-        db_path: /var/lib/dittofs/metadata
+        path: /var/lib/dittofs/metadata
 
-content:
+payload:
   stores:
     prod-disk:
       type: filesystem
       filesystem:
-        path: /var/lib/dittofs/content
+        base_path: /var/lib/dittofs/blocks
 
 shares:
   - name: /export
-    metadata_store: prod-badger
-    content_store: prod-disk
+    metadata: prod-badger
+    payload: prod-disk
     read_only: false
-    async: false  # Synchronous writes for data safety
     allowed_clients:
       - 192.168.1.0/24
     denied_clients:
@@ -899,10 +876,11 @@ shares:
     identity_mapping:
       map_all_to_anonymous: false
       map_privileged_to_anonymous: true
-    root_attr:
+    root_directory_attributes:
       mode: 0755
       uid: 0
       gid: 0
+    dump_restricted: true
 
 adapters:
   nfs:
@@ -920,6 +898,10 @@ adapters:
 Different shares using different storage backends:
 
 ```yaml
+cache:
+  path: /var/lib/dittofs/cache
+  size: "2Gi"
+
 metadata:
   stores:
     fast-memory:
@@ -927,14 +909,14 @@ metadata:
     persistent-badger:
       type: badger
       badger:
-        db_path: /var/lib/dittofs/metadata
+        path: /var/lib/dittofs/metadata
 
-content:
+payload:
   stores:
     local-disk:
       type: filesystem
       filesystem:
-        path: /var/lib/dittofs/content
+        base_path: /var/lib/dittofs/blocks
     cloud-s3:
       type: s3
       s3:
@@ -944,24 +926,24 @@ content:
 shares:
   # Fast temporary share
   - name: /temp
-    metadata_store: fast-memory
-    content_store: local-disk
+    metadata: fast-memory
+    payload: local-disk
     read_only: false
     identity_mapping:
       map_all_to_anonymous: true
 
   # Cloud-backed persistent share
   - name: /cloud
-    metadata_store: persistent-badger
-    content_store: cloud-s3
+    metadata: persistent-badger
+    payload: cloud-s3
     read_only: false
     allowed_clients:
       - 10.0.1.0/24
 
   # Public read-only share
   - name: /public
-    metadata_store: persistent-badger
-    content_store: local-disk
+    metadata: persistent-badger
+    payload: local-disk
     read_only: true
     identity_mapping:
       map_all_to_anonymous: true
@@ -976,14 +958,18 @@ adapters:
 Multiple shares sharing the same metadata database:
 
 ```yaml
+cache:
+  path: /var/lib/dittofs/cache
+  size: "2Gi"
+
 metadata:
   stores:
     shared-badger:
       type: badger
       badger:
-        db_path: /var/lib/dittofs/shared-metadata
+        path: /var/lib/dittofs/shared-metadata
 
-content:
+payload:
   stores:
     s3-production:
       type: s3
@@ -999,14 +985,14 @@ content:
 shares:
   # Production share
   - name: /prod
-    metadata_store: shared-badger    # Shared metadata
-    content_store: s3-production
+    metadata: shared-badger    # Shared metadata
+    payload: s3-production
     read_only: false
 
   # Archive share (shares metadata with /prod)
   - name: /archive
-    metadata_store: shared-badger    # Same metadata store
-    content_store: s3-archive        # Different content backend
+    metadata: shared-badger    # Same metadata store
+    payload: s3-archive        # Different payload backend
     read_only: false
 
 adapters:

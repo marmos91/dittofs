@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: dittoserver-sample
 spec:
-  image: dittofs/dittofs:latest
+  image: marmos91c/dittofs:latest
   replicas: 1
   
   storage:

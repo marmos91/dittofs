@@ -31,12 +31,17 @@ func TestApplyDefaults_Server(t *testing.T) {
 	}
 }
 
-func TestApplyDefaults_Content(t *testing.T) {
+func TestApplyDefaults_Payload(t *testing.T) {
+	createDir := true
 	cfg := &Config{
-		Content: ContentConfig{
-			Stores: map[string]ContentStoreConfig{
+		Payload: PayloadConfig{
+			Stores: map[string]PayloadStoreConfig{
 				"default": {
 					Type: "filesystem",
+					Filesystem: &PayloadFSConfig{
+						BasePath:  "/test/blocks",
+						CreateDir: &createDir,
+					},
 				},
 			},
 		},
@@ -44,18 +49,26 @@ func TestApplyDefaults_Content(t *testing.T) {
 	ApplyDefaults(cfg)
 
 	// Check that stores map is initialized
-	if cfg.Content.Stores == nil {
-		t.Fatal("Expected Content.Stores to be initialized")
+	if cfg.Payload.Stores == nil {
+		t.Fatal("Expected Payload.Stores to be initialized")
 	}
 
 	// Check filesystem defaults for the default store
-	if store, ok := cfg.Content.Stores["default"]; ok {
+	if store, ok := cfg.Payload.Stores["default"]; ok {
 		if store.Filesystem == nil {
-			t.Fatal("Expected Filesystem map to be initialized")
+			t.Fatal("Expected Filesystem config to be preserved")
 		}
-		if path, ok := store.Filesystem["path"]; !ok || path != "/tmp/dittofs-content" {
-			t.Errorf("Expected default filesystem path '/tmp/dittofs-content', got %v", path)
+		if store.Filesystem.BasePath != "/test/blocks" {
+			t.Errorf("Expected filesystem base_path '/test/blocks', got %v", store.Filesystem.BasePath)
 		}
+	}
+
+	// Check transfer defaults
+	if cfg.Payload.Transfer.Workers.Uploads != 16 {
+		t.Errorf("Expected default uploads workers 16, got %d", cfg.Payload.Transfer.Workers.Uploads)
+	}
+	if cfg.Payload.Transfer.Workers.Downloads != 16 {
+		t.Errorf("Expected default downloads workers 16, got %d", cfg.Payload.Transfer.Workers.Downloads)
 	}
 }
 
@@ -164,6 +177,7 @@ func TestApplyDefaults_NFS(t *testing.T) {
 }
 
 func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
+	createDir := true
 	cfg := &Config{
 		Logging: LoggingConfig{
 			Level:  "DEBUG",
@@ -173,12 +187,13 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 		Server: ServerConfig{
 			ShutdownTimeout: 60 * time.Second,
 		},
-		Content: ContentConfig{
-			Stores: map[string]ContentStoreConfig{
+		Payload: PayloadConfig{
+			Stores: map[string]PayloadStoreConfig{
 				"custom": {
-					Type: "memory",
-					Filesystem: map[string]any{
-						"path": "/custom/path",
+					Type: "filesystem",
+					Filesystem: &PayloadFSConfig{
+						BasePath:  "/custom/path",
+						CreateDir: &createDir,
 					},
 				},
 			},
@@ -187,8 +202,8 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 			{
 				Name:           "/export",
 				DumpRestricted: true,
-				MetadataStore:  "default",
-				ContentStore:   "custom",
+				Metadata:       "default",
+				Payload:        "custom",
 			},
 		},
 	}
@@ -284,8 +299,8 @@ func TestGetDefaultConfig_HasRequiredFields(t *testing.T) {
 	if cfg.Logging.Level == "" {
 		t.Error("Default config missing logging level")
 	}
-	if len(cfg.Content.Stores) == 0 {
-		t.Error("Default config has no content stores")
+	if len(cfg.Payload.Stores) == 0 {
+		t.Error("Default config has no payload stores")
 	}
 	if len(cfg.Metadata.Stores) == 0 {
 		t.Error("Default config has no metadata stores")
@@ -295,5 +310,8 @@ func TestGetDefaultConfig_HasRequiredFields(t *testing.T) {
 	}
 	if cfg.Shares[0].Name == "" {
 		t.Error("Default config share has no name")
+	}
+	if cfg.Cache.Path == "" {
+		t.Error("Default config cache has no path")
 	}
 }

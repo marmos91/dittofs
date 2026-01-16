@@ -123,10 +123,10 @@ func checkMFsymlink(
 
 	// File has correct size - need to check content
 	// First try cache, then content store
-	content, err := readMFsymlinkContentForNFS(ctx, reg, share, file.ContentID)
+	content, err := readMFsymlinkContentForNFS(ctx, reg, share, file.PayloadID)
 	if err != nil {
 		logger.Debug("checkMFsymlink: failed to read content",
-			"contentID", file.ContentID,
+			"payloadID", file.PayloadID,
 			"error", err)
 		return MFsymlinkResult{IsMFsymlink: false}
 	}
@@ -140,7 +140,7 @@ func checkMFsymlink(
 	target, err := mfsymlink.Decode(content)
 	if err != nil {
 		logger.Debug("checkMFsymlink: invalid MFsymlink format",
-			"contentID", file.ContentID,
+			"payloadID", file.PayloadID,
 			"error", err)
 		return MFsymlinkResult{IsMFsymlink: false}
 	}
@@ -153,7 +153,7 @@ func checkMFsymlink(
 	modifiedAttr.Mode = modifiedAttr.Mode&^uint32(0777) | 0777
 
 	logger.Debug("checkMFsymlink: detected MFsymlink",
-		"contentID", file.ContentID,
+		"payloadID", file.PayloadID,
 		"target", target)
 
 	return MFsymlinkResult{
@@ -163,38 +163,25 @@ func checkMFsymlink(
 	}
 }
 
-// readMFsymlinkContentForNFS reads content from cache or content store via ContentService.
+// readMFsymlinkContentForNFS reads content from ContentService (uses Cache internally).
 func readMFsymlinkContentForNFS(
 	ctx context.Context,
 	reg *registry.Registry,
 	share string,
-	contentID metadata.ContentID,
+	payloadID metadata.PayloadID,
 ) ([]byte, error) {
-	if contentID == "" {
+	if payloadID == "" {
 		return nil, nil
 	}
 
-	// Use ContentService for reading content (handles cache automatically)
-	contentSvc := reg.GetContentService()
+	// Use ContentService.ReadAt (Cache handles caching automatically)
+	contentSvc := reg.GetBlockService()
 
-	reader, err := contentSvc.ReadContent(ctx, share, contentID)
+	data := make([]byte, mfsymlink.Size)
+	n, err := contentSvc.ReadAt(ctx, share, payloadID, data, 0)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = reader.Close() }()
 
-	data := make([]byte, mfsymlink.Size)
-	totalRead := 0
-	for totalRead < mfsymlink.Size {
-		n, err := reader.Read(data[totalRead:])
-		if err != nil {
-			if totalRead > 0 {
-				break
-			}
-			return nil, err
-		}
-		totalRead += n
-	}
-
-	return data[:totalRead], nil
+	return data[:n], nil
 }

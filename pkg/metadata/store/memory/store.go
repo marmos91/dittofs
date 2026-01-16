@@ -106,7 +106,7 @@ type deviceNumber struct {
 //   - Every file in 'files' has an entry in 'parents' (except root directories)
 //   - Every entry in 'children' corresponds to a valid file in 'files'
 //   - Every symlink in 'files' has an entry in 'symlinkTargets'
-//   - Every regular file in 'files' has an entry in 'contentIDs'
+//   - Every regular file in 'files' has an entry in 'payloadIDs'
 //   - Parent-child relationships are bidirectional (if A is parent of B, then B is in A's children)
 //
 // These invariants are maintained by all operations and can be verified by

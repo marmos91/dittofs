@@ -1,0 +1,50 @@
+# Dockerfile.goreleaser - Simplified Dockerfile for GoReleaser
+# GoReleaser builds the binary separately and copies it into this image
+
+FROM alpine:3.21
+
+# OCI Image Labels (additional labels added by GoReleaser via build_flag_templates)
+LABEL org.opencontainers.image.title="DittoFS" \
+      org.opencontainers.image.description="Modular virtual filesystem with pluggable storage backends" \
+      org.opencontainers.image.url="https://github.com/marmos91/dittofs" \
+      org.opencontainers.image.source="https://github.com/marmos91/dittofs" \
+      org.opencontainers.image.vendor="Marco Moschettini" \
+      org.opencontainers.image.licenses="MIT"
+
+# Install ca-certificates for HTTPS (S3, etc.) and create non-root user
+RUN apk add --no-cache ca-certificates tzdata && \
+    addgroup -g 65532 -S dittofs && \
+    adduser -u 65532 -S -G dittofs -h /app dittofs
+
+WORKDIR /app
+
+# Copy the pre-built binary from GoReleaser
+COPY dittofs /app/dittofs
+
+# Create data directories with proper permissions
+RUN mkdir -p /data/metadata /data/content /data/cache /config && \
+    chown -R 65532:65532 /app /data /config
+
+# Run as non-root user
+USER 65532:65532
+
+# Expose ports:
+# - 12049: NFS server (default)
+# - 12445: SMB server (default)
+# - 9090: Prometheus metrics
+# - 8080: REST API (health checks, management)
+EXPOSE 12049/tcp 12445/tcp 9090/tcp 8080/tcp
+
+# Volume mounts:
+# - /data/metadata: Metadata store (BadgerDB, etc.)
+# - /data/content: Content store for local filesystem backend
+# - /data/cache: Cache and WAL directory
+# - /config: Configuration file location
+VOLUME ["/data/metadata", "/data/content", "/data/cache", "/config"]
+
+# Health check using the REST API health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+
+ENTRYPOINT ["/app/dittofs"]
+CMD ["start", "--config", "/config/config.yaml"]

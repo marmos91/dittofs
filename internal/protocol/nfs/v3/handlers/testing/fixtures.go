@@ -6,14 +6,16 @@ package testing
 
 import (
 	"context"
-	"io"
 	"path/filepath"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
-	contentmemory "github.com/marmos91/dittofs/pkg/content/store/memory"
+	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	"github.com/marmos91/dittofs/pkg/payload"
+	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
+	"github.com/marmos91/dittofs/pkg/payload/transfer"
 	"github.com/marmos91/dittofs/pkg/registry"
 )
 
@@ -30,7 +32,7 @@ const DefaultGID = uint32(1000)
 //
 // It sets up:
 //   - A real memory metadata store (owned by MetadataService)
-//   - A real memory content store
+//   - A Cache for content (via ContentService)
 //   - A registry with a configured share
 //   - A Handler instance ready for testing
 //
@@ -48,8 +50,9 @@ type HandlerTestFixture struct {
 	// It owns the memory-backed metadata store.
 	MetadataService *metadata.MetadataService
 
-	// ContentStore is the memory-backed content store.
-	ContentStore *contentmemory.MemoryContentStore
+	// ContentService provides high-level content operations.
+	// It uses Cache for content storage.
+	ContentService *payload.PayloadService
 
 	// ShareName is the name of the test share.
 	ShareName string
@@ -62,7 +65,7 @@ type HandlerTestFixture struct {
 //
 // The fixture includes:
 //   - Memory metadata store with default capabilities
-//   - Memory content store
+//   - Cache for content (auto-created by registry)
 //   - A share named "/export"
 //   - Handler with the registry configured
 //
@@ -74,25 +77,30 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 
 	// Create stores
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	contentStore, err := contentmemory.NewMemoryContentStore(ctx)
+
+	// Create cache, block store, and transfer manager for content operations
+	testCache := cache.New(0) // 0 = unlimited size
+	blockStore := storemem.New()
+	transferMgr := transfer.New(testCache, blockStore, transfer.DefaultConfig())
+
+	// Create PayloadService with cache and transfer manager
+	payloadSvc, err := payload.New(testCache, transferMgr)
 	if err != nil {
-		t.Fatalf("Failed to create content store: %v", err)
+		t.Fatalf("Failed to create payload service: %v", err)
 	}
 
-	// Create registry and register stores
+	// Create registry and set up payload service
 	reg := registry.NewRegistry()
+	reg.SetPayloadService(payloadSvc)
+
 	if err := reg.RegisterMetadataStore("test-metaSvc", metaStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
-	}
-	if err := reg.RegisterContentStore("test-content", contentStore); err != nil {
-		t.Fatalf("Failed to register content store: %v", err)
 	}
 
 	// Add share
 	shareConfig := &registry.ShareConfig{
 		Name:          DefaultShareName,
 		MetadataStore: "test-metaSvc",
-		ContentStore:  "test-content",
 		RootAttr:      &metadata.FileAttr{}, // Empty attr, AddShare will apply defaults
 	}
 	if err := reg.AddShare(ctx, shareConfig); err != nil {
@@ -115,7 +123,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 		Handler:         handler,
 		Registry:        reg,
 		MetadataService: reg.GetMetadataService(),
-		ContentStore:    contentStore,
+		ContentService:  reg.GetBlockService(),
 		ShareName:       DefaultShareName,
 		RootHandle:      share.RootHandle,
 	}
@@ -258,9 +266,9 @@ func (f *HandlerTestFixture) CreateFile(path string, content []byte) metadata.Fi
 		f.t.Fatalf("Failed to create file %q: %v", path, err)
 	}
 
-	// Write content if provided
+	// Write content if provided (using ContentService with Cache)
 	if len(content) > 0 {
-		if err := f.ContentStore.WriteContent(ctx, file.ContentID, content); err != nil {
+		if err := f.ContentService.WriteAt(ctx, f.ShareName, file.PayloadID, content, 0); err != nil {
 			f.t.Fatalf("Failed to write content to file %q: %v", path, err)
 		}
 
@@ -376,22 +384,22 @@ func (f *HandlerTestFixture) ReadContent(path string) []byte {
 		f.t.Fatalf("File %q does not exist", path)
 	}
 
-	reader, err := f.ContentStore.ReadContent(context.Background(), file.ContentID)
+	ctx := context.Background()
+
+	// Get content size
+	size, err := f.ContentService.GetSize(ctx, f.ShareName, file.PayloadID)
+	if err != nil {
+		f.t.Fatalf("Failed to get content size for %q: %v", path, err)
+	}
+
+	// Read content using ContentService (backed by Cache)
+	content := make([]byte, size)
+	n, err := f.ContentService.ReadAt(ctx, f.ShareName, file.PayloadID, content, 0)
 	if err != nil {
 		f.t.Fatalf("Failed to read content from %q: %v", path, err)
 	}
-	defer func() {
-		if closeErr := reader.Close(); closeErr != nil {
-			f.t.Errorf("Failed to close reader for %q: %v", path, closeErr)
-		}
-	}()
 
-	content, err := io.ReadAll(reader)
-	if err != nil {
-		f.t.Fatalf("Failed to read content from %q: %v", path, err)
-	}
-
-	return content
+	return content[:n]
 }
 
 // authContext creates a metadata.AuthContext for store operations.

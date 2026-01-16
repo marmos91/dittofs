@@ -144,9 +144,9 @@ func (s *PostgresMetadataStore) PutFilesystemMeta(ctx context.Context, shareName
 // Content ID Operations
 // ============================================================================
 
-// GetFileByContentID retrieves a file by its content ID (used by cache flusher)
-func (s *PostgresMetadataStore) GetFileByContentID(ctx context.Context, contentID metadata.ContentID) (*metadata.File, error) {
-	if contentID == "" {
+// GetFileByPayloadID retrieves a file by its content ID (used by cache flusher)
+func (s *PostgresMetadataStore) GetFileByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (*metadata.File, error) {
+	if payloadID == "" {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrInvalidArgument,
 			Message: "content ID cannot be empty",
@@ -166,10 +166,10 @@ func (s *PostgresMetadataStore) GetFileByContentID(ctx context.Context, contentI
 		LIMIT 1
 	`
 
-	row := s.pool.QueryRow(ctx, query, string(contentID))
+	row := s.pool.QueryRow(ctx, query, string(payloadID))
 	file, err := fileRowToFileWithNlink(row)
 	if err != nil {
-		return nil, mapPgError(err, "GetFileByContentID", string(contentID))
+		return nil, mapPgError(err, "GetFileByPayloadID", string(payloadID))
 	}
 
 	return file, nil

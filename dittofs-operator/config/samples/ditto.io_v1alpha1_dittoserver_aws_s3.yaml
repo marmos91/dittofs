@@ -11,7 +11,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: dittoserver-aws-s3
 spec:
-  image: <IMG>
+  image: marmos91c/dittofs:latest
   replicas: 1
   
   storage:

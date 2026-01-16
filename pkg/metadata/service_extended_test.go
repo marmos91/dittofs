@@ -609,7 +609,7 @@ func TestMetadataService_ReadDirectory_Extended(t *testing.T) {
 		require.NoError(t, err)
 
 		// Read it (token="" for first page, maxBytes large enough)
-		page, err := fx.service.ReadDirectory(fx.rootContext(), dirHandle, "", 65536)
+		page, err := fx.service.ReadDirectory(fx.rootContext(), dirHandle, 0, 65536)
 
 		require.NoError(t, err)
 		assert.Empty(t, page.Entries)
@@ -637,7 +637,7 @@ func TestMetadataService_ReadDirectory_Extended(t *testing.T) {
 		}
 
 		// Read directory
-		page, err := fx.service.ReadDirectory(fx.rootContext(), dirHandle, "", 65536)
+		page, err := fx.service.ReadDirectory(fx.rootContext(), dirHandle, 0, 65536)
 
 		require.NoError(t, err)
 		assert.Len(t, page.Entries, 5)
@@ -665,7 +665,7 @@ func TestMetadataService_ReadDirectory_Extended(t *testing.T) {
 		}
 
 		// Read all entries
-		page, err := fx.service.ReadDirectory(fx.rootContext(), dirHandle, "", 65536)
+		page, err := fx.service.ReadDirectory(fx.rootContext(), dirHandle, 0, 65536)
 		require.NoError(t, err)
 		assert.Len(t, page.Entries, 10)
 	})

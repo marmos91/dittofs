@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/name: dittofs-operator
     app.kubernetes.io/managed-by: kubectl
 spec:
-  image: dittofs:latest
+  image: marmos91c/dittofs:latest
   replicas: 1
   
   storage:

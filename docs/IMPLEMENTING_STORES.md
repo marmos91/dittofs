@@ -18,7 +18,7 @@ This guide provides comprehensive instructions for implementing custom metadata 
 
 DittoFS uses a **Service-oriented architecture** with three distinct layers:
 
-- **Services** (`MetadataService`, `ContentService`): Business logic, coordination, caching
+- **Services** (`MetadataService`, `BlockService`): Business logic, coordination, caching
 - **Metadata Stores**: Simple CRUD operations for file/directory structure, attributes, permissions
 - **Content Stores**: Simple CRUD operations for actual file data (bytes)
 
@@ -102,15 +102,15 @@ Protocol Handler → Service → Store
                    Cache
 ```
 
-**Write Flow** (handled by `ContentService`):
-1. Protocol handler calls `ContentService.WriteAt(shareName, contentID, data, offset)`
-2. ContentService checks if cache is configured for this share
+**Write Flow** (handled by `BlockService`):
+1. Protocol handler calls `BlockService.WriteAt(shareName, contentID, data, offset)`
+2. BlockService checks if cache is configured for this share
 3. If cached: writes to cache, marks dirty for later flush
 4. If not cached: writes directly to store
 
-**Read Flow** (handled by `ContentService`):
-1. Protocol handler calls `ContentService.ReadAt(shareName, contentID, offset, size)`
-2. ContentService checks cache first (if configured)
+**Read Flow** (handled by `BlockService`):
+1. Protocol handler calls `BlockService.ReadAt(shareName, contentID, offset, size)`
+2. BlockService checks cache first (if configured)
 3. On cache hit: returns cached data
 4. On cache miss: reads from store, optionally caches result
 
@@ -709,7 +709,7 @@ import (
     "io"
     "sync"
 
-    "github.com/marmos91/dittofs/pkg/content"
+    "github.com/marmos91/dittofs/pkg/blocks"
     "github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -1002,7 +1002,7 @@ func (s *MyContentStore) ReadAt(
 
 #### IncrementalWriteStore (For Large Files)
 
-This is complex and primarily needed for S3-like stores with multipart upload. See `pkg/content/store/s3/s3_incremental.go` for a complete implementation example.
+This is complex and primarily needed for S3-like stores with multipart upload. See `pkg/blocks/store/s3/s3_incremental.go` for a complete implementation example.
 
 **Key Concepts**:
 - Part-based uploads (5MB+ parts)
@@ -1343,7 +1343,7 @@ package mystore_test
 import (
     "testing"
 
-    "github.com/marmos91/dittofs/pkg/content/store/testing"
+    "github.com/marmos91/dittofs/pkg/blocks/store/testing"
     "github.com/yourorg/dittofs-mystore"
 )
 
@@ -1710,12 +1710,12 @@ By following this guide, you can create production-ready store implementations t
 
 ## Additional Resources
 
-- **Interface Definitions**: `pkg/metadata/store.go`, `pkg/content/store.go`
+- **Interface Definitions**: `pkg/metadata/store.go`, `pkg/blocks/store.go`
 - **Reference Implementations**:
-  - Memory: `pkg/metadata/store/memory/`, `pkg/content/store/memory/`
+  - Memory: `pkg/metadata/store/memory/`, `pkg/blocks/store/memory/`
   - BadgerDB: `pkg/metadata/store/badger/`
-  - S3: `pkg/content/store/s3/`
-- **Test Suites**: `pkg/content/store/testing/`
+  - S3: `pkg/blocks/store/s3/`
+- **Test Suites**: `pkg/blocks/store/testing/`
 - **Architecture**: `docs/ARCHITECTURE.md`
 - **Configuration**: `docs/CONFIGURATION.md`
 - **Contributing**: `docs/CONTRIBUTING.md`

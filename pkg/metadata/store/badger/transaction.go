@@ -987,7 +987,7 @@ func (tx *badgerTransaction) GetFilesystemStatistics(ctx context.Context, handle
 // Transaction Files Operations (additional)
 // ============================================================================
 
-func (tx *badgerTransaction) GetFileByContentID(ctx context.Context, contentID metadata.ContentID) (*metadata.File, error) {
+func (tx *badgerTransaction) GetFileByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (*metadata.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -1011,7 +1011,7 @@ func (tx *badgerTransaction) GetFileByContentID(ctx context.Context, contentID m
 				return nil // Skip corrupted entries
 			}
 
-			if file.ContentID == contentID {
+			if file.PayloadID == payloadID {
 				result = file
 				return errFound
 			}

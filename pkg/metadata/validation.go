@@ -23,6 +23,11 @@ type DirEntry struct {
 	// Does not include the parent path
 	Name string
 
+	// Cookie is the NFS/SMB pagination cookie for this entry
+	// Used to resume directory listing from this position
+	// Set by MetadataService.ReadDirectory, not by store implementations
+	Cookie uint64
+
 	// Handle is the file handle for this entry
 	// This avoids expensive Lookup() calls in READDIRPLUS
 	// Implementations MUST populate this field for performance
@@ -54,9 +59,9 @@ func BoolPtr(v bool) *bool { return &v }
 // Content ID Helpers
 // ============================================================================
 
-// BuildContentID constructs a ContentID from share name and full path.
+// BuildPayloadID constructs a PayloadID from share name and full path.
 //
-// This creates a path-based ContentID suitable for S3 storage that:
+// This creates a path-based PayloadID suitable for S3 storage that:
 //   - Removes leading "/" from both shareName and path
 //   - Results in keys like "export/docs/report.pdf"
 //
@@ -70,12 +75,12 @@ func BoolPtr(v bool) *bool { return &v }
 //   - fullPath: Full path with leading "/" (e.g., "/docs/report.pdf")
 //
 // Returns:
-//   - string: ContentID in format "shareName/path" (e.g., "export/docs/report.pdf")
+//   - string: PayloadID in format "shareName/path" (e.g., "export/docs/report.pdf")
 //
 // Examples:
-//   - BuildContentID("/export", "/file.txt") -> "export/file.txt"
-//   - BuildContentID("/export", "/docs/report.pdf") -> "export/docs/report.pdf"
-func BuildContentID(shareName, fullPath string) string {
+//   - BuildPayloadID("/export", "/file.txt") -> "export/file.txt"
+//   - BuildPayloadID("/export", "/docs/report.pdf") -> "export/docs/report.pdf"
+func BuildPayloadID(shareName, fullPath string) string {
 	// Remove leading "/" from shareName
 	share := shareName
 	if len(share) > 0 && share[0] == '/' {

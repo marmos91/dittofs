@@ -15,7 +15,6 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
-	memorycontent "github.com/marmos91/dittofs/pkg/content/store/memory"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -54,12 +53,8 @@ func TestLinuxSMBMount(t *testing.T) {
 
 	// Create stores
 	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
-	contentStore, err := memorycontent.NewMemoryContentStore(ctx)
-	if err != nil {
-		t.Fatalf("Failed to create content store: %v", err)
-	}
 
-	// Create registry
+	// Create registry (auto-creates global cache for content storage)
 	reg := registry.NewRegistry()
 
 	// Create test user with authentication
@@ -81,19 +76,15 @@ func TestLinuxSMBMount(t *testing.T) {
 	}
 	reg.SetUserStore(userStore)
 
-	// Register stores
+	// Register metadata store
 	if err := reg.RegisterMetadataStore("test-metadata", metaStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}
-	if err := reg.RegisterContentStore("test-content", contentStore); err != nil {
-		t.Fatalf("Failed to register content store: %v", err)
-	}
 
-	// Create share
+	// Create share (no content store needed - Registry auto-creates cache)
 	shareConfig := &registry.ShareConfig{
 		Name:              "/export",
 		MetadataStore:     "test-metadata",
-		ContentStore:      "test-content",
 		ReadOnly:          false,
 		AllowGuest:        false, // Require authentication
 		DefaultPermission: string(identity.PermissionReadWrite),

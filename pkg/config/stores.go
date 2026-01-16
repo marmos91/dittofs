@@ -3,45 +3,33 @@ package config
 import (
 	"context"
 	"fmt"
-	"time"
+	"os"
 
-	"github.com/marmos91/dittofs/pkg/bytesize"
 	"github.com/marmos91/dittofs/pkg/cache"
-	cachememory "github.com/marmos91/dittofs/pkg/cache/memory"
-	"github.com/marmos91/dittofs/pkg/content"
-	contentfs "github.com/marmos91/dittofs/pkg/content/store/fs"
-	contentmemory "github.com/marmos91/dittofs/pkg/content/store/memory"
-	"github.com/marmos91/dittofs/pkg/content/store/s3"
+	"github.com/marmos91/dittofs/pkg/cache/wal"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
-	promMetrics "github.com/marmos91/dittofs/pkg/metrics/prometheus"
+	"github.com/marmos91/dittofs/pkg/payload/store"
+	blockfs "github.com/marmos91/dittofs/pkg/payload/store/fs"
+	blockmemory "github.com/marmos91/dittofs/pkg/payload/store/memory"
+	blocks3 "github.com/marmos91/dittofs/pkg/payload/store/s3"
+	"github.com/marmos91/dittofs/pkg/payload/transfer"
 	"github.com/mitchellh/mapstructure"
 )
 
-// s3RetryConfig represents retry configuration for S3 operations.
-type s3RetryConfig struct {
-	MaxRetries        uint    `mapstructure:"max_retries"`        // Max retry attempts (default: 3)
-	InitialBackoff    string  `mapstructure:"initial_backoff"`    // Initial backoff duration (default: 100ms)
-	MaxBackoff        string  `mapstructure:"max_backoff"`        // Max backoff duration (default: 2s)
-	BackoffMultiplier float64 `mapstructure:"backoff_multiplier"` // Backoff multiplier (default: 2.0)
-}
-
-// s3Config represents S3 configuration loaded from YAML files.
-type s3Config struct {
-	Endpoint           string            `mapstructure:"endpoint"`
-	Region             string            `mapstructure:"region"`
-	Bucket             string            `mapstructure:"bucket"`
-	AccessKeyID        string            `mapstructure:"access_key_id"`
-	SecretAccessKey    string            `mapstructure:"secret_access_key"`
-	KeyPrefix          string            `mapstructure:"key_prefix"`
-	ForcePathStyle     bool              `mapstructure:"force_path_style"`
-	PartSize           bytesize.ByteSize `mapstructure:"part_size"` // S3 multipart upload part size (e.g., "5Mi", "16Mi")
-	MaxParallelUploads uint              `mapstructure:"max_parallel_uploads"`
-
-	// Retry configuration for transient S3 errors
-	Retry s3RetryConfig `mapstructure:"retry"`
+// CreateCache creates a WAL-backed cache instance from configuration.
+// WAL is mandatory for crash recovery - all writes go through the WAL cache.
+func CreateCache(cfg CacheConfig) (*cache.Cache, error) {
+	if cfg.Path == "" {
+		return nil, fmt.Errorf("cache path is required (cache.path)")
+	}
+	persister, err := wal.NewMmapPersister(cfg.Path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create WAL persister: %w", err)
+	}
+	return cache.NewWithWal(uint64(cfg.Size), persister)
 }
 
 // createMetadataStore creates a single metadata store instance.
@@ -139,182 +127,73 @@ func createPostgresMetadataStore(
 	return store, nil
 }
 
-// createContentStore creates a single content store instance.
-func createContentStore(
-	ctx context.Context,
-	cfg ContentStoreConfig,
-) (content.ContentStore, error) {
+// CreateBlockStore creates a block store instance from configuration.
+func CreateBlockStore(ctx context.Context, cfg PayloadStoreConfig) (store.BlockStore, error) {
 	switch cfg.Type {
-	case "filesystem":
-		return createFilesystemContentStore(ctx, cfg)
 	case "memory":
-		return createMemoryContentStore(ctx, cfg)
+		return blockmemory.New(), nil
 	case "s3":
-		return createS3ContentStore(ctx, cfg)
-	default:
-		return nil, fmt.Errorf("unknown content store type: %q", cfg.Type)
-	}
-}
-
-// createFilesystemContentStore creates a filesystem-backed content store.
-func createFilesystemContentStore(
-	ctx context.Context,
-	cfg ContentStoreConfig,
-) (content.ContentStore, error) {
-	// Decode filesystem-specific configuration to get the path
-	var fsCfg struct {
-		Path string `mapstructure:"path"`
-	}
-	if err := mapstructure.Decode(cfg.Filesystem, &fsCfg); err != nil {
-		return nil, fmt.Errorf("invalid filesystem config: %w", err)
-	}
-
-	if fsCfg.Path == "" {
-		return nil, fmt.Errorf("filesystem path is required")
-	}
-
-	// Create filesystem store
-	store, err := contentfs.NewFSContentStore(ctx, fsCfg.Path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize filesystem store: %w", err)
-	}
-
-	return store, nil
-}
-
-// createMemoryContentStore creates an in-memory content store.
-func createMemoryContentStore(
-	ctx context.Context,
-	cfg ContentStoreConfig,
-) (content.ContentStore, error) {
-	// Decode memory-specific configuration
-	var memCfg struct {
-		MaxSizeBytes bytesize.ByteSize `mapstructure:"max_size_bytes"` // Maximum store size (e.g., "1Gi", "500Mi")
-	}
-	if err := mapstructure.Decode(cfg.Memory, &memCfg); err != nil {
-		return nil, fmt.Errorf("invalid memory config: %w", err)
-	}
-
-	// Create memory store (currently doesn't support size limit configuration)
-	store, err := contentmemory.NewMemoryContentStore(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create memory content store: %w", err)
-	}
-
-	return store, nil
-}
-
-// createS3ContentStore creates an S3-backed content store.
-func createS3ContentStore(
-	ctx context.Context,
-	cfg ContentStoreConfig,
-) (content.ContentStore, error) {
-	// Decode S3 configuration from YAML
-	var yamlCfg s3Config
-	if err := mapstructure.Decode(cfg.S3, &yamlCfg); err != nil {
-		return nil, fmt.Errorf("invalid S3 config: %w", err)
-	}
-
-	// Validate required fields
-	if yamlCfg.Bucket == "" {
-		return nil, fmt.Errorf("S3 bucket is required")
-	}
-	if yamlCfg.Region == "" {
-		return nil, fmt.Errorf("S3 region is required")
-	}
-
-	// Create S3 client using helper function
-	client, err := s3.NewS3ClientFromConfig(
-		ctx,
-		yamlCfg.Endpoint,
-		yamlCfg.Region,
-		yamlCfg.AccessKeyID,
-		yamlCfg.SecretAccessKey,
-		yamlCfg.ForcePathStyle,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create S3 client: %w", err)
-	}
-
-	// Parse retry configuration durations
-	var initialBackoff, maxBackoff time.Duration
-	if yamlCfg.Retry.InitialBackoff != "" {
-		initialBackoff, err = time.ParseDuration(yamlCfg.Retry.InitialBackoff)
-		if err != nil {
-			return nil, fmt.Errorf("invalid retry.initial_backoff duration: %w", err)
+		if cfg.S3 == nil {
+			return nil, fmt.Errorf("S3 block store requires s3 configuration")
 		}
-	}
-	if yamlCfg.Retry.MaxBackoff != "" {
-		maxBackoff, err = time.ParseDuration(yamlCfg.Retry.MaxBackoff)
-		if err != nil {
-			return nil, fmt.Errorf("invalid retry.max_backoff duration: %w", err)
-		}
-	}
-
-	// Build S3ContentStoreConfig
-	s3Cfg := s3.S3ContentStoreConfig{
-		Client:                  client,
-		Bucket:                  yamlCfg.Bucket,
-		KeyPrefix:               yamlCfg.KeyPrefix,
-		PartSize:                yamlCfg.PartSize.Uint64(),
-		MaxParallelUploads:      yamlCfg.MaxParallelUploads,
-		Metrics:                 promMetrics.NewS3Metrics(), // Enable S3 metrics collection
-		BufferedDeletionEnabled: true,                       // Enable async deletion for better performance
-
-		// Retry configuration
-		MaxRetries:        yamlCfg.Retry.MaxRetries,
-		InitialBackoff:    initialBackoff,
-		MaxBackoff:        maxBackoff,
-		BackoffMultiplier: yamlCfg.Retry.BackoffMultiplier,
-	}
-
-	// Create S3 store
-	store, err := s3.NewS3ContentStore(ctx, s3Cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize S3 store: %w", err)
-	}
-
-	return store, nil
-}
-
-// ============================================================================
-// Cache Creation Functions
-// ============================================================================
-
-// memoryCacheYAMLConfig represents memory cache configuration loaded from YAML files.
-type memoryCacheYAMLConfig struct {
-	MaxSize bytesize.ByteSize `mapstructure:"max_size"` // Maximum cache size (e.g., "100Mi", "1Gi")
-}
-
-// createCache creates a single cache instance.
-func createCache(ctx context.Context, cfg CacheStoreConfig) (cache.Cache, error) {
-	switch cfg.Type {
-	case "memory":
-		return createMemoryCache(ctx, cfg)
+		return createS3BlockStore(ctx, cfg.S3)
 	case "filesystem":
-		// TODO: Implement filesystem cache
-		return nil, fmt.Errorf("filesystem cache not yet implemented")
+		if cfg.Filesystem == nil {
+			return nil, fmt.Errorf("filesystem block store requires filesystem configuration")
+		}
+		return createFSBlockStore(ctx, cfg.Filesystem)
 	default:
-		return nil, fmt.Errorf("unknown cache type: %q", cfg.Type)
+		return nil, fmt.Errorf("unknown block store type: %q", cfg.Type)
 	}
 }
 
-// createMemoryCache creates an in-memory cache.
-func createMemoryCache(ctx context.Context, cfg CacheStoreConfig) (cache.Cache, error) {
-	// Decode memory-specific configuration
-	var yamlCfg memoryCacheYAMLConfig
-	if err := mapstructure.Decode(cfg.Memory, &yamlCfg); err != nil {
-		return nil, fmt.Errorf("failed to decode memory cache config: %w", err)
+// createS3BlockStore creates an S3-backed block store.
+func createS3BlockStore(ctx context.Context, cfg *PayloadS3Config) (store.BlockStore, error) {
+	if cfg.Bucket == "" {
+		return nil, fmt.Errorf("S3 block store requires bucket to be set")
 	}
 
-	// Apply defaults
-	maxSize := yamlCfg.MaxSize.Uint64()
-	if maxSize == 0 {
-		maxSize = 100 * 1024 * 1024 // Default: 100MB
+	s3Cfg := blocks3.Config{
+		Bucket:         cfg.Bucket,
+		Region:         cfg.Region,
+		Endpoint:       cfg.Endpoint,
+		AccessKey:      cfg.AccessKeyID,
+		SecretKey:      cfg.SecretAccessKey,
+		KeyPrefix:      cfg.Prefix,
+		MaxRetries:     cfg.MaxRetries,
+		ForcePathStyle: cfg.ForcePathStyle,
 	}
 
-	// Create memory cache with metrics collection enabled
-	cache := cachememory.NewMemoryCache(maxSize, promMetrics.NewCacheMetrics())
+	return blocks3.NewFromConfig(ctx, s3Cfg)
+}
 
-	return cache, nil
+// createFSBlockStore creates a filesystem-backed block store.
+func createFSBlockStore(_ context.Context, cfg *PayloadFSConfig) (store.BlockStore, error) {
+	if cfg.BasePath == "" {
+		return nil, fmt.Errorf("filesystem block store requires base_path to be set")
+	}
+
+	// Build config - fs.New() applies defaults for zero values
+	createDir := true
+	if cfg.CreateDir != nil {
+		createDir = *cfg.CreateDir
+	}
+	fsCfg := blockfs.Config{
+		BasePath:  cfg.BasePath,
+		CreateDir: createDir,
+		DirMode:   os.FileMode(cfg.DirMode),
+		FileMode:  os.FileMode(cfg.FileMode),
+	}
+
+	return blockfs.New(fsCfg)
+}
+
+// CreateTransferManager creates a transfer manager instance from configuration.
+func CreateTransferManager(c *cache.Cache, blockStore store.BlockStore, cfg TransferConfig) *transfer.TransferManager {
+	tmCfg := transfer.Config{
+		ParallelUploads:   cfg.Workers.Uploads,
+		ParallelDownloads: cfg.Workers.Downloads,
+	}
+
+	return transfer.New(c, blockStore, tmCfg)
 }
