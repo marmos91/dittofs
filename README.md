@@ -124,7 +124,53 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#cli-management-commands) for a
 
 ### Run with Docker
 
-To run DittoFS with Docker, ensure first to have the config file `~/.config/dittofs/config.yaml` to let docker compose mount it in the container:
+#### Using Pre-built Images (Recommended)
+
+Pre-built multi-architecture images (`linux/amd64`, `linux/arm64`) are available on Docker Hub:
+
+```bash
+# Pull the latest image
+docker pull marmos91c/dittofs:latest
+
+# Initialize a config file first
+mkdir -p ~/.config/dittofs
+docker run --rm -v ~/.config/dittofs:/config marmos91c/dittofs:latest init --config /config/config.yaml
+
+# Run DittoFS
+docker run -d \
+  --name dittofs \
+  -p 12049:12049 \
+  -p 12445:12445 \
+  -p 8080:8080 \
+  -p 9090:9090 \
+  -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
+  -v dittofs-metadata:/data/metadata \
+  -v dittofs-content:/data/content \
+  -v dittofs-cache:/data/cache \
+  marmos91c/dittofs:latest
+
+# Check health
+curl http://localhost:8080/health
+
+# View logs
+docker logs -f dittofs
+```
+
+**Available Tags:**
+- `marmos91c/dittofs:latest` - Latest stable release
+- `marmos91c/dittofs:vX.Y.Z` - Specific version
+- `marmos91c/dittofs:vX.Y` - Latest patch for a minor version
+- `marmos91c/dittofs:vX` - Latest minor for a major version
+
+**Ports:**
+- `12049`: NFS server
+- `12445`: SMB server
+- `8080`: REST API (health checks, management)
+- `9090`: Prometheus metrics
+
+#### Using Docker Compose
+
+For more complex setups with different backends:
 
 ```bash
 # Start with local filesystem backend (default)
@@ -148,11 +194,7 @@ docker compose logs -f dittofs
 **Monitoring:**
 For Prometheus and Grafana monitoring stack, see [`monitoring/README.md`](monitoring/README.md).
 
-**Docker Images:**
-- **Production** (`Dockerfile`): Uses Google's distroless image for minimal attack surface
-- **Debug** (`Dockerfile.debug`): Includes shell and debugging tools when needed
-
-> 💡 **Tip**: Make sure your `config.yaml` matches the backend you're using:
+> **Tip**: Make sure your `config.yaml` matches the backend you're using:
 > - Default profile expects BadgerDB metadata + filesystem content
 > - `--profile s3-backend` expects BadgerDB metadata + S3 content
 > - `--profile postgres-backend` expects PostgreSQL metadata + filesystem content

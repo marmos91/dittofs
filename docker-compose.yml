@@ -6,15 +6,25 @@ services:
     container_name: dittofs-server
     image: dittofs:latest
     ports:
-      - "2049:2049/tcp"
+      - "12049:12049/tcp"
+      - "12445:12445/tcp"
       - "9090:9090/tcp"
+      - "8080:8080/tcp"
     volumes:
       - ~/.config/dittofs/config.yaml:/config/config.yaml:ro
       - dittofs-metadata:/data/metadata
       - dittofs-content:/data/content
+      - dittofs-cache:/data/cache
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     restart: unless-stopped
     profiles:
       - default
+
   dittofs-s3:
     build:
       context: .
@@ -22,16 +32,26 @@ services:
     container_name: dittofs-s3-server
     image: dittofs:latest
     ports:
-      - "2049:2049/tcp"
+      - "12049:12049/tcp"
+      - "12445:12445/tcp"
       - "9090:9090/tcp"
+      - "8080:8080/tcp"
     volumes:
       - ~/.config/dittofs/config.yaml:/config/config.yaml:ro
       - dittofs-metadata:/data/metadata
+      - dittofs-cache:/data/cache
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     depends_on:
       - localstack
     restart: unless-stopped
     profiles:
       - s3-backend
+
   localstack:
     image: localstack/localstack:latest
     container_name: dittofs-localstack
@@ -45,6 +65,7 @@ services:
       - localstack-data:/tmp/localstack
     profiles:
       - s3-backend
+
   dittofs-postgres:
     build:
       context: .
@@ -53,16 +74,26 @@ services:
     image: dittofs-postgres:latest
     ports:
       - "12049:12049/tcp"
+      - "12445:12445/tcp"
       - "9090:9090/tcp"
+      - "8080:8080/tcp"
     volumes:
       - ~/.config/dittofs/config.yaml:/config/config.yaml:ro
       - dittofs-content:/data/content
+      - dittofs-cache:/data/cache
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
     profiles:
       - postgres-backend
+
   postgres:
     image: postgres:16-alpine
     container_name: dittofs-postgres
@@ -81,12 +112,16 @@ services:
       retries: 5
     profiles:
       - postgres-backend
+
 volumes:
   # Metadata store (for BadgerDB backend)
   dittofs-metadata:
     driver: local
   # Content store (for local filesystem backend)
   dittofs-content:
+    driver: local
+  # Cache and WAL directory
+  dittofs-cache:
     driver: local
   # S3 storage (for S3 backend)
   localstack-data:

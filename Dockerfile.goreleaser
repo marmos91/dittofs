@@ -1,39 +1,9 @@
-# DittoFS Production Dockerfile
-# Multi-stage build for minimal, secure production image
+# Dockerfile.goreleaser - Simplified Dockerfile for GoReleaser
+# GoReleaser builds the binary separately and copies it into this image
 
-# Build stage
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
-
-# Build arguments for cross-compilation
-ARG TARGETOS
-ARG TARGETARCH
-
-# Build arguments for version info (injected by GoReleaser or CI)
-ARG VERSION=dev
-ARG COMMIT=unknown
-ARG BUILD_DATE=unknown
-
-RUN apk add --no-cache git ca-certificates tzdata
-
-WORKDIR /build
-
-# Copy dependency files first for better layer caching
-COPY go.mod go.sum ./
-RUN go mod download
-
-# Copy source code
-COPY . .
-
-# Build the binary with version info
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
-    -ldflags="-w -s -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${BUILD_DATE}" \
-    -o dittofs \
-    cmd/dittofs/main.go
-
-# Runtime stage - using Alpine for healthcheck support via wget
 FROM alpine:3.21
 
-# OCI Image Labels
+# OCI Image Labels (additional labels added by GoReleaser via build_flag_templates)
 LABEL org.opencontainers.image.title="DittoFS" \
       org.opencontainers.image.description="Modular virtual filesystem with pluggable storage backends" \
       org.opencontainers.image.url="https://github.com/marmos91/dittofs" \
@@ -48,12 +18,12 @@ RUN apk add --no-cache ca-certificates tzdata && \
 
 WORKDIR /app
 
-# Copy the binary from builder
-COPY --from=builder --chown=65532:65532 /build/dittofs /app/dittofs
+# Copy the pre-built binary from GoReleaser
+COPY dittofs /app/dittofs
 
 # Create data directories with proper permissions
 RUN mkdir -p /data/metadata /data/content /data/cache /config && \
-    chown -R 65532:65532 /data /config
+    chown -R 65532:65532 /app /data /config
 
 # Run as non-root user
 USER 65532:65532
@@ -73,7 +43,6 @@ EXPOSE 12049/tcp 12445/tcp 9090/tcp 8080/tcp
 VOLUME ["/data/metadata", "/data/content", "/data/cache", "/config"]
 
 # Health check using the REST API health endpoint
-# Checks liveness every 30s, allows 10s startup grace period
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
