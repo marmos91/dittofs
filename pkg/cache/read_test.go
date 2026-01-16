@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestReadSlice_Basic(t *testing.T) {
+func TestRead_Basic(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
@@ -14,12 +14,12 @@ func TestReadSlice_Basic(t *testing.T) {
 	payloadID := "test-file"
 	data := []byte("hello world")
 
-	_ = c.WriteSlice(ctx, payloadID, 0, data, 0)
+	_ = c.Write(ctx, payloadID, 0, data, 0)
 
 	result := make([]byte, len(data))
-	found, err := c.ReadSlice(ctx, payloadID, 0, 0, uint32(len(data)), result)
+	found, err := c.Read(ctx, payloadID, 0, 0, uint32(len(data)), result)
 	if err != nil {
-		t.Fatalf("ReadSlice failed: %v", err)
+		t.Fatalf("Read failed: %v", err)
 	}
 	if !found {
 		t.Fatal("expected to find data")
@@ -29,21 +29,21 @@ func TestReadSlice_Basic(t *testing.T) {
 	}
 }
 
-func TestReadSlice_NotFound(t *testing.T) {
+func TestRead_NotFound(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
 	result := make([]byte, 10)
-	found, err := c.ReadSlice(context.Background(), "nonexistent", 0, 0, 10, result)
+	found, err := c.Read(context.Background(), "nonexistent", 0, 0, 10, result)
 	if err != nil {
-		t.Fatalf("ReadSlice failed: %v", err)
+		t.Fatalf("Read failed: %v", err)
 	}
 	if found {
 		t.Error("expected not found for nonexistent file")
 	}
 }
 
-func TestReadSlice_PartialRead(t *testing.T) {
+func TestRead_PartialRead(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
@@ -51,13 +51,13 @@ func TestReadSlice_PartialRead(t *testing.T) {
 	payloadID := "test-file"
 	data := []byte("hello world")
 
-	_ = c.WriteSlice(ctx, payloadID, 0, data, 0)
+	_ = c.Write(ctx, payloadID, 0, data, 0)
 
 	// Read only "world"
 	result := make([]byte, 5)
-	found, err := c.ReadSlice(ctx, payloadID, 0, 6, 5, result)
+	found, err := c.Read(ctx, payloadID, 0, 6, 5, result)
 	if err != nil {
-		t.Fatalf("ReadSlice failed: %v", err)
+		t.Fatalf("Read failed: %v", err)
 	}
 	if !found {
 		t.Fatal("expected to find data")
@@ -67,7 +67,7 @@ func TestReadSlice_PartialRead(t *testing.T) {
 	}
 }
 
-func TestReadSlice_NewestWins(t *testing.T) {
+func TestRead_NewestWins(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
@@ -75,12 +75,12 @@ func TestReadSlice_NewestWins(t *testing.T) {
 	payloadID := "test-file"
 
 	// Write overlapping data (newer overwrites older)
-	_ = c.WriteSlice(ctx, payloadID, 0, []byte("AAAAAAAAAA"), 0) // 10 A's at offset 0
-	_ = c.WriteSlice(ctx, payloadID, 0, []byte("BBB"), 3)        // 3 B's at offset 3
+	_ = c.Write(ctx, payloadID, 0, []byte("AAAAAAAAAA"), 0) // 10 A's at offset 0
+	_ = c.Write(ctx, payloadID, 0, []byte("BBB"), 3)        // 3 B's at offset 3
 
 	// Read full range - should be AAABBBAAAA
 	result := make([]byte, 10)
-	found, _ := c.ReadSlice(ctx, payloadID, 0, 0, 10, result)
+	found, _ := c.Read(ctx, payloadID, 0, 0, 10, result)
 	if !found {
 		t.Fatal("expected to find data")
 	}
@@ -90,22 +90,22 @@ func TestReadSlice_NewestWins(t *testing.T) {
 	}
 }
 
-func TestReadSlice_MultipleOverlaps(t *testing.T) {
+func TestRead_MultipleOverlaps(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	// Write multiple overlapping slices (in order: oldest to newest)
+	// Write multiple overlapping regions (in order: oldest to newest)
 	// Each newer write overwrites older data at the same positions
-	_ = c.WriteSlice(ctx, payloadID, 0, []byte("1111111111"), 0) // Base: 1111111111
-	_ = c.WriteSlice(ctx, payloadID, 0, []byte("22"), 2)         // Now:  1122111111
-	_ = c.WriteSlice(ctx, payloadID, 0, []byte("33"), 5)         // Now:  1122133111
-	_ = c.WriteSlice(ctx, payloadID, 0, []byte("4"), 3)          // Now:  1124133111
+	_ = c.Write(ctx, payloadID, 0, []byte("1111111111"), 0) // Base: 1111111111
+	_ = c.Write(ctx, payloadID, 0, []byte("22"), 2)         // Now:  1122111111
+	_ = c.Write(ctx, payloadID, 0, []byte("33"), 5)         // Now:  1122133111
+	_ = c.Write(ctx, payloadID, 0, []byte("4"), 3)          // Now:  1124133111
 
 	result := make([]byte, 10)
-	found, _ := c.ReadSlice(ctx, payloadID, 0, 0, 10, result)
+	found, _ := c.Read(ctx, payloadID, 0, 0, 10, result)
 	if !found {
 		t.Fatal("expected to find data")
 	}
@@ -115,7 +115,7 @@ func TestReadSlice_MultipleOverlaps(t *testing.T) {
 	}
 }
 
-func TestReadSlice_ContextCancelled(t *testing.T) {
+func TestRead_ContextCancelled(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
@@ -123,36 +123,36 @@ func TestReadSlice_ContextCancelled(t *testing.T) {
 	cancel()
 
 	result := make([]byte, 10)
-	_, err := c.ReadSlice(ctx, "test", 0, 0, 10, result)
+	_, err := c.Read(ctx, "test", 0, 0, 10, result)
 	if err != context.Canceled {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
 }
 
-func TestReadSlice_CacheClosed(t *testing.T) {
+func TestRead_CacheClosed(t *testing.T) {
 	c := New(0)
-	_ = c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.Write(context.Background(), "test", 0, []byte("data"), 0)
 	_ = c.Close()
 
 	result := make([]byte, 4)
-	_, err := c.ReadSlice(context.Background(), "test", 0, 0, 4, result)
+	_, err := c.Read(context.Background(), "test", 0, 0, 4, result)
 	if err != ErrCacheClosed {
 		t.Errorf("expected ErrCacheClosed, got %v", err)
 	}
 }
 
-func TestReadSlice_WrongChunk(t *testing.T) {
+func TestRead_WrongChunk(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	_ = c.WriteSlice(ctx, payloadID, 0, []byte("chunk0"), 0)
+	_ = c.Write(ctx, payloadID, 0, []byte("chunk0"), 0)
 
 	// Try to read from chunk 1 (empty)
 	result := make([]byte, 6)
-	found, _ := c.ReadSlice(ctx, payloadID, 1, 0, 6, result)
+	found, _ := c.Read(ctx, payloadID, 1, 0, 6, result)
 	if found {
 		t.Error("expected not found for empty chunk")
 	}
@@ -169,7 +169,7 @@ func TestIsRangeCovered_FullyCovered(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 100), 0)
+	_ = c.Write(ctx, payloadID, 0, make([]byte, 100), 0)
 
 	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 100)
 	if err != nil {
@@ -187,7 +187,7 @@ func TestIsRangeCovered_PartiallyCovered(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 50), 0)
+	_ = c.Write(ctx, payloadID, 0, make([]byte, 50), 0)
 
 	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 100)
 	if err != nil {
@@ -211,23 +211,24 @@ func TestIsRangeCovered_NotCovered(t *testing.T) {
 	}
 }
 
-func TestIsRangeCovered_MultipleSlices(t *testing.T) {
+func TestIsRangeCovered_MultipleWrites(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	// Write non-adjacent slices
-	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 50), 0)
-	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 50), 50)
+	// Write adjacent data that together covers a range
+	// Coverage granularity is 64 bytes, so write at granularity boundaries
+	_ = c.Write(ctx, payloadID, 0, make([]byte, 64), 0)
+	_ = c.Write(ctx, payloadID, 0, make([]byte, 64), 64)
 
-	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 100)
+	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 128)
 	if err != nil {
 		t.Fatalf("IsRangeCovered failed: %v", err)
 	}
 	if !covered {
-		t.Error("expected range to be covered by multiple slices")
+		t.Error("expected range to be covered by multiple writes")
 	}
 }
 
@@ -254,36 +255,34 @@ func TestIsRangeCovered_CacheClosed(t *testing.T) {
 	}
 }
 
-func TestIsRangeCovered_OverlappingSlices(t *testing.T) {
+func TestIsRangeCovered_OverlappingWrites(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	// Write two completely overlapping slices at offset 0
-	// This tests the bug fix: the old implementation would sum overlaps
-	// and incorrectly report coverage for bytes beyond the slices
-	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 5), 0) // bytes 0-5
-	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 5), 0) // bytes 0-5 (overlap)
+	// Coverage bitmap has 64-byte granularity.
+	// Write overlapping data at the same offset - should not extend coverage.
+	_ = c.Write(ctx, payloadID, 0, make([]byte, 64), 0) // bytes 0-64
+	_ = c.Write(ctx, payloadID, 0, make([]byte, 64), 0) // bytes 0-64 (overlap)
 
-	// The old buggy code would count 5+5=10 bytes of overlap
-	// and incorrectly report bytes 0-10 as covered
-	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 10)
-	if err != nil {
-		t.Fatalf("IsRangeCovered failed: %v", err)
-	}
-	if covered {
-		t.Error("expected range 0-10 to NOT be covered (only 0-5 is covered)")
-	}
-
-	// But 0-5 should be covered
-	covered, err = c.IsRangeCovered(ctx, payloadID, 0, 0, 5)
+	// Range 0-64 should be covered
+	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 64)
 	if err != nil {
 		t.Fatalf("IsRangeCovered failed: %v", err)
 	}
 	if !covered {
-		t.Error("expected range 0-5 to be covered")
+		t.Error("expected range 0-64 to be covered")
+	}
+
+	// Range 0-128 should NOT be covered (only first 64 bytes written)
+	covered, err = c.IsRangeCovered(ctx, payloadID, 0, 0, 128)
+	if err != nil {
+		t.Fatalf("IsRangeCovered failed: %v", err)
+	}
+	if covered {
+		t.Error("expected range 0-128 to NOT be covered (only 0-64 is covered)")
 	}
 }
 
@@ -294,26 +293,27 @@ func TestIsRangeCovered_PartialOverlap(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	// Write partially overlapping slices
-	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 10), 0) // bytes 0-10
-	_ = c.WriteSlice(ctx, payloadID, 0, make([]byte, 10), 5) // bytes 5-15
+	// Coverage bitmap has 64-byte granularity.
+	// Write partially overlapping data that together cover a contiguous range.
+	_ = c.Write(ctx, payloadID, 0, make([]byte, 128), 0)  // bytes 0-128
+	_ = c.Write(ctx, payloadID, 0, make([]byte, 128), 64) // bytes 64-192
 
-	// Together they cover 0-15
-	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 15)
+	// Together they cover 0-192
+	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 192)
 	if err != nil {
 		t.Fatalf("IsRangeCovered failed: %v", err)
 	}
 	if !covered {
-		t.Error("expected range 0-15 to be covered")
+		t.Error("expected range 0-192 to be covered")
 	}
 
-	// But 0-20 should not be covered
-	covered, err = c.IsRangeCovered(ctx, payloadID, 0, 0, 20)
+	// But 0-256 should not be covered
+	covered, err = c.IsRangeCovered(ctx, payloadID, 0, 0, 256)
 	if err != nil {
 		t.Fatalf("IsRangeCovered failed: %v", err)
 	}
 	if covered {
-		t.Error("expected range 0-20 to NOT be covered")
+		t.Error("expected range 0-256 to NOT be covered")
 	}
 }
 
@@ -321,8 +321,8 @@ func TestIsRangeCovered_PartialOverlap(t *testing.T) {
 // Read Benchmarks
 // ============================================================================
 
-// BenchmarkReadSlice measures read performance at various sizes.
-func BenchmarkReadSlice(b *testing.B) {
+// BenchmarkRead measures read performance at various sizes.
+func BenchmarkRead(b *testing.B) {
 	sizes := []struct {
 		name string
 		size int
@@ -347,7 +347,7 @@ func BenchmarkReadSlice(b *testing.B) {
 				offset := uint32(i * len(writeData))
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
-				_ = c.WriteSlice(ctx, payloadID, chunkIdx, writeData, offsetInChunk)
+				_ = c.Write(ctx, payloadID, chunkIdx, writeData, offsetInChunk)
 			}
 
 			dest := make([]byte, s.size)
@@ -359,7 +359,7 @@ func BenchmarkReadSlice(b *testing.B) {
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
 
-				if _, err := c.ReadSlice(ctx, payloadID, chunkIdx, offsetInChunk, uint32(s.size), dest); err != nil {
+				if _, err := c.Read(ctx, payloadID, chunkIdx, offsetInChunk, uint32(s.size), dest); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -367,27 +367,27 @@ func BenchmarkReadSlice(b *testing.B) {
 	}
 }
 
-// BenchmarkReadSlice_SliceMerging measures read performance with overlapping slices.
-// Tests the newest-wins merge algorithm efficiency.
-func BenchmarkReadSlice_SliceMerging(b *testing.B) {
-	sliceCounts := []int{1, 5, 10, 25, 50}
+// BenchmarkRead_OverlappingWrites measures read performance with overlapping writes.
+// Tests the newest-wins overwrite behavior efficiency.
+func BenchmarkRead_OverlappingWrites(b *testing.B) {
+	writeCounts := []int{1, 5, 10, 25, 50}
 
-	for _, count := range sliceCounts {
-		b.Run(fmt.Sprintf("slices=%d", count), func(b *testing.B) {
+	for _, count := range writeCounts {
+		b.Run(fmt.Sprintf("writes=%d", count), func(b *testing.B) {
 			c := New(0)
 			defer func() { _ = c.Close() }()
 
 			ctx := context.Background()
 			payloadID := "bench-file"
 
-			// Create overlapping slices (each 4KB, overlapping by 2KB)
+			// Create overlapping writes (each 4KB, overlapping by 2KB)
 			for i := 0; i < count; i++ {
 				data := make([]byte, 4*1024)
 				for j := range data {
 					data[j] = byte(i)
 				}
 				offset := uint32(i * 2 * 1024)
-				_ = c.WriteSlice(ctx, payloadID, 0, data, offset)
+				_ = c.Write(ctx, payloadID, 0, data, offset)
 			}
 
 			readSize := uint32(32 * 1024)
@@ -396,7 +396,7 @@ func BenchmarkReadSlice_SliceMerging(b *testing.B) {
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				if _, err := c.ReadSlice(ctx, payloadID, 0, 0, readSize, dest); err != nil {
+				if _, err := c.Read(ctx, payloadID, 0, 0, readSize, dest); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -414,7 +414,7 @@ func BenchmarkIsRangeCovered(b *testing.B) {
 
 	// Create a file with full coverage
 	data := make([]byte, ChunkSize)
-	_ = c.WriteSlice(ctx, payloadID, 0, data, 0)
+	_ = c.Write(ctx, payloadID, 0, data, 0)
 
 	b.ResetTimer()
 

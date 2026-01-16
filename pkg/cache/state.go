@@ -13,7 +13,7 @@ import (
 // Remove completely removes all cached data for a file.
 //
 // This should be called when a file is deleted from the filesystem.
-// Unlike Evict, Remove deletes ALL data including dirty/pending slices.
+// Unlike Evict, Remove deletes ALL data including dirty/pending blocks.
 // The removal is also persisted to WAL if enabled.
 //
 // Idempotent: Returns nil if file doesn't exist.
@@ -38,7 +38,7 @@ func (c *Cache) Remove(ctx context.Context, payloadID string) error {
 		return nil // Idempotent
 	}
 
-	size := entryDataSize(entry)
+	size := entryMemorySize(entry)
 	delete(c.files, payloadID)
 
 	if size > 0 {
@@ -58,11 +58,11 @@ func (c *Cache) Remove(ctx context.Context, payloadID string) error {
 // Truncate reduces the size of cached data for a file.
 //
 // This should be called when a file is truncated in the filesystem.
-// Removes all slices beyond the new size, and trims slices that span
-// the truncation point.
+// Removes all blocks beyond the new size, and clears coverage for bytes
+// beyond the truncation point in partial blocks.
 //
 // Note: Truncate only reduces size, never extends. Extending a file
-// is done via WriteSlice.
+// is done via Write.
 //
 // Idempotent: Returns nil if file doesn't exist or if newSize >= current size.
 //
@@ -100,43 +100,29 @@ func (c *Cache) Truncate(ctx context.Context, payloadID string, newSize uint64) 
 	for chunkIdx, chk := range entry.chunks {
 		if chunkIdx > newEndChunk {
 			// Remove entire chunk beyond truncation point
-			if size := chunkDataSize(chk); size > 0 {
+			if size := chunkMemorySize(chk); size > 0 {
 				c.totalSize.Add(^(size - 1)) // Subtract
 			}
 			delete(entry.chunks, chunkIdx)
 		} else if chunkIdx == newEndChunk {
-			var newSlices []Slice
-			var removedSize uint64
-
-			for _, slice := range chk.slices {
-				sliceEnd := slice.Offset + slice.Length
-
-				if slice.Offset >= newOffsetInEndChunk {
-					removedSize += uint64(len(slice.Data))
-					continue
+			// Truncate blocks in the last chunk
+			for blockIdx, blk := range chk.blocks {
+				blockStart := blockIdx * BlockSize
+				if blockStart >= newOffsetInEndChunk {
+					// Remove entire block beyond truncation point
+					if blk.data != nil {
+						c.totalSize.Add(^uint64(BlockSize - 1)) // Subtract BlockSize
+					}
+					delete(chk.blocks, blockIdx)
+				} else {
+					// Partial truncation within block - clear coverage beyond new size
+					blockTruncPoint := newOffsetInEndChunk - blockStart
+					if blk.dataSize > blockTruncPoint {
+						blk.dataSize = blockTruncPoint
+					}
+					// Clear coverage bits beyond truncation point
+					clearCoverageBeyond(blk.coverage, blockTruncPoint)
 				}
-
-				if sliceEnd <= newOffsetInEndChunk {
-					newSlices = append(newSlices, slice)
-					continue
-				}
-
-				newLength := newOffsetInEndChunk - slice.Offset
-				truncatedSlice := slice
-				truncatedSlice.Data = slice.Data[:newLength]
-				truncatedSlice.Length = newLength
-				removedSize += uint64(slice.Length - newLength)
-				newSlices = append(newSlices, truncatedSlice)
-			}
-
-			if removedSize > 0 {
-				c.totalSize.Add(^(removedSize - 1)) // Subtract
-			}
-
-			if len(newSlices) == 0 {
-				delete(entry.chunks, chunkIdx)
-			} else {
-				chk.slices = newSlices
 			}
 		}
 	}
@@ -144,15 +130,31 @@ func (c *Cache) Truncate(ctx context.Context, payloadID string, newSize uint64) 
 	return nil
 }
 
+// clearCoverageBeyond clears coverage bits from offset to end of block.
+func clearCoverageBeyond(coverage []uint64, offset uint32) {
+	if coverage == nil {
+		return
+	}
+
+	startBit := offset / CoverageGranularity
+	for bit := startBit; bit < uint32(len(coverage))*CoverageBitsPerWord; bit++ {
+		wordIdx := bit / CoverageBitsPerWord
+		bitInWord := bit % CoverageBitsPerWord
+		if wordIdx < uint32(len(coverage)) {
+			coverage[wordIdx] &^= 1 << bitInWord
+		}
+	}
+}
+
 // ============================================================================
 // File State Queries
 // ============================================================================
 
-// HasDirtyData returns true if the file has any unflushed (pending) slices.
+// HasDirtyData returns true if the file has any unflushed (pending) blocks.
 //
 // Use this to check if a file needs flushing before close, or to prevent
 // eviction of files with dirty data. A file with dirty data should not
-// be removed until its slices are flushed to the block store.
+// be removed until its blocks are flushed to the block store.
 //
 // Thread-safe. Returns false if cache is closed or file doesn't exist.
 func (c *Cache) HasDirtyData(payloadID string) bool {
@@ -168,8 +170,8 @@ func (c *Cache) HasDirtyData(payloadID string) bool {
 	defer entry.mu.RUnlock()
 
 	for _, chunk := range entry.chunks {
-		for _, slice := range chunk.slices {
-			if slice.State == SliceStatePending {
+		for _, blk := range chunk.blocks {
+			if blk.state == BlockStatePending {
 				return true
 			}
 		}
@@ -178,7 +180,7 @@ func (c *Cache) HasDirtyData(payloadID string) bool {
 	return false
 }
 
-// GetFileSize returns the maximum byte offset covered by cached slices.
+// GetFileSize returns the maximum byte offset covered by cached blocks.
 //
 // This represents the size of the file as known to the cache. Note that
 // this may differ from the actual file size if not all data is cached.
@@ -199,15 +201,19 @@ func (c *Cache) GetFileSize(payloadID string) uint64 {
 	return getFileSizeUnlocked(entry)
 }
 
-// getFileSizeUnlocked returns the maximum byte offset covered by cached slices.
+// getFileSizeUnlocked returns the maximum byte offset covered by cached blocks.
 // Caller must hold entry.mu (read or write lock).
 func getFileSizeUnlocked(entry *fileEntry) uint64 {
 	var maxOffset uint64
 
 	for chunkIdx, chunk := range entry.chunks {
 		chunkBase := uint64(chunkIdx) * ChunkSize
-		for _, slice := range chunk.slices {
-			if end := chunkBase + uint64(slice.Offset+slice.Length); end > maxOffset {
+		for blockIdx, blk := range chunk.blocks {
+			if blk.data == nil {
+				continue
+			}
+			blockBase := chunkBase + uint64(blockIdx)*BlockSize
+			if end := blockBase + uint64(blk.dataSize); end > maxOffset {
 				maxOffset = end
 			}
 		}
@@ -216,22 +222,26 @@ func getFileSizeUnlocked(entry *fileEntry) uint64 {
 	return maxOffset
 }
 
-// entryDataSize returns total bytes stored in a file entry's slices.
-func entryDataSize(entry *fileEntry) uint64 {
+// entryMemorySize returns total memory allocated by a file entry's blocks.
+// Returns BlockSize per block buffer (actual memory allocation), not bytes written.
+func entryMemorySize(entry *fileEntry) uint64 {
 	var size uint64
 	for _, chunk := range entry.chunks {
-		size += chunkDataSize(chunk)
+		size += chunkMemorySize(chunk)
 	}
 	return size
 }
 
-// chunkDataSize returns total bytes stored in a chunk's slices.
-func chunkDataSize(chunk *chunkEntry) uint64 {
-	var size uint64
-	for _, slice := range chunk.slices {
-		size += uint64(len(slice.Data))
+// chunkMemorySize returns total memory allocated by a chunk's blocks.
+// Returns BlockSize per block buffer (actual memory allocation), not bytes written.
+func chunkMemorySize(chunk *chunkEntry) uint64 {
+	var count uint64
+	for _, blk := range chunk.blocks {
+		if blk.data != nil {
+			count++
+		}
 	}
-	return size
+	return count * BlockSize
 }
 
 // ListFiles returns all file handles that have cached data.
@@ -259,7 +269,7 @@ func (c *Cache) ListFiles() []string {
 // ListFilesWithSizes returns all cached files with their calculated sizes.
 //
 // For each file in cache, the size is calculated as the maximum byte offset
-// covered by any slice. This is used during crash recovery to reconcile
+// covered by any block. This is used during crash recovery to reconcile
 // metadata with actual recovered data.
 //
 // Returns nil if cache is closed.
@@ -281,10 +291,11 @@ func (c *Cache) ListFilesWithSizes() map[string]uint64 {
 	return result
 }
 
-// GetTotalSize returns the total bytes currently stored in the cache.
+// GetTotalSize returns the total memory allocated by the cache.
 //
-// This includes both dirty (pending) and flushed data. Use Stats() for
-// a breakdown by state.
+// This tracks BlockSize (4MB) per block buffer, regardless of how many
+// bytes are written to each buffer. Use this for OOM prevention monitoring.
+// Use Stats() for a breakdown of actual data written.
 func (c *Cache) GetTotalSize() uint64 {
 	return c.totalSize.Load()
 }
@@ -292,12 +303,16 @@ func (c *Cache) GetTotalSize() uint64 {
 // Stats returns current cache statistics for observability.
 //
 // Returns:
-//   - TotalSize: Current total bytes in cache
+//   - TotalSize: Memory allocated (BlockSize per block buffer)
 //   - MaxSize: Configured maximum (0 = unlimited)
 //   - FileCount: Number of files with cached data
-//   - DirtyBytes: Bytes in pending/uploading state (protected from eviction)
-//   - FlushedBytes: Bytes in flushed state (can be evicted)
-//   - SliceCount: Total number of slices
+//   - DirtyBytes: Actual data bytes in pending/uploading state (protected from eviction)
+//   - UploadedBytes: Actual data bytes in uploaded state (can be evicted)
+//   - BlockCount: Total number of block buffers
+//
+// Note: TotalSize tracks memory allocation, while DirtyBytes+UploadedBytes
+// tracks actual data written. They may differ since each block buffer
+// allocates BlockSize (4MB) regardless of content.
 //
 // Returns zero Stats if cache is closed.
 func (c *Cache) Stats() Stats {
@@ -317,11 +332,14 @@ func (c *Cache) Stats() Stats {
 	for _, entry := range c.files {
 		entry.mu.RLock()
 		for _, chunk := range entry.chunks {
-			for _, slice := range chunk.slices {
-				stats.SliceCount++
-				size := uint64(len(slice.Data))
-				if slice.State == SliceStateFlushed {
-					stats.FlushedBytes += size
+			for _, blk := range chunk.blocks {
+				if blk.data == nil {
+					continue
+				}
+				stats.BlockCount++
+				size := uint64(blk.dataSize)
+				if blk.state == BlockStateUploaded {
+					stats.UploadedBytes += size
 				} else {
 					stats.DirtyBytes += size
 				}

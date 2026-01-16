@@ -53,7 +53,7 @@ for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
 
 // New pattern (Slices iterator) - zero-copy with dest buffer
 for slice := range chunk.Slices(offset, len(buf)) {
-    cache.ReadSlice(ctx, handle, slice.ChunkIndex, slice.Offset, slice.Length, buf[slice.BufOffset:])
+    cache.Read(ctx, handle, slice.ChunkIndex, slice.Offset, slice.Length, buf[slice.BufOffset:])
 }
 ```
 

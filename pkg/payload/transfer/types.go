@@ -126,16 +126,16 @@ type FlushResult struct {
 // Note: Uploads happen asynchronously after scan completes.
 type RecoveryStats struct {
 	FilesScanned int   // Number of files in cache
-	SlicesFound  int   // Number of dirty slices found
+	BlocksFound  int   // Number of dirty blocks found
 	BytesPending int64 // Bytes of dirty data to upload
 
 	// RecoveredFileSizes maps payloadID to the actual file size recovered from WAL.
 	// This allows consumers to reconcile metadata with actual cached data.
-	// File size is calculated as max(offset + length) across all recovered slices.
+	// File size is calculated as max(blockBase + dataSize) across all recovered blocks.
 	//
-	// Key insight: WAL only logs NEW slices, not extended slices (for performance).
-	// On crash recovery, extended slice data may be lost. The metadata may have a
-	// larger file size from CommitWrite. Use this map to truncate metadata to match
+	// Key insight: WAL logs individual block writes. On crash recovery, the metadata
+	// may have a larger file size from CommitWrite if crash occurred after metadata
+	// update but before WAL persistence. Use this map to truncate metadata to match
 	// actual recovered data.
 	RecoveredFileSizes map[string]uint64
 }

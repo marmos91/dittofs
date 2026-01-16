@@ -2,31 +2,28 @@ package cache
 
 import (
 	"context"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/cache/wal"
+	"github.com/marmos91/dittofs/pkg/payload/block"
 )
-
-// minSliceCapacity is the minimum initial capacity for new slices.
-// This reduces reallocations for sequential writes by pre-allocating a larger buffer.
-// Value chosen to cover most NFS write patterns (32KB-1MB writes).
-const minSliceCapacity = 256 * 1024 // 256KB
 
 // ============================================================================
 // Write Operations
 // ============================================================================
 
-// WriteSlice writes data to the cache at the specified chunk and offset.
+// Write writes data to the cache at the specified chunk and offset.
 //
-// This is the primary write path for all file data. The slice is stored in memory
-// with SliceStatePending until flushed to the block store via MarkSliceFlushed.
+// This is the primary write path for all file data. Data is written directly
+// into 4MB block buffers at the correct position. The coverage bitmap tracks
+// which bytes have been written for sparse file support.
 //
-// Sequential Write Optimization:
-// If the write is adjacent to an existing pending slice, we extend that slice
-// instead of creating a new one. This is critical for performance since NFS clients
-// write in 16KB-32KB chunks, so a 10MB file = 320 writes. Without this optimization,
-// we'd create 320 slices instead of 1.
+// Block Buffer Model:
+// Data is written directly to the target position in the block buffer.
+// Overlapping writes simply overwrite previous data (newest-wins semantics).
+//
+// Memory Tracking:
+// The cache tracks actual memory allocation (BlockSize per block buffer), not
+// just bytes written. This ensures accurate backpressure for OOM prevention.
 //
 // Parameters:
 //   - payloadID: Unique identifier for the file content
@@ -37,8 +34,9 @@ const minSliceCapacity = 256 * 1024 // 256KB
 // Errors:
 //   - ErrInvalidOffset: offset + len(data) exceeds ChunkSize
 //   - ErrCacheClosed: cache has been closed
+//   - ErrCacheFull: cache is full of pending data that cannot be evicted
 //   - context.Canceled/DeadlineExceeded: context was cancelled
-func (c *Cache) WriteSlice(ctx context.Context, payloadID string, chunkIdx uint32, data []byte, offset uint32) error {
+func (c *Cache) Write(ctx context.Context, payloadID string, chunkIdx uint32, data []byte, offset uint32) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -55,178 +53,114 @@ func (c *Cache) WriteSlice(ctx context.Context, payloadID string, chunkIdx uint3
 		return ErrInvalidOffset
 	}
 
-	// Enforce maxSize by evicting LRU flushed data if needed.
+	// Calculate which blocks this write spans
+	startBlock := block.IndexForOffset(offset)
+	endBlock := block.IndexForOffset(offset + uint32(len(data)) - 1)
+
+	entry := c.getFileEntry(payloadID)
+	entry.mu.Lock()
+
+	// Calculate how many NEW blocks will be created (for memory tracking).
+	// We track actual memory allocation (BlockSize per block), not data written.
+	var newBlockCount uint64
+	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
+		if !c.blockExists(entry, chunkIdx, blockIdx) {
+			newBlockCount++
+		}
+	}
+	newMemory := newBlockCount * BlockSize
+
+	// Enforce maxSize by evicting LRU uploaded blocks if needed.
 	// If eviction can't free enough space (all data is pending), return ErrCacheFull
 	// to provide backpressure and prevent OOM conditions.
-	if c.maxSize > 0 {
-		dataLen := uint64(len(data))
-		if c.totalSize.Load()+dataLen > c.maxSize {
-			c.evictLRUUntilFits(ctx, dataLen)
+	if c.maxSize > 0 && newMemory > 0 {
+		if c.totalSize.Load()+newMemory > c.maxSize {
+			// Release lock to evict (eviction needs to lock other entries)
+			entry.mu.Unlock()
+			c.evictLRUUntilFits(ctx, newMemory)
+			entry.mu.Lock()
+
+			// Re-check after eviction (someone else might have created the blocks)
+			newBlockCount = 0
+			for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
+				if !c.blockExists(entry, chunkIdx, blockIdx) {
+					newBlockCount++
+				}
+			}
+			newMemory = newBlockCount * BlockSize
 
 			// Check if we have enough space after eviction.
 			// If not, cache is full of pending data that can't be evicted.
-			if c.totalSize.Load()+dataLen > c.maxSize {
+			if c.totalSize.Load()+newMemory > c.maxSize {
+				entry.mu.Unlock()
 				return ErrCacheFull
 			}
 		}
 	}
 
-	entry := c.getFileEntry(payloadID)
-	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
 	// Update LRU access time
 	c.touchFile(entry)
 
-	// Ensure chunk exists
-	chunk, exists := entry.chunks[chunkIdx]
-	if !exists {
-		chunk = &chunkEntry{
-			slices: make([]Slice, 0),
-		}
-		entry.chunks[chunkIdx] = chunk
-	}
+	// Write data to each block buffer it spans
+	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
+		// Get or create block buffer
+		blk, isNew := c.getOrCreateBlock(entry, chunkIdx, blockIdx)
 
-	// Extend an existing adjacent pending slice if possible (sequential write optimization)
-	extResult := c.extendAdjacentSlice(chunk, offset, data)
-	if extResult.extended {
-		// Log extension to WAL if enabled
-		// We log the NEW data portion as a separate slice entry for crash recovery.
-		// On recovery, multiple overlapping slices are merged with newest-wins semantics.
+		// Track memory for new block buffers
+		if isNew {
+			c.totalSize.Add(BlockSize)
+		}
+
+		// Calculate offsets within this block
+		blockStart := blockIdx * BlockSize
+		blockEnd := blockStart + BlockSize
+
+		// Calculate overlap with write range
+		writeStart := max(offset, blockStart)
+		writeEnd := min(offset+uint32(len(data)), blockEnd)
+
+		// Calculate positions
+		offsetInBlock := writeStart - blockStart
+		dataStart := writeStart - offset
+		dataEnd := writeEnd - offset
+		writeLen := dataEnd - dataStart
+
+		// Copy data directly to block buffer
+		copy(blk.data[offsetInBlock:], data[dataStart:dataEnd])
+
+		// Update coverage bitmap
+		markCoverage(blk.coverage, offsetInBlock, writeLen)
+
+		// Update block data size
+		if end := offsetInBlock + writeLen; end > blk.dataSize {
+			blk.dataSize = end
+		}
+
+		// Mark block as dirty if it was uploaded
+		if blk.state == BlockStateUploaded {
+			blk.state = BlockStatePending
+		}
+
+		// Persist to WAL if enabled
 		if c.persister != nil {
-			extSlice := Slice{
-				ID:        uuid.New().String(),
-				Offset:    offset,
-				Length:    uint32(len(data)),
-				Data:      data, // Note: uses original data, not a copy
-				State:     SliceStatePending,
-				CreatedAt: time.Now(),
+			walEntry := &wal.BlockWriteEntry{
+				PayloadID:     payloadID,
+				ChunkIdx:      chunkIdx,
+				BlockIdx:      blockIdx,
+				OffsetInBlock: offsetInBlock,
+				Data:          data[dataStart:dataEnd],
 			}
+			// Release lock during WAL write to avoid deadlock
 			entry.mu.Unlock()
-			walEntry := c.sliceToWALEntry(payloadID, chunkIdx, &extSlice)
-			err := c.persister.AppendSlice(walEntry)
+			err := c.persister.AppendBlockWrite(walEntry)
 			entry.mu.Lock()
 			if err != nil {
 				return err
 			}
 		}
-		return nil
-	}
-
-	// Create new slice with pre-allocated capacity to reduce reallocations
-	sliceID := uuid.New().String()
-
-	// Pre-allocate with minSliceCapacity to reduce reallocs for sequential writes
-	capacity := max(len(data), minSliceCapacity)
-	sliceData := make([]byte, len(data), capacity)
-	copy(sliceData, data)
-
-	slice := Slice{
-		ID:        sliceID,
-		Offset:    offset,
-		Length:    uint32(len(data)),
-		Data:      sliceData,
-		State:     SliceStatePending,
-		CreatedAt: time.Now(),
-	}
-
-	// Prepend to slices (newest first)
-	chunk.slices = append([]Slice{slice}, chunk.slices...)
-	c.totalSize.Add(uint64(len(data)))
-
-	// Persist to WAL if enabled
-	if c.persister != nil {
-		// Note: We release the file lock before persister write to avoid deadlock
-		// This is safe because persister has its own mutex
-		entry.mu.Unlock()
-		walEntry := c.sliceToWALEntry(payloadID, chunkIdx, &slice)
-		err := c.persister.AppendSlice(walEntry)
-		entry.mu.Lock() // Re-acquire for deferred unlock
-		if err != nil {
-			return err
-		}
 	}
 
 	return nil
-}
-
-// sliceToWALEntry wraps a Slice with WAL context for persistence.
-//
-// Since SliceEntry embeds Slice directly, no field copying is needed.
-// The entry contains the file context (payloadID, chunk index) required
-// for recovery.
-func (c *Cache) sliceToWALEntry(payloadID string, chunkIdx uint32, slice *Slice) *wal.SliceEntry {
-	return &wal.SliceEntry{
-		PayloadID: payloadID,
-		ChunkIdx:  chunkIdx,
-		Slice:     *slice, // Embed directly - same type
-	}
-}
-
-// extendResult indicates whether a slice was extended.
-type extendResult struct {
-	extended bool // Whether a slice was extended
-}
-
-// extendAdjacentSlice extends an existing pending slice if the new write is adjacent.
-//
-// This implements the sequential write optimization. When NFS clients write
-// sequentially (which is the common case), we extend the existing slice rather
-// than creating a new one. This dramatically reduces slice count and improves
-// flush performance.
-//
-// Two cases are handled:
-//   - Appending: New write starts exactly where existing slice ends
-//   - Prepending: New write ends exactly where existing slice starts
-//
-// Uses Go's append() for amortized O(1) growth on sequential appends.
-//
-// Returns extendResult with extended=true and the slice ID if extended.
-func (c *Cache) extendAdjacentSlice(chunk *chunkEntry, offset uint32, data []byte) extendResult {
-	writeEnd := offset + uint32(len(data))
-
-	for i := range chunk.slices {
-		slice := &chunk.slices[i]
-		if slice.State != SliceStatePending {
-			continue
-		}
-
-		sliceEnd := slice.Offset + slice.Length
-
-		// Case 1: Appending (write starts where slice ends)
-		if offset == sliceEnd {
-			oldLen := len(slice.Data)
-			// Pre-grow capacity using exponential growth to minimize reallocations.
-			// For sequential writes, this typically results in O(log n) allocations
-			// instead of O(n/256KB) allocations.
-			if cap(slice.Data)-len(slice.Data) < len(data) {
-				// Exponential growth: double capacity, minimum 256KB
-				newCap := max(cap(slice.Data)*2, len(slice.Data)+len(data), minSliceCapacity)
-				// Cap at 64MB (chunk size) to avoid over-allocation
-				newCap = min(newCap, int(ChunkSize))
-				newData := make([]byte, len(slice.Data), newCap)
-				copy(newData, slice.Data)
-				slice.Data = newData
-			}
-			slice.Data = append(slice.Data, data...)
-			slice.Length += uint32(len(data))
-			c.totalSize.Add(uint64(len(slice.Data) - oldLen))
-			return extendResult{extended: true}
-		}
-
-		// Case 2: Prepending (write ends where slice starts)
-		if writeEnd == slice.Offset {
-			oldLen := len(slice.Data)
-			newData := make([]byte, len(data)+len(slice.Data))
-			copy(newData, data)
-			copy(newData[len(data):], slice.Data)
-			slice.Data = newData
-			slice.Offset = offset
-			slice.Length += uint32(len(data))
-			c.totalSize.Add(uint64(len(newData) - oldLen))
-			return extendResult{extended: true}
-		}
-	}
-
-	return extendResult{extended: false}
 }

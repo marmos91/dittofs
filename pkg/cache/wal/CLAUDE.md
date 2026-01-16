@@ -4,68 +4,41 @@ Write-Ahead Log persistence layer for cache crash recovery.
 
 ## Overview
 
-The WAL package provides crash recovery for the cache layer. It logs slice writes to persistent storage, enabling the cache to recover unflushed data after a crash or restart.
+The WAL package provides crash recovery for the cache layer. It logs block writes to persistent storage, enabling the cache to recover unflushed data after a crash or restart.
 
 ## Architecture
 
 ```
-Cache.WriteSlice()
-        │
-        ▼
-  MmapPersister.AppendSlice() ← logs write to WAL
-        │
-        ▼
-  (slice data in memory)
+Cache.Write()
+        |
+        v
+  MmapPersister.AppendBlockWrite() <- logs write to WAL
+        |
+        v
+  (block data in memory)
 
-Server Crash → Restart
-        │
-        ▼
-  MmapPersister.Recover() ← replays WAL entries
-        │
-        ▼
-  Cache populated with unflushed slices
+Server Crash -> Restart
+        |
+        v
+  MmapPersister.Recover() <- replays WAL entries
+        |
+        v
+  Cache populated with unflushed blocks
 ```
 
 ## Key Types
 
-This package defines the canonical types used by both WAL and cache:
-- `SliceState` - re-exported by cache as `cache.SliceState`
-- `BlockRef` - re-exported by cache as `cache.BlockRef`
-- `Slice` - canonical slice type (re-exported by cache)
-- `SliceEntry` - WAL persistence format (PayloadID + ChunkIdx + embedded Slice)
+### BlockWriteEntry
 
-### SliceState
+WAL record for a single write operation.
 
 ```go
-type SliceState int
-
-const (
-    SliceStatePending   SliceState = iota  // Unflushed data
-    SliceStateFlushed                       // Safe in block storage
-    SliceStateUploading                     // Flush in progress
-)
-```
-
-### BlockRef
-
-Reference to a block in the block store.
-
-```go
-type BlockRef struct {
-    ID   string  // Block's unique identifier
-    Size uint32  // Actual size (may be < BlockSize for last block)
-}
-```
-
-### SliceEntry
-
-WAL record for a single slice write. Embeds Slice for zero-copy efficiency.
-
-```go
-type SliceEntry struct {
-    PayloadID string  // Identifies the file this slice belongs to
-    ChunkIdx  uint32  // Chunk index within file
-    Slice             // Embedded slice (ID, Offset, Length, Data, State, CreatedAt, BlockRefs)
+type BlockWriteEntry struct {
+    PayloadID     string  // Identifies the file this write belongs to
+    ChunkIdx      uint32  // Chunk index within file
+    BlockIdx      uint32  // Block index within chunk
+    OffsetInBlock uint32  // Byte offset within the block (0 to BlockSize-1)
+    Data          []byte  // The bytes written
 }
 ```
 
@@ -92,10 +65,10 @@ cache, err := cache.NewWithWal(maxSize, persister)
 - OS page cache provides crash safety
 
 **Methods:**
-- `AppendSlice(entry *SliceEntry) error` - Log a slice write
+- `AppendBlockWrite(entry *BlockWriteEntry) error` - Log a block write
 - `AppendRemove(payloadID string) error` - Log a file removal
 - `Sync() error` - Fsync WAL to disk
-- `Recover() ([]SliceEntry, error)` - Replay WAL entries on startup
+- `Recover() ([]BlockWriteEntry, error)` - Replay WAL entries on startup
 - `Close() error` - Cleanup resources
 - `IsEnabled() bool` - Always returns true
 
@@ -150,24 +123,20 @@ c := cache.New(maxSize)
 ```
 [Header: 64 bytes]
   - Magic: 4 bytes ("DTTC")
-  - Version: uint16 (2 bytes)
+  - Version: uint16 (2 bytes) - version 2 for block-level format
   - Entry count: uint32 (4 bytes)
   - Next write offset: uint64 (8 bytes)
   - Total data size: uint64 (8 bytes)
   - Reserved: 38 bytes
 
-[Slice Entry: variable]
-  - Type: 1 byte (0=slice)
+[Block Write Entry: variable]
+  - Type: 1 byte (0=blockWrite)
   - Payload ID length: uint16 (2 bytes)
   - Payload ID: variable
   - Chunk index: uint32 (4 bytes)
-  - Slice ID: 36 bytes (UUID string)
-  - Offset in chunk: uint32 (4 bytes)
+  - Block index: uint32 (4 bytes)
+  - Offset in block: uint32 (4 bytes)
   - Data length: uint32 (4 bytes)
-  - State: uint8 (1 byte)
-  - CreatedAt: int64 (8 bytes)
-  - BlockRef count: uint16 (2 bytes)
-  - BlockRefs: variable (ID length + ID + size per ref)
   - Data: variable
 
 [Remove Entry: variable]
@@ -179,6 +148,6 @@ c := cache.New(maxSize)
 ## Package Structure
 
 - `errors.go` - Error definitions (ErrPersisterClosed, ErrCorrupted, ErrVersionMismatch)
-- `types.go` - Type definitions (Slice, SliceEntry, SliceState, BlockRef)
+- `types.go` - Type definitions (BlockWriteEntry)
 - `mmap.go` - MmapPersister implementation
 - `mmap_test.go` - Tests and benchmarks

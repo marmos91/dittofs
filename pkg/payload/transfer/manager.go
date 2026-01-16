@@ -217,7 +217,7 @@ func (m *TransferManager) tryEagerUpload(ctx context.Context, payloadID string, 
 	// Read block data from cache
 	dataPtr := blockPool.Get().(*[]byte)
 	data := *dataPtr
-	found, err := m.cache.ReadSlice(ctx, payloadID, chunkIdx, blockStart, BlockSize, data)
+	found, err := m.cache.Read(ctx, payloadID, chunkIdx, blockStart, BlockSize, data)
 	if err != nil || !found {
 		blockPool.Put(dataPtr)
 		return
@@ -301,17 +301,15 @@ func (m *TransferManager) startBlockUpload(ctx context.Context,
 			return
 		}
 
-		// Mark slices within this block as flushed so they can be evicted.
+		// Mark block as uploaded so it can be evicted.
 		// This is critical for memory management during large file writes.
-		blockOffset := blockIdx * BlockSize
-		marked := m.cache.MarkBlockRangeFlushed(ctx, payloadID, chunkIdx, blockOffset, BlockSize)
+		m.cache.MarkBlockUploaded(ctx, payloadID, chunkIdx, blockIdx)
 
 		logger.Info("Eager upload complete",
 			"payloadID", payloadID,
 			"blockKey", blockKeyStr,
 			"duration", time.Since(startTime),
-			"size", len(data),
-			"slicesMarkedFlushed", marked)
+			"size", len(data))
 	}()
 }
 
@@ -330,7 +328,7 @@ func (m *TransferManager) startBlockUpload(ctx context.Context,
 // data to be durable on stable storage - the mmap WAL provides this guarantee.
 //
 // Deduplication: Blocks already uploaded by eager upload are tracked in state.uploaded
-// and skipped by uploadRemainingSlices. No need to wait for eager uploads to complete.
+// and skipped by uploadRemainingBlocks. No need to wait for eager uploads to complete.
 func (m *TransferManager) Flush(ctx context.Context, payloadID string) (*FlushResult, error) {
 	if !m.canProcess(ctx) {
 		return nil, fmt.Errorf("transfer manager is closed")
@@ -340,7 +338,7 @@ func (m *TransferManager) Flush(ctx context.Context, payloadID string) (*FlushRe
 	state := m.getOrCreateUploadState(payloadID)
 	state.flush.Add(1)
 
-	// Upload remaining dirty slices (partial blocks not covered by eager upload)
+	// Upload remaining dirty blocks (partial blocks not covered by eager upload)
 	// in background. No blocking - data is safe in mmap cache.
 	//
 	// IMPORTANT: We use context.Background() here because the request context is
@@ -349,14 +347,14 @@ func (m *TransferManager) Flush(ctx context.Context, payloadID string) (*FlushRe
 	// Server shutdown is handled separately by TransferManager.Close() which:
 	// 1. Stops accepting new work via canProcess() check
 	// 2. Drains the transfer queue with a timeout
-	// 3. uploadRemainingSlices checks canProcess() before each block upload
+	// 3. uploadRemainingBlocks checks canProcess() before each block upload
 	//
 	// Data durability is guaranteed by the mmap WAL cache - uploads are best-effort
 	// for performance, not required for durability.
 	go func() {
 		defer state.flush.Done()
-		if err := m.uploadRemainingSlices(context.Background(), payloadID); err != nil {
-			logger.Warn("Failed to upload remaining slices",
+		if err := m.uploadRemainingBlocks(context.Background(), payloadID); err != nil {
+			logger.Warn("Failed to upload remaining blocks",
 				"payloadID", payloadID,
 				"error", err)
 		}
@@ -413,12 +411,11 @@ func (m *TransferManager) WaitForAllUploads(ctx context.Context, payloadID strin
 	}
 }
 
-// uploadRemainingSlices uploads dirty blocks to the block store in parallel.
+// uploadRemainingBlocks uploads dirty blocks to the block store in parallel.
 // This handles blocks that weren't eagerly uploaded (partial blocks or when semaphore was full).
-// It reads merged data from cache to ensure all overlapping writes are combined.
-func (m *TransferManager) uploadRemainingSlices(ctx context.Context, payloadID string) error {
-	// Get all pending slices to find which blocks need uploading
-	pending, err := m.cache.GetDirtySlices(ctx, payloadID)
+func (m *TransferManager) uploadRemainingBlocks(ctx context.Context, payloadID string) error {
+	// Get all pending blocks that need uploading
+	pending, err := m.cache.GetDirtyBlocks(ctx, payloadID)
 	if err != nil {
 		if err == cache.ErrFileNotInCache {
 			return nil // No data to flush
@@ -433,57 +430,28 @@ func (m *TransferManager) uploadRemainingSlices(ctx context.Context, payloadID s
 	// Get upload state for deduplication
 	state := m.getUploadState(payloadID)
 
-	// Collect unique blocks that need uploading with their max extent
-	type blockCoord struct {
-		chunkIdx uint32
-		blockIdx uint32
-	}
-	blocksToUpload := make(map[blockCoord]uint32) // maps to max data extent within block
-
-	for _, slice := range pending {
-		startBlockIdx := slice.Offset / BlockSize
-		endBlockIdx := (slice.Offset + slice.Length - 1) / BlockSize
-
-		for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
-			// Check if already uploaded by eager upload
-			if state != nil {
-				key := blockKey{chunkIdx: slice.ChunkIndex, blockIdx: blockIdx}
-				state.blocksMu.Lock()
-				alreadyUploaded := state.uploaded[key]
-				state.blocksMu.Unlock()
-				if alreadyUploaded {
-					continue
-				}
-			}
-
-			// Calculate max data extent in this block from this slice
-			coord := blockCoord{chunkIdx: slice.ChunkIndex, blockIdx: blockIdx}
-			blockStart := blockIdx * BlockSize
-			sliceEnd := slice.Offset + slice.Length
-			blockEnd := blockStart + BlockSize
-			if sliceEnd < blockEnd {
-				// Slice ends within this block
-				extent := sliceEnd - blockStart
-				if extent > blocksToUpload[coord] {
-					blocksToUpload[coord] = extent
-				}
-			} else {
-				// Slice extends beyond this block - full block
-				blocksToUpload[coord] = BlockSize
+	// Filter out blocks already uploaded by eager upload
+	var blocksToUpload []cache.PendingBlock
+	for _, blk := range pending {
+		// Check if already uploaded by eager upload
+		if state != nil {
+			key := blockKey{chunkIdx: blk.ChunkIndex, blockIdx: blk.BlockIndex}
+			state.blocksMu.Lock()
+			alreadyUploaded := state.uploaded[key]
+			state.blocksMu.Unlock()
+			if alreadyUploaded {
+				// Mark as uploaded in cache since eager upload succeeded
+				m.cache.MarkBlockUploaded(ctx, payloadID, blk.ChunkIndex, blk.BlockIndex)
+				continue
 			}
 		}
+		blocksToUpload = append(blocksToUpload, blk)
 	}
 
 	if len(blocksToUpload) == 0 {
-		// Mark slices as flushed since all blocks were already uploaded.
-		// Error is intentionally ignored: slice state tracking is best-effort and
-		// does not affect correctness - blocks are already uploaded to block store.
-		for _, slice := range pending {
-			_ = m.cache.MarkSliceFlushed(ctx, payloadID, slice.ID, nil)
-		}
 		logger.Info("Flush: all blocks already uploaded",
 			"payloadID", payloadID,
-			"slices", len(pending))
+			"blocks", len(pending))
 		return nil
 	}
 
@@ -496,30 +464,29 @@ func (m *TransferManager) uploadRemainingSlices(ctx context.Context, payloadID s
 	// Upload all blocks in parallel using semaphore
 	var wg sync.WaitGroup
 
-	for coord, extent := range blocksToUpload {
+	for _, blk := range blocksToUpload {
 		wg.Add(1)
 
 		// Acquire semaphore slot (blocking for flush)
 		m.uploadSem <- struct{}{}
 
-		go func(chunkIdx, blockIdx, dataLen uint32) {
+		go func(pendingBlock cache.PendingBlock) {
 			defer func() {
 				<-m.uploadSem // Release semaphore slot
 				wg.Done()
 			}()
 
-			// Read merged block data from cache
-			blockOffset := blockIdx * BlockSize
-			blockData := make([]byte, dataLen)
-			found, err := m.cache.ReadSlice(ctx, payloadID, chunkIdx, blockOffset, dataLen, blockData)
-			if err != nil || !found {
-				logger.Error("Flush upload: failed to read block from cache",
-					"payloadID", payloadID,
-					"chunkIdx", chunkIdx,
-					"blockIdx", blockIdx,
-					"error", err)
-				return
+			chunkIdx := pendingBlock.ChunkIndex
+			blockIdx := pendingBlock.BlockIndex
+
+			// Get block data from cache (use DataSize for partial blocks)
+			dataLen := pendingBlock.DataSize
+			if dataLen == 0 {
+				dataLen = BlockSize
 			}
+
+			// Use the data directly from PendingBlock (references cache buffer)
+			blockData := pendingBlock.Data[:dataLen]
 
 			blockKeyStr := FormatBlockKey(payloadID, chunkIdx, blockIdx)
 			startTime := time.Now()
@@ -540,23 +507,19 @@ func (m *TransferManager) uploadRemainingSlices(ctx context.Context, payloadID s
 				return
 			}
 
+			// Mark block as uploaded IMMEDIATELY after upload.
+			// This allows cache eviction to happen during flush, preventing OOM.
+			m.cache.MarkBlockUploaded(ctx, payloadID, chunkIdx, blockIdx)
+
 			logger.Info("Flush upload complete",
 				"payloadID", payloadID,
 				"blockKey", blockKeyStr,
 				"duration", time.Since(startTime),
 				"size", dataLen)
-		}(coord.chunkIdx, coord.blockIdx, extent)
+		}(blk)
 	}
 
 	wg.Wait()
-
-	// Mark all slices as flushed.
-	// Error is intentionally ignored: slice state tracking is best-effort and
-	// does not affect correctness - blocks are already uploaded to block store.
-	for _, slice := range pending {
-		_ = m.cache.MarkSliceFlushed(ctx, payloadID, slice.ID, nil)
-	}
-
 	return nil
 }
 
@@ -564,7 +527,7 @@ func (m *TransferManager) uploadRemainingSlices(ctx context.Context, payloadID s
 // Parallel Download (Cache Miss)
 // ============================================================================
 
-// ReadSlice fetches blocks from the block store in parallel and caches them.
+// Read fetches blocks from the block store in parallel and caches them.
 // Called when ReadAt() encounters a cache miss. Data is written directly into dest.
 //
 // Downloads have priority over uploads - when this function runs, any pending
@@ -572,7 +535,7 @@ func (m *TransferManager) uploadRemainingSlices(ctx context.Context, payloadID s
 //
 // Deprecated: Use EnsureAvailable instead, which provides better priority scheduling
 // and prefetch support.
-func (m *TransferManager) ReadSlice(ctx context.Context, payloadID string, chunkIdx uint32, offset, length uint32, dest []byte) error {
+func (m *TransferManager) Read(ctx context.Context, payloadID string, chunkIdx uint32, offset, length uint32, dest []byte) error {
 	m.mu.RLock()
 	if m.closed {
 		m.mu.RUnlock()
@@ -624,11 +587,11 @@ func (m *TransferManager) ReadSlice(ctx context.Context, payloadID string, chunk
 
 			blocks[resultIdx] = data
 
-			// Cache the downloaded block as flushed (evictable)
-			// We create a new slice for this block
+			// Cache the downloaded block (evictable)
+			// Write to cache at the appropriate offset
 			blockOffset := blockIdx * BlockSize
 			// Non-fatal: block was read successfully, just not cached
-			_ = m.cache.WriteSlice(ctx, payloadID, chunkIdx, data, blockOffset)
+			_ = m.cache.Write(ctx, payloadID, chunkIdx, data, blockOffset)
 		}(i, int(i-startBlockIdx))
 	}
 
@@ -695,11 +658,11 @@ func (m *TransferManager) downloadBlock(ctx context.Context, payloadID string, c
 		return fmt.Errorf("download block %s: %w", blockKeyStr, err)
 	}
 
-	// Write to cache as a flushed slice (evictable)
+	// Write to cache (evictable after upload)
 	// PayloadID is the sole identifier for file content
 	blockOffset := blockIdx * BlockSize
 	// Non-fatal: block was read successfully, just not cached
-	_ = m.cache.WriteSlice(ctx, payloadID, chunkIdx, data, blockOffset)
+	_ = m.cache.Write(ctx, payloadID, chunkIdx, data, blockOffset)
 
 	return nil
 }
@@ -720,7 +683,7 @@ func (m *TransferManager) uploadBlock(ctx context.Context, payloadID string, chu
 	defer blockPool.Put(dataPtr)
 	data := *dataPtr
 
-	found, err := m.cache.ReadSlice(ctx, payloadID, chunkIdx, blockOffset, BlockSize, data)
+	found, err := m.cache.Read(ctx, payloadID, chunkIdx, blockOffset, BlockSize, data)
 	if err != nil || !found {
 		return fmt.Errorf("block not in cache: chunk=%d block=%d", chunkIdx, blockIdx)
 	}
