@@ -111,12 +111,12 @@ func TestMmapPersister_AppendAndRecover(t *testing.T) {
 		t.Fatalf("Recover() error = %v", err)
 	}
 
-	if len(recovered) != len(entries) {
-		t.Fatalf("Recover() got %d entries, want %d", len(recovered), len(entries))
+	if len(recovered.Entries) != len(entries) {
+		t.Fatalf("Recover() got %d entries, want %d", len(recovered.Entries), len(entries))
 	}
 
 	// Verify entries
-	for i, got := range recovered {
+	for i, got := range recovered.Entries {
 		want := entries[i]
 		if got.PayloadID != want.PayloadID {
 			t.Errorf("entry[%d].PayloadID = %s, want %s", i, got.PayloadID, want.PayloadID)
@@ -189,12 +189,12 @@ func TestMmapPersister_AppendRemove(t *testing.T) {
 	}
 
 	// Should only have file2 (file1 was removed)
-	if len(recovered) != 1 {
-		t.Fatalf("Recover() got %d entries, want 1", len(recovered))
+	if len(recovered.Entries) != 1 {
+		t.Fatalf("Recover() got %d entries, want 1", len(recovered.Entries))
 	}
 
-	if string(recovered[0].PayloadID) != "file2" {
-		t.Errorf("recovered[0].PayloadID = %s, want file2", recovered[0].PayloadID)
+	if string(recovered.Entries[0].PayloadID) != "file2" {
+		t.Errorf("recovered[0].PayloadID = %s, want file2", recovered.Entries[0].PayloadID)
 	}
 }
 
@@ -276,14 +276,14 @@ func TestMmapPersister_EmptyRecover(t *testing.T) {
 	}
 	defer func() { _ = p.Close() }()
 
-	// Recover from empty WAL should return empty slice
-	entries, err := p.Recover()
+	// Recover from empty WAL should return empty result
+	result, err := p.Recover()
 	if err != nil {
 		t.Fatalf("Recover() error = %v", err)
 	}
 
-	if len(entries) != 0 {
-		t.Errorf("Recover() got %d entries, want 0", len(entries))
+	if len(result.Entries) != 0 {
+		t.Errorf("Recover() got %d entries, want 0", len(result.Entries))
 	}
 }
 
@@ -330,11 +330,11 @@ func TestMmapPersister_LargePayloadID(t *testing.T) {
 		t.Fatalf("Recover() error = %v", err)
 	}
 
-	if len(recovered) != 1 {
-		t.Fatalf("Recover() got %d entries, want 1", len(recovered))
+	if len(recovered.Entries) != 1 {
+		t.Fatalf("Recover() got %d entries, want 1", len(recovered.Entries))
 	}
 
-	if recovered[0].PayloadID != string(largeHandle) {
+	if recovered.Entries[0].PayloadID != string(largeHandle) {
 		t.Errorf("PayloadID mismatch after recovery")
 	}
 }
@@ -376,11 +376,11 @@ func TestMmapPersister_ZeroLengthData(t *testing.T) {
 		t.Fatalf("Recover() error = %v", err)
 	}
 
-	if len(recovered) != 1 {
-		t.Fatalf("Recover() got %d entries, want 1", len(recovered))
+	if len(recovered.Entries) != 1 {
+		t.Fatalf("Recover() got %d entries, want 1", len(recovered.Entries))
 	}
 
-	if len(recovered[0].Data) != 0 {
+	if len(recovered.Entries[0].Data) != 0 {
 		t.Errorf("Expected zero-length data")
 	}
 }
@@ -536,15 +536,15 @@ func TestMmapPersister_MultiFileRecovery(t *testing.T) {
 		t.Fatalf("Recover() error = %v", err)
 	}
 
-	if len(recovered) != totalEntries {
-		t.Fatalf("Recover() got %d entries, want %d", len(recovered), totalEntries)
+	if len(recovered.Entries) != totalEntries {
+		t.Fatalf("Recover() got %d entries, want %d", len(recovered.Entries), totalEntries)
 	}
 
 	// Verify data integrity
 	idx := 0
 	for _, f := range files {
 		for blockIdx := 0; blockIdx < f.blocks; blockIdx++ {
-			got := recovered[idx]
+			got := recovered.Entries[idx]
 			if got.PayloadID != f.handle {
 				t.Errorf("entry[%d].PayloadID = %s, want %s", idx, got.PayloadID, f.handle)
 			}
@@ -620,14 +620,142 @@ func TestMmapPersister_RemoveInterleavedWithWrites(t *testing.T) {
 	}
 
 	// Should only have 2 entries (both for file3)
-	if len(recovered) != 2 {
-		t.Fatalf("Recover() got %d entries, want 2", len(recovered))
+	if len(recovered.Entries) != 2 {
+		t.Fatalf("Recover() got %d entries, want 2", len(recovered.Entries))
 	}
 
-	for _, entry := range recovered {
+	for _, entry := range recovered.Entries {
 		if entry.PayloadID != "file3" {
 			t.Errorf("Unexpected file handle: %s (expected file3)", entry.PayloadID)
 		}
+	}
+}
+
+func TestMmapPersister_BlockUploadedTracking(t *testing.T) {
+	dir := t.TempDir()
+
+	p, err := NewMmapPersister(dir)
+	if err != nil {
+		t.Fatalf("NewMmapPersister() error = %v", err)
+	}
+
+	// Write some blocks
+	entries := []*BlockWriteEntry{
+		{PayloadID: "file1", ChunkIdx: 0, BlockIdx: 0, OffsetInBlock: 0, Data: []byte("hello")},
+		{PayloadID: "file1", ChunkIdx: 0, BlockIdx: 1, OffsetInBlock: 0, Data: []byte("world")},
+		{PayloadID: "file1", ChunkIdx: 0, BlockIdx: 2, OffsetInBlock: 0, Data: []byte("test")},
+	}
+
+	for _, e := range entries {
+		if err := p.AppendBlockWrite(e); err != nil {
+			t.Fatalf("AppendBlockWrite() error = %v", err)
+		}
+	}
+
+	// Mark block 0 and block 2 as uploaded
+	if err := p.AppendBlockUploaded("file1", 0, 0); err != nil {
+		t.Fatalf("AppendBlockUploaded(0,0) error = %v", err)
+	}
+	if err := p.AppendBlockUploaded("file1", 0, 2); err != nil {
+		t.Fatalf("AppendBlockUploaded(0,2) error = %v", err)
+	}
+
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	// Reopen and recover
+	p2, err := NewMmapPersister(dir)
+	if err != nil {
+		t.Fatalf("NewMmapPersister() reopen error = %v", err)
+	}
+	defer func() { _ = p2.Close() }()
+
+	result, err := p2.Recover()
+	if err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+
+	// Should have all 3 entries
+	if len(result.Entries) != 3 {
+		t.Fatalf("Recover() got %d entries, want 3", len(result.Entries))
+	}
+
+	// Should have 2 uploaded blocks
+	if len(result.UploadedBlocks) != 2 {
+		t.Fatalf("Recover() got %d uploaded blocks, want 2", len(result.UploadedBlocks))
+	}
+
+	// Verify uploaded blocks
+	key0 := BlockKey{PayloadID: "file1", ChunkIdx: 0, BlockIdx: 0}
+	key1 := BlockKey{PayloadID: "file1", ChunkIdx: 0, BlockIdx: 1}
+	key2 := BlockKey{PayloadID: "file1", ChunkIdx: 0, BlockIdx: 2}
+
+	if !result.UploadedBlocks[key0] {
+		t.Error("Block 0 should be marked as uploaded")
+	}
+	if result.UploadedBlocks[key1] {
+		t.Error("Block 1 should NOT be marked as uploaded")
+	}
+	if !result.UploadedBlocks[key2] {
+		t.Error("Block 2 should be marked as uploaded")
+	}
+}
+
+func TestMmapPersister_RemoveClearsUploadedBlocks(t *testing.T) {
+	dir := t.TempDir()
+
+	p, err := NewMmapPersister(dir)
+	if err != nil {
+		t.Fatalf("NewMmapPersister() error = %v", err)
+	}
+
+	// Write blocks for file1
+	entry := &BlockWriteEntry{
+		PayloadID:     "file1",
+		ChunkIdx:      0,
+		BlockIdx:      0,
+		OffsetInBlock: 0,
+		Data:          []byte("hello"),
+	}
+	if err := p.AppendBlockWrite(entry); err != nil {
+		t.Fatalf("AppendBlockWrite() error = %v", err)
+	}
+
+	// Mark block as uploaded
+	if err := p.AppendBlockUploaded("file1", 0, 0); err != nil {
+		t.Fatalf("AppendBlockUploaded() error = %v", err)
+	}
+
+	// Remove file1
+	if err := p.AppendRemove("file1"); err != nil {
+		t.Fatalf("AppendRemove() error = %v", err)
+	}
+
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	// Reopen and recover
+	p2, err := NewMmapPersister(dir)
+	if err != nil {
+		t.Fatalf("NewMmapPersister() reopen error = %v", err)
+	}
+	defer func() { _ = p2.Close() }()
+
+	result, err := p2.Recover()
+	if err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+
+	// Should have no entries (file was removed)
+	if len(result.Entries) != 0 {
+		t.Fatalf("Recover() got %d entries, want 0", len(result.Entries))
+	}
+
+	// Should have no uploaded blocks (file was removed)
+	if len(result.UploadedBlocks) != 0 {
+		t.Fatalf("Recover() got %d uploaded blocks, want 0", len(result.UploadedBlocks))
 	}
 }
 
@@ -698,12 +826,12 @@ func TestMmapPersister_AppendAfterRecovery(t *testing.T) {
 		t.Fatalf("Recover() error = %v", err)
 	}
 
-	if len(recovered) != 6 {
-		t.Fatalf("Recover() got %d entries, want 6", len(recovered))
+	if len(recovered.Entries) != 6 {
+		t.Fatalf("Recover() got %d entries, want 6", len(recovered.Entries))
 	}
 
 	// Verify data from both sessions
-	for i, entry := range recovered {
+	for i, entry := range recovered.Entries {
 		if entry.BlockIdx != uint32(i) {
 			t.Errorf("entry[%d].BlockIdx = %d, want %d", i, entry.BlockIdx, i)
 		}
@@ -946,14 +1074,14 @@ func BenchmarkMmapPersister_Recover_WithRemoves(b *testing.B) {
 			b.Fatalf("NewMmapPersister() error = %v", err)
 		}
 
-		entries, err := p2.Recover()
+		result, err := p2.Recover()
 		if err != nil {
 			b.Fatalf("Recover() error = %v", err)
 		}
 
 		// Verify we got 250 entries (half the files removed)
-		if len(entries) != 250 {
-			b.Fatalf("Expected 250 entries, got %d", len(entries))
+		if len(result.Entries) != 250 {
+			b.Fatalf("Expected 250 entries, got %d", len(result.Entries))
 		}
 		_ = p2.Close()
 	}

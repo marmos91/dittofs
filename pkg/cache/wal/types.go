@@ -28,3 +28,21 @@ type BlockWriteEntry struct {
 	// Data contains the bytes written.
 	Data []byte
 }
+
+// BlockKey uniquely identifies a block within a file.
+type BlockKey struct {
+	PayloadID string
+	ChunkIdx  uint32
+	BlockIdx  uint32
+}
+
+// RecoveryResult contains all data recovered from the WAL.
+type RecoveryResult struct {
+	// Entries contains all block write entries to replay.
+	Entries []BlockWriteEntry
+
+	// UploadedBlocks contains block keys for blocks that were already
+	// uploaded to S3 before the crash. These should be marked as Uploaded
+	// (not Pending) during recovery to avoid re-uploading.
+	UploadedBlocks map[BlockKey]bool
+}

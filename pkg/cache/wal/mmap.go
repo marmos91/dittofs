@@ -53,8 +53,9 @@ const (
 
 // Entry types for the append-only log
 const (
-	entryTypeBlockWrite uint8 = 0
-	entryTypeRemove     uint8 = 3
+	entryTypeBlockWrite    uint8 = 0
+	entryTypeBlockUploaded uint8 = 1 // Marks block as uploaded to S3
+	entryTypeRemove        uint8 = 3
 )
 
 // Header field offsets
@@ -215,9 +216,10 @@ func (p *MmapPersister) openExisting(filePath string) error {
 		return ErrCorrupted
 	}
 
-	// Accept both version 1 (legacy format) and version 2 (current block format)
-	// Version 1 files will be upgraded on first write
-	if header.Version != mmapVersion && header.Version != 1 {
+	// Only the current version is supported for recovery.
+	// Legacy version 1 WAL files cannot be recovered - they must be
+	// discarded (the data should already be in S3 from previous runs).
+	if header.Version != mmapVersion {
 		_ = p.closeLocked()
 		return ErrVersionMismatch
 	}
@@ -295,6 +297,62 @@ func (p *MmapPersister) AppendBlockWrite(entry *BlockWriteEntry) error {
 	return nil
 }
 
+// AppendBlockUploaded appends a "block uploaded" marker to the WAL.
+// This indicates that the block has been successfully uploaded to S3.
+// On recovery, blocks with this marker will be marked as Uploaded (evictable)
+// instead of Pending, preventing unnecessary re-uploads.
+//
+// Entry format:
+//   - Entry type: 1 byte (entryTypeBlockUploaded)
+//   - Payload ID length: 2 bytes
+//   - Payload ID: variable
+//   - Chunk index: 4 bytes
+//   - Block index: 4 bytes
+func (p *MmapPersister) AppendBlockUploaded(payloadID string, chunkIdx, blockIdx uint32) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.closed {
+		return ErrPersisterClosed
+	}
+
+	// Calculate entry size: type(1) + payloadIDLen(2) + payloadID + chunkIdx(4) + blockIdx(4)
+	entrySize := 1 + 2 + len(payloadID) + 4 + 4
+
+	if err := p.ensureSpace(uint64(entrySize)); err != nil {
+		return err
+	}
+
+	offset := p.header.NextOffset
+
+	// Write entry type
+	p.data[offset] = entryTypeBlockUploaded
+	offset++
+
+	// Write payload ID
+	binary.LittleEndian.PutUint16(p.data[offset:], uint16(len(payloadID)))
+	offset += 2
+	copy(p.data[offset:], []byte(payloadID))
+	offset += uint64(len(payloadID))
+
+	// Write chunk index
+	binary.LittleEndian.PutUint32(p.data[offset:], chunkIdx)
+	offset += 4
+
+	// Write block index
+	binary.LittleEndian.PutUint32(p.data[offset:], blockIdx)
+	offset += 4
+
+	// Update header
+	p.header.NextOffset = offset
+	p.header.EntryCount++
+	p.header.Version = mmapVersion
+	p.writeHeader()
+	p.dirty = false
+
+	return nil
+}
+
 // AppendRemove appends a file removal entry to the WAL.
 func (p *MmapPersister) AppendRemove(payloadID string) error {
 	p.mu.Lock()
@@ -357,12 +415,18 @@ func (p *MmapPersister) Sync() error {
 	return nil
 }
 
-// Recover replays the WAL and returns all block write entries.
+// Recover replays the WAL and returns all block write entries along with
+// information about which blocks were already uploaded to S3.
 //
 // The WAL is scanned sequentially. Remove entries mark files for exclusion,
-// and block write entries for non-removed files are returned. This allows the cache
-// to be reconstructed from the WAL after a crash.
-func (p *MmapPersister) Recover() ([]BlockWriteEntry, error) {
+// block write entries for non-removed files are collected, and block uploaded
+// entries track which blocks are safe in S3.
+//
+// Returns RecoveryResult containing:
+//   - Entries: Block write entries to replay into cache
+//   - UploadedBlocks: Map of blocks that were uploaded to S3 (should be marked
+//     as Uploaded, not Pending, to avoid re-upload)
+func (p *MmapPersister) Recover() (*RecoveryResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -370,8 +434,9 @@ func (p *MmapPersister) Recover() ([]BlockWriteEntry, error) {
 		return nil, ErrPersisterClosed
 	}
 
-	// First pass: collect all removed payload IDs
+	// First pass: collect all removed payload IDs and uploaded blocks
 	removedFiles := make(map[string]bool)
+	uploadedBlocks := make(map[BlockKey]bool)
 	offset := uint64(mmapHeaderSize)
 	endOffset := p.header.NextOffset
 
@@ -392,12 +457,27 @@ func (p *MmapPersister) Recover() ([]BlockWriteEntry, error) {
 			}
 			offset = newOffset
 
+		case entryTypeBlockUploaded:
+			// Track uploaded block
+			key, newOffset, err := p.readBlockUploadedEntry(offset)
+			if err != nil {
+				return nil, err
+			}
+			uploadedBlocks[key] = true
+			offset = newOffset
+
 		case entryTypeRemove:
 			payloadID, newOffset, err := p.readRemoveEntry(offset)
 			if err != nil {
 				return nil, err
 			}
 			removedFiles[payloadID] = true
+			// Also remove any uploaded blocks for this file
+			for key := range uploadedBlocks {
+				if key.PayloadID == payloadID {
+					delete(uploadedBlocks, key)
+				}
+			}
 			offset = newOffset
 
 		default:
@@ -424,6 +504,14 @@ func (p *MmapPersister) Recover() ([]BlockWriteEntry, error) {
 			}
 			offset = newOffset
 
+		case entryTypeBlockUploaded:
+			// Skip - already processed in first pass
+			_, newOffset, err := p.readBlockUploadedEntry(offset)
+			if err != nil {
+				return nil, err
+			}
+			offset = newOffset
+
 		case entryTypeRemove:
 			_, newOffset, err := p.readRemoveEntry(offset)
 			if err != nil {
@@ -433,7 +521,10 @@ func (p *MmapPersister) Recover() ([]BlockWriteEntry, error) {
 		}
 	}
 
-	return entries, nil
+	return &RecoveryResult{
+		Entries:        entries,
+		UploadedBlocks: uploadedBlocks,
+	}, nil
 }
 
 // readBlockWriteEntry reads a block write entry from the log.
@@ -536,6 +627,42 @@ func (p *MmapPersister) readRemoveEntry(offset uint64) (string, uint64, error) {
 	offset += uint64(idLen)
 
 	return payloadID, offset, nil
+}
+
+// readBlockUploadedEntry reads a block uploaded marker from the log.
+// Returns the BlockKey identifying the uploaded block.
+func (p *MmapPersister) readBlockUploadedEntry(offset uint64) (BlockKey, uint64, error) {
+	var key BlockKey
+
+	// Read payload ID length
+	if offset+2 > p.size {
+		return key, 0, ErrCorrupted
+	}
+	idLen := binary.LittleEndian.Uint16(p.data[offset:])
+	offset += 2
+
+	// Read payload ID
+	if offset+uint64(idLen) > p.size {
+		return key, 0, ErrCorrupted
+	}
+	key.PayloadID = string(p.data[offset : offset+uint64(idLen)])
+	offset += uint64(idLen)
+
+	// Read chunk index
+	if offset+4 > p.size {
+		return key, 0, ErrCorrupted
+	}
+	key.ChunkIdx = binary.LittleEndian.Uint32(p.data[offset:])
+	offset += 4
+
+	// Read block index
+	if offset+4 > p.size {
+		return key, 0, ErrCorrupted
+	}
+	key.BlockIdx = binary.LittleEndian.Uint32(p.data[offset:])
+	offset += 4
+
+	return key, offset, nil
 }
 
 // Close releases resources held by the persister.

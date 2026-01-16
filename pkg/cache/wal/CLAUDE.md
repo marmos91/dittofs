@@ -42,6 +42,31 @@ type BlockWriteEntry struct {
 }
 ```
 
+### BlockKey
+
+Uniquely identifies a block within a file.
+
+```go
+type BlockKey struct {
+    PayloadID string
+    ChunkIdx  uint32
+    BlockIdx  uint32
+}
+```
+
+### RecoveryResult
+
+Contains all data recovered from the WAL.
+
+```go
+type RecoveryResult struct {
+    Entries        []BlockWriteEntry   // Block write entries to replay
+    UploadedBlocks map[BlockKey]bool   // Blocks already uploaded to S3
+}
+```
+
+On recovery, blocks in `UploadedBlocks` should be marked as `Uploaded` (not `Pending`) to avoid re-uploading data that's already safe in S3.
+
 ## MmapPersister
 
 Memory-mapped file persister for high performance.
@@ -66,9 +91,10 @@ cache, err := cache.NewWithWal(maxSize, persister)
 
 **Methods:**
 - `AppendBlockWrite(entry *BlockWriteEntry) error` - Log a block write
+- `AppendBlockUploaded(payloadID string, chunkIdx, blockIdx uint32) error` - Mark block as uploaded to S3
 - `AppendRemove(payloadID string) error` - Log a file removal
 - `Sync() error` - Fsync WAL to disk
-- `Recover() ([]BlockWriteEntry, error)` - Replay WAL entries on startup
+- `Recover() (*RecoveryResult, error)` - Replay WAL entries on startup
 - `Close() error` - Cleanup resources
 - `IsEnabled() bool` - Always returns true
 
@@ -138,6 +164,13 @@ c := cache.New(maxSize)
   - Offset in block: uint32 (4 bytes)
   - Data length: uint32 (4 bytes)
   - Data: variable
+
+[Block Uploaded Entry: variable]
+  - Type: 1 byte (1=blockUploaded)
+  - Payload ID length: uint16 (2 bytes)
+  - Payload ID: variable
+  - Chunk index: uint32 (4 bytes)
+  - Block index: uint32 (4 bytes)
 
 [Remove Entry: variable]
   - Type: 1 byte (3=remove)

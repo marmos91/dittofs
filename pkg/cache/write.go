@@ -48,6 +48,11 @@ func (c *Cache) Write(ctx context.Context, payloadID string, chunkIdx uint32, da
 	}
 	c.globalMu.RUnlock()
 
+	// Fast path: nothing to write
+	if len(data) == 0 {
+		return nil
+	}
+
 	// Validate parameters
 	if offset+uint32(len(data)) > ChunkSize {
 		return ErrInvalidOffset
@@ -119,6 +124,14 @@ func (c *Cache) Write(ctx context.Context, payloadID string, chunkIdx uint32, da
 		// Get or create block buffer
 		blk, isNew := c.getOrCreateBlock(entry, chunkIdx, blockIdx)
 
+		// Cannot write to a block that is currently being uploaded.
+		// This provides backpressure to prevent data corruption - the caller should
+		// wait for the upload to complete (via NFS COMMIT semantics) before retrying.
+		// Check BEFORE writing to prevent partial writes that corrupt upload data.
+		if !isNew && blk.state == BlockStateUploading {
+			return ErrCacheFull // defer handles unlock
+		}
+
 		// Track memory for new block buffers
 		if isNew {
 			c.totalSize.Add(BlockSize)
@@ -173,6 +186,150 @@ func (c *Cache) Write(ctx context.Context, payloadID string, chunkIdx uint32, da
 				return err
 			}
 		}
+	}
+
+	return nil
+}
+
+// WriteDownloaded writes data that was downloaded from the block store.
+//
+// Unlike Write(), this method:
+//   - Marks blocks as Uploaded (evictable), not Pending
+//   - Does NOT count against pendingSize (it's not dirty data)
+//   - Does NOT write to WAL (data is already safe in block store)
+//   - CAN evict other uploaded blocks to make room (downloaded data is evictable)
+//
+// This is used by the TransferManager when downloading blocks from S3 on cache miss.
+// Downloaded data is already persisted in the block store, so it can be evicted
+// immediately if cache pressure requires it.
+//
+// Parameters:
+//   - payloadID: Unique identifier for the file content
+//   - chunkIdx: Which 64MB chunk this write belongs to
+//   - data: The bytes to write (copied into cache, safe to modify after call)
+//   - offset: Byte offset within the chunk (0 to ChunkSize-1)
+//
+// Errors:
+//   - ErrInvalidOffset: offset + len(data) exceeds ChunkSize
+//   - ErrCacheClosed: cache has been closed
+//   - ErrCacheFull: cache is completely full even after eviction
+//   - context.Canceled/DeadlineExceeded: context was cancelled
+func (c *Cache) WriteDownloaded(ctx context.Context, payloadID string, chunkIdx uint32, data []byte, offset uint32) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return ErrCacheClosed
+	}
+	c.globalMu.RUnlock()
+
+	// Fast path: nothing to write
+	if len(data) == 0 {
+		return nil
+	}
+
+	// Validate parameters
+	if offset+uint32(len(data)) > ChunkSize {
+		return ErrInvalidOffset
+	}
+
+	// Calculate which blocks this write spans
+	startBlock := block.IndexForOffset(offset)
+	endBlock := block.IndexForOffset(offset + uint32(len(data)) - 1)
+
+	entry := c.getFileEntry(payloadID)
+	entry.mu.Lock()
+
+	// Calculate how many NEW blocks will be created (for memory tracking).
+	var newBlockCount uint64
+	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
+		if !c.blockExists(entry, chunkIdx, blockIdx) {
+			newBlockCount++
+		}
+	}
+	newMemory := newBlockCount * BlockSize
+
+	// Enforce maxSize by evicting LRU uploaded blocks if needed.
+	// Downloaded blocks ARE evictable, so we can evict them to make room for more downloads.
+	if c.maxSize > 0 && newMemory > 0 {
+		if c.totalSize.Load()+newMemory > c.maxSize {
+			// Release lock to evict (eviction needs to lock other entries)
+			entry.mu.Unlock()
+			c.evictLRUUntilFits(ctx, newMemory)
+			entry.mu.Lock()
+
+			// Re-check after eviction
+			newBlockCount = 0
+			for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
+				if !c.blockExists(entry, chunkIdx, blockIdx) {
+					newBlockCount++
+				}
+			}
+			newMemory = newBlockCount * BlockSize
+
+			// If still no room, return error (all data is pending/uploading)
+			if c.totalSize.Load()+newMemory > c.maxSize {
+				entry.mu.Unlock()
+				return ErrCacheFull
+			}
+		}
+	}
+
+	// NOTE: Downloaded data does NOT check pendingSize backpressure.
+	// It's already in S3, so it's clean/evictable data.
+
+	defer entry.mu.Unlock()
+
+	// Update LRU access time
+	c.touchFile(entry)
+
+	// Write data to each block buffer it spans
+	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
+		// Get or create block buffer
+		blk, isNew := c.getOrCreateBlock(entry, chunkIdx, blockIdx)
+
+		// Track memory for new block buffers
+		if isNew {
+			c.totalSize.Add(BlockSize)
+			// Downloaded blocks start as Uploaded (evictable), NOT Pending
+			blk.state = BlockStateUploaded
+			// Do NOT add to pendingSize - this is clean data
+		}
+
+		// Calculate offsets within this block
+		blockStart := blockIdx * BlockSize
+		blockEnd := blockStart + BlockSize
+
+		// Calculate overlap with write range
+		writeStart := max(offset, blockStart)
+		writeEnd := min(offset+uint32(len(data)), blockEnd)
+
+		// Calculate positions
+		offsetInBlock := writeStart - blockStart
+		dataStart := writeStart - offset
+		dataEnd := writeEnd - offset
+		writeLen := dataEnd - dataStart
+
+		// Copy data directly to block buffer
+		copy(blk.data[offsetInBlock:], data[dataStart:dataEnd])
+
+		// Update coverage bitmap
+		markCoverage(blk.coverage, offsetInBlock, writeLen)
+
+		// Update block data size
+		if end := offsetInBlock + writeLen; end > blk.dataSize {
+			blk.dataSize = end
+		}
+
+		// If block was Pending (dirty), keep it pending - local writes take precedence
+		// If block was Uploading, keep it uploading
+		// Only new blocks (handled above) or existing Uploaded blocks stay Uploaded
+		// This ensures local modifications aren't lost
+
+		// NOTE: No WAL write for downloaded data - it's already safe in block store
 	}
 
 	return nil

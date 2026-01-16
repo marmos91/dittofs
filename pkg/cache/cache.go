@@ -121,15 +121,18 @@ func NewWithWal(maxSize uint64, persister *wal.MmapPersister) (*Cache, error) {
 // recoverFromWal recovers cache state from the WAL persister.
 //
 // Called automatically during NewWithWal. Replays all WAL entries to restore
-// block buffers to their pre-crash state. After recovery, unflushed blocks can be
+// block buffers to their pre-crash state. Blocks that were already uploaded to
+// S3 (tracked in WAL) are marked as Uploaded to avoid re-upload.
+//
+// After recovery, unflushed blocks (those not in UploadedBlocks) can be
 // re-uploaded via the TransferManager.
 func (c *Cache) recoverFromWal() error {
-	entries, err := c.persister.Recover()
+	result, err := c.persister.Recover()
 	if err != nil {
 		return err
 	}
 
-	for _, entry := range entries {
+	for _, entry := range result.Entries {
 		fileEntry := c.getFileEntry(entry.PayloadID)
 		fileEntry.mu.Lock()
 
@@ -141,17 +144,35 @@ func (c *Cache) recoverFromWal() error {
 			fileEntry.chunks[entry.ChunkIdx] = chunk
 		}
 
+		// Check if this block was already uploaded to S3
+		blockKey := wal.BlockKey{
+			PayloadID: entry.PayloadID,
+			ChunkIdx:  entry.ChunkIdx,
+			BlockIdx:  entry.BlockIdx,
+		}
+		wasUploaded := result.UploadedBlocks[blockKey]
+
+		// Determine initial state: Uploaded if already in S3, Pending otherwise
+		initialState := BlockStatePending
+		if wasUploaded {
+			initialState = BlockStateUploaded
+		}
+
 		// Get or create block buffer
 		block, exists := chunk.blocks[entry.BlockIdx]
 		if !exists {
 			block = &blockBuffer{
 				data:     make([]byte, BlockSize),
 				coverage: newCoverageBitmap(),
-				state:    BlockStatePending,
+				state:    initialState,
 			}
 			chunk.blocks[entry.BlockIdx] = block
 			// Track BlockSize for new block buffers (memory allocation tracking)
 			c.totalSize.Add(BlockSize)
+			// Only count against pendingSize if block is Pending (needs upload)
+			if initialState == BlockStatePending {
+				c.pendingSize.Add(BlockSize)
+			}
 		}
 
 		// Copy data to block buffer at correct offset
@@ -207,7 +228,7 @@ func (c *Cache) touchFile(entry *fileEntry) {
 }
 
 // getOrCreateBlock returns or creates a block buffer for the given coordinates.
-// Returns the block buffer and whether it was newly created.
+// Returns the block buffer and whether it was newly created (or re-allocated after detach).
 // Must be called with entry.mu held for write.
 func (c *Cache) getOrCreateBlock(entry *fileEntry, chunkIdx, blockIdx uint32) (*blockBuffer, bool) {
 	chunk, exists := entry.chunks[chunkIdx]
@@ -229,16 +250,30 @@ func (c *Cache) getOrCreateBlock(entry *fileEntry, chunkIdx, blockIdx uint32) (*
 		return block, true // newly created
 	}
 
-	return block, false // existing
+	// If block exists but data was detached (nil), re-allocate the buffer.
+	// This happens when reading data that was previously uploaded via DetachBlockForUpload.
+	if block.data == nil {
+		block.data = make([]byte, BlockSize)
+		block.coverage = newCoverageBitmap()
+		// Keep existing state (likely Uploaded) - don't reset to Pending
+		return block, true // treated as new for memory tracking
+	}
+
+	return block, false // existing with data
 }
 
-// blockExists checks if a block buffer exists for the given coordinates.
+// blockExists checks if a block buffer exists WITH data for the given coordinates.
+// Returns false if the block entry exists but data was detached (nil).
 // Must be called with entry.mu held (read or write lock).
 func (c *Cache) blockExists(entry *fileEntry, chunkIdx, blockIdx uint32) bool {
 	chunk, exists := entry.chunks[chunkIdx]
 	if !exists {
 		return false
 	}
-	_, exists = chunk.blocks[blockIdx]
-	return exists
+	block, exists := chunk.blocks[blockIdx]
+	if !exists {
+		return false
+	}
+	// Block without data (detached) doesn't count as existing for memory purposes
+	return block.data != nil
 }
