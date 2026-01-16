@@ -105,7 +105,7 @@ func TestValidate_ShareNameMustStartWithSlash(t *testing.T) {
 		Shares: []ShareConfig{
 			{
 				Name:               "export", // Missing leading slash
-				Metadata:      "default",
+				Metadata:           "default",
 				Payload:            "default",
 				AllowedAuthMethods: []string{"anonymous"},
 				IdentityMapping: IdentityMappingConfig{
@@ -165,7 +165,7 @@ func TestValidate_InvalidAuthMethod(t *testing.T) {
 		Shares: []ShareConfig{
 			{
 				Name:               "/export",
-				Metadata:      "default",
+				Metadata:           "default",
 				Payload:            "default",
 				AllowedAuthMethods: []string{"kerberos"}, // Invalid
 				IdentityMapping: IdentityMappingConfig{
@@ -323,7 +323,7 @@ func TestValidate_MultipleValidShares(t *testing.T) {
 	cfg := GetDefaultConfig()
 	cfg.Shares = append(cfg.Shares, ShareConfig{
 		Name:               "/data",
-		Metadata:      "default",
+		Metadata:           "default",
 		Payload:            "default",
 		ReadOnly:           true,
 		AllowedAuthMethods: []string{"unix"},
@@ -372,7 +372,7 @@ func TestValidate_EmptyShareName(t *testing.T) {
 		Shares: []ShareConfig{
 			{
 				Name:               "", // Empty name
-				Metadata:      "default",
+				Metadata:           "default",
 				Payload:            "default",
 				AllowedAuthMethods: []string{"anonymous"},
 				IdentityMapping: IdentityMappingConfig{

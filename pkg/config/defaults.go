@@ -244,7 +244,6 @@ func applyWriteGatheringDefaults(cfg *WriteGatheringConfig) {
 	}
 }
 
-
 // applyMetadataDefaults sets metadata store defaults.
 func applyMetadataDefaults(cfg *MetadataConfig) {
 	// Initialize stores map if nil
@@ -555,7 +554,7 @@ func GetDefaultConfig() *Config {
 				Name:     "/export",
 				Metadata: "default",
 				Payload:  "default",
-				ReadOnly:      false,
+				ReadOnly: false,
 				IdentityMapping: IdentityMappingConfig{
 					MapAllToAnonymous:        false, // Don't squash by default
 					MapPrivilegedToAnonymous: false, // root_squash disabled by default

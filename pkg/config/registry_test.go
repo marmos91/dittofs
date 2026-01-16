@@ -36,10 +36,10 @@ func TestInitializeRegistry_Success(t *testing.T) {
 		},
 		Shares: []ShareConfig{
 			{
-				Name:          "/export",
+				Name:     "/export",
 				Metadata: "meta1",
-				Payload:       "default",
-				ReadOnly:      false,
+				Payload:  "default",
+				ReadOnly: false,
 			},
 		},
 	}
@@ -106,22 +106,22 @@ func TestInitializeRegistry_MultipleStoresAndShares(t *testing.T) {
 		},
 		Shares: []ShareConfig{
 			{
-				Name:          "/export1",
+				Name:     "/export1",
 				Metadata: "meta1",
-				Payload:       "default",
-				ReadOnly:      false,
+				Payload:  "default",
+				ReadOnly: false,
 			},
 			{
-				Name:          "/export2",
+				Name:     "/export2",
 				Metadata: "meta2",
-				Payload:       "default",
-				ReadOnly:      true,
+				Payload:  "default",
+				ReadOnly: true,
 			},
 			{
-				Name:          "/export3",
+				Name:     "/export3",
 				Metadata: "meta1", // Reuse store
-				Payload:       "default",
-				ReadOnly:      false,
+				Payload:  "default",
+				ReadOnly: false,
 			},
 		},
 	}
@@ -219,9 +219,9 @@ func TestInitializeRegistry_ShareReferencesNonexistentMetadataStore(t *testing.T
 		},
 		Shares: []ShareConfig{
 			{
-				Name:          "/export",
+				Name:     "/export",
 				Metadata: "nonexistent", // References non-existent store
-				Payload:       "default",
+				Payload:  "default",
 			},
 		},
 	}
@@ -252,9 +252,9 @@ func TestInitializeRegistry_EmptyShareName(t *testing.T) {
 		},
 		Shares: []ShareConfig{
 			{
-				Name:          "", // Empty name
+				Name:     "", // Empty name
 				Metadata: "meta1",
-				Payload:       "default",
+				Payload:  "default",
 			},
 		},
 	}
@@ -285,14 +285,14 @@ func TestInitializeRegistry_DuplicateShareName(t *testing.T) {
 		},
 		Shares: []ShareConfig{
 			{
-				Name:          "/export",
+				Name:     "/export",
 				Metadata: "meta1",
-				Payload:       "default",
+				Payload:  "default",
 			},
 			{
-				Name:          "/export", // Duplicate
+				Name:     "/export", // Duplicate
 				Metadata: "meta1",
-				Payload:       "default",
+				Payload:  "default",
 			},
 		},
 	}
