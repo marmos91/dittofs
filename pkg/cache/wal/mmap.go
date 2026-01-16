@@ -1,3 +1,5 @@
+//go:build !windows
+
 // mmap.go provides memory-mapped file backing for WAL persistence.
 //
 // When mmap backing is enabled, cache data is persisted to disk and can
