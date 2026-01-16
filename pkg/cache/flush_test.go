@@ -596,3 +596,169 @@ func BenchmarkCoalesceWrites(b *testing.B) {
 		})
 	}
 }
+
+// ============================================================================
+// MarkBlockRangeFlushed Tests
+// ============================================================================
+
+func TestMarkBlockRangeFlushed_SlicesFullyContained(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	handle := "test-file"
+
+	// Write slices that are fully contained within a 4MB block (offset 0-4MB)
+	blockSize := uint32(4 * 1024 * 1024) // 4MB
+
+	// Small slice at offset 0
+	_ = c.WriteSlice(ctx, handle, 0, make([]byte, 1024), 0)
+	// Small slice at offset 1MB
+	_ = c.WriteSlice(ctx, handle, 0, make([]byte, 1024), 1024*1024)
+
+	// Verify we have 2 pending slices (they may have been merged)
+	slices, _ := c.GetDirtySlices(ctx, handle)
+	initialCount := len(slices)
+	if initialCount == 0 {
+		t.Fatal("expected at least 1 slice")
+	}
+
+	// Mark block 0 (0 to 4MB) as flushed
+	marked := c.MarkBlockRangeFlushed(ctx, handle, 0, 0, blockSize)
+
+	// All slices should be marked as flushed since they're within the block
+	if marked == 0 {
+		t.Error("expected at least 1 slice to be marked as flushed")
+	}
+
+	// Should have no more dirty slices
+	slices, _ = c.GetDirtySlices(ctx, handle)
+	if len(slices) != 0 {
+		t.Errorf("expected 0 dirty slices after marking block flushed, got %d", len(slices))
+	}
+}
+
+func TestMarkBlockRangeFlushed_SliceExtendsBeyndBlock(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	handle := "test-file"
+
+	blockSize := uint32(4 * 1024 * 1024) // 4MB
+
+	// Write a slice that extends beyond block 0 (starts at 3MB, length 2MB)
+	// This slice spans from 3MB to 5MB, so it extends beyond block 0 (0-4MB)
+	_ = c.WriteSlice(ctx, handle, 0, make([]byte, 2*1024*1024), 3*1024*1024)
+
+	// Mark block 0 (0 to 4MB) as flushed
+	marked := c.MarkBlockRangeFlushed(ctx, handle, 0, 0, blockSize)
+
+	// Slice should NOT be marked because it extends beyond the block
+	if marked != 0 {
+		t.Errorf("expected 0 slices marked (slice extends beyond block), got %d", marked)
+	}
+
+	// Should still have the dirty slice
+	slices, _ := c.GetDirtySlices(ctx, handle)
+	if len(slices) != 1 {
+		t.Errorf("expected 1 dirty slice still present, got %d", len(slices))
+	}
+}
+
+func TestMarkBlockRangeFlushed_OnlyPendingSlices(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	handle := "test-file"
+
+	// Write a slice and mark it as flushed manually
+	_ = c.WriteSlice(ctx, handle, 0, make([]byte, 1024), 0)
+	slices, _ := c.GetDirtySlices(ctx, handle)
+	_ = c.MarkSliceFlushed(ctx, handle, slices[0].ID, nil)
+
+	// MarkBlockRangeFlushed should not affect already-flushed slices
+	marked := c.MarkBlockRangeFlushed(ctx, handle, 0, 0, 4*1024*1024)
+
+	if marked != 0 {
+		t.Errorf("expected 0 newly marked (slice already flushed), got %d", marked)
+	}
+}
+
+func TestMarkBlockRangeFlushed_NonexistentFile(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	marked := c.MarkBlockRangeFlushed(context.Background(), "nonexistent", 0, 0, 4*1024*1024)
+
+	if marked != 0 {
+		t.Errorf("expected 0 for nonexistent file, got %d", marked)
+	}
+}
+
+func TestMarkBlockRangeFlushed_ContextCancelled(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	_ = c.WriteSlice(context.Background(), "test", 0, make([]byte, 1024), 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	marked := c.MarkBlockRangeFlushed(ctx, "test", 0, 0, 4*1024*1024)
+
+	if marked != 0 {
+		t.Errorf("expected 0 for cancelled context, got %d", marked)
+	}
+}
+
+// ============================================================================
+// Backpressure (ErrCacheFull) Tests
+// ============================================================================
+
+func TestWriteSlice_CacheFull_ReturnsError(t *testing.T) {
+	// Create a cache with 1KB max size
+	c := New(1024)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	handle := "test-file"
+
+	// Write data that fills the cache (all pending, can't be evicted)
+	err := c.WriteSlice(ctx, handle, 0, make([]byte, 512), 0)
+	if err != nil {
+		t.Fatalf("first write should succeed: %v", err)
+	}
+
+	// Try to write more data that would exceed cache size
+	// Since all data is pending (not flushed), eviction can't free space
+	err = c.WriteSlice(ctx, handle, 0, make([]byte, 600), 512)
+	if err != ErrCacheFull {
+		t.Errorf("expected ErrCacheFull when cache is full of pending data, got %v", err)
+	}
+}
+
+func TestWriteSlice_CacheFull_SucceedsAfterFlush(t *testing.T) {
+	// Create a cache with 1KB max size
+	c := New(1024)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	handle := "test-file"
+
+	// Fill cache with pending data
+	_ = c.WriteSlice(ctx, handle, 0, make([]byte, 512), 0)
+
+	// Mark data as flushed so it can be evicted
+	slices, _ := c.GetDirtySlices(ctx, handle)
+	for _, s := range slices {
+		_ = c.MarkSliceFlushed(ctx, handle, s.ID, nil)
+	}
+
+	// Now write should succeed because eviction can free space
+	err := c.WriteSlice(ctx, handle, 0, make([]byte, 600), 512)
+	if err != nil {
+		t.Errorf("write should succeed after flushing (eviction possible), got %v", err)
+	}
+}

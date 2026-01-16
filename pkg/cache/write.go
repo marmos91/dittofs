@@ -55,11 +55,19 @@ func (c *Cache) WriteSlice(ctx context.Context, payloadID string, chunkIdx uint3
 		return ErrInvalidOffset
 	}
 
-	// Enforce maxSize by evicting LRU flushed data if needed
+	// Enforce maxSize by evicting LRU flushed data if needed.
+	// If eviction can't free enough space (all data is pending), return ErrCacheFull
+	// to provide backpressure and prevent OOM conditions.
 	if c.maxSize > 0 {
 		dataLen := uint64(len(data))
 		if c.totalSize.Load()+dataLen > c.maxSize {
 			c.evictLRUUntilFits(ctx, dataLen)
+
+			// Check if we have enough space after eviction.
+			// If not, cache is full of pending data that can't be evicted.
+			if c.totalSize.Load()+dataLen > c.maxSize {
+				return ErrCacheFull
+			}
 		}
 	}
 

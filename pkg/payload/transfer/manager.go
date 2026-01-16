@@ -301,11 +301,17 @@ func (m *TransferManager) startBlockUpload(ctx context.Context,
 			return
 		}
 
+		// Mark slices within this block as flushed so they can be evicted.
+		// This is critical for memory management during large file writes.
+		blockOffset := blockIdx * BlockSize
+		marked := m.cache.MarkBlockRangeFlushed(ctx, payloadID, chunkIdx, blockOffset, BlockSize)
+
 		logger.Info("Eager upload complete",
 			"payloadID", payloadID,
 			"blockKey", blockKeyStr,
 			"duration", time.Since(startTime),
-			"size", len(data))
+			"size", len(data),
+			"slicesMarkedFlushed", marked)
 	}()
 }
 

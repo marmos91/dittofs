@@ -38,6 +38,11 @@ var (
 
 	// ErrInvalidOffset is returned for invalid slice offsets.
 	ErrInvalidOffset = errors.New("invalid offset")
+
+	// ErrCacheFull is returned when the cache is full of pending data that
+	// cannot be evicted. This provides backpressure to prevent OOM conditions.
+	// The caller should flush data (NFS COMMIT) before retrying the write.
+	ErrCacheFull = errors.New("cache full: pending data cannot be evicted")
 )
 
 // ============================================================================

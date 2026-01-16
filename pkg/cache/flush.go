@@ -118,6 +118,64 @@ func (c *Cache) MarkSliceFlushed(ctx context.Context, payloadID string, sliceID 
 	return ErrSliceNotFound
 }
 
+// MarkBlockRangeFlushed marks all slices fully contained within a block range as flushed.
+//
+// This is called by the TransferManager after successfully uploading a block to the
+// block store. Only slices that are FULLY contained within the block range are marked
+// as flushed - slices that extend beyond the block boundaries are left as pending
+// to ensure data that hasn't been uploaded yet is not evicted.
+//
+// Parameters:
+//   - payloadID: Unique identifier for the file content
+//   - chunkIdx: The chunk index containing the block
+//   - blockOffset: Start offset of the block within the chunk
+//   - blockLength: Length of the block (typically 4MB)
+//
+// Returns the number of slices marked as flushed.
+func (c *Cache) MarkBlockRangeFlushed(ctx context.Context, payloadID string, chunkIdx uint32, blockOffset, blockLength uint32) int {
+	if err := ctx.Err(); err != nil {
+		return 0
+	}
+
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return 0
+	}
+	c.globalMu.RUnlock()
+
+	entry := c.getFileEntry(payloadID)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	chunk, exists := entry.chunks[chunkIdx]
+	if !exists {
+		return 0
+	}
+
+	blockEnd := blockOffset + blockLength
+	marked := 0
+
+	for i := range chunk.slices {
+		slice := &chunk.slices[i]
+		if slice.State != SliceStatePending {
+			continue
+		}
+
+		sliceEnd := slice.Offset + slice.Length
+
+		// Only mark slices that are FULLY contained within the block range.
+		// This ensures we don't mark data as flushed that extends beyond
+		// what was actually uploaded.
+		if slice.Offset >= blockOffset && sliceEnd <= blockEnd {
+			slice.State = SliceStateFlushed
+			marked++
+		}
+	}
+
+	return marked
+}
+
 // ============================================================================
 // Write Optimization
 // ============================================================================
