@@ -154,7 +154,7 @@ func (s *Store) ReadBlock(ctx context.Context, blockKey string) ([]byte, error) 
 		}
 		return nil, fmt.Errorf("s3 get object: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -187,7 +187,7 @@ func (s *Store) ReadBlockRange(ctx context.Context, blockKey string, offset, len
 		}
 		return nil, fmt.Errorf("s3 get object range: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {

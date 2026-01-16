@@ -97,8 +97,9 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 	transferMgr.Start(ctx)
 
 	// Step 4.5: Recover unflushed cache data from previous run (async)
-	go func() {
-		stats := transferMgr.RecoverUnflushedSlices(context.Background())
+	// Use a context derived from the parent to allow graceful cancellation during shutdown
+	go func(recoveryCtx context.Context) {
+		stats := transferMgr.RecoverUnflushedSlices(recoveryCtx)
 		if stats.SlicesFound > 0 {
 			logger.Info("Recovery: started background upload of unflushed data",
 				"files", stats.FilesScanned,
@@ -107,7 +108,7 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 		} else {
 			logger.Info("Recovery: no unflushed data found")
 		}
-	}()
+	}(ctx)
 
 	// Step 5: Register all metadata stores
 	if err := registerMetadataStores(ctx, reg, cfg); err != nil {

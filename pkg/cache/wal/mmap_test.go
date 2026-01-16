@@ -16,7 +16,7 @@ func TestMmapPersister_CreateNew(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	if !p.IsEnabled() {
 		t.Error("IsEnabled() = false, want true")
@@ -36,7 +36,7 @@ func TestMmapPersister_AppendSlice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	entry := &SliceEntry{
 		PayloadID: "test-file",
@@ -128,7 +128,7 @@ func TestMmapPersister_AppendAndRecover(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() reopen error = %v", err)
 	}
-	defer p2.Close()
+	defer func() { _ = p2.Close() }()
 
 	recovered, err := p2.Recover()
 	if err != nil {
@@ -215,7 +215,7 @@ func TestMmapPersister_AppendRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() reopen error = %v", err)
 	}
-	defer p2.Close()
+	defer func() { _ = p2.Close() }()
 
 	recovered, err := p2.Recover()
 	if err != nil {
@@ -277,7 +277,7 @@ func TestMmapPersister_GrowFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	// Write enough data to trigger file growth
 	largeData := make([]byte, 10*1024*1024) // 10MB
@@ -334,7 +334,7 @@ func TestMmapPersister_EmptyRecover(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	// Recover from empty WAL should return empty slice
 	entries, err := p.Recover()
@@ -354,7 +354,7 @@ func TestMmapPersister_LargePayloadID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	// Create entry with large file handle (512 bytes)
 	largeHandle := make([]byte, 512)
@@ -388,7 +388,7 @@ func TestMmapPersister_LargePayloadID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() reopen error = %v", err)
 	}
-	defer p2.Close()
+	defer func() { _ = p2.Close() }()
 
 	recovered, err := p2.Recover()
 	if err != nil {
@@ -411,7 +411,7 @@ func TestMmapPersister_ManyBlockRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	// Create entry with many block refs
 	blockRefs := make([]BlockRef, 100)
@@ -449,7 +449,7 @@ func TestMmapPersister_ManyBlockRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() reopen error = %v", err)
 	}
-	defer p2.Close()
+	defer func() { _ = p2.Close() }()
 
 	recovered, err := p2.Recover()
 	if err != nil {
@@ -480,7 +480,7 @@ func TestMmapPersister_ZeroLengthData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	entry := &SliceEntry{
 		PayloadID: "empty-file",
@@ -508,7 +508,7 @@ func TestMmapPersister_ZeroLengthData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() reopen error = %v", err)
 	}
-	defer p2.Close()
+	defer func() { _ = p2.Close() }()
 
 	recovered, err := p2.Recover()
 	if err != nil {
@@ -532,7 +532,7 @@ func TestMmapPersister_CorruptedMagic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	p.Close()
+	_ = p.Close()
 
 	// Corrupt the magic bytes
 	filePath := filepath.Join(dir, "cache.dat")
@@ -563,7 +563,7 @@ func TestMmapPersister_VersionMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	p.Close()
+	_ = p.Close()
 
 	// Change version to something wrong
 	filePath := filepath.Join(dir, "cache.dat")
@@ -612,7 +612,7 @@ func TestMmapPersister_SyncNoDirty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	// Sync with no dirty data should be no-op
 	if err := p.Sync(); err != nil {
@@ -675,7 +675,7 @@ func TestMmapPersister_MultiFileRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() reopen error = %v", err)
 	}
-	defer p2.Close()
+	defer func() { _ = p2.Close() }()
 
 	recovered, err := p2.Recover()
 	if err != nil {
@@ -773,7 +773,7 @@ func TestMmapPersister_RemoveInterleavedWithSlices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() reopen error = %v", err)
 	}
-	defer p2.Close()
+	defer func() { _ = p2.Close() }()
 
 	recovered, err := p2.Recover()
 	if err != nil {
@@ -830,7 +830,7 @@ func TestMmapPersister_RecoverPreservesState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() reopen error = %v", err)
 	}
-	defer p2.Close()
+	defer func() { _ = p2.Close() }()
 
 	recovered, err := p2.Recover()
 	if err != nil {
@@ -885,7 +885,7 @@ func TestMmapPersister_RecoverPreservesTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() reopen error = %v", err)
 	}
-	defer p2.Close()
+	defer func() { _ = p2.Close() }()
 
 	recovered, err := p2.Recover()
 	if err != nil {
@@ -972,7 +972,7 @@ func TestMmapPersister_AppendAfterRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMmapPersister() reopen error = %v", err)
 	}
-	defer p3.Close()
+	defer func() { _ = p3.Close() }()
 
 	recovered, err := p3.Recover()
 	if err != nil {
@@ -1009,7 +1009,7 @@ func BenchmarkMmapPersister_AppendSlice_Small(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	// Small slice (512 bytes)
 	data := make([]byte, 512)
@@ -1048,7 +1048,7 @@ func BenchmarkMmapPersister_AppendSlice_Medium(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	// Medium slice (32KB - typical NFS write size)
 	data := make([]byte, 32*1024)
@@ -1087,7 +1087,7 @@ func BenchmarkMmapPersister_AppendSlice_Large(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	// Large slice (1MB)
 	data := make([]byte, 1*1024*1024)
@@ -1147,7 +1147,7 @@ func BenchmarkMmapPersister_Recover_100Entries(b *testing.B) {
 			b.Fatalf("AppendSlice() error = %v", err)
 		}
 	}
-	p.Close()
+	_ = p.Close()
 
 	b.ResetTimer()
 
@@ -1161,7 +1161,7 @@ func BenchmarkMmapPersister_Recover_100Entries(b *testing.B) {
 		if err != nil {
 			b.Fatalf("Recover() error = %v", err)
 		}
-		p2.Close()
+		_ = p2.Close()
 	}
 }
 
@@ -1193,7 +1193,7 @@ func BenchmarkMmapPersister_Recover_1000Entries(b *testing.B) {
 			b.Fatalf("AppendSlice() error = %v", err)
 		}
 	}
-	p.Close()
+	_ = p.Close()
 
 	b.ResetTimer()
 
@@ -1207,7 +1207,7 @@ func BenchmarkMmapPersister_Recover_1000Entries(b *testing.B) {
 		if err != nil {
 			b.Fatalf("Recover() error = %v", err)
 		}
-		p2.Close()
+		_ = p2.Close()
 	}
 }
 
@@ -1250,7 +1250,7 @@ func BenchmarkMmapPersister_Recover_WithRemoves(b *testing.B) {
 			b.Fatalf("AppendRemove() error = %v", err)
 		}
 	}
-	p.Close()
+	_ = p.Close()
 
 	b.ResetTimer()
 
@@ -1269,7 +1269,7 @@ func BenchmarkMmapPersister_Recover_WithRemoves(b *testing.B) {
 		if len(entries) != 250 {
 			b.Fatalf("Expected 250 entries, got %d", len(entries))
 		}
-		p2.Close()
+		_ = p2.Close()
 	}
 }
 
@@ -1280,7 +1280,7 @@ func BenchmarkMmapPersister_AppendRemove(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	b.ResetTimer()
 
@@ -1298,7 +1298,7 @@ func BenchmarkMmapPersister_Sync(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	// Write some data first
 	data := make([]byte, 1024)
@@ -1337,7 +1337,7 @@ func BenchmarkMmapPersister_Throughput(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewMmapPersister() error = %v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	// Simulate NFS write pattern: 32KB writes
 	data := make([]byte, 32*1024)

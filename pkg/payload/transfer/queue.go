@@ -191,11 +191,11 @@ func (q *TransferQueue) Stats() (pending, completed, failed int) {
 	return pending, q.completed, q.failed
 }
 
-// LastError returns the last error and when it occurred.
-func (q *TransferQueue) LastError() (error, time.Time) {
+// LastError returns when the last error occurred and the error itself.
+func (q *TransferQueue) LastError() (time.Time, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return q.lastError, q.lastErrorAt
+	return q.lastErrorAt, q.lastError
 }
 
 // worker processes transfer requests from the queue with priority ordering.

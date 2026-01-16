@@ -122,7 +122,7 @@ func (s *Store) WriteBlock(ctx context.Context, blockKey string, data []byte) er
 
 	// Atomic rename
 	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath) // Clean up on failure
+		_ = os.Remove(tmpPath) // Clean up on failure
 		return err
 	}
 
@@ -168,7 +168,7 @@ func (s *Store) ReadBlockRange(ctx context.Context, blockKey string, offset, len
 		}
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Get file size for bounds checking
 	info, err := f.Stat()

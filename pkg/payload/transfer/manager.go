@@ -14,8 +14,12 @@ import (
 )
 
 // blockPool reuses 4MB buffers for block uploads to reduce GC pressure.
+// Uses *[]byte to satisfy staticcheck SA6002 (sync.Pool prefers pointer types).
 var blockPool = sync.Pool{
-	New: func() any { return make([]byte, BlockSize) },
+	New: func() any {
+		buf := make([]byte, BlockSize)
+		return &buf
+	},
 }
 
 // fileUploadState tracks in-flight uploads for a single file.
@@ -134,13 +138,6 @@ func (m *TransferManager) getUploadState(payloadID string) *fileUploadState {
 	return m.uploads[payloadID]
 }
 
-// cleanupUploadState removes the upload state for a file.
-func (m *TransferManager) cleanupUploadState(payloadID string) {
-	m.uploadsMu.Lock()
-	defer m.uploadsMu.Unlock()
-	delete(m.uploads, payloadID)
-}
-
 // ============================================================================
 // Download Priority
 // ============================================================================
@@ -218,25 +215,26 @@ func (m *TransferManager) tryEagerUpload(ctx context.Context, payloadID string, 
 		"blockIdx", blockIdx)
 
 	// Read block data from cache
-	data := blockPool.Get().([]byte)
+	dataPtr := blockPool.Get().(*[]byte)
+	data := *dataPtr
 	found, err := m.cache.ReadSlice(ctx, payloadID, chunkIdx, blockStart, BlockSize, data)
 	if err != nil || !found {
-		blockPool.Put(data)
+		blockPool.Put(dataPtr)
 		return
 	}
 
-	// Start async upload (takes ownership of data buffer)
-	m.startBlockUpload(ctx, payloadID, chunkIdx, blockIdx, data)
+	// Start async upload (takes ownership of data buffer pointer)
+	m.startBlockUpload(ctx, payloadID, chunkIdx, blockIdx, dataPtr)
 }
 
 // startBlockUpload uploads a block asynchronously with bounded parallelism.
 //
-// The data buffer is owned by this function and will be returned to blockPool
+// The dataPtr buffer pointer is owned by this function and will be returned to blockPool
 // after the upload completes or fails.
 //
 // Upload goroutines yield to downloads (download priority) before performing I/O.
 func (m *TransferManager) startBlockUpload(ctx context.Context,
-	payloadID string, chunkIdx, blockIdx uint32, data []byte) {
+	payloadID string, chunkIdx, blockIdx uint32, dataPtr *[]byte) {
 	state := m.getOrCreateUploadState(payloadID)
 
 	// Check if already uploaded (deduplication)
@@ -244,7 +242,7 @@ func (m *TransferManager) startBlockUpload(ctx context.Context,
 	state.blocksMu.Lock()
 	if state.uploaded[key] {
 		state.blocksMu.Unlock()
-		blockPool.Put(data) // Return unused buffer
+		blockPool.Put(dataPtr) // Return unused buffer
 		return
 	}
 	state.uploaded[key] = true // Mark as in-progress
@@ -260,15 +258,16 @@ func (m *TransferManager) startBlockUpload(ctx context.Context,
 		state.blocksMu.Lock()
 		state.uploaded[key] = false // Unmark so Flush will upload it
 		state.blocksMu.Unlock()
-		blockPool.Put(data)
+		blockPool.Put(dataPtr)
 		return
 	}
 	state.inFlight.Add(1)
 
+	data := *dataPtr
 	go func() {
 		defer func() {
-			blockPool.Put(data) // Return buffer to pool
-			<-m.uploadSem       // Release semaphore slot
+			blockPool.Put(dataPtr) // Return buffer to pool
+			<-m.uploadSem          // Release semaphore slot
 			state.inFlight.Done()
 		}()
 
@@ -460,9 +459,11 @@ func (m *TransferManager) uploadRemainingSlices(ctx context.Context, payloadID s
 	}
 
 	if len(blocksToUpload) == 0 {
-		// Mark slices as flushed since all blocks were already uploaded
+		// Mark slices as flushed since all blocks were already uploaded.
+		// Error is intentionally ignored: slice state tracking is best-effort and
+		// does not affect correctness - blocks are already uploaded to block store.
 		for _, slice := range pending {
-			m.cache.MarkSliceFlushed(ctx, payloadID, slice.ID, nil)
+			_ = m.cache.MarkSliceFlushed(ctx, payloadID, slice.ID, nil)
 		}
 		logger.Info("Flush: all blocks already uploaded",
 			"payloadID", payloadID,
@@ -533,9 +534,11 @@ func (m *TransferManager) uploadRemainingSlices(ctx context.Context, payloadID s
 
 	wg.Wait()
 
-	// Mark all slices as flushed
+	// Mark all slices as flushed.
+	// Error is intentionally ignored: slice state tracking is best-effort and
+	// does not affect correctness - blocks are already uploaded to block store.
 	for _, slice := range pending {
-		m.cache.MarkSliceFlushed(ctx, payloadID, slice.ID, nil)
+		_ = m.cache.MarkSliceFlushed(ctx, payloadID, slice.ID, nil)
 	}
 
 	return nil
@@ -608,9 +611,8 @@ func (m *TransferManager) ReadSlice(ctx context.Context, payloadID string, chunk
 			// Cache the downloaded block as flushed (evictable)
 			// We create a new slice for this block
 			blockOffset := blockIdx * BlockSize
-			if err := m.cache.WriteSlice(ctx, payloadID, chunkIdx, data, blockOffset); err != nil {
-				// Non-fatal: block was read successfully, just not cached
-			}
+			// Non-fatal: block was read successfully, just not cached
+			_ = m.cache.WriteSlice(ctx, payloadID, chunkIdx, data, blockOffset)
 		}(i, int(i-startBlockIdx))
 	}
 
@@ -680,9 +682,8 @@ func (m *TransferManager) downloadBlock(ctx context.Context, payloadID string, c
 	// Write to cache as a flushed slice (evictable)
 	// PayloadID is the sole identifier for file content
 	blockOffset := blockIdx * BlockSize
-	if err := m.cache.WriteSlice(ctx, payloadID, chunkIdx, data, blockOffset); err != nil {
-		// Non-fatal: block was read successfully, just not cached
-	}
+	// Non-fatal: block was read successfully, just not cached
+	_ = m.cache.WriteSlice(ctx, payloadID, chunkIdx, data, blockOffset)
 
 	return nil
 }
@@ -699,8 +700,9 @@ func (m *TransferManager) uploadBlock(ctx context.Context, payloadID string, chu
 
 	// Read block data from cache
 	blockOffset := blockIdx * BlockSize
-	data := blockPool.Get().([]byte)
-	defer blockPool.Put(data)
+	dataPtr := blockPool.Get().(*[]byte)
+	defer blockPool.Put(dataPtr)
+	data := *dataPtr
 
 	found, err := m.cache.ReadSlice(ctx, payloadID, chunkIdx, blockOffset, BlockSize, data)
 	if err != nil || !found {

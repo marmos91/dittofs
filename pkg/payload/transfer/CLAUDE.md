@@ -214,7 +214,7 @@ EnqueuePrefetch(req) bool   // Lowest priority (best effort)
 Pending() int
 PendingByType() (download, upload, prefetch int)
 Stats() (pending, completed, failed int)
-LastError() (error, time.Time)
+LastError() (time.Time, error)
 ```
 
 ## Common Mistakes

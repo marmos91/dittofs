@@ -52,12 +52,16 @@ func TestRemove_UpdatesTotalSize(t *testing.T) {
 	payloadID := "test-file"
 	data := make([]byte, 1024)
 
-	c.WriteSlice(ctx, payloadID, 0, data, 0)
+	if err := c.WriteSlice(ctx, payloadID, 0, data, 0); err != nil {
+		t.Fatalf("WriteSlice failed: %v", err)
+	}
 	if c.GetTotalSize() != 1024 {
 		t.Errorf("expected size 1024, got %d", c.GetTotalSize())
 	}
 
-	c.Remove(ctx, payloadID)
+	if err := c.Remove(ctx, payloadID); err != nil {
+		t.Fatalf("Remove failed: %v", err)
+	}
 	if c.GetTotalSize() != 0 {
 		t.Errorf("expected size 0 after remove, got %d", c.GetTotalSize())
 	}
@@ -218,11 +222,15 @@ func TestHasDirtyData_FalseAfterFlush(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	c.WriteSlice(ctx, payloadID, 0, []byte("data"), 0)
+	if err := c.WriteSlice(ctx, payloadID, 0, []byte("data"), 0); err != nil {
+		t.Fatalf("WriteSlice failed: %v", err)
+	}
 
 	slices, _ := c.GetDirtySlices(ctx, payloadID)
 	for _, slice := range slices {
-		c.MarkSliceFlushed(ctx, payloadID, slice.ID, nil)
+		if err := c.MarkSliceFlushed(ctx, payloadID, slice.ID, nil); err != nil {
+			t.Fatalf("MarkSliceFlushed failed: %v", err)
+		}
 	}
 
 	if c.HasDirtyData(payloadID) {
@@ -429,13 +437,19 @@ func TestStats_Basic(t *testing.T) {
 	ctx := context.Background()
 
 	// Write dirty data
-	c.WriteSlice(ctx, "file1", 0, make([]byte, 10*1024), 0)
+	if err := c.WriteSlice(ctx, "file1", 0, make([]byte, 10*1024), 0); err != nil {
+		t.Fatalf("WriteSlice failed: %v", err)
+	}
 
 	// Write and flush
-	c.WriteSlice(ctx, "file2", 0, make([]byte, 5*1024), 0)
+	if err := c.WriteSlice(ctx, "file2", 0, make([]byte, 5*1024), 0); err != nil {
+		t.Fatalf("WriteSlice failed: %v", err)
+	}
 	slices, _ := c.GetDirtySlices(ctx, "file2")
 	for _, slice := range slices {
-		c.MarkSliceFlushed(ctx, "file2", slice.ID, nil)
+		if err := c.MarkSliceFlushed(ctx, "file2", slice.ID, nil); err != nil {
+			t.Fatalf("MarkSliceFlushed failed: %v", err)
+		}
 	}
 
 	stats := c.Stats()

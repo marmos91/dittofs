@@ -281,52 +281,6 @@ func markRangeCovered(covered []uint64, start, length uint32) {
 	}
 }
 
-// walkSliceCoverage iterates over slice coverage using newest-wins semantics.
-//
-// For each uncovered byte in the range [offset, offset+length), calls the visitor
-// with the result index, slice index, and slice. Uses a bitmap to track coverage
-// and avoid visiting the same byte twice.
-//
-// Returns true if the entire range is covered by slices.
-//
-// WARNING: This allocates O(length) memory. For coverage-only checks, use
-// isRangeCoveredFast instead.
-func walkSliceCoverage(slices []Slice, offset, length uint32, visit func(resultIdx, sliceIdx uint32, slice *Slice)) bool {
-	covered := make([]bool, length)
-	coveredCount := uint32(0)
-	requestEnd := offset + length
-
-	for i := range slices {
-		if coveredCount >= length {
-			break
-		}
-
-		slice := &slices[i]
-		sliceEnd := slice.Offset + slice.Length
-
-		// Skip non-overlapping slices
-		if slice.Offset >= requestEnd || sliceEnd <= offset {
-			continue
-		}
-
-		overlapStart := max(offset, slice.Offset)
-		overlapEnd := min(requestEnd, sliceEnd)
-
-		for j := overlapStart; j < overlapEnd; j++ {
-			resultIdx := j - offset
-			if !covered[resultIdx] {
-				if visit != nil {
-					visit(resultIdx, j-slice.Offset, slice)
-				}
-				covered[resultIdx] = true
-				coveredCount++
-			}
-		}
-	}
-
-	return coveredCount == length
-}
-
 // isRangeCoveredFast checks if a range is fully covered by slices without allocating.
 //
 // Uses interval tracking instead of a byte bitmap. This is O(n*log(n)) where n is

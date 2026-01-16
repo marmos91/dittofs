@@ -37,11 +37,8 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Run integration tests - BadgerDB
-        run: go test -tags=integration -v -timeout=10m ./test/integration/badger
-
-      - name: Run integration tests - S3
-        run: go test -tags=integration -v -timeout=10m ./test/integration/s3
+      - name: Run all integration tests
+        run: go test -tags=integration -v -timeout=15m ./...
 
       - name: Upload test logs on failure
         if: failure()

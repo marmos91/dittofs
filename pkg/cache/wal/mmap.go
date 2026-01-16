@@ -144,14 +144,14 @@ func (p *MmapPersister) createNew(filePath string) error {
 
 	// Extend to initial size
 	if err := f.Truncate(int64(mmapInitialSize)); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("truncate file: %w", err)
 	}
 
 	// Memory map
 	data, err := unix.Mmap(int(f.Fd()), 0, mmapInitialSize, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("mmap: %w", err)
 	}
 
@@ -184,20 +184,20 @@ func (p *MmapPersister) openExisting(filePath string) error {
 	// Get file size
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("stat file: %w", err)
 	}
 
 	size := uint64(info.Size())
 	if size < mmapHeaderSize {
-		f.Close()
+		_ = f.Close()
 		return ErrCorrupted
 	}
 
 	// Memory map
 	data, err := unix.Mmap(int(f.Fd()), 0, int(size), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("mmap: %w", err)
 	}
 
@@ -214,12 +214,12 @@ func (p *MmapPersister) openExisting(filePath string) error {
 	header.TotalDataSize = binary.LittleEndian.Uint64(data[headerOffsetTotalDataSize:])
 
 	if string(header.Magic[:]) != mmapMagic {
-		p.closeLocked()
+		_ = p.closeLocked()
 		return ErrCorrupted
 	}
 
 	if header.Version != mmapVersion {
-		p.closeLocked()
+		_ = p.closeLocked()
 		return ErrVersionMismatch
 	}
 

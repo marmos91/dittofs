@@ -79,55 +79,6 @@ func TestParseShareName(t *testing.T) {
 }
 
 // ============================================================================
-// Minimal mock for reconciliation tests
-// We only need GetFileByPayloadID and PutFile methods
-// ============================================================================
-
-type testStore struct {
-	files map[string]*metadata.File // payloadID -> file
-}
-
-func newTestStore() *testStore {
-	return &testStore{
-		files: make(map[string]*metadata.File),
-	}
-}
-
-func (s *testStore) GetFileByPayloadID(_ context.Context, payloadID metadata.PayloadID) (*metadata.File, error) {
-	file, exists := s.files[string(payloadID)]
-	if !exists {
-		return nil, errNotFound
-	}
-	return file, nil
-}
-
-func (s *testStore) PutFile(_ context.Context, file *metadata.File) error {
-	// Build payloadID from share name and path
-	payloadID := file.ShareName[1:] + file.Path // Remove leading "/" from share name
-	s.files[payloadID] = file
-	return nil
-}
-
-// testReconciler implements MetadataReconciler for testing
-type testReconciler struct {
-	stores map[string]*testStore
-}
-
-func newTestReconciler() *testReconciler {
-	return &testReconciler{
-		stores: make(map[string]*testStore),
-	}
-}
-
-// GetMetadataStoreForShare returns a test store that implements only the methods
-// needed for reconciliation (GetFileByPayloadID and PutFile)
-func (r *testReconciler) GetMetadataStoreForShare(shareName string) (metadata.MetadataStore, error) {
-	// This won't compile because testStore doesn't implement MetadataStore
-	// Instead, we need to test with a different approach
-	return nil, errNotFound
-}
-
-// ============================================================================
 // ReconcileMetadata Tests - Unit tests for the reconciliation logic
 // Note: Full integration tests require the actual metadata stores
 // ============================================================================

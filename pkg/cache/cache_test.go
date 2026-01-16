@@ -57,7 +57,7 @@ func TestCache_WalPersistence(t *testing.T) {
 
 	// Reopen and recover
 	c2 := newTestCacheWithWal(t, dir, 0)
-	defer c2.Close()
+	defer func() { _ = c2.Close() }()
 
 	result := make([]byte, len(data))
 	found, err := c2.ReadSlice(ctx, payloadID, 0, 0, uint32(len(data)), result)
@@ -95,7 +95,7 @@ func TestCache_WalRemovePersistence(t *testing.T) {
 
 	// Reopen
 	c2 := newTestCacheWithWal(t, dir, 0)
-	defer c2.Close()
+	defer func() { _ = c2.Close() }()
 
 	result := make([]byte, len(data))
 	found, _ := c2.ReadSlice(ctx, payloadID, 0, 0, uint32(len(data)), result)
@@ -108,7 +108,7 @@ func TestCache_WalSync(t *testing.T) {
 	dir := t.TempDir()
 
 	c := newTestCacheWithWal(t, dir, 0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 
@@ -143,7 +143,7 @@ func TestCache_WalMultipleFiles(t *testing.T) {
 
 	// Reopen
 	c2 := newTestCacheWithWal(t, dir, 0)
-	defer c2.Close()
+	defer func() { _ = c2.Close() }()
 
 	files := c2.ListFiles()
 	if len(files) != 5 {
@@ -217,7 +217,7 @@ func BenchmarkE2E_FileCopy(b *testing.B) {
 			}
 
 			b.StopTimer()
-			c.Close()
+			_ = c.Close()
 		})
 	}
 }
@@ -225,7 +225,7 @@ func BenchmarkE2E_FileCopy(b *testing.B) {
 // BenchmarkE2E_WriteReadWrite simulates mixed read/write workload.
 func BenchmarkE2E_WriteReadWrite(b *testing.B) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "bench-file"
@@ -268,7 +268,7 @@ func BenchmarkE2E_WriteReadWrite(b *testing.B) {
 // BenchmarkE2E_ConcurrentFileCopies simulates multiple concurrent file copies.
 func BenchmarkE2E_ConcurrentFileCopies(b *testing.B) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	fileSize := 1 * 1024 * 1024 // 1MB per file
@@ -310,7 +310,7 @@ func BenchmarkE2E_ConcurrentFileCopies(b *testing.B) {
 // BenchmarkWAL_InMemory_Write measures write performance without WAL.
 func BenchmarkWAL_InMemory_Write(b *testing.B) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "bench-file"
@@ -340,7 +340,7 @@ func BenchmarkWAL_Mmap_Write(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "bench-file"
@@ -385,7 +385,7 @@ func BenchmarkWAL_FileCopy_Comparison(b *testing.B) {
 			}
 			_ = c.CoalesceWrites(ctx, payloadID)
 		}
-		c.Close()
+		_ = c.Close()
 	})
 
 	b.Run("WithWAL", func(b *testing.B) {
@@ -415,6 +415,6 @@ func BenchmarkWAL_FileCopy_Comparison(b *testing.B) {
 			}
 			_ = c.CoalesceWrites(ctx, payloadID)
 		}
-		c.Close()
+		_ = c.Close()
 	})
 }

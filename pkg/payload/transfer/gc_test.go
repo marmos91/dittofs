@@ -218,7 +218,7 @@ func (s *gcTestStore) Close() error                      { return nil }
 func TestCollectGarbage_Empty(t *testing.T) {
 	ctx := context.Background()
 	blockStore := memory.New()
-	defer blockStore.Close()
+	defer func() { _ = blockStore.Close() }()
 
 	reconciler := newGCTestReconciler()
 
@@ -234,7 +234,7 @@ func TestCollectGarbage_Empty(t *testing.T) {
 func TestCollectGarbage_NoOrphans(t *testing.T) {
 	ctx := context.Background()
 	blockStore := memory.New()
-	defer blockStore.Close()
+	defer func() { _ = blockStore.Close() }()
 
 	// Create blocks for a file
 	payloadID := "export/test-file.txt"
@@ -257,7 +257,7 @@ func TestCollectGarbage_NoOrphans(t *testing.T) {
 func TestCollectGarbage_WithOrphans(t *testing.T) {
 	ctx := context.Background()
 	blockStore := memory.New()
-	defer blockStore.Close()
+	defer func() { _ = blockStore.Close() }()
 
 	// Create blocks for two files
 	validPayloadID := "export/valid-file.txt"
@@ -472,7 +472,7 @@ func BenchmarkCollectGarbage_Memory(b *testing.B) {
 			// Create blocks for all files, but only add half to metadata
 			for i := 0; i < size.fileCount; i++ {
 				payloadID := fmt.Sprintf("export/file-%d.txt", i)
-				blockStore.WriteBlock(ctx, payloadID+"/chunk-0/block-0", make([]byte, 1024))
+				_ = blockStore.WriteBlock(ctx, payloadID+"/chunk-0/block-0", make([]byte, 1024)) // Error ignored in benchmark setup
 
 				if i%2 == 0 {
 					store.addFile(payloadID) // Add every other file to metadata

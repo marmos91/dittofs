@@ -171,10 +171,7 @@ func (s *MetadataService) CommitWrite(ctx *AuthContext, intent *WriteOperation) 
 // The actual commit happens on FlushPendingWrites (called by NFS COMMIT).
 func (s *MetadataService) deferredCommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
 	// Determine if we need to clear setuid/setgid
-	clearSetuid := false
-	if ctx.Identity != nil && ctx.Identity.UID != nil && *ctx.Identity.UID != 0 {
-		clearSetuid = true
-	}
+	clearSetuid := ctx.Identity != nil && ctx.Identity.UID != nil && *ctx.Identity.UID != 0
 
 	// Record in pending writes tracker (lock-free for the hot path)
 	state := s.pendingWrites.RecordWrite(intent.Handle, intent, clearSetuid)

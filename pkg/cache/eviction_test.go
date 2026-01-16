@@ -8,18 +8,22 @@ import (
 
 func TestEvict_FlushedData(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 	data := make([]byte, 10*1024)
 
-	c.WriteSlice(ctx, payloadID, 0, data, 0)
+	if err := c.WriteSlice(ctx, payloadID, 0, data, 0); err != nil {
+		t.Fatalf("WriteSlice failed: %v", err)
+	}
 
 	// Mark as flushed
 	slices, _ := c.GetDirtySlices(ctx, payloadID)
 	for _, slice := range slices {
-		c.MarkSliceFlushed(ctx, payloadID, slice.ID, nil)
+		if err := c.MarkSliceFlushed(ctx, payloadID, slice.ID, nil); err != nil {
+			t.Fatalf("MarkSliceFlushed failed: %v", err)
+		}
 	}
 
 	// Evict
@@ -38,13 +42,15 @@ func TestEvict_FlushedData(t *testing.T) {
 
 func TestEvict_DirtyDataProtected(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	payloadID := "test-file"
 	data := make([]byte, 10*1024)
 
-	c.WriteSlice(ctx, payloadID, 0, data, 0)
+	if err := c.WriteSlice(ctx, payloadID, 0, data, 0); err != nil {
+		t.Fatalf("WriteSlice failed: %v", err)
+	}
 
 	// Try to evict dirty data - should not evict
 	evicted, err := c.Evict(ctx, payloadID)
@@ -65,7 +71,7 @@ func TestEvict_DirtyDataProtected(t *testing.T) {
 
 func TestEvictAll(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 
@@ -73,11 +79,15 @@ func TestEvictAll(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		file := "file" + string(rune('0'+i))
 		data := make([]byte, 5*1024)
-		c.WriteSlice(ctx, file, 0, data, 0)
+		if err := c.WriteSlice(ctx, file, 0, data, 0); err != nil {
+			t.Fatalf("WriteSlice failed: %v", err)
+		}
 
 		slices, _ := c.GetDirtySlices(ctx, file)
 		for _, slice := range slices {
-			c.MarkSliceFlushed(ctx, file, slice.ID, nil)
+			if err := c.MarkSliceFlushed(ctx, file, slice.ID, nil); err != nil {
+				t.Fatalf("MarkSliceFlushed failed: %v", err)
+			}
 		}
 	}
 
@@ -96,7 +106,7 @@ func TestEvictAll(t *testing.T) {
 
 func TestEvictLRU(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 
@@ -104,11 +114,15 @@ func TestEvictLRU(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		file := "file" + string(rune('0'+i))
 		data := make([]byte, 10*1024)
-		c.WriteSlice(ctx, file, 0, data, 0)
+		if err := c.WriteSlice(ctx, file, 0, data, 0); err != nil {
+			t.Fatalf("WriteSlice failed: %v", err)
+		}
 
 		slices, _ := c.GetDirtySlices(ctx, file)
 		for _, slice := range slices {
-			c.MarkSliceFlushed(ctx, file, slice.ID, nil)
+			if err := c.MarkSliceFlushed(ctx, file, slice.ID, nil); err != nil {
+				t.Fatalf("MarkSliceFlushed failed: %v", err)
+			}
 		}
 	}
 
@@ -134,20 +148,26 @@ func TestEvictLRU(t *testing.T) {
 func TestLRUEviction_OnlyEvictsFlushed(t *testing.T) {
 	// Cache with 10KB limit
 	c := New(10 * 1024)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 
 	// Write 5KB dirty data
 	file1 := "dirty-file"
-	c.WriteSlice(ctx, file1, 0, make([]byte, 5*1024), 0)
+	if err := c.WriteSlice(ctx, file1, 0, make([]byte, 5*1024), 0); err != nil {
+		t.Fatalf("WriteSlice failed: %v", err)
+	}
 
 	// Write 5KB and flush
 	file2 := "flushed-file"
-	c.WriteSlice(ctx, file2, 0, make([]byte, 5*1024), 0)
+	if err := c.WriteSlice(ctx, file2, 0, make([]byte, 5*1024), 0); err != nil {
+		t.Fatalf("WriteSlice failed: %v", err)
+	}
 	slices, _ := c.GetDirtySlices(ctx, file2)
 	for _, slice := range slices {
-		c.MarkSliceFlushed(ctx, file2, slice.ID, nil)
+		if err := c.MarkSliceFlushed(ctx, file2, slice.ID, nil); err != nil {
+			t.Fatalf("MarkSliceFlushed failed: %v", err)
+		}
 	}
 
 	// Write 5KB more - triggers eviction
@@ -172,7 +192,7 @@ func TestLRUEviction_OnlyEvictsFlushed(t *testing.T) {
 
 func TestLRUEviction_EvictsOldestFirst(t *testing.T) {
 	c := New(15 * 1024)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	data := make([]byte, 5*1024)
@@ -180,15 +200,21 @@ func TestLRUEviction_EvictsOldestFirst(t *testing.T) {
 	// Write 3 files in sequence
 	files := []string{"oldest", "middle", "newest"}
 	for _, file := range files {
-		c.WriteSlice(ctx, file, 0, data, 0)
+		if err := c.WriteSlice(ctx, file, 0, data, 0); err != nil {
+			t.Fatalf("WriteSlice failed: %v", err)
+		}
 		slices, _ := c.GetDirtySlices(ctx, file)
 		for _, slice := range slices {
-			c.MarkSliceFlushed(ctx, file, slice.ID, nil)
+			if err := c.MarkSliceFlushed(ctx, file, slice.ID, nil); err != nil {
+				t.Fatalf("MarkSliceFlushed failed: %v", err)
+			}
 		}
 	}
 
 	// Write new file to trigger eviction
-	c.WriteSlice(ctx, "trigger", 0, data, 0)
+	if err := c.WriteSlice(ctx, "trigger", 0, data, 0); err != nil {
+		t.Fatalf("WriteSlice failed: %v", err)
+	}
 
 	stats := c.Stats()
 	if stats.TotalSize > 15*1024 {
@@ -198,7 +224,7 @@ func TestLRUEviction_EvictsOldestFirst(t *testing.T) {
 
 func TestEvict_ContextCancelled(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -211,7 +237,7 @@ func TestEvict_ContextCancelled(t *testing.T) {
 
 func TestEvict_CacheClosed(t *testing.T) {
 	c := New(0)
-	c.Close()
+	_ = c.Close()
 
 	_, err := c.Evict(context.Background(), "test")
 	if err != ErrCacheClosed {
@@ -221,7 +247,7 @@ func TestEvict_CacheClosed(t *testing.T) {
 
 func TestEvictAll_ContextCancelled(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -234,7 +260,7 @@ func TestEvictAll_ContextCancelled(t *testing.T) {
 
 func TestEvictLRU_ContextCancelled(t *testing.T) {
 	c := New(0)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -252,7 +278,7 @@ func TestEvictLRU_ContextCancelled(t *testing.T) {
 // BenchmarkEvictLRU measures LRU eviction performance.
 func BenchmarkEvictLRU(b *testing.B) {
 	c := New(100 * 1024 * 1024) // 100MB cache
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 
@@ -265,7 +291,7 @@ func BenchmarkEvictLRU(b *testing.B) {
 		// Mark as flushed so it can be evicted
 		slices, _ := c.GetDirtySlices(ctx, payloadID)
 		for _, s := range slices {
-			c.MarkSliceFlushed(ctx, payloadID, s.ID, nil)
+			_ = c.MarkSliceFlushed(ctx, payloadID, s.ID, nil)
 		}
 	}
 

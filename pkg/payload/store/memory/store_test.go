@@ -10,7 +10,7 @@ import (
 func TestStore_WriteAndRead(t *testing.T) {
 	ctx := context.Background()
 	s := New()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	blockKey := "share1/content123/chunk-0/block-0"
 	data := []byte("hello world")
@@ -34,7 +34,7 @@ func TestStore_WriteAndRead(t *testing.T) {
 func TestStore_ReadBlockNotFound(t *testing.T) {
 	ctx := context.Background()
 	s := New()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	_, err := s.ReadBlock(ctx, "nonexistent")
 	if err != store.ErrBlockNotFound {
@@ -45,7 +45,7 @@ func TestStore_ReadBlockNotFound(t *testing.T) {
 func TestStore_ReadBlockRange(t *testing.T) {
 	ctx := context.Background()
 	s := New()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	blockKey := "share1/content123/chunk-0/block-0"
 	data := []byte("hello world")

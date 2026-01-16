@@ -128,7 +128,7 @@ func TestTransferQueue_LastError(t *testing.T) {
 	cfg := DefaultTransferQueueConfig()
 	q := NewTransferQueue(nil, cfg)
 
-	err, at := q.LastError()
+	at, err := q.LastError()
 	if err != nil {
 		t.Errorf("LastError() error = %v, want nil", err)
 	}
