@@ -461,8 +461,13 @@ func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Ses
 
 	if sess != nil && sess.User != nil {
 		// Use session user's credentials
-		authCtx.Identity.UID = &sess.User.UID
-		authCtx.Identity.GID = &sess.User.GID
+		// NOTE: Users no longer have direct UID/GID - use defaults
+		// TODO: Look up ShareIdentityMapping for the share
+		defaultUID := uint32(1000)
+		defaultGID := uint32(1000)
+		authCtx.Identity.UID = &defaultUID
+		authCtx.Identity.GID = &defaultGID
+		authCtx.Identity.Username = sess.User.Username
 		authCtx.ClientAddr = sess.ClientAddr
 	} else {
 		// Fallback to root for cleanup operations when session info is unavailable.

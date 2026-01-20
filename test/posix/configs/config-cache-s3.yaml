@@ -12,6 +12,10 @@ telemetry:
 
 server:
   shutdown_timeout: 30s
+  api:
+    enabled: true
+    jwt:
+      secret: "test-secret-key-for-posix-testing-32chars"
 
 metadata:
   filesystem_capabilities:

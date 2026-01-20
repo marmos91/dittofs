@@ -12,6 +12,7 @@ require (
 	github.com/dgraph-io/badger/v4 v4.5.2
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/go-playground/validator/v10 v10.28.0
+	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/grafana/pyroscope-go v1.2.7
 	github.com/invopop/jsonschema v0.13.0

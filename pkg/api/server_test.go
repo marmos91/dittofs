@@ -7,9 +7,37 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/api/auth"
+	"github.com/marmos91/dittofs/pkg/identity"
+	identityMemory "github.com/marmos91/dittofs/pkg/store/identity/memory"
 )
 
+// testSetup creates JWT service and identity store for testing
+func testSetup(t *testing.T) (*auth.JWTService, identity.IdentityStore) {
+	t.Helper()
+
+	// Create memory identity store
+	identityStore := identityMemory.NewMemoryIdentityStore()
+
+	// Create JWT service with test secret
+	jwtConfig := auth.JWTConfig{
+		Secret:               "test-secret-key-for-testing-only-32chars",
+		Issuer:               "dittofs-test",
+		AccessTokenDuration:  15 * time.Minute,
+		RefreshTokenDuration: 7 * 24 * time.Hour,
+	}
+	jwtService, err := auth.NewJWTService(jwtConfig)
+	if err != nil {
+		t.Fatalf("Failed to create JWT service: %v", err)
+	}
+
+	return jwtService, identityStore
+}
+
 func TestAPIServer_Lifecycle(t *testing.T) {
+	jwtService, identityStore := testSetup(t)
+
 	// Use a random high port to avoid conflicts
 	enabled := true
 	cfg := APIConfig{
@@ -20,7 +48,7 @@ func TestAPIServer_Lifecycle(t *testing.T) {
 		IdleTimeout:  10 * time.Second,
 	}
 
-	server := NewServer(cfg, nil)
+	server := NewServer(cfg, nil, jwtService, identityStore)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -65,13 +93,15 @@ func TestAPIServer_Lifecycle(t *testing.T) {
 }
 
 func TestAPIServer_Port(t *testing.T) {
+	jwtService, identityStore := testSetup(t)
+
 	enabled := true
 	cfg := APIConfig{
 		Enabled: &enabled,
 		Port:    9999,
 	}
 
-	server := NewServer(cfg, nil)
+	server := NewServer(cfg, nil, jwtService, identityStore)
 
 	if server.Port() != 9999 {
 		t.Errorf("Expected port 9999, got %d", server.Port())
@@ -79,13 +109,15 @@ func TestAPIServer_Port(t *testing.T) {
 }
 
 func TestAPIServer_DefaultConfig(t *testing.T) {
+	jwtService, identityStore := testSetup(t)
+
 	enabled := true
 	cfg := APIConfig{
 		Enabled: &enabled,
 		// Port and timeouts not set - should use defaults
 	}
 
-	server := NewServer(cfg, nil)
+	server := NewServer(cfg, nil, jwtService, identityStore)
 
 	// After applyDefaults, port should be 8080
 	if server.Port() != 8080 {
@@ -94,13 +126,15 @@ func TestAPIServer_DefaultConfig(t *testing.T) {
 }
 
 func TestAPIServer_HealthEndpoint_NoRegistry(t *testing.T) {
+	jwtService, identityStore := testSetup(t)
+
 	enabled := true
 	cfg := APIConfig{
 		Enabled: &enabled,
 		Port:    18081,
 	}
 
-	server := NewServer(cfg, nil)
+	server := NewServer(cfg, nil, jwtService, identityStore)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -137,13 +171,15 @@ func TestAPIServer_HealthEndpoint_NoRegistry(t *testing.T) {
 }
 
 func TestAPIServer_RootRedirectsToHealth(t *testing.T) {
+	jwtService, identityStore := testSetup(t)
+
 	enabled := true
 	cfg := APIConfig{
 		Enabled: &enabled,
 		Port:    18082,
 	}
 
-	server := NewServer(cfg, nil)
+	server := NewServer(cfg, nil, jwtService, identityStore)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -180,13 +216,15 @@ func TestAPIServer_RootRedirectsToHealth(t *testing.T) {
 }
 
 func TestAPIServer_StoresEndpoint(t *testing.T) {
+	jwtService, identityStore := testSetup(t)
+
 	enabled := true
 	cfg := APIConfig{
 		Enabled: &enabled,
 		Port:    18083,
 	}
 
-	server := NewServer(cfg, nil)
+	server := NewServer(cfg, nil, jwtService, identityStore)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
