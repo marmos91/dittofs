@@ -6,7 +6,7 @@ Payload service layer - handles raw file bytes using the Cache layer.
 
 The payload package provides the main entry point for file content operations.
 It coordinates between the Cache (fast in-memory storage) and TransferManager
-(background persistence to block store).
+(background persistence to block store with content-addressed deduplication).
 
 ## Architecture
 
@@ -15,29 +15,37 @@ PayloadService (service.go) - coordinates with cache + transfer manager
          ↓
      ┌───┴───────────┐
      ↓               ↓
-cache.Cache    transfer.TransferManager (optional)
+cache.Cache    transfer.TransferManager
      ↓                    ↓
-(in-memory)        block.Store (S3/memory/fs)
+(in-memory)        ┌─────┴─────┐
+                   ↓           ↓
+             block.Store   ObjectStore
+             (S3/memory)   (dedup metadata)
 ```
 
 ## Key Design
 
 ### Cache + TransferManager Model
 - **Cache**: Fast in-memory storage for all reads/writes
-- **TransferManager** (optional): Handles cache-to-block-store persistence
-- Without TransferManager: cache-only mode (volatile data)
-- With TransferManager: persistent storage with background upload
+- **TransferManager**: Handles cache-to-block-store persistence with deduplication
+- Content-addressed deduplication at 4MB block level via ObjectStore
 
 ### Single Global Cache
 - One cache serves ALL shares
-- ContentID (file handle) uniqueness ensures data isolation
+- PayloadID uniqueness ensures data isolation
 - Registered once in `registry.NewRegistry()`
 
-### Non-blocking COMMIT (when TransferManager configured)
+### Non-blocking COMMIT
 - NFS COMMIT enqueues background upload and returns immediately
 - Data is safe in mmap cache (crash-safe via OS page cache)
 - Block store uploads happen asynchronously
 - Achieves 275+ MB/s write throughput
+
+### Content-Addressed Deduplication
+- Blocks are hashed with SHA-256 before upload
+- ObjectStore tracks block hashes and reference counts
+- Duplicate blocks are detected and skipped (RefCount incremented)
+- Storage savings achieved when multiple files share identical blocks
 
 ## PayloadService Methods
 
