@@ -16,7 +16,7 @@ The transfer package manages data movement between the cache and block store:
 ```
 PayloadService.WriteAt()
         ↓
-  Cache.WriteSlice()
+  Cache.Write()
         ↓
   TransferManager.OnWriteComplete() ← checks for complete 4MB blocks
         ↓
