@@ -12,6 +12,10 @@ telemetry:
 
 server:
   shutdown_timeout: 30s
+  api:
+    enabled: true
+    jwt:
+      secret: "test-secret-key-for-posix-testing-32chars"
 
 metadata:
   filesystem_capabilities:
@@ -50,6 +54,7 @@ shares:
     metadata: "default"
     payload: "default"
     read_only: false
+    default_permission: "read-write"  # Allow anonymous access for POSIX tests
     allowed_clients: []
     denied_clients: []
     require_auth: false

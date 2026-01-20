@@ -13,12 +13,21 @@ import (
 // ErrShareAccessDenied is returned when a user doesn't have permission to access a share.
 var ErrShareAccessDenied = errors.New("share access denied")
 
+// formatUID formats an optional UID for logging.
+// Returns "nil" if the pointer is nil, otherwise the numeric value as string.
+func formatUID(uid *uint32) string {
+	if uid == nil {
+		return "nil"
+	}
+	return fmt.Sprintf("%d", *uid)
+}
+
 // BuildAuthContextWithMapping creates an AuthContext with share-level identity mapping applied.
 //
 // This is a shared helper function used by all NFS v3 handlers to ensure consistent
 // identity mapping across all operations. It:
 //  1. Uses the share name from the connection layer (already extracted from file handle)
-//  2. Looks up the DittoFS user by UID if a UserStore is configured
+//  2. Looks up the DittoFS user by UID using reverse lookup (GetUserByUID)
 //  3. Checks share-level permissions for the user
 //  4. Applies identity mapping rules from the registry (all_squash, root_squash)
 //  5. Returns effective credentials for permission checking
@@ -58,18 +67,24 @@ func BuildAuthContextWithMapping(
 		originalIdentity.Username = fmt.Sprintf("uid:%d", *originalIdentity.UID)
 	}
 
-	// Look up DittoFS user by UID and check share permissions
+	// Look up DittoFS user by UID (reverse lookup) and check share permissions
 	var dittoUser *identity.User
 	var sharePermission identity.SharePermission
 	shareReadOnly := false
 
-	userStore := reg.GetUserStore()
+	identityStore := reg.GetIdentityStore()
 	share, shareErr := reg.GetShare(shareName)
 
-	if userStore != nil && share != nil {
-		// Try to find user by UID
-		if nfsCtx.UID != nil {
-			dittoUser, _ = userStore.GetUserByUID(*nfsCtx.UID)
+	if identityStore != nil && share != nil && nfsCtx.UID != nil {
+		// Try reverse lookup: find user by UID
+		user, err := identityStore.GetUserByUID(*nfsCtx.UID)
+		if err == nil && user != nil {
+			dittoUser = user
+			logger.DebugCtx(ctx, "NFS UID reverse lookup succeeded",
+				"share", shareName, "uid", *nfsCtx.UID, "username", user.Username, "client", clientAddr)
+		} else {
+			logger.DebugCtx(ctx, "NFS UID reverse lookup failed, treating as guest",
+				"share", shareName, "uid", *nfsCtx.UID, "client", clientAddr, "error", err)
 		}
 
 		// Get default permission from share config
@@ -77,7 +92,7 @@ func BuildAuthContextWithMapping(
 
 		if dittoUser != nil {
 			// User found - resolve their permission
-			sharePermission = userStore.ResolveSharePermission(dittoUser, shareName, defaultPerm)
+			sharePermission = identityStore.ResolveSharePermission(dittoUser, shareName, defaultPerm)
 			originalIdentity.Username = dittoUser.Username
 
 			if sharePermission == identity.PermissionNone {
@@ -85,26 +100,23 @@ func BuildAuthContextWithMapping(
 				return nil, ErrShareAccessDenied
 			}
 
-			// Set read-only if user only has read permission
-			shareReadOnly = (sharePermission == identity.PermissionRead)
-			logger.DebugCtx(ctx, "User permission resolved", "share", shareName, "user", dittoUser.Username, "permission", sharePermission)
+			// Read-only if share is read-only OR user only has read permission
+			shareReadOnly = share.ReadOnly || sharePermission == identity.PermissionRead
+			logger.DebugCtx(ctx, "User permission resolved", "share", shareName, "user", dittoUser.Username, "permission", sharePermission, "readOnly", shareReadOnly)
 		} else {
-			// User not found - check if guest access is allowed
-			if !share.AllowGuest {
-				// No guest allowed and user not found
-				logger.DebugCtx(ctx, "Share access denied (guest not allowed)", "share", shareName, "uid", nfsCtx.UID)
+			// User not found - use default permission
+			// If defaultPerm is "none", block access (no guest access)
+			if defaultPerm == identity.PermissionNone {
+				logger.DebugCtx(ctx, "Share access denied (unknown UID, default permission is none)",
+					"share", shareName, "uid", nfsCtx.UID)
 				return nil, ErrShareAccessDenied
 			}
 
-			// Guest access - use default permission
+			// Allow with default permission
 			sharePermission = defaultPerm
-			if sharePermission == identity.PermissionNone {
-				logger.DebugCtx(ctx, "Share access denied (no guest permission)", "share", shareName)
-				return nil, ErrShareAccessDenied
-			}
-
-			shareReadOnly = (sharePermission == identity.PermissionRead)
-			logger.DebugCtx(ctx, "Guest access granted", "share", shareName, "permission", sharePermission)
+			// Read-only if share is read-only OR permission is read-only
+			shareReadOnly = share.ReadOnly || sharePermission == identity.PermissionRead
+			logger.DebugCtx(ctx, "Guest access granted", "share", shareName, "permission", sharePermission, "readOnly", shareReadOnly)
 		}
 	} else if shareErr != nil {
 		return nil, fmt.Errorf("failed to get share: %w", shareErr)
@@ -126,22 +138,8 @@ func BuildAuthContextWithMapping(
 	}
 
 	// Log identity mapping
-	origUID := "nil"
-	if originalIdentity.UID != nil {
-		origUID = fmt.Sprintf("%d", *originalIdentity.UID)
-	}
-	effUID := "nil"
-	if effectiveIdentity.UID != nil {
-		effUID = fmt.Sprintf("%d", *effectiveIdentity.UID)
-	}
-	origGID := "nil"
-	if originalIdentity.GID != nil {
-		origGID = fmt.Sprintf("%d", *originalIdentity.GID)
-	}
-	effGID := "nil"
-	if effectiveIdentity.GID != nil {
-		effGID = fmt.Sprintf("%d", *effectiveIdentity.GID)
-	}
+	origUID, effUID := formatUID(originalIdentity.UID), formatUID(effectiveIdentity.UID)
+	origGID, effGID := formatUID(originalIdentity.GID), formatUID(effectiveIdentity.GID)
 
 	if origUID != effUID || origGID != effGID {
 		logger.DebugCtx(ctx, "Identity mapping applied", "share", shareName, "original_uid", origUID, "uid", effUID, "original_gid", origGID, "gid", effGID)

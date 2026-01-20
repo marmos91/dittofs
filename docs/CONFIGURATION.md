@@ -317,8 +317,12 @@ shares:
     denied_clients: []
 
     # User management (see Section 8)
-    allow_guest: true              # Allow unauthenticated access
-    default_permission: "read"     # Default for users without explicit permission
+    # default_permission controls access for unknown UIDs:
+    # - "none": Block unknown UIDs (no guest access)
+    # - "read": Guest users get read-only access
+    # - "read-write": Guest users get read-write access
+    # - "admin": Guest users get admin access
+    default_permission: "read"
 
     # Authentication
     require_auth: false

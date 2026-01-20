@@ -41,7 +41,7 @@ func (r *contentReadResult) Release() {
 //
 // Parameters:
 //   - ctx: Handler context with cancellation support
-//   - contentSvc: Content service for reading (backed by Cache)
+//   - payloadSvc: Content service for reading (backed by Cache)
 //   - payloadID: Content identifier to read
 //   - offset: Byte offset to read from
 //   - count: Number of bytes to read
@@ -53,7 +53,7 @@ func (r *contentReadResult) Release() {
 //   - error: Error if read failed
 func readFromContentService(
 	ctx *NFSHandlerContext,
-	contentSvc *payload.PayloadService,
+	payloadSvc *payload.PayloadService,
 	payloadID metadata.PayloadID,
 	offset uint64,
 	count uint32,
@@ -64,7 +64,7 @@ func readFromContentService(
 
 	// Get a pooled buffer for the read
 	data := bufpool.Get(int(count))
-	n, readErr := contentSvc.ReadAt(ctx.Context, ctx.Share, payloadID, data, offset)
+	n, readErr := payloadSvc.ReadAt(ctx.Context, ctx.Share, payloadID, data, offset)
 
 	// Handle ReadAt results
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {

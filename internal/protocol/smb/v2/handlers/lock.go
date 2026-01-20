@@ -211,7 +211,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	metaSvc := h.Registry.GetMetadataService()
 
 	// Build auth context
-	authCtx, err := BuildAuthContext(ctx, h.Registry)
+	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		logger.Warn("LOCK: failed to build auth context", "error", err)
 		return NewErrorResult(types.StatusAccessDenied), nil

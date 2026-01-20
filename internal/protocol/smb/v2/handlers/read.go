@@ -331,13 +331,13 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	contentSvc := h.Registry.GetBlockService()
+	payloadSvc := h.Registry.GetBlockService()
 
 	// ========================================================================
 	// Step 5: Build AuthContext and validate permissions
 	// ========================================================================
 
-	authCtx, err := BuildAuthContext(ctx, h.Registry)
+	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		logger.Warn("READ: failed to build auth context", "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
@@ -418,7 +418,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// ========================================================================
 
 	data := make([]byte, actualLength)
-	n, err := contentSvc.ReadAt(authCtx.Context, tree.ShareName, readMeta.Attr.PayloadID, data, req.Offset)
+	n, err := payloadSvc.ReadAt(authCtx.Context, tree.ShareName, readMeta.Attr.PayloadID, data, req.Offset)
 	if err != nil {
 		logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil

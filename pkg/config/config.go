@@ -71,6 +71,10 @@ type Config struct {
 	// Guest configures guest/anonymous access
 	Guest GuestUserConfig `mapstructure:"guest" yaml:"guest"`
 
+	// Identity configures the identity store for user management
+	// This is the control plane for authentication and authorization
+	Identity IdentityStoreConfig `mapstructure:"identity" yaml:"identity"`
+
 	// Shares defines the list of shares/exports available to clients
 	Shares []ShareConfig `mapstructure:"shares" validate:"dive" yaml:"shares"`
 
@@ -399,6 +403,21 @@ type GuestUserConfig struct {
 	SharePermissions map[string]string `mapstructure:"share_permissions" yaml:"share_permissions"`
 }
 
+// IdentityStoreConfig specifies the identity store configuration.
+// The identity store is the control plane for user management and authentication.
+// This is separate from the data plane (metadata/content stores).
+type IdentityStoreConfig struct {
+	// Type specifies which identity store implementation to use
+	// Valid values: memory (for testing only - data lost on restart)
+	// Future: sqlite, badger, postgres
+	Type string `mapstructure:"type" validate:"required,oneof=memory" yaml:"type"`
+
+	// Memory contains memory-specific configuration
+	// Only used when Type = "memory"
+	// Note: Memory store loses all data on restart - for testing only
+	Memory map[string]any `mapstructure:"memory" yaml:"memory"`
+}
+
 // ShareConfig defines a single share/export.
 type ShareConfig struct {
 	// Name is the share path (e.g., "/export")
@@ -416,14 +435,10 @@ type ShareConfig struct {
 	// ReadOnly makes the share read-only if true
 	ReadOnly bool `mapstructure:"read_only" yaml:"read_only"`
 
-	// AllowGuest allows guest/anonymous access to this share
-	// Guest permissions are determined by the guest configuration
-	AllowGuest bool `mapstructure:"allow_guest" yaml:"allow_guest"`
-
-	// DefaultPermission is the permission level for users without explicit/group permissions
-	// Valid values: none, read, read-write
-	// Default: none (users need explicit permission to access)
-	DefaultPermission string `mapstructure:"default_permission" validate:"omitempty,oneof=none read read-write" yaml:"default_permission"`
+	// DefaultPermission is the permission level for unknown UIDs and users without explicit/group permissions.
+	// Valid values: none (block access), read, read-write, admin
+	// Default: none (unknown UIDs are blocked, users need explicit permission to access)
+	DefaultPermission string `mapstructure:"default_permission" validate:"omitempty,oneof=none read read-write admin" yaml:"default_permission"`
 
 	// AllowedClients lists IP addresses or CIDR ranges allowed to access
 	// Empty list means all clients are allowed

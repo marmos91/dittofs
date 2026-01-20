@@ -2,35 +2,40 @@
 package handlers
 
 import (
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/registry"
+)
+
+// Default UID/GID used when user has no UID/GID configured.
+const (
+	defaultUID = uint32(1000)
+	defaultGID = uint32(1000)
 )
 
 // BuildAuthContext creates a metadata.AuthContext from SMB handler context.
 //
 // This bridges the SMB authentication model to the protocol-agnostic
 // metadata store authentication context. It maps:
-//   - SMB session user → Unix UID/GID
+//   - SMB session user → Unix UID/GID (from User.UID/GID fields)
 //   - SMB share permission → metadata store permission checks
 //
-// For authenticated users, UID/GID come from the identity.User.
-// For guest sessions, a default guest identity is used.
-func BuildAuthContext(ctx *SMBHandlerContext, _ *registry.Registry) (*metadata.AuthContext, error) {
+// Identity Resolution:
+// For authenticated users, this function uses the UID/GID fields from the User.
+// If the user has no UID/GID configured, it falls back to default values (1000/1000).
+func BuildAuthContext(ctx *SMBHandlerContext) (*metadata.AuthContext, error) {
+	// Authenticated user - delegate to BuildAuthContextFromUser
+	if ctx.User != nil {
+		return BuildAuthContextFromUser(ctx, ctx.User), nil
+	}
+
 	authCtx := &metadata.AuthContext{
 		Context:    ctx.Context,
 		ClientAddr: ctx.ClientAddr,
 		Identity:   &metadata.Identity{},
 	}
 
-	// Build identity from SMB session user
-	if ctx.User != nil {
-		// Authenticated user - use their Unix identity
-		authCtx.Identity.UID = &ctx.User.UID
-		authCtx.Identity.GID = &ctx.User.GID
-		// Note: Supplementary groups would need to be resolved from UserStore
-		// For now, we only use primary UID/GID
-	} else if ctx.IsGuest {
+	if ctx.IsGuest {
 		// Guest session - use nobody/nogroup
 		guestUID := uint32(65534) // nobody
 		guestGID := uint32(65534) // nogroup
@@ -48,8 +53,38 @@ func BuildAuthContext(ctx *SMBHandlerContext, _ *registry.Registry) (*metadata.A
 	return authCtx, nil
 }
 
+// getUserIdentity returns the UID/GID for a user.
+// Returns the user's configured UID/GID, or defaults if not set.
+func getUserIdentity(user *identity.User) (uid, gid uint32) {
+	uid = defaultUID
+	gid = defaultGID
+
+	if user == nil {
+		return uid, gid
+	}
+
+	if user.UID != nil {
+		uid = *user.UID
+	} else {
+		logger.Debug("User has no UID configured, using default",
+			"username", user.Username, "uid", uid)
+	}
+
+	if user.GID != nil {
+		gid = *user.GID
+	} else {
+		logger.Debug("User has no GID configured, using default",
+			"username", user.Username, "gid", gid)
+	}
+
+	return uid, gid
+}
+
 // BuildAuthContextFromUser creates an AuthContext from a User.
 // This is useful when the handler has direct access to a User object.
+//
+// Identity Resolution:
+// Uses the UID/GID fields from the User. If not set, falls back to defaults.
 func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *identity.User) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
 		Context:    ctx.Context,
@@ -58,8 +93,10 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *identity.User) *meta
 	}
 
 	if user != nil {
-		authCtx.Identity.UID = &user.UID
-		authCtx.Identity.GID = &user.GID
+		uid, gid := getUserIdentity(user)
+		authCtx.Identity.UID = &uid
+		authCtx.Identity.GID = &gid
+		authCtx.Identity.Username = user.Username
 	}
 
 	return authCtx

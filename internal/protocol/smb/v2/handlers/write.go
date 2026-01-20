@@ -362,13 +362,13 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	contentSvc := h.Registry.GetBlockService()
+	payloadSvc := h.Registry.GetBlockService()
 
 	// ========================================================================
 	// Step 6: Build AuthContext
 	// ========================================================================
 
-	authCtx, err := BuildAuthContext(ctx, h.Registry)
+	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		logger.Warn("WRITE: failed to build auth context", "error", err)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
@@ -408,7 +408,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 
 	bytesWritten := len(req.Data)
 
-	err = contentSvc.WriteAt(authCtx.Context, tree.ShareName, writeOp.PayloadID, req.Data, req.Offset)
+	err = payloadSvc.WriteAt(authCtx.Context, tree.ShareName, writeOp.PayloadID, req.Data, req.Offset)
 	if err != nil {
 		logger.Warn("WRITE: content write failed", "path", openFile.Path, "error", err)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil

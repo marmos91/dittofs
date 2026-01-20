@@ -253,7 +253,7 @@ func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64)
 
 		// Handle delete-on-close (FileDispositionInformation)
 		if openFile.DeletePending && len(openFile.ParentHandle) > 0 && openFile.FileName != "" {
-			authCtx := h.buildCleanupAuthContext(ctx, sess)
+			authCtx := h.buildCleanupAuthContext(ctx, sess, openFile.ShareName)
 			metaSvc := h.Registry.GetMetadataService()
 			if openFile.IsDirectory {
 				if err := metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
@@ -333,7 +333,7 @@ func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessi
 
 		// Handle delete-on-close (FileDispositionInformation)
 		if openFile.DeletePending && len(openFile.ParentHandle) > 0 && openFile.FileName != "" {
-			authCtx := h.buildCleanupAuthContext(ctx, sess)
+			authCtx := h.buildCleanupAuthContext(ctx, sess, openFile.ShareName)
 			metaSvc := h.Registry.GetMetadataService()
 			if openFile.IsDirectory {
 				if err := metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
@@ -432,10 +432,10 @@ func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
 		return
 	}
 
-	contentSvc := h.Registry.GetBlockService()
+	payloadSvc := h.Registry.GetBlockService()
 
 	// Use blocking Flush for immediate durability
-	_, flushErr := contentSvc.Flush(ctx, openFile.ShareName, openFile.PayloadID)
+	_, flushErr := payloadSvc.Flush(ctx, openFile.ShareName, openFile.PayloadID)
 	if flushErr != nil {
 		logger.Warn("flushFileCache: flush failed",
 			"path", openFile.Path,
@@ -451,18 +451,20 @@ func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
 // buildCleanupAuthContext creates an AuthContext for cleanup operations.
 // This is used during session/tree cleanup when we need to perform file operations
 // (like delete-on-close) but don't have a full SMBHandlerContext.
-// If the session is available, it uses the session's user credentials.
+// If the session is available, it uses the session user's UID/GID.
 // Otherwise, it falls back to root credentials for cleanup operations.
-func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Session) *metadata.AuthContext {
+func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Session, _ string) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
 		Context:  ctx,
 		Identity: &metadata.Identity{},
 	}
 
 	if sess != nil && sess.User != nil {
-		// Use session user's credentials
-		authCtx.Identity.UID = &sess.User.UID
-		authCtx.Identity.GID = &sess.User.GID
+		// Use session user's UID/GID from User object
+		uid, gid := getUserIdentity(sess.User)
+		authCtx.Identity.UID = &uid
+		authCtx.Identity.GID = &gid
+		authCtx.Identity.Username = sess.User.Username
 		authCtx.ClientAddr = sess.ClientAddr
 	} else {
 		// Fallback to root for cleanup operations when session info is unavailable.

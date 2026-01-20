@@ -82,11 +82,11 @@ func TestLinuxSMBMount(t *testing.T) {
 	}
 
 	// Create share (no content store needed - Registry auto-creates cache)
+	// DefaultPermission: "none" would block unknown users, "read-write" allows authenticated users
 	shareConfig := &registry.ShareConfig{
 		Name:              "/export",
 		MetadataStore:     "test-metadata",
 		ReadOnly:          false,
-		AllowGuest:        false, // Require authentication
 		DefaultPermission: string(identity.PermissionReadWrite),
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,

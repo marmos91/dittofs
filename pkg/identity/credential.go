@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"encoding/hex"
 	"errors"
 
 	"golang.org/x/crypto/bcrypt"
@@ -71,6 +72,29 @@ func HashPasswordWithCost(password string, cost int) (string, error) {
 	}
 
 	return string(hash), nil
+}
+
+// HashPasswordWithNT creates both a bcrypt hash and NT hash for a password.
+// This is a convenience function for user creation/password update flows
+// that need both hashes computed together.
+//
+// Parameters:
+//   - password: The plaintext password to hash
+//
+// Returns:
+//   - passwordHash: The bcrypt hash
+//   - ntHashHex: The NT hash as a hex-encoded string
+//   - error: If the password is invalid or hashing fails
+func HashPasswordWithNT(password string) (passwordHash, ntHashHex string, err error) {
+	passwordHash, err = HashPassword(password)
+	if err != nil {
+		return "", "", err
+	}
+
+	ntHash := ComputeNTHash(password)
+	ntHashHex = hex.EncodeToString(ntHash[:])
+
+	return passwordHash, ntHashHex, nil
 }
 
 // VerifyPassword checks if a password matches a bcrypt hash.

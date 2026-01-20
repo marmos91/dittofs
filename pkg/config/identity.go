@@ -1,9 +1,12 @@
 package config
 
 import (
+	"context"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/identity"
+	identityMemory "github.com/marmos91/dittofs/pkg/store/identity/memory"
 )
 
 // CreateUserStore creates a UserStore from the configuration.
@@ -41,6 +44,8 @@ func (c *Config) CreateUserStore() (identity.UserStore, error) {
 }
 
 // convertGroupConfig converts GroupConfig to identity.Group.
+// NOTE: GID and SID from config are ignored - groups no longer have Unix/Windows identity.
+// Identity is now per-share via ShareIdentityMapping.
 func convertGroupConfig(gc *GroupConfig) (*identity.Group, error) {
 	sharePerms := make(map[string]identity.SharePermission)
 	for shareName, permStr := range gc.SharePermissions {
@@ -51,16 +56,17 @@ func convertGroupConfig(gc *GroupConfig) (*identity.Group, error) {
 		sharePerms[shareName] = perm
 	}
 
+	// NOTE: gc.GID and gc.SID are ignored - groups are now abstract
 	return &identity.Group{
 		Name:             gc.Name,
-		GID:              gc.GID,
-		SID:              gc.SID,
 		SharePermissions: sharePerms,
 		Description:      gc.Description,
 	}, nil
 }
 
 // convertUserConfig converts UserConfig to identity.User.
+// NOTE: UID, GID, GIDs, SID, and GroupSIDs from config are ignored.
+// Users no longer have global Unix/Windows identity - use ShareIdentityMapping per-share.
 func convertUserConfig(uc *UserConfig) (*identity.User, error) {
 	sharePerms := make(map[string]identity.SharePermission)
 	for shareName, permStr := range uc.SharePermissions {
@@ -71,16 +77,14 @@ func convertUserConfig(uc *UserConfig) (*identity.User, error) {
 		sharePerms[shareName] = perm
 	}
 
+	// NOTE: uc.UID, uc.GID, uc.GIDs, uc.SID, uc.GroupSIDs are ignored
+	// Users are now abstract - Unix/Windows identity is per-share
 	return &identity.User{
 		Username:         uc.Username,
 		PasswordHash:     uc.PasswordHash,
 		NTHash:           uc.NTHash,
 		Enabled:          uc.Enabled,
-		UID:              uc.UID,
-		GID:              uc.GID,
-		GIDs:             uc.GIDs,
-		SID:              uc.SID,
-		GroupSIDs:        uc.GroupSIDs,
+		Role:             identity.RoleUser, // Config users default to regular user role
 		Groups:           uc.Groups,
 		SharePermissions: sharePerms,
 		DisplayName:      uc.DisplayName,
@@ -110,4 +114,43 @@ func (sc *ShareConfig) GetDefaultPermission() identity.SharePermission {
 		return identity.PermissionNone
 	}
 	return identity.ParseSharePermission(sc.DefaultPermission)
+}
+
+// CreateIdentityStore creates an IdentityStore from the configuration.
+// This creates the control plane store for user management and authentication.
+//
+// The identity store is separate from the data plane (metadata/content stores)
+// and is used by the API server for authentication.
+func (c *Config) CreateIdentityStore(ctx context.Context) (identity.IdentityStore, error) {
+	switch c.Identity.Type {
+	case "memory":
+		logger.Warn("Using memory identity store - all user data will be lost on restart")
+		return identityMemory.NewMemoryIdentityStore(), nil
+	default:
+		return nil, fmt.Errorf("unknown identity store type: %s", c.Identity.Type)
+	}
+}
+
+// InitializeIdentityStore creates and initializes the identity store, including admin user setup.
+// Returns the store and the initial admin password (empty if admin already exists).
+func (c *Config) InitializeIdentityStore(ctx context.Context) (identity.IdentityStore, string, error) {
+	store, err := c.CreateIdentityStore(ctx)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create identity store: %w", err)
+	}
+
+	// Ensure admin user exists
+	initialPassword, err := store.EnsureAdminUser(ctx)
+	if err != nil {
+		_ = store.Close()
+		return nil, "", fmt.Errorf("failed to initialize admin user: %w", err)
+	}
+
+	if initialPassword != "" {
+		logger.Warn("Admin user created - password change required on first login",
+			"username", identity.AdminUsername,
+			"action", "CHANGE PASSWORD IMMEDIATELY")
+	}
+
+	return store, initialPassword, nil
 }

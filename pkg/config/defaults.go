@@ -25,6 +25,7 @@ func ApplyDefaults(cfg *Config) {
 	applyLoggingDefaults(&cfg.Logging)
 	applyTelemetryDefaults(&cfg.Telemetry)
 	applyServerDefaults(&cfg.Server)
+	applyIdentityDefaults(&cfg.Identity)
 	applyMetadataDefaults(&cfg.Metadata)
 	applyCacheDefaults(&cfg.Cache)
 	applyPayloadDefaults(&cfg.Payload)
@@ -114,6 +115,15 @@ func applyServerDefaults(cfg *ServerConfig) {
 
 	// Apply API defaults
 	applyAPIDefaults(&cfg.API)
+}
+
+// applyIdentityDefaults sets identity store defaults.
+func applyIdentityDefaults(cfg *IdentityStoreConfig) {
+	// Default to memory store (for testing/development)
+	// Production deployments should use sqlite, badger, or postgres
+	if cfg.Type == "" {
+		cfg.Type = "memory"
+	}
 }
 
 // applyMetricsDefaults sets metrics defaults.
@@ -490,6 +500,9 @@ func GetDefaultConfig() *Config {
 	cfg := &Config{
 		Logging: LoggingConfig{},
 		Server:  ServerConfig{},
+		Identity: IdentityStoreConfig{
+			Type: "memory", // Default to memory for testing; production should use sqlite/postgres
+		},
 		Cache: CacheConfig{
 			Path: "/tmp/dittofs-cache",
 			Size: bytesize.ByteSize(bytesize.GiB), // 1 GiB
