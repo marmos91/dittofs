@@ -13,8 +13,8 @@ func NewMmapPersister(_ string) (*MmapPersister, error) {
 	return nil, ErrUnsupportedPlatform
 }
 
-// AppendSlice is not supported on Windows.
-func (p *MmapPersister) AppendSlice(_ *SliceEntry) error {
+// AppendBlockWrite is not supported on Windows.
+func (p *MmapPersister) AppendBlockWrite(_ *BlockWriteEntry) error {
 	return ErrUnsupportedPlatform
 }
 
@@ -29,7 +29,7 @@ func (p *MmapPersister) Sync() error {
 }
 
 // Recover is not supported on Windows.
-func (p *MmapPersister) Recover() ([]SliceEntry, error) {
+func (p *MmapPersister) Recover() ([]BlockWriteEntry, error) {
 	return nil, ErrUnsupportedPlatform
 }
 

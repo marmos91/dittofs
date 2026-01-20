@@ -4,20 +4,17 @@ import (
 	"cmp"
 	"context"
 	"slices"
-	"time"
-
-	"github.com/google/uuid"
 )
 
 // ============================================================================
 // Flush Coordination
 // ============================================================================
 
-// GetDirtySlices returns all pending (unflushed) slices for a file, ready for upload.
+// GetDirtyBlocks returns all pending (unflushed) blocks for a file, ready for upload.
 //
-// Coalesces adjacent writes first, then returns slices sorted by (ChunkIndex, Offset).
-// The returned PendingSlice.Data references the cache's internal buffer - do not modify.
-func (c *Cache) GetDirtySlices(ctx context.Context, payloadID string) ([]PendingSlice, error) {
+// Returns blocks sorted by (ChunkIndex, BlockIndex).
+// The returned PendingBlock.Data references the cache's internal buffer - do not modify.
+func (c *Cache) GetDirtyBlocks(ctx context.Context, payloadID string) ([]PendingBlock, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -30,70 +27,70 @@ func (c *Cache) GetDirtySlices(ctx context.Context, payloadID string) ([]Pending
 	c.globalMu.RUnlock()
 
 	entry := c.getFileEntry(payloadID)
-
-	// Coalesce under write lock, then collect under read lock
-	entry.mu.Lock()
-	if len(entry.chunks) == 0 {
-		entry.mu.Unlock()
-		return nil, ErrFileNotInCache
-	}
-	for _, chunk := range entry.chunks {
-		// Check context between chunks to allow cancellation during large files
-		if err := ctx.Err(); err != nil {
-			entry.mu.Unlock()
-			return nil, err
-		}
-		coalesceChunk(chunk)
-	}
-	entry.mu.Unlock()
-
 	entry.mu.RLock()
 	defer entry.mu.RUnlock()
 
-	var result []PendingSlice
+	if len(entry.chunks) == 0 {
+		return nil, ErrFileNotInCache
+	}
+
+	var result []PendingBlock
 	for chunkIdx, chunk := range entry.chunks {
-		for _, s := range chunk.slices {
-			if s.State != SliceStatePending {
+		for blockIdx, blk := range chunk.blocks {
+			// Check context between blocks to allow cancellation during large files
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+
+			if blk.state != BlockStatePending {
 				continue
 			}
-			result = append(result, PendingSlice{
-				Slice:      s,
+
+			if blk.data == nil {
+				continue
+			}
+
+			result = append(result, PendingBlock{
 				ChunkIndex: chunkIdx,
+				BlockIndex: blockIdx,
+				Data:       blk.data,
+				Coverage:   blk.coverage,
+				DataSize:   blk.dataSize,
 			})
 		}
 	}
 
-	slices.SortFunc(result, func(a, b PendingSlice) int {
-		return cmp.Or(cmp.Compare(a.ChunkIndex, b.ChunkIndex), cmp.Compare(a.Offset, b.Offset))
+	slices.SortFunc(result, func(a, b PendingBlock) int {
+		return cmp.Or(cmp.Compare(a.ChunkIndex, b.ChunkIndex), cmp.Compare(a.BlockIndex, b.BlockIndex))
 	})
 
 	return result, nil
 }
 
-// MarkSliceFlushed marks a slice as successfully flushed to the block store.
+// MarkBlockUploaded marks a block as successfully uploaded to the block store.
 //
-// This should be called by the TransferManager after successfully uploading a slice's data.
-// The slice transitions from SliceStatePending to SliceStateFlushed, making it eligible
-// for LRU eviction when cache pressure requires freeing memory.
+// This should be called by the TransferManager after successfully uploading a block.
+// The block transitions from BlockStatePending to BlockStateUploaded, making it
+// eligible for LRU eviction when cache pressure requires freeing memory.
+//
+// If WAL persistence is enabled, the uploaded state is recorded to the WAL so that
+// on recovery, the block won't be re-uploaded unnecessarily.
 //
 // Parameters:
 //   - payloadID: Unique identifier for the file content
-//   - sliceID: The ID from PendingSlice returned by GetDirtySlices
-//   - blockRefs: Block references from the block store (used for future reads)
+//   - chunkIdx: The chunk index containing the block
+//   - blockIdx: The block index within the chunk
 //
-// Errors:
-//   - ErrSliceNotFound: slice ID doesn't exist (possibly already evicted or removed)
-//   - ErrCacheClosed: cache has been closed
-//   - context.Canceled/DeadlineExceeded: context was cancelled
-func (c *Cache) MarkSliceFlushed(ctx context.Context, payloadID string, sliceID string, blockRefs []BlockRef) error {
+// Returns true if the block was found and marked.
+func (c *Cache) MarkBlockUploaded(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) bool {
 	if err := ctx.Err(); err != nil {
-		return err
+		return false
 	}
 
 	c.globalMu.RLock()
 	if c.closed {
 		c.globalMu.RUnlock()
-		return ErrCacheClosed
+		return false
 	}
 	c.globalMu.RUnlock()
 
@@ -101,45 +98,66 @@ func (c *Cache) MarkSliceFlushed(ctx context.Context, payloadID string, sliceID 
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	// Find the slice
-	for _, chunk := range entry.chunks {
-		for i := range chunk.slices {
-			if chunk.slices[i].ID == sliceID {
-				chunk.slices[i].State = SliceStateFlushed
-				if blockRefs != nil {
-					chunk.slices[i].BlockRefs = make([]BlockRef, len(blockRefs))
-					copy(chunk.slices[i].BlockRefs, blockRefs)
-				}
-				return nil
-			}
-		}
+	chunk, exists := entry.chunks[chunkIdx]
+	if !exists {
+		return false
 	}
 
-	return ErrSliceNotFound
+	blk, exists := chunk.blocks[blockIdx]
+	if !exists {
+		return false
+	}
+
+	if blk.state == BlockStatePending || blk.state == BlockStateUploading {
+		blk.state = BlockStateUploaded
+		// Decrement pending size - block is no longer pending
+		c.pendingSize.Add(^uint64(BlockSize - 1)) // Atomic subtract
+
+		// If buffer was detached (nil), also decrement totalSize since memory is released
+		if blk.data == nil {
+			c.totalSize.Add(^uint64(BlockSize - 1)) // Atomic subtract
+		}
+
+		// Record uploaded state in WAL for crash recovery.
+		// On recovery, blocks with this marker won't be re-uploaded.
+		//
+		// Safety: We release the lock during WAL write to avoid holding it during I/O.
+		// This is safe because:
+		// 1. The state transition to Uploaded is already complete
+		// 2. The WAL append is idempotent (duplicate markers are harmless)
+		// 3. We don't access block state after re-acquiring the lock
+		if c.persister != nil {
+			entry.mu.Unlock()
+			_ = c.persister.AppendBlockUploaded(payloadID, chunkIdx, blockIdx)
+			entry.mu.Lock()
+		}
+
+		return true
+	}
+
+	return false
 }
 
-// ============================================================================
-// Write Optimization
-// ============================================================================
-
-// CoalesceWrites merges adjacent pending writes into fewer slices.
+// MarkBlockPending reverts a block from Uploading state back to Pending.
 //
-// Called automatically by GetDirtySlices before returning pending slices.
-// Reduces the number of block store uploads by combining adjacent writes.
+// This is used for error recovery when an upload fails, allowing the block
+// to be retried in a future flush operation.
 //
-// Errors:
-//   - ErrFileNotInCache: file has no cached data
-//   - ErrCacheClosed: cache has been closed
-//   - context.Canceled/DeadlineExceeded: context was cancelled
-func (c *Cache) CoalesceWrites(ctx context.Context, payloadID string) error {
+// Parameters:
+//   - payloadID: Unique identifier for the file content
+//   - chunkIdx: The chunk index containing the block
+//   - blockIdx: The block index within the chunk
+//
+// Returns true if the block was found and reverted.
+func (c *Cache) MarkBlockPending(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) bool {
 	if err := ctx.Err(); err != nil {
-		return err
+		return false
 	}
 
 	c.globalMu.RLock()
 	if c.closed {
 		c.globalMu.RUnlock()
-		return ErrCacheClosed
+		return false
 	}
 	c.globalMu.RUnlock()
 
@@ -147,88 +165,220 @@ func (c *Cache) CoalesceWrites(ctx context.Context, payloadID string) error {
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	if len(entry.chunks) == 0 {
-		return ErrFileNotInCache
+	chunk, exists := entry.chunks[chunkIdx]
+	if !exists {
+		return false
 	}
 
-	for _, chunk := range entry.chunks {
-		coalesceChunk(chunk)
+	blk, exists := chunk.blocks[blockIdx]
+	if !exists {
+		return false
 	}
 
-	return nil
+	if blk.state == BlockStateUploading {
+		blk.state = BlockStatePending
+		return true
+	}
+
+	return false
 }
 
-// coalesceChunk merges adjacent/overlapping pending slices within a chunk.
+// MarkBlockUploading marks a block as currently being uploaded.
 //
-// Only pending slices are merged - flushed slices are preserved as-is.
-// After merging, the chunk contains fewer, larger slices which reduces
-// the number of block store operations needed during flush.
-func coalesceChunk(chunk *chunkEntry) {
-	pending, flushed := partitionByState(chunk.slices, SliceStatePending)
-	if len(pending) <= 1 {
-		return
+// This prevents eviction during upload and indicates upload is in progress.
+// Used for atomic "claim" semantics to prevent concurrent uploads of the same block.
+//
+// Parameters:
+//   - payloadID: Unique identifier for the file content
+//   - chunkIdx: The chunk index containing the block
+//   - blockIdx: The block index within the chunk
+//
+// Returns true if the block was found and marked (state was Pending).
+// Returns false if the block doesn't exist or is already Uploading/Uploaded.
+func (c *Cache) MarkBlockUploading(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) bool {
+	if err := ctx.Err(); err != nil {
+		return false
 	}
 
-	slices.SortFunc(pending, func(a, b Slice) int {
-		return cmp.Compare(a.Offset, b.Offset)
-	})
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return false
+	}
+	c.globalMu.RUnlock()
 
-	chunk.slices = append(mergeAdjacent(pending), flushed...)
+	entry := c.getFileEntry(payloadID)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	chunk, exists := entry.chunks[chunkIdx]
+	if !exists {
+		return false
+	}
+
+	blk, exists := chunk.blocks[blockIdx]
+	if !exists {
+		return false
+	}
+
+	if blk.state == BlockStatePending {
+		blk.state = BlockStateUploading
+		return true
+	}
+
+	return false
 }
 
-// partitionByState splits slices into matching and non-matching groups.
-func partitionByState(slices []Slice, state SliceState) (matching, other []Slice) {
-	for _, s := range slices {
-		if s.State == state {
-			matching = append(matching, s)
-		} else {
-			other = append(other, s)
-		}
+// GetBlockData returns the data for a specific block.
+//
+// This is used by the TransferManager to get block data for upload.
+// The returned data references the cache's internal buffer - do not modify.
+//
+// Parameters:
+//   - payloadID: Unique identifier for the file content
+//   - chunkIdx: The chunk index containing the block
+//   - blockIdx: The block index within the chunk
+//
+// Returns the block data and its actual size, or nil if not found.
+func (c *Cache) GetBlockData(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) ([]byte, uint32, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
 	}
-	return
+
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return nil, 0, ErrCacheClosed
+	}
+	c.globalMu.RUnlock()
+
+	entry := c.getFileEntry(payloadID)
+	entry.mu.RLock()
+	defer entry.mu.RUnlock()
+
+	chunk, exists := entry.chunks[chunkIdx]
+	if !exists {
+		return nil, 0, ErrBlockNotFound
+	}
+
+	blk, exists := chunk.blocks[blockIdx]
+	if !exists || blk.data == nil {
+		return nil, 0, ErrBlockNotFound
+	}
+
+	return blk.data, blk.dataSize, nil
 }
 
-// mergeAdjacent combines overlapping/adjacent slices into fewer slices.
-// Input must be sorted by offset.
-func mergeAdjacent(slices []Slice) []Slice {
-	result := []Slice{newSliceFrom(slices[0])}
-
-	for _, s := range slices[1:] {
-		last := &result[len(result)-1]
-		if s.Offset <= last.Offset+last.Length {
-			extendSlice(last, &s)
-		} else {
-			result = append(result, newSliceFrom(s))
-		}
+// DetachBlockForUpload atomically claims a block for upload and detaches its buffer.
+//
+// This is a zero-copy operation that transfers ownership of the block's data buffer
+// to the caller. The block is marked as Uploading and its data pointer is set to nil.
+// This prevents data corruption from concurrent writes during upload.
+//
+// The caller takes ownership of the returned buffer and is responsible for:
+//   - Uploading the data to the block store
+//   - Returning the buffer to a pool after upload
+//   - Calling RestoreBlockBuffer on failure, or MarkBlockUploaded on success
+//
+// Parameters:
+//   - payloadID: Unique identifier for the file content
+//   - chunkIdx: The chunk index containing the block
+//   - blockIdx: The block index within the chunk
+//
+// Returns:
+//   - data: The detached buffer (caller takes ownership), nil if block not found/claimable
+//   - dataSize: Actual data size in the buffer
+//   - ok: true if block was successfully claimed and detached
+func (c *Cache) DetachBlockForUpload(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) (data []byte, dataSize uint32, ok bool) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, false
 	}
-	return result
+
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return nil, 0, false
+	}
+	c.globalMu.RUnlock()
+
+	entry := c.getFileEntry(payloadID)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	chunk, exists := entry.chunks[chunkIdx]
+	if !exists {
+		return nil, 0, false
+	}
+
+	blk, exists := chunk.blocks[blockIdx]
+	if !exists {
+		return nil, 0, false
+	}
+
+	// Can only detach Pending blocks
+	if blk.state != BlockStatePending {
+		return nil, 0, false
+	}
+
+	if blk.data == nil {
+		return nil, 0, false
+	}
+
+	// Move the buffer out (zero-copy transfer of ownership)
+	data = blk.data
+	dataSize = blk.dataSize
+	blk.data = nil // Detach - caller now owns the buffer
+	blk.state = BlockStateUploading
+
+	return data, dataSize, true
 }
 
-// newSliceFrom creates a deep copy with a new ID.
-func newSliceFrom(s Slice) Slice {
-	data := make([]byte, len(s.Data))
-	copy(data, s.Data)
-	return Slice{
-		ID:        uuid.New().String(),
-		Offset:    s.Offset,
-		Length:    s.Length,
-		Data:      data,
-		State:     SliceStatePending,
-		CreatedAt: time.Now(),
-	}
-}
-
-// extendSlice merges src data into dst, growing the buffer if needed.
-func extendSlice(dst, src *Slice) {
-	newEnd := max(dst.Offset+dst.Length, src.Offset+src.Length)
-	newLen := newEnd - dst.Offset
-
-	if newLen > uint32(len(dst.Data)) {
-		grown := make([]byte, newLen)
-		copy(grown, dst.Data)
-		dst.Data = grown
-		dst.Length = newLen
+// RestoreBlockBuffer restores a detached buffer back to a block after upload failure.
+//
+// This is used for error recovery when an upload fails. The buffer is restored
+// and the block is reverted to Pending state so it can be retried.
+//
+// Parameters:
+//   - payloadID: Unique identifier for the file content
+//   - chunkIdx: The chunk index containing the block
+//   - blockIdx: The block index within the chunk
+//   - data: The buffer to restore (ownership transfers back to cache)
+//
+// Returns true if the buffer was restored successfully.
+func (c *Cache) RestoreBlockBuffer(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32, data []byte) bool {
+	if err := ctx.Err(); err != nil {
+		return false
 	}
 
-	copy(dst.Data[src.Offset-dst.Offset:], src.Data)
+	c.globalMu.RLock()
+	if c.closed {
+		c.globalMu.RUnlock()
+		return false
+	}
+	c.globalMu.RUnlock()
+
+	entry := c.getFileEntry(payloadID)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	chunk, exists := entry.chunks[chunkIdx]
+	if !exists {
+		return false
+	}
+
+	blk, exists := chunk.blocks[blockIdx]
+	if !exists {
+		return false
+	}
+
+	// Only restore to Uploading blocks (the expected state after detach)
+	if blk.state != BlockStateUploading {
+		return false
+	}
+
+	// Restore the buffer
+	blk.data = data
+	blk.state = BlockStatePending
+
+	return true
 }

@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// RecoverUnflushedSlices scans the cache for pending slices and starts background uploads.
+// RecoverUnflushedBlocks scans the cache for pending blocks and starts background uploads.
 // Called on startup to ensure crash recovery.
 //
 // This is non-blocking - uploads are enqueued to the background transfer queue.
@@ -17,7 +17,7 @@ import (
 // The returned RecoveryStats includes RecoveredFileSizes which maps payloadID to actual
 // file size from recovered WAL data. Consumers MUST use this to reconcile metadata:
 //
-//	stats := transferManager.RecoverUnflushedSlices(ctx)
+//	stats := transferManager.RecoverUnflushedBlocks(ctx)
 //	for payloadID, actualSize := range stats.RecoveredFileSizes {
 //	    metadataSize := getMetadataSize(payloadID)
 //	    if metadataSize > actualSize {
@@ -26,10 +26,10 @@ import (
 //	    }
 //	}
 //
-// This reconciliation is necessary because WAL only logs NEW slices (not extended slices)
-// for performance. Extended slice data is lost on crash, but metadata may have been
-// updated with the larger size before crash.
-func (m *TransferManager) RecoverUnflushedSlices(ctx context.Context) *RecoveryStats {
+// This reconciliation is necessary because WAL logs individual block writes.
+// If a crash occurs after metadata update but before WAL persistence,
+// metadata may have been updated with a larger size before crash.
+func (m *TransferManager) RecoverUnflushedBlocks(ctx context.Context) *RecoveryStats {
 	stats := &RecoveryStats{
 		RecoveredFileSizes: make(map[string]uint64),
 	}
@@ -53,28 +53,28 @@ func (m *TransferManager) RecoverUnflushedSlices(ctx context.Context) *RecoveryS
 
 	// Start background flush for each file with dirty data
 	for payloadID, recoveredSize := range fileSizes {
-		pending, _ := m.cache.GetDirtySlices(ctx, payloadID)
+		pending, _ := m.cache.GetDirtyBlocks(ctx, payloadID)
 		if len(pending) == 0 {
 			continue
 		}
 
-		sliceCount := len(pending)
-		stats.SlicesFound += sliceCount
+		blockCount := len(pending)
+		stats.BlocksFound += blockCount
 
 		// Calculate bytes for stats
-		for _, s := range pending {
-			stats.BytesPending += int64(len(s.Data))
+		for _, b := range pending {
+			stats.BytesPending += int64(b.DataSize)
 		}
 
-		logger.Info("Recovery: uploading recovered slices",
+		logger.Info("Recovery: uploading recovered blocks",
 			"payloadID", payloadID,
-			"slices", sliceCount,
+			"blocks", blockCount,
 			"recoveredSize", recoveredSize)
 
-		// Upload remaining slices in background goroutine
+		// Upload remaining blocks in background goroutine
 		go func(pID string) {
-			if err := m.uploadRemainingSlices(ctx, pID); err != nil {
-				logger.Error("Recovery: failed to upload recovered slices",
+			if err := m.uploadRemainingBlocks(ctx, pID); err != nil {
+				logger.Error("Recovery: failed to upload recovered blocks",
 					"payloadID", pID,
 					"error", err)
 			}
@@ -83,7 +83,7 @@ func (m *TransferManager) RecoverUnflushedSlices(ctx context.Context) *RecoveryS
 
 	logger.Info("Recovery: background flushes started",
 		"files", stats.FilesScanned,
-		"slicesFound", stats.SlicesFound,
+		"blocksFound", stats.BlocksFound,
 		"bytesPending", stats.BytesPending)
 
 	return stats
@@ -107,14 +107,14 @@ type ReconciliationStats struct {
 // ReconcileMetadata compares recovered file sizes with metadata and truncates
 // metadata where necessary.
 //
-// This should be called AFTER RecoverUnflushedSlices and AFTER metadata stores
+// This should be called AFTER RecoverUnflushedBlocks and AFTER metadata stores
 // are registered. It fixes metadata inconsistencies caused by crashes that
 // occurred after CommitWrite but before data was flushed to block store.
 //
 // Background:
-// WAL only logs NEW slices for performance (not extended slices). If a crash
+// WAL only logs NEW blocks for performance (not extended blocks). If a crash
 // occurs after:
-//  1. Data written to cache (extending an existing slice)
+//  1. Data written to cache (extending an existing block)
 //  2. CommitWrite called (metadata updated with new size)
 //  3. BUT before WAL persistence of the extended data
 //
@@ -131,7 +131,7 @@ type ReconciliationStats struct {
 //
 // Example:
 //
-//	stats := transferMgr.RecoverUnflushedSlices(ctx)
+//	stats := transferMgr.RecoverUnflushedBlocks(ctx)
 //	reconStats := transfer.ReconcileMetadata(ctx, registry, stats.RecoveredFileSizes)
 //	logger.Info("Reconciliation complete", "truncated", reconStats.FilesTruncated)
 func ReconcileMetadata(

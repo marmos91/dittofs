@@ -99,11 +99,11 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 	// Step 4.5: Recover unflushed cache data from previous run (async)
 	// Use a context derived from the parent to allow graceful cancellation during shutdown
 	go func(recoveryCtx context.Context) {
-		stats := transferMgr.RecoverUnflushedSlices(recoveryCtx)
-		if stats.SlicesFound > 0 {
+		stats := transferMgr.RecoverUnflushedBlocks(recoveryCtx)
+		if stats.BlocksFound > 0 {
 			logger.Info("Recovery: started background upload of unflushed data",
 				"files", stats.FilesScanned,
-				"slices", stats.SlicesFound,
+				"blocks", stats.BlocksFound,
 				"bytes", stats.BytesPending)
 		} else {
 			logger.Info("Recovery: no unflushed data found")
