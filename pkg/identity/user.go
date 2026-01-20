@@ -1,7 +1,6 @@
 package identity
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -12,19 +11,38 @@ import (
 	"golang.org/x/crypto/md4" //nolint:staticcheck // MD4 is required for NTLM protocol compatibility
 )
 
-// User represents a DittoFS user with cross-protocol identity mapping.
+// UserRole represents the role of a user in the system.
+type UserRole string
+
+const (
+	// RoleUser is a regular user with limited permissions.
+	RoleUser UserRole = "user"
+	// RoleAdmin is an administrator with full permissions.
+	RoleAdmin UserRole = "admin"
+)
+
+// IsValid checks if the role is a valid UserRole.
+func (r UserRole) IsValid() bool {
+	return r == RoleUser || r == RoleAdmin
+}
+
+// User represents a DittoFS user with abstract identity.
 //
 // Users can authenticate via different protocols (NFS, SMB, API) and have
-// their identity mapped to the appropriate format. Share-level permissions
-// can be assigned directly to users or inherited from groups.
+// their identity mapped to the appropriate format. Unix identity (UID/GID)
+// is stored directly on the user for NFS reverse lookup and file ownership.
+// Share-level permissions can be assigned directly to users or inherited from groups.
 type User struct {
-	// Username is the unique identifier for the user.
+	// ID is the unique identifier for the user (UUID).
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Username is the unique human-readable identifier for the user.
 	// Used for SMB authentication and display purposes.
-	Username string `yaml:"username" mapstructure:"username"`
+	Username string `json:"username" yaml:"username" mapstructure:"username"`
 
 	// PasswordHash is the bcrypt hash of the user's password.
-	// Used for dashboard login and password verification.
-	PasswordHash string `yaml:"password_hash" mapstructure:"password_hash"`
+	// Used for API login and password verification.
+	PasswordHash string `json:"-" yaml:"password_hash" mapstructure:"password_hash"`
 
 	// NTHash is the hex-encoded NT hash of the user's password.
 	// Used for SMB NTLM authentication. This is MD4(UTF16LE(password)).
@@ -39,60 +57,56 @@ type User struct {
 	//     secret material and restricted to root/administrator access only.
 	//   - Operators should ensure that on-disk config files are readable only by the
 	//     service account (for example, chmod 600 on Unix-like systems).
-	NTHash string `yaml:"nt_hash,omitempty" mapstructure:"nt_hash"`
+	NTHash string `json:"-" yaml:"nt_hash,omitempty" mapstructure:"nt_hash"`
 
 	// Enabled indicates whether the user account is active.
 	// Disabled users cannot authenticate.
-	Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+	Enabled bool `json:"enabled" yaml:"enabled" mapstructure:"enabled"`
 
-	// Unix identity mapping
-	// Used for NFS authentication and file ownership.
+	// MustChangePassword indicates whether the user must change their password
+	// before performing other operations. Set to true for newly created users
+	// or after admin password reset.
+	MustChangePassword bool `json:"must_change_password" yaml:"must_change_password" mapstructure:"must_change_password"`
 
-	// UID is the Unix user ID.
-	// NFS clients with this UID will be mapped to this user.
-	UID uint32 `yaml:"uid" mapstructure:"uid"`
-
-	// GID is the primary Unix group ID.
-	GID uint32 `yaml:"gid" mapstructure:"gid"`
-
-	// GIDs is a list of supplementary Unix group IDs.
-	GIDs []uint32 `yaml:"gids,omitempty" mapstructure:"gids"`
-
-	// Windows identity mapping
-	// Used for SMB authentication.
-
-	// SID is the Windows Security Identifier.
-	// If empty, a SID will be auto-generated from the UID.
-	SID string `yaml:"sid,omitempty" mapstructure:"sid"`
-
-	// GroupSIDs is a list of Windows group Security Identifiers.
-	GroupSIDs []string `yaml:"group_sids,omitempty" mapstructure:"group_sids"`
+	// Role is the user's role in the system (admin or user).
+	Role UserRole `json:"role" yaml:"role" mapstructure:"role"`
 
 	// DittoFS group membership
 
 	// Groups is a list of DittoFS group names this user belongs to.
 	// Permissions are inherited from these groups.
-	Groups []string `yaml:"groups,omitempty" mapstructure:"groups"`
+	Groups []string `json:"groups,omitempty" yaml:"groups,omitempty" mapstructure:"groups"`
+
+	// Unix identity for NFS and file ownership
+
+	// UID is the Unix user ID for this user.
+	// Used for NFS authentication (reverse lookup from AUTH_UNIX UID)
+	// and file ownership in the filesystem.
+	UID *uint32 `json:"uid,omitempty" yaml:"uid,omitempty" mapstructure:"uid"`
+
+	// GID is the primary Unix group ID for this user.
+	// Used for NFS authentication and file ownership.
+	GID *uint32 `json:"gid,omitempty" yaml:"gid,omitempty" mapstructure:"gid"`
 
 	// Per-share permissions
 
 	// SharePermissions maps share names to explicit permission levels.
 	// These take precedence over group permissions.
-	SharePermissions map[string]SharePermission `yaml:"share_permissions,omitempty" mapstructure:"share_permissions"`
+	SharePermissions map[string]SharePermission `json:"share_permissions,omitempty" yaml:"share_permissions,omitempty" mapstructure:"share_permissions"`
 
 	// Metadata
 
 	// DisplayName is the human-readable name for the user.
-	DisplayName string `yaml:"display_name,omitempty" mapstructure:"display_name"`
+	DisplayName string `json:"display_name,omitempty" yaml:"display_name,omitempty" mapstructure:"display_name"`
 
 	// Email is the user's email address.
-	Email string `yaml:"email,omitempty" mapstructure:"email"`
+	Email string `json:"email,omitempty" yaml:"email,omitempty" mapstructure:"email"`
 
 	// CreatedAt is when the user was created.
-	CreatedAt time.Time `yaml:"created_at,omitempty" mapstructure:"created_at"`
+	CreatedAt time.Time `json:"created_at,omitempty" yaml:"created_at,omitempty" mapstructure:"created_at"`
 
 	// LastLogin is when the user last authenticated.
-	LastLogin time.Time `yaml:"last_login,omitempty" mapstructure:"last_login"`
+	LastLogin time.Time `json:"last_login,omitempty" yaml:"last_login,omitempty" mapstructure:"last_login"`
 }
 
 // GetDisplayName returns the display name, or username if display name is not set.
@@ -147,30 +161,9 @@ func ComputeNTHash(password string) [16]byte {
 	return ntHash
 }
 
-// GetSID returns the Windows SID, auto-generating one if not set.
-//
-// The auto-generated SID follows the format:
-// S-1-5-21-dittofs-{hash(uid)}
-//
-// This ensures consistent SID generation across restarts.
-func (u *User) GetSID() string {
-	if u.SID != "" {
-		return u.SID
-	}
-	return GenerateSIDFromUID(u.UID)
-}
-
 // HasGroup checks if the user belongs to the specified group.
 func (u *User) HasGroup(groupName string) bool {
 	return slices.Contains(u.Groups, groupName)
-}
-
-// HasGID checks if the user has the specified GID in their supplementary groups.
-func (u *User) HasGID(gid uint32) bool {
-	if u.GID == gid {
-		return true
-	}
-	return slices.Contains(u.GIDs, gid)
 }
 
 // GetExplicitSharePermission returns the user's explicit permission for a share.
@@ -191,8 +184,8 @@ func (u *User) Validate() error {
 	if u.Username == "" {
 		return fmt.Errorf("username is required")
 	}
-	if u.UID == 0 && u.Username != "root" {
-		return fmt.Errorf("UID 0 is reserved for root")
+	if u.Role != "" && !u.Role.IsValid() {
+		return fmt.Errorf("invalid role %q", u.Role)
 	}
 	for shareName, perm := range u.SharePermissions {
 		if !perm.IsValid() {
@@ -202,35 +195,7 @@ func (u *User) Validate() error {
 	return nil
 }
 
-// GenerateSIDFromUID creates a deterministic Windows SID from a Unix UID.
-//
-// Format: S-1-5-21-{dittofs-hash}-{uid}
-// The dittofs-hash provides a unique identifier authority.
-func GenerateSIDFromUID(uid uint32) string {
-	// Use a hash of "dittofs" as the identifier authority
-	// This ensures our SIDs don't conflict with real Windows SIDs
-	h := sha256.Sum256([]byte("dittofs"))
-	hashStr := hex.EncodeToString(h[:4])
-
-	// Parse first 4 bytes as uint32 for the sub-authority
-	// Note: Sscanf cannot fail here because hashStr is always 8 hex chars from sha256
-	var subAuth1 uint32
-	_, _ = fmt.Sscanf(hashStr, "%08x", &subAuth1)
-
-	// S-1-5-21-{subAuth1}-0-{uid}
-	// 1 = NT Authority
-	// 5 = NT Authority
-	// 21 = Non-unique domain
-	return fmt.Sprintf("S-1-5-21-%d-0-%d", subAuth1, uid)
-}
-
-// GuestUser creates a guest user with the specified UID/GID.
-func GuestUser(uid, gid uint32) *User {
-	return &User{
-		Username:    "guest",
-		Enabled:     true,
-		UID:         uid,
-		GID:         gid,
-		DisplayName: "Guest",
-	}
+// IsAdmin checks if the user has admin role.
+func (u *User) IsAdmin() bool {
+	return u.Role == RoleAdmin
 }

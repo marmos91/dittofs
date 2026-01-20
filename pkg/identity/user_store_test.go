@@ -11,59 +11,56 @@ func createTestStore(t *testing.T) *ConfigUserStore {
 
 	users := []*User{
 		{
+			ID:           "user-1",
 			Username:     "admin",
 			PasswordHash: hash,
 			Enabled:      true,
-			UID:          1000,
-			GID:          100,
+			Role:         RoleAdmin,
 			Groups:       []string{"admins"},
 			SharePermissions: map[string]SharePermission{
 				"/private": PermissionAdmin,
 			},
 		},
 		{
+			ID:           "user-2",
 			Username:     "editor",
 			PasswordHash: hash,
 			Enabled:      true,
-			UID:          1001,
-			GID:          101,
+			Role:         RoleUser,
 			Groups:       []string{"editors"},
 		},
 		{
+			ID:           "user-3",
 			Username:     "viewer",
 			PasswordHash: hash,
 			Enabled:      true,
-			UID:          1002,
-			GID:          102,
+			Role:         RoleUser,
 			Groups:       []string{"viewers"},
 		},
 		{
+			ID:           "user-4",
 			Username:     "disabled",
 			PasswordHash: hash,
 			Enabled:      false,
-			UID:          1003,
-			GID:          100,
+			Role:         RoleUser,
 		},
 	}
 
 	groups := []*Group{
 		{
 			Name: "admins",
-			GID:  100,
 			SharePermissions: map[string]SharePermission{
 				"/export": PermissionAdmin,
 			},
 		},
 		{
 			Name: "editors",
-			GID:  101,
 			SharePermissions: map[string]SharePermission{
 				"/export": PermissionReadWrite,
 			},
 		},
 		{
 			Name: "viewers",
-			GID:  102,
 			SharePermissions: map[string]SharePermission{
 				"/export": PermissionRead,
 			},
@@ -108,32 +105,6 @@ func TestConfigUserStore_GetUser(t *testing.T) {
 			}
 			if tc.wantErr == nil && user.Username != tc.username {
 				t.Errorf("GetUser(%q) username = %q, want %q", tc.username, user.Username, tc.username)
-			}
-		})
-	}
-}
-
-func TestConfigUserStore_GetUserByUID(t *testing.T) {
-	store := createTestStore(t)
-
-	tests := []struct {
-		name    string
-		uid     uint32
-		wantErr error
-	}{
-		{"admin UID", 1000, nil},
-		{"editor UID", 1001, nil},
-		{"non-existent UID", 9999, ErrUserNotFound},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			user, err := store.GetUserByUID(tc.uid)
-			if err != tc.wantErr {
-				t.Errorf("GetUserByUID(%d) error = %v, wantErr %v", tc.uid, err, tc.wantErr)
-			}
-			if tc.wantErr == nil && user.UID != tc.uid {
-				t.Errorf("GetUserByUID(%d) UID = %d, want %d", tc.uid, user.UID, tc.uid)
 			}
 		})
 	}
@@ -223,8 +194,11 @@ func TestConfigUserStore_GetGuestUser(t *testing.T) {
 	if guest.Username != "guest" {
 		t.Errorf("GetGuestUser() username = %q, want guest", guest.Username)
 	}
-	if guest.UID != 65534 {
-		t.Errorf("GetGuestUser() UID = %d, want 65534", guest.UID)
+	if guest.DisplayName != "Guest" {
+		t.Errorf("GetGuestUser() DisplayName = %q, want Guest", guest.DisplayName)
+	}
+	if guest.Role != RoleUser {
+		t.Errorf("GetGuestUser() Role = %q, want %q", guest.Role, RoleUser)
 	}
 }
 
@@ -333,8 +307,8 @@ func TestConfigUserStore_ListGroups(t *testing.T) {
 func TestNewConfigUserStore_DuplicateUser(t *testing.T) {
 	hash, _ := HashPassword("password")
 	users := []*User{
-		{Username: "admin", PasswordHash: hash, Enabled: true, UID: 1000, GID: 100},
-		{Username: "admin", PasswordHash: hash, Enabled: true, UID: 1001, GID: 100},
+		{ID: "1", Username: "admin", PasswordHash: hash, Enabled: true},
+		{ID: "2", Username: "admin", PasswordHash: hash, Enabled: true},
 	}
 
 	_, err := NewConfigUserStore(users, nil, nil)
@@ -343,23 +317,10 @@ func TestNewConfigUserStore_DuplicateUser(t *testing.T) {
 	}
 }
 
-func TestNewConfigUserStore_DuplicateUID(t *testing.T) {
-	hash, _ := HashPassword("password")
-	users := []*User{
-		{Username: "admin", PasswordHash: hash, Enabled: true, UID: 1000, GID: 100},
-		{Username: "editor", PasswordHash: hash, Enabled: true, UID: 1000, GID: 101},
-	}
-
-	_, err := NewConfigUserStore(users, nil, nil)
-	if err != ErrDuplicateUID {
-		t.Errorf("NewConfigUserStore() error = %v, want ErrDuplicateUID", err)
-	}
-}
-
 func TestNewConfigUserStore_DuplicateGroup(t *testing.T) {
 	groups := []*Group{
-		{Name: "admins", GID: 100},
-		{Name: "admins", GID: 101},
+		{Name: "admins"},
+		{Name: "admins"},
 	}
 
 	_, err := NewConfigUserStore(nil, groups, nil)
@@ -368,14 +329,45 @@ func TestNewConfigUserStore_DuplicateGroup(t *testing.T) {
 	}
 }
 
-func TestNewConfigUserStore_DuplicateGID(t *testing.T) {
-	groups := []*Group{
-		{Name: "admins", GID: 100},
-		{Name: "editors", GID: 100},
+func TestConfigUserStore_IsGuestEnabled(t *testing.T) {
+	store := createTestStore(t)
+
+	if !store.IsGuestEnabled() {
+		t.Error("IsGuestEnabled() = false, want true")
 	}
 
-	_, err := NewConfigUserStore(nil, groups, nil)
-	if err != ErrDuplicateGID {
-		t.Errorf("NewConfigUserStore() error = %v, want ErrDuplicateGID", err)
+	// Test with guest disabled
+	emptyStore, _ := NewConfigUserStore(nil, nil, &GuestConfig{Enabled: false})
+	if emptyStore.IsGuestEnabled() {
+		t.Error("IsGuestEnabled() = true, want false for disabled guest")
+	}
+
+	// Test with nil guest config
+	nilStore, _ := NewConfigUserStore(nil, nil, nil)
+	if nilStore.IsGuestEnabled() {
+		t.Error("IsGuestEnabled() = true, want false for nil guest config")
+	}
+}
+
+func TestConfigUserStore_GetGuestSharePermission(t *testing.T) {
+	store := createTestStore(t)
+
+	// Test existing share permission
+	perm := store.GetGuestSharePermission("/public")
+	if perm != PermissionRead {
+		t.Errorf("GetGuestSharePermission(/public) = %q, want %q", perm, PermissionRead)
+	}
+
+	// Test non-existent share
+	perm = store.GetGuestSharePermission("/unknown")
+	if perm != PermissionNone {
+		t.Errorf("GetGuestSharePermission(/unknown) = %q, want %q", perm, PermissionNone)
+	}
+
+	// Test with nil guest config
+	nilStore, _ := NewConfigUserStore(nil, nil, nil)
+	perm = nilStore.GetGuestSharePermission("/public")
+	if perm != PermissionNone {
+		t.Errorf("GetGuestSharePermission() with nil guest = %q, want %q", perm, PermissionNone)
 	}
 }

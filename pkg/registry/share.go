@@ -69,8 +69,10 @@ type Share struct {
 	ReadOnly      bool
 
 	// User-based Access Control
-	AllowGuest        bool   // Allow unauthenticated/guest access to this share
-	DefaultPermission string // Default permission for users without explicit permission (none, read, read-write)
+	// DefaultPermission is the permission for users without explicit permission or unknown UIDs.
+	// Values: "none" (block access), "read", "read-write", "admin"
+	// When "none", unknown UIDs are blocked (no guest access).
+	DefaultPermission string
 
 	// Access Control
 	AllowedClients     []string // IP addresses or CIDR ranges allowed (empty = all allowed)
@@ -105,8 +107,9 @@ type ShareConfig struct {
 	ReadOnly      bool
 
 	// User-based Access Control
-	AllowGuest        bool   // Allow unauthenticated/guest access
-	DefaultPermission string // Default permission for users without explicit permission
+	// DefaultPermission is the permission for unknown UIDs (none, read, read-write, admin).
+	// When "none", unknown UIDs are blocked.
+	DefaultPermission string
 
 	AllowedClients     []string
 	DeniedClients      []string

@@ -2,16 +2,17 @@ package config
 
 // DittoFSConfig represents the complete DittoFS configuration structure
 type DittoFSConfig struct {
-	Logging  LoggingConfig  `yaml:"logging"`
-	Server   ServerConfig   `yaml:"server"`
-	Metadata MetadataConfig `yaml:"metadata"`
-	Content  ContentConfig  `yaml:"content"`
-	Cache    CacheConfig    `yaml:"cache,omitempty"`
-	Shares   []Share        `yaml:"shares"`
-	Users    []User         `yaml:"users,omitempty"`
-	Groups   []Group        `yaml:"groups,omitempty"`
-	Guest    *Guest         `yaml:"guest,omitempty"`
-	Adapters AdaptersConfig `yaml:"adapters"`
+	Logging  LoggingConfig   `yaml:"logging"`
+	Server   ServerConfig    `yaml:"server"`
+	Identity *IdentityConfig `yaml:"identity,omitempty"`
+	Metadata MetadataConfig  `yaml:"metadata"`
+	Content  ContentConfig   `yaml:"content"`
+	Cache    CacheConfig     `yaml:"cache,omitempty"`
+	Shares   []Share         `yaml:"shares"`
+	Users    []User          `yaml:"users,omitempty"`
+	Groups   []Group         `yaml:"groups,omitempty"`
+	Guest    *Guest          `yaml:"guest,omitempty"`
+	Adapters AdaptersConfig  `yaml:"adapters"`
 }
 
 type LoggingConfig struct {
@@ -22,6 +23,27 @@ type LoggingConfig struct {
 
 type ServerConfig struct {
 	ShutdownTimeout string `yaml:"shutdown_timeout"`
+}
+
+// IdentityConfig defines identity store and JWT authentication configuration
+type IdentityConfig struct {
+	Type  string     `yaml:"type"`
+	JWT   *JWTConfig `yaml:"jwt,omitempty"`
+	Admin *Admin     `yaml:"admin,omitempty"`
+}
+
+// JWTConfig defines JWT authentication settings
+type JWTConfig struct {
+	Secret               string `yaml:"secret"`
+	Issuer               string `yaml:"issuer,omitempty"`
+	AccessTokenDuration  string `yaml:"access_token_duration,omitempty"`
+	RefreshTokenDuration string `yaml:"refresh_token_duration,omitempty"`
+}
+
+// Admin defines the initial admin user configuration
+type Admin struct {
+	Username string `yaml:"username,omitempty"`
+	Password string `yaml:"password,omitempty"`
 }
 
 type MetadataConfig struct {
@@ -112,7 +134,6 @@ type Share struct {
 	ContentStore            string              `yaml:"content_store"`
 	Cache                   string              `yaml:"cache,omitempty"`
 	ReadOnly                bool                `yaml:"read_only"`
-	AllowGuest              bool                `yaml:"allow_guest"`
 	DefaultPermission       string              `yaml:"default_permission,omitempty"`
 	AllowedClients          []string            `yaml:"allowed_clients"`
 	DeniedClients           []string            `yaml:"denied_clients"`

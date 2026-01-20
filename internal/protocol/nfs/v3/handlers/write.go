@@ -299,7 +299,7 @@ func (h *Handler) Write(
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	contentSvc := h.Registry.GetBlockService()
+	payloadSvc := h.Registry.GetBlockService()
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
@@ -400,7 +400,7 @@ func (h *Handler) Write(
 	}
 
 	// Write to ContentService (uses Cache, will be flushed on COMMIT)
-	err = contentSvc.WriteAt(ctx.Context, ctx.Share, writeIntent.PayloadID, req.Data, req.Offset)
+	err = payloadSvc.WriteAt(ctx.Context, ctx.Share, writeIntent.PayloadID, req.Data, req.Offset)
 	if err != nil {
 		traceError(ctx.Context, err, "WRITE failed: content write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.PayloadID, "client", clientIP)
 		status := xdr.MapContentErrorToNFSStatus(err)

@@ -198,11 +198,12 @@ func (tc *TestContext) startServer() {
 		mode = 0777 // Allow SMB test user to write
 	}
 
+	// DefaultPermission controls access for unknown UIDs and guests.
+	// "read-write" allows guest access; "none" would block unknown users.
 	shareConfig := &registry.ShareConfig{
 		Name:              "/export",
 		MetadataStore:     storeName,
 		ReadOnly:          false,
-		AllowGuest:        tc.options.EnableSMB, // Allow guest for interop tests
 		DefaultPermission: string(identity.PermissionReadWrite),
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,

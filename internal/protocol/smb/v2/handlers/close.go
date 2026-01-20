@@ -295,9 +295,9 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// Flush cached data to ensure durability
 	// Unlike NFS COMMIT which is non-blocking, SMB CLOSE requires immediate durability
 	if !openFile.IsDirectory && openFile.PayloadID != "" {
-		contentSvc := h.Registry.GetBlockService()
+		payloadSvc := h.Registry.GetBlockService()
 		// Use blocking Flush for immediate durability
-		_, flushErr := contentSvc.Flush(ctx.Context, openFile.ShareName, openFile.PayloadID)
+		_, flushErr := payloadSvc.Flush(ctx.Context, openFile.ShareName, openFile.PayloadID)
 		if flushErr != nil {
 			logger.Warn("CLOSE: flush failed", "path", openFile.Path, "error", flushErr)
 			// Continue with close even if flush fails
@@ -367,7 +367,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// ========================================================================
 
 	if openFile.DeletePending {
-		authCtx, err := BuildAuthContext(ctx, h.Registry)
+		authCtx, err := BuildAuthContext(ctx)
 		if err != nil {
 			logger.Warn("CLOSE: failed to build auth context for delete", "error", err)
 		} else {
@@ -516,11 +516,11 @@ func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *Ope
 // readMFsymlinkContent reads the content of a potential MFsymlink file.
 // It reads from ContentService which uses Cache internally.
 func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFile) ([]byte, error) {
-	contentSvc := h.Registry.GetBlockService()
+	payloadSvc := h.Registry.GetBlockService()
 
 	// Read the MFsymlink content (always 1067 bytes)
 	data := make([]byte, mfsymlink.Size)
-	n, err := contentSvc.ReadAt(ctx.Context, openFile.ShareName, openFile.PayloadID, data, 0)
+	n, err := payloadSvc.ReadAt(ctx.Context, openFile.ShareName, openFile.PayloadID, data, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -535,7 +535,7 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 		return fmt.Errorf("missing parent handle or filename for MFsymlink conversion")
 	}
 
-	authCtx, err := BuildAuthContext(ctx, h.Registry)
+	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -553,8 +553,8 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 
 	// Delete content from content store via ContentService (optional - ignore errors)
 	if openFile.PayloadID != "" {
-		contentSvc := h.Registry.GetBlockService()
-		_ = contentSvc.Delete(ctx.Context, openFile.ShareName, openFile.PayloadID)
+		payloadSvc := h.Registry.GetBlockService()
+		_ = payloadSvc.Delete(ctx.Context, openFile.ShareName, openFile.PayloadID)
 	}
 
 	// Create the real symlink with default attributes

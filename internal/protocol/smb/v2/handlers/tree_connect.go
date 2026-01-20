@@ -78,44 +78,42 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		return NewErrorResult(types.StatusBadNetworkName), nil
 	}
 
-	// Get session and check permissions
+	// Get session and resolve permissions
 	sess, _ := h.SessionManager.GetSession(ctx.SessionID)
 	permission := identity.PermissionReadWrite // Default for unauthenticated
+	defaultPerm := identity.ParseSharePermission(share.DefaultPermission)
+	userStore := h.Registry.GetUserStore()
 
-	if sess != nil {
-		userStore := h.Registry.GetUserStore()
+	// Resolve permission based on session type
+	var user string
+	if sess != nil && sess.User != nil && userStore != nil {
+		// Authenticated user - resolve their permission
+		permission = userStore.ResolveSharePermission(sess.User, shareName, defaultPerm)
+		user = sess.User.Username
+	} else if sess != nil && sess.IsGuest {
+		// Guest session - use default permission
+		permission = defaultPerm
+		user = "guest"
+	}
 
-		if sess.User != nil && userStore != nil {
-			// Authenticated user - resolve their permission
-			defaultPerm := identity.ParseSharePermission(share.DefaultPermission)
-			permission = userStore.ResolveSharePermission(sess.User, shareName, defaultPerm)
+	// Check for access denied
+	if permission == identity.PermissionNone {
+		logger.Debug("Share access denied", "shareName", shareName, "user", user)
+		return NewErrorResult(types.StatusAccessDenied), nil
+	}
 
-			if permission == identity.PermissionNone {
-				logger.Debug("Share access denied", "shareName", shareName, "user", sess.User.Username)
-				return NewErrorResult(types.StatusAccessDenied), nil
-			}
+	logger.Debug("Permission resolved for tree connect",
+		"shareName", shareName,
+		"user", user,
+		"permission", permission)
 
-			logger.Debug("User permission resolved for tree connect",
-				"shareName", shareName,
-				"user", sess.User.Username,
-				"permission", permission)
-		} else if sess.IsGuest {
-			// Guest session - check if guest access is allowed
-			if !share.AllowGuest {
-				logger.Debug("Share access denied (guest not allowed)", "shareName", shareName)
-				return NewErrorResult(types.StatusAccessDenied), nil
-			}
-
-			// Use default permission for guests
-			permission = identity.ParseSharePermission(share.DefaultPermission)
-			if permission == identity.PermissionNone {
-				logger.Debug("Share access denied (no guest permission)", "shareName", shareName)
-				return NewErrorResult(types.StatusAccessDenied), nil
-			}
-
-			logger.Debug("Guest permission for tree connect",
-				"shareName", shareName,
-				"permission", permission)
+	// Apply share-level read_only override
+	// If share is configured as read_only, cap permission to Read
+	if share.ReadOnly && permission != identity.PermissionNone {
+		if permission == identity.PermissionReadWrite || permission == identity.PermissionAdmin {
+			logger.Debug("Share is read-only, capping permission to read",
+				"shareName", shareName, "originalPermission", permission)
+			permission = identity.PermissionRead
 		}
 	}
 
@@ -134,7 +132,7 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	ctx.TreeID = treeID
 	ctx.ShareName = shareName
 
-	// Calculate MaximalAccess based on permission
+	// Calculate MaximalAccess based on effective permission
 	maximalAccess := calculateMaximalAccess(permission)
 
 	// Build response (16 bytes)

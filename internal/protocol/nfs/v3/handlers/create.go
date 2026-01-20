@@ -167,7 +167,7 @@ func (h *Handler) Create(
 	// ========================================================================
 
 	// Get content service for this share
-	contentSvc := h.Registry.GetBlockService()
+	payloadSvc := h.Registry.GetBlockService()
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
 	logger.DebugCtx(ctx.Context, "CREATE", "share", ctx.Share, "file", req.Filename)
@@ -324,7 +324,7 @@ func (h *Handler) Create(
 			// Truncate existing file
 			existingHandle, _ := metadata.EncodeFileHandle(existingFile)
 			fileHandle = existingHandle
-			fileAttr, err = truncateExistingFile(authCtx, contentSvc, ctx.Share, metaSvc, existingFile, req)
+			fileAttr, err = truncateExistingFile(authCtx, payloadSvc, ctx.Share, metaSvc, existingFile, req)
 		} else {
 			// Create new file
 			fileHandle, fileAttr, err = createNewFile(authCtx, metaSvc, parentHandle, req)
@@ -541,7 +541,7 @@ func createNewFile(
 //
 // Parameters:
 //   - authCtx: Authentication context for permission checking
-//   - contentSvc: Content service for truncation
+//   - payloadSvc: Content service for truncation
 //   - shareName: Share name for content service routing
 //   - metaSvc: Metadata service for file operations
 //   - existingFile: Existing file to truncate
@@ -551,7 +551,7 @@ func createNewFile(
 //   - Updated file attributes and error
 func truncateExistingFile(
 	authCtx *metadata.AuthContext,
-	contentSvc *payload.PayloadService,
+	payloadSvc *payload.PayloadService,
 	shareName string,
 	metaSvc *metadata.MetadataService,
 	existingFile *metadata.File,
@@ -595,7 +595,7 @@ func truncateExistingFile(
 
 	// Truncate content if file has content
 	if existingFile.PayloadID != "" {
-		if err := contentSvc.Truncate(authCtx.Context, shareName, existingFile.PayloadID, targetSize); err != nil {
+		if err := payloadSvc.Truncate(authCtx.Context, shareName, existingFile.PayloadID, targetSize); err != nil {
 			logger.Warn("Failed to truncate content", "size", targetSize, "error", err)
 			// Non-fatal: metadata is already updated
 		}

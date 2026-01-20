@@ -40,6 +40,7 @@ type Registry struct {
 	shares          map[string]*Share
 	mounts          map[string]*MountInfo     // key: clientAddr, value: mount info
 	userStore       identity.UserStore        // User/group management for authentication
+	identityStore   identity.IdentityStore    // Full identity store for ShareIdentityMapping lookup
 	metadataService *metadata.MetadataService // High-level metadata operations
 	blockService    *payload.PayloadService   // High-level content operations (uses Cache)
 }
@@ -160,7 +161,6 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 		MetadataStore:            config.MetadataStore,
 		RootHandle:               rootHandle,
 		ReadOnly:                 config.ReadOnly,
-		AllowGuest:               config.AllowGuest,
 		DefaultPermission:        config.DefaultPermission,
 		AllowedClients:           config.AllowedClients,
 		DeniedClients:            config.DeniedClients,
@@ -413,4 +413,21 @@ func (r *Registry) GetUserStore() identity.UserStore {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.userStore
+}
+
+// SetIdentityStore sets the identity store for ShareIdentityMapping lookup.
+// This should be called during server initialization before handling requests.
+// The identity store provides per-share UID/GID/SID mappings for authenticated users.
+func (r *Registry) SetIdentityStore(store identity.IdentityStore) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.identityStore = store
+}
+
+// GetIdentityStore returns the identity store for ShareIdentityMapping lookup.
+// Returns nil if no identity store has been configured.
+func (r *Registry) GetIdentityStore() identity.IdentityStore {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.identityStore
 }

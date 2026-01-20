@@ -360,8 +360,8 @@ func TestContentServiceCreation(t *testing.T) {
 	_ = reg.AddShare(context.Background(), testShareConfig("/export", "meta1", false))
 
 	// Verify ContentService is available (now explicitly set)
-	contentSvc := reg.GetBlockService()
-	if contentSvc == nil {
+	payloadSvc = reg.GetBlockService()
+	if payloadSvc == nil {
 		t.Fatal("ContentService should be available after SetPayloadService")
 	}
 

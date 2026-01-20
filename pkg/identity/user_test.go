@@ -37,41 +37,6 @@ func TestUser_GetDisplayName(t *testing.T) {
 	}
 }
 
-func TestUser_GetSID(t *testing.T) {
-	tests := []struct {
-		name     string
-		user     User
-		wantAuto bool
-	}{
-		{
-			name:     "returns explicit SID when set",
-			user:     User{UID: 1000, SID: "S-1-5-21-123-456-789"},
-			wantAuto: false,
-		},
-		{
-			name:     "auto-generates SID when not set",
-			user:     User{UID: 1000, SID: ""},
-			wantAuto: true,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			result := tc.user.GetSID()
-			if tc.wantAuto {
-				expected := GenerateSIDFromUID(tc.user.UID)
-				if result != expected {
-					t.Errorf("GetSID() = %q, want auto-generated %q", result, expected)
-				}
-			} else {
-				if result != tc.user.SID {
-					t.Errorf("GetSID() = %q, want explicit %q", result, tc.user.SID)
-				}
-			}
-		})
-	}
-}
-
 func TestUser_HasGroup(t *testing.T) {
 	user := User{
 		Username: "jdoe",
@@ -94,35 +59,6 @@ func TestUser_HasGroup(t *testing.T) {
 			result := user.HasGroup(tc.groupName)
 			if result != tc.expected {
 				t.Errorf("HasGroup(%q) = %v, want %v", tc.groupName, result, tc.expected)
-			}
-		})
-	}
-}
-
-func TestUser_HasGID(t *testing.T) {
-	user := User{
-		Username: "jdoe",
-		GID:      1000,
-		GIDs:     []uint32{1001, 1002},
-	}
-
-	tests := []struct {
-		name     string
-		gid      uint32
-		expected bool
-	}{
-		{"primary GID", 1000, true},
-		{"supplementary GID 1001", 1001, true},
-		{"supplementary GID 1002", 1002, true},
-		{"non-member GID", 9999, false},
-		{"GID zero", 0, false},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			result := user.HasGID(tc.gid)
-			if result != tc.expected {
-				t.Errorf("HasGID(%d) = %v, want %v", tc.gid, result, tc.expected)
 			}
 		})
 	}
@@ -181,30 +117,33 @@ func TestUser_Validate(t *testing.T) {
 	}{
 		{
 			name:    "valid user",
-			user:    User{Username: "jdoe", UID: 1000, GID: 1000},
+			user:    User{Username: "jdoe", Role: RoleUser},
 			wantErr: false,
 		},
 		{
 			name:    "empty username",
-			user:    User{Username: "", UID: 1000, GID: 1000},
+			user:    User{Username: "", Role: RoleUser},
 			wantErr: true,
 		},
 		{
-			name:    "UID 0 for non-root",
-			user:    User{Username: "jdoe", UID: 0, GID: 1000},
-			wantErr: true,
-		},
-		{
-			name:    "UID 0 for root is valid",
-			user:    User{Username: "root", UID: 0, GID: 0},
+			name:    "valid admin user",
+			user:    User{Username: "admin", Role: RoleAdmin},
 			wantErr: false,
+		},
+		{
+			name:    "no role (defaults to empty, valid)",
+			user:    User{Username: "jdoe"},
+			wantErr: false,
+		},
+		{
+			name:    "invalid role",
+			user:    User{Username: "jdoe", Role: "superadmin"},
+			wantErr: true,
 		},
 		{
 			name: "invalid share permission",
 			user: User{
 				Username: "jdoe",
-				UID:      1000,
-				GID:      1000,
 				SharePermissions: map[string]SharePermission{
 					"/export": "invalid-permission",
 				},
@@ -215,8 +154,6 @@ func TestUser_Validate(t *testing.T) {
 			name: "valid share permissions",
 			user: User{
 				Username: "jdoe",
-				UID:      1000,
-				GID:      1000,
 				SharePermissions: map[string]SharePermission{
 					"/export":  PermissionRead,
 					"/private": PermissionAdmin,
@@ -236,60 +173,126 @@ func TestUser_Validate(t *testing.T) {
 	}
 }
 
-func TestGenerateSIDFromUID(t *testing.T) {
+func TestUser_IsAdmin(t *testing.T) {
 	tests := []struct {
-		name string
-		uid  uint32
+		name     string
+		user     User
+		expected bool
 	}{
-		{"UID 0", 0},
-		{"UID 1000", 1000},
-		{"UID 65534", 65534},
-		{"max UID", 4294967295},
+		{
+			name:     "admin role",
+			user:     User{Username: "admin", Role: RoleAdmin},
+			expected: true,
+		},
+		{
+			name:     "user role",
+			user:     User{Username: "user", Role: RoleUser},
+			expected: false,
+		},
+		{
+			name:     "empty role",
+			user:     User{Username: "user"},
+			expected: false,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			sid := GenerateSIDFromUID(tc.uid)
-
-			// Verify format starts with expected prefix
-			if len(sid) < 10 {
-				t.Errorf("GenerateSIDFromUID(%d) = %q, too short", tc.uid, sid)
-			}
-
-			// Verify determinism - same UID should always generate same SID
-			sid2 := GenerateSIDFromUID(tc.uid)
-			if sid != sid2 {
-				t.Errorf("GenerateSIDFromUID(%d) not deterministic: %q != %q", tc.uid, sid, sid2)
+			result := tc.user.IsAdmin()
+			if result != tc.expected {
+				t.Errorf("IsAdmin() = %v, want %v", result, tc.expected)
 			}
 		})
 	}
-
-	// Verify different UIDs produce different SIDs
-	t.Run("uniqueness", func(t *testing.T) {
-		sid1 := GenerateSIDFromUID(1000)
-		sid2 := GenerateSIDFromUID(1001)
-		if sid1 == sid2 {
-			t.Errorf("Different UIDs produced same SID: %q", sid1)
-		}
-	})
 }
 
-func TestGuestUser(t *testing.T) {
-	guest := GuestUser(65534, 65534)
+func TestUserRole_IsValid(t *testing.T) {
+	tests := []struct {
+		name     string
+		role     UserRole
+		expected bool
+	}{
+		{"admin role", RoleAdmin, true},
+		{"user role", RoleUser, true},
+		{"empty role", "", false},
+		{"invalid role", "superadmin", false},
+	}
 
-	if guest.Username != "guest" {
-		t.Errorf("GuestUser() Username = %q, want guest", guest.Username)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := tc.role.IsValid()
+			if result != tc.expected {
+				t.Errorf("IsValid() = %v, want %v", result, tc.expected)
+			}
+		})
 	}
-	if !guest.Enabled {
-		t.Error("GuestUser() Enabled = false, want true")
+}
+
+func TestComputeNTHash(t *testing.T) {
+	// Test that ComputeNTHash produces consistent results
+	password := "testpassword"
+
+	hash1 := ComputeNTHash(password)
+	hash2 := ComputeNTHash(password)
+
+	if hash1 != hash2 {
+		t.Errorf("ComputeNTHash() not deterministic: got different results for same input")
 	}
-	if guest.UID != 65534 {
-		t.Errorf("GuestUser() UID = %d, want 65534", guest.UID)
+
+	// Different passwords should produce different hashes
+	hash3 := ComputeNTHash("differentpassword")
+	if hash1 == hash3 {
+		t.Errorf("ComputeNTHash() produced same hash for different passwords")
 	}
-	if guest.GID != 65534 {
-		t.Errorf("GuestUser() GID = %d, want 65534", guest.GID)
+}
+
+func TestUser_GetNTHash(t *testing.T) {
+	// Test with valid NT hash
+	user := User{Username: "test"}
+	user.SetNTHashFromPassword("password")
+
+	ntHash, ok := user.GetNTHash()
+	if !ok {
+		t.Error("GetNTHash() returned false for valid hash")
 	}
-	if guest.DisplayName != "Guest" {
-		t.Errorf("GuestUser() DisplayName = %q, want Guest", guest.DisplayName)
+
+	// Verify ntHash is not all zeros (actual hash has content)
+	allZeros := true
+	for _, b := range ntHash {
+		if b != 0 {
+			allZeros = false
+			break
+		}
+	}
+	if allZeros {
+		t.Error("GetNTHash() returned all zeros, expected actual hash")
+	}
+
+	// Test with empty NT hash
+	emptyUser := User{Username: "empty"}
+	_, ok = emptyUser.GetNTHash()
+	if ok {
+		t.Error("GetNTHash() returned true for empty hash")
+	}
+}
+
+func TestUser_SetNTHashFromPassword(t *testing.T) {
+	user := User{Username: "test"}
+
+	// Verify NTHash is empty initially
+	if user.NTHash != "" {
+		t.Error("Expected empty NTHash initially")
+	}
+
+	user.SetNTHashFromPassword("password")
+
+	// Verify NTHash is now set
+	if user.NTHash == "" {
+		t.Error("SetNTHashFromPassword() did not set NTHash")
+	}
+
+	// Verify it's a valid hex string of expected length (32 hex chars = 16 bytes)
+	if len(user.NTHash) != 32 {
+		t.Errorf("SetNTHashFromPassword() produced hash of length %d, want 32", len(user.NTHash))
 	}
 }

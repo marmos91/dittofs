@@ -106,8 +106,10 @@ func (p *LocalAuthProvider) authenticatePassword(ctx context.Context, creds *Pas
 }
 
 // LookupUser finds a user by various identifiers.
+// Note: UID and SID lookups are no longer supported by the UserStore interface.
+// For protocol-specific identity resolution, use IdentityStore with ShareIdentityMapping.
 func (p *LocalAuthProvider) LookupUser(ctx context.Context, identifier UserIdentifier) (*User, error) {
-	// Try username first
+	// Try username first (the only lookup method supported by UserStore)
 	if identifier.Username != "" {
 		user, err := p.store.GetUser(identifier.Username)
 		if err == nil {
@@ -115,16 +117,9 @@ func (p *LocalAuthProvider) LookupUser(ctx context.Context, identifier UserIdent
 		}
 	}
 
-	// Try UID
-	if identifier.UID != nil {
-		user, err := p.store.GetUserByUID(*identifier.UID)
-		if err == nil {
-			return user, nil
-		}
-	}
-
-	// SID lookup would require iterating all users
-	// For now, we don't support SID-only lookup in the local provider
+	// UID and SID lookups are not supported by the UserStore interface.
+	// Protocol-specific identity (UID/GID/SID) is now per-share via ShareIdentityMapping.
+	// Use IdentityStore.GetShareIdentityMapping() for UID/SID resolution.
 
 	return nil, ErrUserNotFound
 }
