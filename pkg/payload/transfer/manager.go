@@ -2,16 +2,23 @@ package transfer
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/payload/block"
 	"github.com/marmos91/dittofs/pkg/payload/chunk"
 	"github.com/marmos91/dittofs/pkg/payload/store"
 )
+
+// defaultShutdownTimeout is the maximum time to wait for the transfer queue
+// to finish processing during graceful shutdown.
+const defaultShutdownTimeout = 30 * time.Second
 
 // blockPool reuses 4MB buffers for block uploads to reduce GC pressure.
 // Uses *[]byte to satisfy staticcheck SA6002 (sync.Pool prefers pointer types).
@@ -28,8 +35,11 @@ type fileUploadState struct {
 	flush    sync.WaitGroup    // Tracks in-flight flush operations
 	errors   []error           // Accumulated errors
 	errorsMu sync.Mutex        // Protects errors
-	blocksMu sync.Mutex        // Protects uploadedBlocks
+	blocksMu sync.Mutex        // Protects uploadedBlocks and blockHashes
 	uploaded map[blockKey]bool // Tracks which blocks have been uploaded
+
+	// Block hashes for finalization (sorted by chunk/block index)
+	blockHashes map[blockKey][32]byte
 }
 
 // blockKey uniquely identifies a block within a file.
@@ -37,6 +47,10 @@ type blockKey struct {
 	chunkIdx uint32
 	blockIdx uint32
 }
+
+// FinalizationCallback is called when all blocks for a file have been uploaded.
+// It receives the payloadID and a list of block hashes for computing the final object hash.
+type FinalizationCallback func(ctx context.Context, payloadID string, blockHashes [][32]byte)
 
 // TransferManager handles eager upload and parallel download for cache-to-block-store integration.
 //
@@ -46,11 +60,17 @@ type blockKey struct {
 //   - Prefetch: Speculatively fetches upcoming blocks for sequential reads
 //   - Configurable parallelism: Set max concurrent uploads via config
 //   - In-flight deduplication: Avoids duplicate downloads for the same block
+//   - Content-addressed deduplication: Skip upload if block with same hash exists (optional)
 //   - Non-blocking: All operations return immediately, I/O happens in background
+//   - Finalization callback: Notifies when all blocks are uploaded for a file
 type TransferManager struct {
-	cache      *cache.Cache
-	blockStore store.BlockStore
-	config     Config
+	cache       *cache.Cache
+	blockStore  store.BlockStore
+	objectStore metadata.ObjectStore // Required: enables content-addressed deduplication
+	config      Config
+
+	// Finalization callback - called when all blocks for a file are uploaded
+	onFinalized FinalizationCallback
 
 	// Per-file upload tracking
 	uploads   map[string]*fileUploadState // payloadID -> state
@@ -79,9 +99,13 @@ type TransferManager struct {
 //
 // Parameters:
 //   - c: The cache to transfer from/to
-//   - store: The block store to transfer to
+//   - blockStore: The block store to transfer to
+//   - objectStore: Required ObjectStore for content-addressed deduplication
 //   - config: TransferManager configuration
-func New(c *cache.Cache, store store.BlockStore, config Config) *TransferManager {
+func New(c *cache.Cache, blockStore store.BlockStore, objectStore metadata.ObjectStore, config Config) *TransferManager {
+	if objectStore == nil {
+		panic("objectStore is required for TransferManager")
+	}
 	if config.ParallelUploads <= 0 {
 		config.ParallelUploads = DefaultParallelUploads
 	}
@@ -99,13 +123,14 @@ func New(c *cache.Cache, store store.BlockStore, config Config) *TransferManager
 	}
 
 	m := &TransferManager{
-		cache:      c,
-		blockStore: store,
-		config:     config,
-		uploads:    make(map[string]*fileUploadState),
-		ioCond:     sync.NewCond(&sync.Mutex{}),
-		inFlight:   make(map[string]chan error),
-		uploadSem:  make(chan struct{}, semSize),
+		cache:       c,
+		blockStore:  blockStore,
+		objectStore: objectStore,
+		config:      config,
+		uploads:     make(map[string]*fileUploadState),
+		ioCond:      sync.NewCond(&sync.Mutex{}),
+		inFlight:    make(map[string]chan error),
+		uploadSem:   make(chan struct{}, semSize),
 	}
 
 	// Initialize transfer queue
@@ -116,6 +141,18 @@ func New(c *cache.Cache, store store.BlockStore, config Config) *TransferManager
 	return m
 }
 
+// SetFinalizationCallback sets the callback function that is invoked when
+// all blocks for a file have been uploaded. The callback receives the payloadID
+// and an ordered list of block hashes for computing the final object hash.
+//
+// This is used by the metadata layer to compute the Object/Chunk/Block hierarchy
+// and update FileAttr.ObjectID after all uploads complete.
+func (m *TransferManager) SetFinalizationCallback(fn FinalizationCallback) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onFinalized = fn
+}
+
 // getOrCreateUploadState returns the upload state for a file, creating it if needed.
 func (m *TransferManager) getOrCreateUploadState(payloadID string) *fileUploadState {
 	m.uploadsMu.Lock()
@@ -124,7 +161,8 @@ func (m *TransferManager) getOrCreateUploadState(payloadID string) *fileUploadSt
 	state, exists := m.uploads[payloadID]
 	if !exists {
 		state = &fileUploadState{
-			uploaded: make(map[blockKey]bool),
+			uploaded:    make(map[blockKey]bool),
+			blockHashes: make(map[blockKey][32]byte),
 		}
 		m.uploads[payloadID] = state
 	}
@@ -136,6 +174,73 @@ func (m *TransferManager) getUploadState(payloadID string) *fileUploadState {
 	m.uploadsMu.Lock()
 	defer m.uploadsMu.Unlock()
 	return m.uploads[payloadID]
+}
+
+// handleUploadSuccess performs common post-upload tasks:
+// 1. Registers block in ObjectStore for deduplication
+// 2. Tracks block hash for finalization
+// 3. Marks block as uploaded in cache
+//
+// This consolidates the success handling from both startBlockUpload and uploadRemainingBlocks.
+func (m *TransferManager) handleUploadSuccess(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32, hash [32]byte, dataSize uint32) {
+	// Register block in ObjectStore for deduplication (if configured)
+	if m.objectStore != nil {
+		objBlock := metadata.NewObjectBlock(
+			metadata.ContentHash{}, // ChunkHash - will be set during finalization
+			blockIdx,
+			hash,
+			dataSize,
+		)
+		objBlock.MarkUploaded()
+		_ = m.objectStore.PutBlock(ctx, objBlock)
+	}
+
+	// Track block hash for finalization
+	state := m.getUploadState(payloadID)
+	if state != nil {
+		key := blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx}
+		state.blocksMu.Lock()
+		state.blockHashes[key] = hash
+		state.blocksMu.Unlock()
+	}
+
+	// Mark block as uploaded so it can be evicted
+	m.cache.MarkBlockUploaded(ctx, payloadID, chunkIdx, blockIdx)
+}
+
+// getOrderedBlockHashes returns block hashes in order (sorted by chunk/block index).
+func (m *TransferManager) getOrderedBlockHashes(payloadID string) [][32]byte {
+	state := m.getUploadState(payloadID)
+	if state == nil {
+		return nil
+	}
+
+	state.blocksMu.Lock()
+	defer state.blocksMu.Unlock()
+
+	if len(state.blockHashes) == 0 {
+		return nil
+	}
+
+	// Collect keys and sort by chunk index first, then block index
+	keys := make([]blockKey, 0, len(state.blockHashes))
+	for k := range state.blockHashes {
+		keys = append(keys, k)
+	}
+	slices.SortFunc(keys, func(a, b blockKey) int {
+		if a.chunkIdx != b.chunkIdx {
+			return int(a.chunkIdx) - int(b.chunkIdx)
+		}
+		return int(a.blockIdx) - int(b.blockIdx)
+	})
+
+	// Build ordered hash list
+	hashes := make([][32]byte, len(keys))
+	for i, k := range keys {
+		hashes[i] = state.blockHashes[k]
+	}
+
+	return hashes
 }
 
 // ============================================================================
@@ -194,6 +299,12 @@ func blockRange(offset, length uint32) (start, end uint32) {
 
 // tryEagerUpload checks if a block is complete and starts an async upload if ready.
 // Only complete 4MB blocks are uploaded; partial blocks are flushed during Flush().
+//
+// If ObjectStore is configured, content-addressed deduplication is performed:
+// 1. Compute SHA-256 hash of block data
+// 2. Check if block with same hash already exists
+// 3. If exists: increment RefCount, skip upload (block is already in storage)
+// 4. If not: proceed with upload, register block after successful upload
 func (m *TransferManager) tryEagerUpload(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) {
 	blockStart := blockIdx * BlockSize
 	blockEnd := blockStart + BlockSize
@@ -217,14 +328,36 @@ func (m *TransferManager) tryEagerUpload(ctx context.Context, payloadID string, 
 	// Read block data from cache
 	dataPtr := blockPool.Get().(*[]byte)
 	data := *dataPtr
-	found, err := m.cache.Read(ctx, payloadID, chunkIdx, blockStart, BlockSize, data)
+	found, err := m.cache.ReadAt(ctx, payloadID, chunkIdx, blockStart, BlockSize, data)
 	if err != nil || !found {
 		blockPool.Put(dataPtr)
 		return
 	}
 
+	// Compute hash for deduplication (done before async to avoid race)
+	hash := sha256.Sum256(data)
+
+	// Content-addressed deduplication: check if block already exists
+	if m.objectStore != nil {
+		existing, err := m.objectStore.FindBlockByHash(ctx, hash)
+		if err == nil && existing != nil && existing.IsUploaded() {
+			// Block already exists and is uploaded - increment RefCount and skip upload
+			_, _ = m.objectStore.IncrementBlockRefCount(ctx, hash)
+			m.cache.MarkBlockReadyForUpload(ctx, payloadID, chunkIdx, blockIdx, hash, nil)
+			m.cache.MarkBlockUploaded(ctx, payloadID, chunkIdx, blockIdx)
+			blockPool.Put(dataPtr) // Return unused buffer
+
+			logger.Debug("Dedup: block already exists, skipping upload",
+				"payloadID", payloadID,
+				"chunkIdx", chunkIdx,
+				"blockIdx", blockIdx,
+				"hash", hash)
+			return
+		}
+	}
+
 	// Start async upload (takes ownership of data buffer pointer)
-	m.startBlockUpload(ctx, payloadID, chunkIdx, blockIdx, dataPtr)
+	m.startBlockUpload(ctx, payloadID, chunkIdx, blockIdx, dataPtr, hash)
 }
 
 // startBlockUpload uploads a block asynchronously with bounded parallelism.
@@ -233,8 +366,11 @@ func (m *TransferManager) tryEagerUpload(ctx context.Context, payloadID string, 
 // after the upload completes or fails.
 //
 // Upload goroutines yield to downloads (download priority) before performing I/O.
+//
+// If ObjectStore is configured, the block is registered after successful upload
+// with its content hash for deduplication.
 func (m *TransferManager) startBlockUpload(ctx context.Context,
-	payloadID string, chunkIdx, blockIdx uint32, dataPtr *[]byte) {
+	payloadID string, chunkIdx, blockIdx uint32, dataPtr *[]byte, hash [32]byte) {
 	state := m.getOrCreateUploadState(payloadID)
 
 	// Check if already uploaded (deduplication)
@@ -301,13 +437,13 @@ func (m *TransferManager) startBlockUpload(ctx context.Context,
 			return
 		}
 
-		// Mark block as uploaded so it can be evicted.
-		// This is critical for memory management during large file writes.
-		m.cache.MarkBlockUploaded(ctx, payloadID, chunkIdx, blockIdx)
+		// Handle successful upload (ObjectStore, hash tracking, cache marking)
+		m.handleUploadSuccess(ctx, payloadID, chunkIdx, blockIdx, hash, uint32(len(data)))
 
 		logger.Debug("Eager upload complete",
 			"payloadID", payloadID,
 			"blockKey", blockKeyStr,
+			"hash", hash,
 			"duration", time.Since(startTime),
 			"size", len(data))
 	}()
@@ -353,10 +489,27 @@ func (m *TransferManager) Flush(ctx context.Context, payloadID string) (*FlushRe
 	// for performance, not required for durability.
 	go func() {
 		defer state.flush.Done()
-		if err := m.uploadRemainingBlocks(context.Background(), payloadID); err != nil {
+		bgCtx := context.Background()
+
+		if err := m.uploadRemainingBlocks(bgCtx, payloadID); err != nil {
 			logger.Warn("Failed to upload remaining blocks",
 				"payloadID", payloadID,
 				"error", err)
+		}
+
+		// Wait for any in-flight eager uploads to complete
+		state.inFlight.Wait()
+
+		// Call finalization callback with ordered block hashes
+		m.mu.RLock()
+		callback := m.onFinalized
+		m.mu.RUnlock()
+
+		if callback != nil {
+			hashes := m.getOrderedBlockHashes(payloadID)
+			if len(hashes) > 0 {
+				callback(bgCtx, payloadID, hashes)
+			}
 		}
 	}()
 
@@ -468,6 +621,33 @@ func (m *TransferManager) uploadRemainingBlocks(ctx context.Context, payloadID s
 		chunkIdx := blk.ChunkIndex
 		blockIdx := blk.BlockIndex
 
+		// Use existing hash from ReadyForUpload state, or compute it
+		hash := blk.Hash
+		if hash == [32]byte{} {
+			blockData, dataSize, err := m.cache.GetBlockData(ctx, payloadID, chunkIdx, blockIdx)
+			if err != nil {
+				continue
+			}
+			hash = sha256.Sum256(blockData[:dataSize])
+		}
+
+		// Content-addressed deduplication: check if block already exists
+		if m.objectStore != nil {
+			existing, err := m.objectStore.FindBlockByHash(ctx, hash)
+			if err == nil && existing != nil && existing.IsUploaded() {
+				// Block already exists - increment RefCount and skip upload
+				_, _ = m.objectStore.IncrementBlockRefCount(ctx, hash)
+				m.cache.MarkBlockUploaded(ctx, payloadID, chunkIdx, blockIdx)
+
+				logger.Debug("Flush dedup: block already exists, skipping upload",
+					"payloadID", payloadID,
+					"chunkIdx", chunkIdx,
+					"blockIdx", blockIdx,
+					"hash", hash)
+				continue
+			}
+		}
+
 		// Atomically claim and detach the block buffer for upload.
 		// This is a zero-copy operation that transfers ownership of the buffer
 		// to the upload goroutine, preventing data corruption from concurrent writes.
@@ -493,7 +673,7 @@ func (m *TransferManager) uploadRemainingBlocks(ctx context.Context, payloadID s
 		// Acquire semaphore slot (blocking for flush)
 		m.uploadSem <- struct{}{}
 
-		go func(blockData []byte, dataSize, chunkIdx, blockIdx uint32) {
+		go func(blockData []byte, dataSize, chunkIdx, blockIdx uint32, hash [32]byte) {
 			defer func() {
 				<-m.uploadSem // Release semaphore slot
 				wg.Done()
@@ -526,16 +706,17 @@ func (m *TransferManager) uploadRemainingBlocks(ctx context.Context, payloadID s
 				return
 			}
 
-			// Mark block as uploaded. Buffer is discarded - data is now in S3.
-			// If needed later, it can be downloaded from S3.
-			m.cache.MarkBlockUploaded(ctx, payloadID, chunkIdx, blockIdx)
+			// Handle successful upload (ObjectStore, hash tracking, cache marking)
+			// Buffer is discarded - data is now in S3. If needed later, it can be downloaded.
+			m.handleUploadSuccess(ctx, payloadID, chunkIdx, blockIdx, hash, dataSize)
 
 			logger.Info("Flush upload complete",
 				"payloadID", payloadID,
 				"blockKey", blockKeyStr,
+				"hash", hash,
 				"duration", time.Since(startTime),
 				"size", dataSize)
-		}(blockData, dataSize, chunkIdx, blockIdx)
+		}(blockData, dataSize, chunkIdx, blockIdx, hash)
 	}
 
 	wg.Wait()
@@ -593,7 +774,7 @@ func (m *TransferManager) uploadBlock(ctx context.Context, payloadID string, chu
 	defer blockPool.Put(dataPtr)
 	data := *dataPtr
 
-	found, err := m.cache.Read(ctx, payloadID, chunkIdx, blockOffset, BlockSize, data)
+	found, err := m.cache.ReadAt(ctx, payloadID, chunkIdx, blockOffset, BlockSize, data)
 	if err != nil || !found {
 		return fmt.Errorf("block not in cache: chunk=%d block=%d", chunkIdx, blockIdx)
 	}
@@ -758,7 +939,7 @@ func (m *TransferManager) isRangeInCache(ctx context.Context, payloadID string, 
 
 // GetFileSize returns the total size of a file from the block store.
 // This is used as a fallback when the cache doesn't have the file.
-func (m *TransferManager) GetFileSize(ctx context.Context, _ /* shareName */, payloadID string) (uint64, error) {
+func (m *TransferManager) GetFileSize(ctx context.Context, payloadID string) (uint64, error) {
 	m.mu.RLock()
 	if m.closed {
 		m.mu.RUnlock()
@@ -812,7 +993,7 @@ func (m *TransferManager) GetFileSize(ctx context.Context, _ /* shareName */, pa
 }
 
 // Exists checks if any blocks exist for a file in the block store.
-func (m *TransferManager) Exists(ctx context.Context, _ /* shareName */, payloadID string) (bool, error) {
+func (m *TransferManager) Exists(ctx context.Context, payloadID string) (bool, error) {
 	if !m.canProcess(ctx) {
 		return false, fmt.Errorf("transfer manager is closed")
 	}
@@ -837,7 +1018,7 @@ func (m *TransferManager) Exists(ctx context.Context, _ /* shareName */, payload
 // Note: This deletes whole blocks only. Partial block truncation (e.g., truncating
 // to middle of a block) is not supported - the last block retains its original size.
 // Future optimization: Add TruncateBlock to BlockStore interface using S3 CopyObjectWithRange.
-func (m *TransferManager) Truncate(ctx context.Context, _ /* shareName */, payloadID string, newSize uint64) error {
+func (m *TransferManager) Truncate(ctx context.Context, payloadID string, newSize uint64) error {
 	if !m.canProcess(ctx) {
 		return fmt.Errorf("transfer manager is closed")
 	}
@@ -874,7 +1055,8 @@ func (m *TransferManager) Truncate(ctx context.Context, _ /* shareName */, paylo
 }
 
 // Delete removes all blocks for a file from the block store.
-func (m *TransferManager) Delete(ctx context.Context, _ /* shareName */, payloadID string) error {
+// Use this for unfinalized files (no ObjectID).
+func (m *TransferManager) Delete(ctx context.Context, payloadID string) error {
 	if !m.canProcess(ctx) {
 		return fmt.Errorf("transfer manager is closed")
 	}
@@ -883,7 +1065,107 @@ func (m *TransferManager) Delete(ctx context.Context, _ /* shareName */, payload
 		return fmt.Errorf("no block store configured")
 	}
 
+	// Clean up upload state for this file
+	m.uploadsMu.Lock()
+	delete(m.uploads, payloadID)
+	m.uploadsMu.Unlock()
+
 	return m.blockStore.DeleteByPrefix(ctx, payloadID+"/")
+}
+
+// DeleteWithRefCount deletes a finalized file using reference counting.
+// For files with an ObjectID (finalized), this decrements reference counts
+// and cascades delete when counts reach zero.
+//
+// Parameters:
+//   - objectID: The content hash of the finalized object
+//   - blockHashes: The hashes of all blocks in the object (for cascade delete)
+//
+// Returns nil if successful. If ObjectStore is not configured, falls back to
+// prefix-based delete using payloadID.
+func (m *TransferManager) DeleteWithRefCount(ctx context.Context, payloadID string, objectID metadata.ContentHash, blockHashes []metadata.ContentHash) error {
+	if !m.canProcess(ctx) {
+		return fmt.Errorf("transfer manager is closed")
+	}
+
+	// Clean up upload state for this file
+	m.uploadsMu.Lock()
+	delete(m.uploads, payloadID)
+	m.uploadsMu.Unlock()
+
+	// If no ObjectStore, fall back to prefix-based delete
+	if m.objectStore == nil {
+		if m.blockStore != nil {
+			return m.blockStore.DeleteByPrefix(ctx, payloadID+"/")
+		}
+		return nil
+	}
+
+	// Decrement object reference count
+	refCount, err := m.objectStore.DecrementObjectRefCount(ctx, objectID)
+	if err != nil {
+		// Object might not exist (race condition or unfinalized)
+		logger.Warn("Failed to decrement object refcount",
+			"objectID", objectID,
+			"error", err)
+		// Fall back to prefix delete
+		if m.blockStore != nil {
+			return m.blockStore.DeleteByPrefix(ctx, payloadID+"/")
+		}
+		return nil
+	}
+
+	// If reference count > 0, other files still reference this object
+	if refCount > 0 {
+		logger.Debug("Object still has references, not deleting blocks",
+			"objectID", objectID,
+			"refCount", refCount)
+		return nil
+	}
+
+	// Object reference count is 0 - cascade delete blocks
+	logger.Info("Object refcount reached 0, cascade deleting blocks",
+		"objectID", objectID,
+		"blockCount", len(blockHashes))
+
+	// Delete each block (decrement refcount, delete if 0)
+	for _, blockHash := range blockHashes {
+		blockRefCount, err := m.objectStore.DecrementBlockRefCount(ctx, blockHash)
+		if err != nil {
+			logger.Warn("Failed to decrement block refcount",
+				"blockHash", blockHash,
+				"error", err)
+			continue
+		}
+
+		if blockRefCount == 0 {
+			// Block refcount is 0 - safe to delete from block store
+			blockKey := blockHash.String()
+			if m.blockStore != nil {
+				if err := m.blockStore.DeleteBlock(ctx, blockKey); err != nil {
+					logger.Warn("Failed to delete block from store",
+						"blockKey", blockKey,
+						"error", err)
+				}
+			}
+
+			// Delete block metadata
+			if err := m.objectStore.DeleteBlock(ctx, blockHash); err != nil {
+				logger.Warn("Failed to delete block metadata",
+					"blockHash", blockHash,
+					"error", err)
+			}
+		}
+	}
+
+	// Delete object metadata
+	if err := m.objectStore.DeleteObject(ctx, objectID); err != nil {
+		logger.Warn("Failed to delete object metadata",
+			"objectID", objectID,
+			"error", err)
+	}
+
+	return nil
 }
 
 // ============================================================================
@@ -911,9 +1193,9 @@ func (m *TransferManager) Close() error {
 	m.closed = true
 	m.mu.Unlock()
 
-	// Stop transfer queue with 30 second timeout
+	// Stop transfer queue with graceful shutdown timeout
 	if m.queue != nil {
-		m.queue.Stop(30 * time.Second)
+		m.queue.Stop(defaultShutdownTimeout)
 	}
 
 	return nil

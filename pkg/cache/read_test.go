@@ -14,10 +14,10 @@ func TestRead_Basic(t *testing.T) {
 	payloadID := "test-file"
 	data := []byte("hello world")
 
-	_ = c.Write(ctx, payloadID, 0, data, 0)
+	_ = c.WriteAt(ctx, payloadID, 0, data, 0)
 
 	result := make([]byte, len(data))
-	found, err := c.Read(ctx, payloadID, 0, 0, uint32(len(data)), result)
+	found, err := c.ReadAt(ctx, payloadID, 0, 0, uint32(len(data)), result)
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestRead_NotFound(t *testing.T) {
 	defer func() { _ = c.Close() }()
 
 	result := make([]byte, 10)
-	found, err := c.Read(context.Background(), "nonexistent", 0, 0, 10, result)
+	found, err := c.ReadAt(context.Background(), "nonexistent", 0, 0, 10, result)
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
@@ -51,11 +51,11 @@ func TestRead_PartialRead(t *testing.T) {
 	payloadID := "test-file"
 	data := []byte("hello world")
 
-	_ = c.Write(ctx, payloadID, 0, data, 0)
+	_ = c.WriteAt(ctx, payloadID, 0, data, 0)
 
 	// Read only "world"
 	result := make([]byte, 5)
-	found, err := c.Read(ctx, payloadID, 0, 6, 5, result)
+	found, err := c.ReadAt(ctx, payloadID, 0, 6, 5, result)
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
@@ -75,12 +75,12 @@ func TestRead_NewestWins(t *testing.T) {
 	payloadID := "test-file"
 
 	// Write overlapping data (newer overwrites older)
-	_ = c.Write(ctx, payloadID, 0, []byte("AAAAAAAAAA"), 0) // 10 A's at offset 0
-	_ = c.Write(ctx, payloadID, 0, []byte("BBB"), 3)        // 3 B's at offset 3
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("AAAAAAAAAA"), 0) // 10 A's at offset 0
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("BBB"), 3)        // 3 B's at offset 3
 
 	// Read full range - should be AAABBBAAAA
 	result := make([]byte, 10)
-	found, _ := c.Read(ctx, payloadID, 0, 0, 10, result)
+	found, _ := c.ReadAt(ctx, payloadID, 0, 0, 10, result)
 	if !found {
 		t.Fatal("expected to find data")
 	}
@@ -99,13 +99,13 @@ func TestRead_MultipleOverlaps(t *testing.T) {
 
 	// Write multiple overlapping regions (in order: oldest to newest)
 	// Each newer write overwrites older data at the same positions
-	_ = c.Write(ctx, payloadID, 0, []byte("1111111111"), 0) // Base: 1111111111
-	_ = c.Write(ctx, payloadID, 0, []byte("22"), 2)         // Now:  1122111111
-	_ = c.Write(ctx, payloadID, 0, []byte("33"), 5)         // Now:  1122133111
-	_ = c.Write(ctx, payloadID, 0, []byte("4"), 3)          // Now:  1124133111
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("1111111111"), 0) // Base: 1111111111
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("22"), 2)         // Now:  1122111111
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("33"), 5)         // Now:  1122133111
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("4"), 3)          // Now:  1124133111
 
 	result := make([]byte, 10)
-	found, _ := c.Read(ctx, payloadID, 0, 0, 10, result)
+	found, _ := c.ReadAt(ctx, payloadID, 0, 0, 10, result)
 	if !found {
 		t.Fatal("expected to find data")
 	}
@@ -123,7 +123,7 @@ func TestRead_ContextCancelled(t *testing.T) {
 	cancel()
 
 	result := make([]byte, 10)
-	_, err := c.Read(ctx, "test", 0, 0, 10, result)
+	_, err := c.ReadAt(ctx, "test", 0, 0, 10, result)
 	if err != context.Canceled {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
@@ -131,11 +131,11 @@ func TestRead_ContextCancelled(t *testing.T) {
 
 func TestRead_CacheClosed(t *testing.T) {
 	c := New(0)
-	_ = c.Write(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.WriteAt(context.Background(), "test", 0, []byte("data"), 0)
 	_ = c.Close()
 
 	result := make([]byte, 4)
-	_, err := c.Read(context.Background(), "test", 0, 0, 4, result)
+	_, err := c.ReadAt(context.Background(), "test", 0, 0, 4, result)
 	if err != ErrCacheClosed {
 		t.Errorf("expected ErrCacheClosed, got %v", err)
 	}
@@ -148,11 +148,11 @@ func TestRead_WrongChunk(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	_ = c.Write(ctx, payloadID, 0, []byte("chunk0"), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("chunk0"), 0)
 
 	// Try to read from chunk 1 (empty)
 	result := make([]byte, 6)
-	found, _ := c.Read(ctx, payloadID, 1, 0, 6, result)
+	found, _ := c.ReadAt(ctx, payloadID, 1, 0, 6, result)
 	if found {
 		t.Error("expected not found for empty chunk")
 	}
@@ -169,7 +169,7 @@ func TestIsRangeCovered_FullyCovered(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	_ = c.Write(ctx, payloadID, 0, make([]byte, 100), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 100), 0)
 
 	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 100)
 	if err != nil {
@@ -187,7 +187,7 @@ func TestIsRangeCovered_PartiallyCovered(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	_ = c.Write(ctx, payloadID, 0, make([]byte, 50), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 50), 0)
 
 	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 100)
 	if err != nil {
@@ -220,8 +220,8 @@ func TestIsRangeCovered_MultipleWrites(t *testing.T) {
 
 	// Write adjacent data that together covers a range
 	// Coverage granularity is 64 bytes, so write at granularity boundaries
-	_ = c.Write(ctx, payloadID, 0, make([]byte, 64), 0)
-	_ = c.Write(ctx, payloadID, 0, make([]byte, 64), 64)
+	_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 64), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 64), 64)
 
 	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 128)
 	if err != nil {
@@ -264,8 +264,8 @@ func TestIsRangeCovered_OverlappingWrites(t *testing.T) {
 
 	// Coverage bitmap has 64-byte granularity.
 	// Write overlapping data at the same offset - should not extend coverage.
-	_ = c.Write(ctx, payloadID, 0, make([]byte, 64), 0) // bytes 0-64
-	_ = c.Write(ctx, payloadID, 0, make([]byte, 64), 0) // bytes 0-64 (overlap)
+	_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 64), 0) // bytes 0-64
+	_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 64), 0) // bytes 0-64 (overlap)
 
 	// Range 0-64 should be covered
 	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 64)
@@ -295,8 +295,8 @@ func TestIsRangeCovered_PartialOverlap(t *testing.T) {
 
 	// Coverage bitmap has 64-byte granularity.
 	// Write partially overlapping data that together cover a contiguous range.
-	_ = c.Write(ctx, payloadID, 0, make([]byte, 128), 0)  // bytes 0-128
-	_ = c.Write(ctx, payloadID, 0, make([]byte, 128), 64) // bytes 64-192
+	_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 128), 0)  // bytes 0-128
+	_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 128), 64) // bytes 64-192
 
 	// Together they cover 0-192
 	covered, err := c.IsRangeCovered(ctx, payloadID, 0, 0, 192)
@@ -347,7 +347,7 @@ func BenchmarkRead(b *testing.B) {
 				offset := uint32(i * len(writeData))
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
-				_ = c.Write(ctx, payloadID, chunkIdx, writeData, offsetInChunk)
+				_ = c.WriteAt(ctx, payloadID, chunkIdx, writeData, offsetInChunk)
 			}
 
 			dest := make([]byte, s.size)
@@ -359,7 +359,7 @@ func BenchmarkRead(b *testing.B) {
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
 
-				if _, err := c.Read(ctx, payloadID, chunkIdx, offsetInChunk, uint32(s.size), dest); err != nil {
+				if _, err := c.ReadAt(ctx, payloadID, chunkIdx, offsetInChunk, uint32(s.size), dest); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -387,7 +387,7 @@ func BenchmarkRead_OverlappingWrites(b *testing.B) {
 					data[j] = byte(i)
 				}
 				offset := uint32(i * 2 * 1024)
-				_ = c.Write(ctx, payloadID, 0, data, offset)
+				_ = c.WriteAt(ctx, payloadID, 0, data, offset)
 			}
 
 			readSize := uint32(32 * 1024)
@@ -396,7 +396,7 @@ func BenchmarkRead_OverlappingWrites(b *testing.B) {
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				if _, err := c.Read(ctx, payloadID, 0, 0, readSize, dest); err != nil {
+				if _, err := c.ReadAt(ctx, payloadID, 0, 0, readSize, dest); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -414,7 +414,7 @@ func BenchmarkIsRangeCovered(b *testing.B) {
 
 	// Create a file with full coverage
 	data := make([]byte, ChunkSize)
-	_ = c.Write(ctx, payloadID, 0, data, 0)
+	_ = c.WriteAt(ctx, payloadID, 0, data, 0)
 
 	b.ResetTimer()
 

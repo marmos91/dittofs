@@ -18,7 +18,7 @@ func TestRemove_ExistingFile(t *testing.T) {
 	payloadID := "test-file"
 	data := []byte("test data")
 
-	_ = c.Write(ctx, payloadID, 0, data, 0)
+	_ = c.WriteAt(ctx, payloadID, 0, data, 0)
 
 	if err := c.Remove(ctx, payloadID); err != nil {
 		t.Fatalf("Remove failed: %v", err)
@@ -26,7 +26,7 @@ func TestRemove_ExistingFile(t *testing.T) {
 
 	// Should not find data
 	result := make([]byte, len(data))
-	found, _ := c.Read(ctx, payloadID, 0, 0, uint32(len(data)), result)
+	found, _ := c.ReadAt(ctx, payloadID, 0, 0, uint32(len(data)), result)
 	if found {
 		t.Error("expected data to be removed")
 	}
@@ -52,7 +52,7 @@ func TestRemove_UpdatesTotalSize(t *testing.T) {
 	payloadID := "test-file"
 	data := make([]byte, 1024)
 
-	if err := c.Write(ctx, payloadID, 0, data, 0); err != nil {
+	if err := c.WriteAt(ctx, payloadID, 0, data, 0); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 	// TotalSize tracks memory allocation (BlockSize per block buffer), not bytes written
@@ -103,13 +103,13 @@ func TestTruncate_ReducesSize(t *testing.T) {
 	payloadID := "test-file"
 	data := make([]byte, 10*1024)
 
-	_ = c.Write(ctx, payloadID, 0, data, 0)
+	_ = c.WriteAt(ctx, payloadID, 0, data, 0)
 
 	if err := c.Truncate(ctx, payloadID, 5*1024); err != nil {
 		t.Fatalf("Truncate failed: %v", err)
 	}
 
-	size := c.GetFileSize(payloadID)
+	size := c.GetFileSize(ctx, payloadID)
 	if size != 5*1024 {
 		t.Errorf("expected size 5120, got %d", size)
 	}
@@ -122,13 +122,13 @@ func TestTruncate_ToZero(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	_ = c.Write(ctx, payloadID, 0, make([]byte, 1024), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 1024), 0)
 
 	if err := c.Truncate(ctx, payloadID, 0); err != nil {
 		t.Fatalf("Truncate to 0 failed: %v", err)
 	}
 
-	size := c.GetFileSize(payloadID)
+	size := c.GetFileSize(ctx, payloadID)
 	if size != 0 {
 		t.Errorf("expected size 0, got %d", size)
 	}
@@ -142,7 +142,7 @@ func TestTruncate_ExtendNoOp(t *testing.T) {
 	payloadID := "test-file"
 	data := make([]byte, 1024)
 
-	_ = c.Write(ctx, payloadID, 0, data, 0)
+	_ = c.WriteAt(ctx, payloadID, 0, data, 0)
 
 	// Try to extend - should be no-op
 	if err := c.Truncate(ctx, payloadID, 2048); err != nil {
@@ -150,7 +150,7 @@ func TestTruncate_ExtendNoOp(t *testing.T) {
 	}
 
 	// Size should remain 1024 (truncate doesn't extend)
-	size := c.GetFileSize(payloadID)
+	size := c.GetFileSize(ctx, payloadID)
 	if size != 1024 {
 		t.Errorf("expected size 1024, got %d", size)
 	}
@@ -197,7 +197,8 @@ func TestHasDirtyData_InitiallyFalse(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
-	if c.HasDirtyData("nonexistent") {
+	ctx := context.Background()
+	if c.HasDirtyData(ctx, "nonexistent") {
 		t.Error("expected no dirty data for nonexistent file")
 	}
 }
@@ -209,9 +210,9 @@ func TestHasDirtyData_TrueAfterWrite(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	_ = c.Write(ctx, payloadID, 0, []byte("data"), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("data"), 0)
 
-	if !c.HasDirtyData(payloadID) {
+	if !c.HasDirtyData(ctx, payloadID) {
 		t.Error("expected dirty data after write")
 	}
 }
@@ -223,7 +224,7 @@ func TestHasDirtyData_FalseAfterUpload(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	if err := c.Write(ctx, payloadID, 0, []byte("data"), 0); err != nil {
+	if err := c.WriteAt(ctx, payloadID, 0, []byte("data"), 0); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
@@ -232,7 +233,7 @@ func TestHasDirtyData_FalseAfterUpload(t *testing.T) {
 		c.MarkBlockUploaded(ctx, payloadID, blk.ChunkIndex, blk.BlockIndex)
 	}
 
-	if c.HasDirtyData(payloadID) {
+	if c.HasDirtyData(ctx, payloadID) {
 		t.Error("expected no dirty data after upload")
 	}
 }
@@ -248,9 +249,9 @@ func TestGetFileSize_Basic(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	_ = c.Write(ctx, payloadID, 0, make([]byte, 1024), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 1024), 0)
 
-	if size := c.GetFileSize(payloadID); size != 1024 {
+	if size := c.GetFileSize(ctx, payloadID); size != 1024 {
 		t.Errorf("expected size 1024, got %d", size)
 	}
 }
@@ -259,7 +260,8 @@ func TestGetFileSize_NonexistentFile(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
-	if size := c.GetFileSize("nonexistent"); size != 0 {
+	ctx := context.Background()
+	if size := c.GetFileSize(ctx, "nonexistent"); size != 0 {
 		t.Errorf("expected size 0 for nonexistent, got %d", size)
 	}
 }
@@ -272,12 +274,12 @@ func TestGetFileSize_MultipleChunks(t *testing.T) {
 	payloadID := "test-file"
 
 	// Write to chunk 0 and chunk 1
-	_ = c.Write(ctx, payloadID, 0, make([]byte, 1000), 0)
-	_ = c.Write(ctx, payloadID, 1, make([]byte, 500), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 1000), 0)
+	_ = c.WriteAt(ctx, payloadID, 1, make([]byte, 500), 0)
 
 	// Size should be: chunk_1_offset + 500 = ChunkSize + 500
 	expected := uint64(ChunkSize) + 500
-	if size := c.GetFileSize(payloadID); size != expected {
+	if size := c.GetFileSize(ctx, payloadID); size != expected {
 		t.Errorf("expected size %d, got %d", expected, size)
 	}
 }
@@ -302,9 +304,9 @@ func TestListFiles_MultipleFiles(t *testing.T) {
 
 	ctx := context.Background()
 
-	_ = c.Write(ctx, "file1", 0, []byte("data1"), 0)
-	_ = c.Write(ctx, "file2", 0, []byte("data2"), 0)
-	_ = c.Write(ctx, "file3", 0, []byte("data3"), 0)
+	_ = c.WriteAt(ctx, "file1", 0, []byte("data1"), 0)
+	_ = c.WriteAt(ctx, "file2", 0, []byte("data2"), 0)
+	_ = c.WriteAt(ctx, "file3", 0, []byte("data3"), 0)
 
 	files := c.ListFiles()
 	if len(files) != 3 {
@@ -314,7 +316,7 @@ func TestListFiles_MultipleFiles(t *testing.T) {
 
 func TestListFiles_CacheClosed(t *testing.T) {
 	c := New(0)
-	_ = c.Write(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.WriteAt(context.Background(), "test", 0, []byte("data"), 0)
 	_ = c.Close()
 
 	files := c.ListFiles()
@@ -343,7 +345,7 @@ func TestListFilesWithSizes_SingleFile(t *testing.T) {
 	ctx := context.Background()
 
 	// Write 32KB to file
-	_ = c.Write(ctx, "file1", 0, make([]byte, 32*1024), 0)
+	_ = c.WriteAt(ctx, "file1", 0, make([]byte, 32*1024), 0)
 
 	sizes := c.ListFilesWithSizes()
 	if len(sizes) != 1 {
@@ -360,9 +362,9 @@ func TestListFilesWithSizes_MultipleFiles(t *testing.T) {
 	ctx := context.Background()
 
 	// Write different sizes to different files
-	_ = c.Write(ctx, "small", 0, make([]byte, 1024), 0)
-	_ = c.Write(ctx, "medium", 0, make([]byte, 10*1024), 0)
-	_ = c.Write(ctx, "large", 0, make([]byte, 100*1024), 0)
+	_ = c.WriteAt(ctx, "small", 0, make([]byte, 1024), 0)
+	_ = c.WriteAt(ctx, "medium", 0, make([]byte, 10*1024), 0)
+	_ = c.WriteAt(ctx, "large", 0, make([]byte, 100*1024), 0)
 
 	sizes := c.ListFilesWithSizes()
 	if len(sizes) != 3 {
@@ -385,8 +387,8 @@ func TestListFilesWithSizes_SparseFile(t *testing.T) {
 	ctx := context.Background()
 
 	// Write at offset 0 and at offset 1MB (sparse file)
-	_ = c.Write(ctx, "sparse", 0, make([]byte, 1024), 0)
-	_ = c.Write(ctx, "sparse", 0, make([]byte, 1024), 1024*1024) // 1MB offset
+	_ = c.WriteAt(ctx, "sparse", 0, make([]byte, 1024), 0)
+	_ = c.WriteAt(ctx, "sparse", 0, make([]byte, 1024), 1024*1024) // 1MB offset
 
 	sizes := c.ListFilesWithSizes()
 	// Size should be max offset + length = 1MB + 1KB
@@ -403,8 +405,8 @@ func TestListFilesWithSizes_MultipleChunks(t *testing.T) {
 
 	// Write to chunk 0 and chunk 1 (each chunk is 64MB)
 	// Offset parameter is offset within the chunk, not global offset
-	_ = c.Write(ctx, "multiChunk", 0, make([]byte, 1024), 0) // Chunk 0, offset 0
-	_ = c.Write(ctx, "multiChunk", 1, make([]byte, 1024), 0) // Chunk 1, offset 0 within chunk
+	_ = c.WriteAt(ctx, "multiChunk", 0, make([]byte, 1024), 0) // Chunk 0, offset 0
+	_ = c.WriteAt(ctx, "multiChunk", 1, make([]byte, 1024), 0) // Chunk 1, offset 0 within chunk
 
 	sizes := c.ListFilesWithSizes()
 	// Size should be: chunk1_base + offset + length = 64MB + 0 + 1024
@@ -416,12 +418,12 @@ func TestListFilesWithSizes_MultipleChunks(t *testing.T) {
 
 func TestListFilesWithSizes_CacheClosed(t *testing.T) {
 	c := New(0)
-	_ = c.Write(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.WriteAt(context.Background(), "test", 0, []byte("data"), 0)
 	_ = c.Close()
 
 	sizes := c.ListFilesWithSizes()
-	if sizes != nil {
-		t.Errorf("expected nil when closed, got %v", sizes)
+	if len(sizes) != 0 {
+		t.Errorf("expected empty map when closed, got %v", sizes)
 	}
 }
 
@@ -438,12 +440,12 @@ func TestStats_Basic(t *testing.T) {
 	ctx := context.Background()
 
 	// Write dirty data
-	if err := c.Write(ctx, "file1", 0, make([]byte, 10*1024), 0); err != nil {
+	if err := c.WriteAt(ctx, "file1", 0, make([]byte, 10*1024), 0); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
 	// Write and mark as uploaded
-	if err := c.Write(ctx, "file2", 0, make([]byte, 5*1024), 0); err != nil {
+	if err := c.WriteAt(ctx, "file2", 0, make([]byte, 5*1024), 0); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 	blocks, _ := c.GetDirtyBlocks(ctx, "file2")
@@ -478,7 +480,7 @@ func TestStats_Basic(t *testing.T) {
 
 func TestStats_CacheClosed(t *testing.T) {
 	c := New(0)
-	_ = c.Write(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.WriteAt(context.Background(), "test", 0, []byte("data"), 0)
 	_ = c.Close()
 
 	stats := c.Stats()
@@ -507,7 +509,7 @@ func TestClose_ReleasesResources(t *testing.T) {
 	c := New(0)
 
 	ctx := context.Background()
-	_ = c.Write(ctx, "test", 0, make([]byte, 1024), 0)
+	_ = c.WriteAt(ctx, "test", 0, make([]byte, 1024), 0)
 
 	_ = c.Close()
 
@@ -564,9 +566,9 @@ func BenchmarkListFilesWithSizes(b *testing.B) {
 			for i := 0; i < size.fileCount; i++ {
 				// Each file has 3 chunks with varying writes
 				payloadID := fmt.Sprintf("file-%d", i)
-				_ = c.Write(ctx, payloadID, 0, make([]byte, 32*1024), 0)
-				_ = c.Write(ctx, payloadID, 0, make([]byte, 16*1024), 32*1024)
-				_ = c.Write(ctx, payloadID, 1, make([]byte, 64*1024), 0)
+				_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 32*1024), 0)
+				_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 16*1024), 32*1024)
+				_ = c.WriteAt(ctx, payloadID, 1, make([]byte, 64*1024), 0)
 			}
 
 			b.ResetTimer()
@@ -601,14 +603,14 @@ func BenchmarkGetFileSize(b *testing.B) {
 			// Create a file with many writes (simulates sequential writes)
 			for i := 0; i < size.writes; i++ {
 				offset := uint32(i * 32 * 1024)
-				_ = c.Write(ctx, "test-file", uint32(offset/ChunkSize), make([]byte, 32*1024), offset%ChunkSize)
+				_ = c.WriteAt(ctx, "test-file", uint32(offset/ChunkSize), make([]byte, 32*1024), offset%ChunkSize)
 			}
 
 			b.ResetTimer()
 			b.ReportAllocs()
 
 			for i := 0; i < b.N; i++ {
-				_ = c.GetFileSize("test-file")
+				_ = c.GetFileSize(ctx, "test-file")
 			}
 
 			b.StopTimer()

@@ -4,191 +4,47 @@ import (
 	"testing"
 )
 
-func TestSlices_SingleChunk(t *testing.T) {
+func TestBlockRanges_SingleChunk(t *testing.T) {
 	// Range entirely within first chunk
-	var slices []Slice
-	for s := range Slices(1000, 5000) {
-		slices = append(slices, s)
+	var ranges []BlockRange
+	for r := range BlockRanges(1000, 5000) {
+		ranges = append(ranges, r)
 	}
 
-	if len(slices) != 1 {
-		t.Fatalf("Expected 1 slice, got %d", len(slices))
+	if len(ranges) == 0 {
+		t.Fatalf("Expected at least 1 range, got 0")
 	}
 
-	s := slices[0]
-	if s.ChunkIndex != 0 {
-		t.Errorf("ChunkIndex = %d, want 0", s.ChunkIndex)
-	}
-	if s.Offset != 1000 {
-		t.Errorf("Offset = %d, want 1000", s.Offset)
-	}
-	if s.Length != 5000 {
-		t.Errorf("Length = %d, want 5000", s.Length)
-	}
-	if s.BufOffset != 0 {
-		t.Errorf("BufOffset = %d, want 0", s.BufOffset)
+	r := ranges[0]
+	if r.ChunkIndex != 0 {
+		t.Errorf("ChunkIndex = %d, want 0", r.ChunkIndex)
 	}
 }
 
-func TestSlices_SpansTwoChunks(t *testing.T) {
-	// Range spans two chunks: starts 1000 bytes before chunk boundary
-	offset := uint64(Size - 1000)
-	length := 2000 // 1000 in chunk 0, 1000 in chunk 1
-
-	var slices []Slice
-	for s := range Slices(offset, length) {
-		slices = append(slices, s)
-	}
-
-	if len(slices) != 2 {
-		t.Fatalf("Expected 2 slices, got %d", len(slices))
-	}
-
-	// First slice: last 1000 bytes of chunk 0
-	s0 := slices[0]
-	if s0.ChunkIndex != 0 {
-		t.Errorf("Slice 0: ChunkIndex = %d, want 0", s0.ChunkIndex)
-	}
-	if s0.Offset != Size-1000 {
-		t.Errorf("Slice 0: Offset = %d, want %d", s0.Offset, Size-1000)
-	}
-	if s0.Length != 1000 {
-		t.Errorf("Slice 0: Length = %d, want 1000", s0.Length)
-	}
-	if s0.BufOffset != 0 {
-		t.Errorf("Slice 0: BufOffset = %d, want 0", s0.BufOffset)
-	}
-
-	// Second slice: first 1000 bytes of chunk 1
-	s1 := slices[1]
-	if s1.ChunkIndex != 1 {
-		t.Errorf("Slice 1: ChunkIndex = %d, want 1", s1.ChunkIndex)
-	}
-	if s1.Offset != 0 {
-		t.Errorf("Slice 1: Offset = %d, want 0", s1.Offset)
-	}
-	if s1.Length != 1000 {
-		t.Errorf("Slice 1: Length = %d, want 1000", s1.Length)
-	}
-	if s1.BufOffset != 1000 {
-		t.Errorf("Slice 1: BufOffset = %d, want 1000", s1.BufOffset)
-	}
-}
-
-func TestSlices_SpansThreeChunks(t *testing.T) {
-	// Range spans three chunks
-	offset := uint64(Size - 100)
-	length := Size + 200 // 100 in chunk 0, full chunk 1, 100 in chunk 2
-
-	var slices []Slice
-	for s := range Slices(offset, length) {
-		slices = append(slices, s)
-	}
-
-	if len(slices) != 3 {
-		t.Fatalf("Expected 3 slices, got %d", len(slices))
-	}
-
-	// First slice: last 100 bytes of chunk 0
-	if slices[0].ChunkIndex != 0 || slices[0].Length != 100 {
-		t.Errorf("Slice 0: got chunk=%d len=%d, want chunk=0 len=100",
-			slices[0].ChunkIndex, slices[0].Length)
-	}
-
-	// Second slice: full chunk 1
-	if slices[1].ChunkIndex != 1 || slices[1].Length != Size {
-		t.Errorf("Slice 1: got chunk=%d len=%d, want chunk=1 len=%d",
-			slices[1].ChunkIndex, slices[1].Length, Size)
-	}
-
-	// Third slice: first 100 bytes of chunk 2
-	if slices[2].ChunkIndex != 2 || slices[2].Length != 100 {
-		t.Errorf("Slice 2: got chunk=%d len=%d, want chunk=2 len=100",
-			slices[2].ChunkIndex, slices[2].Length)
-	}
-
-	// Verify BufOffsets are correct
-	expectedBufOffset := 0
-	for i, s := range slices {
-		if s.BufOffset != expectedBufOffset {
-			t.Errorf("Slice %d: BufOffset = %d, want %d", i, s.BufOffset, expectedBufOffset)
-		}
-		expectedBufOffset += int(s.Length)
-	}
-
-	// Total length should match
-	if expectedBufOffset != int(length) {
-		t.Errorf("Total length = %d, want %d", expectedBufOffset, length)
-	}
-}
-
-func TestSlices_ZeroLength(t *testing.T) {
+func TestBlockRanges_ZeroLength(t *testing.T) {
 	var count int
-	for range Slices(1000, 0) {
+	for range BlockRanges(1000, 0) {
 		count++
 	}
 
 	if count != 0 {
-		t.Errorf("Expected 0 slices for zero length, got %d", count)
+		t.Errorf("Expected 0 ranges for zero length, got %d", count)
 	}
 }
 
-func TestSlices_ExactChunkBoundary(t *testing.T) {
-	// Start exactly at chunk 1 boundary
-	offset := uint64(Size)
-	length := 1000
-
-	var slices []Slice
-	for s := range Slices(offset, length) {
-		slices = append(slices, s)
-	}
-
-	if len(slices) != 1 {
-		t.Fatalf("Expected 1 slice, got %d", len(slices))
-	}
-
-	if slices[0].ChunkIndex != 1 {
-		t.Errorf("ChunkIndex = %d, want 1", slices[0].ChunkIndex)
-	}
-	if slices[0].Offset != 0 {
-		t.Errorf("Offset = %d, want 0", slices[0].Offset)
-	}
-}
-
-func TestSlices_FullChunk(t *testing.T) {
-	// Exactly one full chunk
-	offset := uint64(0)
-	length := Size
-
-	var slices []Slice
-	for s := range Slices(offset, length) {
-		slices = append(slices, s)
-	}
-
-	if len(slices) != 1 {
-		t.Fatalf("Expected 1 slice, got %d", len(slices))
-	}
-
-	if slices[0].Length != Size {
-		t.Errorf("Length = %d, want %d", slices[0].Length, Size)
-	}
-}
-
-func TestSlices_EarlyBreak(t *testing.T) {
+func TestBlockRanges_EarlyBreak(t *testing.T) {
 	// Test that the iterator respects early termination
-	offset := uint64(Size - 100)
-	length := Size + 200 // Would span 3 chunks
-
+	// Large range that would span many blocks
 	var count int
-	for range Slices(offset, length) {
+	for range BlockRanges(0, 100*1024*1024) { // 100MB would span many blocks
 		count++
 		if count >= 2 {
-			break // Stop after 2 slices
+			break // Stop after 2 ranges
 		}
 	}
 
 	if count != 2 {
-		t.Errorf("Expected to process 2 slices before break, got %d", count)
+		t.Errorf("Expected to process 2 ranges before break, got %d", count)
 	}
 }
 

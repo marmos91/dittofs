@@ -373,7 +373,7 @@ func (h *Handler) Commit(
 	//
 	// Per RFC 1813 Section 3.3.21, the server MAY choose when data reaches
 	// stable storage. Our WAL cache provides the durability guarantee.
-	_, flushErr := payloadSvc.Flush(ctx.Context, ctx.Share, file.PayloadID)
+	_, flushErr := payloadSvc.Flush(ctx.Context, file.PayloadID)
 	if flushErr != nil {
 		traceError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "content_id", file.PayloadID, "client", clientIP)
 

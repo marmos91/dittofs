@@ -10,21 +10,32 @@ import (
 // Flush Coordination
 // ============================================================================
 
-// GetDirtyBlocks returns all pending (unflushed) blocks for a file, ready for upload.
+// GetDirtyBlocks returns all pending and ready-for-upload blocks for a file.
 //
 // Returns blocks sorted by (ChunkIndex, BlockIndex).
 // The returned PendingBlock.Data references the cache's internal buffer - do not modify.
+// The returned PendingBlock.State and PendingBlock.Hash contain state information.
 func (c *Cache) GetDirtyBlocks(ctx context.Context, payloadID string) ([]PendingBlock, error) {
-	if err := ctx.Err(); err != nil {
+	return c.getBlocksFiltered(ctx, payloadID, func(blk *blockBuffer) bool {
+		return blk.state == BlockStatePending || blk.state == BlockStateReadyForUpload
+	})
+}
+
+// GetBlocksByState returns all blocks in a specific state for a file.
+//
+// Returns blocks sorted by (ChunkIndex, BlockIndex).
+// The returned PendingBlock.Data references the cache's internal buffer - do not modify.
+func (c *Cache) GetBlocksByState(ctx context.Context, payloadID string, state BlockState) ([]PendingBlock, error) {
+	return c.getBlocksFiltered(ctx, payloadID, func(blk *blockBuffer) bool {
+		return blk.state == state
+	})
+}
+
+// getBlocksFiltered is the shared implementation for GetDirtyBlocks and GetBlocksByState.
+func (c *Cache) getBlocksFiltered(ctx context.Context, payloadID string, filter func(*blockBuffer) bool) ([]PendingBlock, error) {
+	if err := c.checkClosed(ctx); err != nil {
 		return nil, err
 	}
-
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return nil, ErrCacheClosed
-	}
-	c.globalMu.RUnlock()
 
 	entry := c.getFileEntry(payloadID)
 	entry.mu.RLock()
@@ -42,11 +53,7 @@ func (c *Cache) GetDirtyBlocks(ctx context.Context, payloadID string) ([]Pending
 				return nil, err
 			}
 
-			if blk.state != BlockStatePending {
-				continue
-			}
-
-			if blk.data == nil {
+			if blk.data == nil || !filter(blk) {
 				continue
 			}
 
@@ -56,6 +63,8 @@ func (c *Cache) GetDirtyBlocks(ctx context.Context, payloadID string) ([]Pending
 				Data:       blk.data,
 				Coverage:   blk.coverage,
 				DataSize:   blk.dataSize,
+				Hash:       blk.hash,
+				State:      blk.state,
 			})
 		}
 	}
@@ -67,11 +76,46 @@ func (c *Cache) GetDirtyBlocks(ctx context.Context, payloadID string) ([]Pending
 	return result, nil
 }
 
+// MarkBlockReadyForUpload marks a block as ready for upload with its computed hash.
+//
+// This is called by the TransferManager when a block is fully covered and its hash
+// has been computed. The block is queued for upload. If new writes arrive before
+// the upload starts, the write handler will cancel the upload and revert to Pending.
+//
+// Parameters:
+//   - payloadID: Unique identifier for the file content
+//   - chunkIdx: The chunk index containing the block
+//   - blockIdx: The block index within the chunk
+//   - hash: The SHA-256 hash of the block's data
+//   - cancelFunc: Optional function to call if a write arrives before upload starts
+//
+// Returns true if the block was found and marked.
+func (c *Cache) MarkBlockReadyForUpload(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32, hash [32]byte, cancelFunc func()) bool {
+	if c.checkClosed(ctx) != nil {
+		return false
+	}
+
+	entry := c.getFileEntry(payloadID)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	blk := getBlockUnlocked(entry, chunkIdx, blockIdx)
+	if blk == nil || blk.state != BlockStatePending {
+		return false
+	}
+
+	blk.state = BlockStateReadyForUpload
+	blk.hash = hash
+	blk.uploadCancel = cancelFunc
+
+	return true
+}
+
 // MarkBlockUploaded marks a block as successfully uploaded to the block store.
 //
 // This should be called by the TransferManager after successfully uploading a block.
-// The block transitions from BlockStatePending to BlockStateUploaded, making it
-// eligible for LRU eviction when cache pressure requires freeing memory.
+// The block transitions from Pending/ReadyForUpload/Uploading to BlockStateUploaded,
+// making it eligible for LRU eviction when cache pressure requires freeing memory.
 //
 // If WAL persistence is enabled, the uploaded state is recorded to the WAL so that
 // on recovery, the block won't be re-uploaded unnecessarily.
@@ -83,39 +127,29 @@ func (c *Cache) GetDirtyBlocks(ctx context.Context, payloadID string) ([]Pending
 //
 // Returns true if the block was found and marked.
 func (c *Cache) MarkBlockUploaded(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) bool {
-	if err := ctx.Err(); err != nil {
+	if c.checkClosed(ctx) != nil {
 		return false
 	}
-
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return false
-	}
-	c.globalMu.RUnlock()
 
 	entry := c.getFileEntry(payloadID)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	chunk, exists := entry.chunks[chunkIdx]
-	if !exists {
+	blk := getBlockUnlocked(entry, chunkIdx, blockIdx)
+	if blk == nil {
 		return false
 	}
 
-	blk, exists := chunk.blocks[blockIdx]
-	if !exists {
-		return false
-	}
-
-	if blk.state == BlockStatePending || blk.state == BlockStateUploading {
+	if blk.state == BlockStatePending || blk.state == BlockStateReadyForUpload || blk.state == BlockStateUploading {
 		blk.state = BlockStateUploaded
+		// Clear upload cancel func since upload is complete
+		blk.uploadCancel = nil
 		// Decrement pending size - block is no longer pending
-		c.pendingSize.Add(^uint64(BlockSize - 1)) // Atomic subtract
+		atomicSubtract(&c.pendingSize, BlockSize)
 
 		// If buffer was detached (nil), also decrement totalSize since memory is released
 		if blk.data == nil {
-			c.totalSize.Add(^uint64(BlockSize - 1)) // Atomic subtract
+			atomicSubtract(&c.totalSize, BlockSize)
 		}
 
 		// Record uploaded state in WAL for crash recovery.
@@ -150,37 +184,21 @@ func (c *Cache) MarkBlockUploaded(ctx context.Context, payloadID string, chunkId
 //
 // Returns true if the block was found and reverted.
 func (c *Cache) MarkBlockPending(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) bool {
-	if err := ctx.Err(); err != nil {
+	if c.checkClosed(ctx) != nil {
 		return false
 	}
-
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return false
-	}
-	c.globalMu.RUnlock()
 
 	entry := c.getFileEntry(payloadID)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	chunk, exists := entry.chunks[chunkIdx]
-	if !exists {
+	blk := getBlockUnlocked(entry, chunkIdx, blockIdx)
+	if blk == nil || blk.state != BlockStateUploading {
 		return false
 	}
 
-	blk, exists := chunk.blocks[blockIdx]
-	if !exists {
-		return false
-	}
-
-	if blk.state == BlockStateUploading {
-		blk.state = BlockStatePending
-		return true
-	}
-
-	return false
+	blk.state = BlockStatePending
+	return true
 }
 
 // MarkBlockUploading marks a block as currently being uploaded.
@@ -196,32 +214,20 @@ func (c *Cache) MarkBlockPending(ctx context.Context, payloadID string, chunkIdx
 // Returns true if the block was found and marked (state was Pending).
 // Returns false if the block doesn't exist or is already Uploading/Uploaded.
 func (c *Cache) MarkBlockUploading(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) bool {
-	if err := ctx.Err(); err != nil {
+	if c.checkClosed(ctx) != nil {
 		return false
 	}
-
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return false
-	}
-	c.globalMu.RUnlock()
 
 	entry := c.getFileEntry(payloadID)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	chunk, exists := entry.chunks[chunkIdx]
-	if !exists {
+	blk := getBlockUnlocked(entry, chunkIdx, blockIdx)
+	if blk == nil {
 		return false
 	}
 
-	blk, exists := chunk.blocks[blockIdx]
-	if !exists {
-		return false
-	}
-
-	if blk.state == BlockStatePending {
+	if blk.state == BlockStatePending || blk.state == BlockStateReadyForUpload {
 		blk.state = BlockStateUploading
 		return true
 	}
@@ -241,28 +247,16 @@ func (c *Cache) MarkBlockUploading(ctx context.Context, payloadID string, chunkI
 //
 // Returns the block data and its actual size, or nil if not found.
 func (c *Cache) GetBlockData(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) ([]byte, uint32, error) {
-	if err := ctx.Err(); err != nil {
+	if err := c.checkClosed(ctx); err != nil {
 		return nil, 0, err
 	}
-
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return nil, 0, ErrCacheClosed
-	}
-	c.globalMu.RUnlock()
 
 	entry := c.getFileEntry(payloadID)
 	entry.mu.RLock()
 	defer entry.mu.RUnlock()
 
-	chunk, exists := entry.chunks[chunkIdx]
-	if !exists {
-		return nil, 0, ErrBlockNotFound
-	}
-
-	blk, exists := chunk.blocks[blockIdx]
-	if !exists || blk.data == nil {
+	blk := getBlockUnlocked(entry, chunkIdx, blockIdx)
+	if blk == nil || blk.data == nil {
 		return nil, 0, ErrBlockNotFound
 	}
 
@@ -290,37 +284,21 @@ func (c *Cache) GetBlockData(ctx context.Context, payloadID string, chunkIdx, bl
 //   - dataSize: Actual data size in the buffer
 //   - ok: true if block was successfully claimed and detached
 func (c *Cache) DetachBlockForUpload(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) (data []byte, dataSize uint32, ok bool) {
-	if err := ctx.Err(); err != nil {
+	if c.checkClosed(ctx) != nil {
 		return nil, 0, false
 	}
-
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return nil, 0, false
-	}
-	c.globalMu.RUnlock()
 
 	entry := c.getFileEntry(payloadID)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	chunk, exists := entry.chunks[chunkIdx]
-	if !exists {
+	blk := getBlockUnlocked(entry, chunkIdx, blockIdx)
+	if blk == nil || blk.data == nil {
 		return nil, 0, false
 	}
 
-	blk, exists := chunk.blocks[blockIdx]
-	if !exists {
-		return nil, 0, false
-	}
-
-	// Can only detach Pending blocks
-	if blk.state != BlockStatePending {
-		return nil, 0, false
-	}
-
-	if blk.data == nil {
+	// Can only detach Pending or ReadyForUpload blocks
+	if blk.state != BlockStatePending && blk.state != BlockStateReadyForUpload {
 		return nil, 0, false
 	}
 
@@ -346,33 +324,16 @@ func (c *Cache) DetachBlockForUpload(ctx context.Context, payloadID string, chun
 //
 // Returns true if the buffer was restored successfully.
 func (c *Cache) RestoreBlockBuffer(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32, data []byte) bool {
-	if err := ctx.Err(); err != nil {
+	if c.checkClosed(ctx) != nil {
 		return false
 	}
-
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return false
-	}
-	c.globalMu.RUnlock()
 
 	entry := c.getFileEntry(payloadID)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	chunk, exists := entry.chunks[chunkIdx]
-	if !exists {
-		return false
-	}
-
-	blk, exists := chunk.blocks[blockIdx]
-	if !exists {
-		return false
-	}
-
-	// Only restore to Uploading blocks (the expected state after detach)
-	if blk.state != BlockStateUploading {
+	blk := getBlockUnlocked(entry, chunkIdx, blockIdx)
+	if blk == nil || blk.state != BlockStateUploading {
 		return false
 	}
 

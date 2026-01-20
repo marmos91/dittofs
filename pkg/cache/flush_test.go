@@ -6,6 +6,33 @@ import (
 	"testing"
 )
 
+// getCoveredSize returns the highest byte offset that is covered.
+// Used to determine the actual data size for partial blocks.
+// This is a test helper - kept here as it's only used in tests.
+func getCoveredSize(coverage []uint64) uint32 {
+	if coverage == nil {
+		return 0
+	}
+
+	// Find the highest set bit
+	for wordIdx := len(coverage) - 1; wordIdx >= 0; wordIdx-- {
+		word := coverage[wordIdx]
+		if word == 0 {
+			continue
+		}
+		// Find highest bit in this word
+		for bitInWord := CoverageBitsPerWord - 1; bitInWord >= 0; bitInWord-- {
+			if word&(1<<bitInWord) != 0 {
+				// This bit represents coverage for bytes [bit*64, (bit+1)*64)
+				bit := uint32(wordIdx)*CoverageBitsPerWord + uint32(bitInWord)
+				return (bit + 1) * CoverageGranularity
+			}
+		}
+	}
+
+	return 0
+}
+
 // ============================================================================
 // Coverage Bitmap Helper Tests
 // ============================================================================
@@ -163,13 +190,13 @@ func TestGetDirtyBlocks_SortedByChunkAndBlock(t *testing.T) {
 
 	// Write to different chunks and blocks in random order
 	// Chunk 1, block 2
-	_ = c.Write(ctx, payloadID, 1, []byte("chunk1-block2"), 2*BlockSize)
+	_ = c.WriteAt(ctx, payloadID, 1, []byte("chunk1-block2"), 2*BlockSize)
 	// Chunk 0, block 1
-	_ = c.Write(ctx, payloadID, 0, []byte("chunk0-block1"), 1*BlockSize)
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("chunk0-block1"), 1*BlockSize)
 	// Chunk 1, block 0
-	_ = c.Write(ctx, payloadID, 1, []byte("chunk1-block0"), 0)
+	_ = c.WriteAt(ctx, payloadID, 1, []byte("chunk1-block0"), 0)
 	// Chunk 0, block 0
-	_ = c.Write(ctx, payloadID, 0, []byte("chunk0-block0"), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("chunk0-block0"), 0)
 
 	blocks, err := c.GetDirtyBlocks(ctx, payloadID)
 	if err != nil {
@@ -207,8 +234,8 @@ func TestGetDirtyBlocks_OnlyReturnsPending(t *testing.T) {
 	payloadID := "test-file"
 
 	// Write two blocks
-	_ = c.Write(ctx, payloadID, 0, []byte("block0"), 0)
-	_ = c.Write(ctx, payloadID, 0, []byte("block1"), BlockSize)
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("block0"), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("block1"), BlockSize)
 
 	// Mark second block as uploaded
 	c.MarkBlockUploaded(ctx, payloadID, 0, 1)
@@ -242,7 +269,7 @@ func TestGetDirtyBlocks_ContextCancelled(t *testing.T) {
 
 func TestGetDirtyBlocks_CacheClosed(t *testing.T) {
 	c := New(0)
-	_ = c.Write(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.WriteAt(context.Background(), "test", 0, []byte("data"), 0)
 	_ = c.Close()
 
 	_, err := c.GetDirtyBlocks(context.Background(), "test")
@@ -262,7 +289,7 @@ func TestMarkBlockUploaded_Success(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	_ = c.Write(ctx, payloadID, 0, []byte("data"), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("data"), 0)
 
 	// Verify we have pending blocks
 	blocks, _ := c.GetDirtyBlocks(ctx, payloadID)
@@ -290,7 +317,7 @@ func TestMarkBlockUploaded_NotFound(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	_ = c.Write(ctx, payloadID, 0, []byte("data"), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("data"), 0)
 
 	// Try to mark a nonexistent block
 	marked := c.MarkBlockUploaded(ctx, payloadID, 99, 99)
@@ -306,7 +333,7 @@ func TestMarkBlockUploaded_AlreadyUploaded(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	_ = c.Write(ctx, payloadID, 0, []byte("data"), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("data"), 0)
 
 	// Mark as uploaded twice
 	c.MarkBlockUploaded(ctx, payloadID, 0, 0)
@@ -322,7 +349,7 @@ func TestMarkBlockUploaded_ContextCancelled(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
-	_ = c.Write(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.WriteAt(context.Background(), "test", 0, []byte("data"), 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -335,7 +362,7 @@ func TestMarkBlockUploaded_ContextCancelled(t *testing.T) {
 
 func TestMarkBlockUploaded_CacheClosed(t *testing.T) {
 	c := New(0)
-	_ = c.Write(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.WriteAt(context.Background(), "test", 0, []byte("data"), 0)
 	_ = c.Close()
 
 	marked := c.MarkBlockUploaded(context.Background(), "test", 0, 0)
@@ -355,7 +382,7 @@ func TestMarkBlockUploading_Success(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	_ = c.Write(ctx, payloadID, 0, []byte("data"), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("data"), 0)
 
 	// Mark as uploading
 	marked := c.MarkBlockUploading(ctx, payloadID, 0, 0)
@@ -378,7 +405,7 @@ func TestMarkBlockUploading_NotFound(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	_ = c.Write(ctx, payloadID, 0, []byte("data"), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("data"), 0)
 
 	// Try to mark a nonexistent block
 	marked := c.MarkBlockUploading(ctx, payloadID, 99, 99)
@@ -394,7 +421,7 @@ func TestMarkBlockUploading_AlreadyUploading(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "test-file"
 
-	_ = c.Write(ctx, payloadID, 0, []byte("data"), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("data"), 0)
 
 	// Mark as uploading twice
 	c.MarkBlockUploading(ctx, payloadID, 0, 0)
@@ -418,7 +445,7 @@ func TestGetBlockData_Success(t *testing.T) {
 	payloadID := "test-file"
 	testData := []byte("test data content")
 
-	_ = c.Write(ctx, payloadID, 0, testData, 0)
+	_ = c.WriteAt(ctx, payloadID, 0, testData, 0)
 
 	data, size, err := c.GetBlockData(ctx, payloadID, 0, 0)
 	if err != nil {
@@ -447,7 +474,7 @@ func TestGetBlockData_NotFound(t *testing.T) {
 	}
 
 	// File exists but block doesn't
-	_ = c.Write(ctx, "test", 0, []byte("data"), 0)
+	_ = c.WriteAt(ctx, "test", 0, []byte("data"), 0)
 	_, _, err = c.GetBlockData(ctx, "test", 99, 99)
 	if err != ErrBlockNotFound {
 		t.Errorf("expected ErrBlockNotFound for nonexistent block, got %v", err)
@@ -458,7 +485,7 @@ func TestGetBlockData_ContextCancelled(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
-	_ = c.Write(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.WriteAt(context.Background(), "test", 0, []byte("data"), 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -471,7 +498,7 @@ func TestGetBlockData_ContextCancelled(t *testing.T) {
 
 func TestGetBlockData_CacheClosed(t *testing.T) {
 	c := New(0)
-	_ = c.Write(context.Background(), "test", 0, []byte("data"), 0)
+	_ = c.WriteAt(context.Background(), "test", 0, []byte("data"), 0)
 	_ = c.Close()
 
 	_, _, err := c.GetBlockData(context.Background(), "test", 0, 0)
@@ -495,14 +522,14 @@ func TestWrite_CacheFull_ReturnsError(t *testing.T) {
 	payloadID := "test-file"
 
 	// Write data that creates a block (all pending, can't be evicted)
-	err := c.Write(ctx, payloadID, 0, make([]byte, 1024), 0)
+	err := c.WriteAt(ctx, payloadID, 0, make([]byte, 1024), 0)
 	if err != nil {
 		t.Fatalf("first write should succeed: %v", err)
 	}
 
 	// Try to write to a different block that would exceed cache size
 	// Since all data is pending (not uploaded), eviction can't free space
-	err = c.Write(ctx, payloadID, 0, make([]byte, 1024), BlockSize)
+	err = c.WriteAt(ctx, payloadID, 0, make([]byte, 1024), BlockSize)
 	if err != ErrCacheFull {
 		t.Errorf("expected ErrCacheFull when cache is full of pending data, got %v", err)
 	}
@@ -517,13 +544,13 @@ func TestWrite_CacheFull_SucceedsAfterUpload(t *testing.T) {
 	payloadID := "test-file"
 
 	// Fill cache with pending data
-	_ = c.Write(ctx, payloadID, 0, make([]byte, 1024), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 1024), 0)
 
 	// Mark block as uploaded so it can be evicted
 	c.MarkBlockUploaded(ctx, payloadID, 0, 0)
 
 	// Now write should succeed because eviction can free space
-	err := c.Write(ctx, payloadID, 0, make([]byte, 1024), BlockSize)
+	err := c.WriteAt(ctx, payloadID, 0, make([]byte, 1024), BlockSize)
 	if err != nil {
 		t.Errorf("write should succeed after upload (eviction possible), got %v", err)
 	}
@@ -548,7 +575,7 @@ func BenchmarkGetDirtyBlocks(b *testing.B) {
 			// Create dirty blocks across multiple chunks
 			data := make([]byte, 32*1024)
 			for i := 0; i < chunks; i++ {
-				_ = c.Write(ctx, payloadID, uint32(i), data, 0)
+				_ = c.WriteAt(ctx, payloadID, uint32(i), data, 0)
 			}
 
 			b.ResetTimer()
@@ -578,7 +605,7 @@ func BenchmarkMarkBlockUploaded(b *testing.B) {
 	// Pre-create blocks across multiple files
 	for i := 0; i < maxBlocks; i++ {
 		payloadID := fmt.Sprintf("file-%d", i)
-		_ = c.Write(ctx, payloadID, 0, make([]byte, 1024), 0)
+		_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 1024), 0)
 	}
 
 	b.ResetTimer()

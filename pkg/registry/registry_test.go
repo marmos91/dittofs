@@ -348,14 +348,13 @@ func TestContentServiceCreation(t *testing.T) {
 	// Set up payload service
 	c := cache.New(10 * 1024 * 1024)
 	blockStore := storemem.New()
-	tm := transfer.New(c, blockStore, transfer.DefaultConfig())
+	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
+	tm := transfer.New(c, blockStore, metaStore, transfer.DefaultConfig())
 	payloadSvc, err := payload.New(c, tm)
 	if err != nil {
 		t.Fatalf("Failed to create payload service: %v", err)
 	}
 	reg.SetPayloadService(payloadSvc)
-
-	metaStore := metadataMemory.NewMemoryMetadataStoreWithDefaults()
 	_ = reg.RegisterMetadataStore("meta1", metaStore)
 	_ = reg.AddShare(context.Background(), testShareConfig("/export", "meta1", false))
 

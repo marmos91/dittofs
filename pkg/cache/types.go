@@ -3,16 +3,17 @@ package cache
 
 import (
 	"errors"
+	"sync/atomic"
 
 	"github.com/marmos91/dittofs/pkg/payload/block"
 	"github.com/marmos91/dittofs/pkg/payload/chunk"
 )
 
-// Re-export chunk constants for backward compatibility.
+// Re-export chunk and block constants for backward compatibility.
 // New code should import pkg/payload/chunk and pkg/payload/block directly.
 const (
-	ChunkSize      = chunk.Size
-	BlockSize      = block.Size
+	ChunkSize      = chunk.Size  // 64MB
+	BlockSize      = block.Size  // 4MB
 	MinBlockSize   = block.MinSize
 	MaxBlockSize   = block.MaxSize
 	BlocksPerChunk = ChunkSize / BlockSize // 16 blocks per 64MB chunk
@@ -60,6 +61,26 @@ var (
 )
 
 // ============================================================================
+// Atomic Helpers
+// ============================================================================
+
+// atomicSubtract subtracts n from the atomic value.
+//
+// Go's atomic.Uint64 doesn't have a Subtract method, only Add. To subtract,
+// we use two's complement arithmetic: Add(^(n-1)) is equivalent to Add(-n)
+// for unsigned types because ^(n-1) == -n in two's complement representation.
+//
+// Example: to subtract 5, we compute ^4 (bitwise NOT of 4):
+//
+//	^4 = 0xFFFFFFFFFFFFFFFB (in 64-bit)
+//	When added to any value, this has the same effect as subtracting 5.
+//
+// This pattern is common in Go's standard library (see sync/atomic internals).
+func atomicSubtract(a *atomic.Uint64, n uint64) {
+	a.Add(^(n - 1))
+}
+
+// ============================================================================
 // Block Buffer Types
 // ============================================================================
 
@@ -68,9 +89,16 @@ type BlockState int
 
 const (
 	// BlockStatePending indicates the block has unflushed data.
+	// New writes arrive here, hash not yet computed.
 	BlockStatePending BlockState = iota
 
+	// BlockStateReadyForUpload indicates the block is complete and hash computed.
+	// The block is queued for upload. If new writes arrive, cancel upload and
+	// revert to Pending.
+	BlockStateReadyForUpload
+
 	// BlockStateUploading indicates the block is currently being uploaded.
+	// The buffer has been detached for zero-copy upload.
 	BlockStateUploading
 
 	// BlockStateUploaded indicates the block has been uploaded to storage.
@@ -83,6 +111,8 @@ func (s BlockState) String() string {
 	switch s {
 	case BlockStatePending:
 		return "Pending"
+	case BlockStateReadyForUpload:
+		return "ReadyForUpload"
 	case BlockStateUploading:
 		return "Uploading"
 	case BlockStateUploaded:
@@ -110,6 +140,15 @@ type blockBuffer struct {
 	// dataSize tracks the actual bytes written (for partial blocks).
 	// This is the highest (offset + length) seen, used for file size calculation.
 	dataSize uint32
+
+	// hash is the SHA-256 content hash computed when block becomes ReadyForUpload.
+	// Used for deduplication lookup and as the block store key.
+	// Zero value indicates hash not yet computed.
+	hash [32]byte
+
+	// uploadCancel cancels a pending upload when new writes arrive.
+	// Set when transitioning to ReadyForUpload, called if write arrives before upload starts.
+	uploadCancel func()
 }
 
 // PendingBlock represents a block ready for upload.
@@ -129,6 +168,13 @@ type PendingBlock struct {
 
 	// DataSize is the actual size of valid data in the block.
 	DataSize uint32
+
+	// Hash is the SHA-256 content hash (set when state is ReadyForUpload).
+	// Zero value indicates hash not yet computed.
+	Hash [32]byte
+
+	// State is the current block state.
+	State BlockState
 }
 
 // ============================================================================
@@ -226,28 +272,3 @@ func isFullyCovered(coverage []uint64) bool {
 	return true
 }
 
-// getCoveredSize returns the highest byte offset that is covered.
-// Used to determine the actual data size for partial blocks.
-func getCoveredSize(coverage []uint64) uint32 {
-	if coverage == nil {
-		return 0
-	}
-
-	// Find the highest set bit
-	for wordIdx := len(coverage) - 1; wordIdx >= 0; wordIdx-- {
-		word := coverage[wordIdx]
-		if word == 0 {
-			continue
-		}
-		// Find highest bit in this word
-		for bitInWord := CoverageBitsPerWord - 1; bitInWord >= 0; bitInWord-- {
-			if word&(1<<bitInWord) != 0 {
-				// This bit represents coverage for bytes [bit*64, (bit+1)*64)
-				bit := uint32(wordIdx)*CoverageBitsPerWord + uint32(bitInWord)
-				return (bit + 1) * CoverageGranularity
-			}
-		}
-	}
-
-	return 0
-}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/payload"
 	"github.com/marmos91/dittofs/pkg/registry"
 )
@@ -80,7 +81,10 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 	logger.Info("Created block store", "name", blockStoreName, "type", blockStoreCfg.Type)
 
 	// Step 3: Create transfer manager (required)
-	transferMgr := CreateTransferManager(globalCache, blockStore, cfg.Payload.Transfer)
+	// Create a dedicated ObjectStore for content-addressed deduplication
+	// This is shared across all files/shares to enable global deduplication
+	objectStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	transferMgr := CreateTransferManager(globalCache, blockStore, objectStore, cfg.Payload.Transfer)
 	logger.Info("Created transfer manager for cache-to-block-store persistence",
 		"uploads", cfg.Payload.Transfer.Workers.Uploads,
 		"downloads", cfg.Payload.Transfer.Workers.Downloads)

@@ -118,70 +118,96 @@ func ClipToChunk(chunkIdx uint32, fileOffset, length uint64) (offsetInChunk, cli
 }
 
 // ============================================================================
-// Chunk Slice Iterator
+// Block Range Iterator
 // ============================================================================
 
-// Slice represents a portion of a byte range within a single chunk.
-// Used by the Slices iterator to break a file-level range into per-chunk pieces.
-type Slice struct {
-	// ChunkIndex is the chunk this slice belongs to.
+// BlockSize is the size of a block in bytes (4MB).
+// Blocks are the unit of storage, hash computation, and deduplication.
+const BlockSize = 4 * 1024 * 1024
+
+// BlocksPerChunk is the number of blocks in a full chunk (16).
+const BlocksPerChunk = Size / BlockSize
+
+// BlockRange represents a contiguous write range within a single 4MB block.
+// Used to split writes across block boundaries for completion tracking,
+// hash computation, and deduplication.
+type BlockRange struct {
+	// ChunkIndex is which 64MB chunk (0, 1, 2, ...).
 	ChunkIndex uint32
 
-	// Offset is the byte offset within the chunk (0 to Size-1).
+	// BlockIndex is which 4MB block within the chunk (0 to BlocksPerChunk-1).
+	BlockIndex uint32
+
+	// Offset is the byte offset within the block (0 to BlockSize-1).
 	Offset uint32
 
-	// Length is the size of this slice in bytes.
+	// Length is the length of data in this block range.
 	Length uint32
 
-	// BufOffset is the offset into the caller's buffer where this slice's data
+	// BufOffset is the offset into the caller's buffer where this range's data
 	// should be read from or written to.
 	BufOffset int
 }
 
-// Slices returns an iterator over chunk slices for a file-level byte range.
-// Each yielded Slice represents the portion of the range within a single chunk.
+// BlockRanges returns an iterator over write ranges at 4MB block boundaries.
+// Splits writes that cross block boundaries, providing chunk+block coordinates
+// for each segment. This is the primary iterator for write operations.
 //
-// This eliminates the common pattern of:
-//
-//	startChunk, endChunk := chunk.Range(offset, length)
-//	for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
-//	    offsetInChunk, len := chunk.ClipToChunk(chunkIdx, offset+processed, remaining)
-//	    // ...
-//	}
+// Example: A 10MB write starting at offset 2MB would yield:
+//   - BlockRange{ChunkIndex: 0, BlockIndex: 0, Offset: 2MB, Length: 2MB, BufOffset: 0}
+//   - BlockRange{ChunkIndex: 0, BlockIndex: 1, Offset: 0, Length: 4MB, BufOffset: 2MB}
+//   - BlockRange{ChunkIndex: 0, BlockIndex: 2, Offset: 0, Length: 4MB, BufOffset: 6MB}
 //
 // Usage:
 //
-//	for slice := range chunk.Slices(offset, len(buf)) {
-//	    cache.Read(ctx, handle, slice.ChunkIndex, slice.Offset, slice.Length, buf[slice.BufOffset:])
+//	for br := range chunk.BlockRanges(offset, len(data)) {
+//	    segment := data[br.BufOffset : br.BufOffset+int(br.Length)]
+//	    cache.WriteAt(ctx, payloadID, br.ChunkIndex, segment, br.Offset + br.BlockIndex*BlockSize)
 //	}
-func Slices(fileOffset uint64, length int) func(yield func(Slice) bool) {
-	return func(yield func(Slice) bool) {
-		if length == 0 {
+func BlockRanges(fileOffset uint64, length int) func(yield func(BlockRange) bool) {
+	return func(yield func(BlockRange) bool) {
+		if length <= 0 {
 			return
 		}
 
-		len64 := uint64(length)
-		startChunk, endChunk := Range(fileOffset, len64)
+		remaining := uint64(length)
+		currentOffset := fileOffset
 		bufOffset := 0
 
-		for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
-			offsetInChunk, sliceLen := ClipToChunk(chunkIdx, fileOffset+uint64(bufOffset), len64-uint64(bufOffset))
-			if sliceLen == 0 {
-				continue
-			}
+		for remaining > 0 {
+			// Calculate chunk coordinates
+			chunkIdx := uint32(currentOffset / Size)
+			offsetInChunk := currentOffset % Size
 
-			slice := Slice{
+			// Calculate block coordinates within chunk
+			blockIdx := uint32(offsetInChunk / BlockSize)
+			offsetInBlock := uint32(offsetInChunk % BlockSize)
+
+			// How much can we write in this block?
+			spaceInBlock := uint64(BlockSize - offsetInBlock)
+			writeLen := min(remaining, spaceInBlock)
+
+			br := BlockRange{
 				ChunkIndex: chunkIdx,
-				Offset:     offsetInChunk,
-				Length:     sliceLen,
+				BlockIndex: blockIdx,
+				Offset:     offsetInBlock,
+				Length:     uint32(writeLen),
 				BufOffset:  bufOffset,
 			}
 
-			if !yield(slice) {
+			if !yield(br) {
 				return
 			}
 
-			bufOffset += int(sliceLen)
+			currentOffset += writeLen
+			bufOffset += int(writeLen)
+			remaining -= writeLen
 		}
 	}
+}
+
+// ChunkOffsetForBlock returns the chunk-level offset for a block index.
+// This is the offset within the chunk where the block starts.
+func ChunkOffsetForBlock(blockIdx uint32) uint32 {
+	return blockIdx * BlockSize
 }

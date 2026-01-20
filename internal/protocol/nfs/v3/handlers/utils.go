@@ -167,7 +167,7 @@ func checkMFsymlink(
 func readMFsymlinkContentForNFS(
 	ctx context.Context,
 	reg *registry.Registry,
-	share string,
+	_ /* share */ string,
 	payloadID metadata.PayloadID,
 ) ([]byte, error) {
 	if payloadID == "" {
@@ -178,7 +178,7 @@ func readMFsymlinkContentForNFS(
 	payloadSvc := reg.GetBlockService()
 
 	data := make([]byte, mfsymlink.Size)
-	n, err := payloadSvc.ReadAt(ctx, share, payloadID, data, 0)
+	n, err := payloadSvc.ReadAt(ctx, payloadID, data, 0)
 	if err != nil {
 		return nil, err
 	}

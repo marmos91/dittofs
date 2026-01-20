@@ -100,7 +100,7 @@ func (c *Cache) evictUploadedBlocks(entry *fileEntry) uint64 {
 			// Evict by clearing the data buffer.
 			// Subtract BlockSize since that's what we track for memory allocation.
 			evicted += BlockSize
-			c.totalSize.Add(^uint64(BlockSize - 1)) // Atomic subtract
+			atomicSubtract(&c.totalSize, BlockSize)
 
 			blk.data = nil
 			blk.coverage = nil
@@ -126,16 +126,9 @@ func (c *Cache) evictUploadedBlocks(entry *fileEntry) uint64 {
 //
 // Only uploaded blocks are evicted - dirty data is protected.
 func (c *Cache) EvictLRU(ctx context.Context, targetFreeBytes uint64) (uint64, error) {
-	if err := ctx.Err(); err != nil {
+	if err := c.checkClosed(ctx); err != nil {
 		return 0, err
 	}
-
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return 0, ErrCacheClosed
-	}
-	c.globalMu.RUnlock()
 
 	startSize := c.totalSize.Load()
 	targetSize := uint64(0)
@@ -156,16 +149,9 @@ func (c *Cache) EvictLRU(ctx context.Context, targetFreeBytes uint64) (uint64, e
 // Use this when a file is closed or deleted to free its cache space immediately.
 // Only uploaded blocks are removed - dirty data is protected.
 func (c *Cache) Evict(ctx context.Context, payloadID string) (uint64, error) {
-	if err := ctx.Err(); err != nil {
+	if err := c.checkClosed(ctx); err != nil {
 		return 0, err
 	}
-
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return 0, ErrCacheClosed
-	}
-	c.globalMu.RUnlock()
 
 	entry := c.getFileEntry(payloadID)
 	entry.mu.Lock()
@@ -184,15 +170,11 @@ func (c *Cache) Evict(ctx context.Context, payloadID string) (uint64, error) {
 //   - evicted: Total bytes evicted across all files
 //   - error: Context errors or ErrCacheClosed
 func (c *Cache) EvictAll(ctx context.Context) (uint64, error) {
-	if err := ctx.Err(); err != nil {
+	if err := c.checkClosed(ctx); err != nil {
 		return 0, err
 	}
 
 	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return 0, ErrCacheClosed
-	}
 	payloadIDs := make([]string, 0, len(c.files))
 	for k := range c.files {
 		payloadIDs = append(payloadIDs, k)

@@ -22,6 +22,7 @@
 package cache
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -70,7 +71,7 @@ type Cache struct {
 	// Pending size tracking for backpressure
 	// Pending = blocks that haven't been uploaded yet (can't be evicted)
 	pendingSize    atomic.Uint64
-	maxPendingSize uint64 // 0 = use default (256MB)
+	maxPendingSize uint64 // 0 = use default (512MB, see DefaultMaxPendingSize)
 
 	// WAL persistence (nil = disabled)
 	persister *wal.MmapPersister
@@ -266,14 +267,31 @@ func (c *Cache) getOrCreateBlock(entry *fileEntry, chunkIdx, blockIdx uint32) (*
 // Returns false if the block entry exists but data was detached (nil).
 // Must be called with entry.mu held (read or write lock).
 func (c *Cache) blockExists(entry *fileEntry, chunkIdx, blockIdx uint32) bool {
+	blk := getBlockUnlocked(entry, chunkIdx, blockIdx)
+	return blk != nil && blk.data != nil
+}
+
+// getBlockUnlocked returns the block at the given coordinates.
+// Returns nil if chunk or block doesn't exist.
+// Caller must hold entry.mu (read or write lock).
+func getBlockUnlocked(entry *fileEntry, chunkIdx, blockIdx uint32) *blockBuffer {
 	chunk, exists := entry.chunks[chunkIdx]
 	if !exists {
-		return false
+		return nil
 	}
-	block, exists := chunk.blocks[blockIdx]
-	if !exists {
-		return false
+	return chunk.blocks[blockIdx]
+}
+
+// checkClosed checks if the context is cancelled or the cache is closed.
+// Returns nil if the cache is open and context is valid.
+func (c *Cache) checkClosed(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	// Block without data (detached) doesn't count as existing for memory purposes
-	return block.data != nil
+	c.globalMu.RLock()
+	defer c.globalMu.RUnlock()
+	if c.closed {
+		return ErrCacheClosed
+	}
+	return nil
 }
