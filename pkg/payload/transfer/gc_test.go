@@ -114,7 +114,7 @@ func (r *gcTestReconciler) GetMetadataStoreForShare(shareName string) (metadata.
 // Helper to create a file with a specific PayloadID in the store
 // ============================================================================
 
-func createFileWithPayloadID(ctx context.Context, t *testing.T, store metadata.MetadataStore, shareName, payloadID string) {
+func createFileWithPayloadID(ctx context.Context, t testing.TB, store metadata.MetadataStore, shareName, payloadID string) {
 	t.Helper()
 
 	// Register the share first (required for GetRootHandle to work)

@@ -515,7 +515,7 @@ func testWriteAndFlush(t *testing.T, env *testEnv) {
 	}
 
 	// Verify data in block store
-	exists, err := env.manager.Exists(ctx, "", payloadID)
+	exists, err := env.manager.Exists(ctx, payloadID)
 	if err != nil {
 		t.Fatalf("Exists failed: %v", err)
 	}
@@ -524,7 +524,7 @@ func testWriteAndFlush(t *testing.T, env *testEnv) {
 	}
 
 	// Verify size
-	size, err := env.manager.GetFileSize(ctx, "", payloadID)
+	size, err := env.manager.GetFileSize(ctx, payloadID)
 	if err != nil {
 		t.Fatalf("GetFileSize failed: %v", err)
 	}
@@ -630,7 +630,7 @@ func testConcurrentOperations(t *testing.T, env *testEnv) {
 			}
 
 			// Verify
-			exists, err := env.manager.Exists(ctx, "", payloadID)
+			exists, err := env.manager.Exists(ctx, payloadID)
 			if err != nil {
 				errors <- fmt.Errorf("file %d: Exists failed: %w", fileIdx, err)
 				return
@@ -1098,7 +1098,7 @@ func testDeduplication(t *testing.T, env *testEnv) {
 	}
 
 	// Verify both files exist in block store
-	exists1, err := env.manager.Exists(ctx, "", payloadID1)
+	exists1, err := env.manager.Exists(ctx, payloadID1)
 	if err != nil {
 		t.Fatalf("Exists file1 failed: %v", err)
 	}
@@ -1111,7 +1111,7 @@ func testDeduplication(t *testing.T, env *testEnv) {
 	// For dedup, the blocks are stored by hash, not payloadID
 
 	// Verify the sizes are correct
-	size1, err := env.manager.GetFileSize(ctx, "", payloadID1)
+	size1, err := env.manager.GetFileSize(ctx, payloadID1)
 	if err != nil {
 		t.Fatalf("GetFileSize file1 failed: %v", err)
 	}
@@ -1167,7 +1167,7 @@ func testDedupWithDifferentData(t *testing.T, env *testEnv) {
 	}
 
 	// Verify both files exist
-	exists1, err := env.manager.Exists(ctx, "", payloadID1)
+	exists1, err := env.manager.Exists(ctx, payloadID1)
 	if err != nil {
 		t.Fatalf("Exists file1 failed: %v", err)
 	}
@@ -1175,7 +1175,7 @@ func testDedupWithDifferentData(t *testing.T, env *testEnv) {
 		t.Error("File1 should exist")
 	}
 
-	exists2, err := env.manager.Exists(ctx, "", payloadID2)
+	exists2, err := env.manager.Exists(ctx, payloadID2)
 	if err != nil {
 		t.Fatalf("Exists file2 failed: %v", err)
 	}
