@@ -100,16 +100,11 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 				"user", sess.User.Username,
 				"permission", permission)
 		} else if sess.IsGuest {
-			// Guest session - check if guest access is allowed
-			if !share.AllowGuest {
-				logger.Debug("Share access denied (guest not allowed)", "shareName", shareName)
-				return NewErrorResult(types.StatusAccessDenied), nil
-			}
-
-			// Use default permission for guests
+			// Guest session - use default permission
+			// If default permission is "none", deny access
 			permission = identity.ParseSharePermission(share.DefaultPermission)
 			if permission == identity.PermissionNone {
-				logger.Debug("Share access denied (no guest permission)", "shareName", shareName)
+				logger.Debug("Share access denied (guest, default permission is none)", "shareName", shareName)
 				return NewErrorResult(types.StatusAccessDenied), nil
 			}
 

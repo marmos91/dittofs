@@ -435,14 +435,10 @@ type ShareConfig struct {
 	// ReadOnly makes the share read-only if true
 	ReadOnly bool `mapstructure:"read_only" yaml:"read_only"`
 
-	// AllowGuest allows guest/anonymous access to this share
-	// Guest permissions are determined by the guest configuration
-	AllowGuest bool `mapstructure:"allow_guest" yaml:"allow_guest"`
-
-	// DefaultPermission is the permission level for users without explicit/group permissions
-	// Valid values: none, read, read-write
-	// Default: none (users need explicit permission to access)
-	DefaultPermission string `mapstructure:"default_permission" validate:"omitempty,oneof=none read read-write" yaml:"default_permission"`
+	// DefaultPermission is the permission level for unknown UIDs and users without explicit/group permissions.
+	// Valid values: none (block access), read, read-write, admin
+	// Default: none (unknown UIDs are blocked, users need explicit permission to access)
+	DefaultPermission string `mapstructure:"default_permission" validate:"omitempty,oneof=none read read-write admin" yaml:"default_permission"`
 
 	// AllowedClients lists IP addresses or CIDR ranges allowed to access
 	// Empty list means all clients are allowed

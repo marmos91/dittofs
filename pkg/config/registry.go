@@ -195,7 +195,6 @@ func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 			Name:                     shareCfg.Name,
 			MetadataStore:            shareCfg.Metadata,
 			ReadOnly:                 shareCfg.ReadOnly,
-			AllowGuest:               shareCfg.AllowGuest,
 			DefaultPermission:        shareCfg.DefaultPermission,
 			AllowedClients:           shareCfg.AllowedClients,
 			DeniedClients:            shareCfg.DeniedClients,

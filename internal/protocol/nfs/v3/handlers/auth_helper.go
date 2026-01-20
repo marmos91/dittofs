@@ -95,20 +95,16 @@ func BuildAuthContextWithMapping(
 			shareReadOnly = (sharePermission == identity.PermissionRead)
 			logger.DebugCtx(ctx, "User permission resolved", "share", shareName, "user", dittoUser.Username, "permission", sharePermission)
 		} else {
-			// User not found - check if guest access is allowed
-			if !share.AllowGuest {
-				// No guest allowed and user not found
-				logger.DebugCtx(ctx, "Share access denied (guest not allowed)", "share", shareName, "uid", nfsCtx.UID)
+			// User not found - use default permission
+			// If defaultPerm is "none", block access (no guest access)
+			if defaultPerm == identity.PermissionNone {
+				logger.DebugCtx(ctx, "Share access denied (unknown UID, default permission is none)",
+					"share", shareName, "uid", nfsCtx.UID)
 				return nil, ErrShareAccessDenied
 			}
 
-			// Guest access - use default permission
+			// Allow with default permission
 			sharePermission = defaultPerm
-			if sharePermission == identity.PermissionNone {
-				logger.DebugCtx(ctx, "Share access denied (no guest permission)", "share", shareName)
-				return nil, ErrShareAccessDenied
-			}
-
 			shareReadOnly = (sharePermission == identity.PermissionRead)
 			logger.DebugCtx(ctx, "Guest access granted", "share", shareName, "permission", sharePermission)
 		}

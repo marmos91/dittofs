@@ -161,7 +161,6 @@ func (r *Registry) AddShare(ctx context.Context, config *ShareConfig) error {
 		MetadataStore:            config.MetadataStore,
 		RootHandle:               rootHandle,
 		ReadOnly:                 config.ReadOnly,
-		AllowGuest:               config.AllowGuest,
 		DefaultPermission:        config.DefaultPermission,
 		AllowedClients:           config.AllowedClients,
 		DeniedClients:            config.DeniedClients,
