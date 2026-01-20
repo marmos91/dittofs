@@ -14,14 +14,14 @@ func TestWrite_Basic(t *testing.T) {
 	payloadID := "test-file"
 	data := []byte("hello world")
 
-	err := c.Write(ctx, payloadID, 0, data, 0)
+	err := c.WriteAt(ctx, payloadID, 0, data, 0)
 	if err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
 	// Verify data was written
 	result := make([]byte, len(data))
-	found, err := c.Read(ctx, payloadID, 0, 0, uint32(len(data)), result)
+	found, err := c.ReadAt(ctx, payloadID, 0, 0, uint32(len(data)), result)
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestWrite_SequentialToSameBlock(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		data := make([]byte, 1024)
 		offset := uint32(i * 1024)
-		if err := c.Write(ctx, payloadID, 0, data, offset); err != nil {
+		if err := c.WriteAt(ctx, payloadID, 0, data, offset); err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
 	}
@@ -73,11 +73,11 @@ func TestWrite_AdjacentWrites(t *testing.T) {
 
 	// Write at offset 100 first
 	data1 := []byte("WORLD")
-	_ = c.Write(ctx, payloadID, 0, data1, 100)
+	_ = c.WriteAt(ctx, payloadID, 0, data1, 100)
 
 	// Write at offset 95 (adjacent/overlapping)
 	data2 := []byte("HELLO")
-	_ = c.Write(ctx, payloadID, 0, data2, 95)
+	_ = c.WriteAt(ctx, payloadID, 0, data2, 95)
 
 	// All writes go to the same block (block 0)
 	blocks, _ := c.GetDirtyBlocks(ctx, payloadID)
@@ -99,7 +99,7 @@ func TestWrite_InvalidOffset(t *testing.T) {
 
 	// Try to write past chunk boundary
 	data := make([]byte, 100)
-	err := c.Write(ctx, payloadID, 0, data, ChunkSize-50)
+	err := c.WriteAt(ctx, payloadID, 0, data, ChunkSize-50)
 	if err != ErrInvalidOffset {
 		t.Errorf("expected ErrInvalidOffset, got %v", err)
 	}
@@ -112,7 +112,7 @@ func TestWrite_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := c.Write(ctx, "test", 0, []byte("data"), 0)
+	err := c.WriteAt(ctx, "test", 0, []byte("data"), 0)
 	if err != context.Canceled {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
@@ -122,7 +122,7 @@ func TestWrite_CacheClosed(t *testing.T) {
 	c := New(0)
 	_ = c.Close()
 
-	err := c.Write(context.Background(), "test", 0, []byte("data"), 0)
+	err := c.WriteAt(context.Background(), "test", 0, []byte("data"), 0)
 	if err != ErrCacheClosed {
 		t.Errorf("expected ErrCacheClosed, got %v", err)
 	}
@@ -136,9 +136,9 @@ func TestWrite_MultipleChunks(t *testing.T) {
 	payloadID := "test-file"
 
 	// Write to different chunks
-	_ = c.Write(ctx, payloadID, 0, []byte("chunk0"), 0)
-	_ = c.Write(ctx, payloadID, 1, []byte("chunk1"), 0)
-	_ = c.Write(ctx, payloadID, 2, []byte("chunk2"), 0)
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("chunk0"), 0)
+	_ = c.WriteAt(ctx, payloadID, 1, []byte("chunk1"), 0)
+	_ = c.WriteAt(ctx, payloadID, 2, []byte("chunk2"), 0)
 
 	blocks, _ := c.GetDirtyBlocks(ctx, payloadID)
 	if len(blocks) != 3 {
@@ -191,7 +191,7 @@ func BenchmarkWrite_Sequential(b *testing.B) {
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
 
-				if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+				if err := c.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -218,7 +218,7 @@ func BenchmarkWrite_SequentialExtend(b *testing.B) {
 		chunkIdx := offset / ChunkSize
 		offsetInChunk := offset % ChunkSize
 
-		if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+		if err := c.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -252,7 +252,7 @@ func BenchmarkWrite_Random(b *testing.B) {
 		chunkIdx := uint32((i * 7919) % 1000) // Spread across 1000 chunks
 		offsetInChunk := uint32((i * 7907) % int(maxOffsetInChunk))
 
-		if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+		if err := c.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -280,7 +280,7 @@ func BenchmarkWrite_MultiFile(b *testing.B) {
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
 
-				if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+				if err := c.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -308,7 +308,7 @@ func BenchmarkWrite_Concurrent(b *testing.B) {
 			chunkIdx := offset / ChunkSize
 			offsetInChunk := offset % ChunkSize
 
-			if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+			if err := c.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 				b.Fatal(err)
 			}
 			i++
@@ -329,7 +329,7 @@ func BenchmarkMemory_BlockAllocation(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		payloadID := fmt.Sprintf("file-%d", i)
-		if err := c.Write(ctx, payloadID, 0, data, 0); err != nil {
+		if err := c.WriteAt(ctx, payloadID, 0, data, 0); err != nil {
 			b.Fatal(err)
 		}
 	}

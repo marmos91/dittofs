@@ -10,7 +10,7 @@ import (
 // Read Operations
 // ============================================================================
 
-// Read reads data from the cache into the provided buffer.
+// ReadAt reads data from the cache into the provided buffer.
 //
 // This is the primary read path. Data is read from block buffers, with
 // uncovered regions (sparse file holes) zero-filled in the destination buffer.
@@ -31,17 +31,10 @@ import (
 //
 // Note: Uncovered portions of dest will contain zeros (sparse file behavior).
 // Use IsRangeCovered to check full coverage.
-func (c *Cache) Read(ctx context.Context, payloadID string, chunkIdx uint32, offset, length uint32, dest []byte) (bool, error) {
-	if err := ctx.Err(); err != nil {
+func (c *Cache) ReadAt(ctx context.Context, payloadID string, chunkIdx uint32, offset, length uint32, dest []byte) (bool, error) {
+	if err := c.checkClosed(ctx); err != nil {
 		return false, err
 	}
-
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return false, ErrCacheClosed
-	}
-	c.globalMu.RUnlock()
 
 	entry := c.getFileEntry(payloadID)
 	entry.mu.RLock()
@@ -103,16 +96,9 @@ func (c *Cache) Read(ctx context.Context, payloadID string, chunkIdx uint32, off
 //   - covered: true if every byte in [offset, offset+length) is covered
 //   - error: context errors or ErrCacheClosed
 func (c *Cache) IsRangeCovered(ctx context.Context, payloadID string, chunkIdx uint32, offset, length uint32) (bool, error) {
-	if err := ctx.Err(); err != nil {
+	if err := c.checkClosed(ctx); err != nil {
 		return false, err
 	}
-
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return false, ErrCacheClosed
-	}
-	c.globalMu.RUnlock()
 
 	entry := c.getFileEntry(payloadID)
 	entry.mu.RLock()
@@ -168,16 +154,9 @@ func (c *Cache) IsRangeCovered(ctx context.Context, payloadID string, chunkIdx u
 //   - covered: true if all 4MB of the block are covered
 //   - error: context errors or ErrCacheClosed
 func (c *Cache) IsBlockFullyCovered(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) (bool, error) {
-	if err := ctx.Err(); err != nil {
+	if err := c.checkClosed(ctx); err != nil {
 		return false, err
 	}
-
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return false, ErrCacheClosed
-	}
-	c.globalMu.RUnlock()
 
 	entry := c.getFileEntry(payloadID)
 	entry.mu.RLock()

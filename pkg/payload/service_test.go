@@ -6,6 +6,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	"github.com/marmos91/dittofs/pkg/payload/transfer"
 )
@@ -16,7 +17,8 @@ func newTestService(t *testing.T) *PayloadService {
 
 	c := cache.New(10 * 1024 * 1024) // 10MB cache
 	blockStore := storemem.New()
-	tm := transfer.New(c, blockStore, transfer.DefaultConfig())
+	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	tm := transfer.New(c, blockStore, metaStore, transfer.DefaultConfig())
 
 	svc, err := New(c, tm)
 	if err != nil {
@@ -28,7 +30,8 @@ func newTestService(t *testing.T) *PayloadService {
 func TestPayloadService_New(t *testing.T) {
 	c := cache.New(10 * 1024 * 1024)
 	blockStore := storemem.New()
-	tm := transfer.New(c, blockStore, transfer.DefaultConfig())
+	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	tm := transfer.New(c, blockStore, metaStore, transfer.DefaultConfig())
 
 	svc, err := New(c, tm)
 	if err != nil {
@@ -42,7 +45,8 @@ func TestPayloadService_New(t *testing.T) {
 func TestPayloadService_New_NilCache(t *testing.T) {
 	blockStore := storemem.New()
 	c := cache.New(10 * 1024 * 1024)
-	tm := transfer.New(c, blockStore, transfer.DefaultConfig())
+	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	tm := transfer.New(c, blockStore, metaStore, transfer.DefaultConfig())
 
 	_, err := New(nil, tm)
 	if err == nil {
@@ -67,13 +71,13 @@ func TestPayloadService_WriteAndRead(t *testing.T) {
 	data := []byte("hello world")
 
 	// Write data
-	if err := svc.WriteAt(ctx, "share", payloadID, data, 0); err != nil {
+	if err := svc.WriteAt(ctx, payloadID, data, 0); err != nil {
 		t.Fatalf("WriteAt() error = %v", err)
 	}
 
 	// Read data back
 	buf := make([]byte, len(data))
-	n, err := svc.ReadAt(ctx, "share", payloadID, buf, 0)
+	n, err := svc.ReadAt(ctx, payloadID, buf, 0)
 	if err != nil {
 		t.Fatalf("ReadAt() error = %v", err)
 	}
@@ -92,7 +96,7 @@ func TestPayloadService_WriteEmpty(t *testing.T) {
 	payloadID := metadata.PayloadID("test-file")
 
 	// Writing empty data should be a no-op
-	if err := svc.WriteAt(ctx, "share", payloadID, []byte{}, 0); err != nil {
+	if err := svc.WriteAt(ctx, payloadID, []byte{}, 0); err != nil {
 		t.Errorf("WriteAt(empty) error = %v", err)
 	}
 }
@@ -104,7 +108,7 @@ func TestPayloadService_ReadEmpty(t *testing.T) {
 	payloadID := metadata.PayloadID("test-file")
 
 	// Reading with empty buffer should be a no-op
-	n, err := svc.ReadAt(ctx, "share", payloadID, []byte{}, 0)
+	n, err := svc.ReadAt(ctx, payloadID, []byte{}, 0)
 	if err != nil {
 		t.Errorf("ReadAt(empty) error = %v", err)
 	}
@@ -120,7 +124,7 @@ func TestPayloadService_GetSize(t *testing.T) {
 	payloadID := metadata.PayloadID("test-file")
 
 	// Initially size should be 0
-	size, err := svc.GetSize(ctx, "share", payloadID)
+	size, err := svc.GetSize(ctx, payloadID)
 	if err != nil {
 		t.Fatalf("GetSize() error = %v", err)
 	}
@@ -130,10 +134,10 @@ func TestPayloadService_GetSize(t *testing.T) {
 
 	// Write some data
 	data := []byte("hello world")
-	_ = svc.WriteAt(ctx, "share", payloadID, data, 0)
+	_ = svc.WriteAt(ctx, payloadID, data, 0)
 
 	// Size should now be data length
-	size, err = svc.GetSize(ctx, "share", payloadID)
+	size, err = svc.GetSize(ctx, payloadID)
 	if err != nil {
 		t.Fatalf("GetSize() error = %v", err)
 	}
@@ -149,7 +153,7 @@ func TestPayloadService_Exists(t *testing.T) {
 	payloadID := metadata.PayloadID("test-file")
 
 	// Initially should not exist (no data written)
-	exists, err := svc.Exists(ctx, "share", payloadID)
+	exists, err := svc.Exists(ctx, payloadID)
 	if err != nil {
 		t.Fatalf("Exists() error = %v", err)
 	}
@@ -158,10 +162,10 @@ func TestPayloadService_Exists(t *testing.T) {
 	}
 
 	// Write some data
-	_ = svc.WriteAt(ctx, "share", payloadID, []byte("data"), 0)
+	_ = svc.WriteAt(ctx, payloadID, []byte("data"), 0)
 
 	// Now should exist
-	exists, err = svc.Exists(ctx, "share", payloadID)
+	exists, err = svc.Exists(ctx, payloadID)
 	if err != nil {
 		t.Fatalf("Exists() error = %v", err)
 	}
@@ -177,10 +181,10 @@ func TestPayloadService_Flush(t *testing.T) {
 	payloadID := metadata.PayloadID("test-file")
 
 	// Write some data
-	_ = svc.WriteAt(ctx, "share", payloadID, []byte("test data"), 0)
+	_ = svc.WriteAt(ctx, payloadID, []byte("test data"), 0)
 
 	// Flush (non-blocking - enqueues for background upload)
-	result, err := svc.Flush(ctx, "share", payloadID)
+	result, err := svc.Flush(ctx, payloadID)
 	if err != nil {
 		t.Fatalf("Flush() error = %v", err)
 	}

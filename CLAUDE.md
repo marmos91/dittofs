@@ -381,6 +381,10 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 **3. Metadata Store** (`pkg/metadata/store/`)
 - Stores file/directory structure, attributes, permissions
 - Handles access control and root directory creation
+- Implements `ObjectStore` interface for content-addressed deduplication:
+  - **Object → Chunk → Block** hierarchy (SHA-256 hashes)
+  - Reference counting for garbage collection
+  - `FindBlockByHash()` enables deduplication at 4MB block level
 - Implementations:
   - `pkg/metadata/store/memory/`: In-memory (fast, ephemeral, full hard link support)
   - `pkg/metadata/store/badger/`: BadgerDB (persistent, embedded, path-based handles)

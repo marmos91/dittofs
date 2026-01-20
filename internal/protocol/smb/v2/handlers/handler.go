@@ -435,7 +435,7 @@ func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
 	payloadSvc := h.Registry.GetBlockService()
 
 	// Use blocking Flush for immediate durability
-	_, flushErr := payloadSvc.Flush(ctx, openFile.ShareName, openFile.PayloadID)
+	_, flushErr := payloadSvc.Flush(ctx, openFile.PayloadID)
 	if flushErr != nil {
 		logger.Warn("flushFileCache: flush failed",
 			"path", openFile.Path,

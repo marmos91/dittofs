@@ -81,7 +81,8 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 	// Create cache, block store, and transfer manager for content operations
 	testCache := cache.New(0) // 0 = unlimited size
 	blockStore := storemem.New()
-	transferMgr := transfer.New(testCache, blockStore, transfer.DefaultConfig())
+	// Use metaStore as ObjectStore - MemoryMetadataStore implements ObjectStore
+	transferMgr := transfer.New(testCache, blockStore, metaStore, transfer.DefaultConfig())
 
 	// Create PayloadService with cache and transfer manager
 	payloadSvc, err := payload.New(testCache, transferMgr)
@@ -268,7 +269,7 @@ func (f *HandlerTestFixture) CreateFile(path string, content []byte) metadata.Fi
 
 	// Write content if provided (using ContentService with Cache)
 	if len(content) > 0 {
-		if err := f.ContentService.WriteAt(ctx, f.ShareName, file.PayloadID, content, 0); err != nil {
+		if err := f.ContentService.WriteAt(ctx, file.PayloadID, content, 0); err != nil {
 			f.t.Fatalf("Failed to write content to file %q: %v", path, err)
 		}
 
@@ -387,14 +388,14 @@ func (f *HandlerTestFixture) ReadContent(path string) []byte {
 	ctx := context.Background()
 
 	// Get content size
-	size, err := f.ContentService.GetSize(ctx, f.ShareName, file.PayloadID)
+	size, err := f.ContentService.GetSize(ctx, file.PayloadID)
 	if err != nil {
 		f.t.Fatalf("Failed to get content size for %q: %v", path, err)
 	}
 
 	// Read content using ContentService (backed by Cache)
 	content := make([]byte, size)
-	n, err := f.ContentService.ReadAt(ctx, f.ShareName, file.PayloadID, content, 0)
+	n, err := f.ContentService.ReadAt(ctx, file.PayloadID, content, 0)
 	if err != nil {
 		f.t.Fatalf("Failed to read content from %q: %v", path, err)
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/marmos91/dittofs/pkg/cache"
+	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/payload/store"
 	blockmemory "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	blocks3 "github.com/marmos91/dittofs/pkg/payload/store/s3"
@@ -309,8 +310,11 @@ func TestFlusher_Integration(t *testing.T) {
 	c := cache.New(0)
 	defer c.Close()
 
+	// Create object store for deduplication
+	objectStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+
 	// Create flusher
-	f := transfer.New(c, blockStore, transfer.Config{
+	f := transfer.New(c, blockStore, objectStore, transfer.Config{
 		ParallelUploads:   4,
 		ParallelDownloads: 4,
 	})
@@ -322,7 +326,7 @@ func TestFlusher_Integration(t *testing.T) {
 		data := []byte("hello world from flusher test")
 
 		// Write data to cache
-		err := c.Write(ctx, payloadID, 0, data, 0)
+		err := c.WriteAt(ctx, payloadID, 0, data, 0)
 		if err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
@@ -361,7 +365,7 @@ func TestFlusher_Integration(t *testing.T) {
 			data[i] = byte(i % 256)
 		}
 
-		err := c.Write(ctx, payloadID, 0, data, 0)
+		err := c.WriteAt(ctx, payloadID, 0, data, 0)
 		if err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
@@ -410,7 +414,7 @@ func TestFlusher_Integration(t *testing.T) {
 
 		// Read from cache
 		readData := make([]byte, len(originalData))
-		found, err := c.Read(ctx, payloadID, 0, 0, uint32(len(originalData)), readData)
+		found, err := c.ReadAt(ctx, payloadID, 0, 0, uint32(len(originalData)), readData)
 		if err != nil {
 			t.Fatalf("Read failed: %v", err)
 		}
@@ -436,8 +440,11 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 	c := cache.New(0)
 	defer c.Close()
 
+	// Create object store for deduplication
+	objectStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+
 	// Create transfer manager
-	f := transfer.New(c, blockStore, transfer.Config{
+	f := transfer.New(c, blockStore, objectStore, transfer.Config{
 		ParallelUploads:   4,
 		ParallelDownloads: 4,
 	})
@@ -449,7 +456,7 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 		data := []byte("test data for memory store")
 
 		// Write to cache
-		err := c.Write(ctx, payloadID, 0, data, 0)
+		err := c.WriteAt(ctx, payloadID, 0, data, 0)
 		if err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
@@ -479,7 +486,7 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 
 		// Read from cache
 		readData := make([]byte, len(data))
-		found, err := c.Read(ctx, payloadID, 0, 0, uint32(len(data)), readData)
+		found, err := c.ReadAt(ctx, payloadID, 0, 0, uint32(len(data)), readData)
 		if err != nil {
 			t.Fatalf("Read failed: %v", err)
 		}

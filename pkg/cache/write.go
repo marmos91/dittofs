@@ -11,7 +11,18 @@ import (
 // Write Operations
 // ============================================================================
 
-// Write writes data to the cache at the specified chunk and offset.
+// writeOptions controls the behavior of writeAtInternal.
+type writeOptions struct {
+	// isDownloaded indicates data is from block store (already persisted).
+	// When true:
+	//   - Skip pending size backpressure check
+	//   - New blocks start as Uploaded (evictable)
+	//   - Skip WAL write (data already safe in block store)
+	//   - Preserve existing block state (don't re-dirty)
+	isDownloaded bool
+}
+
+// WriteAt writes data to the cache at the specified chunk and offset.
 //
 // This is the primary write path for all file data. Data is written directly
 // into 4MB block buffers at the correct position. The coverage bitmap tracks
@@ -36,164 +47,13 @@ import (
 //   - ErrCacheClosed: cache has been closed
 //   - ErrCacheFull: cache is full of pending data that cannot be evicted
 //   - context.Canceled/DeadlineExceeded: context was cancelled
-func (c *Cache) Write(ctx context.Context, payloadID string, chunkIdx uint32, data []byte, offset uint32) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return ErrCacheClosed
-	}
-	c.globalMu.RUnlock()
-
-	// Fast path: nothing to write
-	if len(data) == 0 {
-		return nil
-	}
-
-	// Validate parameters
-	if offset+uint32(len(data)) > ChunkSize {
-		return ErrInvalidOffset
-	}
-
-	// Calculate which blocks this write spans
-	startBlock := block.IndexForOffset(offset)
-	endBlock := block.IndexForOffset(offset + uint32(len(data)) - 1)
-
-	entry := c.getFileEntry(payloadID)
-	entry.mu.Lock()
-
-	// Calculate how many NEW blocks will be created (for memory tracking).
-	// We track actual memory allocation (BlockSize per block), not data written.
-	var newBlockCount uint64
-	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
-		if !c.blockExists(entry, chunkIdx, blockIdx) {
-			newBlockCount++
-		}
-	}
-	newMemory := newBlockCount * BlockSize
-
-	// Enforce maxSize by evicting LRU uploaded blocks if needed.
-	// If eviction can't free enough space (all data is pending), return ErrCacheFull
-	// to provide backpressure and prevent OOM conditions.
-	if c.maxSize > 0 && newMemory > 0 {
-		if c.totalSize.Load()+newMemory > c.maxSize {
-			// Release lock to evict (eviction needs to lock other entries)
-			entry.mu.Unlock()
-			c.evictLRUUntilFits(ctx, newMemory)
-			entry.mu.Lock()
-
-			// Re-check after eviction (someone else might have created the blocks)
-			newBlockCount = 0
-			for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
-				if !c.blockExists(entry, chunkIdx, blockIdx) {
-					newBlockCount++
-				}
-			}
-			newMemory = newBlockCount * BlockSize
-
-			// Check if we have enough space after eviction.
-			// If not, cache is full of pending data that can't be evicted.
-			if c.totalSize.Load()+newMemory > c.maxSize {
-				entry.mu.Unlock()
-				return ErrCacheFull
-			}
-		}
-	}
-
-	// Backpressure on pending data (applies even when maxSize=0).
-	// This prevents OOM when uploads can't keep up with writes.
-	maxPending := c.maxPendingSize
-	if maxPending == 0 {
-		maxPending = DefaultMaxPendingSize
-	}
-	if newMemory > 0 && c.pendingSize.Load()+newMemory > maxPending {
-		entry.mu.Unlock()
-		return ErrCacheFull
-	}
-
-	defer entry.mu.Unlock()
-
-	// Update LRU access time
-	c.touchFile(entry)
-
-	// Write data to each block buffer it spans
-	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
-		// Get or create block buffer
-		blk, isNew := c.getOrCreateBlock(entry, chunkIdx, blockIdx)
-
-		// Cannot write to a block that is currently being uploaded.
-		// This provides backpressure to prevent data corruption - the caller should
-		// wait for the upload to complete (via NFS COMMIT semantics) before retrying.
-		// Check BEFORE writing to prevent partial writes that corrupt upload data.
-		if !isNew && blk.state == BlockStateUploading {
-			return ErrCacheFull // defer handles unlock
-		}
-
-		// Track memory for new block buffers
-		if isNew {
-			c.totalSize.Add(BlockSize)
-			c.pendingSize.Add(BlockSize) // New blocks start as pending
-		}
-
-		// Calculate offsets within this block
-		blockStart := blockIdx * BlockSize
-		blockEnd := blockStart + BlockSize
-
-		// Calculate overlap with write range
-		writeStart := max(offset, blockStart)
-		writeEnd := min(offset+uint32(len(data)), blockEnd)
-
-		// Calculate positions
-		offsetInBlock := writeStart - blockStart
-		dataStart := writeStart - offset
-		dataEnd := writeEnd - offset
-		writeLen := dataEnd - dataStart
-
-		// Copy data directly to block buffer
-		copy(blk.data[offsetInBlock:], data[dataStart:dataEnd])
-
-		// Update coverage bitmap
-		markCoverage(blk.coverage, offsetInBlock, writeLen)
-
-		// Update block data size
-		if end := offsetInBlock + writeLen; end > blk.dataSize {
-			blk.dataSize = end
-		}
-
-		// Mark block as dirty if it was uploaded (re-dirty)
-		if blk.state == BlockStateUploaded {
-			blk.state = BlockStatePending
-			c.pendingSize.Add(BlockSize) // Re-dirtied block becomes pending again
-		}
-
-		// Persist to WAL if enabled
-		if c.persister != nil {
-			walEntry := &wal.BlockWriteEntry{
-				PayloadID:     payloadID,
-				ChunkIdx:      chunkIdx,
-				BlockIdx:      blockIdx,
-				OffsetInBlock: offsetInBlock,
-				Data:          data[dataStart:dataEnd],
-			}
-			// Release lock during WAL write to avoid deadlock
-			entry.mu.Unlock()
-			err := c.persister.AppendBlockWrite(walEntry)
-			entry.mu.Lock()
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
+func (c *Cache) WriteAt(ctx context.Context, payloadID string, chunkIdx uint32, data []byte, offset uint32) error {
+	return c.writeAtInternal(ctx, payloadID, chunkIdx, data, offset, writeOptions{isDownloaded: false})
 }
 
 // WriteDownloaded writes data that was downloaded from the block store.
 //
-// Unlike Write(), this method:
+// Unlike WriteAt(), this method:
 //   - Marks blocks as Uploaded (evictable), not Pending
 //   - Does NOT count against pendingSize (it's not dirty data)
 //   - Does NOT write to WAL (data is already safe in block store)
@@ -215,16 +75,14 @@ func (c *Cache) Write(ctx context.Context, payloadID string, chunkIdx uint32, da
 //   - ErrCacheFull: cache is completely full even after eviction
 //   - context.Canceled/DeadlineExceeded: context was cancelled
 func (c *Cache) WriteDownloaded(ctx context.Context, payloadID string, chunkIdx uint32, data []byte, offset uint32) error {
-	if err := ctx.Err(); err != nil {
+	return c.writeAtInternal(ctx, payloadID, chunkIdx, data, offset, writeOptions{isDownloaded: true})
+}
+
+// writeAtInternal is the shared implementation for WriteAt and WriteDownloaded.
+func (c *Cache) writeAtInternal(ctx context.Context, payloadID string, chunkIdx uint32, data []byte, offset uint32, opts writeOptions) error {
+	if err := c.checkClosed(ctx); err != nil {
 		return err
 	}
-
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return ErrCacheClosed
-	}
-	c.globalMu.RUnlock()
 
 	// Fast path: nothing to write
 	if len(data) == 0 {
@@ -244,16 +102,9 @@ func (c *Cache) WriteDownloaded(ctx context.Context, payloadID string, chunkIdx 
 	entry.mu.Lock()
 
 	// Calculate how many NEW blocks will be created (for memory tracking).
-	var newBlockCount uint64
-	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
-		if !c.blockExists(entry, chunkIdx, blockIdx) {
-			newBlockCount++
-		}
-	}
-	newMemory := newBlockCount * BlockSize
+	newMemory := c.countNewBlockMemory(entry, chunkIdx, startBlock, endBlock)
 
 	// Enforce maxSize by evicting LRU uploaded blocks if needed.
-	// Downloaded blocks ARE evictable, so we can evict them to make room for more downloads.
 	if c.maxSize > 0 && newMemory > 0 {
 		if c.totalSize.Load()+newMemory > c.maxSize {
 			// Release lock to evict (eviction needs to lock other entries)
@@ -261,16 +112,10 @@ func (c *Cache) WriteDownloaded(ctx context.Context, payloadID string, chunkIdx 
 			c.evictLRUUntilFits(ctx, newMemory)
 			entry.mu.Lock()
 
-			// Re-check after eviction
-			newBlockCount = 0
-			for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
-				if !c.blockExists(entry, chunkIdx, blockIdx) {
-					newBlockCount++
-				}
-			}
-			newMemory = newBlockCount * BlockSize
+			// Re-check after eviction (someone else might have created the blocks)
+			newMemory = c.countNewBlockMemory(entry, chunkIdx, startBlock, endBlock)
 
-			// If still no room, return error (all data is pending/uploading)
+			// Check if we have enough space after eviction.
 			if c.totalSize.Load()+newMemory > c.maxSize {
 				entry.mu.Unlock()
 				return ErrCacheFull
@@ -278,8 +123,19 @@ func (c *Cache) WriteDownloaded(ctx context.Context, payloadID string, chunkIdx 
 		}
 	}
 
-	// NOTE: Downloaded data does NOT check pendingSize backpressure.
-	// It's already in S3, so it's clean/evictable data.
+	// Backpressure on pending data (applies even when maxSize=0).
+	// This prevents OOM when uploads can't keep up with writes.
+	// Skip for downloaded data - it's already in block store, not pending.
+	if !opts.isDownloaded {
+		maxPending := c.maxPendingSize
+		if maxPending == 0 {
+			maxPending = DefaultMaxPendingSize
+		}
+		if newMemory > 0 && c.pendingSize.Load()+newMemory > maxPending {
+			entry.mu.Unlock()
+			return ErrCacheFull
+		}
+	}
 
 	defer entry.mu.Unlock()
 
@@ -288,48 +144,108 @@ func (c *Cache) WriteDownloaded(ctx context.Context, payloadID string, chunkIdx 
 
 	// Write data to each block buffer it spans
 	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
-		// Get or create block buffer
-		blk, isNew := c.getOrCreateBlock(entry, chunkIdx, blockIdx)
+		if err := c.writeToBlock(ctx, entry, payloadID, chunkIdx, blockIdx, data, offset, opts); err != nil {
+			return err
+		}
+	}
 
-		// Track memory for new block buffers
-		if isNew {
-			c.totalSize.Add(BlockSize)
-			// Downloaded blocks start as Uploaded (evictable), NOT Pending
+	return nil
+}
+
+// countNewBlockMemory calculates memory needed for new blocks in the given range.
+func (c *Cache) countNewBlockMemory(entry *fileEntry, chunkIdx, startBlock, endBlock uint32) uint64 {
+	var newBlockCount uint64
+	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
+		if !c.blockExists(entry, chunkIdx, blockIdx) {
+			newBlockCount++
+		}
+	}
+	return newBlockCount * BlockSize
+}
+
+// writeToBlock writes data to a single block buffer.
+// Caller must hold entry.mu.Lock().
+func (c *Cache) writeToBlock(ctx context.Context, entry *fileEntry, payloadID string, chunkIdx, blockIdx uint32, data []byte, offset uint32, opts writeOptions) error {
+	// Get or create block buffer
+	blk, isNew := c.getOrCreateBlock(entry, chunkIdx, blockIdx)
+
+	// For normal writes (not downloaded), handle state transitions
+	if !opts.isDownloaded {
+		// Cannot write to a block that is currently being uploaded.
+		if !isNew && blk.state == BlockStateUploading {
+			return ErrCacheFull
+		}
+
+		// Handle write to ReadyForUpload block - cancel pending upload and revert to Pending.
+		if !isNew && blk.state == BlockStateReadyForUpload {
+			if blk.uploadCancel != nil {
+				blk.uploadCancel()
+				blk.uploadCancel = nil
+			}
+			blk.state = BlockStatePending
+			blk.hash = [32]byte{} // Invalidate hash - will be recomputed on completion
+		}
+	}
+
+	// Track memory and set initial state for new block buffers
+	if isNew {
+		c.totalSize.Add(BlockSize)
+		if opts.isDownloaded {
+			// Downloaded blocks start as Uploaded (evictable)
 			blk.state = BlockStateUploaded
-			// Do NOT add to pendingSize - this is clean data
+		} else {
+			// Normal writes start as Pending
+			c.pendingSize.Add(BlockSize)
 		}
+	}
 
-		// Calculate offsets within this block
-		blockStart := blockIdx * BlockSize
-		blockEnd := blockStart + BlockSize
+	// Calculate offsets within this block
+	blockStart := blockIdx * BlockSize
+	blockEnd := blockStart + BlockSize
 
-		// Calculate overlap with write range
-		writeStart := max(offset, blockStart)
-		writeEnd := min(offset+uint32(len(data)), blockEnd)
+	// Calculate overlap with write range
+	writeStart := max(offset, blockStart)
+	writeEnd := min(offset+uint32(len(data)), blockEnd)
 
-		// Calculate positions
-		offsetInBlock := writeStart - blockStart
-		dataStart := writeStart - offset
-		dataEnd := writeEnd - offset
-		writeLen := dataEnd - dataStart
+	// Calculate positions
+	offsetInBlock := writeStart - blockStart
+	dataStart := writeStart - offset
+	dataEnd := writeEnd - offset
+	writeLen := dataEnd - dataStart
 
-		// Copy data directly to block buffer
-		copy(blk.data[offsetInBlock:], data[dataStart:dataEnd])
+	// Copy data directly to block buffer
+	copy(blk.data[offsetInBlock:], data[dataStart:dataEnd])
 
-		// Update coverage bitmap
-		markCoverage(blk.coverage, offsetInBlock, writeLen)
+	// Update coverage bitmap
+	markCoverage(blk.coverage, offsetInBlock, writeLen)
 
-		// Update block data size
-		if end := offsetInBlock + writeLen; end > blk.dataSize {
-			blk.dataSize = end
+	// Update block data size
+	if end := offsetInBlock + writeLen; end > blk.dataSize {
+		blk.dataSize = end
+	}
+
+	// For normal writes, mark block as dirty if it was uploaded (re-dirty)
+	if !opts.isDownloaded && blk.state == BlockStateUploaded {
+		blk.state = BlockStatePending
+		c.pendingSize.Add(BlockSize) // Re-dirtied block becomes pending again
+	}
+
+	// Persist to WAL if enabled (only for normal writes)
+	if !opts.isDownloaded && c.persister != nil {
+		walEntry := &wal.BlockWriteEntry{
+			PayloadID:     payloadID,
+			ChunkIdx:      chunkIdx,
+			BlockIdx:      blockIdx,
+			OffsetInBlock: offsetInBlock,
+			Data:          data[dataStart:dataEnd],
 		}
-
-		// If block was Pending (dirty), keep it pending - local writes take precedence
-		// If block was Uploading, keep it uploading
-		// Only new blocks (handled above) or existing Uploaded blocks stay Uploaded
-		// This ensures local modifications aren't lost
-
-		// NOTE: No WAL write for downloaded data - it's already safe in block store
+		// Release lock during WAL write to avoid deadlock
+		entry.mu.Unlock()
+		err := c.persister.AppendBlockWrite(walEntry)
+		entry.mu.Lock()
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil

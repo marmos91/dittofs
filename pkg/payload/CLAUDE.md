@@ -1,70 +1,77 @@
-# pkg/blocks
+# pkg/payload
 
-Block service layer - handles raw file bytes using the Cache layer.
+Payload service layer - handles raw file bytes using the Cache layer.
 
 ## Overview
 
-The blocks package provides the main entry point for file content operations.
+The payload package provides the main entry point for file content operations.
 It coordinates between the Cache (fast in-memory storage) and TransferManager
-(optional background persistence to block store).
+(background persistence to block store with content-addressed deduplication).
 
 ## Architecture
 
 ```
-BlockService (service.go) - coordinates with cache + transfer manager
+PayloadService (service.go) - coordinates with cache + transfer manager
          ↓
      ┌───┴───────────┐
      ↓               ↓
-cache.Cache    transfer.TransferManager (optional)
+cache.Cache    transfer.TransferManager
      ↓                    ↓
-(in-memory)        block.Store (S3/memory/fs)
+(in-memory)        ┌─────┴─────┐
+                   ↓           ↓
+             block.Store   ObjectStore
+             (S3/memory)   (dedup metadata)
 ```
 
 ## Key Design
 
 ### Cache + TransferManager Model
 - **Cache**: Fast in-memory storage for all reads/writes
-- **TransferManager** (optional): Handles cache-to-block-store persistence
-- Without TransferManager: cache-only mode (volatile data)
-- With TransferManager: persistent storage with background upload
+- **TransferManager**: Handles cache-to-block-store persistence with deduplication
+- Content-addressed deduplication at 4MB block level via ObjectStore
 
 ### Single Global Cache
 - One cache serves ALL shares
-- ContentID (file handle) uniqueness ensures data isolation
+- PayloadID uniqueness ensures data isolation
 - Registered once in `registry.NewRegistry()`
 
-### Non-blocking COMMIT (when TransferManager configured)
+### Non-blocking COMMIT
 - NFS COMMIT enqueues background upload and returns immediately
 - Data is safe in mmap cache (crash-safe via OS page cache)
 - Block store uploads happen asynchronously
 - Achieves 275+ MB/s write throughput
 
-## BlockService Methods
+### Content-Addressed Deduplication
+- Blocks are hashed with SHA-256 before upload
+- ObjectStore tracks block hashes and reference counts
+- Duplicate blocks are detected and skipped (RefCount incremented)
+- Storage savings achieved when multiple files share identical blocks
 
-### Configuration
+## PayloadService Methods
+
+### Constructor
 ```go
-SetCache(cache *cache.Cache) error           // Required: set global cache
-SetTransferManager(tm *transfer.TransferManager)  // Optional: enable block store persistence
+New(cache *cache.Cache, tm *transfer.TransferManager) (*PayloadService, error)
 ```
 
 ### Read Operations
 ```go
-ReadAt(ctx, shareName, contentID, buf, offset) (int, error)
-GetContentSize(ctx, shareName, contentID) (uint64, error)
-ContentExists(ctx, shareName, contentID) (bool, error)
+ReadAt(ctx, payloadID, buf, offset) (int, error)
+ReadAtWithCOWSource(ctx, payloadID, cowSource, buf, offset) (int, error)
+GetSize(ctx, payloadID) (uint64, error)
+Exists(ctx, payloadID) (bool, error)
 ```
 
 ### Write Operations
 ```go
-WriteAt(ctx, shareName, contentID, data, offset) error  // Writes to cache only
-Truncate(ctx, shareName, contentID, newSize) error
-Delete(ctx, shareName, contentID) error
+WriteAt(ctx, payloadID, data, offset) error  // Writes to cache only
+Truncate(ctx, payloadID, newSize) error
+Delete(ctx, payloadID) error
 ```
 
 ### Flush Operations
 ```go
-Flush(ctx, shareName, contentID) (*FlushResult, error)           // NFS COMMIT - non-blocking
-FlushAndFinalize(ctx, shareName, contentID) (*FlushResult, error) // SMB CLOSE - blocking
+Flush(ctx, payloadID) (*FlushResult, error)  // NFS COMMIT - non-blocking
 ```
 
 ## Critical Conventions
@@ -96,7 +103,7 @@ startChunk, endChunk := cache.ChunkRange(offset, uint64(len(buf)))
 
 // Read from each chunk
 for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
-    found, err := cache.Read(ctx, fileHandle, chunkIdx, offsetInChunk, length, dest)
+    found, err := cache.ReadAt(ctx, fileHandle, chunkIdx, offsetInChunk, length, dest)
     // Handle not-found as zeros (sparse file behavior)
 }
 ```
@@ -108,19 +115,17 @@ startChunk, endChunk := cache.ChunkRange(offset, uint64(len(data)))
 
 // Write to each chunk
 for chunkIdx := startChunk; chunkIdx <= endChunk; chunkIdx++ {
-    err := cache.Write(ctx, fileHandle, chunkIdx, data[dataStart:dataEnd], offsetInChunk)
+    err := cache.WriteAt(ctx, fileHandle, chunkIdx, data[dataStart:dataEnd], offsetInChunk)
 }
 ```
 
 ## Migration from pkg/content
 
-| Old (pkg/content) | New (pkg/blocks) |
-|-------------------|------------------|
-| `ContentService` | `BlockService` |
-| `content.New()` | `blocks.New()` |
-| `SetFlusher(f)` | `SetTransferManager(tm)` |
-| `GetFlusher()` | `GetTransferManager()` |
-| `ErrNoCacheConfigured` | `ErrNoCacheConfigured` |
+| Old (pkg/content) | New (pkg/payload) |
+|-------------------|-------------------|
+| `ContentService` | `PayloadService` |
+| `content.New()` | `payload.New()` |
+| `SetFlusher(f)` | Constructor injection |
 | `FlushResult` | `FlushResult` |
 | `StorageStats` | `StorageStats` |
 

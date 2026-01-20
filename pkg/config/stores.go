@@ -189,11 +189,12 @@ func createFSBlockStore(_ context.Context, cfg *PayloadFSConfig) (store.BlockSto
 }
 
 // CreateTransferManager creates a transfer manager instance from configuration.
-func CreateTransferManager(c *cache.Cache, blockStore store.BlockStore, cfg TransferConfig) *transfer.TransferManager {
+// objectStore is required for content-addressed deduplication.
+func CreateTransferManager(c *cache.Cache, blockStore store.BlockStore, objectStore metadata.ObjectStore, cfg TransferConfig) *transfer.TransferManager {
 	tmCfg := transfer.Config{
 		ParallelUploads:   cfg.Workers.Uploads,
 		ParallelDownloads: cfg.Workers.Downloads,
 	}
 
-	return transfer.New(c, blockStore, tmCfg)
+	return transfer.New(c, blockStore, objectStore, tmCfg)
 }

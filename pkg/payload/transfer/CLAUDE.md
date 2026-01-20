@@ -1,14 +1,16 @@
 # pkg/transfer
 
-Cache-to-block-store transfer layer - handles uploads, downloads, and prefetch with priority scheduling.
+Cache-to-block-store transfer layer - handles uploads, downloads, prefetch, and content-addressed deduplication.
 
 ## Overview
 
 The transfer package manages data movement between the cache and block store:
 - **Eager upload**: Upload 4MB blocks as soon as they're ready (don't wait for COMMIT)
+- **Content-addressed deduplication**: Skip uploads for blocks that already exist (by SHA-256 hash)
 - **Download with prefetch**: Fetch blocks from block store on cache miss, prefetch upcoming blocks
 - **Priority scheduling**: Downloads > Uploads > Prefetch
-- **Non-blocking flush**: FlushAsync/Flush return immediately - data is safe in WAL mmap cache
+- **Non-blocking flush**: Flush returns immediately - data is safe in WAL mmap cache
+- **Small file optimization**: Files below threshold are flushed synchronously to free buffers
 - **In-flight deduplication**: Avoid duplicate downloads for the same block
 
 ## Architecture
@@ -165,15 +167,68 @@ The `payloadID` is the sole identifier for file content:
 
 ```go
 type Config struct {
-    ParallelUploads   int  // Default: 4
-    ParallelDownloads int  // Default: 4
-    PrefetchBlocks    int  // Default: 4 (16MB ahead)
+    ParallelUploads    int    // Default: 16 (concurrent block uploads)
+    MaxParallelUploads int    // Default: 0 (unlimited, auto-tuned by congestion control)
+    ParallelDownloads  int    // Default: 4 (concurrent downloads per file)
+    PrefetchBlocks     int    // Default: 4 (16MB prefetch ahead)
+    SmallFileThreshold int64  // Default: 0 (disabled). Files smaller than this
+                              // are flushed synchronously to free buffers immediately
 }
 
 type TransferQueueConfig struct {
     QueueSize int  // Default: 1000 (per channel)
     Workers   int  // Default: 4
 }
+```
+
+### Small File Optimization
+When `SmallFileThreshold > 0`, files smaller than the threshold are flushed synchronously
+during `Flush()`. This prevents pendingSize buildup when creating many small files by
+immediately freeing the 4MB block buffer after upload completes.
+
+### Content-Addressed Deduplication
+TransferManager requires an `ObjectStore` for content-addressed deduplication:
+- On block completion, SHA-256 hash is computed
+- `ObjectStore.FindBlockByHash()` checks if block already exists
+- If exists and uploaded: increment RefCount, skip upload
+- If new: register block in ObjectStore, proceed with upload
+
+```go
+// Constructor requires ObjectStore
+New(cache *cache.Cache, blockStore store.BlockStore, objectStore metadata.ObjectStore, config Config)
+```
+
+### Upload Parallelism
+
+The transfer manager uses parallel uploads to maximize throughput:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `ParallelUploads` | 16 | Initial concurrent block uploads |
+| `MaxParallelUploads` | 0 (unlimited) | Maximum concurrent uploads (caps adaptive scaling) |
+| `ParallelDownloads` | 4 | Concurrent downloads per file |
+| `PrefetchBlocks` | 4 | Blocks to prefetch ahead (16MB) |
+
+**Throughput estimates** (4MB blocks):
+- 16 parallel uploads × ~4 MB/s per S3 connection ≈ 64 MB/s sustained upload
+- Actual throughput depends on network bandwidth and S3 region latency
+
+**Tuning for different scenarios**:
+```yaml
+# High-bandwidth network (e.g., AWS same-region)
+transfer:
+  parallel_uploads: 32
+  max_parallel_uploads: 64
+
+# Limited bandwidth or cost-sensitive
+transfer:
+  parallel_uploads: 4
+  max_parallel_uploads: 8
+
+# Large file workloads (maximize throughput)
+transfer:
+  parallel_uploads: 16
+  prefetch_blocks: 8  # 32MB prefetch ahead
 ```
 
 ## Methods

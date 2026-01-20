@@ -360,7 +360,7 @@ func (h *Handler) Read(
 	// All reads go through ContentService.ReadAt which reads from Cache.
 	// Cache handles slice merging (newest-wins semantics).
 
-	readResult, readErr := readFromContentService(ctx, payloadSvc, file.PayloadID, req.Offset, actualLength, clientIP, req.Handle)
+	readResult, readErr := readFromPayloadService(ctx, payloadSvc, file.PayloadID, file.COWSourcePayloadID, req.Offset, actualLength, clientIP, req.Handle)
 	if readErr != nil {
 		// Check if cancellation error
 		if readErr == context.Canceled || readErr == context.DeadlineExceeded {

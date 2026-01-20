@@ -6,19 +6,16 @@ import "github.com/marmos91/dittofs/pkg/payload/transfer"
 // Type Notes
 // ============================================================================
 //
-// Slice-related types are organized as follows:
+// Block-related types are organized as follows:
 //
 // Type locations:
-// - wal.SliceState      - slice lifecycle states (canonical definition)
-// - wal.BlockRef        - block reference type (canonical definition)
-// - wal.SliceEntry      - WAL persistence format (includes FileHandle, ChunkIdx)
-// - cache.SliceState    - type alias for wal.SliceState
-// - cache.BlockRef      - type alias for wal.BlockRef
-// - cache.Slice         - in-memory slice representation (uses wal types)
+// - cache.BlockState    - block lifecycle states (Pending → Uploading → Uploaded)
+// - cache.PendingBlock  - block ready for upload (includes ChunkIndex, BlockIndex, Data)
+// - cache.Stats         - cache statistics (TotalSize, DirtyBytes, UploadedBytes)
+// - transfer.FlushResult - result of flush operation
 //
-// This type unification eliminates conversion overhead between cache and WAL
-// operations. The wal package owns the canonical type definitions because it
-// handles persistence and must maintain format stability.
+// The cache package owns the canonical type definitions for in-memory state,
+// while the transfer package handles block store persistence.
 
 // ============================================================================
 // Supporting Types

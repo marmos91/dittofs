@@ -55,7 +55,7 @@ func TestCollectGarbage_Filesystem(t *testing.T) {
 	// Set up reconciler with only valid file
 	reconciler := newGCTestReconciler()
 	store := reconciler.addShare("/export")
-	store.addFile(validPayloadID)
+	createFileWithPayloadID(ctx, t, store, "/export", validPayloadID)
 
 	// Run GC
 	stats := CollectGarbage(ctx, blockStore, reconciler, nil)
@@ -105,7 +105,7 @@ func TestCollectGarbage_Filesystem_LargeScale(t *testing.T) {
 		require.NoError(t, blockStore.WriteBlock(ctx, payloadID+"/chunk-0/block-0", data))
 
 		if i%2 == 0 {
-			store.addFile(payloadID) // 50 valid files
+			createFileWithPayloadID(ctx, t, store, "/export", payloadID) // 50 valid files
 		}
 	}
 
@@ -169,7 +169,7 @@ func TestCollectGarbage_S3(t *testing.T) {
 	// Set up reconciler with only valid file
 	reconciler := newGCTestReconciler()
 	store := reconciler.addShare("/export")
-	store.addFile(validPayloadID)
+	createFileWithPayloadID(ctx, t, store, "/export", validPayloadID)
 
 	// Run GC
 	stats := CollectGarbage(ctx, blockStore, reconciler, nil)
@@ -218,7 +218,7 @@ func BenchmarkCollectGarbage_Filesystem(b *testing.B) {
 		blockStore.WriteBlock(ctx, payloadID+"/chunk-0/block-0", data)
 
 		if i%2 == 0 {
-			store.addFile(payloadID)
+			createFileWithPayloadID(ctx, b, store, "/export", payloadID)
 		}
 	}
 

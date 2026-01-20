@@ -43,10 +43,10 @@ func (c *Cache) Remove(ctx context.Context, payloadID string) error {
 	delete(c.files, payloadID)
 
 	if size > 0 {
-		c.totalSize.Add(^(size - 1)) // Subtract
+		atomicSubtract(&c.totalSize, size)
 	}
 	if pendingSize > 0 {
-		c.pendingSize.Add(^(pendingSize - 1)) // Subtract
+		atomicSubtract(&c.pendingSize, pendingSize)
 	}
 
 	// Persist removal to WAL if enabled
@@ -74,16 +74,9 @@ func (c *Cache) Remove(ctx context.Context, payloadID string) error {
 //   - ErrCacheClosed: cache has been closed
 //   - context.Canceled/DeadlineExceeded: context was cancelled
 func (c *Cache) Truncate(ctx context.Context, payloadID string, newSize uint64) error {
-	if err := ctx.Err(); err != nil {
+	if err := c.checkClosed(ctx); err != nil {
 		return err
 	}
-
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
-		return ErrCacheClosed
-	}
-	c.globalMu.RUnlock()
 
 	entry := c.getFileEntry(payloadID)
 	entry.mu.Lock()
@@ -105,7 +98,7 @@ func (c *Cache) Truncate(ctx context.Context, payloadID string, newSize uint64) 
 		if chunkIdx > newEndChunk {
 			// Remove entire chunk beyond truncation point
 			if size := chunkMemorySize(chk); size > 0 {
-				c.totalSize.Add(^(size - 1)) // Subtract
+				atomicSubtract(&c.totalSize, size)
 			}
 			delete(entry.chunks, chunkIdx)
 		} else if chunkIdx == newEndChunk {
@@ -115,7 +108,7 @@ func (c *Cache) Truncate(ctx context.Context, payloadID string, newSize uint64) 
 				if blockStart >= newOffsetInEndChunk {
 					// Remove entire block beyond truncation point
 					if blk.data != nil {
-						c.totalSize.Add(^uint64(BlockSize - 1)) // Subtract BlockSize
+						atomicSubtract(&c.totalSize, BlockSize)
 					}
 					delete(chk.blocks, blockIdx)
 				} else {
@@ -160,14 +153,11 @@ func clearCoverageBeyond(coverage []uint64, offset uint32) {
 // eviction of files with dirty data. A file with dirty data should not
 // be removed until its blocks are flushed to the block store.
 //
-// Thread-safe. Returns false if cache is closed or file doesn't exist.
-func (c *Cache) HasDirtyData(payloadID string) bool {
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
+// Thread-safe. Returns false if cache is closed, context is cancelled, or file doesn't exist.
+func (c *Cache) HasDirtyData(ctx context.Context, payloadID string) bool {
+	if c.checkClosed(ctx) != nil {
 		return false
 	}
-	c.globalMu.RUnlock()
 
 	entry := c.getFileEntry(payloadID)
 	entry.mu.RLock()
@@ -189,14 +179,11 @@ func (c *Cache) HasDirtyData(payloadID string) bool {
 // This represents the size of the file as known to the cache. Note that
 // this may differ from the actual file size if not all data is cached.
 //
-// Returns 0 if the file doesn't exist in cache or cache is closed.
-func (c *Cache) GetFileSize(payloadID string) uint64 {
-	c.globalMu.RLock()
-	if c.closed {
-		c.globalMu.RUnlock()
+// Returns 0 if the file doesn't exist in cache, cache is closed, or context is cancelled.
+func (c *Cache) GetFileSize(ctx context.Context, payloadID string) uint64 {
+	if c.checkClosed(ctx) != nil {
 		return 0
 	}
-	c.globalMu.RUnlock()
 
 	entry := c.getFileEntry(payloadID)
 	entry.mu.RLock()
@@ -290,13 +277,13 @@ func (c *Cache) ListFiles() []string {
 // covered by any block. This is used during crash recovery to reconcile
 // metadata with actual recovered data.
 //
-// Returns nil if cache is closed.
+// Returns empty map if cache is closed.
 func (c *Cache) ListFilesWithSizes() map[string]uint64 {
 	c.globalMu.RLock()
 	defer c.globalMu.RUnlock()
 
 	if c.closed {
-		return nil
+		return map[string]uint64{}
 	}
 
 	result := make(map[string]uint64, len(c.files))
