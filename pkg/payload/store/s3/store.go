@@ -4,10 +4,14 @@ package s3
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -79,6 +83,56 @@ func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
 			credentials.NewStaticCredentialsProvider(config.AccessKey, config.SecretKey, ""),
 		))
 	}
+
+	// Configure HTTP client optimized for high-throughput parallel uploads.
+	//
+	// Key optimizations:
+	// 1. Force HTTP/1.1 - HTTP/2 can be slower for parallel large uploads due to
+	//    stream multiplexing and flow control overhead. HTTP/1.1 with multiple
+	//    connections provides better throughput for our use case.
+	// 2. High connection limits - Allow many parallel connections to S3.
+	// 3. Larger write buffers - Reduce syscall overhead for large uploads.
+	// 4. Disable ExpectContinue - Skip the 100-Continue round trip for faster uploads.
+	// 5. Keep-alive settings - Reuse connections efficiently.
+	httpTransport := &http.Transport{
+		// Connection pooling
+		MaxIdleConns:        200,
+		MaxIdleConnsPerHost: 200,
+		MaxConnsPerHost:     200,
+		IdleConnTimeout:     90 * time.Second,
+
+		// Disable HTTP/2 - use HTTP/1.1 for better parallel upload performance
+		ForceAttemptHTTP2: false,
+		TLSNextProto:      make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+
+		// TCP optimizations
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+
+		// TLS settings
+		TLSHandshakeTimeout: 10 * time.Second,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
+
+		// Buffer sizes for better throughput
+		WriteBufferSize: 256 * 1024, // 256KB write buffer
+		ReadBufferSize:  256 * 1024, // 256KB read buffer
+
+		// Disable Expect: 100-continue for faster uploads
+		ExpectContinueTimeout: 0,
+
+		// Response header timeout
+		ResponseHeaderTimeout: 60 * time.Second,
+	}
+
+	httpClient := &http.Client{
+		Transport: httpTransport,
+		Timeout:   0, // No timeout - let context handle it
+	}
+	opts = append(opts, awsconfig.WithHTTPClient(httpClient))
 
 	// Load AWS configuration
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
@@ -195,6 +249,37 @@ func (s *Store) ReadBlockRange(ctx context.Context, blockKey string, offset, len
 	}
 
 	return data, nil
+}
+
+// CopyBlock copies a block from source to destination key using S3 server-side copy.
+// Data stays within S3, no network transfer to/from the client.
+func (s *Store) CopyBlock(ctx context.Context, srcKey, dstKey string) error {
+	s.mu.RLock()
+	if s.closed {
+		s.mu.RUnlock()
+		return store.ErrStoreClosed
+	}
+	s.mu.RUnlock()
+
+	fullSrcKey := s.fullKey(srcKey)
+	fullDstKey := s.fullKey(dstKey)
+
+	// S3 CopyObject requires the source in "bucket/key" format
+	copySource := s.bucket + "/" + fullSrcKey
+
+	_, err := s.client.CopyObject(ctx, &s3.CopyObjectInput{
+		Bucket:     aws.String(s.bucket),
+		CopySource: aws.String(copySource),
+		Key:        aws.String(fullDstKey),
+	})
+	if err != nil {
+		if isNotFoundError(err) {
+			return store.ErrBlockNotFound
+		}
+		return fmt.Errorf("s3 copy object: %w", err)
+	}
+
+	return nil
 }
 
 // DeleteBlock removes a single block from S3.

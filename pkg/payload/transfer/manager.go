@@ -3,6 +3,7 @@ package transfer
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"slices"
 	"sync"
@@ -15,6 +16,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/payload/chunk"
 	"github.com/marmos91/dittofs/pkg/payload/store"
 )
+
+// hashB64 returns a base64-encoded representation of a hash for readable logging.
+func hashB64(h [32]byte) string {
+	return base64.StdEncoding.EncodeToString(h[:])
+}
 
 // defaultShutdownTimeout is the maximum time to wait for the transfer queue
 // to finish processing during graceful shutdown.
@@ -243,6 +249,21 @@ func (m *TransferManager) getOrderedBlockHashes(payloadID string) [][32]byte {
 	return hashes
 }
 
+// invokeFinalizationCallback calls the finalization callback with ordered block hashes.
+// This is a helper to deduplicate code between Flush and flushSmallFileSync.
+func (m *TransferManager) invokeFinalizationCallback(ctx context.Context, payloadID string) {
+	m.mu.RLock()
+	callback := m.onFinalized
+	m.mu.RUnlock()
+
+	if callback != nil {
+		hashes := m.getOrderedBlockHashes(payloadID)
+		if len(hashes) > 0 {
+			callback(ctx, payloadID, hashes)
+		}
+	}
+}
+
 // ============================================================================
 // Download Priority
 // ============================================================================
@@ -300,11 +321,9 @@ func blockRange(offset, length uint32) (start, end uint32) {
 // tryEagerUpload checks if a block is complete and starts an async upload if ready.
 // Only complete 4MB blocks are uploaded; partial blocks are flushed during Flush().
 //
-// If ObjectStore is configured, content-addressed deduplication is performed:
-// 1. Compute SHA-256 hash of block data
-// 2. Check if block with same hash already exists
-// 3. If exists: increment RefCount, skip upload (block is already in storage)
-// 4. If not: proceed with upload, register block after successful upload
+// PERFORMANCE: This function is called in the NFS WRITE path. It must return quickly
+// to avoid blocking writes. Hash computation and dedup checks are done asynchronously
+// in the upload goroutine to minimize write latency.
 func (m *TransferManager) tryEagerUpload(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) {
 	blockStart := blockIdx * BlockSize
 	blockEnd := blockStart + BlockSize
@@ -314,7 +333,7 @@ func (m *TransferManager) tryEagerUpload(ctx context.Context, payloadID string, 
 		return
 	}
 
-	// Check if fully covered (no zero-filled gaps)
+	// Check if fully covered (no zero-filled gaps) - fast bitmap check
 	covered, err := m.cache.IsRangeCovered(ctx, payloadID, chunkIdx, blockStart, BlockSize)
 	if err != nil || !covered {
 		return
@@ -325,7 +344,7 @@ func (m *TransferManager) tryEagerUpload(ctx context.Context, payloadID string, 
 		"chunkIdx", chunkIdx,
 		"blockIdx", blockIdx)
 
-	// Read block data from cache
+	// Read block data from cache into pooled buffer
 	dataPtr := blockPool.Get().(*[]byte)
 	data := *dataPtr
 	found, err := m.cache.ReadAt(ctx, payloadID, chunkIdx, blockStart, BlockSize, data)
@@ -334,30 +353,10 @@ func (m *TransferManager) tryEagerUpload(ctx context.Context, payloadID string, 
 		return
 	}
 
-	// Compute hash for deduplication (done before async to avoid race)
-	hash := sha256.Sum256(data)
-
-	// Content-addressed deduplication: check if block already exists
-	if m.objectStore != nil {
-		existing, err := m.objectStore.FindBlockByHash(ctx, hash)
-		if err == nil && existing != nil && existing.IsUploaded() {
-			// Block already exists and is uploaded - increment RefCount and skip upload
-			_, _ = m.objectStore.IncrementBlockRefCount(ctx, hash)
-			m.cache.MarkBlockReadyForUpload(ctx, payloadID, chunkIdx, blockIdx, hash, nil)
-			m.cache.MarkBlockUploaded(ctx, payloadID, chunkIdx, blockIdx)
-			blockPool.Put(dataPtr) // Return unused buffer
-
-			logger.Debug("Dedup: block already exists, skipping upload",
-				"payloadID", payloadID,
-				"chunkIdx", chunkIdx,
-				"blockIdx", blockIdx,
-				"hash", hash)
-			return
-		}
-	}
-
 	// Start async upload (takes ownership of data buffer pointer)
-	m.startBlockUpload(ctx, payloadID, chunkIdx, blockIdx, dataPtr, hash)
+	// Hash computation and dedup checks happen in the background goroutine
+	// to avoid blocking the NFS WRITE path
+	m.startBlockUpload(ctx, payloadID, chunkIdx, blockIdx, dataPtr)
 }
 
 // startBlockUpload uploads a block asynchronously with bounded parallelism.
@@ -367,10 +366,17 @@ func (m *TransferManager) tryEagerUpload(ctx context.Context, payloadID string, 
 //
 // Upload goroutines yield to downloads (download priority) before performing I/O.
 //
-// If ObjectStore is configured, the block is registered after successful upload
-// with its content hash for deduplication.
+// PERFORMANCE: Hash computation and dedup checks happen inside the goroutine
+// to avoid blocking the NFS WRITE path. This moves ~15ms of SHA-256 computation
+// off the critical path for each 4MB block.
+//
+// If ObjectStore is configured, content-addressed deduplication is performed:
+// 1. Compute SHA-256 hash of block data (async)
+// 2. Check if block with same hash already exists
+// 3. If exists: increment RefCount, skip upload
+// 4. If not: upload and register block
 func (m *TransferManager) startBlockUpload(ctx context.Context,
-	payloadID string, chunkIdx, blockIdx uint32, dataPtr *[]byte, hash [32]byte) {
+	payloadID string, chunkIdx, blockIdx uint32, dataPtr *[]byte) {
 	state := m.getOrCreateUploadState(payloadID)
 
 	// Check if already uploaded (deduplication)
@@ -413,6 +419,27 @@ func (m *TransferManager) startBlockUpload(ctx context.Context,
 		blockKeyStr := FormatBlockKey(payloadID, chunkIdx, blockIdx)
 		startTime := time.Now()
 
+		// Compute hash for deduplication (done in background to not block writes)
+		hash := sha256.Sum256(data)
+
+		// Content-addressed deduplication: check if block already exists
+		if m.objectStore != nil {
+			existing, err := m.objectStore.FindBlockByHash(ctx, hash)
+			if err == nil && existing != nil && existing.IsUploaded() {
+				// Block already exists and is uploaded - increment RefCount and skip upload
+				_, _ = m.objectStore.IncrementBlockRefCount(ctx, hash)
+				m.cache.MarkBlockReadyForUpload(ctx, payloadID, chunkIdx, blockIdx, hash, nil)
+				m.cache.MarkBlockUploaded(ctx, payloadID, chunkIdx, blockIdx)
+
+				logger.Debug("Dedup: block already exists, skipping upload",
+					"payloadID", payloadID,
+					"chunkIdx", chunkIdx,
+					"blockIdx", blockIdx,
+					"hash", hashB64(hash))
+				return
+			}
+		}
+
 		logger.Debug("Eager upload starting",
 			"payloadID", payloadID,
 			"blockKey", blockKeyStr,
@@ -443,7 +470,7 @@ func (m *TransferManager) startBlockUpload(ctx context.Context,
 		logger.Debug("Eager upload complete",
 			"payloadID", payloadID,
 			"blockKey", blockKeyStr,
-			"hash", hash,
+			"hash", hashB64(hash),
 			"duration", time.Since(startTime),
 			"size", len(data))
 	}()
@@ -465,6 +492,10 @@ func (m *TransferManager) startBlockUpload(ctx context.Context,
 //
 // Deduplication: Blocks already uploaded by eager upload are tracked in state.uploaded
 // and skipped by uploadRemainingBlocks. No need to wait for eager uploads to complete.
+//
+// Small file optimization: If SmallFileThreshold > 0 and the file is smaller than
+// the threshold, the upload is done SYNCHRONOUSLY. This immediately frees the 4MB
+// block buffer, preventing pendingSize buildup when creating many small files.
 func (m *TransferManager) Flush(ctx context.Context, payloadID string) (*FlushResult, error) {
 	if !m.canProcess(ctx) {
 		return nil, fmt.Errorf("transfer manager is closed")
@@ -472,6 +503,18 @@ func (m *TransferManager) Flush(ctx context.Context, payloadID string) (*FlushRe
 
 	// Get or create upload state for tracking
 	state := m.getOrCreateUploadState(payloadID)
+
+	// Check if this is a small file that should be flushed synchronously.
+	// This prevents pendingSize buildup when creating many small files.
+	fileSize := m.cache.GetFileSize(ctx, payloadID)
+	isSmallFile := m.config.SmallFileThreshold > 0 &&
+		int64(fileSize) <= m.config.SmallFileThreshold
+
+	if isSmallFile {
+		return m.flushSmallFileSync(ctx, payloadID, state)
+	}
+
+	// Large file: async flush (existing behavior)
 	state.flush.Add(1)
 
 	// Upload remaining dirty blocks (partial blocks not covered by eager upload)
@@ -500,18 +543,31 @@ func (m *TransferManager) Flush(ctx context.Context, payloadID string) (*FlushRe
 		// Wait for any in-flight eager uploads to complete
 		state.inFlight.Wait()
 
-		// Call finalization callback with ordered block hashes
-		m.mu.RLock()
-		callback := m.onFinalized
-		m.mu.RUnlock()
-
-		if callback != nil {
-			hashes := m.getOrderedBlockHashes(payloadID)
-			if len(hashes) > 0 {
-				callback(bgCtx, payloadID, hashes)
-			}
-		}
+		// Invoke finalization callback
+		m.invokeFinalizationCallback(bgCtx, payloadID)
 	}()
+
+	return &FlushResult{Finalized: true}, nil
+}
+
+// flushSmallFileSync uploads a small file synchronously during Flush().
+// This ensures the 4MB block buffer is freed immediately, preventing
+// pendingSize buildup when creating many small files.
+func (m *TransferManager) flushSmallFileSync(ctx context.Context, payloadID string, state *fileUploadState) (*FlushResult, error) {
+	logger.Debug("Small file sync flush",
+		"payloadID", payloadID,
+		"threshold", m.config.SmallFileThreshold)
+
+	// Upload remaining blocks synchronously (blocks until complete)
+	if err := m.uploadRemainingBlocks(ctx, payloadID); err != nil {
+		return nil, fmt.Errorf("sync flush failed: %w", err)
+	}
+
+	// Wait for any in-flight eager uploads to complete
+	state.inFlight.Wait()
+
+	// Invoke finalization callback
+	m.invokeFinalizationCallback(ctx, payloadID)
 
 	return &FlushResult{Finalized: true}, nil
 }
@@ -643,7 +699,7 @@ func (m *TransferManager) uploadRemainingBlocks(ctx context.Context, payloadID s
 					"payloadID", payloadID,
 					"chunkIdx", chunkIdx,
 					"blockIdx", blockIdx,
-					"hash", hash)
+					"hash", hashB64(hash))
 				continue
 			}
 		}
@@ -713,7 +769,7 @@ func (m *TransferManager) uploadRemainingBlocks(ctx context.Context, payloadID s
 			logger.Info("Flush upload complete",
 				"payloadID", payloadID,
 				"blockKey", blockKeyStr,
-				"hash", hash,
+				"hash", hashB64(hash),
 				"duration", time.Since(startTime),
 				"size", dataSize)
 		}(blockData, dataSize, chunkIdx, blockIdx, hash)
