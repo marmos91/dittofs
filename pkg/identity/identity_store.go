@@ -23,6 +23,11 @@ type IdentityStore interface {
 	// Returns ErrUserNotFound if no user has this ID.
 	GetUserByID(id string) (*User, error)
 
+	// GetUserByUID returns a user by their Unix UID.
+	// This is used for NFS reverse lookup from AUTH_UNIX credentials.
+	// Returns ErrUserNotFound if no user has this UID.
+	GetUserByUID(uid uint32) (*User, error)
+
 	// ListUsers returns all users.
 	ListUsers() ([]*User, error)
 

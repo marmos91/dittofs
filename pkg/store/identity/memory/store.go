@@ -66,6 +66,15 @@ func copyUser(u *identity.User) *identity.User {
 		return nil
 	}
 	userCopy := *u
+	// Deep copy pointer fields
+	if u.UID != nil {
+		uid := *u.UID
+		userCopy.UID = &uid
+	}
+	if u.GID != nil {
+		gid := *u.GID
+		userCopy.GID = &gid
+	}
 	if u.Groups != nil {
 		userCopy.Groups = make([]string, len(u.Groups))
 		copy(userCopy.Groups, u.Groups)
@@ -137,6 +146,20 @@ func (s *MemoryIdentityStore) GetUserByID(id string) (*identity.User, error) {
 		return nil, identity.ErrUserNotFound
 	}
 	return copyUser(user), nil
+}
+
+// GetUserByUID returns a user by their Unix UID.
+// This is used for NFS reverse lookup from AUTH_UNIX credentials.
+func (s *MemoryIdentityStore) GetUserByUID(uid uint32) (*identity.User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, user := range s.users {
+		if user.UID != nil && *user.UID == uid {
+			return copyUser(user), nil
+		}
+	}
+	return nil, identity.ErrUserNotFound
 }
 
 // ListUsers returns all users.

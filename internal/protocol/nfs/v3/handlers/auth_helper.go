@@ -18,7 +18,7 @@ var ErrShareAccessDenied = errors.New("share access denied")
 // This is a shared helper function used by all NFS v3 handlers to ensure consistent
 // identity mapping across all operations. It:
 //  1. Uses the share name from the connection layer (already extracted from file handle)
-//  2. Looks up the DittoFS user by UID if a UserStore is configured
+//  2. Looks up the DittoFS user by UID using reverse lookup (GetUserByUID)
 //  3. Checks share-level permissions for the user
 //  4. Applies identity mapping rules from the registry (all_squash, root_squash)
 //  5. Returns effective credentials for permission checking
@@ -58,32 +58,32 @@ func BuildAuthContextWithMapping(
 		originalIdentity.Username = fmt.Sprintf("uid:%d", *originalIdentity.UID)
 	}
 
-	// Look up DittoFS user and check share permissions
-	// NOTE: Direct UID-to-user lookup is not supported in the new identity model.
-	// Users have per-share identity mappings (ShareIdentityMapping) instead of global UID/GID.
-	// For NFS clients, we use the share's default permission or guest access.
-	// Full user resolution from UID requires IdentityStore integration with reverse lookup.
+	// Look up DittoFS user by UID (reverse lookup) and check share permissions
 	var dittoUser *identity.User
 	var sharePermission identity.SharePermission
 	shareReadOnly := false
 
-	userStore := reg.GetUserStore()
+	identityStore := reg.GetIdentityStore()
 	share, shareErr := reg.GetShare(shareName)
 
-	if userStore != nil && share != nil {
-		// NOTE: UID-based user lookup is not implemented in the current identity model.
-		// In the new model, Unix UID is per-share (ShareIdentityMapping), not per-user.
-		// For now, we treat NFS clients as guests and use share default permissions.
-		// Future: Use IdentityStore.GetUserByShareUID(shareName, uid) for reverse lookup.
-		logger.DebugCtx(ctx, "NFS UID-based user lookup not implemented; using share defaults",
-			"share", shareName, "uid", nfsCtx.UID, "client", clientAddr)
+	if identityStore != nil && share != nil && nfsCtx.UID != nil {
+		// Try reverse lookup: find user by UID
+		user, err := identityStore.GetUserByUID(*nfsCtx.UID)
+		if err == nil && user != nil {
+			dittoUser = user
+			logger.DebugCtx(ctx, "NFS UID reverse lookup succeeded",
+				"share", shareName, "uid", *nfsCtx.UID, "username", user.Username, "client", clientAddr)
+		} else {
+			logger.DebugCtx(ctx, "NFS UID reverse lookup failed, treating as guest",
+				"share", shareName, "uid", *nfsCtx.UID, "client", clientAddr, "error", err)
+		}
 
 		// Get default permission from share config
 		defaultPerm := identity.ParseSharePermission(share.DefaultPermission)
 
 		if dittoUser != nil {
 			// User found - resolve their permission
-			sharePermission = userStore.ResolveSharePermission(dittoUser, shareName, defaultPerm)
+			sharePermission = identityStore.ResolveSharePermission(dittoUser, shareName, defaultPerm)
 			originalIdentity.Username = dittoUser.Username
 
 			if sharePermission == identity.PermissionNone {

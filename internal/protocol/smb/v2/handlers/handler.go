@@ -451,21 +451,17 @@ func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
 // buildCleanupAuthContext creates an AuthContext for cleanup operations.
 // This is used during session/tree cleanup when we need to perform file operations
 // (like delete-on-close) but don't have a full SMBHandlerContext.
-// If the session is available, it uses the session's user credentials with
-// ShareIdentityMapping lookup for proper UID/GID resolution.
+// If the session is available, it uses the session user's UID/GID.
 // Otherwise, it falls back to root credentials for cleanup operations.
-//
-// The shareName parameter is used to look up ShareIdentityMapping for the user.
-// If empty, default UID/GID values are used for authenticated users.
-func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Session, shareName string) *metadata.AuthContext {
+func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Session, _ string) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
 		Context:  ctx,
 		Identity: &metadata.Identity{},
 	}
 
 	if sess != nil && sess.User != nil {
-		// Use session user's credentials with ShareIdentityMapping lookup
-		uid, gid := resolveUserIdentity(h.Registry, sess.User.Username, shareName)
+		// Use session user's UID/GID from User object
+		uid, gid := getUserIdentity(sess.User)
 		authCtx.Identity.UID = &uid
 		authCtx.Identity.GID = &gid
 		authCtx.Identity.Username = sess.User.Username

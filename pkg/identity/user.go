@@ -29,8 +29,8 @@ func (r UserRole) IsValid() bool {
 // User represents a DittoFS user with abstract identity.
 //
 // Users can authenticate via different protocols (NFS, SMB, API) and have
-// their identity mapped to the appropriate format. Protocol-specific identity
-// (Unix UID/GID, Windows SID) is resolved per-share via ShareIdentityMapping.
+// their identity mapped to the appropriate format. Unix identity (UID/GID)
+// is stored directly on the user for NFS reverse lookup and file ownership.
 // Share-level permissions can be assigned directly to users or inherited from groups.
 type User struct {
 	// ID is the unique identifier for the user (UUID).
@@ -76,6 +76,17 @@ type User struct {
 	// Groups is a list of DittoFS group names this user belongs to.
 	// Permissions are inherited from these groups.
 	Groups []string `json:"groups,omitempty" yaml:"groups,omitempty" mapstructure:"groups"`
+
+	// Unix identity for NFS and file ownership
+
+	// UID is the Unix user ID for this user.
+	// Used for NFS authentication (reverse lookup from AUTH_UNIX UID)
+	// and file ownership in the filesystem.
+	UID *uint32 `json:"uid,omitempty" yaml:"uid,omitempty" mapstructure:"uid"`
+
+	// GID is the primary Unix group ID for this user.
+	// Used for NFS authentication and file ownership.
+	GID *uint32 `json:"gid,omitempty" yaml:"gid,omitempty" mapstructure:"gid"`
 
 	// Per-share permissions
 
