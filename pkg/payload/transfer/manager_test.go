@@ -571,7 +571,7 @@ func testDownloadOnCacheMiss(t *testing.T, env *testEnv) {
 
 	// Verify data is now in cache
 	dest := make([]byte, BlockSize)
-	found, err := env.cache.Read(ctx, payloadID, 0, 0, BlockSize, dest)
+	found, err := env.cache.ReadAt(ctx, payloadID, 0, 0, BlockSize, dest)
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
