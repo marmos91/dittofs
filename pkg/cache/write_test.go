@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestWriteSlice_Basic(t *testing.T) {
+func TestWrite_Basic(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
@@ -14,16 +14,16 @@ func TestWriteSlice_Basic(t *testing.T) {
 	payloadID := "test-file"
 	data := []byte("hello world")
 
-	err := c.WriteSlice(ctx, payloadID, 0, data, 0)
+	err := c.Write(ctx, payloadID, 0, data, 0)
 	if err != nil {
-		t.Fatalf("WriteSlice failed: %v", err)
+		t.Fatalf("Write failed: %v", err)
 	}
 
 	// Verify data was written
 	result := make([]byte, len(data))
-	found, err := c.ReadSlice(ctx, payloadID, 0, 0, uint32(len(data)), result)
+	found, err := c.Read(ctx, payloadID, 0, 0, uint32(len(data)), result)
 	if err != nil {
-		t.Fatalf("ReadSlice failed: %v", err)
+		t.Fatalf("Read failed: %v", err)
 	}
 	if !found {
 		t.Fatal("expected to find data")
@@ -33,7 +33,7 @@ func TestWriteSlice_Basic(t *testing.T) {
 	}
 }
 
-func TestWriteSlice_SequentialOptimization(t *testing.T) {
+func TestWrite_SequentialToSameBlock(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
@@ -41,28 +41,30 @@ func TestWriteSlice_SequentialOptimization(t *testing.T) {
 	payloadID := "test-file"
 
 	// Write sequential chunks (simulating NFS 32KB writes)
+	// All writes go to the same block since 10KB < 4MB block size
 	for i := 0; i < 10; i++ {
 		data := make([]byte, 1024)
 		offset := uint32(i * 1024)
-		if err := c.WriteSlice(ctx, payloadID, 0, data, offset); err != nil {
-			t.Fatalf("WriteSlice failed: %v", err)
+		if err := c.Write(ctx, payloadID, 0, data, offset); err != nil {
+			t.Fatalf("Write failed: %v", err)
 		}
 	}
 
-	// Get dirty slices - should be coalesced into 1 due to sequential optimization
-	slices, err := c.GetDirtySlices(ctx, payloadID)
+	// Get dirty blocks - should be 1 block since all writes fit in one block
+	blocks, err := c.GetDirtyBlocks(ctx, payloadID)
 	if err != nil {
-		t.Fatalf("GetDirtySlices failed: %v", err)
+		t.Fatalf("GetDirtyBlocks failed: %v", err)
 	}
-	if len(slices) != 1 {
-		t.Errorf("expected 1 coalesced slice, got %d", len(slices))
+	if len(blocks) != 1 {
+		t.Errorf("expected 1 block, got %d", len(blocks))
 	}
-	if slices[0].Length != 10*1024 {
-		t.Errorf("expected length 10240, got %d", slices[0].Length)
+	// DataSize should be 10KB
+	if blocks[0].DataSize != 10*1024 {
+		t.Errorf("expected dataSize 10240, got %d", blocks[0].DataSize)
 	}
 }
 
-func TestWriteSlice_Prepend(t *testing.T) {
+func TestWrite_AdjacentWrites(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
@@ -71,23 +73,24 @@ func TestWriteSlice_Prepend(t *testing.T) {
 
 	// Write at offset 100 first
 	data1 := []byte("WORLD")
-	_ = c.WriteSlice(ctx, payloadID, 0, data1, 100)
+	_ = c.Write(ctx, payloadID, 0, data1, 100)
 
-	// Prepend at offset 95 (ends where previous starts)
+	// Write at offset 95 (adjacent/overlapping)
 	data2 := []byte("HELLO")
-	_ = c.WriteSlice(ctx, payloadID, 0, data2, 95)
+	_ = c.Write(ctx, payloadID, 0, data2, 95)
 
-	// Should be coalesced into one slice by tryExtendAdjacentSlice
-	slices, _ := c.GetDirtySlices(ctx, payloadID)
-	if len(slices) != 1 {
-		t.Errorf("expected 1 coalesced slice after prepend, got %d", len(slices))
+	// All writes go to the same block (block 0)
+	blocks, _ := c.GetDirtyBlocks(ctx, payloadID)
+	if len(blocks) != 1 {
+		t.Errorf("expected 1 block, got %d", len(blocks))
 	}
-	if slices[0].Length != 10 {
-		t.Errorf("expected length 10, got %d", slices[0].Length)
+	// DataSize should reflect the highest written offset: 100 + 5 = 105
+	if blocks[0].DataSize != 105 {
+		t.Errorf("expected dataSize 105, got %d", blocks[0].DataSize)
 	}
 }
 
-func TestWriteSlice_InvalidOffset(t *testing.T) {
+func TestWrite_InvalidOffset(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
@@ -96,36 +99,36 @@ func TestWriteSlice_InvalidOffset(t *testing.T) {
 
 	// Try to write past chunk boundary
 	data := make([]byte, 100)
-	err := c.WriteSlice(ctx, payloadID, 0, data, ChunkSize-50)
+	err := c.Write(ctx, payloadID, 0, data, ChunkSize-50)
 	if err != ErrInvalidOffset {
 		t.Errorf("expected ErrInvalidOffset, got %v", err)
 	}
 }
 
-func TestWriteSlice_ContextCancelled(t *testing.T) {
+func TestWrite_ContextCancelled(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := c.WriteSlice(ctx, "test", 0, []byte("data"), 0)
+	err := c.Write(ctx, "test", 0, []byte("data"), 0)
 	if err != context.Canceled {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
 }
 
-func TestWriteSlice_CacheClosed(t *testing.T) {
+func TestWrite_CacheClosed(t *testing.T) {
 	c := New(0)
 	_ = c.Close()
 
-	err := c.WriteSlice(context.Background(), "test", 0, []byte("data"), 0)
+	err := c.Write(context.Background(), "test", 0, []byte("data"), 0)
 	if err != ErrCacheClosed {
 		t.Errorf("expected ErrCacheClosed, got %v", err)
 	}
 }
 
-func TestWriteSlice_MultipleChunks(t *testing.T) {
+func TestWrite_MultipleChunks(t *testing.T) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
@@ -133,19 +136,19 @@ func TestWriteSlice_MultipleChunks(t *testing.T) {
 	payloadID := "test-file"
 
 	// Write to different chunks
-	_ = c.WriteSlice(ctx, payloadID, 0, []byte("chunk0"), 0)
-	_ = c.WriteSlice(ctx, payloadID, 1, []byte("chunk1"), 0)
-	_ = c.WriteSlice(ctx, payloadID, 2, []byte("chunk2"), 0)
+	_ = c.Write(ctx, payloadID, 0, []byte("chunk0"), 0)
+	_ = c.Write(ctx, payloadID, 1, []byte("chunk1"), 0)
+	_ = c.Write(ctx, payloadID, 2, []byte("chunk2"), 0)
 
-	slices, _ := c.GetDirtySlices(ctx, payloadID)
-	if len(slices) != 3 {
-		t.Errorf("expected 3 slices (one per chunk), got %d", len(slices))
+	blocks, _ := c.GetDirtyBlocks(ctx, payloadID)
+	if len(blocks) != 3 {
+		t.Errorf("expected 3 blocks (one per chunk), got %d", len(blocks))
 	}
 
 	// Verify sorted by chunk index
-	for i, s := range slices {
-		if s.ChunkIndex != uint32(i) {
-			t.Errorf("slice[%d].ChunkIndex = %d, want %d", i, s.ChunkIndex, i)
+	for i, blk := range blocks {
+		if blk.ChunkIndex != uint32(i) {
+			t.Errorf("block[%d].ChunkIndex = %d, want %d", i, blk.ChunkIndex, i)
 		}
 	}
 }
@@ -154,9 +157,9 @@ func TestWriteSlice_MultipleChunks(t *testing.T) {
 // Write Benchmarks
 // ============================================================================
 
-// BenchmarkWriteSlice_Sequential measures sequential write performance.
+// BenchmarkWrite_Sequential measures sequential write performance.
 // This is the critical path for NFS file copies - must achieve >3 GB/s.
-func BenchmarkWriteSlice_Sequential(b *testing.B) {
+func BenchmarkWrite_Sequential(b *testing.B) {
 	sizes := []struct {
 		name string
 		size int
@@ -188,7 +191,7 @@ func BenchmarkWriteSlice_Sequential(b *testing.B) {
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
 
-				if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+				if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -196,9 +199,9 @@ func BenchmarkWriteSlice_Sequential(b *testing.B) {
 	}
 }
 
-// BenchmarkWriteSlice_SequentialExtend measures the sequential write optimization.
-// Tests how well adjacent writes are coalesced into single slices.
-func BenchmarkWriteSlice_SequentialExtend(b *testing.B) {
+// BenchmarkWrite_SequentialExtend measures the sequential write optimization.
+// Tests how well sequential writes go to same block buffers.
+func BenchmarkWrite_SequentialExtend(b *testing.B) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
@@ -209,27 +212,27 @@ func BenchmarkWriteSlice_SequentialExtend(b *testing.B) {
 	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 
-	// All writes should extend the same slice (sequential optimization)
+	// All writes within same block go to same buffer
 	for i := 0; i < b.N; i++ {
 		offset := uint32(i * len(data))
 		chunkIdx := offset / ChunkSize
 		offsetInChunk := offset % ChunkSize
 
-		if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+		if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 			b.Fatal(err)
 		}
 	}
 
 	b.StopTimer()
 
-	// Report slice count (should be ~1 per chunk due to sequential optimization)
+	// Report block count (should be ~16 blocks per chunk, fewer if writes are small)
 	stats := c.Stats()
-	b.ReportMetric(float64(stats.SliceCount), "slices")
+	b.ReportMetric(float64(stats.BlockCount), "blocks")
 }
 
-// BenchmarkWriteSlice_Random measures random write performance.
+// BenchmarkWrite_Random measures random write performance.
 // Simulates database workloads with scattered writes.
-func BenchmarkWriteSlice_Random(b *testing.B) {
+func BenchmarkWrite_Random(b *testing.B) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
@@ -249,15 +252,15 @@ func BenchmarkWriteSlice_Random(b *testing.B) {
 		chunkIdx := uint32((i * 7919) % 1000) // Spread across 1000 chunks
 		offsetInChunk := uint32((i * 7907) % int(maxOffsetInChunk))
 
-		if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+		if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 			b.Fatal(err)
 		}
 	}
 }
 
-// BenchmarkWriteSlice_MultiFile measures writes across multiple files.
+// BenchmarkWrite_MultiFile measures writes across multiple files.
 // Simulates multiple concurrent file operations.
-func BenchmarkWriteSlice_MultiFile(b *testing.B) {
+func BenchmarkWrite_MultiFile(b *testing.B) {
 	fileCounts := []int{10, 100, 1000}
 
 	for _, fileCount := range fileCounts {
@@ -277,7 +280,7 @@ func BenchmarkWriteSlice_MultiFile(b *testing.B) {
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
 
-				if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+				if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -285,9 +288,9 @@ func BenchmarkWriteSlice_MultiFile(b *testing.B) {
 	}
 }
 
-// BenchmarkWriteSlice_Concurrent measures concurrent write throughput.
+// BenchmarkWrite_Concurrent measures concurrent write throughput.
 // Tests lock contention under parallel access.
-func BenchmarkWriteSlice_Concurrent(b *testing.B) {
+func BenchmarkWrite_Concurrent(b *testing.B) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
@@ -305,7 +308,7 @@ func BenchmarkWriteSlice_Concurrent(b *testing.B) {
 			chunkIdx := offset / ChunkSize
 			offsetInChunk := offset % ChunkSize
 
-			if err := c.WriteSlice(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+			if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 				b.Fatal(err)
 			}
 			i++
@@ -313,8 +316,8 @@ func BenchmarkWriteSlice_Concurrent(b *testing.B) {
 	})
 }
 
-// BenchmarkMemory_SliceAllocation measures slice allocation overhead.
-func BenchmarkMemory_SliceAllocation(b *testing.B) {
+// BenchmarkMemory_BlockAllocation measures block buffer allocation overhead.
+func BenchmarkMemory_BlockAllocation(b *testing.B) {
 	c := New(0)
 	defer func() { _ = c.Close() }()
 
@@ -326,7 +329,7 @@ func BenchmarkMemory_SliceAllocation(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		payloadID := fmt.Sprintf("file-%d", i)
-		if err := c.WriteSlice(ctx, payloadID, 0, data, 0); err != nil {
+		if err := c.Write(ctx, payloadID, 0, data, 0); err != nil {
 			b.Fatal(err)
 		}
 	}

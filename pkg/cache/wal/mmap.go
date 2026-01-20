@@ -6,33 +6,29 @@
 // survive process restarts. The OS handles flushing dirty pages asynchronously,
 // so write performance remains similar to pure in-memory operation.
 //
-// File Format:
+// File Format (Block-Level WAL):
 // The mmap file uses an append-only log format for crash safety:
 //
 //	Header (64 bytes):
 //	  - Magic: "DTTC" (4 bytes)
-//	  - Version: uint16 (2 bytes)
+//	  - Version: uint16 (2 bytes) - version 2 for block-level format
 //	  - Entry count: uint32 (4 bytes)
 //	  - Next write offset: uint64 (8 bytes)
 //	  - Total data size: uint64 (8 bytes)
 //	  - Reserved: 38 bytes
 //
-//	Entries (variable):
-//	  - Entry type: uint8 (1 byte) - 0=slice, 1=delete, 2=truncate, 3=remove
-//	  - File handle length: uint16 (2 bytes)
-//	  - File handle: variable
+//	Block Write Entry (variable):
+//	  - Entry type: uint8 (1 byte) - 0=blockWrite, 3=remove
+//	  - Payload ID length: uint16 (2 bytes)
+//	  - Payload ID: variable
 //	  - Chunk index: uint32 (4 bytes)
-//	  - Slice ID: 36 bytes (UUID string)
-//	  - Offset in chunk: uint32 (4 bytes)
+//	  - Block index: uint32 (4 bytes)
+//	  - Offset in block: uint32 (4 bytes)
 //	  - Data length: uint32 (4 bytes)
-//	  - State: uint8 (1 byte)
-//	  - CreatedAt: int64 (8 bytes)
-//	  - BlockRef count: uint16 (2 bytes)
-//	  - BlockRefs: variable (ID length + ID + size per ref)
 //	  - Data: variable
 //
 // Recovery:
-// On startup, the log is replayed to return all slice entries.
+// On startup, the log is replayed to return all block write entries.
 
 package wal
 
@@ -42,15 +38,14 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"golang.org/x/sys/unix"
 )
 
 // mmap file constants
 const (
-	mmapMagic        = "DTTC" // DittoFS Cache
-	mmapVersion      = uint16(1)
+	mmapMagic        = "DTTC"    // DittoFS Cache
+	mmapVersion      = uint16(2) // Version 2 for block-level format
 	mmapHeaderSize   = 64
 	mmapInitialSize  = 64 * 1024 * 1024 // 64MB initial file size
 	mmapGrowthFactor = 2                // Double size when growing
@@ -58,8 +53,9 @@ const (
 
 // Entry types for the append-only log
 const (
-	entryTypeSlice  uint8 = 0
-	entryTypeRemove uint8 = 3
+	entryTypeBlockWrite    uint8 = 0
+	entryTypeBlockUploaded uint8 = 1 // Marks block as uploaded to S3
+	entryTypeRemove        uint8 = 3
 )
 
 // Header field offsets
@@ -80,7 +76,7 @@ type mmapHeader struct {
 	TotalDataSize uint64
 }
 
-// MmapPersister implements the Persister interface using memory-mapped files.
+// MmapPersister implements WAL persistence using memory-mapped files.
 type MmapPersister struct {
 	mu     sync.Mutex
 	path   string
@@ -220,6 +216,9 @@ func (p *MmapPersister) openExisting(filePath string) error {
 		return ErrCorrupted
 	}
 
+	// Only the current version is supported for recovery.
+	// Legacy version 1 WAL files cannot be recovered - they must be
+	// discarded (the data should already be in S3 from previous runs).
 	if header.Version != mmapVersion {
 		_ = p.closeLocked()
 		return ErrVersionMismatch
@@ -230,8 +229,8 @@ func (p *MmapPersister) openExisting(filePath string) error {
 	return nil
 }
 
-// AppendSlice appends a slice entry to the WAL.
-func (p *MmapPersister) AppendSlice(entry *SliceEntry) error {
+// AppendBlockWrite appends a block write entry to the WAL.
+func (p *MmapPersister) AppendBlockWrite(entry *BlockWriteEntry) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -243,17 +242,10 @@ func (p *MmapPersister) AppendSlice(entry *SliceEntry) error {
 	entrySize := 1 + // entry type
 		2 + len(entry.PayloadID) + // payload ID
 		4 + // chunk index
-		36 + // slice ID
-		4 + // offset
-		4 + // length
-		1 + // state
-		8 + // created at
-		2 // block ref count
-
-	for _, ref := range entry.BlockRefs {
-		entrySize += 1 + len(ref.ID) + 4 // ID length + ID + Size
-	}
-	entrySize += len(entry.Data)
+		4 + // block index
+		4 + // offset in block
+		4 + // data length
+		len(entry.Data) // data
 
 	// Ensure space
 	if err := p.ensureSpace(uint64(entrySize)); err != nil {
@@ -263,7 +255,7 @@ func (p *MmapPersister) AppendSlice(entry *SliceEntry) error {
 	offset := p.header.NextOffset
 
 	// Write entry type
-	p.data[offset] = entryTypeSlice
+	p.data[offset] = entryTypeBlockWrite
 	offset++
 
 	// Write payload ID
@@ -276,43 +268,17 @@ func (p *MmapPersister) AppendSlice(entry *SliceEntry) error {
 	binary.LittleEndian.PutUint32(p.data[offset:], entry.ChunkIdx)
 	offset += 4
 
-	// Write slice ID (pad to 36 bytes)
-	idBytes := []byte(entry.ID)
-	if len(idBytes) > 36 {
-		idBytes = idBytes[:36]
-	}
-	copy(p.data[offset:offset+36], idBytes)
-	offset += 36
-
-	// Write offset
-	binary.LittleEndian.PutUint32(p.data[offset:], entry.Offset)
+	// Write block index
+	binary.LittleEndian.PutUint32(p.data[offset:], entry.BlockIdx)
 	offset += 4
 
-	// Write length
-	binary.LittleEndian.PutUint32(p.data[offset:], entry.Length)
+	// Write offset in block
+	binary.LittleEndian.PutUint32(p.data[offset:], entry.OffsetInBlock)
 	offset += 4
 
-	// Write state
-	p.data[offset] = uint8(entry.State)
-	offset++
-
-	// Write created at
-	binary.LittleEndian.PutUint64(p.data[offset:], uint64(entry.CreatedAt.UnixNano()))
-	offset += 8
-
-	// Write block ref count
-	binary.LittleEndian.PutUint16(p.data[offset:], uint16(len(entry.BlockRefs)))
-	offset += 2
-
-	// Write block refs
-	for _, ref := range entry.BlockRefs {
-		p.data[offset] = uint8(len(ref.ID))
-		offset++
-		copy(p.data[offset:], ref.ID)
-		offset += uint64(len(ref.ID))
-		binary.LittleEndian.PutUint32(p.data[offset:], ref.Size)
-		offset += 4
-	}
+	// Write data length
+	binary.LittleEndian.PutUint32(p.data[offset:], uint32(len(entry.Data)))
+	offset += 4
 
 	// Write data
 	copy(p.data[offset:], entry.Data)
@@ -324,8 +290,65 @@ func (p *MmapPersister) AppendSlice(entry *SliceEntry) error {
 	p.header.NextOffset = offset
 	p.header.EntryCount++
 	p.header.TotalDataSize += uint64(len(entry.Data))
-	p.writeHeader() // Write header to mmap region immediately for crash safety
-	p.dirty = false // Header is now in sync with mmap region
+	p.header.Version = mmapVersion // Upgrade version on write
+	p.writeHeader()                // Write header to mmap region immediately for crash safety
+	p.dirty = false                // Header is now in sync with mmap region
+
+	return nil
+}
+
+// AppendBlockUploaded appends a "block uploaded" marker to the WAL.
+// This indicates that the block has been successfully uploaded to S3.
+// On recovery, blocks with this marker will be marked as Uploaded (evictable)
+// instead of Pending, preventing unnecessary re-uploads.
+//
+// Entry format:
+//   - Entry type: 1 byte (entryTypeBlockUploaded)
+//   - Payload ID length: 2 bytes
+//   - Payload ID: variable
+//   - Chunk index: 4 bytes
+//   - Block index: 4 bytes
+func (p *MmapPersister) AppendBlockUploaded(payloadID string, chunkIdx, blockIdx uint32) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.closed {
+		return ErrPersisterClosed
+	}
+
+	// Calculate entry size: type(1) + payloadIDLen(2) + payloadID + chunkIdx(4) + blockIdx(4)
+	entrySize := 1 + 2 + len(payloadID) + 4 + 4
+
+	if err := p.ensureSpace(uint64(entrySize)); err != nil {
+		return err
+	}
+
+	offset := p.header.NextOffset
+
+	// Write entry type
+	p.data[offset] = entryTypeBlockUploaded
+	offset++
+
+	// Write payload ID
+	binary.LittleEndian.PutUint16(p.data[offset:], uint16(len(payloadID)))
+	offset += 2
+	copy(p.data[offset:], []byte(payloadID))
+	offset += uint64(len(payloadID))
+
+	// Write chunk index
+	binary.LittleEndian.PutUint32(p.data[offset:], chunkIdx)
+	offset += 4
+
+	// Write block index
+	binary.LittleEndian.PutUint32(p.data[offset:], blockIdx)
+	offset += 4
+
+	// Update header
+	p.header.NextOffset = offset
+	p.header.EntryCount++
+	p.header.Version = mmapVersion
+	p.writeHeader()
+	p.dirty = false
 
 	return nil
 }
@@ -360,7 +383,8 @@ func (p *MmapPersister) AppendRemove(payloadID string) error {
 	// Update header in memory and persist to mmap region immediately
 	p.header.NextOffset = offset
 	p.header.EntryCount++
-	p.writeHeader() // Write header to mmap region immediately for crash safety
+	p.header.Version = mmapVersion // Upgrade version on write
+	p.writeHeader()                // Write header to mmap region immediately for crash safety
 	p.dirty = false
 
 	return nil
@@ -391,12 +415,18 @@ func (p *MmapPersister) Sync() error {
 	return nil
 }
 
-// Recover replays the WAL and returns all slice entries.
+// Recover replays the WAL and returns all block write entries along with
+// information about which blocks were already uploaded to S3.
 //
 // The WAL is scanned sequentially. Remove entries mark files for exclusion,
-// and slice entries for non-removed files are returned. This allows the cache
-// to be reconstructed from the WAL after a crash.
-func (p *MmapPersister) Recover() ([]SliceEntry, error) {
+// block write entries for non-removed files are collected, and block uploaded
+// entries track which blocks are safe in S3.
+//
+// Returns RecoveryResult containing:
+//   - Entries: Block write entries to replay into cache
+//   - UploadedBlocks: Map of blocks that were uploaded to S3 (should be marked
+//     as Uploaded, not Pending, to avoid re-upload)
+func (p *MmapPersister) Recover() (*RecoveryResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -404,8 +434,9 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 		return nil, ErrPersisterClosed
 	}
 
-	// First pass: collect all removed payload IDs
+	// First pass: collect all removed payload IDs and uploaded blocks
 	removedFiles := make(map[string]bool)
+	uploadedBlocks := make(map[BlockKey]bool)
 	offset := uint64(mmapHeaderSize)
 	endOffset := p.header.NextOffset
 
@@ -418,12 +449,21 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 		offset++
 
 		switch entryType {
-		case entryTypeSlice:
-			// Skip slice entry (we'll read it in second pass)
-			newOffset, err := p.skipSliceEntry(offset)
+		case entryTypeBlockWrite:
+			// Skip block write entry (we'll read it in second pass)
+			newOffset, err := p.skipBlockWriteEntry(offset)
 			if err != nil {
 				return nil, err
 			}
+			offset = newOffset
+
+		case entryTypeBlockUploaded:
+			// Track uploaded block
+			key, newOffset, err := p.readBlockUploadedEntry(offset)
+			if err != nil {
+				return nil, err
+			}
+			uploadedBlocks[key] = true
 			offset = newOffset
 
 		case entryTypeRemove:
@@ -432,6 +472,12 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 				return nil, err
 			}
 			removedFiles[payloadID] = true
+			// Also remove any uploaded blocks for this file
+			for key := range uploadedBlocks {
+				if key.PayloadID == payloadID {
+					delete(uploadedBlocks, key)
+				}
+			}
 			offset = newOffset
 
 		default:
@@ -439,8 +485,8 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 		}
 	}
 
-	// Second pass: collect slice entries for non-removed files
-	var entries []SliceEntry
+	// Second pass: collect block write entries for non-removed files
+	var entries []BlockWriteEntry
 	offset = uint64(mmapHeaderSize)
 
 	for offset < endOffset {
@@ -448,13 +494,21 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 		offset++
 
 		switch entryType {
-		case entryTypeSlice:
-			entry, newOffset, err := p.readSliceEntry(offset)
+		case entryTypeBlockWrite:
+			entry, newOffset, err := p.readBlockWriteEntry(offset)
 			if err != nil {
 				return nil, err
 			}
 			if !removedFiles[entry.PayloadID] {
 				entries = append(entries, *entry)
+			}
+			offset = newOffset
+
+		case entryTypeBlockUploaded:
+			// Skip - already processed in first pass
+			_, newOffset, err := p.readBlockUploadedEntry(offset)
+			if err != nil {
+				return nil, err
 			}
 			offset = newOffset
 
@@ -467,12 +521,15 @@ func (p *MmapPersister) Recover() ([]SliceEntry, error) {
 		}
 	}
 
-	return entries, nil
+	return &RecoveryResult{
+		Entries:        entries,
+		UploadedBlocks: uploadedBlocks,
+	}, nil
 }
 
-// readSliceEntry reads a slice entry from the log.
-func (p *MmapPersister) readSliceEntry(offset uint64) (*SliceEntry, uint64, error) {
-	entry := &SliceEntry{}
+// readBlockWriteEntry reads a block write entry from the log.
+func (p *MmapPersister) readBlockWriteEntry(offset uint64) (*BlockWriteEntry, uint64, error) {
+	entry := &BlockWriteEntry{}
 
 	// Read payload ID length
 	if offset+2 > p.size {
@@ -495,85 +552,41 @@ func (p *MmapPersister) readSliceEntry(offset uint64) (*SliceEntry, uint64, erro
 	entry.ChunkIdx = binary.LittleEndian.Uint32(p.data[offset:])
 	offset += 4
 
-	// Read slice ID (36 bytes)
-	if offset+36 > p.size {
-		return nil, 0, ErrCorrupted
-	}
-	entry.ID = string(p.data[offset : offset+36])
-	offset += 36
-
-	// Read offset in chunk
+	// Read block index
 	if offset+4 > p.size {
 		return nil, 0, ErrCorrupted
 	}
-	entry.Offset = binary.LittleEndian.Uint32(p.data[offset:])
+	entry.BlockIdx = binary.LittleEndian.Uint32(p.data[offset:])
+	offset += 4
+
+	// Read offset in block
+	if offset+4 > p.size {
+		return nil, 0, ErrCorrupted
+	}
+	entry.OffsetInBlock = binary.LittleEndian.Uint32(p.data[offset:])
 	offset += 4
 
 	// Read data length
 	if offset+4 > p.size {
 		return nil, 0, ErrCorrupted
 	}
-	entry.Length = binary.LittleEndian.Uint32(p.data[offset:])
+	dataLen := binary.LittleEndian.Uint32(p.data[offset:])
 	offset += 4
 
-	// Read state
-	if offset+1 > p.size {
-		return nil, 0, ErrCorrupted
-	}
-	entry.State = SliceState(p.data[offset])
-	offset++
-
-	// Read created at
-	if offset+8 > p.size {
-		return nil, 0, ErrCorrupted
-	}
-	createdAtNano := int64(binary.LittleEndian.Uint64(p.data[offset:]))
-	entry.CreatedAt = time.Unix(0, createdAtNano)
-	offset += 8
-
-	// Read block ref count
-	if offset+2 > p.size {
-		return nil, 0, ErrCorrupted
-	}
-	blockRefCount := binary.LittleEndian.Uint16(p.data[offset:])
-	offset += 2
-
-	// Read block refs
-	entry.BlockRefs = make([]BlockRef, blockRefCount)
-	for i := range blockRefCount {
-		if offset+1 > p.size {
-			return nil, 0, ErrCorrupted
-		}
-		idLen := p.data[offset]
-		offset++
-
-		if offset+uint64(idLen) > p.size {
-			return nil, 0, ErrCorrupted
-		}
-		entry.BlockRefs[i].ID = string(p.data[offset : offset+uint64(idLen)])
-		offset += uint64(idLen)
-
-		if offset+4 > p.size {
-			return nil, 0, ErrCorrupted
-		}
-		entry.BlockRefs[i].Size = binary.LittleEndian.Uint32(p.data[offset:])
-		offset += 4
-	}
-
 	// Read data
-	if offset+uint64(entry.Length) > p.size {
+	if offset+uint64(dataLen) > p.size {
 		return nil, 0, ErrCorrupted
 	}
-	entry.Data = make([]byte, entry.Length)
-	copy(entry.Data, p.data[offset:offset+uint64(entry.Length)])
-	offset += uint64(entry.Length)
+	entry.Data = make([]byte, dataLen)
+	copy(entry.Data, p.data[offset:offset+uint64(dataLen)])
+	offset += uint64(dataLen)
 
 	return entry, offset, nil
 }
 
-// skipSliceEntry skips a slice entry without reading its data.
+// skipBlockWriteEntry skips a block write entry without reading its data.
 // Used in the first pass of recovery to find removed files.
-func (p *MmapPersister) skipSliceEntry(offset uint64) (uint64, error) {
+func (p *MmapPersister) skipBlockWriteEntry(offset uint64) (uint64, error) {
 	// Skip payload ID
 	if offset+2 > p.size {
 		return 0, ErrCorrupted
@@ -581,30 +594,15 @@ func (p *MmapPersister) skipSliceEntry(offset uint64) (uint64, error) {
 	handleLen := binary.LittleEndian.Uint16(p.data[offset:])
 	offset += 2 + uint64(handleLen)
 
-	// Skip chunk index (4) + slice ID (36) + offset (4) + length (4) + state (1) + created at (8)
-	fixedSize := uint64(4 + 36 + 4 + 4 + 1 + 8)
+	// Skip chunk index (4) + block index (4) + offset in block (4) + data length (4)
+	fixedSize := uint64(16)
 	if offset+fixedSize > p.size {
 		return 0, ErrCorrupted
 	}
 
-	// Read length to know how much data to skip
-	dataLen := binary.LittleEndian.Uint32(p.data[offset+4+36+4:])
+	// Read data length to know how much to skip
+	dataLen := binary.LittleEndian.Uint32(p.data[offset+12:])
 	offset += fixedSize
-
-	// Skip block refs
-	if offset+2 > p.size {
-		return 0, ErrCorrupted
-	}
-	blockRefCount := binary.LittleEndian.Uint16(p.data[offset:])
-	offset += 2
-
-	for range blockRefCount {
-		if offset+1 > p.size {
-			return 0, ErrCorrupted
-		}
-		idLen := p.data[offset]
-		offset += 1 + uint64(idLen) + 4 // ID length + ID + Size
-	}
 
 	// Skip data
 	offset += uint64(dataLen)
@@ -629,6 +627,42 @@ func (p *MmapPersister) readRemoveEntry(offset uint64) (string, uint64, error) {
 	offset += uint64(idLen)
 
 	return payloadID, offset, nil
+}
+
+// readBlockUploadedEntry reads a block uploaded marker from the log.
+// Returns the BlockKey identifying the uploaded block.
+func (p *MmapPersister) readBlockUploadedEntry(offset uint64) (BlockKey, uint64, error) {
+	var key BlockKey
+
+	// Read payload ID length
+	if offset+2 > p.size {
+		return key, 0, ErrCorrupted
+	}
+	idLen := binary.LittleEndian.Uint16(p.data[offset:])
+	offset += 2
+
+	// Read payload ID
+	if offset+uint64(idLen) > p.size {
+		return key, 0, ErrCorrupted
+	}
+	key.PayloadID = string(p.data[offset : offset+uint64(idLen)])
+	offset += uint64(idLen)
+
+	// Read chunk index
+	if offset+4 > p.size {
+		return key, 0, ErrCorrupted
+	}
+	key.ChunkIdx = binary.LittleEndian.Uint32(p.data[offset:])
+	offset += 4
+
+	// Read block index
+	if offset+4 > p.size {
+		return key, 0, ErrCorrupted
+	}
+	key.BlockIdx = binary.LittleEndian.Uint32(p.data[offset:])
+	offset += 4
+
+	return key, offset, nil
 }
 
 // Close releases resources held by the persister.
