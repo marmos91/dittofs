@@ -81,6 +81,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 	// Create cache, block store, and transfer manager for content operations
 	testCache := cache.New(0) // 0 = unlimited size
 	blockStore := storemem.New()
+	// Use metaStore as ObjectStore - MemoryMetadataStore implements ObjectStore
 	transferMgr := transfer.New(testCache, blockStore, metaStore, transfer.DefaultConfig())
 
 	// Create PayloadService with cache and transfer manager
