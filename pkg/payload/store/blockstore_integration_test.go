@@ -314,6 +314,7 @@ func TestFlusher_Integration(t *testing.T) {
 		ParallelUploads:   4,
 		ParallelDownloads: 4,
 	})
+	f.Start(ctx) // Start queue workers for downloads
 	defer f.Close()
 
 	t.Run("FlushSmallFile", func(t *testing.T) {
@@ -321,9 +322,9 @@ func TestFlusher_Integration(t *testing.T) {
 		data := []byte("hello world from flusher test")
 
 		// Write data to cache
-		err := c.WriteSlice(ctx, payloadID, 0, data, 0)
+		err := c.Write(ctx, payloadID, 0, data, 0)
 		if err != nil {
-			t.Fatalf("WriteSlice failed: %v", err)
+			t.Fatalf("Write failed: %v", err)
 		}
 
 		// Notify transfer manager of write completion
@@ -360,9 +361,9 @@ func TestFlusher_Integration(t *testing.T) {
 			data[i] = byte(i % 256)
 		}
 
-		err := c.WriteSlice(ctx, payloadID, 0, data, 0)
+		err := c.Write(ctx, payloadID, 0, data, 0)
 		if err != nil {
-			t.Fatalf("WriteSlice failed: %v", err)
+			t.Fatalf("Write failed: %v", err)
 		}
 
 		// Notify transfer manager of write completion
@@ -390,7 +391,7 @@ func TestFlusher_Integration(t *testing.T) {
 		}
 	})
 
-	t.Run("ReadSliceFromS3", func(t *testing.T) {
+	t.Run("ReadFromS3", func(t *testing.T) {
 		payloadID := "share1/content-read"
 
 		// Pre-populate S3 with a block
@@ -401,11 +402,20 @@ func TestFlusher_Integration(t *testing.T) {
 			t.Fatalf("WriteBlock failed: %v", err)
 		}
 
-		// Read through transfer manager (cache miss -> S3 fetch)
-		readData := make([]byte, len(originalData))
-		err = f.ReadSlice(ctx, payloadID, 0, 0, uint32(len(originalData)), readData)
+		// Ensure data is available (cache miss -> S3 fetch -> cache)
+		err = f.EnsureAvailable(ctx, payloadID, 0, 0, uint32(len(originalData)))
 		if err != nil {
-			t.Fatalf("ReadSlice failed: %v", err)
+			t.Fatalf("EnsureAvailable failed: %v", err)
+		}
+
+		// Read from cache
+		readData := make([]byte, len(originalData))
+		found, err := c.Read(ctx, payloadID, 0, 0, uint32(len(originalData)), readData)
+		if err != nil {
+			t.Fatalf("Read failed: %v", err)
+		}
+		if !found {
+			t.Fatal("Expected data to be found in cache after EnsureAvailable")
 		}
 
 		if string(readData) != string(originalData) {
@@ -431,6 +441,7 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 		ParallelUploads:   4,
 		ParallelDownloads: 4,
 	})
+	f.Start(ctx) // Start queue workers for downloads
 	defer f.Close()
 
 	t.Run("FlushAndRead", func(t *testing.T) {
@@ -438,9 +449,9 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 		data := []byte("test data for memory store")
 
 		// Write to cache
-		err := c.WriteSlice(ctx, payloadID, 0, data, 0)
+		err := c.Write(ctx, payloadID, 0, data, 0)
 		if err != nil {
-			t.Fatalf("WriteSlice failed: %v", err)
+			t.Fatalf("Write failed: %v", err)
 		}
 
 		// Notify transfer manager of write completion
@@ -460,11 +471,20 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 		// Clear cache to force block store read
 		c.Remove(ctx, payloadID)
 
-		// Read back through transfer manager
-		readData := make([]byte, len(data))
-		err = f.ReadSlice(ctx, payloadID, 0, 0, uint32(len(data)), readData)
+		// Ensure data is available (cache miss -> block store fetch -> cache)
+		err = f.EnsureAvailable(ctx, payloadID, 0, 0, uint32(len(data)))
 		if err != nil {
-			t.Fatalf("ReadSlice failed: %v", err)
+			t.Fatalf("EnsureAvailable failed: %v", err)
+		}
+
+		// Read from cache
+		readData := make([]byte, len(data))
+		found, err := c.Read(ctx, payloadID, 0, 0, uint32(len(data)), readData)
+		if err != nil {
+			t.Fatalf("Read failed: %v", err)
+		}
+		if !found {
+			t.Fatal("Expected data to be found in cache after EnsureAvailable")
 		}
 
 		if string(readData) != string(data) {
