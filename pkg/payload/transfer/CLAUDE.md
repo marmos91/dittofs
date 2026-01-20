@@ -198,6 +198,39 @@ TransferManager requires an `ObjectStore` for content-addressed deduplication:
 New(cache *cache.Cache, blockStore store.BlockStore, objectStore metadata.ObjectStore, config Config)
 ```
 
+### Upload Parallelism
+
+The transfer manager uses parallel uploads to maximize throughput:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `ParallelUploads` | 16 | Initial concurrent block uploads |
+| `MaxParallelUploads` | 0 (unlimited) | Maximum concurrent uploads (caps adaptive scaling) |
+| `ParallelDownloads` | 4 | Concurrent downloads per file |
+| `PrefetchBlocks` | 4 | Blocks to prefetch ahead (16MB) |
+
+**Throughput estimates** (4MB blocks):
+- 16 parallel uploads × ~4 MB/s per S3 connection ≈ 64 MB/s sustained upload
+- Actual throughput depends on network bandwidth and S3 region latency
+
+**Tuning for different scenarios**:
+```yaml
+# High-bandwidth network (e.g., AWS same-region)
+transfer:
+  parallel_uploads: 32
+  max_parallel_uploads: 64
+
+# Limited bandwidth or cost-sensitive
+transfer:
+  parallel_uploads: 4
+  max_parallel_uploads: 8
+
+# Large file workloads (maximize throughput)
+transfer:
+  parallel_uploads: 16
+  prefetch_blocks: 8  # 32MB prefetch ahead
+```
+
 ## Methods
 
 ### TransferManager
