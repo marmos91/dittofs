@@ -226,7 +226,7 @@ func (h *Handler) Remove(
 	metaSvc := h.Registry.GetMetadataService()
 
 	// Get content service for this share
-	contentSvc := h.Registry.GetBlockService()
+	payloadSvc := h.Registry.GetBlockService()
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 
@@ -335,7 +335,7 @@ func (h *Handler) Remove(
 	// Any unflushed cache data will be cleaned up by cache eviction.
 
 	if removedFileAttr.PayloadID != "" {
-		if err := contentSvc.Delete(ctx.Context, ctx.Share, removedFileAttr.PayloadID); err != nil {
+		if err := payloadSvc.Delete(ctx.Context, ctx.Share, removedFileAttr.PayloadID); err != nil {
 			// Log but don't fail the operation - metadata is already removed
 			logger.WarnCtx(ctx.Context, "REMOVE: failed to delete content", "name", req.Filename, "content_id", removedFileAttr.PayloadID, "error", err)
 			// This is non-fatal - the file is successfully removed from metadata

@@ -2,9 +2,16 @@
 package handlers
 
 import (
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/registry"
+)
+
+// Default UID/GID used when no ShareIdentityMapping is configured for a user.
+const (
+	defaultUID = uint32(1000)
+	defaultGID = uint32(1000)
 )
 
 // BuildAuthContext creates a metadata.AuthContext from SMB handler context.
@@ -14,13 +21,11 @@ import (
 //   - SMB session user → Unix UID/GID (via ShareIdentityMapping)
 //   - SMB share permission → metadata store permission checks
 //
-// NOTE: In the new identity model, users don't have global UID/GID.
-// Instead, Unix identity is resolved per-share via ShareIdentityMapping.
-// Until IdentityStore integration is complete, authenticated users use
-// a default UID/GID (1000/1000).
-//
-// TODO: Integrate with IdentityStore to resolve ShareIdentityMapping for the current share.
-func BuildAuthContext(ctx *SMBHandlerContext, _ *registry.Registry) (*metadata.AuthContext, error) {
+// Identity Resolution:
+// For authenticated users, this function looks up the ShareIdentityMapping
+// in the IdentityStore to resolve per-share UID/GID. If no mapping exists,
+// it falls back to default values (1000/1000).
+func BuildAuthContext(ctx *SMBHandlerContext, reg *registry.Registry) (*metadata.AuthContext, error) {
 	authCtx := &metadata.AuthContext{
 		Context:    ctx.Context,
 		ClientAddr: ctx.ClientAddr,
@@ -28,16 +33,11 @@ func BuildAuthContext(ctx *SMBHandlerContext, _ *registry.Registry) (*metadata.A
 	}
 
 	// Build identity from SMB session
-	// NOTE: Users no longer have direct UID/GID fields.
-	// Unix identity is now per-share (via ShareIdentityMapping).
-	// For now, we use default values until IdentityStore integration is complete.
 	if ctx.User != nil {
-		// Authenticated user - use default Unix identity
-		// TODO: Look up ShareIdentityMapping for ctx.ShareName to get proper UID/GID
-		defaultUID := uint32(1000)
-		defaultGID := uint32(1000)
-		authCtx.Identity.UID = &defaultUID
-		authCtx.Identity.GID = &defaultGID
+		// Authenticated user - look up ShareIdentityMapping
+		uid, gid := resolveUserIdentity(reg, ctx.User.Username, ctx.ShareName)
+		authCtx.Identity.UID = &uid
+		authCtx.Identity.GID = &gid
 		authCtx.Identity.Username = ctx.User.Username
 	} else if ctx.IsGuest {
 		// Guest session - use nobody/nogroup
@@ -57,12 +57,52 @@ func BuildAuthContext(ctx *SMBHandlerContext, _ *registry.Registry) (*metadata.A
 	return authCtx, nil
 }
 
+// resolveUserIdentity looks up the ShareIdentityMapping for a user on a share.
+// Returns the UID/GID from the mapping, or defaults if no mapping exists.
+func resolveUserIdentity(reg *registry.Registry, username, shareName string) (uid, gid uint32) {
+	// Default values if no mapping found
+	uid = defaultUID
+	gid = defaultGID
+
+	if reg == nil || username == "" || shareName == "" {
+		return uid, gid
+	}
+
+	identityStore := reg.GetIdentityStore()
+	if identityStore == nil {
+		logger.Debug("No identity store configured, using default UID/GID",
+			"username", username, "share", shareName, "uid", uid, "gid", gid)
+		return uid, gid
+	}
+
+	mapping, err := identityStore.GetShareIdentityMapping(username, shareName)
+	if err != nil {
+		logger.Debug("Failed to get ShareIdentityMapping, using defaults",
+			"username", username, "share", shareName, "error", err)
+		return uid, gid
+	}
+
+	if mapping != nil {
+		uid = mapping.UID
+		gid = mapping.GID
+		logger.Debug("Resolved ShareIdentityMapping",
+			"username", username, "share", shareName, "uid", uid, "gid", gid)
+	} else {
+		logger.Debug("No ShareIdentityMapping found, using defaults",
+			"username", username, "share", shareName, "uid", uid, "gid", gid)
+	}
+
+	return uid, gid
+}
+
 // BuildAuthContextFromUser creates an AuthContext from a User.
 // This is useful when the handler has direct access to a User object.
 //
-// NOTE: In the new identity model, users don't have global UID/GID.
-// This function uses default values until ShareIdentityMapping integration is complete.
-func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *identity.User) *metadata.AuthContext {
+// Identity Resolution:
+// For authenticated users, this function looks up the ShareIdentityMapping
+// in the IdentityStore to resolve per-share UID/GID. If no mapping exists,
+// it falls back to default values (1000/1000).
+func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *identity.User, reg *registry.Registry) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
 		Context:    ctx.Context,
 		ClientAddr: ctx.ClientAddr,
@@ -70,12 +110,10 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *identity.User) *meta
 	}
 
 	if user != nil {
-		// Users no longer have direct UID/GID - use defaults
-		// TODO: Look up ShareIdentityMapping for ctx.ShareName
-		defaultUID := uint32(1000)
-		defaultGID := uint32(1000)
-		authCtx.Identity.UID = &defaultUID
-		authCtx.Identity.GID = &defaultGID
+		// Look up ShareIdentityMapping for the user on this share
+		uid, gid := resolveUserIdentity(reg, user.Username, ctx.ShareName)
+		authCtx.Identity.UID = &uid
+		authCtx.Identity.GID = &gid
 		authCtx.Identity.Username = user.Username
 	}
 

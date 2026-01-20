@@ -253,7 +253,7 @@ func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64)
 
 		// Handle delete-on-close (FileDispositionInformation)
 		if openFile.DeletePending && len(openFile.ParentHandle) > 0 && openFile.FileName != "" {
-			authCtx := h.buildCleanupAuthContext(ctx, sess)
+			authCtx := h.buildCleanupAuthContext(ctx, sess, openFile.ShareName)
 			metaSvc := h.Registry.GetMetadataService()
 			if openFile.IsDirectory {
 				if err := metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
@@ -333,7 +333,7 @@ func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessi
 
 		// Handle delete-on-close (FileDispositionInformation)
 		if openFile.DeletePending && len(openFile.ParentHandle) > 0 && openFile.FileName != "" {
-			authCtx := h.buildCleanupAuthContext(ctx, sess)
+			authCtx := h.buildCleanupAuthContext(ctx, sess, openFile.ShareName)
 			metaSvc := h.Registry.GetMetadataService()
 			if openFile.IsDirectory {
 				if err := metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
@@ -432,10 +432,10 @@ func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
 		return
 	}
 
-	contentSvc := h.Registry.GetBlockService()
+	payloadSvc := h.Registry.GetBlockService()
 
 	// Use blocking Flush for immediate durability
-	_, flushErr := contentSvc.Flush(ctx, openFile.ShareName, openFile.PayloadID)
+	_, flushErr := payloadSvc.Flush(ctx, openFile.ShareName, openFile.PayloadID)
 	if flushErr != nil {
 		logger.Warn("flushFileCache: flush failed",
 			"path", openFile.Path,
@@ -451,22 +451,23 @@ func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
 // buildCleanupAuthContext creates an AuthContext for cleanup operations.
 // This is used during session/tree cleanup when we need to perform file operations
 // (like delete-on-close) but don't have a full SMBHandlerContext.
-// If the session is available, it uses the session's user credentials.
+// If the session is available, it uses the session's user credentials with
+// ShareIdentityMapping lookup for proper UID/GID resolution.
 // Otherwise, it falls back to root credentials for cleanup operations.
-func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Session) *metadata.AuthContext {
+//
+// The shareName parameter is used to look up ShareIdentityMapping for the user.
+// If empty, default UID/GID values are used for authenticated users.
+func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Session, shareName string) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
 		Context:  ctx,
 		Identity: &metadata.Identity{},
 	}
 
 	if sess != nil && sess.User != nil {
-		// Use session user's credentials
-		// NOTE: Users no longer have direct UID/GID - use defaults
-		// TODO: Look up ShareIdentityMapping for the share
-		defaultUID := uint32(1000)
-		defaultGID := uint32(1000)
-		authCtx.Identity.UID = &defaultUID
-		authCtx.Identity.GID = &defaultGID
+		// Use session user's credentials with ShareIdentityMapping lookup
+		uid, gid := resolveUserIdentity(h.Registry, sess.User.Username, shareName)
+		authCtx.Identity.UID = &uid
+		authCtx.Identity.GID = &gid
 		authCtx.Identity.Username = sess.User.Username
 		authCtx.ClientAddr = sess.ClientAddr
 	} else {

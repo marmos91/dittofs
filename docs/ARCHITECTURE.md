@@ -281,14 +281,14 @@ type BlockService struct {
 }
 
 // Usage by protocol handlers
-contentSvc := content.New()
-contentSvc.RegisterStoreForShare("/export", memoryStore)
-contentSvc.RegisterCacheForShare("/export", memoryCache)
+payloadSvc := content.New()
+payloadSvc.RegisterStoreForShare("/export", memoryStore)
+payloadSvc.RegisterCacheForShare("/export", memoryCache)
 
 // High-level operations (cache-aware)
-data, err := contentSvc.ReadAt(ctx, shareName, contentID, offset, size)  // Checks cache first
-err := contentSvc.WriteAt(ctx, shareName, contentID, data, offset)       // Writes to cache
-err := contentSvc.Flush(ctx, shareName, contentID)                       // Flushes cache to store
+data, err := payloadSvc.ReadAt(ctx, shareName, contentID, offset, size)  // Checks cache first
+err := payloadSvc.WriteAt(ctx, shareName, contentID, data, offset)       // Writes to cache
+err := payloadSvc.Flush(ctx, shareName, contentID)                       // Flushes cache to store
 ```
 
 ### Store Interfaces (CRUD)
@@ -350,13 +350,13 @@ contentStore := fscontent.New("/data/content")
 metaSvc := metadata.New()
 metaSvc.RegisterStoreForShare("/export", metadataStore)
 
-contentSvc := content.New()
-contentSvc.RegisterStoreForShare("/export", contentStore)
+payloadSvc := content.New()
+payloadSvc.RegisterStoreForShare("/export", contentStore)
 
 // Create registry and wire services
 registry := registry.New()
 registry.SetMetadataService(metaSvc)
-registry.SetBlockService(contentSvc)
+registry.SetBlockService(payloadSvc)
 
 // Start server
 server := server.New(registry)
@@ -407,7 +407,7 @@ func (s *S3Store) ReadAt(ctx context.Context, id content.ContentID, offset, size
 
 // 3. Register with services (business logic is in services, not stores)
 metaSvc.RegisterStoreForShare("/archive", postgresStore)
-contentSvc.RegisterStoreForShare("/archive", s3Store)
+payloadSvc.RegisterStoreForShare("/archive", s3Store)
 ```
 
 ## Directory Structure

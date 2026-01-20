@@ -301,6 +301,9 @@ func runStart() {
 			log.Fatalf("Failed to initialize identity store: %v", err)
 		}
 
+		// Set identity store on registry for protocol handlers to use ShareIdentityMapping
+		reg.SetIdentityStore(identityStore)
+
 		// Create JWT service
 		jwtConfig := auth.JWTConfig{
 			Secret:               jwtSecret,

@@ -276,7 +276,7 @@ func (h *Handler) Read(
 	// Step 2: Get content service from registry
 	// ========================================================================
 
-	contentSvc := h.Registry.GetBlockService()
+	payloadSvc := h.Registry.GetBlockService()
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
@@ -360,7 +360,7 @@ func (h *Handler) Read(
 	// All reads go through ContentService.ReadAt which reads from Cache.
 	// Cache handles slice merging (newest-wins semantics).
 
-	readResult, readErr := readFromContentService(ctx, contentSvc, file.PayloadID, req.Offset, actualLength, clientIP, req.Handle)
+	readResult, readErr := readFromContentService(ctx, payloadSvc, file.PayloadID, req.Offset, actualLength, clientIP, req.Handle)
 	if readErr != nil {
 		// Check if cancellation error
 		if readErr == context.Canceled || readErr == context.DeadlineExceeded {

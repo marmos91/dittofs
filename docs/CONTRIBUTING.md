@@ -291,7 +291,7 @@ func (s *MyContentStore) WriteAt(ctx context.Context, id content.ContentID, data
 }
 
 // Register with BlockService (which handles caching, routing)
-contentSvc.RegisterStoreForShare("/myshare", myContentStore)
+payloadSvc.RegisterStoreForShare("/myshare", myContentStore)
 ```
 
 See [IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for detailed implementation guide.
