@@ -444,20 +444,13 @@ func (s *MemoryIdentityStore) RemoveUserFromGroup(ctx context.Context, username,
 		return identity.ErrUserNotFound
 	}
 
+	// Filter out the group - no error if user wasn't in the group
 	newGroups := make([]string, 0, len(user.Groups))
-	found := false
 	for _, g := range user.Groups {
-		if g == groupName {
-			found = true
-		} else {
+		if g != groupName {
 			newGroups = append(newGroups, g)
 		}
 	}
-
-	if !found {
-		return nil // User wasn't in the group
-	}
-
 	user.Groups = newGroups
 	return nil
 }

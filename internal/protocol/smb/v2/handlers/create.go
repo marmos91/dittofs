@@ -380,7 +380,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// Step 3: Build AuthContext from SMB session
 	// ========================================================================
 
-	authCtx, err := BuildAuthContext(ctx, h.Registry)
+	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		logger.Warn("CREATE: failed to build auth context", "error", err)
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil

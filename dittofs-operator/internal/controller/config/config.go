@@ -113,15 +113,15 @@ func GenerateDittoFSConfig(ctx context.Context, client client.Client, dittoServe
 			allowedAuthMethods = []string{"anonymous", "unix"}
 		}
 
+		// Initialize with defaults (bools default to false via Go zero values)
 		identityMapping := IdentityMapping{
-			MapAllToAnonymous:        false,
-			MapPrivilegedToAnonymous: false,
-			AnonymousUID:             65534,
-			AnonymousGID:             65534,
+			AnonymousUID: 65534,
+			AnonymousGID: 65534,
 		}
 		if share.IdentityMapping != nil {
 			identityMapping.MapAllToAnonymous = share.IdentityMapping.MapAllToAnonymous
 			identityMapping.MapPrivilegedToAnonymous = share.IdentityMapping.MapPrivilegedToAnonymous
+			// Only override defaults if non-zero values provided
 			if share.IdentityMapping.AnonymousUID != 0 {
 				identityMapping.AnonymousUID = share.IdentityMapping.AnonymousUID
 			}
@@ -143,18 +143,8 @@ func GenerateDittoFSConfig(ctx context.Context, client client.Client, dittoServe
 			rootDirAttrs.GID = share.RootDirectoryAttributes.GID
 		}
 
-		// Set AllowGuest based on configuration, defaulting to false
-		allowGuest := false
-		if share.AllowGuest != nil {
-			allowGuest = *share.AllowGuest
-		}
-
-		if share.RequireAuth && allowGuest {
-			fmt.Printf("warning: share %q has RequireAuth enabled but AllowGuest is true; guest access will still be permitted\n", share.ExportPath)
-		}
-
-		// Set DefaultPermission based on configuration, defaulting to "read"
-		defaultPermission := "read"
+		// Set DefaultPermission based on configuration, defaulting to "none" (no guest access)
+		defaultPermission := "none"
 		if share.DefaultPermission != "" {
 			defaultPermission = share.DefaultPermission
 		}
@@ -165,7 +155,6 @@ func GenerateDittoFSConfig(ctx context.Context, client client.Client, dittoServe
 			ContentStore:            share.ContentStore,
 			Cache:                   share.Cache,
 			ReadOnly:                share.ReadOnly,
-			AllowGuest:              allowGuest,
 			DefaultPermission:       defaultPermission,
 			AllowedClients:          share.AllowedClients,
 			DeniedClients:           share.DeniedClients,
@@ -327,8 +316,28 @@ func getConfigValue(config map[string]string, key, defaultValue string) string {
 	return defaultValue
 }
 
+// resolveSecretValue resolves a single secret value from a Kubernetes Secret.
+// This is a helper to avoid repeating the secret resolution pattern.
+func resolveSecretValue(ctx context.Context, c client.Client, namespace string, secretRef corev1.SecretKeySelector) (string, error) {
+	secret := &corev1.Secret{}
+	secretKey := types.NamespacedName{
+		Name:      secretRef.Name,
+		Namespace: namespace,
+	}
+
+	if err := c.Get(ctx, secretKey, secret); err != nil {
+		return "", fmt.Errorf("failed to get secret %s: %w", secretRef.Name, err)
+	}
+
+	if secretValue, ok := secret.Data[secretRef.Key]; ok {
+		return string(secretValue), nil
+	}
+
+	return "", fmt.Errorf("key %s not found in secret %s", secretRef.Key, secretRef.Name)
+}
+
 // resolveBackendConfig resolves configuration values from both direct config and secret references
-func resolveBackendConfig(ctx context.Context, client client.Client, namespace string, backend dittoiov1alpha1.BackendConfig) (map[string]string, error) {
+func resolveBackendConfig(ctx context.Context, c client.Client, namespace string, backend dittoiov1alpha1.BackendConfig) (map[string]string, error) {
 	resolved := make(map[string]string)
 
 	// Copy direct config values
@@ -336,28 +345,18 @@ func resolveBackendConfig(ctx context.Context, client client.Client, namespace s
 
 	// Resolve secret references (they override direct config values)
 	for key, secretRef := range backend.SecretRefs {
-		secret := &corev1.Secret{}
-		secretKey := types.NamespacedName{
-			Name:      secretRef.Name,
-			Namespace: namespace,
+		value, err := resolveSecretValue(ctx, c, namespace, secretRef)
+		if err != nil {
+			return nil, err
 		}
-
-		if err := client.Get(ctx, secretKey, secret); err != nil {
-			return nil, fmt.Errorf("failed to get secret %s: %w", secretRef.Name, err)
-		}
-
-		if secretValue, ok := secret.Data[secretRef.Key]; ok {
-			resolved[key] = string(secretValue)
-		} else {
-			return nil, fmt.Errorf("key %s not found in secret %s", secretRef.Key, secretRef.Name)
-		}
+		resolved[key] = value
 	}
 
 	return resolved, nil
 }
 
 // resolveUserConfig resolves user configuration including password from secrets
-func resolveUserConfig(ctx context.Context, client client.Client, namespace string, userSpec dittoiov1alpha1.UserSpec) (User, error) {
+func resolveUserConfig(ctx context.Context, c client.Client, namespace string, userSpec dittoiov1alpha1.UserSpec) (User, error) {
 	user := User{
 		Username:         userSpec.Username,
 		Enabled:          userSpec.Enabled,
@@ -372,22 +371,11 @@ func resolveUserConfig(ctx context.Context, client client.Client, namespace stri
 
 	// Resolve password hash
 	if userSpec.PasswordSecretRef != nil {
-		// Use secret reference
-		secret := &corev1.Secret{}
-		secretKey := types.NamespacedName{
-			Name:      userSpec.PasswordSecretRef.Name,
-			Namespace: namespace,
+		passwordHash, err := resolveSecretValue(ctx, c, namespace, *userSpec.PasswordSecretRef)
+		if err != nil {
+			return user, err
 		}
-
-		if err := client.Get(ctx, secretKey, secret); err != nil {
-			return user, fmt.Errorf("failed to get secret %s: %w", userSpec.PasswordSecretRef.Name, err)
-		}
-
-		if passwordHash, ok := secret.Data[userSpec.PasswordSecretRef.Key]; ok {
-			user.PasswordHash = string(passwordHash)
-		} else {
-			return user, fmt.Errorf("key %s not found in secret %s", userSpec.PasswordSecretRef.Key, userSpec.PasswordSecretRef.Name)
-		}
+		user.PasswordHash = passwordHash
 	} else if userSpec.PasswordHash != "" {
 		// Use direct password hash (deprecated but still supported)
 		user.PasswordHash = userSpec.PasswordHash
@@ -437,27 +425,16 @@ func resolveIdentityConfig(ctx context.Context, c client.Client, namespace strin
 
 	// Resolve JWT configuration
 	if identitySpec.JWT != nil {
+		jwtSecret, err := resolveSecretValue(ctx, c, namespace, identitySpec.JWT.SecretRef)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve JWT secret: %w", err)
+		}
+
 		jwtConfig := &JWTConfig{
+			Secret:               jwtSecret,
 			Issuer:               "dittofs",
 			AccessTokenDuration:  "15m",
 			RefreshTokenDuration: "168h",
-		}
-
-		// Resolve JWT secret from Kubernetes Secret
-		secret := &corev1.Secret{}
-		secretKey := types.NamespacedName{
-			Name:      identitySpec.JWT.SecretRef.Name,
-			Namespace: namespace,
-		}
-
-		if err := c.Get(ctx, secretKey, secret); err != nil {
-			return nil, fmt.Errorf("failed to get JWT secret %s: %w", identitySpec.JWT.SecretRef.Name, err)
-		}
-
-		if secretValue, ok := secret.Data[identitySpec.JWT.SecretRef.Key]; ok {
-			jwtConfig.Secret = string(secretValue)
-		} else {
-			return nil, fmt.Errorf("key %s not found in JWT secret %s", identitySpec.JWT.SecretRef.Key, identitySpec.JWT.SecretRef.Name)
 		}
 
 		// Apply optional overrides
@@ -486,21 +463,11 @@ func resolveIdentityConfig(ctx context.Context, c client.Client, namespace strin
 
 		// Resolve admin password from Kubernetes Secret if provided
 		if identitySpec.Admin.PasswordSecretRef != nil {
-			secret := &corev1.Secret{}
-			secretKey := types.NamespacedName{
-				Name:      identitySpec.Admin.PasswordSecretRef.Name,
-				Namespace: namespace,
+			password, err := resolveSecretValue(ctx, c, namespace, *identitySpec.Admin.PasswordSecretRef)
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve admin password: %w", err)
 			}
-
-			if err := c.Get(ctx, secretKey, secret); err != nil {
-				return nil, fmt.Errorf("failed to get admin password secret %s: %w", identitySpec.Admin.PasswordSecretRef.Name, err)
-			}
-
-			if passwordValue, ok := secret.Data[identitySpec.Admin.PasswordSecretRef.Key]; ok {
-				adminConfig.Password = string(passwordValue)
-			} else {
-				return nil, fmt.Errorf("key %s not found in admin password secret %s", identitySpec.Admin.PasswordSecretRef.Key, identitySpec.Admin.PasswordSecretRef.Name)
-			}
+			adminConfig.Password = password
 		}
 		// If no password secret ref, DittoFS will generate a random password
 

@@ -48,6 +48,7 @@ shares:
     metadata: "default"
     payload: "default"
     read_only: false
+    default_permission: "read-write"  # Allow anonymous access for POSIX tests
     allowed_clients: []
     denied_clients: []
     require_auth: false

@@ -220,11 +220,6 @@ spec:
                     items:
                       description: ShareConfig defines an NFS export/share
                       properties:
-                        allowGuest:
-                          default: false
-                          description: AllowGuest allows guest/anonymous access to
-                            this share
-                          type: boolean
                         allowedAuthMethods:
                           default:
                           - anonymous
@@ -253,10 +248,14 @@ spec:
                             This backend will store file content
                           type: string
                         defaultPermission:
-                          default: read
+                          default: none
                           description: |-
-                            DefaultPermission sets the default permission level for users without explicit permissions
-                            Valid values: none, read, read-write, admin
+                            DefaultPermission sets the default permission level for users without explicit permissions.
+                            This also controls guest/anonymous access:
+                            - "none": Blocks unknown UIDs (no guest access)
+                            - "read": Guest users get read-only access
+                            - "read-write": Guest users get read-write access
+                            - "admin": Guest users get admin access
                           enum:
                           - none
                           - read

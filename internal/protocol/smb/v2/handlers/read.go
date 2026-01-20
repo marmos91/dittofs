@@ -337,7 +337,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 5: Build AuthContext and validate permissions
 	// ========================================================================
 
-	authCtx, err := BuildAuthContext(ctx, h.Registry)
+	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		logger.Warn("READ: failed to build auth context", "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil

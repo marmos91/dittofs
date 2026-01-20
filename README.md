@@ -437,8 +437,7 @@ shares:
   - name: /archive
     metadata_store: badger-main
     blocks_store: s3-cloud
-    allow_guest: true
-    default_permission: read
+    default_permission: read  # Allows guest access with read-only permissions
 
 adapters:
   nfs:

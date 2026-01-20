@@ -98,7 +98,7 @@ func (h *Handler) handleGetReparsePoint(ctx *SMBHandlerContext, body []byte) (*H
 	}
 
 	// Build auth context
-	authCtx, err := BuildAuthContext(ctx, h.Registry)
+	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		logger.Warn("IOCTL GET_REPARSE_POINT: failed to build auth context", "error", err)
 		return NewErrorResult(types.StatusAccessDenied), nil

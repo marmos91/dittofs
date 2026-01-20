@@ -357,7 +357,7 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	// Step 3: Build AuthContext
 	// ========================================================================
 
-	authCtx, err := BuildAuthContext(ctx, h.Registry)
+	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		logger.Warn("QUERY_DIRECTORY: failed to build auth context", "error", err)
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil

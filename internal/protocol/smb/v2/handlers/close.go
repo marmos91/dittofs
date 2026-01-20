@@ -367,7 +367,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// ========================================================================
 
 	if openFile.DeletePending {
-		authCtx, err := BuildAuthContext(ctx, h.Registry)
+		authCtx, err := BuildAuthContext(ctx)
 		if err != nil {
 			logger.Warn("CLOSE: failed to build auth context for delete", "error", err)
 		} else {
@@ -535,7 +535,7 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 		return fmt.Errorf("missing parent handle or filename for MFsymlink conversion")
 	}
 
-	authCtx, err := BuildAuthContext(ctx, h.Registry)
+	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		return err
 	}

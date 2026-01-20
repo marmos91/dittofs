@@ -154,14 +154,13 @@ type ShareConfig struct {
 	// +optional
 	AllowedAuthMethods []string `json:"allowedAuthMethods,omitempty"`
 
-	// AllowGuest allows guest/anonymous access to this share
-	// +kubebuilder:default=false
-	// +optional
-	AllowGuest *bool `json:"allowGuest,omitempty"`
-
-	// DefaultPermission sets the default permission level for users without explicit permissions
-	// Valid values: none, read, read-write, admin
-	// +kubebuilder:default="read"
+	// DefaultPermission sets the default permission level for users without explicit permissions.
+	// This also controls guest/anonymous access:
+	// - "none": Blocks unknown UIDs (no guest access)
+	// - "read": Guest users get read-only access
+	// - "read-write": Guest users get read-write access
+	// - "admin": Guest users get admin access
+	// +kubebuilder:default="none"
 	// +kubebuilder:validation:Enum=none;read;read-write;admin
 	// +optional
 	DefaultPermission string `json:"defaultPermission,omitempty"`
@@ -519,25 +518,33 @@ type GroupSpec struct {
 	SharePermissions map[string]string `json:"sharePermissions,omitempty"`
 }
 
-// GuestSpec defines guest/anonymous access configuration
+// GuestSpec defines guest/anonymous access configuration.
+// This is used in conjunction with per-share DefaultPermission:
+//   - If Enabled=false, guest access is blocked globally
+//   - If Enabled=true, per-share access is controlled by DefaultPermission:
+//   - DefaultPermission="none" blocks guests on that share
+//   - DefaultPermission="read"/"read-write"/"admin" allows guests with that permission
 type GuestSpec struct {
-	// Enable guest/anonymous access
+	// Enable guest/anonymous access globally.
+	// When false, all guest access is blocked regardless of share settings.
+	// When true, per-share access is controlled by each share's DefaultPermission.
 	// +kubebuilder:default=true
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 
-	// Unix UID for guest users
+	// Unix UID for guest users (used for file ownership)
 	// +kubebuilder:default=65534
 	// +optional
 	UID uint32 `json:"uid,omitempty"`
 
-	// Unix GID for guest users
+	// Unix GID for guest users (used for file ownership)
 	// +kubebuilder:default=65534
 	// +optional
 	GID uint32 `json:"gid,omitempty"`
 
-	// Per-share permissions for guests
-	// Map of share path to permission level (none, read, read-write, admin)
+	// Per-share permissions for guests.
+	// Map of share path to permission level (none, read, read-write, admin).
+	// These override the share's DefaultPermission for the guest user.
 	// +optional
 	SharePermissions map[string]string `json:"sharePermissions,omitempty"`
 }

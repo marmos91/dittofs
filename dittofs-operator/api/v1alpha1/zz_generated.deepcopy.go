@@ -591,11 +591,6 @@ func (in *ShareConfig) DeepCopyInto(out *ShareConfig) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
-	if in.AllowGuest != nil {
-		in, out := &in.AllowGuest, &out.AllowGuest
-		*out = new(bool)
-		**out = **in
-	}
 	if in.IdentityMapping != nil {
 		in, out := &in.IdentityMapping, &out.IdentityMapping
 		*out = new(IdentityMappingConfig)

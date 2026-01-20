@@ -5,7 +5,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/registry"
 )
 
 // Default UID/GID used when user has no UID/GID configured.
@@ -24,21 +23,19 @@ const (
 // Identity Resolution:
 // For authenticated users, this function uses the UID/GID fields from the User.
 // If the user has no UID/GID configured, it falls back to default values (1000/1000).
-func BuildAuthContext(ctx *SMBHandlerContext, _ *registry.Registry) (*metadata.AuthContext, error) {
+func BuildAuthContext(ctx *SMBHandlerContext) (*metadata.AuthContext, error) {
+	// Authenticated user - delegate to BuildAuthContextFromUser
+	if ctx.User != nil {
+		return BuildAuthContextFromUser(ctx, ctx.User), nil
+	}
+
 	authCtx := &metadata.AuthContext{
 		Context:    ctx.Context,
 		ClientAddr: ctx.ClientAddr,
 		Identity:   &metadata.Identity{},
 	}
 
-	// Build identity from SMB session
-	if ctx.User != nil {
-		// Authenticated user - use UID/GID from User object
-		uid, gid := getUserIdentity(ctx.User)
-		authCtx.Identity.UID = &uid
-		authCtx.Identity.GID = &gid
-		authCtx.Identity.Username = ctx.User.Username
-	} else if ctx.IsGuest {
+	if ctx.IsGuest {
 		// Guest session - use nobody/nogroup
 		guestUID := uint32(65534) // nobody
 		guestGID := uint32(65534) // nogroup
@@ -88,7 +85,7 @@ func getUserIdentity(user *identity.User) (uid, gid uint32) {
 //
 // Identity Resolution:
 // Uses the UID/GID fields from the User. If not set, falls back to defaults.
-func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *identity.User, _ *registry.Registry) *metadata.AuthContext {
+func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *identity.User) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
 		Context:    ctx.Context,
 		ClientAddr: ctx.ClientAddr,

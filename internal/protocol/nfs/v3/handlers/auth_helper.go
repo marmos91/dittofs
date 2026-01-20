@@ -13,6 +13,15 @@ import (
 // ErrShareAccessDenied is returned when a user doesn't have permission to access a share.
 var ErrShareAccessDenied = errors.New("share access denied")
 
+// formatUID formats an optional UID for logging.
+// Returns "nil" if the pointer is nil, otherwise the numeric value as string.
+func formatUID(uid *uint32) string {
+	if uid == nil {
+		return "nil"
+	}
+	return fmt.Sprintf("%d", *uid)
+}
+
 // BuildAuthContextWithMapping creates an AuthContext with share-level identity mapping applied.
 //
 // This is a shared helper function used by all NFS v3 handlers to ensure consistent
@@ -91,9 +100,9 @@ func BuildAuthContextWithMapping(
 				return nil, ErrShareAccessDenied
 			}
 
-			// Set read-only if user only has read permission
-			shareReadOnly = (sharePermission == identity.PermissionRead)
-			logger.DebugCtx(ctx, "User permission resolved", "share", shareName, "user", dittoUser.Username, "permission", sharePermission)
+			// Read-only if share is read-only OR user only has read permission
+			shareReadOnly = share.ReadOnly || sharePermission == identity.PermissionRead
+			logger.DebugCtx(ctx, "User permission resolved", "share", shareName, "user", dittoUser.Username, "permission", sharePermission, "readOnly", shareReadOnly)
 		} else {
 			// User not found - use default permission
 			// If defaultPerm is "none", block access (no guest access)
@@ -105,8 +114,9 @@ func BuildAuthContextWithMapping(
 
 			// Allow with default permission
 			sharePermission = defaultPerm
-			shareReadOnly = (sharePermission == identity.PermissionRead)
-			logger.DebugCtx(ctx, "Guest access granted", "share", shareName, "permission", sharePermission)
+			// Read-only if share is read-only OR permission is read-only
+			shareReadOnly = share.ReadOnly || sharePermission == identity.PermissionRead
+			logger.DebugCtx(ctx, "Guest access granted", "share", shareName, "permission", sharePermission, "readOnly", shareReadOnly)
 		}
 	} else if shareErr != nil {
 		return nil, fmt.Errorf("failed to get share: %w", shareErr)
@@ -128,22 +138,8 @@ func BuildAuthContextWithMapping(
 	}
 
 	// Log identity mapping
-	origUID := "nil"
-	if originalIdentity.UID != nil {
-		origUID = fmt.Sprintf("%d", *originalIdentity.UID)
-	}
-	effUID := "nil"
-	if effectiveIdentity.UID != nil {
-		effUID = fmt.Sprintf("%d", *effectiveIdentity.UID)
-	}
-	origGID := "nil"
-	if originalIdentity.GID != nil {
-		origGID = fmt.Sprintf("%d", *originalIdentity.GID)
-	}
-	effGID := "nil"
-	if effectiveIdentity.GID != nil {
-		effGID = fmt.Sprintf("%d", *effectiveIdentity.GID)
-	}
+	origUID, effUID := formatUID(originalIdentity.UID), formatUID(effectiveIdentity.UID)
+	origGID, effGID := formatUID(originalIdentity.GID), formatUID(effectiveIdentity.GID)
 
 	if origUID != effUID || origGID != effGID {
 		logger.DebugCtx(ctx, "Identity mapping applied", "share", shareName, "original_uid", origUID, "uid", effUID, "original_gid", origGID, "gid", effGID)
