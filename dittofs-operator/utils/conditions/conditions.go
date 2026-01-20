@@ -3,7 +3,7 @@ package conditions
 import (
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/metaSvc/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // ConditionType is a constraint for types that can be used as condition types

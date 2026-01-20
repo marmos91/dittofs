@@ -2,7 +2,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/metaSvc/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // DittoServerSpec defines the desired state of DittoServer
@@ -44,6 +44,10 @@ type DittoServerSpec struct {
 	// User management configuration
 	// +optional
 	Users *UserManagementSpec `json:"users,omitempty"`
+
+	// Identity store configuration (JWT authentication, API access)
+	// +optional
+	Identity *IdentityConfig `json:"identity,omitempty"`
 
 	// Resource requirements for the DittoFS container (CPU, memory limits/requests)
 	// +optional
@@ -536,6 +540,59 @@ type GuestSpec struct {
 	// Map of share path to permission level (none, read, read-write, admin)
 	// +optional
 	SharePermissions map[string]string `json:"sharePermissions,omitempty"`
+}
+
+// IdentityConfig defines identity store and JWT authentication configuration
+type IdentityConfig struct {
+	// Type of identity store
+	// +kubebuilder:default="memory"
+	// +kubebuilder:validation:Enum=memory
+	// +optional
+	Type string `json:"type,omitempty"`
+
+	// JWT configuration for REST API authentication
+	// +optional
+	JWT *JWTConfig `json:"jwt,omitempty"`
+
+	// Admin user configuration
+	// +optional
+	Admin *AdminConfig `json:"admin,omitempty"`
+}
+
+// JWTConfig defines JWT authentication settings
+type JWTConfig struct {
+	// Reference to a Secret containing the JWT signing secret
+	// The secret must contain a key with at least 32 characters
+	// +kubebuilder:validation:Required
+	SecretRef corev1.SecretKeySelector `json:"secretRef"`
+
+	// Access token duration (e.g., "15m", "1h")
+	// +kubebuilder:default="15m"
+	// +optional
+	AccessTokenDuration string `json:"accessTokenDuration,omitempty"`
+
+	// Refresh token duration (e.g., "168h" for 7 days)
+	// +kubebuilder:default="168h"
+	// +optional
+	RefreshTokenDuration string `json:"refreshTokenDuration,omitempty"`
+
+	// Token issuer claim
+	// +kubebuilder:default="dittofs"
+	// +optional
+	Issuer string `json:"issuer,omitempty"`
+}
+
+// AdminConfig defines the initial admin user configuration
+type AdminConfig struct {
+	// Admin username
+	// +kubebuilder:default="admin"
+	// +optional
+	Username string `json:"username,omitempty"`
+
+	// Reference to a Secret containing the admin password
+	// If not set, a random password will be generated and logged at startup
+	// +optional
+	PasswordSecretRef *corev1.SecretKeySelector `json:"passwordSecretRef,omitempty"`
 }
 
 // ServiceSpec defines the Kubernetes Service for the NFS server

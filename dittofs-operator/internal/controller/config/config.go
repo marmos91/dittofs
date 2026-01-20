@@ -259,6 +259,16 @@ func GenerateDittoFSConfig(ctx context.Context, client client.Client, dittoServe
 		adapters.SMB = smbAdapter
 	}
 
+	// Build identity configuration
+	var identityConfig *IdentityConfig
+	if dittoServer.Spec.Identity != nil {
+		var identityErr error
+		identityConfig, identityErr = resolveIdentityConfig(ctx, client, dittoServer.Namespace, dittoServer.Spec.Identity)
+		if identityErr != nil {
+			return "", fmt.Errorf("failed to resolve identity config: %w", identityErr)
+		}
+	}
+
 	config := DittoFSConfig{
 		Logging: LoggingConfig{
 			Level:  "INFO",
@@ -268,6 +278,7 @@ func GenerateDittoFSConfig(ctx context.Context, client client.Client, dittoServe
 		Server: ServerConfig{
 			ShutdownTimeout: "30s",
 		},
+		Identity: identityConfig,
 		Metadata: MetadataConfig{
 			Global: MetadataGlobal{
 				FilesystemCapabilities: FilesystemCapabilities{
@@ -412,4 +423,89 @@ func parseSizeString(size string) any {
 	}
 
 	return uint64(bytes)
+}
+
+// resolveIdentityConfig resolves identity configuration including JWT secret from Kubernetes secrets
+func resolveIdentityConfig(ctx context.Context, c client.Client, namespace string, identitySpec *dittoiov1alpha1.IdentityConfig) (*IdentityConfig, error) {
+	identityConfig := &IdentityConfig{
+		Type: "memory", // Default to memory
+	}
+
+	if identitySpec.Type != "" {
+		identityConfig.Type = identitySpec.Type
+	}
+
+	// Resolve JWT configuration
+	if identitySpec.JWT != nil {
+		jwtConfig := &JWTConfig{
+			Issuer:               "dittofs",
+			AccessTokenDuration:  "15m",
+			RefreshTokenDuration: "168h",
+		}
+
+		// Resolve JWT secret from Kubernetes Secret
+		secret := &corev1.Secret{}
+		secretKey := types.NamespacedName{
+			Name:      identitySpec.JWT.SecretRef.Name,
+			Namespace: namespace,
+		}
+
+		if err := c.Get(ctx, secretKey, secret); err != nil {
+			return nil, fmt.Errorf("failed to get JWT secret %s: %w", identitySpec.JWT.SecretRef.Name, err)
+		}
+
+		if secretValue, ok := secret.Data[identitySpec.JWT.SecretRef.Key]; ok {
+			jwtConfig.Secret = string(secretValue)
+		} else {
+			return nil, fmt.Errorf("key %s not found in JWT secret %s", identitySpec.JWT.SecretRef.Key, identitySpec.JWT.SecretRef.Name)
+		}
+
+		// Apply optional overrides
+		if identitySpec.JWT.Issuer != "" {
+			jwtConfig.Issuer = identitySpec.JWT.Issuer
+		}
+		if identitySpec.JWT.AccessTokenDuration != "" {
+			jwtConfig.AccessTokenDuration = identitySpec.JWT.AccessTokenDuration
+		}
+		if identitySpec.JWT.RefreshTokenDuration != "" {
+			jwtConfig.RefreshTokenDuration = identitySpec.JWT.RefreshTokenDuration
+		}
+
+		identityConfig.JWT = jwtConfig
+	}
+
+	// Resolve admin configuration
+	if identitySpec.Admin != nil {
+		adminConfig := &Admin{
+			Username: "admin", // Default username
+		}
+
+		if identitySpec.Admin.Username != "" {
+			adminConfig.Username = identitySpec.Admin.Username
+		}
+
+		// Resolve admin password from Kubernetes Secret if provided
+		if identitySpec.Admin.PasswordSecretRef != nil {
+			secret := &corev1.Secret{}
+			secretKey := types.NamespacedName{
+				Name:      identitySpec.Admin.PasswordSecretRef.Name,
+				Namespace: namespace,
+			}
+
+			if err := c.Get(ctx, secretKey, secret); err != nil {
+				return nil, fmt.Errorf("failed to get admin password secret %s: %w", identitySpec.Admin.PasswordSecretRef.Name, err)
+			}
+
+			if passwordValue, ok := secret.Data[identitySpec.Admin.PasswordSecretRef.Key]; ok {
+				adminConfig.Password = string(passwordValue)
+			} else {
+				return nil, fmt.Errorf("key %s not found in admin password secret %s", identitySpec.Admin.PasswordSecretRef.Key, identitySpec.Admin.PasswordSecretRef.Name)
+			}
+		}
+		// If no password secret ref, DittoFS will generate a random password
+
+		identityConfig.Admin = adminConfig
+	}
+
+	return identityConfig, nil
 }

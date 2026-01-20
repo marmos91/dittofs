@@ -361,6 +361,95 @@ spec:
                 required:
                 - shares
                 type: object
+              identity:
+                description: Identity store configuration (JWT authentication, API
+                  access)
+                properties:
+                  admin:
+                    description: Admin user configuration
+                    properties:
+                      passwordSecretRef:
+                        description: |-
+                          Reference to a Secret containing the admin password
+                          If not set, a random password will be generated and logged at startup
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must
+                              be a valid secret key.
+                            type: string
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must
+                              be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      username:
+                        default: admin
+                        description: Admin username
+                        type: string
+                    type: object
+                  jwt:
+                    description: JWT configuration for REST API authentication
+                    properties:
+                      accessTokenDuration:
+                        default: 15m
+                        description: Access token duration (e.g., "15m", "1h")
+                        type: string
+                      issuer:
+                        default: dittofs
+                        description: Token issuer claim
+                        type: string
+                      refreshTokenDuration:
+                        default: 168h
+                        description: Refresh token duration (e.g., "168h" for 7 days)
+                        type: string
+                      secretRef:
+                        description: |-
+                          Reference to a Secret containing the JWT signing secret
+                          The secret must contain a key with at least 32 characters
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must
+                              be a valid secret key.
+                            type: string
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must
+                              be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                        x-kubernetes-map-type: atomic
+                    required:
+                    - secretRef
+                    type: object
+                  type:
+                    default: memory
+                    description: Type of identity store
+                    enum:
+                    - memory
+                    type: string
+                type: object
               image:
                 default: marmos91c/dittofs:latest
                 description: Container image for DittoFS server
