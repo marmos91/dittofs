@@ -859,4 +859,3 @@ func (s *MemoryMetadataStore) markBlockUploadedLocked(_ context.Context, hash me
 	block.MarkUploaded()
 	return nil
 }
-

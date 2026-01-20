@@ -12,8 +12,8 @@ import (
 // Re-export chunk and block constants for backward compatibility.
 // New code should import pkg/payload/chunk and pkg/payload/block directly.
 const (
-	ChunkSize      = chunk.Size  // 64MB
-	BlockSize      = block.Size  // 4MB
+	ChunkSize      = chunk.Size // 64MB
+	BlockSize      = block.Size // 4MB
 	MinBlockSize   = block.MinSize
 	MaxBlockSize   = block.MaxSize
 	BlocksPerChunk = ChunkSize / BlockSize // 16 blocks per 64MB chunk
@@ -271,4 +271,3 @@ func isFullyCovered(coverage []uint64) bool {
 	}
 	return true
 }
-

@@ -39,8 +39,8 @@ func TestBlockRanges_SingleBlock(t *testing.T) {
 
 func TestBlockRanges_CrossBlockBoundary(t *testing.T) {
 	// 5MB write at offset 2MB - crosses into second block
-	offset := uint64(2 * 1024 * 1024)   // 2MB
-	length := 5 * 1024 * 1024           // 5MB
+	offset := uint64(2 * 1024 * 1024) // 2MB
+	length := 5 * 1024 * 1024         // 5MB
 
 	var ranges []BlockRange
 	for br := range BlockRanges(offset, length) {
@@ -88,8 +88,8 @@ func TestBlockRanges_CrossBlockBoundary(t *testing.T) {
 
 func TestBlockRanges_CrossChunkBoundary(t *testing.T) {
 	// Write that spans chunk boundary (at 64MB)
-	offset := uint64(63 * 1024 * 1024)  // 1MB before chunk boundary
-	length := 4 * 1024 * 1024           // 4MB write
+	offset := uint64(63 * 1024 * 1024) // 1MB before chunk boundary
+	length := 4 * 1024 * 1024          // 4MB write
 
 	var ranges []BlockRange
 	for br := range BlockRanges(offset, length) {
@@ -235,8 +235,8 @@ func TestBlockRanges_EarlyBreak(t *testing.T) {
 
 func TestBlockRanges_BufOffsetContinuity(t *testing.T) {
 	// Verify that BufOffset values are continuous
-	offset := uint64(1 * 1024 * 1024)  // Start at 1MB
-	length := 20 * 1024 * 1024         // 20MB - spans 6 blocks
+	offset := uint64(1 * 1024 * 1024) // Start at 1MB
+	length := 20 * 1024 * 1024        // 20MB - spans 6 blocks
 
 	expectedBufOffset := 0
 	for br := range BlockRanges(offset, length) {
