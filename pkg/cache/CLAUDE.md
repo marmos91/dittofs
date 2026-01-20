@@ -14,8 +14,8 @@ Cache (cache.go)
 ## Package Structure
 
 - `cache.go` - Core types (Cache, fileEntry, chunkEntry, blockBuffer), constructors, helpers
-- `write.go` - Write, block buffer allocation
-- `read.go` - Read, IsRangeCovered, IsBlockFullyCovered
+- `write.go` - WriteAt, block buffer allocation
+- `read.go` - ReadAt, IsRangeCovered, IsBlockFullyCovered
 - `flush.go` - GetDirtyBlocks, MarkBlockUploaded, MarkBlockUploading, GetBlockData
 - `eviction.go` - LRU eviction (EvictLRU, Evict, EvictAll)
 - `state.go` - Remove, Truncate, HasDirtyData, GetFileSize, Stats, Close, Sync
@@ -44,8 +44,8 @@ Create the WAL persister externally for better separation of concerns.
 - S3 is the real persistence layer (blocks flushed there)
 
 ### Block Buffer Model
-- `Write(payloadID, chunkIdx, data, offset)` - writes directly to 4MB block buffers
-- `Read(payloadID, chunkIdx, offset, length, dest)` - reads from block buffers
+- `WriteAt(payloadID, chunkIdx, data, offset)` - writes directly to 4MB block buffers
+- `ReadAt(payloadID, chunkIdx, offset, length, dest)` - reads from block buffers
 - Coverage bitmap tracks which bytes have been written (64-byte granularity)
 - No slice coalescing needed - data goes directly to target position
 
@@ -69,7 +69,7 @@ BlockStatePending → BlockStateUploading → BlockStateUploaded
 
 Cache enforces `maxSize` using LRU eviction with dirty data protection:
 
-1. **Automatic eviction** - On `Write`, if cache would exceed maxSize, evicts uploaded blocks from LRU files
+1. **Automatic eviction** - On `WriteAt`, if cache would exceed maxSize, evicts uploaded blocks from LRU files
 2. **LRU tracking** - Each file tracks `lastAccess` time (updated on writes)
 3. **Dirty protection** - Only `BlockStateUploaded` blocks can be evicted; pending/uploading are protected
 4. **Manual eviction** - `EvictLRU(ctx, targetFreeBytes)` for explicit eviction
@@ -78,8 +78,8 @@ Cache enforces `maxSize` using LRU eviction with dirty data protection:
 // Create cache with 1GB limit
 c := cache.New(1 << 30)
 
-// Automatic eviction happens on Write when full
-c.Write(ctx, payloadID, chunkIdx, data, offset)
+// Automatic eviction happens on WriteAt when full
+c.WriteAt(ctx, payloadID, chunkIdx, data, offset)
 
 // Manual eviction to free 100MB
 evicted, err := c.EvictLRU(ctx, 100*1024*1024)
@@ -122,11 +122,11 @@ if err != nil {
 c, err := cache.NewWithWal(1<<30, persister) // 1GB max
 
 // Write data directly to block buffers
-c.Write(ctx, payloadID, chunkIdx, data, offset)
+c.WriteAt(ctx, payloadID, chunkIdx, data, offset)
 
 // Read data from block buffers
 dest := make([]byte, length)
-found, err := c.Read(ctx, payloadID, chunkIdx, offset, length, dest)
+found, err := c.ReadAt(ctx, payloadID, chunkIdx, offset, length, dest)
 
 // Get dirty blocks for flush
 pending, err := c.GetDirtyBlocks(ctx, payloadID)

@@ -75,6 +75,14 @@ type Config struct {
 	// Set to 0 to disable prefetching.
 	// Default: 4 (16MB ahead at 4MB block size)
 	PrefetchBlocks int
+
+	// SmallFileThreshold is the file size threshold for synchronous flush.
+	// Files smaller than this size are uploaded synchronously during Flush()
+	// to immediately free their block buffers and prevent pendingSize buildup
+	// when creating many small files.
+	// Set to 0 to disable (all files use async flush).
+	// Default: 0 (disabled)
+	SmallFileThreshold int64
 }
 
 // DefaultConfig returns the default transfer manager configuration.

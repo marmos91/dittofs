@@ -418,7 +418,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// ========================================================================
 
 	data := make([]byte, actualLength)
-	n, err := payloadSvc.ReadAt(authCtx.Context, tree.ShareName, readMeta.Attr.PayloadID, data, req.Offset)
+	n, err := payloadSvc.ReadAt(authCtx.Context, readMeta.Attr.PayloadID, data, req.Offset)
 	if err != nil {
 		logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil

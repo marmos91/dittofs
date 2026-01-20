@@ -324,7 +324,7 @@ func (h *Handler) Create(
 			// Truncate existing file
 			existingHandle, _ := metadata.EncodeFileHandle(existingFile)
 			fileHandle = existingHandle
-			fileAttr, err = truncateExistingFile(authCtx, payloadSvc, ctx.Share, metaSvc, existingFile, req)
+			fileAttr, err = truncateExistingFile(authCtx, payloadSvc, metaSvc, existingFile, req)
 		} else {
 			// Create new file
 			fileHandle, fileAttr, err = createNewFile(authCtx, metaSvc, parentHandle, req)
@@ -542,7 +542,6 @@ func createNewFile(
 // Parameters:
 //   - authCtx: Authentication context for permission checking
 //   - payloadSvc: Content service for truncation
-//   - shareName: Share name for content service routing
 //   - metaSvc: Metadata service for file operations
 //   - existingFile: Existing file to truncate
 //   - req: Create request with attributes
@@ -552,7 +551,6 @@ func createNewFile(
 func truncateExistingFile(
 	authCtx *metadata.AuthContext,
 	payloadSvc *payload.PayloadService,
-	shareName string,
 	metaSvc *metadata.MetadataService,
 	existingFile *metadata.File,
 	req *CreateRequest,
@@ -595,7 +593,7 @@ func truncateExistingFile(
 
 	// Truncate content if file has content
 	if existingFile.PayloadID != "" {
-		if err := payloadSvc.Truncate(authCtx.Context, shareName, existingFile.PayloadID, targetSize); err != nil {
+		if err := payloadSvc.Truncate(authCtx.Context, existingFile.PayloadID, targetSize); err != nil {
 			logger.Warn("Failed to truncate content", "size", targetSize, "error", err)
 			// Non-fatal: metadata is already updated
 		}

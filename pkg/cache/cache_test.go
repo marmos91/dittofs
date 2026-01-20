@@ -41,7 +41,7 @@ func TestCache_WalPersistence(t *testing.T) {
 	payloadID := "test-file"
 	data := []byte("persistent data")
 
-	if err := c.Write(ctx, payloadID, 0, data, 0); err != nil {
+	if err := c.WriteAt(ctx, payloadID, 0, data, 0); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
@@ -60,7 +60,7 @@ func TestCache_WalPersistence(t *testing.T) {
 	defer func() { _ = c2.Close() }()
 
 	result := make([]byte, len(data))
-	found, err := c2.Read(ctx, payloadID, 0, 0, uint32(len(data)), result)
+	found, err := c2.ReadAt(ctx, payloadID, 0, 0, uint32(len(data)), result)
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestCache_WalRemovePersistence(t *testing.T) {
 	payloadID := "test-file"
 	data := []byte("to be removed")
 
-	if err := c.Write(ctx, payloadID, 0, data, 0); err != nil {
+	if err := c.WriteAt(ctx, payloadID, 0, data, 0); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestCache_WalRemovePersistence(t *testing.T) {
 	defer func() { _ = c2.Close() }()
 
 	result := make([]byte, len(data))
-	found, _ := c2.Read(ctx, payloadID, 0, 0, uint32(len(data)), result)
+	found, _ := c2.ReadAt(ctx, payloadID, 0, 0, uint32(len(data)), result)
 	if found {
 		t.Error("expected data to be removed after recovery")
 	}
@@ -112,7 +112,7 @@ func TestCache_WalSync(t *testing.T) {
 
 	ctx := context.Background()
 
-	if err := c.Write(ctx, "test", 0, []byte("sync test"), 0); err != nil {
+	if err := c.WriteAt(ctx, "test", 0, []byte("sync test"), 0); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
@@ -132,7 +132,7 @@ func TestCache_WalMultipleFiles(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		payloadID := "file-" + string(rune('0'+i))
 		data := []byte("data for file " + string(rune('0'+i)))
-		if err := c.Write(ctx, payloadID, 0, data, 0); err != nil {
+		if err := c.WriteAt(ctx, payloadID, 0, data, 0); err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
 	}
@@ -155,7 +155,7 @@ func TestCache_WalMultipleFiles(t *testing.T) {
 		payloadID := "file-" + string(rune('0'+i))
 		expected := "data for file " + string(rune('0'+i))
 		result := make([]byte, len(expected))
-		found, err := c2.Read(ctx, payloadID, 0, 0, uint32(len(expected)), result)
+		found, err := c2.ReadAt(ctx, payloadID, 0, 0, uint32(len(expected)), result)
 		if err != nil {
 			t.Fatalf("Read failed: %v", err)
 		}
@@ -205,7 +205,7 @@ func BenchmarkE2E_FileCopy(b *testing.B) {
 					chunkIdx := offset / ChunkSize
 					offsetInChunk := offset % ChunkSize
 
-					if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+					if err := c.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 						b.Fatal(err)
 					}
 				}
@@ -234,7 +234,7 @@ func BenchmarkE2E_WriteReadWrite(b *testing.B) {
 		offset := uint32(i * len(data))
 		chunkIdx := offset / ChunkSize
 		offsetInChunk := offset % ChunkSize
-		_ = c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk)
+		_ = c.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk)
 	}
 
 	b.SetBytes(int64(len(data) * 3)) // write + read + write
@@ -246,17 +246,17 @@ func BenchmarkE2E_WriteReadWrite(b *testing.B) {
 		offsetInChunk := offset % ChunkSize
 
 		// Write
-		if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+		if err := c.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 			b.Fatal(err)
 		}
 
 		// Read
-		if _, err := c.Read(ctx, payloadID, chunkIdx, offsetInChunk, uint32(len(dest)), dest); err != nil {
+		if _, err := c.ReadAt(ctx, payloadID, chunkIdx, offsetInChunk, uint32(len(dest)), dest); err != nil {
 			b.Fatal(err)
 		}
 
 		// Write again
-		if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+		if err := c.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -286,7 +286,7 @@ func BenchmarkE2E_ConcurrentFileCopies(b *testing.B) {
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
 
-				if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+				if err := c.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -318,7 +318,7 @@ func BenchmarkWAL_InMemory_Write(b *testing.B) {
 		offset := uint32(i * len(data))
 		chunkIdx := offset / ChunkSize
 		offsetInChunk := offset % ChunkSize
-		if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+		if err := c.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -348,7 +348,7 @@ func BenchmarkWAL_Mmap_Write(b *testing.B) {
 		offset := uint32(i * len(data))
 		chunkIdx := offset / ChunkSize
 		offsetInChunk := offset % ChunkSize
-		if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+		if err := c.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -374,7 +374,7 @@ func BenchmarkWAL_FileCopy_Comparison(b *testing.B) {
 				offset := uint32(j * writeSize)
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
-				if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+				if err := c.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -404,7 +404,7 @@ func BenchmarkWAL_FileCopy_Comparison(b *testing.B) {
 				offset := uint32(j * writeSize)
 				chunkIdx := offset / ChunkSize
 				offsetInChunk := offset % ChunkSize
-				if err := c.Write(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+				if err := c.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
 					b.Fatal(err)
 				}
 			}

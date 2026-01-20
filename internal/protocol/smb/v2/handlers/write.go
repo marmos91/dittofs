@@ -408,7 +408,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 
 	bytesWritten := len(req.Data)
 
-	err = payloadSvc.WriteAt(authCtx.Context, tree.ShareName, writeOp.PayloadID, req.Data, req.Offset)
+	err = payloadSvc.WriteAt(authCtx.Context, writeOp.PayloadID, req.Data, req.Offset)
 	if err != nil {
 		logger.Warn("WRITE: content write failed", "path", openFile.Path, "error", err)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil

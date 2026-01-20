@@ -12,11 +12,11 @@ import (
 )
 
 // ============================================================================
-// Content Read Operations
+// Payload Read Operations
 // ============================================================================
 
-// contentReadResult holds the result of reading from the content service.
-type contentReadResult struct {
+// payloadReadResult holds the result of reading from the payload service.
+type payloadReadResult struct {
 	data      []byte
 	bytesRead int
 	eof       bool
@@ -25,7 +25,7 @@ type contentReadResult struct {
 
 // Release returns the data buffer to the pool if it was pooled.
 // Must be called after the data is no longer needed (e.g., after encoding).
-func (r *contentReadResult) Release() {
+func (r *payloadReadResult) Release() {
 	if r.pooled && r.data != nil {
 		bufpool.Put(r.data)
 		r.data = nil
@@ -33,7 +33,7 @@ func (r *contentReadResult) Release() {
 	}
 }
 
-// readFromContentService reads data using the ContentService ReadAt method.
+// readFromPayloadService reads data using the PayloadService ReadAt method.
 // The Cache always supports efficient random-access reads.
 //
 // The returned result uses a pooled buffer. The caller MUST call result.Release()
@@ -43,32 +43,43 @@ func (r *contentReadResult) Release() {
 //   - ctx: Handler context with cancellation support
 //   - payloadSvc: Content service for reading (backed by Cache)
 //   - payloadID: Content identifier to read
+//   - cowSource: COW source PayloadID for lazy copy (empty if not a COW file)
 //   - offset: Byte offset to read from
 //   - count: Number of bytes to read
 //   - clientIP: Client IP for logging
 //   - handle: File handle for logging
 //
 // Returns:
-//   - contentReadResult: Result with data (caller must call Release())
+//   - payloadReadResult: Result with data (caller must call Release())
 //   - error: Error if read failed
-func readFromContentService(
+func readFromPayloadService(
 	ctx *NFSHandlerContext,
 	payloadSvc *payload.PayloadService,
 	payloadID metadata.PayloadID,
+	cowSource metadata.PayloadID,
 	offset uint64,
 	count uint32,
 	clientIP string,
 	handle []byte,
-) (contentReadResult, error) {
-	logger.DebugCtx(ctx.Context, "READ: reading from Cache", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count, "content_id", payloadID)
+) (payloadReadResult, error) {
+	logger.DebugCtx(ctx.Context, "READ: reading from Payload Service", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count, "content_id", payloadID, "cow_source", cowSource)
 
 	// Get a pooled buffer for the read
 	data := bufpool.Get(int(count))
-	n, readErr := payloadSvc.ReadAt(ctx.Context, ctx.Share, payloadID, data, offset)
+
+	var n int
+	var readErr error
+	if cowSource != "" {
+		// Use COW-aware read that handles lazy copy from source
+		n, readErr = payloadSvc.ReadAtWithCOWSource(ctx.Context, payloadID, cowSource, data, offset)
+	} else {
+		// Standard read
+		n, readErr = payloadSvc.ReadAt(ctx.Context, payloadID, data, offset)
+	}
 
 	// Handle ReadAt results
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
-		return contentReadResult{
+		return payloadReadResult{
 			data:      data[:n],
 			bytesRead: n,
 			eof:       true,
@@ -80,16 +91,16 @@ func readFromContentService(
 		// Return buffer to pool on error
 		bufpool.Put(data)
 		logger.DebugCtx(ctx.Context, "READ: request cancelled during ReadAt", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "read", n, "client", clientIP)
-		return contentReadResult{}, readErr
+		return payloadReadResult{}, readErr
 	}
 
 	if readErr != nil {
 		// Return buffer to pool on error
 		bufpool.Put(data)
-		return contentReadResult{}, fmt.Errorf("ReadAt error: %w", readErr)
+		return payloadReadResult{}, fmt.Errorf("ReadAt error: %w", readErr)
 	}
 
-	return contentReadResult{
+	return payloadReadResult{
 		data:      data,
 		bytesRead: n,
 		eof:       false,

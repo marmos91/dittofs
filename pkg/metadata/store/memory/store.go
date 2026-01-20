@@ -197,6 +197,11 @@ type MemoryMetadataStore struct {
 	// Value: sorted slice of child names
 	// Note: Cache is lazy-populated on first read and cleared on modifications
 	sortedDirCache map[string][]string
+
+	// objectData holds content-addressed object tracking data for deduplication.
+	// This tracks Objects, Chunks, and Blocks with their content hashes and ref counts.
+	// Initialized lazily on first use.
+	objectData *objectStoreData
 }
 
 // MemoryMetadataStoreConfig contains configuration for creating a memory metadata store.

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
+	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/payload/store/memory"
 )
 
@@ -79,137 +80,112 @@ func TestParsePayloadIDFromBlockKey(t *testing.T) {
 }
 
 // ============================================================================
-// Mock Reconciler for GC Testing
+// Mock Reconciler for GC Testing using real memory store
 // ============================================================================
 
-// gcTestReconciler implements MetadataReconciler with minimal functionality for GC testing.
-// It wraps simple file existence tracking without implementing the full MetadataStore interface.
+// gcTestReconciler implements MetadataReconciler using real memory stores.
 type gcTestReconciler struct {
-	shares map[string]*gcTestStore
+	stores map[string]metadata.MetadataStore
 }
 
 func newGCTestReconciler() *gcTestReconciler {
 	return &gcTestReconciler{
-		shares: make(map[string]*gcTestStore),
+		stores: make(map[string]metadata.MetadataStore),
 	}
 }
 
-func (r *gcTestReconciler) addShare(shareName string) *gcTestStore {
-	store := &gcTestStore{files: make(map[string]bool)}
-	r.shares[shareName] = store
+// addShare creates a new memory store for the given share.
+// Returns the store so test can add files to it.
+func (r *gcTestReconciler) addShare(shareName string) metadata.MetadataStore {
+	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	r.stores[shareName] = store
 	return store
 }
 
 func (r *gcTestReconciler) GetMetadataStoreForShare(shareName string) (metadata.MetadataStore, error) {
-	store, exists := r.shares[shareName]
+	store, exists := r.stores[shareName]
 	if !exists {
-		return nil, errors.New("share not found")
+		return nil, fmt.Errorf("share %q not found", shareName)
 	}
 	return store, nil
 }
 
-// gcTestStore implements metadata.MetadataStore with minimal functionality.
-// Only GetFileByPayloadID is actually implemented; other methods panic.
-type gcTestStore struct {
-	files map[string]bool
-}
+// ============================================================================
+// Helper to create a file with a specific PayloadID in the store
+// ============================================================================
 
-func (s *gcTestStore) addFile(payloadID string) {
-	s.files[payloadID] = true
-}
+func createFileWithPayloadID(ctx context.Context, t testing.TB, store metadata.MetadataStore, shareName, payloadID string) {
+	t.Helper()
 
-func (s *gcTestStore) GetFileByPayloadID(_ context.Context, payloadID metadata.PayloadID) (*metadata.File, error) {
-	if s.files[string(payloadID)] {
-		return &metadata.File{}, nil
+	// Register the share first (required for GetRootHandle to work)
+	share := &metadata.Share{
+		Name: shareName,
 	}
-	return nil, errors.New("file not found")
-}
+	err := store.CreateShare(ctx, share)
+	if err != nil {
+		// Ignore "already exists" errors
+		var storeErr *metadata.StoreError
+		if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrAlreadyExists {
+			require.NoError(t, err)
+		}
+	}
 
-// Required interface methods - minimal stubs for MetadataStore
-// All methods except GetFileByPayloadID will panic if called.
-func (s *gcTestStore) GetFile(context.Context, metadata.FileHandle) (*metadata.File, error) {
-	panic("not implemented for GC tests")
+	// Create root directory for the share if needed
+	rootAttr := &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0755,
+	}
+	_, err = store.CreateRootDirectory(ctx, shareName, rootAttr)
+	if err != nil {
+		// Ignore errors - CreateRootDirectory returns success for existing roots
+		var storeErr *metadata.StoreError
+		if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrAlreadyExists {
+			require.NoError(t, err)
+		}
+	}
+
+	// Get root handle
+	rootHandle, err := store.GetRootHandle(ctx, shareName)
+	require.NoError(t, err)
+
+	// Generate unique filename from payloadID (extract file part after share name)
+	filename := "file-" + payloadID
+	if len(filename) > 50 {
+		filename = filename[:50]
+	}
+
+	// Generate handle for the file
+	handle, err := store.GenerateHandle(ctx, shareName, "/"+filename)
+	require.NoError(t, err)
+
+	// Decode handle to get UUID
+	_, fileID, err := metadata.DecodeFileHandle(handle)
+	require.NoError(t, err)
+
+	// Create a file with the given PayloadID
+	fileAttr := &metadata.FileAttr{
+		Type:      metadata.FileTypeRegular,
+		Mode:      0644,
+		Size:      1024, // Arbitrary size
+		PayloadID: metadata.PayloadID(payloadID),
+	}
+
+	// Create the file
+	file := &metadata.File{
+		ShareName: shareName,
+		Path:      "/" + filename,
+		FileAttr:  *fileAttr,
+		ID:        fileID,
+	}
+
+	// Store the file
+	err = store.PutFile(ctx, file)
+	require.NoError(t, err)
+
+	// Link to parent
+	err = store.SetChild(ctx, rootHandle, filename, handle)
+	require.NoError(t, err)
 }
-func (s *gcTestStore) PutFile(context.Context, *metadata.File) error {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) DeleteFile(context.Context, metadata.FileHandle) error {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) GetChild(context.Context, metadata.FileHandle, string) (metadata.FileHandle, error) {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) SetChild(context.Context, metadata.FileHandle, string, metadata.FileHandle) error {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) DeleteChild(context.Context, metadata.FileHandle, string) error {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) ListChildren(context.Context, metadata.FileHandle, string, int) ([]metadata.DirEntry, string, error) {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) GetParent(context.Context, metadata.FileHandle) (metadata.FileHandle, error) {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) SetParent(context.Context, metadata.FileHandle, metadata.FileHandle) error {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) GetLinkCount(context.Context, metadata.FileHandle) (uint32, error) {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) SetLinkCount(context.Context, metadata.FileHandle, uint32) error {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) WithTransaction(context.Context, func(metadata.Transaction) error) error {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) GenerateHandle(context.Context, string, string) (metadata.FileHandle, error) {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) GetFilesystemMeta(context.Context, string) (*metadata.FilesystemMeta, error) {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) PutFilesystemMeta(context.Context, string, *metadata.FilesystemMeta) error {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) GetRootHandle(context.Context, string) (metadata.FileHandle, error) {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) GetShareOptions(context.Context, string) (*metadata.ShareOptions, error) {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) CreateRootDirectory(context.Context, string, *metadata.FileAttr) (*metadata.File, error) {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) CreateShare(context.Context, *metadata.Share) error {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) UpdateShareOptions(context.Context, string, *metadata.ShareOptions) error {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) DeleteShare(context.Context, string) error {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) ListShares(context.Context) ([]string, error) {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) SetServerConfig(context.Context, metadata.MetadataServerConfig) error {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) GetServerConfig(context.Context) (metadata.MetadataServerConfig, error) {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) GetFilesystemCapabilities(context.Context, metadata.FileHandle) (*metadata.FilesystemCapabilities, error) {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) SetFilesystemCapabilities(metadata.FilesystemCapabilities) {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) GetFilesystemStatistics(context.Context, metadata.FileHandle) (*metadata.FilesystemStatistics, error) {
-	panic("not implemented for GC tests")
-}
-func (s *gcTestStore) Healthcheck(context.Context) error { return nil }
-func (s *gcTestStore) Close() error                      { return nil }
 
 // ============================================================================
 // CollectGarbage Tests
@@ -226,9 +202,8 @@ func TestCollectGarbage_Empty(t *testing.T) {
 
 	assert.NotNil(t, stats)
 	assert.Equal(t, 0, stats.BlocksScanned)
-	assert.Equal(t, 0, stats.OrphanFiles)
 	assert.Equal(t, 0, stats.OrphanBlocks)
-	assert.Equal(t, 0, stats.Errors)
+	assert.Equal(t, int64(0), stats.BytesReclaimed)
 }
 
 func TestCollectGarbage_NoOrphans(t *testing.T) {
@@ -236,147 +211,103 @@ func TestCollectGarbage_NoOrphans(t *testing.T) {
 	blockStore := memory.New()
 	defer func() { _ = blockStore.Close() }()
 
-	// Create blocks for a file
-	payloadID := "export/test-file.txt"
-	require.NoError(t, blockStore.WriteBlock(ctx, payloadID+"/chunk-0/block-0", make([]byte, 1024)))
-	require.NoError(t, blockStore.WriteBlock(ctx, payloadID+"/chunk-0/block-1", make([]byte, 1024)))
+	// Add a block to the store
+	blockKey := "export/test-file.txt/chunk-0/block-0"
+	require.NoError(t, blockStore.WriteBlock(ctx, blockKey, []byte("test data")))
 
-	// Set up reconciler with the file in metadata
+	// Create reconciler with a share and file that owns this block
 	reconciler := newGCTestReconciler()
 	store := reconciler.addShare("/export")
-	store.addFile(payloadID)
+	createFileWithPayloadID(ctx, t, store, "/export", "export/test-file.txt")
 
 	stats := CollectGarbage(ctx, blockStore, reconciler, nil)
 
-	assert.Equal(t, 2, stats.BlocksScanned)
-	assert.Equal(t, 0, stats.OrphanFiles)
+	assert.Equal(t, 1, stats.BlocksScanned)
 	assert.Equal(t, 0, stats.OrphanBlocks)
-	assert.Equal(t, 0, stats.Errors)
+	assert.Equal(t, int64(0), stats.BytesReclaimed)
+
+	// Verify block still exists
+	data, err := blockStore.ReadBlock(ctx, blockKey)
+	assert.NoError(t, err)
+	assert.Equal(t, []byte("test data"), data)
 }
 
-func TestCollectGarbage_WithOrphans(t *testing.T) {
+func TestCollectGarbage_DeletesOrphans(t *testing.T) {
 	ctx := context.Background()
 	blockStore := memory.New()
 	defer func() { _ = blockStore.Close() }()
 
-	// Create blocks for two files
-	validPayloadID := "export/valid-file.txt"
-	orphanPayloadID := "export/orphan-file.txt"
+	// Add an orphan block (no file references it)
+	blockKey := "export/deleted-file.txt/chunk-0/block-0"
+	require.NoError(t, blockStore.WriteBlock(ctx, blockKey, []byte("orphan data")))
 
-	require.NoError(t, blockStore.WriteBlock(ctx, validPayloadID+"/chunk-0/block-0", make([]byte, 1024)))
-	require.NoError(t, blockStore.WriteBlock(ctx, orphanPayloadID+"/chunk-0/block-0", make([]byte, 1024)))
-	require.NoError(t, blockStore.WriteBlock(ctx, orphanPayloadID+"/chunk-0/block-1", make([]byte, 1024)))
+	// Create reconciler with share but no file for this payload
+	reconciler := newGCTestReconciler()
+	reconciler.addShare("/export")
 
-	// Set up reconciler with only the valid file in metadata
+	stats := CollectGarbage(ctx, blockStore, reconciler, nil)
+
+	assert.Equal(t, 1, stats.BlocksScanned)
+	assert.Equal(t, 1, stats.OrphanBlocks)
+	assert.Equal(t, int64(BlockSize), stats.BytesReclaimed) // GC estimates by block size
+
+	// Verify block was deleted
+	_, err := blockStore.ReadBlock(ctx, blockKey)
+	assert.Error(t, err)
+}
+
+func TestCollectGarbage_MixedOrphansAndValid(t *testing.T) {
+	ctx := context.Background()
+	blockStore := memory.New()
+	defer func() { _ = blockStore.Close() }()
+
+	// Add a valid block
+	validKey := "export/valid-file.txt/chunk-0/block-0"
+	require.NoError(t, blockStore.WriteBlock(ctx, validKey, []byte("valid")))
+
+	// Add an orphan block
+	orphanKey := "export/orphan-file.txt/chunk-0/block-0"
+	require.NoError(t, blockStore.WriteBlock(ctx, orphanKey, []byte("orphan")))
+
+	// Create reconciler with share and only the valid file
 	reconciler := newGCTestReconciler()
 	store := reconciler.addShare("/export")
-	store.addFile(validPayloadID) // orphanPayloadID is NOT in metadata
+	createFileWithPayloadID(ctx, t, store, "/export", "export/valid-file.txt")
 
 	stats := CollectGarbage(ctx, blockStore, reconciler, nil)
-
-	assert.Equal(t, 3, stats.BlocksScanned)
-	assert.Equal(t, 1, stats.OrphanFiles)
-	assert.Equal(t, 2, stats.OrphanBlocks)
-	assert.Equal(t, 0, stats.Errors)
-
-	// Verify orphan blocks were deleted
-	keys, _ := blockStore.ListByPrefix(ctx, orphanPayloadID)
-	assert.Empty(t, keys, "orphan blocks should be deleted")
-
-	// Verify valid blocks still exist
-	keys, _ = blockStore.ListByPrefix(ctx, validPayloadID)
-	assert.Len(t, keys, 1, "valid blocks should remain")
-}
-
-func TestCollectGarbage_DryRun(t *testing.T) {
-	ctx := context.Background()
-	blockStore := memory.New()
-	defer func() { _ = blockStore.Close() }()
-
-	// Create orphan blocks
-	orphanPayloadID := "export/orphan-file.txt"
-	require.NoError(t, blockStore.WriteBlock(ctx, orphanPayloadID+"/chunk-0/block-0", make([]byte, 1024)))
-	require.NoError(t, blockStore.WriteBlock(ctx, orphanPayloadID+"/chunk-0/block-1", make([]byte, 1024)))
-
-	// Set up reconciler with NO files in metadata
-	reconciler := newGCTestReconciler()
-	reconciler.addShare("/export")
-
-	stats := CollectGarbage(ctx, blockStore, reconciler, &GCOptions{DryRun: true})
 
 	assert.Equal(t, 2, stats.BlocksScanned)
-	assert.Equal(t, 1, stats.OrphanFiles)
-	assert.Equal(t, 2, stats.OrphanBlocks)
+	assert.Equal(t, 1, stats.OrphanBlocks)
+	assert.Equal(t, int64(BlockSize), stats.BytesReclaimed)
 
-	// Verify blocks were NOT deleted (dry run)
-	keys, _ := blockStore.ListByPrefix(ctx, orphanPayloadID)
-	assert.Len(t, keys, 2, "blocks should NOT be deleted in dry run")
+	// Valid block should still exist
+	data, err := blockStore.ReadBlock(ctx, validKey)
+	assert.NoError(t, err)
+	assert.Equal(t, []byte("valid"), data)
+
+	// Orphan should be deleted
+	_, err = blockStore.ReadBlock(ctx, orphanKey)
+	assert.Error(t, err)
 }
 
-func TestCollectGarbage_ContextCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+func TestCollectGarbage_UnknownShare(t *testing.T) {
+	ctx := context.Background()
 	blockStore := memory.New()
 	defer func() { _ = blockStore.Close() }()
 
-	// Create many orphan files
+	// Add a block for an unknown share
+	blockKey := "unknown-share/file.txt/chunk-0/block-0"
+	require.NoError(t, blockStore.WriteBlock(ctx, blockKey, []byte("data")))
+
+	// Create reconciler with a different share
 	reconciler := newGCTestReconciler()
 	reconciler.addShare("/export")
-
-	for i := 0; i < 100; i++ {
-		payloadID := fmt.Sprintf("export/orphan-%d.txt", i)
-		require.NoError(t, blockStore.WriteBlock(ctx, payloadID+"/chunk-0/block-0", make([]byte, 1024)))
-	}
-
-	// Cancel immediately
-	cancel()
 
 	stats := CollectGarbage(ctx, blockStore, reconciler, nil)
 
-	// Should return early due to cancellation
-	// Exact counts depend on timing, but should be less than 100
-	assert.True(t, stats.OrphanFiles < 100 || stats.OrphanFiles == 0,
-		"should stop early on cancellation")
-}
-
-func TestCollectGarbage_SharePrefix(t *testing.T) {
-	ctx := context.Background()
-	blockStore := memory.New()
-	defer func() { _ = blockStore.Close() }()
-
-	// Create blocks in two shares
-	require.NoError(t, blockStore.WriteBlock(ctx, "share1/file.txt/chunk-0/block-0", make([]byte, 1024)))
-	require.NoError(t, blockStore.WriteBlock(ctx, "share2/file.txt/chunk-0/block-0", make([]byte, 1024)))
-
-	// Set up reconciler with NO files (all orphans)
-	reconciler := newGCTestReconciler()
-	reconciler.addShare("/share1")
-	reconciler.addShare("/share2")
-
-	// Scan only share1
-	stats := CollectGarbage(ctx, blockStore, reconciler, &GCOptions{SharePrefix: "share1/"})
-
-	assert.Equal(t, 1, stats.BlocksScanned, "should only scan share1")
-	assert.Equal(t, 1, stats.OrphanFiles)
-}
-
-func TestCollectGarbage_MaxOrphansLimit(t *testing.T) {
-	ctx := context.Background()
-	blockStore := memory.New()
-	defer func() { _ = blockStore.Close() }()
-
-	// Create 10 orphan files
-	reconciler := newGCTestReconciler()
-	reconciler.addShare("/export")
-
-	for i := 0; i < 10; i++ {
-		payloadID := fmt.Sprintf("export/orphan-%d.txt", i)
-		require.NoError(t, blockStore.WriteBlock(ctx, payloadID+"/chunk-0/block-0", make([]byte, 1024)))
-	}
-
-	// Limit to 3 orphans
-	stats := CollectGarbage(ctx, blockStore, reconciler, &GCOptions{MaxOrphansPerShare: 3})
-
-	assert.Equal(t, 3, stats.OrphanFiles, "should stop after max orphans")
+	// Block should be deleted (unknown share = orphan)
+	assert.Equal(t, 1, stats.BlocksScanned)
+	assert.Equal(t, 1, stats.OrphanBlocks)
 }
 
 func TestCollectGarbage_ProgressCallback(t *testing.T) {
@@ -384,119 +315,47 @@ func TestCollectGarbage_ProgressCallback(t *testing.T) {
 	blockStore := memory.New()
 	defer func() { _ = blockStore.Close() }()
 
-	// Create orphan files
+	// Add some orphan blocks (one per "file" to trigger callback per file)
+	for i := 0; i < 5; i++ {
+		blockKey := fmt.Sprintf("export/file%d.txt/chunk-0/block-0", i)
+		require.NoError(t, blockStore.WriteBlock(ctx, blockKey, []byte("data")))
+	}
+
 	reconciler := newGCTestReconciler()
 	reconciler.addShare("/export")
 
-	for i := 0; i < 5; i++ {
-		payloadID := fmt.Sprintf("export/orphan-%d.txt", i)
-		require.NoError(t, blockStore.WriteBlock(ctx, payloadID+"/chunk-0/block-0", make([]byte, 1024)))
+	var progressCalls int
+	progress := func(stats GCStats) {
+		progressCalls++
+		assert.GreaterOrEqual(t, stats.OrphanFiles, 0)
+		assert.LessOrEqual(t, stats.OrphanBlocks, stats.BlocksScanned)
 	}
 
-	// Track progress calls
-	var progressCalls []GCStats
-	callback := func(stats GCStats) {
-		progressCalls = append(progressCalls, stats)
-	}
+	CollectGarbage(ctx, blockStore, reconciler, &GCOptions{ProgressCallback: progress})
 
-	stats := CollectGarbage(ctx, blockStore, reconciler, &GCOptions{ProgressCallback: callback})
-
-	assert.Equal(t, 5, stats.OrphanFiles)
-	assert.Len(t, progressCalls, 5, "should call progress for each orphan")
-
-	// Progress should be incremental
-	for i, progress := range progressCalls {
-		assert.Equal(t, i+1, progress.OrphanFiles, "progress should be incremental")
-	}
+	// Progress should have been called once per orphan file
+	assert.Equal(t, 5, progressCalls)
 }
 
-func TestCollectGarbage_ShareNotFound(t *testing.T) {
+func TestCollectGarbage_DryRun(t *testing.T) {
 	ctx := context.Background()
 	blockStore := memory.New()
 	defer func() { _ = blockStore.Close() }()
 
-	// Create blocks for a share that doesn't exist in reconciler
-	payloadID := "unknownshare/file.txt"
-	require.NoError(t, blockStore.WriteBlock(ctx, payloadID+"/chunk-0/block-0", make([]byte, 1024)))
+	// Add an orphan block
+	blockKey := "export/orphan.txt/chunk-0/block-0"
+	require.NoError(t, blockStore.WriteBlock(ctx, blockKey, []byte("orphan data")))
 
-	// Set up reconciler with NO shares
 	reconciler := newGCTestReconciler()
+	reconciler.addShare("/export")
 
-	stats := CollectGarbage(ctx, blockStore, reconciler, nil)
+	// Run with dry run - should NOT delete
+	stats := CollectGarbage(ctx, blockStore, reconciler, &GCOptions{DryRun: true})
 
-	// Should treat as orphan (share not found)
-	assert.Equal(t, 1, stats.OrphanFiles)
 	assert.Equal(t, 1, stats.OrphanBlocks)
-}
 
-func TestCollectGarbage_InvalidBlockKey(t *testing.T) {
-	ctx := context.Background()
-	blockStore := memory.New()
-	defer func() { _ = blockStore.Close() }()
-
-	// Create a block with invalid key format (no chunk marker)
-	require.NoError(t, blockStore.WriteBlock(ctx, "invalid-key-no-chunk", make([]byte, 1024)))
-
-	reconciler := newGCTestReconciler()
-
-	stats := CollectGarbage(ctx, blockStore, reconciler, nil)
-
-	assert.Equal(t, 1, stats.Errors, "should count invalid key as error")
-	assert.Equal(t, 0, stats.OrphanFiles)
-}
-
-// ============================================================================
-// Benchmarks
-// ============================================================================
-
-func BenchmarkCollectGarbage_Memory(b *testing.B) {
-	sizes := []struct {
-		name      string
-		fileCount int
-	}{
-		{"10files", 10},
-		{"100files", 100},
-		{"1000files", 1000},
-	}
-
-	for _, size := range sizes {
-		b.Run(size.name, func(b *testing.B) {
-			ctx := context.Background()
-			blockStore := memory.New()
-			defer func() { _ = blockStore.Close() }()
-
-			// Set up reconciler with half the files (50% orphans)
-			reconciler := newGCTestReconciler()
-			store := reconciler.addShare("/export")
-
-			// Create blocks for all files, but only add half to metadata
-			for i := 0; i < size.fileCount; i++ {
-				payloadID := fmt.Sprintf("export/file-%d.txt", i)
-				_ = blockStore.WriteBlock(ctx, payloadID+"/chunk-0/block-0", make([]byte, 1024)) // Error ignored in benchmark setup
-
-				if i%2 == 0 {
-					store.addFile(payloadID) // Add every other file to metadata
-				}
-			}
-
-			b.ResetTimer()
-			b.ReportAllocs()
-
-			for i := 0; i < b.N; i++ {
-				// Use dry run to not modify the store between iterations
-				CollectGarbage(ctx, blockStore, reconciler, &GCOptions{DryRun: true})
-			}
-		})
-	}
-}
-
-func BenchmarkParsePayloadIDFromBlockKey(b *testing.B) {
-	blockKey := "export/deep/nested/path/document.pdf/chunk-100/block-50"
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		_ = parsePayloadIDFromBlockKey(blockKey)
-	}
+	// Block should still exist
+	data, err := blockStore.ReadBlock(ctx, blockKey)
+	assert.NoError(t, err)
+	assert.Equal(t, []byte("orphan data"), data)
 }

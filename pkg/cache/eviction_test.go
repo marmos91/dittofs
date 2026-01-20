@@ -14,7 +14,7 @@ func TestEvict_FlushedData(t *testing.T) {
 	payloadID := "test-file"
 	data := make([]byte, 10*1024)
 
-	if err := c.Write(ctx, payloadID, 0, data, 0); err != nil {
+	if err := c.WriteAt(ctx, payloadID, 0, data, 0); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
@@ -42,7 +42,7 @@ func TestEvict_DirtyDataProtected(t *testing.T) {
 	payloadID := "test-file"
 	data := make([]byte, 10*1024)
 
-	if err := c.Write(ctx, payloadID, 0, data, 0); err != nil {
+	if err := c.WriteAt(ctx, payloadID, 0, data, 0); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
@@ -57,7 +57,7 @@ func TestEvict_DirtyDataProtected(t *testing.T) {
 
 	// Data should still be there
 	result := make([]byte, len(data))
-	found, _ := c.Read(ctx, payloadID, 0, 0, uint32(len(data)), result)
+	found, _ := c.ReadAt(ctx, payloadID, 0, 0, uint32(len(data)), result)
 	if !found {
 		t.Error("dirty data should still be present")
 	}
@@ -73,7 +73,7 @@ func TestEvictAll(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		file := "file" + string(rune('0'+i))
 		data := make([]byte, 5*1024)
-		if err := c.Write(ctx, file, 0, data, 0); err != nil {
+		if err := c.WriteAt(ctx, file, 0, data, 0); err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
 
@@ -102,7 +102,7 @@ func TestEvictLRU(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		file := "file" + string(rune('0'+i))
 		data := make([]byte, 10*1024)
-		if err := c.Write(ctx, file, 0, data, 0); err != nil {
+		if err := c.WriteAt(ctx, file, 0, data, 0); err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
 
@@ -138,13 +138,13 @@ func TestLRUEviction_OnlyEvictsFlushed(t *testing.T) {
 
 	// Write dirty data
 	file1 := "dirty-file"
-	if err := c.Write(ctx, file1, 0, make([]byte, 5*1024), 0); err != nil {
+	if err := c.WriteAt(ctx, file1, 0, make([]byte, 5*1024), 0); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
 	// Write and mark as uploaded
 	file2 := "uploaded-file"
-	if err := c.Write(ctx, file2, 0, make([]byte, 5*1024), 0); err != nil {
+	if err := c.WriteAt(ctx, file2, 0, make([]byte, 5*1024), 0); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 	blocks, _ := c.GetDirtyBlocks(ctx, file2)
@@ -160,7 +160,7 @@ func TestLRUEviction_OnlyEvictsFlushed(t *testing.T) {
 
 	// Dirty file should still exist
 	result := make([]byte, 5*1024)
-	found, _ := c.Read(ctx, file1, 0, 0, 5*1024, result)
+	found, _ := c.ReadAt(ctx, file1, 0, 0, 5*1024, result)
 	if !found {
 		t.Error("dirty file should not be evicted")
 	}
@@ -176,7 +176,7 @@ func TestLRUEviction_EvictsOldestFirst(t *testing.T) {
 	// Write 3 files in sequence
 	files := []string{"oldest", "middle", "newest"}
 	for _, file := range files {
-		if err := c.Write(ctx, file, 0, data, 0); err != nil {
+		if err := c.WriteAt(ctx, file, 0, data, 0); err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
 		blocks, _ := c.GetDirtyBlocks(ctx, file)
@@ -259,7 +259,7 @@ func BenchmarkEvictLRU(b *testing.B) {
 	data := make([]byte, 32*1024)
 	for i := 0; i < 1000; i++ {
 		payloadID := fmt.Sprintf("file-%d", i)
-		_ = c.Write(ctx, payloadID, 0, data, 0)
+		_ = c.WriteAt(ctx, payloadID, 0, data, 0)
 
 		// Mark as uploaded so it can be evicted
 		blocks, _ := c.GetDirtyBlocks(ctx, payloadID)

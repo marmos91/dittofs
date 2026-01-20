@@ -26,7 +26,24 @@ See [../BENCHMARKS.md](../BENCHMARKS.md) for detailed benchmarks.
 - **S3-Compatible**: Works with AWS S3, MinIO, Localstack, Ceph, etc.
 - **Batch Delete**: Uses DeleteObjects API for efficient prefix deletion
 - **Range Reads**: HTTP Range header for efficient partial reads
+- **Server-Side Copy**: CopyBlock uses S3 CopyObject API (no data transfer through client)
 - **Path-Style Support**: Required for Localstack/MinIO
+
+## HTTP Client Optimizations
+
+The S3 client uses a custom HTTP transport optimized for parallel uploads:
+
+| Optimization | Value | Reason |
+|--------------|-------|--------|
+| Force HTTP/1.1 | `ForceAttemptHTTP2: false` | HTTP/2 multiplexing adds overhead for large parallel uploads |
+| Max connections | 200 per host | High parallelism for concurrent block uploads |
+| Write buffer | 256KB | Reduce syscall overhead for large uploads |
+| Read buffer | 256KB | Reduce syscall overhead for large downloads |
+| ExpectContinue | Disabled | Skip 100-Continue round trip for faster uploads |
+| Keep-alive | 30s timeout | Efficient connection reuse |
+| Idle connections | 200 max | Pool connections for burst traffic |
+
+These optimizations improve parallel upload throughput by 2-3x compared to default settings.
 
 ## Usage
 
@@ -46,6 +63,7 @@ defer store.Close()
 err := store.WriteBlock(ctx, "share/content/chunk-0/block-0", data)
 data, err := store.ReadBlock(ctx, "share/content/chunk-0/block-0")
 data, err := store.ReadBlockRange(ctx, "share/content/chunk-0/block-0", offset, length)
+err = store.CopyBlock(ctx, "src/chunk-0/block-0", "dst/chunk-0/block-0")  // Server-side copy
 err = store.DeleteBlock(ctx, "share/content/chunk-0/block-0")
 err = store.DeleteByPrefix(ctx, "share/content")
 keys, err := store.ListByPrefix(ctx, "share")

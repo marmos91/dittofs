@@ -26,6 +26,12 @@ type PendingWriteState struct {
 	// CachedFile stores validated file metadata for fast-path PrepareWrite
 	// This avoids repeated GetFile calls for sequential writes
 	CachedFile *File
+
+	// IsCOW indicates this write triggered copy-on-write
+	IsCOW bool
+
+	// COWSourcePayloadID is the source for lazy copy (only set when IsCOW is true)
+	COWSourcePayloadID PayloadID
 }
 
 // PendingWritesTracker manages uncommitted write metadata.
@@ -59,11 +65,13 @@ func (t *PendingWritesTracker) RecordWrite(handle FileHandle, intent *WriteOpera
 	if !exists {
 		// First write to this file
 		state = &PendingWriteState{
-			MaxSize:           intent.NewSize,
-			LastMtime:         intent.NewMtime,
-			PayloadID:         intent.PayloadID,
-			PreWriteAttr:      intent.PreWriteAttr,
-			ClearSetuidSetgid: clearSetuid,
+			MaxSize:            intent.NewSize,
+			LastMtime:          intent.NewMtime,
+			PayloadID:          intent.PayloadID,
+			PreWriteAttr:       intent.PreWriteAttr,
+			ClearSetuidSetgid:  clearSetuid,
+			IsCOW:              intent.IsCOW,
+			COWSourcePayloadID: intent.COWSourcePayloadID,
 		}
 		t.pending[key] = state
 	} else {
@@ -75,6 +83,8 @@ func (t *PendingWritesTracker) RecordWrite(handle FileHandle, intent *WriteOpera
 		if clearSetuid {
 			state.ClearSetuidSetgid = true
 		}
+		// COW is set on first write and doesn't change for subsequent writes
+		// (once COW is triggered, we're writing to the new PayloadID)
 	}
 
 	return state

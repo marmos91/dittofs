@@ -228,7 +228,7 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	// Step 3: Flush data using ContentService (same as NFS COMMIT)
 	// ========================================================================
 
-	_, flushErr := payloadSvc.Flush(ctx.Context, openFile.ShareName, file.PayloadID)
+	_, flushErr := payloadSvc.Flush(ctx.Context, file.PayloadID)
 	if flushErr != nil {
 		logger.Warn("FLUSH: failed", "path", openFile.Path, "error", flushErr)
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUnexpectedIOError}}, nil
