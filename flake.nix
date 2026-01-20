@@ -21,7 +21,7 @@
     }:
     let
       # Version configuration - update this for releases
-      version = "0.3.2";
+      version = "0.3.3";
     in
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -395,7 +395,8 @@
           };
         };
 
-      } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+      }
+      // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
         # Export pjdfstest package (Linux only - uses Linux-specific syscalls)
         packages.pjdfstest = pjdfstest;
       }
