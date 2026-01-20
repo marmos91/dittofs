@@ -414,7 +414,7 @@ func TestFlusher_Integration(t *testing.T) {
 
 		// Read from cache
 		readData := make([]byte, len(originalData))
-		found, err := c.Read(ctx, payloadID, 0, 0, uint32(len(originalData)), readData)
+		found, err := c.ReadAt(ctx, payloadID, 0, 0, uint32(len(originalData)), readData)
 		if err != nil {
 			t.Fatalf("Read failed: %v", err)
 		}
@@ -486,7 +486,7 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 
 		// Read from cache
 		readData := make([]byte, len(data))
-		found, err := c.Read(ctx, payloadID, 0, 0, uint32(len(data)), readData)
+		found, err := c.ReadAt(ctx, payloadID, 0, 0, uint32(len(data)), readData)
 		if err != nil {
 			t.Fatalf("Read failed: %v", err)
 		}
