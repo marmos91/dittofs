@@ -1,0 +1,208 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+)
+
+// ============================================
+// GROUP OPERATIONS
+// ============================================
+
+func (s *GORMStore) GetGroup(ctx context.Context, name string) (*models.Group, error) {
+	var group models.Group
+	if err := s.db.WithContext(ctx).
+		Preload("SharePermissions").
+		Where("name = ?", name).
+		First(&group).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, models.ErrGroupNotFound
+		}
+		return nil, err
+	}
+	return &group, nil
+}
+
+func (s *GORMStore) GetGroupByID(ctx context.Context, id string) (*models.Group, error) {
+	var group models.Group
+	if err := s.db.WithContext(ctx).
+		Preload("SharePermissions").
+		Where("id = ?", id).
+		First(&group).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, models.ErrGroupNotFound
+		}
+		return nil, err
+	}
+	return &group, nil
+}
+
+func (s *GORMStore) ListGroups(ctx context.Context) ([]*models.Group, error) {
+	var groups []*models.Group
+	if err := s.db.WithContext(ctx).
+		Preload("SharePermissions").
+		Find(&groups).Error; err != nil {
+		return nil, err
+	}
+	return groups, nil
+}
+
+func (s *GORMStore) CreateGroup(ctx context.Context, group *models.Group) (string, error) {
+	if group.ID == "" {
+		group.ID = uuid.New().String()
+	}
+	group.CreatedAt = time.Now()
+
+	if err := s.db.WithContext(ctx).Create(group).Error; err != nil {
+		if isUniqueConstraintError(err) {
+			return "", models.ErrDuplicateGroup
+		}
+		return "", err
+	}
+	return group.ID, nil
+}
+
+func (s *GORMStore) UpdateGroup(ctx context.Context, group *models.Group) error {
+	// Check if group exists first
+	var existing models.Group
+	if err := s.db.WithContext(ctx).Where("id = ?", group.ID).First(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.ErrGroupNotFound
+		}
+		return err
+	}
+
+	// Update specific fields using Select to handle pointers properly
+	result := s.db.WithContext(ctx).
+		Model(&existing).
+		Select("Name", "GID", "Description").
+		Updates(group)
+
+	if result.Error != nil {
+		return result.Error
+	}
+	return nil
+}
+
+func (s *GORMStore) DeleteGroup(ctx context.Context, name string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Get group
+		var group models.Group
+		if err := tx.Where("name = ?", name).First(&group).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return models.ErrGroupNotFound
+			}
+			return err
+		}
+
+		// Delete share permissions
+		if err := tx.Where("group_id = ?", group.ID).Delete(&models.GroupSharePermission{}).Error; err != nil {
+			return err
+		}
+
+		// Remove users from group (GORM handles the join table)
+		if err := tx.Model(&group).Association("Users").Clear(); err != nil {
+			return err
+		}
+
+		// Delete group
+		if err := tx.Delete(&group).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+}
+
+func (s *GORMStore) GetUserGroups(ctx context.Context, username string) ([]*models.Group, error) {
+	user, err := s.GetUser(ctx, username)
+	if err != nil {
+		return nil, err
+	}
+
+	groups := make([]*models.Group, len(user.Groups))
+	for i := range user.Groups {
+		groups[i] = &user.Groups[i]
+	}
+	return groups, nil
+}
+
+func (s *GORMStore) AddUserToGroup(ctx context.Context, username, groupName string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Get user
+		var user models.User
+		if err := tx.Where("username = ?", username).First(&user).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return models.ErrUserNotFound
+			}
+			return err
+		}
+
+		// Get group
+		var group models.Group
+		if err := tx.Where("name = ?", groupName).First(&group).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return models.ErrGroupNotFound
+			}
+			return err
+		}
+
+		// Add user to group
+		return tx.Model(&user).Association("Groups").Append(&group)
+	})
+}
+
+func (s *GORMStore) RemoveUserFromGroup(ctx context.Context, username, groupName string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Get user
+		var user models.User
+		if err := tx.Where("username = ?", username).First(&user).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return models.ErrUserNotFound
+			}
+			return err
+		}
+
+		// Get group
+		var group models.Group
+		if err := tx.Where("name = ?", groupName).First(&group).Error; err != nil {
+			// Group not found is not an error for remove operation
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+
+		// Remove user from group
+		return tx.Model(&user).Association("Groups").Delete(&group)
+	})
+}
+
+func (s *GORMStore) GetGroupMembers(ctx context.Context, groupName string) ([]*models.User, error) {
+	// First verify the group exists
+	var group models.Group
+	if err := s.db.WithContext(ctx).Where("name = ?", groupName).First(&group).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, models.ErrGroupNotFound
+		}
+		return nil, err
+	}
+
+	// Get all users who belong to this group
+	var users []*models.User
+	if err := s.db.WithContext(ctx).
+		Joins("JOIN user_groups ON user_groups.user_id = users.id").
+		Joins("JOIN groups ON groups.id = user_groups.group_id").
+		Where("groups.name = ?", groupName).
+		Find(&users).Error; err != nil {
+		return nil, err
+	}
+
+	return users, nil
+}
