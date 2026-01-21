@@ -3,8 +3,8 @@ package handlers
 
 import (
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // Default UID/GID used when user has no UID/GID configured.

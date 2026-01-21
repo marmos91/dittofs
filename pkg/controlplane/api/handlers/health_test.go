@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memoryMeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 func TestLiveness_ReturnsOK(t *testing.T) {

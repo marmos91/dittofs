@@ -11,9 +11,9 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/signing"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // Handler manages SMB2 protocol handling
