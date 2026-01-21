@@ -90,7 +90,7 @@ func TestLinuxSMBMount(t *testing.T) {
 		Role:         string(models.RoleUser),
 	}
 
-	if err := cpStore.CreateUser(ctx, testUser); err != nil {
+	if _, err := cpStore.CreateUser(ctx, testUser); err != nil {
 		t.Fatalf("Failed to create test user: %v", err)
 	}
 

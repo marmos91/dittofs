@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
@@ -80,29 +81,10 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 
 	// Get session and resolve permissions
 	sess, _ := h.SessionManager.GetSession(ctx.SessionID)
-	permission := models.PermissionReadWrite // Default for unauthenticated
 	defaultPerm := models.ParseSharePermission(share.DefaultPermission)
-	userStore := h.Registry.GetUserStore()
 
 	// Resolve permission based on session type
-	var user string
-	if sess != nil && sess.User != nil && userStore != nil {
-		// Authenticated user - resolve their permission
-		perm, permErr := userStore.ResolveSharePermission(ctx.Context, sess.User, shareName)
-		if permErr != nil {
-			// Fall back to default permission if resolution fails
-			permission = defaultPerm
-			logger.Debug("Permission resolution failed, using default",
-				"shareName", shareName, "user", sess.User.Username, "error", permErr, "default", defaultPerm)
-		} else {
-			permission = perm
-		}
-		user = sess.User.Username
-	} else if sess != nil && sess.IsGuest {
-		// Guest session - use default permission
-		permission = defaultPerm
-		user = "guest"
-	}
+	permission, user := resolveSharePermission(ctx, sess, shareName, defaultPerm, h.Registry.GetUserStore())
 
 	// Check for access denied
 	if permission == models.PermissionNone {
@@ -267,4 +249,33 @@ func parseSharePath(path string) string {
 	// Windows clients often send share names in uppercase (e.g., /EXPORT)
 	// but our shares are typically configured in lowercase (e.g., /export)
 	return "/" + strings.ToLower(parts[1])
+}
+
+// resolveSharePermission determines the effective permission for a session on a share.
+// Returns the permission level and a user identifier for logging.
+func resolveSharePermission(
+	ctx *SMBHandlerContext,
+	sess *session.Session,
+	shareName string,
+	defaultPerm models.SharePermission,
+	userStore models.UserStore,
+) (models.SharePermission, string) {
+	// Authenticated user with valid session and user store
+	if sess != nil && sess.User != nil && userStore != nil {
+		perm, err := userStore.ResolveSharePermission(ctx.Context, sess.User, shareName)
+		if err != nil {
+			logger.Debug("Permission resolution failed, using default",
+				"shareName", shareName, "user", sess.User.Username, "error", err, "default", defaultPerm)
+			return defaultPerm, sess.User.Username
+		}
+		return perm, sess.User.Username
+	}
+
+	// Guest session - use default permission
+	if sess != nil && sess.IsGuest {
+		return defaultPerm, "guest"
+	}
+
+	// No session or unauthenticated - default to read-write for backwards compatibility
+	return models.PermissionReadWrite, ""
 }
