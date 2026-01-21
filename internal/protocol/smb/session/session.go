@@ -43,7 +43,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/protocol/smb/signing"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // Session represents an SMB2 session with both identity and credit tracking.
@@ -70,7 +70,7 @@ type Session struct {
 	// DittoFS user (nil for guest sessions)
 	// This links the SMB session to the authenticated DittoFS user
 	// for permission checking and share access control.
-	User *identity.User
+	User *models.User
 
 	// Signing state for message integrity
 	// This tracks whether signing is enabled and holds the signing key.
@@ -123,7 +123,7 @@ func NewSession(sessionID uint64, clientAddr string, isGuest bool, username, dom
 
 // NewSessionWithUser creates a new session with the given identity and DittoFS user.
 // Use this when the user has been authenticated against the UserStore.
-func NewSessionWithUser(sessionID uint64, clientAddr string, user *identity.User, domain string) *Session {
+func NewSessionWithUser(sessionID uint64, clientAddr string, user *models.User, domain string) *Session {
 	s := &Session{
 		SessionID:  sessionID,
 		IsGuest:    false,

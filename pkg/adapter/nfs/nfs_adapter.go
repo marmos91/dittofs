@@ -12,7 +12,7 @@ import (
 	mount "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	v3 "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/pkg/metrics"
-	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // NFSAdapter implements the adapter.Adapter interface for NFSv3 protocol.
@@ -55,7 +55,7 @@ type NFSAdapter struct {
 	mountHandler *mount.Handler
 
 	// registry provides access to all stores and shares
-	registry *registry.Registry
+	registry *runtime.Runtime
 
 	// metrics provides optional Prometheus metrics collection
 	// If nil, no metrics are collected (zero overhead)
@@ -305,7 +305,7 @@ func New(
 //
 // Thread safety:
 // Called exactly once before Serve(), no synchronization needed.
-func (s *NFSAdapter) SetRegistry(reg *registry.Registry) {
+func (s *NFSAdapter) SetRegistry(reg *runtime.Runtime) {
 	s.registry = reg
 
 	// Inject registry into handlers

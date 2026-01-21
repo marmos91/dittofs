@@ -4,7 +4,7 @@ package handlers
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // SMBHandlerContext carries request context through handlers
@@ -36,11 +36,11 @@ type SMBHandlerContext struct {
 
 	// User is the authenticated DittoFS user (nil for guest sessions)
 	// This is set from the session during request handling.
-	User *identity.User
+	User *models.User
 
 	// Permission is the user's permission level for the current share
 	// This is resolved during TREE_CONNECT and used for access control.
-	Permission identity.SharePermission
+	Permission models.SharePermission
 
 	// AsyncNotifyCallback is used for sending async CHANGE_NOTIFY responses.
 	// Set by the connection layer to enable async notification delivery.
@@ -60,7 +60,7 @@ func NewSMBHandlerContext(ctx context.Context, clientAddr string, sessionID uint
 }
 
 // WithUser returns a copy of the context with user identity populated
-func (c *SMBHandlerContext) WithUser(user *identity.User, permission identity.SharePermission) *SMBHandlerContext {
+func (c *SMBHandlerContext) WithUser(user *models.User, permission models.SharePermission) *SMBHandlerContext {
 	newCtx := *c
 	newCtx.User = user
 	newCtx.Permission = permission

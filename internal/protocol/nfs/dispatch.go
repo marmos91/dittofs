@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	nfs "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
-	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // ============================================================================
@@ -158,7 +158,7 @@ func ExtractHandlerContext(
 type nfsProcedureHandler func(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error)
 
@@ -199,7 +199,7 @@ var NfsDispatchTable map[uint32]*nfsProcedure
 type mountProcedureHandler func(
 	ctx *mount.MountHandlerContext,
 	handler *mount.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error)
 
@@ -358,7 +358,7 @@ func initNFSDispatchTable() {
 func handleNFSNull(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 
@@ -378,7 +378,7 @@ func handleNFSNull(
 func handleNFSGetAttr(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -397,7 +397,7 @@ func handleNFSGetAttr(
 func handleNFSSetAttr(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -416,7 +416,7 @@ func handleNFSSetAttr(
 func handleNFSLookup(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -435,7 +435,7 @@ func handleNFSLookup(
 func handleNFSAccess(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -454,7 +454,7 @@ func handleNFSAccess(
 func handleNFSReadLink(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -473,7 +473,7 @@ func handleNFSReadLink(
 func handleNFSRead(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	result, err := handleRequest(
@@ -508,7 +508,7 @@ func handleNFSRead(
 func handleNFSWrite(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	result, err := handleRequest(
@@ -538,7 +538,7 @@ func handleNFSWrite(
 func handleNFSCreate(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -557,7 +557,7 @@ func handleNFSCreate(
 func handleNFSMkdir(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -576,7 +576,7 @@ func handleNFSMkdir(
 func handleNFSSymlink(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -595,7 +595,7 @@ func handleNFSSymlink(
 func handleNFSMknod(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -614,7 +614,7 @@ func handleNFSMknod(
 func handleNFSRemove(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -633,7 +633,7 @@ func handleNFSRemove(
 func handleNFSRmdir(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -652,7 +652,7 @@ func handleNFSRmdir(
 func handleNFSRename(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -671,7 +671,7 @@ func handleNFSRename(
 func handleNFSLink(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -690,7 +690,7 @@ func handleNFSLink(
 func handleNFSReadDir(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -709,7 +709,7 @@ func handleNFSReadDir(
 func handleNFSReadDirPlus(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -728,7 +728,7 @@ func handleNFSReadDirPlus(
 func handleNFSFsStat(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -747,7 +747,7 @@ func handleNFSFsStat(
 func handleNFSFsInfo(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -766,7 +766,7 @@ func handleNFSFsInfo(
 func handleNFSPathConf(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -785,7 +785,7 @@ func handleNFSPathConf(
 func handleNFSCommit(
 	ctx *nfs.NFSHandlerContext,
 	handler *nfs.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -850,7 +850,7 @@ func initMountDispatchTable() {
 func handleMountNull(
 	ctx *mount.MountHandlerContext,
 	handler *mount.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -869,7 +869,7 @@ func handleMountNull(
 func handleMountMnt(
 	ctx *mount.MountHandlerContext,
 	handler *mount.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -888,7 +888,7 @@ func handleMountMnt(
 func handleMountDump(
 	ctx *mount.MountHandlerContext,
 	handler *mount.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -907,7 +907,7 @@ func handleMountDump(
 func handleMountUmnt(
 	ctx *mount.MountHandlerContext,
 	handler *mount.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -926,7 +926,7 @@ func handleMountUmnt(
 func handleMountUmntAll(
 	ctx *mount.MountHandlerContext,
 	handler *mount.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(
@@ -945,7 +945,7 @@ func handleMountUmntAll(
 func handleMountExport(
 	ctx *mount.MountHandlerContext,
 	handler *mount.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
 	return handleRequest(

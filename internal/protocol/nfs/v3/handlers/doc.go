@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metrics"
-	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // Handler is the concrete implementation for NFS v3 protocol handlers.
@@ -18,7 +18,7 @@ import (
 type Handler struct {
 	// Registry provides access to all stores and shares
 	// Exported to allow injection by the NFS adapter
-	Registry *registry.Registry
+	Registry *runtime.Runtime
 
 	// Metrics collects observability data for NFS operations
 	// Optional - may be nil to disable metrics with zero overhead

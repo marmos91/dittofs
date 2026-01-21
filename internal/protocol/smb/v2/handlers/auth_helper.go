@@ -3,8 +3,8 @@ package handlers
 
 import (
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // Default UID/GID used when user has no UID/GID configured.
@@ -55,7 +55,7 @@ func BuildAuthContext(ctx *SMBHandlerContext) (*metadata.AuthContext, error) {
 
 // getUserIdentity returns the UID/GID for a user.
 // Returns the user's configured UID/GID, or defaults if not set.
-func getUserIdentity(user *identity.User) (uid, gid uint32) {
+func getUserIdentity(user *models.User) (uid, gid uint32) {
 	uid = defaultUID
 	gid = defaultGID
 
@@ -85,7 +85,7 @@ func getUserIdentity(user *identity.User) (uid, gid uint32) {
 //
 // Identity Resolution:
 // Uses the UID/GID fields from the User. If not set, falls back to defaults.
-func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *identity.User) *metadata.AuthContext {
+func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
 		Context:    ctx.Context,
 		ClientAddr: ctx.ClientAddr,
@@ -104,17 +104,17 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *identity.User) *meta
 
 // HasWritePermission checks if the SMB context has write permission for the share.
 func HasWritePermission(ctx *SMBHandlerContext) bool {
-	return ctx.Permission == identity.PermissionReadWrite || ctx.Permission == identity.PermissionAdmin
+	return ctx.Permission == models.PermissionReadWrite || ctx.Permission == models.PermissionAdmin
 }
 
 // HasReadPermission checks if the SMB context has read permission for the share.
 func HasReadPermission(ctx *SMBHandlerContext) bool {
-	return ctx.Permission == identity.PermissionRead ||
-		ctx.Permission == identity.PermissionReadWrite ||
-		ctx.Permission == identity.PermissionAdmin
+	return ctx.Permission == models.PermissionRead ||
+		ctx.Permission == models.PermissionReadWrite ||
+		ctx.Permission == models.PermissionAdmin
 }
 
 // HasAdminPermission checks if the SMB context has admin permission for the share.
 func HasAdminPermission(ctx *SMBHandlerContext) bool {
-	return ctx.Permission == identity.PermissionAdmin
+	return ctx.Permission == models.PermissionAdmin
 }

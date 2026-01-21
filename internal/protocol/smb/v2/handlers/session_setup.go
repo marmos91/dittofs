@@ -297,7 +297,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 
 	if userStore != nil {
 		// Look up user by username
-		user, err := userStore.GetUser(authMsg.Username)
+		user, err := userStore.GetUser(ctx.Context, authMsg.Username)
 		if err == nil && user != nil && user.Enabled {
 			// User found and enabled - validate NTLMv2 response if NT hash is available
 			ntHash, hasNTHash := user.GetNTHash()

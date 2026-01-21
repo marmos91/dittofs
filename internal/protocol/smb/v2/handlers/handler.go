@@ -11,14 +11,14 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/signing"
-	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // Handler manages SMB2 protocol handling
 type Handler struct {
-	Registry  *registry.Registry
+	Registry  *runtime.Runtime
 	StartTime time.Time
 
 	// Server identity
@@ -73,7 +73,7 @@ type TreeConnection struct {
 	ShareName  string
 	ShareType  uint8
 	CreatedAt  time.Time
-	Permission identity.SharePermission // User's permission level for this share
+	Permission models.SharePermission // User's permission level for this share
 }
 
 // OpenFile represents an open file handle
@@ -532,7 +532,7 @@ func (h *Handler) CreateSessionWithID(sessionID uint64, clientAddr string, isGue
 
 // CreateSessionWithUser creates an authenticated session with a DittoFS user.
 // The session is linked to the user for permission checking during share access.
-func (h *Handler) CreateSessionWithUser(sessionID uint64, clientAddr string, user *identity.User, domain string) *session.Session {
+func (h *Handler) CreateSessionWithUser(sessionID uint64, clientAddr string, user *models.User, domain string) *session.Session {
 	sess := session.NewSessionWithUser(sessionID, clientAddr, user, domain)
 	h.SessionManager.StoreSession(sess)
 	return sess

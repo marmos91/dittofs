@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // safeAdd performs checked addition of two uint64 values.
@@ -108,7 +108,7 @@ type MFsymlinkResult struct {
 // Returns MFsymlinkResult with detection result and modified attributes.
 func checkMFsymlink(
 	ctx context.Context,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	share string,
 	file *metadata.File,
 ) MFsymlinkResult {
@@ -166,7 +166,7 @@ func checkMFsymlink(
 // readMFsymlinkContentForNFS reads content from ContentService (uses Cache internally).
 func readMFsymlinkContentForNFS(
 	ctx context.Context,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	_ /* share */ string,
 	payloadID metadata.PayloadID,
 ) ([]byte, error) {

@@ -5,9 +5,9 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // ErrShareAccessDenied is returned when a user doesn't have permission to access a share.
@@ -42,7 +42,7 @@ func formatUID(uid *uint32) string {
 //   - error: If identity mapping fails, access is denied, or context is cancelled
 func BuildAuthContextWithMapping(
 	nfsCtx *NFSHandlerContext,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	shareName string,
 ) (*metadata.AuthContext, error) {
 	ctx := nfsCtx.Context
@@ -68,8 +68,8 @@ func BuildAuthContextWithMapping(
 	}
 
 	// Look up DittoFS user by UID (reverse lookup) and check share permissions
-	var dittoUser *identity.User
-	var sharePermission identity.SharePermission
+	var dittoUser *models.User
+	var sharePermission models.SharePermission
 	shareReadOnly := false
 
 	identityStore := reg.GetIdentityStore()
@@ -77,7 +77,7 @@ func BuildAuthContextWithMapping(
 
 	if identityStore != nil && share != nil && nfsCtx.UID != nil {
 		// Try reverse lookup: find user by UID
-		user, err := identityStore.GetUserByUID(*nfsCtx.UID)
+		user, err := identityStore.GetUserByUID(ctx, *nfsCtx.UID)
 		if err == nil && user != nil {
 			dittoUser = user
 			logger.DebugCtx(ctx, "NFS UID reverse lookup succeeded",
@@ -88,25 +88,33 @@ func BuildAuthContextWithMapping(
 		}
 
 		// Get default permission from share config
-		defaultPerm := identity.ParseSharePermission(share.DefaultPermission)
+		defaultPerm := models.ParseSharePermission(share.DefaultPermission)
 
 		if dittoUser != nil {
 			// User found - resolve their permission
-			sharePermission = identityStore.ResolveSharePermission(dittoUser, shareName, defaultPerm)
+			perm, permErr := identityStore.ResolveSharePermission(ctx, dittoUser, shareName)
+			if permErr != nil {
+				// Fall back to default permission if resolution fails
+				sharePermission = defaultPerm
+				logger.DebugCtx(ctx, "Permission resolution failed, using default",
+					"share", shareName, "user", dittoUser.Username, "error", permErr, "default", defaultPerm)
+			} else {
+				sharePermission = perm
+			}
 			originalIdentity.Username = dittoUser.Username
 
-			if sharePermission == identity.PermissionNone {
+			if sharePermission == models.PermissionNone {
 				logger.DebugCtx(ctx, "Share access denied", "share", shareName, "user", dittoUser.Username)
 				return nil, ErrShareAccessDenied
 			}
 
 			// Read-only if share is read-only OR user only has read permission
-			shareReadOnly = share.ReadOnly || sharePermission == identity.PermissionRead
+			shareReadOnly = share.ReadOnly || sharePermission == models.PermissionRead
 			logger.DebugCtx(ctx, "User permission resolved", "share", shareName, "user", dittoUser.Username, "permission", sharePermission, "readOnly", shareReadOnly)
 		} else {
 			// User not found - use default permission
 			// If defaultPerm is "none", block access (no guest access)
-			if defaultPerm == identity.PermissionNone {
+			if defaultPerm == models.PermissionNone {
 				logger.DebugCtx(ctx, "Share access denied (unknown UID, default permission is none)",
 					"share", shareName, "uid", nfsCtx.UID)
 				return nil, ErrShareAccessDenied
@@ -115,7 +123,7 @@ func BuildAuthContextWithMapping(
 			// Allow with default permission
 			sharePermission = defaultPerm
 			// Read-only if share is read-only OR permission is read-only
-			shareReadOnly = share.ReadOnly || sharePermission == identity.PermissionRead
+			shareReadOnly = share.ReadOnly || sharePermission == models.PermissionRead
 			logger.DebugCtx(ctx, "Guest access granted", "share", shareName, "permission", sharePermission, "readOnly", shareReadOnly)
 		}
 	} else if shareErr != nil {

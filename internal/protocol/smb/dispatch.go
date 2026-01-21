@@ -4,7 +4,7 @@ package smb
 import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 	"github.com/marmos91/dittofs/internal/protocol/smb/v2/handlers"
-	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // HandlerResult is an alias for the handlers.HandlerResult type
@@ -14,7 +14,7 @@ type HandlerResult = handlers.HandlerResult
 type CommandHandler func(
 	ctx *handlers.SMBHandlerContext,
 	handler *handlers.Handler,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	body []byte,
 ) (*HandlerResult, error)
 
@@ -149,15 +149,15 @@ func init() {
 }
 
 // Dispatch handler wrappers - delegate to handlers package
-func handleNegotiate(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleNegotiate(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return h.Negotiate(ctx, body)
 }
 
-func handleSessionSetup(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleSessionSetup(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return h.SessionSetup(ctx, body)
 }
 
-func handleLogoff(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleLogoff(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return handleRequest(
 		body,
 		handlers.DecodeLogoffRequest,
@@ -171,15 +171,15 @@ func handleLogoff(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *regis
 	)
 }
 
-func handleTreeConnect(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleTreeConnect(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return h.TreeConnect(ctx, body)
 }
 
-func handleTreeDisconnect(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleTreeDisconnect(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return h.TreeDisconnect(ctx, body)
 }
 
-func handleCreate(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleCreate(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return handleRequest(
 		body,
 		handlers.DecodeCreateRequest,
@@ -193,7 +193,7 @@ func handleCreate(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *regis
 	)
 }
 
-func handleClose(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleClose(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return handleRequest(
 		body,
 		handlers.DecodeCloseRequest,
@@ -207,7 +207,7 @@ func handleClose(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *regist
 	)
 }
 
-func handleFlush(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleFlush(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return handleRequest(
 		body,
 		handlers.DecodeFlushRequest,
@@ -221,7 +221,7 @@ func handleFlush(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *regist
 	)
 }
 
-func handleRead(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleRead(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return handleRequest(
 		body,
 		handlers.DecodeReadRequest,
@@ -235,7 +235,7 @@ func handleRead(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registr
 	)
 }
 
-func handleWrite(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleWrite(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return handleRequest(
 		body,
 		handlers.DecodeWriteRequest,
@@ -249,7 +249,7 @@ func handleWrite(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *regist
 	)
 }
 
-func handleQueryDirectory(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleQueryDirectory(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return handleRequest(
 		body,
 		handlers.DecodeQueryDirectoryRequest,
@@ -263,7 +263,7 @@ func handleQueryDirectory(ctx *handlers.SMBHandlerContext, h *handlers.Handler, 
 	)
 }
 
-func handleQueryInfo(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleQueryInfo(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return handleRequest(
 		body,
 		handlers.DecodeQueryInfoRequest,
@@ -277,7 +277,7 @@ func handleQueryInfo(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *re
 	)
 }
 
-func handleSetInfo(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleSetInfo(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return handleRequest(
 		body,
 		handlers.DecodeSetInfoRequest,
@@ -291,7 +291,7 @@ func handleSetInfo(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *regi
 	)
 }
 
-func handleEcho(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleEcho(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return handleRequest(
 		body,
 		handlers.DecodeEchoRequest,
@@ -305,22 +305,22 @@ func handleEcho(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registr
 	)
 }
 
-func handleIoctl(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleIoctl(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return h.Ioctl(ctx, body)
 }
 
-func handleCancel(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleCancel(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return h.Cancel(ctx, body)
 }
 
-func handleChangeNotify(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleChangeNotify(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return h.ChangeNotify(ctx, body)
 }
 
-func handleLock(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleLock(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return h.Lock(ctx, body)
 }
 
-func handleOplockBreak(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *registry.Registry, body []byte) (*HandlerResult, error) {
+func handleOplockBreak(ctx *handlers.SMBHandlerContext, h *handlers.Handler, _ *runtime.Runtime, body []byte) (*HandlerResult, error) {
 	return h.OplockBreak(ctx, body)
 }
