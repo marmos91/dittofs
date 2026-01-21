@@ -13,9 +13,10 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/marmos91/dittofs/pkg/controlplane"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/server"
 )
 
@@ -31,7 +32,7 @@ type TestContext struct {
 	T             *testing.T
 	Config        *TestConfig
 	Server        *server.DittoServer
-	Registry      *registry.Registry
+	Registry      *runtime.Runtime
 	MetadataStore metadata.MetadataStore
 
 	// Protocol mounts
@@ -172,7 +173,7 @@ func (tc *TestContext) startServer() {
 	}
 
 	// Create Registry (auto-creates global SliceCache for content storage)
-	tc.Registry = registry.NewRegistry()
+	tc.Registry = runtime.New(nil)
 
 	// Setup user store for SMB if enabled
 	if tc.options.EnableSMB {
@@ -200,11 +201,11 @@ func (tc *TestContext) startServer() {
 
 	// DefaultPermission controls access for unknown UIDs and guests.
 	// "read-write" allows guest access; "none" would block unknown users.
-	shareConfig := &registry.ShareConfig{
+	shareConfig := &runtime.ShareConfig{
 		Name:              "/export",
 		MetadataStore:     storeName,
 		ReadOnly:          false,
-		DefaultPermission: string(identity.PermissionReadWrite),
+		DefaultPermission: string(models.PermissionReadWrite),
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: mode,
@@ -276,31 +277,47 @@ func (tc *TestContext) startServer() {
 	}
 }
 
-// createUserStore creates a user store with test credentials.
-func (tc *TestContext) createUserStore() identity.UserStore {
-	hash, err := identity.HashPassword(tc.SMBPassword)
+// createUserStore creates an identity store with test credentials using in-memory SQLite.
+// GORMStore directly implements models.UserStore.
+func (tc *TestContext) createUserStore() models.UserStore {
+	// Create in-memory SQLite control plane store for testing
+	dbConfig := controlplane.DatabaseConfig{
+		Type: "sqlite",
+		SQLite: controlplane.SQLiteConfig{
+			Path: ":memory:",
+		},
+	}
+	cpStore, err := controlplane.NewStore(tc.ctx, &dbConfig)
+	if err != nil {
+		tc.T.Fatalf("Failed to create control plane store: %v", err)
+	}
+
+	// Hash password
+	hash, err := models.HashPassword(tc.SMBPassword)
 	if err != nil {
 		tc.T.Fatalf("Failed to hash password: %v", err)
 	}
 
-	testUser := &identity.User{
+	// Create test user
+	uid := uint32(1000)
+	gid := uint32(1000)
+	testUser := &models.User{
+		ID:           "test-user-id",
 		Username:     tc.SMBUsername,
 		PasswordHash: hash,
-		UID:          1000,
-		GID:          1000,
+		UID:          &uid,
+		GID:          &gid,
 		Enabled:      true,
 		DisplayName:  "Test User",
-		SharePermissions: map[string]identity.SharePermission{
-			"/export": identity.PermissionReadWrite,
-		},
+		Role:         string(models.RoleUser),
 	}
 
-	store, err := identity.NewConfigUserStore([]*identity.User{testUser}, nil, nil)
-	if err != nil {
-		tc.T.Fatalf("Failed to create user store: %v", err)
+	if err := cpStore.CreateUser(tc.ctx, testUser); err != nil {
+		tc.T.Fatalf("Failed to create test user: %v", err)
 	}
 
-	return store
+	// GORMStore directly implements models.UserStore
+	return cpStore
 }
 
 // mountFilesystems mounts NFS and/or SMB filesystems.

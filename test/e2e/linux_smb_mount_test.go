@@ -15,10 +15,11 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/marmos91/dittofs/pkg/controlplane"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
-	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/server"
 	"github.com/marmos91/dittofs/test/e2e/framework"
 )
@@ -55,26 +56,46 @@ func TestLinuxSMBMount(t *testing.T) {
 	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
 
 	// Create registry (auto-creates global cache for content storage)
-	reg := registry.NewRegistry()
+	reg := runtime.New(nil)
 
-	// Create test user with authentication
-	testUser := &identity.User{
-		Username:     "testuser",
-		PasswordHash: mustHashPassword("testpass123"),
-		UID:          1000,
-		GID:          1000,
-		Enabled:      true,
-		DisplayName:  "Test User",
-		SharePermissions: map[string]identity.SharePermission{
-			"/export": identity.PermissionReadWrite,
+	// Create in-memory SQLite control plane store for testing
+	dbConfig := controlplane.DatabaseConfig{
+		Type: "sqlite",
+		SQLite: controlplane.SQLiteConfig{
+			Path: ":memory:",
 		},
 	}
-
-	userStore, err := identity.NewConfigUserStore([]*identity.User{testUser}, nil, nil)
+	cpStore, err := controlplane.NewStore(ctx, &dbConfig)
 	if err != nil {
-		t.Fatalf("Failed to create user store: %v", err)
+		t.Fatalf("Failed to create control plane store: %v", err)
 	}
-	reg.SetUserStore(userStore)
+
+	// Hash password
+	hash, err := models.HashPassword("testpass123")
+	if err != nil {
+		t.Fatalf("Failed to hash password: %v", err)
+	}
+
+	// Create test user
+	uid := uint32(1000)
+	gid := uint32(1000)
+	testUser := &models.User{
+		ID:           "test-user-id",
+		Username:     "testuser",
+		PasswordHash: hash,
+		UID:          &uid,
+		GID:          &gid,
+		Enabled:      true,
+		DisplayName:  "Test User",
+		Role:         string(models.RoleUser),
+	}
+
+	if err := cpStore.CreateUser(ctx, testUser); err != nil {
+		t.Fatalf("Failed to create test user: %v", err)
+	}
+
+	// Set user store on registry - GORMStore directly implements models.UserStore
+	reg.SetUserStore(cpStore)
 
 	// Register metadata store
 	if err := reg.RegisterMetadataStore("test-metadata", metaStore); err != nil {
@@ -83,11 +104,11 @@ func TestLinuxSMBMount(t *testing.T) {
 
 	// Create share (no content store needed - Registry auto-creates cache)
 	// DefaultPermission: "none" would block unknown users, "read-write" allows authenticated users
-	shareConfig := &registry.ShareConfig{
+	shareConfig := &runtime.ShareConfig{
 		Name:              "/export",
 		MetadataStore:     "test-metadata",
 		ReadOnly:          false,
-		DefaultPermission: string(identity.PermissionReadWrite),
+		DefaultPermission: string(models.PermissionReadWrite),
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0777,
@@ -271,13 +292,4 @@ func runDockerScript(t *testing.T, script string, testName string) {
 func isDockerAvailable() bool {
 	cmd := exec.Command("docker", "info")
 	return cmd.Run() == nil
-}
-
-// mustHashPassword hashes a password and panics on error
-func mustHashPassword(password string) string {
-	hash, err := identity.HashPassword(password)
-	if err != nil {
-		panic(err)
-	}
-	return hash
 }
