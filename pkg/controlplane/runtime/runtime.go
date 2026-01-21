@@ -370,40 +370,20 @@ func (r *Runtime) ApplyIdentityMapping(shareName string, identity *metadata.Iden
 		Username: identity.Username,
 	}
 
-	// Handle anonymous access (AUTH_NULL - nil UID/GID)
-	if identity.UID == nil {
+	// Determine if we need to map to anonymous
+	shouldMapToAnonymous := identity.UID == nil || // AUTH_NULL
+		share.MapAllToAnonymous || // all_squash
+		(share.MapPrivilegedToAnonymous && identity.UID != nil && *identity.UID == 0) // root_squash
+
+	if shouldMapToAnonymous {
 		anonUID := share.AnonymousUID
 		anonGID := share.AnonymousGID
 		effective.UID = &anonUID
 		effective.GID = &anonGID
 		effective.GIDs = []uint32{anonGID}
 		effective.Username = fmt.Sprintf("anonymous(%d)", anonUID)
-		return effective, nil
 	}
 
-	// Apply all_squash (map all users to anonymous)
-	if share.MapAllToAnonymous {
-		anonUID := share.AnonymousUID
-		anonGID := share.AnonymousGID
-		effective.UID = &anonUID
-		effective.GID = &anonGID
-		effective.GIDs = []uint32{anonGID}
-		effective.Username = fmt.Sprintf("anonymous(%d)", anonUID)
-		return effective, nil
-	}
-
-	// Apply root_squash (map root to anonymous)
-	if share.MapPrivilegedToAnonymous && identity.UID != nil && *identity.UID == 0 {
-		anonUID := share.AnonymousUID
-		anonGID := share.AnonymousGID
-		effective.UID = &anonUID
-		effective.GID = &anonGID
-		effective.GIDs = []uint32{anonGID}
-		effective.Username = fmt.Sprintf("anonymous(%d)", anonUID)
-		return effective, nil
-	}
-
-	// No mapping applied, return original identity
 	return effective, nil
 }
 

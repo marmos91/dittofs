@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,10 +17,7 @@ import (
 func (s *GORMStore) GetPayloadStore(ctx context.Context, name string) (*models.PayloadStoreConfig, error) {
 	var store models.PayloadStoreConfig
 	if err := s.db.WithContext(ctx).Where("name = ?", name).First(&store).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, models.ErrStoreNotFound
-		}
-		return nil, err
+		return nil, convertNotFoundError(err, models.ErrStoreNotFound)
 	}
 	return &store, nil
 }
@@ -29,10 +25,7 @@ func (s *GORMStore) GetPayloadStore(ctx context.Context, name string) (*models.P
 func (s *GORMStore) GetPayloadStoreByID(ctx context.Context, id string) (*models.PayloadStoreConfig, error) {
 	var store models.PayloadStoreConfig
 	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&store).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, models.ErrStoreNotFound
-		}
-		return nil, err
+		return nil, convertNotFoundError(err, models.ErrStoreNotFound)
 	}
 	return &store, nil
 }
@@ -81,13 +74,9 @@ func (s *GORMStore) UpdatePayloadStore(ctx context.Context, store *models.Payloa
 
 func (s *GORMStore) DeletePayloadStore(ctx context.Context, name string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Get store
 		var store models.PayloadStoreConfig
 		if err := tx.Where("name = ?", name).First(&store).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return models.ErrStoreNotFound
-			}
-			return err
+			return convertNotFoundError(err, models.ErrStoreNotFound)
 		}
 
 		// Check if any shares reference this store

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -208,4 +209,12 @@ func isUniqueConstraintError(err error) bool {
 	// SQLite or PostgreSQL unique constraint errors
 	return strings.Contains(errStr, "UNIQUE constraint failed") ||
 		strings.Contains(errStr, "duplicate key value violates unique constraint")
+}
+
+// convertNotFoundError converts gorm.ErrRecordNotFound to the appropriate domain error.
+func convertNotFoundError(err error, notFoundErr error) error {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return notFoundErr
+	}
+	return err
 }

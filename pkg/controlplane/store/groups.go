@@ -17,28 +17,24 @@ import (
 
 func (s *GORMStore) GetGroup(ctx context.Context, name string) (*models.Group, error) {
 	var group models.Group
-	if err := s.db.WithContext(ctx).
+	err := s.db.WithContext(ctx).
 		Preload("SharePermissions").
 		Where("name = ?", name).
-		First(&group).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, models.ErrGroupNotFound
-		}
-		return nil, err
+		First(&group).Error
+	if err != nil {
+		return nil, convertNotFoundError(err, models.ErrGroupNotFound)
 	}
 	return &group, nil
 }
 
 func (s *GORMStore) GetGroupByID(ctx context.Context, id string) (*models.Group, error) {
 	var group models.Group
-	if err := s.db.WithContext(ctx).
+	err := s.db.WithContext(ctx).
 		Preload("SharePermissions").
 		Where("id = ?", id).
-		First(&group).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, models.ErrGroupNotFound
-		}
-		return nil, err
+		First(&group).Error
+	if err != nil {
+		return nil, convertNotFoundError(err, models.ErrGroupNotFound)
 	}
 	return &group, nil
 }
@@ -72,33 +68,21 @@ func (s *GORMStore) UpdateGroup(ctx context.Context, group *models.Group) error 
 	// Check if group exists first
 	var existing models.Group
 	if err := s.db.WithContext(ctx).Where("id = ?", group.ID).First(&existing).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return models.ErrGroupNotFound
-		}
-		return err
+		return convertNotFoundError(err, models.ErrGroupNotFound)
 	}
 
 	// Update specific fields using Select to handle pointers properly
-	result := s.db.WithContext(ctx).
+	return s.db.WithContext(ctx).
 		Model(&existing).
 		Select("Name", "GID", "Description").
-		Updates(group)
-
-	if result.Error != nil {
-		return result.Error
-	}
-	return nil
+		Updates(group).Error
 }
 
 func (s *GORMStore) DeleteGroup(ctx context.Context, name string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Get group
 		var group models.Group
 		if err := tx.Where("name = ?", name).First(&group).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return models.ErrGroupNotFound
-			}
-			return err
+			return convertNotFoundError(err, models.ErrGroupNotFound)
 		}
 
 		// Delete share permissions
@@ -135,41 +119,27 @@ func (s *GORMStore) GetUserGroups(ctx context.Context, username string) ([]*mode
 
 func (s *GORMStore) AddUserToGroup(ctx context.Context, username, groupName string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Get user
 		var user models.User
 		if err := tx.Where("username = ?", username).First(&user).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return models.ErrUserNotFound
-			}
-			return err
+			return convertNotFoundError(err, models.ErrUserNotFound)
 		}
 
-		// Get group
 		var group models.Group
 		if err := tx.Where("name = ?", groupName).First(&group).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return models.ErrGroupNotFound
-			}
-			return err
+			return convertNotFoundError(err, models.ErrGroupNotFound)
 		}
 
-		// Add user to group
 		return tx.Model(&user).Association("Groups").Append(&group)
 	})
 }
 
 func (s *GORMStore) RemoveUserFromGroup(ctx context.Context, username, groupName string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Get user
 		var user models.User
 		if err := tx.Where("username = ?", username).First(&user).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return models.ErrUserNotFound
-			}
-			return err
+			return convertNotFoundError(err, models.ErrUserNotFound)
 		}
 
-		// Get group
 		var group models.Group
 		if err := tx.Where("name = ?", groupName).First(&group).Error; err != nil {
 			// Group not found is not an error for remove operation
@@ -179,19 +149,14 @@ func (s *GORMStore) RemoveUserFromGroup(ctx context.Context, username, groupName
 			return err
 		}
 
-		// Remove user from group
 		return tx.Model(&user).Association("Groups").Delete(&group)
 	})
 }
 
 func (s *GORMStore) GetGroupMembers(ctx context.Context, groupName string) ([]*models.User, error) {
-	// First verify the group exists
 	var group models.Group
 	if err := s.db.WithContext(ctx).Where("name = ?", groupName).First(&group).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, models.ErrGroupNotFound
-		}
-		return nil, err
+		return nil, convertNotFoundError(err, models.ErrGroupNotFound)
 	}
 
 	// Get all users who belong to this group

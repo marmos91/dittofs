@@ -129,7 +129,5 @@ func (cp *ControlPlane) IdentityStore() models.IdentityStore {
 
 // Close releases all resources held by the ControlPlane.
 func (cp *ControlPlane) Close() error {
-	// Store cleanup is handled by GORM's connection pool
-	// No explicit close needed for current implementation
-	return nil
+	return cp.store.Close()
 }

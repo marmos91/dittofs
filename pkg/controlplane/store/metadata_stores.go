@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,10 +17,7 @@ import (
 func (s *GORMStore) GetMetadataStore(ctx context.Context, name string) (*models.MetadataStoreConfig, error) {
 	var store models.MetadataStoreConfig
 	if err := s.db.WithContext(ctx).Where("name = ?", name).First(&store).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, models.ErrStoreNotFound
-		}
-		return nil, err
+		return nil, convertNotFoundError(err, models.ErrStoreNotFound)
 	}
 	return &store, nil
 }
@@ -29,10 +25,7 @@ func (s *GORMStore) GetMetadataStore(ctx context.Context, name string) (*models.
 func (s *GORMStore) GetMetadataStoreByID(ctx context.Context, id string) (*models.MetadataStoreConfig, error) {
 	var store models.MetadataStoreConfig
 	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&store).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, models.ErrStoreNotFound
-		}
-		return nil, err
+		return nil, convertNotFoundError(err, models.ErrStoreNotFound)
 	}
 	return &store, nil
 }
@@ -81,13 +74,9 @@ func (s *GORMStore) UpdateMetadataStore(ctx context.Context, store *models.Metad
 
 func (s *GORMStore) DeleteMetadataStore(ctx context.Context, name string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Get store
 		var store models.MetadataStoreConfig
 		if err := tx.Where("name = ?", name).First(&store).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return models.ErrStoreNotFound
-			}
-			return err
+			return convertNotFoundError(err, models.ErrStoreNotFound)
 		}
 
 		// Check if any shares reference this store

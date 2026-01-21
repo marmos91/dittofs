@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,36 +16,32 @@ import (
 
 func (s *GORMStore) GetShare(ctx context.Context, name string) (*models.Share, error) {
 	var share models.Share
-	if err := s.db.WithContext(ctx).
+	err := s.db.WithContext(ctx).
 		Preload("MetadataStore").
 		Preload("PayloadStore").
 		Preload("AccessRules").
 		Preload("UserPermissions").
 		Preload("GroupPermissions").
 		Where("name = ?", name).
-		First(&share).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, models.ErrShareNotFound
-		}
-		return nil, err
+		First(&share).Error
+	if err != nil {
+		return nil, convertNotFoundError(err, models.ErrShareNotFound)
 	}
 	return &share, nil
 }
 
 func (s *GORMStore) GetShareByID(ctx context.Context, id string) (*models.Share, error) {
 	var share models.Share
-	if err := s.db.WithContext(ctx).
+	err := s.db.WithContext(ctx).
 		Preload("MetadataStore").
 		Preload("PayloadStore").
 		Preload("AccessRules").
 		Preload("UserPermissions").
 		Preload("GroupPermissions").
 		Where("id = ?", id).
-		First(&share).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, models.ErrShareNotFound
-		}
-		return nil, err
+		First(&share).Error
+	if err != nil {
+		return nil, convertNotFoundError(err, models.ErrShareNotFound)
 	}
 	return &share, nil
 }
@@ -109,13 +104,9 @@ func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error 
 
 func (s *GORMStore) DeleteShare(ctx context.Context, name string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Get share
 		var share models.Share
 		if err := tx.Where("name = ?", name).First(&share).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return models.ErrShareNotFound
-			}
-			return err
+			return convertNotFoundError(err, models.ErrShareNotFound)
 		}
 
 		// Delete access rules
@@ -203,13 +194,9 @@ func (s *GORMStore) GetShareAccessRules(ctx context.Context, shareName string) (
 
 func (s *GORMStore) SetShareAccessRules(ctx context.Context, shareName string, rules []*models.ShareAccessRule) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Get share
 		var share models.Share
 		if err := tx.Where("name = ?", shareName).First(&share).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return models.ErrShareNotFound
-			}
-			return err
+			return convertNotFoundError(err, models.ErrShareNotFound)
 		}
 
 		// Delete existing rules
@@ -234,13 +221,9 @@ func (s *GORMStore) SetShareAccessRules(ctx context.Context, shareName string, r
 
 func (s *GORMStore) AddShareAccessRule(ctx context.Context, shareName string, rule *models.ShareAccessRule) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Get share
 		var share models.Share
 		if err := tx.Where("name = ?", shareName).First(&share).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return models.ErrShareNotFound
-			}
-			return err
+			return convertNotFoundError(err, models.ErrShareNotFound)
 		}
 
 		if rule.ID == "" {
@@ -254,16 +237,11 @@ func (s *GORMStore) AddShareAccessRule(ctx context.Context, shareName string, ru
 
 func (s *GORMStore) RemoveShareAccessRule(ctx context.Context, shareName, ruleID string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Get share
 		var share models.Share
 		if err := tx.Where("name = ?", shareName).First(&share).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return models.ErrShareNotFound
-			}
-			return err
+			return convertNotFoundError(err, models.ErrShareNotFound)
 		}
 
-		// Delete rule (no error if it doesn't exist)
 		return tx.Where("id = ? AND share_id = ?", ruleID, share.ID).Delete(&models.ShareAccessRule{}).Error
 	})
 }

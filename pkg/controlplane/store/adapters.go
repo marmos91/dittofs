@@ -2,11 +2,9 @@ package store
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
@@ -18,10 +16,7 @@ import (
 func (s *GORMStore) GetAdapter(ctx context.Context, adapterType string) (*models.AdapterConfig, error) {
 	var adapter models.AdapterConfig
 	if err := s.db.WithContext(ctx).Where("type = ?", adapterType).First(&adapter).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, models.ErrAdapterNotFound
-		}
-		return nil, err
+		return nil, convertNotFoundError(err, models.ErrAdapterNotFound)
 	}
 	return &adapter, nil
 }

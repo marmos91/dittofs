@@ -19,45 +19,39 @@ import (
 
 func (s *GORMStore) GetUser(ctx context.Context, username string) (*models.User, error) {
 	var user models.User
-	if err := s.db.WithContext(ctx).
+	err := s.db.WithContext(ctx).
 		Preload("Groups").
 		Preload("SharePermissions").
 		Where("username = ?", username).
-		First(&user).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, models.ErrUserNotFound
-		}
-		return nil, err
+		First(&user).Error
+	if err != nil {
+		return nil, convertNotFoundError(err, models.ErrUserNotFound)
 	}
 	return &user, nil
 }
 
 func (s *GORMStore) GetUserByID(ctx context.Context, id string) (*models.User, error) {
 	var user models.User
-	if err := s.db.WithContext(ctx).
+	err := s.db.WithContext(ctx).
 		Preload("Groups").
 		Preload("SharePermissions").
 		Where("id = ?", id).
-		First(&user).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, models.ErrUserNotFound
-		}
-		return nil, err
+		First(&user).Error
+	if err != nil {
+		return nil, convertNotFoundError(err, models.ErrUserNotFound)
 	}
 	return &user, nil
 }
 
 func (s *GORMStore) GetUserByUID(ctx context.Context, uid uint32) (*models.User, error) {
 	var user models.User
-	if err := s.db.WithContext(ctx).
+	err := s.db.WithContext(ctx).
 		Preload("Groups").
 		Preload("SharePermissions").
 		Where("uid = ?", uid).
-		First(&user).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, models.ErrUserNotFound
-		}
-		return nil, err
+		First(&user).Error
+	if err != nil {
+		return nil, convertNotFoundError(err, models.ErrUserNotFound)
 	}
 	return &user, nil
 }
@@ -92,34 +86,21 @@ func (s *GORMStore) UpdateUser(ctx context.Context, user *models.User) error {
 	// Check if user exists first
 	var existing models.User
 	if err := s.db.WithContext(ctx).Where("id = ?", user.ID).First(&existing).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return models.ErrUserNotFound
-		}
-		return err
+		return convertNotFoundError(err, models.ErrUserNotFound)
 	}
 
 	// Update specific fields using Select to handle pointers properly
-	result := s.db.WithContext(ctx).
+	return s.db.WithContext(ctx).
 		Model(&existing).
 		Select("Username", "Enabled", "MustChangePassword", "Role", "UID", "GID", "DisplayName", "Email").
-		Updates(user)
-
-	if result.Error != nil {
-		return result.Error
-	}
-	return nil
+		Updates(user).Error
 }
 
 func (s *GORMStore) DeleteUser(ctx context.Context, username string) error {
-	// Start transaction
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Get user
 		var user models.User
 		if err := tx.Where("username = ?", username).First(&user).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return models.ErrUserNotFound
-			}
-			return err
+			return convertNotFoundError(err, models.ErrUserNotFound)
 		}
 
 		// Delete share permissions
