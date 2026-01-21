@@ -40,6 +40,10 @@ go.work.sum
 
 # Build artifacts (binary at root level only)
 /dittofs
+/main
+
+# Operator binaries and tools
+dittofs-operator/bin/
 
 # Temporary files
 tmp/
