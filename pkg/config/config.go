@@ -4,14 +4,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect" // Used in mapstructure decode hooks for runtime type inspection
+	"reflect"
 	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
-	"github.com/marmos91/dittofs/pkg/api"
+	"github.com/marmos91/dittofs/pkg/controlplane/api"
+	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/mitchellh/mapstructure"
 	"github.com/spf13/viper"
@@ -71,9 +72,9 @@ type Config struct {
 	// Guest configures guest/anonymous access
 	Guest GuestUserConfig `mapstructure:"guest" yaml:"guest"`
 
-	// Identity configures the identity store for user management
-	// This is the control plane for authentication and authorization
-	Identity IdentityStoreConfig `mapstructure:"identity" yaml:"identity"`
+	// Database configures the control plane database (SQLite or PostgreSQL).
+	// This is the persistent store for users, groups, shares, and configuration.
+	Database store.Config `mapstructure:"database" yaml:"database"`
 
 	// Shares defines the list of shares/exports available to clients
 	Shares []ShareConfig `mapstructure:"shares" validate:"dive" yaml:"shares"`
@@ -401,21 +402,6 @@ type GuestUserConfig struct {
 
 	// SharePermissions maps share names to permission levels for guests
 	SharePermissions map[string]string `mapstructure:"share_permissions" yaml:"share_permissions"`
-}
-
-// IdentityStoreConfig specifies the identity store configuration.
-// The identity store is the control plane for user management and authentication.
-// This is separate from the data plane (metadata/content stores).
-type IdentityStoreConfig struct {
-	// Type specifies which identity store implementation to use
-	// Valid values: memory (for testing only - data lost on restart)
-	// Future: sqlite, badger, postgres
-	Type string `mapstructure:"type" validate:"required,oneof=memory" yaml:"type"`
-
-	// Memory contains memory-specific configuration
-	// Only used when Type = "memory"
-	// Note: Memory store loses all data on restart - for testing only
-	Memory map[string]any `mapstructure:"memory" yaml:"memory"`
 }
 
 // ShareConfig defines a single share/export.

@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/payload"
-	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // InitializeRegistry creates a fully configured Registry from the provided configuration.
@@ -27,7 +27,7 @@ import (
 //   - cfg: Complete configuration loaded from config file
 //
 // Returns:
-//   - *registry.Registry: Fully initialized registry
+//   - *runtime.Runtime: Fully initialized registry
 //   - error: If store creation fails, share validation fails, or configuration is invalid
 //
 // Validation performed:
@@ -42,7 +42,7 @@ import (
 //	if err != nil {
 //	    log.Fatalf("Failed to initialize registry: %v", err)
 //	}
-func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, error) {
+func InitializeRegistry(ctx context.Context, cfg *Config) (*runtime.Runtime, error) {
 	logger.Debug("Initializing registry from configuration")
 
 	// Validate configuration has required sections
@@ -51,7 +51,7 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 	}
 
 	// Create registry
-	reg := registry.NewRegistry()
+	reg := runtime.New(nil)
 
 	// Step 1: Create cache from configuration (WAL-backed, mandatory)
 	globalCache, err := CreateCache(cfg.Cache)
@@ -126,15 +126,10 @@ func InitializeRegistry(ctx context.Context, cfg *Config) (*registry.Registry, e
 	}
 	logger.Info("Registered shares", "count", reg.CountShares())
 
-	// Step 7: Create and register user store (if users/groups configured)
-	if len(cfg.Users) > 0 || len(cfg.Groups) > 0 || cfg.Guest.Enabled {
-		userStore, err := cfg.CreateUserStore()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create user store: %w", err)
-		}
-		reg.SetUserStore(userStore)
-		logger.Info("Registered user store", "users", len(cfg.Users), "groups", len(cfg.Groups), "guest_enabled", cfg.Guest.Enabled)
-	}
+	// Note: User store is now managed via the control plane database (controlplane.Store).
+	// It is initialized separately and passed to the API server directly.
+	// The legacy config-based users/groups (cfg.Users, cfg.Groups) are deprecated
+	// in favor of the control plane database.
 
 	return reg, nil
 }
@@ -157,7 +152,7 @@ func validateRegistryConfig(cfg *Config) error {
 }
 
 // registerMetadataStores creates and registers all configured metadata stores.
-func registerMetadataStores(ctx context.Context, reg *registry.Registry, cfg *Config) error {
+func registerMetadataStores(ctx context.Context, reg *runtime.Runtime, cfg *Config) error {
 	// Get filesystem capabilities that apply to all metadata stores
 	capabilities := cfg.Metadata.FilesystemCapabilities
 
@@ -179,9 +174,9 @@ func registerMetadataStores(ctx context.Context, reg *registry.Registry, cfg *Co
 	return nil
 }
 
-// addShares validates and adds all configured shares to the registry.
+// addShares validates and adds all configured shares to the runtime.
 // Each share automatically gets a Cache for content storage.
-func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
+func addShares(ctx context.Context, reg *runtime.Runtime, cfg *Config) error {
 	for i, shareCfg := range cfg.Shares {
 		logger.Debug("Adding share", "name", shareCfg.Name, "metadata", shareCfg.Metadata, "read_only", shareCfg.ReadOnly)
 
@@ -195,7 +190,7 @@ func addShares(ctx context.Context, reg *registry.Registry, cfg *Config) error {
 
 		// Create ShareConfig from configuration
 		// Note: ContentStore and Cache fields were removed - Cache is auto-created
-		shareConfig := &registry.ShareConfig{
+		shareConfig := &runtime.ShareConfig{
 			Name:                     shareCfg.Name,
 			MetadataStore:            shareCfg.Metadata,
 			ReadOnly:                 shareCfg.ReadOnly,

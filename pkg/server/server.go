@@ -9,9 +9,9 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter"
-	"github.com/marmos91/dittofs/pkg/api"
+	cpapi "github.com/marmos91/dittofs/pkg/controlplane/api"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metrics"
-	"github.com/marmos91/dittofs/pkg/registry"
 )
 
 // DefaultShutdownTimeout is the default timeout for graceful adapter shutdown.
@@ -49,7 +49,7 @@ const DefaultShutdownTimeout = 30 * time.Second
 //	}
 type DittoServer struct {
 	// registry contains all stores and shares
-	registry *registry.Registry
+	registry *runtime.Runtime
 
 	// adapters contains all registered protocol adapters
 	adapters []adapter.Adapter
@@ -58,7 +58,7 @@ type DittoServer struct {
 	metricsServer *metrics.Server
 
 	// apiServer is the HTTP server for the REST API (optional)
-	apiServer *api.Server
+	apiServer *cpapi.Server
 
 	// shutdownTimeout is the maximum time to wait for adapter shutdown
 	shutdownTimeout time.Duration
@@ -94,7 +94,7 @@ type adapterError struct {
 // register protocols, then Serve() to start the server.
 //
 // Panics if registry is nil (indicates programmer error).
-func New(reg *registry.Registry, shutdownTimeout time.Duration) *DittoServer {
+func New(reg *runtime.Runtime, shutdownTimeout time.Duration) *DittoServer {
 	if reg == nil {
 		panic("registry cannot be nil")
 	}
@@ -150,7 +150,7 @@ func (s *DittoServer) SetMetricsServer(metricsServer *metrics.Server) {
 //
 // Parameters:
 //   - apiServer: The API server to register, or nil to disable
-func (s *DittoServer) SetAPIServer(apiServer *api.Server) {
+func (s *DittoServer) SetAPIServer(apiServer *cpapi.Server) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
