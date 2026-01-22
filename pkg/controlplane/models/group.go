@@ -27,9 +27,10 @@ func (Group) TableName() string {
 
 // GetSharePermission returns the group's permission for a share.
 // Returns PermissionNone if no permission is set for the share.
+// Note: This method requires SharePermissions to be loaded with ShareName populated.
 func (g *Group) GetSharePermission(shareName string) SharePermission {
 	for _, p := range g.SharePermissions {
-		if p.ShareID == shareName {
+		if p.ShareName == shareName {
 			return SharePermission(p.Permission)
 		}
 	}
@@ -48,6 +49,7 @@ func (g *Group) Validate() error {
 type GroupSharePermission struct {
 	GroupID    string `gorm:"primaryKey;size:36" json:"group_id"`
 	ShareID    string `gorm:"primaryKey;size:36" json:"share_id"`
+	ShareName  string `gorm:"size:255" json:"share_name"`         // Denormalized for lookups
 	Permission string `gorm:"not null;size:50" json:"permission"` // none, read, read-write, admin
 }
 

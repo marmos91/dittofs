@@ -111,9 +111,10 @@ func (u *User) HasGroupName(groupName string, groupNames []string) bool {
 
 // GetExplicitSharePermission returns the user's explicit permission for a share.
 // Returns PermissionNone and false if no explicit permission is set.
+// Note: This method requires SharePermissions to be loaded with ShareName populated.
 func (u *User) GetExplicitSharePermission(shareName string) (SharePermission, bool) {
 	for _, p := range u.SharePermissions {
-		if p.ShareID == shareName {
+		if p.ShareName == shareName {
 			return SharePermission(p.Permission), true
 		}
 	}
@@ -145,6 +146,7 @@ func (u *User) GetRole() UserRole {
 type UserSharePermission struct {
 	UserID     string `gorm:"primaryKey;size:36" json:"user_id"`
 	ShareID    string `gorm:"primaryKey;size:36" json:"share_id"`
+	ShareName  string `gorm:"size:255" json:"share_name"`         // Denormalized for lookups
 	Permission string `gorm:"not null;size:50" json:"permission"` // none, read, read-write, admin
 }
 

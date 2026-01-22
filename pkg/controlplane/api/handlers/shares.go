@@ -236,21 +236,35 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	perm := &models.UserSharePermission{
-		UserID:     username,
-		ShareID:    shareName,
-		Permission: req.Permission,
-	}
-
-	if err := h.store.SetUserSharePermission(r.Context(), perm); err != nil {
+	// Look up user and share to get their IDs
+	user, err := h.store.GetUser(r.Context(), username)
+	if err != nil {
 		if errors.Is(err, models.ErrUserNotFound) {
 			NotFound(w, "User not found")
 			return
 		}
+		InternalServerError(w, "Failed to get user")
+		return
+	}
+
+	share, err := h.store.GetShare(r.Context(), shareName)
+	if err != nil {
 		if errors.Is(err, models.ErrShareNotFound) {
 			NotFound(w, "Share not found")
 			return
 		}
+		InternalServerError(w, "Failed to get share")
+		return
+	}
+
+	perm := &models.UserSharePermission{
+		UserID:     user.ID,
+		ShareID:    share.ID,
+		ShareName:  share.Name,
+		Permission: req.Permission,
+	}
+
+	if err := h.store.SetUserSharePermission(r.Context(), perm); err != nil {
 		InternalServerError(w, "Failed to set user permission")
 		return
 	}
@@ -308,21 +322,35 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	perm := &models.GroupSharePermission{
-		GroupID:    groupName,
-		ShareID:    shareName,
-		Permission: req.Permission,
-	}
-
-	if err := h.store.SetGroupSharePermission(r.Context(), perm); err != nil {
+	// Look up group and share to get their IDs
+	group, err := h.store.GetGroup(r.Context(), groupName)
+	if err != nil {
 		if errors.Is(err, models.ErrGroupNotFound) {
 			NotFound(w, "Group not found")
 			return
 		}
+		InternalServerError(w, "Failed to get group")
+		return
+	}
+
+	share, err := h.store.GetShare(r.Context(), shareName)
+	if err != nil {
 		if errors.Is(err, models.ErrShareNotFound) {
 			NotFound(w, "Share not found")
 			return
 		}
+		InternalServerError(w, "Failed to get share")
+		return
+	}
+
+	perm := &models.GroupSharePermission{
+		GroupID:    group.ID,
+		ShareID:    share.ID,
+		ShareName:  share.Name,
+		Permission: req.Permission,
+	}
+
+	if err := h.store.SetGroupSharePermission(r.Context(), perm); err != nil {
 		InternalServerError(w, "Failed to set group permission")
 		return
 	}

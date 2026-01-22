@@ -316,8 +316,8 @@ func (c *GroupCommand) runGrant(args []string) error {
 
 	ctx := context.Background()
 
-	// Verify group exists
-	_, err = s.GetGroup(ctx, groupName)
+	// Get group to obtain ID
+	group, err := s.GetGroup(ctx, groupName)
 	if err != nil {
 		if err == models.ErrGroupNotFound {
 			return fmt.Errorf("group %q not found", groupName)
@@ -325,10 +325,20 @@ func (c *GroupCommand) runGrant(args []string) error {
 		return fmt.Errorf("failed to get group: %w", err)
 	}
 
-	// Set permission
+	// Get share to obtain ID
+	share, err := s.GetShare(ctx, shareName)
+	if err != nil {
+		if err == models.ErrShareNotFound {
+			return fmt.Errorf("share %q not found", shareName)
+		}
+		return fmt.Errorf("failed to get share: %w", err)
+	}
+
+	// Set permission with correct IDs
 	groupPerm := &models.GroupSharePermission{
-		GroupID:    groupName,
-		ShareID:    shareName,
+		GroupID:    group.ID,
+		ShareID:    share.ID,
+		ShareName:  share.Name,
 		Permission: permission,
 	}
 

@@ -408,8 +408,8 @@ func (c *UserCommand) runGrant(args []string) error {
 
 	ctx := context.Background()
 
-	// Verify user exists
-	_, err = s.GetUser(ctx, username)
+	// Get user to obtain ID
+	user, err := s.GetUser(ctx, username)
 	if err != nil {
 		if err == models.ErrUserNotFound {
 			return fmt.Errorf("user %q not found", username)
@@ -417,10 +417,20 @@ func (c *UserCommand) runGrant(args []string) error {
 		return fmt.Errorf("failed to get user: %w", err)
 	}
 
-	// Set permission
+	// Get share to obtain ID
+	share, err := s.GetShare(ctx, shareName)
+	if err != nil {
+		if err == models.ErrShareNotFound {
+			return fmt.Errorf("share %q not found", shareName)
+		}
+		return fmt.Errorf("failed to get share: %w", err)
+	}
+
+	// Set permission with correct IDs
 	userPerm := &models.UserSharePermission{
-		UserID:     username,
-		ShareID:    shareName,
+		UserID:     user.ID,
+		ShareID:    share.ID,
+		ShareName:  share.Name,
 		Permission: permission,
 	}
 

@@ -13,9 +13,9 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
-	"github.com/marmos91/dittofs/pkg/controlplane"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/server"
 )
@@ -281,13 +281,13 @@ func (tc *TestContext) startServer() {
 // GORMStore directly implements models.UserStore.
 func (tc *TestContext) createUserStore() models.UserStore {
 	// Create in-memory SQLite control plane store for testing
-	dbConfig := controlplane.DatabaseConfig{
-		Type: "sqlite",
-		SQLite: controlplane.SQLiteConfig{
+	dbConfig := &store.Config{
+		Type: store.DatabaseTypeSQLite,
+		SQLite: store.SQLiteConfig{
 			Path: ":memory:",
 		},
 	}
-	cpStore, err := controlplane.NewStore(tc.ctx, &dbConfig)
+	cpStore, err := store.New(dbConfig)
 	if err != nil {
 		tc.T.Fatalf("Failed to create control plane store: %v", err)
 	}
@@ -312,7 +312,7 @@ func (tc *TestContext) createUserStore() models.UserStore {
 		Role:         string(models.RoleUser),
 	}
 
-	if err := cpStore.CreateUser(tc.ctx, testUser); err != nil {
+	if _, err := cpStore.CreateUser(tc.ctx, testUser); err != nil {
 		tc.T.Fatalf("Failed to create test user: %v", err)
 	}
 

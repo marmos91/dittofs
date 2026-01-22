@@ -15,9 +15,9 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
-	"github.com/marmos91/dittofs/pkg/controlplane"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/server"
@@ -59,13 +59,13 @@ func TestLinuxSMBMount(t *testing.T) {
 	reg := runtime.New(nil)
 
 	// Create in-memory SQLite control plane store for testing
-	dbConfig := controlplane.DatabaseConfig{
-		Type: "sqlite",
-		SQLite: controlplane.SQLiteConfig{
+	dbConfig := &store.Config{
+		Type: store.DatabaseTypeSQLite,
+		SQLite: store.SQLiteConfig{
 			Path: ":memory:",
 		},
 	}
-	cpStore, err := controlplane.NewStore(ctx, &dbConfig)
+	cpStore, err := store.New(dbConfig)
 	if err != nil {
 		t.Fatalf("Failed to create control plane store: %v", err)
 	}
