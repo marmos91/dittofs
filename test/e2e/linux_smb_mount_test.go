@@ -52,12 +52,6 @@ func TestLinuxSMBMount(t *testing.T) {
 	// Find free port
 	smbPort := framework.FindFreePort(t)
 
-	// Create stores
-	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
-
-	// Create registry (auto-creates global cache for content storage)
-	reg := runtime.New(nil)
-
 	// Create in-memory SQLite control plane store for testing
 	dbConfig := &store.Config{
 		Type: store.DatabaseTypeSQLite,
@@ -69,6 +63,12 @@ func TestLinuxSMBMount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create control plane store: %v", err)
 	}
+
+	// Create stores
+	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
+
+	// Create runtime with control plane store
+	reg := runtime.New(cpStore)
 
 	// Hash password
 	hash, err := models.HashPassword("testpass123")
@@ -93,9 +93,6 @@ func TestLinuxSMBMount(t *testing.T) {
 	if _, err := cpStore.CreateUser(ctx, testUser); err != nil {
 		t.Fatalf("Failed to create test user: %v", err)
 	}
-
-	// Set user store on registry - GORMStore directly implements models.UserStore
-	reg.SetUserStore(cpStore)
 
 	// Register metadata store
 	if err := reg.RegisterMetadataStore("test-metadata", metaStore); err != nil {

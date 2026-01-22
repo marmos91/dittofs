@@ -172,14 +172,14 @@ func (tc *TestContext) startServer() {
 		logger.SetLevel("ERROR")
 	}
 
-	// Create Registry (auto-creates global SliceCache for content storage)
-	tc.Registry = runtime.New(nil)
-
-	// Setup user store for SMB if enabled
+	// Create control plane store if SMB is enabled (for user authentication)
+	var cpStore store.Store
 	if tc.options.EnableSMB {
-		userStore := tc.createUserStore()
-		tc.Registry.SetUserStore(userStore)
+		cpStore = tc.createUserStore()
 	}
+
+	// Create Registry with optional control plane store
+	tc.Registry = runtime.New(cpStore)
 
 	// Register metadata store
 	port := tc.NFSPort
@@ -278,8 +278,8 @@ func (tc *TestContext) startServer() {
 }
 
 // createUserStore creates an identity store with test credentials using in-memory SQLite.
-// GORMStore directly implements models.UserStore.
-func (tc *TestContext) createUserStore() models.UserStore {
+// GORMStore implements store.Store (which includes models.UserStore).
+func (tc *TestContext) createUserStore() store.Store {
 	// Create in-memory SQLite control plane store for testing
 	dbConfig := &store.Config{
 		Type: store.DatabaseTypeSQLite,
@@ -316,7 +316,6 @@ func (tc *TestContext) createUserStore() models.UserStore {
 		tc.T.Fatalf("Failed to create test user: %v", err)
 	}
 
-	// GORMStore directly implements models.UserStore
 	return cpStore
 }
 
