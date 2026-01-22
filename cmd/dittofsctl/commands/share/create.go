@@ -64,5 +64,5 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create share: %w", err)
 	}
 
-	return cmdutil.PrintCreatedResource(os.Stdout, share, fmt.Sprintf("Share '%s' created successfully", share.Name))
+	return cmdutil.PrintResourceWithSuccess(os.Stdout, share, fmt.Sprintf("Share '%s' created successfully", share.Name))
 }

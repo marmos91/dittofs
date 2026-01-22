@@ -138,10 +138,22 @@ func PrintResourceWithSuccess(w io.Writer, data any, successMsg string) error {
 	}
 }
 
-// PrintCreatedResource is an alias for PrintResourceWithSuccess.
-// It prints a created resource in the specified format.
-func PrintCreatedResource(w io.Writer, data any, successMsg string) error {
-	return PrintResourceWithSuccess(w, data, successMsg)
+// PrintResource prints a resource in the specified format.
+// For table format, it uses the provided tableRenderer. For JSON/YAML, it outputs the resource.
+func PrintResource(w io.Writer, data any, tableRenderer output.TableRenderer) error {
+	format, err := GetOutputFormatParsed()
+	if err != nil {
+		return err
+	}
+
+	switch format {
+	case output.FormatJSON:
+		return output.PrintJSON(w, data)
+	case output.FormatYAML:
+		return output.PrintYAML(w, data)
+	default:
+		return output.PrintTable(w, tableRenderer)
+	}
 }
 
 // RunDeleteWithConfirmation prompts for confirmation (unless force is true) and runs deleteFn.

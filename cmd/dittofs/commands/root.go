@@ -6,6 +6,7 @@ import (
 
 	"github.com/marmos91/dittofs/cmd/dittofs/commands/backup"
 	"github.com/marmos91/dittofs/cmd/dittofs/commands/config"
+	"github.com/marmos91/dittofs/cmd/dittofs/commands/restore"
 	"github.com/spf13/cobra"
 )
 
@@ -57,6 +58,7 @@ func init() {
 	rootCmd.AddCommand(logsCmd)
 	rootCmd.AddCommand(config.Cmd)
 	rootCmd.AddCommand(backup.Cmd)
+	rootCmd.AddCommand(restore.Cmd)
 	rootCmd.AddCommand(completionCmd)
 
 	// Hide the default completion command (we provide our own)

@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/spf13/cobra"
@@ -31,26 +30,15 @@ func init() {
 }
 
 func runConfigValidate(cmd *cobra.Command, args []string) error {
+	// Load and validate configuration
+	cfg, err := config.MustLoad(validateConfigPath)
+	if err != nil {
+		return err
+	}
+
 	configPath := validateConfigPath
 	if configPath == "" {
-		if !config.DefaultConfigExists() {
-			return fmt.Errorf("no configuration file found at default location: %s\n\n"+
-				"Create one with:\n"+
-				"  dittofs config init",
-				config.GetDefaultConfigPath())
-		}
 		configPath = config.GetDefaultConfigPath()
-	}
-
-	// Check if file exists
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return fmt.Errorf("configuration file not found: %s", configPath)
-	}
-
-	// Try to load and validate configuration
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return fmt.Errorf("validation failed: %w", err)
 	}
 
 	// Additional validation checks
@@ -62,14 +50,7 @@ func runConfigValidate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check for at least one adapter
-	adapterCount := 0
-	if cfg.Adapters.NFS.Enabled {
-		adapterCount++
-	}
-	if cfg.Adapters.SMB.Enabled {
-		adapterCount++
-	}
-	if adapterCount == 0 {
+	if !cfg.Adapters.NFS.Enabled && !cfg.Adapters.SMB.Enabled {
 		warnings = append(warnings, "No protocol adapters enabled")
 	}
 

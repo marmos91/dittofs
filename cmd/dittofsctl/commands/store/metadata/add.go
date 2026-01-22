@@ -67,5 +67,5 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create metadata store: %w", err)
 	}
 
-	return cmdutil.PrintCreatedResource(os.Stdout, store, fmt.Sprintf("Metadata store '%s' (type: %s) created successfully", store.Name, store.Type))
+	return cmdutil.PrintResourceWithSuccess(os.Stdout, store, fmt.Sprintf("Metadata store '%s' (type: %s) created successfully", store.Name, store.Type))
 }

@@ -5,7 +5,6 @@ import (
 	"os"
 
 	"github.com/marmos91/dittofs/cmd/dittofsctl/cmdutil"
-	"github.com/marmos91/dittofs/internal/cli/output"
 	"github.com/spf13/cobra"
 )
 
@@ -38,20 +37,5 @@ func runSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to set setting: %w", err)
 	}
 
-	format, err := cmdutil.GetOutputFormatParsed()
-	if err != nil {
-		return err
-	}
-
-	switch format {
-	case output.FormatJSON:
-		return output.PrintJSON(os.Stdout, setting)
-	case output.FormatYAML:
-		return output.PrintYAML(os.Stdout, setting)
-	default:
-		printer := output.NewPrinter(os.Stdout, format, !cmdutil.IsColorDisabled())
-		printer.Success(fmt.Sprintf("Setting '%s' updated to '%s'", setting.Key, setting.Value))
-	}
-
-	return nil
+	return cmdutil.PrintResourceWithSuccess(os.Stdout, setting, fmt.Sprintf("Setting '%s' updated to '%s'", setting.Key, setting.Value))
 }

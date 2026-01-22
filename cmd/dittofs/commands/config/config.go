@@ -11,15 +11,15 @@ var Cmd = &cobra.Command{
 	Short: "Configuration management",
 	Long: `Manage DittoFS configuration files.
 
+Use 'dittofs init' to create a new configuration file.
+
 Subcommands:
-  init      Initialize a new configuration file
   edit      Open configuration in editor
   validate  Validate configuration file
   show      Display current configuration`,
 }
 
 func init() {
-	Cmd.AddCommand(initCmd)
 	Cmd.AddCommand(editCmd)
 	Cmd.AddCommand(validateCmd)
 	Cmd.AddCommand(showCmd)

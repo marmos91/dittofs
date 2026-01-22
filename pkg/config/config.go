@@ -545,6 +545,45 @@ func Load(configPath string) (*Config, error) {
 	return &cfg, nil
 }
 
+// MustLoad loads configuration with helpful error messages.
+// It checks if the config file exists and provides user-friendly instructions if not.
+//
+// Parameters:
+//   - configPath: Path to config file (empty string uses default location)
+//
+// Returns:
+//   - *Config: Loaded and validated configuration
+//   - error: User-friendly error with instructions if config not found
+func MustLoad(configPath string) (*Config, error) {
+	// Determine config path
+	if configPath == "" {
+		if !DefaultConfigExists() {
+			return nil, fmt.Errorf("no configuration file found at default location: %s\n\n"+
+				"Please initialize a configuration file first:\n"+
+				"  dittofs init\n\n"+
+				"Or specify a custom config file:\n"+
+				"  dittofs <command> --config /path/to/config.yaml",
+				GetDefaultConfigPath())
+		}
+		configPath = GetDefaultConfigPath()
+	} else {
+		if _, err := os.Stat(configPath); os.IsNotExist(err) {
+			return nil, fmt.Errorf("configuration file not found: %s\n\n"+
+				"Please create the configuration file:\n"+
+				"  dittofs init --config %s",
+				configPath, configPath)
+		}
+	}
+
+	// Load configuration
+	cfg, err := Load(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load configuration: %w", err)
+	}
+
+	return cfg, nil
+}
+
 // SaveConfig saves the configuration to the specified file path.
 // The configuration is saved in YAML format using proper yaml tags.
 func SaveConfig(cfg *Config, path string) error {

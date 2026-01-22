@@ -3,7 +3,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/config"
@@ -31,43 +30,14 @@ Examples:
 }
 
 func runMigrate(cmd *cobra.Command, args []string) error {
-	configFile := GetConfigFile()
-
-	// Check if config exists
-	if configFile == "" {
-		// Check default location
-		if !config.DefaultConfigExists() {
-			return fmt.Errorf("no configuration file found at default location: %s\n\n"+
-				"Please initialize a configuration file first:\n"+
-				"  dittofs init\n\n"+
-				"Or specify a custom config file:\n"+
-				"  dittofs migrate --config /path/to/config.yaml",
-				config.GetDefaultConfigPath())
-		}
-	} else {
-		// Check explicitly specified path
-		if _, err := os.Stat(configFile); os.IsNotExist(err) {
-			return fmt.Errorf("configuration file not found: %s\n\n"+
-				"Please create the configuration file:\n"+
-				"  dittofs init --config %s",
-				configFile, configFile)
-		}
-	}
-
-	// Load configuration
-	cfg, err := config.Load(configFile)
+	cfg, err := config.MustLoad(GetConfigFile())
 	if err != nil {
-		return fmt.Errorf("failed to load configuration: %w", err)
+		return err
 	}
 
 	// Initialize the structured logger
-	loggerCfg := logger.Config{
-		Level:  cfg.Logging.Level,
-		Format: cfg.Logging.Format,
-		Output: cfg.Logging.Output,
-	}
-	if err := logger.Init(loggerCfg); err != nil {
-		return fmt.Errorf("failed to initialize logger: %w", err)
+	if err := InitLogger(cfg); err != nil {
+		return err
 	}
 
 	// Find PostgreSQL metadata store configuration

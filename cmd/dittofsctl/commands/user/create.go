@@ -87,5 +87,5 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create user: %w", err)
 	}
 
-	return cmdutil.PrintCreatedResource(os.Stdout, user, fmt.Sprintf("User '%s' created successfully", user.Username))
+	return cmdutil.PrintResourceWithSuccess(os.Stdout, user, fmt.Sprintf("User '%s' created successfully", user.Username))
 }

@@ -70,5 +70,5 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create payload store: %w", err)
 	}
 
-	return cmdutil.PrintCreatedResource(os.Stdout, store, fmt.Sprintf("Payload store '%s' (type: %s) created successfully", store.Name, store.Type))
+	return cmdutil.PrintResourceWithSuccess(os.Stdout, store, fmt.Sprintf("Payload store '%s' (type: %s) created successfully", store.Name, store.Type))
 }

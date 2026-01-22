@@ -56,5 +56,5 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create group: %w", err)
 	}
 
-	return cmdutil.PrintCreatedResource(os.Stdout, group, fmt.Sprintf("Group '%s' created successfully (GID: %d)", group.Name, group.GID))
+	return cmdutil.PrintResourceWithSuccess(os.Stdout, group, fmt.Sprintf("Group '%s' created successfully (GID: %d)", group.Name, group.GID))
 }

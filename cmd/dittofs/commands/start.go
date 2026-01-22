@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -22,6 +24,7 @@ import (
 var (
 	foreground bool
 	pidFile    string
+	logFile    string
 )
 
 var startCmd = &cobra.Command{
@@ -29,65 +32,47 @@ var startCmd = &cobra.Command{
 	Short: "Start the DittoFS server",
 	Long: `Start the DittoFS server with the specified configuration.
 
-The server will run in the foreground by default. Use --config to specify
-a custom configuration file, or it will use the default location at
-$XDG_CONFIG_HOME/dittofs/config.yaml.
+By default, the server runs in the background (daemon mode). Use --foreground
+to run in the foreground for debugging or when managed by a process supervisor.
+
+Use --config to specify a custom configuration file, or it will use the
+default location at $XDG_CONFIG_HOME/dittofs/config.yaml.
 
 Examples:
-  # Start with default config
+  # Start in background (default)
   dittofs start
+
+  # Start in foreground
+  dittofs start --foreground
 
   # Start with custom config file
   dittofs start --config /etc/dittofs/config.yaml
 
   # Start with environment variable overrides
-  DITTOFS_LOGGING_LEVEL=DEBUG dittofs start`,
+  DITTOFS_LOGGING_LEVEL=DEBUG dittofs start --foreground`,
 	RunE: runStart,
 }
 
 func init() {
-	startCmd.Flags().BoolVar(&foreground, "foreground", true, "Run in foreground")
-	startCmd.Flags().StringVar(&pidFile, "pid-file", "", "Path to PID file")
+	startCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "Run in foreground (default: background/daemon mode)")
+	startCmd.Flags().StringVar(&pidFile, "pid-file", "", "Path to PID file (default: $XDG_STATE_HOME/dittofs/dittofs.pid)")
+	startCmd.Flags().StringVar(&logFile, "log-file", "", "Path to log file for daemon mode (default: $XDG_STATE_HOME/dittofs/dittofs.log)")
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
-	configFile := GetConfigFile()
-
-	// Check if config exists
-	if configFile == "" {
-		// Check default location
-		if !config.DefaultConfigExists() {
-			return fmt.Errorf("no configuration file found at default location: %s\n\n"+
-				"Please initialize a configuration file first:\n"+
-				"  dittofs init\n\n"+
-				"Or specify a custom config file:\n"+
-				"  dittofs start --config /path/to/config.yaml",
-				config.GetDefaultConfigPath())
-		}
-	} else {
-		// Check explicitly specified path
-		if _, err := os.Stat(configFile); os.IsNotExist(err) {
-			return fmt.Errorf("configuration file not found: %s\n\n"+
-				"Please create the configuration file:\n"+
-				"  dittofs init --config %s",
-				configFile, configFile)
-		}
+	// Handle daemon mode (background)
+	if !foreground {
+		return startDaemon()
 	}
 
-	// Load configuration
-	cfg, err := config.Load(configFile)
+	cfg, err := config.MustLoad(GetConfigFile())
 	if err != nil {
-		return fmt.Errorf("failed to load configuration: %w", err)
+		return err
 	}
 
 	// Initialize the structured logger
-	loggerCfg := logger.Config{
-		Level:  cfg.Logging.Level,
-		Format: cfg.Logging.Format,
-		Output: cfg.Logging.Output,
-	}
-	if err := logger.Init(loggerCfg); err != nil {
-		return fmt.Errorf("failed to initialize logger: %w", err)
+	if err := InitLogger(cfg); err != nil {
+		return err
 	}
 
 	// Create cancellable context for graceful shutdown
@@ -133,7 +118,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("DittoFS - A modular virtual filesystem")
 	logger.Info("Log level", "level", cfg.Logging.Level, "format", cfg.Logging.Format)
-	logger.Info("Configuration loaded", "source", getConfigSource(configFile))
+	logger.Info("Configuration loaded", "source", getConfigSource(GetConfigFile()))
 	if telemetry.IsEnabled() {
 		logger.Info("Telemetry enabled", "endpoint", cfg.Telemetry.Endpoint, "sample_rate", cfg.Telemetry.SampleRate)
 	} else {
@@ -280,4 +265,98 @@ func getConfigSource(configFile string) string {
 		return config.GetDefaultConfigPath()
 	}
 	return "defaults"
+}
+
+// startDaemon starts the server as a background daemon process.
+func startDaemon() error {
+	// Determine state directory for PID and log files
+	stateDir := os.Getenv("XDG_STATE_HOME")
+	if stateDir == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("failed to get home directory: %w", err)
+		}
+		stateDir = filepath.Join(homeDir, ".local", "state")
+	}
+	dittofsStateDir := filepath.Join(stateDir, "dittofs")
+
+	// Create state directory if it doesn't exist
+	if err := os.MkdirAll(dittofsStateDir, 0755); err != nil {
+		return fmt.Errorf("failed to create state directory: %w", err)
+	}
+
+	// Set default PID file if not specified
+	pidPath := pidFile
+	if pidPath == "" {
+		pidPath = filepath.Join(dittofsStateDir, "dittofs.pid")
+	}
+
+	// Check if already running
+	if _, err := os.Stat(pidPath); err == nil {
+		pidData, err := os.ReadFile(pidPath)
+		if err == nil {
+			var pid int
+			if _, err := fmt.Sscanf(string(pidData), "%d", &pid); err == nil {
+				// Check if process is still running
+				if process, err := os.FindProcess(pid); err == nil {
+					if err := process.Signal(syscall.Signal(0)); err == nil {
+						return fmt.Errorf("DittoFS is already running (PID %d)\nUse 'dittofs stop' to stop the running instance", pid)
+					}
+				}
+			}
+		}
+		// Stale PID file, remove it
+		_ = os.Remove(pidPath)
+	}
+
+	// Set default log file if not specified
+	logPath := logFile
+	if logPath == "" {
+		logPath = filepath.Join(dittofsStateDir, "dittofs.log")
+	}
+
+	// Get the executable path
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to get executable path: %w", err)
+	}
+
+	// Build arguments for the daemon process
+	daemonArgs := []string{"start", "--foreground", "--pid-file", pidPath}
+	if GetConfigFile() != "" {
+		daemonArgs = append(daemonArgs, "--config", GetConfigFile())
+	}
+
+	// Create the daemon process
+	cmd := exec.Command(executable, daemonArgs...)
+
+	// Open log file for stdout/stderr
+	logFileHandle, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open log file: %w", err)
+	}
+
+	cmd.Stdout = logFileHandle
+	cmd.Stderr = logFileHandle
+
+	// Detach from parent process
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
+
+	// Start the daemon
+	if err := cmd.Start(); err != nil {
+		_ = logFileHandle.Close()
+		return fmt.Errorf("failed to start daemon: %w", err)
+	}
+
+	_ = logFileHandle.Close()
+
+	fmt.Printf("DittoFS started in background (PID %d)\n", cmd.Process.Pid)
+	fmt.Printf("  PID file: %s\n", pidPath)
+	fmt.Printf("  Log file: %s\n", logPath)
+	fmt.Println("\nUse 'dittofs stop' to stop the server")
+	fmt.Println("Use 'dittofs status' to check server status")
+
+	return nil
 }

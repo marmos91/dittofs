@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/marmos91/dittofs/internal/cli/output"
@@ -39,26 +38,10 @@ func init() {
 }
 
 func runConfigShow(cmd *cobra.Command, args []string) error {
-	configPath := showConfigPath
-	if configPath == "" {
-		if !config.DefaultConfigExists() {
-			return fmt.Errorf("no configuration file found at default location: %s\n\n"+
-				"Create one with:\n"+
-				"  dittofs config init",
-				config.GetDefaultConfigPath())
-		}
-		configPath = config.GetDefaultConfigPath()
-	}
-
-	// Check if file exists
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return fmt.Errorf("configuration file not found: %s", configPath)
-	}
-
 	// Load configuration
-	cfg, err := config.Load(configPath)
+	cfg, err := config.MustLoad(showConfigPath)
 	if err != nil {
-		return fmt.Errorf("failed to load configuration: %w", err)
+		return err
 	}
 
 	// Parse output format

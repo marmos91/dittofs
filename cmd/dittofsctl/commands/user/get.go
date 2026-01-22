@@ -5,7 +5,6 @@ import (
 	"os"
 
 	"github.com/marmos91/dittofs/cmd/dittofsctl/cmdutil"
-	"github.com/marmos91/dittofs/internal/cli/output"
 	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
@@ -69,17 +68,5 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get user: %w", err)
 	}
 
-	format, err := cmdutil.GetOutputFormatParsed()
-	if err != nil {
-		return err
-	}
-
-	switch format {
-	case output.FormatJSON:
-		return output.PrintJSON(os.Stdout, user)
-	case output.FormatYAML:
-		return output.PrintYAML(os.Stdout, user)
-	default:
-		return output.PrintTable(os.Stdout, SingleUserList{*user})
-	}
+	return cmdutil.PrintResource(os.Stdout, user, SingleUserList{*user})
 }

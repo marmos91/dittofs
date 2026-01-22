@@ -23,29 +23,35 @@ var stopCmd = &cobra.Command{
 By default, sends SIGTERM for graceful shutdown. Use --force for immediate
 termination with SIGKILL.
 
-The PID file location must match what was used with 'dittofs start --pid-file'.
-
 Examples:
-  # Stop server using PID file
+  # Stop server (uses default PID file)
+  dittofs stop
+
+  # Stop server using custom PID file
   dittofs stop --pid-file /var/run/dittofs.pid
 
   # Force stop (SIGKILL)
-  dittofs stop --pid-file /var/run/dittofs.pid --force`,
+  dittofs stop --force`,
 	RunE: runStop,
 }
 
 func init() {
-	stopCmd.Flags().StringVar(&stopPidFile, "pid-file", "", "Path to PID file (required)")
-	stopCmd.Flags().BoolVar(&stopForce, "force", false, "Force kill (SIGKILL) instead of graceful shutdown (SIGTERM)")
-	_ = stopCmd.MarkFlagRequired("pid-file")
+	stopCmd.Flags().StringVar(&stopPidFile, "pid-file", "", "Path to PID file (default: $XDG_STATE_HOME/dittofs/dittofs.pid)")
+	stopCmd.Flags().BoolVarP(&stopForce, "force", "f", false, "Force kill (SIGKILL) instead of graceful shutdown (SIGTERM)")
 }
 
 func runStop(cmd *cobra.Command, args []string) error {
+	// Use default PID file if not specified
+	pidPath := stopPidFile
+	if pidPath == "" {
+		pidPath = GetDefaultPidFile()
+	}
+
 	// Read PID file
-	pidData, err := os.ReadFile(stopPidFile)
+	pidData, err := os.ReadFile(pidPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("PID file not found: %s\n\nIs the server running?", stopPidFile)
+			return fmt.Errorf("PID file not found: %s\n\nIs the server running?", pidPath)
 		}
 		return fmt.Errorf("failed to read PID file: %w", err)
 	}
@@ -77,7 +83,7 @@ func runStop(cmd *cobra.Command, args []string) error {
 		if err == os.ErrProcessDone {
 			fmt.Println("Server already stopped")
 			// Clean up PID file
-			_ = os.Remove(stopPidFile)
+			_ = os.Remove(pidPath)
 			return nil
 		}
 		return fmt.Errorf("failed to send signal: %w", err)

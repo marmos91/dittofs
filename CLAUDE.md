@@ -42,41 +42,126 @@ Each major subsystem has its own CLAUDE.md with non-obvious conventions and gotc
 - **[pkg/config/CLAUDE.md](pkg/config/CLAUDE.md)** - Named stores pattern, env overrides
 - **[internal/protocol/CLAUDE.md](internal/protocol/CLAUDE.md)** - NFS/SMB wire formats, handler rules
 
+## CLI Architecture
+
+DittoFS provides two CLI binaries:
+
+| Binary | Purpose | Location |
+|--------|---------|----------|
+| **`dittofs`** | Server daemon management | `cmd/dittofs/` |
+| **`dittofsctl`** | Remote REST API client | `cmd/dittofsctl/` |
+
+Both CLIs use the **Cobra** framework with subcommand structure and support shell completion (bash, zsh, fish, powershell).
+
+### CLI Code Structure
+
+```
+cmd/
+├── dittofs/                    # Server CLI
+│   ├── main.go
+│   └── commands/
+│       ├── root.go             # Root command, global flags
+│       ├── start.go            # Start server
+│       ├── stop.go             # Stop server
+│       ├── status.go           # Server status
+│       ├── logs.go             # Tail logs
+│       ├── version.go          # Version info
+│       ├── completion.go       # Shell completion
+│       ├── config/             # Config subcommands (init, show, validate, edit)
+│       └── backup/             # Backup subcommands
+│
+└── dittofsctl/                 # Client CLI
+    ├── main.go
+    ├── cmdutil/                # Shared utilities
+    │   └── util.go             # Auth client, output helpers, flags
+    └── commands/
+        ├── root.go             # Root command, global flags (-o, --no-color)
+        ├── login.go            # Authentication
+        ├── logout.go
+        ├── version.go
+        ├── completion.go
+        ├── context/            # Multi-server context management
+        ├── user/               # User CRUD
+        ├── group/              # Group CRUD
+        ├── share/              # Share management
+        │   └── permission/     # Share permissions
+        ├── store/
+        │   ├── metadata/       # Metadata store management
+        │   └── payload/        # Payload store management
+        ├── adapter/            # Protocol adapter management
+        └── settings/           # Server settings
+```
+
+### Shared CLI Packages
+
+```
+internal/cli/
+├── output/                     # Output formatting (table, JSON, YAML)
+├── prompt/                     # Interactive prompts (confirm, password, select)
+└── credentials/                # Multi-context credential storage
+
+pkg/apiclient/                  # REST API client library
+├── client.go                   # HTTP client with auth
+├── users.go, groups.go, ...    # Resource-specific methods
+└── errors.go                   # API error types
+```
+
 ## Essential Commands
 
 ### Building
 ```bash
-# Build the main binary
+# Build both binaries
 go build -o dittofs cmd/dittofs/main.go
+go build -o dittofsctl cmd/dittofsctl/main.go
 
 # Install dependencies
 go mod download
 ```
 
-### Configuration
+### Server Management (dittofs)
 ```bash
-# Initialize configuration file (creates ~/.config/dittofs/config.yaml)
-./dittofs init
+# Configuration
+./dittofs config init              # Create default config
+./dittofs config show              # Display config
+./dittofs config validate          # Validate config
 
-# Initialize with custom path
-./dittofs init --config /etc/dittofs/config.yaml
+# Server lifecycle
+./dittofs start                    # Start in foreground
+./dittofs stop                     # Graceful shutdown
+./dittofs status                   # Check status
+./dittofs logs -f                  # Follow logs
 
-# Force overwrite existing config
-./dittofs init --force
+# Backup
+./dittofs backup controlplane --output /tmp/backup.json
 ```
 
-### Running
+### Remote Management (dittofsctl)
 ```bash
-# Start server with default config
-./dittofs start
+# Authentication
+./dittofsctl login --server http://localhost:8080 --username admin
+./dittofsctl logout
+./dittofsctl context list          # Multi-server support
 
-# Start with custom config file
-./dittofs start --config /path/to/config.yaml
+# User/Group management
+./dittofsctl user create --username alice    # Password prompted
+./dittofsctl user list -o json
+./dittofsctl group create --name editors
+./dittofsctl group add-user editors alice
 
-# Start with environment variable overrides
-DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
-DITTOFS_ADAPTERS_NFS_PORT=3049 ./dittofs start
+# Share management
+./dittofsctl share list
+./dittofsctl share permission grant /export --user alice --level read-write
 
+# Store management
+./dittofsctl store metadata list
+./dittofsctl store payload add --name s3-content --type s3 --config '{...}'
+
+# Adapter management
+./dittofsctl adapter list
+```
+
+### Environment Variables
+```bash
 # Common environment variables:
 # DITTOFS_LOGGING_LEVEL: DEBUG, INFO, WARN, ERROR
 # DITTOFS_LOGGING_FORMAT: text, json (default: text)
@@ -461,8 +546,15 @@ The control plane provides centralized management for DittoFS:
 
 ```
 dittofs/
-├── cmd/dittofs/              # Main application entry point
-│   └── main.go               # Server startup, config parsing, init
+├── cmd/
+│   ├── dittofs/              # Server CLI binary
+│   │   ├── main.go           # Entry point
+│   │   └── commands/         # Cobra commands (start, stop, config, logs, backup)
+│   │
+│   └── dittofsctl/           # Client CLI binary
+│       ├── main.go           # Entry point
+│       ├── cmdutil/          # Shared utilities (auth, output, flags)
+│       └── commands/         # Cobra commands (user, group, share, store, adapter)
 │
 ├── pkg/                      # Public API (stable interfaces)
 │   ├── adapter/              # Protocol adapter interface
@@ -524,10 +616,22 @@ dittofs/
 │   │   ├── stores.go         # Store and transfer manager creation
 │   │   └── runtime.go        # Runtime initialization
 │   │
-│   └── server/               # DittoServer orchestration
-│       └── server.go         # Multi-adapter server management
+│   ├── server/               # DittoServer orchestration
+│   │   └── server.go         # Multi-adapter server management
+│   │
+│   └── apiclient/            # REST API client library
+│       ├── client.go         # HTTP client with token auth
+│       ├── users.go          # User API methods
+│       ├── groups.go         # Group API methods
+│       ├── shares.go         # Share API methods
+│       └── ...               # Other resource methods
 │
 ├── internal/                 # Private implementation details
+│   ├── cli/                  # CLI utilities
+│   │   ├── output/           # Table, JSON, YAML formatting
+│   │   ├── prompt/           # Interactive prompts
+│   │   └── credentials/      # Multi-context credential storage
+│   │
 │   ├── protocol/nfs/         # NFS protocol implementation
 │   │   ├── dispatch.go       # RPC procedure routing
 │   │   ├── rpc/              # RPC layer (call/reply handling)
