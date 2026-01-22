@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // =============================================================================
@@ -117,9 +117,9 @@ func TestTreeConnect_IPCShare(t *testing.T) {
 				tree.ShareType, types.SMB2ShareTypePipe)
 		}
 
-		if tree.Permission != identity.PermissionReadWrite {
+		if tree.Permission != models.PermissionReadWrite {
 			t.Errorf("Permission = %v, expected %v",
-				tree.Permission, identity.PermissionReadWrite)
+				tree.Permission, models.PermissionReadWrite)
 		}
 	})
 
@@ -264,7 +264,7 @@ func TestParseSharePath(t *testing.T) {
 
 func TestCalculateMaximalAccess(t *testing.T) {
 	t.Run("AdminPermission", func(t *testing.T) {
-		access := calculateMaximalAccess(identity.PermissionAdmin)
+		access := calculateMaximalAccess(models.PermissionAdmin)
 		// Full access = 0x001F01FF
 		expected := uint32(0x001F01FF)
 		if access != expected {
@@ -274,7 +274,7 @@ func TestCalculateMaximalAccess(t *testing.T) {
 	})
 
 	t.Run("ReadWritePermission", func(t *testing.T) {
-		access := calculateMaximalAccess(identity.PermissionReadWrite)
+		access := calculateMaximalAccess(models.PermissionReadWrite)
 		// Should include read, write, and delete rights
 		if access == 0 {
 			t.Error("ReadWrite permission should grant non-zero access")
@@ -282,7 +282,7 @@ func TestCalculateMaximalAccess(t *testing.T) {
 	})
 
 	t.Run("ReadPermission", func(t *testing.T) {
-		access := calculateMaximalAccess(identity.PermissionRead)
+		access := calculateMaximalAccess(models.PermissionRead)
 		// Should grant read-only access
 		if access == 0 {
 			t.Error("Read permission should grant non-zero access")
@@ -290,7 +290,7 @@ func TestCalculateMaximalAccess(t *testing.T) {
 	})
 
 	t.Run("NonePermission", func(t *testing.T) {
-		access := calculateMaximalAccess(identity.PermissionNone)
+		access := calculateMaximalAccess(models.PermissionNone)
 		if access != 0 {
 			t.Errorf("calculateMaximalAccess(None) = 0x%x, expected 0", access)
 		}

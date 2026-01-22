@@ -9,12 +9,14 @@ DittoFS uses a flexible configuration system with support for YAML/TOML files an
   - [Logging](#1-logging)
   - [Telemetry](#2-telemetry-opentelemetry)
   - [Server Settings](#3-server-settings)
-  - [Cache Configuration](#4-cache-configuration)
-  - [Metadata Configuration](#5-metadata-configuration)
-  - [Payload Configuration](#6-payload-configuration)
-  - [Shares (Exports)](#7-shares-exports)
-  - [User Management](#8-user-management)
-  - [Protocol Adapters](#9-protocol-adapters)
+  - [Database (Control Plane)](#4-database-control-plane)
+  - [API Server](#5-api-server)
+  - [Cache Configuration](#6-cache-configuration)
+  - [Metadata Configuration](#7-metadata-configuration)
+  - [Payload Configuration](#8-payload-configuration)
+  - [Shares (Exports)](#9-shares-exports)
+  - [User Management](#10-user-management)
+  - [Protocol Adapters](#11-protocol-adapters)
 - [Environment Variables](#environment-variables)
 - [Configuration Precedence](#configuration-precedence)
 - [Configuration Examples](#configuration-examples)
@@ -129,7 +131,120 @@ server:
     burst: 10000
 ```
 
-### 4. Cache Configuration
+### 4. Database (Control Plane)
+
+DittoFS uses a control plane database to store persistent configuration for users, groups, shares, and permissions. This enables dynamic management via CLI commands and REST API without restarting the server.
+
+```yaml
+database:
+  # Database type: sqlite (single-node) or postgres (HA-capable)
+  type: sqlite
+
+  # SQLite configuration (default)
+  sqlite:
+    # Path to the SQLite database file
+    # Default: $XDG_CONFIG_HOME/dittofs/controlplane.db
+    path: /var/lib/dittofs/controlplane.db
+
+  # PostgreSQL configuration (for HA deployments)
+  postgres:
+    host: localhost
+    port: 5432
+    database: dittofs
+    user: dittofs
+    password: ${POSTGRES_PASSWORD}  # Use environment variable
+    sslmode: require               # disable, require, verify-ca, verify-full
+    ssl_root_cert: ""              # Path to CA certificate
+    max_open_conns: 25             # Maximum open connections
+    max_idle_conns: 5              # Maximum idle connections
+```
+
+**Database Types:**
+
+| Type | Description | Use Case |
+|------|-------------|----------|
+| `sqlite` | Embedded SQLite database | Single-node deployments (default) |
+| `postgres` | PostgreSQL database | High-availability, multi-node deployments |
+
+**SQLite Configuration:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `path` | `~/.config/dittofs/controlplane.db` | Database file path |
+
+**PostgreSQL Configuration:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `host` | (required) | PostgreSQL server hostname |
+| `port` | `5432` | PostgreSQL server port |
+| `database` | (required) | Database name |
+| `user` | (required) | Database user |
+| `password` | (required) | Database password |
+| `sslmode` | `disable` | SSL mode: disable, require, verify-ca, verify-full |
+| `ssl_root_cert` | | Path to CA certificate for SSL verification |
+| `max_open_conns` | `25` | Maximum number of open connections |
+| `max_idle_conns` | `5` | Maximum number of idle connections |
+
+> **Note**: The control plane database automatically creates tables and runs migrations on startup.
+
+### 5. API Server
+
+The REST API server provides endpoints for authentication, user management, and configuration. It is enabled by default.
+
+```yaml
+server:
+  api:
+    enabled: true              # Enable/disable API server (default: true)
+    port: 8080                 # HTTP port for API endpoints
+    read_timeout: 10s          # Max time to read request
+    write_timeout: 10s         # Max time to write response
+    idle_timeout: 60s          # Max idle time for keep-alive
+
+    # JWT authentication configuration
+    jwt:
+      # HMAC signing key for JWT tokens (min 32 characters)
+      # Can also be set via DITTOFS_API_JWT_SECRET environment variable
+      secret: "your-secret-key-at-least-32-characters"
+      access_token_duration: 15m   # Access token lifetime
+      refresh_token_duration: 168h # Refresh token lifetime (7 days)
+```
+
+**API Configuration Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `true` | Enable/disable the API server |
+| `port` | `8080` | HTTP port for API endpoints |
+| `read_timeout` | `10s` | Maximum duration to read request |
+| `write_timeout` | `10s` | Maximum duration to write response |
+| `idle_timeout` | `60s` | Maximum idle time for keep-alive |
+
+**JWT Configuration Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `secret` | (required) | HMAC signing key (min 32 chars) |
+| `access_token_duration` | `15m` | Access token lifetime |
+| `refresh_token_duration` | `168h` | Refresh token lifetime (7 days) |
+
+> **Security Note**: The JWT secret should be kept confidential. Use the `DITTOFS_API_JWT_SECRET` environment variable in production to avoid storing secrets in config files.
+
+**API Endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/api/v1/auth/login` | POST | Authenticate and get tokens |
+| `/api/v1/auth/refresh` | POST | Refresh access token |
+| `/api/v1/users` | GET/POST | List/create users |
+| `/api/v1/users/{id}` | GET/PUT/DELETE | Get/update/delete user |
+| `/api/v1/groups` | GET/POST | List/create groups |
+| `/api/v1/groups/{id}` | GET/PUT/DELETE | Get/update/delete group |
+| `/api/v1/shares` | GET/POST | List/create shares |
+| `/api/v1/shares/{id}` | GET/PUT/DELETE | Get/update/delete share |
+
+### 6. Cache Configuration
 
 DittoFS uses a WAL-backed (Write-Ahead Log) cache for all file operations. The cache is mandatory for crash recovery and performance.
 
@@ -155,7 +270,7 @@ cache:
 | `path` | Yes | Directory for cache WAL file |
 | `size` | No | Maximum cache size (default: 1GB) |
 
-### 5. Metadata Configuration
+### 7. Metadata Configuration
 
 Define named metadata store instances that shares can reference:
 
@@ -225,7 +340,7 @@ metadata:
 > - **BadgerDB**: Persistent embedded database - single-node deployments. File handles and metadata survive restarts.
 > - **PostgreSQL**: Persistent distributed database - multi-node deployments with horizontal scaling. Survives restarts and supports multiple DittoFS instances sharing the same metadata.
 
-### 6. Payload Configuration
+### 8. Payload Configuration
 
 Define named payload store instances (block stores) that shares can reference for persistent storage:
 
@@ -300,7 +415,7 @@ payload:
 | `force_path_style` | No | Use path-style addressing (required for Localstack/MinIO) |
 | `max_retries` | No | Maximum retry attempts (default: 3) |
 
-### 7. Shares (Exports)
+### 9. Shares (Exports)
 
 Each share explicitly references metadata and payload stores by name. Multiple shares can reference the same store instances for resource sharing:
 
@@ -364,9 +479,17 @@ shares:
 - **Resource Efficiency**: Multiple shares can reference the same store instance (no duplication)
 - **Global Cache**: All shares use the single global cache configured in the top-level `cache:` section
 
-### 8. User Management
+### 10. User Management
 
-DittoFS supports a unified user management system for both NFS and SMB protocols. Users and groups can have share-level permissions, and permission resolution follows a priority order: user explicit permissions > group permissions (highest wins) > share default.
+DittoFS supports a unified user management system for both NFS and SMB protocols. Users, groups, and their permissions are stored in the control plane database (see [Database Configuration](#4-database-control-plane)) and can be managed via:
+
+1. **CLI commands** (`dittofs user`, `dittofs group`) - Recommended for initial setup
+2. **REST API** - For programmatic management and integrations
+3. **Config file** - For bootstrap configuration (imported on first run)
+
+Permission resolution follows a priority order: user explicit permissions > group permissions (highest wins) > share default.
+
+> **Note**: Users and groups defined in the config file are imported into the database on first run. After that, use CLI commands or the REST API to manage them.
 
 #### Users
 
@@ -572,7 +695,7 @@ dittofs user list --config /etc/dittofs/config.yaml
 dittofs group add admins --config /etc/dittofs/config.yaml
 ```
 
-### 9. Protocol Adapters
+### 11. Protocol Adapters
 
 Configures protocol-specific settings:
 
@@ -694,6 +817,23 @@ export DITTOFS_TELEMETRY_SAMPLE_RATE=0.5
 
 # Server
 export DITTOFS_SERVER_SHUTDOWN_TIMEOUT=60s
+
+# Database (Control Plane)
+export DITTOFS_DATABASE_TYPE=sqlite
+export DITTOFS_DATABASE_SQLITE_PATH=/var/lib/dittofs/controlplane.db
+# PostgreSQL
+export DITTOFS_DATABASE_TYPE=postgres
+export DITTOFS_DATABASE_POSTGRES_HOST=localhost
+export DITTOFS_DATABASE_POSTGRES_PORT=5432
+export DITTOFS_DATABASE_POSTGRES_DATABASE=dittofs
+export DITTOFS_DATABASE_POSTGRES_USER=dittofs
+export DITTOFS_DATABASE_POSTGRES_PASSWORD=secret
+export DITTOFS_DATABASE_POSTGRES_SSLMODE=require
+
+# API Server
+export DITTOFS_SERVER_API_ENABLED=true
+export DITTOFS_SERVER_API_PORT=8080
+export DITTOFS_API_JWT_SECRET=your-secret-key-at-least-32-characters
 
 # Cache
 export DITTOFS_CACHE_PATH=/var/lib/dittofs/cache

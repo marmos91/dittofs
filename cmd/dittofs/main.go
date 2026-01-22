@@ -12,9 +12,9 @@ import (
 	"github.com/marmos91/dittofs/cmd/dittofs/commands"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/telemetry"
-	"github.com/marmos91/dittofs/pkg/api"
-	"github.com/marmos91/dittofs/pkg/api/auth"
 	"github.com/marmos91/dittofs/pkg/config"
+	"github.com/marmos91/dittofs/pkg/controlplane/api"
+	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
 	dittoServer "github.com/marmos91/dittofs/pkg/server"
 	"github.com/mitchellh/mapstructure"
@@ -287,37 +287,34 @@ func runStart() {
 
 	// Initialize API server (if enabled - defaults to true)
 	if cfg.Server.API.IsEnabled() {
-		// Validate JWT secret is configured with helpful error message
-		jwtSecret := cfg.Server.API.GetJWTSecret()
-		if len(jwtSecret) < 32 {
-			log.Fatalf("JWT secret must be at least 32 bytes. "+
-				"Set via environment variable %s or in config file under server.api.jwt.secret",
-				api.EnvJWTSecret)
-		}
-
-		// Initialize identity store for user management
-		identityStore, _, err := cfg.InitializeIdentityStore(ctx)
+		// Initialize control plane store for user management
+		cpStore, err := store.New(&cfg.Database)
 		if err != nil {
-			log.Fatalf("Failed to initialize identity store: %v", err)
+			log.Fatalf("Failed to initialize control plane store: %v", err)
 		}
 
-		// Set identity store on registry for protocol handlers to use ShareIdentityMapping
-		reg.SetIdentityStore(identityStore)
-
-		// Create JWT service
-		jwtConfig := auth.JWTConfig{
-			Secret:               jwtSecret,
-			Issuer:               "dittofs",
-			AccessTokenDuration:  cfg.Server.API.JWT.AccessTokenDuration,
-			RefreshTokenDuration: cfg.Server.API.JWT.RefreshTokenDuration,
-		}
-		jwtService, err := auth.NewJWTService(jwtConfig)
+		// Ensure admin user exists (generates random password on first run)
+		adminPassword, err := cpStore.EnsureAdminUser(ctx)
 		if err != nil {
-			log.Fatalf("Failed to create JWT service: %v", err)
+			log.Fatalf("Failed to ensure admin user: %v", err)
+		}
+		if adminPassword != "" {
+			logger.Info("Admin user created", "username", "admin", "password", adminPassword)
+			fmt.Printf("\n*** IMPORTANT: Admin user created with password: %s ***\n", adminPassword)
+			fmt.Println("Please save this password. It will not be shown again.")
+			fmt.Println()
 		}
 
-		// Create API server with JWT and identity store
-		apiServer := api.NewServer(cfg.Server.API, reg, jwtService, identityStore)
+		// Set identity store on registry for protocol handlers
+		// GORMStore directly implements models.IdentityStore
+		reg.SetIdentityStore(cpStore)
+
+		// Create API server (JWT service is created internally from config)
+		// Pass nil for runtime - full runtime integration is a future step
+		apiServer, err := api.NewServer(cfg.Server.API, nil, cpStore)
+		if err != nil {
+			log.Fatalf("Failed to create API server: %v", err)
+		}
 		dittoSrv.SetAPIServer(apiServer)
 		logger.Info("API server enabled", "port", cfg.Server.API.Port)
 	} else {

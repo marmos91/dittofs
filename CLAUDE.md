@@ -329,14 +329,25 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
         │
         ▼
 ┌─────────────────────────────────────────┐
-│         Store Registry                  │
-│   (Named store management)              │
-│   pkg/registry/registry.go              │
+│         Control Plane                   │
+│   (Configuration & Runtime)             │
+│   pkg/controlplane/                     │
 │                                         │
-│  Stores:                                │
-│  - "fast-memory" → Memory stores        │
-│  - "persistent"  → BadgerDB + FS        │
-│  - "s3-archive"  → BadgerDB + S3        │
+│  ┌─────────────────────────────────┐    │
+│  │ Store (SQLite/PostgreSQL)       │    │
+│  │ - Users, Groups, Permissions    │    │
+│  │ - Shares, Settings              │    │
+│  └─────────────────────────────────┘    │
+│  ┌─────────────────────────────────┐    │
+│  │ Runtime                         │    │
+│  │ - Metadata Stores (named)       │    │
+│  │ - Shares (active)               │    │
+│  │ - Mounts (ephemeral)            │    │
+│  └─────────────────────────────────┘    │
+│  ┌─────────────────────────────────┐    │
+│  │ REST API (JWT auth)             │    │
+│  │ - /api/v1/users, groups, shares │    │
+│  └─────────────────────────────────┘    │
 └───────┬───────────────────┬─────────────┘
         │                   │
         ▼                   ▼
@@ -364,18 +375,31 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 
 ### Key Interfaces
 
-**1. Store Registry** (`pkg/registry/registry.go`)
-- Central registry for managing named metadata and content stores
-- Stores are created once and shared across multiple NFS shares/exports
-- Enables flexible configurations (e.g., "fast-memory", "s3-archive", "persistent")
-- Handles store lifecycle and identity resolution
-- Maps file handles to their originating share for proper store routing
+**1. Control Plane** (`pkg/controlplane/`)
+The control plane provides centralized management for DittoFS:
+
+- **Store** (`pkg/controlplane/store/`): GORM-based persistent storage for configuration
+  - Users, groups, and their permissions
+  - Share configurations
+  - Settings and metadata/payload store configs
+  - Supports SQLite (single-node) and PostgreSQL (HA)
+
+- **Runtime** (`pkg/controlplane/runtime/`): Ephemeral state management
+  - Active metadata store instances
+  - Loaded shares with root handles
+  - Mount tracking (NFS/SMB)
+  - Identity resolution for protocol operations
+
+- **API** (`pkg/controlplane/api/`): REST API with JWT authentication
+  - User/group CRUD operations
+  - Share management
+  - Health checks
 
 **2. Adapter Interface** (`pkg/adapter/adapter.go`)
 - Each protocol implements the `Adapter` interface
-- Adapters receive a registry reference to resolve stores per-share
-- Lifecycle: `SetRegistry() → Serve() → Stop()`
-- Multiple adapters can share the same registry
+- Adapters receive a runtime reference to resolve stores per-share
+- Lifecycle: `SetRuntime() → Serve() → Stop()`
+- Multiple adapters can share the same runtime
 - Thread-safe, supports graceful shutdown
 
 **3. Metadata Store** (`pkg/metadata/store/`)
@@ -477,15 +501,28 @@ dittofs/
 │   │   ├── entry.go          # TransferQueueEntry interface
 │   │   └── recovery.go       # WAL recovery on startup
 │   │
-│   ├── registry/             # Store registry
-│   │   ├── registry.go       # Central store registry
-│   │   ├── share.go          # Share configuration
-│   │   └── access.go         # Identity mapping and handle resolution
+│   ├── controlplane/         # Control plane (config + runtime)
+│   │   ├── store/            # GORM-based persistent store
+│   │   │   ├── interface.go  # Store interface
+│   │   │   ├── gorm.go       # GORMStore implementation
+│   │   │   ├── users.go      # User operations
+│   │   │   ├── groups.go     # Group operations
+│   │   │   ├── shares.go     # Share operations
+│   │   │   └── permissions.go# Permission resolution
+│   │   ├── runtime/          # Ephemeral runtime state
+│   │   │   ├── runtime.go    # Runtime manager
+│   │   │   ├── shares.go     # Share management
+│   │   │   └── mounts.go     # Mount tracking
+│   │   ├── api/              # REST API server
+│   │   │   ├── server.go     # HTTP server with JWT
+│   │   │   ├── handlers/     # API handlers
+│   │   │   └── middleware/   # Auth middleware
+│   │   └── models/           # Domain models (User, Group, Share)
 │   │
 │   ├── config/               # Configuration parsing
 │   │   ├── config.go         # Main config struct
 │   │   ├── stores.go         # Store and transfer manager creation
-│   │   └── registry.go       # Registry initialization
+│   │   └── runtime.go        # Runtime initialization
 │   │
 │   └── server/               # DittoServer orchestration
 │       └── server.go         # Multi-adapter server management
@@ -505,16 +542,32 @@ dittofs/
     └── e2e/                  # End-to-end tests (real NFS mounts)
 ```
 
-## Store Registry Pattern
+## Control Plane Pattern
 
-The Store Registry is the central innovation enabling flexible, multi-share configurations.
+The Control Plane is the central innovation enabling flexible configuration and runtime management.
+
+### Architecture
+
+The control plane has two main components:
+
+1. **Store** (persistent): GORM-based database (SQLite or PostgreSQL) storing:
+   - Users and groups with bcrypt password hashes
+   - Share configurations and permissions
+   - Metadata/payload store configurations
+   - Settings
+
+2. **Runtime** (ephemeral): In-memory state for active operations:
+   - Loaded metadata store instances
+   - Active shares with root handles
+   - Mount tracking for NFS/SMB
+   - Identity resolution
 
 ### How It Works
 
-1. **Named Store Creation**: Stores are created with unique names (e.g., "fast-memory", "s3-archive")
-2. **Share-to-Store Mapping**: Each NFS share references a store by name
-3. **Handle Identity**: File handles encode both the share ID and file-specific data
-4. **Store Resolution**: When handling operations, the registry decodes the handle to identify the share, then routes to the correct stores
+1. **Configuration Loading**: On startup, config is read and stores are created
+2. **Share Loading**: Shares are loaded from database, metadata stores initialized
+3. **Handle Resolution**: File handles encode share ID, runtime routes to correct stores
+4. **Permission Resolution**: Runtime queries store for user/group permissions
 
 ### Configuration Example
 
@@ -607,7 +660,7 @@ Export-level access control (AllSquash, RootSquash) is applied during mount in `
 
 File handles are **opaque 64-bit identifiers**:
 - Generated by metadata store
-- Encode share identity for registry routing
+- Encode share identity for runtime routing
 - Never parsed or interpreted by protocol handlers
 - Must remain stable across server restarts for production
 
@@ -726,7 +779,7 @@ Large I/O operations use buffer pools (`internal/protocol/nfs/bufpool.go`):
 2. Implement `Adapter` interface:
    - `Serve(ctx)`: Start protocol server
    - `Stop(ctx)`: Graceful shutdown
-   - `SetRegistry()`: Receive store registry reference
+   - `SetRuntime()`: Receive runtime reference for store access
    - `Protocol()`: Return name
    - `Port()`: Return listen port
 3. Register in `cmd/dittofs/main.go`

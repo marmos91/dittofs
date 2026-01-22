@@ -7,8 +7,9 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // treeConnectFixedSize is the size of the TREE_CONNECT request fixed structure [MS-SMB2] 2.2.9
@@ -80,24 +81,13 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 
 	// Get session and resolve permissions
 	sess, _ := h.SessionManager.GetSession(ctx.SessionID)
-	permission := identity.PermissionReadWrite // Default for unauthenticated
-	defaultPerm := identity.ParseSharePermission(share.DefaultPermission)
-	userStore := h.Registry.GetUserStore()
+	defaultPerm := models.ParseSharePermission(share.DefaultPermission)
 
 	// Resolve permission based on session type
-	var user string
-	if sess != nil && sess.User != nil && userStore != nil {
-		// Authenticated user - resolve their permission
-		permission = userStore.ResolveSharePermission(sess.User, shareName, defaultPerm)
-		user = sess.User.Username
-	} else if sess != nil && sess.IsGuest {
-		// Guest session - use default permission
-		permission = defaultPerm
-		user = "guest"
-	}
+	permission, user := resolveSharePermission(ctx, sess, shareName, defaultPerm, h.Registry.GetUserStore())
 
 	// Check for access denied
-	if permission == identity.PermissionNone {
+	if permission == models.PermissionNone {
 		logger.Debug("Share access denied", "shareName", shareName, "user", user)
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
@@ -109,11 +99,11 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 
 	// Apply share-level read_only override
 	// If share is configured as read_only, cap permission to Read
-	if share.ReadOnly && permission != identity.PermissionNone {
-		if permission == identity.PermissionReadWrite || permission == identity.PermissionAdmin {
+	if share.ReadOnly && permission != models.PermissionNone {
+		if permission == models.PermissionReadWrite || permission == models.PermissionAdmin {
 			logger.Debug("Share is read-only, capping permission to read",
 				"shareName", shareName, "originalPermission", permission)
-			permission = identity.PermissionRead
+			permission = models.PermissionRead
 		}
 	}
 
@@ -149,7 +139,7 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 
 // calculateMaximalAccess returns the SMB2 MaximalAccess mask based on share permission.
 // [MS-SMB2] Section 2.2.10 - MaximalAccess is a bit mask of allowed operations.
-func calculateMaximalAccess(perm identity.SharePermission) uint32 {
+func calculateMaximalAccess(perm models.SharePermission) uint32 {
 	// SMB2 Access Mask values
 	const (
 		// Standard rights
@@ -179,13 +169,13 @@ func calculateMaximalAccess(perm identity.SharePermission) uint32 {
 	)
 
 	switch perm {
-	case identity.PermissionAdmin:
+	case models.PermissionAdmin:
 		// Full access including delete and ownership
 		return fullAccess
-	case identity.PermissionReadWrite:
+	case models.PermissionReadWrite:
 		// Read and write access
 		return genericRead | genericWrite | delete_ | fileDeleteChild
-	case identity.PermissionRead:
+	case models.PermissionRead:
 		// Read-only access
 		return genericRead
 	default:
@@ -222,7 +212,7 @@ func (h *Handler) handleIPCShare(ctx *SMBHandlerContext) (*HandlerResult, error)
 		ShareName:  "/ipc$",
 		ShareType:  types.SMB2ShareTypePipe, // Named pipe share
 		CreatedAt:  time.Now(),
-		Permission: identity.PermissionReadWrite,
+		Permission: models.PermissionReadWrite,
 	}
 	h.StoreTree(tree)
 
@@ -259,4 +249,33 @@ func parseSharePath(path string) string {
 	// Windows clients often send share names in uppercase (e.g., /EXPORT)
 	// but our shares are typically configured in lowercase (e.g., /export)
 	return "/" + strings.ToLower(parts[1])
+}
+
+// resolveSharePermission determines the effective permission for a session on a share.
+// Returns the permission level and a user identifier for logging.
+func resolveSharePermission(
+	ctx *SMBHandlerContext,
+	sess *session.Session,
+	shareName string,
+	defaultPerm models.SharePermission,
+	userStore models.UserStore,
+) (models.SharePermission, string) {
+	// Authenticated user with valid session and user store
+	if sess != nil && sess.User != nil && userStore != nil {
+		perm, err := userStore.ResolveSharePermission(ctx.Context, sess.User, shareName)
+		if err != nil {
+			logger.Debug("Permission resolution failed, using default",
+				"shareName", shareName, "user", sess.User.Username, "error", err, "default", defaultPerm)
+			return defaultPerm, sess.User.Username
+		}
+		return perm, sess.User.Username
+	}
+
+	// Guest session - use default permission
+	if sess != nil && sess.IsGuest {
+		return defaultPerm, "guest"
+	}
+
+	// No session or unauthenticated - default to read-write for backwards compatibility
+	return models.PermissionReadWrite, ""
 }

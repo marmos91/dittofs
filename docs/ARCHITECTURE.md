@@ -13,7 +13,7 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 
 ## Core Abstraction Layers
 
-DittoFS uses a **Service-oriented architecture** with the Registry pattern to enable named, reusable stores that can be shared across multiple NFS exports:
+DittoFS uses a **Service-oriented architecture** with the Control Plane pattern to enable named, reusable stores that can be shared across multiple NFS exports:
 
 ```
 ┌─────────────────────────────────────────┐
@@ -31,14 +31,17 @@ DittoFS uses a **Service-oriented architecture** with the Registry pattern to en
         │
         ▼
 ┌─────────────────────────────────────────┐
-│         Store Registry                  │
-│   (Named store management)              │
-│   pkg/registry/registry.go              │
+│         Control Plane                   │
+│   (Configuration & Runtime state)       │
+│   pkg/controlplane/                     │
 │                                         │
-│  Stores:                                │
-│  - "fast-memory" → Memory stores        │
-│  - "persistent"  → BadgerDB + FS        │
-│  - "s3-archive"  → BadgerDB + S3        │
+│  ┌────────────┐  ┌───────────────────┐  │
+│  │   Store    │  │     Runtime       │  │
+│  │ (Persist)  │  │   (Ephemeral)     │  │
+│  │ users,     │  │ metadata stores,  │  │
+│  │ groups,    │  │ shares, mounts    │  │
+│  │ perms      │  │                   │  │
+│  └────────────┘  └───────────────────┘  │
 └───────┬─────────────────────────────────┘
         │
         ▼
@@ -80,19 +83,18 @@ DittoFS uses a **Service-oriented architecture** with the Registry pattern to en
 
 ### Key Interfaces
 
-**1. Store Registry** (`pkg/registry/registry.go`)
-- Central registry for managing named metadata and content stores
-- Stores are created once and shared across multiple NFS shares/exports
-- Enables flexible configurations (e.g., "fast-memory", "s3-archive", "persistent")
-- Handles store lifecycle and identity resolution
-- Maps file handles to their originating share for proper store routing
-- Owns and coordinates Services (MetadataService, BlockService)
+**1. Control Plane** (`pkg/controlplane/`)
+- Central management component for DittoFS
+- **Store** (`pkg/controlplane/store/`): Persistent configuration (users, groups, permissions)
+- **Runtime** (`pkg/controlplane/runtime/`): Ephemeral state (metadata stores, shares, mounts)
+- **API** (`pkg/controlplane/api/`): REST API for management operations
+- Owns and coordinates Services (MetadataService, PayloadService)
 
 **2. Adapter Interface** (`pkg/adapter/adapter.go`)
 - Each protocol implements the `Adapter` interface
-- Adapters receive a registry reference to access services
+- Adapters receive a Runtime reference to access services
 - Lifecycle: `SetRegistry() → Serve() → Stop()`
-- Multiple adapters can share the same registry
+- Multiple adapters can share the same runtime
 - Thread-safe, supports graceful shutdown
 
 **3. MetadataService** (`pkg/metadata/service.go`)
@@ -189,16 +191,16 @@ server.AddAdapter(smb.New(smbConfig))
 server.Serve(ctx)
 ```
 
-## Store Registry Pattern
+## Control Plane Pattern
 
-The Store Registry is the central innovation enabling flexible, multi-share configurations.
+The Control Plane is the central management component enabling flexible, multi-share configurations.
 
 ### How It Works
 
 1. **Named Store Creation**: Stores are created with unique names (e.g., "fast-memory", "s3-archive")
 2. **Share-to-Store Mapping**: Each NFS share references a store by name
 3. **Handle Identity**: File handles encode both the share ID and file-specific data
-4. **Store Resolution**: When handling operations, the registry decodes the handle to identify the share, then routes to the correct stores
+4. **Store Resolution**: When handling operations, the runtime decodes the handle to identify the share, then routes to the correct stores
 
 ### Configuration Example
 

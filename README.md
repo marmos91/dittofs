@@ -31,7 +31,11 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
                │
                ▼
 ┌──────────────────────────────────────┐
-│         Store Registry               │
+│         Control Plane                │
+│  ┌─────────────────────────────────┐ │
+│  │ REST API (users, groups, shares)│ │
+│  │ Database (SQLite/PostgreSQL)    │ │
+│  └─────────────────────────────────┘ │
 │                                      │
 │  Metadata Stores │  Block Storage    │
 │  • Memory        │  ┌─────────────┐  │
@@ -53,6 +57,7 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 ### Key Concepts
 
 - **Protocol Adapters**: Multiple protocols (NFS, SMB, etc.) can run simultaneously
+- **Control Plane**: Centralized management of users, groups, shares, and configuration via REST API
 - **Shares**: Export points that clients mount, each referencing specific stores
 - **Named Store Registry**: Reusable store instances that can be shared across exports
 - **Pluggable Storage**: Mix and match metadata and content backends per share
@@ -66,7 +71,8 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 - ✅ **Cloud-Native**: S3 backend with production optimizations
 - ✅ **Pure Go**: Single binary, easy deployment, cross-platform
 - ✅ **Extensible**: Clean adapter pattern for new protocols
-- ✅ **User Management**: Unified users/groups with share-level permissions (CLI included)
+- ✅ **User Management**: Unified users/groups with share-level permissions (CLI + REST API)
+- ✅ **REST API**: Full management API with JWT authentication for users, groups, and shares
 
 ## Quick Start
 
@@ -104,6 +110,9 @@ go build -o dittofs cmd/dittofs/main.go
 
 ### User Management
 
+Users and groups are stored in the control plane database (SQLite by default, PostgreSQL for HA). Manage them via CLI or REST API:
+
+**CLI:**
 ```bash
 # Add a user (prompts for password)
 ./dittofs user add alice
@@ -120,7 +129,24 @@ go build -o dittofs cmd/dittofs/main.go
 ./dittofs group list
 ```
 
-See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#cli-management-commands) for all user/group commands.
+**REST API:**
+```bash
+# Login to get JWT token
+TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin"}' | jq -r '.access_token')
+
+# List users
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/users
+
+# Create a user
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"secret123","uid":1001,"gid":1001}' \
+  http://localhost:8080/api/v1/users
+```
+
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#10-user-management) for all user/group commands.
 
 ### Run with Docker
 
@@ -348,12 +374,14 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - Single expected failure due to NFSv3 32-bit timestamp limitation (year 2106)
 - See [Known Limitations](docs/KNOWN_LIMITATIONS.md) for details
 
-**User Management**
+**User Management & Control Plane**
 - Unified identity system for NFS and SMB
 - Users with bcrypt password hashing
 - Groups with share-level permissions
 - Permission resolution: user → group → share default
 - CLI tools for user/group management
+- REST API with JWT authentication
+- Control plane database (SQLite/PostgreSQL)
 
 **Production Features**
 - Prometheus metrics integration
@@ -381,14 +409,13 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 
 **Kubernetes Integration**
 - [x] Kubernetes Operator for deployment
-- [ ] Health check endpoints
+- [x] Health check endpoints
 - [ ] CSI driver implementation
 
 **Advanced Features**
 - [ ] Sync between DittoFS replicas
 - [ ] Scan content stores to populate metadata stores
-- [ ] Admin REST API for users/permissions/shares/configs
-- [ ] Web UI for administration
+- [x] Admin REST API for users/permissions/shares/configs
 - [ ] NFSv4 support
 - [ ] Advanced caching strategies
 
@@ -397,6 +424,20 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for complete roadmap.
 ## Configuration Example
 
 ```yaml
+# Control plane database (stores users, groups, shares)
+database:
+  type: sqlite  # or "postgres" for HA
+  sqlite:
+    path: /var/lib/dittofs/controlplane.db
+
+# REST API server (enabled by default)
+server:
+  api:
+    enabled: true
+    port: 8080
+    jwt:
+      secret: "your-secret-key-at-least-32-characters"
+
 # Define named stores (reusable across shares)
 metadata:
   stores:
@@ -405,7 +446,7 @@ metadata:
       badger:
         db_path: /var/lib/dittofs/metadata
 
-blocks:
+payload:
   stores:
     s3-cloud:
       type: s3
@@ -413,30 +454,11 @@ blocks:
         region: us-east-1
         bucket: my-dittofs-bucket
 
-# User management
-groups:
-  - name: editors
-    gid: 101
-    share_permissions:
-      /archive: read-write
-
-users:
-  - username: alice
-    password_hash: "$2a$10$..."  # bcrypt hash
-    uid: 1001
-    gid: 101
-    groups: [editors]
-
-guest:
-  enabled: true
-  uid: 65534
-  gid: 65534
-
 # Define shares with permissions
 shares:
   - name: /archive
-    metadata_store: badger-main
-    blocks_store: s3-cloud
+    metadata: badger-main
+    payload: s3-cloud
     default_permission: read  # Allows guest access with read-only permissions
 
 adapters:
@@ -447,6 +469,8 @@ adapters:
     enabled: true
     port: 12445
 ```
+
+> **Note**: Users and groups are managed via CLI (`dittofs user/group`) or REST API, not in the config file.
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for complete documentation.
 

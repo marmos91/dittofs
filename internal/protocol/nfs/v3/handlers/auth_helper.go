@@ -1,13 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/registry"
 )
 
 // ErrShareAccessDenied is returned when a user doesn't have permission to access a share.
@@ -20,6 +21,13 @@ func formatUID(uid *uint32) string {
 		return "nil"
 	}
 	return fmt.Sprintf("%d", *uid)
+}
+
+// permissionResult holds the result of permission resolution.
+type permissionResult struct {
+	permission models.SharePermission
+	readOnly   bool
+	username   string
 }
 
 // BuildAuthContextWithMapping creates an AuthContext with share-level identity mapping applied.
@@ -42,7 +50,7 @@ func formatUID(uid *uint32) string {
 //   - error: If identity mapping fails, access is denied, or context is cancelled
 func BuildAuthContextWithMapping(
 	nfsCtx *NFSHandlerContext,
-	reg *registry.Registry,
+	reg *runtime.Runtime,
 	shareName string,
 ) (*metadata.AuthContext, error) {
 	ctx := nfsCtx.Context
@@ -67,59 +75,20 @@ func BuildAuthContextWithMapping(
 		originalIdentity.Username = fmt.Sprintf("uid:%d", *originalIdentity.UID)
 	}
 
-	// Look up DittoFS user by UID (reverse lookup) and check share permissions
-	var dittoUser *identity.User
-	var sharePermission identity.SharePermission
-	shareReadOnly := false
-
-	identityStore := reg.GetIdentityStore()
+	// Get share and identity store
 	share, shareErr := reg.GetShare(shareName)
-
-	if identityStore != nil && share != nil && nfsCtx.UID != nil {
-		// Try reverse lookup: find user by UID
-		user, err := identityStore.GetUserByUID(*nfsCtx.UID)
-		if err == nil && user != nil {
-			dittoUser = user
-			logger.DebugCtx(ctx, "NFS UID reverse lookup succeeded",
-				"share", shareName, "uid", *nfsCtx.UID, "username", user.Username, "client", clientAddr)
-		} else {
-			logger.DebugCtx(ctx, "NFS UID reverse lookup failed, treating as guest",
-				"share", shareName, "uid", *nfsCtx.UID, "client", clientAddr, "error", err)
-		}
-
-		// Get default permission from share config
-		defaultPerm := identity.ParseSharePermission(share.DefaultPermission)
-
-		if dittoUser != nil {
-			// User found - resolve their permission
-			sharePermission = identityStore.ResolveSharePermission(dittoUser, shareName, defaultPerm)
-			originalIdentity.Username = dittoUser.Username
-
-			if sharePermission == identity.PermissionNone {
-				logger.DebugCtx(ctx, "Share access denied", "share", shareName, "user", dittoUser.Username)
-				return nil, ErrShareAccessDenied
-			}
-
-			// Read-only if share is read-only OR user only has read permission
-			shareReadOnly = share.ReadOnly || sharePermission == identity.PermissionRead
-			logger.DebugCtx(ctx, "User permission resolved", "share", shareName, "user", dittoUser.Username, "permission", sharePermission, "readOnly", shareReadOnly)
-		} else {
-			// User not found - use default permission
-			// If defaultPerm is "none", block access (no guest access)
-			if defaultPerm == identity.PermissionNone {
-				logger.DebugCtx(ctx, "Share access denied (unknown UID, default permission is none)",
-					"share", shareName, "uid", nfsCtx.UID)
-				return nil, ErrShareAccessDenied
-			}
-
-			// Allow with default permission
-			sharePermission = defaultPerm
-			// Read-only if share is read-only OR permission is read-only
-			shareReadOnly = share.ReadOnly || sharePermission == identity.PermissionRead
-			logger.DebugCtx(ctx, "Guest access granted", "share", shareName, "permission", sharePermission, "readOnly", shareReadOnly)
-		}
-	} else if shareErr != nil {
+	if shareErr != nil {
 		return nil, fmt.Errorf("failed to get share: %w", shareErr)
+	}
+
+	// Resolve permissions
+	identityStore := reg.GetIdentityStore()
+	permResult, err := resolveNFSSharePermission(ctx, nfsCtx, identityStore, share, shareName, clientAddr)
+	if err != nil {
+		return nil, err
+	}
+	if permResult.username != "" {
+		originalIdentity.Username = permResult.username
 	}
 
 	// Apply share-level identity mapping (all_squash, root_squash)
@@ -134,7 +103,7 @@ func BuildAuthContextWithMapping(
 		ClientAddr:    clientAddr,
 		AuthMethod:    authMethod,
 		Identity:      effectiveIdentity,
-		ShareReadOnly: shareReadOnly,
+		ShareReadOnly: permResult.readOnly,
 	}
 
 	// Log identity mapping
@@ -148,4 +117,66 @@ func BuildAuthContextWithMapping(
 	}
 
 	return effectiveAuthCtx, nil
+}
+
+// resolveNFSSharePermission resolves the share permission for an NFS request.
+// Returns the permission result or an error if access is denied.
+func resolveNFSSharePermission(
+	ctx context.Context,
+	nfsCtx *NFSHandlerContext,
+	identityStore models.IdentityStore,
+	share *runtime.Share,
+	shareName string,
+	clientAddr string,
+) (*permissionResult, error) {
+	result := &permissionResult{}
+
+	// No identity store or UID - allow with share defaults
+	if identityStore == nil || share == nil || nfsCtx.UID == nil {
+		return result, nil
+	}
+
+	defaultPerm := models.ParseSharePermission(share.DefaultPermission)
+
+	// Try reverse lookup: find user by UID
+	user, err := identityStore.GetUserByUID(ctx, *nfsCtx.UID)
+	if err != nil || user == nil {
+		logger.DebugCtx(ctx, "NFS UID reverse lookup failed, treating as guest",
+			"share", shareName, "uid", *nfsCtx.UID, "client", clientAddr, "error", err)
+
+		// Guest access - check default permission
+		if defaultPerm == models.PermissionNone {
+			logger.DebugCtx(ctx, "Share access denied (unknown UID, default permission is none)",
+				"share", shareName, "uid", nfsCtx.UID)
+			return nil, ErrShareAccessDenied
+		}
+
+		result.permission = defaultPerm
+		result.readOnly = share.ReadOnly || defaultPerm == models.PermissionRead
+		logger.DebugCtx(ctx, "Guest access granted", "share", shareName, "permission", defaultPerm, "readOnly", result.readOnly)
+		return result, nil
+	}
+
+	// User found - resolve their permission
+	logger.DebugCtx(ctx, "NFS UID reverse lookup succeeded",
+		"share", shareName, "uid", *nfsCtx.UID, "username", user.Username, "client", clientAddr)
+
+	perm, permErr := identityStore.ResolveSharePermission(ctx, user, shareName)
+	if permErr != nil {
+		logger.DebugCtx(ctx, "Permission resolution failed, using default",
+			"share", shareName, "user", user.Username, "error", permErr, "default", defaultPerm)
+		perm = defaultPerm
+	}
+
+	if perm == models.PermissionNone {
+		logger.DebugCtx(ctx, "Share access denied", "share", shareName, "user", user.Username)
+		return nil, ErrShareAccessDenied
+	}
+
+	result.permission = perm
+	result.readOnly = share.ReadOnly || perm == models.PermissionRead
+	result.username = user.Username
+	logger.DebugCtx(ctx, "User permission resolved", "share", shareName, "user", user.Username, "permission", perm, "readOnly", result.readOnly)
+
+	return result, nil
 }

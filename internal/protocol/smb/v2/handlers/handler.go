@@ -11,14 +11,14 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/signing"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/registry"
 )
 
 // Handler manages SMB2 protocol handling
 type Handler struct {
-	Registry  *registry.Registry
+	Registry  *runtime.Runtime
 	StartTime time.Time
 
 	// Server identity
@@ -73,7 +73,7 @@ type TreeConnection struct {
 	ShareName  string
 	ShareType  uint8
 	CreatedAt  time.Time
-	Permission identity.SharePermission // User's permission level for this share
+	Permission models.SharePermission // User's permission level for this share
 }
 
 // OpenFile represents an open file handle
@@ -218,77 +218,10 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 // This releases locks, flushes caches, handles delete-on-close, and removes file handles.
 // Returns the number of files closed.
 func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64) int {
-	var closed int
-	var toDelete [][16]byte
-
-	// Get session for auth context (may be nil if session already deleted)
-	sess, _ := h.GetSession(sessionID)
-
-	// First pass: collect files to close and release locks
-	h.files.Range(func(key, value any) bool {
-		openFile := value.(*OpenFile)
-		if openFile.SessionID != sessionID {
-			return true // Continue iterating
-		}
-
-		// Handle pipe close
-		if openFile.IsPipe {
-			h.PipeManager.ClosePipe(openFile.FileID)
-			toDelete = append(toDelete, openFile.FileID)
-			closed++
-			return true
-		}
-
-		metaSvc := h.Registry.GetMetadataService()
-
-		// Release locks for this file
-		if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
-			_ = metaSvc.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID)
-		}
-
-		// Flush cache if needed
-		if !openFile.IsDirectory && openFile.PayloadID != "" {
-			h.flushFileCache(ctx, openFile)
-		}
-
-		// Handle delete-on-close (FileDispositionInformation)
-		if openFile.DeletePending && len(openFile.ParentHandle) > 0 && openFile.FileName != "" {
-			authCtx := h.buildCleanupAuthContext(ctx, sess, openFile.ShareName)
-			metaSvc := h.Registry.GetMetadataService()
-			if openFile.IsDirectory {
-				if err := metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
-					logger.Debug("CloseAllFilesForSession: failed to delete directory",
-						"path", openFile.Path, "error", err)
-				} else {
-					logger.Debug("CloseAllFilesForSession: directory deleted", "path", openFile.Path)
-				}
-			} else {
-				if _, err := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
-					logger.Debug("CloseAllFilesForSession: failed to delete file",
-						"path", openFile.Path, "error", err)
-				} else {
-					logger.Debug("CloseAllFilesForSession: file deleted", "path", openFile.Path)
-				}
-			}
-		}
-
-		toDelete = append(toDelete, openFile.FileID)
-		closed++
-		return true
-	})
-
-	// Second pass: delete collected file handles
-	for _, fileID := range toDelete {
-		h.DeleteOpenFile(fileID)
+	filter := func(f *OpenFile) bool {
+		return f.SessionID == sessionID
 	}
-
-	if closed > 0 {
-		logger.Debug("CloseAllFilesForSession: closed files",
-			"sessionID", sessionID,
-			"count", closed)
-	}
-
-	return closed
+	return h.closeFilesWithFilter(ctx, sessionID, filter, "CloseAllFilesForSession")
 }
 
 // CloseAllFilesForTree closes all open files associated with a tree connection.
@@ -297,17 +230,31 @@ func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64)
 // and lock release operations. Files are filtered by both treeID and sessionID for safety.
 // Returns the number of files closed.
 func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessionID uint64) int {
+	filter := func(f *OpenFile) bool {
+		return f.TreeID == treeID && f.SessionID == sessionID
+	}
+	return h.closeFilesWithFilter(ctx, sessionID, filter, "CloseAllFilesForTree")
+}
+
+// closeFilesWithFilter closes files matching the filter predicate.
+// This is the shared implementation for CloseAllFilesForSession and CloseAllFilesForTree.
+func (h *Handler) closeFilesWithFilter(
+	ctx context.Context,
+	sessionID uint64,
+	filter func(*OpenFile) bool,
+	caller string,
+) int {
 	var closed int
 	var toDelete [][16]byte
 
 	// Get session for auth context (may be nil if session already deleted)
 	sess, _ := h.GetSession(sessionID)
+	metaSvc := h.Registry.GetMetadataService()
 
 	// First pass: collect files to close and release locks
 	h.files.Range(func(key, value any) bool {
 		openFile := value.(*OpenFile)
-		// Filter by both treeID and sessionID for safety
-		if openFile.TreeID != treeID || openFile.SessionID != sessionID {
+		if !filter(openFile) {
 			return true // Continue iterating
 		}
 
@@ -318,8 +265,6 @@ func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessi
 			closed++
 			return true
 		}
-
-		metaSvc := h.Registry.GetMetadataService()
 
 		// Release locks for this file
 		if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
@@ -333,23 +278,7 @@ func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessi
 
 		// Handle delete-on-close (FileDispositionInformation)
 		if openFile.DeletePending && len(openFile.ParentHandle) > 0 && openFile.FileName != "" {
-			authCtx := h.buildCleanupAuthContext(ctx, sess, openFile.ShareName)
-			metaSvc := h.Registry.GetMetadataService()
-			if openFile.IsDirectory {
-				if err := metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
-					logger.Debug("CloseAllFilesForTree: failed to delete directory",
-						"path", openFile.Path, "error", err)
-				} else {
-					logger.Debug("CloseAllFilesForTree: directory deleted", "path", openFile.Path)
-				}
-			} else {
-				if _, err := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
-					logger.Debug("CloseAllFilesForTree: failed to delete file",
-						"path", openFile.Path, "error", err)
-				} else {
-					logger.Debug("CloseAllFilesForTree: file deleted", "path", openFile.Path)
-				}
-			}
+			h.handleDeleteOnClose(ctx, sess, openFile, caller)
 		}
 
 		toDelete = append(toDelete, openFile.FileID)
@@ -363,12 +292,30 @@ func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessi
 	}
 
 	if closed > 0 {
-		logger.Debug("CloseAllFilesForTree: closed files",
-			"treeID", treeID,
-			"count", closed)
+		logger.Debug(caller+": closed files", "sessionID", sessionID, "count", closed)
 	}
 
 	return closed
+}
+
+// handleDeleteOnClose performs the delete operation for files marked with delete-on-close.
+func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session, openFile *OpenFile, caller string) {
+	authCtx := h.buildCleanupAuthContext(ctx, sess, openFile.ShareName)
+	metaSvc := h.Registry.GetMetadataService()
+
+	if openFile.IsDirectory {
+		if err := metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
+			logger.Debug(caller+": failed to delete directory", "path", openFile.Path, "error", err)
+		} else {
+			logger.Debug(caller+": directory deleted", "path", openFile.Path)
+		}
+	} else {
+		if _, err := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
+			logger.Debug(caller+": failed to delete file", "path", openFile.Path, "error", err)
+		} else {
+			logger.Debug(caller+": file deleted", "path", openFile.Path)
+		}
+	}
 }
 
 // DeleteAllTreesForSession removes all tree connections for a session.
@@ -532,7 +479,7 @@ func (h *Handler) CreateSessionWithID(sessionID uint64, clientAddr string, isGue
 
 // CreateSessionWithUser creates an authenticated session with a DittoFS user.
 // The session is linked to the user for permission checking during share access.
-func (h *Handler) CreateSessionWithUser(sessionID uint64, clientAddr string, user *identity.User, domain string) *session.Session {
+func (h *Handler) CreateSessionWithUser(sessionID uint64, clientAddr string, user *models.User, domain string) *session.Session {
 	sess := session.NewSessionWithUser(sessionID, clientAddr, user, domain)
 	h.SessionManager.StoreSession(sess)
 	return sess

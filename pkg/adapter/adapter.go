@@ -3,7 +3,7 @@ package adapter
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // Adapter represents a protocol-specific server adapter that can be managed by DittoServer.
@@ -54,7 +54,7 @@ type Adapter interface {
 	//
 	// Thread safety:
 	// Called before Serve(), no synchronization needed.
-	SetRegistry(reg *registry.Registry)
+	SetRegistry(reg *runtime.Runtime)
 
 	// Stop initiates graceful shutdown of the protocol server.
 	//

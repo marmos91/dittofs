@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
 	internalxdr "github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
-	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	xdr "github.com/rasky/go-xdr/xdr2"
 )
 
@@ -19,7 +19,7 @@ import (
 type Handler struct {
 	// Registry provides access to all stores and shares
 	// Exported to allow injection by the NFS adapter
-	Registry *registry.Registry
+	Registry *runtime.Runtime
 }
 
 // MountRequest represents a MOUNT (MNT) request from an NFS client.

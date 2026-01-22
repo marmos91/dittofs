@@ -11,12 +11,12 @@ import (
 
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/payload"
 	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	"github.com/marmos91/dittofs/pkg/payload/transfer"
-	"github.com/marmos91/dittofs/pkg/registry"
 )
 
 // DefaultShareName is the default share name used in test fixtures.
@@ -44,7 +44,7 @@ type HandlerTestFixture struct {
 	Handler *handlers.Handler
 
 	// Registry manages stores and shares.
-	Registry *registry.Registry
+	Registry *runtime.Runtime
 
 	// MetadataService provides high-level metadata operations.
 	// It owns the memory-backed metadata store.
@@ -91,7 +91,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 	}
 
 	// Create registry and set up payload service
-	reg := registry.NewRegistry()
+	reg := runtime.New(nil)
 	reg.SetPayloadService(payloadSvc)
 
 	if err := reg.RegisterMetadataStore("test-metaSvc", metaStore); err != nil {
@@ -99,7 +99,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 	}
 
 	// Add share
-	shareConfig := &registry.ShareConfig{
+	shareConfig := &runtime.ShareConfig{
 		Name:          DefaultShareName,
 		MetadataStore: "test-metaSvc",
 		RootAttr:      &metadata.FileAttr{}, // Empty attr, AddShare will apply defaults

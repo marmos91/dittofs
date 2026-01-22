@@ -11,7 +11,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/v2/handlers"
-	"github.com/marmos91/dittofs/pkg/registry"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // SMBAdapter implements the adapter.Adapter interface for SMB2 protocol.
@@ -51,7 +51,7 @@ type SMBAdapter struct {
 	handler *handlers.Handler
 
 	// registry provides access to all stores and shares
-	registry *registry.Registry
+	registry *runtime.Runtime
 
 	// activeConns tracks all currently active connections for graceful shutdown
 	// Each connection calls Add(1) when starting and Done() when complete
@@ -178,7 +178,7 @@ func New(config SMBConfig) *SMBAdapter {
 //
 // Thread safety:
 // Called exactly once before Serve(), no synchronization needed.
-func (s *SMBAdapter) SetRegistry(reg *registry.Registry) {
+func (s *SMBAdapter) SetRegistry(reg *runtime.Runtime) {
 	s.registry = reg
 	s.handler.Registry = reg
 	logger.Debug("SMB adapter configured with registry", "shares", reg.CountShares())

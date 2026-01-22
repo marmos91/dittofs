@@ -1,0 +1,223 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+)
+
+// ============================================
+// USER OPERATIONS
+// ============================================
+
+func (s *GORMStore) GetUser(ctx context.Context, username string) (*models.User, error) {
+	var user models.User
+	err := s.db.WithContext(ctx).
+		Preload("Groups").
+		Preload("SharePermissions").
+		Where("username = ?", username).
+		First(&user).Error
+	if err != nil {
+		return nil, convertNotFoundError(err, models.ErrUserNotFound)
+	}
+	return &user, nil
+}
+
+func (s *GORMStore) GetUserByID(ctx context.Context, id string) (*models.User, error) {
+	var user models.User
+	err := s.db.WithContext(ctx).
+		Preload("Groups").
+		Preload("SharePermissions").
+		Where("id = ?", id).
+		First(&user).Error
+	if err != nil {
+		return nil, convertNotFoundError(err, models.ErrUserNotFound)
+	}
+	return &user, nil
+}
+
+func (s *GORMStore) GetUserByUID(ctx context.Context, uid uint32) (*models.User, error) {
+	var user models.User
+	err := s.db.WithContext(ctx).
+		Preload("Groups").
+		Preload("SharePermissions").
+		Where("uid = ?", uid).
+		First(&user).Error
+	if err != nil {
+		return nil, convertNotFoundError(err, models.ErrUserNotFound)
+	}
+	return &user, nil
+}
+
+func (s *GORMStore) ListUsers(ctx context.Context) ([]*models.User, error) {
+	var users []*models.User
+	if err := s.db.WithContext(ctx).
+		Preload("Groups").
+		Preload("SharePermissions").
+		Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+func (s *GORMStore) CreateUser(ctx context.Context, user *models.User) (string, error) {
+	if user.ID == "" {
+		user.ID = uuid.New().String()
+	}
+	user.CreatedAt = time.Now()
+
+	if err := s.db.WithContext(ctx).Create(user).Error; err != nil {
+		if isUniqueConstraintError(err) {
+			return "", models.ErrDuplicateUser
+		}
+		return "", err
+	}
+	return user.ID, nil
+}
+
+func (s *GORMStore) UpdateUser(ctx context.Context, user *models.User) error {
+	// Check if user exists first
+	var existing models.User
+	if err := s.db.WithContext(ctx).Where("id = ?", user.ID).First(&existing).Error; err != nil {
+		return convertNotFoundError(err, models.ErrUserNotFound)
+	}
+
+	// Update specific fields using Select to handle pointers properly
+	return s.db.WithContext(ctx).
+		Model(&existing).
+		Select("Username", "Enabled", "MustChangePassword", "Role", "UID", "GID", "DisplayName", "Email").
+		Updates(user).Error
+}
+
+func (s *GORMStore) DeleteUser(ctx context.Context, username string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var user models.User
+		if err := tx.Where("username = ?", username).First(&user).Error; err != nil {
+			return convertNotFoundError(err, models.ErrUserNotFound)
+		}
+
+		// Delete share permissions
+		if err := tx.Where("user_id = ?", user.ID).Delete(&models.UserSharePermission{}).Error; err != nil {
+			return err
+		}
+
+		// Remove from groups (GORM handles the join table)
+		if err := tx.Model(&user).Association("Groups").Clear(); err != nil {
+			return err
+		}
+
+		// Delete user
+		if err := tx.Delete(&user).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+}
+
+func (s *GORMStore) UpdatePassword(ctx context.Context, username, passwordHash, ntHash string) error {
+	result := s.db.WithContext(ctx).
+		Model(&models.User{}).
+		Where("username = ?", username).
+		Updates(map[string]any{
+			"password_hash": passwordHash,
+			"nt_hash":       ntHash,
+		})
+
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return models.ErrUserNotFound
+	}
+	return nil
+}
+
+func (s *GORMStore) UpdateLastLogin(ctx context.Context, username string, timestamp time.Time) error {
+	result := s.db.WithContext(ctx).
+		Model(&models.User{}).
+		Where("username = ?", username).
+		Update("last_login", timestamp)
+
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return models.ErrUserNotFound
+	}
+	return nil
+}
+
+func (s *GORMStore) ValidateCredentials(ctx context.Context, username, password string) (*models.User, error) {
+	user, err := s.GetUser(ctx, username)
+	if err != nil {
+		if errors.Is(err, models.ErrUserNotFound) {
+			return nil, models.ErrInvalidCredentials
+		}
+		return nil, err
+	}
+
+	if !user.Enabled {
+		return nil, models.ErrUserDisabled
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+		return nil, models.ErrInvalidCredentials
+	}
+
+	return user, nil
+}
+
+// ============================================
+// ADMIN INITIALIZATION
+// ============================================
+
+func (s *GORMStore) EnsureAdminUser(ctx context.Context) (string, error) {
+	// Check if admin exists
+	_, err := s.GetUser(ctx, models.AdminUsername)
+	if err == nil {
+		return "", nil // Admin already exists
+	}
+	if !errors.Is(err, models.ErrUserNotFound) {
+		return "", err // Unexpected error
+	}
+
+	// Generate or get password from environment
+	password, err := models.GetOrGenerateAdminPassword()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate password: %w", err)
+	}
+
+	// Hash password with NT hash for SMB support
+	passwordHash, ntHash, err := models.HashPasswordWithNT(password)
+	if err != nil {
+		return "", fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	// Create admin user
+	admin := models.DefaultAdminUser(passwordHash, ntHash)
+
+	if _, err := s.CreateUser(ctx, admin); err != nil {
+		return "", fmt.Errorf("failed to create admin user: %w", err)
+	}
+
+	return password, nil
+}
+
+func (s *GORMStore) IsAdminInitialized(ctx context.Context) (bool, error) {
+	_, err := s.GetUser(ctx, models.AdminUsername)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, models.ErrUserNotFound) {
+		return false, nil
+	}
+	return false, err
+}

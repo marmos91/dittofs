@@ -1,13 +1,17 @@
 package commands
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/config"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
 // GroupCommand handles group management subcommands
@@ -89,58 +93,67 @@ func (c *GroupCommand) loadConfig() (*config.Config, error) {
 	return config.Load(c.configFile)
 }
 
-func (c *GroupCommand) saveConfig(cfg *config.Config) error {
-	path := c.configFile
-	if path == "" {
-		path = config.GetDefaultConfigPath()
+func (c *GroupCommand) openStore() (store.Store, error) {
+	cfg, err := c.loadConfig()
+	if err != nil {
+		return nil, err
 	}
-	return config.SaveConfig(cfg, path)
+	return store.New(&cfg.Database)
 }
 
 func (c *GroupCommand) runAdd(args []string) error {
 	fs := flag.NewFlagSet("group add", flag.ExitOnError)
 	gid := fs.Uint("gid", 0, "Group ID (auto-generated if not specified)")
+	description := fs.String("description", "", "Group description")
 	if err := c.parseFlags(fs, args); err != nil {
 		return err
 	}
 
 	if fs.NArg() < 1 {
-		return fmt.Errorf("group name required\nUsage: dittofs group add <name> [--gid N]")
+		return fmt.Errorf("group name required\nUsage: dittofs group add <name> [--gid N] [--description TEXT]")
 	}
 
 	groupName := fs.Arg(0)
 
-	cfg, err := c.loadConfig()
+	s, err := c.openStore()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return fmt.Errorf("failed to open store: %w", err)
 	}
 
+	ctx := context.Background()
+
 	// Check if group already exists
-	for _, g := range cfg.Groups {
-		if g.Name == groupName {
-			return fmt.Errorf("group %q already exists", groupName)
-		}
+	_, err = s.GetGroup(ctx, groupName)
+	if err == nil {
+		return fmt.Errorf("group %q already exists", groupName)
+	}
+	if err != models.ErrGroupNotFound {
+		return fmt.Errorf("failed to check group: %w", err)
 	}
 
 	// Generate GID if not specified
 	groupGID := uint32(*gid)
 	if groupGID == 0 {
-		groupGID = c.findNextGID(cfg)
+		groupGID, err = c.findNextGID(ctx, s)
+		if err != nil {
+			return fmt.Errorf("failed to find next GID: %w", err)
+		}
 	}
 
-	// Create group config
-	newGroup := config.GroupConfig{
-		Name: groupName,
-		GID:  groupGID,
+	// Create group
+	group := &models.Group{
+		ID:          uuid.New().String(),
+		Name:        groupName,
+		GID:         &groupGID,
+		Description: *description,
+		CreatedAt:   time.Now(),
 	}
 
-	cfg.Groups = append(cfg.Groups, newGroup)
-
-	if err := c.saveConfig(cfg); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+	if _, err := s.CreateGroup(ctx, group); err != nil {
+		return fmt.Errorf("failed to create group: %w", err)
 	}
 
-	fmt.Printf("✓ Group %q created (GID: %d)\n", groupName, groupGID)
+	fmt.Printf("Group %q created (GID: %d)\n", groupName, groupGID)
 	return nil
 }
 
@@ -157,54 +170,36 @@ func (c *GroupCommand) runDelete(args []string) error {
 
 	groupName := fs.Arg(0)
 
-	cfg, err := c.loadConfig()
+	s, err := c.openStore()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return fmt.Errorf("failed to open store: %w", err)
 	}
 
-	// Check if any users are members
+	ctx := context.Background()
+
+	// Check if group has members
 	if !*force {
-		members := c.findGroupMembers(cfg, groupName)
+		members, err := s.GetGroupMembers(ctx, groupName)
+		if err != nil && err != models.ErrGroupNotFound {
+			return fmt.Errorf("failed to check group members: %w", err)
+		}
 		if len(members) > 0 {
-			return fmt.Errorf("group %q has members (%s). Use --force to delete anyway", groupName, strings.Join(members, ", "))
-		}
-	}
-
-	// Find and remove group
-	found := false
-	newGroups := make([]config.GroupConfig, 0, len(cfg.Groups))
-	for _, g := range cfg.Groups {
-		if g.Name == groupName {
-			found = true
-			continue
-		}
-		newGroups = append(newGroups, g)
-	}
-
-	if !found {
-		return fmt.Errorf("group %q not found", groupName)
-	}
-
-	cfg.Groups = newGroups
-
-	// Remove group from all users if force delete
-	if *force {
-		for i := range cfg.Users {
-			newUserGroups := make([]string, 0)
-			for _, g := range cfg.Users[i].Groups {
-				if g != groupName {
-					newUserGroups = append(newUserGroups, g)
-				}
+			var memberNames []string
+			for _, m := range members {
+				memberNames = append(memberNames, m.Username)
 			}
-			cfg.Users[i].Groups = newUserGroups
+			return fmt.Errorf("group %q has members (%s). Use --force to delete anyway", groupName, strings.Join(memberNames, ", "))
 		}
 	}
 
-	if err := c.saveConfig(cfg); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+	if err := s.DeleteGroup(ctx, groupName); err != nil {
+		if err == models.ErrGroupNotFound {
+			return fmt.Errorf("group %q not found", groupName)
+		}
+		return fmt.Errorf("failed to delete group: %w", err)
 	}
 
-	fmt.Printf("✓ Group %q deleted\n", groupName)
+	fmt.Printf("Group %q deleted\n", groupName)
 	return nil
 }
 
@@ -214,33 +209,41 @@ func (c *GroupCommand) runList(args []string) error {
 		return err
 	}
 
-	cfg, err := c.loadConfig()
+	s, err := c.openStore()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return fmt.Errorf("failed to open store: %w", err)
 	}
 
-	if len(cfg.Groups) == 0 {
+	ctx := context.Background()
+
+	groups, err := s.ListGroups(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list groups: %w", err)
+	}
+
+	if len(groups) == 0 {
 		fmt.Println("No groups configured")
 		return nil
 	}
 
-	fmt.Printf("%-20s %-8s %-8s %s\n", "NAME", "GID", "MEMBERS", "SHARE PERMISSIONS")
+	fmt.Printf("%-20s %-8s %-8s %s\n", "NAME", "GID", "MEMBERS", "DESCRIPTION")
 	fmt.Println(strings.Repeat("-", 80))
-	for _, g := range cfg.Groups {
-		members := c.findGroupMembers(cfg, g.Name)
+	for _, g := range groups {
+		gid := "-"
+		if g.GID != nil {
+			gid = fmt.Sprintf("%d", *g.GID)
+		}
+
+		// Get member count
+		members, _ := s.GetGroupMembers(ctx, g.Name)
 		memberCount := len(members)
 
-		// Format share permissions
-		var perms []string
-		for share, perm := range g.SharePermissions {
-			perms = append(perms, fmt.Sprintf("%s:%s", share, perm))
-		}
-		permStr := strings.Join(perms, ", ")
-		if permStr == "" {
-			permStr = "-"
+		description := g.Description
+		if description == "" {
+			description = "-"
 		}
 
-		fmt.Printf("%-20s %-8d %-8d %s\n", g.Name, g.GID, memberCount, permStr)
+		fmt.Printf("%-20s %-8s %-8d %s\n", g.Name, gid, memberCount, description)
 	}
 
 	return nil
@@ -258,25 +261,20 @@ func (c *GroupCommand) runMembers(args []string) error {
 
 	groupName := fs.Arg(0)
 
-	cfg, err := c.loadConfig()
+	s, err := c.openStore()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return fmt.Errorf("failed to open store: %w", err)
 	}
 
-	// Check if group exists
-	groupExists := false
-	for _, g := range cfg.Groups {
-		if g.Name == groupName {
-			groupExists = true
-			break
+	ctx := context.Background()
+
+	members, err := s.GetGroupMembers(ctx, groupName)
+	if err != nil {
+		if err == models.ErrGroupNotFound {
+			return fmt.Errorf("group %q not found", groupName)
 		}
+		return fmt.Errorf("failed to get group members: %w", err)
 	}
-
-	if !groupExists {
-		return fmt.Errorf("group %q not found", groupName)
-	}
-
-	members := c.findGroupMembers(cfg, groupName)
 
 	if len(members) == 0 {
 		fmt.Printf("Group %q has no members\n", groupName)
@@ -285,7 +283,7 @@ func (c *GroupCommand) runMembers(args []string) error {
 
 	fmt.Printf("Members of group %q:\n", groupName)
 	for _, m := range members {
-		fmt.Printf("  - %s\n", m)
+		fmt.Printf("  - %s\n", m.Username)
 	}
 
 	return nil
@@ -306,41 +304,49 @@ func (c *GroupCommand) runGrant(args []string) error {
 	permission := fs.Arg(2)
 
 	// Validate permission
-	perm := identity.ParseSharePermission(permission)
+	perm := models.ParseSharePermission(permission)
 	if !perm.IsValid() {
 		return fmt.Errorf("invalid permission %q (valid: none, read, read-write, admin)", permission)
 	}
 
-	cfg, err := c.loadConfig()
+	s, err := c.openStore()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return fmt.Errorf("failed to open store: %w", err)
 	}
 
-	// Find group
-	groupIdx := -1
-	for i, g := range cfg.Groups {
-		if g.Name == groupName {
-			groupIdx = i
-			break
+	ctx := context.Background()
+
+	// Get group to obtain ID
+	group, err := s.GetGroup(ctx, groupName)
+	if err != nil {
+		if err == models.ErrGroupNotFound {
+			return fmt.Errorf("group %q not found", groupName)
 		}
+		return fmt.Errorf("failed to get group: %w", err)
 	}
 
-	if groupIdx == -1 {
-		return fmt.Errorf("group %q not found", groupName)
+	// Get share to obtain ID
+	share, err := s.GetShare(ctx, shareName)
+	if err != nil {
+		if err == models.ErrShareNotFound {
+			return fmt.Errorf("share %q not found", shareName)
+		}
+		return fmt.Errorf("failed to get share: %w", err)
 	}
 
-	// Initialize share permissions map if nil
-	if cfg.Groups[groupIdx].SharePermissions == nil {
-		cfg.Groups[groupIdx].SharePermissions = make(map[string]string)
+	// Set permission with correct IDs
+	groupPerm := &models.GroupSharePermission{
+		GroupID:    group.ID,
+		ShareID:    share.ID,
+		ShareName:  share.Name,
+		Permission: permission,
 	}
 
-	cfg.Groups[groupIdx].SharePermissions[shareName] = permission
-
-	if err := c.saveConfig(cfg); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+	if err := s.SetGroupSharePermission(ctx, groupPerm); err != nil {
+		return fmt.Errorf("failed to set permission: %w", err)
 	}
 
-	fmt.Printf("✓ Granted %q permission on %q to group %q\n", permission, shareName, groupName)
+	fmt.Printf("Granted %q permission on %q to group %q\n", permission, shareName, groupName)
 	return nil
 }
 
@@ -357,61 +363,32 @@ func (c *GroupCommand) runRevoke(args []string) error {
 	groupName := fs.Arg(0)
 	shareName := fs.Arg(1)
 
-	cfg, err := c.loadConfig()
+	s, err := c.openStore()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return fmt.Errorf("failed to open store: %w", err)
 	}
 
-	// Find group
-	groupIdx := -1
-	for i, g := range cfg.Groups {
-		if g.Name == groupName {
-			groupIdx = i
-			break
-		}
+	ctx := context.Background()
+
+	if err := s.DeleteGroupSharePermission(ctx, groupName, shareName); err != nil {
+		return fmt.Errorf("failed to revoke permission: %w", err)
 	}
 
-	if groupIdx == -1 {
-		return fmt.Errorf("group %q not found", groupName)
-	}
-
-	if cfg.Groups[groupIdx].SharePermissions == nil {
-		return fmt.Errorf("group %q has no permissions on %q", groupName, shareName)
-	}
-
-	if _, ok := cfg.Groups[groupIdx].SharePermissions[shareName]; !ok {
-		return fmt.Errorf("group %q has no permission on %q", groupName, shareName)
-	}
-
-	delete(cfg.Groups[groupIdx].SharePermissions, shareName)
-
-	if err := c.saveConfig(cfg); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
-	}
-
-	fmt.Printf("✓ Revoked permission on %q from group %q\n", shareName, groupName)
+	fmt.Printf("Revoked permission on %q from group %q\n", shareName, groupName)
 	return nil
 }
 
-func (c *GroupCommand) findNextGID(cfg *config.Config) uint32 {
-	maxGID := uint32(99) // Start from 100
-	for _, g := range cfg.Groups {
-		if g.GID > maxGID {
-			maxGID = g.GID
-		}
+func (c *GroupCommand) findNextGID(ctx context.Context, s store.Store) (uint32, error) {
+	groups, err := s.ListGroups(ctx)
+	if err != nil {
+		return 0, err
 	}
-	return maxGID + 1
-}
 
-func (c *GroupCommand) findGroupMembers(cfg *config.Config, groupName string) []string {
-	var members []string
-	for _, u := range cfg.Users {
-		for _, g := range u.Groups {
-			if g == groupName {
-				members = append(members, u.Username)
-				break
-			}
+	maxGID := uint32(99) // Start from 100
+	for _, g := range groups {
+		if g.GID != nil && *g.GID > maxGID {
+			maxGID = *g.GID
 		}
 	}
-	return members
+	return maxGID + 1, nil
 }

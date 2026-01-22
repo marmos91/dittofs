@@ -8,7 +8,8 @@ import (
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
-	"github.com/marmos91/dittofs/pkg/api"
+	"github.com/marmos91/dittofs/pkg/controlplane/api"
+	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -25,7 +26,7 @@ func ApplyDefaults(cfg *Config) {
 	applyLoggingDefaults(&cfg.Logging)
 	applyTelemetryDefaults(&cfg.Telemetry)
 	applyServerDefaults(&cfg.Server)
-	applyIdentityDefaults(&cfg.Identity)
+	applyDatabaseDefaults(&cfg.Database)
 	applyMetadataDefaults(&cfg.Metadata)
 	applyCacheDefaults(&cfg.Cache)
 	applyPayloadDefaults(&cfg.Payload)
@@ -117,13 +118,9 @@ func applyServerDefaults(cfg *ServerConfig) {
 	applyAPIDefaults(&cfg.API)
 }
 
-// applyIdentityDefaults sets identity store defaults.
-func applyIdentityDefaults(cfg *IdentityStoreConfig) {
-	// Default to memory store (for testing/development)
-	// Production deployments should use sqlite, badger, or postgres
-	if cfg.Type == "" {
-		cfg.Type = "memory"
-	}
+// applyDatabaseDefaults sets control plane database defaults.
+func applyDatabaseDefaults(cfg *store.Config) {
+	cfg.ApplyDefaults()
 }
 
 // applyMetricsDefaults sets metrics defaults.
@@ -500,8 +497,8 @@ func GetDefaultConfig() *Config {
 	cfg := &Config{
 		Logging: LoggingConfig{},
 		Server:  ServerConfig{},
-		Identity: IdentityStoreConfig{
-			Type: "memory", // Default to memory for testing; production should use sqlite/postgres
+		Database: store.Config{
+			Type: store.DatabaseTypeSQLite, // Default to SQLite for single-node
 		},
 		Cache: CacheConfig{
 			Path: "/tmp/dittofs-cache",

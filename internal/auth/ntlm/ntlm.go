@@ -19,7 +19,7 @@ import (
 	"strings"
 	"unicode/utf16"
 
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // =============================================================================
@@ -626,9 +626,9 @@ const (
 //
 // [MS-NLMP] Section 3.3.1
 //
-// This function delegates to identity.ComputeNTHash to avoid code duplication.
+// This function delegates to models.ComputeNTHash to avoid code duplication.
 func ComputeNTHash(password string) [16]byte {
-	return identity.ComputeNTHash(password)
+	return models.ComputeNTHash(password)
 }
 
 // ComputeNTLMv2Hash computes the NTLMv2 response key.

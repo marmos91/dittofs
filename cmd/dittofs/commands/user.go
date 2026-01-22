@@ -2,14 +2,18 @@ package commands
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/config"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"golang.org/x/term"
 )
 
@@ -103,12 +107,12 @@ func (c *UserCommand) loadConfig() (*config.Config, error) {
 	return config.Load(c.configFile)
 }
 
-func (c *UserCommand) saveConfig(cfg *config.Config) error {
-	path := c.configFile
-	if path == "" {
-		path = config.GetDefaultConfigPath()
+func (c *UserCommand) openStore() (store.Store, error) {
+	cfg, err := c.loadConfig()
+	if err != nil {
+		return nil, err
 	}
-	return config.SaveConfig(cfg, path)
+	return store.New(&cfg.Database)
 }
 
 func (c *UserCommand) runAdd(args []string) error {
@@ -116,27 +120,32 @@ func (c *UserCommand) runAdd(args []string) error {
 	uid := fs.Uint("uid", 0, "User ID (auto-generated if not specified)")
 	gid := fs.Uint("gid", 0, "Primary group ID (defaults to UID)")
 	groups := fs.String("groups", "", "Comma-separated list of groups")
+	role := fs.String("role", "user", "User role (user or admin)")
 	if err := c.parseFlags(fs, args); err != nil {
 		return err
 	}
 
 	if fs.NArg() < 1 {
-		return fmt.Errorf("username required\nUsage: dittofs user add <username> [--uid N] [--gid N] [--groups g1,g2]")
+		return fmt.Errorf("username required\nUsage: dittofs user add <username> [--uid N] [--gid N] [--groups g1,g2] [--role user|admin]")
 	}
 
 	username := fs.Arg(0)
 
-	// Load config
-	cfg, err := c.loadConfig()
+	// Open store
+	s, err := c.openStore()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return fmt.Errorf("failed to open store: %w", err)
 	}
 
+	ctx := context.Background()
+
 	// Check if user already exists
-	for _, u := range cfg.Users {
-		if u.Username == username {
-			return fmt.Errorf("user %q already exists", username)
-		}
+	_, err = s.GetUser(ctx, username)
+	if err == nil {
+		return fmt.Errorf("user %q already exists", username)
+	}
+	if err != models.ErrUserNotFound {
+		return fmt.Errorf("failed to check user: %w", err)
 	}
 
 	// Prompt for password
@@ -155,24 +164,27 @@ func (c *UserCommand) runAdd(args []string) error {
 	}
 
 	// Validate password
-	if err := identity.ValidatePassword(password); err != nil {
+	if err := models.ValidatePassword(password); err != nil {
 		return fmt.Errorf("invalid password: %w", err)
 	}
 
 	// Hash password (bcrypt for general auth)
-	hash, err := identity.HashPassword(password)
+	hash, err := models.HashPassword(password)
 	if err != nil {
 		return fmt.Errorf("failed to hash password: %w", err)
 	}
 
 	// Compute NT hash for SMB NTLM authentication
-	ntHash := identity.ComputeNTHash(password)
+	ntHash := models.ComputeNTHash(password)
 	ntHashHex := fmt.Sprintf("%x", ntHash)
 
 	// Generate UID if not specified
 	userUID := uint32(*uid)
 	if userUID == 0 {
-		userUID = c.findNextUID(cfg)
+		userUID, err = c.findNextUID(ctx, s)
+		if err != nil {
+			return fmt.Errorf("failed to find next UID: %w", err)
+		}
 	}
 
 	// Default GID to UID if not specified
@@ -181,34 +193,38 @@ func (c *UserCommand) runAdd(args []string) error {
 		userGID = userUID
 	}
 
-	// Parse groups
-	var userGroups []string
-	if *groups != "" {
-		userGroups = strings.Split(*groups, ",")
-		for i := range userGroups {
-			userGroups[i] = strings.TrimSpace(userGroups[i])
-		}
-	}
-
-	// Create user config
-	newUser := config.UserConfig{
+	// Create user
+	user := &models.User{
+		ID:           uuid.New().String(),
 		Username:     username,
 		PasswordHash: hash,
 		NTHash:       ntHashHex,
 		Enabled:      true,
-		UID:          userUID,
-		GID:          userGID,
-		Groups:       userGroups,
+		Role:         *role,
+		UID:          &userUID,
+		GID:          &userGID,
+		CreatedAt:    time.Now(),
 	}
 
-	cfg.Users = append(cfg.Users, newUser)
-
-	// Save config
-	if err := c.saveConfig(cfg); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+	if _, err := s.CreateUser(ctx, user); err != nil {
+		return fmt.Errorf("failed to create user: %w", err)
 	}
 
-	fmt.Printf("✓ User %q created (UID: %d, GID: %d)\n", username, userUID, userGID)
+	// Add to groups if specified
+	if *groups != "" {
+		groupList := strings.Split(*groups, ",")
+		for _, groupName := range groupList {
+			groupName = strings.TrimSpace(groupName)
+			if groupName == "" {
+				continue
+			}
+			if err := s.AddUserToGroup(ctx, username, groupName); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to add user to group %q: %v\n", groupName, err)
+			}
+		}
+	}
+
+	fmt.Printf("User %q created (UID: %d, GID: %d)\n", username, userUID, userGID)
 	return nil
 }
 
@@ -224,33 +240,21 @@ func (c *UserCommand) runDelete(args []string) error {
 
 	username := fs.Arg(0)
 
-	cfg, err := c.loadConfig()
+	s, err := c.openStore()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return fmt.Errorf("failed to open store: %w", err)
 	}
 
-	// Find and remove user
-	found := false
-	newUsers := make([]config.UserConfig, 0, len(cfg.Users))
-	for _, u := range cfg.Users {
-		if u.Username == username {
-			found = true
-			continue
+	ctx := context.Background()
+
+	if err := s.DeleteUser(ctx, username); err != nil {
+		if err == models.ErrUserNotFound {
+			return fmt.Errorf("user %q not found", username)
 		}
-		newUsers = append(newUsers, u)
+		return fmt.Errorf("failed to delete user: %w", err)
 	}
 
-	if !found {
-		return fmt.Errorf("user %q not found", username)
-	}
-
-	cfg.Users = newUsers
-
-	if err := c.saveConfig(cfg); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
-	}
-
-	fmt.Printf("✓ User %q deleted\n", username)
+	fmt.Printf("User %q deleted\n", username)
 	return nil
 }
 
@@ -260,28 +264,50 @@ func (c *UserCommand) runList(args []string) error {
 		return err
 	}
 
-	cfg, err := c.loadConfig()
+	s, err := c.openStore()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return fmt.Errorf("failed to open store: %w", err)
 	}
 
-	if len(cfg.Users) == 0 {
+	ctx := context.Background()
+
+	users, err := s.ListUsers(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list users: %w", err)
+	}
+
+	if len(users) == 0 {
 		fmt.Println("No users configured")
 		return nil
 	}
 
-	fmt.Printf("%-20s %-8s %-8s %-8s %s\n", "USERNAME", "UID", "GID", "ENABLED", "GROUPS")
-	fmt.Println(strings.Repeat("-", 70))
-	for _, u := range cfg.Users {
+	fmt.Printf("%-20s %-8s %-8s %-8s %-8s %s\n", "USERNAME", "UID", "GID", "ROLE", "ENABLED", "GROUPS")
+	fmt.Println(strings.Repeat("-", 80))
+	for _, u := range users {
 		enabled := "yes"
 		if !u.Enabled {
 			enabled = "no"
 		}
-		groups := strings.Join(u.Groups, ",")
+		uid := "-"
+		if u.UID != nil {
+			uid = fmt.Sprintf("%d", *u.UID)
+		}
+		gid := "-"
+		if u.GID != nil {
+			gid = fmt.Sprintf("%d", *u.GID)
+		}
+
+		// Get user's groups
+		var groupNames []string
+		for _, g := range u.Groups {
+			groupNames = append(groupNames, g.Name)
+		}
+		groups := strings.Join(groupNames, ",")
 		if groups == "" {
 			groups = "-"
 		}
-		fmt.Printf("%-20s %-8d %-8d %-8s %s\n", u.Username, u.UID, u.GID, enabled, groups)
+
+		fmt.Printf("%-20s %-8s %-8s %-8s %-8s %s\n", u.Username, uid, gid, u.Role, enabled, groups)
 	}
 
 	return nil
@@ -299,22 +325,20 @@ func (c *UserCommand) runPasswd(args []string) error {
 
 	username := fs.Arg(0)
 
-	cfg, err := c.loadConfig()
+	s, err := c.openStore()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return fmt.Errorf("failed to open store: %w", err)
 	}
 
-	// Find user
-	userIdx := -1
-	for i, u := range cfg.Users {
-		if u.Username == username {
-			userIdx = i
-			break
+	ctx := context.Background()
+
+	// Get user to verify exists
+	user, err := s.GetUser(ctx, username)
+	if err != nil {
+		if err == models.ErrUserNotFound {
+			return fmt.Errorf("user %q not found", username)
 		}
-	}
-
-	if userIdx == -1 {
-		return fmt.Errorf("user %q not found", username)
+		return fmt.Errorf("failed to get user: %w", err)
 	}
 
 	// Prompt for new password
@@ -332,27 +356,28 @@ func (c *UserCommand) runPasswd(args []string) error {
 		return fmt.Errorf("passwords do not match")
 	}
 
-	if err := identity.ValidatePassword(password); err != nil {
+	if err := models.ValidatePassword(password); err != nil {
 		return fmt.Errorf("invalid password: %w", err)
 	}
 
-	hash, err := identity.HashPassword(password)
+	hash, err := models.HashPassword(password)
 	if err != nil {
 		return fmt.Errorf("failed to hash password: %w", err)
 	}
 
 	// Compute NT hash for SMB NTLM authentication
-	ntHash := identity.ComputeNTHash(password)
+	ntHash := models.ComputeNTHash(password)
 	ntHashHex := fmt.Sprintf("%x", ntHash)
 
-	cfg.Users[userIdx].PasswordHash = hash
-	cfg.Users[userIdx].NTHash = ntHashHex
+	user.PasswordHash = hash
+	user.NTHash = ntHashHex
+	user.MustChangePassword = false
 
-	if err := c.saveConfig(cfg); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+	if err := s.UpdateUser(ctx, user); err != nil {
+		return fmt.Errorf("failed to update password: %w", err)
 	}
 
-	fmt.Printf("✓ Password changed for user %q\n", username)
+	fmt.Printf("Password changed for user %q\n", username)
 	return nil
 }
 
@@ -371,41 +396,49 @@ func (c *UserCommand) runGrant(args []string) error {
 	permission := fs.Arg(2)
 
 	// Validate permission
-	perm := identity.ParseSharePermission(permission)
+	perm := models.ParseSharePermission(permission)
 	if !perm.IsValid() {
 		return fmt.Errorf("invalid permission %q (valid: none, read, read-write, admin)", permission)
 	}
 
-	cfg, err := c.loadConfig()
+	s, err := c.openStore()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return fmt.Errorf("failed to open store: %w", err)
 	}
 
-	// Find user
-	userIdx := -1
-	for i, u := range cfg.Users {
-		if u.Username == username {
-			userIdx = i
-			break
+	ctx := context.Background()
+
+	// Get user to obtain ID
+	user, err := s.GetUser(ctx, username)
+	if err != nil {
+		if err == models.ErrUserNotFound {
+			return fmt.Errorf("user %q not found", username)
 		}
+		return fmt.Errorf("failed to get user: %w", err)
 	}
 
-	if userIdx == -1 {
-		return fmt.Errorf("user %q not found", username)
+	// Get share to obtain ID
+	share, err := s.GetShare(ctx, shareName)
+	if err != nil {
+		if err == models.ErrShareNotFound {
+			return fmt.Errorf("share %q not found", shareName)
+		}
+		return fmt.Errorf("failed to get share: %w", err)
 	}
 
-	// Initialize share permissions map if nil
-	if cfg.Users[userIdx].SharePermissions == nil {
-		cfg.Users[userIdx].SharePermissions = make(map[string]string)
+	// Set permission with correct IDs
+	userPerm := &models.UserSharePermission{
+		UserID:     user.ID,
+		ShareID:    share.ID,
+		ShareName:  share.Name,
+		Permission: permission,
 	}
 
-	cfg.Users[userIdx].SharePermissions[shareName] = permission
-
-	if err := c.saveConfig(cfg); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+	if err := s.SetUserSharePermission(ctx, userPerm); err != nil {
+		return fmt.Errorf("failed to set permission: %w", err)
 	}
 
-	fmt.Printf("✓ Granted %q permission on %q to user %q\n", permission, shareName, username)
+	fmt.Printf("Granted %q permission on %q to user %q\n", permission, shareName, username)
 	return nil
 }
 
@@ -422,39 +455,18 @@ func (c *UserCommand) runRevoke(args []string) error {
 	username := fs.Arg(0)
 	shareName := fs.Arg(1)
 
-	cfg, err := c.loadConfig()
+	s, err := c.openStore()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return fmt.Errorf("failed to open store: %w", err)
 	}
 
-	// Find user
-	userIdx := -1
-	for i, u := range cfg.Users {
-		if u.Username == username {
-			userIdx = i
-			break
-		}
+	ctx := context.Background()
+
+	if err := s.DeleteUserSharePermission(ctx, username, shareName); err != nil {
+		return fmt.Errorf("failed to revoke permission: %w", err)
 	}
 
-	if userIdx == -1 {
-		return fmt.Errorf("user %q not found", username)
-	}
-
-	if cfg.Users[userIdx].SharePermissions == nil {
-		return fmt.Errorf("user %q has no explicit permissions on %q", username, shareName)
-	}
-
-	if _, ok := cfg.Users[userIdx].SharePermissions[shareName]; !ok {
-		return fmt.Errorf("user %q has no explicit permission on %q", username, shareName)
-	}
-
-	delete(cfg.Users[userIdx].SharePermissions, shareName)
-
-	if err := c.saveConfig(cfg); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
-	}
-
-	fmt.Printf("✓ Revoked permission on %q from user %q\n", shareName, username)
+	fmt.Printf("Revoked permission on %q from user %q\n", shareName, username)
 	return nil
 }
 
@@ -470,22 +482,19 @@ func (c *UserCommand) runGroups(args []string) error {
 
 	username := fs.Arg(0)
 
-	cfg, err := c.loadConfig()
+	s, err := c.openStore()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return fmt.Errorf("failed to open store: %w", err)
 	}
 
-	// Find user
-	var user *config.UserConfig
-	for i := range cfg.Users {
-		if cfg.Users[i].Username == username {
-			user = &cfg.Users[i]
-			break
+	ctx := context.Background()
+
+	user, err := s.GetUser(ctx, username)
+	if err != nil {
+		if err == models.ErrUserNotFound {
+			return fmt.Errorf("user %q not found", username)
 		}
-	}
-
-	if user == nil {
-		return fmt.Errorf("user %q not found", username)
+		return fmt.Errorf("failed to get user: %w", err)
 	}
 
 	if len(user.Groups) == 0 {
@@ -495,7 +504,7 @@ func (c *UserCommand) runGroups(args []string) error {
 
 	fmt.Printf("Groups for user %q:\n", username)
 	for _, g := range user.Groups {
-		fmt.Printf("  - %s\n", g)
+		fmt.Printf("  - %s\n", g.Name)
 	}
 
 	return nil
@@ -514,51 +523,24 @@ func (c *UserCommand) runJoin(args []string) error {
 	username := fs.Arg(0)
 	groupName := fs.Arg(1)
 
-	cfg, err := c.loadConfig()
+	s, err := c.openStore()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return fmt.Errorf("failed to open store: %w", err)
 	}
 
-	// Find user
-	userIdx := -1
-	for i, u := range cfg.Users {
-		if u.Username == username {
-			userIdx = i
-			break
+	ctx := context.Background()
+
+	if err := s.AddUserToGroup(ctx, username, groupName); err != nil {
+		if err == models.ErrUserNotFound {
+			return fmt.Errorf("user %q not found", username)
 		}
-	}
-
-	if userIdx == -1 {
-		return fmt.Errorf("user %q not found", username)
-	}
-
-	// Check if group exists
-	groupExists := false
-	for _, g := range cfg.Groups {
-		if g.Name == groupName {
-			groupExists = true
-			break
+		if err == models.ErrGroupNotFound {
+			return fmt.Errorf("group %q not found", groupName)
 		}
+		return fmt.Errorf("failed to add user to group: %w", err)
 	}
 
-	if !groupExists {
-		return fmt.Errorf("group %q not found", groupName)
-	}
-
-	// Check if already a member
-	for _, g := range cfg.Users[userIdx].Groups {
-		if g == groupName {
-			return fmt.Errorf("user %q is already a member of group %q", username, groupName)
-		}
-	}
-
-	cfg.Users[userIdx].Groups = append(cfg.Users[userIdx].Groups, groupName)
-
-	if err := c.saveConfig(cfg); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
-	}
-
-	fmt.Printf("✓ Added user %q to group %q\n", username, groupName)
+	fmt.Printf("Added user %q to group %q\n", username, groupName)
 	return nil
 }
 
@@ -575,57 +557,34 @@ func (c *UserCommand) runLeave(args []string) error {
 	username := fs.Arg(0)
 	groupName := fs.Arg(1)
 
-	cfg, err := c.loadConfig()
+	s, err := c.openStore()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return fmt.Errorf("failed to open store: %w", err)
 	}
 
-	// Find user
-	userIdx := -1
-	for i, u := range cfg.Users {
-		if u.Username == username {
-			userIdx = i
-			break
-		}
+	ctx := context.Background()
+
+	if err := s.RemoveUserFromGroup(ctx, username, groupName); err != nil {
+		return fmt.Errorf("failed to remove user from group: %w", err)
 	}
 
-	if userIdx == -1 {
-		return fmt.Errorf("user %q not found", username)
-	}
-
-	// Find and remove group
-	found := false
-	newGroups := make([]string, 0, len(cfg.Users[userIdx].Groups))
-	for _, g := range cfg.Users[userIdx].Groups {
-		if g == groupName {
-			found = true
-			continue
-		}
-		newGroups = append(newGroups, g)
-	}
-
-	if !found {
-		return fmt.Errorf("user %q is not a member of group %q", username, groupName)
-	}
-
-	cfg.Users[userIdx].Groups = newGroups
-
-	if err := c.saveConfig(cfg); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
-	}
-
-	fmt.Printf("✓ Removed user %q from group %q\n", username, groupName)
+	fmt.Printf("Removed user %q from group %q\n", username, groupName)
 	return nil
 }
 
-func (c *UserCommand) findNextUID(cfg *config.Config) uint32 {
+func (c *UserCommand) findNextUID(ctx context.Context, s store.Store) (uint32, error) {
+	users, err := s.ListUsers(ctx)
+	if err != nil {
+		return 0, err
+	}
+
 	maxUID := uint32(999) // Start from 1000
-	for _, u := range cfg.Users {
-		if u.UID > maxUID {
-			maxUID = u.UID
+	for _, u := range users {
+		if u.UID != nil && *u.UID > maxUID {
+			maxUID = *u.UID
 		}
 	}
-	return maxUID + 1
+	return maxUID + 1, nil
 }
 
 // promptPassword prompts for a password without echoing
