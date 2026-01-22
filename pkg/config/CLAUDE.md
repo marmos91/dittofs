@@ -6,7 +6,7 @@ Configuration parsing and validation - transforms YAML/env vars into typed confi
 
 - `config.go` - Main `Config` struct and component configs
 - `stores.go` - Factory functions creating stores from config
-- `registry.go` - Registry initialization from config
+- `runtime.go` - Control plane runtime initialization from config
 - `defaults.go` - Default values for all configurations
 - `init.go` - `dittofs init` file generation
 

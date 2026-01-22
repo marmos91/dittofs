@@ -5,12 +5,12 @@ Protocol adapters - network servers that expose filesystem via NFS/SMB protocols
 ## Adapter Lifecycle
 
 ```
-Creation → SetRegistry() → Serve() → Stop()
+Creation → SetRuntime() → Serve() → Stop()
                               ↓
                          context.Canceled on graceful shutdown
 ```
 
-- `SetRegistry()`: Called once before `Serve()`, injects shared backend access
+- `SetRuntime()`: Called once before `Serve()`, injects control plane runtime for store access
 - `Serve()`: Blocks until context cancelled or fatal error
 - `Stop()`: Safe to call concurrently, idempotent via `sync.Once`
 
@@ -41,7 +41,7 @@ Similar lifecycle to NFS but with:
 
 ## Common Mistakes
 
-1. **Calling Serve() before SetRegistry()** - nil pointer panic
+1. **Calling Serve() before SetRuntime()** - nil pointer panic
 2. **Not returning context.Canceled** - caller can't distinguish graceful vs error
 3. **Blocking in Stop()** - should trigger shutdown, not wait for it
 4. **Ignoring shutdown timeout** - force close after deadline, don't hang forever
