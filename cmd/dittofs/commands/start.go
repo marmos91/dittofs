@@ -130,86 +130,45 @@ func runStart(cmd *cobra.Command, args []string) error {
 		logger.Info("Profiling disabled")
 	}
 
-	// Initialize metrics FIRST (before creating stores that use metrics)
+	// Initialize metrics (if enabled)
 	metricsResult := config.InitializeMetrics(cfg)
 
-	// Initialize registry with all stores and shares
-	reg, err := config.InitializeRegistry(ctx, cfg)
+	// Initialize control plane store for user management
+	cpStore, err := store.New(&cfg.Database)
 	if err != nil {
-		return fmt.Errorf("failed to initialize registry: %w", err)
-	}
-	logger.Info("Registry initialized",
-		"metadata_stores", reg.CountMetadataStores(),
-		"shares", reg.CountShares())
-
-	// Log share details
-	for _, shareName := range reg.ListShares() {
-		share, _ := reg.GetShare(shareName)
-		logger.Info("Share configured",
-			"name", share.Name,
-			"metadata_store", share.MetadataStore,
-			"read_only", share.ReadOnly)
+		return fmt.Errorf("failed to initialize control plane store: %w", err)
 	}
 
-	// Create DittoServer with registry and shutdown timeout
-	dittoSrv := dittoServer.New(reg, cfg.Server.ShutdownTimeout)
+	// Ensure admin user exists (generates random password on first run)
+	adminPassword, err := cpStore.EnsureAdminUser(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to ensure admin user: %w", err)
+	}
+	if adminPassword != "" {
+		logger.Info("Admin user created", "username", "admin", "password", adminPassword)
+		fmt.Printf("\n*** IMPORTANT: Admin user created with password: %s ***\n", adminPassword)
+		fmt.Println("Please save this password. It will not be shown again.")
+		fmt.Println()
+	}
+
+	// Create DittoServer with shutdown timeout
+	// Note: Registry and adapters are managed via the API
+	dittoSrv := dittoServer.NewAPIOnly(cfg.ShutdownTimeout)
 
 	if metricsResult.Server != nil {
-		logger.Info("Metrics enabled", "port", cfg.Server.Metrics.Port)
+		logger.Info("Metrics enabled", "port", cfg.Metrics.Port)
 		dittoSrv.SetMetricsServer(metricsResult.Server)
 	} else {
 		logger.Info("Metrics collection disabled")
 	}
 
-	// Initialize API server (if enabled - defaults to true)
-	if cfg.Server.API.IsEnabled() {
-		// Initialize control plane store for user management
-		cpStore, err := store.New(&cfg.Database)
-		if err != nil {
-			return fmt.Errorf("failed to initialize control plane store: %w", err)
-		}
-
-		// Ensure admin user exists (generates random password on first run)
-		adminPassword, err := cpStore.EnsureAdminUser(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to ensure admin user: %w", err)
-		}
-		if adminPassword != "" {
-			logger.Info("Admin user created", "username", "admin", "password", adminPassword)
-			fmt.Printf("\n*** IMPORTANT: Admin user created with password: %s ***\n", adminPassword)
-			fmt.Println("Please save this password. It will not be shown again.")
-			fmt.Println()
-		}
-
-		// Set identity store on registry for protocol handlers
-		// GORMStore directly implements models.IdentityStore
-		reg.SetIdentityStore(cpStore)
-
-		// Create API server (JWT service is created internally from config)
-		// Pass nil for runtime - full runtime integration is a future step
-		apiServer, err := api.NewServer(cfg.Server.API, nil, cpStore)
-		if err != nil {
-			return fmt.Errorf("failed to create API server: %w", err)
-		}
-		dittoSrv.SetAPIServer(apiServer)
-		logger.Info("API server enabled", "port", cfg.Server.API.Port)
-	} else {
-		logger.Info("API server disabled")
-	}
-
-	// Create all enabled adapters using the factory
-	adapters, err := config.CreateAdapters(cfg, metricsResult.NFSMetrics)
+	// Create API server (JWT service is created internally from config)
+	apiServer, err := api.NewServer(cfg.ControlPlane, nil, cpStore)
 	if err != nil {
-		return fmt.Errorf("failed to create adapters: %w", err)
+		return fmt.Errorf("failed to create API server: %w", err)
 	}
-
-	// Add all adapters to the server
-	for _, adapter := range adapters {
-		if err := dittoSrv.AddAdapter(adapter); err != nil {
-			return fmt.Errorf("failed to add %s adapter: %w", adapter.Protocol(), err)
-		}
-		logger.Info("Adapter enabled", "protocol", adapter.Protocol(), "port", adapter.Port())
-	}
+	dittoSrv.SetAPIServer(apiServer)
+	logger.Info("API server started", "port", cfg.ControlPlane.Port)
 
 	// Write PID file if specified
 	if pidFile != "" {

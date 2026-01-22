@@ -111,6 +111,28 @@ func New(reg *runtime.Runtime, shutdownTimeout time.Duration) *DittoServer {
 	}
 }
 
+// NewAPIOnly creates a DittoServer that only runs the API server.
+//
+// This is used when stores, shares, and adapters are managed dynamically
+// via the REST API rather than being configured statically at startup.
+//
+// Parameters:
+//   - shutdownTimeout: Maximum time to wait for graceful shutdown (0 = use default)
+//
+// Returns a configured but not yet started DittoServer. Call SetAPIServer()
+// to set the API server, then Serve() to start.
+func NewAPIOnly(shutdownTimeout time.Duration) *DittoServer {
+	if shutdownTimeout == 0 {
+		shutdownTimeout = DefaultShutdownTimeout
+	}
+
+	return &DittoServer{
+		registry:        nil, // No registry - managed via API
+		shutdownTimeout: shutdownTimeout,
+		adapters:        make([]adapter.Adapter, 0),
+	}
+}
+
 // SetMetricsServer sets the metrics HTTP server for the server.
 //
 // The metrics server exposes Prometheus metrics at /metrics endpoint.

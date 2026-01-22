@@ -42,7 +42,7 @@ type Server struct {
 // The server is created in a stopped state. Call Start() to begin serving requests.
 //
 // The JWT service is created internally from the config. The JWT secret must be
-// configured via config.JWT.Secret or the DITTOFS_API_JWT_SECRET environment variable.
+// configured via config.JWT.Secret or the DITTOFS_CONTROLPLANE_SECRET environment variable.
 //
 // Parameters:
 //   - config: Server configuration (port, timeouts, JWT config)

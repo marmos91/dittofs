@@ -6,19 +6,18 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/config"
-	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
-	"github.com/mitchellh/mapstructure"
+	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/spf13/cobra"
 )
 
 var migrateCmd = &cobra.Command{
 	Use:   "migrate",
 	Short: "Run database migrations",
-	Long: `Run database migrations for PostgreSQL metadata stores.
+	Long: `Run database migrations for the control plane database.
 
-This command applies pending database migrations to the configured PostgreSQL
-metadata store. It is required after upgrading DittoFS when schema changes
-have been made.
+This command applies pending database migrations to the configured control plane
+database (SQLite or PostgreSQL). It is required after upgrading DittoFS when
+schema changes have been made.
 
 Examples:
   # Run migrations with default config
@@ -40,44 +39,22 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Find PostgreSQL metadata store configuration
-	var postgresCfg *postgres.PostgresMetadataStoreConfig
-	for name, storeCfg := range cfg.Metadata.Stores {
-		if storeCfg.Type == "postgres" {
-			var pgCfg postgres.PostgresMetadataStoreConfig
-			if err := mapstructure.Decode(storeCfg.Postgres, &pgCfg); err != nil {
-				return fmt.Errorf("invalid postgres config: %w", err)
-			}
-			pgCfg.ApplyDefaults()
-			postgresCfg = &pgCfg
-			logger.Info("Found PostgreSQL metadata store", "name", name)
-			break
-		}
-	}
+	logger.Info("Running database migrations", "type", cfg.Database.Type)
 
-	if postgresCfg == nil {
-		return fmt.Errorf("no PostgreSQL metadata store configured\n\n" +
-			"To use migrations, configure a PostgreSQL metadata store in your config:\n\n" +
-			"metadata:\n" +
-			"  stores:\n" +
-			"    postgres:\n" +
-			"      type: postgres\n" +
-			"      postgres:\n" +
-			"        host: localhost\n" +
-			"        port: 5432\n" +
-			"        database: dittofs\n" +
-			"        user: postgres\n" +
-			"        password: secret")
-	}
-
-	// Run migrations
+	// Create control plane store (this triggers auto-migration)
 	ctx := context.Background()
-	fmt.Println("Running PostgreSQL database migrations...")
-
-	if err := postgres.RunMigrations(ctx, postgresCfg); err != nil {
+	cpStore, err := store.New(&cfg.Database)
+	if err != nil {
 		return fmt.Errorf("migration failed: %w", err)
 	}
+	defer func() { _ = cpStore.Close() }()
 
-	fmt.Println("Migrations completed successfully")
+	// Verify the migration worked by checking if we can query users
+	_, err = cpStore.ListUsers(ctx)
+	if err != nil {
+		return fmt.Errorf("migration verification failed: %w", err)
+	}
+
+	fmt.Printf("Migrations completed successfully (database type: %s)\n", cfg.Database.Type)
 	return nil
 }

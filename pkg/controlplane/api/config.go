@@ -8,20 +8,14 @@ import (
 )
 
 // Environment variable for JWT secret
-const EnvJWTSecret = "DITTOFS_API_JWT_SECRET"
+const EnvJWTSecret = "DITTOFS_CONTROLPLANE_SECRET"
 
 // APIConfig configures the REST API HTTP server.
 //
 // The API server provides health check endpoints, authentication endpoints,
-// and user management APIs.
-//
-// When Enabled is false, no API server is started (zero overhead).
+// and user management APIs. The API is always enabled as it is required for
+// managing shares, users, and other dynamic configuration.
 type APIConfig struct {
-	// Enabled controls whether the API server is started.
-	// Default: true (API is enabled by default)
-	// Use a pointer to distinguish "not set" from "explicitly false"
-	Enabled *bool `mapstructure:"enabled" yaml:"enabled"`
-
 	// Port is the HTTP port for the API endpoints.
 	// Default: 8080
 	Port int `mapstructure:"port" validate:"omitempty,min=1,max=65535" yaml:"port"`
@@ -49,7 +43,7 @@ type APIConfig struct {
 type JWTConfig struct {
 	// Secret is the HMAC signing key for JWT tokens.
 	// Must be at least 32 characters long.
-	// Can also be set via DITTOFS_API_JWT_SECRET environment variable.
+	// Can also be set via DITTOFS_CONTROLPLANE_SECRET environment variable.
 	// Environment variable takes precedence over config file.
 	Secret string `mapstructure:"secret" yaml:"secret"`
 
@@ -60,15 +54,6 @@ type JWTConfig struct {
 	// RefreshTokenDuration is the lifetime of refresh tokens.
 	// Default: 168h (7 days)
 	RefreshTokenDuration time.Duration `mapstructure:"refresh_token_duration" yaml:"refresh_token_duration"`
-}
-
-// IsEnabled returns whether the API server is enabled.
-// Defaults to true if not explicitly set.
-func (c *APIConfig) IsEnabled() bool {
-	if c.Enabled == nil {
-		return true // Default: enabled
-	}
-	return *c.Enabled
 }
 
 // applyDefaults fills in zero values with sensible defaults.

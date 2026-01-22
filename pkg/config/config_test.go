@@ -12,7 +12,7 @@ func TestLoad_DefaultConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
 
-	// Write minimal config with new payload structure
+	// Write minimal config with new structure
 	configContent := `
 logging:
   level: "INFO"
@@ -21,24 +21,13 @@ cache:
   path: "` + tmpDir + `/cache"
   size: 100Mi
 
-payload:
-  stores:
-    default:
-      type: "memory"
+database:
+  type: sqlite
 
-metadata:
-  stores:
-    default:
-      type: "memory"
-
-shares:
-  - name: "/export"
-    metadata: "default"
-    payload: "default"
-
-adapters:
-  nfs:
-    enabled: true
+controlplane:
+  port: 8080
+  jwt:
+    secret: "test-secret-key-for-testing-minimum-32-chars"
 `
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("Failed to write config file: %v", err)
@@ -57,15 +46,13 @@ adapters:
 	if cfg.Logging.Output != "stdout" {
 		t.Errorf("Expected default output 'stdout', got %q", cfg.Logging.Output)
 	}
-	if cfg.Server.ShutdownTimeout != 30*time.Second {
-		t.Errorf("Expected default shutdown_timeout 30s, got %v", cfg.Server.ShutdownTimeout)
+	if cfg.ShutdownTimeout != 30*time.Second {
+		t.Errorf("Expected default shutdown_timeout 30s, got %v", cfg.ShutdownTimeout)
 	}
-	if cfg.Adapters.NFS.Port != 2049 {
-		t.Errorf("Expected default NFS port 2049, got %d", cfg.Adapters.NFS.Port)
+	if cfg.ControlPlane.Port != 8080 {
+		t.Errorf("Expected control plane port 8080, got %d", cfg.ControlPlane.Port)
 	}
 }
-
-// TestLoad_WithOverrides removed - we only support environment variable overrides now
 
 func TestLoad_NoConfigFile(t *testing.T) {
 	// Loading with no config file returns a valid default config.
@@ -83,14 +70,9 @@ func TestLoad_NoConfigFile(t *testing.T) {
 		t.Fatal("Expected default config to be returned")
 	}
 
-	// Verify default config has at least one share
-	if len(cfg.Shares) == 0 {
-		t.Error("Expected default config to have at least one share")
-	}
-
-	// Verify NFS adapter is enabled by default
-	if !cfg.Adapters.NFS.Enabled {
-		t.Error("Expected NFS adapter to be enabled in default config")
+	// Verify default API port
+	if cfg.ControlPlane.Port != 8080 {
+		t.Errorf("Expected default API port 8080, got %d", cfg.ControlPlane.Port)
 	}
 }
 
@@ -128,20 +110,14 @@ format = "json"
 path = "` + tmpDir + `/cache"
 size = "100Mi"
 
-[payload.stores.default]
-type = "memory"
+[database]
+type = "sqlite"
 
-[metadata.stores.default]
-type = "memory"
+[api]
+port = 8080
 
-[[shares]]
-name = "/export"
-metadata = "default"
-payload = "default"
-
-[adapters.nfs]
-enabled = true
-port = 2049
+[api.jwt]
+secret = "test-secret-key-for-testing-minimum-32-chars"
 `
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("Failed to write config file: %v", err)
@@ -173,27 +149,14 @@ func TestGetDefaultConfig(t *testing.T) {
 	if cfg.Logging.Output != "stdout" {
 		t.Errorf("Expected default log output 'stdout', got %q", cfg.Logging.Output)
 	}
-	if cfg.Server.ShutdownTimeout != 30*time.Second {
-		t.Errorf("Expected default shutdown timeout 30s, got %v", cfg.Server.ShutdownTimeout)
+	if cfg.ShutdownTimeout != 30*time.Second {
+		t.Errorf("Expected default shutdown timeout 30s, got %v", cfg.ShutdownTimeout)
 	}
-	// Check stores are configured
-	if len(cfg.Payload.Stores) == 0 {
-		t.Error("Expected at least one payload store")
+	if cfg.ControlPlane.Port != 8080 {
+		t.Errorf("Expected default API port 8080, got %d", cfg.ControlPlane.Port)
 	}
-	if len(cfg.Metadata.Stores) == 0 {
-		t.Error("Expected at least one metadata store")
-	}
-	if len(cfg.Shares) != 1 {
-		t.Errorf("Expected 1 default share, got %d", len(cfg.Shares))
-	}
-	if cfg.Shares[0].Name != "/export" {
-		t.Errorf("Expected default share name '/export', got %q", cfg.Shares[0].Name)
-	}
-	if !cfg.Adapters.NFS.Enabled {
-		t.Error("Expected NFS adapter enabled by default")
-	}
-	if cfg.Adapters.NFS.Port != 2049 {
-		t.Errorf("Expected default NFS port 2049, got %d", cfg.Adapters.NFS.Port)
+	if cfg.Admin.Username != "admin" {
+		t.Errorf("Expected default admin username 'admin', got %q", cfg.Admin.Username)
 	}
 }
 
@@ -230,10 +193,10 @@ func TestGetConfigDir(t *testing.T) {
 func TestLoad_EnvironmentVariables(t *testing.T) {
 	// Set environment variables
 	_ = os.Setenv("DITTOFS_LOGGING_LEVEL", "ERROR")
-	_ = os.Setenv("DITTOFS_ADAPTERS_NFS_PORT", "5049")
+	_ = os.Setenv("DITTOFS_CONTROLPLANE_PORT", "9090")
 	defer func() {
 		_ = os.Unsetenv("DITTOFS_LOGGING_LEVEL")
-		_ = os.Unsetenv("DITTOFS_ADAPTERS_NFS_PORT")
+		_ = os.Unsetenv("DITTOFS_CONTROLPLANE_PORT")
 	}()
 
 	// Create minimal config file
@@ -248,25 +211,13 @@ cache:
   path: "` + tmpDir + `/cache"
   size: 100Mi
 
-payload:
-  stores:
-    default:
-      type: "memory"
+database:
+  type: sqlite
 
-metadata:
-  stores:
-    default:
-      type: "memory"
-
-shares:
-  - name: "/export"
-    metadata: "default"
-    payload: "default"
-
-adapters:
-  nfs:
-    enabled: true
-    port: 2049
+controlplane:
+  port: 8080
+  jwt:
+    secret: "test-secret-key-for-testing-minimum-32-chars"
 `
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("Failed to write config file: %v", err)
@@ -281,7 +232,7 @@ adapters:
 	if cfg.Logging.Level != "ERROR" {
 		t.Errorf("Expected level 'ERROR' from env var, got %q", cfg.Logging.Level)
 	}
-	if cfg.Adapters.NFS.Port != 5049 {
-		t.Errorf("Expected port 5049 from env var, got %d", cfg.Adapters.NFS.Port)
+	if cfg.ControlPlane.Port != 9090 {
+		t.Errorf("Expected port 9090 from env var, got %d", cfg.ControlPlane.Port)
 	}
 }

@@ -57,6 +57,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("  1. Edit the configuration file to customize your setup")
 	fmt.Println("  2. Start the server with: dittofs start")
 	fmt.Printf("  3. Or specify custom config: dittofs start --config %s\n", configPath)
+	fmt.Println("\nSecurity note:")
+	fmt.Println("  A random JWT secret has been generated for development use.")
+	fmt.Println("  For production, generate a secure secret and use an environment variable:")
+	fmt.Println("    export DITTOFS_CONTROLPLANE_SECRET=$(openssl rand -hex 32)")
 
 	return nil
 }

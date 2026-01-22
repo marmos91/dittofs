@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -229,7 +230,7 @@ func extractTimestamp(line string) time.Time {
 	// Try to find JSON "time" field (simple parsing)
 	// Format: {"time":"2024-01-15T10:30:45.123Z",...}
 	const timeKey = `"time":"`
-	if idx := indexOf(line, timeKey); idx >= 0 {
+	if idx := strings.Index(line, timeKey); idx >= 0 {
 		start := idx + len(timeKey)
 		end := start + 24 // RFC3339 with milliseconds
 		if end <= len(line) {
@@ -246,14 +247,4 @@ func extractTimestamp(line string) time.Time {
 	}
 
 	return time.Time{}
-}
-
-// indexOf returns the index of substr in s, or -1 if not found.
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }

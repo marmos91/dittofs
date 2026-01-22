@@ -9,8 +9,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var editConfigPath string
-
 var editCmd = &cobra.Command{
 	Use:   "edit",
 	Short: "Open configuration in editor",
@@ -27,12 +25,9 @@ Examples:
 	RunE: runConfigEdit,
 }
 
-func init() {
-	editCmd.Flags().StringVar(&editConfigPath, "config", "", "Path to config file")
-}
-
 func runConfigEdit(cmd *cobra.Command, args []string) error {
-	configPath := editConfigPath
+	// Get config path from parent's persistent flag
+	configPath, _ := cmd.Flags().GetString("config")
 	if configPath == "" {
 		configPath = config.GetDefaultConfigPath()
 	}

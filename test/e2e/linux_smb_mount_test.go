@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -29,8 +29,8 @@ import (
 // It verifies that the SMB2 protocol implementation works correctly with mount.cifs.
 func TestLinuxSMBMount(t *testing.T) {
 	// Skip on non-Linux/macOS systems where Docker might not be available
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skipf("Skipping Linux SMB mount test on %s", runtime.GOOS)
+	if goruntime.GOOS != "darwin" && goruntime.GOOS != "linux" {
+		t.Skipf("Skipping Linux SMB mount test on %s", goruntime.GOOS)
 	}
 
 	// Check if Docker is available

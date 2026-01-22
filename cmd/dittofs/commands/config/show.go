@@ -8,10 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	showConfigPath string
-	showOutput     string
-)
+var showOutput string
 
 var showCmd = &cobra.Command{
 	Use:   "show",
@@ -33,13 +30,15 @@ Examples:
 }
 
 func init() {
-	showCmd.Flags().StringVar(&showConfigPath, "config", "", "Path to config file")
 	showCmd.Flags().StringVarP(&showOutput, "output", "o", "yaml", "Output format (yaml|json)")
 }
 
 func runConfigShow(cmd *cobra.Command, args []string) error {
+	// Get config path from parent's persistent flag
+	configPath, _ := cmd.Flags().GetString("config")
+
 	// Load configuration
-	cfg, err := config.MustLoad(showConfigPath)
+	cfg, err := config.MustLoad(configPath)
 	if err != nil {
 		return err
 	}

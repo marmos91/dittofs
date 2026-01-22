@@ -39,35 +39,14 @@ func Validate(cfg *Config) error {
 
 // validateCustomRules performs custom validation beyond struct tags.
 func validateCustomRules(cfg *Config) error {
-	// Validate at least one share exists
-	if len(cfg.Shares) == 0 {
-		return fmt.Errorf("shares: at least one share must be configured")
-	}
-
-	// Validate share names are unique
-	names := make(map[string]bool)
-	for i, share := range cfg.Shares {
-		if names[share.Name] {
-			return fmt.Errorf("shares[%d]: duplicate share name %q", i, share.Name)
-		}
-		names[share.Name] = true
-	}
-
-	// Validate at least one adapter is enabled
-	if !cfg.Adapters.NFS.Enabled && !cfg.Adapters.SMB.Enabled {
-		return fmt.Errorf("adapters: at least one adapter must be enabled")
-	}
-
-	// Validate dump_restricted logic for each share
-	for i, share := range cfg.Shares {
-		if share.DumpRestricted && len(share.DumpAllowedClients) == 0 {
-			return fmt.Errorf("shares[%d]: dump_restricted is true but dump_allowed_clients is empty", i)
-		}
-	}
-
 	// Validate telemetry configuration
 	if err := validateTelemetry(&cfg.Telemetry); err != nil {
 		return err
+	}
+
+	// Validate cache path is set
+	if cfg.Cache.Path == "" {
+		return fmt.Errorf("cache: path is required")
 	}
 
 	return nil
