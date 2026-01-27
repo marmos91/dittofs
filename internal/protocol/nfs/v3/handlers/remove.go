@@ -223,10 +223,11 @@ func (h *Handler) Remove(
 	// Step 2: Get metadata and content services from registry
 	// ========================================================================
 
-	metaSvc := h.Registry.GetMetadataService()
-
-	// Get content service for this share
-	payloadSvc := h.Registry.GetBlockService()
+	metaSvc, payloadSvc, err := getServices(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "REMOVE failed: service not initialized", "client", clientIP, "error", err)
+		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 

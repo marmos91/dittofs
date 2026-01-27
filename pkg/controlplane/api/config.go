@@ -7,8 +7,8 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// Environment variable for JWT secret
-const EnvJWTSecret = "DITTOFS_CONTROLPLANE_SECRET"
+// EnvControlPlaneSecret is the name of the environment variable used for the JWT signing secret.
+const EnvControlPlaneSecret = "DITTOFS_CONTROLPLANE_SECRET"
 
 // APIConfig configures the REST API HTTP server.
 //
@@ -83,11 +83,11 @@ func (c *APIConfig) applyDefaults() {
 // Returns empty string if neither env var nor config secret is set.
 // Logs a warning if the environment variable overrides a config file value.
 func (c *APIConfig) GetJWTSecret() string {
-	envSecret := os.Getenv(EnvJWTSecret)
+	envSecret := os.Getenv(EnvControlPlaneSecret)
 	if envSecret != "" {
 		if c.JWT.Secret != "" && c.JWT.Secret != envSecret {
 			logger.Warn("JWT secret from environment variable overrides config file value",
-				"env_var", EnvJWTSecret)
+				"env_var", EnvControlPlaneSecret)
 		}
 		return envSecret
 	}

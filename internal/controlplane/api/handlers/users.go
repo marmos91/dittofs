@@ -19,7 +19,8 @@ type UserHandler struct {
 	jwtService *auth.JWTService
 }
 
-// NewUserHandler creates a new UserHandler.
+// NewUserHandler creates a new UserHandler. jwtService is required for generating
+// new tokens after password changes to ensure users receive fresh credentials.
 func NewUserHandler(store store.Store, jwtService *auth.JWTService) *UserHandler {
 	return &UserHandler{store: store, jwtService: jwtService}
 }

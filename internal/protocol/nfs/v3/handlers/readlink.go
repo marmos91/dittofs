@@ -258,7 +258,12 @@ func (h *Handler) ReadLink(
 	// - Handling any I/O errors
 	// - Respecting context cancellation
 
-	metaSvc := h.Registry.GetMetadataService()
+	metaSvc, svcErr := getMetadataService(h.Registry)
+	if svcErr != nil {
+		logger.ErrorCtx(ctx.Context, "READLINK failed: metadata service not initialized", "client", clientIP, "error", svcErr)
+		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
+
 	target, file, err := metaSvc.ReadSymlink(authCtx, fileHandle)
 	if err != nil {
 		// Check if error is due to context cancellation

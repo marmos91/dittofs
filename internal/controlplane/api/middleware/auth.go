@@ -129,7 +129,7 @@ func RequirePasswordChange(allowedPaths ...string) func(http.Handler) http.Handl
 
 			// Block if user must change password
 			if claims.MustChangePassword {
-				http.Error(w, "Password change required. Use 'dittofsctl user change-password' to change your password.", http.StatusForbidden)
+				http.Error(w, "Password change required. Please change your password before proceeding.", http.StatusForbidden)
 				return
 			}
 

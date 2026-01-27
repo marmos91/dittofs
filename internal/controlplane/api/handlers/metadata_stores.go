@@ -7,18 +7,21 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
 // MetadataStoreHandler handles metadata store configuration API endpoints.
 type MetadataStoreHandler struct {
-	store store.Store
+	store   store.Store
+	runtime *runtime.Runtime
 }
 
 // NewMetadataStoreHandler creates a new MetadataStoreHandler.
-func NewMetadataStoreHandler(store store.Store) *MetadataStoreHandler {
-	return &MetadataStoreHandler{store: store}
+func NewMetadataStoreHandler(store store.Store, rt *runtime.Runtime) *MetadataStoreHandler {
+	return &MetadataStoreHandler{store: store, runtime: rt}
 }
 
 // CreateMetadataStoreRequest is the request body for POST /api/v1/metadata-stores.
@@ -45,6 +48,7 @@ type MetadataStoreResponse struct {
 
 // Create handles POST /api/v1/metadata-stores.
 // Creates a new metadata store configuration (admin only).
+// Also creates the actual metadata store instance and registers it with the runtime.
 func (h *MetadataStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req CreateMetadataStoreRequest
 	if !decodeJSONBody(w, r, &req) {
@@ -60,7 +64,7 @@ func (h *MetadataStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	store := &models.MetadataStoreConfig{
+	storeCfg := &models.MetadataStoreConfig{
 		ID:        uuid.New().String(),
 		Name:      req.Name,
 		Type:      req.Type,
@@ -68,7 +72,7 @@ func (h *MetadataStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	}
 
-	if _, err := h.store.CreateMetadataStore(r.Context(), store); err != nil {
+	if _, err := h.store.CreateMetadataStore(r.Context(), storeCfg); err != nil {
 		if errors.Is(err, models.ErrDuplicateStore) {
 			Conflict(w, "Metadata store already exists")
 			return
@@ -77,7 +81,25 @@ func (h *MetadataStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSONCreated(w, metadataStoreToResponse(store))
+	// Create the actual metadata store instance and register with runtime
+	if h.runtime != nil {
+		metaStore, err := runtime.CreateMetadataStoreFromConfig(r.Context(), storeCfg.Type, storeCfg)
+		if err != nil {
+			// Config saved but store creation failed - log warning
+			// The store will be created on next server restart
+			logger.Warn("Metadata store config saved but failed to create instance. The store will be created on next server restart.",
+				"name", req.Name, "type", req.Type, "error", err)
+		} else {
+			if err := h.runtime.RegisterMetadataStore(req.Name, metaStore); err != nil {
+				logger.Warn("Metadata store created but failed to register with runtime",
+					"name", req.Name, "error", err)
+			} else {
+				logger.Info("Metadata store created and registered", "name", req.Name, "type", req.Type)
+			}
+		}
+	}
+
+	WriteJSONCreated(w, metadataStoreToResponse(storeCfg))
 }
 
 // List handles GET /api/v1/metadata-stores.

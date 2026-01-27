@@ -37,21 +37,13 @@ jobs:
       - name: Install NFS client utilities
         run: sudo apt-get update && sudo apt-get install -y nfs-common
 
-      - name: Build DittoFS
-        run: nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go
-
-      - name: Start DittoFS (Memory)
+      - name: Build DittoFS binaries
         run: |
-          ./dittofs start --config test/posix/configs/config-memory.yaml &
-          sleep 3
-          nc -zv localhost 12049 || (echo "DittoFS failed to start"; exit 1)
+          nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go
+          nix develop .#ci --command go build -o dittofsctl cmd/dittofsctl/main.go
 
-      - name: Mount NFS share
-        run: |
-          sudo mkdir -p $DITTOFS_MOUNT
-          sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,nolock,actimeo=0 \
-            localhost:/export $DITTOFS_MOUNT
-          mount | grep dittofs-test
+      - name: Setup DittoFS (Memory)
+        run: sudo -E ./test/posix/setup-posix.sh memory
 
       - name: Run POSIX tests
         run: |
@@ -84,9 +76,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: |
-          sudo umount $DITTOFS_MOUNT || true
-          pkill dittofs || true
+        run: sudo ./test/posix/teardown-posix.sh || true
 
       - name: Upload results
         if: always()
@@ -114,21 +104,13 @@ jobs:
       - name: Install NFS client utilities
         run: sudo apt-get update && sudo apt-get install -y nfs-common
 
-      - name: Build DittoFS
-        run: nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go
-
-      - name: Start DittoFS (BadgerDB)
+      - name: Build DittoFS binaries
         run: |
-          ./dittofs start --config test/posix/configs/config-badger.yaml &
-          sleep 3
-          nc -zv localhost 12049 || (echo "DittoFS failed to start"; exit 1)
+          nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go
+          nix develop .#ci --command go build -o dittofsctl cmd/dittofsctl/main.go
 
-      - name: Mount NFS share
-        run: |
-          sudo mkdir -p $DITTOFS_MOUNT
-          sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,nolock,actimeo=0 \
-            localhost:/export $DITTOFS_MOUNT
-          mount | grep dittofs-test
+      - name: Setup DittoFS (BadgerDB)
+        run: sudo -E ./test/posix/setup-posix.sh badger
 
       - name: Run POSIX tests
         run: |
@@ -160,10 +142,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: |
-          sudo umount $DITTOFS_MOUNT || true
-          pkill dittofs || true
-          rm -rf /tmp/dittofs-metadata-badger /tmp/dittofs-content-badger || true
+        run: sudo ./test/posix/teardown-posix.sh || true
 
       - name: Upload results
         if: always()
@@ -206,21 +185,13 @@ jobs:
       - name: Install NFS client utilities
         run: sudo apt-get update && sudo apt-get install -y nfs-common
 
-      - name: Build DittoFS
-        run: nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go
-
-      - name: Start DittoFS (PostgreSQL)
+      - name: Build DittoFS binaries
         run: |
-          ./dittofs start --config test/posix/configs/config-postgres.yaml &
-          sleep 5
-          nc -zv localhost 12049 || (echo "DittoFS failed to start"; exit 1)
+          nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go
+          nix develop .#ci --command go build -o dittofsctl cmd/dittofsctl/main.go
 
-      - name: Mount NFS share
-        run: |
-          sudo mkdir -p $DITTOFS_MOUNT
-          sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,nolock,actimeo=0 \
-            localhost:/export $DITTOFS_MOUNT
-          mount | grep dittofs-test
+      - name: Setup DittoFS (PostgreSQL)
+        run: sudo -E ./test/posix/setup-posix.sh postgres
 
       - name: Run POSIX tests
         run: |
@@ -252,9 +223,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: |
-          sudo umount $DITTOFS_MOUNT || true
-          pkill dittofs || true
+        run: sudo ./test/posix/teardown-posix.sh || true
 
       - name: Upload results
         if: always()

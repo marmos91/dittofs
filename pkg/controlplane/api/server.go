@@ -56,7 +56,7 @@ func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store) (*Ser
 	// Get JWT secret from config (prefers env var)
 	jwtSecret := config.GetJWTSecret()
 	if len(jwtSecret) < 32 {
-		return nil, fmt.Errorf("JWT secret must be at least 32 characters; set via %s env var or config", EnvJWTSecret)
+		return nil, fmt.Errorf("JWT secret must be at least 32 characters; set via %s env var or config", EnvControlPlaneSecret)
 	}
 
 	// Create JWT service internally

@@ -162,6 +162,12 @@ configure_via_api() {
         return 1
     }
 
+    # Change password (required for new admin user)
+    log_info "Changing admin password (first login requirement)..."
+    "$DITTOFSCTL_BIN" user change-password --current "$admin_password" --new "$TEST_PASSWORD" 2>/dev/null || {
+        log_info "Password already changed or change-password not required"
+    }
+
     # Create metadata store based on config type
     log_info "Creating metadata store..."
     case "$CONFIG_TYPE" in
@@ -199,11 +205,22 @@ configure_via_api() {
 
     # Create share
     log_info "Creating share..."
-    "$DITTOFSCTL_BIN" share create --name /export --metadata default --content default
+    "$DITTOFSCTL_BIN" share create --name /export --metadata default --payload default
 
     # Enable NFS adapter
     log_info "Enabling NFS adapter..."
-    "$DITTOFSCTL_BIN" adapter update nfs --enabled true --port $NFS_PORT
+    "$DITTOFSCTL_BIN" adapter enable nfs --port $NFS_PORT
+
+    # Wait for NFS adapter to start and register shares
+    log_info "Waiting for NFS adapter to be ready..."
+    sleep 3
+
+    # Verify NFS port is listening
+    if ! nc -zv localhost $NFS_PORT 2>&1; then
+        log_error "NFS adapter failed to start on port $NFS_PORT"
+        cat /tmp/dittofs-posix-server.log | tail -50
+        return 1
+    fi
 
     log_info "API configuration complete"
 }

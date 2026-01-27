@@ -146,7 +146,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			r.Route("/metadata-stores", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
 
-				metadataStoreHandler := handlers.NewMetadataStoreHandler(cpStore)
+				metadataStoreHandler := handlers.NewMetadataStoreHandler(cpStore, rt)
 				r.Post("/", metadataStoreHandler.Create)
 				r.Get("/", metadataStoreHandler.List)
 				r.Get("/{name}", metadataStoreHandler.Get)

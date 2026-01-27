@@ -126,11 +126,17 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// Add share to runtime if runtime is available
 	if h.runtime != nil {
-		// Get the metadata store name by ID
-		metaStore, err := h.store.GetMetadataStoreByID(r.Context(), req.MetadataStoreID)
+		// Get the metadata store config - try by name first, then by ID
+		// (users can pass either the store name or its UUID)
+		metaStore, err := h.store.GetMetadataStore(r.Context(), req.MetadataStoreID)
 		if err != nil {
-			// Share created in DB but failed to load - log but don't fail the request
+			metaStore, err = h.store.GetMetadataStoreByID(r.Context(), req.MetadataStoreID)
+		}
+		if err != nil {
+			// Share created in DB but failed to load - log warning
 			// The share can be loaded on next server restart
+			logger.Warn("Share created but metadata store not found for runtime registration",
+				"share", req.Name, "metadata_store_id", req.MetadataStoreID, "error", err)
 			WriteJSONCreated(w, shareToResponse(share))
 			return
 		}

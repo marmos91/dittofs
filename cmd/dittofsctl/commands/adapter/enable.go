@@ -3,7 +3,6 @@ package adapter
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/marmos91/dittofs/cmd/dittofsctl/cmdutil"
 	"github.com/marmos91/dittofs/pkg/apiclient"
@@ -56,7 +55,7 @@ func runEnable(cmd *cobra.Command, args []string) error {
 	adapter, err := client.UpdateAdapter(adapterType, updateReq)
 	if err != nil {
 		// If adapter doesn't exist, create it
-		if strings.Contains(err.Error(), "404") {
+		if apiErr, ok := err.(*apiclient.APIError); ok && apiErr.IsNotFound() {
 			createReq := &apiclient.CreateAdapterRequest{
 				Type:    adapterType,
 				Enabled: &enabled,

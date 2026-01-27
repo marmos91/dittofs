@@ -217,7 +217,11 @@ func (h *Handler) Link(
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrInval}}, nil
 	}
 
-	metaSvc := h.Registry.GetMetadataService()
+	metaSvc, svcErr := getMetadataService(h.Registry)
+	if svcErr != nil {
+		logger.ErrorCtx(ctx.Context, "LINK failed: metadata service not initialized", "client", clientIP, "error", svcErr)
+		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 	logger.DebugCtx(ctx.Context, "LINK", "share", ctx.Share, "name", req.Name)
@@ -312,7 +316,6 @@ func (h *Handler) Link(
 	// Step 9: Check if name already exists in target directory using Lookup
 	// ========================================================================
 
-	metaSvc = h.Registry.GetMetadataService()
 	_, err = metaSvc.Lookup(authCtx, dirHandle, req.Name)
 	if err == nil {
 		// No error means file exists

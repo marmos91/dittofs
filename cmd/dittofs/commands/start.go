@@ -181,6 +181,20 @@ func runStart(cmd *cobra.Command, args []string) error {
 		"metadata_stores", rt.CountMetadataStores(),
 		"shares", rt.CountShares())
 
+	// Store cache config for lazy PayloadService initialization
+	// The PayloadService is created lazily when the first payload store is added via API
+	rt.SetCacheConfig(&runtime.CacheConfig{
+		Path: cfg.Cache.Path,
+		Size: uint64(cfg.Cache.Size),
+	})
+	logger.Info("Cache configuration stored", "path", cfg.Cache.Path, "size", cfg.Cache.Size)
+
+	// If payload stores already exist in DB, create the PayloadService now
+	if err := rt.EnsurePayloadService(ctx); err != nil {
+		// Don't fail if no payload stores configured - it will be created when first one is added
+		logger.Info("PayloadService not initialized (will be created when first payload store is added)", "reason", err)
+	}
+
 	// Configure runtime
 	rt.SetShutdownTimeout(cfg.ShutdownTimeout)
 	rt.SetAdapterFactory(createAdapterFactory())

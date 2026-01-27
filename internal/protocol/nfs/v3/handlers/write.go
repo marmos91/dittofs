@@ -298,8 +298,11 @@ func (h *Handler) Write(
 	// Step 2: Get metadata and content services from registry
 	// ========================================================================
 
-	metaSvc := h.Registry.GetMetadataService()
-	payloadSvc := h.Registry.GetBlockService()
+	metaSvc, payloadSvc, err := getServices(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "WRITE failed: service not initialized", "client", clientIP, "error", err)
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	fileHandle := metadata.FileHandle(req.Handle)
 

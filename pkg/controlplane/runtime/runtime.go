@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -55,6 +56,15 @@ type AuxiliaryServer interface {
 // This allows Runtime to manage adapters without importing the adapter package.
 type AdapterFactory func(cfg *models.AdapterConfig) (ProtocolAdapter, error)
 
+// CacheConfig contains cache configuration for the runtime.
+// This is a minimal config struct to avoid import cycles with pkg/config.
+type CacheConfig struct {
+	// Path is the directory for the cache WAL file (e.g., /var/lib/dittofs/cache)
+	Path string
+	// Size is the maximum cache size in bytes
+	Size uint64
+}
+
 // adapterEntry holds adapter state for lifecycle management.
 type adapterEntry struct {
 	adapter ProtocolAdapter
@@ -80,7 +90,8 @@ type adapterEntry struct {
 //
 // Content Model:
 // All content operations go through the PayloadService which includes
-// caching and transfer management.
+// caching and transfer management. The PayloadService is created lazily
+// when the first share that uses a payload store is created.
 type Runtime struct {
 	mu              sync.RWMutex
 	metadata        map[string]metadata.MetadataStore // Named metadata store instances
@@ -89,6 +100,10 @@ type Runtime struct {
 	store           store.Store                       // Persistent configuration store
 	metadataService *metadata.MetadataService         // High-level metadata operations
 	payloadService  *payload.PayloadService           // High-level content operations
+	cacheInstance   *cache.Cache                      // WAL-backed cache for content operations
+
+	// Cache configuration (set at startup, used for lazy PayloadService creation)
+	cacheConfig *CacheConfig
 
 	// Adapter management
 	adaptersMu     sync.RWMutex
@@ -279,6 +294,38 @@ func (r *Runtime) SetPayloadService(ps *payload.PayloadService) {
 	r.payloadService = ps
 }
 
+// SetCacheConfig stores cache configuration for lazy initialization.
+// The cache and PayloadService are not created until the first share is added.
+// This saves memory when no shares are configured.
+func (r *Runtime) SetCacheConfig(cfg *CacheConfig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cacheConfig = cfg
+}
+
+// GetCacheConfig returns the cache configuration.
+func (r *Runtime) GetCacheConfig() *CacheConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.cacheConfig
+}
+
+// SetCache stores the cache instance in the runtime.
+// This is called after the cache is created, either at startup (if payload
+// stores exist) or lazily when the first payload store is added via API.
+func (r *Runtime) SetCache(c *cache.Cache) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cacheInstance = c
+}
+
+// GetCache returns the cache instance, or nil if not yet created.
+func (r *Runtime) GetCache() *cache.Cache {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.cacheInstance
+}
+
 // Store returns the persistent configuration store.
 func (r *Runtime) Store() store.Store {
 	return r.store
@@ -357,17 +404,39 @@ func (r *Runtime) ListMetadataStores() []string {
 
 // AddShare creates and registers a new share with the given configuration.
 // This method:
-//  1. Validates that the share doesn't already exist
-//  2. Validates that the referenced metadata store exists
-//  3. Creates the root directory in the metadata store
-//  4. Registers the share in the runtime
+//  1. Ensures PayloadService is initialized (required for content operations)
+//  2. Validates that the share doesn't already exist
+//  3. Validates that the referenced metadata store exists
+//  4. Creates the root directory in the metadata store
+//  5. Registers the share in the runtime
 func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	if config.Name == "" {
 		return fmt.Errorf("cannot add share with empty name")
 	}
 
+	// Ensure PayloadService is initialized before creating shares
+	// This must be called before acquiring the lock to avoid deadlock
+	// Skip if:
+	// 1. PayloadService is already set (e.g., in tests), OR
+	// 2. Store is nil (testing mode - can't initialize PayloadService without store)
+	r.mu.RLock()
+	hasPayloadService := r.payloadService != nil
+	hasStore := r.store != nil
+	r.mu.RUnlock()
+
+	if !hasPayloadService && hasStore {
+		if err := r.EnsurePayloadService(ctx); err != nil {
+			return fmt.Errorf("failed to initialize payload service: %w", err)
+		}
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Validate that metadata service exists
+	if r.metadataService == nil {
+		return fmt.Errorf("metadata service not initialized")
+	}
 
 	// Check if share already exists
 	if _, exists := r.shares[config.Name]; exists {

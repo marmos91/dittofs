@@ -240,7 +240,11 @@ func (h *Handler) Lookup(
 	// Step 3: Get metadata from registry
 	// ========================================================================
 
-	metaSvc := h.Registry.GetMetadataService()
+	metaSvc, err := getMetadataService(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "LOOKUP failed: metadata service not initialized", "client", clientIP, "error", err)
+		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 	logger.DebugCtx(ctx.Context, "LOOKUP",
@@ -341,7 +345,6 @@ func (h *Handler) Lookup(
 		}, nil
 	}
 
-	metaSvc = h.Registry.GetMetadataService()
 	childFile, err := metaSvc.Lookup(authCtx, dirHandle, req.Filename)
 	if err != nil {
 		logger.DebugCtx(ctx.Context, "LOOKUP failed: child not found or access denied",
