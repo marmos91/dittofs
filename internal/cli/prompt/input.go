@@ -2,6 +2,8 @@ package prompt
 
 import (
 	"errors"
+	"fmt"
+	"strconv"
 
 	"github.com/manifoldco/promptui"
 )
@@ -72,4 +74,27 @@ func InputOptional(label string) (string, error) {
 
 	result, err := prompt.Run()
 	return result, wrapError(err)
+}
+
+// InputInt prompts for integer input with validation.
+func InputInt(label string, defaultValue int) (int, error) {
+	prompt := promptui.Prompt{
+		Label:   label,
+		Default: strconv.Itoa(defaultValue),
+		Validate: func(input string) error {
+			_, err := strconv.Atoi(input)
+			if err != nil {
+				return fmt.Errorf("must be a valid integer")
+			}
+			return nil
+		},
+	}
+
+	result, err := prompt.Run()
+	if err != nil {
+		return 0, wrapError(err)
+	}
+
+	value, _ := strconv.Atoi(result) // Already validated
+	return value, nil
 }

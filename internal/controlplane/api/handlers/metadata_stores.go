@@ -85,9 +85,8 @@ func (h *MetadataStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if h.runtime != nil {
 		metaStore, err := runtime.CreateMetadataStoreFromConfig(r.Context(), storeCfg.Type, storeCfg)
 		if err != nil {
-			// Config saved but store creation failed - log warning
-			// The store will be created on next server restart
-			logger.Warn("Metadata store config saved but failed to create instance. The store will be created on next server restart.",
+			// Config saved but store creation failed - manual intervention may be required
+			logger.Warn("Metadata store config saved but failed to create instance. Fix the configuration and restart the server.",
 				"name", req.Name, "type", req.Type, "error", err)
 		} else {
 			if err := h.runtime.RegisterMetadataStore(req.Name, metaStore); err != nil {

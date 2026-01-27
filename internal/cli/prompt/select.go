@@ -15,9 +15,9 @@ type SelectOption struct {
 func selectTemplates() *promptui.SelectTemplates {
 	return &promptui.SelectTemplates{
 		Label:    "{{ . }}",
-		Active:   "\U0001F449 {{ .Label | cyan }}",
+		Active:   "> {{ .Label | cyan }}",
 		Inactive: "  {{ .Label | white }}",
-		Selected: "\U00002705 {{ .Label | green }}",
+		Selected: "* {{ .Label | green }}",
 	}
 }
 

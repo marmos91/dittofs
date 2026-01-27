@@ -6,8 +6,9 @@ import (
 	"strings"
 )
 
-// normalizeShareNameForAPI strips leading slashes from share names for API URLs.
-// The server will normalize them back to include the leading slash.
+// normalizeShareNameForAPI strips all leading slashes from share names for API URLs.
+// This removes all leading slashes (e.g., "///export" becomes "export") to ensure
+// valid URL paths. The server will normalize them back to include the leading slash.
 func normalizeShareNameForAPI(name string) string {
 	return strings.TrimLeft(name, "/")
 }

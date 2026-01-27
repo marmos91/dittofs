@@ -366,8 +366,8 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 
 	if !isOwner && !isRoot {
 		return &StoreError{
-			Code:    ErrAccessDenied,
-			Message: "permission denied",
+			Code:    ErrPermissionDenied,
+			Message: "operation not permitted",
 			Path:    file.Path,
 		}
 	}
@@ -382,16 +382,19 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 	}
 
 	if attrs.UID != nil {
-		// Only root can change owner
-		if !isRoot {
+		// Only root can change owner to a different UID
+		// Owner can set UID to their own UID (no-op for chown(file, same_uid, new_gid))
+		if *attrs.UID != file.UID && !isRoot {
 			return &StoreError{
-				Code:    ErrAccessDenied,
+				Code:    ErrPermissionDenied,
 				Message: "only root can change owner",
 				Path:    file.Path,
 			}
 		}
-		file.UID = *attrs.UID
-		modified = true
+		if *attrs.UID != file.UID {
+			file.UID = *attrs.UID
+			modified = true
+		}
 	}
 
 	if attrs.GID != nil {
@@ -408,7 +411,7 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 			}
 			if !canChangeGID {
 				return &StoreError{
-					Code:    ErrAccessDenied,
+					Code:    ErrPermissionDenied,
 					Message: "not a member of target group",
 					Path:    file.Path,
 				}

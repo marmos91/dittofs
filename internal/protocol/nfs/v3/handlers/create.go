@@ -640,7 +640,7 @@ func mapMetadataErrorToNFS(err error) uint32 {
 		case metadata.ErrAccessDenied, metadata.ErrAuthRequired:
 			return types.NFS3ErrAccess
 		case metadata.ErrPermissionDenied:
-			return types.NFS3ErrAccess
+			return types.NFS3ErrPerm
 		case metadata.ErrPrivilegeRequired:
 			// RFC 1813: EPERM for privilege violations (e.g., creating device files as non-root)
 			return types.NFS3ErrPerm

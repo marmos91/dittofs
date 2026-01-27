@@ -85,7 +85,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	// Get password (prompt if not provided)
 	password := loginPassword
 	if password == "" {
-		password, err = prompt.PasswordWithValidation("Password", 1)
+		password, err = prompt.PasswordWithValidation("Password", 8)
 		if err != nil {
 			return cmdutil.HandleAbort(err)
 		}

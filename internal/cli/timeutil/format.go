@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+// LocalTimeFormat is the format used for displaying local times in CLI output.
+// Uses Go's reference time: Mon Jan 2 15:04:05 2006.
+const LocalTimeFormat = "Mon Jan 2 15:04:05 2006"
+
 // FormatUptime converts a duration string to a human-readable format.
 // Input is expected to be a Go duration string (e.g., "72h30m15s").
 // Returns a formatted string like "3d 0h 30m 15s" or the original string if parsing fails.
@@ -39,5 +43,5 @@ func FormatTime(timestamp string) string {
 	if err != nil {
 		return timestamp
 	}
-	return t.Local().Format("Mon Jan 2 15:04:05 2006")
+	return t.Local().Format(LocalTimeFormat)
 }

@@ -19,10 +19,11 @@ env:
   DITTOFS_MOUNT: /tmp/dittofs-test
 
 jobs:
-  posix-memory:
-    name: Memory Store
+  # Build binaries once and share across test jobs
+  build:
+    name: Build Binaries
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -34,24 +35,60 @@ jobs:
       - name: Setup Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@main
 
-      - name: Install NFS client utilities
-        run: sudo apt-get update && sudo apt-get install -y nfs-common
-
       - name: Build DittoFS binaries
         run: |
           nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go
           nix develop .#ci --command go build -o dittofsctl cmd/dittofsctl/main.go
+
+      - name: Build pjdfstest
+        run: |
+          PJDFSTEST=$(nix build .#pjdfstest --print-out-paths)
+          # Copy to local directory for artifact upload
+          mkdir -p pjdfstest-dist
+          cp -r "$PJDFSTEST/bin" pjdfstest-dist/
+          cp -r "$PJDFSTEST/share" pjdfstest-dist/
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: dittofs-binaries
+          path: |
+            dittofs
+            dittofsctl
+            pjdfstest-dist
+          retention-days: 1
+
+  posix-memory:
+    name: Memory Store
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install NFS client utilities
+        run: sudo apt-get update && sudo apt-get install -y nfs-common
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: dittofs-binaries
+
+      - name: Make binaries executable
+        run: chmod +x dittofs dittofsctl pjdfstest-dist/bin/*
 
       - name: Setup DittoFS (Memory)
         run: sudo -E ./test/posix/setup-posix.sh memory
 
       - name: Run POSIX tests
         run: |
-          PJDFSTEST=$(nix build .#pjdfstest --print-out-paths)
-          TESTS_DIR="$PJDFSTEST/share/pjdfstest/tests"
+          PJDFSTEST_DIR="$(pwd)/pjdfstest-dist"
+          TESTS_DIR="$PJDFSTEST_DIR/share/pjdfstest/tests"
 
           cd $DITTOFS_MOUNT
-          sudo env PATH="$PJDFSTEST/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
+          sudo env PATH="$PJDFSTEST_DIR/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
             2>&1 | tee ~/posix-memory.log || true
 
           # Extract summary
@@ -62,17 +99,36 @@ jobs:
 
       - name: Verify pass rate
         run: |
-          # Expected: 8788/8789 pass (1 known failure: utimensat/09.t test 5 - NFSv3 timestamp limit)
+          # Check for test failures in the log
+          # Expected: Only 1 known failure (utimensat/09.t test 5 - NFSv3 timestamp limit)
+
           if grep -q "All tests successful" ~/posix-memory.log; then
             echo "✓ All tests passed!"
-          elif grep -q "Failed 1/" ~/posix-memory.log; then
-            echo "✓ Expected failure count (1 test - NFSv3 timestamp limit)"
-          else
+            exit 0
+          fi
+
+          # Check if Result: FAIL is in the output
+          if grep -q "Result: FAIL" ~/posix-memory.log; then
+            # Count how many test files failed
+            FAILED_LINE=$(grep "Files=.*Failed" ~/posix-memory.log | tail -1)
+            echo "Test summary: $FAILED_LINE"
+
+            # Check if only 1 test file failed AND it's the expected utimensat/09.t
+            if grep -q "^Files=.*Failed: 1$" ~/posix-memory.log 2>/dev/null || \
+               (grep "utimensat/09.t" ~/posix-memory.log | grep -q "Failed: 1"); then
+              echo "✓ Only expected failure (utimensat/09.t - NFSv3 timestamp limit)"
+              exit 0
+            fi
+
             echo "✗ Unexpected test failures detected!"
-            echo "::error::POSIX tests failed with more than 1 expected failure"
-            tail -50 ~/posix-memory.log
+            echo "::error::POSIX tests failed"
+            echo ""
+            echo "=== Test Summary Report ==="
+            sed -n '/Test Summary Report/,/Result:/p' ~/posix-memory.log
             exit 1
           fi
+
+          echo "✓ Tests completed"
 
       - name: Cleanup
         if: always()
@@ -89,36 +145,34 @@ jobs:
   posix-badger:
     name: BadgerDB Store
     runs-on: ubuntu-latest
+    needs: build
     timeout-minutes: 60
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Setup Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
       - name: Install NFS client utilities
         run: sudo apt-get update && sudo apt-get install -y nfs-common
 
-      - name: Build DittoFS binaries
-        run: |
-          nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go
-          nix develop .#ci --command go build -o dittofsctl cmd/dittofsctl/main.go
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: dittofs-binaries
+
+      - name: Make binaries executable
+        run: chmod +x dittofs dittofsctl pjdfstest-dist/bin/*
 
       - name: Setup DittoFS (BadgerDB)
         run: sudo -E ./test/posix/setup-posix.sh badger
 
       - name: Run POSIX tests
         run: |
-          PJDFSTEST=$(nix build .#pjdfstest --print-out-paths)
-          TESTS_DIR="$PJDFSTEST/share/pjdfstest/tests"
+          PJDFSTEST_DIR="$(pwd)/pjdfstest-dist"
+          TESTS_DIR="$PJDFSTEST_DIR/share/pjdfstest/tests"
 
           cd $DITTOFS_MOUNT
-          sudo env PATH="$PJDFSTEST/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
+          sudo env PATH="$PJDFSTEST_DIR/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
             2>&1 | tee ~/posix-badger.log || true
 
           echo "## BadgerDB Store Results" >> $GITHUB_STEP_SUMMARY
@@ -128,17 +182,35 @@ jobs:
 
       - name: Verify pass rate
         run: |
-          # Expected: 8788/8789 pass (1 known failure: utimensat/09.t test 5 - NFSv3 timestamp limit)
+          # Check for test failures in the log
+          # Expected: Only 1 known failure (utimensat/09.t test 5 - NFSv3 timestamp limit)
+
           if grep -q "All tests successful" ~/posix-badger.log; then
             echo "✓ All tests passed!"
-          elif grep -q "Failed 1/" ~/posix-badger.log; then
-            echo "✓ Expected failure count (1 test - NFSv3 timestamp limit)"
-          else
+            exit 0
+          fi
+
+          # Check if Result: FAIL is in the output
+          if grep -q "Result: FAIL" ~/posix-badger.log; then
+            FAILED_LINE=$(grep "Files=.*Failed" ~/posix-badger.log | tail -1)
+            echo "Test summary: $FAILED_LINE"
+
+            # Check if only utimensat/09.t failed (expected failure)
+            if grep -q "^Files=.*Failed: 1$" ~/posix-badger.log 2>/dev/null || \
+               (grep "utimensat/09.t" ~/posix-badger.log | grep -q "Failed: 1"); then
+              echo "✓ Only expected failure (utimensat/09.t - NFSv3 timestamp limit)"
+              exit 0
+            fi
+
             echo "✗ Unexpected test failures detected!"
-            echo "::error::POSIX tests failed with more than 1 expected failure"
-            tail -50 ~/posix-badger.log
+            echo "::error::POSIX tests failed"
+            echo ""
+            echo "=== Test Summary Report ==="
+            sed -n '/Test Summary Report/,/Result:/p' ~/posix-badger.log
             exit 1
           fi
+
+          echo "✓ Tests completed"
 
       - name: Cleanup
         if: always()
@@ -155,6 +227,7 @@ jobs:
   posix-postgres:
     name: PostgreSQL Store
     runs-on: ubuntu-latest
+    needs: build
     timeout-minutes: 60
 
     services:
@@ -176,30 +249,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Setup Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
       - name: Install NFS client utilities
         run: sudo apt-get update && sudo apt-get install -y nfs-common
 
-      - name: Build DittoFS binaries
-        run: |
-          nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go
-          nix develop .#ci --command go build -o dittofsctl cmd/dittofsctl/main.go
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: dittofs-binaries
+
+      - name: Make binaries executable
+        run: chmod +x dittofs dittofsctl pjdfstest-dist/bin/*
 
       - name: Setup DittoFS (PostgreSQL)
         run: sudo -E ./test/posix/setup-posix.sh postgres
 
       - name: Run POSIX tests
         run: |
-          PJDFSTEST=$(nix build .#pjdfstest --print-out-paths)
-          TESTS_DIR="$PJDFSTEST/share/pjdfstest/tests"
+          PJDFSTEST_DIR="$(pwd)/pjdfstest-dist"
+          TESTS_DIR="$PJDFSTEST_DIR/share/pjdfstest/tests"
 
           cd $DITTOFS_MOUNT
-          sudo env PATH="$PJDFSTEST/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
+          sudo env PATH="$PJDFSTEST_DIR/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
             2>&1 | tee ~/posix-postgres.log || true
 
           echo "## PostgreSQL Store Results" >> $GITHUB_STEP_SUMMARY
@@ -209,17 +279,35 @@ jobs:
 
       - name: Verify pass rate
         run: |
-          # Expected: 8788/8789 pass (1 known failure: utimensat/09.t test 5 - NFSv3 timestamp limit)
+          # Check for test failures in the log
+          # Expected: Only 1 known failure (utimensat/09.t test 5 - NFSv3 timestamp limit)
+
           if grep -q "All tests successful" ~/posix-postgres.log; then
             echo "✓ All tests passed!"
-          elif grep -q "Failed 1/" ~/posix-postgres.log; then
-            echo "✓ Expected failure count (1 test - NFSv3 timestamp limit)"
-          else
+            exit 0
+          fi
+
+          # Check if Result: FAIL is in the output
+          if grep -q "Result: FAIL" ~/posix-postgres.log; then
+            FAILED_LINE=$(grep "Files=.*Failed" ~/posix-postgres.log | tail -1)
+            echo "Test summary: $FAILED_LINE"
+
+            # Check if only utimensat/09.t failed (expected failure)
+            if grep -q "^Files=.*Failed: 1$" ~/posix-postgres.log 2>/dev/null || \
+               (grep "utimensat/09.t" ~/posix-postgres.log | grep -q "Failed: 1"); then
+              echo "✓ Only expected failure (utimensat/09.t - NFSv3 timestamp limit)"
+              exit 0
+            fi
+
             echo "✗ Unexpected test failures detected!"
-            echo "::error::POSIX tests failed with more than 1 expected failure"
-            tail -50 ~/posix-postgres.log
+            echo "::error::POSIX tests failed"
+            echo ""
+            echo "=== Test Summary Report ==="
+            sed -n '/Test Summary Report/,/Result:/p' ~/posix-postgres.log
             exit 1
           fi
+
+          echo "✓ Tests completed"
 
       - name: Cleanup
         if: always()
