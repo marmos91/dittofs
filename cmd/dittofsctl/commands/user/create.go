@@ -15,6 +15,7 @@ var (
 	createPassword string
 	createEmail    string
 	createRole     string
+	createUID      uint32
 	createGroups   string
 	createEnabled  bool
 )
@@ -38,7 +39,10 @@ Examples:
   dittofsctl user create --username admin2 --password secret --role admin
 
   # Create user with email and groups
-  dittofsctl user create --username bob --password secret --email bob@example.com --groups editors,viewers`,
+  dittofsctl user create --username bob --password secret --email bob@example.com --groups editors,viewers
+
+  # Create user with specific UID
+  dittofsctl user create --username bob --password secret --uid 1001`,
 	RunE: runCreate,
 }
 
@@ -47,6 +51,7 @@ func init() {
 	createCmd.Flags().StringVarP(&createPassword, "password", "p", "", "Password (prompts if not provided)")
 	createCmd.Flags().StringVar(&createEmail, "email", "", "Email address")
 	createCmd.Flags().StringVar(&createRole, "role", "user", "Role (user|admin)")
+	createCmd.Flags().Uint32Var(&createUID, "uid", 0, "Unix user ID (auto-assigned if not specified)")
 	createCmd.Flags().StringVar(&createGroups, "groups", "", "Comma-separated list of groups")
 	createCmd.Flags().BoolVar(&createEnabled, "enabled", true, "Enable account")
 }
@@ -57,11 +62,14 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Check if running interactively (no flags provided)
+	interactive := !cmd.Flags().Changed("username")
+
 	username := createUsername
 	if username == "" {
 		username, err = prompt.InputRequired("Username")
 		if err != nil {
-			return fmt.Errorf("failed to read username: %w", err)
+			return cmdutil.HandleAbort(err)
 		}
 	}
 
@@ -69,16 +77,62 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	if password == "" {
 		password, err = prompt.PasswordWithConfirmation("Password", "Confirm password", 8)
 		if err != nil {
-			return fmt.Errorf("failed to read password: %w", err)
+			return cmdutil.HandleAbort(err)
+		}
+	}
+
+	// Prompt for optional fields if running interactively
+	email := createEmail
+	if interactive && !cmd.Flags().Changed("email") {
+		email, err = prompt.InputOptional("Email")
+		if err != nil {
+			return cmdutil.HandleAbort(err)
+		}
+	}
+
+	role := createRole
+	if interactive && !cmd.Flags().Changed("role") {
+		role, err = prompt.Select("Role", []prompt.SelectOption{
+			{Label: "user", Value: "user", Description: "Regular user with standard permissions"},
+			{Label: "admin", Value: "admin", Description: "Administrator with full access"},
+		})
+		if err != nil {
+			return cmdutil.HandleAbort(err)
+		}
+	}
+
+	groups := createGroups
+	if interactive && !cmd.Flags().Changed("groups") {
+		groups, err = prompt.Input("Groups (comma-separated)", "users")
+		if err != nil {
+			return cmdutil.HandleAbort(err)
+		}
+	}
+
+	// UID - prompt if interactive and not provided
+	var uid *uint32
+	if cmd.Flags().Changed("uid") {
+		uid = &createUID
+	} else if interactive {
+		uidInput, err := prompt.InputOptional("UID (leave empty for auto-assign)")
+		if err != nil {
+			return cmdutil.HandleAbort(err)
+		}
+		if uidInput != "" {
+			var uidVal uint32
+			if _, err := fmt.Sscanf(uidInput, "%d", &uidVal); err == nil {
+				uid = &uidVal
+			}
 		}
 	}
 
 	req := &apiclient.CreateUserRequest{
 		Username: username,
 		Password: password,
-		Email:    createEmail,
-		Role:     createRole,
-		Groups:   cmdutil.ParseCommaSeparatedList(createGroups),
+		Email:    email,
+		Role:     role,
+		UID:      uid,
+		Groups:   cmdutil.ParseCommaSeparatedList(groups),
 		Enabled:  &createEnabled,
 	}
 

@@ -11,7 +11,7 @@ var Cmd = &cobra.Command{
 	Short: "User management",
 	Long: `Manage users on the DittoFS server.
 
-User commands allow you to create, list, update, and delete users.
+User commands allow you to create, list, edit, and delete users.
 These operations require admin privileges.
 
 Examples:
@@ -24,6 +24,9 @@ Examples:
   # Create a user with flags
   dittofsctl user create --username alice --password secret --role user
 
+  # Edit a user interactively
+  dittofsctl user edit alice
+
   # Delete a user
   dittofsctl user delete alice`,
 }
@@ -33,6 +36,7 @@ func init() {
 	Cmd.AddCommand(createCmd)
 	Cmd.AddCommand(deleteCmd)
 	Cmd.AddCommand(getCmd)
-	Cmd.AddCommand(updateCmd)
+	Cmd.AddCommand(editCmd)
 	Cmd.AddCommand(passwordCmd)
+	Cmd.AddCommand(changePasswordCmd)
 }

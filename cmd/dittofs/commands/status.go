@@ -10,7 +10,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/cli/health"
 	"github.com/marmos91/dittofs/internal/cli/output"
+	"github.com/marmos91/dittofs/internal/cli/timeutil"
 	"github.com/spf13/cobra"
 )
 
@@ -56,19 +58,6 @@ type ServerStatus struct {
 	Healthy   bool   `json:"healthy" yaml:"healthy"`
 }
 
-// HealthResponse represents the API health response.
-type HealthResponse struct {
-	Status    string `json:"status"`
-	Timestamp string `json:"timestamp"`
-	Data      struct {
-		Service   string `json:"service"`
-		StartedAt string `json:"started_at"`
-		Uptime    string `json:"uptime"`
-		UptimeSec int64  `json:"uptime_sec"`
-	} `json:"data"`
-	Error string `json:"error,omitempty"`
-}
-
 func runStatus(cmd *cobra.Command, args []string) error {
 	format, err := output.ParseFormat(statusOutput)
 	if err != nil {
@@ -105,35 +94,32 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// If process is running, check health endpoint
-	if status.Running {
-		healthURL := fmt.Sprintf("http://localhost:%d/health", statusAPIPort)
-		client := &http.Client{Timeout: 5 * time.Second}
+	// Check health endpoint (works for both daemon and foreground mode)
+	healthURL := fmt.Sprintf("http://localhost:%d/health", statusAPIPort)
+	client := &http.Client{Timeout: 2 * time.Second}
 
-		resp, err := client.Get(healthURL)
-		if err != nil {
-			status.Message = "Server is running but health check failed"
-		} else {
-			defer func() { _ = resp.Body.Close() }()
+	resp, err := client.Get(healthURL)
+	if err == nil {
+		defer func() { _ = resp.Body.Close() }()
 
-			var healthResp HealthResponse
-			if err := json.NewDecoder(resp.Body).Decode(&healthResp); err == nil {
-				status.Healthy = healthResp.Status == "healthy"
-				status.StartedAt = healthResp.Data.StartedAt
-				status.Uptime = healthResp.Data.Uptime
-				if status.Healthy {
-					status.Message = "Server is running and healthy"
-				} else {
-					status.Message = fmt.Sprintf("Server is running but unhealthy: %s", healthResp.Error)
-				}
+		var healthResp health.Response
+		if err := json.NewDecoder(resp.Body).Decode(&healthResp); err == nil {
+			status.Running = true
+			status.Healthy = healthResp.Status == "healthy"
+			status.StartedAt = healthResp.Data.StartedAt
+			status.Uptime = healthResp.Data.Uptime
+			if status.Healthy {
+				status.Message = "Server is running and healthy"
 			} else {
-				status.Message = "Server is running but health response invalid"
+				status.Message = fmt.Sprintf("Server is running but unhealthy: %s", healthResp.Error)
 			}
+		} else {
+			status.Running = true
+			status.Message = "Server is running but health response invalid"
 		}
-	} else if os.IsNotExist(err) {
-		status.Message = "Server is not running"
-	} else {
-		status.Message = "Server is not running (stale PID file)"
+	} else if status.Running {
+		// PID file says running but health check failed
+		status.Message = "Server process exists but health check failed"
 	}
 
 	switch format {
@@ -162,15 +148,10 @@ func printStatusTable(status ServerStatus) {
 		}
 		fmt.Printf("  PID:        %d\n", status.PID)
 		if status.StartedAt != "" {
-			// Parse and format the start time nicely
-			if t, err := time.Parse(time.RFC3339, status.StartedAt); err == nil {
-				fmt.Printf("  Started:    %s\n", t.Local().Format("Mon Jan 2 15:04:05 2006"))
-			} else {
-				fmt.Printf("  Started:    %s\n", status.StartedAt)
-			}
+			fmt.Printf("  Started:    %s\n", timeutil.FormatTime(status.StartedAt))
 		}
 		if status.Uptime != "" {
-			fmt.Printf("  Uptime:     %s\n", formatUptime(status.Uptime))
+			fmt.Printf("  Uptime:     %s\n", timeutil.FormatUptime(status.Uptime))
 		}
 	} else {
 		fmt.Printf("  Status:     \033[31m○ Stopped\033[0m\n")
@@ -179,26 +160,4 @@ func printStatusTable(status ServerStatus) {
 	fmt.Println()
 	fmt.Printf("  %s\n", status.Message)
 	fmt.Println()
-}
-
-// formatUptime converts a duration string to a more readable format.
-func formatUptime(uptime string) string {
-	d, err := time.ParseDuration(uptime)
-	if err != nil {
-		return uptime
-	}
-
-	days := int(d.Hours()) / 24
-	hours := int(d.Hours()) % 24
-	minutes := int(d.Minutes()) % 60
-	seconds := int(d.Seconds()) % 60
-
-	if days > 0 {
-		return fmt.Sprintf("%dd %dh %dm %ds", days, hours, minutes, seconds)
-	} else if hours > 0 {
-		return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
-	} else if minutes > 0 {
-		return fmt.Sprintf("%dm %ds", minutes, seconds)
-	}
-	return fmt.Sprintf("%ds", seconds)
 }

@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/controlplane/api/auth"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )

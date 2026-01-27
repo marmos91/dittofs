@@ -5,7 +5,6 @@ import (
 
 	"github.com/marmos91/dittofs/cmd/dittofsctl/cmdutil"
 	"github.com/marmos91/dittofs/internal/cli/credentials"
-	"github.com/marmos91/dittofs/internal/cli/prompt"
 	"github.com/spf13/cobra"
 )
 
@@ -47,19 +46,7 @@ func runContextDelete(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get context: %w", err)
 	}
 
-	confirmed, err := prompt.ConfirmWithForce(fmt.Sprintf("Delete context '%s'?", contextName), deleteForce)
-	if err != nil {
-		return fmt.Errorf("failed to confirm: %w", err)
-	}
-	if !confirmed {
-		fmt.Println("Aborted.")
-		return nil
-	}
-
-	if err := store.DeleteContext(contextName); err != nil {
-		return fmt.Errorf("failed to delete context: %w", err)
-	}
-
-	cmdutil.PrintSuccess(fmt.Sprintf("Context '%s' deleted successfully", contextName))
-	return nil
+	return cmdutil.RunDeleteWithConfirmation("Context", contextName, deleteForce, func() error {
+		return store.DeleteContext(contextName)
+	})
 }

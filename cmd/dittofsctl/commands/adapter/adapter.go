@@ -11,21 +11,29 @@ var Cmd = &cobra.Command{
 	Short: "Protocol adapter management",
 	Long: `Manage protocol adapters on the DittoFS server.
 
-Adapter commands allow you to list, add, update, and remove protocol adapters.
+Adapter commands allow you to list, enable, disable, and edit protocol adapters.
 These operations require admin privileges.
 
 Examples:
   # List adapters
   dittofsctl adapter list
 
-  # Update NFS adapter port
-  dittofsctl adapter update nfs --port 3049
+  # Enable NFS adapter on port 12049
+  dittofsctl adapter enable nfs --port 12049
 
-  # Enable/disable adapter
-  dittofsctl adapter update smb --enabled false`,
+  # Disable SMB adapter
+  dittofsctl adapter disable smb
+
+  # Edit adapter interactively
+  dittofsctl adapter edit nfs
+
+  # Edit adapter settings with flags
+  dittofsctl adapter edit nfs --port 3049`,
 }
 
 func init() {
 	Cmd.AddCommand(listCmd)
-	Cmd.AddCommand(updateCmd)
+	Cmd.AddCommand(enableCmd)
+	Cmd.AddCommand(disableCmd)
+	Cmd.AddCommand(editCmd)
 }

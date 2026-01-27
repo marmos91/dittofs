@@ -51,22 +51,6 @@ func HashPassword(password string) (string, error) {
 	return string(hash), nil
 }
 
-// HashPasswordWithCost creates a bcrypt hash with a custom cost.
-// Higher cost values increase security but also increase hashing time.
-// Valid cost values are between 4 and 31.
-func HashPasswordWithCost(password string, cost int) (string, error) {
-	if err := ValidatePassword(password); err != nil {
-		return "", err
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), cost)
-	if err != nil {
-		return "", err
-	}
-
-	return string(hash), nil
-}
-
 // HashPasswordWithNT creates both a bcrypt hash and NT hash for a password.
 // This is a convenience function for user creation/password update flows
 // that need both hashes computed together.
@@ -98,17 +82,6 @@ func ValidatePassword(password string) error {
 		return ErrPasswordTooLong
 	}
 	return nil
-}
-
-// NeedsRehash checks if a hash needs to be regenerated.
-// This can happen when the cost parameter has been increased
-// or the hash algorithm has been updated.
-func NeedsRehash(hash string) bool {
-	cost, err := bcrypt.Cost([]byte(hash))
-	if err != nil {
-		return true
-	}
-	return cost < DefaultBcryptCost
 }
 
 // ComputeNTHash computes the NT hash from a password.

@@ -3,8 +3,8 @@ package commands
 import (
 	"fmt"
 	"net/url"
-	"time"
 
+	"github.com/marmos91/dittofs/cmd/dittofsctl/cmdutil"
 	"github.com/marmos91/dittofs/internal/cli/credentials"
 	"github.com/marmos91/dittofs/internal/cli/prompt"
 	"github.com/marmos91/dittofs/pkg/apiclient"
@@ -76,12 +76,9 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	// Get username (prompt if not provided)
 	username := loginUsername
 	if username == "" {
-		username, err = prompt.Input("Username", "")
+		username, err = prompt.InputRequired("Username")
 		if err != nil {
-			return fmt.Errorf("failed to read username: %w", err)
-		}
-		if username == "" {
-			return fmt.Errorf("username is required")
+			return cmdutil.HandleAbort(err)
 		}
 	}
 
@@ -90,7 +87,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	if password == "" {
 		password, err = prompt.Password("Password")
 		if err != nil {
-			return fmt.Errorf("failed to read password: %w", err)
+			return cmdutil.HandleAbort(err)
 		}
 		if password == "" {
 			return fmt.Errorf("password is required")
@@ -119,7 +116,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		Username:     username,
 		AccessToken:  tokens.AccessToken,
 		RefreshToken: tokens.RefreshToken,
-		ExpiresAt:    time.Now().Add(tokens.ExpiresIn),
+		ExpiresAt:    tokens.ExpiresAt,
 	}
 
 	if err := store.SetContext(contextName, ctx); err != nil {

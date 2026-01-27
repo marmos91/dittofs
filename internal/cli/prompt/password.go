@@ -17,7 +17,8 @@ func Password(label string) (string, error) {
 		Mask:  '*',
 	}
 
-	return prompt.Run()
+	result, err := prompt.Run()
+	return result, wrapError(err)
 }
 
 // PasswordWithValidation prompts for a password with minimum length validation.
@@ -33,7 +34,8 @@ func PasswordWithValidation(label string, minLength int) (string, error) {
 		},
 	}
 
-	return prompt.Run()
+	result, err := prompt.Run()
+	return result, wrapError(err)
 }
 
 // PasswordWithConfirmation prompts for a password and confirmation.

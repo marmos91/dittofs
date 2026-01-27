@@ -40,7 +40,7 @@ func Select(label string, options []SelectOption) (string, error) {
 
 	i, _, err := prompt.Run()
 	if err != nil {
-		return "", err
+		return "", wrapError(err)
 	}
 
 	return options[i].Value, nil
@@ -56,7 +56,7 @@ func SelectString(label string, items []string) (string, error) {
 	}
 
 	_, result, err := prompt.Run()
-	return result, err
+	return result, wrapError(err)
 }
 
 // SelectIndex prompts the user to select from a list of options.
@@ -70,7 +70,7 @@ func SelectIndex(label string, options []SelectOption) (int, error) {
 	}
 
 	i, _, err := prompt.Run()
-	return i, err
+	return i, wrapError(err)
 }
 
 // MultiSelect allows selecting multiple options (using space to toggle).

@@ -22,6 +22,7 @@ type CreateGroupRequest struct {
 
 // UpdateGroupRequest is the request to update a group.
 type UpdateGroupRequest struct {
+	GID         *uint32 `json:"gid,omitempty"`
 	Description *string `json:"description,omitempty"`
 }
 

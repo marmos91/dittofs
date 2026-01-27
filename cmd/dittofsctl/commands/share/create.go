@@ -5,16 +5,18 @@ import (
 	"os"
 
 	"github.com/marmos91/dittofs/cmd/dittofsctl/cmdutil"
+	"github.com/marmos91/dittofs/internal/cli/prompt"
 	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
 
 var (
-	createName        string
-	createMetadata    string
-	createContent     string
-	createReadOnly    bool
-	createDescription string
+	createName              string
+	createMetadata          string
+	createPayload           string
+	createReadOnly          bool
+	createDefaultPermission string
+	createDescription       string
 )
 
 var createCmd = &cobra.Command{
@@ -24,25 +26,26 @@ var createCmd = &cobra.Command{
 
 Examples:
   # Create a share with required stores
-  dittofsctl share create --name /archive --metadata default --content s3-store
+  dittofsctl share create --name /archive --metadata default --payload s3-store
 
   # Create a read-only share
-  dittofsctl share create --name /readonly --metadata default --content fs-store --read-only
+  dittofsctl share create --name /readonly --metadata default --payload fs-store --read-only
+
+  # Create with default permission allowing all users read-write access
+  dittofsctl share create --name /shared --metadata default --payload s3-store --default-permission read-write
 
   # Create with description
-  dittofsctl share create --name /docs --metadata default --content s3-store --description "Documentation files"`,
+  dittofsctl share create --name /docs --metadata default --payload s3-store --description "Documentation files"`,
 	RunE: runCreate,
 }
 
 func init() {
 	createCmd.Flags().StringVar(&createName, "name", "", "Share name/path (required)")
 	createCmd.Flags().StringVar(&createMetadata, "metadata", "", "Metadata store name (required)")
-	createCmd.Flags().StringVar(&createContent, "content", "", "Content store name (required)")
+	createCmd.Flags().StringVar(&createPayload, "payload", "", "Payload store name (required)")
 	createCmd.Flags().BoolVar(&createReadOnly, "read-only", false, "Make share read-only")
+	createCmd.Flags().StringVar(&createDefaultPermission, "default-permission", "read-write", "Default permission (none|read|read-write|admin)")
 	createCmd.Flags().StringVar(&createDescription, "description", "", "Share description")
-	_ = createCmd.MarkFlagRequired("name")
-	_ = createCmd.MarkFlagRequired("metadata")
-	_ = createCmd.MarkFlagRequired("content")
 }
 
 func runCreate(cmd *cobra.Command, args []string) error {
@@ -51,12 +54,48 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	name := createName
+	if name == "" {
+		name, err = prompt.InputRequired("Share name (e.g., /export)")
+		if err != nil {
+			return cmdutil.HandleAbort(err)
+		}
+	}
+
+	metadata := createMetadata
+	if metadata == "" {
+		metadata, err = prompt.InputRequired("Metadata store name")
+		if err != nil {
+			return cmdutil.HandleAbort(err)
+		}
+	}
+
+	payload := createPayload
+	if payload == "" {
+		payload, err = prompt.InputRequired("Payload store name")
+		if err != nil {
+			return cmdutil.HandleAbort(err)
+		}
+	}
+
+	defaultPerm := createDefaultPermission
+	if !cmd.Flags().Changed("default-permission") && createName == "" {
+		// Interactive mode - ask for default permission
+		permOptions := []string{"read-write", "read", "admin", "none"}
+		selectedPerm, err := prompt.SelectString("Default permission", permOptions)
+		if err != nil {
+			return cmdutil.HandleAbort(err)
+		}
+		defaultPerm = selectedPerm
+	}
+
 	req := &apiclient.CreateShareRequest{
-		Name:          createName,
-		MetadataStore: createMetadata,
-		ContentStore:  createContent,
-		ReadOnly:      createReadOnly,
-		Description:   createDescription,
+		Name:              name,
+		MetadataStoreID:   metadata,
+		PayloadStoreID:    payload,
+		ReadOnly:          createReadOnly,
+		DefaultPermission: defaultPerm,
+		Description:       createDescription,
 	}
 
 	share, err := client.CreateShare(req)

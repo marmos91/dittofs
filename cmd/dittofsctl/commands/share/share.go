@@ -12,7 +12,7 @@ var Cmd = &cobra.Command{
 	Short: "Share management",
 	Long: `Manage shares on the DittoFS server.
 
-Share commands allow you to create, list, update, and delete shares,
+Share commands allow you to create, list, edit, and delete shares,
 as well as manage share permissions.
 These operations require admin privileges.
 
@@ -23,8 +23,11 @@ Examples:
   # Create a new share
   dittofsctl share create --name /archive --metadata default --payload s3-store
 
-  # Update a share
-  dittofsctl share update /archive --read-only
+  # Edit a share interactively
+  dittofsctl share edit /archive
+
+  # Edit a share with flags
+  dittofsctl share edit /archive --read-only true
 
   # Delete a share
   dittofsctl share delete /archive
@@ -37,6 +40,6 @@ func init() {
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(createCmd)
 	Cmd.AddCommand(deleteCmd)
-	Cmd.AddCommand(updateCmd)
+	Cmd.AddCommand(editCmd)
 	Cmd.AddCommand(permission.Cmd)
 }

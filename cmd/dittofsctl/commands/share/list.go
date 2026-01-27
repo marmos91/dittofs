@@ -31,14 +31,14 @@ type ShareList []apiclient.Share
 
 // Headers implements TableRenderer.
 func (sl ShareList) Headers() []string {
-	return []string{"NAME", "METADATA STORE", "CONTENT STORE", "READ-ONLY"}
+	return []string{"NAME", "METADATA STORE", "PAYLOAD STORE", "DEFAULT PERMISSION"}
 }
 
 // Rows implements TableRenderer.
 func (sl ShareList) Rows() [][]string {
 	rows := make([][]string, 0, len(sl))
 	for _, s := range sl {
-		rows = append(rows, []string{s.Name, s.MetadataStore, s.ContentStore, cmdutil.BoolToYesNo(s.ReadOnly)})
+		rows = append(rows, []string{s.Name, s.MetadataStoreID, s.PayloadStoreID, s.DefaultPermission})
 	}
 	return rows
 }

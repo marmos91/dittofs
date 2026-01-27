@@ -292,27 +292,27 @@ func New(
 	}
 }
 
-// SetRegistry injects the registry containing all stores and shares.
+// SetRuntime injects the runtime containing all stores and shares.
 //
-// This method is called by DittoServer before Serve() is called. The registry
+// This method is called by Runtime before Serve() is called. The runtime
 // provides access to all configured metadata stores, content stores, and shares.
 //
-// The NFS adapter stores the registry and injects it into both the NFS and Mount
+// The NFS adapter stores the runtime and injects it into both the NFS and Mount
 // handlers so they can access stores based on share names.
 //
 // Parameters:
-//   - reg: Registry containing all stores and shares
+//   - rt: Runtime containing all stores and shares
 //
 // Thread safety:
 // Called exactly once before Serve(), no synchronization needed.
-func (s *NFSAdapter) SetRegistry(reg *runtime.Runtime) {
-	s.registry = reg
+func (s *NFSAdapter) SetRuntime(rt *runtime.Runtime) {
+	s.registry = rt
 
-	// Inject registry into handlers
-	s.nfsHandler.Registry = reg
-	s.mountHandler.Registry = reg
+	// Inject runtime into handlers
+	s.nfsHandler.Registry = rt
+	s.mountHandler.Registry = rt
 
-	logger.Debug("NFS adapter configured with registry", "shares", reg.CountShares())
+	logger.Debug("NFS adapter configured with runtime", "shares", rt.CountShares())
 }
 
 // Serve starts the NFS server and blocks until the context is cancelled

@@ -2,10 +2,8 @@ package user
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/marmos91/dittofs/cmd/dittofsctl/cmdutil"
-	"github.com/marmos91/dittofs/internal/cli/output"
 	"github.com/marmos91/dittofs/internal/cli/prompt"
 	"github.com/spf13/cobra"
 )
@@ -47,7 +45,7 @@ func runPassword(cmd *cobra.Command, args []string) error {
 	if password == "" {
 		password, err = prompt.PasswordWithConfirmation("New password", "Confirm password", 8)
 		if err != nil {
-			return fmt.Errorf("failed to read password: %w", err)
+			return cmdutil.HandleAbort(err)
 		}
 	}
 
@@ -55,16 +53,10 @@ func runPassword(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to reset password: %w", err)
 	}
 
-	format, err := cmdutil.GetOutputFormatParsed()
-	if err != nil {
-		return err
-	}
-
-	if format == output.FormatTable {
-		printer := output.NewPrinter(os.Stdout, format, !cmdutil.IsColorDisabled())
-		printer.Success(fmt.Sprintf("Password reset for user '%s'", username))
-		fmt.Println("User will be required to change password on next login.")
-	}
+	cmdutil.PrintSuccessWithInfo(
+		fmt.Sprintf("Password reset for user '%s'", username),
+		"User will be required to change password on next login.",
+	)
 
 	return nil
 }

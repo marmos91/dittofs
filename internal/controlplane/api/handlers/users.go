@@ -7,19 +7,21 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/pkg/controlplane/api/middleware"
+	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
+	"github.com/marmos91/dittofs/internal/controlplane/api/middleware"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
 // UserHandler handles user management API endpoints.
 type UserHandler struct {
-	store store.Store
+	store      store.Store
+	jwtService *auth.JWTService
 }
 
 // NewUserHandler creates a new UserHandler.
-func NewUserHandler(store store.Store) *UserHandler {
-	return &UserHandler{store: store}
+func NewUserHandler(store store.Store, jwtService *auth.JWTService) *UserHandler {
+	return &UserHandler{store: store, jwtService: jwtService}
 }
 
 // CreateUserRequest is the request body for POST /api/v1/users.
@@ -351,5 +353,20 @@ func (h *UserHandler) ChangeOwnPassword(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	WriteNoContent(w)
+	// Generate new tokens with updated claims (MustChangePassword = false)
+	tokenPair, err := h.jwtService.GenerateTokenPair(user)
+	if err != nil {
+		InternalServerError(w, "Failed to generate new tokens")
+		return
+	}
+
+	// Return new tokens so client can update stored credentials
+	WriteJSONOK(w, LoginResponse{
+		AccessToken:  tokenPair.AccessToken,
+		RefreshToken: tokenPair.RefreshToken,
+		TokenType:    "Bearer",
+		ExpiresIn:    tokenPair.ExpiresIn,
+		ExpiresAt:    tokenPair.ExpiresAt,
+		User:         userToResponse(user),
+	})
 }

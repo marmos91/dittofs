@@ -124,6 +124,12 @@ type Store interface {
 	// Returns models.ErrGroupNotFound if the group doesn't exist.
 	GetGroupMembers(ctx context.Context, groupName string) ([]*models.User, error)
 
+	// EnsureDefaultGroups creates the default groups (admins, users) if they don't exist.
+	// Also adds the admin user to the admins group if both exist.
+	// Returns true if any groups were created.
+	// This should be called during server startup after EnsureAdminUser.
+	EnsureDefaultGroups(ctx context.Context) (created bool, err error)
+
 	// ============================================
 	// METADATA STORE OPERATIONS
 	// ============================================
@@ -330,6 +336,11 @@ type Store interface {
 	// DeleteAdapter deletes an adapter configuration by type.
 	// Returns models.ErrAdapterNotFound if the adapter doesn't exist.
 	DeleteAdapter(ctx context.Context, adapterType string) error
+
+	// EnsureDefaultAdapters creates the default NFS and SMB adapters if they don't exist.
+	// Returns true if any adapters were created.
+	// This should be called during server startup.
+	EnsureDefaultAdapters(ctx context.Context) (created bool, err error)
 
 	// ============================================
 	// SETTINGS OPERATIONS

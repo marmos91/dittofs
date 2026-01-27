@@ -3,30 +3,40 @@ package apiclient
 import (
 	"fmt"
 	"net/url"
+	"strings"
 )
+
+// normalizeShareNameForAPI strips leading slashes from share names for API URLs.
+// The server will normalize them back to include the leading slash.
+func normalizeShareNameForAPI(name string) string {
+	return strings.TrimLeft(name, "/")
+}
 
 // Share represents a share in the system.
 type Share struct {
-	Name          string `json:"name"`
-	MetadataStore string `json:"metadata_store"`
-	ContentStore  string `json:"content_store"`
-	ReadOnly      bool   `json:"read_only,omitempty"`
-	Description   string `json:"description,omitempty"`
+	Name              string `json:"name"`
+	MetadataStoreID   string `json:"metadata_store_id"`
+	PayloadStoreID    string `json:"payload_store_id"`
+	ReadOnly          bool   `json:"read_only,omitempty"`
+	DefaultPermission string `json:"default_permission,omitempty"`
+	Description       string `json:"description,omitempty"`
 }
 
 // CreateShareRequest is the request to create a share.
 type CreateShareRequest struct {
-	Name          string `json:"name"`
-	MetadataStore string `json:"metadata_store"`
-	ContentStore  string `json:"content_store"`
-	ReadOnly      bool   `json:"read_only,omitempty"`
-	Description   string `json:"description,omitempty"`
+	Name              string `json:"name"`
+	MetadataStoreID   string `json:"metadata_store_id"`
+	PayloadStoreID    string `json:"payload_store_id"`
+	ReadOnly          bool   `json:"read_only,omitempty"`
+	DefaultPermission string `json:"default_permission,omitempty"`
+	Description       string `json:"description,omitempty"`
 }
 
 // UpdateShareRequest is the request to update a share.
 type UpdateShareRequest struct {
-	ReadOnly    *bool   `json:"read_only,omitempty"`
-	Description *string `json:"description,omitempty"`
+	ReadOnly          *bool   `json:"read_only,omitempty"`
+	DefaultPermission *string `json:"default_permission,omitempty"`
+	Description       *string `json:"description,omitempty"`
 }
 
 // SharePermission represents a permission on a share.
@@ -48,7 +58,7 @@ func (c *Client) ListShares() ([]Share, error) {
 // GetShare returns a share by name.
 func (c *Client) GetShare(name string) (*Share, error) {
 	var share Share
-	if err := c.get(fmt.Sprintf("/api/v1/shares/%s", url.PathEscape(name)), &share); err != nil {
+	if err := c.get(fmt.Sprintf("/api/v1/shares/%s", url.PathEscape(normalizeShareNameForAPI(name))), &share); err != nil {
 		return nil, err
 	}
 	return &share, nil
@@ -66,7 +76,7 @@ func (c *Client) CreateShare(req *CreateShareRequest) (*Share, error) {
 // UpdateShare updates an existing share.
 func (c *Client) UpdateShare(name string, req *UpdateShareRequest) (*Share, error) {
 	var share Share
-	if err := c.put(fmt.Sprintf("/api/v1/shares/%s", url.PathEscape(name)), req, &share); err != nil {
+	if err := c.put(fmt.Sprintf("/api/v1/shares/%s", url.PathEscape(normalizeShareNameForAPI(name))), req, &share); err != nil {
 		return nil, err
 	}
 	return &share, nil
@@ -74,13 +84,13 @@ func (c *Client) UpdateShare(name string, req *UpdateShareRequest) (*Share, erro
 
 // DeleteShare deletes a share.
 func (c *Client) DeleteShare(name string) error {
-	return c.delete(fmt.Sprintf("/api/v1/shares/%s", url.PathEscape(name)), nil)
+	return c.delete(fmt.Sprintf("/api/v1/shares/%s", url.PathEscape(normalizeShareNameForAPI(name))), nil)
 }
 
 // ListSharePermissions returns permissions for a share.
 func (c *Client) ListSharePermissions(shareName string) ([]SharePermission, error) {
 	var perms []SharePermission
-	if err := c.get(fmt.Sprintf("/api/v1/shares/%s/permissions", url.PathEscape(shareName)), &perms); err != nil {
+	if err := c.get(fmt.Sprintf("/api/v1/shares/%s/permissions", url.PathEscape(normalizeShareNameForAPI(shareName))), &perms); err != nil {
 		return nil, err
 	}
 	return perms, nil
@@ -89,21 +99,21 @@ func (c *Client) ListSharePermissions(shareName string) ([]SharePermission, erro
 // SetUserSharePermission sets a user's permission on a share.
 func (c *Client) SetUserSharePermission(shareName, username, level string) error {
 	req := map[string]string{"level": level}
-	return c.put(fmt.Sprintf("/api/v1/shares/%s/permissions/users/%s", url.PathEscape(shareName), username), req, nil)
+	return c.put(fmt.Sprintf("/api/v1/shares/%s/permissions/users/%s", url.PathEscape(normalizeShareNameForAPI(shareName)), username), req, nil)
 }
 
 // RemoveUserSharePermission removes a user's permission from a share.
 func (c *Client) RemoveUserSharePermission(shareName, username string) error {
-	return c.delete(fmt.Sprintf("/api/v1/shares/%s/permissions/users/%s", url.PathEscape(shareName), username), nil)
+	return c.delete(fmt.Sprintf("/api/v1/shares/%s/permissions/users/%s", url.PathEscape(normalizeShareNameForAPI(shareName)), username), nil)
 }
 
 // SetGroupSharePermission sets a group's permission on a share.
 func (c *Client) SetGroupSharePermission(shareName, groupName, level string) error {
 	req := map[string]string{"level": level}
-	return c.put(fmt.Sprintf("/api/v1/shares/%s/permissions/groups/%s", url.PathEscape(shareName), groupName), req, nil)
+	return c.put(fmt.Sprintf("/api/v1/shares/%s/permissions/groups/%s", url.PathEscape(normalizeShareNameForAPI(shareName)), groupName), req, nil)
 }
 
 // RemoveGroupSharePermission removes a group's permission from a share.
 func (c *Client) RemoveGroupSharePermission(shareName, groupName string) error {
-	return c.delete(fmt.Sprintf("/api/v1/shares/%s/permissions/groups/%s", url.PathEscape(shareName), groupName), nil)
+	return c.delete(fmt.Sprintf("/api/v1/shares/%s/permissions/groups/%s", url.PathEscape(normalizeShareNameForAPI(shareName)), groupName), nil)
 }

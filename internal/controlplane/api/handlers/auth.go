@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
+	"github.com/marmos91/dittofs/internal/controlplane/api/middleware"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/controlplane/api/auth"
-	"github.com/marmos91/dittofs/pkg/controlplane/api/middleware"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )

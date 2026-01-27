@@ -11,7 +11,7 @@ var Cmd = &cobra.Command{
 	Short: "Group management",
 	Long: `Manage groups on the DittoFS server.
 
-Group commands allow you to create, list, update, and delete groups,
+Group commands allow you to create, list, edit, and delete groups,
 as well as manage group membership.
 These operations require admin privileges.
 
@@ -21,6 +21,9 @@ Examples:
 
   # Create a new group
   dittofsctl group create --name editors
+
+  # Edit a group interactively
+  dittofsctl group edit editors
 
   # Add a user to a group
   dittofsctl group add-user editors alice
@@ -35,6 +38,7 @@ Examples:
 func init() {
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(createCmd)
+	Cmd.AddCommand(editCmd)
 	Cmd.AddCommand(deleteCmd)
 	Cmd.AddCommand(addUserCmd)
 	Cmd.AddCommand(removeUserCmd)

@@ -27,6 +27,7 @@ type GlobalFlags struct {
 
 // GetAuthenticatedClient returns an API client configured from the current context.
 // It uses the --server and --token flags if provided, otherwise falls back to stored credentials.
+// If the access token is expired but a refresh token exists, it will automatically refresh.
 func GetAuthenticatedClient() (*apiclient.Client, error) {
 	// Check for explicit flags first
 	if Flags.ServerURL != "" && Flags.Token != "" {
@@ -51,14 +52,32 @@ func GetAuthenticatedClient() (*apiclient.Client, error) {
 		url = Flags.ServerURL
 	}
 
+	if url == "" {
+		return nil, fmt.Errorf("no server URL configured. Run 'dittofsctl login --server <url>' first")
+	}
+
 	tok := ctx.AccessToken
 	if Flags.Token != "" {
 		tok = Flags.Token
 	}
 
-	if url == "" {
-		return nil, fmt.Errorf("no server URL configured. Run 'dittofsctl login --server <url>' first")
+	// Check if token is expired and try to refresh
+	if ctx.IsExpired() && ctx.HasRefreshToken() {
+		client := apiclient.New(url)
+		newTokens, err := client.RefreshToken(ctx.RefreshToken)
+		if err != nil {
+			// Refresh failed, user needs to re-login
+			return nil, fmt.Errorf("session expired. Run 'dittofsctl login' to re-authenticate")
+		}
+
+		// Save new tokens
+		if err := store.UpdateTokens(newTokens.AccessToken, newTokens.RefreshToken, newTokens.ExpiresAt); err != nil {
+			return nil, fmt.Errorf("failed to save refreshed tokens: %w", err)
+		}
+
+		tok = newTokens.AccessToken
 	}
+
 	if tok == "" {
 		return nil, fmt.Errorf("no access token. Run 'dittofsctl login' first")
 	}
@@ -118,6 +137,20 @@ func PrintSuccess(msg string) {
 	printer.Success(msg)
 }
 
+// PrintSuccessWithInfo prints a success message followed by additional info lines.
+// The info lines are only printed in table format.
+func PrintSuccessWithInfo(msg string, infoLines ...string) {
+	format, err := GetOutputFormatParsed()
+	if err != nil || format != output.FormatTable {
+		return
+	}
+	printer := output.NewPrinter(os.Stdout, format, !IsColorDisabled())
+	printer.Success(msg)
+	for _, line := range infoLines {
+		fmt.Println(line)
+	}
+}
+
 // PrintResourceWithSuccess prints a resource in the specified format.
 // For table format, it displays a success message. For JSON/YAML, it outputs the resource.
 // This is useful for create, update, and similar operations.
@@ -160,6 +193,10 @@ func PrintResource(w io.Writer, data any, tableRenderer output.TableRenderer) er
 func RunDeleteWithConfirmation(resourceType, name string, force bool, deleteFn func() error) error {
 	confirmed, err := prompt.ConfirmWithForce(fmt.Sprintf("Delete %s '%s'?", resourceType, name), force)
 	if err != nil {
+		if prompt.IsAborted(err) {
+			fmt.Println("\nAborted.")
+			return nil
+		}
 		return err
 	}
 	if !confirmed {
@@ -205,4 +242,25 @@ func EmptyOr(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// GetConfigString extracts a string value from a config map with a default fallback.
+func GetConfigString(config map[string]any, key, defaultValue string) string {
+	if config == nil {
+		return defaultValue
+	}
+	if v, ok := config[key].(string); ok {
+		return v
+	}
+	return defaultValue
+}
+
+// HandleAbort checks if error is an abort (Ctrl+C) and prints a message.
+// Returns nil for abort (user cancelled), otherwise returns the original error.
+func HandleAbort(err error) error {
+	if prompt.IsAborted(err) {
+		fmt.Println("\nAborted.")
+		return nil
+	}
+	return err
 }

@@ -12,6 +12,7 @@ type User struct {
 	DisplayName        string            `json:"display_name,omitempty"`
 	Email              string            `json:"email,omitempty"`
 	Role               string            `json:"role"`
+	UID                *uint32           `json:"uid,omitempty"`
 	Groups             []string          `json:"groups,omitempty"`
 	Enabled            bool              `json:"enabled"`
 	MustChangePassword bool              `json:"must_change_password"`
@@ -27,6 +28,7 @@ type CreateUserRequest struct {
 	Email            string            `json:"email,omitempty"`
 	DisplayName      string            `json:"display_name,omitempty"`
 	Role             string            `json:"role,omitempty"`
+	UID              *uint32           `json:"uid,omitempty"`
 	Groups           []string          `json:"groups,omitempty"`
 	Enabled          *bool             `json:"enabled,omitempty"`
 	SharePermissions map[string]string `json:"share_permissions,omitempty"`
@@ -37,6 +39,7 @@ type UpdateUserRequest struct {
 	Email            *string            `json:"email,omitempty"`
 	DisplayName      *string            `json:"display_name,omitempty"`
 	Role             *string            `json:"role,omitempty"`
+	UID              *uint32            `json:"uid,omitempty"`
 	Groups           *[]string          `json:"groups,omitempty"`
 	Enabled          *bool              `json:"enabled,omitempty"`
 	SharePermissions *map[string]string `json:"share_permissions,omitempty"`
@@ -96,12 +99,17 @@ func (c *Client) ResetUserPassword(username, newPassword string) error {
 }
 
 // ChangeOwnPassword changes the current user's password.
-func (c *Client) ChangeOwnPassword(currentPassword, newPassword string) error {
+// Returns new tokens that should be saved to update credentials.
+func (c *Client) ChangeOwnPassword(currentPassword, newPassword string) (*TokenResponse, error) {
 	req := &ChangePasswordRequest{
 		CurrentPassword: currentPassword,
 		NewPassword:     newPassword,
 	}
-	return c.post("/api/v1/users/me/password", req, nil)
+	var resp TokenResponse
+	if err := c.post("/api/v1/users/me/password", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 // GetCurrentUser returns the currently authenticated user.

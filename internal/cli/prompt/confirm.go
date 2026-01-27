@@ -10,6 +10,7 @@ import (
 
 // Confirm prompts the user for yes/no confirmation.
 // Returns true if the user confirms, false otherwise.
+// Returns ErrAborted if the user presses Ctrl+C.
 func Confirm(label string, defaultYes bool) (bool, error) {
 	defaultStr := "y/N"
 	if defaultYes {
@@ -24,7 +25,11 @@ func Confirm(label string, defaultYes bool) (bool, error) {
 
 	result, err := prompt.Run()
 	if err != nil {
-		// promptui returns error for "n" response
+		// Ctrl+C should abort
+		if err == promptui.ErrInterrupt {
+			return false, ErrAborted
+		}
+		// promptui returns ErrAbort for "n" response
 		if err == promptui.ErrAbort {
 			return false, nil
 		}
@@ -40,6 +45,7 @@ func Confirm(label string, defaultYes bool) (bool, error) {
 
 // ConfirmDanger prompts for confirmation of a dangerous operation.
 // Requires typing the confirmation word to proceed.
+// Returns ErrAborted if the user presses Ctrl+C.
 func ConfirmDanger(label, confirmWord string) (bool, error) {
 	prompt := promptui.Prompt{
 		Label: fmt.Sprintf("%s (type '%s' to confirm)", label, confirmWord),
@@ -53,7 +59,10 @@ func ConfirmDanger(label, confirmWord string) (bool, error) {
 
 	result, err := prompt.Run()
 	if err != nil {
-		if err == promptui.ErrInterrupt || err == promptui.ErrAbort {
+		if err == promptui.ErrInterrupt {
+			return false, ErrAborted
+		}
+		if err == promptui.ErrAbort {
 			return false, nil
 		}
 		return false, err

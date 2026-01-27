@@ -12,10 +12,16 @@ type LoginRequest struct {
 
 // TokenResponse represents the response from login/refresh endpoints.
 type TokenResponse struct {
-	AccessToken  string        `json:"access_token"`
-	RefreshToken string        `json:"refresh_token"`
-	TokenType    string        `json:"token_type"`
-	ExpiresIn    time.Duration `json:"expires_in"`
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token"`
+	TokenType    string    `json:"token_type"`
+	ExpiresIn    int64     `json:"expires_in"` // seconds
+	ExpiresAt    time.Time `json:"expires_at"`
+}
+
+// ExpiresInDuration returns ExpiresIn as a time.Duration.
+func (t *TokenResponse) ExpiresInDuration() time.Duration {
+	return time.Duration(t.ExpiresIn) * time.Second
 }
 
 // Login authenticates with the server and returns tokens.

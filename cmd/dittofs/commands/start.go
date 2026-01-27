@@ -11,10 +11,13 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/telemetry"
+	"github.com/marmos91/dittofs/pkg/adapter/nfs"
+	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
-	dittoServer "github.com/marmos91/dittofs/pkg/server"
 	"github.com/spf13/cobra"
 
 	// Import prometheus metrics to register init() functions
@@ -151,24 +154,52 @@ func runStart(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
-	// Create DittoServer with shutdown timeout
-	// Note: Registry and adapters are managed via the API
-	dittoSrv := dittoServer.NewAPIOnly(cfg.ShutdownTimeout)
+	// Ensure default groups exist (admins, users) and add admin to admins group
+	groupsCreated, err := cpStore.EnsureDefaultGroups(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to ensure default groups: %w", err)
+	}
+	if groupsCreated {
+		logger.Info("Default groups created", "groups", "admins, users")
+	}
 
+	// Ensure default adapters exist (NFS and SMB)
+	adaptersCreated, err := cpStore.EnsureDefaultAdapters(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to ensure default adapters: %w", err)
+	}
+	if adaptersCreated {
+		logger.Info("Default adapters created", "adapters", "nfs, smb")
+	}
+
+	// Initialize runtime from database (loads metadata stores and shares)
+	rt, err := runtime.InitializeFromStore(ctx, cpStore)
+	if err != nil {
+		return fmt.Errorf("failed to initialize runtime: %w", err)
+	}
+	logger.Info("Runtime initialized",
+		"metadata_stores", rt.CountMetadataStores(),
+		"shares", rt.CountShares())
+
+	// Configure runtime
+	rt.SetShutdownTimeout(cfg.ShutdownTimeout)
+	rt.SetAdapterFactory(createAdapterFactory())
+
+	// Set metrics server if enabled
 	if metricsResult.Server != nil {
 		logger.Info("Metrics enabled", "port", cfg.Metrics.Port)
-		dittoSrv.SetMetricsServer(metricsResult.Server)
+		rt.SetMetricsServer(metricsResult.Server)
 	} else {
 		logger.Info("Metrics collection disabled")
 	}
 
-	// Create API server (JWT service is created internally from config)
-	apiServer, err := api.NewServer(cfg.ControlPlane, nil, cpStore)
+	// Create and set API server
+	apiServer, err := api.NewServer(cfg.ControlPlane, rt, cpStore)
 	if err != nil {
 		return fmt.Errorf("failed to create API server: %w", err)
 	}
-	dittoSrv.SetAPIServer(apiServer)
-	logger.Info("API server started", "port", cfg.ControlPlane.Port)
+	rt.SetAPIServer(apiServer)
+	logger.Info("API server configured", "port", cfg.ControlPlane.Port)
 
 	// Write PID file if specified
 	if pidFile != "" {
@@ -178,10 +209,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 		defer func() { _ = os.Remove(pidFile) }()
 	}
 
-	// Start server in background
+	// Start runtime in background (loads adapters from store automatically)
 	serverDone := make(chan error, 1)
 	go func() {
-		serverDone <- dittoSrv.Serve(ctx)
+		serverDone <- rt.Serve(ctx)
 	}()
 
 	// Wait for interrupt signal or server error
@@ -318,4 +349,36 @@ func startDaemon() error {
 	fmt.Println("Use 'dittofs status' to check server status")
 
 	return nil
+}
+
+// createAdapterFactory returns a factory function that creates protocol adapters
+// from configuration. This factory is used by Runtime to create adapters
+// dynamically when loading from store or when created via API.
+func createAdapterFactory() runtime.AdapterFactory {
+	return func(cfg *models.AdapterConfig) (runtime.ProtocolAdapter, error) {
+		switch cfg.Type {
+		case "nfs":
+			nfsCfg := nfs.NFSConfig{
+				Enabled: true,
+				Port:    cfg.Port,
+			}
+			if nfsCfg.Port == 0 {
+				nfsCfg.Port = 12049 // Default NFS port
+			}
+			return nfs.New(nfsCfg, nil), nil
+
+		case "smb":
+			smbCfg := smb.SMBConfig{
+				Enabled: true,
+				Port:    cfg.Port,
+			}
+			if smbCfg.Port == 0 {
+				smbCfg.Port = 12445 // Default SMB port
+			}
+			return smb.New(smbCfg), nil
+
+		default:
+			return nil, fmt.Errorf("unknown adapter type: %s", cfg.Type)
+		}
+	}
 }

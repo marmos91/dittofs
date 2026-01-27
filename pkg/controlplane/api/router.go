@@ -7,10 +7,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
+	"github.com/marmos91/dittofs/internal/controlplane/api/handlers"
+	apiMiddleware "github.com/marmos91/dittofs/internal/controlplane/api/middleware"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/controlplane/api/auth"
-	"github.com/marmos91/dittofs/pkg/controlplane/api/handlers"
-	apiMiddleware "github.com/marmos91/dittofs/pkg/controlplane/api/middleware"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
@@ -66,7 +66,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 
 	// API handlers - use cpStore directly since API handlers have request context
 	authHandler := handlers.NewAuthHandler(cpStore, jwtService)
-	userHandler := handlers.NewUserHandler(cpStore)
+	userHandler := handlers.NewUserHandler(cpStore, jwtService)
 
 	// API v1 routes
 	r.Route("/api/v1", func(r chi.Router) {
@@ -128,7 +128,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			r.Route("/shares", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
 
-				shareHandler := handlers.NewShareHandler(cpStore)
+				shareHandler := handlers.NewShareHandler(cpStore, rt)
 				r.Post("/", shareHandler.Create)
 				r.Get("/", shareHandler.List)
 				r.Get("/{name}", shareHandler.Get)
@@ -170,7 +170,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			r.Route("/adapters", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
 
-				adapterHandler := handlers.NewAdapterHandler(cpStore)
+				adapterHandler := handlers.NewAdapterHandler(rt)
 				r.Post("/", adapterHandler.Create)
 				r.Get("/", adapterHandler.List)
 				r.Get("/{type}", adapterHandler.Get)
