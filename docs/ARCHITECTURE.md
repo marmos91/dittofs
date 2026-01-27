@@ -13,7 +13,7 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 
 ## Core Abstraction Layers
 
-DittoFS uses a **Service-oriented architecture** with the Control Plane pattern to enable named, reusable stores that can be shared across multiple NFS exports:
+DittoFS uses a **Runtime-centric architecture** where the Runtime is the single entrypoint for all operations. This design ensures that both persistent store and in-memory state stay synchronized.
 
 ```
 ┌─────────────────────────────────────────┐
@@ -24,24 +24,30 @@ DittoFS uses a **Service-oriented architecture** with the Control Plane pattern 
                 │
                 ▼
 ┌─────────────────────────────────────────┐
-│         DittoServer                     │
-│   (Adapter lifecycle management)        │
-│   pkg/server/server.go                  │
-└───────┬─────────────────────────────────┘
-        │
-        ▼
-┌─────────────────────────────────────────┐
-│         Control Plane                   │
-│   (Configuration & Runtime state)       │
-│   pkg/controlplane/                     │
+│              Runtime                    │
+│   (Single entrypoint for all ops)       │
+│   pkg/controlplane/runtime/             │
+│                                         │
+│  ┌─────────────────────────────────┐    │
+│  │ Adapter Lifecycle Management    │    │
+│  │ • AddAdapter, CreateAdapter     │    │
+│  │ • StopAdapter, DeleteAdapter    │    │
+│  │ • LoadAdaptersFromStore         │    │
+│  └─────────────────────────────────┘    │
 │                                         │
 │  ┌────────────┐  ┌───────────────────┐  │
-│  │   Store    │  │     Runtime       │  │
-│  │ (Persist)  │  │   (Ephemeral)     │  │
+│  │   Store    │  │   In-Memory       │  │
+│  │ (Persist)  │  │     State         │  │
 │  │ users,     │  │ metadata stores,  │  │
-│  │ groups,    │  │ shares, mounts    │  │
-│  │ perms      │  │                   │  │
+│  │ groups,    │  │ shares, mounts,   │  │
+│  │ adapters   │  │ running adapters  │  │
 │  └────────────┘  └───────────────────┘  │
+│                                         │
+│  ┌─────────────────────────────────┐    │
+│  │ Auxiliary Servers               │    │
+│  │ • API Server (:8080)            │    │
+│  │ • Metrics Server (:9090)        │    │
+│  └─────────────────────────────────┘    │
 └───────┬─────────────────────────────────┘
         │
         ▼
@@ -50,8 +56,8 @@ DittoFS uses a **Service-oriented architecture** with the Control Plane pattern 
 │   (Business logic & coordination)       │
 │                                         │
 │  ┌─────────────────┐ ┌────────────────┐ │
-│  │ MetadataService │ │  BlockService  │ │
-│  │ pkg/metadata/   │ │  pkg/blocks/   │ │
+│  │ MetadataService │ │ PayloadService │ │
+│  │ pkg/metadata/   │ │  pkg/payload/  │ │
 │  │ service.go      │ │  service.go    │ │
 │  └────────┬────────┘ └───────┬────────┘ │
 │           │                  │          │
@@ -64,7 +70,7 @@ DittoFS uses a **Service-oriented architecture** with the Control Plane pattern 
 │           │    │    │    └────┬─────┘ │ │
 │           │    │    │ ┌──────▼──────┐ │ │
 │           │    │    │ │     WAL     │ │ │
-│           │    │    │ │  pkg/cache/wal/   │ │ │
+│           │    │    │ │pkg/cache/wal│ │ │
 │           │    │    └─┴─────────────┘ │ │
 │           │    └─────────────────────┘ │
 └───────────┼────────────────────────────┘
@@ -83,17 +89,26 @@ DittoFS uses a **Service-oriented architecture** with the Control Plane pattern 
 
 ### Key Interfaces
 
-**1. Control Plane** (`pkg/controlplane/`)
-- Central management component for DittoFS
-- **Store** (`pkg/controlplane/store/`): Persistent configuration (users, groups, permissions)
-- **Runtime** (`pkg/controlplane/runtime/`): Ephemeral state (metadata stores, shares, mounts)
-- **API** (`pkg/controlplane/api/`): REST API for management operations
-- Owns and coordinates Services (MetadataService, PayloadService)
+**1. Runtime** (`pkg/controlplane/runtime/`)
+- **Single entrypoint for all operations** - both API handlers and internal code
+- Updates both persistent store AND in-memory state together
+- Manages adapter lifecycle (create, start, stop, delete)
+- Owns auxiliary servers (API, Metrics)
+- Coordinates Services (MetadataService, PayloadService)
+- Key methods:
+  - `Serve(ctx)`: Starts all adapters and servers, blocks until shutdown
+  - `CreateAdapter(ctx, cfg)`: Saves to store AND starts immediately
+  - `DeleteAdapter(ctx, type)`: Stops adapter AND removes from store
+  - `AddAdapter(adapter)`: Direct adapter injection (for testing)
 
-**2. Adapter Interface** (`pkg/adapter/adapter.go`)
+**2. Control Plane Store** (`pkg/controlplane/store/`)
+- Persistent configuration (users, groups, permissions, adapters)
+- SQLite (single-node) or PostgreSQL (distributed)
+
+**3. Adapter Interface** (`pkg/adapter/adapter.go`)
 - Each protocol implements the `Adapter` interface
 - Adapters receive a Runtime reference to access services
-- Lifecycle: `SetRegistry() → Serve() → Stop()`
+- Lifecycle: `SetRuntime() → Serve() → Stop()`
 - Multiple adapters can share the same runtime
 - Thread-safe, supports graceful shutdown
 
@@ -163,32 +178,35 @@ DittoFS uses a **Service-oriented architecture** with the Control Plane pattern 
 DittoFS uses the Adapter pattern to provide clean protocol abstractions:
 
 ```go
-// Adapter interface - each protocol implements this
-type Adapter interface {
+// ProtocolAdapter interface (defined in runtime package to avoid import cycles)
+type ProtocolAdapter interface {
     Serve(ctx context.Context) error
     Stop(ctx context.Context) error
     Protocol() string
     Port() int
-    SetRegistry(registry *Registry)  // Receive registry for service access
 }
 
-// Example: NFS Adapter accesses services via registry
+// RuntimeSetter - adapters that need runtime access implement this
+type RuntimeSetter interface {
+    SetRuntime(rt *Runtime)
+}
+
+// Example: NFS Adapter accesses services via runtime
 type NFSAdapter struct {
-    config   NFSConfig
-    registry *Registry  // Access to MetadataService and BlockService
+    config  NFSConfig
+    runtime *runtime.Runtime  // Access to MetadataService and PayloadService
 }
 
 func (a *NFSAdapter) handleRead(ctx context.Context, req *ReadRequest) {
-    // Use BlockService for reads (handles caching automatically)
-    data, err := a.registry.BlockService().ReadAt(ctx, shareName, contentID, offset, size)
+    // Use PayloadService for reads (handles caching automatically)
+    data, err := a.runtime.GetPayloadService().ReadAt(ctx, shareName, contentID, offset, size)
     // ...
 }
 
-// Multiple adapters can run concurrently, sharing the same services
-server := dittofs.NewServer(config)
-server.AddAdapter(nfs.New(nfsConfig))
-server.AddAdapter(smb.New(smbConfig))
-server.Serve(ctx)
+// Multiple adapters can run concurrently, sharing the same runtime
+rt := runtime.New(cpStore)
+rt.SetAdapterFactory(createAdapterFactory())
+rt.Serve(ctx)  // Loads adapters from store and starts them
 ```
 
 ## Control Plane Pattern

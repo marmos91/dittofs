@@ -407,31 +407,29 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
                 │
                 ▼
 ┌─────────────────────────────────────────┐
-│         DittoServer                     │
-│   (Adapter lifecycle management)        │
-│   pkg/server/server.go                  │
-└───────┬─────────────────────────────────┘
-        │
-        ▼
-┌─────────────────────────────────────────┐
-│         Control Plane                   │
-│   (Configuration & Runtime)             │
-│   pkg/controlplane/                     │
+│              Runtime                    │
+│   (Single entrypoint for all ops)       │
+│   pkg/controlplane/runtime/             │
 │                                         │
 │  ┌─────────────────────────────────┐    │
-│  │ Store (SQLite/PostgreSQL)       │    │
-│  │ - Users, Groups, Permissions    │    │
-│  │ - Shares, Settings              │    │
+│  │ Adapter Lifecycle Management    │    │
+│  │ • AddAdapter, CreateAdapter     │    │
+│  │ • StopAdapter, DeleteAdapter    │    │
+│  │ • LoadAdaptersFromStore         │    │
 │  └─────────────────────────────────┘    │
+│                                         │
+│  ┌────────────┐  ┌───────────────────┐  │
+│  │   Store    │  │   In-Memory       │  │
+│  │ (Persist)  │  │     State         │  │
+│  │ users,     │  │ metadata stores,  │  │
+│  │ groups,    │  │ shares, mounts,   │  │
+│  │ adapters   │  │ running adapters  │  │
+│  └────────────┘  └───────────────────┘  │
+│                                         │
 │  ┌─────────────────────────────────┐    │
-│  │ Runtime                         │    │
-│  │ - Metadata Stores (named)       │    │
-│  │ - Shares (active)               │    │
-│  │ - Mounts (ephemeral)            │    │
-│  └─────────────────────────────────┘    │
-│  ┌─────────────────────────────────┐    │
-│  │ REST API (JWT auth)             │    │
-│  │ - /api/v1/users, groups, shares │    │
+│  │ Auxiliary Servers               │    │
+│  │ • API Server (:8080)            │    │
+│  │ • Metrics Server (:9090)        │    │
 │  └─────────────────────────────────┘    │
 └───────┬───────────────────┬─────────────┘
         │                   │
@@ -442,7 +440,7 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 │                │  │  ┌──────────────┐  │
 │  - Memory      │  │  │ Cache + WAL  │  │
 │  - BadgerDB    │  │  │ pkg/cache/   │  │
-│  - PostgreSQL  │  │  │ pkg/cache/wal/     │  │
+│  - PostgreSQL  │  │  │ pkg/cache/wal│  │
 │                │  │  └──────┬───────┘  │
 │                │  │         │          │
 │                │  │  ┌──────▼───────┐  │
@@ -460,29 +458,35 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 
 ### Key Interfaces
 
-**1. Control Plane** (`pkg/controlplane/`)
-The control plane provides centralized management for DittoFS:
+**1. Runtime** (`pkg/controlplane/runtime/`)
+- **Single entrypoint for all operations** - both API handlers and internal code
+- Updates both persistent store AND in-memory state together
+- Manages adapter lifecycle (create, start, stop, delete)
+- Owns auxiliary servers (API, Metrics)
+- Coordinates Services (MetadataService, PayloadService)
+- Key methods:
+  - `Serve(ctx)`: Starts all adapters and servers, blocks until shutdown
+  - `CreateAdapter(ctx, cfg)`: Saves to store AND starts immediately
+  - `DeleteAdapter(ctx, type)`: Stops adapter AND removes from store
+  - `AddAdapter(adapter)`: Direct adapter injection (for testing)
 
-- **Store** (`pkg/controlplane/store/`): GORM-based persistent storage for configuration
-  - Users, groups, and their permissions
-  - Share configurations
-  - Settings and metadata/payload store configs
-  - Supports SQLite (single-node) and PostgreSQL (HA)
+**2. Control Plane Store** (`pkg/controlplane/store/`)
+- GORM-based persistent storage for configuration
+- Users, groups, and their permissions
+- Share configurations
+- Settings and metadata/payload store configs
+- Supports SQLite (single-node) and PostgreSQL (HA)
 
-- **Runtime** (`pkg/controlplane/runtime/`): Ephemeral state management
-  - Active metadata store instances
-  - Loaded shares with root handles
-  - Mount tracking (NFS/SMB)
-  - Identity resolution for protocol operations
+**3. API Server** (`pkg/controlplane/api/`)
+- REST API with JWT authentication
+- User/group CRUD operations
+- Share management
+- Health checks
+- Thin handlers that delegate to Runtime methods
 
-- **API** (`pkg/controlplane/api/`): REST API with JWT authentication
-  - User/group CRUD operations
-  - Share management
-  - Health checks
-
-**2. Adapter Interface** (`pkg/adapter/adapter.go`)
-- Each protocol implements the `Adapter` interface
-- Adapters receive a runtime reference to resolve stores per-share
+**4. Adapter Interface** (`pkg/adapter/adapter.go`)
+- Each protocol implements the `ProtocolAdapter` interface
+- Adapters receive a runtime reference via `SetRuntime()`
 - Lifecycle: `SetRuntime() → Serve() → Stop()`
 - Multiple adapters can share the same runtime
 - Thread-safe, supports graceful shutdown
@@ -615,9 +619,6 @@ dittofs/
 │   │   ├── config.go         # Main config struct
 │   │   ├── stores.go         # Store and transfer manager creation
 │   │   └── runtime.go        # Runtime initialization
-│   │
-│   ├── server/               # DittoServer orchestration
-│   │   └── server.go         # Multi-adapter server management
 │   │
 │   └── apiclient/            # REST API client library
 │       ├── client.go         # HTTP client with token auth

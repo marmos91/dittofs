@@ -20,7 +20,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
-	"github.com/marmos91/dittofs/pkg/server"
 	"github.com/marmos91/dittofs/test/e2e/framework"
 )
 
@@ -118,9 +117,7 @@ func TestLinuxSMBMount(t *testing.T) {
 		t.Fatalf("Failed to add share: %v", err)
 	}
 
-	// Create and start server
-	srv := server.New(reg, 30*time.Second)
-
+	// Create and add SMB adapter to runtime
 	smbConfig := smb.SMBConfig{
 		Enabled:        true,
 		Port:           smbPort,
@@ -133,18 +130,16 @@ func TestLinuxSMBMount(t *testing.T) {
 		},
 	}
 	smbAdapter := smb.New(smbConfig)
-	if err := srv.AddAdapter(smbAdapter); err != nil {
+	if err := reg.AddAdapter(smbAdapter); err != nil {
 		t.Fatalf("Failed to add SMB adapter: %v", err)
 	}
 
-	// Start server in background
-	go func() {
-		if err := srv.Serve(ctx); err != nil && err != context.Canceled {
-			t.Logf("Server error: %v", err)
-		}
+	// Cleanup adapters when done
+	defer func() {
+		_ = reg.StopAllAdapters()
 	}()
 
-	// Wait for server to be ready
+	// Wait for adapter to be ready
 	framework.WaitForServer(t, smbPort, 10*time.Second)
 
 	// Run Docker tests

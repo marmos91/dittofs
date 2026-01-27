@@ -17,11 +17,10 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/server"
 )
 
 // TestContext provides a complete testing environment with:
-// - Running DittoFS server
+// - Running DittoFS runtime
 // - NFS mount (always available)
 // - SMB mount (when EnableSMB is true, default: true)
 // - Cleanup mechanisms
@@ -31,8 +30,7 @@ import (
 type TestContext struct {
 	T             *testing.T
 	Config        *TestConfig
-	Server        *server.DittoServer
-	Registry      *runtime.Runtime
+	Runtime       *runtime.Runtime
 	MetadataStore metadata.MetadataStore
 
 	// Protocol mounts
@@ -160,7 +158,7 @@ func (tc *TestContext) setupStores() {
 	}
 }
 
-// startServer starts the DittoFS server with configured adapters.
+// startServer starts the DittoFS runtime with configured adapters.
 func (tc *TestContext) startServer() {
 	tc.T.Helper()
 
@@ -178,8 +176,8 @@ func (tc *TestContext) startServer() {
 		cpStore = tc.createUserStore()
 	}
 
-	// Create Registry with optional control plane store
-	tc.Registry = runtime.New(cpStore)
+	// Create Runtime with optional control plane store
+	tc.Runtime = runtime.New(cpStore)
 
 	// Register metadata store
 	port := tc.NFSPort
@@ -188,12 +186,12 @@ func (tc *TestContext) startServer() {
 	}
 
 	storeName := fmt.Sprintf("test-metadata-%d", port)
-	if err := tc.Registry.RegisterMetadataStore(storeName, tc.MetadataStore); err != nil {
+	if err := tc.Runtime.RegisterMetadataStore(storeName, tc.MetadataStore); err != nil {
 		tc.T.Fatalf("Failed to register metadata store: %v", err)
 	}
 
 	// Create share with appropriate permissions
-	// Note: No content store or cache registration needed - Registry handles it
+	// Note: No content store or cache registration needed - Runtime handles it
 	mode := uint32(0755)
 	if tc.options.EnableSMB {
 		mode = 0777 // Allow SMB test user to write
@@ -214,12 +212,9 @@ func (tc *TestContext) startServer() {
 		},
 	}
 
-	if err := tc.Registry.AddShare(tc.ctx, shareConfig); err != nil {
+	if err := tc.Runtime.AddShare(tc.ctx, shareConfig); err != nil {
 		tc.T.Fatalf("Failed to add share: %v", err)
 	}
-
-	// Create DittoServer
-	tc.Server = server.New(tc.Registry, 30*time.Second)
 
 	// Add NFS adapter if enabled
 	if tc.options.EnableNFS {
@@ -235,7 +230,7 @@ func (tc *TestContext) startServer() {
 			},
 		}
 		nfsAdapter := nfs.New(nfsConfig, nil)
-		if err := tc.Server.AddAdapter(nfsAdapter); err != nil {
+		if err := tc.Runtime.AddAdapter(nfsAdapter); err != nil {
 			tc.T.Fatalf("Failed to add NFS adapter: %v", err)
 		}
 	}
@@ -254,21 +249,12 @@ func (tc *TestContext) startServer() {
 			},
 		}
 		smbAdapter := smb.New(smbConfig)
-		if err := tc.Server.AddAdapter(smbAdapter); err != nil {
+		if err := tc.Runtime.AddAdapter(smbAdapter); err != nil {
 			tc.T.Fatalf("Failed to add SMB adapter: %v", err)
 		}
 	}
 
-	// Start server in background
-	tc.wg.Add(1)
-	go func() {
-		defer tc.wg.Done()
-		if err := tc.Server.Serve(tc.ctx); err != nil && err != context.Canceled {
-			tc.T.Logf("Server error: %v", err)
-		}
-	}()
-
-	// Wait for servers to be ready
+	// Wait for adapters to be ready
 	if tc.options.EnableNFS {
 		WaitForServer(tc.T, tc.NFSPort, 10*time.Second)
 	}
@@ -335,7 +321,7 @@ func (tc *TestContext) mountFilesystems() {
 	}
 }
 
-// Cleanup unmounts filesystems, stops the server, and cleans up resources.
+// Cleanup unmounts filesystems, stops the runtime, and cleans up resources.
 func (tc *TestContext) Cleanup() {
 	tc.T.Helper()
 
@@ -347,13 +333,15 @@ func (tc *TestContext) Cleanup() {
 		tc.SMB.Cleanup()
 	}
 
-	// Stop server
+	// Stop all adapters
+	if tc.Runtime != nil {
+		_ = tc.Runtime.StopAllAdapters()
+	}
+
+	// Cancel context
 	if tc.cancel != nil {
 		tc.cancel()
 	}
-
-	// Wait for server to stop
-	tc.wg.Wait()
 
 	// Close metadata store
 	if tc.MetadataStore != nil {
