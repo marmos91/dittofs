@@ -621,7 +621,7 @@ func (s *MetadataService) checkWritePermission(ctx *AuthContext, handle FileHand
 
 	if granted&PermissionWrite == 0 {
 		return &StoreError{
-			Code:    ErrPermissionDenied,
+			Code:    ErrAccessDenied,
 			Message: "write permission denied",
 		}
 	}
@@ -638,7 +638,7 @@ func (s *MetadataService) checkReadPermission(ctx *AuthContext, handle FileHandl
 
 	if granted&PermissionRead == 0 {
 		return &StoreError{
-			Code:    ErrPermissionDenied,
+			Code:    ErrAccessDenied,
 			Message: "read permission denied",
 		}
 	}
@@ -655,7 +655,7 @@ func (s *MetadataService) checkExecutePermission(ctx *AuthContext, handle FileHa
 
 	if granted&PermissionExecute == 0 {
 		return &StoreError{
-			Code:    ErrPermissionDenied,
+			Code:    ErrAccessDenied,
 			Message: "execute permission denied",
 		}
 	}

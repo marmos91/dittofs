@@ -447,12 +447,13 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		}
 	}
 
-	// POSIX: Clear SUID/SGID bits when ownership changes on regular files
+	// POSIX: Clear SUID/SGID bits when ownership changes on non-directory files
 	// This is a security measure to prevent privilege escalation.
 	// For directories, SGID has different meaning (inherit group) and should NOT be cleared.
+	// For symlinks, permissions aren't used (target permissions matter), so we skip them.
 	// Note: This clears SUID/SGID regardless of who does the chown (including root),
 	// matching Linux kernel behavior.
-	if ownershipChanged && file.Type == FileTypeRegular {
+	if ownershipChanged && file.Type != FileTypeDirectory && file.Type != FileTypeSymlink {
 		// Clear SUID (04000) and SGID (02000) bits
 		file.Mode &= ^uint32(0o6000)
 	}
