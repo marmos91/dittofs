@@ -832,7 +832,7 @@ func TestMetadataService_SetFileAttributes(t *testing.T) {
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
 		require.ErrorAs(t, err, &storeErr)
-		assert.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+		assert.Equal(t, metadata.ErrPermissionDenied, storeErr.Code)
 	})
 
 	t.Run("root can change owner", func(t *testing.T) {

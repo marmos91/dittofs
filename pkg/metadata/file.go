@@ -381,6 +381,9 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		modified = true
 	}
 
+	// Track if ownership changed (for SUID/SGID clearing)
+	ownershipChanged := false
+
 	if attrs.UID != nil {
 		// Only root can change owner to a different UID
 		// Owner can set UID to their own UID (no-op for chown(file, same_uid, new_gid))
@@ -394,6 +397,7 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		if *attrs.UID != file.UID {
 			file.UID = *attrs.UID
 			modified = true
+			ownershipChanged = true
 		}
 	}
 
@@ -417,8 +421,19 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 				}
 			}
 		}
-		file.GID = *attrs.GID
-		modified = true
+		if *attrs.GID != file.GID {
+			file.GID = *attrs.GID
+			modified = true
+			ownershipChanged = true
+		}
+	}
+
+	// POSIX: Clear SUID/SGID bits when ownership changes on regular files
+	// This is a security measure to prevent privilege escalation.
+	// For directories, SGID has different meaning (inherit group) and should NOT be cleared.
+	if ownershipChanged && file.Type == FileTypeRegular && !isRoot {
+		// Clear SUID (04000) and SGID (02000) bits
+		file.Mode &= ^uint32(0o6000)
 	}
 
 	if attrs.Size != nil {
@@ -428,6 +443,11 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		}
 		file.Size = *attrs.Size
 		modified = true
+
+		// POSIX: Clear SUID/SGID bits on truncate for non-root users (like write)
+		if file.Type == FileTypeRegular && !isRoot {
+			file.Mode &= ^uint32(0o6000)
+		}
 	}
 
 	if attrs.Atime != nil {
@@ -443,7 +463,13 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 	// Always update ctime when attributes change
 	if modified {
 		file.Ctime = now
-		return store.PutFile(ctx.Context, file)
+		if err := store.PutFile(ctx.Context, file); err != nil {
+			return err
+		}
+
+		// Invalidate cached file in pending writes to ensure subsequent
+		// writes use fresh attributes (e.g., mode changes for SUID/SGID clearing)
+		s.pendingWrites.InvalidateCache(handle)
 	}
 
 	return nil

@@ -37,16 +37,9 @@ jobs:
 
       - name: Build DittoFS binaries
         run: |
-          nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go
-          nix develop .#ci --command go build -o dittofsctl cmd/dittofsctl/main.go
-
-      - name: Build pjdfstest
-        run: |
-          PJDFSTEST=$(nix build .#pjdfstest --print-out-paths)
-          # Copy to local directory for artifact upload
-          mkdir -p pjdfstest-dist
-          cp -r "$PJDFSTEST/bin" pjdfstest-dist/
-          cp -r "$PJDFSTEST/share" pjdfstest-dist/
+          # Build static binaries so they work outside the Nix environment
+          nix develop .#ci --command sh -c "CGO_ENABLED=0 go build -o dittofs cmd/dittofs/main.go"
+          nix develop .#ci --command sh -c "CGO_ENABLED=0 go build -o dittofsctl cmd/dittofsctl/main.go"
 
       - name: Upload binaries
         uses: actions/upload-artifact@v4
@@ -55,7 +48,6 @@ jobs:
           path: |
             dittofs
             dittofsctl
-            pjdfstest-dist
           retention-days: 1
 
   posix-memory:
@@ -68,6 +60,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
       - name: Install NFS client utilities
         run: sudo apt-get update && sudo apt-get install -y nfs-common
 
@@ -77,14 +75,34 @@ jobs:
           name: dittofs-binaries
 
       - name: Make binaries executable
-        run: chmod +x dittofs dittofsctl pjdfstest-dist/bin/*
+        run: chmod +x dittofs dittofsctl
+
+      - name: Build pjdfstest in Nix
+        run: |
+          PJDFSTEST=$(nix build .#pjdfstest --print-out-paths)
+          echo "PJDFSTEST_DIR=$PJDFSTEST" >> $GITHUB_ENV
 
       - name: Setup DittoFS (Memory)
+        id: setup
         run: sudo -E ./test/posix/setup-posix.sh memory
+
+      - name: Debug - Show server log on failure
+        if: failure() && steps.setup.outcome == 'failure'
+        run: |
+          echo "=== Server Log ==="
+          cat /tmp/dittofs-posix-server.log 2>/dev/null || echo "No server log found"
+          echo ""
+          echo "=== Process List ==="
+          ps aux | grep dittofs || true
+          echo ""
+          echo "=== Port 8080 ==="
+          ss -tlnp | grep 8080 || echo "Port 8080 not listening"
+          echo ""
+          echo "=== Port 12049 ==="
+          ss -tlnp | grep 12049 || echo "Port 12049 not listening"
 
       - name: Run POSIX tests
         run: |
-          PJDFSTEST_DIR="$(pwd)/pjdfstest-dist"
           TESTS_DIR="$PJDFSTEST_DIR/share/pjdfstest/tests"
 
           cd $DITTOFS_MOUNT
@@ -99,6 +117,13 @@ jobs:
 
       - name: Verify pass rate
         run: |
+          # First check for critical errors that mean tests didn't actually run
+          if grep -q "could not find pjdfstest" ~/posix-memory.log; then
+            echo "✗ CRITICAL: pjdfstest binary not found or not executable!"
+            echo "::error::pjdfstest not found - tests did not run"
+            exit 1
+          fi
+
           # Check for test failures in the log
           # Expected: Only 1 known failure (utimensat/09.t test 5 - NFSv3 timestamp limit)
 
@@ -139,7 +164,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: posix-memory-results
-          path: ~/posix-memory.log
+          path: |
+            ~/posix-memory.log
+            /tmp/dittofs-posix-server.log
           retention-days: 30
 
   posix-badger:
@@ -152,6 +179,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
       - name: Install NFS client utilities
         run: sudo apt-get update && sudo apt-get install -y nfs-common
 
@@ -161,14 +194,31 @@ jobs:
           name: dittofs-binaries
 
       - name: Make binaries executable
-        run: chmod +x dittofs dittofsctl pjdfstest-dist/bin/*
+        run: chmod +x dittofs dittofsctl
+
+      - name: Build pjdfstest in Nix
+        run: |
+          PJDFSTEST=$(nix build .#pjdfstest --print-out-paths)
+          echo "PJDFSTEST_DIR=$PJDFSTEST" >> $GITHUB_ENV
 
       - name: Setup DittoFS (BadgerDB)
+        id: setup-badger
         run: sudo -E ./test/posix/setup-posix.sh badger
+
+      - name: Debug - Show server log on failure
+        if: failure() && steps.setup-badger.outcome == 'failure'
+        run: |
+          echo "=== Server Log ==="
+          cat /tmp/dittofs-posix-server.log 2>/dev/null || echo "No server log found"
+          echo ""
+          echo "=== Process List ==="
+          ps aux | grep dittofs || true
+          echo ""
+          echo "=== Port 8080 ==="
+          ss -tlnp | grep 8080 || echo "Port 8080 not listening"
 
       - name: Run POSIX tests
         run: |
-          PJDFSTEST_DIR="$(pwd)/pjdfstest-dist"
           TESTS_DIR="$PJDFSTEST_DIR/share/pjdfstest/tests"
 
           cd $DITTOFS_MOUNT
@@ -182,6 +232,13 @@ jobs:
 
       - name: Verify pass rate
         run: |
+          # First check for critical errors that mean tests didn't actually run
+          if grep -q "could not find pjdfstest" ~/posix-badger.log; then
+            echo "✗ CRITICAL: pjdfstest binary not found or not executable!"
+            echo "::error::pjdfstest not found - tests did not run"
+            exit 1
+          fi
+
           # Check for test failures in the log
           # Expected: Only 1 known failure (utimensat/09.t test 5 - NFSv3 timestamp limit)
 
@@ -221,7 +278,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: posix-badger-results
-          path: ~/posix-badger.log
+          path: |
+            ~/posix-badger.log
+            /tmp/dittofs-posix-server.log
           retention-days: 30
 
   posix-postgres:
@@ -249,6 +308,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
       - name: Install NFS client utilities
         run: sudo apt-get update && sudo apt-get install -y nfs-common
 
@@ -258,14 +323,31 @@ jobs:
           name: dittofs-binaries
 
       - name: Make binaries executable
-        run: chmod +x dittofs dittofsctl pjdfstest-dist/bin/*
+        run: chmod +x dittofs dittofsctl
+
+      - name: Build pjdfstest in Nix
+        run: |
+          PJDFSTEST=$(nix build .#pjdfstest --print-out-paths)
+          echo "PJDFSTEST_DIR=$PJDFSTEST" >> $GITHUB_ENV
 
       - name: Setup DittoFS (PostgreSQL)
+        id: setup-postgres
         run: sudo -E ./test/posix/setup-posix.sh postgres
+
+      - name: Debug - Show server log on failure
+        if: failure() && steps.setup-postgres.outcome == 'failure'
+        run: |
+          echo "=== Server Log ==="
+          cat /tmp/dittofs-posix-server.log 2>/dev/null || echo "No server log found"
+          echo ""
+          echo "=== Process List ==="
+          ps aux | grep dittofs || true
+          echo ""
+          echo "=== Port 8080 ==="
+          ss -tlnp | grep 8080 || echo "Port 8080 not listening"
 
       - name: Run POSIX tests
         run: |
-          PJDFSTEST_DIR="$(pwd)/pjdfstest-dist"
           TESTS_DIR="$PJDFSTEST_DIR/share/pjdfstest/tests"
 
           cd $DITTOFS_MOUNT
@@ -279,6 +361,13 @@ jobs:
 
       - name: Verify pass rate
         run: |
+          # First check for critical errors that mean tests didn't actually run
+          if grep -q "could not find pjdfstest" ~/posix-postgres.log; then
+            echo "✗ CRITICAL: pjdfstest binary not found or not executable!"
+            echo "::error::pjdfstest not found - tests did not run"
+            exit 1
+          fi
+
           # Check for test failures in the log
           # Expected: Only 1 known failure (utimensat/09.t test 5 - NFSv3 timestamp limit)
 
@@ -318,7 +407,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: posix-postgres-results
-          path: ~/posix-postgres.log
+          path: |
+            ~/posix-postgres.log
+            /tmp/dittofs-posix-server.log
           retention-days: 30
 
   summary:
