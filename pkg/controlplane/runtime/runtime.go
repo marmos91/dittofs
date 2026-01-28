@@ -481,16 +481,15 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 
 	// Create share struct
 	share := &Share{
-		Name:                     config.Name,
-		MetadataStore:            config.MetadataStore,
-		RootHandle:               rootHandle,
-		ReadOnly:                 config.ReadOnly,
-		DefaultPermission:        config.DefaultPermission,
-		MapAllToAnonymous:        config.MapAllToAnonymous,
-		MapPrivilegedToAnonymous: config.MapPrivilegedToAnonymous,
-		AnonymousUID:             config.AnonymousUID,
-		AnonymousGID:             config.AnonymousGID,
-		DisableReaddirplus:       config.DisableReaddirplus,
+		Name:               config.Name,
+		MetadataStore:      config.MetadataStore,
+		RootHandle:         rootHandle,
+		ReadOnly:           config.ReadOnly,
+		DefaultPermission:  config.DefaultPermission,
+		Squash:             config.Squash,
+		AnonymousUID:       config.AnonymousUID,
+		AnonymousGID:       config.AnonymousGID,
+		DisableReaddirplus: config.DisableReaddirplus,
 	}
 
 	r.shares[config.Name] = share
@@ -658,10 +657,14 @@ func (r *Runtime) ListMounts() []*MountInfo {
 
 // ApplyIdentityMapping applies share-level identity mapping rules.
 //
-// This implements:
-//   - anonymous access: Maps nil UID/GID (AUTH_NULL) to anonymous credentials
-//   - all_squash: Maps all users to anonymous
-//   - root_squash: Maps root (UID 0) to anonymous
+// This implements Synology-style squash modes:
+//   - none: No mapping, UIDs pass through unchanged
+//   - root_to_admin: Root (UID 0) retains admin privileges (default)
+//   - root_to_guest: Root (UID 0) is mapped to anonymous (root_squash)
+//   - all_to_admin: All users are mapped to root (UID 0)
+//   - all_to_guest: All users are mapped to anonymous (all_squash)
+//
+// AUTH_NULL (nil UID) is always mapped to anonymous regardless of squash mode.
 func (r *Runtime) ApplyIdentityMapping(shareName string, identity *metadata.Identity) (*metadata.Identity, error) {
 	r.mu.RLock()
 	share, exists := r.shares[shareName]
@@ -679,21 +682,50 @@ func (r *Runtime) ApplyIdentityMapping(shareName string, identity *metadata.Iden
 		Username: identity.Username,
 	}
 
-	// Determine if we need to map to anonymous
-	shouldMapToAnonymous := identity.UID == nil || // AUTH_NULL
-		share.MapAllToAnonymous || // all_squash
-		(share.MapPrivilegedToAnonymous && identity.UID != nil && *identity.UID == 0) // root_squash
+	// Handle AUTH_NULL (anonymous access) - always map to anonymous
+	if identity.UID == nil {
+		applyAnonymousIdentity(effective, share.AnonymousUID, share.AnonymousGID)
+		return effective, nil
+	}
 
-	if shouldMapToAnonymous {
-		anonUID := share.AnonymousUID
-		anonGID := share.AnonymousGID
-		effective.UID = &anonUID
-		effective.GID = &anonGID
-		effective.GIDs = []uint32{anonGID}
-		effective.Username = fmt.Sprintf("anonymous(%d)", anonUID)
+	// Apply squash based on mode
+	switch share.Squash {
+	case models.SquashNone, models.SquashRootToAdmin:
+		// No mapping - UIDs pass through (root keeps admin)
+
+	case models.SquashRootToGuest:
+		// Map root (UID 0) to anonymous
+		if *identity.UID == 0 {
+			applyAnonymousIdentity(effective, share.AnonymousUID, share.AnonymousGID)
+		}
+
+	case models.SquashAllToAdmin:
+		// Map all users to root
+		applyRootIdentity(effective)
+
+	case models.SquashAllToGuest:
+		// Map all users to anonymous
+		applyAnonymousIdentity(effective, share.AnonymousUID, share.AnonymousGID)
 	}
 
 	return effective, nil
+}
+
+// applyAnonymousIdentity sets the identity to anonymous with the given UID/GID.
+func applyAnonymousIdentity(identity *metadata.Identity, anonUID, anonGID uint32) {
+	identity.UID = &anonUID
+	identity.GID = &anonGID
+	identity.GIDs = []uint32{anonGID}
+	identity.Username = fmt.Sprintf("anonymous(%d)", anonUID)
+}
+
+// applyRootIdentity sets the identity to root (UID/GID 0).
+func applyRootIdentity(identity *metadata.Identity) {
+	rootUID, rootGID := uint32(0), uint32(0)
+	identity.UID = &rootUID
+	identity.GID = &rootGID
+	identity.GIDs = []uint32{rootGID}
+	identity.Username = "root"
 }
 
 // GetShareNameForHandle extracts the share name from a file handle.

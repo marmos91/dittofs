@@ -371,132 +371,110 @@ func TestShareOperations(t *testing.T) {
 }
 
 func TestApplyIdentityMapping(t *testing.T) {
-	rt := New(nil)
-
-	// Add a share directly for testing identity mapping
-	rt.mu.Lock()
-	rt.shares["/export"] = &Share{
-		Name:                     "/export",
-		MapAllToAnonymous:        false,
-		MapPrivilegedToAnonymous: false,
-		AnonymousUID:             65534,
-		AnonymousGID:             65534,
+	// Helper to create a fresh runtime with a share for each test
+	setupRuntime := func(squash models.SquashMode) *Runtime {
+		rt := New(nil)
+		rt.mu.Lock()
+		rt.shares["/export"] = &Share{
+			Name:         "/export",
+			Squash:       squash,
+			AnonymousUID: 65534,
+			AnonymousGID: 65534,
+		}
+		rt.mu.Unlock()
+		return rt
 	}
-	rt.mu.Unlock()
 
-	t.Run("normal user passes through", func(t *testing.T) {
-		uid := uint32(1000)
-		gid := uint32(1000)
-		identity := &metadata.Identity{
+	// Helper to create identity with UID/GID
+	makeIdentity := func(uid, gid uint32, username string) *metadata.Identity {
+		return &metadata.Identity{
 			UID:      &uid,
 			GID:      &gid,
-			Username: "testuser",
+			Username: username,
 		}
+	}
+
+	t.Run("AUTH_NULL always maps to anonymous", func(t *testing.T) {
+		rt := setupRuntime(models.SquashRootToAdmin)
+		identity := &metadata.Identity{UID: nil, GID: nil}
 
 		effective, err := rt.ApplyIdentityMapping("/export", identity)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if *effective.UID != 1000 {
-			t.Errorf("expected UID 1000, got %d", *effective.UID)
-		}
-		if effective.Username != "testuser" {
-			t.Errorf("expected username 'testuser', got %q", effective.Username)
-		}
-	})
-
-	t.Run("AUTH_NULL maps to anonymous", func(t *testing.T) {
-		identity := &metadata.Identity{
-			UID: nil, // AUTH_NULL
-			GID: nil,
-		}
-
-		effective, err := rt.ApplyIdentityMapping("/export", identity)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if *effective.UID != 65534 {
-			t.Errorf("expected anonymous UID 65534, got %d", *effective.UID)
-		}
-		if *effective.GID != 65534 {
-			t.Errorf("expected anonymous GID 65534, got %d", *effective.GID)
-		}
-	})
-
-	t.Run("all_squash maps all to anonymous", func(t *testing.T) {
-		rt.mu.Lock()
-		rt.shares["/export"].MapAllToAnonymous = true
-		rt.mu.Unlock()
-
-		uid := uint32(1000)
-		gid := uint32(1000)
-		identity := &metadata.Identity{
-			UID:      &uid,
-			GID:      &gid,
-			Username: "testuser",
-		}
-
-		effective, err := rt.ApplyIdentityMapping("/export", identity)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if *effective.UID != 65534 {
-			t.Errorf("expected anonymous UID 65534, got %d", *effective.UID)
-		}
-
-		// Restore
-		rt.mu.Lock()
-		rt.shares["/export"].MapAllToAnonymous = false
-		rt.mu.Unlock()
-	})
-
-	t.Run("root_squash maps root to anonymous", func(t *testing.T) {
-		rt.mu.Lock()
-		rt.shares["/export"].MapPrivilegedToAnonymous = true
-		rt.mu.Unlock()
-
-		uid := uint32(0) // root
-		gid := uint32(0)
-		identity := &metadata.Identity{
-			UID:      &uid,
-			GID:      &gid,
-			Username: "root",
-		}
-
-		effective, err := rt.ApplyIdentityMapping("/export", identity)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if *effective.UID != 65534 {
-			t.Errorf("expected anonymous UID 65534, got %d", *effective.UID)
-		}
-
-		// Non-root should pass through
-		uid = 1000
-		gid = 1000
-		identity = &metadata.Identity{
-			UID:      &uid,
-			GID:      &gid,
-			Username: "testuser",
-		}
-
-		effective, err = rt.ApplyIdentityMapping("/export", identity)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if *effective.UID != 1000 {
-			t.Errorf("expected UID 1000, got %d", *effective.UID)
+		if *effective.UID != 65534 || *effective.GID != 65534 {
+			t.Errorf("expected anonymous (65534/65534), got (%d/%d)", *effective.UID, *effective.GID)
 		}
 	})
 
 	t.Run("non-existing share fails", func(t *testing.T) {
+		rt := setupRuntime(models.SquashRootToAdmin)
 		uid := uint32(1000)
 		identity := &metadata.Identity{UID: &uid}
+
 		_, err := rt.ApplyIdentityMapping("/not-found", identity)
 		if err == nil {
 			t.Fatal("expected error for non-existing share")
 		}
 	})
+
+	// Table-driven tests for squash modes
+	tests := []struct {
+		name        string
+		squash      models.SquashMode
+		inputUID    uint32
+		inputGID    uint32
+		wantUID     uint32
+		wantGID     uint32
+		wantIsAnon  bool // true if username should be "anonymous(N)"
+		wantIsRoot  bool // true if username should be "root"
+	}{
+		// SquashNone: all UIDs pass through unchanged
+		{"none/normal_user", models.SquashNone, 1000, 1000, 1000, 1000, false, false},
+		{"none/root", models.SquashNone, 0, 0, 0, 0, false, false},
+
+		// SquashRootToAdmin: all UIDs pass through unchanged (root keeps admin)
+		{"root_to_admin/normal_user", models.SquashRootToAdmin, 1000, 1000, 1000, 1000, false, false},
+		{"root_to_admin/root", models.SquashRootToAdmin, 0, 0, 0, 0, false, false},
+
+		// SquashRootToGuest: root mapped to anonymous, others pass through
+		{"root_to_guest/normal_user", models.SquashRootToGuest, 1000, 1000, 1000, 1000, false, false},
+		{"root_to_guest/root", models.SquashRootToGuest, 0, 0, 65534, 65534, true, false},
+
+		// SquashAllToAdmin: all users mapped to root
+		{"all_to_admin/normal_user", models.SquashAllToAdmin, 1000, 1000, 0, 0, false, true},
+		{"all_to_admin/root", models.SquashAllToAdmin, 0, 0, 0, 0, false, true},
+
+		// SquashAllToGuest: all users mapped to anonymous
+		{"all_to_guest/normal_user", models.SquashAllToGuest, 1000, 1000, 65534, 65534, true, false},
+		{"all_to_guest/root", models.SquashAllToGuest, 0, 0, 65534, 65534, true, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := setupRuntime(tc.squash)
+			identity := makeIdentity(tc.inputUID, tc.inputGID, "testuser")
+
+			effective, err := rt.ApplyIdentityMapping("/export", identity)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if *effective.UID != tc.wantUID {
+				t.Errorf("expected UID %d, got %d", tc.wantUID, *effective.UID)
+			}
+			if *effective.GID != tc.wantGID {
+				t.Errorf("expected GID %d, got %d", tc.wantGID, *effective.GID)
+			}
+
+			if tc.wantIsAnon && effective.Username != "anonymous(65534)" {
+				t.Errorf("expected anonymous username, got %q", effective.Username)
+			}
+			if tc.wantIsRoot && effective.Username != "root" {
+				t.Errorf("expected 'root' username, got %q", effective.Username)
+			}
+		})
+	}
 }
 
 func TestGetMetadataStoreForShare(t *testing.T) {

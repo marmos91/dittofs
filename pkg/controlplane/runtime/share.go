@@ -9,6 +9,7 @@
 package runtime
 
 import (
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -23,13 +24,19 @@ type Share struct {
 	// User-based Access Control
 	// DefaultPermission is the permission for users without explicit permission or unknown UIDs.
 	// Values: "none" (block access), "read", "read-write", "admin"
+	// Default is "read-write" for NFS compatibility.
 	DefaultPermission string
 
-	// Identity Mapping (Squashing)
-	MapAllToAnonymous        bool   // Map all users to anonymous (all_squash)
-	MapPrivilegedToAnonymous bool   // Map root to anonymous (root_squash)
-	AnonymousUID             uint32 // UID for anonymous users
-	AnonymousGID             uint32 // GID for anonymous users
+	// Identity Mapping (Squashing) - matches Synology NFS options
+	// Squash controls how UIDs are mapped:
+	//   - none: No mapping, UIDs pass through
+	//   - root_to_admin: Root (UID 0) retains admin privileges (default)
+	//   - root_to_guest: Root mapped to anonymous (root_squash)
+	//   - all_to_admin: All users mapped to root
+	//   - all_to_guest: All users mapped to anonymous (all_squash)
+	Squash       models.SquashMode
+	AnonymousUID uint32 // UID for anonymous mapping (default: 65534)
+	AnonymousGID uint32 // GID for anonymous mapping (default: 65534)
 
 	// NFS-specific options
 	DisableReaddirplus bool // Prevent READDIRPLUS on this share
@@ -45,10 +52,9 @@ type ShareConfig struct {
 	DefaultPermission string
 
 	// Identity Mapping
-	MapAllToAnonymous        bool
-	MapPrivilegedToAnonymous bool
-	AnonymousUID             uint32
-	AnonymousGID             uint32
+	Squash       models.SquashMode
+	AnonymousUID uint32
+	AnonymousGID uint32
 
 	// Root directory attributes
 	RootAttr *metadata.FileAttr
