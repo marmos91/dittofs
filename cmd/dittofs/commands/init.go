@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/pkg/config"
+	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/spf13/cobra"
 )
 
@@ -61,7 +62,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("  A random JWT secret has been generated for development use.")
 	fmt.Println("  For production, generate a secure secret and use an environment variable:")
 	fmt.Println("    # Generates a 64-character hex string (32 bytes of entropy)")
-	fmt.Println("    export DITTOFS_CONTROLPLANE_SECRET=$(openssl rand -hex 32)")
+	fmt.Printf("    export %s=$(openssl rand -hex 32)\n", api.EnvControlPlaneSecret)
 
 	return nil
 }

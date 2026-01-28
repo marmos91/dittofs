@@ -7,7 +7,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// EnvControlPlaneSecret is the name of the environment variable used for the JWT signing secret.
+// EnvControlPlaneSecret is the name of the environment variable for the control plane's JWT authentication signing secret.
 const EnvControlPlaneSecret = "DITTOFS_CONTROLPLANE_SECRET"
 
 // APIConfig configures the REST API HTTP server.

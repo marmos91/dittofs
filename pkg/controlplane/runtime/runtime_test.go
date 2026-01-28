@@ -420,14 +420,14 @@ func TestApplyIdentityMapping(t *testing.T) {
 
 	// Table-driven tests for squash modes
 	tests := []struct {
-		name        string
-		squash      models.SquashMode
-		inputUID    uint32
-		inputGID    uint32
-		wantUID     uint32
-		wantGID     uint32
-		wantIsAnon  bool // true if username should be "anonymous(N)"
-		wantIsRoot  bool // true if username should be "root"
+		name       string
+		squash     models.SquashMode
+		inputUID   uint32
+		inputGID   uint32
+		wantUID    uint32
+		wantGID    uint32
+		wantIsAnon bool // true if username should be "anonymous(N)"
+		wantIsRoot bool // true if username should be "root"
 	}{
 		// SquashNone: all UIDs pass through unchanged
 		{"none/normal_user", models.SquashNone, 1000, 1000, 1000, 1000, false, false},

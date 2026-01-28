@@ -134,19 +134,20 @@ jobs:
 
           # Check if Result: FAIL is in the output
           if grep -q "Result: FAIL" ~/posix-memory.log; then
-            # Count how many test files failed
-            FAILED_LINE=$(grep "Files=.*Failed" ~/posix-memory.log | tail -1)
-            echo "Test summary: $FAILED_LINE"
+            # Extract the Test Summary Report section and count failed test files
+            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' ~/posix-memory.log | grep -c "Failed tests:" || echo "0")
+            echo "Number of test files with failures: $FAILED_FILES"
 
             # Check if only 1 test file failed AND it's the expected utimensat/09.t
-            if grep -q "^Files=.*Failed: 1$" ~/posix-memory.log 2>/dev/null || \
-               (grep "utimensat/09.t" ~/posix-memory.log | grep -q "Failed: 1"); then
-              echo "✓ Only expected failure (utimensat/09.t - NFSv3 timestamp limit)"
-              exit 0
+            if [ "$FAILED_FILES" = "1" ]; then
+              if sed -n '/Test Summary Report/,/^Files=/p' ~/posix-memory.log | grep -q "utimensat/09.t"; then
+                echo "✓ Only expected failure (utimensat/09.t - NFSv3 timestamp limit)"
+                exit 0
+              fi
             fi
 
             echo "✗ Unexpected test failures detected!"
-            echo "::error::POSIX tests failed"
+            echo "::error::POSIX tests failed - $FAILED_FILES test files failed"
             echo ""
             echo "=== Test Summary Report ==="
             sed -n '/Test Summary Report/,/Result:/p' ~/posix-memory.log
@@ -249,18 +250,20 @@ jobs:
 
           # Check if Result: FAIL is in the output
           if grep -q "Result: FAIL" ~/posix-badger.log; then
-            FAILED_LINE=$(grep "Files=.*Failed" ~/posix-badger.log | tail -1)
-            echo "Test summary: $FAILED_LINE"
+            # Extract the Test Summary Report section and count failed test files
+            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' ~/posix-badger.log | grep -c "Failed tests:" || echo "0")
+            echo "Number of test files with failures: $FAILED_FILES"
 
-            # Check if only utimensat/09.t failed (expected failure)
-            if grep -q "^Files=.*Failed: 1$" ~/posix-badger.log 2>/dev/null || \
-               (grep "utimensat/09.t" ~/posix-badger.log | grep -q "Failed: 1"); then
-              echo "✓ Only expected failure (utimensat/09.t - NFSv3 timestamp limit)"
-              exit 0
+            # Check if only 1 test file failed AND it's the expected utimensat/09.t
+            if [ "$FAILED_FILES" = "1" ]; then
+              if sed -n '/Test Summary Report/,/^Files=/p' ~/posix-badger.log | grep -q "utimensat/09.t"; then
+                echo "✓ Only expected failure (utimensat/09.t - NFSv3 timestamp limit)"
+                exit 0
+              fi
             fi
 
             echo "✗ Unexpected test failures detected!"
-            echo "::error::POSIX tests failed"
+            echo "::error::POSIX tests failed - $FAILED_FILES test files failed"
             echo ""
             echo "=== Test Summary Report ==="
             sed -n '/Test Summary Report/,/Result:/p' ~/posix-badger.log
@@ -378,18 +381,20 @@ jobs:
 
           # Check if Result: FAIL is in the output
           if grep -q "Result: FAIL" ~/posix-postgres.log; then
-            FAILED_LINE=$(grep "Files=.*Failed" ~/posix-postgres.log | tail -1)
-            echo "Test summary: $FAILED_LINE"
+            # Extract the Test Summary Report section and count failed test files
+            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' ~/posix-postgres.log | grep -c "Failed tests:" || echo "0")
+            echo "Number of test files with failures: $FAILED_FILES"
 
-            # Check if only utimensat/09.t failed (expected failure)
-            if grep -q "^Files=.*Failed: 1$" ~/posix-postgres.log 2>/dev/null || \
-               (grep "utimensat/09.t" ~/posix-postgres.log | grep -q "Failed: 1"); then
-              echo "✓ Only expected failure (utimensat/09.t - NFSv3 timestamp limit)"
-              exit 0
+            # Check if only 1 test file failed AND it's the expected utimensat/09.t
+            if [ "$FAILED_FILES" = "1" ]; then
+              if sed -n '/Test Summary Report/,/^Files=/p' ~/posix-postgres.log | grep -q "utimensat/09.t"; then
+                echo "✓ Only expected failure (utimensat/09.t - NFSv3 timestamp limit)"
+                exit 0
+              fi
             fi
 
             echo "✗ Unexpected test failures detected!"
-            echo "::error::POSIX tests failed"
+            echo "::error::POSIX tests failed - $FAILED_FILES test files failed"
             echo ""
             echo "=== Test Summary Report ==="
             sed -n '/Test Summary Report/,/Result:/p' ~/posix-postgres.log

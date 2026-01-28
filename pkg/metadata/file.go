@@ -377,7 +377,26 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 
 	// Apply requested changes
 	if attrs.Mode != nil {
-		file.Mode = *attrs.Mode
+		newMode := *attrs.Mode
+
+		// POSIX: Non-root users cannot set SUID/SGID bits arbitrarily
+		// - SUID (04000) can only be set by owner or root
+		// - SGID (02000) can only be set by owner who is member of file's group, or root
+		if !isRoot {
+			// Strip SUID bit if caller doesn't own the file
+			if newMode&0o4000 != 0 && !isOwner {
+				newMode &= ^uint32(0o4000)
+			}
+			// Strip SGID bit if caller is not a member of the file's group
+			if newMode&0o2000 != 0 {
+				// For SGID, caller must be owner AND member of file's group
+				if !isOwner || !identity.HasGID(file.GID) {
+					newMode &= ^uint32(0o2000)
+				}
+			}
+		}
+
+		file.Mode = newMode
 		modified = true
 	}
 
@@ -431,7 +450,9 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 	// POSIX: Clear SUID/SGID bits when ownership changes on regular files
 	// This is a security measure to prevent privilege escalation.
 	// For directories, SGID has different meaning (inherit group) and should NOT be cleared.
-	if ownershipChanged && file.Type == FileTypeRegular && !isRoot {
+	// Note: This clears SUID/SGID regardless of who does the chown (including root),
+	// matching Linux kernel behavior.
+	if ownershipChanged && file.Type == FileTypeRegular {
 		// Clear SUID (04000) and SGID (02000) bits
 		file.Mode &= ^uint32(0o6000)
 	}
@@ -755,6 +776,46 @@ func (s *MetadataService) createEntry(
 	newAttr.LinkTarget = linkTarget
 	ApplyCreateDefaults(&newAttr, ctx, linkTarget)
 	ApplyOwnerDefaults(&newAttr, ctx)
+
+	// POSIX SGID inheritance:
+	// When parent directory has SGID bit set:
+	// 1. New entries inherit parent's GID (not the creating user's primary GID)
+	// 2. New directories also get SGID bit set (to propagate the behavior)
+	// 3. New regular files do NOT get SGID bit set
+	parentHasSGID := parent.Mode&0o2000 != 0
+	if parentHasSGID {
+		// Inherit GID from parent directory
+		newAttr.GID = parent.GID
+
+		// For directories, also inherit SGID bit to propagate the behavior
+		if fileType == FileTypeDirectory {
+			newAttr.Mode |= 0o2000
+		} else {
+			// For regular files and other types, ensure SGID is NOT set
+			// (it may have been set in the input mode, which would be incorrect)
+			newAttr.Mode &= ^uint32(0o2000)
+		}
+	}
+
+	// POSIX: Validate SUID/SGID bits for non-root users
+	// Even during file creation, non-root users cannot arbitrarily set these bits
+	identity := ctx.Identity
+	isRoot := identity != nil && identity.UID != nil && *identity.UID == 0
+	if !isRoot {
+		// SUID (04000): Only root can set on new files (owner will be the caller anyway)
+		// But we still strip it for non-root to be safe
+		if newAttr.Mode&0o4000 != 0 {
+			newAttr.Mode &= ^uint32(0o4000)
+		}
+
+		// SGID (02000): For regular files, non-root can only set if member of file's group
+		// For directories, SGID is allowed (inherited above or explicitly requested)
+		if fileType != FileTypeDirectory && newAttr.Mode&0o2000 != 0 {
+			if !identity.HasGID(newAttr.GID) {
+				newAttr.Mode &= ^uint32(0o2000)
+			}
+		}
+	}
 
 	// Set content ID for regular files
 	if fileType == FileTypeRegular {
