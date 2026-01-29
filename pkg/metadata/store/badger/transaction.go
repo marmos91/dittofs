@@ -109,7 +109,8 @@ func (tx *badgerTransaction) GetFile(ctx context.Context, handle metadata.FileHa
 	// Look up the link count and set Nlink on the returned file
 	// The link count is stored separately to support hard links
 	linkItem, linkErr := tx.txn.Get(keyLinkCount(fileID))
-	if linkErr == nil {
+	switch linkErr {
+	case nil:
 		_ = linkItem.Value(func(val []byte) error {
 			count, decErr := decodeUint32(val)
 			if decErr == nil {
@@ -117,7 +118,7 @@ func (tx *badgerTransaction) GetFile(ctx context.Context, handle metadata.FileHa
 			}
 			return nil
 		})
-	} else if linkErr == badgerdb.ErrKeyNotFound {
+	case badgerdb.ErrKeyNotFound:
 		// No link count stored - use default based on file type
 		if file.Type == metadata.FileTypeDirectory {
 			file.Nlink = 2
@@ -348,7 +349,8 @@ func (tx *badgerTransaction) ListChildren(ctx context.Context, dirHandle metadat
 				}
 				// Look up link count for this file
 				linkItem, linkErr := tx.txn.Get(keyLinkCount(childID))
-				if linkErr == nil {
+				switch linkErr {
+				case nil:
 					_ = linkItem.Value(func(linkVal []byte) error {
 						count, countErr := decodeUint32(linkVal)
 						if countErr == nil {
@@ -356,7 +358,7 @@ func (tx *badgerTransaction) ListChildren(ctx context.Context, dirHandle metadat
 						}
 						return nil
 					})
-				} else if linkErr == badgerdb.ErrKeyNotFound {
+				case badgerdb.ErrKeyNotFound:
 					// Default based on file type
 					if file.Type == metadata.FileTypeDirectory {
 						file.Nlink = 2
@@ -803,7 +805,8 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 
 		// Look up link count for the root file
 		linkItem, linkErr := tx.txn.Get(keyLinkCount(rootID))
-		if linkErr == nil {
+		switch linkErr {
+		case nil:
 			_ = linkItem.Value(func(linkVal []byte) error {
 				count, countErr := decodeUint32(linkVal)
 				if countErr == nil {
@@ -811,7 +814,7 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 				}
 				return nil
 			})
-		} else if linkErr == badgerdb.ErrKeyNotFound {
+		case badgerdb.ErrKeyNotFound:
 			// Root directories always have at least 2 links
 			rootFile.Nlink = 2
 		}
@@ -1067,7 +1070,8 @@ func (tx *badgerTransaction) GetFileByPayloadID(ctx context.Context, payloadID m
 			if file.PayloadID == payloadID {
 				// Look up link count for this file
 				linkItem, linkErr := tx.txn.Get(keyLinkCount(file.ID))
-				if linkErr == nil {
+				switch linkErr {
+				case nil:
 					_ = linkItem.Value(func(linkVal []byte) error {
 						count, countErr := decodeUint32(linkVal)
 						if countErr == nil {
@@ -1075,7 +1079,7 @@ func (tx *badgerTransaction) GetFileByPayloadID(ctx context.Context, payloadID m
 						}
 						return nil
 					})
-				} else if linkErr == badgerdb.ErrKeyNotFound {
+				case badgerdb.ErrKeyNotFound:
 					// Default based on file type
 					if file.Type == metadata.FileTypeDirectory {
 						file.Nlink = 2

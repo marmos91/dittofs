@@ -77,7 +77,8 @@ func (s *BadgerMetadataStore) GetFileByPayloadID(ctx context.Context, payloadID 
 				if file.PayloadID == payloadID {
 					// Look up link count for this file
 					linkItem, linkErr := txn.Get(keyLinkCount(file.ID))
-					if linkErr == nil {
+					switch linkErr {
+					case nil:
 						_ = linkItem.Value(func(linkVal []byte) error {
 							count, countErr := decodeUint32(linkVal)
 							if countErr == nil {
@@ -85,7 +86,7 @@ func (s *BadgerMetadataStore) GetFileByPayloadID(ctx context.Context, payloadID 
 							}
 							return nil
 						})
-					} else if linkErr == badgerdb.ErrKeyNotFound {
+					case badgerdb.ErrKeyNotFound:
 						// Default based on file type
 						if file.Type == metadata.FileTypeDirectory {
 							file.Nlink = 2
