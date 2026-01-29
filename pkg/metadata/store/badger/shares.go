@@ -319,6 +319,21 @@ func (s *BadgerMetadataStore) loadExistingRoot(txn *badgerdb.Txn, item *badgerdb
 		return fmt.Errorf("failed to decode existing root file: %w", err)
 	}
 
+	// Look up link count for the root file
+	linkItem, linkErr := txn.Get(keyLinkCount(rootID))
+	if linkErr == nil {
+		_ = linkItem.Value(func(linkVal []byte) error {
+			count, countErr := decodeUint32(linkVal)
+			if countErr == nil {
+				(*rootFile).Nlink = count
+			}
+			return nil
+		})
+	} else if linkErr == badgerdb.ErrKeyNotFound {
+		// Root directories always have at least 2 links
+		(*rootFile).Nlink = 2
+	}
+
 	// Update attributes if config changed
 	needsUpdate := false
 	if (*rootFile).Mode != attr.Mode {
