@@ -376,9 +376,10 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 
 	query := `
 		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
-		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden
+		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, lc.link_count
 		FROM parent_child_map dc
 		LEFT JOIN files f ON dc.child_id = f.id
+		LEFT JOIN link_counts lc ON dc.child_id = lc.file_id
 		WHERE dc.parent_id = $1 AND dc.child_name > $2
 		ORDER BY dc.child_name
 		LIMIT $3
@@ -398,9 +399,10 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 		var size int64
 		var atime, mtime, ctime, creationTime time.Time
 		var hidden bool
+		var linkCount *uint32
 
 		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size,
-			&atime, &mtime, &ctime, &creationTime, &hidden)
+			&atime, &mtime, &ctime, &creationTime, &hidden, &linkCount)
 		if err != nil {
 			return nil, "", err
 		}
@@ -410,6 +412,19 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 			return nil, "", err
 		}
 
+		// Determine Nlink value
+		var nlink uint32
+		if linkCount != nil {
+			nlink = *linkCount
+		} else {
+			// Default based on file type
+			if metadata.FileType(fileType) == metadata.FileTypeDirectory {
+				nlink = 2
+			} else {
+				nlink = 1
+			}
+		}
+
 		entry := metadata.DirEntry{
 			ID:     metadata.HandleToINode(childHandle),
 			Name:   name,
@@ -417,6 +432,7 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 			Attr: &metadata.FileAttr{
 				Type:         metadata.FileType(fileType),
 				Mode:         uint32(mode),
+				Nlink:        nlink,
 				UID:          uint32(uid),
 				GID:          uint32(gid),
 				Size:         uint64(size),
@@ -743,8 +759,9 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 	// Check if root directory already exists (idempotent behavior)
 	checkQuery := `
 		SELECT f.id, f.file_type, f.mode, f.uid, f.gid, f.size,
-			   f.atime, f.mtime, f.ctime, f.creation_time, f.hidden
+			   f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, lc.link_count
 		FROM files f
+		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.share_name = $1 AND f.path = '/'
 	`
 
@@ -760,14 +777,24 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 		ctime        time.Time
 		creationTime time.Time
 		hidden       bool
+		linkCount    *uint32
 	)
 
 	err := tx.tx.QueryRow(ctx, checkQuery, shareName).Scan(
 		&id, &fileType, &existingMode, &existingUID, &existingGID, &size,
-		&atime, &mtime, &ctime, &creationTime, &hidden,
+		&atime, &mtime, &ctime, &creationTime, &hidden, &linkCount,
 	)
 
 	if err == nil {
+		// Determine Nlink value
+		var nlink uint32
+		if linkCount != nil {
+			nlink = *linkCount
+		} else {
+			// Root directories always have at least 2 links
+			nlink = 2
+		}
+
 		// Root exists - return it
 		return &metadata.File{
 			ID:        uuid.MustParse(id),
@@ -776,6 +803,7 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 			FileAttr: metadata.FileAttr{
 				Type:         metadata.FileType(fileType),
 				Mode:         uint32(existingMode),
+				Nlink:        nlink,
 				UID:          uint32(existingUID),
 				GID:          uint32(existingGID),
 				Size:         uint64(size),
@@ -862,6 +890,7 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 		FileAttr: metadata.FileAttr{
 			Type:         metadata.FileTypeDirectory,
 			Mode:         mode,
+			Nlink:        2, // Root directories have 2 links (. and parent's entry)
 			UID:          uid,
 			GID:          gid,
 			Size:         0,
