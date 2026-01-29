@@ -135,7 +135,7 @@ jobs:
           # Check if Result: FAIL is in the output
           if grep -q "Result: FAIL" ~/posix-memory.log; then
             # Extract the Test Summary Report section and count failed test files
-            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' ~/posix-memory.log | grep -c "Failed tests:" || echo "0")
+            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' ~/posix-memory.log | grep -cE "Failed tests?:" || echo "0")
             echo "Number of test files with failures: $FAILED_FILES"
 
             # Check if only 1 test file failed AND it's the expected utimensat/09.t
@@ -251,7 +251,7 @@ jobs:
           # Check if Result: FAIL is in the output
           if grep -q "Result: FAIL" ~/posix-badger.log; then
             # Extract the Test Summary Report section and count failed test files
-            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' ~/posix-badger.log | grep -c "Failed tests:" || echo "0")
+            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' ~/posix-badger.log | grep -cE "Failed tests?:" || echo "0")
             echo "Number of test files with failures: $FAILED_FILES"
 
             # Check if only 1 test file failed AND it's the expected utimensat/09.t
@@ -382,7 +382,7 @@ jobs:
           # Check if Result: FAIL is in the output
           if grep -q "Result: FAIL" ~/posix-postgres.log; then
             # Extract the Test Summary Report section and count failed test files
-            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' ~/posix-postgres.log | grep -c "Failed tests:" || echo "0")
+            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' ~/posix-postgres.log | grep -cE "Failed tests?:" || echo "0")
             echo "Number of test files with failures: $FAILED_FILES"
 
             # Check if only 1 test file failed AND it's the expected utimensat/09.t
