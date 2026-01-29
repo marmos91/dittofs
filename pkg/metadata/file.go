@@ -366,21 +366,6 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 	isOwner := identity != nil && identity.UID != nil && *identity.UID == file.UID
 	isRoot := identity != nil && identity.UID != nil && *identity.UID == 0
 
-	// Debug: Log setattr operation details
-	callerUID := "nil"
-	if identity != nil && identity.UID != nil {
-		callerUID = fmt.Sprintf("%d", *identity.UID)
-	}
-	logger.Debug("SetFileAttributes",
-		"file_path", file.Path,
-		"file_uid", file.UID,
-		"caller_uid", callerUID,
-		"is_owner", isOwner,
-		"is_root", isRoot,
-		"set_uid", attrs.UID != nil,
-		"set_gid", attrs.GID != nil,
-		"set_mode", attrs.Mode != nil)
-
 	// POSIX: For utimensat() with UTIME_NOW, write permission is sufficient.
 	// Check if we're ONLY setting times to "now" (no other attribute changes).
 	onlySettingTimesToNow := attrs.Mode == nil && attrs.UID == nil &&

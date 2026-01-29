@@ -98,3 +98,29 @@ func InputInt(label string, defaultValue int) (int, error) {
 	value, _ := strconv.Atoi(result) // Already validated
 	return value, nil
 }
+
+// InputPort prompts for a network port with validation (1-65535).
+func InputPort(label string, defaultValue int) (int, error) {
+	prompt := promptui.Prompt{
+		Label:   label,
+		Default: strconv.Itoa(defaultValue),
+		Validate: func(input string) error {
+			port, err := strconv.Atoi(input)
+			if err != nil {
+				return fmt.Errorf("must be a valid integer")
+			}
+			if port < 1 || port > 65535 {
+				return fmt.Errorf("must be a valid port (1-65535)")
+			}
+			return nil
+		},
+	}
+
+	result, err := prompt.Run()
+	if err != nil {
+		return 0, wrapError(err)
+	}
+
+	value, _ := strconv.Atoi(result) // Already validated
+	return value, nil
+}

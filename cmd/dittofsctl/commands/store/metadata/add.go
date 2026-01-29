@@ -121,7 +121,7 @@ func buildMetadataConfig(storeType, jsonConfig, dbPath string) (any, error) {
 			return nil, err
 		}
 
-		port, err := prompt.InputInt("PostgreSQL port", 5432)
+		port, err := prompt.InputPort("PostgreSQL port", 5432)
 		if err != nil {
 			return nil, err
 		}
