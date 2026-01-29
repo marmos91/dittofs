@@ -28,8 +28,10 @@ import (
 )
 
 // InitializeFromStore creates and initializes a runtime from the database.
-// It loads metadata stores and shares from the persistent store and
-// creates live instances of each.
+// It loads metadata stores from the persistent store and creates live instances.
+//
+// Note: Shares are NOT loaded here. Call LoadSharesFromStore separately after
+// setting cache configuration with SetCacheConfig (required for PayloadService).
 //
 // Returns an initialized runtime ready for use by adapters.
 func InitializeFromStore(ctx context.Context, s store.Store) (*Runtime, error) {
@@ -40,10 +42,7 @@ func InitializeFromStore(ctx context.Context, s store.Store) (*Runtime, error) {
 		return nil, fmt.Errorf("failed to load metadata stores: %w", err)
 	}
 
-	// Load and add shares
-	if err := loadShares(ctx, rt, s); err != nil {
-		return nil, fmt.Errorf("failed to load shares: %w", err)
-	}
+	// Shares are loaded separately via LoadSharesFromStore after cache config is set
 
 	return rt, nil
 }
@@ -323,8 +322,9 @@ func CreateBlockStoreFromConfig(ctx context.Context, storeType string, cfg inter
 	}
 }
 
-// loadShares loads share configurations from the database and adds them to the runtime.
-func loadShares(ctx context.Context, rt *Runtime, s store.Store) error {
+// LoadSharesFromStore loads share configurations from the database and adds them to the runtime.
+// This must be called AFTER SetCacheConfig to ensure PayloadService can be initialized.
+func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error {
 	shares, err := s.ListShares(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list shares: %w", err)
@@ -349,6 +349,9 @@ func loadShares(ctx context.Context, rt *Runtime, s store.Store) error {
 			MetadataStore:     metaStoreCfg.Name,
 			ReadOnly:          share.ReadOnly,
 			DefaultPermission: share.DefaultPermission,
+			Squash:            share.GetSquashMode(),
+			AnonymousUID:      share.GetAnonymousUID(),
+			AnonymousGID:      share.GetAnonymousGID(),
 		}
 
 		if err := rt.AddShare(ctx, shareConfig); err != nil {

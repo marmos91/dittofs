@@ -177,17 +177,22 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize runtime: %w", err)
 	}
-	logger.Info("Runtime initialized",
-		"metadata_stores", rt.CountMetadataStores(),
-		"shares", rt.CountShares())
 
-	// Store cache config for lazy PayloadService initialization
-	// The PayloadService is created lazily when the first payload store is added via API
+	// Store cache config BEFORE loading shares (AddShare needs it for PayloadService)
 	rt.SetCacheConfig(&runtime.CacheConfig{
 		Path: cfg.Cache.Path,
 		Size: uint64(cfg.Cache.Size),
 	})
 	logger.Info("Cache configuration stored", "path", cfg.Cache.Path, "size", cfg.Cache.Size)
+
+	// Now load shares (they need cache config to initialize PayloadService)
+	if err := runtime.LoadSharesFromStore(ctx, rt, cpStore); err != nil {
+		logger.Warn("Failed to load some shares", "error", err)
+	}
+
+	logger.Info("Runtime initialized",
+		"metadata_stores", rt.CountMetadataStores(),
+		"shares", rt.CountShares())
 
 	// If payload stores already exist in DB, create the PayloadService now
 	if err := rt.EnsurePayloadService(ctx); err != nil {

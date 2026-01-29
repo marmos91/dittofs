@@ -689,8 +689,9 @@ func (r *Runtime) ApplyIdentityMapping(shareName string, identity *metadata.Iden
 	}
 
 	// Apply squash based on mode
+	// Empty string ("") is treated as the default (SquashRootToAdmin)
 	switch share.Squash {
-	case models.SquashNone, models.SquashRootToAdmin:
+	case "", models.SquashNone, models.SquashRootToAdmin:
 		// No mapping - UIDs pass through (root keeps admin)
 
 	case models.SquashRootToGuest:

@@ -232,7 +232,11 @@ mount_nfs() {
     mkdir -p "$MOUNT_POINT"
 
     # Mount with NFSv3
-    mount -t nfs -o nfsvers=3,tcp,port=$NFS_PORT,mountport=$NFS_PORT,nolock \
+    # noac disables attribute caching to ensure fresh attributes for tests
+    # that delete and recreate files with the same name
+    # sync forces synchronous operations to prevent SETATTR coalescing issues
+    # lookupcache=none disables name lookup caching
+    mount -t nfs -o nfsvers=3,tcp,port=$NFS_PORT,mountport=$NFS_PORT,nolock,noac,sync,lookupcache=none \
         localhost:/export "$MOUNT_POINT"
 
     log_info "NFS share mounted at $MOUNT_POINT"

@@ -7,7 +7,7 @@
 #   DITTOFS_CACHE_PATH - Cache directory path
 
 logging:
-  level: "INFO"
+  level: "DEBUG"
   format: "text"
   output: "stdout"
 

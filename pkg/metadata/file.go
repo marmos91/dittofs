@@ -1,9 +1,11 @@
 package metadata
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // ============================================================================
@@ -359,12 +361,43 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		return err
 	}
 
-	// Check permissions: only owner or root can change attributes
+	// Check permissions based on what's being changed
 	identity := ctx.Identity
 	isOwner := identity != nil && identity.UID != nil && *identity.UID == file.UID
 	isRoot := identity != nil && identity.UID != nil && *identity.UID == 0
 
-	if !isOwner && !isRoot {
+	// Debug: Log setattr operation details
+	callerUID := "nil"
+	if identity != nil && identity.UID != nil {
+		callerUID = fmt.Sprintf("%d", *identity.UID)
+	}
+	logger.Debug("SetFileAttributes",
+		"file_path", file.Path,
+		"file_uid", file.UID,
+		"caller_uid", callerUID,
+		"is_owner", isOwner,
+		"is_root", isRoot,
+		"set_uid", attrs.UID != nil,
+		"set_gid", attrs.GID != nil,
+		"set_mode", attrs.Mode != nil)
+
+	// POSIX: For utimensat() with UTIME_NOW, write permission is sufficient.
+	// Check if we're ONLY setting times to "now" (no other attribute changes).
+	onlySettingTimesToNow := attrs.Mode == nil && attrs.UID == nil &&
+		attrs.GID == nil && attrs.Size == nil &&
+		(attrs.AtimeNow || attrs.MtimeNow)
+
+	if onlySettingTimesToNow && !isOwner && !isRoot {
+		// Check write permission instead of ownership
+		if err := s.checkWritePermission(ctx, handle); err != nil {
+			return &StoreError{
+				Code:    ErrPermissionDenied,
+				Message: "operation not permitted",
+				Path:    file.Path,
+			}
+		}
+		// Write permission granted, allow timestamp update
+	} else if !isOwner && !isRoot {
 		return &StoreError{
 			Code:    ErrPermissionDenied,
 			Message: "operation not permitted",
@@ -406,7 +439,20 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 	if attrs.UID != nil {
 		// Only root can change owner to a different UID
 		// Owner can set UID to their own UID (no-op for chown(file, same_uid, new_gid))
+		logger.Debug("SetFileAttributes: UID change requested",
+			"handle", fmt.Sprintf("%x", handle),
+			"file_id", file.ID,
+			"file_path", file.Path,
+			"old_uid", file.UID,
+			"new_uid", *attrs.UID,
+			"is_root", isRoot)
 		if *attrs.UID != file.UID && !isRoot {
+			logger.Debug("SetFileAttributes: UID change DENIED (not root)",
+				"handle", fmt.Sprintf("%x", handle),
+				"file_id", file.ID,
+				"file_path", file.Path,
+				"old_uid", file.UID,
+				"new_uid", *attrs.UID)
 			return &StoreError{
 				Code:    ErrPermissionDenied,
 				Message: "only root can change owner",
@@ -414,6 +460,12 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 			}
 		}
 		if *attrs.UID != file.UID {
+			logger.Debug("SetFileAttributes: UID changed",
+				"handle", fmt.Sprintf("%x", handle),
+				"file_id", file.ID,
+				"file_path", file.Path,
+				"old_uid", file.UID,
+				"new_uid", *attrs.UID)
 			file.UID = *attrs.UID
 			modified = true
 			ownershipChanged = true
@@ -559,9 +611,51 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 		return err
 	}
 
+	// Debug: Log Move parameters before sticky bit check
+	callerUID := "nil"
+	if ctx.Identity != nil && ctx.Identity.UID != nil {
+		callerUID = fmt.Sprintf("%d", *ctx.Identity.UID)
+	}
+	logger.Debug("Move: before sticky bit check",
+		"src_dir_handle", fmt.Sprintf("%x", fromDir),
+		"src_dir_id", srcDir.ID,
+		"src_dir_uid", srcDir.UID,
+		"src_dir_mode", fmt.Sprintf("%04o", srcDir.Mode),
+		"src_file_handle", fmt.Sprintf("%x", srcHandle),
+		"src_file_id", srcFile.ID,
+		"src_file_uid", srcFile.UID,
+		"caller_uid", callerUID,
+		"from_name", fromName,
+		"to_name", toName)
+
 	// Check sticky bit on source directory
 	if err := CheckStickyBitRestriction(ctx, &srcDir.FileAttr, &srcFile.FileAttr); err != nil {
 		return err
+	}
+
+	// POSIX: When moving a directory to a different parent from a sticky directory,
+	// the caller must own the directory being moved (not just the sticky directory).
+	// This is because the ".." link inside the moved directory must be updated,
+	// which requires ownership of the directory being moved.
+	// See rename(2) man page: "If oldpath refers to a directory, then ... if the
+	// sticky bit is set on the directory containing oldpath ... the process must
+	// own the file being renamed."
+	if srcFile.Type == FileTypeDirectory && string(fromDir) != string(toDir) && srcDir.Mode&ModeSticky != 0 {
+		callerUID := ^uint32(0) // Invalid UID
+		if ctx.Identity != nil && ctx.Identity.UID != nil {
+			callerUID = *ctx.Identity.UID
+		}
+		// Root can always move directories
+		if callerUID != 0 && srcFile.UID != callerUID {
+			logger.Debug("Move: cross-directory move denied by sticky bit",
+				"reason", "caller does not own directory being moved",
+				"src_file_uid", srcFile.UID,
+				"caller_uid", callerUID)
+			return &StoreError{
+				Code:    ErrAccessDenied,
+				Message: "sticky bit set: cannot move directory you don't own to different parent",
+			}
+		}
 	}
 
 	// Check if destination exists
@@ -610,12 +704,17 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 			}
 		} else {
 			// For files, decrement link count or set to 0
+			// POSIX: ctime must be updated when link count changes
 			linkCount, _ := store.GetLinkCount(ctx.Context, dstHandle)
+			now := time.Now()
 			if linkCount <= 1 {
 				_ = store.SetLinkCount(ctx.Context, dstHandle, 0)
 			} else {
 				_ = store.SetLinkCount(ctx.Context, dstHandle, linkCount-1)
 			}
+			// Update ctime on the file being unlinked (affects remaining hard links)
+			dstFile.Ctime = now
+			_ = store.PutFile(ctx.Context, dstFile)
 		}
 
 		// Remove destination from children

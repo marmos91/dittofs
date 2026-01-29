@@ -98,9 +98,12 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set default permission if not provided
+	// Use "read-write" for NFS compatibility (same as traditional NFS servers)
+	// This allows anonymous/unknown UIDs to access the share, with file-level
+	// permissions enforcing access control (Unix DAC model).
 	defaultPerm := req.DefaultPermission
 	if defaultPerm == "" {
-		defaultPerm = "none"
+		defaultPerm = "read-write"
 	}
 
 	now := time.Now()
@@ -146,6 +149,9 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			MetadataStore:     metaStore.Name,
 			ReadOnly:          req.ReadOnly,
 			DefaultPermission: defaultPerm,
+			Squash:            share.GetSquashMode(),
+			AnonymousUID:      share.GetAnonymousUID(),
+			AnonymousGID:      share.GetAnonymousGID(),
 		}
 
 		if err := h.runtime.AddShare(r.Context(), shareConfig); err != nil {
