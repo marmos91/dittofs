@@ -264,6 +264,12 @@ func (s *MetadataService) CreateHardLink(ctx *AuthContext, dirHandle FileHandle,
 		}
 	}
 
+	// Validate full path length (POSIX PATH_MAX compliance)
+	fullPath := buildPath(dir.Path, name)
+	if err := ValidatePath(fullPath); err != nil {
+		return err
+	}
+
 	// Check write permission on directory
 	if err := s.checkWritePermission(ctx, dirHandle); err != nil {
 		return err
@@ -578,6 +584,12 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 		}
 	}
 
+	// Validate destination path length (POSIX PATH_MAX compliance)
+	destPath := buildPath(dstDir.Path, toName)
+	if err := ValidatePath(destPath); err != nil {
+		return err
+	}
+
 	// Check write permission on both directories
 	if err := s.checkWritePermission(ctx, fromDir); err != nil {
 		return err
@@ -824,6 +836,12 @@ func (s *MetadataService) createEntry(
 		}
 	}
 
+	// Validate full path length (POSIX PATH_MAX compliance)
+	fullPath := buildPath(parent.Path, name)
+	if err := ValidatePath(fullPath); err != nil {
+		return nil, err
+	}
+
 	// Check write permission on parent
 	if err := s.checkWritePermission(ctx, parentHandle); err != nil {
 		return nil, err
@@ -844,7 +862,7 @@ func (s *MetadataService) createEntry(
 	}
 
 	// Generate new handle
-	newHandle, err := store.GenerateHandle(ctx.Context, parent.ShareName, buildPath(parent.Path, name))
+	newHandle, err := store.GenerateHandle(ctx.Context, parent.ShareName, fullPath)
 	if err != nil {
 		return nil, err
 	}
@@ -904,7 +922,7 @@ func (s *MetadataService) createEntry(
 
 	// Set content ID for regular files
 	if fileType == FileTypeRegular {
-		newAttr.PayloadID = PayloadID(buildPayloadID(parent.ShareName, buildPath(parent.Path, name)))
+		newAttr.PayloadID = PayloadID(buildPayloadID(parent.ShareName, fullPath))
 	}
 
 	// Set device numbers for block/char devices
@@ -916,7 +934,7 @@ func (s *MetadataService) createEntry(
 	newFile := &File{
 		ID:        id,
 		ShareName: parent.ShareName,
-		Path:      buildPath(parent.Path, name),
+		Path:      fullPath,
 		FileAttr:  newAttr,
 	}
 	newFile.Nlink = GetInitialLinkCount(fileType)
