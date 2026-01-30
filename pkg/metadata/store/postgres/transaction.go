@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"time"
@@ -399,7 +400,7 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 		var size int64
 		var atime, mtime, ctime, creationTime time.Time
 		var hidden bool
-		var linkCount *uint32
+		var linkCount sql.NullInt32
 
 		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size,
 			&atime, &mtime, &ctime, &creationTime, &hidden, &linkCount)
@@ -414,8 +415,8 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 
 		// Determine Nlink value
 		var nlink uint32
-		if linkCount != nil {
-			nlink = *linkCount
+		if linkCount.Valid {
+			nlink = uint32(linkCount.Int32)
 		} else {
 			// Default based on file type
 			if metadata.FileType(fileType) == metadata.FileTypeDirectory {
@@ -777,7 +778,7 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 		ctime        time.Time
 		creationTime time.Time
 		hidden       bool
-		linkCount    *uint32
+		linkCount    sql.NullInt32
 	)
 
 	err := tx.tx.QueryRow(ctx, checkQuery, shareName).Scan(
@@ -788,8 +789,8 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 	if err == nil {
 		// Determine Nlink value
 		var nlink uint32
-		if linkCount != nil {
-			nlink = *linkCount
+		if linkCount.Valid {
+			nlink = uint32(linkCount.Int32)
 		} else {
 			// Root directories always have at least 2 links
 			nlink = 2
