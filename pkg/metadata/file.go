@@ -102,51 +102,56 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 		FileAttr:  file.FileAttr,
 	}
 
-	// Handle link count
-	if linkCount > 1 {
-		// File has other hard links, just decrement count
-		// Empty PayloadID signals caller NOT to delete content
-		returnFile.PayloadID = ""
-		returnFile.Nlink = linkCount - 1
-		returnFile.Ctime = now
+	// Execute all write operations in a single transaction for better performance.
+	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Handle link count
+		if linkCount > 1 {
+			// File has other hard links, just decrement count
+			// Empty PayloadID signals caller NOT to delete content
+			returnFile.PayloadID = ""
+			returnFile.Nlink = linkCount - 1
+			returnFile.Ctime = now
 
-		// Update file's link count and ctime
-		if err := store.SetLinkCount(ctx.Context, fileHandle, linkCount-1); err != nil {
-			return nil, err
+			// Update file's link count and ctime
+			if err := tx.SetLinkCount(ctx.Context, fileHandle, linkCount-1); err != nil {
+				return err
+			}
+
+			// Update file's ctime
+			file.Ctime = now
+			if err := tx.PutFile(ctx.Context, file); err != nil {
+				return err
+			}
+		} else {
+			// Last link - set nlink=0 but keep metadata for POSIX compliance
+			returnFile.Nlink = 0
+			returnFile.Ctime = now
+
+			// Set link count to 0
+			if err := tx.SetLinkCount(ctx.Context, fileHandle, 0); err != nil {
+				return err
+			}
+
+			// Update file's ctime and nlink
+			file.Ctime = now
+			file.Nlink = 0
+			if err := tx.PutFile(ctx.Context, file); err != nil {
+				return err
+			}
 		}
 
-		// Update file's ctime
-		file.Ctime = now
-		if err := store.PutFile(ctx.Context, file); err != nil {
-			return nil, err
-		}
-	} else {
-		// Last link - set nlink=0 but keep metadata for POSIX compliance
-		returnFile.Nlink = 0
-		returnFile.Ctime = now
-
-		// Set link count to 0
-		if err := store.SetLinkCount(ctx.Context, fileHandle, 0); err != nil {
-			return nil, err
+		// Remove from parent's children
+		if err := tx.DeleteChild(ctx.Context, parentHandle, name); err != nil {
+			return err
 		}
 
-		// Update file's ctime and nlink
-		file.Ctime = now
-		file.Nlink = 0
-		if err := store.PutFile(ctx.Context, file); err != nil {
-			return nil, err
-		}
-	}
+		// Update parent timestamps
+		parent.Mtime = now
+		parent.Ctime = now
+		return tx.PutFile(ctx.Context, parent)
+	})
 
-	// Remove from parent's children
-	if err := store.DeleteChild(ctx.Context, parentHandle, name); err != nil {
-		return nil, err
-	}
-
-	// Update parent timestamps
-	parent.Mtime = now
-	parent.Ctime = now
-	if err := store.PutFile(ctx.Context, parent); err != nil {
+	if err != nil {
 		return nil, err
 	}
 
@@ -302,29 +307,30 @@ func (s *MetadataService) CreateHardLink(ctx *AuthContext, dirHandle FileHandle,
 		return err
 	}
 
-	// Add to directory's children
-	if err := store.SetChild(ctx.Context, dirHandle, name, targetHandle); err != nil {
-		return err
-	}
+	// Execute all write operations in a single transaction for better performance.
+	return store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Add to directory's children
+		if err := tx.SetChild(ctx.Context, dirHandle, name, targetHandle); err != nil {
+			return err
+		}
 
-	// Increment target's link count
-	linkCount, _ := store.GetLinkCount(ctx.Context, targetHandle)
-	if err := store.SetLinkCount(ctx.Context, targetHandle, linkCount+1); err != nil {
-		// Cleanup
-		_ = store.DeleteChild(ctx.Context, dirHandle, name)
-		return err
-	}
+		// Increment target's link count
+		linkCount, _ := tx.GetLinkCount(ctx.Context, targetHandle)
+		if err := tx.SetLinkCount(ctx.Context, targetHandle, linkCount+1); err != nil {
+			return err
+		}
 
-	// Update timestamps
-	now := time.Now()
-	target.Ctime = now
-	_ = store.PutFile(ctx.Context, target)
+		// Update timestamps
+		now := time.Now()
+		target.Ctime = now
+		if err := tx.PutFile(ctx.Context, target); err != nil {
+			return err
+		}
 
-	dir.Mtime = now
-	dir.Ctime = now
-	_ = store.PutFile(ctx.Context, dir)
-
-	return nil
+		dir.Mtime = now
+		dir.Ctime = now
+		return tx.PutFile(ctx.Context, dir)
+	})
 }
 
 // ReadSymlink reads the target path of a symbolic link.
@@ -655,11 +661,13 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 		}
 	}
 
-	// Check if destination exists
-	dstHandle, err := store.GetChild(ctx.Context, toDir, toName)
+	// Check if destination exists and gather info before transaction
+	var dstHandle FileHandle
+	var dstFile *File
+	dstHandle, err = store.GetChild(ctx.Context, toDir, toName)
 	if err == nil {
 		// Destination exists - check compatibility
-		dstFile, err := store.GetFile(ctx.Context, dstHandle)
+		dstFile, err = store.GetFile(ctx.Context, dstHandle)
 		if err != nil {
 			return err
 		}
@@ -693,80 +701,86 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 				}
 			}
 		}
-
-		// Remove destination
-		if dstFile.Type == FileTypeDirectory {
-			if err := store.DeleteFile(ctx.Context, dstHandle); err != nil {
-				return err
-			}
-		} else {
-			// For files, decrement link count or set to 0
-			// POSIX: ctime must be updated when link count changes
-			linkCount, _ := store.GetLinkCount(ctx.Context, dstHandle)
-			now := time.Now()
-			if linkCount <= 1 {
-				_ = store.SetLinkCount(ctx.Context, dstHandle, 0)
-			} else {
-				_ = store.SetLinkCount(ctx.Context, dstHandle, linkCount-1)
-			}
-			// Update ctime on the file being unlinked (affects remaining hard links)
-			dstFile.Ctime = now
-			_ = store.PutFile(ctx.Context, dstFile)
-		}
-
-		// Remove destination from children
-		if err := store.DeleteChild(ctx.Context, toDir, toName); err != nil {
-			return err
-		}
 	} else if !IsNotFoundError(err) {
 		return err
 	}
 
-	// Remove source from old parent
-	if err := store.DeleteChild(ctx.Context, fromDir, fromName); err != nil {
-		return err
-	}
-
-	// Add source to new parent
-	if err := store.SetChild(ctx.Context, toDir, toName, srcHandle); err != nil {
-		return err
-	}
-
-	// Update parent reference if directories are different
-	if string(fromDir) != string(toDir) {
-		// Non-fatal error, ignore
-		_ = store.SetParent(ctx.Context, srcHandle, toDir)
-
-		// Update link counts for directory moves
-		if srcFile.Type == FileTypeDirectory {
-			// Decrement source parent's link count
-			srcLinkCount, _ := store.GetLinkCount(ctx.Context, fromDir)
-			if srcLinkCount > 0 {
-				_ = store.SetLinkCount(ctx.Context, fromDir, srcLinkCount-1)
+	// Execute all write operations in a single transaction for better performance.
+	return store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Handle destination removal if it exists
+		if dstFile != nil {
+			// Remove destination
+			if dstFile.Type == FileTypeDirectory {
+				if err := tx.DeleteFile(ctx.Context, dstHandle); err != nil {
+					return err
+				}
+			} else {
+				// For files, decrement link count or set to 0
+				// POSIX: ctime must be updated when link count changes
+				linkCount, _ := tx.GetLinkCount(ctx.Context, dstHandle)
+				now := time.Now()
+				if linkCount <= 1 {
+					_ = tx.SetLinkCount(ctx.Context, dstHandle, 0)
+				} else {
+					_ = tx.SetLinkCount(ctx.Context, dstHandle, linkCount-1)
+				}
+				// Update ctime on the file being unlinked (affects remaining hard links)
+				dstFile.Ctime = now
+				_ = tx.PutFile(ctx.Context, dstFile)
 			}
-			// Increment destination parent's link count
-			dstLinkCount, _ := store.GetLinkCount(ctx.Context, toDir)
-			_ = store.SetLinkCount(ctx.Context, toDir, dstLinkCount+1)
+
+			// Remove destination from children
+			if err := tx.DeleteChild(ctx.Context, toDir, toName); err != nil {
+				return err
+			}
 		}
-	}
 
-	// Update timestamps (non-fatal errors, ignore)
-	now := time.Now()
-	srcFile.Ctime = now
-	_ = store.PutFile(ctx.Context, srcFile)
+		// Remove source from old parent
+		if err := tx.DeleteChild(ctx.Context, fromDir, fromName); err != nil {
+			return err
+		}
 
-	srcDir.Mtime = now
-	srcDir.Ctime = now
-	_ = store.PutFile(ctx.Context, srcDir)
+		// Add source to new parent
+		if err := tx.SetChild(ctx.Context, toDir, toName, srcHandle); err != nil {
+			return err
+		}
 
-	if string(fromDir) != string(toDir) {
-		dstDir.Mtime = now
-		dstDir.Ctime = now
-		// Non-fatal error, ignore
-		_ = store.PutFile(ctx.Context, dstDir)
-	}
+		// Update parent reference if directories are different
+		if string(fromDir) != string(toDir) {
+			// Non-fatal error, ignore
+			_ = tx.SetParent(ctx.Context, srcHandle, toDir)
 
-	return nil
+			// Update link counts for directory moves
+			if srcFile.Type == FileTypeDirectory {
+				// Decrement source parent's link count
+				srcLinkCount, _ := tx.GetLinkCount(ctx.Context, fromDir)
+				if srcLinkCount > 0 {
+					_ = tx.SetLinkCount(ctx.Context, fromDir, srcLinkCount-1)
+				}
+				// Increment destination parent's link count
+				dstLinkCount, _ := tx.GetLinkCount(ctx.Context, toDir)
+				_ = tx.SetLinkCount(ctx.Context, toDir, dstLinkCount+1)
+			}
+		}
+
+		// Update timestamps (non-fatal errors, ignore)
+		now := time.Now()
+		srcFile.Ctime = now
+		_ = tx.PutFile(ctx.Context, srcFile)
+
+		srcDir.Mtime = now
+		srcDir.Ctime = now
+		_ = tx.PutFile(ctx.Context, srcDir)
+
+		if string(fromDir) != string(toDir) {
+			dstDir.Mtime = now
+			dstDir.Ctime = now
+			// Non-fatal error, ignore
+			_ = tx.PutFile(ctx.Context, dstDir)
+		}
+
+		return nil
+	})
 }
 
 // MarkFileAsOrphaned sets a file's link count to 0, marking it as orphaned.
@@ -939,46 +953,49 @@ func (s *MetadataService) createEntry(
 	}
 	newFile.Nlink = GetInitialLinkCount(fileType)
 
-	// Store the entry
-	if err := store.PutFile(ctx.Context, newFile); err != nil {
-		return nil, err
-	}
-
-	// Initialize link count in the store (required for hard link management)
-	if err := store.SetLinkCount(ctx.Context, newHandle, newFile.Nlink); err != nil {
-		// Cleanup on failure
-		_ = store.DeleteFile(ctx.Context, newHandle)
-		return nil, err
-	}
-
-	// Set parent reference
-	if err := store.SetParent(ctx.Context, newHandle, parentHandle); err != nil {
-		// Cleanup on failure
-		_ = store.DeleteFile(ctx.Context, newHandle)
-		return nil, err
-	}
-
-	// Add to parent's children
-	if err := store.SetChild(ctx.Context, parentHandle, name, newHandle); err != nil {
-		// Cleanup on failure
-		_ = store.DeleteFile(ctx.Context, newHandle)
-		return nil, err
-	}
-
-	// For directories, increment parent's link count (new ".." reference)
-	if fileType == FileTypeDirectory {
-		parentLinkCount, err := store.GetLinkCount(ctx.Context, parentHandle)
-		if err == nil {
-			_ = store.SetLinkCount(ctx.Context, parentHandle, parentLinkCount+1)
+	// Execute all write operations in a single transaction for better performance.
+	// This reduces PostgreSQL round-trips from 6+ to 2 (BEGIN + COMMIT).
+	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Store the entry
+		if err := tx.PutFile(ctx.Context, newFile); err != nil {
+			return err
 		}
-	}
 
-	// Update parent timestamps
-	now := time.Now()
-	parent.Mtime = now
-	parent.Ctime = now
-	// Non-fatal, file was created
-	_ = store.PutFile(ctx.Context, parent)
+		// Initialize link count in the store (required for hard link management)
+		if err := tx.SetLinkCount(ctx.Context, newHandle, newFile.Nlink); err != nil {
+			return err
+		}
+
+		// Set parent reference
+		if err := tx.SetParent(ctx.Context, newHandle, parentHandle); err != nil {
+			return err
+		}
+
+		// Add to parent's children
+		if err := tx.SetChild(ctx.Context, parentHandle, name, newHandle); err != nil {
+			return err
+		}
+
+		// For directories, increment parent's link count (new ".." reference)
+		if fileType == FileTypeDirectory {
+			parentLinkCount, err := tx.GetLinkCount(ctx.Context, parentHandle)
+			if err == nil {
+				if err := tx.SetLinkCount(ctx.Context, parentHandle, parentLinkCount+1); err != nil {
+					return err
+				}
+			}
+		}
+
+		// Update parent timestamps
+		now := time.Now()
+		parent.Mtime = now
+		parent.Ctime = now
+		return tx.PutFile(ctx.Context, parent)
+	})
+
+	if err != nil {
+		return nil, err
+	}
 
 	return newFile, nil
 }

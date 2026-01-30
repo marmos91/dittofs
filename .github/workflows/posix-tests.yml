@@ -299,6 +299,8 @@ jobs:
           POSTGRES_USER: dittofs
           POSTGRES_PASSWORD: dittofs
           POSTGRES_DB: dittofs_test
+          # Performance tuning for high-throughput testing
+          POSTGRES_INITDB_ARGS: "--data-checksums"
         ports:
           - 5432:5432
         options: >-
@@ -306,6 +308,7 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+          --shm-size=256mb
 
     steps:
       - name: Checkout
@@ -332,6 +335,17 @@ jobs:
         run: |
           PJDFSTEST=$(nix build .#pjdfstest --print-out-paths)
           echo "PJDFSTEST_DIR=$PJDFSTEST" >> $GITHUB_ENV
+
+      - name: Tune PostgreSQL for testing
+        run: |
+          # Disable synchronous commit for faster writes (safe for testing)
+          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET synchronous_commit = 'off';"
+          # Increase checkpoint timeout to reduce I/O
+          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET checkpoint_timeout = '30min';"
+          # Increase work_mem for faster sorts/joins
+          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET work_mem = '64MB';"
+          # Reload configuration
+          PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "SELECT pg_reload_conf();"
 
       - name: Setup DittoFS (PostgreSQL)
         id: setup-postgres

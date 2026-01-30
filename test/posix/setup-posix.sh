@@ -180,7 +180,7 @@ configure_via_api() {
             ;;
         postgres)
             "$DITTOFSCTL_BIN" store metadata add --name default --type postgres \
-                --config '{"host":"localhost","port":5432,"user":"dittofs","password":"dittofs","database":"dittofs_test","sslmode":"disable"}'
+                --config '{"host":"localhost","port":5432,"user":"dittofs","password":"dittofs","database":"dittofs_test","sslmode":"disable","max_conns":50,"min_conns":10}'
             ;;
     esac
 
