@@ -19,7 +19,7 @@ import (
 //
 // Error Mapping:
 //   - ErrNotFound → types.NFS3ErrNoEnt (ENOENT: No such file or directory)
-//   - ErrAccessDenied → types.NFS3ErrAcces (EACCES: Access denied)
+//   - ErrAccessDenied → types.NFS3ErrAcces (EACCES: Permission denied)
 //   - ErrPermissionDenied → types.NFS3ErrPerm (EPERM: Operation not permitted)
 //   - ErrNotDirectory → types.NFS3ErrNotDir (ENOTDIR: Not a directory)
 //   - ErrIsDirectory → types.NFS3ErrIsDir (EISDIR: Is a directory)

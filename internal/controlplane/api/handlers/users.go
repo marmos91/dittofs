@@ -21,13 +21,13 @@ type UserHandler struct {
 
 // NewUserHandler creates a new UserHandler. jwtService is required for generating
 // new tokens after password changes to ensure users receive fresh credentials.
-// jwtService must not be nil; passing nil will cause a panic so that misconfiguration
-// is detected immediately at startup rather than at first use.
-func NewUserHandler(store store.Store, jwtService *auth.JWTService) *UserHandler {
+// Returns an error if jwtService is nil, allowing callers to handle the
+// misconfiguration gracefully (e.g., at startup).
+func NewUserHandler(store store.Store, jwtService *auth.JWTService) (*UserHandler, error) {
 	if jwtService == nil {
-		panic("NewUserHandler: jwtService is required and must not be nil")
+		return nil, errors.New("NewUserHandler: jwtService is required and must not be nil")
 	}
-	return &UserHandler{store: store, jwtService: jwtService}
+	return &UserHandler{store: store, jwtService: jwtService}, nil
 }
 
 // CreateUserRequest is the request body for POST /api/v1/users.

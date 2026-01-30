@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // MetadataStoreHandler handles metadata store configuration API endpoints.
@@ -72,6 +73,21 @@ func (h *MetadataStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	}
 
+	// Validate store can be created before persisting configuration
+	// This prevents inconsistent state where config exists but store cannot be instantiated
+	var metaStore metadata.MetadataStore
+	if h.runtime != nil {
+		var err error
+		metaStore, err = runtime.CreateMetadataStoreFromConfig(r.Context(), storeCfg.Type, storeCfg)
+		if err != nil {
+			logger.Error("Failed to create metadata store instance",
+				"name", req.Name, "type", req.Type, "error", err)
+			BadRequest(w, "Failed to create metadata store: "+err.Error())
+			return
+		}
+	}
+
+	// Store creation succeeded, now persist the configuration
 	if _, err := h.store.CreateMetadataStore(r.Context(), storeCfg); err != nil {
 		if errors.Is(err, models.ErrDuplicateStore) {
 			Conflict(w, "Metadata store already exists")
@@ -81,20 +97,15 @@ func (h *MetadataStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create the actual metadata store instance and register with runtime
-	if h.runtime != nil {
-		metaStore, err := runtime.CreateMetadataStoreFromConfig(r.Context(), storeCfg.Type, storeCfg)
-		if err != nil {
-			// Config saved but store creation failed - manual intervention may be required
-			logger.Warn("Metadata store config saved but failed to create instance. Fix the configuration and restart the server.",
-				"name", req.Name, "type", req.Type, "error", err)
+	// Register with runtime (store already validated above)
+	if h.runtime != nil && metaStore != nil {
+		if err := h.runtime.RegisterMetadataStore(req.Name, metaStore); err != nil {
+			// Config saved but registration failed - log warning
+			// Store will be registered on next server restart
+			logger.Warn("Metadata store created but failed to register with runtime",
+				"name", req.Name, "error", err)
 		} else {
-			if err := h.runtime.RegisterMetadataStore(req.Name, metaStore); err != nil {
-				logger.Warn("Metadata store created but failed to register with runtime",
-					"name", req.Name, "error", err)
-			} else {
-				logger.Info("Metadata store created and registered", "name", req.Name, "type", req.Type)
-			}
+			logger.Info("Metadata store created and registered", "name", req.Name, "type", req.Type)
 		}
 	}
 

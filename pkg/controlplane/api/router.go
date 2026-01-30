@@ -66,7 +66,11 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 
 	// API handlers - use cpStore directly since API handlers have request context
 	authHandler := handlers.NewAuthHandler(cpStore, jwtService)
-	userHandler := handlers.NewUserHandler(cpStore, jwtService)
+	userHandler, err := handlers.NewUserHandler(cpStore, jwtService)
+	if err != nil {
+		// This is a programming error - jwtService should always be provided
+		panic("failed to create user handler: " + err.Error())
+	}
 
 	// API v1 routes
 	r.Route("/api/v1", func(r chi.Router) {
