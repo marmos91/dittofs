@@ -90,24 +90,10 @@ echo "Tests directory: $WORK_DIR/tests"
 echo "pjdfstest binary: $PJDFSTEST_BIN"
 echo ""
 
-# Tests that are known to hang (not just fail) due to NFS limitations.
-# These tests attempt operations that cannot work over NFS and cause
-# the kernel NFS client to hang indefinitely.
-HANGING_TESTS=(
-    # UNIX domain sockets can't function over NFS - bind() hangs
-    "open/24.t"
-)
-
-# Build exclusion arguments for prove
-EXCLUDE_ARGS=""
-for test in "${HANGING_TESTS[@]}"; do
-    EXCLUDE_ARGS="$EXCLUDE_ARGS --ignore=$test"
-done
-
 if [[ $# -gt 0 ]]; then
     # Run specific test pattern
-    exec prove -rv $EXCLUDE_ARGS "$WORK_DIR/tests/$1"
+    exec prove -rv "$WORK_DIR/tests/$1"
 else
-    # Run all tests (excluding hanging tests)
-    exec prove -rv $EXCLUDE_ARGS "$WORK_DIR/tests"
+    # Run all tests
+    exec prove -rv "$WORK_DIR/tests"
 fi
