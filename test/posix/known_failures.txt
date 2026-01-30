@@ -98,6 +98,15 @@ posix_fallocate/*|No ALLOCATE procedure in NFSv3
 # ---------------------------------------------
 # DittoFS can create special file entries (MKNOD) but they don't
 # function as actual devices/sockets/FIFOs.
+#
+# UNIX domain sockets are particularly problematic over NFS:
+# - The socket file can be created via MKNOD
+# - But bind() to create a functional socket doesn't work
+# - The kernel NFS client may hang or return unexpected errors
+# - This is a fundamental NFS limitation, not a DittoFS bug
+
+open/24.t|UNIX domain socket tests - sockets don't function over NFS
+open::24.t|UNIX domain socket tests - sockets don't function over NFS
 
 # mknod may fail for certain device types on some systems
 # mknod/chr/*|Character devices - metadata only, no functionality

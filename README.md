@@ -363,8 +363,10 @@ sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock localhost:/e
 ./dittofsctl share permission grant /export --user alice --level read-write
 
 # Linux (using credentials file for security)
+# NOTE: Never embed passwords in scripts or command history.
+# Create ~/.smbcredentials manually with: username=alice\npassword=YOUR_PASSWORD
+# Then: chmod 600 ~/.smbcredentials
 sudo mkdir -p /mnt/smb
-echo -e "username=alice\npassword=secret" > ~/.smbcredentials && chmod 600 ~/.smbcredentials
 sudo mount -t cifs //localhost/export /mnt/smb -o port=12445,credentials=$HOME/.smbcredentials,vers=2.0
 
 # macOS (will prompt for password)

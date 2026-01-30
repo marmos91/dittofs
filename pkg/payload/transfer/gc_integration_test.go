@@ -251,7 +251,17 @@ func getS3Endpoint(t *testing.T) (string, func()) {
 	req := testcontainers.ContainerRequest{
 		Image:        "localstack/localstack:3.0",
 		ExposedPorts: []string{"4566/tcp"},
-		WaitingFor:   wait.ForListeningPort("4566/tcp"),
+		// Wait for both the port AND the health endpoint to ensure S3 is ready.
+		// Just waiting for the port causes "connection reset by peer" errors
+		// because LocalStack's services aren't fully initialized yet.
+		WaitingFor: wait.ForAll(
+			wait.ForListeningPort("4566/tcp"),
+			wait.ForHTTP("/_localstack/health").WithPort("4566/tcp").WithStatusCodeMatcher(
+				func(status int) bool {
+					return status == 200
+				},
+			),
+		),
 		Env: map[string]string{
 			"SERVICES": "s3",
 		},
