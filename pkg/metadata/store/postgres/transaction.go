@@ -241,8 +241,11 @@ func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.F
 	}
 
 	// Delete related records first
+	// Note: We only delete link_counts and children of this file (if it's a directory).
+	// We do NOT delete this file from its parent's children map here - that's the
+	// responsibility of DeleteChild, which is called separately by the service layer.
+	// This matches the behavior of memory and badger stores.
 	_, _ = tx.tx.Exec(ctx, `DELETE FROM link_counts WHERE file_id = $1`, id)
-	_, _ = tx.tx.Exec(ctx, `DELETE FROM parent_child_map WHERE child_id = $1`, id)
 	_, _ = tx.tx.Exec(ctx, `DELETE FROM parent_child_map WHERE parent_id = $1`, id)
 
 	// Delete the file
@@ -343,17 +346,15 @@ func (tx *postgresTransaction) DeleteChild(ctx context.Context, dirHandle metada
 		}
 	}
 
-	result, err := tx.tx.Exec(ctx, `DELETE FROM parent_child_map WHERE parent_id = $1 AND child_name = $2`, parentID, name)
+	_, err = tx.tx.Exec(ctx, `DELETE FROM parent_child_map WHERE parent_id = $1 AND child_name = $2`, parentID, name)
 	if err != nil {
 		return mapPgError(err, "DeleteChild", name)
 	}
 
-	if result.RowsAffected() == 0 {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "child not found",
-		}
-	}
+	// Note: We don't check RowsAffected() here because the entry may have already
+	// been deleted by the CASCADE DELETE on the child_id foreign key when DeleteFile
+	// deleted the file from the files table. The desired outcome (child mapping
+	// no longer exists) is achieved either way.
 
 	return nil
 }
