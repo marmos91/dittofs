@@ -934,8 +934,19 @@ func (m *TransferManager) enqueueDownload(payloadID string, chunkIdx, blockIdx u
 	m.inFlight[key] = done
 
 	req := NewDownloadRequest(payloadID, chunkIdx, blockIdx, nil)
-	req.Done = m.wrapDoneChannel(key, done)
-	m.queue.EnqueueDownload(req)
+	wrappedDone := m.wrapDoneChannel(key, done)
+	req.Done = wrappedDone
+
+	// Enqueue the download - if queue is full, signal error immediately
+	// to prevent infinite wait on the done channel
+	if !m.queue.EnqueueDownload(req) {
+		// Queue is full - signal error on the wrapped channel to:
+		// 1. Clean up in-flight tracking (via wrapDoneChannel goroutine)
+		// 2. Forward error to the original done channel
+		// 3. Prevent goroutine leak in wrapDoneChannel
+		wrappedDone <- fmt.Errorf("download queue full, cannot enqueue block %s", key)
+		return done
+	}
 
 	return done
 }

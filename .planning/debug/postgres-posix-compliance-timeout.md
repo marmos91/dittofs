@@ -1,20 +1,23 @@
 ---
-status: investigating
+status: verifying
 trigger: "PostgreSQL POSIX compliance test (pjdfstest) times out during CI. Hangs after completing tests/open/24.t successfully."
 created: 2026-01-31T10:00:00Z
-updated: 2026-01-31T18:30:00Z
+updated: 2026-01-31T23:55:00Z
 ---
 
 ## Current Focus
 
-**CRITICAL INSIGHT: All PostgreSQL operations have 10-second timeouts, but NONE are firing during the 1+ hour hang.**
+**BREAKTHROUGH: Tests do NOT hang locally - only in CI environment.**
 
-This definitively proves the hang is NOT in any PostgreSQL/database operation.
+Local test run (PostgreSQL backend):
+- open tests 00-24: ALL PASS (except known test 03 ENAMETOOLONG failures)
+- Transition 24.t -> end: COMPLETED WITHOUT HANG
+- Total time: ~5.5 minutes
 
-hypothesis: The hang is in a non-database operation that differs between PostgreSQL and other stores
-test: Job 62089600222 is currently running (started 15:47:43, still in_progress as of 17:30)
-expecting: Either CI times out (60min limit) or we identify a non-database blocking point
-next_action: Once CI completes/times out, examine logs to identify exact blocking location
+hypothesis: CI-specific environmental issue - not a code bug
+test: Need to identify what differs between local machine and GitHub Actions runner
+expecting: Root cause in CI configuration, containerized postgres setup, or resource constraints
+next_action: Check GitHub Actions artifacts for monitor.log from recent failed CI runs
 
 ## Symptoms
 
@@ -160,9 +163,104 @@ started: Currently failing on PR https://github.com/marmos91/dittofs/pull/109
   found: requestSem properly acquired/released via handleRequestPanic. wg.Add/Done properly paired. Context cancellation checks throughout.
   implication: No obvious blocking in NFS layer.
 
+- timestamp: 2026-01-31T22:36:00Z
+  checked: LOCAL TEST RUN - PostgreSQL backend with open tests 00-24
+  found: ALL TESTS COMPLETE WITHOUT HANGING
+  details: |
+    - Tests 00-24 ran successfully (excluding open/25.t which is 2GB file test)
+    - Only failures: test 03.t due to ENAMETOOLONG (path length limits) - expected behavior
+    - Total time: ~5.5 minutes (352 wallclock secs)
+    - Transition between tests: NORMAL (no hang after 24.t)
+    - PostgreSQL connection: localhost:5432, same credentials as CI
+  implication: **TESTS DO NOT HANG LOCALLY - THIS IS A CI-ONLY ISSUE**
+
+- timestamp: 2026-01-31T22:40:00Z
+  checked: Local vs CI environment differences
+  found: Key differences identified:
+    1. CI uses GitHub Actions service container for PostgreSQL
+    2. CI has resource limits (shared runner, 2 vCPU, 7GB RAM)
+    3. CI uses ubuntu-latest (may have different kernel/NFS client version)
+    4. CI PostgreSQL runs in separate container with Docker networking
+  implication: Issue may be related to containerized PostgreSQL or CI resource constraints
+
+- timestamp: 2026-01-31T22:50:00Z
+  checked: CI artifacts - monitor.log, posix-postgres.log, server.log, posix-memory.log
+  found: |
+    **ROOT CAUSE IDENTIFIED:**
+    1. Test 24.t completes successfully at 20:21:58
+    2. Test 25.t STARTS (it's the 2GB file test) - contrary to earlier assumption
+    3. Server log shows READ at 2GB offset being initiated
+    4. The READ operation enters "reading from Payload Service" but NEVER RETURNS
+    5. Memory store passes test 25 in 34ms - test itself is not the problem
+    6. PostgreSQL store hangs on the same test
+
+    The hang is in the Payload Service READ path when combined with PostgreSQL metadata store.
+
+  implication: |
+    The timing/behavior of PostgreSQL metadata operations affects the Payload Service READ
+    in a way that causes a deadlock or infinite wait. This only manifests in CI, not locally.
+
+- timestamp: 2026-01-31T23:30:00Z
+  checked: TransferQueue.EnqueueDownload and TransferManager.enqueueDownload
+  found: |
+    **CRITICAL BUG FOUND:**
+
+    In manager.go line 938:
+    ```go
+    m.queue.EnqueueDownload(req)
+    ```
+
+    The return value is NOT checked. But EnqueueDownload returns false if queue is full:
+
+    In queue.go lines 124-136:
+    ```go
+    func (q *TransferQueue) EnqueueDownload(req TransferRequest) bool {
+        select {
+        case q.downloads <- req:
+            // ... success
+            return true
+        default:
+            logger.Warn("Download queue full, dropping request")
+            return false  // <-- REQUEST DROPPED!
+        }
+    }
+    ```
+
+    If the download request is dropped:
+    1. The `done` channel created in enqueueDownload is NEVER signaled
+    2. The caller waits forever at line 897: `case err := <-done:`
+    3. The READ operation hangs indefinitely
+
+  implication: |
+    This is the root cause of the infinite hang. When download queue becomes full:
+    - Download request is silently dropped (only a warning logged)
+    - done channel never receives a value
+    - EnsureAvailable waits forever
+    - READ operation hangs
+
+    Why only PostgreSQL in CI?
+    - PostgreSQL metadata operations are slower (network latency to service container)
+    - More NFS operations pile up waiting for metadata
+    - More concurrent download requests flood the queue
+    - Queue reaches capacity (default: 1000)
+    - Subsequent downloads are dropped
+
+    Why not locally?
+    - PostgreSQL is faster (localhost)
+    - Less concurrent pressure on download queue
+    - Queue never fills up
+
 ## Resolution
 
-root_cause: **UNKNOWN - Hang is NOT in any PostgreSQL operation**
+root_cause: |
+  **FOUND: EnqueueDownload silently drops requests when queue is full**
+
+  The TransferManager.enqueueDownload() calls queue.EnqueueDownload() but does NOT check
+  the return value. When the queue is full, the request is dropped but the done channel
+  is never signaled, causing EnsureAvailable to wait forever.
+
+  Fix: Return an error when EnqueueDownload returns false, instead of returning a done
+  channel that will never be signaled.
 
 ### Eliminated Root Causes
 
@@ -237,3 +335,38 @@ BadgerDB:
 - pkg/metadata/store/postgres/server.go (updated pool operations - Phase 1)
 - pkg/metadata/store/postgres/objects.go (updated pool operations - Phase 1)
 - pkg/metadata/store/postgres/transaction.go (added Commit/Rollback timeouts - Phase 2)
+- pkg/payload/transfer/manager.go (FIX: handle EnqueueDownload returning false - Phase 3)
+
+### Fix Applied
+
+Modified `enqueueDownload()` in `pkg/payload/transfer/manager.go` to check the return
+value of `queue.EnqueueDownload()`. When the queue is full:
+1. Clean up in-flight tracking immediately
+2. Signal an error on the done channel
+3. Return the channel (caller will receive error instead of waiting forever)
+
+```go
+// Before (buggy):
+req.Done = m.wrapDoneChannel(key, done)
+m.queue.EnqueueDownload(req)
+return done
+
+// After (fixed):
+wrappedDone := m.wrapDoneChannel(key, done)
+req.Done = wrappedDone
+
+if !m.queue.EnqueueDownload(req) {
+    // Queue is full - signal error on the wrapped channel to:
+    // 1. Clean up in-flight tracking (via wrapDoneChannel goroutine)
+    // 2. Forward error to the original done channel
+    // 3. Prevent goroutine leak in wrapDoneChannel
+    wrappedDone <- fmt.Errorf("download queue full, cannot enqueue block %s", key)
+    return done
+}
+return done
+```
+
+### Verification Needed
+- [ ] Run POSIX tests with PostgreSQL in CI
+- [ ] Verify test 25 (2GB file) completes without hanging
+- [ ] Verify error is properly reported when queue is full
