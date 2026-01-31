@@ -44,7 +44,7 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 		WHERE f.id = $1 AND f.share_name = $2
 	`
 
-	row := s.pool.QueryRow(ctx, query, id, shareName)
+	row := s.queryRow(ctx, query, id, shareName)
 	file, err := fileRowToFileWithNlink(row)
 	if err != nil {
 		return nil, mapPgError(err, "GetFile", "")
@@ -91,7 +91,7 @@ func (s *PostgresMetadataStore) GetChild(ctx context.Context, dirHandle metadata
 	`
 
 	var childID string
-	err = s.pool.QueryRow(ctx, query, parentID, name).Scan(&childID)
+	err = s.queryRow(ctx, query, parentID, name).Scan(&childID)
 	if err != nil {
 		return nil, mapPgError(err, "GetChild", name)
 	}
@@ -133,7 +133,7 @@ func (s *PostgresMetadataStore) GetParent(ctx context.Context, handle metadata.F
 	query := `SELECT parent_id FROM parent_child_map WHERE child_id = $1 LIMIT 1`
 
 	var parentIDStr string
-	err = s.pool.QueryRow(ctx, query, childID).Scan(&parentIDStr)
+	err = s.queryRow(ctx, query, childID).Scan(&parentIDStr)
 	if err != nil {
 		return nil, mapPgError(err, "GetParent", "")
 	}
@@ -165,7 +165,7 @@ func (s *PostgresMetadataStore) GetLinkCount(ctx context.Context, handle metadat
 	}
 
 	var count uint32
-	err = s.pool.QueryRow(ctx, `SELECT link_count FROM link_counts WHERE file_id = $1`, fileID).Scan(&count)
+	err = s.queryRow(ctx, `SELECT link_count FROM link_counts WHERE file_id = $1`, fileID).Scan(&count)
 	if err != nil {
 		// Not found means count is 0
 		return 0, nil
@@ -211,7 +211,7 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 		LIMIT $3
 	`
 
-	rows, err := s.pool.Query(ctx, query, parentID, cursor, limit+1)
+	rows, err := s.query(ctx, query, parentID, cursor, limit+1)
 	if err != nil {
 		return nil, "", mapPgError(err, "ListChildren", "")
 	}
@@ -291,7 +291,7 @@ func (s *PostgresMetadataStore) GetFilesystemMeta(ctx context.Context, shareName
 	query := `SELECT meta FROM filesystem_meta WHERE share_name = $1`
 
 	var data []byte
-	err := s.pool.QueryRow(ctx, query, shareName).Scan(&data)
+	err := s.queryRow(ctx, query, shareName).Scan(&data)
 	if err != nil {
 		// Return defaults if not found
 		return &metadata.FilesystemMeta{
@@ -340,7 +340,7 @@ func (s *PostgresMetadataStore) GetFileByPayloadID(ctx context.Context, payloadI
 		LIMIT 1
 	`
 
-	row := s.pool.QueryRow(ctx, query, string(payloadID))
+	row := s.queryRow(ctx, query, string(payloadID))
 	file, err := fileRowToFileWithNlink(row)
 	if err != nil {
 		return nil, mapPgError(err, "GetFileByPayloadID", string(payloadID))

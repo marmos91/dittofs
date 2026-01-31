@@ -36,7 +36,7 @@ var _ metadata.ObjectStore = (*PostgresMetadataStore)(nil)
 // GetObject retrieves an object by its content hash.
 func (s *PostgresMetadataStore) GetObject(ctx context.Context, id metadata.ContentHash) (*metadata.Object, error) {
 	query := `SELECT id, size, ref_count, chunk_count, created_at, finalized FROM objects WHERE id = $1`
-	row := s.pool.QueryRow(ctx, query, id.String())
+	row := s.queryRow(ctx, query, id.String())
 
 	var obj metadata.Object
 	var idStr string
@@ -62,7 +62,7 @@ func (s *PostgresMetadataStore) PutObject(ctx context.Context, obj *metadata.Obj
 			ref_count = EXCLUDED.ref_count,
 			chunk_count = EXCLUDED.chunk_count,
 			finalized = EXCLUDED.finalized`
-	_, err := s.pool.Exec(ctx, query,
+	_, err := s.exec(ctx, query,
 		obj.ID.String(), obj.Size, obj.RefCount, obj.ChunkCount, obj.CreatedAt, obj.Finalized)
 	if err != nil {
 		return fmt.Errorf("put object: %w", err)
@@ -72,7 +72,7 @@ func (s *PostgresMetadataStore) PutObject(ctx context.Context, obj *metadata.Obj
 
 // DeleteObject removes an object by its content hash.
 func (s *PostgresMetadataStore) DeleteObject(ctx context.Context, id metadata.ContentHash) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM objects WHERE id = $1`, id.String())
+	result, err := s.exec(ctx, `DELETE FROM objects WHERE id = $1`, id.String())
 	if err != nil {
 		return fmt.Errorf("delete object: %w", err)
 	}
@@ -87,7 +87,7 @@ func (s *PostgresMetadataStore) DeleteObject(ctx context.Context, id metadata.Co
 func (s *PostgresMetadataStore) IncrementObjectRefCount(ctx context.Context, id metadata.ContentHash) (uint32, error) {
 	query := `UPDATE objects SET ref_count = ref_count + 1 WHERE id = $1 RETURNING ref_count`
 	var newCount uint32
-	err := s.pool.QueryRow(ctx, query, id.String()).Scan(&newCount)
+	err := s.queryRow(ctx, query, id.String()).Scan(&newCount)
 	if err == pgx.ErrNoRows {
 		return 0, metadata.ErrObjectNotFound
 	}
@@ -101,7 +101,7 @@ func (s *PostgresMetadataStore) IncrementObjectRefCount(ctx context.Context, id 
 func (s *PostgresMetadataStore) DecrementObjectRefCount(ctx context.Context, id metadata.ContentHash) (uint32, error) {
 	query := `UPDATE objects SET ref_count = GREATEST(ref_count - 1, 0) WHERE id = $1 RETURNING ref_count`
 	var newCount uint32
-	err := s.pool.QueryRow(ctx, query, id.String()).Scan(&newCount)
+	err := s.queryRow(ctx, query, id.String()).Scan(&newCount)
 	if err == pgx.ErrNoRows {
 		return 0, metadata.ErrObjectNotFound
 	}
@@ -118,7 +118,7 @@ func (s *PostgresMetadataStore) DecrementObjectRefCount(ctx context.Context, id 
 // GetChunk retrieves a chunk by its content hash.
 func (s *PostgresMetadataStore) GetChunk(ctx context.Context, hash metadata.ContentHash) (*metadata.ObjectChunk, error) {
 	query := `SELECT object_id, idx, hash, size, block_count, ref_count FROM object_chunks WHERE hash = $1`
-	row := s.pool.QueryRow(ctx, query, hash.String())
+	row := s.queryRow(ctx, query, hash.String())
 
 	var chunk metadata.ObjectChunk
 	var objectIDStr, hashStr string
@@ -138,7 +138,7 @@ func (s *PostgresMetadataStore) GetChunk(ctx context.Context, hash metadata.Cont
 // GetChunksByObject retrieves all chunks for an object, ordered by Index.
 func (s *PostgresMetadataStore) GetChunksByObject(ctx context.Context, objectID metadata.ContentHash) ([]*metadata.ObjectChunk, error) {
 	query := `SELECT object_id, idx, hash, size, block_count, ref_count FROM object_chunks WHERE object_id = $1 ORDER BY idx`
-	rows, err := s.pool.Query(ctx, query, objectID.String())
+	rows, err := s.query(ctx, query, objectID.String())
 	if err != nil {
 		return nil, fmt.Errorf("get chunks by object: %w", err)
 	}
@@ -165,7 +165,7 @@ func (s *PostgresMetadataStore) PutChunk(ctx context.Context, chunk *metadata.Ob
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (hash) DO UPDATE SET
 			ref_count = EXCLUDED.ref_count`
-	_, err := s.pool.Exec(ctx, query,
+	_, err := s.exec(ctx, query,
 		chunk.ObjectID.String(), chunk.Index, chunk.Hash.String(), chunk.Size, chunk.BlockCount, chunk.RefCount)
 	if err != nil {
 		return fmt.Errorf("put chunk: %w", err)
@@ -175,7 +175,7 @@ func (s *PostgresMetadataStore) PutChunk(ctx context.Context, chunk *metadata.Ob
 
 // DeleteChunk removes a chunk by its content hash.
 func (s *PostgresMetadataStore) DeleteChunk(ctx context.Context, hash metadata.ContentHash) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM object_chunks WHERE hash = $1`, hash.String())
+	result, err := s.exec(ctx, `DELETE FROM object_chunks WHERE hash = $1`, hash.String())
 	if err != nil {
 		return fmt.Errorf("delete chunk: %w", err)
 	}
@@ -190,7 +190,7 @@ func (s *PostgresMetadataStore) DeleteChunk(ctx context.Context, hash metadata.C
 func (s *PostgresMetadataStore) IncrementChunkRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
 	query := `UPDATE object_chunks SET ref_count = ref_count + 1 WHERE hash = $1 RETURNING ref_count`
 	var newCount uint32
-	err := s.pool.QueryRow(ctx, query, hash.String()).Scan(&newCount)
+	err := s.queryRow(ctx, query, hash.String()).Scan(&newCount)
 	if err == pgx.ErrNoRows {
 		return 0, metadata.ErrChunkNotFound
 	}
@@ -204,7 +204,7 @@ func (s *PostgresMetadataStore) IncrementChunkRefCount(ctx context.Context, hash
 func (s *PostgresMetadataStore) DecrementChunkRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
 	query := `UPDATE object_chunks SET ref_count = GREATEST(ref_count - 1, 0) WHERE hash = $1 RETURNING ref_count`
 	var newCount uint32
-	err := s.pool.QueryRow(ctx, query, hash.String()).Scan(&newCount)
+	err := s.queryRow(ctx, query, hash.String()).Scan(&newCount)
 	if err == pgx.ErrNoRows {
 		return 0, metadata.ErrChunkNotFound
 	}
@@ -221,7 +221,7 @@ func (s *PostgresMetadataStore) DecrementChunkRefCount(ctx context.Context, hash
 // GetBlock retrieves a block by its content hash.
 func (s *PostgresMetadataStore) GetBlock(ctx context.Context, hash metadata.ContentHash) (*metadata.ObjectBlock, error) {
 	query := `SELECT chunk_hash, idx, hash, size, ref_count, uploaded_at FROM object_blocks WHERE hash = $1`
-	row := s.pool.QueryRow(ctx, query, hash.String())
+	row := s.queryRow(ctx, query, hash.String())
 
 	var block metadata.ObjectBlock
 	var chunkHashStr, hashStr string
@@ -245,7 +245,7 @@ func (s *PostgresMetadataStore) GetBlock(ctx context.Context, hash metadata.Cont
 // GetBlocksByChunk retrieves all blocks for a chunk, ordered by Index.
 func (s *PostgresMetadataStore) GetBlocksByChunk(ctx context.Context, chunkHash metadata.ContentHash) ([]*metadata.ObjectBlock, error) {
 	query := `SELECT chunk_hash, idx, hash, size, ref_count, uploaded_at FROM object_blocks WHERE chunk_hash = $1 ORDER BY idx`
-	rows, err := s.pool.Query(ctx, query, chunkHash.String())
+	rows, err := s.query(ctx, query, chunkHash.String())
 	if err != nil {
 		return nil, fmt.Errorf("get blocks by chunk: %w", err)
 	}
@@ -281,7 +281,7 @@ func (s *PostgresMetadataStore) PutBlock(ctx context.Context, block *metadata.Ob
 		ON CONFLICT (hash) DO UPDATE SET
 			ref_count = EXCLUDED.ref_count,
 			uploaded_at = COALESCE(EXCLUDED.uploaded_at, object_blocks.uploaded_at)`
-	_, err := s.pool.Exec(ctx, query,
+	_, err := s.exec(ctx, query,
 		block.ChunkHash.String(), block.Index, block.Hash.String(), block.Size, block.RefCount, uploadedAt)
 	if err != nil {
 		return fmt.Errorf("put block: %w", err)
@@ -291,7 +291,7 @@ func (s *PostgresMetadataStore) PutBlock(ctx context.Context, block *metadata.Ob
 
 // DeleteBlock removes a block by its content hash.
 func (s *PostgresMetadataStore) DeleteBlock(ctx context.Context, hash metadata.ContentHash) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM object_blocks WHERE hash = $1`, hash.String())
+	result, err := s.exec(ctx, `DELETE FROM object_blocks WHERE hash = $1`, hash.String())
 	if err != nil {
 		return fmt.Errorf("delete block: %w", err)
 	}
@@ -316,7 +316,7 @@ func (s *PostgresMetadataStore) FindBlockByHash(ctx context.Context, hash metada
 func (s *PostgresMetadataStore) IncrementBlockRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
 	query := `UPDATE object_blocks SET ref_count = ref_count + 1 WHERE hash = $1 RETURNING ref_count`
 	var newCount uint32
-	err := s.pool.QueryRow(ctx, query, hash.String()).Scan(&newCount)
+	err := s.queryRow(ctx, query, hash.String()).Scan(&newCount)
 	if err == pgx.ErrNoRows {
 		return 0, metadata.ErrBlockNotFound
 	}
@@ -330,7 +330,7 @@ func (s *PostgresMetadataStore) IncrementBlockRefCount(ctx context.Context, hash
 func (s *PostgresMetadataStore) DecrementBlockRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
 	query := `UPDATE object_blocks SET ref_count = GREATEST(ref_count - 1, 0) WHERE hash = $1 RETURNING ref_count`
 	var newCount uint32
-	err := s.pool.QueryRow(ctx, query, hash.String()).Scan(&newCount)
+	err := s.queryRow(ctx, query, hash.String()).Scan(&newCount)
 	if err == pgx.ErrNoRows {
 		return 0, metadata.ErrBlockNotFound
 	}
@@ -342,7 +342,7 @@ func (s *PostgresMetadataStore) DecrementBlockRefCount(ctx context.Context, hash
 
 // MarkBlockUploaded marks a block as uploaded to the block store.
 func (s *PostgresMetadataStore) MarkBlockUploaded(ctx context.Context, hash metadata.ContentHash) error {
-	result, err := s.pool.Exec(ctx,
+	result, err := s.exec(ctx,
 		`UPDATE object_blocks SET uploaded_at = $1 WHERE hash = $2`,
 		time.Now(), hash.String())
 	if err != nil {

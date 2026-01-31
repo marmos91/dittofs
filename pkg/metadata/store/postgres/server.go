@@ -15,7 +15,7 @@ func (s *PostgresMetadataStore) GetServerConfig(ctx context.Context) (metadata.M
 	query := `SELECT config FROM server_config WHERE id = 1`
 
 	var customSettings map[string]any
-	err := s.pool.QueryRow(ctx, query).Scan(&customSettings)
+	err := s.queryRow(ctx, query).Scan(&customSettings)
 	if err != nil {
 		return metadata.MetadataServerConfig{}, mapPgError(err, "GetServerConfig", "")
 	}
@@ -34,9 +34,9 @@ func (s *PostgresMetadataStore) SetServerConfig(ctx context.Context, config meta
 		SET config = EXCLUDED.config, updated_at = NOW()
 	`
 
-	_, err := s.pool.Exec(ctx, query, config.CustomSettings)
+	_, err := s.exec(ctx, query, config.CustomSettings)
 	if err != nil {
-		return mapPgError(err, "SetServerConfig", "")
+		return err
 	}
 
 	return nil
@@ -87,7 +87,7 @@ func (s *PostgresMetadataStore) SetFilesystemCapabilities(capabilities metadata.
 			time_resolution = EXCLUDED.time_resolution
 	`
 
-	_, err := s.pool.Exec(ctx, query,
+	_, err := s.exec(ctx, query,
 		capabilities.MaxReadSize,
 		capabilities.PreferredReadSize,
 		capabilities.MaxWriteSize,
@@ -130,7 +130,7 @@ func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context, han
 	`
 
 	var bytesUsed, filesUsed int64
-	err := s.pool.QueryRow(ctx, query).Scan(&bytesUsed, &filesUsed)
+	err := s.queryRow(ctx, query).Scan(&bytesUsed, &filesUsed)
 	if err != nil {
 		return nil, mapPgError(err, "GetFilesystemStatistics", "")
 	}
