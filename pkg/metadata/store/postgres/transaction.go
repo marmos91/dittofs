@@ -84,7 +84,10 @@ func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx 
 
 		ptx := &postgresTransaction{store: s, tx: tx}
 		if err := fn(ptx); err != nil {
-			_ = tx.Rollback(ctx)
+			// Apply timeout to rollback to prevent indefinite blocking
+			rollbackCtx, rollbackCancel := context.WithTimeout(ctx, connectionAcquireTimeout)
+			_ = tx.Rollback(rollbackCtx)
+			rollbackCancel()
 			if isRetryableError(err) {
 				lastErr = err
 				// Small backoff before retry
@@ -94,7 +97,11 @@ func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx 
 			return err
 		}
 
-		if err := tx.Commit(ctx); err != nil {
+		// Apply timeout to commit to prevent indefinite blocking if PostgreSQL is slow
+		// (e.g., during checkpoint or WAL flush)
+		commitCtx, commitCancel := context.WithTimeout(ctx, connectionAcquireTimeout)
+		if err := tx.Commit(commitCtx); err != nil {
+			commitCancel()
 			if isRetryableError(err) {
 				lastErr = err
 				time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
@@ -102,6 +109,7 @@ func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx 
 			}
 			return err
 		}
+		commitCancel()
 
 		return nil // Success
 	}
