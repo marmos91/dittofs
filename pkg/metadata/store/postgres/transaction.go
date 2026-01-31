@@ -16,6 +16,10 @@ import (
 // Maximum number of retries for retryable errors (deadlock, serialization failure)
 const maxTransactionRetries = 3
 
+// connectionAcquireTimeout is the maximum time to wait for a connection from the pool.
+// This prevents indefinite blocking when the pool is exhausted under high load.
+const connectionAcquireTimeout = 10 * time.Second
+
 // ============================================================================
 // Transaction Support
 // ============================================================================
@@ -45,6 +49,9 @@ func isRetryableError(err error) bool {
 // If fn returns an error, the transaction is rolled back.
 // If fn returns nil, the transaction is committed.
 // Retries automatically on deadlock or serialization failures.
+//
+// Connection acquisition has a timeout to prevent indefinite blocking when
+// the pool is exhausted under high concurrent load.
 func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -52,8 +59,26 @@ func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx 
 
 	var lastErr error
 	for attempt := 0; attempt < maxTransactionRetries; attempt++ {
-		tx, err := s.pool.Begin(ctx)
+		// Use a timeout for connection acquisition to prevent indefinite blocking
+		// when the pool is exhausted. This is critical under high concurrent load
+		// (e.g., POSIX compliance tests) where all connections might be in use.
+		acquireCtx, cancel := context.WithTimeout(ctx, connectionAcquireTimeout)
+		tx, err := s.pool.Begin(acquireCtx)
+		cancel() // Release timer resources immediately after Begin returns
+
 		if err != nil {
+			// Check if it was a timeout acquiring connection
+			if errors.Is(err, context.DeadlineExceeded) {
+				stats := s.pool.Stat()
+				s.logger.Warn("Connection pool exhausted, timed out acquiring connection",
+					"timeout", connectionAcquireTimeout,
+					"attempt", attempt+1,
+					"max_conns", s.config.MaxConns,
+					"total_conns", stats.TotalConns(),
+					"acquired_conns", stats.AcquiredConns(),
+					"idle_conns", stats.IdleConns(),
+					"constructing_conns", stats.ConstructingConns())
+			}
 			return err
 		}
 
