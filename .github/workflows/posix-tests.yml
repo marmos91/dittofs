@@ -367,14 +367,46 @@ jobs:
         run: |
           TESTS_DIR="$PJDFSTEST_DIR/share/pjdfstest/tests"
 
+          # Start background monitoring script for debugging hangs
+          (
+            while true; do
+              echo "=== $(date -u +%H:%M:%S) Monitor ===" >> ~/monitor.log
+              echo "--- Prove processes (state column shows D=blocked on I/O, S=sleeping, R=running) ---" >> ~/monitor.log
+              ps aux | grep -E 'prove|pjdfstest|sh.*\.t' | grep -v grep >> ~/monitor.log 2>&1 || true
+              echo "--- NFS RPC stats ---" >> ~/monitor.log
+              nfsstat -c 2>&1 | head -30 >> ~/monitor.log || true
+              echo "--- NFS mount stats (pending ops) ---" >> ~/monitor.log
+              cat /proc/self/mountstats 2>/dev/null | grep -A 20 "$DITTOFS_MOUNT" >> ~/monitor.log || true
+              echo "--- Server log (last 3 lines) ---" >> ~/monitor.log
+              tail -3 /tmp/dittofs-posix-server.log >> ~/monitor.log 2>&1 || true
+              echo "" >> ~/monitor.log
+              sleep 15
+            done
+          ) &
+          MONITOR_PID=$!
+
           cd $DITTOFS_MOUNT
-          sudo env PATH="$PJDFSTEST_DIR/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
+
+          # Run tests with timeout to prevent indefinite hangs
+          timeout 55m sudo env PATH="$PJDFSTEST_DIR/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
             2>&1 | tee ~/posix-postgres.log || true
+
+          # Stop monitoring
+          kill $MONITOR_PID 2>/dev/null || true
 
           echo "## PostgreSQL Store Results" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           tail -30 ~/posix-postgres.log >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+          # Show monitoring log if tests didn't complete all
+          if ! grep -q "All tests successful" ~/posix-postgres.log; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## Debug Monitor Log (last 50 lines)" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -50 ~/monitor.log >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "No monitor log"
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Verify pass rate
         run: |
