@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
@@ -9,7 +10,50 @@ import (
 	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/payload"
 )
+
+// ErrMetadataServiceNotInitialized is returned when the metadata service is not available.
+var ErrMetadataServiceNotInitialized = errors.New("metadata service not initialized")
+
+// ErrPayloadServiceNotInitialized is returned when the payload service is not available.
+var ErrPayloadServiceNotInitialized = errors.New("payload service not initialized")
+
+// getServices returns both the metadata and payload services from the runtime.
+// Returns an error if either service is not initialized.
+func getServices(reg *runtime.Runtime) (*metadata.MetadataService, *payload.PayloadService, error) {
+	metaSvc := reg.GetMetadataService()
+	if metaSvc == nil {
+		return nil, nil, ErrMetadataServiceNotInitialized
+	}
+
+	payloadSvc := reg.GetPayloadService()
+	if payloadSvc == nil {
+		return nil, nil, ErrPayloadServiceNotInitialized
+	}
+
+	return metaSvc, payloadSvc, nil
+}
+
+// getMetadataService returns the metadata service from the runtime.
+// Returns an error if the service is not initialized.
+func getMetadataService(reg *runtime.Runtime) (*metadata.MetadataService, error) {
+	metaSvc := reg.GetMetadataService()
+	if metaSvc == nil {
+		return nil, ErrMetadataServiceNotInitialized
+	}
+	return metaSvc, nil
+}
+
+// getPayloadService returns the payload service from the runtime.
+// Returns an error if the service is not initialized.
+func getPayloadService(reg *runtime.Runtime) (*payload.PayloadService, error) {
+	payloadSvc := reg.GetPayloadService()
+	if payloadSvc == nil {
+		return nil, ErrPayloadServiceNotInitialized
+	}
+	return payloadSvc, nil
+}
 
 // safeAdd performs checked addition of two uint64 values.
 // Returns the sum and a boolean indicating whether overflow occurred.
@@ -175,7 +219,10 @@ func readMFsymlinkContentForNFS(
 	}
 
 	// Use ContentService.ReadAt (Cache handles caching automatically)
-	payloadSvc := reg.GetBlockService()
+	payloadSvc, err := getPayloadService(reg)
+	if err != nil {
+		return nil, err
+	}
 
 	data := make([]byte, mfsymlink.Size)
 	n, err := payloadSvc.ReadAt(ctx, payloadID, data, 0)

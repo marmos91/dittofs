@@ -7,8 +7,9 @@ on:
     branches: [develop, main]
 
 jobs:
-  gofmt:
-    name: gofmt
+  # Combine gofmt and go vet into a single fast job
+  format-vet:
+    name: Format & Vet
     runs-on: ubuntu-latest
 
     steps:
@@ -19,6 +20,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.25.x"
+          cache: true  # Built-in Go module caching
 
       - name: Run gofmt
         run: |
@@ -27,22 +29,6 @@ jobs:
             gofmt -s -l .
             exit 1
           fi
-
-  govet:
-    name: go vet
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.25.x"
-
-      - name: Download dependencies
-        run: go mod download
 
       - name: Run go vet
         run: go vet ./...
@@ -59,13 +45,11 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.25.x"
-
-      - name: Download dependencies
-        run: go mod download
+          cache: true  # Built-in Go module caching
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.4.0
           args: --timeout=5m
-          skip-cache: true
+          # Enable caching (removed skip-cache: true)

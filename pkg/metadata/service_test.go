@@ -610,6 +610,99 @@ func TestMetadataService_Move(t *testing.T) {
 		require.ErrorAs(t, err, &storeErr)
 		assert.Equal(t, metadata.ErrNotDirectory, storeErr.Code)
 	})
+
+	t.Run("sticky bit blocks non-owner rename", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		// Create a directory with sticky bit (mode 01777), owned by root
+		stickyDir, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "sticky", &metadata.FileAttr{
+			Mode: 0o1777, // Sticky bit + rwxrwxrwx
+			UID:  0,      // Owned by root
+			GID:  0,
+		})
+		require.NoError(t, err)
+		stickyDirHandle, _ := fx.store.GetChild(context.Background(), fx.rootHandle, "sticky")
+
+		// Verify sticky bit is set
+		t.Logf("Created sticky directory with mode: 0o%o", stickyDir.Mode)
+		require.Equal(t, uint32(0o1777), stickyDir.Mode, "sticky bit should be set")
+
+		// Create destination directory (no sticky bit), owned by root, world-writable
+		_, err = fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "dest", &metadata.FileAttr{
+			Mode: 0o0777, // World-writable so user 65534 can write to it
+			UID:  0,
+			GID:  0,
+		})
+		require.NoError(t, err)
+		destDirHandle, _ := fx.store.GetChild(context.Background(), fx.rootHandle, "dest")
+
+		// Create a file in sticky dir, owned by root
+		file, err := fx.service.CreateFile(fx.rootContext(), stickyDirHandle, "rootfile.txt", &metadata.FileAttr{
+			Mode: 0o0644,
+			UID:  0, // Owned by root
+			GID:  0,
+		})
+		require.NoError(t, err)
+		t.Logf("Created file in sticky dir: UID=%d, GID=%d", file.UID, file.GID)
+
+		// Try to rename as user 65534 (nobody)
+		// This should FAIL because:
+		// - User 65534 is not root (UID 0)
+		// - User 65534 does not own the file (file owned by UID 0)
+		// - User 65534 does not own the directory (dir owned by UID 0)
+		nobodyCtx := fx.authContext(65534, 65534)
+		err = fx.service.Move(nobodyCtx, stickyDirHandle, "rootfile.txt", destDirHandle, "renamed.txt")
+
+		// Should return ErrAccessDenied
+		require.Error(t, err, "rename should fail due to sticky bit restriction")
+		var storeErr *metadata.StoreError
+		require.ErrorAs(t, err, &storeErr)
+		assert.Equal(t, metadata.ErrAccessDenied, storeErr.Code, "should return ErrAccessDenied for sticky bit violation")
+		t.Logf("Got expected error: %v", err)
+
+		// Verify file still exists in original location
+		_, err = fx.service.Lookup(fx.rootContext(), stickyDirHandle, "rootfile.txt")
+		assert.NoError(t, err, "file should still exist in original location")
+
+		// Verify file does NOT exist in destination
+		_, err = fx.service.Lookup(fx.rootContext(), destDirHandle, "renamed.txt")
+		assert.True(t, metadata.IsNotFoundError(err), "file should not exist in destination")
+	})
+
+	t.Run("sticky bit allows owner to rename own file", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		// Create a sticky directory owned by root
+		_, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "sticky2", &metadata.FileAttr{
+			Mode: 0o1777,
+			UID:  0,
+			GID:  0,
+		})
+		require.NoError(t, err)
+		stickyDirHandle, _ := fx.store.GetChild(context.Background(), fx.rootHandle, "sticky2")
+
+		// Create destination directory (world-writable)
+		_, err = fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "dest2", &metadata.FileAttr{
+			Mode: 0o0777,
+		})
+		require.NoError(t, err)
+		destDirHandle, _ := fx.store.GetChild(context.Background(), fx.rootHandle, "dest2")
+
+		// Create a file in sticky dir, owned by user 65534
+		userCtx := fx.authContext(65534, 65534)
+		_, err = fx.service.CreateFile(userCtx, stickyDirHandle, "myfile.txt", &metadata.FileAttr{
+			Mode: 0o0644,
+			UID:  65534, // Owned by user 65534
+			GID:  65534,
+		})
+		require.NoError(t, err)
+
+		// User 65534 should be able to rename their own file
+		err = fx.service.Move(userCtx, stickyDirHandle, "myfile.txt", destDirHandle, "renamed.txt")
+		require.NoError(t, err, "owner should be able to rename their own file despite sticky bit")
+	})
 }
 
 // ============================================================================
@@ -832,7 +925,7 @@ func TestMetadataService_SetFileAttributes(t *testing.T) {
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
 		require.ErrorAs(t, err, &storeErr)
-		assert.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+		assert.Equal(t, metadata.ErrPermissionDenied, storeErr.Code)
 	})
 
 	t.Run("root can change owner", func(t *testing.T) {

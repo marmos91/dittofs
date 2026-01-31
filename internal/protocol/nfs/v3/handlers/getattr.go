@@ -180,7 +180,10 @@ func (h *Handler) GetAttr(
 	// Step 2: Get metadata from registry
 	// ========================================================================
 
-	_ = h.Registry.GetMetadataService() // metaSvc available if needed later
+	if _, err := getMetadataService(h.Registry); err != nil {
+		logger.ErrorCtx(ctx.Context, "GETATTR failed: metadata service not initialized", "client", clientIP, "error", err)
+		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	// ========================================================================
 	// Step 3: Verify file handle exists and retrieve attributes

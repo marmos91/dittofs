@@ -3,14 +3,76 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/payload"
 )
+
+// DefaultShutdownTimeout is the default timeout for graceful adapter shutdown.
+const DefaultShutdownTimeout = 30 * time.Second
+
+// ProtocolAdapter is an interface for protocol adapters (NFS, SMB) that can be
+// managed by Runtime. This interface is defined here to break the import cycle
+// between runtime and adapter packages.
+//
+// Note: SetRuntime is handled separately via RuntimeSetter interface to avoid
+// type compatibility issues across package boundaries.
+type ProtocolAdapter interface {
+	// Serve starts the protocol server and blocks until the context is cancelled.
+	Serve(ctx context.Context) error
+	// Stop initiates graceful shutdown of the protocol server.
+	Stop(ctx context.Context) error
+	// Protocol returns the protocol name (e.g., "NFS", "SMB").
+	Protocol() string
+	// Port returns the TCP port the adapter is listening on.
+	Port() int
+}
+
+// RuntimeSetter is implemented by adapters that need runtime access.
+// This is separate from ProtocolAdapter to avoid type compatibility issues.
+type RuntimeSetter interface {
+	SetRuntime(rt *Runtime)
+}
+
+// AuxiliaryServer is an interface for auxiliary HTTP servers (API, Metrics)
+// that can be managed alongside protocol adapters.
+type AuxiliaryServer interface {
+	// Start starts the HTTP server and blocks until context is cancelled or error.
+	Start(ctx context.Context) error
+	// Stop initiates graceful shutdown.
+	Stop(ctx context.Context) error
+	// Port returns the TCP port the server is listening on.
+	Port() int
+}
+
+// AdapterFactory is a function that creates a ProtocolAdapter from configuration.
+// This allows Runtime to manage adapters without importing the adapter package.
+type AdapterFactory func(cfg *models.AdapterConfig) (ProtocolAdapter, error)
+
+// CacheConfig contains cache configuration for the runtime.
+// This is a minimal config struct to avoid import cycles with pkg/config.
+type CacheConfig struct {
+	// Path is the directory for the cache WAL file (e.g., /var/lib/dittofs/cache)
+	Path string
+	// Size is the maximum cache size in bytes
+	Size uint64
+}
+
+// adapterEntry holds adapter state for lifecycle management.
+type adapterEntry struct {
+	adapter ProtocolAdapter
+	config  *models.AdapterConfig
+	ctx     context.Context
+	cancel  context.CancelFunc
+	errCh   chan error
+}
 
 // Runtime manages all runtime state for shares and protocol adapters.
 // It provides thread-safe registration and lookup of all server resources.
@@ -20,10 +82,16 @@ import (
 //   - Live metadata store instances
 //   - Share runtime state (root handles)
 //   - Active mounts from NFS clients (ephemeral)
+//   - Protocol adapters (NFS, SMB)
+//
+// Runtime is the single entrypoint for all operations - both API handlers
+// and internal code should use Runtime methods for all mutations to ensure
+// both store and in-memory state stay in sync.
 //
 // Content Model:
 // All content operations go through the PayloadService which includes
-// caching and transfer management.
+// caching and transfer management. The PayloadService is created lazily
+// when the first share that uses a payload store is created.
 type Runtime struct {
 	mu              sync.RWMutex
 	metadata        map[string]metadata.MetadataStore // Named metadata store instances
@@ -32,6 +100,26 @@ type Runtime struct {
 	store           store.Store                       // Persistent configuration store
 	metadataService *metadata.MetadataService         // High-level metadata operations
 	payloadService  *payload.PayloadService           // High-level content operations
+	cacheInstance   *cache.Cache                      // WAL-backed cache for content operations
+
+	// Cache configuration (set at startup, used for lazy PayloadService creation)
+	cacheConfig *CacheConfig
+
+	// Adapter management
+	adaptersMu     sync.RWMutex
+	adapters       map[string]*adapterEntry // key: adapter type (nfs, smb)
+	adapterFactory AdapterFactory           // Factory to create adapters from config
+
+	// Auxiliary servers
+	metricsServer AuxiliaryServer
+	apiServer     AuxiliaryServer
+
+	// Shutdown management
+	shutdownTimeout time.Duration
+
+	// serveOnce ensures Serve() is only called once
+	serveOnce sync.Once
+	served    bool
 }
 
 // New creates a new Runtime with the given persistent store.
@@ -40,8 +128,160 @@ func New(s store.Store) *Runtime {
 		metadata:        make(map[string]metadata.MetadataStore),
 		shares:          make(map[string]*Share),
 		mounts:          make(map[string]*MountInfo),
+		adapters:        make(map[string]*adapterEntry),
 		store:           s,
 		metadataService: metadata.New(),
+		shutdownTimeout: DefaultShutdownTimeout,
+	}
+}
+
+// SetAdapterFactory sets the factory function for creating adapters.
+// This must be called before CreateAdapter or LoadAdaptersFromStore.
+func (r *Runtime) SetAdapterFactory(factory AdapterFactory) {
+	r.adaptersMu.Lock()
+	defer r.adaptersMu.Unlock()
+	r.adapterFactory = factory
+}
+
+// SetShutdownTimeout sets the maximum time to wait for graceful adapter shutdown.
+func (r *Runtime) SetShutdownTimeout(d time.Duration) {
+	if d == 0 {
+		d = DefaultShutdownTimeout
+	}
+	r.shutdownTimeout = d
+}
+
+// SetMetricsServer sets the metrics HTTP server for the runtime.
+// This is optional - if not set, metrics collection is disabled.
+// Must be called before Serve().
+func (r *Runtime) SetMetricsServer(server AuxiliaryServer) {
+	if r.served {
+		panic("cannot set metrics server after Serve() has been called")
+	}
+	r.metricsServer = server
+	if server != nil {
+		logger.Info("Metrics server registered", "port", server.Port())
+	}
+}
+
+// SetAPIServer sets the REST API HTTP server for the runtime.
+// This is optional - if not set, API endpoints are not available.
+// Must be called before Serve().
+func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
+	if r.served {
+		panic("cannot set API server after Serve() has been called")
+	}
+	r.apiServer = server
+	if server != nil {
+		logger.Info("API server registered", "port", server.Port())
+	}
+}
+
+// Serve starts all adapters and auxiliary servers, and blocks until shutdown.
+//
+// This method orchestrates the lifecycle of the entire DittoFS server:
+//  1. Loads and starts adapters from the store
+//  2. Starts metrics server (if configured)
+//  3. Starts API server (if configured)
+//  4. Waits for context cancellation
+//  5. Gracefully shuts down all components
+//
+// Serve() should only be called once. Calling it multiple times will panic.
+func (r *Runtime) Serve(ctx context.Context) error {
+	var err error
+
+	r.serveOnce.Do(func() {
+		r.served = true
+		err = r.serve(ctx)
+	})
+
+	return err
+}
+
+// serve is the internal implementation of Serve().
+func (r *Runtime) serve(ctx context.Context) error {
+	logger.Info("Starting DittoFS runtime")
+
+	// 1. Load and start adapters from store
+	if err := r.LoadAdaptersFromStore(ctx); err != nil {
+		return fmt.Errorf("failed to load adapters: %w", err)
+	}
+
+	// 2. Start metrics server if configured
+	metricsErrChan := make(chan error, 1)
+	if r.metricsServer != nil {
+		go func() {
+			if err := r.metricsServer.Start(ctx); err != nil {
+				logger.Error("Metrics server error", "error", err)
+				metricsErrChan <- err
+			}
+		}()
+	}
+
+	// 3. Start API server if configured
+	apiErrChan := make(chan error, 1)
+	if r.apiServer != nil {
+		go func() {
+			if err := r.apiServer.Start(ctx); err != nil {
+				logger.Error("API server error", "error", err)
+				apiErrChan <- err
+			}
+		}()
+	}
+
+	// 4. Wait for shutdown signal or server error
+	var shutdownErr error
+	select {
+	case <-ctx.Done():
+		logger.Info("Shutdown signal received", "reason", ctx.Err())
+		shutdownErr = ctx.Err()
+
+	case err := <-metricsErrChan:
+		logger.Error("Metrics server failed - initiating shutdown", "error", err)
+		shutdownErr = fmt.Errorf("metrics server error: %w", err)
+
+	case err := <-apiErrChan:
+		logger.Error("API server failed - initiating shutdown", "error", err)
+		shutdownErr = fmt.Errorf("API server error: %w", err)
+	}
+
+	// 5. Graceful shutdown
+	r.shutdown()
+
+	logger.Info("DittoFS runtime stopped")
+	return shutdownErr
+}
+
+// shutdown performs graceful shutdown of all components.
+func (r *Runtime) shutdown() {
+	// Stop all adapters (with connection draining)
+	logger.Info("Stopping all adapters")
+	if err := r.StopAllAdapters(); err != nil {
+		logger.Warn("Error stopping adapters", "error", err)
+	}
+
+	// Close metadata stores
+	logger.Info("Closing metadata stores")
+	r.CloseMetadataStores()
+
+	// Stop metrics server
+	if r.metricsServer != nil {
+		logger.Debug("Stopping metrics server")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := r.metricsServer.Stop(ctx); err != nil {
+			logger.Error("Metrics server shutdown error", "error", err)
+		}
+	}
+
+	// Stop API server
+	if r.apiServer != nil {
+		logger.Debug("Stopping API server")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := r.apiServer.Stop(ctx); err != nil {
+			logger.Error("API server shutdown error", "error", err)
+		}
 	}
 }
 
@@ -52,6 +292,38 @@ func (r *Runtime) SetPayloadService(ps *payload.PayloadService) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.payloadService = ps
+}
+
+// SetCacheConfig stores cache configuration for lazy initialization.
+// The cache and PayloadService are not created until the first share is added.
+// This saves memory when no shares are configured.
+func (r *Runtime) SetCacheConfig(cfg *CacheConfig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cacheConfig = cfg
+}
+
+// GetCacheConfig returns the cache configuration.
+func (r *Runtime) GetCacheConfig() *CacheConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.cacheConfig
+}
+
+// SetCache stores the cache instance in the runtime.
+// This is called after the cache is created, either at startup (if payload
+// stores exist) or lazily when the first payload store is added via API.
+func (r *Runtime) SetCache(c *cache.Cache) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cacheInstance = c
+}
+
+// GetCache returns the cache instance, or nil if not yet created.
+func (r *Runtime) GetCache() *cache.Cache {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.cacheInstance
 }
 
 // Store returns the persistent configuration store.
@@ -132,17 +404,39 @@ func (r *Runtime) ListMetadataStores() []string {
 
 // AddShare creates and registers a new share with the given configuration.
 // This method:
-//  1. Validates that the share doesn't already exist
-//  2. Validates that the referenced metadata store exists
-//  3. Creates the root directory in the metadata store
-//  4. Registers the share in the runtime
+//  1. Ensures PayloadService is initialized (required for content operations)
+//  2. Validates that the share doesn't already exist
+//  3. Validates that the referenced metadata store exists
+//  4. Creates the root directory in the metadata store
+//  5. Registers the share in the runtime
 func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	if config.Name == "" {
 		return fmt.Errorf("cannot add share with empty name")
 	}
 
+	// Ensure PayloadService is initialized before creating shares
+	// This must be called before acquiring the lock to avoid deadlock
+	// Skip if:
+	// 1. PayloadService is already set (e.g., in tests), OR
+	// 2. Store is nil (testing mode - can't initialize PayloadService without store)
+	r.mu.RLock()
+	hasPayloadService := r.payloadService != nil
+	hasStore := r.store != nil
+	r.mu.RUnlock()
+
+	if !hasPayloadService && hasStore {
+		if err := r.EnsurePayloadService(ctx); err != nil {
+			return fmt.Errorf("failed to initialize payload service: %w", err)
+		}
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Validate that metadata service exists
+	if r.metadataService == nil {
+		return fmt.Errorf("metadata service not initialized")
+	}
 
 	// Check if share already exists
 	if _, exists := r.shares[config.Name]; exists {
@@ -187,22 +481,15 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 
 	// Create share struct
 	share := &Share{
-		Name:                     config.Name,
-		MetadataStore:            config.MetadataStore,
-		RootHandle:               rootHandle,
-		ReadOnly:                 config.ReadOnly,
-		DefaultPermission:        config.DefaultPermission,
-		AllowedClients:           config.AllowedClients,
-		DeniedClients:            config.DeniedClients,
-		RequireAuth:              config.RequireAuth,
-		AllowedAuthMethods:       config.AllowedAuthMethods,
-		MapAllToAnonymous:        config.MapAllToAnonymous,
-		MapPrivilegedToAnonymous: config.MapPrivilegedToAnonymous,
-		AnonymousUID:             config.AnonymousUID,
-		AnonymousGID:             config.AnonymousGID,
-		PrefetchConfig:           config.PrefetchConfig,
-		WriteGatheringConfig:     config.WriteGatheringConfig,
-		DisableReaddirplus:       config.DisableReaddirplus,
+		Name:               config.Name,
+		MetadataStore:      config.MetadataStore,
+		RootHandle:         rootHandle,
+		ReadOnly:           config.ReadOnly,
+		DefaultPermission:  config.DefaultPermission,
+		Squash:             config.Squash,
+		AnonymousUID:       config.AnonymousUID,
+		AnonymousGID:       config.AnonymousGID,
+		DisableReaddirplus: config.DisableReaddirplus,
 	}
 
 	r.shares[config.Name] = share
@@ -228,6 +515,27 @@ func (r *Runtime) RemoveShare(name string) error {
 	}
 
 	delete(r.shares, name)
+	return nil
+}
+
+// UpdateShare updates a share's configuration in the runtime.
+// Only updates fields that can be changed without reloading (ReadOnly, DefaultPermission).
+func (r *Runtime) UpdateShare(name string, readOnly *bool, defaultPermission *string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	share, exists := r.shares[name]
+	if !exists {
+		return fmt.Errorf("share %q not found", name)
+	}
+
+	if readOnly != nil {
+		share.ReadOnly = *readOnly
+	}
+	if defaultPermission != nil {
+		share.DefaultPermission = *defaultPermission
+	}
+
 	return nil
 }
 
@@ -349,10 +657,14 @@ func (r *Runtime) ListMounts() []*MountInfo {
 
 // ApplyIdentityMapping applies share-level identity mapping rules.
 //
-// This implements:
-//   - anonymous access: Maps nil UID/GID (AUTH_NULL) to anonymous credentials
-//   - all_squash: Maps all users to anonymous
-//   - root_squash: Maps root (UID 0) to anonymous
+// This implements Synology-style squash modes:
+//   - none: No mapping, UIDs pass through unchanged
+//   - root_to_admin: Root (UID 0) retains admin privileges (default)
+//   - root_to_guest: Root (UID 0) is mapped to anonymous (root_squash)
+//   - all_to_admin: All users are mapped to root (UID 0)
+//   - all_to_guest: All users are mapped to anonymous (all_squash)
+//
+// AUTH_NULL (nil UID) is always mapped to anonymous regardless of squash mode.
 func (r *Runtime) ApplyIdentityMapping(shareName string, identity *metadata.Identity) (*metadata.Identity, error) {
 	r.mu.RLock()
 	share, exists := r.shares[shareName]
@@ -370,21 +682,51 @@ func (r *Runtime) ApplyIdentityMapping(shareName string, identity *metadata.Iden
 		Username: identity.Username,
 	}
 
-	// Determine if we need to map to anonymous
-	shouldMapToAnonymous := identity.UID == nil || // AUTH_NULL
-		share.MapAllToAnonymous || // all_squash
-		(share.MapPrivilegedToAnonymous && identity.UID != nil && *identity.UID == 0) // root_squash
+	// Handle AUTH_NULL (anonymous access) - always map to anonymous
+	if identity.UID == nil {
+		applyAnonymousIdentity(effective, share.AnonymousUID, share.AnonymousGID)
+		return effective, nil
+	}
 
-	if shouldMapToAnonymous {
-		anonUID := share.AnonymousUID
-		anonGID := share.AnonymousGID
-		effective.UID = &anonUID
-		effective.GID = &anonGID
-		effective.GIDs = []uint32{anonGID}
-		effective.Username = fmt.Sprintf("anonymous(%d)", anonUID)
+	// Apply squash based on mode
+	// Empty string ("") is treated as the default (SquashRootToAdmin)
+	switch share.Squash {
+	case "", models.SquashNone, models.SquashRootToAdmin:
+		// No mapping - UIDs pass through (root keeps admin)
+
+	case models.SquashRootToGuest:
+		// Map root (UID 0) to anonymous
+		if *identity.UID == 0 {
+			applyAnonymousIdentity(effective, share.AnonymousUID, share.AnonymousGID)
+		}
+
+	case models.SquashAllToAdmin:
+		// Map all users to root
+		applyRootIdentity(effective)
+
+	case models.SquashAllToGuest:
+		// Map all users to anonymous
+		applyAnonymousIdentity(effective, share.AnonymousUID, share.AnonymousGID)
 	}
 
 	return effective, nil
+}
+
+// applyAnonymousIdentity sets the identity to anonymous with the given UID/GID.
+func applyAnonymousIdentity(identity *metadata.Identity, anonUID, anonGID uint32) {
+	identity.UID = &anonUID
+	identity.GID = &anonGID
+	identity.GIDs = []uint32{anonGID}
+	identity.Username = fmt.Sprintf("anonymous(%d)", anonUID)
+}
+
+// applyRootIdentity sets the identity to root (UID/GID 0).
+func applyRootIdentity(identity *metadata.Identity) {
+	rootUID, rootGID := uint32(0), uint32(0)
+	identity.UID = &rootUID
+	identity.GID = &rootGID
+	identity.GIDs = []uint32{rootGID}
+	identity.Username = "root"
 }
 
 // GetShareNameForHandle extracts the share name from a file handle.
@@ -420,20 +762,6 @@ func (r *Runtime) GetIdentityStore() models.IdentityStore {
 	return r.store
 }
 
-// SetIdentityStore is a no-op for backwards compatibility.
-// Runtime uses the Store directly for identity operations.
-// Deprecated: Use runtime.Store() instead.
-func (r *Runtime) SetIdentityStore(_ models.IdentityStore) {
-	// No-op: Runtime uses r.store directly
-}
-
-// SetUserStore is a no-op for backwards compatibility.
-// Runtime uses the Store directly for user operations.
-// Deprecated: Use runtime.Store() instead.
-func (r *Runtime) SetUserStore(_ models.UserStore) {
-	// No-op: Runtime uses r.store directly
-}
-
 // GetBlockService returns the PayloadService for backwards compatibility.
 // Deprecated: Use GetPayloadService instead.
 func (r *Runtime) GetBlockService() *payload.PayloadService {
@@ -454,16 +782,319 @@ func (r *Runtime) CountShares() int {
 	return len(r.shares)
 }
 
-// ListSharesUsingMetadataStore returns all shares that use the specified metadata store.
-func (r *Runtime) ListSharesUsingMetadataStore(storeName string) []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+// ============================================================================
+// Adapter Management
+// ============================================================================
 
-	var shares []string
-	for _, share := range r.shares {
-		if share.MetadataStore == storeName {
-			shares = append(shares, share.Name)
+// CreateAdapter saves the adapter config to store AND starts it immediately.
+// This is the method that API handlers should call - it ensures both persistent
+// store and in-memory state are updated together.
+func (r *Runtime) CreateAdapter(ctx context.Context, cfg *models.AdapterConfig) error {
+	// 1. Save to store
+	if _, err := r.store.CreateAdapter(ctx, cfg); err != nil {
+		return fmt.Errorf("failed to save adapter config: %w", err)
+	}
+
+	// 2. Start the adapter
+	if err := r.startAdapter(cfg); err != nil {
+		// Rollback: delete from store
+		_ = r.store.DeleteAdapter(ctx, cfg.Type)
+		return fmt.Errorf("failed to start adapter: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteAdapter stops the running adapter (drains connections) AND removes from store.
+func (r *Runtime) DeleteAdapter(ctx context.Context, adapterType string) error {
+	// 1. Stop running adapter (drains connections)
+	if err := r.stopAdapter(adapterType); err != nil {
+		logger.Warn("Adapter stop failed during delete", "type", adapterType, "error", err)
+		// Continue with deletion even if stop fails
+	}
+
+	// 2. Delete from store
+	if err := r.store.DeleteAdapter(ctx, adapterType); err != nil {
+		return fmt.Errorf("failed to delete adapter from store: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateAdapter restarts the adapter with new configuration.
+// Updates store first, then restarts the running adapter.
+func (r *Runtime) UpdateAdapter(ctx context.Context, cfg *models.AdapterConfig) error {
+	// 1. Update store
+	if err := r.store.UpdateAdapter(ctx, cfg); err != nil {
+		return fmt.Errorf("failed to update adapter config: %w", err)
+	}
+
+	// 2. Stop old adapter (if running)
+	_ = r.stopAdapter(cfg.Type)
+
+	// 3. Start with new config if enabled
+	if cfg.Enabled {
+		if err := r.startAdapter(cfg); err != nil {
+			logger.Warn("Failed to restart adapter after update", "type", cfg.Type, "error", err)
+			// Don't fail the update - config was saved successfully
 		}
 	}
-	return shares
+
+	return nil
+}
+
+// EnableAdapter enables an adapter and starts it.
+func (r *Runtime) EnableAdapter(ctx context.Context, adapterType string) error {
+	cfg, err := r.store.GetAdapter(ctx, adapterType)
+	if err != nil {
+		return fmt.Errorf("adapter not found: %w", err)
+	}
+
+	cfg.Enabled = true
+	if err := r.store.UpdateAdapter(ctx, cfg); err != nil {
+		return fmt.Errorf("failed to enable adapter: %w", err)
+	}
+
+	if err := r.startAdapter(cfg); err != nil {
+		return fmt.Errorf("failed to start adapter: %w", err)
+	}
+
+	return nil
+}
+
+// DisableAdapter stops an adapter and disables it.
+func (r *Runtime) DisableAdapter(ctx context.Context, adapterType string) error {
+	cfg, err := r.store.GetAdapter(ctx, adapterType)
+	if err != nil {
+		return fmt.Errorf("adapter not found: %w", err)
+	}
+
+	// Stop the adapter first
+	_ = r.stopAdapter(adapterType)
+
+	// Update store
+	cfg.Enabled = false
+	if err := r.store.UpdateAdapter(ctx, cfg); err != nil {
+		return fmt.Errorf("failed to disable adapter: %w", err)
+	}
+
+	return nil
+}
+
+// startAdapter creates and starts an adapter from config.
+// This is an internal method - use CreateAdapter or EnableAdapter for public API.
+func (r *Runtime) startAdapter(cfg *models.AdapterConfig) error {
+	r.adaptersMu.Lock()
+	defer r.adaptersMu.Unlock()
+
+	if _, exists := r.adapters[cfg.Type]; exists {
+		return fmt.Errorf("adapter %s already running", cfg.Type)
+	}
+
+	if r.adapterFactory == nil {
+		return fmt.Errorf("adapter factory not set")
+	}
+
+	// Create adapter instance using factory
+	adp, err := r.adapterFactory(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create adapter: %w", err)
+	}
+
+	// Create per-adapter context
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+
+	// Inject runtime into adapter if it supports RuntimeSetter
+	if setter, ok := adp.(RuntimeSetter); ok {
+		setter.SetRuntime(r)
+	}
+
+	// Start in goroutine
+	go func() {
+		logger.Info("Starting adapter", "protocol", adp.Protocol(), "port", adp.Port())
+		err := adp.Serve(ctx)
+		if err != nil && err != context.Canceled && ctx.Err() == nil {
+			logger.Error("Adapter failed", "protocol", adp.Protocol(), "error", err)
+		}
+		errCh <- err
+	}()
+
+	r.adapters[cfg.Type] = &adapterEntry{
+		adapter: adp,
+		config:  cfg,
+		ctx:     ctx,
+		cancel:  cancel,
+		errCh:   errCh,
+	}
+
+	logger.Info("Adapter started", "type", cfg.Type, "port", cfg.Port)
+	return nil
+}
+
+// stopAdapter stops a running adapter with connection draining.
+// This is an internal method - use DeleteAdapter or DisableAdapter for public API.
+func (r *Runtime) stopAdapter(adapterType string) error {
+	r.adaptersMu.Lock()
+	entry, exists := r.adapters[adapterType]
+	if !exists {
+		r.adaptersMu.Unlock()
+		return fmt.Errorf("adapter %s not running", adapterType)
+	}
+	delete(r.adapters, adapterType)
+	r.adaptersMu.Unlock()
+
+	// Create timeout context for graceful shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), r.shutdownTimeout)
+	defer cancel()
+
+	logger.Info("Stopping adapter", "type", adapterType)
+
+	// Signal adapter to stop (triggers connection draining)
+	if err := entry.adapter.Stop(ctx); err != nil {
+		logger.Warn("Adapter stop error", "type", adapterType, "error", err)
+	}
+
+	// Cancel adapter's context
+	entry.cancel()
+
+	// Wait for adapter goroutine
+	select {
+	case <-entry.errCh:
+		logger.Info("Adapter stopped", "type", adapterType)
+		return nil
+	case <-ctx.Done():
+		logger.Warn("Adapter stop timed out", "type", adapterType)
+		return fmt.Errorf("adapter %s stop timed out", adapterType)
+	}
+}
+
+// StopAllAdapters stops all running adapters (for shutdown).
+func (r *Runtime) StopAllAdapters() error {
+	r.adaptersMu.RLock()
+	types := make([]string, 0, len(r.adapters))
+	for t := range r.adapters {
+		types = append(types, t)
+	}
+	r.adaptersMu.RUnlock()
+
+	var lastErr error
+	for _, t := range types {
+		if err := r.stopAdapter(t); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+// LoadAdaptersFromStore loads enabled adapters from store and starts them.
+// This is called during server startup.
+func (r *Runtime) LoadAdaptersFromStore(ctx context.Context) error {
+	adapters, err := r.store.ListAdapters(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list adapters: %w", err)
+	}
+
+	for _, cfg := range adapters {
+		if !cfg.Enabled {
+			logger.Info("Adapter disabled, skipping", "type", cfg.Type)
+			continue
+		}
+
+		if err := r.startAdapter(cfg); err != nil {
+			return fmt.Errorf("failed to start adapter %s: %w", cfg.Type, err)
+		}
+	}
+
+	return nil
+}
+
+// ListRunningAdapters returns information about currently running adapters.
+func (r *Runtime) ListRunningAdapters() []string {
+	r.adaptersMu.RLock()
+	defer r.adaptersMu.RUnlock()
+
+	types := make([]string, 0, len(r.adapters))
+	for t := range r.adapters {
+		types = append(types, t)
+	}
+	return types
+}
+
+// IsAdapterRunning checks if an adapter is currently running.
+func (r *Runtime) IsAdapterRunning(adapterType string) bool {
+	r.adaptersMu.RLock()
+	defer r.adaptersMu.RUnlock()
+	_, exists := r.adapters[adapterType]
+	return exists
+}
+
+// AddAdapter adds and starts a pre-created adapter directly.
+// This bypasses the store and is primarily for testing.
+// The adapter will be registered under its Protocol() name.
+func (r *Runtime) AddAdapter(adapter ProtocolAdapter) error {
+	adapterType := adapter.Protocol()
+
+	r.adaptersMu.Lock()
+	defer r.adaptersMu.Unlock()
+
+	if _, exists := r.adapters[adapterType]; exists {
+		return fmt.Errorf("adapter %s already running", adapterType)
+	}
+
+	// Create per-adapter context
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+
+	// Inject runtime into adapter if it supports RuntimeSetter
+	if setter, ok := adapter.(RuntimeSetter); ok {
+		setter.SetRuntime(r)
+	}
+
+	// Start in goroutine
+	go func() {
+		logger.Info("Starting adapter", "protocol", adapter.Protocol(), "port", adapter.Port())
+		err := adapter.Serve(ctx)
+		if err != nil && err != context.Canceled && ctx.Err() == nil {
+			logger.Error("Adapter failed", "protocol", adapter.Protocol(), "error", err)
+		}
+		errCh <- err
+	}()
+
+	r.adapters[adapterType] = &adapterEntry{
+		adapter: adapter,
+		config:  &models.AdapterConfig{Type: adapterType, Port: adapter.Port(), Enabled: true},
+		ctx:     ctx,
+		cancel:  cancel,
+		errCh:   errCh,
+	}
+
+	logger.Info("Adapter added and started", "type", adapterType, "port", adapter.Port())
+	return nil
+}
+
+// ============================================================================
+// Metadata Store Lifecycle
+// ============================================================================
+
+// CloseMetadataStores closes all registered metadata stores.
+// This should be called during graceful shutdown.
+func (r *Runtime) CloseMetadataStores() {
+	// Collect stores while holding lock
+	r.mu.RLock()
+	stores := make(map[string]metadata.MetadataStore, len(r.metadata))
+	for name, store := range r.metadata {
+		stores[name] = store
+	}
+	r.mu.RUnlock()
+
+	// Close stores outside of lock
+	for name, store := range stores {
+		if closer, ok := store.(io.Closer); ok {
+			logger.Debug("Closing metadata store", "store", name)
+			if err := closer.Close(); err != nil {
+				logger.Error("Metadata store close error", "store", name, "error", err)
+			}
+		}
+	}
 }

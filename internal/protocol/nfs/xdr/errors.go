@@ -20,7 +20,7 @@ import (
 // Error Mapping:
 //   - ErrNotFound → types.NFS3ErrNoEnt (ENOENT: No such file or directory)
 //   - ErrAccessDenied → types.NFS3ErrAcces (EACCES: Permission denied)
-//   - ErrPermissionDenied → types.NFS3ErrAcces (EACCES: Permission denied)
+//   - ErrPermissionDenied → types.NFS3ErrPerm (EPERM: Operation not permitted)
 //   - ErrNotDirectory → types.NFS3ErrNotDir (ENOTDIR: Not a directory)
 //   - ErrIsDirectory → types.NFS3ErrIsDir (EISDIR: Is a directory)
 //   - ErrAlreadyExists → types.NFS3ErrExist (EEXIST: File exists)
@@ -64,10 +64,15 @@ func MapStoreErrorToNFSStatus(err error, clientIP string, operation string) uint
 		logger.Warn("Operation failed", "operation", operation, "message", storeErr.Message, "client", clientIP)
 		return types.NFS3ErrNoEnt
 
-	case metadata.ErrAccessDenied, metadata.ErrPermissionDenied:
-		// Permission denied (share-level or file-level)
+	case metadata.ErrAccessDenied:
+		// Access denied (EACCES - e.g., search permission on directory, file access)
 		logger.Warn("Operation failed", "operation", operation, "message", storeErr.Message, "client", clientIP)
 		return types.NFS3ErrAccess
+
+	case metadata.ErrPermissionDenied:
+		// Permission denied (EPERM - e.g., chmod by non-owner, chown by non-root)
+		logger.Warn("Operation failed", "operation", operation, "message", storeErr.Message, "client", clientIP)
+		return types.NFS3ErrPerm
 
 	case metadata.ErrAuthRequired:
 		// Authentication required (map to access denied for NFS)

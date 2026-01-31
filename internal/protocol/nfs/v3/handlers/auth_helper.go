@@ -138,6 +138,21 @@ func resolveNFSSharePermission(
 
 	defaultPerm := models.ParseSharePermission(share.DefaultPermission)
 
+	// Check if caller is root (UID 0) and squash mode doesn't map root away
+	// Root has full admin access when squash mode is: none, root_to_admin, all_to_admin,
+	// or empty string (default behavior = root_to_admin)
+	isCallerRoot := *nfsCtx.UID == 0
+	rootHasAdmin := share.Squash == "" || // Empty string = default (root_to_admin)
+		share.Squash == models.SquashNone ||
+		share.Squash == models.SquashRootToAdmin ||
+		share.Squash == models.SquashAllToAdmin
+	if isCallerRoot && rootHasAdmin {
+		result.permission = models.PermissionAdmin
+		result.readOnly = share.ReadOnly
+		result.username = "root"
+		return result, nil
+	}
+
 	// Try reverse lookup: find user by UID
 	user, err := identityStore.GetUserByUID(ctx, *nfsCtx.UID)
 	if err != nil || user == nil {

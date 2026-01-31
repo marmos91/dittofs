@@ -254,7 +254,11 @@ func (h *Handler) Rename(
 	// Step 2: Get metadata store from context and validate handles
 	// ========================================================================
 
-	metaSvc := h.Registry.GetMetadataService()
+	metaSvc, svcErr := getMetadataService(h.Registry)
+	if svcErr != nil {
+		logger.ErrorCtx(ctx.Context, "RENAME failed: metadata service not initialized", "client", clientIP, "error", svcErr)
+		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	fromDirHandle := metadata.FileHandle(req.FromDirHandle)
 	toDirHandle := metadata.FileHandle(req.ToDirHandle)

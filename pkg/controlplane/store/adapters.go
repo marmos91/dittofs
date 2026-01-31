@@ -78,3 +78,41 @@ func (s *GORMStore) DeleteAdapter(ctx context.Context, adapterType string) error
 	}
 	return nil
 }
+
+// EnsureDefaultAdapters creates the default NFS and SMB adapters if they don't exist.
+// Returns true if any adapters were created.
+func (s *GORMStore) EnsureDefaultAdapters(ctx context.Context) (bool, error) {
+	created := false
+
+	// Default adapter configurations
+	defaults := []struct {
+		adapterType string
+		port        int
+	}{
+		{"nfs", 12049},
+		{"smb", 1445},
+	}
+
+	for _, d := range defaults {
+		_, err := s.GetAdapter(ctx, d.adapterType)
+		if err == nil {
+			continue // Already exists
+		}
+		if err != models.ErrAdapterNotFound {
+			return created, err // Unexpected error
+		}
+
+		// Create the adapter
+		adapter := &models.AdapterConfig{
+			Type:    d.adapterType,
+			Port:    d.port,
+			Enabled: true,
+		}
+		if _, err := s.CreateAdapter(ctx, adapter); err != nil {
+			return created, err
+		}
+		created = true
+	}
+
+	return created, nil
+}

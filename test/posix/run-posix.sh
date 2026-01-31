@@ -31,37 +31,69 @@ if ! mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
     exit 1
 fi
 
-# Find pjdfstest binary to locate tests directory
+# Helper function to check if a pjdfstest binary has tests directory
+has_tests_dir() {
+    local bin="$1"
+    local tests_dir
+    tests_dir="$(dirname "$bin")/../share/pjdfstest/tests"
+    [[ -d "$tests_dir" ]]
+}
+
+# Find pjdfstest binary that has tests directory
+PJDFSTEST_BIN=""
+TESTS_DIR=""
+
+# First, try pjdfstest from PATH (works when run from nix develop shell)
 if command -v pjdfstest &>/dev/null; then
-    PJDFSTEST_BIN="$(which pjdfstest)"
-else
-    # Look in nix store
-    PJDFSTEST_BIN=$(find /nix/store -name "pjdfstest" -type f -executable 2>/dev/null | head -1)
-    if [[ -z "$PJDFSTEST_BIN" ]]; then
-        echo "Error: pjdfstest not found"
-        echo "Enter nix development shell: nix develop"
-        exit 1
+    candidate="$(which pjdfstest)"
+    if has_tests_dir "$candidate"; then
+        PJDFSTEST_BIN="$candidate"
     fi
 fi
 
-# Find tests directory relative to pjdfstest binary
-TESTS_DIR="$(dirname "$PJDFSTEST_BIN")/../share/pjdfstest/tests"
-if [[ ! -d "$TESTS_DIR" ]]; then
-    echo "Error: pjdfstest tests not found at $TESTS_DIR"
+# If not found or doesn't have tests, search nix store for one that does
+if [[ -z "$PJDFSTEST_BIN" ]]; then
+    for candidate in $(find /nix/store -path "*/bin/pjdfstest" -type f -executable 2>/dev/null); do
+        if has_tests_dir "$candidate"; then
+            PJDFSTEST_BIN="$candidate"
+            break
+        fi
+    done
+fi
+
+if [[ -z "$PJDFSTEST_BIN" ]]; then
+    echo "Error: pjdfstest not found (or no version with tests directory)"
+    echo "Enter nix development shell: nix develop"
     exit 1
 fi
+
+TESTS_DIR="$(dirname "$PJDFSTEST_BIN")/../share/pjdfstest/tests"
+
+# pjdfstest's misc.sh searches for the binary by traversing up the directory tree.
+# Since nix store is read-only and the binary is in bin/ (not a parent of tests/),
+# we need to create a working directory with a symlink to the binary.
+WORK_DIR=$(mktemp -d)
+trap "rm -rf '$WORK_DIR'" EXIT
+
+# Create symlink to pjdfstest binary at the working directory root
+ln -s "$PJDFSTEST_BIN" "$WORK_DIR/pjdfstest"
+
+# Copy the tests directory structure (symlinks to actual test files)
+# The conf file is inside tests/, so cp -rs includes it
+cp -rs "$TESTS_DIR" "$WORK_DIR/tests"
 
 cd "$MOUNT_POINT"
 
 echo "Running POSIX compliance tests..."
 echo "Mount point: $MOUNT_POINT"
-echo "Tests directory: $TESTS_DIR"
+echo "Tests directory: $WORK_DIR/tests"
+echo "pjdfstest binary: $PJDFSTEST_BIN"
 echo ""
 
 if [[ $# -gt 0 ]]; then
     # Run specific test pattern
-    exec prove -rv "$TESTS_DIR/$1"
+    exec prove -rv "$WORK_DIR/tests/$1"
 else
     # Run all tests
-    exec prove -rv "$TESTS_DIR"
+    exec prove -rv "$WORK_DIR/tests"
 fi

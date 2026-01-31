@@ -3,9 +3,6 @@ package config
 import (
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 )
 
 func TestValidate_ValidConfig(t *testing.T) {
@@ -40,162 +37,9 @@ func TestValidate_InvalidLogFormat(t *testing.T) {
 	}
 }
 
-// TestValidate_InvalidPayloadType skipped - store type validation happens
-// at runtime during store initialization, not during config validation
-func TestValidate_InvalidPayloadType(t *testing.T) {
-	t.Skip("Store type validation occurs at runtime, not during config validation")
-}
-
-// TestValidate_InvalidMetadataType skipped - store type validation happens
-// at runtime during store initialization, not during config validation
-func TestValidate_InvalidMetadataType(t *testing.T) {
-	t.Skip("Store type validation occurs at runtime, not during config validation")
-}
-
-func TestValidate_NoShares(t *testing.T) {
+func TestValidate_InvalidAPIPort(t *testing.T) {
 	cfg := GetDefaultConfig()
-	cfg.Shares = []ShareConfig{}
-
-	err := Validate(cfg)
-	if err == nil {
-		t.Fatal("Expected validation error for no shares")
-	}
-	if !strings.Contains(err.Error(), "at least one share") {
-		t.Errorf("Expected 'at least one share' error, got: %v", err)
-	}
-}
-
-func TestValidate_DuplicateShareNames(t *testing.T) {
-	cfg := GetDefaultConfig()
-	cfg.Shares = append(cfg.Shares, cfg.Shares[0]) // Duplicate share
-
-	err := Validate(cfg)
-	if err == nil {
-		t.Fatal("Expected validation error for duplicate share names")
-	}
-	if !strings.Contains(err.Error(), "duplicate") {
-		t.Errorf("Expected 'duplicate' error, got: %v", err)
-	}
-}
-
-func TestValidate_ShareNameMustStartWithSlash(t *testing.T) {
-	cfg := &Config{
-		Logging: LoggingConfig{
-			Level:  "INFO",
-			Format: "text",
-			Output: "stdout",
-		},
-		Server: ServerConfig{
-			ShutdownTimeout: 30,
-		},
-		Cache: CacheConfig{
-			Path: "/tmp/test-cache",
-			Size: 1024 * 1024 * 100,
-		},
-		Payload: PayloadConfig{
-			Stores: map[string]PayloadStoreConfig{
-				"default": {Type: "memory"},
-			},
-		},
-		Metadata: MetadataConfig{
-			Stores: map[string]MetadataStoreConfig{
-				"default": {Type: "memory"},
-			},
-		},
-		Shares: []ShareConfig{
-			{
-				Name:               "export", // Missing leading slash
-				Metadata:           "default",
-				Payload:            "default",
-				AllowedAuthMethods: []string{"anonymous"},
-				IdentityMapping: IdentityMappingConfig{
-					AnonymousUID: 65534,
-					AnonymousGID: 65534,
-				},
-				RootDirectoryAttributes: RootDirectoryAttributesConfig{
-					Mode: 0755,
-				},
-			},
-		},
-		Adapters: AdaptersConfig{
-			NFS: nfs.NFSConfig{
-				Enabled:  true,
-				Port:     2049,
-				Timeouts: nfs.NFSTimeoutsConfig{Shutdown: 30 * time.Second},
-			},
-		},
-	}
-
-	err := Validate(cfg)
-	if err == nil {
-		t.Fatal("Expected validation error for share name without leading slash")
-	}
-	t.Logf("Got error: %v", err)
-	// The error might mention shares[0] or similar
-	errStr := err.Error()
-	if !strings.Contains(errStr, "startswith") && !strings.Contains(errStr, "required") {
-		t.Errorf("Expected 'startswith' or 'required' validation error, got: %v", err)
-	}
-}
-
-func TestValidate_InvalidAuthMethod(t *testing.T) {
-	cfg := &Config{
-		Logging: LoggingConfig{
-			Level:  "INFO",
-			Format: "text",
-			Output: "stdout",
-		},
-		Server: ServerConfig{
-			ShutdownTimeout: 30,
-		},
-		Cache: CacheConfig{
-			Path: "/tmp/test-cache",
-			Size: 1024 * 1024 * 100,
-		},
-		Payload: PayloadConfig{
-			Stores: map[string]PayloadStoreConfig{
-				"default": {Type: "memory"},
-			},
-		},
-		Metadata: MetadataConfig{
-			Stores: map[string]MetadataStoreConfig{
-				"default": {Type: "memory"},
-			},
-		},
-		Shares: []ShareConfig{
-			{
-				Name:               "/export",
-				Metadata:           "default",
-				Payload:            "default",
-				AllowedAuthMethods: []string{"kerberos"}, // Invalid
-				IdentityMapping: IdentityMappingConfig{
-					AnonymousUID: 65534,
-					AnonymousGID: 65534,
-				},
-				RootDirectoryAttributes: RootDirectoryAttributesConfig{
-					Mode: 0755,
-				},
-			},
-		},
-		Adapters: AdaptersConfig{
-			NFS: nfs.NFSConfig{
-				Enabled:  true,
-				Port:     2049,
-				Timeouts: nfs.NFSTimeoutsConfig{Shutdown: 30 * time.Second},
-			},
-		},
-	}
-
-	err := Validate(cfg)
-	if err == nil {
-		t.Fatal("Expected validation error for invalid auth method")
-	}
-	// Just check we got an error, the exact validation tag doesn't matter
-}
-
-func TestValidate_InvalidNFSPort(t *testing.T) {
-	cfg := GetDefaultConfig()
-	cfg.Adapters.NFS.Port = 70000 // Out of range
+	cfg.ControlPlane.Port = 70000 // Out of range
 
 	err := Validate(cfg)
 	if err == nil {
@@ -208,7 +52,7 @@ func TestValidate_InvalidNFSPort(t *testing.T) {
 
 func TestValidate_NegativePort(t *testing.T) {
 	cfg := GetDefaultConfig()
-	cfg.Adapters.NFS.Port = -1
+	cfg.ControlPlane.Port = -1
 
 	err := Validate(cfg)
 	if err == nil {
@@ -216,79 +60,44 @@ func TestValidate_NegativePort(t *testing.T) {
 	}
 }
 
-func TestValidate_NegativeMaxConnections(t *testing.T) {
+func TestValidate_MissingCachePath(t *testing.T) {
 	cfg := GetDefaultConfig()
-	cfg.Adapters.NFS.MaxConnections = -1
+	cfg.Cache.Path = ""
 
 	err := Validate(cfg)
 	if err == nil {
-		t.Fatal("Expected validation error for negative max_connections")
+		t.Fatal("Expected validation error for missing cache path")
+	}
+	// The error should mention Cache.Path or cache path in some form
+	errStr := strings.ToLower(err.Error())
+	if !strings.Contains(errStr, "cache") || !strings.Contains(errStr, "path") {
+		t.Errorf("Expected error about cache path, got: %v", err)
 	}
 }
 
-func TestValidate_InvalidShutdownTimeout(t *testing.T) {
+func TestValidate_TelemetryEnabledWithoutEndpoint(t *testing.T) {
 	cfg := GetDefaultConfig()
-	cfg.Server.ShutdownTimeout = 0
+	cfg.Telemetry.Enabled = true
+	cfg.Telemetry.Endpoint = ""
 
 	err := Validate(cfg)
 	if err == nil {
-		t.Fatal("Expected validation error for zero shutdown timeout")
+		t.Fatal("Expected validation error for telemetry enabled without endpoint")
 	}
-	// Either 'required' or 'gt' is acceptable
-	if !strings.Contains(err.Error(), "required") && !strings.Contains(err.Error(), "gt") {
-		t.Errorf("Expected 'required' or 'gt' validation error, got: %v", err)
+	if !strings.Contains(err.Error(), "telemetry") && !strings.Contains(err.Error(), "endpoint") {
+		t.Errorf("Expected error about telemetry endpoint, got: %v", err)
 	}
 }
 
-func TestValidate_NegativeTimeout(t *testing.T) {
+func TestValidate_TelemetrySampleRate(t *testing.T) {
 	cfg := GetDefaultConfig()
-	cfg.Adapters.NFS.Timeouts.Read = -1 * time.Second
+	cfg.Telemetry.Enabled = true
+	cfg.Telemetry.Endpoint = "localhost:4317"
+	cfg.Telemetry.SampleRate = 1.5 // Out of range (should be 0.0-1.0)
 
 	err := Validate(cfg)
 	if err == nil {
-		t.Fatal("Expected validation error for negative timeout")
-	}
-}
-
-func TestValidate_NoAdaptersEnabled(t *testing.T) {
-	cfg := GetDefaultConfig()
-	cfg.Adapters.NFS.Enabled = false
-	cfg.Adapters.SMB.Enabled = false
-
-	err := Validate(cfg)
-	if err == nil {
-		t.Fatal("Expected validation error when no adapters are enabled")
-	}
-	if !strings.Contains(err.Error(), "at least one adapter") {
-		t.Errorf("Expected 'at least one adapter' error, got: %v", err)
-	}
-}
-
-func TestValidate_DumpRestrictedWithoutClients(t *testing.T) {
-	cfg := GetDefaultConfig()
-	// DumpRestricted is now per-share, not global
-	cfg.Shares[0].DumpRestricted = true
-	cfg.Shares[0].DumpAllowedClients = []string{}
-
-	err := Validate(cfg)
-	if err == nil {
-		t.Fatal("Expected validation error for dump_restricted without allowed clients")
-	}
-	if !strings.Contains(err.Error(), "dump_allowed_clients") {
-		t.Errorf("Expected error about dump_allowed_clients, got: %v", err)
-	}
-}
-
-func TestValidate_InvalidRootMode(t *testing.T) {
-	cfg := GetDefaultConfig()
-	cfg.Shares[0].RootDirectoryAttributes.Mode = 0777 + 1 // 512 in decimal, > 511 (0777)
-
-	err := Validate(cfg)
-	if err == nil {
-		t.Fatal("Expected validation error for invalid mode")
-	}
-	if !strings.Contains(err.Error(), "lte") {
-		t.Errorf("Expected 'lte' (less than or equal) validation error, got: %v", err)
+		t.Fatal("Expected validation error for sample rate out of range")
 	}
 }
 
@@ -317,85 +126,4 @@ func TestValidate_LogLevelNormalization(t *testing.T) {
 	if cfg.Logging.Level != "INFO" {
 		t.Errorf("Expected ApplyDefaults to normalize 'info' to 'INFO', got %q", cfg.Logging.Level)
 	}
-}
-
-func TestValidate_MultipleValidShares(t *testing.T) {
-	cfg := GetDefaultConfig()
-	cfg.Shares = append(cfg.Shares, ShareConfig{
-		Name:               "/data",
-		Metadata:           "default",
-		Payload:            "default",
-		ReadOnly:           true,
-		AllowedAuthMethods: []string{"unix"},
-		IdentityMapping: IdentityMappingConfig{
-			MapAllToAnonymous: false,
-			AnonymousUID:      65534,
-			AnonymousGID:      65534,
-		},
-		RootDirectoryAttributes: RootDirectoryAttributesConfig{
-			Mode: 0755,
-			UID:  0,
-			GID:  0,
-		},
-	})
-
-	err := Validate(cfg)
-	if err != nil {
-		t.Errorf("Expected valid config with multiple shares, got error: %v", err)
-	}
-}
-
-func TestValidate_EmptyShareName(t *testing.T) {
-	cfg := &Config{
-		Logging: LoggingConfig{
-			Level:  "INFO",
-			Format: "text",
-			Output: "stdout",
-		},
-		Server: ServerConfig{
-			ShutdownTimeout: 30,
-		},
-		Cache: CacheConfig{
-			Path: "/tmp/test-cache",
-			Size: 1024 * 1024 * 100,
-		},
-		Payload: PayloadConfig{
-			Stores: map[string]PayloadStoreConfig{
-				"default": {Type: "memory"},
-			},
-		},
-		Metadata: MetadataConfig{
-			Stores: map[string]MetadataStoreConfig{
-				"default": {Type: "memory"},
-			},
-		},
-		Shares: []ShareConfig{
-			{
-				Name:               "", // Empty name
-				Metadata:           "default",
-				Payload:            "default",
-				AllowedAuthMethods: []string{"anonymous"},
-				IdentityMapping: IdentityMappingConfig{
-					AnonymousUID: 65534,
-					AnonymousGID: 65534,
-				},
-				RootDirectoryAttributes: RootDirectoryAttributesConfig{
-					Mode: 0755,
-				},
-			},
-		},
-		Adapters: AdaptersConfig{
-			NFS: nfs.NFSConfig{
-				Enabled:  true,
-				Port:     2049,
-				Timeouts: nfs.NFSTimeoutsConfig{Shutdown: 30 * time.Second},
-			},
-		},
-	}
-
-	err := Validate(cfg)
-	if err == nil {
-		t.Fatal("Expected validation error for empty share name")
-	}
-	// Just check we got an error for the empty share name
 }

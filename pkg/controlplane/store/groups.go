@@ -171,3 +171,52 @@ func (s *GORMStore) GetGroupMembers(ctx context.Context, groupName string) ([]*m
 
 	return users, nil
 }
+
+// EnsureDefaultGroups creates the default groups (admins, users) if they don't exist.
+// Also adds the admin user to the admins group if both exist.
+// Returns true if any groups were created.
+func (s *GORMStore) EnsureDefaultGroups(ctx context.Context) (bool, error) {
+	created := false
+
+	// Helper to create uint32 pointer
+	uint32Ptr := func(v uint32) *uint32 { return &v }
+
+	defaults := []struct {
+		name        string
+		gid         *uint32
+		description string
+	}{
+		{"admins", uint32Ptr(1000), "System administrators"},
+		{"users", uint32Ptr(1001), "Regular users"},
+	}
+
+	for _, d := range defaults {
+		_, err := s.GetGroup(ctx, d.name)
+		if err == nil {
+			continue // Already exists
+		}
+		if !errors.Is(err, models.ErrGroupNotFound) {
+			return created, err
+		}
+
+		group := &models.Group{
+			Name:        d.name,
+			GID:         d.gid,
+			Description: d.description,
+		}
+		if _, err := s.CreateGroup(ctx, group); err != nil {
+			return created, err
+		}
+		created = true
+	}
+
+	// Add admin user to admins group if both exist
+	if _, err := s.GetUser(ctx, models.AdminUsername); err == nil {
+		if _, err := s.GetGroup(ctx, "admins"); err == nil {
+			// Ignore error - user might already be in group
+			_ = s.AddUserToGroup(ctx, models.AdminUsername, "admins")
+		}
+	}
+
+	return created, nil
+}

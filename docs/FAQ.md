@@ -57,7 +57,7 @@ Yes! That's one of the main goals of DittoFS. Implement the `Adapter` interface 
 type Adapter interface {
     Serve(ctx context.Context) error
     Stop(ctx context.Context) error
-    SetRegistry(*registry.Registry)
+    SetRuntime(*runtime.Runtime)
     Protocol() string
     Port() int
 }

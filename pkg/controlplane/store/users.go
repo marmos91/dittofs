@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -189,6 +190,9 @@ func (s *GORMStore) EnsureAdminUser(ctx context.Context) (string, error) {
 		return "", err // Unexpected error
 	}
 
+	// Check if password was explicitly set via environment variable
+	passwordFromEnv := os.Getenv(models.EnvAdminInitialPassword) != ""
+
 	// Generate or get password from environment
 	password, err := models.GetOrGenerateAdminPassword()
 	if err != nil {
@@ -203,6 +207,11 @@ func (s *GORMStore) EnsureAdminUser(ctx context.Context) (string, error) {
 
 	// Create admin user
 	admin := models.DefaultAdminUser(passwordHash, ntHash)
+
+	// If password was explicitly set via env var, don't require change
+	if passwordFromEnv {
+		admin.MustChangePassword = false
+	}
 
 	if _, err := s.CreateUser(ctx, admin); err != nil {
 		return "", fmt.Errorf("failed to create admin user: %w", err)

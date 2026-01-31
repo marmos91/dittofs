@@ -198,7 +198,11 @@ func (h *Handler) FsStat(
 	// Get metadata from registry
 	// ========================================================================
 
-	metaSvc := h.Registry.GetMetadataService()
+	metaSvc, err := getMetadataService(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "FSSTAT failed: metadata service not initialized", "client", ctx.ClientAddr, "error", err)
+		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	fileHandle := metadata.FileHandle(req.Handle)
 

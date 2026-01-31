@@ -3,7 +3,6 @@ package models
 import (
 	"encoding/hex"
 	"fmt"
-	"slices"
 	"time"
 )
 
@@ -102,11 +101,6 @@ func (u *User) GetGroupNames() []string {
 		names[i] = g.Name
 	}
 	return names
-}
-
-// HasGroupName checks if the user belongs to a group by name (from a string slice).
-func (u *User) HasGroupName(groupName string, groupNames []string) bool {
-	return slices.Contains(groupNames, groupName)
 }
 
 // GetExplicitSharePermission returns the user's explicit permission for a share.

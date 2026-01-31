@@ -1,9 +1,11 @@
 package metadata
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // ============================================================================
@@ -100,51 +102,56 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 		FileAttr:  file.FileAttr,
 	}
 
-	// Handle link count
-	if linkCount > 1 {
-		// File has other hard links, just decrement count
-		// Empty PayloadID signals caller NOT to delete content
-		returnFile.PayloadID = ""
-		returnFile.Nlink = linkCount - 1
-		returnFile.Ctime = now
+	// Execute all write operations in a single transaction for better performance.
+	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Handle link count
+		if linkCount > 1 {
+			// File has other hard links, just decrement count
+			// Empty PayloadID signals caller NOT to delete content
+			returnFile.PayloadID = ""
+			returnFile.Nlink = linkCount - 1
+			returnFile.Ctime = now
 
-		// Update file's link count and ctime
-		if err := store.SetLinkCount(ctx.Context, fileHandle, linkCount-1); err != nil {
-			return nil, err
+			// Update file's link count and ctime
+			if err := tx.SetLinkCount(ctx.Context, fileHandle, linkCount-1); err != nil {
+				return err
+			}
+
+			// Update file's ctime
+			file.Ctime = now
+			if err := tx.PutFile(ctx.Context, file); err != nil {
+				return err
+			}
+		} else {
+			// Last link - set nlink=0 but keep metadata for POSIX compliance
+			returnFile.Nlink = 0
+			returnFile.Ctime = now
+
+			// Set link count to 0
+			if err := tx.SetLinkCount(ctx.Context, fileHandle, 0); err != nil {
+				return err
+			}
+
+			// Update file's ctime and nlink
+			file.Ctime = now
+			file.Nlink = 0
+			if err := tx.PutFile(ctx.Context, file); err != nil {
+				return err
+			}
 		}
 
-		// Update file's ctime
-		file.Ctime = now
-		if err := store.PutFile(ctx.Context, file); err != nil {
-			return nil, err
-		}
-	} else {
-		// Last link - set nlink=0 but keep metadata for POSIX compliance
-		returnFile.Nlink = 0
-		returnFile.Ctime = now
-
-		// Set link count to 0
-		if err := store.SetLinkCount(ctx.Context, fileHandle, 0); err != nil {
-			return nil, err
+		// Remove from parent's children
+		if err := tx.DeleteChild(ctx.Context, parentHandle, name); err != nil {
+			return err
 		}
 
-		// Update file's ctime and nlink
-		file.Ctime = now
-		file.Nlink = 0
-		if err := store.PutFile(ctx.Context, file); err != nil {
-			return nil, err
-		}
-	}
+		// Update parent timestamps
+		parent.Mtime = now
+		parent.Ctime = now
+		return tx.PutFile(ctx.Context, parent)
+	})
 
-	// Remove from parent's children
-	if err := store.DeleteChild(ctx.Context, parentHandle, name); err != nil {
-		return nil, err
-	}
-
-	// Update parent timestamps
-	parent.Mtime = now
-	parent.Ctime = now
-	if err := store.PutFile(ctx.Context, parent); err != nil {
+	if err != nil {
 		return nil, err
 	}
 
@@ -262,6 +269,12 @@ func (s *MetadataService) CreateHardLink(ctx *AuthContext, dirHandle FileHandle,
 		}
 	}
 
+	// Validate full path length (POSIX PATH_MAX compliance)
+	fullPath := buildPath(dir.Path, name)
+	if err := ValidatePath(fullPath); err != nil {
+		return err
+	}
+
 	// Check write permission on directory
 	if err := s.checkWritePermission(ctx, dirHandle); err != nil {
 		return err
@@ -294,29 +307,30 @@ func (s *MetadataService) CreateHardLink(ctx *AuthContext, dirHandle FileHandle,
 		return err
 	}
 
-	// Add to directory's children
-	if err := store.SetChild(ctx.Context, dirHandle, name, targetHandle); err != nil {
-		return err
-	}
+	// Execute all write operations in a single transaction for better performance.
+	return store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Add to directory's children
+		if err := tx.SetChild(ctx.Context, dirHandle, name, targetHandle); err != nil {
+			return err
+		}
 
-	// Increment target's link count
-	linkCount, _ := store.GetLinkCount(ctx.Context, targetHandle)
-	if err := store.SetLinkCount(ctx.Context, targetHandle, linkCount+1); err != nil {
-		// Cleanup
-		_ = store.DeleteChild(ctx.Context, dirHandle, name)
-		return err
-	}
+		// Increment target's link count
+		linkCount, _ := tx.GetLinkCount(ctx.Context, targetHandle)
+		if err := tx.SetLinkCount(ctx.Context, targetHandle, linkCount+1); err != nil {
+			return err
+		}
 
-	// Update timestamps
-	now := time.Now()
-	target.Ctime = now
-	_ = store.PutFile(ctx.Context, target)
+		// Update timestamps
+		now := time.Now()
+		target.Ctime = now
+		if err := tx.PutFile(ctx.Context, target); err != nil {
+			return err
+		}
 
-	dir.Mtime = now
-	dir.Ctime = now
-	_ = store.PutFile(ctx.Context, dir)
-
-	return nil
+		dir.Mtime = now
+		dir.Ctime = now
+		return tx.PutFile(ctx.Context, dir)
+	})
 }
 
 // ReadSymlink reads the target path of a symbolic link.
@@ -359,15 +373,31 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		return err
 	}
 
-	// Check permissions: only owner or root can change attributes
+	// Check permissions based on what's being changed
 	identity := ctx.Identity
 	isOwner := identity != nil && identity.UID != nil && *identity.UID == file.UID
 	isRoot := identity != nil && identity.UID != nil && *identity.UID == 0
 
-	if !isOwner && !isRoot {
+	// POSIX: For utimensat() with UTIME_NOW, write permission is sufficient.
+	// Check if we're ONLY setting times to "now" (no other attribute changes).
+	onlySettingTimesToNow := attrs.Mode == nil && attrs.UID == nil &&
+		attrs.GID == nil && attrs.Size == nil &&
+		(attrs.AtimeNow || attrs.MtimeNow)
+
+	if onlySettingTimesToNow && !isOwner && !isRoot {
+		// Check write permission instead of ownership
+		if err := s.checkWritePermission(ctx, handle); err != nil {
+			return &StoreError{
+				Code:    ErrPermissionDenied,
+				Message: "operation not permitted",
+				Path:    file.Path,
+			}
+		}
+		// Write permission granted, allow timestamp update
+	} else if !isOwner && !isRoot {
 		return &StoreError{
-			Code:    ErrAccessDenied,
-			Message: "permission denied",
+			Code:    ErrPermissionDenied,
+			Message: "operation not permitted",
 			Path:    file.Path,
 		}
 	}
@@ -377,21 +407,66 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 
 	// Apply requested changes
 	if attrs.Mode != nil {
-		file.Mode = *attrs.Mode
+		newMode := *attrs.Mode
+
+		// POSIX: Non-root users cannot set SUID/SGID bits arbitrarily
+		// - SUID (04000) can only be set by owner or root
+		// - SGID (02000) can only be set by owner who is member of file's group, or root
+		if !isRoot {
+			// Strip SUID bit if caller doesn't own the file
+			if newMode&0o4000 != 0 && !isOwner {
+				newMode &= ^uint32(0o4000)
+			}
+			// Strip SGID bit if caller is not a member of the file's group
+			if newMode&0o2000 != 0 {
+				// For SGID, caller must be owner AND member of file's group
+				if !isOwner || !identity.HasGID(file.GID) {
+					newMode &= ^uint32(0o2000)
+				}
+			}
+		}
+
+		file.Mode = newMode
 		modified = true
 	}
 
+	// Track if ownership changed (for SUID/SGID clearing)
+	ownershipChanged := false
+
 	if attrs.UID != nil {
-		// Only root can change owner
-		if !isRoot {
+		// Only root can change owner to a different UID
+		// Owner can set UID to their own UID (no-op for chown(file, same_uid, new_gid))
+		logger.Debug("SetFileAttributes: UID change requested",
+			"handle", fmt.Sprintf("%x", handle),
+			"file_id", file.ID,
+			"file_path", file.Path,
+			"old_uid", file.UID,
+			"new_uid", *attrs.UID,
+			"is_root", isRoot)
+		if *attrs.UID != file.UID && !isRoot {
+			logger.Debug("SetFileAttributes: UID change DENIED (not root)",
+				"handle", fmt.Sprintf("%x", handle),
+				"file_id", file.ID,
+				"file_path", file.Path,
+				"old_uid", file.UID,
+				"new_uid", *attrs.UID)
 			return &StoreError{
-				Code:    ErrAccessDenied,
+				Code:    ErrPermissionDenied,
 				Message: "only root can change owner",
 				Path:    file.Path,
 			}
 		}
-		file.UID = *attrs.UID
-		modified = true
+		if *attrs.UID != file.UID {
+			logger.Debug("SetFileAttributes: UID changed",
+				"handle", fmt.Sprintf("%x", handle),
+				"file_id", file.ID,
+				"file_path", file.Path,
+				"old_uid", file.UID,
+				"new_uid", *attrs.UID)
+			file.UID = *attrs.UID
+			modified = true
+			ownershipChanged = true
+		}
 	}
 
 	if attrs.GID != nil {
@@ -408,14 +483,28 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 			}
 			if !canChangeGID {
 				return &StoreError{
-					Code:    ErrAccessDenied,
+					Code:    ErrPermissionDenied,
 					Message: "not a member of target group",
 					Path:    file.Path,
 				}
 			}
 		}
-		file.GID = *attrs.GID
-		modified = true
+		if *attrs.GID != file.GID {
+			file.GID = *attrs.GID
+			modified = true
+			ownershipChanged = true
+		}
+	}
+
+	// POSIX: Clear SUID/SGID bits when ownership changes on non-directory files
+	// This is a security measure to prevent privilege escalation.
+	// For directories, SGID has different meaning (inherit group) and should NOT be cleared.
+	// For symlinks, permissions aren't used (target permissions matter), so we skip them.
+	// Note: This clears SUID/SGID regardless of who does the chown (including root),
+	// matching Linux kernel behavior.
+	if ownershipChanged && file.Type != FileTypeDirectory && file.Type != FileTypeSymlink {
+		// Clear SUID (04000) and SGID (02000) bits
+		file.Mode &= ^uint32(0o6000)
 	}
 
 	if attrs.Size != nil {
@@ -425,6 +514,11 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		}
 		file.Size = *attrs.Size
 		modified = true
+
+		// POSIX: Clear SUID/SGID bits on truncate for non-root users (like write)
+		if file.Type == FileTypeRegular && !isRoot {
+			file.Mode &= ^uint32(0o6000)
+		}
 	}
 
 	if attrs.Atime != nil {
@@ -440,7 +534,13 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 	// Always update ctime when attributes change
 	if modified {
 		file.Ctime = now
-		return store.PutFile(ctx.Context, file)
+		if err := store.PutFile(ctx.Context, file); err != nil {
+			return err
+		}
+
+		// Invalidate cached file in pending writes to ensure subsequent
+		// writes use fresh attributes (e.g., mode changes for SUID/SGID clearing)
+		s.pendingWrites.InvalidateCache(handle)
 	}
 
 	return nil
@@ -490,6 +590,12 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 		}
 	}
 
+	// Validate destination path length (POSIX PATH_MAX compliance)
+	destPath := buildPath(dstDir.Path, toName)
+	if err := ValidatePath(destPath); err != nil {
+		return err
+	}
+
 	// Check write permission on both directories
 	if err := s.checkWritePermission(ctx, fromDir); err != nil {
 		return err
@@ -508,16 +614,60 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 		return err
 	}
 
+	// Debug: Log Move parameters before sticky bit check
+	callerUID := "nil"
+	if ctx.Identity != nil && ctx.Identity.UID != nil {
+		callerUID = fmt.Sprintf("%d", *ctx.Identity.UID)
+	}
+	logger.Debug("Move: before sticky bit check",
+		"src_dir_handle", fmt.Sprintf("%x", fromDir),
+		"src_dir_id", srcDir.ID,
+		"src_dir_uid", srcDir.UID,
+		"src_dir_mode", fmt.Sprintf("%04o", srcDir.Mode),
+		"src_file_handle", fmt.Sprintf("%x", srcHandle),
+		"src_file_id", srcFile.ID,
+		"src_file_uid", srcFile.UID,
+		"caller_uid", callerUID,
+		"from_name", fromName,
+		"to_name", toName)
+
 	// Check sticky bit on source directory
 	if err := CheckStickyBitRestriction(ctx, &srcDir.FileAttr, &srcFile.FileAttr); err != nil {
 		return err
 	}
 
-	// Check if destination exists
-	dstHandle, err := store.GetChild(ctx.Context, toDir, toName)
+	// POSIX: When moving a directory to a different parent from a sticky directory,
+	// the caller must own the directory being moved (not just the sticky directory).
+	// This is because the ".." link inside the moved directory must be updated,
+	// which requires ownership of the directory being moved.
+	// See rename(2) man page: "If oldpath refers to a directory, then ... if the
+	// sticky bit is set on the directory containing oldpath ... the process must
+	// own the file being renamed."
+	if srcFile.Type == FileTypeDirectory && string(fromDir) != string(toDir) && srcDir.Mode&ModeSticky != 0 {
+		callerUID := ^uint32(0) // Invalid UID
+		if ctx.Identity != nil && ctx.Identity.UID != nil {
+			callerUID = *ctx.Identity.UID
+		}
+		// Root can always move directories
+		if callerUID != 0 && srcFile.UID != callerUID {
+			logger.Debug("Move: cross-directory move denied by sticky bit",
+				"reason", "caller does not own directory being moved",
+				"src_file_uid", srcFile.UID,
+				"caller_uid", callerUID)
+			return &StoreError{
+				Code:    ErrAccessDenied,
+				Message: "sticky bit set: cannot move directory you don't own to different parent",
+			}
+		}
+	}
+
+	// Check if destination exists and gather info before transaction
+	var dstHandle FileHandle
+	var dstFile *File
+	dstHandle, err = store.GetChild(ctx.Context, toDir, toName)
 	if err == nil {
 		// Destination exists - check compatibility
-		dstFile, err := store.GetFile(ctx.Context, dstHandle)
+		dstFile, err = store.GetFile(ctx.Context, dstHandle)
 		if err != nil {
 			return err
 		}
@@ -551,75 +701,86 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 				}
 			}
 		}
-
-		// Remove destination
-		if dstFile.Type == FileTypeDirectory {
-			if err := store.DeleteFile(ctx.Context, dstHandle); err != nil {
-				return err
-			}
-		} else {
-			// For files, decrement link count or set to 0
-			linkCount, _ := store.GetLinkCount(ctx.Context, dstHandle)
-			if linkCount <= 1 {
-				_ = store.SetLinkCount(ctx.Context, dstHandle, 0)
-			} else {
-				_ = store.SetLinkCount(ctx.Context, dstHandle, linkCount-1)
-			}
-		}
-
-		// Remove destination from children
-		if err := store.DeleteChild(ctx.Context, toDir, toName); err != nil {
-			return err
-		}
 	} else if !IsNotFoundError(err) {
 		return err
 	}
 
-	// Remove source from old parent
-	if err := store.DeleteChild(ctx.Context, fromDir, fromName); err != nil {
-		return err
-	}
-
-	// Add source to new parent
-	if err := store.SetChild(ctx.Context, toDir, toName, srcHandle); err != nil {
-		return err
-	}
-
-	// Update parent reference if directories are different
-	if string(fromDir) != string(toDir) {
-		// Non-fatal error, ignore
-		_ = store.SetParent(ctx.Context, srcHandle, toDir)
-
-		// Update link counts for directory moves
-		if srcFile.Type == FileTypeDirectory {
-			// Decrement source parent's link count
-			srcLinkCount, _ := store.GetLinkCount(ctx.Context, fromDir)
-			if srcLinkCount > 0 {
-				_ = store.SetLinkCount(ctx.Context, fromDir, srcLinkCount-1)
+	// Execute all write operations in a single transaction for better performance.
+	return store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Handle destination removal if it exists
+		if dstFile != nil {
+			// Remove destination
+			if dstFile.Type == FileTypeDirectory {
+				if err := tx.DeleteFile(ctx.Context, dstHandle); err != nil {
+					return err
+				}
+			} else {
+				// For files, decrement link count or set to 0
+				// POSIX: ctime must be updated when link count changes
+				linkCount, _ := tx.GetLinkCount(ctx.Context, dstHandle)
+				now := time.Now()
+				if linkCount <= 1 {
+					_ = tx.SetLinkCount(ctx.Context, dstHandle, 0)
+				} else {
+					_ = tx.SetLinkCount(ctx.Context, dstHandle, linkCount-1)
+				}
+				// Update ctime on the file being unlinked (affects remaining hard links)
+				dstFile.Ctime = now
+				_ = tx.PutFile(ctx.Context, dstFile)
 			}
-			// Increment destination parent's link count
-			dstLinkCount, _ := store.GetLinkCount(ctx.Context, toDir)
-			_ = store.SetLinkCount(ctx.Context, toDir, dstLinkCount+1)
+
+			// Remove destination from children
+			if err := tx.DeleteChild(ctx.Context, toDir, toName); err != nil {
+				return err
+			}
 		}
-	}
 
-	// Update timestamps (non-fatal errors, ignore)
-	now := time.Now()
-	srcFile.Ctime = now
-	_ = store.PutFile(ctx.Context, srcFile)
+		// Remove source from old parent
+		if err := tx.DeleteChild(ctx.Context, fromDir, fromName); err != nil {
+			return err
+		}
 
-	srcDir.Mtime = now
-	srcDir.Ctime = now
-	_ = store.PutFile(ctx.Context, srcDir)
+		// Add source to new parent
+		if err := tx.SetChild(ctx.Context, toDir, toName, srcHandle); err != nil {
+			return err
+		}
 
-	if string(fromDir) != string(toDir) {
-		dstDir.Mtime = now
-		dstDir.Ctime = now
-		// Non-fatal error, ignore
-		_ = store.PutFile(ctx.Context, dstDir)
-	}
+		// Update parent reference if directories are different
+		if string(fromDir) != string(toDir) {
+			// Non-fatal error, ignore
+			_ = tx.SetParent(ctx.Context, srcHandle, toDir)
 
-	return nil
+			// Update link counts for directory moves
+			if srcFile.Type == FileTypeDirectory {
+				// Decrement source parent's link count
+				srcLinkCount, _ := tx.GetLinkCount(ctx.Context, fromDir)
+				if srcLinkCount > 0 {
+					_ = tx.SetLinkCount(ctx.Context, fromDir, srcLinkCount-1)
+				}
+				// Increment destination parent's link count
+				dstLinkCount, _ := tx.GetLinkCount(ctx.Context, toDir)
+				_ = tx.SetLinkCount(ctx.Context, toDir, dstLinkCount+1)
+			}
+		}
+
+		// Update timestamps (non-fatal errors, ignore)
+		now := time.Now()
+		srcFile.Ctime = now
+		_ = tx.PutFile(ctx.Context, srcFile)
+
+		srcDir.Mtime = now
+		srcDir.Ctime = now
+		_ = tx.PutFile(ctx.Context, srcDir)
+
+		if string(fromDir) != string(toDir) {
+			dstDir.Mtime = now
+			dstDir.Ctime = now
+			// Non-fatal error, ignore
+			_ = tx.PutFile(ctx.Context, dstDir)
+		}
+
+		return nil
+	})
 }
 
 // MarkFileAsOrphaned sets a file's link count to 0, marking it as orphaned.
@@ -689,6 +850,12 @@ func (s *MetadataService) createEntry(
 		}
 	}
 
+	// Validate full path length (POSIX PATH_MAX compliance)
+	fullPath := buildPath(parent.Path, name)
+	if err := ValidatePath(fullPath); err != nil {
+		return nil, err
+	}
+
 	// Check write permission on parent
 	if err := s.checkWritePermission(ctx, parentHandle); err != nil {
 		return nil, err
@@ -709,7 +876,7 @@ func (s *MetadataService) createEntry(
 	}
 
 	// Generate new handle
-	newHandle, err := store.GenerateHandle(ctx.Context, parent.ShareName, buildPath(parent.Path, name))
+	newHandle, err := store.GenerateHandle(ctx.Context, parent.ShareName, fullPath)
 	if err != nil {
 		return nil, err
 	}
@@ -727,9 +894,49 @@ func (s *MetadataService) createEntry(
 	ApplyCreateDefaults(&newAttr, ctx, linkTarget)
 	ApplyOwnerDefaults(&newAttr, ctx)
 
+	// POSIX SGID inheritance:
+	// When parent directory has SGID bit set:
+	// 1. New entries inherit parent's GID (not the creating user's primary GID)
+	// 2. New directories also get SGID bit set (to propagate the behavior)
+	// 3. New regular files do NOT get SGID bit set
+	parentHasSGID := parent.Mode&0o2000 != 0
+	if parentHasSGID {
+		// Inherit GID from parent directory
+		newAttr.GID = parent.GID
+
+		// For directories, also inherit SGID bit to propagate the behavior
+		if fileType == FileTypeDirectory {
+			newAttr.Mode |= 0o2000
+		} else {
+			// For regular files and other types, ensure SGID is NOT set
+			// (it may have been set in the input mode, which would be incorrect)
+			newAttr.Mode &= ^uint32(0o2000)
+		}
+	}
+
+	// POSIX: Validate SUID/SGID bits for non-root users
+	// Even during file creation, non-root users cannot arbitrarily set these bits
+	identity := ctx.Identity
+	isRoot := identity != nil && identity.UID != nil && *identity.UID == 0
+	if !isRoot {
+		// SUID (04000): Only root can set on new files (owner will be the caller anyway)
+		// But we still strip it for non-root to be safe
+		if newAttr.Mode&0o4000 != 0 {
+			newAttr.Mode &= ^uint32(0o4000)
+		}
+
+		// SGID (02000): For regular files, non-root can only set if member of file's group
+		// For directories, SGID is allowed (inherited above or explicitly requested)
+		if fileType != FileTypeDirectory && newAttr.Mode&0o2000 != 0 {
+			if !identity.HasGID(newAttr.GID) {
+				newAttr.Mode &= ^uint32(0o2000)
+			}
+		}
+	}
+
 	// Set content ID for regular files
 	if fileType == FileTypeRegular {
-		newAttr.PayloadID = PayloadID(buildPayloadID(parent.ShareName, buildPath(parent.Path, name)))
+		newAttr.PayloadID = PayloadID(buildPayloadID(parent.ShareName, fullPath))
 	}
 
 	// Set device numbers for block/char devices
@@ -741,51 +948,54 @@ func (s *MetadataService) createEntry(
 	newFile := &File{
 		ID:        id,
 		ShareName: parent.ShareName,
-		Path:      buildPath(parent.Path, name),
+		Path:      fullPath,
 		FileAttr:  newAttr,
 	}
 	newFile.Nlink = GetInitialLinkCount(fileType)
 
-	// Store the entry
-	if err := store.PutFile(ctx.Context, newFile); err != nil {
-		return nil, err
-	}
-
-	// Initialize link count in the store (required for hard link management)
-	if err := store.SetLinkCount(ctx.Context, newHandle, newFile.Nlink); err != nil {
-		// Cleanup on failure
-		_ = store.DeleteFile(ctx.Context, newHandle)
-		return nil, err
-	}
-
-	// Set parent reference
-	if err := store.SetParent(ctx.Context, newHandle, parentHandle); err != nil {
-		// Cleanup on failure
-		_ = store.DeleteFile(ctx.Context, newHandle)
-		return nil, err
-	}
-
-	// Add to parent's children
-	if err := store.SetChild(ctx.Context, parentHandle, name, newHandle); err != nil {
-		// Cleanup on failure
-		_ = store.DeleteFile(ctx.Context, newHandle)
-		return nil, err
-	}
-
-	// For directories, increment parent's link count (new ".." reference)
-	if fileType == FileTypeDirectory {
-		parentLinkCount, err := store.GetLinkCount(ctx.Context, parentHandle)
-		if err == nil {
-			_ = store.SetLinkCount(ctx.Context, parentHandle, parentLinkCount+1)
+	// Execute all write operations in a single transaction for better performance.
+	// This reduces PostgreSQL round-trips from 6+ to 2 (BEGIN + COMMIT).
+	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Store the entry
+		if err := tx.PutFile(ctx.Context, newFile); err != nil {
+			return err
 		}
-	}
 
-	// Update parent timestamps
-	now := time.Now()
-	parent.Mtime = now
-	parent.Ctime = now
-	// Non-fatal, file was created
-	_ = store.PutFile(ctx.Context, parent)
+		// Initialize link count in the store (required for hard link management)
+		if err := tx.SetLinkCount(ctx.Context, newHandle, newFile.Nlink); err != nil {
+			return err
+		}
+
+		// Set parent reference
+		if err := tx.SetParent(ctx.Context, newHandle, parentHandle); err != nil {
+			return err
+		}
+
+		// Add to parent's children
+		if err := tx.SetChild(ctx.Context, parentHandle, name, newHandle); err != nil {
+			return err
+		}
+
+		// For directories, increment parent's link count (new ".." reference)
+		if fileType == FileTypeDirectory {
+			parentLinkCount, err := tx.GetLinkCount(ctx.Context, parentHandle)
+			if err == nil {
+				if err := tx.SetLinkCount(ctx.Context, parentHandle, parentLinkCount+1); err != nil {
+					return err
+				}
+			}
+		}
+
+		// Update parent timestamps
+		now := time.Now()
+		parent.Mtime = now
+		parent.Ctime = now
+		return tx.PutFile(ctx.Context, parent)
+	})
+
+	if err != nil {
+		return nil, err
+	}
 
 	return newFile, nil
 }
