@@ -129,6 +129,14 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 			pgCfg.SSLMode = "disable" // default for local dev
 		}
 
+		// Connection pool settings
+		if maxConns, ok := config["max_conns"].(float64); ok {
+			pgCfg.MaxConns = int32(maxConns)
+		}
+		if minConns, ok := config["min_conns"].(float64); ok {
+			pgCfg.MinConns = int32(minConns)
+		}
+
 		// Enable auto-migrate by default for dynamic store creation
 		pgCfg.AutoMigrate = true
 
