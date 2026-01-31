@@ -372,7 +372,7 @@ jobs:
             while true; do
               echo "=== $(date -u +%H:%M:%S) Monitor ===" >> ~/monitor.log
               echo "--- Prove processes (state column shows D=blocked on I/O, S=sleeping, R=running) ---" >> ~/monitor.log
-              ps aux | grep -E 'prove|pjdfstest|sh.*\.t' | grep -v grep >> ~/monitor.log 2>&1 || true
+              ps auxww | grep -E 'prove|pjdfstest|sh.*\.t' | grep -v grep >> ~/monitor.log 2>&1 || true
               echo "--- NFS RPC stats ---" >> ~/monitor.log
               nfsstat -c 2>&1 | head -30 >> ~/monitor.log || true
               echo "--- NFS mount stats (pending ops) ---" >> ~/monitor.log
@@ -384,29 +384,44 @@ jobs:
             done
           ) &
           MONITOR_PID=$!
+          echo $MONITOR_PID > ~/monitor.pid
 
           cd $DITTOFS_MOUNT
 
-          # Run tests with timeout to prevent indefinite hangs
-          timeout 55m sudo env PATH="$PJDFSTEST_DIR/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
+          # Run tests with timeout AFTER sudo to properly kill prove
+          sudo timeout 45m env PATH="$PJDFSTEST_DIR/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
             2>&1 | tee ~/posix-postgres.log || true
 
           # Stop monitoring
-          kill $MONITOR_PID 2>/dev/null || true
+          kill $(cat ~/monitor.pid 2>/dev/null) 2>/dev/null || true
 
           echo "## PostgreSQL Store Results" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           tail -30 ~/posix-postgres.log >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-          # Show monitoring log if tests didn't complete all
-          if ! grep -q "All tests successful" ~/posix-postgres.log; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "## Debug Monitor Log (last 50 lines)" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            tail -50 ~/monitor.log >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "No monitor log"
-            echo '```' >> $GITHUB_STEP_SUMMARY
-          fi
+      - name: Upload debug logs
+        if: always()
+        run: |
+          # Always upload monitoring log for debugging
+          echo "## Debug Monitor Log" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat ~/monitor.log >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "No monitor log"
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          # Also save to artifact
+          mkdir -p ~/debug-logs
+          cp ~/monitor.log ~/debug-logs/ 2>/dev/null || true
+          cp ~/posix-postgres.log ~/debug-logs/ 2>/dev/null || true
+          cp /tmp/dittofs-posix-server.log ~/debug-logs/ 2>/dev/null || true
+
+      - name: Upload debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-debug-logs
+          path: ~/debug-logs/
+          if-no-files-found: ignore
 
       - name: Verify pass rate
         run: |
