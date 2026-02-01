@@ -8,22 +8,90 @@ The test suite validates DittoFS's NFSv3 implementation against POSIX filesystem
 
 ## Quick Start
 
-### macOS
+### Automated Setup (Recommended)
 
-On macOS, run DittoFS and mount NFS natively, then run pjdfstest in Docker:
+The setup script handles starting the server, configuring stores/shares via API, and mounting:
 
 ```bash
-# Terminal 1: Build and run DittoFS
-go build -o dittofs cmd/dittofs/main.go
-./dittofs init
-./dittofs start
+# Build binaries
+go build -o dittofs ./cmd/dittofs
+go build -o dittofsctl ./cmd/dittofsctl
 
-# Terminal 2: Mount NFS share
+# Setup with memory metadata store (default)
+sudo ./test/posix/setup-posix.sh
+
+# Or use a different store type
+sudo ./test/posix/setup-posix.sh badger
+sudo ./test/posix/setup-posix.sh postgres  # requires running postgres
+
+# Run POSIX tests
+cd /tmp/dittofs-test
+sudo env PATH="$PATH" ./test/posix/run-posix.sh
+
+# Run specific test category
+sudo env PATH="$PATH" ./test/posix/run-posix.sh chmod
+
+# Teardown when done
+sudo ./test/posix/teardown-posix.sh
+```
+
+### Store Types
+
+The setup script supports different storage backend combinations:
+
+| Store Type | Metadata Store | Payload Store | Requirements |
+|------------|----------------|---------------|--------------|
+| `memory` | In-memory | Filesystem | None (default) |
+| `badger` | BadgerDB | Filesystem | None |
+| `postgres` | PostgreSQL | Filesystem | Running PostgreSQL |
+| `memory-content` | In-memory | In-memory | None |
+| `cache-s3` | In-memory | S3 | Running Localstack |
+
+### Manual Setup
+
+If you prefer manual setup:
+
+```bash
+# Terminal 1: Start DittoFS server
+./dittofs start --config test/posix/configs/config.yaml
+
+# Terminal 2: Configure via API (server generates admin password on first start)
+# Check server output for the generated password
+ADMIN_PASSWORD="<from-server-output>"
+
+# Login
+./dittofsctl login --server http://localhost:8080 --username admin --password "$ADMIN_PASSWORD"
+
+# Create stores
+./dittofsctl store metadata add --name default --type memory
+./dittofsctl store payload add --name default --type filesystem \
+  --config '{"path":"/tmp/dittofs-content"}'
+
+# Create share
+./dittofsctl share create --name /export --metadata default --content default
+
+# Enable NFS adapter
+./dittofsctl adapter update nfs --enabled true --port 12049
+
+# Mount NFS share
 sudo mkdir -p /tmp/dittofs-test
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport,nolock \
+sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,nolock \
   localhost:/export /tmp/dittofs-test
 
-# Terminal 2: Build and run pjdfstest container
+# Run tests
+cd /tmp/dittofs-test
+sudo env PATH="$PATH" ../test/posix/run-posix.sh
+```
+
+### macOS with Docker
+
+On macOS, run pjdfstest in Docker:
+
+```bash
+# Setup DittoFS and mount
+sudo ./test/posix/setup-posix.sh
+
+# Build pjdfstest container
 docker build -t dittofs-pjdfstest -f test/posix/Dockerfile.pjdfstest .
 
 # Run all tests
@@ -33,63 +101,27 @@ docker run --rm -v /tmp/dittofs-test:/mnt/test dittofs-pjdfstest
 docker run --rm -v /tmp/dittofs-test:/mnt/test dittofs-pjdfstest chmod
 
 # Cleanup
-sudo umount /tmp/dittofs-test
+sudo ./test/posix/teardown-posix.sh
 ```
 
 ### Linux with Nix
 
-On Linux, pjdfstest is available directly in the Nix development environment.
-
-**Option 1: Using helper commands (recommended)**
+On Linux, pjdfstest is available directly in the Nix development environment:
 
 ```bash
-# Terminal 1: Build and run DittoFS (as regular user)
+# Enter nix shell
 nix develop
-go build -o dittofs cmd/dittofs/main.go
-./dittofs init
-./dittofs start
 
-# Terminal 2: Enter nix shell and use helpers
-nix develop
+# Setup DittoFS
+sudo ./test/posix/setup-posix.sh
 
 # Use helper commands
-dittofs-mount                          # Mount NFS to /tmp/dittofs-test
 dittofs-posix                          # Run all tests
 dittofs-posix chmod                    # Run chmod tests only
 dittofs-posix chmod chown              # Run multiple test categories
-dittofs-umount                         # Unmount
-```
-
-**Option 2: Root nix shell (manual)**
-
-```bash
-# Terminal 2: Enter nix shell as root for testing
-sudo nix develop
-
-# Mount and run tests
-mkdir -p /tmp/dittofs-test
-mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,nolock \
-  localhost:/export /tmp/dittofs-test
-
-cd /tmp/dittofs-test
-
-# Run all tests using pjdfstest binary directly
-pjdfstest -c /path/to/pjdfstest.toml -p .
-
-# Run specific test category
-pjdfstest -c /path/to/pjdfstest.toml -p . chmod
 
 # Cleanup
-umount /tmp/dittofs-test
-```
-
-### Linux with Docker
-
-Alternatively, use Docker on Linux (same as macOS):
-
-```bash
-docker build -t dittofs-pjdfstest -f test/posix/Dockerfile.pjdfstest .
-docker run --rm -v /tmp/dittofs-test:/mnt/test dittofs-pjdfstest
+sudo ./test/posix/teardown-posix.sh
 ```
 
 ## Test Categories
@@ -136,8 +168,13 @@ See `known_failures.txt` for expected test failures with reasons.
 ```
 test/posix/
 ├── README.md              # This file
+├── setup-posix.sh         # Automated setup script
+├── teardown-posix.sh      # Cleanup script
+├── run-posix.sh           # Test runner
 ├── Dockerfile.pjdfstest   # pjdfstest container (for macOS/Docker)
 ├── known_failures.txt     # Expected failures with reasons
+├── configs/               # Configuration files
+│   └── config.yaml        # Single config (paths set via env vars)
 └── results/               # Test results (not committed)
 ```
 

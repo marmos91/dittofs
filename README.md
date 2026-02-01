@@ -108,28 +108,121 @@ go build -o dittofs cmd/dittofs/main.go
 ./dittofs start
 ```
 
-### User Management
+### CLI Tools
 
-Users and groups are stored in the control plane database (SQLite by default, PostgreSQL for HA). Manage them via CLI or REST API:
+Users and groups are stored in the control plane database (SQLite by default, PostgreSQL for HA). Manage them via CLI or REST API.
 
-**CLI:**
+DittoFS provides two CLI binaries for complete management:
+
+| Binary | Purpose | Examples |
+|--------|---------|----------|
+| **`dittofs`** | Server daemon management | start, stop, status, config, logs, backup |
+| **`dittofsctl`** | Remote API client | users, groups, shares, stores, adapters |
+
+#### Server Management (`dittofs`)
+
 ```bash
-# Add a user (prompts for password)
-./dittofs user add alice
+# Configuration
+./dittofs config init              # Create default config file
+./dittofs config show              # Display current configuration
+./dittofs config validate          # Validate config file
 
-# Grant share permission
-./dittofs user grant alice /export read-write
+# Server lifecycle
+./dittofs start                    # Start in foreground
+./dittofs start --pid-file /var/run/dittofs.pid  # Start with PID file
+./dittofs stop                     # Graceful shutdown
+./dittofs stop --force             # Force kill
+./dittofs status                   # Check server status
 
-# Create a group and add user
-./dittofs group add editors
-./dittofs user join alice editors
+# Logging
+./dittofs logs                     # Show last 100 lines
+./dittofs logs -f                  # Follow logs in real-time
+./dittofs logs -n 50               # Show last 50 lines
+./dittofs logs --since "2024-01-15T10:00:00Z"
 
-# List users and groups
-./dittofs user list
-./dittofs group list
+# Backup
+./dittofs backup controlplane --output /tmp/backup.json
+
+# Shell completion (bash, zsh, fish, powershell)
+./dittofs completion bash > /etc/bash_completion.d/dittofs
 ```
 
-**REST API:**
+#### Remote Management (`dittofsctl`)
+
+```bash
+# Authentication & Context Management
+./dittofsctl login --server http://localhost:8080 --username admin
+./dittofsctl logout
+./dittofsctl context list          # List all server contexts
+./dittofsctl context use prod      # Switch to production server
+./dittofsctl context current       # Show current context
+
+# User Management (password will be prompted interactively)
+./dittofsctl user create --username alice
+./dittofsctl user create --username bob --email bob@example.com --groups editors,viewers
+./dittofsctl user list
+./dittofsctl user list -o json     # Output as JSON
+./dittofsctl user get alice
+./dittofsctl user update alice --email alice@example.com
+./dittofsctl user delete alice
+
+# Group Management
+./dittofsctl group create --name editors
+./dittofsctl group list
+./dittofsctl group add-user editors alice
+./dittofsctl group remove-user editors alice
+./dittofsctl group delete editors
+
+# Share Management
+./dittofsctl share list
+./dittofsctl share create --name /archive --metadata badger-main --payload s3-content
+./dittofsctl share delete /archive
+
+# Share Permissions
+./dittofsctl share permission list /export
+./dittofsctl share permission grant /export --user alice --level read-write
+./dittofsctl share permission grant /export --group editors --level read
+./dittofsctl share permission revoke /export --user alice
+
+# Store Management (Metadata)
+./dittofsctl store metadata list
+./dittofsctl store metadata add --name fast-meta --type memory
+./dittofsctl store metadata add --name persistent --type badger --config '{"db_path":"/data/meta"}'
+./dittofsctl store metadata remove fast-meta
+
+# Store Management (Payload/Blocks)
+./dittofsctl store payload list
+./dittofsctl store payload add --name s3-content --type s3 --config '{"bucket":"my-bucket"}'
+./dittofsctl store payload remove s3-content
+
+# Adapter Management
+./dittofsctl adapter list
+./dittofsctl adapter add --type nfs --port 12049
+./dittofsctl adapter update nfs --config '{"port":2049}'
+./dittofsctl adapter remove smb
+
+# Settings
+./dittofsctl settings list
+./dittofsctl settings get logging.level
+./dittofsctl settings set logging.level DEBUG
+
+# Shell completion
+./dittofsctl completion bash > /etc/bash_completion.d/dittofsctl
+./dittofsctl completion zsh > ~/.zsh/completions/_dittofsctl
+```
+
+#### Output Formats
+
+All list commands support multiple output formats:
+
+```bash
+./dittofsctl user list              # Default table format
+./dittofsctl user list -o json      # JSON format
+./dittofsctl user list -o yaml      # YAML format
+```
+
+#### REST API
+
 ```bash
 # Login to get JWT token
 TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/auth/login \
@@ -146,7 +239,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
   http://localhost:8080/api/v1/users
 ```
 
-See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#10-user-management) for all user/group commands.
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#cli-management-commands) for complete CLI documentation.
 
 ### Run with Docker
 
@@ -264,17 +357,19 @@ sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock localhost:/e
 
 **SMB** (requires user authentication):
 ```bash
-# First, create a user with the CLI
-./dittofs user add alice
-./dittofs user grant alice /export read-write
+# First, create a user with dittofsctl (server must be running)
+./dittofsctl login --server http://localhost:8080 --username admin
+./dittofsctl user create --username alice  # Password prompted interactively
+./dittofsctl share permission grant /export --user alice --level read-write
 
-# Linux
+# Linux (using credentials file for security)
 sudo mkdir -p /mnt/smb
-sudo mount -t cifs //localhost/export /mnt/smb -o port=12445,username=alice,password=yourpassword,vers=2.0
+echo -e "username=alice\npassword=secret" > ~/.smbcredentials && chmod 600 ~/.smbcredentials
+sudo mount -t cifs //localhost/export /mnt/smb -o port=12445,credentials=$HOME/.smbcredentials,vers=2.0
 
-# macOS
+# macOS (will prompt for password)
 mkdir -p /tmp/smb
-mount -t smbfs //alice:yourpassword@localhost:12445/export /tmp/smb
+mount -t smbfs //alice@localhost:12445/export /tmp/smb
 ```
 
 See [docs/SMB.md](docs/SMB.md) for detailed SMB client usage.

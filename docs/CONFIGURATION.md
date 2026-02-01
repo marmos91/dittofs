@@ -204,7 +204,7 @@ server:
     # JWT authentication configuration
     jwt:
       # HMAC signing key for JWT tokens (min 32 characters)
-      # Can also be set via DITTOFS_API_JWT_SECRET environment variable
+      # Can also be set via DITTOFS_CONTROLPLANE_SECRET environment variable
       secret: "your-secret-key-at-least-32-characters"
       access_token_duration: 15m   # Access token lifetime
       refresh_token_duration: 168h # Refresh token lifetime (7 days)
@@ -228,7 +228,7 @@ server:
 | `access_token_duration` | `15m` | Access token lifetime |
 | `refresh_token_duration` | `168h` | Refresh token lifetime (7 days) |
 
-> **Security Note**: The JWT secret should be kept confidential. Use the `DITTOFS_API_JWT_SECRET` environment variable in production to avoid storing secrets in config files.
+> **Security Note**: The JWT secret should be kept confidential. Use the `DITTOFS_CONTROLPLANE_SECRET` environment variable in production to avoid storing secrets in config files.
 
 **API Endpoints:**
 
@@ -833,7 +833,7 @@ export DITTOFS_DATABASE_POSTGRES_SSLMODE=require
 # API Server
 export DITTOFS_SERVER_API_ENABLED=true
 export DITTOFS_SERVER_API_PORT=8080
-export DITTOFS_API_JWT_SECRET=your-secret-key-at-least-32-characters
+export DITTOFS_CONTROLPLANE_SECRET=your-secret-key-at-least-32-characters
 
 # Cache
 export DITTOFS_CACHE_PATH=/var/lib/dittofs/cache
