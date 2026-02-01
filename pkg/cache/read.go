@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/payload/block"
 )
 
@@ -42,6 +43,14 @@ func (c *Cache) ReadAt(ctx context.Context, payloadID string, chunkIdx uint32, o
 
 	chunk, exists := entry.chunks[chunkIdx]
 	if !exists || len(chunk.blocks) == 0 {
+		// DEBUG: Log cache miss due to missing chunk
+		if chunkIdx >= 32 { // Only log for large offsets (2GB+ files)
+			logger.Debug("Cache ReadAt: chunk not found",
+				"payloadID", payloadID,
+				"chunkIdx", chunkIdx,
+				"offset", offset,
+				"length", length)
+		}
 		return false, nil
 	}
 
@@ -56,6 +65,20 @@ func (c *Cache) ReadAt(ctx context.Context, payloadID string, chunkIdx uint32, o
 		blk, exists := chunk.blocks[blockIdx]
 		if !exists || blk.data == nil {
 			// Block doesn't exist or was evicted - zeros remain in dest (sparse file)
+			// DEBUG: Log cache miss reason for large offsets
+			if chunkIdx >= 32 {
+				var state string
+				if !exists {
+					state = "block_not_exists"
+				} else {
+					state = "data_nil_state_" + blk.state.String()
+				}
+				logger.Debug("Cache ReadAt: block miss",
+					"payloadID", payloadID,
+					"chunkIdx", chunkIdx,
+					"blockIdx", blockIdx,
+					"reason", state)
+			}
 			continue
 		}
 

@@ -203,14 +203,21 @@ func (q *TransferQueue) LastError() (time.Time, error) {
 //
 // The worker uses a two-phase select to ensure downloads are processed first
 // without busy-waiting (CPU spin) when queues are empty.
-func (q *TransferQueue) worker(ctx context.Context, _ int) {
+//
+// IMPORTANT: Workers ignore the passed context for lifecycle management and only
+// exit when stopCh is closed. This prevents workers from exiting early if the
+// initialization context is short-lived or cancelled. Each request gets its own
+// fresh context with timeout in processRequest().
+func (q *TransferQueue) worker(_ context.Context, id int) {
 	defer q.wg.Done()
+
+	logger.Debug("Transfer queue worker started", "workerID", id)
 
 	for {
 		// Phase 1: Check for high-priority downloads (non-blocking)
 		select {
 		case req := <-q.downloads:
-			q.processRequest(ctx, req)
+			q.processRequest(req)
 			continue
 		default:
 		}
@@ -218,30 +225,29 @@ func (q *TransferQueue) worker(ctx context.Context, _ int) {
 		// Phase 2: Wait for any work (blocking - no CPU spin)
 		select {
 		case req := <-q.downloads:
-			q.processRequest(ctx, req)
+			q.processRequest(req)
 		case req := <-q.uploads:
-			q.processRequest(ctx, req)
+			q.processRequest(req)
 		case req := <-q.prefetch:
-			q.processRequest(ctx, req)
+			q.processRequest(req)
 		case <-q.stopCh:
-			q.drainQueue(ctx)
-			return
-		case <-ctx.Done():
+			q.drainQueue()
+			logger.Debug("Transfer queue worker stopped", "workerID", id)
 			return
 		}
 	}
 }
 
 // drainQueue processes remaining items in all queues during shutdown.
-func (q *TransferQueue) drainQueue(ctx context.Context) {
+func (q *TransferQueue) drainQueue() {
 	for {
 		select {
 		case req := <-q.downloads:
-			q.processRequest(ctx, req)
+			q.processRequest(req)
 		case req := <-q.uploads:
-			q.processRequest(ctx, req)
+			q.processRequest(req)
 		case req := <-q.prefetch:
-			q.processRequest(ctx, req)
+			q.processRequest(req)
 		default:
 			return
 		}
@@ -249,7 +255,9 @@ func (q *TransferQueue) drainQueue(ctx context.Context) {
 }
 
 // processRequest handles a single transfer request.
-func (q *TransferQueue) processRequest(_ context.Context, req TransferRequest) {
+// Each request gets a fresh context with timeout - worker contexts are not used
+// to ensure workers don't exit early if the initialization context is cancelled.
+func (q *TransferQueue) processRequest(req TransferRequest) {
 	// Use a fresh context with timeout for block store operations
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -318,8 +326,34 @@ func (q *TransferQueue) processDownload(ctx context.Context, req TransferRequest
 		return nil
 	}
 
+	// DEBUG: Log download start for large offsets
+	if req.ChunkIdx >= 32 {
+		logger.Debug("processDownload: starting",
+			"payloadID", req.PayloadID,
+			"chunkIdx", req.ChunkIdx,
+			"blockIdx", req.BlockIdx)
+	}
+
 	// Download the block and cache it
-	return q.manager.downloadBlock(ctx, req.PayloadID, req.ChunkIdx, req.BlockIdx)
+	err := q.manager.downloadBlock(ctx, req.PayloadID, req.ChunkIdx, req.BlockIdx)
+
+	// DEBUG: Log download result for large offsets
+	if req.ChunkIdx >= 32 {
+		if err != nil {
+			logger.Debug("processDownload: failed",
+				"payloadID", req.PayloadID,
+				"chunkIdx", req.ChunkIdx,
+				"blockIdx", req.BlockIdx,
+				"error", err)
+		} else {
+			logger.Debug("processDownload: succeeded",
+				"payloadID", req.PayloadID,
+				"chunkIdx", req.ChunkIdx,
+				"blockIdx", req.BlockIdx)
+		}
+	}
+
+	return err
 }
 
 // processUpload handles an upload request.

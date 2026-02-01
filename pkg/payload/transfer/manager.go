@@ -54,6 +54,15 @@ type blockKey struct {
 	blockIdx uint32
 }
 
+// downloadResult is a broadcast-capable result for in-flight download deduplication.
+// When the download completes, err is set and done is closed. Multiple waiters can
+// safely read the result because closing a channel notifies ALL receivers.
+type downloadResult struct {
+	done chan struct{} // Closed when download completes
+	err  error         // Result of the download (set before closing done)
+	mu   sync.Mutex    // Protects err during write
+}
+
 // FinalizationCallback is called when all blocks for a file have been uploaded.
 // It receives the payloadID and a list of block hashes for computing the final object hash.
 type FinalizationCallback func(ctx context.Context, payloadID string, blockHashes [][32]byte)
@@ -93,7 +102,8 @@ type TransferManager struct {
 	downloadsPending int        // Count of active downloads (protected by ioCond.L)
 
 	// In-flight download tracking: prevents duplicate downloads
-	inFlight   map[string]chan error // blockKey -> completion channel
+	// Uses downloadResult with broadcast pattern - closing done channel notifies ALL waiters
+	inFlight   map[string]*downloadResult // blockKey -> broadcast result
 	inFlightMu sync.Mutex
 
 	// Shutdown
@@ -135,7 +145,7 @@ func New(c *cache.Cache, blockStore store.BlockStore, objectStore metadata.Objec
 		config:      config,
 		uploads:     make(map[string]*fileUploadState),
 		ioCond:      sync.NewCond(&sync.Mutex{}),
-		inFlight:    make(map[string]chan error),
+		inFlight:    make(map[string]*downloadResult),
 		uploadSem:   make(chan struct{}, semSize),
 	}
 
@@ -189,17 +199,15 @@ func (m *TransferManager) getUploadState(payloadID string) *fileUploadState {
 //
 // This consolidates the success handling from both startBlockUpload and uploadRemainingBlocks.
 func (m *TransferManager) handleUploadSuccess(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32, hash [32]byte, dataSize uint32) {
-	// Register block in ObjectStore for deduplication (if configured)
-	if m.objectStore != nil {
-		objBlock := metadata.NewObjectBlock(
-			metadata.ContentHash{}, // ChunkHash - will be set during finalization
-			blockIdx,
-			hash,
-			dataSize,
-		)
-		objBlock.MarkUploaded()
-		_ = m.objectStore.PutBlock(ctx, objBlock)
-	}
+	// Register block in ObjectStore for deduplication
+	objBlock := metadata.NewObjectBlock(
+		metadata.ContentHash{}, // ChunkHash - will be set during finalization
+		blockIdx,
+		hash,
+		dataSize,
+	)
+	objBlock.MarkUploaded()
+	_ = m.objectStore.PutBlock(ctx, objBlock)
 
 	// Track block hash for finalization
 	state := m.getUploadState(payloadID)
@@ -863,6 +871,15 @@ func (m *TransferManager) EnsureAvailable(ctx context.Context, payloadID string,
 		return nil
 	}
 
+	// DEBUG: Log cache miss for large offsets (2GB+ files)
+	if chunkIdx >= 32 {
+		logger.Debug("EnsureAvailable: cache miss, will download",
+			"payloadID", payloadID,
+			"chunkIdx", chunkIdx,
+			"offset", offset,
+			"length", length)
+	}
+
 	// Calculate which blocks we need
 	startBlockIdx := offset / BlockSize
 	endBlockIdx := (offset + length - 1) / BlockSize
@@ -876,6 +893,14 @@ func (m *TransferManager) EnsureAvailable(ctx context.Context, payloadID string,
 		if done != nil {
 			doneChannels = append(doneChannels, done)
 		}
+	}
+
+	// DEBUG: Log number of downloads enqueued
+	if chunkIdx >= 32 && len(doneChannels) > 0 {
+		logger.Debug("EnsureAvailable: downloads enqueued",
+			"payloadID", payloadID,
+			"chunkIdx", chunkIdx,
+			"downloadsCount", len(doneChannels))
 	}
 
 	// 2. Enqueue prefetch blocks (no Done channel, fire-and-forget)
@@ -892,11 +917,34 @@ func (m *TransferManager) EnsureAvailable(ctx context.Context, payloadID string,
 	}
 
 	// 3. Wait for all requested blocks to complete
-	for _, done := range doneChannels {
+	for i, done := range doneChannels {
+		// DEBUG: Log waiting for download
+		if chunkIdx >= 32 {
+			logger.Debug("EnsureAvailable: waiting for download",
+				"payloadID", payloadID,
+				"chunkIdx", chunkIdx,
+				"downloadIndex", i,
+				"totalDownloads", len(doneChannels))
+		}
 		select {
 		case err := <-done:
 			if err != nil {
+				// DEBUG: Log download error
+				if chunkIdx >= 32 {
+					logger.Debug("EnsureAvailable: download error",
+						"payloadID", payloadID,
+						"chunkIdx", chunkIdx,
+						"downloadIndex", i,
+						"error", err)
+				}
 				return err
+			}
+			// DEBUG: Log download complete
+			if chunkIdx >= 32 {
+				logger.Debug("EnsureAvailable: download complete",
+					"payloadID", payloadID,
+					"chunkIdx", chunkIdx,
+					"downloadIndex", i)
 			}
 		case <-ctx.Done():
 			return ctx.Err()
@@ -908,6 +956,10 @@ func (m *TransferManager) EnsureAvailable(ctx context.Context, payloadID string,
 
 // enqueueDownload enqueues a download, handling in-flight deduplication.
 // Returns channel to wait on, or nil if already in cache.
+//
+// Uses a broadcast pattern: multiple callers requesting the same block will all
+// wait on the same downloadResult. When the download completes, the done channel
+// is CLOSED (not written to), which notifies ALL waiters simultaneously.
 func (m *TransferManager) enqueueDownload(payloadID string, chunkIdx, blockIdx uint32) chan error {
 	// Check cache first (fast path)
 	if m.isBlockInCache(payloadID, chunkIdx, blockIdx) {
@@ -917,43 +969,62 @@ func (m *TransferManager) enqueueDownload(payloadID string, chunkIdx, blockIdx u
 	key := FormatBlockKey(payloadID, chunkIdx, blockIdx)
 
 	m.inFlightMu.Lock()
-	defer m.inFlightMu.Unlock()
 
-	// Check if already in-flight (wait on existing channel)
+	// Check if already in-flight - use broadcast pattern to notify ALL waiters
 	if existing, ok := m.inFlight[key]; ok {
-		// Create waiter that receives from existing download
+		m.inFlightMu.Unlock()
+		// Create waiter that receives broadcast from existing download
 		waiter := make(chan error, 1)
 		go func() {
-			waiter <- <-existing
+			<-existing.done // Wait for broadcast (channel close)
+			existing.mu.Lock()
+			err := existing.err
+			existing.mu.Unlock()
+			waiter <- err
 		}()
 		return waiter
 	}
 
-	// Create new completion channel and enqueue
-	done := make(chan error, 1)
-	m.inFlight[key] = done
+	// Create new broadcast result and enqueue
+	result := &downloadResult{
+		done: make(chan struct{}),
+	}
+	m.inFlight[key] = result
+	m.inFlightMu.Unlock()
 
+	// Create completion channel for this caller
+	callerDone := make(chan error, 1)
+
+	// Create the request with a Done channel that broadcasts to all waiters
 	req := NewDownloadRequest(payloadID, chunkIdx, blockIdx, nil)
-	req.Done = m.wrapDoneChannel(key, done)
-	m.queue.EnqueueDownload(req)
+	req.Done = make(chan error, 1)
 
-	return done
-}
-
-// wrapDoneChannel creates a channel that cleans up in-flight tracking when signaled.
-func (m *TransferManager) wrapDoneChannel(key string, original chan error) chan error {
-	wrapped := make(chan error, 1)
+	// Goroutine to handle completion: broadcast to all waiters
 	go func() {
-		err := <-wrapped
+		err := <-req.Done // Wait for worker to signal completion
+
+		// Set result and broadcast to ALL waiters by closing the done channel
+		result.mu.Lock()
+		result.err = err
+		result.mu.Unlock()
+		close(result.done) // Broadcast: closing notifies ALL receivers
+
 		// Cleanup in-flight tracking
 		m.inFlightMu.Lock()
 		delete(m.inFlight, key)
 		m.inFlightMu.Unlock()
-		// Forward to original
-		original <- err
-		close(original)
+
+		// Signal the original caller
+		callerDone <- err
 	}()
-	return wrapped
+
+	// Enqueue the download - if queue is full, signal error immediately
+	if !m.queue.EnqueueDownload(req) {
+		// Queue is full - signal error on req.Done to trigger the broadcast
+		req.Done <- fmt.Errorf("download queue full, cannot enqueue block %s", key)
+	}
+
+	return callerDone
 }
 
 // enqueuePrefetch enqueues a prefetch request (non-blocking, best effort).
