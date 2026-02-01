@@ -225,6 +225,8 @@ All list commands support multiple output formats:
 
 ```bash
 # Login to get JWT token
+# NOTE: For production, avoid passing passwords in command line - they appear in shell history
+# and process listings. Use environment variables or prompt-based input instead.
 TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"admin"}' | jq -r '.access_token')
@@ -232,7 +234,7 @@ TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/auth/login \
 # List users
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/users
 
-# Create a user
+# Create a user (for demos only - use dittofsctl for secure password entry)
 curl -X POST -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"username":"alice","password":"secret123","uid":1001,"gid":1001}' \
@@ -363,8 +365,13 @@ sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock localhost:/e
 ./dittofsctl share permission grant /export --user alice --level read-write
 
 # Linux (using credentials file for security)
+# Create credentials file securely - never echo passwords in scripts or command line
 sudo mkdir -p /mnt/smb
-echo -e "username=alice\npassword=secret" > ~/.smbcredentials && chmod 600 ~/.smbcredentials
+cat > ~/.smbcredentials << 'EOF'
+username=alice
+password=YOUR_PASSWORD_HERE
+EOF
+chmod 600 ~/.smbcredentials
 sudo mount -t cifs //localhost/export /mnt/smb -o port=12445,credentials=$HOME/.smbcredentials,vers=2.0
 
 # macOS (will prompt for password)
