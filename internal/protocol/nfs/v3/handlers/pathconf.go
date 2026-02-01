@@ -231,7 +231,11 @@ func (h *Handler) PathConf(
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	metaSvc := h.Registry.GetMetadataService()
+	metaSvc, err := getMetadataService(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "PATHCONF failed: metadata service not initialized", "client", clientIP, "error", err)
+		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	fileHandle := metadata.FileHandle(req.Handle)
 

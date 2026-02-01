@@ -276,7 +276,11 @@ func (h *Handler) Read(
 	// Step 2: Get content service from registry
 	// ========================================================================
 
-	payloadSvc := h.Registry.GetBlockService()
+	payloadSvc, err := getPayloadService(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "READ failed: payload service not initialized", "client", clientIP, "error", err)
+		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	fileHandle := metadata.FileHandle(req.Handle)
 

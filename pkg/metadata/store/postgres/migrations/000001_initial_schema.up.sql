@@ -6,6 +6,7 @@
 -- - Hidden file attribute for SMB/Windows support
 -- - nlink column for fast GETATTR
 -- - Path hash indexing for long paths (>2704 bytes)
+-- - Content ID hash indexing for long content IDs (>2704 bytes)
 -- - Partial unique constraint for POSIX compliance (orphaned files)
 -- - Share options JSONB column
 
@@ -29,6 +30,7 @@ CREATE TABLE files (
     ctime         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     creation_time TIMESTAMPTZ NOT NULL DEFAULT NOW(), -- Actual file creation time (birth time) for SMB/NFSv4
     content_id    TEXT,                       -- Reference to content store
+    content_id_hash TEXT,                     -- MD5 hash of content_id for indexing (solves btree 2704 byte limit)
     link_target   TEXT,                       -- For symlinks only
     device_major  INTEGER,                    -- For device files
     device_minor  INTEGER,                    -- For device files
@@ -46,7 +48,8 @@ CREATE TABLE files (
 
 -- Indexes for files table
 CREATE INDEX idx_files_share_name ON files(share_name);
-CREATE INDEX idx_files_content_id ON files(content_id) WHERE content_id IS NOT NULL;
+-- Use content_id_hash instead of content_id to avoid btree 2704 byte limit for long paths
+CREATE INDEX idx_files_content_id_hash ON files(content_id_hash) WHERE content_id_hash IS NOT NULL;
 CREATE INDEX idx_files_updated_at ON files(updated_at);
 CREATE INDEX idx_files_hidden ON files(hidden) WHERE hidden = TRUE;
 
@@ -187,3 +190,21 @@ $$ language 'plpgsql';
 CREATE TRIGGER files_path_hash_trigger
     BEFORE INSERT OR UPDATE OF path ON files
     FOR EACH ROW EXECUTE FUNCTION update_path_hash();
+
+-- Function to automatically maintain content_id_hash on insert/update
+CREATE OR REPLACE FUNCTION update_content_id_hash()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.content_id IS NOT NULL THEN
+        NEW.content_id_hash = md5(NEW.content_id);
+    ELSE
+        NEW.content_id_hash = NULL;
+    END IF;
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+-- Trigger for content_id_hash maintenance
+CREATE TRIGGER files_content_id_hash_trigger
+    BEFORE INSERT OR UPDATE OF content_id ON files
+    FOR EACH ROW EXECUTE FUNCTION update_content_id_hash();

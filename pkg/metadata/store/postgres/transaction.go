@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"time"
@@ -44,6 +45,9 @@ func isRetryableError(err error) bool {
 // If fn returns an error, the transaction is rolled back.
 // If fn returns nil, the transaction is committed.
 // Retries automatically on deadlock or serialization failures.
+//
+// Connection acquisition has a timeout to prevent indefinite blocking when
+// the pool is exhausted under high concurrent load.
 func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -51,14 +55,35 @@ func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx 
 
 	var lastErr error
 	for attempt := 0; attempt < maxTransactionRetries; attempt++ {
-		tx, err := s.pool.Begin(ctx)
+		// Use a timeout for connection acquisition to prevent indefinite blocking
+		// when the pool is exhausted. This is critical under high concurrent load
+		// (e.g., POSIX compliance tests) where all connections might be in use.
+		acquireCtx, cancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
+		tx, err := s.pool.Begin(acquireCtx)
+		cancel() // Release timer resources immediately after Begin returns
+
 		if err != nil {
+			// Check if it was a timeout acquiring connection
+			if errors.Is(err, context.DeadlineExceeded) {
+				stats := s.pool.Stat()
+				s.logger.Warn("Connection pool exhausted, timed out acquiring connection",
+					"timeout", poolConnectionAcquireTimeout,
+					"attempt", attempt+1,
+					"max_conns", s.config.MaxConns,
+					"total_conns", stats.TotalConns(),
+					"acquired_conns", stats.AcquiredConns(),
+					"idle_conns", stats.IdleConns(),
+					"constructing_conns", stats.ConstructingConns())
+			}
 			return err
 		}
 
 		ptx := &postgresTransaction{store: s, tx: tx}
 		if err := fn(ptx); err != nil {
-			_ = tx.Rollback(ctx)
+			// Apply timeout to rollback to prevent indefinite blocking
+			rollbackCtx, rollbackCancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
+			_ = tx.Rollback(rollbackCtx)
+			rollbackCancel()
 			if isRetryableError(err) {
 				lastErr = err
 				// Small backoff before retry
@@ -68,7 +93,11 @@ func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx 
 			return err
 		}
 
-		if err := tx.Commit(ctx); err != nil {
+		// Apply timeout to commit to prevent indefinite blocking if PostgreSQL is slow
+		// (e.g., during checkpoint or WAL flush)
+		commitCtx, commitCancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
+		if err := tx.Commit(commitCtx); err != nil {
+			commitCancel()
 			if isRetryableError(err) {
 				lastErr = err
 				time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
@@ -76,6 +105,7 @@ func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx 
 			}
 			return err
 		}
+		commitCancel()
 
 		return nil // Success
 	}
@@ -240,8 +270,11 @@ func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.F
 	}
 
 	// Delete related records first
+	// Note: We only delete link_counts and children of this file (if it's a directory).
+	// We do NOT delete this file from its parent's children map here - that's the
+	// responsibility of DeleteChild, which is called separately by the service layer.
+	// This matches the behavior of memory and badger stores.
 	_, _ = tx.tx.Exec(ctx, `DELETE FROM link_counts WHERE file_id = $1`, id)
-	_, _ = tx.tx.Exec(ctx, `DELETE FROM parent_child_map WHERE child_id = $1`, id)
 	_, _ = tx.tx.Exec(ctx, `DELETE FROM parent_child_map WHERE parent_id = $1`, id)
 
 	// Delete the file
@@ -342,17 +375,15 @@ func (tx *postgresTransaction) DeleteChild(ctx context.Context, dirHandle metada
 		}
 	}
 
-	result, err := tx.tx.Exec(ctx, `DELETE FROM parent_child_map WHERE parent_id = $1 AND child_name = $2`, parentID, name)
+	_, err = tx.tx.Exec(ctx, `DELETE FROM parent_child_map WHERE parent_id = $1 AND child_name = $2`, parentID, name)
 	if err != nil {
 		return mapPgError(err, "DeleteChild", name)
 	}
 
-	if result.RowsAffected() == 0 {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "child not found",
-		}
-	}
+	// Note: We don't check RowsAffected() here because the entry may have already
+	// been deleted by the CASCADE DELETE on the child_id foreign key when DeleteFile
+	// deleted the file from the files table. The desired outcome (child mapping
+	// no longer exists) is achieved either way.
 
 	return nil
 }
@@ -376,9 +407,10 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 
 	query := `
 		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
-		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden
+		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, lc.link_count
 		FROM parent_child_map dc
 		LEFT JOIN files f ON dc.child_id = f.id
+		LEFT JOIN link_counts lc ON dc.child_id = lc.file_id
 		WHERE dc.parent_id = $1 AND dc.child_name > $2
 		ORDER BY dc.child_name
 		LIMIT $3
@@ -398,9 +430,10 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 		var size int64
 		var atime, mtime, ctime, creationTime time.Time
 		var hidden bool
+		var linkCount sql.NullInt32
 
 		err := rows.Scan(&name, &childIDStr, &fileType, &mode, &uid, &gid, &size,
-			&atime, &mtime, &ctime, &creationTime, &hidden)
+			&atime, &mtime, &ctime, &creationTime, &hidden, &linkCount)
 		if err != nil {
 			return nil, "", err
 		}
@@ -410,6 +443,19 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 			return nil, "", err
 		}
 
+		// Determine Nlink value
+		var nlink uint32
+		if linkCount.Valid {
+			nlink = uint32(linkCount.Int32)
+		} else {
+			// Default based on file type
+			if metadata.FileType(fileType) == metadata.FileTypeDirectory {
+				nlink = 2
+			} else {
+				nlink = 1
+			}
+		}
+
 		entry := metadata.DirEntry{
 			ID:     metadata.HandleToINode(childHandle),
 			Name:   name,
@@ -417,6 +463,7 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 			Attr: &metadata.FileAttr{
 				Type:         metadata.FileType(fileType),
 				Mode:         uint32(mode),
+				Nlink:        nlink,
 				UID:          uint32(uid),
 				GID:          uint32(gid),
 				Size:         uint64(size),
@@ -743,8 +790,9 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 	// Check if root directory already exists (idempotent behavior)
 	checkQuery := `
 		SELECT f.id, f.file_type, f.mode, f.uid, f.gid, f.size,
-			   f.atime, f.mtime, f.ctime, f.creation_time, f.hidden
+			   f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, lc.link_count
 		FROM files f
+		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.share_name = $1 AND f.path = '/'
 	`
 
@@ -760,14 +808,24 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 		ctime        time.Time
 		creationTime time.Time
 		hidden       bool
+		linkCount    sql.NullInt32
 	)
 
 	err := tx.tx.QueryRow(ctx, checkQuery, shareName).Scan(
 		&id, &fileType, &existingMode, &existingUID, &existingGID, &size,
-		&atime, &mtime, &ctime, &creationTime, &hidden,
+		&atime, &mtime, &ctime, &creationTime, &hidden, &linkCount,
 	)
 
 	if err == nil {
+		// Determine Nlink value
+		var nlink uint32
+		if linkCount.Valid {
+			nlink = uint32(linkCount.Int32)
+		} else {
+			// Root directories always have at least 2 links
+			nlink = 2
+		}
+
 		// Root exists - return it
 		return &metadata.File{
 			ID:        uuid.MustParse(id),
@@ -776,6 +834,7 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 			FileAttr: metadata.FileAttr{
 				Type:         metadata.FileType(fileType),
 				Mode:         uint32(existingMode),
+				Nlink:        nlink,
 				UID:          uint32(existingUID),
 				GID:          uint32(existingGID),
 				Size:         uint64(size),
@@ -862,6 +921,7 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 		FileAttr: metadata.FileAttr{
 			Type:         metadata.FileTypeDirectory,
 			Mode:         mode,
+			Nlink:        2, // Root directories have 2 links (. and parent's entry)
 			UID:          uid,
 			GID:          gid,
 			Size:         0,
@@ -975,6 +1035,9 @@ func (tx *postgresTransaction) GetFileByPayloadID(ctx context.Context, payloadID
 		}
 	}
 
+	// Use content_id_hash (MD5 of content_id) for index lookup to avoid
+	// PostgreSQL btree 2704-byte limit. The content_id can exceed this limit
+	// for files with paths near PATH_MAX (4096 bytes).
 	query := `
 		SELECT
 			f.id, f.share_name, f.path,
@@ -984,7 +1047,7 @@ func (tx *postgresTransaction) GetFileByPayloadID(ctx context.Context, payloadID
 			f.hidden, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
-		WHERE f.content_id = $1
+		WHERE f.content_id_hash = md5($1)
 		LIMIT 1
 	`
 

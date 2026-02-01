@@ -305,7 +305,11 @@ func (h *Handler) SetAttr(
 	// Step 2: Get metadata store from context
 	// ========================================================================
 
-	metaSvc := h.Registry.GetMetadataService()
+	metaSvc, err := getMetadataService(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "SETATTR failed: metadata service not initialized", "client", clientIP, "error", err)
+		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	fileHandle := metadata.FileHandle(req.Handle)
 

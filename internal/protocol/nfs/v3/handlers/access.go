@@ -217,7 +217,11 @@ func (h *Handler) Access(
 	// Step 2: Get metadata service
 	// ========================================================================
 
-	metaSvc := h.Registry.GetMetadataService()
+	metaSvc, err := getMetadataService(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "ACCESS failed: metadata service not initialized", "client", clientIP, "error", err)
+		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	fileHandle := metadata.FileHandle(req.Handle)
 

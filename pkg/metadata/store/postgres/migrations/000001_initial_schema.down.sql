@@ -2,11 +2,13 @@
 -- Order matters: drop dependent objects first
 
 -- Drop triggers
+DROP TRIGGER IF EXISTS files_content_id_hash_trigger ON files;
 DROP TRIGGER IF EXISTS files_path_hash_trigger ON files;
 DROP TRIGGER IF EXISTS update_server_config_updated_at ON server_config;
 DROP TRIGGER IF EXISTS update_files_updated_at ON files;
 
 -- Drop functions
+DROP FUNCTION IF EXISTS update_content_id_hash();
 DROP FUNCTION IF EXISTS update_path_hash();
 DROP FUNCTION IF EXISTS update_updated_at_column();
 

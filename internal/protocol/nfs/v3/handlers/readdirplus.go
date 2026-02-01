@@ -317,7 +317,11 @@ func (h *Handler) ReadDirPlus(
 	// Get metadata store from context
 	// ========================================================================
 
-	metaSvc := h.Registry.GetMetadataService()
+	metaSvc, err := getMetadataService(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "READDIRPLUS failed: metadata service not initialized", "client", clientIP, "error", err)
+		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	// ========================================================================
 	// Check if READDIRPLUS is disabled for this share

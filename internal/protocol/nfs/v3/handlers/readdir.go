@@ -264,7 +264,11 @@ func (h *Handler) ReadDir(
 	// Step 2: Get metadata store from context
 	// ========================================================================
 
-	metaSvc := h.Registry.GetMetadataService()
+	metaSvc, err := getMetadataService(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "READDIR failed: metadata service not initialized", "client", clientIP, "error", err)
+		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 
