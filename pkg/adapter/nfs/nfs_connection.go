@@ -104,10 +104,13 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 		// Acquire semaphore slot (blocks if at limit)
 		c.requestSem <- struct{}{}
 
-		// Process request in parallel goroutine
-		// NOTE: rawMessage is a pooled buffer - goroutine must return it via bufpool.Put()
+		// Process request synchronously to maintain POSIX ordering semantics.
+		// NFS clients send requests sequentially for dependent operations (e.g., chown
+		// followed by rename). Processing them in parallel can cause TOCTOU races where
+		// a later operation checks stale metadata (e.g., sticky bit check sees old UID).
+		// NOTE: rawMessage is a pooled buffer - must be returned via bufpool.Put()
 		c.wg.Add(1)
-		go func(call *rpc.RPCCallMessage, rawMessage []byte) {
+		func(call *rpc.RPCCallMessage, rawMessage []byte) {
 			defer c.handleRequestPanic(clientAddr, call.XID)
 			defer bufpool.Put(rawMessage) // Return pooled buffer after processing
 
@@ -747,7 +750,7 @@ func (c *NFSConnection) handleConnectionClose() {
 }
 
 // handleRequestPanic handles cleanup and panic recovery for individual requests.
-// This is called as a deferred function in the request processing goroutine to:
+// This is called as a deferred function in the request processing to:
 //  1. Release the semaphore slot
 //  2. Decrement the wait group counter
 //  3. Recover from any panics in the request handler

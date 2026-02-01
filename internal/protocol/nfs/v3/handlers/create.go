@@ -163,11 +163,14 @@ func (h *Handler) Create(
 	}
 
 	// ========================================================================
-	// Step 2: Get content service from registry
+	// Step 2: Get services from registry
 	// ========================================================================
 
-	// Get content service for this share
-	payloadSvc := h.Registry.GetBlockService()
+	metaSvc, payloadSvc, err := getServices(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "CREATE failed: service not initialized", "client", clientIP, "error", err)
+		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
 	logger.DebugCtx(ctx.Context, "CREATE", "share", ctx.Share, "file", req.Filename)
@@ -222,8 +225,8 @@ func (h *Handler) Create(
 	// Step 4: Check if file already exists using Lookup
 	// ========================================================================
 
-	metaSvc := h.Registry.GetMetadataService()
-	existingFile, err := metaSvc.Lookup(authCtx, parentHandle, req.Filename)
+	var existingFile *metadata.File
+	existingFile, err = metaSvc.Lookup(authCtx, parentHandle, req.Filename)
 	if err != nil && ctx.Context.Err() != nil {
 		// Context was cancelled during Lookup
 		logger.DebugCtx(ctx.Context, "CREATE cancelled during existence check", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
@@ -637,7 +640,7 @@ func mapMetadataErrorToNFS(err error) uint32 {
 		case metadata.ErrAccessDenied, metadata.ErrAuthRequired:
 			return types.NFS3ErrAccess
 		case metadata.ErrPermissionDenied:
-			return types.NFS3ErrAccess
+			return types.NFS3ErrPerm
 		case metadata.ErrPrivilegeRequired:
 			// RFC 1813: EPERM for privilege violations (e.g., creating device files as non-root)
 			return types.NFS3ErrPerm

@@ -9,37 +9,31 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/bytesize"
-	"github.com/marmos91/dittofs/pkg/adapter/nfs"
-	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/mitchellh/mapstructure"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
 
-// Config represents the complete DittoFS configuration.
+// Config represents the DittoFS configuration.
 //
-// This structure captures all configurable aspects of the DittoFS server including:
+// This structure captures static configuration aspects of the DittoFS server:
 //   - Logging configuration
 //   - Telemetry/tracing configuration
-//   - Server-wide settings
-//   - Payload store configuration (block stores for S3/filesystem persistence)
-//   - Metadata store selection and configuration
+//   - Server settings (shutdown timeout, metrics, API)
+//   - Database connection (control plane persistence)
 //   - Cache configuration (WAL-backed, mandatory for crash recovery)
-//   - Share/export definitions
-//   - Protocol adapter configurations
+//   - Admin user setup (for initial bootstrap)
+//
+// Dynamic configuration (users, groups, shares, stores, adapters) is managed
+// through the REST API and stored in the control plane database.
 //
 // Configuration sources (in order of precedence):
 //  1. CLI flags (highest priority)
 //  2. Environment variables (DITTOFS_*)
 //  3. Configuration file (YAML or TOML)
 //  4. Default values (lowest priority)
-//
-// Store Configuration Pattern:
-// Each store implementation defines its own configuration type and factory function.
-// Shares reference stores by name, enabling resource sharing across shares.
 type Config struct {
 	// Logging controls log output behavior
 	Logging LoggingConfig `mapstructure:"logging" yaml:"logging"`
@@ -47,40 +41,26 @@ type Config struct {
 	// Telemetry controls OpenTelemetry distributed tracing
 	Telemetry TelemetryConfig `mapstructure:"telemetry" yaml:"telemetry"`
 
-	// Server contains server-wide settings
-	Server ServerConfig `mapstructure:"server" yaml:"server"`
-
-	// Payload specifies block store configuration for persistent storage
-	// Block stores persist cache data to durable storage (S3, filesystem)
-	Payload PayloadConfig `mapstructure:"payload" yaml:"payload"`
-
-	// Cache specifies the WAL-backed cache configuration
-	// Cache is mandatory for crash recovery - all writes go through cache
-	Cache CacheConfig `mapstructure:"cache" yaml:"cache"`
-
-	// Metadata specifies the metadata store type and type-specific configuration
-	Metadata MetadataConfig `mapstructure:"metadata" yaml:"metadata"`
-
-	// Groups defines DittoFS groups for permission management
-	// Groups can have share-level permissions that are inherited by members
-	Groups []GroupConfig `mapstructure:"groups" yaml:"groups"`
-
-	// Users defines DittoFS users for authentication and authorization
-	// Users can belong to groups and have explicit share permissions
-	Users []UserConfig `mapstructure:"users" yaml:"users"`
-
-	// Guest configures guest/anonymous access
-	Guest GuestUserConfig `mapstructure:"guest" yaml:"guest"`
+	// ShutdownTimeout is the maximum time to wait for graceful shutdown
+	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout" validate:"required,gt=0" yaml:"shutdown_timeout"`
 
 	// Database configures the control plane database (SQLite or PostgreSQL).
 	// This is the persistent store for users, groups, shares, and configuration.
 	Database store.Config `mapstructure:"database" yaml:"database"`
 
-	// Shares defines the list of shares/exports available to clients
-	Shares []ShareConfig `mapstructure:"shares" validate:"dive" yaml:"shares"`
+	// Metrics contains Prometheus metrics server configuration
+	Metrics MetricsConfig `mapstructure:"metrics" yaml:"metrics"`
 
-	// Adapters contains protocol adapter configurations
-	Adapters AdaptersConfig `mapstructure:"adapters" yaml:"adapters"`
+	// ControlPlane contains control plane API server configuration
+	ControlPlane api.APIConfig `mapstructure:"controlplane" yaml:"controlplane"`
+
+	// Cache specifies the WAL-backed cache configuration
+	// Cache is mandatory for crash recovery - all writes go through cache
+	Cache CacheConfig `mapstructure:"cache" yaml:"cache"`
+
+	// Admin contains initial admin user configuration for bootstrap
+	// This is used by 'dittofs init' to set up the first admin user
+	Admin AdminConfig `mapstructure:"admin" yaml:"admin"`
 }
 
 // LoggingConfig controls logging behavior.
@@ -143,18 +123,6 @@ type ProfilingConfig struct {
 	ProfileTypes []string `mapstructure:"profile_types" yaml:"profile_types"`
 }
 
-// ServerConfig contains server-wide settings.
-type ServerConfig struct {
-	// ShutdownTimeout is the maximum time to wait for graceful shutdown
-	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout" validate:"required,gt=0" yaml:"shutdown_timeout"`
-
-	// Metrics contains Prometheus metrics server configuration
-	Metrics MetricsConfig `mapstructure:"metrics" yaml:"metrics"`
-
-	// API contains REST API server configuration
-	API api.APIConfig `mapstructure:"api" yaml:"api"`
-}
-
 // MetricsConfig configures the Prometheus metrics HTTP server.
 // When Enabled is false, no metrics are collected (zero overhead).
 type MetricsConfig struct {
@@ -164,126 +132,6 @@ type MetricsConfig struct {
 	// Port is the HTTP port for the metrics endpoint
 	// Default: 9090
 	Port int `mapstructure:"port" validate:"omitempty,min=1,max=65535" yaml:"port"`
-}
-
-// PayloadConfig specifies block store configuration for persistent storage.
-// Block stores persist cache data to durable storage (S3, filesystem).
-type PayloadConfig struct {
-	// Stores contains named block store instances
-	// Shares reference these by name
-	Stores map[string]PayloadStoreConfig `mapstructure:"stores" yaml:"stores"`
-
-	// Transfer configures the transfer manager (uploads/downloads)
-	Transfer TransferConfig `mapstructure:"transfer" yaml:"transfer"`
-}
-
-// PayloadStoreConfig defines a single block store instance.
-type PayloadStoreConfig struct {
-	// Type specifies which block store implementation to use
-	// Valid values: s3, memory, filesystem
-	Type string `mapstructure:"type" validate:"required,oneof=s3 memory filesystem" yaml:"type"`
-
-	// S3 contains S3-specific configuration
-	// Only used when Type = "s3"
-	S3 *PayloadS3Config `mapstructure:"s3" yaml:"s3,omitempty"`
-
-	// Filesystem contains filesystem-specific configuration
-	// Only used when Type = "filesystem"
-	Filesystem *PayloadFSConfig `mapstructure:"filesystem" yaml:"filesystem,omitempty"`
-}
-
-// PayloadS3Config contains S3-specific block store configuration.
-type PayloadS3Config struct {
-	// Bucket is the S3 bucket name (required)
-	Bucket string `mapstructure:"bucket" validate:"required" yaml:"bucket"`
-
-	// Region is the AWS region (optional, uses SDK default if empty)
-	Region string `mapstructure:"region" yaml:"region,omitempty"`
-
-	// Endpoint is the S3 endpoint URL (optional, for S3-compatible services)
-	Endpoint string `mapstructure:"endpoint" yaml:"endpoint,omitempty"`
-
-	// AccessKeyID is the S3 access key ID (optional, uses AWS SDK default chain if empty)
-	AccessKeyID string `mapstructure:"access_key_id" yaml:"access_key_id,omitempty"`
-
-	// SecretAccessKey is the S3 secret access key (optional, uses AWS SDK default chain if empty)
-	SecretAccessKey string `mapstructure:"secret_access_key" yaml:"secret_access_key,omitempty"`
-
-	// Prefix is the prefix for all block keys in the bucket
-	// Default: "blocks/"
-	Prefix string `mapstructure:"prefix" yaml:"prefix,omitempty"`
-
-	// MaxRetries is the maximum number of retries for S3 operations
-	// Default: 3
-	MaxRetries int `mapstructure:"max_retries" yaml:"max_retries,omitempty"`
-
-	// ForcePathStyle forces path-style addressing (required for Localstack/MinIO)
-	// Default: false
-	ForcePathStyle bool `mapstructure:"force_path_style" yaml:"force_path_style,omitempty"`
-}
-
-// PayloadFSConfig contains filesystem-specific block store configuration.
-type PayloadFSConfig struct {
-	// BasePath is the root directory for block storage (required)
-	BasePath string `mapstructure:"base_path" validate:"required" yaml:"base_path"`
-
-	// CreateDir creates the base directory if it doesn't exist
-	// Default: true
-	CreateDir *bool `mapstructure:"create_dir" yaml:"create_dir,omitempty"`
-
-	// DirMode is the permission mode for created directories
-	// Default: 0755
-	DirMode uint32 `mapstructure:"dir_mode" yaml:"dir_mode,omitempty"`
-
-	// FileMode is the permission mode for created block files
-	// Default: 0644
-	FileMode uint32 `mapstructure:"file_mode" yaml:"file_mode,omitempty"`
-}
-
-// TransferConfig configures the transfer manager for uploads/downloads.
-type TransferConfig struct {
-	// Workers configures worker counts
-	Workers TransferWorkersConfig `mapstructure:"workers" yaml:"workers"`
-}
-
-// TransferWorkersConfig configures worker counts for transfers.
-type TransferWorkersConfig struct {
-	// Uploads is the number of parallel upload workers
-	// Default: 4
-	Uploads int `mapstructure:"uploads" yaml:"uploads,omitempty"`
-
-	// Downloads is the number of parallel download workers
-	// Default: 4
-	Downloads int `mapstructure:"downloads" yaml:"downloads,omitempty"`
-}
-
-// MetadataConfig specifies metadata store configuration with named stores.
-type MetadataConfig struct {
-	// FilesystemCapabilities defines filesystem capabilities and limits
-	// These apply to all metadata stores
-	FilesystemCapabilities metadata.FilesystemCapabilities `mapstructure:"filesystem_capabilities" yaml:"filesystem_capabilities"`
-
-	// Named metadata store instances
-	Stores map[string]MetadataStoreConfig `mapstructure:"stores" yaml:"stores"`
-}
-
-// MetadataStoreConfig defines a single metadata store instance.
-type MetadataStoreConfig struct {
-	// Type specifies which metadata store implementation to use
-	// Valid values: memory, badger, postgres
-	Type string `mapstructure:"type" validate:"required,oneof=memory badger postgres" yaml:"type"`
-
-	// Memory contains memory-specific configuration
-	// Only used when Type = "memory"
-	Memory map[string]any `mapstructure:"memory" yaml:"memory"`
-
-	// Badger contains BadgerDB-specific configuration
-	// Only used when Type = "badger"
-	Badger map[string]any `mapstructure:"badger" yaml:"badger"`
-
-	// Postgres contains PostgreSQL-specific configuration
-	// Only used when Type = "postgres"
-	Postgres map[string]any `mapstructure:"postgres" yaml:"postgres"`
 }
 
 // CacheConfig specifies the WAL-backed cache configuration.
@@ -301,200 +149,20 @@ type CacheConfig struct {
 	Size bytesize.ByteSize `mapstructure:"size" yaml:"size,omitempty"`
 }
 
-// WriteGatheringConfig configures the write gathering optimization.
-//
-// Write gathering is based on the Linux kernel's "wdelay" optimization (fs/nfsd/vfs.c).
-// When multiple writes are happening to the same file, COMMIT operations wait
-// briefly to allow additional writes to accumulate before flushing.
-//
-// This optimization:
-//   - Reduces S3 API calls by batching writes
-//   - Improves throughput for bulk write scenarios
-//   - Trades small latency increase (GatherDelay) for better efficiency
-type WriteGatheringConfig struct {
-	// Enabled controls whether write gathering is active.
-	// Default: true
-	Enabled *bool `mapstructure:"enabled" yaml:"enabled"`
+// AdminConfig contains initial admin user configuration for bootstrap.
+// This is used by 'dittofs init' to pre-configure the first admin user.
+type AdminConfig struct {
+	// Username is the admin username
+	// Default: "admin"
+	Username string `mapstructure:"username" yaml:"username"`
 
-	// GatherDelay is how long COMMIT waits when recent writes are detected.
-	// Similar to Linux kernel's 10ms delay in wait_for_concurrent_writes().
-	// Default: 10ms. Range: 1ms to 100ms.
-	GatherDelay time.Duration `mapstructure:"gather_delay" yaml:"gather_delay"`
+	// Email is the admin user's email address (optional)
+	Email string `mapstructure:"email" yaml:"email,omitempty"`
 
-	// ActiveThreshold is how recent a write must be to trigger gathering.
-	// If last write was within this duration, COMMIT will wait GatherDelay.
-	// Default: 10ms (same as GatherDelay for symmetry).
-	ActiveThreshold time.Duration `mapstructure:"active_threshold" yaml:"active_threshold"`
-}
-
-// GroupConfig defines a DittoFS group in configuration.
-type GroupConfig struct {
-	// Name is the unique identifier for the group
-	Name string `mapstructure:"name" validate:"required" yaml:"name"`
-
-	// GID is the Unix group ID
-	GID uint32 `mapstructure:"gid" validate:"required" yaml:"gid"`
-
-	// SID is the Windows Security Identifier (auto-generated if empty)
-	SID string `mapstructure:"sid,omitempty" yaml:"sid,omitempty"`
-
-	// SharePermissions maps share names to permission levels
-	SharePermissions map[string]string `mapstructure:"share_permissions" yaml:"share_permissions"`
-
-	// Description is an optional description of the group
-	Description string `mapstructure:"description,omitempty" yaml:"description,omitempty"`
-}
-
-// UserConfig defines a DittoFS user in configuration.
-type UserConfig struct {
-	// Username is the unique identifier for the user
-	Username string `mapstructure:"username" validate:"required" yaml:"username"`
-
-	// PasswordHash is the bcrypt hash of the user's password
-	PasswordHash string `mapstructure:"password_hash" validate:"required" yaml:"password_hash"`
-
-	// NTHash is the hex-encoded NT hash for SMB NTLM authentication
-	// This is automatically generated when creating/updating user passwords
-	NTHash string `mapstructure:"nt_hash,omitempty" yaml:"nt_hash,omitempty"`
-
-	// Enabled indicates whether the user account is active
-	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
-
-	// UID is the Unix user ID
-	UID uint32 `mapstructure:"uid" validate:"required" yaml:"uid"`
-
-	// GID is the primary Unix group ID
-	GID uint32 `mapstructure:"gid" validate:"required" yaml:"gid"`
-
-	// GIDs is a list of supplementary Unix group IDs
-	GIDs []uint32 `mapstructure:"gids,omitempty" yaml:"gids,omitempty"`
-
-	// SID is the Windows Security Identifier (auto-generated if empty)
-	SID string `mapstructure:"sid,omitempty" yaml:"sid,omitempty"`
-
-	// GroupSIDs is a list of Windows group Security Identifiers
-	GroupSIDs []string `mapstructure:"group_sids,omitempty" yaml:"group_sids,omitempty"`
-
-	// Groups is a list of DittoFS group names this user belongs to
-	Groups []string `mapstructure:"groups,omitempty" yaml:"groups,omitempty"`
-
-	// SharePermissions maps share names to explicit permission levels
-	// These take precedence over group permissions
-	SharePermissions map[string]string `mapstructure:"share_permissions,omitempty" yaml:"share_permissions,omitempty"`
-
-	// DisplayName is the human-readable name for the user
-	DisplayName string `mapstructure:"display_name,omitempty" yaml:"display_name,omitempty"`
-
-	// Email is the user's email address
-	Email string `mapstructure:"email,omitempty" yaml:"email,omitempty"`
-}
-
-// GuestUserConfig configures guest/anonymous access.
-type GuestUserConfig struct {
-	// Enabled indicates whether guest access is allowed
-	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
-
-	// UID is the Unix user ID for guest operations
-	UID uint32 `mapstructure:"uid" yaml:"uid"`
-
-	// GID is the Unix group ID for guest operations
-	GID uint32 `mapstructure:"gid" yaml:"gid"`
-
-	// SharePermissions maps share names to permission levels for guests
-	SharePermissions map[string]string `mapstructure:"share_permissions" yaml:"share_permissions"`
-}
-
-// ShareConfig defines a single share/export.
-type ShareConfig struct {
-	// Name is the share path (e.g., "/export")
-	Name string `mapstructure:"name" validate:"required,startswith=/" yaml:"name"`
-
-	// Metadata is the name of the metadata store to use for this share
-	// References a store defined in metadata.stores
-	Metadata string `mapstructure:"metadata" validate:"required" yaml:"metadata"`
-
-	// Payload is the name of the payload store to use for this share
-	// References a store defined in payload.stores
-	// If empty, uses the default payload store (first one defined)
-	Payload string `mapstructure:"payload" yaml:"payload"`
-
-	// ReadOnly makes the share read-only if true
-	ReadOnly bool `mapstructure:"read_only" yaml:"read_only"`
-
-	// DefaultPermission is the permission level for unknown UIDs and users without explicit/group permissions.
-	// Valid values: none (block access), read, read-write, admin
-	// Default: none (unknown UIDs are blocked, users need explicit permission to access)
-	DefaultPermission string `mapstructure:"default_permission" validate:"omitempty,oneof=none read read-write admin" yaml:"default_permission"`
-
-	// AllowedClients lists IP addresses or CIDR ranges allowed to access
-	// Empty list means all clients are allowed
-	AllowedClients []string `mapstructure:"allowed_clients" yaml:"allowed_clients"`
-
-	// DeniedClients lists IP addresses or CIDR ranges explicitly denied
-	// Takes precedence over AllowedClients
-	DeniedClients []string `mapstructure:"denied_clients" yaml:"denied_clients"`
-
-	// RequireAuth requires authentication if true
-	RequireAuth bool `mapstructure:"require_auth" yaml:"require_auth"`
-
-	// AllowedAuthMethods lists allowed authentication methods
-	// Valid values: anonymous, unix
-	AllowedAuthMethods []string `mapstructure:"allowed_auth_methods" validate:"dive,oneof=anonymous unix" yaml:"allowed_auth_methods"`
-
-	// IdentityMapping configures user/group mapping
-	IdentityMapping IdentityMappingConfig `mapstructure:"identity_mapping" validate:"required" yaml:"identity_mapping"`
-
-	// RootDirectoryAttributes specifies attributes for the share root directory
-	// These define the permissions and ownership of the export root
-	RootDirectoryAttributes RootDirectoryAttributesConfig `mapstructure:"root_directory_attributes" validate:"required" yaml:"root_directory_attributes"`
-
-	// DumpRestricted restricts DUMP operations to allowed clients only
-	// DUMP is a mount protocol operation that lists active mounts for this share
-	DumpRestricted bool `mapstructure:"dump_restricted" yaml:"dump_restricted"`
-
-	// DumpAllowedClients lists IP addresses or CIDR ranges allowed to use DUMP
-	// Only used if DumpRestricted is true
-	// Empty list with DumpRestricted=true means no clients can use DUMP
-	DumpAllowedClients []string `mapstructure:"dump_allowed_clients" yaml:"dump_allowed_clients"`
-}
-
-// IdentityMappingConfig controls user/group identity mapping.
-type IdentityMappingConfig struct {
-	// MapAllToAnonymous maps all users to anonymous (all_squash)
-	MapAllToAnonymous bool `mapstructure:"map_all_to_anonymous" yaml:"map_all_to_anonymous"`
-
-	// MapPrivilegedToAnonymous maps root user to anonymous (root_squash)
-	MapPrivilegedToAnonymous bool `mapstructure:"map_privileged_to_anonymous" yaml:"map_privileged_to_anonymous"`
-
-	// AnonymousUID is the UID to use for anonymous users
-	AnonymousUID uint32 `mapstructure:"anonymous_uid" yaml:"anonymous_uid"`
-
-	// AnonymousGID is the GID to use for anonymous users
-	AnonymousGID uint32 `mapstructure:"anonymous_gid" yaml:"anonymous_gid"`
-}
-
-// RootDirectoryAttributesConfig specifies the attributes for a share's root directory.
-// These attributes define the permissions and ownership of the export root.
-type RootDirectoryAttributesConfig struct {
-	// Mode is the Unix permission mode (e.g., 0755)
-	Mode uint32 `mapstructure:"mode" validate:"lte=511" yaml:"mode"` // 511 = 0777 in decimal
-
-	// UID is the owner user ID
-	UID uint32 `mapstructure:"uid" yaml:"uid"`
-
-	// GID is the owner group ID
-	GID uint32 `mapstructure:"gid" yaml:"gid"`
-}
-
-// AdaptersConfig contains all protocol adapter configurations.
-type AdaptersConfig struct {
-	// NFS contains NFS protocol configuration.
-	// Uses the nfs.NFSConfig type directly to avoid duplication.
-	NFS nfs.NFSConfig `mapstructure:"nfs" yaml:"nfs"`
-
-	// SMB contains SMB protocol configuration.
-	// Uses the smb.SMBConfig type directly to avoid duplication.
-	SMB smb.SMBConfig `mapstructure:"smb" yaml:"smb"`
+	// PasswordHash is the bcrypt hash of the admin password
+	// Generated during 'dittofs init' or can be set manually
+	// Use: htpasswd -nbB "" "password" | cut -d: -f2
+	PasswordHash string `mapstructure:"password_hash" yaml:"password_hash,omitempty"`
 }
 
 // Load loads configuration from file, environment, and defaults.
@@ -543,6 +211,45 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// MustLoad loads configuration with helpful error messages.
+// It checks if the config file exists and provides user-friendly instructions if not.
+//
+// Parameters:
+//   - configPath: Path to config file (empty string uses default location)
+//
+// Returns:
+//   - *Config: Loaded and validated configuration
+//   - error: User-friendly error with instructions if config not found
+func MustLoad(configPath string) (*Config, error) {
+	// Determine config path
+	if configPath == "" {
+		if !DefaultConfigExists() {
+			return nil, fmt.Errorf("no configuration file found at default location: %s\n\n"+
+				"Please initialize a configuration file first:\n"+
+				"  dittofs init\n\n"+
+				"Or specify a custom config file:\n"+
+				"  dittofs <command> --config /path/to/config.yaml",
+				GetDefaultConfigPath())
+		}
+		configPath = GetDefaultConfigPath()
+	} else {
+		if _, err := os.Stat(configPath); os.IsNotExist(err) {
+			return nil, fmt.Errorf("configuration file not found: %s\n\n"+
+				"Please create the configuration file:\n"+
+				"  dittofs init --config %s",
+				configPath, configPath)
+		}
+	}
+
+	// Load configuration
+	cfg, err := Load(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load configuration: %w", err)
+	}
+
+	return cfg, nil
 }
 
 // SaveConfig saves the configuration to the specified file path.

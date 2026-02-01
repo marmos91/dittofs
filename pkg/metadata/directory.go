@@ -175,32 +175,32 @@ func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHan
 		}
 	}
 
-	// Remove directory entry
-	if err := store.DeleteFile(ctx.Context, dirHandle); err != nil {
-		return err
-	}
+	// Execute all write operations in a single transaction for better performance.
+	return store.WithTransaction(ctx.Context, func(tx Transaction) error {
+		// Remove directory entry
+		if err := tx.DeleteFile(ctx.Context, dirHandle); err != nil {
+			return err
+		}
 
-	// Remove from parent's children
-	if err := store.DeleteChild(ctx.Context, parentHandle, name); err != nil {
-		return err
-	}
+		// Remove from parent's children
+		if err := tx.DeleteChild(ctx.Context, parentHandle, name); err != nil {
+			return err
+		}
 
-	// Update parent's link count (removing ".." reference)
-	parentLinkCount, err := store.GetLinkCount(ctx.Context, parentHandle)
-	if err == nil && parentLinkCount > 0 {
-		// Non-fatal error, ignore
-		_ = store.SetLinkCount(ctx.Context, parentHandle, parentLinkCount-1)
-	}
+		// Update parent's link count (removing ".." reference)
+		parentLinkCount, err := tx.GetLinkCount(ctx.Context, parentHandle)
+		if err == nil && parentLinkCount > 0 {
+			if err := tx.SetLinkCount(ctx.Context, parentHandle, parentLinkCount-1); err != nil {
+				return err
+			}
+		}
 
-	// Update parent timestamps
-	now := time.Now()
-	parent.Mtime = now
-	parent.Ctime = now
-	if err := store.PutFile(ctx.Context, parent); err != nil {
-		return err
-	}
-
-	return nil
+		// Update parent timestamps
+		now := time.Now()
+		parent.Mtime = now
+		parent.Ctime = now
+		return tx.PutFile(ctx.Context, parent)
+	})
 }
 
 // CreateDirectory creates a new directory in a parent directory.

@@ -283,7 +283,11 @@ func (h *Handler) Commit(
 	// Step 3: Get metadata service
 	// ========================================================================
 
-	metaSvc := h.Registry.GetMetadataService()
+	metaSvc, err := getMetadataService(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "COMMIT failed: metadata service not initialized", "client", clientIP, "error", err)
+		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	handle := metadata.FileHandle(req.Handle)
 
@@ -361,7 +365,15 @@ func (h *Handler) Commit(
 
 	logger.InfoCtx(ctx.Context, "COMMIT: flushing data", "share", ctx.Share)
 
-	payloadSvc := h.Registry.GetBlockService()
+	payloadSvc, err := getPayloadService(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "COMMIT failed: payload service not initialized", "client", clientIP, "error", err)
+		return &CommitResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			AttrBefore:      wccBefore,
+			AttrAfter:       wccAfter,
+		}, nil
+	}
 
 	// Flush cache to content store using ContentService (non-blocking)
 	//

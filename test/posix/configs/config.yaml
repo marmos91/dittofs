@@ -1,0 +1,39 @@
+# DittoFS Configuration for POSIX Compliance Testing
+# Stores, shares, and adapters are managed via the API.
+# Use test/posix/setup-posix.sh to configure them.
+#
+# The database and cache paths can be overridden via environment variables:
+#   DITTOFS_DATABASE_SQLITE_PATH - SQLite database path
+#   DITTOFS_CACHE_PATH - Cache directory path
+
+logging:
+  level: "DEBUG"
+  format: "text"
+  output: "stdout"
+
+telemetry:
+  enabled: false
+
+shutdown_timeout: 30s
+
+# Control plane database (paths overridable via env vars)
+database:
+  type: sqlite
+  sqlite:
+    path: "/tmp/dittofs-posix/controlplane.db"
+
+metrics:
+  enabled: false
+
+# Control plane API server
+controlplane:
+  port: 8080
+  jwt:
+    secret: "test-secret-key-for-posix-testing-32chars"
+    access_token_duration: 15m
+    refresh_token_duration: 168h
+
+# Cache configuration (path overridable via env var)
+cache:
+  path: "/tmp/dittofs-posix/cache"
+  size: "512MB"

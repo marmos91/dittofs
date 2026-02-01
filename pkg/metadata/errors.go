@@ -35,13 +35,18 @@ const (
 	// ErrNotFound indicates the requested file/directory/share doesn't exist
 	ErrNotFound ErrorCode = iota
 
-	// ErrAccessDenied indicates share-level access was denied
+	// ErrAccessDenied indicates permission bit violations (POSIX EACCES).
+	// Used when the caller lacks the required read/write/execute permission bits.
+	// Maps to NFS3ErrAccess (EACCES).
 	ErrAccessDenied
 
 	// ErrAuthRequired indicates authentication is required but not provided
 	ErrAuthRequired
 
-	// ErrPermissionDenied indicates file-level permission was denied
+	// ErrPermissionDenied indicates operation not permitted (POSIX EPERM).
+	// Used when the operation requires ownership or root privileges.
+	// Examples: chmod by non-owner, chown by non-root.
+	// Maps to NFS3ErrPerm (EPERM).
 	ErrPermissionDenied
 
 	// ErrAlreadyExists indicates a file/directory with the name already exists

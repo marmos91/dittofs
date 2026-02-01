@@ -298,16 +298,16 @@ See [IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for detailed implementation
 
 ### Adding a New Protocol Adapter
 
-Adapters receive a registry reference and **interact with services, not stores directly**.
+Adapters receive a runtime reference and **interact with services, not stores directly**.
 
 1. Create new package in `pkg/adapter/`
 2. Implement `Adapter` interface:
    - `Serve(ctx)`: Start protocol server
    - `Stop(ctx)`: Graceful shutdown
-   - `SetRegistry()`: Receive registry reference (provides access to services)
+   - `SetRuntime()`: Receive runtime reference (provides access to services)
    - `Protocol()`: Return name
    - `Port()`: Return listen port
-3. Use `registry.MetadataService()` and `registry.BlockService()` for operations
+3. Use `runtime.GetMetadataService()` and `runtime.GetBlockService()` for operations
 4. Register in `cmd/dittofs/main.go`
 5. Update README with usage instructions
 
@@ -315,17 +315,17 @@ Example:
 ```go
 // pkg/adapter/smb/adapter.go
 type SMBAdapter struct {
-    config   SMBConfig
-    registry *registry.Registry
+    config  SMBConfig
+    runtime *runtime.Runtime
 }
 
-func (a *SMBAdapter) SetRegistry(r *registry.Registry) {
-    a.registry = r
+func (a *SMBAdapter) SetRuntime(rt *runtime.Runtime) {
+    a.runtime = rt
 }
 
 func (a *SMBAdapter) handleRead(ctx context.Context, shareName string, contentID content.ContentID) ([]byte, error) {
     // Use BlockService (handles caching automatically)
-    return a.registry.BlockService().ReadAt(ctx, shareName, contentID, 0, size)
+    return a.runtime.GetBlockService().ReadAt(ctx, shareName, contentID, 0, size)
 }
 
 func (a *SMBAdapter) Serve(ctx context.Context) error {

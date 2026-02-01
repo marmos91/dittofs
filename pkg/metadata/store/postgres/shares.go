@@ -35,7 +35,7 @@ func (s *PostgresMetadataStore) GetRootHandle(ctx context.Context, shareName str
 	query := `SELECT root_file_id FROM shares WHERE share_name = $1`
 
 	var rootID uuid.UUID
-	err := s.pool.QueryRow(ctx, query, shareName).Scan(&rootID)
+	err := s.queryRow(ctx, query, shareName).Scan(&rootID)
 	if err != nil {
 		return nil, mapPgError(err, "GetRootHandle", shareName)
 	}
@@ -53,7 +53,7 @@ func (s *PostgresMetadataStore) GetShareOptions(ctx context.Context, shareName s
 	query := `SELECT options FROM shares WHERE share_name = $1`
 
 	var optionsJSON []byte
-	err := s.pool.QueryRow(ctx, query, shareName).Scan(&optionsJSON)
+	err := s.queryRow(ctx, query, shareName).Scan(&optionsJSON)
 	if err != nil {
 		return nil, mapPgError(err, "GetShareOptions", shareName)
 	}
@@ -88,9 +88,9 @@ func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata
 		return err
 	}
 
-	_, err = s.pool.Exec(ctx, query, share.Name, optionsData)
+	_, err = s.exec(ctx, query, share.Name, optionsData)
 	if err != nil {
-		return mapPgError(err, "CreateShare", share.Name)
+		return err
 	}
 
 	return nil
@@ -108,9 +108,9 @@ func (s *PostgresMetadataStore) UpdateShareOptions(ctx context.Context, shareNam
 	}
 
 	query := `UPDATE shares SET options = $1 WHERE share_name = $2`
-	result, err := s.pool.Exec(ctx, query, optionsData, shareName)
+	result, err := s.exec(ctx, query, optionsData, shareName)
 	if err != nil {
-		return mapPgError(err, "UpdateShareOptions", shareName)
+		return err
 	}
 
 	if result.RowsAffected() == 0 {
@@ -130,9 +130,9 @@ func (s *PostgresMetadataStore) DeleteShare(ctx context.Context, shareName strin
 		return err
 	}
 
-	result, err := s.pool.Exec(ctx, `DELETE FROM shares WHERE share_name = $1`, shareName)
+	result, err := s.exec(ctx, `DELETE FROM shares WHERE share_name = $1`, shareName)
 	if err != nil {
-		return mapPgError(err, "DeleteShare", shareName)
+		return err
 	}
 
 	if result.RowsAffected() == 0 {
@@ -152,9 +152,9 @@ func (s *PostgresMetadataStore) ListShares(ctx context.Context) ([]string, error
 		return nil, err
 	}
 
-	rows, err := s.pool.Query(ctx, `SELECT share_name FROM shares`)
+	rows, err := s.query(ctx, `SELECT share_name FROM shares`)
 	if err != nil {
-		return nil, mapPgError(err, "ListShares", "")
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -239,7 +239,7 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 				SET mode = $1, uid = $2, gid = $3, ctime = $4
 				WHERE id = $5
 			`
-			_, err := s.pool.Exec(ctx, updateQuery,
+			_, err := s.exec(ctx, updateQuery,
 				int32(existingRoot.Mode),
 				int32(existingRoot.UID),
 				int32(existingRoot.GID),
@@ -247,7 +247,7 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 				existingRoot.ID,
 			)
 			if err != nil {
-				return nil, mapPgError(err, "UpdateRootDirectory", shareName)
+				return nil, err
 			}
 			existingRoot.Ctime = now
 			s.logger.Info("Root directory attributes updated from config",
@@ -262,10 +262,10 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 		return existingRoot, nil
 	}
 
-	// Begin transaction
-	tx, err := s.pool.Begin(ctx)
+	// Begin transaction with connection acquire timeout
+	tx, err := s.beginTx(ctx)
 	if err != nil {
-		return nil, mapPgError(err, "CreateRootDirectory", shareName)
+		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -390,7 +390,7 @@ func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, sh
 		hidden       bool
 	)
 
-	err := s.pool.QueryRow(ctx, query, shareName).Scan(
+	err := s.queryRow(ctx, query, shareName).Scan(
 		&id,
 		&fileType,
 		&mode,

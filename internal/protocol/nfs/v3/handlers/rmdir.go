@@ -237,7 +237,11 @@ func (h *Handler) Rmdir(
 	// Step 3: Get metadata store from context
 	// ========================================================================
 
-	metaSvc := h.Registry.GetMetadataService()
+	metaSvc, err := getMetadataService(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "RMDIR failed: metadata service not initialized", "client", clientIP, "error", err)
+		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
 

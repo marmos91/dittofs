@@ -10,7 +10,7 @@ Creation → SetRuntime() → Serve() → Stop()
                          context.Canceled on graceful shutdown
 ```
 
-- `SetRuntime()`: Called once before `Serve()`, injects control plane runtime for store access
+- `SetRuntime()`: Called once before `Serve()`, injects Runtime for store/service access
 - `Serve()`: Blocks until context cancelled or fatal error
 - `Stop()`: Safe to call concurrently, idempotent via `sync.Once`
 

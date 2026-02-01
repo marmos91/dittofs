@@ -3,8 +3,6 @@ package config
 import (
 	"testing"
 	"time"
-
-	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 )
 
 func TestApplyDefaults_Logging(t *testing.T) {
@@ -22,189 +20,65 @@ func TestApplyDefaults_Logging(t *testing.T) {
 	}
 }
 
-func TestApplyDefaults_Server(t *testing.T) {
+func TestApplyDefaults_ShutdownTimeout(t *testing.T) {
 	cfg := &Config{}
 	ApplyDefaults(cfg)
 
-	if cfg.Server.ShutdownTimeout != 30*time.Second {
-		t.Errorf("Expected default shutdown timeout 30s, got %v", cfg.Server.ShutdownTimeout)
+	if cfg.ShutdownTimeout != 30*time.Second {
+		t.Errorf("Expected default shutdown timeout 30s, got %v", cfg.ShutdownTimeout)
 	}
 }
 
-func TestApplyDefaults_Payload(t *testing.T) {
-	createDir := true
-	cfg := &Config{
-		Payload: PayloadConfig{
-			Stores: map[string]PayloadStoreConfig{
-				"default": {
-					Type: "filesystem",
-					Filesystem: &PayloadFSConfig{
-						BasePath:  "/test/blocks",
-						CreateDir: &createDir,
-					},
-				},
-			},
-		},
-	}
-	ApplyDefaults(cfg)
-
-	// Check that stores map is initialized
-	if cfg.Payload.Stores == nil {
-		t.Fatal("Expected Payload.Stores to be initialized")
-	}
-
-	// Check filesystem defaults for the default store
-	if store, ok := cfg.Payload.Stores["default"]; ok {
-		if store.Filesystem == nil {
-			t.Fatal("Expected Filesystem config to be preserved")
-		}
-		if store.Filesystem.BasePath != "/test/blocks" {
-			t.Errorf("Expected filesystem base_path '/test/blocks', got %v", store.Filesystem.BasePath)
-		}
-	}
-
-	// Check transfer defaults
-	if cfg.Payload.Transfer.Workers.Uploads != 16 {
-		t.Errorf("Expected default uploads workers 16, got %d", cfg.Payload.Transfer.Workers.Uploads)
-	}
-	if cfg.Payload.Transfer.Workers.Downloads != 16 {
-		t.Errorf("Expected default downloads workers 16, got %d", cfg.Payload.Transfer.Workers.Downloads)
-	}
-}
-
-func TestApplyDefaults_Metadata(t *testing.T) {
-	cfg := &Config{
-		Metadata: MetadataConfig{
-			Stores: map[string]MetadataStoreConfig{
-				"default": {
-					Type: "badger",
-				},
-			},
-		},
-	}
-	ApplyDefaults(cfg)
-
-	// Check that stores map is initialized
-	if cfg.Metadata.Stores == nil {
-		t.Fatal("Expected Metadata.Stores to be initialized")
-	}
-
-	// Check badger defaults for the default store
-	if store, ok := cfg.Metadata.Stores["default"]; ok {
-		if store.Badger == nil {
-			t.Fatal("Expected Badger map to be initialized")
-		}
-		if dbPath, ok := store.Badger["db_path"]; !ok || dbPath != "/tmp/dittofs-metadata" {
-			t.Errorf("Expected default db_path '/tmp/dittofs-metadata', got %v", dbPath)
-		}
-	}
-}
-
-func TestApplyDefaults_Shares(t *testing.T) {
-	cfg := &Config{
-		Shares: []ShareConfig{
-			{
-				Name: "/export",
-			},
-		},
-	}
-	ApplyDefaults(cfg)
-
-	share := cfg.Shares[0]
-
-	// Check allowed clients initialized
-	if share.AllowedClients == nil {
-		t.Error("Expected AllowedClients to be initialized")
-	}
-
-	// Check denied clients initialized
-	if share.DeniedClients == nil {
-		t.Error("Expected DeniedClients to be initialized")
-	}
-
-	// Check auth methods defaulted
-	if len(share.AllowedAuthMethods) != 2 {
-		t.Errorf("Expected 2 default auth methods, got %d", len(share.AllowedAuthMethods))
-	}
-
-	// Check anonymous UID/GID
-	if share.IdentityMapping.AnonymousUID != 65534 {
-		t.Errorf("Expected default anonymous UID 65534, got %d", share.IdentityMapping.AnonymousUID)
-	}
-	if share.IdentityMapping.AnonymousGID != 65534 {
-		t.Errorf("Expected default anonymous GID 65534, got %d", share.IdentityMapping.AnonymousGID)
-	}
-
-	// Check root attributes
-	if share.RootDirectoryAttributes.Mode != 0755 {
-		t.Errorf("Expected default root mode 0755, got 0%o", share.RootDirectoryAttributes.Mode)
-	}
-}
-
-func TestApplyDefaults_NFS(t *testing.T) {
+func TestApplyDefaults_ControlPlane(t *testing.T) {
 	cfg := &Config{}
 	ApplyDefaults(cfg)
 
-	nfs := cfg.Adapters.NFS
+	if cfg.ControlPlane.Port != 8080 {
+		t.Errorf("Expected default API port 8080, got %d", cfg.ControlPlane.Port)
+	}
+	if cfg.ControlPlane.ReadTimeout != 10*time.Second {
+		t.Errorf("Expected default read timeout 10s, got %v", cfg.ControlPlane.ReadTimeout)
+	}
+	if cfg.ControlPlane.WriteTimeout != 10*time.Second {
+		t.Errorf("Expected default write timeout 10s, got %v", cfg.ControlPlane.WriteTimeout)
+	}
+	if cfg.ControlPlane.IdleTimeout != 60*time.Second {
+		t.Errorf("Expected default idle timeout 60s, got %v", cfg.ControlPlane.IdleTimeout)
+	}
+}
 
-	// Note: ApplyDefaults now enables NFS by default when in unconfigured state.
-	// This ensures configs loaded without a config file pass validation.
-	// Users can explicitly disable by setting enabled: false and port: 2049 in their config.
-	if !nfs.Enabled {
-		t.Error("Expected NFS Enabled to be true after ApplyDefaults on unconfigured state")
+func TestApplyDefaults_Admin(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+
+	if cfg.Admin.Username != "admin" {
+		t.Errorf("Expected default admin username 'admin', got %q", cfg.Admin.Username)
 	}
-	if nfs.Port != 2049 {
-		t.Errorf("Expected default NFS port 2049, got %d", nfs.Port)
+}
+
+func TestApplyDefaults_Telemetry(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+
+	if cfg.Telemetry.Endpoint != "localhost:4317" {
+		t.Errorf("Expected default telemetry endpoint 'localhost:4317', got %q", cfg.Telemetry.Endpoint)
 	}
-	if nfs.MaxConnections != 0 {
-		t.Errorf("Expected default max_connections 0, got %d", nfs.MaxConnections)
-	}
-	if nfs.Timeouts.Read != 5*time.Minute {
-		t.Errorf("Expected default read_timeout 5m, got %v", nfs.Timeouts.Read)
-	}
-	if nfs.Timeouts.Write != 30*time.Second {
-		t.Errorf("Expected default write_timeout 30s, got %v", nfs.Timeouts.Write)
-	}
-	if nfs.Timeouts.Idle != 5*time.Minute {
-		t.Errorf("Expected default idle_timeout 5m, got %v", nfs.Timeouts.Idle)
-	}
-	if nfs.Timeouts.Shutdown != 30*time.Second {
-		t.Errorf("Expected default shutdown_timeout 30s, got %v", nfs.Timeouts.Shutdown)
-	}
-	if nfs.MetricsLogInterval != 5*time.Minute {
-		t.Errorf("Expected default metrics_log_interval 5m, got %v", nfs.MetricsLogInterval)
+	if cfg.Telemetry.SampleRate != 1.0 {
+		t.Errorf("Expected default sample rate 1.0, got %v", cfg.Telemetry.SampleRate)
 	}
 }
 
 func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
-	createDir := true
 	cfg := &Config{
 		Logging: LoggingConfig{
 			Level:  "DEBUG",
 			Format: "json",
 			Output: "/var/log/dittofs.log",
 		},
-		Server: ServerConfig{
-			ShutdownTimeout: 60 * time.Second,
-		},
-		Payload: PayloadConfig{
-			Stores: map[string]PayloadStoreConfig{
-				"custom": {
-					Type: "filesystem",
-					Filesystem: &PayloadFSConfig{
-						BasePath:  "/custom/path",
-						CreateDir: &createDir,
-					},
-				},
-			},
-		},
-		Shares: []ShareConfig{
-			{
-				Name:           "/export",
-				DumpRestricted: true,
-				Metadata:       "default",
-				Payload:        "custom",
-			},
+		ShutdownTimeout: 60 * time.Second,
+		Admin: AdminConfig{
+			Username: "customadmin",
+			Email:    "admin@example.com",
 		},
 	}
 
@@ -220,65 +94,11 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 	if cfg.Logging.Output != "/var/log/dittofs.log" {
 		t.Errorf("Expected explicit output to be preserved, got %q", cfg.Logging.Output)
 	}
-	if cfg.Server.ShutdownTimeout != 60*time.Second {
-		t.Errorf("Expected explicit timeout 60s to be preserved, got %v", cfg.Server.ShutdownTimeout)
+	if cfg.ShutdownTimeout != 60*time.Second {
+		t.Errorf("Expected explicit timeout 60s to be preserved, got %v", cfg.ShutdownTimeout)
 	}
-	if !cfg.Shares[0].DumpRestricted {
-		t.Error("Expected explicit dump_restricted true to be preserved")
-	}
-}
-
-func TestApplyDefaults_MultipleSharesWithMixedDefaults(t *testing.T) {
-	cfg := &Config{
-		Shares: []ShareConfig{
-			{
-				Name:     "/export1",
-				ReadOnly: true,
-			},
-			{
-				Name: "/export2",
-				IdentityMapping: IdentityMappingConfig{
-					MapAllToAnonymous: true,
-					AnonymousUID:      1000,
-					AnonymousGID:      1000,
-				},
-			},
-		},
-	}
-
-	ApplyDefaults(cfg)
-
-	// First share
-	if cfg.Shares[0].IdentityMapping.AnonymousUID != 65534 {
-		t.Errorf("Expected default anonymous UID 65534 for first share, got %d",
-			cfg.Shares[0].IdentityMapping.AnonymousUID)
-	}
-
-	// Second share should preserve explicit values
-	if cfg.Shares[1].IdentityMapping.AnonymousUID != 1000 {
-		t.Errorf("Expected explicit anonymous UID 1000 for second share, got %d",
-			cfg.Shares[1].IdentityMapping.AnonymousUID)
-	}
-	if cfg.Shares[1].IdentityMapping.AnonymousGID != 1000 {
-		t.Errorf("Expected explicit anonymous GID 1000 for second share, got %d",
-			cfg.Shares[1].IdentityMapping.AnonymousGID)
-	}
-}
-
-func TestApplyDefaults_NFSDisabled(t *testing.T) {
-	cfg := &Config{
-		Adapters: AdaptersConfig{
-			NFS: nfs.NFSConfig{
-				Enabled: false,
-			},
-		},
-	}
-
-	ApplyDefaults(cfg)
-
-	// Even disabled, other defaults should still be applied
-	if cfg.Adapters.NFS.Port != 2049 {
-		t.Errorf("Expected default port even when disabled, got %d", cfg.Adapters.NFS.Port)
+	if cfg.Admin.Username != "customadmin" {
+		t.Errorf("Expected explicit admin username to be preserved, got %q", cfg.Admin.Username)
 	}
 }
 
@@ -299,19 +119,13 @@ func TestGetDefaultConfig_HasRequiredFields(t *testing.T) {
 	if cfg.Logging.Level == "" {
 		t.Error("Default config missing logging level")
 	}
-	if len(cfg.Payload.Stores) == 0 {
-		t.Error("Default config has no payload stores")
+	if cfg.ControlPlane.Port == 0 {
+		t.Error("Default config missing API port")
 	}
-	if len(cfg.Metadata.Stores) == 0 {
-		t.Error("Default config has no metadata stores")
-	}
-	if len(cfg.Shares) == 0 {
-		t.Error("Default config has no shares")
-	}
-	if cfg.Shares[0].Name == "" {
-		t.Error("Default config share has no name")
+	if cfg.Admin.Username == "" {
+		t.Error("Default config missing admin username")
 	}
 	if cfg.Cache.Path == "" {
-		t.Error("Default config cache has no path")
+		t.Error("Default config missing cache path")
 	}
 }

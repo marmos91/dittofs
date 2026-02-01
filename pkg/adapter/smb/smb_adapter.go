@@ -101,8 +101,8 @@ type SMBAdapter struct {
 
 // New creates a new SMBAdapter with the specified configuration.
 //
-// The adapter is created in a stopped state. Call SetRegistry() to inject
-// the backend registry, then call Serve() to start accepting connections.
+// The adapter is created in a stopped state. Call SetRuntime() to inject
+// the Runtime, then call Serve() to start accepting connections.
 //
 // Configuration:
 //   - Zero values in config are replaced with sensible defaults
@@ -168,20 +168,20 @@ func New(config SMBConfig) *SMBAdapter {
 	}
 }
 
-// SetRegistry injects the registry containing all stores and shares.
+// SetRuntime injects the runtime containing all stores and shares.
 //
-// This method is called by DittoServer before Serve() is called. The registry
+// This method is called by Runtime before Serve() is called. The runtime
 // provides access to all configured metadata stores, content stores, and shares.
 //
 // Parameters:
-//   - reg: Registry containing all stores and shares
+//   - rt: Runtime containing all stores and shares
 //
 // Thread safety:
 // Called exactly once before Serve(), no synchronization needed.
-func (s *SMBAdapter) SetRegistry(reg *runtime.Runtime) {
-	s.registry = reg
-	s.handler.Registry = reg
-	logger.Debug("SMB adapter configured with registry", "shares", reg.CountShares())
+func (s *SMBAdapter) SetRuntime(rt *runtime.Runtime) {
+	s.registry = rt
+	s.handler.Registry = rt
+	logger.Debug("SMB adapter configured with runtime", "shares", rt.CountShares())
 }
 
 // Serve starts the SMB server and blocks until the context is cancelled

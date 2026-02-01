@@ -201,3 +201,26 @@ func (t *PendingWritesTracker) Count() int {
 	defer t.mu.RUnlock()
 	return len(t.pending)
 }
+
+// InvalidateCache removes the cached file metadata for a handle.
+// This should be called when file attributes change (e.g., via SETATTR)
+// to ensure subsequent writes use fresh attributes from the store.
+func (t *PendingWritesTracker) InvalidateCache(handle FileHandle) {
+	key := handleKey(handle)
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	state, exists := t.pending[key]
+	if !exists {
+		return
+	}
+
+	// Clear the cached file, keeping other pending state if present
+	state.CachedFile = nil
+
+	// If there's no other pending state, remove the entry entirely
+	if state.PreWriteAttr == nil && state.MaxSize == 0 {
+		delete(t.pending, key)
+	}
+}
