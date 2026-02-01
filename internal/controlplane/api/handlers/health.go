@@ -20,7 +20,8 @@ const HealthCheckTimeout = 5 * time.Second
 //   - Readiness probe: Is the server ready to accept requests?
 //   - Store health: Detailed health status of all stores
 type HealthHandler struct {
-	registry *runtime.Runtime
+	registry  *runtime.Runtime
+	startTime time.Time
 }
 
 // NewHealthHandler creates a new health handler.
@@ -28,7 +29,10 @@ type HealthHandler struct {
 // The registry parameter may be nil, in which case readiness and store
 // health checks will return unhealthy status.
 func NewHealthHandler(registry *runtime.Runtime) *HealthHandler {
-	return &HealthHandler{registry: registry}
+	return &HealthHandler{
+		registry:  registry,
+		startTime: time.Now(),
+	}
 }
 
 // Liveness handles GET /health - simple liveness probe.
@@ -37,8 +41,12 @@ func NewHealthHandler(registry *runtime.Runtime) *HealthHandler {
 // for Kubernetes liveness probes and should always succeed as long as the
 // HTTP server is responsive.
 func (h *HealthHandler) Liveness(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, healthyResponse(map[string]string{
-		"service": "dittofs",
+	uptime := time.Since(h.startTime)
+	writeJSON(w, http.StatusOK, healthyResponse(map[string]interface{}{
+		"service":    "dittofs",
+		"started_at": h.startTime.UTC().Format(time.RFC3339),
+		"uptime":     uptime.Round(time.Second).String(),
+		"uptime_sec": int64(uptime.Seconds()),
 	}))
 }
 

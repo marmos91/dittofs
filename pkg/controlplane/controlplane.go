@@ -82,8 +82,8 @@ func New(ctx context.Context, opts *Options) (*ControlPlane, error) {
 		runtime: rt,
 	}
 
-	// Initialize API server if enabled
-	if opts.API != nil && opts.API.IsEnabled() {
+	// Initialize API server (always enabled - required for managing shares/users)
+	if opts.API != nil {
 		apiServer, err := api.NewServer(*opts.API, rt, cpStore)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create API server: %w", err)

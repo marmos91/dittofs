@@ -3,22 +3,45 @@ package handlers
 import (
 	"errors"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
+// normalizeShareName ensures a share name has exactly one leading slash.
+// "export" -> "/export"
+// "/export" -> "/export"
+// "//export" -> "/export"
+func normalizeShareName(name string) string {
+	// URL-decode the name in case it was encoded
+	decoded, err := url.PathUnescape(name)
+	if err != nil {
+		decoded = name
+	}
+	// Trim all leading slashes, then add exactly one
+	trimmed := strings.TrimLeft(decoded, "/")
+	if trimmed == "" {
+		return "/"
+	}
+	return "/" + trimmed
+}
+
 // ShareHandler handles share management API endpoints.
 type ShareHandler struct {
-	store store.Store
+	store   store.Store
+	runtime *runtime.Runtime
 }
 
 // NewShareHandler creates a new ShareHandler.
-func NewShareHandler(store store.Store) *ShareHandler {
-	return &ShareHandler{store: store}
+func NewShareHandler(store store.Store, rt *runtime.Runtime) *ShareHandler {
+	return &ShareHandler{store: store, runtime: rt}
 }
 
 // CreateShareRequest is the request body for POST /api/v1/shares.
@@ -62,6 +85,9 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		BadRequest(w, "Share name is required")
 		return
 	}
+
+	// Normalize share name to always have leading slash
+	req.Name = normalizeShareName(req.Name)
 	if req.MetadataStoreID == "" {
 		BadRequest(w, "Metadata store ID is required")
 		return
@@ -72,9 +98,12 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set default permission if not provided
+	// Use "read-write" for NFS compatibility (same as traditional NFS servers)
+	// This allows anonymous/unknown UIDs to access the share, with file-level
+	// permissions enforcing access control (Unix DAC model).
 	defaultPerm := req.DefaultPermission
 	if defaultPerm == "" {
-		defaultPerm = "none"
+		defaultPerm = "read-write"
 	}
 
 	now := time.Now()
@@ -96,6 +125,41 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 		InternalServerError(w, "Failed to create share")
 		return
+	}
+
+	// Add share to runtime if runtime is available
+	if h.runtime != nil {
+		// Get the metadata store config - try by name first, then by ID
+		// (users can pass either the store name or its UUID)
+		metaStore, err := h.store.GetMetadataStore(r.Context(), req.MetadataStoreID)
+		if err != nil {
+			metaStore, err = h.store.GetMetadataStoreByID(r.Context(), req.MetadataStoreID)
+		}
+		if err != nil {
+			// Share created in DB but failed to load - log warning
+			// The share can be loaded on next server restart
+			logger.Warn("Share created but metadata store not found for runtime registration",
+				"share", req.Name, "metadata_store_id", req.MetadataStoreID, "error", err)
+			WriteJSONCreated(w, shareToResponse(share))
+			return
+		}
+
+		shareConfig := &runtime.ShareConfig{
+			Name:              req.Name,
+			MetadataStore:     metaStore.Name,
+			ReadOnly:          req.ReadOnly,
+			DefaultPermission: defaultPerm,
+			Squash:            share.GetSquashMode(),
+			AnonymousUID:      share.GetAnonymousUID(),
+			AnonymousGID:      share.GetAnonymousGID(),
+		}
+
+		if err := h.runtime.AddShare(r.Context(), shareConfig); err != nil {
+			// Share created in DB but failed to load into runtime
+			// Log but don't fail the request - share can be loaded on restart
+			logger.Warn("Share created but failed to add to runtime",
+				"share", req.Name, "error", err)
+		}
 	}
 
 	WriteJSONCreated(w, shareToResponse(share))
@@ -121,8 +185,8 @@ func (h *ShareHandler) List(w http.ResponseWriter, r *http.Request) {
 // Get handles GET /api/v1/shares/{name}.
 // Gets a share by name (admin only).
 func (h *ShareHandler) Get(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
-	if name == "" {
+	name := normalizeShareName(chi.URLParam(r, "name"))
+	if name == "/" {
 		BadRequest(w, "Share name is required")
 		return
 	}
@@ -143,8 +207,8 @@ func (h *ShareHandler) Get(w http.ResponseWriter, r *http.Request) {
 // Update handles PUT /api/v1/shares/{name}.
 // Updates a share (admin only).
 func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
-	if name == "" {
+	name := normalizeShareName(chi.URLParam(r, "name"))
+	if name == "/" {
 		BadRequest(w, "Share name is required")
 		return
 	}
@@ -181,8 +245,17 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	share.UpdatedAt = time.Now()
 
 	if err := h.store.UpdateShare(r.Context(), share); err != nil {
+		logger.Error("Failed to update share", "share", share.Name, "id", share.ID, "error", err)
 		InternalServerError(w, "Failed to update share")
 		return
+	}
+
+	// Update runtime if available
+	if h.runtime != nil {
+		if err := h.runtime.UpdateShare(share.Name, req.ReadOnly, req.DefaultPermission); err != nil {
+			// Log but don't fail - database was updated successfully
+			logger.Warn("Failed to update share in runtime", "share", share.Name, "error", err)
+		}
 	}
 
 	WriteJSONOK(w, shareToResponse(share))
@@ -191,10 +264,15 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 // Delete handles DELETE /api/v1/shares/{name}.
 // Deletes a share (admin only).
 func (h *ShareHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
-	if name == "" {
+	name := normalizeShareName(chi.URLParam(r, "name"))
+	if name == "/" {
 		BadRequest(w, "Share name is required")
 		return
+	}
+
+	// Remove from runtime first (if runtime is available)
+	if h.runtime != nil {
+		_ = h.runtime.RemoveShare(name) // Ignore error if not found in runtime
 	}
 
 	if err := h.store.DeleteShare(r.Context(), name); err != nil {
@@ -212,10 +290,10 @@ func (h *ShareHandler) Delete(w http.ResponseWriter, r *http.Request) {
 // SetUserPermission handles PUT /api/v1/shares/{name}/users/{username}.
 // Sets a user's permission for a share (admin only).
 func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request) {
-	shareName := chi.URLParam(r, "name")
+	shareName := normalizeShareName(chi.URLParam(r, "name"))
 	username := chi.URLParam(r, "username")
 
-	if shareName == "" {
+	if shareName == "/" {
 		BadRequest(w, "Share name is required")
 		return
 	}
@@ -275,10 +353,10 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 // DeleteUserPermission handles DELETE /api/v1/shares/{name}/users/{username}.
 // Removes a user's permission for a share (admin only).
 func (h *ShareHandler) DeleteUserPermission(w http.ResponseWriter, r *http.Request) {
-	shareName := chi.URLParam(r, "name")
+	shareName := normalizeShareName(chi.URLParam(r, "name"))
 	username := chi.URLParam(r, "username")
 
-	if shareName == "" {
+	if shareName == "/" {
 		BadRequest(w, "Share name is required")
 		return
 	}
@@ -298,10 +376,10 @@ func (h *ShareHandler) DeleteUserPermission(w http.ResponseWriter, r *http.Reque
 // SetGroupPermission handles PUT /api/v1/shares/{name}/groups/{groupname}.
 // Sets a group's permission for a share (admin only).
 func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request) {
-	shareName := chi.URLParam(r, "name")
+	shareName := normalizeShareName(chi.URLParam(r, "name"))
 	groupName := chi.URLParam(r, "groupname")
 
-	if shareName == "" {
+	if shareName == "/" {
 		BadRequest(w, "Share name is required")
 		return
 	}
@@ -361,10 +439,10 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 // DeleteGroupPermission handles DELETE /api/v1/shares/{name}/groups/{groupname}.
 // Removes a group's permission for a share (admin only).
 func (h *ShareHandler) DeleteGroupPermission(w http.ResponseWriter, r *http.Request) {
-	shareName := chi.URLParam(r, "name")
+	shareName := normalizeShareName(chi.URLParam(r, "name"))
 	groupName := chi.URLParam(r, "groupname")
 
-	if shareName == "" {
+	if shareName == "/" {
 		BadRequest(w, "Share name is required")
 		return
 	}

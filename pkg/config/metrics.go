@@ -31,7 +31,7 @@ type MetricsResult struct {
 // Returns:
 //   - MetricsResult containing all metrics components
 func InitializeMetrics(cfg *Config) *MetricsResult {
-	if !cfg.Server.Metrics.Enabled {
+	if !cfg.Metrics.Enabled {
 		// Metrics disabled - return nil for zero overhead
 		return &MetricsResult{
 			Server:     nil,
@@ -44,7 +44,7 @@ func InitializeMetrics(cfg *Config) *MetricsResult {
 
 	// Create metrics HTTP server
 	server := metrics.NewServer(metrics.ServerConfig{
-		Port: cfg.Server.Metrics.Port,
+		Port: cfg.Metrics.Port,
 	})
 
 	// Create Prometheus-backed metrics for NFS adapter

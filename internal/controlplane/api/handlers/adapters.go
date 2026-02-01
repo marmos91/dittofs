@@ -9,17 +9,19 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // AdapterHandler handles adapter configuration API endpoints.
+// It uses Runtime methods to ensure both persistent store and in-memory
+// adapter state are updated together.
 type AdapterHandler struct {
-	store store.Store
+	runtime *runtime.Runtime
 }
 
 // NewAdapterHandler creates a new AdapterHandler.
-func NewAdapterHandler(store store.Store) *AdapterHandler {
-	return &AdapterHandler{store: store}
+func NewAdapterHandler(rt *runtime.Runtime) *AdapterHandler {
+	return &AdapterHandler{runtime: rt}
 }
 
 // CreateAdapterRequest is the request body for POST /api/v1/adapters.
@@ -42,6 +44,7 @@ type AdapterResponse struct {
 	ID        string         `json:"id"`
 	Type      string         `json:"type"`
 	Enabled   bool           `json:"enabled"`
+	Running   bool           `json:"running"`
 	Port      int            `json:"port"`
 	Config    map[string]any `json:"config,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
@@ -49,7 +52,7 @@ type AdapterResponse struct {
 }
 
 // Create handles POST /api/v1/adapters.
-// Creates a new adapter configuration (admin only).
+// Creates a new adapter configuration AND starts it immediately (admin only).
 func (h *AdapterHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req CreateAdapterRequest
 	if !decodeJSONBody(w, r, &req) {
@@ -84,7 +87,8 @@ func (h *AdapterHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if _, err := h.store.CreateAdapter(r.Context(), adapter); err != nil {
+	// CreateAdapter saves to store AND starts the adapter
+	if err := h.runtime.CreateAdapter(r.Context(), adapter); err != nil {
 		if errors.Is(err, models.ErrDuplicateAdapter) {
 			Conflict(w, "Adapter already exists")
 			return
@@ -99,7 +103,7 @@ func (h *AdapterHandler) Create(w http.ResponseWriter, r *http.Request) {
 // List handles GET /api/v1/adapters.
 // Lists all adapter configurations (admin only).
 func (h *AdapterHandler) List(w http.ResponseWriter, r *http.Request) {
-	adapters, err := h.store.ListAdapters(r.Context())
+	adapters, err := h.runtime.Store().ListAdapters(r.Context())
 	if err != nil {
 		InternalServerError(w, "Failed to list adapters")
 		return
@@ -107,7 +111,10 @@ func (h *AdapterHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	response := make([]AdapterResponse, len(adapters))
 	for i, a := range adapters {
-		response[i] = adapterToResponse(a)
+		resp := adapterToResponse(a)
+		// Add running status
+		resp.Running = h.runtime.IsAdapterRunning(a.Type)
+		response[i] = resp
 	}
 
 	WriteJSONOK(w, response)
@@ -122,7 +129,7 @@ func (h *AdapterHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	adapter, err := h.store.GetAdapter(r.Context(), adapterType)
+	adapter, err := h.runtime.Store().GetAdapter(r.Context(), adapterType)
 	if err != nil {
 		if errors.Is(err, models.ErrAdapterNotFound) {
 			NotFound(w, "Adapter not found")
@@ -132,11 +139,13 @@ func (h *AdapterHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSONOK(w, adapterToResponse(adapter))
+	resp := adapterToResponse(adapter)
+	resp.Running = h.runtime.IsAdapterRunning(adapterType)
+	WriteJSONOK(w, resp)
 }
 
 // Update handles PUT /api/v1/adapters/{type}.
-// Updates an adapter configuration (admin only).
+// Updates an adapter configuration AND restarts with new config (admin only).
 func (h *AdapterHandler) Update(w http.ResponseWriter, r *http.Request) {
 	adapterType := chi.URLParam(r, "type")
 	if adapterType == "" {
@@ -150,7 +159,7 @@ func (h *AdapterHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch existing adapter
-	adapter, err := h.store.GetAdapter(r.Context(), adapterType)
+	adapter, err := h.runtime.Store().GetAdapter(r.Context(), adapterType)
 	if err != nil {
 		if errors.Is(err, models.ErrAdapterNotFound) {
 			NotFound(w, "Adapter not found")
@@ -174,16 +183,19 @@ func (h *AdapterHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.store.UpdateAdapter(r.Context(), adapter); err != nil {
+	// UpdateAdapter updates store AND restarts the adapter
+	if err := h.runtime.UpdateAdapter(r.Context(), adapter); err != nil {
 		InternalServerError(w, "Failed to update adapter")
 		return
 	}
 
-	WriteJSONOK(w, adapterToResponse(adapter))
+	resp := adapterToResponse(adapter)
+	resp.Running = h.runtime.IsAdapterRunning(adapterType)
+	WriteJSONOK(w, resp)
 }
 
 // Delete handles DELETE /api/v1/adapters/{type}.
-// Deletes an adapter configuration (admin only).
+// Stops the adapter AND deletes configuration (admin only).
 func (h *AdapterHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	adapterType := chi.URLParam(r, "type")
 	if adapterType == "" {
@@ -191,7 +203,8 @@ func (h *AdapterHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.DeleteAdapter(r.Context(), adapterType); err != nil {
+	// DeleteAdapter stops the running adapter AND removes from store
+	if err := h.runtime.DeleteAdapter(r.Context(), adapterType); err != nil {
 		if errors.Is(err, models.ErrAdapterNotFound) {
 			NotFound(w, "Adapter not found")
 			return

@@ -43,20 +43,6 @@ func WriteProblem(w http.ResponseWriter, status int, title, detail string) {
 	_ = json.NewEncoder(w).Encode(problem)
 }
 
-// WriteProblemWithType writes an RFC 7807 problem response with a custom type URI.
-func WriteProblemWithType(w http.ResponseWriter, problemType string, status int, title, detail string) {
-	problem := &Problem{
-		Type:   problemType,
-		Title:  title,
-		Status: status,
-		Detail: detail,
-	}
-
-	w.Header().Set("Content-Type", ContentTypeProblemJSON)
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(problem)
-}
-
 // Common problem helper functions for standard HTTP errors.
 
 // BadRequest writes a 400 Bad Request problem response.

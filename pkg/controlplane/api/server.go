@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/controlplane/api/auth"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
@@ -42,7 +42,7 @@ type Server struct {
 // The server is created in a stopped state. Call Start() to begin serving requests.
 //
 // The JWT service is created internally from the config. The JWT secret must be
-// configured via config.JWT.Secret or the DITTOFS_API_JWT_SECRET environment variable.
+// configured via config.JWT.Secret or the DITTOFS_CONTROLPLANE_SECRET environment variable.
 //
 // Parameters:
 //   - config: Server configuration (port, timeouts, JWT config)
@@ -56,7 +56,7 @@ func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store) (*Ser
 	// Get JWT secret from config (prefers env var)
 	jwtSecret := config.GetJWTSecret()
 	if len(jwtSecret) < 32 {
-		return nil, fmt.Errorf("JWT secret must be at least 32 characters; set via %s env var or config", EnvJWTSecret)
+		return nil, fmt.Errorf("JWT secret must be at least 32 characters; set via %s env var or config", EnvControlPlaneSecret)
 	}
 
 	// Create JWT service internally

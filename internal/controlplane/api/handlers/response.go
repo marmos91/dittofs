@@ -1,12 +1,8 @@
 package handlers
 
 import (
-	"bytes"
-	"encoding/json"
 	"net/http"
 	"time"
-
-	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // Response represents a standard API response wrapper.
@@ -24,22 +20,10 @@ type Response struct {
 }
 
 // writeJSON writes a JSON response with the given status code.
-//
-// The response is written with Content-Type: application/json header.
-// Encoding is done to a buffer first to ensure we can return an error
-// response if encoding fails (before headers are sent).
+// Deprecated: Use WriteJSON from problem.go instead.
+// This function is kept for backward compatibility with health endpoints.
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
-	// Encode to buffer first to catch encoding errors before sending headers
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(data); err != nil {
-		logger.Error("Failed to encode JSON response", "error", err)
-		http.Error(w, `{"status":"error","error":"failed to encode response"}`, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write(buf.Bytes())
+	WriteJSON(w, status, data)
 }
 
 // healthyResponse creates a successful health check response.

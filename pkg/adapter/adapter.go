@@ -43,18 +43,18 @@ type Adapter interface {
 	//   - error if startup fails or shutdown is not graceful
 	Serve(ctx context.Context) error
 
-	// SetRegistry injects the shared registry containing all stores and shares.
+	// SetRuntime injects the shared Runtime containing all stores and shares.
 	//
-	// This method is called exactly once by DittoServer before Serve() is called.
-	// Implementations should store the registry for use during operation to
+	// This method is called exactly once by Runtime before Serve() is called.
+	// Implementations should store the runtime for use during operation to
 	// resolve shares and access their corresponding stores.
 	//
 	// Parameters:
-	//   - reg: Registry containing all metadata stores, content stores, and shares
+	//   - rt: Runtime containing all metadata stores, content stores, and shares
 	//
 	// Thread safety:
 	// Called before Serve(), no synchronization needed.
-	SetRegistry(reg *runtime.Runtime)
+	SetRuntime(rt *runtime.Runtime)
 
 	// Stop initiates graceful shutdown of the protocol server.
 	//

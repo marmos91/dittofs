@@ -77,19 +77,15 @@ func (s *GORMStore) CreateShare(ctx context.Context, share *models.Share) (strin
 func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error {
 	share.UpdatedAt = time.Now()
 
+	// Only update fields that don't have foreign key constraints
+	// MetadataStoreID and PayloadStoreID are not updated here to avoid FK issues
+	// Use specific methods to change stores if needed
 	result := s.db.WithContext(ctx).
 		Model(&models.Share{}).
 		Where("id = ?", share.ID).
 		Updates(map[string]any{
-			"name":               share.Name,
-			"metadata_store_id":  share.MetadataStoreID,
-			"payload_store_id":   share.PayloadStoreID,
 			"read_only":          share.ReadOnly,
 			"default_permission": share.DefaultPermission,
-			"config":             share.Config,
-			"guest_enabled":      share.GuestEnabled,
-			"guest_uid":          share.GuestUID,
-			"guest_gid":          share.GuestGID,
 			"updated_at":         share.UpdatedAt,
 		})
 

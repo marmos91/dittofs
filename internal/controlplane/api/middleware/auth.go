@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/marmos91/dittofs/pkg/controlplane/api/auth"
+	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
 )
 
 // Context key type for storing claims
@@ -129,7 +129,7 @@ func RequirePasswordChange(allowedPaths ...string) func(http.Handler) http.Handl
 
 			// Block if user must change password
 			if claims.MustChangePassword {
-				http.Error(w, "Password change required", http.StatusForbidden)
+				http.Error(w, "Password change required. Please change your password before proceeding.", http.StatusForbidden)
 				return
 			}
 

@@ -28,9 +28,7 @@ func testSetup(t *testing.T, port int) (store.Store, APIConfig) {
 	}
 
 	// Create API config with a valid JWT secret (>= 32 characters)
-	enabled := true
 	cfg := APIConfig{
-		Enabled:      &enabled,
 		Port:         port,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
@@ -111,9 +109,7 @@ func TestAPIServer_Port(t *testing.T) {
 func TestAPIServer_DefaultConfig(t *testing.T) {
 	cpStore, _ := testSetup(t, 0)
 
-	enabled := true
 	cfg := APIConfig{
-		Enabled: &enabled,
 		// Port and timeouts not set - should use defaults
 		JWT: JWTConfig{
 			Secret: "test-secret-key-for-testing-only-32chars",
@@ -261,9 +257,7 @@ func TestAPIServer_StoresEndpoint(t *testing.T) {
 func TestAPIServer_InvalidJWTSecret(t *testing.T) {
 	cpStore, _ := testSetup(t, 0)
 
-	enabled := true
 	cfg := APIConfig{
-		Enabled: &enabled,
 		JWT: JWTConfig{
 			Secret: "short", // Too short, should fail
 		},
