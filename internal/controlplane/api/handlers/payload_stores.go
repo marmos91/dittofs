@@ -174,8 +174,11 @@ func (h *PayloadStoreHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			NotFound(w, "Payload store not found")
 			return
 		}
-		// Check if store is in use
-		Conflict(w, "Cannot delete payload store: it may be in use by shares")
+		if errors.Is(err, models.ErrStoreInUse) {
+			Conflict(w, "Cannot delete payload store: it is in use by one or more shares")
+			return
+		}
+		InternalServerError(w, "Failed to delete payload store")
 		return
 	}
 

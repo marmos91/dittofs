@@ -6,6 +6,7 @@ This guide covers common issues and their solutions when working with DittoFS.
 
 - [Connection Issues](#connection-issues)
 - [Mount Issues](#mount-issues)
+  - [SMB mount permission denied (macOS)](#smb-mount-permission-denied-macos)
 - [Permission Issues](#permission-issues)
 - [File Handle Issues](#file-handle-issues)
 - [Performance Issues](#performance-issues)
@@ -155,6 +156,46 @@ mount.nfs: mounting localhost:/export failed, reason given by server: No such fi
    # Mount using the exact share name from config
    sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
    ```
+
+### SMB mount permission denied (macOS)
+
+**Symptoms:**
+```
+zsh: permission denied: /tmp/smb-test/file.txt
+```
+
+This happens after mounting an SMB share, even with 0777 permissions.
+
+**Cause:** macOS has a security restriction where **only the mount owner can access files**,
+regardless of Unix permissions. This is enforced at a level below file permissions - no SMB
+traffic even reaches the server. Apple confirmed this is "works as intended".
+
+**Solution - use dittofsctl (handles this automatically):**
+
+The `dittofsctl share mount` command automatically handles this by using `sudo -u $SUDO_USER`
+to mount as your user instead of root:
+
+```bash
+# This works - mount owned by your user, not root
+sudo dittofsctl share mount --protocol smb /export /mnt/share
+```
+
+**Alternative - mount to user directory without sudo:**
+```bash
+mkdir -p ~/mnt/share
+dittofsctl share mount --protocol smb /export ~/mnt/share
+```
+
+**If using manual mount_smbfs:**
+```bash
+# Mount as your user, not root
+sudo -u $USER mount_smbfs //user:pass@localhost:12445/export /mnt/share
+```
+
+**Note:** This is a macOS-specific issue. On Linux, `dittofsctl share mount` uses uid/gid
+options which work correctly.
+
+See [Known Limitations](KNOWN_LIMITATIONS.md#macos-mount-owner-only-access) for details.
 
 ## Permission Issues
 

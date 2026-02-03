@@ -37,6 +37,14 @@ type AuthContext struct {
 	// This is determined by share-level user permissions (identity.SharePermission)
 	// When true, all write operations to this share should be denied
 	ShareReadOnly bool
+
+	// ShareWritable indicates whether the user has share-level write permission.
+	// When true, the user can write to files in the share regardless of file-level
+	// Unix permissions. This is used to implement share-based access control where
+	// authenticated users with share write permission bypass file-level permission checks.
+	// This is similar to how root bypass works, but applies to any user with share
+	// write permission.
+	ShareWritable bool
 }
 
 // ============================================================================
@@ -549,6 +557,19 @@ func (s *MetadataService) checkFilePermissions(ctx *AuthContext, handle FileHand
 	if err != nil {
 		// If we can't get share options, continue without read-only check
 		shareOpts = nil
+	}
+
+	// Share-level write permission bypass:
+	// If the user has share-level write permission (ctx.ShareWritable), grant write
+	// permissions on files in the share, bypassing file-level Unix permission checks.
+	// This allows authenticated users with share write access to create/modify files
+	// even if the file's Unix permissions would normally deny access.
+	//
+	// Note: ShareReadOnly takes precedence - if the share is read-only for this user,
+	// write permission is denied regardless of ShareWritable.
+	if ctx.ShareWritable && !ctx.ShareReadOnly {
+		// Grant all requested permissions except those explicitly denied by read-only
+		return requested, nil
 	}
 
 	return calculatePermissions(file, ctx.Identity, shareOpts, requested), nil

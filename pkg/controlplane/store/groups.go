@@ -18,6 +18,7 @@ import (
 func (s *GORMStore) GetGroup(ctx context.Context, name string) (*models.Group, error) {
 	var group models.Group
 	err := s.db.WithContext(ctx).
+		Preload("Users").
 		Preload("SharePermissions").
 		Where("name = ?", name).
 		First(&group).Error
@@ -30,6 +31,7 @@ func (s *GORMStore) GetGroup(ctx context.Context, name string) (*models.Group, e
 func (s *GORMStore) GetGroupByID(ctx context.Context, id string) (*models.Group, error) {
 	var group models.Group
 	err := s.db.WithContext(ctx).
+		Preload("Users").
 		Preload("SharePermissions").
 		Where("id = ?", id).
 		First(&group).Error
@@ -42,6 +44,7 @@ func (s *GORMStore) GetGroupByID(ctx context.Context, id string) (*models.Group,
 func (s *GORMStore) ListGroups(ctx context.Context) ([]*models.Group, error) {
 	var groups []*models.Group
 	if err := s.db.WithContext(ctx).
+		Preload("Users").
 		Preload("SharePermissions").
 		Find(&groups).Error; err != nil {
 		return nil, err
@@ -149,7 +152,11 @@ func (s *GORMStore) RemoveUserFromGroup(ctx context.Context, username, groupName
 			return err
 		}
 
-		return tx.Model(&user).Association("Groups").Delete(&group)
+		// Delete the association - this is idempotent (no error if not exists)
+		if err := tx.Model(&user).Association("Groups").Delete(&group); err != nil {
+			return err
+		}
+		return nil
 	})
 }
 
@@ -186,8 +193,8 @@ func (s *GORMStore) EnsureDefaultGroups(ctx context.Context) (bool, error) {
 		gid         *uint32
 		description string
 	}{
-		{"admins", uint32Ptr(1000), "System administrators"},
-		{"users", uint32Ptr(1001), "Regular users"},
+		{"admins", uint32Ptr(0), "System administrators"}, // GID 0 for root-level access
+		{"users", uint32Ptr(1000), "Regular users"},       // GID 1000 for regular users
 	}
 
 	for _, d := range defaults {

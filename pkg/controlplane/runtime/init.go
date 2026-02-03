@@ -108,8 +108,11 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 		} else {
 			pgCfg.Port = 5432 // default
 		}
+		// Accept both "database" and "dbname" for compatibility
 		if database, ok := config["database"].(string); ok {
 			pgCfg.Database = database
+		} else if dbname, ok := config["dbname"].(string); ok {
+			pgCfg.Database = dbname
 		} else {
 			return nil, fmt.Errorf("postgres metadata store requires database")
 		}

@@ -37,6 +37,7 @@ type CreateUserRequest struct {
 	Email       string                            `json:"email,omitempty"`
 	DisplayName string                            `json:"display_name,omitempty"`
 	Role        string                            `json:"role,omitempty"`
+	UID         *uint32                           `json:"uid,omitempty"`
 	Groups      []string                          `json:"groups,omitempty"`
 	Enabled     *bool                             `json:"enabled,omitempty"`
 	SharePerms  map[string]models.SharePermission `json:"share_permissions,omitempty"`
@@ -47,6 +48,7 @@ type UpdateUserRequest struct {
 	Email       *string                            `json:"email,omitempty"`
 	DisplayName *string                            `json:"display_name,omitempty"`
 	Role        *string                            `json:"role,omitempty"`
+	UID         *uint32                            `json:"uid,omitempty"`
 	Groups      *[]string                          `json:"groups,omitempty"`
 	Enabled     *bool                              `json:"enabled,omitempty"`
 	SharePerms  *map[string]models.SharePermission `json:"share_permissions,omitempty"`
@@ -93,13 +95,15 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create user
+	// Only admin users require password change on first login
+	mustChangePassword := role == models.RoleAdmin
 	user := &models.User{
 		ID:                 uuid.New().String(),
 		Username:           req.Username,
 		PasswordHash:       passwordHash,
 		NTHash:             ntHashHex,
 		Enabled:            true,
-		MustChangePassword: true, // New users must change password
+		MustChangePassword: mustChangePassword,
 		Role:               string(role),
 		DisplayName:        req.DisplayName,
 		Email:              req.Email,
@@ -109,6 +113,11 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Override enabled if explicitly set
 	if req.Enabled != nil {
 		user.Enabled = *req.Enabled
+	}
+
+	// Set UID if provided
+	if req.UID != nil {
+		user.UID = req.UID
 	}
 
 	if _, err := h.store.CreateUser(r.Context(), user); err != nil {
@@ -141,11 +150,24 @@ func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 // Get handles GET /api/v1/users/{username}.
-// Gets a user by username (admin only).
+// Gets a user by username. Admins can get any user, non-admins can only get their own info.
 func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 	username := chi.URLParam(r, "username")
 	if username == "" {
 		BadRequest(w, "Username is required")
+		return
+	}
+
+	// Check authorization - allow admin or self-access
+	claims := middleware.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		Unauthorized(w, "Authentication required")
+		return
+	}
+
+	// Non-admins can only access their own info
+	if !claims.IsAdmin() && claims.Username != username {
+		Forbidden(w, "Access denied")
 		return
 	}
 
@@ -204,6 +226,9 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Enabled != nil {
 		user.Enabled = *req.Enabled
+	}
+	if req.UID != nil {
+		user.UID = req.UID
 	}
 
 	if err := h.store.UpdateUser(r.Context(), user); err != nil {
@@ -278,14 +303,15 @@ func (h *UserHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update password and set must change flag
+	// Update password
 	if err := h.store.UpdatePassword(r.Context(), username, passwordHash, ntHashHex); err != nil {
 		InternalServerError(w, "Failed to update password")
 		return
 	}
 
-	// Set must change password flag
-	user.MustChangePassword = true
+	// Set must change password flag only for admin users
+	// Regular users don't need to change password after admin reset
+	user.MustChangePassword = user.Role == string(models.RoleAdmin)
 	if err := h.store.UpdateUser(r.Context(), user); err != nil {
 		InternalServerError(w, "Failed to update user")
 		return
