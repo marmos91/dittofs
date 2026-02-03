@@ -15,7 +15,7 @@ import (
 	"crypto/hmac"
 	"crypto/md5" //nolint:gosec // MD5 is required for NTLM protocol compatibility (HMAC-MD5 in NTLMv2)
 	"crypto/rand"
-	"crypto/rc4" //nolint:gosec // RC4 is required for NTLM KEY_EXCH protocol compatibility
+	"crypto/rc4" //nolint:gosec // RC4 required for NTLM KEY_EXCH; only encrypts session key, not message data
 	"encoding/binary"
 	"strings"
 	"unicode/utf16"

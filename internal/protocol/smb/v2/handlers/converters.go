@@ -101,7 +101,8 @@ func fileAttrToSMBAttributesInternal(attr *metadata.FileAttr, hidden bool) types
 	// Note: We intentionally do NOT set FileAttributeReadonly based on Unix mode.
 	// macOS SMB clients interpret FileAttributeReadonly as "share is read-only"
 	// and refuse to create files, even before contacting the server.
-	// Unix permission enforcement should happen at file operation time, not via attributes.
+	// Unix permission enforcement happens at file operation time, not via attributes.
+	// See docs/KNOWN_LIMITATIONS.md for details on this macOS compatibility behavior.
 
 	return attrs
 }

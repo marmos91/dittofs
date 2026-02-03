@@ -162,9 +162,6 @@ func calculateMaximalAccess(perm models.SharePermission) uint32 {
 		// Generic read access
 		genericRead = fileReadData | fileReadEA | fileReadAttributes | readControl | synchronize
 
-		// Generic write access
-		genericWrite = fileWriteData | fileAppendData | fileWriteEA | fileWriteAttributes | synchronize
-
 		// Full access
 		fullAccess = 0x001F01FF
 	)
@@ -174,7 +171,9 @@ func calculateMaximalAccess(perm models.SharePermission) uint32 {
 		// Full access for admin users
 		return fullAccess
 	case models.PermissionReadWrite:
-		// Full access for read-write users (required for file creation on macOS)
+		// Full access for read-write users. macOS Finder checks MaximalAccess before
+		// attempting file operations and refuses to create files if delete/ownership
+		// bits are missing. Actual permission enforcement happens at operation time.
 		return fullAccess
 	case models.PermissionRead:
 		// Read-only access

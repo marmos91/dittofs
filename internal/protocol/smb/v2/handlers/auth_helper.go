@@ -79,15 +79,14 @@ func getUserIdentity(user *models.User) (uid, gid uint32) {
 			"username", user.Username, "uid", uid)
 	}
 
-	// Get GID from user's groups (use lowest GID for best permission matching)
-	// This ensures admins (GID 0) get root-level group permissions
+	// Get GID from user's primary group (first group with a GID).
+	// This follows Unix semantics where the primary group is used for new file creation.
 	gidFound := false
 	for _, group := range user.Groups {
 		if group.GID != nil {
-			if !gidFound || *group.GID < gid {
-				gid = *group.GID
-				gidFound = true
-			}
+			gid = *group.GID
+			gidFound = true
+			break
 		}
 	}
 

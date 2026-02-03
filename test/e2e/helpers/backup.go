@@ -20,7 +20,7 @@ type ControlPlaneBackup struct {
 	DatabaseType   string            `json:"database_type"`
 	Users          []BackupUser      `json:"users"`
 	Groups         []BackupGroup     `json:"groups"`
-	Shares         []json.RawMessage `json:"shares"`          // Raw to avoid deep model dependency
+	Shares         []json.RawMessage `json:"shares"` // Raw to avoid deep model dependency
 	MetadataStores []json.RawMessage `json:"metadata_stores"`
 	PayloadStores  []json.RawMessage `json:"payload_stores"`
 	Adapters       []json.RawMessage `json:"adapters"`
