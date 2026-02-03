@@ -188,6 +188,11 @@ func (s *GORMStore) EnsureDefaultGroups(ctx context.Context) (bool, error) {
 	// Helper to create uint32 pointer
 	uint32Ptr := func(v uint32) *uint32 { return &v }
 
+	// Default groups created during initialization.
+	// The admins group uses GID 0 (root) intentionally - this grants Unix filesystem
+	// permission bypass for administrative operations. This is documented in
+	// docs/SECURITY.md and matches the admin user's UID 0 for consistent root-level
+	// access to all files regardless of Unix permissions.
 	defaults := []struct {
 		name        string
 		gid         *uint32
