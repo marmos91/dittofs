@@ -181,6 +181,84 @@ func MountSMB(t *testing.T, port int, creds SMBCredentials) *Mount {
 	}
 }
 
+// MountSMBWithError mounts an SMB share and returns the mount info or an error.
+// Unlike MountSMB, this function does NOT call t.Fatal on mount failure.
+// Use this for testing scenarios where mount is expected to fail (e.g., permission denied).
+func MountSMBWithError(t *testing.T, port int, creds SMBCredentials) (*Mount, error) {
+	t.Helper()
+
+	// Give the SMB server a moment to fully initialize
+	time.Sleep(500 * time.Millisecond)
+
+	// Create mount directory
+	mountPath, err := os.MkdirTemp("", "dittofs-e2e-smb-*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SMB mount directory: %w", err)
+	}
+
+	// Build mount command based on platform
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		// macOS: mount_smbfs
+		smbURL := fmt.Sprintf("//%s:%s@localhost:%d/export", creds.Username, creds.Password, port)
+		cmd = exec.Command("mount_smbfs", smbURL, mountPath)
+	case "linux":
+		// Linux: mount -t cifs
+		cmd = exec.Command("mount", "-t", "cifs",
+			"//localhost/export",
+			mountPath,
+			"-o", fmt.Sprintf("port=%d,username=%s,password=%s,vers=2.1",
+				port, creds.Username, creds.Password))
+	default:
+		_ = os.RemoveAll(mountPath)
+		return nil, fmt.Errorf("unsupported platform for SMB: %s", runtime.GOOS)
+	}
+
+	// Execute mount command with retries
+	var output []byte
+	var lastErr error
+	maxRetries := 3
+
+	for i := 0; i < maxRetries; i++ {
+		output, lastErr = cmd.CombinedOutput()
+
+		if lastErr == nil {
+			t.Logf("SMB share mounted successfully at %s", mountPath)
+			return &Mount{
+				T:        t,
+				Path:     mountPath,
+				Protocol: "smb",
+				Port:     port,
+				mounted:  true,
+			}, nil
+		}
+
+		if i < maxRetries-1 {
+			t.Logf("SMB mount attempt %d failed (error: %v), retrying in 1 second...", i+1, lastErr)
+			time.Sleep(time.Second)
+
+			// Rebuild command for next attempt (cmd can only be run once)
+			switch runtime.GOOS {
+			case "darwin":
+				smbURL := fmt.Sprintf("//%s:%s@localhost:%d/export", creds.Username, creds.Password, port)
+				cmd = exec.Command("mount_smbfs", smbURL, mountPath)
+			case "linux":
+				cmd = exec.Command("mount", "-t", "cifs",
+					"//localhost/export",
+					mountPath,
+					"-o", fmt.Sprintf("port=%d,username=%s,password=%s,vers=2.1",
+						port, creds.Username, creds.Password))
+			}
+		}
+	}
+
+	// Clean up mount directory on failure
+	_ = os.RemoveAll(mountPath)
+	return nil, fmt.Errorf("failed to mount SMB share after %d attempts: %v\nOutput: %s",
+		maxRetries, lastErr, string(output))
+}
+
 // Unmount unmounts the filesystem.
 func (m *Mount) Unmount() {
 	m.T.Helper()
@@ -214,12 +292,23 @@ func (m *Mount) Unmount() {
 		_ = cmd.Run()
 	}
 
-	// Wait a moment for macOS to release SMB session state
-	if runtime.GOOS == "darwin" && m.Protocol == "smb" {
-		time.Sleep(200 * time.Millisecond)
-	}
+	// Wait for the mount to be fully removed from the kernel.
+	// On macOS, diskutil returns before the kernel fully releases the mount.
+	// We poll until the mount disappears or timeout after 5 seconds.
+	waitForUnmount(m.Path, 5*time.Second)
 
 	m.mounted = false
+}
+
+// waitForUnmount polls until the path is no longer mounted or timeout expires.
+func waitForUnmount(path string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !isMounted(path) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // Cleanup unmounts and removes the mount directory.
@@ -275,14 +364,35 @@ func WaitForServer(t *testing.T, port int, timeout time.Duration) {
 // This handles cases where tests timeout or panic without proper cleanup.
 func CleanupStaleMounts() {
 	// Find all dittofs test mount directories in /tmp
+	// On macOS, /tmp is a symlink to /private/tmp, so we need to check both paths
 	patterns := []string{
 		"/tmp/dittofs-test-*",
 		"/tmp/dittofs-e2e-*",
+		"/tmp/dittofs-e2e-nfs-*",
+		"/tmp/dittofs-e2e-smb-*",
+		"/tmp/dittofs-e2e-matrix-*",
 		"/tmp/dittofs-interop-nfs-*",
 		"/tmp/dittofs-interop-smb-*",
 		"/tmp/dittofs-smb-*",
 		"/tmp/dittofs-cache-*",
 		"/tmp/dittofs-shared-*",
+	}
+
+	// On macOS, also check /private/tmp (canonical path)
+	if runtime.GOOS == "darwin" {
+		macOSPatterns := []string{
+			"/private/tmp/dittofs-test-*",
+			"/private/tmp/dittofs-e2e-*",
+			"/private/tmp/dittofs-e2e-nfs-*",
+			"/private/tmp/dittofs-e2e-smb-*",
+			"/private/tmp/dittofs-e2e-matrix-*",
+			"/private/tmp/dittofs-interop-nfs-*",
+			"/private/tmp/dittofs-interop-smb-*",
+			"/private/tmp/dittofs-smb-*",
+			"/private/tmp/dittofs-cache-*",
+			"/private/tmp/dittofs-shared-*",
+		}
+		patterns = append(patterns, macOSPatterns...)
 	}
 
 	for _, pattern := range patterns {
@@ -294,19 +404,40 @@ func CleanupStaleMounts() {
 		for _, mountPath := range matches {
 			// Check if it's actually mounted
 			if isMounted(mountPath) {
-				// Try normal unmount first
-				cmd := exec.Command("umount", mountPath)
-				if err := cmd.Run(); err != nil {
-					// Force unmount if normal unmount fails
-					cmd = exec.Command("umount", "-f", mountPath)
-					_ = cmd.Run()
-				}
+				unmountStale(mountPath)
 			}
 
 			// Remove the directory if it exists and is empty
 			_ = os.Remove(mountPath)
 		}
 	}
+}
+
+// unmountStale attempts to unmount a stale mount point.
+func unmountStale(mountPath string) {
+	var cmd *exec.Cmd
+
+	switch runtime.GOOS {
+	case "darwin":
+		// On macOS, use diskutil for cleaner unmount
+		cmd = exec.Command("diskutil", "unmount", mountPath)
+	default:
+		cmd = exec.Command("umount", mountPath)
+	}
+
+	if err := cmd.Run(); err != nil {
+		// Force unmount if normal unmount fails
+		switch runtime.GOOS {
+		case "darwin":
+			cmd = exec.Command("diskutil", "unmount", "force", mountPath)
+		default:
+			cmd = exec.Command("umount", "-f", mountPath)
+		}
+		_ = cmd.Run()
+	}
+
+	// Wait for the mount to be fully removed
+	waitForUnmount(mountPath, 3*time.Second)
 }
 
 // isMounted checks if a path is currently mounted

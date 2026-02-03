@@ -108,9 +108,11 @@ jobs:
           --health-retries 5
 
       localstack:
-        image: localstack/localstack:latest
+        image: localstack/localstack:3.0
         env:
           SERVICES: s3
+          EAGER_SERVICE_LOADING: "1"
+          GATEWAY_LISTEN: "0.0.0.0:4566"  # Force HTTP mode (no TLS)
         ports:
           - 4566:4566
         options: >-
@@ -118,6 +120,15 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+
+    env:
+      # Tell tests to use pre-existing services instead of starting containers
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_DATABASE: dittofs_test
+      POSTGRES_USER: dittofs
+      POSTGRES_PASSWORD: dittofs
+      LOCALSTACK_ENDPOINT: http://localhost:4566
 
     steps:
       - name: Checkout
@@ -140,7 +151,8 @@ jobs:
       - name: Run E2E tests (Full mode)
         run: |
           # Full mode: all configurations including Docker-based stores
-          sudo nix develop .#ci --command go test -tags=e2e -v -timeout 30m ./test/e2e/... \
+          # Pass environment variables through sudo for external service detection
+          sudo -E nix develop .#ci --command go test -tags=e2e -v -timeout 30m ./test/e2e/... \
             2>&1 | tee "$GITHUB_WORKSPACE/e2e-full.log"
 
       - name: Generate summary

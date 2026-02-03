@@ -11,66 +11,6 @@ import (
 	"testing"
 )
 
-// RunOnAllConfigs runs a test function on all configurations.
-// By default, enables both NFS and SMB for each configuration.
-func RunOnAllConfigs(t *testing.T, testFunc func(t *testing.T, tc *TestContext)) {
-	t.Helper()
-	RunOnConfigs(t, AllConfigurations(), testFunc)
-}
-
-// RunOnLocalConfigs runs a test function on local configurations only (no Docker).
-func RunOnLocalConfigs(t *testing.T, testFunc func(t *testing.T, tc *TestContext)) {
-	t.Helper()
-	RunOnConfigs(t, LocalConfigurations(), testFunc)
-}
-
-// RunOnConfigs runs a test function on the specified configurations.
-// Each test gets a fresh context with its own server and mounts.
-func RunOnConfigs(t *testing.T, configs []*TestConfig, testFunc func(t *testing.T, tc *TestContext)) {
-	t.Helper()
-
-	for _, config := range configs {
-		t.Run(config.Name, func(t *testing.T) {
-			tc := NewTestContextWithOptions(t, config, DefaultOptions())
-			defer tc.Cleanup()
-			testFunc(t, tc)
-		})
-	}
-}
-
-// RunOnConfigsNFSOnly runs a test function with only NFS enabled.
-// Each test gets a fresh context with its own server and mounts.
-func RunOnConfigsNFSOnly(t *testing.T, configs []*TestConfig, testFunc func(t *testing.T, tc *TestContext)) {
-	t.Helper()
-
-	opts := TestContextOptions{
-		EnableNFS: true,
-		EnableSMB: false,
-	}
-
-	for _, config := range configs {
-		t.Run(config.Name, func(t *testing.T) {
-			tc := NewTestContextWithOptions(t, config, opts)
-			defer tc.Cleanup()
-			testFunc(t, tc)
-		})
-	}
-}
-
-// RunOnConfigsWithOptions runs a test function with custom options.
-// Each test gets a fresh context with its own server and mounts.
-func RunOnConfigsWithOptions(t *testing.T, configs []*TestConfig, opts TestContextOptions, testFunc func(t *testing.T, tc *TestContext)) {
-	t.Helper()
-
-	for _, config := range configs {
-		t.Run(config.Name, func(t *testing.T) {
-			tc := NewTestContextWithOptions(t, config, opts)
-			defer tc.Cleanup()
-			testFunc(t, tc)
-		})
-	}
-}
-
 // IsLargeFile returns true if the file size is considered "large" (>5MB).
 func IsLargeFile(sizeBytes int64) bool {
 	return sizeBytes > 5*1024*1024
