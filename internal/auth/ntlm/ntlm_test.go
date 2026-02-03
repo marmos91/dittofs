@@ -198,10 +198,12 @@ func TestBuildChallenge(t *testing.T) {
 			{FlagUnicode, "Unicode"},
 			{FlagRequestTarget, "RequestTarget"},
 			{FlagNTLM, "NTLM"},
+			{FlagSign, "Sign"},
 			{FlagAlwaysSign, "AlwaysSign"},
 			{FlagTargetTypeServer, "TargetTypeServer"},
 			{FlagExtendedSecurity, "ExtendedSecurity"},
 			{FlagTargetInfo, "TargetInfo"},
+			{FlagKeyExch, "KeyExch"},
 			{Flag128, "128-bit"},
 			{Flag56, "56-bit"},
 		}
@@ -599,4 +601,110 @@ func computeNTProofStr(ntlmv2Hash [16]byte, serverChallenge [8]byte, clientBlob 
 	mac.Write(serverChallenge[:])
 	mac.Write(clientBlob)
 	return mac.Sum(nil)
+}
+
+// =============================================================================
+// DeriveSigningKey Tests
+// =============================================================================
+
+func TestDeriveSigningKey(t *testing.T) {
+	t.Run("NoKeyExch", func(t *testing.T) {
+		// When KEY_EXCH is NOT set, SessionBaseKey is used directly
+		sessionBaseKey := [16]byte{
+			0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+			0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+		}
+		flags := FlagUnicode | FlagNTLM // No KEY_EXCH
+
+		result := DeriveSigningKey(sessionBaseKey, flags, nil)
+
+		if !bytes.Equal(result[:], sessionBaseKey[:]) {
+			t.Errorf("Without KEY_EXCH, should return sessionBaseKey directly")
+		}
+	})
+
+	t.Run("KeyExchWithValidEncryptedKey", func(t *testing.T) {
+		// When KEY_EXCH is set, we decrypt EncryptedRandomSessionKey with RC4
+		sessionBaseKey := [16]byte{
+			0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+			0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+		}
+		flags := FlagUnicode | FlagNTLM | FlagKeyExch
+
+		// Simulate what the client does: generate a random key and encrypt it
+		// For this test, we use a known "exported session key"
+		exportedSessionKey := [16]byte{
+			0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8,
+			0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8,
+		}
+
+		// Encrypt it with RC4(sessionBaseKey)
+		encryptedKey := rc4Encrypt(sessionBaseKey[:], exportedSessionKey[:])
+
+		result := DeriveSigningKey(sessionBaseKey, flags, encryptedKey)
+
+		// Should recover the original exported session key
+		if !bytes.Equal(result[:], exportedSessionKey[:]) {
+			t.Errorf("KEY_EXCH should decrypt to ExportedSessionKey.\nGot:      %x\nExpected: %x",
+				result, exportedSessionKey)
+		}
+	})
+
+	t.Run("KeyExchWithInvalidLength", func(t *testing.T) {
+		// If encrypted key is wrong length, fall back to session base key
+		sessionBaseKey := [16]byte{
+			0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+			0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+		}
+		flags := FlagUnicode | FlagNTLM | FlagKeyExch
+		shortKey := []byte{0x01, 0x02, 0x03} // Wrong length
+
+		result := DeriveSigningKey(sessionBaseKey, flags, shortKey)
+
+		if !bytes.Equal(result[:], sessionBaseKey[:]) {
+			t.Errorf("Invalid encrypted key length should fall back to sessionBaseKey")
+		}
+	})
+
+	t.Run("KeyExchWithEmptyKey", func(t *testing.T) {
+		// If encrypted key is empty, fall back to session base key
+		sessionBaseKey := [16]byte{
+			0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+			0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+		}
+		flags := FlagUnicode | FlagNTLM | FlagKeyExch
+
+		result := DeriveSigningKey(sessionBaseKey, flags, nil)
+
+		if !bytes.Equal(result[:], sessionBaseKey[:]) {
+			t.Errorf("Empty encrypted key should fall back to sessionBaseKey")
+		}
+	})
+}
+
+// rc4Encrypt performs RC4 encryption (which is same as decryption for RC4)
+func rc4Encrypt(key, data []byte) []byte {
+	// RC4 cipher initialization
+	s := make([]byte, 256)
+	for i := range s {
+		s[i] = byte(i)
+	}
+
+	j := 0
+	for i := 0; i < 256; i++ {
+		j = (j + int(s[i]) + int(key[i%len(key)])) % 256
+		s[i], s[j] = s[j], s[i]
+	}
+
+	// RC4 encryption
+	result := make([]byte, len(data))
+	i, j := 0, 0
+	for k := 0; k < len(data); k++ {
+		i = (i + 1) % 256
+		j = (j + int(s[i])) % 256
+		s[i], s[j] = s[j], s[i]
+		result[k] = data[k] ^ s[(int(s[i])+int(s[j]))%256]
+	}
+
+	return result
 }

@@ -5,8 +5,10 @@ import (
 	"encoding/binary"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // =============================================================================
@@ -339,6 +341,159 @@ func TestTreeConnectConstants(t *testing.T) {
 		if ipcMaximalAccess != expected {
 			t.Errorf("ipcMaximalAccess = 0x%x, expected 0x%x",
 				ipcMaximalAccess, expected)
+		}
+	})
+}
+
+// =============================================================================
+// Root User Bypass Tests
+// =============================================================================
+
+func TestIsRootUser(t *testing.T) {
+	t.Run("NilUser", func(t *testing.T) {
+		if isRootUser(nil) {
+			t.Error("nil user should not be root")
+		}
+	})
+
+	t.Run("UserWithNilUID", func(t *testing.T) {
+		user := &models.User{Username: "test"}
+		if isRootUser(user) {
+			t.Error("user with nil UID should not be root")
+		}
+	})
+
+	t.Run("UserWithNonZeroUID", func(t *testing.T) {
+		uid := uint32(1000)
+		user := &models.User{Username: "test", UID: &uid}
+		if isRootUser(user) {
+			t.Error("user with UID 1000 should not be root")
+		}
+	})
+
+	t.Run("UserWithZeroUID", func(t *testing.T) {
+		uid := uint32(0)
+		user := &models.User{Username: "admin", UID: &uid}
+		if !isRootUser(user) {
+			t.Error("user with UID 0 should be root")
+		}
+	})
+}
+
+func TestRootHasAdminAccess(t *testing.T) {
+	t.Run("NilShare", func(t *testing.T) {
+		if rootHasAdminAccess(nil) {
+			t.Error("nil share should not allow root admin access")
+		}
+	})
+
+	t.Run("EmptySquash", func(t *testing.T) {
+		share := &runtime.Share{Name: "/test", Squash: ""}
+		if !rootHasAdminAccess(share) {
+			t.Error("empty squash should allow root admin access")
+		}
+	})
+
+	t.Run("SquashNone", func(t *testing.T) {
+		share := &runtime.Share{Name: "/test", Squash: models.SquashNone}
+		if !rootHasAdminAccess(share) {
+			t.Error("SquashNone should allow root admin access")
+		}
+	})
+
+	t.Run("SquashRootToAdmin", func(t *testing.T) {
+		share := &runtime.Share{Name: "/test", Squash: models.SquashRootToAdmin}
+		if !rootHasAdminAccess(share) {
+			t.Error("SquashRootToAdmin should allow root admin access")
+		}
+	})
+
+	t.Run("SquashAllToAdmin", func(t *testing.T) {
+		share := &runtime.Share{Name: "/test", Squash: models.SquashAllToAdmin}
+		if !rootHasAdminAccess(share) {
+			t.Error("SquashAllToAdmin should allow root admin access")
+		}
+	})
+
+	t.Run("SquashRootToGuest", func(t *testing.T) {
+		share := &runtime.Share{Name: "/test", Squash: models.SquashRootToGuest}
+		if rootHasAdminAccess(share) {
+			t.Error("SquashRootToGuest should not allow root admin access")
+		}
+	})
+
+	t.Run("SquashAllToGuest", func(t *testing.T) {
+		share := &runtime.Share{Name: "/test", Squash: models.SquashAllToGuest}
+		if rootHasAdminAccess(share) {
+			t.Error("SquashAllToGuest should not allow root admin access")
+		}
+	})
+}
+
+func TestResolveSharePermission_RootBypass(t *testing.T) {
+	ctx := NewSMBHandlerContext(context.Background(), "127.0.0.1:12345", 1, 0, 1)
+
+	t.Run("RootUserGetsAdminPermission", func(t *testing.T) {
+		uid := uint32(0)
+		user := &models.User{Username: "admin", UID: &uid}
+		sess := session.NewSessionWithUser(1, "127.0.0.1", user, "")
+		share := &runtime.Share{Name: "/export", Squash: "", DefaultPermission: "read-write"}
+		defaultPerm := models.PermissionReadWrite
+
+		perm, username := resolveSharePermission(ctx, sess, share, defaultPerm, nil)
+
+		if perm != models.PermissionAdmin {
+			t.Errorf("Root user should get PermissionAdmin, got %v", perm)
+		}
+		if username != "admin" {
+			t.Errorf("Username should be 'admin', got %q", username)
+		}
+	})
+
+	t.Run("RootUserWithRootToGuestSquash", func(t *testing.T) {
+		uid := uint32(0)
+		user := &models.User{Username: "admin", UID: &uid}
+		sess := session.NewSessionWithUser(1, "127.0.0.1", user, "")
+		share := &runtime.Share{Name: "/export", Squash: models.SquashRootToGuest, DefaultPermission: "read-write"}
+		defaultPerm := models.PermissionReadWrite
+
+		perm, _ := resolveSharePermission(ctx, sess, share, defaultPerm, nil)
+
+		// Root bypass should NOT apply when squash mode denies root
+		// Without userStore, it falls back to default permission
+		if perm != models.PermissionReadWrite {
+			t.Errorf("Root user with root_to_guest squash should get default permission (read-write), got %v", perm)
+		}
+	})
+
+	t.Run("NonRootUserDoesNotGetAdminBypass", func(t *testing.T) {
+		uid := uint32(1000)
+		user := &models.User{Username: "user", UID: &uid}
+		sess := session.NewSessionWithUser(1, "127.0.0.1", user, "")
+		share := &runtime.Share{Name: "/export", Squash: "", DefaultPermission: "read-write"}
+		defaultPerm := models.PermissionReadWrite
+
+		perm, _ := resolveSharePermission(ctx, sess, share, defaultPerm, nil)
+
+		// Non-root user should NOT get admin bypass
+		// Without userStore, it falls back to default permission
+		if perm == models.PermissionAdmin {
+			t.Error("Non-root user should not get PermissionAdmin from root bypass")
+		}
+	})
+
+	t.Run("GuestSessionUsesDefaultPermission", func(t *testing.T) {
+		sess := session.NewSession(1, "127.0.0.1", true, "guest", "")
+		share := &runtime.Share{Name: "/export", Squash: "", DefaultPermission: "read"}
+		defaultPerm := models.PermissionRead
+
+		perm, username := resolveSharePermission(ctx, sess, share, defaultPerm, nil)
+
+		if perm != models.PermissionRead {
+			t.Errorf("Guest session should get default permission, got %v", perm)
+		}
+		if username != "guest" {
+			t.Errorf("Username should be 'guest', got %q", username)
 		}
 	})
 }

@@ -8,16 +8,16 @@ import (
 type Group struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
-	GID         uint32   `json:"gid"`
+	GID         *uint32  `json:"gid,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Members     []string `json:"members,omitempty"`
 }
 
 // CreateGroupRequest is the request to create a group.
 type CreateGroupRequest struct {
-	Name        string `json:"name"`
-	GID         uint32 `json:"gid,omitempty"`
-	Description string `json:"description,omitempty"`
+	Name        string  `json:"name"`
+	GID         *uint32 `json:"gid,omitempty"`
+	Description string  `json:"description,omitempty"`
 }
 
 // UpdateGroupRequest is the request to update a group.

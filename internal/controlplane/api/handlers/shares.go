@@ -97,6 +97,26 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate that metadata store exists (try by name first, then by ID)
+	metaStore, err := h.store.GetMetadataStore(r.Context(), req.MetadataStoreID)
+	if err != nil {
+		metaStore, err = h.store.GetMetadataStoreByID(r.Context(), req.MetadataStoreID)
+	}
+	if err != nil {
+		BadRequest(w, "Metadata store not found: "+req.MetadataStoreID)
+		return
+	}
+
+	// Validate that payload store exists (try by name first, then by ID)
+	payloadStore, err := h.store.GetPayloadStore(r.Context(), req.PayloadStoreID)
+	if err != nil {
+		payloadStore, err = h.store.GetPayloadStoreByID(r.Context(), req.PayloadStoreID)
+	}
+	if err != nil {
+		BadRequest(w, "Payload store not found: "+req.PayloadStoreID)
+		return
+	}
+
 	// Set default permission if not provided
 	// Use "read-write" for NFS compatibility (same as traditional NFS servers)
 	// This allows anonymous/unknown UIDs to access the share, with file-level
@@ -110,8 +130,8 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	share := &models.Share{
 		ID:                uuid.New().String(),
 		Name:              req.Name,
-		MetadataStoreID:   req.MetadataStoreID,
-		PayloadStoreID:    req.PayloadStoreID,
+		MetadataStoreID:   metaStore.ID,    // Use actual store ID (UUID), not name
+		PayloadStoreID:    payloadStore.ID, // Use actual store ID (UUID), not name
 		ReadOnly:          req.ReadOnly,
 		DefaultPermission: defaultPerm,
 		CreatedAt:         now,
@@ -129,21 +149,6 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// Add share to runtime if runtime is available
 	if h.runtime != nil {
-		// Get the metadata store config - try by name first, then by ID
-		// (users can pass either the store name or its UUID)
-		metaStore, err := h.store.GetMetadataStore(r.Context(), req.MetadataStoreID)
-		if err != nil {
-			metaStore, err = h.store.GetMetadataStoreByID(r.Context(), req.MetadataStoreID)
-		}
-		if err != nil {
-			// Share created in DB but failed to load - log warning
-			// The share can be loaded on next server restart
-			logger.Warn("Share created but metadata store not found for runtime registration",
-				"share", req.Name, "metadata_store_id", req.MetadataStoreID, "error", err)
-			WriteJSONCreated(w, shareToResponse(share))
-			return
-		}
-
 		shareConfig := &runtime.ShareConfig{
 			Name:              req.Name,
 			MetadataStore:     metaStore.Name,
@@ -303,14 +308,14 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req struct {
-		Permission string `json:"permission"`
+		Level string `json:"level"`
 	}
 	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
-	if req.Permission == "" {
-		BadRequest(w, "Permission is required")
+	if req.Level == "" {
+		BadRequest(w, "Permission level is required")
 		return
 	}
 
@@ -339,7 +344,7 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 		UserID:     user.ID,
 		ShareID:    share.ID,
 		ShareName:  share.Name,
-		Permission: req.Permission,
+		Permission: req.Level,
 	}
 
 	if err := h.store.SetUserSharePermission(r.Context(), perm); err != nil {
@@ -350,7 +355,7 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 	WriteNoContent(w)
 }
 
-// DeleteUserPermission handles DELETE /api/v1/shares/{name}/users/{username}.
+// DeleteUserPermission handles DELETE /api/v1/shares/{name}/permissions/users/{username}.
 // Removes a user's permission for a share (admin only).
 func (h *ShareHandler) DeleteUserPermission(w http.ResponseWriter, r *http.Request) {
 	shareName := normalizeShareName(chi.URLParam(r, "name"))
@@ -389,14 +394,14 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 	}
 
 	var req struct {
-		Permission string `json:"permission"`
+		Level string `json:"level"`
 	}
 	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
-	if req.Permission == "" {
-		BadRequest(w, "Permission is required")
+	if req.Level == "" {
+		BadRequest(w, "Permission level is required")
 		return
 	}
 
@@ -425,7 +430,7 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 		GroupID:    group.ID,
 		ShareID:    share.ID,
 		ShareName:  share.Name,
-		Permission: req.Permission,
+		Permission: req.Level,
 	}
 
 	if err := h.store.SetGroupSharePermission(r.Context(), perm); err != nil {
@@ -436,7 +441,7 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 	WriteNoContent(w)
 }
 
-// DeleteGroupPermission handles DELETE /api/v1/shares/{name}/groups/{groupname}.
+// DeleteGroupPermission handles DELETE /api/v1/shares/{name}/permissions/groups/{groupname}.
 // Removes a group's permission for a share (admin only).
 func (h *ShareHandler) DeleteGroupPermission(w http.ResponseWriter, r *http.Request) {
 	shareName := normalizeShareName(chi.URLParam(r, "name"))
@@ -457,6 +462,69 @@ func (h *ShareHandler) DeleteGroupPermission(w http.ResponseWriter, r *http.Requ
 	}
 
 	WriteNoContent(w)
+}
+
+// PermissionResponse represents a permission entry for a share.
+type PermissionResponse struct {
+	Type  string `json:"type"`  // "user" or "group"
+	Name  string `json:"name"`  // username or group name
+	Level string `json:"level"` // permission level
+}
+
+// ListPermissions handles GET /api/v1/shares/{name}/permissions.
+// Returns all permissions configured for a share (admin only).
+func (h *ShareHandler) ListPermissions(w http.ResponseWriter, r *http.Request) {
+	shareName := normalizeShareName(chi.URLParam(r, "name"))
+	if shareName == "/" {
+		BadRequest(w, "Share name is required")
+		return
+	}
+
+	// Get share with permissions loaded
+	share, err := h.store.GetShare(r.Context(), shareName)
+	if err != nil {
+		if errors.Is(err, models.ErrShareNotFound) {
+			NotFound(w, "Share not found")
+			return
+		}
+		InternalServerError(w, "Failed to get share")
+		return
+	}
+
+	// Build permission list
+	var perms []PermissionResponse
+
+	// Get user permissions with usernames
+	for _, up := range share.UserPermissions {
+		// Look up user to get username
+		user, err := h.store.GetUserByID(r.Context(), up.UserID)
+		if err != nil {
+			// Skip if user no longer exists (orphaned permission)
+			continue
+		}
+		perms = append(perms, PermissionResponse{
+			Type:  "user",
+			Name:  user.Username,
+			Level: up.Permission,
+		})
+	}
+
+	// Get group permissions with group names
+	for _, gp := range share.GroupPermissions {
+		// Look up group to get name
+		group, err := h.store.GetGroupByID(r.Context(), gp.GroupID)
+		if err != nil {
+			// Skip if group no longer exists (orphaned permission)
+			continue
+		}
+		perms = append(perms, PermissionResponse{
+			Type:  "group",
+			Name:  group.Name,
+			Level: gp.Permission,
+		})
+	}
+
+	WriteJSONOK(w, perms)
 }
 
 // shareToResponse converts a models.Share to ShareResponse.

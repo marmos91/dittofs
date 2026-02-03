@@ -153,7 +153,11 @@ func New(config *Config) (*GORMStore, error) {
 		if err := os.MkdirAll(filepath.Dir(config.SQLite.Path), 0755); err != nil {
 			return nil, fmt.Errorf("failed to create database directory: %w", err)
 		}
-		dialector = sqlite.Open(config.SQLite.Path)
+		// SQLite pragmas for better concurrent access:
+		// - journal_mode(WAL): Write-Ahead Logging for concurrent readers/single writer
+		// - busy_timeout(5000): Wait up to 5 seconds when database is locked
+		dsn := config.SQLite.Path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+		dialector = sqlite.Open(dsn)
 
 	case DatabaseTypePostgres:
 		dialector = postgres.Open(config.Postgres.DSN())

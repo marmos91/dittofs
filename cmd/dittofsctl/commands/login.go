@@ -38,7 +38,7 @@ Examples:
 }
 
 func init() {
-	loginCmd.Flags().StringVar(&loginServer, "server", "", "Server URL (required on first login)")
+	loginCmd.Flags().StringVar(&loginServer, "server", "http://localhost:8080", "Server URL")
 	loginCmd.Flags().StringVarP(&loginUsername, "username", "u", "", "Username")
 	loginCmd.Flags().StringVarP(&loginPassword, "password", "p", "", "Password")
 }
@@ -50,18 +50,8 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to initialize credential store: %w", err)
 	}
 
-	// Determine server URL
+	// Determine server URL (defaults to http://localhost:8080)
 	serverURLStr := loginServer
-	if serverURLStr == "" {
-		// Try to get from current context
-		ctx, err := store.GetCurrentContext()
-		if err != nil || ctx == nil || ctx.ServerURL == "" {
-			return fmt.Errorf("no server URL specified and no saved context found\n\n" +
-				"Specify server URL:\n" +
-				"  dittofsctl login --server http://localhost:8080")
-		}
-		serverURLStr = ctx.ServerURL
-	}
 
 	// Validate server URL
 	parsedURL, err := url.Parse(serverURLStr)

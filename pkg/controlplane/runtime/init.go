@@ -108,8 +108,13 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 		} else {
 			pgCfg.Port = 5432 // default
 		}
+		// Accept both "database" and "dbname" for compatibility with different conventions:
+		// - "database": used by some Go database drivers and our config format
+		// - "dbname": used by PostgreSQL connection strings and libpq
 		if database, ok := config["database"].(string); ok {
 			pgCfg.Database = database
+		} else if dbname, ok := config["dbname"].(string); ok {
+			pgCfg.Database = dbname
 		} else {
 			return nil, fmt.Errorf("postgres metadata store requires database")
 		}

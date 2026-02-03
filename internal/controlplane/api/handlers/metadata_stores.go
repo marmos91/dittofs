@@ -206,8 +206,12 @@ func (h *MetadataStoreHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			NotFound(w, "Metadata store not found")
 			return
 		}
-		// Check if store is in use
-		Conflict(w, "Cannot delete metadata store: it may be in use by shares")
+		if errors.Is(err, models.ErrStoreInUse) {
+			Conflict(w, "Cannot delete metadata store: it is in use by one or more shares")
+			return
+		}
+		logger.Error("Failed to delete metadata store", "name", name, "error", err)
+		InternalServerError(w, "Failed to delete metadata store")
 		return
 	}
 

@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
@@ -69,20 +70,22 @@ func NewLocalstackHelper(t *testing.T) *LocalstackHelper {
 	}
 
 	// Start Localstack container using testcontainers
+	// Use a longer timeout (3 minutes) because Localstack can be slow to start,
+	// especially on first run when images need to be pulled.
+	// Note: Localstack 3.0+ defaults to HTTPS, but we can use GATEWAY_LISTEN to force HTTP.
 	req := testcontainers.ContainerRequest{
 		Image:        "localstack/localstack:3.0",
 		ExposedPorts: []string{"4566/tcp"},
 		Env: map[string]string{
 			"SERVICES":              "s3",
-			"DEFAULT_REGION":        "us-east-1",
 			"EAGER_SERVICE_LOADING": "1",
+			"GATEWAY_LISTEN":        "0.0.0.0:4566", // Force HTTP mode (no TLS)
 		},
 		WaitingFor: wait.ForAll(
 			wait.ForListeningPort("4566/tcp"),
 			wait.ForHTTP("/_localstack/health").
-				WithPort("4566/tcp").
-				WithStartupTimeout(60*time.Second),
-		),
+				WithPort("4566/tcp"),
+		).WithDeadline(3 * time.Minute),
 	}
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -210,24 +213,6 @@ func CheckLocalstackAvailable(t *testing.T) bool {
 	return true
 }
 
-// SetupS3Config configures a TestConfig for S3 usage with Localstack.
-func SetupS3Config(t *testing.T, config *TestConfig, helper *LocalstackHelper) {
-	t.Helper()
-
-	ctx := context.Background()
-
-	config.S3Client = helper.Client
-
-	bucketName := fmt.Sprintf("dittofs-test-%s", config.Name)
-	helper.CleanupBucket(ctx, bucketName)
-
-	if err := helper.CreateBucket(ctx, bucketName); err != nil {
-		t.Fatalf("Failed to create S3 bucket: %v", err)
-	}
-
-	config.S3Bucket = bucketName
-}
-
 // PostgresHelper manages PostgreSQL container for E2E tests.
 type PostgresHelper struct {
 	T         *testing.T
@@ -284,27 +269,22 @@ func NewPostgresHelper(t *testing.T) *PostgresHelper {
 		return helper
 	}
 
-	// Start PostgreSQL container using testcontainers
-	req := testcontainers.ContainerRequest{
-		Image:        "postgres:16-alpine",
-		ExposedPorts: []string{"5432/tcp"},
-		Env: map[string]string{
-			"POSTGRES_DB":       "dittofs_e2e",
-			"POSTGRES_USER":     "dittofs_e2e",
-			"POSTGRES_PASSWORD": "dittofs_e2e",
-		},
-		WaitingFor: wait.ForAll(
+	// Start PostgreSQL container using testcontainers postgres module
+	// Use a custom wait strategy with a longer timeout (5 minutes) because Docker can be slow
+	// on some systems, especially on first run when images need to be pulled.
+	// PostgreSQL outputs "database system is ready" twice during startup (once during
+	// bootstrap, once when fully ready), so we wait for 2 occurrences.
+	container, err := postgres.Run(ctx,
+		"postgres:16-alpine",
+		postgres.WithDatabase("dittofs_e2e"),
+		postgres.WithUsername("dittofs_e2e"),
+		postgres.WithPassword("dittofs_e2e"),
+		testcontainers.WithWaitStrategyAndDeadline(5*time.Minute,
 			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(60*time.Second),
+				WithOccurrence(2),
 			wait.ForListeningPort("5432/tcp"),
 		),
-	}
-
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
+	)
 	if err != nil {
 		t.Fatalf("failed to start postgres container: %v", err)
 	}
@@ -427,17 +407,6 @@ func CheckPostgresAvailable(t *testing.T) bool {
 
 	// With testcontainers, we can always start the container on demand
 	return true
-}
-
-// SetupPostgresConfig configures a TestConfig for PostgreSQL usage.
-func SetupPostgresConfig(t *testing.T, config *TestConfig, helper *PostgresHelper) {
-	t.Helper()
-
-	if err := helper.TruncateTables(); err != nil {
-		t.Logf("Warning: failed to truncate tables (may be first run): %v", err)
-	}
-
-	config.PostgresConfig = helper.GetConfig()
 }
 
 // CleanupSharedContainers terminates all shared test containers.

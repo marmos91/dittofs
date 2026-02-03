@@ -11,6 +11,8 @@ This document describes the known limitations of DittoFS due to protocol constra
   - [Extended Attributes](#extended-attributes)
   - [ACLs](#acls)
   - [fallocate/posix_fallocate](#fallocateposix_fallocate)
+- [SMB Client Limitations](#smb-client-limitations)
+  - [macOS Mount Ownership (Catalina 10.15+)](#macos-mount-ownership-catalina-1015)
 - [Storage Backend Limitations](#storage-backend-limitations)
   - [Hard Links](#hard-links)
   - [Special Files](#special-files)
@@ -158,6 +160,49 @@ All backends now support hard links via the NFS LINK procedure. Link counts are 
 | Sockets | Metadata only | MKNOD creates entry, no socket functionality |
 
 DittoFS can create special file entries via MKNOD, but they don't function as actual devices, pipes, or sockets. The metadata (type, mode, device numbers) is preserved but operations on the files themselves won't work as expected.
+
+## SMB Client Limitations
+
+### macOS Mount Owner-Only Access
+
+| Status | Reason |
+|--------|--------|
+| Handled by dittofsctl | Apple security restriction - only mount owner can access |
+
+**What it is**: macOS has a security restriction where only the user who owns an SMB mount
+can access its files, regardless of Unix permissions (0777 doesn't help). When Apple was
+asked about this, they responded "works as intended".
+
+**Why it happens**:
+1. Apple removed `-u`/`-g` (uid/gid) options from `mount_smbfs` in Catalina (10.15)
+2. macOS ignores group and other permissions on SMB mounts - only the owner can access
+3. This is enforced at a level below Unix permissions (no SMB traffic even reaches the server)
+
+**How dittofsctl handles this**:
+
+When you run `sudo dittofsctl share mount`, it automatically uses `sudo -u $SUDO_USER` to
+mount as your user (not root). This means:
+- The mount is owned by your user
+- You can access the files normally
+- No permission workarounds needed
+
+```bash
+# This works correctly - mount owned by your user, not root
+sudo dittofsctl share mount --protocol smb /export /mnt/share
+```
+
+**Alternative - mount without sudo**:
+```bash
+mkdir -p ~/mnt/share
+dittofsctl share mount --protocol smb /export ~/mnt/share
+```
+
+**Linux comparison**: Linux CIFS mount fully supports `uid=`/`gid=` options, so this
+complexity is macOS-specific.
+
+**References**:
+- [Apple Community - Mount permission problems](https://discussions.apple.com/thread/149293)
+- [Apple Community - HOW TO Mount a Network Share](https://discussions.apple.com/thread/4927134)
 
 ## General Limitations
 

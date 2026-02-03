@@ -17,12 +17,14 @@ const (
 //
 // This bridges the SMB authentication model to the protocol-agnostic
 // metadata store authentication context. It maps:
-//   - SMB session user → Unix UID/GID (from User.UID/GID fields)
+//   - SMB session user → Unix UID (from User.UID field)
+//   - SMB session user → Unix GID (from user's Group membership)
 //   - SMB share permission → metadata store permission checks
 //
 // Identity Resolution:
-// For authenticated users, this function uses the UID/GID fields from the User.
-// If the user has no UID/GID configured, it falls back to default values (1000/1000).
+// For authenticated users, UID comes from the User model and GID comes from
+// the user's group membership (lowest GID is used for best permission matching).
+// If not configured, falls back to default values (1000/1000).
 func BuildAuthContext(ctx *SMBHandlerContext) (*metadata.AuthContext, error) {
 	// Authenticated user - delegate to BuildAuthContextFromUser
 	if ctx.User != nil {
@@ -50,11 +52,17 @@ func BuildAuthContext(ctx *SMBHandlerContext) (*metadata.AuthContext, error) {
 		authCtx.Identity.GID = &rootGID
 	}
 
+	// Set share-level permission flags for guest/anonymous sessions
+	authCtx.ShareWritable = HasWritePermission(ctx)
+	authCtx.ShareReadOnly = ctx.Permission == models.PermissionRead
+
 	return authCtx, nil
 }
 
 // getUserIdentity returns the UID/GID for a user.
-// Returns the user's configured UID/GID, or defaults if not set.
+// UID comes from user.UID field.
+// GID comes from the user's group membership (lowest GID for root-level access).
+// Falls back to defaults if not configured.
 func getUserIdentity(user *models.User) (uid, gid uint32) {
 	uid = defaultUID
 	gid = defaultGID
@@ -63,6 +71,7 @@ func getUserIdentity(user *models.User) (uid, gid uint32) {
 		return uid, gid
 	}
 
+	// Get UID from user
 	if user.UID != nil {
 		uid = *user.UID
 	} else {
@@ -70,10 +79,19 @@ func getUserIdentity(user *models.User) (uid, gid uint32) {
 			"username", user.Username, "uid", uid)
 	}
 
-	if user.GID != nil {
-		gid = *user.GID
-	} else {
-		logger.Debug("User has no GID configured, using default",
+	// Get GID from user's primary group (first group with a GID).
+	// This follows Unix semantics where the primary group is used for new file creation.
+	gidFound := false
+	for _, group := range user.Groups {
+		if group.GID != nil {
+			gid = *group.GID
+			gidFound = true
+			break
+		}
+	}
+
+	if !gidFound {
+		logger.Debug("User has no group with GID configured, using default",
 			"username", user.Username, "gid", gid)
 	}
 
@@ -84,7 +102,13 @@ func getUserIdentity(user *models.User) (uid, gid uint32) {
 // This is useful when the handler has direct access to a User object.
 //
 // Identity Resolution:
-// Uses the UID/GID fields from the User. If not set, falls back to defaults.
+// UID comes from User.UID, GID comes from user's group membership.
+// Falls back to defaults (1000/1000) if not configured.
+//
+// Share Permission:
+// ShareWritable is set based on the SMB context's share permission.
+// This allows users with share-level write permission to bypass file-level
+// Unix permission checks.
 func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
 		Context:    ctx.Context,
@@ -98,6 +122,11 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metada
 		authCtx.Identity.GID = &gid
 		authCtx.Identity.Username = user.Username
 	}
+
+	// Set share-level permission flags
+	// ShareWritable allows bypassing file-level permission checks for write operations
+	authCtx.ShareWritable = HasWritePermission(ctx)
+	authCtx.ShareReadOnly = ctx.Permission == models.PermissionRead
 
 	return authCtx
 }

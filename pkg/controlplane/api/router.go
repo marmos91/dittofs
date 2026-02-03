@@ -99,16 +99,21 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			r.Use(apiMiddleware.JWTAuth(jwtService))
 			r.Use(apiMiddleware.RequirePasswordChange("/api/v1/users/me/password"))
 
-			// User management (admin only)
+			// User management
 			r.Route("/users", func(r chi.Router) {
-				r.Use(apiMiddleware.RequireAdmin())
-
-				r.Post("/", userHandler.Create)
-				r.Get("/", userHandler.List)
+				// Self-access allowed - handler does its own authorization
 				r.Get("/{username}", userHandler.Get)
-				r.Put("/{username}", userHandler.Update)
-				r.Delete("/{username}", userHandler.Delete)
-				r.Post("/{username}/password", userHandler.ResetPassword)
+
+				// Admin-only operations
+				r.Group(func(r chi.Router) {
+					r.Use(apiMiddleware.RequireAdmin())
+
+					r.Post("/", userHandler.Create)
+					r.Get("/", userHandler.List)
+					r.Put("/{username}", userHandler.Update)
+					r.Delete("/{username}", userHandler.Delete)
+					r.Post("/{username}/password", userHandler.ResetPassword)
+				})
 			})
 
 			// Group management (admin only)
@@ -140,10 +145,11 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Delete("/{name}", shareHandler.Delete)
 
 				// Share permissions
-				r.Put("/{name}/users/{username}", shareHandler.SetUserPermission)
-				r.Delete("/{name}/users/{username}", shareHandler.DeleteUserPermission)
-				r.Put("/{name}/groups/{groupname}", shareHandler.SetGroupPermission)
-				r.Delete("/{name}/groups/{groupname}", shareHandler.DeleteGroupPermission)
+				r.Get("/{name}/permissions", shareHandler.ListPermissions)
+				r.Put("/{name}/permissions/users/{username}", shareHandler.SetUserPermission)
+				r.Delete("/{name}/permissions/users/{username}", shareHandler.DeleteUserPermission)
+				r.Put("/{name}/permissions/groups/{groupname}", shareHandler.SetGroupPermission)
+				r.Delete("/{name}/permissions/groups/{groupname}", shareHandler.DeleteGroupPermission)
 			})
 
 			// Metadata store management (admin only)

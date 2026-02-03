@@ -12,6 +12,29 @@ import (
 	memoryMeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
+// mockAdapter implements runtime.ProtocolAdapter for testing
+type mockAdapter struct {
+	protocol string
+	port     int
+}
+
+func (m *mockAdapter) Serve(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (m *mockAdapter) Stop(ctx context.Context) error {
+	return nil
+}
+
+func (m *mockAdapter) Protocol() string {
+	return m.protocol
+}
+
+func (m *mockAdapter) Port() int {
+	return m.port
+}
+
 func TestLiveness_ReturnsOK(t *testing.T) {
 	handler := NewHealthHandler(nil)
 	req := httptest.NewRequest("GET", "/health", nil)
@@ -93,7 +116,7 @@ func TestReadiness_NoShares_Returns503(t *testing.T) {
 	}
 }
 
-func TestReadiness_WithShares_ReturnsOK(t *testing.T) {
+func TestReadiness_WithSharesNoAdapters_Returns503(t *testing.T) {
 	ctx := context.Background()
 	reg := runtime.New(nil)
 
@@ -112,6 +135,60 @@ func TestReadiness_WithShares_ReturnsOK(t *testing.T) {
 	if err := reg.AddShare(ctx, shareConfig); err != nil {
 		t.Fatalf("Failed to add share: %v", err)
 	}
+
+	handler := NewHealthHandler(reg)
+	req := httptest.NewRequest("GET", "/health/ready", nil)
+	w := httptest.NewRecorder()
+
+	handler.Readiness(w, req)
+
+	// Should return 503 because no adapters are running
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status %d, got %d", http.StatusServiceUnavailable, w.Code)
+	}
+
+	var resp Response
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if resp.Status != "unhealthy" {
+		t.Errorf("Expected status 'unhealthy', got '%s'", resp.Status)
+	}
+
+	if resp.Error != "no adapters running" {
+		t.Errorf("Expected error 'no adapters running', got '%s'", resp.Error)
+	}
+}
+
+func TestReadiness_WithSharesAndAdapters_ReturnsOK(t *testing.T) {
+	ctx := context.Background()
+	reg := runtime.New(nil)
+
+	// Register metadata store
+	metaStore := memoryMeta.NewMemoryMetadataStoreWithDefaults()
+	if err := reg.RegisterMetadataStore("test-meta", metaStore); err != nil {
+		t.Fatalf("Failed to register metadata store: %v", err)
+	}
+
+	// Add a share
+	shareConfig := &runtime.ShareConfig{
+		Name:          "/test",
+		MetadataStore: "test-meta",
+		RootAttr:      &metadata.FileAttr{},
+	}
+	if err := reg.AddShare(ctx, shareConfig); err != nil {
+		t.Fatalf("Failed to add share: %v", err)
+	}
+
+	// Add a mock adapter
+	adapter := &mockAdapter{protocol: "test", port: 12345}
+	if err := reg.AddAdapter(adapter); err != nil {
+		t.Fatalf("Failed to add adapter: %v", err)
+	}
+	defer func() {
+		_ = reg.StopAllAdapters()
+	}()
 
 	handler := NewHealthHandler(reg)
 	req := httptest.NewRequest("GET", "/health/ready", nil)
@@ -139,6 +216,16 @@ func TestReadiness_WithShares_ReturnsOK(t *testing.T) {
 
 	if data["shares"].(float64) != 1 {
 		t.Errorf("Expected 1 share, got %v", data["shares"])
+	}
+
+	// Check adapter info in response
+	adapters, ok := data["adapters"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected adapters to be a map, got %T", data["adapters"])
+	}
+
+	if adapters["running"].(float64) != 1 {
+		t.Errorf("Expected 1 running adapter, got %v", adapters["running"])
 	}
 }
 

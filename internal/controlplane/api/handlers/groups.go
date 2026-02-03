@@ -38,8 +38,9 @@ type UpdateGroupRequest struct {
 type GroupResponse struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
-	GID         uint32    `json:"gid,omitempty"`
+	GID         *uint32   `json:"gid,omitempty"`
 	Description string    `json:"description,omitempty"`
+	Members     []string  `json:"members,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 
@@ -161,10 +162,17 @@ func (h *GroupHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 // Delete handles DELETE /api/v1/groups/{name}.
 // Deletes a group (admin only).
+// System groups (admins, users) cannot be deleted.
 func (h *GroupHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if name == "" {
 		BadRequest(w, "Group name is required")
+		return
+	}
+
+	// Protect system groups from deletion
+	if name == "admins" || name == "users" {
+		Forbidden(w, "Cannot delete system group")
 		return
 	}
 
@@ -288,8 +296,17 @@ func groupToResponse(g *models.Group) GroupResponse {
 		Description: g.Description,
 		CreatedAt:   g.CreatedAt,
 	}
+	// Copy GID pointer
 	if g.GID != nil {
-		resp.GID = *g.GID
+		gid := *g.GID
+		resp.GID = &gid
+	}
+	// Populate members from Users
+	if len(g.Users) > 0 {
+		resp.Members = make([]string, len(g.Users))
+		for i, u := range g.Users {
+			resp.Members[i] = u.Username
+		}
 	}
 	return resp
 }

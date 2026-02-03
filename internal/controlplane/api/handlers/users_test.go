@@ -122,9 +122,10 @@ func TestUserHandler_Create(t *testing.T) {
 				if resp.Username != tt.body.Username {
 					t.Errorf("Create() username = %s, want %s", resp.Username, tt.body.Username)
 				}
-				// New users must change password
-				if !resp.MustChangePassword {
-					t.Error("Expected must_change_password to be true for new user")
+				// MustChangePassword is only true for admin users
+				expectedMustChange := tt.body.Role == "admin"
+				if resp.MustChangePassword != expectedMustChange {
+					t.Errorf("Create() must_change_password = %v, want %v (role=%s)", resp.MustChangePassword, expectedMustChange, tt.body.Role)
 				}
 			}
 		})
@@ -207,8 +208,23 @@ func TestUserHandler_List(t *testing.T) {
 }
 
 func TestUserHandler_Get(t *testing.T) {
-	cpStore, _, handler := setupUserTest(t)
+	cpStore, jwtService, handler := setupUserTest(t)
 	ctx := context.Background()
+
+	// Create an admin user for authentication
+	adminHash, adminNT, _ := models.HashPasswordWithNT("adminpass")
+	adminUser := &models.User{
+		ID:           uuid.New().String(),
+		Username:     "testadmin",
+		PasswordHash: adminHash,
+		NTHash:       adminNT,
+		Enabled:      true,
+		Role:         "admin",
+		CreatedAt:    time.Now(),
+	}
+	if _, err := cpStore.CreateUser(ctx, adminUser); err != nil {
+		t.Fatalf("Failed to create admin user: %v", err)
+	}
 
 	// Create a test user
 	passwordHash, ntHash, _ := models.HashPasswordWithNT("password")
@@ -225,6 +241,12 @@ func TestUserHandler_Get(t *testing.T) {
 	}
 	if _, err := cpStore.CreateUser(ctx, user); err != nil {
 		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	// Get admin token for authorization
+	adminTokens, err := jwtService.GenerateTokenPair(adminUser)
+	if err != nil {
+		t.Fatalf("Failed to generate admin tokens: %v", err)
 	}
 
 	tests := []struct {
@@ -247,16 +269,19 @@ func TestUserHandler_Get(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/users/"+tt.username, nil)
+			req.Header.Set("Authorization", "Bearer "+adminTokens.AccessToken)
 
 			rctx := chi.NewRouteContext()
 			rctx.URLParams.Add("username", tt.username)
 			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
+			// Apply JWT middleware to set claims in context
+			jwtMiddleware := middleware.JWTAuth(jwtService)
 			w := httptest.NewRecorder()
-			handler.Get(w, req)
+			jwtMiddleware(http.HandlerFunc(handler.Get)).ServeHTTP(w, req)
 
 			if w.Code != tt.wantStatus {
-				t.Errorf("Get() status = %d, want %d", w.Code, tt.wantStatus)
+				t.Errorf("Get() status = %d, want %d, body = %s", w.Code, tt.wantStatus, w.Body.String())
 			}
 
 			if tt.wantStatus == http.StatusOK {
@@ -453,7 +478,7 @@ func TestUserHandler_ResetPassword(t *testing.T) {
 	cpStore, _, handler := setupUserTest(t)
 	ctx := context.Background()
 
-	// Create a test user
+	// Create a regular user (role "user")
 	passwordHash, ntHash, _ := models.HashPasswordWithNT("oldpassword")
 	user := &models.User{
 		ID:                 uuid.New().String(),
@@ -487,10 +512,11 @@ func TestUserHandler_ResetPassword(t *testing.T) {
 		t.Errorf("ResetPassword() status = %d, want %d, body = %s", w.Code, http.StatusNoContent, w.Body.String())
 	}
 
-	// Verify password was changed and must_change_password is set
+	// Verify password was changed
+	// MustChangePassword is only set for admin users after reset
 	updated, _ := cpStore.GetUser(ctx, "resetuser")
-	if !updated.MustChangePassword {
-		t.Error("Expected must_change_password to be true after reset")
+	if updated.MustChangePassword {
+		t.Error("Expected must_change_password to be false for regular user after reset")
 	}
 
 	// Verify new password works

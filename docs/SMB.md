@@ -15,25 +15,94 @@ This document details DittoFS's SMB2 implementation, protocol status, and client
 
 DittoFS uses a configurable port (default 12445) and supports NTLM authentication.
 
-### Mount on macOS
+### Using dittofsctl (Recommended)
+
+The `dittofsctl share mount` command handles platform-specific mount options automatically:
+
+```bash
+# macOS - Mount to user directory (recommended, no sudo needed)
+mkdir -p ~/mnt/dittofs
+dittofsctl share mount --protocol smb /export ~/mnt/dittofs
+
+# macOS - Mount to system directory (requires sudo)
+sudo dittofsctl share mount --protocol smb /export /mnt/smb
+
+# Linux - Mount with sudo (owner set to your user automatically)
+sudo dittofsctl share mount --protocol smb /export /mnt/smb
+
+# Unmount
+sudo umount /mnt/smb  # or: diskutil unmount ~/mnt/dittofs (macOS)
+```
+
+### Platform-Specific Mount Behavior
+
+#### macOS Security Restriction
+
+macOS has a security restriction where **only the mount owner can access files**, regardless
+of Unix permissions. Even with 0777, non-owner users get "Permission denied". Apple confirmed
+this is "works as intended".
+
+**How dittofsctl handles this**: When you run `sudo dittofsctl share mount`, it automatically
+uses `sudo -u $SUDO_USER` to mount as your user (not root):
+
+```bash
+# Works correctly - mount owned by your user
+sudo dittofsctl share mount --protocol smb /export /mnt/share
+```
+
+**Alternative - mount without sudo** (to user directory):
+
+```bash
+mkdir -p ~/mnt/share
+dittofsctl share mount --protocol smb /export ~/mnt/share
+```
+
+#### Linux Behavior
+
+Linux CIFS mount fully supports `uid=` and `gid=` options. When using sudo with `dittofsctl`:
+
+- The `SUDO_UID` and `SUDO_GID` environment variables are automatically detected
+- Mount options include `uid=<your-uid>,gid=<your-gid>`
+- Files appear owned by your user, not root
+- Default permissions are `0755` (standard Unix)
+
+```bash
+# Files will be owned by your user, not root
+sudo dittofsctl share mount --protocol smb /export /mnt/smb
+ls -la /mnt/smb
+# drwxr-xr-x youruser yourgroup ... .
+```
+
+### Manual Mount Commands
+
+If you prefer to use native mount commands directly:
+
+#### macOS
 
 ```bash
 # Using mount_smbfs (built-in)
-sudo mount_smbfs //username:password@localhost:12445/export /mnt/smb
+# Note: -f sets file mode, -d sets directory mode (required for write access with sudo)
+sudo mount_smbfs -f 0777 -d 0777 //username:password@localhost:12445/export /mnt/smb
+
+# Mount to home directory (no sudo, user-owned)
+mount_smbfs //username:password@localhost:12445/export ~/mnt/smb
 
 # Using open (opens in Finder)
 open smb://username:password@localhost:12445/export
 
 # Unmount
 sudo umount /mnt/smb
+# or
+diskutil unmount /mnt/smb
 ```
 
-### Mount on Linux
+#### Linux
 
 ```bash
 # Using mount.cifs (requires cifs-utils)
+# uid/gid options set the owner of mounted files
 sudo mount -t cifs //localhost/export /mnt/smb \
-    -o port=12445,username=testuser,password=testpass,vers=2.0
+    -o port=12445,username=testuser,password=testpass,vers=2.0,uid=$(id -u),gid=$(id -g)
 
 # Unmount
 sudo umount /mnt/smb

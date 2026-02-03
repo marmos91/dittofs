@@ -375,6 +375,12 @@ func startDaemon() error {
 // dynamically when loading from store or when created via API.
 func createAdapterFactory() runtime.AdapterFactory {
 	return func(cfg *models.AdapterConfig) (runtime.ProtocolAdapter, error) {
+		// Parse the JSON config if present
+		parsedConfig, err := cfg.GetConfig()
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse adapter config: %w", err)
+		}
+
 		switch cfg.Type {
 		case "nfs":
 			nfsCfg := nfs.NFSConfig{
@@ -394,6 +400,19 @@ func createAdapterFactory() runtime.AdapterFactory {
 			if smbCfg.Port == 0 {
 				smbCfg.Port = 12445 // Default SMB port
 			}
+
+			// Apply parsed config for SMB-specific settings
+			if parsedConfig != nil {
+				if signingCfg, ok := parsedConfig["signing"].(map[string]any); ok {
+					if enabled, ok := signingCfg["enabled"].(bool); ok {
+						smbCfg.Signing.Enabled = &enabled
+					}
+					if required, ok := signingCfg["required"].(bool); ok {
+						smbCfg.Signing.Required = required
+					}
+				}
+			}
+
 			return smb.New(smbCfg), nil
 
 		default:

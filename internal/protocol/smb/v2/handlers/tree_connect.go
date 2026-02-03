@@ -10,6 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // treeConnectFixedSize is the size of the TREE_CONNECT request fixed structure [MS-SMB2] 2.2.9
@@ -84,7 +85,7 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	defaultPerm := models.ParseSharePermission(share.DefaultPermission)
 
 	// Resolve permission based on session type
-	permission, user := resolveSharePermission(ctx, sess, shareName, defaultPerm, h.Registry.GetUserStore())
+	permission, user := resolveSharePermission(ctx, sess, share, defaultPerm, h.Registry.GetUserStore())
 
 	// Check for access denied
 	if permission == models.PermissionNone {
@@ -161,20 +162,19 @@ func calculateMaximalAccess(perm models.SharePermission) uint32 {
 		// Generic read access
 		genericRead = fileReadData | fileReadEA | fileReadAttributes | readControl | synchronize
 
-		// Generic write access
-		genericWrite = fileWriteData | fileAppendData | fileWriteEA | fileWriteAttributes | synchronize
-
 		// Full access
 		fullAccess = 0x001F01FF
 	)
 
 	switch perm {
 	case models.PermissionAdmin:
-		// Full access including delete and ownership
+		// Full access for admin users
 		return fullAccess
 	case models.PermissionReadWrite:
-		// Read and write access
-		return genericRead | genericWrite | delete_ | fileDeleteChild
+		// Full access for read-write users. macOS Finder checks MaximalAccess before
+		// attempting file operations and refuses to create files if delete/ownership
+		// bits are missing. Actual permission enforcement happens at operation time.
+		return fullAccess
 	case models.PermissionRead:
 		// Read-only access
 		return genericRead
@@ -253,22 +253,46 @@ func parseSharePath(path string) string {
 
 // resolveSharePermission determines the effective permission for a session on a share.
 // Returns the permission level and a user identifier for logging.
+//
+// Permission resolution follows this order:
+//  1. Root user bypass: If user has UID=0 and squash mode allows root access, grant PermissionAdmin
+//  2. User-level permission from UserStore.ResolveSharePermission (if userStore available)
+//  3. Default permission if no explicit permission found
+//
+// This mirrors the NFS behavior where root users get automatic admin access based on squash settings.
 func resolveSharePermission(
 	ctx *SMBHandlerContext,
 	sess *session.Session,
-	shareName string,
+	share *runtime.Share,
 	defaultPerm models.SharePermission,
 	userStore models.UserStore,
 ) (models.SharePermission, string) {
-	// Authenticated user with valid session and user store
-	if sess != nil && sess.User != nil && userStore != nil {
-		perm, err := userStore.ResolveSharePermission(ctx.Context, sess.User, shareName)
-		if err != nil {
-			logger.Debug("Permission resolution failed, using default",
-				"shareName", shareName, "user", sess.User.Username, "error", err, "default", defaultPerm)
-			return defaultPerm, sess.User.Username
+	// Authenticated user with valid session
+	if sess != nil && sess.User != nil {
+		// Check if user is root (UID 0) and squash mode allows root access
+		// This mirrors the NFS behavior in resolveNFSSharePermission
+		// Root bypass applies regardless of whether userStore is available
+		if isRootUser(sess.User) && rootHasAdminAccess(share) {
+			logger.Debug("Root user granted admin access via squash mode",
+				"shareName", share.Name, "user", sess.User.Username, "squash", share.Squash)
+			return models.PermissionAdmin, sess.User.Username
 		}
-		return perm, sess.User.Username
+
+		// If userStore is available, use it to resolve permission
+		if userStore != nil {
+			perm, err := userStore.ResolveSharePermission(ctx.Context, sess.User, share.Name)
+			if err != nil {
+				logger.Debug("Permission resolution failed, using default",
+					"shareName", share.Name, "user", sess.User.Username, "error", err, "default", defaultPerm)
+				return defaultPerm, sess.User.Username
+			}
+			return perm, sess.User.Username
+		}
+
+		// No userStore - use default permission
+		logger.Debug("No userStore available, using default permission",
+			"shareName", share.Name, "user", sess.User.Username, "default", defaultPerm)
+		return defaultPerm, sess.User.Username
 	}
 
 	// Guest session - use default permission
@@ -278,4 +302,25 @@ func resolveSharePermission(
 
 	// No session or unauthenticated - default to read-write for backwards compatibility
 	return models.PermissionReadWrite, ""
+}
+
+// isRootUser checks if the user has UID 0 (root).
+func isRootUser(user *models.User) bool {
+	return user != nil && user.UID != nil && *user.UID == 0
+}
+
+// rootHasAdminAccess checks if the share's squash mode allows root to have admin access.
+// Root has admin access when squash mode is:
+//   - Empty string (default behavior = root_to_admin)
+//   - SquashNone (no mapping)
+//   - SquashRootToAdmin (root keeps admin)
+//   - SquashAllToAdmin (everyone gets admin)
+func rootHasAdminAccess(share *runtime.Share) bool {
+	if share == nil {
+		return false
+	}
+	return share.Squash == "" ||
+		share.Squash == models.SquashNone ||
+		share.Squash == models.SquashRootToAdmin ||
+		share.Squash == models.SquashAllToAdmin
 }

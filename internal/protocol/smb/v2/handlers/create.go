@@ -462,6 +462,26 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	}
 
 	// ========================================================================
+	// Step 6b: Check write permission for create/overwrite operations
+	// ========================================================================
+	//
+	// Write permission is required for:
+	// - FileCreated: Creating new files or directories
+	// - FileOverwritten: Truncating existing files
+	// - FileSuperseded: Replacing existing files
+	//
+	// Read permission is sufficient for:
+	// - FileOpened: Opening existing files for read
+
+	if createAction != types.FileOpened && !HasWritePermission(ctx) {
+		logger.Debug("CREATE: access denied (no write permission)",
+			"path", filename,
+			"action", createAction,
+			"permission", ctx.Permission)
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+	}
+
+	// ========================================================================
 	// Step 7: Perform create/open operation
 	// ========================================================================
 

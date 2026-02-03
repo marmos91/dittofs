@@ -41,7 +41,11 @@ func (gl GroupList) Rows() [][]string {
 	for _, g := range gl {
 		members := cmdutil.EmptyOr(strings.Join(g.Members, ", "), "-")
 		description := cmdutil.EmptyOr(g.Description, "-")
-		rows = append(rows, []string{g.Name, fmt.Sprintf("%d", g.GID), members, description})
+		gidStr := "-"
+		if g.GID != nil {
+			gidStr = fmt.Sprintf("%d", *g.GID)
+		}
+		rows = append(rows, []string{g.Name, gidStr, members, description})
 	}
 	return rows
 }
