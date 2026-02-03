@@ -122,9 +122,8 @@ type SMBConfig struct {
 //   - Enabled: true (signing capability is advertised)
 //   - Required: false (signing is optional)
 //
-// Production recommendations:
-//   - Set Required: true for security-sensitive environments
-//   - Keep Enabled: true for client compatibility
+// Security note: For production, consider setting Required: true via the
+// controlplane API to prevent man-in-the-middle attacks.
 type SMBSigningConfig struct {
 	// Enabled controls whether signing capability is advertised to clients.
 	// When true, SMB2_NEGOTIATE_SIGNING_ENABLED is set in NEGOTIATE response.
@@ -134,7 +133,7 @@ type SMBSigningConfig struct {
 	// Required controls whether signing is mandatory for all sessions.
 	// When true, SMB2_NEGOTIATE_SIGNING_REQUIRED is set and unsigned
 	// messages from established sessions will be rejected.
-	// Default: false
+	// Default: false (configure via controlplane API for production)
 	Required bool `mapstructure:"required"`
 }
 

@@ -285,7 +285,9 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 		"domain", authMsg.Domain,
 		"workstation", authMsg.Workstation,
 		"isAnonymous", authMsg.IsAnonymous,
-		"ntResponseLen", len(authMsg.NtChallengeResponse))
+		"ntResponseLen", len(authMsg.NtChallengeResponse),
+		"negotiateFlags", fmt.Sprintf("0x%08x", authMsg.NegotiateFlags),
+		"encryptedRandomSessionKeyLen", len(authMsg.EncryptedRandomSessionKey))
 
 	// If anonymous authentication requested, create guest session
 	if authMsg.IsAnonymous || authMsg.Username == "" {
@@ -303,8 +305,8 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 			ntHash, hasNTHash := user.GetNTHash()
 
 			if hasNTHash && len(authMsg.NtChallengeResponse) > 0 {
-				// Validate NTLMv2 response and derive session key
-				sessionKey, err := ntlm.ValidateNTLMv2Response(
+				// Validate NTLMv2 response and derive session base key
+				sessionBaseKey, err := ntlm.ValidateNTLMv2Response(
 					ntHash,
 					authMsg.Username,
 					authMsg.Domain,
@@ -319,12 +321,36 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 					return NewErrorResult(types.StatusLogonFailure), nil
 				}
 
+				// Derive the final signing key
+				// When KEY_EXCH is negotiated, the client sends an encrypted random session key
+				// that we need to decrypt to get the actual signing key.
+				logger.Debug("NTLM key derivation details",
+					"sessionID", pending.SessionID,
+					"negotiateFlags", fmt.Sprintf("0x%08x", authMsg.NegotiateFlags),
+					"keyExchFlag", (authMsg.NegotiateFlags&ntlm.FlagKeyExch) != 0,
+					"signFlag", (authMsg.NegotiateFlags&ntlm.FlagSign) != 0,
+					"encryptedKeyLen", len(authMsg.EncryptedRandomSessionKey),
+					"encryptedKey", fmt.Sprintf("%x", authMsg.EncryptedRandomSessionKey),
+					"sessionBaseKey", fmt.Sprintf("%x", sessionBaseKey),
+					"serverChallenge", fmt.Sprintf("%x", pending.ServerChallenge))
+
+				signingKey := ntlm.DeriveSigningKey(
+					sessionBaseKey,
+					authMsg.NegotiateFlags,
+					authMsg.EncryptedRandomSessionKey,
+				)
+
+				logger.Debug("Derived signing key (will be used for HMAC-SHA256)",
+					"sessionID", pending.SessionID,
+					"signingKey", fmt.Sprintf("%x", signingKey),
+					"usedKeyExch", (authMsg.NegotiateFlags&ntlm.FlagKeyExch) != 0 && len(authMsg.EncryptedRandomSessionKey) == 16)
+
 				// Authentication successful with validated credentials
 				sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
 				ctx.IsGuest = false
 
-				// Configure signing with derived session key
-				h.configureSessionSigningWithKey(sess, sessionKey[:])
+				// Configure signing with derived signing key
+				h.configureSessionSigningWithKey(sess, signingKey[:])
 
 				logger.Debug("NTLM authentication complete (validated credentials)",
 					"sessionID", sess.SessionID,
@@ -441,8 +467,17 @@ func (h *Handler) createGuestSession(ctx *SMBHandlerContext) (*HandlerResult, er
 // [MS-SMB2] Section 3.3.5.5.3 - Session signing is established here
 func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionKey []byte) {
 	if !h.SigningConfig.Enabled || len(sessionKey) == 0 {
+		logger.Debug("Session signing NOT configured",
+			"sessionID", sess.SessionID,
+			"signingConfigEnabled", h.SigningConfig.Enabled,
+			"sessionKeyLen", len(sessionKey))
 		return
 	}
+
+	// Log the signing key for debugging (16 bytes)
+	logger.Debug("Configuring session signing key",
+		"sessionID", sess.SessionID,
+		"signingKey", fmt.Sprintf("%x", sessionKey))
 
 	// Set the signing key on the session
 	sess.SetSigningKey(sessionKey)
@@ -450,9 +485,10 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 	// Enable signing
 	sess.EnableSigning(h.SigningConfig.Required)
 
-	logger.Debug("Session signing configured with derived key",
+	logger.Debug("Session signing configured",
 		"sessionID", sess.SessionID,
 		"enabled", sess.ShouldSign(),
+		"shouldVerify", sess.ShouldVerify(),
 		"required", h.SigningConfig.Required)
 }
 

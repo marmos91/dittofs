@@ -15,6 +15,7 @@ import (
 	"crypto/hmac"
 	"crypto/md5" //nolint:gosec // MD5 is required for NTLM protocol compatibility (HMAC-MD5 in NTLMv2)
 	"crypto/rand"
+	"crypto/rc4" //nolint:gosec // RC4 is required for NTLM KEY_EXCH protocol compatibility
 	"encoding/binary"
 	"strings"
 	"unicode/utf16"
@@ -185,6 +186,13 @@ const (
 	// Required for strong encryption.
 	Flag128 NegotiateFlag = 0x20000000
 
+	// FlagKeyExch (bit V) indicates key exchange support.
+	// When set, the client generates a random session key (ExportedSessionKey)
+	// and encrypts it with RC4 using the SessionBaseKey. The encrypted key
+	// is sent in the EncryptedRandomSessionKey field of the AUTHENTICATE message.
+	// The ExportedSessionKey becomes the SigningKey instead of SessionBaseKey.
+	FlagKeyExch NegotiateFlag = 0x40000000
+
 	// Flag56 (bit AA) indicates 56-bit encryption support.
 	// Legacy; 128-bit is preferred.
 	Flag56 NegotiateFlag = 0x80000000
@@ -269,14 +277,6 @@ const (
 	AvNbDomainName AvID = 0x0002
 )
 
-// AV_PAIR structure sizes
-// Note: These constants are defined for documentation but not used in current implementation.
-// They would be used if we implement full AV_PAIR parsing in the future.
-const (
-	_ = 4 // avPairHeaderSize: AvId (2 bytes) + AvLen (2 bytes)
-	_ = 4 // avPairTerminatorLen: MsvAvEOL with AvLen=0 (just the header, no value)
-)
-
 // =============================================================================
 // NTLM Message Detection
 // =============================================================================
@@ -346,10 +346,12 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 	flags := FlagUnicode | // Support UTF-16LE strings
 		FlagRequestTarget | // We can provide target info
 		FlagNTLM | // Support NTLM authentication
+		FlagSign | // Support message integrity (signing)
 		FlagAlwaysSign | // Include signature (even if dummy)
 		FlagTargetTypeServer | // We are a server (not domain controller)
 		FlagExtendedSecurity | // Support NTLMv2 session security
 		FlagTargetInfo | // Include AV_PAIR list
+		FlagKeyExch | // Support session key exchange (required for signing)
 		Flag128 | // Support 128-bit encryption
 		Flag56 // Support 56-bit encryption (legacy)
 
@@ -488,6 +490,11 @@ type AuthenticateMessage struct {
 	// NegotiateFlags contains the negotiated flags.
 	NegotiateFlags NegotiateFlag
 
+	// EncryptedRandomSessionKey contains the encrypted session key when KEY_EXCH is negotiated.
+	// If KEY_EXCH flag is set, this is decrypted with RC4 using SessionBaseKey
+	// to obtain the ExportedSessionKey, which is then used for signing.
+	EncryptedRandomSessionKey []byte
+
 	// IsAnonymous indicates if this is an anonymous authentication request.
 	// Set when FlagAnonymous is present in NegotiateFlags.
 	IsAnonymous bool
@@ -565,6 +572,14 @@ func ParseAuthenticate(buf []byte) (*AuthenticateMessage, error) {
 	wsOff := binary.LittleEndian.Uint32(buf[authWorkstationOffOffset : authWorkstationOffOffset+4])
 	if wsLen > 0 && int(wsOff)+int(wsLen) <= len(buf) {
 		msg.Workstation = decodeString(buf[wsOff:wsOff+uint32(wsLen)], isUnicode)
+	}
+
+	// Parse EncryptedRandomSessionKey (used when KEY_EXCH flag is set)
+	keyLen := binary.LittleEndian.Uint16(buf[authEncryptedRandomSessionKeyLen : authEncryptedRandomSessionKeyLen+2])
+	keyOff := binary.LittleEndian.Uint32(buf[authEncryptedRandomSessionKeyOff : authEncryptedRandomSessionKeyOff+4])
+	if keyLen > 0 && int(keyOff)+int(keyLen) <= len(buf) {
+		msg.EncryptedRandomSessionKey = make([]byte, keyLen)
+		copy(msg.EncryptedRandomSessionKey, buf[keyOff:keyOff+uint32(keyLen)])
 	}
 
 	return msg, nil
@@ -715,4 +730,51 @@ func ValidateNTLMv2Response(
 	copy(sessionKey[:], mac.Sum(nil))
 
 	return sessionKey, nil
+}
+
+// DeriveSigningKey derives the final signing key from the session base key.
+//
+// When the NTLMSSP_NEGOTIATE_KEY_EXCH (0x40000000) flag is negotiated:
+//   - The client generates a random 16-byte ExportedSessionKey
+//   - The client encrypts it with RC4 using SessionBaseKey
+//   - The encrypted key is sent in EncryptedRandomSessionKey
+//   - Server decrypts to obtain ExportedSessionKey
+//   - ExportedSessionKey is used for message signing
+//
+// When KEY_EXCH is NOT negotiated:
+//   - SessionBaseKey is used directly for signing
+//
+// This function handles both cases transparently.
+//
+// Parameters:
+//   - sessionBaseKey: The session key from ValidateNTLMv2Response
+//   - flags: NegotiateFlags from the AUTHENTICATE message
+//   - encryptedKey: EncryptedRandomSessionKey from AUTHENTICATE message (may be nil)
+//
+// Returns the signing key to use for message signing.
+func DeriveSigningKey(sessionBaseKey [16]byte, flags NegotiateFlag, encryptedKey []byte) [16]byte {
+	// If KEY_EXCH is not negotiated, use SessionBaseKey directly
+	if (flags & FlagKeyExch) == 0 {
+		return sessionBaseKey
+	}
+
+	// KEY_EXCH is negotiated - decrypt the ExportedSessionKey
+	if len(encryptedKey) != 16 {
+		// Invalid encrypted key length, fall back to session base key
+		// This shouldn't happen with a well-formed AUTHENTICATE message
+		return sessionBaseKey
+	}
+
+	// Decrypt EncryptedRandomSessionKey using RC4 with SessionBaseKey
+	// RC4 is symmetric, so encryption and decryption use the same operation
+	cipher, err := rc4.NewCipher(sessionBaseKey[:])
+	if err != nil {
+		// RC4 cipher creation failed (shouldn't happen with 16-byte key)
+		return sessionBaseKey
+	}
+
+	var exportedSessionKey [16]byte
+	cipher.XORKeyStream(exportedSessionKey[:], encryptedKey)
+
+	return exportedSessionKey
 }

@@ -10,6 +10,15 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
+// clusterSize is the allocation unit size used for AllocationSize calculations.
+// SMB clients expect AllocationSize to be a multiple of the filesystem cluster size.
+const clusterSize = 4096
+
+// calculateAllocationSize returns the size rounded up to the nearest cluster boundary.
+func calculateAllocationSize(size uint64) uint64 {
+	return ((size + clusterSize - 1) / clusterSize) * clusterSize
+}
+
 // getSMBSize returns the appropriate size for SMB reporting.
 // For symlinks, this returns the MFsymlink size (1067 bytes) since SMB clients
 // expect symlinks to be stored as MFsymlink files.
@@ -58,8 +67,7 @@ func FileAttrToSMBAttributes(attr *metadata.FileAttr) types.FileAttributes {
 // FileAttrToSMBAttributesWithName converts metadata FileAttr to SMB file attributes,
 // including the Hidden attribute based on filename (dot-prefix) and metadata flag.
 func FileAttrToSMBAttributesWithName(attr *metadata.FileAttr, name string) types.FileAttributes {
-	attrs := fileAttrToSMBAttributesInternal(attr, IsHiddenFile(name, attr))
-	return attrs
+	return fileAttrToSMBAttributesInternal(attr, IsHiddenFile(name, attr))
 }
 
 // fileAttrToSMBAttributesInternal is the internal implementation for attribute conversion.
@@ -90,10 +98,10 @@ func fileAttrToSMBAttributesInternal(attr *metadata.FileAttr, hidden bool) types
 		attrs = types.FileAttributeNormal
 	}
 
-	// Read-only if no write permission for owner
-	if attr.Mode&0200 == 0 {
-		attrs |= types.FileAttributeReadonly
-	}
+	// Note: We intentionally do NOT set FileAttributeReadonly based on Unix mode.
+	// macOS SMB clients interpret FileAttributeReadonly as "share is read-only"
+	// and refuse to create files, even before contacting the server.
+	// Unix permission enforcement should happen at file operation time, not via attributes.
 
 	return attrs
 }
@@ -132,7 +140,7 @@ func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *
 	// Get appropriate size (MFsymlink size for symlinks)
 	size := getSMBSize(attr)
 	// Allocation size is typically rounded up to cluster size (4KB typical)
-	allocationSize := ((size + 4095) / 4096) * 4096
+	allocationSize := calculateAllocationSize(size)
 
 	return &FileStandardInfo{
 		AllocationSize: allocationSize,
@@ -148,7 +156,7 @@ func FileAttrToFileNetworkOpenInfo(attr *metadata.FileAttr) *FileNetworkOpenInfo
 	creation, access, write, change := FileAttrToSMBTimes(attr)
 	// Get appropriate size (MFsymlink size for symlinks)
 	size := getSMBSize(attr)
-	allocationSize := ((size + 4095) / 4096) * 4096
+	allocationSize := calculateAllocationSize(size)
 
 	return &FileNetworkOpenInfo{
 		CreationTime:   creation,
@@ -166,7 +174,7 @@ func FileAttrToDirectoryEntry(file *metadata.File, name string, fileIndex uint64
 	creation, access, write, change := FileAttrToSMBTimes(&file.FileAttr)
 	// Get appropriate size (MFsymlink size for symlinks)
 	size := getSMBSize(&file.FileAttr)
-	allocationSize := ((size + 4095) / 4096) * 4096
+	allocationSize := calculateAllocationSize(size)
 
 	return &DirectoryEntry{
 		FileName:       name,
@@ -195,7 +203,7 @@ func DirEntryToDirectoryEntry(entry *metadata.DirEntry, fileIndex uint64) *Direc
 		creation, access, write, change := FileAttrToSMBTimes(entry.Attr)
 		// Get appropriate size (MFsymlink size for symlinks)
 		size := getSMBSize(entry.Attr)
-		allocationSize := ((size + 4095) / 4096) * 4096
+		allocationSize := calculateAllocationSize(size)
 
 		dirEntry.CreationTime = creation
 		dirEntry.LastAccessTime = access

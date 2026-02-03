@@ -191,7 +191,11 @@ func (c *SMBConnection) readRequest(ctx context.Context) (*header.SMB2Header, []
 		return nil, nil, nil, fmt.Errorf("SMB message too large: %d bytes (max %d)", msgLen, c.server.config.MaxMessageSize)
 	}
 
-	if msgLen < header.HeaderSize {
+	// SMB messages must be at least 4 bytes to read the protocol ID.
+	// SMB1 header is 32 bytes, SMB2 header is 64 bytes.
+	// We defer the full size check until after we know the protocol version.
+	const minProtocolIDSize = 4
+	if msgLen < minProtocolIDSize {
 		return nil, nil, nil, fmt.Errorf("SMB message too small: %d bytes", msgLen)
 	}
 
@@ -209,16 +213,20 @@ func (c *SMBConnection) readRequest(ctx context.Context) (*header.SMB2Header, []
 	}
 
 	// Check if this is SMB1 (legacy negotiate) - needs upgrade to SMB2
-	if len(message) >= 4 {
-		protocolID := binary.LittleEndian.Uint32(message[0:4])
-		if protocolID == types.SMB1ProtocolID {
-			// Handle SMB1 NEGOTIATE by responding with SMB2 NEGOTIATE response
-			if err := c.handleSMB1Negotiate(ctx, message); err != nil {
-				return nil, nil, nil, fmt.Errorf("handle SMB1 negotiate: %w", err)
-			}
-			// Read the next message which should be SMB2
-			return c.readRequest(ctx)
+	// SMB1 messages can be smaller than 64 bytes (SMB1 header is 32 bytes)
+	protocolID := binary.LittleEndian.Uint32(message[0:4])
+	if protocolID == types.SMB1ProtocolID {
+		// Handle SMB1 NEGOTIATE by responding with SMB2 NEGOTIATE response
+		if err := c.handleSMB1Negotiate(ctx, message); err != nil {
+			return nil, nil, nil, fmt.Errorf("handle SMB1 negotiate: %w", err)
 		}
+		// Read the next message which should be SMB2
+		return c.readRequest(ctx)
+	}
+
+	// For SMB2, validate that we have at least a full header (64 bytes)
+	if msgLen < header.HeaderSize {
+		return nil, nil, nil, fmt.Errorf("SMB2 message too small: %d bytes (need %d)", msgLen, header.HeaderSize)
 	}
 
 	// Parse SMB2 header
@@ -227,27 +235,52 @@ func (c *SMBConnection) readRequest(ctx context.Context) (*header.SMB2Header, []
 		return nil, nil, nil, fmt.Errorf("parse SMB2 header: %w", err)
 	}
 
-	// Verify message signature if the session requires it
+	// Verify message signature if required
 	// Skip verification for messages without a session (SessionID == 0)
 	// and for NEGOTIATE/SESSION_SETUP which may not have signing set up yet.
 	//
-	// Note: This is intentionally asymmetric with response signing (which signs
-	// SESSION_SETUP responses after authentication). The asymmetry is correct:
-	// - Incoming SESSION_SETUP: Client hasn't established signing yet
-	// - Outgoing SESSION_SETUP response: Server has just enabled signing
+	// Per MS-SMB2 3.3.5.2.4: Only verify if:
+	// - Session requires signing (SigningRequired), OR
+	// - The message has SMB2_FLAGS_SIGNED set
+	//
+	// If signing is enabled but not required, and the client doesn't sign,
+	// we accept the unsigned message (signing is optional).
 	if hdr.SessionID != 0 && hdr.Command != types.SMB2Negotiate && hdr.Command != types.SMB2SessionSetup {
-		if sess, ok := c.server.handler.GetSession(hdr.SessionID); ok && sess.ShouldVerify() {
-			if !sess.VerifyMessage(message) {
-				logger.Warn("SMB2 message signature verification failed",
+		if sess, ok := c.server.handler.GetSession(hdr.SessionID); ok {
+			// Check if message is signed (SMB2_FLAGS_SIGNED = 0x00000008)
+			isSigned := hdr.Flags.IsSigned()
+
+			if sess.Signing != nil && sess.Signing.SigningRequired && !isSigned {
+				// Signing required but message not signed - reject
+				logger.Warn("SMB2 message not signed but signing required",
 					"command", hdr.Command.String(),
 					"sessionID", hdr.SessionID,
 					"client", c.conn.RemoteAddr().String())
-				// Per MS-SMB2, signature verification failures should return STATUS_ACCESS_DENIED
-				return nil, nil, nil, fmt.Errorf("STATUS_ACCESS_DENIED: signature verification failed")
+				return nil, nil, nil, fmt.Errorf("STATUS_ACCESS_DENIED: message not signed")
 			}
-			logger.Debug("Verified incoming SMB2 message signature",
-				"command", hdr.Command.String(),
-				"sessionID", hdr.SessionID)
+
+			if isSigned && sess.ShouldVerify() {
+				// Message is signed - verify it
+				logger.Debug("Verifying incoming SMB2 message signature",
+					"command", hdr.Command.String(),
+					"sessionID", hdr.SessionID,
+					"messageLen", len(message))
+				if !sess.VerifyMessage(message) {
+					logger.Warn("SMB2 message signature verification failed",
+						"command", hdr.Command.String(),
+						"sessionID", hdr.SessionID,
+						"client", c.conn.RemoteAddr().String())
+					return nil, nil, nil, fmt.Errorf("STATUS_ACCESS_DENIED: signature verification failed")
+				}
+				logger.Debug("Verified incoming SMB2 message signature",
+					"command", hdr.Command.String(),
+					"sessionID", hdr.SessionID)
+			} else if !isSigned {
+				// Message not signed and signing not required - accept
+				logger.Debug("Accepting unsigned message (signing not required)",
+					"command", hdr.Command.String(),
+					"sessionID", hdr.SessionID)
+			}
 		}
 	}
 
@@ -746,14 +779,21 @@ func (c *SMBConnection) sendMessage(hdr *header.SMB2Header, body []byte) error {
 	copy(smbMessage[0:len(headerBytes)], headerBytes)
 	copy(smbMessage[len(headerBytes):], body)
 
-	// Sign the message if session has signing enabled
+	// Sign the message if session requires signing
 	// Skip signing for messages without a session (SessionID == 0)
+	//
+	// Per MS-SMB2: Sign if SigningRequired is TRUE.
+	// If signing is enabled but not required, we only sign if the client is signing
+	// (which we track by whether the session requires it).
 	if hdr.SessionID != 0 {
-		if sess, ok := c.server.handler.GetSession(hdr.SessionID); ok && sess.ShouldSign() {
-			sess.SignMessage(smbMessage)
-			logger.Debug("Signed outgoing SMB2 message",
-				"command", hdr.Command.String(),
-				"sessionID", hdr.SessionID)
+		if sess, ok := c.server.handler.GetSession(hdr.SessionID); ok {
+			shouldSign := sess.Signing != nil && sess.Signing.SigningRequired && sess.ShouldSign()
+			if shouldSign {
+				sess.SignMessage(smbMessage)
+				logger.Debug("Signed outgoing SMB2 message",
+					"command", hdr.Command.String(),
+					"sessionID", hdr.SessionID)
+			}
 		}
 	}
 
@@ -900,8 +940,16 @@ func (c *SMBConnection) handleSMB1Negotiate(ctx context.Context, message []byte)
 
 	// StructureSize: 65
 	binary.LittleEndian.PutUint16(respBody[0:2], 65)
-	// SecurityMode: 0 (no signing required)
-	respBody[2] = 0
+	// SecurityMode: Set based on signing configuration [MS-SMB2 2.2.4]
+	// This should match what we send in the proper SMB2 NEGOTIATE response
+	var securityMode byte
+	if c.server.handler.SigningConfig.Enabled {
+		securityMode |= 0x01 // SMB2_NEGOTIATE_SIGNING_ENABLED
+	}
+	if c.server.handler.SigningConfig.Required {
+		securityMode |= 0x02 // SMB2_NEGOTIATE_SIGNING_REQUIRED
+	}
+	respBody[2] = securityMode
 	// Reserved
 	respBody[3] = 0
 	// DialectRevision: SMB 2.0.2
