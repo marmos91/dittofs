@@ -94,3 +94,44 @@ cmdutil.HandleError(cmd, err)
 - Show user-friendly errors
 - Include hints for common issues
 - Use `--verbose` for stack traces
+
+## Mount Command Platform Differences
+
+The `share mount` command has important platform-specific behavior for SMB mounts:
+
+### macOS Security Restriction
+
+macOS has a security restriction where **only the mount owner can access files**, regardless
+of Unix permissions (0777 doesn't help). Apple confirmed this is "works as intended".
+
+**How dittofsctl handles this**: When running with sudo, it uses `sudo -u $SUDO_USER` to
+mount as your user (not root), so you can access the files:
+
+```bash
+# This works - mount owned by your user, not root
+sudo dittofsctl share mount --protocol smb /export /mnt/share
+
+# Alternative - mount to home directory without sudo
+mkdir -p ~/mnt/share
+dittofsctl share mount --protocol smb /export ~/mnt/share
+```
+
+### Linux Behavior
+
+Linux CIFS mount fully supports `uid=`/`gid=` options. When using sudo:
+
+- `SUDO_UID` and `SUDO_GID` are automatically passed to the mount
+- Files appear owned by the original user, not root
+- Default permissions are `0755` (standard Unix permissions)
+
+```bash
+# On Linux, sudo mount works correctly - files owned by your user
+sudo dittofsctl share mount --protocol smb /export /mnt/share
+```
+
+### Platform Defaults Summary
+
+| Platform | Default Mode | Owner with sudo | Reason |
+|----------|--------------|-----------------|--------|
+| macOS    | `0777`       | root            | uid/gid options removed in Catalina |
+| Linux    | `0755`       | your user       | uid/gid options work correctly |
