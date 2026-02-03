@@ -95,8 +95,11 @@ func isMountPoint(path string) bool {
 	// Normalize the path for comparison
 	normalizedPath := strings.TrimSuffix(path, "/")
 
-	// Also get the real path (resolve symlinks) for comparison
-	// On macOS, /tmp -> /private/tmp, so mount shows /private/tmp/...
+	// Also get the real path (resolve symlinks) for comparison.
+	// Common symlink scenarios across platforms:
+	// - macOS: /tmp -> /private/tmp, /var -> /private/var
+	// - Linux: /var/run -> /run on some distributions
+	// Mount output shows the resolved path, so we check both.
 	realPath := normalizedPath
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		realPath = strings.TrimSuffix(resolved, "/")

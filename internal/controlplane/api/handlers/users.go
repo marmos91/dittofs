@@ -309,8 +309,10 @@ func (h *UserHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set must change password flag only for admin users
-	// Regular users don't need to change password after admin reset
+	// Set must change password flag only for admin users.
+	// Admin accounts are high-privilege, so reset passwords are treated as temporary
+	// credentials that must be personalized. For regular users, the admin-set password
+	// is considered final per deployment policy (admins can choose a permanent password).
 	user.MustChangePassword = user.Role == string(models.RoleAdmin)
 	if err := h.store.UpdateUser(r.Context(), user); err != nil {
 		InternalServerError(w, "Failed to update user")

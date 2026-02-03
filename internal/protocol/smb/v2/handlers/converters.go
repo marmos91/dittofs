@@ -12,6 +12,9 @@ import (
 
 // clusterSize is the allocation unit size used for AllocationSize calculations.
 // SMB clients expect AllocationSize to be a multiple of the filesystem cluster size.
+// We use 4096 bytes (4KB) as this is the default allocation unit size on NTFS and
+// most modern filesystems. This is a logical value for SMB reporting purposes only;
+// it does not reflect the actual backing store's block size.
 const clusterSize = 4096
 
 // calculateAllocationSize returns the size rounded up to the nearest cluster boundary.
