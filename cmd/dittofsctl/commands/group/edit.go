@@ -98,7 +98,10 @@ func runEditInteractive(client *apiclient.Client, name string) error {
 	hasUpdate := false
 
 	// GID
-	currentGIDStr := fmt.Sprintf("%d", current.GID)
+	currentGIDStr := ""
+	if current.GID != nil {
+		currentGIDStr = fmt.Sprintf("%d", *current.GID)
+	}
 	newGIDStr, err := prompt.Input("GID", currentGIDStr)
 	if err != nil {
 		return cmdutil.HandleAbort(err)

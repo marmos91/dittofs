@@ -56,7 +56,7 @@ func GetRootCmd() *cobra.Command {
 
 func init() {
 	// Global persistent flags
-	rootCmd.PersistentFlags().String("server", "", "Server URL (overrides stored credential)")
+	rootCmd.PersistentFlags().String("server", "http://localhost:8080", "Server URL (overrides stored credential)")
 	rootCmd.PersistentFlags().String("token", "", "Bearer token (overrides stored credential)")
 	rootCmd.PersistentFlags().StringP("output", "o", "table", "Output format (table|json|yaml)")
 	rootCmd.PersistentFlags().Bool("no-color", false, "Disable colored output")

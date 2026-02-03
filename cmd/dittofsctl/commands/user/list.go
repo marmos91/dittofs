@@ -32,7 +32,7 @@ type UserList []apiclient.User
 
 // Headers implements TableRenderer.
 func (ul UserList) Headers() []string {
-	return []string{"USERNAME", "ROLE", "EMAIL", "GROUPS", "ENABLED"}
+	return []string{"USERNAME", "UID", "ROLE", "EMAIL", "GROUPS", "ENABLED"}
 }
 
 // Rows implements TableRenderer.
@@ -41,7 +41,11 @@ func (ul UserList) Rows() [][]string {
 	for _, u := range ul {
 		groups := cmdutil.EmptyOr(strings.Join(u.Groups, ", "), "-")
 		email := cmdutil.EmptyOr(u.Email, "-")
-		rows = append(rows, []string{u.Username, u.Role, email, groups, cmdutil.BoolToYesNo(u.Enabled)})
+		uidStr := "-"
+		if u.UID != nil {
+			uidStr = fmt.Sprintf("%d", *u.UID)
+		}
+		rows = append(rows, []string{u.Username, uidStr, u.Role, email, groups, cmdutil.BoolToYesNo(u.Enabled)})
 	}
 	return rows
 }

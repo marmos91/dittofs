@@ -47,8 +47,13 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	req := &apiclient.CreateGroupRequest{
 		Name:        createName,
-		GID:         createGID,
 		Description: createDescription,
+	}
+
+	// Only set GID if explicitly provided
+	if cmd.Flags().Changed("gid") {
+		gid := createGID
+		req.GID = &gid
 	}
 
 	group, err := client.CreateGroup(req)
@@ -56,5 +61,9 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create group: %w", err)
 	}
 
-	return cmdutil.PrintResourceWithSuccess(os.Stdout, group, fmt.Sprintf("Group '%s' created successfully (GID: %d)", group.Name, group.GID))
+	gidStr := "auto"
+	if group.GID != nil {
+		gidStr = fmt.Sprintf("%d", *group.GID)
+	}
+	return cmdutil.PrintResourceWithSuccess(os.Stdout, group, fmt.Sprintf("Group '%s' created successfully (GID: %s)", group.Name, gidStr))
 }

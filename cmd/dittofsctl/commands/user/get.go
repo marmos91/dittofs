@@ -42,6 +42,10 @@ func (ul SingleUserList) Rows() [][]string {
 	if len(u.Groups) > 0 {
 		groups = fmt.Sprintf("%v", u.Groups)
 	}
+	uidStr := "-"
+	if u.UID != nil {
+		uidStr = fmt.Sprintf("%d", *u.UID)
+	}
 
 	return [][]string{
 		{"ID", u.ID},
@@ -49,6 +53,7 @@ func (ul SingleUserList) Rows() [][]string {
 		{"Display Name", u.DisplayName},
 		{"Email", u.Email},
 		{"Role", u.Role},
+		{"UID", uidStr},
 		{"Groups", groups},
 		{"Enabled", cmdutil.BoolToYesNo(u.Enabled)},
 		{"Must Change Password", cmdutil.BoolToYesNo(u.MustChangePassword)},
