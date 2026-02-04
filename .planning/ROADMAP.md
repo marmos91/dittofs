@@ -11,7 +11,7 @@ DittoFS evolves from NFSv3 to full NFSv4.2 support across four milestones. v1.0 
 - [ ] **v3.0 NFSv4.1 Sessions** - Phases 16-21.5 (26 requirements + 2 manual checkpoints)
 - [ ] **v4.0 NFSv4.2 Extensions** - Phases 22-28.5 (28 requirements + 2 manual checkpoints)
 
-**⚑ USER CHECKPOINT** phases require your manual testing before proceeding. Use `/gsd:verify-work` to validate.
+**USER CHECKPOINT** phases require your manual testing before proceeding. Use `/gsd:verify-work` to validate.
 
 ## Phases
 
@@ -28,46 +28,46 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 3: NSM Protocol** - Network Status Monitor for crash recovery
 - [ ] **Phase 4: SMB Leases** - SMB2/3 oplock and lease support
 - [ ] **Phase 5: Cross-Protocol Integration** - Lock visibility across NFS and SMB
-- [ ] **Phase 5.5: Manual Verification v1.0** ⚑ USER CHECKPOINT - Test NFS+SMB locking manually
+- [ ] **Phase 5.5: Manual Verification v1.0** USER CHECKPOINT - Test NFS+SMB locking manually
 
 ### v2.0 NFSv4.0 + Kerberos
 
 - [ ] **Phase 6: NFSv4 Protocol Foundation** - Compound operations and pseudo-filesystem
 - [ ] **Phase 7: NFSv4 File Operations** - Lookup, read, write, create, remove
-- [ ] **Phase 7.5: Manual Verification - Basic NFSv4** ⚑ USER CHECKPOINT - Test NFSv4 mount and basic ops
+- [ ] **Phase 7.5: Manual Verification - Basic NFSv4** USER CHECKPOINT - Test NFSv4 mount and basic ops
 - [ ] **Phase 8: NFSv4 Advanced Operations** - Link, rename, verify, security info
 - [ ] **Phase 9: State Management** - Client ID, state ID, and lease tracking
 - [ ] **Phase 10: NFSv4 Locking** - Integrated byte-range locking (LOCK/LOCKT/LOCKU)
 - [ ] **Phase 11: Delegations** - Read/write delegations with callback channel
 - [ ] **Phase 12: Kerberos Authentication** - RPCSEC_GSS framework with krb5/krb5i/krb5p
-- [ ] **Phase 12.5: Manual Verification - Kerberos** ⚑ USER CHECKPOINT - Test Kerberos auth manually
+- [ ] **Phase 12.5: Manual Verification - Kerberos** USER CHECKPOINT - Test Kerberos auth manually
 - [ ] **Phase 13: NFSv4 ACLs** - Extended ACL model with Windows interoperability
 - [ ] **Phase 14: Control Plane v2.0** - NFSv4 adapter configuration and settings
 - [ ] **Phase 15: v2.0 Testing** - Comprehensive E2E tests for NFSv4.0
-- [ ] **Phase 15.5: Manual Verification v2.0** ⚑ USER CHECKPOINT - Full NFSv4.0 validation
+- [ ] **Phase 15.5: Manual Verification v2.0** USER CHECKPOINT - Full NFSv4.0 validation
 
 ### v3.0 NFSv4.1 Sessions
 
 - [ ] **Phase 16: Session Infrastructure** - EXCHANGE_ID, CREATE_SESSION, DESTROY_SESSION
 - [ ] **Phase 17: Exactly-Once Semantics** - Slot tables and duplicate request cache
 - [ ] **Phase 18: Backchannel** - NAT-friendly callbacks over fore channel
-- [ ] **Phase 18.5: Manual Verification - Sessions** ⚑ USER CHECKPOINT - Test session behavior
+- [ ] **Phase 18.5: Manual Verification - Sessions** USER CHECKPOINT - Test session behavior
 - [ ] **Phase 19: Directory Delegations** - Directory change notifications
 - [ ] **Phase 20: NFSv4.1 Operations** - DESTROY_CLIENTID, FREE_STATEID, TEST_STATEID
 - [ ] **Phase 21: v3.0 Testing** - Session and backchannel E2E tests
-- [ ] **Phase 21.5: Manual Verification v3.0** ⚑ USER CHECKPOINT - Full NFSv4.1 validation
+- [ ] **Phase 21.5: Manual Verification v3.0** USER CHECKPOINT - Full NFSv4.1 validation
 
 ### v4.0 NFSv4.2 Extensions
 
 - [ ] **Phase 22: Server-Side Copy** - Async COPY with OFFLOAD_STATUS polling
 - [ ] **Phase 23: Clone/Reflinks** - Copy-on-write via content-addressed storage
 - [ ] **Phase 24: Sparse Files** - SEEK, ALLOCATE, DEALLOCATE operations
-- [ ] **Phase 24.5: Manual Verification - Advanced Ops** ⚑ USER CHECKPOINT - Test copy/clone/sparse
+- [ ] **Phase 24.5: Manual Verification - Advanced Ops** USER CHECKPOINT - Test copy/clone/sparse
 - [ ] **Phase 25: Extended Attributes** - xattrs in metadata layer, exposed via NFS/SMB
 - [ ] **Phase 26: NFSv4.2 Operations** - IO_ADVISE and optional pNFS operations
 - [ ] **Phase 27: Documentation** - Complete documentation for all new features
 - [ ] **Phase 28: v4.0 Testing** - Final testing and pjdfstest POSIX compliance
-- [ ] **Phase 28.5: Final Manual Verification** ⚑ USER CHECKPOINT - Complete validation of all features
+- [ ] **Phase 28.5: Final Manual Verification** USER CHECKPOINT - Complete validation of all features
 
 ## Phase Details
 
@@ -85,12 +85,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Lock conflicts are detected across different lock types (read/write, shared/exclusive)
   4. Grace period rejects new locks while allowing reclaims after restart
   5. Connection pool manages client connections per adapter
-**Plans**: TBD
+**Plans**: 3 plans in 2 waves
 
 Plans:
-- [ ] 01-01: Unified Lock Manager core implementation
-- [ ] 01-02: Lock persistence and grace period handling
-- [ ] 01-03: Connection pool infrastructure
+- [ ] 01-01-PLAN.md — Enhanced lock types, POSIX splitting, deadlock detection, config
+- [ ] 01-02-PLAN.md — Lock persistence (LockStore interface, memory/badger/postgres)
+- [ ] 01-03-PLAN.md — Grace period state machine, connection tracking, metrics
 
 ### Phase 2: NLM Protocol
 **Goal**: Implement the Network Lock Manager protocol (RPC 100021) for NFSv3 locking
@@ -584,7 +584,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 1. Locking Infrastructure | v1.0 | 0/3 | Not started | - |
+| 1. Locking Infrastructure | v1.0 | 0/3 | Planned | - |
 | 2. NLM Protocol | v1.0 | 0/3 | Not started | - |
 | 3. NSM Protocol | v1.0 | 0/3 | Not started | - |
 | 4. SMB Leases | v1.0 | 0/3 | Not started | - |
@@ -617,4 +617,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 
 ---
 *Roadmap created: 2026-02-04*
+*Phase 1 planned: 2026-02-04*
 *Requirements coverage: 162/162 mapped*
