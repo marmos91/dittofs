@@ -46,7 +46,7 @@ Plans:
 - [x] 01-03-PLAN.md - End-to-end validation on local/test cluster
 
 ### Phase 2: ConfigMap Generation and Services
-**Goal**: ConfigMap generated from CRD spec; LoadBalancer Services for NFS, SMB, API; checksum annotation for pod restart
+**Goal**: ConfigMap generated from CRD spec matching DittoFS develop branch format; LoadBalancer Services for NFS, SMB, API; checksum annotation for automatic pod restart
 **Depends on**: Phase 1
 **Requirements**: R2.1, R2.2, R2.3, R2.4, R2.5, R2.6
 **Complexity**: Medium
@@ -57,17 +57,18 @@ Plans:
   4. SMB port accessible via LoadBalancer Service (default 445)
   5. REST API accessible via LoadBalancer/ClusterIP Service (port 8080)
 **Key Deliverables**:
-  - pkg/configgen: CRD-to-ConfigMap transformer
-  - pkg/resources: Builder pattern for Kubernetes resources
-  - Checksum annotation pattern implementation
-  - LoadBalancer Services for NFS, SMB, API
-  - NodePort fallback when LoadBalancer unavailable
-**Plans**: TBD
+  - Simplified CRD with infrastructure-only fields (database, cache, controlplane, metrics)
+  - ConfigMap generation matching DittoFS develop branch format
+  - pkg/resources: Hash utility and Service builder
+  - Checksum annotation pattern for pod restart
+  - Four Services: headless, file (NFS+SMB), API, metrics (conditional)
+  - Port validation webhook
+**Plans**: 3 plans
 
 Plans:
-- [ ] 02-01: ConfigMap generation from CRD spec
-- [ ] 02-02: Checksum annotation and pod restart
-- [ ] 02-03: LoadBalancer Services for NFS, SMB, API
+- [ ] 02-01-PLAN.md - Simplify CRD and ConfigMap generation for develop branch format
+- [ ] 02-02-PLAN.md - Checksum annotation for automatic pod restart on config change
+- [ ] 02-03-PLAN.md - Four Services (headless, file, API, metrics) with port validation
 
 ### Phase 3: Storage Management
 **Goal**: VolumeClaimTemplates for metadata, payload, cache PVCs; StorageClass validation
@@ -172,8 +173,8 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Operator Foundation | 3/3 | ✓ Complete | 2026-02-04 |
-| 2. ConfigMap and Services | 0/3 | Not started | - |
+| 1. Operator Foundation | 3/3 | Complete | 2026-02-04 |
+| 2. ConfigMap and Services | 0/3 | In Progress | - |
 | 3. Storage Management | 0/3 | Not started | - |
 | 4. Percona Integration | 0/3 | Not started | - |
 | 5. Status and Lifecycle | 0/3 | Not started | - |
