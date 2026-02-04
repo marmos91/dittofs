@@ -1,756 +1,540 @@
-# Architecture Research: DittoFS Kubernetes Operator
+# Architecture Research: NFSv4 Server State Management
 
-**Domain:** Kubernetes Operator for Stateful Application (NFS/SMB filesystem server)
+**Domain:** NFSv4 Protocol Server Implementation
 **Researched:** 2026-02-04
-**Confidence:** MEDIUM
+**Confidence:** MEDIUM-HIGH
 
 ## Executive Summary
 
-This document describes the recommended architecture for a Kubernetes operator that deploys and manages DittoFS instances. The operator follows established Kubernetes operator patterns with specific considerations for:
+NFSv4 fundamentally differs from NFSv3 by being a stateful protocol. The server must track client identities, open files, locks, delegations, and sessions (NFSv4.1+). This research documents the standard architecture patterns for NFSv4 state management components, with specific recommendations for integrating into DittoFS's existing architecture.
 
-1. **External operator dependency**: PostgreSQL managed by Percona Operator
-2. **Stateful storage requirements**: BadgerDB metadata and filesystem payload stores via PVCs
-3. **Multi-protocol service exposure**: NFS (TCP 2049), SMB (TCP 445), REST API (TCP 8080)
-4. **Configuration generation**: ConfigMaps derived from CRD specifications
+## Standard NFSv4 Server Architecture
 
-The architecture uses the **controller-runtime** pattern with Kubebuilder scaffolding, implementing separate controllers for each CRD to maintain separation of concerns.
-
-## System Overview
+### System Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          DittoFS Operator                                   │
-│                    (Controller Manager Pod)                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐ │
-│  │  DittoFS Controller │  │  Share Controller   │  │  Backup Controller  │ │
-│  │  (main reconciler)  │  │  (share lifecycle)  │  │  (backup/restore)   │ │
-│  └──────────┬──────────┘  └──────────┬──────────┘  └──────────┬──────────┘ │
-│             │                        │                        │             │
-│             └────────────────────────┼────────────────────────┘             │
-│                                      │                                      │
-└──────────────────────────────────────┼──────────────────────────────────────┘
-                                       │
-                                       ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                        Kubernetes API Server                                  │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  Custom Resources (CRDs)              │  Generated Resources                 │
-│  ┌─────────────────────────────────┐  │  ┌─────────────────────────────────┐│
-│  │ dittofs.dittofs.io/v1alpha1     │  │  │ ConfigMap (dittofs-config)      ││
-│  │   - DittoFS                     │──┼─▶│ StatefulSet (dittofs)           ││
-│  │   - DittoFSShare                │  │  │ Service (nfs, smb, api)         ││
-│  │   - DittoFSBackup               │  │  │ PVC (metadata, payload, cache)  ││
-│  └─────────────────────────────────┘  │  │ Secret (jwt-secret)             ││
-│                                       │  └─────────────────────────────────┘│
-│  External Resources (watched)         │                                      │
-│  ┌─────────────────────────────────┐  │                                      │
-│  │ pgv2.percona.com/v2             │  │                                      │
-│  │   - PerconaPGCluster            │──┼──▶ PostgreSQL connection details    │
-│  └─────────────────────────────────┘  │                                      │
-│                                       │                                      │
-└───────────────────────────────────────┴──────────────────────────────────────┘
-                                       │
-                                       ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                          Running DittoFS Instance                             │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  StatefulSet: dittofs                                                        │
-│  ┌─────────────────────────────────────────────────────────────────────────┐│
-│  │  Pod: dittofs-0                                                          ││
-│  │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐          ││
-│  │  │ NFS Port 2049   │  │ SMB Port 445    │  │ API Port 8080   │          ││
-│  │  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘          ││
-│  │           │                    │                    │                    ││
-│  │           └────────────────────┼────────────────────┘                    ││
-│  │                                ▼                                         ││
-│  │  ┌─────────────────────────────────────────────────────────────────────┐││
-│  │  │                      DittoFS Runtime                                │││
-│  │  │                                                                     │││
-│  │  │  ConfigMap Mount: /etc/dittofs/config.yaml                          │││
-│  │  │  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐              │││
-│  │  │  │ PostgreSQL    │ │ BadgerDB PVC  │ │ Filesystem    │              │││
-│  │  │  │ (via Percona) │ │ /data/meta    │ │ PVC /data/pay │              │││
-│  │  │  │ Metadata      │ │ Metadata Alt  │ │ Payload Store │              │││
-│  │  │  └───────┬───────┘ └───────┬───────┘ └───────┬───────┘              │││
-│  │  │          │                 │                 │                      │││
-│  │  │          └─────────────────┼─────────────────┘                      │││
-│  │  │                            ▼                                        │││
-│  │  │                     Cache PVC: /data/cache                          │││
-│  │  └─────────────────────────────────────────────────────────────────────┘││
-│  └─────────────────────────────────────────────────────────────────────────┘│
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
++-----------------------------------------------------------------------------+
+|                         Protocol Layer (v4/)                                |
+|  +---------------+  +----------------+  +----------------+                  |
+|  | COMPOUND      |  | Operation      |  | Callback       |                  |
+|  | Processor     |  | Handlers       |  | Client         |                  |
+|  | (dispatch)    |  | (nfs4proc)     |  | (CB_* ops)     |                  |
+|  +-------+-------+  +-------+--------+  +-------+--------+                  |
+|          |                  |                   |                           |
++----------+------------------+-------------------+---------------------------+
+           |                  |                   |
++----------+------------------+-------------------+---------------------------+
+|                        State Manager                                        |
+|  +------------------+  +------------------+  +------------------+           |
+|  | Client Manager   |  | Session Manager  |  | Lease Manager    |           |
+|  | - clientid table |  | - session table  |  | - lease renewal  |           |
+|  | - owner tracking |  | - slot table     |  | - expiration     |           |
+|  | - verifier mgmt  |  | - DRC (replay)   |  | - grace period   |           |
+|  +--------+---------+  +--------+---------+  +--------+---------+           |
+|           |                     |                     |                     |
+|  +--------+---------+  +--------+---------+  +--------+---------+           |
+|  | State ID Manager |  | Lock Manager     |  | Delegation Mgr   |           |
+|  | - open states    |  | - byte-range     |  | - read/write     |           |
+|  | - lock states    |  | - conflict check |  | - recall logic   |           |
+|  | - deleg states   |  | - cross-protocol |  | - callback queue |           |
+|  +--------+---------+  +--------+---------+  +--------+---------+           |
+|           |                     |                     |                     |
++----------+----------------------+---------------------+---------------------+
+           |                      |                     |
++----------+----------------------+---------------------+---------------------+
+|                    Recovery Store (Persistent)                              |
+|  +------------------+  +------------------+  +------------------+           |
+|  | Client Records   |  | Grace Period     |  | Reclaim Tracker  |           |
+|  | (owner names)    |  | (timestamps)     |  | (state history)  |           |
+|  +------------------+  +------------------+  +------------------+           |
++-----------------------------------------------------------------------------+
+           |
++----------+------------------------------------------------------------------+
+|                    Existing DittoFS Services                                |
+|  +------------------+  +------------------+  +------------------+           |
+|  | MetadataService  |  | BlockService     |  | LockManager      |           |
+|  | (file metadata)  |  | (content)        |  | (byte-range)     |           |
+|  +------------------+  +------------------+  +------------------+           |
++-----------------------------------------------------------------------------+
 ```
 
-## Component Responsibilities
+### Component Responsibilities
 
-| Component | Responsibility | Communicates With |
-|-----------|----------------|-------------------|
-| **DittoFS Controller** | Main reconciler: creates ConfigMap, StatefulSet, Services, PVCs; watches PerconaPGCluster for connection details | Kubernetes API, Percona Operator CRDs |
-| **Share Controller** | Manages DittoFSShare resources; updates ConfigMap with share definitions; signals DittoFS pods to reload | DittoFS Controller (via ConfigMap), DittoFS REST API |
-| **Backup Controller** | Handles backup/restore operations using DittoFS backup CLI | DittoFS REST API, External storage (S3/PVC) |
-| **ConfigMap Generator** | Transforms CRD spec into DittoFS YAML configuration | Embedded in DittoFS Controller |
-| **StatefulSet** | Runs DittoFS pod(s) with mounted configuration and PVCs | ConfigMap, PVCs, Services |
-| **Services** | Expose NFS (ClusterIP/LoadBalancer), SMB (ClusterIP), REST API (ClusterIP) | External clients, other operators |
+| Component | Responsibility | Typical Implementation |
+|-----------|----------------|------------------------|
+| **Client Manager** | Track NFSv4 client identities, owner strings, verifiers | Hash table keyed by clientid; handles SETCLIENTID/EXCHANGE_ID |
+| **Session Manager** | NFSv4.1 session handling, slot tables, duplicate request cache | Per-client session list; handles CREATE_SESSION/DESTROY_SESSION |
+| **Lease Manager** | Track lease validity, handle renewals, detect expired clients | Timer-based; background "laundromat" thread for cleanup |
+| **State ID Manager** | Generate/validate stateids, track open/lock/delegation states | State tables keyed by stateid; links to client and file |
+| **Lock Manager** | Byte-range locking with conflict detection | Existing DittoFS LockManager can be extended |
+| **Delegation Manager** | Grant/recall read/write delegations, manage callback queue | Callback client for CB_RECALL; tracks delegation holders |
+| **Recovery Store** | Persist client records for grace period recovery | Filesystem or database; tracks "active" clients |
 
 ## Recommended Project Structure
 
+Based on analysis of Linux nfsd, NFS-Ganesha, and nfs4j, here is the recommended structure for DittoFS:
+
 ```
-dittofs-operator/
-├── api/
-│   └── v1alpha1/
-│       ├── dittofs_types.go           # DittoFS CRD spec/status
-│       ├── dittofs_share_types.go     # DittoFSShare CRD spec/status
-│       ├── dittofs_backup_types.go    # DittoFSBackup CRD spec/status
-│       ├── groupversion_info.go       # API group metadata
-│       └── zz_generated.deepcopy.go   # Generated deepcopy
-│
-├── internal/
-│   └── controller/
-│       ├── dittofs_controller.go      # Main DittoFS reconciler
-│       ├── dittofs_controller_test.go
-│       ├── share_controller.go        # Share reconciler
-│       ├── share_controller_test.go
-│       ├── backup_controller.go       # Backup reconciler
-│       ├── backup_controller_test.go
-│       └── suite_test.go              # Controller test suite
-│
-├── pkg/
-│   ├── configgen/
-│   │   ├── configgen.go               # CRD-to-ConfigMap transformer
-│   │   └── configgen_test.go
-│   ├── resources/
-│   │   ├── configmap.go               # ConfigMap builder
-│   │   ├── statefulset.go             # StatefulSet builder
-│   │   ├── service.go                 # Service builder
-│   │   ├── pvc.go                     # PVC builder
-│   │   └── secret.go                  # Secret builder
-│   └── percona/
-│       ├── client.go                  # Percona PGCluster watcher
-│       └── connection.go              # Connection string builder
-│
-├── config/
-│   ├── crd/
-│   │   └── bases/                     # Generated CRD YAML
-│   ├── manager/
-│   │   └── manager.yaml               # Controller manager deployment
-│   ├── rbac/                          # RBAC resources
-│   ├── samples/                       # Example CRs
-│   └── default/                       # Kustomize overlay
-│
-├── cmd/
-│   └── main.go                        # Operator entrypoint
-│
-├── Dockerfile                         # Operator container image
-├── Makefile                           # Build/deploy automation
-├── PROJECT                            # Kubebuilder project config
-└── go.mod
+internal/protocol/nfs/
+├── v4/                           # NFSv4 specific implementation
+│   ├── doc.go                    # Package documentation
+│   ├── handlers/                 # NFSv4 operation handlers
+│   │   ├── compound.go           # COMPOUND processor
+│   │   ├── exchange_id.go        # EXCHANGE_ID (clientid establishment)
+│   │   ├── create_session.go     # CREATE_SESSION
+│   │   ├── sequence.go           # SEQUENCE (session validation)
+│   │   ├── open.go               # OPEN (creates open stateid)
+│   │   ├── close.go              # CLOSE
+│   │   ├── lock.go               # LOCK/LOCKT/LOCKU
+│   │   ├── read.go               # READ (stateid validation)
+│   │   ├── write.go              # WRITE (stateid validation)
+│   │   ├── commit.go             # COMMIT
+│   │   ├── delegreturn.go        # DELEGRETURN
+│   │   ├── reclaim_complete.go   # RECLAIM_COMPLETE
+│   │   └── ... (40+ operations)
+│   ├── callback/                 # Callback client implementation
+│   │   ├── client.go             # CB_COMPOUND RPC client
+│   │   ├── recall.go             # CB_RECALL implementation
+│   │   └── notify.go             # CB_NOTIFY (optional)
+│   └── xdr/                      # NFSv4 XDR types
+│       ├── types.go              # NFSv4 type definitions
+│       ├── stateid.go            # Stateid encoding/decoding
+│       └── compound.go           # COMPOUND request/response
+
+pkg/nfs4state/                    # NFSv4 state management (new package)
+├── doc.go                        # Package documentation
+├── manager.go                    # StateManager interface + implementation
+├── client.go                     # NFS4Client struct and clientid handling
+├── session.go                    # NFS4Session struct (NFSv4.1)
+├── stateid.go                    # StateID generation and types
+├── open_state.go                 # Open state tracking
+├── lock_state.go                 # Lock state (delegates to metadata.LockManager)
+├── delegation.go                 # Delegation state and recall logic
+├── lease.go                      # Lease management and expiration
+├── grace.go                      # Grace period handling
+├── recovery.go                   # State recovery coordination
+└── store/                        # Persistent recovery store
+    ├── interface.go              # RecoveryStore interface
+    ├── memory.go                 # In-memory (ephemeral, testing)
+    └── file.go                   # File-based persistence
 ```
 
 ### Structure Rationale
 
-- **api/v1alpha1/:** All CRD type definitions in one version directory. Enables clear API evolution.
-- **internal/controller/:** Private controller implementations. One controller per CRD following Kubebuilder conventions.
-- **pkg/configgen/:** Reusable ConfigMap generation logic. Separates transformation from reconciliation.
-- **pkg/resources/:** Builder pattern for Kubernetes resources. Makes resource creation testable and reusable.
-- **pkg/percona/:** Encapsulates Percona operator integration. Isolates external dependency.
+- **`internal/protocol/nfs/v4/`**: Keeps NFSv4 handlers separate from v3, following existing pattern
+- **`pkg/nfs4state/`**: State management as a public package allows:
+  - Sharing state between NFS and SMB adapters (cross-protocol locking)
+  - Testing state logic independently of protocol handlers
+  - Future API exposure for state inspection/management
+- **Recovery store abstraction**: Enables different persistence backends (file, database)
 
 ## Architectural Patterns
 
-### Pattern 1: External Operator Dependency (Percona PostgreSQL)
+### Pattern 1: Compound Operation Processing
 
-**What:** Watch resources created by another operator (PerconaPGCluster) and extract connection details.
+**What:** NFSv4 uses a single COMPOUND RPC that contains multiple operations executed sequentially. Each operation can reference results from previous operations via the "current filehandle" concept.
 
-**When to use:** When your application depends on resources managed by a third-party operator.
+**When to use:** All NFSv4 requests (unlike NFSv3's single-operation RPCs)
 
 **Trade-offs:**
-- Pro: Leverages battle-tested database operator
-- Pro: Separation of concerns (database lifecycle vs application lifecycle)
-- Con: Coupling to external CRD schema
-- Con: Must handle "not ready" states gracefully
+- Pro: Reduces round trips, enables atomic multi-operation sequences
+- Con: More complex error handling, partial success states
 
-**Implementation:**
-
+**Example:**
 ```go
-// Watch PerconaPGCluster as external resource (no ownerReference)
-func (r *DittoFSReconciler) SetupWithManager(mgr ctrl.Manager) error {
-    return ctrl.NewControllerManagedBy(mgr).
-        For(&dittofsv1alpha1.DittoFS{}).
-        Owns(&corev1.ConfigMap{}).
-        Owns(&appsv1.StatefulSet{}).
-        Owns(&corev1.Service{}).
-        Owns(&corev1.PersistentVolumeClaim{}).
-        // Watch external PerconaPGCluster - triggers reconcile when status changes
-        Watches(
-            &source.Kind{Type: &pgv2.PerconaPGCluster{}},
-            handler.EnqueueRequestsFromMapFunc(r.findDittoFSForPGCluster),
-            builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-        ).
-        Complete(r)
+// Compound processor maintains current/saved filehandle state
+type CompoundContext struct {
+    CurrentFH   metadata.FileHandle
+    SavedFH     metadata.FileHandle
+    Client      *NFS4Client
+    Session     *NFS4Session  // nil for NFSv4.0
+    StateID     *StateID      // current operation's stateid
+    MinorVer    uint32
 }
 
-// Find DittoFS instances that reference this PGCluster
-func (r *DittoFSReconciler) findDittoFSForPGCluster(obj client.Object) []reconcile.Request {
-    pgCluster := obj.(*pgv2.PerconaPGCluster)
+func ProcessCompound(ctx context.Context, args *CompoundArgs) *CompoundRes {
+    cctx := &CompoundContext{MinorVer: args.MinorVersion}
+    results := make([]OperationResult, 0, len(args.Operations))
 
-    // Find all DittoFS instances referencing this cluster
-    var dittoFSList dittofsv1alpha1.DittoFSList
-    if err := r.List(context.TODO(), &dittoFSList, client.InNamespace(pgCluster.Namespace)); err != nil {
-        return nil
-    }
+    for _, op := range args.Operations {
+        result := dispatchOperation(ctx, cctx, op)
+        results = append(results, result)
 
-    var requests []reconcile.Request
-    for _, dfs := range dittoFSList.Items {
-        if dfs.Spec.Database.PostgresRef.Name == pgCluster.Name {
-            requests = append(requests, reconcile.Request{
-                NamespacedName: types.NamespacedName{
-                    Name:      dfs.Name,
-                    Namespace: dfs.Namespace,
-                },
-            })
+        // Stop on first error
+        if result.Status != NFS4_OK {
+            break
         }
     }
-    return requests
-}
 
-// Extract connection details from PerconaPGCluster status
-func (r *DittoFSReconciler) getPostgresConnection(ctx context.Context, ref *PostgresRef, namespace string) (*PostgresConnection, error) {
-    var pgCluster pgv2.PerconaPGCluster
-    if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: namespace}, &pgCluster); err != nil {
-        return nil, err
-    }
-
-    // Check if cluster is ready
-    if pgCluster.Status.State != "ready" {
-        return nil, ErrDatabaseNotReady
-    }
-
-    // Get connection secret
-    var secret corev1.Secret
-    secretName := fmt.Sprintf("%s-pguser-%s", ref.Name, ref.User)
-    if err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, &secret); err != nil {
-        return nil, err
-    }
-
-    return &PostgresConnection{
-        Host:     string(secret.Data["host"]),
-        Port:     string(secret.Data["port"]),
-        Database: string(secret.Data["dbname"]),
-        User:     string(secret.Data["user"]),
-        Password: string(secret.Data["password"]),
-    }, nil
+    return &CompoundRes{Status: results[len(results)-1].Status, Results: results}
 }
 ```
 
-### Pattern 2: ConfigMap Generation from CRD Spec
+### Pattern 2: Stateid Validation Chain
 
-**What:** Transform CRD specification into DittoFS configuration YAML stored in a ConfigMap.
+**What:** Every stateful operation (READ, WRITE, LOCK, etc.) must validate the provided stateid against the server's state tables.
 
-**When to use:** When your application reads configuration from a file rather than environment variables.
+**When to use:** Any operation that requires open/lock state
 
 **Trade-offs:**
-- Pro: Single source of truth in CRD
-- Pro: Familiar configuration format for DittoFS
-- Pro: Supports complex nested configuration
-- Con: ConfigMap size limits (1MB)
-- Con: Pod restart may be needed for config changes
+- Pro: Ensures state consistency, detects stale/invalid state
+- Con: Additional lookup overhead on every I/O operation
 
-**Implementation:**
-
+**Example:**
 ```go
-// CRD Spec (simplified)
-type DittoFSSpec struct {
-    // Database configuration
-    Database DatabaseSpec `json:"database"`
-
-    // Cache configuration
-    Cache CacheSpec `json:"cache"`
-
-    // Metadata store configuration
-    Metadata MetadataSpec `json:"metadata"`
-
-    // Payload store configuration
-    Payload PayloadSpec `json:"payload"`
-
-    // Protocol adapter configuration
-    Adapters AdaptersSpec `json:"adapters"`
-
-    // Image and resources
-    Image    string                      `json:"image"`
-    Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+type StateID struct {
+    Seqid  uint32   // Increments on state changes
+    Other  [12]byte // Server-generated identifier
 }
 
-type DatabaseSpec struct {
-    // Reference to PerconaPGCluster
-    PostgresRef *PostgresRef `json:"postgresRef,omitempty"`
-    // Or inline SQLite config
-    SQLite *SQLiteSpec `json:"sqlite,omitempty"`
-}
+func (sm *StateManager) ValidateStateID(ctx context.Context,
+    fh metadata.FileHandle, stateid StateID, op Operation) (*OpenState, error) {
 
-type PostgresRef struct {
-    Name string `json:"name"`
-    User string `json:"user"`
-}
-
-// ConfigMap generator
-func GenerateConfigMap(dfs *dittofsv1alpha1.DittoFS, pgConn *PostgresConnection) (*corev1.ConfigMap, error) {
-    config := map[string]interface{}{
-        "logging": map[string]interface{}{
-            "level":  "INFO",
-            "format": "json",
-        },
-        "cache": map[string]interface{}{
-            "path": "/data/cache",
-            "size": dfs.Spec.Cache.Size,
-        },
-        "database": buildDatabaseConfig(dfs.Spec.Database, pgConn),
-        "metadata": buildMetadataConfig(dfs.Spec.Metadata),
-        "payload":  buildPayloadConfig(dfs.Spec.Payload),
-        "adapters": buildAdaptersConfig(dfs.Spec.Adapters),
+    // Check for special stateids (anonymous, READ bypass)
+    if isSpecialStateID(stateid) {
+        return sm.handleSpecialStateID(ctx, fh, stateid, op)
     }
 
-    yamlBytes, err := yaml.Marshal(config)
+    // Look up state by stateid.Other
+    state, err := sm.states.Get(stateid.Other)
     if err != nil {
-        return nil, err
+        return nil, NFS4ERR_BAD_STATEID
     }
 
-    return &corev1.ConfigMap{
-        ObjectMeta: metav1.ObjectMeta{
-            Name:      fmt.Sprintf("%s-config", dfs.Name),
-            Namespace: dfs.Namespace,
-            Labels:    labelsForDittoFS(dfs),
-        },
-        Data: map[string]string{
-            "config.yaml": string(yamlBytes),
-        },
-    }, nil
+    // Verify seqid (detect replay or old state)
+    if stateid.Seqid != state.Seqid && stateid.Seqid != 0 {
+        if stateid.Seqid < state.Seqid {
+            return nil, NFS4ERR_OLD_STATEID
+        }
+        return nil, NFS4ERR_BAD_STATEID
+    }
+
+    // Verify file handle matches
+    if !bytes.Equal(state.FileHandle, fh) {
+        return nil, NFS4ERR_BAD_STATEID
+    }
+
+    // Renew lease on successful validation
+    sm.leaseManager.Renew(state.ClientID)
+
+    return state, nil
 }
 ```
 
-### Pattern 3: Stateful Application with PVCs
+### Pattern 3: Lease-Based Expiration (Laundromat)
 
-**What:** Use StatefulSet with PersistentVolumeClaims for durable storage of BadgerDB metadata, filesystem payload, and cache WAL.
+**What:** Background goroutine periodically scans for expired clients and revokes their state. Named after Linux nfsd's "laundromat" thread.
 
-**When to use:** When application requires persistent storage that survives pod restarts.
+**When to use:** Required for any NFSv4 server
 
 **Trade-offs:**
-- Pro: Data persists across restarts and rescheduling
-- Pro: StatefulSet provides stable network identity
-- Con: PVC binding can delay pod startup
-- Con: Storage class must support required access modes
+- Pro: Automatic cleanup, predictable resource bounds
+- Con: Must carefully handle concurrent access, callback delays
 
-**Implementation:**
-
+**Example:**
 ```go
-func buildStatefulSet(dfs *dittofsv1alpha1.DittoFS, configMapName string) *appsv1.StatefulSet {
-    return &appsv1.StatefulSet{
-        ObjectMeta: metav1.ObjectMeta{
-            Name:      dfs.Name,
-            Namespace: dfs.Namespace,
-            Labels:    labelsForDittoFS(dfs),
-        },
-        Spec: appsv1.StatefulSetSpec{
-            Replicas:    ptr.To(int32(1)), // Single replica for NFS consistency
-            ServiceName: fmt.Sprintf("%s-headless", dfs.Name),
-            Selector: &metav1.LabelSelector{
-                MatchLabels: labelsForDittoFS(dfs),
-            },
-            Template: corev1.PodTemplateSpec{
-                ObjectMeta: metav1.ObjectMeta{
-                    Labels: labelsForDittoFS(dfs),
-                },
-                Spec: corev1.PodSpec{
-                    Containers: []corev1.Container{{
-                        Name:  "dittofs",
-                        Image: dfs.Spec.Image,
-                        Args:  []string{"start", "--config", "/etc/dittofs/config.yaml"},
-                        Ports: []corev1.ContainerPort{
-                            {Name: "nfs", ContainerPort: 2049, Protocol: corev1.ProtocolTCP},
-                            {Name: "smb", ContainerPort: 445, Protocol: corev1.ProtocolTCP},
-                            {Name: "api", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
-                        },
-                        VolumeMounts: []corev1.VolumeMount{
-                            {Name: "config", MountPath: "/etc/dittofs", ReadOnly: true},
-                            {Name: "metadata", MountPath: "/data/metadata"},
-                            {Name: "payload", MountPath: "/data/payload"},
-                            {Name: "cache", MountPath: "/data/cache"},
-                        },
-                        Resources: dfs.Spec.Resources,
-                        LivenessProbe: &corev1.Probe{
-                            ProbeHandler: corev1.ProbeHandler{
-                                HTTPGet: &corev1.HTTPGetAction{
-                                    Path: "/health",
-                                    Port: intstr.FromString("api"),
-                                },
-                            },
-                            InitialDelaySeconds: 10,
-                            PeriodSeconds:       30,
-                        },
-                    }},
-                    Volumes: []corev1.Volume{{
-                        Name: "config",
-                        VolumeSource: corev1.VolumeSource{
-                            ConfigMap: &corev1.ConfigMapVolumeSource{
-                                LocalObjectReference: corev1.LocalObjectReference{
-                                    Name: configMapName,
-                                },
-                            },
-                        },
-                    }},
-                },
-            },
-            VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
-                buildPVC("metadata", dfs.Spec.Metadata.Storage),
-                buildPVC("payload", dfs.Spec.Payload.Storage),
-                buildPVC("cache", dfs.Spec.Cache.Storage),
-            },
-        },
+type LeaseManager struct {
+    leaseTime time.Duration
+    clients   *ClientTable
+    ticker    *time.Ticker
+    stopCh    chan struct{}
+}
+
+func (lm *LeaseManager) Start() {
+    lm.ticker = time.NewTicker(lm.leaseTime / 2)
+    go lm.laundromat()
+}
+
+func (lm *LeaseManager) laundromat() {
+    for {
+        select {
+        case <-lm.ticker.C:
+            lm.expireClients()
+        case <-lm.stopCh:
+            return
+        }
+    }
+}
+
+func (lm *LeaseManager) expireClients() {
+    now := time.Now()
+    expired := lm.clients.FindExpired(now)
+
+    for _, client := range expired {
+        // Check for "courtesy" extension (no conflicting requests)
+        if lm.canExtendCourtesy(client) {
+            continue
+        }
+
+        // Recall any delegations first
+        if err := lm.recallDelegations(client); err != nil {
+            // Client unresponsive, force revoke
+            lm.revokeClientState(client)
+        }
+
+        lm.clients.Remove(client.ID)
     }
 }
 ```
 
-### Pattern 4: Multi-Controller Architecture (One CRD Per Controller)
+### Pattern 4: Delegation Callback
 
-**What:** Separate controllers for DittoFS, DittoFSShare, and DittoFSBackup resources.
+**What:** Server can grant read/write delegations to clients for caching. When conflicts arise, server recalls delegations via callback RPC.
 
-**When to use:** When CRDs represent distinct lifecycle concerns that should be managed independently.
+**When to use:** Optimization for exclusive access patterns
 
 **Trade-offs:**
-- Pro: Clear separation of concerns
-- Pro: Independent scaling and testing
-- Pro: Follows controller-runtime best practices
-- Con: Cross-CRD coordination requires careful design
-- Con: More boilerplate code
+- Pro: Major performance improvement for single-client workloads
+- Con: Complex callback handling, unresponsive client issues
 
-**Controller responsibilities:**
+**Example:**
+```go
+type DelegationManager struct {
+    delegations *DelegationTable
+    callbacks   *CallbackClient
+    recallWait  time.Duration
+}
 
-| Controller | Owns | Watches | Creates |
-|------------|------|---------|---------|
-| DittoFS | DittoFS CR | PerconaPGCluster, Secret | ConfigMap, StatefulSet, Service, PVC |
-| Share | DittoFSShare CR | DittoFS status | Updates ConfigMap (via DittoFS controller) |
-| Backup | DittoFSBackup CR | DittoFS status | Job (backup command), PVC (backup target) |
+func (dm *DelegationManager) RecallDelegation(ctx context.Context,
+    deleg *Delegation, reason RecallReason) error {
+
+    // Send CB_RECALL to client
+    err := dm.callbacks.Recall(ctx, deleg.ClientID, deleg.StateID, deleg.FileHandle)
+    if err != nil {
+        // Callback failed - mark for forced revocation
+        deleg.Status = DelegationRevoking
+        return err
+    }
+
+    // Wait for DELEGRETURN with timeout
+    select {
+    case <-deleg.ReturnedCh:
+        return nil
+    case <-time.After(dm.recallWait):
+        // Client didn't return delegation, force revoke
+        dm.revokeDelegation(deleg)
+        return ErrDelegationRevoked
+    }
+}
+```
 
 ## Data Flow
 
-### CRD Change to Running DittoFS
+### Client Establishment Flow (NFSv4.1)
 
 ```
-User creates/updates DittoFS CR
-           │
-           ▼
-┌─────────────────────────────┐
-│ DittoFS Controller watches  │
-│ dittofs.dittofs.io/v1alpha1 │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐    ┌─────────────────────────┐
-│ Check PerconaPGCluster      │───▶│ Get connection details  │
-│ readiness                   │    │ from Secret             │
-└──────────────┬──────────────┘    └─────────────┬───────────┘
-               │                                  │
-               ▼                                  │
-┌─────────────────────────────┐                  │
-│ Generate ConfigMap YAML     │◀─────────────────┘
-│ (embed PG connection)       │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│ Create/Update ConfigMap     │
-│ (owner: DittoFS CR)         │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│ Create/Update StatefulSet   │
-│ (mounts ConfigMap)          │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│ Create/Update Services      │
-│ (NFS, SMB, API)             │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│ Update DittoFS status       │
-│ (ready/not ready)           │
-└─────────────────────────────┘
+Client                    Server
+  |                         |
+  | EXCHANGE_ID            |
+  |------------------------>|
+  |                         | - Generate clientid (timestamp | instance | counter)
+  |                         | - Store client record with owner/verifier
+  |   clientid, seqid      |
+  |<------------------------|
+  |                         |
+  | CREATE_SESSION         |
+  |------------------------>|
+  |                         | - Validate clientid
+  |                         | - Generate sessionid
+  |                         | - Initialize slot table (DRC)
+  |   sessionid, slot info |
+  |<------------------------|
+  |                         |
+  | SEQUENCE + RECLAIM_COMPLETE (if recovering)
+  |------------------------>|
+  |                         | - Validate session
+  |                         | - Mark client as "active"
+  |   OK                   |
+  |<------------------------|
 ```
 
-### Share Configuration Flow
+### Open/Read/Write Flow
 
 ```
-User creates DittoFSShare CR
-           │
-           ▼
-┌─────────────────────────────┐
-│ Share Controller watches    │
-│ dittofs.dittofs.io/v1alpha1 │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│ Find referenced DittoFS     │
-│ instance                    │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│ Check DittoFS is Ready      │
-│ (status.ready == true)      │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│ Update DittoFS annotation   │
-│ to trigger reconcile        │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│ DittoFS Controller          │
-│ regenerates ConfigMap       │
-│ (includes all shares)       │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│ StatefulSet pod restarts    │
-│ (ConfigMap changed)         │
-│ OR                          │
-│ Call DittoFS reload API     │
-└─────────────────────────────┘
+Client                    Server
+  |                         |
+  | COMPOUND: SEQUENCE + PUTFH + OPEN
+  |------------------------>|
+  |                         | - Validate session (SEQUENCE)
+  |                         | - Set current FH (PUTFH)
+  |                         | - Create open state
+  |                         | - Generate open stateid
+  |                         | - Optionally grant delegation
+  |   open_stateid, delegation_stateid (optional)
+  |<------------------------|
+  |                         |
+  | COMPOUND: SEQUENCE + PUTFH + READ(stateid)
+  |------------------------>|
+  |                         | - Validate session
+  |                         | - Validate stateid (renews lease)
+  |                         | - Check access mode vs open state
+  |                         | - Perform read
+  |   data                 |
+  |<------------------------|
 ```
 
-## Anti-Patterns
+### State Management Flow
 
-### Anti-Pattern 1: Single Controller for Multiple CRDs
-
-**What people do:** One controller that manages DittoFS, Share, and Backup in a single reconcile loop.
-
-**Why it's wrong:**
-- Violates Single Responsibility Principle
-- Harder to test individual features
-- Reconciliation becomes complex with many conditional branches
-- Scaling one feature requires scaling all features
-
-**Do this instead:** Implement separate controllers for each CRD. Use status fields and annotations for cross-CRD coordination.
-
-### Anti-Pattern 2: Direct Child Resource Modification
-
-**What people do:** Manually edit the ConfigMap or StatefulSet created by the operator.
-
-**Why it's wrong:**
-- Operator will overwrite changes on next reconcile (config drift)
-- Creates confusion about source of truth
-- Breaks declarative model
-
-**Do this instead:** All configuration changes go through CRD. Implement `spec.configOverrides` for escape hatches.
-
-### Anti-Pattern 3: Polling Instead of Watching
-
-**What people do:** Use `RequeueAfter` to periodically check external resource status.
-
-**Why it's wrong:**
-- Wastes API server resources
-- Slow to react to changes
-- Unnecessary reconciliation loops
-
-**Do this instead:** Use `Watches()` with appropriate predicates to trigger reconciliation only when relevant changes occur.
-
-### Anti-Pattern 4: Missing Finalizers for External Resources
-
-**What people do:** Delete CRD without cleaning up resources not covered by ownerReferences (cross-namespace resources, external API calls).
-
-**Why it's wrong:**
-- Orphaned resources accumulate
-- Security risk (dangling database credentials)
-- Cost implications (unused cloud resources)
-
-**Do this instead:** Add finalizers when creating resources that need explicit cleanup. Remove finalizer only after cleanup completes.
-
-```go
-const dittoFSFinalizer = "dittofs.dittofs.io/finalizer"
-
-func (r *DittoFSReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-    var dfs dittofsv1alpha1.DittoFS
-    if err := r.Get(ctx, req.NamespacedName, &dfs); err != nil {
-        return ctrl.Result{}, client.IgnoreNotFound(err)
-    }
-
-    // Handle deletion
-    if !dfs.ObjectMeta.DeletionTimestamp.IsZero() {
-        if controllerutil.ContainsFinalizer(&dfs, dittoFSFinalizer) {
-            // Perform cleanup
-            if err := r.cleanupExternalResources(ctx, &dfs); err != nil {
-                return ctrl.Result{}, err
-            }
-
-            // Remove finalizer
-            controllerutil.RemoveFinalizer(&dfs, dittoFSFinalizer)
-            if err := r.Update(ctx, &dfs); err != nil {
-                return ctrl.Result{}, err
-            }
-        }
-        return ctrl.Result{}, nil
-    }
-
-    // Add finalizer if not present
-    if !controllerutil.ContainsFinalizer(&dfs, dittoFSFinalizer) {
-        controllerutil.AddFinalizer(&dfs, dittoFSFinalizer)
-        if err := r.Update(ctx, &dfs); err != nil {
-            return ctrl.Result{}, err
-        }
-    }
-
-    // Normal reconciliation...
-}
 ```
-
-## Integration Points
-
-### External Services
-
-| Service | Integration Pattern | Notes |
-|---------|---------------------|-------|
-| **Percona PGCluster** | Watch CRD status, read connection Secret | Must handle "not ready" state gracefully; requeue with backoff |
-| **S3 (payload store)** | Pass credentials via Secret mounted as env vars | Use IRSA on AWS EKS; workload identity on GKE |
-| **Metrics (Prometheus)** | ServiceMonitor CR if prometheus-operator installed | Expose DittoFS metrics on :9090 |
-| **Scaleway Kubernetes** | Standard LoadBalancer service for NFS | May need annotation for external IP allocation |
-
-### Internal Boundaries
-
-| Boundary | Communication | Notes |
-|----------|---------------|-------|
-| DittoFS Controller <-> Share Controller | Share Controller triggers DittoFS reconcile via annotation update | Avoids tight coupling; maintains single source of truth |
-| DittoFS Controller <-> Backup Controller | Backup Controller reads DittoFS status for endpoint discovery | One-way dependency; backup won't run if DittoFS not ready |
-| ConfigMap <-> StatefulSet | StatefulSet watches ConfigMap hash annotation | Pod restart on config change (or use config reload API) |
+                          StateManager
+                               |
+         +--------------------+--------------------+
+         |                    |                    |
+    ClientManager        SessionManager      LeaseManager
+         |                    |                    |
+    +----+----+          +----+----+          +----+
+    |         |          |         |          |
+ clients   owners     sessions   slots     timers
+ (hash)    (hash)      (hash)   (array)   (heap)
+         |                    |                    |
+         +--------------------+--------------------+
+                               |
+                         StateIDManager
+                               |
+         +--------------------+--------------------+
+         |                    |                    |
+    OpenStates           LockStates         Delegations
+    (by stateid)       (by stateid)       (by stateid)
+         |                    |                    |
+         +--------------------+--------------------+
+                               |
+                       RecoveryStore
+                       (persistent)
+```
 
 ## Scaling Considerations
 
 | Scale | Architecture Adjustments |
 |-------|--------------------------|
-| 1-5 DittoFS instances | Single operator deployment is sufficient |
-| 5-20 instances | Increase operator replicas, use leader election |
-| 20+ instances | Consider sharding by namespace or label selector |
+| 0-1k clients | Single StateManager instance, in-memory state, file-based recovery |
+| 1k-100k clients | Sharded state tables by clientid hash, async lease processing |
+| 100k+ clients | Distributed state (not recommended for NFSv4.0), consider NFSv4.1 session affinity |
 
 ### Scaling Priorities
 
-1. **First bottleneck:** API server rate limiting - use exponential backoff, cache reads
-2. **Second bottleneck:** Controller memory - implement pagination for list operations
+1. **First bottleneck: State table locking** - Use RWMutex for state tables, separate locks for different state types (open, lock, delegation)
+2. **Second bottleneck: Lease expiration scanning** - Use heap/priority queue sorted by expiration time instead of full table scans
+3. **Third bottleneck: Recovery store I/O** - Batch writes, async persistence with WAL
 
-## Build Order Implications
+## Anti-Patterns
 
-Based on component dependencies, recommended implementation phases:
+### Anti-Pattern 1: Monolithic State Table
 
-### Phase 1: Core Operator Infrastructure (Foundation)
-- CRD definitions (DittoFS, DittoFSShare)
-- Basic DittoFS Controller skeleton
-- ConfigMap generation from spec
-- StatefulSet creation (no Percona integration yet)
-- Service creation (NFS, API)
+**What people do:** Single map with global lock for all state types
+**Why it's wrong:** Contention between unrelated operations (e.g., lock check blocks open)
+**Do this instead:** Separate tables for clients, sessions, opens, locks, delegations with independent locks
 
-**Dependency:** None. This is the foundation.
+### Anti-Pattern 2: Synchronous Delegation Recall
 
-### Phase 2: Percona PostgreSQL Integration
-- PerconaPGCluster watching
-- Connection Secret extraction
-- Database configuration injection into ConfigMap
-- Readiness gating (DittoFS not ready until PG ready)
+**What people do:** Block on delegation recall during conflicting OPEN
+**Why it's wrong:** Unresponsive client blocks all other clients trying to access file
+**Do this instead:** Async recall with timeout, fail conflicting request if recall doesn't complete in time
 
-**Dependency:** Phase 1 (controller exists to add watching to)
+### Anti-Pattern 3: Embedding Stateid Validation in Handlers
 
-### Phase 3: Storage Configuration
-- PVC creation for BadgerDB, filesystem, cache
-- StorageClass configuration
-- Volume mount setup in StatefulSet
+**What people do:** Each handler (READ, WRITE, LOCK) implements its own stateid validation
+**Why it's wrong:** Inconsistent validation, duplicated code, harder to audit
+**Do this instead:** Centralized ValidateStateID() called before dispatching to handler
 
-**Dependency:** Phase 1 (StatefulSet exists to add volumes to)
+### Anti-Pattern 4: Ignoring Grace Period
 
-### Phase 4: Share Controller
-- DittoFSShare CRD and controller
-- Cross-controller coordination
-- ConfigMap regeneration trigger
-- Hot reload or pod restart strategy
+**What people do:** Accept new state immediately after restart
+**Why it's wrong:** Clients may have locks from before crash that conflict with new requests
+**Do this instead:** Implement grace period where only RECLAIM operations are allowed
 
-**Dependency:** Phase 1, Phase 2 (working DittoFS instance)
+## Integration Points
 
-### Phase 5: Production Readiness
-- Finalizers for cleanup
-- Status conditions (Ready, Available, Degraded)
-- Events for debugging
-- RBAC fine-tuning
-- Health checks and probes
+### Integration with Existing DittoFS Components
 
-**Dependency:** All previous phases
+| Boundary | Communication | Notes |
+|----------|---------------|-------|
+| StateManager <-> MetadataService | Direct method calls | StateManager delegates file operations to MetadataService |
+| StateManager <-> LockManager | Interface abstraction | Extend existing LockManager to understand NFSv4 lock owners |
+| NFS4Adapter <-> StateManager | Dependency injection | Adapter creates/owns StateManager instance |
+| StateManager <-> RecoveryStore | Interface abstraction | Allow pluggable persistence (file, BadgerDB, PostgreSQL) |
 
-### Phase 6: Backup Controller (Optional)
-- DittoFSBackup CRD and controller
-- Backup Job creation
-- Restore workflow
+### Cross-Protocol Locking (NFS + SMB)
 
-**Dependency:** Phase 4 (Share Controller for complete system)
+| Protocol | Lock Semantics | Integration Approach |
+|----------|----------------|---------------------|
+| NFSv4 | Byte-range, advisory | Use existing LockManager with NFSv4 owner types |
+| SMB | Share mode + byte-range, mandatory | Same LockManager, different owner type |
+| Cross-protocol | Both check same lock table | Unified LockManager, protocol-specific owner identity |
 
-## Status Conditions
+**Key decision:** The existing `metadata.LockManager` already supports session-based locking. NFSv4 state adds:
+- Owner concept (clientid + owner string)
+- Stateid tracking (lock state generates stateid)
+- Lock upgrade/downgrade semantics
 
-Following Kubernetes conventions, DittoFS should expose standard conditions:
-
+**Recommendation:** Extend LockManager interface to support:
 ```go
-type DittoFSStatus struct {
-    // Conditions represent the latest available observations
-    Conditions []metav1.Condition `json:"conditions,omitempty"`
-
-    // Ready indicates the DittoFS instance is serving requests
-    Ready bool `json:"ready"`
-
-    // Phase provides a simple, high-level summary
-    Phase DittoFSPhase `json:"phase,omitempty"`
-
-    // Endpoint provides the connection information
-    Endpoint string `json:"endpoint,omitempty"`
+type NFSv4LockOwner struct {
+    ClientID  uint64
+    OwnerStr  []byte
 }
 
-// Recommended conditions
-const (
-    ConditionDatabaseReady  = "DatabaseReady"
-    ConditionConfigReady    = "ConfigReady"
-    ConditionStatefulSetReady = "StatefulSetReady"
-    ConditionAvailable      = "Available"
-)
+// Add to LockManager interface
+LockWithOwner(handleKey string, owner NFSv4LockOwner, lock FileLock) (*LockState, error)
 ```
+
+## Build Order (Dependencies)
+
+Based on the architecture analysis, here is the recommended build order:
+
+### Phase 1: Core State Infrastructure
+1. **StateID types and generation** - Foundation for all state tracking
+2. **Client Manager** - Handles SETCLIENTID/EXCHANGE_ID
+3. **Lease Manager** - Laundromat thread for expiration
+4. **Basic Recovery Store** - File-based client persistence
+
+### Phase 2: Open State and Basic Operations
+1. **Open State Manager** - OPEN/CLOSE operations
+2. **Stateid Validation** - Shared validation logic
+3. **NFSv4 handlers for stateful READ/WRITE** - Uses open stateids
+
+### Phase 3: Locking
+1. **Lock State integration** - Connect to existing LockManager
+2. **LOCK/LOCKT/LOCKU handlers** - Generate lock stateids
+3. **Cross-protocol lock awareness** - SMB integration
+
+### Phase 4: Sessions (NFSv4.1)
+1. **Session Manager** - CREATE_SESSION/DESTROY_SESSION
+2. **Slot table and DRC** - Duplicate request cache
+3. **SEQUENCE operation** - Session validation
+
+### Phase 5: Delegations
+1. **Callback client** - RPC client for CB_* operations
+2. **Delegation Manager** - Grant/recall logic
+3. **Delegation stateids** - Track delegation state
+
+### Phase 6: Recovery
+1. **Grace period handling** - RECLAIM operations
+2. **Full recovery flow** - Server restart recovery
+3. **Edge cases** - Revocation, courtesy clients
 
 ## Sources
 
-**Official Documentation (HIGH confidence):**
-- [Kubernetes Operator Pattern](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
-- [Kubebuilder Good Practices](https://book.kubebuilder.io/reference/good-practices)
-- [Operator SDK Best Practices](https://sdk.operatorframework.io/docs/best-practices/best-practices/)
-- [Kubernetes Finalizers](https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/)
-- [Kubebuilder Using Finalizers](https://book.kubebuilder.io/reference/using-finalizers)
-- [Kubebuilder Watching Resources](https://book.kubebuilder.io/reference/watching-resources)
+### RFC Standards (HIGH confidence)
+- [RFC 7530 - NFSv4.0 Protocol](https://datatracker.ietf.org/doc/html/rfc7530)
+- [RFC 5661 - NFSv4.1 Protocol](https://www.rfc-editor.org/rfc/rfc5661.html)
+- [RFC 8881 - NFSv4.1 (updated)](https://www.rfc-editor.org/rfc/rfc8881.pdf)
 
-**Percona Operator (MEDIUM confidence):**
-- [Percona Operator for PostgreSQL](https://docs.percona.com/percona-operator-for-postgresql/index.html)
-- [Percona Operator GitHub](https://github.com/percona/percona-postgresql-operator)
-- [Percona Operator 2025 Wrap Up](https://www.percona.com/blog/percona-operator-for-postgresql-2025-wrap-up-and-what-we-are-focusing-on-next/)
+### Linux Kernel Implementation (HIGH confidence)
+- [Linux nfsd source - nfs4state.c](https://elixir.bootlin.com/linux/latest/source/fs/nfsd/nfs4state.c)
+- [Linux NFSv4.1 Server Documentation](https://docs.kernel.org/filesystems/nfs/nfs41-server.html)
+- [Nfsd4 Server Recovery Design](https://client.linux-nfs.org/wiki/index.php/Nfsd4_server_recovery)
 
-**Community Patterns (MEDIUM confidence):**
-- [Google Cloud - Best practices for building Kubernetes Operators](https://cloud.google.com/blog/products/containers-kubernetes/best-practices-for-building-kubernetes-operators)
-- [Operator SDK Common Recommendations](https://sdk.operatorframework.io/docs/best-practices/common-recommendation/)
-- [Kubernetes Operators 2025 Guide](https://outerbyte.com/kubernetes-operators-2025-guide/)
-- [iximiuz - Exploring Kubernetes Operator Pattern](https://iximiuz.com/en/posts/kubernetes-operator-pattern/)
+### Reference Implementations (MEDIUM confidence)
+- [nfs4j - Java NFSv4 Implementation](https://github.com/dCache/nfs4j)
+- [nfs4j StateHandler Source](https://github.com/dCache/nfs4j/blob/master/core/src/main/java/org/dcache/nfs/v4/NFSv4StateHandler.java)
+- [NFS-Ganesha Project](https://github.com/nfs-ganesha/nfs-ganesha)
+- [NFS-Ganesha Lock Management](https://deepwiki.com/nfs-ganesha/nfs-ganesha/6.1-lock-management)
 
-**Cross-Operator Patterns (MEDIUM confidence):**
-- [Kubebuilder For vs Owns vs Watches](https://yash-kukreja-98.medium.com/develop-on-kubernetes-series-demystifying-the-for-vs-owns-vs-watches-controller-builders-in-c11ab32a046e)
-- [Azure Service Operator - Type References and Ownership](https://azure.github.io/azure-service-operator/design/type-references-and-ownership/)
+### Cross-Protocol Locking (MEDIUM confidence)
+- [Multiprotocol NAS and Locking](https://whyistheinternetbroken.wordpress.com/2015/05/20/techmultiprotocol-nas-locking-and-you/)
+- [NetApp NFS/SMB Locking](https://kb.netapp.com/on-prem/ontap/da/NAS/NAS-KBs/How_does_file_locking_work_between_NFS_and_SMB_protocols)
+- [Linux Dual-Protocol Support](https://linux-nfs.org/wiki/index.php?title=Dual-protocol_support)
 
 ---
-*Architecture research for: DittoFS Kubernetes Operator*
+*Architecture research for: NFSv4 Server State Management*
 *Researched: 2026-02-04*

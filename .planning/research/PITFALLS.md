@@ -1,237 +1,220 @@
-# Pitfalls Research: DittoFS Kubernetes Operator
+# NFSv4 Server Implementation Pitfalls
 
-**Domain:** Kubernetes Operator for Stateful TCP Services (NFS/SMB)
+**Domain:** NFSv4 Protocol Server (adding to existing NFSv3 implementation)
 **Researched:** 2026-02-04
-**Confidence:** MEDIUM (verified with multiple sources, some domain-specific patterns from experience)
-
----
+**Confidence:** MEDIUM-HIGH (based on RFCs, Linux kernel docs, vendor documentation, and community bug reports)
 
 ## Critical Pitfalls
 
-### Pitfall 1: LoadBalancer Service for NFS/SMB Ports Fails on Non-Cloud or Misconfigured Clusters
+Mistakes that cause rewrites, data corruption, or major interoperability failures.
+
+### Pitfall 1: Stateid Sequence Number Mismanagement
 
 **What goes wrong:**
-LoadBalancer service for NFS (port 2049) or SMB (port 445) gets stuck with EXTERNAL-IP "pending" forever. Users cannot mount the filesystem from outside the cluster.
+Server fails to properly increment stateid sequence numbers (seqid) at each state transition, or client/server seqids get out of sync. Results in "bad sequence-id" errors flooding logs, clients hanging, and potential data corruption from replayed operations.
 
 **Why it happens:**
-- LoadBalancer services require cloud provider integration or MetalLB for bare-metal
-- Scaleway requires all LB modifications through Kubernetes annotations, never through console
-- NFS/SMB use non-standard ports; Ingress only handles HTTP/HTTPS (80/443)
-- Some managed Kubernetes providers don't provision LBs for non-HTTP ports correctly
+- NFSv4 uses seqids to detect duplicate/replayed requests and ensure exactly-once semantics
+- Multiple state types (open-owner, lock-owner) each have independent seqids
+- Wraparound handling at 2^32 is often forgotten
+- RELEASE_LOCKOWNER not implemented, exhausting server stateids
 
 **How to avoid:**
-1. Detect cloud provider at operator startup and validate LB support
-2. Document MetalLB requirement for bare-metal/self-hosted Kubernetes
-3. Use Scaleway-specific annotations: `service.beta.kubernetes.io/scw-loadbalancer-use-hostname: "true"` for internal cluster connectivity
-4. Provide NodePort fallback with clear documentation for when LoadBalancer fails
-5. Add operator status condition `ServiceExternalIPPending` with actionable error message
+1. Maintain separate seqid tracking per open-owner AND per lock-owner (they are distinct)
+2. Increment seqid monotonically at EVERY state transition, not just some
+3. Implement proper wraparound handling (accounting for unsigned overflow)
+4. Implement RELEASE_LOCKOWNER to allow clients to clean up lock state
+5. Map NFS4ERR_RESOURCE to proper seqid-incrementing behavior per RFC 3530
 
 **Warning signs:**
-- Service stuck in "pending" for EXTERNAL-IP longer than 5 minutes
-- Events showing "no load balancer available for service"
-- Scaleway: health check failures if `externalTrafficPolicy: Local` instead of `Cluster`
+- Log messages containing "bad sequence-id" or NFS4ERR_BAD_SEQID
+- Clients repeatedly sending same operations
+- State accumulation without cleanup
+- Tests passing individually but failing under concurrent load
 
 **Phase to address:**
-Phase 2 (Service Exposure) - Must be solved before NFS/SMB can be accessed externally.
+Phase 1 (Core State Management) - This is foundational; getting it wrong invalidates all subsequent work.
 
 ---
 
-### Pitfall 2: Percona PostgreSQL Operator Dependency Not Ready Before DittoFS Starts
+### Pitfall 2: Grace Period Violations
 
 **What goes wrong:**
-DittoFS operator creates DittoFS CR, which references PostgreSQL cluster. PostgreSQL isn't ready yet, so DittoFS pod crashes with connection refused or enters CrashLoopBackOff.
+Server grants new locks or allows READ/WRITE operations during the grace period after restart, violating protocol requirements. Can lead to data corruption when pre-crash locks are "stolen" by other clients.
 
 **Why it happens:**
-- Operators manage their own lifecycle independently
-- No built-in Kubernetes mechanism for cross-operator coordination
-- "Operator sprawl" - each operator manages its domain without awareness of others
-- DittoFS expects PostgreSQL to be immediately available
+- Grace period logic is complex with many edge cases
+- Desire to "be responsive" leads to skipping grace period checks
+- Not tracking which clients are allowed to reclaim
+- Ending grace period too early or not at all
+- Not properly rejecting non-reclaim operations with NFS4ERR_GRACE
 
 **How to avoid:**
-1. Use init containers to wait for PostgreSQL to be ready before main container starts
-2. Check for PostgreSQL CR status conditions (`Ready: True`) in DittoFS reconciliation loop
-3. Implement exponential backoff when PostgreSQL isn't ready (don't just error and requeue immediately)
-4. Add DittoFS status condition `PostgreSQLReady: False` with clear message
-5. Consider OLM (Operator Lifecycle Manager) for dependency declaration if targeting OpenShift
+1. During grace period: MUST reject READ/WRITE and non-reclaim LOCK/OPEN with NFS4ERR_GRACE
+2. Maintain stable storage record of active clients at shutdown
+3. Only allow clients from pre-restart list to reclaim state
+4. Support RECLAIM_COMPLETE (NFSv4.1) to allow early grace period termination when all clients done
+5. Default grace period: 90 seconds; must be >= lease period
 
 **Warning signs:**
-- DittoFS pods in CrashLoopBackOff with connection errors
-- Rapid reconciliation requeues (infinite loop pattern)
-- Percona PostgreSQL CR shows `Initializing` or similar non-ready state
+- New clients able to acquire locks immediately after server restart
+- Pre-existing clients losing locks they should have reclaimed
+- No NFS4ERR_GRACE errors visible during restart testing
+- Tests passing only when run in isolation
 
 **Phase to address:**
-Phase 1 (CRD Design) - Define dependency relationships. Phase 3 (PostgreSQL Integration) - Implement waiting/retry logic.
+Phase 2 (State Persistence & Recovery) - Requires stable storage foundation from Phase 1.
 
 ---
 
-### Pitfall 3: ConfigMap/Secret Changes Don't Trigger Pod Restart
+### Pitfall 3: Pseudo-Filesystem / Export Path Confusion
 
 **What goes wrong:**
-User updates ConfigMap or Secret via CRD spec. Operator updates the ConfigMap. Pods continue running with old configuration because Kubernetes doesn't automatically restart pods when mounted ConfigMaps/Secrets change.
+NFSv3 exports work differently than NFSv4 exports. Servers that expose exports the same way for both protocols create broken mount paths, missing directories, or inaccessible shares.
 
 **Why it happens:**
-- Kubernetes does NOT reload ConfigMaps/Secrets automatically into running pods
-- Volume-mounted ConfigMaps eventually update (kubelet sync period), but env vars never update
-- Application must implement hot-reload or pods must be restarted
+- NFSv4 has a "pseudo-filesystem" concept where all exports are children of a virtual root
+- What was `server:/export/users` in NFSv3 becomes `server:/users` in NFSv4 (with `/export` as fsid=0 root)
+- DittoFS already has exports configured for NFSv3; naive NFSv4 addition will break paths
+- Multiple filesystems cannot have fsid=0
 
 **How to avoid:**
-1. Use checksum annotation pattern: add `configmap-hash: sha256(configmap-data)` to pod template annotations
-2. When ConfigMap content changes, hash changes, triggering rolling restart
-3. For Secrets, same pattern: `secret-hash: sha256(secret-data)`
-4. Consider Reloader operator as alternative (but adds dependency complexity)
-5. Document which config changes require restart vs. hot-reload
+1. Designate ONE export as fsid=0 (pseudo-root) or let server auto-generate pseudo-filesystem
+2. Document the path transformation clearly for users
+3. Consider supporting both NFSv3-style full paths AND NFSv4-style relative paths
+4. Test mount commands for BOTH protocol versions against same exports
+5. Pseudo-filesystem filehandles should be expected to be volatile
 
 **Warning signs:**
-- Users report config changes "not taking effect"
-- ConfigMap updated timestamp is newer than pod start time
-- Application logs show old configuration values
+- NFSv3 mounts work but NFSv4 mounts fail with "No such file or directory"
+- Clients seeing different directory hierarchies between protocol versions
+- `showmount -e` showing different exports than NFSv4 clients can access
+- Mount paths requiring different syntax for v3 vs v4
 
 **Phase to address:**
-Phase 2 (ConfigMap Generation) - Implement checksum annotation pattern from day one.
+Phase 1 (Protocol Foundation) - Must be designed correctly from the start; changing later breaks all clients.
 
 ---
 
-### Pitfall 4: PVC Stuck in Terminating or Pending State
+### Pitfall 4: Lease Expiration Race Conditions
 
 **What goes wrong:**
-PVC gets stuck in "Pending" (no matching PV or StorageClass issue) or "Terminating" (finalizer preventing deletion). Operator cannot create or delete DittoFS instances cleanly.
+Race conditions between lease expiration checks and new client operations cause state corruption, lost locks, or denial of service. Either locks are incorrectly revoked from active clients, or expired state is not cleaned up properly.
 
 **Why it happens:**
-- Pending: StorageClass not found, no available PV, capacity mismatch, access mode mismatch
-- Terminating: PVC has finalizer `kubernetes.io/pvc-protection` and pod still mounts it
-- Terminating: Volume still attached to node (FailedAttachVolume)
-- Scaleway: PVC fails to attach due to node pool configuration errors
+- Lease renewal can happen on ANY operation (implicit renewal), not just explicit RENEW
+- Network delays can make active clients appear expired
+- Multiple goroutines checking/modifying lease state without proper synchronization
+- Aggressive cleanup removing state before client can renew
+- Courteous server behavior (keeping expired state until conflict) not implemented
 
 **How to avoid:**
-1. Validate StorageClass exists before creating PVC
-2. Set reasonable defaults matching Scaleway's storage offerings
-3. On deletion: delete pods first, wait for confirmation, then delete PVC
-4. Use owner references correctly so garbage collection works (see Pitfall 6)
-5. Add status condition `PVCBound: False` with specific error from events
-6. For expansion: verify StorageClass has `allowVolumeExpansion: true`
+1. Use atomic operations or proper locking for lease timestamp updates
+2. Implement implicit lease renewal on ANY state-modifying operation
+3. Default lease period: 30-90 seconds; renewal should happen at half the period
+4. Consider implementing "Courteous Server" behavior - keep expired state until conflict
+5. When revoking expired state that conflicts with new request, revoke atomically
 
 **Warning signs:**
-- PVC status shows "Pending" with no events or "no persistent volumes available"
-- PVC stuck in "Terminating" for more than 5 minutes
-- Events show "FailedAttachVolume" or "FailedMount"
-- Multi-attach errors when using ReadWriteOnce with multiple pods
+- Spurious lock loss during normal operations
+- "Expired lease" errors on clients that were actively using files
+- Memory growth from never-cleaned state
+- Race condition failures in stress tests
 
 **Phase to address:**
-Phase 3 (Storage Management) - PVC lifecycle must be carefully designed.
+Phase 2 (State Management) - After basic state structures exist but before production use.
 
 ---
 
-### Pitfall 5: Infinite Reconciliation Loop from Status Updates
+### Pitfall 5: Delegation Callbacks Failing in NAT/Container Environments
 
 **What goes wrong:**
-Operator updates status subresource, which triggers watch event, which triggers reconciliation, which updates status, creating infinite loop. Controller CPU spikes, API server gets hammered.
+NFSv4.0 delegations require the server to initiate TCP connections BACK to the client for recall. This fails completely behind NAT, firewalls, or in containerized environments where the client IP is not routable from the server.
 
 **Why it happens:**
-- Controller watches all changes to CR, including status changes
-- Not using status subresource properly (updating full object instead of status)
-- Status changes even when nothing meaningful changed (timestamps, counters)
+- Callback address is embedded in NFS requests by client
+- NAT rewrites source addresses, making callback address unreachable
+- Container networking adds another layer of address translation
+- Firewalls block server-initiated connections to clients
+- Many implementations just silently fail to delegate
 
 **How to avoid:**
-1. Configure controller to use status subresource: `UpdateStatus()` not `Update()`
-2. Only update status when it actually changes (compare before write)
-3. Use `meta.SetStatusCondition` which handles deduplication
-4. Return `ctrl.Result{}` (no requeue) when status update is the only change
-5. Test reconciliation loop with logging to detect rapid requeues
+1. For NFSv4.0: Detect when callback path is non-functional and disable delegations for that client
+2. Implement NFSv4.1 which uses "backchannel" on SAME TCP connection (no NAT issues)
+3. If supporting NFSv4.0 callbacks: make callback port configurable
+4. Test callback functionality explicitly before granting delegations
+5. Have graceful fallback when callbacks fail (just don't delegate)
 
 **Warning signs:**
-- Controller logs show reconciliation every few seconds
-- High API server request rate from operator
-- Operator CPU usage unexpectedly high
-- Same status condition repeatedly logged as "updated"
+- Delegations granted but never recalled (stale data served)
+- "Callback channel down" errors
+- Delegations working in development but failing in production
+- Performance degradation when delegations should help
 
 **Phase to address:**
-Phase 1 (CRD Design) - Define status subresource. Phase 2 (Controller Implementation) - Implement proper status handling.
+Phase 3 (Delegations) - Can be deferred; system works without delegations, just less efficiently.
 
 ---
 
-### Pitfall 6: Finalizer Blocks Deletion Forever
+### Pitfall 6: Lock Owner vs Open Owner Conflation
 
 **What goes wrong:**
-User deletes DittoFS CR. CR stays in "Terminating" state forever because operator's finalizer isn't being removed. Could be caused by operator crash, bug in cleanup logic, or dependent resource that can't be deleted.
+Implementation treats open-owners and lock-owners as the same entity, causing state corruption, failed lock operations, and seqid synchronization failures.
 
 **Why it happens:**
-- Finalizer added but cleanup logic errors before removing finalizer
-- Operator pod not running (crash, eviction, node drain)
-- Cleanup tries to delete resource that's already gone (404 error not handled)
-- Circular dependency: resource A waits for B, B waits for A
+- Both are "owners" in NFSv4 terminology
+- Both have seqids that need tracking
+- Tempting to unify for simpler code
+- RFC uses similar language for both
 
 **How to avoid:**
-1. Handle "not found" errors gracefully in cleanup - resource gone = success
-2. Set timeout for cleanup operations - don't wait forever
-3. Log detailed cleanup progress so users can diagnose stuck deletions
-4. Consider making cleanup idempotent - safe to run multiple times
-5. Add webhook validation to prevent deletion if in unsafe state
-6. Document manual finalizer removal as escape hatch (but with warnings)
+1. Maintain SEPARATE data structures for open-owners and lock-owners
+2. Open-owners are tied to file opens (OPEN/CLOSE operations)
+3. Lock-owners are tied to byte-range locks (LOCK/LOCKU operations)
+4. Each has independent seqid tracking
+5. Lock-owners can exist without open-owners in some edge cases
+6. FreeBSD fix: Add filehandle to lock_owner string to make it per-process-per-file
 
 **Warning signs:**
-- CR stuck in Terminating for more than operator's reconciliation period
-- Operator logs show cleanup errors or no logs at all (operator not running)
-- `kubectl describe` shows finalizers present but deletionTimestamp set
+- LOCK operations returning unexpected seqid errors
+- State corruption when same process has multiple opens and locks
+- Tests with single file/process passing but multi-file failing
+- RELEASE_LOCKOWNER affecting CLOSE operations incorrectly
 
 **Phase to address:**
-Phase 1 (CRD Design) - Plan finalizer strategy. Phase 4 (Lifecycle Management) - Implement robust cleanup.
+Phase 1 (Core State Management) - Fundamental data structure decision.
 
 ---
 
-### Pitfall 7: Owner References Cause Unexpected Garbage Collection
+### Pitfall 7: Kerberos/RPCSEC_GSS Clock Skew and DNS Issues
 
 **What goes wrong:**
-Cluster-scoped resources (like PVs) or resources in other namespaces get unexpectedly deleted when parent CR is deleted. Or conversely, resources are orphaned when they should be cleaned up.
+Kerberos authentication fails intermittently or completely due to clock skew, DNS resolution issues, or /etc/hosts misconfiguration. Error messages are often cryptic ("GSS_S_FAILURE").
 
 **Why it happens:**
-- Cross-namespace owner references are disallowed by design
-- Namespace-scoped owner to cluster-scoped dependent doesn't work
-- UID mismatch or stale owner reference triggers garbage collection
-- Controller-manager restart can trigger unexpected deletions
+- Kerberos has 5-minute default clock skew tolerance
+- gssd daemon looks up its own IP and reports it to KDC; if /etc/hosts has 127.0.0.1 for hostname, authentication fails
+- Reverse DNS must work for Kerberos principals
+- rpcsec_gss_krb5 kernel module must be loaded
+- Keytab files must have correct principals (nfs/hostname@REALM)
 
 **How to avoid:**
-1. Never use owner references across namespaces
-2. For cluster-scoped resources: use finalizer + explicit deletion instead of owner refs
-3. Use foreground deletion policy when order matters
-4. For shared resources (like PostgreSQL cluster): don't set owner reference, use labels + finalizer cleanup
-5. Test deletion scenarios including controller-manager restart
+1. Document NTP/time synchronization as a hard requirement
+2. Verify /etc/hosts does not map hostname to 127.0.0.1
+3. Require working forward AND reverse DNS for all hosts
+4. Test Kerberos completely separately before integrating with NFS
+5. Provide clear error messages that point to common causes
+6. Consider making Kerberos optional and clearly documenting AUTH_SYS limitations
 
 **Warning signs:**
-- Resources disappearing unexpectedly after unrelated events
-- Controller-manager logs showing OwnerRefInvalidNamespace events
-- Resources with ownerReferences to non-existent objects
+- Authentication works sometimes but not others
+- "Too many open files" errors from gssd
+- "GSS_S_FAILURE" in logs without clear cause
+- Authentication working from some clients but not others
+- Works in dev (local network) but fails in production
 
 **Phase to address:**
-Phase 1 (CRD Design) - Define ownership hierarchy. Phase 4 (Lifecycle Management) - Implement correct cleanup patterns.
-
----
-
-### Pitfall 8: CRD Version Upgrade Migration Breaks Existing Resources
-
-**What goes wrong:**
-New operator version has CRD schema changes (v1alpha1 -> v1beta1). Existing CRs fail validation or lose data during conversion. storedVersions in CRD status causes upgrade failures.
-
-**Why it happens:**
-- CRD storedVersions tracks all versions ever persisted in etcd
-- Removing a version from CRD while storedVersions still references it fails
-- Conversion webhooks not implemented or buggy
-- Breaking schema changes without migration path
-
-**How to avoid:**
-1. Start with versioned CRD from v1alpha1, plan for future versions
-2. Only additive changes within same API version
-3. Use conversion webhook for major version bumps
-4. Implement storage version migration job for existing resources
-5. Test upgrade path: v1alpha1 CR exists, deploy v1beta1 operator, verify conversion
-6. Document required upgrade sequence (can't skip versions)
-
-**Warning signs:**
-- Operator fails to start with CRD validation errors
-- Existing CRs show validation errors after operator upgrade
-- `status.storedVersions` contains old versions that need migration
-
-**Phase to address:**
-Phase 1 (CRD Design) - Version schema from start. Phase 5+ (Upgrades) - Implement migration strategy.
+Phase 4 (Security) - Kerberos is optional but complex; defer until core functionality works.
 
 ---
 
@@ -241,29 +224,25 @@ Shortcuts that seem reasonable but create long-term problems.
 
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
 |----------|-------------------|----------------|-----------------|
-| Hardcoding namespace | Simpler code | Can't deploy in arbitrary namespace | Never in production operator |
-| Skipping status conditions | Faster initial development | Users can't diagnose issues, no tooling integration | Only in prototype |
-| Using `Update()` instead of `UpdateStatus()` | One less API call to understand | Infinite reconciliation loops, race conditions | Never |
-| Not implementing finalizers | Simpler deletion | Orphaned resources, leaked cloud resources (LB, PV) | Only for purely ephemeral resources |
-| Polling instead of watching | Simpler to implement | API server load, delayed reactions | Only for external resources that can't be watched |
-| Single reconcile for everything | Less code | Impossible to debug, hard to test | Only for trivial operators |
-
----
+| Skip NFSv4.1 sessions, implement only NFSv4.0 | Simpler state model | NAT callback issues, no exactly-once semantics, less efficient | Never for new implementations |
+| Ignore DENY share reservations | POSIX compatible, simpler | Windows clients fail, cross-protocol locking broken | Acceptable if Windows/SMB not a target |
+| Volatile filehandles only | No persistence requirements | Clients must cache path->handle mappings, more traffic | Only for pseudo-filesystem, not real files |
+| Single-threaded state management | No lock contention | Performance bottleneck, won't scale | Early prototyping only |
+| Skip compound operation error handling | Simpler per-operation logic | Partial failures leave inconsistent state | Never |
+| Hardcode lease/grace periods | Fewer configuration options | Cannot tune for different environments | Early development only |
 
 ## Integration Gotchas
 
-Common mistakes when connecting to external services.
+Common mistakes when connecting NFSv4 to existing DittoFS components.
 
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| Percona PostgreSQL | Assuming cluster ready when CR exists | Check `status.pgCluster.state: "ready"` condition |
-| Percona PostgreSQL | Hardcoding internal service name | Use service name from Percona CR status |
-| Scaleway LoadBalancer | Modifying LB via console | Always use Kubernetes annotations only |
-| Scaleway LoadBalancer | Using `externalTrafficPolicy: Local` | Use `Cluster` unless specific need for source IP preservation |
-| S3 (for DittoFS content store) | Assuming virtual-hosted style | Check if provider needs `forcePathStyle: true` |
-| External Secrets Operator | Expecting automatic pod restart | ESO doesn't restart pods; implement checksum pattern |
-
----
+| NFSv3 exports | Exposing same paths for v3 and v4 | v4 needs pseudo-filesystem; paths are relative to fsid=0 root |
+| MetadataStore | Using NFSv3 filehandle format | NFSv4 needs stateid embedded or associated; handles may need to be persistent |
+| BlockService | Ignoring LAYOUTGET/LAYOUTRETURN (pNFS) | Either implement pNFS or clearly reject layout operations |
+| Cache layer | Not coordinating with delegations | Delegation state must inform cache invalidation |
+| WAL | Not persisting NFSv4 state | State must survive restart for grace period recovery |
+| SMB adapter | Independent locking | Must coordinate locks across protocols or clients will corrupt data |
 
 ## Performance Traps
 
@@ -271,46 +250,53 @@ Patterns that work at small scale but fail as usage grows.
 
 | Trap | Symptoms | Prevention | When It Breaks |
 |------|----------|------------|----------------|
-| Watching all namespaces | High memory, slow startup | Use namespace selector or predicate filters | >100 DittoFS instances |
-| No rate limiting on reconcile | API server throttled | Use workqueue rate limiter (default in controller-runtime) | During bulk operations |
-| Fetching full object on every reconcile | High API server load | Use cached client, only fetch when needed | >50 reconciles/second |
-| Logging every reconcile | Log explosion, storage costs | Log only meaningful events, use debug level | Always in production |
-| Not setting resource limits | Operator evicted under memory pressure | Set realistic requests/limits based on testing | Memory pressure events |
-| Full resync on every reconcile | CPU spike, API thundering herd | Use informer cache, only resync periodically | >500 watched resources |
-
----
+| Global lock for state operations | High latency under load | Per-client or per-file locking | >100 concurrent clients |
+| Linear client ID lookup | Slow SETCLIENTID/EXCHANGE_ID | Hash map for client IDs | >1000 clients |
+| Unbounded state storage | Memory exhaustion | Lease expiration + cleanup | Long-running server with client churn |
+| Per-operation stable storage sync | Disk I/O bottleneck | Batched writes, async where safe | >10,000 ops/sec |
+| TEST_STATEID polling overhead | Network saturation | Proper error handling to avoid polling | Interrupted connections under load |
+| Single callback thread | Delegation recalls block | Thread pool for callbacks | >100 delegations |
 
 ## Security Mistakes
 
-Domain-specific security issues beyond general web security.
+Domain-specific security issues beyond general NFS security.
 
 | Mistake | Risk | Prevention |
 |---------|------|------------|
-| Storing PostgreSQL password in ConfigMap | Anyone with ConfigMap view access sees password | Use Secret, restrict with RBAC |
-| Using default ServiceAccount | Operator has minimal permissions, fails silently | Create dedicated SA with precise RBAC |
-| Over-permissive ClusterRole | Operator can modify any resource cluster-wide | Use namespace-scoped Role where possible |
-| Not encrypting etcd Secrets | Secrets stored base64 (readable), not encrypted | Enable encryption at rest, or use external secret manager |
-| Running operator as root | Container escape has full host access | Use securityContext with non-root user |
-| Mounting SA token when not needed | Compromised pod can access API server | Set `automountServiceAccountToken: false` on workload pods |
+| Trusting client-asserted UID/GID with AUTH_SYS | Any client can impersonate any user | Use Kerberos or document limitation clearly |
+| Not validating stateid ownership | Client can operate on another client's state | Always verify stateid belongs to requesting client |
+| Exposing pseudo-filesystem structure | Information disclosure of server layout | Limit pseudo-fs to necessary exports only |
+| Ignoring NFS4ERR_WRONGSEC | Client bypasses security flavor requirements | Always check and enforce security flavor per export |
+| Allowing lock stealing after grace period | Data corruption | Track pre-restart clients, don't allow reclaim after grace |
+| Callback to arbitrary client-specified address | Server as attack vector | Validate callback address matches connection source |
 
----
+## UX Pitfalls
+
+Common user experience mistakes in NFS server administration.
+
+| Pitfall | User Impact | Better Approach |
+|---------|-------------|-----------------|
+| Different mount paths for v3 vs v4 | Confusion, broken scripts | Document clearly, consider compatibility layer |
+| Cryptic error codes (NFS4ERR_*) | Unable to debug issues | Translate to human-readable messages in logs |
+| Silent delegation failures | Unexpected performance | Log when delegations disabled and why |
+| Inconsistent ID mapping | Permission denied, wrong owners | Clear idmapd configuration guidance |
+| Grace period delays without explanation | "Server slow after restart" | Show grace period status, time remaining |
+| No visibility into state | Cannot debug lock issues | Admin API to query client state, locks, delegations |
 
 ## "Looks Done But Isn't" Checklist
 
 Things that appear complete but are missing critical pieces.
 
-- [ ] **NFS Service:** Often missing - ReadinessProbe verification. Mount test from outside cluster, not just internal.
-- [ ] **PostgreSQL Integration:** Often missing - Connection retry logic. First connection attempt might fail.
-- [ ] **ConfigMap from CRD:** Often missing - Checksum annotation for pod restart.
-- [ ] **PVC Creation:** Often missing - StorageClass validation before creation.
-- [ ] **Status Conditions:** Often missing - Negative conditions (Ready=False with reason).
-- [ ] **Finalizer Cleanup:** Often missing - Handling of already-deleted resources (404 = success).
-- [ ] **RBAC:** Often missing - Permissions for status subresource update.
-- [ ] **Leader Election:** Often missing - Required if running multiple operator replicas.
-- [ ] **Webhook TLS:** Often missing - Cert-manager integration for webhook certificates.
-- [ ] **Helm Chart:** Often missing - CRD install hooks (pre-install, not during upgrade).
-
----
+- [ ] **OPEN operation:** Often missing share reservation (DENY mode) handling - verify Windows clients can DENY_WRITE
+- [ ] **LOCK operation:** Often missing byte-range split/merge for sub-range locks - verify overlapping lock upgrade/downgrade
+- [ ] **State recovery:** Often missing stable storage - verify state survives server restart
+- [ ] **Compound operations:** Often missing proper error propagation - verify partial failure cleans up properly
+- [ ] **Grace period:** Often missing client tracking - verify only pre-restart clients can reclaim
+- [ ] **Delegations:** Often missing callback channel verification - verify recalls actually reach clients
+- [ ] **ID mapping:** Often missing domain configuration - verify user/group names resolve correctly
+- [ ] **ACLs:** Often missing mode-to-ACL synchronization - verify chmod updates ACL and vice versa
+- [ ] **LAYOUTGET (pNFS):** Often returns success but doesn't actually work - verify data path to storage devices
+- [ ] **EXCHANGE_ID (v4.1):** Often missing trunking support - verify multi-homed servers work
 
 ## Recovery Strategies
 
@@ -318,16 +304,13 @@ When pitfalls occur despite prevention, how to recover.
 
 | Pitfall | Recovery Cost | Recovery Steps |
 |---------|---------------|----------------|
-| LoadBalancer pending | LOW | Switch to NodePort, document LB requirements |
-| PostgreSQL not ready | LOW | Implement init container, restart affected pods |
-| ConfigMap not reloaded | LOW | Delete affected pods to force restart |
-| PVC stuck terminating | MEDIUM | Check pod mounts, remove finalizer if safe |
-| Infinite reconciliation | MEDIUM | Fix status update code, restart operator |
-| Finalizer blocking deletion | MEDIUM | Manual finalizer removal with kubectl patch |
-| Owner ref garbage collection | HIGH | Restore from backup, manually recreate resources |
-| CRD version migration failed | HIGH | Rollback operator version, fix migration logic, retry |
-
----
+| Stateid sequence corruption | MEDIUM | Clear client state, force re-SETCLIENTID; clients will re-establish |
+| Grace period violation (locks stolen) | HIGH | Cannot automatically recover; affected files may have data corruption |
+| Pseudo-fs path mismatch | LOW | Update documentation, provide migration script for client fstab |
+| Lease race conditions | MEDIUM | Add proper locking, existing state will expire and renew correctly |
+| Callback failures | LOW | Disable delegations for affected clients; fallback to non-delegated ops |
+| Lock/Open owner conflation | HIGH | Data structure redesign required; coordinate with client re-mount |
+| Kerberos misconfiguration | LOW | Fix configuration, restart services; no state impact |
 
 ## Pitfall-to-Phase Mapping
 
@@ -335,61 +318,67 @@ How roadmap phases should address these pitfalls.
 
 | Pitfall | Prevention Phase | Verification |
 |---------|------------------|--------------|
-| LoadBalancer pending | Phase 2 (Service Exposure) | E2E test: mount NFS from external host |
-| Percona dependency not ready | Phase 3 (PostgreSQL Integration) | Integration test: create DittoFS before PostgreSQL ready |
-| ConfigMap not triggering restart | Phase 2 (ConfigMap Generation) | Test: update config, verify pod restart |
-| PVC stuck | Phase 3 (Storage Management) | Test: full deletion, verify no orphaned PVCs |
-| Infinite reconciliation | Phase 2 (Controller Core) | Test: verify reconcile count doesn't spike |
-| Finalizer stuck | Phase 4 (Lifecycle) | Test: delete with operator stopped, then restart |
-| Owner ref issues | Phase 1 (CRD Design) | Test: delete CR, verify all owned resources deleted |
-| CRD migration | Phase 1 (CRD Design) | Plan: versioning strategy documented |
+| Stateid sequence mismanagement | Phase 1: Core State | Unit tests with concurrent state transitions, seqid wraparound tests |
+| Grace period violations | Phase 2: State Persistence | Integration test: restart server, verify only listed clients can reclaim |
+| Pseudo-fs path confusion | Phase 1: Protocol Foundation | E2E test: mount same export with v3 and v4, verify both work |
+| Lease expiration races | Phase 2: State Management | Stress test with artificial network delays, verify no spurious expirations |
+| Delegation callback failures | Phase 3: Delegations | Test behind NAT; verify graceful degradation |
+| Lock/Open owner conflation | Phase 1: Core State | Unit tests with multi-file, multi-lock per process |
+| Kerberos integration | Phase 4: Security | Integration tests against real KDC; document all prerequisites |
+| Cross-protocol lock coordination | Phase 5: SMB Integration | Test NFS lock visibility from SMB and vice versa |
+| Compound partial failures | Phase 1: Protocol Foundation | Unit tests with forced mid-compound errors |
+| ACL interoperability | Phase 4: Security | Test ACL round-trip between NFS and SMB clients |
 
----
+## NFSv4.0 vs NFSv4.1+ Decision Matrix
+
+Critical decision point: which minor version to implement.
+
+| Aspect | NFSv4.0 | NFSv4.1+ | Recommendation |
+|--------|---------|----------|----------------|
+| Callbacks | Server initiates to client (NAT breaks) | Backchannel on same TCP (NAT-safe) | **Implement v4.1** |
+| Sessions | None | Exactly-once semantics, slots | **Implement v4.1** |
+| Replay cache | Unbounded per-client | Bounded per-slot | **Implement v4.1** |
+| pNFS | Not available | Full parallel NFS support | v4.1 if pNFS needed |
+| Complexity | Lower | Higher | v4.0 only for legacy |
+| Client support | Universal | Very wide (all modern clients) | v4.1 preferred |
+
+**Strong recommendation:** Implement NFSv4.1 as the minimum. NFSv4.0 has fundamental NAT/firewall issues that make it unsuitable for modern deployments. The session model in v4.1 also provides better exactly-once semantics.
 
 ## Sources
 
-**Kubernetes Operator Patterns:**
-- [Kubernetes Operator Pattern (Official)](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
-- [Operator SDK Best Practices](https://sdk.operatorframework.io/docs/best-practices/best-practices/)
-- [Red Hat - Kubernetes Operators Best Practices](https://www.redhat.com/en/blog/kubernetes-operators-best-practices)
-- [Kubernetes Blog - 7 Common Pitfalls](https://kubernetes.io/blog/2025/10/20/seven-kubernetes-pitfalls-and-how-to-avoid/)
+### Official Specifications
+- [RFC 7530 - NFSv4.0 Protocol](https://datatracker.ietf.org/doc/html/rfc7530) - MEDIUM confidence (read for state management details)
+- [RFC 8881 - NFSv4.1 Protocol](https://www.rfc-editor.org/rfc/rfc8881.html) - HIGH confidence (current authoritative spec)
+- [RFC 5661 - NFSv4.1 (obsoleted by 8881)](https://www.rfc-editor.org/rfc/rfc5661) - Referenced in older implementations
 
-**Finalizers and Garbage Collection:**
-- [Kubernetes Finalizers (Official)](https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/)
-- [Stop Messing with Kubernetes Finalizers](https://martinheinz.dev/blog/74)
-- [Hard Lessons Learned about Kubernetes Garbage Collection](https://opensource.com/article/20/6/kubernetes-garbage-collection)
+### Linux Kernel Documentation
+- [NFSv4.1 Server Implementation](https://docs.kernel.org/filesystems/nfs/nfs41-server.html) - HIGH confidence (Linux kernel docs)
+- [NFSv4 Client Identifier](https://docs.kernel.org/filesystems/nfs/client-identifier.html) - HIGH confidence
 
-**ConfigMap/Secret Management:**
-- [ConfigMaps & Secrets in Kubernetes: Real-World Guide](https://medium.com/devops-diaries-hub/configmaps-secrets-in-kubernetes-the-complete-real-world-guide-with-patterns-pitfalls-and-1a142b344f15)
-- [Production-grade Configuration & Secrets Guide](https://dev.to/jumptotech/production-grade-guide-to-configuration-secrets-in-kubernetes-1ogk)
+### Vendor Documentation
+- [NetApp NFSv4 Best Practices](https://www.netapp.com/media/16398-tr-3580.pdf) - MEDIUM confidence
+- [Oracle NFSv4 Delegation Guide](https://docs.oracle.com/cd/E19253-01/816-4555/rfsrefer-140/index.html) - MEDIUM confidence
+- [Oracle NFSv4 Grace Period](https://docs.oracle.com/cd/E19120-01/open.solaris/819-1634/rfsrefer-138/index.html) - MEDIUM confidence
+- [Oracle NFSv4 Courteous Server](https://blogs.oracle.com/linux/nfsv4-courteous-server) - MEDIUM confidence
 
-**PVC and Stateful Apps:**
-- [Kubernetes PVC: Examples and Best Practices](https://www.plural.sh/blog/kubernetes-pvc-guide/)
-- [VolumeClaimTemplate PVC Update Issues](https://medium.com/@tylerauerbeck/plight-of-the-volumeclaimtemplate-how-to-update-your-pvc-once-its-been-created-by-a-managed-9f5886feeb93)
+### Bug Reports and Community
+- [Red Hat: Bad Sequence-ID Errors](https://access.redhat.com/solutions/26169) - MEDIUM confidence
+- [Red Hat: NFSv4 Stale Stateid](https://access.redhat.com/solutions/469263) - MEDIUM confidence
+- [Red Hat: Kerberos GSS Failures](https://access.redhat.com/solutions/84433) - MEDIUM confidence
+- [Linux NFS Wiki: ACLs](http://wiki.linux-nfs.org/wiki/index.php/ACLs) - MEDIUM confidence
+- [Linux NFS Wiki: Pseudo-filesystem](http://linux-nfs.org/wiki/index.php/Pseudofilesystem_improvements) - MEDIUM confidence
+- [Linux NFS Wiki: pNFS Implementation Issues](https://wiki.linux-nfs.org/wiki/index.php/PNFS_Implementation_Issues) - MEDIUM confidence
 
-**TCP Service Exposure:**
-- [Exposing Custom Ports in Kubernetes (Red Hat 2026)](https://developers.redhat.com/articles/2026/01/28/exposing-custom-ports-kubernetes)
-- [GitHub Issue: NFS Service Between Pods](https://github.com/kubernetes/kubernetes/issues/74266)
+### Security
+- [IETF Draft: NFSv4 Security](https://datatracker.ietf.org/doc/draft-dnoveck-nfsv4-security/) - MEDIUM confidence
+- [IETF Draft: NFSv4 ACLs](https://datatracker.ietf.org/doc/draft-dnoveck-nfsv4-acls/) - MEDIUM confidence
+- [NFS-Ganesha: RPCSEC_GSS](https://github.com/nfs-ganesha/nfs-ganesha/wiki/RPCSEC_GSS) - MEDIUM confidence
 
-**Scaleway-Specific:**
-- [Scaleway LoadBalancer Troubleshooting](https://www.scaleway.com/en/docs/load-balancer/troubleshooting/k8s-errors/)
-- [Scaleway Kubernetes LoadBalancer Guide](https://www.scaleway.com/en/docs/kubernetes/reference-content/kubernetes-load-balancer/)
-
-**Percona PostgreSQL Operator:**
-- [Percona Operator for PostgreSQL Documentation](https://docs.percona.com/percona-operator-for-postgresql/index.html)
-- [Run PostgreSQL on Kubernetes - Percona Guide](https://www.percona.com/blog/run-postgresql-on-kubernetes-a-practical-guide-with-benchmarks-best-practices/)
-
-**Operator Dependency Management:**
-- [The Runaway Problem of Kubernetes Operators and Dependency Lifecycles](https://thenewstack.io/the-runaway-problem-of-kubernetes-operators-and-dependency-lifecycles/)
-
-**CRD Version Migration:**
-- [Kubernetes CRD: The Versioning Joy](https://dev.to/jotak/kubernetes-crd-the-versioning-joy-6g0)
-- [How to Fix Karpenter CRD Migration Issues](https://medium.com/@chillcaley/how-to-fix-karpenter-crd-migration-issues-during-upgrade-0-x-1-x-b488935ba2bc)
-
-**Reconciliation Loop Issues:**
-- [Operator SDK - Subresource Status Infinite Loop Issue](https://github.com/operator-framework/operator-sdk/issues/2795)
-- [Kubernetes Reconciliation Loop Pattern](https://medium.com/@inchararlingappa/kubernetes-reconciliation-loop-74d3f38e382f)
+### Cross-Protocol
+- [NetApp: Multiprotocol NAS Locking](https://whyistheinternetbroken.wordpress.com/2015/05/20/techmultiprotocol-nas-locking-and-you/) - MEDIUM confidence
+- [Oracle: Cross-Protocol Locking](https://docs.oracle.com/en/operating-systems/solaris/oracle-solaris/11.4/manage-smb/cross-protocol-locking.html) - MEDIUM confidence
 
 ---
-*Pitfalls research for: DittoFS Kubernetes Operator*
+*Pitfalls research for: NFSv4 Server Implementation*
 *Researched: 2026-02-04*
+*Context: Adding NFSv4 to existing DittoFS NFSv3 server*

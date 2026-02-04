@@ -1,271 +1,278 @@
-# Stack Research: DittoFS Kubernetes Operator
+# Stack Research: NFSv4 Protocol Implementation for DittoFS
 
-**Domain:** Kubernetes Operator Development (Go)
+**Domain:** NFSv4 protocol server implementation in Go
 **Researched:** 2026-02-04
-**Confidence:** HIGH
+**Confidence:** MEDIUM (Go NFSv4 ecosystem is sparse; recommendations based on available options + protocol requirements)
 
 ## Executive Summary
 
-The standard 2025/2026 stack for building production Kubernetes operators in Go is well-established and centers on the **Operator SDK** (which wraps **Kubebuilder** and **controller-runtime**). The ecosystem has matured significantly, with Kubernetes 1.30+ and controller-runtime v0.23+ providing stable foundations. Key shifts include the move to Go 1.24, adoption of CEL validation for CRDs, and replacement of kube-rbac-proxy with controller-runtime's native authn/authz.
-
-For DittoFS specifically, the operator will need to orchestrate multiple sub-operators (Percona for PostgreSQL), manage PVCs, and expose TCP services (NFS/SMB) - all well-supported patterns in the current ecosystem.
+The Go ecosystem for NFSv4 server implementation is nascent compared to C-based solutions like NFS-Ganesha. No single library provides production-ready NFSv4.x with RPCSEC_GSS. The recommended approach is to **extend DittoFS's existing hand-written XDR/RPC** rather than adopt external libraries, while leveraging `jcmturner/gokrb5` (already in go.mod) for Kerberos primitives. RPCSEC_GSS must be implemented from RFC 2203/5403 specifications.
 
 ---
 
 ## Recommended Stack
 
-### Core Framework
+### Core Technologies
 
 | Technology | Version | Purpose | Why Recommended | Confidence |
 |------------|---------|---------|-----------------|------------|
-| Operator SDK | v1.42.0 | Operator scaffolding, OLM integration | Industry standard, wraps Kubebuilder with OLM/OperatorHub integration. More polished UX than raw Kubebuilder. | HIGH |
-| controller-runtime | v0.23.1 | Controller logic, reconciliation loops | Kubernetes-SIG maintained, powers all Go operators. Latest has subresource Apply support, generic webhooks. | HIGH |
-| controller-gen | v0.18.0 | CRD/RBAC/DeepCopy generation | Required for API code generation. Integrated via `make manifests` and `make generate`. | HIGH |
-| Go | 1.24+ | Language runtime | Operator SDK v1.41+ requires Go 1.24. Provides log/slog for structured logging. | HIGH |
+| **Go** | 1.25+ | Language runtime | Already in use; concurrent, performant | HIGH |
+| **Custom XDR** | N/A | XDR encoding/decoding | Extend existing `internal/protocol/nfs/xdr/`; avoids dependency churn, full control over NFSv4 compound ops | HIGH |
+| **Custom RPC** | N/A | ONC RPC layer | Extend existing `internal/protocol/nfs/rpc/`; RPCSEC_GSS integration requires tight coupling | HIGH |
+| **jcmturner/gokrb5/v8** | v8.4.4 | Kerberos 5 | Pure Go, already in go.mod, active maintenance, AD integration | HIGH |
 
-### Kubernetes Client Libraries
-
-| Library | Version | Purpose | Why Recommended | Confidence |
-|---------|---------|---------|-----------------|------------|
-| k8s.io/client-go | v0.33.x | Kubernetes API client | Required dependency. Tied to controller-runtime version. | HIGH |
-| k8s.io/api | v0.33.x | Kubernetes API types | Core API types for Pods, Services, PVCs, etc. | HIGH |
-| k8s.io/apimachinery | v0.33.x | API machinery utilities | Conditions helpers, runtime.Object, meta/v1 types. | HIGH |
-| sigs.k8s.io/controller-tools | v0.18.0 | Code generation tools | controller-gen binary source. | HIGH |
-
-### Testing Framework
-
-| Library | Version | Purpose | Why Recommended | Confidence |
-|---------|---------|---------|-----------------|------------|
-| sigs.k8s.io/controller-runtime/pkg/envtest | (matches controller-runtime) | Integration testing | Spins up etcd + kube-apiserver without kubelet. Official recommendation for operator testing. | HIGH |
-| github.com/onsi/ginkgo/v2 | v2.x (latest) | BDD test framework | Operator SDK scaffolded tests use Ginkgo. Good for async assertions. | HIGH |
-| github.com/onsi/gomega | (latest) | Matcher library | Pairs with Ginkgo. `Eventually` for async assertions critical for controller tests. | HIGH |
-
-### Observability
-
-| Library | Version | Purpose | Why Recommended | Confidence |
-|---------|---------|---------|-----------------|------------|
-| sigs.k8s.io/controller-runtime/pkg/metrics | (matches controller-runtime) | Prometheus metrics | Built-in metrics server. Exposes controller reconciliation metrics. | HIGH |
-| sigs.k8s.io/controller-runtime/pkg/log | (matches controller-runtime) | Structured logging | Use with Zap backend. Integrates with controller context. | HIGH |
-| github.com/go-logr/zapr | v1.3.0 | Zap adapter for logr | Production-grade structured logging. | MEDIUM |
-
-### Deployment & Packaging
-
-| Tool | Version | Purpose | Why Recommended | Confidence |
-|------|---------|---------|-----------------|------------|
-| Kustomize | v5.x | Manifest management | Built into kubectl. Operator SDK uses for base/overlay structure. | HIGH |
-| OLM (Operator Lifecycle Manager) | v1.x | Operator deployment/upgrades | Standard for production operator distribution. Handles dependencies, upgrades. | HIGH |
-| Helm | v3.x | Alternative packaging | For non-OLM deployments. Can combine with Kustomize. | MEDIUM |
-
----
-
-## Supporting Libraries
+### Supporting Libraries
 
 | Library | Version | Purpose | When to Use | Confidence |
 |---------|---------|---------|-------------|------------|
-| k8s.io/apimachinery/pkg/api/meta | v0.33.x | Condition helpers | `SetStatusCondition`, `FindStatusCondition` - use for CR status management | HIGH |
-| sigs.k8s.io/controller-runtime/pkg/controller/controllerutil | (matches controller-runtime) | Finalizer helpers | `AddFinalizer`, `RemoveFinalizer`, `SetControllerReference` | HIGH |
-| sigs.k8s.io/controller-runtime/pkg/predicate | (matches controller-runtime) | Event filtering | Filter reconcile triggers (generation changes, label selectors) | HIGH |
-| github.com/percona/percona-postgresql-operator/pkg/apis | (check latest) | Percona PG CRD types | For creating/managing PostgreSQL clusters via Percona operator | MEDIUM |
+| **github.com/jcmturner/gokrb5/v8/gssapi** | v8.4.4 | GSS-API primitives | Wrap/MIC tokens for RPCSEC_GSS integrity/privacy | HIGH |
+| **github.com/jcmturner/gokrb5/v8/spnego** | v8.4.4 | SPNEGO negotiation | If SPNEGO mechlist needed (rare for pure NFS) | MEDIUM |
+| **github.com/davecgh/go-xdr/xdr2** | latest | Reference/fallback XDR | Testing, validation of custom implementation | MEDIUM |
+| **github.com/xdrpp/goxdr** | latest | XDR code generator | Generate NFSv4 types from .x specs if starting fresh | LOW |
+
+### Development Tools
+
+| Tool | Purpose | Notes |
+|------|---------|-------|
+| **wireshark** | Protocol debugging | NFS/RPC dissectors essential for debugging |
+| **rpcdebug** | Linux RPC tracing | Kernel-side debugging |
+| **kinit/klist** | Kerberos ticket management | Testing RPCSEC_GSS |
+| **MIT krb5 / Heimdal** | KDC for testing | Local KDC for development |
+
+---
+
+## Decision Rationale
+
+### XDR: Extend Custom vs. Use Library
+
+**Decision:** Extend existing custom XDR in `internal/protocol/nfs/xdr/`
+
+**Why:**
+1. DittoFS already has ~400 lines of hand-tuned XDR (encode.go, decode.go)
+2. NFSv4 compound operations require streaming encode/decode with variable-length arrays
+3. External libraries (davecgh/go-xdr, xdrpp/goxdr) are reflection-based or code-generator-based
+4. Custom code allows zero-copy optimizations crucial for NFS performance
+5. RFC 7530/7531/8881/7862 XDR specs can be translated directly
+
+**Tradeoffs:**
+- More code to maintain
+- Must verify correctness against specs
+- No code generation from .x files
+
+**Alternative considered:** `xdrpp/goxdr` for code generation
+- Pros: RFC 5531 compliant, generates from .x files
+- Cons: Less control, another dependency, may conflict with existing patterns
+- When to use: Greenfield NFSv4 project without existing XDR
+
+### RPC: Extend Custom vs. Use Library
+
+**Decision:** Extend existing custom RPC in `internal/protocol/nfs/rpc/`
+
+**Why:**
+1. RPCSEC_GSS authentication must integrate with RPC call/reply handling
+2. Existing auth.go handles AUTH_UNIX; extend pattern for RPCSEC_GSS
+3. NFSv4 uses single RPC program (100003) with compound operations
+4. Session management (NFSv4.1+) requires RPC-level state tracking
+5. No Go library provides RPCSEC_GSS out-of-box
+
+**Key extensions needed:**
+- `RPCSEC_GSS` auth flavor (6) handling
+- GSS context establishment (INIT/CONTINUE_INIT/DESTROY)
+- Sequence window and replay protection
+- Integrity (MIC) and Privacy (wrap) message verification
+
+### Kerberos/GSSAPI: gokrb5 vs. C Bindings
+
+**Decision:** Use `jcmturner/gokrb5/v8` (already in go.mod)
+
+**Why:**
+1. Pure Go - no CGO, cross-compiles cleanly to Linux containers
+2. Already a dependency (go.mod shows v8.4.4)
+3. Implements RFC 4121 (Kerberos V5 GSS-API)
+4. Supports keytab authentication for service principals
+5. Active maintenance, well-tested with AD environments
+
+**What gokrb5 provides:**
+- Kerberos ticket acquisition and validation
+- `gssapi.WrapToken` for RPCSEC_GSS_INTEGRITY/PRIVACY
+- `gssapi.MICToken` for message authentication codes
+- AD PAC decoding for authorization data
+
+**What gokrb5 does NOT provide:**
+- RPCSEC_GSS protocol layer (must implement RFC 2203)
+- RPC message framing with GSS tokens
+- Sequence number window management
+
+**Alternative considered:** `golang-auth/go-gssapi`
+- Pros: Full GSS-API RFC 2743 interface
+- Cons: v3 requires C bindings (MIT/Heimdal), v2 pure-Go "not production ready"
+- When to use: If strict GSS-API compliance needed; accept CGO dependency
+
+### NLM: Build vs. Buy
+
+**Decision:** Implement custom NLM for NFSv3 compatibility (if needed)
+
+**Why:**
+1. No Go NLM library exists
+2. NLM is obsolete with NFSv4 (locking is built into protocol)
+3. Only needed for NFSv3 backwards compatibility
+4. Small protocol (~10 procedures)
+
+**NFSv4 alternative:** Implement NFSv4 lock operations directly
+- LOCK, LOCKT, LOCKU, OPEN (with share locks)
+- No separate NLM daemon needed
+- Simpler architecture
+
+---
+
+## Alternatives Considered
+
+| Recommended | Alternative | When to Use Alternative |
+|-------------|-------------|-------------------------|
+| Custom XDR | `davecgh/go-xdr/xdr2` | Simple XDR needs, no performance concerns |
+| Custom XDR | `xdrpp/goxdr` | Greenfield project, want code generation from .x specs |
+| Custom RPC | None available | N/A - no Go RPCSEC_GSS library exists |
+| `gokrb5/v8` | `golang-auth/go-gssapi` v3 | Need strict GSS-API compliance, accept CGO |
+| `gokrb5/v8` | `openshift/gssapi` | Need MIT/Heimdal C library bindings |
+| Custom NLM | None available | N/A - no Go NLM library exists |
+
+---
+
+## What NOT to Use
+
+| Avoid | Why | Use Instead |
+|-------|-----|-------------|
+| **github.com/rasky/go-xdr** | Unmaintained since 2017, training data reference | `davecgh/go-xdr/xdr2` or custom |
+| **github.com/smallfz/libnfs-go** | NFSv4.0 only, experimental, no Kerberos | Custom implementation |
+| **github.com/kuleuven/nfs4go** | 5 commits total, minimal community, AUTH_SYS only | Reference architecture only |
+| **github.com/willscott/go-nfs** | NFSv3 only, no NFSv4 support | Useful patterns but not applicable |
+| **C bindings for GSSAPI** | CGO complicates deployment, cross-compilation | `gokrb5/v8` pure Go |
+| **FUSE-based approach** | Adds latency, complexity; DittoFS is already userspace NFS | Direct protocol implementation |
+
+---
+
+## Stack Patterns by NFSv4 Minor Version
+
+### NFSv4.0 (RFC 7530)
+
+**Pattern:** Stateful protocol, client ID + state ID model
+```
+Required:
+- Compound operations (single RPC, multiple ops)
+- File delegation (read/write)
+- ACL support
+- Mandatory locking
+- RPCSEC_GSS (optional but recommended)
+
+Use:
+- gokrb5/v8 for Kerberos (if RPCSEC_GSS)
+- Custom state management (client IDs, state IDs, lock owners)
+- 128-bit file handles
+```
+
+### NFSv4.1 (RFC 8881)
+
+**Pattern:** Session-based, mandatory RPCSEC_GSS support
+```
+Additional requirements:
+- Sessions (EXCHANGE_ID, CREATE_SESSION)
+- Backchannel (server-to-client callbacks)
+- pNFS (optional, high complexity)
+- Session binding (security association)
+
+Use:
+- Session state machine implementation
+- Callback RPC server (for delegations)
+- gokrb5/v8 for mandatory RPCSEC_GSS
+```
+
+### NFSv4.2 (RFC 7862)
+
+**Pattern:** Performance extensions
+```
+Additional requirements:
+- Server-side copy (CLONE, COPY, OFFLOAD_*)
+- Sparse files (ALLOCATE, DEALLOCATE)
+- Labeled NFS (MAC security, sec_label attribute)
+- Application I/O hints (IO_ADVISE)
+
+Use:
+- Block store support for server-side copy
+- Extended attribute support for labels
+```
+
+---
+
+## Version Compatibility Matrix
+
+| Package | Compatible Go | NFSv4.0 | NFSv4.1 | NFSv4.2 | RPCSEC_GSS |
+|---------|---------------|---------|---------|---------|------------|
+| DittoFS custom XDR | 1.25+ | Extend | Extend | Extend | Extend |
+| DittoFS custom RPC | 1.25+ | Extend | Extend | Extend | Extend |
+| jcmturner/gokrb5/v8 | 1.18+ | Yes | Yes | Yes | Foundation |
+| davecgh/go-xdr/xdr2 | 1.0+ | Reference | Reference | Reference | N/A |
 
 ---
 
 ## Installation
 
 ```bash
-# Install Operator SDK CLI (macOS)
-brew install operator-sdk
+# Already in go.mod:
+# github.com/jcmturner/gokrb5/v8 v8.4.4
 
-# Or download binary directly
-export ARCH=$(case $(uname -m) in x86_64) echo -n amd64 ;; aarch64) echo -n arm64 ;; *) echo -n $(uname -m) ;; esac)
-export OS=$(uname | awk '{print tolower($0)}')
-export OPERATOR_SDK_DL_URL=https://github.com/operator-framework/operator-sdk/releases/download/v1.42.0
-curl -LO ${OPERATOR_SDK_DL_URL}/operator-sdk_${OS}_${ARCH}
-chmod +x operator-sdk_${OS}_${ARCH}
-sudo mv operator-sdk_${OS}_${ARCH} /usr/local/bin/operator-sdk
+# Optional - for XDR validation/testing:
+go get github.com/davecgh/go-xdr/xdr2
 
-# Verify
-operator-sdk version
+# Optional - for code generation from .x specs:
+go install github.com/xdrpp/goxdr/cmd/goxdr@latest
 
-# Initialize new operator project
-operator-sdk init --domain dittofs.io --repo github.com/yourusername/dittofs-operator
-
-# Create API (CRD + controller)
-operator-sdk create api --group storage --version v1alpha1 --kind DittoFS --resource --controller
-
-# Install OLM (for testing)
-operator-sdk olm install
-
-# Go dependencies (automatically managed via go mod)
-go mod tidy
+# For Kerberos testing:
+# macOS: brew install krb5
+# Linux: apt install krb5-user krb5-kdc (or equivalent)
 ```
 
 ---
 
-## Alternatives Considered
+## Implementation Complexity Estimates
 
-| Category | Recommended | Alternative | When to Use Alternative |
-|----------|-------------|-------------|-------------------------|
-| Framework | Operator SDK | Kubebuilder (raw) | If you don't need OLM integration or want simpler setup. Operator SDK uses Kubebuilder internally. |
-| Framework | Operator SDK | KUDO | For simpler, declarative-only operators. Not suitable for complex Go logic. |
-| Framework | Operator SDK | Metacontroller | For simple webhook-based operators without Go. Not production-grade for complex needs. |
-| Testing | envtest | kind (Kubernetes in Docker) | For full cluster testing including CNI/storage. Slower but more realistic. |
-| Logging | controller-runtime/log + Zap | log/slog (Go stdlib) | For minimal dependencies. But Zap is already integrated and battle-tested. |
-| Metrics | controller-runtime/metrics | Custom Prometheus client | Only if you need metrics outside controller-runtime's patterns. |
-
----
-
-## What NOT to Use
-
-| Avoid | Why | Use Instead | Confidence |
-|-------|-----|-------------|------------|
-| kube-rbac-proxy | Discontinued from Kubebuilder/Operator SDK (March 2025). GCR images unavailable. | controller-runtime's `WithAuthenticationAndAuthorization` feature | HIGH |
-| gcr.io/kubebuilder/* images | GCR went away March 2025 | Use official quay.io or custom registry images | HIGH |
-| Logrus | Maintenance mode. Not integrated with controller-runtime | log/slog or Zap via controller-runtime/pkg/log | MEDIUM |
-| client-go rate limiter (default) | Disabled by default in recent controller-runtime. Previous behavior caused issues. | Set QPS 20, Burst 30 explicitly if you need old behavior | MEDIUM |
-| OLM v0 concepts exclusively | OLM v1 available with simpler API, GitOps support | Adopt OLM v1 patterns where possible | MEDIUM |
-
----
-
-## Stack Patterns by Variant
-
-### If deploying via OLM (OperatorHub):
-
-- Use `operator-sdk bundle create` for packaging
-- Include `ClusterServiceVersion` manifest
-- Follow OLM v1 patterns (simpler API, Helm/GitOps support)
-- Use bundle format (not deprecated package manifests)
-
-### If deploying via Helm/Kustomize (no OLM):
-
-- Use `config/default` Kustomize base
-- Add Helm chart wrapper in `helm/` directory
-- Consider Kustomize + Helm inflation for environment customization
-- Deploy CRDs separately from operator
-
-### If managing sub-operators (e.g., Percona PostgreSQL):
-
-- Import Percona CRD types as Go dependency
-- Use `controllerutil.SetControllerReference` for owned resources
-- Watch for Percona CR status changes in your reconciler
-- Handle dependency ordering in OLM bundle
-
-### If exposing TCP services (NFS/SMB):
-
-- Use `LoadBalancer` or `NodePort` Services
-- Consider MetalLB for bare-metal LoadBalancer
-- For NFS: port 2049 (or custom), consider StatefulSet for stable network identity
-- For REST API: standard ClusterIP + Ingress pattern
-
----
-
-## Version Compatibility Matrix
-
-| Operator SDK | controller-runtime | Go | Kubernetes (client) | Kubebuilder Base |
-|--------------|-------------------|----|---------------------|------------------|
-| v1.42.0 | v0.21.0 | 1.24 | v0.33.x | v4.6.0 |
-| v1.41.1 | v0.21.0 | 1.24 | v0.33.x | v4.6.0 |
-| v1.40.0 | v0.20.4 | 1.23 | v0.32.x | v4.5.2 |
-
-**Note:** controller-runtime v0.23.1 is the latest release (January 2025), but Operator SDK v1.42.0 ships with v0.21.0. You can upgrade controller-runtime independently if needed.
-
----
-
-## Key Configuration Snippets
-
-### go.mod (core dependencies)
-
-```go
-module github.com/yourorg/dittofs-operator
-
-go 1.24
-
-require (
-    k8s.io/api v0.33.2
-    k8s.io/apimachinery v0.33.2
-    k8s.io/client-go v0.33.2
-    sigs.k8s.io/controller-runtime v0.21.0
-)
-```
-
-### Makefile targets (auto-generated by Operator SDK)
-
-```makefile
-# Generate code (DeepCopy, runtime.Object)
-generate:
-    $(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
-
-# Generate CRDs, RBAC, webhooks
-manifests:
-    $(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
-
-# Run tests with envtest
-test:
-    KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test ./... -coverprofile cover.out
-```
-
-### RBAC markers example
-
-```go
-//+kubebuilder:rbac:groups=storage.dittofs.io,resources=dittofses,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=storage.dittofs.io,resources=dittofses/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=storage.dittofs.io,resources=dittofses/finalizers,verbs=update
-//+kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-```
-
-### Status Conditions pattern
-
-```go
-import (
-    metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-    "k8s.io/apimachinery/pkg/api/meta"
-)
-
-// DittoFSStatus defines the observed state of DittoFS
-type DittoFSStatus struct {
-    // Conditions represent the latest available observations of the DittoFS state
-    Conditions []metav1.Condition `json:"conditions,omitempty"`
-    // Phase represents the current lifecycle phase
-    Phase string `json:"phase,omitempty"`
-}
-
-// In reconciler:
-meta.SetStatusCondition(&dittofs.Status.Conditions, metav1.Condition{
-    Type:               "Ready",
-    Status:             metav1.ConditionTrue,
-    Reason:             "AllComponentsHealthy",
-    Message:            "All DittoFS components are running",
-    LastTransitionTime: metav1.Now(),
-})
-```
+| Component | Complexity | Rationale |
+|-----------|------------|-----------|
+| NFSv4.0 compound ops | HIGH | ~50 operations, complex state |
+| RPCSEC_GSS layer | HIGH | Security-critical, RFC 2203 + 5403 |
+| NFSv4.1 sessions | VERY HIGH | State machines, backchannels |
+| NFSv4.2 copy | MEDIUM | Block store integration |
+| NLM (if needed) | LOW | Small protocol, obsolete |
 
 ---
 
 ## Sources
 
-### HIGH Confidence (Official Documentation)
-- [Operator SDK Official Documentation](https://sdk.operatorframework.io/) - Tutorial, best practices, advanced topics
-- [Operator SDK GitHub Releases](https://github.com/operator-framework/operator-sdk/releases) - v1.42.0 release notes, version requirements
-- [controller-runtime GitHub Releases](https://github.com/kubernetes-sigs/controller-runtime/releases) - v0.23.1 release notes
-- [Kubebuilder Book](https://book.kubebuilder.io/) - controller-gen CLI, RBAC markers, CRD generation
-- [Operator SDK Best Practices](https://sdk.operatorframework.io/docs/best-practices/best-practices/) - Architecture, CRD management, security
-- [Operator SDK Observability Best Practices](https://sdk.operatorframework.io/docs/best-practices/observability-best-practices/) - Metrics, conditions
-- [Operator SDK Testing Documentation](https://sdk.operatorframework.io/docs/building-operators/golang/testing/) - envtest, Ginkgo patterns
-- [OLM Documentation](https://olm.operatorframework.io/) - OLM v1 improvements, bundle format
+### Official Documentation (HIGH confidence)
+- [RFC 7530 - NFSv4.0](https://datatracker.ietf.org/doc/rfc7530/) - Core NFSv4 protocol
+- [RFC 8881 - NFSv4.1](https://datatracker.ietf.org/doc/rfc8881/) - Sessions, pNFS
+- [RFC 7862 - NFSv4.2](https://datatracker.ietf.org/doc/rfc7862/) - Server-side copy, sparse files
+- [RFC 2203 - RPCSEC_GSS](https://datatracker.ietf.org/doc/rfc2203/) - GSS security for RPC
+- [RFC 5403 - RPCSEC_GSS v2](https://datatracker.ietf.org/doc/rfc5403/) - Channel bindings
+- [RFC 4121 - Kerberos V5 GSS-API](https://datatracker.ietf.org/doc/rfc4121/) - Kerberos mechanism
 
-### MEDIUM Confidence (Verified Community Sources)
-- [Kubernetes Operators in 2025 Guide](https://outerbyte.com/kubernetes-operators-2025-guide/) - Best practices, patterns, 2025 trends
-- [IBM Operator Sample Go](https://github.com/IBM/operator-sample-go) - Reference implementation with best practices
-- [Go Ecosystem 2025 Trends](https://blog.jetbrains.com/go/2025/11/10/go-language-trends-ecosystem-2025/) - Go version trends, logging (log/slog)
-- [Standardizing CRD Condition Metrics](https://sourcehawk.medium.com/kubernetes-operator-metrics-411ca81833ab) - Prometheus metrics patterns
+### Libraries (verified via GitHub/pkg.go.dev)
+- [jcmturner/gokrb5](https://github.com/jcmturner/gokrb5) - Pure Go Kerberos (v8.4.4, Feb 2023)
+- [davecgh/go-xdr](https://github.com/davecgh/go-xdr) - XDR reference implementation
+- [xdrpp/goxdr](https://github.com/xdrpp/goxdr) - XDR code generator (updated Dec 2024)
+- [golang-auth/go-gssapi](https://github.com/golang-auth/go-gssapi) - GSS-API (v3 beta, C bindings)
 
-### LOW Confidence (Needs Validation)
-- Specific Percona PostgreSQL Operator API versions - verify against current Percona releases
-- OLM v1 GA status - confirm current stability for production use
+### Reference Implementations (MEDIUM confidence)
+- [NFS-Ganesha Architecture](https://github.com/nfs-ganesha/nfs-ganesha/wiki/NFS-Ganesha-Architecture) - FSAL pattern
+- [NFS-Ganesha RPCSEC_GSS](https://github.com/nfs-ganesha/nfs-ganesha/wiki/RPCSEC_GSS) - Kerberos setup
+- [kuleuven/nfs4go](https://github.com/kuleuven/nfs4go) - Go NFSv4 reference (minimal)
+- [smallfz/libnfs-go](https://github.com/smallfz/libnfs-go) - Go NFS server (experimental)
+
+### WebSearch Findings (LOW confidence - verify before use)
+- NFSv4.1 session state machine patterns from RFC only
+- No production Go NFSv4.1+ server implementations found
+- No Go RPCSEC_GSS implementations found
 
 ---
 
-*Stack research for: DittoFS Kubernetes Operator*
+*Stack research for: NFSv4 Protocol Implementation*
 *Researched: 2026-02-04*
