@@ -305,42 +305,209 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| LOCK-01 to LOCK-07 | v1.0 Phase 1 | Pending |
-| NLM-01 to NLM-09 | v1.0 Phase 2 | Pending |
-| NSM-01 to NSM-07 | v1.0 Phase 2 | Pending |
-| SMB-01 to SMB-06 | v1.0 Phase 3 | Pending |
-| XPRO-01 to XPRO-04 | v1.0 Phase 4 | Pending |
-| TEST1-01 to TEST1-05 | v1.0 Phase 5 | Pending |
-| NFS4-01 to NFS4-08 | v2.0 Phase 1 | Pending |
-| OPS4-01 to OPS4-35 | v2.0 Phase 2 | Pending |
-| STATE-01 to STATE-09 | v2.0 Phase 3 | Pending |
-| DELEG-01 to DELEG-08 | v2.0 Phase 4 | Pending |
-| KRB-01 to KRB-09 | v2.0 Phase 5 | Pending |
-| ACL-01 to ACL-05 | v2.0 Phase 6 | Pending |
-| IDMAP-01 to IDMAP-04 | v2.0 Phase 6 | Pending |
-| CP2-01 to CP2-06 | v2.0 Phase 7 | Pending |
-| TEST2-01 to TEST2-06 | v2.0 Phase 8 | Pending |
-| SESS-01 to SESS-08 | v3.0 Phase 1 | Pending |
-| EOS-01 to EOS-04 | v3.0 Phase 2 | Pending |
-| BACK-01 to BACK-05 | v3.0 Phase 3 | Pending |
-| DDIR-01 to DDIR-04 | v3.0 Phase 4 | Pending |
-| OPS41-01 to OPS41-05 | v3.0 Phase 5 | Pending |
-| TEST3-01 to TEST3-05 | v3.0 Phase 6 | Pending |
-| COPY-01 to COPY-06 | v4.0 Phase 1 | Pending |
-| CLONE-01 to CLONE-03 | v4.0 Phase 2 | Pending |
-| SPARSE-01 to SPARSE-05 | v4.0 Phase 3 | Pending |
-| XATTR-01 to XATTR-06 | v4.0 Phase 4 | Pending |
-| OPS42-01 to OPS42-03 | v4.0 Phase 5 | Pending |
-| DOCS-01 to DOCS-06 | v4.0 Phase 6 | Pending |
-| TEST4-01 to TEST4-06 | v4.0 Phase 7 | Pending |
+| LOCK-01 | Phase 1: Locking Infrastructure | Pending |
+| LOCK-02 | Phase 1: Locking Infrastructure | Pending |
+| LOCK-03 | Phase 1: Locking Infrastructure | Pending |
+| LOCK-04 | Phase 1: Locking Infrastructure | Pending |
+| LOCK-05 | Phase 1: Locking Infrastructure | Pending |
+| LOCK-06 | Phase 1: Locking Infrastructure | Pending |
+| LOCK-07 | Phase 1: Locking Infrastructure | Pending |
+| NLM-01 | Phase 2: NLM Protocol | Pending |
+| NLM-02 | Phase 2: NLM Protocol | Pending |
+| NLM-03 | Phase 2: NLM Protocol | Pending |
+| NLM-04 | Phase 2: NLM Protocol | Pending |
+| NLM-05 | Phase 2: NLM Protocol | Pending |
+| NLM-06 | Phase 2: NLM Protocol | Pending |
+| NLM-07 | Phase 2: NLM Protocol | Pending |
+| NLM-08 | Phase 2: NLM Protocol | Pending |
+| NLM-09 | Phase 2: NLM Protocol | Pending |
+| NSM-01 | Phase 3: NSM Protocol | Pending |
+| NSM-02 | Phase 3: NSM Protocol | Pending |
+| NSM-03 | Phase 3: NSM Protocol | Pending |
+| NSM-04 | Phase 3: NSM Protocol | Pending |
+| NSM-05 | Phase 3: NSM Protocol | Pending |
+| NSM-06 | Phase 3: NSM Protocol | Pending |
+| NSM-07 | Phase 3: NSM Protocol | Pending |
+| SMB-01 | Phase 4: SMB Leases | Pending |
+| SMB-02 | Phase 4: SMB Leases | Pending |
+| SMB-03 | Phase 4: SMB Leases | Pending |
+| SMB-04 | Phase 4: SMB Leases | Pending |
+| SMB-05 | Phase 4: SMB Leases | Pending |
+| SMB-06 | Phase 4: SMB Leases | Pending |
+| XPRO-01 | Phase 5: Cross-Protocol Integration | Pending |
+| XPRO-02 | Phase 5: Cross-Protocol Integration | Pending |
+| XPRO-03 | Phase 5: Cross-Protocol Integration | Pending |
+| XPRO-04 | Phase 5: Cross-Protocol Integration | Pending |
+| TEST1-01 | Phase 5: Cross-Protocol Integration | Pending |
+| TEST1-02 | Phase 5: Cross-Protocol Integration | Pending |
+| TEST1-03 | Phase 5: Cross-Protocol Integration | Pending |
+| TEST1-04 | Phase 5: Cross-Protocol Integration | Pending |
+| TEST1-05 | Phase 5: Cross-Protocol Integration | Pending |
+| NFS4-01 | Phase 6: NFSv4 Protocol Foundation | Pending |
+| NFS4-02 | Phase 6: NFSv4 Protocol Foundation | Pending |
+| NFS4-03 | Phase 6: NFSv4 Protocol Foundation | Pending |
+| NFS4-04 | Phase 6: NFSv4 Protocol Foundation | Pending |
+| NFS4-05 | Phase 6: NFSv4 Protocol Foundation | Pending |
+| NFS4-06 | Phase 6: NFSv4 Protocol Foundation | Pending |
+| NFS4-07 | Phase 6: NFSv4 Protocol Foundation | Pending |
+| NFS4-08 | Phase 6: NFSv4 Protocol Foundation | Pending |
+| OPS4-01 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-02 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-03 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-04 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-05 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-06 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-11 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-12 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-14 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-18 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-19 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-20 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-21 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-22 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-23 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-24 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-34 | Phase 7: NFSv4 File Operations | Pending |
+| OPS4-07 | Phase 8: NFSv4 Advanced Operations | Pending |
+| OPS4-13 | Phase 8: NFSv4 Advanced Operations | Pending |
+| OPS4-15 | Phase 8: NFSv4 Advanced Operations | Pending |
+| OPS4-16 | Phase 8: NFSv4 Advanced Operations | Pending |
+| OPS4-17 | Phase 8: NFSv4 Advanced Operations | Pending |
+| OPS4-25 | Phase 8: NFSv4 Advanced Operations | Pending |
+| OPS4-27 | Phase 8: NFSv4 Advanced Operations | Pending |
+| OPS4-28 | Phase 8: NFSv4 Advanced Operations | Pending |
+| OPS4-29 | Phase 8: NFSv4 Advanced Operations | Pending |
+| OPS4-30 | Phase 8: NFSv4 Advanced Operations | Pending |
+| OPS4-33 | Phase 8: NFSv4 Advanced Operations | Pending |
+| STATE-01 | Phase 9: State Management | Pending |
+| STATE-02 | Phase 9: State Management | Pending |
+| STATE-03 | Phase 9: State Management | Pending |
+| STATE-04 | Phase 9: State Management | Pending |
+| STATE-05 | Phase 9: State Management | Pending |
+| STATE-06 | Phase 9: State Management | Pending |
+| STATE-07 | Phase 9: State Management | Pending |
+| STATE-08 | Phase 9: State Management | Pending |
+| STATE-09 | Phase 9: State Management | Pending |
+| OPS4-26 | Phase 9: State Management | Pending |
+| OPS4-31 | Phase 9: State Management | Pending |
+| OPS4-32 | Phase 9: State Management | Pending |
+| OPS4-08 | Phase 10: NFSv4 Locking | Pending |
+| OPS4-09 | Phase 10: NFSv4 Locking | Pending |
+| OPS4-10 | Phase 10: NFSv4 Locking | Pending |
+| OPS4-35 | Phase 10: NFSv4 Locking | Pending |
+| DELEG-01 | Phase 11: Delegations | Pending |
+| DELEG-02 | Phase 11: Delegations | Pending |
+| DELEG-03 | Phase 11: Delegations | Pending |
+| DELEG-04 | Phase 11: Delegations | Pending |
+| DELEG-05 | Phase 11: Delegations | Pending |
+| DELEG-06 | Phase 11: Delegations | Pending |
+| DELEG-07 | Phase 11: Delegations | Pending |
+| DELEG-08 | Phase 11: Delegations | Pending |
+| KRB-01 | Phase 12: Kerberos Authentication | Pending |
+| KRB-02 | Phase 12: Kerberos Authentication | Pending |
+| KRB-03 | Phase 12: Kerberos Authentication | Pending |
+| KRB-04 | Phase 12: Kerberos Authentication | Pending |
+| KRB-05 | Phase 12: Kerberos Authentication | Pending |
+| KRB-06 | Phase 12: Kerberos Authentication | Pending |
+| KRB-07 | Phase 12: Kerberos Authentication | Pending |
+| KRB-08 | Phase 12: Kerberos Authentication | Pending |
+| KRB-09 | Phase 12: Kerberos Authentication | Pending |
+| ACL-01 | Phase 13: NFSv4 ACLs | Pending |
+| ACL-02 | Phase 13: NFSv4 ACLs | Pending |
+| ACL-03 | Phase 13: NFSv4 ACLs | Pending |
+| ACL-04 | Phase 13: NFSv4 ACLs | Pending |
+| ACL-05 | Phase 13: NFSv4 ACLs | Pending |
+| IDMAP-01 | Phase 13: NFSv4 ACLs | Pending |
+| IDMAP-02 | Phase 13: NFSv4 ACLs | Pending |
+| IDMAP-03 | Phase 13: NFSv4 ACLs | Pending |
+| IDMAP-04 | Phase 13: NFSv4 ACLs | Pending |
+| CP2-01 | Phase 14: Control Plane v2.0 | Pending |
+| CP2-02 | Phase 14: Control Plane v2.0 | Pending |
+| CP2-03 | Phase 14: Control Plane v2.0 | Pending |
+| CP2-04 | Phase 14: Control Plane v2.0 | Pending |
+| CP2-05 | Phase 14: Control Plane v2.0 | Pending |
+| CP2-06 | Phase 14: Control Plane v2.0 | Pending |
+| TEST2-01 | Phase 15: v2.0 Testing | Pending |
+| TEST2-02 | Phase 15: v2.0 Testing | Pending |
+| TEST2-03 | Phase 15: v2.0 Testing | Pending |
+| TEST2-04 | Phase 15: v2.0 Testing | Pending |
+| TEST2-05 | Phase 15: v2.0 Testing | Pending |
+| TEST2-06 | Phase 15: v2.0 Testing | Pending |
+| SESS-01 | Phase 16: Session Infrastructure | Pending |
+| SESS-02 | Phase 16: Session Infrastructure | Pending |
+| SESS-03 | Phase 16: Session Infrastructure | Pending |
+| SESS-04 | Phase 16: Session Infrastructure | Pending |
+| SESS-05 | Phase 16: Session Infrastructure | Pending |
+| SESS-06 | Phase 16: Session Infrastructure | Pending |
+| SESS-07 | Phase 17: Exactly-Once Semantics | Pending |
+| SESS-08 | Phase 17: Exactly-Once Semantics | Pending |
+| EOS-01 | Phase 17: Exactly-Once Semantics | Pending |
+| EOS-02 | Phase 17: Exactly-Once Semantics | Pending |
+| EOS-03 | Phase 17: Exactly-Once Semantics | Pending |
+| EOS-04 | Phase 17: Exactly-Once Semantics | Pending |
+| BACK-01 | Phase 18: Backchannel | Pending |
+| BACK-02 | Phase 18: Backchannel | Pending |
+| BACK-03 | Phase 18: Backchannel | Pending |
+| BACK-04 | Phase 18: Backchannel | Pending |
+| BACK-05 | Phase 18: Backchannel | Pending |
+| DDIR-01 | Phase 19: Directory Delegations | Pending |
+| DDIR-02 | Phase 19: Directory Delegations | Pending |
+| DDIR-03 | Phase 19: Directory Delegations | Pending |
+| DDIR-04 | Phase 19: Directory Delegations | Pending |
+| OPS41-01 | Phase 20: NFSv4.1 Operations | Pending |
+| OPS41-02 | Phase 20: NFSv4.1 Operations | Pending |
+| OPS41-03 | Phase 20: NFSv4.1 Operations | Pending |
+| OPS41-04 | Phase 20: NFSv4.1 Operations | Pending |
+| OPS41-05 | Phase 20: NFSv4.1 Operations | Pending |
+| TEST3-01 | Phase 21: v3.0 Testing | Pending |
+| TEST3-02 | Phase 21: v3.0 Testing | Pending |
+| TEST3-03 | Phase 21: v3.0 Testing | Pending |
+| TEST3-04 | Phase 21: v3.0 Testing | Pending |
+| TEST3-05 | Phase 21: v3.0 Testing | Pending |
+| COPY-01 | Phase 22: Server-Side Copy | Pending |
+| COPY-02 | Phase 22: Server-Side Copy | Pending |
+| COPY-03 | Phase 22: Server-Side Copy | Pending |
+| COPY-04 | Phase 22: Server-Side Copy | Pending |
+| COPY-05 | Phase 22: Server-Side Copy | Pending |
+| COPY-06 | Phase 22: Server-Side Copy | Pending |
+| CLONE-01 | Phase 23: Clone/Reflinks | Pending |
+| CLONE-02 | Phase 23: Clone/Reflinks | Pending |
+| CLONE-03 | Phase 23: Clone/Reflinks | Pending |
+| SPARSE-01 | Phase 24: Sparse Files | Pending |
+| SPARSE-02 | Phase 24: Sparse Files | Pending |
+| SPARSE-03 | Phase 24: Sparse Files | Pending |
+| SPARSE-04 | Phase 24: Sparse Files | Pending |
+| SPARSE-05 | Phase 24: Sparse Files | Pending |
+| XATTR-01 | Phase 25: Extended Attributes | Pending |
+| XATTR-02 | Phase 25: Extended Attributes | Pending |
+| XATTR-03 | Phase 25: Extended Attributes | Pending |
+| XATTR-04 | Phase 25: Extended Attributes | Pending |
+| XATTR-05 | Phase 25: Extended Attributes | Pending |
+| XATTR-06 | Phase 25: Extended Attributes | Pending |
+| OPS42-01 | Phase 26: NFSv4.2 Operations | Pending |
+| OPS42-02 | Phase 26: NFSv4.2 Operations | Pending |
+| OPS42-03 | Phase 26: NFSv4.2 Operations | Pending |
+| DOCS-01 | Phase 27: Documentation | Pending |
+| DOCS-02 | Phase 27: Documentation | Pending |
+| DOCS-03 | Phase 27: Documentation | Pending |
+| DOCS-04 | Phase 27: Documentation | Pending |
+| DOCS-05 | Phase 27: Documentation | Pending |
+| DOCS-06 | Phase 27: Documentation | Pending |
+| TEST4-01 | Phase 28: v4.0 Testing | Pending |
+| TEST4-02 | Phase 28: v4.0 Testing | Pending |
+| TEST4-03 | Phase 28: v4.0 Testing | Pending |
+| TEST4-04 | Phase 28: v4.0 Testing | Pending |
+| TEST4-05 | Phase 28: v4.0 Testing | Pending |
+| TEST4-06 | Phase 28: v4.0 Testing | Pending |
 
 **Coverage:**
-- v1.0 requirements: 33 total
-- v2.0 requirements: 75 total
-- v3.0 requirements: 26 total
-- v4.0 requirements: 28 total
-- **Total: 162 requirements**
+- v1.0 requirements: 33 total (Phases 1-5)
+- v2.0 requirements: 75 total (Phases 6-15)
+- v3.0 requirements: 26 total (Phases 16-21)
+- v4.0 requirements: 28 total (Phases 22-28)
+- **Total: 162 requirements mapped to 28 phases**
 
 ---
 *Requirements defined: 2026-02-04*
+*Traceability updated: 2026-02-04*
 *Milestone: v1.0 through v4.0*
