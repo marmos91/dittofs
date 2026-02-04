@@ -1,11 +1,13 @@
-# Minimal DittoFS configuration using memory-like ephemeral stores
-# This is the simplest setup for Phase 1 validation - no external dependencies
+# Minimal DittoFS configuration for Phase 2 validation
+# Infrastructure-only config - stores, shares, adapters managed via REST API
 #
-# Note: DittoFS doesn't have a pure "memory" backend type. This config uses:
-# - metadata: BadgerDB on /data/metadata (uses small PVC)
-# - content: local filesystem on /tmp/content (ephemeral within pod)
+# This config:
+# - Uses SQLite for control plane database (default)
+# - WAL-backed cache at /data/cache
+# - REST API on port 8080
+# - NFS server on port 2049
 #
-# Data is ephemeral (content is lost on pod restart) - suitable for testing only.
+# After deployment, configure stores, shares, and users via dittofsctl CLI.
 apiVersion: dittofs.dittofs.com/v1alpha1
 kind: DittoServer
 metadata:
@@ -17,39 +19,34 @@ spec:
   image: marmos91c/dittofs:latest
   replicas: 1
 
-  # Minimal storage - only metadata PVC is required
-  # Content uses /tmp which is ephemeral (emptyDir behavior)
+  # Storage for internal server data
   storage:
     metadataSize: "1Gi"
-    # contentSize omitted - using ephemeral /tmp for content
+    contentSize: "5Gi"
 
-  # NFS configuration
+  # Control plane database - defaults to SQLite
+  database:
+    type: sqlite
+    sqlite:
+      path: "/data/controlplane/controlplane.db"
+
+  # WAL-backed cache configuration
+  cache:
+    path: "/data/cache"
+    size: "1GB"
+
+  # Control plane REST API configuration
+  controlPlane:
+    port: 8080
+
+  # Prometheus metrics (disabled by default)
+  metrics:
+    enabled: false
+    port: 9090
+
+  # NFS server port
   nfsPort: 2049
 
   # Service configuration
   service:
     type: ClusterIP
-
-  config:
-    # Backends configuration
-    backends:
-      # BadgerDB for metadata - requires small PVC
-      - name: "memory-metadata"
-        type: "badger"
-        config:
-          path: "/data/metadata"
-
-      # Local filesystem on /tmp - ephemeral, lost on pod restart
-      - name: "memory-content"
-        type: "local"
-        config:
-          path: "/tmp/content"
-
-    # Single share for testing
-    shares:
-      - name: "test"
-        exportPath: "/export"
-        metadataStore: "memory-metadata"
-        contentStore: "memory-content"
-        # Guest access enabled for easy testing
-        defaultPermission: "read-write"

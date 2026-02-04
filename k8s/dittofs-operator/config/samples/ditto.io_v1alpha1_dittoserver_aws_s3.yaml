@@ -1,7 +1,12 @@
-# Example DittoServer configuration for AWS S3 storage
+# DittoFS configuration with S3 backend preparation
+# Infrastructure-only config - S3 stores configured via REST API after deployment
 #
-# This example uses AWS S3 in eu-north-1 region
-# Apply with: kubectl apply -f config/samples/ditto.io_v1alpha1_dittoserver_aws_s3.yaml
+# After deployment:
+# 1. Login: dittofsctl login --server http://localhost:8080
+# 2. Create S3 store: dittofsctl store payload add --name s3-content --type s3 \
+#    --config '{"bucket":"dittofs-bucket","region":"us-east-1","access_key_id":"...","secret_access_key":"..."}'
+# 3. Create share: dittofsctl share create --name s3-share --path /s3 \
+#    --metadata-store memory --content-store s3-content
 #
 apiVersion: dittofs.dittofs.com/v1alpha1
 kind: DittoServer
@@ -13,54 +18,40 @@ metadata:
 spec:
   image: marmos91c/dittofs:latest
   replicas: 1
-  
+
+  # Storage for internal server data
   storage:
     metadataSize: "10Gi"
     contentSize: "10Gi"
-  
-  config:
-    backends:
-      - name: badger-metadata
-        type: badger
-        config:
-          path: /data/metadata
-      
-      - name: s3-content
-        type: s3
-        config:
-          bucket: dittofs-bucket
-          
-          region: us-east-1
-          
-          access_key_id: <AWS_ACCESS_KEY>
-          secret_access_key: <AWS_SECRET_ACCESS_KEY>
-    
-    caches:
-      - name: s3-cache
-        type: memory
-        memory:
-          maxSize: "2Gi"
-        prefetch:
-          enabled: true
-          maxFileSize: "100Mi"
-          chunkSize: "512Ki"
-        flusher:
-          interval: "10s"
-          flushTimeout: "30s"
-          workers: 4
-    
-    shares:
-      - name: s3-share
-        exportPath: /s3
-        metadataStore: badger-metadata
-        contentStore: s3-content
-        cache: s3-cache
-  
+
+  # Control plane database
+  database:
+    type: sqlite
+    sqlite:
+      path: "/data/controlplane/controlplane.db"
+
+  # WAL-backed cache - larger for S3 workloads
+  cache:
+    path: "/data/cache"
+    size: "2GB"
+
+  # Control plane REST API
+  controlPlane:
+    port: 8080
+
+  # Metrics enabled for S3 monitoring
+  metrics:
+    enabled: true
+    port: 9090
+
+  # NFS server port
   nfsPort: 12049
-  
+
+  # Service configuration
   service:
     type: ClusterIP
-  
+
+  # Resource configuration for S3 workloads
   resources:
     limits:
       cpu: "2"

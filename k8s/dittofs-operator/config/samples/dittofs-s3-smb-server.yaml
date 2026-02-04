@@ -1,3 +1,11 @@
+# DittoFS configuration with SMB adapter enabled
+# Infrastructure-only config - stores, shares, users managed via REST API
+#
+# After deployment:
+# 1. Login: dittofsctl login --server http://localhost:8080
+# 2. Create stores and shares via REST API
+# 3. Create users for SMB authentication
+#
 apiVersion: dittofs.dittofs.com/v1alpha1
 kind: DittoServer
 metadata:
@@ -8,60 +16,35 @@ metadata:
 spec:
   image: marmos91c/dittofs:latest
   replicas: 1
-  
+
+  # Storage for internal server data
   storage:
     metadataSize: "1Gi"
     contentSize: "1Gi"
-  
-  config:
-    backends:
-      - name: badger-metadata
-        type: badger
-        config:
-          path: /data/metadata
-      
-      - name: s3-content
-        type: s3
-        config:
-          bucket: dittofs-bucket
-          region: us-east-1
-          access_key_id: <access_key_id>
-          secret_access_key: <secret_access_key>
-    
-    caches:
-      - name: s3-cache
-        type: memory
-        memory:
-          maxSize: "2Gi"
-        prefetch:
-          enabled: true
-          maxFileSize: "100Mi"
-          chunkSize: "512Ki"
-        flusher:
-          interval: "10s"
-          flushTimeout: "30s"
-          workers: 4
-    
-    shares:
-      - name: s3-share
-        exportPath: /s3
-        metadataStore: badger-metadata
-        contentStore: s3-content
-        cache: s3-cache
-        readOnly: false
-        allowedClients: []
-        requireAuth: false
-        allowedAuthMethods: ["anonymous", "unix"]
-        allowGuest: true
-        defaultPermission: "read-write"
-        rootDirectoryAttributes:
-          mode: 0777  # Allow write for everyone
-          uid: 0      # Root ownership
-          gid: 0      # Root group
-  
-  # NFS configuration
+
+  # Control plane database
+  database:
+    type: sqlite
+    sqlite:
+      path: "/data/controlplane/controlplane.db"
+
+  # WAL-backed cache - larger for S3 workloads
+  cache:
+    path: "/data/cache"
+    size: "2GB"
+
+  # Control plane REST API
+  controlPlane:
+    port: 8080
+
+  # Metrics enabled
+  metrics:
+    enabled: true
+    port: 9090
+
+  # NFS server port
   nfsPort: 2049
-  
+
   # SMB configuration
   smb:
     enabled: true
@@ -80,32 +63,16 @@ spec:
       initialGrant: 256
       maxSessionCredits: 65535
     metricsLogInterval: "5m"
-  
-  # User management for SMB
-  users:
-    guest:
-      enabled: true
-      uid: 65534
-      gid: 65534
-      sharePermissions:
-        "/s3": "read-write"
-    users:
-      - username: testuser
-        passwordHash: "$2y$05$R6mOPa8hawc24Vs16Dh91.TdEdC2amcdy3wLcOy/lJdZdJXViz0ia"
-        enabled: true
-        uid: 1000
-        gid: 1000
-        sharePermissions:
-          "/s3": "read-write"
-  
+
+  # Service configuration
   service:
     type: ClusterIP
-  
+
+  # Resource configuration
   resources:
     limits:
       cpu: "2"
       memory: "4Gi"
     requests:
       cpu: "500m"
-      memory: "1Gi"
       memory: "1Gi"

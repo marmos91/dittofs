@@ -1,3 +1,9 @@
+# DittoFS configuration with cache tuning
+# Infrastructure-only config - stores and shares configured via REST API
+#
+# Cache configuration in this CRD sets the WAL-backed cache for crash recovery.
+# Application-level caching is configured per-share via REST API.
+#
 apiVersion: dittofs.dittofs.com/v1alpha1
 kind: DittoServer
 metadata:
@@ -8,50 +14,35 @@ metadata:
 spec:
   image: marmos91c/dittofs:latest
   replicas: 1
-  
+
   # Storage for server's internal volumes
   storage:
     metadataSize: "10Gi"
     contentSize: "50Gi"
-  
-  # DittoFS configuration
-  config:
-    # Define storage backends
-    backends:
-      - name: badger-metadata
-        type: badger
-        config:
-          path: /data/metadata
-      
-      - name: s3-content
-        type: s3
-        config:
-          bucket: my-ditto-bucket
-          region: us-east-1
-    
-    # Define cache for performance optimization
-    caches:
-      - name: main-cache
-        type: memory
-        memory:
-          maxSize: "1Gi"  # Maximum cache size
-        prefetch:
-          enabled: true
-          maxFileSize: "100Mi"  # Don't prefetch files larger than this
-          chunkSize: "512Ki"    # Prefetch chunk size
-        flusher:
-          interval: "10s"       # How often to check for idle files
-          flushTimeout: "30s"   # How long a file must be idle before flushing
-          workers: 4            # Number of parallel flush workers
-    
-    # Define NFS shares
-    shares:
-      - name: default-share
-        exportPath: /export
-        metadataStore: badger-metadata
-        contentStore: s3-content
-        cache: main-cache  # Reference the cache
-  
+
+  # Control plane database
+  database:
+    type: sqlite
+    sqlite:
+      path: "/data/controlplane/controlplane.db"
+
+  # Large WAL-backed cache for performance
+  cache:
+    path: "/data/cache"
+    size: "4GB"
+
+  # Control plane REST API
+  controlPlane:
+    port: 8080
+
+  # Metrics enabled
+  metrics:
+    enabled: true
+    port: 9090
+
+  # NFS server port
+  nfsPort: 2049
+
   # Service configuration
   service:
     type: ClusterIP
