@@ -12,7 +12,7 @@ This roadmap delivers a production-ready Kubernetes operator for DittoFS, progre
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Operator Foundation** - Functional operator skeleton with DittoFS CRD creating StatefulSet
+- [x] **Phase 1: Operator Foundation** - Functional operator skeleton with DittoFS CRD creating StatefulSet
 - [ ] **Phase 2: ConfigMap Generation and Services** - ConfigMap from CRD spec; LoadBalancer Services for NFS, SMB, API
 - [ ] **Phase 3: Storage Management** - VolumeClaimTemplates for metadata, payload, cache PVCs
 - [ ] **Phase 4: Percona PostgreSQL Integration** - PerconaPGCluster watching; connection Secret extraction; readiness gating
@@ -41,9 +41,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 3 plans
 
 Plans:
-- [ ] 01-01-PLAN.md - Relocate operator to k8s/dittofs-operator/ with updated module path
-- [ ] 01-02-PLAN.md - Fix RBAC (add secrets), CRD shortName, create memory sample CR
-- [ ] 01-03-PLAN.md - End-to-end validation on local/test cluster
+- [x] 01-01-PLAN.md - Relocate operator to k8s/dittofs-operator/ with updated module path
+- [x] 01-02-PLAN.md - Fix RBAC (add secrets), CRD shortName, create memory sample CR
+- [x] 01-03-PLAN.md - End-to-end validation on local/test cluster
 
 ### Phase 2: ConfigMap Generation and Services
 **Goal**: ConfigMap generated from CRD spec; LoadBalancer Services for NFS, SMB, API; checksum annotation for pod restart
@@ -172,7 +172,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Operator Foundation | 0/3 | Planned | - |
+| 1. Operator Foundation | 3/3 | ✓ Complete | 2026-02-04 |
 | 2. ConfigMap and Services | 0/3 | Not started | - |
 | 3. Storage Management | 0/3 | Not started | - |
 | 4. Percona Integration | 0/3 | Not started | - |

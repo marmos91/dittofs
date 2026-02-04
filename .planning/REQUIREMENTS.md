@@ -3,11 +3,11 @@
 ## Core Requirements
 
 ### Operator Foundation
-- [ ] **R1.1** Operator scaffold with Operator SDK v1.42.0 and Go 1.24+
-- [ ] **R1.2** DittoFS CRD (v1alpha1) with complete spec schema
-- [ ] **R1.3** Basic controller reconciliation loop
-- [ ] **R1.4** RBAC (ServiceAccount, Role, RoleBinding) for operator
-- [ ] **R1.5** Operator deployed to `k8s/dittofs-operator/` directory structure
+- [x] **R1.1** Operator scaffold with Operator SDK v1.42.0 and Go 1.24+
+- [x] **R1.2** DittoFS CRD (v1alpha1) with complete spec schema
+- [x] **R1.3** Basic controller reconciliation loop
+- [x] **R1.4** RBAC (ServiceAccount, Role, RoleBinding) for operator
+- [x] **R1.5** Operator deployed to `k8s/dittofs-operator/` directory structure
 
 ### Configuration & Services
 - [ ] **R2.1** ConfigMap generation from CRD spec (all DittoFS config options)
@@ -82,11 +82,11 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| R1.1 | Phase 1 | Pending |
-| R1.2 | Phase 1 | Pending |
-| R1.3 | Phase 1 | Pending |
-| R1.4 | Phase 1 | Pending |
-| R1.5 | Phase 1 | Pending |
+| R1.1 | Phase 1 | Complete |
+| R1.2 | Phase 1 | Complete |
+| R1.3 | Phase 1 | Complete |
+| R1.4 | Phase 1 | Complete |
+| R1.5 | Phase 1 | Complete |
 | R2.1 | Phase 2 | Pending |
 | R2.2 | Phase 2 | Pending |
 | R2.3 | Phase 2 | Pending |

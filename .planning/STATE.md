@@ -58,7 +58,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-None yet.
+- **Update DittoFS Docker image** - Image needs to support new control plane config format (operator generates new format, published image expects old format). Address in Phase 6 or earlier.
 
 ### Blockers/Concerns
 
