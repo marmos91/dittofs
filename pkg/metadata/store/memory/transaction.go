@@ -598,3 +598,4 @@ func (tx *memoryTransaction) GetFilesystemStatistics(ctx context.Context, handle
 	stats := tx.store.computeStatistics()
 	return &stats, nil
 }
+

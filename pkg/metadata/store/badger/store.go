@@ -78,6 +78,10 @@ type BadgerMetadataStore struct {
 		ttl       time.Duration
 		mu        sync.RWMutex
 	}
+
+	// lockStore provides lock persistence
+	lockStore   *badgerLockStore
+	lockStoreMu sync.Mutex
 }
 
 // BadgerMetadataStoreConfig contains configuration for creating a BadgerDB metadata store.

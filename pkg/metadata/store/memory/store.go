@@ -202,6 +202,10 @@ type MemoryMetadataStore struct {
 	// This tracks Objects, Chunks, and Blocks with their content hashes and ref counts.
 	// Initialized lazily on first use.
 	objectData *objectStoreData
+
+	// lockStore holds persisted lock data for NLM/SMB lock persistence.
+	// Initialized lazily on first use.
+	lockStore *memoryLockStore
 }
 
 // MemoryMetadataStoreConfig contains configuration for creating a memory metadata store.
