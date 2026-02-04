@@ -1,7 +1,7 @@
 package smb
 
 import (
-	dittoiov1alpha1 "github.com/marmos91/dittofs/dittofs-operator/api/v1alpha1"
+	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
 )
 
 // getSMBPort returns the SMB port from the spec or the default (445)

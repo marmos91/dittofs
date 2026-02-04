@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"maps"
 
-	dittoiov1alpha1 "github.com/marmos91/dittofs/dittofs-operator/api/v1alpha1"
-	"github.com/marmos91/dittofs/dittofs-operator/utils/nfs"
-	"github.com/marmos91/dittofs/dittofs-operator/utils/smb"
+	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
+	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/nfs"
+	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/smb"
 
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"

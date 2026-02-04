@@ -6,8 +6,8 @@ cliVersion: 4.10.1
 domain: dittofs.com
 layout:
 - go.kubebuilder.io/v4
-projectName: dittofs/dittofs-operator
-repo: github.com/marmos91/dittofs/dittofs-operator
+projectName: dittofs/k8s/dittofs-operator
+repo: github.com/marmos91/dittofs/k8s/dittofs-operator
 resources:
 - api:
     crdVersion: v1
@@ -16,6 +16,6 @@ resources:
   domain: dittofs.com
   group: dittofs
   kind: DittoServer
-  path: github.com/marmos91/dittofs/dittofs-operator/api/v1
+  path: github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1
   version: v1
 version: "3"

@@ -35,8 +35,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	dittoiov1alpha1 "github.com/marmos91/dittofs/dittofs-operator/api/v1alpha1"
-	"github.com/marmos91/dittofs/dittofs-operator/internal/controller"
+	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
+	"github.com/marmos91/dittofs/k8s/dittofs-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 
