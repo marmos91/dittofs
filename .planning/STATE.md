@@ -10,33 +10,33 @@ See: .planning/PROJECT.md (updated 2026-02-04)
 ## Current Position
 
 Phase: 2 of 6 (ConfigMap and Services)
-Plan: 1 of 3 in current phase - COMPLETE
+Plan: 2 of 3 in current phase - COMPLETE
 Status: In progress
-Last activity: 2026-02-04 - Completed 02-01-PLAN.md (CRD and ConfigMap Simplification)
+Last activity: 2026-02-04 - Completed 02-02-PLAN.md (Checksum Annotation)
 
-Progress: [███░░░░░░░] 22%
+Progress: [████░░░░░░] 28%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 4
-- Average duration: 14 min
-- Total execution time: 53 min
+- Total plans completed: 5
+- Average duration: 12 min
+- Total execution time: 55 min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 1. Operator Foundation | 3/3 | 47 min | 16 min |
-| 2. ConfigMap and Services | 1/3 | 6 min | 6 min |
+| 2. ConfigMap and Services | 2/3 | 8 min | 4 min |
 | 3. Storage Management | 0/3 | - | - |
 | 4. Percona Integration | 0/3 | - | - |
 | 5. Status and Lifecycle | 0/3 | - | - |
 | 6. Documentation | 0/3 | - | - |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (4m), 01-02 (4m), 01-03 (39m with checkpoint), 02-01 (6m)
-- Trend: Non-checkpoint plans complete quickly (~5-6 min)
+- Last 5 plans: 01-02 (4m), 01-03 (39m with checkpoint), 02-01 (6m), 02-02 (2m)
+- Trend: Autonomous plans complete quickly (~2-6 min)
 
 *Updated after each plan completion*
 
@@ -56,6 +56,8 @@ Recent decisions affecting current work:
 | 2026-02-04 | cache.path required in ConfigMap | DittoFS requires cache configuration |
 | 2026-02-04 | PostgresSecretRef takes precedence over Type field | If both SQLite type and PostgresSecretRef set, Postgres wins silently |
 | 2026-02-04 | Infrastructure-only CRD schema | Stores, shares, adapters, users managed via REST API, not CRD |
+| 2026-02-04 | Hash includes ConfigMap + secrets + generation | Complete change detection for pod restart |
+| 2026-02-04 | ServiceName uses headless naming ({name}-headless) | Anticipates Plan 03 headless service |
 
 ### Pending Todos
 
@@ -74,15 +76,19 @@ Recent decisions affecting current work:
 - PostgreSQL secret resolution implemented
 - Sample CRs updated
 
-**Plan 02-02: Service Definitions - PENDING**
+**Plan 02-02: Checksum Annotation - COMPLETE**
+- pkg/resources package with ComputeConfigHash utility
+- collectSecretData helper gathers JWT, admin, postgres secrets
+- StatefulSet pod template has dittofs.io/config-hash annotation
+- ConfigMap reconciled before StatefulSet ensures hash computable
 
-**Plan 02-03: ConfigMap Finalization - PENDING**
+**Plan 02-03: Service Definitions - PENDING**
 
 ## Session Continuity
 
-Last session: 2026-02-04T19:22:59Z
-Stopped at: Completed 02-01-PLAN.md
-Resume file: .planning/phases/02-configmap-services/02-02-PLAN.md
+Last session: 2026-02-04T20:12:15Z
+Stopped at: Completed 02-02-PLAN.md
+Resume file: .planning/phases/02-configmap-services/02-03-PLAN.md
 
 ---
 *State initialized: 2026-02-04*
