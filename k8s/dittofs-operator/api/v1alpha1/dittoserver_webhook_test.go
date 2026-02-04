@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -16,7 +17,7 @@ func TestDittoServerValidation(t *testing.T) {
 		wantWarning bool
 	}{
 		{
-			name: "valid configuration",
+			name: "valid minimal configuration",
 			dittoServer: &DittoServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
@@ -26,17 +27,46 @@ func TestDittoServerValidation(t *testing.T) {
 					Storage: StorageSpec{
 						MetadataSize: "10Gi",
 					},
-					Config: DittoConfig{
-						Backends: []BackendConfig{
-							{Name: "badger-metaSvc", Type: "badger"},
-							{Name: "local-content", Type: "local"},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid full configuration",
+			dittoServer: &DittoServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: DittoServerSpec{
+					Storage: StorageSpec{
+						MetadataSize: "10Gi",
+						ContentSize:  "50Gi",
+					},
+					Database: &DatabaseConfig{
+						Type: "sqlite",
+						SQLite: &SQLiteConfig{
+							Path: "/data/controlplane/controlplane.db",
 						},
-						Shares: []ShareConfig{
-							{
-								Name:          "test-share",
-								ExportPath:    "/export",
-								MetadataStore: "badger-metaSvc",
-								ContentStore:  "local-content",
+					},
+					Cache: &InfraCacheConfig{
+						Path: "/data/cache",
+						Size: "1GB",
+					},
+					Metrics: &MetricsConfig{
+						Enabled: true,
+						Port:    9090,
+					},
+					ControlPlane: &ControlPlaneAPIConfig{
+						Port: 8080,
+					},
+					Identity: &IdentityConfig{
+						JWT: &JWTConfig{
+							SecretRef: corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: "jwt-secret",
+								},
+								Key: "secret",
 							},
 						},
 					},
@@ -45,7 +75,7 @@ func TestDittoServerValidation(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "missing metadata store reference",
+			name: "missing metadata size",
 			dittoServer: &DittoServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
@@ -53,28 +83,15 @@ func TestDittoServerValidation(t *testing.T) {
 				},
 				Spec: DittoServerSpec{
 					Storage: StorageSpec{
-						MetadataSize: "10Gi",
-					},
-					Config: DittoConfig{
-						Backends: []BackendConfig{
-							{Name: "local-content", Type: "local"},
-						},
-						Shares: []ShareConfig{
-							{
-								Name:          "test-share",
-								ExportPath:    "/export",
-								MetadataStore: "badger-metaSvc", // Does not exist
-								ContentStore:  "local-content",
-							},
-						},
+						// MetadataSize missing
 					},
 				},
 			},
 			wantErr:     true,
-			errContains: "metadataStore 'badger-metaSvc' does not exist in backends list",
+			errContains: "storage.metadataSize is required",
 		},
 		{
-			name: "missing content store reference",
+			name: "postgres secret with sqlite type - should warn",
 			dittoServer: &DittoServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
@@ -84,154 +101,58 @@ func TestDittoServerValidation(t *testing.T) {
 					Storage: StorageSpec{
 						MetadataSize: "10Gi",
 					},
-					Config: DittoConfig{
-						Backends: []BackendConfig{
-							{Name: "badger-metaSvc", Type: "badger"},
-						},
-						Shares: []ShareConfig{
-							{
-								Name:          "test-share",
-								ExportPath:    "/export",
-								MetadataStore: "badger-metaSvc",
-								ContentStore:  "missing-store", // Does not exist
+					Database: &DatabaseConfig{
+						Type: "sqlite",
+						PostgresSecretRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "postgres-secret",
 							},
-						},
-					},
-				},
-			},
-			wantErr:     true,
-			errContains: "contentStore 'missing-store' does not exist in backends list",
-		},
-		{
-			name: "duplicate backend names",
-			dittoServer: &DittoServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: DittoServerSpec{
-					Storage: StorageSpec{
-						MetadataSize: "10Gi",
-					},
-					Config: DittoConfig{
-						Backends: []BackendConfig{
-							{Name: "badger-metaSvc", Type: "badger"},
-							{Name: "badger-metaSvc", Type: "badger"}, // Duplicate
-						},
-						Shares: []ShareConfig{
-							{
-								Name:          "test-share",
-								ExportPath:    "/export",
-								MetadataStore: "badger-metaSvc",
-								ContentStore:  "badger-metaSvc",
-							},
-						},
-					},
-				},
-			},
-			wantErr:     true,
-			errContains: "duplicate backend name 'badger-metaSvc'",
-		},
-		{
-			name: "duplicate share names",
-			dittoServer: &DittoServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: DittoServerSpec{
-					Storage: StorageSpec{
-						MetadataSize: "10Gi",
-					},
-					Config: DittoConfig{
-						Backends: []BackendConfig{
-							{Name: "badger-metaSvc", Type: "badger"},
-							{Name: "local-content", Type: "local"},
-						},
-						Shares: []ShareConfig{
-							{
-								Name:          "test-share",
-								ExportPath:    "/export",
-								MetadataStore: "badger-metaSvc",
-								ContentStore:  "local-content",
-							},
-							{
-								Name:          "test-share", // Duplicate
-								ExportPath:    "/data",
-								MetadataStore: "badger-metaSvc",
-								ContentStore:  "local-content",
-							},
-						},
-					},
-				},
-			},
-			wantErr:     true,
-			errContains: "duplicate share name 'test-share'",
-		},
-		{
-			name: "duplicate export paths",
-			dittoServer: &DittoServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: DittoServerSpec{
-					Storage: StorageSpec{
-						MetadataSize: "10Gi",
-					},
-					Config: DittoConfig{
-						Backends: []BackendConfig{
-							{Name: "badger-metaSvc", Type: "badger"},
-							{Name: "local-content", Type: "local"},
-						},
-						Shares: []ShareConfig{
-							{
-								Name:          "share1",
-								ExportPath:    "/export",
-								MetadataStore: "badger-metaSvc",
-								ContentStore:  "local-content",
-							},
-							{
-								Name:          "share2",
-								ExportPath:    "/export", // Duplicate
-								MetadataStore: "badger-metaSvc",
-								ContentStore:  "local-content",
-							},
-						},
-					},
-				},
-			},
-			wantErr:     true,
-			errContains: "duplicate export path '/export'",
-		},
-		{
-			name: "same backend for metadata and content - should warn",
-			dittoServer: &DittoServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: DittoServerSpec{
-					Storage: StorageSpec{
-						MetadataSize: "10Gi",
-					},
-					Config: DittoConfig{
-						Backends: []BackendConfig{
-							{Name: "badger-store", Type: "badger"},
-						},
-						Shares: []ShareConfig{
-							{
-								Name:          "test-share",
-								ExportPath:    "/export",
-								MetadataStore: "badger-store",
-								ContentStore:  "badger-store", // Same backend
-							},
+							Key: "connection-string",
 						},
 					},
 				},
 			},
 			wantErr:     false,
 			wantWarning: true,
+		},
+		{
+			name: "invalid control plane port",
+			dittoServer: &DittoServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: DittoServerSpec{
+					Storage: StorageSpec{
+						MetadataSize: "10Gi",
+					},
+					ControlPlane: &ControlPlaneAPIConfig{
+						Port: 70000, // Invalid port
+					},
+				},
+			},
+			wantErr:     true,
+			errContains: "controlPlane.port must be between 1 and 65535",
+		},
+		{
+			name: "invalid metrics port",
+			dittoServer: &DittoServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: DittoServerSpec{
+					Storage: StorageSpec{
+						MetadataSize: "10Gi",
+					},
+					Metrics: &MetricsConfig{
+						Enabled: true,
+						Port:    70000, // Invalid port
+					},
+				},
+			},
+			wantErr:     true,
+			errContains: "metrics.port must be between 1 and 65535",
 		},
 	}
 

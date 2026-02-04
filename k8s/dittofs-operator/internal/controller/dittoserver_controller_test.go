@@ -374,72 +374,31 @@ func TestReconcileDittoServer(t *testing.T) {
 			},
 		},
 		{
-			description: "Create DittoServer with SMB and user management using secrets",
+			description: "Create DittoServer with database and cache config",
 			fields: fields{
-				dittoServer: func() *v1alpha1.DittoServer {
-					return v1alpha1.NewDittoServer(
-						v1alpha1.WithName("smb-with-users-server"),
-						v1alpha1.WithNamespace("default"),
-						v1alpha1.WithSpec(
-							*v1alpha1.NewDittoServerSpec(
-								v1alpha1.WithStorage(
-									v1alpha1.StorageSpec{
-										MetadataSize: "5Gi",
-									},
-								),
-								v1alpha1.WithSMB(&v1alpha1.SMBAdapterSpec{
-									Enabled: true,
-								}),
-								v1alpha1.WithUsers(&v1alpha1.UserManagementSpec{
-									Users: []v1alpha1.UserSpec{
-										{
-											Username: "testuser",
-											PasswordSecretRef: &corev1.SecretKeySelector{
-												LocalObjectReference: corev1.LocalObjectReference{
-													Name: "user-credentials",
-												},
-												Key: "testuser-password-hash",
-											},
-											UID: 1001,
-											GID: 1001,
-											SharePermissions: map[string]string{
-												"/": "read-write",
-											},
-										},
-									},
-									Groups: []v1alpha1.GroupSpec{
-										{
-											Name: "testgroup",
-											GID:  1001,
-											SharePermissions: map[string]string{
-												"/": "read",
-											},
-										},
-									},
-									Guest: &v1alpha1.GuestSpec{
-										Enabled: true,
-										UID:     65534,
-										GID:     65534,
-										SharePermissions: map[string]string{
-											"/": "read",
-										},
-									},
-								}),
+				dittoServer: v1alpha1.NewDittoServer(
+					v1alpha1.WithName("db-cache-server"),
+					v1alpha1.WithNamespace("default"),
+					v1alpha1.WithSpec(
+						*v1alpha1.NewDittoServerSpec(
+							v1alpha1.WithStorage(
+								v1alpha1.StorageSpec{
+									MetadataSize: "5Gi",
+								},
 							),
+							v1alpha1.WithDatabase(&v1alpha1.DatabaseConfig{
+								Type: "sqlite",
+								SQLite: &v1alpha1.SQLiteConfig{
+									Path: "/data/controlplane/controlplane.db",
+								},
+							}),
+							v1alpha1.WithCache(&v1alpha1.InfraCacheConfig{
+								Path: "/data/cache",
+								Size: "1GB",
+							}),
 						),
-					)
-				}(),
-				secrets: []*corev1.Secret{
-					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      "user-credentials",
-							Namespace: "default",
-						},
-						Data: map[string][]byte{
-							"testuser-password-hash": []byte("$2y$10$rEKx.8vhUWJ1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c"), // bcrypt hash for "testpass"
-						},
-					},
-				},
+					),
+				),
 			},
 			expectedStatus: &expectedStatus{
 				phase:           "Pending",
@@ -449,111 +408,33 @@ func TestReconcileDittoServer(t *testing.T) {
 			request: ctrl.Request{
 				NamespacedName: types.NamespacedName{
 					Namespace: "default",
-					Name:      "smb-with-users-server",
+					Name:      "db-cache-server",
 				},
 			},
 		},
 		{
-			description: "Create DittoServer with S3 backend and SMB using secrets",
+			description: "Create DittoServer with metrics enabled",
 			fields: fields{
-				dittoServer: func() *v1alpha1.DittoServer {
-					return v1alpha1.NewDittoServer(
-						v1alpha1.WithName("s3-smb-secrets-server"),
-						v1alpha1.WithNamespace("default"),
-						v1alpha1.WithSpec(
-							*v1alpha1.NewDittoServerSpec(
-								v1alpha1.WithStorage(
-									v1alpha1.StorageSpec{
-										MetadataSize: "5Gi",
-									},
-								),
-								v1alpha1.WithConfig(v1alpha1.DittoConfig{
-									Backends: []v1alpha1.BackendConfig{
-										{
-											Name: "badger-metadata",
-											Type: "badger",
-											Config: map[string]string{
-												"path": "/data/metadata",
-											},
-										},
-										{
-											Name: "s3-content",
-											Type: "s3",
-											Config: map[string]string{
-												"bucket": "dittofs-bucket",
-												"region": "us-east-1",
-											},
-											SecretRefs: map[string]corev1.SecretKeySelector{
-												"access_key_id": {
-													LocalObjectReference: corev1.LocalObjectReference{
-														Name: "s3-credentials",
-													},
-													Key: "access-key-id",
-												},
-												"secret_access_key": {
-													LocalObjectReference: corev1.LocalObjectReference{
-														Name: "s3-credentials",
-													},
-													Key: "secret-access-key",
-												},
-											},
-										},
-									},
-									Shares: []v1alpha1.ShareConfig{
-										{
-											Name:          "s3-share",
-											ExportPath:    "/s3",
-											MetadataStore: "badger-metadata",
-											ContentStore:  "s3-content",
-										},
-									},
-								}),
-								v1alpha1.WithSMB(&v1alpha1.SMBAdapterSpec{
-									Enabled: true,
-								}),
-								v1alpha1.WithUsers(&v1alpha1.UserManagementSpec{
-									Users: []v1alpha1.UserSpec{
-										{
-											Username: "s3user",
-											PasswordSecretRef: &corev1.SecretKeySelector{
-												LocalObjectReference: corev1.LocalObjectReference{
-													Name: "user-credentials",
-												},
-												Key: "s3user-password-hash",
-											},
-											UID: 1002,
-											GID: 1002,
-											SharePermissions: map[string]string{
-												"/s3": "read-write",
-											},
-										},
-									},
-								}),
+				dittoServer: v1alpha1.NewDittoServer(
+					v1alpha1.WithName("metrics-server"),
+					v1alpha1.WithNamespace("default"),
+					v1alpha1.WithSpec(
+						*v1alpha1.NewDittoServerSpec(
+							v1alpha1.WithStorage(
+								v1alpha1.StorageSpec{
+									MetadataSize: "5Gi",
+								},
 							),
+							v1alpha1.WithMetrics(&v1alpha1.MetricsConfig{
+								Enabled: true,
+								Port:    9090,
+							}),
+							v1alpha1.WithControlPlane(&v1alpha1.ControlPlaneAPIConfig{
+								Port: 8080,
+							}),
 						),
-					)
-				}(),
-				secrets: []*corev1.Secret{
-					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      "s3-credentials",
-							Namespace: "default",
-						},
-						Data: map[string][]byte{
-							"access-key-id":     []byte("access_key"),
-							"secret-access-key": []byte("aws_secret_example"),
-						},
-					},
-					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      "user-credentials",
-							Namespace: "default",
-						},
-						Data: map[string][]byte{
-							"s3user-password-hash": []byte("$2y$10$anotherHashForS3User1234567890abcdefghijklmnopqr"),
-						},
-					},
-				},
+					),
+				),
 			},
 			expectedStatus: &expectedStatus{
 				phase:           "Pending",
@@ -563,7 +444,7 @@ func TestReconcileDittoServer(t *testing.T) {
 			request: ctrl.Request{
 				NamespacedName: types.NamespacedName{
 					Namespace: "default",
-					Name:      "s3-smb-secrets-server",
+					Name:      "metrics-server",
 				},
 			},
 		},
