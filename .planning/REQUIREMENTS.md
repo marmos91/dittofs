@@ -7,13 +7,13 @@
 
 ### Locking Infrastructure (LOCK)
 
-- [ ] **LOCK-01**: Unified Lock Manager embedded in metadata service
-- [ ] **LOCK-02**: Lock state persistence in metadata store (per-share)
-- [ ] **LOCK-03**: Flexible lock model supporting NLM, NFSv4, and SMB semantics
-- [ ] **LOCK-04**: Lock translation at protocol boundary (cross-protocol visibility)
-- [ ] **LOCK-05**: Grace period handling for server restarts
-- [ ] **LOCK-06**: Per-adapter connection pool (unified stateless/stateful)
-- [ ] **LOCK-07**: Lock conflict detection across protocols
+- [x] **LOCK-01**: Unified Lock Manager embedded in metadata service
+- [x] **LOCK-02**: Lock state persistence in metadata store (per-share)
+- [x] **LOCK-03**: Flexible lock model supporting NLM, NFSv4, and SMB semantics
+- [x] **LOCK-04**: Lock translation at protocol boundary (cross-protocol visibility)
+- [x] **LOCK-05**: Grace period handling for server restarts
+- [x] **LOCK-06**: Per-adapter connection pool (unified stateless/stateful)
+- [x] **LOCK-07**: Lock conflict detection across protocols
 
 ### NLM Protocol (NLM)
 
@@ -305,13 +305,13 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| LOCK-01 | Phase 1: Locking Infrastructure | Pending |
-| LOCK-02 | Phase 1: Locking Infrastructure | Pending |
-| LOCK-03 | Phase 1: Locking Infrastructure | Pending |
-| LOCK-04 | Phase 1: Locking Infrastructure | Pending |
-| LOCK-05 | Phase 1: Locking Infrastructure | Pending |
-| LOCK-06 | Phase 1: Locking Infrastructure | Pending |
-| LOCK-07 | Phase 1: Locking Infrastructure | Pending |
+| LOCK-01 | Phase 1: Locking Infrastructure | Complete |
+| LOCK-02 | Phase 1: Locking Infrastructure | Complete |
+| LOCK-03 | Phase 1: Locking Infrastructure | Complete |
+| LOCK-04 | Phase 1: Locking Infrastructure | Complete |
+| LOCK-05 | Phase 1: Locking Infrastructure | Complete |
+| LOCK-06 | Phase 1: Locking Infrastructure | Complete |
+| LOCK-07 | Phase 1: Locking Infrastructure | Complete |
 | NLM-01 | Phase 2: NLM Protocol | Pending |
 | NLM-02 | Phase 2: NLM Protocol | Pending |
 | NLM-03 | Phase 2: NLM Protocol | Pending |

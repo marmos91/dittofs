@@ -23,7 +23,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 ### v1.0 NLM + Unified Lock Manager
 
-- [ ] **Phase 1: Locking Infrastructure** - Unified lock manager embedded in metadata service
+- [x] **Phase 1: Locking Infrastructure** ✓ - Unified lock manager embedded in metadata service
 - [ ] **Phase 2: NLM Protocol** - Network Lock Manager for NFSv3 clients
 - [ ] **Phase 3: NSM Protocol** - Network Status Monitor for crash recovery
 - [ ] **Phase 4: SMB Leases** - SMB2/3 oplock and lease support
@@ -88,9 +88,10 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 3 plans in 2 waves
 
 Plans:
-- [ ] 01-01-PLAN.md — Enhanced lock types, POSIX splitting, deadlock detection, config
-- [ ] 01-02-PLAN.md — Lock persistence (LockStore interface, memory/badger/postgres)
-- [ ] 01-03-PLAN.md — Grace period state machine, connection tracking, metrics
+- [x] 01-01-PLAN.md — Enhanced lock types, POSIX splitting, deadlock detection, config
+- [x] 01-02-PLAN.md — Lock persistence (LockStore interface, memory/badger/postgres)
+- [x] 01-03-PLAN.md — Grace period state machine, connection tracking, metrics
+- [x] 01-04-PLAN.md — Refactor: Move lock code to pkg/metadata/lock/, errors to pkg/metadata/errors/
 
 ### Phase 2: NLM Protocol
 **Goal**: Implement the Network Lock Manager protocol (RPC 100021) for NFSv3 locking
@@ -584,7 +585,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 1. Locking Infrastructure | v1.0 | 0/3 | Planned | - |
+| 1. Locking Infrastructure | v1.0 | 4/4 | ✓ Complete | 2026-02-04 |
 | 2. NLM Protocol | v1.0 | 0/3 | Not started | - |
 | 3. NSM Protocol | v1.0 | 0/3 | Not started | - |
 | 4. SMB Leases | v1.0 | 0/3 | Not started | - |
@@ -613,7 +614,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 27. Documentation | v4.0 | 0/3 | Not started | - |
 | 28. v4.0 Testing | v4.0 | 0/5 | Not started | - |
 
-**Total:** 0/108 plans complete
+**Total:** 4/108 plans complete
 
 ---
 *Roadmap created: 2026-02-04*
