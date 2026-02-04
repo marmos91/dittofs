@@ -77,8 +77,24 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileService(ctx, dittoServer); err != nil {
-		logger.Error(err, "Failed to reconcile Service")
+	// Reconcile services (headless required for StatefulSet DNS)
+	if err := r.reconcileHeadlessService(ctx, dittoServer); err != nil {
+		logger.Error(err, "Failed to reconcile headless Service")
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileFileService(ctx, dittoServer); err != nil {
+		logger.Error(err, "Failed to reconcile file Service")
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileAPIService(ctx, dittoServer); err != nil {
+		logger.Error(err, "Failed to reconcile API Service")
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileMetricsService(ctx, dittoServer); err != nil {
+		logger.Error(err, "Failed to reconcile metrics Service")
 		return ctrl.Result{}, err
 	}
 
@@ -112,7 +128,7 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		dittoServerCopy.Status.Phase = "Pending"
 	}
 
-	dittoServerCopy.Status.NFSEndpoint = fmt.Sprintf("%s.%s.svc.cluster.local:%d",
+	dittoServerCopy.Status.NFSEndpoint = fmt.Sprintf("%s-file.%s.svc.cluster.local:%d",
 		dittoServer.Name, dittoServer.Namespace, nfs.GetNFSPort(dittoServer))
 
 	if statefulSet.Status.ReadyReplicas == replicas && replicas > 0 {
@@ -175,37 +191,191 @@ func (r *DittoServerReconciler) reconcileConfigMap(ctx context.Context, dittoSer
 	return err
 }
 
-func (r *DittoServerReconciler) reconcileService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
-	service := &corev1.Service{
+// getServiceType returns the Kubernetes Service type from the CRD spec.
+func getServiceType(dittoServer *dittoiov1alpha1.DittoServer) corev1.ServiceType {
+	if dittoServer.Spec.Service.Type != "" {
+		return corev1.ServiceType(dittoServer.Spec.Service.Type)
+	}
+	return corev1.ServiceTypeLoadBalancer // Default to LoadBalancer
+}
+
+// getAPIPort returns the control plane API port (default 8080).
+func getAPIPort(dittoServer *dittoiov1alpha1.DittoServer) int32 {
+	if dittoServer.Spec.ControlPlane != nil && dittoServer.Spec.ControlPlane.Port > 0 {
+		return dittoServer.Spec.ControlPlane.Port
+	}
+	return 8080
+}
+
+// getMetricsPort returns the metrics port (default 9090).
+func getMetricsPort(dittoServer *dittoiov1alpha1.DittoServer) int32 {
+	if dittoServer.Spec.Metrics != nil && dittoServer.Spec.Metrics.Port > 0 {
+		return dittoServer.Spec.Metrics.Port
+	}
+	return 9090
+}
+
+// reconcileHeadlessService creates/updates the headless Service for StatefulSet DNS.
+func (r *DittoServerReconciler) reconcileHeadlessService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
+	labels := map[string]string{
+		"app":      "dittofs-server",
+		"instance": dittoServer.Name,
+	}
+
+	nfsPort := nfs.GetNFSPort(dittoServer)
+
+	svc := resources.NewServiceBuilder(dittoServer.Name+"-headless", dittoServer.Namespace).
+		WithLabels(labels).
+		WithSelector(labels).
+		AsHeadless().
+		AddTCPPort("nfs", nfsPort).
+		Build()
+
+	existing := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      dittoServer.Name,
-			Namespace: dittoServer.Namespace,
+			Name:      svc.Name,
+			Namespace: svc.Namespace,
 		},
 	}
 
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, service, func() error {
-		if err := controllerutil.SetControllerReference(dittoServer, service, r.Scheme); err != nil {
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
+		if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
 			return err
 		}
+		existing.Spec = svc.Spec
+		existing.Labels = svc.Labels
+		return nil
+	})
 
-		serviceType := corev1.ServiceTypeClusterIP
-		if dittoServer.Spec.Service.Type != "" {
-			serviceType = corev1.ServiceType(dittoServer.Spec.Service.Type)
+	return err
+}
+
+// reconcileFileService creates/updates the Service for file protocols (NFS, SMB).
+func (r *DittoServerReconciler) reconcileFileService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
+	labels := map[string]string{
+		"app":      "dittofs-server",
+		"instance": dittoServer.Name,
+	}
+
+	nfsPort := nfs.GetNFSPort(dittoServer)
+
+	builder := resources.NewServiceBuilder(dittoServer.Name+"-file", dittoServer.Namespace).
+		WithLabels(labels).
+		WithSelector(labels).
+		WithType(getServiceType(dittoServer)).
+		WithAnnotations(dittoServer.Spec.Service.Annotations).
+		AddTCPPort("nfs", nfsPort)
+
+	// Add SMB port if enabled
+	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Enabled {
+		smbPort := smb.GetSMBPort(dittoServer)
+		builder.AddTCPPort("smb", smbPort)
+	}
+
+	svc := builder.Build()
+
+	existing := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svc.Name,
+			Namespace: svc.Namespace,
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
+		if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
+			return err
 		}
+		existing.Spec = svc.Spec
+		existing.Labels = svc.Labels
+		existing.Annotations = svc.Annotations
+		return nil
+	})
 
-		service.Spec = corev1.ServiceSpec{
-			Type: serviceType,
-			Selector: map[string]string{
-				"app":      "dittofs-server",
-				"instance": dittoServer.Name,
-			},
-			Ports: buildServicePorts(dittoServer),
+	return err
+}
+
+// reconcileAPIService creates/updates the Service for REST API access.
+func (r *DittoServerReconciler) reconcileAPIService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
+	labels := map[string]string{
+		"app":      "dittofs-server",
+		"instance": dittoServer.Name,
+	}
+
+	apiPort := getAPIPort(dittoServer)
+
+	svc := resources.NewServiceBuilder(dittoServer.Name+"-api", dittoServer.Namespace).
+		WithLabels(labels).
+		WithSelector(labels).
+		WithType(getServiceType(dittoServer)).
+		WithAnnotations(dittoServer.Spec.Service.Annotations).
+		AddTCPPort("api", apiPort).
+		Build()
+
+	existing := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svc.Name,
+			Namespace: svc.Namespace,
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
+		if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
+			return err
 		}
+		existing.Spec = svc.Spec
+		existing.Labels = svc.Labels
+		existing.Annotations = svc.Annotations
+		return nil
+	})
 
-		if dittoServer.Spec.Service.Annotations != nil {
-			service.Annotations = dittoServer.Spec.Service.Annotations
+	return err
+}
+
+// reconcileMetricsService creates/updates the Service for Prometheus metrics (if enabled).
+func (r *DittoServerReconciler) reconcileMetricsService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
+	// Only create metrics service if metrics are enabled
+	if dittoServer.Spec.Metrics == nil || !dittoServer.Spec.Metrics.Enabled {
+		// Delete metrics service if it exists
+		existing := &corev1.Service{}
+		err := r.Get(ctx, client.ObjectKey{
+			Namespace: dittoServer.Namespace,
+			Name:      dittoServer.Name + "-metrics",
+		}, existing)
+		if err == nil {
+			// Service exists, delete it
+			return r.Delete(ctx, existing)
 		}
+		return client.IgnoreNotFound(err)
+	}
 
+	labels := map[string]string{
+		"app":      "dittofs-server",
+		"instance": dittoServer.Name,
+	}
+
+	metricsPort := getMetricsPort(dittoServer)
+
+	// Metrics service is always ClusterIP (internal only)
+	svc := resources.NewServiceBuilder(dittoServer.Name+"-metrics", dittoServer.Namespace).
+		WithLabels(labels).
+		WithSelector(labels).
+		WithType(corev1.ServiceTypeClusterIP).
+		AddTCPPort("metrics", metricsPort).
+		Build()
+
+	existing := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svc.Name,
+			Namespace: svc.Namespace,
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
+		if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
+			return err
+		}
+		existing.Spec = svc.Spec
+		existing.Labels = svc.Labels
 		return nil
 	})
 
@@ -412,52 +582,42 @@ func getPodSecurityContext(dittoServer *dittoiov1alpha1.DittoServer) *corev1.Pod
 	}
 }
 
-// buildServicePorts constructs the service ports based on enabled protocols
-func buildServicePorts(dittoServer *dittoiov1alpha1.DittoServer) []corev1.ServicePort {
-	ports := []corev1.ServicePort{
-		{
-			Name:     "nfs",
-			Port:     nfs.GetNFSPort(dittoServer),
-			Protocol: corev1.ProtocolTCP,
-		},
-		{
-			Name:     "metrics",
-			Port:     9090,
-			Protocol: corev1.ProtocolTCP,
-		},
-	}
-
-	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Enabled {
-		ports = append(ports, corev1.ServicePort{
-			Name:     "smb",
-			Port:     smb.GetSMBPort(dittoServer),
-			Protocol: corev1.ProtocolTCP,
-		})
-	}
-
-	return ports
-}
-
 // buildContainerPorts constructs the container ports based on enabled protocols
 func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer) []corev1.ContainerPort {
+	nfsPort := nfs.GetNFSPort(dittoServer)
+
 	ports := []corev1.ContainerPort{
 		{
 			Name:          "nfs",
-			ContainerPort: nfs.GetNFSPort(dittoServer),
-			Protocol:      corev1.ProtocolTCP,
-		},
-		{
-			Name:          "metrics",
-			ContainerPort: 9090,
+			ContainerPort: nfsPort,
 			Protocol:      corev1.ProtocolTCP,
 		},
 	}
 
-	// Add SMB port if SMB is enabled
+	// Add API port
+	apiPort := getAPIPort(dittoServer)
+	ports = append(ports, corev1.ContainerPort{
+		Name:          "api",
+		ContainerPort: apiPort,
+		Protocol:      corev1.ProtocolTCP,
+	})
+
+	// Add metrics port if enabled
+	if dittoServer.Spec.Metrics != nil && dittoServer.Spec.Metrics.Enabled {
+		metricsPort := getMetricsPort(dittoServer)
+		ports = append(ports, corev1.ContainerPort{
+			Name:          "metrics",
+			ContainerPort: metricsPort,
+			Protocol:      corev1.ProtocolTCP,
+		})
+	}
+
+	// Add SMB port if enabled
 	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Enabled {
+		smbPort := smb.GetSMBPort(dittoServer)
 		ports = append(ports, corev1.ContainerPort{
 			Name:          "smb",
-			ContainerPort: smb.GetSMBPort(dittoServer),
+			ContainerPort: smbPort,
 			Protocol:      corev1.ProtocolTCP,
 		})
 	}
