@@ -1,94 +1,94 @@
-# DittoFS E2E Test Suite Redesign
+# DittoFS Kubernetes Operator
 
 ## What This Is
 
-A complete CLI-driven E2E test suite that validates DittoFS across all store combinations (memory, badger, postgres × memory, filesystem, s3) using both NFS and SMB protocols. Tests use `dittofsctl` CLI commands ensuring the system works correctly from a user's perspective.
+A production-ready Kubernetes operator that deploys and manages DittoFS instances on Kubernetes clusters. The operator handles the complete lifecycle: provisioning PostgreSQL (via Percona operator) for control plane persistence, creating ConfigMaps from CRD specs, managing PVCs for storage backends, and exposing services via LoadBalancer/Ingress for API, NFS, and SMB access.
 
 ## Core Value
 
-Ensure DittoFS works correctly with the new control plane and APIs, across all metadata/payload store combinations, with both NFS and SMB protocols — while keeping tests fast, maintainable, and behavior-focused.
-
-## Current State (v1.0 Shipped)
-
-**Shipped:** 2026-02-03
-
-**Test Infrastructure:**
-- 30 test files, 8,884 lines of Go code
-- `test/e2e/helpers/` package for CLI-driven test utilities
-- `test/e2e/framework/` for mount/container helpers
-- Testcontainers integration for Postgres and S3
-
-**Test Coverage:**
-- Mount/unmount CLI commands (NFS and SMB, macOS/Linux)
-- Server lifecycle tests
-- User/group CRUD and membership tests
-- Metadata/payload store CRUD tests
-- Share and permission management tests
-- Adapter lifecycle with hot reload
-- Backup/restore tests
-- Multi-context credential isolation
-- Cross-protocol interoperability (NFS ↔ SMB)
-- All 9 store matrix combinations validated
-
-**Running Tests:**
-```bash
-sudo go test -tags=e2e -v ./test/e2e/... -timeout 30m
-```
+Enable one-command DittoFS deployment on Kubernetes with full configurability of storage backends (memory, disk, S3, PostgreSQL) through a declarative CRD, while automating all infrastructure dependencies.
 
 ## Requirements
 
 ### Validated
 
-- ✓ `dittofsctl share mount` command (NFS and SMB) — v1.0
-- ✓ `dittofsctl share unmount` command — v1.0
-- ✓ Platform-specific mount handling (macOS/Linux) — v1.0
-- ✓ Test framework with Testcontainers — v1.0
-- ✓ Server lifecycle E2E tests — v1.0
-- ✓ User/group CRUD tests — v1.0
-- ✓ Metadata store CRUD tests (memory, badger, postgres) — v1.0
-- ✓ Payload store CRUD tests (memory, filesystem, s3) — v1.0
-- ✓ Share CRUD tests — v1.0
-- ✓ Permission grant/revoke tests — v1.0
-- ✓ Adapter lifecycle tests (NFS/SMB enable/disable) — v1.0
-- ✓ Backup/restore tests — v1.0
-- ✓ Multi-context management tests — v1.0
-- ✓ NFS file operations (read, write, delete, mkdir) — v1.0
-- ✓ SMB file operations (read, write, delete, mkdir) — v1.0
-- ✓ Cross-protocol interoperability tests — v1.0
-- ✓ Permission enforcement tests — v1.0
-- ✓ All 9 store combinations validated — v1.0
+- ✓ Existing DittoFS server binary with control plane API — existing
+- ✓ NFSv3 and SMB2 protocol adapters — existing
+- ✓ Support for memory, BadgerDB, PostgreSQL metadata stores — existing
+- ✓ Support for memory, filesystem, S3 payload stores — existing
+- ✓ Docker image available — existing
 
 ### Active
 
-(None — milestone complete)
+- [ ] Restructure operator to `k8s/dittofs-operator/` directory
+- [ ] Update CRD to support new control plane API configuration
+- [ ] CRD support for all metadata store types (memory, badger, postgres)
+- [ ] CRD support for all payload store types (memory, filesystem/PVC, S3)
+- [ ] Automatic PostgreSQL provisioning via Percona operator (for control plane and/or metadata)
+- [ ] ConfigMap generation from CRD spec
+- [ ] PVC management for BadgerDB and filesystem stores
+- [ ] S3 credentials management (Secrets) for Cubbit DS3 / external S3
+- [ ] Ingress controller documentation and setup guide
+- [ ] LoadBalancer services for NFS (TCP) and SMB (TCP)
+- [ ] Ingress resource for REST API with TLS support
+- [ ] Operator deployment on Scaleway cluster (`dittofs-demo` context)
+- [ ] End-to-end validation: deploy DittoFS via operator, mount NFS/SMB, verify operations
+- [ ] CRD documentation with examples for all store combinations
+- [ ] Operator installation documentation (Helm chart or kubectl apply)
+- [ ] Proper error handling, logging, and metrics in operator
+- [ ] Single replica enforcement (replicas: 1, HA is future scope)
 
 ### Out of Scope
 
-- Performance benchmarks — separate suite exists
-- POSIX compliance testing — separate suite exists
-- Stress testing / load testing — not part of E2E validation
-- Soft delete for shares — server implements hard delete (noted as known limitation)
+- Multi-replica / High Availability support — future project, current focus is single replica correctness
+- MinIO deployment orchestration — using external S3 (Cubbit DS3)
+- Custom ingress controller development — will use nginx-ingress
+- Automated backup scheduling — manual backup via CLI for now
+- Multi-cluster federation — single cluster deployment
+
+## Context
+
+**Existing Operator State:**
+- Located at `./dittofs-operator/` (needs move to `k8s/dittofs-operator/`)
+- Built with Operator SDK (Go)
+- Has basic CRD (`DittoServer`) but needs updating for new control plane API
+- Current implementation doesn't support PostgreSQL orchestration
+
+**Target Environment:**
+- Scaleway Kubernetes cluster
+- Context: `dittofs-demo`
+- Kubeconfig already configured
+
+**External Dependencies:**
+- Percona PostgreSQL operator for database provisioning
+- nginx-ingress controller for HTTP ingress
+- Cubbit DS3 for S3-compatible object storage (default)
+- Scaleway LoadBalancer for TCP services (NFS, SMB)
+
+**Protocol Exposure Research Needed:**
+- NFS uses TCP port 2049 (configurable in DittoFS to 12049)
+- SMB uses TCP port 445 (configurable in DittoFS to 12445)
+- Neither is HTTP-based, so standard Ingress won't work
+- Options: LoadBalancer per protocol, NodePort, or TCP Ingress via nginx
+
+## Constraints
+
+- **Replicas**: Single replica only (replicas: 1) — HA is future scope
+- **Operator Framework**: Go with Operator SDK — existing choice, maintain consistency
+- **PostgreSQL**: Percona operator for PostgreSQL provisioning
+- **S3 Backend**: External S3 (Cubbit DS3 default) — no MinIO deployment
+- **Cluster**: Scaleway Kubernetes, context `dittofs-demo`
+- **Image Source**: Docker Registry (may use local registry during development)
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| CLI-driven tests (dittofsctl) | Tests user-facing behavior, not internal APIs | ✓ Good — all tests use CLI |
-| Go testing + testify | Standard Go practice, suite support | ✓ Good |
-| Testcontainers for external deps | Self-contained tests, no pre-setup required | ✓ Good |
-| Shared server model | Faster than per-test server | ✓ Good |
-| All 9 store combinations | Comprehensive coverage | ✓ Good — full matrix tested |
-| Test tags for categories | Enable selective test runs | ✓ Good — `-tags=e2e` works |
-| SMB for permission tests | NFS AUTH_UNIX is UID-based, not useful for permission testing | ✓ Good |
-| NFS only for store matrix | Cross-protocol already validated separately | ✓ Good — reduced redundancy |
-| Old tests deleted | Fresh start with CLI-driven approach | ✓ Good — clean codebase |
-
-## Constraints
-
-- **Platform**: macOS (development) and Linux (CI/CD)
-- **Privileges**: Mounting requires sudo/root access
-- **External dependencies**: Postgres and S3 via Testcontainers (Docker required)
-- **Framework**: Go testing + testify
+| Move operator to k8s/dittofs-operator/ | Better organization, standard k8s convention | — Pending |
+| Use Percona operator for PostgreSQL | Managed PostgreSQL with proper lifecycle handling | — Pending |
+| LoadBalancer for NFS/SMB | TCP protocols can't use HTTP Ingress | — Pending |
+| Single replica enforcement | Simplify initial deployment, defer HA complexity | — Pending |
+| ConfigMap for DittoFS config | Standard K8s pattern, allows hot reload | — Pending |
 
 ---
-*Last updated: 2026-02-03 after v1.0 milestone*
+*Last updated: 2026-02-04 after initialization*
