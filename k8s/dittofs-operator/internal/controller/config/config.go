@@ -292,6 +292,7 @@ func GenerateDittoFSConfig(ctx context.Context, client client.Client, dittoServe
 			Stores: contentStores,
 		},
 		Cache: CacheConfig{
+			Path:   "/data/cache", // Required by DittoFS for WAL persistence
 			Stores: cacheStores,
 		},
 		Shares:   shares,

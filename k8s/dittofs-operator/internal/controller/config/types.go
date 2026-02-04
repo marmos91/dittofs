@@ -106,6 +106,9 @@ type S3Config struct {
 }
 
 type CacheConfig struct {
+	// Path is the directory for the cache WAL file (required by DittoFS)
+	// Default: /data/cache
+	Path   string                `yaml:"path"`
 	Stores map[string]CacheStore `yaml:"stores,omitempty"`
 }
 

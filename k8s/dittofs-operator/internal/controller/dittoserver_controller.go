@@ -235,6 +235,10 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 				MountPath: "/data/metadata",
 			},
 			{
+				Name:      "cache",
+				MountPath: "/data/cache",
+			},
+			{
 				Name:      "config",
 				MountPath: "/config",
 			},
@@ -352,6 +356,12 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 										Name: dittoServer.Name + "-config",
 									},
 								},
+							},
+						},
+						{
+							Name: "cache",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
 							},
 						},
 					},
