@@ -1,0 +1,1321 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: dittoservers.dittofs.dittofs.com
+spec:
+  group: dittofs.dittofs.com
+  names:
+    kind: DittoServer
+    listKind: DittoServerList
+    plural: dittoservers
+    shortNames:
+    - ditto
+    singular: dittoserver
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.replicas
+      name: Replicas
+      type: integer
+    - jsonPath: .status.availableReplicas
+      name: Ready
+      type: integer
+    - jsonPath: .status.nfsEndpoint
+      name: NFS Endpoint
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: DittoServer is the Schema for the dittoservers API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DittoServerSpec defines the desired state of DittoServer
+            properties:
+              config:
+                description: |-
+                  DittoFS configuration (shares, backends, etc.)
+                  This maps directly to the config.yaml format used by DittoFS
+                properties:
+                  backends:
+                    description: |-
+                      Backend storage definitions (metadata and content stores)
+                      These are referenced by name in ShareConfig
+                    items:
+                      description: |-
+                        BackendConfig defines a storage backend (metadata or content store)
+                        Backends are referenced by name in ShareConfig
+                      properties:
+                        config:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Backend-specific configuration (e.g., S3 bucket, region, credentials)
+                            The structure depends on the Type field
+                          example:
+                            bucket: my-bucket
+                            region: us-east-1
+                          type: object
+                        name:
+                          description: |-
+                            Unique name for this backend
+                            Used as a reference in MetadataStore/ContentStore fields
+                          example: s3-production
+                          type: string
+                        secretRefs:
+                          additionalProperties:
+                            description: SecretKeySelector selects a key of a Secret.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                          description: |-
+                            Secret references for sensitive configuration values
+                            Keys should match the expected config keys (e.g., "access_key_id", "secret_access_key")
+                          type: object
+                        type:
+                          description: Type of backend storage
+                          enum:
+                          - s3
+                          - local
+                          - badger
+                          type: string
+                      required:
+                      - name
+                      - type
+                      type: object
+                    type: array
+                  caches:
+                    description: |-
+                      Cache configuration for read/write buffering
+                      Caches are optional and referenced by name in ShareConfig
+                    items:
+                      description: |-
+                        CacheConfig defines a cache instance for read/write buffering
+                        Caches are referenced by name in ShareConfig
+                      properties:
+                        flusher:
+                          description: Flusher configuration for write buffering and
+                            background flush
+                          properties:
+                            flushTimeout:
+                              default: 30s
+                              description: |-
+                                FlushTimeout is how long a file must be idle before flushing
+                                This is the key NFS async write timeout
+                              example: 30s
+                              type: string
+                            interval:
+                              default: 10s
+                              description: SweepInterval is how often to check for
+                                idle files
+                              example: 10s
+                              type: string
+                            workers:
+                              default: 4
+                              description: Workers is the number of parallel flush
+                                workers
+                              format: int32
+                              minimum: 1
+                              type: integer
+                          type: object
+                        memory:
+                          description: Memory cache configuration (only used when
+                            Type=memory)
+                          properties:
+                            maxSize:
+                              description: |-
+                                MaxSize is the maximum cache size in bytes
+                                Use suffixes like "1Gi", "512Mi", etc.
+                                Empty or "0" means unlimited
+                              example: 1Gi
+                              type: string
+                          type: object
+                        name:
+                          description: |-
+                            Unique name for this cache
+                            Used as a reference in ShareConfig.Cache field
+                          example: fast-cache
+                          type: string
+                        prefetch:
+                          description: Prefetch configuration for read optimization
+                          properties:
+                            chunkSize:
+                              default: 512Ki
+                              description: ChunkSize is the size of each chunk read
+                                during prefetch
+                              example: 512Ki
+                              type: string
+                            enabled:
+                              default: true
+                              description: Enabled controls whether prefetch is enabled
+                              type: boolean
+                            maxFileSize:
+                              default: 100Mi
+                              description: |-
+                                MaxFileSize is the maximum file size to prefetch
+                                Files larger than this are not prefetched to avoid cache thrashing
+                                Use suffixes like "100Mi", "1Gi", etc.
+                              example: 100Mi
+                              type: string
+                          type: object
+                        type:
+                          default: memory
+                          description: Type of cache implementation
+                          enum:
+                          - memory
+                          type: string
+                      required:
+                      - name
+                      - type
+                      type: object
+                    type: array
+                  shares:
+                    description: |-
+                      NFS exports/shares configuration
+                      Each share defines an NFS export path and its backing stores
+                    items:
+                      description: ShareConfig defines an NFS export/share
+                      properties:
+                        allowedAuthMethods:
+                          default:
+                          - anonymous
+                          - unix
+                          description: |-
+                            AllowedAuthMethods lists allowed authentication methods
+                            Valid values: anonymous, unix
+                          items:
+                            type: string
+                          type: array
+                        allowedClients:
+                          description: |-
+                            AllowedClients lists IP addresses or CIDR ranges allowed to access this share
+                            Empty list means all clients are allowed
+                          items:
+                            type: string
+                          type: array
+                        cache:
+                          description: |-
+                            Reference to a cache in the Caches list (by name)
+                            Cache is optional - if not specified, no caching is used
+                          type: string
+                        contentStore:
+                          description: |-
+                            Reference to a backend in the Backends list (by name)
+                            This backend will store file content
+                          type: string
+                        defaultPermission:
+                          default: none
+                          description: |-
+                            DefaultPermission sets the default permission level for users without explicit permissions.
+                            This also controls guest/anonymous access:
+                            - "none": Blocks unknown UIDs (no guest access)
+                            - "read": Guest users get read-only access
+                            - "read-write": Guest users get read-write access
+                            - "admin": Guest users get admin access
+                          enum:
+                          - none
+                          - read
+                          - read-write
+                          - admin
+                          type: string
+                        deniedClients:
+                          description: |-
+                            DeniedClients lists IP addresses or CIDR ranges explicitly denied access
+                            Takes precedence over AllowedClients
+                          items:
+                            type: string
+                          type: array
+                        dumpAllowedClients:
+                          description: |-
+                            DumpAllowedClients lists clients allowed to perform dump operations
+                            Only relevant if DumpRestricted is true
+                          items:
+                            type: string
+                          type: array
+                        dumpRestricted:
+                          default: false
+                          description: DumpRestricted restricts dump operations if
+                            true
+                          type: boolean
+                        exportPath:
+                          default: /export
+                          description: NFS export path (e.g., "/export", "/data")
+                          type: string
+                        identityMapping:
+                          description: IdentityMapping configures user/group mapping
+                            for this share
+                          properties:
+                            anonymousGID:
+                              default: 65534
+                              description: AnonymousGID is the GID used for anonymous
+                                users
+                              format: int32
+                              type: integer
+                            anonymousUID:
+                              default: 65534
+                              description: AnonymousUID is the UID used for anonymous
+                                users
+                              format: int32
+                              type: integer
+                            mapAllToAnonymous:
+                              default: false
+                              description: MapAllToAnonymous maps all users to anonymous
+                                if true
+                              type: boolean
+                            mapPrivilegedToAnonymous:
+                              default: false
+                              description: MapPrivilegedToAnonymous maps root/privileged
+                                users to anonymous if true
+                              type: boolean
+                          type: object
+                        metadataStore:
+                          description: |-
+                            Reference to a backend in the Backends list (by name)
+                            This backend will store filesystem metadata
+                          type: string
+                        name:
+                          description: Unique name for this share
+                          type: string
+                        readOnly:
+                          default: false
+                          description: ReadOnly makes the share read-only if true
+                          type: boolean
+                        requireAuth:
+                          default: false
+                          description: RequireAuth requires authentication if true
+                          type: boolean
+                        rootDirectoryAttributes:
+                          description: RootDirectoryAttributes sets the attributes
+                            for the root directory of the share
+                          properties:
+                            gid:
+                              default: 0
+                              description: GID is the group ID of the directory owner
+                              format: int32
+                              type: integer
+                            mode:
+                              default: 493
+                              description: Mode is the file mode/permissions (e.g.,
+                                0755)
+                              format: int32
+                              type: integer
+                            uid:
+                              default: 0
+                              description: UID is the user ID of the directory owner
+                              format: int32
+                              type: integer
+                          type: object
+                      required:
+                      - contentStore
+                      - exportPath
+                      - metadataStore
+                      - name
+                      type: object
+                    minItems: 1
+                    type: array
+                required:
+                - shares
+                type: object
+              identity:
+                description: Identity store configuration (JWT authentication, API
+                  access)
+                properties:
+                  admin:
+                    description: Admin user configuration
+                    properties:
+                      passwordSecretRef:
+                        description: |-
+                          Reference to a Secret containing the admin password
+                          If not set, a random password will be generated and logged at startup
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must
+                              be a valid secret key.
+                            type: string
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must
+                              be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      username:
+                        default: admin
+                        description: Admin username
+                        type: string
+                    type: object
+                  jwt:
+                    description: JWT configuration for REST API authentication
+                    properties:
+                      accessTokenDuration:
+                        default: 15m
+                        description: Access token duration (e.g., "15m", "1h")
+                        type: string
+                      issuer:
+                        default: dittofs
+                        description: Token issuer claim
+                        type: string
+                      refreshTokenDuration:
+                        default: 168h
+                        description: Refresh token duration (e.g., "168h" for 7 days)
+                        type: string
+                      secretRef:
+                        description: |-
+                          Reference to a Secret containing the JWT signing secret
+                          The secret must contain a key with at least 32 characters
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must
+                              be a valid secret key.
+                            type: string
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must
+                              be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                        x-kubernetes-map-type: atomic
+                    required:
+                    - secretRef
+                    type: object
+                  type:
+                    default: memory
+                    description: Type of identity store
+                    enum:
+                    - memory
+                    type: string
+                type: object
+              image:
+                default: marmos91c/dittofs:latest
+                description: Container image for DittoFS server
+                type: string
+              nfsPort:
+                default: 2049
+                description: NFS port to listen on
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+              podSecurityContext:
+                description: Pod security context for the DittoFS pod
+                properties:
+                  appArmorProfile:
+                    description: |-
+                      appArmorProfile is the AppArmor options to use by the containers in this pod.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    properties:
+                      localhostProfile:
+                        description: |-
+                          localhostProfile indicates a profile loaded on the node that should be used.
+                          The profile must be preconfigured on the node to work.
+                          Must match the loaded name of the profile.
+                          Must be set if and only if type is "Localhost".
+                        type: string
+                      type:
+                        description: |-
+                          type indicates which kind of AppArmor profile will be applied.
+                          Valid options are:
+                            Localhost - a profile pre-loaded on the node.
+                            RuntimeDefault - the container runtime's default profile.
+                            Unconfined - no AppArmor enforcement.
+                        type: string
+                    required:
+                    - type
+                    type: object
+                  fsGroup:
+                    description: |-
+                      A special supplemental group that applies to all containers in a pod.
+                      Some volume types allow the Kubelet to change the ownership of that volume
+                      to be owned by the pod:
+
+                      1. The owning GID will be the FSGroup
+                      2. The setgid bit is set (new files created in the volume will be owned by FSGroup)
+                      3. The permission bits are OR'd with rw-rw----
+
+                      If unset, the Kubelet will not modify the ownership and permissions of any volume.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    format: int64
+                    type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      fsGroupChangePolicy defines behavior of changing ownership and permission of the volume
+                      before being exposed inside Pod. This field will only apply to
+                      volume types which support fsGroup based ownership(and permissions).
+                      It will have no effect on ephemeral volume types such as: secret, configmaps
+                      and emptydir.
+                      Valid values are "OnRootMismatch" and "Always". If not specified, "Always" is used.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    type: string
+                  runAsGroup:
+                    description: |-
+                      The GID to run the entrypoint of the container process.
+                      Uses runtime default if unset.
+                      May also be set in SecurityContext.  If set in both SecurityContext and
+                      PodSecurityContext, the value specified in SecurityContext takes precedence
+                      for that container.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    format: int64
+                    type: integer
+                  runAsNonRoot:
+                    description: |-
+                      Indicates that the container must run as a non-root user.
+                      If true, the Kubelet will validate the image at runtime to ensure that it
+                      does not run as UID 0 (root) and fail to start the container if it does.
+                      If unset or false, no such validation will be performed.
+                      May also be set in SecurityContext.  If set in both SecurityContext and
+                      PodSecurityContext, the value specified in SecurityContext takes precedence.
+                    type: boolean
+                  runAsUser:
+                    description: |-
+                      The UID to run the entrypoint of the container process.
+                      Defaults to user specified in image metadata if unspecified.
+                      May also be set in SecurityContext.  If set in both SecurityContext and
+                      PodSecurityContext, the value specified in SecurityContext takes precedence
+                      for that container.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    format: int64
+                    type: integer
+                  seLinuxChangePolicy:
+                    description: |-
+                      seLinuxChangePolicy defines how the container's SELinux label is applied to all volumes used by the Pod.
+                      It has no effect on nodes that do not support SELinux or to volumes does not support SELinux.
+                      Valid values are "MountOption" and "Recursive".
+
+                      "Recursive" means relabeling of all files on all Pod volumes by the container runtime.
+                      This may be slow for large volumes, but allows mixing privileged and unprivileged Pods sharing the same volume on the same node.
+
+                      "MountOption" mounts all eligible Pod volumes with `-o context` mount option.
+                      This requires all Pods that share the same volume to use the same SELinux label.
+                      It is not possible to share the same volume among privileged and unprivileged Pods.
+                      Eligible volumes are in-tree FibreChannel and iSCSI volumes, and all CSI volumes
+                      whose CSI driver announces SELinux support by setting spec.seLinuxMount: true in their
+                      CSIDriver instance. Other volumes are always re-labelled recursively.
+                      "MountOption" value is allowed only when SELinuxMount feature gate is enabled.
+
+                      If not specified and SELinuxMount feature gate is enabled, "MountOption" is used.
+                      If not specified and SELinuxMount feature gate is disabled, "MountOption" is used for ReadWriteOncePod volumes
+                      and "Recursive" for all other volumes.
+
+                      This field affects only Pods that have SELinux label set, either in PodSecurityContext or in SecurityContext of all containers.
+
+                      All Pods that use the same volume should use the same seLinuxChangePolicy, otherwise some pods can get stuck in ContainerCreating state.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    type: string
+                  seLinuxOptions:
+                    description: |-
+                      The SELinux context to be applied to all containers.
+                      If unspecified, the container runtime will allocate a random SELinux context for each
+                      container.  May also be set in SecurityContext.  If set in
+                      both SecurityContext and PodSecurityContext, the value specified in SecurityContext
+                      takes precedence for that container.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    properties:
+                      level:
+                        description: Level is SELinux level label that applies to
+                          the container.
+                        type: string
+                      role:
+                        description: Role is a SELinux role label that applies to
+                          the container.
+                        type: string
+                      type:
+                        description: Type is a SELinux type label that applies to
+                          the container.
+                        type: string
+                      user:
+                        description: User is a SELinux user label that applies to
+                          the container.
+                        type: string
+                    type: object
+                  seccompProfile:
+                    description: |-
+                      The seccomp options to use by the containers in this pod.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    properties:
+                      localhostProfile:
+                        description: |-
+                          localhostProfile indicates a profile defined in a file on the node should be used.
+                          The profile must be preconfigured on the node to work.
+                          Must be a descending path, relative to the kubelet's configured seccomp profile location.
+                          Must be set if type is "Localhost". Must NOT be set for any other type.
+                        type: string
+                      type:
+                        description: |-
+                          type indicates which kind of seccomp profile will be applied.
+                          Valid options are:
+
+                          Localhost - a profile defined in a file on the node should be used.
+                          RuntimeDefault - the container runtime default profile should be used.
+                          Unconfined - no profile should be applied.
+                        type: string
+                    required:
+                    - type
+                    type: object
+                  supplementalGroups:
+                    description: |-
+                      A list of groups applied to the first process run in each container, in
+                      addition to the container's primary GID and fsGroup (if specified).  If
+                      the SupplementalGroupsPolicy feature is enabled, the
+                      supplementalGroupsPolicy field determines whether these are in addition
+                      to or instead of any group memberships defined in the container image.
+                      If unspecified, no additional groups are added, though group memberships
+                      defined in the container image may still be used, depending on the
+                      supplementalGroupsPolicy field.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    items:
+                      format: int64
+                      type: integer
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  supplementalGroupsPolicy:
+                    description: |-
+                      Defines how supplemental groups of the first container processes are calculated.
+                      Valid values are "Merge" and "Strict". If not specified, "Merge" is used.
+                      (Alpha) Using the field requires the SupplementalGroupsPolicy feature gate to be enabled
+                      and the container runtime must implement support for this feature.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    type: string
+                  sysctls:
+                    description: |-
+                      Sysctls hold a list of namespaced sysctls used for the pod. Pods with unsupported
+                      sysctls (by the container runtime) might fail to launch.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    items:
+                      description: Sysctl defines a kernel parameter to be set
+                      properties:
+                        name:
+                          description: Name of a property to set
+                          type: string
+                        value:
+                          description: Value of a property to set
+                          type: string
+                      required:
+                      - name
+                      - value
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  windowsOptions:
+                    description: |-
+                      The Windows specific settings applied to all containers.
+                      If unspecified, the options within a container's SecurityContext will be used.
+                      If set in both SecurityContext and PodSecurityContext, the value specified in SecurityContext takes precedence.
+                      Note that this field cannot be set when spec.os.name is linux.
+                    properties:
+                      gmsaCredentialSpec:
+                        description: |-
+                          GMSACredentialSpec is where the GMSA admission webhook
+                          (https://github.com/kubernetes-sigs/windows-gmsa) inlines the contents of the
+                          GMSA credential spec named by the GMSACredentialSpecName field.
+                        type: string
+                      gmsaCredentialSpecName:
+                        description: GMSACredentialSpecName is the name of the GMSA
+                          credential spec to use.
+                        type: string
+                      hostProcess:
+                        description: |-
+                          HostProcess determines if a container should be run as a 'Host Process' container.
+                          All of a Pod's containers must have the same effective HostProcess value
+                          (it is not allowed to have a mix of HostProcess containers and non-HostProcess containers).
+                          In addition, if HostProcess is true then HostNetwork must also be set to true.
+                        type: boolean
+                      runAsUserName:
+                        description: |-
+                          The UserName in Windows to run the entrypoint of the container process.
+                          Defaults to the user specified in image metadata if unspecified.
+                          May also be set in PodSecurityContext. If set in both SecurityContext and
+                          PodSecurityContext, the value specified in SecurityContext takes precedence.
+                        type: string
+                    type: object
+                type: object
+              replicas:
+                default: 1
+                description: |-
+                  Number of server replicas
+                  Only 0 or 1 is supported. Multiple replicas would cause BadgerDB corruption.
+                format: int32
+                maximum: 1
+                minimum: 0
+                type: integer
+              resources:
+                description: Resource requirements for the DittoFS container (CPU,
+                  memory limits/requests)
+                properties:
+                  claims:
+                    description: |-
+                      Claims lists the names of resources, defined in spec.resourceClaims,
+                      that are used by this container.
+
+                      This field depends on the
+                      DynamicResourceAllocation feature gate.
+
+                      This field is immutable. It can only be set for containers.
+                    items:
+                      description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                      properties:
+                        name:
+                          description: |-
+                            Name must match the name of one entry in pod.spec.resourceClaims of
+                            the Pod where this field is used. It makes that resource available
+                            inside a container.
+                          type: string
+                        request:
+                          description: |-
+                            Request is the name chosen for a request in the referenced claim.
+                            If empty, everything from the claim is made available, otherwise
+                            only the result of this request.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  limits:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Limits describes the maximum amount of compute resources allowed.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                  requests:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Requests describes the minimum amount of compute resources required.
+                      If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                      otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                type: object
+              securityContext:
+                description: |-
+                  Security context for the DittoFS container
+                  Use this to configure capabilities (e.g., CAP_SYS_ADMIN for privileged ports)
+                properties:
+                  allowPrivilegeEscalation:
+                    description: |-
+                      AllowPrivilegeEscalation controls whether a process can gain more
+                      privileges than its parent process. This bool directly controls if
+                      the no_new_privs flag will be set on the container process.
+                      AllowPrivilegeEscalation is true always when the container is:
+                      1) run as Privileged
+                      2) has CAP_SYS_ADMIN
+                      Note that this field cannot be set when spec.os.name is windows.
+                    type: boolean
+                  appArmorProfile:
+                    description: |-
+                      appArmorProfile is the AppArmor options to use by this container. If set, this profile
+                      overrides the pod's appArmorProfile.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    properties:
+                      localhostProfile:
+                        description: |-
+                          localhostProfile indicates a profile loaded on the node that should be used.
+                          The profile must be preconfigured on the node to work.
+                          Must match the loaded name of the profile.
+                          Must be set if and only if type is "Localhost".
+                        type: string
+                      type:
+                        description: |-
+                          type indicates which kind of AppArmor profile will be applied.
+                          Valid options are:
+                            Localhost - a profile pre-loaded on the node.
+                            RuntimeDefault - the container runtime's default profile.
+                            Unconfined - no AppArmor enforcement.
+                        type: string
+                    required:
+                    - type
+                    type: object
+                  capabilities:
+                    description: |-
+                      The capabilities to add/drop when running containers.
+                      Defaults to the default set of capabilities granted by the container runtime.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    properties:
+                      add:
+                        description: Added capabilities
+                        items:
+                          description: Capability represent POSIX capabilities type
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      drop:
+                        description: Removed capabilities
+                        items:
+                          description: Capability represent POSIX capabilities type
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: atomic
+                    type: object
+                  privileged:
+                    description: |-
+                      Run container in privileged mode.
+                      Processes in privileged containers are essentially equivalent to root on the host.
+                      Defaults to false.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    type: boolean
+                  procMount:
+                    description: |-
+                      procMount denotes the type of proc mount to use for the containers.
+                      The default value is Default which uses the container runtime defaults for
+                      readonly paths and masked paths.
+                      This requires the ProcMountType feature flag to be enabled.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    type: string
+                  readOnlyRootFilesystem:
+                    description: |-
+                      Whether this container has a read-only root filesystem.
+                      Default is false.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    type: boolean
+                  runAsGroup:
+                    description: |-
+                      The GID to run the entrypoint of the container process.
+                      Uses runtime default if unset.
+                      May also be set in PodSecurityContext.  If set in both SecurityContext and
+                      PodSecurityContext, the value specified in SecurityContext takes precedence.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    format: int64
+                    type: integer
+                  runAsNonRoot:
+                    description: |-
+                      Indicates that the container must run as a non-root user.
+                      If true, the Kubelet will validate the image at runtime to ensure that it
+                      does not run as UID 0 (root) and fail to start the container if it does.
+                      If unset or false, no such validation will be performed.
+                      May also be set in PodSecurityContext.  If set in both SecurityContext and
+                      PodSecurityContext, the value specified in SecurityContext takes precedence.
+                    type: boolean
+                  runAsUser:
+                    description: |-
+                      The UID to run the entrypoint of the container process.
+                      Defaults to user specified in image metadata if unspecified.
+                      May also be set in PodSecurityContext.  If set in both SecurityContext and
+                      PodSecurityContext, the value specified in SecurityContext takes precedence.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    format: int64
+                    type: integer
+                  seLinuxOptions:
+                    description: |-
+                      The SELinux context to be applied to the container.
+                      If unspecified, the container runtime will allocate a random SELinux context for each
+                      container.  May also be set in PodSecurityContext.  If set in both SecurityContext and
+                      PodSecurityContext, the value specified in SecurityContext takes precedence.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    properties:
+                      level:
+                        description: Level is SELinux level label that applies to
+                          the container.
+                        type: string
+                      role:
+                        description: Role is a SELinux role label that applies to
+                          the container.
+                        type: string
+                      type:
+                        description: Type is a SELinux type label that applies to
+                          the container.
+                        type: string
+                      user:
+                        description: User is a SELinux user label that applies to
+                          the container.
+                        type: string
+                    type: object
+                  seccompProfile:
+                    description: |-
+                      The seccomp options to use by this container. If seccomp options are
+                      provided at both the pod & container level, the container options
+                      override the pod options.
+                      Note that this field cannot be set when spec.os.name is windows.
+                    properties:
+                      localhostProfile:
+                        description: |-
+                          localhostProfile indicates a profile defined in a file on the node should be used.
+                          The profile must be preconfigured on the node to work.
+                          Must be a descending path, relative to the kubelet's configured seccomp profile location.
+                          Must be set if type is "Localhost". Must NOT be set for any other type.
+                        type: string
+                      type:
+                        description: |-
+                          type indicates which kind of seccomp profile will be applied.
+                          Valid options are:
+
+                          Localhost - a profile defined in a file on the node should be used.
+                          RuntimeDefault - the container runtime default profile should be used.
+                          Unconfined - no profile should be applied.
+                        type: string
+                    required:
+                    - type
+                    type: object
+                  windowsOptions:
+                    description: |-
+                      The Windows specific settings applied to all containers.
+                      If unspecified, the options from the PodSecurityContext will be used.
+                      If set in both SecurityContext and PodSecurityContext, the value specified in SecurityContext takes precedence.
+                      Note that this field cannot be set when spec.os.name is linux.
+                    properties:
+                      gmsaCredentialSpec:
+                        description: |-
+                          GMSACredentialSpec is where the GMSA admission webhook
+                          (https://github.com/kubernetes-sigs/windows-gmsa) inlines the contents of the
+                          GMSA credential spec named by the GMSACredentialSpecName field.
+                        type: string
+                      gmsaCredentialSpecName:
+                        description: GMSACredentialSpecName is the name of the GMSA
+                          credential spec to use.
+                        type: string
+                      hostProcess:
+                        description: |-
+                          HostProcess determines if a container should be run as a 'Host Process' container.
+                          All of a Pod's containers must have the same effective HostProcess value
+                          (it is not allowed to have a mix of HostProcess containers and non-HostProcess containers).
+                          In addition, if HostProcess is true then HostNetwork must also be set to true.
+                        type: boolean
+                      runAsUserName:
+                        description: |-
+                          The UserName in Windows to run the entrypoint of the container process.
+                          Defaults to the user specified in image metadata if unspecified.
+                          May also be set in PodSecurityContext. If set in both SecurityContext and
+                          PodSecurityContext, the value specified in SecurityContext takes precedence.
+                        type: string
+                    type: object
+                type: object
+              service:
+                description: Service configuration for the NFS server endpoint
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: Service annotations (e.g., for cloud load balancer
+                      configuration)
+                    type: object
+                  type:
+                    default: ClusterIP
+                    description: Service type
+                    enum:
+                    - ClusterIP
+                    - NodePort
+                    - LoadBalancer
+                    type: string
+                type: object
+              smb:
+                description: SMB adapter configuration
+                properties:
+                  credits:
+                    description: SMB credit management configuration
+                    properties:
+                      aggressiveClientThreshold:
+                        default: 256
+                        description: Outstanding requests threshold for client throttling
+                          (adaptive strategy only)
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      initialGrant:
+                        default: 256
+                        description: Credits for initial requests (NEGOTIATE)
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      loadThresholdHigh:
+                        default: 1000
+                        description: Server load threshold for throttling (adaptive
+                          strategy only)
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      loadThresholdLow:
+                        default: 100
+                        description: Server load threshold for boosting (adaptive
+                          strategy only)
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      maxGrant:
+                        default: 8192
+                        description: Maximum credits per response
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      maxSessionCredits:
+                        default: 65535
+                        description: Maximum outstanding credits per session
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      minGrant:
+                        default: 16
+                        description: Minimum credits per response
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      strategy:
+                        default: adaptive
+                        description: 'Credit grant strategy: fixed, echo, or adaptive'
+                        enum:
+                        - fixed
+                        - echo
+                        - adaptive
+                        type: string
+                    type: object
+                  enabled:
+                    default: false
+                    description: Enable SMB protocol
+                    type: boolean
+                  maxConnections:
+                    default: 0
+                    description: Maximum number of concurrent SMB connections (0 =
+                      unlimited)
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  maxRequestsPerConnection:
+                    default: 100
+                    description: Maximum number of concurrent requests per SMB connection
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  metricsLogInterval:
+                    default: 5m
+                    description: Metrics logging interval (e.g., "5m", "10m")
+                    type: string
+                  port:
+                    default: 445
+                    description: SMB port to listen on
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  timeouts:
+                    description: Timeout configurations for SMB operations
+                    properties:
+                      idle:
+                        default: 5m
+                        description: Maximum idle time between requests
+                        type: string
+                      read:
+                        default: 5m
+                        description: Maximum time to read request
+                        type: string
+                      shutdown:
+                        default: 30s
+                        description: Graceful shutdown timeout
+                        type: string
+                      write:
+                        default: 30s
+                        description: Maximum time to write response
+                        type: string
+                    type: object
+                type: object
+              storage:
+                description: |-
+                  Storage configuration for DittoFS server's internal volumes
+                  These PVCs are mounted inside the server pod at /data/metadata and /data/content
+                  This is separate from the NFS storage exposed to clients
+                properties:
+                  contentSize:
+                    description: |-
+                      Size for content store PVC (mounted at /data/content)
+                      Used for local filesystem content backend (not needed if using pure S3)
+                    example: 50Gi
+                    pattern: ^[0-9]+(Gi|Mi|Ti)$
+                    type: string
+                  metadataSize:
+                    description: |-
+                      Size for metadata store PVC (mounted at /data/metadata)
+                      Used by BadgerDB or other metadata backends
+                    example: 10Gi
+                    pattern: ^[0-9]+(Gi|Mi|Ti)$
+                    type: string
+                  storageClassName:
+                    description: |-
+                      StorageClass for the server's PVCs
+                      If not specified, uses the cluster's default StorageClass
+                    type: string
+                required:
+                - metadataSize
+                type: object
+              users:
+                description: User management configuration
+                properties:
+                  groups:
+                    description: List of groups
+                    items:
+                      description: GroupSpec defines a group with share-level permissions
+                      properties:
+                        gid:
+                          description: Unix GID
+                          format: int32
+                          type: integer
+                        name:
+                          description: Unique group name
+                          type: string
+                        sharePermissions:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Per-share permissions for all group members
+                            Map of share path to permission level (none, read, read-write, admin)
+                          type: object
+                      required:
+                      - gid
+                      - name
+                      type: object
+                    type: array
+                  guest:
+                    description: Guest configuration for anonymous access
+                    properties:
+                      enabled:
+                        default: true
+                        description: Enable guest/anonymous access
+                        type: boolean
+                      gid:
+                        default: 65534
+                        description: Unix GID for guest users
+                        format: int32
+                        type: integer
+                      sharePermissions:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          Per-share permissions for guests
+                          Map of share path to permission level (none, read, read-write, admin)
+                        type: object
+                      uid:
+                        default: 65534
+                        description: Unix UID for guest users
+                        format: int32
+                        type: integer
+                    type: object
+                  users:
+                    description: List of users
+                    items:
+                      description: UserSpec defines a user with credentials and permissions
+                      properties:
+                        enabled:
+                          default: true
+                          description: Whether the user is enabled
+                          type: boolean
+                        gid:
+                          description: Primary Unix GID
+                          format: int32
+                          type: integer
+                        groups:
+                          description: Group membership (by group name)
+                          items:
+                            type: string
+                          type: array
+                        passwordHash:
+                          description: |-
+                            Password hash (bcrypt) - DEPRECATED: Use passwordSecretRef instead
+                            Generate with: htpasswd -bnBC 10 "" password | tr -d ':\n'
+                          type: string
+                        passwordSecretRef:
+                          description: |-
+                            Reference to a Secret key containing the bcrypt password hash
+                            The Secret name and key are specified via the SecretKeySelector
+                            For example, you may store the hash under a key such as "passwordHash"
+                            This is the preferred way to store user passwords
+                          properties:
+                            key:
+                              description: The key of the secret to select from.  Must
+                                be a valid secret key.
+                              type: string
+                            name:
+                              default: ""
+                              description: |-
+                                Name of the referent.
+                                This field is effectively required, but due to backwards compatibility is
+                                allowed to be empty. Instances of this type with an empty value here are
+                                almost certainly wrong.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                              type: string
+                            optional:
+                              description: Specify whether the Secret or its key must
+                                be defined
+                              type: boolean
+                          required:
+                          - key
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        sharePermissions:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Per-share permissions (overrides group permissions)
+                            Map of share path to permission level (none, read, read-write, admin)
+                          type: object
+                        uid:
+                          description: Unix UID for NFS identity mapping
+                          format: int32
+                          type: integer
+                        username:
+                          description: Username for authentication
+                          type: string
+                      required:
+                      - gid
+                      - uid
+                      - username
+                      type: object
+                    type: array
+                type: object
+            required:
+            - config
+            - storage
+            type: object
+          status:
+            description: DittoServerStatus defines the observed state of DittoServer
+            properties:
+              availableReplicas:
+                description: Number of ready replicas
+                format: int32
+                type: integer
+              conditions:
+                description: Detailed status conditions
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              nfsEndpoint:
+                description: |-
+                  NFS endpoint that clients should use to mount
+                  Format: service-name.namespace.svc.cluster.local:2049
+                type: string
+              phase:
+                description: Current phase of the DittoServer
+                enum:
+                - Pending
+                - Running
+                - Failed
+                - Stopped
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
