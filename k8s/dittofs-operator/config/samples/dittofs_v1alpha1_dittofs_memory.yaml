@@ -1,52 +1,85 @@
-# Minimal DittoFS configuration for Phase 2 validation
-# Infrastructure-only config - stores, shares, adapters managed via REST API
-#
-# This config:
-# - Uses SQLite for control plane database (default)
-# - WAL-backed cache at /data/cache
-# - REST API on port 8080
-# - NFS server on port 2049
-#
-# After deployment, configure stores, shares, and users via dittofsctl CLI.
 apiVersion: dittofs.dittofs.com/v1alpha1
 kind: DittoServer
 metadata:
-  name: dittofs-memory
   labels:
     app.kubernetes.io/name: dittofs-operator
     app.kubernetes.io/managed-by: kustomize
+  name: dittofs-sample
 spec:
+  # Container image
   image: marmos91c/dittofs:latest
   replicas: 1
 
-  # Storage for internal server data
+  # Internal storage for server (not NFS exports)
   storage:
-    metadataSize: "1Gi"
-    contentSize: "5Gi"
+    metadataSize: "10Gi"
+    contentSize: "50Gi"
+    # storageClassName: standard  # Optional: uses default if not specified
 
-  # Control plane database - defaults to SQLite
+  # Database configuration (SQLite by default)
   database:
     type: sqlite
     sqlite:
-      path: "/data/controlplane/controlplane.db"
+      path: /data/controlplane/controlplane.db
 
-  # WAL-backed cache configuration
+  # Cache configuration (WAL-backed for crash recovery)
   cache:
-    path: "/data/cache"
+    path: /data/cache
     size: "1GB"
 
-  # Control plane REST API configuration
-  controlPlane:
-    port: 8080
-
-  # Prometheus metrics (disabled by default)
+  # Metrics (disabled by default)
   metrics:
     enabled: false
     port: 9090
 
-  # NFS server port
+  # Control plane REST API
+  controlPlane:
+    port: 8080
+
+  # Identity/authentication configuration
+  # NOTE: You must create these secrets before applying this CR
+  identity:
+    jwt:
+      secretRef:
+        name: dittofs-jwt-secret
+        key: jwt-secret
+      accessTokenDuration: "15m"
+      refreshTokenDuration: "168h"
+    admin:
+      username: admin
+      passwordSecretRef:
+        name: dittofs-admin-secret
+        key: password-hash
+
+  # Kubernetes Service configuration
+  service:
+    type: LoadBalancer
+    # annotations:
+    #   service.beta.kubernetes.io/aws-load-balancer-type: nlb
+
+  # NFS port (default 2049)
   nfsPort: 2049
 
-  # Service configuration
-  service:
-    type: ClusterIP
+  # SMB (optional, disabled by default)
+  # smb:
+  #   enabled: true
+  #   port: 445
+---
+# JWT signing secret (required)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dittofs-jwt-secret
+type: Opaque
+stringData:
+  jwt-secret: "your-jwt-signing-secret-at-least-32-chars-long"
+---
+# Admin password hash secret (required)
+# Generate hash with: htpasswd -nbB "" "yourpassword" | cut -d: -f2
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dittofs-admin-secret
+type: Opaque
+stringData:
+  password-hash: "$2y$10$example-bcrypt-hash-here"
