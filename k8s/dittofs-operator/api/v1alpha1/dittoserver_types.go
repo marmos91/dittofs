@@ -632,7 +632,7 @@ type DittoServerStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=ditto
+// +kubebuilder:resource:shortName=ditto;dittofs
 // +kubebuilder:printcolumn:name="Replicas",type=integer,JSONPath=`.spec.replicas`
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.availableReplicas`
 // +kubebuilder:printcolumn:name="NFS Endpoint",type=string,JSONPath=`.status.nfsEndpoint`
