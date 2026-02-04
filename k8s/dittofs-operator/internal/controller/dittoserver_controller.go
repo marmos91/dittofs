@@ -22,6 +22,7 @@ import (
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/internal/controller/config"
+	"github.com/marmos91/dittofs/k8s/dittofs-operator/pkg/resources"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/conditions"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/nfs"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/smb"
@@ -212,6 +213,24 @@ func (r *DittoServerReconciler) reconcileService(ctx context.Context, dittoServe
 }
 
 func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer, replicas int32) error {
+	logger := logf.FromContext(ctx)
+
+	// Generate config to compute hash (same config that was just written to ConfigMap)
+	configYAML, err := config.GenerateDittoFSConfig(ctx, r.Client, dittoServer)
+	if err != nil {
+		return fmt.Errorf("failed to generate config for hash: %w", err)
+	}
+
+	// Collect secret data for hash computation
+	secretData, err := r.collectSecretData(ctx, dittoServer)
+	if err != nil {
+		logger.Error(err, "Failed to collect secret data for hash, using config-only hash")
+		secretData = make(map[string][]byte)
+	}
+
+	// Compute config hash BEFORE CreateOrUpdate
+	configHash := resources.ComputeConfigHash(configYAML, secretData, dittoServer.Generation)
+
 	statefulSet := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      dittoServer.Name,
@@ -219,7 +238,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 		},
 	}
 
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, statefulSet, func() error {
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, statefulSet, func() error {
 		if err := controllerutil.SetControllerReference(dittoServer, statefulSet, r.Scheme); err != nil {
 			return err
 		}
@@ -301,13 +320,16 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 
 		statefulSet.Spec = appsv1.StatefulSetSpec{
 			Replicas:    &replicas,
-			ServiceName: dittoServer.Name,
+			ServiceName: dittoServer.Name + "-headless",
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
+					Annotations: map[string]string{
+						resources.ConfigHashAnnotation: configHash,
+					},
 				},
 				Spec: corev1.PodSpec{
 					SecurityContext: getPodSecurityContext(dittoServer),
@@ -441,4 +463,58 @@ func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer) []corev1.Cont
 	}
 
 	return ports
+}
+
+// collectSecretData gathers all secret data referenced by the DittoServer CR.
+// This is used to compute the config hash - when any secret changes, the hash changes.
+func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) (map[string][]byte, error) {
+	secrets := make(map[string][]byte)
+
+	// JWT secret
+	if dittoServer.Spec.Identity != nil && dittoServer.Spec.Identity.JWT != nil {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: dittoServer.Namespace,
+			Name:      dittoServer.Spec.Identity.JWT.SecretRef.Name,
+		}, secret); err != nil {
+			return nil, fmt.Errorf("failed to get JWT secret: %w", err)
+		}
+		key := dittoServer.Spec.Identity.JWT.SecretRef.Key
+		if data, ok := secret.Data[key]; ok {
+			secrets["jwt:"+key] = data
+		}
+	}
+
+	// Admin password secret
+	if dittoServer.Spec.Identity != nil && dittoServer.Spec.Identity.Admin != nil &&
+		dittoServer.Spec.Identity.Admin.PasswordSecretRef != nil {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: dittoServer.Namespace,
+			Name:      dittoServer.Spec.Identity.Admin.PasswordSecretRef.Name,
+		}, secret); err != nil {
+			return nil, fmt.Errorf("failed to get admin password secret: %w", err)
+		}
+		key := dittoServer.Spec.Identity.Admin.PasswordSecretRef.Key
+		if data, ok := secret.Data[key]; ok {
+			secrets["admin:"+key] = data
+		}
+	}
+
+	// PostgreSQL connection string secret (if configured)
+	if dittoServer.Spec.Database != nil && dittoServer.Spec.Database.PostgresSecretRef != nil {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: dittoServer.Namespace,
+			Name:      dittoServer.Spec.Database.PostgresSecretRef.Name,
+		}, secret); err != nil {
+			return nil, fmt.Errorf("failed to get postgres secret: %w", err)
+		}
+		key := dittoServer.Spec.Database.PostgresSecretRef.Key
+		if data, ok := secret.Data[key]; ok {
+			secrets["postgres:"+key] = data
+		}
+	}
+
+	return secrets, nil
 }
