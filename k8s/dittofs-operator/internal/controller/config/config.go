@@ -3,306 +3,77 @@ package config
 import (
 	"context"
 	"fmt"
-	"maps"
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
-	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/nfs"
-	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/smb"
-
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func GenerateDittoFSConfig(ctx context.Context, client client.Client, dittoServer *dittoiov1alpha1.DittoServer) (string, error) {
-	metadataStores := make(map[string]MetadataStore)
-	contentStores := make(map[string]ContentStore)
-
-	for _, backend := range dittoServer.Spec.Config.Backends {
-		// Resolve config values from both direct config and secret references
-		resolvedConfig, err := resolveBackendConfig(ctx, client, dittoServer.Namespace, backend)
+// GenerateDittoFSConfig generates DittoFS configuration YAML from the CRD spec.
+// This generates infrastructure-only config matching the DittoFS develop branch format.
+// Dynamic configuration (stores, shares, users, adapters) is managed via REST API.
+func GenerateDittoFSConfig(ctx context.Context, c client.Client, dittoServer *dittoiov1alpha1.DittoServer) (string, error) {
+	// Resolve JWT secret
+	jwtSecret := ""
+	if dittoServer.Spec.Identity != nil && dittoServer.Spec.Identity.JWT != nil {
+		secret, err := resolveSecretValue(ctx, c, dittoServer.Namespace, dittoServer.Spec.Identity.JWT.SecretRef)
 		if err != nil {
-			return "", fmt.Errorf("failed to resolve config for backend %s: %w", backend.Name, err)
+			return "", fmt.Errorf("failed to resolve JWT secret: %w", err)
 		}
-
-		switch backend.Type {
-		case "badger":
-			metadataStores[backend.Name] = MetadataStore{
-				Type: "badger",
-				Badger: &BadgerConfig{
-					DBPath: getConfigValue(resolvedConfig, "path", "/data/metadata"),
-				},
-			}
-		case "local":
-			contentStores[backend.Name] = ContentStore{
-				Type: "filesystem",
-				Filesystem: &FilesystemConfig{
-					Path: getConfigValue(resolvedConfig, "path", "/data/content"),
-				},
-			}
-		case "s3":
-			contentStores[backend.Name] = ContentStore{
-				Type: "s3",
-				S3: &S3Config{
-					Bucket:          getConfigValue(resolvedConfig, "bucket", ""),
-					Region:          getConfigValue(resolvedConfig, "region", "us-east-1"),
-					Endpoint:        getConfigValue(resolvedConfig, "endpoint", ""),
-					AccessKeyID:     getConfigValue(resolvedConfig, "access_key_id", ""),
-					SecretAccessKey: getConfigValue(resolvedConfig, "secret_access_key", ""),
-					ForcePathStyle:  getConfigValue(resolvedConfig, "force_path_style", "") == "true",
-				},
-			}
-		default:
-			return "", fmt.Errorf("unsupported backend type %q for backend %q", backend.Type, backend.Name)
-		}
+		jwtSecret = secret
 	}
 
-	cacheStores := make(map[string]CacheStore)
-	for _, cache := range dittoServer.Spec.Config.Caches {
-		cacheStore := CacheStore{
-			Type: cache.Type,
+	// Resolve admin password hash
+	adminPasswordHash := ""
+	if dittoServer.Spec.Identity != nil && dittoServer.Spec.Identity.Admin != nil &&
+		dittoServer.Spec.Identity.Admin.PasswordSecretRef != nil {
+		hash, err := resolveSecretValue(ctx, c, dittoServer.Namespace, *dittoServer.Spec.Identity.Admin.PasswordSecretRef)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve admin password: %w", err)
 		}
-
-		if cache.Memory != nil {
-			memoryConfig := make(map[string]any)
-			if cache.Memory.MaxSize != "" {
-				memoryConfig["max_size"] = parseSizeString(cache.Memory.MaxSize)
-			}
-			if len(memoryConfig) > 0 {
-				cacheStore.Memory = memoryConfig
-			}
-		}
-
-		if cache.Prefetch != nil {
-			prefetch := &Prefetch{}
-			if cache.Prefetch.Enabled != nil {
-				prefetch.Enabled = cache.Prefetch.Enabled
-			}
-			if cache.Prefetch.MaxFileSize != "" {
-				prefetch.MaxFileSize = parseSizeString(cache.Prefetch.MaxFileSize)
-			}
-			if cache.Prefetch.ChunkSize != "" {
-				prefetch.ChunkSize = parseSizeString(cache.Prefetch.ChunkSize)
-			}
-			cacheStore.Prefetch = prefetch
-		}
-
-		if cache.Flusher != nil {
-			flusher := &Flusher{}
-			if cache.Flusher.Interval != "" {
-				flusher.SweepInterval = cache.Flusher.Interval
-			}
-			if cache.Flusher.FlushTimeout != "" {
-				flusher.FlushTimeout = cache.Flusher.FlushTimeout
-			}
-			if cache.Flusher.Workers != nil {
-				flusher.FlushPoolSize = cache.Flusher.Workers
-			}
-			cacheStore.Flusher = flusher
-		}
-
-		cacheStores[cache.Name] = cacheStore
+		adminPasswordHash = hash
 	}
 
-	shares := make([]Share, 0, len(dittoServer.Spec.Config.Shares))
-	for _, share := range dittoServer.Spec.Config.Shares {
-		allowedAuthMethods := share.AllowedAuthMethods
-		if len(allowedAuthMethods) == 0 {
-			allowedAuthMethods = []string{"anonymous", "unix"}
-		}
-
-		// Initialize with defaults (bools default to false via Go zero values)
-		identityMapping := IdentityMapping{
-			AnonymousUID: 65534,
-			AnonymousGID: 65534,
-		}
-		if share.IdentityMapping != nil {
-			identityMapping.MapAllToAnonymous = share.IdentityMapping.MapAllToAnonymous
-			identityMapping.MapPrivilegedToAnonymous = share.IdentityMapping.MapPrivilegedToAnonymous
-			// Only override defaults if non-zero values provided
-			if share.IdentityMapping.AnonymousUID != 0 {
-				identityMapping.AnonymousUID = share.IdentityMapping.AnonymousUID
-			}
-			if share.IdentityMapping.AnonymousGID != 0 {
-				identityMapping.AnonymousGID = share.IdentityMapping.AnonymousGID
-			}
-		}
-
-		rootDirAttrs := DirectoryAttributes{
-			Mode: 0755,
-			UID:  0,
-			GID:  0,
-		}
-		if share.RootDirectoryAttributes != nil {
-			if share.RootDirectoryAttributes.Mode != 0 {
-				rootDirAttrs.Mode = share.RootDirectoryAttributes.Mode
-			}
-			rootDirAttrs.UID = share.RootDirectoryAttributes.UID
-			rootDirAttrs.GID = share.RootDirectoryAttributes.GID
-		}
-
-		// Set DefaultPermission based on configuration, defaulting to "none" (no guest access)
-		defaultPermission := "none"
-		if share.DefaultPermission != "" {
-			defaultPermission = share.DefaultPermission
-		}
-
-		shareYAML := Share{
-			Name:                    share.ExportPath,
-			MetadataStore:           share.MetadataStore,
-			ContentStore:            share.ContentStore,
-			Cache:                   share.Cache,
-			ReadOnly:                share.ReadOnly,
-			DefaultPermission:       defaultPermission,
-			AllowedClients:          share.AllowedClients,
-			DeniedClients:           share.DeniedClients,
-			RequireAuth:             share.RequireAuth,
-			AllowedAuthMethods:      allowedAuthMethods,
-			IdentityMapping:         identityMapping,
-			RootDirectoryAttributes: rootDirAttrs,
-			DumpRestricted:          share.DumpRestricted,
-			DumpAllowedClients:      share.DumpAllowedClients,
-		}
-
-		shares = append(shares, shareYAML)
+	// Build database config (resolves Postgres secret if configured)
+	dbConfig, err := buildDatabaseConfig(ctx, c, dittoServer)
+	if err != nil {
+		return "", fmt.Errorf("failed to build database config: %w", err)
 	}
 
-	// Build user management configuration
-	var users []User
-	var groups []Group
-	var guest *Guest
-
-	if dittoServer.Spec.Users != nil {
-		// Resolve users with secret support
-		for _, userSpec := range dittoServer.Spec.Users.Users {
-			user, err := resolveUserConfig(ctx, client, dittoServer.Namespace, userSpec)
-			if err != nil {
-				return "", fmt.Errorf("failed to resolve config for user %s: %w", userSpec.Username, err)
-			}
-			users = append(users, user)
-		}
-
-		for _, g := range dittoServer.Spec.Users.Groups {
-			groups = append(groups, Group{
-				Name:             g.Name,
-				GID:              g.GID,
-				SharePermissions: g.SharePermissions,
-			})
-		}
-
-		if dittoServer.Spec.Users.Guest != nil {
-			guest = &Guest{
-				Enabled:          dittoServer.Spec.Users.Guest.Enabled,
-				UID:              dittoServer.Spec.Users.Guest.UID,
-				GID:              dittoServer.Spec.Users.Guest.GID,
-				SharePermissions: dittoServer.Spec.Users.Guest.SharePermissions,
-			}
-		}
-	}
-
-	adapters := AdaptersConfig{
-		NFS: NFSAdapter{
-			Enabled:        true,
-			Port:           nfs.GetNFSPort(dittoServer),
-			MaxConnections: 0,
-			Timeouts: TimeoutsConfig{
-				Read:     "5m0s",
-				Write:    "30s",
-				Idle:     "5m0s",
-				Shutdown: "30s",
-			},
-			MetricsLogInterval: "5m0s",
-		},
-	}
-
-	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Enabled {
-		smbAdapter := SMBAdapter{
-			Enabled:                  true,
-			Port:                     smb.GetSMBPort(dittoServer),
-			MaxConnections:           smb.GetMaxConnections(dittoServer),
-			MaxRequestsPerConnection: smb.GetMaxRequestsPerConnection(dittoServer),
-			Timeouts: TimeoutsConfig{
-				Read:     smb.GetTimeout(dittoServer.Spec.SMB.Timeouts, "read", "5m0s"),
-				Write:    smb.GetTimeout(dittoServer.Spec.SMB.Timeouts, "write", "30s"),
-				Idle:     smb.GetTimeout(dittoServer.Spec.SMB.Timeouts, "idle", "5m0s"),
-				Shutdown: smb.GetTimeout(dittoServer.Spec.SMB.Timeouts, "shutdown", "30s"),
-			},
-			MetricsLogInterval: smb.GetMetricsLogInterval(dittoServer),
-		}
-
-		if dittoServer.Spec.SMB.Credits != nil {
-			smbAdapter.Credits = &SMBCredits{
-				Strategy:                  smb.GetCreditsStrategy(dittoServer),
-				MinGrant:                  smb.GetCreditsMinGrant(dittoServer),
-				MaxGrant:                  smb.GetCreditsMaxGrant(dittoServer),
-				InitialGrant:              smb.GetCreditsInitialGrant(dittoServer),
-				MaxSessionCredits:         smb.GetCreditsMaxSessionCredits(dittoServer),
-				LoadThresholdHigh:         smb.GetCreditsLoadThresholdHigh(dittoServer),
-				LoadThresholdLow:          smb.GetCreditsLoadThresholdLow(dittoServer),
-				AggressiveClientThreshold: smb.GetCreditsAggressiveClientThreshold(dittoServer),
-			}
-		}
-
-		adapters.SMB = smbAdapter
-	}
-
-	// Build identity configuration
-	var identityConfig *IdentityConfig
-	if dittoServer.Spec.Identity != nil {
-		var identityErr error
-		identityConfig, identityErr = resolveIdentityConfig(ctx, client, dittoServer.Namespace, dittoServer.Spec.Identity)
-		if identityErr != nil {
-			return "", fmt.Errorf("failed to resolve identity config: %w", identityErr)
-		}
-	}
-
-	config := DittoFSConfig{
+	// Build config
+	cfg := DittoFSConfig{
 		Logging: LoggingConfig{
 			Level:  "INFO",
-			Format: "text",
+			Format: "json", // JSON for Kubernetes structured logging
 			Output: "stdout",
 		},
-		Server: ServerConfig{
-			ShutdownTimeout: "30s",
+		Telemetry: TelemetryConfig{
+			Enabled: false, // Disabled by default
 		},
-		Identity: identityConfig,
-		Metadata: MetadataConfig{
-			Global: MetadataGlobal{
-				FilesystemCapabilities: FilesystemCapabilities{
-					MaxReadSize:        1048576,
-					PreferredReadSize:  65536,
-					MaxWriteSize:       1048576,
-					PreferredWriteSize: 65536,
-					MaxFileSize:        9223372036854775807,
-					MaxFilenameLen:     255,
-					MaxPathLen:         4096,
-					MaxHardLinkCount:   32767,
-					SupportsHardLinks:  true,
-					SupportsSymlinks:   true,
-					CaseSensitive:      true,
-					CasePreserving:     true,
-				},
-			},
-			Stores: metadataStores,
-		},
-		Content: ContentConfig{
-			Global: map[string]any{},
-			Stores: contentStores,
-		},
-		Cache: CacheConfig{
-			Path:   "/data/cache", // Required by DittoFS for WAL persistence
-			Stores: cacheStores,
-		},
-		Shares:   shares,
-		Users:    users,
-		Groups:   groups,
-		Guest:    guest,
-		Adapters: adapters,
+		ShutdownTimeout: "30s",
+		Database:        dbConfig,
+		Metrics:         buildMetricsConfig(dittoServer),
+		ControlPlane:    buildControlPlaneConfig(dittoServer, jwtSecret),
+		Cache:           buildCacheConfig(dittoServer),
 	}
 
-	yamlBytes, err := yaml.Marshal(&config)
+	// Add admin config if we have credentials
+	adminUsername := "admin"
+	if dittoServer.Spec.Identity != nil && dittoServer.Spec.Identity.Admin != nil {
+		if dittoServer.Spec.Identity.Admin.Username != "" {
+			adminUsername = dittoServer.Spec.Identity.Admin.Username
+		}
+	}
+	if adminPasswordHash != "" {
+		cfg.Admin = AdminConfig{
+			Username:     adminUsername,
+			PasswordHash: adminPasswordHash,
+		}
+	}
+
+	yamlBytes, err := yaml.Marshal(&cfg)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal config to YAML: %w", err)
 	}
@@ -310,15 +81,120 @@ func GenerateDittoFSConfig(ctx context.Context, client client.Client, dittoServe
 	return string(yamlBytes), nil
 }
 
-func getConfigValue(config map[string]string, key, defaultValue string) string {
-	if val, ok := config[key]; ok {
-		return val
+// buildDatabaseConfig constructs database configuration.
+// Per CONTEXT.md: If PostgresSecretRef is set, Postgres takes precedence silently (regardless of Type field).
+// PostgreSQL connection string is resolved from Secret and included in config YAML.
+func buildDatabaseConfig(ctx context.Context, c client.Client, ds *dittoiov1alpha1.DittoServer) (DatabaseConfig, error) {
+	// Default to SQLite
+	cfg := DatabaseConfig{
+		Type: "sqlite",
+		SQLite: &SQLiteConfig{
+			Path: "/data/controlplane/controlplane.db",
+		},
 	}
-	return defaultValue
+
+	if ds.Spec.Database == nil {
+		return cfg, nil
+	}
+
+	// Check for Postgres FIRST - takes precedence per CONTEXT.md
+	// We check PostgresSecretRef being set as the indicator that Postgres is configured,
+	// regardless of what Type field says. This implements "Postgres takes precedence silently".
+	if ds.Spec.Database.PostgresSecretRef != nil {
+		// Resolve PostgreSQL connection string from Secret
+		connString, err := resolveSecretValue(ctx, c, ds.Namespace, *ds.Spec.Database.PostgresSecretRef)
+		if err != nil {
+			return cfg, fmt.Errorf("failed to resolve postgres secret: %w", err)
+		}
+
+		// PostgreSQL configured - set type AND connection string
+		cfg.Type = "postgres"
+		cfg.SQLite = nil
+		cfg.Postgres = &connString
+		return cfg, nil
+	}
+
+	// Postgres not configured - use SQLite settings
+	if ds.Spec.Database.Type == "sqlite" || ds.Spec.Database.Type == "" {
+		if ds.Spec.Database.SQLite != nil && ds.Spec.Database.SQLite.Path != "" {
+			cfg.SQLite.Path = ds.Spec.Database.SQLite.Path
+		}
+	}
+
+	return cfg, nil
+}
+
+// buildMetricsConfig constructs metrics configuration
+func buildMetricsConfig(ds *dittoiov1alpha1.DittoServer) MetricsConfig {
+	cfg := MetricsConfig{
+		Enabled: false,
+		Port:    9090,
+	}
+
+	if ds.Spec.Metrics != nil {
+		cfg.Enabled = ds.Spec.Metrics.Enabled
+		if ds.Spec.Metrics.Port > 0 {
+			cfg.Port = int(ds.Spec.Metrics.Port)
+		}
+	}
+
+	return cfg
+}
+
+// buildControlPlaneConfig constructs control plane API configuration
+func buildControlPlaneConfig(ds *dittoiov1alpha1.DittoServer, jwtSecret string) ControlPlaneConfig {
+	port := 8080
+	if ds.Spec.ControlPlane != nil && ds.Spec.ControlPlane.Port > 0 {
+		port = int(ds.Spec.ControlPlane.Port)
+	}
+
+	accessDuration := "15m"
+	refreshDuration := "168h" // 7 days
+	issuer := "dittofs"
+
+	if ds.Spec.Identity != nil && ds.Spec.Identity.JWT != nil {
+		if ds.Spec.Identity.JWT.AccessTokenDuration != "" {
+			accessDuration = ds.Spec.Identity.JWT.AccessTokenDuration
+		}
+		if ds.Spec.Identity.JWT.RefreshTokenDuration != "" {
+			refreshDuration = ds.Spec.Identity.JWT.RefreshTokenDuration
+		}
+		if ds.Spec.Identity.JWT.Issuer != "" {
+			issuer = ds.Spec.Identity.JWT.Issuer
+		}
+	}
+
+	return ControlPlaneConfig{
+		Port: port,
+		JWT: JWTConfig{
+			Secret:               jwtSecret,
+			Issuer:               issuer,
+			AccessTokenDuration:  accessDuration,
+			RefreshTokenDuration: refreshDuration,
+		},
+	}
+}
+
+// buildCacheConfig constructs cache configuration
+func buildCacheConfig(ds *dittoiov1alpha1.DittoServer) CacheConfig {
+	cfg := CacheConfig{
+		Path: "/data/cache",
+		Size: "1GB",
+	}
+
+	if ds.Spec.Cache != nil {
+		if ds.Spec.Cache.Path != "" {
+			cfg.Path = ds.Spec.Cache.Path
+		}
+		if ds.Spec.Cache.Size != "" {
+			cfg.Size = ds.Spec.Cache.Size
+		}
+	}
+
+	return cfg
 }
 
 // resolveSecretValue resolves a single secret value from a Kubernetes Secret.
-// This is a helper to avoid repeating the secret resolution pattern.
 func resolveSecretValue(ctx context.Context, c client.Client, namespace string, secretRef corev1.SecretKeySelector) (string, error) {
 	secret := &corev1.Secret{}
 	secretKey := types.NamespacedName{
@@ -335,145 +211,4 @@ func resolveSecretValue(ctx context.Context, c client.Client, namespace string, 
 	}
 
 	return "", fmt.Errorf("key %s not found in secret %s", secretRef.Key, secretRef.Name)
-}
-
-// resolveBackendConfig resolves configuration values from both direct config and secret references
-func resolveBackendConfig(ctx context.Context, c client.Client, namespace string, backend dittoiov1alpha1.BackendConfig) (map[string]string, error) {
-	resolved := make(map[string]string)
-
-	// Copy direct config values
-	maps.Copy(resolved, backend.Config)
-
-	// Resolve secret references (they override direct config values)
-	for key, secretRef := range backend.SecretRefs {
-		value, err := resolveSecretValue(ctx, c, namespace, secretRef)
-		if err != nil {
-			return nil, err
-		}
-		resolved[key] = value
-	}
-
-	return resolved, nil
-}
-
-// resolveUserConfig resolves user configuration including password from secrets
-func resolveUserConfig(ctx context.Context, c client.Client, namespace string, userSpec dittoiov1alpha1.UserSpec) (User, error) {
-	user := User{
-		Username:         userSpec.Username,
-		Enabled:          userSpec.Enabled,
-		UID:              userSpec.UID,
-		GID:              userSpec.GID,
-		Groups:           userSpec.Groups,
-		SharePermissions: make(map[string]string),
-	}
-
-	// Copy share permissions
-	maps.Copy(user.SharePermissions, userSpec.SharePermissions)
-
-	// Resolve password hash
-	if userSpec.PasswordSecretRef != nil {
-		passwordHash, err := resolveSecretValue(ctx, c, namespace, *userSpec.PasswordSecretRef)
-		if err != nil {
-			return user, err
-		}
-		user.PasswordHash = passwordHash
-	} else if userSpec.PasswordHash != "" {
-		// Use direct password hash (deprecated but still supported)
-		user.PasswordHash = userSpec.PasswordHash
-	} else {
-		return user, fmt.Errorf("no password hash provided for user %s (use either passwordHash or passwordSecretRef)", userSpec.Username)
-	}
-
-	return user, nil
-}
-
-// parseSizeString converts Kubernetes-style size strings (e.g., "1Gi", "512Mi", "100Ki")
-// to bytes as uint64 for DittoFS configuration.
-// Returns 0 for empty or "0" strings.
-// Returns the string as-is if parsing fails.
-//
-// TODO: make ditto compliant with kubernetes
-// resources to delete this function
-func parseSizeString(size string) any {
-	if size == "" || size == "0" {
-		return uint64(0)
-	}
-
-	quantity, err := resource.ParseQuantity(size)
-	if err != nil {
-		// If parsing fails, return the string as-is
-		// This allows DittoFS to handle it or fail gracefully
-		return size
-	}
-
-	bytes := quantity.Value()
-	if bytes < 0 {
-		return size // Invalid negative size, return string
-	}
-
-	return uint64(bytes)
-}
-
-// resolveIdentityConfig resolves identity configuration including JWT secret from Kubernetes secrets
-func resolveIdentityConfig(ctx context.Context, c client.Client, namespace string, identitySpec *dittoiov1alpha1.IdentityConfig) (*IdentityConfig, error) {
-	identityConfig := &IdentityConfig{
-		Type: "memory", // Default to memory
-	}
-
-	if identitySpec.Type != "" {
-		identityConfig.Type = identitySpec.Type
-	}
-
-	// Resolve JWT configuration
-	if identitySpec.JWT != nil {
-		jwtSecret, err := resolveSecretValue(ctx, c, namespace, identitySpec.JWT.SecretRef)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve JWT secret: %w", err)
-		}
-
-		jwtConfig := &JWTConfig{
-			Secret:               jwtSecret,
-			Issuer:               "dittofs",
-			AccessTokenDuration:  "15m",
-			RefreshTokenDuration: "168h",
-		}
-
-		// Apply optional overrides
-		if identitySpec.JWT.Issuer != "" {
-			jwtConfig.Issuer = identitySpec.JWT.Issuer
-		}
-		if identitySpec.JWT.AccessTokenDuration != "" {
-			jwtConfig.AccessTokenDuration = identitySpec.JWT.AccessTokenDuration
-		}
-		if identitySpec.JWT.RefreshTokenDuration != "" {
-			jwtConfig.RefreshTokenDuration = identitySpec.JWT.RefreshTokenDuration
-		}
-
-		identityConfig.JWT = jwtConfig
-	}
-
-	// Resolve admin configuration
-	if identitySpec.Admin != nil {
-		adminConfig := &Admin{
-			Username: "admin", // Default username
-		}
-
-		if identitySpec.Admin.Username != "" {
-			adminConfig.Username = identitySpec.Admin.Username
-		}
-
-		// Resolve admin password from Kubernetes Secret if provided
-		if identitySpec.Admin.PasswordSecretRef != nil {
-			password, err := resolveSecretValue(ctx, c, namespace, *identitySpec.Admin.PasswordSecretRef)
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve admin password: %w", err)
-			}
-			adminConfig.Password = password
-		}
-		// If no password secret ref, DittoFS will generate a random password
-
-		identityConfig.Admin = adminConfig
-	}
-
-	return identityConfig, nil
 }
