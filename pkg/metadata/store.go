@@ -2,6 +2,8 @@ package metadata
 
 import (
 	"context"
+
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================
@@ -321,13 +323,14 @@ type ObjectStore interface {
 
 // Transaction provides all operations available within a transactional context.
 //
-// This interface combines Files, Shares, ServerConfig, and ObjectStore interfaces
-// to enable atomic operations across all metadata domains.
+// This interface combines Files, Shares, ServerConfig, ObjectStore, and LockStore
+// interfaces to enable atomic operations across all metadata domains.
 type Transaction interface {
-	Files        // File CRUD operations
-	Shares       // Share management
-	ServerConfig // Server configuration
-	ObjectStore  // Content-addressed deduplication (optional)
+	Files           // File CRUD operations
+	Shares          // Share management
+	ServerConfig    // Server configuration
+	ObjectStore     // Content-addressed deduplication (optional)
+	lock.LockStore  // Lock persistence for NLM/SMB
 }
 
 // ============================================================================
