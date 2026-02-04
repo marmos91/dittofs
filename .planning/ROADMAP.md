@@ -13,7 +13,7 @@ This roadmap delivers a production-ready Kubernetes operator for DittoFS, progre
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Operator Foundation** - Functional operator skeleton with DittoFS CRD creating StatefulSet
-- [ ] **Phase 2: ConfigMap Generation and Services** - ConfigMap from CRD spec; LoadBalancer Services for NFS, SMB, API
+- [x] **Phase 2: ConfigMap Generation and Services** - ConfigMap from CRD spec; LoadBalancer Services for NFS, SMB, API
 - [ ] **Phase 3: Storage Management** - VolumeClaimTemplates for metadata, payload, cache PVCs
 - [ ] **Phase 4: Percona PostgreSQL Integration** - PerconaPGCluster watching; connection Secret extraction; readiness gating
 - [ ] **Phase 5: Status Conditions and Lifecycle** - Full status conditions, finalizers, events, health probes
@@ -66,9 +66,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 02-01-PLAN.md - Simplify CRD and ConfigMap generation for develop branch format
-- [ ] 02-02-PLAN.md - Checksum annotation for automatic pod restart on config change
-- [ ] 02-03-PLAN.md - Four Services (headless, file, API, metrics) with port validation
+- [x] 02-01-PLAN.md - Simplify CRD and ConfigMap generation for develop branch format
+- [x] 02-02-PLAN.md - Checksum annotation for automatic pod restart on config change
+- [x] 02-03-PLAN.md - Four Services (headless, file, API, metrics) with port validation
 
 ### Phase 3: Storage Management
 **Goal**: VolumeClaimTemplates for metadata, payload, cache PVCs; StorageClass validation
@@ -174,7 +174,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Operator Foundation | 3/3 | Complete | 2026-02-04 |
-| 2. ConfigMap and Services | 0/3 | In Progress | - |
+| 2. ConfigMap and Services | 3/3 | Complete | 2026-02-04 |
 | 3. Storage Management | 0/3 | Not started | - |
 | 4. Percona Integration | 0/3 | Not started | - |
 | 5. Status and Lifecycle | 0/3 | Not started | - |

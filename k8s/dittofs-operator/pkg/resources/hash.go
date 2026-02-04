@@ -47,7 +47,7 @@ func ComputeConfigHash(configData string, secrets map[string][]byte, generation 
 	}
 
 	// Hash generation number
-	h.Write([]byte(fmt.Sprintf("gen:%d", generation)))
+	fmt.Fprintf(h, "gen:%d", generation)
 
 	return hex.EncodeToString(h.Sum(nil))
 }
