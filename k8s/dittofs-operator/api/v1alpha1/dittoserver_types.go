@@ -6,59 +6,64 @@ import (
 )
 
 // DittoServerSpec defines the desired state of DittoServer
+// This is infrastructure-only configuration. Dynamic configuration (stores, shares,
+// adapters, users) is managed via REST API at runtime.
 type DittoServerSpec struct {
-	// Container image for DittoFS server
+	// Image is the container image for DittoFS server
 	// +kubebuilder:default="marmos91c/dittofs:latest"
 	Image string `json:"image,omitempty"`
 
-	// Number of server replicas
-	// Only 0 or 1 is supported. Multiple replicas would cause BadgerDB corruption.
+	// Replicas is the number of server replicas (0 or 1 only)
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=1
 	Replicas *int32 `json:"replicas,omitempty"`
 
-	// Storage configuration for DittoFS server's internal volumes
-	// These PVCs are mounted inside the server pod at /data/metadata and /data/content
-	// This is separate from the NFS storage exposed to clients
+	// Storage configures PVCs for internal server storage
 	Storage StorageSpec `json:"storage"`
 
-	// DittoFS configuration (shares, backends, etc.)
-	// This maps directly to the config.yaml format used by DittoFS
-	Config DittoConfig `json:"config"`
-
-	// Service configuration for the NFS server endpoint
-	Service ServiceSpec `json:"service,omitempty"`
-
-	// NFS port to listen on
-	// +kubebuilder:default=2049
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
+	// Database configures the control plane database
 	// +optional
-	NFSPort *int32 `json:"nfsPort,omitempty"`
+	Database *DatabaseConfig `json:"database,omitempty"`
 
-	// SMB adapter configuration
+	// Cache configures the WAL-backed cache
 	// +optional
-	SMB *SMBAdapterSpec `json:"smb,omitempty"`
+	Cache *InfraCacheConfig `json:"cache,omitempty"`
 
-	// User management configuration
+	// Metrics configures Prometheus metrics
 	// +optional
-	Users *UserManagementSpec `json:"users,omitempty"`
+	Metrics *MetricsConfig `json:"metrics,omitempty"`
 
-	// Identity store configuration (JWT authentication, API access)
+	// ControlPlane configures the REST API server
+	// +optional
+	ControlPlane *ControlPlaneAPIConfig `json:"controlPlane,omitempty"`
+
+	// Identity configures JWT authentication and admin user
 	// +optional
 	Identity *IdentityConfig `json:"identity,omitempty"`
 
-	// Resource requirements for the DittoFS container (CPU, memory limits/requests)
+	// Service configures the Kubernetes Service
+	Service ServiceSpec `json:"service,omitempty"`
+
+	// NFSPort is the NFS server port
+	// +kubebuilder:default=2049
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	NFSPort *int32 `json:"nfsPort,omitempty"`
+
+	// SMB configures the SMB protocol adapter
+	// +optional
+	SMB *SMBAdapterSpec `json:"smb,omitempty"`
+
+	// Resources configures container resource requirements
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 
-	// Security context for the DittoFS container
-	// Use this to configure capabilities (e.g., CAP_SYS_ADMIN for privileged ports)
+	// SecurityContext for the container
 	// +optional
 	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
 
-	// Pod security context for the DittoFS pod
+	// PodSecurityContext for the pod
 	// +optional
 	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
 }
@@ -84,252 +89,62 @@ type StorageSpec struct {
 	StorageClassName *string `json:"storageClassName,omitempty"`
 }
 
-// DittoConfig contains DittoFS server configuration
-// This structure mirrors the DittoFS config.yaml format
-type DittoConfig struct {
-	// NFS exports/shares configuration
-	// Each share defines an NFS export path and its backing stores
-	// +kubebuilder:validation:MinItems=1
-	Shares []ShareConfig `json:"shares"`
+// DatabaseConfig configures the control plane database
+type DatabaseConfig struct {
+	// Type is the database type: sqlite or postgres
+	// +kubebuilder:validation:Enum=sqlite;postgres
+	// +kubebuilder:default="sqlite"
+	Type string `json:"type,omitempty"`
 
-	// Backend storage definitions (metadata and content stores)
-	// These are referenced by name in ShareConfig
-	Backends []BackendConfig `json:"backends,omitempty"`
-
-	// Cache configuration for read/write buffering
-	// Caches are optional and referenced by name in ShareConfig
+	// SQLite configuration (used when Type=sqlite)
 	// +optional
-	Caches []CacheConfig `json:"caches,omitempty"`
+	SQLite *SQLiteConfig `json:"sqlite,omitempty"`
+
+	// PostgresSecretRef references a Secret containing the PostgreSQL connection string
+	// The Secret must contain a key "connection-string" with the DSN
+	// When configured, Postgres takes precedence over SQLite (regardless of Type field)
+	// +optional
+	PostgresSecretRef *corev1.SecretKeySelector `json:"postgresSecretRef,omitempty"`
 }
 
-// ShareConfig defines an NFS export/share
-type ShareConfig struct {
-	// Unique name for this share
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
+// SQLiteConfig configures SQLite database
+type SQLiteConfig struct {
+	// Path is the database file path inside the container
+	// +kubebuilder:default="/data/controlplane/controlplane.db"
+	Path string `json:"path,omitempty"`
+}
 
-	// NFS export path (e.g., "/export", "/data")
-	// +kubebuilder:validation:Required
-	// +kubebuilder:default="/export"
-	ExportPath string `json:"exportPath"`
+// InfraCacheConfig configures the WAL-backed cache for crash recovery
+type InfraCacheConfig struct {
+	// Path is the directory for cache WAL file
+	// +kubebuilder:default="/data/cache"
+	Path string `json:"path,omitempty"`
 
-	// Reference to a backend in the Backends list (by name)
-	// This backend will store filesystem metadata
-	// +kubebuilder:validation:Required
-	MetadataStore string `json:"metadataStore"`
+	// Size is the maximum cache size (e.g., "1GB", "512MB")
+	// +kubebuilder:default="1GB"
+	Size string `json:"size,omitempty"`
+}
 
-	// Reference to a backend in the Backends list (by name)
-	// This backend will store file content
-	// +kubebuilder:validation:Required
-	ContentStore string `json:"contentStore"`
-
-	// Reference to a cache in the Caches list (by name)
-	// Cache is optional - if not specified, no caching is used
-	// +optional
-	Cache string `json:"cache,omitempty"`
-
-	// ReadOnly makes the share read-only if true
+// MetricsConfig configures Prometheus metrics
+type MetricsConfig struct {
+	// Enabled controls whether metrics are exposed
 	// +kubebuilder:default=false
-	// +optional
-	ReadOnly bool `json:"readOnly,omitempty"`
+	Enabled bool `json:"enabled,omitempty"`
 
-	// AllowedClients lists IP addresses or CIDR ranges allowed to access this share
-	// Empty list means all clients are allowed
-	// +optional
-	AllowedClients []string `json:"allowedClients,omitempty"`
-
-	// DeniedClients lists IP addresses or CIDR ranges explicitly denied access
-	// Takes precedence over AllowedClients
-	// +optional
-	DeniedClients []string `json:"deniedClients,omitempty"`
-
-	// RequireAuth requires authentication if true
-	// +kubebuilder:default=false
-	// +optional
-	RequireAuth bool `json:"requireAuth,omitempty"`
-
-	// AllowedAuthMethods lists allowed authentication methods
-	// Valid values: anonymous, unix
-	// +kubebuilder:default={"anonymous","unix"}
-	// +optional
-	AllowedAuthMethods []string `json:"allowedAuthMethods,omitempty"`
-
-	// DefaultPermission sets the default permission level for users without explicit permissions.
-	// This also controls guest/anonymous access:
-	// - "none": Blocks unknown UIDs (no guest access)
-	// - "read": Guest users get read-only access
-	// - "read-write": Guest users get read-write access
-	// - "admin": Guest users get admin access
-	// +kubebuilder:default="none"
-	// +kubebuilder:validation:Enum=none;read;read-write;admin
-	// +optional
-	DefaultPermission string `json:"defaultPermission,omitempty"`
-
-	// IdentityMapping configures user/group mapping for this share
-	// +optional
-	IdentityMapping *IdentityMappingConfig `json:"identityMapping,omitempty"`
-
-	// RootDirectoryAttributes sets the attributes for the root directory of the share
-	// +optional
-	RootDirectoryAttributes *DirectoryAttributesConfig `json:"rootDirectoryAttributes,omitempty"`
-
-	// DumpRestricted restricts dump operations if true
-	// +kubebuilder:default=false
-	// +optional
-	DumpRestricted bool `json:"dumpRestricted,omitempty"`
-
-	// DumpAllowedClients lists clients allowed to perform dump operations
-	// Only relevant if DumpRestricted is true
-	// +optional
-	DumpAllowedClients []string `json:"dumpAllowedClients,omitempty"`
-}
-
-// IdentityMappingConfig defines user/group mapping configuration for NFS shares
-type IdentityMappingConfig struct {
-	// MapAllToAnonymous maps all users to anonymous if true
-	// +kubebuilder:default=false
-	// +optional
-	MapAllToAnonymous bool `json:"mapAllToAnonymous,omitempty"`
-
-	// MapPrivilegedToAnonymous maps root/privileged users to anonymous if true
-	// +kubebuilder:default=false
-	// +optional
-	MapPrivilegedToAnonymous bool `json:"mapPrivilegedToAnonymous,omitempty"`
-
-	// AnonymousUID is the UID used for anonymous users
-	// +kubebuilder:default=65534
-	// +optional
-	AnonymousUID int32 `json:"anonymousUID,omitempty"`
-
-	// AnonymousGID is the GID used for anonymous users
-	// +kubebuilder:default=65534
-	// +optional
-	AnonymousGID int32 `json:"anonymousGID,omitempty"`
-}
-
-// DirectoryAttributesConfig defines directory ownership and permissions
-type DirectoryAttributesConfig struct {
-	// Mode is the file mode/permissions (e.g., 0755)
-	// +kubebuilder:default=493
-	// +optional
-	Mode int32 `json:"mode,omitempty"`
-
-	// UID is the user ID of the directory owner
-	// +kubebuilder:default=0
-	// +optional
-	UID int32 `json:"uid,omitempty"`
-
-	// GID is the group ID of the directory owner
-	// +kubebuilder:default=0
-	// +optional
-	GID int32 `json:"gid,omitempty"`
-}
-
-// CacheConfig defines a cache instance for read/write buffering
-// Caches are referenced by name in ShareConfig
-type CacheConfig struct {
-	// Unique name for this cache
-	// Used as a reference in ShareConfig.Cache field
-	// +kubebuilder:validation:Required
-	// +kubebuilder:example="fast-cache"
-	Name string `json:"name"`
-
-	// Type of cache implementation
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=memory
-	// +kubebuilder:default="memory"
-	Type string `json:"type"`
-
-	// Memory cache configuration (only used when Type=memory)
-	// +optional
-	Memory *MemoryCacheConfig `json:"memory,omitempty"`
-
-	// Prefetch configuration for read optimization
-	// +optional
-	Prefetch *PrefetchConfig `json:"prefetch,omitempty"`
-
-	// Flusher configuration for write buffering and background flush
-	// +optional
-	Flusher *FlusherConfig `json:"flusher,omitempty"`
-}
-
-// MemoryCacheConfig defines configuration for in-memory cache
-type MemoryCacheConfig struct {
-	// MaxSize is the maximum cache size in bytes
-	// Use suffixes like "1Gi", "512Mi", etc.
-	// Empty or "0" means unlimited
-	// +kubebuilder:example="1Gi"
-	// +optional
-	MaxSize string `json:"maxSize,omitempty"`
-}
-
-// PrefetchConfig defines read prefetch optimization settings
-type PrefetchConfig struct {
-	// Enabled controls whether prefetch is enabled
-	// +kubebuilder:default=true
-	// +optional
-	Enabled *bool `json:"enabled,omitempty"`
-
-	// MaxFileSize is the maximum file size to prefetch
-	// Files larger than this are not prefetched to avoid cache thrashing
-	// Use suffixes like "100Mi", "1Gi", etc.
-	// +kubebuilder:example="100Mi"
-	// +kubebuilder:default="100Mi"
-	// +optional
-	MaxFileSize string `json:"maxFileSize,omitempty"`
-
-	// ChunkSize is the size of each chunk read during prefetch
-	// +kubebuilder:example="512Ki"
-	// +kubebuilder:default="512Ki"
-	// +optional
-	ChunkSize string `json:"chunkSize,omitempty"`
-}
-
-// FlusherConfig defines write buffering and background flush settings
-type FlusherConfig struct {
-	// SweepInterval is how often to check for idle files
-	// +kubebuilder:example="10s"
-	// +kubebuilder:default="10s"
-	// +optional
-	Interval string `json:"interval,omitempty"`
-
-	// FlushTimeout is how long a file must be idle before flushing
-	// This is the key NFS async write timeout
-	// +kubebuilder:example="30s"
-	// +kubebuilder:default="30s"
-	// +optional
-	FlushTimeout string `json:"flushTimeout,omitempty"`
-
-	// Workers is the number of parallel flush workers
-	// +kubebuilder:default=4
+	// Port is the metrics HTTP port
+	// +kubebuilder:default=9090
 	// +kubebuilder:validation:Minimum=1
-	// +optional
-	Workers *int32 `json:"workers,omitempty"`
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port,omitempty"`
 }
 
-// BackendConfig defines a storage backend (metadata or content store)
-// Backends are referenced by name in ShareConfig
-type BackendConfig struct {
-	// Unique name for this backend
-	// Used as a reference in MetadataStore/ContentStore fields
-	// +kubebuilder:validation:Required
-	// +kubebuilder:example="s3-production"
-	Name string `json:"name"`
-
-	// Type of backend storage
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=s3;local;badger
-	Type string `json:"type"`
-
-	// Backend-specific configuration (e.g., S3 bucket, region, credentials)
-	// The structure depends on the Type field
-	// +kubebuilder:example={"bucket":"my-bucket","region":"us-east-1"}
-	Config map[string]string `json:"config,omitempty"`
-
-	// Secret references for sensitive configuration values
-	// Keys should match the expected config keys (e.g., "access_key_id", "secret_access_key")
-	// +optional
-	SecretRefs map[string]corev1.SecretKeySelector `json:"secretRefs,omitempty"`
+// ControlPlaneAPIConfig configures the control plane REST API
+type ControlPlaneAPIConfig struct {
+	// Port is the API server port
+	// +kubebuilder:default=8080
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port,omitempty"`
 }
 
 // SMBAdapterSpec defines SMB protocol configuration
@@ -446,109 +261,6 @@ type SMBCreditsSpec struct {
 	AggressiveClientThreshold *int32 `json:"aggressiveClientThreshold,omitempty"`
 }
 
-// UserManagementSpec defines user and group management configuration
-type UserManagementSpec struct {
-	// List of users
-	// +optional
-	Users []UserSpec `json:"users,omitempty"`
-
-	// List of groups
-	// +optional
-	Groups []GroupSpec `json:"groups,omitempty"`
-
-	// Guest configuration for anonymous access
-	// +optional
-	Guest *GuestSpec `json:"guest,omitempty"`
-}
-
-// UserSpec defines a user with credentials and permissions
-type UserSpec struct {
-	// Username for authentication
-	// +kubebuilder:validation:Required
-	Username string `json:"username"`
-
-	// Password hash (bcrypt) - DEPRECATED: Use passwordSecretRef instead
-	// Generate with: htpasswd -bnBC 10 "" password | tr -d ':\n'
-	// +optional
-	PasswordHash string `json:"passwordHash,omitempty"`
-
-	// Reference to a Secret key containing the bcrypt password hash
-	// The Secret name and key are specified via the SecretKeySelector
-	// For example, you may store the hash under a key such as "passwordHash"
-	// This is the preferred way to store user passwords
-	// +optional
-	PasswordSecretRef *corev1.SecretKeySelector `json:"passwordSecretRef,omitempty"`
-
-	// Whether the user is enabled
-	// +kubebuilder:default=true
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
-
-	// Unix UID for NFS identity mapping
-	// +kubebuilder:validation:Required
-	UID uint32 `json:"uid"`
-
-	// Primary Unix GID
-	// +kubebuilder:validation:Required
-	GID uint32 `json:"gid"`
-
-	// Group membership (by group name)
-	// +optional
-	Groups []string `json:"groups,omitempty"`
-
-	// Per-share permissions (overrides group permissions)
-	// Map of share path to permission level (none, read, read-write, admin)
-	// +optional
-	SharePermissions map[string]string `json:"sharePermissions,omitempty"`
-}
-
-// GroupSpec defines a group with share-level permissions
-type GroupSpec struct {
-	// Unique group name
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
-
-	// Unix GID
-	// +kubebuilder:validation:Required
-	GID uint32 `json:"gid"`
-
-	// Per-share permissions for all group members
-	// Map of share path to permission level (none, read, read-write, admin)
-	// +optional
-	SharePermissions map[string]string `json:"sharePermissions,omitempty"`
-}
-
-// GuestSpec defines guest/anonymous access configuration.
-// This is used in conjunction with per-share DefaultPermission:
-//   - If Enabled=false, guest access is blocked globally
-//   - If Enabled=true, per-share access is controlled by DefaultPermission:
-//   - DefaultPermission="none" blocks guests on that share
-//   - DefaultPermission="read"/"read-write"/"admin" allows guests with that permission
-type GuestSpec struct {
-	// Enable guest/anonymous access globally.
-	// When false, all guest access is blocked regardless of share settings.
-	// When true, per-share access is controlled by each share's DefaultPermission.
-	// +kubebuilder:default=true
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
-
-	// Unix UID for guest users (used for file ownership)
-	// +kubebuilder:default=65534
-	// +optional
-	UID uint32 `json:"uid,omitempty"`
-
-	// Unix GID for guest users (used for file ownership)
-	// +kubebuilder:default=65534
-	// +optional
-	GID uint32 `json:"gid,omitempty"`
-
-	// Per-share permissions for guests.
-	// Map of share path to permission level (none, read, read-write, admin).
-	// These override the share's DefaultPermission for the guest user.
-	// +optional
-	SharePermissions map[string]string `json:"sharePermissions,omitempty"`
-}
-
 // IdentityConfig defines identity store and JWT authentication configuration
 type IdentityConfig struct {
 	// Type of identity store
@@ -596,7 +308,7 @@ type AdminConfig struct {
 	// +optional
 	Username string `json:"username,omitempty"`
 
-	// Reference to a Secret containing the admin password
+	// Reference to a Secret containing the admin password hash (bcrypt)
 	// If not set, a random password will be generated and logged at startup
 	// +optional
 	PasswordSecretRef *corev1.SecretKeySelector `json:"passwordSecretRef,omitempty"`

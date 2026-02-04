@@ -56,321 +56,89 @@ spec:
           metadata:
             type: object
           spec:
-            description: DittoServerSpec defines the desired state of DittoServer
+            description: |-
+              DittoServerSpec defines the desired state of DittoServer
+              This is infrastructure-only configuration. Dynamic configuration (stores, shares,
+              adapters, users) is managed via REST API at runtime.
             properties:
-              config:
-                description: |-
-                  DittoFS configuration (shares, backends, etc.)
-                  This maps directly to the config.yaml format used by DittoFS
+              cache:
+                description: Cache configures the WAL-backed cache
                 properties:
-                  backends:
+                  path:
+                    default: /data/cache
+                    description: Path is the directory for cache WAL file
+                    type: string
+                  size:
+                    default: 1GB
+                    description: Size is the maximum cache size (e.g., "1GB", "512MB")
+                    type: string
+                type: object
+              controlPlane:
+                description: ControlPlane configures the REST API server
+                properties:
+                  port:
+                    default: 8080
+                    description: Port is the API server port
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                type: object
+              database:
+                description: Database configures the control plane database
+                properties:
+                  postgresSecretRef:
                     description: |-
-                      Backend storage definitions (metadata and content stores)
-                      These are referenced by name in ShareConfig
-                    items:
-                      description: |-
-                        BackendConfig defines a storage backend (metadata or content store)
-                        Backends are referenced by name in ShareConfig
-                      properties:
-                        config:
-                          additionalProperties:
-                            type: string
-                          description: |-
-                            Backend-specific configuration (e.g., S3 bucket, region, credentials)
-                            The structure depends on the Type field
-                          example:
-                            bucket: my-bucket
-                            region: us-east-1
-                          type: object
-                        name:
-                          description: |-
-                            Unique name for this backend
-                            Used as a reference in MetadataStore/ContentStore fields
-                          example: s3-production
-                          type: string
-                        secretRefs:
-                          additionalProperties:
-                            description: SecretKeySelector selects a key of a Secret.
-                            properties:
-                              key:
-                                description: The key of the secret to select from.  Must
-                                  be a valid secret key.
-                                type: string
-                              name:
-                                default: ""
-                                description: |-
-                                  Name of the referent.
-                                  This field is effectively required, but due to backwards compatibility is
-                                  allowed to be empty. Instances of this type with an empty value here are
-                                  almost certainly wrong.
-                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                type: string
-                              optional:
-                                description: Specify whether the Secret or its key
-                                  must be defined
-                                type: boolean
-                            required:
-                            - key
-                            type: object
-                            x-kubernetes-map-type: atomic
-                          description: |-
-                            Secret references for sensitive configuration values
-                            Keys should match the expected config keys (e.g., "access_key_id", "secret_access_key")
-                          type: object
-                        type:
-                          description: Type of backend storage
-                          enum:
-                          - s3
-                          - local
-                          - badger
-                          type: string
-                      required:
-                      - name
-                      - type
-                      type: object
-                    type: array
-                  caches:
-                    description: |-
-                      Cache configuration for read/write buffering
-                      Caches are optional and referenced by name in ShareConfig
-                    items:
-                      description: |-
-                        CacheConfig defines a cache instance for read/write buffering
-                        Caches are referenced by name in ShareConfig
-                      properties:
-                        flusher:
-                          description: Flusher configuration for write buffering and
-                            background flush
-                          properties:
-                            flushTimeout:
-                              default: 30s
-                              description: |-
-                                FlushTimeout is how long a file must be idle before flushing
-                                This is the key NFS async write timeout
-                              example: 30s
-                              type: string
-                            interval:
-                              default: 10s
-                              description: SweepInterval is how often to check for
-                                idle files
-                              example: 10s
-                              type: string
-                            workers:
-                              default: 4
-                              description: Workers is the number of parallel flush
-                                workers
-                              format: int32
-                              minimum: 1
-                              type: integer
-                          type: object
-                        memory:
-                          description: Memory cache configuration (only used when
-                            Type=memory)
-                          properties:
-                            maxSize:
-                              description: |-
-                                MaxSize is the maximum cache size in bytes
-                                Use suffixes like "1Gi", "512Mi", etc.
-                                Empty or "0" means unlimited
-                              example: 1Gi
-                              type: string
-                          type: object
-                        name:
-                          description: |-
-                            Unique name for this cache
-                            Used as a reference in ShareConfig.Cache field
-                          example: fast-cache
-                          type: string
-                        prefetch:
-                          description: Prefetch configuration for read optimization
-                          properties:
-                            chunkSize:
-                              default: 512Ki
-                              description: ChunkSize is the size of each chunk read
-                                during prefetch
-                              example: 512Ki
-                              type: string
-                            enabled:
-                              default: true
-                              description: Enabled controls whether prefetch is enabled
-                              type: boolean
-                            maxFileSize:
-                              default: 100Mi
-                              description: |-
-                                MaxFileSize is the maximum file size to prefetch
-                                Files larger than this are not prefetched to avoid cache thrashing
-                                Use suffixes like "100Mi", "1Gi", etc.
-                              example: 100Mi
-                              type: string
-                          type: object
-                        type:
-                          default: memory
-                          description: Type of cache implementation
-                          enum:
-                          - memory
-                          type: string
-                      required:
-                      - name
-                      - type
-                      type: object
-                    type: array
-                  shares:
-                    description: |-
-                      NFS exports/shares configuration
-                      Each share defines an NFS export path and its backing stores
-                    items:
-                      description: ShareConfig defines an NFS export/share
-                      properties:
-                        allowedAuthMethods:
-                          default:
-                          - anonymous
-                          - unix
-                          description: |-
-                            AllowedAuthMethods lists allowed authentication methods
-                            Valid values: anonymous, unix
-                          items:
-                            type: string
-                          type: array
-                        allowedClients:
-                          description: |-
-                            AllowedClients lists IP addresses or CIDR ranges allowed to access this share
-                            Empty list means all clients are allowed
-                          items:
-                            type: string
-                          type: array
-                        cache:
-                          description: |-
-                            Reference to a cache in the Caches list (by name)
-                            Cache is optional - if not specified, no caching is used
-                          type: string
-                        contentStore:
-                          description: |-
-                            Reference to a backend in the Backends list (by name)
-                            This backend will store file content
-                          type: string
-                        defaultPermission:
-                          default: none
-                          description: |-
-                            DefaultPermission sets the default permission level for users without explicit permissions.
-                            This also controls guest/anonymous access:
-                            - "none": Blocks unknown UIDs (no guest access)
-                            - "read": Guest users get read-only access
-                            - "read-write": Guest users get read-write access
-                            - "admin": Guest users get admin access
-                          enum:
-                          - none
-                          - read
-                          - read-write
-                          - admin
-                          type: string
-                        deniedClients:
-                          description: |-
-                            DeniedClients lists IP addresses or CIDR ranges explicitly denied access
-                            Takes precedence over AllowedClients
-                          items:
-                            type: string
-                          type: array
-                        dumpAllowedClients:
-                          description: |-
-                            DumpAllowedClients lists clients allowed to perform dump operations
-                            Only relevant if DumpRestricted is true
-                          items:
-                            type: string
-                          type: array
-                        dumpRestricted:
-                          default: false
-                          description: DumpRestricted restricts dump operations if
-                            true
-                          type: boolean
-                        exportPath:
-                          default: /export
-                          description: NFS export path (e.g., "/export", "/data")
-                          type: string
-                        identityMapping:
-                          description: IdentityMapping configures user/group mapping
-                            for this share
-                          properties:
-                            anonymousGID:
-                              default: 65534
-                              description: AnonymousGID is the GID used for anonymous
-                                users
-                              format: int32
-                              type: integer
-                            anonymousUID:
-                              default: 65534
-                              description: AnonymousUID is the UID used for anonymous
-                                users
-                              format: int32
-                              type: integer
-                            mapAllToAnonymous:
-                              default: false
-                              description: MapAllToAnonymous maps all users to anonymous
-                                if true
-                              type: boolean
-                            mapPrivilegedToAnonymous:
-                              default: false
-                              description: MapPrivilegedToAnonymous maps root/privileged
-                                users to anonymous if true
-                              type: boolean
-                          type: object
-                        metadataStore:
-                          description: |-
-                            Reference to a backend in the Backends list (by name)
-                            This backend will store filesystem metadata
-                          type: string
-                        name:
-                          description: Unique name for this share
-                          type: string
-                        readOnly:
-                          default: false
-                          description: ReadOnly makes the share read-only if true
-                          type: boolean
-                        requireAuth:
-                          default: false
-                          description: RequireAuth requires authentication if true
-                          type: boolean
-                        rootDirectoryAttributes:
-                          description: RootDirectoryAttributes sets the attributes
-                            for the root directory of the share
-                          properties:
-                            gid:
-                              default: 0
-                              description: GID is the group ID of the directory owner
-                              format: int32
-                              type: integer
-                            mode:
-                              default: 493
-                              description: Mode is the file mode/permissions (e.g.,
-                                0755)
-                              format: int32
-                              type: integer
-                            uid:
-                              default: 0
-                              description: UID is the user ID of the directory owner
-                              format: int32
-                              type: integer
-                          type: object
-                      required:
-                      - contentStore
-                      - exportPath
-                      - metadataStore
-                      - name
-                      type: object
-                    minItems: 1
-                    type: array
-                required:
-                - shares
+                      PostgresSecretRef references a Secret containing the PostgreSQL connection string
+                      The Secret must contain a key "connection-string" with the DSN
+                      When configured, Postgres takes precedence over SQLite (regardless of Type field)
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  sqlite:
+                    description: SQLite configuration (used when Type=sqlite)
+                    properties:
+                      path:
+                        default: /data/controlplane/controlplane.db
+                        description: Path is the database file path inside the container
+                        type: string
+                    type: object
+                  type:
+                    default: sqlite
+                    description: 'Type is the database type: sqlite or postgres'
+                    enum:
+                    - sqlite
+                    - postgres
+                    type: string
                 type: object
               identity:
-                description: Identity store configuration (JWT authentication, API
-                  access)
+                description: Identity configures JWT authentication and admin user
                 properties:
                   admin:
                     description: Admin user configuration
                     properties:
                       passwordSecretRef:
                         description: |-
-                          Reference to a Secret containing the admin password
+                          Reference to a Secret containing the admin password hash (bcrypt)
                           If not set, a random password will be generated and logged at startup
                         properties:
                           key:
@@ -452,17 +220,32 @@ spec:
                 type: object
               image:
                 default: marmos91c/dittofs:latest
-                description: Container image for DittoFS server
+                description: Image is the container image for DittoFS server
                 type: string
+              metrics:
+                description: Metrics configures Prometheus metrics
+                properties:
+                  enabled:
+                    default: false
+                    description: Enabled controls whether metrics are exposed
+                    type: boolean
+                  port:
+                    default: 9090
+                    description: Port is the metrics HTTP port
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                type: object
               nfsPort:
                 default: 2049
-                description: NFS port to listen on
+                description: NFSPort is the NFS server port
                 format: int32
                 maximum: 65535
                 minimum: 1
                 type: integer
               podSecurityContext:
-                description: Pod security context for the DittoFS pod
+                description: PodSecurityContext for the pod
                 properties:
                   appArmorProfile:
                     description: |-
@@ -695,16 +478,13 @@ spec:
                 type: object
               replicas:
                 default: 1
-                description: |-
-                  Number of server replicas
-                  Only 0 or 1 is supported. Multiple replicas would cause BadgerDB corruption.
+                description: Replicas is the number of server replicas (0 or 1 only)
                 format: int32
                 maximum: 1
                 minimum: 0
                 type: integer
               resources:
-                description: Resource requirements for the DittoFS container (CPU,
-                  memory limits/requests)
+                description: Resources configures container resource requirements
                 properties:
                   claims:
                     description: |-
@@ -763,9 +543,7 @@ spec:
                     type: object
                 type: object
               securityContext:
-                description: |-
-                  Security context for the DittoFS container
-                  Use this to configure capabilities (e.g., CAP_SYS_ADMIN for privileged ports)
+                description: SecurityContext for the container
                 properties:
                   allowPrivilegeEscalation:
                     description: |-
@@ -955,7 +733,7 @@ spec:
                     type: object
                 type: object
               service:
-                description: Service configuration for the NFS server endpoint
+                description: Service configures the Kubernetes Service
                 properties:
                   annotations:
                     additionalProperties:
@@ -973,7 +751,7 @@ spec:
                     type: string
                 type: object
               smb:
-                description: SMB adapter configuration
+                description: SMB configures the SMB protocol adapter
                 properties:
                   credits:
                     description: SMB credit management configuration
@@ -1082,10 +860,7 @@ spec:
                     type: object
                 type: object
               storage:
-                description: |-
-                  Storage configuration for DittoFS server's internal volumes
-                  These PVCs are mounted inside the server pod at /data/metadata and /data/content
-                  This is separate from the NFS storage exposed to clients
+                description: Storage configures PVCs for internal server storage
                 properties:
                   contentSize:
                     description: |-
@@ -1109,136 +884,7 @@ spec:
                 required:
                 - metadataSize
                 type: object
-              users:
-                description: User management configuration
-                properties:
-                  groups:
-                    description: List of groups
-                    items:
-                      description: GroupSpec defines a group with share-level permissions
-                      properties:
-                        gid:
-                          description: Unix GID
-                          format: int32
-                          type: integer
-                        name:
-                          description: Unique group name
-                          type: string
-                        sharePermissions:
-                          additionalProperties:
-                            type: string
-                          description: |-
-                            Per-share permissions for all group members
-                            Map of share path to permission level (none, read, read-write, admin)
-                          type: object
-                      required:
-                      - gid
-                      - name
-                      type: object
-                    type: array
-                  guest:
-                    description: Guest configuration for anonymous access
-                    properties:
-                      enabled:
-                        default: true
-                        description: |-
-                          Enable guest/anonymous access globally.
-                          When false, all guest access is blocked regardless of share settings.
-                          When true, per-share access is controlled by each share's DefaultPermission.
-                        type: boolean
-                      gid:
-                        default: 65534
-                        description: Unix GID for guest users (used for file ownership)
-                        format: int32
-                        type: integer
-                      sharePermissions:
-                        additionalProperties:
-                          type: string
-                        description: |-
-                          Per-share permissions for guests.
-                          Map of share path to permission level (none, read, read-write, admin).
-                          These override the share's DefaultPermission for the guest user.
-                        type: object
-                      uid:
-                        default: 65534
-                        description: Unix UID for guest users (used for file ownership)
-                        format: int32
-                        type: integer
-                    type: object
-                  users:
-                    description: List of users
-                    items:
-                      description: UserSpec defines a user with credentials and permissions
-                      properties:
-                        enabled:
-                          default: true
-                          description: Whether the user is enabled
-                          type: boolean
-                        gid:
-                          description: Primary Unix GID
-                          format: int32
-                          type: integer
-                        groups:
-                          description: Group membership (by group name)
-                          items:
-                            type: string
-                          type: array
-                        passwordHash:
-                          description: |-
-                            Password hash (bcrypt) - DEPRECATED: Use passwordSecretRef instead
-                            Generate with: htpasswd -bnBC 10 "" password | tr -d ':\n'
-                          type: string
-                        passwordSecretRef:
-                          description: |-
-                            Reference to a Secret key containing the bcrypt password hash
-                            The Secret name and key are specified via the SecretKeySelector
-                            For example, you may store the hash under a key such as "passwordHash"
-                            This is the preferred way to store user passwords
-                          properties:
-                            key:
-                              description: The key of the secret to select from.  Must
-                                be a valid secret key.
-                              type: string
-                            name:
-                              default: ""
-                              description: |-
-                                Name of the referent.
-                                This field is effectively required, but due to backwards compatibility is
-                                allowed to be empty. Instances of this type with an empty value here are
-                                almost certainly wrong.
-                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                              type: string
-                            optional:
-                              description: Specify whether the Secret or its key must
-                                be defined
-                              type: boolean
-                          required:
-                          - key
-                          type: object
-                          x-kubernetes-map-type: atomic
-                        sharePermissions:
-                          additionalProperties:
-                            type: string
-                          description: |-
-                            Per-share permissions (overrides group permissions)
-                            Map of share path to permission level (none, read, read-write, admin)
-                          type: object
-                        uid:
-                          description: Unix UID for NFS identity mapping
-                          format: int32
-                          type: integer
-                        username:
-                          description: Username for authentication
-                          type: string
-                      required:
-                      - gid
-                      - uid
-                      - username
-                      type: object
-                    type: array
-                type: object
             required:
-            - config
             - storage
             type: object
           status:
