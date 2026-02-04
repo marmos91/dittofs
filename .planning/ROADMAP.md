@@ -38,12 +38,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   - Basic controller reconciliation loop
   - RBAC (ServiceAccount, Role, RoleBinding)
   - Sample CR for testing
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 01-01: Operator scaffold and CRD definition
-- [ ] 01-02: Controller reconciliation and StatefulSet creation
-- [ ] 01-03: RBAC configuration and validation
+- [ ] 01-01-PLAN.md - Relocate operator to k8s/dittofs-operator/ with updated module path
+- [ ] 01-02-PLAN.md - Fix RBAC (add secrets), CRD shortName, create memory sample CR
+- [ ] 01-03-PLAN.md - End-to-end validation on local/test cluster
 
 ### Phase 2: ConfigMap Generation and Services
 **Goal**: ConfigMap generated from CRD spec; LoadBalancer Services for NFS, SMB, API; checksum annotation for pod restart
@@ -172,7 +172,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Operator Foundation | 0/3 | Not started | - |
+| 1. Operator Foundation | 0/3 | Planned | - |
 | 2. ConfigMap and Services | 0/3 | Not started | - |
 | 3. Storage Management | 0/3 | Not started | - |
 | 4. Percona Integration | 0/3 | Not started | - |
