@@ -195,14 +195,16 @@ func CheckIOConflict(existing *FileLock, sessionID uint64, offset, length uint64
 // Thread Safety:
 // LockManager is safe for concurrent use by multiple goroutines.
 type LockManager struct {
-	mu    sync.RWMutex
-	locks map[string][]FileLock // handle key -> locks
+	mu            sync.RWMutex
+	locks         map[string][]FileLock      // handle key -> locks (legacy)
+	enhancedLocks map[string][]*EnhancedLock // handle key -> enhanced locks
 }
 
 // NewLockManager creates a new lock manager.
 func NewLockManager() *LockManager {
 	return &LockManager{
-		locks: make(map[string][]FileLock),
+		locks:         make(map[string][]FileLock),
+		enhancedLocks: make(map[string][]*EnhancedLock),
 	}
 }
 
@@ -401,4 +403,419 @@ func (lm *LockManager) RemoveFileLocks(handleKey string) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 	delete(lm.locks, handleKey)
+}
+
+// ============================================================================
+// POSIX Lock Splitting
+// ============================================================================
+
+// SplitLock splits an existing lock when a portion is unlocked.
+//
+// POSIX semantics require that unlocking a portion of a locked range results in:
+//   - 0 locks: if the unlock range covers the entire lock
+//   - 1 lock: if the unlock range covers the start or end
+//   - 2 locks: if the unlock range is in the middle (creates a "hole")
+//
+// Parameters:
+//   - existing: The lock to split
+//   - unlockOffset: Starting byte offset of the unlock range
+//   - unlockLength: Number of bytes to unlock (0 = to EOF)
+//
+// Returns:
+//   - []EnhancedLock: The resulting locks after the split (0, 1, or 2 locks)
+//
+// Examples:
+//   - Lock [0-100], Unlock [0-100] → [] (exact match)
+//   - Lock [0-100], Unlock [0-50] → [[50-100]] (unlock at start)
+//   - Lock [0-100], Unlock [50-100] → [[0-50]] (unlock at end)
+//   - Lock [0-100], Unlock [25-75] → [[0-25], [75-100]] (unlock in middle)
+func SplitLock(existing *EnhancedLock, unlockOffset, unlockLength uint64) []*EnhancedLock {
+	// Check if ranges overlap at all
+	if !RangesOverlap(existing.Offset, existing.Length, unlockOffset, unlockLength) {
+		// No overlap - return existing lock unchanged
+		return []*EnhancedLock{existing.Clone()}
+	}
+
+	// Calculate lock end
+	lockEnd := existing.End()
+	if existing.Length == 0 {
+		// Unbounded lock - treat as very large for calculation purposes
+		lockEnd = ^uint64(0) // Max uint64
+	}
+
+	// Calculate unlock end
+	unlockEnd := unlockOffset + unlockLength
+	if unlockLength == 0 {
+		// Unbounded unlock - goes to EOF
+		unlockEnd = ^uint64(0)
+	}
+
+	// Check for exact match or complete coverage
+	if unlockOffset <= existing.Offset && unlockEnd >= lockEnd {
+		// Unlock completely covers the lock - remove it
+		return []*EnhancedLock{}
+	}
+
+	var result []*EnhancedLock
+
+	// Check if there's a portion before the unlock range
+	if unlockOffset > existing.Offset {
+		beforeLock := existing.Clone()
+		beforeLock.Length = unlockOffset - existing.Offset
+		result = append(result, beforeLock)
+	}
+
+	// Check if there's a portion after the unlock range
+	if unlockEnd < lockEnd {
+		afterLock := existing.Clone()
+		afterLock.Offset = unlockEnd
+		if existing.Length == 0 {
+			// Original was unbounded, after portion is also unbounded
+			afterLock.Length = 0
+		} else {
+			afterLock.Length = lockEnd - unlockEnd
+		}
+		result = append(result, afterLock)
+	}
+
+	return result
+}
+
+// ============================================================================
+// Lock Merging
+// ============================================================================
+
+// MergeLocks coalesces adjacent or overlapping locks from the same owner.
+//
+// This is used when upgrading or extending locks to avoid fragmentation.
+// Only locks with the same owner, type, and file handle can be merged.
+//
+// Parameters:
+//   - locks: Slice of locks to potentially merge
+//
+// Returns:
+//   - []EnhancedLock: Merged locks (may have fewer elements than input)
+func MergeLocks(locks []*EnhancedLock) []*EnhancedLock {
+	if len(locks) == 0 {
+		return nil
+	}
+	if len(locks) == 1 {
+		return []*EnhancedLock{locks[0].Clone()}
+	}
+
+	// Group locks by owner+type+filehandle
+	type groupKey struct {
+		ownerID    string
+		lockType   LockType
+		fileHandle string
+	}
+
+	groups := make(map[groupKey][]*EnhancedLock)
+	for _, lock := range locks {
+		key := groupKey{
+			ownerID:    lock.Owner.OwnerID,
+			lockType:   lock.Type,
+			fileHandle: string(lock.FileHandle),
+		}
+		groups[key] = append(groups[key], lock)
+	}
+
+	var result []*EnhancedLock
+
+	for _, group := range groups {
+		merged := mergeRanges(group)
+		result = append(result, merged...)
+	}
+
+	return result
+}
+
+// mergeRanges merges locks that have the same owner/type/file.
+// It combines overlapping or adjacent ranges into single locks.
+func mergeRanges(locks []*EnhancedLock) []*EnhancedLock {
+	if len(locks) == 0 {
+		return nil
+	}
+	if len(locks) == 1 {
+		return []*EnhancedLock{locks[0].Clone()}
+	}
+
+	// Sort by offset (simple bubble sort for small slices)
+	sorted := make([]*EnhancedLock, len(locks))
+	for i, l := range locks {
+		sorted[i] = l.Clone()
+	}
+	for i := 0; i < len(sorted)-1; i++ {
+		for j := 0; j < len(sorted)-i-1; j++ {
+			if sorted[j].Offset > sorted[j+1].Offset {
+				sorted[j], sorted[j+1] = sorted[j+1], sorted[j]
+			}
+		}
+	}
+
+	var result []*EnhancedLock
+	current := sorted[0]
+
+	for i := 1; i < len(sorted); i++ {
+		next := sorted[i]
+
+		// Check if current and next can be merged
+		if canMerge(current, next) {
+			// Merge into current
+			current = mergeTwoLocks(current, next)
+		} else {
+			// Can't merge - finalize current and move to next
+			result = append(result, current)
+			current = next
+		}
+	}
+
+	// Don't forget the last one
+	result = append(result, current)
+
+	return result
+}
+
+// canMerge checks if two locks can be merged (adjacent or overlapping).
+func canMerge(a, b *EnhancedLock) bool {
+	// Must be same owner, type, and file (assumed by caller grouping)
+
+	// Handle unbounded locks
+	if a.Length == 0 {
+		// a is unbounded - can merge with anything at or after a.Offset
+		return b.Offset >= a.Offset
+	}
+	if b.Length == 0 {
+		// b is unbounded - can merge if a overlaps or is adjacent to b.Offset
+		return a.End() >= b.Offset
+	}
+
+	// Both bounded - check if adjacent or overlapping
+	aEnd := a.End()
+	return aEnd >= b.Offset // Adjacent (aEnd == b.Offset) or overlapping
+}
+
+// mergeTwoLocks combines two locks into one.
+func mergeTwoLocks(a, b *EnhancedLock) *EnhancedLock {
+	result := a.Clone()
+
+	// Start is the minimum offset
+	if b.Offset < result.Offset {
+		result.Offset = b.Offset
+	}
+
+	// Handle unbounded locks
+	if a.Length == 0 || b.Length == 0 {
+		result.Length = 0 // Result is unbounded
+		return result
+	}
+
+	// Both bounded - end is the maximum
+	aEnd := a.End()
+	bEnd := b.End()
+	maxEnd := aEnd
+	if bEnd > maxEnd {
+		maxEnd = bEnd
+	}
+
+	result.Length = maxEnd - result.Offset
+	return result
+}
+
+// ============================================================================
+// Atomic Lock Upgrade
+// ============================================================================
+
+// UpgradeLock atomically converts a shared lock to exclusive if no other readers exist.
+//
+// This implements the user decision: "Lock upgrade: Atomic upgrade supported
+// (read -> write if no other readers)".
+//
+// Steps:
+//  1. Find existing shared lock owned by `owner` covering the range
+//  2. Check if any OTHER owners hold shared locks on overlapping range
+//  3. If other readers exist: return ErrLockConflict
+//  4. If no other readers: atomically change lock type to Exclusive
+//
+// Parameters:
+//   - handleKey: The file handle key
+//   - owner: The lock owner requesting the upgrade
+//   - offset: Starting byte offset of the range to upgrade
+//   - length: Number of bytes (0 = to EOF)
+//
+// Returns:
+//   - *EnhancedLock: The upgraded lock on success
+//   - error: ErrLockConflict if other readers exist, ErrLockNotFound if no lock to upgrade
+func (lm *LockManager) UpgradeLock(handleKey string, owner LockOwner, offset, length uint64) (*EnhancedLock, error) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	// This method works with the enhanced lock storage (if available)
+	// For now, we'll add enhanced lock storage alongside the existing FileLock storage
+
+	enhancedLocks := lm.getEnhancedLocksLocked(handleKey)
+
+	// Step 1: Find existing shared lock owned by this owner covering the range
+	var ownLock *EnhancedLock
+	var ownLockIndex int = -1
+
+	for i, lock := range enhancedLocks {
+		if lock.Owner.OwnerID == owner.OwnerID &&
+			lock.Type == LockTypeShared &&
+			lock.Overlaps(offset, length) {
+			// Found our shared lock
+			ownLock = lock
+			ownLockIndex = i
+			break
+		}
+	}
+
+	if ownLock == nil {
+		// Check if we already have an exclusive lock (no-op case)
+		for _, lock := range enhancedLocks {
+			if lock.Owner.OwnerID == owner.OwnerID &&
+				lock.Type == LockTypeExclusive &&
+				lock.Overlaps(offset, length) {
+				// Already exclusive - return it as-is
+				return lock.Clone(), nil
+			}
+		}
+		return nil, NewLockNotFoundError("")
+	}
+
+	// Step 2: Check if any OTHER owners hold shared locks on overlapping range
+	for _, lock := range enhancedLocks {
+		if lock.Owner.OwnerID == owner.OwnerID {
+			continue // Skip our own locks
+		}
+		if lock.Overlaps(offset, length) {
+			// Another owner has a lock on this range - cannot upgrade
+			return nil, NewLockConflictError("", &EnhancedLockConflict{
+				Lock:   lock,
+				Reason: "other reader exists on range",
+			})
+		}
+	}
+
+	// Step 3: Atomically upgrade the lock
+	enhancedLocks[ownLockIndex].Type = LockTypeExclusive
+
+	return enhancedLocks[ownLockIndex].Clone(), nil
+}
+
+// getEnhancedLocksLocked returns enhanced locks for a file (must hold lm.mu).
+func (lm *LockManager) getEnhancedLocksLocked(handleKey string) []*EnhancedLock {
+	return lm.enhancedLocks[handleKey]
+}
+
+// AddEnhancedLock adds an enhanced lock to the storage.
+func (lm *LockManager) AddEnhancedLock(handleKey string, lock *EnhancedLock) error {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	existing := lm.enhancedLocks[handleKey]
+
+	// Check for conflicts with existing locks
+	for _, el := range existing {
+		if IsEnhancedLockConflicting(el, lock) {
+			return NewLockConflictError("", &EnhancedLockConflict{
+				Lock:   el,
+				Reason: "lock conflict",
+			})
+		}
+	}
+
+	// Check if this exact lock already exists (same owner, offset, length)
+	// If so, update it (allows changing lock type)
+	for i, el := range existing {
+		if el.Owner.OwnerID == lock.Owner.OwnerID &&
+			el.Offset == lock.Offset &&
+			el.Length == lock.Length {
+			// Update existing lock in place
+			existing[i].Type = lock.Type
+			existing[i].AcquiredAt = time.Now()
+			return nil
+		}
+	}
+
+	// Set acquisition time if not set
+	if lock.AcquiredAt.IsZero() {
+		lock.AcquiredAt = time.Now()
+	}
+
+	// Add new lock
+	lm.enhancedLocks[handleKey] = append(existing, lock)
+	return nil
+}
+
+// RemoveEnhancedLock removes an enhanced lock using POSIX splitting semantics.
+func (lm *LockManager) RemoveEnhancedLock(handleKey string, owner LockOwner, offset, length uint64) error {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	existing := lm.enhancedLocks[handleKey]
+	if len(existing) == 0 {
+		return NewLockNotFoundError("")
+	}
+
+	var newLocks []*EnhancedLock
+	found := false
+
+	for _, lock := range existing {
+		if lock.Owner.OwnerID != owner.OwnerID {
+			// Not our lock - keep it
+			newLocks = append(newLocks, lock)
+			continue
+		}
+
+		// Our lock - check if it overlaps with the unlock range
+		if !lock.Overlaps(offset, length) {
+			// Doesn't overlap - keep it unchanged
+			newLocks = append(newLocks, lock)
+			continue
+		}
+
+		// Overlaps - split the lock
+		found = true
+		splitResult := SplitLock(lock, offset, length)
+		newLocks = append(newLocks, splitResult...)
+	}
+
+	if !found {
+		return NewLockNotFoundError("")
+	}
+
+	// Update or clean up
+	if len(newLocks) == 0 {
+		delete(lm.enhancedLocks, handleKey)
+	} else {
+		lm.enhancedLocks[handleKey] = newLocks
+	}
+
+	return nil
+}
+
+// ListEnhancedLocks returns all enhanced locks on a file.
+func (lm *LockManager) ListEnhancedLocks(handleKey string) []*EnhancedLock {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	existing := lm.enhancedLocks[handleKey]
+	if len(existing) == 0 {
+		return nil
+	}
+
+	// Return a copy to avoid race conditions
+	result := make([]*EnhancedLock, len(existing))
+	for i, el := range existing {
+		result[i] = el.Clone()
+	}
+	return result
+}
+
+// RemoveEnhancedFileLocks removes all enhanced locks for a file.
+func (lm *LockManager) RemoveEnhancedFileLocks(handleKey string) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	delete(lm.enhancedLocks, handleKey)
 }

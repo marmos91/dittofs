@@ -96,6 +96,18 @@ const (
 
 	// ErrNameTooLong indicates the path or filename exceeds system limits
 	ErrNameTooLong
+
+	// ErrDeadlock indicates the operation would cause a deadlock
+	ErrDeadlock
+
+	// ErrGracePeriod indicates the operation is blocked during grace period
+	ErrGracePeriod
+
+	// ErrLockLimitExceeded indicates lock limits have been reached
+	ErrLockLimitExceeded
+
+	// ErrLockConflict indicates a lock upgrade or acquisition conflict
+	ErrLockConflict
 )
 
 // ============================================================================
@@ -231,6 +243,49 @@ func NewNameTooLongError(path string) *StoreError {
 	}
 }
 
+// NewDeadlockError creates a StoreError for deadlock detection.
+func NewDeadlockError(waiter string, blockedBy []string) *StoreError {
+	return &StoreError{
+		Code:    ErrDeadlock,
+		Message: fmt.Sprintf("deadlock detected: %s would be blocked by %v", waiter, blockedBy),
+	}
+}
+
+// NewGracePeriodError creates a StoreError for grace period blocking.
+func NewGracePeriodError(remainingSeconds int) *StoreError {
+	return &StoreError{
+		Code:    ErrGracePeriod,
+		Message: fmt.Sprintf("server is in grace period (%d seconds remaining)", remainingSeconds),
+	}
+}
+
+// NewLockLimitExceededError creates a StoreError for lock limit violations.
+func NewLockLimitExceededError(limitType string, current, max int) *StoreError {
+	return &StoreError{
+		Code:    ErrLockLimitExceeded,
+		Message: fmt.Sprintf("%s lock limit exceeded: %d/%d", limitType, current, max),
+	}
+}
+
+// NewLockConflictError creates a StoreError for lock conflicts (upgrade, etc.).
+func NewLockConflictError(path string, conflict *EnhancedLockConflict) *StoreError {
+	var msg string
+	if conflict != nil && conflict.Lock != nil {
+		msg = fmt.Sprintf("lock conflict with %s (owner=%s, offset=%d, length=%d): %s",
+			conflict.Lock.Type, conflict.Lock.Owner.OwnerID,
+			conflict.Lock.Offset, conflict.Lock.Length, conflict.Reason)
+	} else if conflict != nil {
+		msg = fmt.Sprintf("lock conflict: %s", conflict.Reason)
+	} else {
+		msg = "lock conflict"
+	}
+	return &StoreError{
+		Code:    ErrLockConflict,
+		Message: msg,
+		Path:    path,
+	}
+}
+
 // IsNotFoundError checks if an error is a StoreError with ErrNotFound code.
 func IsNotFoundError(err error) bool {
 	if err == nil {
@@ -238,6 +293,28 @@ func IsNotFoundError(err error) bool {
 	}
 	if storeErr, ok := err.(*StoreError); ok {
 		return storeErr.Code == ErrNotFound
+	}
+	return false
+}
+
+// IsLockConflictError checks if an error is a StoreError with ErrLockConflict code.
+func IsLockConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if storeErr, ok := err.(*StoreError); ok {
+		return storeErr.Code == ErrLockConflict
+	}
+	return false
+}
+
+// IsDeadlockError checks if an error is a StoreError with ErrDeadlock code.
+func IsDeadlockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if storeErr, ok := err.(*StoreError); ok {
+		return storeErr.Code == ErrDeadlock
 	}
 	return false
 }
