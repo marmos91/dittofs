@@ -1,0 +1,55 @@
+# Minimal DittoFS configuration using memory-like ephemeral stores
+# This is the simplest setup for Phase 1 validation - no external dependencies
+#
+# Note: DittoFS doesn't have a pure "memory" backend type. This config uses:
+# - metadata: BadgerDB on /data/metadata (uses small PVC)
+# - content: local filesystem on /tmp/content (ephemeral within pod)
+#
+# Data is ephemeral (content is lost on pod restart) - suitable for testing only.
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  name: dittofs-memory
+  labels:
+    app.kubernetes.io/name: dittofs-operator
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  image: marmos91c/dittofs:latest
+  replicas: 1
+
+  # Minimal storage - only metadata PVC is required
+  # Content uses /tmp which is ephemeral (emptyDir behavior)
+  storage:
+    metadataSize: "1Gi"
+    # contentSize omitted - using ephemeral /tmp for content
+
+  # NFS configuration
+  nfsPort: 2049
+
+  # Service configuration
+  service:
+    type: ClusterIP
+
+  config:
+    # Backends configuration
+    backends:
+      # BadgerDB for metadata - requires small PVC
+      - name: "memory-metadata"
+        type: "badger"
+        config:
+          path: "/data/metadata"
+
+      # Local filesystem on /tmp - ephemeral, lost on pod restart
+      - name: "memory-content"
+        type: "local"
+        config:
+          path: "/tmp/content"
+
+    # Single share for testing
+    shares:
+      - name: "test"
+        exportPath: "/export"
+        metadataStore: "memory-metadata"
+        contentStore: "memory-content"
+        # Guest access enabled for easy testing
+        defaultPermission: "read-write"
