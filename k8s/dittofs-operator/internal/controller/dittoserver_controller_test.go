@@ -485,44 +485,83 @@ func verifyConfigMap(t *testing.T, ctx context.Context, r *DittoServerReconciler
 }
 
 func verifyService(t *testing.T, ctx context.Context, r *DittoServerReconciler, req ctrl.Request, dittoServer *v1alpha1.DittoServer) {
-	service := &corev1.Service{}
-	serviceKey := types.NamespacedName{
+	// Verify headless service exists
+	headlessService := &corev1.Service{}
+	if err := r.Get(ctx, types.NamespacedName{
 		Namespace: req.Namespace,
-		Name:      req.Name,
-	}
-	if err := r.Get(ctx, serviceKey, service); err != nil {
-		t.Errorf("Failed to get Service: %v", err)
-		return
-	}
-
-	hasNFS, hasMetrics, hasSMB := false, false, false
-	for _, port := range service.Spec.Ports {
-		if port.Name == "nfs" {
-			hasNFS = true
-		}
-		if port.Name == "metrics" {
-			hasMetrics = true
-		}
-		if port.Name == "smb" {
-			hasSMB = true
+		Name:      req.Name + "-headless",
+	}, headlessService); err != nil {
+		t.Errorf("Failed to get headless Service: %v", err)
+	} else {
+		if headlessService.Spec.ClusterIP != corev1.ClusterIPNone {
+			t.Errorf("Headless service should have ClusterIP: None")
 		}
 	}
 
-	if !hasNFS {
-		t.Errorf("Service missing NFS port")
-	}
-	if !hasMetrics {
-		t.Errorf("Service missing metrics port")
+	// Verify file service exists with NFS port
+	fileService := &corev1.Service{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: req.Namespace,
+		Name:      req.Name + "-file",
+	}, fileService); err != nil {
+		t.Errorf("Failed to get file Service: %v", err)
+	} else {
+		hasNFS, hasSMB := false, false
+		for _, port := range fileService.Spec.Ports {
+			if port.Name == "nfs" {
+				hasNFS = true
+			}
+			if port.Name == "smb" {
+				hasSMB = true
+			}
+		}
+		if !hasNFS {
+			t.Errorf("File service missing NFS port")
+		}
+		// Check SMB port only if SMB is enabled
+		if dittoServer != nil && dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Enabled && !hasSMB {
+			t.Errorf("File service missing SMB port when SMB is enabled")
+		}
+		// Check that SMB port is NOT present when SMB is disabled
+		if (dittoServer == nil || dittoServer.Spec.SMB == nil || !dittoServer.Spec.SMB.Enabled) && hasSMB {
+			t.Errorf("File service has SMB port when SMB is disabled")
+		}
 	}
 
-	// Check SMB port only if SMB is enabled
-	if dittoServer != nil && dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Enabled && !hasSMB {
-		t.Errorf("Service missing SMB port when SMB is enabled")
+	// Verify API service exists
+	apiService := &corev1.Service{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: req.Namespace,
+		Name:      req.Name + "-api",
+	}, apiService); err != nil {
+		t.Errorf("Failed to get API Service: %v", err)
+	} else {
+		hasAPI := false
+		for _, port := range apiService.Spec.Ports {
+			if port.Name == "api" {
+				hasAPI = true
+			}
+		}
+		if !hasAPI {
+			t.Errorf("API service missing api port")
+		}
 	}
 
-	// Check that SMB port is NOT present when SMB is disabled
-	if (dittoServer == nil || dittoServer.Spec.SMB == nil || !dittoServer.Spec.SMB.Enabled) && hasSMB {
-		t.Errorf("Service has SMB port when SMB is disabled")
+	// Verify metrics service exists only if metrics enabled
+	metricsService := &corev1.Service{}
+	metricsEnabled := dittoServer != nil && dittoServer.Spec.Metrics != nil && dittoServer.Spec.Metrics.Enabled
+	err := r.Get(ctx, types.NamespacedName{
+		Namespace: req.Namespace,
+		Name:      req.Name + "-metrics",
+	}, metricsService)
+
+	if metricsEnabled {
+		if err != nil {
+			t.Errorf("Failed to get metrics Service when metrics enabled: %v", err)
+		}
+	} else {
+		// Metrics service should not exist when disabled (or be deleted)
+		// Note: In test context, service might not exist which is fine
 	}
 }
 
