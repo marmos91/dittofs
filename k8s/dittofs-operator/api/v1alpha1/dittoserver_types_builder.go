@@ -37,10 +37,38 @@ func WithStorage(storage StorageSpec) func(*DittoServerSpec) {
 	}
 }
 
-// WithConfig sets the Config of a DittoServerSpec
-func WithConfig(config DittoConfig) func(*DittoServerSpec) {
+// WithDatabase sets the Database of a DittoServerSpec
+func WithDatabase(database *DatabaseConfig) func(*DittoServerSpec) {
 	return func(obj *DittoServerSpec) {
-		obj.Config = config
+		obj.Database = database
+	}
+}
+
+// WithCache sets the Cache of a DittoServerSpec
+func WithCache(cache *InfraCacheConfig) func(*DittoServerSpec) {
+	return func(obj *DittoServerSpec) {
+		obj.Cache = cache
+	}
+}
+
+// WithMetrics sets the Metrics of a DittoServerSpec
+func WithMetrics(metrics *MetricsConfig) func(*DittoServerSpec) {
+	return func(obj *DittoServerSpec) {
+		obj.Metrics = metrics
+	}
+}
+
+// WithControlPlane sets the ControlPlane of a DittoServerSpec
+func WithControlPlane(controlPlane *ControlPlaneAPIConfig) func(*DittoServerSpec) {
+	return func(obj *DittoServerSpec) {
+		obj.ControlPlane = controlPlane
+	}
+}
+
+// WithIdentity sets the Identity of a DittoServerSpec
+func WithIdentity(identity *IdentityConfig) func(*DittoServerSpec) {
+	return func(obj *DittoServerSpec) {
+		obj.Identity = identity
 	}
 }
 
@@ -55,6 +83,13 @@ func WithService(service ServiceSpec) func(*DittoServerSpec) {
 func WithNFSPort(nfsport *int32) func(*DittoServerSpec) {
 	return func(obj *DittoServerSpec) {
 		obj.NFSPort = nfsport
+	}
+}
+
+// WithSMB sets the SMB of a DittoServerSpec
+func WithSMB(smb *SMBAdapterSpec) func(*DittoServerSpec) {
+	return func(obj *DittoServerSpec) {
+		obj.SMB = smb
 	}
 }
 
@@ -132,20 +167,6 @@ func NewDittoServer(opts ...func(*DittoServer)) *DittoServer {
 	}
 
 	return obj
-}
-
-// WithSMB sets the SMB of a DittoServerSpec
-func WithSMB(smb *SMBAdapterSpec) func(*DittoServerSpec) {
-	return func(obj *DittoServerSpec) {
-		obj.SMB = smb
-	}
-}
-
-// WithUsers sets the Users of a DittoServerSpec
-func WithUsers(users *UserManagementSpec) func(*DittoServerSpec) {
-	return func(obj *DittoServerSpec) {
-		obj.Users = users
-	}
 }
 
 // WithName sets the name of the DittoServer

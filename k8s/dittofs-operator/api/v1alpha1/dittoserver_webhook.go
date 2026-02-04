@@ -44,101 +44,36 @@ func (r *DittoServer) ValidateDelete(ctx context.Context, obj runtime.Object) (a
 }
 
 // validateDittoServer validates the DittoServer spec
+// With infrastructure-only config, validation is minimal as dynamic config
+// (stores, shares, adapters, users) is managed via REST API at runtime.
 func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 	var warnings admission.Warnings
 
-	backendNames := make(map[string]bool)
-	for _, backend := range r.Spec.Config.Backends {
-		backendNames[backend.Name] = true
+	// Validate storage is provided
+	if r.Spec.Storage.MetadataSize == "" {
+		return warnings, fmt.Errorf("storage.metadataSize is required")
 	}
 
-	cacheNames := make(map[string]bool)
-	for _, cache := range r.Spec.Config.Caches {
-		cacheNames[cache.Name] = true
-	}
-
-	for i, share := range r.Spec.Config.Shares {
-		if share.MetadataStore == "" {
-			return warnings, fmt.Errorf("share[%d] (%s): metadataStore cannot be empty", i, share.Name)
-		}
-		if !backendNames[share.MetadataStore] {
-			return warnings, fmt.Errorf("share[%d] (%s): metadataStore '%s' does not exist in backends list",
-				i, share.Name, share.MetadataStore)
-		}
-
-		if share.ContentStore == "" {
-			return warnings, fmt.Errorf("share[%d] (%s): contentStore cannot be empty", i, share.Name)
-		}
-		if !backendNames[share.ContentStore] {
-			return warnings, fmt.Errorf("share[%d] (%s): contentStore '%s' does not exist in backends list",
-				i, share.Name, share.ContentStore)
-		}
-
-		if share.MetadataStore == share.ContentStore {
-			warnings = append(warnings, fmt.Sprintf("share[%d] (%s): metadataStore and contentStore reference the same backend '%s' - this may not be optimal",
-				i, share.Name, share.MetadataStore))
-		}
-
-		// Validate cache reference if specified
-		if share.Cache != "" && !cacheNames[share.Cache] {
-			return warnings, fmt.Errorf("share[%d] (%s): cache '%s' does not exist in caches list",
-				i, share.Name, share.Cache)
+	// Validate database configuration consistency
+	if r.Spec.Database != nil {
+		// If PostgresSecretRef is set, warn that Type field will be ignored
+		if r.Spec.Database.PostgresSecretRef != nil && r.Spec.Database.Type == "sqlite" {
+			warnings = append(warnings, "database.postgresSecretRef is set but database.type is 'sqlite' - PostgreSQL will take precedence")
 		}
 	}
 
-	for i, share := range r.Spec.Config.Shares {
-		for _, backend := range r.Spec.Config.Backends {
-			// Check if a metadata store is using an inappropriate backend type
-			if backend.Name == share.MetadataStore {
-				switch backend.Type {
-				case "badger":
-					// Good choice for metadata, no warning
-				case "s3", "local":
-					warnings = append(warnings, fmt.Sprintf("share[%d] (%s): using backend type '%s' for metadata storage is unusual - consider using 'badger' instead",
-						i, share.Name, backend.Type))
-				default:
-					// Unknown backend type - this should have been caught by CRD validation enum
-					warnings = append(warnings, fmt.Sprintf("share[%d] (%s): unknown backend type '%s' for metadata storage",
-						i, share.Name, backend.Type))
-				}
-			}
+	// Validate control plane port range
+	if r.Spec.ControlPlane != nil && r.Spec.ControlPlane.Port != 0 {
+		if r.Spec.ControlPlane.Port < 1 || r.Spec.ControlPlane.Port > 65535 {
+			return warnings, fmt.Errorf("controlPlane.port must be between 1 and 65535")
 		}
 	}
 
-	// Validate no duplicate backend names
-	seenBackends := make(map[string]int)
-	for i, backend := range r.Spec.Config.Backends {
-		if prevIndex, exists := seenBackends[backend.Name]; exists {
-			return warnings, fmt.Errorf("duplicate backend name '%s' at indices %d and %d", backend.Name, prevIndex, i)
+	// Validate metrics port range
+	if r.Spec.Metrics != nil && r.Spec.Metrics.Port != 0 {
+		if r.Spec.Metrics.Port < 1 || r.Spec.Metrics.Port > 65535 {
+			return warnings, fmt.Errorf("metrics.port must be between 1 and 65535")
 		}
-		seenBackends[backend.Name] = i
-	}
-
-	// Validate no duplicate cache names
-	seenCaches := make(map[string]int)
-	for i, cache := range r.Spec.Config.Caches {
-		if prevIndex, exists := seenCaches[cache.Name]; exists {
-			return warnings, fmt.Errorf("duplicate cache name '%s' at indices %d and %d", cache.Name, prevIndex, i)
-		}
-		seenCaches[cache.Name] = i
-	}
-
-	// Validate no duplicate share names
-	seenShares := make(map[string]int)
-	for i, share := range r.Spec.Config.Shares {
-		if prevIndex, exists := seenShares[share.Name]; exists {
-			return warnings, fmt.Errorf("duplicate share name '%s' at indices %d and %d", share.Name, prevIndex, i)
-		}
-		seenShares[share.Name] = i
-	}
-
-	// Validate no duplicate export paths
-	seenPaths := make(map[string]int)
-	for i, share := range r.Spec.Config.Shares {
-		if prevIndex, exists := seenPaths[share.ExportPath]; exists {
-			return warnings, fmt.Errorf("duplicate export path '%s' at indices %d and %d", share.ExportPath, prevIndex, i)
-		}
-		seenPaths[share.ExportPath] = i
 	}
 
 	return warnings, nil
