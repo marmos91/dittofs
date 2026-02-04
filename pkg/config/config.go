@@ -61,6 +61,39 @@ type Config struct {
 	// Admin contains initial admin user configuration for bootstrap
 	// This is used by 'dittofs init' to set up the first admin user
 	Admin AdminConfig `mapstructure:"admin" yaml:"admin"`
+
+	// Lock contains lock manager configuration
+	// Controls lock limits, timeouts, and behavior
+	Lock LockConfig `mapstructure:"lock" yaml:"lock"`
+}
+
+// LockConfig contains lock manager configuration.
+// These settings control lock limits, timeouts, and behavior across
+// all protocols (NLM, SMB, NFSv4).
+type LockConfig struct {
+	// MaxLocksPerFile is the maximum number of locks allowed on a single file.
+	// Default: 1000
+	MaxLocksPerFile int `mapstructure:"max_locks_per_file" yaml:"max_locks_per_file"`
+
+	// MaxLocksPerClient is the maximum number of locks a single client can hold.
+	// Default: 10000
+	MaxLocksPerClient int `mapstructure:"max_locks_per_client" yaml:"max_locks_per_client"`
+
+	// MaxTotalLocks is the maximum total locks across all files and clients.
+	// Default: 100000
+	MaxTotalLocks int `mapstructure:"max_total_locks" yaml:"max_total_locks"`
+
+	// BlockingTimeout is the server-side timeout for blocking lock requests.
+	// Default: 60s
+	BlockingTimeout time.Duration `mapstructure:"blocking_timeout" yaml:"blocking_timeout"`
+
+	// GracePeriodDuration is the duration of the grace period after server restart.
+	// Default: 90s
+	GracePeriodDuration time.Duration `mapstructure:"grace_period" yaml:"grace_period"`
+
+	// MandatoryLocking controls whether locks are mandatory or advisory.
+	// Default: false (advisory)
+	MandatoryLocking bool `mapstructure:"mandatory_locking" yaml:"mandatory_locking"`
 }
 
 // LoggingConfig controls logging behavior.
