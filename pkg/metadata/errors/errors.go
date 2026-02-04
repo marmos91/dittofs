@@ -17,8 +17,22 @@ const (
 	// ErrNotFound indicates the requested resource does not exist.
 	ErrNotFound ErrorCode = iota + 1
 
-	// ErrPermissionDenied indicates insufficient permissions.
+	// ErrAccessDenied indicates permission bit violations (POSIX EACCES).
+	// Used when the caller lacks the required read/write/execute permission bits.
+	ErrAccessDenied
+
+	// ErrAuthRequired indicates authentication is required but not provided.
+	ErrAuthRequired
+
+	// ErrPermissionDenied indicates operation not permitted (POSIX EPERM).
+	// Used when the operation requires ownership or root privileges.
 	ErrPermissionDenied
+
+	// ErrAlreadyExists indicates the resource already exists.
+	ErrAlreadyExists
+
+	// ErrNotEmpty indicates directory is not empty.
+	ErrNotEmpty
 
 	// ErrIsDirectory indicates operation not valid on directory.
 	ErrIsDirectory
@@ -26,29 +40,29 @@ const (
 	// ErrNotDirectory indicates operation requires a directory.
 	ErrNotDirectory
 
-	// ErrInvalidHandle indicates the file handle is invalid.
-	ErrInvalidHandle
-
-	// ErrNotEmpty indicates directory is not empty.
-	ErrNotEmpty
-
-	// ErrAlreadyExists indicates the resource already exists.
-	ErrAlreadyExists
-
 	// ErrInvalidArgument indicates an invalid argument was provided.
 	ErrInvalidArgument
 
-	// ErrAccessDenied indicates access was denied.
-	ErrAccessDenied
+	// ErrIOError indicates an I/O error occurred.
+	ErrIOError
+
+	// ErrNoSpace indicates no space is available.
+	ErrNoSpace
 
 	// ErrQuotaExceeded indicates quota has been exceeded.
 	ErrQuotaExceeded
 
-	// ErrPrivilegeRequired indicates elevated privileges are required.
-	ErrPrivilegeRequired
+	// ErrReadOnly indicates operation failed because filesystem is read-only.
+	ErrReadOnly
 
-	// ErrNameTooLong indicates the name exceeds maximum length.
-	ErrNameTooLong
+	// ErrNotSupported indicates operation is not supported by implementation.
+	ErrNotSupported
+
+	// ErrInvalidHandle indicates the file handle is invalid.
+	ErrInvalidHandle
+
+	// ErrStaleHandle indicates the file handle is valid but stale.
+	ErrStaleHandle
 
 	// ErrLocked indicates the resource is locked.
 	ErrLocked
@@ -56,8 +70,11 @@ const (
 	// ErrLockNotFound indicates the specified lock does not exist.
 	ErrLockNotFound
 
-	// ErrLockConflict indicates a lock conflict (enhanced lock types).
-	ErrLockConflict
+	// ErrPrivilegeRequired indicates elevated privileges are required.
+	ErrPrivilegeRequired
+
+	// ErrNameTooLong indicates the name exceeds maximum length.
+	ErrNameTooLong
 
 	// ErrDeadlock indicates a deadlock would occur.
 	ErrDeadlock
@@ -68,6 +85,9 @@ const (
 	// ErrLockLimitExceeded indicates lock limits have been exceeded.
 	ErrLockLimitExceeded
 
+	// ErrLockConflict indicates a lock conflict (enhanced lock types).
+	ErrLockConflict
+
 	// ErrConnectionLimitReached indicates connection limit has been reached.
 	ErrConnectionLimitReached
 )
@@ -77,40 +97,52 @@ func (e ErrorCode) String() string {
 	switch e {
 	case ErrNotFound:
 		return "NotFound"
+	case ErrAccessDenied:
+		return "AccessDenied"
+	case ErrAuthRequired:
+		return "AuthRequired"
 	case ErrPermissionDenied:
 		return "PermissionDenied"
+	case ErrAlreadyExists:
+		return "AlreadyExists"
+	case ErrNotEmpty:
+		return "NotEmpty"
 	case ErrIsDirectory:
 		return "IsDirectory"
 	case ErrNotDirectory:
 		return "NotDirectory"
-	case ErrInvalidHandle:
-		return "InvalidHandle"
-	case ErrNotEmpty:
-		return "NotEmpty"
-	case ErrAlreadyExists:
-		return "AlreadyExists"
 	case ErrInvalidArgument:
 		return "InvalidArgument"
-	case ErrAccessDenied:
-		return "AccessDenied"
+	case ErrIOError:
+		return "IOError"
+	case ErrNoSpace:
+		return "NoSpace"
 	case ErrQuotaExceeded:
 		return "QuotaExceeded"
-	case ErrPrivilegeRequired:
-		return "PrivilegeRequired"
-	case ErrNameTooLong:
-		return "NameTooLong"
+	case ErrReadOnly:
+		return "ReadOnly"
+	case ErrNotSupported:
+		return "NotSupported"
+	case ErrInvalidHandle:
+		return "InvalidHandle"
+	case ErrStaleHandle:
+		return "StaleHandle"
 	case ErrLocked:
 		return "Locked"
 	case ErrLockNotFound:
 		return "LockNotFound"
-	case ErrLockConflict:
-		return "LockConflict"
+	case ErrPrivilegeRequired:
+		return "PrivilegeRequired"
+	case ErrNameTooLong:
+		return "NameTooLong"
 	case ErrDeadlock:
 		return "Deadlock"
 	case ErrGracePeriod:
 		return "GracePeriod"
 	case ErrLockLimitExceeded:
 		return "LockLimitExceeded"
+	case ErrLockConflict:
+		return "LockConflict"
 	case ErrConnectionLimitReached:
 		return "ConnectionLimitReached"
 	default:
@@ -147,10 +179,10 @@ func NewNotFoundError(path, resourceType string) *StoreError {
 }
 
 // NewPermissionDeniedError creates a PermissionDenied error.
-func NewPermissionDeniedError(path, operation string) *StoreError {
+func NewPermissionDeniedError(path string) *StoreError {
 	return &StoreError{
 		Code:    ErrPermissionDenied,
-		Message: fmt.Sprintf("permission denied for %s", operation),
+		Message: "permission denied",
 		Path:    path,
 	}
 }
@@ -174,11 +206,10 @@ func NewNotDirectoryError(path string) *StoreError {
 }
 
 // NewInvalidHandleError creates an InvalidHandle error.
-func NewInvalidHandleError(handle string) *StoreError {
+func NewInvalidHandleError() *StoreError {
 	return &StoreError{
 		Code:    ErrInvalidHandle,
 		Message: "invalid file handle",
-		Path:    handle,
 	}
 }
 
@@ -209,11 +240,10 @@ func NewInvalidArgumentError(message string) *StoreError {
 }
 
 // NewAccessDeniedError creates an AccessDenied error.
-func NewAccessDeniedError(path, reason string) *StoreError {
+func NewAccessDeniedError(reason string) *StoreError {
 	return &StoreError{
 		Code:    ErrAccessDenied,
 		Message: reason,
-		Path:    path,
 	}
 }
 
@@ -221,7 +251,7 @@ func NewAccessDeniedError(path, reason string) *StoreError {
 func NewQuotaExceededError(path string) *StoreError {
 	return &StoreError{
 		Code:    ErrQuotaExceeded,
-		Message: "quota exceeded",
+		Message: "disk quota exceeded",
 		Path:    path,
 	}
 }
@@ -230,16 +260,16 @@ func NewQuotaExceededError(path string) *StoreError {
 func NewPrivilegeRequiredError(operation string) *StoreError {
 	return &StoreError{
 		Code:    ErrPrivilegeRequired,
-		Message: fmt.Sprintf("elevated privileges required for %s", operation),
+		Message: fmt.Sprintf("operation requires root privileges: %s", operation),
 	}
 }
 
 // NewNameTooLongError creates a NameTooLong error.
-func NewNameTooLongError(name string, maxLen int) *StoreError {
+func NewNameTooLongError(path string) *StoreError {
 	return &StoreError{
 		Code:    ErrNameTooLong,
-		Message: fmt.Sprintf("name exceeds maximum length of %d", maxLen),
-		Path:    name,
+		Message: "name too long",
+		Path:    path,
 	}
 }
 
