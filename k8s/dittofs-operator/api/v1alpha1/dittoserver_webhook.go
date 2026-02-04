@@ -76,5 +76,75 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 		}
 	}
 
+	// Validate port uniqueness and warn about privileged ports
+	portWarnings, err := r.validatePorts()
+	if err != nil {
+		return warnings, err
+	}
+	warnings = append(warnings, portWarnings...)
+
+	return warnings, nil
+}
+
+// validatePorts checks port configuration for conflicts and warns about privileged ports.
+func (r *DittoServer) validatePorts() (admission.Warnings, error) {
+	var warnings admission.Warnings
+
+	// Get NFS port (default 2049)
+	nfsPort := int32(2049)
+	if r.Spec.NFSPort != nil {
+		nfsPort = *r.Spec.NFSPort
+	}
+
+	// Get SMB port (default 445)
+	smbPort := int32(445)
+	smbEnabled := r.Spec.SMB != nil && r.Spec.SMB.Enabled
+	if smbEnabled && r.Spec.SMB.Port != nil {
+		smbPort = *r.Spec.SMB.Port
+	}
+
+	// Get API port (default 8080)
+	apiPort := int32(8080)
+	if r.Spec.ControlPlane != nil && r.Spec.ControlPlane.Port > 0 {
+		apiPort = r.Spec.ControlPlane.Port
+	}
+
+	// Get metrics port (default 9090)
+	metricsPort := int32(9090)
+	metricsEnabled := r.Spec.Metrics != nil && r.Spec.Metrics.Enabled
+	if metricsEnabled && r.Spec.Metrics.Port > 0 {
+		metricsPort = r.Spec.Metrics.Port
+	}
+
+	// Build port map for uniqueness check
+	ports := map[int32]string{
+		nfsPort: "nfs",
+		apiPort: "api",
+	}
+
+	// Check SMB port uniqueness
+	if smbEnabled {
+		if existing, ok := ports[smbPort]; ok {
+			return nil, fmt.Errorf("port %d is used by both %s and smb", smbPort, existing)
+		}
+		ports[smbPort] = "smb"
+	}
+
+	// Check metrics port uniqueness
+	if metricsEnabled {
+		if existing, ok := ports[metricsPort]; ok {
+			return nil, fmt.Errorf("port %d is used by both %s and metrics", metricsPort, existing)
+		}
+		ports[metricsPort] = "metrics"
+	}
+
+	// Warn about privileged ports (< 1024)
+	for port, name := range ports {
+		if port < 1024 {
+			warnings = append(warnings,
+				fmt.Sprintf("%s port %d is privileged; may require CAP_NET_BIND_SERVICE capability", name, port))
+		}
+	}
+
 	return warnings, nil
 }
