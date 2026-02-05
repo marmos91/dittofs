@@ -537,3 +537,49 @@ func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 	m.crossProtocolConflictTotal.Collect(ch)
 	m.crossProtocolBreakDuration.Collect(ch)
 }
+
+// ============================================================================
+// Package-Level Metric Functions
+// ============================================================================
+//
+// These functions provide convenient access to cross-protocol metrics without
+// requiring access to a Metrics instance. They use a package-level instance
+// that is safe to call even before initialization (they are no-ops in that case).
+
+var globalMetrics *Metrics
+
+// SetGlobalMetrics sets the global metrics instance used by package-level functions.
+// This should be called during initialization with a registered Metrics instance.
+func SetGlobalMetrics(m *Metrics) {
+	globalMetrics = m
+}
+
+// RecordCrossProtocolConflict is a package-level function for recording cross-protocol conflicts.
+//
+// This is a convenience wrapper around Metrics.RecordCrossProtocolConflict that uses
+// the global metrics instance. Safe to call before metrics initialization (no-op).
+//
+// Parameters:
+//   - initiator: The protocol that initiated the operation (InitiatorNFS/InitiatorSMB)
+//   - conflicting: The type of conflicting lock (ConflictingNFSLock/ConflictingSMBLease)
+//   - resolution: How the conflict was resolved (ResolutionDenied/ResolutionBreakInitiated)
+func RecordCrossProtocolConflict(initiator, conflicting, resolution string) {
+	if globalMetrics != nil {
+		globalMetrics.RecordCrossProtocolConflict(initiator, conflicting, resolution)
+	}
+}
+
+// RecordCrossProtocolBreakDuration is a package-level function for recording break durations.
+//
+// This is a convenience wrapper around Metrics.RecordCrossProtocolBreakDuration that uses
+// the global metrics instance. Safe to call before metrics initialization (no-op).
+//
+// Parameters:
+//   - trigger: What triggered the break (TriggerNFSWrite/TriggerNFSLock/TriggerNFSRemove)
+//   - target: The type of lease being broken (TargetSMBWriteLease/TargetSMBHandleLease)
+//   - duration: Time from break initiation to completion
+func RecordCrossProtocolBreakDuration(trigger, target string, duration time.Duration) {
+	if globalMetrics != nil {
+		globalMetrics.RecordCrossProtocolBreakDuration(trigger, target, duration)
+	}
+}

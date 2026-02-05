@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"github.com/marmos91/dittofs/internal/protocol/nlm/blocking"
+	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -14,6 +15,7 @@ const DefaultBlockingQueueSize = 100
 // Handler holds references to:
 //   - MetadataService for performing lock operations
 //   - BlockingQueue for managing pending blocking lock requests
+//   - Config for configurable timeouts (e.g., lease break timeout)
 //
 // Thread Safety:
 // Handler is safe for concurrent use by multiple goroutines.
@@ -21,6 +23,7 @@ const DefaultBlockingQueueSize = 100
 type Handler struct {
 	metadataService *metadata.MetadataService
 	blockingQueue   *blocking.BlockingQueue
+	config          *config.Config
 }
 
 // NewHandler creates a new NLM handler with the given metadata service and blocking queue.
@@ -36,6 +39,22 @@ func NewHandler(metadataService *metadata.MetadataService, blockingQueue *blocki
 	return &Handler{
 		metadataService: metadataService,
 		blockingQueue:   blockingQueue,
+	}
+}
+
+// NewHandlerWithConfig creates a new NLM handler with config for cross-protocol settings.
+//
+// Parameters:
+//   - metadataService: The metadata service for performing lock operations.
+//   - blockingQueue: The blocking queue for managing pending lock requests.
+//   - cfg: The config containing lock settings (lease break timeout, etc.)
+//
+// Returns a configured Handler with cross-protocol support.
+func NewHandlerWithConfig(metadataService *metadata.MetadataService, blockingQueue *blocking.BlockingQueue, cfg *config.Config) *Handler {
+	return &Handler{
+		metadataService: metadataService,
+		blockingQueue:   blockingQueue,
+		config:          cfg,
 	}
 }
 

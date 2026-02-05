@@ -270,6 +270,39 @@ func (m *OplockManager) RequestLease(
 	// Build owner ID for cross-protocol visibility
 	ownerID := fmt.Sprintf("smb:lease:%x", leaseKey)
 
+	// ========================================================================
+	// Cross-Protocol Check: NLM byte-range locks
+	// ========================================================================
+	//
+	// Per CONTEXT.md: "NFS lock vs SMB Write lease: Deny SMB immediately"
+	// NFS byte-range locks are explicit and win over opportunistic SMB leases.
+	// We check NLM locks BEFORE checking for existing SMB leases because:
+	// 1. NLM locks have priority (explicit vs opportunistic)
+	// 2. Denying immediately is simpler than breaking
+	// 3. This matches the "NFS locks win" semantic
+
+	if m.lockStore != nil {
+		conflicts, err := checkNLMLocksForLeaseConflict(ctx, m.lockStore, fileHandle, requestedState)
+		if err != nil {
+			// Fail open - don't block lease request due to query failure
+			// Log at WARN since this is unexpected
+			logger.Warn("Lease: failed to check NLM locks", "error", err)
+		} else if len(conflicts) > 0 {
+			// Log at INFO per CONTEXT.md (cross-protocol conflicts are working as designed)
+			logger.Info("Lease: denied due to NLM lock",
+				"leaseKey", fmt.Sprintf("%x", leaseKey),
+				"requestedState", lock.LeaseStateToString(requestedState),
+				"nlmLock", formatNLMLockInfo(conflicts[0]))
+
+			// Record cross-protocol conflict metric
+			lock.RecordCrossProtocolConflict(lock.InitiatorSMB, lock.ConflictingNFSLock, lock.ResolutionDenied)
+
+			// Return None - caller will handle STATUS_LOCK_NOT_GRANTED
+			// We return nil error because this is an expected outcome, not a failure
+			return lock.LeaseStateNone, 0, nil
+		}
+	}
+
 	// Check for existing lease with same key
 	existing := m.findLeaseByKey(ctx, fileHandle, leaseKey)
 	if existing != nil {

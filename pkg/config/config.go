@@ -94,6 +94,13 @@ type LockConfig struct {
 	// MandatoryLocking controls whether locks are mandatory or advisory.
 	// Default: false (advisory)
 	MandatoryLocking bool `mapstructure:"mandatory_locking" yaml:"mandatory_locking"`
+
+	// LeaseBreakTimeout is how long to wait for SMB lease breaks before proceeding.
+	// This is the maximum time NFS/NLM operations will wait for an SMB client to
+	// acknowledge a lease break and flush cached data.
+	// Default: 35s (SMB2 spec maximum, MS-SMB2 2.2.23)
+	// Set to 5s for faster CI tests via: DITTOFS_LOCK_LEASE_BREAK_TIMEOUT=5s
+	LeaseBreakTimeout time.Duration `mapstructure:"lease_break_timeout" yaml:"lease_break_timeout"`
 }
 
 // LoggingConfig controls logging behavior.

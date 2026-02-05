@@ -26,6 +26,7 @@ func ApplyDefaults(cfg *Config) {
 	applyControlPlaneDefaults(&cfg.ControlPlane)
 	applyCacheDefaults(&cfg.Cache)
 	applyAdminDefaults(&cfg.Admin)
+	applyLockDefaults(&cfg.Lock)
 }
 
 // applyLoggingDefaults sets logging defaults and normalizes values.
@@ -141,6 +142,17 @@ func applyAdminDefaults(cfg *AdminConfig) {
 		cfg.Username = "admin"
 	}
 	// Email and PasswordHash have no defaults - they're optional or set during init
+}
+
+// applyLockDefaults sets lock manager defaults.
+func applyLockDefaults(cfg *LockConfig) {
+	// LeaseBreakTimeout defaults to 35 seconds (SMB2 spec maximum, MS-SMB2 2.2.23)
+	// This is the Windows default and provides maximum time for SMB clients
+	// to acknowledge lease breaks and flush cached data.
+	// For CI tests, set DITTOFS_LOCK_LEASE_BREAK_TIMEOUT=5s for faster execution.
+	if cfg.LeaseBreakTimeout == 0 {
+		cfg.LeaseBreakTimeout = 35 * time.Second
+	}
 }
 
 // GetDefaultConfig returns a Config struct with all default values applied.

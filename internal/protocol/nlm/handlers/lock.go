@@ -92,6 +92,11 @@ func EncodeLockResponse(resp *LockResponse) ([]byte, error) {
 //   - Reclaim (Reclaim=true): Uses reclaim path during grace period
 //   - During grace period with Reclaim=false: Returns NLM4DeniedGrace
 //
+// Cross-Protocol Behavior:
+//   - Before acquiring, checks for SMB Write leases that need to be broken
+//   - Waits for SMB lease break acknowledgment (configurable timeout, default 35s)
+//   - If conflict is due to SMB lease, returns NLM4_DENIED with SMB holder info
+//
 // Parameters:
 //   - ctx: The NLM handler context with auth and client info
 //   - req: The LOCK request containing lock parameters
@@ -115,6 +120,23 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 
 	// Convert file handle
 	handle := metadata.FileHandle(req.Lock.FH)
+
+	// ========================================================================
+	// Cross-Protocol: Check for SMB leases before acquiring NLM lock
+	// ========================================================================
+	// Per CONTEXT.md: NLM LOCK must check for SMB Write leases and wait for
+	// lease break acknowledgment before granting the lock.
+	checker := metadata.GetOplockChecker()
+	if checker != nil {
+		if err := checkForSMBLeaseConflicts(ctx.Context, checker, lock.FileHandle(handle), h.config); err != nil {
+			// Context cancelled during wait - return error
+			logger.Info("NLM LOCK: lease break wait interrupted",
+				"client", ctx.ClientAddr,
+				"error", err)
+			// Don't fail the operation - proceed with lock attempt
+			// The SMB client may have released the lease
+		}
+	}
 
 	// Build lock owner
 	owner := lock.LockOwner{
@@ -207,7 +229,27 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 		}, nil
 	}
 
-	// Non-blocking request with conflict - return denied
+	// Non-blocking request with conflict - check if it's SMB lease or byte-range lock
+	// Per CONTEXT.md: Return holder info for cross-protocol conflicts
+	if result.Conflict != nil && result.Conflict.Lock != nil {
+		if result.Conflict.Lock.IsLease() {
+			// Conflict is with SMB lease - build response with SMB holder info
+			logger.Info("NLM LOCK denied by SMB lease",
+				"client", ctx.ClientAddr,
+				"owner", ownerID,
+				"lease_state", result.Conflict.Lock.Lease.StateString())
+			// Record cross-protocol conflict metric
+			lock.RecordCrossProtocolConflict(lock.InitiatorNFS, lock.ConflictingSMBLease, lock.ResolutionDenied)
+			return buildDeniedResponseFromSMBLease(req.Cookie, result.Conflict.Lock), nil
+		}
+		// Conflict is with byte-range lock - build response with lock holder info
+		logger.Debug("NLM LOCK denied by byte-range lock",
+			"client", ctx.ClientAddr,
+			"owner", ownerID)
+		return buildDeniedResponseFromByteRangeLock(req.Cookie, result.Conflict.Lock), nil
+	}
+
+	// Generic conflict without detailed info
 	logger.Debug("NLM LOCK denied",
 		"client", ctx.ClientAddr,
 		"owner", ownerID)
