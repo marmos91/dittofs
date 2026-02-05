@@ -733,3 +733,73 @@ func (m *OplockManager) CheckAndBreakForRead(ctx context.Context, fileHandle loc
 
 	return nil
 }
+
+// CheckAndBreakForDelete checks for SMB Handle leases that must break before file deletion.
+// Called by NFS REMOVE/RENAME handlers before deleting files.
+//
+// Per MS-SMB2 and cross-protocol semantics:
+//   - Handle lease (H) protects against "surprise deletion"
+//   - SMB clients use H leases to get notification before file deletion
+//   - Break to None for delete operations (file is being removed)
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - fileHandle: The file being deleted
+//
+// Returns:
+//   - nil if no Handle leases or all breaks completed
+//   - ErrLeaseBreakPending if a break was initiated and caller should wait
+func (m *OplockManager) CheckAndBreakForDelete(ctx context.Context, fileHandle lock.FileHandle) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.lockStore == nil {
+		return nil
+	}
+
+	// Query leases for this file
+	isLease := true
+	leases, err := m.lockStore.ListLocks(ctx, lock.LockQuery{
+		FileID:  string(fileHandle),
+		IsLease: &isLease,
+	})
+	if err != nil {
+		return nil // Don't block delete on query failure
+	}
+
+	breakPending := false
+	for _, pl := range leases {
+		if len(pl.LeaseKey) != 16 {
+			continue
+		}
+
+		el := lock.FromPersistedLock(pl)
+		if el.Lease == nil {
+			continue
+		}
+
+		// Handle lease protects against surprise deletion
+		// Delete requires breaking ALL leases to None
+		if el.Lease.HasHandle() || el.Lease.HasWrite() || el.Lease.HasRead() {
+			logger.Debug("Lease: NFS delete triggers lease break",
+				"fileHandle", string(fileHandle),
+				"leaseKey", fmt.Sprintf("%x", el.Lease.LeaseKey),
+				"leaseState", el.Lease.StateString())
+
+			if el.Lease.Breaking {
+				// Break already in progress - caller should wait
+				breakPending = true
+			} else {
+				// Break to None for delete operations
+				m.initiateLeaseBreak(el, lock.LeaseStateNone)
+				breakPending = true
+			}
+		}
+	}
+
+	if breakPending {
+		return ErrLeaseBreakPending
+	}
+
+	return nil
+}

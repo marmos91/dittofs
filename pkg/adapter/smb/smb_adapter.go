@@ -12,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/v2/handlers"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // SMBAdapter implements the adapter.Adapter interface for SMB2 protocol.
@@ -181,6 +182,16 @@ func New(config SMBConfig) *SMBAdapter {
 func (s *SMBAdapter) SetRuntime(rt *runtime.Runtime) {
 	s.registry = rt
 	s.handler.Registry = rt
+
+	// Register OplockManager with MetadataService for cross-protocol lease breaks.
+	// This enables NFS handlers to break SMB leases before write/delete operations.
+	// The registration uses the package-level SetOplockChecker function since
+	// OplockChecker is a global singleton (one SMB adapter instance).
+	if s.handler.OplockManager != nil {
+		metadata.SetOplockChecker(s.handler.OplockManager)
+		logger.Debug("SMB adapter registered OplockManager for cross-protocol lease breaks")
+	}
+
 	logger.Debug("SMB adapter configured with runtime", "shares", rt.CountShares())
 }
 
