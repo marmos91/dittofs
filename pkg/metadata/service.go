@@ -733,3 +733,94 @@ func (s *MetadataService) CancelBlockingLock(
 	// For now, just return success since we don't have a blocking queue
 	return nil
 }
+
+// ============================================================================
+// Cross-Protocol Lease Integration (SMB Leases)
+// ============================================================================
+//
+// These methods provide NFS protocol handlers with visibility into SMB leases.
+// When an NFS operation conflicts with an SMB lease, the lease must be broken
+// before the NFS operation can proceed.
+//
+// The OplockManager interface is injected by the SMB adapter when it starts.
+// If no SMB adapter is running, these methods are no-ops.
+
+// OplockChecker defines the interface for cross-protocol lease checking.
+// This interface is implemented by the SMB OplockManager.
+type OplockChecker interface {
+	// CheckAndBreakForWrite checks for SMB leases that conflict with a write
+	// and initiates breaks as needed. Returns ErrLeaseBreakPending if caller
+	// should wait for break acknowledgment.
+	CheckAndBreakForWrite(ctx context.Context, fileHandle lock.FileHandle) error
+
+	// CheckAndBreakForRead checks for SMB leases that conflict with a read
+	// and initiates breaks as needed. Returns ErrLeaseBreakPending if caller
+	// should wait for break acknowledgment.
+	CheckAndBreakForRead(ctx context.Context, fileHandle lock.FileHandle) error
+}
+
+// oplockChecker is the optional cross-protocol lease checker.
+// Set by SMB adapter via SetOplockChecker. Nil if no SMB adapter running.
+var oplockChecker OplockChecker
+var oplockCheckerMu sync.RWMutex
+
+// SetOplockChecker sets the cross-protocol lease checker.
+// Called by the SMB adapter when it initializes the OplockManager.
+func SetOplockChecker(checker OplockChecker) {
+	oplockCheckerMu.Lock()
+	defer oplockCheckerMu.Unlock()
+	oplockChecker = checker
+}
+
+// GetOplockChecker returns the current oplock checker, or nil if not set.
+func GetOplockChecker() OplockChecker {
+	oplockCheckerMu.RLock()
+	defer oplockCheckerMu.RUnlock()
+	return oplockChecker
+}
+
+// CheckAndBreakLeasesForWrite checks for SMB leases that conflict with a write
+// operation and initiates breaks as needed.
+//
+// This is called by NFS WRITE handler before committing the write.
+// If an SMB client holds a Write lease on the file, the lease must be broken
+// and the client must flush its cached writes before the NFS write proceeds.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - handle: File handle being written to
+//
+// Returns:
+//   - nil if no SMB adapter or no conflicting leases
+//   - ErrLeaseBreakPending if a lease break was initiated (caller should wait)
+//   - Other errors for system failures
+func (s *MetadataService) CheckAndBreakLeasesForWrite(ctx context.Context, handle FileHandle) error {
+	checker := GetOplockChecker()
+	if checker == nil {
+		return nil // No SMB adapter, no leases to break
+	}
+	return checker.CheckAndBreakForWrite(ctx, lock.FileHandle(handle))
+}
+
+// CheckAndBreakLeasesForRead checks for SMB leases that conflict with a read
+// operation and initiates breaks as needed.
+//
+// This is called by NFS READ handler before reading.
+// If an SMB client holds a Write lease on the file (uncommitted writes),
+// the lease must be broken and the client must flush before NFS read proceeds.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - handle: File handle being read from
+//
+// Returns:
+//   - nil if no SMB adapter or no conflicting leases
+//   - ErrLeaseBreakPending if a lease break was initiated (caller should wait)
+//   - Other errors for system failures
+func (s *MetadataService) CheckAndBreakLeasesForRead(ctx context.Context, handle FileHandle) error {
+	checker := GetOplockChecker()
+	if checker == nil {
+		return nil // No SMB adapter, no leases to break
+	}
+	return checker.CheckAndBreakForRead(ctx, lock.FileHandle(handle))
+}
