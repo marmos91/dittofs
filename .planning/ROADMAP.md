@@ -151,13 +151,15 @@ Plans:
   3. Cross-protocol file access maintains consistency (no data corruption)
   4. E2E tests verify locking scenarios across both protocols
   5. Grace period recovery works for both NFS and SMB clients
-**Plans**: 4 plans in 3 waves
+**Plans**: 6 plans in 2 waves
 
 Plans:
-- [ ] 05-01-PLAN.md — UnifiedLockView for cross-protocol lock queries, translation helpers, metrics
-- [ ] 05-02-PLAN.md — NLM handler integration: SMB lease check, break wait, Handle lease break for REMOVE/RENAME
-- [ ] 05-03-PLAN.md — SMB handler integration: NLM lock check before lease grant, STATUS_LOCK_NOT_GRANTED
-- [ ] 05-04-PLAN.md — E2E tests: cross-protocol lock conflicts, data integrity, grace period recovery
+- [x] 05-01-PLAN.md — UnifiedLockView for cross-protocol lock queries, translation helpers, metrics
+- [x] 05-02-PLAN.md — NLM handler integration: SMB lease check, break wait, Handle lease break for REMOVE/RENAME
+- [x] 05-03-PLAN.md — SMB handler integration: NLM lock check before lease grant, STATUS_LOCK_NOT_GRANTED
+- [x] 05-04-PLAN.md — E2E tests: cross-protocol lock conflicts, data integrity, grace period recovery
+- [ ] 05-05-PLAN.md — [GAP CLOSURE] SMB lease grace period reclaim implementation
+- [ ] 05-06-PLAN.md — [GAP CLOSURE] Docker-based CIFS mount for E2E test execution
 
 ---
 
@@ -589,7 +591,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 2. NLM Protocol | v1.0 | 3/3 | Complete | 2026-02-05 |
 | 3. NSM Protocol | v1.0 | 3/3 | Complete | 2026-02-05 |
 | 4. SMB Leases | v1.0 | 3/3 | Complete | 2026-02-05 |
-| 5. Cross-Protocol Integration | v1.0 | 0/4 | Planned | - |
+| 5. Cross-Protocol Integration | v1.0 | 4/6 | Gap closure | - |
 | 6. NFSv4 Protocol Foundation | v2.0 | 0/3 | Not started | - |
 | 7. NFSv4 File Operations | v2.0 | 0/5 | Not started | - |
 | 8. NFSv4 Advanced Operations | v2.0 | 0/5 | Not started | - |
@@ -614,7 +616,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 27. Documentation | v4.0 | 0/3 | Not started | - |
 | 28. v4.0 Testing | v4.0 | 0/5 | Not started | - |
 
-**Total:** 13/108 plans complete
+**Total:** 17/110 plans complete
 
 ---
 *Roadmap created: 2026-02-04*
@@ -623,4 +625,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 *Phase 3 completed: 2026-02-05*
 *Phase 4 completed: 2026-02-05*
 *Phase 5 planned: 2026-02-05*
+*Phase 5 gap closure: 2026-02-05*
 *Requirements coverage: 162/162 mapped*
