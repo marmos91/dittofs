@@ -12,13 +12,18 @@ import (
 
 // Label constants for metrics.
 const (
-	LabelShare     = "share"
-	LabelType      = "type"
-	LabelStatus    = "status"
-	LabelReason    = "reason"
-	LabelAdapter   = "adapter"
-	LabelEvent     = "event"
-	LabelLimitType = "limit_type"
+	LabelShare      = "share"
+	LabelType       = "type"
+	LabelStatus     = "status"
+	LabelReason     = "reason"
+	LabelAdapter    = "adapter"
+	LabelEvent      = "event"
+	LabelLimitType  = "limit_type"
+	LabelInitiator  = "initiator"
+	LabelConflicting = "conflicting"
+	LabelResolution = "resolution"
+	LabelTrigger    = "trigger"
+	LabelTarget     = "target"
 )
 
 // Status constants for lock operations.
@@ -34,6 +39,38 @@ const (
 	ReasonTimeout      = "timeout"
 	ReasonDisconnect   = "disconnect"
 	ReasonGraceExpired = "grace_expired"
+)
+
+// Cross-protocol initiator constants.
+const (
+	InitiatorNFS = "nfs"
+	InitiatorSMB = "smb"
+)
+
+// Cross-protocol conflicting type constants.
+const (
+	ConflictingNFSLock   = "nfs_lock"
+	ConflictingSMBLease  = "smb_lease"
+)
+
+// Cross-protocol resolution constants.
+const (
+	ResolutionDenied         = "denied"
+	ResolutionBreakInitiated = "break_initiated"
+	ResolutionBreakCompleted = "break_completed"
+)
+
+// Cross-protocol trigger constants.
+const (
+	TriggerNFSWrite  = "nfs_write"
+	TriggerNFSLock   = "nfs_lock"
+	TriggerNFSRemove = "nfs_remove"
+)
+
+// Cross-protocol target constants.
+const (
+	TargetSMBWriteLease  = "smb_write_lease"
+	TargetSMBHandleLease = "smb_handle_lease"
 )
 
 // Metrics provides Prometheus metrics for lock and connection tracking.
@@ -64,6 +101,10 @@ type Metrics struct {
 
 	// Deadlock detection
 	deadlockDetected prometheus.Counter
+
+	// Cross-protocol metrics
+	crossProtocolConflictTotal   *prometheus.CounterVec
+	crossProtocolBreakDuration   *prometheus.HistogramVec
 
 	// Flag to track if metrics are registered
 	registered bool
@@ -201,6 +242,29 @@ func NewMetrics(registry prometheus.Registerer) *Metrics {
 				Help:      "Number of deadlocks detected",
 			},
 		),
+
+		crossProtocolConflictTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "dittofs",
+				Subsystem: "locks",
+				Name:      "cross_protocol_conflict_total",
+				Help:      "Total number of cross-protocol lock conflicts",
+			},
+			[]string{LabelInitiator, LabelConflicting, LabelResolution},
+		),
+
+		crossProtocolBreakDuration: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "dittofs",
+				Subsystem: "locks",
+				Name:      "cross_protocol_break_duration_seconds",
+				Help:      "Time taken to complete a cross-protocol lease break",
+				// Buckets from 0.1s to ~100s exponential
+				// SMB lease break timeout is 35s, so we need coverage up to there
+				Buckets:   []float64{0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 35, 50, 100},
+			},
+			[]string{LabelTrigger, LabelTarget},
+		),
 	}
 
 	// Register with registry if provided
@@ -219,6 +283,8 @@ func NewMetrics(registry prometheus.Registerer) *Metrics {
 			m.reclaimTotal,
 			m.lockLimitHits,
 			m.deadlockDetected,
+			m.crossProtocolConflictTotal,
+			m.crossProtocolBreakDuration,
 		)
 		m.registered = true
 	}
@@ -382,6 +448,47 @@ func (m *Metrics) ObserveDeadlock() {
 }
 
 // ============================================================================
+// Cross-Protocol Metrics
+// ============================================================================
+
+// RecordCrossProtocolConflict records a cross-protocol lock conflict.
+//
+// Parameters:
+//   - initiator: The protocol that initiated the operation (nfs/smb)
+//   - conflicting: The type of conflicting lock (nfs_lock/smb_lease)
+//   - resolution: How the conflict was resolved (denied/break_initiated/break_completed)
+//
+// Example usage:
+//   - NFS WRITE conflicts with SMB Write lease, break initiated:
+//     RecordCrossProtocolConflict(InitiatorNFS, ConflictingSMBLease, ResolutionBreakInitiated)
+//   - SMB lock request denied due to NFS lock:
+//     RecordCrossProtocolConflict(InitiatorSMB, ConflictingNFSLock, ResolutionDenied)
+func (m *Metrics) RecordCrossProtocolConflict(initiator, conflicting, resolution string) {
+	if m == nil {
+		return
+	}
+	m.crossProtocolConflictTotal.WithLabelValues(initiator, conflicting, resolution).Inc()
+}
+
+// RecordCrossProtocolBreakDuration records the time taken to complete a cross-protocol
+// lease break operation.
+//
+// Parameters:
+//   - trigger: What triggered the break (nfs_write/nfs_lock/nfs_remove)
+//   - target: The type of lease being broken (smb_write_lease/smb_handle_lease)
+//   - duration: Time from break initiation to completion
+//
+// Example usage:
+//   - NFS WRITE triggered SMB Write lease break that took 2.5s:
+//     RecordCrossProtocolBreakDuration(TriggerNFSWrite, TargetSMBWriteLease, 2.5*time.Second)
+func (m *Metrics) RecordCrossProtocolBreakDuration(trigger, target string, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	m.crossProtocolBreakDuration.WithLabelValues(trigger, target).Observe(duration.Seconds())
+}
+
+// ============================================================================
 // Collector Interface (optional)
 // ============================================================================
 
@@ -404,6 +511,8 @@ func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 	m.reclaimTotal.Describe(ch)
 	m.lockLimitHits.Describe(ch)
 	ch <- m.deadlockDetected.Desc()
+	m.crossProtocolConflictTotal.Describe(ch)
+	m.crossProtocolBreakDuration.Describe(ch)
 }
 
 // Collect implements prometheus.Collector.
@@ -425,4 +534,6 @@ func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 	m.reclaimTotal.Collect(ch)
 	m.lockLimitHits.Collect(ch)
 	ch <- m.deadlockDetected
+	m.crossProtocolConflictTotal.Collect(ch)
+	m.crossProtocolBreakDuration.Collect(ch)
 }

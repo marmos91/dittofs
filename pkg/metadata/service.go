@@ -33,12 +33,13 @@ import (
 //	file, err := metaSvc.GetFile(ctx, handle)
 type MetadataService struct {
 	mu               sync.RWMutex
-	stores           map[string]MetadataStore // shareName -> store
-	lockManagers     map[string]*LockManager  // shareName -> lock manager (ephemeral, per-share)
-	pendingWrites    *PendingWritesTracker    // deferred metadata commits for performance
-	deferredCommit   bool                     // if true, use deferred commits (default: true)
-	cookies          *CookieManager           // NFS/SMB cookie ↔ store token translation
-	onUnlockCallback func(handle FileHandle)  // NLM callback to process waiting locks
+	stores           map[string]MetadataStore     // shareName -> store
+	lockManagers     map[string]*LockManager      // shareName -> lock manager (ephemeral, per-share)
+	unifiedViews     map[string]*UnifiedLockView  // shareName -> unified lock view (cross-protocol)
+	pendingWrites    *PendingWritesTracker        // deferred metadata commits for performance
+	deferredCommit   bool                         // if true, use deferred commits (default: true)
+	cookies          *CookieManager               // NFS/SMB cookie ↔ store token translation
+	onUnlockCallback func(handle FileHandle)      // NLM callback to process waiting locks
 }
 
 // New creates a new empty MetadataService instance.
@@ -48,6 +49,7 @@ func New() *MetadataService {
 	return &MetadataService{
 		stores:         make(map[string]MetadataStore),
 		lockManagers:   make(map[string]*LockManager),
+		unifiedViews:   make(map[string]*UnifiedLockView),
 		pendingWrites:  NewPendingWritesTracker(),
 		deferredCommit: true, // Enable deferred commits by default
 		cookies:        NewCookieManager(),
@@ -146,6 +148,57 @@ func (s *MetadataService) GetLockManagerForShare(shareName string) *LockManager 
 		return lm
 	}
 	return nil
+}
+
+// GetUnifiedLockView returns the UnifiedLockView for a specific share.
+//
+// UnifiedLockView provides cross-protocol lock visibility, allowing any protocol
+// handler to query all locks (NLM byte-range and SMB leases) on a file.
+//
+// Returns nil if no UnifiedLockView exists for the share. This can happen if:
+//   - The share has not been registered
+//   - No LockStore has been set for the share
+//
+// Thread safety: Safe to call concurrently.
+func (s *MetadataService) GetUnifiedLockView(shareName string) *UnifiedLockView {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if view, ok := s.unifiedViews[shareName]; ok {
+		return view
+	}
+	return nil
+}
+
+// SetUnifiedLockView sets the UnifiedLockView for a specific share.
+//
+// This is called when a LockStore becomes available for a share (e.g., when
+// a store that implements LockStore is registered). Protocol handlers should
+// NOT call this directly - it's for internal use by the registration process.
+//
+// Thread safety: Safe to call concurrently.
+func (s *MetadataService) SetUnifiedLockView(shareName string, view *UnifiedLockView) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.unifiedViews[shareName] = view
+}
+
+// unifiedViewForHandle returns the UnifiedLockView for the share that owns the handle.
+func (s *MetadataService) unifiedViewForHandle(handle FileHandle) (*UnifiedLockView, error) {
+	shareName, _, err := DecodeFileHandle(handle)
+	if err != nil {
+		return nil, fmt.Errorf("invalid file handle: %w", err)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if view, ok := s.unifiedViews[shareName]; ok {
+		return view, nil
+	}
+
+	return nil, fmt.Errorf("no unified lock view for share %q", shareName)
 }
 
 // ============================================================================
