@@ -8,6 +8,7 @@ import (
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -259,6 +260,74 @@ func (v *DittoServerValidator) validateDittoServerWithClient(ctx context.Context
 			if _, ok := secret.Data[secretAccessKeyKey]; !ok {
 				warnings = append(warnings,
 					fmt.Sprintf("S3 credentials Secret %q missing key %q", secretName, secretAccessKeyKey))
+			}
+		}
+	}
+
+	// Validate Percona configuration
+	if ds.Spec.Percona != nil && ds.Spec.Percona.Enabled {
+		// Check if PerconaPGCluster CRD is installed
+		gvk := schema.GroupVersionKind{
+			Group:   "pgv2.percona.com",
+			Version: "v2",
+			Kind:    "PerconaPGCluster",
+		}
+		_, err := v.Client.RESTMapper().RESTMapping(gvk.GroupKind(), gvk.Version)
+		if err != nil {
+			return warnings, fmt.Errorf("Percona PostgreSQL Operator CRD not installed; install pg-operator first or disable percona.enabled")
+		}
+
+		// Warn if both Percona and PostgresSecretRef are set
+		if ds.Spec.Database != nil && ds.Spec.Database.PostgresSecretRef != nil {
+			warnings = append(warnings,
+				"Both percona.enabled and database.postgresSecretRef are set; Percona-managed PostgreSQL will be used (PostgresSecretRef ignored)")
+		}
+
+		// Validate Percona StorageClass if specified
+		if ds.Spec.Percona.StorageClassName != nil && *ds.Spec.Percona.StorageClassName != "" {
+			scName := *ds.Spec.Percona.StorageClassName
+			storageClass := &storagev1.StorageClass{}
+			err := v.Client.Get(ctx, types.NamespacedName{Name: scName}, storageClass)
+			if err != nil {
+				if apierrors.IsNotFound(err) {
+					return warnings, fmt.Errorf("Percona StorageClass %q does not exist in cluster", scName)
+				}
+				warnings = append(warnings,
+					fmt.Sprintf("Could not verify Percona StorageClass %q exists: %v", scName, err))
+			}
+		}
+
+		// Validate backup configuration if enabled
+		if ds.Spec.Percona.Backup != nil && ds.Spec.Percona.Backup.Enabled {
+			backup := ds.Spec.Percona.Backup
+
+			// Bucket is required if backup enabled
+			if backup.Bucket == "" {
+				return warnings, fmt.Errorf("percona.backup.bucket is required when backup is enabled")
+			}
+
+			// Endpoint is required for S3-compatible storage
+			if backup.Endpoint == "" {
+				return warnings, fmt.Errorf("percona.backup.endpoint is required when backup is enabled")
+			}
+
+			// Warn if credentials secret not specified
+			if backup.CredentialsSecretRef == nil {
+				warnings = append(warnings,
+					"percona.backup.credentialsSecretRef not set; pgBackRest may fail to authenticate with S3")
+			} else {
+				// Check if credentials secret exists (warning only)
+				secret := &corev1.Secret{}
+				err := v.Client.Get(ctx, types.NamespacedName{
+					Name:      backup.CredentialsSecretRef.Name,
+					Namespace: ds.Namespace,
+				}, secret)
+				if err != nil {
+					if apierrors.IsNotFound(err) {
+						warnings = append(warnings,
+							fmt.Sprintf("pgBackRest credentials Secret %q not found; ensure it exists before PostgreSQL starts", backup.CredentialsSecretRef.Name))
+					}
+				}
 			}
 		}
 	}
