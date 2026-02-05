@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	mount "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	v3 "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
+	nlm_handlers "github.com/marmos91/dittofs/internal/protocol/nlm/handlers"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metrics"
 )
@@ -53,6 +54,9 @@ type NFSAdapter struct {
 
 	// mountHandler processes MOUNT protocol operations (MNT, UMNT, EXPORT, etc.)
 	mountHandler *mount.Handler
+
+	// nlmHandler processes NLM (Network Lock Manager) operations (LOCK, UNLOCK, TEST, etc.)
+	nlmHandler *nlm_handlers.Handler
 
 	// registry provides access to all stores and shares
 	registry *runtime.Runtime
@@ -311,6 +315,10 @@ func (s *NFSAdapter) SetRuntime(rt *runtime.Runtime) {
 	// Inject runtime into handlers
 	s.nfsHandler.Registry = rt
 	s.mountHandler.Registry = rt
+
+	// Initialize NLM handler with MetadataService from runtime
+	metadataService := rt.GetMetadataService()
+	s.nlmHandler = nlm_handlers.NewHandler(metadataService)
 
 	logger.Debug("NFS adapter configured with runtime", "shares", rt.CountShares())
 }
