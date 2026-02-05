@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"github.com/marmos91/dittofs/pkg/metadata/errors"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // MetadataService provides all metadata operations for the filesystem.
@@ -460,4 +463,229 @@ func (s *MetadataService) GetShareOptions(ctx context.Context, shareName string)
 		return nil, err
 	}
 	return store.GetShareOptions(ctx, shareName)
+}
+
+// ============================================================================
+// NLM Lock Operations
+// ============================================================================
+//
+// These methods provide NLM-specific lock operations that integrate with the
+// unified lock manager from Phase 1. They differ from the generic lock methods
+// in that they:
+//   - Take owner ID string directly (NLM handler constructs it)
+//   - Return detailed conflict info for NLM_DENIED responses
+//   - Support blocking semantics via lock.LockResult
+//
+// Owner ID format per CONTEXT.md: nlm:{caller_name}:{svid}:{oh_hex}
+
+// LockFileNLM acquires a lock for NLM protocol.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - handle: File handle to lock
+//   - owner: Lock owner (contains protocol-prefixed ownerID)
+//   - offset: Starting byte offset of lock range
+//   - length: Number of bytes to lock (0 = to EOF)
+//   - exclusive: true for exclusive/write lock, false for shared/read lock
+//   - reclaim: true if this is a reclaim during grace period
+//
+// Returns:
+//   - *lock.LockResult: Success=true with Lock if granted, Success=false with Conflict if denied
+//   - error: System-level errors only (not lock conflicts)
+func (s *MetadataService) LockFileNLM(
+	ctx context.Context,
+	handle FileHandle,
+	owner LockOwner,
+	offset, length uint64,
+	exclusive bool,
+	reclaim bool,
+) (*lock.LockResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	// Get lock manager for the handle's share
+	lm, err := s.lockManagerForHandle(handle)
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify file exists
+	store, err := s.storeForHandle(handle)
+	if err != nil {
+		return nil, err
+	}
+	_, err = store.GetFile(ctx, handle)
+	if err != nil {
+		return nil, err // Will map to NLM4_STALE_FH
+	}
+
+	// Create enhanced lock
+	lockType := LockTypeShared
+	if exclusive {
+		lockType = LockTypeExclusive
+	}
+	enhancedLock := NewEnhancedLock(owner, lock.FileHandle(handle), offset, length, lockType)
+	enhancedLock.Reclaim = reclaim
+
+	// Try to acquire
+	handleKey := string(handle)
+	err = lm.AddEnhancedLock(handleKey, enhancedLock)
+	if err != nil {
+		// Check if it's a lock conflict error (StoreError with ErrLockConflict code)
+		if storeErr, ok := err.(*errors.StoreError); ok && storeErr.Code == errors.ErrLockConflict {
+			// For NLM, we need to find the conflicting lock for the response
+			existing := lm.ListEnhancedLocks(handleKey)
+			for _, el := range existing {
+				if IsEnhancedLockConflicting(el, enhancedLock) {
+					return &lock.LockResult{
+						Success:  false,
+						Conflict: &EnhancedLockConflict{Lock: el, Reason: "conflict"},
+					}, nil
+				}
+			}
+			// Conflict but couldn't find specific lock - still return failure
+			return &lock.LockResult{
+				Success: false,
+			}, nil
+		}
+		return nil, err
+	}
+
+	return &lock.LockResult{
+		Success: true,
+		Lock:    enhancedLock,
+	}, nil
+}
+
+// TestLockNLM tests if a lock could be granted without acquiring it.
+//
+// This is used for NLM_TEST procedure (F_GETLK fcntl() support).
+// Per Phase 1 decision: TEST is allowed during grace period.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - handle: File handle to test
+//   - owner: Lock owner for the test
+//   - offset: Starting byte offset of test range
+//   - length: Number of bytes to test (0 = to EOF)
+//   - exclusive: true to test for exclusive lock, false for shared lock
+//
+// Returns:
+//   - bool: true if lock would succeed, false if conflict exists
+//   - *EnhancedLockConflict: Information about conflicting lock (nil if granted)
+//   - error: System-level errors only
+func (s *MetadataService) TestLockNLM(
+	ctx context.Context,
+	handle FileHandle,
+	owner LockOwner,
+	offset, length uint64,
+	exclusive bool,
+) (bool, *EnhancedLockConflict, error) {
+	if err := ctx.Err(); err != nil {
+		return false, nil, err
+	}
+
+	// Get lock manager
+	lm, err := s.lockManagerForHandle(handle)
+	if err != nil {
+		return false, nil, err
+	}
+
+	// Verify file exists
+	store, err := s.storeForHandle(handle)
+	if err != nil {
+		return false, nil, err
+	}
+	_, err = store.GetFile(ctx, handle)
+	if err != nil {
+		return false, nil, err
+	}
+
+	// Test the lock
+	lockType := LockTypeShared
+	if exclusive {
+		lockType = LockTypeExclusive
+	}
+	testLock := NewEnhancedLock(owner, lock.FileHandle(handle), offset, length, lockType)
+
+	handleKey := string(handle)
+	existing := lm.ListEnhancedLocks(handleKey)
+	for _, el := range existing {
+		if IsEnhancedLockConflicting(el, testLock) {
+			return false, &EnhancedLockConflict{Lock: el, Reason: "conflict"}, nil
+		}
+	}
+	return true, nil, nil
+}
+
+// UnlockFileNLM releases a lock for NLM protocol.
+//
+// Per NLM specification and CONTEXT.md:
+//   - Unlock of non-existent lock silently succeeds (returns nil)
+//   - This ensures idempotency for retried unlock requests
+//   - The exclusive flag is ignored on unlock
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - handle: File handle to unlock
+//   - ownerID: Owner ID string (protocol-prefixed)
+//   - offset: Starting byte offset of lock range
+//   - length: Number of bytes to unlock (0 = to EOF)
+//
+// Returns:
+//   - error: nil on success (including non-existent lock), system errors otherwise
+func (s *MetadataService) UnlockFileNLM(
+	ctx context.Context,
+	handle FileHandle,
+	ownerID string,
+	offset, length uint64,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	lm, err := s.lockManagerForHandle(handle)
+	if err != nil {
+		return nil // No lock manager = no locks = success
+	}
+
+	handleKey := string(handle)
+	err = lm.RemoveEnhancedLock(handleKey, LockOwner{OwnerID: ownerID}, offset, length)
+	if err != nil {
+		// Per CONTEXT.md: unlock of non-existent lock silently succeeds
+		if storeErr, ok := err.(*errors.StoreError); ok && storeErr.Code == errors.ErrLockNotFound {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// CancelBlockingLock cancels a pending blocking lock request.
+//
+// This is used for NLM_CANCEL procedure when a client times out waiting
+// for a blocked lock request.
+//
+// Note: This is a stub for now. Full implementation will be added in Plan 02-03
+// when the blocking queue is implemented.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - handle: File handle
+//   - ownerID: Owner ID of the pending request
+//   - offset: Starting byte offset of the pending lock
+//   - length: Number of bytes of the pending lock
+//
+// Returns:
+//   - error: nil on success, system errors otherwise
+func (s *MetadataService) CancelBlockingLock(
+	ctx context.Context,
+	handle FileHandle,
+	ownerID string,
+	offset, length uint64,
+) error {
+	// Stub for now - blocking queue implementation in Plan 02-03
+	// For now, just return success since we don't have a blocking queue
+	return nil
 }

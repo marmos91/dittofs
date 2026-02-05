@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/protocol/nlm"
+	"github.com/marmos91/dittofs/internal/protocol/nlm/types"
 	"github.com/marmos91/dittofs/internal/protocol/xdr"
 )
 
@@ -20,7 +20,7 @@ import (
 //	stat:   [uint32]
 //
 // Used by: NLM_LOCK, NLM_UNLOCK, NLM_CANCEL, NLM_GRANTED responses
-func EncodeNLM4Res(buf *bytes.Buffer, res *nlm.NLM4Res) error {
+func EncodeNLM4Res(buf *bytes.Buffer, res *types.NLM4Res) error {
 	if res == nil {
 		return fmt.Errorf("NLM4Res is nil")
 	}
@@ -49,7 +49,7 @@ func EncodeNLM4Res(buf *bytes.Buffer, res *nlm.NLM4Res) error {
 //
 // If Status is NLM4Denied, Holder must be non-nil and will be encoded.
 // If Status is anything else, Holder is ignored (not encoded).
-func EncodeNLM4TestRes(buf *bytes.Buffer, res *nlm.NLM4TestRes) error {
+func EncodeNLM4TestRes(buf *bytes.Buffer, res *types.NLM4TestRes) error {
 	if res == nil {
 		return fmt.Errorf("NLM4TestRes is nil")
 	}
@@ -65,7 +65,7 @@ func EncodeNLM4TestRes(buf *bytes.Buffer, res *nlm.NLM4TestRes) error {
 	}
 
 	// If denied, encode holder information
-	if res.Status == nlm.NLM4Denied {
+	if res.Status == types.NLM4Denied {
 		if res.Holder == nil {
 			return fmt.Errorf("NLM4TestRes.Holder is nil but status is DENIED")
 		}
@@ -86,7 +86,7 @@ func EncodeNLM4TestRes(buf *bytes.Buffer, res *nlm.NLM4TestRes) error {
 //	oh:        [length:uint32][data:bytes][padding]
 //	l_offset:  [uint64]
 //	l_len:     [uint64]
-func EncodeNLM4Holder(buf *bytes.Buffer, holder *nlm.NLM4Holder) error {
+func EncodeNLM4Holder(buf *bytes.Buffer, holder *types.NLM4Holder) error {
 	if holder == nil {
 		return fmt.Errorf("NLM4Holder is nil")
 	}
@@ -129,7 +129,7 @@ func EncodeNLM4Holder(buf *bytes.Buffer, holder *nlm.NLM4Holder) error {
 //
 // Used when server calls back to client to notify that a blocked lock
 // has been granted.
-func EncodeNLM4GrantedArgs(buf *bytes.Buffer, args *nlm.NLM4GrantedArgs) error {
+func EncodeNLM4GrantedArgs(buf *bytes.Buffer, args *types.NLM4GrantedArgs) error {
 	if args == nil {
 		return fmt.Errorf("NLM4GrantedArgs is nil")
 	}
@@ -162,7 +162,7 @@ func EncodeNLM4GrantedArgs(buf *bytes.Buffer, args *nlm.NLM4GrantedArgs) error {
 //	svid:        [int32]
 //	l_offset:    [uint64]
 //	l_len:       [uint64]
-func EncodeNLM4Lock(buf *bytes.Buffer, lock *nlm.NLM4Lock) error {
+func EncodeNLM4Lock(buf *bytes.Buffer, lock *types.NLM4Lock) error {
 	if lock == nil {
 		return fmt.Errorf("NLM4Lock is nil")
 	}
@@ -207,7 +207,7 @@ func EncodeNLM4Lock(buf *bytes.Buffer, lock *nlm.NLM4Lock) error {
 //	cookie:   [length:uint32][data:bytes][padding]
 //	stat:     [uint32]
 //	sequence: [int32]
-func EncodeNLM4ShareRes(buf *bytes.Buffer, res *nlm.NLM4ShareRes) error {
+func EncodeNLM4ShareRes(buf *bytes.Buffer, res *types.NLM4ShareRes) error {
 	if res == nil {
 		return fmt.Errorf("NLM4ShareRes is nil")
 	}
@@ -246,7 +246,7 @@ func EncodeNLM4ShareRes(buf *bytes.Buffer, res *nlm.NLM4ShareRes) error {
 //	state:     [int32]
 //
 // Primarily used for testing decode functions.
-func EncodeNLM4LockArgs(buf *bytes.Buffer, args *nlm.NLM4LockArgs) error {
+func EncodeNLM4LockArgs(buf *bytes.Buffer, args *types.NLM4LockArgs) error {
 	if args == nil {
 		return fmt.Errorf("NLM4LockArgs is nil")
 	}
@@ -290,7 +290,7 @@ func EncodeNLM4LockArgs(buf *bytes.Buffer, args *nlm.NLM4LockArgs) error {
 //
 //	cookie: [length:uint32][data:bytes][padding]
 //	alock:  [nlm4_lock structure]
-func EncodeNLM4UnlockArgs(buf *bytes.Buffer, args *nlm.NLM4UnlockArgs) error {
+func EncodeNLM4UnlockArgs(buf *bytes.Buffer, args *types.NLM4UnlockArgs) error {
 	if args == nil {
 		return fmt.Errorf("NLM4UnlockArgs is nil")
 	}
@@ -315,7 +315,7 @@ func EncodeNLM4UnlockArgs(buf *bytes.Buffer, args *nlm.NLM4UnlockArgs) error {
 //	cookie:    [length:uint32][data:bytes][padding]
 //	exclusive: [uint32] (0=false, 1=true)
 //	alock:     [nlm4_lock structure]
-func EncodeNLM4TestArgs(buf *bytes.Buffer, args *nlm.NLM4TestArgs) error {
+func EncodeNLM4TestArgs(buf *bytes.Buffer, args *types.NLM4TestArgs) error {
 	if args == nil {
 		return fmt.Errorf("NLM4TestArgs is nil")
 	}
@@ -346,7 +346,7 @@ func EncodeNLM4TestArgs(buf *bytes.Buffer, args *nlm.NLM4TestArgs) error {
 //	block:     [uint32] (0=false, 1=true)
 //	exclusive: [uint32] (0=false, 1=true)
 //	alock:     [nlm4_lock structure]
-func EncodeNLM4CancelArgs(buf *bytes.Buffer, args *nlm.NLM4CancelArgs) error {
+func EncodeNLM4CancelArgs(buf *bytes.Buffer, args *types.NLM4CancelArgs) error {
 	if args == nil {
 		return fmt.Errorf("NLM4CancelArgs is nil")
 	}

@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/protocol/nlm"
+	"github.com/marmos91/dittofs/internal/protocol/nlm/types"
 	"github.com/marmos91/dittofs/internal/protocol/xdr"
 )
 
@@ -27,16 +27,16 @@ import (
 //	svid:        [int32]
 //	l_offset:    [uint64]
 //	l_len:       [uint64]
-func DecodeNLM4Lock(r io.Reader) (*nlm.NLM4Lock, error) {
-	lock := &nlm.NLM4Lock{}
+func DecodeNLM4Lock(r io.Reader) (*types.NLM4Lock, error) {
+	lock := &types.NLM4Lock{}
 
 	// Decode caller_name (string)
 	callerName, err := xdr.DecodeString(r)
 	if err != nil {
 		return nil, fmt.Errorf("decode caller_name: %w", err)
 	}
-	if len(callerName) > nlm.LMMaxStrLen {
-		return nil, fmt.Errorf("caller_name too long: %d > %d", len(callerName), nlm.LMMaxStrLen)
+	if len(callerName) > types.LMMaxStrLen {
+		return nil, fmt.Errorf("caller_name too long: %d > %d", len(callerName), types.LMMaxStrLen)
 	}
 	lock.CallerName = callerName
 
@@ -88,8 +88,8 @@ func DecodeNLM4Lock(r io.Reader) (*nlm.NLM4Lock, error) {
 //	alock:     [nlm4_lock structure]
 //	reclaim:   [uint32] (0=false, 1=true)
 //	state:     [int32]
-func DecodeNLM4LockArgs(r io.Reader) (*nlm.NLM4LockArgs, error) {
-	args := &nlm.NLM4LockArgs{}
+func DecodeNLM4LockArgs(r io.Reader) (*types.NLM4LockArgs, error) {
+	args := &types.NLM4LockArgs{}
 
 	// Decode cookie (opaque)
 	cookie, err := xdr.DecodeOpaque(r)
@@ -142,8 +142,8 @@ func DecodeNLM4LockArgs(r io.Reader) (*nlm.NLM4LockArgs, error) {
 //
 //	cookie: [length:uint32][data:bytes][padding]
 //	alock:  [nlm4_lock structure]
-func DecodeNLM4UnlockArgs(r io.Reader) (*nlm.NLM4UnlockArgs, error) {
-	args := &nlm.NLM4UnlockArgs{}
+func DecodeNLM4UnlockArgs(r io.Reader) (*types.NLM4UnlockArgs, error) {
+	args := &types.NLM4UnlockArgs{}
 
 	// Decode cookie (opaque)
 	cookie, err := xdr.DecodeOpaque(r)
@@ -169,8 +169,8 @@ func DecodeNLM4UnlockArgs(r io.Reader) (*nlm.NLM4UnlockArgs, error) {
 //	cookie:    [length:uint32][data:bytes][padding]
 //	exclusive: [uint32] (0=false, 1=true)
 //	alock:     [nlm4_lock structure]
-func DecodeNLM4TestArgs(r io.Reader) (*nlm.NLM4TestArgs, error) {
-	args := &nlm.NLM4TestArgs{}
+func DecodeNLM4TestArgs(r io.Reader) (*types.NLM4TestArgs, error) {
+	args := &types.NLM4TestArgs{}
 
 	// Decode cookie (opaque)
 	cookie, err := xdr.DecodeOpaque(r)
@@ -204,8 +204,8 @@ func DecodeNLM4TestArgs(r io.Reader) (*nlm.NLM4TestArgs, error) {
 //	block:     [uint32] (0=false, 1=true)
 //	exclusive: [uint32] (0=false, 1=true)
 //	alock:     [nlm4_lock structure]
-func DecodeNLM4CancelArgs(r io.Reader) (*nlm.NLM4CancelArgs, error) {
-	args := &nlm.NLM4CancelArgs{}
+func DecodeNLM4CancelArgs(r io.Reader) (*types.NLM4CancelArgs, error) {
+	args := &types.NLM4CancelArgs{}
 
 	// Decode cookie (opaque)
 	cookie, err := xdr.DecodeOpaque(r)
@@ -247,8 +247,8 @@ func DecodeNLM4CancelArgs(r io.Reader) (*nlm.NLM4CancelArgs, error) {
 //	alock:     [nlm4_lock structure]
 //
 // Note: GRANTED uses the same format as TEST args.
-func DecodeNLM4GrantedArgs(r io.Reader) (*nlm.NLM4GrantedArgs, error) {
-	args := &nlm.NLM4GrantedArgs{}
+func DecodeNLM4GrantedArgs(r io.Reader) (*types.NLM4GrantedArgs, error) {
+	args := &types.NLM4GrantedArgs{}
 
 	// Decode cookie (opaque)
 	cookie, err := xdr.DecodeOpaque(r)
@@ -280,16 +280,16 @@ func DecodeNLM4GrantedArgs(r io.Reader) (*nlm.NLM4GrantedArgs, error) {
 //
 //	name:  [length:uint32][data:bytes][padding]
 //	state: [int32]
-func DecodeNLM4FreeAllArgs(r io.Reader) (*nlm.NLM4FreeAllArgs, error) {
-	args := &nlm.NLM4FreeAllArgs{}
+func DecodeNLM4FreeAllArgs(r io.Reader) (*types.NLM4FreeAllArgs, error) {
+	args := &types.NLM4FreeAllArgs{}
 
 	// Decode name (string)
 	name, err := xdr.DecodeString(r)
 	if err != nil {
 		return nil, fmt.Errorf("decode name: %w", err)
 	}
-	if len(name) > nlm.LMMaxStrLen {
-		return nil, fmt.Errorf("name too long: %d > %d", len(name), nlm.LMMaxStrLen)
+	if len(name) > types.LMMaxStrLen {
+		return nil, fmt.Errorf("name too long: %d > %d", len(name), types.LMMaxStrLen)
 	}
 	args.Name = name
 
@@ -314,8 +314,8 @@ func DecodeNLM4FreeAllArgs(r io.Reader) (*nlm.NLM4FreeAllArgs, error) {
 //	mode:        [uint32]
 //	access:      [uint32]
 //	reclaim:     [uint32] (0=false, 1=true)
-func DecodeNLM4ShareArgs(r io.Reader) (*nlm.NLM4ShareArgs, error) {
-	args := &nlm.NLM4ShareArgs{}
+func DecodeNLM4ShareArgs(r io.Reader) (*types.NLM4ShareArgs, error) {
+	args := &types.NLM4ShareArgs{}
 
 	// Decode cookie (opaque)
 	cookie, err := xdr.DecodeOpaque(r)
@@ -329,8 +329,8 @@ func DecodeNLM4ShareArgs(r io.Reader) (*nlm.NLM4ShareArgs, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode caller_name: %w", err)
 	}
-	if len(callerName) > nlm.LMMaxStrLen {
-		return nil, fmt.Errorf("caller_name too long: %d > %d", len(callerName), nlm.LMMaxStrLen)
+	if len(callerName) > types.LMMaxStrLen {
+		return nil, fmt.Errorf("caller_name too long: %d > %d", len(callerName), types.LMMaxStrLen)
 	}
 	args.CallerName = callerName
 
@@ -381,8 +381,8 @@ func DecodeNLM4ShareArgs(r io.Reader) (*nlm.NLM4ShareArgs, error) {
 //	oh:        [length:uint32][data:bytes][padding]
 //	l_offset:  [uint64]
 //	l_len:     [uint64]
-func DecodeNLM4Holder(r io.Reader) (*nlm.NLM4Holder, error) {
-	holder := &nlm.NLM4Holder{}
+func DecodeNLM4Holder(r io.Reader) (*types.NLM4Holder, error) {
+	holder := &types.NLM4Holder{}
 
 	// Decode exclusive (bool)
 	exclusive, err := xdr.DecodeBool(r)
@@ -428,8 +428,8 @@ func DecodeNLM4Holder(r io.Reader) (*nlm.NLM4Holder, error) {
 //
 //	cookie: [length:uint32][data:bytes][padding]
 //	stat:   [uint32]
-func DecodeNLM4Res(r io.Reader) (*nlm.NLM4Res, error) {
-	res := &nlm.NLM4Res{}
+func DecodeNLM4Res(r io.Reader) (*types.NLM4Res, error) {
+	res := &types.NLM4Res{}
 
 	// Decode cookie (opaque)
 	cookie, err := xdr.DecodeOpaque(r)
@@ -456,8 +456,8 @@ func DecodeNLM4Res(r io.Reader) (*nlm.NLM4Res, error) {
 //	stat:   [uint32]
 //	if stat == NLM4_DENIED:
 //	    holder: [nlm4_holder structure]
-func DecodeNLM4TestRes(r io.Reader) (*nlm.NLM4TestRes, error) {
-	res := &nlm.NLM4TestRes{}
+func DecodeNLM4TestRes(r io.Reader) (*types.NLM4TestRes, error) {
+	res := &types.NLM4TestRes{}
 
 	// Decode cookie (opaque)
 	cookie, err := xdr.DecodeOpaque(r)
@@ -474,7 +474,7 @@ func DecodeNLM4TestRes(r io.Reader) (*nlm.NLM4TestRes, error) {
 	res.Status = stat
 
 	// If denied, decode holder information
-	if stat == nlm.NLM4Denied {
+	if stat == types.NLM4Denied {
 		holder, err := DecodeNLM4Holder(r)
 		if err != nil {
 			return nil, fmt.Errorf("decode holder: %w", err)
