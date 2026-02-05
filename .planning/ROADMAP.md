@@ -85,7 +85,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Lock conflicts are detected across different lock types (read/write, shared/exclusive)
   4. Grace period rejects new locks while allowing reclaims after restart
   5. Connection pool manages client connections per adapter
-**Plans**: 3 plans in 2 waves
+**Plans**: 4 plans
 
 Plans:
 - [x] 01-01-PLAN.md — Enhanced lock types, POSIX splitting, deadlock detection, config
@@ -102,12 +102,12 @@ Plans:
   2. Blocking lock requests queue and notify when lock becomes available
   3. NLM_TEST correctly reports lock conflicts with owner information
   4. Lock cancellation stops pending blocking locks
-**Plans**: TBD
+**Plans**: 3 plans in 3 waves
 
 Plans:
-- [ ] 02-01: NLM protocol dispatcher and XDR types
-- [ ] 02-02: NLM lock operations (TEST, LOCK, UNLOCK, CANCEL)
-- [ ] 02-03: Blocking lock queue and callbacks
+- [ ] 02-01-PLAN.md — Shared XDR utilities extraction, NLM types and constants
+- [ ] 02-02-PLAN.md — NLM dispatcher integration and core handlers (NULL, TEST, LOCK, UNLOCK, CANCEL)
+- [ ] 02-03-PLAN.md — Blocking lock queue and NLM_GRANTED callback mechanism
 
 ### Phase 3: NSM Protocol
 **Goal**: Implement Network Status Monitor (RPC 100024) for crash recovery
@@ -585,8 +585,8 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 1. Locking Infrastructure | v1.0 | 4/4 | ✓ Complete | 2026-02-04 |
-| 2. NLM Protocol | v1.0 | 0/3 | Not started | - |
+| 1. Locking Infrastructure | v1.0 | 4/4 | Complete | 2026-02-04 |
+| 2. NLM Protocol | v1.0 | 0/3 | Planned | - |
 | 3. NSM Protocol | v1.0 | 0/3 | Not started | - |
 | 4. SMB Leases | v1.0 | 0/3 | Not started | - |
 | 5. Cross-Protocol Integration | v1.0 | 0/4 | Not started | - |
@@ -618,5 +618,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 
 ---
 *Roadmap created: 2026-02-04*
-*Phase 1 planned: 2026-02-04*
+*Phase 1 completed: 2026-02-04*
+*Phase 2 planned: 2026-02-05*
 *Requirements coverage: 162/162 mapped*
