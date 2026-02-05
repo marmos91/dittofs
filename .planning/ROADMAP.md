@@ -24,7 +24,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ### v1.0 NLM + Unified Lock Manager
 
 - [x] **Phase 1: Locking Infrastructure** ✓ - Unified lock manager embedded in metadata service
-- [ ] **Phase 2: NLM Protocol** - Network Lock Manager for NFSv3 clients
+- [x] **Phase 2: NLM Protocol** ✓ - Network Lock Manager for NFSv3 clients
 - [ ] **Phase 3: NSM Protocol** - Network Status Monitor for crash recovery
 - [ ] **Phase 4: SMB Leases** - SMB2/3 oplock and lease support
 - [ ] **Phase 5: Cross-Protocol Integration** - Lock visibility across NFS and SMB
@@ -105,9 +105,9 @@ Plans:
 **Plans**: 3 plans in 3 waves
 
 Plans:
-- [ ] 02-01-PLAN.md — Shared XDR utilities extraction, NLM types and constants
-- [ ] 02-02-PLAN.md — NLM dispatcher integration and core handlers (NULL, TEST, LOCK, UNLOCK, CANCEL)
-- [ ] 02-03-PLAN.md — Blocking lock queue and NLM_GRANTED callback mechanism
+- [x] 02-01-PLAN.md — Shared XDR utilities extraction, NLM types and constants
+- [x] 02-02-PLAN.md — NLM dispatcher integration and core handlers (NULL, TEST, LOCK, UNLOCK, CANCEL)
+- [x] 02-03-PLAN.md — Blocking lock queue and NLM_GRANTED callback mechanism
 
 ### Phase 3: NSM Protocol
 **Goal**: Implement Network Status Monitor (RPC 100024) for crash recovery
@@ -586,7 +586,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 1. Locking Infrastructure | v1.0 | 4/4 | Complete | 2026-02-04 |
-| 2. NLM Protocol | v1.0 | 0/3 | Planned | - |
+| 2. NLM Protocol | v1.0 | 3/3 | Complete | 2026-02-05 |
 | 3. NSM Protocol | v1.0 | 0/3 | Not started | - |
 | 4. SMB Leases | v1.0 | 0/3 | Not started | - |
 | 5. Cross-Protocol Integration | v1.0 | 0/4 | Not started | - |
@@ -614,10 +614,10 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 27. Documentation | v4.0 | 0/3 | Not started | - |
 | 28. v4.0 Testing | v4.0 | 0/5 | Not started | - |
 
-**Total:** 4/108 plans complete
+**Total:** 7/108 plans complete
 
 ---
 *Roadmap created: 2026-02-04*
 *Phase 1 completed: 2026-02-04*
-*Phase 2 planned: 2026-02-05*
+*Phase 2 completed: 2026-02-05*
 *Requirements coverage: 162/162 mapped*
