@@ -345,18 +345,37 @@ type ServiceSpec struct {
 
 // DittoServerStatus defines the observed state of DittoServer
 type DittoServerStatus struct {
-	// Number of ready replicas
+	// ObservedGeneration is the generation last processed by the controller
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Replicas is the desired number of replicas
+	Replicas int32 `json:"replicas,omitempty"`
+
+	// ReadyReplicas is the number of pods with Ready condition
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+
+	// AvailableReplicas is the number of pods ready for at least minReadySeconds
 	AvailableReplicas int32 `json:"availableReplicas,omitempty"`
 
-	// NFS endpoint that clients should use to mount
+	// NFSEndpoint that clients should use to mount
 	// Format: service-name.namespace.svc.cluster.local:2049
 	NFSEndpoint string `json:"nfsEndpoint,omitempty"`
 
-	// Current phase of the DittoServer
-	// +kubebuilder:validation:Enum=Pending;Running;Failed;Stopped
+	// Phase of the DittoServer (Pending, Running, Failed, Stopped, Deleting)
+	// +kubebuilder:validation:Enum=Pending;Running;Failed;Stopped;Deleting
 	Phase string `json:"phase,omitempty"`
 
-	// Detailed status conditions
+	// ConfigHash is the hash of current configuration (for debugging)
+	ConfigHash string `json:"configHash,omitempty"`
+
+	// PerconaClusterName is the name of the owned PerconaPGCluster (when enabled)
+	// +optional
+	PerconaClusterName string `json:"perconaClusterName,omitempty"`
+
+	// Conditions represent the latest available observations
+	// +listType=map
+	// +listMapKey=type
+	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
@@ -364,9 +383,9 @@ type DittoServerStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=ditto;dittofs
 // +kubebuilder:printcolumn:name="Replicas",type=integer,JSONPath=`.spec.replicas`
-// +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.availableReplicas`
-// +kubebuilder:printcolumn:name="NFS Endpoint",type=string,JSONPath=`.status.nfsEndpoint`
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
+// +kubebuilder:printcolumn:name="Available",type=integer,JSONPath=`.status.availableReplicas`
+// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // DittoServer is the Schema for the dittoservers API

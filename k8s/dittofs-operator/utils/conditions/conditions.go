@@ -6,6 +6,24 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// DittoServer condition types
+const (
+	// ConditionReady indicates the DittoServer is fully operational
+	ConditionReady = "Ready"
+
+	// ConditionAvailable indicates the StatefulSet has minimum ready replicas
+	ConditionAvailable = "Available"
+
+	// ConditionConfigReady indicates ConfigMap and secrets are valid
+	ConditionConfigReady = "ConfigReady"
+
+	// ConditionDatabaseReady indicates PostgreSQL (Percona) is ready (when enabled)
+	ConditionDatabaseReady = "DatabaseReady"
+
+	// ConditionProgressing indicates a change is being applied
+	ConditionProgressing = "Progressing"
+)
+
 // ConditionType is a constraint for types that can be used as condition types
 // Any type with underlying type string can be used (e.g., type MyCondition string)
 type ConditionType interface {
