@@ -185,6 +185,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+HELMIFY ?= $(LOCALBIN)/helmify
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.7.1
@@ -248,3 +249,30 @@ endef
 define gomodver
 $(shell go list -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' $(1) 2>/dev/null)
 endef
+
+##@ Helm
+
+HELMIFY_VERSION ?= latest
+
+.PHONY: helmify
+helmify: $(HELMIFY) ## Download helmify locally if necessary.
+$(HELMIFY): $(LOCALBIN)
+	$(call go-install-tool,$(HELMIFY),github.com/arttor/helmify/cmd/helmify,$(HELMIFY_VERSION))
+
+.PHONY: helm
+helm: manifests kustomize helmify ## Generate Helm chart from kustomize manifests.
+	"$(KUSTOMIZE)" build config/default | "$(HELMIFY)" chart
+	@# Copy raw CRD to crds/ (Helm crds/ doesn't support templating)
+	@mkdir -p chart/crds
+	@cp config/crd/bases/dittofs.dittofs.com_dittoservers.yaml chart/crds/dittoservers.yaml
+	@# Remove templated CRD from templates/ if it exists
+	@rm -f chart/templates/dittoserver-crd.yaml
+	@echo "Helm chart generated in chart/"
+
+.PHONY: helm-lint
+helm-lint: ## Lint the Helm chart.
+	helm lint ./chart
+
+.PHONY: helm-template
+helm-template: ## Render Helm chart templates for debugging.
+	helm template dittofs-operator ./chart --debug

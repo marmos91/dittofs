@@ -1,0 +1,66 @@
+# DittoFS Operator Helm Chart Values
+# See https://github.com/marmos91/dittofs for documentation
+
+# Controller Manager configuration
+controllerManager:
+  manager:
+    args:
+      - --metrics-bind-address=:8443
+      - --leader-elect
+      - --health-probe-bind-address=:8081
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: true
+    image:
+      repository: ghcr.io/marmos91/dittofs-operator
+      tag: latest
+      # Overrides the image tag whose default is the chart appVersion
+      # tag: ""
+    resources:
+      limits:
+        cpu: 500m
+        memory: 128Mi
+      requests:
+        cpu: 10m
+        memory: 64Mi
+
+  # Node selector for controller pods
+  nodeSelector: {}
+
+  # Pod-level security context
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Number of controller replicas (1 recommended with leader election)
+  replicas: 1
+
+  # Tolerations for controller pods
+  tolerations: []
+
+  # Topology spread constraints
+  topologySpreadConstraints: []
+
+# Kubernetes cluster domain (for service DNS)
+kubernetesClusterDomain: cluster.local
+
+# Metrics service configuration
+metricsService:
+  ports:
+    - name: https
+      port: 8443
+      protocol: TCP
+      targetPort: 8443
+  type: ClusterIP
+
+# Service account configuration
+serviceAccount:
+  annotations: {}
+  automount: true
+  create: true
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
