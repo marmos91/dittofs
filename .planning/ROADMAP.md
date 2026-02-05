@@ -137,9 +137,9 @@ Plans:
 **Plans**: 3 plans in 3 waves
 
 Plans:
-- [ ] 04-01-PLAN.md — Lease types (LeaseInfo, LeaseState constants), persistence schema extension
-- [ ] 04-02-PLAN.md — OplockManager refactor to delegate to unified lock manager, lease break timer
-- [ ] 04-03-PLAN.md — Cross-protocol break triggering, SMB CREATE lease context support
+- [x] 04-01-PLAN.md — Lease types (LeaseInfo, LeaseState constants), persistence schema extension
+- [x] 04-02-PLAN.md — OplockManager refactor to delegate to unified lock manager, lease break timer
+- [x] 04-03-PLAN.md — Cross-protocol break triggering, SMB CREATE lease context support
 
 ### Phase 5: Cross-Protocol Integration
 **Goal**: Enable lock visibility and conflict detection across NFS (NLM) and SMB protocols
@@ -151,13 +151,13 @@ Plans:
   3. Cross-protocol file access maintains consistency (no data corruption)
   4. E2E tests verify locking scenarios across both protocols
   5. Grace period recovery works for both NFS and SMB clients
-**Plans**: TBD
+**Plans**: 4 plans in 3 waves
 
 Plans:
-- [ ] 05-01: Cross-protocol lock translation and conflict detection
-- [ ] 05-02: E2E tests for NLM locking scenarios
-- [ ] 05-03: E2E tests for SMB lease scenarios
-- [ ] 05-04: E2E tests for cross-protocol conflicts
+- [ ] 05-01-PLAN.md — UnifiedLockView for cross-protocol lock queries, translation helpers, metrics
+- [ ] 05-02-PLAN.md — NLM handler integration: SMB lease check, break wait, Handle lease break for REMOVE/RENAME
+- [ ] 05-03-PLAN.md — SMB handler integration: NLM lock check before lease grant, STATUS_LOCK_NOT_GRANTED
+- [ ] 05-04-PLAN.md — E2E tests: cross-protocol lock conflicts, data integrity, grace period recovery
 
 ---
 
@@ -589,7 +589,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 2. NLM Protocol | v1.0 | 3/3 | Complete | 2026-02-05 |
 | 3. NSM Protocol | v1.0 | 3/3 | Complete | 2026-02-05 |
 | 4. SMB Leases | v1.0 | 3/3 | Complete | 2026-02-05 |
-| 5. Cross-Protocol Integration | v1.0 | 0/4 | Not started | - |
+| 5. Cross-Protocol Integration | v1.0 | 0/4 | Planned | - |
 | 6. NFSv4 Protocol Foundation | v2.0 | 0/3 | Not started | - |
 | 7. NFSv4 File Operations | v2.0 | 0/5 | Not started | - |
 | 8. NFSv4 Advanced Operations | v2.0 | 0/5 | Not started | - |
@@ -622,4 +622,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 *Phase 2 completed: 2026-02-05*
 *Phase 3 completed: 2026-02-05*
 *Phase 4 completed: 2026-02-05*
+*Phase 5 planned: 2026-02-05*
 *Requirements coverage: 162/162 mapped*
