@@ -19,9 +19,11 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/internal/controller/config"
+	"github.com/marmos91/dittofs/k8s/dittofs-operator/pkg/percona"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/pkg/resources"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/conditions"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/nfs"
@@ -29,6 +31,7 @@ import (
 	pgv2 "github.com/percona/percona-postgresql-operator/v2/pkg/apis/pgv2.percona.com/v2"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -99,6 +102,32 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err := r.reconcileMetricsService(ctx, dittoServer); err != nil {
 		logger.Error(err, "Failed to reconcile metrics Service")
 		return ctrl.Result{}, err
+	}
+
+	// Reconcile PerconaPGCluster if Percona is enabled
+	if err := r.reconcilePerconaPGCluster(ctx, dittoServer); err != nil {
+		logger.Error(err, "Failed to reconcile PerconaPGCluster")
+		return ctrl.Result{}, err
+	}
+
+	// Check if Percona is enabled but not ready - block StatefulSet creation
+	if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
+		pgCluster := &pgv2.PerconaPGCluster{}
+		err := r.Get(ctx, client.ObjectKey{
+			Namespace: dittoServer.Namespace,
+			Name:      percona.ClusterName(dittoServer.Name),
+		}, pgCluster)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				logger.Info("Waiting for PerconaPGCluster to be created")
+				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			}
+			return ctrl.Result{}, err
+		}
+		if !percona.IsReady(pgCluster) {
+			logger.Info("Waiting for PerconaPGCluster to be ready", "state", percona.GetState(pgCluster))
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
 	}
 
 	replicas := int32(1)
@@ -726,6 +755,59 @@ func buildS3EnvVars(spec *dittoiov1alpha1.S3StoreConfig) []corev1.EnvVar {
 // boolPtr returns a pointer to a bool value.
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+// reconcilePerconaPGCluster creates/updates the PerconaPGCluster CR if Percona is enabled.
+// The PerconaPGCluster is owned by DittoServer and will be deleted when DittoServer is deleted.
+// Per CONTEXT.md decision: operator doesn't reconcile user modifications (no drift reconciliation).
+func (r *DittoServerReconciler) reconcilePerconaPGCluster(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
+	// Skip if Percona is not enabled
+	if dittoServer.Spec.Percona == nil || !dittoServer.Spec.Percona.Enabled {
+		return nil
+	}
+
+	logger := logf.FromContext(ctx)
+	clusterName := percona.ClusterName(dittoServer.Name)
+
+	pgCluster := &pgv2.PerconaPGCluster{}
+	err := r.Get(ctx, client.ObjectKey{
+		Namespace: dittoServer.Namespace,
+		Name:      clusterName,
+	}, pgCluster)
+
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to get PerconaPGCluster: %w", err)
+	}
+
+	// Create if doesn't exist
+	if apierrors.IsNotFound(err) {
+		logger.Info("Creating PerconaPGCluster", "name", clusterName)
+
+		pgCluster = &pgv2.PerconaPGCluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      clusterName,
+				Namespace: dittoServer.Namespace,
+			},
+			Spec: percona.BuildPerconaPGClusterSpec(dittoServer),
+		}
+
+		// Set owner reference so it's deleted when DittoServer is deleted
+		if err := controllerutil.SetControllerReference(dittoServer, pgCluster, r.Scheme); err != nil {
+			return fmt.Errorf("failed to set owner reference: %w", err)
+		}
+
+		if err := r.Create(ctx, pgCluster); err != nil {
+			return fmt.Errorf("failed to create PerconaPGCluster: %w", err)
+		}
+
+		logger.Info("Created PerconaPGCluster", "name", clusterName)
+		return nil
+	}
+
+	// PerconaPGCluster exists - do NOT update (no drift reconciliation per CONTEXT.md)
+	// Users can modify it directly if needed
+	logger.V(1).Info("PerconaPGCluster already exists, skipping update", "name", clusterName)
+	return nil
 }
 
 // collectSecretData gathers all secret data referenced by the DittoServer CR.
