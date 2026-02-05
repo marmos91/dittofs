@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nlm/blocking"
 	"github.com/marmos91/dittofs/internal/protocol/nlm/callback"
 	nlm_handlers "github.com/marmos91/dittofs/internal/protocol/nlm/handlers"
+	nsm_handlers "github.com/marmos91/dittofs/internal/protocol/nsm/handlers"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -61,6 +63,9 @@ type NFSAdapter struct {
 
 	// nlmHandler processes NLM (Network Lock Manager) operations (LOCK, UNLOCK, TEST, etc.)
 	nlmHandler *nlm_handlers.Handler
+
+	// nsmHandler processes NSM (Network Status Monitor) operations (MON, UNMON, NOTIFY, etc.)
+	nsmHandler *nsm_handlers.Handler
 
 	// blockingQueue manages pending NLM blocking lock requests
 	blockingQueue *blocking.BlockingQueue
@@ -336,6 +341,10 @@ func (s *NFSAdapter) SetRuntime(rt *runtime.Runtime) {
 		go s.processNLMWaiters(handle)
 	})
 
+	// Initialize NSM handler for crash recovery
+	// NSM uses the ConnectionTracker from the MetadataService and ClientRegistrationStore
+	s.initNSMHandler(rt, metadataService)
+
 	logger.Debug("NFS adapter configured with runtime", "shares", rt.CountShares())
 }
 
@@ -431,6 +440,51 @@ func (s *NFSAdapter) getLockManagerForHandle(handle metadata.FileHandle) *lock.M
 	}
 
 	return s.registry.GetMetadataService().GetLockManagerForShare(shareName)
+}
+
+// initNSMHandler initializes the NSM handler for crash recovery.
+//
+// NSM (Network Status Monitor) enables clients to register for crash
+// notifications and recover locks after server restarts.
+func (s *NFSAdapter) initNSMHandler(rt *runtime.Runtime, _ *metadata.MetadataService) {
+	// Create connection tracker for client registration
+	// This is used to track active NSM clients
+	tracker := lock.NewConnectionTracker(lock.DefaultConnectionTrackerConfig())
+
+	// Try to get a client registration store from any share's metadata store
+	// Note: In a multi-store setup, we pick the first available store with ClientRegistrationStore
+	var clientStore lock.ClientRegistrationStore
+	shares := rt.ListShares()
+	for _, shareName := range shares {
+		store, err := rt.GetMetadataStoreForShare(shareName)
+		if err != nil {
+			continue
+		}
+		// Check if the store implements ClientRegistrationStore
+		if crs, ok := store.(lock.ClientRegistrationStore); ok {
+			clientStore = crs
+			break
+		}
+	}
+
+	// Get server hostname for NSM callbacks
+	serverName, err := os.Hostname()
+	if err != nil {
+		serverName = "localhost"
+	}
+
+	// Create NSM handler
+	s.nsmHandler = nsm_handlers.NewHandler(nsm_handlers.HandlerConfig{
+		Tracker:      tracker,
+		ClientStore:  clientStore,
+		ServerName:   serverName,
+		InitialState: 1, // Start with odd state (up)
+		MaxClients:   nsm_handlers.DefaultMaxClients,
+	})
+
+	logger.Debug("NSM handler initialized",
+		"server_name", serverName,
+		"has_client_store", clientStore != nil)
 }
 
 // Serve starts the NFS server and blocks until the context is cancelled
