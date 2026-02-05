@@ -430,6 +430,14 @@ type PerconaConfig struct {
 	// +kubebuilder:default=false
 	Enabled bool `json:"enabled,omitempty"`
 
+	// DeleteWithServer controls whether PerconaPGCluster is deleted when DittoServer is deleted.
+	// If true, the PostgreSQL cluster and its data are deleted with the DittoServer.
+	// If false (default), the PerconaPGCluster is orphaned and preserved.
+	// WARNING: Setting to true will delete all PostgreSQL data when DittoServer is deleted!
+	// +kubebuilder:default=false
+	// +optional
+	DeleteWithServer bool `json:"deleteWithServer,omitempty"`
+
 	// Replicas for PostgreSQL instances
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=1
