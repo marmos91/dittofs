@@ -153,6 +153,14 @@ Progress: [################--------] 57% (16/28 plans complete)
 - Cross-protocol Prometheus metrics (cross_protocol_conflict_total, cross_protocol_break_duration_seconds)
 - MetadataService owns UnifiedLockView per share
 
+### Plan 05-02: NLM-SMB Integration - COMPLETE
+- Configurable lease break timeout (default 35s, CI=5s via DITTOFS_LOCK_LEASE_BREAK_TIMEOUT)
+- NLM cross_protocol.go with waitForLeaseBreak, buildDeniedResponseFromSMBLease helpers
+- NLM LOCK checks for SMB leases before acquiring, waits for lease break
+- OplockChecker.CheckAndBreakForDelete for Handle lease breaks
+- NFS REMOVE/RENAME break Handle leases before deletion
+- SMB adapter registers OplockManager with MetadataService.SetOplockChecker
+
 ### Plan 05-03: SMB-to-NFS Integration - COMPLETE
 - SMB handlers check NLM byte-range locks before granting leases
 - Write lease denied when ANY NLM lock exists on file
@@ -215,6 +223,9 @@ Recent decisions affecting current work:
 - [05-01]: Per-share UnifiedLockView ownership matches LockManager pattern
 - [05-01]: NLM OH field = first 8 bytes of 16-byte LeaseKey
 - [05-01]: Cross-protocol metrics use descriptive label constants
+- [05-02]: Handle lease break proceeds even on timeout (Windows behavior)
+- [05-02]: Break ALL leases to None for delete operations
+- [05-02]: OplockChecker registered via SMB adapter SetRuntime
 - [05-03]: NLM locks checked BEFORE SMB leases (explicit wins over opportunistic)
 - [05-03]: STATUS_LOCK_NOT_GRANTED for byte-range conflicts, not STATUS_SHARING_VIOLATION
 - [05-03]: CREATE succeeds even when lease denied (file opens, caching disabled)
