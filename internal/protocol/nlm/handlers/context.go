@@ -36,4 +36,9 @@ type NLMHandlerContext struct {
 
 	// GIDs is the list of supplementary group IDs.
 	GIDs []uint32
+
+	// Data contains the raw request bytes for procedures that need direct access.
+	// Some procedures (like FREE_ALL) need to decode request data directly
+	// rather than receiving pre-decoded structures.
+	Data []byte
 }

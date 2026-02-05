@@ -84,6 +84,11 @@ func initNLMDispatchTable() {
 			Handler:   handleNLMUnlock,
 			NeedsAuth: true,
 		},
+		types.NLMProcFreeAll: {
+			Name:      "FREE_ALL",
+			Handler:   handleNLMFreeAll,
+			NeedsAuth: false, // FREE_ALL is called by rpc.statd, uses AUTH_NULL
+		},
 	}
 }
 
@@ -235,6 +240,26 @@ func handleNLMUnlock(
 	}
 
 	return &HandlerResult{Data: encoded, NLMStatus: resp.Status}, nil
+}
+
+func handleNLMFreeAll(
+	ctx *handlers.NLMHandlerContext,
+	handler *handlers.Handler,
+	reg *runtime.Runtime,
+	data []byte,
+) (*HandlerResult, error) {
+	// FREE_ALL needs the raw data bytes since it decodes directly
+	ctx.Data = data
+
+	encoded, err := handler.FreeAll(ctx)
+	if err != nil {
+		logger.Debug("NLM FREE_ALL handler error", "error", err)
+		// FREE_ALL returns void, so we still return empty response
+		return &HandlerResult{Data: []byte{}, NLMStatus: types.NLM4Granted}, err
+	}
+
+	// FREE_ALL returns void per NLM spec
+	return &HandlerResult{Data: encoded, NLMStatus: types.NLM4Granted}, nil
 }
 
 // ============================================================================
