@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** Phase 4 in progress (SMB Leases)
+**Current focus:** Phase 4 COMPLETE (SMB Leases)
 
 ## Current Position
 
 Phase: 4 of 28 (SMB Leases)
-Plan: 2 of 3 complete
-Status: In progress
-Last activity: 2026-02-05 - Completed 04-02-PLAN.md
+Plan: 3 of 3 complete
+Status: PHASE COMPLETE
+Last activity: 2026-02-05 - Completed 04-03-PLAN.md
 
-Progress: [############------------] 43% (12/28 plans complete)
+Progress: [#############-----------] 46% (13/28 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 12
+- Total plans completed: 13
 - Average duration: 12 min
-- Total execution time: 2.2 hours
+- Total execution time: 2.5 hours
 
 **By Phase:**
 
@@ -30,11 +30,11 @@ Progress: [############------------] 43% (12/28 plans complete)
 | 01-locking-infrastructure | 4 | 75 min | 18.75 min | COMPLETE |
 | 02-nlm-protocol | 3 | 25 min | 8.3 min | COMPLETE |
 | 03-nsm-protocol | 3 | 19 min | 6.3 min | COMPLETE |
-| 04-smb-leases | 2 | 14 min | 7 min | IN PROGRESS |
+| 04-smb-leases | 3 | 29 min | 9.7 min | COMPLETE |
 
 **Recent Trend:**
-- Last 5 plans: 03-02 (10 min), 03-03 (6 min), 04-01 (7 min), 04-02 (7 min)
-- Trend: Type definition tasks fast, handler patterns well established
+- Last 5 plans: 03-03 (6 min), 04-01 (7 min), 04-02 (7 min), 04-03 (15 min)
+- Trend: Cross-protocol integration requires more time but patterns established
 
 *Updated after each plan completion*
 
@@ -132,6 +132,16 @@ Progress: [############------------] 43% (12/28 plans complete)
 - Cross-protocol break triggers (CheckAndBreakForWrite/Read)
 - Backward compatible with existing oplock API
 
+### Plan 04-03: Cross-Protocol Breaks and CREATE Context - COMPLETE
+- ErrLeaseBreakPending error for signaling pending breaks
+- CheckAndBreakForWrite/Read return ErrLeaseBreakPending for W leases
+- OplockChecker interface in MetadataService for cross-protocol visibility
+- waitForLeaseBreak helper in NFS handlers with 35s timeout
+- NFS WRITE/READ handlers call CheckAndBreakLeasesFor{Write,Read}
+- Lease create context (RqLs/RsLs) parsing and encoding per MS-SMB2
+- SMB CREATE processes lease contexts when OplockLevel=0xFF
+- CREATE response includes granted lease state in RsLs context
+
 ## Accumulated Context
 
 ### Decisions
@@ -179,6 +189,9 @@ Recent decisions affecting current work:
 - [04-02]: Break timeout 35 seconds (Windows default per MS-SMB2)
 - [04-02]: Scan interval 1 second for balance of responsiveness and efficiency
 - [04-02]: Session tracking map for break notification routing
+- [04-03]: 35-second lease break timeout matches Windows MS-SMB2 default
+- [04-03]: Polling-based lease break wait with 100ms interval
+- [04-03]: OplockChecker interface in MetadataService for clean cross-protocol visibility
 
 ### Pending Todos
 
@@ -190,11 +203,11 @@ None.
 
 ## Next Steps
 
-**Phase 4 Plan 2 COMPLETE - Continue Phase 4:**
-- Plan 04-03: Lease break notification and timeout handling
+**Phase 4 COMPLETE - Ready for Phase 5:**
+- Phase 05: Kerberos Authentication
 
 ## Session Continuity
 
 Last session: 2026-02-05
-Stopped at: Completed 04-02-PLAN.md
+Stopped at: Completed 04-03-PLAN.md - Phase 04 COMPLETE
 Resume file: None
