@@ -37,6 +37,7 @@ import (
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/internal/controller"
+	pgv2 "github.com/percona/percona-postgresql-operator/v2/pkg/apis/pgv2.percona.com/v2"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -49,6 +50,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(dittoiov1alpha1.AddToScheme(scheme))
+	utilruntime.Must(pgv2.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

@@ -5,6 +5,7 @@ go 1.25.1
 require (
 	github.com/onsi/ginkgo/v2 v2.27.2
 	github.com/onsi/gomega v1.38.2
+	github.com/percona/percona-postgresql-operator/v2 v2.8.2
 	k8s.io/apimachinery v0.34.1
 	k8s.io/client-go v0.34.1
 	sigs.k8s.io/controller-runtime v0.22.4
@@ -12,6 +13,13 @@ require (
 
 require (
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
+	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
+	github.com/go-openapi/analysis v0.24.0 // indirect
+	github.com/go-openapi/errors v0.22.3 // indirect
+	github.com/go-openapi/loads v0.23.1 // indirect
+	github.com/go-openapi/runtime v0.29.0 // indirect
+	github.com/go-openapi/spec v0.22.0 // indirect
+	github.com/go-openapi/strfmt v0.24.0 // indirect
 	github.com/go-openapi/swag/cmdutils v0.25.1 // indirect
 	github.com/go-openapi/swag/conv v0.25.1 // indirect
 	github.com/go-openapi/swag/fileutils v0.25.1 // indirect
@@ -23,6 +31,12 @@ require (
 	github.com/go-openapi/swag/stringutils v0.25.1 // indirect
 	github.com/go-openapi/swag/typeutils v0.25.1 // indirect
 	github.com/go-openapi/swag/yamlutils v0.25.1 // indirect
+	github.com/go-openapi/validate v0.25.0 // indirect
+	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
+	github.com/hashicorp/go-version v1.7.0 // indirect
+	github.com/oklog/ulid v1.3.1 // indirect
+	github.com/sirupsen/logrus v1.9.3 // indirect
+	go.mongodb.org/mongo-driver v1.17.4 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/mod v0.29.0 // indirect
 )

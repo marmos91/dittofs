@@ -26,6 +26,7 @@ import (
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/conditions"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/nfs"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/smb"
+	pgv2 "github.com/percona/percona-postgresql-operator/v2/pkg/apis/pgv2.percona.com/v2"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -54,6 +55,8 @@ type DittoServerReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=pgv2.percona.com,resources=perconapgclusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=pgv2.percona.com,resources=perconapgclusters/status,verbs=get
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -159,6 +162,7 @@ func (r *DittoServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&pgv2.PerconaPGCluster{}).
 		Named("dittoserver").
 		Complete(r)
 }

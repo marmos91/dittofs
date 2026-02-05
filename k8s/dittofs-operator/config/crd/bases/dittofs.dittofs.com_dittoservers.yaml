@@ -244,6 +244,84 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
+              percona:
+                description: |-
+                  Percona configures auto-creation of PerconaPGCluster for PostgreSQL metadata store
+                  When enabled, the operator creates a PerconaPGCluster owned by this DittoServer
+                properties:
+                  backup:
+                    description: Backup configures pgBackRest S3 backups (optional)
+                    properties:
+                      bucket:
+                        description: Bucket name for backups
+                        type: string
+                      credentialsSecretRef:
+                        description: |-
+                          CredentialsSecretRef references Secret with S3 credentials for pgBackRest
+                          Secret must contain keys matching pgBackRest s3.conf format
+                        properties:
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      enabled:
+                        default: false
+                        description: Enabled activates backup configuration
+                        type: boolean
+                      endpoint:
+                        description: Endpoint for S3-compatible storage (e.g., https://s3.cubbit.eu)
+                        type: string
+                      fullSchedule:
+                        default: 0 2 * * *
+                        description: FullSchedule cron expression for full backups
+                        type: string
+                      incrSchedule:
+                        default: 0 * * * *
+                        description: IncrSchedule cron expression for incremental
+                          backups
+                        type: string
+                      region:
+                        default: eu-west-1
+                        description: Region for S3 bucket
+                        type: string
+                      retentionDays:
+                        default: 7
+                        description: RetentionDays for backup retention
+                        format: int32
+                        minimum: 1
+                        type: integer
+                    type: object
+                  databaseName:
+                    default: dittofs
+                    description: DatabaseName for DittoFS control plane
+                    type: string
+                  enabled:
+                    default: false
+                    description: Enabled triggers auto-creation of PerconaPGCluster
+                    type: boolean
+                  replicas:
+                    default: 1
+                    description: Replicas for PostgreSQL instances
+                    format: int32
+                    maximum: 5
+                    minimum: 1
+                    type: integer
+                  storageClassName:
+                    description: StorageClassName for PostgreSQL PVCs (may differ
+                      from DittoFS storage)
+                    type: string
+                  storageSize:
+                    default: 10Gi
+                    description: StorageSize for PostgreSQL data volume
+                    type: string
+                type: object
               podSecurityContext:
                 description: PodSecurityContext for the pod
                 properties:
