@@ -60,6 +60,11 @@ type DittoServerSpec struct {
 	// +optional
 	S3 *S3StoreConfig `json:"s3,omitempty"`
 
+	// Percona configures auto-creation of PerconaPGCluster for PostgreSQL metadata store
+	// When enabled, the operator creates a PerconaPGCluster owned by this DittoServer
+	// +optional
+	Percona *PerconaConfig `json:"percona,omitempty"`
+
 	// Resources configures container resource requirements
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
@@ -417,6 +422,79 @@ type S3StoreConfig struct {
 	// Bucket name (informational; actual config via REST API)
 	// +optional
 	Bucket string `json:"bucket,omitempty"`
+}
+
+// PerconaConfig configures auto-creation of PerconaPGCluster for PostgreSQL metadata store
+type PerconaConfig struct {
+	// Enabled triggers auto-creation of PerconaPGCluster
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Replicas for PostgreSQL instances
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=5
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// StorageSize for PostgreSQL data volume
+	// +kubebuilder:default="10Gi"
+	// +optional
+	StorageSize string `json:"storageSize,omitempty"`
+
+	// StorageClassName for PostgreSQL PVCs (may differ from DittoFS storage)
+	// +optional
+	StorageClassName *string `json:"storageClassName,omitempty"`
+
+	// DatabaseName for DittoFS control plane
+	// +kubebuilder:default="dittofs"
+	// +optional
+	DatabaseName string `json:"databaseName,omitempty"`
+
+	// Backup configures pgBackRest S3 backups (optional)
+	// +optional
+	Backup *PerconaBackupConfig `json:"backup,omitempty"`
+}
+
+// PerconaBackupConfig configures pgBackRest S3 backups for PostgreSQL
+type PerconaBackupConfig struct {
+	// Enabled activates backup configuration
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// CredentialsSecretRef references Secret with S3 credentials for pgBackRest
+	// Secret must contain keys matching pgBackRest s3.conf format
+	// +optional
+	CredentialsSecretRef *corev1.LocalObjectReference `json:"credentialsSecretRef,omitempty"`
+
+	// Bucket name for backups
+	// +optional
+	Bucket string `json:"bucket,omitempty"`
+
+	// Endpoint for S3-compatible storage (e.g., https://s3.cubbit.eu)
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// Region for S3 bucket
+	// +kubebuilder:default="eu-west-1"
+	// +optional
+	Region string `json:"region,omitempty"`
+
+	// FullSchedule cron expression for full backups
+	// +kubebuilder:default="0 2 * * *"
+	// +optional
+	FullSchedule string `json:"fullSchedule,omitempty"`
+
+	// IncrSchedule cron expression for incremental backups
+	// +kubebuilder:default="0 * * * *"
+	// +optional
+	IncrSchedule string `json:"incrSchedule,omitempty"`
+
+	// RetentionDays for backup retention
+	// +kubebuilder:default=7
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	RetentionDays *int32 `json:"retentionDays,omitempty"`
 }
 
 func init() {
