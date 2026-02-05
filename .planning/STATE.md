@@ -5,33 +5,33 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** Phase 2 - NLM Protocol Implementation (Plan 02 complete)
+**Current focus:** Phase 2 - NLM Protocol Implementation (Plan 03 complete)
 
 ## Current Position
 
 Phase: 2 of 28 (NLM Protocol)
-Plan: 2 of 4 in current phase
+Plan: 3 of 4 in current phase
 Status: In progress
-Last activity: 2026-02-05 - Completed 02-02-PLAN.md (NLM dispatcher and synchronous operations)
+Last activity: 2026-02-05 - Completed 02-03-PLAN.md (Blocking lock queue and GRANTED callback)
 
-Progress: [######------------------] 21% (6/28 plans complete)
+Progress: [#######-----------------] 25% (7/28 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 6
-- Average duration: 15 min
-- Total execution time: 1.55 hours
+- Total plans completed: 7
+- Average duration: 14 min
+- Total execution time: 1.68 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan | Status |
 |-------|-------|-------|----------|--------|
 | 01-locking-infrastructure | 4 | 75 min | 18.75 min | COMPLETE |
-| 02-nlm-protocol | 2 | 17 min | 8.5 min | IN PROGRESS |
+| 02-nlm-protocol | 3 | 25 min | 8.3 min | IN PROGRESS |
 
 **Recent Trend:**
-- Last 5 plans: 01-03 (20 min), 01-04 (45 min), 02-01 (6 min), 02-02 (11 min)
+- Last 5 plans: 01-04 (45 min), 02-01 (6 min), 02-02 (11 min), 02-03 (8 min)
 - Trend: Phase 2 plans faster due to building on Phase 1 infrastructure
 
 *Updated after each plan completion*
@@ -80,6 +80,13 @@ Progress: [######------------------] 21% (6/28 plans complete)
 - NLM program routing in NFS adapter (same port 12049)
 - Package restructure to avoid import cycles (nlm/types subpackage)
 
+### Plan 02-03: Blocking Lock Queue and GRANTED Callback - COMPLETE
+- Per-file blocking lock queue with configurable limit (100 per file)
+- NLM_GRANTED callback client with 5s TOTAL timeout
+- Queue integration with lock/unlock handlers
+- SetNLMUnlockCallback for async waiter notification
+- NLM Prometheus metrics (nlm_* prefix)
+
 ## Accumulated Context
 
 ### Decisions
@@ -104,6 +111,10 @@ Recent decisions affecting current work:
 - [02-02]: NLM types moved to nlm/types subpackage to avoid import cycle
 - [02-02]: NLM handler initialized with MetadataService from runtime
 - [02-02]: Owner ID format: nlm:{caller_name}:{svid}:{oh_hex}
+- [02-03]: 5 second TOTAL timeout for NLM_GRANTED callbacks
+- [02-03]: Fresh TCP connection per callback (no caching)
+- [02-03]: Release lock immediately on callback failure
+- [02-03]: Unlock callback pattern for async waiter notification
 
 ### Pending Todos
 
@@ -115,18 +126,14 @@ None.
 
 ## Next Steps
 
-**Plan 02-03: Blocking Lock Queue and GRANTED Callback**
-- Blocking lock queue implementation
-- GRANTED callback for unblocking clients
-- Integration with CancelBlockingLock
-
 **Plan 02-04: NSM Integration and Lock Reclaim**
 - Network Status Monitor integration
 - Lock reclaim during grace period
 - Client state tracking
+- FREE_ALL procedure for client crash cleanup
 
 ## Session Continuity
 
-Last session: 2026-02-05 10:11:24 UTC
-Stopped at: Completed 02-02-PLAN.md
+Last session: 2026-02-05 10:24:32 UTC
+Stopped at: Completed 02-03-PLAN.md
 Resume file: None
