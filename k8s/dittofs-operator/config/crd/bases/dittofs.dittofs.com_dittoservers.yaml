@@ -21,14 +21,14 @@ spec:
     - jsonPath: .spec.replicas
       name: Replicas
       type: integer
-    - jsonPath: .status.availableReplicas
+    - jsonPath: .status.readyReplicas
       name: Ready
       type: integer
-    - jsonPath: .status.nfsEndpoint
-      name: NFS Endpoint
-      type: string
+    - jsonPath: .status.availableReplicas
+      name: Available
+      type: integer
     - jsonPath: .status.phase
-      name: Phase
+      name: Status
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -302,6 +302,14 @@ spec:
                     default: dittofs
                     description: DatabaseName for DittoFS control plane
                     type: string
+                  deleteWithServer:
+                    default: false
+                    description: |-
+                      DeleteWithServer controls whether PerconaPGCluster is deleted when DittoServer is deleted.
+                      If true, the PostgreSQL cluster and its data are deleted with the DittoServer.
+                      If false (default), the PerconaPGCluster is orphaned and preserved.
+                      WARNING: Setting to true will delete all PostgreSQL data when DittoServer is deleted!
+                    type: boolean
                   enabled:
                     default: false
                     description: Enabled triggers auto-creation of PerconaPGCluster
@@ -1016,11 +1024,12 @@ spec:
             description: DittoServerStatus defines the observed state of DittoServer
             properties:
               availableReplicas:
-                description: Number of ready replicas
+                description: AvailableReplicas is the number of pods ready for at
+                  least minReadySeconds
                 format: int32
                 type: integer
               conditions:
-                description: Detailed status conditions
+                description: Conditions represent the latest available observations
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -1076,19 +1085,45 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              configHash:
+                description: ConfigHash is the hash of current configuration (for
+                  debugging)
+                type: string
               nfsEndpoint:
                 description: |-
-                  NFS endpoint that clients should use to mount
+                  NFSEndpoint that clients should use to mount
                   Format: service-name.namespace.svc.cluster.local:2049
                 type: string
+              observedGeneration:
+                description: ObservedGeneration is the generation last processed by
+                  the controller
+                format: int64
+                type: integer
+              perconaClusterName:
+                description: PerconaClusterName is the name of the owned PerconaPGCluster
+                  (when enabled)
+                type: string
               phase:
-                description: Current phase of the DittoServer
+                description: Phase of the DittoServer (Pending, Running, Failed, Stopped,
+                  Deleting)
                 enum:
                 - Pending
                 - Running
                 - Failed
                 - Stopped
+                - Deleting
                 type: string
+              readyReplicas:
+                description: ReadyReplicas is the number of pods with Ready condition
+                format: int32
+                type: integer
+              replicas:
+                description: Replicas is the desired number of replicas
+                format: int32
+                type: integer
             type: object
         type: object
     served: true
