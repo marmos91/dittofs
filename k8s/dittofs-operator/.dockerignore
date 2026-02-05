@@ -9,3 +9,6 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Re-include pre-built binaries for cross-compilation
+!manager-*
