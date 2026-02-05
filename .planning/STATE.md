@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-02-04)
 ## Current Position
 
 Phase: 4 of 28 (SMB Leases)
-Plan: 1 of 3 complete
+Plan: 2 of 3 complete
 Status: In progress
-Last activity: 2026-02-05 - Completed 04-01-PLAN.md
+Last activity: 2026-02-05 - Completed 04-02-PLAN.md
 
-Progress: [###########-------------] 39% (11/28 plans complete)
+Progress: [############------------] 43% (12/28 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 11
+- Total plans completed: 12
 - Average duration: 12 min
-- Total execution time: 2.1 hours
+- Total execution time: 2.2 hours
 
 **By Phase:**
 
@@ -30,10 +30,10 @@ Progress: [###########-------------] 39% (11/28 plans complete)
 | 01-locking-infrastructure | 4 | 75 min | 18.75 min | COMPLETE |
 | 02-nlm-protocol | 3 | 25 min | 8.3 min | COMPLETE |
 | 03-nsm-protocol | 3 | 19 min | 6.3 min | COMPLETE |
-| 04-smb-leases | 1 | 7 min | 7 min | IN PROGRESS |
+| 04-smb-leases | 2 | 14 min | 7 min | IN PROGRESS |
 
 **Recent Trend:**
-- Last 5 plans: 03-01 (3 min), 03-02 (10 min), 03-03 (6 min), 04-01 (7 min)
+- Last 5 plans: 03-02 (10 min), 03-03 (6 min), 04-01 (7 min), 04-02 (7 min)
 - Trend: Type definition tasks fast, handler patterns well established
 
 *Updated after each plan completion*
@@ -125,6 +125,13 @@ Progress: [###########-------------] 39% (11/28 plans complete)
 - LockQuery.IsLease filter for listing leases vs byte-range locks
 - Full round-trip conversion (ToPersistedLock/FromPersistedLock)
 
+### Plan 04-02: OplockManager Refactoring - COMPLETE
+- OplockManager refactored with LockStore dependency for lease persistence
+- RequestLease/AcknowledgeLeaseBreak/ReleaseLease methods
+- LeaseBreakScanner with 35s default timeout
+- Cross-protocol break triggers (CheckAndBreakForWrite/Read)
+- Backward compatible with existing oplock API
+
 ## Accumulated Context
 
 ### Decisions
@@ -168,6 +175,10 @@ Recent decisions affecting current work:
 - [04-01]: LeaseInfo embedded in EnhancedLock via pointer (nil for byte-range locks)
 - [04-01]: Centralized MatchesLock method in LockQuery for consistent filtering
 - [04-01]: BreakStarted is runtime-only, not persisted
+- [04-02]: LockStore dependency injected via NewOplockManagerWithStore
+- [04-02]: Break timeout 35 seconds (Windows default per MS-SMB2)
+- [04-02]: Scan interval 1 second for balance of responsiveness and efficiency
+- [04-02]: Session tracking map for break notification routing
 
 ### Pending Todos
 
@@ -179,12 +190,11 @@ None.
 
 ## Next Steps
 
-**Phase 4 Plan 1 COMPLETE - Continue Phase 4:**
-- Plan 04-02: OplockManager refactoring to delegate to unified lock manager
+**Phase 4 Plan 2 COMPLETE - Continue Phase 4:**
 - Plan 04-03: Lease break notification and timeout handling
 
 ## Session Continuity
 
 Last session: 2026-02-05
-Stopped at: Completed 04-01-PLAN.md
+Stopped at: Completed 04-02-PLAN.md
 Resume file: None
