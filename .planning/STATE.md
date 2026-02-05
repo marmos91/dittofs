@@ -5,34 +5,34 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** Phase 2 - NLM Protocol Implementation (Plan 01 complete)
+**Current focus:** Phase 2 - NLM Protocol Implementation (Plan 02 complete)
 
 ## Current Position
 
 Phase: 2 of 28 (NLM Protocol)
-Plan: 1 of 4 in current phase
+Plan: 2 of 4 in current phase
 Status: In progress
-Last activity: 2026-02-05 - Completed 02-01-PLAN.md (XDR utilities and NLM types)
+Last activity: 2026-02-05 - Completed 02-02-PLAN.md (NLM dispatcher and synchronous operations)
 
-Progress: [#####---------------] 18% (5/28 plans complete)
+Progress: [######------------------] 21% (6/28 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 5
-- Average duration: 16.2 min
-- Total execution time: 1.35 hours
+- Total plans completed: 6
+- Average duration: 15 min
+- Total execution time: 1.55 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan | Status |
 |-------|-------|-------|----------|--------|
 | 01-locking-infrastructure | 4 | 75 min | 18.75 min | COMPLETE |
-| 02-nlm-protocol | 1 | 6 min | 6 min | IN PROGRESS |
+| 02-nlm-protocol | 2 | 17 min | 8.5 min | IN PROGRESS |
 
 **Recent Trend:**
-- Last 5 plans: 01-02 (15 min), 01-03 (20 min), 01-04 (45 min), 02-01 (6 min)
-- Trend: 02-01 was primarily type definitions (fast)
+- Last 5 plans: 01-03 (20 min), 01-04 (45 min), 02-01 (6 min), 02-02 (11 min)
+- Trend: Phase 2 plans faster due to building on Phase 1 infrastructure
 
 *Updated after each plan completion*
 
@@ -73,6 +73,13 @@ Progress: [#####---------------] 18% (5/28 plans complete)
 - NLM v4 types (NLM4Lock, NLM4Holder, request/response structures)
 - NLM XDR encode/decode functions for all message types
 
+### Plan 02-02: NLM Dispatcher and Synchronous Operations - COMPLETE
+- NLM procedure handlers (NULL, TEST, LOCK, UNLOCK, CANCEL)
+- NLM dispatch table mapping procedures to handlers
+- MetadataService NLM methods (LockFileNLM, TestLockNLM, UnlockFileNLM, CancelBlockingLock)
+- NLM program routing in NFS adapter (same port 12049)
+- Package restructure to avoid import cycles (nlm/types subpackage)
+
 ## Accumulated Context
 
 ### Decisions
@@ -94,6 +101,9 @@ Recent decisions affecting current work:
 - [01-04]: Backward compatibility via type aliases in pkg/metadata
 - [02-01]: Shared XDR package at internal/protocol/xdr/ for NFS+NLM reuse
 - [02-01]: NLM v4 only (64-bit offsets/lengths), not v1-3
+- [02-02]: NLM types moved to nlm/types subpackage to avoid import cycle
+- [02-02]: NLM handler initialized with MetadataService from runtime
+- [02-02]: Owner ID format: nlm:{caller_name}:{svid}:{oh_hex}
 
 ### Pending Todos
 
@@ -105,21 +115,18 @@ None.
 
 ## Next Steps
 
-**Plan 02-02: NSM Integration**
-- Network Status Monitor for crash recovery
+**Plan 02-03: Blocking Lock Queue and GRANTED Callback**
+- Blocking lock queue implementation
+- GRANTED callback for unblocking clients
+- Integration with CancelBlockingLock
+
+**Plan 02-04: NSM Integration and Lock Reclaim**
+- Network Status Monitor integration
+- Lock reclaim during grace period
 - Client state tracking
-- Notify mechanism for lock reclaim
-
-**Plan 02-03: NLM Handlers**
-- Wire protocol handlers (NULL, TEST, LOCK, UNLOCK, CANCEL, GRANTED)
-- RPC dispatch integration
-
-**Plan 02-04: LockManager Integration**
-- NLM <-> LockManager bridge
-- Lock reclaim via grace period
 
 ## Session Continuity
 
-Last session: 2026-02-05 09:56:28 UTC
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-02-05 10:11:24 UTC
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None
