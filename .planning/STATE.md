@@ -9,19 +9,19 @@ See: .planning/PROJECT.md (updated 2026-02-04)
 
 ## Current Position
 
-Phase: 4 of 6 (Percona Integration) - COMPLETE
-Plan: 3 of 3 in current phase - COMPLETE
-Status: Phase complete
-Last activity: 2026-02-05 - Completed 04-03-PLAN.md (Webhook Validation, Sample CR, Human Verification)
+Phase: 5 of 6 (Status and Lifecycle) - IN PROGRESS
+Plan: 2 of 3 in current phase - COMPLETE
+Status: In progress
+Last activity: 2026-02-05 - Completed 05-02-PLAN.md (Finalizer Implementation)
 
-Progress: [██████████████░] 67%
+Progress: [███████████████░] 78%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 12
+- Total plans completed: 14
 - Average duration: 8 min
-- Total execution time: ~100 min
+- Total execution time: ~116 min
 
 **By Phase:**
 
@@ -31,12 +31,12 @@ Progress: [██████████████░] 67%
 | 2. ConfigMap and Services | 3/3 | 23 min | 8 min |
 | 3. Storage Management | 3/3 | 21 min | 7 min |
 | 4. Percona Integration | 3/3 | 9 min | 3 min |
-| 5. Status and Lifecycle | 0/3 | - | - |
+| 5. Status and Lifecycle | 2/3 | 16 min | 8 min |
 | 6. Documentation | 0/3 | - | - |
 
 **Recent Trend:**
-- Last 5 plans: 03-03 (15m with checkpoint), 04-01 (4m), 04-02 (3m), 04-03 (2m)
-- Trend: Autonomous plans complete quickly (~2-4 min), checkpoints add ~10 min
+- Last 5 plans: 04-01 (4m), 04-02 (3m), 04-03 (2m), 05-01 (~8m), 05-02 (8m)
+- Trend: Autonomous plans complete quickly (~2-8 min)
 
 *Updated after each plan completion*
 
@@ -72,6 +72,9 @@ Recent decisions affecting current work:
 | 2026-02-05 | CRD check via RESTMapper | Works without needing actual CRD type |
 | 2026-02-05 | Percona precedence is warning not error | User might have both during migration |
 | 2026-02-05 | Backup credentials warning only | Allow external-secrets pattern |
+| 2026-02-05 | Finalizer: dittofs.dittofs.com/finalizer | Standard naming convention |
+| 2026-02-05 | deleteWithServer=false by default | Preserve PostgreSQL data on accidental deletion |
+| 2026-02-05 | 60-second cleanup timeout | Balance waiting vs stuck resources |
 
 ### Pending Todos
 
@@ -149,11 +152,28 @@ Recent decisions affecting current work:
 - Sample Percona CR demonstrates full integration setup
 - Human verified: all tests pass, RBAC correct, CRD schema complete
 
+## Phase 5 Summary - IN PROGRESS
+
+**Plan 05-01: Status Conditions Implementation - COMPLETE** (executed in parallel)
+- DittoServerStatus enhanced with comprehensive fields
+- Five conditions: Ready, Available, Progressing, ConfigReady, DatabaseReady
+- Ready is aggregate of other conditions
+- updateConfigReadyCondition and IsConditionTrue helpers
+
+**Plan 05-02: Finalizer Implementation - COMPLETE**
+- DeleteWithServer field in PerconaConfig (default: false)
+- Finalizer: dittofs.dittofs.com/finalizer
+- handleDeletion with 60-second timeout
+- performCleanup orphans or deletes PerconaPGCluster based on deleteWithServer
+- Status phase shows "Deleting" during deletion
+
+**Plan 05-03: Observability (Event Recorder) - PENDING**
+
 ## Session Continuity
 
-Last session: 2026-02-05T11:35:00Z
-Stopped at: Completed 04-03-PLAN.md (Phase 4 Complete)
-Resume file: .planning/phases/05-status-lifecycle/05-01-PLAN.md
+Last session: 2026-02-05T12:08:00Z
+Stopped at: Completed 05-02-PLAN.md
+Resume file: .planning/phases/05-status-conditions-and-lifecycle/05-03-PLAN.md
 
 ---
 *State initialized: 2026-02-04*
