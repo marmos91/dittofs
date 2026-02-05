@@ -542,6 +542,44 @@ spec:
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
+              s3:
+                description: |-
+                  S3 configures S3-compatible payload store credentials
+                  Credentials are injected as environment variables for the AWS SDK
+                properties:
+                  bucket:
+                    description: Bucket name (informational; actual config via REST
+                      API)
+                    type: string
+                  credentialsSecretRef:
+                    description: CredentialsSecretRef references a Secret with S3
+                      credentials
+                    properties:
+                      accessKeyIdKey:
+                        default: accessKeyId
+                        description: 'Key for access key ID (default: accessKeyId)'
+                        type: string
+                      endpointKey:
+                        default: endpoint
+                        description: |-
+                          Key for S3 endpoint URL (default: endpoint)
+                          For Cubbit DS3: https://s3.cubbit.eu
+                        type: string
+                      secretAccessKeyKey:
+                        default: secretAccessKey
+                        description: 'Key for secret access key (default: secretAccessKey)'
+                        type: string
+                      secretName:
+                        description: Name of the Secret in the same namespace
+                        type: string
+                    required:
+                    - secretName
+                    type: object
+                  region:
+                    default: eu-west-1
+                    description: Region for S3 bucket (e.g., "eu-west-1" for Cubbit)
+                    type: string
+                type: object
               securityContext:
                 description: SecurityContext for the container
                 properties:

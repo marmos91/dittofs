@@ -55,6 +55,11 @@ type DittoServerSpec struct {
 	// +optional
 	SMB *SMBAdapterSpec `json:"smb,omitempty"`
 
+	// S3 configures S3-compatible payload store credentials
+	// Credentials are injected as environment variables for the AWS SDK
+	// +optional
+	S3 *S3StoreConfig `json:"s3,omitempty"`
+
 	// Resources configures container resource requirements
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
@@ -375,6 +380,43 @@ type DittoServerList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata"`
 	Items           []DittoServer `json:"items"`
+}
+
+// S3CredentialsSecretRef references a Secret containing S3-compatible credentials
+type S3CredentialsSecretRef struct {
+	// Name of the Secret in the same namespace
+	// +kubebuilder:validation:Required
+	SecretName string `json:"secretName"`
+
+	// Key for access key ID (default: accessKeyId)
+	// +kubebuilder:default="accessKeyId"
+	AccessKeyIDKey string `json:"accessKeyIdKey,omitempty"`
+
+	// Key for secret access key (default: secretAccessKey)
+	// +kubebuilder:default="secretAccessKey"
+	SecretAccessKeyKey string `json:"secretAccessKeyKey,omitempty"`
+
+	// Key for S3 endpoint URL (default: endpoint)
+	// For Cubbit DS3: https://s3.cubbit.eu
+	// +kubebuilder:default="endpoint"
+	EndpointKey string `json:"endpointKey,omitempty"`
+}
+
+// S3StoreConfig configures S3-compatible payload store credentials
+// Note: Actual store creation is done via REST API; this enables
+// the operator to inject S3 credentials as environment variables.
+type S3StoreConfig struct {
+	// CredentialsSecretRef references a Secret with S3 credentials
+	// +optional
+	CredentialsSecretRef *S3CredentialsSecretRef `json:"credentialsSecretRef,omitempty"`
+
+	// Region for S3 bucket (e.g., "eu-west-1" for Cubbit)
+	// +kubebuilder:default="eu-west-1"
+	Region string `json:"region,omitempty"`
+
+	// Bucket name (informational; actual config via REST API)
+	// +optional
+	Bucket string `json:"bucket,omitempty"`
 }
 
 func init() {
