@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** Phase 3 complete (NSM Protocol)
+**Current focus:** Phase 4 in progress (SMB Leases)
 
 ## Current Position
 
-Phase: 3 of 28 (NSM Protocol)
-Plan: 3 of 3 complete
-Status: PHASE COMPLETE
-Last activity: 2026-02-05 - Completed 03-03-PLAN.md
+Phase: 4 of 28 (SMB Leases)
+Plan: 1 of 3 complete
+Status: In progress
+Last activity: 2026-02-05 - Completed 04-01-PLAN.md
 
-Progress: [##########--------------] 36% (10/28 plans complete)
+Progress: [###########-------------] 39% (11/28 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 10
-- Average duration: 13 min
-- Total execution time: 2.0 hours
+- Total plans completed: 11
+- Average duration: 12 min
+- Total execution time: 2.1 hours
 
 **By Phase:**
 
@@ -30,10 +30,11 @@ Progress: [##########--------------] 36% (10/28 plans complete)
 | 01-locking-infrastructure | 4 | 75 min | 18.75 min | COMPLETE |
 | 02-nlm-protocol | 3 | 25 min | 8.3 min | COMPLETE |
 | 03-nsm-protocol | 3 | 19 min | 6.3 min | COMPLETE |
+| 04-smb-leases | 1 | 7 min | 7 min | IN PROGRESS |
 
 **Recent Trend:**
-- Last 5 plans: 02-03 (8 min), 03-01 (3 min), 03-02 (10 min), 03-03 (6 min)
-- Trend: Handler/dispatch patterns are well established
+- Last 5 plans: 03-01 (3 min), 03-02 (10 min), 03-03 (6 min), 04-01 (7 min)
+- Trend: Type definition tasks fast, handler patterns well established
 
 *Updated after each plan completion*
 
@@ -113,6 +114,17 @@ Progress: [##########--------------] 36% (10/28 plans complete)
 - NSM Prometheus metrics (nsm_* prefix)
 - NFS adapter integration for startup notification
 
+## Phase 04 Accomplishments
+
+### Plan 04-01: SMB Lease Types - COMPLETE
+- LeaseInfo struct with R/W/H state flags matching MS-SMB2 spec
+- Lease state constants (0x01=R, 0x02=W, 0x04=H)
+- EnhancedLock.Lease field for unified lock manager integration
+- PersistedLock lease fields (LeaseKey, LeaseState, LeaseEpoch, BreakToState, Breaking)
+- Lease conflict detection in IsEnhancedLockConflicting
+- LockQuery.IsLease filter for listing leases vs byte-range locks
+- Full round-trip conversion (ToPersistedLock/FromPersistedLock)
+
 ## Accumulated Context
 
 ### Decisions
@@ -152,6 +164,10 @@ Recent decisions affecting current work:
 - [03-03]: Failed notification = client crashed, cleanup locks immediately
 - [03-03]: FREE_ALL returns void per NLM spec
 - [03-03]: Background notification goroutine (non-blocking)
+- [04-01]: Lease state constants match MS-SMB2 2.2.13.2.8 spec values
+- [04-01]: LeaseInfo embedded in EnhancedLock via pointer (nil for byte-range locks)
+- [04-01]: Centralized MatchesLock method in LockQuery for consistent filtering
+- [04-01]: BreakStarted is runtime-only, not persisted
 
 ### Pending Todos
 
@@ -163,11 +179,12 @@ None.
 
 ## Next Steps
 
-**Phase 3 COMPLETE - Ready for Phase 4:**
-- Phase 4: NFSv4 Foundation (per roadmap)
+**Phase 4 Plan 1 COMPLETE - Continue Phase 4:**
+- Plan 04-02: OplockManager refactoring to delegate to unified lock manager
+- Plan 04-03: Lease break notification and timeout handling
 
 ## Session Continuity
 
 Last session: 2026-02-05
-Stopped at: Completed 03-03-PLAN.md (Phase 3 complete)
+Stopped at: Completed 04-01-PLAN.md
 Resume file: None
