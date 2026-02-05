@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enable one-command DittoFS deployment on Kubernetes with full configurability of storage backends through a declarative CRD
-**Current focus:** Phase 4 - Percona Integration
+**Current focus:** Phase 5 - Status and Lifecycle
 
 ## Current Position
 
-Phase: 4 of 6 (Percona Integration) - IN PROGRESS
-Plan: 2 of 3 in current phase - COMPLETE
-Status: In progress
-Last activity: 2026-02-05 - Completed 04-02-PLAN.md (PerconaPGCluster Reconciliation)
+Phase: 4 of 6 (Percona Integration) - COMPLETE
+Plan: 3 of 3 in current phase - COMPLETE
+Status: Phase complete
+Last activity: 2026-02-05 - Completed 04-03-PLAN.md (Webhook Validation, Sample CR, Human Verification)
 
-Progress: [███████████░] 61%
+Progress: [██████████████░] 67%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 11
+- Total plans completed: 12
 - Average duration: 8 min
-- Total execution time: ~98 min
+- Total execution time: ~100 min
 
 **By Phase:**
 
@@ -30,12 +30,12 @@ Progress: [███████████░] 61%
 | 1. Operator Foundation | 3/3 | 47 min | 16 min |
 | 2. ConfigMap and Services | 3/3 | 23 min | 8 min |
 | 3. Storage Management | 3/3 | 21 min | 7 min |
-| 4. Percona Integration | 2/3 | 7 min | 4 min |
+| 4. Percona Integration | 3/3 | 9 min | 3 min |
 | 5. Status and Lifecycle | 0/3 | - | - |
 | 6. Documentation | 0/3 | - | - |
 
 **Recent Trend:**
-- Last 5 plans: 03-02 (2m), 03-03 (15m with checkpoint), 04-01 (4m), 04-02 (3m)
+- Last 5 plans: 03-03 (15m with checkpoint), 04-01 (4m), 04-02 (3m), 04-03 (2m)
 - Trend: Autonomous plans complete quickly (~2-4 min), checkpoints add ~10 min
 
 *Updated after each plan completion*
@@ -69,6 +69,9 @@ Recent decisions affecting current work:
 | 2026-02-05 | No drift reconciliation for PerconaPGCluster | Users can modify directly, operator doesn't overwrite |
 | 2026-02-05 | Init container 5-minute timeout for PostgreSQL | Balance waiting vs failing fast |
 | 2026-02-05 | DATABASE_URL from Percona Secret 'uri' key | Full connection string, properly escaped |
+| 2026-02-05 | CRD check via RESTMapper | Works without needing actual CRD type |
+| 2026-02-05 | Percona precedence is warning not error | User might have both during migration |
+| 2026-02-05 | Backup credentials warning only | Allow external-secrets pattern |
 
 ### Pending Todos
 
@@ -122,7 +125,7 @@ Recent decisions affecting current work:
 - SetupDittoServerWebhookWithManager function in main.go
 - Comprehensive tests for all validation scenarios
 
-## Phase 4 Summary - IN PROGRESS
+## Phase 4 Summary - COMPLETE
 
 **Plan 04-01: Percona CRD Types and Foundation - COMPLETE**
 - PerconaConfig and PerconaBackupConfig CRD types added
@@ -139,11 +142,18 @@ Recent decisions affecting current work:
 - DATABASE_URL injected from Percona Secret 'uri' key
 - Percona Secret included in config hash
 
+**Plan 04-03: Webhook Validation, Sample CR, Human Verification - COMPLETE**
+- Webhook validates PerconaPGCluster CRD installed when percona.enabled=true
+- Webhook warns if both Percona and PostgresSecretRef set (Percona wins)
+- Webhook validates Percona StorageClass and backup configuration
+- Sample Percona CR demonstrates full integration setup
+- Human verified: all tests pass, RBAC correct, CRD schema complete
+
 ## Session Continuity
 
-Last session: 2026-02-05T10:25:44Z
-Stopped at: Completed 04-02-PLAN.md
-Resume file: .planning/phases/04-percona-integration/04-03-PLAN.md
+Last session: 2026-02-05T11:35:00Z
+Stopped at: Completed 04-03-PLAN.md (Phase 4 Complete)
+Resume file: .planning/phases/05-status-lifecycle/05-01-PLAN.md
 
 ---
 *State initialized: 2026-02-04*
