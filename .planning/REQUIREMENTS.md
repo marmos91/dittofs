@@ -10,27 +10,27 @@
 - [x] **R1.5** Operator deployed to `k8s/dittofs-operator/` directory structure
 
 ### Configuration & Services
-- [ ] **R2.1** ConfigMap generation from CRD spec (all DittoFS config options)
-- [ ] **R2.2** Checksum annotation pattern for pod restart on config change
-- [ ] **R2.3** LoadBalancer Service for NFS (port 2049, configurable)
-- [ ] **R2.4** LoadBalancer Service for SMB (port 445, configurable)
-- [ ] **R2.5** LoadBalancer/Ingress for REST API (port 8080)
-- [ ] **R2.6** NodePort fallback when LoadBalancer unavailable
+- [x] **R2.1** ConfigMap generation from CRD spec (all DittoFS config options)
+- [x] **R2.2** Checksum annotation pattern for pod restart on config change
+- [x] **R2.3** LoadBalancer Service for NFS (port 2049, configurable)
+- [x] **R2.4** LoadBalancer Service for SMB (port 445, configurable)
+- [x] **R2.5** LoadBalancer/Ingress for REST API (port 8080)
+- [x] **R2.6** NodePort fallback when LoadBalancer unavailable
 
 ### Storage Management
-- [ ] **R3.1** PVC for metadata store (BadgerDB) via volumeClaimTemplate
-- [ ] **R3.2** PVC for payload store (filesystem) via volumeClaimTemplate
-- [ ] **R3.3** PVC for cache (WAL persistence) via volumeClaimTemplate
-- [ ] **R3.4** Memory store configuration (no PVC)
-- [ ] **R3.5** S3 store configuration (Cubbit DS3 credentials via Secret)
-- [ ] **R3.6** StorageClass validation before PVC creation
+- [x] **R3.1** PVC for metadata store (BadgerDB) via volumeClaimTemplate
+- [x] **R3.2** PVC for payload store (filesystem) via volumeClaimTemplate
+- [x] **R3.3** PVC for cache (WAL persistence) via volumeClaimTemplate
+- [x] **R3.4** Memory store configuration (no PVC)
+- [x] **R3.5** S3 store configuration (Cubbit DS3 credentials via Secret)
+- [x] **R3.6** StorageClass validation before PVC creation
 
 ### PostgreSQL Integration
-- [ ] **R4.1** Percona PostgreSQL operator CRD watching
-- [ ] **R4.2** Connection Secret extraction from PerconaPGCluster
-- [ ] **R4.3** Init container waiting for PostgreSQL readiness
-- [ ] **R4.4** PostgreSQL metadata store configuration in ConfigMap
-- [ ] **R4.5** Documentation for Percona operator installation
+- [x] **R4.1** Percona PostgreSQL operator CRD watching
+- [x] **R4.2** Connection Secret extraction from PerconaPGCluster
+- [x] **R4.3** Init container waiting for PostgreSQL readiness
+- [x] **R4.4** DATABASE_URL environment variable injected from Percona Secret
+- [x] **R4.5** Sample CR with Percona prerequisites documented
 
 ### Status & Lifecycle
 - [ ] **R5.1** Status conditions: Ready, Available, Degraded, DatabaseReady, ConfigReady
@@ -87,23 +87,23 @@
 | R1.3 | Phase 1 | Complete |
 | R1.4 | Phase 1 | Complete |
 | R1.5 | Phase 1 | Complete |
-| R2.1 | Phase 2 | Pending |
-| R2.2 | Phase 2 | Pending |
-| R2.3 | Phase 2 | Pending |
-| R2.4 | Phase 2 | Pending |
-| R2.5 | Phase 2 | Pending |
-| R2.6 | Phase 2 | Pending |
-| R3.1 | Phase 3 | Pending |
-| R3.2 | Phase 3 | Pending |
-| R3.3 | Phase 3 | Pending |
-| R3.4 | Phase 3 | Pending |
-| R3.5 | Phase 3 | Pending |
-| R3.6 | Phase 3 | Pending |
-| R4.1 | Phase 4 | Pending |
-| R4.2 | Phase 4 | Pending |
-| R4.3 | Phase 4 | Pending |
-| R4.4 | Phase 4 | Pending |
-| R4.5 | Phase 4 | Pending |
+| R2.1 | Phase 2 | Complete |
+| R2.2 | Phase 2 | Complete |
+| R2.3 | Phase 2 | Complete |
+| R2.4 | Phase 2 | Complete |
+| R2.5 | Phase 2 | Complete |
+| R2.6 | Phase 2 | Complete |
+| R3.1 | Phase 3 | Complete |
+| R3.2 | Phase 3 | Complete |
+| R3.3 | Phase 3 | Complete |
+| R3.4 | Phase 3 | Complete |
+| R3.5 | Phase 3 | Complete |
+| R3.6 | Phase 3 | Complete |
+| R4.1 | Phase 4 | Complete |
+| R4.2 | Phase 4 | Complete |
+| R4.3 | Phase 4 | Complete |
+| R4.4 | Phase 4 | Complete |
+| R4.5 | Phase 4 | Complete |
 | R5.1 | Phase 5 | Pending |
 | R5.2 | Phase 5 | Pending |
 | R5.3 | Phase 5 | Pending |

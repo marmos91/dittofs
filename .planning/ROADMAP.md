@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Operator Foundation** - Functional operator skeleton with DittoFS CRD creating StatefulSet
 - [x] **Phase 2: ConfigMap Generation and Services** - ConfigMap from CRD spec; LoadBalancer Services for NFS, SMB, API
 - [x] **Phase 3: Storage Management** - Cache PVC (replaces EmptyDir for WAL persistence); S3 credentials support; StorageClass validation
-- [ ] **Phase 4: Percona PostgreSQL Integration** - PerconaPGCluster watching; connection Secret extraction; readiness gating
+- [x] **Phase 4: Percona PostgreSQL Integration** - PerconaPGCluster watching; connection Secret extraction; readiness gating
 - [ ] **Phase 5: Status Conditions and Lifecycle** - Full status conditions, finalizers, events, health probes
 - [ ] **Phase 6: Documentation and Deployment** - Complete documentation and validation on Scaleway cluster
 
@@ -105,7 +105,7 @@ Plans:
   1. Operator watches PerconaPGCluster resources in same namespace
   2. Connection details extracted from Percona-created Secret
   3. DittoFS pod waits for PostgreSQL readiness before starting (init container)
-  4. ConfigMap includes PostgreSQL connection string for metadata store
+  4. DATABASE_URL environment variable injected from Percona Secret into DittoFS pod
   5. DittoFS successfully connects to PostgreSQL metadata store on startup
 **Key Deliverables**:
   - pkg/percona: Percona operator integration package
@@ -116,9 +116,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 04-01-PLAN.md - CRD types (PerconaConfig, PerconaBackupConfig), Percona API import, RBAC
-- [ ] 04-02-PLAN.md - reconcilePerconaPGCluster, init container, DATABASE_URL wiring
-- [ ] 04-03-PLAN.md - Webhook validation for Percona CRD, sample CR, human verification
+- [x] 04-01-PLAN.md - CRD types (PerconaConfig, PerconaBackupConfig), Percona API import, RBAC
+- [x] 04-02-PLAN.md - reconcilePerconaPGCluster, init container, DATABASE_URL wiring
+- [x] 04-03-PLAN.md - Webhook validation for Percona CRD, sample CR, human verification
 
 ### Phase 5: Status Conditions and Lifecycle
 **Goal**: Full status conditions, finalizers, events, health probes
@@ -178,7 +178,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 1. Operator Foundation | 3/3 | Complete | 2026-02-04 |
 | 2. ConfigMap and Services | 3/3 | Complete | 2026-02-04 |
 | 3. Storage Management | 3/3 | Complete | 2026-02-05 |
-| 4. Percona Integration | 0/3 | Planned | - |
+| 4. Percona Integration | 3/3 | Complete | 2026-02-05 |
 | 5. Status and Lifecycle | 0/3 | Not started | - |
 | 6. Documentation | 0/3 | Not started | - |
 
