@@ -17,25 +17,25 @@
 
 ### NLM Protocol (NLM)
 
-- [ ] **NLM-01**: NLM protocol implementation (RPC program 100021)
-- [ ] **NLM-02**: NLM_TEST operation (test lock availability)
-- [ ] **NLM-03**: NLM_LOCK operation (acquire lock)
-- [ ] **NLM-04**: NLM_UNLOCK operation (release lock)
-- [ ] **NLM-05**: NLM_CANCEL operation (cancel pending lock)
-- [ ] **NLM-06**: Byte-range locking support
-- [ ] **NLM-07**: Blocking lock support with callbacks
-- [ ] **NLM-08**: Non-blocking lock support
-- [ ] **NLM-09**: NLM handlers in internal/protocol/nlm/
+- [x] **NLM-01**: NLM protocol implementation (RPC program 100021)
+- [x] **NLM-02**: NLM_TEST operation (test lock availability)
+- [x] **NLM-03**: NLM_LOCK operation (acquire lock)
+- [x] **NLM-04**: NLM_UNLOCK operation (release lock)
+- [x] **NLM-05**: NLM_CANCEL operation (cancel pending lock)
+- [x] **NLM-06**: Byte-range locking support
+- [x] **NLM-07**: Blocking lock support with callbacks
+- [x] **NLM-08**: Non-blocking lock support
+- [x] **NLM-09**: NLM handlers in internal/protocol/nlm/
 
 ### NSM Protocol (NSM)
 
-- [ ] **NSM-01**: NSM protocol implementation (RPC program 100024)
-- [ ] **NSM-02**: SM_MON operation (monitor client)
-- [ ] **NSM-03**: SM_UNMON operation (unmonitor client)
-- [ ] **NSM-04**: SM_NOTIFY operation (crash notification)
-- [ ] **NSM-05**: Client status tracking
-- [ ] **NSM-06**: Lock cleanup on client crash
-- [ ] **NSM-07**: Server restart notification to clients
+- [x] **NSM-01**: NSM protocol implementation (RPC program 100024)
+- [x] **NSM-02**: SM_MON operation (monitor client)
+- [x] **NSM-03**: SM_UNMON operation (unmonitor client)
+- [x] **NSM-04**: SM_NOTIFY operation (crash notification)
+- [x] **NSM-05**: Client status tracking
+- [x] **NSM-06**: Lock cleanup on client crash
+- [x] **NSM-07**: Server restart notification to clients
 
 ### SMB Locking (SMB)
 
@@ -312,22 +312,22 @@
 | LOCK-05 | Phase 1: Locking Infrastructure | Complete |
 | LOCK-06 | Phase 1: Locking Infrastructure | Complete |
 | LOCK-07 | Phase 1: Locking Infrastructure | Complete |
-| NLM-01 | Phase 2: NLM Protocol | Pending |
-| NLM-02 | Phase 2: NLM Protocol | Pending |
-| NLM-03 | Phase 2: NLM Protocol | Pending |
-| NLM-04 | Phase 2: NLM Protocol | Pending |
-| NLM-05 | Phase 2: NLM Protocol | Pending |
-| NLM-06 | Phase 2: NLM Protocol | Pending |
-| NLM-07 | Phase 2: NLM Protocol | Pending |
-| NLM-08 | Phase 2: NLM Protocol | Pending |
-| NLM-09 | Phase 2: NLM Protocol | Pending |
-| NSM-01 | Phase 3: NSM Protocol | Pending |
-| NSM-02 | Phase 3: NSM Protocol | Pending |
-| NSM-03 | Phase 3: NSM Protocol | Pending |
-| NSM-04 | Phase 3: NSM Protocol | Pending |
-| NSM-05 | Phase 3: NSM Protocol | Pending |
-| NSM-06 | Phase 3: NSM Protocol | Pending |
-| NSM-07 | Phase 3: NSM Protocol | Pending |
+| NLM-01 | Phase 2: NLM Protocol | Complete |
+| NLM-02 | Phase 2: NLM Protocol | Complete |
+| NLM-03 | Phase 2: NLM Protocol | Complete |
+| NLM-04 | Phase 2: NLM Protocol | Complete |
+| NLM-05 | Phase 2: NLM Protocol | Complete |
+| NLM-06 | Phase 2: NLM Protocol | Complete |
+| NLM-07 | Phase 2: NLM Protocol | Complete |
+| NLM-08 | Phase 2: NLM Protocol | Complete |
+| NLM-09 | Phase 2: NLM Protocol | Complete |
+| NSM-01 | Phase 3: NSM Protocol | Complete |
+| NSM-02 | Phase 3: NSM Protocol | Complete |
+| NSM-03 | Phase 3: NSM Protocol | Complete |
+| NSM-04 | Phase 3: NSM Protocol | Complete |
+| NSM-05 | Phase 3: NSM Protocol | Complete |
+| NSM-06 | Phase 3: NSM Protocol | Complete |
+| NSM-07 | Phase 3: NSM Protocol | Complete |
 | SMB-01 | Phase 4: SMB Leases | Pending |
 | SMB-02 | Phase 4: SMB Leases | Pending |
 | SMB-03 | Phase 4: SMB Leases | Pending |

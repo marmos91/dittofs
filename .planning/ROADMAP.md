@@ -25,7 +25,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Locking Infrastructure** ✓ - Unified lock manager embedded in metadata service
 - [x] **Phase 2: NLM Protocol** ✓ - Network Lock Manager for NFSv3 clients
-- [ ] **Phase 3: NSM Protocol** - Network Status Monitor for crash recovery
+- [x] **Phase 3: NSM Protocol** ✓ - Network Status Monitor for crash recovery
 - [ ] **Phase 4: SMB Leases** - SMB2/3 oplock and lease support
 - [ ] **Phase 5: Cross-Protocol Integration** - Lock visibility across NFS and SMB
 - [ ] **Phase 5.5: Manual Verification v1.0** USER CHECKPOINT - Test NFS+SMB locking manually
@@ -121,9 +121,9 @@ Plans:
 **Plans**: 3 plans in 3 waves
 
 Plans:
-- [ ] 03-01-PLAN.md — NSM types, XDR encode/decode, ConnectionTracker extension, ClientRegistrationStore interface
-- [ ] 03-02-PLAN.md — NSM dispatcher, handlers (NULL, STAT, MON, UNMON, UNMON_ALL), client registration persistence
-- [ ] 03-03-PLAN.md — SM_NOTIFY callback client, parallel notification, FREE_ALL handler, metrics
+- [x] 03-01-PLAN.md — NSM types, XDR encode/decode, ConnectionTracker extension, ClientRegistrationStore interface
+- [x] 03-02-PLAN.md — NSM dispatcher, handlers (NULL, STAT, MON, UNMON, UNMON_ALL), client registration persistence
+- [x] 03-03-PLAN.md — SM_NOTIFY callback client, parallel notification, FREE_ALL handler, metrics
 
 ### Phase 4: SMB Leases
 **Goal**: Add SMB2/3 oplock and lease support integrated with unified lock manager
@@ -587,7 +587,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 |-------|-----------|----------------|--------|-----------|
 | 1. Locking Infrastructure | v1.0 | 4/4 | Complete | 2026-02-04 |
 | 2. NLM Protocol | v1.0 | 3/3 | Complete | 2026-02-05 |
-| 3. NSM Protocol | v1.0 | 0/3 | Planned | - |
+| 3. NSM Protocol | v1.0 | 3/3 | Complete | 2026-02-05 |
 | 4. SMB Leases | v1.0 | 0/3 | Not started | - |
 | 5. Cross-Protocol Integration | v1.0 | 0/4 | Not started | - |
 | 6. NFSv4 Protocol Foundation | v2.0 | 0/3 | Not started | - |
@@ -614,11 +614,11 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 27. Documentation | v4.0 | 0/3 | Not started | - |
 | 28. v4.0 Testing | v4.0 | 0/5 | Not started | - |
 
-**Total:** 7/108 plans complete
+**Total:** 10/108 plans complete
 
 ---
 *Roadmap created: 2026-02-04*
 *Phase 1 completed: 2026-02-04*
 *Phase 2 completed: 2026-02-05*
-*Phase 3 planned: 2026-02-05*
+*Phase 3 completed: 2026-02-05*
 *Requirements coverage: 162/162 mapped*
