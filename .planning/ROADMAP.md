@@ -71,7 +71,7 @@ Plans:
 - [x] 02-03-PLAN.md - Four Services (headless, file, API, metrics) with port validation
 
 ### Phase 3: Storage Management
-**Goal**: VolumeClaimTemplates for metadata, payload, cache PVCs; StorageClass validation
+**Goal**: VolumeClaimTemplates for metadata, payload, cache PVCs; StorageClass validation; S3 credentials support
 **Depends on**: Phase 2
 **Requirements**: R3.1, R3.2, R3.3, R3.4, R3.5, R3.6
 **Complexity**: Medium
@@ -87,12 +87,12 @@ Plans:
   - Memory store configuration (no PVC)
   - S3 credentials Secret reference support
   - PVC lifecycle management (proper deletion order)
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 03-01: VolumeClaimTemplates for persistent storage
-- [ ] 03-02: Memory and S3 store configuration
-- [ ] 03-03: StorageClass validation and PVC lifecycle
+- [ ] 03-01-PLAN.md - Cache VolumeClaimTemplate and CacheSize CRD field (fix EmptyDir bug)
+- [ ] 03-02-PLAN.md - S3 credentials Secret reference and env var injection
+- [ ] 03-03-PLAN.md - StorageClass validation webhook with client injection
 
 ### Phase 4: Percona PostgreSQL Integration
 **Goal**: PerconaPGCluster watching; connection Secret extraction; readiness gating
@@ -175,7 +175,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 |-------|----------------|--------|-----------|
 | 1. Operator Foundation | 3/3 | Complete | 2026-02-04 |
 | 2. ConfigMap and Services | 3/3 | Complete | 2026-02-04 |
-| 3. Storage Management | 0/3 | Not started | - |
+| 3. Storage Management | 0/3 | In progress | - |
 | 4. Percona Integration | 0/3 | Not started | - |
 | 5. Status and Lifecycle | 0/3 | Not started | - |
 | 6. Documentation | 0/3 | Not started | - |
