@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-02-04)
 ## Current Position
 
 Phase: 4 of 6 (Percona Integration) - IN PROGRESS
-Plan: 1 of 3 in current phase - COMPLETE
+Plan: 2 of 3 in current phase - COMPLETE
 Status: In progress
-Last activity: 2026-02-05 - Completed 04-01-PLAN.md (Percona CRD Types and Foundation)
+Last activity: 2026-02-05 - Completed 04-02-PLAN.md (PerconaPGCluster Reconciliation)
 
-Progress: [██████████░░] 56%
+Progress: [███████████░] 61%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 10
-- Average duration: 9 min
-- Total execution time: ~95 min
+- Total plans completed: 11
+- Average duration: 8 min
+- Total execution time: ~98 min
 
 **By Phase:**
 
@@ -30,12 +30,12 @@ Progress: [██████████░░] 56%
 | 1. Operator Foundation | 3/3 | 47 min | 16 min |
 | 2. ConfigMap and Services | 3/3 | 23 min | 8 min |
 | 3. Storage Management | 3/3 | 21 min | 7 min |
-| 4. Percona Integration | 1/3 | 4 min | 4 min |
+| 4. Percona Integration | 2/3 | 7 min | 4 min |
 | 5. Status and Lifecycle | 0/3 | - | - |
 | 6. Documentation | 0/3 | - | - |
 
 **Recent Trend:**
-- Last 5 plans: 03-01 (4m), 03-02 (2m), 03-03 (15m with checkpoint), 04-01 (4m)
+- Last 5 plans: 03-02 (2m), 03-03 (15m with checkpoint), 04-01 (4m), 04-02 (3m)
 - Trend: Autonomous plans complete quickly (~2-4 min), checkpoints add ~10 min
 
 *Updated after each plan completion*
@@ -66,6 +66,9 @@ Recent decisions affecting current work:
 | 2026-02-05 | S3 Secret validation is warning only | Allow CR creation before Secret exists (external-secrets, Vault) |
 | 2026-02-05 | Percona API import: v2 module path | github.com/percona/percona-postgresql-operator/v2/... |
 | 2026-02-05 | Controller Owns() PerconaPGCluster | Automatic deletion when DittoServer deleted |
+| 2026-02-05 | No drift reconciliation for PerconaPGCluster | Users can modify directly, operator doesn't overwrite |
+| 2026-02-05 | Init container 5-minute timeout for PostgreSQL | Balance waiting vs failing fast |
+| 2026-02-05 | DATABASE_URL from Percona Secret 'uri' key | Full connection string, properly escaped |
 
 ### Pending Todos
 
@@ -128,11 +131,19 @@ Recent decisions affecting current work:
 - Controller watches owned PerconaPGCluster resources
 - All tests pass, build succeeds
 
+**Plan 04-02: PerconaPGCluster Reconciliation - COMPLETE**
+- pkg/percona package with BuildPerconaPGClusterSpec and status helpers
+- reconcilePerconaPGCluster creates owned PerconaPGCluster
+- Controller blocks StatefulSet until PostgreSQL ready
+- Init container waits 5 minutes for PostgreSQL using pg_isready
+- DATABASE_URL injected from Percona Secret 'uri' key
+- Percona Secret included in config hash
+
 ## Session Continuity
 
-Last session: 2026-02-05T10:16:26Z
-Stopped at: Completed 04-01-PLAN.md
-Resume file: .planning/phases/04-percona-integration/04-02-PLAN.md
+Last session: 2026-02-05T10:25:44Z
+Stopped at: Completed 04-02-PLAN.md
+Resume file: .planning/phases/04-percona-integration/04-03-PLAN.md
 
 ---
 *State initialized: 2026-02-04*
