@@ -9,19 +9,19 @@ See: .planning/PROJECT.md (updated 2026-02-04)
 
 ## Current Position
 
-Phase: 3 of 6 (Storage Management) - COMPLETE
-Plan: 3 of 3 in current phase - COMPLETE
-Status: Phase complete, ready for Phase 4
-Last activity: 2026-02-05 - Completed 03-03-PLAN.md (StorageClass Validation Webhook)
+Phase: 4 of 6 (Percona Integration) - IN PROGRESS
+Plan: 1 of 3 in current phase - COMPLETE
+Status: In progress
+Last activity: 2026-02-05 - Completed 04-01-PLAN.md (Percona CRD Types and Foundation)
 
-Progress: [█████████░] 50%
+Progress: [██████████░░] 56%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 9
-- Average duration: 10 min
-- Total execution time: ~91 min
+- Total plans completed: 10
+- Average duration: 9 min
+- Total execution time: ~95 min
 
 **By Phase:**
 
@@ -30,12 +30,12 @@ Progress: [█████████░] 50%
 | 1. Operator Foundation | 3/3 | 47 min | 16 min |
 | 2. ConfigMap and Services | 3/3 | 23 min | 8 min |
 | 3. Storage Management | 3/3 | 21 min | 7 min |
-| 4. Percona Integration | 0/3 | - | - |
+| 4. Percona Integration | 1/3 | 4 min | 4 min |
 | 5. Status and Lifecycle | 0/3 | - | - |
 | 6. Documentation | 0/3 | - | - |
 
 **Recent Trend:**
-- Last 5 plans: 02-03 (15m with checkpoint), 03-01 (4m), 03-02 (2m), 03-03 (15m with checkpoint)
+- Last 5 plans: 03-01 (4m), 03-02 (2m), 03-03 (15m with checkpoint), 04-01 (4m)
 - Trend: Autonomous plans complete quickly (~2-4 min), checkpoints add ~10 min
 
 *Updated after each plan completion*
@@ -64,6 +64,8 @@ Recent decisions affecting current work:
 | 2026-02-05 | S3 Secret keys all included in hash | Any credential change triggers pod restart |
 | 2026-02-05 | StorageClass validation is hard error | Required for PVC creation - catch errors early |
 | 2026-02-05 | S3 Secret validation is warning only | Allow CR creation before Secret exists (external-secrets, Vault) |
+| 2026-02-05 | Percona API import: v2 module path | github.com/percona/percona-postgresql-operator/v2/... |
+| 2026-02-05 | Controller Owns() PerconaPGCluster | Automatic deletion when DittoServer deleted |
 
 ### Pending Todos
 
@@ -73,6 +75,7 @@ Recent decisions affecting current work:
 
 - DittoFS needs containerization before pods can run (future phase)
 - Current sample CR expects image that doesn't exist yet
+- Percona Operator must be installed in cluster before Percona integration works
 
 ## Phase 2 Summary - COMPLETE
 
@@ -116,11 +119,20 @@ Recent decisions affecting current work:
 - SetupDittoServerWebhookWithManager function in main.go
 - Comprehensive tests for all validation scenarios
 
+## Phase 4 Summary - IN PROGRESS
+
+**Plan 04-01: Percona CRD Types and Foundation - COMPLETE**
+- PerconaConfig and PerconaBackupConfig CRD types added
+- Percona pgv2 API types imported and scheme registered
+- RBAC markers grant operator full CRUD on PerconaPGCluster
+- Controller watches owned PerconaPGCluster resources
+- All tests pass, build succeeds
+
 ## Session Continuity
 
-Last session: 2026-02-05T09:15:53Z
-Stopped at: Completed 03-03-PLAN.md (Phase 3 complete)
-Resume file: .planning/phases/04-percona-integration/04-01-PLAN.md
+Last session: 2026-02-05T10:16:26Z
+Stopped at: Completed 04-01-PLAN.md
+Resume file: .planning/phases/04-percona-integration/04-02-PLAN.md
 
 ---
 *State initialized: 2026-02-04*
