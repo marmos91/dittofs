@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-02-04)
 ## Current Position
 
 Phase: 3 of 6 (Storage Management)
-Plan: 1 of 3 in current phase
+Plan: 2 of 3 in current phase
 Status: In progress
-Last activity: 2026-02-05 - Completed 03-01-PLAN.md (Cache VolumeClaimTemplate)
+Last activity: 2026-02-05 - Completed 03-02-PLAN.md (S3 Credentials Secret Reference)
 
-Progress: [██████░░░░] 39%
+Progress: [██████░░░░] 44%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 7
-- Average duration: 11 min
-- Total execution time: 74 min
+- Total plans completed: 8
+- Average duration: 10 min
+- Total execution time: 76 min
 
 **By Phase:**
 
@@ -29,14 +29,14 @@ Progress: [██████░░░░] 39%
 |-------|-------|-------|----------|
 | 1. Operator Foundation | 3/3 | 47 min | 16 min |
 | 2. ConfigMap and Services | 3/3 | 23 min | 8 min |
-| 3. Storage Management | 1/3 | 4 min | 4 min |
+| 3. Storage Management | 2/3 | 6 min | 3 min |
 | 4. Percona Integration | 0/3 | - | - |
 | 5. Status and Lifecycle | 0/3 | - | - |
 | 6. Documentation | 0/3 | - | - |
 
 **Recent Trend:**
-- Last 5 plans: 02-01 (6m), 02-02 (2m), 02-03 (15m with checkpoint), 03-01 (4m)
-- Trend: Autonomous plans complete quickly (~2-6 min), checkpoints add ~10 min
+- Last 5 plans: 02-02 (2m), 02-03 (15m with checkpoint), 03-01 (4m), 03-02 (2m)
+- Trend: Autonomous plans complete quickly (~2-4 min), checkpoints add ~10 min
 
 *Updated after each plan completion*
 
@@ -60,6 +60,8 @@ Recent decisions affecting current work:
 | 2026-02-04 | ServiceName uses headless naming ({name}-headless) | Anticipates Plan 03 headless service |
 | 2026-02-05 | CacheSize required field with 5Gi default | WAL persistence critical for crash recovery |
 | 2026-02-05 | PVC retention policy Retain/Retain | Protect user data on DittoServer deletion/scaling |
+| 2026-02-05 | AWS_ENDPOINT_URL is optional | AWS S3 doesn't need endpoint; Cubbit DS3 does |
+| 2026-02-05 | S3 Secret keys all included in hash | Any credential change triggers pod restart |
 
 ### Pending Todos
 
@@ -98,11 +100,18 @@ Recent decisions affecting current work:
 - PersistentVolumeClaimRetentionPolicy Retain/Retain for data safety
 - All tests updated and passing
 
+**Plan 03-02: S3 Credentials Secret Reference - COMPLETE**
+- S3CredentialsSecretRef and S3StoreConfig types added to CRD
+- S3 credentials injected as AWS SDK environment variables
+- buildS3EnvVars function wired to container Env field
+- S3 Secret included in config hash for pod restart on change
+- Sample S3 Secret and DittoServer CR added
+
 ## Session Continuity
 
-Last session: 2026-02-05T08:53:13Z
-Stopped at: Completed 03-01-PLAN.md
-Resume file: .planning/phases/03-storage-management/03-02-PLAN.md
+Last session: 2026-02-05T08:58:13Z
+Stopped at: Completed 03-02-PLAN.md
+Resume file: .planning/phases/03-storage-management/03-03-PLAN.md
 
 ---
 *State initialized: 2026-02-04*
