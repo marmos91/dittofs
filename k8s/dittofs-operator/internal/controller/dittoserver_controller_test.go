@@ -67,6 +67,7 @@ func TestReconcileDittoServer(t *testing.T) {
 								v1alpha1.StorageSpec{
 									MetadataSize: "10Gi",
 									ContentSize:  "100Gi",
+									CacheSize:    "5Gi",
 								},
 							),
 							v1alpha1.WithResources(
@@ -111,6 +112,7 @@ func TestReconcileDittoServer(t *testing.T) {
 								v1alpha1.WithStorage(
 									v1alpha1.StorageSpec{
 										MetadataSize: "5Gi",
+										CacheSize:    "5Gi",
 									},
 								),
 							),
@@ -144,6 +146,7 @@ func TestReconcileDittoServer(t *testing.T) {
 								v1alpha1.WithStorage(
 									v1alpha1.StorageSpec{
 										MetadataSize: "5Gi",
+										CacheSize:    "5Gi",
 									},
 								),
 							),
@@ -177,6 +180,7 @@ func TestReconcileDittoServer(t *testing.T) {
 								v1alpha1.WithStorage(
 									v1alpha1.StorageSpec{
 										MetadataSize: "10Gi",
+										CacheSize:    "5Gi",
 									},
 								),
 							),
@@ -223,6 +227,7 @@ func TestReconcileDittoServer(t *testing.T) {
 							v1alpha1.WithStorage(
 								v1alpha1.StorageSpec{
 									MetadataSize: "5Gi",
+									CacheSize:    "5Gi",
 								},
 							),
 							v1alpha1.WithSMB(&v1alpha1.SMBAdapterSpec{
@@ -257,6 +262,7 @@ func TestReconcileDittoServer(t *testing.T) {
 								v1alpha1.WithStorage(
 									v1alpha1.StorageSpec{
 										MetadataSize: "5Gi",
+										CacheSize:    "5Gi",
 									},
 								),
 								v1alpha1.WithSMB(&v1alpha1.SMBAdapterSpec{
@@ -291,6 +297,7 @@ func TestReconcileDittoServer(t *testing.T) {
 							v1alpha1.WithStorage(
 								v1alpha1.StorageSpec{
 									MetadataSize: "5Gi",
+									CacheSize:    "5Gi",
 								},
 							),
 							v1alpha1.WithSMB(&v1alpha1.SMBAdapterSpec{
@@ -334,6 +341,7 @@ func TestReconcileDittoServer(t *testing.T) {
 								v1alpha1.WithStorage(
 									v1alpha1.StorageSpec{
 										MetadataSize: "5Gi",
+										CacheSize:    "5Gi",
 									},
 								),
 								v1alpha1.WithSMB(&v1alpha1.SMBAdapterSpec{
@@ -384,6 +392,7 @@ func TestReconcileDittoServer(t *testing.T) {
 							v1alpha1.WithStorage(
 								v1alpha1.StorageSpec{
 									MetadataSize: "5Gi",
+									CacheSize:    "5Gi",
 								},
 							),
 							v1alpha1.WithDatabase(&v1alpha1.DatabaseConfig{
@@ -423,6 +432,7 @@ func TestReconcileDittoServer(t *testing.T) {
 							v1alpha1.WithStorage(
 								v1alpha1.StorageSpec{
 									MetadataSize: "5Gi",
+									CacheSize:    "5Gi",
 								},
 							),
 							v1alpha1.WithMetrics(&v1alpha1.MetricsConfig{

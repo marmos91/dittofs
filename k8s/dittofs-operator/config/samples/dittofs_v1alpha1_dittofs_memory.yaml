@@ -14,6 +14,7 @@ spec:
   storage:
     metadataSize: "10Gi"
     contentSize: "50Gi"
+    cacheSize: "5Gi"
     # storageClassName: standard  # Optional: uses default if not specified
 
   # Database configuration (SQLite by default)

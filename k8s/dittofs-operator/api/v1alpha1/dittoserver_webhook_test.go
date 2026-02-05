@@ -26,6 +26,7 @@ func TestDittoServerValidation(t *testing.T) {
 				Spec: DittoServerSpec{
 					Storage: StorageSpec{
 						MetadataSize: "10Gi",
+						CacheSize:    "5Gi",
 					},
 				},
 			},
@@ -42,6 +43,7 @@ func TestDittoServerValidation(t *testing.T) {
 					Storage: StorageSpec{
 						MetadataSize: "10Gi",
 						ContentSize:  "50Gi",
+						CacheSize:    "5Gi",
 					},
 					Database: &DatabaseConfig{
 						Type: "sqlite",
@@ -100,6 +102,7 @@ func TestDittoServerValidation(t *testing.T) {
 				Spec: DittoServerSpec{
 					Storage: StorageSpec{
 						MetadataSize: "10Gi",
+						CacheSize:    "5Gi",
 					},
 					Database: &DatabaseConfig{
 						Type: "sqlite",
@@ -125,6 +128,7 @@ func TestDittoServerValidation(t *testing.T) {
 				Spec: DittoServerSpec{
 					Storage: StorageSpec{
 						MetadataSize: "10Gi",
+						CacheSize:    "5Gi",
 					},
 					ControlPlane: &ControlPlaneAPIConfig{
 						Port: 70000, // Invalid port
@@ -144,6 +148,7 @@ func TestDittoServerValidation(t *testing.T) {
 				Spec: DittoServerSpec{
 					Storage: StorageSpec{
 						MetadataSize: "10Gi",
+						CacheSize:    "5Gi",
 					},
 					Metrics: &MetricsConfig{
 						Enabled: true,
