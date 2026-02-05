@@ -465,9 +465,19 @@ func TestReconcileDittoServer(t *testing.T) {
 			ctx := context.TODO()
 			r := setupDittoServerReconciler(t, tt.fields)
 
-			_, err := r.Reconcile(ctx, tt.request)
+			// First reconcile adds finalizer
+			result, err := r.Reconcile(ctx, tt.request)
 			if err != nil {
-				t.Fatalf("Reconcile failed: %v", err)
+				t.Fatalf("Reconcile (finalizer) failed: %v", err)
+			}
+			if !result.Requeue {
+				t.Logf("First reconcile didn't request requeue (may be expected for some tests)")
+			}
+
+			// Second reconcile creates all resources
+			_, err = r.Reconcile(ctx, tt.request)
+			if err != nil {
+				t.Fatalf("Reconcile (resources) failed: %v", err)
 			}
 
 			verifyConfigMap(t, ctx, r, tt.request)

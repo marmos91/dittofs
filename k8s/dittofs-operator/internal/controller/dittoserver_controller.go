@@ -42,6 +42,13 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+const (
+	// finalizerName is the finalizer for DittoServer cleanup
+	finalizerName = "dittofs.dittofs.com/finalizer"
+	// cleanupTimeout is the maximum time to wait for cleanup before force-removing finalizer
+	cleanupTimeout = 60 * time.Second
+)
+
 // DittoServerReconciler reconciles a DittoServer object
 type DittoServerReconciler struct {
 	client.Client
@@ -76,6 +83,29 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	dittoServer := &dittoiov1alpha1.DittoServer{}
 	if err := r.Get(ctx, req.NamespacedName, dittoServer); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Handle deletion
+	if !dittoServer.ObjectMeta.DeletionTimestamp.IsZero() {
+		requeue, err := r.handleDeletion(ctx, dittoServer)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if requeue {
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Add finalizer if not present
+	if !controllerutil.ContainsFinalizer(dittoServer, finalizerName) {
+		logger.Info("Adding finalizer to DittoServer")
+		controllerutil.AddFinalizer(dittoServer, finalizerName)
+		if err := r.Update(ctx, dittoServer); err != nil {
+			return ctrl.Result{}, err
+		}
+		// Requeue to continue with reconciliation after finalizer is added
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	if err := r.reconcileConfigMap(ctx, dittoServer); err != nil {
@@ -182,6 +212,118 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// handleDeletion processes DittoServer deletion, performing cleanup before allowing deletion to proceed.
+// Returns (requeue, error) - if requeue is true, reconciliation should be requeued.
+func (r *DittoServerReconciler) handleDeletion(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) (bool, error) {
+	logger := logf.FromContext(ctx)
+
+	if !controllerutil.ContainsFinalizer(dittoServer, finalizerName) {
+		// Finalizer already removed, nothing to do
+		return false, nil
+	}
+
+	logger.Info("Processing DittoServer deletion", "name", dittoServer.Name)
+
+	// Update phase to Deleting
+	dittoServerCopy := dittoServer.DeepCopy()
+	dittoServerCopy.Status.Phase = "Deleting"
+	if err := r.Status().Update(ctx, dittoServerCopy); err != nil {
+		logger.Error(err, "Failed to update phase to Deleting")
+		// Continue with cleanup even if status update fails
+	}
+
+	// Check how long we've been trying to delete
+	deletionTime := dittoServer.DeletionTimestamp.Time
+	elapsed := time.Since(deletionTime)
+
+	if elapsed > cleanupTimeout {
+		logger.Info("Cleanup timeout exceeded, forcing finalizer removal",
+			"elapsed", elapsed, "timeout", cleanupTimeout)
+		// Force remove finalizer after timeout
+		controllerutil.RemoveFinalizer(dittoServer, finalizerName)
+		if err := r.Update(ctx, dittoServer); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	// Perform cleanup
+	if err := r.performCleanup(ctx, dittoServer); err != nil {
+		logger.Error(err, "Cleanup failed, will retry")
+		// Requeue with backoff
+		return true, nil
+	}
+
+	// Cleanup successful, remove finalizer
+	logger.Info("Cleanup complete, removing finalizer")
+	controllerutil.RemoveFinalizer(dittoServer, finalizerName)
+	if err := r.Update(ctx, dittoServer); err != nil {
+		return false, err
+	}
+
+	return false, nil
+}
+
+// performCleanup handles cleanup of resources that need special handling beyond owner references.
+// Owned resources (StatefulSet, Services, ConfigMap) are automatically garbage collected.
+// This handles Percona orphaning/deletion based on spec.percona.deleteWithServer.
+func (r *DittoServerReconciler) performCleanup(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
+	logger := logf.FromContext(ctx)
+
+	// Handle Percona cleanup based on deleteWithServer flag
+	if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
+		clusterName := percona.ClusterName(dittoServer.Name)
+		pgCluster := &pgv2.PerconaPGCluster{}
+		err := r.Get(ctx, client.ObjectKey{
+			Namespace: dittoServer.Namespace,
+			Name:      clusterName,
+		}, pgCluster)
+
+		if err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to get PerconaPGCluster: %w", err)
+		}
+
+		if err == nil {
+			// PerconaPGCluster exists
+			if dittoServer.Spec.Percona.DeleteWithServer {
+				// Delete the PerconaPGCluster - it will cascade to PVCs
+				logger.Info("Deleting PerconaPGCluster (deleteWithServer=true)",
+					"name", clusterName)
+				if err := r.Delete(ctx, pgCluster); err != nil && !apierrors.IsNotFound(err) {
+					return fmt.Errorf("failed to delete PerconaPGCluster: %w", err)
+				}
+				// Note: Deletion is async, but we proceed since owner reference is being removed
+			} else {
+				// Orphan the PerconaPGCluster by removing our owner reference
+				logger.Info("Orphaning PerconaPGCluster (deleteWithServer=false)",
+					"name", clusterName)
+
+				// Remove owner reference
+				var newOwnerRefs []metav1.OwnerReference
+				for _, ref := range pgCluster.OwnerReferences {
+					if ref.UID != dittoServer.UID {
+						newOwnerRefs = append(newOwnerRefs, ref)
+					}
+				}
+
+				if len(newOwnerRefs) != len(pgCluster.OwnerReferences) {
+					pgCluster.OwnerReferences = newOwnerRefs
+					if err := r.Update(ctx, pgCluster); err != nil {
+						return fmt.Errorf("failed to orphan PerconaPGCluster: %w", err)
+					}
+					logger.Info("PerconaPGCluster orphaned successfully", "name", clusterName)
+				}
+			}
+		}
+	}
+
+	// Other owned resources (StatefulSet, Services, ConfigMap) are automatically
+	// garbage collected via owner references when DittoServer is deleted.
+	// No additional cleanup needed for them.
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
