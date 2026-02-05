@@ -48,7 +48,27 @@ const (
 	finalizerName = "dittofs.dittofs.com/finalizer"
 	// cleanupTimeout is the maximum time to wait for cleanup before force-removing finalizer
 	cleanupTimeout = 60 * time.Second
+	// maxRetries is the number of retries for CreateOrUpdate operations on conflict
+	maxRetries = 3
 )
+
+// retryOnConflict wraps an operation with retry logic for optimistic locking conflicts.
+// This is necessary because CreateOrUpdate can race with status updates from other controllers.
+func retryOnConflict(fn func() error) error {
+	var err error
+	for i := 0; i < maxRetries; i++ {
+		err = fn()
+		if err == nil {
+			return nil
+		}
+		if !apierrors.IsConflict(err) {
+			return err
+		}
+		// Small backoff before retry
+		time.Sleep(time.Duration(i+1) * 100 * time.Millisecond)
+	}
+	return err
+}
 
 // DittoServerReconciler reconciles a DittoServer object
 type DittoServerReconciler struct {
@@ -564,17 +584,18 @@ func (r *DittoServerReconciler) reconcileHeadlessService(ctx context.Context, di
 		},
 	}
 
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
-		if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
-			return err
-		}
-		// Only update fields we own, preserve cloud controller fields
-		mergeServiceSpec(&existing.Spec, &svc.Spec)
-		existing.Labels = svc.Labels
-		return nil
+	return retryOnConflict(func() error {
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
+			if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
+				return err
+			}
+			// Only update fields we own, preserve cloud controller fields
+			mergeServiceSpec(&existing.Spec, &svc.Spec)
+			existing.Labels = svc.Labels
+			return nil
+		})
+		return err
 	})
-
-	return err
 }
 
 // reconcileFileService creates/updates the Service for file protocols (NFS, SMB).
@@ -608,18 +629,19 @@ func (r *DittoServerReconciler) reconcileFileService(ctx context.Context, dittoS
 		},
 	}
 
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
-		if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
-			return err
-		}
-		// Only update fields we own, preserve cloud controller fields
-		mergeServiceSpec(&existing.Spec, &svc.Spec)
-		existing.Labels = svc.Labels
-		mergeAnnotations(existing.Annotations, svc.Annotations)
-		return nil
+	return retryOnConflict(func() error {
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
+			if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
+				return err
+			}
+			// Only update fields we own, preserve cloud controller fields
+			mergeServiceSpec(&existing.Spec, &svc.Spec)
+			existing.Labels = svc.Labels
+			mergeAnnotations(existing.Annotations, svc.Annotations)
+			return nil
+		})
+		return err
 	})
-
-	return err
 }
 
 // reconcileAPIService creates/updates the Service for REST API access.
@@ -646,18 +668,19 @@ func (r *DittoServerReconciler) reconcileAPIService(ctx context.Context, dittoSe
 		},
 	}
 
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
-		if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
-			return err
-		}
-		// Only update fields we own, preserve cloud controller fields
-		mergeServiceSpec(&existing.Spec, &svc.Spec)
-		existing.Labels = svc.Labels
-		mergeAnnotations(existing.Annotations, svc.Annotations)
-		return nil
+	return retryOnConflict(func() error {
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
+			if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
+				return err
+			}
+			// Only update fields we own, preserve cloud controller fields
+			mergeServiceSpec(&existing.Spec, &svc.Spec)
+			existing.Labels = svc.Labels
+			mergeAnnotations(existing.Annotations, svc.Annotations)
+			return nil
+		})
+		return err
 	})
-
-	return err
 }
 
 // reconcileMetricsService creates/updates the Service for Prometheus metrics (if enabled).
@@ -699,17 +722,18 @@ func (r *DittoServerReconciler) reconcileMetricsService(ctx context.Context, dit
 		},
 	}
 
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
-		if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
-			return err
-		}
-		// Only update fields we own, preserve cloud controller fields
-		mergeServiceSpec(&existing.Spec, &svc.Spec)
-		existing.Labels = svc.Labels
-		return nil
+	return retryOnConflict(func() error {
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
+			if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
+				return err
+			}
+			// Only update fields we own, preserve cloud controller fields
+			mergeServiceSpec(&existing.Spec, &svc.Spec)
+			existing.Labels = svc.Labels
+			return nil
+		})
+		return err
 	})
-
-	return err
 }
 
 func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer, replicas int32) (string, error) {
@@ -738,15 +762,16 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 		},
 	}
 
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, statefulSet, func() error {
-		if err := controllerutil.SetControllerReference(dittoServer, statefulSet, r.Scheme); err != nil {
-			return err
-		}
+	err = retryOnConflict(func() error {
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, statefulSet, func() error {
+			if err := controllerutil.SetControllerReference(dittoServer, statefulSet, r.Scheme); err != nil {
+				return err
+			}
 
-		labels := map[string]string{
-			"app":      "dittofs-server",
-			"instance": dittoServer.Name,
-		}
+			labels := map[string]string{
+				"app":      "dittofs-server",
+				"instance": dittoServer.Name,
+			}
 
 		volumeMounts := []corev1.VolumeMount{
 			{
@@ -950,7 +975,9 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 			},
 		}
 
-		return nil
+			return nil
+		})
+		return err
 	})
 
 	return configHash, err
