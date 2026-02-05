@@ -9,19 +9,19 @@ See: .planning/PROJECT.md (updated 2026-02-04)
 
 ## Current Position
 
-Phase: 5 of 6 (Status and Lifecycle) - COMPLETE
-Plan: 3 of 3 in current phase - COMPLETE
-Status: Phase 5 complete, ready for Phase 6
-Last activity: 2026-02-05 - Completed 05-03-PLAN.md (Observability)
+Phase: 6 of 6 (Documentation)
+Plan: 2 of 3 in current phase
+Status: Phase 6 in progress
+Last activity: 2026-02-05 - Completed 06-02-PLAN.md (Percona, Troubleshooting, README)
 
-Progress: [████████████████░░] 83%
+Progress: [█████████████████░] 94%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 15
+- Total plans completed: 17
 - Average duration: 8 min
-- Total execution time: ~124 min
+- Total execution time: ~132 min
 
 **By Phase:**
 
@@ -32,11 +32,11 @@ Progress: [████████████████░░] 83%
 | 3. Storage Management | 3/3 | 21 min | 7 min |
 | 4. Percona Integration | 3/3 | 9 min | 3 min |
 | 5. Status and Lifecycle | 3/3 | 24 min | 8 min |
-| 6. Documentation | 0/3 | - | - |
+| 6. Documentation | 2/3 | 8 min | 4 min |
 
 **Recent Trend:**
-- Last 5 plans: 04-02 (3m), 04-03 (2m), 05-01 (~8m), 05-02 (8m), 05-03 (8m)
-- Trend: Autonomous plans complete quickly (~2-8 min)
+- Last 5 plans: 05-01 (~8m), 05-02 (8m), 05-03 (8m), 06-01 (~4m), 06-02 (4m)
+- Trend: Documentation plans very fast (~4 min)
 
 *Updated after each plan completion*
 
@@ -78,6 +78,9 @@ Recent decisions affecting current work:
 | 2026-02-05 | HTTP probes on API port | Better than TCP on NFS - checks actual health |
 | 2026-02-05 | 150-second startup timeout | Allow slow database migrations |
 | 2026-02-05 | 5-second preStop sleep | Connection draining for graceful shutdown |
+| 2026-02-05 | PERCONA.md covers deleteWithServer lifecycle | Document data retention behavior clearly |
+| 2026-02-05 | Troubleshooting uses Symptom/Cause/Solution format | Consistent structure, easy to follow |
+| 2026-02-05 | README reduced to 133 lines | Entry point only, details in linked docs |
 
 ### Pending Todos
 
@@ -177,11 +180,28 @@ Recent decisions affecting current work:
 - StartupProbe with 150-second max startup (30 failures * 5s)
 - PreStop lifecycle hook with 5-second sleep for connection draining
 
+## Phase 6 Summary - IN PROGRESS
+
+**Plan 06-01: INSTALL.md and Helm Chart - COMPLETE**
+- Helm chart generated with helmify
+- INSTALL.md with kubectl and Helm instructions
+- CRD_REFERENCE.md with comprehensive field documentation
+
+**Plan 06-02: Percona, Troubleshooting, README - COMPLETE**
+- PERCONA.md with complete PostgreSQL integration guide
+- TROUBLESHOOTING.md with 9 common issues
+- README.md rewritten as concise entry point (133 lines)
+
+**Plan 06-03: Scaleway Deployment Validation - PENDING**
+- Deploy to Scaleway Kapsule cluster
+- Validate LoadBalancer and NFS mount
+- Final documentation review
+
 ## Session Continuity
 
-Last session: 2026-02-05T12:23:00Z
-Stopped at: Completed 05-03-PLAN.md
-Resume file: .planning/phases/06-documentation/06-01-PLAN.md
+Last session: 2026-02-05T13:51:00Z
+Stopped at: Completed 06-02-PLAN.md
+Resume file: .planning/phases/06-documentation/06-03-PLAN.md
 
 ---
 *State initialized: 2026-02-04*
