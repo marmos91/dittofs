@@ -75,9 +75,9 @@ NSM (Network Status Monitor) for crash recovery is Phase 3 - not in scope here.
 <deferred>
 ## Deferred Ideas
 
-None - discussion stayed within phase scope.
+- **SMB lock manager refactoring (Phase 4):** Refactor existing SMB locking logic to use the unified lock manager as central authority. Remove all legacy SMB lock tracking code. SMB2/3 oplocks and leases should flow through the same LockManager that NLM uses.
 
-NSM crash recovery explicitly out of scope (Phase 3).
+- NSM crash recovery explicitly out of scope (Phase 3).
 
 </deferred>
 
