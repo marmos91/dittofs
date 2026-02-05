@@ -16,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================
@@ -522,15 +523,50 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	smbFileID := h.GenerateFileID()
 
 	// ========================================================================
-	// Step 8b: Request oplock if applicable
+	// Step 8b: Request oplock or lease if applicable
 	// ========================================================================
 	//
-	// Oplocks are only granted for regular files, not directories.
+	// Oplocks/leases are only granted for regular files, not directories.
 	// The client's requested oplock level may be downgraded if there
 	// are conflicting opens.
+	//
+	// SMB2.1+ clients prefer leases over oplocks (indicated by OplockLevel=0xFF).
+	// When OplockLevel=0xFF, look for RqLs create context.
 
 	var grantedOplock uint8
-	if file.Type == metadata.FileTypeRegular && req.OplockLevel != OplockLevelNone {
+	var leaseResponse *LeaseResponseContext
+
+	// Check for lease request (SMB2.1+)
+	if req.OplockLevel == OplockLevelLease {
+		// Look for RqLs create context
+		if leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest); leaseCtx != nil {
+			// Use metadata handle as lock file handle
+			lockFileHandle := lock.FileHandle(fileHandle)
+
+			// Process lease request
+			var err error
+			leaseResponse, err = ProcessLeaseCreateContext(
+				h.OplockManager,
+				leaseCtx.Data,
+				lockFileHandle,
+				ctx.SessionID,
+				fmt.Sprintf("smb:%d", ctx.SessionID), // Client ID
+				tree.ShareName,
+				file.Type == metadata.FileTypeDirectory,
+			)
+			if err != nil {
+				logger.Debug("CREATE: lease context processing failed", "error", err)
+			}
+
+			// Set oplock level to lease if lease was granted
+			if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
+				grantedOplock = OplockLevelLease
+			}
+		}
+	}
+
+	// Fall back to traditional oplocks if no lease was requested/granted
+	if grantedOplock == 0 && file.Type == metadata.FileTypeRegular && req.OplockLevel != OplockLevelNone && req.OplockLevel != OplockLevelLease {
 		// Build the oplock path using consistent helper
 		oplockPath := BuildOplockPath(tree.ShareName, filename)
 		grantedOplock = h.OplockManager.RequestOplock(
@@ -596,7 +632,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	size := getSMBSize(&file.FileAttr)
 	allocationSize := ((size + 4095) / 4096) * 4096
 
-	return &CreateResponse{
+	resp := &CreateResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
 		OplockLevel:     grantedOplock,
 		CreateAction:    createAction,
@@ -608,7 +644,25 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		EndOfFile:       size,
 		FileAttributes:  FileAttrToSMBAttributes(&file.FileAttr),
 		FileID:          smbFileID,
-	}, nil
+	}
+
+	// ========================================================================
+	// Step 10b: Add lease response context if lease was granted
+	// ========================================================================
+
+	if leaseResponse != nil {
+		resp.CreateContexts = append(resp.CreateContexts, CreateContext{
+			Name: LeaseContextTagResponse,
+			Data: leaseResponse.Encode(),
+		})
+
+		logger.Debug("CREATE: lease granted in response",
+			"leaseKey", fmt.Sprintf("%x", leaseResponse.LeaseKey),
+			"grantedState", lock.LeaseStateToString(leaseResponse.LeaseState),
+			"epoch", leaseResponse.Epoch)
+	}
+
+	return resp, nil
 }
 
 // ============================================================================
