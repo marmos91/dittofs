@@ -1,507 +1,133 @@
-# dittofs-operator
+# DittoFS Kubernetes Operator
 
-A Kubernetes operator for managing DittoFS servers, providing a declarative way to deploy and manage distributed file systems in Kubernetes clusters.
+A Kubernetes operator for deploying and managing DittoFS distributed filesystem servers.
 
-## Description
+## Overview
 
-The DittoFS Operator automates the deployment, configuration, and lifecycle management of DittoFS servers on Kubernetes. It provides a native Kubernetes API through Custom Resource Definitions (CRDs) to manage DittoFS instances, handling StatefulSets, Services, ConfigMaps, and persistent storage automatically.
-
-### Key Features
-
-- **Declarative Management**: Define your DittoFS server configuration as Kubernetes resources
-- **Automatic Resource Management**: Handles StatefulSets, Services, and ConfigMaps automatically
-- **Storage Configuration**: Supports customizable metadata and content storage sizes
-- **NFS Protocol Support**: Exposes NFS endpoints for distributed file access
-- **SMB Protocol Support**: Built-in SMB/CIFS server with authentication and access control
-- **User Management**: Integrated user authentication with bcrypt password hashing
-- **Permission Control**: Fine-grained share-level permissions for users, groups, and guests
-- **High Availability**: Support for multiple replicas with proper resource allocation
-- **Status Tracking**: Real-time status updates with condition reporting
-- **Flexible Configuration**: Customize resources, security contexts, and service types
-
-## API Reference
-
-### DittoServer
-
-The `DittoServer` resource represents a managed DittoFS server instance.
-
-#### Spec Fields
-
-| Field | Type | Description | Required |
-|-------|------|-------------|----------|
-| `image` | string | Container image for DittoFS | Yes |
-| `replicas` | int32 | Number of replicas (default: 1) | No |
-| `storage.metadataSize` | string | Size of metadata storage (e.g., "10Gi") | Yes |
-| `storage.contentSize` | string | Size of content storage (e.g., "100Gi") | No |
-| `storage.storageClassName` | string | Storage class for PVCs | No |
-| `resources` | ResourceRequirements | CPU/Memory limits and requests | No |
-| `service.type` | string | Service type (ClusterIP, LoadBalancer, NodePort) | No |
-| `service.annotations` | map[string]string | Service annotations | No |
-| `nfsPort` | int32 | NFS port (default: 2049) | No |
-| `smb.enabled` | bool | Enable SMB protocol (default: false) | No |
-| `smb.port` | int32 | SMB port (default: 445) | No |
-| `smb.maxConnections` | int32 | Max concurrent SMB connections (0 = unlimited) | No |
-| `smb.timeouts` | SMBTimeoutsSpec | SMB operation timeouts | No |
-| `smb.credits` | SMBCreditsSpec | SMB credit management configuration | No |
-| `users` | UserManagementSpec | User authentication and permissions | No |
-| `securityContext` | SecurityContext | Container security context | No |
-| `podSecurityContext` | PodSecurityContext | Pod security context | No |
-
-#### Status Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `phase` | string | Current phase (Pending, Running, Stopped) |
-| `nfsEndpoint` | string | NFS endpoint for mounting |
-| `smbEndpoint` | string | SMB endpoint for connections |
-| `availableReplicas` | int32 | Number of ready replicas |
-| `conditions` | []Condition | Status conditions |
+The DittoFS Operator automates deployment, configuration, and lifecycle management of DittoFS servers on Kubernetes. It provides a declarative API through Custom Resource Definitions (CRDs) to manage DittoFS instances, automatically handling StatefulSets, Services, ConfigMaps, and persistent storage.
 
 ## Architecture
 
-The DittoFS Operator manages the following Kubernetes resources for each DittoServer:
+```mermaid
+flowchart TB
+    subgraph "User Input"
+        CR[DittoServer CR]
+    end
 
-```
-DittoServer (CR)
-    │
-    ├─→ ConfigMap (dittofs configuration)
-    │
-    ├─→ Service (NFS and metrics endpoints)
-    │
-    └─→ StatefulSet
-         ├─→ Pod(s) running DittoFS
-         └─→ PersistentVolumeClaims
-              ├─→ metadata volume
-              └─→ content volume (optional)
-```
+    subgraph "DittoFS Operator"
+        CTRL[Controller]
+    end
 
-### Components
+    subgraph "Managed Resources"
+        CM[ConfigMap<br/>config.yaml]
+        STS[StatefulSet]
+        PVC[PVCs<br/>metadata, cache, content]
+        SVCF[Service -file<br/>NFS:2049, SMB:445]
+        SVCA[Service -api<br/>REST:8080]
+        SVCM[Service -metrics<br/>Prometheus:9090]
+    end
 
-- **ConfigMap**: Contains the generated DittoFS configuration file
-- **Service**: Exposes NFS (default: 2049), SMB (default: 445), and metrics (9090) ports
-- **StatefulSet**: Manages DittoFS pods with stable network identities
-- **PersistentVolumeClaims**: Provides storage for metadata and optionally content
+    subgraph "Optional: Percona Integration"
+        PG[PerconaPGCluster]
+        PGSEC[PostgreSQL Secret]
+    end
 
-## Getting Started
-
-### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
-
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
-
-```sh
-make docker-build docker-push IMG=<some-registry>/dittofs/dittofs-operator:tag
+    CR --> CTRL
+    CTRL --> CM
+    CTRL --> STS
+    CTRL --> PVC
+    CTRL --> SVCF
+    CTRL --> SVCA
+    CTRL --> SVCM
+    CTRL -.->|percona.enabled| PG
+    PG --> PGSEC
+    PGSEC -.->|DATABASE_URL| STS
 ```
 
-or using `kubectl`:
+## Quick Start
 
-```sh
-kubectl -k config/default/
-```
+```bash
+# 1. Install CRDs
+kubectl apply -f https://raw.githubusercontent.com/marmos91/dittofs/main/k8s/dittofs-operator/config/crd/bases/dittofs.dittofs.com_dittoservers.yaml
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+# 2. Install operator
+kubectl apply -k https://raw.githubusercontent.com/marmos91/dittofs/main/k8s/dittofs-operator/config/default/
 
-**Install the CRDs into the cluster:**
-
-```sh
-make install
-```
-
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
-
-```sh
-make deploy IMG=<some-registry>/dittofs/dittofs-operator:tag
-```
-
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
-
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
-
-```sh
-kubectl apply -k config/samples/
-```
-
-Or create a custom DittoServer resource:
-
-```yaml
+# 3. Create a DittoServer
+kubectl apply -f - <<EOF
 apiVersion: dittofs.dittofs.com/v1alpha1
 kind: DittoServer
 metadata:
   name: my-dittofs
-  namespace: default
 spec:
-  image: ghcr.io/marmos91/dittofs:latest
-  replicas: 1
   storage:
     metadataSize: "10Gi"
-    contentSize: "100Gi"
-    storageClassName: "standard"
-  resources:
-    limits:
-      cpu: "2"
-      memory: "4Gi"
-    requests:
-      cpu: "500m"
-      memory: "1Gi"
+    cacheSize: "5Gi"
   service:
-    type: ClusterIP
+    type: LoadBalancer
+EOF
+
+# 4. Wait for ready
+kubectl wait --for=condition=Ready dittoserver/my-dittofs --timeout=300s
+
+# 5. Mount via NFS
+EXTERNAL_IP=$(kubectl get svc my-dittofs-file -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+sudo mount -t nfs -o tcp,port=2049,mountport=2049 $EXTERNAL_IP:/export /mnt/dittofs
 ```
 
-Apply the resource:
+## Documentation
 
-```sh
-kubectl apply -f my-dittofs.yaml
-```
+| Guide | Description |
+|-------|-------------|
+| [Installation](docs/INSTALL.md) | kubectl and Helm installation methods |
+| [CRD Reference](docs/CRD_REFERENCE.md) | Complete field reference with examples |
+| [Percona Integration](docs/PERCONA.md) | PostgreSQL metadata store via Percona |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | Common issues and solutions |
 
-Check the status:
+## Features
 
-```sh
-kubectl get dittoserver my-dittofs
-kubectl describe dittoserver my-dittofs
-```
+- **Declarative Management** - Define DittoFS configuration as Kubernetes resources
+- **Automatic Resource Management** - StatefulSets, Services, ConfigMaps, PVCs
+- **Protocol Support** - NFS and SMB with configurable ports
+- **S3 Credentials Injection** - Automatic AWS SDK environment variables
+- **Percona PostgreSQL Integration** - Production-grade metadata store
+- **Status Conditions** - Ready, Available, ConfigReady, DatabaseReady
+- **Observability** - Prometheus metrics, events, structured logging
+- **Graceful Lifecycle** - Finalizers, probes, preStop hooks
 
-### Security Best Practices
+## Prerequisites
 
-**⚠️ IMPORTANT: Never store credentials directly in YAML files!**
+- Kubernetes 1.26+
+- kubectl 1.26+
+- Storage provisioner (for PVCs)
+- Optional: Percona Operator (for PostgreSQL metadata store)
 
-- Always use Kubernetes Secrets for storing sensitive data like passwords, API keys, and access tokens
-- Use `passwordSecretRef` instead of `passwordHash` for user credentials
-- Use `secretRefs` instead of direct `config` values for S3 credentials
-- Ensure secrets are created in the same namespace as your DittoServer
+## Sample Configurations
 
-### SMB Configuration Examples
+The `config/samples/` directory contains example DittoServer configurations:
 
-#### Basic SMB Server
+| Sample | Description |
+|--------|-------------|
+| `dittofs_v1alpha1_dittoserver.yaml` | Basic configuration |
+| `dittofs_v1alpha1_dittoserver_percona.yaml` | Percona PostgreSQL integration |
+| `dittofs_v1alpha1_dittoserver_s3.yaml` | S3 content store |
 
-Enable SMB protocol with default settings:
+## Development
 
-```yaml
-apiVersion: dittofs.dittofs.com/v1alpha1
-kind: DittoServer
-metadata:
-  name: my-smb-server
-  namespace: default
-spec:
-  image: ghcr.io/marmos91/dittofs:latest
-  storage:
-    metadataSize: "10Gi"
-    contentSize: "100Gi"
-  smb:
-    enabled: true
-    # Uses default port 445
-```
+```bash
+# Build and install CRDs
+make install
 
-#### SMB with Custom Port and Limits
+# Run operator locally
+make run
 
-```yaml
-apiVersion: dittofs.dittofs.com/v1alpha1
-kind: DittoServer
-metadata:
-  name: my-custom-smb-server
-  namespace: default
-spec:
-  image: ghcr.io/marmos91/dittofs:latest
-  storage:
-    metadataSize: "10Gi"
-  smb:
-    enabled: true
-    port: 8445
-    maxConnections: 100
-    maxRequestsPerConnection: 50
-    timeouts:
-      read: "2m"
-      write: "30s"
-      idle: "10m"
-      shutdown: "30s"
-    credits:
-      strategy: "adaptive"
-      minGrant: 16
-      maxGrant: 8192
-      initialGrant: 256
-      maxSessionCredits: 65535
-```
-
-#### SMB with User Authentication
-
-```yaml
-apiVersion: dittofs.dittofs.com/v1alpha1
-kind: DittoServer
-metadata:
-  name: my-authenticated-smb-server
-  namespace: default
-spec:
-  image: ghcr.io/marmos91/dittofs:latest
-  storage:
-    metadataSize: "10Gi"
-    contentSize: "100Gi"
-  smb:
-    enabled: true
-  users:
-    # Define users with bcrypt password hashes stored in secrets (recommended)
-    users:
-      - username: "alice"
-        passwordSecretRef:
-          name: "user-passwords"
-          key: "alice-hash"
-        uid: 1001
-        gid: 1001
-        groups: ["developers"]
-        sharePermissions:
-          "/": "read-write"
-          "/readonly": "read"
-      - username: "bob"
-        passwordSecretRef:
-          name: "user-passwords" 
-          key: "bob-hash"
-        uid: 1002
-        gid: 1002
-        sharePermissions:
-          "/": "read"
-    
-    # Define groups
-    groups:
-      - name: "developers"
-        gid: 1001
-        sharePermissions:
-          "/": "read-write"
-      - name: "readonly-users"
-        gid: 1003
-        sharePermissions:
-          "/": "read"
-    
-    # Configure guest access
-    guest:
-      enabled: true
-      uid: 65534
-      gid: 65534
-      sharePermissions:
-        "/public": "read"
-
----
-# Secret containing user password hashes
-apiVersion: v1
-kind: Secret
-metadata:
-  name: user-passwords
-type: Opaque
-data:
-  # Base64 encoded bcrypt hashes
-  alice-hash: JDJ5JDEwJHJFS3guOHZoVVdKMWMxYzFjMWMxYzE=  # testpass
-  bob-hash: JDJ5JDEwJGFCY0RlRmdIaUprTG1Ob1BxUnNUdVY=      # testpass123
-```
-
-#### S3 Backend with Secret Credentials
-
-```yaml
-apiVersion: dittofs.dittofs.com/v1alpha1
-kind: DittoServer
-metadata:
-  name: my-s3-server
-  namespace: default
-spec:
-  image: ghcr.io/marmos91/dittofs:latest
-  storage:
-    metadataSize: "10Gi"
-  config:
-    backends:
-      - name: s3-backend
-        type: s3
-        config:
-          bucket: "my-bucket"
-          region: "us-east-1"
-        # Store credentials securely in secrets
-        secretRefs:
-          access_key_id:
-            name: "s3-credentials"
-            key: "access-key"
-          secret_access_key:
-            name: "s3-credentials"
-            key: "secret-key"
-    shares:
-      - name: s3-share
-        exportPath: /s3
-        metadataStore: metadata-backend
-        contentStore: s3-backend
-
----
-# Secret for S3 credentials
-apiVersion: v1
-kind: Secret
-metadata:
-  name: s3-credentials
-type: Opaque
-data:
-  # Base64 encoded AWS credentials - REPLACE WITH YOUR ACTUAL VALUES
-  # echo -n "YOUR_ACCESS_KEY_ID" | base64
-  access-key: WU9VUl9BQ0NFU1NfS0VZX0lE
-  # echo -n "YOUR_SECRET_ACCESS_KEY" | base64
-  secret-key: WU9VUl9TRUNSRVRfQUNDRVNTX0tFWQ==
-```
-
-#### Generate Password Hash and Secrets
-
-To generate a bcrypt password hash for user configuration:
-
-```sh
-# Using htpasswd (if available)
-htpasswd -bnBC 10 "" "your-password" | tr -d ':\n'
-
-# Using Python
-python3 -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt(rounds=10)).decode())"
-
-# Using online bcrypt generator (ensure it uses cost factor 10+)
-```
-
-To create secrets for storing credentials:
-
-```sh
-# Create secret for S3 credentials - REPLACE WITH YOUR ACTUAL CREDENTIALS
-kubectl create secret generic s3-credentials \
-  --from-literal=access-key="YOUR_AWS_ACCESS_KEY_ID" \
-  --from-literal=secret-key="YOUR_AWS_SECRET_ACCESS_KEY"
-
-# Create secret for user password hashes
-kubectl create secret generic user-passwords \
-  --from-literal=alice-hash='$2y$10$rEKx.8vhUWJ1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c' \
-  --from-literal=bob-hash='$2y$10$aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890abcdefghijklmnop'
-
-# Or encode manually and create YAML
-echo -n 'YOUR_ACTUAL_PASSWORD_HASH' | base64
-```
-
-#### Connecting to SMB Share
-
-Once deployed, you can connect to the SMB share:
-
-```sh
-# Get the service endpoint
-kubectl get service my-smb-server
-
-# Mount the share (Linux/macOS)
-mkdir -p /mnt/dittofs
-sudo mount -t smbfs //alice:your-password@SERVICE_IP:445/s3 /mnt/dittofs
-
-# Windows
-net use Z: \\SERVICE_IP\s3 /user:alice your-password
-```
-
-For guest access (if enabled):
-```sh
-sudo mount -t smbfs //guest@SERVICE_IP:445/s3 /mnt/dittofs -o guest
-```
-
-#### Share Permissions
-
-The `sharePermissions` field supports the following permission levels:
-
-- `none`: No access
-- `read`: Read-only access
-- `read-write`: Read and write access
-- `admin`: Full administrative access
-
-Permission hierarchy (most restrictive wins):
-1. User-specific permissions override group permissions
-2. Group permissions apply to group members
-3. Guest permissions apply to unauthenticated users
-4. Share-level `defaultPermission` applies when no specific permission is set
-
->**NOTE**: Ensure that the samples has default values to test it out.
-
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
-
-```sh
-kubectl delete -k config/samples/
-```
-
-**Delete the APIs(CRDs) from the cluster:**
-
-```sh
-make uninstall
-```
-
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/dittofs/dittofs-operator:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/dittofs/dittofs-operator/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v2-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-### Running Tests
-
-```sh
-# Run all tests
+# Run tests
 make test
+
+# Build container image
+make docker-build IMG=<registry>/dittofs-operator:tag
 ```
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
 
 ## License
 
-Copyright 2025.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+Apache License 2.0. See [LICENSE](LICENSE) for details.
