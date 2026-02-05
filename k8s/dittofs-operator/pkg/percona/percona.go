@@ -9,8 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
-	crunchyv1beta1 "github.com/percona/percona-postgresql-operator/v2/pkg/apis/postgres-operator.crunchydata.com/v1beta1"
 	pgv2 "github.com/percona/percona-postgresql-operator/v2/pkg/apis/pgv2.percona.com/v2"
+	crunchyv1beta1 "github.com/percona/percona-postgresql-operator/v2/pkg/apis/postgres-operator.crunchydata.com/v1beta1"
 )
 
 const (
@@ -107,8 +107,8 @@ func buildBackupsSpec(dsName string, backup *dittoiov1alpha1.PerconaBackupConfig
 	}
 
 	// Default schedules
-	fullSchedule := "0 2 * * *"   // Daily at 2am
-	incrSchedule := "0 * * * *"   // Hourly
+	fullSchedule := "0 2 * * *" // Daily at 2am
+	incrSchedule := "0 * * * *" // Hourly
 	region := "eu-west-1"
 
 	if backup.FullSchedule != "" {
@@ -126,9 +126,9 @@ func buildBackupsSpec(dsName string, backup *dittoiov1alpha1.PerconaBackupConfig
 		Enabled: &enabled,
 		PGBackRest: pgv2.PGBackRestArchive{
 			Global: map[string]string{
-				"repo1-path":                "/pgbackrest/" + dsName + "/repo1",
-				"repo1-s3-uri-style":        "path",
-				"repo1-storage-verify-tls":  "y",
+				"repo1-path":               "/pgbackrest/" + dsName + "/repo1",
+				"repo1-s3-uri-style":       "path",
+				"repo1-storage-verify-tls": "y",
 			},
 			Repos: []crunchyv1beta1.PGBackRestRepo{
 				{
