@@ -545,6 +545,18 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 			},
 		})
 
+		// Build init containers
+		var initContainers []corev1.Container
+		if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
+			initContainers = append(initContainers, buildPostgresInitContainer(dittoServer.Name))
+		}
+
+		// Merge env vars
+		envVars := buildS3EnvVars(dittoServer.Spec.S3)
+		if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
+			envVars = append(envVars, buildPostgresEnvVars(dittoServer.Name)...)
+		}
+
 		statefulSet.Spec = appsv1.StatefulSetSpec{
 			Replicas:    &replicas,
 			ServiceName: dittoServer.Name + "-headless",
@@ -560,6 +572,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 				},
 				Spec: corev1.PodSpec{
 					SecurityContext: getPodSecurityContext(dittoServer),
+					InitContainers:  initContainers,
 					Containers: []corev1.Container{
 						{
 							Name:            "dittofs",
@@ -570,7 +583,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 							Resources:       dittoServer.Spec.Resources,
 							SecurityContext: dittoServer.Spec.SecurityContext,
 							Ports:           buildContainerPorts(dittoServer),
-							Env:             buildS3EnvVars(dittoServer.Spec.S3),
+							Env:             envVars,
 							LivenessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									TCPSocket: &corev1.TCPSocketAction{
@@ -757,6 +770,99 @@ func boolPtr(b bool) *bool {
 	return &b
 }
 
+// buildPostgresInitContainer creates an init container that waits for PostgreSQL to be ready.
+// Uses pg_isready with full auth check (connects as dittofs user to dittofs database).
+func buildPostgresInitContainer(dsName string) corev1.Container {
+	secretName := percona.SecretName(dsName)
+
+	return corev1.Container{
+		Name:  "wait-for-postgres",
+		Image: "postgres:16-alpine",
+		Command: []string{
+			"/bin/sh",
+			"-c",
+			`echo "Waiting for PostgreSQL at $PGHOST:$PGPORT..."
+timeout=300
+elapsed=0
+while ! pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -t 5; do
+  echo "PostgreSQL not ready, waiting... ($elapsed/$timeout seconds)"
+  sleep 2
+  elapsed=$((elapsed + 2))
+  if [ $elapsed -ge $timeout ]; then
+    echo "Timeout waiting for PostgreSQL"
+    exit 1
+  fi
+done
+echo "PostgreSQL is ready!"`,
+		},
+		Env: []corev1.EnvVar{
+			{
+				Name: "PGHOST",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+						Key:                  "host",
+					},
+				},
+			},
+			{
+				Name: "PGPORT",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+						Key:                  "port",
+					},
+				},
+			},
+			{
+				Name: "PGUSER",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+						Key:                  "user",
+					},
+				},
+			},
+			{
+				Name: "PGPASSWORD",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+						Key:                  "password",
+					},
+				},
+			},
+			{
+				Name: "PGDATABASE",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+						Key:                  "dbname",
+					},
+				},
+			},
+		},
+	}
+}
+
+// buildPostgresEnvVars creates the DATABASE_URL env var from Percona Secret.
+// Uses the 'uri' key which contains the full connection string.
+func buildPostgresEnvVars(dsName string) []corev1.EnvVar {
+	secretName := percona.SecretName(dsName)
+
+	return []corev1.EnvVar{
+		{
+			Name: "DATABASE_URL",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+					Key:                  "uri",
+				},
+			},
+		},
+	}
+}
+
 // reconcilePerconaPGCluster creates/updates the PerconaPGCluster CR if Percona is enabled.
 // The PerconaPGCluster is owned by DittoServer and will be deleted when DittoServer is deleted.
 // Per CONTEXT.md decision: operator doesn't reconcile user modifications (no drift reconciliation).
@@ -875,6 +981,22 @@ func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServ
 		for k, v := range secret.Data {
 			secrets["s3:"+k] = v
 		}
+	}
+
+	// Percona PostgreSQL credentials secret (if Percona enabled)
+	if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
+		secretName := percona.SecretName(dittoServer.Name)
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: dittoServer.Namespace,
+			Name:      secretName,
+		}, secret); err == nil {
+			// Include uri key for hash (credential changes should restart pod)
+			if data, ok := secret.Data["uri"]; ok {
+				secrets["percona:uri"] = data
+			}
+		}
+		// Note: Don't error if secret doesn't exist yet - Percona operator creates it
 	}
 
 	return secrets, nil
