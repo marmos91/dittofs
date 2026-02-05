@@ -97,7 +97,7 @@ Plans:
 - [x] 03-03-PLAN.md - StorageClass validation webhook with client injection
 
 ### Phase 4: Percona PostgreSQL Integration
-**Goal**: PerconaPGCluster watching; connection Secret extraction; readiness gating
+**Goal**: Auto-create PerconaPGCluster for PostgreSQL metadata store; connection Secret extraction; readiness gating via init container
 **Depends on**: Phase 3
 **Requirements**: R4.1, R4.2, R4.3, R4.4, R4.5
 **Complexity**: High
@@ -113,12 +113,12 @@ Plans:
   - Connection Secret extraction logic
   - Init container for PostgreSQL readiness check
   - PostgreSQL metadata store ConfigMap generation
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 04-01: Percona operator CRD watching
-- [ ] 04-02: Connection Secret extraction and init container
-- [ ] 04-03: PostgreSQL metadata store configuration
+- [ ] 04-01-PLAN.md - CRD types (PerconaConfig, PerconaBackupConfig), Percona API import, RBAC
+- [ ] 04-02-PLAN.md - reconcilePerconaPGCluster, init container, DATABASE_URL wiring
+- [ ] 04-03-PLAN.md - Webhook validation for Percona CRD, sample CR, human verification
 
 ### Phase 5: Status Conditions and Lifecycle
 **Goal**: Full status conditions, finalizers, events, health probes
@@ -178,7 +178,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 1. Operator Foundation | 3/3 | Complete | 2026-02-04 |
 | 2. ConfigMap and Services | 3/3 | Complete | 2026-02-04 |
 | 3. Storage Management | 3/3 | Complete | 2026-02-05 |
-| 4. Percona Integration | 0/3 | Not started | - |
+| 4. Percona Integration | 0/3 | Planned | - |
 | 5. Status and Lifecycle | 0/3 | Not started | - |
 | 6. Documentation | 0/3 | Not started | - |
 
