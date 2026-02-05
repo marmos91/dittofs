@@ -186,7 +186,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&dittoiov1alpha1.DittoServer{}).SetupWebhookWithManager(mgr); err != nil {
+	if err := dittoiov1alpha1.SetupDittoServerWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "DittoServer")
 		os.Exit(1)
 	}
