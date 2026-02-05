@@ -82,6 +82,10 @@ type BadgerMetadataStore struct {
 	// lockStore provides lock persistence
 	lockStore   *badgerLockStore
 	lockStoreMu sync.Mutex
+
+	// clientStore provides NSM client registration persistence
+	clientStore   *badgerClientStore
+	clientStoreMu sync.Mutex
 }
 
 // BadgerMetadataStoreConfig contains configuration for creating a BadgerDB metadata store.

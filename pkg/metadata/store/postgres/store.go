@@ -39,6 +39,11 @@ type PostgresMetadataStore struct {
 	// Initialized lazily via initLockStore().
 	lockStore   *postgresLockStore
 	lockStoreMu sync.Mutex
+
+	// clientStore holds NSM client registration persistence.
+	// Initialized lazily via getClientStore().
+	clientStore   *postgresClientStore
+	clientStoreMu sync.Mutex
 }
 
 // statsCache holds cached filesystem statistics

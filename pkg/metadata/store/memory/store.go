@@ -206,6 +206,10 @@ type MemoryMetadataStore struct {
 	// lockStore holds persisted lock data for NLM/SMB lock persistence.
 	// Initialized lazily on first use.
 	lockStore *memoryLockStore
+
+	// clientStore holds NSM client registrations for crash recovery.
+	// Initialized lazily on first use.
+	clientStore *memoryClientStore
 }
 
 // MemoryMetadataStoreConfig contains configuration for creating a memory metadata store.
