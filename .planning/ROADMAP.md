@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Operator Foundation** - Functional operator skeleton with DittoFS CRD creating StatefulSet
 - [x] **Phase 2: ConfigMap Generation and Services** - ConfigMap from CRD spec; LoadBalancer Services for NFS, SMB, API
-- [ ] **Phase 3: Storage Management** - Cache PVC (replaces EmptyDir for WAL persistence); S3 credentials support; StorageClass validation
+- [x] **Phase 3: Storage Management** - Cache PVC (replaces EmptyDir for WAL persistence); S3 credentials support; StorageClass validation
 - [ ] **Phase 4: Percona PostgreSQL Integration** - PerconaPGCluster watching; connection Secret extraction; readiness gating
 - [ ] **Phase 5: Status Conditions and Lifecycle** - Full status conditions, finalizers, events, health probes
 - [ ] **Phase 6: Documentation and Deployment** - Complete documentation and validation on Scaleway cluster
@@ -92,9 +92,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 03-01-PLAN.md - Cache VolumeClaimTemplate and CacheSize CRD field (fix EmptyDir bug)
-- [ ] 03-02-PLAN.md - S3 credentials Secret reference and env var injection
-- [ ] 03-03-PLAN.md - StorageClass validation webhook with client injection
+- [x] 03-01-PLAN.md - Cache VolumeClaimTemplate and CacheSize CRD field (fix EmptyDir bug)
+- [x] 03-02-PLAN.md - S3 credentials Secret reference and env var injection
+- [x] 03-03-PLAN.md - StorageClass validation webhook with client injection
 
 ### Phase 4: Percona PostgreSQL Integration
 **Goal**: PerconaPGCluster watching; connection Secret extraction; readiness gating
@@ -177,7 +177,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 |-------|----------------|--------|-----------|
 | 1. Operator Foundation | 3/3 | Complete | 2026-02-04 |
 | 2. ConfigMap and Services | 3/3 | Complete | 2026-02-04 |
-| 3. Storage Management | 0/3 | In progress | - |
+| 3. Storage Management | 3/3 | Complete | 2026-02-05 |
 | 4. Percona Integration | 0/3 | Not started | - |
 | 5. Status and Lifecycle | 0/3 | Not started | - |
 | 6. Documentation | 0/3 | Not started | - |
