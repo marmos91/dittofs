@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** Phase 4 COMPLETE (SMB Leases)
+**Current focus:** Phase 5 IN PROGRESS (Cross-Protocol Integration)
 
 ## Current Position
 
-Phase: 4 of 28 (SMB Leases)
-Plan: 3 of 3 complete
-Status: PHASE COMPLETE
-Last activity: 2026-02-05 - Completed 04-03-PLAN.md
+Phase: 5 of 28 (Cross-Protocol Integration)
+Plan: 1 of 3 complete
+Status: In progress
+Last activity: 2026-02-05 - Completed 05-01-PLAN.md
 
-Progress: [#############-----------] 46% (13/28 plans complete)
+Progress: [##############----------] 50% (14/28 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 13
-- Average duration: 12 min
-- Total execution time: 2.5 hours
+- Total plans completed: 14
+- Average duration: 11.5 min
+- Total execution time: 2.6 hours
 
 **By Phase:**
 
@@ -31,10 +31,11 @@ Progress: [#############-----------] 46% (13/28 plans complete)
 | 02-nlm-protocol | 3 | 25 min | 8.3 min | COMPLETE |
 | 03-nsm-protocol | 3 | 19 min | 6.3 min | COMPLETE |
 | 04-smb-leases | 3 | 29 min | 9.7 min | COMPLETE |
+| 05-cross-protocol-integration | 1 | 7 min | 7 min | IN PROGRESS |
 
 **Recent Trend:**
-- Last 5 plans: 03-03 (6 min), 04-01 (7 min), 04-02 (7 min), 04-03 (15 min)
-- Trend: Cross-protocol integration requires more time but patterns established
+- Last 5 plans: 04-01 (7 min), 04-02 (7 min), 04-03 (15 min), 05-01 (7 min)
+- Trend: Foundation work faster, integration work takes longer
 
 *Updated after each plan completion*
 
@@ -142,6 +143,16 @@ Progress: [#############-----------] 46% (13/28 plans complete)
 - SMB CREATE processes lease contexts when OplockLevel=0xFF
 - CREATE response includes granted lease state in RsLs context
 
+## Phase 05 Accomplishments
+
+### Plan 05-01: Unified Lock View Foundation - COMPLETE
+- UnifiedLockView struct in pkg/metadata/ for cross-protocol lock visibility
+- FileLocksInfo separates ByteRangeLocks and Leases for easy processing
+- GetAllLocksOnFile, HasConflictingLocks, GetLeaseByKey, GetWriteLeases, GetHandleLeases
+- NLMHolderInfo and TranslateToNLMHolder for NLM4_DENIED responses
+- Cross-protocol Prometheus metrics (cross_protocol_conflict_total, cross_protocol_break_duration_seconds)
+- MetadataService owns UnifiedLockView per share
+
 ## Accumulated Context
 
 ### Decisions
@@ -192,6 +203,10 @@ Recent decisions affecting current work:
 - [04-03]: 35-second lease break timeout matches Windows MS-SMB2 default
 - [04-03]: Polling-based lease break wait with 100ms interval
 - [04-03]: OplockChecker interface in MetadataService for clean cross-protocol visibility
+- [05-01]: UnifiedLockView in pkg/metadata/ (not pkg/metadata/lock/) per CONTEXT.md
+- [05-01]: Per-share UnifiedLockView ownership matches LockManager pattern
+- [05-01]: NLM OH field = first 8 bytes of 16-byte LeaseKey
+- [05-01]: Cross-protocol metrics use descriptive label constants
 
 ### Pending Todos
 
@@ -203,11 +218,12 @@ None.
 
 ## Next Steps
 
-**Phase 4 COMPLETE - Ready for Phase 5:**
-- Phase 5: Cross-Protocol Integration
+**Phase 5 IN PROGRESS:**
+- Plan 05-02: NFS protocol integration with cross-protocol conflict detection
+- Plan 05-03: SMB protocol integration with cross-protocol visibility
 
 ## Session Continuity
 
 Last session: 2026-02-05
-Stopped at: Completed 04-03-PLAN.md - Phase 04 COMPLETE
+Stopped at: Completed 05-01-PLAN.md
 Resume file: None
