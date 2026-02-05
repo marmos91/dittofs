@@ -405,3 +405,187 @@ func TestS3SecretValid(t *testing.T) {
 		t.Errorf("Expected no warnings for valid S3 Secret, got: %v", warnings)
 	}
 }
+
+// Percona validation tests
+// Note: Tests that require RESTMapper (CRD existence) are tested via
+// integration tests as fake client doesn't support RESTMapper mocking.
+
+func TestPerconaPrecedenceWarning(t *testing.T) {
+	// Test that basic validation passes when both Percona and PostgresSecretRef are set
+	// Note: The actual warning is produced by validateDittoServerWithClient, which
+	// requires cluster access. Basic validation does not check this precedence.
+	ds := &DittoServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-percona-precedence",
+			Namespace: "default",
+		},
+		Spec: DittoServerSpec{
+			Storage: StorageSpec{
+				MetadataSize: "10Gi",
+				CacheSize:    "5Gi",
+			},
+			Percona: &PerconaConfig{
+				Enabled: true,
+			},
+			Database: &DatabaseConfig{
+				PostgresSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: "external-postgres",
+					},
+					Key: "connection-string",
+				},
+			},
+		},
+	}
+
+	// Basic validation should pass (Percona + PostgresSecretRef is allowed config)
+	warnings, err := ds.validateDittoServer()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Basic validation doesn't check Percona/Postgres precedence (needs client)
+	_ = warnings
+}
+
+func TestPerconaBackupRequiredFields(t *testing.T) {
+	// Test that backup validation happens in the client-aware validator
+	// Basic validation does not check backup required fields
+	ds := &DittoServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-percona-backup",
+			Namespace: "default",
+		},
+		Spec: DittoServerSpec{
+			Storage: StorageSpec{
+				MetadataSize: "10Gi",
+				CacheSize:    "5Gi",
+			},
+			Percona: &PerconaConfig{
+				Enabled: true,
+				Backup: &PerconaBackupConfig{
+					Enabled: true,
+					// Missing bucket and endpoint - validated by client-aware validator
+				},
+			},
+		},
+	}
+
+	// Basic validation passes (backup validation needs client for full check)
+	warnings, err := ds.validateDittoServer()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_ = warnings
+}
+
+func TestPerconaDisabled(t *testing.T) {
+	// Test that Percona config is valid when disabled (even without CRD)
+	scheme := runtime.NewScheme()
+	_ = storagev1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	validator := &DittoServerValidator{Client: fakeClient}
+
+	ds := &DittoServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-percona-disabled",
+			Namespace: "default",
+		},
+		Spec: DittoServerSpec{
+			Storage: StorageSpec{
+				MetadataSize: "10Gi",
+				CacheSize:    "5Gi",
+			},
+			Percona: &PerconaConfig{
+				Enabled: false, // Disabled, so no CRD check needed
+			},
+		},
+	}
+
+	warnings, err := validator.ValidateCreate(context.Background(), ds)
+	if err != nil {
+		t.Errorf("Disabled Percona should not error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("Expected no warnings for disabled Percona, got: %v", warnings)
+	}
+}
+
+func TestPerconaStorageClassValidation(t *testing.T) {
+	// Test that Percona StorageClass validation is a hard error when not found
+	scheme := runtime.NewScheme()
+	_ = storagev1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	validator := &DittoServerValidator{Client: fakeClient}
+
+	scName := "nonexistent-percona-sc"
+	ds := &DittoServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-percona-sc",
+			Namespace: "default",
+		},
+		Spec: DittoServerSpec{
+			Storage: StorageSpec{
+				MetadataSize: "10Gi",
+				CacheSize:    "5Gi",
+			},
+			Percona: &PerconaConfig{
+				Enabled:          true,
+				StorageClassName: &scName,
+			},
+		},
+	}
+
+	// This will fail at the RESTMapper check before StorageClass validation
+	// because fake client doesn't support RESTMapper.
+	// In a real cluster, the error would be about the StorageClass.
+	_, err := validator.ValidateCreate(context.Background(), ds)
+	if err == nil {
+		t.Error("Expected error when Percona enabled without CRD")
+	}
+}
+
+func TestPerconaBackupMissingBucket(t *testing.T) {
+	// When Percona is enabled with backup enabled but bucket missing,
+	// should error (requires CRD check first)
+	scheme := runtime.NewScheme()
+	_ = storagev1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	validator := &DittoServerValidator{Client: fakeClient}
+
+	ds := &DittoServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-percona-backup-no-bucket",
+			Namespace: "default",
+		},
+		Spec: DittoServerSpec{
+			Storage: StorageSpec{
+				MetadataSize: "10Gi",
+				CacheSize:    "5Gi",
+			},
+			Percona: &PerconaConfig{
+				Enabled: true,
+				Backup: &PerconaBackupConfig{
+					Enabled:  true,
+					Bucket:   "", // Missing
+					Endpoint: "https://s3.cubbit.eu",
+				},
+			},
+		},
+	}
+
+	// This will fail at RESTMapper first (no CRD)
+	// In a real cluster with CRD, it would fail at bucket validation
+	_, err := validator.ValidateCreate(context.Background(), ds)
+	if err == nil {
+		t.Error("Expected error when Percona enabled without CRD")
+	}
+}

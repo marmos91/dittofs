@@ -1,0 +1,64 @@
+# DittoServer with Percona PostgreSQL integration
+# Prerequisites:
+# 1. Percona Operator installed: helm install pg-operator percona/pg-operator
+# 2. StorageClass available (or use cluster default)
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  name: dittofs-percona
+  labels:
+    app.kubernetes.io/name: dittofs
+    app.kubernetes.io/instance: dittofs-percona
+spec:
+  image: marmos91c/dittofs:latest
+  replicas: 1
+
+  # Storage for DittoFS internal data
+  storage:
+    metadataSize: "10Gi"
+    contentSize: "50Gi"
+    cacheSize: "5Gi"
+    # storageClassName: "fast-ssd"  # Optional, uses default if not set
+
+  # Percona PostgreSQL for control plane metadata
+  percona:
+    enabled: true
+    replicas: 1
+    storageSize: "10Gi"
+    # storageClassName: "fast-ssd"  # Can differ from DittoFS storage
+    databaseName: "dittofs"
+    # Backup configuration (optional)
+    # backup:
+    #   enabled: true
+    #   bucket: "my-backups"
+    #   endpoint: "https://s3.cubbit.eu"
+    #   region: "eu-west-1"
+    #   credentialsSecretRef:
+    #     name: pgbackrest-s3-creds
+
+  # REST API configuration
+  controlPlane:
+    port: 8080
+
+  # Identity configuration
+  identity:
+    type: memory
+    jwt:
+      secretRef:
+        name: dittofs-percona-jwt
+        key: secret
+      accessTokenDuration: "15m"
+      refreshTokenDuration: "168h"
+
+  # Service configuration
+  service:
+    type: LoadBalancer
+---
+# JWT Secret for API authentication
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dittofs-percona-jwt
+type: Opaque
+stringData:
+  secret: "change-this-to-a-secure-random-string-at-least-32-chars"
