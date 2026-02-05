@@ -88,7 +88,7 @@ func TestReconcileDittoServer(t *testing.T) {
 			},
 			expectedStatus: &expectedStatus{
 				phase:           "Pending",
-				conditionReason: "StatefulSetNotReady",
+				conditionReason: "ConditionsNotMet",
 				conditionStatus: metav1.ConditionFalse,
 			},
 			request: ctrl.Request{
@@ -122,7 +122,7 @@ func TestReconcileDittoServer(t *testing.T) {
 			},
 			expectedStatus: &expectedStatus{
 				phase:           "Pending",
-				conditionReason: "StatefulSetNotReady",
+				conditionReason: "ConditionsNotMet",
 				conditionStatus: metav1.ConditionFalse,
 			},
 			request: ctrl.Request{
@@ -156,7 +156,7 @@ func TestReconcileDittoServer(t *testing.T) {
 			},
 			expectedStatus: &expectedStatus{
 				phase:           "Stopped",
-				conditionReason: "Stopped",
+				conditionReason: "AllConditionsMet",
 				conditionStatus: metav1.ConditionTrue,
 			},
 			request: ctrl.Request{
@@ -198,14 +198,15 @@ func TestReconcileDittoServer(t *testing.T) {
 							Replicas: &replicas,
 						},
 						Status: appsv1.StatefulSetStatus{
-							ReadyReplicas: 2,
+							ReadyReplicas:     2,
+							AvailableReplicas: 2,
 						},
 					}
 				}(),
 			},
 			expectedStatus: &expectedStatus{
 				phase:             "Running",
-				conditionReason:   "StatefulSetReady",
+				conditionReason:   "AllConditionsMet",
 				conditionStatus:   metav1.ConditionTrue,
 				availableReplicas: func() *int32 { r := int32(2); return &r }(),
 			},
@@ -239,7 +240,7 @@ func TestReconcileDittoServer(t *testing.T) {
 			},
 			expectedStatus: &expectedStatus{
 				phase:           "Pending",
-				conditionReason: "StatefulSetNotReady",
+				conditionReason: "ConditionsNotMet",
 				conditionStatus: metav1.ConditionFalse,
 			},
 			request: ctrl.Request{
@@ -276,7 +277,7 @@ func TestReconcileDittoServer(t *testing.T) {
 			},
 			expectedStatus: &expectedStatus{
 				phase:           "Pending",
-				conditionReason: "StatefulSetNotReady",
+				conditionReason: "ConditionsNotMet",
 				conditionStatus: metav1.ConditionFalse,
 			},
 			request: ctrl.Request{
@@ -309,7 +310,7 @@ func TestReconcileDittoServer(t *testing.T) {
 			},
 			expectedStatus: &expectedStatus{
 				phase:           "Pending",
-				conditionReason: "StatefulSetNotReady",
+				conditionReason: "ConditionsNotMet",
 				conditionStatus: metav1.ConditionFalse,
 			},
 			request: ctrl.Request{
@@ -371,7 +372,7 @@ func TestReconcileDittoServer(t *testing.T) {
 			},
 			expectedStatus: &expectedStatus{
 				phase:           "Pending",
-				conditionReason: "StatefulSetNotReady",
+				conditionReason: "ConditionsNotMet",
 				conditionStatus: metav1.ConditionFalse,
 			},
 			request: ctrl.Request{
@@ -411,7 +412,7 @@ func TestReconcileDittoServer(t *testing.T) {
 			},
 			expectedStatus: &expectedStatus{
 				phase:           "Pending",
-				conditionReason: "StatefulSetNotReady",
+				conditionReason: "ConditionsNotMet",
 				conditionStatus: metav1.ConditionFalse,
 			},
 			request: ctrl.Request{
@@ -448,7 +449,7 @@ func TestReconcileDittoServer(t *testing.T) {
 			},
 			expectedStatus: &expectedStatus{
 				phase:           "Pending",
-				conditionReason: "StatefulSetNotReady",
+				conditionReason: "ConditionsNotMet",
 				conditionStatus: metav1.ConditionFalse,
 			},
 			request: ctrl.Request{

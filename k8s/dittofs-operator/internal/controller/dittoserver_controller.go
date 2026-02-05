@@ -165,7 +165,8 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		replicas = *dittoServer.Spec.Replicas
 	}
 
-	if err := r.reconcileStatefulSet(ctx, dittoServer, replicas); err != nil {
+	configHash, err := r.reconcileStatefulSet(ctx, dittoServer, replicas)
+	if err != nil {
 		logger.Error(err, "Failed to reconcile StatefulSet")
 		return ctrl.Result{}, err
 	}
@@ -180,7 +181,16 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	dittoServerCopy := dittoServer.DeepCopy()
-	dittoServerCopy.Status.AvailableReplicas = statefulSet.Status.ReadyReplicas
+	dittoServerCopy.Status.ObservedGeneration = dittoServer.Generation
+	dittoServerCopy.Status.Replicas = replicas
+	dittoServerCopy.Status.ReadyReplicas = statefulSet.Status.ReadyReplicas
+	dittoServerCopy.Status.AvailableReplicas = statefulSet.Status.AvailableReplicas
+	dittoServerCopy.Status.ConfigHash = configHash
+
+	// Set PerconaClusterName if Percona is enabled
+	if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
+		dittoServerCopy.Status.PerconaClusterName = percona.ClusterName(dittoServer.Name)
+	}
 
 	if replicas == 0 {
 		dittoServerCopy.Status.Phase = "Stopped"
@@ -193,17 +203,96 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	dittoServerCopy.Status.NFSEndpoint = fmt.Sprintf("%s-file.%s.svc.cluster.local:%d",
 		dittoServer.Name, dittoServer.Namespace, nfs.GetNFSPort(dittoServer))
 
-	if statefulSet.Status.ReadyReplicas == replicas && replicas > 0 {
+	// Set ConfigReady condition
+	r.updateConfigReadyCondition(ctx, dittoServer, &dittoServerCopy.Status)
+
+	// Set DatabaseReady condition (only relevant when Percona enabled)
+	if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
+		pgCluster := &pgv2.PerconaPGCluster{}
+		err := r.Get(ctx, client.ObjectKey{
+			Namespace: dittoServer.Namespace,
+			Name:      percona.ClusterName(dittoServer.Name),
+		}, pgCluster)
+		if err != nil {
+			conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+				conditions.ConditionDatabaseReady, metav1.ConditionFalse, "PerconaNotFound",
+				fmt.Sprintf("PerconaPGCluster not found: %v", err))
+		} else if !percona.IsReady(pgCluster) {
+			conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+				conditions.ConditionDatabaseReady, metav1.ConditionFalse, "PerconaNotReady",
+				fmt.Sprintf("PostgreSQL cluster state: %s", percona.GetState(pgCluster)))
+		} else {
+			conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+				conditions.ConditionDatabaseReady, metav1.ConditionTrue, "PerconaReady",
+				"PostgreSQL cluster is ready")
+		}
+	} else {
+		// Remove DatabaseReady condition if Percona not enabled
+		conditions.RemoveCondition(&dittoServerCopy.Status.Conditions, conditions.ConditionDatabaseReady)
+	}
+
+	// Set Available condition
+	if replicas == 0 {
 		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
-			"Ready", metav1.ConditionTrue, "StatefulSetReady",
+			conditions.ConditionAvailable, metav1.ConditionTrue, "Stopped",
+			"DittoServer is stopped (replicas=0)")
+	} else if statefulSet.Status.ReadyReplicas >= 1 {
+		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+			conditions.ConditionAvailable, metav1.ConditionTrue, "MinimumReplicasAvailable",
 			fmt.Sprintf("StatefulSet has %d/%d ready replicas", statefulSet.Status.ReadyReplicas, replicas))
-	} else if replicas == 0 {
-		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
-			"Ready", metav1.ConditionTrue, "Stopped", "DittoServer is stopped (replicas=0)")
 	} else {
 		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
-			"Ready", metav1.ConditionFalse, "StatefulSetNotReady",
-			fmt.Sprintf("StatefulSet has %d/%d ready replicas", statefulSet.Status.ReadyReplicas, replicas))
+			conditions.ConditionAvailable, metav1.ConditionFalse, "NoReplicasAvailable",
+			fmt.Sprintf("Waiting for replicas: %d/%d ready", statefulSet.Status.ReadyReplicas, replicas))
+	}
+
+	// Set Progressing condition
+	if statefulSet.Status.ObservedGeneration < statefulSet.Generation {
+		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+			conditions.ConditionProgressing, metav1.ConditionTrue, "StatefulSetUpdating",
+			"StatefulSet is being updated")
+	} else if statefulSet.Status.ReadyReplicas != replicas {
+		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+			conditions.ConditionProgressing, metav1.ConditionTrue, "ScalingReplicas",
+			fmt.Sprintf("Scaling: %d/%d replicas ready", statefulSet.Status.ReadyReplicas, replicas))
+	} else {
+		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+			conditions.ConditionProgressing, metav1.ConditionFalse, "ReconcileComplete",
+			"All resources are up to date")
+	}
+
+	// Set Ready condition (aggregate of other conditions)
+	configReady := conditions.IsConditionTrue(dittoServerCopy.Status.Conditions, conditions.ConditionConfigReady)
+	available := conditions.IsConditionTrue(dittoServerCopy.Status.Conditions, conditions.ConditionAvailable)
+	notProgressing := !conditions.IsConditionTrue(dittoServerCopy.Status.Conditions, conditions.ConditionProgressing)
+
+	// DatabaseReady only required if Percona enabled
+	databaseReady := true
+	if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
+		databaseReady = conditions.IsConditionTrue(dittoServerCopy.Status.Conditions, conditions.ConditionDatabaseReady)
+	}
+
+	if configReady && available && notProgressing && databaseReady {
+		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+			conditions.ConditionReady, metav1.ConditionTrue, "AllConditionsMet",
+			"DittoServer is fully operational")
+	} else {
+		var reasons []string
+		if !configReady {
+			reasons = append(reasons, "ConfigNotReady")
+		}
+		if !available {
+			reasons = append(reasons, "NotAvailable")
+		}
+		if !notProgressing {
+			reasons = append(reasons, "StillProgressing")
+		}
+		if !databaseReady {
+			reasons = append(reasons, "DatabaseNotReady")
+		}
+		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+			conditions.ConditionReady, metav1.ConditionFalse, "ConditionsNotMet",
+			fmt.Sprintf("Not ready: %v", reasons))
 	}
 
 	if err := r.Status().Update(ctx, dittoServerCopy); err != nil {
@@ -324,6 +413,33 @@ func (r *DittoServerReconciler) performCleanup(ctx context.Context, dittoServer 
 	// No additional cleanup needed for them.
 
 	return nil
+}
+
+// updateConfigReadyCondition checks ConfigMap and sets ConfigReady condition.
+func (r *DittoServerReconciler) updateConfigReadyCondition(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer, statusCopy *dittoiov1alpha1.DittoServerStatus) {
+	configMap := &corev1.ConfigMap{}
+	err := r.Get(ctx, client.ObjectKey{
+		Namespace: dittoServer.Namespace,
+		Name:      dittoServer.Name + "-config",
+	}, configMap)
+
+	if err != nil {
+		conditions.SetCondition(&statusCopy.Conditions, dittoServer.Generation,
+			conditions.ConditionConfigReady, metav1.ConditionFalse, "ConfigMapNotFound",
+			fmt.Sprintf("ConfigMap %s-config not found: %v", dittoServer.Name, err))
+		return
+	}
+
+	if _, ok := configMap.Data["config.yaml"]; !ok {
+		conditions.SetCondition(&statusCopy.Conditions, dittoServer.Generation,
+			conditions.ConditionConfigReady, metav1.ConditionFalse, "ConfigMissing",
+			"ConfigMap does not contain config.yaml key")
+		return
+	}
+
+	conditions.SetCondition(&statusCopy.Conditions, dittoServer.Generation,
+		conditions.ConditionConfigReady, metav1.ConditionTrue, "ConfigValid",
+		"ConfigMap is valid and contains configuration")
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -557,13 +673,13 @@ func (r *DittoServerReconciler) reconcileMetricsService(ctx context.Context, dit
 	return err
 }
 
-func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer, replicas int32) error {
+func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer, replicas int32) (string, error) {
 	logger := logf.FromContext(ctx)
 
 	// Generate config to compute hash (same config that was just written to ConfigMap)
 	configYAML, err := config.GenerateDittoFSConfig(ctx, r.Client, dittoServer)
 	if err != nil {
-		return fmt.Errorf("failed to generate config for hash: %w", err)
+		return "", fmt.Errorf("failed to generate config for hash: %w", err)
 	}
 
 	// Collect secret data for hash computation
@@ -776,7 +892,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 		return nil
 	})
 
-	return err
+	return configHash, err
 }
 
 // getPodSecurityContext returns the pod security context with fsGroup set to ensure
