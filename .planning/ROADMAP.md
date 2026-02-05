@@ -134,12 +134,12 @@ Plans:
   2. Oplock break notifications sent when conflicting access occurs
   3. Lease break acknowledgments correctly transition lease state
   4. SMB leases flow through unified lock manager (not separate tracking)
-**Plans**: TBD
+**Plans**: 3 plans in 3 waves
 
 Plans:
-- [ ] 04-01: SMB lease types and state machine
-- [ ] 04-02: Oplock break notification mechanism
-- [ ] 04-03: Integration with unified lock manager
+- [ ] 04-01-PLAN.md — Lease types (LeaseInfo, LeaseState constants), persistence schema extension
+- [ ] 04-02-PLAN.md — OplockManager refactor to delegate to unified lock manager, lease break timer
+- [ ] 04-03-PLAN.md — Cross-protocol break triggering, SMB CREATE lease context support
 
 ### Phase 5: Cross-Protocol Integration
 **Goal**: Enable lock visibility and conflict detection across NFS (NLM) and SMB protocols
@@ -621,4 +621,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 *Phase 1 completed: 2026-02-04*
 *Phase 2 completed: 2026-02-05*
 *Phase 3 completed: 2026-02-05*
+*Phase 4 planned: 2026-02-05*
 *Requirements coverage: 162/162 mapped*
