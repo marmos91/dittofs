@@ -537,6 +537,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 							Resources:       dittoServer.Spec.Resources,
 							SecurityContext: dittoServer.Spec.SecurityContext,
 							Ports:           buildContainerPorts(dittoServer),
+							Env:             buildS3EnvVars(dittoServer.Spec.S3),
 							LivenessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									TCPSocket: &corev1.TCPSocketAction{
@@ -645,6 +646,82 @@ func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer) []corev1.Cont
 	}
 
 	return ports
+}
+
+// buildS3EnvVars creates environment variables for S3 credentials from Secret reference.
+// Returns nil if S3 is not configured.
+func buildS3EnvVars(spec *dittoiov1alpha1.S3StoreConfig) []corev1.EnvVar {
+	if spec == nil || spec.CredentialsSecretRef == nil {
+		return nil
+	}
+
+	ref := spec.CredentialsSecretRef
+
+	// Apply defaults for key names
+	accessKeyIDKey := ref.AccessKeyIDKey
+	if accessKeyIDKey == "" {
+		accessKeyIDKey = "accessKeyId"
+	}
+	secretAccessKeyKey := ref.SecretAccessKeyKey
+	if secretAccessKeyKey == "" {
+		secretAccessKeyKey = "secretAccessKey"
+	}
+	endpointKey := ref.EndpointKey
+	if endpointKey == "" {
+		endpointKey = "endpoint"
+	}
+
+	envVars := []corev1.EnvVar{
+		{
+			Name: "AWS_ACCESS_KEY_ID",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: ref.SecretName,
+					},
+					Key: accessKeyIDKey,
+				},
+			},
+		},
+		{
+			Name: "AWS_SECRET_ACCESS_KEY",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: ref.SecretName,
+					},
+					Key: secretAccessKeyKey,
+				},
+			},
+		},
+		{
+			Name: "AWS_ENDPOINT_URL",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: ref.SecretName,
+					},
+					Key:      endpointKey,
+					Optional: boolPtr(true), // Endpoint is optional (AWS doesn't need it)
+				},
+			},
+		},
+	}
+
+	// Add region if specified
+	if spec.Region != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "AWS_REGION",
+			Value: spec.Region,
+		})
+	}
+
+	return envVars
+}
+
+// boolPtr returns a pointer to a bool value.
+func boolPtr(b bool) *bool {
+	return &b
 }
 
 // collectSecretData gathers all secret data referenced by the DittoServer CR.
