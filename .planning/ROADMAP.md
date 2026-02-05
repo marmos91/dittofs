@@ -132,17 +132,17 @@ Plans:
   4. DittoFS pod has working liveness and readiness probes
   5. Graceful shutdown completes within configured timeout
 **Key Deliverables**:
-  - Status conditions implementation (Ready, Available, Degraded, DatabaseReady, ConfigReady)
-  - Finalizers for clean resource cleanup
-  - Kubernetes events for debugging
-  - Health probes configuration (liveness, readiness)
-  - Graceful shutdown handling
-**Plans**: TBD
+  - Status conditions implementation (Ready, Available, Progressing, DatabaseReady, ConfigReady)
+  - Finalizers for clean resource cleanup with deleteWithServer option for Percona
+  - Kubernetes events for debugging (moderate verbosity)
+  - HTTP health probes (liveness, readiness, startup)
+  - Graceful shutdown handling (preStop hook)
+**Plans**: 3 plans
 
 Plans:
-- [ ] 05-01: Status conditions implementation
-- [ ] 05-02: Finalizers and resource cleanup
-- [ ] 05-03: Events, health probes, graceful shutdown
+- [ ] 05-01-PLAN.md - Enhanced status conditions (Ready, Available, ConfigReady, DatabaseReady, Progressing) and status fields
+- [ ] 05-02-PLAN.md - Finalizers with deleteWithServer flag for Percona orphaning/deletion
+- [ ] 05-03-PLAN.md - EventRecorder integration, HTTP health probes, preStop lifecycle hook
 
 ### Phase 6: Documentation and Deployment
 **Goal**: Complete documentation and validation on Scaleway cluster
