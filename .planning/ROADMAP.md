@@ -118,12 +118,12 @@ Plans:
   2. Client crash triggers automatic lock cleanup
   3. Server restart sends SM_NOTIFY to all previously registered clients
   4. Clients can reclaim locks during grace period after restart
-**Plans**: TBD
+**Plans**: 3 plans in 3 waves
 
 Plans:
-- [ ] 03-01: NSM protocol dispatcher and state tracking
-- [ ] 03-02: SM_MON, SM_UNMON, SM_NOTIFY operations
-- [ ] 03-03: Lock cleanup and restart notification
+- [ ] 03-01-PLAN.md — NSM types, XDR encode/decode, ConnectionTracker extension, ClientRegistrationStore interface
+- [ ] 03-02-PLAN.md — NSM dispatcher, handlers (NULL, STAT, MON, UNMON, UNMON_ALL), client registration persistence
+- [ ] 03-03-PLAN.md — SM_NOTIFY callback client, parallel notification, FREE_ALL handler, metrics
 
 ### Phase 4: SMB Leases
 **Goal**: Add SMB2/3 oplock and lease support integrated with unified lock manager
@@ -587,7 +587,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 |-------|-----------|----------------|--------|-----------|
 | 1. Locking Infrastructure | v1.0 | 4/4 | Complete | 2026-02-04 |
 | 2. NLM Protocol | v1.0 | 3/3 | Complete | 2026-02-05 |
-| 3. NSM Protocol | v1.0 | 0/3 | Not started | - |
+| 3. NSM Protocol | v1.0 | 0/3 | Planned | - |
 | 4. SMB Leases | v1.0 | 0/3 | Not started | - |
 | 5. Cross-Protocol Integration | v1.0 | 0/4 | Not started | - |
 | 6. NFSv4 Protocol Foundation | v2.0 | 0/3 | Not started | - |
@@ -620,4 +620,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 *Roadmap created: 2026-02-04*
 *Phase 1 completed: 2026-02-04*
 *Phase 2 completed: 2026-02-05*
+*Phase 3 planned: 2026-02-05*
 *Requirements coverage: 162/162 mapped*
