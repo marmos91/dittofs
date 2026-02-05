@@ -488,6 +488,30 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 			})
 		}
 
+		// Cache PVC (ALWAYS required for WAL persistence)
+		cacheSize, err := resource.ParseQuantity(dittoServer.Spec.Storage.CacheSize)
+		if err != nil {
+			return fmt.Errorf("invalid cache size: %w", err)
+		}
+
+		// Cache VolumeClaimTemplate - always required for WAL persistence
+		volumeClaimTemplates = append(volumeClaimTemplates, corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "cache",
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{
+					corev1.ReadWriteOnce,
+				},
+				StorageClassName: dittoServer.Spec.Storage.StorageClassName,
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: cacheSize,
+					},
+				},
+			},
+		})
+
 		statefulSet.Spec = appsv1.StatefulSetSpec{
 			Replicas:    &replicas,
 			ServiceName: dittoServer.Name + "-headless",
@@ -550,16 +574,14 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 								},
 							},
 						},
-						{
-							Name: "cache",
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
-							},
-						},
 					},
 				},
 			},
 			VolumeClaimTemplates: volumeClaimTemplates,
+			PersistentVolumeClaimRetentionPolicy: &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+				WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+				WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+			},
 		}
 
 		return nil
