@@ -19,6 +19,7 @@ import (
 //   - Lock recovery after server restart
 //   - Grace period for clients to reclaim locks
 //   - Split-brain detection via ServerEpoch
+//   - SMB lease state persistence and reclaim
 type PersistedLock struct {
 	// ID is the unique identifier for this lock (UUID).
 	ID string `json:"id"`
@@ -55,6 +56,35 @@ type PersistedLock struct {
 	// ServerEpoch is the server epoch when the lock was acquired.
 	// Used for split-brain detection and stale lock cleanup.
 	ServerEpoch uint64 `json:"server_epoch"`
+
+	// ========================================================================
+	// Lease Fields (omitempty for byte-range locks)
+	// ========================================================================
+
+	// LeaseKey is the 128-bit client-generated key identifying the lease.
+	// Non-empty (16 bytes) for leases, empty for byte-range locks.
+	LeaseKey []byte `json:"lease_key,omitempty"`
+
+	// LeaseState is the current R/W/H flags (LeaseStateRead|Write|Handle).
+	// 0 for byte-range locks or None lease state.
+	LeaseState uint32 `json:"lease_state,omitempty"`
+
+	// LeaseEpoch is the SMB3 epoch counter, incremented on state change.
+	// 0 for byte-range locks.
+	LeaseEpoch uint16 `json:"lease_epoch,omitempty"`
+
+	// BreakToState is the target state during an active lease break.
+	// 0 if no break in progress.
+	BreakToState uint32 `json:"break_to_state,omitempty"`
+
+	// Breaking indicates a lease break is in progress awaiting acknowledgment.
+	// False for byte-range locks.
+	Breaking bool `json:"breaking,omitempty"`
+}
+
+// IsLease returns true if this persisted lock is an SMB lease.
+func (pl *PersistedLock) IsLease() bool {
+	return len(pl.LeaseKey) == 16
 }
 
 // LockQuery specifies filters for listing locks.
@@ -77,11 +107,41 @@ type LockQuery struct {
 	// ShareName filters by share.
 	// Empty string means no share filtering.
 	ShareName string
+
+	// IsLease filters by lock type.
+	// nil means no type filtering (both leases and byte-range locks).
+	// true means leases only.
+	// false means byte-range locks only.
+	IsLease *bool
 }
 
 // IsEmpty returns true if the query has no filters.
 func (q LockQuery) IsEmpty() bool {
-	return q.FileID == "" && q.OwnerID == "" && q.ClientID == "" && q.ShareName == ""
+	return q.FileID == "" && q.OwnerID == "" && q.ClientID == "" && q.ShareName == "" && q.IsLease == nil
+}
+
+// MatchesLock returns true if the lock matches all query filters.
+// Used by store implementations for consistent filtering logic.
+func (q LockQuery) MatchesLock(lk *PersistedLock) bool {
+	if q.FileID != "" && lk.FileID != q.FileID {
+		return false
+	}
+	if q.OwnerID != "" && lk.OwnerID != q.OwnerID {
+		return false
+	}
+	if q.ClientID != "" && lk.ClientID != q.ClientID {
+		return false
+	}
+	if q.ShareName != "" && lk.ShareName != q.ShareName {
+		return false
+	}
+	if q.IsLease != nil {
+		isLease := lk.IsLease()
+		if *q.IsLease != isLease {
+			return false
+		}
+	}
+	return true
 }
 
 // LockStore defines operations for persisting locks to the metadata store.
@@ -155,8 +215,11 @@ type LockStore interface {
 //
 // Returns:
 //   - *PersistedLock: Serializable lock ready for storage
+//
+// For leases, the Lease field must be non-nil. The 128-bit LeaseKey,
+// LeaseState, Epoch, BreakToState, and Breaking are all preserved.
 func ToPersistedLock(lock *EnhancedLock, epoch uint64) *PersistedLock {
-	return &PersistedLock{
+	pl := &PersistedLock{
 		ID:               lock.ID,
 		ShareName:        lock.Owner.ShareName,
 		FileID:           string(lock.FileHandle),
@@ -169,6 +232,17 @@ func ToPersistedLock(lock *EnhancedLock, epoch uint64) *PersistedLock {
 		AcquiredAt:       lock.AcquiredAt,
 		ServerEpoch:      epoch,
 	}
+
+	// Persist lease fields if this is a lease
+	if lock.Lease != nil {
+		pl.LeaseKey = lock.Lease.LeaseKey[:]
+		pl.LeaseState = lock.Lease.LeaseState
+		pl.LeaseEpoch = lock.Lease.Epoch
+		pl.BreakToState = lock.Lease.BreakToState
+		pl.Breaking = lock.Lease.Breaking
+	}
+
+	return pl
 }
 
 // FromPersistedLock converts a PersistedLock back to an EnhancedLock.
@@ -178,8 +252,12 @@ func ToPersistedLock(lock *EnhancedLock, epoch uint64) *PersistedLock {
 //
 // Returns:
 //   - *EnhancedLock: In-memory lock for use in lock manager
+//
+// For leases (identified by non-empty LeaseKey), the LeaseInfo struct
+// is populated with the persisted lease state. Blocking and Reclaim
+// are runtime-only and not restored.
 func FromPersistedLock(pl *PersistedLock) *EnhancedLock {
-	return &EnhancedLock{
+	el := &EnhancedLock{
 		ID: pl.ID,
 		Owner: LockOwner{
 			OwnerID:   pl.OwnerID,
@@ -194,4 +272,20 @@ func FromPersistedLock(pl *PersistedLock) *EnhancedLock {
 		AcquiredAt:       pl.AcquiredAt,
 		// Blocking and Reclaim are runtime-only, not persisted
 	}
+
+	// Restore lease fields if this is a lease (16-byte key present)
+	if len(pl.LeaseKey) == 16 {
+		var leaseKey [16]byte
+		copy(leaseKey[:], pl.LeaseKey)
+		el.Lease = &LeaseInfo{
+			LeaseKey:     leaseKey,
+			LeaseState:   pl.LeaseState,
+			Epoch:        pl.LeaseEpoch,
+			BreakToState: pl.BreakToState,
+			Breaking:     pl.Breaking,
+			// BreakStarted is runtime-only, not persisted
+		}
+	}
+
+	return el
 }

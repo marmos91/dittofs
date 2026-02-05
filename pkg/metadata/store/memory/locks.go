@@ -49,21 +49,7 @@ func (s *memoryLockStore) PutLock(ctx context.Context, lk *lock.PersistedLock) e
 	defer s.mu.Unlock()
 
 	// Clone the lock to prevent external modifications
-	stored := &lock.PersistedLock{
-		ID:               lk.ID,
-		ShareName:        lk.ShareName,
-		FileID:           lk.FileID,
-		OwnerID:          lk.OwnerID,
-		ClientID:         lk.ClientID,
-		LockType:         lk.LockType,
-		Offset:           lk.Offset,
-		Length:           lk.Length,
-		ShareReservation: lk.ShareReservation,
-		AcquiredAt:       lk.AcquiredAt,
-		ServerEpoch:      lk.ServerEpoch,
-	}
-
-	s.locks[lk.ID] = stored
+	s.locks[lk.ID] = cloneLock(lk)
 	return nil
 }
 
@@ -201,24 +187,13 @@ func (s *memoryLockStore) IncrementServerEpoch(ctx context.Context) (uint64, err
 
 // matchesQuery returns true if the lock matches all non-empty query fields.
 func matchesQuery(lk *lock.PersistedLock, query lock.LockQuery) bool {
-	if query.FileID != "" && lk.FileID != query.FileID {
-		return false
-	}
-	if query.OwnerID != "" && lk.OwnerID != query.OwnerID {
-		return false
-	}
-	if query.ClientID != "" && lk.ClientID != query.ClientID {
-		return false
-	}
-	if query.ShareName != "" && lk.ShareName != query.ShareName {
-		return false
-	}
-	return true
+	// Use the centralized MatchesLock method from LockQuery
+	return query.MatchesLock(lk)
 }
 
 // cloneLock creates a deep copy of a PersistedLock.
 func cloneLock(lk *lock.PersistedLock) *lock.PersistedLock {
-	return &lock.PersistedLock{
+	clone := &lock.PersistedLock{
 		ID:               lk.ID,
 		ShareName:        lk.ShareName,
 		FileID:           lk.FileID,
@@ -230,7 +205,18 @@ func cloneLock(lk *lock.PersistedLock) *lock.PersistedLock {
 		ShareReservation: lk.ShareReservation,
 		AcquiredAt:       lk.AcquiredAt,
 		ServerEpoch:      lk.ServerEpoch,
+		// Lease fields
+		LeaseState:   lk.LeaseState,
+		LeaseEpoch:   lk.LeaseEpoch,
+		BreakToState: lk.BreakToState,
+		Breaking:     lk.Breaking,
 	}
+	// Deep copy LeaseKey slice if present
+	if len(lk.LeaseKey) > 0 {
+		clone.LeaseKey = make([]byte, len(lk.LeaseKey))
+		copy(clone.LeaseKey, lk.LeaseKey)
+	}
+	return clone
 }
 
 // ============================================================================
