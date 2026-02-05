@@ -20,6 +20,7 @@ var dittoserverlog = logf.Log.WithName("dittoserver-resource")
 
 // DittoServerValidator implements webhook.CustomValidator with cluster client access.
 // This enables validation of cluster resources like StorageClass and Secrets.
+// +kubebuilder:object:generate=false
 type DittoServerValidator struct {
 	Client client.Client
 }

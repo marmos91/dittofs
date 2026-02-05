@@ -5,7 +5,10 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestDittoServerValidation(t *testing.T) {
@@ -197,4 +200,208 @@ func containsSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestStorageClassValidation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = storagev1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = AddToScheme(scheme)
+
+	// Create a fake client with no StorageClass
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	validator := &DittoServerValidator{Client: fakeClient}
+
+	scName := "nonexistent-sc"
+	ds := &DittoServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-ds",
+			Namespace: "default",
+		},
+		Spec: DittoServerSpec{
+			Storage: StorageSpec{
+				MetadataSize:     "10Gi",
+				CacheSize:        "5Gi",
+				StorageClassName: &scName,
+			},
+		},
+	}
+
+	_, err := validator.ValidateCreate(context.Background(), ds)
+	if err == nil {
+		t.Error("Expected error for nonexistent StorageClass, got nil")
+	}
+}
+
+func TestStorageClassValidation_Exists(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = storagev1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = AddToScheme(scheme)
+
+	// Create a fake client with a StorageClass
+	sc := &storagev1.StorageClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "existing-sc",
+		},
+		Provisioner: "kubernetes.io/aws-ebs",
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sc).Build()
+
+	validator := &DittoServerValidator{Client: fakeClient}
+
+	scName := "existing-sc"
+	ds := &DittoServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-ds",
+			Namespace: "default",
+		},
+		Spec: DittoServerSpec{
+			Storage: StorageSpec{
+				MetadataSize:     "10Gi",
+				CacheSize:        "5Gi",
+				StorageClassName: &scName,
+			},
+		},
+	}
+
+	_, err := validator.ValidateCreate(context.Background(), ds)
+	if err != nil {
+		t.Errorf("Expected no error for existing StorageClass, got: %v", err)
+	}
+}
+
+func TestS3SecretWarning(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = storagev1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = AddToScheme(scheme)
+
+	// Create a fake client with no Secret
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	validator := &DittoServerValidator{Client: fakeClient}
+
+	ds := &DittoServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-ds",
+			Namespace: "default",
+		},
+		Spec: DittoServerSpec{
+			Storage: StorageSpec{
+				MetadataSize: "10Gi",
+				CacheSize:    "5Gi",
+			},
+			S3: &S3StoreConfig{
+				CredentialsSecretRef: &S3CredentialsSecretRef{
+					SecretName: "nonexistent-secret",
+				},
+			},
+		},
+	}
+
+	warnings, err := validator.ValidateCreate(context.Background(), ds)
+	if err != nil {
+		t.Errorf("S3 Secret not found should warn, not error: %v", err)
+	}
+	if len(warnings) == 0 {
+		t.Error("Expected warning for missing S3 Secret")
+	}
+}
+
+func TestS3SecretMissingKeys(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = storagev1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = AddToScheme(scheme)
+
+	// Create a fake client with a Secret that has missing keys
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "s3-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"accessKeyId": []byte("test-key"),
+			// Missing secretAccessKey
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+
+	validator := &DittoServerValidator{Client: fakeClient}
+
+	ds := &DittoServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-ds",
+			Namespace: "default",
+		},
+		Spec: DittoServerSpec{
+			Storage: StorageSpec{
+				MetadataSize: "10Gi",
+				CacheSize:    "5Gi",
+			},
+			S3: &S3StoreConfig{
+				CredentialsSecretRef: &S3CredentialsSecretRef{
+					SecretName: "s3-secret",
+				},
+			},
+		},
+	}
+
+	warnings, err := validator.ValidateCreate(context.Background(), ds)
+	if err != nil {
+		t.Errorf("Missing S3 key should warn, not error: %v", err)
+	}
+	if len(warnings) == 0 {
+		t.Error("Expected warning for missing secretAccessKey")
+	}
+}
+
+func TestS3SecretValid(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = storagev1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = AddToScheme(scheme)
+
+	// Create a fake client with a valid Secret
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "s3-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"accessKeyId":     []byte("test-key"),
+			"secretAccessKey": []byte("test-secret"),
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+
+	validator := &DittoServerValidator{Client: fakeClient}
+
+	ds := &DittoServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-ds",
+			Namespace: "default",
+		},
+		Spec: DittoServerSpec{
+			Storage: StorageSpec{
+				MetadataSize: "10Gi",
+				CacheSize:    "5Gi",
+			},
+			S3: &S3StoreConfig{
+				CredentialsSecretRef: &S3CredentialsSecretRef{
+					SecretName: "s3-secret",
+				},
+			},
+		},
+	}
+
+	warnings, err := validator.ValidateCreate(context.Background(), ds)
+	if err != nil {
+		t.Errorf("Valid S3 Secret should not error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("Expected no warnings for valid S3 Secret, got: %v", warnings)
+	}
 }
