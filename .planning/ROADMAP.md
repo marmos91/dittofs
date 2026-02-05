@@ -161,12 +161,12 @@ Plans:
   - Percona operator integration guide
   - Troubleshooting guide (common issues)
   - Deployment validation on Scaleway cluster
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 06-01: CRD reference and installation documentation
-- [ ] 06-02: Integration and troubleshooting guides
-- [ ] 06-03: Scaleway cluster validation
+- [ ] 06-01-PLAN.md - Helm chart generation, CRD reference, and installation documentation
+- [ ] 06-02-PLAN.md - Percona integration guide and troubleshooting documentation
+- [ ] 06-03-PLAN.md - Scaleway cluster validation (human verification checkpoint)
 
 ## Progress
 
