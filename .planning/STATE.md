@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-02-04)
 ## Current Position
 
 Phase: 3 of 28 (NSM Protocol)
-Plan: 1 of 3 complete
+Plan: 2 of 3 complete
 Status: In progress
-Last activity: 2026-02-05 - Completed 03-01-PLAN.md
+Last activity: 2026-02-05 - Completed 03-02-PLAN.md
 
-Progress: [########----------------] 29% (8/28 plans complete)
+Progress: [#########---------------] 32% (9/28 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 8
+- Total plans completed: 9
 - Average duration: 13 min
-- Total execution time: 1.73 hours
+- Total execution time: 1.90 hours
 
 **By Phase:**
 
@@ -29,11 +29,11 @@ Progress: [########----------------] 29% (8/28 plans complete)
 |-------|-------|-------|----------|--------|
 | 01-locking-infrastructure | 4 | 75 min | 18.75 min | COMPLETE |
 | 02-nlm-protocol | 3 | 25 min | 8.3 min | COMPLETE |
-| 03-nsm-protocol | 1 | 3 min | 3 min | IN PROGRESS |
+| 03-nsm-protocol | 2 | 13 min | 6.5 min | IN PROGRESS |
 
 **Recent Trend:**
-- Last 5 plans: 02-01 (6 min), 02-02 (11 min), 02-03 (8 min), 03-01 (3 min)
-- Trend: Foundation work pays off - type/XDR packages are fast
+- Last 5 plans: 02-02 (11 min), 02-03 (8 min), 03-01 (3 min), 03-02 (10 min)
+- Trend: Handler/dispatch patterns are well established
 
 *Updated after each plan completion*
 
@@ -98,6 +98,14 @@ Progress: [########----------------] 29% (8/28 plans complete)
 - ClientRegistrationStore interface for persistence
 - Conversion functions for persistence (To/From PersistedClientRegistration)
 
+### Plan 03-02: NSM Handlers and Dispatch - COMPLETE
+- NSM handler struct with ConnectionTracker, ClientRegistrationStore, server state
+- NSM dispatch table mapping procedures to handlers
+- SM_NULL, SM_STAT, SM_MON, SM_UNMON, SM_UNMON_ALL, SM_NOTIFY handlers
+- Client registration storage in Memory, BadgerDB, PostgreSQL
+- PostgreSQL migration 000003_clients for nsm_client_registrations table
+- NSM program (100024) routing in NFS adapter
+
 ## Accumulated Context
 
 ### Decisions
@@ -130,6 +138,9 @@ Recent decisions affecting current work:
 - [03-01]: priv field as [16]byte fixed array (XDR opaque[16])
 - [03-01]: ClientRegistrationStore interface for persistence
 - [03-01]: Extend existing ClientRegistration vs new type
+- [03-02]: HandlerResult in handlers package (close to handlers)
+- [03-02]: Client ID format: nsm:{client_addr}:{callback_host}
+- [03-02]: NSM v1 only (standard version)
 
 ### Pending Todos
 
@@ -142,11 +153,10 @@ None.
 ## Next Steps
 
 **Phase 3 Continuation:**
-- Plan 03-02: NSM Dispatcher and Handlers
-- Plan 03-03: NSM Service and Store Implementations
+- Plan 03-03: NSM Service and Store Implementations (NEXT)
 
 ## Session Continuity
 
 Last session: 2026-02-05
-Stopped at: Completed 03-01-PLAN.md
+Stopped at: Completed 03-02-PLAN.md
 Resume file: None
