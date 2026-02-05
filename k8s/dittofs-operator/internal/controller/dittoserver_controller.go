@@ -872,11 +872,12 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 							Env:             envVars,
 							LivenessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
-									TCPSocket: &corev1.TCPSocketAction{
-										Port: intstr.FromInt32(nfs.GetNFSPort(dittoServer)),
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/health",
+										Port: intstr.FromInt32(getAPIPort(dittoServer)),
 									},
 								},
-								InitialDelaySeconds: 30,
+								InitialDelaySeconds: 15,
 								PeriodSeconds:       10,
 								TimeoutSeconds:      5,
 								SuccessThreshold:    1,
@@ -884,15 +885,36 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 							},
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
-									TCPSocket: &corev1.TCPSocketAction{
-										Port: intstr.FromInt32(nfs.GetNFSPort(dittoServer)),
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/health/ready",
+										Port: intstr.FromInt32(getAPIPort(dittoServer)),
 									},
 								},
 								InitialDelaySeconds: 10,
 								PeriodSeconds:       5,
-								TimeoutSeconds:      3,
+								TimeoutSeconds:      5,
 								SuccessThreshold:    1,
 								FailureThreshold:    3,
+							},
+							StartupProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/health",
+										Port: intstr.FromInt32(getAPIPort(dittoServer)),
+									},
+								},
+								InitialDelaySeconds: 0,
+								PeriodSeconds:       5,
+								TimeoutSeconds:      5,
+								SuccessThreshold:    1,
+								FailureThreshold:    30, // 30 * 5s = 150s max startup time
+							},
+							Lifecycle: &corev1.Lifecycle{
+								PreStop: &corev1.LifecycleHandler{
+									Exec: &corev1.ExecAction{
+										Command: []string{"/bin/sh", "-c", "sleep 5"},
+									},
+								},
 							},
 						},
 					},
