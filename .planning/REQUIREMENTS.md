@@ -25,7 +25,7 @@
 - [ ] **NLM-06**: Byte-range locking support
 - [ ] **NLM-07**: Blocking lock support with callbacks
 - [ ] **NLM-08**: Non-blocking lock support
-- [ ] **NLM-09**: NLM handlers in internal/protocol/nfs/nlm/
+- [ ] **NLM-09**: NLM handlers in internal/protocol/nlm/
 
 ### NSM Protocol (NSM)
 
@@ -509,5 +509,5 @@
 
 ---
 *Requirements defined: 2026-02-04*
-*Traceability updated: 2026-02-04*
+*Traceability updated: 2026-02-05*
 *Milestone: v1.0 through v4.0*
