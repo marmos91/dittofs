@@ -472,14 +472,21 @@ func (r *DittoServerReconciler) updateConfigReadyCondition(ctx context.Context, 
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *DittoServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&dittoiov1alpha1.DittoServer{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
-		Owns(&pgv2.PerconaPGCluster{}).
-		Named("dittoserver").
-		Complete(r)
+		Named("dittoserver")
+
+	// Conditionally watch PerconaPGCluster only if CRD exists
+	// This allows the operator to work without Percona Operator installed
+	_, err := mgr.GetRESTMapper().RESTMapping(pgv2.GroupVersion.WithKind("PerconaPGCluster").GroupKind())
+	if err == nil {
+		builder = builder.Owns(&pgv2.PerconaPGCluster{})
+	}
+
+	return builder.Complete(r)
 }
 
 func (r *DittoServerReconciler) reconcileConfigMap(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
