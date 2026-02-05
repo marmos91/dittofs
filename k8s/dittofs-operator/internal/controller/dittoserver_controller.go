@@ -568,7 +568,8 @@ func (r *DittoServerReconciler) reconcileHeadlessService(ctx context.Context, di
 		if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
 			return err
 		}
-		existing.Spec = svc.Spec
+		// Only update fields we own, preserve cloud controller fields
+		mergeServiceSpec(&existing.Spec, &svc.Spec)
 		existing.Labels = svc.Labels
 		return nil
 	})
@@ -611,9 +612,10 @@ func (r *DittoServerReconciler) reconcileFileService(ctx context.Context, dittoS
 		if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
 			return err
 		}
-		existing.Spec = svc.Spec
+		// Only update fields we own, preserve cloud controller fields
+		mergeServiceSpec(&existing.Spec, &svc.Spec)
 		existing.Labels = svc.Labels
-		existing.Annotations = svc.Annotations
+		mergeAnnotations(existing.Annotations, svc.Annotations)
 		return nil
 	})
 
@@ -648,9 +650,10 @@ func (r *DittoServerReconciler) reconcileAPIService(ctx context.Context, dittoSe
 		if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
 			return err
 		}
-		existing.Spec = svc.Spec
+		// Only update fields we own, preserve cloud controller fields
+		mergeServiceSpec(&existing.Spec, &svc.Spec)
 		existing.Labels = svc.Labels
-		existing.Annotations = svc.Annotations
+		mergeAnnotations(existing.Annotations, svc.Annotations)
 		return nil
 	})
 
@@ -700,7 +703,8 @@ func (r *DittoServerReconciler) reconcileMetricsService(ctx context.Context, dit
 		if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
 			return err
 		}
-		existing.Spec = svc.Spec
+		// Only update fields we own, preserve cloud controller fields
+		mergeServiceSpec(&existing.Spec, &svc.Spec)
 		existing.Labels = svc.Labels
 		return nil
 	})
@@ -1315,4 +1319,75 @@ func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServ
 	}
 
 	return secrets, nil
+}
+
+// mergeServiceSpec updates only the fields we own in the Service spec,
+// preserving fields managed by cloud controllers (ClusterIP, HealthCheckNodePort, etc.).
+// This prevents optimistic locking conflicts when external controllers modify the service.
+func mergeServiceSpec(existing, desired *corev1.ServiceSpec) {
+	// Update fields we own
+	existing.Type = desired.Type
+	existing.Selector = desired.Selector
+	existing.Ports = mergePorts(existing.Ports, desired.Ports)
+
+	// Preserve ClusterIP - only set if not already assigned
+	// ClusterIP is immutable after creation, setting it would fail anyway
+	// For headless services (ClusterIP: None), we need to set it on create
+	if existing.ClusterIP == "" {
+		existing.ClusterIP = desired.ClusterIP
+	}
+
+	// Note: We intentionally DO NOT update these fields as they are managed by cloud controllers:
+	// - ClusterIP, ClusterIPs (assigned by Kubernetes, immutable)
+	// - HealthCheckNodePort (assigned by cloud LB controller)
+	// - LoadBalancerIP (deprecated, but may be set externally)
+	// - LoadBalancerClass (may be defaulted by admission webhook)
+	// - ExternalTrafficPolicy, InternalTrafficPolicy (preserve if set)
+	// - AllocateLoadBalancerNodePorts (preserve if set)
+	// - IPFamilies, IPFamilyPolicy (assigned by Kubernetes)
+
+	// Update ExternalTrafficPolicy only if we're explicitly setting it
+	if desired.ExternalTrafficPolicy != "" {
+		existing.ExternalTrafficPolicy = desired.ExternalTrafficPolicy
+	}
+}
+
+// mergePorts merges desired ports into existing, preserving NodePort assignments.
+// This ensures that cloud-assigned NodePorts are not changed, preventing conflicts.
+func mergePorts(existing, desired []corev1.ServicePort) []corev1.ServicePort {
+	if len(existing) == 0 {
+		return desired
+	}
+
+	// Build map of existing ports by name for quick lookup
+	existingByName := make(map[string]corev1.ServicePort)
+	for _, p := range existing {
+		existingByName[p.Name] = p
+	}
+
+	// Merge desired into existing, preserving NodePort
+	result := make([]corev1.ServicePort, 0, len(desired))
+	for _, d := range desired {
+		merged := d
+		if e, ok := existingByName[d.Name]; ok {
+			// Preserve NodePort if it was assigned
+			if e.NodePort != 0 && d.NodePort == 0 {
+				merged.NodePort = e.NodePort
+			}
+		}
+		result = append(result, merged)
+	}
+
+	return result
+}
+
+// mergeAnnotations merges desired annotations into existing, without removing
+// annotations that may have been added by cloud controllers.
+func mergeAnnotations(existing, desired map[string]string) {
+	if existing == nil {
+		return
+	}
+	for k, v := range desired {
+		existing[k] = v
+	}
 }
