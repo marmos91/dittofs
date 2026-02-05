@@ -862,6 +862,14 @@ spec:
               storage:
                 description: Storage configures PVCs for internal server storage
                 properties:
+                  cacheSize:
+                    default: 5Gi
+                    description: |-
+                      Size for cache PVC (mounted at /data/cache)
+                      Required for WAL persistence - enables crash recovery
+                    example: 5Gi
+                    pattern: ^[0-9]+(Gi|Mi|Ti)$
+                    type: string
                   contentSize:
                     description: |-
                       Size for content store PVC (mounted at /data/content)
@@ -882,6 +890,7 @@ spec:
                       If not specified, uses the cluster's default StorageClass
                     type: string
                 required:
+                - cacheSize
                 - metadataSize
                 type: object
             required:

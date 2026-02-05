@@ -84,6 +84,14 @@ type StorageSpec struct {
 	// +kubebuilder:example="50Gi"
 	ContentSize string `json:"contentSize,omitempty"`
 
+	// Size for cache PVC (mounted at /data/cache)
+	// Required for WAL persistence - enables crash recovery
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[0-9]+(Gi|Mi|Ti)$`
+	// +kubebuilder:default="5Gi"
+	// +kubebuilder:example="5Gi"
+	CacheSize string `json:"cacheSize"`
+
 	// StorageClass for the server's PVCs
 	// If not specified, uses the cluster's default StorageClass
 	StorageClassName *string `json:"storageClassName,omitempty"`
