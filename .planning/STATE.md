@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** Phase 3 in progress (NSM Protocol)
+**Current focus:** Phase 3 complete (NSM Protocol)
 
 ## Current Position
 
 Phase: 3 of 28 (NSM Protocol)
-Plan: 2 of 3 complete
-Status: In progress
-Last activity: 2026-02-05 - Completed 03-02-PLAN.md
+Plan: 3 of 3 complete
+Status: PHASE COMPLETE
+Last activity: 2026-02-05 - Completed 03-03-PLAN.md
 
-Progress: [#########---------------] 32% (9/28 plans complete)
+Progress: [##########--------------] 36% (10/28 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 9
+- Total plans completed: 10
 - Average duration: 13 min
-- Total execution time: 1.90 hours
+- Total execution time: 2.0 hours
 
 **By Phase:**
 
@@ -29,10 +29,10 @@ Progress: [#########---------------] 32% (9/28 plans complete)
 |-------|-------|-------|----------|--------|
 | 01-locking-infrastructure | 4 | 75 min | 18.75 min | COMPLETE |
 | 02-nlm-protocol | 3 | 25 min | 8.3 min | COMPLETE |
-| 03-nsm-protocol | 2 | 13 min | 6.5 min | IN PROGRESS |
+| 03-nsm-protocol | 3 | 19 min | 6.3 min | COMPLETE |
 
 **Recent Trend:**
-- Last 5 plans: 02-02 (11 min), 02-03 (8 min), 03-01 (3 min), 03-02 (10 min)
+- Last 5 plans: 02-03 (8 min), 03-01 (3 min), 03-02 (10 min), 03-03 (6 min)
 - Trend: Handler/dispatch patterns are well established
 
 *Updated after each plan completion*
@@ -106,6 +106,13 @@ Progress: [#########---------------] 32% (9/28 plans complete)
 - PostgreSQL migration 000003_clients for nsm_client_registrations table
 - NSM program (100024) routing in NFS adapter
 
+### Plan 03-03: NSM Crash Recovery - COMPLETE
+- SM_NOTIFY callback client with 5s total timeout
+- Notifier for parallel SM_NOTIFY on server restart
+- NLM FREE_ALL handler (procedure 23) for bulk lock release
+- NSM Prometheus metrics (nsm_* prefix)
+- NFS adapter integration for startup notification
+
 ## Accumulated Context
 
 ### Decisions
@@ -141,6 +148,10 @@ Recent decisions affecting current work:
 - [03-02]: HandlerResult in handlers package (close to handlers)
 - [03-02]: Client ID format: nsm:{client_addr}:{callback_host}
 - [03-02]: NSM v1 only (standard version)
+- [03-03]: Parallel SM_NOTIFY using goroutines for fastest recovery
+- [03-03]: Failed notification = client crashed, cleanup locks immediately
+- [03-03]: FREE_ALL returns void per NLM spec
+- [03-03]: Background notification goroutine (non-blocking)
 
 ### Pending Todos
 
@@ -152,11 +163,11 @@ None.
 
 ## Next Steps
 
-**Phase 3 Continuation:**
-- Plan 03-03: NSM Service and Store Implementations (NEXT)
+**Phase 3 COMPLETE - Ready for Phase 4:**
+- Phase 4: NFSv4 Foundation (per roadmap)
 
 ## Session Continuity
 
 Last session: 2026-02-05
-Stopped at: Completed 03-02-PLAN.md
+Stopped at: Completed 03-03-PLAN.md (Phase 3 complete)
 Resume file: None
