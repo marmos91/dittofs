@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -735,8 +736,12 @@ func setupDittoServerReconciler(t *testing.T, fields fields) *DittoServerReconci
 		WithStatusSubresource(&v1alpha1.DittoServer{}).
 		Build()
 
+	// Create a fake event recorder for tests
+	fakeRecorder := record.NewFakeRecorder(100)
+
 	return &DittoServerReconciler{
-		Client: fakeClient,
-		Scheme: s,
+		Client:   fakeClient,
+		Scheme:   s,
+		Recorder: fakeRecorder,
 	}
 }

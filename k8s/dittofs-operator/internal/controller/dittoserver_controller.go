@@ -106,38 +106,52 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if err := r.Update(ctx, dittoServer); err != nil {
 			return ctrl.Result{}, err
 		}
+		r.Recorder.Event(dittoServer, corev1.EventTypeNormal, "Created",
+			"DittoServer created, finalizer added")
 		// Requeue to continue with reconciliation after finalizer is added
 		return ctrl.Result{Requeue: true}, nil
 	}
 
 	if err := r.reconcileConfigMap(ctx, dittoServer); err != nil {
+		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
+			"Failed to reconcile ConfigMap: %v", err)
 		logger.Error(err, "Failed to reconcile ConfigMap")
 		return ctrl.Result{}, err
 	}
 
 	// Reconcile services (headless required for StatefulSet DNS)
 	if err := r.reconcileHeadlessService(ctx, dittoServer); err != nil {
+		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
+			"Failed to reconcile headless Service: %v", err)
 		logger.Error(err, "Failed to reconcile headless Service")
 		return ctrl.Result{}, err
 	}
 
 	if err := r.reconcileFileService(ctx, dittoServer); err != nil {
+		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
+			"Failed to reconcile file Service: %v", err)
 		logger.Error(err, "Failed to reconcile file Service")
 		return ctrl.Result{}, err
 	}
 
 	if err := r.reconcileAPIService(ctx, dittoServer); err != nil {
+		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
+			"Failed to reconcile API Service: %v", err)
 		logger.Error(err, "Failed to reconcile API Service")
 		return ctrl.Result{}, err
 	}
 
 	if err := r.reconcileMetricsService(ctx, dittoServer); err != nil {
+		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
+			"Failed to reconcile metrics Service: %v", err)
 		logger.Error(err, "Failed to reconcile metrics Service")
 		return ctrl.Result{}, err
 	}
 
 	// Reconcile PerconaPGCluster if Percona is enabled
 	if err := r.reconcilePerconaPGCluster(ctx, dittoServer); err != nil {
+		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
+			"Failed to reconcile PerconaPGCluster: %v", err)
 		logger.Error(err, "Failed to reconcile PerconaPGCluster")
 		return ctrl.Result{}, err
 	}
@@ -157,6 +171,8 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, err
 		}
 		if !percona.IsReady(pgCluster) {
+			r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "PerconaNotReady",
+				"Waiting for PostgreSQL cluster %s (state: %s)", percona.ClusterName(dittoServer.Name), percona.GetState(pgCluster))
 			logger.Info("Waiting for PerconaPGCluster to be ready", "state", percona.GetState(pgCluster))
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
@@ -169,6 +185,8 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	configHash, err := r.reconcileStatefulSet(ctx, dittoServer, replicas)
 	if err != nil {
+		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
+			"Failed to reconcile StatefulSet: %v", err)
 		logger.Error(err, "Failed to reconcile StatefulSet")
 		return ctrl.Result{}, err
 	}
@@ -324,6 +342,8 @@ func (r *DittoServerReconciler) handleDeletion(ctx context.Context, dittoServer 
 		logger.Error(err, "Failed to update phase to Deleting")
 		// Continue with cleanup even if status update fails
 	}
+	r.Recorder.Event(dittoServer, corev1.EventTypeNormal, "Deleting",
+		"DittoServer is being deleted, cleaning up resources")
 
 	// Check how long we've been trying to delete
 	deletionTime := dittoServer.DeletionTimestamp.Time
@@ -332,6 +352,8 @@ func (r *DittoServerReconciler) handleDeletion(ctx context.Context, dittoServer 
 	if elapsed > cleanupTimeout {
 		logger.Info("Cleanup timeout exceeded, forcing finalizer removal",
 			"elapsed", elapsed, "timeout", cleanupTimeout)
+		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "CleanupTimeout",
+			"Cleanup timeout exceeded (%v), forcing finalizer removal", cleanupTimeout)
 		// Force remove finalizer after timeout
 		controllerutil.RemoveFinalizer(dittoServer, finalizerName)
 		if err := r.Update(ctx, dittoServer); err != nil {
@@ -385,6 +407,8 @@ func (r *DittoServerReconciler) performCleanup(ctx context.Context, dittoServer 
 				if err := r.Delete(ctx, pgCluster); err != nil && !apierrors.IsNotFound(err) {
 					return fmt.Errorf("failed to delete PerconaPGCluster: %w", err)
 				}
+				r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "PerconaDeleted",
+					"PerconaPGCluster %s deleted (deleteWithServer=true)", clusterName)
 				// Note: Deletion is async, but we proceed since owner reference is being removed
 			} else {
 				// Orphan the PerconaPGCluster by removing our owner reference
@@ -404,6 +428,8 @@ func (r *DittoServerReconciler) performCleanup(ctx context.Context, dittoServer 
 					if err := r.Update(ctx, pgCluster); err != nil {
 						return fmt.Errorf("failed to orphan PerconaPGCluster: %w", err)
 					}
+					r.Recorder.Eventf(dittoServer, corev1.EventTypeNormal, "PerconaOrphaned",
+						"PerconaPGCluster %s orphaned and will be preserved", clusterName)
 					logger.Info("PerconaPGCluster orphaned successfully", "name", clusterName)
 				}
 			}
