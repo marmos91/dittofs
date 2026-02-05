@@ -3,8 +3,10 @@ package handlers
 import (
 	"bytes"
 	"fmt"
+	"net"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/nlm/blocking"
 	"github.com/marmos91/dittofs/internal/protocol/nlm/types"
 	nlm_xdr "github.com/marmos91/dittofs/internal/protocol/nlm/xdr"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -154,9 +156,49 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 
 	// Lock conflict
 	if req.Block {
-		// Blocking request - return NLM4Blocked
-		// Actual blocking queue handling is in Plan 02-03
-		logger.Debug("NLM LOCK blocked",
+		// Blocking request - queue the waiter
+		waiter := &blocking.Waiter{
+			Lock: &lock.EnhancedLock{
+				Owner:      owner,
+				FileHandle: lock.FileHandle(handle),
+				Offset:     req.Lock.Offset,
+				Length:     req.Lock.Length,
+			},
+			Cookie:       req.Cookie,
+			Exclusive:    req.Exclusive,
+			CallbackAddr: extractCallbackAddr(ctx.ClientAddr),
+			CallbackProg: types.ProgramNLM,
+			CallbackVers: types.NLMVersion4,
+			CallerName:   req.Lock.CallerName,
+			Svid:         req.Lock.Svid,
+			OH:           req.Lock.OH,
+			FileHandle:   req.Lock.FH,
+		}
+
+		// Try to queue the waiter
+		handleKey := string(handle)
+		if err := h.blockingQueue.Enqueue(handleKey, waiter); err != nil {
+			if err == blocking.ErrQueueFull {
+				// Per CONTEXT.md: queue full returns NLM4_DENIED_NOLOCKS
+				logger.Warn("NLM LOCK queue full",
+					"client", ctx.ClientAddr,
+					"owner", ownerID)
+				return &LockResponse{
+					Cookie: req.Cookie,
+					Status: types.NLM4DeniedNoLocks,
+				}, nil
+			}
+			// Other queue error
+			logger.Warn("NLM LOCK queue error",
+				"client", ctx.ClientAddr,
+				"error", err)
+			return &LockResponse{
+				Cookie: req.Cookie,
+				Status: types.NLM4Failed,
+			}, nil
+		}
+
+		logger.Debug("NLM LOCK queued",
 			"client", ctx.ClientAddr,
 			"owner", ownerID)
 		return &LockResponse{
@@ -173,4 +215,27 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 		Cookie: req.Cookie,
 		Status: types.NLM4Denied,
 	}, nil
+}
+
+// extractCallbackAddr constructs the callback address from the client address.
+//
+// Per NLM protocol, the callback is sent to the client's IP with the standard
+// NLM port (same as the main NLM port). Some implementations use a separate
+// callback port, but most use the same port.
+//
+// Parameters:
+//   - clientAddr: Client address in "host:port" format
+//
+// Returns the callback address in "host:port" format using standard NLM port.
+func extractCallbackAddr(clientAddr string) string {
+	host, _, err := net.SplitHostPort(clientAddr)
+	if err != nil {
+		// If we can't parse, use the original address
+		return clientAddr
+	}
+	// Use the standard NLM port (same as NFS port typically)
+	// NLM callbacks go to the same port the client is listening on
+	// which is typically a dynamic port chosen by the client
+	// For now, use the standard approach of connecting back to standard NLM port
+	return net.JoinHostPort(host, "12049")
 }

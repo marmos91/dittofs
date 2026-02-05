@@ -11,8 +11,12 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	mount "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	v3 "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
+	"github.com/marmos91/dittofs/internal/protocol/nlm/blocking"
+	"github.com/marmos91/dittofs/internal/protocol/nlm/callback"
 	nlm_handlers "github.com/marmos91/dittofs/internal/protocol/nlm/handlers"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 	"github.com/marmos91/dittofs/pkg/metrics"
 )
 
@@ -57,6 +61,9 @@ type NFSAdapter struct {
 
 	// nlmHandler processes NLM (Network Lock Manager) operations (LOCK, UNLOCK, TEST, etc.)
 	nlmHandler *nlm_handlers.Handler
+
+	// blockingQueue manages pending NLM blocking lock requests
+	blockingQueue *blocking.BlockingQueue
 
 	// registry provides access to all stores and shares
 	registry *runtime.Runtime
@@ -316,11 +323,114 @@ func (s *NFSAdapter) SetRuntime(rt *runtime.Runtime) {
 	s.nfsHandler.Registry = rt
 	s.mountHandler.Registry = rt
 
-	// Initialize NLM handler with MetadataService from runtime
+	// Create blocking queue for NLM lock operations
+	s.blockingQueue = blocking.NewBlockingQueue(nlm_handlers.DefaultBlockingQueueSize)
+
+	// Initialize NLM handler with MetadataService and blocking queue
 	metadataService := rt.GetMetadataService()
-	s.nlmHandler = nlm_handlers.NewHandler(metadataService)
+	s.nlmHandler = nlm_handlers.NewHandler(metadataService, s.blockingQueue)
+
+	// Set unlock callback to process waiting locks when a lock is released
+	metadataService.SetNLMUnlockCallback(func(handle metadata.FileHandle) {
+		// Process waiters in a goroutine to avoid blocking unlock path
+		go s.processNLMWaiters(handle)
+	})
 
 	logger.Debug("NFS adapter configured with runtime", "shares", rt.CountShares())
+}
+
+// processNLMWaiters processes pending NLM lock requests after a lock is released.
+//
+// This method is called asynchronously (in a goroutine) when an NLM unlock occurs.
+// It iterates through queued waiters in FIFO order and attempts to grant their locks.
+// For each successful grant, it sends an NLM_GRANTED callback to the client.
+//
+// Per CONTEXT.md decisions:
+//   - Waiters are processed in FIFO order
+//   - NLM_GRANTED callback with 5s total timeout
+//   - Callback failure releases the lock immediately
+//
+// Parameters:
+//   - handle: File handle that was just unlocked
+func (s *NFSAdapter) processNLMWaiters(handle metadata.FileHandle) {
+	handleKey := string(handle)
+
+	// Get a snapshot of waiters (copy, so we can iterate safely)
+	waiters := s.blockingQueue.GetWaiters(handleKey)
+	if len(waiters) == 0 {
+		return
+	}
+
+	logger.Debug("Processing NLM waiters after unlock",
+		"handle", handleKey[:min(16, len(handleKey))],
+		"waiters", len(waiters))
+
+	for _, waiter := range waiters {
+		// Skip if cancelled
+		if waiter.IsCancelled() {
+			continue
+		}
+
+		// Try to acquire the lock for this waiter
+		lockType := metadata.LockTypeShared
+		if waiter.Exclusive {
+			lockType = metadata.LockTypeExclusive
+		}
+
+		// Get the lock manager for this handle
+		lm := s.getLockManagerForHandle(handle)
+		if lm == nil {
+			continue
+		}
+
+		// Try to add the lock
+		enhancedLock := metadata.NewEnhancedLock(
+			waiter.Lock.Owner,
+			lock.FileHandle(handle),
+			waiter.Lock.Offset,
+			waiter.Lock.Length,
+			lockType,
+		)
+
+		err := lm.AddEnhancedLock(handleKey, enhancedLock)
+		if err != nil {
+			// Lock still conflicts - try next waiter
+			logger.Debug("NLM waiter still conflicts, skipping",
+				"owner", waiter.Lock.Owner.OwnerID)
+			continue
+		}
+
+		// Lock acquired - update waiter's lock reference
+		waiter.Lock = enhancedLock
+
+		// Send GRANTED callback
+		// ProcessGrantedCallback releases the lock on failure
+		success := callback.ProcessGrantedCallback(
+			s.shutdownCtx,
+			waiter,
+			lm,
+			nil, // metrics - can add later
+		)
+
+		if success {
+			// Remove waiter from queue
+			s.blockingQueue.RemoveWaiter(handleKey, waiter)
+			logger.Debug("NLM waiter granted and notified",
+				"owner", waiter.Lock.Owner.OwnerID)
+		}
+		// If callback failed, ProcessGrantedCallback already released the lock
+	}
+}
+
+// getLockManagerForHandle returns the lock manager for a file handle.
+// Returns nil if the lock manager cannot be found.
+func (s *NFSAdapter) getLockManagerForHandle(handle metadata.FileHandle) *lock.Manager {
+	shareName, _, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return nil
+	}
+
+	return s.registry.GetMetadataService().GetLockManagerForShare(shareName)
 }
 
 // Serve starts the NFS server and blocks until the context is cancelled

@@ -72,20 +72,17 @@ func EncodeCancelResponse(resp *CancelResponse) ([]byte, error) {
 // This is used when a client times out waiting for a lock or wants to abort
 // a blocking lock request.
 //
-// Per NLM specification:
+// Per NLM specification and CONTEXT.md:
 //   - Returns NLM4Granted if cancellation is processed (whether or not
 //     the lock request existed in the queue)
 //   - The Block and Exclusive flags should match the original LOCK request
-//
-// Note: The actual blocking queue is implemented in Plan 02-03.
-// This handler provides the cancellation stub that will integrate with it.
 //
 // Parameters:
 //   - ctx: The NLM handler context with auth and client info
 //   - req: The CANCEL request containing lock parameters
 //
 // Returns:
-//   - *CancelResponse: Status indicating result (usually NLM4Granted)
+//   - *CancelResponse: Status indicating result (always NLM4Granted)
 //   - error: System-level errors only
 func (h *Handler) Cancel(ctx *NLMHandlerContext, req *CancelRequest) (*CancelResponse, error) {
 	// Build owner ID
@@ -102,28 +99,21 @@ func (h *Handler) Cancel(ctx *NLMHandlerContext, req *CancelRequest) (*CancelRes
 
 	// Convert file handle
 	handle := metadata.FileHandle(req.Lock.FH)
+	handleKey := string(handle)
 
-	// Call MetadataService to cancel blocking lock
-	// This is a stub for now - full implementation in Plan 02-03
-	err := h.metadataService.CancelBlockingLock(
-		ctx.Context,
-		handle,
-		ownerID,
-		req.Lock.Offset,
-		req.Lock.Length,
-	)
-
-	if err != nil {
-		// Log but still return granted for idempotency
-		logger.Warn("NLM CANCEL error (returning granted)",
+	// Try to cancel from blocking queue
+	cancelled := h.blockingQueue.Cancel(handleKey, ownerID, req.Lock.Offset, req.Lock.Length)
+	if cancelled {
+		logger.Debug("NLM CANCEL found and cancelled waiter",
 			"client", ctx.ClientAddr,
-			"error", err)
+			"owner", ownerID)
+	} else {
+		logger.Debug("NLM CANCEL no waiter found (already processed or never queued)",
+			"client", ctx.ClientAddr,
+			"owner", ownerID)
 	}
 
-	logger.Debug("NLM CANCEL granted",
-		"client", ctx.ClientAddr,
-		"owner", ownerID)
-
+	// Per NLM specification: always return NLM4Granted for idempotency
 	return &CancelResponse{
 		Cookie: req.Cookie,
 		Status: types.NLM4Granted,

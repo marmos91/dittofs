@@ -32,12 +32,13 @@ import (
 //	// Low-level operations (direct store access)
 //	file, err := metaSvc.GetFile(ctx, handle)
 type MetadataService struct {
-	mu             sync.RWMutex
-	stores         map[string]MetadataStore // shareName -> store
-	lockManagers   map[string]*LockManager  // shareName -> lock manager (ephemeral, per-share)
-	pendingWrites  *PendingWritesTracker    // deferred metadata commits for performance
-	deferredCommit bool                     // if true, use deferred commits (default: true)
-	cookies        *CookieManager           // NFS/SMB cookie ↔ store token translation
+	mu               sync.RWMutex
+	stores           map[string]MetadataStore // shareName -> store
+	lockManagers     map[string]*LockManager  // shareName -> lock manager (ephemeral, per-share)
+	pendingWrites    *PendingWritesTracker    // deferred metadata commits for performance
+	deferredCommit   bool                     // if true, use deferred commits (default: true)
+	cookies          *CookieManager           // NFS/SMB cookie ↔ store token translation
+	onUnlockCallback func(handle FileHandle)  // NLM callback to process waiting locks
 }
 
 // New creates a new empty MetadataService instance.
@@ -129,6 +130,22 @@ func (s *MetadataService) lockManagerForHandle(handle FileHandle) (*LockManager,
 	}
 
 	return nil, fmt.Errorf("no lock manager for share %q", shareName)
+}
+
+// GetLockManagerForShare returns the lock manager for a specific share.
+//
+// This is used by the NFS adapter to process NLM blocking lock waiters.
+// Returns nil if no lock manager exists for the share.
+//
+// Thread safety: Safe to call concurrently.
+func (s *MetadataService) GetLockManagerForShare(shareName string) *LockManager {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if lm, ok := s.lockManagers[shareName]; ok {
+		return lm
+	}
+	return nil
 }
 
 // ============================================================================
@@ -619,12 +636,29 @@ func (s *MetadataService) TestLockNLM(
 	return true, nil, nil
 }
 
+// SetNLMUnlockCallback sets a callback invoked after each NLM unlock.
+//
+// The NLM blocking queue uses this to process waiting locks when a lock
+// is released. The callback is called asynchronously (in a goroutine by
+// the caller) to avoid blocking the unlock operation.
+//
+// Parameters:
+//   - fn: Callback function that receives the file handle of the unlocked file
+func (s *MetadataService) SetNLMUnlockCallback(fn func(handle FileHandle)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onUnlockCallback = fn
+}
+
 // UnlockFileNLM releases a lock for NLM protocol.
 //
 // Per NLM specification and CONTEXT.md:
 //   - Unlock of non-existent lock silently succeeds (returns nil)
 //   - This ensures idempotency for retried unlock requests
 //   - The exclusive flag is ignored on unlock
+//
+// After a successful unlock, the NLM unlock callback is invoked (if set)
+// to allow the blocking queue to process waiting lock requests.
 //
 // Parameters:
 //   - ctx: Context for cancellation
@@ -659,6 +693,16 @@ func (s *MetadataService) UnlockFileNLM(
 		}
 		return err
 	}
+
+	// Notify NLM blocking queue that a lock was released
+	// Read callback under lock, call outside lock to avoid deadlock
+	s.mu.RLock()
+	callback := s.onUnlockCallback
+	s.mu.RUnlock()
+	if callback != nil {
+		callback(handle)
+	}
+
 	return nil
 }
 
