@@ -810,6 +810,11 @@ type OplockChecker interface {
 	// and initiates breaks as needed. Returns ErrLeaseBreakPending if caller
 	// should wait for break acknowledgment.
 	CheckAndBreakForRead(ctx context.Context, fileHandle lock.FileHandle) error
+
+	// CheckAndBreakForDelete checks for SMB Handle leases that must break
+	// before file deletion. H leases protect against surprise deletion.
+	// Returns ErrLeaseBreakPending if caller should wait for break acknowledgment.
+	CheckAndBreakForDelete(ctx context.Context, fileHandle lock.FileHandle) error
 }
 
 // oplockChecker is the optional cross-protocol lease checker.
@@ -876,4 +881,27 @@ func (s *MetadataService) CheckAndBreakLeasesForRead(ctx context.Context, handle
 		return nil // No SMB adapter, no leases to break
 	}
 	return checker.CheckAndBreakForRead(ctx, lock.FileHandle(handle))
+}
+
+// CheckAndBreakLeasesForDelete checks for SMB Handle leases that must break
+// before file deletion.
+//
+// This is called by NFS REMOVE/RENAME handlers before deleting a file.
+// SMB clients use Handle leases (H) to protect against "surprise deletion" -
+// they expect to receive notification before a file they have open is deleted.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - handle: File handle being deleted
+//
+// Returns:
+//   - nil if no SMB adapter or no Handle leases
+//   - ErrLeaseBreakPending if a lease break was initiated (caller should wait)
+//   - Other errors for system failures
+func (s *MetadataService) CheckAndBreakLeasesForDelete(ctx context.Context, handle FileHandle) error {
+	checker := GetOplockChecker()
+	if checker == nil {
+		return nil // No SMB adapter, no leases to break
+	}
+	return checker.CheckAndBreakForDelete(ctx, lock.FileHandle(handle))
 }
