@@ -10,6 +10,7 @@ package lock
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -165,12 +166,7 @@ func LeaseStateToString(state uint32) string {
 // Valid file states: None, R, RW, RH, RWH
 // Invalid states: W alone, H alone, WH (Write/Handle without Read)
 func IsValidFileLeaseState(state uint32) bool {
-	for _, valid := range ValidFileLeaseStates {
-		if state == valid {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ValidFileLeaseStates, state)
 }
 
 // IsValidDirectoryLeaseState returns true if the state is a valid lease combination for directories.
@@ -178,12 +174,7 @@ func IsValidFileLeaseState(state uint32) bool {
 // Valid directory states: None, R, RH
 // Invalid: W, RW, H, WH, RWH (no Write caching for directories)
 func IsValidDirectoryLeaseState(state uint32) bool {
-	for _, valid := range ValidDirectoryLeaseStates {
-		if state == valid {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ValidDirectoryLeaseStates, state)
 }
 
 // ============================================================================
