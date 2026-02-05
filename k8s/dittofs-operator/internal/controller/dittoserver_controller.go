@@ -775,5 +775,21 @@ func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServ
 		}
 	}
 
+	// S3 credentials secret (if configured)
+	if dittoServer.Spec.S3 != nil && dittoServer.Spec.S3.CredentialsSecretRef != nil {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: dittoServer.Namespace,
+			Name:      dittoServer.Spec.S3.CredentialsSecretRef.SecretName,
+		}, secret); err != nil {
+			return nil, fmt.Errorf("failed to get S3 credentials secret: %w", err)
+		}
+
+		// Include all data from the secret for hash
+		for k, v := range secret.Data {
+			secrets["s3:"+k] = v
+		}
+	}
+
 	return secrets, nil
 }
