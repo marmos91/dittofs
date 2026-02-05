@@ -53,7 +53,7 @@ No specific requirements — open to standard approaches
 <deferred>
 ## Deferred Ideas
 
-None — discussion stayed within phase scope
+- **Percona multi-database support** — Add CRD field to create additional databases/users in an existing PerconaPGCluster instead of always creating a new cluster. Enables resource-efficient PostgreSQL metadata stores by reusing a shared Percona cluster. New field like `percona.existingClusterRef` + `percona.databases[]` to define database/user pairs.
 
 </deferred>
 
