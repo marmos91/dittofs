@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Operator Foundation** - Functional operator skeleton with DittoFS CRD creating StatefulSet
 - [x] **Phase 2: ConfigMap Generation and Services** - ConfigMap from CRD spec; LoadBalancer Services for NFS, SMB, API
-- [ ] **Phase 3: Storage Management** - VolumeClaimTemplates for metadata, payload, cache PVCs
+- [ ] **Phase 3: Storage Management** - Cache PVC (replaces EmptyDir for WAL persistence); S3 credentials support; StorageClass validation
 - [ ] **Phase 4: Percona PostgreSQL Integration** - PerconaPGCluster watching; connection Secret extraction; readiness gating
 - [ ] **Phase 5: Status Conditions and Lifecycle** - Full status conditions, finalizers, events, health probes
 - [ ] **Phase 6: Documentation and Deployment** - Complete documentation and validation on Scaleway cluster
@@ -71,22 +71,24 @@ Plans:
 - [x] 02-03-PLAN.md - Four Services (headless, file, API, metrics) with port validation
 
 ### Phase 3: Storage Management
-**Goal**: VolumeClaimTemplates for metadata, payload, cache PVCs; StorageClass validation; S3 credentials support
+**Goal**: Cache PVC for WAL persistence (replaces EmptyDir from Phase 2); S3 credentials Secret reference support; StorageClass validation webhook
 **Depends on**: Phase 2
 **Requirements**: R3.1, R3.2, R3.3, R3.4, R3.5, R3.6
 **Complexity**: Medium
+**Note**: Metadata and payload PVCs already exist from Phase 2. This phase adds the missing cache PVC and S3 support.
 **Success Criteria** (what must be TRUE):
-  1. BadgerDB metadata store uses PVC that persists across pod restarts
-  2. Filesystem payload store uses PVC that persists across pod restarts
-  3. Cache (WAL persistence) uses PVC that survives pod restarts
+  1. Cache (WAL persistence) uses PVC that survives pod restarts (not EmptyDir)
+  2. Metadata PVC continues to work (already exists from Phase 2)
+  3. Payload PVC continues to work (already exists from Phase 2)
   4. Memory store configuration works without PVC creation
   5. S3 store configuration accepts Cubbit DS3 credentials via Secret reference
+  6. Invalid StorageClass is rejected at CR creation time
 **Key Deliverables**:
-  - VolumeClaimTemplates in StatefulSet for metadata, payload, cache
-  - StorageClass validation before PVC creation
-  - Memory store configuration (no PVC)
-  - S3 credentials Secret reference support
-  - PVC lifecycle management (proper deletion order)
+  - Cache VolumeClaimTemplate in StatefulSet (replaces EmptyDir)
+  - CacheSize field in CRD StorageSpec
+  - PVC retention policy (Retain/Retain for data safety)
+  - S3 credentials Secret reference support with env var injection
+  - StorageClass validation webhook with client injection
 **Plans**: 3 plans
 
 Plans:
