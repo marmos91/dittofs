@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enable one-command DittoFS deployment on Kubernetes with full configurability of storage backends through a declarative CRD
-**Current focus:** Phase 3 - Storage Management
+**Current focus:** Phase 4 - Percona Integration
 
 ## Current Position
 
-Phase: 3 of 6 (Storage Management)
-Plan: 2 of 3 in current phase
-Status: In progress
-Last activity: 2026-02-05 - Completed 03-02-PLAN.md (S3 Credentials Secret Reference)
+Phase: 3 of 6 (Storage Management) - COMPLETE
+Plan: 3 of 3 in current phase - COMPLETE
+Status: Phase complete, ready for Phase 4
+Last activity: 2026-02-05 - Completed 03-03-PLAN.md (StorageClass Validation Webhook)
 
-Progress: [██████░░░░] 44%
+Progress: [█████████░] 50%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 8
+- Total plans completed: 9
 - Average duration: 10 min
-- Total execution time: 76 min
+- Total execution time: ~91 min
 
 **By Phase:**
 
@@ -29,13 +29,13 @@ Progress: [██████░░░░] 44%
 |-------|-------|-------|----------|
 | 1. Operator Foundation | 3/3 | 47 min | 16 min |
 | 2. ConfigMap and Services | 3/3 | 23 min | 8 min |
-| 3. Storage Management | 2/3 | 6 min | 3 min |
+| 3. Storage Management | 3/3 | 21 min | 7 min |
 | 4. Percona Integration | 0/3 | - | - |
 | 5. Status and Lifecycle | 0/3 | - | - |
 | 6. Documentation | 0/3 | - | - |
 
 **Recent Trend:**
-- Last 5 plans: 02-02 (2m), 02-03 (15m with checkpoint), 03-01 (4m), 03-02 (2m)
+- Last 5 plans: 02-03 (15m with checkpoint), 03-01 (4m), 03-02 (2m), 03-03 (15m with checkpoint)
 - Trend: Autonomous plans complete quickly (~2-4 min), checkpoints add ~10 min
 
 *Updated after each plan completion*
@@ -62,6 +62,8 @@ Recent decisions affecting current work:
 | 2026-02-05 | PVC retention policy Retain/Retain | Protect user data on DittoServer deletion/scaling |
 | 2026-02-05 | AWS_ENDPOINT_URL is optional | AWS S3 doesn't need endpoint; Cubbit DS3 does |
 | 2026-02-05 | S3 Secret keys all included in hash | Any credential change triggers pod restart |
+| 2026-02-05 | StorageClass validation is hard error | Required for PVC creation - catch errors early |
+| 2026-02-05 | S3 Secret validation is warning only | Allow CR creation before Secret exists (external-secrets, Vault) |
 
 ### Pending Todos
 
@@ -92,7 +94,7 @@ Recent decisions affecting current work:
 - Port validation webhook with conflict detection
 - Updated sample CR with infrastructure-only format
 
-## Phase 3 Summary - IN PROGRESS
+## Phase 3 Summary - COMPLETE
 
 **Plan 03-01: Cache VolumeClaimTemplate - COMPLETE**
 - CacheSize field added to StorageSpec (required, 5Gi default)
@@ -107,11 +109,18 @@ Recent decisions affecting current work:
 - S3 Secret included in config hash for pod restart on change
 - Sample S3 Secret and DittoServer CR added
 
+**Plan 03-03: StorageClass Validation Webhook - COMPLETE**
+- DittoServerValidator struct with Kubernetes client injection
+- StorageClass existence validation (hard error if not found)
+- S3 Secret existence and key validation (warnings only)
+- SetupDittoServerWebhookWithManager function in main.go
+- Comprehensive tests for all validation scenarios
+
 ## Session Continuity
 
-Last session: 2026-02-05T08:58:13Z
-Stopped at: Completed 03-02-PLAN.md
-Resume file: .planning/phases/03-storage-management/03-03-PLAN.md
+Last session: 2026-02-05T09:15:53Z
+Stopped at: Completed 03-03-PLAN.md (Phase 3 complete)
+Resume file: .planning/phases/04-percona-integration/04-01-PLAN.md
 
 ---
 *State initialized: 2026-02-04*
