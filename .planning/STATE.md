@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** Phase 5 IN PROGRESS (Cross-Protocol Integration)
+**Current focus:** Phase 5 COMPLETE (Cross-Protocol Integration)
 
 ## Current Position
 
 Phase: 5 of 28 (Cross-Protocol Integration)
-Plan: 3 of 3 complete
+Plan: 4 of 4 complete
 Status: Phase complete
-Last activity: 2026-02-05 - Completed 05-03-PLAN.md
+Last activity: 2026-02-05 - Completed 05-04-PLAN.md
 
-Progress: [################--------] 57% (16/28 plans complete)
+Progress: [#################-------] 61% (17/28 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 16
-- Average duration: 10.4 min
-- Total execution time: 2.8 hours
+- Total plans completed: 17
+- Average duration: 10.1 min
+- Total execution time: 2.9 hours
 
 **By Phase:**
 
@@ -31,10 +31,10 @@ Progress: [################--------] 57% (16/28 plans complete)
 | 02-nlm-protocol | 3 | 25 min | 8.3 min | COMPLETE |
 | 03-nsm-protocol | 3 | 19 min | 6.3 min | COMPLETE |
 | 04-smb-leases | 3 | 29 min | 9.7 min | COMPLETE |
-| 05-cross-protocol-integration | 3 | 19 min | 6.3 min | COMPLETE |
+| 05-cross-protocol-integration | 4 | 24 min | 6 min | COMPLETE |
 
 **Recent Trend:**
-- Last 5 plans: 04-03 (15 min), 05-01 (7 min), 05-02 (7 min), 05-03 (5 min)
+- Last 5 plans: 05-01 (7 min), 05-02 (7 min), 05-03 (5 min), 05-04 (5 min)
 - Trend: Cross-protocol integration completing quickly
 
 *Updated after each plan completion*
@@ -169,6 +169,13 @@ Progress: [################--------] 57% (16/28 plans complete)
 - Cross-protocol conflicts logged at INFO level
 - CREATE succeeds even when lease denied (only caching affected)
 
+### Plan 05-04: Cross-Protocol Locking E2E Tests - COMPLETE
+- File locking helpers (LockFile, TryLockFile, LockFileRange) using flock/fcntl
+- TestCrossProtocolLocking with XPRO-01 to XPRO-04 subtests
+- Grace period recovery tests (TestGracePeriodRecovery, TestCrossProtocolReclaim)
+- Byte-range specific locking tests for fine-grained conflict detection
+- Platform-specific notes logging for macOS vs Linux
+
 ## Accumulated Context
 
 ### Decisions
@@ -230,6 +237,9 @@ Recent decisions affecting current work:
 - [05-03]: STATUS_LOCK_NOT_GRANTED for byte-range conflicts, not STATUS_SHARING_VIOLATION
 - [05-03]: CREATE succeeds even when lease denied (file opens, caching disabled)
 - [05-03]: Handle-only leases do not conflict with NLM locks
+- [05-04]: fcntl for byte-range locks (NLM), flock for whole-file advisory locks
+- [05-04]: Platform-specific notes logging for macOS vs Linux lock behavior
+- [05-04]: Grace period tests simulate behavior (full testing requires persistent stores)
 
 ### Pending Todos
 
@@ -242,8 +252,10 @@ None.
 ## Next Steps
 
 **Phase 5 COMPLETE**
-- All 3 plans complete
+- All 4 plans complete (05-01, 05-02, 05-03, 05-04)
 - Cross-protocol lock visibility established
+- NLM-SMB and SMB-NFS integration complete
+- E2E test coverage added
 - Ready for Phase 6
 
 **Next Phase: 6 (to be planned)**
@@ -251,5 +263,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-05
-Stopped at: Completed 05-03-PLAN.md (Phase 5 complete)
+Stopped at: Completed 05-04-PLAN.md (Phase 5 complete)
 Resume file: None
