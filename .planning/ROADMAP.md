@@ -179,7 +179,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 2. ConfigMap and Services | 3/3 | Complete | 2026-02-04 |
 | 3. Storage Management | 3/3 | Complete | 2026-02-05 |
 | 4. Percona Integration | 3/3 | Complete | 2026-02-05 |
-| 5. Status and Lifecycle | 0/3 | Not started | - |
+| 5. Status and Lifecycle | 0/3 | Planned | - |
 | 6. Documentation | 0/3 | Not started | - |
 
 ---
