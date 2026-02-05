@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-02-04)
 ## Current Position
 
 Phase: 5 of 28 (Cross-Protocol Integration)
-Plan: 1 of 3 complete
-Status: In progress
-Last activity: 2026-02-05 - Completed 05-01-PLAN.md
+Plan: 3 of 3 complete
+Status: Phase complete
+Last activity: 2026-02-05 - Completed 05-03-PLAN.md
 
-Progress: [##############----------] 50% (14/28 plans complete)
+Progress: [################--------] 57% (16/28 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 14
-- Average duration: 11.5 min
-- Total execution time: 2.6 hours
+- Total plans completed: 16
+- Average duration: 10.4 min
+- Total execution time: 2.8 hours
 
 **By Phase:**
 
@@ -31,11 +31,11 @@ Progress: [##############----------] 50% (14/28 plans complete)
 | 02-nlm-protocol | 3 | 25 min | 8.3 min | COMPLETE |
 | 03-nsm-protocol | 3 | 19 min | 6.3 min | COMPLETE |
 | 04-smb-leases | 3 | 29 min | 9.7 min | COMPLETE |
-| 05-cross-protocol-integration | 1 | 7 min | 7 min | IN PROGRESS |
+| 05-cross-protocol-integration | 3 | 19 min | 6.3 min | COMPLETE |
 
 **Recent Trend:**
-- Last 5 plans: 04-01 (7 min), 04-02 (7 min), 04-03 (15 min), 05-01 (7 min)
-- Trend: Foundation work faster, integration work takes longer
+- Last 5 plans: 04-03 (15 min), 05-01 (7 min), 05-02 (7 min), 05-03 (5 min)
+- Trend: Cross-protocol integration completing quickly
 
 *Updated after each plan completion*
 
@@ -153,6 +153,14 @@ Progress: [##############----------] 50% (14/28 plans complete)
 - Cross-protocol Prometheus metrics (cross_protocol_conflict_total, cross_protocol_break_duration_seconds)
 - MetadataService owns UnifiedLockView per share
 
+### Plan 05-03: SMB-to-NFS Integration - COMPLETE
+- SMB handlers check NLM byte-range locks before granting leases
+- Write lease denied when ANY NLM lock exists on file
+- Read lease denied when exclusive NLM lock exists
+- STATUS_LOCK_NOT_GRANTED (0xC0000054) for NLM conflicts
+- Cross-protocol conflicts logged at INFO level
+- CREATE succeeds even when lease denied (only caching affected)
+
 ## Accumulated Context
 
 ### Decisions
@@ -207,6 +215,10 @@ Recent decisions affecting current work:
 - [05-01]: Per-share UnifiedLockView ownership matches LockManager pattern
 - [05-01]: NLM OH field = first 8 bytes of 16-byte LeaseKey
 - [05-01]: Cross-protocol metrics use descriptive label constants
+- [05-03]: NLM locks checked BEFORE SMB leases (explicit wins over opportunistic)
+- [05-03]: STATUS_LOCK_NOT_GRANTED for byte-range conflicts, not STATUS_SHARING_VIOLATION
+- [05-03]: CREATE succeeds even when lease denied (file opens, caching disabled)
+- [05-03]: Handle-only leases do not conflict with NLM locks
 
 ### Pending Todos
 
@@ -218,12 +230,15 @@ None.
 
 ## Next Steps
 
-**Phase 5 IN PROGRESS:**
-- Plan 05-02: NFS protocol integration with cross-protocol conflict detection
-- Plan 05-03: SMB protocol integration with cross-protocol visibility
+**Phase 5 COMPLETE**
+- All 3 plans complete
+- Cross-protocol lock visibility established
+- Ready for Phase 6
+
+**Next Phase: 6 (to be planned)**
 
 ## Session Continuity
 
 Last session: 2026-02-05
-Stopped at: Completed 05-01-PLAN.md
+Stopped at: Completed 05-03-PLAN.md (Phase 5 complete)
 Resume file: None
