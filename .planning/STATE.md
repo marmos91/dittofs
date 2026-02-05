@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** Phase 2 complete, ready for Phase 3 (NSM Protocol)
+**Current focus:** Phase 3 in progress (NSM Protocol)
 
 ## Current Position
 
-Phase: 2 of 28 (NLM Protocol) - COMPLETE
-Plan: All 3 plans complete
-Status: Phase complete, verified
-Last activity: 2026-02-05 - Phase 2 verified and marked complete
+Phase: 3 of 28 (NSM Protocol)
+Plan: 1 of 3 complete
+Status: In progress
+Last activity: 2026-02-05 - Completed 03-01-PLAN.md
 
-Progress: [#######-----------------] 25% (7/28 plans complete)
+Progress: [########----------------] 29% (8/28 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 7
-- Average duration: 14 min
-- Total execution time: 1.68 hours
+- Total plans completed: 8
+- Average duration: 13 min
+- Total execution time: 1.73 hours
 
 **By Phase:**
 
@@ -29,10 +29,11 @@ Progress: [#######-----------------] 25% (7/28 plans complete)
 |-------|-------|-------|----------|--------|
 | 01-locking-infrastructure | 4 | 75 min | 18.75 min | COMPLETE |
 | 02-nlm-protocol | 3 | 25 min | 8.3 min | COMPLETE |
+| 03-nsm-protocol | 1 | 3 min | 3 min | IN PROGRESS |
 
 **Recent Trend:**
-- Last 5 plans: 01-04 (45 min), 02-01 (6 min), 02-02 (11 min), 02-03 (8 min)
-- Trend: Phase 2 plans faster due to building on Phase 1 infrastructure
+- Last 5 plans: 02-01 (6 min), 02-02 (11 min), 02-03 (8 min), 03-01 (3 min)
+- Trend: Foundation work pays off - type/XDR packages are fast
 
 *Updated after each plan completion*
 
@@ -87,6 +88,16 @@ Progress: [#######-----------------] 25% (7/28 plans complete)
 - SetNLMUnlockCallback for async waiter notification
 - NLM Prometheus metrics (nlm_* prefix)
 
+## Phase 03 Accomplishments
+
+### Plan 03-01: NSM Types and Foundation - COMPLETE
+- NSM types package at internal/protocol/nsm/types/
+- NSM XDR encode/decode at internal/protocol/nsm/xdr/
+- Extended ClientRegistration with NSM fields (MonName, Priv, SMState, CallbackInfo)
+- NSMCallback struct for RPC callback details
+- ClientRegistrationStore interface for persistence
+- Conversion functions for persistence (To/From PersistedClientRegistration)
+
 ## Accumulated Context
 
 ### Decisions
@@ -115,6 +126,10 @@ Recent decisions affecting current work:
 - [02-03]: Fresh TCP connection per callback (no caching)
 - [02-03]: Release lock immediately on callback failure
 - [02-03]: Unlock callback pattern for async waiter notification
+- [03-01]: NSM types package mirrors NLM structure
+- [03-01]: priv field as [16]byte fixed array (XDR opaque[16])
+- [03-01]: ClientRegistrationStore interface for persistence
+- [03-01]: Extend existing ClientRegistration vs new type
 
 ### Pending Todos
 
@@ -126,15 +141,12 @@ None.
 
 ## Next Steps
 
-**Phase 3: NSM Protocol**
-- Network Status Monitor (RPC 100024) for crash recovery
-- Server monitors clients and detects crashes
-- Client crash triggers automatic lock cleanup
-- Server restart sends SM_NOTIFY to previously registered clients
-- Clients can reclaim locks during grace period after restart
+**Phase 3 Continuation:**
+- Plan 03-02: NSM Dispatcher and Handlers
+- Plan 03-03: NSM Service and Store Implementations
 
 ## Session Continuity
 
 Last session: 2026-02-05
-Stopped at: Phase 2 complete (verified)
+Stopped at: Completed 03-01-PLAN.md
 Resume file: None
