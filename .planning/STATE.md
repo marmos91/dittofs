@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enable one-command DittoFS deployment on Kubernetes with full configurability of storage backends through a declarative CRD
-**Current focus:** Phase 5 - Status and Lifecycle
+**Current focus:** Phase 6 - Documentation (Phase 5 Complete)
 
 ## Current Position
 
-Phase: 5 of 6 (Status and Lifecycle) - IN PROGRESS
-Plan: 2 of 3 in current phase - COMPLETE
-Status: In progress
-Last activity: 2026-02-05 - Completed 05-02-PLAN.md (Finalizer Implementation)
+Phase: 5 of 6 (Status and Lifecycle) - COMPLETE
+Plan: 3 of 3 in current phase - COMPLETE
+Status: Phase 5 complete, ready for Phase 6
+Last activity: 2026-02-05 - Completed 05-03-PLAN.md (Observability)
 
-Progress: [███████████████░] 78%
+Progress: [████████████████░░] 83%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 14
+- Total plans completed: 15
 - Average duration: 8 min
-- Total execution time: ~116 min
+- Total execution time: ~124 min
 
 **By Phase:**
 
@@ -31,11 +31,11 @@ Progress: [███████████████░] 78%
 | 2. ConfigMap and Services | 3/3 | 23 min | 8 min |
 | 3. Storage Management | 3/3 | 21 min | 7 min |
 | 4. Percona Integration | 3/3 | 9 min | 3 min |
-| 5. Status and Lifecycle | 2/3 | 16 min | 8 min |
+| 5. Status and Lifecycle | 3/3 | 24 min | 8 min |
 | 6. Documentation | 0/3 | - | - |
 
 **Recent Trend:**
-- Last 5 plans: 04-01 (4m), 04-02 (3m), 04-03 (2m), 05-01 (~8m), 05-02 (8m)
+- Last 5 plans: 04-02 (3m), 04-03 (2m), 05-01 (~8m), 05-02 (8m), 05-03 (8m)
 - Trend: Autonomous plans complete quickly (~2-8 min)
 
 *Updated after each plan completion*
@@ -75,6 +75,9 @@ Recent decisions affecting current work:
 | 2026-02-05 | Finalizer: dittofs.dittofs.com/finalizer | Standard naming convention |
 | 2026-02-05 | deleteWithServer=false by default | Preserve PostgreSQL data on accidental deletion |
 | 2026-02-05 | 60-second cleanup timeout | Balance waiting vs stuck resources |
+| 2026-02-05 | HTTP probes on API port | Better than TCP on NFS - checks actual health |
+| 2026-02-05 | 150-second startup timeout | Allow slow database migrations |
+| 2026-02-05 | 5-second preStop sleep | Connection draining for graceful shutdown |
 
 ### Pending Todos
 
@@ -152,9 +155,9 @@ Recent decisions affecting current work:
 - Sample Percona CR demonstrates full integration setup
 - Human verified: all tests pass, RBAC correct, CRD schema complete
 
-## Phase 5 Summary - IN PROGRESS
+## Phase 5 Summary - COMPLETE
 
-**Plan 05-01: Status Conditions Implementation - COMPLETE** (executed in parallel)
+**Plan 05-01: Status Conditions Implementation - COMPLETE**
 - DittoServerStatus enhanced with comprehensive fields
 - Five conditions: Ready, Available, Progressing, ConfigReady, DatabaseReady
 - Ready is aggregate of other conditions
@@ -167,13 +170,18 @@ Recent decisions affecting current work:
 - performCleanup orphans or deletes PerconaPGCluster based on deleteWithServer
 - Status phase shows "Deleting" during deletion
 
-**Plan 05-03: Observability (Event Recorder) - PENDING**
+**Plan 05-03: Observability (Event Recorder and Probes) - COMPLETE**
+- EventRecorder wired into reconciler via main.go
+- Events emitted: Created, Deleting, CleanupTimeout, PerconaDeleted, PerconaOrphaned, PerconaNotReady, ReconcileFailed
+- HTTP probes on API port: liveness /health, readiness /health/ready
+- StartupProbe with 150-second max startup (30 failures * 5s)
+- PreStop lifecycle hook with 5-second sleep for connection draining
 
 ## Session Continuity
 
-Last session: 2026-02-05T12:08:00Z
-Stopped at: Completed 05-02-PLAN.md
-Resume file: .planning/phases/05-status-conditions-and-lifecycle/05-03-PLAN.md
+Last session: 2026-02-05T12:23:00Z
+Stopped at: Completed 05-03-PLAN.md
+Resume file: .planning/phases/06-documentation/06-01-PLAN.md
 
 ---
 *State initialized: 2026-02-04*
