@@ -33,6 +33,44 @@ type ClientRegistration struct {
 
 	// LockCount is the number of locks held by this client.
 	LockCount int
+
+	// ============================================================================
+	// NSM-specific fields (Phase 3)
+	// ============================================================================
+
+	// MonName is the monitored hostname (mon_id.mon_name from SM_MON).
+	// This is typically the server's hostname that the client is monitoring.
+	MonName string
+
+	// Priv is the 16-byte private data returned in SM_NOTIFY callbacks.
+	// Stored from SM_MON and sent back to the client when state changes.
+	Priv [16]byte
+
+	// SMState is the client's NSM state counter at registration time.
+	// Used to detect stale registrations after client restarts.
+	SMState int32
+
+	// CallbackInfo contains RPC callback details from SM_MON my_id field.
+	// Used to send SM_NOTIFY callbacks when server restarts or client crashes.
+	CallbackInfo *NSMCallback
+}
+
+// NSMCallback holds callback RPC details from SM_MON my_id field.
+// Used to send SM_NOTIFY callbacks when server restarts or client crashes.
+type NSMCallback struct {
+	// Hostname is the callback target (my_id.my_name).
+	// This is where the SM_NOTIFY RPC will be sent.
+	Hostname string
+
+	// Program is the RPC program number (usually NLM 100021).
+	Program uint32
+
+	// Version is the program version.
+	Version uint32
+
+	// Proc is the procedure number for the callback.
+	// NLM uses NLM_FREE_ALL (procedure 23) to release locks.
+	Proc uint32
 }
 
 // ConnectionTrackerConfig configures the connection tracker.
@@ -275,6 +313,65 @@ func (ct *ConnectionTracker) GetPendingDisconnectCount() int {
 	ct.mu.RLock()
 	defer ct.mu.RUnlock()
 	return len(ct.disconnectTimers)
+}
+
+// ============================================================================
+// NSM-specific methods (Phase 3)
+// ============================================================================
+
+// UpdateNSMInfo updates NSM-specific fields for a client.
+// Called after SM_MON to store monitoring callback details.
+func (ct *ConnectionTracker) UpdateNSMInfo(clientID, monName string, priv [16]byte, callback *NSMCallback) {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+
+	if client, exists := ct.clients[clientID]; exists {
+		client.MonName = monName
+		client.Priv = priv
+		client.CallbackInfo = callback
+	}
+}
+
+// UpdateSMState updates the NSM state counter for a client.
+func (ct *ConnectionTracker) UpdateSMState(clientID string, state int32) {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+
+	if client, exists := ct.clients[clientID]; exists {
+		client.SMState = state
+	}
+}
+
+// GetNSMClients returns all clients with NSM callback info (for SM_NOTIFY).
+// Returns copies to prevent modification of internal state.
+func (ct *ConnectionTracker) GetNSMClients() []*ClientRegistration {
+	ct.mu.RLock()
+	defer ct.mu.RUnlock()
+
+	var result []*ClientRegistration
+	for _, client := range ct.clients {
+		if client.CallbackInfo != nil {
+			clientCopy := *client
+			// Deep copy the callback info
+			callbackCopy := *client.CallbackInfo
+			clientCopy.CallbackInfo = &callbackCopy
+			result = append(result, &clientCopy)
+		}
+	}
+	return result
+}
+
+// ClearNSMInfo removes NSM-specific fields for a client.
+// Called after SM_UNMON to clear monitoring registration.
+func (ct *ConnectionTracker) ClearNSMInfo(clientID string) {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+
+	if client, exists := ct.clients[clientID]; exists {
+		client.MonName = ""
+		client.Priv = [16]byte{}
+		client.CallbackInfo = nil
+	}
 }
 
 // Close cancels all pending disconnect timers and clears state.
