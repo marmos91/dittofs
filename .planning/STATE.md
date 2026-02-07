@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** Phase 5 COMPLETE (Cross-Protocol Integration)
+**Current focus:** Phase 5 VERIFIED (Cross-Protocol Integration) - Ready for v1.0 milestone
 
 ## Current Position
 
 Phase: 5 of 28 (Cross-Protocol Integration)
-Plan: 4 of 4 complete
-Status: Phase complete
-Last activity: 2026-02-05 - Completed 05-04-PLAN.md
+Plan: 6 of 6 complete (including gap closure)
+Status: Phase verified (5/5 must-haves)
+Last activity: 2026-02-07 - Phase 5 verification passed
 
-Progress: [#################-------] 61% (17/28 plans complete)
+Progress: [####################----] 68% (19/28 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 17
-- Average duration: 10.1 min
-- Total execution time: 2.9 hours
+- Total plans completed: 19
+- Average duration: 9.5 min
+- Total execution time: 3.0 hours
 
 **By Phase:**
 
@@ -31,11 +31,11 @@ Progress: [#################-------] 61% (17/28 plans complete)
 | 02-nlm-protocol | 3 | 25 min | 8.3 min | COMPLETE |
 | 03-nsm-protocol | 3 | 19 min | 6.3 min | COMPLETE |
 | 04-smb-leases | 3 | 29 min | 9.7 min | COMPLETE |
-| 05-cross-protocol-integration | 4 | 24 min | 6 min | COMPLETE |
+| 05-cross-protocol-integration | 6 | 37 min | 6.2 min | VERIFIED |
 
 **Recent Trend:**
-- Last 5 plans: 05-01 (7 min), 05-02 (7 min), 05-03 (5 min), 05-04 (5 min)
-- Trend: Cross-protocol integration completing quickly
+- Last 5 plans: 05-03 (5 min), 05-04 (5 min), 05-05 (8 min), 05-06 (5 min)
+- Trend: Gap closure plans completing efficiently
 
 *Updated after each plan completion*
 
@@ -176,6 +176,20 @@ Progress: [#################-------] 61% (17/28 plans complete)
 - Byte-range specific locking tests for fine-grained conflict detection
 - Platform-specific notes logging for macOS vs Linux
 
+### Plan 05-05: SMB Lease Grace Period Reclaim - COMPLETE [GAP CLOSURE]
+- Added `Reclaim bool` field to LeaseInfo for tracking grace period reclaims
+- Added `ReclaimLease` method to LockStore interface
+- Implemented `ReclaimLeaseSMB` in MetadataService for SMB lease recovery
+- Added `LeaseReclaimer` interface and `RequestLeaseWithReclaim` to OplockManager
+- Added `OnReconnect` hook to SMB adapter for session reconnection handling
+
+### Plan 05-06: E2E SMB Mount Support - COMPLETE [GAP CLOSURE]
+- Added `IsNativeSMBAvailable()` to check platform-specific SMB mount capability
+- Added `SkipIfNoSMBMount(t)` helper for graceful test skipping
+- Cross-protocol tests skip gracefully when SMB mount unavailable
+- Platform support: Windows (native), macOS (mount_smbfs), Linux (cifs-utils)
+- Note: Docker fallback approach removed per user feedback (proven unreliable)
+
 ## Accumulated Context
 
 ### Decisions
@@ -251,17 +265,23 @@ None.
 
 ## Next Steps
 
-**Phase 5 COMPLETE**
-- All 4 plans complete (05-01, 05-02, 05-03, 05-04)
+**Phase 5 VERIFIED (5/5)**
+- All 6 plans complete (05-01 through 05-06, including gap closure)
 - Cross-protocol lock visibility established
 - NLM-SMB and SMB-NFS integration complete
-- E2E test coverage added
-- Ready for Phase 6
+- SMB lease grace period reclaim implemented
+- E2E tests skip gracefully when SMB mount unavailable
+- Phase verification passed (5/5 must-haves)
 
-**Next Phase: 6 (to be planned)**
+**v1.0 Milestone Ready**
+- Phases 1-5 complete and verified
+- Ready for Phase 5.5: Manual Verification USER CHECKPOINT
+- Or proceed to v1.0 PR creation
+
+**Next Phase: 5.5 (User Checkpoint) or Phase 6 (to be planned)**
 
 ## Session Continuity
 
-Last session: 2026-02-05
-Stopped at: Completed 05-04-PLAN.md (Phase 5 complete)
+Last session: 2026-02-07
+Stopped at: Phase 5 verification passed, ready for v1.0 milestone PR
 Resume file: None

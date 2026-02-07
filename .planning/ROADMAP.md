@@ -27,7 +27,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: NLM Protocol** ✓ - Network Lock Manager for NFSv3 clients
 - [x] **Phase 3: NSM Protocol** ✓ - Network Status Monitor for crash recovery
 - [x] **Phase 4: SMB Leases** ✓ - SMB2/3 oplock and lease support
-- [ ] **Phase 5: Cross-Protocol Integration** - Lock visibility across NFS and SMB
+- [x] **Phase 5: Cross-Protocol Integration** ✓ - Lock visibility across NFS and SMB
 - [ ] **Phase 5.5: Manual Verification v1.0** USER CHECKPOINT - Test NFS+SMB locking manually
 
 ### v2.0 NFSv4.0 + Kerberos
@@ -158,8 +158,8 @@ Plans:
 - [x] 05-02-PLAN.md — NLM handler integration: SMB lease check, break wait, Handle lease break for REMOVE/RENAME
 - [x] 05-03-PLAN.md — SMB handler integration: NLM lock check before lease grant, STATUS_LOCK_NOT_GRANTED
 - [x] 05-04-PLAN.md — E2E tests: cross-protocol lock conflicts, data integrity, grace period recovery
-- [ ] 05-05-PLAN.md — [GAP CLOSURE] SMB lease grace period reclaim implementation
-- [ ] 05-06-PLAN.md — [GAP CLOSURE] Docker-based CIFS mount for E2E test execution
+- [x] 05-05-PLAN.md — [GAP CLOSURE] SMB lease grace period reclaim implementation
+- [x] 05-06-PLAN.md — [GAP CLOSURE] Graceful SMB mount skip for cross-protocol E2E tests
 
 ---
 
