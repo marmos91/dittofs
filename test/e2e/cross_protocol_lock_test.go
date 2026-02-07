@@ -31,6 +31,9 @@ func TestCrossProtocolLocking(t *testing.T) {
 		t.Skip("Skipping cross-protocol locking tests in short mode")
 	}
 
+	// Skip if no SMB mount capability (need CIFS client or Docker)
+	framework.SkipIfNoSMBMount(t)
+
 	// Log platform-specific locking notes for debugging context
 	framework.LogPlatformLockingNotes(t)
 
@@ -427,6 +430,9 @@ func TestCrossProtocolLockingByteRange(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping cross-protocol byte-range locking tests in short mode")
 	}
+
+	// Skip if no SMB mount capability (need CIFS client or Docker)
+	framework.SkipIfNoSMBMount(t)
 
 	// Log platform notes
 	framework.LogPlatformLockingNotes(t)
