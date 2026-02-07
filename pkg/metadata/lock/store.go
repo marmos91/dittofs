@@ -201,6 +201,25 @@ type LockStore interface {
 	// Called during server startup to detect restarts.
 	// Locks with epoch < current epoch are stale.
 	IncrementServerEpoch(ctx context.Context) (uint64, error)
+
+	// ========================================================================
+	// Lease Reclaim Operations
+	// ========================================================================
+
+	// ReclaimLease reclaims an existing lease during grace period.
+	// This validates the lease existed in persistent storage before restart
+	// and allows the client to re-establish the lease state.
+	//
+	// Parameters:
+	//   - ctx: Context for cancellation
+	//   - fileHandle: File handle for the lease
+	//   - leaseKey: The 16-byte SMB lease key
+	//   - clientID: Client identifier for ownership verification
+	//
+	// Returns:
+	//   - *EnhancedLock: The reclaimed lease on success
+	//   - error: ErrLockNotFound if lease doesn't exist
+	ReclaimLease(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte, clientID string) (*EnhancedLock, error)
 }
 
 // ============================================================================

@@ -453,6 +453,77 @@ func (s *postgresLockStore) incrementServerEpochTx(ctx context.Context, tx pgx.T
 	return newEpoch, err
 }
 
+// ReclaimLease reclaims an existing lease during grace period.
+// Searches for a persisted lease with matching file handle and lease key.
+func (s *postgresLockStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, _ string) (*lock.EnhancedLock, error) {
+	// Search for leases on this file with matching lease key
+	locks, err := s.ListLocks(ctx, lock.LockQuery{FileID: string(fileHandle)})
+	if err != nil {
+		return nil, err
+	}
+
+	for _, lk := range locks {
+		// Must be a lease (has 16-byte key)
+		if len(lk.LeaseKey) != 16 {
+			continue
+		}
+		// Match lease key
+		var storedKey [16]byte
+		copy(storedKey[:], lk.LeaseKey)
+		if storedKey != leaseKey {
+			continue
+		}
+		// Found matching lease - convert to EnhancedLock
+		enhanced := lock.FromPersistedLock(lk)
+		if enhanced.Lease != nil {
+			enhanced.Lease.Reclaim = true
+		}
+		enhanced.Reclaim = true
+		return enhanced, nil
+	}
+
+	return nil, &errors.StoreError{
+		Code:    errors.ErrLockNotFound,
+		Message: "lease not found for reclaim",
+		Path:    string(fileHandle),
+	}
+}
+
+// reclaimLeaseTx reclaims a lease within an existing transaction.
+func (s *postgresLockStore) reclaimLeaseTx(ctx context.Context, tx pgx.Tx, fileHandle lock.FileHandle, leaseKey [16]byte, _ string) (*lock.EnhancedLock, error) {
+	// Search for leases on this file with matching lease key
+	locks, err := s.listLocksTx(ctx, tx, lock.LockQuery{FileID: string(fileHandle)})
+	if err != nil {
+		return nil, err
+	}
+
+	for _, lk := range locks {
+		// Must be a lease (has 16-byte key)
+		if len(lk.LeaseKey) != 16 {
+			continue
+		}
+		// Match lease key
+		var storedKey [16]byte
+		copy(storedKey[:], lk.LeaseKey)
+		if storedKey != leaseKey {
+			continue
+		}
+		// Found matching lease - convert to EnhancedLock
+		enhanced := lock.FromPersistedLock(lk)
+		if enhanced.Lease != nil {
+			enhanced.Lease.Reclaim = true
+		}
+		enhanced.Reclaim = true
+		return enhanced, nil
+	}
+
+	return nil, &errors.StoreError{
+		Code:    errors.ErrLockNotFound,
+		Message: "lease not found for reclaim",
+		Path:    string(fileHandle),
+	}
+}
+
 // ============================================================================
 // PostgresMetadataStore LockStore Integration
 // ============================================================================
@@ -517,6 +588,12 @@ func (s *PostgresMetadataStore) IncrementServerEpoch(ctx context.Context) (uint6
 	return s.lockStore.IncrementServerEpoch(ctx)
 }
 
+// ReclaimLease reclaims an existing lease during grace period.
+func (s *PostgresMetadataStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+	s.initLockStore()
+	return s.lockStore.ReclaimLease(ctx, fileHandle, leaseKey, clientID)
+}
+
 // ============================================================================
 // Transaction LockStore Support
 // ============================================================================
@@ -562,4 +639,9 @@ func (ptx *postgresTransaction) GetServerEpoch(ctx context.Context) (uint64, err
 func (ptx *postgresTransaction) IncrementServerEpoch(ctx context.Context) (uint64, error) {
 	ptx.store.initLockStore()
 	return ptx.store.lockStore.incrementServerEpochTx(ctx, ptx.tx)
+}
+
+func (ptx *postgresTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+	ptx.store.initLockStore()
+	return ptx.store.lockStore.reclaimLeaseTx(ctx, ptx.tx, fileHandle, leaseKey, clientID)
 }

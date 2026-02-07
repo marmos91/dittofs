@@ -345,6 +345,24 @@ func (s *MemoryMetadataStore) IncrementServerEpoch(ctx context.Context) (uint64,
 	return s.incrementServerEpochLocked(ctx)
 }
 
+// ReclaimLease reclaims an existing lease during grace period.
+// Memory store returns ErrLockNotFound since leases are not persisted across restarts.
+func (s *MemoryMetadataStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.lockStore == nil {
+		return nil, &errors.StoreError{
+			Code:    errors.ErrLockNotFound,
+			Message: "lease not found for reclaim",
+			Path:    string(fileHandle),
+		}
+	}
+	return s.reclaimLeaseLocked(ctx, fileHandle, leaseKey, clientID)
+}
+
 // ============================================================================
 // Locked Helpers (for transaction support)
 // ============================================================================
@@ -420,6 +438,41 @@ func (s *MemoryMetadataStore) incrementServerEpochLocked(_ context.Context) (uin
 	return s.lockStore.serverEpoch, nil
 }
 
+// reclaimLeaseLocked searches for a lease matching the criteria.
+// Memory store looks for existing leases that match the lease key.
+func (s *MemoryMetadataStore) reclaimLeaseLocked(_ context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+	// Search for a persisted lease with matching file handle and lease key
+	for _, lk := range s.lockStore.locks {
+		// Must be a lease (has 16-byte key)
+		if len(lk.LeaseKey) != 16 {
+			continue
+		}
+		// Match file handle
+		if lk.FileID != string(fileHandle) {
+			continue
+		}
+		// Match lease key
+		var storedKey [16]byte
+		copy(storedKey[:], lk.LeaseKey)
+		if storedKey != leaseKey {
+			continue
+		}
+		// Found matching lease - convert to EnhancedLock
+		enhanced := lock.FromPersistedLock(lk)
+		if enhanced.Lease != nil {
+			enhanced.Lease.Reclaim = true
+		}
+		enhanced.Reclaim = true
+		return enhanced, nil
+	}
+
+	return nil, &errors.StoreError{
+		Code:    errors.ErrLockNotFound,
+		Message: "lease not found for reclaim",
+		Path:    string(fileHandle),
+	}
+}
+
 // ============================================================================
 // Transaction LockStore Support
 // ============================================================================
@@ -487,4 +540,15 @@ func (tx *memoryTransaction) GetServerEpoch(ctx context.Context) (uint64, error)
 func (tx *memoryTransaction) IncrementServerEpoch(ctx context.Context) (uint64, error) {
 	tx.store.initLockStore()
 	return tx.store.incrementServerEpochLocked(ctx)
+}
+
+func (tx *memoryTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+	if tx.store.lockStore == nil {
+		return nil, &errors.StoreError{
+			Code:    errors.ErrLockNotFound,
+			Message: "lease not found for reclaim",
+			Path:    string(fileHandle),
+		}
+	}
+	return tx.store.reclaimLeaseLocked(ctx, fileHandle, leaseKey, clientID)
 }

@@ -423,6 +423,52 @@ func (s *badgerLockStore) IncrementServerEpoch(ctx context.Context) (uint64, err
 	return newEpoch, err
 }
 
+// ReclaimLease reclaims an existing lease during grace period.
+// Searches for a persisted lease with matching file handle and lease key.
+func (s *badgerLockStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	var result *lock.EnhancedLock
+	err := s.db.View(func(txn *badgerdb.Txn) error {
+		// Search for leases on this file
+		locks, err := s.listLocksTx(txn, lock.LockQuery{FileID: string(fileHandle)})
+		if err != nil {
+			return err
+		}
+
+		for _, lk := range locks {
+			// Must be a lease (has 16-byte key)
+			if len(lk.LeaseKey) != 16 {
+				continue
+			}
+			// Match lease key
+			var storedKey [16]byte
+			copy(storedKey[:], lk.LeaseKey)
+			if storedKey != leaseKey {
+				continue
+			}
+			// Found matching lease - convert to EnhancedLock
+			enhanced := lock.FromPersistedLock(lk)
+			if enhanced.Lease != nil {
+				enhanced.Lease.Reclaim = true
+			}
+			enhanced.Reclaim = true
+			result = enhanced
+			return nil
+		}
+
+		return &errors.StoreError{
+			Code:    errors.ErrLockNotFound,
+			Message: "lease not found for reclaim",
+			Path:    string(fileHandle),
+		}
+	})
+
+	return result, err
+}
+
 // ============================================================================
 // BadgerMetadataStore LockStore Integration
 // ============================================================================
@@ -485,6 +531,12 @@ func (s *BadgerMetadataStore) GetServerEpoch(ctx context.Context) (uint64, error
 func (s *BadgerMetadataStore) IncrementServerEpoch(ctx context.Context) (uint64, error) {
 	s.initLockStore()
 	return s.lockStore.IncrementServerEpoch(ctx)
+}
+
+// ReclaimLease reclaims an existing lease during grace period.
+func (s *BadgerMetadataStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+	s.initLockStore()
+	return s.lockStore.ReclaimLease(ctx, fileHandle, leaseKey, clientID)
 }
 
 // ============================================================================
@@ -558,4 +610,12 @@ func (tx *badgerTransaction) IncrementServerEpoch(ctx context.Context) (uint64, 
 	}
 	tx.store.initLockStore()
 	return tx.store.lockStore.IncrementServerEpoch(ctx)
+}
+
+func (tx *badgerTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	tx.store.initLockStore()
+	return tx.store.lockStore.ReclaimLease(ctx, fileHandle, leaseKey, clientID)
 }

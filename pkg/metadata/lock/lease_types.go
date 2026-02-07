@@ -102,6 +102,11 @@ type LeaseInfo struct {
 	// BreakStarted records when the break was initiated.
 	// Used to enforce break timeout (force revoke if client doesn't acknowledge).
 	BreakStarted time.Time
+
+	// Reclaim indicates this lease was reclaimed during grace period.
+	// Set when SMB client reconnects after server restart and successfully
+	// reclaims its previously held lease.
+	Reclaim bool
 }
 
 // ============================================================================
@@ -193,6 +198,7 @@ func (l *LeaseInfo) Clone() *LeaseInfo {
 		Breaking:     l.Breaking,
 		Epoch:        l.Epoch,
 		BreakStarted: l.BreakStarted,
+		Reclaim:      l.Reclaim,
 	}
 	return clone
 }
