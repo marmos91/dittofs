@@ -16,12 +16,11 @@ import (
 
 // Mount represents a mounted filesystem (NFS or SMB).
 type Mount struct {
-	T           *testing.T
-	Path        string
-	Protocol    string // "nfs" or "smb"
-	Port        int
-	mounted     bool
-	dockerMount *SMBDockerMount // Non-nil if using Docker-based mount
+	T        *testing.T
+	Path     string
+	Protocol string // "nfs" or "smb"
+	Port     int
+	mounted  bool
 }
 
 // MountNFS mounts an NFS share and returns the mount info.
@@ -104,40 +103,7 @@ func DefaultSMBCredentials() SMBCredentials {
 }
 
 // MountSMB mounts an SMB share and returns the mount info.
-// It first tries native mount, then falls back to Docker-based mount if available.
 func MountSMB(t *testing.T, port int, creds SMBCredentials) *Mount {
-	t.Helper()
-
-	// Try native mount first
-	mount, err := tryNativeSMBMount(t, port, creds)
-	if err == nil {
-		return mount
-	}
-
-	// Log native mount failure
-	t.Logf("Native SMB mount failed: %v, trying Docker-based mount", err)
-
-	// Fallback to Docker-based mount
-	if IsDockerAvailable() {
-		dockerMount := MountSMBWithDocker(t, port, creds)
-		t.Logf("Using Docker-based SMB mount (container: %s)", dockerMount.ContainerID[:12])
-		return &Mount{
-			T:           t,
-			Path:        dockerMount.HostPath,
-			Protocol:    "smb",
-			Port:        port,
-			mounted:     true,
-			dockerMount: dockerMount,
-		}
-	}
-
-	t.Fatalf("SMB mount failed: native mount unavailable (%v) and Docker not available", err)
-	return nil
-}
-
-// tryNativeSMBMount attempts to mount SMB share using native OS mount command.
-// Returns the mount or an error (does not call t.Fatal).
-func tryNativeSMBMount(t *testing.T, port int, creds SMBCredentials) (*Mount, error) {
 	t.Helper()
 
 	// Give the SMB server a moment to fully initialize
@@ -146,7 +112,7 @@ func tryNativeSMBMount(t *testing.T, port int, creds SMBCredentials) (*Mount, er
 	// Create mount directory
 	mountPath, err := os.MkdirTemp("", "dittofs-e2e-smb-*")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create SMB mount directory: %w", err)
+		t.Fatalf("Failed to create SMB mount directory: %v", err)
 	}
 
 	// Build mount command based on platform
@@ -165,7 +131,7 @@ func tryNativeSMBMount(t *testing.T, port int, creds SMBCredentials) (*Mount, er
 				port, creds.Username, creds.Password))
 	default:
 		_ = os.RemoveAll(mountPath)
-		return nil, fmt.Errorf("unsupported platform for SMB: %s", runtime.GOOS)
+		t.Fatalf("Unsupported platform for SMB: %s", runtime.GOOS)
 	}
 
 	// Execute mount command with retries
@@ -177,14 +143,8 @@ func tryNativeSMBMount(t *testing.T, port int, creds SMBCredentials) (*Mount, er
 		output, lastErr = cmd.CombinedOutput()
 
 		if lastErr == nil {
-			t.Logf("SMB share mounted successfully at %s (native)", mountPath)
-			return &Mount{
-				T:        t,
-				Path:     mountPath,
-				Protocol: "smb",
-				Port:     port,
-				mounted:  true,
-			}, nil
+			t.Logf("SMB share mounted successfully at %s", mountPath)
+			break
 		}
 
 		if i < maxRetries-1 {
@@ -206,10 +166,19 @@ func tryNativeSMBMount(t *testing.T, port int, creds SMBCredentials) (*Mount, er
 		}
 	}
 
-	// Clean up mount directory on failure
-	_ = os.RemoveAll(mountPath)
-	return nil, fmt.Errorf("failed to mount SMB share after %d attempts: %v\nOutput: %s",
-		maxRetries, lastErr, string(output))
+	if lastErr != nil {
+		_ = os.RemoveAll(mountPath)
+		t.Fatalf("Failed to mount SMB share after %d attempts: %v\nOutput: %s",
+			maxRetries, lastErr, string(output))
+	}
+
+	return &Mount{
+		T:        t,
+		Path:     mountPath,
+		Protocol: "smb",
+		Port:     port,
+		mounted:  true,
+	}
 }
 
 // MountSMBWithError mounts an SMB share and returns the mount info or an error.
@@ -345,15 +314,6 @@ func waitForUnmount(path string, timeout time.Duration) {
 // Cleanup unmounts and removes the mount directory.
 func (m *Mount) Cleanup() {
 	m.T.Helper()
-
-	// Handle Docker-based mount cleanup
-	if m.dockerMount != nil {
-		m.dockerMount.Cleanup()
-		m.mounted = false
-		return
-	}
-
-	// Native mount cleanup
 	m.Unmount()
 	if m.Path != "" {
 		_ = os.RemoveAll(m.Path)
@@ -361,12 +321,7 @@ func (m *Mount) Cleanup() {
 }
 
 // FilePath returns the absolute path for a relative path within the mount.
-// For Docker-based mounts, this still returns the host path since file operations
-// go through the shared volume, not the container's internal mount.
 func (m *Mount) FilePath(relativePath string) string {
-	// Note: For Docker mounts, m.Path is the host path (shared volume),
-	// not the container's internal /mnt/smb path. File operations through
-	// the standard Go APIs work on the host path.
 	return filepath.Join(m.Path, relativePath)
 }
 
