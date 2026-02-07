@@ -690,3 +690,134 @@ func (m *OplockManager) invalidateCache() {
 	m.leaseCache = make(map[string][]*lock.EnhancedLock)
 	m.cacheValid = false
 }
+
+// ============================================================================
+// SMB Lease Reclaim for Grace Period Recovery
+// ============================================================================
+
+// LeaseReclaimer defines the interface for reclaiming SMB leases during grace period.
+// This is typically implemented by MetadataService.
+type LeaseReclaimer interface {
+	// ReclaimLeaseSMB attempts to reclaim a lease during grace period.
+	// Returns the reclaimed lease result or error if lease doesn't exist.
+	ReclaimLeaseSMB(
+		ctx context.Context,
+		handle lock.FileHandle,
+		leaseKey [16]byte,
+		clientID string,
+		requestedState uint32,
+	) (*lock.LockResult, error)
+}
+
+// HandleLeaseReclaim processes a lease reclaim request during grace period.
+//
+// This is called when an SMB client reconnects after server restart and wants to
+// reclaim previously held leases. SMB2 doesn't have an explicit "reclaim" flag,
+// so detection is based on:
+//   - Server is in grace period (recently restarted)
+//   - Client provides a lease key it previously held
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - reclaimer: Service that handles lease reclaim (MetadataService)
+//   - fileHandle: The file handle for the lease
+//   - leaseKey: Client's 128-bit lease key
+//   - sessionID: The SMB session ID
+//   - clientID: The connection tracker client ID
+//   - requestedState: The R/W/H state being reclaimed
+//
+// Returns the granted state, epoch, and any error.
+func (m *OplockManager) HandleLeaseReclaim(
+	ctx context.Context,
+	reclaimer LeaseReclaimer,
+	fileHandle lock.FileHandle,
+	leaseKey [16]byte,
+	sessionID uint64,
+	clientID string,
+	requestedState uint32,
+) (grantedState uint32, epoch uint16, err error) {
+	if reclaimer == nil {
+		// No reclaimer available - fall through to normal acquisition
+		logger.Debug("Lease: reclaim attempted but no reclaimer available",
+			"leaseKey", fmt.Sprintf("%x", leaseKey))
+		return lock.LeaseStateNone, 0, nil
+	}
+
+	// Try to reclaim via MetadataService
+	result, err := reclaimer.ReclaimLeaseSMB(ctx, fileHandle, leaseKey, clientID, requestedState)
+	if err != nil {
+		// Reclaim failed - this could be ErrLockNotFound (no prior lease)
+		// or ErrGracePeriod (not in grace period)
+		// Log at DEBUG since this is expected for new leases
+		logger.Debug("Lease: reclaim failed, will treat as new request",
+			"leaseKey", fmt.Sprintf("%x", leaseKey),
+			"error", err)
+		return lock.LeaseStateNone, 0, nil // Caller should try normal acquisition
+	}
+
+	// Reclaim succeeded
+	if result != nil && result.Success && result.Lock != nil && result.Lock.Lease != nil {
+		// Track session for future break notifications
+		m.mu.Lock()
+		m.sessionMap[fmt.Sprintf("%x", leaseKey)] = sessionID
+		m.invalidateCache()
+		m.mu.Unlock()
+
+		logger.Info("Lease: reclaimed during grace period",
+			"leaseKey", fmt.Sprintf("%x", leaseKey),
+			"state", lock.LeaseStateToString(result.Lock.Lease.LeaseState),
+			"fileHandle", fileHandle)
+
+		return result.Lock.Lease.LeaseState, result.Lock.Lease.Epoch, nil
+	}
+
+	return lock.LeaseStateNone, 0, nil
+}
+
+// RequestLeaseWithReclaim tries reclaim first (during grace period), then normal acquisition.
+//
+// This is the preferred method for lease acquisition that handles both:
+//   - Grace period reclaim (for reconnecting clients after server restart)
+//   - Normal lease acquisition (for new lease requests)
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - reclaimer: Service that handles lease reclaim (nil to skip reclaim)
+//   - fileHandle: The file handle for the lease
+//   - leaseKey: Client-generated 128-bit key
+//   - sessionID: The SMB session ID
+//   - clientID: The connection tracker client ID
+//   - shareName: The share name
+//   - requestedState: Requested R/W/H state flags
+//   - isDirectory: True if target is a directory
+//
+// Returns the granted state, epoch, and any error.
+func (m *OplockManager) RequestLeaseWithReclaim(
+	ctx context.Context,
+	reclaimer LeaseReclaimer,
+	fileHandle lock.FileHandle,
+	leaseKey [16]byte,
+	sessionID uint64,
+	clientID string,
+	shareName string,
+	requestedState uint32,
+	isDirectory bool,
+) (grantedState uint32, epoch uint16, err error) {
+	// Try reclaim first if reclaimer is available
+	// This handles the case where server just restarted and client is reconnecting
+	if reclaimer != nil {
+		state, ep, err := m.HandleLeaseReclaim(
+			ctx, reclaimer, fileHandle, leaseKey, sessionID, clientID, requestedState)
+		if err != nil {
+			return lock.LeaseStateNone, 0, err
+		}
+		if state != lock.LeaseStateNone {
+			// Reclaim succeeded
+			return state, ep, nil
+		}
+		// Reclaim didn't find prior lease, continue with normal acquisition
+	}
+
+	// Normal lease acquisition
+	return m.RequestLease(ctx, fileHandle, leaseKey, sessionID, clientID, shareName, requestedState, isDirectory)
+}

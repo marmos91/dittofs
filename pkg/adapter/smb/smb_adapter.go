@@ -512,3 +512,39 @@ func (s *SMBAdapter) Port() int {
 func (s *SMBAdapter) Protocol() string {
 	return "SMB"
 }
+
+// ============================================================================
+// Session Reconnection for Grace Period Recovery
+// ============================================================================
+
+// OnReconnect is called when an SMB session reconnects after server restart.
+//
+// During the grace period, this method triggers lease reclaim for all leases
+// the client previously held. This allows SMB clients to restore their caching
+// state after server restart, maintaining cache consistency.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - sessionID: The reconnecting session ID
+//   - clientID: The connection tracker client ID
+//
+// Implementation note: This is a minimal implementation for gap closure.
+// Full implementation would enumerate persisted leases for the session and
+// call HandleLeaseReclaim for each one. Currently, the reclaim happens
+// implicitly when the client requests the same lease key during grace period.
+func (s *SMBAdapter) OnReconnect(ctx context.Context, sessionID uint64, clientID string) {
+	logger.Info("SMB session reconnected",
+		"sessionID", sessionID,
+		"clientID", clientID)
+
+	// During grace period, leases will be reclaimed when the client
+	// makes a CREATE request with its known lease key.
+	// The RequestLeaseWithReclaim method handles this transparently.
+	//
+	// A full implementation would:
+	// 1. Query LockStore for all leases owned by this clientID
+	// 2. Prepare them for reclaim on first access
+	// 3. Notify client of available leases to reclaim
+	//
+	// For this gap closure, we rely on implicit reclaim in RequestLeaseWithReclaim.
+}

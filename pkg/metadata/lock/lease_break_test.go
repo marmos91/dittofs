@@ -123,6 +123,11 @@ func (s *mockLockStore) IncrementServerEpoch(ctx context.Context) (uint64, error
 	return 2, nil
 }
 
+func (s *mockLockStore) ReclaimLease(_ context.Context, _ FileHandle, _ [16]byte, _ string) (*EnhancedLock, error) {
+	// Mock implementation returns not found - reclaim not supported in mock
+	return nil, nil
+}
+
 // Helper to create a breaking lease
 func createBreakingLease(id string, leaseKey [16]byte, breakStart time.Time) *PersistedLock {
 	return &PersistedLock{
