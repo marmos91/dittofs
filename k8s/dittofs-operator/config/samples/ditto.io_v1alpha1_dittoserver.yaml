@@ -1,0 +1,39 @@
+# Basic DittoFS configuration
+# Infrastructure-only config - stores, shares, adapters managed via REST API
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  labels:
+    app.kubernetes.io/name: dittofs-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: dittoserver-sample
+spec:
+  image: marmos91c/dittofs:latest
+  replicas: 1
+
+  # Storage for internal server data
+  storage:
+    metadataSize: "10Gi"
+    contentSize: "50Gi"
+
+  # Control plane database - defaults to SQLite
+  database:
+    type: sqlite
+    sqlite:
+      path: "/data/controlplane/controlplane.db"
+
+  # WAL-backed cache configuration
+  cache:
+    path: "/data/cache"
+    size: "1GB"
+
+  # Control plane REST API configuration
+  controlPlane:
+    port: 8080
+
+  # NFS server port
+  nfsPort: 2049
+
+  # Service configuration
+  service:
+    type: "ClusterIP"
