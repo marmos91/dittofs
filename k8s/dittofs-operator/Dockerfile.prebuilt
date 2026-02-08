@@ -1,0 +1,7 @@
+# Pre-built binary Dockerfile
+# Use when Go version in Docker Hub doesn't match required version
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY manager-linux-amd64 /manager
+USER 65532:65532
+ENTRYPOINT ["/manager"]
