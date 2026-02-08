@@ -98,12 +98,17 @@ func BuildAuthContextWithMapping(
 	}
 
 	// Create auth context with the effective (mapped) identity
+	// ShareWritable is set ONLY for admin users - this grants them full access
+	// like root (UID 0), bypassing Unix file permissions. Regular read-write
+	// users do NOT get ShareWritable - they must respect Unix permissions
+	// to maintain POSIX compliance.
 	effectiveAuthCtx := &metadata.AuthContext{
 		Context:       ctx,
 		ClientAddr:    clientAddr,
 		AuthMethod:    authMethod,
 		Identity:      effectiveIdentity,
 		ShareReadOnly: permResult.readOnly,
+		ShareWritable: permResult.permission == models.PermissionAdmin,
 	}
 
 	// Log identity mapping

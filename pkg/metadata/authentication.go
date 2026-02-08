@@ -559,23 +559,22 @@ func (s *MetadataService) checkFilePermissions(ctx *AuthContext, handle FileHand
 		shareOpts = nil
 	}
 
-	// Share-level write permission bypass:
-	// If the user has share-level write permission (ctx.ShareWritable), grant write-
-	// related permissions on files in the share, bypassing file-level Unix permission
-	// checks. This allows authenticated users with share write access to create/modify
-	// files even if the file's Unix permissions would normally deny access.
+	// Admin bypass: ShareWritable is set ONLY for admin users (not regular read-write users).
+	// Admin users get all requested permissions, similar to root (UID 0), bypassing
+	// Unix file permission checks. This allows admin users to manage all files in
+	// shares without being blocked by file ownership or permission bits.
 	//
 	// Note: ShareReadOnly takes precedence - if the share is read-only for this user,
-	// write permission is denied regardless of ShareWritable.
+	// write permissions are denied regardless of admin status.
 	if ctx.ShareWritable && !ctx.ShareReadOnly {
-		// Only grant write-related permissions via the share-level bypass.
-		// Read permissions still go through normal calculatePermissions checks.
-		writePerms := requested & (PermissionWrite | PermissionDelete)
-		if writePerms != 0 {
-			// For write requests, grant what was requested
-			return writePerms, nil
-		}
-		// For non-write requests (read-only), fall through to normal permission check
+		// Admin gets all requested permissions (like root)
+		return requested, nil
+	}
+
+	// ShareReadOnly admin: can read everything, but no write
+	if ctx.ShareWritable && ctx.ShareReadOnly {
+		// Grant all requested permissions except write/delete
+		return requested &^ (PermissionWrite | PermissionDelete), nil
 	}
 
 	return calculatePermissions(file, ctx.Identity, shareOpts, requested), nil
