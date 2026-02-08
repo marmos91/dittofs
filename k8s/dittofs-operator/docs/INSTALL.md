@@ -90,7 +90,7 @@ cat > my-values.yaml << 'EOF'
 controllerManager:
   manager:
     image:
-      repository: ghcr.io/marmos91/dittofs-operator
+      repository: marmos91c/dittofs-operator
       tag: v0.1.0
     resources:
       limits:
@@ -304,7 +304,7 @@ kubectl apply -f config/crd/bases/dittofs.dittofs.com_dittoservers.yaml
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `controllerManager.manager.image.repository` | Operator image repository | `ghcr.io/marmos91/dittofs-operator` |
+| `controllerManager.manager.image.repository` | Operator image repository | `marmos91c/dittofs-operator` |
 | `controllerManager.manager.image.tag` | Operator image tag | `latest` |
 | `controllerManager.manager.resources.limits.cpu` | CPU limit | `500m` |
 | `controllerManager.manager.resources.limits.memory` | Memory limit | `128Mi` |

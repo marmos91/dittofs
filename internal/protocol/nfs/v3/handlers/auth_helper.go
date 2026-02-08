@@ -104,7 +104,6 @@ func BuildAuthContextWithMapping(
 		AuthMethod:    authMethod,
 		Identity:      effectiveIdentity,
 		ShareReadOnly: permResult.readOnly,
-		ShareWritable: permResult.permission == models.PermissionReadWrite || permResult.permission == models.PermissionAdmin,
 	}
 
 	// Log identity mapping

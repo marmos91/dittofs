@@ -15,7 +15,7 @@ controllerManager:
           - ALL
       readOnlyRootFilesystem: true
     image:
-      repository: ghcr.io/marmos91/dittofs-operator
+      repository: marmos91c/dittofs-operator
       tag: latest
       # Overrides the image tag whose default is the chart appVersion
       # tag: ""
