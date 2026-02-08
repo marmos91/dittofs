@@ -163,6 +163,16 @@ func (s *GORMStore) ResolveSharePermission(ctx context.Context, user *models.Use
 		return defaultPerm, nil
 	}
 
+	// Admin users get admin permissions on all shares
+	if user.IsAdmin() {
+		return models.PermissionAdmin, nil
+	}
+
+	// Users in the "admins" group get admin permissions on all shares
+	if user.HasGroup("admins") {
+		return models.PermissionAdmin, nil
+	}
+
 	// Check user explicit permission first
 	for _, perm := range user.SharePermissions {
 		if perm.ShareID == share.ID {
