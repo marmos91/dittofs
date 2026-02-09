@@ -90,7 +90,7 @@ type DittoServerReconciler struct {
 // +kubebuilder:rbac:groups=dittofs.dittofs.com,resources=dittoservers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
@@ -116,7 +116,7 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Handle deletion
-	if !dittoServer.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !dittoServer.DeletionTimestamp.IsZero() {
 		requeue, err := r.handleDeletion(ctx, dittoServer)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -193,7 +193,7 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Check if Percona is enabled but not ready - block StatefulSet creation
-	if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
+	if isPerconaEnabled(dittoServer) {
 		pgCluster := &pgv2.PerconaPGCluster{}
 		err := r.Get(ctx, client.ObjectKey{
 			Namespace: dittoServer.Namespace,
@@ -236,6 +236,19 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	if err := r.updateStatus(ctx, dittoServer, statefulSet, replicas, configHash); err != nil {
+		logger.Error(err, "Failed to update DittoServer status")
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// updateStatus computes and persists the DittoServer status from current cluster state.
+func (r *DittoServerReconciler) updateStatus(
+	ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer,
+	statefulSet *appsv1.StatefulSet, replicas int32, configHash string,
+) error {
 	dittoServerCopy := dittoServer.DeepCopy()
 	dittoServerCopy.Status.ObservedGeneration = dittoServer.Generation
 	dittoServerCopy.Status.Replicas = replicas
@@ -244,17 +257,11 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	dittoServerCopy.Status.ConfigHash = configHash
 
 	// Set PerconaClusterName if Percona is enabled
-	if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
+	if isPerconaEnabled(dittoServer) {
 		dittoServerCopy.Status.PerconaClusterName = percona.ClusterName(dittoServer.Name)
 	}
 
-	if replicas == 0 {
-		dittoServerCopy.Status.Phase = "Stopped"
-	} else if statefulSet.Status.ReadyReplicas == replicas {
-		dittoServerCopy.Status.Phase = "Running"
-	} else {
-		dittoServerCopy.Status.Phase = "Pending"
-	}
+	dittoServerCopy.Status.Phase = determinePhase(replicas, statefulSet.Status.ReadyReplicas)
 
 	dittoServerCopy.Status.NFSEndpoint = fmt.Sprintf("%s-file.%s.svc.cluster.local:%d",
 		dittoServer.Name, dittoServer.Namespace, nfs.GetNFSPort(dittoServer))
@@ -263,100 +270,117 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	r.updateConfigReadyCondition(ctx, dittoServer, &dittoServerCopy.Status)
 
 	// Set DatabaseReady condition (only relevant when Percona enabled)
-	if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
-		pgCluster := &pgv2.PerconaPGCluster{}
-		err := r.Get(ctx, client.ObjectKey{
-			Namespace: dittoServer.Namespace,
-			Name:      percona.ClusterName(dittoServer.Name),
-		}, pgCluster)
-		if err != nil {
-			conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
-				conditions.ConditionDatabaseReady, metav1.ConditionFalse, "PerconaNotFound",
-				fmt.Sprintf("PerconaPGCluster not found: %v", err))
-		} else if !percona.IsReady(pgCluster) {
-			conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
-				conditions.ConditionDatabaseReady, metav1.ConditionFalse, "PerconaNotReady",
-				fmt.Sprintf("PostgreSQL cluster state: %s", percona.GetState(pgCluster)))
-		} else {
-			conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
-				conditions.ConditionDatabaseReady, metav1.ConditionTrue, "PerconaReady",
-				"PostgreSQL cluster is ready")
-		}
-	} else {
-		// Remove DatabaseReady condition if Percona not enabled
-		conditions.RemoveCondition(&dittoServerCopy.Status.Conditions, conditions.ConditionDatabaseReady)
-	}
+	r.updateDatabaseReadyCondition(ctx, dittoServer, &dittoServerCopy.Status)
 
 	// Set Available condition
+	updateAvailableCondition(dittoServer, &dittoServerCopy.Status, replicas, statefulSet)
+
+	// Set Progressing condition
+	updateProgressingCondition(dittoServer, &dittoServerCopy.Status, replicas, statefulSet)
+
+	// Set Ready condition (aggregate of other conditions)
+	updateReadyCondition(dittoServer, &dittoServerCopy.Status)
+
+	return r.Status().Update(ctx, dittoServerCopy)
+}
+
+// updateDatabaseReadyCondition sets the DatabaseReady condition based on Percona state.
+func (r *DittoServerReconciler) updateDatabaseReadyCondition(
+	ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer,
+	status *dittoiov1alpha1.DittoServerStatus,
+) {
+	if !isPerconaEnabled(dittoServer) {
+		conditions.RemoveCondition(&status.Conditions, conditions.ConditionDatabaseReady)
+		return
+	}
+
+	pgCluster := &pgv2.PerconaPGCluster{}
+	err := r.Get(ctx, client.ObjectKey{
+		Namespace: dittoServer.Namespace,
+		Name:      percona.ClusterName(dittoServer.Name),
+	}, pgCluster)
+	if err != nil {
+		conditions.SetCondition(&status.Conditions, dittoServer.Generation,
+			conditions.ConditionDatabaseReady, metav1.ConditionFalse, "PerconaNotFound",
+			fmt.Sprintf("PerconaPGCluster not found: %v", err))
+	} else if !percona.IsReady(pgCluster) {
+		conditions.SetCondition(&status.Conditions, dittoServer.Generation,
+			conditions.ConditionDatabaseReady, metav1.ConditionFalse, "PerconaNotReady",
+			fmt.Sprintf("PostgreSQL cluster state: %s", percona.GetState(pgCluster)))
+	} else {
+		conditions.SetCondition(&status.Conditions, dittoServer.Generation,
+			conditions.ConditionDatabaseReady, metav1.ConditionTrue, "PerconaReady",
+			"PostgreSQL cluster is ready")
+	}
+}
+
+// updateAvailableCondition sets the Available condition based on replica readiness.
+func updateAvailableCondition(
+	dittoServer *dittoiov1alpha1.DittoServer,
+	status *dittoiov1alpha1.DittoServerStatus,
+	replicas int32, statefulSet *appsv1.StatefulSet,
+) {
 	if replicas == 0 {
-		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+		conditions.SetCondition(&status.Conditions, dittoServer.Generation,
 			conditions.ConditionAvailable, metav1.ConditionTrue, "Stopped",
 			"DittoServer is stopped (replicas=0)")
 	} else if statefulSet.Status.ReadyReplicas >= 1 {
-		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+		conditions.SetCondition(&status.Conditions, dittoServer.Generation,
 			conditions.ConditionAvailable, metav1.ConditionTrue, "MinimumReplicasAvailable",
 			fmt.Sprintf("StatefulSet has %d/%d ready replicas", statefulSet.Status.ReadyReplicas, replicas))
 	} else {
-		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+		conditions.SetCondition(&status.Conditions, dittoServer.Generation,
 			conditions.ConditionAvailable, metav1.ConditionFalse, "NoReplicasAvailable",
 			fmt.Sprintf("Waiting for replicas: %d/%d ready", statefulSet.Status.ReadyReplicas, replicas))
 	}
+}
 
-	// Set Progressing condition
+// updateProgressingCondition sets the Progressing condition based on StatefulSet state.
+func updateProgressingCondition(
+	dittoServer *dittoiov1alpha1.DittoServer,
+	status *dittoiov1alpha1.DittoServerStatus,
+	replicas int32, statefulSet *appsv1.StatefulSet,
+) {
 	if statefulSet.Status.ObservedGeneration < statefulSet.Generation {
-		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+		conditions.SetCondition(&status.Conditions, dittoServer.Generation,
 			conditions.ConditionProgressing, metav1.ConditionTrue, "StatefulSetUpdating",
 			"StatefulSet is being updated")
 	} else if statefulSet.Status.ReadyReplicas != replicas {
-		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+		conditions.SetCondition(&status.Conditions, dittoServer.Generation,
 			conditions.ConditionProgressing, metav1.ConditionTrue, "ScalingReplicas",
 			fmt.Sprintf("Scaling: %d/%d replicas ready", statefulSet.Status.ReadyReplicas, replicas))
 	} else {
-		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+		conditions.SetCondition(&status.Conditions, dittoServer.Generation,
 			conditions.ConditionProgressing, metav1.ConditionFalse, "ReconcileComplete",
 			"All resources are up to date")
 	}
+}
 
-	// Set Ready condition (aggregate of other conditions)
-	configReady := conditions.IsConditionTrue(dittoServerCopy.Status.Conditions, conditions.ConditionConfigReady)
-	available := conditions.IsConditionTrue(dittoServerCopy.Status.Conditions, conditions.ConditionAvailable)
-	notProgressing := !conditions.IsConditionTrue(dittoServerCopy.Status.Conditions, conditions.ConditionProgressing)
+// updateReadyCondition sets the aggregate Ready condition from other conditions.
+func updateReadyCondition(
+	dittoServer *dittoiov1alpha1.DittoServer,
+	status *dittoiov1alpha1.DittoServerStatus,
+) {
+	configReady := conditions.IsConditionTrue(status.Conditions, conditions.ConditionConfigReady)
+	available := conditions.IsConditionTrue(status.Conditions, conditions.ConditionAvailable)
+	progressing := conditions.IsConditionTrue(status.Conditions, conditions.ConditionProgressing)
 
-	// DatabaseReady only required if Percona enabled
 	databaseReady := true
-	if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
-		databaseReady = conditions.IsConditionTrue(dittoServerCopy.Status.Conditions, conditions.ConditionDatabaseReady)
+	if isPerconaEnabled(dittoServer) {
+		databaseReady = conditions.IsConditionTrue(status.Conditions, conditions.ConditionDatabaseReady)
 	}
 
-	if configReady && available && notProgressing && databaseReady {
-		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+	allReady := configReady && available && !progressing && databaseReady
+	if allReady {
+		conditions.SetCondition(&status.Conditions, dittoServer.Generation,
 			conditions.ConditionReady, metav1.ConditionTrue, "AllConditionsMet",
 			"DittoServer is fully operational")
 	} else {
-		var reasons []string
-		if !configReady {
-			reasons = append(reasons, "ConfigNotReady")
-		}
-		if !available {
-			reasons = append(reasons, "NotAvailable")
-		}
-		if !notProgressing {
-			reasons = append(reasons, "StillProgressing")
-		}
-		if !databaseReady {
-			reasons = append(reasons, "DatabaseNotReady")
-		}
-		conditions.SetCondition(&dittoServerCopy.Status.Conditions, dittoServer.Generation,
+		reasons := collectNotReadyReasons(configReady, available, progressing, databaseReady)
+		conditions.SetCondition(&status.Conditions, dittoServer.Generation,
 			conditions.ConditionReady, metav1.ConditionFalse, "ConditionsNotMet",
 			fmt.Sprintf("Not ready: %v", reasons))
 	}
-
-	if err := r.Status().Update(ctx, dittoServerCopy); err != nil {
-		logger.Error(err, "Failed to update DittoServer status")
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{}, nil
 }
 
 // handleDeletion processes DittoServer deletion, performing cleanup before allowing deletion to proceed.
@@ -422,7 +446,7 @@ func (r *DittoServerReconciler) performCleanup(ctx context.Context, dittoServer 
 	logger := logf.FromContext(ctx)
 
 	// Handle Percona cleanup based on deleteWithServer flag
-	if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
+	if isPerconaEnabled(dittoServer) {
 		clusterName := percona.ClusterName(dittoServer.Name)
 		pgCluster := &pgv2.PerconaPGCluster{}
 		err := r.Get(ctx, client.ObjectKey{
@@ -549,11 +573,14 @@ func (r *DittoServerReconciler) reconcileJWTSecret(ctx context.Context, dittoSer
 		}
 
 		// Only generate secret if it doesn't already exist
-		if secret.Data == nil || len(secret.Data["jwt-secret"]) == 0 {
+		if secret.Data == nil || len(secret.Data[dittoiov1alpha1.ManagedJWTSecretKey]) == 0 {
 			// Generate a 32-byte random secret (64 hex chars)
-			jwtSecret := generateRandomSecret(32)
+			jwtSecret, err := generateRandomSecret(32)
+			if err != nil {
+				return err
+			}
 			secret.Data = map[string][]byte{
-				"jwt-secret": []byte(jwtSecret),
+				dittoiov1alpha1.ManagedJWTSecretKey: []byte(jwtSecret),
 			}
 		}
 
@@ -564,36 +591,24 @@ func (r *DittoServerReconciler) reconcileJWTSecret(ctx context.Context, dittoSer
 		return fmt.Errorf("failed to create/update JWT secret: %w", err)
 	}
 
-	// Update the DittoServer spec to reference the managed secret if not already set
-	if dittoServer.Spec.Identity == nil {
-		dittoServer.Spec.Identity = &dittoiov1alpha1.IdentityConfig{}
-	}
-	if dittoServer.Spec.Identity.JWT == nil {
-		dittoServer.Spec.Identity.JWT = &dittoiov1alpha1.JWTConfig{}
-	}
-	dittoServer.Spec.Identity.JWT.SecretRef = corev1.SecretKeySelector{
-		LocalObjectReference: corev1.LocalObjectReference{
-			Name: secretName,
-		},
-		Key: "jwt-secret",
-	}
-
+	// Note: We don't mutate dittoServer.Spec here. Instead, use GetEffectiveJWTSecretRef()
+	// to get the correct secret reference when needed.
 	return nil
 }
 
 // generateRandomSecret generates a cryptographically secure random string of the given length.
-func generateRandomSecret(length int) string {
+// Returns an error if random generation fails (should never happen with crypto/rand).
+func generateRandomSecret(length int) (string, error) {
 	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	result := make([]byte, length)
 	randomBytes := make([]byte, length)
 	if _, err := rand.Read(randomBytes); err != nil {
-		// Fallback should never happen with crypto/rand
-		panic("failed to generate random bytes: " + err.Error())
+		return "", fmt.Errorf("failed to generate random bytes: %w", err)
 	}
 	for i := range result {
 		result[i] = chars[int(randomBytes[i])%len(chars)]
 	}
-	return string(result)
+	return string(result), nil
 }
 
 func (r *DittoServerReconciler) reconcileConfigMap(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
@@ -609,7 +624,7 @@ func (r *DittoServerReconciler) reconcileConfigMap(ctx context.Context, dittoSer
 			return err
 		}
 
-		configYAML, err := config.GenerateDittoFSConfig(ctx, r.Client, dittoServer)
+		configYAML, err := config.GenerateDittoFSConfig(dittoServer)
 		if err != nil {
 			return fmt.Errorf("failed to generate config: %w", err)
 		}
@@ -648,6 +663,31 @@ func getMetricsPort(dittoServer *dittoiov1alpha1.DittoServer) int32 {
 	return defaultMetricsPort
 }
 
+// createOrUpdateService is a helper that creates or updates a Service with retry logic.
+// It handles owner reference setting and merges service specs to preserve cloud controller fields.
+func (r *DittoServerReconciler) createOrUpdateService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer, svc *corev1.Service) error {
+	existing := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svc.Name,
+			Namespace: svc.Namespace,
+		},
+	}
+
+	return retryOnConflict(func() error {
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
+			if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
+				return err
+			}
+			// Only update fields we own, preserve cloud controller fields
+			mergeServiceSpec(&existing.Spec, &svc.Spec)
+			existing.Labels = svc.Labels
+			existing.Annotations = mergeAnnotations(existing.Annotations, svc.Annotations)
+			return nil
+		})
+		return err
+	})
+}
+
 // reconcileHeadlessService creates/updates the headless Service for StatefulSet DNS.
 func (r *DittoServerReconciler) reconcileHeadlessService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
 	labels := map[string]string{
@@ -664,25 +704,7 @@ func (r *DittoServerReconciler) reconcileHeadlessService(ctx context.Context, di
 		AddTCPPort("nfs", nfsPort).
 		Build()
 
-	existing := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      svc.Name,
-			Namespace: svc.Namespace,
-		},
-	}
-
-	return retryOnConflict(func() error {
-		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
-			if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
-				return err
-			}
-			// Only update fields we own, preserve cloud controller fields
-			mergeServiceSpec(&existing.Spec, &svc.Spec)
-			existing.Labels = svc.Labels
-			return nil
-		})
-		return err
-	})
+	return r.createOrUpdateService(ctx, dittoServer, svc)
 }
 
 // reconcileFileService creates/updates the Service for file protocols (NFS, SMB).
@@ -709,26 +731,7 @@ func (r *DittoServerReconciler) reconcileFileService(ctx context.Context, dittoS
 
 	svc := builder.Build()
 
-	existing := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      svc.Name,
-			Namespace: svc.Namespace,
-		},
-	}
-
-	return retryOnConflict(func() error {
-		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
-			if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
-				return err
-			}
-			// Only update fields we own, preserve cloud controller fields
-			mergeServiceSpec(&existing.Spec, &svc.Spec)
-			existing.Labels = svc.Labels
-			mergeAnnotations(existing.Annotations, svc.Annotations)
-			return nil
-		})
-		return err
-	})
+	return r.createOrUpdateService(ctx, dittoServer, svc)
 }
 
 // reconcileAPIService creates/updates the Service for REST API access.
@@ -748,26 +751,7 @@ func (r *DittoServerReconciler) reconcileAPIService(ctx context.Context, dittoSe
 		AddTCPPort("api", apiPort).
 		Build()
 
-	existing := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      svc.Name,
-			Namespace: svc.Namespace,
-		},
-	}
-
-	return retryOnConflict(func() error {
-		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
-			if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
-				return err
-			}
-			// Only update fields we own, preserve cloud controller fields
-			mergeServiceSpec(&existing.Spec, &svc.Spec)
-			existing.Labels = svc.Labels
-			mergeAnnotations(existing.Annotations, svc.Annotations)
-			return nil
-		})
-		return err
-	})
+	return r.createOrUpdateService(ctx, dittoServer, svc)
 }
 
 // reconcileMetricsService creates/updates the Service for Prometheus metrics (if enabled).
@@ -802,32 +786,14 @@ func (r *DittoServerReconciler) reconcileMetricsService(ctx context.Context, dit
 		AddTCPPort("metrics", metricsPort).
 		Build()
 
-	existing := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      svc.Name,
-			Namespace: svc.Namespace,
-		},
-	}
-
-	return retryOnConflict(func() error {
-		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, existing, func() error {
-			if err := controllerutil.SetControllerReference(dittoServer, existing, r.Scheme); err != nil {
-				return err
-			}
-			// Only update fields we own, preserve cloud controller fields
-			mergeServiceSpec(&existing.Spec, &svc.Spec)
-			existing.Labels = svc.Labels
-			return nil
-		})
-		return err
-	})
+	return r.createOrUpdateService(ctx, dittoServer, svc)
 }
 
 func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer, replicas int32) (string, error) {
 	logger := logf.FromContext(ctx)
 
 	// Generate config to compute hash (same config that was just written to ConfigMap)
-	configYAML, err := config.GenerateDittoFSConfig(ctx, r.Client, dittoServer)
+	configYAML, err := config.GenerateDittoFSConfig(dittoServer)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate config for hash: %w", err)
 	}
@@ -956,13 +922,14 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 
 			// Build init containers
 			var initContainers []corev1.Container
-			if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
+			if isPerconaEnabled(dittoServer) {
 				initContainers = append(initContainers, buildPostgresInitContainer(dittoServer.Name))
 			}
 
-			// Merge env vars
-			envVars := buildS3EnvVars(dittoServer.Spec.S3)
-			if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
+			// Merge env vars: secrets first, then S3, then Percona
+			envVars := buildSecretEnvVars(dittoServer)
+			envVars = append(envVars, buildS3EnvVars(dittoServer.Spec.S3)...)
+			if isPerconaEnabled(dittoServer) {
 				envVars = append(envVars, buildPostgresEnvVars(dittoServer.Name)...)
 			}
 
@@ -1184,6 +1151,48 @@ func defaultIfEmpty(value, defaultValue string) string {
 	return value
 }
 
+// buildSecretEnvVars creates environment variables for secrets that should NOT be in the ConfigMap.
+// These are sourced from Kubernetes Secrets and injected as env vars into the container.
+func buildSecretEnvVars(dittoServer *dittoiov1alpha1.DittoServer) []corev1.EnvVar {
+	var envVars []corev1.EnvVar
+
+	// JWT secret (always present - either user-provided or auto-generated)
+	jwtSecretRef := dittoServer.GetEffectiveJWTSecretRef()
+	envVars = append(envVars, secretEnvVar(
+		"DITTOFS_CONTROLPLANE_JWT_SECRET",
+		jwtSecretRef.Name,
+		jwtSecretRef.Key,
+		false,
+	))
+
+	// Admin password hash (optional - only if user configured it)
+	if dittoServer.Spec.Identity != nil && dittoServer.Spec.Identity.Admin != nil &&
+		dittoServer.Spec.Identity.Admin.PasswordSecretRef != nil {
+		ref := dittoServer.Spec.Identity.Admin.PasswordSecretRef
+		envVars = append(envVars, secretEnvVar(
+			"DITTOFS_ADMIN_PASSWORD_HASH",
+			ref.Name,
+			ref.Key,
+			false,
+		))
+	}
+
+	// PostgreSQL connection string (only if Postgres configured and NOT using Percona)
+	// Percona case already injects DATABASE_URL via buildPostgresEnvVars.
+	if dittoServer.Spec.Database != nil && dittoServer.Spec.Database.PostgresSecretRef != nil &&
+		!isPerconaEnabled(dittoServer) {
+		ref := dittoServer.Spec.Database.PostgresSecretRef
+		envVars = append(envVars, secretEnvVar(
+			"DITTOFS_DATABASE_POSTGRES",
+			ref.Name,
+			ref.Key,
+			false,
+		))
+	}
+
+	return envVars
+}
+
 // buildPostgresInitContainer creates an init container that waits for PostgreSQL to be ready.
 // Uses pg_isready with full auth check (connects as dittofs user to dittofs database).
 func buildPostgresInitContainer(dsName string) corev1.Container {
@@ -1295,12 +1304,17 @@ func (r *DittoServerReconciler) reconcilePerconaPGCluster(ctx context.Context, d
 	if apierrors.IsNotFound(err) {
 		logger.Info("Creating PerconaPGCluster", "name", clusterName)
 
+		pgClusterSpec, err := percona.BuildPerconaPGClusterSpec(dittoServer)
+		if err != nil {
+			return fmt.Errorf("failed to build PerconaPGCluster spec: %w", err)
+		}
+
 		pgCluster = &pgv2.PerconaPGCluster{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      clusterName,
 				Namespace: dittoServer.Namespace,
 			},
-			Spec: percona.BuildPerconaPGClusterSpec(dittoServer),
+			Spec: pgClusterSpec,
 		}
 
 		// Set owner reference so it's deleted when DittoServer is deleted
@@ -1327,19 +1341,17 @@ func (r *DittoServerReconciler) reconcilePerconaPGCluster(ctx context.Context, d
 func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) (map[string][]byte, error) {
 	secrets := make(map[string][]byte)
 
-	// JWT secret
-	if dittoServer.Spec.Identity != nil && dittoServer.Spec.Identity.JWT != nil {
-		secret := &corev1.Secret{}
-		if err := r.Get(ctx, client.ObjectKey{
-			Namespace: dittoServer.Namespace,
-			Name:      dittoServer.Spec.Identity.JWT.SecretRef.Name,
-		}, secret); err != nil {
-			return nil, fmt.Errorf("failed to get JWT secret: %w", err)
-		}
-		key := dittoServer.Spec.Identity.JWT.SecretRef.Key
-		if data, ok := secret.Data[key]; ok {
-			secrets["jwt:"+key] = data
-		}
+	// JWT secret (use effective ref which handles both user-provided and auto-generated)
+	jwtSecretRef := dittoServer.GetEffectiveJWTSecretRef()
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: dittoServer.Namespace,
+		Name:      jwtSecretRef.Name,
+	}, secret); err != nil {
+		return nil, fmt.Errorf("failed to get JWT secret: %w", err)
+	}
+	if data, ok := secret.Data[jwtSecretRef.Key]; ok {
+		secrets["jwt:"+jwtSecretRef.Key] = data
 	}
 
 	// Admin password secret
@@ -1390,7 +1402,7 @@ func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServ
 	}
 
 	// Percona PostgreSQL credentials secret (if Percona enabled)
-	if dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled {
+	if isPerconaEnabled(dittoServer) {
 		secretName := percona.SecretName(dittoServer.Name)
 		secret := &corev1.Secret{}
 		if err := r.Get(ctx, client.ObjectKey{
@@ -1470,11 +1482,51 @@ func mergePorts(existing, desired []corev1.ServicePort) []corev1.ServicePort {
 
 // mergeAnnotations merges desired annotations into existing, without removing
 // annotations that may have been added by cloud controllers.
-func mergeAnnotations(existing, desired map[string]string) {
+// Note: This modifies the existing map in place. If existing is nil, use the
+// returned map. Returns the merged map (which may be existing or a new map).
+func mergeAnnotations(existing, desired map[string]string) map[string]string {
+	if len(desired) == 0 {
+		return existing
+	}
 	if existing == nil {
-		return
+		existing = make(map[string]string, len(desired))
 	}
 	for k, v := range desired {
 		existing[k] = v
 	}
+	return existing
+}
+
+// determinePhase returns the appropriate phase based on replica counts.
+func determinePhase(desired, ready int32) string {
+	if desired == 0 {
+		return "Stopped"
+	}
+	if ready == desired {
+		return "Running"
+	}
+	return "Pending"
+}
+
+// isPerconaEnabled returns true if Percona PostgreSQL integration is enabled.
+func isPerconaEnabled(dittoServer *dittoiov1alpha1.DittoServer) bool {
+	return dittoServer.Spec.Percona != nil && dittoServer.Spec.Percona.Enabled
+}
+
+// collectNotReadyReasons gathers the list of conditions that are not met.
+func collectNotReadyReasons(configReady, available, progressing, databaseReady bool) []string {
+	var reasons []string
+	if !configReady {
+		reasons = append(reasons, "ConfigNotReady")
+	}
+	if !available {
+		reasons = append(reasons, "NotAvailable")
+	}
+	if progressing {
+		reasons = append(reasons, "StillProgressing")
+	}
+	if !databaseReady {
+		reasons = append(reasons, "DatabaseNotReady")
+	}
+	return reasons
 }

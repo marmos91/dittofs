@@ -6,6 +6,7 @@ apiVersion: dittofs.dittofs.com/v1alpha1
 kind: DittoServer
 metadata:
   name: dittofs-percona
+  namespace: dittofs
   labels:
     app.kubernetes.io/name: dittofs
     app.kubernetes.io/instance: dittofs-percona
@@ -59,6 +60,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: dittofs-percona-jwt
+  namespace: dittofs
 type: Opaque
 stringData:
   secret: "change-this-to-a-secure-random-string-at-least-32-chars"

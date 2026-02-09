@@ -8,7 +8,7 @@ Before installing the operator, ensure you have:
 
 | Requirement | Minimum Version | Check Command |
 |-------------|-----------------|---------------|
-| Kubernetes cluster | 1.25+ | `kubectl version` |
+| Kubernetes cluster | 1.26+ | `kubectl version` |
 | kubectl | 1.25+ | `kubectl version --client` |
 | Helm (for Helm installation) | 3.0+ | `helm version` |
 | StorageClass available | - | `kubectl get storageclass` |
@@ -138,7 +138,19 @@ kubectl logs -n dittofs deployment/dittofs-operator-controller-manager
 
 Once the operator is running, create a minimal DittoServer:
 
-**Step 1: Create the DittoServer resource**
+**Step 1: Create required secrets**
+
+```bash
+# JWT signing secret (required, >= 32 characters)
+kubectl create secret generic dittofs-jwt-secret \
+  --from-literal=jwt-signing-key="$(openssl rand -base64 32)"
+
+# Admin password hash (required)
+kubectl create secret generic dittofs-admin-secret \
+  --from-literal=password-hash="$(htpasswd -nbB '' admin | cut -d: -f2)"
+```
+
+**Step 2: Create the DittoServer resource**
 
 ```bash
 cat << 'EOF' | kubectl apply -f -
@@ -150,10 +162,20 @@ spec:
   storage:
     metadataSize: "5Gi"
     cacheSize: "5Gi"
+  identity:
+    jwt:
+      secretRef:
+        name: dittofs-jwt-secret
+        key: jwt-signing-key
+    admin:
+      username: admin
+      passwordSecretRef:
+        name: dittofs-admin-secret
+        key: password-hash
 EOF
 ```
 
-**Step 2: Watch the resources being created**
+**Step 3: Watch the resources being created**
 
 ```bash
 # Watch DittoServer status
@@ -166,7 +188,7 @@ kubectl get dittoserver my-dittofs -w
 # my-dittofs   1          1       1           Running   30s
 ```
 
-**Step 3: Verify all resources**
+**Step 4: Verify all resources**
 
 ```bash
 # Check created resources
@@ -179,11 +201,11 @@ kubectl get pvc -l app.kubernetes.io/instance=my-dittofs
 kubectl get configmap my-dittofs-config -o yaml
 ```
 
-**Step 4: Get the NFS endpoint**
+**Step 5: Get the NFS endpoint**
 
 ```bash
 kubectl get dittoserver my-dittofs -o jsonpath='{.status.nfsEndpoint}'
-# Output: my-dittofs-file.default.svc.cluster.local:2049
+# Example output: my-dittofs-file.default.svc.cluster.local:12049
 ```
 
 ## NFS Client Configuration

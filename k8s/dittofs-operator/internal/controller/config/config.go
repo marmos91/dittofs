@@ -1,14 +1,10 @@
 package config
 
 import (
-	"context"
 	"fmt"
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
 	"gopkg.in/yaml.v3"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // Default configuration values
@@ -30,36 +26,11 @@ const (
 
 // GenerateDittoFSConfig generates DittoFS configuration YAML from the CRD spec.
 // This generates infrastructure-only config matching the DittoFS develop branch format.
+// Secrets (JWT, admin password, Postgres DSN) are NOT included in the config YAML.
+// They are injected as environment variables sourced from Kubernetes Secrets instead.
 // Dynamic configuration (stores, shares, users, adapters) is managed via REST API.
-func GenerateDittoFSConfig(ctx context.Context, c client.Client, dittoServer *dittoiov1alpha1.DittoServer) (string, error) {
-	// Resolve JWT secret
-	jwtSecret := ""
-	if dittoServer.Spec.Identity != nil && dittoServer.Spec.Identity.JWT != nil {
-		secret, err := resolveSecretValue(ctx, c, dittoServer.Namespace, dittoServer.Spec.Identity.JWT.SecretRef)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve JWT secret: %w", err)
-		}
-		jwtSecret = secret
-	}
-
-	// Resolve admin password hash
-	adminPasswordHash := ""
-	if dittoServer.Spec.Identity != nil && dittoServer.Spec.Identity.Admin != nil &&
-		dittoServer.Spec.Identity.Admin.PasswordSecretRef != nil {
-		hash, err := resolveSecretValue(ctx, c, dittoServer.Namespace, *dittoServer.Spec.Identity.Admin.PasswordSecretRef)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve admin password: %w", err)
-		}
-		adminPasswordHash = hash
-	}
-
-	// Build database config (resolves Postgres secret if configured)
-	dbConfig, err := buildDatabaseConfig(ctx, c, dittoServer)
-	if err != nil {
-		return "", fmt.Errorf("failed to build database config: %w", err)
-	}
-
-	// Build config
+func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, error) {
+	// Build config without any secrets
 	cfg := DittoFSConfig{
 		Logging: LoggingConfig{
 			Level:  DefaultLoggingLevel,
@@ -70,23 +41,20 @@ func GenerateDittoFSConfig(ctx context.Context, c client.Client, dittoServer *di
 			Enabled: false,
 		},
 		ShutdownTimeout: DefaultShutdownTimeout,
-		Database:        dbConfig,
+		Database:        buildDatabaseConfig(dittoServer),
 		Metrics:         buildMetricsConfig(dittoServer),
-		ControlPlane:    buildControlPlaneConfig(dittoServer, jwtSecret),
+		ControlPlane:    buildControlPlaneConfig(dittoServer),
 		Cache:           buildCacheConfig(dittoServer),
 	}
 
-	// Add admin config if we have credentials
+	// Add admin config with username only (password hash injected via env var)
 	adminUsername := DefaultAdminUsername
 	if dittoServer.Spec.Identity != nil && dittoServer.Spec.Identity.Admin != nil &&
 		dittoServer.Spec.Identity.Admin.Username != "" {
 		adminUsername = dittoServer.Spec.Identity.Admin.Username
 	}
-	if adminPasswordHash != "" {
-		cfg.Admin = AdminConfig{
-			Username:     adminUsername,
-			PasswordHash: adminPasswordHash,
-		}
+	cfg.Admin = AdminConfig{
+		Username: adminUsername,
 	}
 
 	yamlBytes, err := yaml.Marshal(&cfg)
@@ -99,8 +67,8 @@ func GenerateDittoFSConfig(ctx context.Context, c client.Client, dittoServer *di
 
 // buildDatabaseConfig constructs database configuration.
 // Per CONTEXT.md: If PostgresSecretRef is set, Postgres takes precedence silently (regardless of Type field).
-// PostgreSQL connection string is resolved from Secret and included in config YAML.
-func buildDatabaseConfig(ctx context.Context, c client.Client, ds *dittoiov1alpha1.DittoServer) (DatabaseConfig, error) {
+// The PostgreSQL connection string is NOT included - it is injected via environment variable.
+func buildDatabaseConfig(ds *dittoiov1alpha1.DittoServer) DatabaseConfig {
 	// Default to SQLite
 	cfg := DatabaseConfig{
 		Type: "sqlite",
@@ -110,24 +78,17 @@ func buildDatabaseConfig(ctx context.Context, c client.Client, ds *dittoiov1alph
 	}
 
 	if ds.Spec.Database == nil {
-		return cfg, nil
+		return cfg
 	}
 
 	// Check for Postgres FIRST - takes precedence per CONTEXT.md
 	// We check PostgresSecretRef being set as the indicator that Postgres is configured,
 	// regardless of what Type field says. This implements "Postgres takes precedence silently".
 	if ds.Spec.Database.PostgresSecretRef != nil {
-		// Resolve PostgreSQL connection string from Secret
-		connString, err := resolveSecretValue(ctx, c, ds.Namespace, *ds.Spec.Database.PostgresSecretRef)
-		if err != nil {
-			return cfg, fmt.Errorf("failed to resolve postgres secret: %w", err)
-		}
-
-		// PostgreSQL configured - set type AND connection string
+		// PostgreSQL configured - set type only, connection string injected via env var
 		cfg.Type = "postgres"
 		cfg.SQLite = nil
-		cfg.Postgres = &connString
-		return cfg, nil
+		return cfg
 	}
 
 	// Postgres not configured - use SQLite settings
@@ -137,7 +98,7 @@ func buildDatabaseConfig(ctx context.Context, c client.Client, ds *dittoiov1alph
 		}
 	}
 
-	return cfg, nil
+	return cfg
 }
 
 // buildMetricsConfig constructs metrics configuration
@@ -159,38 +120,40 @@ func buildMetricsConfig(ds *dittoiov1alpha1.DittoServer) MetricsConfig {
 	return cfg
 }
 
-// buildControlPlaneConfig constructs control plane API configuration
-func buildControlPlaneConfig(ds *dittoiov1alpha1.DittoServer, jwtSecret string) ControlPlaneConfig {
+// buildControlPlaneConfig constructs control plane API configuration.
+// The JWT secret is NOT included - it is injected via environment variable.
+func buildControlPlaneConfig(ds *dittoiov1alpha1.DittoServer) ControlPlaneConfig {
 	port := DefaultAPIPort
 	if ds.Spec.ControlPlane != nil && ds.Spec.ControlPlane.Port > 0 {
 		port = int(ds.Spec.ControlPlane.Port)
 	}
 
-	accessDuration := DefaultAccessDuration
-	refreshDuration := DefaultRefreshDuration
-	issuer := DefaultJWTIssuer
-
-	if ds.Spec.Identity != nil && ds.Spec.Identity.JWT != nil {
-		if ds.Spec.Identity.JWT.AccessTokenDuration != "" {
-			accessDuration = ds.Spec.Identity.JWT.AccessTokenDuration
-		}
-		if ds.Spec.Identity.JWT.RefreshTokenDuration != "" {
-			refreshDuration = ds.Spec.Identity.JWT.RefreshTokenDuration
-		}
-		if ds.Spec.Identity.JWT.Issuer != "" {
-			issuer = ds.Spec.Identity.JWT.Issuer
-		}
-	}
+	jwtCfg := getJWTConfig(ds)
 
 	return ControlPlaneConfig{
 		Port: port,
 		JWT: JWTConfig{
-			Secret:               jwtSecret,
-			Issuer:               issuer,
-			AccessTokenDuration:  accessDuration,
-			RefreshTokenDuration: refreshDuration,
+			Issuer:               stringOrDefault(jwtCfg.Issuer, DefaultJWTIssuer),
+			AccessTokenDuration:  stringOrDefault(jwtCfg.AccessTokenDuration, DefaultAccessDuration),
+			RefreshTokenDuration: stringOrDefault(jwtCfg.RefreshTokenDuration, DefaultRefreshDuration),
 		},
 	}
+}
+
+// getJWTConfig returns the JWT config from the spec, or an empty struct if not configured.
+func getJWTConfig(ds *dittoiov1alpha1.DittoServer) *dittoiov1alpha1.JWTConfig {
+	if ds.Spec.Identity != nil && ds.Spec.Identity.JWT != nil {
+		return ds.Spec.Identity.JWT
+	}
+	return &dittoiov1alpha1.JWTConfig{}
+}
+
+// stringOrDefault returns the value if non-empty, otherwise returns the default.
+func stringOrDefault(value, defaultValue string) string {
+	if value == "" {
+		return defaultValue
+	}
+	return value
 }
 
 // buildCacheConfig constructs cache configuration
@@ -212,23 +175,4 @@ func buildCacheConfig(ds *dittoiov1alpha1.DittoServer) CacheConfig {
 	}
 
 	return cfg
-}
-
-// resolveSecretValue resolves a single secret value from a Kubernetes Secret.
-func resolveSecretValue(ctx context.Context, c client.Client, namespace string, secretRef corev1.SecretKeySelector) (string, error) {
-	secret := &corev1.Secret{}
-	secretKey := types.NamespacedName{
-		Name:      secretRef.Name,
-		Namespace: namespace,
-	}
-
-	if err := c.Get(ctx, secretKey, secret); err != nil {
-		return "", fmt.Errorf("failed to get secret %s: %w", secretRef.Name, err)
-	}
-
-	if secretValue, ok := secret.Data[secretRef.Key]; ok {
-		return string(secretValue), nil
-	}
-
-	return "", fmt.Errorf("key %s not found in secret %s", secretRef.Key, secretRef.Name)
 }

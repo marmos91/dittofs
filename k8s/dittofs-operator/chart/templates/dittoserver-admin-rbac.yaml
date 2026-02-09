@@ -3,7 +3,7 @@ kind: ClusterRole
 metadata:
   name: {{ include "chart.fullname" . }}-dittoserver-admin-role
   labels:
-  {{- include "chart.labels" . | nindent 4 }}
+    {{- include "chart.labels" . | nindent 4 }}
 rules:
 - apiGroups:
   - dittofs.dittofs.com

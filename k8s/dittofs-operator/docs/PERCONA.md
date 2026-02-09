@@ -69,7 +69,7 @@ The Percona Operator must be installed in your cluster before enabling Percona i
 
 ```bash
 # Install Percona Operator v2
-kubectl apply --server-side -f https://raw.githubusercontent.com/percona/percona-postgresql-operator/v2.6.0/deploy/bundle.yaml
+kubectl apply --server-side -f https://raw.githubusercontent.com/percona/percona-postgresql-operator/v2.8.0/deploy/bundle.yaml
 ```
 
 **Using Helm:**
@@ -357,7 +357,7 @@ Error: no matches for kind "PerconaPGCluster" in version "pgv2.percona.com/v2"
 
 ```bash
 # Install Percona Operator
-kubectl apply --server-side -f https://raw.githubusercontent.com/percona/percona-postgresql-operator/v2.6.0/deploy/bundle.yaml
+kubectl apply --server-side -f https://raw.githubusercontent.com/percona/percona-postgresql-operator/v2.8.0/deploy/bundle.yaml
 
 # Verify CRD exists
 kubectl get crd perconapgclusters.pgv2.percona.com

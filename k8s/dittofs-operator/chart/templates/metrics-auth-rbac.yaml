@@ -3,7 +3,7 @@ kind: ClusterRole
 metadata:
   name: {{ include "chart.fullname" . }}-metrics-auth-role
   labels:
-  {{- include "chart.labels" . | nindent 4 }}
+    {{- include "chart.labels" . | nindent 4 }}
 rules:
 - apiGroups:
   - authentication.k8s.io
@@ -23,7 +23,7 @@ kind: ClusterRoleBinding
 metadata:
   name: {{ include "chart.fullname" . }}-metrics-auth-rolebinding
   labels:
-  {{- include "chart.labels" . | nindent 4 }}
+    {{- include "chart.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

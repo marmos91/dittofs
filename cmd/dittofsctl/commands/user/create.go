@@ -58,6 +58,7 @@ func init() {
 	createCmd.Flags().Uint32Var(&createUID, "uid", 0, "Unix user ID (auto-assigned if not specified)")
 	createCmd.Flags().BoolVar(&createHostUID, "host-uid", false, "Use current host user's UID (for NFS access)")
 	createCmd.Flags().StringVar(&createGroups, "groups", "", "Comma-separated list of groups")
+	// MarkFlagsMutuallyExclusive panics if flag names don't exist (see Cobra source)
 	createCmd.MarkFlagsMutuallyExclusive("uid", "host-uid")
 	createCmd.Flags().BoolVar(&createEnabled, "enabled", true, "Enable account")
 }
@@ -118,8 +119,12 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	// UID - use host-uid, explicit uid, or prompt if interactive
 	var uid *uint32
 	if createHostUID {
-		hostUID := uint32(os.Getuid())
-		uid = &hostUID
+		hostUID := os.Getuid()
+		if hostUID < 0 {
+			return fmt.Errorf("--host-uid is not supported on this platform")
+		}
+		hostUIDUint32 := uint32(hostUID)
+		uid = &hostUIDUint32
 	} else if cmd.Flags().Changed("uid") {
 		uid = &createUID
 	} else if interactive {

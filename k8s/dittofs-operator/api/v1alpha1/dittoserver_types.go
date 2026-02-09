@@ -46,7 +46,7 @@ type DittoServerSpec struct {
 	Service ServiceSpec `json:"service,omitempty"`
 
 	// NFSPort is the NFS server port
-	// +kubebuilder:default=2049
+	// +kubebuilder:default=12049
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	NFSPort *int32 `json:"nfsPort,omitempty"`
@@ -173,7 +173,7 @@ type SMBAdapterSpec struct {
 	Enabled bool `json:"enabled,omitempty"`
 
 	// SMB port to listen on
-	// +kubebuilder:default=445
+	// +kubebuilder:default=12445
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +optional

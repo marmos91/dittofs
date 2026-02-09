@@ -19,12 +19,13 @@ type ServiceBuilder struct {
 	headless    bool
 }
 
-// NewServiceBuilder creates a new ServiceBuilder.
+// NewServiceBuilder creates a new ServiceBuilder with ClusterIP as default.
+// Use WithType() to explicitly set LoadBalancer or NodePort if needed.
 func NewServiceBuilder(name, namespace string) *ServiceBuilder {
 	return &ServiceBuilder{
 		name:        name,
 		namespace:   namespace,
-		serviceType: corev1.ServiceTypeLoadBalancer,
+		serviceType: corev1.ServiceTypeClusterIP,
 		labels:      make(map[string]string),
 		selector:    make(map[string]string),
 		annotations: make(map[string]string),

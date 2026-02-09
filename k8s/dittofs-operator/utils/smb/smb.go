@@ -6,7 +6,7 @@ import (
 
 // Default SMB configuration values
 const (
-	DefaultSMBPort                   = 445
+	DefaultSMBPort                   = 12445 // Non-privileged port (use 445 only with CAP_NET_BIND_SERVICE)
 	DefaultMaxRequestsPerConnection  = 100
 	DefaultMetricsLogInterval        = "5m0s"
 	DefaultCreditsStrategy           = "adaptive"
@@ -44,7 +44,11 @@ func GetMaxRequestsPerConnection(dittoServer *dittoiov1alpha1.DittoServer) int32
 }
 
 // getTimeoutValue is a generic helper for extracting timeout values.
-func getTimeoutValue(timeouts *dittoiov1alpha1.SMBTimeoutsSpec, accessor func(*dittoiov1alpha1.SMBTimeoutsSpec) string, defaultValue string) string {
+func getTimeoutValue(
+	timeouts *dittoiov1alpha1.SMBTimeoutsSpec,
+	accessor func(*dittoiov1alpha1.SMBTimeoutsSpec) string,
+	defaultValue string,
+) string {
 	if timeouts != nil {
 		if value := accessor(timeouts); value != "" {
 			return value
@@ -82,7 +86,11 @@ func GetMetricsLogInterval(dittoServer *dittoiov1alpha1.DittoServer) string {
 }
 
 // getCreditsInt32 is a helper for extracting int32 SMB credits values.
-func getCreditsInt32(dittoServer *dittoiov1alpha1.DittoServer, accessor func(*dittoiov1alpha1.SMBCreditsSpec) *int32, defaultValue int32) int32 {
+func getCreditsInt32(
+	dittoServer *dittoiov1alpha1.DittoServer,
+	accessor func(*dittoiov1alpha1.SMBCreditsSpec) *int32,
+	defaultValue int32,
+) int32 {
 	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Credits != nil {
 		if value := accessor(dittoServer.Spec.SMB.Credits); value != nil {
 			return *value
@@ -100,36 +108,50 @@ func GetCreditsStrategy(dittoServer *dittoiov1alpha1.DittoServer) string {
 }
 
 // GetCreditsMinGrant returns the minimum credits grant from the spec.
-func GetCreditsMinGrant(dittoServer *dittoiov1alpha1.DittoServer) int32 {
-	return getCreditsInt32(dittoServer, func(c *dittoiov1alpha1.SMBCreditsSpec) *int32 { return c.MinGrant }, DefaultCreditsMinGrant)
+func GetCreditsMinGrant(ds *dittoiov1alpha1.DittoServer) int32 {
+	return getCreditsInt32(ds,
+		func(c *dittoiov1alpha1.SMBCreditsSpec) *int32 { return c.MinGrant },
+		DefaultCreditsMinGrant)
 }
 
 // GetCreditsMaxGrant returns the maximum credits grant from the spec.
-func GetCreditsMaxGrant(dittoServer *dittoiov1alpha1.DittoServer) int32 {
-	return getCreditsInt32(dittoServer, func(c *dittoiov1alpha1.SMBCreditsSpec) *int32 { return c.MaxGrant }, DefaultCreditsMaxGrant)
+func GetCreditsMaxGrant(ds *dittoiov1alpha1.DittoServer) int32 {
+	return getCreditsInt32(ds,
+		func(c *dittoiov1alpha1.SMBCreditsSpec) *int32 { return c.MaxGrant },
+		DefaultCreditsMaxGrant)
 }
 
 // GetCreditsInitialGrant returns the initial credits grant from the spec.
-func GetCreditsInitialGrant(dittoServer *dittoiov1alpha1.DittoServer) int32 {
-	return getCreditsInt32(dittoServer, func(c *dittoiov1alpha1.SMBCreditsSpec) *int32 { return c.InitialGrant }, DefaultCreditsInitialGrant)
+func GetCreditsInitialGrant(ds *dittoiov1alpha1.DittoServer) int32 {
+	return getCreditsInt32(ds,
+		func(c *dittoiov1alpha1.SMBCreditsSpec) *int32 { return c.InitialGrant },
+		DefaultCreditsInitialGrant)
 }
 
 // GetCreditsMaxSessionCredits returns the max session credits from the spec.
-func GetCreditsMaxSessionCredits(dittoServer *dittoiov1alpha1.DittoServer) int32 {
-	return getCreditsInt32(dittoServer, func(c *dittoiov1alpha1.SMBCreditsSpec) *int32 { return c.MaxSessionCredits }, DefaultCreditsMaxSessionCredits)
+func GetCreditsMaxSessionCredits(ds *dittoiov1alpha1.DittoServer) int32 {
+	return getCreditsInt32(ds,
+		func(c *dittoiov1alpha1.SMBCreditsSpec) *int32 { return c.MaxSessionCredits },
+		DefaultCreditsMaxSessionCredits)
 }
 
 // GetCreditsLoadThresholdHigh returns the high load threshold from the spec.
-func GetCreditsLoadThresholdHigh(dittoServer *dittoiov1alpha1.DittoServer) int32 {
-	return getCreditsInt32(dittoServer, func(c *dittoiov1alpha1.SMBCreditsSpec) *int32 { return c.LoadThresholdHigh }, DefaultCreditsLoadThresholdHigh)
+func GetCreditsLoadThresholdHigh(ds *dittoiov1alpha1.DittoServer) int32 {
+	return getCreditsInt32(ds,
+		func(c *dittoiov1alpha1.SMBCreditsSpec) *int32 { return c.LoadThresholdHigh },
+		DefaultCreditsLoadThresholdHigh)
 }
 
 // GetCreditsLoadThresholdLow returns the low load threshold from the spec.
-func GetCreditsLoadThresholdLow(dittoServer *dittoiov1alpha1.DittoServer) int32 {
-	return getCreditsInt32(dittoServer, func(c *dittoiov1alpha1.SMBCreditsSpec) *int32 { return c.LoadThresholdLow }, DefaultCreditsLoadThresholdLow)
+func GetCreditsLoadThresholdLow(ds *dittoiov1alpha1.DittoServer) int32 {
+	return getCreditsInt32(ds,
+		func(c *dittoiov1alpha1.SMBCreditsSpec) *int32 { return c.LoadThresholdLow },
+		DefaultCreditsLoadThresholdLow)
 }
 
 // GetCreditsAggressiveClientThreshold returns the aggressive client threshold from the spec.
-func GetCreditsAggressiveClientThreshold(dittoServer *dittoiov1alpha1.DittoServer) int32 {
-	return getCreditsInt32(dittoServer, func(c *dittoiov1alpha1.SMBCreditsSpec) *int32 { return c.AggressiveClientThreshold }, DefaultAggressiveClientThreshold)
+func GetCreditsAggressiveClientThreshold(ds *dittoiov1alpha1.DittoServer) int32 {
+	return getCreditsInt32(ds,
+		func(c *dittoiov1alpha1.SMBCreditsSpec) *int32 { return c.AggressiveClientThreshold },
+		DefaultAggressiveClientThreshold)
 }

@@ -22,7 +22,7 @@ flowchart TB
         CM[ConfigMap<br/>config.yaml]
         STS[StatefulSet]
         PVC[PVCs<br/>metadata, cache, content]
-        SVCF[Service -file<br/>NFS:2049, SMB:445]
+        SVCF[Service -file<br/>NFS:12049, SMB:12445]
         SVCA[Service -api<br/>REST:8080]
         SVCM[Service -metrics<br/>Prometheus:9090]
     end
@@ -51,9 +51,15 @@ flowchart TB
 kubectl apply -f https://raw.githubusercontent.com/marmos91/dittofs/main/k8s/dittofs-operator/config/crd/bases/dittofs.dittofs.com_dittoservers.yaml
 
 # 2. Install operator
-kubectl apply -k https://raw.githubusercontent.com/marmos91/dittofs/main/k8s/dittofs-operator/config/default/
+kubectl apply -k 'https://github.com/marmos91/dittofs//k8s/dittofs-operator/config/default?ref=main'
 
-# 3. Create a DittoServer
+# 3. Create secrets (JWT and admin password)
+kubectl create secret generic dittofs-jwt-secret \
+  --from-literal=jwt-signing-key="$(openssl rand -base64 32)"
+kubectl create secret generic dittofs-admin-secret \
+  --from-literal=password-hash="$(htpasswd -nbB '' admin | cut -d: -f2)"
+
+# 4. Create a DittoServer
 kubectl apply -f - <<EOF
 apiVersion: dittofs.dittofs.com/v1alpha1
 kind: DittoServer
@@ -63,16 +69,26 @@ spec:
   storage:
     metadataSize: "10Gi"
     cacheSize: "5Gi"
+  identity:
+    jwt:
+      secretRef:
+        name: dittofs-jwt-secret
+        key: jwt-signing-key
+    admin:
+      username: admin
+      passwordSecretRef:
+        name: dittofs-admin-secret
+        key: password-hash
   service:
     type: LoadBalancer
 EOF
 
-# 4. Wait for ready
+# 5. Wait for ready
 kubectl wait --for=condition=Ready dittoserver/my-dittofs --timeout=300s
 
-# 5. Mount via NFS
+# 6. Mount via NFS (default port 12049)
 EXTERNAL_IP=$(kubectl get svc my-dittofs-file -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-sudo mount -t nfs -o tcp,port=2049,mountport=2049 $EXTERNAL_IP:/export /mnt/dittofs
+sudo mount -t nfs -o tcp,port=12049,mountport=12049 $EXTERNAL_IP:/export /mnt/dittofs
 ```
 
 ## Documentation
@@ -108,9 +124,11 @@ The `config/samples/` directory contains example DittoServer configurations:
 
 | Sample | Description |
 |--------|-------------|
-| `dittofs_v1alpha1_dittoserver.yaml` | Basic configuration |
+| `ditto.io_v1alpha1_dittoserver.yaml` | Basic configuration with identity |
+| `dittofs_v1alpha1_dittofs_memory.yaml` | Complete configuration with secrets |
 | `dittofs_v1alpha1_dittoserver_percona.yaml` | Percona PostgreSQL integration |
-| `dittofs_v1alpha1_dittoserver_s3.yaml` | S3 content store |
+| `ditto.io_v1alpha1_dittoserver_aws_s3.yaml` | S3 backend preparation |
+| `dittofs-s3-smb-server.yaml` | SMB with S3 configuration |
 
 ## Development
 

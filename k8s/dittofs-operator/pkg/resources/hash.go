@@ -32,7 +32,8 @@ func ComputeConfigHash(configData string, secrets map[string][]byte, generation 
 	h := sha256.New()
 
 	// Hash ConfigMap content
-	h.Write([]byte(configData))
+	// Note: sha256.Hash.Write never returns an error per Go docs
+	_, _ = h.Write([]byte(configData))
 
 	// Hash secrets in sorted order for determinism
 	keys := make([]string, 0, len(secrets))
@@ -42,12 +43,15 @@ func ComputeConfigHash(configData string, secrets map[string][]byte, generation 
 	sort.Strings(keys)
 
 	for _, k := range keys {
-		h.Write([]byte(k))
-		h.Write(secrets[k])
+		// Use length-prefix framing to avoid collisions between different key/value pairs
+		// e.g., ("a", "bc") vs ("ab", "c") would otherwise produce the same hash
+		_, _ = fmt.Fprintf(h, "%d:%s:", len(k), k)
+		_, _ = fmt.Fprintf(h, "%d:", len(secrets[k]))
+		_, _ = h.Write(secrets[k])
 	}
 
 	// Hash generation number
-	fmt.Fprintf(h, "gen:%d", generation)
+	_, _ = fmt.Fprintf(h, "gen:%d", generation)
 
 	return hex.EncodeToString(h.Sum(nil))
 }

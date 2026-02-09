@@ -5,6 +5,8 @@ from DittoServer configuration.
 package percona
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -38,11 +40,12 @@ func SecretName(dsName string) string {
 }
 
 // BuildPerconaPGClusterSpec creates the PerconaPGCluster spec from DittoServer config.
-// Returns an empty spec if Percona is not configured.
-func BuildPerconaPGClusterSpec(ds *dittoiov1alpha1.DittoServer) pgv2.PerconaPGClusterSpec {
+// Returns an empty spec and nil error if Percona is not configured.
+// Returns an error if the storage size is invalid.
+func BuildPerconaPGClusterSpec(ds *dittoiov1alpha1.DittoServer) (pgv2.PerconaPGClusterSpec, error) {
 	cfg := ds.Spec.Percona
 	if cfg == nil {
-		return pgv2.PerconaPGClusterSpec{}
+		return pgv2.PerconaPGClusterSpec{}, nil
 	}
 
 	replicas := int32(1)
@@ -53,6 +56,12 @@ func BuildPerconaPGClusterSpec(ds *dittoiov1alpha1.DittoServer) pgv2.PerconaPGCl
 	storageSize := DefaultStorageSize
 	if cfg.StorageSize != "" {
 		storageSize = cfg.StorageSize
+	}
+
+	// Parse storage size safely to avoid panic
+	storageSizeQuantity, err := resource.ParseQuantity(storageSize)
+	if err != nil {
+		return pgv2.PerconaPGClusterSpec{}, fmt.Errorf("invalid percona.storageSize %q: %w", storageSize, err)
 	}
 
 	dbName := DefaultDatabaseName
@@ -73,7 +82,7 @@ func BuildPerconaPGClusterSpec(ds *dittoiov1alpha1.DittoServer) pgv2.PerconaPGCl
 					},
 					Resources: corev1.VolumeResourceRequirements{
 						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: resource.MustParse(storageSize),
+							corev1.ResourceStorage: storageSizeQuantity,
 						},
 					},
 				},
@@ -97,8 +106,15 @@ func BuildPerconaPGClusterSpec(ds *dittoiov1alpha1.DittoServer) pgv2.PerconaPGCl
 		spec.Backups = buildBackupsSpec(ds.Name, cfg.Backup)
 	}
 
-	return spec
+	return spec, nil
 }
+
+// Default backup schedules and region
+const (
+	defaultFullSchedule = "0 2 * * *" // Daily at 2am
+	defaultIncrSchedule = "0 * * * *" // Hourly
+	defaultBackupRegion = "eu-west-1"
+)
 
 // buildBackupsSpec creates the pgBackRest backup configuration.
 func buildBackupsSpec(dsName string, backup *dittoiov1alpha1.PerconaBackupConfig) pgv2.Backups {
@@ -106,20 +122,9 @@ func buildBackupsSpec(dsName string, backup *dittoiov1alpha1.PerconaBackupConfig
 		return pgv2.Backups{}
 	}
 
-	// Default schedules
-	fullSchedule := "0 2 * * *" // Daily at 2am
-	incrSchedule := "0 * * * *" // Hourly
-	region := "eu-west-1"
-
-	if backup.FullSchedule != "" {
-		fullSchedule = backup.FullSchedule
-	}
-	if backup.IncrSchedule != "" {
-		incrSchedule = backup.IncrSchedule
-	}
-	if backup.Region != "" {
-		region = backup.Region
-	}
+	fullSchedule := valueOrDefault(backup.FullSchedule, defaultFullSchedule)
+	incrSchedule := valueOrDefault(backup.IncrSchedule, defaultIncrSchedule)
+	region := valueOrDefault(backup.Region, defaultBackupRegion)
 
 	enabled := true
 	backups := pgv2.Backups{
@@ -159,4 +164,12 @@ func buildBackupsSpec(dsName string, backup *dittoiov1alpha1.PerconaBackupConfig
 	}
 
 	return backups
+}
+
+// valueOrDefault returns the value if non-empty, otherwise returns the default.
+func valueOrDefault(value, defaultValue string) string {
+	if value == "" {
+		return defaultValue
+	}
+	return value
 }

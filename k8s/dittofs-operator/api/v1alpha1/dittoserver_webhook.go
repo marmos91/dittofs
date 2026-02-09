@@ -7,6 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -34,53 +35,25 @@ const (
 // This enables validation of cluster resources like StorageClass and Secrets.
 // +kubebuilder:object:generate=false
 type DittoServerValidator struct {
-	Client client.Client
+	Client     client.Client
+	RESTMapper meta.RESTMapper
 }
 
 var _ webhook.CustomValidator = &DittoServerValidator{}
 
-// SetupWebhookWithManager will setup the manager to manage the webhooks
-// Deprecated: Use SetupDittoServerWebhookWithManager for cluster resource validation
-func (r *DittoServer) SetupWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(r).
-		Complete()
-}
+// +kubebuilder:webhook:path=/validate-dittofs-dittofs-com-v1alpha1-dittoserver,mutating=false,failurePolicy=fail,sideEffects=None,groups=dittofs.dittofs.com,resources=dittoservers,verbs=create;update,versions=v1alpha1,name=vdittoserver.kb.io,admissionReviewVersions=v1
 
 // SetupDittoServerWebhookWithManager sets up the webhook with client injection for validation.
-// This function should be used instead of SetupWebhookWithManager when cluster resource
-// validation (StorageClass, Secrets) is needed.
+// This enables validation of cluster resources like StorageClass and Secrets.
 func SetupDittoServerWebhookWithManager(mgr ctrl.Manager) error {
 	validator := &DittoServerValidator{
-		Client: mgr.GetClient(),
+		Client:     mgr.GetClient(),
+		RESTMapper: mgr.GetRESTMapper(),
 	}
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(&DittoServer{}).
 		WithValidator(validator).
 		Complete()
-}
-
-// +kubebuilder:webhook:path=/validate-dittofs-dittofs-com-v1alpha1-dittoserver,mutating=false,failurePolicy=fail,sideEffects=None,groups=dittofs.dittofs.com,resources=dittoservers,verbs=create;update,versions=v1alpha1,name=vdittoserver.kb.io,admissionReviewVersions=v1
-
-var _ webhook.CustomValidator = &DittoServer{}
-
-// ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type
-func (r *DittoServer) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	dittoserverlog.Info("validate create", "name", r.Name)
-	return r.validateDittoServer()
-}
-
-// ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type
-func (r *DittoServer) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	dittoserverlog.Info("validate update", "name", r.Name)
-	return r.validateDittoServer()
-}
-
-// ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type
-func (r *DittoServer) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	dittoserverlog.Info("validate delete", "name", r.Name)
-	// No validation needed for delete
-	return nil, nil
 }
 
 // validateDittoServer validates the DittoServer spec
@@ -92,6 +65,13 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 	// Validate storage is provided
 	if r.Spec.Storage.MetadataSize == "" {
 		return warnings, fmt.Errorf("storage.metadataSize is required")
+	}
+
+	// Validate JWT secretRef.key if secretRef.name is provided
+	// If no secretRef is provided, the controller will auto-generate a managed secret
+	if r.Spec.Identity != nil && r.Spec.Identity.JWT != nil &&
+		r.Spec.Identity.JWT.SecretRef.Name != "" && r.Spec.Identity.JWT.SecretRef.Key == "" {
+		return warnings, fmt.Errorf("identity.jwt.secretRef.key is required when secretRef.name is set")
 	}
 
 	// Validate database configuration consistency
@@ -116,6 +96,20 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 		}
 	}
 
+	// Validate NFS port range
+	if r.Spec.NFSPort != nil && *r.Spec.NFSPort != 0 {
+		if *r.Spec.NFSPort < minPort || *r.Spec.NFSPort > maxPort {
+			return warnings, fmt.Errorf("nfsPort must be between %d and %d", minPort, maxPort)
+		}
+	}
+
+	// Validate SMB port range when enabled
+	if r.Spec.SMB != nil && r.Spec.SMB.Enabled && r.Spec.SMB.Port != nil && *r.Spec.SMB.Port != 0 {
+		if *r.Spec.SMB.Port < minPort || *r.Spec.SMB.Port > maxPort {
+			return warnings, fmt.Errorf("smb.port must be between %d and %d", minPort, maxPort)
+		}
+	}
+
 	// Validate port uniqueness and warn about privileged ports
 	portWarnings, err := r.validatePorts()
 	if err != nil {
@@ -136,22 +130,27 @@ func (r *DittoServer) validatePorts() (admission.Warnings, error) {
 		portOrDefault(controlPlanePort(r.Spec.ControlPlane), defaultAPIPort): "api",
 	}
 
+	// Helper to check and add a port
+	addPort := func(port int32, name string) error {
+		if existing, ok := ports[port]; ok {
+			return fmt.Errorf("port %d is used by both %s and %s", port, existing, name)
+		}
+		ports[port] = name
+		return nil
+	}
+
 	// Check SMB port uniqueness
 	if r.Spec.SMB != nil && r.Spec.SMB.Enabled {
-		smbPort := portOrDefault(r.Spec.SMB.Port, defaultSMBPort)
-		if existing, ok := ports[smbPort]; ok {
-			return nil, fmt.Errorf("port %d is used by both %s and smb", smbPort, existing)
+		if err := addPort(portOrDefault(r.Spec.SMB.Port, defaultSMBPort), "smb"); err != nil {
+			return nil, err
 		}
-		ports[smbPort] = "smb"
 	}
 
 	// Check metrics port uniqueness
 	if r.Spec.Metrics != nil && r.Spec.Metrics.Enabled {
-		metricsPort := portOrDefault(metricsPortPtr(r.Spec.Metrics), defaultMetricsPort)
-		if existing, ok := ports[metricsPort]; ok {
-			return nil, fmt.Errorf("port %d is used by both %s and metrics", metricsPort, existing)
+		if err := addPort(portOrDefault(metricsPortPtr(r.Spec.Metrics), defaultMetricsPort), "metrics"); err != nil {
+			return nil, err
 		}
-		ports[metricsPort] = "metrics"
 	}
 
 	// Warn about privileged ports
@@ -187,6 +186,14 @@ func metricsPortPtr(m *MetricsConfig) *int32 {
 		return &m.Port
 	}
 	return nil
+}
+
+// stringOrDefault returns the value if non-empty, otherwise returns the default.
+func stringOrDefault(value, defaultValue string) string {
+	if value == "" {
+		return defaultValue
+	}
+	return value
 }
 
 // ValidateCreate implements webhook.CustomValidator for DittoServerValidator
@@ -228,7 +235,7 @@ func (v *DittoServerValidator) validateDittoServerWithClient(ctx context.Context
 		err := v.Client.Get(ctx, types.NamespacedName{Name: scName}, storageClass)
 		if err != nil {
 			if apierrors.IsNotFound(err) {
-				return warnings, fmt.Errorf("StorageClass %q does not exist in cluster", scName)
+				return warnings, fmt.Errorf("storageClass %q does not exist in cluster", scName)
 			}
 			// Transient error - warn but allow (API server might be temporarily unavailable)
 			warnings = append(warnings,
@@ -255,14 +262,8 @@ func (v *DittoServerValidator) validateDittoServerWithClient(ctx context.Context
 		} else {
 			// Secret exists, validate it has required keys
 			ref := ds.Spec.S3.CredentialsSecretRef
-			accessKeyIDKey := ref.AccessKeyIDKey
-			if accessKeyIDKey == "" {
-				accessKeyIDKey = "accessKeyId"
-			}
-			secretAccessKeyKey := ref.SecretAccessKeyKey
-			if secretAccessKeyKey == "" {
-				secretAccessKeyKey = "secretAccessKey"
-			}
+			accessKeyIDKey := stringOrDefault(ref.AccessKeyIDKey, "accessKeyId")
+			secretAccessKeyKey := stringOrDefault(ref.SecretAccessKeyKey, "secretAccessKey")
 
 			if _, ok := secret.Data[accessKeyIDKey]; !ok {
 				warnings = append(warnings,
@@ -283,9 +284,9 @@ func (v *DittoServerValidator) validateDittoServerWithClient(ctx context.Context
 			Version: "v2",
 			Kind:    "PerconaPGCluster",
 		}
-		_, err := v.Client.RESTMapper().RESTMapping(gvk.GroupKind(), gvk.Version)
+		_, err := v.RESTMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 		if err != nil {
-			return warnings, fmt.Errorf("Percona PostgreSQL Operator CRD not installed; install pg-operator first or disable percona.enabled")
+			return warnings, fmt.Errorf("percona PostgreSQL Operator CRD not installed; install pg-operator first or disable percona.enabled")
 		}
 
 		// Warn if both Percona and PostgresSecretRef are set
@@ -301,7 +302,7 @@ func (v *DittoServerValidator) validateDittoServerWithClient(ctx context.Context
 			err := v.Client.Get(ctx, types.NamespacedName{Name: scName}, storageClass)
 			if err != nil {
 				if apierrors.IsNotFound(err) {
-					return warnings, fmt.Errorf("Percona StorageClass %q does not exist in cluster", scName)
+					return warnings, fmt.Errorf("percona StorageClass %q does not exist in cluster", scName)
 				}
 				warnings = append(warnings,
 					fmt.Sprintf("Could not verify Percona StorageClass %q exists: %v", scName, err))

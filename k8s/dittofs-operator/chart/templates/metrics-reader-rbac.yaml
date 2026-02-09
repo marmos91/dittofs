@@ -3,7 +3,7 @@ kind: ClusterRole
 metadata:
   name: {{ include "chart.fullname" . }}-metrics-reader
   labels:
-  {{- include "chart.labels" . | nindent 4 }}
+    {{- include "chart.labels" . | nindent 4 }}
 rules:
 - nonResourceURLs:
   - /metrics

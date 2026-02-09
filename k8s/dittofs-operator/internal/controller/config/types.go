@@ -30,9 +30,8 @@ type TelemetryConfig struct {
 
 // DatabaseConfig configures the control plane database
 type DatabaseConfig struct {
-	Type     string        `yaml:"type"`
-	SQLite   *SQLiteConfig `yaml:"sqlite,omitempty"`
-	Postgres *string       `yaml:"postgres,omitempty"`
+	Type   string        `yaml:"type"`
+	SQLite *SQLiteConfig `yaml:"sqlite,omitempty"`
 }
 
 // SQLiteConfig configures SQLite database
@@ -54,7 +53,6 @@ type ControlPlaneConfig struct {
 
 // JWTConfig configures JWT authentication
 type JWTConfig struct {
-	Secret               string `yaml:"secret"`
 	Issuer               string `yaml:"issuer,omitempty"`
 	AccessTokenDuration  string `yaml:"access_token_duration"`
 	RefreshTokenDuration string `yaml:"refresh_token_duration"`
@@ -68,7 +66,6 @@ type CacheConfig struct {
 
 // AdminConfig configures the initial admin user
 type AdminConfig struct {
-	Username     string `yaml:"username"`
-	Email        string `yaml:"email,omitempty"`
-	PasswordHash string `yaml:"password_hash,omitempty"`
+	Username string `yaml:"username"`
+	Email    string `yaml:"email,omitempty"`
 }

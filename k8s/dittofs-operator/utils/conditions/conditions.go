@@ -33,7 +33,10 @@ type ConditionType interface {
 // SetCondition adds or updates a condition in the conditions slice
 // If the condition already exists with a different status, it updates the LastTransitionTime
 // Accepts any type with underlying type string (e.g., custom condition type enums)
-func SetCondition[T ConditionType](conditions *[]metav1.Condition, generation int64, conditionType T, status metav1.ConditionStatus, reason, message string) {
+func SetCondition[T ConditionType](
+	conditions *[]metav1.Condition, generation int64, conditionType T,
+	status metav1.ConditionStatus, reason, message string,
+) {
 	now := metav1.NewTime(time.Now())
 	condTypeStr := string(conditionType)
 

@@ -3,7 +3,7 @@ kind: ClusterRole
 metadata:
   name: {{ include "chart.fullname" . }}-manager-role
   labels:
-  {{- include "chart.labels" . | nindent 4 }}
+    {{- include "chart.labels" . | nindent 4 }}
 rules:
 - apiGroups:
   - ""
@@ -112,7 +112,7 @@ kind: ClusterRoleBinding
 metadata:
   name: {{ include "chart.fullname" . }}-manager-rolebinding
   labels:
-  {{- include "chart.labels" . | nindent 4 }}
+    {{- include "chart.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

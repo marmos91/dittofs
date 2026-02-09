@@ -168,7 +168,7 @@ service:
 
 | Field | Type | Default | Required | Description |
 |-------|------|---------|----------|-------------|
-| `nfsPort` | int32 | `2049` | No | NFS server port |
+| `nfsPort` | int32 | `12049` | No | NFS server port (non-privileged default) |
 
 **Validation Rules:**
 - Must be between 1 and 65535
@@ -387,7 +387,7 @@ The status section is managed by the operator and reflects the current state of 
 | `replicas` | int32 | Desired number of replicas |
 | `readyReplicas` | int32 | Number of pods with Ready condition |
 | `availableReplicas` | int32 | Number of pods ready for at least minReadySeconds |
-| `nfsEndpoint` | string | Endpoint for NFS clients (format: `service.namespace.svc.cluster.local:2049`) |
+| `nfsEndpoint` | string | Endpoint for NFS clients (format: `service.namespace.svc.cluster.local:12049`) |
 | `phase` | string | Current phase: `Pending`, `Running`, `Failed`, `Stopped`, `Deleting` |
 | `configHash` | string | Hash of current configuration (for debugging) |
 | `perconaClusterName` | string | Name of owned PerconaPGCluster (when Percona enabled) |
@@ -410,7 +410,7 @@ status:
   replicas: 1
   readyReplicas: 1
   availableReplicas: 1
-  nfsEndpoint: "my-dittofs-file.default.svc.cluster.local:2049"
+  nfsEndpoint: "my-dittofs-file.default.svc.cluster.local:12049"
   phase: Running
   configHash: "abc123def"
   conditions:
@@ -623,7 +623,7 @@ spec:
     metadataSize: "10Gi"
     cacheSize: "10Gi"
 
-  nfsPort: 2049
+  nfsPort: 12049
 
   smb:
     enabled: true

@@ -7,6 +7,7 @@ metadata:
     app.kubernetes.io/name: dittofs-operator
     app.kubernetes.io/managed-by: kustomize
   name: dittoserver-sample
+  namespace: dittofs
 spec:
   image: marmos91c/dittofs:latest
   replicas: 1
@@ -15,6 +16,18 @@ spec:
   storage:
     metadataSize: "10Gi"
     contentSize: "50Gi"
+
+  # Identity configuration (required)
+  identity:
+    jwt:
+      secretRef:
+        name: dittofs-jwt-secret
+        key: secret
+    admin:
+      username: admin
+      passwordSecretRef:
+        name: dittofs-admin-secret
+        key: password-hash
 
   # Control plane database - defaults to SQLite
   database:
@@ -32,7 +45,7 @@ spec:
     port: 8080
 
   # NFS server port
-  nfsPort: 2049
+  nfsPort: 12049
 
   # Service configuration
   service:

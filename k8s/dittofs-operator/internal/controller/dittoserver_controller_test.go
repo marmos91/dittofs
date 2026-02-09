@@ -578,13 +578,8 @@ func verifyService(t *testing.T, ctx context.Context, r *DittoServerReconciler, 
 		Name:      req.Name + "-metrics",
 	}, metricsService)
 
-	if metricsEnabled {
-		if err != nil {
-			t.Errorf("Failed to get metrics Service when metrics enabled: %v", err)
-		}
-	} else {
-		// Metrics service should not exist when disabled (or be deleted)
-		// Note: In test context, service might not exist which is fine
+	if metricsEnabled && err != nil {
+		t.Errorf("Failed to get metrics Service when metrics enabled: %v", err)
 	}
 }
 
