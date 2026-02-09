@@ -1,0 +1,64 @@
+# DittoFS configuration with cache tuning
+# Infrastructure-only config - stores and shares configured via REST API
+#
+# Cache configuration in this CRD sets the WAL-backed cache for crash recovery.
+# Application-level caching is configured per-share via REST API.
+#
+# Prerequisites:
+# 1. Create secrets: kubectl apply -f dittofs_secrets.yaml
+#
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  labels:
+    app.kubernetes.io/name: dittofs-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: dittoserver-with-cache
+  namespace: dittofs
+spec:
+  image: marmos91c/dittofs:latest
+  replicas: 1
+
+  # Storage for server's internal volumes
+  storage:
+    metadataSize: "10Gi"
+    contentSize: "50Gi"
+
+  # Identity configuration (required)
+  identity:
+    jwt:
+      secretRef:
+        name: dittofs-jwt-secret
+        key: secret
+    admin:
+      username: admin
+      passwordSecretRef:
+        name: dittofs-admin-secret
+        key: password-hash
+
+  # Control plane database
+  database:
+    type: sqlite
+    sqlite:
+      path: "/data/controlplane/controlplane.db"
+
+  # Large WAL-backed cache for performance
+  cache:
+    path: "/data/cache"
+    size: "4GB"
+
+  # Control plane REST API
+  controlPlane:
+    port: 8080
+
+  # Metrics enabled
+  metrics:
+    enabled: true
+    port: 9090
+
+  # NFS server port (non-privileged default)
+  nfsPort: 12049
+
+  # Service configuration
+  service:
+    type: ClusterIP

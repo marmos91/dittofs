@@ -51,37 +51,16 @@ func (h *HealthHandler) Liveness(w http.ResponseWriter, r *http.Request) {
 }
 
 // Readiness handles GET /health/ready - readiness probe.
-//
-// Returns 200 OK if the server is ready to accept requests. This checks:
-//   - Registry is initialized
-//   - At least one share is configured
-//   - At least one protocol adapter is running (NFS or SMB)
-//
-// Per CONTEXT.md: "Readiness vs Health distinction: Server is ready when all
-// adapters started AND all store healthchecks pass"
-//
-// Returns 503 Service Unavailable if the server is not ready.
+// Returns 200 OK if registry is initialized.
 func (h *HealthHandler) Readiness(w http.ResponseWriter, r *http.Request) {
 	if h.registry == nil {
 		writeJSON(w, http.StatusServiceUnavailable, unhealthyResponse("registry not initialized"))
 		return
 	}
 
-	shareCount := h.registry.CountShares()
-	if shareCount == 0 {
-		writeJSON(w, http.StatusServiceUnavailable, unhealthyResponse("no shares configured"))
-		return
-	}
-
-	// Check adapter status - at least one adapter must be running
 	runningAdapters := h.registry.ListRunningAdapters()
-	if len(runningAdapters) == 0 {
-		writeJSON(w, http.StatusServiceUnavailable, unhealthyResponse("no adapters running"))
-		return
-	}
-
 	writeJSON(w, http.StatusOK, healthyResponse(map[string]interface{}{
-		"shares":          shareCount,
+		"shares":          h.registry.CountShares(),
 		"metadata_stores": h.registry.CountMetadataStores(),
 		"adapters": map[string]interface{}{
 			"running": len(runningAdapters),

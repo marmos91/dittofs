@@ -1,0 +1,21 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "chart.fullname" . }}-dittoserver-viewer-role
+  labels:
+    {{- include "chart.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - dittofs.dittofs.com
+  resources:
+  - dittoservers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - dittofs.dittofs.com
+  resources:
+  - dittoservers/status
+  verbs:
+  - get

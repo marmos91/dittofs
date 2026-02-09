@@ -104,9 +104,49 @@ go build -o dittofs cmd/dittofs/main.go
 # Initialize configuration (creates ~/.config/dittofs/config.yaml)
 ./dittofs init
 
-# Start server
+# Start server (note the admin password printed on first start)
 ./dittofs start
 ```
+
+### NFS Quickstart
+
+Get an NFS share running in under a minute:
+
+```bash
+# 1. Start the server (first run prints admin password)
+./dittofs start
+
+# 2. Login and change admin password
+./dittofsctl login --server http://localhost:8080 --username admin
+./dittofsctl user change-password
+
+# 3. Create a user with your host UID (for NFS write access)
+./dittofsctl user create --username $(whoami) --host-uid
+
+# 4. Create stores
+./dittofsctl store metadata add --name default --type memory
+./dittofsctl store payload add --name default --type memory
+
+# 5. Create a share and grant access
+./dittofsctl share create --name /export --metadata default --payload default
+./dittofsctl share permission grant /export --user $(whoami) --level read-write
+
+# 6. Enable NFS adapter
+./dittofsctl adapter enable nfs
+
+# 7. Mount and use!
+# Linux:
+sudo mkdir -p /mnt/nfs
+sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
+echo "Hello DittoFS!" > /mnt/nfs/hello.txt
+
+# macOS:
+mkdir -p /tmp/nfs
+sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock localhost:/export /tmp/nfs
+echo "Hello DittoFS!" > /tmp/nfs/hello.txt
+```
+
+> **Note:** Memory stores are ephemeral (data lost on restart). For persistence, use `--type badger` for metadata and `--type filesystem` or `--type s3` for payload.
 
 ### CLI Tools
 
@@ -159,6 +199,7 @@ DittoFS provides two CLI binaries for complete management:
 
 # User Management (password will be prompted interactively)
 ./dittofsctl user create --username alice
+./dittofsctl user create --username alice --host-uid  # Use your current UID (for NFS)
 ./dittofsctl user create --username bob --email bob@example.com --groups editors,viewers
 ./dittofsctl user list
 ./dittofsctl user list -o json     # Output as JSON
@@ -346,14 +387,13 @@ See the [`operator/`](operator/) directory for detailed documentation and config
 
 ### Mount from Client
 
-**NFS:**
+**NFS:** See [NFS Quickstart](#nfs-quickstart) for complete setup. Mount commands:
+
 ```bash
 # Linux
-sudo mkdir -p /mnt/nfs
 sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
 
 # macOS
-mkdir -p /tmp/nfs
 sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock localhost:/export /tmp/nfs
 ```
 

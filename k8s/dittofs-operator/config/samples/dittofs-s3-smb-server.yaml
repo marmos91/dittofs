@@ -1,0 +1,94 @@
+# DittoFS configuration with SMB adapter enabled
+# Infrastructure-only config - stores, shares, users managed via REST API
+#
+# Prerequisites:
+# 1. Create secrets: kubectl apply -f dittofs_secrets.yaml
+#
+# After deployment:
+# 1. Login: dittofsctl login --server http://localhost:8080
+# 2. Create stores and shares via REST API
+# 3. Create users for SMB authentication
+#
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  name: dittofs-s3-smb-server
+  namespace: dittofs
+  labels:
+    app.kubernetes.io/name: dittofs-operator
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  image: marmos91c/dittofs:latest
+  replicas: 1
+
+  # Storage for internal server data
+  storage:
+    metadataSize: "1Gi"
+    contentSize: "1Gi"
+
+  # Identity configuration (required)
+  identity:
+    jwt:
+      secretRef:
+        name: dittofs-jwt-secret
+        key: secret
+    admin:
+      username: admin
+      passwordSecretRef:
+        name: dittofs-admin-secret
+        key: password-hash
+
+  # Control plane database
+  database:
+    type: sqlite
+    sqlite:
+      path: "/data/controlplane/controlplane.db"
+
+  # WAL-backed cache - larger for S3 workloads
+  cache:
+    path: "/data/cache"
+    size: "2GB"
+
+  # Control plane REST API
+  controlPlane:
+    port: 8080
+
+  # Metrics enabled
+  metrics:
+    enabled: true
+    port: 9090
+
+  # NFS server port (non-privileged default)
+  nfsPort: 12049
+
+  # SMB configuration
+  smb:
+    enabled: true
+    port: 12445
+    maxConnections: 100
+    maxRequestsPerConnection: 50
+    timeouts:
+      read: "5m"
+      write: "30s"
+      idle: "5m"
+      shutdown: "30s"
+    credits:
+      strategy: adaptive
+      minGrant: 16
+      maxGrant: 8192
+      initialGrant: 256
+      maxSessionCredits: 65535
+    metricsLogInterval: "5m"
+
+  # Service configuration
+  service:
+    type: ClusterIP
+
+  # Resource configuration
+  resources:
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+    requests:
+      cpu: "500m"
+      memory: "1Gi"

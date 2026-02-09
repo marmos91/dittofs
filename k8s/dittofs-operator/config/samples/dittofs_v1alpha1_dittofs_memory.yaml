@@ -1,0 +1,89 @@
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  name: dittofs-sample
+  namespace: dittofs
+  labels:
+    app.kubernetes.io/name: dittofs-operator
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  # Container image
+  image: marmos91c/dittofs:latest
+  replicas: 1
+
+  # Internal storage for server (not NFS exports)
+  storage:
+    metadataSize: "10Gi"
+    contentSize: "50Gi"
+    cacheSize: "5Gi"
+    # storageClassName: standard  # Optional: uses default if not specified
+
+  # Database configuration (SQLite by default)
+  database:
+    type: sqlite
+    sqlite:
+      path: /data/controlplane/controlplane.db
+
+  # Cache configuration (WAL-backed for crash recovery)
+  cache:
+    path: /data/cache
+    size: "1GB"
+
+  # Metrics (disabled by default)
+  metrics:
+    enabled: false
+    port: 9090
+
+  # Control plane REST API
+  controlPlane:
+    port: 8080
+
+  # Identity/authentication configuration
+  # NOTE: You must create these secrets before applying this CR
+  identity:
+    jwt:
+      secretRef:
+        name: dittofs-jwt-secret
+        key: jwt-signing-key
+      accessTokenDuration: "15m"
+      refreshTokenDuration: "168h"
+    admin:
+      username: admin
+      passwordSecretRef:
+        name: dittofs-admin-secret
+        key: password-hash
+
+  # Kubernetes Service configuration
+  service:
+    type: ClusterIP
+    # annotations:
+    #   service.beta.kubernetes.io/aws-load-balancer-type: nlb
+
+  # NFS port (default 12049, non-privileged)
+  nfsPort: 12049
+
+  # SMB (optional, disabled by default)
+  # smb:
+  #   enabled: true
+  #   port: 12445  # Non-privileged default
+---
+# JWT signing secret (required)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dittofs-jwt-secret
+  namespace: dittofs
+type: Opaque
+stringData:
+  jwt-signing-key: "your-jwt-signing-secret-at-least-32-chars-long"
+---
+# Admin password hash secret (required)
+# Generate hash with: htpasswd -nbB "" "yourpassword" | cut -d: -f2
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dittofs-admin-secret
+  namespace: dittofs
+type: Opaque
+stringData:
+  password-hash: "$2y$10$example-bcrypt-hash-here"

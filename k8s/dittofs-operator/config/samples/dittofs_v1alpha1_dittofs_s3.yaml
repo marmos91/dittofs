@@ -1,0 +1,28 @@
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  name: dittofs-s3-sample
+  namespace: dittofs
+spec:
+  image: marmos91c/dittofs:latest
+  replicas: 1
+  storage:
+    metadataSize: "10Gi"
+    cacheSize: "5Gi"
+    # No contentSize needed - using S3 for payload
+  s3:
+    credentialsSecretRef:
+      secretName: dittofs-s3-credentials
+      # Using defaults for keys: accessKeyId, secretAccessKey, endpoint
+    region: "eu-west-1"
+    bucket: "dittofs-data"
+  identity:
+    jwt:
+      secretRef:
+        name: dittofs-jwt-secret
+        key: secret
+    admin:
+      username: admin
+      passwordSecretRef:
+        name: dittofs-admin-secret
+        key: password-hash

@@ -16,6 +16,7 @@ var (
 	createEmail    string
 	createRole     string
 	createUID      uint32
+	createHostUID  bool
 	createGroups   string
 	createEnabled  bool
 )
@@ -42,7 +43,10 @@ Examples:
   dittofsctl user create --username bob --password secret --email bob@example.com --groups editors,viewers
 
   # Create user with specific UID
-  dittofsctl user create --username bob --password secret --uid 1001`,
+  dittofsctl user create --username bob --password secret --uid 1001
+
+  # Create user with your current host UID (for NFS access)
+  dittofsctl user create --username bob --password secret --host-uid`,
 	RunE: runCreate,
 }
 
@@ -52,7 +56,10 @@ func init() {
 	createCmd.Flags().StringVar(&createEmail, "email", "", "Email address")
 	createCmd.Flags().StringVar(&createRole, "role", "user", "Role (user|admin)")
 	createCmd.Flags().Uint32Var(&createUID, "uid", 0, "Unix user ID (auto-assigned if not specified)")
+	createCmd.Flags().BoolVar(&createHostUID, "host-uid", false, "Use current host user's UID (for NFS access)")
 	createCmd.Flags().StringVar(&createGroups, "groups", "", "Comma-separated list of groups")
+	// MarkFlagsMutuallyExclusive panics if flag names don't exist (see Cobra source)
+	createCmd.MarkFlagsMutuallyExclusive("uid", "host-uid")
 	createCmd.Flags().BoolVar(&createEnabled, "enabled", true, "Enable account")
 }
 
@@ -109,12 +116,19 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// UID - prompt if interactive and not provided
+	// UID - use host-uid, explicit uid, or prompt if interactive
 	var uid *uint32
-	if cmd.Flags().Changed("uid") {
+	if createHostUID {
+		hostUID := os.Getuid()
+		if hostUID < 0 {
+			return fmt.Errorf("--host-uid is not supported on this platform")
+		}
+		hostUIDUint32 := uint32(hostUID)
+		uid = &hostUIDUint32
+	} else if cmd.Flags().Changed("uid") {
 		uid = &createUID
 	} else if interactive {
-		uidInput, err := prompt.InputOptional("UID (leave empty for auto-assign)")
+		uidInput, err := prompt.InputOptional("UID (leave empty for auto-assign, or use --host-uid)")
 		if err != nil {
 			return cmdutil.HandleAbort(err)
 		}
