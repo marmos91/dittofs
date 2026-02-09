@@ -2,7 +2,7 @@ apiVersion: dittofs.dittofs.com/v1alpha1
 kind: DittoServer
 metadata:
   name: dittofs-s3-sample
-  namespace: dittofs-system
+  namespace: dittofs
 spec:
   image: marmos91c/dittofs:latest
   replicas: 1

@@ -463,7 +463,7 @@ kind: DittoServer
 metadata:
   name: dittofs-s3
 spec:
-  image: "ghcr.io/marmos91/dittofs:v1.0.0"
+  image: "marmos91c/dittofs:v1.0.0"
   replicas: 1
 
   storage:
@@ -551,7 +551,7 @@ kind: DittoServer
 metadata:
   name: dittofs-ha
 spec:
-  image: "ghcr.io/marmos91/dittofs:v1.0.0"
+  image: "marmos91c/dittofs:v1.0.0"
   replicas: 1
 
   storage:

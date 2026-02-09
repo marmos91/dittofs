@@ -21,9 +21,9 @@ var dittoserverlog = logf.Log.WithName("dittoserver-resource")
 
 // Default port values for validation
 const (
-	defaultNFSPort     = 2049
+	defaultNFSPort     = 12049 // DittoFS uses non-privileged port by default
 	defaultAPIPort     = 8080
-	defaultSMBPort     = 445
+	defaultSMBPort     = 12445 // DittoFS uses non-privileged port by default
 	defaultMetricsPort = 9090
 	privilegedPortMax  = 1024
 	minPort            = 1

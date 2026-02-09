@@ -11,7 +11,7 @@ Before diving into specific issues, run these commands to gather diagnostic info
 kubectl get dittoserver -A
 
 # Check operator logs
-kubectl logs -n dittofs-system deployment/dittofs-operator-controller-manager
+kubectl logs -n dittofs deployment/dittofs-operator-controller-manager
 
 # Check pod status
 kubectl get pods -l app.kubernetes.io/name=dittofs
@@ -200,7 +200,7 @@ kubectl describe pvc metadata-dittofs-sample-0
 The operator pod is in CrashLoopBackOff:
 
 ```bash
-kubectl get pods -n dittofs-system
+kubectl get pods -n dittofs
 
 # NAME                                               READY   STATUS             RESTARTS
 # dittofs-operator-controller-manager-xxx            0/1     CrashLoopBackOff   5
@@ -220,7 +220,7 @@ Common reasons for operator crashes:
 **Step 1: Check operator logs**
 
 ```bash
-kubectl logs -n dittofs-system deployment/dittofs-operator-controller-manager --previous
+kubectl logs -n dittofs deployment/dittofs-operator-controller-manager --previous
 ```
 
 **Step 2: Verify CRD installed**
@@ -235,7 +235,7 @@ kubectl apply -f config/crd/bases/
 **Step 3: Check RBAC**
 
 ```bash
-kubectl auth can-i --as=system:serviceaccount:dittofs-system:dittofs-operator-controller-manager \
+kubectl auth can-i --as=system:serviceaccount:dittofs:dittofs-operator-controller-manager \
   list pods -n default
 
 # If denied, check ClusterRole/RoleBinding
@@ -247,8 +247,8 @@ kubectl describe clusterrolebinding dittofs-operator-manager-rolebinding
 
 ```bash
 # If using cert-manager
-kubectl get certificate -n dittofs-system
-kubectl describe certificate -n dittofs-system dittofs-operator-serving-cert
+kubectl get certificate -n dittofs
+kubectl describe certificate -n dittofs dittofs-operator-serving-cert
 
 # Check webhook configuration
 kubectl get validatingwebhookconfigurations dittofs-operator-validating-webhook-configuration
@@ -258,16 +258,16 @@ kubectl get validatingwebhookconfigurations dittofs-operator-validating-webhook-
 
 ```bash
 # Full operator logs
-kubectl logs -n dittofs-system deployment/dittofs-operator-controller-manager -f
+kubectl logs -n dittofs deployment/dittofs-operator-controller-manager -f
 
 # Previous container logs
-kubectl logs -n dittofs-system deployment/dittofs-operator-controller-manager --previous
+kubectl logs -n dittofs deployment/dittofs-operator-controller-manager --previous
 
 # Describe operator pod
-kubectl describe pod -n dittofs-system -l control-plane=controller-manager
+kubectl describe pod -n dittofs -l control-plane=controller-manager
 
 # Check events
-kubectl get events -n dittofs-system --sort-by=.lastTimestamp
+kubectl get events -n dittofs --sort-by=.lastTimestamp
 ```
 
 ---
@@ -338,7 +338,7 @@ kubectl describe dittoserver dittofs-sample
 kubectl get events --field-selector involvedObject.name=dittofs-sample-0
 
 # Operator logs for this resource
-kubectl logs -n dittofs-system deployment/dittofs-operator-controller-manager | grep dittofs-sample
+kubectl logs -n dittofs deployment/dittofs-operator-controller-manager | grep dittofs-sample
 ```
 
 ---
@@ -526,7 +526,7 @@ kubectl get configmap dittofs-sample-config -o yaml | md5sum
 **Step 2: Check operator is reconciling**
 
 ```bash
-kubectl logs -n dittofs-system deployment/dittofs-operator-controller-manager | grep dittofs-sample
+kubectl logs -n dittofs deployment/dittofs-operator-controller-manager | grep dittofs-sample
 ```
 
 **Step 3: Force pod restart manually**
@@ -553,7 +553,7 @@ kubectl get statefulset dittofs-sample -o yaml | grep -A10 "annotations"
 kubectl get configmap dittofs-sample-config -o yaml
 
 # View operator reconciliation
-kubectl logs -n dittofs-system deployment/dittofs-operator-controller-manager -f | grep -i reconcile
+kubectl logs -n dittofs deployment/dittofs-operator-controller-manager -f | grep -i reconcile
 ```
 
 ---
@@ -711,7 +711,7 @@ kubectl logs <pod-name> -c <container>
 kubectl logs <pod-name> --previous
 
 # Operator logs
-kubectl logs -n dittofs-system deployment/dittofs-operator-controller-manager -f
+kubectl logs -n dittofs deployment/dittofs-operator-controller-manager -f
 
 # Events
 kubectl get events --sort-by=.lastTimestamp

@@ -56,7 +56,7 @@ kubectl apply -f https://raw.githubusercontent.com/marmos91/dittofs/main/k8s/dit
 kubectl apply -f https://raw.githubusercontent.com/marmos91/dittofs/main/k8s/dittofs-operator/dist/install.yaml
 ```
 
-The operator is installed in the `dittofs-system` namespace by default.
+The operator is installed in the `dittofs` namespace by default.
 
 ### Method 2: Helm
 
@@ -71,12 +71,12 @@ cd dittofs/k8s/dittofs-operator
 
 # Install with default values
 helm install dittofs-operator ./chart \
-  -n dittofs-system \
+  -n dittofs \
   --create-namespace
 
 # Or with custom values
 helm install dittofs-operator ./chart \
-  -n dittofs-system \
+  -n dittofs \
   --create-namespace \
   --set controllerManager.manager.resources.limits.memory=256Mi \
   --set controllerManager.replicas=1
@@ -90,7 +90,7 @@ cat > my-values.yaml << 'EOF'
 controllerManager:
   manager:
     image:
-      repository: ghcr.io/marmos91/dittofs-operator
+      repository: marmos91c/dittofs-operator
       tag: v0.1.0
     resources:
       limits:
@@ -106,7 +106,7 @@ EOF
 
 # Install with custom values
 helm install dittofs-operator ./chart \
-  -n dittofs-system \
+  -n dittofs \
   --create-namespace \
   -f my-values.yaml
 ```
@@ -117,7 +117,7 @@ After installation, verify the operator is running:
 
 ```bash
 # Check the operator pod
-kubectl get pods -n dittofs-system
+kubectl get pods -n dittofs
 
 # Expected output:
 # NAME                                           READY   STATUS    RESTARTS   AGE
@@ -131,7 +131,7 @@ kubectl get crd dittoservers.dittofs.dittofs.com
 # dittoservers.dittofs.dittofs.com  2024-01-15T10:00:00Z
 
 # Check operator logs
-kubectl logs -n dittofs-system deployment/dittofs-operator-controller-manager
+kubectl logs -n dittofs deployment/dittofs-operator-controller-manager
 ```
 
 ## Quick Start: Deploy Your First DittoServer
@@ -264,10 +264,10 @@ kubectl delete -f https://raw.githubusercontent.com/marmos91/dittofs/main/k8s/di
 ### Uninstall operator via Helm
 
 ```bash
-helm uninstall dittofs-operator -n dittofs-system
+helm uninstall dittofs-operator -n dittofs
 
 # Delete the namespace
-kubectl delete namespace dittofs-system
+kubectl delete namespace dittofs
 
 # Delete CRD (Helm doesn't delete CRDs automatically)
 kubectl delete crd dittoservers.dittofs.dittofs.com
@@ -291,7 +291,7 @@ cd dittofs/k8s/dittofs-operator
 git pull
 
 # Upgrade the release
-helm upgrade dittofs-operator ./chart -n dittofs-system
+helm upgrade dittofs-operator ./chart -n dittofs
 
 # IMPORTANT: Helm does not upgrade CRDs automatically!
 # You must manually apply CRD updates:
@@ -304,7 +304,7 @@ kubectl apply -f config/crd/bases/dittofs.dittofs.com_dittoservers.yaml
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `controllerManager.manager.image.repository` | Operator image repository | `ghcr.io/marmos91/dittofs-operator` |
+| `controllerManager.manager.image.repository` | Operator image repository | `marmos91c/dittofs-operator` |
 | `controllerManager.manager.image.tag` | Operator image tag | `latest` |
 | `controllerManager.manager.resources.limits.cpu` | CPU limit | `500m` |
 | `controllerManager.manager.resources.limits.memory` | Memory limit | `128Mi` |
@@ -332,10 +332,10 @@ The operator supports the following environment variables:
 
 ```bash
 # Check pod status
-kubectl describe pod -n dittofs-system -l control-plane=controller-manager
+kubectl describe pod -n dittofs -l control-plane=controller-manager
 
 # Check events
-kubectl get events -n dittofs-system --sort-by='.lastTimestamp'
+kubectl get events -n dittofs --sort-by='.lastTimestamp'
 ```
 
 ### DittoServer stuck in Pending
@@ -345,7 +345,7 @@ kubectl get events -n dittofs-system --sort-by='.lastTimestamp'
 kubectl get dittoserver my-dittofs -o jsonpath='{.status.conditions}' | jq
 
 # Check operator logs
-kubectl logs -n dittofs-system deployment/dittofs-operator-controller-manager
+kubectl logs -n dittofs deployment/dittofs-operator-controller-manager
 
 # Check if PVCs are bound
 kubectl get pvc -l app.kubernetes.io/instance=my-dittofs

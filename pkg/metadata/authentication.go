@@ -559,9 +559,6 @@ func (s *MetadataService) checkFilePermissions(ctx *AuthContext, handle FileHand
 		shareOpts = nil
 	}
 
-	// Calculate base permissions from file mode and identity
-	basePerms := calculatePermissions(file, ctx.Identity, shareOpts, requested)
-
 	// Share-level write permission bypass:
 	// If the user has share-level write permission (ctx.ShareWritable), grant write-
 	// related permissions on files in the share, bypassing file-level Unix permission
@@ -571,12 +568,17 @@ func (s *MetadataService) checkFilePermissions(ctx *AuthContext, handle FileHand
 	// Note: ShareReadOnly takes precedence - if the share is read-only for this user,
 	// write permission is denied regardless of ShareWritable.
 	if ctx.ShareWritable && !ctx.ShareReadOnly {
-		// Grant write permissions via share-level bypass, combined with base permissions
+		// Only grant write-related permissions via the share-level bypass.
+		// Read permissions still go through normal calculatePermissions checks.
 		writePerms := requested & (PermissionWrite | PermissionDelete)
-		return basePerms | writePerms, nil
+		if writePerms != 0 {
+			// For write requests, grant what was requested
+			return writePerms, nil
+		}
+		// For non-write requests (read-only), fall through to normal permission check
 	}
 
-	return basePerms, nil
+	return calculatePermissions(file, ctx.Identity, shareOpts, requested), nil
 }
 
 // calculatePermissions computes granted permissions based on file attributes and identity.
