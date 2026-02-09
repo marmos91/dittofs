@@ -1,0 +1,31 @@
+apiVersion: v2
+name: dittofs-operator
+description: Kubernetes operator for deploying and managing DittoFS - a modular virtual filesystem with pluggable storage backends
+
+type: application
+
+# Chart version - incremented for each chart change
+version: 0.1.0
+
+# Application version - tracks operator version
+appVersion: "0.1.0"
+
+keywords:
+  - dittofs
+  - nfs
+  - filesystem
+  - storage
+  - operator
+  - kubernetes
+
+home: https://github.com/marmos91/dittofs
+
+sources:
+  - https://github.com/marmos91/dittofs
+
+maintainers:
+  - name: Marco Moschettini
+    email: marmos91@gmail.com
+    url: https://github.com/marmos91
+
+kubeVersion: ">=1.25.0-0"

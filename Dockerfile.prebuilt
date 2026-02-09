@@ -1,0 +1,15 @@
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates tzdata && \
+    addgroup -g 65532 -S dittofs && \
+    adduser -u 65532 -S -G dittofs -h /app dittofs
+WORKDIR /app
+COPY dittofs-linux-amd64 /app/dittofs
+RUN mkdir -p /data/metadata /data/content /data/cache /config && \
+    chown -R 65532:65532 /app /data /config
+USER 65532:65532
+EXPOSE 12049/tcp 12445/tcp 9090/tcp 8080/tcp
+VOLUME ["/data/metadata", "/data/content", "/data/cache", "/config"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+ENTRYPOINT ["/app/dittofs"]
+CMD ["start", "--foreground", "--config", "/config/config.yaml"]
