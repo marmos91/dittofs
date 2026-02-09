@@ -90,7 +90,7 @@ func TestReadiness_NoRegistry_Returns503(t *testing.T) {
 	}
 }
 
-func TestReadiness_NoShares_Returns503(t *testing.T) {
+func TestReadiness_NoShares_ReturnsOK(t *testing.T) {
 	reg := runtime.New(nil)
 	handler := NewHealthHandler(reg)
 	req := httptest.NewRequest("GET", "/health/ready", nil)
@@ -98,8 +98,10 @@ func TestReadiness_NoShares_Returns503(t *testing.T) {
 
 	handler.Readiness(w, req)
 
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("Expected status %d, got %d", http.StatusServiceUnavailable, w.Code)
+	// Readiness returns OK if registry is initialized, even without shares
+	// This allows Kubernetes pods to become ready before configuration is complete
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
 	}
 
 	var resp Response
@@ -107,16 +109,12 @@ func TestReadiness_NoShares_Returns503(t *testing.T) {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
-	if resp.Status != "unhealthy" {
-		t.Errorf("Expected status 'unhealthy', got '%s'", resp.Status)
-	}
-
-	if resp.Error != "no shares configured" {
-		t.Errorf("Expected error 'no shares configured', got '%s'", resp.Error)
+	if resp.Status != "healthy" {
+		t.Errorf("Expected status 'healthy', got '%s'", resp.Status)
 	}
 }
 
-func TestReadiness_WithSharesNoAdapters_Returns503(t *testing.T) {
+func TestReadiness_WithSharesNoAdapters_ReturnsOK(t *testing.T) {
 	ctx := context.Background()
 	reg := runtime.New(nil)
 
@@ -142,9 +140,10 @@ func TestReadiness_WithSharesNoAdapters_Returns503(t *testing.T) {
 
 	handler.Readiness(w, req)
 
-	// Should return 503 because no adapters are running
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("Expected status %d, got %d", http.StatusServiceUnavailable, w.Code)
+	// Readiness returns OK if registry is initialized, even without adapters
+	// This allows Kubernetes pods to become ready before adapters start
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
 	}
 
 	var resp Response
@@ -152,12 +151,18 @@ func TestReadiness_WithSharesNoAdapters_Returns503(t *testing.T) {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
-	if resp.Status != "unhealthy" {
-		t.Errorf("Expected status 'unhealthy', got '%s'", resp.Status)
+	if resp.Status != "healthy" {
+		t.Errorf("Expected status 'healthy', got '%s'", resp.Status)
 	}
 
-	if resp.Error != "no adapters running" {
-		t.Errorf("Expected error 'no adapters running', got '%s'", resp.Error)
+	// Should still report share count
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected Data to be a map, got %T", resp.Data)
+	}
+
+	if data["shares"].(float64) != 1 {
+		t.Errorf("Expected 1 share, got %v", data["shares"])
 	}
 }
 
