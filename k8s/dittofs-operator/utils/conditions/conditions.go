@@ -22,6 +22,9 @@ const (
 
 	// ConditionProgressing indicates a change is being applied
 	ConditionProgressing = "Progressing"
+
+	// ConditionAuthenticated indicates the operator has authenticated with the DittoFS API
+	ConditionAuthenticated = "Authenticated"
 )
 
 // ConditionType is a constraint for types that can be used as condition types

@@ -169,7 +169,7 @@ func TestReconcileDittoServer(t *testing.T) {
 			},
 		},
 		{
-			description: "DittoServer with ready StatefulSet",
+			description: "DittoServer with ready StatefulSet (not yet authenticated)",
 			fields: fields{
 				dittoServer: func() *v1alpha1.DittoServer {
 					replicas := int32(2)
@@ -207,9 +207,11 @@ func TestReconcileDittoServer(t *testing.T) {
 				}(),
 			},
 			expectedStatus: &expectedStatus{
+				// Running phase but not yet Ready because Authenticated condition is not True
+				// (no DittoFS API server available in test environment)
 				phase:             "Running",
-				conditionReason:   "AllConditionsMet",
-				conditionStatus:   metav1.ConditionTrue,
+				conditionReason:   "ConditionsNotMet",
+				conditionStatus:   metav1.ConditionFalse,
 				availableReplicas: func() *int32 { r := int32(2); return &r }(),
 			},
 			request: ctrl.Request{

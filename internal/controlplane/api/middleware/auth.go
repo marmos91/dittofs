@@ -28,6 +28,13 @@ func GetClaimsFromContext(ctx context.Context) *auth.Claims {
 	return claims
 }
 
+// ContextWithClaims returns a new context with the given claims stored.
+// This is primarily useful for testing middleware and handlers that depend
+// on claims being present in the request context.
+func ContextWithClaims(ctx context.Context, claims *auth.Claims) context.Context {
+	return context.WithValue(ctx, claimsContextKey, claims)
+}
+
 // extractBearerToken extracts the token from a Bearer Authorization header.
 // Returns the token string and true if successful, or empty string and false if not.
 func extractBearerToken(r *http.Request) (string, bool) {
@@ -81,6 +88,36 @@ func RequireAdmin() func(http.Handler) http.Handler {
 
 			if !claims.IsAdmin() {
 				http.Error(w, "Admin access required", http.StatusForbidden)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// RequireRole is a middleware that allows only users with one of the specified roles.
+// Must be used after JWTAuth middleware.
+//
+// This is a fail-closed middleware: if no roles are specified, ALL requests are denied.
+// If claims are missing from the context, the request is rejected with 401.
+// If the user's role is not in the allowed set, the request is rejected with 403.
+func RequireRole(allowedRoles ...string) func(http.Handler) http.Handler {
+	roleSet := make(map[string]bool, len(allowedRoles))
+	for _, role := range allowedRoles {
+		roleSet[role] = true
+	}
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims := GetClaimsFromContext(r.Context())
+			if claims == nil {
+				http.Error(w, "Authentication required", http.StatusUnauthorized)
+				return
+			}
+
+			if !roleSet[claims.Role] {
+				http.Error(w, "Insufficient permissions", http.StatusForbidden)
 				return
 			}
 

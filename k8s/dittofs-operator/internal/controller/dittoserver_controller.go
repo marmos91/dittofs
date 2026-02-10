@@ -148,6 +148,15 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	// Ensure admin credentials Secret exists (auto-generate if not provided)
+	// This must happen before ConfigMap so the Secret exists when the StatefulSet is created.
+	if err := r.reconcileAdminCredentials(ctx, dittoServer); err != nil {
+		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
+			"Failed to reconcile admin credentials: %v", err)
+		logger.Error(err, "Failed to reconcile admin credentials")
+		return ctrl.Result{}, err
+	}
+
 	if err := r.reconcileConfigMap(ctx, dittoServer); err != nil {
 		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
 			"Failed to reconcile ConfigMap: %v", err)
@@ -239,6 +248,21 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err := r.updateStatus(ctx, dittoServer, statefulSet, replicas, configHash); err != nil {
 		logger.Error(err, "Failed to update DittoServer status")
 		return ctrl.Result{}, err
+	}
+
+	// Auth reconciliation: only when StatefulSet has at least one ready replica
+	if statefulSet.Status.ReadyReplicas >= 1 {
+		authResult, authErr := r.reconcileAuth(ctx, dittoServer)
+		if authErr != nil {
+			logger.Error(authErr, "Auth reconciliation failed")
+			r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "AuthFailed",
+				"Failed to authenticate with DittoFS API: %v", authErr)
+			// Don't return error -- auth failure should not block infrastructure reconciliation
+			// The Authenticated condition will reflect the failure
+		}
+		if authResult.RequeueAfter > 0 {
+			return authResult, nil
+		}
 	}
 
 	return ctrl.Result{}, nil
@@ -370,13 +394,24 @@ func updateReadyCondition(
 		databaseReady = conditions.IsConditionTrue(status.Conditions, conditions.ConditionDatabaseReady)
 	}
 
-	allReady := configReady && available && !progressing && databaseReady
+	// Authenticated is only required when the server is running (replicas > 0).
+	// When stopped (replicas=0), there's no DittoFS API to authenticate against.
+	authenticated := true
+	desiredReplicas := int32(1)
+	if dittoServer.Spec.Replicas != nil {
+		desiredReplicas = *dittoServer.Spec.Replicas
+	}
+	if desiredReplicas > 0 {
+		authenticated = conditions.IsConditionTrue(status.Conditions, conditions.ConditionAuthenticated)
+	}
+
+	allReady := configReady && available && !progressing && databaseReady && authenticated
 	if allReady {
 		conditions.SetCondition(&status.Conditions, dittoServer.Generation,
 			conditions.ConditionReady, metav1.ConditionTrue, "AllConditionsMet",
 			"DittoServer is fully operational")
 	} else {
-		reasons := collectNotReadyReasons(configReady, available, progressing, databaseReady)
+		reasons := collectNotReadyReasons(configReady, available, progressing, databaseReady, authenticated)
 		conditions.SetCondition(&status.Conditions, dittoServer.Generation,
 			conditions.ConditionReady, metav1.ConditionFalse, "ConditionsNotMet",
 			fmt.Sprintf("Not ready: %v", reasons))
@@ -496,6 +531,12 @@ func (r *DittoServerReconciler) performCleanup(ctx context.Context, dittoServer 
 		}
 	}
 
+	// Best-effort: delete DittoFS operator service account
+	if err := r.cleanupOperatorServiceAccount(ctx, dittoServer); err != nil {
+		logger.Error(err, "Failed to delete operator service account (best-effort)")
+		// Don't return error -- best-effort cleanup
+	}
+
 	// Other owned resources (StatefulSet, Services, ConfigMap) are automatically
 	// garbage collected via owner references when DittoServer is deleted.
 	// No additional cleanup needed for them.
@@ -537,6 +578,7 @@ func (r *DittoServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.Secret{}).
 		Named("dittoserver")
 
 	// Conditionally watch PerconaPGCluster only if CRD exists
@@ -1175,6 +1217,15 @@ func buildSecretEnvVars(dittoServer *dittoiov1alpha1.DittoServer) []corev1.EnvVa
 			ref.Key,
 			false,
 		))
+	} else {
+		// Inject auto-generated admin password from operator-managed Secret.
+		// Optional=true so the pod doesn't fail if the Secret is manually deleted.
+		envVars = append(envVars, secretEnvVar(
+			"DITTOFS_ADMIN_INITIAL_PASSWORD",
+			dittoServer.GetAdminCredentialsSecretName(),
+			"password",
+			true,
+		))
 	}
 
 	// PostgreSQL connection string (only if Postgres configured and NOT using Percona)
@@ -1368,6 +1419,18 @@ func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServ
 		if data, ok := secret.Data[key]; ok {
 			secrets["admin:"+key] = data
 		}
+	} else {
+		// Include auto-generated admin credentials in hash
+		adminSecret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: dittoServer.Namespace,
+			Name:      dittoServer.GetAdminCredentialsSecretName(),
+		}, adminSecret); err == nil {
+			if data, ok := adminSecret.Data["password"]; ok {
+				secrets["admin:password"] = data
+			}
+		}
+		// Note: Don't error if secret doesn't exist yet - it's created in reconcileAdminCredentials
 	}
 
 	// PostgreSQL connection string secret (if configured)
@@ -1514,7 +1577,7 @@ func isPerconaEnabled(dittoServer *dittoiov1alpha1.DittoServer) bool {
 }
 
 // collectNotReadyReasons gathers the list of conditions that are not met.
-func collectNotReadyReasons(configReady, available, progressing, databaseReady bool) []string {
+func collectNotReadyReasons(configReady, available, progressing, databaseReady, authenticated bool) []string {
 	var reasons []string
 	if !configReady {
 		reasons = append(reasons, "ConfigNotReady")
@@ -1527,6 +1590,9 @@ func collectNotReadyReasons(configReady, available, progressing, databaseReady b
 	}
 	if !databaseReady {
 		reasons = append(reasons, "DatabaseNotReady")
+	}
+	if !authenticated {
+		reasons = append(reasons, "NotAuthenticated")
 	}
 	return reasons
 }

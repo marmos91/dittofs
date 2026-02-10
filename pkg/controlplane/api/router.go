@@ -37,6 +37,7 @@ import (
 //   - /api/v1/shares/* - Share management (admin only)
 //   - /api/v1/metadata-stores/* - Metadata store management (admin only)
 //   - /api/v1/payload-stores/* - Payload store management (admin only)
+//   - GET /api/v1/adapters - Adapter list (admin + operator)
 //   - /api/v1/adapters/* - Adapter management (admin only)
 //   - /api/v1/settings/* - System settings management (admin only)
 func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.Store) http.Handler {
@@ -176,16 +177,24 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Delete("/{name}", payloadStoreHandler.Delete)
 			})
 
-			// Adapter configuration (admin only)
+			// Adapter configuration - split read/write access
 			r.Route("/adapters", func(r chi.Router) {
-				r.Use(apiMiddleware.RequireAdmin())
-
 				adapterHandler := handlers.NewAdapterHandler(rt)
-				r.Post("/", adapterHandler.Create)
-				r.Get("/", adapterHandler.List)
-				r.Get("/{type}", adapterHandler.Get)
-				r.Put("/{type}", adapterHandler.Update)
-				r.Delete("/{type}", adapterHandler.Delete)
+
+				// Read endpoint: admin + operator (list only)
+				r.Group(func(r chi.Router) {
+					r.Use(apiMiddleware.RequireRole("admin", "operator"))
+					r.Get("/", adapterHandler.List)
+				})
+
+				// Write endpoints + individual get: admin only
+				r.Group(func(r chi.Router) {
+					r.Use(apiMiddleware.RequireAdmin())
+					r.Post("/", adapterHandler.Create)
+					r.Get("/{type}", adapterHandler.Get)
+					r.Put("/{type}", adapterHandler.Update)
+					r.Delete("/{type}", adapterHandler.Delete)
+				})
 			})
 
 			// System settings (admin only)

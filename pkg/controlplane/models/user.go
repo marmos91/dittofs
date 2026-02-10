@@ -14,11 +14,13 @@ const (
 	RoleUser UserRole = "user"
 	// RoleAdmin is an administrator with full permissions.
 	RoleAdmin UserRole = "admin"
+	// RoleOperator is a service account role with read-only access to specific endpoints.
+	RoleOperator UserRole = "operator"
 )
 
 // IsValid checks if the role is a valid UserRole.
 func (r UserRole) IsValid() bool {
-	return r == RoleUser || r == RoleAdmin
+	return r == RoleUser || r == RoleAdmin || r == RoleOperator
 }
 
 // User represents a DittoFS user for authentication and authorization.
@@ -33,7 +35,7 @@ type User struct {
 	NTHash             string     `json:"-"` // For SMB NTLM authentication
 	Enabled            bool       `gorm:"default:true" json:"enabled"`
 	MustChangePassword bool       `gorm:"default:false" json:"must_change_password"`
-	Role               string     `gorm:"default:user;size:50" json:"role"` // user, admin
+	Role               string     `gorm:"default:user;size:50" json:"role"` // user, admin, operator
 	UID                *uint32    `gorm:"uniqueIndex" json:"uid,omitempty"`
 	GID                *uint32    `json:"gid,omitempty"`
 	DisplayName        string     `gorm:"size:255" json:"display_name,omitempty"`

@@ -12,7 +12,7 @@ Transform the DittoFS K8s operator from static adapter configuration to dynamic,
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Auth Foundation** - Operator can authenticate to DittoFS API with least-privilege access
+- [x] **Phase 1: Auth Foundation** - Operator can authenticate to DittoFS API with least-privilege access
 - [ ] **Phase 2: Adapter Discovery** - Operator discovers active adapters by polling the DittoFS API
 - [ ] **Phase 3: Dynamic Services & Ports** - Operator creates/removes K8s Services and updates container ports based on adapter state
 - [ ] **Phase 4: Security Hardening** - Static adapter config removed from CRD and NetworkPolicies enforce per-adapter traffic rules
@@ -28,11 +28,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. When the operator starts and DittoFS is ready, a service account with operator role exists and its JWT is stored in a K8s Secret
   3. When the DittoFS API is unreachable, the operator logs warnings and retries with backoff without crashing or deleting existing K8s resources
   4. The operator's JWT token is refreshed automatically before expiry without requiring a pod restart
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 01-01: Implement operator role and service account provisioning
-- [ ] 01-02: Implement credential storage and token lifecycle
+- [x] 01-01-PLAN.md — Add operator role to DittoFS server with RequireRole middleware and split adapter routes
+- [x] 01-02-PLAN.md — Implement operator service account provisioning, credential storage, and token lifecycle
 
 ### Phase 2: Adapter Discovery
 **Goal**: Operator reliably discovers the current state of all protocol adapters by polling the DittoFS API
@@ -84,7 +84,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Auth Foundation | 0/2 | Not started | - |
+| 1. Auth Foundation | 2/2 | ✓ Complete | 2026-02-10 |
 | 2. Adapter Discovery | 0/1 | Not started | - |
 | 3. Dynamic Services & Ports | 0/2 | Not started | - |
 | 4. Security Hardening | 0/2 | Not started | - |

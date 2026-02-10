@@ -89,7 +89,7 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if req.Role != "" {
 		role = models.UserRole(req.Role)
 		if !role.IsValid() {
-			BadRequest(w, "Invalid role. Must be 'user' or 'admin'")
+			BadRequest(w, "Invalid role. Must be 'user', 'admin', or 'operator'")
 			return
 		}
 	}
@@ -219,7 +219,7 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.Role != nil {
 		role := models.UserRole(*req.Role)
 		if !role.IsValid() {
-			BadRequest(w, "Invalid role. Must be 'user' or 'admin'")
+			BadRequest(w, "Invalid role. Must be 'user', 'admin', or 'operator'")
 			return
 		}
 		user.Role = string(role)
