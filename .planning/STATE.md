@@ -2,58 +2,62 @@
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-02-03)
+See: .planning/PROJECT.md (updated 2026-02-09)
 
-**Core value:** Validate DittoFS works correctly with new control plane APIs, all store combinations, and both NFS/SMB protocols
-**Current focus:** v1.0 Complete — Ready for next milestone
+**Core value:** Operator ensures protocol adapters are only externally accessible when running, reducing attack surface and making adapter lifecycle fully dynamic.
+**Current focus:** Phase 1 - Auth Foundation
 
 ## Current Position
 
-Phase: 6 of 6 (File Operations) — COMPLETE
-Plan: 17 of 17 — ALL COMPLETE
-Status: v1.0 Milestone Shipped
-Last activity: 2026-02-03 — v1.0 milestone archived
+Phase: 1 of 4 (Auth Foundation)
+Plan: 0 of 2 in current phase
+Status: Ready to plan
+Last activity: 2026-02-10 -- Roadmap created
 
-Progress: [██████████] 100%
+Progress: [░░░░░░░░░░] 0%
 
-## Milestone v1.0 Summary
+## Performance Metrics
 
-**Shipped:** 2026-02-03
+**Velocity:**
+- Total plans completed: 0
+- Average duration: -
+- Total execution time: 0 hours
 
-- 6 phases, 17 plans completed
-- 30 test files, 8,884 lines of Go code
-- All 9 store combinations validated
-- Both NFS and SMB protocols tested
-- Cross-protocol interoperability verified
+**By Phase:**
 
-See `.planning/MILESTONES.md` for full details.
-See `.planning/milestones/v1.0-ROADMAP.md` for archived roadmap.
-See `.planning/milestones/v1.0-REQUIREMENTS.md` for archived requirements.
+| Phase | Plans | Total | Avg/Plan |
+|-------|-------|-------|----------|
+| - | - | - | - |
+
+**Recent Trend:**
+- Last 5 plans: -
+- Trend: -
+
+*Updated after each plan completion*
 
 ## Accumulated Context
 
 ### Decisions
 
-See PROJECT.md Key Decisions table for full list.
+Decisions are logged in PROJECT.md Key Decisions table.
+Recent decisions affecting current work:
+
+- Polling over webhooks (no webhook system exists; polling is simpler)
+- One LoadBalancer per adapter (clean separation, independent IPs)
+- New "operator" role with least privilege (read-only adapter access)
+- source.Channel vs RequeueAfter still to be finalized (research recommends source.Channel)
 
 ### Pending Todos
 
-None — Milestone complete
+None yet.
 
 ### Blockers/Concerns
 
-None — Ready for next milestone
+- Module import path for `pkg/apiclient`: operator is a separate Go module; may need `replace` directive or Go workspace
+- Adapter API `running` field: needs verification whether it exists in response or needs to be added
 
 ## Session Continuity
 
-Last session: 2026-02-03
-Stopped at: v1.0 milestone complete
+Last session: 2026-02-10
+Stopped at: Roadmap created, ready to plan Phase 1
 Resume file: None
-
-## Next Steps
-
-Run `/gsd:new-milestone` to start the next milestone cycle:
-- Questioning → Research → Requirements → Roadmap
-
----
-*State updated: 2026-02-03 after v1.0 milestone completion*

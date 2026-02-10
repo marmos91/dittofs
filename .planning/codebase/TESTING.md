@@ -1,632 +1,477 @@
 # Testing Patterns
 
-**Analysis Date:** 2026-02-02
+**Analysis Date:** 2026-02-09
 
 ## Test Framework
 
 **Runner:**
-- Go's built-in `testing` package (no external test framework)
-- Tests execute via `go test ./...`
-- Parallel execution enabled by default: `t.Parallel()`
+- Go's standard `testing` package
+- 107 test files across the codebase
 
 **Assertion Library:**
-- `github.com/stretchr/testify` v1.11.1
-- `assert` package for non-fatal assertions (test continues on failure)
-- `require` package for fatal assertions (test stops on failure)
+- `github.com/stretchr/testify/assert` - For non-fatal assertions
+- `github.com/stretchr/testify/require` - For fatal assertions (test stops on failure)
+- Pattern: Use `require` for setup/preconditions, `assert` for behavior verification
 
 **Run Commands:**
 ```bash
 # Run all unit and integration tests
 go test ./...
 
-# Run with verbose output
-go test -v ./...
-
-# Watch mode (requires external tool)
-# Use standard Go test runner without special flags
-
-# Coverage report
+# Run with coverage
 go test -cover ./...
-go test -coverprofile=coverage.out ./...
-go test -html=coverage.out ./...
 
-# Race detection
+# Run with race detection
 go test -race ./...
 
 # Run specific package
-go test ./pkg/metadata/
+go test ./pkg/metadata/...
 
-# Run specific test
-go test -run TestMetadataService_RegisterStoreForShare ./pkg/metadata/
+# Run with verbose output
+go test -v ./...
 
-# Run tests matching pattern
-go test -run "TestMetadataService" ./pkg/metadata/
+# E2E tests (requires special build tag)
+go test -tags=e2e -v ./test/e2e/...
 
-# Run with timeout
-go test -timeout 10m ./...
+# E2E tests with race detection
+go test -tags=e2e -v -race -timeout 30m ./test/e2e/...
 
-# Run integration tests only (have //go:build integration)
-go test -tags=integration ./...
-
-# Run E2E tests only (have //go:build e2e)
-go test -tags=e2e ./...
+# E2E tests with Localstack (S3 support)
+# See test/e2e/README.md for setup
+sudo go test -tags=e2e -v ./test/e2e/... -run TestE2E
 ```
 
 ## Test File Organization
 
 **Location:**
-- Co-located with source: `*.go` files paired with `*_test.go` files in same directory
-- Special cases:
-  - Integration tests: `*_integration_test.go` (require `//go:build integration`)
-  - E2E tests: All in `test/e2e/` directory (require `//go:build e2e` or e2e build tag)
+- Co-located with source code in same package
+- Example: `pkg/cache/cache.go` alongside `pkg/cache/cache_test.go`
+- Exception: E2E tests in `test/e2e/` directory with `//go:build e2e` tag
 
 **Naming:**
-- Unit tests: `{source}_test.go` (e.g., `service_test.go`, `cache_test.go`)
-- Integration tests: `{component}_integration_test.go` (e.g., `badger_integration_test.go`)
-- E2E tests: Any `*_test.go` in `test/e2e/` with appropriate build tags
+- Standard: `*_test.go` suffix
+- Test functions: `TestFunctionName_Scenario` pattern
+- Examples:
+  - `TestWrite_SimpleWrite` - Basic operation
+  - `TestWrite_AtOffset` - Specific parameter
+  - `TestWrite_SparseFile` - Edge case
+  - `TestLookup_ExistingFile` - Success case
+  - `TestLookup_NonExistentFile` - Error case
 
-**Build Tags:**
-```go
-// Integration tests (requires Docker/Localstack for S3)
-//go:build integration
+**Structure (by directory type):**
 
-// E2E tests (requires NFS mount capabilities and sudo)
-//go:build e2e
-
-// No tag = runs in `go test ./...`
+Unit/Integration Tests:
+```
+pkg/
+├── cache/
+│   ├── cache.go
+│   ├── cache_test.go       # Tests for cache.go
+│   ├── write.go
+│   ├── write_test.go       # Tests for write.go
+│   └── types.go            # No types_test.go (helper types only)
+│
+└── metadata/
+    ├── service.go
+    ├── service_test.go     # Tests for service.go
+    └── store/
+        ├── store.go
+        ├── memory/
+        │   ├── memory.go
+        │   └── memory_test.go
 ```
 
-**File Structure Pattern:**
-
-```go
-package metadata_test
-
-import (
-    "context"
-    "testing"
-
-    "github.com/marmos91/dittofs/pkg/metadata"
-    "github.com/stretchr/testify/assert"
-    "github.com/stretchr/testify/require"
-)
-
-// ============================================================================
-// Test Fixtures (Section header)
-// ============================================================================
-
-// testFixture provides a configured service for testing.
-type testFixture struct {
-    t       *testing.T
-    service *metadata.MetadataService
-    store   *memory.MemoryMetadataStore
-}
-
-func newTestFixture(t *testing.T) *testFixture {
-    t.Helper()  // Exclude this function from test call stack
-    // ... setup code
-}
-
-// ============================================================================
-// Test Suite for Function (Section header)
-// ============================================================================
-
-func TestFunction_Description(t *testing.T) {
-    t.Parallel()
-
-    t.Run("sub-case 1", func(t *testing.T) {
-        t.Parallel()
-        // Test code
-    })
-
-    t.Run("sub-case 2", func(t *testing.T) {
-        t.Parallel()
-        // Test code
-    })
-}
+E2E Tests:
+```
+test/
+└── e2e/
+    ├── main_test.go            # TestMain setup/teardown
+    ├── users_test.go           # TestUserCRUD
+    ├── groups_test.go          # TestGroupManagement
+    ├── metadata_stores_test.go # TestMetadataStoresCRUD
+    ├── framework/              # Test infrastructure
+    │   ├── postgres.go         # PostgreSQL container setup
+    │   └── localstack.go       # S3/Localstack setup
+    └── helpers/                # Test utilities
+        ├── server.go           # ServerProcess management
+        ├── cli.go              # CLI runner
+        └── unique.go           # Unique naming helpers
 ```
 
 ## Test Structure
 
-**Suite Organization:**
-Each test function typically has one or more subtests using `t.Run()`:
+**Test Setup Pattern:**
 
+1. **Create fixture** (if reusable components needed):
 ```go
-func TestMetadataService_RegisterStoreForShare(t *testing.T) {
-    t.Parallel()
-
-    t.Run("registers store successfully", func(t *testing.T) {
-        t.Parallel()
-        svc := metadata.New()
-        store := memory.NewMemoryMetadataStoreWithDefaults()
-
-        err := svc.RegisterStoreForShare("/test", store)
-
-        require.NoError(t, err)
-    })
-
-    t.Run("rejects nil store", func(t *testing.T) {
-        t.Parallel()
-        svc := metadata.New()
-
-        err := svc.RegisterStoreForShare("/test", nil)
-
-        require.Error(t, err)
-        assert.Contains(t, err.Error(), "nil store")
-    })
-}
+fx := handlertesting.NewHandlerFixture(t)  // t.Helper() called internally
+defer fx.Close()  // Cleanup
 ```
 
-**Patterns:**
-
-**1. Arrange-Act-Assert (Setup-Execute-Verify):**
+2. **Setup data** (test preconditions):
 ```go
+fileHandle := fx.CreateFile("testfile.txt", []byte("hello world"))
+```
+
+3. **Execute** (run the code being tested):
+```go
+req := &handlers.WriteRequest{
+    Handle: fileHandle,
+    Offset: 0,
+    Count:  uint32(len(data)),
+    Stable: 2,
+    Data:   data,
+}
+resp, err := fx.Handler.Write(fx.ContextWithUID(0, 0), req)
+```
+
+4. **Verify** (assertions):
+```go
+require.NoError(t, err)                                    // Fatal assert
+assert.EqualValues(t, types.NFS3OK, resp.Status)          // Non-fatal assert
+assert.EqualValues(t, uint32(len(data)), resp.Count)
+```
+
+**Example from `write_test.go`:**
+```go
+// TestWrite_SimpleWrite tests writing to a file.
 func TestWrite_SimpleWrite(t *testing.T) {
-    fx := handlertesting.NewHandlerFixture(t)
+	fx := handlertesting.NewHandlerFixture(t)  // Setup fixture
 
-    // Arrange: Setup test state
-    fileHandle := fx.CreateFile("testfile.txt", []byte{})
+	// Setup: Create an empty file
+	fileHandle := fx.CreateFile("testfile.txt", []byte{})
 
-    // Act: Execute the code being tested
-    data := []byte("hello world")
-    resp, err := fx.Handler.Write(fx.ContextWithUID(0, 0), &handlers.WriteRequest{
-        Handle: fileHandle,
-        Offset: 0,
-        Count:  uint32(len(data)),
-        Data:   data,
-    })
+	// Execute: Write some data
+	data := []byte("hello world")
+	req := &handlers.WriteRequest{
+		Handle: fileHandle,
+		Offset: 0,
+		Count:  uint32(len(data)),
+		Stable: 2, // FILE_SYNC
+		Data:   data,
+	}
+	resp, err := fx.Handler.Write(fx.ContextWithUID(0, 0), req)
 
-    // Assert: Verify results
-    require.NoError(t, err)
-    assert.EqualValues(t, types.NFS3OK, resp.Status)
+	// Verify
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3OK, resp.Status)
+	assert.EqualValues(t, uint32(len(data)), resp.Count)
+
+	// Additional verification: read back written data
+	readResp, err := fx.Handler.Read(fx.Context(), &handlers.ReadRequest{
+		Handle: fileHandle,
+		Offset: 0,
+		Count:  100,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, data, readResp.Data)
 }
 ```
 
-**2. Fixture Pattern:**
-Create reusable test fixtures for complex setups:
+**Subtests Pattern:**
 
 ```go
-// testFixture provides a configured MetadataService with a memory store for testing.
-type testFixture struct {
-    t          *testing.T
-    service    *metadata.MetadataService
-    store      *metadata.MemoryMetadataStore
-    shareName  string
-    rootHandle metadata.FileHandle
-}
+// Use t.Run for grouped related test cases
+func TestGroupManagement(t *testing.T) {
+	sp := helpers.StartServerProcess(t, "")
+	t.Cleanup(sp.ForceKill)
+	cli := helpers.LoginAsAdmin(t, sp.APIURL())
 
-func newTestFixture(t *testing.T) *testFixture {
-    t.Helper()
-    // ... setup
-    return &testFixture{...}
-}
+	t.Run("create group", func(t *testing.T) {
+		testCreateGroup(t, cli)
+	})
 
-// Helper methods on fixture
-func (f *testFixture) authContext(uid, gid uint32) *metadata.AuthContext {
-    return &metadata.AuthContext{
-        Context:    context.Background(),
-        AuthMethod: "unix",
-        Identity:   &metadata.Identity{UID: uid, GID: gid},
-        ClientAddr: "127.0.0.1",
-    }
+	t.Run("create group with description", func(t *testing.T) {
+		testCreateGroupWithDescription(t, cli)
+	})
+
+	t.Run("list groups", func(t *testing.T) {
+		testListGroups(t, cli)
+	})
 }
 ```
 
-**3. Table-Driven Tests:**
-For testing multiple input combinations:
+**Test Helper Methods:**
 
+Fixtures use `t.Helper()` to mark helper functions:
 ```go
-func TestNewNotFoundError(t *testing.T) {
-    t.Parallel()
-
-    tests := []struct {
-        name       string
-        path       string
-        entityType string
-        wantMsg    string
-    }{
-        {"file not found", "/path/to/file.txt", "file", "file not found: /path/to/file.txt"},
-        {"directory not found", "/path/to/dir", "directory", "directory not found: /path/to/dir"},
-    }
-
-    for _, tt := range tests {
-        t.Run(tt.name, func(t *testing.T) {
-            t.Parallel()
-            err := NewNotFoundError(tt.path, tt.entityType)
-
-            assert.Equal(t, tt.wantMsg, err.Error())
-        })
-    }
+func (f *HandlerTestFixture) CreateFile(name string, content []byte) metadata.FileHandle {
+	f.t.Helper()  // Mark as helper so test line numbers point to caller
+	// ... implementation
 }
 ```
 
 ## Mocking
 
-**Framework:**
-- No mocking library used in core tests
-- Uses real memory stores instead of mocks
-- Reason: Memory stores are deterministic, testable, and prevent mock brittleness
+**Framework:** No mocking framework used; real implementations preferred
 
 **Approach:**
+- Use in-memory implementations instead of mocks
+- Examples:
+  - `metadatamemory.NewMemoryMetadataStoreWithDefaults()` - Real in-memory store
+  - `cache.New(0)` - Real in-memory cache
+  - `storemem.New()` - Real in-memory block store
+
+**Benefits:**
+- Tests behavior contracts, not implementation details
+- Catches integration issues between components
+- More maintainable than mocked tests
+
+**What to Mock:** Almost nothing; use real components
+
+**What NOT to Mock:** Everything should use real implementations unless testing specific failures
+
+**Example from test fixtures** (`internal/protocol/nfs/v3/handlers/testing/fixtures.go`):
 ```go
-// PREFERRED: Use real in-memory implementations
-store := memory.NewMemoryMetadataStoreWithDefaults()
-svc := metadata.New()
-svc.RegisterStoreForShare("/test", store)
+// Create real stores, not mocks
+metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+testCache := cache.New(0) // Real in-memory cache
+blockStore := storemem.New() // Real in-memory block store
+transferMgr := transfer.New(testCache, blockStore, metaStore, transfer.DefaultConfig())
 
-// NOT: No gomock or similar - too coupled to implementation
-```
-
-**When to NOT Mock:**
-- Metadata stores: Use real `memory.MemoryMetadataStore` instead
-- Block stores: Use real `storemem.New()` for most tests
-- Services: Inject real implementations, not mocks
-
-**Integration Test Setup Pattern:**
-When testing with Docker/Localstack:
-
-```go
-type localstackHelper struct {
-    container testcontainers.Container
-    endpoint  string
-    client    *s3.Client
-}
-
-func newLocalstackHelper(t *testing.T) *localstackHelper {
-    t.Helper()
-    ctx := context.Background()
-
-    // Check for external Localstack
-    if endpoint := os.Getenv("LOCALSTACK_ENDPOINT"); endpoint != "" {
-        return &localstackHelper{endpoint: endpoint}
-    }
-
-    // Start container
-    req := testcontainers.ContainerRequest{
-        Image:        "localstack/localstack:3.0",
-        ExposedPorts: []string{"4566/tcp"},
-        Env: map[string]string{
-            "SERVICES": "s3",
-        },
-        WaitingFor: wait.ForAll(
-            wait.ForListeningPort("4566/tcp"),
-            wait.ForHTTP("/_localstack/health").WithPort("4566/tcp"),
-        ),
-    }
-
-    container, err := testcontainers.GenericContainer(ctx,
-        testcontainers.GenericContainerRequest{
-            ContainerRequest: req,
-            Started:          true,
-        })
-    if err != nil {
-        t.Fatalf("failed to start localstack: %v", err)
-    }
-
-    // Extract host:port and create client...
-    return &localstackHelper{container: container, endpoint: fmt.Sprintf("http://%s:%s", host, port)}
+// Create handler with real components
+handler := &handlers.Handler{
+    Registry: reg,
 }
 ```
 
 ## Fixtures and Factories
 
-**Test Data Pattern:**
-The `testFixture` pattern provides factory methods for creating test data:
+**Test Data Creation:**
 
+1. **Handler Test Fixture** (`internal/protocol/nfs/v3/handlers/testing/fixtures.go`):
+   - Creates complete test environment for NFS handler testing
+   - Sets up metadata store, cache, block store, transfer manager
+   - Provides helper methods: `CreateFile()`, `CreateDirectory()`, `Context()`
+   - Usage:
 ```go
-// HandlerTestFixture in internal/protocol/nfs/v3/handlers/testing/fixtures.go
-type HandlerTestFixture struct {
-    t                *testing.T
-    Handler          *handlers.Handler
-    Registry         *runtime.Runtime
-    MetadataService  *metadata.MetadataService
-    ContentService   *payload.PayloadService
-    ShareName        string
-    RootHandle       metadata.FileHandle
-}
-
-// Factory method: NewHandlerFixture(t)
-func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
-    t.Helper()
-    // ... full setup with real stores
-    return &HandlerTestFixture{...}
-}
-
-// Helper methods for creating test data
-func (f *HandlerTestFixture) CreateFile(name string, data []byte) metadata.FileHandle {
-    // Creates a file and returns handle
-}
-
-func (f *HandlerTestFixture) CreateDirectory(name string) metadata.FileHandle {
-    // Creates a directory and returns handle
-}
-
-func (f *HandlerTestFixture) Context() context.Context {
-    // Returns request context
-}
-
-func (f *HandlerTestFixture) ContextWithUID(uid, gid uint32) *metadata.AuthContext {
-    // Returns auth context with specific user
-}
+fx := handlertesting.NewHandlerFixture(t)
+fileHandle := fx.CreateFile("file.txt", []byte("content"))
+resp, err := fx.Handler.Read(fx.Context(), &handlers.ReadRequest{
+    Handle: fileHandle,
+    Offset: 0,
+    Count:  100,
+})
 ```
 
-**Location:**
-- Fixtures in `testdata/` subdirectories or test file itself
-- Shared test helpers in `testing/` subdirectories (e.g., `pkg/metadata/store/memory/testing/`)
-- Handler test fixtures in `internal/protocol/nfs/v3/handlers/testing/fixtures.go`
+2. **E2E Test Environment** (`test/e2e/helpers/`):
+   - `NewTestEnvironmentForMain()` - Creates shared test environment
+   - `StartServerProcess(t, config)` - Starts real DittoFS server
+   - `LoginAsAdmin(t, serverURL)` - Returns CLI runner with auth
+   - `UniqueTestName(prefix)` - Generates unique test resource names
+   - Usage:
+```go
+sp := helpers.StartServerProcess(t, "")
+t.Cleanup(sp.ForceKill)
+cli := helpers.LoginAsAdmin(t, sp.APIURL())
+user, err := cli.CreateUser("testuser", "password")
+```
+
+3. **Temp Directories** (standard Go):
+```go
+dir := t.TempDir()  // Automatically cleaned up
+walFile := filepath.Join(dir, "cache.dat")
+```
 
 ## Coverage
 
-**Requirements:**
-- No hard coverage threshold enforced
-- Recommendations:
-  - Business logic: 80%+ coverage
-  - Protocol handlers: 70%+ coverage (some error paths hard to trigger)
-  - Internal utilities: 60%+ coverage
+**Requirements:** Not enforced by CI/linting, but important for critical paths
 
 **View Coverage:**
 ```bash
-# Generate coverage report
+# Generate coverage profile
+go test -cover ./...
+
+# Detailed coverage report
 go test -coverprofile=coverage.out ./...
-
-# View in terminal
-go tool cover -func=coverage.out
-
-# View in browser (HTML)
-go tool cover -html=coverage.out -o coverage.html
-open coverage.html
+go tool cover -html=coverage.out  # View in browser
 ```
 
-**Coverage Gaps to Prioritize:**
-- Error paths (disk full, I/O errors, etc.)
-- Concurrent access patterns
-- State transitions (pending → uploading → uploaded)
-- Protocol compliance (RFC 1813 edge cases)
+**Test Coverage Patterns:**
+
+Unit tests cover:
+- Happy path (normal operation)
+- Error cases (invalid input, not found, permission denied)
+- Edge cases (zero bytes, sparse files, large files)
+- Boundary conditions (min/max values)
+
+Integration tests cover:
+- Store behavior with real implementations
+- Cache with WAL persistence
+- Protocol handler compliance with RFC specifications
+
+E2E tests cover:
+- Complete workflows (create → read → write → delete)
+- Cross-protocol scenarios (NFS and SMB)
+- Permission enforcement
+- Server lifecycle (start → operate → shutdown)
 
 ## Test Types
 
 **Unit Tests:**
-- Location: Co-located `*_test.go` files
-- Scope: Single function or method
-- Dependencies: Use real implementations (no mocks)
-- Speed: Milliseconds
-- Example: `pkg/metadata/service_test.go` tests `MetadataService` methods
-- Run with: `go test ./...`
+- Scope: Individual functions/methods in isolation
+- Approach: Real in-memory components (no mocks)
+- Speed: Fast (< 100ms per test)
+- Examples:
+  - `pkg/cache/cache_test.go` - Cache operations
+  - `internal/protocol/nfs/v3/handlers/write_test.go` - WRITE handler compliance
+  - `internal/protocol/nfs/v3/handlers/lookup_test.go` - LOOKUP handler compliance
+- Location: Co-located with source files
 
 **Integration Tests:**
-- Location: `*_integration_test.go` with `//go:build integration`
-- Scope: Multiple components working together (store + service + handler)
-- Dependencies: Real S3 (via Localstack), BadgerDB, filesystem
-- Speed: Seconds
+- Scope: Multiple components working together
+- Approach: Real stores (BadgerDB, S3, PostgreSQL) with test containers
+- Speed: Medium (1-10s per test)
 - Examples:
-  - `pkg/metadata/store/badger/badger_integration_test.go` - BadgerDB store integration
-  - `pkg/payload/store/blockstore_integration_test.go` - Block store integrations
-- Run with: `go test -tags=integration ./...`
+  - Cache + WAL persistence recovery
+  - Metadata store + block store coordination
+  - Handler + service layer integration
+- Location: `test/integration/` (if separated) or alongside source
 
 **E2E Tests:**
-- Location: `test/e2e/` with `//go:build e2e`
-- Scope: Full NFS server with real kernel NFS client
-- Dependencies: Real NFS mount, sudo privileges
-- Speed: Minutes
+- Scope: Complete system workflows with real NFS/SMB mounts
+- Approach: Real server process, actual protocol clients, Docker containers for external services
+- Speed: Slow (10-60s per test)
 - Examples:
-  - `test/e2e/functional_test.go` - File operations (create, read, write, delete)
-  - `test/e2e/advanced_test.go` - Advanced scenarios (permissions, hard links)
-  - `test/e2e/scale_test.go` - Large file handling
-- Run with:
-  ```bash
-  sudo go test -tags=e2e -v ./test/e2e/ -timeout 30m
-  # Or using provided script:
-  cd test/e2e && sudo ./run-e2e.sh
-  ```
+  - User CRUD via CLI
+  - File operations via NFS mount
+  - Permission enforcement via SMB
+  - Server lifecycle management
+- Location: `test/e2e/` with `//go:build e2e` build tag
+- Requirements:
+  - NFS client installed (`mount`, `umount`)
+  - macOS or Linux (tests mount real NFS)
+  - Docker (for Localstack S3, PostgreSQL)
+  - `sudo` access (for NFS mounts)
 
 ## Common Patterns
 
-**Async Testing (Contexts & Timeouts):**
+**Async/Context Testing:**
+
 ```go
-func TestFlushWithTimeout(t *testing.T) {
-    t.Parallel()
+// Test context cancellation
+ctx, cancel := context.WithCancel(context.Background())
+cancel()  // Cancel before operation
+resp, err := fx.Handler.Write(ctx, req)
+require.Error(t, err)  // Should fail due to cancelled context
+```
 
-    // Create context with timeout
-    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    defer cancel()
+**Error Testing:**
 
-    // Use context in async operation
-    result, err := payloadSvc.Flush(ctx, payloadID)
-
+Use subtests to test different error conditions:
+```go
+t.Run("not found", func(t *testing.T) {
+    req := &handlers.ReadRequest{
+        Handle: []byte{}, // Invalid handle
+        Offset: 0,
+        Count:  100,
+    }
+    resp, err := fx.Handler.Read(fx.Context(), req)
     require.NoError(t, err)
-    assert.True(t, result.Finalized)
+    assert.EqualValues(t, types.NFS3ErrBadHandle, resp.Status)
+})
+
+t.Run("permission denied", func(t *testing.T) {
+    // Create file as one user
+    fx := handlertesting.NewHandlerFixture(t)
+    fileHandle := fx.CreateFile("file.txt", []byte("content"))
+
+    // Try to read as different user without permission
+    resp, err := fx.Handler.Read(fx.ContextWithUID(1001, 1001), &handlers.ReadRequest{
+        Handle: fileHandle,
+        Offset: 0,
+        Count:  100,
+    })
+    require.NoError(t, err)
+    assert.EqualValues(t, types.NFS3ErrAccess, resp.Status)
+})
+```
+
+**RFC Compliance Testing:**
+
+Tests reference specific RFC sections with clear test names:
+```go
+// TestWrite_RFC1813 tests WRITE handler behaviors per RFC 1813 Section 3.3.7.
+//
+// WRITE is used to write data to a regular file. It supports:
+// - Writing at any offset
+// - Extending files beyond their current size
+// - Different stability levels (UNSTABLE, DATA_SYNC, FILE_SYNC)
+// - WCC data for cache consistency
+
+// TestWrite_SimpleWrite tests writing to a file.
+func TestWrite_SimpleWrite(t *testing.T) {
+    // ...
 }
 ```
 
-**Error Testing Pattern:**
+**Cleanup Patterns:**
+
+Use `t.Cleanup()` for test-specific cleanup:
 ```go
-func TestNotFoundError(t *testing.T) {
-    t.Parallel()
+func TestUserManagement(t *testing.T) {
+    sp := helpers.StartServerProcess(t, "")
+    t.Cleanup(sp.ForceKill)  // Ensures server is killed even if test panics
 
-    t.Run("returns error for missing file", func(t *testing.T) {
-        t.Parallel()
-        store := memory.NewMemoryMetadataStoreWithDefaults()
+    cli := helpers.LoginAsAdmin(t, sp.APIURL())
 
-        _, err := store.GetFile(context.Background(), invalidHandle)
-
-        require.Error(t, err)
-        assert.True(t, metadata.IsNotFoundError(err))
+    username := "testuser"
+    t.Cleanup(func() {
+        _ = cli.DeleteUser(username)  // Clean up test data
     })
 
-    t.Run("error message includes path", func(t *testing.T) {
-        t.Parallel()
-        err := metadata.NewNotFoundError("/path/to/file", "file")
-
-        assert.Contains(t, err.Error(), "/path/to/file")
-    })
-}
-```
-
-**Cleanup Pattern:**
-```go
-func TestWithCleanup(t *testing.T) {
-    t.Parallel()
-
-    dir := t.TempDir()  // Automatically cleaned up after test
-    persister, err := wal.NewMmapPersister(dir)
+    user, err := cli.CreateUser(username, "password")
     require.NoError(t, err)
-
-    c := cache.NewWithWal(1<<30, persister)
-    defer func() {
-        _ = c.Close()  // Graceful cleanup
-    }()
-
-    // Test code
+    // Test continues...
 }
 ```
 
-**Concurrent Access Testing:**
-```go
-func TestConcurrentAccess(t *testing.T) {
-    t.Parallel()
+**Build Tags for Test Categories:**
 
-    store := memory.NewMemoryMetadataStoreWithDefaults()
-    var wg sync.WaitGroup
-
-    // Multiple goroutines accessing store
-    for i := 0; i < 10; i++ {
-        wg.Add(1)
-        go func(id int) {
-            defer wg.Done()
-            file, err := store.CreateFile(context.Background(), rootHandle,
-                fmt.Sprintf("file-%d", id), fileAttr)
-            require.NoError(t, err)
-            assert.NotNil(t, file)
-        }(i)
-    }
-
-    wg.Wait()
-}
-```
-
-## Test Helpers
-
-**t.Helper() Usage:**
-Always include `t.Helper()` at the start of helper functions:
-
-```go
-func (f *testFixture) authContext(uid, gid uint32) *metadata.AuthContext {
-    return &metadata.AuthContext{  // Missing t.Helper() - test call stack will show this line
-        ...
-    }
-}
-
-// BETTER:
-func (f *testFixture) authContext(uid, gid uint32) *metadata.AuthContext {
-    f.t.Helper()  // Excludes this function from test call stack
-    return &metadata.AuthContext{  // Call stack now shows caller of authContext()
-        ...
-    }
-}
-```
-
-**Assertion Helper Patterns:**
-
-```go
-// Use require for fatal assertions (stops test immediately)
-require.NoError(t, err)          // Stop test on error
-require.NotNil(t, result)        // Stop test if nil
-require.Equal(t, expected, got)  // Stop test if not equal
-
-// Use assert for non-fatal assertions (test continues)
-assert.EqualValues(t, types.NFS3OK, resp.Status)  // Soft fail
-assert.Contains(t, err.Error(), "expected text")   // Soft fail
-```
-
-## Build Tags
-
-**Integration Tests:**
-```go
-//go:build integration
-
-package store_test
-
-import "testing"
-
-// This test only runs with: go test -tags=integration ./...
-func TestS3Integration(t *testing.T) {
-    // Uses Localstack container
-}
-```
-
-**E2E Tests:**
+E2E tests use build tag to separate from regular tests:
 ```go
 //go:build e2e
 
 package e2e
 
-import "testing"
+import (
+	"testing"
+	"github.com/marmos91/dittofs/test/e2e/helpers"
+)
 
-// This test only runs with: go test -tags=e2e ./... or sudo ./run-e2e.sh
-// Requires: NFS client, mount capabilities, sudo
-func TestCreateFile_1MB(t *testing.T) {
-    // Real NFS mount testing
+func TestUserCRUD(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping user CRUD tests in short mode")
+	}
+	// ... test implementation
 }
 ```
 
-## Performance Testing
-
-**Benchmarking Pattern:**
-Located in `pkg/cache/benchmark_test.go`:
-
-```go
-func BenchmarkCache_SequentialWrite(b *testing.B) {
-    c := cache.New(0)
-
-    buf := make([]byte, 32<<10)  // 32KB buffer
-    for _, v := range buf {
-        v = byte(rand.Intn(256))
-    }
-
-    b.ReportAllocs()
-    b.ResetTimer()
-
-    for i := 0; i < b.N; i++ {
-        _ = c.WriteAt(context.Background(), "payload", 0, buf, 0)
-    }
-}
-```
-
-**Run Benchmarks:**
+Run regular tests:
 ```bash
-# Run all benchmarks
-go test -bench=. -benchmem ./pkg/cache/
-
-# Run specific benchmark with CPU count
-go test -bench=BenchmarkCache_SequentialWrite -benchtime=10s ./pkg/cache/
-
-# Save results
-go test -bench=. -benchmem -benchstat ./pkg/cache/
+go test ./...  # Excludes E2E tests
 ```
 
-## Special Directives
-
-**Skipping Tests:**
-```go
-func TestExpensiveOperation(t *testing.T) {
-    if testing.Short() {
-        t.Skip("Skipping expensive test in short mode")
-    }
-    // Long-running test
-}
-
-// Run with: go test -short ./...
+Run E2E tests:
+```bash
+go test -tags=e2e -v ./test/e2e/...
 ```
 
-**Timeout Control:**
-```go
-// Global timeout for all tests
-go test -timeout 30m ./...
+## Key Testing Packages
 
-// Per-test timeout handled via context
-ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-defer cancel()
-```
+**testify:** `github.com/stretchr/testify`
+- `assert` - Non-fatal assertions
+- `require` - Fatal assertions (stops test on failure)
+
+**testcontainers:** `github.com/testcontainers/testcontainers-go`
+- Manages Docker containers for PostgreSQL, Localstack (S3)
+- Shared containers across test suite for performance
+
+**Internal test helpers:** `test/e2e/{framework,helpers}/`
+- Server process management
+- CLI runner with authentication
+- Mount management and cleanup
+- Unique test resource naming
 
 ---
 
-*Testing analysis: 2026-02-02*
+*Testing analysis: 2026-02-09*

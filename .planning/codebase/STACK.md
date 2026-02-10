@@ -1,120 +1,155 @@
 # Technology Stack
 
-**Analysis Date:** 2026-02-02
+**Analysis Date:** 2026-02-09
 
 ## Languages
 
 **Primary:**
-- Go 1.25.0 - All server and client binaries (`cmd/dittofs/`, `cmd/dittofsctl/`)
+- Go 1.25.0 - Main codebase (`cmd/`, `pkg/`, `internal/`)
+- Go 1.24.6 - Kubernetes operator (`dittofs-operator/`)
 
 **Secondary:**
-- YAML - Configuration files and test data
-- Shell - Build scripts and development utilities
+- Shell - Installation and utility scripts
+- YAML - Configuration, Kubernetes manifests, GitHub Actions workflows
 
 ## Runtime
 
 **Environment:**
-- Go 1.25.0 runtime (Linux, macOS, Windows supported)
-- Alpine 3.21 Linux (production container)
-- macOS via Nix Darwin or native installation
+- Go runtime (no external VM/interpreter required)
+- Kubernetes 1.24+ (operator support)
+- Linux (NFS/SMB protocols), macOS (development)
 
 **Package Manager:**
-- Go Modules (go.mod/go.sum)
-- Lockfile: `go.sum` (present)
+- Go Modules
+- Lockfile: `go.mod`, `go.sum` present
 
 ## Frameworks
 
 **Core:**
-- Cobra v1.8.1 - CLI framework for both `dittofs` and `dittofsctl` binaries
-- chi/v5 v5.1.0 - HTTP router for REST API endpoints in `pkg/controlplane/api/`
-- GORM v1.31.1 - ORM for control plane database (SQLite/PostgreSQL)
+- chi/v5 1.8.1 - HTTP router for REST API (`pkg/controlplane/api/`)
+- gorm 1.31.1 - ORM for control plane database
+- cobra 1.8.1 - CLI framework (`cmd/dittofs/`, `cmd/dittofsctl/`)
+- viper 1.21.0 - Configuration management (`pkg/config/`)
 
-**Testing:**
-- testcontainers-go v0.40.0 - Docker container management for integration tests (S3, PostgreSQL)
-- stretchr/testify v1.11.1 - Assertions and mocking utilities
+**Storage/Data:**
+- badger/v4 4.5.2 - Embedded key-value store for metadata (`pkg/metadata/store/badger/`)
+- pgx/v5 5.7.6 - PostgreSQL driver for metadata (`pkg/metadata/store/postgres/`)
+- sqlite v1.11.0 - SQLite for control plane store (`pkg/controlplane/store/`)
+- aws-sdk-go-v2 1.39.6 - S3 client for block storage (`pkg/payload/store/s3/`)
+
+**Testing/E2E:**
+- testcontainers-go 0.40.0 - Docker-based test infrastructure
+- testify 1.11.1 - Assertion library
+
+**Observability:**
+- prometheus/client_golang 1.23.2 - Prometheus metrics (`pkg/metrics/`)
+- opentelemetry 1.36.0+ - Distributed tracing (optional, configurable)
+- pyroscope-go 1.2.7 - Continuous profiling (optional, configurable)
 
 **Build/Dev:**
-- golangci-lint - Static analysis (configured via `.golangci.yml`)
-- goreleaser - Cross-platform binary builds and releases (`.goreleaser.yml`)
+- golang-migrate/migrate/v4 4.19.1 - Database migrations
+- go-xdr 0.0.0-20170124162913 - XDR encoding for NFS/RPC protocol
+- gokrb5/v8 8.4.4 - Kerberos authentication (SMB support)
 
 ## Key Dependencies
 
 **Critical:**
-- rasky/go-xdr v0.0.0-20170124162913 - XDR encoding/decoding for NFS wire protocol
-- aws-sdk-go-v2 v1.39.6 - AWS S3 client for block storage (`pkg/payload/store/s3/`)
-- dgraph-io/badger/v4 v4.5.2 - Embedded key-value store for metadata (`pkg/metadata/store/badger/`)
-- jackc/pgx/v5 v5.7.6 - PostgreSQL driver for control plane store
-- glebarez/sqlite v1.11.0 - SQLite driver for single-node control plane
+- github.com/aws/aws-sdk-go-v2 + s3 - Production S3 storage backend
+- github.com/jackc/pgx/v5 - PostgreSQL for HA deployments
+- github.com/dgraph-io/badger/v4 - Persistent embedded metadata store
+- github.com/glebarez/sqlite - SQLite control plane database
+- gorm.io/gorm - ORM for database abstraction
 
 **Infrastructure:**
-- prometheus/client_golang v1.23.2 - Prometheus metrics collection (`pkg/metrics/`)
-- go-opentelemetry v1.37.0, otlptrace v1.32.0 - Distributed tracing with OTLP (`pkg/config/`)
-- grafana/pyroscope-go v1.2.7 - Continuous profiling for performance analysis
-- golang-jwt/jwt/v5 v5.3.0 - JWT authentication for REST API (`internal/controlplane/api/auth/`)
-- golang-migrate/migrate/v4 v4.19.1 - Database migration tool for PostgreSQL (`pkg/metadata/store/postgres/`)
-- jcmturner/gokrb5/v8 v8.4.4 - Kerberos authentication for SMB protocol
-- go-chi/chi/v5 v5.1.0 - HTTP routing
-- go-playground/validator/v10 v10.28.0 - Struct validation for config and API payloads
-- invopop/jsonschema v0.13.0 - JSON schema generation from Go structs
+- github.com/go-chi/chi/v5 - HTTP routing
+- github.com/spf13/cobra - CLI command structure
+- github.com/spf13/viper - Config file parsing and env var binding
+- github.com/golang-jwt/jwt/v5 - JWT authentication for API
 
-**CLI Utilities:**
-- spf13/cobra v1.8.1 - CLI subcommand framework
-- spf13/viper v1.21.0 - Configuration file parsing (YAML/TOML)
-- manifoldco/promptui v0.9.0 - Interactive terminal prompts (`internal/cli/prompt/`)
-- olekukonko/tablewriter v0.0.5 - ASCII table formatting for CLI output
+**Cryptography:**
+- golang.org/x/crypto - Password hashing, encryption primitives
+
+**Validation:**
+- github.com/go-playground/validator/v10 - Configuration validation
+
+**Utilities:**
+- github.com/google/uuid - UUID generation for resource IDs
+- github.com/invopop/jsonschema - JSON schema generation
+- github.com/mitchellh/mapstructure - YAML→Go struct mapping
 
 ## Configuration
 
 **Environment:**
-- YAML configuration file (default: `~/.config/dittofs/config.yaml`)
-- DITTOFS_* environment variable overrides via Viper
-- Precedence: CLI flags > env vars > config file > defaults
+- YAML-based configuration file (primary)
+- Environment variables with `DITTOFS_*` prefix (override)
+- CLI flags (highest priority)
 
 **Build:**
-- `flake.nix` - Nix flake for reproducible development environment
-- `.goreleaser.yml` - Cross-platform binary building
-- `Dockerfile` - Multi-stage Alpine-based container image
-- `.golangci.yml` - Linting configuration
+- `.golangci.yml` - Go linter configuration
+- `.goreleaser.yml` - Release artifact building
+- `Dockerfile` - Multi-stage Alpine-based image
+- `docker-compose.yml` - Local development environment
+
+**Key Config Areas:**
+- Logging (level, format: text/json, output)
+- Telemetry (OpenTelemetry OTLP endpoint, Pyroscope profiling)
+- Database (SQLite default, PostgreSQL for HA)
+- Cache (WAL-backed, mmap persistence)
+- Metrics (Prometheus on port 9090)
+- API (REST on port 8080, JWT authentication)
 
 ## Platform Requirements
 
 **Development:**
-- Go 1.25.0
-- Docker (for testcontainers-based integration tests)
-- NFS client utilities (for end-to-end testing)
-- SQLite and PostgreSQL drivers (bundled via GORM)
+- Go 1.25+
+- Docker (for E2E tests with NFS mount)
+- Nix Flake (optional, for declarative environment via `flake.nix`)
+- SQLite 3.x (built into Go driver)
 
 **Production:**
-- Deployment targets: Linux (x86_64, arm64), macOS (x86_64, arm64), Windows
-- Container deployment: Docker/Kubernetes (Alpine 3.21 base)
-- Persistent storage: SQLite (embedded) or PostgreSQL (recommended for HA)
-- Optional: AWS S3 bucket for content storage (or S3-compatible service like MinIO)
-- Optional: Prometheus-compatible metrics collector
-- Optional: OTLP-compatible trace collector (Jaeger, Tempo, etc.)
-- Optional: Pyroscope server for continuous profiling
+- Docker or Kubernetes (1.24+)
+- PostgreSQL 12+ (optional, for HA control plane)
+- AWS S3 or S3-compatible service (optional, for durable block storage)
+- NFS client kernel module (for client mounting)
+- SMB client (optional, for SMB protocol support)
 
-## Key Configuration Files
+**Runtime Ports:**
+- 12049/tcp - NFS server (default, configurable)
+- 12445/tcp - SMB server (default, configurable)
+- 8080/tcp - REST API (health checks, management)
+- 9090/tcp - Prometheus metrics (optional)
 
-**`pkg/config/config.go`:**
-- Defines Config struct with nested: Logging, Telemetry, Database, Metrics, ControlPlane, Cache, Admin
-- Supports YAML/TOML via Viper
-- Environment variable override pattern: `DITTOFS_SECTION_KEY=value`
+## Database Support
 
-**`pkg/config/defaults.go`:**
-- Default values for logging (INFO, text, stdout), shutdown timeout (30s), cache size (1GB), metrics port (9090)
-- JWT token defaults: 15min access, 7day refresh
-- Database: SQLite at `~/.config/dittofs/controlplane.db`
+**Control Plane (User/Group/Share Management):**
+- SQLite (default, single-node) - Zero external dependencies
+- PostgreSQL (HA-capable) - pgx driver, GORM adapter
 
-**`pkg/config/stores.go`:**
-- Creates metadata stores (memory, BadgerDB, PostgreSQL) from config
-- Creates block stores (memory, filesystem, S3) from config
-- Named store pattern enables reuse across shares
+**Metadata Store (File Structure):**
+- Memory (ephemeral, testing)
+- BadgerDB (persistent, single-node)
+- PostgreSQL (distributed, multi-node)
 
-**`pkg/controlplane/store/gorm.go`:**
-- Database initialization for SQLite or PostgreSQL
-- Auto-migration of schema on startup
-- Default PostgreSQL: localhost:5432, disable SSL mode
+**Block Store (File Content):**
+- Memory (ephemeral, testing)
+- Filesystem (local/NAS)
+- S3 (AWS S3, MinIO, Localstack, Ceph)
+
+## Encryption & Security
+
+**Password Hashing:**
+- bcrypt (Unix users)
+- NT hash (SMB users)
+
+**API Authentication:**
+- JWT with HMAC signing (configurable secret via env)
+- Access tokens (default 15m lifetime)
+- Refresh tokens (default 7d lifetime)
+
+**TLS/SSL:**
+- Optional for external integrations (S3, PostgreSQL, OTLP)
+- No built-in TLS for NFS/SMB (network-level security recommended)
 
 ---
 
-*Stack analysis: 2026-02-02*
+*Stack analysis: 2026-02-09*

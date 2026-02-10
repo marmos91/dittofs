@@ -1,229 +1,550 @@
 # Codebase Concerns
 
-**Analysis Date:** 2026-02-02
+**Analysis Date:** 2026-02-09
 
 ## Tech Debt
 
-### NTLM Encryption Not Implemented
-- **Issue**: NTLM security negotiation flags advertise 128-bit and 56-bit encryption support (`Flag128`, `Flag56`), but no actual encryption is implemented
-- **Files**: `internal/auth/ntlm/ntlm.go` (lines 343-354)
-- **Impact**: SMB clients may fail authentication if they require encrypted connections; security weakness for sensitive data in transit
-- **Fix approach**: Implement session key derivation and RC4/AES encryption per MS-NLMP specification; requires adding ciphertext handling in SMB request/response pipeline
+### Missing NTLM Encryption Implementation
 
-### Link Count Hardcoded in SMB
-- **Issue**: SMB handler returns hardcoded `NumberOfLinks: 1` instead of tracking actual hard link count
-- **Files**: `internal/protocol/smb/v2/handlers/converters.go` (line 140)
-- **Impact**: SMB clients receive incorrect link count; hard links created via NFS won't be properly reported to SMB clients
-- **Fix approach**: Thread actual link count from `FileAttr.LinkCount` through converter; ensure all backends populate link count correctly (memory, badger, postgres all support it)
+**Issue:** NTLM authentication advertises encryption support (Flag128, Flag56) but does not actually implement encryption.
 
-### Storage Stats Tracking Not Implemented
-- **Issue**: `PayloadService.GetStorageStats()` returns hardcoded `UsedSize: 0` instead of calculating actual used space
-- **Files**: `pkg/payload/service.go` (line 326)
-- **Impact**: REST API reports zero disk usage; admin tools can't monitor storage consumption
-- **Fix approach**: Implement proper cache stats aggregation; consider storing in metadata service for efficiency (currently requires scanning all files)
+**Files:** `internal/auth/ntlm/ntlm.go` (lines 343-356)
 
-### Prefetch GET Errors Silently Ignored
-- **Issue**: Prefetch requests in transfer queue silently ignore download errors without logging
-- **Files**: `pkg/payload/transfer/queue.go` (line 277): `_ = q.processDownload(ctx, req) // Best effort - ignore errors`
-- **Impact**: Prefetch failures go undetected; metrics don't reflect download failures for prefetch operations
-- **Fix approach**: Log prefetch errors at DEBUG level; track failed prefetch attempts in metrics
+**Impact:** SMB clients connecting with encryption negotiated will believe traffic is encrypted when it is not. This is a critical security gap for SMB shares exposed over untrusted networks.
 
-### Share List Cached Inefficiently in Pipe CREATE
-- **Issue**: SMB pipe CREATE handler refreshes entire share list from registry on every pipe creation
-- **Files**: `internal/protocol/smb/v2/handlers/create.go` (lines 618-620)
-- **Impact**: High latency under concurrent pipe creation; scales linearly with number of shares
-- **Fix approach**: Cache share list with invalidation events on share add/remove; use event-driven updates instead of eager refresh
+**Current state:**
+- Server advertises `Flag128` and `Flag56` capability flags
+- Session key exchange is negotiated
+- Message signing is advertised and processed (dummy signatures only)
+- Actual RC4/AES traffic encryption is not implemented per MS-NLMP spec
 
-### ReadDirPlus GetFile() Duplication
-- **Issue**: `ReadDirPlus` calls `GetFile()` to fetch entry attributes even if directory listing already populated them
-- **Files**: `internal/protocol/nfs/v3/handlers/readdirplus.go`
-- **Impact**: Unnecessary metadata store lookups; degrades performance for large directories
-- **Fix approach**: Check if entry attributes already populated from listing before calling `GetFile()`
+**Fix approach:**
+1. Implement session key derivation (NLSSP signing key / sealing key)
+2. Implement RC4 stream cipher for sealing (backwards compatibility with legacy clients)
+3. Add AES-CCM support for newer clients
+4. Remove or correct capability flags if encryption not implemented
+5. Add integration tests verifying encrypted traffic end-to-end
+
+**Priority:** High (security issue)
+
+### Incomplete Storage Statistics Tracking
+
+**Issue:** `UsedSize` field in `StorageStats` is hardcoded to zero and never updated.
+
+**Files:** `pkg/payload/service.go` (line 326)
+
+**Impact:** Cannot determine actual disk usage from API calls. Users cannot monitor storage consumption or implement storage quotas. Affects capacity planning and billing scenarios.
+
+**Current state:**
+```go
+UsedSize: 0, // TODO: Implement proper stats tracking
+```
+
+**Fix approach:**
+1. Track cumulative bytes written per file via cache dirty bytes
+2. Account for uploaded blocks in block store (deduped blocks count once)
+3. Add mechanism to query block store for actual stored size (S3: use ListObjects summaries)
+4. Update StorageStats on flush and cache eviction
+5. Add test coverage for stats accuracy
+
+**Priority:** Medium (observability/UX)
+
+### SMB Pipe Share List Refresh Inefficiency
+
+**Issue:** Share list is queried from registry on every SMB pipe CREATE, causing N+1 lookups under load.
+
+**Files:** `internal/protocol/smb/v2/handlers/create.go` (lines 638-654)
+
+**Impact:** Each pipe creation (e.g., during share enumeration via SRVSVC) triggers a registry scan. This scales poorly with number of shares and concurrent clients. Can cause latency spikes.
+
+**Current state:**
+```go
+// TODO: This is called on every pipe CREATE which is inefficient under high load.
+// Consider caching the share list and invalidating on share add/remove events.
+if h.Registry != nil {
+    shareNames := h.Registry.ListShares()
+    // ... iterate and build share info
+}
+```
+
+**Fix approach:**
+1. Cache share list in pipe handler with TTL (e.g., 30 seconds)
+2. Implement cache invalidation on share create/delete events from Runtime
+3. Alternatively, move share info to pipe-local state instead of dynamic lookup
+4. Add metrics to measure cache hit ratio and request latency
+
+**Priority:** Medium (performance)
+
+### Redundant File Attribute Lookups in READDIRPLUS
+
+**Issue:** `READDIRPLUS` calls `GetFile()` after using `GetChild()`, even when entry attributes are already available.
+
+**Files:** `internal/protocol/nfs/v3/handlers/readdirplus.go` (lines 488-494)
+
+**Impact:** Double metadata fetches for each directory entry, especially inefficient with BadgerDB/PostgreSQL backends. Scales with directory size (O(N) redundant queries).
+
+**Current state:**
+```go
+// TODO: Use entry.Attr if populated to avoid this GetFile() call
+entryFile, err := metaSvc.GetFile(ctx.Context, entryHandle)
+```
+
+**Fix approach:**
+1. Return file attributes from `GetChild()` operation
+2. Check if `entry.Attr` is populated before calling `GetFile()`
+3. Only fetch missing attributes if entry.Attr is nil
+4. Add benchmark comparing old vs. new approach
+5. Consider extending MetadataStore interface to return attributes directly
+
+**Priority:** Medium (performance optimization)
 
 ## Known Bugs
 
-### Parent Directory Navigation Not Handled in SMB
-- **Issue**: SMB CREATE handler doesn't properly handle parent directory navigation in path (`..`)
-- **Files**: `internal/protocol/smb/v2/handlers/create.go` (line 754)
-- **Impact**: Clients attempting to open files in parent directories may fail; affects relative path handling
-- **Fix approach**: Implement parent directory traversal in path resolution; validate against share root boundary
+### NFS Client Panic with Apple Filesystems
+
+**Issue:** Apple NFS client sometimes sends null pointer dereference with com.apple.filesystems.nfs.
+
+**Files:** `pkg/adapter/nfs/nfs_connection.go` (line 295)
+
+**Symptom:** NFS operations occasionally trigger a panic in Apple's NFS driver when server behavior is at protocol boundary.
+
+**Trigger:** Unidentified specific sequence; documented but not fully reproducible.
+
+**Workaround:** Connection-level panic recovery is in place; individual requests are isolated from one another.
+
+**Status:** Mitigated (not fully root-caused). Should investigate with Apple support or NSF client testing on specific macOS versions.
 
 ## Security Considerations
 
-### NTLM Flags Advertise Unsupported Encryption
-- **Risk**: NTLM client may select encryption algorithms (RC4/AES) that aren't implemented, leading to authentication failure or fallback to unencrypted
-- **Files**: `internal/auth/ntlm/ntlm.go` (lines 343-355)
-- **Current mitigation**: Dummy signatures included (Flag_AlwaysSign), but actual message encryption not implemented
-- **Recommendations**:
-  1. Either implement encryption per MS-NLMP or remove encryption flags from negotiation
-  2. Implement session key derivation (HMAC-MD5 over client/server nonces + credential material)
-  3. Add AES-CCM-128 (preferred) or RC4-HMAC-MD5 (legacy) encryption for message confidentiality
+### Lack of Production Security Audit
 
-### Limited Auth Provider Support
-- **Risk**: Only AUTH_UNIX (NFS) and NTLM (SMB) supported; no Kerberos, no strong auth for NFS
-- **Files**: `internal/auth/ntlm/ntlm.go`, `internal/protocol/nfs/dispatch.go`
-- **Current mitigation**: Network-level security must be provided (VPN recommended)
-- **Recommendations**:
-  1. Document Kerberos as non-supported; recommend operating in isolated networks
-  2. Consider SPNEGO support for Kerberos interoperability in future releases
+**Risk:** DittoFS has not undergone security audit. Authentication, authorization, and data protection mechanisms have not been reviewed by security experts.
 
-### Hard Link Reference Counting Not Validated
-- **Risk**: While link counting logic is implemented, there's no atomic guarantee that decrementing RefCount and deleting files happens atomically
-- **Files**: `pkg/metadata/file.go` (various operations that modify link counts)
-- **Current mitigation**: Single-threaded metadata operations within transactions
-- **Recommendations**: Add assertions that validate link count invariants during filesystem recovery; implement reference count validation tool
+**Files:** `internal/auth/ntlm/`, `internal/auth/spnego/`, `pkg/controlplane/api/`
+
+**Current mitigation:**
+- AUTH_UNIX credentials are extracted from client TCP connection only
+- User/group validation done via database lookup
+- JWT tokens used for API authentication (standard implementation)
+- No built-in TLS (recommended to run behind VPN/network encryption)
+
+**Recommendations:**
+1. Deploy behind VPN or encrypted tunnel (WireGuard, VPN gateway, etc.)
+2. Use network-level firewall to restrict client access
+3. Enable API authentication and never expose HTTP port to untrusted networks
+4. Consider third-party security audit before production use with sensitive data
+5. Implement comprehensive audit logging for compliance scenarios
+
+**Priority:** High (for production deployments)
+
+### NTLM Security Issues (Above)
+
+See "Missing NTLM Encryption Implementation" section.
+
+### Weak API Default Configuration
+
+**Risk:** Default API configuration may expose services when misconfigured.
+
+**Files:** `pkg/config/config.go`, `pkg/controlplane/api/router.go`
+
+**Current state:**
+- API listens on 0.0.0.0:8080 by default
+- Metrics listens on 0.0.0.0:9090 by default
+- No TLS by default
+- Authentication required only for API endpoints
+
+**Recommendations:**
+1. Document that API should never be exposed to untrusted networks
+2. Add warnings in config validation if API binds to 0.0.0.0 in non-container environments
+3. Consider default binding to localhost (127.0.0.1) instead
+4. Add TLS support with self-signed cert generation option
+
+**Priority:** Medium (operational security)
 
 ## Performance Bottlenecks
 
-### Prefetch Queue Fills Without Backpressure
-- **Problem**: Prefetch requests can overload transfer queue without limiting incoming requests; low-priority prefetch may starve uploads
-- **Files**: `pkg/payload/transfer/manager.go`, `pkg/payload/transfer/queue.go`
-- **Cause**: Prefetch enqueue returns immediately; no capacity check before enqueuing; workers process in priority order but queue still accumulates
-- **Improvement path**:
-  1. Add queue depth monitoring per transfer type
-  2. Implement dynamic backpressure: when prefetch queue > threshold, drop oldest prefetch requests
-  3. Reduce `PrefetchBlocks` config default from 4 to 2 for better responsiveness
+### Cache Miss Overhead for Large Files
 
-### Cache Eviction Algorithm Not Optimal
-- **Problem**: LRU eviction is O(n) scan per eviction; high CPU usage under cache pressure
-- **Files**: `pkg/cache/eviction.go`
-- **Cause**: No sorted LRU list; must scan all entries to find LRU candidates
-- **Improvement path**:
-  1. Maintain ordered list (doubly-linked list or heap) of entries by access time
-  2. Move accessed entry to head on write (O(1) removal + insertion)
-  3. Evict from tail efficiently without scan
+**Problem:** Files larger than cache capacity cause repeated downloads of the same blocks. Sequential reads on multi-GB files may thrash cache.
 
-### S3 Stats Caching May Be Too Aggressive
-- **Problem**: Stats caching with TTL can return stale size information to clients
-- **Files**: `pkg/metadata/store/badger/store.go` (stats cache)
-- **Cause**: BadgerDB caches stat results to avoid expensive scans (macOS Finder hammers FSSTAT)
-- **Improvement path**:
-  1. Document stat freshness guarantees in configuration
-  2. Allow disabling cache for accuracy-critical deployments
-  3. Consider hybrid: serve cached stats for human-facing tools, bypass for programmatic clients
+**Files:** `pkg/cache/read.go` (lines 46-68), `pkg/payload/transfer/manager.go` (lines 874-942)
 
-### Concurrent Connection Semaphore Contention
-- **Problem**: Each connection acquisition/release acquires semaphore lock; high lock contention at scale
-- **Files**: `pkg/adapter/nfs/nfs_adapter.go` (connection semaphore)
-- **Cause**: Single semaphore protecting all connections; Acquire/Release have lock overhead
-- **Improvement path**:
-  1. Use lock-free atomic compare-and-swap for semaphore (if counter-based)
-  2. Consider per-CPU semaphore sharding for NUMA systems
-  3. Benchmark contention at 1000+ concurrent connections
+**Current behavior:**
+- Cache size configurable but typically 1-4GB
+- Files larger than cache are read with repeated eviction/re-download
+- Prefetch helps but doesn't prevent eviction of just-read blocks
+- LRU eviction may evict blocks needed by sequential read workloads
+
+**Improvement path:**
+1. Implement sequential access pattern detection
+2. Adjust prefetch window based on read pattern (larger for sequential, smaller for random)
+3. Consider pinning blocks during sequential reads
+4. Add metrics to measure prefetch hit ratio and cache efficiency
+5. Document cache sizing recommendations for workload
+
+**Priority:** Low (addressed by proper cache sizing)
+
+### S3 Multipart Upload Complexity
+
+**Problem:** Large file uploads coordinate multiple goroutines with potential for partial failures during upload.
+
+**Files:** `pkg/payload/store/s3/store.go`, `pkg/payload/transfer/manager.go`
+
+**Current behavior:**
+- Multipart uploads are chunked (default 5MB per part)
+- If single part fails, entire upload may be orphaned
+- Cleanup is not guaranteed on upload abort
+- Concurrent uploads may fragment object store
+
+**Risk:** AWS S3 charges for orphaned multipart uploads. Extended outages could lead to storage cost overages.
+
+**Improvement path:**
+1. Add lifecycle policy validation/recommendations in docs
+2. Implement multipart upload cleanup on transfer manager shutdown
+3. Add metrics for failed uploads and cleanup attempts
+4. Consider implementing exponential backoff with jitter (currently implemented)
+5. Add integration tests for partial upload recovery
+
+**Priority:** Low (cloud provider management recommended)
 
 ## Fragile Areas
 
-### Metadata Transaction Nesting
-- **Files**: `pkg/metadata/service.go`, `pkg/metadata/store/badger/transaction.go`, `pkg/metadata/store/postgres/transaction.go`
-- **Why fragile**: Code doesn't explicitly prevent nested transactions; if caller begins transaction and delegates to another function that also begins transaction, deadlock occurs
-- **Safe modification**: Document and enforce "no nested transactions" rule; consider adding runtime detection in development builds
-- **Test coverage**: Limited testing of nested transaction scenarios; E2E tests should cover concurrent operations
+### Transfer Manager with Content-Addressed Deduplication
 
-### Hard Link Cycle Detection
-- **Files**: `pkg/metadata/file.go` (rename operations), `pkg/metadata/store/*/transaction.go`
-- **Why fragile**: While cycle checks exist, they're inline with rename logic; if rename path changes, cycle check may be bypassed
-- **Safe modification**: Extract cycle detection into separate, independently testable function; add assertion in rename handlers
-- **Test coverage**: Edge cases like renaming across shares not covered
+**Files:** `pkg/payload/transfer/manager.go` (1345 lines)
 
-### File Handle Encoding/Decoding
-- **Files**: `pkg/metadata/store/memory/store.go` (unsafe.String usage), `internal/protocol/nfs/xdr/filehandle.go`
-- **Why fragile**: Memory store uses `unsafe.String()` for handle conversion; assumes handle bytes don't change during conversion
-- **Safe modification**: Use standard string conversion with allocation; profile impact before assuming performance is critical
-- **Test coverage**: Handle stability tests exist but don't cover all backends
+**Why fragile:**
+- Complex state machine (pending → uploading → uploaded with concurrent transitions)
+- Multiple error recovery paths (block hash conflicts, ObjectStore failures, block store failures)
+- In-flight deduplication tracking adds synchronization complexity
+- Finalization callback ordering sensitive to race conditions
+- WAL recovery on startup must handle partial uploads
+
+**Safe modification:**
+1. Always test with concurrent uploads and failures
+2. Use table-driven tests for state transitions
+3. Add race detector tests (go test -race)
+4. Document state machine transitions in comments
+5. Test block deduplication scenarios explicitly
+
+**Test coverage:**
+- Manager unit tests: `manager_test.go` (1187 lines)
+- Queue tests: `queue_test.go`
+- Integration tests: `test/integration/`
+- Missing: Chaos tests for S3 failures during upload
+
+**Priority:** Medium (add chaos testing)
+
+### NFS Dispatch and Protocol Handler Integration
+
+**Files:** `internal/protocol/nfs/dispatch.go` (962 lines), `internal/protocol/nfs/v3/handlers/`
+
+**Why fragile:**
+- Auth context extraction tightly coupled to RPC message parsing
+- Export-level access control (AllSquash, RootSquash) applies during mount
+- Error handling differs between handler and NFS error codes
+- File handle encoding varies by metadata backend (path vs UUID)
+- WCC (weak cache consistency) data requires pre/post attributes
+
+**Safe modification:**
+1. Keep protocol-level changes isolated from business logic
+2. Test with multiple NFS clients (Linux, macOS, Windows Subsystem for Linux)
+3. Verify error codes against RFC 1813
+4. Test with various squash configurations
+5. Ensure file handles remain stable across server restarts
+
+**Test coverage:**
+- E2E tests: `test/e2e/`
+- pjdfstest compliance: 8788/8789 tests pass (99.99%)
+- Missing: Edge cases around simultaneous client operations
+
+**Priority:** Medium (add concurrent client tests)
+
+### PostgreSQL Metadata Store Link Count Handling
+
+**Files:** `pkg/metadata/store/postgres/transaction.go` (1061 lines)
+
+**Why fragile:**
+- Link counts tracked in separate table (link_counts), not files.nlink
+- Silly rename handling (NFS) sets link_count=0, requires GREATEST() protection
+- Cross-directory directory moves require parent nlink updates
+- SGID directory inheritance has specific clearance rules
+
+**Safe modification:**
+1. Test all link count scenarios (hard link, mkdir, rmdir, cross-dir move)
+2. Verify silly rename cleanup works correctly
+3. Test SGID inheritance with group membership checks
+4. Run full pjdfstest suite after changes
+5. Test concurrent directory operations
+
+**Test coverage:**
+- PostgreSQL-specific tests in metadata test suite
+- pjdfstest includes link count tests
+- Missing: Concurrent link count modification stress tests
+
+**Priority:** Low (well-tested but complex)
 
 ### SMB Session State Machine
-- **Files**: `internal/protocol/smb/session/manager.go`, `pkg/adapter/smb/smb_connection.go`
-- **Why fragile**: Session state transitions aren't explicitly guarded; concurrent operations may transition state incorrectly
-- **Safe modification**: Implement explicit state machine with guard clauses; log state transitions at DEBUG level
-- **Test coverage**: Limited race condition testing; should run with `-race` flag more thoroughly
 
-### Deferred Metadata Commits
-- **Files**: `pkg/metadata/service.go` (lines 53-59), `pkg/metadata/pending_writes.go`
-- **Why fragile**: Deferred commits merge pending state without triggering store updates; if pending state accumulates unbounded, memory grows
-- **Safe modification**:
-  1. Add periodic flush of pending state (every N writes or time-based)
-  2. Add metrics to track pending write count
-  3. Implement bounded pending write buffer
-- **Test coverage**: Load tests should verify pending state doesn't accumulate indefinitely
+**Files:** `pkg/adapter/smb/smb_adapter.go` (805 lines), `internal/protocol/smb/session/manager.go`
+
+**Why fragile:**
+- Session lifecycle tied to TCP connection but can outlive it
+- Signing state must be maintained across multiple requests
+- Context variables tied to session (encryption keys, signing keys)
+- Concurrent requests on same session require serialization
+
+**Safe modification:**
+1. Test session creation/destruction with concurrent requests
+2. Verify signing/encryption state consistency
+3. Test session timeout handling
+4. Test with concurrent clients and session reuse
+5. Add metrics for session lifecycle
+
+**Test coverage:**
+- Handler tests: `handler_test.go` (720 lines)
+- Integration tests for SMB operations
+- Missing: Concurrent session stress tests
+
+**Priority:** Medium (add concurrent session tests)
 
 ## Scaling Limits
 
-### Single Cache Instance for All Shares
-- **Current capacity**: 1 global cache; bounded by `maxSize` parameter
-- **Limit**: With 100+ shares, cache contention increases; single lock contects become bottleneck
-- **Scaling path**:
-  1. Implement per-file micro-caching or partition cache by hash(payloadID)
-  2. Add cache sharding to reduce lock contention
-  3. Profile cache lock hold times under workload
+### Single-Node Architecture
 
-### Memory Store Metadata Is Ephemeral
-- **Current capacity**: Unbounded in-memory map growth with number of files
-- **Limit**: Server crash or OOM if file count exceeds available RAM
-- **Scaling path**: Use BadgerDB or PostgreSQL backend; memory store is testing-only
+**Current capacity:**
+- Single server process
+- Limited by machine CPU and memory
+- Throughput depends on machine specs and network
+- No replication or HA
 
-### Control Plane Store Scale
-- **Current capacity**: SQLite single-file; BadgerDB single-instance; PostgreSQL distributed
-- **Limit**: SQLite performance degrades with 1000+ users/groups; no HA support
-- **Scaling path**:
-  1. For production: use PostgreSQL with read replicas
-  2. For HA: implement clustering at application layer (future work)
+**Limit:** Enterprise deployments requiring 99.99% uptime, disaster recovery, or geo-distribution.
+
+**Scaling path:**
+1. Consider stateless design for horizontal scaling
+2. Implement distributed metadata store (PostgreSQL already supports this)
+3. Add block store replication via S3 cross-region replication
+4. Design cache coordination for multi-node scenarios
+5. Implement distributed locking for concurrent access
+
+**Priority:** Low (future enhancement)
+
+### Cache Size Limitations
+
+**Current capacity:**
+- Cache size configurable (default unlimited)
+- Large writes to cache can cause OOM
+- ErrCacheFull indicates backpressure but clients may not handle it
+
+**Limit:** Large concurrent file transfers or workloads with many small files.
+
+**Scaling path:**
+1. Implement bounded queue before cache (backpressure earlier)
+2. Add adaptive cache sizing based on available memory
+3. Implement spill-to-disk (mmap-backed cache) for overflow
+4. Add circuit breaker pattern for overload scenarios
+
+**Priority:** Medium (affects large file workloads)
 
 ## Dependencies at Risk
 
-### NTLM Implementation Incomplete
-- **Risk**: Security flags indicate support for encryption but don't implement it
-- **Impact**: SMB clients requiring encryption will fail; potential for security downgrades
-- **Migration plan**:
-  1. Short term: Remove encryption flags from negotiation to prevent failures
-  2. Medium term: Implement session key derivation and AES-CCM-128 encryption
-  3. Document as breaking change in release notes
+### Cobra CLI Framework
 
-### BadgerDB Stats Caching TTL
-- **Risk**: Cached stats may serve stale information; no invalidation on write
-- **Impact**: Admin tools show outdated storage usage; capacity planning based on incorrect data
-- **Migration plan**:
-  1. Add configuration option for stats cache TTL (0 = disabled)
-  2. Implement write-through invalidation (when file truncated, invalidate stats)
-  3. Document stat freshness guarantees
+**Risk:** Stable but major version is v1; framework not under active development.
+
+**Impact:** New CLI commands require manual setup; no built-in features for newer patterns.
+
+**Migration plan:** Continue using Cobra; it is mature and stable. No alternative required unless new major CLI patterns emerge.
+
+**Priority:** Low (framework is stable)
+
+### GORM Database ORM
+
+**Risk:** Major abstraction over SQL; can hide query inefficiencies.
+
+**Impact:** Complex queries (link count handling, permission checks) may not be optimized. Requires SQL-level understanding.
+
+**Current mitigation:**
+- SQL queries are visible and auditable
+- Test coverage includes performance benchmarks
+- PostgreSQL store has been optimized for common operations
+
+**Recommendations:**
+1. Continue monitoring query performance metrics
+2. Use EXPLAIN plans for new complex queries
+3. Consider raw SQL for performance-critical paths
+4. Add query timeout protection
+
+**Priority:** Low (mitigated by test coverage)
+
+### AWS SDK Dependency Chain
+
+**Risk:** Large transitive dependency tree; security updates may be frequent.
+
+**Impact:** Vulnerability in S3 client or its dependencies could affect all users.
+
+**Current mitigation:**
+- Use official AWS SDK (aws-sdk-go-v2)
+- CI should run go mod tidy and check for vulnerabilities
+- Pin versions in go.mod
+
+**Recommendations:**
+1. Monitor security advisories in AWS SDK
+2. Update dependencies regularly
+3. Use go mod verify to detect tampering
+4. Consider alternatives (MinIO SDK) for object storage abstraction
+
+**Priority:** Low (standard practice)
+
+## Missing Critical Features
+
+### Network Lock Manager (NLM) Protocol
+
+**Problem:** File locking (flock, fcntl, lockf) is not implemented.
+
+**Impact:** Applications requiring file locks cannot use DittoFS. Multiple clients can write to same file simultaneously without coordination.
+
+**Blocks:** Enterprise applications (databases, ERP systems) that require advisory locking.
+
+**Effort estimate:** High (NLM protocol is complex; requires distributed lock coordinator).
+
+**Alternative approaches:**
+1. Document lack of support clearly
+2. Recommend application-level locking
+3. Consider NFSv4 in future (has integrated locking)
+
+**Priority:** Low (known limitation, documented)
+
+### Block-Level Snapshots
+
+**Problem:** No snapshot capability for backup/recovery scenarios.
+
+**Impact:** Cannot create point-in-time backups without file-level consistency guarantees.
+
+**Blocks:** Backup/disaster recovery workflows.
+
+**Effort estimate:** Medium (requires backup API + storage backend snapshot integration).
+
+**Alternative approaches:**
+1. Document S3 snapshot/versioning as mitigation
+2. Provide backup/restore API for control plane state
+3. Consider incremental backup support in future
+
+**Priority:** Low (S3 versioning provides some mitigation)
+
+### Rate Limiting per Share/User
+
+**Problem:** Global rate limiting only; cannot limit specific users or shares.
+
+**Impact:** Cannot isolate noisy neighbors; DoS from single share affects all shares.
+
+**Blocks:** Multi-tenant deployments, SLA enforcement.
+
+**Effort estimate:** Medium (requires per-user/share request tracking).
+
+**Current mitigation:**
+- Global rate limiting available (config: `server.rate_limiting`)
+- Network-level rate limiting recommended
+- Can run separate server instances per tenant
+
+**Priority:** Low (low priority for current use cases)
 
 ## Test Coverage Gaps
 
-### SMB Pipe CREATE Performance
-- **What's not tested**: Concurrent pipe creation with many shares
-- **Files**: `internal/protocol/smb/v2/handlers/create.go`
-- **Risk**: Performance regression under load; share list refresh on every create is inefficient
-- **Priority**: High (affects SMB client compatibility)
+### Concurrent Metadata Operations
 
-### Hard Link Stability Across Restarts
-- **What's not tested**: Hard links created in one session, server restarted, link count still correct
-- **Files**: `pkg/metadata/file.go`, `pkg/metadata/store/badger/`, `pkg/metadata/store/postgres/`
-- **Risk**: Link counts may be inconsistent after crash recovery
-- **Priority**: Medium (affects data integrity)
+**Untested area:** Simultaneous operations on same file/directory from multiple clients.
 
-### Deferred Commit Unbounded Growth
-- **What's not tested**: Pending write buffer size under sustained high write load
-- **Files**: `pkg/metadata/service.go`, `pkg/metadata/pending_writes.go`
-- **Risk**: Memory exhaustion if pending writes accumulate faster than committed
-- **Priority**: Medium (affects long-running servers under load)
+**Files:** All metadata store implementations and NFS/SMB handlers.
 
-### Concurrent RENAME Operations
-- **What's not tested**: Concurrent renames on same source/destination; cycle detection under races
-- **Files**: `pkg/metadata/file.go` (rename logic)
-- **Risk**: Potential for infinite loops or missed cycles
-- **Priority**: Medium (affects concurrent workloads)
+**Risk:** Race conditions in file creation, deletion, rename, and permission changes. Metadata stores may have non-atomic transitions.
 
-### SMB Session Teardown Under Load
-- **What's not tested**: Abrupt disconnection with pending requests
-- **Files**: `pkg/adapter/smb/smb_connection.go`, `internal/protocol/smb/session/manager.go`
-- **Risk**: Goroutine leaks if cleanup is incomplete; session state corruption
-- **Priority**: High (affects long-running servers)
+**Priority:** High
 
-### Transfer Queue Prefetch Overload
-- **What's not tested**: Prefetch queue behavior when overwhelmed (queue full, worker starvation)
-- **Files**: `pkg/payload/transfer/queue.go`, `pkg/payload/transfer/manager.go`
-- **Risk**: Prefetch requests may drop silently; memory consumption unbounded if queue fills
-- **Priority**: Medium (affects performance under load)
+**Recommended tests:**
+1. Parallel file creation in same directory (race on nlink)
+2. Concurrent reads while file is being written
+3. Simultaneous rename and delete on same file
+4. Parallel chmod on same file
+5. Concurrent hard link creation
+
+### S3 Failure Scenarios
+
+**Untested area:** Partial S3 upload failures, network timeouts, throttling responses.
+
+**Files:** `pkg/payload/transfer/manager.go`, `pkg/payload/store/s3/store.go`
+
+**Risk:** Uploads may hang indefinitely on transient S3 errors; retry logic may not be comprehensive.
+
+**Priority:** Medium
+
+**Recommended tests:**
+1. Inject S3 API failures at random points during upload
+2. Test timeout handling on slow uploads
+3. Test throttling (429) response handling
+4. Test multipart upload abort cleanup
+5. Verify orphaned upload cleanup on server restart
+
+### Edge Cases in Block Addressing
+
+**Untested area:** Block addressing for files at chunk/block boundaries and very large files (2TB+).
+
+**Files:** `pkg/cache/read.go`, `pkg/payload/transfer/manager.go` (offset/length calculations)
+
+**Risk:** Off-by-one errors in block index calculations; potential data corruption for large files.
+
+**Priority:** Medium
+
+**Recommended tests:**
+1. Write/read at exact chunk boundaries (64MB)
+2. Write/read at exact block boundaries (4MB)
+3. Files > 1TB (tests chunkIdx/blockIdx wrapping)
+4. Reads that span multiple chunks (currently exercised)
+5. Sparse file operations (zero gap between blocks)
+
+### SMB Signing and Encryption
+
+**Untested area:** SMB message signing with various algorithms, encryption negotiation.
+
+**Files:** `internal/protocol/smb/signing/`, `internal/auth/ntlm/`
+
+**Risk:** Signing may not be cryptographically correct; clients may reject signatures.
+
+**Priority:** High (security-relevant)
+
+**Recommended tests:**
+1. Verify HMAC-SHA256 signing with known test vectors
+2. Test with SMB clients that require signing (Windows Server)
+3. Test encryption flag negotiation and fallback
+4. Test with non-ASCII filenames requiring UTF-16 encoding
+5. Fuzz test SMB message parsing
+
+## Performance Analysis
+
+### Memory Allocations in Hot Paths
+
+**Area:** NFS READ/WRITE handling allocates buffers per request.
+
+**Current:** Buffer pooling implemented (3-tier pool: 4KB, 64KB, 1MB).
+
+**Status:** Mitigated. Go allocator performance is good; profiling recommended if throughput concerns arise.
+
+### Context Deadline Propagation
+
+**Area:** Context deadlines from client requests propagated through entire call stack.
+
+**Current:** All methods accept context.Context parameter.
+
+**Status:** Good. Should verify timeout configurations are appropriate for operations.
+
+### Goroutine Leak Prevention
+
+**Area:** Connection handlers spawn goroutines; must clean up on connection close.
+
+**Current:** Defer-based cleanup in place; panic recovery added.
+
+**Status:** Good. Should verify no goroutine leaks in load tests.
 
 ---
 
-*Concerns audit: 2026-02-02*
+*Concerns audit: 2026-02-09*
