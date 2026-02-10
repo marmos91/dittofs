@@ -42,6 +42,10 @@ type DittoServerSpec struct {
 	// +optional
 	Identity *IdentityConfig `json:"identity,omitempty"`
 
+	// AdapterDiscovery configures adapter discovery polling
+	// +optional
+	AdapterDiscovery *AdapterDiscoverySpec `json:"adapterDiscovery,omitempty"`
+
 	// Service configures the Kubernetes Service
 	Service ServiceSpec `json:"service,omitempty"`
 
@@ -330,6 +334,15 @@ type AdminConfig struct {
 	// If not set, a random password will be generated and logged at startup
 	// +optional
 	PasswordSecretRef *corev1.SecretKeySelector `json:"passwordSecretRef,omitempty"`
+}
+
+// AdapterDiscoverySpec configures how the operator discovers protocol adapters.
+type AdapterDiscoverySpec struct {
+	// PollingInterval is how often the operator polls the adapter list API.
+	// Supports Go duration strings (e.g., "30s", "1m", "5m").
+	// +kubebuilder:default="30s"
+	// +optional
+	PollingInterval string `json:"pollingInterval,omitempty"`
 }
 
 // ServiceSpec defines the Kubernetes Service for the NFS server

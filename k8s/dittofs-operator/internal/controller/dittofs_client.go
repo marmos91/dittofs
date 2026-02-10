@@ -201,3 +201,21 @@ func (c *DittoFSClient) CreateUser(username, password, role string) error {
 func (c *DittoFSClient) DeleteUser(username string) error {
 	return c.do(http.MethodDelete, fmt.Sprintf("/api/v1/users/%s", username), nil, nil)
 }
+
+// AdapterInfo represents an adapter returned by the DittoFS API.
+// Only fields needed by the operator are included.
+type AdapterInfo struct {
+	Type    string `json:"type"`
+	Enabled bool   `json:"enabled"`
+	Running bool   `json:"running"`
+	Port    int    `json:"port"`
+}
+
+// ListAdapters calls GET /api/v1/adapters and returns the adapter list.
+func (c *DittoFSClient) ListAdapters() ([]AdapterInfo, error) {
+	var adapters []AdapterInfo
+	if err := c.do(http.MethodGet, "/api/v1/adapters", nil, &adapters); err != nil {
+		return nil, err
+	}
+	return adapters, nil
+}

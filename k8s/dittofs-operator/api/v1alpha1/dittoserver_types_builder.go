@@ -72,6 +72,13 @@ func WithIdentity(identity *IdentityConfig) func(*DittoServerSpec) {
 	}
 }
 
+// WithAdapterDiscovery sets the AdapterDiscovery of a DittoServerSpec
+func WithAdapterDiscovery(ad *AdapterDiscoverySpec) func(*DittoServerSpec) {
+	return func(obj *DittoServerSpec) {
+		obj.AdapterDiscovery = ad
+	}
+}
+
 // WithService sets the Service of a DittoServerSpec
 func WithService(service ServiceSpec) func(*DittoServerSpec) {
 	return func(obj *DittoServerSpec) {

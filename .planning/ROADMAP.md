@@ -13,7 +13,7 @@ Transform the DittoFS K8s operator from static adapter configuration to dynamic,
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Auth Foundation** - Operator can authenticate to DittoFS API with least-privilege access
-- [ ] **Phase 2: Adapter Discovery** - Operator discovers active adapters by polling the DittoFS API
+- [x] **Phase 2: Adapter Discovery** - Operator discovers active adapters by polling the DittoFS API
 - [ ] **Phase 3: Dynamic Services & Ports** - Operator creates/removes K8s Services and updates container ports based on adapter state
 - [ ] **Phase 4: Security Hardening** - Static adapter config removed from CRD and NetworkPolicies enforce per-adapter traffic rules
 
@@ -42,10 +42,10 @@ Plans:
   1. Operator polls the adapter list endpoint at the interval specified in the CRD spec (defaulting to 30s)
   2. Changing the polling interval in the CRD spec takes effect without restarting the operator
   3. When the API returns an error or empty response, the operator preserves all existing adapter Services and does not delete or modify them
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 02-01: Implement adapter polling loop with configurable interval and safety guards
+- [x] 02-01-PLAN.md -- Add CRD polling interval field, ListAdapters client method, adapter reconciler with safety guards, and Reconcile loop integration
 
 ### Phase 3: Dynamic Services & Ports
 **Goal**: K8s Services and StatefulSet container ports automatically reflect the set of running adapters
@@ -85,6 +85,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Auth Foundation | 2/2 | ✓ Complete | 2026-02-10 |
-| 2. Adapter Discovery | 0/1 | Not started | - |
+| 2. Adapter Discovery | 1/1 | ✓ Complete | 2026-02-10 |
 | 3. Dynamic Services & Ports | 0/2 | Not started | - |
 | 4. Security Hardening | 0/2 | Not started | - |

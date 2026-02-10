@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"sync"
 	"time"
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
@@ -83,6 +84,12 @@ type DittoServerReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+
+	// adaptersMu protects lastKnownAdapters for concurrent reconcile safety.
+	adaptersMu sync.RWMutex
+	// lastKnownAdapters stores the last successful adapter poll result per CR.
+	// Key is namespace/name of the DittoServer CR.
+	lastKnownAdapters map[string][]AdapterInfo
 }
 
 // +kubebuilder:rbac:groups=dittofs.dittofs.com,resources=dittoservers,verbs=get;list;watch;create;update;patch;delete
@@ -260,12 +267,44 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// Don't return error -- auth failure should not block infrastructure reconciliation
 			// The Authenticated condition will reflect the failure
 		}
-		if authResult.RequeueAfter > 0 {
-			return authResult, nil
+
+		// Re-fetch to get updated conditions after auth reconciliation
+		if err := r.Get(ctx, req.NamespacedName, dittoServer); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+
+		// Adapter discovery: only if authenticated
+		var adapterResult ctrl.Result
+		if conditions.IsConditionTrue(dittoServer.Status.Conditions, conditions.ConditionAuthenticated) {
+			adapterResult, _ = r.reconcileAdapters(ctx, dittoServer)
+		}
+
+		// Use minimum RequeueAfter from all sub-reconcilers
+		result := mergeRequeueAfter(authResult, adapterResult)
+		if result.RequeueAfter > 0 || result.Requeue {
+			return result, nil
 		}
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// mergeRequeueAfter returns a Result with the minimum positive RequeueAfter
+// from the given results. This ensures the fastest-cycling sub-reconciler
+// drives the reconcile cadence.
+func mergeRequeueAfter(results ...ctrl.Result) ctrl.Result {
+	var minResult ctrl.Result
+	for _, r := range results {
+		if r.Requeue {
+			minResult.Requeue = true
+		}
+		if r.RequeueAfter > 0 {
+			if minResult.RequeueAfter == 0 || r.RequeueAfter < minResult.RequeueAfter {
+				minResult.RequeueAfter = r.RequeueAfter
+			}
+		}
+	}
+	return minResult
 }
 
 // updateStatus computes and persists the DittoServer status from current cluster state.
