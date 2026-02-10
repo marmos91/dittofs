@@ -1,0 +1,266 @@
+/*
+Copyright 2025.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"context"
+	"fmt"
+
+	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+)
+
+const (
+	// adapterNetworkPolicyLabel marks a NetworkPolicy as managed by the adapter NetworkPolicy reconciler.
+	adapterNetworkPolicyLabel = "dittofs.io/adapter-networkpolicy"
+)
+
+// networkPolicyName returns the canonical name for an adapter NetworkPolicy.
+func networkPolicyName(crName, adapterType string) string {
+	return fmt.Sprintf("%s-adapter-%s", crName, adapterType)
+}
+
+// networkPolicyLabels returns the labels for an adapter NetworkPolicy.
+func networkPolicyLabels(crName, adapterType string) map[string]string {
+	return map[string]string{
+		"app":                     "dittofs-server",
+		"instance":               crName,
+		adapterNetworkPolicyLabel: "true",
+		adapterTypeLabel:          adapterType,
+	}
+}
+
+// protocolPtr returns a pointer to corev1.ProtocolTCP.
+func protocolPtr() *corev1.Protocol {
+	tcp := corev1.ProtocolTCP
+	return &tcp
+}
+
+// buildAdapterNetworkPolicy constructs a NetworkPolicy allowing TCP ingress on a single adapter port.
+func buildAdapterNetworkPolicy(crName, namespace, adapterType string, port int32) *networkingv1.NetworkPolicy {
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      networkPolicyName(crName, adapterType),
+			Namespace: namespace,
+			Labels:    networkPolicyLabels(crName, adapterType),
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app":      "dittofs-server",
+					"instance": crName,
+				},
+			},
+			PolicyTypes: []networkingv1.PolicyType{
+				networkingv1.PolicyTypeIngress,
+			},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{
+				{
+					Ports: []networkingv1.NetworkPolicyPort{
+						{
+							Protocol: protocolPtr(),
+							Port: &intstr.IntOrString{
+								Type:   intstr.Int,
+								IntVal: port,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// reconcileNetworkPolicies synchronizes K8s NetworkPolicies with the discovered adapter state.
+// It creates NetworkPolicies for enabled+running adapters, updates when ports change,
+// and deletes NetworkPolicies for stopped/removed adapters. Only manages NetworkPolicies
+// with the dittofs.io/adapter-networkpolicy label -- never touches static NetworkPolicies.
+// Unlike adapter Services, NetworkPolicy errors are propagated (security-critical).
+func (r *DittoServerReconciler) reconcileNetworkPolicies(ctx context.Context, ds *dittoiov1alpha1.DittoServer) error {
+	logger := logf.FromContext(ctx)
+
+	// DISC-03 safety: if no successful poll has occurred yet, skip entirely.
+	adapters := r.getLastKnownAdapters(ds)
+	if adapters == nil {
+		logger.V(1).Info("No adapter poll yet, skipping adapter NetworkPolicy reconciliation")
+		return nil
+	}
+
+	// Build desired set: only enabled AND running adapters get NetworkPolicies.
+	desired := make(map[string]AdapterInfo)
+	for _, a := range adapters {
+		if a.Enabled && a.Running {
+			desired[a.Type] = a
+		}
+	}
+
+	// List existing adapter NetworkPolicies using label selector.
+	var existingList networkingv1.NetworkPolicyList
+	if err := r.List(ctx, &existingList,
+		client.InNamespace(ds.Namespace),
+		client.MatchingLabels{
+			adapterNetworkPolicyLabel: "true",
+			"instance":               ds.Name,
+		},
+	); err != nil {
+		return fmt.Errorf("failed to list adapter network policies: %w", err)
+	}
+
+	// Build actual set keyed by adapter type.
+	actual := make(map[string]*networkingv1.NetworkPolicy)
+	for i := range existingList.Items {
+		np := &existingList.Items[i]
+		adapterType := np.Labels[adapterTypeLabel]
+		if adapterType != "" {
+			actual[adapterType] = np
+		}
+	}
+
+	// Create NetworkPolicies for desired adapters not yet present.
+	for adapterType, info := range desired {
+		if _, exists := actual[adapterType]; !exists {
+			if err := r.createAdapterNetworkPolicy(ctx, ds, adapterType, info); err != nil {
+				return fmt.Errorf("failed to create adapter network policy for %s: %w", adapterType, err)
+			}
+		}
+	}
+
+	// Update NetworkPolicies that exist and are still desired (port change detection).
+	for adapterType, np := range actual {
+		if info, stillDesired := desired[adapterType]; stillDesired {
+			if err := r.updateAdapterNetworkPolicyIfNeeded(ctx, ds, np, info); err != nil {
+				return fmt.Errorf("failed to update adapter network policy for %s: %w", adapterType, err)
+			}
+		}
+	}
+
+	// Delete NetworkPolicies for adapters that are no longer desired.
+	for adapterType, np := range actual {
+		if _, stillDesired := desired[adapterType]; !stillDesired {
+			if err := r.deleteAdapterNetworkPolicy(ctx, ds, np, adapterType); err != nil {
+				return fmt.Errorf("failed to delete adapter network policy for %s: %w", adapterType, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// createAdapterNetworkPolicy creates a new K8s NetworkPolicy for an adapter.
+func (r *DittoServerReconciler) createAdapterNetworkPolicy(ctx context.Context, ds *dittoiov1alpha1.DittoServer, adapterType string, info AdapterInfo) error {
+	np := buildAdapterNetworkPolicy(ds.Name, ds.Namespace, adapterType, int32(info.Port))
+
+	// Set owner reference for garbage collection.
+	if err := controllerutil.SetControllerReference(ds, np, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference: %w", err)
+	}
+
+	if err := r.Create(ctx, np); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			// Fall through to update path on next reconcile.
+			return nil
+		}
+		return fmt.Errorf("failed to create network policy %s: %w", np.Name, err)
+	}
+
+	r.Recorder.Eventf(ds, corev1.EventTypeNormal, "AdapterNetworkPolicyCreated",
+		"Created NetworkPolicy %s for adapter %s (port %d)", np.Name, adapterType, info.Port)
+
+	return nil
+}
+
+// updateAdapterNetworkPolicyIfNeeded updates an existing adapter NetworkPolicy if its port changed.
+func (r *DittoServerReconciler) updateAdapterNetworkPolicyIfNeeded(ctx context.Context, ds *dittoiov1alpha1.DittoServer, existing *networkingv1.NetworkPolicy, info AdapterInfo) error {
+	desiredPort := int32(info.Port)
+
+	// Check if update is needed by comparing ingress port.
+	needsUpdate := false
+	if len(existing.Spec.Ingress) > 0 && len(existing.Spec.Ingress[0].Ports) > 0 {
+		currentPort := existing.Spec.Ingress[0].Ports[0].Port
+		if currentPort == nil || currentPort.IntVal != desiredPort {
+			needsUpdate = true
+		}
+	} else {
+		// No ingress rules -- needs update.
+		needsUpdate = true
+	}
+
+	if !needsUpdate {
+		return nil
+	}
+
+	// Re-fetch fresh copy for optimistic locking.
+	fresh := &networkingv1.NetworkPolicy{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(existing), fresh); err != nil {
+		return fmt.Errorf("failed to get fresh network policy: %w", err)
+	}
+
+	adapterType := fresh.Labels[adapterTypeLabel]
+	oldPort := int32(0)
+	if len(fresh.Spec.Ingress) > 0 && len(fresh.Spec.Ingress[0].Ports) > 0 && fresh.Spec.Ingress[0].Ports[0].Port != nil {
+		oldPort = fresh.Spec.Ingress[0].Ports[0].Port.IntVal
+	}
+
+	// Update ingress port.
+	fresh.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{
+		{
+			Ports: []networkingv1.NetworkPolicyPort{
+				{
+					Protocol: protocolPtr(),
+					Port: &intstr.IntOrString{
+						Type:   intstr.Int,
+						IntVal: desiredPort,
+					},
+				},
+			},
+		},
+	}
+
+	err := retryOnConflict(func() error {
+		return r.Update(ctx, fresh)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update network policy: %w", err)
+	}
+
+	r.Recorder.Eventf(ds, corev1.EventTypeNormal, "AdapterNetworkPolicyUpdated",
+		"Updated NetworkPolicy %s for adapter %s (port %d -> %d)", fresh.Name, adapterType, oldPort, desiredPort)
+
+	return nil
+}
+
+// deleteAdapterNetworkPolicy deletes a K8s NetworkPolicy for a stopped/removed adapter.
+func (r *DittoServerReconciler) deleteAdapterNetworkPolicy(ctx context.Context, ds *dittoiov1alpha1.DittoServer, np *networkingv1.NetworkPolicy, adapterType string) error {
+	if err := r.Delete(ctx, np); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to delete network policy %s: %w", np.Name, err)
+	}
+
+	r.Recorder.Eventf(ds, corev1.EventTypeNormal, "AdapterNetworkPolicyDeleted",
+		"Deleted NetworkPolicy %s for adapter %s", np.Name, adapterType)
+
+	return nil
+}

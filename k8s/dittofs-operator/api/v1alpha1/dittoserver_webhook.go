@@ -22,9 +22,7 @@ var dittoserverlog = logf.Log.WithName("dittoserver-resource")
 
 // Default port values for validation
 const (
-	defaultNFSPort     = 12049 // DittoFS uses non-privileged port by default
-	defaultAPIPort     = 8080
-	defaultSMBPort     = 12445 // DittoFS uses non-privileged port by default
+	defaultAPIPort    = 8080
 	defaultMetricsPort = 9090
 	privilegedPortMax  = 1024
 	minPort            = 1
@@ -96,20 +94,6 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 		}
 	}
 
-	// Validate NFS port range
-	if r.Spec.NFSPort != nil && *r.Spec.NFSPort != 0 {
-		if *r.Spec.NFSPort < minPort || *r.Spec.NFSPort > maxPort {
-			return warnings, fmt.Errorf("nfsPort must be between %d and %d", minPort, maxPort)
-		}
-	}
-
-	// Validate SMB port range when enabled
-	if r.Spec.SMB != nil && r.Spec.SMB.Enabled && r.Spec.SMB.Port != nil && *r.Spec.SMB.Port != 0 {
-		if *r.Spec.SMB.Port < minPort || *r.Spec.SMB.Port > maxPort {
-			return warnings, fmt.Errorf("smb.port must be between %d and %d", minPort, maxPort)
-		}
-	}
-
 	// Validate port uniqueness and warn about privileged ports
 	portWarnings, err := r.validatePorts()
 	if err != nil {
@@ -126,7 +110,6 @@ func (r *DittoServer) validatePorts() (admission.Warnings, error) {
 
 	// Build port map with enabled ports
 	ports := map[int32]string{
-		portOrDefault(r.Spec.NFSPort, defaultNFSPort):                        "nfs",
 		portOrDefault(controlPlanePort(r.Spec.ControlPlane), defaultAPIPort): "api",
 	}
 
@@ -137,13 +120,6 @@ func (r *DittoServer) validatePorts() (admission.Warnings, error) {
 		}
 		ports[port] = name
 		return nil
-	}
-
-	// Check SMB port uniqueness
-	if r.Spec.SMB != nil && r.Spec.SMB.Enabled {
-		if err := addPort(portOrDefault(r.Spec.SMB.Port, defaultSMBPort), "smb"); err != nil {
-			return nil, err
-		}
 	}
 
 	// Check metrics port uniqueness

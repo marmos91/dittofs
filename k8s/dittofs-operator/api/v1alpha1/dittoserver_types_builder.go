@@ -93,20 +93,6 @@ func WithService(service ServiceSpec) func(*DittoServerSpec) {
 	}
 }
 
-// WithNFSPort sets the NFSPort of a DittoServerSpec
-func WithNFSPort(nfsport *int32) func(*DittoServerSpec) {
-	return func(obj *DittoServerSpec) {
-		obj.NFSPort = nfsport
-	}
-}
-
-// WithSMB sets the SMB of a DittoServerSpec
-func WithSMB(smb *SMBAdapterSpec) func(*DittoServerSpec) {
-	return func(obj *DittoServerSpec) {
-		obj.SMB = smb
-	}
-}
-
 // WithResources sets the Resources of a DittoServerSpec
 func WithResources(resources corev1.ResourceRequirements) func(*DittoServerSpec) {
 	return func(obj *DittoServerSpec) {
@@ -143,13 +129,6 @@ func NewDittoServerStatus(opts ...func(*DittoServerStatus)) *DittoServerStatus {
 func WithAvailableReplicas(availablereplicas int32) func(*DittoServerStatus) {
 	return func(obj *DittoServerStatus) {
 		obj.AvailableReplicas = availablereplicas
-	}
-}
-
-// WithNFSEndpoint sets the NFSEndpoint of a DittoServerStatus
-func WithNFSEndpoint(nfsendpoint string) func(*DittoServerStatus) {
-	return func(obj *DittoServerStatus) {
-		obj.NFSEndpoint = nfsendpoint
 	}
 }
 

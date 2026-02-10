@@ -28,11 +28,10 @@ import (
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/pkg/percona"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/pkg/resources"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/conditions"
-	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/nfs"
-	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/smb"
 	pgv2 "github.com/percona/percona-postgresql-operator/v2/pkg/apis/pgv2.percona.com/v2"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -102,6 +101,7 @@ type DittoServerReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pgv2.percona.com,resources=perconapgclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pgv2.percona.com,resources=perconapgclusters/status,verbs=get
 
@@ -176,13 +176,6 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
 			"Failed to reconcile headless Service: %v", err)
 		logger.Error(err, "Failed to reconcile headless Service")
-		return ctrl.Result{}, err
-	}
-
-	if err := r.reconcileFileService(ctx, dittoServer); err != nil {
-		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
-			"Failed to reconcile file Service: %v", err)
-		logger.Error(err, "Failed to reconcile file Service")
 		return ctrl.Result{}, err
 	}
 
@@ -285,6 +278,15 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 					"Failed to reconcile adapter services: %v", err)
 				// Don't block reconciliation -- adapter services are best-effort
 			}
+
+			// NetworkPolicy reconciliation: restrict ingress to active adapter ports
+			if err := r.reconcileNetworkPolicies(ctx, dittoServer); err != nil {
+				logger.Error(err, "Failed to reconcile adapter network policies")
+				r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "NetworkPolicyFailed",
+					"Failed to reconcile adapter network policies: %v", err)
+				// NetworkPolicies are security-critical, propagate error
+				return ctrl.Result{}, err
+			}
 		}
 
 		// Use minimum RequeueAfter from all sub-reconcilers
@@ -333,9 +335,6 @@ func (r *DittoServerReconciler) updateStatus(
 	}
 
 	dittoServerCopy.Status.Phase = determinePhase(replicas, statefulSet.Status.ReadyReplicas)
-
-	dittoServerCopy.Status.NFSEndpoint = fmt.Sprintf("%s-file.%s.svc.cluster.local:%d",
-		dittoServer.Name, dittoServer.Namespace, nfs.GetNFSPort(dittoServer))
 
 	// Set ConfigReady condition
 	r.updateConfigReadyCondition(ctx, dittoServer, &dittoServerCopy.Status)
@@ -626,6 +625,7 @@ func (r *DittoServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		Named("dittoserver")
 
 	// Conditionally watch PerconaPGCluster only if CRD exists
@@ -784,41 +784,12 @@ func (r *DittoServerReconciler) reconcileHeadlessService(ctx context.Context, di
 		"instance": dittoServer.Name,
 	}
 
-	nfsPort := nfs.GetNFSPort(dittoServer)
-
 	svc := resources.NewServiceBuilder(dittoServer.Name+"-headless", dittoServer.Namespace).
 		WithLabels(labels).
 		WithSelector(labels).
 		AsHeadless().
-		AddTCPPort("nfs", nfsPort).
+		AddTCPPort("api", getAPIPort(dittoServer)).
 		Build()
-
-	return r.createOrUpdateService(ctx, dittoServer, svc)
-}
-
-// reconcileFileService creates/updates the Service for file protocols (NFS, SMB).
-func (r *DittoServerReconciler) reconcileFileService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
-	labels := map[string]string{
-		"app":      "dittofs-server",
-		"instance": dittoServer.Name,
-	}
-
-	nfsPort := nfs.GetNFSPort(dittoServer)
-
-	builder := resources.NewServiceBuilder(dittoServer.Name+"-file", dittoServer.Namespace).
-		WithLabels(labels).
-		WithSelector(labels).
-		WithType(getServiceType(dittoServer)).
-		WithAnnotations(dittoServer.Spec.Service.Annotations).
-		AddTCPPort("nfs", nfsPort)
-
-	// Add SMB port if enabled
-	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Enabled {
-		smbPort := smb.GetSMBPort(dittoServer)
-		builder.AddTCPPort("smb", smbPort)
-	}
-
-	svc := builder.Build()
 
 	return r.createOrUpdateService(ctx, dittoServer, svc)
 }
@@ -1139,25 +1110,19 @@ func getPodSecurityContext(dittoServer *dittoiov1alpha1.DittoServer) *corev1.Pod
 	}
 }
 
-// buildContainerPorts constructs the container ports based on enabled protocols
+// buildContainerPorts constructs the container ports for the DittoFS server.
+// Only emits infrastructure ports (api, metrics). Protocol adapter ports are
+// managed dynamically by reconcileContainerPorts in service_reconciler.go.
 func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer) []corev1.ContainerPort {
-	nfsPort := nfs.GetNFSPort(dittoServer)
+	apiPort := getAPIPort(dittoServer)
 
 	ports := []corev1.ContainerPort{
 		{
-			Name:          "nfs",
-			ContainerPort: nfsPort,
+			Name:          "api",
+			ContainerPort: apiPort,
 			Protocol:      corev1.ProtocolTCP,
 		},
 	}
-
-	// Add API port
-	apiPort := getAPIPort(dittoServer)
-	ports = append(ports, corev1.ContainerPort{
-		Name:          "api",
-		ContainerPort: apiPort,
-		Protocol:      corev1.ProtocolTCP,
-	})
 
 	// Add metrics port if enabled
 	if dittoServer.Spec.Metrics != nil && dittoServer.Spec.Metrics.Enabled {
@@ -1165,16 +1130,6 @@ func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer) []corev1.Cont
 		ports = append(ports, corev1.ContainerPort{
 			Name:          "metrics",
 			ContainerPort: metricsPort,
-			Protocol:      corev1.ProtocolTCP,
-		})
-	}
-
-	// Add SMB port if enabled
-	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Enabled {
-		smbPort := smb.GetSMBPort(dittoServer)
-		ports = append(ports, corev1.ContainerPort{
-			Name:          "smb",
-			ContainerPort: smbPort,
 			Protocol:      corev1.ProtocolTCP,
 		})
 	}

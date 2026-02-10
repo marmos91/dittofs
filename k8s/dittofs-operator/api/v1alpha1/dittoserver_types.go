@@ -53,16 +53,6 @@ type DittoServerSpec struct {
 	// Service configures the Kubernetes Service
 	Service ServiceSpec `json:"service,omitempty"`
 
-	// NFSPort is the NFS server port
-	// +kubebuilder:default=12049
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	NFSPort *int32 `json:"nfsPort,omitempty"`
-
-	// SMB configures the SMB protocol adapter
-	// +optional
-	SMB *SMBAdapterSpec `json:"smb,omitempty"`
-
 	// S3 configures S3-compatible payload store credentials
 	// Credentials are injected as environment variables for the AWS SDK
 	// +optional
@@ -173,120 +163,6 @@ type ControlPlaneAPIConfig struct {
 	Port int32 `json:"port,omitempty"`
 }
 
-// SMBAdapterSpec defines SMB protocol configuration
-type SMBAdapterSpec struct {
-	// Enable SMB protocol
-	// +kubebuilder:default=false
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
-
-	// SMB port to listen on
-	// +kubebuilder:default=12445
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	// +optional
-	Port *int32 `json:"port,omitempty"`
-
-	// Maximum number of concurrent SMB connections (0 = unlimited)
-	// +kubebuilder:default=0
-	// +kubebuilder:validation:Minimum=0
-	// +optional
-	MaxConnections *int32 `json:"maxConnections,omitempty"`
-
-	// Maximum number of concurrent requests per SMB connection
-	// +kubebuilder:default=100
-	// +kubebuilder:validation:Minimum=1
-	// +optional
-	MaxRequestsPerConnection *int32 `json:"maxRequestsPerConnection,omitempty"`
-
-	// Timeout configurations for SMB operations
-	// +optional
-	Timeouts *SMBTimeoutsSpec `json:"timeouts,omitempty"`
-
-	// SMB credit management configuration
-	// +optional
-	Credits *SMBCreditsSpec `json:"credits,omitempty"`
-
-	// Metrics logging interval (e.g., "5m", "10m")
-	// +kubebuilder:default="5m"
-	// +optional
-	MetricsLogInterval string `json:"metricsLogInterval,omitempty"`
-}
-
-// SMBTimeoutsSpec defines timeout configurations for SMB operations
-type SMBTimeoutsSpec struct {
-	// Maximum time to read request
-	// +kubebuilder:default="5m"
-	// +optional
-	Read string `json:"read,omitempty"`
-
-	// Maximum time to write response
-	// +kubebuilder:default="30s"
-	// +optional
-	Write string `json:"write,omitempty"`
-
-	// Maximum idle time between requests
-	// +kubebuilder:default="5m"
-	// +optional
-	Idle string `json:"idle,omitempty"`
-
-	// Graceful shutdown timeout
-	// +kubebuilder:default="30s"
-	// +optional
-	Shutdown string `json:"shutdown,omitempty"`
-}
-
-// SMBCreditsSpec defines SMB credit management configuration
-type SMBCreditsSpec struct {
-	// Credit grant strategy: fixed, echo, or adaptive
-	// +kubebuilder:default="adaptive"
-	// +kubebuilder:validation:Enum=fixed;echo;adaptive
-	// +optional
-	Strategy string `json:"strategy,omitempty"`
-
-	// Minimum credits per response
-	// +kubebuilder:default=16
-	// +kubebuilder:validation:Minimum=1
-	// +optional
-	MinGrant *int32 `json:"minGrant,omitempty"`
-
-	// Maximum credits per response
-	// +kubebuilder:default=8192
-	// +kubebuilder:validation:Minimum=1
-	// +optional
-	MaxGrant *int32 `json:"maxGrant,omitempty"`
-
-	// Credits for initial requests (NEGOTIATE)
-	// +kubebuilder:default=256
-	// +kubebuilder:validation:Minimum=1
-	// +optional
-	InitialGrant *int32 `json:"initialGrant,omitempty"`
-
-	// Maximum outstanding credits per session
-	// +kubebuilder:default=65535
-	// +kubebuilder:validation:Minimum=1
-	// +optional
-	MaxSessionCredits *int32 `json:"maxSessionCredits,omitempty"`
-
-	// Server load threshold for throttling (adaptive strategy only)
-	// +kubebuilder:default=1000
-	// +kubebuilder:validation:Minimum=1
-	// +optional
-	LoadThresholdHigh *int32 `json:"loadThresholdHigh,omitempty"`
-
-	// Server load threshold for boosting (adaptive strategy only)
-	// +kubebuilder:default=100
-	// +kubebuilder:validation:Minimum=1
-	// +optional
-	LoadThresholdLow *int32 `json:"loadThresholdLow,omitempty"`
-
-	// Outstanding requests threshold for client throttling (adaptive strategy only)
-	// +kubebuilder:default=256
-	// +kubebuilder:validation:Minimum=1
-	// +optional
-	AggressiveClientThreshold *int32 `json:"aggressiveClientThreshold,omitempty"`
-}
-
 // IdentityConfig defines identity store and JWT authentication configuration
 type IdentityConfig struct {
 	// Type of identity store
@@ -386,10 +262,6 @@ type DittoServerStatus struct {
 
 	// AvailableReplicas is the number of pods ready for at least minReadySeconds
 	AvailableReplicas int32 `json:"availableReplicas,omitempty"`
-
-	// NFSEndpoint that clients should use to mount
-	// Format: service-name.namespace.svc.cluster.local:2049
-	NFSEndpoint string `json:"nfsEndpoint,omitempty"`
 
 	// Phase of the DittoServer (Pending, Running, Failed, Stopped, Deleting)
 	// +kubebuilder:validation:Enum=Pending;Running;Failed;Stopped;Deleting

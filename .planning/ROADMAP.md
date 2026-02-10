@@ -14,8 +14,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Auth Foundation** - Operator can authenticate to DittoFS API with least-privilege access
 - [x] **Phase 2: Adapter Discovery** - Operator discovers active adapters by polling the DittoFS API
-- [ ] **Phase 3: Dynamic Services & Ports** - Operator creates/removes K8s Services and updates container ports based on adapter state
-- [ ] **Phase 4: Security Hardening** - Static adapter config removed from CRD and NetworkPolicies enforce per-adapter traffic rules
+- [x] **Phase 3: Dynamic Services & Ports** - Operator creates/removes K8s Services and updates container ports based on adapter state
+- [x] **Phase 4: Security Hardening** - Static adapter config removed from CRD and NetworkPolicies enforce per-adapter traffic rules
 
 ## Phase Details
 
@@ -60,8 +60,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — CRD extension (AdapterServiceConfig), per-adapter Service lifecycle with label-based diff, events, and tests
-- [ ] 03-02-PLAN.md — StatefulSet container port reconciliation with adapter- prefix naming and no-op detection
+- [x] 03-01-PLAN.md — CRD extension (AdapterServiceConfig), per-adapter Service lifecycle with label-based diff, events, and tests
+- [x] 03-02-PLAN.md — StatefulSet container port reconciliation with adapter- prefix naming and no-op detection
 
 ### Phase 4: Security Hardening
 **Goal**: Static adapter configuration is fully removed and network access is restricted to only active adapter ports
@@ -71,11 +71,11 @@ Plans:
   1. The DittoServer CRD no longer has `spec.nfsPort` or `spec.smb` fields, and the operator no longer generates adapter sections in the DittoFS YAML config
   2. For each running adapter, a NetworkPolicy exists allowing ingress traffic only on that adapter's port
   3. When an adapter is stopped or removed, its NetworkPolicy is deleted within one polling cycle, blocking traffic to that port
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 04-01: Remove static adapter fields from CRD and config generation
-- [ ] 04-02: Implement per-adapter NetworkPolicy lifecycle management
+- [x] 04-01-PLAN.md — Remove static adapter fields from CRD, delete -file Service, clean up controller and utils
+- [x] 04-02-PLAN.md — Implement per-adapter NetworkPolicy lifecycle management with label-based diff and tests
 
 ## Progress
 
@@ -86,5 +86,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 |-------|----------------|--------|-----------|
 | 1. Auth Foundation | 2/2 | ✓ Complete | 2026-02-10 |
 | 2. Adapter Discovery | 1/1 | ✓ Complete | 2026-02-10 |
-| 3. Dynamic Services & Ports | 0/2 | In Progress | - |
-| 4. Security Hardening | 0/2 | Not started | - |
+| 3. Dynamic Services & Ports | 2/2 | ✓ Complete | 2026-02-10 |
+| 4. Security Hardening | 2/2 | ✓ Complete | 2026-02-10 |
