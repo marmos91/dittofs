@@ -79,6 +79,13 @@ func WithAdapterDiscovery(ad *AdapterDiscoverySpec) func(*DittoServerSpec) {
 	}
 }
 
+// WithAdapterServices sets the AdapterServices of a DittoServerSpec
+func WithAdapterServices(as *AdapterServiceConfig) func(*DittoServerSpec) {
+	return func(obj *DittoServerSpec) {
+		obj.AdapterServices = as
+	}
+}
+
 // WithService sets the Service of a DittoServerSpec
 func WithService(service ServiceSpec) func(*DittoServerSpec) {
 	return func(obj *DittoServerSpec) {

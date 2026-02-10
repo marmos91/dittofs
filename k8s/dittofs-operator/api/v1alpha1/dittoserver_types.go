@@ -46,6 +46,10 @@ type DittoServerSpec struct {
 	// +optional
 	AdapterDiscovery *AdapterDiscoverySpec `json:"adapterDiscovery,omitempty"`
 
+	// AdapterServices configures dynamically created per-adapter Services.
+	// +optional
+	AdapterServices *AdapterServiceConfig `json:"adapterServices,omitempty"`
+
 	// Service configures the Kubernetes Service
 	Service ServiceSpec `json:"service,omitempty"`
 
@@ -343,6 +347,19 @@ type AdapterDiscoverySpec struct {
 	// +kubebuilder:default="30s"
 	// +optional
 	PollingInterval string `json:"pollingInterval,omitempty"`
+}
+
+// AdapterServiceConfig configures dynamically created per-adapter Services.
+type AdapterServiceConfig struct {
+	// Type of Service to create for each adapter (LoadBalancer, NodePort, ClusterIP).
+	// +kubebuilder:default="LoadBalancer"
+	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
+	// +optional
+	Type string `json:"type,omitempty"`
+
+	// Annotations to apply to adapter Services (e.g., cloud LB configuration).
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 // ServiceSpec defines the Kubernetes Service for the NFS server

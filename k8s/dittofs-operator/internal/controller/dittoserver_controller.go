@@ -277,6 +277,14 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		var adapterResult ctrl.Result
 		if conditions.IsConditionTrue(dittoServer.Status.Conditions, conditions.ConditionAuthenticated) {
 			adapterResult, _ = r.reconcileAdapters(ctx, dittoServer)
+
+			// Service reconciliation: sync adapter Services based on discovered state
+			if err := r.reconcileAdapterServices(ctx, dittoServer); err != nil {
+				logger.Error(err, "Failed to reconcile adapter services")
+				r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "AdapterServiceFailed",
+					"Failed to reconcile adapter services: %v", err)
+				// Don't block reconciliation -- adapter services are best-effort
+			}
 		}
 
 		// Use minimum RequeueAfter from all sub-reconcilers

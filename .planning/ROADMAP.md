@@ -57,11 +57,11 @@ Plans:
   3. Adapter Services are owned by the DittoServer CR and are automatically garbage-collected when the CR is deleted
   4. StatefulSet container ports match the set of active adapters (added when adapter starts, removed when adapter stops)
   5. Adapter Service type (LoadBalancer/NodePort/ClusterIP) and custom annotations are configurable via CRD spec, and K8s events are emitted for service lifecycle changes
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 03-01: Implement per-adapter Service lifecycle management
-- [ ] 03-02: Implement StatefulSet port reconciliation, service configurability, and K8s events
+- [ ] 03-01-PLAN.md — CRD extension (AdapterServiceConfig), per-adapter Service lifecycle with label-based diff, events, and tests
+- [ ] 03-02-PLAN.md — StatefulSet container port reconciliation with adapter- prefix naming and no-op detection
 
 ### Phase 4: Security Hardening
 **Goal**: Static adapter configuration is fully removed and network access is restricted to only active adapter ports
@@ -86,5 +86,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 |-------|----------------|--------|-----------|
 | 1. Auth Foundation | 2/2 | ✓ Complete | 2026-02-10 |
 | 2. Adapter Discovery | 1/1 | ✓ Complete | 2026-02-10 |
-| 3. Dynamic Services & Ports | 0/2 | Not started | - |
+| 3. Dynamic Services & Ports | 0/2 | In Progress | - |
 | 4. Security Hardening | 0/2 | Not started | - |

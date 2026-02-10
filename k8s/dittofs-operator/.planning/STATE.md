@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-09)
 
 **Core value:** Operator ensures protocol adapters are only externally accessible when running, reducing attack surface and making adapter lifecycle fully dynamic.
-**Current focus:** Phase 3 - Dynamic Services & Ports (Plan 1 COMPLETE)
+**Current focus:** Phase 3 - Dynamic Services & Ports (COMPLETE)
 
 ## Current Position
 
-Phase: 3 of 4 (Dynamic Services & Ports)
-Plan: 1 of 2 in current phase (COMPLETE)
-Status: Plan 03-01 complete, ready for Plan 03-02
-Last activity: 2026-02-10 -- Completed 03-01-PLAN.md (adapter service reconciler)
+Phase: 3 of 4 (Dynamic Services & Ports) -- COMPLETE
+Plan: 2 of 2 in current phase (COMPLETE)
+Status: Phase 03 complete, ready for Phase 04
+Last activity: 2026-02-10 -- Completed 03-02-PLAN.md (container port reconciliation)
 
-Progress: [███████░░░] 67%
+Progress: [████████░░] 83%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 4
+- Total plans completed: 5
 - Average duration: 5 min
-- Total execution time: 21 min
+- Total execution time: 25 min
 
 **By Phase:**
 
@@ -29,10 +29,10 @@ Progress: [███████░░░] 67%
 |-------|-------|-------|----------|
 | 01-auth-foundation | 2/2 | 13 min | 7 min |
 | 02-adapter-discovery | 1/1 | 4 min | 4 min |
-| 03-dynamic-services-ports | 1/2 | 4 min | 4 min |
+| 03-dynamic-services-ports | 2/2 | 8 min | 4 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (3 min), 01-02 (10 min), 02-01 (4 min), 03-01 (4 min)
+- Last 5 plans: 01-02 (10 min), 02-01 (4 min), 03-01 (4 min), 03-02 (4 min)
 - Trend: stable/fast
 
 *Updated after each plan completion*
@@ -63,6 +63,10 @@ Recent decisions affecting current work:
 - Default adapter Service type is LoadBalancer, configurable via CRD spec.adapterServices.type (03-01)
 - DISC-03 safety preserved: skip service reconciliation when no successful poll (nil adapters) (03-01)
 - Adapter Service reconciliation is best-effort: errors logged but don't block reconciliation (03-01)
+- Dynamic container ports use adapter-{type} prefix to avoid collision with static port names (03-02)
+- Static and dynamic ports coexist during Phase 3; Phase 4 removes static ones (03-02)
+- portsEqual comparison before update prevents unnecessary StatefulSet rolling restarts (03-02)
+- StatefulSet not found during port reconciliation is a graceful no-op (03-02)
 
 ### Pending Todos
 
@@ -77,5 +81,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-10
-Stopped at: Completed 03-01-PLAN.md (adapter service reconciler) -- Plan 1 of Phase 3 complete
+Stopped at: Completed 03-02-PLAN.md (container port reconciliation) -- Phase 3 complete
 Resume file: None
