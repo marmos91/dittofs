@@ -109,6 +109,17 @@ func (r *DittoServerReconciler) setLastKnownAdapters(ds *dittoiov1alpha1.DittoSe
 	r.lastKnownAdapters[key] = adapters
 }
 
+// activeAdaptersByType returns a map of enabled+running adapters keyed by type.
+func activeAdaptersByType(adapters []AdapterInfo) map[string]AdapterInfo {
+	result := make(map[string]AdapterInfo)
+	for _, a := range adapters {
+		if a.Enabled && a.Running {
+			result[a.Type] = a
+		}
+	}
+	return result
+}
+
 // getLastKnownAdapters returns the last known adapter state for a DittoServer.
 // Returns nil if no successful poll has occurred yet.
 func (r *DittoServerReconciler) getLastKnownAdapters(ds *dittoiov1alpha1.DittoServer) []AdapterInfo {

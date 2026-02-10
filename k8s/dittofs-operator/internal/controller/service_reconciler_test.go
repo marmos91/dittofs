@@ -33,7 +33,7 @@ import (
 func newAdapterService(crName, namespace, adapterType string, port int32) *corev1.Service {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      adapterServiceName(crName, adapterType),
+			Name:      adapterResourceName(crName, adapterType),
 			Namespace: namespace,
 			Labels:    adapterServiceLabels(crName, adapterType),
 		},

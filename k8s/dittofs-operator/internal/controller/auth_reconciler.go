@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
@@ -447,46 +448,7 @@ func isTransientError(err error) bool {
 
 // containsIgnoreCase checks if s contains substr (case-insensitive).
 func containsIgnoreCase(s, substr string) bool {
-	sLower := make([]byte, len(s))
-	substrLower := make([]byte, len(substr))
-	for i := range s {
-		if s[i] >= 'A' && s[i] <= 'Z' {
-			sLower[i] = s[i] + 32
-		} else {
-			sLower[i] = s[i]
-		}
-	}
-	for i := range substr {
-		if substr[i] >= 'A' && substr[i] <= 'Z' {
-			substrLower[i] = substr[i] + 32
-		} else {
-			substrLower[i] = substr[i]
-		}
-	}
-	return bytes_contains(sLower, substrLower)
-}
-
-// bytes_contains is a simple byte slice contains check.
-func bytes_contains(s, substr []byte) bool {
-	if len(substr) == 0 {
-		return true
-	}
-	if len(s) < len(substr) {
-		return false
-	}
-	for i := 0; i <= len(s)-len(substr); i++ {
-		match := true
-		for j := range substr {
-			if s[i+j] != substr[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
 
 // getRetryCount reads the auth retry count from the CR annotation.

@@ -22,43 +22,13 @@ import (
 
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // newAdapterNetworkPolicy creates an adapter NetworkPolicy for testing.
+// Delegates to the production builder for consistency.
 func newAdapterNetworkPolicy(crName, namespace, adapterType string, port int32) *networkingv1.NetworkPolicy {
-	return &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      networkPolicyName(crName, adapterType),
-			Namespace: namespace,
-			Labels:    networkPolicyLabels(crName, adapterType),
-		},
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app":      "dittofs-server",
-					"instance": crName,
-				},
-			},
-			PolicyTypes: []networkingv1.PolicyType{
-				networkingv1.PolicyTypeIngress,
-			},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{
-				{
-					Ports: []networkingv1.NetworkPolicyPort{
-						{
-							Protocol: protocolPtr(),
-							Port: &intstr.IntOrString{
-								Type:   intstr.Int,
-								IntVal: port,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
+	return buildAdapterNetworkPolicy(crName, namespace, adapterType, port)
 }
 
 // newStaticNetworkPolicy creates a NetworkPolicy without adapter labels for testing.
@@ -94,7 +64,7 @@ func listAdapterNetworkPolicies(t *testing.T, r *DittoServerReconciler, namespac
 		client.InNamespace(namespace),
 		client.MatchingLabels{
 			adapterNetworkPolicyLabel: "true",
-			"instance":               crName,
+			"instance":                crName,
 		},
 	)
 	if err != nil {

@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -27,6 +28,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -42,19 +44,56 @@ const (
 	adapterPortPrefix = "adapter-"
 )
 
-// adapterServiceName returns the canonical name for an adapter Service.
-func adapterServiceName(crName, adapterType string) string {
-	return fmt.Sprintf("%s-adapter-%s", crName, adapterType)
+// invalidDNSChars matches characters not allowed in DNS-1035 labels.
+var invalidDNSChars = regexp.MustCompile(`[^a-z0-9-]`)
+
+// sanitizeAdapterType normalizes an adapter type string for use in K8s resource names,
+// labels, and port names. Converts to lowercase, replaces invalid characters with hyphens,
+// collapses consecutive hyphens, and trims leading/trailing hyphens.
+func sanitizeAdapterType(adapterType string) string {
+	s := strings.ToLower(adapterType)
+	s = invalidDNSChars.ReplaceAllString(s, "-")
+	// Collapse consecutive hyphens.
+	for strings.Contains(s, "--") {
+		s = strings.ReplaceAll(s, "--", "-")
+	}
+	s = strings.Trim(s, "-")
+	if s == "" {
+		s = "unknown"
+	}
+	return s
+}
+
+// adapterPortName returns a K8s-safe container port name for an adapter.
+// Port names must be IANA service names (max 15 chars, lowercase alphanumeric + hyphens).
+func adapterPortName(adapterType string) string {
+	name := adapterPortPrefix + sanitizeAdapterType(adapterType)
+	if len(name) > 15 {
+		name = name[:15]
+	}
+	name = strings.TrimRight(name, "-")
+	return name
+}
+
+// adapterResourceName returns the canonical name for an adapter-owned K8s resource (Service, NetworkPolicy).
+func adapterResourceName(crName, adapterType string) string {
+	return fmt.Sprintf("%s-adapter-%s", crName, sanitizeAdapterType(adapterType))
+}
+
+// podSelectorLabels returns the standard labels used to select DittoFS server pods.
+func podSelectorLabels(crName string) map[string]string {
+	return map[string]string{
+		"app":      "dittofs-server",
+		"instance": crName,
+	}
 }
 
 // adapterServiceLabels returns the labels for an adapter Service.
 func adapterServiceLabels(crName, adapterType string) map[string]string {
-	return map[string]string{
-		"app":               "dittofs-server",
-		"instance":          crName,
-		adapterServiceLabel: "true",
-		adapterTypeLabel:    adapterType,
-	}
+	labels := podSelectorLabels(crName)
+	labels[adapterServiceLabel] = "true"
+	labels[adapterTypeLabel] = sanitizeAdapterType(adapterType)
+	return labels
 }
 
 // getAdapterServiceType reads the Service type from the CRD spec.adapterServices.type,
@@ -89,13 +128,7 @@ func (r *DittoServerReconciler) reconcileAdapterServices(ctx context.Context, ds
 		return nil
 	}
 
-	// Build desired set: only enabled AND running adapters get Services.
-	desired := make(map[string]AdapterInfo)
-	for _, a := range adapters {
-		if a.Enabled && a.Running {
-			desired[a.Type] = a
-		}
-	}
+	desired := activeAdaptersByType(adapters)
 
 	// List existing adapter Services using label selector.
 	var existingList corev1.ServiceList
@@ -152,19 +185,14 @@ func (r *DittoServerReconciler) reconcileAdapterServices(ctx context.Context, ds
 
 // createAdapterService creates a new K8s Service for an adapter.
 func (r *DittoServerReconciler) createAdapterService(ctx context.Context, ds *dittoiov1alpha1.DittoServer, adapterType string, info AdapterInfo) error {
-	svcName := adapterServiceName(ds.Name, adapterType)
+	svcName := adapterResourceName(ds.Name, adapterType)
 	labels := adapterServiceLabels(ds.Name, adapterType)
 	svcType := getAdapterServiceType(ds)
 	annotations := getAdapterServiceAnnotations(ds)
 
-	selector := map[string]string{
-		"app":      "dittofs-server",
-		"instance": ds.Name,
-	}
-
 	builder := resources.NewServiceBuilder(svcName, ds.Namespace).
 		WithLabels(labels).
-		WithSelector(selector).
+		WithSelector(podSelectorLabels(ds.Name)).
 		WithType(svcType).
 		AddTCPPort(adapterType, int32(info.Port))
 
@@ -199,19 +227,12 @@ func (r *DittoServerReconciler) updateAdapterServiceIfNeeded(ctx context.Context
 	desiredType := getAdapterServiceType(ds)
 	desiredAnnotations := getAdapterServiceAnnotations(ds)
 
-	// Check if update is needed.
-	needsUpdate := false
-	if len(existing.Spec.Ports) > 0 && existing.Spec.Ports[0].Port != desiredPort {
-		needsUpdate = true
-	}
-	if existing.Spec.Type != desiredType {
-		needsUpdate = true
-	}
-	if !annotationsMatch(existing.Annotations, desiredAnnotations) {
-		needsUpdate = true
-	}
+	// Treat empty/malformed ports as drift so the Service self-heals.
+	portChanged := len(existing.Spec.Ports) == 0 || existing.Spec.Ports[0].Port != desiredPort
+	typeChanged := existing.Spec.Type != desiredType
+	annotationsChanged := !annotationsMatch(existing.Annotations, desiredAnnotations)
 
-	if !needsUpdate {
+	if !portChanged && !typeChanged && !annotationsChanged {
 		return nil
 	}
 
@@ -226,11 +247,15 @@ func (r *DittoServerReconciler) updateAdapterServiceIfNeeded(ctx context.Context
 		oldPort = fresh.Spec.Ports[0].Port
 	}
 
-	// Update port and targetPort.
+	// Rebuild port to the desired single-port shape, ensuring TargetPort is always correct.
 	adapterType := fresh.Labels[adapterTypeLabel]
-	if len(fresh.Spec.Ports) > 0 {
-		fresh.Spec.Ports[0].Port = desiredPort
-		fresh.Spec.Ports[0].TargetPort.IntVal = desiredPort
+	fresh.Spec.Ports = []corev1.ServicePort{
+		{
+			Name:       adapterType,
+			Port:       desiredPort,
+			TargetPort: intstr.FromInt32(desiredPort),
+			Protocol:   corev1.ProtocolTCP,
+		},
 	}
 
 	// Update Service type.
@@ -326,7 +351,7 @@ func (r *DittoServerReconciler) reconcileContainerPorts(ctx context.Context, ds 
 	var dynamicPorts []corev1.ContainerPort
 	for adapterType, info := range activeAdapters {
 		dynamicPorts = append(dynamicPorts, corev1.ContainerPort{
-			Name:          fmt.Sprintf("%s%s", adapterPortPrefix, adapterType),
+			Name:          adapterPortName(adapterType),
 			ContainerPort: int32(info.Port),
 			Protocol:      corev1.ProtocolTCP,
 		})
@@ -378,19 +403,12 @@ func sortContainerPorts(ports []corev1.ContainerPort) {
 }
 
 // portsEqual returns true if two sorted container port slices are identical.
-// Compares Name, ContainerPort, and Protocol for each element.
 func portsEqual(a, b []corev1.ContainerPort) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for i := range a {
-		if a[i].Name != b[i].Name {
-			return false
-		}
-		if a[i].ContainerPort != b[i].ContainerPort {
-			return false
-		}
-		if a[i].Protocol != b[i].Protocol {
+		if a[i].Name != b[i].Name || a[i].ContainerPort != b[i].ContainerPort || a[i].Protocol != b[i].Protocol {
 			return false
 		}
 	}

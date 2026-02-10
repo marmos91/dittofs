@@ -105,15 +105,7 @@ type DittoServerReconciler struct {
 // +kubebuilder:rbac:groups=pgv2.percona.com,resources=perconapgclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pgv2.percona.com,resources=perconapgclusters/status,verbs=get
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the DittoServer object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.22.4/pkg/reconcile
+// Reconcile ensures the cluster state matches the desired DittoServer spec.
 func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
 
@@ -349,7 +341,7 @@ func (r *DittoServerReconciler) updateStatus(
 	updateProgressingCondition(dittoServer, &dittoServerCopy.Status, replicas, statefulSet)
 
 	// Set Ready condition (aggregate of other conditions)
-	updateReadyCondition(dittoServer, &dittoServerCopy.Status)
+	updateReadyCondition(dittoServer, &dittoServerCopy.Status, replicas)
 
 	return r.Status().Update(ctx, dittoServerCopy)
 }
@@ -430,6 +422,7 @@ func updateProgressingCondition(
 func updateReadyCondition(
 	dittoServer *dittoiov1alpha1.DittoServer,
 	status *dittoiov1alpha1.DittoServerStatus,
+	replicas int32,
 ) {
 	configReady := conditions.IsConditionTrue(status.Conditions, conditions.ConditionConfigReady)
 	available := conditions.IsConditionTrue(status.Conditions, conditions.ConditionAvailable)
@@ -443,11 +436,7 @@ func updateReadyCondition(
 	// Authenticated is only required when the server is running (replicas > 0).
 	// When stopped (replicas=0), there's no DittoFS API to authenticate against.
 	authenticated := true
-	desiredReplicas := int32(1)
-	if dittoServer.Spec.Replicas != nil {
-		desiredReplicas = *dittoServer.Spec.Replicas
-	}
-	if desiredReplicas > 0 {
+	if replicas > 0 {
 		authenticated = conditions.IsConditionTrue(status.Conditions, conditions.ConditionAuthenticated)
 	}
 
@@ -779,10 +768,7 @@ func (r *DittoServerReconciler) createOrUpdateService(ctx context.Context, ditto
 
 // reconcileHeadlessService creates/updates the headless Service for StatefulSet DNS.
 func (r *DittoServerReconciler) reconcileHeadlessService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
-	labels := map[string]string{
-		"app":      "dittofs-server",
-		"instance": dittoServer.Name,
-	}
+	labels := podSelectorLabels(dittoServer.Name)
 
 	svc := resources.NewServiceBuilder(dittoServer.Name+"-headless", dittoServer.Namespace).
 		WithLabels(labels).
@@ -796,11 +782,7 @@ func (r *DittoServerReconciler) reconcileHeadlessService(ctx context.Context, di
 
 // reconcileAPIService creates/updates the Service for REST API access.
 func (r *DittoServerReconciler) reconcileAPIService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
-	labels := map[string]string{
-		"app":      "dittofs-server",
-		"instance": dittoServer.Name,
-	}
-
+	labels := podSelectorLabels(dittoServer.Name)
 	apiPort := getAPIPort(dittoServer)
 
 	svc := resources.NewServiceBuilder(dittoServer.Name+"-api", dittoServer.Namespace).
@@ -831,11 +813,7 @@ func (r *DittoServerReconciler) reconcileMetricsService(ctx context.Context, dit
 		return client.IgnoreNotFound(err)
 	}
 
-	labels := map[string]string{
-		"app":      "dittofs-server",
-		"instance": dittoServer.Name,
-	}
-
+	labels := podSelectorLabels(dittoServer.Name)
 	metricsPort := getMetricsPort(dittoServer)
 
 	// Metrics service is always ClusterIP (internal only)
@@ -881,10 +859,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 				return err
 			}
 
-			labels := map[string]string{
-				"app":      "dittofs-server",
-				"instance": dittoServer.Name,
-			}
+			labels := podSelectorLabels(dittoServer.Name)
 
 			volumeMounts := []corev1.VolumeMount{
 				{
@@ -1147,9 +1122,9 @@ func buildS3EnvVars(spec *dittoiov1alpha1.S3StoreConfig) []corev1.EnvVar {
 	ref := spec.CredentialsSecretRef
 
 	// Apply defaults for key names
-	accessKeyIDKey := defaultIfEmpty(ref.AccessKeyIDKey, "accessKeyId")
-	secretAccessKeyKey := defaultIfEmpty(ref.SecretAccessKeyKey, "secretAccessKey")
-	endpointKey := defaultIfEmpty(ref.EndpointKey, "endpoint")
+	accessKeyIDKey := stringOrDefault(ref.AccessKeyIDKey, "accessKeyId")
+	secretAccessKeyKey := stringOrDefault(ref.SecretAccessKeyKey, "secretAccessKey")
+	endpointKey := stringOrDefault(ref.EndpointKey, "endpoint")
 
 	envVars := []corev1.EnvVar{
 		secretEnvVar("AWS_ACCESS_KEY_ID", ref.SecretName, accessKeyIDKey, false),
@@ -1187,8 +1162,7 @@ func secretEnvVar(envName, secretName, key string, optional bool) corev1.EnvVar 
 	return env
 }
 
-// defaultIfEmpty returns the value if non-empty, otherwise returns the default.
-func defaultIfEmpty(value, defaultValue string) string {
+func stringOrDefault(value, defaultValue string) string {
 	if value == "" {
 		return defaultValue
 	}
