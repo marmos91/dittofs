@@ -292,6 +292,15 @@ func (r *DittoServerReconciler) refreshOperatorToken(ctx context.Context, ds *di
 		// Fallback: re-login with stored password
 		tokenResp, err = apiClient.Login(ctx, dittoiov1alpha1.OperatorServiceAccountUsername, storedPassword)
 		if err != nil {
+			// If re-login fails with a non-transient error (e.g. 401 user not found),
+			// the operator user may have been lost (server restart with memory identity).
+			// Delete the credentials secret so the next reconcile re-provisions from scratch.
+			if !isTransientError(err) {
+				logger.Info("Deleting stale operator credentials to trigger re-provisioning")
+				if delErr := r.Delete(ctx, secret); delErr != nil {
+					logger.Error(delErr, "Failed to delete stale credentials secret")
+				}
+			}
 			return ctrl.Result{}, fmt.Errorf("both token refresh and re-login failed: %w", err)
 		}
 	}

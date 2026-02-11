@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -1000,7 +1001,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 								VolumeMounts:    volumeMounts,
 								Resources:       dittoServer.Spec.Resources,
 								SecurityContext: dittoServer.Spec.SecurityContext,
-								Ports:           buildContainerPorts(dittoServer),
+								Ports:           buildContainerPorts(dittoServer, existingAdapterPorts(statefulSet)),
 								Env:             envVars,
 								LivenessProbe: &corev1.Probe{
 									ProbeHandler: corev1.ProbeHandler{
@@ -1092,10 +1093,20 @@ func getPodSecurityContext(dittoServer *dittoiov1alpha1.DittoServer) *corev1.Pod
 	}
 }
 
+// existingAdapterPorts extracts existing container ports from the StatefulSet.
+// Returns nil if the StatefulSet has no containers.
+func existingAdapterPorts(sts *appsv1.StatefulSet) []corev1.ContainerPort {
+	if len(sts.Spec.Template.Spec.Containers) == 0 {
+		return nil
+	}
+	return sts.Spec.Template.Spec.Containers[0].Ports
+}
+
 // buildContainerPorts constructs the container ports for the DittoFS server.
-// Only emits infrastructure ports (api, metrics). Protocol adapter ports are
-// managed dynamically by reconcileContainerPorts in service_reconciler.go.
-func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer) []corev1.ContainerPort {
+// Emits infrastructure ports (api, metrics) and preserves any existing dynamic
+// adapter ports (prefixed with "adapter-") from the current StatefulSet.
+// Dynamic adapter ports are managed by reconcileContainerPorts in service_reconciler.go.
+func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer, existingPorts []corev1.ContainerPort) []corev1.ContainerPort {
 	apiPort := getAPIPort(dittoServer)
 
 	ports := []corev1.ContainerPort{
@@ -1114,6 +1125,13 @@ func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer) []corev1.Cont
 			ContainerPort: metricsPort,
 			Protocol:      corev1.ProtocolTCP,
 		})
+	}
+
+	// Preserve existing dynamic adapter ports to avoid unnecessary StatefulSet restarts.
+	for _, p := range existingPorts {
+		if strings.HasPrefix(p.Name, adapterPortPrefix) {
+			ports = append(ports, p)
+		}
 	}
 
 	return ports
