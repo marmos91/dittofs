@@ -190,11 +190,12 @@ func (r *DittoServerReconciler) createAdapterService(ctx context.Context, ds *di
 	svcType := getAdapterServiceType(ds)
 	annotations := getAdapterServiceAnnotations(ds)
 
+	sanitizedType := sanitizeAdapterType(adapterType)
 	builder := resources.NewServiceBuilder(svcName, ds.Namespace).
 		WithLabels(labels).
 		WithSelector(podSelectorLabels(ds.Name)).
 		WithType(svcType).
-		AddTCPPort(adapterType, int32(info.Port))
+		AddTCPPort(sanitizedType, int32(info.Port))
 
 	if annotations != nil {
 		builder.WithAnnotations(annotations)

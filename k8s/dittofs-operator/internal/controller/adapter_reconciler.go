@@ -109,12 +109,13 @@ func (r *DittoServerReconciler) setLastKnownAdapters(ds *dittoiov1alpha1.DittoSe
 	r.lastKnownAdapters[key] = adapters
 }
 
-// activeAdaptersByType returns a map of enabled+running adapters keyed by type.
+// activeAdaptersByType returns a map of enabled+running adapters keyed by sanitized type.
+// Keys are sanitized so they match the label values stored on K8s resources.
 func activeAdaptersByType(adapters []AdapterInfo) map[string]AdapterInfo {
 	result := make(map[string]AdapterInfo)
 	for _, a := range adapters {
 		if a.Enabled && a.Running {
-			result[a.Type] = a
+			result[sanitizeAdapterType(a.Type)] = a
 		}
 	}
 	return result
