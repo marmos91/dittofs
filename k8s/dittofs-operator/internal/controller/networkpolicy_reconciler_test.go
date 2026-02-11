@@ -386,3 +386,63 @@ func TestReconcileNetworkPolicies_OwnerReferenceSet(t *testing.T) {
 		t.Errorf("NetworkPolicy %s owner reference kind = %s, want DittoServer", np.Name, np.OwnerReferences[0].Kind)
 	}
 }
+
+func TestReconcileNetworkPolicies_BaselineCreated(t *testing.T) {
+	ds := newTestDittoServer("test-server", "default")
+
+	r := setupAuthReconciler(t, ds)
+
+	r.setLastKnownAdapters(ds, []AdapterInfo{
+		{Type: "nfs", Enabled: true, Running: true, Port: 12049},
+	})
+
+	err := r.reconcileNetworkPolicies(context.Background(), ds)
+	if err != nil {
+		t.Fatalf("reconcileNetworkPolicies returned error: %v", err)
+	}
+
+	// Verify baseline NetworkPolicy exists allowing API port.
+	baselineNP := &networkingv1.NetworkPolicy{}
+	err = r.Get(context.Background(), client.ObjectKey{
+		Namespace: "default",
+		Name:      baselineNetworkPolicyName("test-server"),
+	}, baselineNP)
+	if err != nil {
+		t.Fatalf("Baseline NetworkPolicy not found: %v", err)
+	}
+
+	if baselineNP.Labels[baselineNetworkPolicyLabel] != "true" {
+		t.Errorf("Baseline NetworkPolicy missing label %s", baselineNetworkPolicyLabel)
+	}
+
+	port := currentIngressPort(baselineNP)
+	if port != defaultAPIPort {
+		t.Errorf("Baseline NetworkPolicy port = %d, want %d", port, defaultAPIPort)
+	}
+
+	if len(baselineNP.OwnerReferences) == 0 {
+		t.Errorf("Baseline NetworkPolicy has no owner references")
+	}
+}
+
+func TestReconcileNetworkPolicies_BaselineCreatedEvenWithNilAdapters(t *testing.T) {
+	ds := newTestDittoServer("test-server", "default")
+
+	r := setupAuthReconciler(t, ds)
+
+	// No adapters set (nil = no poll yet).
+	err := r.reconcileNetworkPolicies(context.Background(), ds)
+	if err != nil {
+		t.Fatalf("reconcileNetworkPolicies returned error: %v", err)
+	}
+
+	// Baseline should still be created even when adapter reconciliation is skipped.
+	baselineNP := &networkingv1.NetworkPolicy{}
+	err = r.Get(context.Background(), client.ObjectKey{
+		Namespace: "default",
+		Name:      baselineNetworkPolicyName("test-server"),
+	}, baselineNP)
+	if err != nil {
+		t.Fatalf("Baseline NetworkPolicy not found even with nil adapters: %v", err)
+	}
+}

@@ -242,6 +242,13 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	// Ensure baseline NetworkPolicy allowing API traffic exists before auth.
+	// This prevents adapter NetworkPolicies from blocking operator-to-API communication.
+	if err := r.ensureBaselineNetworkPolicy(ctx, dittoServer); err != nil {
+		logger.Error(err, "Failed to ensure baseline network policy")
+		return ctrl.Result{}, err
+	}
+
 	// Auth reconciliation: only when StatefulSet has at least one ready replica
 	if statefulSet.Status.ReadyReplicas >= 1 {
 		authResult, authErr := r.reconcileAuth(ctx, dittoServer)
