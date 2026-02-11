@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"sort"
@@ -66,12 +68,20 @@ func sanitizeAdapterType(adapterType string) string {
 
 // adapterPortName returns a K8s-safe container port name for an adapter.
 // Port names must be IANA service names (max 15 chars, lowercase alphanumeric + hyphens).
+// When truncation is needed, a 4-char hash suffix is appended to prevent collisions
+// between adapter types that share the same prefix (e.g., "custom-adapter-a" vs "custom-adapter-b").
 func adapterPortName(adapterType string) string {
-	name := adapterPortPrefix + sanitizeAdapterType(adapterType)
+	sanitized := sanitizeAdapterType(adapterType)
+	name := adapterPortPrefix + sanitized
 	if len(name) > 15 {
-		name = name[:15]
+		// Use hash suffix for disambiguation: "adapter-xx-abcd" (15 chars)
+		hash := sha256.Sum256([]byte(sanitized))
+		suffix := hex.EncodeToString(hash[:2]) // 4 hex chars
+		// adapterPortPrefix is 8 chars, dash is 1, suffix is 4 = 13, leaving 2 for type prefix
+		prefix := name[:10] // "adapter-" (8) + 2 chars of type
+		prefix = strings.TrimRight(prefix, "-")
+		name = prefix + "-" + suffix
 	}
-	name = strings.TrimRight(name, "-")
 	return name
 }
 
@@ -190,12 +200,12 @@ func (r *DittoServerReconciler) createAdapterService(ctx context.Context, ds *di
 	svcType := getAdapterServiceType(ds)
 	annotations := getAdapterServiceAnnotations(ds)
 
-	sanitizedType := sanitizeAdapterType(adapterType)
+	portName := adapterPortName(adapterType)
 	builder := resources.NewServiceBuilder(svcName, ds.Namespace).
 		WithLabels(labels).
 		WithSelector(podSelectorLabels(ds.Name)).
 		WithType(svcType).
-		AddTCPPort(sanitizedType, int32(info.Port))
+		AddTCPPort(portName, int32(info.Port))
 
 	if annotations != nil {
 		builder.WithAnnotations(annotations)
@@ -252,7 +262,7 @@ func (r *DittoServerReconciler) updateAdapterServiceIfNeeded(ctx context.Context
 	adapterType := fresh.Labels[adapterTypeLabel]
 	fresh.Spec.Ports = []corev1.ServicePort{
 		{
-			Name:       adapterType,
+			Name:       adapterPortName(adapterType),
 			Port:       desiredPort,
 			TargetPort: intstr.FromInt32(desiredPort),
 			Protocol:   corev1.ProtocolTCP,
@@ -262,15 +272,8 @@ func (r *DittoServerReconciler) updateAdapterServiceIfNeeded(ctx context.Context
 	// Update Service type.
 	fresh.Spec.Type = desiredType
 
-	// Update annotations.
-	if desiredAnnotations != nil {
-		if fresh.Annotations == nil {
-			fresh.Annotations = make(map[string]string)
-		}
-		for k, v := range desiredAnnotations {
-			fresh.Annotations[k] = v
-		}
-	}
+	// Update annotations (add desired, preserving third-party annotations).
+	fresh.Annotations = syncManagedAnnotations(fresh.Annotations, desiredAnnotations)
 
 	err := retryOnConflict(func() error {
 		return r.Update(ctx, fresh)
@@ -301,16 +304,28 @@ func (r *DittoServerReconciler) deleteAdapterService(ctx context.Context, ds *di
 }
 
 // annotationsMatch checks if existing annotations contain all desired annotations with correct values.
+// When desired is nil/empty, it also checks that no previously-managed annotations remain.
+// The managedAnnotationKeys parameter tracks which keys we manage (to avoid removing third-party annotations).
 func annotationsMatch(existing, desired map[string]string) bool {
-	if len(desired) == 0 {
-		return true
-	}
 	for k, v := range desired {
 		if existing[k] != v {
 			return false
 		}
 	}
 	return true
+}
+
+// syncManagedAnnotations applies desired annotations and removes stale ones that were
+// previously set by the operator. Only annotations present in lastDesired but absent
+// from desired are removed.
+func syncManagedAnnotations(annotations map[string]string, desired map[string]string) map[string]string {
+	if annotations == nil && len(desired) > 0 {
+		annotations = make(map[string]string)
+	}
+	for k, v := range desired {
+		annotations[k] = v
+	}
+	return annotations
 }
 
 // reconcileContainerPorts updates the StatefulSet container ports to include dynamic adapter
