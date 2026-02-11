@@ -1177,7 +1177,7 @@ func buildSecretEnvVars(dittoServer *dittoiov1alpha1.DittoServer) []corev1.EnvVa
 	// JWT secret (always present - either user-provided or auto-generated)
 	jwtSecretRef := dittoServer.GetEffectiveJWTSecretRef()
 	envVars = append(envVars, secretEnvVar(
-		"DITTOFS_CONTROLPLANE_JWT_SECRET",
+		"DITTOFS_CONTROLPLANE_SECRET",
 		jwtSecretRef.Name,
 		jwtSecretRef.Key,
 		false,
