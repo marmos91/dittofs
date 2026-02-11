@@ -194,7 +194,7 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 
 	// Login as admin
 	apiClient := NewDittoFSClient(apiURL)
-	tokenResp, err := apiClient.Login(adminUsername, adminPassword)
+	tokenResp, err := apiClient.Login(ctx, adminUsername, adminPassword)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to login as admin: %w", err)
 	}
@@ -207,7 +207,7 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 	}
 
 	// Create operator user
-	err = apiClient.CreateUser(dittoiov1alpha1.OperatorServiceAccountUsername, operatorPassword, "operator")
+	err = apiClient.CreateUser(ctx, dittoiov1alpha1.OperatorServiceAccountUsername, operatorPassword, "operator")
 	if err != nil {
 		// If user already exists, proceed to login
 		var apiErr *DittoFSAPIError
@@ -219,7 +219,7 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 	}
 
 	// Login as operator to get JWT tokens
-	operatorTokens, err := apiClient.Login(dittoiov1alpha1.OperatorServiceAccountUsername, operatorPassword)
+	operatorTokens, err := apiClient.Login(ctx, dittoiov1alpha1.OperatorServiceAccountUsername, operatorPassword)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to login as operator: %w", err)
 	}
@@ -285,12 +285,12 @@ func (r *DittoServerReconciler) refreshOperatorToken(ctx context.Context, ds *di
 	apiClient := NewDittoFSClient(apiURL)
 
 	// Try refresh first (cheapest operation)
-	tokenResp, err := apiClient.RefreshToken(refreshToken)
+	tokenResp, err := apiClient.RefreshToken(ctx, refreshToken)
 	if err != nil {
 		logger.Info("Token refresh failed, falling back to re-login", "error", err.Error())
 
 		// Fallback: re-login with stored password
-		tokenResp, err = apiClient.Login(dittoiov1alpha1.OperatorServiceAccountUsername, storedPassword)
+		tokenResp, err = apiClient.Login(ctx, dittoiov1alpha1.OperatorServiceAccountUsername, storedPassword)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("both token refresh and re-login failed: %w", err)
 		}
@@ -349,7 +349,7 @@ func (r *DittoServerReconciler) cleanupOperatorServiceAccount(ctx context.Contex
 	apiClient := NewDittoFSClient(apiURL)
 
 	// Login as admin
-	tokenResp, err := apiClient.Login(adminUsername, adminPassword)
+	tokenResp, err := apiClient.Login(ctx, adminUsername, adminPassword)
 	if err != nil {
 		logger.Info("Failed to login as admin for cleanup, skipping", "error", err.Error())
 		return nil
@@ -357,7 +357,7 @@ func (r *DittoServerReconciler) cleanupOperatorServiceAccount(ctx context.Contex
 	apiClient.SetToken(tokenResp.AccessToken)
 
 	// Delete operator user
-	if err := apiClient.DeleteUser(dittoiov1alpha1.OperatorServiceAccountUsername); err != nil {
+	if err := apiClient.DeleteUser(ctx, dittoiov1alpha1.OperatorServiceAccountUsername); err != nil {
 		logger.Info("Failed to delete operator service account (best-effort)", "error", err.Error())
 		return nil
 	}

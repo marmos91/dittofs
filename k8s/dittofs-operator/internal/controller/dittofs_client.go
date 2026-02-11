@@ -18,6 +18,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -51,7 +52,7 @@ func (c *DittoFSClient) SetToken(token string) {
 }
 
 // do performs an HTTP request and decodes the response.
-func (c *DittoFSClient) do(method, path string, body, result any) error {
+func (c *DittoFSClient) do(ctx context.Context, method, path string, body, result any) error {
 	var bodyReader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -61,7 +62,7 @@ func (c *DittoFSClient) do(method, path string, body, result any) error {
 		bodyReader = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequest(method, c.baseURL+path, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -152,14 +153,14 @@ func (t *TokenResponse) ExpiresInDuration() time.Duration {
 }
 
 // Login authenticates with the DittoFS API and returns tokens.
-func (c *DittoFSClient) Login(username, password string) (*TokenResponse, error) {
+func (c *DittoFSClient) Login(ctx context.Context, username, password string) (*TokenResponse, error) {
 	req := LoginRequest{
 		Username: username,
 		Password: password,
 	}
 
 	var resp TokenResponse
-	if err := c.do(http.MethodPost, "/api/v1/auth/login", req, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/api/v1/auth/login", req, &resp); err != nil {
 		return nil, err
 	}
 
@@ -167,7 +168,7 @@ func (c *DittoFSClient) Login(username, password string) (*TokenResponse, error)
 }
 
 // RefreshToken refreshes the access token using the refresh token.
-func (c *DittoFSClient) RefreshToken(refreshToken string) (*TokenResponse, error) {
+func (c *DittoFSClient) RefreshToken(ctx context.Context, refreshToken string) (*TokenResponse, error) {
 	req := struct {
 		RefreshToken string `json:"refresh_token"`
 	}{
@@ -175,7 +176,7 @@ func (c *DittoFSClient) RefreshToken(refreshToken string) (*TokenResponse, error
 	}
 
 	var resp TokenResponse
-	if err := c.do(http.MethodPost, "/api/v1/auth/refresh", req, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/api/v1/auth/refresh", req, &resp); err != nil {
 		return nil, err
 	}
 
@@ -183,7 +184,7 @@ func (c *DittoFSClient) RefreshToken(refreshToken string) (*TokenResponse, error
 }
 
 // CreateUser creates a new user on the DittoFS API.
-func (c *DittoFSClient) CreateUser(username, password, role string) error {
+func (c *DittoFSClient) CreateUser(ctx context.Context, username, password, role string) error {
 	req := struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -194,12 +195,12 @@ func (c *DittoFSClient) CreateUser(username, password, role string) error {
 		Role:     role,
 	}
 
-	return c.do(http.MethodPost, "/api/v1/users", req, nil)
+	return c.do(ctx, http.MethodPost, "/api/v1/users", req, nil)
 }
 
 // DeleteUser deletes a user from the DittoFS API.
-func (c *DittoFSClient) DeleteUser(username string) error {
-	return c.do(http.MethodDelete, fmt.Sprintf("/api/v1/users/%s", username), nil, nil)
+func (c *DittoFSClient) DeleteUser(ctx context.Context, username string) error {
+	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/users/%s", username), nil, nil)
 }
 
 // AdapterInfo represents an adapter returned by the DittoFS API.
@@ -212,9 +213,9 @@ type AdapterInfo struct {
 }
 
 // ListAdapters calls GET /api/v1/adapters and returns the adapter list.
-func (c *DittoFSClient) ListAdapters() ([]AdapterInfo, error) {
+func (c *DittoFSClient) ListAdapters(ctx context.Context) ([]AdapterInfo, error) {
 	var adapters []AdapterInfo
-	if err := c.do(http.MethodGet, "/api/v1/adapters", nil, &adapters); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/api/v1/adapters", nil, &adapters); err != nil {
 		return nil, err
 	}
 	return adapters, nil

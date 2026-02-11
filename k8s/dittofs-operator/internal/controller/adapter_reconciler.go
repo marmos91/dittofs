@@ -82,7 +82,7 @@ func (r *DittoServerReconciler) reconcileAdapters(ctx context.Context, dittoServ
 	}
 
 	// Poll adapter list
-	adapters, err := apiClient.ListAdapters()
+	adapters, err := apiClient.ListAdapters(ctx)
 	if err != nil {
 		logger.Info("Adapter polling failed, preserving existing state", "error", err.Error())
 		return ctrl.Result{RequeueAfter: pollingInterval}, nil
