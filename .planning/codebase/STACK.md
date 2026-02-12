@@ -26,7 +26,7 @@
 ## Frameworks
 
 **Core:**
-- chi/v5 1.8.1 - HTTP router for REST API (`pkg/controlplane/api/`)
+- chi/v5 5.1.0 - HTTP router for REST API (`pkg/controlplane/api/`)
 - gorm 1.31.1 - ORM for control plane database
 - cobra 1.8.1 - CLI framework (`cmd/dittofs/`, `cmd/dittofsctl/`)
 - viper 1.21.0 - Configuration management (`pkg/config/`)

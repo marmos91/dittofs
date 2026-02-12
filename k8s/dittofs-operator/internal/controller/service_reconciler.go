@@ -303,27 +303,58 @@ func (r *DittoServerReconciler) deleteAdapterService(ctx context.Context, ds *di
 	return nil
 }
 
-// annotationsMatch checks if existing annotations contain all desired annotations with correct values.
-// When desired is nil/empty, it also checks that no previously-managed annotations remain.
-// The managedAnnotationKeys parameter tracks which keys we manage (to avoid removing third-party annotations).
+// managedAnnotationsKey is the annotation that tracks which annotation keys the operator manages.
+// This enables cleanup when annotations are removed from the CRD spec.
+const managedAnnotationsKey = "dittofs.io/managed-annotations"
+
+// annotationsMatch checks if existing annotations contain all desired annotations with correct values
+// and that no stale operator-managed annotations remain from a previous spec.
 func annotationsMatch(existing, desired map[string]string) bool {
 	for k, v := range desired {
 		if existing[k] != v {
 			return false
 		}
 	}
+	// Check for stale managed annotations that should be removed.
+	if managed, ok := existing[managedAnnotationsKey]; ok && managed != "" {
+		for _, k := range strings.Split(managed, ",") {
+			if _, stillDesired := desired[k]; !stillDesired {
+				return false
+			}
+		}
+	}
 	return true
 }
 
 // syncManagedAnnotations applies desired annotations and removes stale ones that were
-// previously set by the operator. Only annotations present in lastDesired but absent
-// from desired are removed.
+// previously set by the operator. Tracks managed keys in a metadata annotation so
+// third-party annotations are never removed.
 func syncManagedAnnotations(annotations map[string]string, desired map[string]string) map[string]string {
-	if annotations == nil && len(desired) > 0 {
+	if annotations == nil {
 		annotations = make(map[string]string)
 	}
+	// Remove previously managed keys that are no longer desired.
+	if managed, ok := annotations[managedAnnotationsKey]; ok && managed != "" {
+		for _, k := range strings.Split(managed, ",") {
+			if _, stillDesired := desired[k]; !stillDesired {
+				delete(annotations, k)
+			}
+		}
+	}
+	// Apply desired annotations.
 	for k, v := range desired {
 		annotations[k] = v
+	}
+	// Update the tracking annotation.
+	if len(desired) > 0 {
+		keys := make([]string, 0, len(desired))
+		for k := range desired {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		annotations[managedAnnotationsKey] = strings.Join(keys, ",")
+	} else {
+		delete(annotations, managedAnnotationsKey)
 	}
 	return annotations
 }

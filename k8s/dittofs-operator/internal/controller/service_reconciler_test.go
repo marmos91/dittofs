@@ -811,3 +811,102 @@ func portNames(ports []corev1.ContainerPort) []string {
 	}
 	return names
 }
+
+func TestAnnotationsMatch_AllPresent(t *testing.T) {
+	existing := map[string]string{"foo": "bar", "baz": "qux"}
+	desired := map[string]string{"foo": "bar"}
+	if !annotationsMatch(existing, desired) {
+		t.Error("expected match when all desired annotations are present")
+	}
+}
+
+func TestAnnotationsMatch_Missing(t *testing.T) {
+	existing := map[string]string{"baz": "qux"}
+	desired := map[string]string{"foo": "bar"}
+	if annotationsMatch(existing, desired) {
+		t.Error("expected mismatch when desired annotation is missing")
+	}
+}
+
+func TestAnnotationsMatch_DetectsStaleAnnotations(t *testing.T) {
+	// Simulate: previously managed "foo" and "bar", now only "foo" is desired.
+	existing := map[string]string{
+		"foo":                 "1",
+		"bar":                 "2",
+		managedAnnotationsKey: "bar,foo",
+	}
+	desired := map[string]string{"foo": "1"}
+	if annotationsMatch(existing, desired) {
+		t.Error("expected mismatch when stale managed annotation 'bar' is present")
+	}
+}
+
+func TestAnnotationsMatch_EmptyDesiredWithStale(t *testing.T) {
+	existing := map[string]string{
+		"foo":                 "1",
+		managedAnnotationsKey: "foo",
+	}
+	if annotationsMatch(existing, nil) {
+		t.Error("expected mismatch when desired is nil but stale managed annotations remain")
+	}
+}
+
+func TestSyncManagedAnnotations_AddsAndTracks(t *testing.T) {
+	annotations := map[string]string{"third-party": "keep"}
+	desired := map[string]string{"foo": "1", "bar": "2"}
+	result := syncManagedAnnotations(annotations, desired)
+
+	if result["foo"] != "1" || result["bar"] != "2" {
+		t.Error("desired annotations not applied")
+	}
+	if result["third-party"] != "keep" {
+		t.Error("third-party annotation was removed")
+	}
+	if result[managedAnnotationsKey] != "bar,foo" {
+		t.Errorf("managed keys tracking incorrect: %q", result[managedAnnotationsKey])
+	}
+}
+
+func TestSyncManagedAnnotations_RemovesStale(t *testing.T) {
+	// Previous state had "foo" and "bar" managed; now only "foo" is desired.
+	annotations := map[string]string{
+		"foo":                 "1",
+		"bar":                 "2",
+		"third-party":         "keep",
+		managedAnnotationsKey: "bar,foo",
+	}
+	desired := map[string]string{"foo": "1"}
+	result := syncManagedAnnotations(annotations, desired)
+
+	if result["foo"] != "1" {
+		t.Error("desired annotation 'foo' missing")
+	}
+	if _, exists := result["bar"]; exists {
+		t.Error("stale annotation 'bar' should have been removed")
+	}
+	if result["third-party"] != "keep" {
+		t.Error("third-party annotation was removed")
+	}
+	if result[managedAnnotationsKey] != "foo" {
+		t.Errorf("managed keys tracking incorrect: %q", result[managedAnnotationsKey])
+	}
+}
+
+func TestSyncManagedAnnotations_ClearsAll(t *testing.T) {
+	annotations := map[string]string{
+		"foo":                 "1",
+		"third-party":         "keep",
+		managedAnnotationsKey: "foo",
+	}
+	result := syncManagedAnnotations(annotations, nil)
+
+	if _, exists := result["foo"]; exists {
+		t.Error("stale annotation 'foo' should have been removed")
+	}
+	if result["third-party"] != "keep" {
+		t.Error("third-party annotation was removed")
+	}
+	if _, exists := result[managedAnnotationsKey]; exists {
+		t.Error("managed annotations tracking key should have been removed")
+	}
+}

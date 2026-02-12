@@ -18,9 +18,6 @@ const (
 
 	// OperatorServiceAccountUsername is the fixed username for the operator service account.
 	OperatorServiceAccountUsername = "k8s-operator"
-
-	// defaultAPIPort is the default control plane API port.
-	defaultHelperAPIPort = 8080
 )
 
 // GetEffectiveJWTSecretRef returns the JWT secret reference to use for a DittoServer.
@@ -60,7 +57,7 @@ func (ds *DittoServer) GetAdminCredentialsSecretName() string {
 
 // GetAPIServiceURL returns the in-cluster URL for the DittoFS API service.
 func (ds *DittoServer) GetAPIServiceURL() string {
-	apiPort := defaultHelperAPIPort
+	apiPort := defaultAPIPort
 	if ds.Spec.ControlPlane != nil && ds.Spec.ControlPlane.Port > 0 {
 		apiPort = int(ds.Spec.ControlPlane.Port)
 	}

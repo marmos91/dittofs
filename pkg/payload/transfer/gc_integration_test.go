@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/payload/store/fs"
 	s3store "github.com/marmos91/dittofs/pkg/payload/store/s3"
@@ -121,12 +122,13 @@ func TestCollectGarbage_S3(t *testing.T) {
 	helper := newLocalstackHelper(t)
 	defer helper.close(t)
 
-	// Create a dedicated bucket for GC testing.
-	helper.createBucket(t, "gc-test-bucket")
+	// Create a dedicated bucket for GC testing with unique name to avoid flakiness.
+	bucketName := fmt.Sprintf("gc-test-%d", time.Now().UnixNano())
+	helper.createBucket(t, bucketName)
 
 	// Create S3 block store using the helper's client.
 	blockStore := s3store.New(helper.client, s3store.Config{
-		Bucket:    "gc-test-bucket",
+		Bucket:    bucketName,
 		KeyPrefix: "blocks/",
 	})
 
