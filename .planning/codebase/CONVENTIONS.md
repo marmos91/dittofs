@@ -1,349 +1,293 @@
 # Coding Conventions
 
-**Analysis Date:** 2026-02-02
+**Analysis Date:** 2026-02-09
 
 ## Naming Patterns
 
-**Packages:**
-- All lowercase, single word where possible
-- Multi-word packages use full word names without abbreviation
-- Examples: `metadata`, `payload`, `cache`, `transfer`, `controlplane`
-
 **Files:**
-- Lowercase with underscores for multi-word names
-- Suffix pattern: `_test.go` for unit tests, `_integration_test.go` for integration tests
-- Examples: `service.go`, `cache_test.go`, `flush_test.go`, `write_test.go`
+- `*_test.go` - Test files, located alongside source files (co-located)
+- `*.go` - All lowercase with underscores (Go standard)
+- Service/handler files: `service.go`, `handler.go`, `store.go` (by responsibility)
+- Interface files: No special suffix (e.g., `store.go` contains interface `Store`)
+- Implementation files: Descriptive names matching store type (e.g., `memory.go`, `badger.go`, `postgres.go`)
 
-**Types (Structs & Interfaces):**
-- PascalCase, descriptive full names
-- Service types end with `Service`: `MetadataService`, `PayloadService`
-- Store types end with `Store`: `MetadataStore`, `BlockStore`, `MemoryMetadataStore`, `BadgerMetadataStore`
-- Configuration types end with `Config`: `MetadataServerConfig`, `BadgerMetadataStoreConfig`
-- Interface types typically don't have suffix but name the protocol/capability: `MetadataServiceInterface`, `ProtocolAdapter`
-- Examples from codebase:
-  - `pkg/metadata/service.go`: `MetadataService`, `MetadataStore`, `LockManager`
-  - `pkg/cache/cache.go`: `Cache`, `BlockState`, `PendingBlock`, `Stats`
-  - `pkg/payload/store/store.go`: `BlockStore` (interface)
+**Packages:**
+- Lowercase, no underscores: `cache`, `metadata`, `blocks`, `transfer`
+- Domain-focused: `pkg/metadata/`, `pkg/blocks/`, `pkg/cache/`, `pkg/transfer/`
+- Implementation-specific subdirectories: `store/memory/`, `store/badger/`, `store/s3/`
 
 **Functions:**
-- PascalCase for exported functions
-- Descriptive action verbs: `Get*`, `Set*`, `Create*`, `Delete*`, `Update*`
-- Examples: `GetStoreForShare()`, `RegisterStoreForShare()`, `CreateFile()`, `DeleteFile()`
-- Handler functions follow pattern: `Handle{Verb}` or just the verb
-  - NFS v3 handlers: `Read()`, `Write()`, `Lookup()`, `Create()`, `Mkdir()`
+- PascalCase (exported): `CreateFile()`, `GetStoreForShare()`, `WriteAt()`
+- camelCase (unexported): `storeForHandle()`, `lockManagerForHandle()`, `isTerminal()`
+- Package initialization functions start with `New`: `New()`, `NewWithWal()`, `NewMemoryMetadataStoreWithDefaults()`
+- Getter methods: `Get*` prefix (e.g., `GetFile()`, `GetStoreForShare()`, `GetRootHandle()`)
+- Setter/mutation methods: No special prefix, clear verbs (e.g., `RegisterStoreForShare()`, `WriteAt()`, `MarkBlockUploaded()`)
+- Test fixture creators: `New*Fixture()` (e.g., `NewHandlerFixture()`)
+- Test helper methods: Simple verb names (e.g., `CreateFile()`, `CreateDirectory()`)
 
 **Variables:**
-- camelCase for local variables
-- snake_case for constants that are package-level configs
-- Short names acceptable in tight loops: `i`, `j`, `buf`, `err`
-- Longer names for package state: `currentLevel`, `currentFormat`, `globalPool`
-- Examples:
-  - `pkg/metadata/service.go`: `mu`, `stores`, `lockManagers`, `deferredCommit`
-  - `internal/logger/logger.go`: `currentLevel`, `currentFormat`, `handler`, `slogger`
+- Short names in tight scopes: `ctx` for context, `t` for testing.T, `err` for errors
+- Loop counters: `i`, `idx`, `blockIdx`
+- Meaningful names in larger scopes: `fileEntry`, `metaStore`, `blockBuffer`, `authCtx`
+- Receiver names: Single letter or short (e.g., `s *MetadataService`, `c *Cache`, `f *fileEntry`)
+- Interface implementations: Verify with actual code patterns
 
-**Constants:**
-- ALL_CAPS with underscores for true constants
-- Example: `BlockSize = 4 << 20` (4MB blocks)
-- Constants in handler testing: `DefaultShareName = "/export"`, `DefaultUID = 1000`
+**Types:**
+- Struct names: PascalCase (exported) - `FileAttr`, `MetadataService`, `BlockBuffer`, `Cache`
+- Error types: Suffix with `Error` (e.g., `StoreError`)
+- Error codes: ALL_CAPS constants (e.g., `ErrNotFound`, `ErrAccessDenied`, `ErrPermissionDenied`)
+- Interface names: PascalCase (e.g., `MetadataStore`, `BlockStore`, `ObjectStore`)
+- Constants: ALL_CAPS with underscores (e.g., `DefaultShareName`, `DefaultUID`, `BlockSize`)
 
-**Error Variables:**
-- All caps prefix `Err`: `ErrNotFound`, `ErrAccessDenied`, `ErrPermissionDenied`
-- Examples from `pkg/metadata/errors.go`:
-  - `ErrNotFound`, `ErrAlreadyExists`, `ErrIsDirectory`, `ErrNotDirectory`
-  - `ErrIOError`, `ErrNoSpace`, `ErrQuotaExceeded`, `ErrLocked`
+**Test functions:**
+- Pattern: `TestFunctionName_Scenario` or `TestFunctionName_RFC_Compliance`
+- Examples from codebase:
+  - `TestWrite_SimpleWrite` - Simple operation
+  - `TestWrite_AtOffset` - Specific scenario
+  - `TestWrite_SparseFile` - Edge case
+  - `TestLookup_RFC1813` - RFC compliance
+  - `TestLookup_ExistingFile` - Specific case
 
 ## Code Style
 
 **Formatting:**
-- Use `gofmt` (Go's built-in formatter)
-- Standard Go 80-character soft line limit (Go community convention)
-- Indentation: tabs (Go standard)
+- `go fmt` (standard Go formatting)
+- Line length: No strict limit, but keep reasonable (80-120 chars for readability)
+- Indentation: Tabs (Go standard)
 
 **Linting:**
-- Use golangci-lint with configured linters: `govet`, `unused`, `errcheck`, `staticcheck`, `ineffassign`
-- Config file: `.golangci.yml`
-- Disabled rules: `intrange` (range over int modernization)
+- Tool: `golangci-lint` via `.golangci.yml`
+- Enabled linters:
+  - `govet` - Vet analysis
+  - `unused` - Unused code detection
+  - `errcheck` - Unchecked error handling
+  - `staticcheck` - Static analysis
+  - `ineffassign` - Ineffective assignments
+- Disabled linters:
+  - `intrange` - Range over int modernization (disabled to avoid noise)
 
-**File Header Comments:**
-- Package documentation comment immediately above package declaration
-- Multi-line comments use `//` not `/* */`
-- Example from `internal/protocol/nfs/v3/handlers/testing/fixtures.go`:
-  ```go
-  // Package testing provides test fixtures for NFS v3 handler behavioral tests.
-  //
-  // This package uses real memory stores (not mocks) to test handlers against
-  // RFC 1813 behavioral requirements without testing implementation details.
-  package testing
-  ```
-
-**Type Documentation:**
-- Full documentation comment for every exported type
-- Include purpose, usage examples, thread-safety notes when relevant
-- Example from `pkg/metadata/service.go`:
-  ```go
-  // MetadataService provides all metadata operations for the filesystem.
-  //
-  // It manages metadata stores and routes operations to the correct store
-  // based on share name. All protocol handlers should interact with MetadataService
-  // rather than accessing stores directly.
-  ```
-
-**Method Documentation:**
-- Document all exported methods with full sentences starting with the method name
-- Example from `pkg/metadata/service.go`:
-  ```go
-  // RegisterStoreForShare associates a metadata store with a share.
-  // Each share must have exactly one store. Calling this again for the same
-  // share will replace the previous store.
-  ```
-
-**Function Documentation:**
-- All exported functions documented
-- When complex: include usage examples in documentation
-- Example from `pkg/metadata/service.go`:
-  ```go
-  // New creates a new empty MetadataService instance.
-  // Use RegisterStoreForShare to configure stores for each share.
-  // By default, deferred commits are enabled for better write performance.
-  func New() *MetadataService
-  ```
+**Configuration File:** `.golangci.yml` at repo root
 
 ## Import Organization
 
 **Order:**
-1. Standard library imports (`fmt`, `sync`, `context`, etc.)
-2. External imports (`github.com/*`, `go.opentelemetry.io/*`, etc.)
-3. Internal imports (`github.com/marmos91/dittofs/pkg/*`, `github.com/marmos91/dittofs/internal/*`)
+1. Standard library imports (e.g., `"context"`, `"fmt"`, `"sync"`)
+2. Third-party imports (e.g., `"github.com/marmos91/dittofs/..."`)
+3. Blank lines between groups
 
-Each group separated by blank line.
+**Path Aliases:**
+- Not used; imports use full GitHub paths: `"github.com/marmos91/dittofs/pkg/..."`
+- All code within same module, no aliasing needed
 
-**Example from `pkg/metadata/service.go`:**
+**Example from `write_test.go`:**
 ```go
 import (
-    "context"
-    "fmt"
-    "sync"
+	"testing"
+
+	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
+	handlertesting "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers/testing"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 ```
-
-**Example with externals from `internal/protocol/nfs/v3/handlers/testing/fixtures.go`:**
-```go
-import (
-    "context"
-    "path/filepath"
-    "testing"
-
-    "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
-    "github.com/marmos91/dittofs/pkg/cache"
-    "github.com/marmos91/dittofs/pkg/controlplane/runtime"
-    "github.com/marmos91/dittofs/pkg/metadata"
-    metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
-)
-```
-
-**Import Aliases:**
-- Used for disambiguation when multiple imports have same name
-- Pattern: `shortname` for store imports: `metadatamemory`, `storemem`, `blocks3`
-- Example: `metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"`
 
 ## Error Handling
 
-**Error Return Pattern:**
-- Functions return `(T, error)` or just `error`
-- Multiple return values standard: no custom error types wrapping unless necessary
-- Example: `func GetStoreForShare(shareName string) (MetadataStore, error)`
+**Patterns:**
+- Domain errors use `StoreError` struct with error codes (see `pkg/metadata/errors.go`)
+- Business logic errors (permission denied, not found, etc.) return `StoreError`
+- Protocol handlers convert `StoreError` codes to protocol-specific codes (NFS status, SMB error)
+- Infrastructure errors (network, disk I/O) are wrapped with context
 
-**Error Creation:**
-- Use `fmt.Errorf()` for formatted errors with context
-- Use custom error types (e.g., `*StoreError`) for structured errors requiring additional fields
-- Example from `pkg/metadata/service.go`:
-  ```go
-  if store == nil {
-      return fmt.Errorf("cannot register nil store for share %q", shareName)
-  }
-  ```
-
-**Custom Error Type Pattern:**
-- Defined in `errors.go` files per package
-- Include error code (enum), message, and optional path
-- Implement `error` interface via `Error()` method
-- Example from `pkg/metadata/errors.go`:
-  ```go
-  type StoreError struct {
-      Code    ErrorCode
-      Message string
-      Path    string
-  }
-
-  func (e *StoreError) Error() string {
-      if e.Path != "" {
-          return e.Message + ": " + e.Path
-      }
-      return e.Message
-  }
-  ```
-
-**Error Factory Functions:**
-- Lowercase factory functions for creating specific errors
-- Pattern: `New{ErrorName}Error(...)`
-- Examples: `NewNotFoundError()`, `NewPermissionDeniedError()`, `NewIsDirectoryError()`
-- Example from `pkg/metadata/errors.go`:
-  ```go
-  func NewNotFoundError(path, entityType string) *StoreError {
-      return &StoreError{
-          Code:    ErrNotFound,
-          Message: fmt.Sprintf("%s not found", entityType),
-          Path:    path,
-      }
-  }
-  ```
-
-**Error Checking Functions:**
-- Lowercase helper functions: `Is{ErrorName}Error()`
-- Example: `IsNotFoundError(err)`
-- Often use `errors.As()` internally for type checking
-
-**Log Level for Errors:**
-- `logger.Debug()`: Expected operational errors (file not found, permission denied, stale handle)
-- `logger.Error()`: Unexpected errors (I/O failures, invariant violations, resource exhaustion)
-- No logging from handlers themselves - let service layer log; handlers just return errors
-
-## Logging
-
-**Framework:**
-- Standard library `log/slog` via internal wrapper `pkg/logger`
-- Configured globally with levels: DEBUG, INFO, WARN, ERROR
-
-**Usage Pattern:**
+**Example from `pkg/metadata/errors.go`:**
 ```go
-logger.Debug("operation", "details")
-logger.Info("significant event", "field", value)
-logger.Warn("unexpected condition", "field", value)
-logger.Error("operation failed", "field", value)
+// StoreError represents a domain error from repository operations
+type StoreError struct {
+	Code    ErrorCode  // Business logic error category
+	Message string     // Human-readable description
+	Path    string     // Related filesystem path (if applicable)
+}
+
+// Error codes (constants)
+const (
+	ErrNotFound       // File/directory doesn't exist
+	ErrAccessDenied   // Permission denied (EACCES)
+	ErrPermissionDenied // Operation not permitted (EPERM)
+	ErrAlreadyExists  // File already exists
+	ErrNotEmpty       // Directory not empty
+	ErrIsDirectory    // Expected file, got directory
+	ErrNotDirectory   // Expected directory, got file
+	// ... more error codes
+)
 ```
 
-**Log Levels:**
-- DEBUG: Detailed operation traces, protocol handler entry/exit, lock acquisitions
-- INFO: Service startup/shutdown, significant state changes, successful operations summary
-- WARN: Recoverable issues, deprecated usage, performance degradation warnings
-- ERROR: Unrecoverable failures, invariant violations, resource exhaustion
-
-**When to Log:**
-- Service layer: Log before/after operations, especially at boundaries
-- Handler layer: Minimal logging, defer to service errors
-- Store layer: Log only resource contention or unexpected issues
+**Logging:**
+- Expected/normal errors: `logger.Debug()` (permission denied, file not found)
+- Unexpected errors: `logger.Error()` (I/O errors, invariant violations)
+- Use structured logging via `internal/logger` package
 
 ## Comments
 
-**Block Comments:**
-- Used for test organization: `// ============================================================================`
-- Used to separate logical sections within functions
-- Never use `/* */` style (use `//` instead)
+**When to Comment:**
+- Public API documentation: Always document exported types and functions
+- Complex algorithms: Document non-obvious logic (especially thread-safety, locking)
+- RFC compliance: Reference specific RFC sections (e.g., "RFC 1813 Section 3.3.6")
+- Non-obvious behavior: Lock ordering, transaction isolation, buffer pooling
+- Business rules: Why a particular approach was chosen
 
-**Inline Comments:**
-- Explain "why" not "what" - code shows what, comments explain intent
-- Example from `pkg/metadata/service.go`:
-  ```go
-  // Create a lock manager for this share if it doesn't exist
-  if _, exists := s.lockManagers[shareName]; !exists {
-      s.lockManagers[shareName] = NewLockManager()
-  }
-  ```
+**JSDoc/GoDoc Style:**
+- Package-level documentation: Describe package purpose and usage
+- Type documentation: Describe the type and provide usage examples
+- Method documentation: Describe parameters, return values, and behavior
+- Example format from `pkg/cache/cache.go`:
 
-**Documentation Comments (JSDoc-style):**
-- Not heavily used in Go (relies on exported/unexported distinction)
-- Can include RFC references for protocol implementations
-- Example from `internal/protocol/nfs/v3/handlers/read.go`:
-  ```go
-  // RFC 1813 Section 3.3.6 specifies the READ procedure as:
-  //
-  //    READ3res NFSPROC3_READ(READ3args) = 6;
-  ```
+```go
+// Cache is the mandatory cache layer for all content operations.
+//
+// It uses 4MB block buffers as first-class citizens, storing data directly
+// at the correct position. Optional WAL persistence can be enabled via MmapPersister.
+//
+// Thread Safety:
+// Uses two-level locking for efficiency:
+//   - globalMu: Protects the files map
+//   - per-file mutexes: Protect individual file operations
+//
+// This allows concurrent operations on different files.
+type Cache struct {
+	// ... fields
+}
 
-**TODO/FIXME Comments:**
-- Golangci.yml disabled `intrange` linting - add comment if decision changes
-- Otherwise minimal - issues tracked in GitHub
+// New creates a new in-memory cache with no persistence.
+//
+// Parameters:
+//   - maxSize: Maximum total cache size in bytes. Use 0 for unlimited.
+func New(maxSize uint64) *Cache {
+	// ...
+}
+```
+
+**Multi-line Test Comments:**
+- Document what RFC section is being tested
+- Describe the test scenario
+- Example from `write_test.go`:
+
+```go
+// TestWrite_RFC1813 tests WRITE handler behaviors per RFC 1813 Section 3.3.7.
+//
+// WRITE is used to write data to a regular file. It supports:
+// - Writing at any offset
+// - Extending files beyond their current size
+// - Different stability levels (UNSTABLE, DATA_SYNC, FILE_SYNC)
+// - WCC data for cache consistency
+
+// TestWrite_SimpleWrite tests writing to a file.
+func TestWrite_SimpleWrite(t *testing.T) {
+	// ...
+}
+```
 
 ## Function Design
 
-**Receiver Types:**
-- Value receivers for immutable types: most value types, small structs
-- Pointer receivers for mutable types: stores, services, large structs
-- Consistent within type: if one method uses `*T`, all methods use `*T`
-- Example: `MetadataService` always uses `(s *MetadataService)` receiver
+**Size:** Keep functions focused on single responsibility; 50-100 lines is reasonable, can go longer for complex logic
 
-**Parameter Order:**
-- Context first: `ctx context.Context`
-- Then data parameters
-- Finally options/callbacks
-- Example: `func (s *MetadataService) CreateFile(authCtx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, error)`
+**Parameters:**
+- Pass context as first parameter: `func (s *Service) GetFile(ctx context.Context, ...)`
+- Use pointer receivers for methods on large structs: `func (s *MetadataService) RegisterStore(...)`
+- Group related parameters together (e.g., all handle-related params together)
+- Example from `pkg/metadata/service.go`:
+
+```go
+func (s *MetadataService) RegisterStoreForShare(shareName string, store MetadataStore) error {
+	// First param: receiver
+	// Second param: primary parameter (share name)
+	// Third param: dependency (store)
+}
+```
 
 **Return Values:**
-- Successful result first, error second: `(T, error)`
-- Multiple return values: `(T1, T2, error)` where T1, T2 are results
-- Never return error in other positions
+- Error as last return value (Go convention)
+- Use multiple named returns for clarity (optional, only when beneficial)
+- Exported functions should document all return values
+- Example: `(handle FileHandle, err error)` or `(file *File, preSize uint64, err error)`
 
-**Parameter Documentation:**
-- Include in comment above function, especially for complex types
-- Example from `pkg/metadata/service.go`:
-  ```go
-  // RegisterStoreForShare associates a metadata store with a share.
-  // Each share must have exactly one store. Calling this again for the same
-  // share will replace the previous store.
-  //
-  // This also creates a LockManager for the share if one doesn't exist.
-  func (s *MetadataService) RegisterStoreForShare(shareName string, store MetadataStore) error
-  ```
+## Module Design
+
+**Exports:**
+- Interfaces define public contract: `MetadataStore`, `BlockStore`, `ObjectStore`
+- Types/structs are exported when they're part of public API
+- Private helper types use lowercase: `fileEntry`, `blockBuffer`, `chunkEntry`
+
+**Barrel Files:**
+- Not used; each file has specific responsibility
+- Import directly from specific files: `pkg/metadata/store/memory` not `pkg/metadata/store`
+
+**Package Boundaries:**
+- `pkg/` - Public API (stable interfaces)
+- `internal/` - Private implementation details
+- `cmd/` - Command-line applications
+- Each package owns its interfaces and concrete implementations
 
 ## Concurrency Patterns
 
-**Mutex Naming:**
-- `mu` for single lock in type: common pattern
-- `mu sync.RWMutex` for read-write locks
-- Always defer unlock immediately: `defer mu.Unlock()`
+**Locking:**
+- Use `sync.RWMutex` for read-heavy workloads: `mu sync.RWMutex`
+- Protect critical sections with defer unlock: `defer s.mu.Unlock()`
+- Document lock ownership in struct comments
 - Example from `pkg/metadata/service.go`:
-  ```go
-  type MetadataService struct {
-      mu sync.RWMutex
-      stores map[string]MetadataStore
-  }
-  ```
 
-**Lock Acquisition:**
-- Read locks for data retrieval: `s.mu.RLock()` then `defer s.mu.RUnlock()`
-- Write locks for mutations: `s.mu.Lock()` then `defer s.mu.Unlock()`
+```go
+type MetadataService struct {
+	mu    sync.RWMutex              // Protects stores map
+	stores map[string]MetadataStore // shareName -> store
+}
 
-**Atomic Operations:**
-- Use `sync/atomic` for simple counters/flags
-- Example from `internal/logger/logger.go`:
-  ```go
-  var currentLevel atomic.Int32
-  currentLevel.Store(int32(LevelInfo))
-  ```
+func (s *MetadataService) RegisterStoreForShare(name string, store MetadataStore) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stores[name] = store
+	return nil
+}
 
-**Test Helpers:**
-- Include `t.Helper()` at start to exclude from test call stack
-- Example from `pkg/metadata/service_test.go`:
-  ```go
-  func newTestFixture(t *testing.T) *testFixture {
-      t.Helper()
-      // ... setup code
-  }
-  ```
+func (s *MetadataService) GetStoreForShare(name string) (MetadataStore, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if store, ok := s.stores[name]; ok {
+		return store, nil
+	}
+	return nil, fmt.Errorf("no store configured for share %q", name)
+}
+```
 
-## Module & Package Structure
+**Atomics:**
+- Use `sync/atomic` for simple counters: `atomic.Uint64`
+- Example from `pkg/cache/cache.go`: `totalSize atomic.Uint64`
 
-**Directory Organization:**
-- `cmd/` - Entry points (CLI binaries)
-- `pkg/` - Public APIs (stable interfaces)
-- `internal/` - Private implementation (protocol, logging, utilities)
-- `test/` - Test suites (integration, e2e)
+**Channels:**
+- Used for signal passing (shutdown, done)
+- Not used for data transfer in this codebase (prefers mutexes for shared state)
 
-**Backward Compatibility:**
-- `pkg/*` imports must maintain backward compatibility
-- `internal/*` can change freely
-- Use major.minor.patch versions for public API changes
+## Protocol Layer Conventions
+
+**Separation of Concerns:**
+- Protocol handlers (NFS/SMB) handle ONLY protocol concerns:
+  - XDR/SMB2 encoding/decoding
+  - RPC message framing
+  - Procedure dispatch
+- Business logic belongs in service/repository layer (`pkg/metadata`, `pkg/blocks`)
+- Never implement permission checks in handlers - delegate to service
+
+**Authentication Context:**
+- Thread through all operations: `ExtractAuthContext() → Handler → Service → Store`
+- Type: `*metadata.AuthContext` containing UID, GID, client address
+- Example: Protocol dispatcher extracts context, passes to handler, handler passes to service
+
+**File Handle Management:**
+- Handles are opaque 64-bit identifiers
+- NEVER parse handle contents (except for share name extraction in runtime)
+- Use `DecodeFileHandle()` only for routing, not interpretation
+- Always pass handles through as-is to metadata stores
 
 ---
 
-*Convention analysis: 2026-02-02*
+*Convention analysis: 2026-02-09*

@@ -209,6 +209,200 @@ func TestRequireAdmin(t *testing.T) {
 	})
 }
 
+func TestRequireRole(t *testing.T) {
+	// Helper to create a request with claims in context
+	reqWithClaims := func(role string) *http.Request {
+		claims := &auth.Claims{UserID: "user-123", Username: "testuser", Role: role}
+		ctx := context.WithValue(context.Background(), claimsContextKey, claims)
+		return httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+	}
+
+	t.Run("AdminOnly", func(t *testing.T) {
+		mw := RequireRole("admin")
+
+		// Admin should be allowed
+		t.Run("allows admin", func(t *testing.T) {
+			handlerCalled := false
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, reqWithClaims("admin"))
+			if rr.Code != http.StatusOK {
+				t.Errorf("expected %d, got %d", http.StatusOK, rr.Code)
+			}
+			if !handlerCalled {
+				t.Error("expected handler to be called")
+			}
+		})
+
+		// User should be rejected
+		t.Run("rejects user", func(t *testing.T) {
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("handler should not be called")
+			}))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, reqWithClaims("user"))
+			if rr.Code != http.StatusForbidden {
+				t.Errorf("expected %d, got %d", http.StatusForbidden, rr.Code)
+			}
+		})
+
+		// Operator should be rejected
+		t.Run("rejects operator", func(t *testing.T) {
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("handler should not be called")
+			}))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, reqWithClaims("operator"))
+			if rr.Code != http.StatusForbidden {
+				t.Errorf("expected %d, got %d", http.StatusForbidden, rr.Code)
+			}
+		})
+	})
+
+	t.Run("AdminAndOperator", func(t *testing.T) {
+		mw := RequireRole("admin", "operator")
+
+		t.Run("allows admin", func(t *testing.T) {
+			handlerCalled := false
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, reqWithClaims("admin"))
+			if rr.Code != http.StatusOK {
+				t.Errorf("expected %d, got %d", http.StatusOK, rr.Code)
+			}
+			if !handlerCalled {
+				t.Error("expected handler to be called")
+			}
+		})
+
+		t.Run("allows operator", func(t *testing.T) {
+			handlerCalled := false
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, reqWithClaims("operator"))
+			if rr.Code != http.StatusOK {
+				t.Errorf("expected %d, got %d", http.StatusOK, rr.Code)
+			}
+			if !handlerCalled {
+				t.Error("expected handler to be called")
+			}
+		})
+
+		t.Run("rejects user", func(t *testing.T) {
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("handler should not be called")
+			}))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, reqWithClaims("user"))
+			if rr.Code != http.StatusForbidden {
+				t.Errorf("expected %d, got %d", http.StatusForbidden, rr.Code)
+			}
+		})
+	})
+
+	t.Run("NilClaims", func(t *testing.T) {
+		mw := RequireRole("admin")
+		handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Error("handler should not be called")
+		}))
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("expected %d, got %d", http.StatusUnauthorized, rr.Code)
+		}
+	})
+
+	t.Run("EmptyRoles", func(t *testing.T) {
+		// Fail-closed: no roles specified means nobody is allowed
+		mw := RequireRole()
+
+		t.Run("rejects admin", func(t *testing.T) {
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("handler should not be called")
+			}))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, reqWithClaims("admin"))
+			if rr.Code != http.StatusForbidden {
+				t.Errorf("expected %d, got %d", http.StatusForbidden, rr.Code)
+			}
+		})
+
+		t.Run("rejects user", func(t *testing.T) {
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("handler should not be called")
+			}))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, reqWithClaims("user"))
+			if rr.Code != http.StatusForbidden {
+				t.Errorf("expected %d, got %d", http.StatusForbidden, rr.Code)
+			}
+		})
+
+		t.Run("rejects operator", func(t *testing.T) {
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("handler should not be called")
+			}))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, reqWithClaims("operator"))
+			if rr.Code != http.StatusForbidden {
+				t.Errorf("expected %d, got %d", http.StatusForbidden, rr.Code)
+			}
+		})
+	})
+
+	t.Run("UserOnly", func(t *testing.T) {
+		mw := RequireRole("user")
+
+		t.Run("allows user", func(t *testing.T) {
+			handlerCalled := false
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, reqWithClaims("user"))
+			if rr.Code != http.StatusOK {
+				t.Errorf("expected %d, got %d", http.StatusOK, rr.Code)
+			}
+			if !handlerCalled {
+				t.Error("expected handler to be called")
+			}
+		})
+
+		t.Run("rejects admin", func(t *testing.T) {
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("handler should not be called")
+			}))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, reqWithClaims("admin"))
+			if rr.Code != http.StatusForbidden {
+				t.Errorf("expected %d, got %d", http.StatusForbidden, rr.Code)
+			}
+		})
+
+		t.Run("rejects operator", func(t *testing.T) {
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("handler should not be called")
+			}))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, reqWithClaims("operator"))
+			if rr.Code != http.StatusForbidden {
+				t.Errorf("expected %d, got %d", http.StatusForbidden, rr.Code)
+			}
+		})
+	})
+}
+
 func TestRequirePasswordChange(t *testing.T) {
 	t.Run("no claims in context", func(t *testing.T) {
 		handler := RequirePasswordChange()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

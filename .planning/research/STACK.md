@@ -1,295 +1,181 @@
-# Technology Stack for CLI-Driven E2E Testing
+# Technology Stack
 
-**Project:** DittoFS E2E Test Suite
-**Researched:** 2026-02-02
-**Overall Confidence:** HIGH (verified with official docs and existing codebase)
-
-## Executive Summary
-
-The existing DittoFS codebase already has a solid foundation with Go 1.25, testcontainers-go v0.40.0, and testify v1.11.1. The recommended stack builds on these proven choices while adding CLI-specific testing capabilities. The key insight: **keep it simple** - avoid BDD frameworks (Ginkgo) and exotic CLI testing tools; the standard library plus testify plus testcontainers is the battle-tested path.
-
----
+**Project:** DittoFS K8s Auto-Adapters (Dynamic Service Management)
+**Researched:** 2026-02-09
 
 ## Recommended Stack
 
-### Core Testing Framework
+### Core Framework (Already In Place)
 
-| Technology | Version | Purpose | Confidence |
-|------------|---------|---------|------------|
-| `testing` (stdlib) | Go 1.25 | Test runner, benchmarks, build tags | HIGH |
-| `stretchr/testify` | v1.11.1 | Assertions, require, mock, suite | HIGH |
+| Technology | Version | Purpose | Why |
+|------------|---------|---------|-----|
+| Go | 1.25.1 | Language | Already used by the operator; no reason to change |
+| controller-runtime | v0.22.4 | K8s operator framework | Already in go.mod; v0.22.x introduced native SSA support; v0.22.4 is latest patch in the 0.22 line |
+| k8s.io/api | v0.34.1 | K8s API types | Already in go.mod; provides `networking/v1.NetworkPolicy`, `core/v1.Service`, `apps/v1.StatefulSet` |
+| k8s.io/apimachinery | v0.34.1 | K8s shared machinery | Already in go.mod; required for metav1 types, labels, selectors |
+| k8s.io/client-go | v0.34.1 | K8s client | Already in go.mod; provides typed clients and applyconfigurations for SSA |
 
-**Rationale:** DittoFS already uses testify v1.11.1 successfully. The `assert`/`require` packages provide readable assertions. The `suite` package enables shared setup/teardown for container lifecycle. Adding Ginkgo/Gomega would introduce unnecessary complexity and a different testing style.
+**Confidence:** HIGH -- these are already in the project's `go.mod` and verified against Go package registry.
 
-**Why NOT Ginkgo/Gomega:**
-- Different testing paradigm (BDD) would fragment the codebase
-- Additional learning curve for contributors
-- Kubernetes uses it, but DittoFS is not Kubernetes-scale complexity
-- The `suite` package in testify provides adequate lifecycle management
+### New Dependencies Required
 
-### Container Management
+| Technology | Version | Purpose | Why |
+|------------|---------|---------|-----|
+| `k8s.io/api/networking/v1` | v0.34.1 | NetworkPolicy types | Part of `k8s.io/api` already in go.mod; no new dependency needed. Provides `NetworkPolicy`, `NetworkPolicySpec`, `NetworkPolicyIngressRule`, `NetworkPolicyPort` |
+| `k8s.io/client-go/applyconfigurations` | v0.34.1 | SSA apply configuration types | Part of `k8s.io/client-go` already in go.mod; provides typed apply configs for Services and NetworkPolicies |
 
-| Technology | Version | Purpose | Confidence |
-|------------|---------|---------|------------|
-| `testcontainers-go` | v0.40.0 | Container lifecycle management | HIGH |
-| `testcontainers-go/modules/postgres` | v0.40.0 | PostgreSQL containers | HIGH |
-| `testcontainers-go/modules/localstack` | v0.40.0 | S3 (LocalStack) containers | HIGH |
+**Confidence:** HIGH -- `networking/v1` is a sub-package of `k8s.io/api` which is already a dependency. No new external modules needed.
 
-**Rationale:** Already in use (verified in `go.mod`). Version v0.40.0 (released November 2024) is the latest stable release with improved `Run()` function patterns and wait strategies.
+### DittoFS API Client (Internal)
 
-**Key Features to Use:**
-- `postgres.Run()` with `BasicWaitStrategies()` for reliable startup detection
-- `localstack.Run()` with health check wait strategy
-- Shared container pattern via package-level variables (already implemented in `test/e2e/framework/containers.go`)
+| Technology | Version | Purpose | Why |
+|------------|---------|---------|-----|
+| `pkg/apiclient` | internal | REST client for DittoFS control plane | Already exists in the DittoFS codebase; provides `ListAdapters()`, `Login()`, `RefreshToken()` -- everything the operator needs to poll adapter state |
 
-**Container Reuse Strategy:**
+**Confidence:** HIGH -- verified by reading `pkg/apiclient/adapters.go` and `pkg/apiclient/auth.go`.
+
+## Key Stack Decisions
+
+### 1. Use `source.Channel` + Polling Goroutine (Not RequeueAfter)
+
+**Decision:** Run a background goroutine that polls `GET /api/v1/adapters` and pushes events to a `source.Channel`, rather than using `RequeueAfter` on the main reconciler.
+
+**Rationale:**
+- The main DittoServer reconciler is CR-driven (watches DittoServer spec changes). Adapter state is external data, not part of the CR spec.
+- `source.Channel` is controller-runtime's official mechanism for "events originating outside the cluster" (verified via pkg.go.dev docs).
+- Mixing `RequeueAfter` for polling into the main reconciler conflates two concerns: (1) reconciling CR spec changes and (2) syncing external API state.
+- A dedicated polling goroutine with `source.Channel` keeps the adapter sync loop cleanly separated and testable.
+- The goroutine lifecycle is managed by the controller-runtime Manager (started when Manager starts, stopped on context cancellation).
+
+**Pattern:**
 ```go
-// Use package-level singleton pattern (already in codebase)
-var sharedPostgresHelper *PostgresHelper
-var sharedLocalstackHelper *LocalstackHelper
+// Polling goroutine sends events to channel
+events := make(chan event.TypedGenericEvent[*v1alpha1.DittoServer])
 
-// NOT recommended: WithReuseByName (experimental, API unstable)
+// Controller watches the channel
+ctrl.NewControllerManagedBy(mgr).
+    For(&v1alpha1.DittoServer{}).
+    Watches(source.Channel(events, &handler.EnqueueRequestForObject{})).
+    // ... existing watches
 ```
 
-**Why NOT use `WithReuseByName`:**
-- Documented as "experimental and the API is subject to change"
-- Name collision risks in parallel CI pipelines
-- Package-level singletons provide equivalent reuse with better control
+**Confidence:** HIGH -- `source.Channel` is documented in the official controller-runtime v0.22 source package.
 
-### CLI Testing Approach
+### 2. Keep `controllerutil.CreateOrUpdate` (Not SSA for Dynamic Services)
 
-| Technology | Version | Purpose | Confidence |
-|------------|---------|---------|------------|
-| `os/exec` (stdlib) | Go 1.25 | Execute CLI binary | HIGH |
-| `bytes.Buffer` (stdlib) | Go 1.25 | Capture stdout/stderr | HIGH |
-| `cobra.Command.Execute()` | v1.8.1 | Direct command invocation for unit tests | HIGH |
+**Decision:** Use `controllerutil.CreateOrUpdate` for dynamically managed Services and NetworkPolicies, not Server-Side Apply.
 
-**Rationale:** For E2E tests, execute the actual CLI binary via `os/exec`. This tests the real user experience. For unit tests, use Cobra's `cmd.SetArgs()` and `cmd.SetOut()` pattern.
+**Rationale:**
+- The existing operator already uses `CreateOrUpdate` consistently for all resources (verified in `dittoserver_controller.go`).
+- The dynamic adapter Services are single-owner resources (only the operator manages them). SSA's main benefit (multi-controller field ownership) does not apply here.
+- `CreateOrUpdate` with retry-on-conflict is already implemented and tested (the `retryOnConflict` helper exists).
+- SSA introduces complexity with zero-value fields and ApplyConfiguration types that add boilerplate without benefit for this use case.
+- The operator already handles cloud controller preservation via `mergeServiceSpec()` and `mergePorts()`.
 
-**NOT Recommended:**
-- `rogpeppe/go-internal/testscript`: Overkill for this project, designed for testing the `go` command itself
-- `google/go-cmdtest`: Unmaintained, last commit 2022
-- `rendon/testcli`: Sparse maintenance, unnecessary abstraction
+**Caveat:** If the project later adds multi-controller management of the same Services, revisit this decision. For now, single-owner `CreateOrUpdate` is simpler and already proven.
 
-**CLI E2E Testing Pattern:**
-```go
-// E2E: Execute actual binary
-func execCLI(t *testing.T, args ...string) (stdout, stderr string, err error) {
-    cmd := exec.Command("./dittofsctl", args...)
-    var outBuf, errBuf bytes.Buffer
-    cmd.Stdout = &outBuf
-    cmd.Stderr = &errBuf
-    err = cmd.Run()
-    return outBuf.String(), errBuf.String(), err
-}
+**Confidence:** HIGH -- verified existing patterns in the codebase; SSA would add complexity without benefit for single-owner resources.
 
-// Unit: Direct command invocation
-func TestUserList(t *testing.T) {
-    cmd := commands.NewUserListCmd()
-    var buf bytes.Buffer
-    cmd.SetOut(&buf)
-    cmd.SetArgs([]string{"--output", "json"})
-    err := cmd.Execute()
-    // ...
-}
-```
+### 3. Reuse `pkg/apiclient` for API Communication
 
-### HTTP Testing (for API client tests)
+**Decision:** Import and use `pkg/apiclient` from the main DittoFS codebase, not build a new HTTP client.
 
-| Technology | Version | Purpose | Confidence |
-|------------|---------|---------|------------|
-| `net/http/httptest` (stdlib) | Go 1.25 | Mock HTTP servers | HIGH |
+**Rationale:**
+- `pkg/apiclient` already implements `ListAdapters()`, `Login()`, `RefreshToken()`, and proper error handling (`APIError` type with `IsAuthError()`, `IsNotFound()`).
+- Token management is built in (`WithToken()`, `SetToken()`).
+- Using the same client ensures API compatibility -- if the API changes, the client gets updated in one place.
+- The operator module already imports the DittoFS Go module path (`github.com/marmos91/dittofs/k8s/dittofs-operator`), so adding a dependency on `pkg/apiclient` is straightforward.
 
-**Rationale:** Already used effectively in `pkg/apiclient/client_test.go`. Lightweight, no external dependencies, perfect for testing the `apiclient` package.
+**Implementation note:** The operator will need to import `pkg/apiclient` from the parent module. This may require a `replace` directive in `go.mod` if the modules are not published separately, or restructuring as a multi-module workspace.
 
-### Assertions and Matchers
+**Confidence:** MEDIUM -- the apiclient code is verified and suitable; the module import path may need workspace configuration.
 
-| Technology | Version | Purpose | Confidence |
-|------------|---------|---------|------------|
-| `testify/assert` | v1.11.1 | Non-fatal assertions | HIGH |
-| `testify/require` | v1.11.1 | Fatal assertions | HIGH |
+### 4. Use `networking.k8s.io/v1` NetworkPolicy (Not AdminNetworkPolicy)
 
-**Usage Guidelines:**
-- Use `require` for setup validation (fail fast)
-- Use `assert` for actual test assertions (see all failures)
-- Use `require.Eventually` for async operations with timeout
+**Decision:** Use the standard `NetworkPolicy` resource from `networking.k8s.io/v1`, not the newer `AdminNetworkPolicy` from `policy.networking.k8s.io`.
 
-```go
-// Setup: fail fast if container isn't ready
-require.NoError(t, err, "container startup failed")
+**Rationale:**
+- `NetworkPolicy` (v1) is GA and universally supported by all CNI plugins that support network policies (Calico, Cilium, Antrea, etc.).
+- `AdminNetworkPolicy` is a newer API from the Network Policy API working group (`sigs.k8s.io/network-policy-api`), still evolving and not universally supported.
+- The operator's use case is simple: restrict ingress to adapter pods on specific ports. Standard `NetworkPolicy` handles this perfectly.
+- No need for cluster-scoped policies or priority-based evaluation that AdminNetworkPolicy provides.
 
-// Test assertions: see all failures
-assert.Equal(t, expected, actual, "user list mismatch")
-assert.Contains(t, output, "alice", "should list alice")
+**Confidence:** HIGH -- `networking.k8s.io/v1` has been stable since Kubernetes 1.7 and is the standard approach.
 
-// Async: wait for server ready
-require.Eventually(t, func() bool {
-    resp, err := http.Get(serverURL + "/health")
-    return err == nil && resp.StatusCode == 200
-}, 30*time.Second, 100*time.Millisecond)
-```
+### 5. Store Operator Credentials in a K8s Secret (Not ServiceAccount Token)
 
----
+**Decision:** The operator authenticates to the DittoFS API using credentials stored in a Kubernetes Secret, not a K8s ServiceAccount token.
 
-## Supporting Libraries
+**Rationale:**
+- DittoFS uses its own JWT-based auth system (`/api/v1/auth/login` returns access + refresh tokens). It does not integrate with Kubernetes RBAC/ServiceAccount tokens.
+- The operator needs to authenticate as a DittoFS user with the "operator" role, not as a Kubernetes service account.
+- Credentials (username + password or pre-generated token) are stored in a K8s Secret referenced by the DittoServer CR, similar to existing patterns for JWT secrets and S3 credentials.
+- Token refresh is handled by the polling goroutine using `apiclient.RefreshToken()`.
 
-### Already in Project (No Changes Needed)
+**Confidence:** HIGH -- verified auth API in `pkg/apiclient/auth.go`; consistent with existing Secret-based credential patterns in the operator.
 
-| Library | Version | Purpose |
-|---------|---------|---------|
-| `spf13/cobra` | v1.8.1 | CLI framework |
-| `aws-sdk-go-v2` | v1.39.6 | S3 client for LocalStack |
-| `jackc/pgx/v5` | v5.7.6 | PostgreSQL driver |
+## Version Compatibility Matrix
 
-### Recommended Additions
+| Component | Version | K8s Compat | Notes |
+|-----------|---------|------------|-------|
+| controller-runtime | v0.22.4 | K8s 1.34.x | Verified in go.mod |
+| k8s.io/api | v0.34.1 | K8s 1.34.x | `networking/v1` NetworkPolicy included |
+| k8s.io/client-go | v0.34.1 | K8s 1.34.x | applyconfigurations included |
+| Go | 1.25.1 | N/A | Required by go.mod |
 
-| Library | Version | Purpose | Confidence |
-|---------|---------|---------|------------|
-| None | - | - | - |
+**Confidence:** HIGH -- all versions verified from the project's `go.mod`.
 
-**Rationale:** The existing stack is complete. Adding more libraries increases maintenance burden without proportional benefit.
+## Upgrade Path Consideration
 
----
+The project is on controller-runtime v0.22.4. The latest stable is v0.23.1 (released Jan 26, 2025). v0.23.0 added subresource Apply support and generic webhook validators. Upgrading is optional for this milestone -- v0.22.4 has everything needed.
 
-## Platform-Specific Considerations
+**Recommendation:** Stay on v0.22.4 for this milestone. Upgrade to v0.23.x in a separate maintenance milestone if the new features are needed.
 
-### macOS vs Linux Mount Commands
+## Alternatives Considered
 
-| Platform | NFS Mount Command | SMB Mount Command |
-|----------|-------------------|-------------------|
-| macOS | `mount -t nfs -o tcp,port=N,mountport=N,resvport localhost:/export /mnt` | `mount -t smbfs //user:pass@localhost:N/export /mnt` |
-| Linux | `mount -t nfs -o tcp,port=N,mountport=N,nfsvers=3,noacl localhost:/export /mnt` | `mount -t cifs //localhost/export /mnt -o port=N,user=...` |
+| Category | Recommended | Alternative | Why Not |
+|----------|-------------|-------------|---------|
+| Polling mechanism | `source.Channel` + goroutine | `RequeueAfter` in reconciler | Conflates CR reconciliation with API polling; harder to test; mixes concerns |
+| Resource mutation | `CreateOrUpdate` | Server-Side Apply | SSA adds complexity for single-owner resources; existing patterns use CreateOrUpdate |
+| API client | `pkg/apiclient` (internal) | New HTTP client | Duplication; apiclient already has auth, token refresh, error handling |
+| NetworkPolicy API | `networking.k8s.io/v1` | `policy.networking.k8s.io` AdminNetworkPolicy | AdminNetworkPolicy not GA; not widely supported; overkill for simple port-based ingress rules |
+| Auth storage | K8s Secret | K8s ServiceAccount token | DittoFS has its own JWT auth; doesn't integrate with K8s RBAC |
+| Event source | `source.Channel` | Custom Informer | Over-engineered; no K8s resource to watch; Channel is the idiomatic approach for external events |
 
-**Already Handled:** The existing `test/e2e/framework/mount.go` abstracts platform differences. No changes needed.
+## No New External Dependencies
 
-### Sudo Requirements
-
-Both platforms require `sudo` for mounting:
-- Tests use build tag `//go:build e2e` to separate from regular tests
-- CI runs with `sudo go test -tags=e2e`
-- Local development: `sudo go test -tags=e2e -v ./test/e2e/...`
-
----
-
-## Test Organization Pattern
-
-### Recommended Structure (Aligns with Existing)
+All required functionality is available through packages already in the dependency tree:
 
 ```
-test/e2e/
-├── framework/                    # Shared test infrastructure
-│   ├── context.go               # TestContext (server + mounts)
-│   ├── config.go                # Store configurations (9 combos)
-│   ├── containers.go            # Postgres/LocalStack helpers
-│   ├── mount.go                 # Platform-specific mount helpers
-│   ├── cli.go                   # NEW: CLI execution helpers
-│   └── helpers.go               # File operation helpers
-│
-├── cli/                          # NEW: CLI-specific E2E tests
-│   ├── user_test.go             # dittofsctl user commands
-│   ├── group_test.go            # dittofsctl group commands
-│   ├── share_test.go            # dittofsctl share commands
-│   ├── context_test.go          # Multi-server context management
-│   └── auth_test.go             # Login/logout flows
-│
-├── functional_test.go           # Existing: CRUD via mounted FS
-├── interop_v2_test.go           # Existing: NFS<->SMB interop
-├── scale_test.go                # Existing: Large files
-└── main_test.go                 # Test lifecycle
+# Already in go.mod (no changes needed):
+k8s.io/api v0.34.1                     # networking/v1.NetworkPolicy
+k8s.io/client-go v0.34.1               # applyconfigurations/*
+sigs.k8s.io/controller-runtime v0.22.4  # source.Channel, controllerutil
 ```
 
-### Test Lifecycle Pattern
+The only new import will be `pkg/apiclient` from the parent DittoFS module, which is an internal dependency requiring module configuration.
+
+## RBAC Additions Required
+
+The operator already has RBAC markers for Services and Secrets. New markers needed:
 
 ```go
-// Use testify suite for shared container lifecycle
-type CLISuite struct {
-    suite.Suite
-    postgres  *framework.PostgresHelper
-    localstack *framework.LocalstackHelper
-    serverURL string
-}
-
-func (s *CLISuite) SetupSuite() {
-    // Start containers once for all tests
-    s.postgres = framework.NewPostgresHelper(s.T())
-    s.localstack = framework.NewLocalstackHelper(s.T())
-    // Start DittoFS server
-    // ...
-}
-
-func (s *CLISuite) TearDownSuite() {
-    // Containers cleaned up by CleanupSharedContainers()
-}
-
-func (s *CLISuite) TestUserCreate() {
-    stdout, _, err := s.execCLI("user", "create", "--username", "alice")
-    s.Require().NoError(err)
-    s.Assert().Contains(stdout, "User created")
-}
-
-func TestCLISuite(t *testing.T) {
-    suite.Run(t, new(CLISuite))
-}
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 ```
 
----
+This is the only new RBAC permission. Service and StatefulSet permissions already exist.
 
-## Configuration Matrix
-
-### 9 Store Combinations to Test
-
-| Config Name | Metadata | Payload | Docker Required |
-|-------------|----------|---------|-----------------|
-| `memory-memory` | Memory | Memory | No |
-| `memory-filesystem` | Memory | Filesystem | No |
-| `memory-s3` | Memory | S3 | Yes (LocalStack) |
-| `badger-memory` | BadgerDB | Memory | No |
-| `badger-filesystem` | BadgerDB | Filesystem | No |
-| `badger-s3` | BadgerDB | S3 | Yes (LocalStack) |
-| `postgres-memory` | PostgreSQL | Memory | Yes (Postgres) |
-| `postgres-filesystem` | PostgreSQL | Filesystem | Yes (Postgres) |
-| `postgres-s3` | PostgreSQL | S3 | Yes (Both) |
-
-**Existing Implementation:** 8 of 9 configurations already exist in `test/e2e/framework/config.go`. Add the missing combinations as needed.
-
----
-
-## Versions Summary
-
-| Component | Version | Verified |
-|-----------|---------|----------|
-| Go | 1.25.0 | go.mod |
-| testcontainers-go | v0.40.0 | go.mod, official releases |
-| testify | v1.11.1 | go.mod, official releases |
-| cobra | v1.8.1 | go.mod |
-| aws-sdk-go-v2 | v1.39.6 | go.mod |
-| pgx/v5 | v5.7.6 | go.mod |
-| PostgreSQL (container) | 16-alpine | containers.go |
-| LocalStack (container) | 3.0 | containers.go |
-
----
-
-## What NOT to Use
-
-| Technology | Reason |
-|------------|--------|
-| Ginkgo/Gomega | BDD style fragments codebase, overkill for this project |
-| rogpeppe/testscript | Designed for go command testing, too complex |
-| google/go-cmdtest | Unmaintained since 2022 |
-| rendon/testcli | Sparse maintenance, unnecessary abstraction |
-| `WithReuseByName` | Experimental API, name collision risks |
-| Custom CLI test DSL | Maintenance burden, stdlib works fine |
-
----
+**Confidence:** HIGH -- verified existing RBAC markers in `dittoserver_controller.go`.
 
 ## Sources
 
-- [Testcontainers-go Official Docs](https://golang.testcontainers.org/)
-- [Testcontainers-go Releases](https://github.com/testcontainers/testcontainers-go/releases)
-- [Testcontainers Best Practices (Docker Blog)](https://www.docker.com/blog/testcontainers-best-practices/)
-- [stretchr/testify Releases](https://github.com/stretchr/testify/releases)
-- [testify/suite Package Docs](https://pkg.go.dev/github.com/stretchr/testify/suite)
-- [Cobra CLI Testing (spf13/cobra#770)](https://github.com/spf13/cobra/issues/770)
-- [Testing Cobra Commands (Medium)](https://nayaktapan37.medium.com/testing-cobra-commands-in-golang-ca1fe4ad6657)
-- [Testcontainers Postgres Module](https://golang.testcontainers.org/modules/postgres/)
-- [Testcontainers LocalStack Module](https://golang.testcontainers.org/modules/localstack/)
+- [controller-runtime v0.22.4 releases](https://github.com/kubernetes-sigs/controller-runtime/releases) -- verified version and features
+- [controller-runtime source.Channel docs](https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/source) -- verified Channel API for external events
+- [k8s.io/api networking/v1 package](https://pkg.go.dev/k8s.io/api/networking/v1) -- NetworkPolicy types
+- [Kubernetes NetworkPolicy docs](https://kubernetes.io/docs/concepts/services-networking/network-policies/) -- NetworkPolicy spec and behavior
+- [Kubernetes operator best practices](https://sdk.operatorframework.io/docs/best-practices/best-practices/) -- operator pattern guidance
+- [controller-runtime SSA support](https://github.com/kubernetes-sigs/controller-runtime/issues/2733) -- CreateOrUpdate vs SSA analysis
+- Project source: `k8s/dittofs-operator/go.mod` -- current dependency versions
+- Project source: `k8s/dittofs-operator/internal/controller/dittoserver_controller.go` -- existing patterns
+- Project source: `pkg/apiclient/adapters.go` -- adapter API client
+- Project source: `pkg/apiclient/auth.go` -- authentication API

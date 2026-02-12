@@ -60,6 +60,16 @@ func (c *Claims) IsAdmin() bool {
 	return c.Role == "admin"
 }
 
+// IsOperator returns true if the user has operator role.
+func (c *Claims) IsOperator() bool {
+	return c.Role == "operator"
+}
+
+// HasRole returns true if the user has the specified role.
+func (c *Claims) HasRole(role string) bool {
+	return c.Role == role
+}
+
 // HasGroup returns true if the user belongs to the specified group.
 func (c *Claims) HasGroup(groupName string) bool {
 	return slices.Contains(c.Groups, groupName)

@@ -72,24 +72,24 @@ func WithIdentity(identity *IdentityConfig) func(*DittoServerSpec) {
 	}
 }
 
+// WithAdapterDiscovery sets the AdapterDiscovery of a DittoServerSpec
+func WithAdapterDiscovery(ad *AdapterDiscoverySpec) func(*DittoServerSpec) {
+	return func(obj *DittoServerSpec) {
+		obj.AdapterDiscovery = ad
+	}
+}
+
+// WithAdapterServices sets the AdapterServices of a DittoServerSpec
+func WithAdapterServices(as *AdapterServiceConfig) func(*DittoServerSpec) {
+	return func(obj *DittoServerSpec) {
+		obj.AdapterServices = as
+	}
+}
+
 // WithService sets the Service of a DittoServerSpec
 func WithService(service ServiceSpec) func(*DittoServerSpec) {
 	return func(obj *DittoServerSpec) {
 		obj.Service = service
-	}
-}
-
-// WithNFSPort sets the NFSPort of a DittoServerSpec
-func WithNFSPort(nfsport *int32) func(*DittoServerSpec) {
-	return func(obj *DittoServerSpec) {
-		obj.NFSPort = nfsport
-	}
-}
-
-// WithSMB sets the SMB of a DittoServerSpec
-func WithSMB(smb *SMBAdapterSpec) func(*DittoServerSpec) {
-	return func(obj *DittoServerSpec) {
-		obj.SMB = smb
 	}
 }
 
@@ -129,13 +129,6 @@ func NewDittoServerStatus(opts ...func(*DittoServerStatus)) *DittoServerStatus {
 func WithAvailableReplicas(availablereplicas int32) func(*DittoServerStatus) {
 	return func(obj *DittoServerStatus) {
 		obj.AvailableReplicas = availablereplicas
-	}
-}
-
-// WithNFSEndpoint sets the NFSEndpoint of a DittoServerStatus
-func WithNFSEndpoint(nfsendpoint string) func(*DittoServerStatus) {
-	return func(obj *DittoServerStatus) {
-		obj.NFSEndpoint = nfsendpoint
 	}
 }
 

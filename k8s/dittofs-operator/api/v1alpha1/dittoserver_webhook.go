@@ -22,9 +22,7 @@ var dittoserverlog = logf.Log.WithName("dittoserver-resource")
 
 // Default port values for validation
 const (
-	defaultNFSPort     = 12049 // DittoFS uses non-privileged port by default
 	defaultAPIPort     = 8080
-	defaultSMBPort     = 12445 // DittoFS uses non-privileged port by default
 	defaultMetricsPort = 9090
 	privilegedPortMax  = 1024
 	minPort            = 1
@@ -96,20 +94,6 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 		}
 	}
 
-	// Validate NFS port range
-	if r.Spec.NFSPort != nil && *r.Spec.NFSPort != 0 {
-		if *r.Spec.NFSPort < minPort || *r.Spec.NFSPort > maxPort {
-			return warnings, fmt.Errorf("nfsPort must be between %d and %d", minPort, maxPort)
-		}
-	}
-
-	// Validate SMB port range when enabled
-	if r.Spec.SMB != nil && r.Spec.SMB.Enabled && r.Spec.SMB.Port != nil && *r.Spec.SMB.Port != 0 {
-		if *r.Spec.SMB.Port < minPort || *r.Spec.SMB.Port > maxPort {
-			return warnings, fmt.Errorf("smb.port must be between %d and %d", minPort, maxPort)
-		}
-	}
-
 	// Validate port uniqueness and warn about privileged ports
 	portWarnings, err := r.validatePorts()
 	if err != nil {
@@ -124,36 +108,26 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 func (r *DittoServer) validatePorts() (admission.Warnings, error) {
 	var warnings admission.Warnings
 
-	// Build port map with enabled ports
+	apiPort := int32(defaultAPIPort)
+	if r.Spec.ControlPlane != nil && r.Spec.ControlPlane.Port > 0 {
+		apiPort = r.Spec.ControlPlane.Port
+	}
+
 	ports := map[int32]string{
-		portOrDefault(r.Spec.NFSPort, defaultNFSPort):                        "nfs",
-		portOrDefault(controlPlanePort(r.Spec.ControlPlane), defaultAPIPort): "api",
+		apiPort: "api",
 	}
 
-	// Helper to check and add a port
-	addPort := func(port int32, name string) error {
-		if existing, ok := ports[port]; ok {
-			return fmt.Errorf("port %d is used by both %s and %s", port, existing, name)
-		}
-		ports[port] = name
-		return nil
-	}
-
-	// Check SMB port uniqueness
-	if r.Spec.SMB != nil && r.Spec.SMB.Enabled {
-		if err := addPort(portOrDefault(r.Spec.SMB.Port, defaultSMBPort), "smb"); err != nil {
-			return nil, err
-		}
-	}
-
-	// Check metrics port uniqueness
 	if r.Spec.Metrics != nil && r.Spec.Metrics.Enabled {
-		if err := addPort(portOrDefault(metricsPortPtr(r.Spec.Metrics), defaultMetricsPort), "metrics"); err != nil {
-			return nil, err
+		metricsPort := int32(defaultMetricsPort)
+		if r.Spec.Metrics.Port > 0 {
+			metricsPort = r.Spec.Metrics.Port
 		}
+		if existing, ok := ports[metricsPort]; ok {
+			return nil, fmt.Errorf("port %d is used by both %s and %s", metricsPort, existing, "metrics")
+		}
+		ports[metricsPort] = "metrics"
 	}
 
-	// Warn about privileged ports
 	for port, name := range ports {
 		if port < privilegedPortMax {
 			warnings = append(warnings,
@@ -162,30 +136,6 @@ func (r *DittoServer) validatePorts() (admission.Warnings, error) {
 	}
 
 	return warnings, nil
-}
-
-// portOrDefault returns the value of a port pointer or the default value.
-func portOrDefault(port *int32, defaultValue int32) int32 {
-	if port != nil {
-		return *port
-	}
-	return defaultValue
-}
-
-// controlPlanePort returns a pointer to the control plane port, or nil if not set.
-func controlPlanePort(cp *ControlPlaneAPIConfig) *int32 {
-	if cp != nil && cp.Port > 0 {
-		return &cp.Port
-	}
-	return nil
-}
-
-// metricsPortPtr returns a pointer to the metrics port, or nil if not set.
-func metricsPortPtr(m *MetricsConfig) *int32 {
-	if m != nil && m.Port > 0 {
-		return &m.Port
-	}
-	return nil
 }
 
 // stringOrDefault returns the value if non-empty, otherwise returns the default.

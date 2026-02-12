@@ -1,94 +1,82 @@
-# DittoFS E2E Test Suite Redesign
+# DittoFS K8s Auto-Adapters
 
 ## What This Is
 
-A complete CLI-driven E2E test suite that validates DittoFS across all store combinations (memory, badger, postgres × memory, filesystem, s3) using both NFS and SMB protocols. Tests use `dittofsctl` CLI commands ensuring the system works correctly from a user's perspective.
+Dynamic adapter port management for DittoFS on Kubernetes. The K8s operator automatically discovers which protocol adapters (NFS, SMB) are active on the control plane and creates/removes the corresponding K8s resources (LoadBalancer Services, container ports, NetworkPolicies) so that only running adapters are externally exposed. This also includes removing static adapter configuration from both the DittoFS YAML config and the CRD, making the control plane API the single source of truth for adapter management.
 
 ## Core Value
 
-Ensure DittoFS works correctly with the new control plane and APIs, across all metadata/payload store combinations, with both NFS and SMB protocols — while keeping tests fast, maintainable, and behavior-focused.
-
-## Current State (v1.0 Shipped)
-
-**Shipped:** 2026-02-03
-
-**Test Infrastructure:**
-- 30 test files, 8,884 lines of Go code
-- `test/e2e/helpers/` package for CLI-driven test utilities
-- `test/e2e/framework/` for mount/container helpers
-- Testcontainers integration for Postgres and S3
-
-**Test Coverage:**
-- Mount/unmount CLI commands (NFS and SMB, macOS/Linux)
-- Server lifecycle tests
-- User/group CRUD and membership tests
-- Metadata/payload store CRUD tests
-- Share and permission management tests
-- Adapter lifecycle with hot reload
-- Backup/restore tests
-- Multi-context credential isolation
-- Cross-protocol interoperability (NFS ↔ SMB)
-- All 9 store matrix combinations validated
-
-**Running Tests:**
-```bash
-sudo go test -tags=e2e -v ./test/e2e/... -timeout 30m
-```
+The operator ensures that protocol adapters are only externally accessible when they are actually running, reducing the attack surface and making adapter lifecycle fully dynamic — no manual K8s resource management needed.
 
 ## Requirements
 
 ### Validated
 
-- ✓ `dittofsctl share mount` command (NFS and SMB) — v1.0
-- ✓ `dittofsctl share unmount` command — v1.0
-- ✓ Platform-specific mount handling (macOS/Linux) — v1.0
-- ✓ Test framework with Testcontainers — v1.0
-- ✓ Server lifecycle E2E tests — v1.0
-- ✓ User/group CRUD tests — v1.0
-- ✓ Metadata store CRUD tests (memory, badger, postgres) — v1.0
-- ✓ Payload store CRUD tests (memory, filesystem, s3) — v1.0
-- ✓ Share CRUD tests — v1.0
-- ✓ Permission grant/revoke tests — v1.0
-- ✓ Adapter lifecycle tests (NFS/SMB enable/disable) — v1.0
-- ✓ Backup/restore tests — v1.0
-- ✓ Multi-context management tests — v1.0
-- ✓ NFS file operations (read, write, delete, mkdir) — v1.0
-- ✓ SMB file operations (read, write, delete, mkdir) — v1.0
-- ✓ Cross-protocol interoperability tests — v1.0
-- ✓ Permission enforcement tests — v1.0
-- ✓ All 9 store combinations validated — v1.0
+(None yet — ship to validate)
 
 ### Active
 
-(None — milestone complete)
+- [ ] Remove adapter configuration section from DittoFS YAML config file
+- [ ] Remove `nfsPort` and `smb` spec fields from the DittoServer CRD
+- [ ] Add "operator" role to DittoFS with read-only adapter access (least privilege)
+- [ ] Operator auto-creates a DittoFS service account with operator role on startup
+- [ ] Operator polls `GET /api/v1/adapters` at a configurable interval (default 30s)
+- [ ] For each enabled+running adapter, operator creates a dedicated LoadBalancer Service with the adapter's port
+- [ ] For disabled/removed adapters, operator deletes the corresponding LoadBalancer Service
+- [ ] Operator updates StatefulSet container ports to match active adapters
+- [ ] Operator manages NetworkPolicy rules to allow traffic only to active adapter ports
+- [ ] Polling interval is configurable via CRD spec
+- [ ] Operator handles DittoFS restart gracefully (re-polls and reconciles after readiness)
+- [ ] One LoadBalancer per adapter (NFS and SMB get separate external IPs)
 
 ### Out of Scope
 
-- Performance benchmarks — separate suite exists
-- POSIX compliance testing — separate suite exists
-- Stress testing / load testing — not part of E2E validation
-- Soft delete for shares — server implements hard delete (noted as known limitation)
+- Webhook/event-driven adapter discovery — polling is sufficient for now
+- Ingress resources — NFS/SMB are TCP protocols, not HTTP
+- Multi-replica DittoFS — still single-replica (0 or 1)
+- Building a DittoFS webhook/event system
+- Changes to the adapter API response format (already returns port, enabled, running)
+
+## Context
+
+**Existing operator:** Go operator using controller-runtime at `k8s/dittofs-operator/`. Currently manages StatefulSet, Services, ConfigMap, Secrets, and optional Percona PostgreSQL.
+
+**Current CRD adapter fields (to be removed):**
+- `spec.nfsPort` — static NFS port (default 12049)
+- `spec.smb` — full SMB adapter spec (enabled, port, timeouts, credits, etc.)
+
+**Current adapter API (already sufficient):**
+- `GET /api/v1/adapters` returns `[{type, port, enabled, running, config}]`
+- `POST /api/v1/adapters` creates adapter
+- `PUT /api/v1/adapters/{type}` updates adapter
+- `DELETE /api/v1/adapters/{type}` deletes adapter
+- All endpoints require admin auth (`RequireAdmin()` middleware)
+
+**Default adapters:** DittoFS creates NFS (port 12049) and SMB (port 1445) on first boot via `EnsureDefaultAdapters()`. Both enabled by default.
+
+**Operator service architecture:**
+- Currently creates: headless service, file service (NFS+SMB), API service, metrics service
+- File service statically includes NFS port + SMB port (if enabled in CRD)
+- New: per-adapter LoadBalancer Services created dynamically based on API state
+
+## Constraints
+
+- **Backward compatibility**: Existing DittoFS deployments using static adapter config must still work during migration
+- **Auth model**: Operator needs a new "operator" role — not full admin, just adapter read access
+- **K8s resource ownership**: Dynamically created Services must be owned by the DittoServer CR for proper cleanup
+- **Port source**: Adapter ports come from the API response, not hardcoded in operator
+- **Service type**: LoadBalancer for production exposure (configurable to NodePort for dev)
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| CLI-driven tests (dittofsctl) | Tests user-facing behavior, not internal APIs | ✓ Good — all tests use CLI |
-| Go testing + testify | Standard Go practice, suite support | ✓ Good |
-| Testcontainers for external deps | Self-contained tests, no pre-setup required | ✓ Good |
-| Shared server model | Faster than per-test server | ✓ Good |
-| All 9 store combinations | Comprehensive coverage | ✓ Good — full matrix tested |
-| Test tags for categories | Enable selective test runs | ✓ Good — `-tags=e2e` works |
-| SMB for permission tests | NFS AUTH_UNIX is UID-based, not useful for permission testing | ✓ Good |
-| NFS only for store matrix | Cross-protocol already validated separately | ✓ Good — reduced redundancy |
-| Old tests deleted | Fresh start with CLI-driven approach | ✓ Good — clean codebase |
-
-## Constraints
-
-- **Platform**: macOS (development) and Linux (CI/CD)
-- **Privileges**: Mounting requires sudo/root access
-- **External dependencies**: Postgres and S3 via Testcontainers (Docker required)
-- **Framework**: Go testing + testify
+| Polling over webhooks | No webhook system exists; polling is simpler and sufficient | — Pending |
+| One LoadBalancer per adapter | Clean separation, independent IPs for NFS and SMB | — Pending |
+| Remove adapter config from YAML + CRD | Control plane API is single source of truth | — Pending |
+| New "operator" role (not admin) | Least privilege — operator only needs to read adapter state | — Pending |
+| Auto-create service account | Operator self-provisions when running in K8s, no setup needed outside K8s | — Pending |
+| Configurable poll interval | Default 30s, adjustable via CRD for different environments | — Pending |
 
 ---
-*Last updated: 2026-02-03 after v1.0 milestone*
+*Last updated: 2026-02-09 after initialization*

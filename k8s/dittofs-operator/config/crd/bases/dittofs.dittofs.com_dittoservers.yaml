@@ -61,6 +61,36 @@ spec:
               This is infrastructure-only configuration. Dynamic configuration (stores, shares,
               adapters, users) is managed via REST API at runtime.
             properties:
+              adapterDiscovery:
+                description: AdapterDiscovery configures adapter discovery polling
+                properties:
+                  pollingInterval:
+                    default: 30s
+                    description: |-
+                      PollingInterval is how often the operator polls the adapter list API.
+                      Supports Go duration strings (e.g., "30s", "1m", "5m").
+                    type: string
+                type: object
+              adapterServices:
+                description: AdapterServices configures dynamically created per-adapter
+                  Services.
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: Annotations to apply to adapter Services (e.g., cloud
+                      LB configuration).
+                    type: object
+                  type:
+                    default: LoadBalancer
+                    description: Type of Service to create for each adapter (LoadBalancer,
+                      NodePort, ClusterIP).
+                    enum:
+                    - ClusterIP
+                    - NodePort
+                    - LoadBalancer
+                    type: string
+                type: object
               cache:
                 description: Cache configures the WAL-backed cache
                 properties:
@@ -237,13 +267,6 @@ spec:
                     minimum: 1
                     type: integer
                 type: object
-              nfsPort:
-                default: 2049
-                description: NFSPort is the NFS server port
-                format: int32
-                maximum: 65535
-                minimum: 1
-                type: integer
               percona:
                 description: |-
                   Percona configures auto-creation of PerconaPGCluster for PostgreSQL metadata store
@@ -874,115 +897,6 @@ spec:
                     - LoadBalancer
                     type: string
                 type: object
-              smb:
-                description: SMB configures the SMB protocol adapter
-                properties:
-                  credits:
-                    description: SMB credit management configuration
-                    properties:
-                      aggressiveClientThreshold:
-                        default: 256
-                        description: Outstanding requests threshold for client throttling
-                          (adaptive strategy only)
-                        format: int32
-                        minimum: 1
-                        type: integer
-                      initialGrant:
-                        default: 256
-                        description: Credits for initial requests (NEGOTIATE)
-                        format: int32
-                        minimum: 1
-                        type: integer
-                      loadThresholdHigh:
-                        default: 1000
-                        description: Server load threshold for throttling (adaptive
-                          strategy only)
-                        format: int32
-                        minimum: 1
-                        type: integer
-                      loadThresholdLow:
-                        default: 100
-                        description: Server load threshold for boosting (adaptive
-                          strategy only)
-                        format: int32
-                        minimum: 1
-                        type: integer
-                      maxGrant:
-                        default: 8192
-                        description: Maximum credits per response
-                        format: int32
-                        minimum: 1
-                        type: integer
-                      maxSessionCredits:
-                        default: 65535
-                        description: Maximum outstanding credits per session
-                        format: int32
-                        minimum: 1
-                        type: integer
-                      minGrant:
-                        default: 16
-                        description: Minimum credits per response
-                        format: int32
-                        minimum: 1
-                        type: integer
-                      strategy:
-                        default: adaptive
-                        description: 'Credit grant strategy: fixed, echo, or adaptive'
-                        enum:
-                        - fixed
-                        - echo
-                        - adaptive
-                        type: string
-                    type: object
-                  enabled:
-                    default: false
-                    description: Enable SMB protocol
-                    type: boolean
-                  maxConnections:
-                    default: 0
-                    description: Maximum number of concurrent SMB connections (0 =
-                      unlimited)
-                    format: int32
-                    minimum: 0
-                    type: integer
-                  maxRequestsPerConnection:
-                    default: 100
-                    description: Maximum number of concurrent requests per SMB connection
-                    format: int32
-                    minimum: 1
-                    type: integer
-                  metricsLogInterval:
-                    default: 5m
-                    description: Metrics logging interval (e.g., "5m", "10m")
-                    type: string
-                  port:
-                    default: 445
-                    description: SMB port to listen on
-                    format: int32
-                    maximum: 65535
-                    minimum: 1
-                    type: integer
-                  timeouts:
-                    description: Timeout configurations for SMB operations
-                    properties:
-                      idle:
-                        default: 5m
-                        description: Maximum idle time between requests
-                        type: string
-                      read:
-                        default: 5m
-                        description: Maximum time to read request
-                        type: string
-                      shutdown:
-                        default: 30s
-                        description: Graceful shutdown timeout
-                        type: string
-                      write:
-                        default: 30s
-                        description: Maximum time to write response
-                        type: string
-                    type: object
-                type: object
               storage:
                 description: Storage configures PVCs for internal server storage
                 properties:
@@ -1091,11 +1005,6 @@ spec:
               configHash:
                 description: ConfigHash is the hash of current configuration (for
                   debugging)
-                type: string
-              nfsEndpoint:
-                description: |-
-                  NFSEndpoint that clients should use to mount
-                  Format: service-name.namespace.svc.cluster.local:2049
                 type: string
               observedGeneration:
                 description: ObservedGeneration is the generation last processed by

@@ -1,219 +1,90 @@
-# Project Research Summary
+# Research Summary: DittoFS K8s Auto-Adapters (Stack Dimension)
 
-**Project:** CLI-Driven E2E Test Suite for DittoFS
-**Domain:** End-to-end testing for networked virtual filesystem with NFS/SMB protocols
-**Researched:** 2026-02-02
-**Confidence:** HIGH
+**Domain:** K8s operator dynamic adapter-driven service management
+**Researched:** 2026-02-09
+**Overall confidence:** HIGH
 
 ## Executive Summary
 
-This research evaluated how to build a comprehensive E2E test suite for DittoFS that validates both file system operations (via NFS/SMB mounts) and control plane management (via dittofsctl CLI). The research identified that DittoFS already has an excellent foundation with a well-structured test/e2e/ framework demonstrating Go E2E best practices. The missing piece is systematic CLI-driven testing for the control plane (user/group/share/adapter management).
+The DittoFS K8s operator needs to dynamically manage Kubernetes Services, NetworkPolicies, and container ports based on the runtime state of DittoFS protocol adapters (NFS, SMB). This research focused on the stack dimension: what technologies and patterns to use for this capability.
 
-**Recommended approach:** Build on the existing framework by adding a CLI wrapper layer that provides type-safe dittofsctl command execution. Continue using the proven stack (stdlib testing, testify, testcontainers-go) rather than introducing BDD frameworks or exotic CLI testing tools. The test suite should validate three integration paths: (1) CLI-only operations, (2) filesystem-only operations (existing coverage), and (3) cross-layer scenarios where CLI changes affect mounted filesystems.
+The core finding is that **no new external dependencies are needed**. The existing operator stack (Go 1.25.1, controller-runtime v0.22.4, k8s.io/api v0.34.1) provides everything required. The `networking.k8s.io/v1` NetworkPolicy API is already available as a sub-package of `k8s.io/api`. The `source.Channel` mechanism in controller-runtime is purpose-built for triggering reconciliation from external events (like polling a REST API). The existing `pkg/apiclient` library already implements the adapter listing and JWT authentication APIs the operator needs.
 
-**Key risks:** NFS/SMB attribute caching can cause flaky tests, stale mounts from failed runs break subsequent executions, and cross-protocol locking semantics don't interoperate. These risks are well-understood and preventable through existing framework patterns (actimeo=0 mount option, TestMain cleanup, protocol-specific isolation). The most significant new risk is goroutine leaks from server connection handling, mitigable using goleak verification.
+The key architectural decision is how to integrate external API polling into the controller-runtime reconciliation model. Two approaches exist: (1) `RequeueAfter` on a separate named controller, and (2) `source.Channel` with a background polling goroutine. Both are viable; the previous research round recommended approach (1), while this research recommends approach (2) as the more idiomatic controller-runtime pattern for external events. The choice between them is a design decision, not a blocking concern -- both work with the same stack.
+
+For resource mutation (creating/deleting Services and NetworkPolicies), the recommendation is to continue using `controllerutil.CreateOrUpdate` rather than adopting Server-Side Apply. The dynamic resources are single-owner (only the operator manages them), so SSA's multi-controller field ownership benefits do not apply. The existing codebase already has robust patterns for `CreateOrUpdate` including retry-on-conflict, service spec merging, and port preservation.
 
 ## Key Findings
 
-### Recommended Stack
+**Stack:** No new external dependencies. Use controller-runtime `source.Channel` for polling, `networking.k8s.io/v1` for NetworkPolicy, `pkg/apiclient` for DittoFS API communication. Stay on controller-runtime v0.22.4.
 
-The existing DittoFS stack (Go 1.25, testcontainers-go v0.40.0, testify v1.11.1) is complete and production-proven. No additional testing libraries are needed. The research explicitly recommends AGAINST adding Ginkgo/Gomega (BDD complexity), rogpeppe/testscript (overkill), or custom CLI test DSLs (maintenance burden).
+**Architecture:** Two polling approaches are viable (RequeueAfter vs source.Channel). Both require a clear separation between infrastructure reconciliation (CRD-driven) and adapter reconciliation (API-driven).
 
-**Core technologies:**
-- **testing (stdlib) + testify v1.11.1** — Test runner, assertions, suite lifecycle; battle-tested, already in use
-- **testcontainers-go v0.40.0** — Container lifecycle for PostgreSQL/S3; latest stable, proven in existing framework
-- **os/exec + bytes.Buffer** — CLI execution and output capture; simple, reliable, no external dependencies
-- **cobra v1.8.1** — CLI framework already used by dittofsctl; direct command invocation for unit tests
-
-**Critical insight:** Avoid the temptation to introduce "clever" testing frameworks. The stdlib plus testify provides everything needed. Complexity should be in the system under test, not the test infrastructure.
-
-### Expected Features
-
-The research identified 80+ features across table stakes, differentiators, and anti-features. The analysis reveals DittoFS already has strong coverage of filesystem operations but gaps in control plane E2E testing.
-
-**Must have (table stakes):**
-- **File Operations Coverage** — CRUD, directories, attributes, links, large files (already ~90% covered in functional_test.go)
-- **Control Plane API E2E** — User/group/share CRUD via dittofsctl (NOT covered, critical gap)
-- **Permission Enforcement** — User-cannot-access-share-without-permission scenarios (NOT systematically tested)
-- **Error Handling** — Systematic EACCES, ENOENT, EEXIST, ENOTEMPTY tests (partially covered)
-- **Store Backend Matrix** — All 9 metadata/payload combinations work (framework supports, good coverage)
-
-**Should have (competitive):**
-- **Adapter Lifecycle Testing** — Enable/disable adapters via CLI, verify connectivity changes (API exists, not E2E tested)
-- **Hot Reload Testing** — Change share config, verify changes take effect without restart (critical for production)
-- **Graceful Shutdown Verification** — In-flight operations complete during shutdown (partially tested)
-- **Basic Fault Tolerance** — Server restart recovery, stale handle detection (NOT covered)
-
-**Defer (v2+):**
-- **pjdfstest Integration** — 8,813 POSIX compliance tests (extensive, high value but not MVP)
-- **xfstests Compatibility** — Linux kernel filesystem test suite (very high complexity)
-- **Chaos Engineering** — Network partition, slow backend injection (requires significant infrastructure)
-- **File Locking Tests** — fcntl/flock behavior (DittoFS doesn't implement NLM yet)
-
-### Architecture Approach
-
-The existing framework demonstrates the ideal layered component architecture: Tests → Framework Layer (TestContext, Helpers, Runners) → Infrastructure Layer (Mount, Containers, Config) → External Resources. The research identifies one missing component: a CLI Wrapper that provides type-safe dittofsctl command execution with structured result parsing.
-
-**Major components:**
-
-1. **CLI Wrapper (NEW)** — Execute dittofsctl commands, parse JSON/YAML output, return typed results. Should handle authentication flow (login/logout), manage multi-context credentials, and provide helper methods for each command group (user, group, share, store, adapter).
-
-2. **TestContext (existing, enhance)** — Currently orchestrates server, stores, and mounts. Needs to add CLI accessor method (tc.CLI()) that returns a pre-configured wrapper with server URL and authentication token.
-
-3. **Container Helpers (existing, maintain)** — PostgreSQL and LocalStack management is production-ready. Uses composite wait strategies (port + log + health check) to avoid startup races. Implements singleton pattern for shared containers to reduce test suite execution time.
-
-4. **Mount Helpers (existing, maintain)** — Platform-specific NFS/SMB mount logic with actimeo=0 to eliminate attribute caching flakiness. Includes CleanupStaleMounts() for robust cleanup after test failures.
-
-**Key patterns to follow:**
-- Build tag isolation (//go:build e2e) to separate from unit tests
-- TestMain lifecycle for global setup/teardown and signal handling
-- Configuration matrix testing via RunOnAllConfigs() for pluggable backends
-- Table-driven subtests with t.Run() for test variations
-- Never use fixed ports, always dynamic allocation via FindFreePort()
-
-### Critical Pitfalls
-
-Research identified 13 pitfalls (5 critical, 5 moderate, 3 minor). The top 5 account for 90% of E2E test suite failures in production.
-
-1. **NFS/SMB Attribute Caching** — Clients cache attributes (size, mtime, existence) causing flaky cross-protocol tests. **Prevention:** Mount with actimeo=0 (already done), implement WaitForVisibility helper with exponential backoff instead of time.Sleep().
-
-2. **Stale Mounts After Failures** — Interrupted tests leave NFS/SMB mounts active, blocking subsequent runs. **Prevention:** TestMain cleanup at startup (already done), signal handlers for SIGINT/SIGTERM, unique mount point directories per run, force-unmount with retries.
-
-3. **Cross-Protocol Locking Mismatch** — NFS advisory locks and SMB mandatory locks don't interoperate, causing false test passes despite data race conditions. **Prevention:** Document limitation explicitly, test locking within single protocol only, use different files for cross-protocol tests.
-
-4. **Testcontainers Port Collision** — Parallel CI runs collide on fixed ports. **Prevention:** Never hardcode ports, always use container.MappedPort() (already done), let Testcontainers generate unique container names.
-
-5. **Goroutine Leaks from Server Connections** — Unclosed connections leak goroutines across tests, causing resource exhaustion. **Prevention:** Use goleak.VerifyTestMain(), ensure Runtime.StopAllAdapters() waits for connection drain, set short connection timeouts in tests (5s idle).
+**Critical pitfall:** The chicken-and-egg problem -- the operator cannot poll the DittoFS API until the pod is running, but the pod requires infrastructure resources created by the operator. Two-phase reconciliation (infrastructure first, then adapter discovery) is mandatory.
 
 ## Implications for Roadmap
 
-The research findings suggest a 4-phase structure that builds incrementally from CLI foundation through integration scenarios. Each phase delivers standalone value while setting up the next phase.
+Based on research, suggested phase structure:
 
-### Phase 1: CLI Wrapper Foundation
-**Rationale:** Must establish type-safe CLI execution infrastructure before building specific command tests. This is the blocking dependency for all subsequent phases.
+1. **DittoFS Role and Auth Foundation** - Create the "operator" role in DittoFS, implement operator authentication via K8s Secret
+   - Addresses: operator authentication, new DittoFS role
+   - Avoids: auth bootstrap pitfall by reusing existing admin credential Secrets
 
-**Delivers:**
-- framework/cli.go with CLIWrapper base implementation
-- Binary execution, output capture, error handling
-- TestContext integration (tc.CLI() accessor)
-- Basic smoke tests (version, status commands)
+2. **Polling Infrastructure** - Implement the polling goroutine/channel (or RequeueAfter controller), API client factory with token refresh
+   - Addresses: adapter state discovery, graceful unavailability handling
+   - Avoids: chicken-and-egg pitfall via readiness gate
 
-**Stack decisions:** os/exec + bytes.Buffer (stdlib), no external CLI libraries
-**Avoids pitfalls:** Foundation for proper async testing (no time.Sleep), enables clean teardown patterns
+3. **Dynamic Service Management** - Create/delete per-adapter LoadBalancer Services, update headless service ports
+   - Addresses: primary deliverable, owner references, service lifecycle
+   - Avoids: orphaned LB pitfall via owner references + label-based GC
 
-**Research flag:** SKIP — standard Go patterns, well-documented
+4. **StatefulSet Port and CRD Cleanup** - Update container ports, remove static adapter fields from CRD
+   - Addresses: pod spec correctness, CRD simplification
+   - Avoids: rolling restart storm by making ports informational-only or batching
 
-### Phase 2: Authentication and User Management
-**Rationale:** Authentication is prerequisite for all control plane operations. User/group management are simplest CRUD operations, ideal for validating CLI wrapper patterns before tackling complex share management.
+5. **NetworkPolicy Management** - Per-adapter NetworkPolicy creation/deletion
+   - Addresses: defense-in-depth security
+   - Avoids: traffic blocking pitfall via proper operation ordering
 
-**Delivers:**
-- Login/logout flow tests
-- Token management and persistence
-- User CRUD via dittofsctl (create, list, get, update, delete)
-- Group CRUD and membership operations
+6. **Status and Observability** - Adapter status in CRD, AdaptersReady condition, K8s events
+   - Addresses: kubectl observability, condition aggregation
 
-**Features:** Control Plane API E2E (table stakes), Authentication Flow (table stakes)
-**Avoids pitfalls:** Test isolation through unique usernames, proper cleanup in teardown
+**Phase ordering rationale:**
+- Auth must come first because polling depends on it
+- Polling must come before Service management (no state = no Services to manage)
+- Service management before NetworkPolicy (policies protect Services that must exist first)
+- CRD cleanup can partially parallel with polling/Service work but should land after polling proves stable
+- Status is last because it depends on all other pieces being in place
 
-**Research flag:** SKIP — REST API testing patterns are standard
-
-### Phase 3: Share and Permission Management
-**Rationale:** Builds on Phase 2 (users/groups exist). Share management is core functionality that bridges control plane and data plane. Permission enforcement is critical for production readiness.
-
-**Delivers:**
-- Share CRUD via dittofsctl
-- Permission grant/revoke/list operations
-- Store assignment to shares (metadata + payload)
-- Integration test: create user → create share → grant permission → mount → verify access
-
-**Features:** Permission Enforcement (table stakes), Share Management (table stakes)
-**Architecture:** Validates Named Stores pattern, tests control plane → runtime sync
-**Avoids pitfalls:** Cross-protocol permission isolation, explicit permission verification before file ops
-
-**Research flag:** LOW — Share permission model may need validation against NFS/SMB access control semantics
-
-### Phase 4: Adapter Lifecycle and Hot Reload
-**Rationale:** Advanced production features that depend on all previous phases. Hot reload testing requires shares and permissions to be working. This is the differentiator that makes DittoFS production-ready.
-
-**Delivers:**
-- Adapter enable/disable via CLI
-- Adapter configuration change triggers restart
-- Hot reload with in-flight operations (verify completion)
-- Graceful shutdown verification
-- Metrics validation (connection lifecycle, operation counts)
-
-**Features:** Adapter Lifecycle Testing (competitive differentiator), Hot Reload (competitive differentiator)
-**Avoids pitfalls:** Goroutine leak verification via goleak, connection draining tests, proper timeout handling
-
-**Research flag:** MEDIUM — Hot reload semantics need validation (which operations must complete vs can abort?)
-
-### Phase Ordering Rationale
-
-1. **Foundation first:** CLI wrapper is blocking dependency for everything else. Without type-safe command execution, all subsequent tests become brittle shell scripting.
-
-2. **Simple CRUD before complex workflows:** User/group management teaches CLI wrapper patterns with minimal domain complexity before tackling share permissions and multi-protocol testing.
-
-3. **Permissions after users exist:** Share permission tests need users/groups as test fixtures. Dependency graph dictates this order.
-
-4. **Hot reload last:** Requires stable control plane. Testing adapter restart while operations are in-flight needs all previous functionality working correctly.
-
-5. **Defer advanced features:** pjdfstest integration, chaos engineering, and performance benchmarking provide incremental value but aren't blockers for production readiness.
-
-### Research Flags
-
-**Phases needing deeper research during planning:**
-- **Phase 3:** Share permission model mapping to NFS/SMB access control — need to verify RootSquash, AllSquash, anonuid/anongid semantics align with user/group permissions
-- **Phase 4:** Hot reload operation semantics — which NFS procedures can be interrupted vs must complete? What are safe cancellation points?
-
-**Phases with standard patterns (skip research-phase):**
-- **Phase 1:** CLI testing via os/exec is well-documented, no novel patterns needed
-- **Phase 2:** REST API CRUD testing is standard practice, testify assertions sufficient
+**Research flags for phases:**
+- Phase 1 (Auth): May need deeper research on auto-creating the operator service account vs manual provisioning
+- Phase 2 (Polling): Standard patterns; the source.Channel vs RequeueAfter decision should be finalized early
+- Phase 3 (Services): Standard patterns, unlikely to need additional research
+- Phase 5 (NetworkPolicy): May need research into CNI compatibility and opt-in configuration
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | All technologies already in use in DittoFS, verified with official docs and releases |
-| Features | HIGH | Industry standards (pjdfstest, xfstests, JuiceFS) provide clear benchmarks for completeness |
-| Architecture | HIGH | Existing framework demonstrates best practices, new CLI wrapper follows established patterns |
-| Pitfalls | HIGH | All pitfalls verified against DittoFS existing code and documented in production NFS/SMB systems |
+| Stack | HIGH | All versions verified from go.mod; no new dependencies; APIs confirmed via official docs |
+| Features | HIGH | Based on deep codebase analysis; requirements clearly specified in PROJECT.md |
+| Architecture | HIGH | Two viable approaches identified; both well-documented in controller-runtime |
+| Pitfalls | HIGH | Identified from codebase structure and known K8s patterns; chicken-and-egg confirmed |
 
-**Overall confidence:** HIGH
+## Gaps to Address
 
-The research benefits from strong existing foundation. DittoFS already has ~70% of a comprehensive E2E test suite. The remaining 30% (CLI-driven control plane testing) follows the same architectural patterns as existing code.
-
-### Gaps to Address
-
-**Authentication token expiry:** Research didn't investigate how dittofsctl handles JWT token refresh. During Phase 2 implementation, need to verify if long-running test suites handle token expiry gracefully or if tests need to re-login periodically.
-
-**Multi-context edge cases:** dittofsctl supports multi-server context management. Research didn't identify if parallel tests can safely use different contexts simultaneously or if context switching requires locking. May discover this during Phase 1 implementation.
-
-**Hot reload atomicity:** Unclear from research whether adapter config changes are atomic (all-or-nothing) or if partial application is possible. Phase 4 planning should investigate Runtime.UpdateAdapter() implementation to design appropriate tests.
-
-**S3 eventual consistency:** LocalStack provides immediate consistency, but real S3 has eventual consistency for overwrites and deletes. Research didn't address if tests should simulate eventual consistency or if this is out of scope for E2E suite (covered in integration tests instead).
+- **Module import path for pkg/apiclient**: The operator is a separate Go module. Importing `pkg/apiclient` from the parent DittoFS module may require a `replace` directive or Go workspace. This needs validation during implementation.
+- **Adapter API `running` field semantics**: The `Adapter` struct in `pkg/apiclient/adapters.go` does not include a `running` field. The `pkg/controlplane/models/adapter.go` only has `Enabled`. PROJECT.md states the API "already returns port, enabled, running" -- this needs verification of whether `running` is computed at the handler level or needs to be added.
+- **source.Channel vs RequeueAfter**: Both approaches work. The previous research recommended RequeueAfter on a separate named controller; this research recommends source.Channel. The roadmap should make a decision early and stick with it. Neither requires different dependencies.
 
 ## Sources
 
-### Primary (HIGH confidence)
-- DittoFS existing codebase (test/e2e/framework/, cmd/dittofsctl/) — architecture patterns, proven infrastructure
-- [testcontainers-go v0.40.0 official docs](https://golang.testcontainers.org/) — container lifecycle patterns
-- [testify v1.11.1 release notes](https://github.com/stretchr/testify/releases/tag/v1.11.1) — suite package usage
-- [Go testing package](https://pkg.go.dev/testing) — TestMain, build tags, subtests
-- [NFStest framework](https://github.com/thombashi/NFStest) — NFS-specific test patterns
-- [pjdfstest](https://github.com/pjd/pjdfstest) — POSIX compliance baseline (8,813 tests)
-
-### Secondary (MEDIUM confidence)
-- [JuiceFS POSIX compatibility comparison](https://juicefs.com/en/blog/engineering/posix-compatibility-comparison-among-four-file-system-on-the-cloud) — feature completeness benchmarks
-- [Testcontainers Best Practices (Docker Blog)](https://www.docker.com/blog/testcontainers-best-practices/) — port collision, wait strategies
-- [uber-go/goleak](https://github.com/uber-go/goleak) — goroutine leak detection patterns
-- [Red Hat: NFS Attribute Caching](https://access.redhat.com/solutions/315113) — actimeo parameter documentation
-- [Multiprotocol NAS Locking](https://whyistheinternetbroken.wordpress.com/2015/05/20/techmultiprotocol-nas-locking-and-you/) — NFS/SMB lock semantic mismatch
-
-### Tertiary (LOW confidence)
-- [File Systems are Hard to Test - Xfstests Research](https://www.researchgate.net/publication/330808206_File_Systems_are_Hard_to_Test_-_Learning_from_Xfstests) — 72% coverage analysis, hard-to-test areas
-- [Bunnyshell: E2E Testing for Microservices](https://www.bunnyshell.com/blog/end-to-end-testing-for-microservices-a-2025-guide/) — general microservice testing patterns
-- [Chaos Mesh documentation](https://deepwiki.com/chaos-mesh/chaos-mesh) — fault injection methodology (defer to v2+)
-
----
-*Research completed: 2026-02-02*
-*Ready for roadmap: yes*
+- [controller-runtime releases](https://github.com/kubernetes-sigs/controller-runtime/releases)
+- [controller-runtime source.Channel docs](https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/source)
+- [k8s.io/api networking/v1](https://pkg.go.dev/k8s.io/api/networking/v1)
+- [Kubernetes NetworkPolicy](https://kubernetes.io/docs/concepts/services-networking/network-policies/)
+- [Kubernetes Operator Pattern](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
+- [Operator SDK Best Practices](https://sdk.operatorframework.io/docs/best-practices/best-practices/)
+- [External Resource Management in Operators](https://github.com/operator-framework/operator-sdk/issues/6117)
+- [Self-Healing Controllers for External State](https://anynines.com/blog/external-state-drift-kubernetes-controller-self-healing-design/)
+- [Kubernetes Controllers at Scale](https://medium.com/@timebertt/kubernetes-controllers-at-scale-clients-caches-conflicts-patches-explained-aa0f7a8b4332)

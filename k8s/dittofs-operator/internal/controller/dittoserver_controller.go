@@ -20,6 +20,8 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
@@ -27,11 +29,10 @@ import (
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/pkg/percona"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/pkg/resources"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/conditions"
-	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/nfs"
-	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/smb"
 	pgv2 "github.com/percona/percona-postgresql-operator/v2/pkg/apis/pgv2.percona.com/v2"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -83,6 +84,12 @@ type DittoServerReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+
+	// adaptersMu protects lastKnownAdapters for concurrent reconcile safety.
+	adaptersMu sync.RWMutex
+	// lastKnownAdapters stores the last successful adapter poll result per CR.
+	// Key is namespace/name of the DittoServer CR.
+	lastKnownAdapters map[string][]AdapterInfo
 }
 
 // +kubebuilder:rbac:groups=dittofs.dittofs.com,resources=dittoservers,verbs=get;list;watch;create;update;patch;delete
@@ -95,18 +102,11 @@ type DittoServerReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pgv2.percona.com,resources=perconapgclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pgv2.percona.com,resources=perconapgclusters/status,verbs=get
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the DittoServer object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.22.4/pkg/reconcile
+// Reconcile ensures the cluster state matches the desired DittoServer spec.
 func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
 
@@ -148,6 +148,15 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	// Ensure admin credentials Secret exists (auto-generate if not provided)
+	// This must happen before ConfigMap so the Secret exists when the StatefulSet is created.
+	if err := r.reconcileAdminCredentials(ctx, dittoServer); err != nil {
+		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
+			"Failed to reconcile admin credentials: %v", err)
+		logger.Error(err, "Failed to reconcile admin credentials")
+		return ctrl.Result{}, err
+	}
+
 	if err := r.reconcileConfigMap(ctx, dittoServer); err != nil {
 		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
 			"Failed to reconcile ConfigMap: %v", err)
@@ -160,13 +169,6 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
 			"Failed to reconcile headless Service: %v", err)
 		logger.Error(err, "Failed to reconcile headless Service")
-		return ctrl.Result{}, err
-	}
-
-	if err := r.reconcileFileService(ctx, dittoServer); err != nil {
-		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
-			"Failed to reconcile file Service: %v", err)
-		logger.Error(err, "Failed to reconcile file Service")
 		return ctrl.Result{}, err
 	}
 
@@ -241,7 +243,78 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	// Ensure baseline NetworkPolicy allowing API traffic exists before auth.
+	// This prevents adapter NetworkPolicies from blocking operator-to-API communication.
+	if err := r.ensureBaselineNetworkPolicy(ctx, dittoServer); err != nil {
+		logger.Error(err, "Failed to ensure baseline network policy")
+		return ctrl.Result{}, err
+	}
+
+	// Auth reconciliation: only when StatefulSet has at least one ready replica
+	if statefulSet.Status.ReadyReplicas >= 1 {
+		authResult, authErr := r.reconcileAuth(ctx, dittoServer)
+		if authErr != nil {
+			logger.Error(authErr, "Auth reconciliation failed")
+			r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "AuthFailed",
+				"Failed to authenticate with DittoFS API: %v", authErr)
+			// Don't return error -- auth failure should not block infrastructure reconciliation
+			// The Authenticated condition will reflect the failure
+		}
+
+		// Re-fetch to get updated conditions after auth reconciliation
+		if err := r.Get(ctx, req.NamespacedName, dittoServer); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+
+		// Adapter discovery: only if authenticated
+		var adapterResult ctrl.Result
+		if conditions.IsConditionTrue(dittoServer.Status.Conditions, conditions.ConditionAuthenticated) {
+			adapterResult, _ = r.reconcileAdapters(ctx, dittoServer)
+
+			// Service reconciliation: sync adapter Services based on discovered state
+			if err := r.reconcileAdapterServices(ctx, dittoServer); err != nil {
+				logger.Error(err, "Failed to reconcile adapter services")
+				r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "AdapterServiceFailed",
+					"Failed to reconcile adapter services: %v", err)
+				// Don't block reconciliation -- adapter services are best-effort
+			}
+
+			// NetworkPolicy reconciliation: restrict ingress to active adapter ports
+			if err := r.reconcileNetworkPolicies(ctx, dittoServer); err != nil {
+				logger.Error(err, "Failed to reconcile adapter network policies")
+				r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "NetworkPolicyFailed",
+					"Failed to reconcile adapter network policies: %v", err)
+				// NetworkPolicies are security-critical, propagate error
+				return ctrl.Result{}, err
+			}
+		}
+
+		// Use minimum RequeueAfter from all sub-reconcilers
+		result := mergeRequeueAfter(authResult, adapterResult)
+		if result.RequeueAfter > 0 || result.Requeue {
+			return result, nil
+		}
+	}
+
 	return ctrl.Result{}, nil
+}
+
+// mergeRequeueAfter returns a Result with the minimum positive RequeueAfter
+// from the given results. This ensures the fastest-cycling sub-reconciler
+// drives the reconcile cadence.
+func mergeRequeueAfter(results ...ctrl.Result) ctrl.Result {
+	var minResult ctrl.Result
+	for _, r := range results {
+		if r.Requeue {
+			minResult.Requeue = true
+		}
+		if r.RequeueAfter > 0 {
+			if minResult.RequeueAfter == 0 || r.RequeueAfter < minResult.RequeueAfter {
+				minResult.RequeueAfter = r.RequeueAfter
+			}
+		}
+	}
+	return minResult
 }
 
 // updateStatus computes and persists the DittoServer status from current cluster state.
@@ -263,9 +336,6 @@ func (r *DittoServerReconciler) updateStatus(
 
 	dittoServerCopy.Status.Phase = determinePhase(replicas, statefulSet.Status.ReadyReplicas)
 
-	dittoServerCopy.Status.NFSEndpoint = fmt.Sprintf("%s-file.%s.svc.cluster.local:%d",
-		dittoServer.Name, dittoServer.Namespace, nfs.GetNFSPort(dittoServer))
-
 	// Set ConfigReady condition
 	r.updateConfigReadyCondition(ctx, dittoServer, &dittoServerCopy.Status)
 
@@ -279,7 +349,7 @@ func (r *DittoServerReconciler) updateStatus(
 	updateProgressingCondition(dittoServer, &dittoServerCopy.Status, replicas, statefulSet)
 
 	// Set Ready condition (aggregate of other conditions)
-	updateReadyCondition(dittoServer, &dittoServerCopy.Status)
+	updateReadyCondition(dittoServer, &dittoServerCopy.Status, replicas)
 
 	return r.Status().Update(ctx, dittoServerCopy)
 }
@@ -360,6 +430,7 @@ func updateProgressingCondition(
 func updateReadyCondition(
 	dittoServer *dittoiov1alpha1.DittoServer,
 	status *dittoiov1alpha1.DittoServerStatus,
+	replicas int32,
 ) {
 	configReady := conditions.IsConditionTrue(status.Conditions, conditions.ConditionConfigReady)
 	available := conditions.IsConditionTrue(status.Conditions, conditions.ConditionAvailable)
@@ -370,13 +441,20 @@ func updateReadyCondition(
 		databaseReady = conditions.IsConditionTrue(status.Conditions, conditions.ConditionDatabaseReady)
 	}
 
-	allReady := configReady && available && !progressing && databaseReady
+	// Authenticated is only required when the server is running (replicas > 0).
+	// When stopped (replicas=0), there's no DittoFS API to authenticate against.
+	authenticated := true
+	if replicas > 0 {
+		authenticated = conditions.IsConditionTrue(status.Conditions, conditions.ConditionAuthenticated)
+	}
+
+	allReady := configReady && available && !progressing && databaseReady && authenticated
 	if allReady {
 		conditions.SetCondition(&status.Conditions, dittoServer.Generation,
 			conditions.ConditionReady, metav1.ConditionTrue, "AllConditionsMet",
 			"DittoServer is fully operational")
 	} else {
-		reasons := collectNotReadyReasons(configReady, available, progressing, databaseReady)
+		reasons := collectNotReadyReasons(configReady, available, progressing, databaseReady, authenticated)
 		conditions.SetCondition(&status.Conditions, dittoServer.Generation,
 			conditions.ConditionReady, metav1.ConditionFalse, "ConditionsNotMet",
 			fmt.Sprintf("Not ready: %v", reasons))
@@ -496,6 +574,12 @@ func (r *DittoServerReconciler) performCleanup(ctx context.Context, dittoServer 
 		}
 	}
 
+	// Best-effort: delete DittoFS operator service account
+	if err := r.cleanupOperatorServiceAccount(ctx, dittoServer); err != nil {
+		logger.Error(err, "Failed to delete operator service account (best-effort)")
+		// Don't return error -- best-effort cleanup
+	}
+
 	// Other owned resources (StatefulSet, Services, ConfigMap) are automatically
 	// garbage collected via owner references when DittoServer is deleted.
 	// No additional cleanup needed for them.
@@ -537,6 +621,8 @@ func (r *DittoServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.Secret{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		Named("dittoserver")
 
 	// Conditionally watch PerconaPGCluster only if CRD exists
@@ -690,57 +776,21 @@ func (r *DittoServerReconciler) createOrUpdateService(ctx context.Context, ditto
 
 // reconcileHeadlessService creates/updates the headless Service for StatefulSet DNS.
 func (r *DittoServerReconciler) reconcileHeadlessService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
-	labels := map[string]string{
-		"app":      "dittofs-server",
-		"instance": dittoServer.Name,
-	}
-
-	nfsPort := nfs.GetNFSPort(dittoServer)
+	labels := podSelectorLabels(dittoServer.Name)
 
 	svc := resources.NewServiceBuilder(dittoServer.Name+"-headless", dittoServer.Namespace).
 		WithLabels(labels).
 		WithSelector(labels).
 		AsHeadless().
-		AddTCPPort("nfs", nfsPort).
+		AddTCPPort("api", getAPIPort(dittoServer)).
 		Build()
-
-	return r.createOrUpdateService(ctx, dittoServer, svc)
-}
-
-// reconcileFileService creates/updates the Service for file protocols (NFS, SMB).
-func (r *DittoServerReconciler) reconcileFileService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
-	labels := map[string]string{
-		"app":      "dittofs-server",
-		"instance": dittoServer.Name,
-	}
-
-	nfsPort := nfs.GetNFSPort(dittoServer)
-
-	builder := resources.NewServiceBuilder(dittoServer.Name+"-file", dittoServer.Namespace).
-		WithLabels(labels).
-		WithSelector(labels).
-		WithType(getServiceType(dittoServer)).
-		WithAnnotations(dittoServer.Spec.Service.Annotations).
-		AddTCPPort("nfs", nfsPort)
-
-	// Add SMB port if enabled
-	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Enabled {
-		smbPort := smb.GetSMBPort(dittoServer)
-		builder.AddTCPPort("smb", smbPort)
-	}
-
-	svc := builder.Build()
 
 	return r.createOrUpdateService(ctx, dittoServer, svc)
 }
 
 // reconcileAPIService creates/updates the Service for REST API access.
 func (r *DittoServerReconciler) reconcileAPIService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
-	labels := map[string]string{
-		"app":      "dittofs-server",
-		"instance": dittoServer.Name,
-	}
-
+	labels := podSelectorLabels(dittoServer.Name)
 	apiPort := getAPIPort(dittoServer)
 
 	svc := resources.NewServiceBuilder(dittoServer.Name+"-api", dittoServer.Namespace).
@@ -771,11 +821,7 @@ func (r *DittoServerReconciler) reconcileMetricsService(ctx context.Context, dit
 		return client.IgnoreNotFound(err)
 	}
 
-	labels := map[string]string{
-		"app":      "dittofs-server",
-		"instance": dittoServer.Name,
-	}
-
+	labels := podSelectorLabels(dittoServer.Name)
 	metricsPort := getMetricsPort(dittoServer)
 
 	// Metrics service is always ClusterIP (internal only)
@@ -821,10 +867,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 				return err
 			}
 
-			labels := map[string]string{
-				"app":      "dittofs-server",
-				"instance": dittoServer.Name,
-			}
+			labels := podSelectorLabels(dittoServer.Name)
 
 			volumeMounts := []corev1.VolumeMount{
 				{
@@ -958,7 +1001,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 								VolumeMounts:    volumeMounts,
 								Resources:       dittoServer.Spec.Resources,
 								SecurityContext: dittoServer.Spec.SecurityContext,
-								Ports:           buildContainerPorts(dittoServer),
+								Ports:           buildContainerPorts(dittoServer, existingAdapterPorts(statefulSet)),
 								Env:             envVars,
 								LivenessProbe: &corev1.Probe{
 									ProbeHandler: corev1.ProbeHandler{
@@ -1050,25 +1093,29 @@ func getPodSecurityContext(dittoServer *dittoiov1alpha1.DittoServer) *corev1.Pod
 	}
 }
 
-// buildContainerPorts constructs the container ports based on enabled protocols
-func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer) []corev1.ContainerPort {
-	nfsPort := nfs.GetNFSPort(dittoServer)
+// existingAdapterPorts extracts existing container ports from the StatefulSet.
+// Returns nil if the StatefulSet has no containers.
+func existingAdapterPorts(sts *appsv1.StatefulSet) []corev1.ContainerPort {
+	if len(sts.Spec.Template.Spec.Containers) == 0 {
+		return nil
+	}
+	return sts.Spec.Template.Spec.Containers[0].Ports
+}
+
+// buildContainerPorts constructs the container ports for the DittoFS server.
+// Emits infrastructure ports (api, metrics) and preserves any existing dynamic
+// adapter ports (prefixed with "adapter-") from the current StatefulSet.
+// Dynamic adapter ports are managed by reconcileContainerPorts in service_reconciler.go.
+func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer, existingPorts []corev1.ContainerPort) []corev1.ContainerPort {
+	apiPort := getAPIPort(dittoServer)
 
 	ports := []corev1.ContainerPort{
 		{
-			Name:          "nfs",
-			ContainerPort: nfsPort,
+			Name:          "api",
+			ContainerPort: apiPort,
 			Protocol:      corev1.ProtocolTCP,
 		},
 	}
-
-	// Add API port
-	apiPort := getAPIPort(dittoServer)
-	ports = append(ports, corev1.ContainerPort{
-		Name:          "api",
-		ContainerPort: apiPort,
-		Protocol:      corev1.ProtocolTCP,
-	})
 
 	// Add metrics port if enabled
 	if dittoServer.Spec.Metrics != nil && dittoServer.Spec.Metrics.Enabled {
@@ -1080,14 +1127,11 @@ func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer) []corev1.Cont
 		})
 	}
 
-	// Add SMB port if enabled
-	if dittoServer.Spec.SMB != nil && dittoServer.Spec.SMB.Enabled {
-		smbPort := smb.GetSMBPort(dittoServer)
-		ports = append(ports, corev1.ContainerPort{
-			Name:          "smb",
-			ContainerPort: smbPort,
-			Protocol:      corev1.ProtocolTCP,
-		})
+	// Preserve existing dynamic adapter ports to avoid unnecessary StatefulSet restarts.
+	for _, p := range existingPorts {
+		if strings.HasPrefix(p.Name, adapterPortPrefix) {
+			ports = append(ports, p)
+		}
 	}
 
 	return ports
@@ -1103,9 +1147,9 @@ func buildS3EnvVars(spec *dittoiov1alpha1.S3StoreConfig) []corev1.EnvVar {
 	ref := spec.CredentialsSecretRef
 
 	// Apply defaults for key names
-	accessKeyIDKey := defaultIfEmpty(ref.AccessKeyIDKey, "accessKeyId")
-	secretAccessKeyKey := defaultIfEmpty(ref.SecretAccessKeyKey, "secretAccessKey")
-	endpointKey := defaultIfEmpty(ref.EndpointKey, "endpoint")
+	accessKeyIDKey := stringOrDefault(ref.AccessKeyIDKey, "accessKeyId")
+	secretAccessKeyKey := stringOrDefault(ref.SecretAccessKeyKey, "secretAccessKey")
+	endpointKey := stringOrDefault(ref.EndpointKey, "endpoint")
 
 	envVars := []corev1.EnvVar{
 		secretEnvVar("AWS_ACCESS_KEY_ID", ref.SecretName, accessKeyIDKey, false),
@@ -1143,8 +1187,7 @@ func secretEnvVar(envName, secretName, key string, optional bool) corev1.EnvVar 
 	return env
 }
 
-// defaultIfEmpty returns the value if non-empty, otherwise returns the default.
-func defaultIfEmpty(value, defaultValue string) string {
+func stringOrDefault(value, defaultValue string) string {
 	if value == "" {
 		return defaultValue
 	}
@@ -1159,7 +1202,7 @@ func buildSecretEnvVars(dittoServer *dittoiov1alpha1.DittoServer) []corev1.EnvVa
 	// JWT secret (always present - either user-provided or auto-generated)
 	jwtSecretRef := dittoServer.GetEffectiveJWTSecretRef()
 	envVars = append(envVars, secretEnvVar(
-		"DITTOFS_CONTROLPLANE_JWT_SECRET",
+		"DITTOFS_CONTROLPLANE_SECRET",
 		jwtSecretRef.Name,
 		jwtSecretRef.Key,
 		false,
@@ -1174,6 +1217,15 @@ func buildSecretEnvVars(dittoServer *dittoiov1alpha1.DittoServer) []corev1.EnvVa
 			ref.Name,
 			ref.Key,
 			false,
+		))
+	} else {
+		// Inject auto-generated admin password from operator-managed Secret.
+		// Optional=true so the pod doesn't fail if the Secret is manually deleted.
+		envVars = append(envVars, secretEnvVar(
+			"DITTOFS_ADMIN_INITIAL_PASSWORD",
+			dittoServer.GetAdminCredentialsSecretName(),
+			"password",
+			true,
 		))
 	}
 
@@ -1368,6 +1420,18 @@ func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServ
 		if data, ok := secret.Data[key]; ok {
 			secrets["admin:"+key] = data
 		}
+	} else {
+		// Include auto-generated admin credentials in hash
+		adminSecret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: dittoServer.Namespace,
+			Name:      dittoServer.GetAdminCredentialsSecretName(),
+		}, adminSecret); err == nil {
+			if data, ok := adminSecret.Data["password"]; ok {
+				secrets["admin:password"] = data
+			}
+		}
+		// Note: Don't error if secret doesn't exist yet - it's created in reconcileAdminCredentials
 	}
 
 	// PostgreSQL connection string secret (if configured)
@@ -1514,7 +1578,7 @@ func isPerconaEnabled(dittoServer *dittoiov1alpha1.DittoServer) bool {
 }
 
 // collectNotReadyReasons gathers the list of conditions that are not met.
-func collectNotReadyReasons(configReady, available, progressing, databaseReady bool) []string {
+func collectNotReadyReasons(configReady, available, progressing, databaseReady, authenticated bool) []string {
 	var reasons []string
 	if !configReady {
 		reasons = append(reasons, "ConfigNotReady")
@@ -1527,6 +1591,9 @@ func collectNotReadyReasons(configReady, available, progressing, databaseReady b
 	}
 	if !databaseReady {
 		reasons = append(reasons, "DatabaseNotReady")
+	}
+	if !authenticated {
+		reasons = append(reasons, "NotAuthenticated")
 	}
 	return reasons
 }

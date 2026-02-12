@@ -8,18 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/marmos91/dittofs/pkg/payload/store/fs"
 	s3store "github.com/marmos91/dittofs/pkg/payload/store/s3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // ============================================================================
@@ -124,36 +118,17 @@ func TestCollectGarbage_Filesystem_LargeScale(t *testing.T) {
 func TestCollectGarbage_S3(t *testing.T) {
 	ctx := context.Background()
 
-	// Start Localstack or use existing
-	endpoint, cleanup := getS3Endpoint(t)
-	defer cleanup()
+	// Reuse the shared localstackHelper (same as manager_test.go).
+	helper := newLocalstackHelper(t)
+	defer helper.close(t)
 
-	// Create S3 client
-	cfg, err := awsconfig.LoadDefaultConfig(ctx,
-		awsconfig.WithRegion("us-east-1"),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
-	)
-	require.NoError(t, err)
+	// Create a dedicated bucket for GC testing with unique name to avoid flakiness.
+	bucketName := fmt.Sprintf("gc-test-%d", time.Now().UnixNano())
+	helper.createBucket(t, bucketName)
 
-	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(endpoint)
-		o.UsePathStyle = true
-	})
-
-	// Create bucket
-	bucket := "gc-test-bucket"
-	_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{
-		Bucket: aws.String(bucket),
-	})
-	require.NoError(t, err)
-	defer func() {
-		// Cleanup bucket
-		cleanupBucket(ctx, client, bucket)
-	}()
-
-	// Create S3 block store (uses the client we already created)
-	blockStore := s3store.New(client, s3store.Config{
-		Bucket:    bucket,
+	// Create S3 block store using the helper's client.
+	blockStore := s3store.New(helper.client, s3store.Config{
+		Bucket:    bucketName,
 		KeyPrefix: "blocks/",
 	})
 
@@ -229,84 +204,4 @@ func BenchmarkCollectGarbage_Filesystem(b *testing.B) {
 		// Use dry run to avoid modifying the store
 		CollectGarbage(ctx, blockStore, reconciler, &GCOptions{DryRun: true})
 	}
-}
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-// getS3Endpoint returns an S3 endpoint and cleanup function.
-// Uses LOCALSTACK_ENDPOINT env var if set, otherwise starts a container.
-func getS3Endpoint(t *testing.T) (string, func()) {
-	t.Helper()
-
-	// Check for pre-started Localstack
-	if endpoint := os.Getenv("LOCALSTACK_ENDPOINT"); endpoint != "" {
-		t.Logf("Using pre-started Localstack at %s", endpoint)
-		return endpoint, func() {}
-	}
-
-	// Start Localstack container
-	ctx := context.Background()
-	req := testcontainers.ContainerRequest{
-		Image:        "localstack/localstack:3.0",
-		ExposedPorts: []string{"4566/tcp"},
-		WaitingFor:   wait.ForListeningPort("4566/tcp"),
-		Env: map[string]string{
-			"SERVICES": "s3",
-		},
-	}
-
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	require.NoError(t, err)
-
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-
-	port, err := container.MappedPort(ctx, "4566")
-	require.NoError(t, err)
-
-	endpoint := fmt.Sprintf("http://%s:%s", host, port.Port())
-	t.Logf("Started Localstack at %s", endpoint)
-
-	return endpoint, func() {
-		container.Terminate(ctx)
-	}
-}
-
-// cleanupBucket removes all objects from a bucket and deletes it.
-func cleanupBucket(ctx context.Context, client *s3.Client, bucket string) {
-	// List and delete all objects
-	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(bucket),
-	})
-
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			break
-		}
-
-		if len(page.Contents) == 0 {
-			continue
-		}
-
-		objects := make([]s3types.ObjectIdentifier, len(page.Contents))
-		for i, obj := range page.Contents {
-			objects[i] = s3types.ObjectIdentifier{Key: obj.Key}
-		}
-
-		client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
-			Bucket: aws.String(bucket),
-			Delete: &s3types.Delete{Objects: objects},
-		})
-	}
-
-	// Delete bucket
-	client.DeleteBucket(ctx, &s3.DeleteBucketInput{
-		Bucket: aws.String(bucket),
-	})
 }
