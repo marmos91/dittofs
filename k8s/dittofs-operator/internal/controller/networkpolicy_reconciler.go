@@ -56,6 +56,8 @@ func currentIngressPort(np *networkingv1.NetworkPolicy) int32 {
 }
 
 // buildAdapterNetworkPolicy constructs a NetworkPolicy allowing TCP ingress on a single adapter port.
+// Only ingress is restricted; egress is left unrestricted because DittoFS pods need outbound
+// access to S3, external metadata stores, and other backend services.
 func buildAdapterNetworkPolicy(crName, namespace, adapterType string, port int32) *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
 	return &networkingv1.NetworkPolicy{

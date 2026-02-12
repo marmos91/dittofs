@@ -37,6 +37,8 @@ type DittoFSClient struct {
 }
 
 // NewDittoFSClient creates a new DittoFS API client with the given base URL.
+// The 10s timeout is a safety net for in-cluster calls; the reconciler's context
+// provides cancellation on shutdown and per-request deadlines.
 func NewDittoFSClient(baseURL string) *DittoFSClient {
 	return &DittoFSClient{
 		baseURL: baseURL,
