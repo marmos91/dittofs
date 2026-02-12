@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // ============================================================================
@@ -386,6 +385,3 @@ func (gpm *GracePeriodManager) Close() {
 	gpm.expectedClients = make(map[string]bool)
 	gpm.reclaimedClients = make(map[string]bool)
 }
-
-// Ensure errors package is used
-var _ = errors.ErrGracePeriod

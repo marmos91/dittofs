@@ -76,17 +76,7 @@ func NewLeaseBreakScanner(
 	callback LeaseBreakCallback,
 	timeout time.Duration,
 ) *LeaseBreakScanner {
-	if timeout == 0 {
-		timeout = DefaultLeaseBreakTimeout
-	}
-	return &LeaseBreakScanner{
-		lockStore:    lockStore,
-		callback:     callback,
-		timeout:      timeout,
-		scanInterval: LeaseBreakScanInterval,
-		stop:         make(chan struct{}),
-		stopped:      make(chan struct{}),
-	}
+	return NewLeaseBreakScannerWithInterval(lockStore, callback, timeout, LeaseBreakScanInterval)
 }
 
 // NewLeaseBreakScannerWithInterval creates a new lease break scanner with custom scan interval.

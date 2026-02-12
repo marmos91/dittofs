@@ -296,15 +296,18 @@ func NewMetrics(registry prometheus.Registerer) *Metrics {
 // Lock Operation Metrics
 // ============================================================================
 
+// lockTypeLabel returns the Prometheus label string for a LockType.
+func lockTypeLabel(lockType LockType) string {
+	if lockType == LockTypeExclusive {
+		return "exclusive"
+	}
+	return "shared"
+}
+
 // ObserveLockAcquire records a lock acquire attempt.
 func (m *Metrics) ObserveLockAcquire(share string, lockType LockType, success bool) {
 	if m == nil {
 		return
-	}
-
-	typeLabel := "shared"
-	if lockType == LockTypeExclusive {
-		typeLabel = "exclusive"
 	}
 
 	status := StatusGranted
@@ -312,7 +315,7 @@ func (m *Metrics) ObserveLockAcquire(share string, lockType LockType, success bo
 		status = StatusDenied
 	}
 
-	m.lockAcquireTotal.WithLabelValues(share, typeLabel, status).Inc()
+	m.lockAcquireTotal.WithLabelValues(share, lockTypeLabel(lockType), status).Inc()
 }
 
 // ObserveLockRelease records a lock release.
@@ -328,13 +331,7 @@ func (m *Metrics) SetActiveLocks(share string, lockType LockType, count float64)
 	if m == nil {
 		return
 	}
-
-	typeLabel := "shared"
-	if lockType == LockTypeExclusive {
-		typeLabel = "exclusive"
-	}
-
-	m.lockActiveGauge.WithLabelValues(share, typeLabel).Set(count)
+	m.lockActiveGauge.WithLabelValues(share, lockTypeLabel(lockType)).Set(count)
 }
 
 // SetBlockedLocks sets the number of blocked lock requests.
@@ -358,13 +355,7 @@ func (m *Metrics) ObserveLockHoldDuration(share string, lockType LockType, durat
 	if m == nil {
 		return
 	}
-
-	typeLabel := "shared"
-	if lockType == LockTypeExclusive {
-		typeLabel = "exclusive"
-	}
-
-	m.lockHoldDuration.WithLabelValues(share, typeLabel).Observe(duration.Seconds())
+	m.lockHoldDuration.WithLabelValues(share, lockTypeLabel(lockType)).Observe(duration.Seconds())
 }
 
 // ============================================================================
@@ -396,11 +387,11 @@ func (m *Metrics) SetGracePeriodActive(active bool) {
 	if m == nil {
 		return
 	}
-	val := 0.0
 	if active {
-		val = 1.0
+		m.gracePeriodActive.Set(1.0)
+	} else {
+		m.gracePeriodActive.Set(0.0)
 	}
-	m.gracePeriodActive.Set(val)
 }
 
 // SetGracePeriodRemaining sets the remaining time in grace period.

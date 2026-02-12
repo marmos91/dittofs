@@ -72,18 +72,14 @@ func EncodeFreeAllResponse(_ *FreeAllResponse) ([]byte, error) {
 // FreeAll handles the NLM4_FREE_ALL procedure (procedure 23).
 //
 // FREE_ALL releases all locks held by a specific client. This is called
-// by NSM (via rpc.statd) when a client crashes and reboots. The procedure
-// cleans up orphaned locks that the crashed client no longer holds.
+// by NSM (via rpc.statd) when a client crashes and reboots.
 //
 // ARCHITECTURE NOTE:
-// Each NLM handler instance serves ONE share (via h.metadataService).
-// This FREE_ALL handler releases locks for the handler's assigned share only.
-// Comprehensive lock cleanup across ALL shares is done via the adapter's
-// OnClientCrash callback, which iterates all shares.
-//
-// Per CONTEXT.md decisions:
-//   - Best effort cleanup - continue releasing other locks if one fails
-//   - Process NLM blocking queue waiters when locks released
+// This handler decodes and logs the FREE_ALL request for auditing. The actual
+// lock cleanup across ALL shares is coordinated by the adapter's OnClientCrash
+// callback, which has access to all shares' lock managers. Each NLM handler
+// instance only serves one share, so comprehensive cleanup must happen at the
+// adapter level.
 //
 // Parameters:
 //   - ctx: The NLM handler context with request data
@@ -98,78 +94,13 @@ func (h *Handler) FreeAll(ctx *NLMHandlerContext) ([]byte, error) {
 		return EncodeFreeAllResponse(&FreeAllResponse{})
 	}
 
-	clientName := req.Name
-	logger.Info("FREE_ALL", "client", clientName, "from", ctx.ClientAddr)
+	logger.Info("FREE_ALL: received",
+		"client", req.Name,
+		"from", ctx.ClientAddr)
 
-	// Build client ID pattern: nlm:{hostname}:*
-	// NLM locks have owner IDs formatted as nlm:{caller_name}:{svid}:{oh_hex}
-	// We match any lock where the owner ID starts with "nlm:{clientName}:"
-	clientIDPrefix := "nlm:" + clientName + ":"
-
-	// Track affected files for waiter processing
-	totalReleased := 0
-	affectedFiles := make(map[string]bool)
-
-	// Get all enhanced locks from the metadata service and release matching ones
-	if h.metadataService == nil {
-		logger.Error("FREE_ALL: no metadata service available")
-		return EncodeFreeAllResponse(&FreeAllResponse{})
-	}
-
-	// NOTE: The comprehensive lock cleanup happens via the adapter's OnClientCrash
-	// callback which has access to all shares' lock managers. This handler serves
-	// as the NLM RPC endpoint and logs the request, but the actual cleanup is
-	// coordinated by the adapter.
-	//
-	// The reason: Each NLM handler serves ONE share, but FREE_ALL needs to
-	// release locks across ALL shares. The adapter's OnClientCrash callback
-	// iterates all shares and their lock managers.
-	//
-	// What this handler does:
-	// 1. Decode and validate the FREE_ALL request
-	// 2. Log the request for audit/debugging
-	// 3. The actual lock release is triggered by the adapter
-
-	logger.Info("FREE_ALL: completed",
-		"client", clientName,
-		"client_prefix", clientIDPrefix,
-		"locks_released", totalReleased,
-		"files_affected", len(affectedFiles))
-
-	// Process blocking queue waiters for affected files
-	// This allows waiting lock requests to proceed
-	if h.blockingQueue != nil && len(affectedFiles) > 0 {
-		for fileID := range affectedFiles {
-			h.processWaitersForFile(ctx, fileID)
-		}
-	}
+	// The actual lock release is triggered by the adapter's OnClientCrash
+	// callback, which iterates all shares and their lock managers.
+	// This handler serves as the NLM RPC endpoint for logging and validation.
 
 	return EncodeFreeAllResponse(&FreeAllResponse{})
-}
-
-// processWaitersForFile triggers waiter processing for a specific file.
-//
-// Called after FREE_ALL releases locks to wake up blocked clients.
-// This is a helper that checks if there are waiters and logs appropriately.
-func (h *Handler) processWaitersForFile(ctx *NLMHandlerContext, fileID string) {
-	if h.blockingQueue == nil {
-		return
-	}
-
-	// Get waiters for this file using the existing GetWaiters method
-	waiters := h.blockingQueue.GetWaiters(fileID)
-	if len(waiters) == 0 {
-		return
-	}
-
-	logger.Debug("FREE_ALL: processing waiters", "file", fileID, "count", len(waiters))
-
-	// The actual lock granting happens through the unlock callback mechanism
-	// in the adapter (processNLMWaiters). We just mark that waiters exist.
-	// The NLM unlock path already handles waking up waiters via the
-	// SetNLMUnlockCallback that was set up in SetRuntime.
-	//
-	// Since FREE_ALL triggers lock releases, those releases will invoke the
-	// unlock callback which processes waiters. We don't need to duplicate
-	// that logic here.
 }

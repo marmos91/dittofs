@@ -2,6 +2,7 @@ package badger
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 
@@ -385,8 +386,7 @@ func (s *badgerLockStore) getServerEpochTx(txn *badgerdb.Txn) (uint64, error) {
 		if len(val) != 8 {
 			return fmt.Errorf("invalid epoch value length: %d", len(val))
 		}
-		epoch = uint64(val[0]) | uint64(val[1])<<8 | uint64(val[2])<<16 | uint64(val[3])<<24 |
-			uint64(val[4])<<32 | uint64(val[5])<<40 | uint64(val[6])<<48 | uint64(val[7])<<56
+		epoch = binary.LittleEndian.Uint64(val)
 		return nil
 	})
 	return epoch, err
@@ -408,14 +408,7 @@ func (s *badgerLockStore) IncrementServerEpoch(ctx context.Context) (uint64, err
 		newEpoch = epoch + 1
 		key := []byte(prefixServerEpoch)
 		val := make([]byte, 8)
-		val[0] = byte(newEpoch)
-		val[1] = byte(newEpoch >> 8)
-		val[2] = byte(newEpoch >> 16)
-		val[3] = byte(newEpoch >> 24)
-		val[4] = byte(newEpoch >> 32)
-		val[5] = byte(newEpoch >> 40)
-		val[6] = byte(newEpoch >> 48)
-		val[7] = byte(newEpoch >> 56)
+		binary.LittleEndian.PutUint64(val, newEpoch)
 		return txn.Set(key, val)
 	})
 	return newEpoch, err

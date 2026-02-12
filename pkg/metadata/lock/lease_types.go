@@ -263,17 +263,7 @@ func LeaseConflictsWithByteRangeLock(lease *LeaseInfo, leaseOwnerID string, lock
 		return false
 	}
 
-	// Byte-range locks are on specific ranges; leases are whole-file
-	// A lease with Write conflicts with exclusive byte-range locks
-	if lease.HasWrite() && lock.IsExclusive() {
-		return true
-	}
-
-	// An exclusive byte-range lock conflicts with Write leases
-	if lock.IsExclusive() && lease.HasWrite() {
-		return true
-	}
-
-	// Read leases can coexist with shared byte-range locks
-	return false
+	// A lease with Write conflicts with exclusive byte-range locks (and vice versa).
+	// Read leases can coexist with shared byte-range locks.
+	return lease.HasWrite() && lock.IsExclusive()
 }

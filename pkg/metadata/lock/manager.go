@@ -1,6 +1,8 @@
 package lock
 
 import (
+	"cmp"
+	"slices"
 	"sync"
 	"time"
 )
@@ -139,6 +141,16 @@ func CheckIOConflict(existing *FileLock, sessionID uint64, offset, length uint64
 	return existing.Exclusive
 }
 
+// conflictFrom creates a LockConflict from a FileLock.
+func conflictFrom(fl *FileLock) *LockConflict {
+	return &LockConflict{
+		Offset:         fl.Offset,
+		Length:         fl.Length,
+		Exclusive:      fl.Exclusive,
+		OwnerSessionID: fl.SessionID,
+	}
+}
+
 // ============================================================================
 // Lock Manager
 // ============================================================================
@@ -180,13 +192,7 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 	// Check for conflicts with existing locks
 	for i := range existing {
 		if IsLockConflicting(&existing[i], &lock) {
-			conflict := &LockConflict{
-				Offset:         existing[i].Offset,
-				Length:         existing[i].Length,
-				Exclusive:      existing[i].Exclusive,
-				OwnerSessionID: existing[i].SessionID,
-			}
-			return NewLockedError("", conflict)
+			return NewLockedError("", conflictFrom(&existing[i]))
 		}
 	}
 
@@ -299,12 +305,7 @@ func (lm *Manager) TestLock(handleKey string, sessionID, offset, length uint64, 
 
 	for i := range existing {
 		if IsLockConflicting(&existing[i], testLock) {
-			return false, &LockConflict{
-				Offset:         existing[i].Offset,
-				Length:         existing[i].Length,
-				Exclusive:      existing[i].Exclusive,
-				OwnerSessionID: existing[i].SessionID,
-			}
+			return false, conflictFrom(&existing[i])
 		}
 	}
 
@@ -322,12 +323,7 @@ func (lm *Manager) CheckForIO(handleKey string, sessionID, offset, length uint64
 
 	for i := range existing {
 		if CheckIOConflict(&existing[i], sessionID, offset, length, isWrite) {
-			return &LockConflict{
-				Offset:         existing[i].Offset,
-				Length:         existing[i].Length,
-				Exclusive:      existing[i].Exclusive,
-				OwnerSessionID: existing[i].SessionID,
-			}
+			return conflictFrom(&existing[i])
 		}
 	}
 
@@ -496,18 +492,14 @@ func mergeRanges(locks []*EnhancedLock) []*EnhancedLock {
 		return []*EnhancedLock{locks[0].Clone()}
 	}
 
-	// Sort by offset (simple bubble sort for small slices)
+	// Sort by offset
 	sorted := make([]*EnhancedLock, len(locks))
 	for i, l := range locks {
 		sorted[i] = l.Clone()
 	}
-	for i := 0; i < len(sorted)-1; i++ {
-		for j := 0; j < len(sorted)-i-1; j++ {
-			if sorted[j].Offset > sorted[j+1].Offset {
-				sorted[j], sorted[j+1] = sorted[j+1], sorted[j]
-			}
-		}
-	}
+	slices.SortFunc(sorted, func(a, b *EnhancedLock) int {
+		return cmp.Compare(a.Offset, b.Offset)
+	})
 
 	var result []*EnhancedLock
 	current := sorted[0]

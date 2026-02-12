@@ -36,10 +36,7 @@ type Handler struct {
 //
 // Returns a configured Handler ready to process NLM requests.
 func NewHandler(metadataService *metadata.MetadataService, blockingQueue *blocking.BlockingQueue) *Handler {
-	return &Handler{
-		metadataService: metadataService,
-		blockingQueue:   blockingQueue,
-	}
+	return NewHandlerWithConfig(metadataService, blockingQueue, nil)
 }
 
 // NewHandlerWithConfig creates a new NLM handler with config for cross-protocol settings.

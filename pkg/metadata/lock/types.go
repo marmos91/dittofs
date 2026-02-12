@@ -215,9 +215,6 @@ func (el *EnhancedLock) End() uint64 {
 func (el *EnhancedLock) Contains(offset, length uint64) bool {
 	// Unbounded lock contains everything at or after its offset
 	if el.Length == 0 {
-		if length == 0 {
-			return offset >= el.Offset
-		}
 		return offset >= el.Offset
 	}
 
@@ -364,12 +361,8 @@ func RangesOverlap(offset1, length1, offset2, length2 uint64) bool {
 		end2 = offset2 + length2
 	}
 
-	// No overlap if one range ends before the other starts
-	if end1 <= offset2 || end2 <= offset1 {
-		return false
-	}
-
-	return true
+	// Ranges overlap if each starts before the other ends
+	return end1 > offset2 && end2 > offset1
 }
 
 // ============================================================================

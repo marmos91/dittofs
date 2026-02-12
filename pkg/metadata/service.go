@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"sync"
 
@@ -780,6 +781,12 @@ func (s *MetadataService) CancelBlockingLock(
 //
 // The OplockManager interface is injected by the SMB adapter when it starts.
 // If no SMB adapter is running, these methods are no-ops.
+
+// ErrLeaseBreakPending indicates that a lease break is in progress and the
+// caller should wait for acknowledgment before proceeding with the operation.
+// Returned by OplockChecker methods when an SMB client has a Write lease that
+// must be broken before an NFS/NLM operation can complete.
+var ErrLeaseBreakPending = stderrors.New("lease break pending, operation must wait")
 
 // OplockChecker defines the interface for cross-protocol lease checking.
 // This interface is implemented by the SMB OplockManager.

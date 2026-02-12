@@ -471,46 +471,26 @@ func (m *OplockManager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (u
 // findLeaseByKey finds a lease by key on a specific file.
 // Must be called with m.mu held.
 func (m *OplockManager) findLeaseByKey(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte) *lock.EnhancedLock {
-	if m.lockStore == nil {
-		return nil
-	}
-
-	// Query leases for this file
-	isLease := true
-	leases, err := m.lockStore.ListLocks(ctx, lock.LockQuery{
-		FileID:  string(fileHandle),
-		IsLease: &isLease,
-	})
-	if err != nil {
-		logger.Warn("Lease: failed to query leases", "error", err)
-		return nil
-	}
-
-	for _, pl := range leases {
-		if len(pl.LeaseKey) == 16 {
-			var key [16]byte
-			copy(key[:], pl.LeaseKey)
-			if key == leaseKey {
-				return lock.FromPersistedLock(pl)
-			}
-		}
-	}
-
-	return nil
+	return m.findLeaseByQuery(ctx, lock.LockQuery{FileID: string(fileHandle)}, leaseKey)
 }
 
 // findLeaseByKeyGlobal finds a lease by key across all files.
 // Must be called with m.mu held (for read).
 func (m *OplockManager) findLeaseByKeyGlobal(ctx context.Context, leaseKey [16]byte) *lock.EnhancedLock {
+	return m.findLeaseByQuery(ctx, lock.LockQuery{}, leaseKey)
+}
+
+// findLeaseByQuery searches for a lease matching the given key within the query scope.
+// Must be called with m.mu held.
+func (m *OplockManager) findLeaseByQuery(ctx context.Context, query lock.LockQuery, leaseKey [16]byte) *lock.EnhancedLock {
 	if m.lockStore == nil {
 		return nil
 	}
 
-	// Query all leases
 	isLease := true
-	leases, err := m.lockStore.ListLocks(ctx, lock.LockQuery{
-		IsLease: &isLease,
-	})
+	query.IsLease = &isLease
+
+	leases, err := m.lockStore.ListLocks(ctx, query)
 	if err != nil {
 		logger.Warn("Lease: failed to query leases", "error", err)
 		return nil

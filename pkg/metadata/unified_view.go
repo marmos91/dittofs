@@ -229,6 +229,27 @@ func (v *UnifiedLockView) GetLeaseByKey(
 	return nil, nil
 }
 
+// filterLeases returns leases from a file that match the given predicate.
+func (v *UnifiedLockView) filterLeases(
+	ctx context.Context,
+	fileHandle lock.FileHandle,
+	predicate func(*lock.LeaseInfo) bool,
+) ([]*lock.EnhancedLock, error) {
+	info, err := v.GetAllLocksOnFile(ctx, fileHandle)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []*lock.EnhancedLock
+	for _, lease := range info.Leases {
+		if lease.Lease != nil && predicate(lease.Lease) {
+			result = append(result, lease)
+		}
+	}
+
+	return result, nil
+}
+
 // GetWriteLeases returns all leases with Write caching permission on a file.
 //
 // This is useful for NFS handlers that need to check if any SMB client
@@ -245,19 +266,7 @@ func (v *UnifiedLockView) GetWriteLeases(
 	ctx context.Context,
 	fileHandle lock.FileHandle,
 ) ([]*lock.EnhancedLock, error) {
-	info, err := v.GetAllLocksOnFile(ctx, fileHandle)
-	if err != nil {
-		return nil, err
-	}
-
-	var writeLeases []*lock.EnhancedLock
-	for _, lease := range info.Leases {
-		if lease.Lease != nil && lease.Lease.HasWrite() {
-			writeLeases = append(writeLeases, lease)
-		}
-	}
-
-	return writeLeases, nil
+	return v.filterLeases(ctx, fileHandle, (*lock.LeaseInfo).HasWrite)
 }
 
 // GetHandleLeases returns all leases with Handle caching permission on a file.
@@ -276,17 +285,5 @@ func (v *UnifiedLockView) GetHandleLeases(
 	ctx context.Context,
 	fileHandle lock.FileHandle,
 ) ([]*lock.EnhancedLock, error) {
-	info, err := v.GetAllLocksOnFile(ctx, fileHandle)
-	if err != nil {
-		return nil, err
-	}
-
-	var handleLeases []*lock.EnhancedLock
-	for _, lease := range info.Leases {
-		if lease.Lease != nil && lease.Lease.HasHandle() {
-			handleLeases = append(handleLeases, lease)
-		}
-	}
-
-	return handleLeases, nil
+	return v.filterLeases(ctx, fileHandle, (*lock.LeaseInfo).HasHandle)
 }

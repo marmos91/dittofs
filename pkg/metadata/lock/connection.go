@@ -256,8 +256,8 @@ func (ct *ConnectionTracker) GetClient(clientID string) (*ClientRegistration, bo
 	}
 
 	// Return a copy to prevent modification
-	copy := *client
-	return &copy, true
+	clientCopy := *client
+	return &clientCopy, true
 }
 
 // ListClients returns all clients, optionally filtered by adapter type.
@@ -269,8 +269,8 @@ func (ct *ConnectionTracker) ListClients(adapterType string) []*ClientRegistrati
 	var result []*ClientRegistration
 	for _, client := range ct.clients {
 		if adapterType == "" || client.AdapterType == adapterType {
-			copy := *client
-			result = append(result, &copy)
+			clientCopy := *client
+			result = append(result, &clientCopy)
 		}
 	}
 	return result

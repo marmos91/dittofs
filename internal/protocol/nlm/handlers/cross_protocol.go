@@ -13,6 +13,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -107,7 +108,7 @@ func waitForLeaseBreak(ctx context.Context, checker metadata.OplockChecker, hand
 
 			// ErrLeaseBreakPending means still waiting - continue polling
 			// Any other error - log and continue
-			if err.Error() != "lease break pending, operation must wait" {
+			if !errors.Is(err, metadata.ErrLeaseBreakPending) {
 				logger.Debug("NLM lease break check error - continuing",
 					"handle", string(handle),
 					"error", err)
@@ -163,7 +164,7 @@ func checkForSMBLeaseConflicts(ctx context.Context, checker metadata.OplockCheck
 	}
 
 	// Check if it's a pending break (ErrLeaseBreakPending)
-	if err.Error() == "lease break pending, operation must wait" {
+	if errors.Is(err, metadata.ErrLeaseBreakPending) {
 		// Wait for the break to complete
 		timeout := getLeaseBreakTimeout(cfg)
 		return waitForLeaseBreak(ctx, checker, handle, timeout)

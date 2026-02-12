@@ -3,8 +3,6 @@ package lock
 import (
 	"sync"
 	"time"
-
-	"github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // ============================================================================
@@ -305,6 +303,3 @@ func (ll *Limits) Reset() {
 	ll.locksByClient = make(map[string]int)
 	ll.totalLocks = 0
 }
-
-// Ensure errors package is used
-var _ = errors.ErrLockLimitExceeded

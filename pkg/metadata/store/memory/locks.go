@@ -108,7 +108,7 @@ func (s *memoryLockStore) ListLocks(ctx context.Context, query lock.LockQuery) (
 	var result []*lock.PersistedLock
 
 	for _, lk := range s.locks {
-		if matchesQuery(lk, query) {
+		if query.MatchesLock(lk) {
 			result = append(result, cloneLock(lk))
 		}
 	}
@@ -184,12 +184,6 @@ func (s *memoryLockStore) IncrementServerEpoch(ctx context.Context) (uint64, err
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-// matchesQuery returns true if the lock matches all non-empty query fields.
-func matchesQuery(lk *lock.PersistedLock, query lock.LockQuery) bool {
-	// Use the centralized MatchesLock method from LockQuery
-	return query.MatchesLock(lk)
-}
 
 // cloneLock creates a deep copy of a PersistedLock.
 func cloneLock(lk *lock.PersistedLock) *lock.PersistedLock {
@@ -400,7 +394,7 @@ func (s *MemoryMetadataStore) deleteLockLocked(_ context.Context, lockID string)
 func (s *MemoryMetadataStore) listLocksLocked(_ context.Context, query lock.LockQuery) ([]*lock.PersistedLock, error) {
 	var result []*lock.PersistedLock
 	for _, lk := range s.lockStore.locks {
-		if matchesQuery(lk, query) {
+		if query.MatchesLock(lk) {
 			result = append(result, cloneLock(lk))
 		}
 	}
