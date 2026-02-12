@@ -34,6 +34,16 @@ type PostgresMetadataStore struct {
 
 	// cancel cancels the store context
 	cancel context.CancelFunc
+
+	// lockStore holds persisted lock data for NLM/SMB lock persistence.
+	// Initialized lazily via initLockStore().
+	lockStore   *postgresLockStore
+	lockStoreMu sync.Mutex
+
+	// clientStore holds NSM client registration persistence.
+	// Initialized lazily via getClientStore().
+	clientStore   *postgresClientStore
+	clientStoreMu sync.Mutex
 }
 
 // statsCache holds cached filesystem statistics

@@ -25,6 +25,18 @@ const (
 	// performing NFS operations. It handles the mount negotiation and
 	// authentication that precedes NFS access.
 	ProgramMount = 100005
+
+	// ProgramNLM is the Network Lock Manager program number (Open Group).
+	// NLM provides advisory file locking for NFS clients. It is a separate
+	// RPC program that works alongside NFS to coordinate byte-range locks.
+	// NLM typically listens on the same port as NFS for TCP connections.
+	ProgramNLM = 100021
+
+	// ProgramNSM is the Network Status Monitor program number (Open Group).
+	// NSM provides crash recovery for NLM clients. When a server crashes
+	// and restarts, NSM notifies clients so they can reclaim their locks.
+	// NSM typically listens on the same port as NFS for TCP connections.
+	ProgramNSM = 100024
 )
 
 // RPC Program Versions
@@ -50,6 +62,16 @@ const (
 	// MountVersion3 is the Mount protocol version 3 (RFC 1813 Appendix I).
 	// This version is required for NFSv3 mounts.
 	MountVersion3 = 3
+
+	// NLMVersion4 is the Network Lock Manager protocol version 4.
+	// NLM v4 uses 64-bit offsets and lengths, required for large file support.
+	// This is the only NLM version supported by DittoFS.
+	NLMVersion4 = 4
+
+	// NSMVersion1 is the Network Status Monitor protocol version 1.
+	// NSM v1 is the standard version used by all NFS implementations.
+	// This is the only NSM version supported by DittoFS.
+	NSMVersion1 = 1
 )
 
 // RPC Message Types

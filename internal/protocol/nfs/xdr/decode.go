@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/xdr"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -31,38 +32,7 @@ import (
 // All XDR data types are aligned to 4-byte boundaries. Variable-length data
 // is padded with 0-3 zero bytes to achieve this alignment.
 func DecodeOpaque(reader io.Reader) ([]byte, error) {
-	// Read length (4 bytes)
-	var length uint32
-	if err := binary.Read(reader, binary.BigEndian, &length); err != nil {
-		return nil, fmt.Errorf("read length: %w", err)
-	}
-
-	// Validate reasonable length (protect against malicious input)
-	// NFS typically doesn't have data > 1MB in single opaque fields
-	const maxOpaqueLength = 1024 * 1024 // 1 MB
-	if length > maxOpaqueLength {
-		return nil, fmt.Errorf("opaque length %d exceeds maximum %d", length, maxOpaqueLength)
-	}
-
-	// Read data
-	data := make([]byte, length)
-	if _, err := io.ReadFull(reader, data); err != nil {
-		return nil, fmt.Errorf("read data: %w", err)
-	}
-
-	// PERFORMANCE OPTIMIZATION: Skip padding using stack-allocated buffer
-	// XDR padding is max 3 bytes, so we use a tiny stack buffer instead of io.CopyN
-	// This avoids the overhead of io.CopyN for tiny reads
-	// Example: length=5 → padding=3, length=8 → padding=0
-	padding := (4 - (length % 4)) % 4
-	if padding > 0 {
-		var padBuf [3]byte
-		if _, err := io.ReadFull(reader, padBuf[:padding]); err != nil {
-			return nil, fmt.Errorf("skip padding: %w", err)
-		}
-	}
-
-	return data, nil
+	return xdr.DecodeOpaque(reader)
 }
 
 // DecodeString decodes XDR variable-length string.
@@ -78,11 +48,7 @@ func DecodeOpaque(reader io.Reader) ([]byte, error) {
 //   - string: Decoded string (UTF-8)
 //   - error: Decoding error
 func DecodeString(reader io.Reader) (string, error) {
-	data, err := DecodeOpaque(reader)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
+	return xdr.DecodeString(reader)
 }
 
 // DecodeSetAttrs decodes NFS sattr3 (set attributes) structure from XDR.

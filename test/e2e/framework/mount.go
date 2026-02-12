@@ -452,3 +452,43 @@ func isMounted(path string) bool {
 	// Check if the path appears in mount output
 	return strings.Contains(string(output), path)
 }
+
+// IsNativeSMBAvailable checks if native CIFS/SMB mount is available.
+// On Linux, checks for mount.cifs. On macOS, checks for mount_smbfs.
+// On Windows, SMB is always available natively.
+func IsNativeSMBAvailable() bool {
+	switch runtime.GOOS {
+	case "windows":
+		// Windows has native SMB support built-in (net use)
+		return true
+	case "darwin":
+		// macOS always has mount_smbfs
+		return fileExists("/sbin/mount_smbfs") || fileExists("/usr/sbin/mount_smbfs")
+	case "linux":
+		// Linux needs cifs-utils installed
+		if fileExists("/sbin/mount.cifs") || fileExists("/usr/sbin/mount.cifs") {
+			return true
+		}
+		// Try running mount -t cifs to see if kernel module is available
+		cmd := exec.Command("mount", "-t", "cifs")
+		output, _ := cmd.CombinedOutput()
+		// If it says "unknown filesystem type" it's not available
+		return !strings.Contains(string(output), "unknown filesystem type")
+	default:
+		return false
+	}
+}
+
+// fileExists checks if a file exists.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// SkipIfNoSMBMount skips the test if no native SMB mount capability is available.
+func SkipIfNoSMBMount(t *testing.T) {
+	t.Helper()
+	if !IsNativeSMBAvailable() {
+		t.Skip("Skipping: requires native SMB mount capability (mount_smbfs on macOS or cifs-utils on Linux)")
+	}
+}

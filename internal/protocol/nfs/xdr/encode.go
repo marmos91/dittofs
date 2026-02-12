@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	"github.com/marmos91/dittofs/internal/protocol/xdr"
 )
 
 // ============================================================================
@@ -297,19 +298,7 @@ func EncodeFileAttr(buf *bytes.Buffer, attr *types.NFSFileAttr) error {
 //
 //	[]byte{0x01, 0x02, 0x03} → [00 00 00 03][01 02 03][00] (8 bytes total)
 func WriteXDROpaque(buf *bytes.Buffer, data []byte) error {
-	// Write length
-	length := uint32(len(data))
-	if err := binary.Write(buf, binary.BigEndian, length); err != nil {
-		return fmt.Errorf("write opaque length: %w", err)
-	}
-
-	// Write data
-	if _, err := buf.Write(data); err != nil {
-		return fmt.Errorf("write opaque data: %w", err)
-	}
-
-	// Write padding to 4-byte boundary
-	return WriteXDRPadding(buf, length)
+	return xdr.WriteXDROpaque(buf, data)
 }
 
 // WriteXDRString encodes a string in XDR format: length + data + padding.
@@ -338,19 +327,7 @@ func WriteXDROpaque(buf *bytes.Buffer, data []byte) error {
 //	"abc" (3 bytes) → [00 00 00 03][61 62 63][00] (8 bytes total)
 //	"test" (4 bytes) → [00 00 00 04][74 65 73 74] (8 bytes total)
 func WriteXDRString(buf *bytes.Buffer, s string) error {
-	// Write length
-	length := uint32(len(s))
-	if err := binary.Write(buf, binary.BigEndian, length); err != nil {
-		return fmt.Errorf("write string length: %w", err)
-	}
-
-	// Write data
-	if _, err := buf.Write([]byte(s)); err != nil {
-		return fmt.Errorf("write string data: %w", err)
-	}
-
-	// Write padding to 4-byte boundary
-	return WriteXDRPadding(buf, length)
+	return xdr.WriteXDRString(buf, s)
 }
 
 // WriteXDRPadding writes padding bytes to align to 4-byte boundary.
@@ -376,12 +353,5 @@ func WriteXDRString(buf *bytes.Buffer, s string) error {
 //	dataLen=4 → writes 0 padding bytes
 //	dataLen=5 → writes 3 padding bytes
 func WriteXDRPadding(buf *bytes.Buffer, dataLen uint32) error {
-	padding := (4 - (dataLen % 4)) % 4
-	if padding > 0 {
-		paddingBytes := make([]byte, padding)
-		if _, err := buf.Write(paddingBytes); err != nil {
-			return fmt.Errorf("write padding: %w", err)
-		}
-	}
-	return nil
+	return xdr.WriteXDRPadding(buf, dataLen)
 }

@@ -2,16 +2,33 @@
 //
 // This file implements SMB2 opportunistic lock (oplock) management [MS-SMB2] 2.2.23, 2.2.24.
 // Oplocks allow clients to cache file data aggressively for better performance.
+//
+// The OplockManager is integrated with the unified lock manager from pkg/metadata/lock
+// to enable cross-protocol visibility (SMB leases visible to NLM).
 package handlers
 
 import (
+	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"path"
 	"sync"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
+
+// ============================================================================
+// Cross-Protocol Errors
+// ============================================================================
+
+// ErrLeaseBreakPending indicates that a lease break is in progress and the
+// caller should wait for acknowledgment before proceeding with the operation.
+// Used by NFS handlers when an SMB client has a Write lease that must be
+// broken before the NFS operation can complete.
+var ErrLeaseBreakPending = errors.New("lease break pending, operation must wait")
 
 // ============================================================================
 // SMB2 Oplock Constants [MS-SMB2] 2.2.14
@@ -66,14 +83,33 @@ type OplockState struct {
 	BreakToLevel uint8
 }
 
-// OplockManager manages oplocks across all files.
+// OplockManager manages oplocks and leases across all files.
 //
-// Oplocks are stored per-path (normalized, share-relative path).
-// The metaSvc handles oplock grants, conflicts, and breaks.
+// For backward compatibility, traditional oplocks are still stored per-path.
+// SMB2.1+ leases are stored in the unified lock manager via lockStore.
+//
+// The manager delegates lease operations to the unified lock manager,
+// enabling cross-protocol visibility (SMB leases visible to NLM).
 type OplockManager struct {
 	mu     sync.RWMutex
-	locks  map[string]*OplockState // path -> oplock state
+	locks  map[string]*OplockState // path -> oplock state (legacy oplocks)
 	notify OplockBreakNotifier     // callback for sending break notifications
+
+	// Unified lock manager integration
+	lockStore   lock.LockStore          // For lease persistence
+	leaseNotify LeaseBreakNotifier      // Lease-specific notifications
+	scanner     *lock.LeaseBreakScanner // Lease break timeout scanner
+
+	// Active break tracking (for timeout management)
+	activeBreaks map[string]time.Time // leaseKeyHex -> breakStartTime
+
+	// Session tracking for break notifications
+	sessionMap map[string]uint64 // leaseKeyHex -> sessionID
+
+	// Quick lookup cache: FileHandle -> lease EnhancedLocks
+	// Populated from lock store on demand, cleared on modification
+	leaseCache map[string][]*lock.EnhancedLock
+	cacheValid bool
 }
 
 // OplockBreakNotifier is called when an oplock break needs to be sent to a client.
@@ -84,10 +120,26 @@ type OplockBreakNotifier interface {
 	SendOplockBreak(sessionID uint64, fileID [16]byte, newLevel uint8) error
 }
 
-// NewOplockManager creates a new oplock metaSvc.
+// NewOplockManager creates a new oplock manager without lock store (legacy mode).
+// Use NewOplockManagerWithStore for unified lock manager integration.
 func NewOplockManager() *OplockManager {
 	return &OplockManager{
-		locks: make(map[string]*OplockState),
+		locks:        make(map[string]*OplockState),
+		activeBreaks: make(map[string]time.Time),
+		sessionMap:   make(map[string]uint64),
+		leaseCache:   make(map[string][]*lock.EnhancedLock),
+	}
+}
+
+// NewOplockManagerWithStore creates an oplock manager with unified lock store integration.
+// This enables SMB2.1+ lease support and cross-protocol visibility.
+func NewOplockManagerWithStore(lockStore lock.LockStore) *OplockManager {
+	return &OplockManager{
+		locks:        make(map[string]*OplockState),
+		lockStore:    lockStore,
+		activeBreaks: make(map[string]time.Time),
+		sessionMap:   make(map[string]uint64),
+		leaseCache:   make(map[string][]*lock.EnhancedLock),
 	}
 }
 
@@ -96,6 +148,20 @@ func (m *OplockManager) SetNotifier(notifier OplockBreakNotifier) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.notify = notifier
+}
+
+// SetLeaseNotifier sets the callback for lease break notifications.
+func (m *OplockManager) SetLeaseNotifier(notifier LeaseBreakNotifier) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.leaseNotify = notifier
+}
+
+// SetLockStore sets the lock store for lease persistence.
+func (m *OplockManager) SetLockStore(store lock.LockStore) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lockStore = store
 }
 
 // RequestOplock attempts to grant an oplock on a file.
@@ -452,4 +518,288 @@ func oplockLevelName(level uint8) string {
 // This ensures consistent path construction across all handlers.
 func BuildOplockPath(shareName, filePath string) string {
 	return path.Join(shareName, filePath)
+}
+
+// ============================================================================
+// Lease Break Scanner Integration
+// ============================================================================
+
+// StartScanner starts the lease break timeout scanner.
+// The scanner runs in the background and force-revokes leases that don't
+// acknowledge breaks within the timeout period.
+func (m *OplockManager) StartScanner() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.lockStore == nil {
+		logger.Warn("OplockManager: cannot start scanner without lock store")
+		return
+	}
+
+	if m.scanner == nil {
+		m.scanner = lock.NewLeaseBreakScanner(m.lockStore, m, 0)
+	}
+	m.scanner.Start()
+
+	logger.Debug("OplockManager: lease break scanner started")
+}
+
+// StopScanner stops the lease break timeout scanner.
+func (m *OplockManager) StopScanner() {
+	m.mu.Lock()
+	scanner := m.scanner
+	m.mu.Unlock()
+
+	if scanner != nil {
+		scanner.Stop()
+		logger.Debug("OplockManager: lease break scanner stopped")
+	}
+}
+
+// OnLeaseBreakTimeout implements lock.LeaseBreakCallback.
+// Called by the scanner when a lease break times out without acknowledgment.
+func (m *OplockManager) OnLeaseBreakTimeout(leaseKey [16]byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	keyHex := fmt.Sprintf("%x", leaseKey)
+
+	// Remove from active breaks
+	delete(m.activeBreaks, keyHex)
+
+	// Remove from session map
+	delete(m.sessionMap, keyHex)
+
+	// Invalidate cache
+	m.invalidateCache()
+
+	logger.Debug("OplockManager: lease break timeout force-revoked",
+		"leaseKey", keyHex)
+}
+
+// ============================================================================
+// Cross-Protocol Integration
+// ============================================================================
+
+// CheckAndBreakForWrite checks for SMB leases that conflict with a write operation
+// and initiates breaks as needed. Called by NFS/NLM handlers before writes.
+//
+// Per MS-SMB2 and cross-protocol semantics:
+//   - NFS write conflicts with Write lease (client has cached writes to flush)
+//   - NFS write also conflicts with Read lease (cached reads now stale)
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - fileHandle: The file being written to
+//
+// Returns:
+//   - nil if no conflict or all breaks completed
+//   - ErrLeaseBreakPending if a break was initiated and caller should wait
+func (m *OplockManager) CheckAndBreakForWrite(ctx context.Context, fileHandle lock.FileHandle) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.lockStore == nil {
+		return nil
+	}
+
+	// Query leases for this file
+	isLease := true
+	leases, err := m.lockStore.ListLocks(ctx, lock.LockQuery{
+		FileID:  string(fileHandle),
+		IsLease: &isLease,
+	})
+	if err != nil {
+		return nil // Don't block write on query failure
+	}
+
+	breakPending := false
+	for _, pl := range leases {
+		if len(pl.LeaseKey) != 16 {
+			continue
+		}
+
+		el := lock.FromPersistedLock(pl)
+		if el.Lease == nil {
+			continue
+		}
+
+		// Write conflicts with Write lease (client has cached writes)
+		if el.Lease.HasWrite() {
+			logger.Debug("Lease: NFS write triggers W lease break",
+				"fileHandle", string(fileHandle),
+				"leaseKey", fmt.Sprintf("%x", el.Lease.LeaseKey))
+
+			if el.Lease.Breaking {
+				// Break already in progress - caller should wait
+				breakPending = true
+			} else {
+				// Break to R+H (preserve read and handle caching)
+				breakTo := lock.LeaseStateRead | lock.LeaseStateHandle
+				m.initiateLeaseBreak(el, breakTo)
+				breakPending = true
+			}
+		} else if el.Lease.HasRead() {
+			// NFS write also invalidates Read lease (cached reads now stale)
+			// Read-only lease - break Read but keep Handle if present
+			breakTo := el.Lease.LeaseState &^ lock.LeaseStateRead
+			if breakTo != el.Lease.LeaseState {
+				logger.Debug("Lease: NFS write triggers R lease break",
+					"fileHandle", string(fileHandle),
+					"leaseKey", fmt.Sprintf("%x", el.Lease.LeaseKey))
+
+				if !el.Lease.Breaking {
+					m.initiateLeaseBreak(el, breakTo)
+				}
+				// Read-only break doesn't require waiting (no dirty data)
+			}
+		}
+	}
+
+	if breakPending {
+		return ErrLeaseBreakPending
+	}
+
+	return nil
+}
+
+// CheckAndBreakForRead checks for SMB leases that conflict with a read operation
+// and initiates breaks as needed. Called by NFS/NLM handlers before reads.
+//
+// Per MS-SMB2 and cross-protocol semantics:
+//   - NFS read only conflicts with Write lease (uncommitted writes)
+//   - Read lease coexists with NFS reads (no break needed)
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - fileHandle: The file being read from
+//
+// Returns:
+//   - nil if no conflict or all breaks completed
+//   - ErrLeaseBreakPending if a break was initiated and caller should wait
+func (m *OplockManager) CheckAndBreakForRead(ctx context.Context, fileHandle lock.FileHandle) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.lockStore == nil {
+		return nil
+	}
+
+	// Query leases for this file
+	isLease := true
+	leases, err := m.lockStore.ListLocks(ctx, lock.LockQuery{
+		FileID:  string(fileHandle),
+		IsLease: &isLease,
+	})
+	if err != nil {
+		return nil // Don't block read on query failure
+	}
+
+	breakPending := false
+	for _, pl := range leases {
+		if len(pl.LeaseKey) != 16 {
+			continue
+		}
+
+		el := lock.FromPersistedLock(pl)
+		if el.Lease == nil {
+			continue
+		}
+
+		// Read only conflicts with Write lease (dirty data must be flushed)
+		// Read leases can coexist with reads
+		if el.Lease.HasWrite() {
+			logger.Debug("Lease: NFS read triggers W lease break",
+				"fileHandle", string(fileHandle),
+				"leaseKey", fmt.Sprintf("%x", el.Lease.LeaseKey))
+
+			if el.Lease.Breaking {
+				// Break already in progress - caller should wait
+				breakPending = true
+			} else {
+				// Break W but keep R and H
+				breakTo := (el.Lease.LeaseState | lock.LeaseStateRead) &^ lock.LeaseStateWrite
+				m.initiateLeaseBreak(el, breakTo)
+				breakPending = true
+			}
+		}
+
+		// Read lease coexists with NFS reads - no break
+	}
+
+	if breakPending {
+		return ErrLeaseBreakPending
+	}
+
+	return nil
+}
+
+// CheckAndBreakForDelete checks for SMB Handle leases that must break before file deletion.
+// Called by NFS REMOVE/RENAME handlers before deleting files.
+//
+// Per MS-SMB2 and cross-protocol semantics:
+//   - Handle lease (H) protects against "surprise deletion"
+//   - SMB clients use H leases to get notification before file deletion
+//   - Break to None for delete operations (file is being removed)
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - fileHandle: The file being deleted
+//
+// Returns:
+//   - nil if no Handle leases or all breaks completed
+//   - ErrLeaseBreakPending if a break was initiated and caller should wait
+func (m *OplockManager) CheckAndBreakForDelete(ctx context.Context, fileHandle lock.FileHandle) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.lockStore == nil {
+		return nil
+	}
+
+	// Query leases for this file
+	isLease := true
+	leases, err := m.lockStore.ListLocks(ctx, lock.LockQuery{
+		FileID:  string(fileHandle),
+		IsLease: &isLease,
+	})
+	if err != nil {
+		return nil // Don't block delete on query failure
+	}
+
+	breakPending := false
+	for _, pl := range leases {
+		if len(pl.LeaseKey) != 16 {
+			continue
+		}
+
+		el := lock.FromPersistedLock(pl)
+		if el.Lease == nil {
+			continue
+		}
+
+		// Handle lease protects against surprise deletion
+		// Delete requires breaking ALL leases to None
+		if el.Lease.HasHandle() || el.Lease.HasWrite() || el.Lease.HasRead() {
+			logger.Debug("Lease: NFS delete triggers lease break",
+				"fileHandle", string(fileHandle),
+				"leaseKey", fmt.Sprintf("%x", el.Lease.LeaseKey),
+				"leaseState", el.Lease.StateString())
+
+			if el.Lease.Breaking {
+				// Break already in progress - caller should wait
+				breakPending = true
+			} else {
+				// Break to None for delete operations
+				m.initiateLeaseBreak(el, lock.LeaseStateNone)
+				breakPending = true
+			}
+		}
+	}
+
+	if breakPending {
+		return ErrLeaseBreakPending
+	}
+
+	return nil
 }
