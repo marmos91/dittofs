@@ -318,6 +318,23 @@ func (h *Handler) Read(
 	}
 
 	// ========================================================================
+	// Step 3b: Cross-protocol lease check (SMB leases)
+	// ========================================================================
+	// If an SMB client holds a Write lease on this file, we must break it
+	// before reading. The SMB client needs to flush its cached writes first.
+
+	metaSvc, err := getMetadataService(h.Registry)
+	if err == nil {
+		if err := waitForLeaseBreak(ctx.Context, metaSvc, fileHandle, false /* isRead */); err != nil {
+			logger.WarnCtx(ctx.Context, "READ failed: lease break error",
+				"handle", fmt.Sprintf("0x%x", req.Handle),
+				"client", clientIP,
+				"error", err)
+			// Continue with read - lease timeout scanner will force-revoke if needed
+		}
+	}
+
+	// ========================================================================
 	// Step 3: Check for empty file or invalid offset
 	// ========================================================================
 

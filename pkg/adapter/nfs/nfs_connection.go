@@ -20,6 +20,12 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
 	nfs_types "github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	nlm "github.com/marmos91/dittofs/internal/protocol/nlm"
+	nlm_handlers "github.com/marmos91/dittofs/internal/protocol/nlm/handlers"
+	nlm_types "github.com/marmos91/dittofs/internal/protocol/nlm/types"
+	nsm "github.com/marmos91/dittofs/internal/protocol/nsm"
+	nsm_handlers "github.com/marmos91/dittofs/internal/protocol/nsm/handlers"
+	nsm_types "github.com/marmos91/dittofs/internal/protocol/nsm/types"
 	"github.com/marmos91/dittofs/internal/telemetry"
 )
 
@@ -357,6 +363,20 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 		}
 		replyData, err = c.handleMountProcedure(ctx, call, procedureData, clientAddr)
 
+	case rpc.ProgramNLM:
+		// NLM v4 only per CONTEXT.md decision
+		if call.Version != rpc.NLMVersion4 {
+			return c.handleUnsupportedVersion(call, rpc.NLMVersion4, "NLM", clientAddr)
+		}
+		replyData, err = c.handleNLMProcedure(ctx, call, procedureData, clientAddr)
+
+	case rpc.ProgramNSM:
+		// NSM v1 only
+		if call.Version != rpc.NSMVersion1 {
+			return c.handleUnsupportedVersion(call, rpc.NSMVersion1, "NSM", clientAddr)
+		}
+		replyData, err = c.handleNSMProcedure(ctx, call, procedureData, clientAddr)
+
 	default:
 		logger.Debug("Unknown program", "program", call.Program)
 		// Send PROC_UNAVAIL error reply for unknown programs
@@ -659,6 +679,202 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 			responseStatus = "ERROR_NO_RESULT"
 		}
 		c.server.metrics.RecordRequest(procedureName, share, duration, responseStatus)
+	}
+
+	if result == nil {
+		return nil, err
+	}
+	return result.Data, err
+}
+
+// handleNLMProcedure dispatches an NLM procedure call to the appropriate handler.
+//
+// It looks up the procedure in the NLM dispatch table, extracts authentication
+// context from the RPC call, and invokes the handler with the context.
+//
+// NLM (Network Lock Manager) provides advisory file locking for NFS clients.
+// It runs on the same port as NFS and MOUNT protocols.
+//
+// Returns the reply data or an error if the handler fails.
+func (c *NFSConnection) handleNLMProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
+	// Look up procedure in NLM dispatch table
+	procedure, ok := nlm.NLMDispatchTable[call.Procedure]
+	if !ok {
+		logger.Debug("Unknown NLM procedure", "procedure", call.Procedure)
+		return []byte{}, nil
+	}
+
+	procedureName := fmt.Sprintf("NLM_%s", procedure.Name)
+
+	// Start a span for this NLM operation
+	ctx, span := telemetry.StartSpan(ctx, "nlm."+procedure.Name,
+		trace.WithAttributes(
+			telemetry.ClientAddr(clientAddr),
+			telemetry.RPCXID(call.XID),
+		))
+	defer span.End()
+
+	// Extract handler context for NLM requests
+	handlerCtx := &nlm_handlers.NLMHandlerContext{
+		Context:    ctx,
+		ClientAddr: clientAddr,
+		AuthFlavor: call.GetAuthFlavor(),
+	}
+
+	// Parse Unix credentials if AUTH_UNIX
+	if handlerCtx.AuthFlavor == rpc.AuthUnix {
+		authBody := call.GetAuthBody()
+		if len(authBody) > 0 {
+			if unixAuth, err := rpc.ParseUnixAuth(authBody); err == nil {
+				handlerCtx.UID = &unixAuth.UID
+				handlerCtx.GID = &unixAuth.GID
+				handlerCtx.GIDs = unixAuth.GIDs
+			}
+		}
+	}
+
+	// Log request with trace context
+	logger.DebugCtx(ctx, "NLM request",
+		"procedure", procedureName,
+		"client", clientAddr,
+		"xid", fmt.Sprintf("0x%x", call.XID))
+
+	// Check context before dispatching to handler
+	select {
+	case <-ctx.Done():
+		telemetry.RecordError(ctx, ctx.Err())
+		logger.DebugCtx(ctx, "NLM request cancelled before handler",
+			"procedure", procedure.Name,
+			"xid", fmt.Sprintf("0x%x", call.XID))
+		return nil, ctx.Err()
+	default:
+	}
+
+	// Record request start in metrics
+	if c.server.metrics != nil {
+		c.server.metrics.RecordRequestStart(procedureName, "")
+		defer c.server.metrics.RecordRequestEnd(procedureName, "")
+	}
+
+	// Dispatch to handler with context and record metrics
+	startTime := time.Now()
+	result, err := procedure.Handler(
+		handlerCtx,
+		c.server.nlmHandler,
+		c.server.registry,
+		data,
+	)
+	duration := time.Since(startTime)
+
+	// Record request completion in metrics with NLM status code
+	if c.server.metrics != nil {
+		var responseStatus string
+		if result != nil {
+			if result.NLMStatus != nlm_types.NLM4Granted {
+				responseStatus = nlm.NLMStatusToString(result.NLMStatus)
+			}
+		} else if err != nil {
+			responseStatus = "ERROR_NO_RESULT"
+		}
+		c.server.metrics.RecordRequest(procedureName, "", duration, responseStatus)
+	}
+
+	if result == nil {
+		return nil, err
+	}
+	return result.Data, err
+}
+
+// handleNSMProcedure dispatches an NSM procedure call to the appropriate handler.
+//
+// It looks up the procedure in the NSM dispatch table, extracts authentication
+// context from the RPC call, and invokes the handler with the context.
+//
+// NSM (Network Status Monitor) provides crash recovery for NLM clients.
+// It enables clients to register for notifications when the server restarts.
+//
+// Returns the reply data or an error if the handler fails.
+func (c *NFSConnection) handleNSMProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
+	// Look up procedure in NSM dispatch table
+	procedure, ok := nsm.NSMDispatchTable[call.Procedure]
+	if !ok {
+		logger.Debug("Unknown NSM procedure", "procedure", call.Procedure)
+		return []byte{}, nil
+	}
+
+	procedureName := fmt.Sprintf("NSM_%s", procedure.Name)
+
+	// Start a span for this NSM operation
+	ctx, span := telemetry.StartSpan(ctx, "nsm."+procedure.Name,
+		trace.WithAttributes(
+			telemetry.ClientAddr(clientAddr),
+			telemetry.RPCXID(call.XID),
+		))
+	defer span.End()
+
+	// Extract handler context for NSM requests
+	handlerCtx := &nsm_handlers.NSMHandlerContext{
+		Context:    ctx,
+		ClientAddr: clientAddr,
+		AuthFlavor: call.GetAuthFlavor(),
+	}
+
+	// Parse Unix credentials if AUTH_UNIX
+	if handlerCtx.AuthFlavor == rpc.AuthUnix {
+		authBody := call.GetAuthBody()
+		if len(authBody) > 0 {
+			if unixAuth, err := rpc.ParseUnixAuth(authBody); err == nil {
+				handlerCtx.UID = &unixAuth.UID
+				handlerCtx.GID = &unixAuth.GID
+				handlerCtx.GIDs = unixAuth.GIDs
+				handlerCtx.ClientName = unixAuth.MachineName
+			}
+		}
+	}
+
+	// Log request with trace context
+	logger.DebugCtx(ctx, "NSM request",
+		"procedure", procedureName,
+		"client", clientAddr,
+		"xid", fmt.Sprintf("0x%x", call.XID))
+
+	// Check context before dispatching to handler
+	select {
+	case <-ctx.Done():
+		telemetry.RecordError(ctx, ctx.Err())
+		logger.DebugCtx(ctx, "NSM request cancelled before handler",
+			"procedure", procedure.Name,
+			"xid", fmt.Sprintf("0x%x", call.XID))
+		return nil, ctx.Err()
+	default:
+	}
+
+	// Record request start in metrics
+	if c.server.metrics != nil {
+		c.server.metrics.RecordRequestStart(procedureName, "")
+		defer c.server.metrics.RecordRequestEnd(procedureName, "")
+	}
+
+	// Dispatch to handler with context and record metrics
+	startTime := time.Now()
+	result, err := procedure.Handler(
+		handlerCtx,
+		c.server.nsmHandler,
+		data,
+	)
+	duration := time.Since(startTime)
+
+	// Record request completion in metrics with NSM status code
+	if c.server.metrics != nil {
+		var responseStatus string
+		if result != nil {
+			if result.NSMStatus != nsm_types.StatSucc {
+				responseStatus = nsm.NSMStatusToString(result.NSMStatus)
+			}
+		} else if err != nil {
+			responseStatus = "ERROR_NO_RESULT"
+		}
+		c.server.metrics.RecordRequest(procedureName, "", duration, responseStatus)
 	}
 
 	if result == nil {

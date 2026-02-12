@@ -274,6 +274,29 @@ func (h *Handler) Remove(
 	}
 
 	// ========================================================================
+	// Step 3.5: Break SMB Handle leases before deletion
+	// ========================================================================
+	// SMB clients use Handle leases (H) to protect against "surprise deletion".
+	// Before deleting a file, we must break any Handle leases so the SMB client
+	// can close handles and receive notification that the file will be deleted.
+	//
+	// First, lookup the file to get its handle
+	childHandle, lookupErr := metaSvc.GetChild(ctx.Context, dirHandle, req.Filename)
+	if lookupErr == nil {
+		// File exists - check for Handle leases to break
+		if leaseErr := metaSvc.CheckAndBreakLeasesForDelete(ctx.Context, childHandle); leaseErr != nil {
+			// Log at INFO level per CONTEXT.md (cross-protocol conflict is working as designed)
+			logger.InfoCtx(ctx.Context, "REMOVE: Handle lease break initiated",
+				"name", req.Filename,
+				"handle", fmt.Sprintf("%x", childHandle),
+				"client", clientIP)
+			// Note: We proceed with deletion even if lease break is pending.
+			// The SMB client will receive notification and can close handles gracefully.
+			// Per Windows behavior, delete proceeds - client gets error on next I/O.
+		}
+	}
+
+	// ========================================================================
 	// Step 4: Remove file via store
 	// ========================================================================
 	// The store handles:

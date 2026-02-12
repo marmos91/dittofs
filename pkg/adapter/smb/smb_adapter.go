@@ -12,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/v2/handlers"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // SMBAdapter implements the adapter.Adapter interface for SMB2 protocol.
@@ -181,6 +182,16 @@ func New(config SMBConfig) *SMBAdapter {
 func (s *SMBAdapter) SetRuntime(rt *runtime.Runtime) {
 	s.registry = rt
 	s.handler.Registry = rt
+
+	// Register OplockManager with MetadataService for cross-protocol lease breaks.
+	// This enables NFS handlers to break SMB leases before write/delete operations.
+	// The registration uses the package-level SetOplockChecker function since
+	// OplockChecker is a global singleton (one SMB adapter instance).
+	if s.handler.OplockManager != nil {
+		metadata.SetOplockChecker(s.handler.OplockManager)
+		logger.Debug("SMB adapter registered OplockManager for cross-protocol lease breaks")
+	}
+
 	logger.Debug("SMB adapter configured with runtime", "shares", rt.CountShares())
 }
 
@@ -500,4 +511,40 @@ func (s *SMBAdapter) Port() int {
 // Protocol returns "SMB" as the protocol identifier.
 func (s *SMBAdapter) Protocol() string {
 	return "SMB"
+}
+
+// ============================================================================
+// Session Reconnection for Grace Period Recovery
+// ============================================================================
+
+// OnReconnect is called when an SMB session reconnects after server restart.
+//
+// During the grace period, this method triggers lease reclaim for all leases
+// the client previously held. This allows SMB clients to restore their caching
+// state after server restart, maintaining cache consistency.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - sessionID: The reconnecting session ID
+//   - clientID: The connection tracker client ID
+//
+// Implementation note: This is a minimal implementation for gap closure.
+// Full implementation would enumerate persisted leases for the session and
+// call HandleLeaseReclaim for each one. Currently, the reclaim happens
+// implicitly when the client requests the same lease key during grace period.
+func (s *SMBAdapter) OnReconnect(ctx context.Context, sessionID uint64, clientID string) {
+	logger.Info("SMB session reconnected",
+		"sessionID", sessionID,
+		"clientID", clientID)
+
+	// During grace period, leases will be reclaimed when the client
+	// makes a CREATE request with its known lease key.
+	// The RequestLeaseWithReclaim method handles this transparently.
+	//
+	// A full implementation would:
+	// 1. Query LockStore for all leases owned by this clientID
+	// 2. Prepare them for reclaim on first access
+	// 3. Notify client of available leases to reclaim
+	//
+	// For this gap closure, we rely on implicit reclaim in RequestLeaseWithReclaim.
 }

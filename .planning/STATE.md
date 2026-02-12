@@ -2,41 +2,193 @@
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-02-09)
+See: .planning/PROJECT.md (updated 2026-02-04)
 
-**Core value:** Operator ensures protocol adapters are only externally accessible when running, reducing attack surface and making adapter lifecycle fully dynamic.
-**Current focus:** Phase 4 - Security Hardening
+**Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
+**Current focus:** Phase 5 VERIFIED (Cross-Protocol Integration) - Ready for v1.0 milestone
 
 ## Current Position
 
-Phase: 4 of 4 (Security Hardening)
-Plan: 2 of 2 in current phase (04-02 COMPLETE)
-Status: All Phases Complete
-Last activity: 2026-02-10 -- Completed 04-02-PLAN.md (per-adapter NetworkPolicy lifecycle)
+Phase: 5 of 28 (Cross-Protocol Integration)
+Plan: 6 of 6 complete (including gap closure)
+Status: Phase verified (5/5 must-haves)
+Last activity: 2026-02-07 - Phase 5 verification passed
 
-Progress: [██████████] 100%
+Progress: [####################----] 68% (19/28 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 7
-- Average duration: 5 min
-- Total execution time: 34 min
+- Total plans completed: 19
+- Average duration: 9.5 min
+- Total execution time: 3.0 hours
 
 **By Phase:**
 
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 01-auth-foundation | 2/2 | 13 min | 7 min |
-| 02-adapter-discovery | 1/1 | 4 min | 4 min |
-| 03-dynamic-services-ports | 2/2 | 8 min | 4 min |
-| 04-security-hardening | 2/2 | 9 min | 5 min |
+| Phase | Plans | Total | Avg/Plan | Status |
+|-------|-------|-------|----------|--------|
+| 01-locking-infrastructure | 4 | 75 min | 18.75 min | COMPLETE |
+| 02-nlm-protocol | 3 | 25 min | 8.3 min | COMPLETE |
+| 03-nsm-protocol | 3 | 19 min | 6.3 min | COMPLETE |
+| 04-smb-leases | 3 | 29 min | 9.7 min | COMPLETE |
+| 05-cross-protocol-integration | 6 | 37 min | 6.2 min | VERIFIED |
 
 **Recent Trend:**
-- Last 5 plans: 02-01 (4 min), 03-01 (4 min), 03-02 (4 min), 04-01 (5 min), 04-02 (4 min)
-- Trend: stable/fast
+- Last 5 plans: 05-03 (5 min), 05-04 (5 min), 05-05 (8 min), 05-06 (5 min)
+- Trend: Gap closure plans completing efficiently
 
 *Updated after each plan completion*
+
+## Phase 01 Accomplishments
+
+### Plan 01-01: Lock Manager Enhancements
+- EnhancedLock type with protocol-agnostic ownership model
+- POSIX lock splitting (SplitLock, MergeLocks)
+- Atomic lock upgrade (shared to exclusive)
+- Wait-For Graph deadlock detection
+- Lock configuration and limits tracking
+
+### Plan 01-02: Lock Persistence
+- LockStore interface for all metadata store backends
+- Memory, BadgerDB, PostgreSQL implementations
+- Server epoch tracking for split-brain detection
+- Transaction integration for atomic operations
+
+### Plan 01-03: Grace Period and Metrics
+- Grace period state machine for lock reclaim
+- Connection tracker with adapter-controlled TTL
+- Full Prometheus metrics suite
+- Early grace period exit optimization
+
+### Plan 01-04: Package Reorganization - COMPLETE
+- Created `pkg/metadata/errors/` package (leaf, no deps)
+- Created `pkg/metadata/lock/` package for all lock code
+- Import graph: errors <- lock <- metadata <- stores
+- No circular dependencies
+- Backward compatibility via type aliases
+
+## Phase 02 Accomplishments
+
+### Plan 02-01: XDR Utilities and NLM Types - COMPLETE
+- Shared XDR package at internal/protocol/xdr/ (no DittoFS dependencies)
+- NFS XDR refactored to delegate to shared utilities
+- NLM v4 constants (program 100021, procedures, status codes)
+- NLM v4 types (NLM4Lock, NLM4Holder, request/response structures)
+- NLM XDR encode/decode functions for all message types
+
+### Plan 02-02: NLM Dispatcher and Synchronous Operations - COMPLETE
+- NLM procedure handlers (NULL, TEST, LOCK, UNLOCK, CANCEL)
+- NLM dispatch table mapping procedures to handlers
+- MetadataService NLM methods (LockFileNLM, TestLockNLM, UnlockFileNLM, CancelBlockingLock)
+- NLM program routing in NFS adapter (same port 12049)
+- Package restructure to avoid import cycles (nlm/types subpackage)
+
+### Plan 02-03: Blocking Lock Queue and GRANTED Callback - COMPLETE
+- Per-file blocking lock queue with configurable limit (100 per file)
+- NLM_GRANTED callback client with 5s TOTAL timeout
+- Queue integration with lock/unlock handlers
+- SetNLMUnlockCallback for async waiter notification
+- NLM Prometheus metrics (nlm_* prefix)
+
+## Phase 03 Accomplishments
+
+### Plan 03-01: NSM Types and Foundation - COMPLETE
+- NSM types package at internal/protocol/nsm/types/
+- NSM XDR encode/decode at internal/protocol/nsm/xdr/
+- Extended ClientRegistration with NSM fields (MonName, Priv, SMState, CallbackInfo)
+- NSMCallback struct for RPC callback details
+- ClientRegistrationStore interface for persistence
+- Conversion functions for persistence (To/From PersistedClientRegistration)
+
+### Plan 03-02: NSM Handlers and Dispatch - COMPLETE
+- NSM handler struct with ConnectionTracker, ClientRegistrationStore, server state
+- NSM dispatch table mapping procedures to handlers
+- SM_NULL, SM_STAT, SM_MON, SM_UNMON, SM_UNMON_ALL, SM_NOTIFY handlers
+- Client registration storage in Memory, BadgerDB, PostgreSQL
+- PostgreSQL migration 000003_clients for nsm_client_registrations table
+- NSM program (100024) routing in NFS adapter
+
+### Plan 03-03: NSM Crash Recovery - COMPLETE
+- SM_NOTIFY callback client with 5s total timeout
+- Notifier for parallel SM_NOTIFY on server restart
+- NLM FREE_ALL handler (procedure 23) for bulk lock release
+- NSM Prometheus metrics (nsm_* prefix)
+- NFS adapter integration for startup notification
+
+## Phase 04 Accomplishments
+
+### Plan 04-01: SMB Lease Types - COMPLETE
+- LeaseInfo struct with R/W/H state flags matching MS-SMB2 spec
+- Lease state constants (0x01=R, 0x02=W, 0x04=H)
+- EnhancedLock.Lease field for unified lock manager integration
+- PersistedLock lease fields (LeaseKey, LeaseState, LeaseEpoch, BreakToState, Breaking)
+- Lease conflict detection in IsEnhancedLockConflicting
+- LockQuery.IsLease filter for listing leases vs byte-range locks
+- Full round-trip conversion (ToPersistedLock/FromPersistedLock)
+
+### Plan 04-02: OplockManager Refactoring - COMPLETE
+- OplockManager refactored with LockStore dependency for lease persistence
+- RequestLease/AcknowledgeLeaseBreak/ReleaseLease methods
+- LeaseBreakScanner with 35s default timeout
+- Cross-protocol break triggers (CheckAndBreakForWrite/Read)
+- Backward compatible with existing oplock API
+
+### Plan 04-03: Cross-Protocol Breaks and CREATE Context - COMPLETE
+- ErrLeaseBreakPending error for signaling pending breaks
+- CheckAndBreakForWrite/Read return ErrLeaseBreakPending for W leases
+- OplockChecker interface in MetadataService for cross-protocol visibility
+- waitForLeaseBreak helper in NFS handlers with 35s timeout
+- NFS WRITE/READ handlers call CheckAndBreakLeasesFor{Write,Read}
+- Lease create context (RqLs/RsLs) parsing and encoding per MS-SMB2
+- SMB CREATE processes lease contexts when OplockLevel=0xFF
+- CREATE response includes granted lease state in RsLs context
+
+## Phase 05 Accomplishments
+
+### Plan 05-01: Unified Lock View Foundation - COMPLETE
+- UnifiedLockView struct in pkg/metadata/ for cross-protocol lock visibility
+- FileLocksInfo separates ByteRangeLocks and Leases for easy processing
+- GetAllLocksOnFile, HasConflictingLocks, GetLeaseByKey, GetWriteLeases, GetHandleLeases
+- NLMHolderInfo and TranslateToNLMHolder for NLM4_DENIED responses
+- Cross-protocol Prometheus metrics (cross_protocol_conflict_total, cross_protocol_break_duration_seconds)
+- MetadataService owns UnifiedLockView per share
+
+### Plan 05-02: NLM-SMB Integration - COMPLETE
+- Configurable lease break timeout (default 35s, CI=5s via DITTOFS_LOCK_LEASE_BREAK_TIMEOUT)
+- NLM cross_protocol.go with waitForLeaseBreak, buildDeniedResponseFromSMBLease helpers
+- NLM LOCK checks for SMB leases before acquiring, waits for lease break
+- OplockChecker.CheckAndBreakForDelete for Handle lease breaks
+- NFS REMOVE/RENAME break Handle leases before deletion
+- SMB adapter registers OplockManager with MetadataService.SetOplockChecker
+
+### Plan 05-03: SMB-to-NFS Integration - COMPLETE
+- SMB handlers check NLM byte-range locks before granting leases
+- Write lease denied when ANY NLM lock exists on file
+- Read lease denied when exclusive NLM lock exists
+- STATUS_LOCK_NOT_GRANTED (0xC0000054) for NLM conflicts
+- Cross-protocol conflicts logged at INFO level
+- CREATE succeeds even when lease denied (only caching affected)
+
+### Plan 05-04: Cross-Protocol Locking E2E Tests - COMPLETE
+- File locking helpers (LockFile, TryLockFile, LockFileRange) using flock/fcntl
+- TestCrossProtocolLocking with XPRO-01 to XPRO-04 subtests
+- Grace period recovery tests (TestGracePeriodRecovery, TestCrossProtocolReclaim)
+- Byte-range specific locking tests for fine-grained conflict detection
+- Platform-specific notes logging for macOS vs Linux
+
+### Plan 05-05: SMB Lease Grace Period Reclaim - COMPLETE [GAP CLOSURE]
+- Added `Reclaim bool` field to LeaseInfo for tracking grace period reclaims
+- Added `ReclaimLease` method to LockStore interface
+- Implemented `ReclaimLeaseSMB` in MetadataService for SMB lease recovery
+- Added `LeaseReclaimer` interface and `RequestLeaseWithReclaim` to OplockManager
+- Added `OnReconnect` hook to SMB adapter for session reconnection handling
+
+### Plan 05-06: E2E SMB Mount Support - COMPLETE [GAP CLOSURE]
+- Added `IsNativeSMBAvailable()` to check platform-specific SMB mount capability
+- Added `SkipIfNoSMBMount(t)` helper for graceful test skipping
+- Cross-protocol tests skip gracefully when SMB mount unavailable
+- Platform support: Windows (native), macOS (mount_smbfs), Linux (cifs-utils)
+- Note: Docker fallback approach removed per user feedback (proven unreliable)
 
 ## Accumulated Context
 
@@ -45,45 +197,91 @@ Progress: [██████████] 100%
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- Polling over webhooks (no webhook system exists; polling is simpler)
-- One LoadBalancer per adapter (clean separation, independent IPs)
-- New "operator" role with least privilege (read-only adapter access)
-- source.Channel vs RequeueAfter still to be finalized (research recommends source.Channel)
-- RequireRole is fail-closed: zero allowed roles means all requests denied (01-01)
-- GET /api/v1/adapters/{type} stays admin-only per least-privilege (01-01)
-- Authenticated condition skipped from Ready aggregate when replicas=0 (01-02)
-- DittoFSClient self-contained in operator module, no pkg/apiclient import (01-02)
-- Admin credentials auto-generated only when user has NOT provided passwordSecretRef (01-02)
-- Auth retry count tracked via annotation, persists across operator restarts (01-02)
-- Transient errors get backoff; permanent errors propagate to controller-runtime (01-02)
-- AdapterInfo uses minimal 4-field subset; Go JSON decoder ignores extra API fields (02-01)
-- Polling interval read fresh from CRD spec every reconcile, never cached (02-01)
-- Empty adapter list stored as valid state (empty slice, not nil) (02-01)
-- Re-fetch DittoServer after auth reconciliation to get updated conditions (02-01)
-- Adapter Services use dittofs.io/adapter-service=true label for isolation from static Services (03-01)
-- Default adapter Service type is LoadBalancer, configurable via CRD spec.adapterServices.type (03-01)
-- DISC-03 safety preserved: skip service reconciliation when no successful poll (nil adapters) (03-01)
-- Adapter Service reconciliation is best-effort: errors logged but don't block reconciliation (03-01)
-- Dynamic container ports use adapter-{type} prefix to avoid collision with static port names (03-02)
-- Static and dynamic ports coexist in Phase 3; Phase 4 removes static ones (03-02)
-- Container port comparison before update prevents unnecessary StatefulSet rolling restarts (03-02)
-- Headless Service port changed from NFS to API -- API always available, sufficient for StatefulSet DNS (04-01)
-- SMB test cases removed entirely since SMB types deleted -- adapter testing via dynamic service reconciler (04-01)
-- NetworkPolicy errors propagated (not best-effort) because they are security-critical (04-02)
-- Same naming convention for NetworkPolicies as adapter Services: <cr>-adapter-<type> (04-02)
+- [Init]: NLM before NFSv4 - Build locking foundation first
+- [Init]: Unified Lock Manager - Single lock model for NFS+SMB
+- [Init]: Lock state in metadata store - Atomic with file operations
+- [01-01]: OwnerID as opaque string - Lock manager does not parse protocol prefix
+- [01-01]: Enhanced locks stored per-LockManager instance (not global)
+- [01-01]: Atomic upgrade returns ErrLockConflict when other readers exist
+- [01-02]: LockStore embedded in Transaction for atomic operations
+- [01-02]: PersistedLock uses string FileID for storage efficiency
+- [01-03]: Grace period blocks new locks, allows reclaims and tests
+- [01-03]: Connection TTL controlled by adapter (NFS=0, SMB may have grace)
+- [01-04]: Import graph: errors <- lock <- metadata <- stores
+- [01-04]: Backward compatibility via type aliases in pkg/metadata
+- [02-01]: Shared XDR package at internal/protocol/xdr/ for NFS+NLM reuse
+- [02-01]: NLM v4 only (64-bit offsets/lengths), not v1-3
+- [02-02]: NLM types moved to nlm/types subpackage to avoid import cycle
+- [02-02]: NLM handler initialized with MetadataService from runtime
+- [02-02]: Owner ID format: nlm:{caller_name}:{svid}:{oh_hex}
+- [02-03]: 5 second TOTAL timeout for NLM_GRANTED callbacks
+- [02-03]: Fresh TCP connection per callback (no caching)
+- [02-03]: Release lock immediately on callback failure
+- [02-03]: Unlock callback pattern for async waiter notification
+- [03-01]: NSM types package mirrors NLM structure
+- [03-01]: priv field as [16]byte fixed array (XDR opaque[16])
+- [03-01]: ClientRegistrationStore interface for persistence
+- [03-01]: Extend existing ClientRegistration vs new type
+- [03-02]: HandlerResult in handlers package (close to handlers)
+- [03-02]: Client ID format: nsm:{client_addr}:{callback_host}
+- [03-02]: NSM v1 only (standard version)
+- [03-03]: Parallel SM_NOTIFY using goroutines for fastest recovery
+- [03-03]: Failed notification = client crashed, cleanup locks immediately
+- [03-03]: FREE_ALL returns void per NLM spec
+- [03-03]: Background notification goroutine (non-blocking)
+- [04-01]: Lease state constants match MS-SMB2 2.2.13.2.8 spec values
+- [04-01]: LeaseInfo embedded in EnhancedLock via pointer (nil for byte-range locks)
+- [04-01]: Centralized MatchesLock method in LockQuery for consistent filtering
+- [04-01]: BreakStarted is runtime-only, not persisted
+- [04-02]: LockStore dependency injected via NewOplockManagerWithStore
+- [04-02]: Break timeout 35 seconds (Windows default per MS-SMB2)
+- [04-02]: Scan interval 1 second for balance of responsiveness and efficiency
+- [04-02]: Session tracking map for break notification routing
+- [04-03]: 35-second lease break timeout matches Windows MS-SMB2 default
+- [04-03]: Polling-based lease break wait with 100ms interval
+- [04-03]: OplockChecker interface in MetadataService for clean cross-protocol visibility
+- [05-01]: UnifiedLockView in pkg/metadata/ (not pkg/metadata/lock/) per CONTEXT.md
+- [05-01]: Per-share UnifiedLockView ownership matches LockManager pattern
+- [05-01]: NLM OH field = first 8 bytes of 16-byte LeaseKey
+- [05-01]: Cross-protocol metrics use descriptive label constants
+- [05-02]: Handle lease break proceeds even on timeout (Windows behavior)
+- [05-02]: Break ALL leases to None for delete operations
+- [05-02]: OplockChecker registered via SMB adapter SetRuntime
+- [05-03]: NLM locks checked BEFORE SMB leases (explicit wins over opportunistic)
+- [05-03]: STATUS_LOCK_NOT_GRANTED for byte-range conflicts, not STATUS_SHARING_VIOLATION
+- [05-03]: CREATE succeeds even when lease denied (file opens, caching disabled)
+- [05-03]: Handle-only leases do not conflict with NLM locks
+- [05-04]: fcntl for byte-range locks (NLM), flock for whole-file advisory locks
+- [05-04]: Platform-specific notes logging for macOS vs Linux lock behavior
+- [05-04]: Grace period tests simulate behavior (full testing requires persistent stores)
 
 ### Pending Todos
 
-None yet.
+None.
 
 ### Blockers/Concerns
 
-- Module import path for `pkg/apiclient`: RESOLVED -- operator uses its own DittoFSClient (01-02)
-- Adapter API `running` field: CONFIRMED -- exists in AdapterResponse, populated by IsAdapterRunning() (02-01)
-- Verify DittoFS supports `DITTOFS_ADMIN_INITIAL_PASSWORD` env var: CONFIRMED -- exists in models/admin.go (01-02)
+None.
+
+## Next Steps
+
+**Phase 5 VERIFIED (5/5)**
+- All 6 plans complete (05-01 through 05-06, including gap closure)
+- Cross-protocol lock visibility established
+- NLM-SMB and SMB-NFS integration complete
+- SMB lease grace period reclaim implemented
+- E2E tests skip gracefully when SMB mount unavailable
+- Phase verification passed (5/5 must-haves)
+
+**v1.0 Milestone Ready**
+- Phases 1-5 complete and verified
+- Ready for Phase 5.5: Manual Verification USER CHECKPOINT
+- Or proceed to v1.0 PR creation
+
+**Next Phase: 5.5 (User Checkpoint) or Phase 6 (to be planned)**
 
 ## Session Continuity
 
-Last session: 2026-02-10
-Stopped at: Completed 04-02-PLAN.md (per-adapter NetworkPolicy lifecycle) -- all phases complete
+Last session: 2026-02-07
+Stopped at: Phase 5 verification passed, ready for v1.0 milestone PR
 Resume file: None

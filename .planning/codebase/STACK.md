@@ -114,8 +114,8 @@
 - SMB client (optional, for SMB protocol support)
 
 **Runtime Ports:**
-- 12049/tcp - NFS server (default, configurable)
-- 12445/tcp - SMB server (default, configurable)
+- 12049/tcp - NFS server (app default; Kubernetes Service exposes standard 2049/tcp)
+- 12445/tcp - SMB server (app default; Kubernetes Service exposes standard 445/tcp)
 - 8080/tcp - REST API (health checks, management)
 - 9090/tcp - Prometheus metrics (optional)
 

@@ -1,181 +1,278 @@
-# Technology Stack
+# Stack Research: NFSv4 Protocol Implementation for DittoFS
 
-**Project:** DittoFS K8s Auto-Adapters (Dynamic Service Management)
-**Researched:** 2026-02-09
+**Domain:** NFSv4 protocol server implementation in Go
+**Researched:** 2026-02-04
+**Confidence:** MEDIUM (Go NFSv4 ecosystem is sparse; recommendations based on available options + protocol requirements)
+
+## Executive Summary
+
+The Go ecosystem for NFSv4 server implementation is nascent compared to C-based solutions like NFS-Ganesha. No single library provides production-ready NFSv4.x with RPCSEC_GSS. The recommended approach is to **extend DittoFS's existing hand-written XDR/RPC** rather than adopt external libraries, while leveraging `jcmturner/gokrb5` (already in go.mod) for Kerberos primitives. RPCSEC_GSS must be implemented from RFC 2203/5403 specifications.
+
+---
 
 ## Recommended Stack
 
-### Core Framework (Already In Place)
+### Core Technologies
 
-| Technology | Version | Purpose | Why |
-|------------|---------|---------|-----|
-| Go | 1.25.1 | Language | Already used by the operator; no reason to change |
-| controller-runtime | v0.22.4 | K8s operator framework | Already in go.mod; v0.22.x introduced native SSA support; v0.22.4 is latest patch in the 0.22 line |
-| k8s.io/api | v0.34.1 | K8s API types | Already in go.mod; provides `networking/v1.NetworkPolicy`, `core/v1.Service`, `apps/v1.StatefulSet` |
-| k8s.io/apimachinery | v0.34.1 | K8s shared machinery | Already in go.mod; required for metav1 types, labels, selectors |
-| k8s.io/client-go | v0.34.1 | K8s client | Already in go.mod; provides typed clients and applyconfigurations for SSA |
+| Technology | Version | Purpose | Why Recommended | Confidence |
+|------------|---------|---------|-----------------|------------|
+| **Go** | 1.25+ | Language runtime | Already in use; concurrent, performant | HIGH |
+| **Custom XDR** | N/A | XDR encoding/decoding | Extend existing `internal/protocol/nfs/xdr/`; avoids dependency churn, full control over NFSv4 compound ops | HIGH |
+| **Custom RPC** | N/A | ONC RPC layer | Extend existing `internal/protocol/nfs/rpc/`; RPCSEC_GSS integration requires tight coupling | HIGH |
+| **jcmturner/gokrb5/v8** | v8.4.4 | Kerberos 5 | Pure Go, already in go.mod, active maintenance, AD integration | HIGH |
 
-**Confidence:** HIGH -- these are already in the project's `go.mod` and verified against Go package registry.
+### Supporting Libraries
 
-### New Dependencies Required
+| Library | Version | Purpose | When to Use | Confidence |
+|---------|---------|---------|-------------|------------|
+| **github.com/jcmturner/gokrb5/v8/gssapi** | v8.4.4 | GSS-API primitives | Wrap/MIC tokens for RPCSEC_GSS integrity/privacy | HIGH |
+| **github.com/jcmturner/gokrb5/v8/spnego** | v8.4.4 | SPNEGO negotiation | If SPNEGO mechlist needed (rare for pure NFS) | MEDIUM |
+| **github.com/davecgh/go-xdr/xdr2** | latest | Reference/fallback XDR | Testing, validation of custom implementation | MEDIUM |
+| **github.com/xdrpp/goxdr** | latest | XDR code generator | Generate NFSv4 types from .x specs if starting fresh | LOW |
 
-| Technology | Version | Purpose | Why |
-|------------|---------|---------|-----|
-| `k8s.io/api/networking/v1` | v0.34.1 | NetworkPolicy types | Part of `k8s.io/api` already in go.mod; no new dependency needed. Provides `NetworkPolicy`, `NetworkPolicySpec`, `NetworkPolicyIngressRule`, `NetworkPolicyPort` |
-| `k8s.io/client-go/applyconfigurations` | v0.34.1 | SSA apply configuration types | Part of `k8s.io/client-go` already in go.mod; provides typed apply configs for Services and NetworkPolicies |
+### Development Tools
 
-**Confidence:** HIGH -- `networking/v1` is a sub-package of `k8s.io/api` which is already a dependency. No new external modules needed.
+| Tool | Purpose | Notes |
+|------|---------|-------|
+| **wireshark** | Protocol debugging | NFS/RPC dissectors essential for debugging |
+| **rpcdebug** | Linux RPC tracing | Kernel-side debugging |
+| **kinit/klist** | Kerberos ticket management | Testing RPCSEC_GSS |
+| **MIT krb5 / Heimdal** | KDC for testing | Local KDC for development |
 
-### DittoFS API Client (Internal)
+---
 
-| Technology | Version | Purpose | Why |
-|------------|---------|---------|-----|
-| `pkg/apiclient` | internal | REST client for DittoFS control plane | Already exists in the DittoFS codebase; provides `ListAdapters()`, `Login()`, `RefreshToken()` -- everything the operator needs to poll adapter state |
+## Decision Rationale
 
-**Confidence:** HIGH -- verified by reading `pkg/apiclient/adapters.go` and `pkg/apiclient/auth.go`.
+### XDR: Extend Custom vs. Use Library
 
-## Key Stack Decisions
+**Decision:** Extend existing custom XDR in `internal/protocol/nfs/xdr/`
 
-### 1. Use `source.Channel` + Polling Goroutine (Not RequeueAfter)
+**Why:**
+1. DittoFS already has ~400 lines of hand-tuned XDR (encode.go, decode.go)
+2. NFSv4 compound operations require streaming encode/decode with variable-length arrays
+3. External libraries (davecgh/go-xdr, xdrpp/goxdr) are reflection-based or code-generator-based
+4. Custom code allows zero-copy optimizations crucial for NFS performance
+5. RFC 7530/7531/8881/7862 XDR specs can be translated directly
 
-**Decision:** Run a background goroutine that polls `GET /api/v1/adapters` and pushes events to a `source.Channel`, rather than using `RequeueAfter` on the main reconciler.
+**Tradeoffs:**
+- More code to maintain
+- Must verify correctness against specs
+- No code generation from .x files
 
-**Rationale:**
-- The main DittoServer reconciler is CR-driven (watches DittoServer spec changes). Adapter state is external data, not part of the CR spec.
-- `source.Channel` is controller-runtime's official mechanism for "events originating outside the cluster" (verified via pkg.go.dev docs).
-- Mixing `RequeueAfter` for polling into the main reconciler conflates two concerns: (1) reconciling CR spec changes and (2) syncing external API state.
-- A dedicated polling goroutine with `source.Channel` keeps the adapter sync loop cleanly separated and testable.
-- The goroutine lifecycle is managed by the controller-runtime Manager (started when Manager starts, stopped on context cancellation).
+**Alternative considered:** `xdrpp/goxdr` for code generation
+- Pros: RFC 5531 compliant, generates from .x files
+- Cons: Less control, another dependency, may conflict with existing patterns
+- When to use: Greenfield NFSv4 project without existing XDR
 
-**Pattern:**
-```go
-// Polling goroutine sends events to channel
-events := make(chan event.TypedGenericEvent[*v1alpha1.DittoServer])
+### RPC: Extend Custom vs. Use Library
 
-// Controller watches the channel
-ctrl.NewControllerManagedBy(mgr).
-    For(&v1alpha1.DittoServer{}).
-    Watches(source.Channel(events, &handler.EnqueueRequestForObject{})).
-    // ... existing watches
-```
+**Decision:** Extend existing custom RPC in `internal/protocol/nfs/rpc/`
 
-**Confidence:** HIGH -- `source.Channel` is documented in the official controller-runtime v0.22 source package.
+**Why:**
+1. RPCSEC_GSS authentication must integrate with RPC call/reply handling
+2. Existing auth.go handles AUTH_UNIX; extend pattern for RPCSEC_GSS
+3. NFSv4 uses single RPC program (100003) with compound operations
+4. Session management (NFSv4.1+) requires RPC-level state tracking
+5. No Go library provides RPCSEC_GSS out-of-box
 
-### 2. Keep `controllerutil.CreateOrUpdate` (Not SSA for Dynamic Services)
+**Key extensions needed:**
+- `RPCSEC_GSS` auth flavor (6) handling
+- GSS context establishment (INIT/CONTINUE_INIT/DESTROY)
+- Sequence window and replay protection
+- Integrity (MIC) and Privacy (wrap) message verification
 
-**Decision:** Use `controllerutil.CreateOrUpdate` for dynamically managed Services and NetworkPolicies, not Server-Side Apply.
+### Kerberos/GSSAPI: gokrb5 vs. C Bindings
 
-**Rationale:**
-- The existing operator already uses `CreateOrUpdate` consistently for all resources (verified in `dittoserver_controller.go`).
-- The dynamic adapter Services are single-owner resources (only the operator manages them). SSA's main benefit (multi-controller field ownership) does not apply here.
-- `CreateOrUpdate` with retry-on-conflict is already implemented and tested (the `retryOnConflict` helper exists).
-- SSA introduces complexity with zero-value fields and ApplyConfiguration types that add boilerplate without benefit for this use case.
-- The operator already handles cloud controller preservation via `mergeServiceSpec()` and `mergePorts()`.
+**Decision:** Use `jcmturner/gokrb5/v8` (already in go.mod)
 
-**Caveat:** If the project later adds multi-controller management of the same Services, revisit this decision. For now, single-owner `CreateOrUpdate` is simpler and already proven.
+**Why:**
+1. Pure Go - no CGO, cross-compiles cleanly to Linux containers
+2. Already a dependency (go.mod shows v8.4.4)
+3. Implements RFC 4121 (Kerberos V5 GSS-API)
+4. Supports keytab authentication for service principals
+5. Active maintenance, well-tested with AD environments
 
-**Confidence:** HIGH -- verified existing patterns in the codebase; SSA would add complexity without benefit for single-owner resources.
+**What gokrb5 provides:**
+- Kerberos ticket acquisition and validation
+- `gssapi.WrapToken` for RPCSEC_GSS_INTEGRITY/PRIVACY
+- `gssapi.MICToken` for message authentication codes
+- AD PAC decoding for authorization data
 
-### 3. Reuse `pkg/apiclient` for API Communication
+**What gokrb5 does NOT provide:**
+- RPCSEC_GSS protocol layer (must implement RFC 2203)
+- RPC message framing with GSS tokens
+- Sequence number window management
 
-**Decision:** Import and use `pkg/apiclient` from the main DittoFS codebase, not build a new HTTP client.
+**Alternative considered:** `golang-auth/go-gssapi`
+- Pros: Full GSS-API RFC 2743 interface
+- Cons: v3 requires C bindings (MIT/Heimdal), v2 pure-Go "not production ready"
+- When to use: If strict GSS-API compliance needed; accept CGO dependency
 
-**Rationale:**
-- `pkg/apiclient` already implements `ListAdapters()`, `Login()`, `RefreshToken()`, and proper error handling (`APIError` type with `IsAuthError()`, `IsNotFound()`).
-- Token management is built in (`WithToken()`, `SetToken()`).
-- Using the same client ensures API compatibility -- if the API changes, the client gets updated in one place.
-- The operator module already imports the DittoFS Go module path (`github.com/marmos91/dittofs/k8s/dittofs-operator`), so adding a dependency on `pkg/apiclient` is straightforward.
+### NLM: Build vs. Buy
 
-**Implementation note:** The operator will need to import `pkg/apiclient` from the parent module. This may require a `replace` directive in `go.mod` if the modules are not published separately, or restructuring as a multi-module workspace.
+**Decision:** Implement custom NLM for NFSv3 compatibility (if needed)
 
-**Confidence:** MEDIUM -- the apiclient code is verified and suitable; the module import path may need workspace configuration.
+**Why:**
+1. No Go NLM library exists
+2. NLM is obsolete with NFSv4 (locking is built into protocol)
+3. Only needed for NFSv3 backwards compatibility
+4. Small protocol (~10 procedures)
 
-### 4. Use `networking.k8s.io/v1` NetworkPolicy (Not AdminNetworkPolicy)
+**NFSv4 alternative:** Implement NFSv4 lock operations directly
+- LOCK, LOCKT, LOCKU, OPEN (with share locks)
+- No separate NLM daemon needed
+- Simpler architecture
 
-**Decision:** Use the standard `NetworkPolicy` resource from `networking.k8s.io/v1`, not the newer `AdminNetworkPolicy` from `policy.networking.k8s.io`.
-
-**Rationale:**
-- `NetworkPolicy` (v1) is GA and universally supported by all CNI plugins that support network policies (Calico, Cilium, Antrea, etc.).
-- `AdminNetworkPolicy` is a newer API from the Network Policy API working group (`sigs.k8s.io/network-policy-api`), still evolving and not universally supported.
-- The operator's use case is simple: restrict ingress to adapter pods on specific ports. Standard `NetworkPolicy` handles this perfectly.
-- No need for cluster-scoped policies or priority-based evaluation that AdminNetworkPolicy provides.
-
-**Confidence:** HIGH -- `networking.k8s.io/v1` has been stable since Kubernetes 1.7 and is the standard approach.
-
-### 5. Store Operator Credentials in a K8s Secret (Not ServiceAccount Token)
-
-**Decision:** The operator authenticates to the DittoFS API using credentials stored in a Kubernetes Secret, not a K8s ServiceAccount token.
-
-**Rationale:**
-- DittoFS uses its own JWT-based auth system (`/api/v1/auth/login` returns access + refresh tokens). It does not integrate with Kubernetes RBAC/ServiceAccount tokens.
-- The operator needs to authenticate as a DittoFS user with the "operator" role, not as a Kubernetes service account.
-- Credentials (username + password or pre-generated token) are stored in a K8s Secret referenced by the DittoServer CR, similar to existing patterns for JWT secrets and S3 credentials.
-- Token refresh is handled by the polling goroutine using `apiclient.RefreshToken()`.
-
-**Confidence:** HIGH -- verified auth API in `pkg/apiclient/auth.go`; consistent with existing Secret-based credential patterns in the operator.
-
-## Version Compatibility Matrix
-
-| Component | Version | K8s Compat | Notes |
-|-----------|---------|------------|-------|
-| controller-runtime | v0.22.4 | K8s 1.34.x | Verified in go.mod |
-| k8s.io/api | v0.34.1 | K8s 1.34.x | `networking/v1` NetworkPolicy included |
-| k8s.io/client-go | v0.34.1 | K8s 1.34.x | applyconfigurations included |
-| Go | 1.25.1 | N/A | Required by go.mod |
-
-**Confidence:** HIGH -- all versions verified from the project's `go.mod`.
-
-## Upgrade Path Consideration
-
-The project is on controller-runtime v0.22.4. The latest stable is v0.23.1 (released Jan 26, 2025). v0.23.0 added subresource Apply support and generic webhook validators. Upgrading is optional for this milestone -- v0.22.4 has everything needed.
-
-**Recommendation:** Stay on v0.22.4 for this milestone. Upgrade to v0.23.x in a separate maintenance milestone if the new features are needed.
+---
 
 ## Alternatives Considered
 
-| Category | Recommended | Alternative | Why Not |
-|----------|-------------|-------------|---------|
-| Polling mechanism | `source.Channel` + goroutine | `RequeueAfter` in reconciler | Conflates CR reconciliation with API polling; harder to test; mixes concerns |
-| Resource mutation | `CreateOrUpdate` | Server-Side Apply | SSA adds complexity for single-owner resources; existing patterns use CreateOrUpdate |
-| API client | `pkg/apiclient` (internal) | New HTTP client | Duplication; apiclient already has auth, token refresh, error handling |
-| NetworkPolicy API | `networking.k8s.io/v1` | `policy.networking.k8s.io` AdminNetworkPolicy | AdminNetworkPolicy not GA; not widely supported; overkill for simple port-based ingress rules |
-| Auth storage | K8s Secret | K8s ServiceAccount token | DittoFS has its own JWT auth; doesn't integrate with K8s RBAC |
-| Event source | `source.Channel` | Custom Informer | Over-engineered; no K8s resource to watch; Channel is the idiomatic approach for external events |
+| Recommended | Alternative | When to Use Alternative |
+|-------------|-------------|-------------------------|
+| Custom XDR | `davecgh/go-xdr/xdr2` | Simple XDR needs, no performance concerns |
+| Custom XDR | `xdrpp/goxdr` | Greenfield project, want code generation from .x specs |
+| Custom RPC | None available | N/A - no Go RPCSEC_GSS library exists |
+| `gokrb5/v8` | `golang-auth/go-gssapi` v3 | Need strict GSS-API compliance, accept CGO |
+| `gokrb5/v8` | `openshift/gssapi` | Need MIT/Heimdal C library bindings |
+| Custom NLM | None available | N/A - no Go NLM library exists |
 
-## No New External Dependencies
+---
 
-All required functionality is available through packages already in the dependency tree:
+## What NOT to Use
 
+| Avoid | Why | Use Instead |
+|-------|-----|-------------|
+| **github.com/rasky/go-xdr** | Unmaintained since 2017, training data reference | `davecgh/go-xdr/xdr2` or custom |
+| **github.com/smallfz/libnfs-go** | NFSv4.0 only, experimental, no Kerberos | Custom implementation |
+| **github.com/kuleuven/nfs4go** | 5 commits total, minimal community, AUTH_SYS only | Reference architecture only |
+| **github.com/willscott/go-nfs** | NFSv3 only, no NFSv4 support | Useful patterns but not applicable |
+| **C bindings for GSSAPI** | CGO complicates deployment, cross-compilation | `gokrb5/v8` pure Go |
+| **FUSE-based approach** | Adds latency, complexity; DittoFS is already userspace NFS | Direct protocol implementation |
+
+---
+
+## Stack Patterns by NFSv4 Minor Version
+
+### NFSv4.0 (RFC 7530)
+
+**Pattern:** Stateful protocol, client ID + state ID model
 ```
-# Already in go.mod (no changes needed):
-k8s.io/api v0.34.1                     # networking/v1.NetworkPolicy
-k8s.io/client-go v0.34.1               # applyconfigurations/*
-sigs.k8s.io/controller-runtime v0.22.4  # source.Channel, controllerutil
+Required:
+- Compound operations (single RPC, multiple ops)
+- File delegation (read/write)
+- ACL support
+- Mandatory locking
+- RPCSEC_GSS (optional but recommended)
+
+Use:
+- gokrb5/v8 for Kerberos (if RPCSEC_GSS)
+- Custom state management (client IDs, state IDs, lock owners)
+- 128-bit file handles
 ```
 
-The only new import will be `pkg/apiclient` from the parent DittoFS module, which is an internal dependency requiring module configuration.
+### NFSv4.1 (RFC 8881)
 
-## RBAC Additions Required
+**Pattern:** Session-based, mandatory RPCSEC_GSS support
+```
+Additional requirements:
+- Sessions (EXCHANGE_ID, CREATE_SESSION)
+- Backchannel (server-to-client callbacks)
+- pNFS (optional, high complexity)
+- Session binding (security association)
 
-The operator already has RBAC markers for Services and Secrets. New markers needed:
-
-```go
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+Use:
+- Session state machine implementation
+- Callback RPC server (for delegations)
+- gokrb5/v8 for mandatory RPCSEC_GSS
 ```
 
-This is the only new RBAC permission. Service and StatefulSet permissions already exist.
+### NFSv4.2 (RFC 7862)
 
-**Confidence:** HIGH -- verified existing RBAC markers in `dittoserver_controller.go`.
+**Pattern:** Performance extensions
+```
+Additional requirements:
+- Server-side copy (CLONE, COPY, OFFLOAD_*)
+- Sparse files (ALLOCATE, DEALLOCATE)
+- Labeled NFS (MAC security, sec_label attribute)
+- Application I/O hints (IO_ADVISE)
+
+Use:
+- Block store support for server-side copy
+- Extended attribute support for labels
+```
+
+---
+
+## Version Compatibility Matrix
+
+| Package | Compatible Go | NFSv4.0 | NFSv4.1 | NFSv4.2 | RPCSEC_GSS |
+|---------|---------------|---------|---------|---------|------------|
+| DittoFS custom XDR | 1.25+ | Extend | Extend | Extend | Extend |
+| DittoFS custom RPC | 1.25+ | Extend | Extend | Extend | Extend |
+| jcmturner/gokrb5/v8 | 1.18+ | Yes | Yes | Yes | Foundation |
+| davecgh/go-xdr/xdr2 | 1.0+ | Reference | Reference | Reference | N/A |
+
+---
+
+## Installation
+
+```bash
+# Already in go.mod:
+# github.com/jcmturner/gokrb5/v8 v8.4.4
+
+# Optional - for XDR validation/testing:
+go get github.com/davecgh/go-xdr/xdr2
+
+# Optional - for code generation from .x specs:
+go install github.com/xdrpp/goxdr/cmd/goxdr@latest
+
+# For Kerberos testing:
+# macOS: brew install krb5
+# Linux: apt install krb5-user krb5-kdc (or equivalent)
+```
+
+---
+
+## Implementation Complexity Estimates
+
+| Component | Complexity | Rationale |
+|-----------|------------|-----------|
+| NFSv4.0 compound ops | HIGH | ~50 operations, complex state |
+| RPCSEC_GSS layer | HIGH | Security-critical, RFC 2203 + 5403 |
+| NFSv4.1 sessions | VERY HIGH | State machines, backchannels |
+| NFSv4.2 copy | MEDIUM | Block store integration |
+| NLM (if needed) | LOW | Small protocol, obsolete |
+
+---
 
 ## Sources
 
-- [controller-runtime v0.22.4 releases](https://github.com/kubernetes-sigs/controller-runtime/releases) -- verified version and features
-- [controller-runtime source.Channel docs](https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/source) -- verified Channel API for external events
-- [k8s.io/api networking/v1 package](https://pkg.go.dev/k8s.io/api/networking/v1) -- NetworkPolicy types
-- [Kubernetes NetworkPolicy docs](https://kubernetes.io/docs/concepts/services-networking/network-policies/) -- NetworkPolicy spec and behavior
-- [Kubernetes operator best practices](https://sdk.operatorframework.io/docs/best-practices/best-practices/) -- operator pattern guidance
-- [controller-runtime SSA support](https://github.com/kubernetes-sigs/controller-runtime/issues/2733) -- CreateOrUpdate vs SSA analysis
-- Project source: `k8s/dittofs-operator/go.mod` -- current dependency versions
-- Project source: `k8s/dittofs-operator/internal/controller/dittoserver_controller.go` -- existing patterns
-- Project source: `pkg/apiclient/adapters.go` -- adapter API client
-- Project source: `pkg/apiclient/auth.go` -- authentication API
+### Official Documentation (HIGH confidence)
+- [RFC 7530 - NFSv4.0](https://datatracker.ietf.org/doc/rfc7530/) - Core NFSv4 protocol
+- [RFC 8881 - NFSv4.1](https://datatracker.ietf.org/doc/rfc8881/) - Sessions, pNFS
+- [RFC 7862 - NFSv4.2](https://datatracker.ietf.org/doc/rfc7862/) - Server-side copy, sparse files
+- [RFC 2203 - RPCSEC_GSS](https://datatracker.ietf.org/doc/rfc2203/) - GSS security for RPC
+- [RFC 5403 - RPCSEC_GSS v2](https://datatracker.ietf.org/doc/rfc5403/) - Channel bindings
+- [RFC 4121 - Kerberos V5 GSS-API](https://datatracker.ietf.org/doc/rfc4121/) - Kerberos mechanism
+
+### Libraries (verified via GitHub/pkg.go.dev)
+- [jcmturner/gokrb5](https://github.com/jcmturner/gokrb5) - Pure Go Kerberos (v8.4.4, Feb 2023)
+- [davecgh/go-xdr](https://github.com/davecgh/go-xdr) - XDR reference implementation
+- [xdrpp/goxdr](https://github.com/xdrpp/goxdr) - XDR code generator (updated Dec 2024)
+- [golang-auth/go-gssapi](https://github.com/golang-auth/go-gssapi) - GSS-API (v3 beta, C bindings)
+
+### Reference Implementations (MEDIUM confidence)
+- [NFS-Ganesha Architecture](https://github.com/nfs-ganesha/nfs-ganesha/wiki/NFS-Ganesha-Architecture) - FSAL pattern
+- [NFS-Ganesha RPCSEC_GSS](https://github.com/nfs-ganesha/nfs-ganesha/wiki/RPCSEC_GSS) - Kerberos setup
+- [kuleuven/nfs4go](https://github.com/kuleuven/nfs4go) - Go NFSv4 reference (minimal)
+- [smallfz/libnfs-go](https://github.com/smallfz/libnfs-go) - Go NFS server (experimental)
+
+### WebSearch Findings (LOW confidence - verify before use)
+- NFSv4.1 session state machine patterns from RFC only
+- No production Go NFSv4.1+ server implementations found
+- No Go RPCSEC_GSS implementations found
+
+---
+
+*Stack research for: NFSv4 Protocol Implementation*
+*Researched: 2026-02-04*
