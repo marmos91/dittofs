@@ -151,7 +151,7 @@ Plans:
   3. Cross-protocol file access maintains consistency (no data corruption)
   4. E2E tests verify locking scenarios across both protocols
   5. Grace period recovery works for both NFS and SMB clients
-**Plans**: 6 plans in 2 waves
+**Plans**: 7 plans in 2 waves
 
 Plans:
 - [x] 05-01-PLAN.md — UnifiedLockView for cross-protocol lock queries, translation helpers, metrics
@@ -160,6 +160,7 @@ Plans:
 - [x] 05-04-PLAN.md — E2E tests: cross-protocol lock conflicts, data integrity, grace period recovery
 - [x] 05-05-PLAN.md — [GAP CLOSURE] SMB lease grace period reclaim implementation
 - [x] 05-06-PLAN.md — [GAP CLOSURE] Graceful SMB mount skip for cross-protocol E2E tests
+- [ ] 05-07-PLAN.md — [GAP CLOSURE] Portmapper auto-registration for NLM service discovery
 
 ---
 
@@ -591,7 +592,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 2. NLM Protocol | v1.0 | 3/3 | Complete | 2026-02-05 |
 | 3. NSM Protocol | v1.0 | 3/3 | Complete | 2026-02-05 |
 | 4. SMB Leases | v1.0 | 3/3 | Complete | 2026-02-05 |
-| 5. Cross-Protocol Integration | v1.0 | 4/6 | Gap closure | - |
+| 5. Cross-Protocol Integration | v1.0 | 6/7 | Gap closure | - |
 | 6. NFSv4 Protocol Foundation | v2.0 | 0/3 | Not started | - |
 | 7. NFSv4 File Operations | v2.0 | 0/5 | Not started | - |
 | 8. NFSv4 Advanced Operations | v2.0 | 0/5 | Not started | - |

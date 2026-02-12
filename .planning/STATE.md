@@ -10,9 +10,9 @@ See: .planning/PROJECT.md (updated 2026-02-04)
 ## Current Position
 
 Phase: 5 of 28 (Cross-Protocol Integration)
-Plan: 6 of 6 complete (including gap closure)
-Status: Phase verified (5/5 must-haves)
-Last activity: 2026-02-07 - Phase 5 verification passed
+Plan: 6 of 7 complete (including gap closure)
+Status: Plan 05-07 pending (portmapper auto-registration)
+Last activity: 2026-02-12 - Added plan 05-07 for rpcbind auto-registration
 
 Progress: [####################----] 68% (19/28 plans complete)
 
@@ -265,23 +265,24 @@ None.
 
 ## Next Steps
 
-**Phase 5 VERIFIED (5/5)**
-- All 6 plans complete (05-01 through 05-06, including gap closure)
+**Phase 5 — Plan 05-07 Pending**
+- 6 of 7 plans complete (05-01 through 05-06, including gap closure)
+- Plan 05-07: Portmapper auto-registration for NLM service discovery
 - Cross-protocol lock visibility established
 - NLM-SMB and SMB-NFS integration complete
 - SMB lease grace period reclaim implemented
 - E2E tests skip gracefully when SMB mount unavailable
-- Phase verification passed (5/5 must-haves)
 
-**v1.0 Milestone Ready**
-- Phases 1-5 complete and verified
-- Ready for Phase 5.5: Manual Verification USER CHECKPOINT
-- Or proceed to v1.0 PR creation
+**Blocker: NLM is unreachable without portmapper registration**
+- NFS clients discover NLM port via rpcbind (port 111)
+- DittoFS multiplexes NLM on the NFS port but doesn't register with rpcbind
+- Result: `flock()`/`fcntl()` fail with ENOLCK on all NFS clients
+- Plan 05-07 fixes this by auto-registering with system portmapper on startup
 
-**Next Phase: 5.5 (User Checkpoint) or Phase 6 (to be planned)**
+**Next: Execute 05-07, then Phase 5.5 (Manual Verification on Linux VM)**
 
 ## Session Continuity
 
-Last session: 2026-02-07
-Stopped at: Phase 5 verification passed, ready for v1.0 milestone PR
+Last session: 2026-02-12
+Stopped at: Plan 05-07 created, ready for execution
 Resume file: None

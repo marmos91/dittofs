@@ -146,6 +146,7 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Xattrs in metadata layer | Clean abstraction, expose via NFSv4.2 and SMB | — Pending |
 | Async COPY with polling | Better for large files, standard NFSv4.2 pattern | — Pending |
 | CLONE via content-addressed storage | Efficient reflinks using existing dedup infrastructure | — Pending |
+| Auto-register with system rpcbind | NFS clients discover NLM via portmapper; warn (not fail) if rpcbind unavailable. NFS-Ganesha pattern. | — Pending |
 | Per-adapter connection pools | Isolation between NFS and SMB, simpler limits | — Pending |
 | TDD approach | E2E tests first ensures correct behavior | — Pending |
 
