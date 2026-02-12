@@ -93,22 +93,45 @@ func baselineNetworkPolicyName(crName string) string {
 	return crName + "-baseline"
 }
 
-// ensureBaselineNetworkPolicy ensures a NetworkPolicy exists that allows API port traffic.
-// This prevents adapter NetworkPolicies from blocking operator-to-API and health check traffic.
+// baselineIngressPorts returns the ingress ports for the baseline NetworkPolicy.
+// Always includes the API port; includes the metrics port when metrics are enabled.
+func baselineIngressPorts(ds *dittoiov1alpha1.DittoServer) []networkingv1.NetworkPolicyPort {
+	tcp := corev1.ProtocolTCP
+	ports := []networkingv1.NetworkPolicyPort{
+		{
+			Protocol: &tcp,
+			Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: getAPIPort(ds)},
+		},
+	}
+	if ds.Spec.Metrics != nil && ds.Spec.Metrics.Enabled {
+		ports = append(ports, networkingv1.NetworkPolicyPort{
+			Protocol: &tcp,
+			Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: getMetricsPort(ds)},
+		})
+	}
+	return ports
+}
+
+// ensureBaselineNetworkPolicy ensures a NetworkPolicy exists that allows API and metrics traffic.
+// This prevents adapter NetworkPolicies from blocking operator-to-API and Prometheus scraping.
+//
+// This is called from the main Reconcile loop BEFORE auth, and also from reconcileNetworkPolicies.
+// The early call is intentional: the baseline NP must exist before adapter NPs are created,
+// otherwise the first adapter NP would activate default-deny and block API traffic (chicken-and-egg).
 func (r *DittoServerReconciler) ensureBaselineNetworkPolicy(ctx context.Context, ds *dittoiov1alpha1.DittoServer) error {
 	npName := baselineNetworkPolicyName(ds.Name)
-	apiPort := getAPIPort(ds)
-	tcp := corev1.ProtocolTCP
+	desiredLabels := map[string]string{
+		"app":                      "dittofs-server",
+		"instance":                 ds.Name,
+		baselineNetworkPolicyLabel: "true",
+	}
+	desiredIngress := baselineIngressPorts(ds)
 
 	np := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      npName,
 			Namespace: ds.Namespace,
-			Labels: map[string]string{
-				"app":                      "dittofs-server",
-				"instance":                 ds.Name,
-				baselineNetworkPolicyLabel: "true",
-			},
+			Labels:    desiredLabels,
 		},
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{
@@ -118,17 +141,7 @@ func (r *DittoServerReconciler) ensureBaselineNetworkPolicy(ctx context.Context,
 				networkingv1.PolicyTypeIngress,
 			},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
-				{
-					Ports: []networkingv1.NetworkPolicyPort{
-						{
-							Protocol: &tcp,
-							Port: &intstr.IntOrString{
-								Type:   intstr.Int,
-								IntVal: apiPort,
-							},
-						},
-					},
-				},
+				{Ports: desiredIngress},
 			},
 		},
 	}
@@ -151,15 +164,65 @@ func (r *DittoServerReconciler) ensureBaselineNetworkPolicy(ctx context.Context,
 		return fmt.Errorf("failed to get baseline network policy: %w", err)
 	}
 
-	// Update port if it changed.
-	if currentIngressPort(existing) != apiPort {
-		existing.Spec.Ingress = np.Spec.Ingress
+	// Converge metadata (labels, ownerReferences) and spec to desired state.
+	needsUpdate := false
+	for k, v := range desiredLabels {
+		if existing.Labels[k] != v {
+			needsUpdate = true
+			break
+		}
+	}
+	if !ingressPortsMatch(existing.Spec.Ingress, desiredIngress) {
+		needsUpdate = true
+	}
+	if !hasOwnerReference(existing, ds) {
+		needsUpdate = true
+	}
+
+	if needsUpdate {
+		existing.Labels = desiredLabels
+		existing.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{
+			{Ports: desiredIngress},
+		}
+		if err := controllerutil.SetControllerReference(ds, existing, r.Scheme); err != nil {
+			return fmt.Errorf("failed to set controller reference on baseline network policy: %w", err)
+		}
 		if err := r.Update(ctx, existing); err != nil {
 			return fmt.Errorf("failed to update baseline network policy: %w", err)
 		}
 	}
 
 	return nil
+}
+
+// ingressPortsMatch checks if existing ingress rules match the desired ports.
+func ingressPortsMatch(existing []networkingv1.NetworkPolicyIngressRule, desired []networkingv1.NetworkPolicyPort) bool {
+	if len(existing) == 0 {
+		return len(desired) == 0
+	}
+	existingPorts := existing[0].Ports
+	if len(existingPorts) != len(desired) {
+		return false
+	}
+	for i := range desired {
+		if existingPorts[i].Port == nil || desired[i].Port == nil {
+			return false
+		}
+		if existingPorts[i].Port.IntVal != desired[i].Port.IntVal {
+			return false
+		}
+	}
+	return true
+}
+
+// hasOwnerReference checks if the object has an owner reference to the given owner.
+func hasOwnerReference(obj, owner client.Object) bool {
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.UID == owner.GetUID() {
+			return true
+		}
+	}
+	return false
 }
 
 // reconcileNetworkPolicies synchronizes K8s NetworkPolicies with the discovered adapter state.
@@ -170,13 +233,14 @@ func (r *DittoServerReconciler) ensureBaselineNetworkPolicy(ctx context.Context,
 func (r *DittoServerReconciler) reconcileNetworkPolicies(ctx context.Context, ds *dittoiov1alpha1.DittoServer) error {
 	logger := logf.FromContext(ctx)
 
-	// Ensure baseline NetworkPolicy allowing API port before creating adapter policies.
-	// This prevents adapter policies from blocking operator-to-API and health check traffic.
+	// Ensure baseline NetworkPolicy is converged (idempotent, also called from main Reconcile).
+	// Must run before adapter NPs: creating adapter NPs without a baseline would activate
+	// default-deny and block the API port (chicken-and-egg problem).
 	if err := r.ensureBaselineNetworkPolicy(ctx, ds); err != nil {
 		return fmt.Errorf("failed to ensure baseline network policy: %w", err)
 	}
 
-	// DISC-03 safety: if no successful poll has occurred yet, skip entirely.
+	// DISC-03 safety: if no successful poll has occurred yet, skip adapter NP reconciliation.
 	adapters := r.getLastKnownAdapters(ds)
 	if adapters == nil {
 		logger.V(1).Info("No adapter poll yet, skipping adapter NetworkPolicy reconciliation")
