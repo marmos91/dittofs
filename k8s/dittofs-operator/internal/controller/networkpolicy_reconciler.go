@@ -294,10 +294,7 @@ func (r *DittoServerReconciler) updateAdapterNetworkPolicyIfNeeded(ctx context.C
 		},
 	}
 
-	err := retryOnConflict(func() error {
-		return r.Update(ctx, fresh)
-	})
-	if err != nil {
+	if err := r.Update(ctx, fresh); err != nil {
 		return fmt.Errorf("failed to update network policy: %w", err)
 	}
 

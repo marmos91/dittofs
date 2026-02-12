@@ -275,10 +275,7 @@ func (r *DittoServerReconciler) updateAdapterServiceIfNeeded(ctx context.Context
 	// Update annotations (add desired, preserving third-party annotations).
 	fresh.Annotations = syncManagedAnnotations(fresh.Annotations, desiredAnnotations)
 
-	err := retryOnConflict(func() error {
-		return r.Update(ctx, fresh)
-	})
-	if err != nil {
+	if err := r.Update(ctx, fresh); err != nil {
 		return fmt.Errorf("failed to update service: %w", err)
 	}
 
@@ -428,10 +425,7 @@ func (r *DittoServerReconciler) reconcileContainerPorts(ctx context.Context, ds 
 	// Update container ports (only PodTemplateSpec, never VolumeClaimTemplates).
 	fresh.Spec.Template.Spec.Containers[0].Ports = desiredPorts
 
-	err := retryOnConflict(func() error {
-		return r.Update(ctx, fresh)
-	})
-	if err != nil {
+	if err := r.Update(ctx, fresh); err != nil {
 		return fmt.Errorf("failed to update StatefulSet container ports: %w", err)
 	}
 
