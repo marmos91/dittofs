@@ -19,6 +19,8 @@ import (
 	mount_handlers "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
 	nfs_types "github.com/marmos91/dittofs/internal/protocol/nfs/types"
+	v4handlers "github.com/marmos91/dittofs/internal/protocol/nfs/v4/handlers"
+	v4types "github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	nlm "github.com/marmos91/dittofs/internal/protocol/nlm"
 	nlm_handlers "github.com/marmos91/dittofs/internal/protocol/nlm/handlers"
@@ -277,40 +279,28 @@ func (c *NFSConnection) readRPCMessage(length uint32) ([]byte, error) {
 
 // handleUnsupportedVersion handles version mismatch for NFS/Mount protocols.
 //
-// This method logs a warning about the unsupported version and returns an
-// appropriate response. For NFSv4, it closes the connection to work around
-// a macOS kernel bug. For other versions, it sends an RFC 5531-compliant
-// PROG_MISMATCH reply.
+// This method logs a warning about the unsupported version and sends an
+// RFC 5531-compliant PROG_MISMATCH reply indicating the supported version range.
 //
 // Parameters:
 //   - call: The RPC call with the unsupported version
-//   - supportedVersion: The version we support (e.g., 3 for NFSv3)
+//   - lowVersion: The lowest supported version
+//   - highVersion: The highest supported version
 //   - programName: Name for logging ("NFS" or "Mount")
 //   - clientAddr: Client address for logging
 //
 // Returns:
-//   - error: Always returns an error (either connection closed or reply sent)
-func (c *NFSConnection) handleUnsupportedVersion(call *rpc.RPCCallMessage, supportedVersion uint32, programName string, clientAddr string) error {
+//   - error: Always returns an error after sending PROG_MISMATCH
+func (c *NFSConnection) handleUnsupportedVersion(call *rpc.RPCCallMessage, lowVersion, highVersion uint32, programName string, clientAddr string) error {
 	logger.Warn("Unsupported "+programName+" version",
 		"requested", call.Version,
-		"supported", supportedVersion,
+		"supported_low", lowVersion,
+		"supported_high", highVersion,
 		"xid", fmt.Sprintf("0x%x", call.XID),
 		"client", clientAddr)
 
-	// WORKAROUND: macOS's NFS kernel module has a bug that causes a kernel
-	// panic (null pointer dereference in com.apple.filesystems.nfs) when
-	// receiving PROG_MISMATCH replies for NFSv4 requests. To avoid crashing
-	// the client's machine, we close the TCP connection instead of sending
-	// the RFC-compliant PROG_MISMATCH reply for NFSv4.
-	// For other versions (e.g., NFSv2), we send the proper PROG_MISMATCH.
-	if call.Version == rpc.NFSVersion4 {
-		_ = c.conn.Close()
-		return fmt.Errorf("unsupported %s version %d (only version %d supported) - closed connection to avoid macOS kernel bug",
-			programName, call.Version, supportedVersion)
-	}
-
 	// Per RFC 5531, respond with PROG_MISMATCH for unsupported versions
-	mismatchReply, err := rpc.MakeProgMismatchReply(call.XID, supportedVersion, supportedVersion)
+	mismatchReply, err := rpc.MakeProgMismatchReply(call.XID, lowVersion, highVersion)
 	if err != nil {
 		return fmt.Errorf("make version mismatch reply: %w", err)
 	}
@@ -347,11 +337,15 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 
 	switch call.Program {
 	case rpc.ProgramNFS:
-		// Validate NFS version (we only support NFSv3)
-		if call.Version != rpc.NFSVersion3 {
-			return c.handleUnsupportedVersion(call, rpc.NFSVersion3, "NFS", clientAddr)
+		// Route based on NFS version: v3 and v4 are both supported
+		switch call.Version {
+		case rpc.NFSVersion3:
+			replyData, err = c.handleNFSProcedure(ctx, call, procedureData, clientAddr)
+		case rpc.NFSVersion4:
+			replyData, err = c.handleNFSv4Procedure(ctx, call, procedureData, clientAddr)
+		default:
+			return c.handleUnsupportedVersion(call, rpc.NFSVersion3, rpc.NFSVersion4, "NFS", clientAddr)
 		}
-		replyData, err = c.handleNFSProcedure(ctx, call, procedureData, clientAddr)
 
 	case rpc.ProgramMount:
 		// Mount protocol version handling:
@@ -359,21 +353,21 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 		// - Other procedures (NULL, DUMP, UMNT, UMNTALL, EXPORT) are version-agnostic
 		// macOS umount uses mount v1 for UMNT, so we accept v1/v2/v3 for those procedures
 		if call.Procedure == mount_handlers.MountProcMnt && call.Version != rpc.MountVersion3 {
-			return c.handleUnsupportedVersion(call, rpc.MountVersion3, "Mount", clientAddr)
+			return c.handleUnsupportedVersion(call, rpc.MountVersion3, rpc.MountVersion3, "Mount", clientAddr)
 		}
 		replyData, err = c.handleMountProcedure(ctx, call, procedureData, clientAddr)
 
 	case rpc.ProgramNLM:
 		// NLM v4 only per CONTEXT.md decision
 		if call.Version != rpc.NLMVersion4 {
-			return c.handleUnsupportedVersion(call, rpc.NLMVersion4, "NLM", clientAddr)
+			return c.handleUnsupportedVersion(call, rpc.NLMVersion4, rpc.NLMVersion4, "NLM", clientAddr)
 		}
 		replyData, err = c.handleNLMProcedure(ctx, call, procedureData, clientAddr)
 
 	case rpc.ProgramNSM:
 		// NSM v1 only
 		if call.Version != rpc.NSMVersion1 {
-			return c.handleUnsupportedVersion(call, rpc.NSMVersion1, "NSM", clientAddr)
+			return c.handleUnsupportedVersion(call, rpc.NSMVersion1, rpc.NSMVersion1, "NSM", clientAddr)
 		}
 		replyData, err = c.handleNSMProcedure(ctx, call, procedureData, clientAddr)
 
@@ -462,6 +456,9 @@ func (c *NFSConnection) extractShareName(ctx context.Context, data []byte) (stri
 //
 // Returns the reply data or an error if the handler fails.
 func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
+	// Log first v3 call per server lifetime
+	c.server.logV3FirstUse()
+
 	// Look up procedure in dispatch table
 	procedure, ok := nfs.NfsDispatchTable[call.Procedure]
 	if !ok {
@@ -881,6 +878,74 @@ func (c *NFSConnection) handleNSMProcedure(ctx context.Context, call *rpc.RPCCal
 		return nil, err
 	}
 	return result.Data, err
+}
+
+// handleNFSv4Procedure dispatches an NFSv4 procedure call to the appropriate handler.
+//
+// NFSv4 has only two RPC procedures (RFC 7530 Section 16):
+//   - NFSPROC4_NULL (0): Ping/keepalive
+//   - NFSPROC4_COMPOUND (1): Bundled operations
+//
+// All other procedure numbers are invalid and receive PROC_UNAVAIL.
+func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
+	// Log first v4 call per server lifetime
+	c.server.logV4FirstUse()
+
+	// Start a span for this NFSv4 operation
+	ctx, span := telemetry.StartSpan(ctx, "nfs4.procedure",
+		trace.WithAttributes(
+			telemetry.ClientAddr(clientAddr),
+			telemetry.RPCXID(call.XID),
+		))
+	defer span.End()
+
+	// Record metrics
+	if c.server.metrics != nil {
+		procedureName := "NFSv4_COMPOUND"
+		if call.Procedure == v4types.NFSPROC4_NULL {
+			procedureName = "NFSv4_NULL"
+		}
+		c.server.metrics.RecordRequestStart(procedureName, "")
+		defer c.server.metrics.RecordRequestEnd(procedureName, "")
+	}
+
+	startTime := time.Now()
+
+	switch call.Procedure {
+	case v4types.NFSPROC4_NULL:
+		result, err := c.server.v4Handler.HandleNull(data)
+		if c.server.metrics != nil {
+			duration := time.Since(startTime)
+			c.server.metrics.RecordRequest("NFSv4_NULL", "", duration, "")
+		}
+		return result, err
+
+	case v4types.NFSPROC4_COMPOUND:
+		// Extract CompoundContext with auth credentials
+		compCtx := v4handlers.ExtractV4HandlerContext(ctx, call, clientAddr)
+
+		result, err := c.server.v4Handler.ProcessCompound(compCtx, data)
+		if c.server.metrics != nil {
+			duration := time.Since(startTime)
+			var responseStatus string
+			if err != nil {
+				responseStatus = "ERROR"
+			}
+			c.server.metrics.RecordRequest("NFSv4_COMPOUND", "", duration, responseStatus)
+		}
+		return result, err
+
+	default:
+		// NFSv4 only has 2 procedures -- anything else is invalid
+		logger.Debug("Unknown NFSv4 procedure",
+			"procedure", call.Procedure,
+			"client", clientAddr)
+		errorReply, err := rpc.MakeErrorReply(call.XID, rpc.RPCProcUnavail)
+		if err != nil {
+			return nil, fmt.Errorf("make NFSv4 proc unavail reply: %w", err)
+		}
+		return nil, c.writeReply(call.XID, errorReply)
+	}
 }
 
 // sendReply sends an RPC reply to the client.

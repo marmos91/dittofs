@@ -54,9 +54,7 @@ const (
 	NFSVersion3 = 3
 
 	// NFSVersion4 is the NFSv4 protocol version (RFC 7530).
-	// DittoFS does not support NFSv4. This constant is used for
-	// version detection to apply the macOS kernel bug workaround
-	// (closing connection instead of sending PROG_MISMATCH).
+	// DittoFS supports NFSv4.0 (RFC 7530). Used for version routing in dispatch.
 	NFSVersion4 = 4
 
 	// MountVersion3 is the Mount protocol version 3 (RFC 1813 Appendix I).

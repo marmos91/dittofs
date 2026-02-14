@@ -12,6 +12,9 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	mount "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	v3 "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
+	v4handlers "github.com/marmos91/dittofs/internal/protocol/nfs/v4/handlers"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/pseudofs"
+	v4state "github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/protocol/nlm/blocking"
 	"github.com/marmos91/dittofs/internal/protocol/nlm/callback"
 	nlm_handlers "github.com/marmos91/dittofs/internal/protocol/nlm/handlers"
@@ -23,9 +26,10 @@ import (
 	"github.com/marmos91/dittofs/pkg/metrics"
 )
 
-// NFSAdapter implements the adapter.Adapter interface for NFSv3 protocol.
+// NFSAdapter implements the adapter.Adapter interface for NFS protocol.
 //
-// This adapter provides a production-ready NFSv3 server with:
+// This adapter provides a production-ready NFS server supporting both
+// NFSv3 and NFSv4 simultaneously with:
 //   - Graceful shutdown with configurable timeout
 //   - Connection limiting and resource management
 //   - Context-based request cancellation
@@ -58,6 +62,16 @@ type NFSAdapter struct {
 
 	// nfsHandler processes NFSv3 protocol operations (LOOKUP, READ, WRITE, etc.)
 	nfsHandler *v3.Handler
+
+	// v4Handler processes NFSv4 COMPOUND operations
+	v4Handler *v4handlers.Handler
+
+	// pseudoFS is the NFSv4 pseudo-filesystem virtual namespace
+	pseudoFS *pseudofs.PseudoFS
+
+	// v3FirstUse and v4FirstUse log at INFO level on first use of each version
+	v3FirstUse sync.Once
+	v4FirstUse sync.Once
 
 	// mountHandler processes MOUNT protocol operations (MNT, UMNT, EXPORT, etc.)
 	mountHandler *mount.Handler
@@ -337,6 +351,14 @@ func (s *NFSAdapter) SetRuntime(rt *runtime.Runtime) {
 	// Inject runtime into handlers
 	s.nfsHandler.Registry = rt
 	s.mountHandler.Registry = rt
+
+	// Initialize NFSv4 pseudo-filesystem and handler
+	s.pseudoFS = pseudofs.New()
+	shares := rt.ListShares()
+	s.pseudoFS.Rebuild(shares)
+	v4StateManager := v4state.NewStateManager(v4state.DefaultLeaseDuration)
+	s.v4Handler = v4handlers.NewHandler(rt, s.pseudoFS, v4StateManager)
+	// TODO: Rebuild pseudo-fs dynamically when shares change (on share add/remove)
 
 	// Create blocking queue for NLM lock operations
 	s.blockingQueue = blocking.NewBlockingQueue(nlm_handlers.DefaultBlockingQueueSize)
@@ -1127,4 +1149,20 @@ func (s *NFSAdapter) Port() int {
 // Returns "NFS" for logging and metrics.
 func (s *NFSAdapter) Protocol() string {
 	return "NFS"
+}
+
+// logV3FirstUse logs at INFO level the first time a client uses NFSv3.
+// Subsequent calls are no-ops (uses sync.Once for one-time logging).
+func (s *NFSAdapter) logV3FirstUse() {
+	s.v3FirstUse.Do(func() {
+		logger.Info("First NFSv3 request received")
+	})
+}
+
+// logV4FirstUse logs at INFO level the first time a client uses NFSv4.
+// Subsequent calls are no-ops (uses sync.Once for one-time logging).
+func (s *NFSAdapter) logV4FirstUse() {
+	s.v4FirstUse.Do(func() {
+		logger.Info("First NFSv4 request received")
+	})
 }
