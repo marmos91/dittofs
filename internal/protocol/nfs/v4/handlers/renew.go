@@ -1,0 +1,58 @@
+package handlers
+
+import (
+	"io"
+
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
+	"github.com/marmos91/dittofs/internal/protocol/xdr"
+)
+
+// handleRenew implements the RENEW operation (RFC 7530 Section 16.29).
+//
+// RENEW renews the lease associated with a client ID. It validates
+// that the client ID exists and is confirmed via StateManager.RenewLease.
+//
+// Wire format args:
+//
+//	clientid:  uint64
+//
+// Wire format res:
+//
+//	nfsstat4:  uint32
+func (h *Handler) handleRenew(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
+	// Read clientid (uint64)
+	clientID, err := xdr.DecodeUint64(reader)
+	if err != nil {
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_BADXDR,
+			OpCode: types.OP_RENEW,
+			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+		}
+	}
+
+	// Delegate to StateManager for validation and lease renewal
+	if err := h.StateManager.RenewLease(clientID); err != nil {
+		nfsStatus := mapOpenStateError(err)
+		logger.Info("NFSv4 RENEW failed",
+			"client_id", clientID,
+			"error", err,
+			"nfs_status", nfsStatus,
+			"client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: nfsStatus,
+			OpCode: types.OP_RENEW,
+			Data:   encodeStatusOnly(nfsStatus),
+		}
+	}
+
+	logger.Debug("NFSv4 RENEW: lease renewed",
+		"client_id", clientID,
+		"client", ctx.ClientAddr)
+
+	return &types.CompoundResult{
+		Status: types.NFS4_OK,
+		OpCode: types.OP_RENEW,
+		Data:   encodeStatusOnly(types.NFS4_OK),
+	}
+}
