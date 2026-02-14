@@ -78,7 +78,7 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 	// Special stateids (all-zeros, all-ones) bypass validation.
 	// Real stateids are validated for correctness (seqid, epoch, filehandle match).
 	if _, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH); stateErr != nil {
-		nfsStatus := mapOpenStateError(stateErr)
+		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 READ stateid validation failed",
 			"error", stateErr,
 			"nfs_status", nfsStatus,
@@ -201,15 +201,8 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 func encodeRead4resok(eof bool, data []byte) *types.CompoundResult {
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
+	_ = xdr.WriteBool(&buf, eof)
 
-	// eof (bool as uint32)
-	if eof {
-		_ = xdr.WriteUint32(&buf, 1)
-	} else {
-		_ = xdr.WriteUint32(&buf, 0)
-	}
-
-	// data (XDR opaque: uint32 length + bytes + padding)
 	if data == nil {
 		data = []byte{}
 	}

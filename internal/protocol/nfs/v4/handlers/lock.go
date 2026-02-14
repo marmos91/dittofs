@@ -218,7 +218,7 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 
 	// Handle errors
 	if stateErr != nil {
-		nfsStatus := mapOpenStateError(stateErr)
+		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 LOCK failed",
 			"error", stateErr,
 			"nfs_status", nfsStatus,
@@ -353,7 +353,7 @@ func (h *Handler) handleLockT(ctx *types.CompoundContext, reader io.Reader) *typ
 	// Delegate to StateManager (no state created)
 	denied, stateErr := h.StateManager.TestLock(clientID, ownerData, ctx.CurrentFH, lockType, offset, length)
 	if stateErr != nil {
-		nfsStatus := mapOpenStateError(stateErr)
+		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 LOCKT failed",
 			"error", stateErr,
 			"nfs_status", nfsStatus,
@@ -485,7 +485,7 @@ func (h *Handler) handleLockU(ctx *types.CompoundContext, reader io.Reader) *typ
 		lockStateid, seqid, lockType, offset, length,
 	)
 	if stateErr != nil {
-		nfsStatus := mapOpenStateError(stateErr)
+		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 LOCKU failed",
 			"error", stateErr,
 			"nfs_status", nfsStatus,

@@ -31,10 +31,10 @@ func TestHandleLock_NoCurrentFH(t *testing.T) {
 	// Encode minimal LOCK args (won't be read since FH check happens first)
 	var args bytes.Buffer
 	_ = xdr.WriteUint32(&args, types.WRITE_LT) // locktype
-	_ = xdr.WriteUint32(&args, 0)               // reclaim
-	_ = xdr.WriteUint64(&args, 0)               // offset
-	_ = xdr.WriteUint64(&args, 100)             // length
-	_ = xdr.WriteUint32(&args, 1)               // new_lock_owner = true
+	_ = xdr.WriteUint32(&args, 0)              // reclaim
+	_ = xdr.WriteUint64(&args, 0)              // offset
+	_ = xdr.WriteUint64(&args, 100)            // length
+	_ = xdr.WriteUint32(&args, 1)              // new_lock_owner = true
 
 	result := h.handleLock(ctx, bytes.NewReader(args.Bytes()))
 
@@ -106,12 +106,12 @@ func setupHandlerLockClient(t *testing.T, h *Handler) (clientID uint64, openStat
 
 	// SETCLIENTID
 	var scidArgs bytes.Buffer
-	scidArgs.Write(make([]byte, 8))                            // client verifier
-	_ = xdr.WriteXDRString(&scidArgs, "lock-handler-client")   // client id string
-	_ = xdr.WriteUint32(&scidArgs, 0x40000000)                 // callback program
-	_ = xdr.WriteXDRString(&scidArgs, "tcp")                   // callback netid
-	_ = xdr.WriteXDRString(&scidArgs, "127.0.0.1.8.1")        // callback addr
-	_ = xdr.WriteUint32(&scidArgs, 1)                          // callback_ident
+	scidArgs.Write(make([]byte, 8))                          // client verifier
+	_ = xdr.WriteXDRString(&scidArgs, "lock-handler-client") // client id string
+	_ = xdr.WriteUint32(&scidArgs, 0x40000000)               // callback program
+	_ = xdr.WriteXDRString(&scidArgs, "tcp")                 // callback netid
+	_ = xdr.WriteXDRString(&scidArgs, "127.0.0.1.8.1")       // callback addr
+	_ = xdr.WriteUint32(&scidArgs, 1)                        // callback_ident
 
 	scidResult := h.handleSetClientID(ctx, bytes.NewReader(scidArgs.Bytes()))
 	if scidResult.Status != types.NFS4_OK {
@@ -184,16 +184,16 @@ func TestHandleLock_NewLockOwner_Success(t *testing.T) {
 
 	// Encode LOCK4args with new_lock_owner=true
 	var args bytes.Buffer
-	_ = xdr.WriteUint32(&args, types.WRITE_LT)            // locktype
-	_ = xdr.WriteUint32(&args, 0)                           // reclaim = false
-	_ = xdr.WriteUint64(&args, 0)                           // offset
-	_ = xdr.WriteUint64(&args, 100)                         // length
-	_ = xdr.WriteUint32(&args, 1)                           // new_lock_owner = true
+	_ = xdr.WriteUint32(&args, types.WRITE_LT) // locktype
+	_ = xdr.WriteUint32(&args, 0)              // reclaim = false
+	_ = xdr.WriteUint64(&args, 0)              // offset
+	_ = xdr.WriteUint64(&args, 100)            // length
+	_ = xdr.WriteUint32(&args, 1)              // new_lock_owner = true
 	// open_to_lock_owner4:
 	_ = xdr.WriteUint32(&args, openSeqid+1)                // open_seqid
-	types.EncodeStateid4(&args, openStateid)                // open_stateid
-	_ = xdr.WriteUint32(&args, 1)                           // lock_seqid
-	_ = xdr.WriteUint64(&args, clientID)                    // lock_owner clientid
+	types.EncodeStateid4(&args, openStateid)               // open_stateid
+	_ = xdr.WriteUint32(&args, 1)                          // lock_seqid
+	_ = xdr.WriteUint64(&args, clientID)                   // lock_owner clientid
 	_ = xdr.WriteXDROpaque(&args, []byte("my-lock-owner")) // lock_owner data
 
 	result := h.handleLock(ctx, bytes.NewReader(args.Bytes()))
@@ -275,7 +275,7 @@ func TestHandleLock_ExistingLockOwner_Success(t *testing.T) {
 	_ = xdr.WriteUint32(&args2, 0) // new_lock_owner = false
 	// exist_lock_owner4:
 	types.EncodeStateid4(&args2, lockStateid) // lock_stateid
-	_ = xdr.WriteUint32(&args2, 2)             // lock_seqid
+	_ = xdr.WriteUint32(&args2, 2)            // lock_seqid
 
 	result2 := h.handleLock(ctx, bytes.NewReader(args2.Bytes()))
 	if result2.Status != types.NFS4_OK {
@@ -379,9 +379,9 @@ func TestHandleLockT_NoConflict(t *testing.T) {
 	// LOCKT on unlocked file: should return NFS4_OK
 	var args bytes.Buffer
 	_ = xdr.WriteUint32(&args, types.WRITE_LT) // locktype
-	_ = xdr.WriteUint64(&args, 0)               // offset
-	_ = xdr.WriteUint64(&args, 100)             // length
-	_ = xdr.WriteUint64(&args, clientID)         // lock_owner4.clientid
+	_ = xdr.WriteUint64(&args, 0)              // offset
+	_ = xdr.WriteUint64(&args, 100)            // length
+	_ = xdr.WriteUint64(&args, clientID)       // lock_owner4.clientid
 	_ = xdr.WriteXDROpaque(&args, []byte("lockt-test-owner"))
 
 	result := h.handleLockT(ctx, bytes.NewReader(args.Bytes()))
@@ -585,10 +585,10 @@ func TestHandleLockU_Success(t *testing.T) {
 	// LOCKU to release the lock
 	var args bytes.Buffer
 	_ = xdr.WriteUint32(&args, types.WRITE_LT) // locktype
-	_ = xdr.WriteUint32(&args, lockSeqid)        // seqid
-	types.EncodeStateid4(&args, lockStateid)     // lock_stateid
-	_ = xdr.WriteUint64(&args, 0)                // offset
-	_ = xdr.WriteUint64(&args, 100)              // length
+	_ = xdr.WriteUint32(&args, lockSeqid)      // seqid
+	types.EncodeStateid4(&args, lockStateid)   // lock_stateid
+	_ = xdr.WriteUint64(&args, 0)              // offset
+	_ = xdr.WriteUint64(&args, 100)            // length
 
 	result := h.handleLockU(ctx, bytes.NewReader(args.Bytes()))
 
@@ -652,10 +652,10 @@ func TestHandleLockU_BadStateid(t *testing.T) {
 
 	var args bytes.Buffer
 	_ = xdr.WriteUint32(&args, types.WRITE_LT) // locktype
-	_ = xdr.WriteUint32(&args, 1)               // seqid
-	types.EncodeStateid4(&args, fakeStateid)     // lock_stateid
-	_ = xdr.WriteUint64(&args, 0)               // offset
-	_ = xdr.WriteUint64(&args, 100)             // length
+	_ = xdr.WriteUint32(&args, 1)              // seqid
+	types.EncodeStateid4(&args, fakeStateid)   // lock_stateid
+	_ = xdr.WriteUint64(&args, 0)              // offset
+	_ = xdr.WriteUint64(&args, 100)            // length
 
 	result := h.handleLockU(ctx, bytes.NewReader(args.Bytes()))
 
@@ -925,7 +925,7 @@ func TestHandleClose_LocksHeld(t *testing.T) {
 
 	// CLOSE should fail with NFS4ERR_LOCKS_HELD
 	var closeArgs bytes.Buffer
-	_ = xdr.WriteUint32(&closeArgs, openSeqid+2) // seqid
+	_ = xdr.WriteUint32(&closeArgs, openSeqid+2)  // seqid
 	types.EncodeStateid4(&closeArgs, openStateid) // open_stateid
 
 	closeResult := h.handleClose(ctx, bytes.NewReader(closeArgs.Bytes()))
@@ -980,7 +980,7 @@ func TestHandleClose_AfterUnlock(t *testing.T) {
 
 	// CLOSE should succeed
 	var closeArgs bytes.Buffer
-	_ = xdr.WriteUint32(&closeArgs, openSeqid+2) // seqid
+	_ = xdr.WriteUint32(&closeArgs, openSeqid+2)  // seqid
 	types.EncodeStateid4(&closeArgs, openStateid) // open_stateid
 
 	closeResult := h.handleClose(ctx, bytes.NewReader(closeArgs.Bytes()))
@@ -1018,13 +1018,13 @@ func TestFullLockLifecycle(t *testing.T) {
 	// 2. LOCK with new_lock_owner on range [0, 100)
 	var lockArgs1 bytes.Buffer
 	_ = xdr.WriteUint32(&lockArgs1, types.WRITE_LT)
-	_ = xdr.WriteUint32(&lockArgs1, 0) // reclaim = false
-	_ = xdr.WriteUint64(&lockArgs1, 0) // offset
-	_ = xdr.WriteUint64(&lockArgs1, 100) // length
-	_ = xdr.WriteUint32(&lockArgs1, 1) // new_lock_owner = true
+	_ = xdr.WriteUint32(&lockArgs1, 0)           // reclaim = false
+	_ = xdr.WriteUint64(&lockArgs1, 0)           // offset
+	_ = xdr.WriteUint64(&lockArgs1, 100)         // length
+	_ = xdr.WriteUint32(&lockArgs1, 1)           // new_lock_owner = true
 	_ = xdr.WriteUint32(&lockArgs1, openSeqid+1) // open_seqid
 	types.EncodeStateid4(&lockArgs1, openStateid)
-	_ = xdr.WriteUint32(&lockArgs1, 1) // lock_seqid
+	_ = xdr.WriteUint32(&lockArgs1, 1)        // lock_seqid
 	_ = xdr.WriteUint64(&lockArgs1, clientID) // lock_owner clientid
 	_ = xdr.WriteXDROpaque(&lockArgs1, []byte("lifecycle-owner"))
 
@@ -1045,7 +1045,7 @@ func TestFullLockLifecycle(t *testing.T) {
 	// 3. LOCKT from same owner on same range: should show no conflict (same owner)
 	var locktArgs1 bytes.Buffer
 	_ = xdr.WriteUint32(&locktArgs1, types.WRITE_LT)
-	_ = xdr.WriteUint64(&locktArgs1, 0) // offset
+	_ = xdr.WriteUint64(&locktArgs1, 0)   // offset
 	_ = xdr.WriteUint64(&locktArgs1, 100) // length
 	_ = xdr.WriteUint64(&locktArgs1, clientID)
 	_ = xdr.WriteXDROpaque(&locktArgs1, []byte("lifecycle-owner"))
@@ -1058,12 +1058,12 @@ func TestFullLockLifecycle(t *testing.T) {
 	// 4. LOCK existing owner on range [200, 300)
 	var lockArgs2 bytes.Buffer
 	_ = xdr.WriteUint32(&lockArgs2, types.WRITE_LT)
-	_ = xdr.WriteUint32(&lockArgs2, 0) // reclaim
-	_ = xdr.WriteUint64(&lockArgs2, 200) // offset
-	_ = xdr.WriteUint64(&lockArgs2, 100) // length
-	_ = xdr.WriteUint32(&lockArgs2, 0) // new_lock_owner = false
+	_ = xdr.WriteUint32(&lockArgs2, 0)             // reclaim
+	_ = xdr.WriteUint64(&lockArgs2, 200)           // offset
+	_ = xdr.WriteUint64(&lockArgs2, 100)           // length
+	_ = xdr.WriteUint32(&lockArgs2, 0)             // new_lock_owner = false
 	types.EncodeStateid4(&lockArgs2, lockStateid1) // existing lock stateid
-	_ = xdr.WriteUint32(&lockArgs2, 2) // lock_seqid
+	_ = xdr.WriteUint32(&lockArgs2, 2)             // lock_seqid
 
 	lockResult2 := h.handleLock(ctx, bytes.NewReader(lockArgs2.Bytes()))
 	if lockResult2.Status != types.NFS4_OK {
@@ -1086,10 +1086,10 @@ func TestFullLockLifecycle(t *testing.T) {
 	// 5. LOCKU first range [0, 100)
 	var unlockArgs1 bytes.Buffer
 	_ = xdr.WriteUint32(&unlockArgs1, types.WRITE_LT)
-	_ = xdr.WriteUint32(&unlockArgs1, 3) // lock-owner seqid
+	_ = xdr.WriteUint32(&unlockArgs1, 3)             // lock-owner seqid
 	types.EncodeStateid4(&unlockArgs1, lockStateid2) // use latest lock stateid
-	_ = xdr.WriteUint64(&unlockArgs1, 0) // offset
-	_ = xdr.WriteUint64(&unlockArgs1, 100) // length
+	_ = xdr.WriteUint64(&unlockArgs1, 0)             // offset
+	_ = xdr.WriteUint64(&unlockArgs1, 100)           // length
 
 	unlockResult1 := h.handleLockU(ctx, bytes.NewReader(unlockArgs1.Bytes()))
 	if unlockResult1.Status != types.NFS4_OK {

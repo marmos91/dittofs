@@ -145,7 +145,7 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 	case types.CLAIM_NULL:
 		// New open: check grace period BEFORE file creation/lookup
 		if graceErr := h.StateManager.CheckGraceForNewState(); graceErr != nil {
-			nfsStatus := mapOpenStateError(graceErr)
+			nfsStatus := mapStateError(graceErr)
 			logger.Debug("NFSv4 OPEN blocked by grace period",
 				"claim_type", "CLAIM_NULL",
 				"client", ctx.ClientAddr)
@@ -310,7 +310,7 @@ func (h *Handler) handleOpenClaimNull(
 		claimType,
 	)
 	if stateErr != nil {
-		return openError(mapOpenStateError(stateErr))
+		return openError(mapStateError(stateErr))
 	}
 
 	if openResult.IsReplay {
@@ -392,7 +392,7 @@ func (h *Handler) handleOpenClaimPrevious(
 		claimType,
 	)
 	if stateErr != nil {
-		nfsStatus := mapOpenStateError(stateErr)
+		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 OPEN CLAIM_PREVIOUS failed",
 			"error", stateErr,
 			"nfs_status", nfsStatus,
@@ -499,7 +499,7 @@ func (h *Handler) handleOpenConfirm(ctx *types.CompoundContext, reader io.Reader
 	// Delegate to StateManager
 	resultStateid, stateErr := h.StateManager.ConfirmOpen(stateid, confirmSeqid)
 	if stateErr != nil {
-		nfsStatus := mapOpenStateError(stateErr)
+		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 OPEN_CONFIRM failed",
 			"error", stateErr,
 			"nfs_status", nfsStatus,
@@ -555,7 +555,7 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	// Validate the delegation stateid
 	_, delegErr := h.StateManager.ValidateDelegationStateid(delegStateid)
 	if delegErr != nil {
-		nfsStatus := mapOpenStateError(delegErr)
+		nfsStatus := mapStateError(delegErr)
 		logger.Debug("NFSv4 OPEN CLAIM_DELEGATE_CUR: invalid delegation stateid",
 			"error", delegErr,
 			"nfs_status", nfsStatus,
@@ -615,7 +615,7 @@ func (h *Handler) handleOpenClaimDelegateCur(
 		types.CLAIM_NULL,
 	)
 	if stateErr != nil {
-		return openError(mapOpenStateError(stateErr))
+		return openError(mapStateError(stateErr))
 	}
 
 	if openResult.IsReplay {
@@ -658,13 +658,4 @@ func effectiveUIDGID(authCtx *metadata.AuthContext) (uint32, uint32) {
 		}
 	}
 	return uid, gid
-}
-
-// mapOpenStateError maps state package errors to NFS4 status codes.
-// Extends mapStateError for open-specific state errors.
-func mapOpenStateError(err error) uint32 {
-	if stateErr, ok := err.(*state.NFS4StateError); ok {
-		return stateErr.Status
-	}
-	return mapStateError(err)
 }

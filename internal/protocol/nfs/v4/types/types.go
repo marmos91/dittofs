@@ -178,25 +178,35 @@ type Stateid4 struct {
 //   - Anonymous: seqid=0, other=all-zeros (standard access check, no lock state)
 //   - READ bypass: seqid=0xFFFFFFFF, other=all-ones (bypass locks for read only)
 func (s *Stateid4) IsSpecialStateid() bool {
-	allZeros := true
-	allOnes := true
+	return s.isAnonymous() || s.isReadBypass()
+}
+
+// isAnonymous returns true if the stateid is the anonymous stateid
+// (seqid=0, other=all-zeros).
+func (s *Stateid4) isAnonymous() bool {
+	if s.Seqid != 0 {
+		return false
+	}
 	for _, b := range s.Other {
 		if b != 0 {
-			allZeros = false
+			return false
 		}
+	}
+	return true
+}
+
+// isReadBypass returns true if the stateid is the READ bypass stateid
+// (seqid=0xFFFFFFFF, other=all-ones).
+func (s *Stateid4) isReadBypass() bool {
+	if s.Seqid != 0xFFFFFFFF {
+		return false
+	}
+	for _, b := range s.Other {
 		if b != 0xFF {
-			allOnes = false
+			return false
 		}
 	}
-	// Anonymous stateid: seqid=0, other=all-zeros
-	if s.Seqid == 0 && allZeros {
-		return true
-	}
-	// READ bypass stateid: seqid=0xFFFFFFFF, other=all-ones
-	if s.Seqid == 0xFFFFFFFF && allOnes {
-		return true
-	}
-	return false
+	return true
 }
 
 // DecodeStateid4 reads a stateid4 from an io.Reader.

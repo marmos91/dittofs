@@ -349,23 +349,23 @@ func TestBuildCBRPCCallMessage(t *testing.T) {
 
 	// AUTH_NULL credentials: flavor=0, length=0
 	var credFlavor, credLen uint32
-	binary.Read(reader, binary.BigEndian, &credFlavor)
-	binary.Read(reader, binary.BigEndian, &credLen)
+	_ = binary.Read(reader, binary.BigEndian, &credFlavor)
+	_ = binary.Read(reader, binary.BigEndian, &credLen)
 	if credFlavor != rpc.AuthNull || credLen != 0 {
 		t.Errorf("cred = (flavor=%d, len=%d), want (0, 0)", credFlavor, credLen)
 	}
 
 	// AUTH_NULL verifier: flavor=0, length=0
 	var verfFlavor, verfLen uint32
-	binary.Read(reader, binary.BigEndian, &verfFlavor)
-	binary.Read(reader, binary.BigEndian, &verfLen)
+	_ = binary.Read(reader, binary.BigEndian, &verfFlavor)
+	_ = binary.Read(reader, binary.BigEndian, &verfLen)
 	if verfFlavor != rpc.AuthNull || verfLen != 0 {
 		t.Errorf("verf = (flavor=%d, len=%d), want (0, 0)", verfFlavor, verfLen)
 	}
 
 	// Args
 	remaining := make([]byte, reader.Len())
-	io.ReadFull(reader, remaining)
+	_, _ = io.ReadFull(reader, remaining)
 	if !bytes.Equal(remaining, args) {
 		t.Errorf("args = %v, want %v", remaining, args)
 	}
@@ -414,22 +414,22 @@ func buildMockCBCompoundReply(xid uint32) []byte {
 	var reply bytes.Buffer
 
 	// XID (echo back)
-	binary.Write(&reply, binary.BigEndian, xid)
+	_ = binary.Write(&reply, binary.BigEndian, xid)
 	// MsgType = REPLY (1)
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCReply))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCReply))
 	// reply_stat = MSG_ACCEPTED (0)
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCMsgAccepted))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCMsgAccepted))
 	// Verifier: AUTH_NULL (flavor=0, body_len=0)
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.AuthNull))
-	binary.Write(&reply, binary.BigEndian, uint32(0))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.AuthNull))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(0))
 	// accept_stat = SUCCESS (0)
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCSuccess))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCSuccess))
 	// CB_COMPOUND4res: nfsstat4 = NFS4_OK (0)
-	binary.Write(&reply, binary.BigEndian, uint32(types.NFS4_OK))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(types.NFS4_OK))
 	// tag (empty)
-	binary.Write(&reply, binary.BigEndian, uint32(0))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(0))
 	// resarray count = 0 (we don't need per-op results for this test)
-	binary.Write(&reply, binary.BigEndian, uint32(0))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(0))
 
 	body := reply.Bytes()
 
@@ -446,16 +446,16 @@ func buildMockNullReply(xid uint32) []byte {
 	var reply bytes.Buffer
 
 	// XID
-	binary.Write(&reply, binary.BigEndian, xid)
+	_ = binary.Write(&reply, binary.BigEndian, xid)
 	// MsgType = REPLY
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCReply))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCReply))
 	// reply_stat = MSG_ACCEPTED
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCMsgAccepted))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCMsgAccepted))
 	// Verifier: AUTH_NULL
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.AuthNull))
-	binary.Write(&reply, binary.BigEndian, uint32(0))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.AuthNull))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(0))
 	// accept_stat = SUCCESS
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCSuccess))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCSuccess))
 
 	body := reply.Bytes()
 
@@ -512,7 +512,7 @@ func TestSendCBRecall_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	callback := makeCallbackInfoFromListener(l)
 
@@ -524,7 +524,7 @@ func TestSendCBRecall_Success(t *testing.T) {
 			done <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		// Read the RPC request and extract XID
 		xid, err := extractXIDFromRequest(conn)
@@ -577,7 +577,7 @@ func TestSendCBRecall_Timeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	callback := makeCallbackInfoFromListener(l)
 
@@ -593,7 +593,7 @@ func TestSendCBRecall_Timeout(t *testing.T) {
 		_, _ = conn.Read(buf)
 		// Sleep longer than timeout
 		time.Sleep(10 * time.Second)
-		conn.Close()
+		_ = conn.Close()
 	}()
 
 	// Use a very short timeout context
@@ -615,7 +615,7 @@ func TestSendCBNull_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	callback := makeCallbackInfoFromListener(l)
 
@@ -627,7 +627,7 @@ func TestSendCBNull_Success(t *testing.T) {
 			done <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		// Read the RPC request and extract XID
 		xid, err := extractXIDFromRequest(conn)
@@ -673,7 +673,7 @@ func TestSendCBNull_Timeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	callback := makeCallbackInfoFromListener(l)
 
@@ -686,7 +686,7 @@ func TestSendCBNull_Timeout(t *testing.T) {
 		buf := make([]byte, 4096)
 		_, _ = conn.Read(buf)
 		time.Sleep(10 * time.Second)
-		conn.Close()
+		_ = conn.Close()
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -707,13 +707,13 @@ func TestReadAndValidateCBReply_ValidCompound(t *testing.T) {
 	var reply bytes.Buffer
 	xid := uint32(1234)
 
-	binary.Write(&reply, binary.BigEndian, xid)
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCReply))
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCMsgAccepted))
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.AuthNull)) // verf flavor
-	binary.Write(&reply, binary.BigEndian, uint32(0))            // verf body len
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCSuccess))
-	binary.Write(&reply, binary.BigEndian, uint32(types.NFS4_OK))
+	_ = binary.Write(&reply, binary.BigEndian, xid)
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCReply))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCMsgAccepted))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.AuthNull)) // verf flavor
+	_ = binary.Write(&reply, binary.BigEndian, uint32(0))            // verf body len
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCSuccess))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(types.NFS4_OK))
 
 	body := reply.Bytes()
 	framed := make([]byte, 4+len(body))
@@ -722,11 +722,11 @@ func TestReadAndValidateCBReply_ValidCompound(t *testing.T) {
 
 	// Create a pipe to simulate a connection
 	server, client := net.Pipe()
-	defer server.Close()
-	defer client.Close()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
 
 	go func() {
-		server.Write(framed)
+		_, _ = server.Write(framed)
 	}()
 
 	err := readAndValidateCBReply(client)
@@ -739,9 +739,9 @@ func TestReadAndValidateCBReply_DeniedReply(t *testing.T) {
 	var reply bytes.Buffer
 	xid := uint32(1234)
 
-	binary.Write(&reply, binary.BigEndian, xid)
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCReply))
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCMsgDenied)) // DENIED
+	_ = binary.Write(&reply, binary.BigEndian, xid)
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCReply))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCMsgDenied)) // DENIED
 
 	body := reply.Bytes()
 	framed := make([]byte, 4+len(body))
@@ -749,11 +749,11 @@ func TestReadAndValidateCBReply_DeniedReply(t *testing.T) {
 	copy(framed[4:], body)
 
 	server, client := net.Pipe()
-	defer server.Close()
-	defer client.Close()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
 
 	go func() {
-		server.Write(framed)
+		_, _ = server.Write(framed)
 	}()
 
 	err := readAndValidateCBReply(client)
@@ -766,13 +766,13 @@ func TestReadAndValidateCBReply_NFS4Error(t *testing.T) {
 	var reply bytes.Buffer
 	xid := uint32(1234)
 
-	binary.Write(&reply, binary.BigEndian, xid)
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCReply))
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCMsgAccepted))
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.AuthNull))
-	binary.Write(&reply, binary.BigEndian, uint32(0))
-	binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCSuccess))
-	binary.Write(&reply, binary.BigEndian, uint32(types.NFS4ERR_BADHANDLE)) // NFS error
+	_ = binary.Write(&reply, binary.BigEndian, xid)
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCReply))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCMsgAccepted))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.AuthNull))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(0))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(rpc.RPCSuccess))
+	_ = binary.Write(&reply, binary.BigEndian, uint32(types.NFS4ERR_BADHANDLE)) // NFS error
 
 	body := reply.Bytes()
 	framed := make([]byte, 4+len(body))
@@ -780,11 +780,11 @@ func TestReadAndValidateCBReply_NFS4Error(t *testing.T) {
 	copy(framed[4:], body)
 
 	server, client := net.Pipe()
-	defer server.Close()
-	defer client.Close()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
 
 	go func() {
-		server.Write(framed)
+		_, _ = server.Write(framed)
 	}()
 
 	err := readAndValidateCBReply(client)
@@ -802,7 +802,7 @@ func TestSendCBRecall_VerifyWireFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	callback := makeCallbackInfoFromListener(l)
 
@@ -816,7 +816,7 @@ func TestSendCBRecall_VerifyWireFormat(t *testing.T) {
 			done <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		// Read fragment header
 		var headerBuf [4]byte
@@ -838,13 +838,13 @@ func TestSendCBRecall_VerifyWireFormat(t *testing.T) {
 
 		// Parse: XID, MsgType, RPCVersion, Program, Version, Procedure
 		var xid, msgType, rpcVer uint32
-		binary.Read(reader, binary.BigEndian, &xid)
-		binary.Read(reader, binary.BigEndian, &msgType)
-		binary.Read(reader, binary.BigEndian, &rpcVer)
-		binary.Read(reader, binary.BigEndian, &receivedProg)
+		_ = binary.Read(reader, binary.BigEndian, &xid)
+		_ = binary.Read(reader, binary.BigEndian, &msgType)
+		_ = binary.Read(reader, binary.BigEndian, &rpcVer)
+		_ = binary.Read(reader, binary.BigEndian, &receivedProg)
 		var vers uint32
-		binary.Read(reader, binary.BigEndian, &vers)
-		binary.Read(reader, binary.BigEndian, &receivedProc)
+		_ = binary.Read(reader, binary.BigEndian, &vers)
+		_ = binary.Read(reader, binary.BigEndian, &receivedProc)
 
 		// Send reply
 		reply := buildMockCBCompoundReply(xid)
@@ -880,7 +880,7 @@ func TestSendCBNull_VerifyProcedure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	callback := makeCallbackInfoFromListener(l)
 
@@ -893,7 +893,7 @@ func TestSendCBNull_VerifyProcedure(t *testing.T) {
 			done <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		// Read fragment header
 		var headerBuf [4]byte
@@ -914,12 +914,12 @@ func TestSendCBNull_VerifyProcedure(t *testing.T) {
 
 		// Parse header fields
 		var xid, msgType, rpcVer, prog, vers uint32
-		binary.Read(reader, binary.BigEndian, &xid)
-		binary.Read(reader, binary.BigEndian, &msgType)
-		binary.Read(reader, binary.BigEndian, &rpcVer)
-		binary.Read(reader, binary.BigEndian, &prog)
-		binary.Read(reader, binary.BigEndian, &vers)
-		binary.Read(reader, binary.BigEndian, &receivedProc)
+		_ = binary.Read(reader, binary.BigEndian, &xid)
+		_ = binary.Read(reader, binary.BigEndian, &msgType)
+		_ = binary.Read(reader, binary.BigEndian, &rpcVer)
+		_ = binary.Read(reader, binary.BigEndian, &prog)
+		_ = binary.Read(reader, binary.BigEndian, &vers)
+		_ = binary.Read(reader, binary.BigEndian, &receivedProc)
 
 		// Send reply
 		reply := buildMockNullReply(xid)

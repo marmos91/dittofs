@@ -25,12 +25,12 @@ func TestStatefulLifecycle_FullCompound(t *testing.T) {
 	ctx := newRealFSContext(0, 0)
 
 	var scidArgs bytes.Buffer
-	scidArgs.Write(make([]byte, 8))                      // client verifier
+	scidArgs.Write(make([]byte, 8))                            // client verifier
 	_ = xdr.WriteXDRString(&scidArgs, "test-client-lifecycle") // client id string
-	_ = xdr.WriteUint32(&scidArgs, 0x40000000)           // callback program
-	_ = xdr.WriteXDRString(&scidArgs, "tcp")              // callback netid
-	_ = xdr.WriteXDRString(&scidArgs, "127.0.0.1.8.1")   // callback addr
-	_ = xdr.WriteUint32(&scidArgs, 1)                     // callback_ident
+	_ = xdr.WriteUint32(&scidArgs, 0x40000000)                 // callback program
+	_ = xdr.WriteXDRString(&scidArgs, "tcp")                   // callback netid
+	_ = xdr.WriteXDRString(&scidArgs, "127.0.0.1.8.1")         // callback addr
+	_ = xdr.WriteUint32(&scidArgs, 1)                          // callback_ident
 
 	scidResult := fx.handler.handleSetClientID(ctx, bytes.NewReader(scidArgs.Bytes()))
 	if scidResult.Status != types.NFS4_OK {
@@ -70,15 +70,15 @@ func TestStatefulLifecycle_FullCompound(t *testing.T) {
 	copy(ctx.CurrentFH, fx.rootHandle)
 
 	openArgs := encodeOpenArgs(
-		1,                                      // seqid
-		types.OPEN4_SHARE_ACCESS_BOTH,         // share_access
-		types.OPEN4_SHARE_DENY_NONE,           // share_deny
-		clientID,                               // clientid
-		[]byte("lifecycle-owner"),              // owner
-		types.OPEN4_CREATE,                    // opentype
-		types.UNCHECKED4,                      // createmode
-		types.CLAIM_NULL,                      // claim_type
-		"lifecycle-test.txt",                  // filename
+		1,                             // seqid
+		types.OPEN4_SHARE_ACCESS_BOTH, // share_access
+		types.OPEN4_SHARE_DENY_NONE,   // share_deny
+		clientID,                      // clientid
+		[]byte("lifecycle-owner"),     // owner
+		types.OPEN4_CREATE,            // opentype
+		types.UNCHECKED4,              // createmode
+		types.CLAIM_NULL,              // claim_type
+		"lifecycle-test.txt",          // filename
 	)
 
 	openResult := fx.handler.handleOpen(ctx, bytes.NewReader(openArgs))

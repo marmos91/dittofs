@@ -87,12 +87,13 @@ func verifyAttributes(h *Handler, ctx *types.CompoundContext, reader io.Reader) 
 // attr_vals portion, stripping the bitmap and opaque length prefix.
 //
 // The encode functions (EncodePseudoFSAttrs, EncodeRealFileAttrs) write:
-//   bitmap4 (variable) + opaque(attr_vals) = [len:uint32][data:bytes][padding]
+//
+//	bitmap4 (variable) + opaque(attr_vals) = [len:uint32][data:bytes][padding]
 //
 // We need just the raw attr_vals bytes for comparison. Strategy:
-//   1. Encode to a buffer
-//   2. Skip the bitmap4 (decode it to advance past it)
-//   3. Read the opaque data (which is the attr_vals)
+//  1. Encode to a buffer
+//  2. Skip the bitmap4 (decode it to advance past it)
+//  3. Read the opaque data (which is the attr_vals)
 func encodeAttrValsOnly(encodeFn func(buf *bytes.Buffer, responseBitmap []uint32) error, clientBitmap []uint32) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := encodeFn(&buf, clientBitmap); err != nil {

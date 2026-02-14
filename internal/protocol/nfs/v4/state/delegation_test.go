@@ -45,8 +45,7 @@ func TestGrantDelegation_Read(t *testing.T) {
 	if _, exists := sm.delegByOther[deleg.Stateid.Other]; !exists {
 		t.Error("delegation should be in delegByOther map")
 	}
-	fhKey := string([]byte("fh-read-deleg"))
-	if delegs, exists := sm.delegByFile[fhKey]; !exists || len(delegs) != 1 {
+	if delegs, exists := sm.delegByFile[string([]byte("fh-read-deleg"))]; !exists || len(delegs) != 1 {
 		t.Error("delegation should be in delegByFile map")
 	}
 }
@@ -91,8 +90,7 @@ func TestReturnDelegation_Success(t *testing.T) {
 	if _, exists := sm.delegByOther[deleg.Stateid.Other]; exists {
 		t.Error("delegation should be removed from delegByOther")
 	}
-	fhKey := string([]byte("fh-return-test"))
-	if delegs, exists := sm.delegByFile[fhKey]; exists && len(delegs) > 0 {
+	if delegs, exists := sm.delegByFile[string([]byte("fh-return-test"))]; exists && len(delegs) > 0 {
 		t.Error("delegation should be removed from delegByFile")
 	}
 }
@@ -944,8 +942,7 @@ func TestRecallTimer_FiresRevocation(t *testing.T) {
 	}
 
 	// Should NOT be in delegByFile
-	fhKey := string(fh)
-	if delegs, exists := sm.delegByFile[fhKey]; exists && len(delegs) > 0 {
+	if delegs, exists := sm.delegByFile[string(fh)]; exists && len(delegs) > 0 {
 		t.Error("revoked delegation should be removed from delegByFile")
 	}
 }
@@ -993,8 +990,7 @@ func TestRevokeDelegation_CleansState(t *testing.T) {
 	}
 
 	// Should be removed from delegByFile
-	fhKey := string(fh)
-	if delegs, exists := sm.delegByFile[fhKey]; exists && len(delegs) > 0 {
+	if delegs, exists := sm.delegByFile[string(fh)]; exists && len(delegs) > 0 {
 		t.Error("revoked delegation should be removed from delegByFile")
 	}
 
@@ -1103,7 +1099,7 @@ func TestCBPathUp_VerifiedOnConfirm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	// Handle one CB_NULL connection
 	go func() {
@@ -1111,7 +1107,7 @@ func TestCBPathUp_VerifiedOnConfirm(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		// Read the record mark + RPC call
 		var recMark [4]byte
@@ -1129,19 +1125,19 @@ func TestCBPathUp_VerifiedOnConfirm(t *testing.T) {
 
 		// Build RPC reply: accepted, success
 		var reply bytes.Buffer
-		binary.Write(&reply, binary.BigEndian, xid)           // XID
-		binary.Write(&reply, binary.BigEndian, uint32(1))     // REPLY
-		binary.Write(&reply, binary.BigEndian, uint32(0))     // MSG_ACCEPTED
-		binary.Write(&reply, binary.BigEndian, uint32(0))     // AUTH_NULL
-		binary.Write(&reply, binary.BigEndian, uint32(0))     // opaque len 0
-		binary.Write(&reply, binary.BigEndian, uint32(0))     // ACCEPT_SUCCESS
+		_ = binary.Write(&reply, binary.BigEndian, xid)       // XID
+		_ = binary.Write(&reply, binary.BigEndian, uint32(1)) // REPLY
+		_ = binary.Write(&reply, binary.BigEndian, uint32(0)) // MSG_ACCEPTED
+		_ = binary.Write(&reply, binary.BigEndian, uint32(0)) // AUTH_NULL
+		_ = binary.Write(&reply, binary.BigEndian, uint32(0)) // opaque len 0
+		_ = binary.Write(&reply, binary.BigEndian, uint32(0)) // ACCEPT_SUCCESS
 
 		// Write record mark + reply
 		replyBytes := reply.Bytes()
 		var outRecMark [4]byte
 		binary.BigEndian.PutUint32(outRecMark[:], uint32(len(replyBytes))|0x80000000)
-		conn.Write(outRecMark[:])
-		conn.Write(replyBytes)
+		_, _ = conn.Write(outRecMark[:])
+		_, _ = conn.Write(replyBytes)
 	}()
 
 	callback := makeCallbackInfoFromListener(l)

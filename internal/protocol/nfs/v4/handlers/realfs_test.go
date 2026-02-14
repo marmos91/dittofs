@@ -386,7 +386,7 @@ func TestReadDir_RealFS_ListsEntries(t *testing.T) {
 
 	// Cookie verifier (8 bytes)
 	cookieVerf := make([]byte, 8)
-	reader.Read(cookieVerf)
+	_, _ = reader.Read(cookieVerf)
 
 	// Read entries
 	var entryNames []string

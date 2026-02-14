@@ -103,7 +103,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 	// Implicit lease renewal happens inside ValidateStateid for real stateids.
 	openState, stateErr := h.StateManager.ValidateStateid(stateid, ctx.CurrentFH)
 	if stateErr != nil {
-		nfsStatus := mapOpenStateError(stateErr)
+		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 WRITE stateid validation failed",
 			"error", stateErr,
 			"nfs_status", nfsStatus,

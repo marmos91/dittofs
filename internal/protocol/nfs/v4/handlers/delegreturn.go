@@ -53,7 +53,7 @@ func (h *Handler) handleDelegReturn(ctx *types.CompoundContext, reader io.Reader
 	// Remove delegation state
 	stateErr := h.StateManager.ReturnDelegation(stateid)
 	if stateErr != nil {
-		nfsStatus := mapOpenStateError(stateErr)
+		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 DELEGRETURN failed",
 			"error", stateErr,
 			"nfs_status", nfsStatus,

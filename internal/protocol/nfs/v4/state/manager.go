@@ -620,12 +620,6 @@ func (sm *StateManager) RevokeDelegation(delegOther [types.NFS4_OTHER_SIZE]byte)
 		"deleg_type", deleg.DelegType)
 }
 
-// GetLeaseDuration returns the configured lease duration.
-// Used by GETATTR to return the lease_time attribute.
-func (sm *StateManager) GetLeaseDuration() time.Duration {
-	return sm.leaseDuration
-}
-
 // Shutdown stops all active lease timers, recall timers, and the grace period
 // for graceful server shutdown.
 func (sm *StateManager) Shutdown() {
@@ -1376,16 +1370,10 @@ func (sm *StateManager) LockExisting(
 	// 1. Look up lock state
 	lockState, exists := sm.lockStateByOther[lockStateid.Other]
 	if !exists {
-		// Check if it's a stale stateid from a previous boot
 		if !sm.isCurrentEpoch(lockStateid.Other) {
 			return nil, ErrStaleStateid
 		}
 		return nil, ErrBadStateid
-	}
-
-	// Validate boot epoch
-	if !sm.isCurrentEpoch(lockStateid.Other) {
-		return nil, ErrStaleStateid
 	}
 
 	// Validate seqid: old vs bad
@@ -1575,7 +1563,7 @@ func (sm *StateManager) TestLock(
 
 			// Parse OwnerID to extract clientID and ownerData
 			// Format: "nfs4:{clientid}:{owner_hex}"
-			denied.Owner.ClientID = 0   // Default
+			denied.Owner.ClientID = 0    // Default
 			denied.Owner.OwnerData = nil // Default
 			parseConflictOwner(el.Owner.OwnerID, denied)
 
@@ -1622,11 +1610,6 @@ func (sm *StateManager) UnlockFile(
 			return nil, ErrStaleStateid
 		}
 		return nil, ErrBadStateid
-	}
-
-	// Validate boot epoch
-	if !sm.isCurrentEpoch(lockStateid.Other) {
-		return nil, ErrStaleStateid
 	}
 
 	// 2. Validate stateid seqid

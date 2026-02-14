@@ -244,11 +244,12 @@ func encodeOpenArgs(
 	if openType == types.OPEN4_CREATE {
 		// createhow4: createmode
 		_ = xdr.WriteUint32(&buf, createMode)
-		if createMode == types.UNCHECKED4 || createMode == types.GUARDED4 {
+		switch createMode {
+		case types.UNCHECKED4, types.GUARDED4:
 			// createattrs: empty bitmap + empty opaque
 			_ = xdr.WriteUint32(&buf, 0) // bitmap length
 			_ = xdr.WriteUint32(&buf, 0) // attr data length
-		} else if createMode == types.EXCLUSIVE4 {
+		case types.EXCLUSIVE4:
 			// verifier (8 bytes)
 			buf.Write(make([]byte, 8))
 		}
@@ -313,15 +314,15 @@ func TestOpen_CreateFile_Success(t *testing.T) {
 	copy(ctx.CurrentFH, fx.rootHandle)
 
 	args := encodeOpenArgs(
-		1,                      // seqid
+		1,                             // seqid
 		types.OPEN4_SHARE_ACCESS_BOTH, // share_access
 		types.OPEN4_SHARE_DENY_NONE,   // share_deny
-		0x12345678,             // clientid
-		[]byte("test-owner"),   // owner
-		types.OPEN4_CREATE,     // opentype
-		types.UNCHECKED4,       // createmode
-		types.CLAIM_NULL,       // claim_type
-		"newfile.txt",          // filename
+		0x12345678,                    // clientid
+		[]byte("test-owner"),          // owner
+		types.OPEN4_CREATE,            // opentype
+		types.UNCHECKED4,              // createmode
+		types.CLAIM_NULL,              // claim_type
+		"newfile.txt",                 // filename
 	)
 
 	result := fx.handler.handleOpen(ctx, bytes.NewReader(args))

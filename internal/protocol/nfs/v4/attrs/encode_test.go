@@ -22,10 +22,10 @@ type mockPseudoNode struct {
 }
 
 func (m *mockPseudoNode) GetHandle() []byte         { return m.handle }
-func (m *mockPseudoNode) GetFSID() (uint64, uint64)  { return m.fsidMaj, m.fsidMin }
-func (m *mockPseudoNode) GetFileID() uint64          { return m.fileID }
-func (m *mockPseudoNode) GetChangeID() uint64        { return m.changeID }
-func (m *mockPseudoNode) GetType() uint32            { return m.fileType }
+func (m *mockPseudoNode) GetFSID() (uint64, uint64) { return m.fsidMaj, m.fsidMin }
+func (m *mockPseudoNode) GetFileID() uint64         { return m.fileID }
+func (m *mockPseudoNode) GetChangeID() uint64       { return m.changeID }
+func (m *mockPseudoNode) GetType() uint32           { return m.fileType }
 
 func newMockNode() *mockPseudoNode {
 	return &mockPseudoNode{

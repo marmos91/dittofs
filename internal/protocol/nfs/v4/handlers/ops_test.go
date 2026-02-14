@@ -117,11 +117,11 @@ func encodeReadDir(cookie uint64, maxcount uint32, bits ...uint32) encodedOp {
 	}
 
 	var buf bytes.Buffer
-	_ = xdr.WriteUint64(&buf, cookie)       // cookie
-	buf.Write(make([]byte, 8))               // cookieverf (8 zero bytes)
-	_ = xdr.WriteUint32(&buf, 4096)          // dircount (hint)
-	_ = xdr.WriteUint32(&buf, maxcount)      // maxcount
-	_ = attrs.EncodeBitmap4(&buf, bitmap)    // attr_request
+	_ = xdr.WriteUint64(&buf, cookie)     // cookie
+	buf.Write(make([]byte, 8))            // cookieverf (8 zero bytes)
+	_ = xdr.WriteUint32(&buf, 4096)       // dircount (hint)
+	_ = xdr.WriteUint32(&buf, maxcount)   // maxcount
+	_ = attrs.EncodeBitmap4(&buf, bitmap) // attr_request
 	return encodedOp{opCode: types.OP_READDIR, args: buf.Bytes()}
 }
 
@@ -137,9 +137,9 @@ func encodeIllegal() encodedOp {
 
 func encodeSetClientID(clientName string) encodedOp {
 	var buf bytes.Buffer
-	buf.Write(make([]byte, 8))                  // client verifier (8 zero bytes)
-	_ = xdr.WriteXDRString(&buf, clientName)     // client id string
-	_ = xdr.WriteUint32(&buf, 0x40000000)        // callback program
+	buf.Write(make([]byte, 8))                    // client verifier (8 zero bytes)
+	_ = xdr.WriteXDRString(&buf, clientName)      // client id string
+	_ = xdr.WriteUint32(&buf, 0x40000000)         // callback program
 	_ = xdr.WriteXDRString(&buf, "tcp")           // callback netid
 	_ = xdr.WriteXDRString(&buf, "127.0.0.1.8.1") // callback addr
 	_ = xdr.WriteUint32(&buf, 1)                  // callback_ident
@@ -227,18 +227,18 @@ func decodeCompoundResp(data []byte) (*decodedCompoundResp, error) {
 				// Read all remaining GETATTR response data (bitmap + opaque attrvals)
 				// which follows the status. Capture as raw bytes for test-level parsing.
 				remaining := make([]byte, reader.Len())
-				reader.Read(remaining)
+				_, _ = reader.Read(remaining)
 				extra = remaining
 			case types.OP_READDIR:
 				// Read remaining READDIR response data (cookieverf + entries + eof)
 				remaining := make([]byte, reader.Len())
-				reader.Read(remaining)
+				_, _ = reader.Read(remaining)
 				extra = remaining
 			case types.OP_SETCLIENTID:
 				// Read clientid (uint64) + confirm verifier (8 bytes)
 				clientID, _ := xdr.DecodeUint64(reader)
 				verf := make([]byte, 8)
-				reader.Read(verf)
+				_, _ = reader.Read(verf)
 				extra = make([]byte, 16)
 				binary.BigEndian.PutUint64(extra[0:8], clientID)
 				copy(extra[8:16], verf)
@@ -780,8 +780,8 @@ func TestGetAttr_EmptyBitmap(t *testing.T) {
 	if overallStatus != types.NFS4_OK {
 		t.Fatalf("overall status = %d, want NFS4_OK", overallStatus)
 	}
-	_, _ = xdr.DecodeOpaque(reader)   // tag
-	_, _ = xdr.DecodeUint32(reader)   // numResults
+	_, _ = xdr.DecodeOpaque(reader) // tag
+	_, _ = xdr.DecodeUint32(reader) // numResults
 
 	// Skip PUTROOTFH result
 	_, _ = xdr.DecodeUint32(reader) // opcode
@@ -855,7 +855,7 @@ func TestReadDir_PseudoFSRoot(t *testing.T) {
 
 	// cookieverf (8 bytes)
 	cookieVerf := make([]byte, 8)
-	extraReader.Read(cookieVerf)
+	_, _ = extraReader.Read(cookieVerf)
 
 	// Read entries
 	var entryNames []string

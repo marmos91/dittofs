@@ -55,8 +55,8 @@ func (h *Handler) handleAccess(ctx *types.CompoundContext, reader io.Reader) *ty
 		// Pseudo-fs directories are always accessible: grant all requested bits
 		var buf bytes.Buffer
 		_ = xdr.WriteUint32(&buf, types.NFS4_OK)
-		_ = xdr.WriteUint32(&buf, accessReq) // supported
-		_ = xdr.WriteUint32(&buf, accessReq) // access granted
+		_ = xdr.WriteUint32(&buf, ACCESS4_READ|ACCESS4_LOOKUP|ACCESS4_MODIFY|ACCESS4_EXTEND|ACCESS4_DELETE|ACCESS4_EXECUTE) // supported
+		_ = xdr.WriteUint32(&buf, accessReq)                                                                                // access granted
 
 		return &types.CompoundResult{
 			Status: types.NFS4_OK,
@@ -105,8 +105,9 @@ func (h *Handler) accessRealFS(ctx *types.CompoundContext, accessReq uint32) *ty
 	// Check Unix permission bits against UID/GID
 	granted := checkAccessBits(accessReq, file, authCtx)
 
-	// All 6 bits are supported
-	supported := accessReq
+	// Report all ACCESS4 bits the server can evaluate
+	supported := uint32(ACCESS4_READ | ACCESS4_LOOKUP | ACCESS4_MODIFY |
+		ACCESS4_EXTEND | ACCESS4_DELETE | ACCESS4_EXECUTE)
 
 	// Debug log the access check result
 	var uid, gid uint32
@@ -150,8 +151,8 @@ func checkAccessBits(requested uint32, file *metadata.File, authCtx *metadata.Au
 	var granted uint32
 
 	// Determine effective UID/GID
-	var uid uint32 = ^uint32(0) // sentinel: invalid UID
-	var gid uint32 = ^uint32(0)
+	uid := ^uint32(0) // sentinel: invalid UID
+	gid := ^uint32(0)
 	var gids []uint32
 
 	if authCtx.Identity != nil {

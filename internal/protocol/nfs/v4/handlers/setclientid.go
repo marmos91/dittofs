@@ -182,7 +182,12 @@ func (h *Handler) handleSetClientIDConfirm(ctx *types.CompoundContext, reader io
 }
 
 // mapStateError maps state package errors to NFS4 status codes.
+// Handles both NFS4StateError (which carry a status directly) and
+// sentinel errors (ErrStaleClientID, ErrClientIDInUse).
 func mapStateError(err error) uint32 {
+	if stateErr, ok := err.(*state.NFS4StateError); ok {
+		return stateErr.Status
+	}
 	switch {
 	case errors.Is(err, state.ErrStaleClientID):
 		return types.NFS4ERR_STALE_CLIENTID

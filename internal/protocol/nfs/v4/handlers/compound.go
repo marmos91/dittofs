@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"fmt"
-	"io"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
@@ -72,7 +71,7 @@ func (h *Handler) ProcessCompound(compCtx *types.CompoundContext, data []byte) (
 	}
 
 	// Sequential dispatch loop
-	results := make([]types.CompoundResult, 0, numOps)
+	results := make([]types.CompoundResult, 0, int(numOps))
 	var lastStatus uint32 = types.NFS4_OK
 
 	for i := uint32(0); i < numOps; i++ {
@@ -186,8 +185,3 @@ func encodeCompoundResponse(status uint32, tag []byte, results []types.CompoundR
 
 	return buf.Bytes(), nil
 }
-
-// Helper: read and discard remaining bytes for an unknown operation.
-// This is not used in the streaming model since we stop on error,
-// but reserved for future use if we need to skip unknown op args.
-var _ = io.Discard

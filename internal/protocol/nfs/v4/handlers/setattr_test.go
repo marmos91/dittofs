@@ -269,8 +269,8 @@ func TestHandleSetAttr_MultipleAttrs(t *testing.T) {
 
 	// Set mode + owner together (bits in ascending order: 33, 36)
 	var attrVals bytes.Buffer
-	_ = xdr.WriteUint32(&attrVals, 0o600)                     // MODE
-	_ = xdr.WriteXDRString(&attrVals, "1001@localdomain")     // OWNER
+	_ = xdr.WriteUint32(&attrVals, 0o600)                 // MODE
+	_ = xdr.WriteXDRString(&attrVals, "1001@localdomain") // OWNER
 
 	var bitmap []uint32
 	attrs.SetBit(&bitmap, attrs.FATTR4_MODE)
@@ -424,8 +424,8 @@ func TestHandleSetAttr_AttrssetBitmap(t *testing.T) {
 
 	// Set mode + owner_group
 	var attrVals bytes.Buffer
-	_ = xdr.WriteUint32(&attrVals, 0o644)                  // MODE
-	_ = xdr.WriteXDRString(&attrVals, "500@localdomain")   // OWNER_GROUP
+	_ = xdr.WriteUint32(&attrVals, 0o644)                // MODE
+	_ = xdr.WriteXDRString(&attrVals, "500@localdomain") // OWNER_GROUP
 
 	var bitmap []uint32
 	attrs.SetBit(&bitmap, attrs.FATTR4_MODE)

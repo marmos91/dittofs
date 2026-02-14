@@ -43,7 +43,7 @@ func (h *Handler) handleGetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 
 	// Ensure lease_time reflects configured duration from StateManager
 	if h.StateManager != nil {
-		leaseDur := h.StateManager.GetLeaseDuration()
+		leaseDur := h.StateManager.LeaseDuration()
 		attrs.SetLeaseTime(uint32(leaseDur.Seconds()))
 	}
 

@@ -398,7 +398,7 @@ func TestVerifyNVerify_CompoundSequence(t *testing.T) {
 				overallStatus, types.NFS4ERR_NOT_SAME)
 		}
 
-		_, _ = xdr.DecodeOpaque(reader)           // tag
+		_, _ = xdr.DecodeOpaque(reader) // tag
 		numResults, _ := xdr.DecodeUint32(reader)
 
 		// Only 2 results: PUTFH succeeded, VERIFY failed, GETATTR not executed

@@ -268,11 +268,11 @@ func TestDecodeFattr4ToSetAttrs_MultipleAttrs(t *testing.T) {
 	var attrVals bytes.Buffer
 	// Mode (bit 33) comes after Owner (bit 36) in bit order? No: 33 < 36.
 	// Bits in ascending order: MODE(33), OWNER(36), TIME_MODIFY_SET(54)
-	_ = xdr.WriteUint32(&attrVals, 0o644)                       // MODE
-	_ = xdr.WriteXDRString(&attrVals, "1001@localdomain")       // OWNER
-	_ = xdr.WriteUint32(&attrVals, SET_TO_CLIENT_TIME4)         // TIME_MODIFY_SET how
-	_ = xdr.WriteUint64(&attrVals, uint64(1718451045))          // seconds
-	_ = xdr.WriteUint32(&attrVals, 0)                           // nseconds
+	_ = xdr.WriteUint32(&attrVals, 0o644)                 // MODE
+	_ = xdr.WriteXDRString(&attrVals, "1001@localdomain") // OWNER
+	_ = xdr.WriteUint32(&attrVals, SET_TO_CLIENT_TIME4)   // TIME_MODIFY_SET how
+	_ = xdr.WriteUint64(&attrVals, uint64(1718451045))    // seconds
+	_ = xdr.WriteUint32(&attrVals, 0)                     // nseconds
 
 	var bitmap []uint32
 	SetBit(&bitmap, FATTR4_MODE)

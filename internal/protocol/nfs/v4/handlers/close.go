@@ -73,7 +73,7 @@ func (h *Handler) handleClose(ctx *types.CompoundContext, reader io.Reader) *typ
 	// Delegate to StateManager for state cleanup
 	closedStateid, stateErr := h.StateManager.CloseFile(stateid, closeSeqid)
 	if stateErr != nil {
-		nfsStatus := mapOpenStateError(stateErr)
+		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 CLOSE failed",
 			"error", stateErr,
 			"nfs_status", nfsStatus,

@@ -33,7 +33,7 @@ func (h *Handler) handleRenew(ctx *types.CompoundContext, reader io.Reader) *typ
 
 	// Delegate to StateManager for validation and lease renewal
 	if err := h.StateManager.RenewLease(clientID); err != nil {
-		nfsStatus := mapOpenStateError(err)
+		nfsStatus := mapStateError(err)
 		logger.Info("NFSv4 RENEW failed",
 			"client_id", clientID,
 			"error", err,

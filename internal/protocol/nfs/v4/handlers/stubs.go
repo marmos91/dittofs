@@ -133,7 +133,7 @@ func (h *Handler) handleOpenDowngrade(ctx *types.CompoundContext, reader io.Read
 		stateid, downgradeSeqid, newShareAccess, newShareDeny,
 	)
 	if stateErr != nil {
-		nfsStatus := mapOpenStateError(stateErr)
+		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 OPEN_DOWNGRADE failed",
 			"error", stateErr,
 			"nfs_status", nfsStatus,
@@ -195,7 +195,7 @@ func (h *Handler) handleReleaseLockOwner(ctx *types.CompoundContext, reader io.R
 	// Delegate to StateManager
 	stateErr := h.StateManager.ReleaseLockOwner(clientID, ownerData)
 	if stateErr != nil {
-		nfsStatus := mapOpenStateError(stateErr)
+		nfsStatus := mapStateError(stateErr)
 		logger.Debug("NFSv4 RELEASE_LOCKOWNER failed",
 			"error", stateErr,
 			"nfs_status", nfsStatus,

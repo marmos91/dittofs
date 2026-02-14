@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"fmt"
-	"io"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
@@ -116,18 +115,7 @@ func getPayloadServiceForCtx(h *Handler) (*payload.PayloadService, error) {
 //	uint64  changeid_before;
 //	uint64  changeid_after;
 func encodeChangeInfo4(buf *bytes.Buffer, atomic bool, before, after uint64) {
-	if atomic {
-		_ = xdr.WriteUint32(buf, 1)
-	} else {
-		_ = xdr.WriteUint32(buf, 0)
-	}
+	_ = xdr.WriteBool(buf, atomic)
 	_ = xdr.WriteUint64(buf, before)
 	_ = xdr.WriteUint64(buf, after)
-}
-
-// skipStateid4 consumes a stateid4 structure (16 bytes) from the reader without parsing it.
-// stateid4 = uint32 seqid (4 bytes) + opaque other[12] (12 bytes) = 16 bytes total.
-func skipStateid4(reader io.Reader) {
-	var skip [16]byte
-	_, _ = io.ReadFull(reader, skip[:])
 }

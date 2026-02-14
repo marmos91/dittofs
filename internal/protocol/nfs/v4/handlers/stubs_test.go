@@ -60,9 +60,9 @@ func TestHandleOpenDowngrade_BadStateid(t *testing.T) {
 	var args bytes.Buffer
 	sid := &types.Stateid4{Seqid: 1}
 	types.EncodeStateid4(&args, sid)
-	_ = xdr.WriteUint32(&args, 2)                              // seqid
-	_ = xdr.WriteUint32(&args, types.OPEN4_SHARE_ACCESS_READ)  // share_access
-	_ = xdr.WriteUint32(&args, types.OPEN4_SHARE_DENY_NONE)    // share_deny
+	_ = xdr.WriteUint32(&args, 2)                             // seqid
+	_ = xdr.WriteUint32(&args, types.OPEN4_SHARE_ACCESS_READ) // share_access
+	_ = xdr.WriteUint32(&args, types.OPEN4_SHARE_DENY_NONE)   // share_deny
 
 	result := h.handleOpenDowngrade(ctx, bytes.NewReader(args.Bytes()))
 
@@ -119,8 +119,8 @@ func TestHandleReleaseLockOwner_Success(t *testing.T) {
 
 	// Encode lock_owner4: clientid (uint64) + owner (opaque)
 	var args bytes.Buffer
-	_ = xdr.WriteUint64(&args, 12345)                    // clientid
-	_ = xdr.WriteXDROpaque(&args, []byte("test-owner"))  // owner
+	_ = xdr.WriteUint64(&args, 12345)                   // clientid
+	_ = xdr.WriteXDROpaque(&args, []byte("test-owner")) // owner
 
 	result := h.handleReleaseLockOwner(ctx, bytes.NewReader(args.Bytes()))
 

@@ -191,8 +191,7 @@ func (sm *StateManager) GetDelegationsForFile(fileHandle []byte) []*DelegationSt
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	fhKey := string(fileHandle)
-	delegs := sm.delegByFile[fhKey]
+	delegs := sm.delegByFile[string(fileHandle)]
 	if len(delegs) == 0 {
 		return nil
 	}
@@ -266,8 +265,7 @@ func (sm *StateManager) ShouldGrantDelegation(clientID uint64, fileHandle []byte
 
 	// Check 4: No active delegations on this file (from any client).
 	// Another client's delegation is a conflict; same client's is a double-grant.
-	fhKey := string(fileHandle)
-	for _, deleg := range sm.delegByFile[fhKey] {
+	for _, deleg := range sm.delegByFile[string(fileHandle)] {
 		if !deleg.Revoked {
 			return types.OPEN_DELEGATE_NONE, false
 		}
@@ -302,8 +300,7 @@ func (sm *StateManager) CheckDelegationConflict(fileHandle []byte, clientID uint
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	fhKey := string(fileHandle)
-	for _, deleg := range sm.delegByFile[fhKey] {
+	for _, deleg := range sm.delegByFile[string(fileHandle)] {
 		if deleg.ClientID == clientID || deleg.Revoked {
 			continue
 		}

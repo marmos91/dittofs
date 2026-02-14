@@ -116,7 +116,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 		}
 	}
 
-	_, flushErr := payloadSvc.Flush(ctx.Context, file.PayloadID)
+	_, flushErr := payloadSvc.Flush(authCtx.Context, file.PayloadID)
 	if flushErr != nil {
 		logger.Debug("NFSv4 COMMIT flush failed",
 			"error", flushErr,

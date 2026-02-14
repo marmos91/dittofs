@@ -72,9 +72,9 @@ func TestHandleLink_Success(t *testing.T) {
 	// Create a regular file to link
 	fileHandle := fx.createTestFile(t, fx.rootHandle, "original.txt", metadata.FileTypeRegular, 0o644, 0, 0)
 
-	ctx := newRealFSContext(0, 0) // root user
-	setCurrentFH(ctx, fx.rootHandle)  // target directory
-	setSavedFH(ctx, fileHandle)       // source file to link
+	ctx := newRealFSContext(0, 0)    // root user
+	setCurrentFH(ctx, fx.rootHandle) // target directory
+	setSavedFH(ctx, fileHandle)      // source file to link
 
 	args := encodeLinkArgs("hardlink.txt")
 	result := fx.handler.handleLink(ctx, bytes.NewReader(args))
@@ -131,7 +131,7 @@ func TestHandleLink_NoCurrentFH(t *testing.T) {
 	fileHandle := fx.createTestFile(t, fx.rootHandle, "file.txt", metadata.FileTypeRegular, 0o644, 0, 0)
 
 	ctx := newRealFSContext(0, 0)
-	ctx.CurrentFH = nil           // no current FH
+	ctx.CurrentFH = nil // no current FH
 	setSavedFH(ctx, fileHandle)
 
 	args := encodeLinkArgs("newlink")
@@ -203,8 +203,8 @@ func TestHandleLink_CrossShare(t *testing.T) {
 	otherHandle := makeCrossShareHandle(t, "/other-share")
 
 	ctx := newRealFSContext(0, 0)
-	setCurrentFH(ctx, fx.rootHandle)    // /export
-	setSavedFH(ctx, otherHandle)        // /other-share
+	setCurrentFH(ctx, fx.rootHandle) // /export
+	setSavedFH(ctx, otherHandle)     // /other-share
 
 	args := encodeLinkArgs("crosslink")
 	result := fx.handler.handleLink(ctx, bytes.NewReader(args))
@@ -446,7 +446,7 @@ func TestHandleRename_PseudoFS_SavedFH(t *testing.T) {
 	pfs.Rebuild([]string{"/export"})
 
 	ctx := newRealFSContext(0, 0)
-	setCurrentFH(ctx, fx.rootHandle) // real-fs
+	setCurrentFH(ctx, fx.rootHandle)  // real-fs
 	ctx.SavedFH = pfs.GetRootHandle() // pseudo-fs
 
 	args := encodeRenameArgs("old", "new")

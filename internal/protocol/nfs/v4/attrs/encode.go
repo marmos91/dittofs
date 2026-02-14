@@ -35,17 +35,17 @@ const (
 
 // Recommended attributes (used for pseudo-fs and real files)
 const (
-	FATTR4_FILEHANDLE       = 19 // nfs_fh4: the file handle itself
-	FATTR4_FILEID           = 20 // uint64: unique file identifier
-	FATTR4_MODE             = 33 // uint32: POSIX mode bits
-	FATTR4_NUMLINKS         = 35 // uint32: number of hard links
-	FATTR4_OWNER            = 36 // utf8str_mixed: owner name
-	FATTR4_OWNER_GROUP      = 37 // utf8str_mixed: group owner name
-	FATTR4_SPACE_USED       = 45 // uint64: disk space used
-	FATTR4_TIME_ACCESS      = 47 // nfstime4: last access time
-	FATTR4_TIME_ACCESS_SET  = 48 // settime4: set atime (writable)
-	FATTR4_TIME_MODIFY      = 53 // nfstime4: last modify time
-	FATTR4_TIME_MODIFY_SET  = 54 // settime4: set mtime (writable)
+	FATTR4_FILEHANDLE        = 19 // nfs_fh4: the file handle itself
+	FATTR4_FILEID            = 20 // uint64: unique file identifier
+	FATTR4_MODE              = 33 // uint32: POSIX mode bits
+	FATTR4_NUMLINKS          = 35 // uint32: number of hard links
+	FATTR4_OWNER             = 36 // utf8str_mixed: owner name
+	FATTR4_OWNER_GROUP       = 37 // utf8str_mixed: group owner name
+	FATTR4_SPACE_USED        = 45 // uint64: disk space used
+	FATTR4_TIME_ACCESS       = 47 // nfstime4: last access time
+	FATTR4_TIME_ACCESS_SET   = 48 // settime4: set atime (writable)
+	FATTR4_TIME_MODIFY       = 53 // nfstime4: last modify time
+	FATTR4_TIME_MODIFY_SET   = 54 // settime4: set mtime (writable)
 	FATTR4_MOUNTED_ON_FILEID = 55 // uint64: fileid of mounted-on dir
 )
 
