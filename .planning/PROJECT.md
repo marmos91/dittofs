@@ -96,9 +96,9 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 
 **Existing Codebase:**
 - NFSv3 fully implemented in `internal/protocol/nfs/v3/`
-- SMB adapter exists but lacks oplock/lease support
+- SMB adapter with oplock/lease support and unified lock manager integration
 - Control plane has user/group/ACL infrastructure
-- Metadata service architecture supports embedding lock manager
+- Unified lock manager embedded in metadata service (per-share)
 - Content-addressed storage enables efficient CLONE
 
 **Target Environment:**

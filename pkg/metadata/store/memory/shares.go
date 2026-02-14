@@ -237,7 +237,7 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	// Complete root directory attributes with defaults
 	rootAttrCopy := *attr
 	if rootAttrCopy.Mode == 0 {
-		rootAttrCopy.Mode = 0755
+		rootAttrCopy.Mode = 0777
 	}
 	now := time.Now()
 	if rootAttrCopy.Atime.IsZero() {

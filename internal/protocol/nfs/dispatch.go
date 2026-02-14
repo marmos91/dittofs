@@ -176,12 +176,16 @@ type nfsProcedure struct {
 	NeedsAuth bool
 }
 
-// nfsDispatchTable maps NFS procedure numbers to their nfs.
+// NfsDispatchTable maps NFSv3 procedure numbers to their handlers.
 // This replaces the large switch statement in handleNFSProcedure.
 //
 // The table is initialized once at package init time for efficiency.
 // Each entry contains the procedure name, handler function, and metadata
 // about authentication requirements.
+//
+// Note: NFSv4 uses its own COMPOUND internal dispatch (v4/handlers/compound.go)
+// and does not use this table. ProgramNFS handles both v3 and v4, with
+// version routing in nfs_connection.go.
 var NfsDispatchTable map[uint32]*nfsProcedure
 
 // mountProcedureHandler defines the signature for Mount procedure handlers.

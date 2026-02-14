@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** Phase 5 VERIFIED (Cross-Protocol Integration) - Ready for v1.0 milestone
+**Current focus:** v1.0 COMPLETE — v2.0 (NFSv4.0 + Kerberos), Phase 11 COMPLETE
 
 ## Current Position
 
-Phase: 5 of 28 (Cross-Protocol Integration)
-Plan: 6 of 7 complete (including gap closure)
-Status: Plan 05-07 pending (portmapper auto-registration)
-Last activity: 2026-02-12 - Added plan 05-07 for rpcbind auto-registration
+Phase: 11 of 28 (Delegations) — COMPLETE
+Plan: 4 of 4 complete
+Status: Phase 11 COMPLETE. All delegation operations implemented: state tracking, callback client, OPEN integration, recall timeout/revocation, anti-storm protection.
+Last activity: 2026-02-14 - Completed Plan 11-04 (Recall Timeout, Revocation, Anti-Storm)
 
-Progress: [####################----] 68% (19/28 plans complete)
+Progress: [############################] 100% (37/37 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 19
-- Average duration: 9.5 min
-- Total execution time: 3.0 hours
+- Total plans completed: 31
+- Average duration: 8.9 min
+- Total execution time: 4.5 hours
 
 **By Phase:**
 
@@ -31,11 +31,18 @@ Progress: [####################----] 68% (19/28 plans complete)
 | 02-nlm-protocol | 3 | 25 min | 8.3 min | COMPLETE |
 | 03-nsm-protocol | 3 | 19 min | 6.3 min | COMPLETE |
 | 04-smb-leases | 3 | 29 min | 9.7 min | COMPLETE |
-| 05-cross-protocol-integration | 6 | 37 min | 6.2 min | VERIFIED |
+| 05-cross-protocol-integration | 6 | 37 min | 6.2 min | COMPLETE |
+| 06-nfsv4-protocol-foundation | 3/3 | 30 min | 10.0 min | COMPLETE |
+| 07-nfsv4-file-operations | 3/3 | 35 min | 11.7 min | COMPLETE |
+| 08-nfsv4-advanced-operations | 3/3 | 18 min | 6.0 min | COMPLETE |
+
+| 09-state-management | 4/4 | 33 min | 8.3 min | COMPLETE |
+| 10-nfsv4-locking | 3/3 | 33 min | 11.0 min | COMPLETE |
+| 11-delegations | 4/4 | 41 min | 10.3 min | COMPLETE |
 
 **Recent Trend:**
-- Last 5 plans: 05-03 (5 min), 05-04 (5 min), 05-05 (8 min), 05-06 (5 min)
-- Trend: Gap closure plans completing efficiently
+- Last 5 plans: 11-01 (9 min), 11-02 (16 min), 11-03 (6 min), 11-04 (10 min)
+- Trend: Fast execution for delegation integration (reuses existing patterns)
 
 *Updated after each plan completion*
 
@@ -190,6 +197,206 @@ Progress: [####################----] 68% (19/28 plans complete)
 - Platform support: Windows (native), macOS (mount_smbfs), Linux (cifs-utils)
 - Note: Docker fallback approach removed per user feedback (proven unreliable)
 
+## Phase 06 Accomplishments
+
+### Plan 06-01: NFSv4 Types, Constants, and Attribute Helpers - COMPLETE
+- All 40 NFSv4 operation numbers defined per RFC 7530 (OP_ACCESS=3 through OP_ILLEGAL=10044)
+- All 48+ NFSv4 error codes with exact values (NFS4_OK=0 through NFS4ERR_CB_PATH_DOWN=10048)
+- CompoundContext, Compound4Args, Compound4Response structs for COMPOUND dispatch
+- MapMetadataErrorToNFS4 mapping 20+ internal errors to NFS4 status codes
+- ValidateUTF8Filename per RFC 7530 Section 12.7
+- Bitmap4 encode/decode/SetBit/IsBitSet/ClearBit/Intersect helpers
+- FATTR4 mandatory + recommended attribute bit numbers
+- EncodePseudoFSAttrs with PseudoFSAttrSource interface
+
+### Plan 06-02: COMPOUND Dispatcher and Version Routing - COMPLETE
+- PseudoFS virtual namespace tree with handle generation, dynamic rebuilds, and handle stability
+- COMPOUND dispatcher with sequential op execution, stop-on-error, tag echo, minor version validation
+- NFSv4 version routing: v3 and v4 operate simultaneously on the same port
+- V4 Handler struct with extensible op dispatch table (NFS4ERR_NOTSUPP for unimplemented ops)
+- NFSv4 NULL procedure handler (RPC procedure 0)
+- ExtractV4HandlerContext for AUTH_UNIX credential extraction
+- Removed macOS kernel workaround (v4 now supported)
+- 27 new tests (16 pseudofs + 11 compound) all passing with race detection
+
+### Plan 06-03: NFSv4 Operation Handlers - COMPLETE
+- 14 operation handlers (PUTFH, PUTROOTFH, PUTPUBFH, GETFH, SAVEFH, RESTOREFH, LOOKUP, LOOKUPP, GETATTR, READDIR, ACCESS, ILLEGAL, SETCLIENTID, SETCLIENTID_CONFIRM)
+- All handlers registered in COMPOUND dispatch table
+- LOOKUP traverses pseudo-fs tree with export junction crossing support
+- GETATTR encodes requested attributes using bitmap intersection
+- READDIR lists pseudo-fs children with cookie pagination
+- SETCLIENTID/SETCLIENTID_CONFIRM stubs for Phase 9 state management
+- 27 new tests covering all handlers, error cases, and end-to-end pseudo-fs browsing
+
+## Phase 07 Accomplishments
+
+### Plan 07-01: NFSv4 File Operation Handlers - COMPLETE
+- buildV4AuthContext helper for identity mapping, squashing, and permission resolution
+- EncodeRealFileAttrs encodes all fattr4 attributes from real metadata.File
+- MapFileTypeToNFS4 type conversion utility
+- PseudoFS.FindJunction for LOOKUPP cross-back to pseudo-fs namespace
+- LOOKUP resolves real directory children via MetadataService.Lookup
+- LOOKUPP navigates to parent with pseudo-fs cross-back at share root
+- GETATTR returns real file attributes (type, size, mode, timestamps)
+- READDIR lists real directory entries with per-entry fattr4 attributes
+- ACCESS checks Unix permissions (owner/group/other) with root bypass
+- READLINK handler returns symlink target paths
+- 20 new real-FS tests plus 5 pseudo-fs regression tests
+
+### Plan 07-02: NFSv4 CREATE/REMOVE Operations - COMPLETE
+- CREATE handler for NF4DIR (directories) and NF4LNK (symlinks) via MetadataService
+- REMOVE handler with auto-detect file vs directory (try RemoveFile, fallback to RemoveDirectory)
+- change_info4 encoding for parent directory cache coherency
+- createtype4, createmode4, OPEN share/claim/delegation, write stability constants
+- Block/char devices, sockets, FIFOs return NFS4ERR_NOTSUPP
+- Regular file creation returns NFS4ERR_BADTYPE (files use OPEN)
+- 15 unit tests with race detection
+
+### Plan 07-03: NFSv4 File I/O Handlers - COMPLETE
+- Stateid4 type with RFC 7530-compliant encode/decode and special-stateid detection
+- OPEN handler (CLAIM_NULL with UNCHECKED4/GUARDED4/EXCLUSIVE4 create modes)
+- OPEN_CONFIRM handler (placeholder for Phase 9 state management)
+- CLOSE handler (accepts any stateid, returns zeroed stateid)
+- READ handler via PayloadService.ReadAt with EOF detection and COW support
+- WRITE handler using two-phase pattern (PrepareWrite/WriteAt/CommitWrite)
+- COMMIT handler via PayloadService.Flush with server boot verifier
+- 37+ comprehensive tests covering I/O lifecycle, roundtrips, and edge cases
+
+## Phase 08 Accomplishments
+
+### Plan 08-01: NFSv4 LINK and RENAME Operations - COMPLETE
+- LINK handler using SavedFH (source file) + CurrentFH (target directory) two-filehandle pattern
+- RENAME handler with dual change_info4 for source and target directories
+- Cross-share XDEV detection via DecodeFileHandle share name comparison
+- Pseudo-fs read-only rejection (LINK checks CurrentFH, RENAME checks both handles)
+- Both operations registered in COMPOUND dispatch table
+- 21 tests covering success paths, error conditions, and compound sequences
+
+### Plan 08-02: SETATTR Handler and fattr4 Decode Infrastructure - COMPLETE
+- fattr4 decode infrastructure (DecodeFattr4ToSetAttrs) supporting all 6 writable attributes
+- Owner/group string parsing (ParseOwnerString, ParseGroupString) with numeric@domain, bare numeric, well-known names
+- SETATTR handler: stateid decode, fattr4 decode, MetadataService.SetFileAttributes, attrsset bitmap response
+- NFS4StatusError interface for typed decode errors (ATTRNOTSUPP, INVAL, BADOWNER)
+- WritableAttrs bitmap, time_how4 constants (SET_TO_SERVER_TIME4, SET_TO_CLIENT_TIME4)
+- 29 tests (15 decode + 14 handler) all passing with -race
+
+### Plan 08-03: VERIFY/NVERIFY + SECINFO Upgrade + Stubs - COMPLETE
+- VERIFY handler: byte-exact XDR comparison of client-provided fattr4 against server attrs
+- NVERIFY handler: inverse of VERIFY (succeeds when attrs differ)
+- Shared verifyAttributes helper + encodeAttrValsOnly for DRY comparison
+- SECINFO upgraded from 1 flavor (AUTH_SYS) to 2 flavors (AUTH_SYS + AUTH_NONE)
+- OPENATTR stub (NFS4ERR_NOTSUPP), OPEN_DOWNGRADE stub (NFS4ERR_NOTSUPP)
+- RELEASE_LOCKOWNER stub (NFS4_OK no-op) to prevent client cleanup errors
+- 16 tests (11 VERIFY/NVERIFY + 5 stubs/SECINFO) all passing with -race
+
+## Phase 09 Accomplishments
+
+### Plan 09-01: Client ID Management (SETCLIENTID, SETCLIENTID_CONFIRM) - COMPLETE
+- StateManager central coordinator at internal/protocol/nfs/v4/state/
+- ClientRecord with five-case SETCLIENTID algorithm per RFC 7530 Section 9.1.1
+- Boot epoch + atomic counter client ID generation (unique across server restarts)
+- crypto/rand confirm verifier generation (not timestamps)
+- Handler.StateManager field with backward-compatible variadic constructor
+- Removed global nextClientID atomic counter from setclientid.go
+- V4ClientState extended with ClientID field
+- 18 unit tests covering all SETCLIENTID cases with race detection
+
+### Plan 09-02: Stateid and Open-State Tracking - COMPLETE
+- Stateid generation with type-tagged other field (type(1) + epoch(3) + counter(8))
+- OpenOwner tracking with seqid validation (OK/Replay/Bad) and replay caching
+- OpenState lifecycle: OpenFile, ConfirmOpen, CloseFile, DowngradeOpen via StateManager
+- Stateid validation for READ/WRITE (rejects bad/old/stale, allows special stateids)
+- RENEW handler validates client ID and updates LastRenewal timestamp
+- OPEN_DOWNGRADE with share mode subset validation
+- Full integration test: SETCLIENTID -> CONFIRM -> OPEN -> CONFIRM -> WRITE -> READ -> RENEW -> CLOSE
+
+### Plan 09-03: Lease Management (RENEW, Expiration) - COMPLETE
+- LeaseState with timer-based expiration, Renew, Stop, IsExpired methods
+- ConfirmClientID creates lease timer for newly confirmed clients
+- onLeaseExpired cleans up all client state (open states, owners, records)
+- ValidateStateid checks lease expiry and renews implicitly (Pitfall 3)
+- WRITE handler checks ShareAccess, returns NFS4ERR_OPENMODE for read-only opens
+- GETATTR returns configured lease_time from StateManager
+- StateManager.Shutdown stops all active lease timers
+- 14 lease tests covering expiration, renewal, cleanup, concurrent access
+
+### Plan 09-04: Grace Period Handling - COMPLETE
+- GracePeriodState with timer-based auto-expiry and early exit on all-reclaimed
+- OPEN with CLAIM_NULL blocked during grace (NFS4ERR_GRACE)
+- OPEN with CLAIM_PREVIOUS allowed during grace for state reclaim
+- CLAIM_PREVIOUS outside grace returns NFS4ERR_NO_GRACE
+- SaveClientState/GetConfirmedClientIDs for shutdown persistence
+- CLAIM_DELEGATE_CUR/CLAIM_DELEGATE_PREV return NFS4ERR_NOTSUPP
+- 9 grace period tests passing with race detection
+
+## Phase 10 Accomplishments
+
+### Plan 10-01: LOCK Operation with Lock-Owner State Management - COMPLETE
+- Lock type constants (READ_LT, WRITE_LT, READW_LT, WRITEW_LT) per RFC 7530
+- LockOwner, LockState, LockResult, LOCK4denied data model
+- StateManager.LockNew() for open-to-lock-owner transition (locker4 new path)
+- StateManager.LockExisting() for existing lock stateid path (locker4 exist path)
+- acquireLock bridge to unified lock.Manager with cross-protocol OwnerID
+- LOCK handler with full locker4 union XDR decoding
+- validateOpenModeForLock for NFS4ERR_OPENMODE checks
+- 28 tests (22 state-level + 6 handler-level) passing with race detection
+
+### Plan 10-02: LOCKT and LOCKU Operations - COMPLETE
+- LOCKT handler for stateless lock conflict testing (no state created)
+- StateManager.TestLock queries lock manager via ListEnhancedLocks + IsEnhancedLockConflicting
+- LOCKU handler for byte-range lock release with POSIX split semantics
+- StateManager.UnlockFile validates stateid/seqid and calls RemoveEnhancedLock
+- parseConflictOwner extracts clientID/ownerData from conflict OwnerID strings
+- 12 new handler-level tests covering LOCKT and LOCKU scenarios
+
+### Plan 10-03: RELEASE_LOCKOWNER and Integration - COMPLETE
+- RELEASE_LOCKOWNER real implementation replacing no-op stub
+- NFS4ERR_LOCKS_HELD enforcement in CloseFile (before state removal)
+- ReleaseLockOwner checks active locks via lock manager before cleanup
+- Lease expiry cascading cleanup: lock states -> lock-owners -> lock manager
+- OpenState.LockStates typed as []*LockState (was []interface{})
+- Full lock lifecycle E2E test: OPEN -> LOCK -> LOCKT -> LOCKU -> RELEASE_LOCKOWNER -> CLOSE
+
+## Phase 11 Accomplishments
+
+### Plan 11-01: Delegation State Tracking and DELEGRETURN - COMPLETE
+- DelegationState struct with stateid (type tag 0x03), client tracking, recall/revoke flags
+- delegByOther and delegByFile dual-map indexing in StateManager
+- GrantDelegation, ReturnDelegation (idempotent), GetDelegationsForFile, countOpensOnFile
+- onLeaseExpired delegation cleanup cascade
+- DELEGRETURN handler registered in COMPOUND dispatch table
+- CB_RECALL, CB_GETATTR, ACE4, space limit constants
+- 20 tests (14 state + 6 handler) all passing with -race
+
+### Plan 11-02: NFSv4 Callback Client - COMPLETE
+- ParseUniversalAddr for IPv4/IPv6 uaddr to host:port conversion per RFC 5665
+- CB_COMPOUND and CB_RECALL XDR encoding per RFC 7530 wire format
+- SendCBRecall creates TCP connection, sends framed RPC CALL with CB_COMPOUND, validates NFS4 reply
+- SendCBNull verifies callback path with lightweight CB_NULL RPC call
+- RPC message building and record marking follows NLM callback pattern
+- 28 tests (12 address parsing + 2 encoding + 4 RPC + 10 integration) all passing with -race
+
+### Plan 11-03: OPEN Delegation Integration - COMPLETE
+- ShouldGrantDelegation policy: callback check, exclusive access, no existing delegations
+- CheckDelegationConflict with async CB_RECALL via goroutine (no lock during TCP)
+- EncodeDelegation for full open_delegation4 wire format (READ/WRITE/NONE with ACE)
+- ValidateDelegationStateid for CLAIM_DELEGATE_CUR support
+- OPEN handler: conflict check -> NFS4ERR_DELAY, grant decision after OpenFile
+- CLAIM_DELEGATE_CUR handler validates delegation stateid and opens file
+- DELEGPURGE handler returns NFS4ERR_NOTSUPP (no CLAIM_DELEGATE_PREV support)
+- 18 new tests covering all policy branches, conflict scenarios, encoding, validation
+
+### Plan 11-04: Recall Timeout, Revocation, and Anti-Storm Protection - COMPLETE
+- RecallTimer on DelegationState with StartRecallTimer/StopRecallTimer methods
+- RevokeDelegation marks delegation revoked, removes from delegByFile, keeps in delegByOther
+- CB_NULL async verification on SETCLIENTID_CONFIRM sets CBPathUp per client
+- CBPathUp=false prevents delegation grants in ShouldGrantDelegation
+- Recently-recalled cache (30s TTL) prevents grant-recall-grant storms
+- ReturnDelegation stops recall timer, handles revoked delegation return (NFS4_OK)
+- ValidateDelegationStateid returns NFS4ERR_BAD_STATEID for revoked delegations
+- Shutdown stops all recall timers to prevent timer goroutines firing after shutdown
+- 16 new tests covering all revocation, callback path, and anti-storm scenarios
+
 ## Accumulated Context
 
 ### Decisions
@@ -254,6 +461,99 @@ Recent decisions affecting current work:
 - [05-04]: fcntl for byte-range locks (NLM), flock for whole-file advisory locks
 - [05-04]: Platform-specific notes logging for macOS vs Linux lock behavior
 - [05-04]: Grace period tests simulate behavior (full testing requires persistent stores)
+- [06-01]: Tag stored as []byte to echo non-UTF-8 content faithfully per RFC 7530
+- [06-01]: bitmap4 decode rejects >8 words to prevent memory exhaustion
+- [06-01]: FH4_PERSISTENT for pseudo-fs handles (no expiration)
+- [06-01]: DefaultLeaseTime 90 seconds matching Linux nfsd
+- [06-01]: PseudoFSAttrSource interface decouples attrs from pseudo-fs implementation
+- [06-02]: Streaming XDR decode via io.Reader cursor (no pre-parsing all COMPOUND ops)
+- [06-02]: Unknown opcodes outside valid range (3-39) return OP_ILLEGAL, valid but unimplemented return NOTSUPP
+- [06-02]: handleUnsupportedVersion takes low/high version range for PROG_MISMATCH
+- [06-02]: PseudoFS handle format: pseudofs:path (SHA-256 hashed if > 128 bytes)
+- [06-02]: First-use INFO logging with sync.Once for both v3 and v4 versions
+- [06-03]: Copy-on-set for all FH assignments to prevent CurrentFH/SavedFH aliasing
+- [06-03]: PUTPUBFH identical to PUTROOTFH per locked decision
+- [06-03]: Export junction crossing uses runtime.GetRootHandle when registry available
+- [06-03]: SETCLIENTID uses atomic counter for client ID (Phase 9 replaces)
+- [06-03]: READDIR uses child index+1 as cookie values for pseudo-fs
+- [07-01]: runtime.Runtime used directly in Handler (consistent with v3 pattern, no interface extraction)
+- [07-01]: LOOKUPP cross-back via PseudoFS.FindJunction(shareName) at share root
+- [07-01]: ACCESS uses Unix permission triad (owner/group/other) with root UID 0 bypass
+- [07-01]: Real file FSID = (major=1, minor=SHA256(shareName)) to distinguish from pseudo-fs FSID (0,1)
+- [07-01]: buildV4AuthContext is centralized auth context builder for all real-FS handlers
+- [07-02]: Regular file creation via CREATE returns NFS4ERR_BADTYPE (files use OPEN per RFC 7530)
+- [07-02]: Block/char/socket/FIFO return NFS4ERR_NOTSUPP (not in metadata layer)
+- [07-02]: REMOVE tries RemoveFile first, falls back to RemoveDirectory on ErrIsDirectory
+- [07-02]: OPEN/claim/delegation/stability constants added proactively for Plan 07-03
+- [07-03]: Placeholder stateids for Phase 7: OPEN returns random stateid, all handlers accept any stateid
+- [07-03]: WRITE always returns UNSTABLE4 stability to leverage cache+WAL for performance
+- [07-03]: Server boot verifier uses time.Now().UnixNano() encoded as uint64 in 8 bytes
+- [07-03]: EXCLUSIVE4 create mode treated as GUARDED4 in Phase 7 (consumes verifier from wire)
+- [07-03]: OPEN always sets OPEN4_RESULT_CONFIRM flag (Phase 9 adds proper state tracking)
+- [08-01]: Cross-share check uses DecodeFileHandle to compare share names before MetadataService call
+- [08-01]: LINK checks only CurrentFH for pseudo-fs; RENAME checks both SavedFH and CurrentFH
+- [08-01]: Auth context built from CurrentFH (target directory) for both LINK and RENAME
+- [08-02]: NFS4StatusError interface for typed decode errors (ATTRNOTSUPP, INVAL, BADOWNER)
+- [08-02]: Accept any special stateid in Phase 8 (Phase 9 validates)
+- [08-02]: attrsset bitmap echoes requested bitmap on success (all-or-nothing semantics)
+- [08-02]: Owner string parsing supports numeric@domain, bare numeric, and well-known names
+- [08-03]: Byte-exact comparison via encode-then-compare for VERIFY/NVERIFY
+- [08-03]: encodeAttrValsOnly reuses existing encode functions, strips bitmap to extract opaque data
+- [08-03]: SECINFO returns AUTH_SYS first (strongest) then AUTH_NONE per RFC convention
+- [08-03]: RELEASE_LOCKOWNER returns NFS4_OK (no-op) to prevent client errors during cleanup
+- [08-03]: All stub handlers consume XDR args fully to prevent COMPOUND stream desync
+- [09-01]: Variadic StateManager in NewHandler for backward compatibility with 50+ test call sites
+- [09-01]: Single RWMutex for all StateManager state (avoids deadlocks per research)
+- [09-01]: crypto/rand for confirm verifiers (not timestamps, per Pitfall 6)
+- [09-01]: Case 5 (re-SETCLIENTID) creates new unconfirmed record with same client ID
+- [09-01]: OpenOwner placeholder struct in state/client.go for Plan 09-02
+- [09-02]: Stateid other field: type(1) + epoch_low24(3) + counter(8) for uniqueness across types and restarts
+- [09-02]: Special stateids (all-zeros, all-ones) bypass validation and CloseFile for backward compatibility
+- [09-02]: OpenOwner keyed by composite string (clientID:hex(ownerData)) for map efficiency
+- [09-02]: SeqID wrap-around at 0xFFFFFFFF goes to 1 (not 0) per RFC 7530 since 0 is reserved
+- [09-02]: NFS4StateError carries NFS4 status code for direct handler mapping
+- [09-03]: LeaseState.mu separate from StateManager.mu to prevent timer callback deadlock
+- [09-03]: Implicit lease renewal in ValidateStateid prevents READ-only client expiry
+- [09-03]: attrs.SetLeaseTime package-level setter for dynamic FATTR4_LEASE_TIME encoding
+- [09-03]: NFS4ERR_OPENMODE returned for WRITE on read-only open state
+- [09-03]: onLeaseExpired cascading cleanup: openStates -> openOwners -> client record
+- [09-04]: Grace period check before sm.mu acquisition to avoid holding main lock during grace check
+- [09-04]: CLAIM_PREVIOUS uses currentFH as the file being reclaimed (no filename decode needed)
+- [09-04]: Empty expectedClientIDs skips grace period entirely (no timer started)
+- [09-04]: ClientSnapshot struct for shutdown serialization (in-memory persistence for Phase 9)
+- [09-04]: CLAIM_DELEGATE_CUR/PREV consume XDR args to prevent COMPOUND stream desync
+- [10-01]: Lock stateid seqid and open-owner seqid only advance on success (denied does not consume)
+- [10-01]: Lock-owner OwnerID format nfs4:{clientid}:{owner_hex} for cross-protocol detection
+- [10-01]: READW_LT/WRITEW_LT are non-blocking hints; server returns NFS4ERR_DENIED immediately
+- [10-01]: One LockState per (LockOwner, OpenState) pair, referenced by stateid other field
+- [10-02]: LOCKT is purely stateless: no lock-owners, stateids, or maps modified
+- [10-02]: LOCKU treats lock-not-found from lock manager as success (idempotent)
+- [10-02]: Lock state persists after LOCKU; RELEASE_LOCKOWNER handles cleanup
+- [10-02]: parseConflictOwner parses nfs4:{clientid}:{owner_hex} with graceful fallback
+- [10-03]: LockStates typed as []*LockState for compile-time safety (was []interface{})
+- [10-03]: CLOSE requires LOCKU + RELEASE_LOCKOWNER before accepting (NFS4ERR_LOCKS_HELD)
+- [10-03]: Lease expiry iterates OpenState.LockStates for cascading lock cleanup
+- [10-03]: RELEASE_LOCKOWNER unknown owner is no-op (NFS4_OK) per RFC 7530
+- [11-01]: Idempotent DELEGRETURN: current-epoch not-found returns NFS4_OK per Pitfall 3
+- [11-01]: delegByFile keyed by string(fileHandle) for O(1) conflict lookup
+- [11-01]: Delegation cleanup after lock/open cleanup in onLeaseExpired for consistent ordering
+- [11-01]: countOpensOnFile scans openStateByOther (adequate for current scale)
+- [11-02]: CB_NULL uses readAndDiscardCBReply; CB_RECALL uses readAndValidateCBReply with NFS4 status check
+- [11-02]: Universal address parsing splits from the right using LastIndex for IPv6 safety
+- [11-02]: 5-second total timeout (CBCallbackTimeout) covers both dial and I/O, matching NLM pattern
+- [11-02]: callback_ident in CB_COMPOUND set to 0 (client identifies via program number)
+- [11-03]: Simple delegation policy: grant only when exclusive access, callback, no existing delegations
+- [11-03]: Async CB_RECALL via goroutine; RLock to read callback info, release before TCP call
+- [11-03]: NFS4ERR_DELAY on delegation conflict per RFC 7530 recommendation (client retries)
+- [11-03]: CLAIM_DELEGATE_PREV returns NFS4ERR_NOTSUPP (requires persistent delegation state)
+- [11-03]: DELEGPURGE returns NFS4ERR_NOTSUPP (no CLAIM_DELEGATE_PREV support)
+- [11-03]: Variadic deleg param in encodeOpenResult for backward compatibility
+- [11-04]: Recall timer fires after lease duration since CB_RECALL per RFC 7530 Section 10.4.6
+- [11-04]: Short 5s revocation timer when CB_RECALL fails (callback path known-down)
+- [11-04]: CBPathUp verified via CB_NULL replaces simple callback address check
+- [11-04]: Recently-recalled TTL = 30s (~1/3 lease duration) prevents grant-recall storms
+- [11-04]: Revoked delegations kept in delegByOther for NFS4ERR_BAD_STATEID detection
+- [11-04]: DELEGRETURN of revoked delegation returns NFS4_OK (graceful cleanup)
 
 ### Pending Todos
 
@@ -265,24 +565,16 @@ None.
 
 ## Next Steps
 
-**Phase 5 — Plan 05-07 Pending**
-- 6 of 7 plans complete (05-01 through 05-06, including gap closure)
-- Plan 05-07: Portmapper auto-registration for NLM service discovery
-- Cross-protocol lock visibility established
-- NLM-SMB and SMB-NFS integration complete
-- SMB lease grace period reclaim implemented
-- E2E tests skip gracefully when SMB mount unavailable
+**Phase 11 — COMPLETE (4/4 plans)**
+- Plan 11-01 COMPLETE: Delegation State Tracking and DELEGRETURN
+- Plan 11-02 COMPLETE: NFSv4 Callback Client
+- Plan 11-03 COMPLETE: OPEN Delegation Integration
+- Plan 11-04 COMPLETE: Recall Timeout, Revocation, Anti-Storm Protection
 
-**Blocker: NLM is unreachable without portmapper registration**
-- NFS clients discover NLM port via rpcbind (port 111)
-- DittoFS multiplexes NLM on the NFS port but doesn't register with rpcbind
-- Result: `flock()`/`fcntl()` fail with ENOLCK on all NFS clients
-- Plan 05-07 fixes this by auto-registering with system portmapper on startup
-
-**Next: Execute 05-07, then Phase 5.5 (Manual Verification on Linux VM)**
+**Next phase to plan: Phase 12**
 
 ## Session Continuity
 
-Last session: 2026-02-12
-Stopped at: Plan 05-07 created, ready for execution
-Resume file: None
+Last session: 2026-02-14
+Stopped at: Completed Phase 11 (Delegations) — all 4 plans executed
+Resume file: Next phase planning
