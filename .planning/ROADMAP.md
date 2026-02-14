@@ -6,7 +6,7 @@ DittoFS evolves from NFSv3 to full NFSv4.2 support across four milestones. v1.0 
 
 ## Milestones
 
-- [ ] **v1.0 NLM + Unified Lock Manager** - Phases 1-5.5 (33 requirements + manual verification)
+- [x] **v1.0 NLM + Unified Lock Manager** ✓ - Phases 1-5.5 (33 requirements + manual verification)
 - [ ] **v2.0 NFSv4.0 + Kerberos** - Phases 6-15.5 (75 requirements + 3 manual checkpoints)
 - [ ] **v3.0 NFSv4.1 Sessions** - Phases 16-21.5 (26 requirements + 2 manual checkpoints)
 - [ ] **v4.0 NFSv4.2 Extensions** - Phases 22-28.5 (28 requirements + 2 manual checkpoints)
@@ -28,16 +28,16 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: NSM Protocol** ✓ - Network Status Monitor for crash recovery
 - [x] **Phase 4: SMB Leases** ✓ - SMB2/3 oplock and lease support
 - [x] **Phase 5: Cross-Protocol Integration** ✓ - Lock visibility across NFS and SMB
-- [ ] **Phase 5.5: Manual Verification v1.0** USER CHECKPOINT - Test NFS+SMB locking manually
+- [x] **Phase 5.5: Manual Verification v1.0** ✓ USER CHECKPOINT - Test NFS+SMB locking manually
 
 ### v2.0 NFSv4.0 + Kerberos
 
-- [ ] **Phase 6: NFSv4 Protocol Foundation** - Compound operations and pseudo-filesystem
-- [ ] **Phase 7: NFSv4 File Operations** - Lookup, read, write, create, remove
-- [ ] **Phase 7.5: Manual Verification - Basic NFSv4** USER CHECKPOINT - Test NFSv4 mount and basic ops
-- [ ] **Phase 8: NFSv4 Advanced Operations** - Link, rename, verify, security info
-- [ ] **Phase 9: State Management** - Client ID, state ID, and lease tracking
-- [ ] **Phase 10: NFSv4 Locking** - Integrated byte-range locking (LOCK/LOCKT/LOCKU)
+- [x] **Phase 6: NFSv4 Protocol Foundation** ✓ - Compound operations and pseudo-filesystem
+- [x] **Phase 7: NFSv4 File Operations** ✓ - Lookup, read, write, create, remove
+- [x] **Phase 7.5: Manual Verification - Basic NFSv4** ✓ USER CHECKPOINT - Test NFSv4 mount and basic ops
+- [x] **Phase 8: NFSv4 Advanced Operations** ✓ - Link, rename, verify, security info
+- [x] **Phase 9: State Management** ✓ - Client ID, state ID, and lease tracking
+- [x] **Phase 10: NFSv4 Locking** ✓ - Integrated byte-range locking (LOCK/LOCKT/LOCKU)
 - [ ] **Phase 11: Delegations** - Read/write delegations with callback channel
 - [ ] **Phase 12: Kerberos Authentication** - RPCSEC_GSS framework with krb5/krb5i/krb5p
 - [ ] **Phase 12.5: Manual Verification - Kerberos** USER CHECKPOINT - Test Kerberos auth manually
@@ -67,6 +67,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 26: NFSv4.2 Operations** - IO_ADVISE and optional pNFS operations
 - [ ] **Phase 27: Documentation** - Complete documentation for all new features
 - [ ] **Phase 28: v4.0 Testing** - Final testing and pjdfstest POSIX compliance
+- [ ] **Phase 28.1: Portmapper Auto-Registration** INSERTED - Register NLM/MOUNT with system rpcbind
 - [ ] **Phase 28.5: Final Manual Verification** USER CHECKPOINT - Complete validation of all features
 
 ## Phase Details
@@ -151,7 +152,7 @@ Plans:
   3. Cross-protocol file access maintains consistency (no data corruption)
   4. E2E tests verify locking scenarios across both protocols
   5. Grace period recovery works for both NFS and SMB clients
-**Plans**: 7 plans in 2 waves
+**Plans**: 6 plans in 2 waves
 
 Plans:
 - [x] 05-01-PLAN.md — UnifiedLockView for cross-protocol lock queries, translation helpers, metrics
@@ -160,7 +161,6 @@ Plans:
 - [x] 05-04-PLAN.md — E2E tests: cross-protocol lock conflicts, data integrity, grace period recovery
 - [x] 05-05-PLAN.md — [GAP CLOSURE] SMB lease grace period reclaim implementation
 - [x] 05-06-PLAN.md — [GAP CLOSURE] Graceful SMB mount skip for cross-protocol E2E tests
-- [ ] 05-07-PLAN.md — [GAP CLOSURE] Portmapper auto-registration for NLM service discovery
 
 ---
 
@@ -176,15 +176,15 @@ Plans:
   3. Pseudo-filesystem presents unified namespace for all exports
   4. NFSv4 error codes correctly mapped from internal errors
   5. UTF-8 filenames validated on creation
-**Plans**: TBD
+**Plans**: 3 plans in 3 waves
 
 Plans:
-- [ ] 06-01: NFSv4 XDR types and error mapping
-- [ ] 06-02: COMPOUND dispatcher with filehandle context
-- [ ] 06-03: Pseudo-filesystem implementation
+- [x] 06-01-PLAN.md — NFSv4 types, constants, error codes, attribute bitmaps, UTF-8 validation
+- [x] 06-02-PLAN.md — COMPOUND dispatcher, pseudo-filesystem, version routing, NULL handler
+- [x] 06-03-PLAN.md — Operation handlers (PUTFH, GETFH, SAVEFH, LOOKUP, GETATTR, READDIR, ACCESS, SETCLIENTID stubs)
 
 ### Phase 7: NFSv4 File Operations
-**Goal**: Implement core file operations (lookup, read, write, create, remove)
+**Goal**: Upgrade existing pseudo-fs handlers for real filesystem support and implement core file I/O operations
 **Depends on**: Phase 6
 **Requirements**: OPS4-01, OPS4-02, OPS4-03, OPS4-04, OPS4-05, OPS4-06, OPS4-11, OPS4-12, OPS4-14, OPS4-18, OPS4-19, OPS4-20, OPS4-21, OPS4-22, OPS4-23, OPS4-24, OPS4-34
 **Success Criteria** (what must be TRUE):
@@ -193,14 +193,12 @@ Plans:
   3. OPEN/CLOSE operations manage file access state correctly
   4. READDIR returns directory entries with requested attributes
   5. Symbolic links readable via READLINK
-**Plans**: TBD
+**Plans**: 3 plans in 3 waves
 
 Plans:
-- [ ] 07-01: PUTFH, PUTROOTFH, PUTPUBFH, GETFH operations
-- [ ] 07-02: LOOKUP, LOOKUPP, ACCESS operations
-- [ ] 07-03: GETATTR, CREATE, REMOVE operations
-- [ ] 07-04: OPEN, CLOSE, READ, WRITE, COMMIT operations
-- [ ] 07-05: READDIR, READLINK operations
+- [x] 07-01-PLAN.md — Shared helpers, real file attribute encoder, upgrade LOOKUP/LOOKUPP/GETATTR/READDIR/ACCESS for real-FS, add READLINK
+- [x] 07-02-PLAN.md — CREATE (dirs, symlinks) and REMOVE (files, dirs) with change_info4
+- [x] 07-03-PLAN.md — OPEN/OPEN_CONFIRM/CLOSE with placeholder stateids, READ/WRITE/COMMIT via PayloadService
 
 ### Phase 8: NFSv4 Advanced Operations
 **Goal**: Implement remaining NFSv4 operations (link, rename, verify, security)
@@ -212,14 +210,12 @@ Plans:
   3. VERIFY/NVERIFY enable conditional operations
   4. SAVEFH/RESTOREFH enable complex compound sequences
   5. SECINFO returns available security mechanisms for path
-**Plans**: TBD
+**Plans**: 3 plans in 2 waves
 
 Plans:
-- [ ] 08-01: LINK, RENAME operations
-- [ ] 08-02: SAVEFH, RESTOREFH operations
-- [ ] 08-03: VERIFY, NVERIFY operations
-- [ ] 08-04: SETATTR, OPENATTR operations
-- [ ] 08-05: SECINFO, OPEN_CONFIRM, OPEN_DOWNGRADE operations
+- [x] 08-01-PLAN.md — LINK and RENAME operations (two-filehandle pattern)
+- [x] 08-02-PLAN.md — SETATTR handler with fattr4 decode infrastructure
+- [x] 08-03-PLAN.md — VERIFY/NVERIFY, SECINFO upgrade, and stubs (OPENATTR, OPEN_DOWNGRADE, RELEASE_LOCKOWNER)
 
 ### Phase 9: State Management
 **Goal**: Implement NFSv4 stateful model (client ID, state ID, leases)
@@ -231,17 +227,16 @@ Plans:
   3. Lease renewal via RENEW extends client state lifetime
   4. Expired leases trigger state cleanup after grace period
   5. Server restart preserves client records for reclaim
-**Plans**: TBD
+**Plans**: 4 plans in 4 waves
 
 Plans:
-- [ ] 09-01: Client ID management (SETCLIENTID, SETCLIENTID_CONFIRM)
-- [ ] 09-02: State ID generation and validation
-- [ ] 09-03: Open-owner and lock-owner tracking
-- [ ] 09-04: Lease management (RENEW, expiration)
-- [ ] 09-05: State recovery and grace period handling
+- [x] 09-01-PLAN.md — StateManager foundation, ClientRecord, SETCLIENTID five-case algorithm
+- [x] 09-02-PLAN.md — Stateid generation/validation, OpenState, OpenOwner seqid tracking, OPEN/CLOSE upgrade
+- [x] 09-03-PLAN.md — Lease management with RENEW, implicit renewal in READ/WRITE, lease_time in GETATTR
+- [x] 09-04-PLAN.md — Grace period for state reclaim, CLAIM_PREVIOUS support, client snapshot persistence
 
 ### Phase 10: NFSv4 Locking
-**Goal**: Implement NFSv4 integrated byte-range locking
+**Goal**: Implement NFSv4 integrated byte-range locking with lock-owner state management and unified lock manager bridge
 **Depends on**: Phase 9
 **Requirements**: OPS4-08, OPS4-09, OPS4-10, OPS4-35
 **Success Criteria** (what must be TRUE):
@@ -250,13 +245,12 @@ Plans:
   3. LOCKU releases locks correctly
   4. NFSv4 locks integrate with unified lock manager (cross-protocol aware)
   5. RELEASE_LOCKOWNER cleans up lock-owner state
-**Plans**: TBD
+**Plans**: 3 plans in 3 waves
 
 Plans:
-- [ ] 10-01: LOCK operation with stateid management
-- [ ] 10-02: LOCKT, LOCKU operations
-- [ ] 10-03: RELEASE_LOCKOWNER operation
-- [ ] 10-04: Integration with unified lock manager
+- [x] 10-01-PLAN.md — Lock-owner data model, lock type constants, StateManager lock methods, LOCK handler with locker4 union
+- [x] 10-02-PLAN.md — LOCKT (conflict test without state) and LOCKU (unlock with POSIX split) handlers
+- [x] 10-03-PLAN.md — RELEASE_LOCKOWNER upgrade, CLOSE NFS4ERR_LOCKS_HELD check, lease expiry lock cleanup
 
 ### Phase 11: Delegations
 **Goal**: Implement read/write delegations with callback mechanism
@@ -579,6 +573,20 @@ Plans:
 - [ ] 28-04: pjdfstest POSIX compliance
 - [ ] 28-05: Performance benchmarks
 
+### Phase 28.1: Portmapper Auto-Registration INSERTED
+**Goal**: Register NLM (100021) and MOUNT (100005) programs with system rpcbind for service discovery
+**Depends on**: Phase 28
+**Requirements**: (deferred from Phase 5 gap closure)
+**Success Criteria** (what must be TRUE):
+  1. NFS adapter registers NLM and MOUNT with system rpcbind on startup
+  2. NFS adapter deregisters from rpcbind on shutdown
+  3. Registration failure logs a warning but does not prevent server startup
+  4. Registration is opt-out via config (enabled by default)
+**Plans**: 1 plan
+
+Plans:
+- [ ] 28.1-01-PLAN.md — Portmapper registration/deregistration using RFC 1833 PMAP protocol
+
 ---
 
 ## Progress
@@ -592,12 +600,12 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 2. NLM Protocol | v1.0 | 3/3 | Complete | 2026-02-05 |
 | 3. NSM Protocol | v1.0 | 3/3 | Complete | 2026-02-05 |
 | 4. SMB Leases | v1.0 | 3/3 | Complete | 2026-02-05 |
-| 5. Cross-Protocol Integration | v1.0 | 6/7 | Gap closure | - |
-| 6. NFSv4 Protocol Foundation | v2.0 | 0/3 | Not started | - |
-| 7. NFSv4 File Operations | v2.0 | 0/5 | Not started | - |
-| 8. NFSv4 Advanced Operations | v2.0 | 0/5 | Not started | - |
-| 9. State Management | v2.0 | 0/5 | Not started | - |
-| 10. NFSv4 Locking | v2.0 | 0/4 | Not started | - |
+| 5. Cross-Protocol Integration | v1.0 | 6/6 | Complete | 2026-02-12 |
+| 6. NFSv4 Protocol Foundation | v2.0 | 3/3 | Complete | 2026-02-13 |
+| 7. NFSv4 File Operations | v2.0 | 3/3 | Complete | 2026-02-13 |
+| 8. NFSv4 Advanced Operations | v2.0 | 3/3 | Complete | 2026-02-13 |
+| 9. State Management | v2.0 | 4/4 | Complete | 2026-02-14 |
+| 10. NFSv4 Locking | v2.0 | 3/3 | Complete | 2026-02-14 |
 | 11. Delegations | v2.0 | 0/4 | Not started | - |
 | 12. Kerberos Authentication | v2.0 | 0/5 | Not started | - |
 | 13. NFSv4 ACLs | v2.0 | 0/4 | Not started | - |
@@ -616,8 +624,9 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 26. NFSv4.2 Operations | v4.0 | 0/2 | Not started | - |
 | 27. Documentation | v4.0 | 0/3 | Not started | - |
 | 28. v4.0 Testing | v4.0 | 0/5 | Not started | - |
+| 28.1 Portmapper Auto-Registration | v4.0 | 0/1 | Not started | - |
 
-**Total:** 17/110 plans complete
+**Total:** 35/106 plans complete
 
 ---
 *Roadmap created: 2026-02-04*
@@ -627,4 +636,15 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 *Phase 4 completed: 2026-02-05*
 *Phase 5 planned: 2026-02-05*
 *Phase 5 gap closure: 2026-02-05*
+*Phase 5 completed: 2026-02-12 (portmapper deferred to Phase 28.1)*
+*Phase 6 planned: 2026-02-12*
 *Requirements coverage: 162/162 mapped*
+*Phase 6 completed: 2026-02-13*
+*Phase 7 planned: 2026-02-13 (reorganized from 5 to 3 plans per research)*
+*Phase 7 completed: 2026-02-13*
+*Phase 8 planned: 2026-02-13*
+*Phase 8 completed: 2026-02-13*
+*Phase 9 planned: 2026-02-13 (consolidated from 5 to 4 plans per research)*
+*Phase 9 completed: 2026-02-14*
+*Phase 10 planned: 2026-02-14 (consolidated from 4 to 3 plans -- lock manager integration woven into each plan)*
+*Phase 10 completed: 2026-02-14*
