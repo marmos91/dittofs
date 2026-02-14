@@ -128,14 +128,15 @@ func TestValidateStateid_SpecialStateid_AllZeros(t *testing.T) {
 func TestValidateStateid_SpecialStateid_AllOnes(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 
-	stateid := &types.Stateid4{Seqid: 0}
+	// RFC 7530 Section 9.1.4.3: READ bypass stateid has seqid=0xFFFFFFFF, other=all-ones
+	stateid := &types.Stateid4{Seqid: 0xFFFFFFFF}
 	for i := range stateid.Other {
 		stateid.Other[i] = 0xFF
 	}
 
 	openState, err := sm.ValidateStateid(stateid, nil)
 	if err != nil {
-		t.Fatalf("ValidateStateid for all-ones: %v", err)
+		t.Fatalf("ValidateStateid for all-ones READ bypass: %v", err)
 	}
 	if openState != nil {
 		t.Error("special stateid should return nil openState")
@@ -296,6 +297,158 @@ func TestValidateStateid_FilehandleMismatch(t *testing.T) {
 	if stateErr.Status != types.NFS4ERR_BAD_STATEID {
 		t.Errorf("status = %d, want NFS4ERR_BAD_STATEID (%d)",
 			stateErr.Status, types.NFS4ERR_BAD_STATEID)
+	}
+}
+
+// ============================================================================
+// Delegation Stateid Validation Tests
+// ============================================================================
+
+func TestValidateStateid_DelegationStateid_Success(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	fileHandle := []byte("fh-deleg-validate")
+	deleg := sm.GrantDelegation(100, fileHandle, types.OPEN_DELEGATE_WRITE)
+
+	// Validate the delegation stateid
+	openState, err := sm.ValidateStateid(&deleg.Stateid, fileHandle)
+	if err != nil {
+		t.Fatalf("ValidateStateid for delegation: %v", err)
+	}
+	if openState != nil {
+		t.Error("delegation stateid should return nil openState")
+	}
+}
+
+func TestValidateStateid_DelegationStateid_NotFound(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	// Create a delegation-type stateid that isn't in the map
+	other := sm.generateStateidOther(StateTypeDeleg)
+	stateid := &types.Stateid4{Seqid: 1, Other: other}
+
+	_, err := sm.ValidateStateid(stateid, nil)
+	if err == nil {
+		t.Fatal("ValidateStateid should fail for unknown delegation stateid")
+	}
+	stateErr, ok := err.(*NFS4StateError)
+	if !ok {
+		t.Fatalf("expected NFS4StateError, got %T", err)
+	}
+	if stateErr.Status != types.NFS4ERR_BAD_STATEID {
+		t.Errorf("status = %d, want NFS4ERR_BAD_STATEID (%d)",
+			stateErr.Status, types.NFS4ERR_BAD_STATEID)
+	}
+}
+
+func TestValidateStateid_DelegationStateid_Revoked(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	fileHandle := []byte("fh-deleg-revoked")
+	deleg := sm.GrantDelegation(100, fileHandle, types.OPEN_DELEGATE_WRITE)
+
+	// Mark as revoked
+	sm.mu.Lock()
+	deleg.Revoked = true
+	sm.mu.Unlock()
+
+	_, err := sm.ValidateStateid(&deleg.Stateid, fileHandle)
+	if err == nil {
+		t.Fatal("ValidateStateid should fail for revoked delegation")
+	}
+	stateErr, ok := err.(*NFS4StateError)
+	if !ok {
+		t.Fatalf("expected NFS4StateError, got %T", err)
+	}
+	if stateErr.Status != types.NFS4ERR_BAD_STATEID {
+		t.Errorf("status = %d, want NFS4ERR_BAD_STATEID (%d)",
+			stateErr.Status, types.NFS4ERR_BAD_STATEID)
+	}
+}
+
+func TestValidateStateid_DelegationStateid_FilehandleMismatch(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	deleg := sm.GrantDelegation(100, []byte("fh-deleg-mismatch"), types.OPEN_DELEGATE_READ)
+
+	wrongFH := []byte("fh-wrong-handle")
+	_, err := sm.ValidateStateid(&deleg.Stateid, wrongFH)
+	if err == nil {
+		t.Fatal("ValidateStateid should fail for filehandle mismatch")
+	}
+	stateErr, ok := err.(*NFS4StateError)
+	if !ok {
+		t.Fatalf("expected NFS4StateError, got %T", err)
+	}
+	if stateErr.Status != types.NFS4ERR_BAD_STATEID {
+		t.Errorf("status = %d, want NFS4ERR_BAD_STATEID (%d)",
+			stateErr.Status, types.NFS4ERR_BAD_STATEID)
+	}
+}
+
+func TestValidateStateid_DelegationStateid_OldSeqid(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	deleg := sm.GrantDelegation(100, []byte("fh-deleg-old"), types.OPEN_DELEGATE_WRITE)
+
+	// Use a seqid older than the current one
+	oldStateid := types.Stateid4{Seqid: 0, Other: deleg.Stateid.Other}
+	_, err := sm.ValidateStateid(&oldStateid, nil)
+	if err == nil {
+		t.Fatal("ValidateStateid should fail for old delegation seqid")
+	}
+	stateErr, ok := err.(*NFS4StateError)
+	if !ok {
+		t.Fatalf("expected NFS4StateError, got %T", err)
+	}
+	if stateErr.Status != types.NFS4ERR_OLD_STATEID {
+		t.Errorf("status = %d, want NFS4ERR_OLD_STATEID (%d)",
+			stateErr.Status, types.NFS4ERR_OLD_STATEID)
+	}
+}
+
+// ============================================================================
+// IsSpecialStateid Tests
+// ============================================================================
+
+func TestIsSpecialStateid_Anonymous(t *testing.T) {
+	stateid := &types.Stateid4{Seqid: 0}
+	// Other is default all-zeros
+	if !stateid.IsSpecialStateid() {
+		t.Error("anonymous stateid (seqid=0, other=all-zeros) should be special")
+	}
+}
+
+func TestIsSpecialStateid_ReadBypass(t *testing.T) {
+	stateid := &types.Stateid4{Seqid: 0xFFFFFFFF}
+	for i := range stateid.Other {
+		stateid.Other[i] = 0xFF
+	}
+	if !stateid.IsSpecialStateid() {
+		t.Error("READ bypass stateid (seqid=0xFFFFFFFF, other=all-ones) should be special")
+	}
+}
+
+func TestIsSpecialStateid_NotSpecial(t *testing.T) {
+	// seqid=1 with all-zeros other is NOT special
+	stateid := &types.Stateid4{Seqid: 1}
+	if stateid.IsSpecialStateid() {
+		t.Error("stateid with seqid=1, other=all-zeros should NOT be special")
+	}
+
+	// seqid=0 with all-ones other is NOT special (wrong combination)
+	stateid2 := &types.Stateid4{Seqid: 0}
+	for i := range stateid2.Other {
+		stateid2.Other[i] = 0xFF
+	}
+	if stateid2.IsSpecialStateid() {
+		t.Error("stateid with seqid=0, other=all-ones should NOT be special")
+	}
+
+	// seqid=0xFFFFFFFF with all-zeros other is NOT special
+	stateid3 := &types.Stateid4{Seqid: 0xFFFFFFFF}
+	if stateid3.IsSpecialStateid() {
+		t.Error("stateid with seqid=0xFFFFFFFF, other=all-zeros should NOT be special")
 	}
 }
 

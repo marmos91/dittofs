@@ -1257,7 +1257,8 @@ func TestStateid4_IsSpecial_AllZeros(t *testing.T) {
 }
 
 func TestStateid4_IsSpecial_AllOnes(t *testing.T) {
-	sid := types.Stateid4{Seqid: 0}
+	// RFC 7530 Section 9.1.4.3: READ bypass stateid has seqid=0xFFFFFFFF, other=all-ones
+	sid := types.Stateid4{Seqid: 0xFFFFFFFF}
 	for i := range sid.Other {
 		sid.Other[i] = 0xFF
 	}

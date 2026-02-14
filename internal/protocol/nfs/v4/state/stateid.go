@@ -111,13 +111,15 @@ func (sm *StateManager) isCurrentEpoch(other [types.NFS4_OTHER_SIZE]byte) bool {
 //
 // Per RFC 7530 Section 9.1.4, validation checks:
 //  1. Special stateids bypass validation (return nil, nil)
-//  2. Look up in openStateByOther map
-//  3. If not found -> NFS4ERR_BAD_STATEID
-//  4. Check boot epoch matches -> NFS4ERR_STALE_STATEID
-//  5. Compare seqid: < current -> NFS4ERR_OLD_STATEID; > current -> NFS4ERR_BAD_STATEID
-//  6. Verify filehandle matches (if provided and non-nil) -> NFS4ERR_BAD_STATEID
-//  7. Check lease expiry (placeholder for Phase 9-04)
-//  8. Implicit lease renewal on success
+//  2. Route by type tag: open stateids -> openStateByOther, delegation -> delegByOther
+//  3. If not found -> NFS4ERR_BAD_STATEID (or NFS4ERR_STALE_STATEID for wrong epoch)
+//  4. Compare seqid: < current -> NFS4ERR_OLD_STATEID; > current -> NFS4ERR_BAD_STATEID
+//  5. Verify filehandle matches (if provided and non-nil) -> NFS4ERR_BAD_STATEID
+//  6. Check lease expiry and implicit renewal on success
+//
+// For delegation stateids (type 0x03), returns nil OpenState on success
+// (same as special stateids). The caller's permission checks at the metadata
+// layer (PrepareWrite) still apply.
 //
 // Caller must NOT hold sm.mu.
 func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byte) (*OpenState, error) {
@@ -129,7 +131,15 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	// Step 2-4: Look up by "other" field, checking boot epoch if not found
+	// Step 2: Route by type tag in byte 0 of the "other" field
+	stateType := stateid.Other[0]
+
+	// Delegation stateids (type 0x03) are stored in delegByOther, not openStateByOther.
+	if stateType == StateTypeDeleg {
+		return sm.validateDelegStateid(stateid, currentFH)
+	}
+
+	// Open stateids (type 0x01) and lock stateids (type 0x02) use openStateByOther
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
 		if !sm.isCurrentEpoch(stateid.Other) {
@@ -144,7 +154,7 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 		}
 	}
 
-	// Step 5: Compare seqid
+	// Step 4: Compare seqid
 	if stateid.Seqid < openState.Stateid.Seqid {
 		return nil, &NFS4StateError{
 			Status:  types.NFS4ERR_OLD_STATEID,
@@ -158,8 +168,8 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 		}
 	}
 
-	// Step 6: Verify filehandle matches (if provided)
-	if currentFH != nil && len(currentFH) > 0 && len(openState.FileHandle) > 0 {
+	// Step 5: Verify filehandle matches (if provided)
+	if len(currentFH) > 0 && len(openState.FileHandle) > 0 {
 		if !bytes.Equal(currentFH, openState.FileHandle) {
 			return nil, &NFS4StateError{
 				Status:  types.NFS4ERR_BAD_STATEID,
@@ -168,7 +178,7 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 		}
 	}
 
-	// Step 7-8: Lease check and implicit renewal
+	// Step 6: Lease check and implicit renewal
 	// Per RFC 7530 Section 9.6: any operation that uses a stateid implicitly
 	// renews the lease for the associated client. This prevents READ-only
 	// clients from having their state expire (Pitfall 3).
@@ -183,4 +193,66 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 	}
 
 	return openState, nil
+}
+
+// validateDelegStateid validates a delegation stateid (type 0x03).
+// Returns nil OpenState on success (delegation validated, caller should proceed).
+// Caller must hold sm.mu.RLock.
+func (sm *StateManager) validateDelegStateid(stateid *types.Stateid4, currentFH []byte) (*OpenState, error) {
+	deleg, exists := sm.delegByOther[stateid.Other]
+	if !exists {
+		if !sm.isCurrentEpoch(stateid.Other) {
+			return nil, &NFS4StateError{
+				Status:  types.NFS4ERR_STALE_STATEID,
+				Message: "stateid from previous server incarnation",
+			}
+		}
+		return nil, &NFS4StateError{
+			Status:  types.NFS4ERR_BAD_STATEID,
+			Message: "delegation stateid not found",
+		}
+	}
+
+	// Revoked delegations are no longer valid
+	if deleg.Revoked {
+		return nil, &NFS4StateError{
+			Status:  types.NFS4ERR_BAD_STATEID,
+			Message: "delegation has been revoked",
+		}
+	}
+
+	// Compare seqid
+	if stateid.Seqid < deleg.Stateid.Seqid {
+		return nil, &NFS4StateError{
+			Status:  types.NFS4ERR_OLD_STATEID,
+			Message: fmt.Sprintf("delegation stateid seqid %d < current %d", stateid.Seqid, deleg.Stateid.Seqid),
+		}
+	}
+	if stateid.Seqid > deleg.Stateid.Seqid {
+		return nil, &NFS4StateError{
+			Status:  types.NFS4ERR_BAD_STATEID,
+			Message: fmt.Sprintf("delegation stateid seqid %d > current %d", stateid.Seqid, deleg.Stateid.Seqid),
+		}
+	}
+
+	// Verify filehandle matches
+	if len(currentFH) > 0 && len(deleg.FileHandle) > 0 {
+		if !bytes.Equal(currentFH, deleg.FileHandle) {
+			return nil, &NFS4StateError{
+				Status:  types.NFS4ERR_BAD_STATEID,
+				Message: "delegation stateid filehandle mismatch",
+			}
+		}
+	}
+
+	// Implicit lease renewal for the delegation's client
+	client, clientExists := sm.clientsByID[deleg.ClientID]
+	if clientExists && client.Lease != nil {
+		if client.Lease.IsExpired() {
+			return nil, ErrExpired
+		}
+		client.Lease.Renew()
+	}
+
+	return nil, nil
 }

@@ -176,11 +176,8 @@ type Stateid4 struct {
 // IsSpecialStateid returns true if the stateid is a special stateid.
 // Special stateids per RFC 7530 Section 9.1.4.3:
 //   - Anonymous: seqid=0, other=all-zeros (standard access check, no lock state)
-//   - READ bypass: seqid=0, other=all-ones (bypass locks for read only)
+//   - READ bypass: seqid=0xFFFFFFFF, other=all-ones (bypass locks for read only)
 func (s *Stateid4) IsSpecialStateid() bool {
-	if s.Seqid != 0 {
-		return false
-	}
 	allZeros := true
 	allOnes := true
 	for _, b := range s.Other {
@@ -191,7 +188,15 @@ func (s *Stateid4) IsSpecialStateid() bool {
 			allOnes = false
 		}
 	}
-	return allZeros || allOnes
+	// Anonymous stateid: seqid=0, other=all-zeros
+	if s.Seqid == 0 && allZeros {
+		return true
+	}
+	// READ bypass stateid: seqid=0xFFFFFFFF, other=all-ones
+	if s.Seqid == 0xFFFFFFFF && allOnes {
+		return true
+	}
+	return false
 }
 
 // DecodeStateid4 reads a stateid4 from an io.Reader.
