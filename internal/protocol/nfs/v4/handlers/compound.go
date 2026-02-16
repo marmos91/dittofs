@@ -92,6 +92,22 @@ func (h *Handler) ProcessCompound(compCtx *types.CompoundContext, data []byte) (
 			return nil, fmt.Errorf("decode op %d opcode: %w", i, err)
 		}
 
+		// Check adapter-level operation blocklist before dispatch.
+		// Blocked operations return NFS4ERR_NOTSUPP per locked decision.
+		if h.IsOperationBlocked(opCode) {
+			logger.Debug("NFSv4 COMPOUND op blocked by adapter settings",
+				"op_index", i,
+				"opcode", opCode,
+				"op_name", types.OpName(opCode),
+				"client", compCtx.ClientAddr)
+
+			result := notSuppHandler(opCode)
+			result.OpCode = opCode
+			results = append(results, *result)
+			lastStatus = result.Status
+			break
+		}
+
 		// Dispatch to handler
 		var result *types.CompoundResult
 		handler, ok := h.opDispatchTable[opCode]

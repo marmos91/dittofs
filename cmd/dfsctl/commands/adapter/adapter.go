@@ -36,4 +36,5 @@ func init() {
 	Cmd.AddCommand(enableCmd)
 	Cmd.AddCommand(disableCmd)
 	Cmd.AddCommand(editCmd)
+	Cmd.AddCommand(settingsCmd)
 }

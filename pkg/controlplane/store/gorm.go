@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -192,10 +193,26 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, fmt.Errorf("failed to run database migration: %w", err)
 	}
 
-	return &GORMStore{
+	store := &GORMStore{
 		db:     db,
 		config: config,
-	}, nil
+	}
+
+	// Post-migration: populate default settings for existing adapters
+	if err := store.EnsureAdapterSettings(context.Background()); err != nil {
+		return nil, fmt.Errorf("failed to ensure adapter settings: %w", err)
+	}
+
+	// Post-migration: set correct defaults for existing shares that got zero-values
+	// from column addition. GORM's default tag only applies on INSERT, not ALTER TABLE.
+	// Existing shares would get allow_auth_sys=false (zero value) instead of true.
+	// Only update shares where all security fields are zero-valued (untouched by migration).
+	db.Exec(
+		"UPDATE shares SET allow_auth_sys = ? WHERE allow_auth_sys = ? AND require_kerberos = ? AND blocked_operations IS NULL",
+		true, false, false,
+	)
+
+	return store, nil
 }
 
 // DB returns the underlying GORM database connection.

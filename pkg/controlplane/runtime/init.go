@@ -361,6 +361,19 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			}
 		}
 
+		// Resolve netgroup name from ID for runtime
+		var netgroupName string
+		if share.NetgroupID != nil && *share.NetgroupID != "" {
+			ng, err := s.GetNetgroupByID(ctx, *share.NetgroupID)
+			if err == nil {
+				netgroupName = ng.Name
+			} else {
+				logger.Warn("Share references unknown netgroup",
+					"share", share.Name,
+					"netgroup_id", *share.NetgroupID)
+			}
+		}
+
 		shareConfig := &ShareConfig{
 			Name:              share.Name,
 			MetadataStore:     metaStoreCfg.Name,
@@ -369,6 +382,11 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			Squash:            share.GetSquashMode(),
 			AnonymousUID:      share.GetAnonymousUID(),
 			AnonymousGID:      share.GetAnonymousGID(),
+			AllowAuthSys:      share.AllowAuthSys,
+			RequireKerberos:   share.RequireKerberos,
+			MinKerberosLevel:  share.MinKerberosLevel,
+			NetgroupID:        netgroupName,
+			BlockedOperations: share.GetBlockedOps(),
 		}
 
 		if err := rt.AddShare(ctx, shareConfig); err != nil {

@@ -40,6 +40,14 @@ type Share struct {
 
 	// NFS-specific options
 	DisableReaddirplus bool // Prevent READDIRPLUS on this share
+
+	// Security Policy
+	// These fields are populated when shares are loaded from the DB into the runtime.
+	AllowAuthSys      bool     // Allow AUTH_SYS connections (default: true)
+	RequireKerberos   bool     // Require Kerberos authentication (default: false)
+	MinKerberosLevel  string   // Minimum Kerberos level: krb5, krb5i, krb5p (default: krb5)
+	NetgroupID        string   // Netgroup name for IP-based access control (empty = allow all)
+	BlockedOperations []string // Operations blocked on this share
 }
 
 // ShareConfig contains all configuration needed to create a share in the runtime.
@@ -61,6 +69,13 @@ type ShareConfig struct {
 
 	// NFS-specific options
 	DisableReaddirplus bool
+
+	// Security Policy
+	AllowAuthSys      bool
+	RequireKerberos   bool
+	MinKerberosLevel  string
+	NetgroupID        string
+	BlockedOperations []string
 }
 
 // MountInfo represents an active NFS mount from a client.

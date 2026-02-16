@@ -193,6 +193,41 @@ func (s *SMBAdapter) SetRuntime(rt *runtime.Runtime) {
 	}
 
 	logger.Debug("SMB adapter configured with runtime", "shares", rt.CountShares())
+
+	// Apply live SMB adapter settings from SettingsWatcher.
+	// The SettingsWatcher polls DB every 10s and provides atomic pointer swap
+	// for thread-safe reads. Settings are consumed here at startup and on
+	// each new connection (grandfathering per locked decision).
+	s.applySMBSettings(rt)
+}
+
+// applySMBSettings reads current SMB adapter settings from the runtime's
+// SettingsWatcher and applies them. Called during SetRuntime (startup).
+func (s *SMBAdapter) applySMBSettings(rt *runtime.Runtime) {
+	settings := rt.GetSMBSettings()
+	if settings == nil {
+		logger.Debug("SMB adapter: no live settings available, using defaults")
+		return
+	}
+
+	// Encryption stub: log warning when enabled per locked decision
+	if settings.EnableEncryption {
+		logger.Info("SMB encryption requested but not yet implemented -- connections will proceed without encryption")
+	}
+
+	// Dialect range: logged at startup for visibility
+	logger.Debug("SMB adapter: dialect range from settings",
+		"min_dialect", settings.MinDialect,
+		"max_dialect", settings.MaxDialect)
+
+	// Operation blocklist: log active blocks. SMB blocklist is a pass-through
+	// that logs unsupported operation names (SMB doesn't have the same per-op
+	// granularity as NFS COMPOUND).
+	blockedOps := settings.GetBlockedOperations()
+	if len(blockedOps) > 0 {
+		logger.Info("SMB adapter: operation blocklist from settings (advisory only)",
+			"blocked_ops", blockedOps)
+	}
 }
 
 // Serve starts the SMB server and blocks until the context is cancelled
@@ -285,6 +320,28 @@ func (s *SMBAdapter) Serve(ctx context.Context) error {
 		if tcp, ok := tcpConn.(*net.TCPConn); ok {
 			if err := tcp.SetNoDelay(true); err != nil {
 				logger.Debug("Failed to set TCP_NODELAY", "error", err)
+			}
+		}
+
+		// Check live settings for dynamic max_connections limit.
+		// Per locked decision: existing connections are grandfathered; only new
+		// connections are rejected when the live limit is exceeded.
+		if s.registry != nil {
+			if liveSettings := s.registry.GetSMBSettings(); liveSettings != nil {
+				if liveSettings.MaxConnections > 0 {
+					currentActive := s.connCount.Load()
+					if int(currentActive) >= liveSettings.MaxConnections {
+						logger.Warn("SMB connection rejected: live settings max_connections exceeded",
+							"active", currentActive,
+							"max_connections", liveSettings.MaxConnections,
+							"client", tcpConn.RemoteAddr())
+						_ = tcpConn.Close()
+						if s.connSemaphore != nil {
+							<-s.connSemaphore
+						}
+						continue
+					}
+				}
 			}
 		}
 

@@ -21,6 +21,13 @@ type Share struct {
 	ReadOnly          bool   `json:"read_only,omitempty"`
 	DefaultPermission string `json:"default_permission,omitempty"`
 	Description       string `json:"description,omitempty"`
+
+	// Security policy
+	AllowAuthSys      bool     `json:"allow_auth_sys"`
+	RequireKerberos   bool     `json:"require_kerberos"`
+	MinKerberosLevel  string   `json:"min_kerberos_level,omitempty"`
+	NetgroupID        *string  `json:"netgroup_id,omitempty"`
+	BlockedOperations []string `json:"blocked_operations,omitempty"`
 }
 
 // CreateShareRequest is the request to create a share.
@@ -31,6 +38,13 @@ type CreateShareRequest struct {
 	ReadOnly          bool   `json:"read_only,omitempty"`
 	DefaultPermission string `json:"default_permission,omitempty"`
 	Description       string `json:"description,omitempty"`
+
+	// Security policy
+	AllowAuthSys      *bool     `json:"allow_auth_sys,omitempty"`
+	RequireKerberos   *bool     `json:"require_kerberos,omitempty"`
+	MinKerberosLevel  *string   `json:"min_kerberos_level,omitempty"`
+	NetgroupID        *string   `json:"netgroup_id,omitempty"`
+	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
 }
 
 // UpdateShareRequest is the request to update a share.
@@ -38,6 +52,13 @@ type UpdateShareRequest struct {
 	ReadOnly          *bool   `json:"read_only,omitempty"`
 	DefaultPermission *string `json:"default_permission,omitempty"`
 	Description       *string `json:"description,omitempty"`
+
+	// Security policy
+	AllowAuthSys      *bool     `json:"allow_auth_sys,omitempty"`
+	RequireKerberos   *bool     `json:"require_kerberos,omitempty"`
+	MinKerberosLevel  *string   `json:"min_kerberos_level,omitempty"`
+	NetgroupID        *string   `json:"netgroup_id,omitempty"`
+	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
 }
 
 // SharePermission represents a permission on a share.

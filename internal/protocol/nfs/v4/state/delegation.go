@@ -242,6 +242,11 @@ func (sm *StateManager) ShouldGrantDelegation(clientID uint64, fileHandle []byte
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
+	// Check 0: Delegations must be enabled via adapter settings
+	if !sm.delegationsEnabled {
+		return types.OPEN_DELEGATE_NONE, false
+	}
+
 	// Check 1: Verify client exists and has callback path up
 	client, exists := sm.clientsByID[clientID]
 	if !exists {

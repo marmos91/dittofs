@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** v1.0 COMPLETE — v2.0 (NFSv4.0 + Kerberos + ACLs), Phase 13 COMPLETE
+**Current focus:** v1.0 COMPLETE — v2.0 (NFSv4.0 + Kerberos + ACLs + Control Plane v2.0), Phase 14 COMPLETE
 
 ## Current Position
 
-Phase: 13 of 28 (NFSv4 ACLs) - COMPLETE
-Plan: 5 of 5 complete
-Status: Phase 13 complete. Full NFSv4 ACL pipeline: types, evaluation, metadata, NFS wire format, SMB interop, identity mapping API/CLI, metrics.
-Last activity: 2026-02-16 - Completed Plan 13-05 (SMB Security Descriptor and Control Plane Integration)
+Phase: 14 of 28 (Control Plane v2.0) - COMPLETE
+Plan: 7 of 7 complete
+Status: Phase 14 COMPLETE. All 7 plans executed: data layer, REST API, settings watcher, adapter enforcement, CLI, integration tests, E2E tests.
+Last activity: 2026-02-16 - Completed Plan 14-07 (Control Plane v2.0 E2E Tests)
 
-Progress: [###############################] 100% (47/47 plans complete)
+Progress: [################################] 100% (54/54 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 47
+- Total plans completed: 48
 - Average duration: 8.3 min
-- Total execution time: 5.6 hours
+- Total execution time: 5.8 hours
 
 **By Phase:**
 
@@ -42,9 +42,11 @@ Progress: [###############################] 100% (47/47 plans complete)
 | 12-kerberos-authentication | 5/5 | 48 min | 9.6 min | COMPLETE |
 | 13-nfsv4-acls | 5/5 | 43 min | 8.6 min | COMPLETE |
 
+| 14-control-plane-v2-0 | 7/7 | 48 min | 6.9 min | COMPLETE |
+
 **Recent Trend:**
-- Last 5 plans: 13-01 (9 min), 13-02 (7 min), 13-03 (7 min), 13-04 (8 min), 13-05 (12 min)
-- Trend: Phase 13 complete, avg 8.6 min/plan
+- Last 5 plans: 14-03 (3 min), 14-05 (5 min), 14-04 (12 min), 14-06 (10 min), 14-07 (4 min)
+- Trend: Phase 14 complete, avg 6.9 min/plan
 
 *Updated after each plan completion*
 
@@ -726,6 +728,44 @@ Recent decisions affecting current work:
 - [13-05]: ACL metrics nil-safe singleton pattern matching GSSMetrics from Phase 12
 - [13-05]: additionalSecInfo bitmask controls SD section inclusion (OWNER/GROUP/DACL)
 
+- [14-01]: Version counter (monotonic int) for settings change detection instead of timestamps
+- [14-01]: Post-migrate SQL UPDATE to fix GORM zero-value boolean trap for existing shares
+- [14-01]: EnsureAdapterSettings called in New() to auto-populate defaults for existing adapters
+- [14-01]: Netgroup deletion checks share FK reference count (ErrNetgroupInUse)
+- [14-01]: Share security fields added directly to Share struct (not separate table)
+
+- [14-02]: ValidationErrorResponse with per-field errors map follows RFC 7807 (status 422)
+- [14-02]: force=true bypasses range validation with logger.Warn audit trail
+- [14-02]: dry_run=true validates and returns would-be result without persisting
+- [14-02]: Per-field reset via ?setting= query param on POST .../reset endpoint
+- [14-02]: Blocked operations validated against known NFS/SMB operation name lists
+- [14-02]: SettingsOption functional pattern for API client (WithForce, WithDryRun)
+
+- [14-03]: SettingsWatcher non-fatal on LoadInitial (adapters may not exist at startup)
+- [14-03]: DNS cache piggybacked cleanup on lookups (no separate goroutine)
+- [14-03]: NetgroupID stored as name in runtime Share (resolved from DB ID during loading)
+- [14-03]: Empty netgroup allowlist = allow all; netgroup with no members = deny all
+- [14-03]: Settings watcher stops before adapters in shutdown sequence
+
+- [14-04]: Operation blocklist returns NFS4ERR_NOTSUPP (not NFS4ERR_PERM) per locked decision
+- [14-04]: Security policy checked at mount handler for NFSv3; COMPOUND for NFSv4 after PUTFH
+- [14-04]: Netgroup check is fail-closed: on error, deny access
+- [14-04]: SMB operation blocklist is advisory-only with logging (SMB lacks per-op COMPOUND granularity)
+- [14-04]: SMB encryption is a stub that logs warning per locked decision
+- [14-04]: Delegation policy check is Check 0 in ShouldGrantDelegation for early short-circuit
+
+- [14-05]: Settings command uses nfs/smb as cobra subcommands rather than positional arg
+- [14-05]: Separate flag variables for NFS and SMB update commands to avoid cobra duplicate flag errors
+- [14-05]: Client-side IP/CIDR/hostname validation before API call for fast feedback
+- [14-05]: PersistentPreRunE on settings adapter subcommands to propagate global flags
+
+- [14-06]: Test hostname matching by pre-populating DNS cache (no net.LookupAddr mock needed)
+- [14-06]: Runtime tests inject shares directly via addShareDirect to isolate netgroup access logic
+
+- [14-07]: E2E tests use apiclient directly rather than CLI runner for precise API-level assertions
+- [14-07]: NFS mount verification not duplicated in lifecycle test (covered by store_matrix_test.go)
+- [14-07]: Delegation grant/deny not observable from client side; test covers API persistence only
+
 ### Pending Todos
 
 None.
@@ -736,17 +776,17 @@ None.
 
 ## Next Steps
 
-**Phase 13 — COMPLETE (5/5 plans)**
-- Plan 13-01 COMPLETE: ACL Types and Evaluation Engine
-- Plan 13-02 COMPLETE: Identity Mapper Package
-- Plan 13-03 COMPLETE: ACL Metadata Integration
-- Plan 13-04 COMPLETE: NFSv4 ACL Wire Format and Handler Integration
-- Plan 13-05 COMPLETE: SMB Security Descriptor and Control Plane Integration
-
-**Ready for Phase 14**
+**Phase 14 — COMPLETE (7/7 plans)**
+- Plan 14-01 COMPLETE: Data Layer Foundation (GORM models, store interface, migration)
+- Plan 14-02 COMPLETE: REST API and API Client (handlers, router, apiclient with patch)
+- Plan 14-03 COMPLETE: Settings Hot-Reload and Netgroup Access (SettingsWatcher, CheckNetgroupAccess, DNS cache)
+- Plan 14-04 COMPLETE: Adapter Settings Enforcement (NFS/SMB settings consumption, operation blocklist, security policy, delegation policy, netgroup)
+- Plan 14-05 COMPLETE: CLI commands for adapter settings and netgroup management
+- Plan 14-06 COMPLETE: Control plane v2.0 tests (71 integration tests for store, handler, runtime)
+- Plan 14-07 COMPLETE: E2E tests (10 test scenarios for full lifecycle, validation, netgroups, security policy)
 
 ## Session Continuity
 
 Last session: 2026-02-16
-Stopped at: Completed 13-05-PLAN.md (SMB Security Descriptor and Control Plane Integration) - Phase 13 COMPLETE
-Resume file: Phase 14 planning
+Stopped at: Completed 14-07-PLAN.md (Phase 14 COMPLETE)
+Resume file: .planning/phases/14-control-plane-v2-0/14-07-SUMMARY.md

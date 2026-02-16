@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -130,11 +131,42 @@ func (h *Handler) Mount(
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrNoEnt}}, nil
 	}
 
-	// Get share to check read-only status
+	// Get share to check read-only status and security policy
 	share, err := h.Registry.GetShare(req.DirPath)
 	if err != nil {
 		logger.Error("Mount access check failed", "path", req.DirPath, "client_ip", clientIP, "error", err)
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrServerFault}}, nil
+	}
+
+	// Security policy enforcement: check auth flavor against share policy.
+	// Per locked decision: existing connections are grandfathered; this check
+	// applies to NEW mount requests only.
+	if !share.AllowAuthSys && ctx.AuthFlavor == rpc.AuthUnix {
+		logger.Warn("Mount denied: AUTH_SYS not allowed on share",
+			"path", req.DirPath, "client_ip", clientIP)
+		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
+	}
+	if share.RequireKerberos && ctx.AuthFlavor != rpc.AuthRPCSECGSS {
+		logger.Warn("Mount denied: Kerberos required but client uses non-GSS auth",
+			"path", req.DirPath, "client_ip", clientIP, "auth_flavor", ctx.AuthFlavor)
+		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
+	}
+
+	// Netgroup IP access check: reject mount if client IP is not in allowed netgroup.
+	// Per locked decision: empty allowlist = allow all.
+	if clientNetIP := net.ParseIP(clientIP); clientNetIP != nil {
+		allowed, netErr := h.Registry.CheckNetgroupAccess(ctx.Context, req.DirPath, clientNetIP)
+		if netErr != nil {
+			logger.Warn("Mount netgroup access check error",
+				"path", req.DirPath, "client_ip", clientIP, "error", netErr)
+			// On error, deny access (fail-closed)
+			return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
+		}
+		if !allowed {
+			logger.Warn("Mount denied: client IP not in allowed netgroup",
+				"path", req.DirPath, "client_ip", clientIP)
+			return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
+		}
 	}
 
 	// Record the mount in the registry

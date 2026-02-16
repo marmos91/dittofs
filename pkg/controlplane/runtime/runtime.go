@@ -114,6 +114,13 @@ type Runtime struct {
 	metricsServer AuxiliaryServer
 	apiServer     AuxiliaryServer
 
+	// Settings hot-reload
+	settingsWatcher *SettingsWatcher
+
+	// DNS cache for netgroup hostname matching
+	dnsCache     *dnsCache
+	dnsCacheOnce sync.Once
+
 	// Shutdown management
 	shutdownTimeout time.Duration
 
@@ -124,7 +131,7 @@ type Runtime struct {
 
 // New creates a new Runtime with the given persistent store.
 func New(s store.Store) *Runtime {
-	return &Runtime{
+	rt := &Runtime{
 		metadata:        make(map[string]metadata.MetadataStore),
 		shares:          make(map[string]*Share),
 		mounts:          make(map[string]*MountInfo),
@@ -133,6 +140,13 @@ func New(s store.Store) *Runtime {
 		metadataService: metadata.New(),
 		shutdownTimeout: DefaultShutdownTimeout,
 	}
+
+	// Create settings watcher if store is available
+	if s != nil {
+		rt.settingsWatcher = NewSettingsWatcher(s, DefaultPollInterval)
+	}
+
+	return rt
 }
 
 // SetAdapterFactory sets the factory function for creating adapters.
@@ -202,6 +216,15 @@ func (r *Runtime) Serve(ctx context.Context) error {
 func (r *Runtime) serve(ctx context.Context) error {
 	logger.Info("Starting DittoFS runtime")
 
+	// 0. Initialize settings watcher (load initial settings before adapters start)
+	if r.settingsWatcher != nil {
+		if err := r.settingsWatcher.LoadInitial(ctx); err != nil {
+			logger.Warn("Failed to load initial adapter settings", "error", err)
+			// Non-fatal: adapters will use static config until settings are available
+		}
+		r.settingsWatcher.Start(ctx)
+	}
+
 	// 1. Load and start adapters from store
 	if err := r.LoadAdaptersFromStore(ctx); err != nil {
 		return fmt.Errorf("failed to load adapters: %w", err)
@@ -254,6 +277,12 @@ func (r *Runtime) serve(ctx context.Context) error {
 
 // shutdown performs graceful shutdown of all components.
 func (r *Runtime) shutdown() {
+	// Stop settings watcher first (no more polling)
+	if r.settingsWatcher != nil {
+		logger.Debug("Stopping settings watcher")
+		r.settingsWatcher.Stop()
+	}
+
 	// Stop all adapters (with connection draining)
 	logger.Info("Stopping all adapters")
 	if err := r.StopAllAdapters(); err != nil {
@@ -490,6 +519,11 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 		AnonymousUID:       config.AnonymousUID,
 		AnonymousGID:       config.AnonymousGID,
 		DisableReaddirplus: config.DisableReaddirplus,
+		AllowAuthSys:       config.AllowAuthSys,
+		RequireKerberos:    config.RequireKerberos,
+		MinKerberosLevel:   config.MinKerberosLevel,
+		NetgroupID:         config.NetgroupID,
+		BlockedOperations:  config.BlockedOperations,
 	}
 
 	r.shares[config.Name] = share
@@ -1071,6 +1105,36 @@ func (r *Runtime) AddAdapter(adapter ProtocolAdapter) error {
 
 	logger.Info("Adapter added and started", "type", adapterType, "port", adapter.Port())
 	return nil
+}
+
+// ============================================================================
+// Settings Access (Hot-Reload)
+// ============================================================================
+
+// GetSettingsWatcher returns the settings watcher for direct access.
+// Adapters can use this to access the full watcher API.
+func (r *Runtime) GetSettingsWatcher() *SettingsWatcher {
+	return r.settingsWatcher
+}
+
+// GetNFSSettings returns the current NFS adapter settings from the watcher cache.
+// Returns nil if no NFS settings are available (watcher not initialized or NFS adapter not configured).
+// Callers must NOT mutate the returned struct.
+func (r *Runtime) GetNFSSettings() *models.NFSAdapterSettings {
+	if r.settingsWatcher == nil {
+		return nil
+	}
+	return r.settingsWatcher.GetNFSSettings()
+}
+
+// GetSMBSettings returns the current SMB adapter settings from the watcher cache.
+// Returns nil if no SMB settings are available (watcher not initialized or SMB adapter not configured).
+// Callers must NOT mutate the returned struct.
+func (r *Runtime) GetSMBSettings() *models.SMBAdapterSettings {
+	if r.settingsWatcher == nil {
+		return nil
+	}
+	return r.settingsWatcher.GetSMBSettings()
 }
 
 // ============================================================================

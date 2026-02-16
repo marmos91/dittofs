@@ -74,6 +74,11 @@ type StateManager struct {
 	// recently recalled. Defaults to RecentlyRecalledTTL (30s).
 	recentlyRecalledTTL time.Duration
 
+	// delegationsEnabled controls whether delegations can be granted.
+	// When false, ShouldGrantDelegation always returns OPEN_DELEGATE_NONE.
+	// Defaults to true; updated from live adapter settings.
+	delegationsEnabled bool
+
 	// lockManager is the unified lock manager for actual byte-range conflict
 	// detection and cross-protocol locking. Set via SetLockManager() or constructor.
 	lockManager *lock.Manager
@@ -126,6 +131,7 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		delegByFile:         make(map[string][]*DelegationState),
 		recentlyRecalled:    make(map[string]time.Time),
 		recentlyRecalledTTL: RecentlyRecalledTTL,
+		delegationsEnabled:  true,
 		bootEpoch:           uint32(time.Now().Unix()),
 		leaseDuration:       leaseDuration,
 		graceDuration:       gd,
@@ -1229,6 +1235,40 @@ func (sm *StateManager) SetLockManager(lm *lock.Manager) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.lockManager = lm
+}
+
+// SetDelegationsEnabled controls whether delegations can be granted.
+// When false, ShouldGrantDelegation always returns OPEN_DELEGATE_NONE.
+// This is updated from live NFS adapter settings.
+//
+// Thread-safe: acquires sm.mu.Lock.
+func (sm *StateManager) SetDelegationsEnabled(enabled bool) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.delegationsEnabled = enabled
+}
+
+// SetLeaseTime updates the lease duration used for new client leases.
+// Existing leases are not affected (grandfathered).
+//
+// Thread-safe: acquires sm.mu.Lock.
+func (sm *StateManager) SetLeaseTime(d time.Duration) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if d > 0 {
+		sm.leaseDuration = d
+	}
+}
+
+// SetGracePeriodDuration updates the grace period duration used for future grace periods.
+//
+// Thread-safe: acquires sm.mu.Lock.
+func (sm *StateManager) SetGracePeriodDuration(d time.Duration) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if d > 0 {
+		sm.graceDuration = d
+	}
 }
 
 // LockNew implements the LOCK operation for a new lock-owner.

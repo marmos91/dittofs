@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+// KerberosLevel constants for share security policy.
+const (
+	KerberosLevelKrb5  = "krb5"
+	KerberosLevelKrb5i = "krb5i"
+	KerberosLevelKrb5p = "krb5p"
+)
+
 // Share defines a DittoFS share/export configuration.
 type Share struct {
 	ID                string    `gorm:"primaryKey;size:36" json:"id"`
@@ -26,6 +33,13 @@ type Share struct {
 	GuestEnabled bool    `gorm:"default:false" json:"guest_enabled"`
 	GuestUID     *uint32 `json:"guest_uid,omitempty"`
 	GuestGID     *uint32 `json:"guest_gid,omitempty"`
+
+	// Security policy fields
+	AllowAuthSys      bool    `gorm:"default:true" json:"allow_auth_sys"`             // Allow AUTH_SYS connections
+	RequireKerberos   bool    `gorm:"default:false" json:"require_kerberos"`          // Require Kerberos authentication
+	MinKerberosLevel  string  `gorm:"default:krb5;size:20" json:"min_kerberos_level"` // krb5, krb5i, krb5p
+	NetgroupID        *string `gorm:"size:36" json:"netgroup_id,omitempty"`           // FK to netgroups (nullable)
+	BlockedOperations string  `gorm:"type:text" json:"-"`                             // JSON array of blocked operations
 
 	// Relationships
 	MetadataStore    MetadataStoreConfig    `gorm:"foreignKey:MetadataStoreID" json:"metadata_store,omitempty"`
@@ -107,4 +121,14 @@ type ShareAccessRule struct {
 // TableName returns the table name for ShareAccessRule.
 func (ShareAccessRule) TableName() string {
 	return "share_access_rules"
+}
+
+// GetBlockedOps returns the blocked operations for this share as a string slice.
+func (s *Share) GetBlockedOps() []string {
+	return parseBlockedOps(s.BlockedOperations)
+}
+
+// SetBlockedOps serializes the blocked operations from a string slice.
+func (s *Share) SetBlockedOps(ops []string) {
+	s.BlockedOperations = marshalBlockedOps(ops)
 }

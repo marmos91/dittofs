@@ -29,6 +29,11 @@ var (
 	// Setting errors
 	ErrSettingNotFound = errors.New("setting not found")
 
+	// Netgroup errors
+	ErrNetgroupNotFound  = errors.New("netgroup not found")
+	ErrDuplicateNetgroup = errors.New("netgroup already exists")
+	ErrNetgroupInUse     = errors.New("netgroup is referenced by shares")
+
 	// Guest errors
 	ErrGuestDisabled = errors.New("guest access is disabled")
 )

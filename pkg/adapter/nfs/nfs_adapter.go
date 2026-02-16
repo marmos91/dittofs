@@ -13,6 +13,7 @@ import (
 	mount "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc/gss"
 	v3 "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
+	v4attrs "github.com/marmos91/dittofs/internal/protocol/nfs/v4/attrs"
 	v4handlers "github.com/marmos91/dittofs/internal/protocol/nfs/v4/handlers"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/pseudofs"
 	v4state "github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
@@ -414,6 +415,51 @@ func (s *NFSAdapter) SetRuntime(rt *runtime.Runtime) {
 	s.initGSSProcessor()
 
 	logger.Debug("NFS adapter configured with runtime", "shares", rt.CountShares())
+
+	// Apply live NFS adapter settings from SettingsWatcher.
+	// The SettingsWatcher polls DB every 10s and provides atomic pointer swap
+	// for thread-safe reads. Settings are consumed here at startup and on
+	// each new connection (grandfathering per locked decision).
+	s.applyNFSSettings(rt)
+}
+
+// applyNFSSettings reads current NFS adapter settings from the runtime's
+// SettingsWatcher and applies them to the StateManager, v4Handler, and
+// attrs package. Called during SetRuntime (startup) and can be called
+// periodically or on new connections to pick up changed settings.
+func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
+	settings := rt.GetNFSSettings()
+	if settings == nil {
+		logger.Debug("NFS adapter: no live settings available, using defaults")
+		return
+	}
+
+	// Lease time -> StateManager + attrs package (FATTR4_LEASE_TIME)
+	if settings.LeaseTime > 0 {
+		leaseSeconds := settings.LeaseTime
+		s.v4Handler.StateManager.SetLeaseTime(time.Duration(leaseSeconds) * time.Second)
+		v4attrs.SetLeaseTime(uint32(leaseSeconds))
+		logger.Debug("NFS adapter: applied lease time from settings",
+			"lease_time_seconds", leaseSeconds)
+	}
+
+	// Grace period -> StateManager
+	if settings.GracePeriod > 0 {
+		s.v4Handler.StateManager.SetGracePeriodDuration(
+			time.Duration(settings.GracePeriod) * time.Second,
+		)
+	}
+
+	// Delegation policy
+	s.v4Handler.StateManager.SetDelegationsEnabled(settings.DelegationsEnabled)
+
+	// Operation blocklist -> v4 Handler
+	blockedOps := settings.GetBlockedOperations()
+	s.v4Handler.SetBlockedOps(blockedOps)
+	if len(blockedOps) > 0 {
+		logger.Info("NFS adapter: operation blocklist active",
+			"blocked_ops", blockedOps)
+	}
 }
 
 // initGSSProcessor initializes the RPCSEC_GSS processor if Kerberos is configured.
@@ -850,6 +896,29 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 				// Common causes: resource exhaustion, network issues
 				logger.Debug("Error accepting NFS connection", "error", err)
 				continue
+			}
+		}
+
+		// Check live settings for dynamic max_connections limit.
+		// This supplements the static connSemaphore from config.
+		// Per locked decision: existing connections are grandfathered; only new
+		// connections are rejected when the live limit is exceeded.
+		if s.registry != nil {
+			if liveSettings := s.registry.GetNFSSettings(); liveSettings != nil {
+				if liveSettings.MaxConnections > 0 {
+					currentActive := s.connCount.Load()
+					if int(currentActive) >= liveSettings.MaxConnections {
+						logger.Warn("NFS connection rejected: live settings max_connections exceeded",
+							"active", currentActive,
+							"max_connections", liveSettings.MaxConnections,
+							"client", tcpConn.RemoteAddr())
+						_ = tcpConn.Close()
+						if s.connSemaphore != nil {
+							<-s.connSemaphore
+						}
+						continue
+					}
+				}
 			}
 		}
 

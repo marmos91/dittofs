@@ -1,0 +1,161 @@
+package store
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+)
+
+// ============================================
+// NETGROUP OPERATIONS
+// ============================================
+
+func (s *GORMStore) GetNetgroup(ctx context.Context, name string) (*models.Netgroup, error) {
+	var netgroup models.Netgroup
+	err := s.db.WithContext(ctx).
+		Preload("Members").
+		Where("name = ?", name).
+		First(&netgroup).Error
+	if err != nil {
+		return nil, convertNotFoundError(err, models.ErrNetgroupNotFound)
+	}
+	return &netgroup, nil
+}
+
+func (s *GORMStore) GetNetgroupByID(ctx context.Context, id string) (*models.Netgroup, error) {
+	var netgroup models.Netgroup
+	err := s.db.WithContext(ctx).
+		Preload("Members").
+		Where("id = ?", id).
+		First(&netgroup).Error
+	if err != nil {
+		return nil, convertNotFoundError(err, models.ErrNetgroupNotFound)
+	}
+	return &netgroup, nil
+}
+
+func (s *GORMStore) ListNetgroups(ctx context.Context) ([]*models.Netgroup, error) {
+	var netgroups []*models.Netgroup
+	if err := s.db.WithContext(ctx).
+		Preload("Members").
+		Find(&netgroups).Error; err != nil {
+		return nil, err
+	}
+	return netgroups, nil
+}
+
+func (s *GORMStore) CreateNetgroup(ctx context.Context, netgroup *models.Netgroup) (string, error) {
+	if netgroup.ID == "" {
+		netgroup.ID = uuid.New().String()
+	}
+	now := time.Now()
+	netgroup.CreatedAt = now
+	netgroup.UpdatedAt = now
+
+	if err := s.db.WithContext(ctx).Create(netgroup).Error; err != nil {
+		if isUniqueConstraintError(err) {
+			return "", models.ErrDuplicateNetgroup
+		}
+		return "", err
+	}
+	return netgroup.ID, nil
+}
+
+func (s *GORMStore) DeleteNetgroup(ctx context.Context, name string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var netgroup models.Netgroup
+		if err := tx.Where("name = ?", name).First(&netgroup).Error; err != nil {
+			return convertNotFoundError(err, models.ErrNetgroupNotFound)
+		}
+
+		// Check if any shares reference this netgroup
+		var shareCount int64
+		if err := tx.Model(&models.Share{}).Where("netgroup_id = ?", netgroup.ID).Count(&shareCount).Error; err != nil {
+			return err
+		}
+		if shareCount > 0 {
+			return models.ErrNetgroupInUse
+		}
+
+		// Delete all members first
+		if err := tx.Where("netgroup_id = ?", netgroup.ID).Delete(&models.NetgroupMember{}).Error; err != nil {
+			return err
+		}
+
+		// Delete the netgroup
+		return tx.Delete(&netgroup).Error
+	})
+}
+
+func (s *GORMStore) AddNetgroupMember(ctx context.Context, netgroupName string, member *models.NetgroupMember) error {
+	// Validate member type
+	if !models.ValidateMemberType(member.Type) {
+		return fmt.Errorf("invalid member type: %s", member.Type)
+	}
+
+	// Validate member value
+	if err := models.ValidateMemberValue(member.Type, member.Value); err != nil {
+		return err
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var netgroup models.Netgroup
+		if err := tx.Where("name = ?", netgroupName).First(&netgroup).Error; err != nil {
+			return convertNotFoundError(err, models.ErrNetgroupNotFound)
+		}
+
+		if member.ID == "" {
+			member.ID = uuid.New().String()
+		}
+		member.NetgroupID = netgroup.ID
+		member.CreatedAt = time.Now()
+
+		return tx.Create(member).Error
+	})
+}
+
+func (s *GORMStore) RemoveNetgroupMember(ctx context.Context, netgroupName, memberID string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var netgroup models.Netgroup
+		if err := tx.Where("name = ?", netgroupName).First(&netgroup).Error; err != nil {
+			return convertNotFoundError(err, models.ErrNetgroupNotFound)
+		}
+
+		return tx.Where("id = ? AND netgroup_id = ?", memberID, netgroup.ID).Delete(&models.NetgroupMember{}).Error
+	})
+}
+
+func (s *GORMStore) GetNetgroupMembers(ctx context.Context, netgroupName string) ([]*models.NetgroupMember, error) {
+	netgroup, err := s.GetNetgroup(ctx, netgroupName)
+	if err != nil {
+		return nil, err
+	}
+
+	members := make([]*models.NetgroupMember, len(netgroup.Members))
+	for i := range netgroup.Members {
+		members[i] = &netgroup.Members[i]
+	}
+	return members, nil
+}
+
+func (s *GORMStore) GetSharesByNetgroup(ctx context.Context, netgroupName string) ([]*models.Share, error) {
+	netgroup, err := s.GetNetgroup(ctx, netgroupName)
+	if err != nil {
+		return nil, err
+	}
+
+	var shares []*models.Share
+	if err := s.db.WithContext(ctx).
+		Preload("MetadataStore").
+		Preload("PayloadStore").
+		Where("netgroup_id = ?", netgroup.ID).
+		Find(&shares).Error; err != nil {
+		return nil, err
+	}
+	return shares, nil
+}
