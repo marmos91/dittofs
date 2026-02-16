@@ -56,7 +56,7 @@ func TestContextHasRefreshToken(t *testing.T) {
 
 func TestStoreOperations(t *testing.T) {
 	// Create temp directory for test
-	tmpDir, err := os.MkdirTemp("", "dittofsctl-test-*")
+	tmpDir, err := os.MkdirTemp("", "dfsctl-test-*")
 	require.NoError(t, err)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
@@ -140,7 +140,7 @@ func TestStoreOperations(t *testing.T) {
 
 func TestStoreUpdateTokens(t *testing.T) {
 	// Create temp directory for test
-	tmpDir, err := os.MkdirTemp("", "dittofsctl-test-*")
+	tmpDir, err := os.MkdirTemp("", "dfsctl-test-*")
 	require.NoError(t, err)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
@@ -176,7 +176,7 @@ func TestStoreUpdateTokens(t *testing.T) {
 }
 
 func TestStoreClearCurrentContext(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "dittofsctl-test-*")
+	tmpDir, err := os.MkdirTemp("", "dfsctl-test-*")
 	require.NoError(t, err)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
@@ -215,7 +215,7 @@ func TestStoreClearCurrentContext(t *testing.T) {
 }
 
 func TestStorePreferences(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "dittofsctl-test-*")
+	tmpDir, err := os.MkdirTemp("", "dfsctl-test-*")
 	require.NoError(t, err)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 

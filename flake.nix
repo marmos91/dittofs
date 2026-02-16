@@ -32,7 +32,7 @@
         gitRev = self.shortRev or self.dirtyShortRev or "unknown";
 
         # Helper scripts for DittoFS development (works in any shell)
-        dittofs-mount = pkgs.writeShellScriptBin "dittofs-mount" ''
+        dfs-mount = pkgs.writeShellScriptBin "dfs-mount" ''
           mount_point="''${1:-/tmp/dittofs-test}"
           sudo mkdir -p "$mount_point" 2>/dev/null || true
           sudo ${pkgs.nfs-utils}/bin/mount.nfs -o nfsvers=3,tcp,port=12049,mountport=12049,nolock,actimeo=0 \
@@ -40,7 +40,7 @@
           echo "Mounted at $mount_point"
         '';
 
-        dittofs-umount = pkgs.writeShellScriptBin "dittofs-umount" ''
+        dfs-umount = pkgs.writeShellScriptBin "dfs-umount" ''
           mount_point="''${1:-/tmp/dittofs-test}"
           sudo ${pkgs.util-linux}/bin/umount "$mount_point"
           echo "Unmounted $mount_point"
@@ -90,7 +90,7 @@
 
         # Helper script to start PostgreSQL for testing
         # Uses sudo for docker commands to avoid docker group requirement
-        dittofs-postgres-start = pkgs.writeShellScriptBin "dittofs-postgres-start" ''
+        dfs-postgres-start = pkgs.writeShellScriptBin "dfs-postgres-start" ''
           container_name="dittofs-postgres-test"
 
           # Check if docker is available
@@ -139,7 +139,7 @@
               echo "  Password: dittofs"
               echo "  Database: dittofs_test"
               echo ""
-              echo "Start DittoFS with: ./dittofs start --config test/posix/configs/config-postgres.yaml"
+              echo "Start DittoFS with: ./dfs start --config test/posix/configs/config-postgres.yaml"
               exit 0
             fi
             sleep 1
@@ -151,7 +151,7 @@
 
         # Helper script to stop PostgreSQL test container
         # Uses sudo for docker commands to avoid docker group requirement
-        dittofs-postgres-stop = pkgs.writeShellScriptBin "dittofs-postgres-stop" ''
+        dfs-postgres-stop = pkgs.writeShellScriptBin "dfs-postgres-stop" ''
           container_name="dittofs-postgres-test"
 
           if sudo docker ps -a --format '{{.Names}}' | grep -q "^$container_name$"; then
@@ -174,7 +174,7 @@
         '';
 
         # Helper script for running e2e tests with sudo
-        dittofs-e2e = pkgs.writeShellScriptBin "dittofs-e2e" ''
+        dfs-e2e = pkgs.writeShellScriptBin "dfs-e2e" ''
           # E2E tests require sudo for NFS mounting
           # This script preserves the nix shell's PATH for go binary access
 
@@ -192,8 +192,8 @@
           echo ""
 
           # Build first (without sudo)
-          echo "Building dittofs..."
-          go build -o "$PROJECT_DIR/dittofs" "$PROJECT_DIR/cmd/dittofs/main.go" || exit 1
+          echo "Building dfs..."
+          go build -o "$PROJECT_DIR/dfs" "$PROJECT_DIR/cmd/dfs/main.go" || exit 1
           echo ""
 
           # Run e2e tests with sudo, preserving PATH for go binary
@@ -220,12 +220,12 @@
         '';
 
         # Helper script for running pjdfstest
-        dittofs-posix = pkgs.writeShellScriptBin "dittofs-posix" ''
+        dfs-posix = pkgs.writeShellScriptBin "dfs-posix" ''
           mount_point="''${DITTOFS_MOUNT:-/tmp/dittofs-test}"
 
           # Check if mounted using /proc/mounts (more reliable than mountpoint for NFS)
           if ! grep -q " $mount_point " /proc/mounts 2>/dev/null; then
-            echo "Error: $mount_point not mounted. Run: dittofs-mount"
+            echo "Error: $mount_point not mounted. Run: dfs-mount"
             exit 1
           fi
 
@@ -282,12 +282,12 @@
             # Docker client for PostgreSQL testing (daemon must be running on host)
             docker-client
             # Helper scripts (work in any shell - bash, zsh, etc.)
-            dittofs-mount
-            dittofs-umount
-            dittofs-posix
-            dittofs-e2e
-            dittofs-postgres-start
-            dittofs-postgres-stop
+            dfs-mount
+            dfs-umount
+            dfs-posix
+            dfs-e2e
+            dfs-postgres-start
+            dfs-postgres-stop
           ];
 
         darwinInputs =
@@ -316,7 +316,7 @@
             echo "Go version: $(go version | cut -d' ' -f3)"
             echo ""
             echo "Available commands:"
-            echo "  go build ./cmd/dittofs      Build DittoFS binary"
+            echo "  go build ./cmd/dfs          Build DittoFS binary"
             echo "  go test ./...               Run all tests"
             echo "  go test -race ./...         Run tests with race detection"
             echo "  golangci-lint run           Run linters"
@@ -326,25 +326,25 @@
               echo "  sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport,nolock localhost:/export /tmp/dittofs-test"
               echo ""
               echo "POSIX compliance testing (via Docker):"
-              echo "  docker build -t dittofs-pjdfstest -f test/posix/Dockerfile.pjdfstest ."
-              echo "  docker run --rm -v /tmp/dittofs-test:/mnt/test dittofs-pjdfstest"
+              echo "  docker build -t dfs-pjdfstest -f test/posix/Dockerfile.pjdfstest ."
+              echo "  docker run --rm -v /tmp/dittofs-test:/mnt/test dfs-pjdfstest"
             else
               echo "NFS helper commands:"
-              echo "  dittofs-mount [path]        Mount NFS (default: /tmp/dittofs-test)"
-              echo "  dittofs-umount [path]       Unmount NFS"
+              echo "  dfs-mount [path]            Mount NFS (default: /tmp/dittofs-test)"
+              echo "  dfs-umount [path]           Unmount NFS"
               echo ""
               echo "POSIX compliance testing (pjdfstest - 8,789 tests):"
-              echo "  dittofs-posix               Run all tests"
-              echo "  dittofs-posix chmod         Run chmod tests only"
-              echo "  dittofs-posix chown         Run chown tests only"
+              echo "  dfs-posix                   Run all tests"
+              echo "  dfs-posix chmod             Run chmod tests only"
+              echo "  dfs-posix chown             Run chown tests only"
               echo ""
               echo "PostgreSQL testing:"
-              echo "  dittofs-postgres-start      Start PostgreSQL container"
-              echo "  dittofs-postgres-stop       Stop and remove container"
+              echo "  dfs-postgres-start          Start PostgreSQL container"
+              echo "  dfs-postgres-stop           Stop and remove container"
               echo ""
               echo "E2E testing (requires sudo for NFS mounts):"
-              echo "  dittofs-e2e                 Run all E2E tests"
-              echo "  dittofs-e2e -run TestName   Run specific test"
+              echo "  dfs-e2e                     Run all E2E tests"
+              echo "  dfs-e2e -run TestName       Run specific test"
             fi
             echo ""
 
@@ -378,7 +378,7 @@
           # To update: set to "", run `nix build`, copy hash from error
           vendorHash = "sha256-ObvJ0kEBS+DM+SOrY0D8qwOsbIsmQCWgpLXXf6oRdqQ=";
 
-          subPackages = [ "cmd/dittofs" ];
+          subPackages = [ "cmd/dfs" ];
 
           ldflags = [
             "-s"

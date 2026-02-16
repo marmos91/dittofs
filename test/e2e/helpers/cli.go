@@ -15,7 +15,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// CLIRunner executes dittofsctl commands with JSON output for reliable parsing.
+// CLIRunner executes dfsctl commands with JSON output for reliable parsing.
 type CLIRunner struct {
 	serverURL string
 	token     string
@@ -30,7 +30,7 @@ func NewCLIRunner(serverURL, token string) *CLIRunner {
 	}
 }
 
-// Run executes dittofsctl with --server, --token, and --output json prepended.
+// Run executes dfsctl with --server, --token, and --output json prepended.
 // Returns the raw output bytes and any error.
 func (r *CLIRunner) Run(args ...string) ([]byte, error) {
 	// Prepend standard args
@@ -43,16 +43,16 @@ func (r *CLIRunner) Run(args ...string) ([]byte, error) {
 	}
 	fullArgs = append(fullArgs, args...)
 
-	return r.execDittofsctl(fullArgs...)
+	return r.execDfsctl(fullArgs...)
 }
 
-// RunRaw executes dittofsctl without prepending standard args.
+// RunRaw executes dfsctl without prepending standard args.
 // Use this for commands that don't support all global flags (like login).
 func (r *CLIRunner) RunRaw(args ...string) ([]byte, error) {
-	return r.execDittofsctl(args...)
+	return r.execDfsctl(args...)
 }
 
-// RunWithInput executes dittofsctl and provides stdin input.
+// RunWithInput executes dfsctl and provides stdin input.
 func (r *CLIRunner) RunWithInput(input string, args ...string) ([]byte, error) {
 	// Prepend standard args
 	fullArgs := []string{"--output", "json"}
@@ -64,7 +64,7 @@ func (r *CLIRunner) RunWithInput(input string, args ...string) ([]byte, error) {
 	}
 	fullArgs = append(fullArgs, args...)
 
-	return r.execDittofsctlWithInput(input, fullArgs...)
+	return r.execDfsctlWithInput(input, fullArgs...)
 }
 
 // SetToken updates the authentication token.
@@ -87,8 +87,8 @@ func (r *CLIRunner) ServerURL() string {
 	return r.serverURL
 }
 
-// execDittofsctl runs the dittofsctl binary with the given arguments.
-func (r *CLIRunner) execDittofsctl(args ...string) ([]byte, error) {
+// execDfsctl runs the dfsctl binary with the given arguments.
+func (r *CLIRunner) execDfsctl(args ...string) ([]byte, error) {
 	binary := r.getBinary()
 	cmd := exec.Command(binary, args...)
 
@@ -99,15 +99,15 @@ func (r *CLIRunner) execDittofsctl(args ...string) ([]byte, error) {
 	err := cmd.Run()
 	if err != nil {
 		// Include stderr in error for better debugging
-		return stdout.Bytes(), fmt.Errorf("dittofsctl %s failed: %w\nstderr: %s",
+		return stdout.Bytes(), fmt.Errorf("dfsctl %s failed: %w\nstderr: %s",
 			strings.Join(args, " "), err, stderr.String())
 	}
 
 	return stdout.Bytes(), nil
 }
 
-// execDittofsctlWithInput runs the dittofsctl binary with stdin input.
-func (r *CLIRunner) execDittofsctlWithInput(input string, args ...string) ([]byte, error) {
+// execDfsctlWithInput runs the dfsctl binary with stdin input.
+func (r *CLIRunner) execDfsctlWithInput(input string, args ...string) ([]byte, error) {
 	binary := r.getBinary()
 	cmd := exec.Command(binary, args...)
 
@@ -119,39 +119,39 @@ func (r *CLIRunner) execDittofsctlWithInput(input string, args ...string) ([]byt
 
 	err := cmd.Run()
 	if err != nil {
-		return stdout.Bytes(), fmt.Errorf("dittofsctl %s failed: %w\nstderr: %s",
+		return stdout.Bytes(), fmt.Errorf("dfsctl %s failed: %w\nstderr: %s",
 			strings.Join(args, " "), err, stderr.String())
 	}
 
 	return stdout.Bytes(), nil
 }
 
-// getBinary returns the path to the dittofsctl binary.
+// getBinary returns the path to the dfsctl binary.
 func (r *CLIRunner) getBinary() string {
 	if r.binary != "" {
 		return r.binary
 	}
 
-	// Check for dittofsctl in PATH
-	if path, err := exec.LookPath("dittofsctl"); err == nil {
+	// Check for dfsctl in PATH
+	if path, err := exec.LookPath("dfsctl"); err == nil {
 		r.binary = path
 		return r.binary
 	}
 
 	// Look in project root
 	projectRoot := findProjectRootForCLI()
-	localBinary := filepath.Join(projectRoot, "dittofsctl")
+	localBinary := filepath.Join(projectRoot, "dfsctl")
 	if _, err := os.Stat(localBinary); err == nil {
 		r.binary = localBinary
 		return r.binary
 	}
 
 	// Build it
-	cmd := exec.Command("go", "build", "-o", localBinary, "./cmd/dittofsctl/")
+	cmd := exec.Command("go", "build", "-o", localBinary, "./cmd/dfsctl/")
 	cmd.Dir = projectRoot
 	if _, err := cmd.CombinedOutput(); err != nil {
-		// Fall back to just "dittofsctl" and let it fail later with better error
-		r.binary = "dittofsctl"
+		// Fall back to just "dfsctl" and let it fail later with better error
+		r.binary = "dfsctl"
 		return r.binary
 	}
 
@@ -227,7 +227,7 @@ func GetAdminPassword() string {
 }
 
 // extractTokenFromLogin extracts the auth token after login.
-// This reads from the credentials file that dittofsctl creates.
+// This reads from the credentials file that dfsctl creates.
 func extractTokenFromLogin(t *testing.T, serverURL string) string {
 	t.Helper()
 
@@ -242,7 +242,7 @@ func extractTokenFromLogin(t *testing.T, serverURL string) string {
 		configHome = filepath.Join(home, ".config")
 	}
 
-	credFile := filepath.Join(configHome, "dittofsctl", "config.json")
+	credFile := filepath.Join(configHome, "dfsctl", "config.json")
 	data, err := os.ReadFile(credFile)
 	if err != nil {
 		t.Fatalf("Failed to read credentials file: %v", err)
@@ -286,12 +286,12 @@ func ParseJSONResponse(output []byte, v interface{}) error {
 	return nil
 }
 
-// RunDittofs executes the dittofs (server) binary with the given arguments.
-// This is useful for commands like `dittofs status`.
-func RunDittofs(t *testing.T, args ...string) ([]byte, error) {
+// RunDfs executes the dfs (server) binary with the given arguments.
+// This is useful for commands like `dfs status`.
+func RunDfs(t *testing.T, args ...string) ([]byte, error) {
 	t.Helper()
 
-	binary := findDittofsBinaryForCLI(t)
+	binary := findDfsBinaryForCLI(t)
 	cmd := exec.Command(binary, args...)
 
 	var stdout, stderr bytes.Buffer
@@ -300,35 +300,35 @@ func RunDittofs(t *testing.T, args ...string) ([]byte, error) {
 
 	err := cmd.Run()
 	if err != nil {
-		return stdout.Bytes(), fmt.Errorf("dittofs %s failed: %w\nstderr: %s",
+		return stdout.Bytes(), fmt.Errorf("dfs %s failed: %w\nstderr: %s",
 			strings.Join(args, " "), err, stderr.String())
 	}
 
 	return stdout.Bytes(), nil
 }
 
-// findDittofsBinaryForCLI locates the dittofs binary, similar to findDittofsBinary but without testing.T dependency.
-func findDittofsBinaryForCLI(t *testing.T) string {
+// findDfsBinaryForCLI locates the dfs binary, similar to findDfsBinary but without testing.T dependency.
+func findDfsBinaryForCLI(t *testing.T) string {
 	t.Helper()
 
-	// Check for dittofs in PATH
-	if path, err := exec.LookPath("dittofs"); err == nil {
+	// Check for dfs in PATH
+	if path, err := exec.LookPath("dfs"); err == nil {
 		return path
 	}
 
-	// Check for dittofs in project root
+	// Check for dfs in project root
 	projectRoot := findProjectRootForCLI()
-	localBinary := filepath.Join(projectRoot, "dittofs")
+	localBinary := filepath.Join(projectRoot, "dfs")
 	if _, err := os.Stat(localBinary); err == nil {
 		return localBinary
 	}
 
 	// Try to build it
-	t.Log("Building dittofs binary...")
-	cmd := exec.Command("go", "build", "-o", localBinary, "./cmd/dittofs/")
+	t.Log("Building dfs binary...")
+	cmd := exec.Command("go", "build", "-o", localBinary, "./cmd/dfs/")
 	cmd.Dir = projectRoot
 	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("Failed to build dittofs: %v\n%s", err, output)
+		t.Fatalf("Failed to build dfs: %v\n%s", err, output)
 	}
 
 	return localBinary

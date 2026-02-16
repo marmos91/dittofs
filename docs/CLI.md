@@ -6,17 +6,17 @@ This document describes the architecture of the DittoFS CLI tools following the 
 
 The CLI is split into two separate binaries following Go best practices:
 
-1. **`dittofs`** - Server daemon management (local operations)
-2. **`dittofsctl`** - REST API client for remote control plane operations
+1. **`dfs`** - Server daemon management (local operations)
+2. **`dfsctl`** - REST API client for remote control plane operations
 
 ## Binary Structure
 
-### dittofs (Server CLI)
+### dfs (Server CLI)
 
-Located in `cmd/dittofs/`, this binary handles local server management:
+Located in `cmd/dfs/`, this binary handles local server management:
 
 ```
-dittofs
+dfs
 ├── start         Start the DittoFS server
 ├── stop          Stop the DittoFS server
 ├── status        Show server status
@@ -32,12 +32,12 @@ dittofs
     └── controlplane  Backup control plane database
 ```
 
-### dittofsctl (Client CLI)
+### dfsctl (Client CLI)
 
-Located in `cmd/dittofsctl/`, this binary handles remote server management via REST API:
+Located in `cmd/dfsctl/`, this binary handles remote server management via REST API:
 
 ```
-dittofsctl
+dfsctl
 ├── login         Authenticate with DittoFS server
 ├── logout        Clear stored credentials
 ├── version       Show version information
@@ -90,11 +90,11 @@ selection, err := prompt.SelectString("Choose option", []string{"a", "b", "c"})
 
 #### credentials/
 
-Credential and context management for dittofsctl:
+Credential and context management for dfsctl:
 
 - `store.go` - Context storage and management
 
-Credentials are stored in `~/.config/dittofsctl/config.json` with mode 0600.
+Credentials are stored in `~/.config/dfsctl/config.json` with mode 0600.
 
 ### Public Packages
 
@@ -102,7 +102,7 @@ Located in `pkg/`:
 
 #### apiclient/
 
-REST API client for dittofsctl:
+REST API client for dfsctl:
 
 - `client.go` - HTTP client wrapper
 - `auth.go` - Authentication (login, token refresh)
@@ -125,13 +125,13 @@ New dependencies added:
 
 ## Configuration
 
-### dittofs
+### dfs
 
 Uses the same configuration as before, located at `$XDG_CONFIG_HOME/dittofs/config.yaml`.
 
-### dittofsctl
+### dfsctl
 
-Stores credentials and preferences in `$XDG_CONFIG_HOME/dittofsctl/config.json`:
+Stores credentials and preferences in `$XDG_CONFIG_HOME/dfsctl/config.json`:
 
 ```json
 {
@@ -157,14 +157,14 @@ Stores credentials and preferences in `$XDG_CONFIG_HOME/dittofsctl/config.json`:
 Build both binaries:
 
 ```bash
-# Build dittofs
-go build -o dittofs ./cmd/dittofs
+# Build dfs
+go build -o dfs ./cmd/dfs
 
-# Build dittofsctl
-go build -o dittofsctl ./cmd/dittofsctl
+# Build dfsctl
+go build -o dfsctl ./cmd/dfsctl
 
 # Build with version info
-go build -ldflags "-X main.version=1.0.0 -X main.commit=$(git rev-parse HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o dittofs ./cmd/dittofs
+go build -ldflags "-X main.version=1.0.0 -X main.commit=$(git rev-parse HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o dfs ./cmd/dfs
 ```
 
 ## Testing
@@ -184,54 +184,54 @@ go test ./internal/cli/credentials/
 
 ## Usage Examples
 
-### Server Management (dittofs)
+### Server Management (dfs)
 
 ```bash
 # Initialize configuration
-dittofs init
+dfs init
 
 # Validate configuration
-dittofs config validate
+dfs config validate
 
 # Start server
-dittofs start
+dfs start
 
 # Start with custom config
-dittofs start --config /etc/dittofs/config.yaml
+dfs start --config /etc/dittofs/config.yaml
 
 # Check status
-dittofs status --pid-file /var/run/dittofs.pid
+dfs status --pid-file /var/run/dittofs.pid
 
 # Stop server
-dittofs stop --pid-file /var/run/dittofs.pid
+dfs stop --pid-file /var/run/dittofs.pid
 ```
 
-### Remote Management (dittofsctl)
+### Remote Management (dfsctl)
 
 ```bash
 # Login to server
-dittofsctl login --server http://localhost:8080 --username admin
+dfsctl login --server http://localhost:8080 --username admin
 
 # List contexts
-dittofsctl context list
+dfsctl context list
 
 # Switch context
-dittofsctl context use production
+dfsctl context use production
 
 # Get current context
-dittofsctl context current
+dfsctl context current
 
 # Logout
-dittofsctl logout
+dfsctl logout
 ```
 
 ## Global Flags
 
-### dittofs
+### dfs
 
 - `--config` - Path to configuration file
 
-### dittofsctl
+### dfsctl
 
 - `--server` - Override server URL
 - `--token` - Override authentication token
@@ -243,10 +243,10 @@ dittofsctl logout
 
 Future phases will add:
 
-1. **Phase 2**: Complete dittofs commands (logs)
+1. **Phase 2**: Complete dfs commands (logs)
 2. **Phase 3**: API client methods for users, groups, shares
-3. **Phase 4**: dittofsctl user/group commands
+3. **Phase 4**: dfsctl user/group commands
 4. **Phase 5**: REST API extensions
-5. **Phase 6**: dittofsctl share commands
-6. **Phase 7**: dittofsctl store/adapter commands
+5. **Phase 6**: dfsctl share commands
+6. **Phase 7**: dfsctl store/adapter commands
 7. **Phase 8**: Shell completion and polish

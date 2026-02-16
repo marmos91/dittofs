@@ -15,20 +15,20 @@ This document details DittoFS's SMB2 implementation, protocol status, and client
 
 DittoFS uses a configurable port (default 12445) and supports NTLM authentication.
 
-### Using dittofsctl (Recommended)
+### Using dfsctl (Recommended)
 
-The `dittofsctl share mount` command handles platform-specific mount options automatically:
+The `dfsctl share mount` command handles platform-specific mount options automatically:
 
 ```bash
 # macOS - Mount to user directory (recommended, no sudo needed)
 mkdir -p ~/mnt/dittofs
-dittofsctl share mount --protocol smb /export ~/mnt/dittofs
+dfsctl share mount --protocol smb /export ~/mnt/dittofs
 
 # macOS - Mount to system directory (requires sudo)
-sudo dittofsctl share mount --protocol smb /export /mnt/smb
+sudo dfsctl share mount --protocol smb /export /mnt/smb
 
 # Linux - Mount with sudo (owner set to your user automatically)
-sudo dittofsctl share mount --protocol smb /export /mnt/smb
+sudo dfsctl share mount --protocol smb /export /mnt/smb
 
 # Unmount
 sudo umount /mnt/smb  # or: diskutil unmount ~/mnt/dittofs (macOS)
@@ -42,24 +42,24 @@ macOS has a security restriction where **only the mount owner can access files**
 of Unix permissions. Even with 0777, non-owner users get "Permission denied". Apple confirmed
 this is "works as intended".
 
-**How dittofsctl handles this**: When you run `sudo dittofsctl share mount`, it automatically
+**How dfsctl handles this**: When you run `sudo dfsctl share mount`, it automatically
 uses `sudo -u $SUDO_USER` to mount as your user (not root):
 
 ```bash
 # Works correctly - mount owned by your user
-sudo dittofsctl share mount --protocol smb /export /mnt/share
+sudo dfsctl share mount --protocol smb /export /mnt/share
 ```
 
 **Alternative - mount without sudo** (to user directory):
 
 ```bash
 mkdir -p ~/mnt/share
-dittofsctl share mount --protocol smb /export ~/mnt/share
+dfsctl share mount --protocol smb /export ~/mnt/share
 ```
 
 #### Linux Behavior
 
-Linux CIFS mount fully supports `uid=` and `gid=` options. When using sudo with `dittofsctl`:
+Linux CIFS mount fully supports `uid=` and `gid=` options. When using sudo with `dfsctl`:
 
 - The `SUDO_UID` and `SUDO_GID` environment variables are automatically detected
 - Mount options include `uid=<your-uid>,gid=<your-gid>`
@@ -68,7 +68,7 @@ Linux CIFS mount fully supports `uid=` and `gid=` options. When using sudo with 
 
 ```bash
 # Files will be owned by your user, not root
-sudo dittofsctl share mount --protocol smb /export /mnt/smb
+sudo dfsctl share mount --protocol smb /export /mnt/smb
 ls -la /mnt/smb
 # drwxr-xr-x youruser yourgroup ... .
 ```
@@ -454,7 +454,7 @@ Resolution order: User explicit → Group permissions → Share default
 
 ```bash
 # Start server with debug logging
-DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
+DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
 
 # Mount and test (macOS)
 sudo mount_smbfs //testuser:testpass@localhost:12445/export /mnt/smb

@@ -434,7 +434,7 @@ payloadSvc.RegisterStoreForShare("/archive", s3Store)
 
 ```
 dittofs/
-├── cmd/dittofs/              # Main application entry point
+├── cmd/dfs/              # Main application entry point
 │   └── main.go               # Server startup, config parsing, init
 │
 ├── pkg/                      # Public API (stable interfaces)

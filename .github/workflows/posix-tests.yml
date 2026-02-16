@@ -38,16 +38,16 @@ jobs:
       - name: Build DittoFS binaries
         run: |
           # Build static binaries so they work outside the Nix environment
-          nix develop .#ci --command sh -c "CGO_ENABLED=0 go build -o dittofs cmd/dittofs/main.go"
-          nix develop .#ci --command sh -c "CGO_ENABLED=0 go build -o dittofsctl cmd/dittofsctl/main.go"
+          nix develop .#ci --command sh -c "CGO_ENABLED=0 go build -o dfs cmd/dfs/main.go"
+          nix develop .#ci --command sh -c "CGO_ENABLED=0 go build -o dfsctl cmd/dfsctl/main.go"
 
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
-          name: dittofs-binaries
+          name: dfs-binaries
           path: |
-            dittofs
-            dittofsctl
+            dfs
+            dfsctl
           retention-days: 1
 
   posix-memory:
@@ -72,10 +72,10 @@ jobs:
       - name: Download binaries
         uses: actions/download-artifact@v4
         with:
-          name: dittofs-binaries
+          name: dfs-binaries
 
       - name: Make binaries executable
-        run: chmod +x dittofs dittofsctl
+        run: chmod +x dfs dfsctl
 
       - name: Build pjdfstest in Nix
         run: |
@@ -93,7 +93,7 @@ jobs:
           cat /tmp/dittofs-posix-server.log 2>/dev/null || echo "No server log found"
           echo ""
           echo "=== Process List ==="
-          ps aux | grep dittofs || true
+          ps aux | grep dfs || true
           echo ""
           echo "=== Port 8080 ==="
           ss -tlnp | grep 8080 || echo "Port 8080 not listening"
@@ -192,10 +192,10 @@ jobs:
       - name: Download binaries
         uses: actions/download-artifact@v4
         with:
-          name: dittofs-binaries
+          name: dfs-binaries
 
       - name: Make binaries executable
-        run: chmod +x dittofs dittofsctl
+        run: chmod +x dfs dfsctl
 
       - name: Build pjdfstest in Nix
         run: |
@@ -213,7 +213,7 @@ jobs:
           cat /tmp/dittofs-posix-server.log 2>/dev/null || echo "No server log found"
           echo ""
           echo "=== Process List ==="
-          ps aux | grep dittofs || true
+          ps aux | grep dfs || true
           echo ""
           echo "=== Port 8080 ==="
           ss -tlnp | grep 8080 || echo "Port 8080 not listening"
@@ -326,10 +326,10 @@ jobs:
       - name: Download binaries
         uses: actions/download-artifact@v4
         with:
-          name: dittofs-binaries
+          name: dfs-binaries
 
       - name: Make binaries executable
-        run: chmod +x dittofs dittofsctl
+        run: chmod +x dfs dfsctl
 
       - name: Build pjdfstest in Nix
         run: |
@@ -358,7 +358,7 @@ jobs:
           cat /tmp/dittofs-posix-server.log 2>/dev/null || echo "No server log found"
           echo ""
           echo "=== Process List ==="
-          ps aux | grep dittofs || true
+          ps aux | grep dfs || true
           echo ""
           echo "=== Port 8080 ==="
           ss -tlnp | grep 8080 || echo "Port 8080 not listening"

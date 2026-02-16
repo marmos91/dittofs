@@ -1,10 +1,10 @@
 services:
-  dittofs:
+  dfs:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: dittofs-server
-    image: dittofs:latest
+    container_name: dfs-server
+    image: dfs:latest
     ports:
       - "12049:12049/tcp"
       - "12445:12445/tcp"
@@ -12,9 +12,9 @@ services:
       - "8080:8080/tcp"
     volumes:
       - ~/.config/dittofs/config.yaml:/config/config.yaml:ro
-      - dittofs-metadata:/data/metadata
-      - dittofs-content:/data/content
-      - dittofs-cache:/data/cache
+      - dfs-metadata:/data/metadata
+      - dfs-content:/data/content
+      - dfs-cache:/data/cache
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 30s
@@ -25,12 +25,12 @@ services:
     profiles:
       - default
 
-  dittofs-s3:
+  dfs-s3:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: dittofs-s3-server
-    image: dittofs:latest
+    container_name: dfs-s3-server
+    image: dfs:latest
     ports:
       - "12049:12049/tcp"
       - "12445:12445/tcp"
@@ -38,8 +38,8 @@ services:
       - "8080:8080/tcp"
     volumes:
       - ~/.config/dittofs/config.yaml:/config/config.yaml:ro
-      - dittofs-metadata:/data/metadata
-      - dittofs-cache:/data/cache
+      - dfs-metadata:/data/metadata
+      - dfs-cache:/data/cache
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 30s
@@ -54,7 +54,7 @@ services:
 
   localstack:
     image: localstack/localstack:latest
-    container_name: dittofs-localstack
+    container_name: dfs-localstack
     ports:
       - "4566:4566"
     environment:
@@ -66,12 +66,12 @@ services:
     profiles:
       - s3-backend
 
-  dittofs-postgres:
+  dfs-postgres:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: dittofs-postgres-server
-    image: dittofs-postgres:latest
+    container_name: dfs-postgres-server
+    image: dfs-postgres:latest
     ports:
       - "12049:12049/tcp"
       - "12445:12445/tcp"
@@ -79,8 +79,8 @@ services:
       - "8080:8080/tcp"
     volumes:
       - ~/.config/dittofs/config.yaml:/config/config.yaml:ro
-      - dittofs-content:/data/content
-      - dittofs-cache:/data/cache
+      - dfs-content:/data/content
+      - dfs-cache:/data/cache
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 30s
@@ -96,7 +96,7 @@ services:
 
   postgres:
     image: postgres:16-alpine
-    container_name: dittofs-postgres
+    container_name: dfs-postgres
     environment:
       POSTGRES_DB: dittofs
       POSTGRES_USER: dittofs
@@ -115,13 +115,13 @@ services:
 
 volumes:
   # Metadata store (for BadgerDB backend)
-  dittofs-metadata:
+  dfs-metadata:
     driver: local
   # Content store (for local filesystem backend)
-  dittofs-content:
+  dfs-content:
     driver: local
   # Cache and WAL directory
-  dittofs-cache:
+  dfs-cache:
     driver: local
   # S3 storage (for S3 backend)
   localstack-data:
@@ -132,4 +132,4 @@ volumes:
 
 networks:
   default:
-    name: dittofs-network
+    name: dfs-network

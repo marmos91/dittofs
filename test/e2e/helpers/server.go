@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-// ServerProcess manages a dittofs server subprocess for E2E testing.
+// ServerProcess manages a DittoFS server subprocess for E2E testing.
 // It provides methods to start the server, check health, send signals, and stop gracefully.
 type ServerProcess struct {
 	cmd           *exec.Cmd
@@ -72,7 +72,7 @@ func FindFreePort(t *testing.T) int {
 	return addr.Port
 }
 
-// StartServerProcess starts a dittofs server in foreground mode with a custom config.
+// StartServerProcess starts a DittoFS server in foreground mode with a custom config.
 // It polls /health/ready until ready (5-second timeout per CONTEXT.md).
 // Uses t.TempDir() for state directory (pid file, log file).
 func StartServerProcess(t *testing.T, configPath string) *ServerProcess {
@@ -84,14 +84,14 @@ func StartServerProcess(t *testing.T, configPath string) *ServerProcess {
 	// Create a modified config with our API port
 	configWithPort := createConfigWithAPIPort(t, configPath, apiPort, stateDir)
 
-	pidFile := filepath.Join(stateDir, "dittofs.pid")
-	logFile := filepath.Join(stateDir, "dittofs.log")
+	pidFile := filepath.Join(stateDir, "dfs.pid")
+	logFile := filepath.Join(stateDir, "dfs.log")
 
-	// Find the dittofs binary
-	dittofsPath := findDittofsBinary(t)
+	// Find the dfs binary
+	dfsPath := findDfsBinary(t)
 
 	// Start server in foreground mode
-	cmd := exec.Command(dittofsPath, "start", "--foreground",
+	cmd := exec.Command(dfsPath, "start", "--foreground",
 		"--config", configWithPort,
 		"--pid-file", pidFile,
 		"--log-file", logFile)
@@ -124,7 +124,7 @@ func StartServerProcess(t *testing.T, configPath string) *ServerProcess {
 	// Start the process
 	if err := cmd.Start(); err != nil {
 		_ = logFileHandle.Close()
-		t.Fatalf("Failed to start dittofs server: %v", err)
+		t.Fatalf("Failed to start dfs server: %v", err)
 	}
 
 	sp := &ServerProcess{
@@ -344,28 +344,28 @@ func (sp *ServerProcess) dumpLogs(t *testing.T) {
 	t.Logf("Server logs:\n%s", string(content))
 }
 
-// findDittofsBinary locates the dittofs binary, building it if necessary.
-func findDittofsBinary(t *testing.T) string {
+// findDfsBinary locates the dfs binary, building it if necessary.
+func findDfsBinary(t *testing.T) string {
 	t.Helper()
 
-	// Check for dittofs in PATH
-	if path, err := exec.LookPath("dittofs"); err == nil {
+	// Check for dfs in PATH
+	if path, err := exec.LookPath("dfs"); err == nil {
 		return path
 	}
 
-	// Check for dittofs in project root
+	// Check for dfs in project root
 	projectRoot := findProjectRoot(t)
-	localBinary := filepath.Join(projectRoot, "dittofs")
+	localBinary := filepath.Join(projectRoot, "dfs")
 	if _, err := os.Stat(localBinary); err == nil {
 		return localBinary
 	}
 
 	// Try to build it
-	t.Log("Building dittofs binary...")
-	cmd := exec.Command("go", "build", "-o", localBinary, "./cmd/dittofs/")
+	t.Log("Building dfs binary...")
+	cmd := exec.Command("go", "build", "-o", localBinary, "./cmd/dfs/")
 	cmd.Dir = projectRoot
 	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("Failed to build dittofs: %v\n%s", err, output)
+		t.Fatalf("Failed to build dfs: %v\n%s", err, output)
 	}
 
 	return localBinary
@@ -392,7 +392,7 @@ func findProjectRoot(t *testing.T) string {
 	}
 }
 
-// StartServerProcessWithConfig starts a dittofs server using a pre-created config file.
+// StartServerProcessWithConfig starts a DittoFS server using a pre-created config file.
 // Unlike StartServerProcess, this does NOT modify the config - it uses it as-is.
 // The caller is responsible for setting appropriate ports, paths, etc. in the config.
 // The caller should set DITTOFS_ADMIN_INITIAL_PASSWORD via t.Setenv before calling.
@@ -401,14 +401,14 @@ func StartServerProcessWithConfig(t *testing.T, configPath string) *ServerProces
 
 	stateDir := t.TempDir()
 
-	pidFile := filepath.Join(stateDir, "dittofs.pid")
-	logFile := filepath.Join(stateDir, "dittofs.log")
+	pidFile := filepath.Join(stateDir, "dfs.pid")
+	logFile := filepath.Join(stateDir, "dfs.log")
 
-	// Find the dittofs binary
-	dittofsPath := findDittofsBinary(t)
+	// Find the dfs binary
+	dfsPath := findDfsBinary(t)
 
 	// Start server in foreground mode
-	cmd := exec.Command(dittofsPath, "start", "--foreground",
+	cmd := exec.Command(dfsPath, "start", "--foreground",
 		"--config", configPath,
 		"--pid-file", pidFile,
 		"--log-file", logFile)
@@ -429,7 +429,7 @@ func StartServerProcessWithConfig(t *testing.T, configPath string) *ServerProces
 	// Start the process
 	if err := cmd.Start(); err != nil {
 		_ = logFileHandle.Close()
-		t.Fatalf("Failed to start dittofs server: %v", err)
+		t.Fatalf("Failed to start dfs server: %v", err)
 	}
 
 	// Extract API port from config by parsing it

@@ -108,7 +108,7 @@ func testStatusReportsRunning(t *testing.T) {
 	t.Cleanup(sp.ForceKill)
 
 	// Run dittofs status command with the correct API port
-	output, err := helpers.RunDittofs(t,
+	output, err := helpers.RunDfs(t,
 		"status",
 		"--api-port", itoa(sp.APIPort()),
 		"--output", "json",

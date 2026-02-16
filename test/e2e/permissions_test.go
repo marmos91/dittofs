@@ -23,7 +23,7 @@ func findPermission(perms []*helpers.SharePermission, permType, name, level stri
 	return false
 }
 
-// TestSharePermissions validates share permission management operations via the dittofsctl CLI.
+// TestSharePermissions validates share permission management operations via the dfsctl CLI.
 // These tests verify that permissions can be granted and revoked for users and groups on shares.
 //
 // Note: These tests require a running DittoFS server with the admin user configured.

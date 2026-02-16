@@ -11,9 +11,9 @@ before:
     - go test -short ./...
 
 builds:
-  - id: dittofs
-    main: ./cmd/dittofs/main.go
-    binary: dittofs
+  - id: dfs
+    main: ./cmd/dfs/main.go
+    binary: dfs
 
     env:
       - CGO_ENABLED=0  # Static binaries
@@ -44,7 +44,7 @@ builds:
       - -X main.builtBy=goreleaser
 
 archives:
-  - id: dittofs-archive
+  - id: dfs-archive
     name_template: >-
       {{ .ProjectName }}_
       {{- .Version }}_
@@ -90,7 +90,7 @@ changelog:
 # Docker images configuration
 dockers:
   # AMD64 image
-  - id: dittofs-amd64
+  - id: dfs-amd64
     goos: linux
     goarch: amd64
     use: buildx
@@ -110,7 +110,7 @@ dockers:
     dockerfile: Dockerfile.goreleaser
 
   # ARM64 image
-  - id: dittofs-arm64
+  - id: dfs-arm64
     goos: linux
     goarch: arm64
     use: buildx

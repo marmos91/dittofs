@@ -60,17 +60,17 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 fi
 
 # Check if binaries exist
-DITTOFS_BIN="$REPO_ROOT/dittofs"
-DITTOFSCTL_BIN="$REPO_ROOT/dittofsctl"
+DITTOFS_BIN="$REPO_ROOT/dfs"
+DITTOFSCTL_BIN="$REPO_ROOT/dfsctl"
 
 if [[ ! -x "$DITTOFS_BIN" ]]; then
-    log_info "Building dittofs..."
-    (cd "$REPO_ROOT" && go build -o dittofs ./cmd/dittofs)
+    log_info "Building dfs..."
+    (cd "$REPO_ROOT" && go build -o dfs ./cmd/dfs)
 fi
 
 if [[ ! -x "$DITTOFSCTL_BIN" ]]; then
-    log_info "Building dittofsctl..."
-    (cd "$REPO_ROOT" && go build -o dittofsctl ./cmd/dittofsctl)
+    log_info "Building dfsctl..."
+    (cd "$REPO_ROOT" && go build -o dfsctl ./cmd/dfsctl)
 fi
 
 # Clean up any existing state
@@ -84,9 +84,9 @@ cleanup_existing() {
     fi
 
     # Stop existing server
-    if pgrep -f "dittofs start" >/dev/null 2>&1; then
+    if pgrep -f "dfs start" >/dev/null 2>&1; then
         log_info "Stopping existing DittoFS server"
-        "$DITTOFS_BIN" stop --force 2>/dev/null || pkill -f "dittofs start" || true
+        "$DITTOFS_BIN" stop --force 2>/dev/null || pkill -f "dfs start" || true
         sleep 2
     fi
 

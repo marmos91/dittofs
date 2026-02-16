@@ -14,7 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MOUNT_POINT="${DITTOFS_MOUNT:-/tmp/dittofs-test}"
-DITTOFS_BIN="$REPO_ROOT/dittofs"
+DITTOFS_BIN="$REPO_ROOT/dfs"
 
 # Colors for output
 RED='\033[0;31m'
@@ -57,11 +57,11 @@ if [[ -f /tmp/dittofs-server.pid ]]; then
     rm -f /tmp/dittofs-server.pid
 fi
 
-# Also try to stop via dittofs stop command
+# Also try to stop via dfs stop command
 "$DITTOFS_BIN" stop --force 2>/dev/null || true
 
-# Kill any remaining dittofs processes
-pkill -f "dittofs start" 2>/dev/null || true
+# Kill any remaining dfs processes
+pkill -f "dfs start" 2>/dev/null || true
 
 # Clean up temporary files
 log_info "Cleaning up temporary files..."

@@ -207,7 +207,7 @@ shares:
 
 **Via environment variable:**
 ```bash
-DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
+DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
 ```
 
 **Via configuration:**

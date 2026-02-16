@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGroupManagement validates group management operations via the dittofsctl CLI.
+// TestGroupManagement validates group management operations via the dfsctl CLI.
 // These tests verify group CRUD operations, membership management, and system group protection.
 //
 // Note: These tests require a running DittoFS server with the admin user configured.

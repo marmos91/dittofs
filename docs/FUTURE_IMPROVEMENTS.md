@@ -451,19 +451,19 @@ nfstest_lock --server localhost --port 12049
 
 **Source**: `juicefs bench`, `juicefs objbench`
 
-**Proposal**: Add `dittofs bench` command
+**Proposal**: Add `dfs bench` command
 
 ```bash
 # Quick filesystem benchmark
-dittofs bench /mnt/share -p 4
+dfs bench /mnt/share -p 4
 
 # Object storage benchmark (test S3 independently)
-dittofs objbench --storage s3 --bucket my-bucket --region us-east-1
+dfs objbench --storage s3 --bucket my-bucket --region us-east-1
 ```
 
 **Implementation**:
 ```go
-// cmd/dittofs/bench.go
+// cmd/dfs/bench.go
 func benchCmd() *cobra.Command {
     return &cobra.Command{
         Use:   "bench [mountpoint]",
@@ -552,11 +552,11 @@ mdtest -d /mnt/dittofs/mdtest -b 6 -I 8 -z 4
 
 **Source**: `juicefs stats`
 
-**Proposal**: Add `dittofs stats` command
+**Proposal**: Add `dfs stats` command
 
 ```bash
 # Real-time performance metrics (like dstat)
-dittofs stats /mnt/share
+dfs stats /mnt/share
 
 # Output:
 # ------usage------ ---nfs-ops--- --cache-- --s3-ops--
@@ -710,16 +710,16 @@ shares:
 **GC commands**:
 ```bash
 # Check for orphaned content
-dittofs gc --check
+dfs gc --check
 
 # Compact fragmented files (if Chunk/Slice model implemented)
-dittofs gc --compact
+dfs gc --compact
 
 # Delete orphaned content
-dittofs gc --delete
+dfs gc --delete
 
 # Full cleanup
-dittofs gc --compact --delete
+dfs gc --compact --delete
 ```
 
 **Implementation sketch**:
@@ -808,7 +808,7 @@ content:
 **Potential improvements**:
 1. Add "pending deletion" state in metadata
 2. Handle files in use (deferred deletion)
-3. Add `dittofs gc --delete` for manual cleanup
+3. Add `dfs gc --delete` for manual cleanup
 4. Track deletion metrics
 
 ---
@@ -875,7 +875,7 @@ shares:
 **3. Monitoring**:
 ```bash
 # Show pending uploads
-dittofs status /mnt/share
+dfs status /mnt/share
 
 # Output:
 # Pending uploads: 150 files, 45MB
@@ -922,7 +922,7 @@ Random write at offset X → Create new slice → Upload new block → Update me
 **Long term** (Chunk/Slice/Block):
 - Implement slice-based writes
 - Add background compaction
-- Add `dittofs compact` command
+- Add `dfs compact` command
 
 ---
 
@@ -962,7 +962,7 @@ Random write at offset X → Create new slice → Upload new block → Update me
 | fio/mdtest benchmarks | High | Low | P0 |
 | Built-in bench command | Medium | Medium | P1 |
 | Trash feature | Medium | Medium | P1 |
-| GC command (`dittofs gc`) | Medium | Medium | P1 |
+| GC command (`dfs gc`) | Medium | Medium | P1 |
 | Disk cache tier | High | High | P1 |
 | Compression (LZ4/Zstd) | Medium | Medium | P1 |
 | Writeback mode (disk cache) | High | Medium | P1 |

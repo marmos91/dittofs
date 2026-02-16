@@ -87,7 +87,7 @@ nix run github:marmos91/dittofs -- start
 
 # Or install to your profile
 nix profile install github:marmos91/dittofs
-dittofs init && dittofs start
+dfs init && dfs start
 
 # Development environment with all tools
 nix develop github:marmos91/dittofs
@@ -99,13 +99,13 @@ nix develop github:marmos91/dittofs
 # Clone and build
 git clone https://github.com/marmos91/dittofs.git
 cd dittofs
-go build -o dittofs cmd/dittofs/main.go
+go build -o dfs cmd/dfs/main.go
 
 # Initialize configuration (creates ~/.config/dittofs/config.yaml)
-./dittofs init
+./dfs init
 
 # Start server (note the admin password printed on first start)
-./dittofs start
+./dfs start
 ```
 
 ### NFS Quickstart
@@ -114,25 +114,25 @@ Get an NFS share running in under a minute:
 
 ```bash
 # 1. Start the server (first run prints admin password)
-./dittofs start
+./dfs start
 
 # 2. Login and change admin password
-./dittofsctl login --server http://localhost:8080 --username admin
-./dittofsctl user change-password
+./dfsctl login --server http://localhost:8080 --username admin
+./dfsctl user change-password
 
 # 3. Create a user with your host UID (for NFS write access)
-./dittofsctl user create --username $(whoami) --host-uid
+./dfsctl user create --username $(whoami) --host-uid
 
 # 4. Create stores
-./dittofsctl store metadata add --name default --type memory
-./dittofsctl store payload add --name default --type memory
+./dfsctl store metadata add --name default --type memory
+./dfsctl store payload add --name default --type memory
 
 # 5. Create a share and grant access
-./dittofsctl share create --name /export --metadata default --payload default
-./dittofsctl share permission grant /export --user $(whoami) --level read-write
+./dfsctl share create --name /export --metadata default --payload default
+./dfsctl share permission grant /export --user $(whoami) --level read-write
 
 # 6. Enable NFS adapter
-./dittofsctl adapter enable nfs
+./dfsctl adapter enable nfs
 
 # 7. Mount and use!
 # Linux:
@@ -156,100 +156,100 @@ DittoFS provides two CLI binaries for complete management:
 
 | Binary | Purpose | Examples |
 |--------|---------|----------|
-| **`dittofs`** | Server daemon management | start, stop, status, config, logs, backup |
-| **`dittofsctl`** | Remote API client | users, groups, shares, stores, adapters |
+| **`dfs`** | Server daemon management | start, stop, status, config, logs, backup |
+| **`dfsctl`** | Remote API client | users, groups, shares, stores, adapters |
 
-#### Server Management (`dittofs`)
+#### Server Management (`dfs`)
 
 ```bash
 # Configuration
-./dittofs config init              # Create default config file
-./dittofs config show              # Display current configuration
-./dittofs config validate          # Validate config file
+./dfs config init              # Create default config file
+./dfs config show              # Display current configuration
+./dfs config validate          # Validate config file
 
 # Server lifecycle
-./dittofs start                    # Start in foreground
-./dittofs start --pid-file /var/run/dittofs.pid  # Start with PID file
-./dittofs stop                     # Graceful shutdown
-./dittofs stop --force             # Force kill
-./dittofs status                   # Check server status
+./dfs start                    # Start in foreground
+./dfs start --pid-file /var/run/dittofs.pid  # Start with PID file
+./dfs stop                     # Graceful shutdown
+./dfs stop --force             # Force kill
+./dfs status                   # Check server status
 
 # Logging
-./dittofs logs                     # Show last 100 lines
-./dittofs logs -f                  # Follow logs in real-time
-./dittofs logs -n 50               # Show last 50 lines
-./dittofs logs --since "2024-01-15T10:00:00Z"
+./dfs logs                     # Show last 100 lines
+./dfs logs -f                  # Follow logs in real-time
+./dfs logs -n 50               # Show last 50 lines
+./dfs logs --since "2024-01-15T10:00:00Z"
 
 # Backup
-./dittofs backup controlplane --output /tmp/backup.json
+./dfs backup controlplane --output /tmp/backup.json
 
 # Shell completion (bash, zsh, fish, powershell)
-./dittofs completion bash > /etc/bash_completion.d/dittofs
+./dfs completion bash > /etc/bash_completion.d/dfs
 ```
 
-#### Remote Management (`dittofsctl`)
+#### Remote Management (`dfsctl`)
 
 ```bash
 # Authentication & Context Management
-./dittofsctl login --server http://localhost:8080 --username admin
-./dittofsctl logout
-./dittofsctl context list          # List all server contexts
-./dittofsctl context use prod      # Switch to production server
-./dittofsctl context current       # Show current context
+./dfsctl login --server http://localhost:8080 --username admin
+./dfsctl logout
+./dfsctl context list          # List all server contexts
+./dfsctl context use prod      # Switch to production server
+./dfsctl context current       # Show current context
 
 # User Management (password will be prompted interactively)
-./dittofsctl user create --username alice
-./dittofsctl user create --username alice --host-uid  # Use your current UID (for NFS)
-./dittofsctl user create --username bob --email bob@example.com --groups editors,viewers
-./dittofsctl user list
-./dittofsctl user list -o json     # Output as JSON
-./dittofsctl user get alice
-./dittofsctl user update alice --email alice@example.com
-./dittofsctl user delete alice
+./dfsctl user create --username alice
+./dfsctl user create --username alice --host-uid  # Use your current UID (for NFS)
+./dfsctl user create --username bob --email bob@example.com --groups editors,viewers
+./dfsctl user list
+./dfsctl user list -o json     # Output as JSON
+./dfsctl user get alice
+./dfsctl user update alice --email alice@example.com
+./dfsctl user delete alice
 
 # Group Management
-./dittofsctl group create --name editors
-./dittofsctl group list
-./dittofsctl group add-user editors alice
-./dittofsctl group remove-user editors alice
-./dittofsctl group delete editors
+./dfsctl group create --name editors
+./dfsctl group list
+./dfsctl group add-user editors alice
+./dfsctl group remove-user editors alice
+./dfsctl group delete editors
 
 # Share Management
-./dittofsctl share list
-./dittofsctl share create --name /archive --metadata badger-main --payload s3-content
-./dittofsctl share delete /archive
+./dfsctl share list
+./dfsctl share create --name /archive --metadata badger-main --payload s3-content
+./dfsctl share delete /archive
 
 # Share Permissions
-./dittofsctl share permission list /export
-./dittofsctl share permission grant /export --user alice --level read-write
-./dittofsctl share permission grant /export --group editors --level read
-./dittofsctl share permission revoke /export --user alice
+./dfsctl share permission list /export
+./dfsctl share permission grant /export --user alice --level read-write
+./dfsctl share permission grant /export --group editors --level read
+./dfsctl share permission revoke /export --user alice
 
 # Store Management (Metadata)
-./dittofsctl store metadata list
-./dittofsctl store metadata add --name fast-meta --type memory
-./dittofsctl store metadata add --name persistent --type badger --config '{"db_path":"/data/meta"}'
-./dittofsctl store metadata remove fast-meta
+./dfsctl store metadata list
+./dfsctl store metadata add --name fast-meta --type memory
+./dfsctl store metadata add --name persistent --type badger --config '{"db_path":"/data/meta"}'
+./dfsctl store metadata remove fast-meta
 
 # Store Management (Payload/Blocks)
-./dittofsctl store payload list
-./dittofsctl store payload add --name s3-content --type s3 --config '{"bucket":"my-bucket"}'
-./dittofsctl store payload remove s3-content
+./dfsctl store payload list
+./dfsctl store payload add --name s3-content --type s3 --config '{"bucket":"my-bucket"}'
+./dfsctl store payload remove s3-content
 
 # Adapter Management
-./dittofsctl adapter list
-./dittofsctl adapter add --type nfs --port 12049
-./dittofsctl adapter update nfs --config '{"port":2049}'
-./dittofsctl adapter remove smb
+./dfsctl adapter list
+./dfsctl adapter add --type nfs --port 12049
+./dfsctl adapter update nfs --config '{"port":2049}'
+./dfsctl adapter remove smb
 
 # Settings
-./dittofsctl settings list
-./dittofsctl settings get logging.level
-./dittofsctl settings set logging.level DEBUG
+./dfsctl settings list
+./dfsctl settings get logging.level
+./dfsctl settings set logging.level DEBUG
 
 # Shell completion
-./dittofsctl completion bash > /etc/bash_completion.d/dittofsctl
-./dittofsctl completion zsh > ~/.zsh/completions/_dittofsctl
+./dfsctl completion bash > /etc/bash_completion.d/dfsctl
+./dfsctl completion zsh > ~/.zsh/completions/_dfsctl
 ```
 
 #### Output Formats
@@ -257,9 +257,9 @@ DittoFS provides two CLI binaries for complete management:
 All list commands support multiple output formats:
 
 ```bash
-./dittofsctl user list              # Default table format
-./dittofsctl user list -o json      # JSON format
-./dittofsctl user list -o yaml      # YAML format
+./dfsctl user list              # Default table format
+./dfsctl user list -o json      # JSON format
+./dfsctl user list -o yaml      # YAML format
 ```
 
 #### REST API
@@ -275,7 +275,7 @@ TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/auth/login \
 # List users
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/users
 
-# Create a user (for demos only - use dittofsctl for secure password entry)
+# Create a user (for demos only - use dfsctl for secure password entry)
 curl -X POST -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"username":"alice","password":"secret123","uid":1001,"gid":1001}' \
@@ -399,10 +399,10 @@ sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock localhost:/e
 
 **SMB** (requires user authentication):
 ```bash
-# First, create a user with dittofsctl (server must be running)
-./dittofsctl login --server http://localhost:8080 --username admin
-./dittofsctl user create --username alice  # Password prompted interactively
-./dittofsctl share permission grant /export --user alice --level read-write
+# First, create a user with dfsctl (server must be running)
+./dfsctl login --server http://localhost:8080 --username admin
+./dfsctl user create --username alice  # Password prompted interactively
+./dfsctl share permission grant /export --user alice --level read-write
 
 # Linux (using credentials file for security)
 # Create credentials file securely - never echo passwords in scripts or command line
@@ -612,7 +612,7 @@ adapters:
     port: 12445
 ```
 
-> **Note**: Users and groups are managed via CLI (`dittofs user/group`) or REST API, not in the config file.
+> **Note**: Users and groups are managed via CLI (`dfs user/group`) or REST API, not in the config file.
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for complete documentation.
 

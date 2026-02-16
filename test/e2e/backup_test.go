@@ -39,7 +39,7 @@ func TestBackupRestore(t *testing.T) {
 		// Run backup with native format
 		backupDir := t.TempDir()
 		backupFile := filepath.Join(backupDir, "backup.db")
-		err = helpers.RunDittofsBackup(t, backupFile, server.ConfigFile(), "native")
+		err = helpers.RunDfsBackup(t, backupFile, server.ConfigFile(), "native")
 		require.NoError(t, err, "backup should succeed")
 
 		// Verify backup file exists and has content
@@ -75,7 +75,7 @@ func TestBackupRestore(t *testing.T) {
 		// Run backup with JSON format
 		backupDir := t.TempDir()
 		backupFile := filepath.Join(backupDir, "backup.json")
-		err = helpers.RunDittofsBackup(t, backupFile, server.ConfigFile(), "json")
+		err = helpers.RunDfsBackup(t, backupFile, server.ConfigFile(), "json")
 		require.NoError(t, err, "JSON backup should succeed")
 
 		// Parse and verify backup contents
@@ -144,7 +144,7 @@ func TestBackupRestore(t *testing.T) {
 		// Run backup
 		backupDir := t.TempDir()
 		backupFile := filepath.Join(backupDir, "backup.json")
-		err = helpers.RunDittofsBackup(t, backupFile, server.ConfigFile(), "json")
+		err = helpers.RunDfsBackup(t, backupFile, server.ConfigFile(), "json")
 		require.NoError(t, err, "backup should succeed")
 
 		backup, err := helpers.ParseBackupFile(t, backupFile)
@@ -208,7 +208,7 @@ func TestBackupRestore(t *testing.T) {
 		// Run backup
 		backupDir := t.TempDir()
 		backupFile := filepath.Join(backupDir, "backup.json")
-		err = helpers.RunDittofsBackup(t, backupFile, server.ConfigFile(), "json")
+		err = helpers.RunDfsBackup(t, backupFile, server.ConfigFile(), "json")
 		require.NoError(t, err, "backup should succeed")
 
 		// Parse backup
@@ -261,7 +261,7 @@ func TestBackupRestore(t *testing.T) {
 
 		// Run backup with invalid config
 		backupFile := filepath.Join(tempDir, "backup.db")
-		err = helpers.RunDittofsBackup(t, backupFile, invalidConfig, "native")
+		err = helpers.RunDfsBackup(t, backupFile, invalidConfig, "native")
 
 		// Should fail with clear error
 		assert.Error(t, err, "backup with invalid config should fail")
@@ -304,7 +304,7 @@ cache:
 
 		// Run backup - should fail because database doesn't exist
 		backupFile := filepath.Join(tempDir, "backup.db")
-		err = helpers.RunDittofsBackup(t, backupFile, configFile, "native")
+		err = helpers.RunDfsBackup(t, backupFile, configFile, "native")
 
 		// Should fail with error
 		assert.Error(t, err, "backup with nonexistent database should fail")

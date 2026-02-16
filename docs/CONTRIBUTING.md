@@ -29,9 +29,9 @@ nix develop
 direnv allow
 
 # Build and run
-go build -o dittofs cmd/dittofs/main.go
-./dittofs init
-./dittofs start
+go build -o dfs cmd/dfs/main.go
+./dfs init
+./dfs start
 ```
 
 The Nix flake provides:
@@ -63,11 +63,11 @@ cd dittofs
 go mod download
 
 # Build
-go build -o dittofs cmd/dittofs/main.go
+go build -o dfs cmd/dfs/main.go
 
 # Run with development settings
-./dittofs init
-./dittofs start --log-level DEBUG
+./dfs init
+./dfs start --log-level DEBUG
 ```
 
 ## Development Workflow
@@ -76,7 +76,7 @@ go build -o dittofs cmd/dittofs/main.go
 
 ```bash
 # Build the main binary
-go build -o dittofs cmd/dittofs/main.go
+go build -o dfs cmd/dfs/main.go
 
 # Install dependencies
 go mod download
@@ -86,13 +86,13 @@ go mod download
 
 ```bash
 # Run server with defaults (port 2049, INFO logging)
-./dittofs start
+./dfs start
 
 # Run with debug logging and custom settings
-./dittofs start --log-level DEBUG
+./dfs start --log-level DEBUG
 
 # Use environment variables for quick config overrides
-DITTOFS_LOGGING_LEVEL=DEBUG DITTOFS_ADAPTERS_NFS_PORT=12049 ./dittofs start
+DITTOFS_LOGGING_LEVEL=DEBUG DITTOFS_ADAPTERS_NFS_PORT=12049 ./dfs start
 ```
 
 ### Linting and Formatting
@@ -308,7 +308,7 @@ Adapters receive a runtime reference and **interact with services, not stores di
    - `Protocol()`: Return name
    - `Port()`: Return listen port
 3. Use `runtime.GetMetadataService()` and `runtime.GetBlockService()` for operations
-4. Register in `cmd/dittofs/main.go`
+4. Register in `cmd/dfs/main.go`
 5. Update README with usage instructions
 
 Example:

@@ -27,8 +27,8 @@ COPY . .
 # Build the binary with version info
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
     -ldflags="-w -s -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${BUILD_DATE}" \
-    -o dittofs \
-    cmd/dittofs/main.go
+    -o dfs \
+    cmd/dfs/main.go
 
 # Runtime stage - using Alpine for healthcheck support via wget
 FROM alpine:3.21
@@ -49,7 +49,7 @@ RUN apk add --no-cache ca-certificates tzdata && \
 WORKDIR /app
 
 # Copy the binary from builder
-COPY --from=builder --chown=65532:65532 /build/dittofs /app/dittofs
+COPY --from=builder --chown=65532:65532 /build/dfs /app/dfs
 
 # Create data directories with proper permissions
 RUN mkdir -p /data/metadata /data/content /data/cache /config && \
@@ -77,5 +77,5 @@ VOLUME ["/data/metadata", "/data/content", "/data/cache", "/config"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-ENTRYPOINT ["/app/dittofs"]
+ENTRYPOINT ["/app/dfs"]
 CMD ["start", "--foreground", "--config", "/config/config.yaml"]

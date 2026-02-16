@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestPayloadStoresCRUD validates payload store management operations via the dittofsctl CLI.
+// TestPayloadStoresCRUD validates payload store management operations via the dfsctl CLI.
 // These tests verify creation, listing, editing, and deletion of payload stores,
 // including proper error handling for stores in use by shares.
 //
