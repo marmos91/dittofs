@@ -6,7 +6,7 @@
   <img alt="DittoFS" src="assets/logo-dark.svg" width="320">
 </picture>
 
-<br><br>
+<br>
 
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Nix Flake](https://img.shields.io/badge/Nix-flake-5277C3?style=flat&logo=nixos)](https://nixos.org/)
