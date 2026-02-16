@@ -354,43 +354,26 @@ Production-ready S3 implementation with:
 - Configurable retry with exponential backoff
 - Connection pooling
 
-```yaml
-content:
-  stores:
-    s3-production:
-      type: s3
-      s3:
-        region: us-east-1
-        bucket: my-bucket
-        key_prefix: blocks/
-        retry:
-          max_retries: 3
-          initial_backoff: 100ms
-          max_backoff: 2s
+```bash
+./dittofsctl store payload add --name s3-production --type s3 \
+  --config '{"region":"us-east-1","bucket":"my-bucket","key_prefix":"blocks/","retry":{"max_retries":3,"initial_backoff":"100ms","max_backoff":"2s"}}'
 ```
 
 ### Filesystem Store
 
 Local filesystem storage:
 
-```yaml
-content:
-  stores:
-    local:
-      type: filesystem
-      filesystem:
-        path: /var/lib/dittofs/blocks
+```bash
+./dittofsctl store payload add --name local --type filesystem \
+  --config '{"path":"/var/lib/dittofs/blocks"}'
 ```
 
 ### Memory Store
 
 In-memory for testing:
 
-```yaml
-content:
-  stores:
-    test:
-      type: memory
+```bash
+./dittofsctl store payload add --name test --type memory
 ```
 
 ## Crash Recovery
@@ -522,45 +505,33 @@ type GCOptions struct {
 
 ### Complete Configuration Example
 
+Server config file (cache and transfer settings):
+
 ```yaml
-# Cache settings
 cache:
-  stores:
-    main:
-      type: memory
-      memory:
-        max_size: "1Gi"
-      wal:
-        enabled: true
-        path: /var/lib/dittofs/cache.wal
-        initial_size: "64Mi"
+  path: /var/lib/dittofs/cache
+  size: "1Gi"
 
-# Block store settings
-content:
-  stores:
-    s3-store:
-      type: s3
-      s3:
-        region: us-east-1
-        bucket: dittofs-production
-        key_prefix: blocks/
-        retry:
-          max_retries: 3
-          initial_backoff: 100ms
+payload:
+  transfer:
+    workers:
+      uploads: 16
+      downloads: 8
+```
 
-# Transfer settings
-transfer:
-  parallel_uploads: 16
-  parallel_downloads: 8
-  prefetch_blocks: 4
-  queue_size: 1000
+Then create stores and shares via CLI:
 
-# Share configuration
-shares:
-  - name: /export
-    metadata_store: badger
-    content_store: s3-store
-    cache: main
+```bash
+# Create payload store
+./dittofsctl store payload add --name s3-store --type s3 \
+  --config '{"region":"us-east-1","bucket":"dittofs-production","key_prefix":"blocks/"}'
+
+# Create metadata store
+./dittofsctl store metadata add --name badger --type badger \
+  --config '{"db_path":"/var/lib/dittofs/metadata"}'
+
+# Create share referencing stores
+./dittofsctl share create --name /export --metadata badger --payload s3-store
 ```
 
 ## Performance Tuning

@@ -222,36 +222,21 @@ The Control Plane is the central management component enabling flexible, multi-s
 
 ### Configuration Example
 
-```yaml
-# Define named stores (created once, shared across shares)
-metadata:
-  stores:
-    fast-meta:
-      type: memory
-    persistent-meta:
-      type: badger
-      badger:
-        db_path: /data/metadata
+Stores, shares, and adapters are managed at runtime via `dittofsctl` (persisted in the control plane database):
 
-content:
-  stores:
-    fast-content:
-      type: memory
-    s3-content:
-      type: s3
-      s3:
-        region: us-east-1
-        bucket: my-bucket
+```bash
+# Create named stores (created once, shared across shares)
+./dittofsctl store metadata add --name fast-meta --type memory
+./dittofsctl store metadata add --name persistent-meta --type badger \
+  --config '{"db_path":"/data/metadata"}'
 
-# Define shares that reference stores
-shares:
-  - name: /temp
-    metadata_store: fast-meta           # Uses memory store for metadata
-    content_store: fast-content         # Uses memory store for content
+./dittofsctl store payload add --name fast-payload --type memory
+./dittofsctl store payload add --name s3-payload --type s3 \
+  --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
-  - name: /archive
-    metadata_store: persistent-meta     # Uses BadgerDB for metadata
-    content_store: s3-content           # Uses S3 for content
+# Create shares that reference stores by name
+./dittofsctl share create --name /temp --metadata fast-meta --payload fast-payload
+./dittofsctl share create --name /archive --metadata persistent-meta --payload s3-payload
 ```
 
 ### Benefits
@@ -339,24 +324,15 @@ type ContentStore interface {
 
 ### Using Built-In Backends
 
-No custom code required - configure via YAML:
+No custom code required - configure via CLI:
 
-```yaml
-# config.yaml
-metadata:
-  stores:
-    default-meta:
-      type: memory  # or badger, postgres
+```bash
+# Create stores
+./dittofsctl store metadata add --name default-meta --type memory  # or badger, postgres
+./dittofsctl store payload add --name default-payload --type memory  # or filesystem, s3
 
-content:
-  stores:
-    default-content:
-      type: memory  # or fs, s3
-
-shares:
-  - name: /export
-    metadata_store: default-meta
-    content_store: default-content
+# Create share referencing stores
+./dittofsctl share create --name /export --metadata default-meta --payload default-payload
 ```
 
 Or programmatically:

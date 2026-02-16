@@ -272,7 +272,9 @@ cache:
 
 ### 7. Metadata Configuration
 
-Define named metadata store instances that shares can reference:
+Metadata configuration has two parts: filesystem capabilities (server config file) and store instances (managed via CLI).
+
+#### Filesystem Capabilities (config file)
 
 ```yaml
 metadata:
@@ -290,49 +292,33 @@ metadata:
     supports_symlinks: true
     case_sensitive: true
     case_preserving: true
+```
 
-  # Named metadata store instances
-  stores:
-    # In-memory metadata for fast temporary workloads
-    memory-fast:
-      type: memory
-      memory: {}
+#### Metadata Store Instances (CLI)
 
-    # BadgerDB for persistent metadata
-    badger-main:
-      type: badger
-      badger:
-        db_path: /tmp/dittofs-metadata-main
+Metadata stores are managed at runtime via `dittofsctl` and persisted in the control plane database:
 
-    # Separate BadgerDB instance for isolated shares
-    badger-isolated:
-      type: badger
-      badger:
-        db_path: /tmp/dittofs-metadata-isolated
+```bash
+# In-memory metadata for fast temporary workloads
+./dittofsctl store metadata add --name memory-fast --type memory
 
-    # PostgreSQL for distributed, horizontally-scalable metadata
-    postgres-production:
-      type: postgres
-      postgres:
-        # Connection settings
-        host: localhost
-        port: 5432
-        database: dittofs
-        user: dittofs
-        password: ${POSTGRES_PASSWORD}  # Use environment variable
+# BadgerDB for persistent metadata
+./dittofsctl store metadata add --name badger-main --type badger \
+  --config '{"db_path":"/tmp/dittofs-metadata-main"}'
 
-        # TLS configuration (recommended for production)
-        sslmode: require  # Options: disable, require, verify-ca, verify-full
+# Separate BadgerDB instance for isolated shares
+./dittofsctl store metadata add --name badger-isolated --type badger \
+  --config '{"db_path":"/tmp/dittofs-metadata-isolated"}'
 
-        # Connection pool sizing
-        max_conns: 15           # Maximum connections (default: 10)
-        min_conns: 2            # Minimum connections (default: 2)
-        max_idle_time: 30m      # Close idle connections after (default: 30m)
-        health_check_period: 1m # Health check interval (default: 1m)
+# PostgreSQL for distributed, horizontally-scalable metadata
+./dittofsctl store metadata add --name postgres-production --type postgres \
+  --config '{"host":"localhost","port":5432,"database":"dittofs","user":"dittofs","password":"secret","sslmode":"require","max_conns":15}'
 
-        # Migration control
-        auto_migrate: false     # Auto-run migrations on startup (default: true)
-        migrations_path: ""     # Use embedded migrations (leave empty)
+# List all metadata stores
+./dittofsctl store metadata list
+
+# Remove a metadata store
+./dittofsctl store metadata remove memory-fast
 ```
 
 > **Persistence Options**:
@@ -342,35 +328,35 @@ metadata:
 
 ### 8. Payload Configuration
 
-Define named payload store instances (block stores) that shares can reference for persistent storage:
+Payload configuration has two parts: transfer manager settings (server config file) and store instances (managed via CLI).
+
+#### Payload Store Instances (CLI)
+
+Payload stores are managed at runtime via `dittofsctl` and persisted in the control plane database:
+
+```bash
+# Local filesystem storage for fast access
+./dittofsctl store payload add --name local-disk --type filesystem \
+  --config '{"base_path":"/var/lib/dittofs/blocks"}'
+
+# S3 storage for cloud-backed shares
+./dittofsctl store payload add --name s3-production --type s3 \
+  --config '{"region":"us-east-1","bucket":"dittofs-production","prefix":"blocks/"}'
+
+# In-memory storage for testing
+./dittofsctl store payload add --name memory-test --type memory
+
+# List all payload stores
+./dittofsctl store payload list
+
+# Remove a payload store
+./dittofsctl store payload remove memory-test
+```
+
+#### Transfer Manager (config file)
 
 ```yaml
 payload:
-  # Named payload store instances
-  stores:
-    # Local filesystem storage for fast access
-    local-disk:
-      type: filesystem
-      filesystem:
-        base_path: /var/lib/dittofs/blocks
-
-    # S3 storage for cloud-backed shares
-    s3-production:
-      type: s3
-      s3:
-        region: us-east-1
-        bucket: dittofs-production
-        prefix: "blocks/"
-        endpoint: ""           # Optional, for S3-compatible services
-        access_key_id: ""      # Optional, uses AWS SDK default chain
-        secret_access_key: ""  # Optional, uses AWS SDK default chain
-        force_path_style: false  # true for Localstack/MinIO
-        max_retries: 3
-
-    # In-memory storage for testing
-    memory-test:
-      type: memory
-
   # Transfer manager configuration (uploads/downloads to block store)
   transfer:
     workers:
@@ -417,58 +403,25 @@ payload:
 
 ### 9. Shares (Exports)
 
-Each share explicitly references metadata and payload stores by name. Multiple shares can reference the same store instances for resource sharing:
+Shares are managed at runtime via `dittofsctl` and persisted in the control plane database. Each share references metadata and payload stores by name:
 
-```yaml
-shares:
-  # Fast local share using in-memory metadata and local disk
-  - name: /fast
-    metadata: memory-fast      # References metadata.stores.memory-fast
-    payload: local-disk        # References payload.stores.local-disk
-    read_only: false
+```bash
+# Create shares referencing existing stores
+./dittofsctl share create --name /fast --metadata memory-fast --payload local-disk
+./dittofsctl share create --name /cloud --metadata badger-main --payload s3-production
+./dittofsctl share create --name /archive --metadata badger-main --payload s3-archive
 
-    # Access control
-    allowed_clients: []
-    denied_clients: []
+# Grant permissions on shares
+./dittofsctl share permission grant /fast --user alice --level read-write
+./dittofsctl share permission grant /cloud --user alice --level read-write
+./dittofsctl share permission grant /cloud --group editors --level read
 
-    # User management (see Section 8)
-    # default_permission controls access for unknown UIDs:
-    # - "none": Block unknown UIDs (no guest access)
-    # - "read": Guest users get read-only access
-    # - "read-write": Guest users get read-write access
-    # - "admin": Guest users get admin access
-    default_permission: "read"
+# List shares and their permissions
+./dittofsctl share list
+./dittofsctl share permission list /cloud
 
-    # Authentication
-    require_auth: false
-    allowed_auth_methods: [anonymous, unix]
-
-    # Identity mapping (user/group squashing)
-    identity_mapping:
-      map_all_to_anonymous: true              # all_squash
-      map_privileged_to_anonymous: false      # root_squash
-      anonymous_uid: 65534                    # nobody
-      anonymous_gid: 65534                    # nogroup
-
-    # Root directory attributes
-    root_directory_attributes:
-      mode: 0755
-      uid: 0
-      gid: 0
-
-  # Cloud-backed share with persistent metadata
-  - name: /cloud
-    metadata: badger-main      # References metadata.stores.badger-main
-    payload: s3-production     # References payload.stores.s3-production
-    read_only: false
-    # ... (same access control options as above)
-
-  # Archive share sharing metadata with /cloud
-  - name: /archive
-    metadata: badger-main      # Shares metadata with /cloud
-    payload: s3-archive        # Different payload backend
-    read_only: false
-    # ... (same access control options as above)
+# Delete a share
+./dittofsctl share delete /fast
 ```
 
 **Configuration Patterns:**
@@ -896,7 +849,7 @@ DITTOFS_ADAPTERS_NFS_PORT=12049 ./dfs start
 
 ### Minimal Configuration
 
-Single share with minimal settings:
+Server config file with minimal settings:
 
 ```yaml
 logging:
@@ -905,27 +858,16 @@ logging:
 cache:
   path: /tmp/dittofs-cache
   size: "512MB"
+```
 
-metadata:
-  stores:
-    default:
-      type: memory
+Then create stores, shares, and enable adapters via CLI:
 
-payload:
-  stores:
-    default:
-      type: filesystem
-      filesystem:
-        base_path: /tmp/dittofs-blocks
-
-shares:
-  - name: /export
-    metadata: default
-    payload: default
-
-adapters:
-  nfs:
-    enabled: true
+```bash
+./dittofsctl store metadata add --name default --type memory
+./dittofsctl store payload add --name default --type filesystem \
+  --config '{"base_path":"/tmp/dittofs-blocks"}'
+./dittofsctl share create --name /export --metadata default --payload default
+./dittofsctl adapter enable nfs
 ```
 
 ### Development Setup
@@ -940,28 +882,13 @@ logging:
 cache:
   path: /tmp/dittofs-dev-cache
   size: "256MB"
+```
 
-metadata:
-  stores:
-    dev-memory:
-      type: memory
-
-payload:
-  stores:
-    dev-memory:
-      type: memory
-
-shares:
-  - name: /export
-    metadata: dev-memory
-    payload: dev-memory
-    identity_mapping:
-      map_all_to_anonymous: true
-
-adapters:
-  nfs:
-    enabled: true
-    port: 12049
+```bash
+./dittofsctl store metadata add --name dev-memory --type memory
+./dittofsctl store payload add --name dev-memory --type memory
+./dittofsctl share create --name /export --metadata dev-memory --payload dev-memory
+./dittofsctl adapter enable nfs --port 12049
 ```
 
 ### Production Setup
@@ -994,47 +921,23 @@ metadata:
   filesystem_capabilities:
     max_read_size: 1048576
     max_write_size: 1048576
+```
 
-  stores:
-    prod-badger:
-      type: badger
-      badger:
-        path: /var/lib/dittofs/metadata
+Then create stores, shares, and enable adapters via CLI:
 
-payload:
-  stores:
-    prod-disk:
-      type: filesystem
-      filesystem:
-        base_path: /var/lib/dittofs/blocks
+```bash
+# Create stores
+./dittofsctl store metadata add --name prod-badger --type badger \
+  --config '{"path":"/var/lib/dittofs/metadata"}'
+./dittofsctl store payload add --name prod-disk --type filesystem \
+  --config '{"base_path":"/var/lib/dittofs/blocks"}'
 
-shares:
-  - name: /export
-    metadata: prod-badger
-    payload: prod-disk
-    read_only: false
-    allowed_clients:
-      - 192.168.1.0/24
-    denied_clients:
-      - 192.168.1.50
-    identity_mapping:
-      map_all_to_anonymous: false
-      map_privileged_to_anonymous: true
-    root_directory_attributes:
-      mode: 0755
-      uid: 0
-      gid: 0
-    dump_restricted: true
+# Create share and grant permissions
+./dittofsctl share create --name /export --metadata prod-badger --payload prod-disk
+./dittofsctl share permission grant /export --user alice --level read-write
 
-adapters:
-  nfs:
-    enabled: true
-    port: 2049
-    max_connections: 1000
-    timeouts:
-      read: 5m
-      write: 30s
-      idle: 5m
+# Enable NFS adapter
+./dittofsctl adapter enable nfs --port 2049
 ```
 
 ### Multi-Share with Different Backends
@@ -1045,56 +948,31 @@ Different shares using different storage backends:
 cache:
   path: /var/lib/dittofs/cache
   size: "2Gi"
+```
 
-metadata:
-  stores:
-    fast-memory:
-      type: memory
-    persistent-badger:
-      type: badger
-      badger:
-        path: /var/lib/dittofs/metadata
+```bash
+# Create metadata stores
+./dittofsctl store metadata add --name fast-memory --type memory
+./dittofsctl store metadata add --name persistent-badger --type badger \
+  --config '{"path":"/var/lib/dittofs/metadata"}'
 
-payload:
-  stores:
-    local-disk:
-      type: filesystem
-      filesystem:
-        base_path: /var/lib/dittofs/blocks
-    cloud-s3:
-      type: s3
-      s3:
-        region: us-east-1
-        bucket: my-dittofs-bucket
+# Create payload stores
+./dittofsctl store payload add --name local-disk --type filesystem \
+  --config '{"base_path":"/var/lib/dittofs/blocks"}'
+./dittofsctl store payload add --name cloud-s3 --type s3 \
+  --config '{"region":"us-east-1","bucket":"my-dittofs-bucket"}'
 
-shares:
-  # Fast temporary share
-  - name: /temp
-    metadata: fast-memory
-    payload: local-disk
-    read_only: false
-    identity_mapping:
-      map_all_to_anonymous: true
+# Create shares with different backends
+./dittofsctl share create --name /temp --metadata fast-memory --payload local-disk
+./dittofsctl share create --name /cloud --metadata persistent-badger --payload cloud-s3
+./dittofsctl share create --name /public --metadata persistent-badger --payload local-disk
 
-  # Cloud-backed persistent share
-  - name: /cloud
-    metadata: persistent-badger
-    payload: cloud-s3
-    read_only: false
-    allowed_clients:
-      - 10.0.1.0/24
+# Grant permissions
+./dittofsctl share permission grant /temp --user alice --level read-write
+./dittofsctl share permission grant /cloud --user alice --level read-write
 
-  # Public read-only share
-  - name: /public
-    metadata: persistent-badger
-    payload: local-disk
-    read_only: true
-    identity_mapping:
-      map_all_to_anonymous: true
-
-adapters:
-  nfs:
-    enabled: true
+# Enable NFS adapter
+./dittofsctl adapter enable nfs
 ```
 
 ### Shared Metadata Pattern
@@ -1105,43 +983,25 @@ Multiple shares sharing the same metadata database:
 cache:
   path: /var/lib/dittofs/cache
   size: "2Gi"
+```
 
-metadata:
-  stores:
-    shared-badger:
-      type: badger
-      badger:
-        path: /var/lib/dittofs/shared-metadata
+```bash
+# Create shared metadata store
+./dittofsctl store metadata add --name shared-badger --type badger \
+  --config '{"path":"/var/lib/dittofs/shared-metadata"}'
 
-payload:
-  stores:
-    s3-production:
-      type: s3
-      s3:
-        region: us-east-1
-        bucket: prod-bucket
-    s3-archive:
-      type: s3
-      s3:
-        region: us-east-1
-        bucket: archive-bucket
+# Create separate payload stores
+./dittofsctl store payload add --name s3-production --type s3 \
+  --config '{"region":"us-east-1","bucket":"prod-bucket"}'
+./dittofsctl store payload add --name s3-archive --type s3 \
+  --config '{"region":"us-east-1","bucket":"archive-bucket"}'
 
-shares:
-  # Production share
-  - name: /prod
-    metadata: shared-badger    # Shared metadata
-    payload: s3-production
-    read_only: false
+# Both shares use the same metadata store
+./dittofsctl share create --name /prod --metadata shared-badger --payload s3-production
+./dittofsctl share create --name /archive --metadata shared-badger --payload s3-archive
 
-  # Archive share (shares metadata with /prod)
-  - name: /archive
-    metadata: shared-badger    # Same metadata store
-    payload: s3-archive        # Different payload backend
-    read_only: false
-
-adapters:
-  nfs:
-    enabled: true
+# Enable NFS adapter
+./dittofsctl adapter enable nfs
 ```
 
 ## IDE Support with JSON Schema

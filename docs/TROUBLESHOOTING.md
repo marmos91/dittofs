@@ -284,17 +284,10 @@ ls: cannot access 'file.txt': Stale file handle
    ```
 
 2. **For persistent handles, use BadgerDB metadata:**
-   ```yaml
-   metadata:
-     stores:
-       persistent:
-         type: badger
-         badger:
-           db_path: /var/lib/dittofs/metadata
-
-   shares:
-     - name: /export
-       metadata_store: persistent
+   ```bash
+   ./dittofsctl store metadata add --name persistent --type badger \
+     --config '{"db_path":"/var/lib/dittofs/metadata"}'
+   ./dittofsctl share create --name /export --metadata persistent --payload default
    ```
 
 3. **Clear client NFS cache (Linux):**
@@ -328,33 +321,15 @@ tail -f ~/.config/dittofs/dittofs.log | grep -i "slow\|timeout"
    ```
 
 2. **Use memory stores for development:**
-   ```yaml
-   metadata:
-     stores:
-       fast:
-         type: memory
-
-   content:
-     stores:
-       fast:
-         type: memory
+   ```bash
+   ./dittofsctl store metadata add --name fast --type memory
+   ./dittofsctl store payload add --name fast --type memory
    ```
 
-3. **Enable async writes (if safe):**
-   ```yaml
-   shares:
-     - name: /export
-       async: true  # Faster but less safe
-   ```
-
-4. **For S3, tune part size:**
-   ```yaml
-   content:
-     stores:
-       s3-store:
-         type: s3
-         s3:
-           part_size: 10485760  # 10MB parts
+3. **For S3, tune part size:**
+   ```bash
+   ./dittofsctl store payload add --name s3-store --type s3 \
+     --config '{"region":"us-east-1","bucket":"my-bucket","part_size":10485760}'
    ```
 
 ### High memory usage
@@ -467,16 +442,13 @@ shares:
 
 **Cause:** Share references a non-existent metadata store.
 
-**Solution:** Ensure the store is defined:
-```yaml
-metadata:
-  stores:
-    my-store:
-      type: memory
+**Solution:** Ensure the store exists before creating the share:
+```bash
+# Create the metadata store first
+./dittofsctl store metadata add --name my-store --type memory
 
-shares:
-  - name: /export
-    metadata_store: my-store  # Must match store name above
+# Then create the share referencing it
+./dittofsctl share create --name /export --metadata my-store --payload my-payload
 ```
 
 ## Getting More Help

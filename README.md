@@ -11,7 +11,7 @@
 
 **A modular virtual filesystem written entirely in Go**
 
-Decouple file interfaces from storage backends. NFSv3 and SMB2 server with pluggable metadata and content stores. Kubernetes-ready with official operator.
+Decouple file interfaces from storage backends. NFSv3 and SMB2 server with pluggable metadata and payload stores. Kubernetes-ready with official operator.
 
 [Quick Start](#quick-start) • [Documentation](#documentation) • [Features](#features) • [Use Cases](#use-cases) • [Contributing](docs/CONTRIBUTING.md)
 
@@ -23,35 +23,54 @@ Decouple file interfaces from storage backends. NFSv3 and SMB2 server with plugg
 
 DittoFS provides a modular architecture with **named, reusable stores** that can be mixed and matched per share:
 
-```
-┌──────────────────────────────────────┐
-│       Protocol Adapters              │
-│         NFS ✅  SMB ✅               │
-└──────────────┬───────────────────────┘
-               │
-               ▼
-┌──────────────────────────────────────┐
-│         Control Plane                │
-│  ┌─────────────────────────────────┐ │
-│  │ REST API (users, groups, shares)│ │
-│  │ Database (SQLite/PostgreSQL)    │ │
-│  └─────────────────────────────────┘ │
-│                                      │
-│  Metadata Stores │  Block Storage    │
-│  • Memory        │  ┌─────────────┐  │
-│  • BadgerDB      │  │ Cache + WAL │  │
-│  • PostgreSQL    │  └──────┬──────┘  │
-│                  │         │         │
-│                  │  ┌──────▼──────┐  │
-│                  │  │ Transfer Mgr│  │
-│                  │  └──────┬──────┘  │
-│                  │         │         │
-│                  │  ┌──────▼──────┐  │
-│                  │  │ Block Store │  │
-│                  │  │ • Memory    │  │
-│                  │  │ • S3        │  │
-│                  │  └─────────────┘  │
-└──────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Clients
+        NFS[NFS Client]
+        SMB[SMB Client]
+    end
+
+    subgraph DittoFS
+        subgraph Adapters[Protocol Adapters]
+            NFSA[NFS Adapter]
+            SMBA[SMB Adapter]
+        end
+
+        subgraph Shares
+            S1["/temp"]
+            S2["/archive"]
+            S3["/cloud"]
+        end
+
+        subgraph MetadataStores[Metadata Stores]
+            MM[Memory]
+            MB[BadgerDB]
+            MP[PostgreSQL]
+        end
+
+        subgraph PayloadStores[Payload Stores]
+            PM[Memory]
+            PF[Filesystem]
+            PS[S3]
+        end
+    end
+
+    NFS --> NFSA
+    SMB --> SMBA
+    NFSA --> Shares
+    SMBA --> Shares
+
+    S1 -- metadata --> MM
+    S1 -- payload --> PF
+    S2 -- metadata --> MB
+    S2 -- payload --> PS
+    S3 -- metadata --> MB
+    S3 -- payload --> PS
+
+    style Adapters fill:#e1f5fe
+    style Shares fill:#fff3e0
+    style MetadataStores fill:#e8f5e9
+    style PayloadStores fill:#fce4ec
 ```
 
 ### Key Concepts
@@ -60,7 +79,7 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 - **Control Plane**: Centralized management of users, groups, shares, and configuration via REST API
 - **Shares**: Export points that clients mount, each referencing specific stores
 - **Named Store Registry**: Reusable store instances that can be shared across exports
-- **Pluggable Storage**: Mix and match metadata and content backends per share
+- **Pluggable Storage**: Mix and match metadata and payload backends per share
 
 ## Features
 
@@ -380,7 +399,7 @@ kubectl get dittofs
 The operator manages:
 - DittoFS deployment lifecycle
 - Configuration via Custom Resources
-- Persistent volume claims for metadata and content stores
+- Persistent volume claims for metadata and payload stores
 - Service exposure for NFS/SMB protocols
 
 See the [`operator/`](operator/) directory for detailed documentation and configuration options.
@@ -435,7 +454,7 @@ go test -v -timeout 30m ./test/e2e/...
 
 ### Multi-Tenant Cloud Storage Gateway
 
-Different tenants get isolated metadata and content stores for security and billing separation.
+Different tenants get isolated metadata and payload stores for security and billing separation.
 
 ### Performance-Tiered Storage
 
@@ -460,7 +479,7 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - **[NFS Implementation](docs/NFS.md)** - NFSv3 protocol status and client usage
 - **[SMB Implementation](docs/SMB_IMPLEMENTATION_PLAN.md)** - SMB2 protocol status, capabilities, and roadmap
 - **[Contributing](docs/CONTRIBUTING.md)** - Development guide and contribution guidelines
-- **[Implementing Stores](docs/IMPLEMENTING_STORES.md)** - Guide for implementing custom metadata and content stores
+- **[Implementing Stores](docs/IMPLEMENTING_STORES.md)** - Guide for implementing custom metadata and payload stores
 
 ### Operational Guides
 
@@ -563,16 +582,21 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for complete roadmap.
 
-## Configuration Example
+## Configuration
+
+DittoFS uses a **two-layer configuration** approach:
+
+1. **Config file** (`~/.config/dittofs/config.yaml`): Server infrastructure settings (logging, telemetry, cache, database, API)
+2. **CLI/API** (`dittofsctl`): Runtime resources (stores, shares, adapters) persisted in the control plane database
+
+### Server Config File
 
 ```yaml
-# Control plane database (stores users, groups, shares)
 database:
   type: sqlite  # or "postgres" for HA
   sqlite:
     path: /var/lib/dittofs/controlplane.db
 
-# REST API server (enabled by default)
 server:
   api:
     enabled: true
@@ -580,39 +604,34 @@ server:
     jwt:
       secret: "your-secret-key-at-least-32-characters"
 
-# Define named stores (reusable across shares)
-metadata:
-  stores:
-    badger-main:
-      type: badger
-      badger:
-        db_path: /var/lib/dittofs/metadata
-
-payload:
-  stores:
-    s3-cloud:
-      type: s3
-      s3:
-        region: us-east-1
-        bucket: my-dittofs-bucket
-
-# Define shares with permissions
-shares:
-  - name: /archive
-    metadata: badger-main
-    payload: s3-cloud
-    default_permission: read  # Allows guest access with read-only permissions
-
-adapters:
-  nfs:
-    enabled: true
-    port: 12049
-  smb:
-    enabled: true
-    port: 12445
+cache:
+  path: /var/lib/dittofs/cache
+  size: "1Gi"
 ```
 
-> **Note**: Users and groups are managed via CLI (`dfs user/group`) or REST API, not in the config file.
+### Runtime Management (CLI)
+
+Stores, shares, and adapters are managed via `dfsctl` and persisted in the database:
+
+```bash
+# Create named stores (reusable across shares)
+./dfsctl store metadata add --name badger-main --type badger \
+  --config '{"db_path":"/var/lib/dfs/metadata"}'
+./dfsctl store payload add --name s3-cloud --type s3 \
+  --config '{"region":"us-east-1","bucket":"my-dfs-bucket"}'
+
+# Create shares referencing stores
+./dfsctl share create --name /archive --metadata badger-main --payload s3-cloud
+
+# Grant permissions
+./dfsctl share permission grant /archive --user alice --level read-write
+
+# Enable protocol adapters
+./dfsctl adapter enable nfs --port 12049
+./dfsctl adapter enable smb --port 12445
+```
+
+> **Note**: Users and groups are also managed via CLI (`dfsctl user/group`) or REST API, not in the config file.
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for complete documentation.
 

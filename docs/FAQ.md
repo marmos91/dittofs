@@ -92,13 +92,9 @@ It depends on the metadata store:
 
 Configure your metadata store accordingly:
 
-```yaml
-metadata:
-  stores:
-    persistent:
-      type: badger
-      badger:
-        db_path: /var/lib/dittofs/metadata
+```bash
+./dittofsctl store metadata add --name persistent --type badger \
+  --config '{"db_path":"/var/lib/dittofs/metadata"}'
 ```
 
 ### Can I import an existing filesystem into DittoFS?
@@ -145,38 +141,23 @@ See [NFS.md](NFS.md) for more details.
 
 ### Can I have multiple shares with different backends?
 
-Yes! This is a core feature. Each share references stores by name:
+Yes! This is a core feature. Create stores and shares via CLI:
 
-```yaml
-metadata:
-  stores:
-    fast-memory:
-      type: memory
-    persistent-db:
-      type: badger
-      badger:
-        db_path: /var/lib/dittofs/metadata
+```bash
+# Create metadata stores
+./dittofsctl store metadata add --name fast-memory --type memory
+./dittofsctl store metadata add --name persistent-db --type badger \
+  --config '{"db_path":"/var/lib/dittofs/metadata"}'
 
-content:
-  stores:
-    local-disk:
-      type: filesystem
-      filesystem:
-        path: /var/lib/dittofs/content
-    cloud-s3:
-      type: s3
-      s3:
-        region: us-east-1
-        bucket: my-bucket
+# Create payload stores
+./dittofsctl store payload add --name local-disk --type filesystem \
+  --config '{"path":"/var/lib/dittofs/content"}'
+./dittofsctl store payload add --name cloud-s3 --type s3 \
+  --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
-shares:
-  - name: /temp
-    metadata_store: fast-memory
-    content_store: local-disk
-
-  - name: /archive
-    metadata_store: persistent-db
-    content_store: cloud-s3
+# Create shares referencing different stores
+./dittofsctl share create --name /temp --metadata fast-memory --payload local-disk
+./dittofsctl share create --name /archive --metadata persistent-db --payload cloud-s3
 ```
 
 See [CONFIGURATION.md](CONFIGURATION.md) for more examples.
@@ -185,22 +166,20 @@ See [CONFIGURATION.md](CONFIGURATION.md) for more examples.
 
 Yes! Multiple shares can reference the same store instance for resource efficiency:
 
-```yaml
-metadata:
-  stores:
-    shared-meta:
-      type: badger
-      badger:
-        db_path: /var/lib/dittofs/shared-metadata
+```bash
+# Create one shared metadata store
+./dittofsctl store metadata add --name shared-meta --type badger \
+  --config '{"db_path":"/var/lib/dittofs/shared-metadata"}'
 
-shares:
-  - name: /prod
-    metadata_store: shared-meta
-    content_store: s3-prod
+# Create separate payload stores
+./dittofsctl store payload add --name s3-prod --type s3 \
+  --config '{"region":"us-east-1","bucket":"prod-bucket"}'
+./dittofsctl store payload add --name s3-archive --type s3 \
+  --config '{"region":"us-east-1","bucket":"archive-bucket"}'
 
-  - name: /archive
-    metadata_store: shared-meta  # Same metadata
-    content_store: s3-archive    # Different content
+# Both shares use the same metadata store
+./dittofsctl share create --name /prod --metadata shared-meta --payload s3-prod
+./dittofsctl share create --name /archive --metadata shared-meta --payload s3-archive
 ```
 
 ### How do I enable debug logging?
