@@ -6,6 +6,7 @@ package handlers
 import (
 	"bytes"
 	"io"
+	"sync"
 
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
@@ -44,6 +45,9 @@ type Handler struct {
 	// and FATTR4_OWNER_GROUP encoding. When non-nil, UIDs/GIDs are
 	// reverse-resolved to user@domain format. When nil, numeric format is used.
 	IdentityMapper identity.IdentityMapper
+
+	// blockedOpsMu protects blockedOps from concurrent read/write access.
+	blockedOpsMu sync.RWMutex
 
 	// blockedOps is a set of operation numbers blocked at the adapter level.
 	// Populated from NFSAdapterSettings.BlockedOperations.
@@ -189,17 +193,22 @@ func (h *Handler) SetBlockedOps(opNames []string) {
 			blocked[opNum] = true
 		}
 	}
+	h.blockedOpsMu.Lock()
 	h.blockedOps = blocked
+	h.blockedOpsMu.Unlock()
 }
 
 // IsOperationBlocked returns true if the given operation number is blocked
 // at the adapter level. Per-share blocked operations are checked separately
 // in the COMPOUND dispatcher using the CompoundContext after PUTFH resolves.
 func (h *Handler) IsOperationBlocked(opNum uint32) bool {
-	if h.blockedOps == nil {
+	h.blockedOpsMu.RLock()
+	blocked := h.blockedOps
+	h.blockedOpsMu.RUnlock()
+	if blocked == nil {
 		return false
 	}
-	return h.blockedOps[opNum]
+	return blocked[opNum]
 }
 
 // encodeStatusOnly XDR-encodes a status-only response (just the nfsstat4).

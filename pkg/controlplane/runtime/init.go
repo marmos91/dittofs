@@ -383,9 +383,10 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			AnonymousUID:      share.GetAnonymousUID(),
 			AnonymousGID:      share.GetAnonymousGID(),
 			AllowAuthSys:      share.AllowAuthSys,
+			AllowAuthSysSet:   true,
 			RequireKerberos:   share.RequireKerberos,
 			MinKerberosLevel:  share.MinKerberosLevel,
-			NetgroupID:        netgroupName,
+			NetgroupName:      netgroupName,
 			BlockedOperations: share.GetBlockedOps(),
 		}
 

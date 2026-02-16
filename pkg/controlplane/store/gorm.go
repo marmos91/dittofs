@@ -207,10 +207,12 @@ func New(config *Config) (*GORMStore, error) {
 	// from column addition. GORM's default tag only applies on INSERT, not ALTER TABLE.
 	// Existing shares would get allow_auth_sys=false (zero value) instead of true.
 	// Only update shares where all security fields are zero-valued (untouched by migration).
-	db.Exec(
+	if err := db.Exec(
 		"UPDATE shares SET allow_auth_sys = ? WHERE allow_auth_sys = ? AND require_kerberos = ? AND blocked_operations IS NULL",
 		true, false, false,
-	)
+	).Error; err != nil {
+		return nil, fmt.Errorf("failed to apply post-migration defaults: %w", err)
+	}
 
 	return store, nil
 }

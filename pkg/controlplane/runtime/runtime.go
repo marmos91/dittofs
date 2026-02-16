@@ -508,6 +508,15 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 		return fmt.Errorf("failed to encode root handle: %w", err)
 	}
 
+	// Apply security policy defaults.
+	// AllowAuthSys defaults to true (standard NFS behavior) when the caller
+	// does not explicitly set it. Since Go's bool zero value is false, we
+	// use AllowAuthSysSet to distinguish "explicitly disabled" from "not set".
+	allowAuthSys := config.AllowAuthSys
+	if !config.AllowAuthSysSet && !allowAuthSys {
+		allowAuthSys = true
+	}
+
 	// Create share struct
 	share := &Share{
 		Name:               config.Name,
@@ -519,10 +528,10 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 		AnonymousUID:       config.AnonymousUID,
 		AnonymousGID:       config.AnonymousGID,
 		DisableReaddirplus: config.DisableReaddirplus,
-		AllowAuthSys:       config.AllowAuthSys,
+		AllowAuthSys:       allowAuthSys,
 		RequireKerberos:    config.RequireKerberos,
 		MinKerberosLevel:   config.MinKerberosLevel,
-		NetgroupID:         config.NetgroupID,
+		NetgroupName:       config.NetgroupName,
 		BlockedOperations:  config.BlockedOperations,
 	}
 

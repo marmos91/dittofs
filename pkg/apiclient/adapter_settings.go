@@ -91,26 +91,25 @@ type PatchSMBSettingsRequest struct {
 // SettingsOption is a functional option for settings API calls.
 type SettingsOption func(url *string)
 
-// WithForce adds the force=true query parameter to bypass range validation.
-func WithForce() SettingsOption {
+// withQueryParam returns a SettingsOption that appends a query parameter to the URL.
+func withQueryParam(param string) SettingsOption {
 	return func(url *string) {
 		if strings.Contains(*url, "?") {
-			*url += "&force=true"
+			*url += "&" + param
 		} else {
-			*url += "?force=true"
+			*url += "?" + param
 		}
 	}
 }
 
+// WithForce adds the force=true query parameter to bypass range validation.
+func WithForce() SettingsOption {
+	return withQueryParam("force=true")
+}
+
 // WithDryRun adds the dry_run=true query parameter to validate without applying.
 func WithDryRun() SettingsOption {
-	return func(url *string) {
-		if strings.Contains(*url, "?") {
-			*url += "&dry_run=true"
-		} else {
-			*url += "?dry_run=true"
-		}
-	}
+	return withQueryParam("dry_run=true")
 }
 
 func applySettingsOptions(url string, opts []SettingsOption) string {

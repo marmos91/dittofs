@@ -2,11 +2,11 @@ package netgroup
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"strings"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/spf13/cobra"
 )
 
@@ -45,15 +45,12 @@ func runAddMember(cmd *cobra.Command, args []string) error {
 
 	// Validate member type
 	memberType := strings.ToLower(addMemberType)
-	switch memberType {
-	case "ip", "cidr", "hostname":
-		// valid
-	default:
-		return fmt.Errorf("invalid member type: %q (valid: ip, cidr, hostname)", addMemberType)
+	if !models.ValidateMemberType(memberType) {
+		return fmt.Errorf("invalid member type: %q (valid: %v)", addMemberType, models.ValidMemberTypes)
 	}
 
-	// Client-side validation
-	if err := validateMemberValue(memberType, addMemberValue); err != nil {
+	// Client-side validation (reuse models validation for consistency)
+	if err := models.ValidateMemberValue(memberType, addMemberValue); err != nil {
 		return err
 	}
 
@@ -69,27 +66,4 @@ func runAddMember(cmd *cobra.Command, args []string) error {
 
 	return cmdutil.PrintResourceWithSuccess(os.Stdout, member,
 		fmt.Sprintf("Member %s '%s' added to netgroup '%s' (ID: %s)", memberType, addMemberValue, netgroupName, member.ID))
-}
-
-// validateMemberValue performs client-side validation of the member value.
-func validateMemberValue(memberType, value string) error {
-	switch memberType {
-	case "ip":
-		if ip := net.ParseIP(value); ip == nil {
-			return fmt.Errorf("invalid IP address: %q", value)
-		}
-	case "cidr":
-		if _, _, err := net.ParseCIDR(value); err != nil {
-			return fmt.Errorf("invalid CIDR range: %q (%v)", value, err)
-		}
-	case "hostname":
-		if value == "" {
-			return fmt.Errorf("hostname cannot be empty")
-		}
-		// Basic hostname validation: must not contain spaces
-		if strings.ContainsAny(value, " \t\n") {
-			return fmt.Errorf("invalid hostname: %q (must not contain whitespace)", value)
-		}
-	}
-	return nil
 }

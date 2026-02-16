@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -150,7 +151,10 @@ func (w *SettingsWatcher) pollNFSSettings(ctx context.Context) error {
 	// Get NFS adapter from store
 	adapter, err := w.store.GetAdapter(ctx, "nfs")
 	if err != nil {
-		return nil // NFS adapter may not exist
+		if errors.Is(err, models.ErrAdapterNotFound) {
+			return nil // NFS adapter may not exist
+		}
+		return err
 	}
 
 	settings, err := w.store.GetNFSAdapterSettings(ctx, adapter.ID)
@@ -191,7 +195,10 @@ func (w *SettingsWatcher) pollSMBSettings(ctx context.Context) error {
 	// Get SMB adapter from store
 	adapter, err := w.store.GetAdapter(ctx, "smb")
 	if err != nil {
-		return nil // SMB adapter may not exist
+		if errors.Is(err, models.ErrAdapterNotFound) {
+			return nil // SMB adapter may not exist
+		}
+		return err
 	}
 
 	settings, err := w.store.GetSMBAdapterSettings(ctx, adapter.ID)

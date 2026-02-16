@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -48,6 +49,7 @@ func (s *GORMStore) UpdateNFSAdapterSettings(ctx context.Context, settings *mode
 			"delegations_enabled":       settings.DelegationsEnabled,
 			"blocked_operations":        settings.BlockedOperations,
 			"version":                   gorm.Expr("version + 1"),
+			"updated_at":                time.Now(),
 		})
 
 	if result.Error != nil {
@@ -68,7 +70,9 @@ func (s *GORMStore) ResetNFSAdapterSettings(ctx context.Context, adapterID strin
 		}
 
 		// Delete existing settings
-		tx.Where("adapter_id = ?", adapterID).Delete(&models.NFSAdapterSettings{})
+		if err := tx.Where("adapter_id = ?", adapterID).Delete(&models.NFSAdapterSettings{}).Error; err != nil {
+			return err
+		}
 
 		// Create new default settings
 		defaults := models.NewDefaultNFSSettings(adapterID)
@@ -105,6 +109,7 @@ func (s *GORMStore) UpdateSMBAdapterSettings(ctx context.Context, settings *mode
 			"enable_encryption":    settings.EnableEncryption,
 			"blocked_operations":   settings.BlockedOperations,
 			"version":              gorm.Expr("version + 1"),
+			"updated_at":           time.Now(),
 		})
 
 	if result.Error != nil {
@@ -125,7 +130,9 @@ func (s *GORMStore) ResetSMBAdapterSettings(ctx context.Context, adapterID strin
 		}
 
 		// Delete existing settings
-		tx.Where("adapter_id = ?", adapterID).Delete(&models.SMBAdapterSettings{})
+		if err := tx.Where("adapter_id = ?", adapterID).Delete(&models.SMBAdapterSettings{}).Error; err != nil {
+			return err
+		}
 
 		// Create new default settings
 		defaults := models.NewDefaultSMBSettings(adapterID)

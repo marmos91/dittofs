@@ -154,7 +154,14 @@ func (h *Handler) Mount(
 
 	// Netgroup IP access check: reject mount if client IP is not in allowed netgroup.
 	// Per locked decision: empty allowlist = allow all.
-	if clientNetIP := net.ParseIP(clientIP); clientNetIP != nil {
+	// Fail-closed: if we cannot parse the client IP, deny access.
+	clientNetIP := net.ParseIP(clientIP)
+	if clientNetIP == nil {
+		logger.Warn("Mount denied: unable to parse client IP for netgroup check",
+			"path", req.DirPath, "client_ip", clientIP)
+		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
+	}
+	{
 		allowed, netErr := h.Registry.CheckNetgroupAccess(ctx.Context, req.DirPath, clientNetIP)
 		if netErr != nil {
 			logger.Warn("Mount netgroup access check error",

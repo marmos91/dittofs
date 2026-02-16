@@ -46,7 +46,7 @@ type Share struct {
 	AllowAuthSys      bool     // Allow AUTH_SYS connections (default: true)
 	RequireKerberos   bool     // Require Kerberos authentication (default: false)
 	MinKerberosLevel  string   // Minimum Kerberos level: krb5, krb5i, krb5p (default: krb5)
-	NetgroupID        string   // Netgroup name for IP-based access control (empty = allow all)
+	NetgroupName      string   // Netgroup name for IP-based access control (empty = allow all)
 	BlockedOperations []string // Operations blocked on this share
 }
 
@@ -72,9 +72,10 @@ type ShareConfig struct {
 
 	// Security Policy
 	AllowAuthSys      bool
+	AllowAuthSysSet   bool // true when AllowAuthSys was explicitly set (distinguishes false from unset)
 	RequireKerberos   bool
 	MinKerberosLevel  string
-	NetgroupID        string
+	NetgroupName      string
 	BlockedOperations []string
 }
 

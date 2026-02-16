@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -167,23 +168,25 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate NetgroupID references existing netgroup
+	// Validate NetgroupID references existing netgroup and resolve to actual ID
 	var netgroupID *string
 	if req.NetgroupID != nil && *req.NetgroupID != "" {
-		if _, err := h.store.GetNetgroupByID(r.Context(), *req.NetgroupID); err != nil {
+		ng, err := h.store.GetNetgroupByID(r.Context(), *req.NetgroupID)
+		if err != nil {
 			// Try by name as well
-			if _, err := h.store.GetNetgroup(r.Context(), *req.NetgroupID); err != nil {
+			ng, err = h.store.GetNetgroup(r.Context(), *req.NetgroupID)
+			if err != nil {
 				BadRequest(w, "Netgroup not found: "+*req.NetgroupID)
 				return
 			}
 		}
-		netgroupID = req.NetgroupID
+		netgroupID = &ng.ID
 	}
 
 	// Validate BlockedOperations entries
 	if req.BlockedOperations != nil {
 		for _, op := range *req.BlockedOperations {
-			if !isValidNFSOperation(op) && !isValidSMBOperation(op) {
+			if !isValidBlockedOperation(op) {
 				BadRequest(w, "Unknown blocked operation: "+op)
 				return
 			}
@@ -239,6 +242,11 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			Squash:            share.GetSquashMode(),
 			AnonymousUID:      share.GetAnonymousUID(),
 			AnonymousGID:      share.GetAnonymousGID(),
+			AllowAuthSys:      allowAuthSys,
+			AllowAuthSysSet:   true,
+			RequireKerberos:   requireKerberos,
+			MinKerberosLevel:  minKerberosLevel,
+			BlockedOperations: share.GetBlockedOps(),
 		}
 
 		if err := h.runtime.AddShare(r.Context(), shareConfig); err != nil {
@@ -346,14 +354,16 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.NetgroupID != nil {
 		if *req.NetgroupID != "" {
-			// Validate netgroup exists
-			if _, err := h.store.GetNetgroupByID(r.Context(), *req.NetgroupID); err != nil {
-				if _, err := h.store.GetNetgroup(r.Context(), *req.NetgroupID); err != nil {
+			// Validate netgroup exists and resolve to actual ID
+			ng, ngErr := h.store.GetNetgroupByID(r.Context(), *req.NetgroupID)
+			if ngErr != nil {
+				ng, ngErr = h.store.GetNetgroup(r.Context(), *req.NetgroupID)
+				if ngErr != nil {
 					BadRequest(w, "Netgroup not found: "+*req.NetgroupID)
 					return
 				}
 			}
-			share.NetgroupID = req.NetgroupID
+			share.NetgroupID = &ng.ID
 		} else {
 			// Empty string means remove netgroup association
 			share.NetgroupID = nil
@@ -361,7 +371,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.BlockedOperations != nil {
 		for _, op := range *req.BlockedOperations {
-			if !isValidNFSOperation(op) && !isValidSMBOperation(op) {
+			if !isValidBlockedOperation(op) {
 				BadRequest(w, "Unknown blocked operation: "+op)
 				return
 			}
@@ -678,12 +688,7 @@ func shareToResponse(s *models.Share) ShareResponse {
 
 // isValidKerberosLevel checks if a Kerberos level string is valid.
 func isValidKerberosLevel(level string) bool {
-	for _, valid := range models.ValidKerberosLevels {
-		if level == valid {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(models.ValidKerberosLevels, level)
 }
 
 // isValidBlockedOperation checks if a blocked operation name is valid for any protocol.

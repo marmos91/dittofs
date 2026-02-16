@@ -99,7 +99,7 @@ func (c *dnsCache) cleanExpiredLocked(now time.Time) {
 //
 // Algorithm:
 //  1. Get share from runtime state (not DB -- use cached share config)
-//  2. If share has no NetgroupID -> return true (empty allowlist = allow all)
+//  2. If share has no NetgroupName -> return true (empty allowlist = allow all)
 //  3. Get netgroup members from store
 //  4. Match client IP against each member (IP, CIDR, or hostname)
 //  5. Return false if no member matches
@@ -117,17 +117,17 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 		return false, nil
 	}
 
-	// 2. If share has no NetgroupID -> allow all
-	if share.NetgroupID == "" {
+	// 2. If share has no netgroup -> allow all
+	if share.NetgroupName == "" {
 		return true, nil
 	}
 
 	// 3. Get netgroup members from store
-	members, err := r.store.GetNetgroupMembers(ctx, share.NetgroupID)
+	members, err := r.store.GetNetgroupMembers(ctx, share.NetgroupName)
 	if err != nil {
 		logger.Warn("Failed to get netgroup members, denying access",
 			"share", shareName,
-			"netgroup", share.NetgroupID,
+			"netgroup", share.NetgroupName,
 			"error", err)
 		return false, err
 	}

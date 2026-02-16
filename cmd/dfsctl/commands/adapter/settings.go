@@ -531,7 +531,7 @@ func updateNFSSettings(cmd *cobra.Command, client *apiclient.Client) error {
 	}
 
 	if !hasChanges {
-		return fmt.Errorf("no settings specified. Use flags like --lease-time, --grace-period, etc.")
+		return fmt.Errorf("no settings specified; use flags like --lease-time, --grace-period, etc")
 	}
 
 	result, err := client.PatchNFSSettings(req, opts...)
@@ -595,7 +595,7 @@ func updateSMBSettings(cmd *cobra.Command, client *apiclient.Client) error {
 	}
 
 	if !hasChanges {
-		return fmt.Errorf("no settings specified. Use flags like --min-dialect, --session-timeout, etc.")
+		return fmt.Errorf("no settings specified; use flags like --min-dialect, --session-timeout, etc")
 	}
 
 	result, err := client.PatchSMBSettings(req, opts...)
