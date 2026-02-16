@@ -70,8 +70,8 @@ type Config struct {
 	// When enabled, NFS clients can authenticate using Kerberos tickets
 	// via the RPCSEC_GSS protocol (RFC 2203).
 	// Environment variable overrides:
-	//   DITTOFS_KERBEROS_KEYTAB_PATH overrides KeytabPath
-	//   DITTOFS_KERBEROS_SERVICE_PRINCIPAL overrides ServicePrincipal
+	//   DITTOFS_KERBEROS_KEYTAB overrides KeytabPath (DITTOFS_KERBEROS_KEYTAB_PATH for compat)
+	//   DITTOFS_KERBEROS_PRINCIPAL overrides ServicePrincipal (DITTOFS_KERBEROS_SERVICE_PRINCIPAL for compat)
 	Kerberos KerberosConfig `mapstructure:"kerberos" yaml:"kerberos"`
 }
 

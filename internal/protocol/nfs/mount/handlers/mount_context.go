@@ -60,8 +60,8 @@ type MountHandlerContext struct {
 	GIDs []uint32
 
 	// KerberosEnabled indicates whether RPCSEC_GSS (Kerberos) authentication
-	// is supported by the server. When true, the mount response should
-	// advertise AUTH_RPCSEC_GSS (6) in addition to AUTH_UNIX (1).
+	// is supported by the server. When true, the mount response advertises
+	// Kerberos pseudoflavors (390003/390004/390005) in addition to AUTH_UNIX (1).
 	KerberosEnabled bool
 }
 

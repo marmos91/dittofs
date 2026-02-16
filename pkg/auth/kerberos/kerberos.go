@@ -8,6 +8,7 @@ import (
 
 	krb5config "github.com/jcmturner/gokrb5/v8/config"
 	"github.com/jcmturner/gokrb5/v8/keytab"
+	"github.com/marmos91/dittofs/internal/logger"
 	dconfig "github.com/marmos91/dittofs/pkg/config"
 )
 
@@ -107,7 +108,8 @@ func NewProvider(cfg *dconfig.KerberosConfig) (*Provider, error) {
 	if err := km.Start(); err != nil {
 		// Non-fatal: log warning but continue (hot-reload just won't work)
 		// This can happen if the file is deleted between load and start
-		_ = err
+		logger.Warn("Keytab hot-reload failed to start, continuing without it",
+			"path", keytabPath, "error", err)
 	}
 	p.keytabManager = km
 

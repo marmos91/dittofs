@@ -160,8 +160,8 @@ func applyLockDefaults(cfg *LockConfig) {
 //
 // When Kerberos is enabled, the keytab path and service principal must
 // be configured either in the config file or via environment variables:
-//   - DITTOFS_KERBEROS_KEYTAB_PATH overrides KeytabPath
-//   - DITTOFS_KERBEROS_SERVICE_PRINCIPAL overrides ServicePrincipal
+//   - DITTOFS_KERBEROS_KEYTAB overrides KeytabPath (DITTOFS_KERBEROS_KEYTAB_PATH for compat)
+//   - DITTOFS_KERBEROS_PRINCIPAL overrides ServicePrincipal (DITTOFS_KERBEROS_SERVICE_PRINCIPAL for compat)
 func applyKerberosDefaults(cfg *KerberosConfig) {
 	// Enabled defaults to false (opt-in for Kerberos)
 	// No need to set, zero value is false

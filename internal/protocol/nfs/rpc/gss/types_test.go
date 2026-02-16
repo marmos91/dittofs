@@ -246,25 +246,25 @@ func TestEncodeGSSInitRes_EmptyFields(t *testing.T) {
 
 	// Handle should be zero-length opaque
 	var handleLen uint32
-	binary.Read(reader, binary.BigEndian, &handleLen)
+	_ = binary.Read(reader, binary.BigEndian, &handleLen)
 	if handleLen != 0 {
 		t.Errorf("handle length = %d, want 0", handleLen)
 	}
 
 	var gssMajor uint32
-	binary.Read(reader, binary.BigEndian, &gssMajor)
+	_ = binary.Read(reader, binary.BigEndian, &gssMajor)
 	if gssMajor != GSSContinueNeeded {
 		t.Errorf("gss_major = %d, want %d", gssMajor, GSSContinueNeeded)
 	}
 
 	var gssMinor uint32
-	binary.Read(reader, binary.BigEndian, &gssMinor)
+	_ = binary.Read(reader, binary.BigEndian, &gssMinor)
 	if gssMinor != 42 {
 		t.Errorf("gss_minor = %d, want 42", gssMinor)
 	}
 
 	var seqWindow uint32
-	binary.Read(reader, binary.BigEndian, &seqWindow)
+	_ = binary.Read(reader, binary.BigEndian, &seqWindow)
 	if seqWindow != 0 {
 		t.Errorf("seq_window = %d, want 0", seqWindow)
 	}
