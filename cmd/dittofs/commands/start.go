@@ -202,7 +202,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Configure runtime
 	rt.SetShutdownTimeout(cfg.ShutdownTimeout)
-	rt.SetAdapterFactory(createAdapterFactory())
+	rt.SetAdapterFactory(createAdapterFactory(&cfg.Kerberos))
 
 	// Set metrics server if enabled
 	if metricsResult.Server != nil {
@@ -373,7 +373,7 @@ func startDaemon() error {
 // createAdapterFactory returns a factory function that creates protocol adapters
 // from configuration. This factory is used by Runtime to create adapters
 // dynamically when loading from store or when created via API.
-func createAdapterFactory() runtime.AdapterFactory {
+func createAdapterFactory(kerberosConfig *config.KerberosConfig) runtime.AdapterFactory {
 	return func(cfg *models.AdapterConfig) (runtime.ProtocolAdapter, error) {
 		// Parse the JSON config if present
 		parsedConfig, err := cfg.GetConfig()
@@ -390,7 +390,12 @@ func createAdapterFactory() runtime.AdapterFactory {
 			if nfsCfg.Port == 0 {
 				nfsCfg.Port = 12049 // Default NFS port
 			}
-			return nfs.New(nfsCfg, nil), nil
+			adapter := nfs.New(nfsCfg, nil)
+			// Configure Kerberos if enabled
+			if kerberosConfig != nil && kerberosConfig.Enabled {
+				adapter.SetKerberosConfig(kerberosConfig)
+			}
+			return adapter, nil
 
 		case "smb":
 			smbCfg := smb.SMBConfig{
