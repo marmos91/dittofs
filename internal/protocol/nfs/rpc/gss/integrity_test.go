@@ -222,7 +222,7 @@ func TestWrapIntegrityProducesValidFormat(t *testing.T) {
 	// Skip padding
 	padding := (4 - (databodyLen % 4)) % 4
 	for range int(padding) {
-		reader.ReadByte()
+		_, _ = reader.ReadByte()
 	}
 
 	// Verify seq_num in databody

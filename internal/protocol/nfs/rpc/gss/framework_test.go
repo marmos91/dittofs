@@ -74,21 +74,6 @@ func buildINITCredBody(t *testing.T) []byte {
 	return body
 }
 
-func buildDATACredBody(t *testing.T, handle []byte, seqNum uint32) []byte {
-	t.Helper()
-	cred := &RPCGSSCredV1{
-		GSSProc: RPCGSSData,
-		SeqNum:  seqNum,
-		Service: RPCGSSSvcIntegrity,
-		Handle:  handle,
-	}
-	body, err := EncodeGSSCred(cred)
-	if err != nil {
-		t.Fatalf("encode DATA cred: %v", err)
-	}
-	return body
-}
-
 func buildDESTROYCredBody(t *testing.T, handle []byte, seqNum uint32) []byte {
 	t.Helper()
 	cred := &RPCGSSCredV1{

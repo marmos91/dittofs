@@ -130,7 +130,7 @@ func (h *Handler) handleSecInfo(ctx *types.CompoundContext, reader io.Reader) *t
 //   - service: rpc_gss_svc_t (1=none, 2=integrity, 3=privacy)
 func encodeSecInfoGSSEntry(buf *bytes.Buffer, service uint32) {
 	_ = xdr.WriteUint32(buf, authRPCSECGSS) // flavor = 6
-	_ = xdr.WriteXDROpaque(buf, krb5OIDDER)  // oid (KRB5 mechanism OID)
-	_ = xdr.WriteUint32(buf, 0)              // qop = 0 (default)
-	_ = xdr.WriteUint32(buf, service)        // service level
+	_ = xdr.WriteXDROpaque(buf, krb5OIDDER) // oid (KRB5 mechanism OID)
+	_ = xdr.WriteUint32(buf, 0)             // qop = 0 (default)
+	_ = xdr.WriteUint32(buf, service)       // service level
 }

@@ -305,7 +305,7 @@ func TestHandleSecInfo_KerberosEnabled_SecurityOrder(t *testing.T) {
 			t.Fatalf("entry[%d] should be RPCSEC_GSS (6), got %d", i, flavor)
 		}
 		_, _ = xdr.DecodeOpaque(reader) // oid
-		_, _ = xdr.DecodeUint32(reader)    // qop
+		_, _ = xdr.DecodeUint32(reader) // qop
 		svc, _ := xdr.DecodeUint32(reader)
 		services = append(services, svc)
 	}
@@ -383,7 +383,7 @@ func TestEncodeSecInfoGSSEntry_Integrity(t *testing.T) {
 	}
 
 	_, _ = xdr.DecodeOpaque(reader) // oid
-	_, _ = xdr.DecodeUint32(reader)    // qop
+	_, _ = xdr.DecodeUint32(reader) // qop
 
 	svc, _ := xdr.DecodeUint32(reader)
 	if svc != 2 {
@@ -403,7 +403,7 @@ func TestEncodeSecInfoGSSEntry_None(t *testing.T) {
 	}
 
 	_, _ = xdr.DecodeOpaque(reader) // oid
-	_, _ = xdr.DecodeUint32(reader)    // qop
+	_, _ = xdr.DecodeUint32(reader) // qop
 
 	svc, _ := xdr.DecodeUint32(reader)
 	if svc != 1 {

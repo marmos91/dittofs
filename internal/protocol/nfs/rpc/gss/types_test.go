@@ -9,11 +9,11 @@ import (
 func TestDecodeGSSCred_INIT(t *testing.T) {
 	// Build an INIT credential: version=1, gss_proc=INIT, seq_num=0, service=none, handle empty
 	buf := &bytes.Buffer{}
-	binary.Write(buf, binary.BigEndian, RPCGSSVers1)   // version
-	binary.Write(buf, binary.BigEndian, RPCGSSInit)    // gss_proc
-	binary.Write(buf, binary.BigEndian, uint32(0))     // seq_num
-	binary.Write(buf, binary.BigEndian, RPCGSSSvcNone) // service
-	binary.Write(buf, binary.BigEndian, uint32(0))     // handle length (empty)
+	_ = binary.Write(buf, binary.BigEndian, RPCGSSVers1)   // version
+	_ = binary.Write(buf, binary.BigEndian, RPCGSSInit)    // gss_proc
+	_ = binary.Write(buf, binary.BigEndian, uint32(0))     // seq_num
+	_ = binary.Write(buf, binary.BigEndian, RPCGSSSvcNone) // service
+	_ = binary.Write(buf, binary.BigEndian, uint32(0))     // handle length (empty)
 
 	cred, err := DecodeGSSCred(buf.Bytes())
 	if err != nil {
@@ -38,11 +38,11 @@ func TestDecodeGSSCred_DATA(t *testing.T) {
 	// Build a DATA credential with a non-empty handle
 	handle := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE}
 	buf := &bytes.Buffer{}
-	binary.Write(buf, binary.BigEndian, RPCGSSVers1)         // version
-	binary.Write(buf, binary.BigEndian, RPCGSSData)          // gss_proc
-	binary.Write(buf, binary.BigEndian, uint32(42))          // seq_num
-	binary.Write(buf, binary.BigEndian, RPCGSSSvcIntegrity)  // service
-	binary.Write(buf, binary.BigEndian, uint32(len(handle))) // handle length
+	_ = binary.Write(buf, binary.BigEndian, RPCGSSVers1)         // version
+	_ = binary.Write(buf, binary.BigEndian, RPCGSSData)          // gss_proc
+	_ = binary.Write(buf, binary.BigEndian, uint32(42))          // seq_num
+	_ = binary.Write(buf, binary.BigEndian, RPCGSSSvcIntegrity)  // service
+	_ = binary.Write(buf, binary.BigEndian, uint32(len(handle))) // handle length
 	buf.Write(handle)
 	// XDR padding: 6 bytes -> padding = (4 - 6%4) % 4 = 2
 	buf.Write([]byte{0, 0})
@@ -68,11 +68,11 @@ func TestDecodeGSSCred_DATA(t *testing.T) {
 
 func TestDecodeGSSCred_RejectsInvalidVersion(t *testing.T) {
 	buf := &bytes.Buffer{}
-	binary.Write(buf, binary.BigEndian, uint32(2))     // version=2 (invalid)
-	binary.Write(buf, binary.BigEndian, RPCGSSData)    // gss_proc
-	binary.Write(buf, binary.BigEndian, uint32(1))     // seq_num
-	binary.Write(buf, binary.BigEndian, RPCGSSSvcNone) // service
-	binary.Write(buf, binary.BigEndian, uint32(0))     // handle length
+	_ = binary.Write(buf, binary.BigEndian, uint32(2))     // version=2 (invalid)
+	_ = binary.Write(buf, binary.BigEndian, RPCGSSData)    // gss_proc
+	_ = binary.Write(buf, binary.BigEndian, uint32(1))     // seq_num
+	_ = binary.Write(buf, binary.BigEndian, RPCGSSSvcNone) // service
+	_ = binary.Write(buf, binary.BigEndian, uint32(0))     // handle length
 
 	_, err := DecodeGSSCred(buf.Bytes())
 	if err == nil {
@@ -182,47 +182,47 @@ func TestEncodeGSSInitRes(t *testing.T) {
 
 	// Read handle
 	var handleLen uint32
-	binary.Read(reader, binary.BigEndian, &handleLen)
+	_ = binary.Read(reader, binary.BigEndian, &handleLen)
 	if handleLen != 3 {
 		t.Errorf("handle length = %d, want 3", handleLen)
 	}
 	handle := make([]byte, handleLen)
-	reader.Read(handle)
+	_, _ = reader.Read(handle)
 	if !bytes.Equal(handle, res.Handle) {
 		t.Errorf("handle = %x, want %x", handle, res.Handle)
 	}
 	// Skip padding (3 bytes -> padding = 1)
-	reader.ReadByte()
+	_, _ = reader.ReadByte()
 
 	// Read gss_major
 	var gssMajor uint32
-	binary.Read(reader, binary.BigEndian, &gssMajor)
+	_ = binary.Read(reader, binary.BigEndian, &gssMajor)
 	if gssMajor != GSSComplete {
 		t.Errorf("gss_major = %d, want %d", gssMajor, GSSComplete)
 	}
 
 	// Read gss_minor
 	var gssMinor uint32
-	binary.Read(reader, binary.BigEndian, &gssMinor)
+	_ = binary.Read(reader, binary.BigEndian, &gssMinor)
 	if gssMinor != 0 {
 		t.Errorf("gss_minor = %d, want 0", gssMinor)
 	}
 
 	// Read seq_window
 	var seqWindow uint32
-	binary.Read(reader, binary.BigEndian, &seqWindow)
+	_ = binary.Read(reader, binary.BigEndian, &seqWindow)
 	if seqWindow != 128 {
 		t.Errorf("seq_window = %d, want 128", seqWindow)
 	}
 
 	// Read gss_token
 	var tokenLen uint32
-	binary.Read(reader, binary.BigEndian, &tokenLen)
+	_ = binary.Read(reader, binary.BigEndian, &tokenLen)
 	if tokenLen != 5 {
 		t.Errorf("token length = %d, want 5", tokenLen)
 	}
 	token := make([]byte, tokenLen)
-	reader.Read(token)
+	_, _ = reader.Read(token)
 	if !bytes.Equal(token, res.GSSToken) {
 		t.Errorf("token = %x, want %x", token, res.GSSToken)
 	}
