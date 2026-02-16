@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** v1.0 COMPLETE — v2.0 (NFSv4.0 + Kerberos), Phase 11 COMPLETE
+**Current focus:** v1.0 COMPLETE — v2.0 (NFSv4.0 + Kerberos), Phase 12 COMPLETE
 
 ## Current Position
 
-Phase: 11 of 28 (Delegations) — COMPLETE
-Plan: 4 of 4 complete
-Status: Phase 11 COMPLETE. All delegation operations implemented: state tracking, callback client, OPEN integration, recall timeout/revocation, anti-storm protection.
-Last activity: 2026-02-14 - Completed Plan 11-04 (Recall Timeout, Revocation, Anti-Storm)
+Phase: 12 of 28 (Kerberos Authentication)
+Plan: 5 of 5 complete
+Status: Phase 12 COMPLETE. Keytab hot-reload, GSS Prometheus metrics, RPCSEC_GSS lifecycle integration test.
+Last activity: 2026-02-15 - Completed Plan 12-05 (Keytab Hot-Reload, Metrics, Lifecycle Test)
 
-Progress: [############################] 100% (37/37 plans complete)
+Progress: [##############################] 100% (42/42 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 31
-- Average duration: 8.9 min
-- Total execution time: 4.5 hours
+- Total plans completed: 42
+- Average duration: 8.5 min
+- Total execution time: 5.1 hours
 
 **By Phase:**
 
@@ -39,10 +39,11 @@ Progress: [############################] 100% (37/37 plans complete)
 | 09-state-management | 4/4 | 33 min | 8.3 min | COMPLETE |
 | 10-nfsv4-locking | 3/3 | 33 min | 11.0 min | COMPLETE |
 | 11-delegations | 4/4 | 41 min | 10.3 min | COMPLETE |
+| 12-kerberos-authentication | 5/5 | 48 min | 9.6 min | COMPLETE |
 
 **Recent Trend:**
-- Last 5 plans: 11-01 (9 min), 11-02 (16 min), 11-03 (6 min), 11-04 (10 min)
-- Trend: Fast execution for delegation integration (reuses existing patterns)
+- Last 5 plans: 12-01 (7 min), 12-02 (5 min), 12-03 (14 min), 12-04 (14 min), 12-05 (8 min)
+- Trend: Kerberos phase complete in 48 min total, avg 9.6 min/plan
 
 *Updated after each plan completion*
 
@@ -397,6 +398,51 @@ Progress: [############################] 100% (37/37 plans complete)
 - Shutdown stops all recall timers to prevent timer goroutines firing after shutdown
 - 16 new tests covering all revocation, callback path, and anti-storm scenarios
 
+## Phase 12 Accomplishments
+
+### Plan 12-01: Foundation Types and Configuration - COMPLETE
+- RPCSEC_GSS XDR types: RPCGSSCredV1 decode/encode, RPCGSSInitRes encode
+- Sliding window sequence number tracker with bitmap-based replay detection
+- RFC 2203 constants (AuthRPCSECGSS=6, gss_proc, service levels, MAXSEQ)
+- KRB5 OID, pseudo-flavors (krb5/krb5i/krb5p), RFC 4121 key usage constants
+- KerberosProvider with keytab/krb5.conf loading and hot-reload
+- StaticMapper for principal@REALM to metadata.Identity conversion
+- KerberosConfig in pkg/config with defaults and env var overrides
+- 20 tests passing with -race
+
+### Plan 12-02: GSS Context State Machine - COMPLETE
+- GSSContext struct with handle, principal, realm, session key, sequence window
+- ContextStore with sync.Map O(1) lookup, TTL-based expiration, LRU eviction
+- GSSProcessor orchestrating RPCSEC_GSS INIT/DESTROY lifecycle
+- Verifier interface for mockable AP-REQ verification (Krb5Verifier for production)
+- extractAPReq strips GSS-API token wrapper to extract raw AP-REQ
+- Store-before-reply ordering enforced (NFS-Ganesha bug prevention)
+- 43 tests passing with -race (12 context + 22 framework + 9 existing)
+
+### Plan 12-03: RPC Integration - COMPLETE
+- handleData validates sequence numbers, checks MAXSEQ, maps principal to Identity via IdentityMapper
+- Reply verifier computes MIC of XDR-encoded seq_num using gokrb5 MICToken (KeyUsageAcceptorSign=25)
+- GSSProcessor wired into handleRPCCall: INIT/DESTROY control path, DATA dispatch path, silent discard
+- GSS identity via context.Value to both NFSv3 ExtractHandlerContext and NFSv4 ExtractV4HandlerContext
+- MakeGSSSuccessReply and MakeAuthErrorReply (CREDPROBLEM/CTXPROBLEM) in rpc/parser.go
+- SetKerberosConfig method on NFSAdapter for pre-SetRuntime Kerberos configuration
+
+### Plan 12-04: SECINFO Upgrade - COMPLETE
+- krb5i integrity: UnwrapIntegrity/WrapIntegrity for rpc_gss_integ_data (MIC verification)
+- krb5p privacy: UnwrapPrivacy/WrapPrivacy for rpc_gss_priv_data (WrapToken verification)
+- Dual sequence number validation (credential + body) for both krb5i and krb5p
+- Reply body wrapping in NFS connection handler for krb5i/krb5p service levels
+- SECINFO returns RPCSEC_GSS entries (krb5p, krb5i, krb5) with KRB5 OID when Kerberos enabled
+- SECINFO entry order: krb5p > krb5i > krb5 > AUTH_SYS > AUTH_NONE (most secure first)
+
+### Plan 12-05: Keytab Hot-Reload, Metrics, and Lifecycle Test - COMPLETE
+- KeytabManager with 60s polling for file changes, atomic reload on modification
+- resolveKeytabPath/resolveServicePrincipal for DITTOFS_KERBEROS_KEYTAB and DITTOFS_KERBEROS_PRINCIPAL env vars
+- GSSMetrics struct with dittofs_gss_ prefix: context creations/destructions, active gauge, auth failures, data requests, duration histograms
+- WithMetrics functional option for GSSProcessor (zero overhead when nil)
+- Full RPCSEC_GSS lifecycle integration test: INIT -> DATA -> duplicate rejection -> DESTROY -> stale handle
+- 15 new tests (12 keytab + 3 lifecycle/metrics) all passing with -race
+
 ## Accumulated Context
 
 ### Decisions
@@ -554,6 +600,34 @@ Recent decisions affecting current work:
 - [11-04]: Recently-recalled TTL = 30s (~1/3 lease duration) prevents grant-recall storms
 - [11-04]: Revoked delegations kept in delegByOther for NFS4ERR_BAD_STATEID detection
 - [11-04]: DELEGRETURN of revoked delegation returns NFS4_OK (graceful cleanup)
+- [12-01]: KerberosConfig in pkg/config (not pkg/auth/kerberos) to avoid circular imports
+- [12-01]: StaticMapper as initial identity mapping strategy with DefaultUID/GID=65534
+- [12-01]: Env var overrides: DITTOFS_KERBEROS_KEYTAB_PATH, SERVICE_PRINCIPAL, KRB5CONF
+- [12-01]: SeqWindow uses bitmap ([]uint64) for O(1) duplicate detection
+- [12-01]: Sequence number 0 rejected (not valid in RPCSEC_GSS)
+- [12-02]: Verifier interface abstracts AP-REQ verification for testability (mock in tests, gokrb5 in production)
+- [12-02]: Store-before-reply ordering enforced: context stored BEFORE INIT reply is built
+- [12-02]: sync.Map for context store: O(1) lookup optimized for high-read/low-write pattern
+- [12-02]: Background cleanup every 5 minutes with configurable TTL for idle context expiration
+- [12-02]: AP-REP token left empty (gokrb5 does not expose AP-REP building); documented limitation
+- [12-02]: GSSProcessResult carries both control replies and data results in single type
+- [12-02]: DATA handling stubbed with explicit error for Plan 03
+- [12-03]: context.Value pattern for GSS identity threading (no handler signature changes)
+- [12-03]: GSSSessionInfo carries session key + seq_num for reply verifier via context.Value
+- [12-03]: SetKerberosConfig as pre-SetRuntime method (avoids changing NFSAdapter constructor)
+- [12-03]: AUTH_NULL verifier for INIT/DESTROY; GSS MIC verifier for DATA replies
+- [12-03]: Silent discard returns nil from handleRPCCall (no reply written to connection)
+
+- [12-04]: gokrb5 WrapToken provides integrity (HMAC) only, not actual encryption; documented limitation
+- [12-04]: Separate key usage for initiator (23/24) vs acceptor (25/26) per RFC 4121
+- [12-04]: KerberosEnabled bool on v4 Handler struct (simplest, no config dependency)
+- [12-04]: KRB5 OID as full DER (tag+length+value) in sec_oid4 per RFC 7530
+- [12-04]: SECINFO order: krb5p > krb5i > krb5 > AUTH_SYS > AUTH_NONE (most secure first)
+
+- [12-05]: Polling (60s) over fsnotify for keytab hot-reload (more reliable for atomic file replacement)
+- [12-05]: DITTOFS_KERBEROS_KEYTAB and DITTOFS_KERBEROS_PRINCIPAL as primary env vars (legacy also supported)
+- [12-05]: WithMetrics functional option pattern for GSSProcessor (avoids breaking existing constructor calls)
+- [12-05]: GSSMetrics nil-safe methods for zero-overhead when metrics disabled
 
 ### Pending Todos
 
@@ -565,16 +639,17 @@ None.
 
 ## Next Steps
 
-**Phase 11 — COMPLETE (4/4 plans)**
-- Plan 11-01 COMPLETE: Delegation State Tracking and DELEGRETURN
-- Plan 11-02 COMPLETE: NFSv4 Callback Client
-- Plan 11-03 COMPLETE: OPEN Delegation Integration
-- Plan 11-04 COMPLETE: Recall Timeout, Revocation, Anti-Storm Protection
+**Phase 12 — COMPLETE (5/5 plans)**
+- Plan 12-01 COMPLETE: Foundation Types and Configuration
+- Plan 12-02 COMPLETE: GSS Context State Machine
+- Plan 12-03 COMPLETE: RPC Integration
+- Plan 12-04 COMPLETE: SECINFO Upgrade
+- Plan 12-05 COMPLETE: Keytab Hot-Reload, Metrics, Lifecycle Test
 
-**Next phase to plan: Phase 12**
+**All 12 phases (42 plans) COMPLETE.**
 
 ## Session Continuity
 
-Last session: 2026-02-14
-Stopped at: Completed Phase 11 (Delegations) — all 4 plans executed
-Resume file: Next phase planning
+Last session: 2026-02-15
+Stopped at: Completed 12-05-PLAN.md (Keytab Hot-Reload, Metrics, Lifecycle Test) - Phase 12 COMPLETE
+Resume file: None (all plans complete)
