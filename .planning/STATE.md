@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** v1.0 COMPLETE — v2.0 (NFSv4.0 + Kerberos), Phase 12 COMPLETE
+**Current focus:** v1.0 COMPLETE — v2.0 (NFSv4.0 + Kerberos + ACLs), Phase 13 COMPLETE
 
 ## Current Position
 
-Phase: 12 of 28 (Kerberos Authentication)
+Phase: 13 of 28 (NFSv4 ACLs) - COMPLETE
 Plan: 5 of 5 complete
-Status: Phase 12 COMPLETE. Keytab hot-reload, GSS Prometheus metrics, RPCSEC_GSS lifecycle integration test.
-Last activity: 2026-02-15 - Completed Plan 12-05 (Keytab Hot-Reload, Metrics, Lifecycle Test)
+Status: Phase 13 complete. Full NFSv4 ACL pipeline: types, evaluation, metadata, NFS wire format, SMB interop, identity mapping API/CLI, metrics.
+Last activity: 2026-02-16 - Completed Plan 13-05 (SMB Security Descriptor and Control Plane Integration)
 
-Progress: [##############################] 100% (42/42 plans complete)
+Progress: [###############################] 100% (47/47 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 42
-- Average duration: 8.5 min
-- Total execution time: 5.1 hours
+- Total plans completed: 47
+- Average duration: 8.3 min
+- Total execution time: 5.6 hours
 
 **By Phase:**
 
@@ -40,10 +40,11 @@ Progress: [##############################] 100% (42/42 plans complete)
 | 10-nfsv4-locking | 3/3 | 33 min | 11.0 min | COMPLETE |
 | 11-delegations | 4/4 | 41 min | 10.3 min | COMPLETE |
 | 12-kerberos-authentication | 5/5 | 48 min | 9.6 min | COMPLETE |
+| 13-nfsv4-acls | 5/5 | 43 min | 8.6 min | COMPLETE |
 
 **Recent Trend:**
-- Last 5 plans: 12-01 (7 min), 12-02 (5 min), 12-03 (14 min), 12-04 (14 min), 12-05 (8 min)
-- Trend: Kerberos phase complete in 48 min total, avg 9.6 min/plan
+- Last 5 plans: 13-01 (9 min), 13-02 (7 min), 13-03 (7 min), 13-04 (8 min), 13-05 (12 min)
+- Trend: Phase 13 complete, avg 8.6 min/plan
 
 *Updated after each plan completion*
 
@@ -443,6 +444,54 @@ Progress: [##############################] 100% (42/42 plans complete)
 - Full RPCSEC_GSS lifecycle integration test: INIT -> DATA -> duplicate rejection -> DESTROY -> stale handle
 - 15 new tests (12 keytab + 3 lifecycle/metrics) all passing with -race
 
+## Phase 13 Accomplishments
+
+### Plan 13-01: ACL Types and Evaluation Engine - COMPLETE
+- ACE/ACL types with all RFC 7530 Section 6 constants (4 types, 7 flags, 16 mask bits, 3 special identifiers)
+- Process-first-match ACL evaluation engine with INHERIT_ONLY skipping and dynamic OWNER@/GROUP@/EVERYONE@ resolution
+- Canonical ordering validation (strict Windows order: explicit DENY > ALLOW > inherited DENY > ALLOW)
+- DeriveMode extracts rwx from OWNER@/GROUP@/EVERYONE@ ALLOW ACEs
+- AdjustACLForMode modifies only special identifiers, preserves explicit user/group ACEs
+- ComputeInheritedACL handles FILE_INHERIT, DIRECTORY_INHERIT, NO_PROPAGATE, INHERIT_ONLY
+- PropagateACL replaces inherited ACEs while preserving explicit ACEs
+- Protocol-agnostic package with zero external imports
+
+### Plan 13-02: Identity Mapper Package - COMPLETE
+- IdentityMapper interface with Resolve(ctx, principal) -> (*ResolvedIdentity, error)
+- ConventionMapper: user@REALM resolution with case-insensitive domain matching
+- ConventionMapper: numeric UID support for AUTH_SYS interop
+- TableMapper: explicit mapping table from MappingStore with userLookup callback
+- CachedMapper: TTL-based caching with double-check locking, error caching, invalidation, stats
+- StaticMapper migrated from pkg/auth/kerberos with backward-compat wrapper
+- GroupResolver interface for group@domain ACE evaluation
+- MappingStore interface for explicit mapping CRUD
+- ParsePrincipal helper and NobodyIdentity utility
+- pkg/identity has zero external imports (stdlib only)
+- 34 tests passing with -race including concurrent cache access
+
+### Plan 13-03: ACL Metadata Integration - COMPLETE
+- FileAttr.ACL field (nil=Unix mode, non-nil=ACL evaluation, empty ACEs=deny all)
+- calculatePermissions branches on ACL presence with evaluateACLPermissions
+- evaluateWithACL maps Permission flags to NFSv4 ACE mask bits per operation
+- createEntry inherits ACL from parent via acl.ComputeInheritedACL
+- chmod adjusts OWNER@/GROUP@/EVERYONE@ ACEs via acl.AdjustACLForMode
+- SetAttrs supports ACL with validation, CopyFileAttr deep-copies ACL
+- PostgreSQL migration 000004: ACL JSONB column with partial index
+- PostgreSQL read/write updated for ACL JSONB serialization
+- IdentityMapping GORM model with controlplane store CRUD (4 methods)
+- AllModels() includes IdentityMapping for auto-migration
+
+### Plan 13-04: NFSv4 ACL Wire Format and Handler Integration - COMPLETE
+- EncodeACLAttr/DecodeACLAttr for full nfsace4 wire format per RFC 7531 with round-trip fidelity
+- EncodeACLSupportAttr reporting all 4 ACE type support flags (0x0F)
+- DecodeACLAttr rejects >128 ACEs to prevent resource exhaustion
+- FATTR4_ACL (bit 12) and FATTR4_ACLSUPPORT (bit 13) in SupportedAttrs bitmap
+- FATTR4_ACL in WritableAttrs bitmap for SETATTR support
+- GETATTR encodes ACL for both pseudo-fs (empty) and real files
+- SETATTR decodes and validates ACL from XDR with proper NFS4 error codes
+- IdentityMapper field on Handler struct for FATTR4_OWNER reverse resolution
+- Package-level SetIdentityMapper for runtime configuration without signature changes
+
 ## Accumulated Context
 
 ### Decisions
@@ -629,6 +678,54 @@ Recent decisions affecting current work:
 - [12-05]: WithMetrics functional option pattern for GSSProcessor (avoids breaking existing constructor calls)
 - [12-05]: GSSMetrics nil-safe methods for zero-overhead when metrics disabled
 
+- [13-01]: Zero requestedMask returns true (vacuously allowed) before nil/empty ACL check
+- [13-01]: AUDIT/ALARM ACEs stored only, skipped during evaluation per project decision
+- [13-01]: Canonical ordering uses four-bucket system with AUDIT/ALARM anywhere
+- [13-01]: DeriveMode considers only ALLOW ACEs of special identifiers
+- [13-01]: AdjustACLForMode preserves non-rwx mask bits (READ_ACL, WRITE_ACL, DELETE, SYNCHRONIZE)
+- [13-01]: PropagateACL replaces inherited ACEs, preserves explicit in canonical order
+
+- [13-02]: StaticMapper always returns Found=true (falls back to defaults for unknown principals)
+- [13-02]: CachedMapper caches errors to prevent thundering herd on infrastructure failures
+- [13-02]: pkg/identity has zero external imports (stdlib only) -- no circular dependency risk
+- [13-02]: ParsePrincipal splits on last @ for user@host@REALM safety
+- [13-02]: ConventionMapper numeric UID uses same value for default GID
+- [13-02]: Backward compat via wrapper delegation, not type alias
+
+- [13-03]: ACL field nil=Unix mode, non-nil=ACL evaluation, empty=deny all
+- [13-03]: ACL evaluation takes precedence over Unix mode in calculatePermissions
+- [13-03]: Root (UID 0) bypasses ACL checks, matching Unix permission model
+- [13-03]: PostgreSQL stores ACL as JSONB with partial index for presence queries
+- [13-03]: Memory/BadgerDB get ACL support automatically via JSON serialization
+- [13-03]: IdentityMapping uses GORM model with principal uniqueIndex
+
+- [13-04]: FATTR4_ACL/ACLSUPPORT constants in attrs package alongside other FATTR4 constants
+- [13-04]: Pseudo-fs nodes encode 0 ACEs (no ACL on virtual namespace)
+- [13-04]: SetIdentityMapper uses package-level variable (same pattern as SetLeaseTime)
+- [13-04]: Group reverse resolution not implemented (only owner uses mapper; group falls back to numeric)
+- [13-04]: ACL validation at XDR decode time via acl.ValidateACL before reaching MetadataService
+- [13-04]: badXDRError (NFS4ERR_BADXDR) and invalidACLError (NFS4ERR_INVAL) as NFS4StatusError types
+
+### Plan 13-05: SMB Security Descriptor and Control Plane Integration - COMPLETE
+- SMB Security Descriptor encoding/decoding per MS-DTYP with self-relative format
+- SID types with encode/decode, FormatSID/ParseSIDString
+- PrincipalToSID/SIDToPrincipal bidirectional identity translation
+- Well-known SID mapping (EVERYONE@, OWNER@, GROUP@)
+- QUERY_INFO returns real Security Descriptor with Owner/Group/DACL from file ACL
+- SET_INFO parses Security Descriptor and applies ACL changes
+- Identity mapping REST API handlers (List, Create, Delete) with admin auth
+- API client methods for identity mapping CRUD
+- dittofsctl idmap add/list/remove CLI commands
+- ACL Prometheus metrics (5 metrics, nil-safe, sync.Once singleton)
+
+- [13-05]: DittoFS user SID format S-1-5-21-0-0-0-{UID/GID} for local identity mapping
+- [13-05]: NFSv4 ACE mask bits identical to Windows ACCESS_MASK (no translation needed per RFC 7530)
+- [13-05]: Well-known SID bidirectional mapping (EVERYONE@ <-> S-1-1-0, OWNER@ <-> S-1-3-0, GROUP@ <-> S-1-3-1)
+- [13-05]: Security Descriptor always self-relative format with SE_SELF_RELATIVE|SE_DACL_PRESENT control flags
+- [13-05]: Identity mapping API at /identity-mappings with RequireAdmin middleware
+- [13-05]: ACL metrics nil-safe singleton pattern matching GSSMetrics from Phase 12
+- [13-05]: additionalSecInfo bitmask controls SD section inclusion (OWNER/GROUP/DACL)
+
 ### Pending Todos
 
 None.
@@ -639,17 +736,17 @@ None.
 
 ## Next Steps
 
-**Phase 12 — COMPLETE (5/5 plans)**
-- Plan 12-01 COMPLETE: Foundation Types and Configuration
-- Plan 12-02 COMPLETE: GSS Context State Machine
-- Plan 12-03 COMPLETE: RPC Integration
-- Plan 12-04 COMPLETE: SECINFO Upgrade
-- Plan 12-05 COMPLETE: Keytab Hot-Reload, Metrics, Lifecycle Test
+**Phase 13 — COMPLETE (5/5 plans)**
+- Plan 13-01 COMPLETE: ACL Types and Evaluation Engine
+- Plan 13-02 COMPLETE: Identity Mapper Package
+- Plan 13-03 COMPLETE: ACL Metadata Integration
+- Plan 13-04 COMPLETE: NFSv4 ACL Wire Format and Handler Integration
+- Plan 13-05 COMPLETE: SMB Security Descriptor and Control Plane Integration
 
-**All 12 phases (42 plans) COMPLETE.**
+**Ready for Phase 14**
 
 ## Session Continuity
 
-Last session: 2026-02-15
-Stopped at: Completed 12-05-PLAN.md (Keytab Hot-Reload, Metrics, Lifecycle Test) - Phase 12 COMPLETE
-Resume file: None (all plans complete)
+Last session: 2026-02-16
+Stopped at: Completed 13-05-PLAN.md (SMB Security Descriptor and Control Plane Integration) - Phase 13 COMPLETE
+Resume file: Phase 14 planning

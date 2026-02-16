@@ -290,7 +290,7 @@ Plans:
 - [x] 12-05-PLAN.md — Keytab hot-reload, GSS Prometheus metrics, lifecycle integration test
 
 ### Phase 13: NFSv4 ACLs
-**Goal**: Extend ACL model for NFSv4 with Windows interoperability
+**Goal**: Implement full NFSv4 ACL model (RFC 7530 Section 6) with identity mapping and SMB interoperability
 **Depends on**: Phase 7
 **Requirements**: ACL-01, ACL-02, ACL-03, ACL-04, ACL-05, IDMAP-01, IDMAP-02, IDMAP-03, IDMAP-04
 **Success Criteria** (what must be TRUE):
@@ -299,13 +299,14 @@ Plans:
   3. New files/directories inherit ACLs from parent
   4. NFSv4 user@domain mapped to control plane users
   5. ACLs interoperable between NFSv4 and SMB
-**Plans**: TBD
+**Plans**: 5 plans in 3 waves
 
 Plans:
-- [ ] 13-01: NFSv4 ACL storage in metadata
-- [ ] 13-02: ACL evaluation and inheritance
-- [ ] 13-03: ID mapping (user@domain to control plane)
-- [ ] 13-04: ACL interoperability with SMB
+- [ ] 13-01-PLAN.md — ACL core package: types, evaluation engine, validation, mode sync, inheritance
+- [ ] 13-02-PLAN.md — Identity mapper package: interface, ConventionMapper, TableMapper, CachedMapper, StaticMapper migration
+- [ ] 13-03-PLAN.md — Metadata integration: FileAttr ACL field, permission check, inheritance, PostgreSQL migration, controlplane identity mapping CRUD
+- [ ] 13-04-PLAN.md — NFS ACL wire format: FATTR4_ACL/ACLSUPPORT encoding/decoding, SETATTR ACL support, identity mapper for owner encoding
+- [ ] 13-05-PLAN.md — SMB Security Descriptor encoding, identity mapping REST API + dittofsctl commands, ACL metrics
 
 ### Phase 14: Control Plane v2.0
 **Goal**: Add NFSv4 configuration support to control plane
@@ -608,7 +609,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 10. NFSv4 Locking | v2.0 | 3/3 | Complete | 2026-02-14 |
 | 11. Delegations | v2.0 | 4/4 | Complete | 2026-02-14 |
 | 12. Kerberos Authentication | v2.0 | 5/5 | Complete | 2026-02-15 |
-| 13. NFSv4 ACLs | v2.0 | 0/4 | Not started | - |
+| 13. NFSv4 ACLs | v2.0 | 0/5 | Planned | - |
 | 14. Control Plane v2.0 | v2.0 | 0/3 | Not started | - |
 | 15. v2.0 Testing | v2.0 | 0/5 | Not started | - |
 | 16. Session Infrastructure | v3.0 | 0/4 | Not started | - |
@@ -626,7 +627,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 28. v4.0 Testing | v4.0 | 0/5 | Not started | - |
 | 28.1 Portmapper Auto-Registration | v4.0 | 0/1 | Not started | - |
 
-**Total:** 44/106 plans complete
+**Total:** 44/107 plans complete
 
 ---
 *Roadmap created: 2026-02-04*
@@ -651,3 +652,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 *Phase 11 completed: 2026-02-14*
 *Phase 12 planned: 2026-02-15 (5 plans in 5 sequential waves -- foundation types, context machine, DATA integration, integrity/privacy, keytab/metrics)*
 *Phase 12 completed: 2026-02-15*
+*Phase 13 planned: 2026-02-16 (5 plans in 3 waves -- ACL core, identity mapper, metadata+NFS integration, SMB interop+CLI)*
