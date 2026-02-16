@@ -137,7 +137,7 @@ func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.File
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, lc.link_count
+			f.hidden, f.acl, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.id = $1 AND f.share_name = $2
@@ -186,8 +186,9 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			link_target = $11,
 			device_major = $12,
 			device_minor = $13,
-			hidden = $14
-		WHERE id = $15 AND share_name = $16
+			hidden = $14,
+			acl = $15
+		WHERE id = $16 AND share_name = $17
 	`
 
 	var deviceMajor, deviceMinor *int32
@@ -209,12 +210,22 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		linkTargetPtr = &file.LinkTarget
 	}
 
+	// Marshal ACL to JSON for JSONB storage
+	var aclJSON []byte
+	if file.ACL != nil {
+		var marshalErr error
+		aclJSON, marshalErr = json.Marshal(file.ACL)
+		if marshalErr != nil {
+			return mapPgError(marshalErr, "PutFile", "marshal ACL")
+		}
+	}
+
 	// Try UPDATE first (most common case for existing files)
 	result, err := tx.tx.Exec(ctx, updateQuery,
 		file.Type, file.Mode, file.UID, file.GID, file.Size,
 		file.Atime, file.Mtime, file.Ctime, file.CreationTime,
 		payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
-		file.Hidden,
+		file.Hidden, aclJSON,
 		file.ID, file.ShareName,
 	)
 	if err != nil {
@@ -227,9 +238,9 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			INSERT INTO files (
 				id, share_name, path, file_type, mode, uid, gid, size,
 				atime, mtime, ctime, creation_time, content_id, link_target,
-				device_major, device_minor, hidden
+				device_major, device_minor, hidden, acl
 			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
 			)
 		`
 
@@ -238,7 +249,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			file.Type, file.Mode, file.UID, file.GID, file.Size,
 			file.Atime, file.Mtime, file.Ctime, file.CreationTime,
 			payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
-			file.Hidden,
+			file.Hidden, aclJSON,
 		)
 		if err != nil {
 			return mapPgError(err, "PutFile", "")
@@ -1044,7 +1055,7 @@ func (tx *postgresTransaction) GetFileByPayloadID(ctx context.Context, payloadID
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
-			f.hidden, lc.link_count
+			f.hidden, f.acl, lc.link_count
 		FROM files f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.content_id_hash = md5($1)

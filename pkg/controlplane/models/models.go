@@ -13,5 +13,6 @@ func AllModels() []any {
 		&GroupSharePermission{},
 		&AdapterConfig{},
 		&Setting{},
+		&IdentityMapping{},
 	}
 }
