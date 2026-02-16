@@ -93,8 +93,8 @@ It depends on the metadata store:
 Configure your metadata store accordingly:
 
 ```bash
-./dittofsctl store metadata add --name persistent --type badger \
-  --config '{"path":"/var/lib/dittofs/metadata"}'
+./dfsctl store metadata add --name persistent --type badger \
+  --config '{"path":"/var/lib/dfs/metadata"}'
 ```
 
 ### Can I import an existing filesystem into DittoFS?
@@ -145,19 +145,19 @@ Yes! This is a core feature. Create stores and shares via CLI:
 
 ```bash
 # Create metadata stores
-./dittofsctl store metadata add --name fast-memory --type memory
-./dittofsctl store metadata add --name persistent-db --type badger \
-  --config '{"path":"/var/lib/dittofs/metadata"}'
+./dfsctl store metadata add --name fast-memory --type memory
+./dfsctl store metadata add --name persistent-db --type badger \
+  --config '{"path":"/var/lib/dfs/metadata"}'
 
 # Create payload stores
-./dittofsctl store payload add --name local-disk --type filesystem \
-  --config '{"path":"/var/lib/dittofs/content"}'
-./dittofsctl store payload add --name cloud-s3 --type s3 \
+./dfsctl store payload add --name local-disk --type filesystem \
+  --config '{"path":"/var/lib/dfs/content"}'
+./dfsctl store payload add --name cloud-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
 # Create shares referencing different stores
-./dittofsctl share create --name /temp --metadata fast-memory --payload local-disk
-./dittofsctl share create --name /archive --metadata persistent-db --payload cloud-s3
+./dfsctl share create --name /temp --metadata fast-memory --payload local-disk
+./dfsctl share create --name /archive --metadata persistent-db --payload cloud-s3
 ```
 
 See [CONFIGURATION.md](CONFIGURATION.md) for more examples.
@@ -168,18 +168,18 @@ Yes! Multiple shares can reference the same store instance for resource efficien
 
 ```bash
 # Create one shared metadata store
-./dittofsctl store metadata add --name shared-meta --type badger \
-  --config '{"path":"/var/lib/dittofs/shared-metadata"}'
+./dfsctl store metadata add --name shared-meta --type badger \
+  --config '{"path":"/var/lib/dfs/shared-metadata"}'
 
 # Create separate payload stores
-./dittofsctl store payload add --name s3-prod --type s3 \
+./dfsctl store payload add --name s3-prod --type s3 \
   --config '{"region":"us-east-1","bucket":"prod-bucket"}'
-./dittofsctl store payload add --name s3-archive --type s3 \
+./dfsctl store payload add --name s3-archive --type s3 \
   --config '{"region":"us-east-1","bucket":"archive-bucket"}'
 
 # Both shares use the same metadata store
-./dittofsctl share create --name /prod --metadata shared-meta --payload s3-prod
-./dittofsctl share create --name /archive --metadata shared-meta --payload s3-archive
+./dfsctl share create --name /prod --metadata shared-meta --payload s3-prod
+./dfsctl share create --name /archive --metadata shared-meta --payload s3-archive
 ```
 
 ### How do I enable debug logging?

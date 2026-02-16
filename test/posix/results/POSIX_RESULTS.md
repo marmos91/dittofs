@@ -35,13 +35,13 @@ See `test/posix/known_failures.txt` for the complete list of known limitations.
 nix develop
 
 # Start DittoFS with desired metadata store
-./dittofs start --config test/posix/configs/config-memory.yaml
-./dittofs start --config test/posix/configs/config-badger.yaml
-./dittofs start --config test/posix/configs/config-postgres.yaml
+./dfs start --config test/posix/configs/config-memory.yaml
+./dfs start --config test/posix/configs/config-badger.yaml
+./dfs start --config test/posix/configs/config-postgres.yaml
 
 # Additional content store configurations
-./dittofs start --config test/posix/configs/config-memory-content.yaml  # Memory content store
-./dittofs start --config test/posix/configs/config-cache-s3.yaml        # Cache + S3 (requires Localstack)
+./dfs start --config test/posix/configs/config-memory-content.yaml  # Memory content store
+./dfs start --config test/posix/configs/config-cache-s3.yaml        # Cache + S3 (requires Localstack)
 
 # Mount and run tests
 dittofs-mount /tmp/dittofs-test

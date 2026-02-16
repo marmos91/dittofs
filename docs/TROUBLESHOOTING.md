@@ -47,7 +47,7 @@ mount.nfs: Connection refused
 4. **Verify configuration:**
    ```bash
    # Check the config file
-   cat ~/.config/dittofs/config.yaml
+   cat ~/.config/dfs/config.yaml
 
    # Start with debug logging
    DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
@@ -285,9 +285,10 @@ ls: cannot access 'file.txt': Stale file handle
 
 2. **For persistent handles, use BadgerDB metadata:**
    ```bash
-   ./dittofsctl store metadata add --name persistent --type badger \
-     --config '{"path":"/var/lib/dittofs/metadata"}'
-   ./dittofsctl share create --name /export --metadata persistent --payload default
+   ./dfsctl store metadata add --name persistent --type badger \
+     --config '{"path":"/var/lib/dfs/metadata"}'
+   ./dfsctl store payload add --name default --type memory
+   ./dfsctl share create --name /export --metadata persistent --payload default
    ```
 
 3. **Clear client NFS cache (Linux):**
@@ -306,7 +307,7 @@ ls: cannot access 'file.txt': Stale file handle
 ./scripts/benchmark.sh --profile
 
 # Check server logs for slow operations
-tail -f ~/.config/dittofs/dittofs.log | grep -i "slow\|timeout"
+tail -f ~/.config/dfs/dfs.log | grep -i "slow\|timeout"
 ```
 
 **Solutions:**
@@ -322,13 +323,13 @@ tail -f ~/.config/dittofs/dittofs.log | grep -i "slow\|timeout"
 
 2. **Use memory stores for development:**
    ```bash
-   ./dittofsctl store metadata add --name fast --type memory
-   ./dittofsctl store payload add --name fast --type memory
+   ./dfsctl store metadata add --name fast --type memory
+   ./dfsctl store payload add --name fast --type memory
    ```
 
 3. **For S3, verify configuration:**
    ```bash
-   ./dittofsctl store payload add --name s3-store --type s3 \
+   ./dfsctl store payload add --name s3-store --type s3 \
      --config '{"region":"us-east-1","bucket":"my-bucket"}'
    ```
 
@@ -445,11 +446,11 @@ shares:
 **Solution:** Ensure stores exist before creating the share:
 ```bash
 # Create the stores first
-./dittofsctl store metadata add --name my-store --type memory
-./dittofsctl store payload add --name my-payload --type memory
+./dfsctl store metadata add --name my-store --type memory
+./dfsctl store payload add --name my-payload --type memory
 
 # Then create the share referencing them
-./dittofsctl share create --name /export --metadata my-store --payload my-payload
+./dfsctl share create --name /export --metadata my-store --payload my-payload
 ```
 
 ## Getting More Help

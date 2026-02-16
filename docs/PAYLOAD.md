@@ -355,7 +355,7 @@ Production-ready S3 implementation with:
 - Connection pooling
 
 ```bash
-./dittofsctl store payload add --name s3-production --type s3 \
+./dfsctl store payload add --name s3-production --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 ```
 
@@ -364,8 +364,8 @@ Production-ready S3 implementation with:
 Local filesystem storage:
 
 ```bash
-./dittofsctl store payload add --name local --type filesystem \
-  --config '{"path":"/var/lib/dittofs/blocks"}'
+./dfsctl store payload add --name local --type filesystem \
+  --config '{"path":"/var/lib/dfs/blocks"}'
 ```
 
 ### Memory Store
@@ -373,7 +373,7 @@ Local filesystem storage:
 In-memory for testing:
 
 ```bash
-./dittofsctl store payload add --name test --type memory
+./dfsctl store payload add --name test --type memory
 ```
 
 ## Crash Recovery
@@ -509,7 +509,7 @@ Server config file (cache settings):
 
 ```yaml
 cache:
-  path: /var/lib/dittofs/cache
+  path: /var/lib/dfs/cache
   size: "1Gi"
 ```
 
@@ -517,15 +517,15 @@ Then create stores and shares via CLI:
 
 ```bash
 # Create payload store
-./dittofsctl store payload add --name s3-store --type s3 \
-  --config '{"region":"us-east-1","bucket":"dittofs-production"}'
+./dfsctl store payload add --name s3-store --type s3 \
+  --config '{"region":"us-east-1","bucket":"dfs-production"}'
 
 # Create metadata store
-./dittofsctl store metadata add --name badger --type badger \
-  --config '{"path":"/var/lib/dittofs/metadata"}'
+./dfsctl store metadata add --name badger --type badger \
+  --config '{"path":"/var/lib/dfs/metadata"}'
 
 # Create share referencing stores
-./dittofsctl share create --name /export --metadata badger --payload s3-store
+./dfsctl share create --name /export --metadata badger --payload s3-store
 ```
 
 ## Performance Tuning

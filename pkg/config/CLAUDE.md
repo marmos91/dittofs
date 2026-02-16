@@ -8,22 +8,22 @@ Configuration parsing and validation - transforms YAML/env vars into typed confi
 - `stores.go` - Factory functions creating stores from config
 - `runtime.go` - Control plane runtime initialization from config
 - `defaults.go` - Default values for all configurations
-- `init.go` - `dittofs init` file generation
+- `init.go` - `dfs init` file generation
 
 ## Named Stores Pattern
 
-Stores, shares, and adapters are managed via `dittofsctl` (persisted in the control plane database):
+Stores, shares, and adapters are managed via `dfsctl` (persisted in the control plane database):
 
 ```bash
 # Create named stores
-./dittofsctl store metadata add --name fast-meta --type memory
-./dittofsctl store metadata add --name persistent-meta --type badger \
+./dfsctl store metadata add --name fast-meta --type memory
+./dfsctl store metadata add --name persistent-meta --type badger \
   --config '{"path":"/data"}'
-./dittofsctl store payload add --name s3-payload --type s3 \
+./dfsctl store payload add --name s3-payload --type s3 \
   --config '{"bucket":"my-bucket"}'
 
 # Create share referencing stores by name
-./dittofsctl share create --name /archive --metadata persistent-meta --payload s3-payload
+./dfsctl share create --name /archive --metadata persistent-meta --payload s3-payload
 ```
 
 - Stores created once, shared across shares
@@ -44,13 +44,13 @@ DITTOFS_SERVER_SHUTDOWN_TIMEOUT=60s
 When using the `--config` JSON flag, only the fields matching the store type are used:
 ```bash
 # The type determines which config fields apply
-./dittofsctl store payload add --name mystore --type s3 \
+./dfsctl store payload add --name mystore --type s3 \
   --config '{"bucket":"my-bucket","region":"us-east-1"}'  # S3-specific fields
 ```
 
 ## Common Mistakes
 
-1. **Store name typo in CLI** - `dittofsctl share create` will fail if the referenced store doesn't exist
+1. **Store name typo in CLI** - `dfsctl share create` will fail if the referenced store doesn't exist
 2. **Forgetting defaults** - `defaults.go` fills missing values before validation
 3. **Environment case** - must be uppercase with underscores
 4. **NTHash in config** - chmod 600, highly sensitive (pass-the-hash risk)

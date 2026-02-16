@@ -222,21 +222,21 @@ The Control Plane is the central management component enabling flexible, multi-s
 
 ### Configuration Example
 
-Stores, shares, and adapters are managed at runtime via `dittofsctl` (persisted in the control plane database):
+Stores, shares, and adapters are managed at runtime via `dfsctl` (persisted in the control plane database):
 
 ```bash
 # Create named stores (created once, shared across shares)
-./dittofsctl store metadata add --name fast-meta --type memory
-./dittofsctl store metadata add --name persistent-meta --type badger \
+./dfsctl store metadata add --name fast-meta --type memory
+./dfsctl store metadata add --name persistent-meta --type badger \
   --config '{"path":"/data/metadata"}'
 
-./dittofsctl store payload add --name fast-payload --type memory
-./dittofsctl store payload add --name s3-payload --type s3 \
+./dfsctl store payload add --name fast-payload --type memory
+./dfsctl store payload add --name s3-payload --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
 # Create shares that reference stores by name
-./dittofsctl share create --name /temp --metadata fast-meta --payload fast-payload
-./dittofsctl share create --name /archive --metadata persistent-meta --payload s3-payload
+./dfsctl share create --name /temp --metadata fast-meta --payload fast-payload
+./dfsctl share create --name /archive --metadata persistent-meta --payload s3-payload
 ```
 
 ### Benefits
@@ -328,11 +328,11 @@ No custom code required - configure via CLI:
 
 ```bash
 # Create stores
-./dittofsctl store metadata add --name default-meta --type memory  # or badger, postgres
-./dittofsctl store payload add --name default-payload --type memory  # or filesystem, s3
+./dfsctl store metadata add --name default-meta --type memory  # or badger, postgres
+./dfsctl store payload add --name default-payload --type memory  # or filesystem, s3
 
 # Create share referencing stores
-./dittofsctl share create --name /export --metadata default-meta --payload default-payload
+./dfsctl share create --name /export --metadata default-meta --payload default-payload
 ```
 
 Or programmatically:
@@ -589,7 +589,7 @@ type Persister interface {
 }
 
 // MmapPersister - memory-mapped file for high performance
-persister, err := wal.NewMmapPersister("/var/lib/dittofs/wal")
+persister, err := wal.NewMmapPersister("/var/lib/dfs/wal")
 if err != nil {
     return err
 }
@@ -663,20 +663,20 @@ The PostgreSQL metadata store enables horizontal scaling for high-availability a
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: dittofs
+  name: dfs
 spec:
   replicas: 3  # Multiple instances for HA
   selector:
     matchLabels:
-      app: dittofs
+      app: dfs
   template:
     metadata:
       labels:
-        app: dittofs
+        app: dfs
     spec:
       containers:
-      - name: dittofs
-        image: dittofs:latest
+      - name: dfs
+        image: dfs:latest
         ports:
         - containerPort: 12049
           name: nfs
@@ -699,10 +699,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: dittofs-nfs
+  name: dfs-nfs
 spec:
   selector:
-    app: dittofs
+    app: dfs
   ports:
   - port: 2049
     targetPort: 12049

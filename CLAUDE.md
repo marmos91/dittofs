@@ -174,7 +174,7 @@ go mod download
 
 **Configuration File**: See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for complete configuration guide.
 
-**Default Location**: `~/.config/dittofs/config.yaml` (or `$XDG_CONFIG_HOME/dittofs/config.yaml`)
+**Default Location**: `~/.config/dfs/config.yaml` (or `$XDG_CONFIG_HOME/dfs/config.yaml`)
 
 ### Testing
 
@@ -676,21 +676,21 @@ The control plane has two main components:
 
 ### Configuration Example
 
-Stores, shares, and adapters are managed at runtime via `dittofsctl` (persisted in the control plane database):
+Stores, shares, and adapters are managed at runtime via `dfsctl` (persisted in the control plane database):
 
 ```bash
 # Create named stores (created once, shared across shares)
-./dittofsctl store metadata add --name fast-meta --type memory
-./dittofsctl store metadata add --name persistent-meta --type badger \
+./dfsctl store metadata add --name fast-meta --type memory
+./dfsctl store metadata add --name persistent-meta --type badger \
   --config '{"path":"/data/metadata"}'
 
-./dittofsctl store payload add --name fast-payload --type memory
-./dittofsctl store payload add --name s3-payload --type s3 \
+./dfsctl store payload add --name fast-payload --type memory
+./dfsctl store payload add --name s3-payload --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
 # Create shares that reference stores by name
-./dittofsctl share create --name /temp --metadata fast-meta --payload fast-payload
-./dittofsctl share create --name /archive --metadata persistent-meta --payload s3-payload
+./dfsctl share create --name /temp --metadata fast-meta --payload fast-payload
+./dfsctl share create --name /archive --metadata persistent-meta --payload s3-payload
 ```
 
 ### Benefits

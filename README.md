@@ -27,7 +27,7 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 
 ```mermaid
 graph TD
-    CTL[dittofsctl] -- manages --> CP
+    CTL[dfsctl] -- manages --> CP
     NFS[NFS Client] --> NFSA
     SMB[SMB Client] --> SMBA
 
@@ -126,7 +126,7 @@ git clone https://github.com/marmos91/dittofs.git
 cd dittofs
 go build -o dfs cmd/dfs/main.go
 
-# Initialize configuration (creates ~/.config/dittofs/config.yaml)
+# Initialize configuration (creates ~/.config/dfs/config.yaml)
 ./dfs init
 
 # Start server (note the admin password printed on first start)
@@ -194,7 +194,7 @@ DittoFS provides two CLI binaries for complete management:
 
 # Server lifecycle
 ./dfs start                    # Start in foreground
-./dfs start --pid-file /var/run/dittofs.pid  # Start with PID file
+./dfs start --pid-file /var/run/dfs.pid  # Start with PID file
 ./dfs stop                     # Graceful shutdown
 ./dfs stop --force             # Force kill
 ./dfs status                   # Check server status
@@ -592,8 +592,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for complete roadmap.
 
 DittoFS uses a **two-layer configuration** approach:
 
-1. **Config file** (`~/.config/dittofs/config.yaml`): Server infrastructure settings (logging, telemetry, cache, database, API)
-2. **CLI/API** (`dittofsctl`): Runtime resources (stores, shares, adapters) persisted in the control plane database
+1. **Config file** (`~/.config/dfs/config.yaml`): Server infrastructure settings (logging, telemetry, cache, database, API)
+2. **CLI/API** (`dfsctl`): Runtime resources (stores, shares, adapters) persisted in the control plane database
 
 ### Server Config File
 
@@ -601,7 +601,7 @@ DittoFS uses a **two-layer configuration** approach:
 database:
   type: sqlite  # or "postgres" for HA
   sqlite:
-    path: /var/lib/dittofs/controlplane.db
+    path: /var/lib/dfs/controlplane.db
 
 controlplane:
   port: 8080
@@ -609,7 +609,7 @@ controlplane:
     secret: "your-secret-key-at-least-32-characters"
 
 cache:
-  path: /var/lib/dittofs/cache
+  path: /var/lib/dfs/cache
   size: "1Gi"
 ```
 

@@ -9,7 +9,7 @@ This directory contains a complete monitoring setup for DittoFS using Prometheus
 Make sure DittoFS is running with the metrics endpoint on port 9090:
 
 ```bash
-./dittofs start  # Metrics exposed on :9090/metrics by default
+./dfs start  # Metrics exposed on :9090/metrics by default
 ```
 
 ### 2. Start Prometheus and Grafana
@@ -194,7 +194,7 @@ Or via environment variables:
 DITTOFS_TELEMETRY_ENABLED=true \
 DITTOFS_TELEMETRY_ENDPOINT=localhost:4317 \
 DITTOFS_TELEMETRY_INSECURE=true \
-./dittofs start
+./dfs start
 ```
 
 ### Running Jaeger Locally

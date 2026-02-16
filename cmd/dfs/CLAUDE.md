@@ -30,7 +30,7 @@ dfs
 ## Global Flags
 
 ```
---config, -c    Config file path (default: ~/.config/dittofs/config.yaml)
+--config, -c    Config file path (default: ~/.config/dfs/config.yaml)
 --verbose, -v   Verbose output
 ```
 
@@ -52,7 +52,7 @@ Supports:
 
 ## Configuration
 
-Default location: `~/.config/dittofs/config.yaml`
+Default location: `~/.config/dfs/config.yaml`
 
 Can override with:
 - `--config` flag
