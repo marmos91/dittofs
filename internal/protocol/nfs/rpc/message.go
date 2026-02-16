@@ -222,3 +222,14 @@ func (c *RPCCallMessage) GetAuthFlavor() uint32 {
 func (c *RPCCallMessage) GetAuthBody() []byte {
 	return c.Cred.Body
 }
+
+// GetVerifierBody returns the verifier body data from the RPC call.
+//
+// For RPCSEC_GSS DATA requests, this contains the MIC of the RPC header
+// computed by the client. For AUTH_UNIX/AUTH_NULL, this is typically empty.
+//
+// Returns:
+//   - []byte: Raw verifier body (may be empty)
+func (c *RPCCallMessage) GetVerifierBody() []byte {
+	return c.Verf.Body
+}

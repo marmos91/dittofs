@@ -439,6 +439,125 @@ func MakeProgMismatchReply(xid uint32, low uint32, high uint32) ([]byte, error) 
 	return result, nil
 }
 
+// MakeGSSSuccessReply constructs an RPC success reply with a GSS verifier.
+//
+// This is identical to MakeSuccessReply except it uses the provided verifier
+// instead of AUTH_NULL. This is required for RPCSEC_GSS DATA replies, where
+// the verifier contains the MIC of the sequence number.
+//
+// Parameters:
+//   - xid: Transaction ID from the original RPC call (must match)
+//   - data: XDR-encoded procedure results (may be empty)
+//   - verifier: The reply verifier (e.g., GSS MIC of seq_num)
+//
+// Returns:
+//   - []byte: Complete RPC reply ready to send on the wire
+//   - error: Encoding error if reply marshaling fails
+func MakeGSSSuccessReply(xid uint32, data []byte, verifier OpaqueAuth) ([]byte, error) {
+	// Construct the RPC reply header with GSS verifier
+	reply := RPCReplyMessage{
+		XID:        xid,
+		MsgType:    RPCReply,
+		ReplyState: RPCMsgAccepted,
+		Verf:       verifier,
+		AcceptStat: RPCSuccess,
+	}
+
+	// Pre-allocate buffer for reply header + procedure data
+	replyHeaderSize := 28 + len(verifier.Body) // Larger due to GSS verifier
+	estimatedSize := replyHeaderSize + len(data)
+	buf := bytes.NewBuffer(make([]byte, 0, estimatedSize))
+
+	// Marshal the reply header using XDR encoding
+	_, err := xdr.Marshal(buf, &reply)
+	if err != nil {
+		return nil, fmt.Errorf("marshal GSS reply: %w", err)
+	}
+
+	// Append the procedure-specific result data
+	buf.Write(data)
+
+	// Prepend RPC fragment header (4 bytes)
+	replyData := buf.Bytes()
+	fragmentHeader := make([]byte, 4)
+	binary.BigEndian.PutUint32(fragmentHeader, 0x80000000|uint32(len(replyData)))
+
+	result := make([]byte, 0, 4+len(replyData))
+	result = append(result, fragmentHeader...)
+	result = append(result, replyData...)
+	return result, nil
+}
+
+// MakeAuthErrorReply creates an RPC MSG_DENIED reply with AUTH_ERROR.
+//
+// Per RFC 5531, MSG_DENIED replies have ReplyState=1 (MSG_DENIED),
+// followed by a reject_stat. For authentication failures, reject_stat=1
+// (AUTH_ERROR), followed by the auth_stat code.
+//
+// RPCSEC_GSS auth stat codes (RFC 2203 Section 5.3.3.3):
+//   - RPCSEC_GSS_CREDPROBLEM (13): Credential problem
+//   - RPCSEC_GSS_CTXPROBLEM (14): Context problem
+//
+// Parameters:
+//   - xid: Transaction ID from the original RPC call
+//   - authStat: The auth_stat code (e.g., 13 for CREDPROBLEM, 14 for CTXPROBLEM)
+//
+// Returns:
+//   - []byte: Complete RPC reply ready to send on the wire
+//   - error: Encoding error if reply marshaling fails
+func MakeAuthErrorReply(xid uint32, authStat uint32) ([]byte, error) {
+	// Build MSG_DENIED reply manually using XDR encoding.
+	// Wire format:
+	//   XID:         uint32
+	//   MsgType:     uint32 (1 = REPLY)
+	//   ReplyState:  uint32 (1 = MSG_DENIED)
+	//   reject_stat: uint32 (1 = AUTH_ERROR)
+	//   auth_stat:   uint32
+	buf := &bytes.Buffer{}
+
+	// XID
+	if err := binary.Write(buf, binary.BigEndian, xid); err != nil {
+		return nil, fmt.Errorf("write XID: %w", err)
+	}
+	// MsgType = REPLY
+	if err := binary.Write(buf, binary.BigEndian, uint32(RPCReply)); err != nil {
+		return nil, fmt.Errorf("write MsgType: %w", err)
+	}
+	// ReplyState = MSG_DENIED
+	if err := binary.Write(buf, binary.BigEndian, uint32(RPCMsgDenied)); err != nil {
+		return nil, fmt.Errorf("write ReplyState: %w", err)
+	}
+	// reject_stat = AUTH_ERROR (1)
+	if err := binary.Write(buf, binary.BigEndian, uint32(1)); err != nil {
+		return nil, fmt.Errorf("write reject_stat: %w", err)
+	}
+	// auth_stat
+	if err := binary.Write(buf, binary.BigEndian, authStat); err != nil {
+		return nil, fmt.Errorf("write auth_stat: %w", err)
+	}
+
+	// Prepend RPC fragment header
+	replyData := buf.Bytes()
+	fragmentHeader := make([]byte, 4)
+	binary.BigEndian.PutUint32(fragmentHeader, 0x80000000|uint32(len(replyData)))
+
+	result := make([]byte, 0, 4+len(replyData))
+	result = append(result, fragmentHeader...)
+	result = append(result, replyData...)
+	return result, nil
+}
+
+// RPCSEC_GSS Auth Stat codes per RFC 2203 Section 5.3.3.3.
+const (
+	// RPCSECGSSCredProblem indicates a problem with the GSS credential.
+	// The client should re-establish the security context.
+	RPCSECGSSCredProblem uint32 = 13
+
+	// RPCSECGSSCtxProblem indicates a problem with the GSS context.
+	// The client should destroy and re-create the security context.
+	RPCSECGSSCtxProblem uint32 = 14
+)
+
 // XdrPadding calculates the number of padding bytes needed for XDR alignment.
 //
 // XDR (External Data Representation) requires all data to be aligned on

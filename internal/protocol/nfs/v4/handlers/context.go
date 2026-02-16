@@ -5,6 +5,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
 )
 
@@ -29,6 +30,27 @@ func ExtractV4HandlerContext(
 		Context:    ctx,
 		ClientAddr: clientAddr,
 		AuthFlavor: call.GetAuthFlavor(),
+	}
+
+	// Check for GSS identity from context.Value (set by handleRPCCall GSS interception)
+	if compCtx.AuthFlavor == rpc.AuthRPCSECGSS {
+		if gssIdentity := gss.IdentityFromContext(ctx); gssIdentity != nil {
+			compCtx.UID = gssIdentity.UID
+			compCtx.GID = gssIdentity.GID
+			compCtx.GIDs = gssIdentity.GIDs
+
+			logger.Debug("NFSv4 using GSS identity",
+				"client", clientAddr,
+				"uid", gssIdentity.UID,
+				"gid", gssIdentity.GID,
+				"ngids", len(gssIdentity.GIDs))
+
+			return compCtx
+		}
+		// GSS auth flavor but no identity in context
+		logger.Warn("NFSv4 RPCSEC_GSS auth flavor but no GSS identity in context",
+			"client", clientAddr)
+		return compCtx
 	}
 
 	// Only attempt to parse Unix credentials if AUTH_UNIX is specified

@@ -34,6 +34,11 @@ type Handler struct {
 	// identity, open state, and lease tracking.
 	StateManager *state.StateManager
 
+	// KerberosEnabled indicates whether RPCSEC_GSS (Kerberos) authentication
+	// is available. When true, SECINFO responses include krb5/krb5i/krb5p
+	// pseudo-flavors in addition to AUTH_SYS and AUTH_NONE.
+	KerberosEnabled bool
+
 	// opDispatchTable maps operation numbers to handler functions.
 	opDispatchTable map[uint32]OpHandler
 }

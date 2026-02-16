@@ -34,6 +34,9 @@ func TestGracePeriodRecovery(t *testing.T) {
 		t.Skip("Skipping grace period recovery test in short mode")
 	}
 
+	// Skip on platforms where NFS locking (NLM) doesn't work with userspace servers
+	framework.SkipIfNFSLockingUnsupported(t)
+
 	// This test requires multiple server restarts and is time-sensitive
 	t.Log("Testing grace period recovery for NFS locks")
 
@@ -164,6 +167,9 @@ func TestGracePeriodUnclaimedLocks(t *testing.T) {
 		t.Skip("Skipping grace period unclaimed locks test in short mode")
 	}
 
+	// Skip on platforms where NFS locking (NLM) doesn't work with userspace servers
+	framework.SkipIfNFSLockingUnsupported(t)
+
 	t.Log("Testing auto-deletion of unclaimed locks after grace period")
 
 	// Start server
@@ -252,6 +258,9 @@ func TestCrossProtocolReclaim(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping cross-protocol reclaim test in short mode")
 	}
+
+	// Skip on platforms where NFS locking (NLM) doesn't work with userspace servers
+	framework.SkipIfNFSLockingUnsupported(t)
 
 	t.Log("Testing cross-protocol lock reclaim after server restart")
 
@@ -425,6 +434,9 @@ func TestGracePeriodNewLockBlocked(t *testing.T) {
 		t.Skip("Skipping grace period new lock blocked test in short mode")
 	}
 
+	// Skip on platforms where NFS locking (NLM) doesn't work with userspace servers
+	framework.SkipIfNFSLockingUnsupported(t)
+
 	t.Log("Testing that new locks are blocked during grace period")
 
 	// This test verifies the conceptual behavior:
@@ -495,6 +507,9 @@ func TestGracePeriodTiming(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping grace period timing test in short mode")
 	}
+
+	// Skip on platforms where NFS locking (NLM) doesn't work with userspace servers
+	framework.SkipIfNFSLockingUnsupported(t)
 
 	t.Log("Testing grace period timing behavior")
 
@@ -568,6 +583,9 @@ func TestGracePeriodEarlyExit(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping grace period early exit test in short mode")
 	}
+
+	// Skip on platforms where NFS locking (NLM) doesn't work with userspace servers
+	framework.SkipIfNFSLockingUnsupported(t)
 
 	t.Log("Testing grace period early exit when all locks reclaimed")
 
@@ -732,10 +750,11 @@ func TestGracePeriodWithSMBLeases(t *testing.T) {
 	// 2. SMB client reconnects and reclaims lease
 	// 3. After grace period (or early exit), normal operation resumes
 
-	// Verify file is accessible
+	// Verify file is accessible and contains data from the write
 	readContent := framework.ReadFile(t, smbPath)
-	assert.Contains(t, string(readContent), "Test content",
-		"File should be readable after lease operations")
+	assert.Contains(t, string(readContent), " - modified",
+		"File should contain the written data after lease operations")
+	assert.NotEmpty(t, readContent, "File should not be empty after lease operations")
 
 	t.Log("TestGracePeriodWithSMBLeases - PASSED")
 }

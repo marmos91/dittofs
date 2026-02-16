@@ -18,6 +18,7 @@ import (
 	nfs "github.com/marmos91/dittofs/internal/protocol/nfs"
 	mount_handlers "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc/gss"
 	nfs_types "github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	v4handlers "github.com/marmos91/dittofs/internal/protocol/nfs/v4/handlers"
 	v4types "github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
@@ -335,6 +336,118 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 	default:
 	}
 
+	// ====================================================================
+	// RPCSEC_GSS Interception (before program dispatch)
+	// ====================================================================
+	//
+	// Auth flavor 6 (RPCSEC_GSS) must be intercepted here, before routing
+	// to NFS/Mount/NLM/NSM handlers. GSS control messages (INIT/DESTROY)
+	// are handled entirely here and never reach NFS handlers.
+	// GSS DATA messages have their procedureData replaced with the unwrapped
+	// arguments and GSS identity injected into the context.
+	if call.GetAuthFlavor() == rpc.AuthRPCSECGSS && c.server.gssProcessor != nil {
+		gssResult := c.server.gssProcessor.Process(call.GetAuthBody(), call.GetVerifierBody(), procedureData)
+
+		// Handle GSS processing errors (CREDPROBLEM / CTXPROBLEM)
+		if gssResult.Err != nil {
+			// Determine the auth_stat from the structured result field
+			authStat := gssResult.AuthStat
+			if authStat == 0 {
+				authStat = rpc.RPCSECGSSCredProblem // default
+			}
+			if gssResult.GSSReply != nil {
+				// INIT failure with encoded error reply - send as control response
+				reply, makeErr := rpc.MakeGSSSuccessReply(call.XID, gssResult.GSSReply,
+					rpc.OpaqueAuth{Flavor: rpc.AuthNull, Body: []byte{}})
+				if makeErr != nil {
+					return fmt.Errorf("make GSS error reply: %w", makeErr)
+				}
+				return c.writeReply(call.XID, reply)
+			}
+
+			logger.Debug("GSS processing error, sending AUTH_ERROR",
+				"xid", fmt.Sprintf("0x%x", call.XID),
+				"auth_stat", authStat,
+				"error", gssResult.Err)
+
+			authErrReply, makeErr := rpc.MakeAuthErrorReply(call.XID, authStat)
+			if makeErr != nil {
+				return fmt.Errorf("make auth error reply: %w", makeErr)
+			}
+			return c.writeReply(call.XID, authErrReply)
+		}
+
+		// Silent discard: per RFC 2203, drop the request without reply
+		if gssResult.SilentDiscard {
+			logger.Debug("GSS silent discard (sequence violation)",
+				"xid", fmt.Sprintf("0x%x", call.XID),
+				"client", clientAddr)
+			return nil
+		}
+
+		// Control messages (INIT/DESTROY): send reply directly, no NFS dispatch
+		if gssResult.IsControl {
+			// Per RFC 2203 Section 5.3.3.2: When the server returns GSS_S_COMPLETE,
+			// the reply verifier contains a MIC of the sequence window. This proves
+			// to the client that the server successfully established the context.
+			//
+			// The client code (authgss_refresh in krb5/libtirpc) verifies this MIC
+			// after receiving GSS_S_COMPLETE:
+			//   seq = htonl(gr.gr_win);
+			//   gss_verify_mic(&min_stat, gd->ctx, &bufin, &bufout, &qop_state);
+			var verifier rpc.OpaqueAuth
+			if gssResult.SessionKey.KeyValue != nil {
+				// Compute MIC with FLAG_ACCEPTOR_SUBKEY if we included subkey in AP-REP
+				micBytes, micErr := gss.ComputeInitVerifier(
+					gssResult.SessionKey,
+					gss.DefaultSeqWindowSize,
+					gssResult.HasAcceptorSubkey,
+				)
+				if micErr != nil {
+					logger.Debug("Failed to compute INIT verifier MIC", "error", micErr)
+					verifier = rpc.OpaqueAuth{Flavor: rpc.AuthNull, Body: []byte{}}
+				} else {
+					verifier = gss.WrapReplyVerifier(micBytes)
+					logger.Debug("GSS INIT verifier MIC computed",
+						"mic_len", len(micBytes),
+						"mic_hex", fmt.Sprintf("%x", micBytes),
+						"has_acceptor_subkey", gssResult.HasAcceptorSubkey,
+					)
+				}
+			} else {
+				// Fallback to AUTH_NULL if no session key (shouldn't happen for successful INIT)
+				verifier = rpc.OpaqueAuth{Flavor: rpc.AuthNull, Body: []byte{}}
+			}
+			reply, makeErr := rpc.MakeGSSSuccessReply(call.XID, gssResult.GSSReply, verifier)
+			if makeErr != nil {
+				return fmt.Errorf("make GSS control reply: %w", makeErr)
+			}
+			logger.Debug("GSS INIT sending RPC reply",
+				"xid", fmt.Sprintf("0x%x", call.XID),
+				"reply_len", len(reply),
+				"gss_reply_len", len(gssResult.GSSReply),
+				"verifier_flavor", verifier.Flavor,
+				"verifier_len", len(verifier.Body),
+			)
+			return c.writeReply(call.XID, reply)
+		}
+
+		// DATA: replace procedureData with unwrapped arguments
+		procedureData = gssResult.ProcessedData
+
+		// Inject GSS identity into context for NFS handlers
+		if gssResult.Identity != nil {
+			ctx = gss.ContextWithIdentity(ctx, gssResult.Identity)
+		}
+
+		// Store session info for reply verifier computation and body wrapping
+		ctx = gss.ContextWithSessionInfo(ctx, &gss.GSSSessionInfo{
+			SessionKey: gssResult.SessionKey,
+			SeqNum:     gssResult.SeqNum,
+			Service:    gssResult.Service,
+		})
+	}
+
 	switch call.Program {
 	case rpc.ProgramNFS:
 		// Route based on NFS version: v3 and v4 are both supported
@@ -405,6 +518,11 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 
 		// Return original error for logging/metrics but reply was sent
 		return fmt.Errorf("handle program %d: %w", call.Program, err)
+	}
+
+	// For GSS-authenticated DATA requests, compute GSS reply verifier
+	if sessionInfo := gss.SessionInfoFromContext(ctx); sessionInfo != nil {
+		return c.sendGSSReply(call.XID, replyData, sessionInfo)
 	}
 
 	return c.sendReply(call.XID, replyData)
@@ -614,9 +732,10 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 
 	// Extract handler context for mount requests
 	handlerCtx := &mount_handlers.MountHandlerContext{
-		Context:    ctx,
-		ClientAddr: clientAddr,
-		AuthFlavor: call.GetAuthFlavor(),
+		Context:         ctx,
+		ClientAddr:      clientAddr,
+		AuthFlavor:      call.GetAuthFlavor(),
+		KerberosEnabled: c.server.gssProcessor != nil,
 	}
 
 	// Parse Unix credentials if AUTH_UNIX
@@ -946,6 +1065,67 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 		}
 		return nil, c.writeReply(call.XID, errorReply)
 	}
+}
+
+// sendGSSReply sends an RPC reply with a GSS verifier for RPCSEC_GSS DATA requests.
+//
+// Per RFC 2203 Section 5.3.3.2, the reply verifier for DATA requests contains
+// the MIC of the XDR-encoded sequence number. This proves to the client that
+// the server holds the session key.
+//
+// For krb5i (integrity): the reply body is wrapped in rpc_gss_integ_data with a MIC.
+// For krb5p (privacy): the reply body is wrapped in rpc_gss_priv_data with encryption.
+// For krb5 (auth-only): the reply body is sent as-is.
+//
+// Parameters:
+//   - xid: Transaction ID for the reply
+//   - data: XDR-encoded procedure results
+//   - sessionInfo: GSS session info with session key, sequence number, and service level
+//
+// Returns an error if verifier computation or reply construction fails.
+func (c *NFSConnection) sendGSSReply(xid uint32, data []byte, sessionInfo *gss.GSSSessionInfo) error {
+	replyData := data
+
+	// Wrap reply body based on service level.
+	// If wrapping fails, return error rather than sending unwrapped data,
+	// which would be rejected by the client and could desync the session.
+	switch sessionInfo.Service {
+	case gss.RPCGSSSvcIntegrity:
+		// krb5i: wrap reply body with MIC
+		wrapped, err := gss.WrapIntegrity(sessionInfo.SessionKey, sessionInfo.SeqNum, data)
+		if err != nil {
+			return fmt.Errorf("wrap GSS integrity reply: %w", err)
+		}
+		replyData = wrapped
+
+	case gss.RPCGSSSvcPrivacy:
+		// krb5p: wrap reply body with encryption
+		wrapped, err := gss.WrapPrivacy(sessionInfo.SessionKey, sessionInfo.SeqNum, data)
+		if err != nil {
+			return fmt.Errorf("wrap GSS privacy reply: %w", err)
+		}
+		replyData = wrapped
+
+	default:
+		// krb5 (svc_none): reply body sent as-is
+	}
+
+	// Compute the reply verifier: MIC of the sequence number
+	mic, err := gss.ComputeReplyVerifier(sessionInfo.SessionKey, sessionInfo.SeqNum)
+	if err != nil {
+		return fmt.Errorf("compute GSS reply verifier: %w", err)
+	}
+
+	// Wrap MIC into OpaqueAuth verifier
+	verifier := gss.WrapReplyVerifier(mic)
+
+	// Build reply with GSS verifier
+	reply, err := rpc.MakeGSSSuccessReply(xid, replyData, verifier)
+	if err != nil {
+		return fmt.Errorf("make GSS reply: %w", err)
+	}
+
+	return c.writeReply(xid, reply)
 }
 
 // sendReply sends an RPC reply to the client.

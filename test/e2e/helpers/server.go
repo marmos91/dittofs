@@ -20,13 +20,14 @@ import (
 // ServerProcess manages a dittofs server subprocess for E2E testing.
 // It provides methods to start the server, check health, send signals, and stop gracefully.
 type ServerProcess struct {
-	cmd        *exec.Cmd
-	pidFile    string
-	apiPort    int
-	logFile    string
-	stateDir   string
-	configFile string
-	process    *os.Process
+	cmd           *exec.Cmd
+	pidFile       string
+	apiPort       int
+	logFile       string
+	stateDir      string
+	configFile    string
+	process       *os.Process
+	logFileHandle *os.File
 }
 
 // HealthResponse represents the /health endpoint response structure.
@@ -127,13 +128,14 @@ func StartServerProcess(t *testing.T, configPath string) *ServerProcess {
 	}
 
 	sp := &ServerProcess{
-		cmd:        cmd,
-		pidFile:    pidFile,
-		apiPort:    apiPort,
-		logFile:    logFile,
-		stateDir:   stateDir,
-		configFile: configWithPort,
-		process:    cmd.Process,
+		cmd:           cmd,
+		pidFile:       pidFile,
+		apiPort:       apiPort,
+		logFile:       logFile,
+		stateDir:      stateDir,
+		configFile:    configWithPort,
+		process:       cmd.Process,
+		logFileHandle: logFileHandle,
 	}
 
 	// Wait for server to be ready
@@ -264,11 +266,16 @@ func (sp *ServerProcess) ForceKill() {
 	select {
 	case <-done:
 		// Process exited gracefully
-		return
 	case <-time.After(2 * time.Second):
 		// Graceful shutdown timed out, force kill
 		_ = sp.process.Kill()
 		<-done
+	}
+
+	// Close log file handle to avoid descriptor leak
+	if sp.logFileHandle != nil {
+		_ = sp.logFileHandle.Close()
+		sp.logFileHandle = nil
 	}
 }
 
@@ -383,6 +390,106 @@ func findProjectRoot(t *testing.T) string {
 		}
 		dir = parent
 	}
+}
+
+// StartServerProcessWithConfig starts a dittofs server using a pre-created config file.
+// Unlike StartServerProcess, this does NOT modify the config - it uses it as-is.
+// The caller is responsible for setting appropriate ports, paths, etc. in the config.
+// The caller should set DITTOFS_ADMIN_INITIAL_PASSWORD via t.Setenv before calling.
+func StartServerProcessWithConfig(t *testing.T, configPath string) *ServerProcess {
+	t.Helper()
+
+	stateDir := t.TempDir()
+
+	pidFile := filepath.Join(stateDir, "dittofs.pid")
+	logFile := filepath.Join(stateDir, "dittofs.log")
+
+	// Find the dittofs binary
+	dittofsPath := findDittofsBinary(t)
+
+	// Start server in foreground mode
+	cmd := exec.Command(dittofsPath, "start", "--foreground",
+		"--config", configPath,
+		"--pid-file", pidFile,
+		"--log-file", logFile)
+
+	// Build environment for subprocess, keeping existing env vars
+	// (caller should have set DITTOFS_ADMIN_INITIAL_PASSWORD via t.Setenv)
+	cmd.Env = os.Environ()
+
+	// Redirect stdout/stderr to log file
+	logFileHandle, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		t.Fatalf("Failed to create log file: %v", err)
+	}
+
+	cmd.Stdout = logFileHandle
+	cmd.Stderr = logFileHandle
+
+	// Start the process
+	if err := cmd.Start(); err != nil {
+		_ = logFileHandle.Close()
+		t.Fatalf("Failed to start dittofs server: %v", err)
+	}
+
+	// Extract API port from config by parsing it
+	apiPort := extractAPIPortFromConfig(t, configPath)
+
+	sp := &ServerProcess{
+		cmd:           cmd,
+		pidFile:       pidFile,
+		apiPort:       apiPort,
+		logFile:       logFile,
+		stateDir:      stateDir,
+		configFile:    configPath,
+		process:       cmd.Process,
+		logFileHandle: logFileHandle,
+	}
+
+	// Wait for server to be ready (longer timeout for Kerberos setup)
+	if err := sp.WaitReady(15 * time.Second); err != nil {
+		// Dump logs on failure
+		sp.dumpLogs(t)
+		sp.ForceKill()
+		t.Fatalf("Server failed to become ready: %v", err)
+	}
+
+	return sp
+}
+
+// extractAPIPortFromConfig parses the config file to find the controlplane port.
+func extractAPIPortFromConfig(t *testing.T, configPath string) int {
+	t.Helper()
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("Failed to read config file: %v", err)
+	}
+
+	// Simple YAML parsing - look for "controlplane:" section and "port:" within it
+	lines := strings.Split(string(content), "\n")
+	inControlplane := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "controlplane:") {
+			inControlplane = true
+			continue
+		}
+		if inControlplane && strings.HasPrefix(trimmed, "port:") {
+			var port int
+			_, err := fmt.Sscanf(trimmed, "port: %d", &port)
+			if err == nil && port > 0 {
+				return port
+			}
+		}
+		// Exit controlplane section if we hit another top-level key
+		if inControlplane && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			break
+		}
+	}
+
+	t.Fatalf("Could not find controlplane port in config file: %s", configPath)
+	return 0
 }
 
 // createConfigWithAPIPort creates a config file with the specified API port.

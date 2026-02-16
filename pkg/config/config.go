@@ -65,6 +65,14 @@ type Config struct {
 	// Lock contains lock manager configuration
 	// Controls lock limits, timeouts, and behavior
 	Lock LockConfig `mapstructure:"lock" yaml:"lock"`
+
+	// Kerberos contains Kerberos/RPCSEC_GSS authentication configuration.
+	// When enabled, NFS clients can authenticate using Kerberos tickets
+	// via the RPCSEC_GSS protocol (RFC 2203).
+	// Environment variable overrides:
+	//   DITTOFS_KERBEROS_KEYTAB overrides KeytabPath (DITTOFS_KERBEROS_KEYTAB_PATH for compat)
+	//   DITTOFS_KERBEROS_PRINCIPAL overrides ServicePrincipal (DITTOFS_KERBEROS_SERVICE_PRINCIPAL for compat)
+	Kerberos KerberosConfig `mapstructure:"kerberos" yaml:"kerberos"`
 }
 
 // LockConfig contains lock manager configuration.
@@ -203,6 +211,91 @@ type AdminConfig struct {
 	// Generated during 'dittofs init' or can be set manually
 	// Use: htpasswd -nbB "" "password" | cut -d: -f2
 	PasswordHash string `mapstructure:"password_hash" yaml:"password_hash,omitempty"`
+}
+
+// KerberosConfig contains Kerberos/RPCSEC_GSS authentication configuration.
+//
+// When Enabled is true, the NFS server supports Kerberos authentication
+// via RPCSEC_GSS (RFC 2203). Clients can authenticate using krb5, krb5i
+// (integrity), or krb5p (privacy) security flavors.
+//
+// The server needs a keytab file containing the service principal's key
+// and a valid krb5.conf for realm/KDC resolution.
+type KerberosConfig struct {
+	// Enabled controls whether Kerberos authentication is active.
+	// Default: false (AUTH_UNIX only)
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+
+	// KeytabPath is the path to the Kerberos keytab file.
+	// The keytab must contain the service principal's key.
+	// Override: DITTOFS_KERBEROS_KEYTAB (primary), DITTOFS_KERBEROS_KEYTAB_PATH (compat)
+	// Example: /etc/dittofs/dittofs.keytab
+	KeytabPath string `mapstructure:"keytab_path" yaml:"keytab_path"`
+
+	// ServicePrincipal is the Kerberos service principal name (SPN).
+	// Format: service/hostname@REALM (e.g., nfs/server.example.com@EXAMPLE.COM)
+	// Override: DITTOFS_KERBEROS_PRINCIPAL (primary), DITTOFS_KERBEROS_SERVICE_PRINCIPAL (compat)
+	ServicePrincipal string `mapstructure:"service_principal" yaml:"service_principal"`
+
+	// Krb5Conf is the path to the Kerberos configuration file.
+	// Default: /etc/krb5.conf
+	Krb5Conf string `mapstructure:"krb5_conf" yaml:"krb5_conf"`
+
+	// MaxClockSkew is the maximum allowed clock difference between client and server.
+	// Kerberos requires synchronized clocks; this tolerance handles minor drift.
+	// Default: 5m
+	MaxClockSkew time.Duration `mapstructure:"max_clock_skew" yaml:"max_clock_skew"`
+
+	// ContextTTL is the maximum lifetime of an RPCSEC_GSS security context.
+	// After this duration, clients must re-authenticate.
+	// Default: 8h
+	ContextTTL time.Duration `mapstructure:"context_ttl" yaml:"context_ttl"`
+
+	// MaxContexts is the maximum number of concurrent RPCSEC_GSS contexts.
+	// Prevents memory exhaustion from excessive context creation.
+	// Default: 10000
+	MaxContexts int `mapstructure:"max_contexts" yaml:"max_contexts"`
+
+	// IdentityMapping configures how Kerberos principals are mapped to Unix identities.
+	IdentityMapping IdentityMappingConfig `mapstructure:"identity_mapping" yaml:"identity_mapping"`
+}
+
+// IdentityMappingConfig controls how Kerberos principals are mapped to Unix UID/GID.
+//
+// The mapping strategy determines how authenticated Kerberos principals
+// (e.g., "alice@EXAMPLE.COM") are converted to Unix identities for
+// NFS file permission checks.
+type IdentityMappingConfig struct {
+	// Strategy selects the identity mapping approach.
+	// Currently supported: "static" (map from config file)
+	// Future: "ldap", "nsswitch", "regex"
+	// Default: "static"
+	Strategy string `mapstructure:"strategy" yaml:"strategy"`
+
+	// StaticMap maps "principal@REALM" strings to Unix identities.
+	// Only used when Strategy is "static".
+	// Example: {"alice@EXAMPLE.COM": {UID: 1000, GID: 1000}}
+	StaticMap map[string]StaticIdentity `mapstructure:"static_map" yaml:"static_map"`
+
+	// DefaultUID is the Unix UID assigned to principals not found in StaticMap.
+	// Default: 65534 (nobody)
+	DefaultUID uint32 `mapstructure:"default_uid" yaml:"default_uid"`
+
+	// DefaultGID is the Unix GID assigned to principals not found in StaticMap.
+	// Default: 65534 (nogroup)
+	DefaultGID uint32 `mapstructure:"default_gid" yaml:"default_gid"`
+}
+
+// StaticIdentity represents a Unix identity for a specific Kerberos principal.
+type StaticIdentity struct {
+	// UID is the Unix user ID
+	UID uint32 `mapstructure:"uid" yaml:"uid"`
+
+	// GID is the Unix primary group ID
+	GID uint32 `mapstructure:"gid" yaml:"gid"`
+
+	// GIDs is a list of supplementary group IDs
+	GIDs []uint32 `mapstructure:"gids" yaml:"gids,omitempty"`
 }
 
 // Load loads configuration from file, environment, and defaults.

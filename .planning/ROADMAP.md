@@ -39,7 +39,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 9: State Management** ✓ - Client ID, state ID, and lease tracking
 - [x] **Phase 10: NFSv4 Locking** ✓ - Integrated byte-range locking (LOCK/LOCKT/LOCKU)
 - [ ] **Phase 11: Delegations** - Read/write delegations with callback channel
-- [ ] **Phase 12: Kerberos Authentication** - RPCSEC_GSS framework with krb5/krb5i/krb5p
+- [x] **Phase 12: Kerberos Authentication** ✓ - RPCSEC_GSS framework with krb5/krb5i/krb5p
 - [ ] **Phase 12.5: Manual Verification - Kerberos** USER CHECKPOINT - Test Kerberos auth manually
 - [ ] **Phase 13: NFSv4 ACLs** - Extended ACL model with Windows interoperability
 - [ ] **Phase 14: Control Plane v2.0** - NFSv4 adapter configuration and settings
@@ -265,10 +265,10 @@ Plans:
 **Plans**: TBD
 
 Plans:
-- [ ] 11-01: Delegation state tracking and grant logic
-- [ ] 11-02: Callback channel (CB_COMPOUND, CB_RECALL)
-- [ ] 11-03: Conflict detection and recall triggering
-- [ ] 11-04: Delegation timeout and revocation
+- [x] 11-01: Delegation state tracking and grant logic
+- [x] 11-02: Callback channel (CB_COMPOUND, CB_RECALL)
+- [x] 11-03: Conflict detection and recall triggering
+- [x] 11-04: Delegation timeout and revocation
 
 ### Phase 12: Kerberos Authentication
 **Goal**: Implement RPCSEC_GSS framework with Kerberos v5 support
@@ -280,14 +280,14 @@ Plans:
   3. Privacy protection (krb5p) encrypts RPC payload
   4. AUTH_SYS fallback available for shares that allow it
   5. External KDC (Active Directory) integration works
-**Plans**: TBD
+**Plans**: 5 plans in 5 waves
 
 Plans:
-- [ ] 12-01: Shared Kerberos layer (pkg/auth/kerberos)
-- [ ] 12-02: RPCSEC_GSS framework implementation
-- [ ] 12-03: krb5 authentication flavor
-- [ ] 12-04: krb5i integrity and krb5p privacy
-- [ ] 12-05: Keytab and service principal configuration
+- [x] 12-01-PLAN.md — RPCSEC_GSS XDR types, sequence window, Kerberos config, identity mapping
+- [x] 12-02-PLAN.md — GSS context store with TTL cleanup, GSSProcessor INIT/DESTROY handling
+- [x] 12-03-PLAN.md — krb5 DATA path integration into NFS connection handler
+- [x] 12-04-PLAN.md — krb5i integrity, krb5p privacy, SECINFO RPCSEC_GSS upgrade
+- [x] 12-05-PLAN.md — Keytab hot-reload, GSS Prometheus metrics, lifecycle integration test
 
 ### Phase 13: NFSv4 ACLs
 **Goal**: Extend ACL model for NFSv4 with Windows interoperability
@@ -606,8 +606,8 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 8. NFSv4 Advanced Operations | v2.0 | 3/3 | Complete | 2026-02-13 |
 | 9. State Management | v2.0 | 4/4 | Complete | 2026-02-14 |
 | 10. NFSv4 Locking | v2.0 | 3/3 | Complete | 2026-02-14 |
-| 11. Delegations | v2.0 | 0/4 | Not started | - |
-| 12. Kerberos Authentication | v2.0 | 0/5 | Not started | - |
+| 11. Delegations | v2.0 | 4/4 | Complete | 2026-02-14 |
+| 12. Kerberos Authentication | v2.0 | 5/5 | Complete | 2026-02-15 |
 | 13. NFSv4 ACLs | v2.0 | 0/4 | Not started | - |
 | 14. Control Plane v2.0 | v2.0 | 0/3 | Not started | - |
 | 15. v2.0 Testing | v2.0 | 0/5 | Not started | - |
@@ -626,7 +626,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 28. v4.0 Testing | v4.0 | 0/5 | Not started | - |
 | 28.1 Portmapper Auto-Registration | v4.0 | 0/1 | Not started | - |
 
-**Total:** 35/106 plans complete
+**Total:** 44/106 plans complete
 
 ---
 *Roadmap created: 2026-02-04*
@@ -648,3 +648,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 *Phase 9 completed: 2026-02-14*
 *Phase 10 planned: 2026-02-14 (consolidated from 4 to 3 plans -- lock manager integration woven into each plan)*
 *Phase 10 completed: 2026-02-14*
+*Phase 11 completed: 2026-02-14*
+*Phase 12 planned: 2026-02-15 (5 plans in 5 sequential waves -- foundation types, context machine, DATA integration, integrity/privacy, keytab/metrics)*
+*Phase 12 completed: 2026-02-15*

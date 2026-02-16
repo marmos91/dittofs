@@ -58,6 +58,11 @@ type MountHandlerContext struct {
 	// GIDs is the list of supplementary group IDs from AUTH_UNIX credentials.
 	// Empty if AuthFlavor != AUTH_UNIX or credentials not provided.
 	GIDs []uint32
+
+	// KerberosEnabled indicates whether RPCSEC_GSS (Kerberos) authentication
+	// is supported by the server. When true, the mount response advertises
+	// Kerberos pseudoflavors (390003/390004/390005) in addition to AUTH_UNIX (1).
+	KerberosEnabled bool
 }
 
 // extractClientIP extracts the IP address from a network address string.

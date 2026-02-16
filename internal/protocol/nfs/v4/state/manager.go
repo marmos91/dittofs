@@ -259,7 +259,12 @@ func (sm *StateManager) createNewClient(clientIDStr string, verifier [8]byte, ca
 func (sm *StateManager) reuseConfirmedClient(confirmed *ClientRecord, clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr string) (*SetClientIDResult, error) {
 	// Remove any existing unconfirmed record for this name
 	if old := sm.unconfirmedByName[clientIDStr]; old != nil {
-		delete(sm.clientsByID, old.ClientID)
+		// Only delete from clientsByID if it's a different ID than the confirmed client.
+		// The unconfirmed record reuses confirmed.ClientID, so we must not delete
+		// the confirmed client's entry from clientsByID.
+		if old.ClientID != confirmed.ClientID {
+			delete(sm.clientsByID, old.ClientID)
+		}
 		delete(sm.unconfirmedByName, clientIDStr)
 	}
 
@@ -393,14 +398,23 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 		return fmt.Errorf("%w: client ID %d not found", ErrStaleClientID, clientID)
 	}
 
-	// If already confirmed, this is a retransmit -- just validate verifier
+	// If already confirmed, check for a pending re-SETCLIENTID (Case 5)
+	// where an unconfirmed record exists with the same client ID.
 	if record.Confirmed {
-		if record.ConfirmVerifier != confirmVerifier {
-			return fmt.Errorf("%w: confirm verifier mismatch for confirmed client %d", ErrStaleClientID, clientID)
+		// Check if there's an unconfirmed record for the same client name
+		// that reuses this client ID (Case 5: re-SETCLIENTID for confirmed client)
+		if unconfirmed := sm.unconfirmedByName[record.ClientIDString]; unconfirmed != nil && unconfirmed.ClientID == clientID {
+			// Use the unconfirmed record instead - this is confirming the re-SETCLIENTID
+			record = unconfirmed
+		} else {
+			// True retransmit - validate verifier matches the confirmed record
+			if record.ConfirmVerifier != confirmVerifier {
+				return fmt.Errorf("%w: confirm verifier mismatch for confirmed client %d", ErrStaleClientID, clientID)
+			}
+			logger.Debug("SETCLIENTID_CONFIRM: retransmit for already-confirmed client",
+				"client_id", clientID)
+			return nil
 		}
-		logger.Debug("SETCLIENTID_CONFIRM: retransmit for already-confirmed client",
-			"client_id", clientID)
-		return nil
 	}
 
 	// Validate confirm verifier
