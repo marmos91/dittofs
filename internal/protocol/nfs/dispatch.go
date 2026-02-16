@@ -6,6 +6,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	mount "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	nfs "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
@@ -94,6 +95,28 @@ func ExtractHandlerContext(
 		ClientAddr: clientAddr,
 		Share:      share,
 		AuthFlavor: call.GetAuthFlavor(),
+	}
+
+	// Check for GSS identity from context.Value (set by handleRPCCall GSS interception)
+	if handlerCtx.AuthFlavor == rpc.AuthRPCSECGSS {
+		if gssIdentity := gss.IdentityFromContext(ctx); gssIdentity != nil {
+			handlerCtx.UID = gssIdentity.UID
+			handlerCtx.GID = gssIdentity.GID
+			handlerCtx.GIDs = gssIdentity.GIDs
+
+			logger.Debug("Using GSS identity",
+				"procedure", procedure,
+				"uid", gssIdentity.UID,
+				"gid", gssIdentity.GID,
+				"ngids", len(gssIdentity.GIDs))
+
+			return handlerCtx
+		}
+		// GSS auth flavor but no identity in context - this should not happen
+		// for DATA requests, but can happen if GSS interception was bypassed
+		logger.Warn("RPCSEC_GSS auth flavor but no GSS identity in context",
+			"procedure", procedure)
+		return handlerCtx
 	}
 
 	// Only attempt to parse Unix credentials if AUTH_UNIX is specified

@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	mount "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc/gss"
 	v3 "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
 	v4handlers "github.com/marmos91/dittofs/internal/protocol/nfs/v4/handlers"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/pseudofs"
@@ -20,6 +21,8 @@ import (
 	nlm_handlers "github.com/marmos91/dittofs/internal/protocol/nlm/handlers"
 	"github.com/marmos91/dittofs/internal/protocol/nsm"
 	nsm_handlers "github.com/marmos91/dittofs/internal/protocol/nsm/handlers"
+	"github.com/marmos91/dittofs/pkg/auth/kerberos"
+	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -87,6 +90,14 @@ type NFSAdapter struct {
 
 	// nsmMetrics provides NSM-specific Prometheus metrics
 	nsmMetrics *nsm.Metrics
+
+	// gssProcessor handles RPCSEC_GSS context lifecycle (INIT/DATA/DESTROY).
+	// nil when Kerberos is not enabled.
+	gssProcessor *gss.GSSProcessor
+
+	// kerberosConfig holds the Kerberos configuration for GSS initialization.
+	// nil when Kerberos is not enabled.
+	kerberosConfig *config.KerberosConfig
 
 	// nsmClientStore persists client registrations for crash recovery
 	nsmClientStore lock.ClientRegistrationStore
@@ -332,6 +343,22 @@ func New(
 	}
 }
 
+// SetKerberosConfig sets the Kerberos configuration for RPCSEC_GSS support.
+//
+// This must be called before SetRuntime() if Kerberos authentication is desired.
+// When set, the GSSProcessor will be initialized during SetRuntime().
+//
+// Parameters:
+//   - cfg: Kerberos configuration. If nil or Enabled is false, Kerberos is disabled.
+//
+// Thread safety:
+// Called exactly once before Serve(), no synchronization needed.
+func (s *NFSAdapter) SetKerberosConfig(cfg *config.KerberosConfig) {
+	if cfg != nil && cfg.Enabled {
+		s.kerberosConfig = cfg
+	}
+}
+
 // SetRuntime injects the runtime containing all stores and shares.
 //
 // This method is called by Runtime before Serve() is called. The runtime
@@ -358,6 +385,7 @@ func (s *NFSAdapter) SetRuntime(rt *runtime.Runtime) {
 	s.pseudoFS.Rebuild(shares)
 	v4StateManager := v4state.NewStateManager(v4state.DefaultLeaseDuration)
 	s.v4Handler = v4handlers.NewHandler(rt, s.pseudoFS, v4StateManager)
+	s.v4Handler.KerberosEnabled = s.kerberosConfig != nil
 	// TODO: Rebuild pseudo-fs dynamically when shares change (on share add/remove)
 
 	// Create blocking queue for NLM lock operations
@@ -377,7 +405,59 @@ func (s *NFSAdapter) SetRuntime(rt *runtime.Runtime) {
 	// NSM uses the ConnectionTracker from the MetadataService and ClientRegistrationStore
 	s.initNSMHandler(rt, metadataService)
 
+	// Initialize RPCSEC_GSS processor if Kerberos is enabled
+	s.initGSSProcessor()
+
 	logger.Debug("NFS adapter configured with runtime", "shares", rt.CountShares())
+}
+
+// initGSSProcessor initializes the RPCSEC_GSS processor if Kerberos is configured.
+//
+// This creates a kerberos.Provider from config, a StaticMapper for identity mapping,
+// and a GSSProcessor that handles the INIT/DATA/DESTROY lifecycle.
+//
+// If Kerberos is not enabled or initialization fails, the adapter continues without
+// GSS support (AUTH_UNIX/AUTH_NULL only).
+func (s *NFSAdapter) initGSSProcessor() {
+	if s.kerberosConfig == nil {
+		return
+	}
+
+	// Create Kerberos provider from config
+	provider, err := kerberos.NewProvider(s.kerberosConfig)
+	if err != nil {
+		logger.Warn("Failed to initialize Kerberos provider, GSS disabled",
+			"error", err)
+		return
+	}
+
+	// Create identity mapper from config
+	mapper := kerberos.NewStaticMapper(&s.kerberosConfig.IdentityMapping)
+
+	// Create GSS verifier using the provider
+	verifier := gss.NewKrb5Verifier(provider)
+
+	// Create GSS metrics if metrics are enabled
+	var gssOpts []gss.GSSProcessorOption
+	if metrics.IsEnabled() {
+		gssMetrics := gss.NewGSSMetrics(metrics.GetRegistry())
+		gssOpts = append(gssOpts, gss.WithMetrics(gssMetrics))
+	}
+
+	// Create the GSS processor
+	s.gssProcessor = gss.NewGSSProcessor(
+		verifier,
+		mapper,
+		s.kerberosConfig.MaxContexts,
+		s.kerberosConfig.ContextTTL,
+		gssOpts...,
+	)
+
+	logger.Info("RPCSEC_GSS (Kerberos) authentication enabled",
+		"service_principal", s.kerberosConfig.ServicePrincipal,
+		"max_contexts", s.kerberosConfig.MaxContexts,
+		"context_ttl", s.kerberosConfig.ContextTTL,
+	)
 }
 
 // processNLMWaiters processes pending NLM lock requests after a lock is released.
@@ -1021,6 +1101,11 @@ func (s *NFSAdapter) forceCloseConnections() {
 // Thread safety:
 // Safe to call concurrently from multiple goroutines.
 func (s *NFSAdapter) Stop(ctx context.Context) error {
+	// Stop GSS processor if running (releases background cleanup goroutine)
+	if s.gssProcessor != nil {
+		s.gssProcessor.Stop()
+	}
+
 	// Always initiate shutdown first
 	s.initiateShutdown()
 
