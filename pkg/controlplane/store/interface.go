@@ -374,6 +374,25 @@ type Store interface {
 	IsAdminInitialized(ctx context.Context) (bool, error)
 
 	// ============================================
+	// IDENTITY MAPPING OPERATIONS
+	// ============================================
+
+	// GetIdentityMapping returns an identity mapping by principal.
+	// Returns models.ErrMappingNotFound if the mapping doesn't exist.
+	GetIdentityMapping(ctx context.Context, principal string) (*models.IdentityMapping, error)
+
+	// ListIdentityMappings returns all identity mappings.
+	ListIdentityMappings(ctx context.Context) ([]*models.IdentityMapping, error)
+
+	// CreateIdentityMapping creates a new identity mapping.
+	// Returns models.ErrDuplicateMapping if a mapping for this principal already exists.
+	CreateIdentityMapping(ctx context.Context, mapping *models.IdentityMapping) error
+
+	// DeleteIdentityMapping deletes an identity mapping by principal.
+	// Returns models.ErrMappingNotFound if the mapping doesn't exist.
+	DeleteIdentityMapping(ctx context.Context, principal string) error
+
+	// ============================================
 	// HEALTH & LIFECYCLE
 	// ============================================
 

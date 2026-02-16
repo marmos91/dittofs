@@ -197,6 +197,16 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				})
 			})
 
+			// Identity mapping management (admin only)
+			r.Route("/identity-mappings", func(r chi.Router) {
+				r.Use(apiMiddleware.RequireAdmin())
+
+				idmapHandler := handlers.NewIdentityMappingHandler(cpStore)
+				r.Get("/", idmapHandler.List)
+				r.Post("/", idmapHandler.Create)
+				r.Delete("/{principal}", idmapHandler.Delete)
+			})
+
 			// System settings (admin only)
 			r.Route("/settings", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())

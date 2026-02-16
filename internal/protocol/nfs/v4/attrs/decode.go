@@ -11,6 +11,7 @@ import (
 	v4types "github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/protocol/xdr"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
 // ============================================================================
@@ -24,6 +25,7 @@ import (
 func WritableAttrs() []uint32 {
 	var bitmap []uint32
 	SetBit(&bitmap, FATTR4_SIZE)
+	SetBit(&bitmap, FATTR4_ACL) // bit 12: ACL is writable via SETATTR
 	SetBit(&bitmap, FATTR4_MODE)
 	SetBit(&bitmap, FATTR4_OWNER)
 	SetBit(&bitmap, FATTR4_OWNER_GROUP)
@@ -202,6 +204,18 @@ func decodeSingleSetAttr(reader io.Reader, bit uint32, setAttrs *metadata.SetAtt
 		}
 		setAttrs.Size = &size
 
+	case FATTR4_ACL:
+		// nfsace4<>: ACL
+		decodedACL, err := DecodeACLAttr(reader)
+		if err != nil {
+			return &badXDRError{msg: fmt.Sprintf("invalid ACL encoding: %v", err)}
+		}
+		// Validate the decoded ACL (canonical ordering, max ACEs, etc.)
+		if err := acl.ValidateACL(decodedACL); err != nil {
+			return &invalidACLError{msg: err.Error()}
+		}
+		setAttrs.ACL = decodedACL
+
 	case FATTR4_MODE:
 		// uint32: POSIX mode bits
 		mode, err := xdr.DecodeUint32(reader)
@@ -339,6 +353,34 @@ func (e *badOwnerError) Error() string {
 // NFS4Status returns the NFS4 error code for this error.
 func (e *badOwnerError) NFS4Status() uint32 {
 	return v4types.NFS4ERR_BADOWNER
+}
+
+// badXDRError represents an NFS4ERR_BADXDR condition.
+type badXDRError struct {
+	msg string
+}
+
+func (e *badXDRError) Error() string {
+	return e.msg
+}
+
+// NFS4Status returns the NFS4 error code for this error.
+func (e *badXDRError) NFS4Status() uint32 {
+	return v4types.NFS4ERR_BADXDR
+}
+
+// invalidACLError represents an NFS4ERR_INVAL condition for invalid ACLs.
+type invalidACLError struct {
+	msg string
+}
+
+func (e *invalidACLError) Error() string {
+	return fmt.Sprintf("invalid ACL: %s", e.msg)
+}
+
+// NFS4Status returns the NFS4 error code for this error.
+func (e *invalidACLError) NFS4Status() uint32 {
+	return v4types.NFS4ERR_INVAL
 }
 
 // NFS4StatusError is an interface for errors that carry an NFS4 status code.

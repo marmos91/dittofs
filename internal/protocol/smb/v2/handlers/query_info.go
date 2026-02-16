@@ -387,7 +387,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	case types.SMB2InfoTypeFilesystem:
 		info, err = h.buildFilesystemInfo(ctx.Context, types.FileInfoClass(req.FileInfoClass), metaSvc, openFile.MetadataHandle)
 	case types.SMB2InfoTypeSecurity:
-		info, err = h.buildSecurityInfo()
+		info, err = h.buildSecurityInfo(file, req.AdditionalInfo)
 	default:
 		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
@@ -615,16 +615,10 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 }
 
 // buildSecurityInfo builds security information [MS-DTYP] 2.4.6.
-func (h *Handler) buildSecurityInfo() ([]byte, error) {
-	// Return minimal security descriptor that grants everyone access
-	info := make([]byte, 20)
-	info[0] = 1                                      // Revision
-	info[1] = 0                                      // Sbz1
-	binary.LittleEndian.PutUint16(info[2:4], 0x8004) // Control (SE_SELF_RELATIVE | SE_DACL_PRESENT)
-	binary.LittleEndian.PutUint32(info[4:8], 0)      // OffsetOwner
-	binary.LittleEndian.PutUint32(info[8:12], 0)     // OffsetGroup
-	binary.LittleEndian.PutUint32(info[12:16], 0)    // OffsetSacl
-	binary.LittleEndian.PutUint32(info[16:20], 0)    // OffsetDacl
-
-	return info, nil
+//
+// This method constructs a full self-relative Security Descriptor with
+// Owner SID, Group SID, and DACL translated from the file's NFSv4 ACL.
+// The secInfo parameter controls which sections are included.
+func (h *Handler) buildSecurityInfo(file *metadata.File, secInfo uint32) ([]byte, error) {
+	return BuildSecurityDescriptor(file, secInfo)
 }

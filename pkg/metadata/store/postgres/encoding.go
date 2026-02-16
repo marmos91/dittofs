@@ -2,11 +2,13 @@ package postgres
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
 // ============================================================================
@@ -34,7 +36,7 @@ func encodeFileHandle(shareName string, idStr string) (metadata.FileHandle, erro
 
 // fileRowToFileWithNlink converts a database row to a File struct, including link count.
 // Expected columns: id, share_name, path, file_type, mode, uid, gid, size,
-// atime, mtime, ctime, creation_time, content_id, link_target, device_major, device_minor, hidden, link_count
+// atime, mtime, ctime, creation_time, content_id, link_target, device_major, device_minor, hidden, acl, link_count
 func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 	var (
 		id           uuid.UUID
@@ -54,6 +56,7 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		deviceMajor  sql.NullInt32
 		deviceMinor  sql.NullInt32
 		hidden       bool
+		aclJSON      []byte
 		linkCount    sql.NullInt32
 	)
 
@@ -75,6 +78,7 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		&deviceMajor,
 		&deviceMinor,
 		&hidden,
+		&aclJSON,
 		&linkCount,
 	)
 	if err != nil {
@@ -118,6 +122,14 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 	// Populate Rdev for device files
 	if deviceMajor.Valid && deviceMinor.Valid {
 		file.Rdev = metadata.MakeRdev(uint32(deviceMajor.Int32), uint32(deviceMinor.Int32))
+	}
+
+	// Unmarshal ACL from JSONB if present
+	if len(aclJSON) > 0 {
+		var fileACL acl.ACL
+		if err := json.Unmarshal(aclJSON, &fileACL); err == nil {
+			file.ACL = &fileACL
+		}
 	}
 
 	return file, nil
