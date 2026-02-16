@@ -348,6 +348,26 @@ func lockTypeToString(lockType int16) string {
 	}
 }
 
+// SkipIfNFSLockingUnsupported skips the test on platforms where NFS file locking
+// (NLM protocol) does not work with userspace NFS servers.
+//
+// On macOS, NFS byte-range locks (fcntl F_SETLK/F_SETLKW) are forwarded to the
+// system lockd daemon, which contacts the portmapper (rpcbind, port 111) to discover
+// the NLM service port. Since DittoFS is a userspace server that does not register
+// with portmapper, lockd cannot reach the NLM service, causing ENOLCK errors.
+// Using the "nolocks" mount option is not a workaround because macOS returns ENOTSUP
+// for all locking operations on NFS mounts with nolocks (unlike Linux, where the
+// kernel handles fcntl locks locally even with the "nolock" mount option).
+//
+// On Linux with the "nolock" mount option, fcntl locks are handled locally by the
+// kernel without contacting NLM, so locking tests work.
+func SkipIfNFSLockingUnsupported(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "darwin" {
+		t.Skip("Skipping: NFS file locking (NLM) requires portmapper, which is not available with userspace NFS servers on macOS")
+	}
+}
+
 // LogPlatformLockingNotes logs platform-specific notes about file locking behavior.
 // Call this at the start of cross-protocol lock tests for debugging context.
 func LogPlatformLockingNotes(t *testing.T) {

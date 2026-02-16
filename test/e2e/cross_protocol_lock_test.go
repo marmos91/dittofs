@@ -31,6 +31,9 @@ func TestCrossProtocolLocking(t *testing.T) {
 		t.Skip("Skipping cross-protocol locking tests in short mode")
 	}
 
+	// Skip on platforms where NFS locking (NLM) doesn't work with userspace servers
+	framework.SkipIfNFSLockingUnsupported(t)
+
 	// Skip if no SMB mount capability (need CIFS client or Docker)
 	framework.SkipIfNoSMBMount(t)
 
@@ -430,6 +433,9 @@ func TestCrossProtocolLockingByteRange(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping cross-protocol byte-range locking tests in short mode")
 	}
+
+	// Skip on platforms where NFS locking (NLM) doesn't work with userspace servers
+	framework.SkipIfNFSLockingUnsupported(t)
 
 	// Skip if no SMB mount capability (need CIFS client or Docker)
 	framework.SkipIfNoSMBMount(t)
