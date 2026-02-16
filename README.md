@@ -21,7 +21,9 @@ Decouple file interfaces from storage backends. NFSv3 and SMB2 server with plugg
 
 ## Overview
 
-DittoFS provides a modular architecture with **named, reusable stores** that can be mixed and matched per share:
+DittoFS provides a modular architecture with **named, reusable stores** that can be mixed and matched per share.
+
+### Architecture at a Glance
 
 ```mermaid
 graph TD
@@ -67,10 +69,10 @@ graph TD
     S3 -- metadata --> MB
     S3 -- payload --> PS
 
-    style Adapters fill:#e1f5fe
-    style Shares fill:#fff3e0
-    style MetadataStores fill:#e8f5e9
-    style PayloadStores fill:#fce4ec
+    style Adapters fill:#e1f5fe,color:#01579b
+    style Shares fill:#fff3e0,color:#e65100
+    style MetadataStores fill:#e8f5e9,color:#1b5e20
+    style PayloadStores fill:#fce4ec,color:#880e4f
 ```
 
 ### Key Concepts
