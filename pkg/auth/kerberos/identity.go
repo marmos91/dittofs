@@ -1,9 +1,8 @@
 package kerberos
 
 import (
-	"fmt"
-
 	"github.com/marmos91/dittofs/pkg/config"
+	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -14,6 +13,8 @@ import (
 //
 // The mapping result is a *metadata.Identity which integrates directly
 // with the existing authentication and permission checking infrastructure.
+//
+// Deprecated: Use pkg/identity.IdentityMapper directly for new code.
 type IdentityMapper interface {
 	// MapPrincipal maps a Kerberos principal and realm to a local identity.
 	//
@@ -29,39 +30,51 @@ type IdentityMapper interface {
 
 // StaticMapper implements IdentityMapper using a static configuration map.
 //
-// Principals are looked up in the configured static map using the key
-// format "principal@realm". If a match is found, the configured UID/GID/GIDs
-// are returned. Otherwise, the default UID/GID is used.
+// This is a backward-compatible wrapper that delegates to identity.StaticMapper
+// from the new pkg/identity package. All new code should use
+// identity.StaticMapper directly.
 //
-// This is suitable for small deployments with a known set of users.
-// For larger deployments, consider LDAP or nsswitch-based mappers.
+// Deprecated: Use pkg/identity.StaticMapper directly for new code.
 type StaticMapper struct {
-	staticMap  map[string]config.StaticIdentity
-	defaultUID uint32
-	defaultGID uint32
+	inner *identity.StaticMapper
 }
 
 // NewStaticMapper creates a new static identity mapper from configuration.
+//
+// Converts the config.IdentityMappingConfig to an identity.StaticMapperConfig
+// and delegates to identity.NewStaticMapper.
 //
 // Parameters:
 //   - cfg: Identity mapping configuration containing the static map and defaults
 //
 // Returns:
-//   - *StaticMapper: Initialized mapper
+//   - *StaticMapper: Initialized mapper wrapping identity.StaticMapper
 func NewStaticMapper(cfg *config.IdentityMappingConfig) *StaticMapper {
-	staticMap := cfg.StaticMap
-	if staticMap == nil {
-		staticMap = make(map[string]config.StaticIdentity)
+	// Convert config.StaticIdentity map to identity.StaticIdentity map
+	staticMap := make(map[string]identity.StaticIdentity, len(cfg.StaticMap))
+	for k, v := range cfg.StaticMap {
+		staticMap[k] = identity.StaticIdentity{
+			UID:  v.UID,
+			GID:  v.GID,
+			GIDs: v.GIDs,
+		}
+	}
+
+	innerCfg := &identity.StaticMapperConfig{
+		StaticMap:  staticMap,
+		DefaultUID: cfg.DefaultUID,
+		DefaultGID: cfg.DefaultGID,
 	}
 
 	return &StaticMapper{
-		staticMap:  staticMap,
-		defaultUID: cfg.DefaultUID,
-		defaultGID: cfg.DefaultGID,
+		inner: identity.NewStaticMapper(innerCfg),
 	}
 }
 
 // MapPrincipal maps a Kerberos principal to a Unix identity.
+//
+// Delegates to the embedded identity.StaticMapper and converts the result
+// to a *metadata.Identity for backward compatibility.
 //
 // Lookup key format: "principal@realm" (e.g., "alice@EXAMPLE.COM").
 //
@@ -75,31 +88,15 @@ func NewStaticMapper(cfg *config.IdentityMappingConfig) *StaticMapper {
 //   - Username is still set to the principal name
 //   - Domain is still set to the realm
 func (m *StaticMapper) MapPrincipal(principal string, realm string) (*metadata.Identity, error) {
-	key := fmt.Sprintf("%s@%s", principal, realm)
-
-	if entry, ok := m.staticMap[key]; ok {
-		uid := entry.UID
-		gid := entry.GID
-		var gids []uint32
-		if len(entry.GIDs) > 0 {
-			gids = make([]uint32, len(entry.GIDs))
-			copy(gids, entry.GIDs)
-		}
-		return &metadata.Identity{
-			UID:      &uid,
-			GID:      &gid,
-			GIDs:     gids,
-			Username: principal,
-			Domain:   realm,
-		}, nil
+	uid, gid, gids, err := m.inner.MapPrincipal(principal, realm)
+	if err != nil {
+		return nil, err
 	}
 
-	// Default mapping for unknown principals
-	uid := m.defaultUID
-	gid := m.defaultGID
 	return &metadata.Identity{
 		UID:      &uid,
 		GID:      &gid,
+		GIDs:     gids,
 		Username: principal,
 		Domain:   realm,
 	}, nil
