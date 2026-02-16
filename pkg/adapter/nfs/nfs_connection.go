@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"time"
 
@@ -351,8 +350,11 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 
 		// Handle GSS processing errors (CREDPROBLEM / CTXPROBLEM)
 		if gssResult.Err != nil {
-			// Determine the auth_stat based on the error message
-			authStat := rpc.RPCSECGSSCredProblem
+			// Determine the auth_stat from the structured result field
+			authStat := gssResult.AuthStat
+			if authStat == 0 {
+				authStat = rpc.RPCSECGSSCredProblem // default
+			}
 			if gssResult.GSSReply != nil {
 				// INIT failure with encoded error reply - send as control response
 				reply, makeErr := rpc.MakeGSSSuccessReply(call.XID, gssResult.GSSReply,
@@ -361,12 +363,6 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 					return fmt.Errorf("make GSS error reply: %w", makeErr)
 				}
 				return c.writeReply(call.XID, reply)
-			}
-
-			// Check error message to determine CREDPROBLEM vs CTXPROBLEM
-			errMsg := gssResult.Err.Error()
-			if strings.HasPrefix(errMsg, "RPCSEC_GSS_CTXPROBLEM") {
-				authStat = rpc.RPCSECGSSCtxProblem
 			}
 
 			logger.Debug("GSS processing error, sending AUTH_ERROR",

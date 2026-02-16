@@ -228,13 +228,13 @@ type KerberosConfig struct {
 
 	// KeytabPath is the path to the Kerberos keytab file.
 	// The keytab must contain the service principal's key.
-	// Override: DITTOFS_KERBEROS_KEYTAB_PATH environment variable
+	// Override: DITTOFS_KERBEROS_KEYTAB (primary), DITTOFS_KERBEROS_KEYTAB_PATH (compat)
 	// Example: /etc/dittofs/dittofs.keytab
 	KeytabPath string `mapstructure:"keytab_path" yaml:"keytab_path"`
 
 	// ServicePrincipal is the Kerberos service principal name (SPN).
 	// Format: service/hostname@REALM (e.g., nfs/server.example.com@EXAMPLE.COM)
-	// Override: DITTOFS_KERBEROS_SERVICE_PRINCIPAL environment variable
+	// Override: DITTOFS_KERBEROS_PRINCIPAL (primary), DITTOFS_KERBEROS_SERVICE_PRINCIPAL (compat)
 	ServicePrincipal string `mapstructure:"service_principal" yaml:"service_principal"`
 
 	// Krb5Conf is the path to the Kerberos configuration file.

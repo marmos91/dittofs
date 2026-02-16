@@ -569,6 +569,11 @@ type GSSProcessResult struct {
 
 	// Err is set if processing failed.
 	Err error
+
+	// AuthStat indicates the RPC auth_stat to return on error.
+	// Only meaningful when Err != nil.
+	// 0 means default (RPCSEC_GSS_CREDPROBLEM).
+	AuthStat uint32
 }
 
 // ============================================================================
@@ -899,7 +904,8 @@ func (p *GSSProcessor) handleData(cred *RPCGSSCredV1, verifBody []byte, requestB
 		)
 		p.metrics.RecordAuthFailure("context_problem")
 		return &GSSProcessResult{
-			Err: fmt.Errorf("RPCSEC_GSS_CREDPROBLEM: context not found"),
+			Err:      fmt.Errorf("RPCSEC_GSS_CREDPROBLEM: context not found"),
+			AuthStat: AuthStatCredProblem,
 		}
 	}
 
@@ -927,7 +933,8 @@ func (p *GSSProcessor) handleData(cred *RPCGSSCredV1, verifBody []byte, requestB
 		p.contexts.Delete(cred.Handle)
 		p.metrics.RecordAuthFailure("context_problem")
 		return &GSSProcessResult{
-			Err: fmt.Errorf("RPCSEC_GSS_CTXPROBLEM: sequence number exceeds MAXSEQ"),
+			Err:      fmt.Errorf("RPCSEC_GSS_CTXPROBLEM: sequence number exceeds MAXSEQ"),
+			AuthStat: AuthStatCtxProblem,
 		}
 	}
 

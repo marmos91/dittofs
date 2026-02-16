@@ -115,6 +115,20 @@ const (
 )
 
 // ============================================================================
+// RPCSEC_GSS Auth Status Constants (RFC 2203 Section 5.3.1)
+// ============================================================================
+
+// Auth status values for RPCSEC_GSS error replies.
+// Duplicated here to avoid circular imports with the rpc package.
+const (
+	// AuthStatCredProblem indicates a problem with the GSS credential (e.g., unknown handle).
+	AuthStatCredProblem uint32 = 13
+
+	// AuthStatCtxProblem indicates a problem with the GSS context (e.g., seq exceeds MAXSEQ).
+	AuthStatCtxProblem uint32 = 14
+)
+
+// ============================================================================
 // RFC 4121 Key Usage Constants
 // ============================================================================
 

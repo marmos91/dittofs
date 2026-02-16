@@ -373,12 +373,15 @@ func setupKDC(t *testing.T) (kdcHostPort int, keytabPath string, krb5ConfPath st
 		t.Fatalf("docker build failed: %v", err)
 	}
 
-	// Start container with random TCP port mapping
+	// Start container with random TCP port mapping.
+	// Override entrypoint to sleep so we can set up the KDC manually.
 	t.Log("Starting KDC container...")
 	runOut, err := exec.Command("docker", "run", "-d",
 		"--name", containerName,
 		"-p", "0:88/tcp",
+		"--entrypoint", "sleep",
 		imageName,
+		"infinity",
 	).CombinedOutput()
 	if err != nil {
 		t.Fatalf("docker run failed: %v\n%s", err, runOut)
