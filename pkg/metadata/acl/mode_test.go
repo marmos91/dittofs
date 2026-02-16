@@ -1,8 +1,6 @@
 package acl
 
-import (
-	"testing"
-)
+import "testing"
 
 func TestDeriveMode_OwnerGroupEveryone(t *testing.T) {
 	tests := []struct {
@@ -185,12 +183,12 @@ func TestAdjustACLForMode_Mode755(t *testing.T) {
 
 	// GROUP@ should have r-x.
 	groupExpected := uint32(ACE4_READ_DATA | ACE4_EXECUTE)
-	if result.ACEs[1].AccessMask != uint32(groupExpected) {
+	if result.ACEs[1].AccessMask != groupExpected {
 		t.Errorf("GROUP@ mask: got 0x%x, want 0x%x", result.ACEs[1].AccessMask, groupExpected)
 	}
 
 	// EVERYONE@ should have r-x.
-	if result.ACEs[2].AccessMask != uint32(groupExpected) {
+	if result.ACEs[2].AccessMask != groupExpected {
 		t.Errorf("EVERYONE@ mask: got 0x%x, want 0x%x", result.ACEs[2].AccessMask, groupExpected)
 	}
 }
@@ -225,9 +223,9 @@ func TestAdjustACLForMode_PreservesNonRWXBits(t *testing.T) {
 	result := AdjustACLForMode(original, 0700)
 
 	// Non-rwx bits (READ_ACL, WRITE_ACL, DELETE, SYNCHRONIZE) should be preserved.
-	expected := ACE4_READ_DATA | ACE4_WRITE_DATA | ACE4_APPEND_DATA | ACE4_EXECUTE |
-		ACE4_READ_ACL | ACE4_WRITE_ACL | ACE4_DELETE | ACE4_SYNCHRONIZE
-	if result.ACEs[0].AccessMask != uint32(expected) {
+	expected := uint32(ACE4_READ_DATA | ACE4_WRITE_DATA | ACE4_APPEND_DATA | ACE4_EXECUTE |
+		ACE4_READ_ACL | ACE4_WRITE_ACL | ACE4_DELETE | ACE4_SYNCHRONIZE)
+	if result.ACEs[0].AccessMask != expected {
 		t.Errorf("OWNER@ mask: got 0x%x, want 0x%x", result.ACEs[0].AccessMask, expected)
 	}
 }
@@ -242,14 +240,14 @@ func TestAdjustACLForMode_DenyACE(t *testing.T) {
 	result := AdjustACLForMode(original, 0500)
 
 	// DENY ACE for OWNER@ should deny w (the bits NOT in mode 5=r-x).
-	denyExpected := ACE4_WRITE_DATA | ACE4_APPEND_DATA
-	if result.ACEs[0].AccessMask != uint32(denyExpected) {
+	denyExpected := uint32(ACE4_WRITE_DATA | ACE4_APPEND_DATA)
+	if result.ACEs[0].AccessMask != denyExpected {
 		t.Errorf("OWNER@ DENY mask: got 0x%x, want 0x%x", result.ACEs[0].AccessMask, denyExpected)
 	}
 
 	// ALLOW ACE for OWNER@ should have r-x.
-	allowExpected := ACE4_READ_DATA | ACE4_EXECUTE
-	if result.ACEs[1].AccessMask != uint32(allowExpected) {
+	allowExpected := uint32(ACE4_READ_DATA | ACE4_EXECUTE)
+	if result.ACEs[1].AccessMask != allowExpected {
 		t.Errorf("OWNER@ ALLOW mask: got 0x%x, want 0x%x", result.ACEs[1].AccessMask, allowExpected)
 	}
 }

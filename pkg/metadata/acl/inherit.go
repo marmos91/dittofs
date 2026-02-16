@@ -24,43 +24,35 @@ func ComputeInheritedACL(parentACL *ACL, isDirectory bool) *ACL {
 		return nil
 	}
 
+	inheritFlag := uint32(ACE4_FILE_INHERIT_ACE)
+	if isDirectory {
+		inheritFlag = ACE4_DIRECTORY_INHERIT_ACE
+	}
+
 	var inherited []ACE
 
 	for i := range parentACL.ACEs {
 		ace := &parentACL.ACEs[i]
 
-		if isDirectory {
-			if ace.Flag&ACE4_DIRECTORY_INHERIT_ACE == 0 {
-				continue
-			}
+		if ace.Flag&inheritFlag == 0 {
+			continue
+		}
 
-			newACE := *ace
-			newACE.Flag |= ACE4_INHERITED_ACE
+		newACE := *ace
+		newACE.Flag |= ACE4_INHERITED_ACE
 
-			if ace.Flag&ACE4_NO_PROPAGATE_INHERIT_ACE != 0 {
-				// NO_PROPAGATE: clear all inheritance flags so this ACE
-				// does not propagate to grandchildren.
-				newACE.Flag &^= inheritanceMask
-			} else if ace.Flag&ACE4_INHERIT_ONLY_ACE != 0 {
-				// INHERIT_ONLY on parent: the ACE was not evaluated on the
-				// parent but should be evaluated on this child directory.
-				// Clear INHERIT_ONLY so it applies here.
-				newACE.Flag &^= ACE4_INHERIT_ONLY_ACE
-			}
-
-			inherited = append(inherited, newACE)
-		} else {
-			if ace.Flag&ACE4_FILE_INHERIT_ACE == 0 {
-				continue
-			}
-
-			newACE := *ace
-			newACE.Flag |= ACE4_INHERITED_ACE
+		if !isDirectory {
 			// Files don't propagate further: clear all inheritance flags.
 			newACE.Flag &^= inheritanceMask
-
-			inherited = append(inherited, newACE)
+		} else if ace.Flag&ACE4_NO_PROPAGATE_INHERIT_ACE != 0 {
+			// NO_PROPAGATE: stop propagation to grandchildren.
+			newACE.Flag &^= inheritanceMask
+		} else if ace.Flag&ACE4_INHERIT_ONLY_ACE != 0 {
+			// INHERIT_ONLY on parent: clear so ACE applies on this child.
+			newACE.Flag &^= ACE4_INHERIT_ONLY_ACE
 		}
+
+		inherited = append(inherited, newACE)
 	}
 
 	if len(inherited) == 0 {
@@ -99,15 +91,13 @@ func PropagateACL(parentACL *ACL, existingACL *ACL, isDirectory bool) *ACL {
 	}
 
 	// Combine: explicit first, then inherited (maintains canonical order).
-	var combined []ACE
-	combined = append(combined, explicit...)
+	var inheritedACEs []ACE
 	if newInherited != nil {
-		combined = append(combined, newInherited.ACEs...)
+		inheritedACEs = newInherited.ACEs
 	}
-
-	if len(combined) == 0 {
-		return nil
-	}
+	combined := make([]ACE, 0, len(explicit)+len(inheritedACEs))
+	combined = append(combined, explicit...)
+	combined = append(combined, inheritedACEs...)
 
 	return &ACL{ACEs: combined}
 }

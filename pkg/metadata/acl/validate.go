@@ -83,15 +83,17 @@ func ValidateACE(ace *ACE) error {
 func aceBucket(ace *ACE) int {
 	inherited := ace.Flag&ACE4_INHERITED_ACE != 0
 
-	switch {
-	case !inherited && ace.Type == ACE4_ACCESS_DENIED_ACE_TYPE:
-		return 1
-	case !inherited && ace.Type == ACE4_ACCESS_ALLOWED_ACE_TYPE:
-		return 2
-	case inherited && ace.Type == ACE4_ACCESS_DENIED_ACE_TYPE:
-		return 3
-	case inherited && ace.Type == ACE4_ACCESS_ALLOWED_ACE_TYPE:
-		return 4
+	// Base bucket: explicit DENY=1/ALLOW=2, inherited DENY=3/ALLOW=4
+	base := 0
+	if inherited {
+		base = 2
+	}
+
+	switch ace.Type {
+	case ACE4_ACCESS_DENIED_ACE_TYPE:
+		return base + 1
+	case ACE4_ACCESS_ALLOWED_ACE_TYPE:
+		return base + 2
 	default:
 		// AUDIT/ALARM should not reach here; treat as bucket 0 (anywhere).
 		return 0

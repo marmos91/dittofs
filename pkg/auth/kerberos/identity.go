@@ -13,8 +13,6 @@ import (
 //
 // The mapping result is a *metadata.Identity which integrates directly
 // with the existing authentication and permission checking infrastructure.
-//
-// Deprecated: Use pkg/identity.IdentityMapper directly for new code.
 type IdentityMapper interface {
 	// MapPrincipal maps a Kerberos principal and realm to a local identity.
 	//
@@ -33,8 +31,6 @@ type IdentityMapper interface {
 // This is a backward-compatible wrapper that delegates to identity.StaticMapper
 // from the new pkg/identity package. All new code should use
 // identity.StaticMapper directly.
-//
-// Deprecated: Use pkg/identity.StaticMapper directly for new code.
 type StaticMapper struct {
 	inner *identity.StaticMapper
 }

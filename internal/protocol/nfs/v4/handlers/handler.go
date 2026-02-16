@@ -12,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/protocol/xdr"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/identity"
 )
 
 // OpHandler is the type signature for individual NFSv4 operation handlers.
@@ -38,6 +39,11 @@ type Handler struct {
 	// is available. When true, SECINFO responses include krb5/krb5i/krb5p
 	// pseudo-flavors in addition to AUTH_SYS and AUTH_NONE.
 	KerberosEnabled bool
+
+	// IdentityMapper is an optional identity resolver for FATTR4_OWNER
+	// and FATTR4_OWNER_GROUP encoding. When non-nil, UIDs/GIDs are
+	// reverse-resolved to user@domain format. When nil, numeric format is used.
+	IdentityMapper identity.IdentityMapper
 
 	// opDispatchTable maps operation numbers to handler functions.
 	opDispatchTable map[uint32]OpHandler

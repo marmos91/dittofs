@@ -23,12 +23,8 @@ func DeriveMode(a *ACL) uint32 {
 	for i := range a.ACEs {
 		ace := &a.ACEs[i]
 
-		// Only consider ALLOW ACEs for mode derivation.
-		if ace.Type != ACE4_ACCESS_ALLOWED_ACE_TYPE {
-			continue
-		}
-		// Skip inherit-only ACEs.
-		if ace.IsInheritOnly() {
+		// Only consider non-inherit-only ALLOW ACEs for mode derivation.
+		if ace.Type != ACE4_ACCESS_ALLOWED_ACE_TYPE || ace.IsInheritOnly() {
 			continue
 		}
 

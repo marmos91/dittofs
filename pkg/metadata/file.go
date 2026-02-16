@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
 // ============================================================================
@@ -427,6 +428,13 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		}
 
 		file.Mode = newMode
+
+		// RFC 7530 Section 6.4.1: chmod adjusts OWNER@/GROUP@/EVERYONE@ ACEs
+		// to match the new mode bits when an ACL is present.
+		if file.ACL != nil {
+			file.ACL = acl.AdjustACLForMode(file.ACL, newMode)
+		}
+
 		modified = true
 	}
 
@@ -528,6 +536,19 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 
 	if attrs.Mtime != nil {
 		file.Mtime = *attrs.Mtime
+		modified = true
+	}
+
+	// Handle ACL setting
+	if attrs.ACL != nil {
+		if err := acl.ValidateACL(attrs.ACL); err != nil {
+			return &StoreError{
+				Code:    ErrInvalidArgument,
+				Message: fmt.Sprintf("invalid ACL: %v", err),
+				Path:    file.Path,
+			}
+		}
+		file.ACL = attrs.ACL
 		modified = true
 	}
 
@@ -953,6 +974,13 @@ func (s *MetadataService) createEntry(
 	}
 	newFile.Nlink = GetInitialLinkCount(fileType)
 
+	// Inherit ACL from parent if parent has one
+	if parent.ACL != nil {
+		isDir := fileType == FileTypeDirectory
+		inherited := acl.ComputeInheritedACL(parent.ACL, isDir)
+		newFile.ACL = inherited
+	}
+
 	// Execute all write operations in a single transaction for better performance.
 	// This reduces PostgreSQL round-trips from 6+ to 2 (BEGIN + COMMIT).
 	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
@@ -1093,6 +1121,11 @@ type FileAttr struct {
 	// Hidden indicates if the file should be hidden from directory listings.
 	Hidden bool `json:"hidden,omitempty"`
 
+	// ACL is the NFSv4 Access Control List for this file.
+	// nil means no ACL is set -- use classic Unix permission check.
+	// Non-nil with empty ACEs means an explicit empty ACL (denies all access).
+	ACL *acl.ACL `json:"acl,omitempty"`
+
 	// IdempotencyToken for detecting duplicate creation requests.
 	IdempotencyToken uint64 `json:"idempotency_token,omitempty"`
 }
@@ -1109,6 +1142,10 @@ type SetAttrs struct {
 	MtimeNow     bool
 	CreationTime *time.Time
 	Hidden       *bool
+
+	// ACL sets the NFSv4 ACL on the file.
+	// When non-nil, the ACL is validated (canonical ordering, max ACEs) before applying.
+	ACL *acl.ACL
 }
 
 // FileType represents the type of a filesystem object.

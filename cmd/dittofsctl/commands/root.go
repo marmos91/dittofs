@@ -8,6 +8,7 @@ import (
 	adaptercmd "github.com/marmos91/dittofs/cmd/dittofsctl/commands/adapter"
 	ctxcmd "github.com/marmos91/dittofs/cmd/dittofsctl/commands/context"
 	groupcmd "github.com/marmos91/dittofs/cmd/dittofsctl/commands/group"
+	idmapcmd "github.com/marmos91/dittofs/cmd/dittofsctl/commands/idmap"
 	settingscmd "github.com/marmos91/dittofs/cmd/dittofsctl/commands/settings"
 	sharecmd "github.com/marmos91/dittofs/cmd/dittofsctl/commands/share"
 	storecmd "github.com/marmos91/dittofs/cmd/dittofsctl/commands/store"
@@ -72,6 +73,7 @@ func init() {
 	rootCmd.AddCommand(sharecmd.Cmd)
 	rootCmd.AddCommand(storecmd.Cmd)
 	rootCmd.AddCommand(adaptercmd.Cmd)
+	rootCmd.AddCommand(idmapcmd.Cmd)
 	rootCmd.AddCommand(settingscmd.Cmd)
 	rootCmd.AddCommand(completionCmd)
 

@@ -39,24 +39,24 @@ const (
 
 // Directory-specific aliases (same bit positions as file permissions).
 const (
-	ACE4_LIST_DIRECTORY  = ACE4_READ_DATA   // 0x00000001
-	ACE4_ADD_FILE        = ACE4_WRITE_DATA  // 0x00000002
+	ACE4_LIST_DIRECTORY   = ACE4_READ_DATA   // 0x00000001
+	ACE4_ADD_FILE         = ACE4_WRITE_DATA  // 0x00000002
 	ACE4_ADD_SUBDIRECTORY = ACE4_APPEND_DATA // 0x00000004
 )
 
 // Common permissions (apply to both files and directories).
 const (
-	ACE4_READ_NAMED_ATTRS  = 0x00000008
-	ACE4_WRITE_NAMED_ATTRS = 0x00000010
-	ACE4_READ_ATTRIBUTES   = 0x00000080
-	ACE4_WRITE_ATTRIBUTES  = 0x00000100
-	ACE4_WRITE_RETENTION   = 0x00000200
+	ACE4_READ_NAMED_ATTRS     = 0x00000008
+	ACE4_WRITE_NAMED_ATTRS    = 0x00000010
+	ACE4_READ_ATTRIBUTES      = 0x00000080
+	ACE4_WRITE_ATTRIBUTES     = 0x00000100
+	ACE4_WRITE_RETENTION      = 0x00000200
 	ACE4_WRITE_RETENTION_HOLD = 0x00000400
-	ACE4_DELETE            = 0x00010000
-	ACE4_READ_ACL          = 0x00020000
-	ACE4_WRITE_ACL         = 0x00040000
-	ACE4_WRITE_OWNER       = 0x00080000
-	ACE4_SYNCHRONIZE       = 0x00100000
+	ACE4_DELETE               = 0x00010000
+	ACE4_READ_ACL             = 0x00020000
+	ACE4_WRITE_ACL            = 0x00040000
+	ACE4_WRITE_OWNER          = 0x00080000
+	ACE4_SYNCHRONIZE          = 0x00100000
 )
 
 // ACL support constants for FATTR4_ACLSUPPORT.
@@ -117,7 +117,7 @@ func (a *ACE) IsInherited() bool {
 	return a.Flag&ACE4_INHERITED_ACE != 0
 }
 
-// String returns a human-readable representation of the ACE type.
+// TypeString returns a human-readable representation of the ACE type.
 func (a *ACE) TypeString() string {
 	switch a.Type {
 	case ACE4_ACCESS_ALLOWED_ACE_TYPE:

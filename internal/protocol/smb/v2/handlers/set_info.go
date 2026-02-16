@@ -285,15 +285,14 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 	}
 
 	// ========================================================================
-	// Step 4: Handle set info based on type
+	// Step 3: Handle set info based on type
 	// ========================================================================
 
 	switch req.InfoType {
 	case types.SMB2InfoTypeFile:
 		return h.setFileInfoFromStore(authCtx, openFile, types.FileInfoClass(req.FileInfoClass), req.Buffer)
 	case types.SMB2InfoTypeSecurity:
-		// Accept but ignore security updates for now
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
+		return h.setSecurityInfo(authCtx, openFile, req.AdditionalInfo, req.Buffer)
 	default:
 		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
@@ -447,7 +446,7 @@ func (h *Handler) setFileInfoFromStore(
 		h.StoreOpenFile(openFile)
 
 		logger.Debug("SET_INFO: rename successful",
-			"oldPath", openFile.Path,
+			"oldPath", oldPath,
 			"newPath", newPath)
 		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
 
@@ -524,4 +523,60 @@ func (h *Handler) setFileInfoFromStore(
 	default:
 		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported}}, nil
 	}
+}
+
+// setSecurityInfo handles SET_INFO for security descriptors.
+//
+// Parses the binary Security Descriptor from the client, extracts owner/group/ACL,
+// and applies the changes to the file via MetadataService.SetFileAttributes.
+func (h *Handler) setSecurityInfo(
+	authCtx *metadata.AuthContext,
+	openFile *OpenFile,
+	additionalInfo uint32,
+	buffer []byte,
+) (*SetInfoResponse, error) {
+	if len(buffer) == 0 {
+		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+	}
+
+	ownerUID, ownerGID, fileACL, err := ParseSecurityDescriptor(buffer)
+	if err != nil {
+		logger.Debug("SET_INFO: failed to parse security descriptor", "path", openFile.Path, "error", err)
+		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+	}
+
+	// Build SetAttrs from parsed SD
+	setAttrs := &metadata.SetAttrs{}
+	changed := false
+
+	// Only apply sections that were requested via AdditionalInfo
+	if (additionalInfo&OwnerSecurityInformation) != 0 && ownerUID != nil {
+		setAttrs.UID = ownerUID
+		changed = true
+	}
+
+	if (additionalInfo&GroupSecurityInformation) != 0 && ownerGID != nil {
+		setAttrs.GID = ownerGID
+		changed = true
+	}
+
+	if (additionalInfo&DACLSecurityInformation) != 0 && fileACL != nil {
+		setAttrs.ACL = fileACL
+		changed = true
+	}
+
+	if !changed {
+		// Nothing to change - accept as no-op
+		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
+	}
+
+	// Apply changes
+	metaSvc := h.Registry.GetMetadataService()
+	err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
+	if err != nil {
+		logger.Debug("SET_INFO: failed to set security info", "path", openFile.Path, "error", err)
+		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+	}
+
+	return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
 }

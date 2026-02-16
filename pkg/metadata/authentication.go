@@ -4,6 +4,8 @@ import (
 	"context"
 	"net"
 	"regexp"
+
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
 // ============================================================================
@@ -371,7 +373,18 @@ func ApplyIdentityMapping(identity *Identity, mapping *IdentityMapping) *Identit
 		return identity
 	}
 
-	// Create a deep copy to avoid modifying the original
+	// Map all users to anonymous -- no need to deep copy slices
+	if mapping.MapAllToAnonymous {
+		return &Identity{
+			UID:      mapping.AnonymousUID,
+			GID:      mapping.AnonymousGID,
+			SID:      mapping.AnonymousSID,
+			Username: identity.Username,
+			Domain:   identity.Domain,
+		}
+	}
+
+	// Deep copy for other mapping operations
 	var gidsCopy []uint32
 	if identity.GIDs != nil {
 		gidsCopy = make([]uint32, len(identity.GIDs))
@@ -392,16 +405,6 @@ func ApplyIdentityMapping(identity *Identity, mapping *IdentityMapping) *Identit
 		GroupSIDs: groupSIDsCopy,
 		Username:  identity.Username,
 		Domain:    identity.Domain,
-	}
-
-	// Map all users to anonymous
-	if mapping.MapAllToAnonymous {
-		result.UID = mapping.AnonymousUID
-		result.GID = mapping.AnonymousGID
-		result.SID = mapping.AnonymousSID
-		result.GIDs = nil
-		result.GroupSIDs = nil
-		return result
 	}
 
 	// Map privileged users to anonymous (root squashing)
@@ -505,6 +508,14 @@ func CopyFileAttr(attr *FileAttr) *FileAttr {
 		return nil
 	}
 
+	// Deep copy ACL if present
+	var aclCopy *acl.ACL
+	if attr.ACL != nil {
+		aces := make([]acl.ACE, len(attr.ACL.ACEs))
+		copy(aces, attr.ACL.ACEs)
+		aclCopy = &acl.ACL{ACEs: aces}
+	}
+
 	return &FileAttr{
 		Type:         attr.Type,
 		Mode:         attr.Mode,
@@ -520,6 +531,7 @@ func CopyFileAttr(attr *FileAttr) *FileAttr {
 		LinkTarget:   attr.LinkTarget,
 		Rdev:         attr.Rdev,
 		Hidden:       attr.Hidden,
+		ACL:          aclCopy,
 	}
 }
 
@@ -590,6 +602,13 @@ func calculatePermissions(
 ) Permission {
 	attr := &file.FileAttr
 
+	// ACL evaluation takes precedence when ACL is present
+	if attr.ACL != nil {
+		return evaluateACLPermissions(file, identity, shareOpts, requested)
+	}
+
+	// No ACL = classic Unix permission check
+
 	// Handle anonymous/no identity case
 	if identity == nil || identity.UID == nil {
 		// Only grant "other" permissions for anonymous users
@@ -634,6 +653,92 @@ func calculatePermissions(
 	// Apply read-only share restriction for all non-root users
 	if shareOpts != nil && shareOpts.ReadOnly {
 		granted &= ^(PermissionWrite | PermissionDelete)
+	}
+
+	return granted & requested
+}
+
+// evaluateACLPermissions handles permission checking when a file has an ACL.
+// It maps the internal Permission flags to NFSv4 ACE mask bits and evaluates
+// the ACL for each requested permission type.
+func evaluateACLPermissions(
+	file *File,
+	identity *Identity,
+	shareOpts *ShareOptions,
+	requested Permission,
+) Permission {
+	// Handle anonymous/no identity
+	if identity == nil || identity.UID == nil {
+		// Evaluate as EVERYONE@ only
+		evalCtx := &acl.EvaluateContext{
+			FileOwnerUID: file.UID,
+			FileOwnerGID: file.GID,
+		}
+		return evaluateWithACL(file.ACL, evalCtx, requested, shareOpts)
+	}
+
+	uid := *identity.UID
+
+	// Root bypass: UID 0 gets all permissions except write on read-only shares
+	if uid == 0 {
+		if shareOpts != nil && shareOpts.ReadOnly {
+			return requested &^ (PermissionWrite | PermissionDelete)
+		}
+		return requested
+	}
+
+	// Build evaluation context
+	evalCtx := &acl.EvaluateContext{
+		UID:          uid,
+		GIDs:         identity.GIDs,
+		FileOwnerUID: file.UID,
+		FileOwnerGID: file.GID,
+	}
+	if identity.GID != nil {
+		evalCtx.GID = *identity.GID
+	}
+
+	// Set Who to "username@domain" if available for named principal matching
+	switch {
+	case identity.Username != "" && identity.Domain != "":
+		evalCtx.Who = identity.Username + "@" + identity.Domain
+	case identity.Username != "":
+		evalCtx.Who = identity.Username
+	}
+
+	return evaluateWithACL(file.ACL, evalCtx, requested, shareOpts)
+}
+
+// permToACLMask maps each Permission flag to its corresponding NFSv4 ACE mask bits.
+// Declared at package level to avoid allocating a map on every call.
+var permToACLMask = [...]struct {
+	perm Permission
+	mask uint32
+}{
+	{PermissionRead, acl.ACE4_READ_DATA},
+	{PermissionWrite, acl.ACE4_WRITE_DATA | acl.ACE4_APPEND_DATA},
+	{PermissionExecute, acl.ACE4_EXECUTE},
+	{PermissionDelete, acl.ACE4_DELETE},
+	{PermissionListDirectory, acl.ACE4_LIST_DIRECTORY},
+	{PermissionTraverse, acl.ACE4_EXECUTE},
+	{PermissionChangePermissions, acl.ACE4_WRITE_ACL},
+	{PermissionChangeOwnership, acl.ACE4_WRITE_OWNER},
+}
+
+// evaluateWithACL maps Permission flags to ACL mask bits and evaluates the ACL.
+// Each permission type is checked individually because ACL evaluation is per-operation.
+func evaluateWithACL(fileACL *acl.ACL, evalCtx *acl.EvaluateContext, requested Permission, shareOpts *ShareOptions) Permission {
+	var granted Permission
+
+	for _, pm := range permToACLMask {
+		if requested&pm.perm != 0 && acl.Evaluate(fileACL, evalCtx, pm.mask) {
+			granted |= pm.perm
+		}
+	}
+
+	// Apply read-only share restriction
+	if shareOpts != nil && shareOpts.ReadOnly {
+		granted &^= PermissionWrite | PermissionDelete
 	}
 
 	return granted & requested

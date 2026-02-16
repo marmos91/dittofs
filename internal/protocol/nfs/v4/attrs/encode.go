@@ -2,10 +2,12 @@ package attrs
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 
 	v4types "github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/protocol/xdr"
+	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -31,6 +33,12 @@ const (
 	FATTR4_UNIQUE_HANDLES  = 9  // bool: handles are unique
 	FATTR4_LEASE_TIME      = 10 // uint32: lease duration in seconds
 	FATTR4_RDATTR_ERROR    = 11 // nfsstat4: per-entry READDIR error
+)
+
+// ACL-related attributes (word 0, bits 12-13)
+const (
+	FATTR4_ACL        = 12 // nfsace4<>: Access Control List
+	FATTR4_ACLSUPPORT = 13 // uint32: ACL support flags
 )
 
 // Recommended attributes (used for pseudo-fs and real files)
@@ -72,6 +80,22 @@ func SetLeaseTime(seconds uint32) {
 // GetLeaseTime returns the currently configured lease time in seconds.
 func GetLeaseTime() uint32 {
 	return leaseTimeSeconds
+}
+
+// identityMapper holds the configured identity mapper for FATTR4_OWNER/OWNER_GROUP encoding.
+// When nil, the numeric UID/GID format is used as fallback.
+var identityMapper identity.IdentityMapper
+
+// SetIdentityMapper configures the identity mapper used for FATTR4_OWNER
+// and FATTR4_OWNER_GROUP encoding. When set, UIDs/GIDs are reverse-resolved
+// to user@domain/group@domain format. When nil, numeric format is used.
+func SetIdentityMapper(mapper identity.IdentityMapper) {
+	identityMapper = mapper
+}
+
+// GetIdentityMapper returns the currently configured identity mapper, or nil.
+func GetIdentityMapper() identity.IdentityMapper {
+	return identityMapper
 }
 
 // ============================================================================
@@ -121,6 +145,8 @@ func SupportedAttrs() []uint32 {
 	SetBit(&bitmap, FATTR4_UNIQUE_HANDLES)
 	SetBit(&bitmap, FATTR4_LEASE_TIME)
 	SetBit(&bitmap, FATTR4_RDATTR_ERROR)
+	SetBit(&bitmap, FATTR4_ACL)
+	SetBit(&bitmap, FATTR4_ACLSUPPORT)
 	SetBit(&bitmap, FATTR4_FILEHANDLE)
 	SetBit(&bitmap, FATTR4_FILEID)
 
@@ -238,6 +264,14 @@ func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) er
 	case FATTR4_RDATTR_ERROR:
 		// nfsstat4: NFS4_OK (no error)
 		return xdr.WriteUint32(buf, v4types.NFS4_OK)
+
+	case FATTR4_ACL:
+		// Pseudo-fs nodes have no ACL: encode 0 ACEs
+		return EncodeACLAttr(buf, nil)
+
+	case FATTR4_ACLSUPPORT:
+		// Report support for all four ACE types
+		return EncodeACLSupportAttr(buf)
 
 	case FATTR4_FILEHANDLE:
 		// nfs_fh4: opaque file handle
@@ -395,6 +429,14 @@ func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, hand
 	case FATTR4_RDATTR_ERROR:
 		return xdr.WriteUint32(buf, v4types.NFS4_OK)
 
+	case FATTR4_ACL:
+		// Encode the file's ACL. If nil, encodes 0 ACEs.
+		return EncodeACLAttr(buf, file.ACL)
+
+	case FATTR4_ACLSUPPORT:
+		// Report support for all four ACE types
+		return EncodeACLSupportAttr(buf)
+
 	case FATTR4_FILEHANDLE:
 		return xdr.WriteXDROpaque(buf, []byte(handle))
 
@@ -409,19 +451,14 @@ func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, hand
 
 	case FATTR4_OWNER:
 		// NFSv4 identity format: "user@domain" per RFC 7530 Section 5.9
-		// Map well-known UIDs to names, others use numeric@domain
-		owner := fmt.Sprintf("%d@localdomain", file.UID)
-		if file.UID == 0 {
-			owner = "root@localdomain"
-		}
+		// Use identity mapper for reverse resolution if available.
+		owner := resolveOwnerString(file.UID)
 		return xdr.WriteXDRString(buf, owner)
 
 	case FATTR4_OWNER_GROUP:
 		// NFSv4 identity format: "group@domain" per RFC 7530 Section 5.9
-		group := fmt.Sprintf("%d@localdomain", file.GID)
-		if file.GID == 0 {
-			group = "wheel@localdomain"
-		}
+		// Use identity mapper for reverse resolution if available.
+		group := resolveGroupString(file.GID)
 		return xdr.WriteXDRString(buf, group)
 
 	case FATTR4_SPACE_USED:
@@ -468,6 +505,49 @@ func MapFileTypeToNFS4(fileType metadata.FileType) uint32 {
 	default:
 		return v4types.NF4REG // Default to regular file
 	}
+}
+
+// ============================================================================
+// Identity Mapper Helpers for OWNER/OWNER_GROUP
+// ============================================================================
+
+// resolveOwnerString converts a UID to an NFSv4 "user@domain" string.
+//
+// When an identity mapper is configured, it attempts to reverse-resolve the UID.
+// Falls back to numeric format: "uid@localdomain" with well-known overrides
+// (UID 0 = "root@localdomain").
+func resolveOwnerString(uid uint32) string {
+	if identityMapper != nil {
+		// Try numeric UID format as the principal for reverse lookup
+		principal := fmt.Sprintf("%d@localdomain", uid)
+		resolved, err := identityMapper.Resolve(context.Background(), principal)
+		if err == nil && resolved != nil && resolved.Found && resolved.Username != "" {
+			domain := resolved.Domain
+			if domain == "" {
+				domain = "localdomain"
+			}
+			return resolved.Username + "@" + domain
+		}
+	}
+
+	// Fallback: well-known UIDs and numeric format
+	if uid == 0 {
+		return "root@localdomain"
+	}
+	return fmt.Sprintf("%d@localdomain", uid)
+}
+
+// resolveGroupString converts a GID to an NFSv4 "group@domain" string.
+//
+// Falls back to numeric format: "gid@localdomain" with well-known overrides
+// (GID 0 = "wheel@localdomain").
+func resolveGroupString(gid uint32) string {
+	// Note: Identity mapper does not currently support group reverse resolution.
+	// This can be extended when GroupResolver implements reverse lookup.
+	if gid == 0 {
+		return "wheel@localdomain"
+	}
+	return fmt.Sprintf("%d@localdomain", gid)
 }
 
 // shareNameToFSIDMinor generates a consistent minor FSID number from a share name.

@@ -104,8 +104,6 @@ func (m *StaticMapper) Resolve(_ context.Context, principal string) (*ResolvedId
 //
 // It constructs a "principal@realm" key, resolves it, and returns a result
 // compatible with the metadata.Identity type via UID/GID pointers.
-//
-// Deprecated: Use Resolve() directly for new code.
 func (m *StaticMapper) MapPrincipal(principal string, realm string) (uid, gid uint32, gids []uint32, err error) {
 	key := fmt.Sprintf("%s@%s", principal, realm)
 	result, resolveErr := m.Resolve(context.Background(), key)
