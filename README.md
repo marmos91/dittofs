@@ -27,22 +27,31 @@ DittoFS provides a modular architecture with **named, reusable stores** that can
 
 ```mermaid
 graph TD
-    subgraph Clients
-        NFS[NFS Client]
-        SMB[SMB Client]
-    end
+    CTL[dittofsctl] -- manages --> CP
+    NFS[NFS Client] --> NFSA
+    SMB[SMB Client] --> SMBA
 
     subgraph DittoFS
+        direction TB
+
+        CP[Control Plane · REST API]
+
         subgraph Adapters[Protocol Adapters]
             NFSA[NFS Adapter]
             SMBA[SMB Adapter]
         end
+
+        NFSA --> S1 & S2
+        SMBA --> S2 & S3
 
         subgraph Shares
             S1["/temp"]
             S2["/archive"]
             S3["/cloud"]
         end
+
+        Shares --> MetadataStores
+        Shares --> PayloadStores
 
         subgraph MetadataStores[Metadata Stores]
             MM[Memory]
@@ -55,24 +64,19 @@ graph TD
             PF[Filesystem]
             PS[S3]
         end
+
+        CP -.-> Adapters
+        CP -.-> Shares
+        CP -.-> MetadataStores
+        CP -.-> PayloadStores
     end
-
-    NFS --> NFSA
-    SMB --> SMBA
-    NFSA --> Shares
-    SMBA --> Shares
-
-    S1 -- metadata --> MM
-    S1 -- payload --> PF
-    S2 -- metadata --> MB
-    S2 -- payload --> PS
-    S3 -- metadata --> MB
-    S3 -- payload --> PS
 
     style Adapters fill:#e1f5fe,color:#01579b
     style Shares fill:#fff3e0,color:#e65100
     style MetadataStores fill:#e8f5e9,color:#1b5e20
     style PayloadStores fill:#fce4ec,color:#880e4f
+    style CP fill:#f3e5f5,color:#4a148c
+    style CTL fill:#fff,color:#333,stroke:#333
 ```
 
 ### Key Concepts
