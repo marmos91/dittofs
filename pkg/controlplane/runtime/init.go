@@ -86,9 +86,13 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 		return memory.NewMemoryMetadataStoreWithDefaults(), nil
 
 	case "badger":
-		dbPath, ok := config["db_path"].(string)
+		dbPath, ok := config["path"].(string)
 		if !ok || dbPath == "" {
-			return nil, fmt.Errorf("badger metadata store requires db_path as string")
+			// Backward compatibility: also accept "db_path"
+			dbPath, ok = config["db_path"].(string)
+			if !ok || dbPath == "" {
+				return nil, fmt.Errorf("badger metadata store requires path as string")
+			}
 		}
 		return badger.NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
 

@@ -18,7 +18,7 @@ Stores, shares, and adapters are managed via `dittofsctl` (persisted in the cont
 # Create named stores
 ./dittofsctl store metadata add --name fast-meta --type memory
 ./dittofsctl store metadata add --name persistent-meta --type badger \
-  --config '{"db_path":"/data"}'
+  --config '{"path":"/data"}'
 ./dittofsctl store payload add --name s3-payload --type s3 \
   --config '{"bucket":"my-bucket"}'
 

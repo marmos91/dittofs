@@ -253,7 +253,7 @@ DittoFS provides two CLI binaries for complete management:
 # Store Management (Metadata)
 ./dfsctl store metadata list
 ./dfsctl store metadata add --name fast-meta --type memory
-./dfsctl store metadata add --name persistent --type badger --config '{"db_path":"/data/meta"}'
+./dfsctl store metadata add --name persistent --type badger --config '{"path":"/data/meta"}'
 ./dfsctl store metadata remove fast-meta
 
 # Store Management (Payload/Blocks)
@@ -603,12 +603,10 @@ database:
   sqlite:
     path: /var/lib/dittofs/controlplane.db
 
-server:
-  api:
-    enabled: true
-    port: 8080
-    jwt:
-      secret: "your-secret-key-at-least-32-characters"
+controlplane:
+  port: 8080
+  jwt:
+    secret: "your-secret-key-at-least-32-characters"
 
 cache:
   path: /var/lib/dittofs/cache
@@ -622,7 +620,7 @@ Stores, shares, and adapters are managed via `dfsctl` and persisted in the datab
 ```bash
 # Create named stores (reusable across shares)
 ./dfsctl store metadata add --name badger-main --type badger \
-  --config '{"db_path":"/var/lib/dfs/metadata"}'
+  --config '{"path":"/var/lib/dfs/metadata"}'
 ./dfsctl store payload add --name s3-cloud --type s3 \
   --config '{"region":"us-east-1","bucket":"my-dfs-bucket"}'
 

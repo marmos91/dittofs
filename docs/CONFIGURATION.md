@@ -193,21 +193,19 @@ database:
 The REST API server provides endpoints for authentication, user management, and configuration. It is enabled by default.
 
 ```yaml
-server:
-  api:
-    enabled: true              # Enable/disable API server (default: true)
-    port: 8080                 # HTTP port for API endpoints
-    read_timeout: 10s          # Max time to read request
-    write_timeout: 10s         # Max time to write response
-    idle_timeout: 60s          # Max idle time for keep-alive
+controlplane:
+  port: 8080                 # HTTP port for API endpoints
+  read_timeout: 10s          # Max time to read request
+  write_timeout: 10s         # Max time to write response
+  idle_timeout: 60s          # Max idle time for keep-alive
 
-    # JWT authentication configuration
-    jwt:
-      # HMAC signing key for JWT tokens (min 32 characters)
-      # Can also be set via DITTOFS_CONTROLPLANE_SECRET environment variable
-      secret: "your-secret-key-at-least-32-characters"
-      access_token_duration: 15m   # Access token lifetime
-      refresh_token_duration: 168h # Refresh token lifetime (7 days)
+  # JWT authentication configuration
+  jwt:
+    # HMAC signing key for JWT tokens (min 32 characters)
+    # Can also be set via DITTOFS_CONTROLPLANE_SECRET environment variable
+    secret: "your-secret-key-at-least-32-characters"
+    access_token_duration: 15m   # Access token lifetime
+    refresh_token_duration: 168h # Refresh token lifetime (7 days)
 ```
 
 **API Configuration Options:**
@@ -304,15 +302,15 @@ Metadata stores are managed at runtime via `dittofsctl` and persisted in the con
 
 # BadgerDB for persistent metadata
 ./dittofsctl store metadata add --name badger-main --type badger \
-  --config '{"db_path":"/tmp/dittofs-metadata-main"}'
+  --config '{"path":"/tmp/dittofs-metadata-main"}'
 
 # Separate BadgerDB instance for isolated shares
 ./dittofsctl store metadata add --name badger-isolated --type badger \
-  --config '{"db_path":"/tmp/dittofs-metadata-isolated"}'
+  --config '{"path":"/tmp/dittofs-metadata-isolated"}'
 
 # PostgreSQL for distributed, horizontally-scalable metadata
 ./dittofsctl store metadata add --name postgres-production --type postgres \
-  --config '{"host":"localhost","port":5432,"database":"dittofs","user":"dittofs","password":"secret","sslmode":"require","max_conns":15}'
+  --config "{\"host\":\"localhost\",\"port\":5432,\"database\":\"dittofs\",\"user\":\"dittofs\",\"password\":\"$POSTGRES_PASSWORD\",\"sslmode\":\"require\",\"max_conns\":15}"
 
 # List all metadata stores
 ./dittofsctl store metadata list
@@ -337,11 +335,11 @@ Payload stores are managed at runtime via `dittofsctl` and persisted in the cont
 ```bash
 # Local filesystem storage for fast access
 ./dittofsctl store payload add --name local-disk --type filesystem \
-  --config '{"base_path":"/var/lib/dittofs/blocks"}'
+  --config '{"path":"/var/lib/dittofs/blocks"}'
 
 # S3 storage for cloud-backed shares
 ./dittofsctl store payload add --name s3-production --type s3 \
-  --config '{"region":"us-east-1","bucket":"dittofs-production","prefix":"blocks/"}'
+  --config '{"region":"us-east-1","bucket":"dittofs-production"}'
 
 # In-memory storage for testing
 ./dittofsctl store payload add --name memory-test --type memory
@@ -353,17 +351,6 @@ Payload stores are managed at runtime via `dittofsctl` and persisted in the cont
 ./dittofsctl store payload remove memory-test
 ```
 
-#### Transfer Manager (config file)
-
-```yaml
-payload:
-  # Transfer manager configuration (uploads/downloads to block store)
-  transfer:
-    workers:
-      uploads: 4      # Number of parallel upload workers
-      downloads: 4    # Number of parallel download workers
-```
-
 > **Payload Stores**: Payload stores persist cache data to durable storage using the Chunk/Slice/Block model.
 > Each file is split into 64MB chunks, each chunk into slices, and slices into 4MB blocks.
 >
@@ -371,7 +358,7 @@ payload:
 >
 > - **Range Reads**: Efficient partial reads using S3 byte-range requests
 > - **Configurable Retry**: Automatic retry with exponential backoff for transient S3 errors
-> - **Path-Based Keys**: Objects stored as `{prefix}{contentID}/chunk-{n}/block-{n}` for easy inspection
+> - **Path-Based Keys**: Objects stored as `{payloadID}/chunk-{n}/block-{n}` for easy inspection
 
 **Payload Store Types:**
 
@@ -385,7 +372,7 @@ payload:
 
 | Option | Required | Description |
 |--------|----------|-------------|
-| `base_path` | Yes | Root directory for block storage |
+| `path` | Yes | Root directory for block storage |
 | `create_dir` | No | Create directory if missing (default: true) |
 | `dir_mode` | No | Permission mode for directories (default: 0755) |
 | `file_mode` | No | Permission mode for files (default: 0644) |
@@ -395,11 +382,10 @@ payload:
 | Option | Required | Description |
 |--------|----------|-------------|
 | `bucket` | Yes | S3 bucket name |
-| `region` | No | AWS region (uses SDK default if empty) |
-| `endpoint` | No | S3 endpoint URL (for S3-compatible services) |
-| `prefix` | No | Key prefix for all blocks (default: "blocks/") |
-| `force_path_style` | No | Use path-style addressing (required for Localstack/MinIO) |
-| `max_retries` | No | Maximum retry attempts (default: 3) |
+| `region` | No | AWS region (default: "us-east-1") |
+| `endpoint` | No | S3 endpoint URL (for S3-compatible services like Localstack/MinIO) |
+| `access_key_id` | No | AWS access key (uses SDK default chain if empty) |
+| `secret_access_key` | No | AWS secret key (uses SDK default chain if empty) |
 
 ### 9. Shares (Exports)
 
@@ -783,9 +769,8 @@ export DITTOFS_DATABASE_POSTGRES_USER=dittofs
 export DITTOFS_DATABASE_POSTGRES_PASSWORD=secret
 export DITTOFS_DATABASE_POSTGRES_SSLMODE=require
 
-# API Server
-export DITTOFS_SERVER_API_ENABLED=true
-export DITTOFS_SERVER_API_PORT=8080
+# Control Plane API Server
+export DITTOFS_CONTROLPLANE_PORT=8080
 export DITTOFS_CONTROLPLANE_SECRET=your-secret-key-at-least-32-characters
 
 # Cache
@@ -865,7 +850,7 @@ Then create stores, shares, and enable adapters via CLI:
 ```bash
 ./dittofsctl store metadata add --name default --type memory
 ./dittofsctl store payload add --name default --type filesystem \
-  --config '{"base_path":"/tmp/dittofs-blocks"}'
+  --config '{"path":"/tmp/dittofs-blocks"}'
 ./dittofsctl share create --name /export --metadata default --payload default
 ./dittofsctl adapter enable nfs
 ```
@@ -930,7 +915,7 @@ Then create stores, shares, and enable adapters via CLI:
 ./dittofsctl store metadata add --name prod-badger --type badger \
   --config '{"path":"/var/lib/dittofs/metadata"}'
 ./dittofsctl store payload add --name prod-disk --type filesystem \
-  --config '{"base_path":"/var/lib/dittofs/blocks"}'
+  --config '{"path":"/var/lib/dittofs/blocks"}'
 
 # Create share and grant permissions
 ./dittofsctl share create --name /export --metadata prod-badger --payload prod-disk
@@ -958,7 +943,7 @@ cache:
 
 # Create payload stores
 ./dittofsctl store payload add --name local-disk --type filesystem \
-  --config '{"base_path":"/var/lib/dittofs/blocks"}'
+  --config '{"path":"/var/lib/dittofs/blocks"}'
 ./dittofsctl store payload add --name cloud-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"my-dittofs-bucket"}'
 

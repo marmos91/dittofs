@@ -682,7 +682,7 @@ Stores, shares, and adapters are managed at runtime via `dittofsctl` (persisted 
 # Create named stores (created once, shared across shares)
 ./dittofsctl store metadata add --name fast-meta --type memory
 ./dittofsctl store metadata add --name persistent-meta --type badger \
-  --config '{"db_path":"/data/metadata"}'
+  --config '{"path":"/data/metadata"}'
 
 ./dittofsctl store payload add --name fast-payload --type memory
 ./dittofsctl store payload add --name s3-payload --type s3 \
@@ -816,7 +816,7 @@ WRITE operations require coordination between metadata and payload stores:
 attr, preSize, preMtime, preCtime, err := metadataStore.WriteFile(handle, newSize, authCtx)
 
 // 2. Write actual data via payload store
-err = payloadStore.WriteAt(attr.ContentID, data, offset)
+err = payloadStore.WriteAt(attr.PayloadID, data, offset)
 
 // 3. Return updated attributes to client for cache consistency
 ```
@@ -826,7 +826,7 @@ The metadata store:
 - Returns pre-operation attributes (for WCC data)
 - Updates file size if extended
 - Updates mtime/ctime timestamps
-- Ensures ContentID exists
+- Ensures PayloadID exists
 
 ### Buffer Pooling
 

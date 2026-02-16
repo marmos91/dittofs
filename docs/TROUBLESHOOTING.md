@@ -286,7 +286,7 @@ ls: cannot access 'file.txt': Stale file handle
 2. **For persistent handles, use BadgerDB metadata:**
    ```bash
    ./dittofsctl store metadata add --name persistent --type badger \
-     --config '{"db_path":"/var/lib/dittofs/metadata"}'
+     --config '{"path":"/var/lib/dittofs/metadata"}'
    ./dittofsctl share create --name /export --metadata persistent --payload default
    ```
 
@@ -326,10 +326,10 @@ tail -f ~/.config/dittofs/dittofs.log | grep -i "slow\|timeout"
    ./dittofsctl store payload add --name fast --type memory
    ```
 
-3. **For S3, tune part size:**
+3. **For S3, verify configuration:**
    ```bash
    ./dittofsctl store payload add --name s3-store --type s3 \
-     --config '{"region":"us-east-1","bucket":"my-bucket","part_size":10485760}'
+     --config '{"region":"us-east-1","bucket":"my-bucket"}'
    ```
 
 ### High memory usage
@@ -442,12 +442,13 @@ shares:
 
 **Cause:** Share references a non-existent metadata store.
 
-**Solution:** Ensure the store exists before creating the share:
+**Solution:** Ensure stores exist before creating the share:
 ```bash
-# Create the metadata store first
+# Create the stores first
 ./dittofsctl store metadata add --name my-store --type memory
+./dittofsctl store payload add --name my-payload --type memory
 
-# Then create the share referencing it
+# Then create the share referencing them
 ./dittofsctl share create --name /export --metadata my-store --payload my-payload
 ```
 

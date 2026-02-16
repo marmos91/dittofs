@@ -22,7 +22,7 @@ Examples:
   dfsctl store metadata add --name fast-meta --type memory
 
   # Add a BadgerDB store
-  dfsctl store metadata add --name persistent-meta --type badger --config '{"db_path":"/data/meta"}'`,
+  dfsctl store metadata add --name persistent-meta --type badger --config '{"path":"/data/meta"}'`,
 }
 
 func init() {

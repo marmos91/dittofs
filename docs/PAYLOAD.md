@@ -356,7 +356,7 @@ Production-ready S3 implementation with:
 
 ```bash
 ./dittofsctl store payload add --name s3-production --type s3 \
-  --config '{"region":"us-east-1","bucket":"my-bucket","key_prefix":"blocks/","retry":{"max_retries":3,"initial_backoff":"100ms","max_backoff":"2s"}}'
+  --config '{"region":"us-east-1","bucket":"my-bucket"}'
 ```
 
 ### Filesystem Store
@@ -505,18 +505,12 @@ type GCOptions struct {
 
 ### Complete Configuration Example
 
-Server config file (cache and transfer settings):
+Server config file (cache settings):
 
 ```yaml
 cache:
   path: /var/lib/dittofs/cache
   size: "1Gi"
-
-payload:
-  transfer:
-    workers:
-      uploads: 16
-      downloads: 8
 ```
 
 Then create stores and shares via CLI:
@@ -524,11 +518,11 @@ Then create stores and shares via CLI:
 ```bash
 # Create payload store
 ./dittofsctl store payload add --name s3-store --type s3 \
-  --config '{"region":"us-east-1","bucket":"dittofs-production","key_prefix":"blocks/"}'
+  --config '{"region":"us-east-1","bucket":"dittofs-production"}'
 
 # Create metadata store
 ./dittofsctl store metadata add --name badger --type badger \
-  --config '{"db_path":"/var/lib/dittofs/metadata"}'
+  --config '{"path":"/var/lib/dittofs/metadata"}'
 
 # Create share referencing stores
 ./dittofsctl share create --name /export --metadata badger --payload s3-store

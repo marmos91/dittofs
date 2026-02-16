@@ -94,7 +94,7 @@ Configure your metadata store accordingly:
 
 ```bash
 ./dittofsctl store metadata add --name persistent --type badger \
-  --config '{"db_path":"/var/lib/dittofs/metadata"}'
+  --config '{"path":"/var/lib/dittofs/metadata"}'
 ```
 
 ### Can I import an existing filesystem into DittoFS?
@@ -147,7 +147,7 @@ Yes! This is a core feature. Create stores and shares via CLI:
 # Create metadata stores
 ./dittofsctl store metadata add --name fast-memory --type memory
 ./dittofsctl store metadata add --name persistent-db --type badger \
-  --config '{"db_path":"/var/lib/dittofs/metadata"}'
+  --config '{"path":"/var/lib/dittofs/metadata"}'
 
 # Create payload stores
 ./dittofsctl store payload add --name local-disk --type filesystem \
@@ -169,7 +169,7 @@ Yes! Multiple shares can reference the same store instance for resource efficien
 ```bash
 # Create one shared metadata store
 ./dittofsctl store metadata add --name shared-meta --type badger \
-  --config '{"db_path":"/var/lib/dittofs/shared-metadata"}'
+  --config '{"path":"/var/lib/dittofs/shared-metadata"}'
 
 # Create separate payload stores
 ./dittofsctl store payload add --name s3-prod --type s3 \
