@@ -167,7 +167,7 @@ DittoFS can create special file entries via MKNOD, but they don't function as ac
 
 | Status | Reason |
 |--------|--------|
-| Handled by dittofsctl | Apple security restriction - only mount owner can access |
+| Handled by dfsctl | Apple security restriction - only mount owner can access |
 
 **What it is**: macOS has a security restriction where only the user who owns an SMB mount
 can access its files, regardless of Unix permissions (0777 doesn't help). When Apple was
@@ -178,9 +178,9 @@ asked about this, they responded "works as intended".
 2. macOS ignores group and other permissions on SMB mounts - only the owner can access
 3. This is enforced at a level below Unix permissions (no SMB traffic even reaches the server)
 
-**How dittofsctl handles this**:
+**How dfsctl handles this**:
 
-When you run `sudo dittofsctl share mount`, it automatically uses `sudo -u $SUDO_USER` to
+When you run `sudo dfsctl share mount`, it automatically uses `sudo -u $SUDO_USER` to
 mount as your user (not root). This means:
 - The mount is owned by your user
 - You can access the files normally
@@ -188,13 +188,13 @@ mount as your user (not root). This means:
 
 ```bash
 # This works correctly - mount owned by your user, not root
-sudo dittofsctl share mount --protocol smb /export /mnt/share
+sudo dfsctl share mount --protocol smb /export /mnt/share
 ```
 
 **Alternative - mount without sudo**:
 ```bash
 mkdir -p ~/mnt/share
-dittofsctl share mount --protocol smb /export ~/mnt/share
+dfsctl share mount --protocol smb /export ~/mnt/share
 ```
 
 **Linux comparison**: Linux CIFS mount fully supports `uid=`/`gid=` options, so this

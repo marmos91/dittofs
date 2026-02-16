@@ -48,8 +48,8 @@ DittoFS provides two CLI binaries:
 
 | Binary | Purpose | Location |
 |--------|---------|----------|
-| **`dittofs`** | Server daemon management | `cmd/dittofs/` |
-| **`dittofsctl`** | Remote REST API client | `cmd/dittofsctl/` |
+| **`dfs`** | Server daemon management | `cmd/dfs/` |
+| **`dfsctl`** | Remote REST API client | `cmd/dfsctl/` |
 
 Both CLIs use the **Cobra** framework with subcommand structure and support shell completion (bash, zsh, fish, powershell).
 
@@ -57,7 +57,7 @@ Both CLIs use the **Cobra** framework with subcommand structure and support shel
 
 ```
 cmd/
-├── dittofs/                    # Server CLI
+├── dfs/                        # Server CLI
 │   ├── main.go
 │   └── commands/
 │       ├── root.go             # Root command, global flags
@@ -70,7 +70,7 @@ cmd/
 │       ├── config/             # Config subcommands (init, show, validate, edit)
 │       └── backup/             # Backup subcommands
 │
-└── dittofsctl/                 # Client CLI
+└── dfsctl/                     # Client CLI
     ├── main.go
     ├── cmdutil/                # Shared utilities
     │   └── util.go             # Auth client, output helpers, flags
@@ -111,53 +111,53 @@ pkg/apiclient/                  # REST API client library
 ### Building
 ```bash
 # Build both binaries
-go build -o dittofs cmd/dittofs/main.go
-go build -o dittofsctl cmd/dittofsctl/main.go
+go build -o dfs cmd/dfs/main.go
+go build -o dfsctl cmd/dfsctl/main.go
 
 # Install dependencies
 go mod download
 ```
 
-### Server Management (dittofs)
+### Server Management (dfs)
 ```bash
 # Configuration
-./dittofs config init              # Create default config
-./dittofs config show              # Display config
-./dittofs config validate          # Validate config
+./dfs config init              # Create default config
+./dfs config show              # Display config
+./dfs config validate          # Validate config
 
 # Server lifecycle
-./dittofs start                    # Start in foreground
-./dittofs stop                     # Graceful shutdown
-./dittofs status                   # Check status
-./dittofs logs -f                  # Follow logs
+./dfs start                    # Start in foreground
+./dfs stop                     # Graceful shutdown
+./dfs status                   # Check status
+./dfs logs -f                  # Follow logs
 
 # Backup
-./dittofs backup controlplane --output /tmp/backup.json
+./dfs backup controlplane --output /tmp/backup.json
 ```
 
-### Remote Management (dittofsctl)
+### Remote Management (dfsctl)
 ```bash
 # Authentication
-./dittofsctl login --server http://localhost:8080 --username admin
-./dittofsctl logout
-./dittofsctl context list          # Multi-server support
+./dfsctl login --server http://localhost:8080 --username admin
+./dfsctl logout
+./dfsctl context list          # Multi-server support
 
 # User/Group management
-./dittofsctl user create --username alice    # Password prompted
-./dittofsctl user list -o json
-./dittofsctl group create --name editors
-./dittofsctl group add-user editors alice
+./dfsctl user create --username alice    # Password prompted
+./dfsctl user list -o json
+./dfsctl group create --name editors
+./dfsctl group add-user editors alice
 
 # Share management
-./dittofsctl share list
-./dittofsctl share permission grant /export --user alice --level read-write
+./dfsctl share list
+./dfsctl share permission grant /export --user alice --level read-write
 
 # Store management
-./dittofsctl store metadata list
-./dittofsctl store payload add --name s3-content --type s3 --config '{...}'
+./dfsctl store metadata list
+./dfsctl store payload add --name s3-content --type s3 --config '{...}'
 
 # Adapter management
-./dittofsctl adapter list
+./dfsctl adapter list
 ```
 
 ### Environment Variables
@@ -551,11 +551,11 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 ```
 dittofs/
 ├── cmd/
-│   ├── dittofs/              # Server CLI binary
+│   ├── dfs/                  # Server CLI binary
 │   │   ├── main.go           # Entry point
 │   │   └── commands/         # Cobra commands (start, stop, config, logs, backup)
 │   │
-│   └── dittofsctl/           # Client CLI binary
+│   └── dfsctl/               # Client CLI binary
 │       ├── main.go           # Entry point
 │       ├── cmdutil/          # Shared utilities (auth, output, flags)
 │       └── commands/         # Cobra commands (user, group, share, store, adapter)
@@ -887,7 +887,7 @@ Large I/O operations use buffer pools (`internal/protocol/nfs/bufpool.go`):
    - `SetRuntime()`: Receive runtime reference for store access
    - `Protocol()`: Return name
    - `Port()`: Return listen port
-3. Register in `cmd/dittofs/main.go`
+3. Register in `cmd/dfs/main.go`
 4. Update README with usage instructions
 
 ## Testing Approach
@@ -943,10 +943,10 @@ sudo go test -v -run TestWriteThenReadBySize ./test/e2e/
 ### Manual NFS Testing
 ```bash
 # Start server
-./dittofs start
+./dfs start
 
 # Or with debug logging
-DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
+DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
 
 # Mount and test operations
 sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/test

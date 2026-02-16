@@ -25,7 +25,7 @@ mount.nfs: Connection refused
 
 1. **Check if DittoFS is running:**
    ```bash
-   ps aux | grep dittofs
+   ps aux | grep dfs
    ```
 
 2. **Verify the port is correct:**
@@ -50,7 +50,7 @@ mount.nfs: Connection refused
    cat ~/.config/dittofs/config.yaml
 
    # Start with debug logging
-   DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
+   DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
    ```
 
 ### Connection timeout
@@ -170,20 +170,20 @@ This happens after mounting an SMB share, even with 0777 permissions.
 regardless of Unix permissions. This is enforced at a level below file permissions - no SMB
 traffic even reaches the server. Apple confirmed this is "works as intended".
 
-**Solution - use dittofsctl (handles this automatically):**
+**Solution - use dfsctl (handles this automatically):**
 
-The `dittofsctl share mount` command automatically handles this by using `sudo -u $SUDO_USER`
+The `dfsctl share mount` command automatically handles this by using `sudo -u $SUDO_USER`
 to mount as your user instead of root:
 
 ```bash
 # This works - mount owned by your user, not root
-sudo dittofsctl share mount --protocol smb /export /mnt/share
+sudo dfsctl share mount --protocol smb /export /mnt/share
 ```
 
 **Alternative - mount to user directory without sudo:**
 ```bash
 mkdir -p ~/mnt/share
-dittofsctl share mount --protocol smb /export ~/mnt/share
+dfsctl share mount --protocol smb /export ~/mnt/share
 ```
 
 **If using manual mount_smbfs:**
@@ -192,7 +192,7 @@ dittofsctl share mount --protocol smb /export ~/mnt/share
 sudo -u $USER mount_smbfs //user:pass@localhost:12445/export /mnt/share
 ```
 
-**Note:** This is a macOS-specific issue. On Linux, `dittofsctl share mount` uses uid/gid
+**Note:** This is a macOS-specific issue. On Linux, `dfsctl share mount` uses uid/gid
 options which work correctly.
 
 See [Known Limitations](KNOWN_LIMITATIONS.md#macos-mount-owner-only-access) for details.
@@ -235,7 +235,7 @@ touch: cannot touch 'file.txt': Permission denied
 
 4. **Enable debug logging to see auth context:**
    ```bash
-   DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
+   DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
    # Look for lines showing UID/GID in requests
    ```
 
@@ -391,7 +391,7 @@ go tool pprof mem.prof
 
 **Via environment variable:**
 ```bash
-DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
+DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
 ```
 
 **Via configuration:**
@@ -430,13 +430,13 @@ wireshark nfs.pcap
 
 ```bash
 # Check if server is responding
-./dittofs status
+./dfs status
 
 # Check metrics (if enabled)
 curl http://localhost:9090/metrics
 
 # Check configuration
-DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start 2>&1 | grep -i "config"
+DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start 2>&1 | grep -i "config"
 ```
 
 ## Common Error Messages

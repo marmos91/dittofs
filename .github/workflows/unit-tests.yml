@@ -47,11 +47,11 @@ jobs:
         continue-on-error: true
 
       - name: Build binary
-        run: go build -v -o dittofs cmd/dittofs/main.go
+        run: go build -v -o dfs cmd/dfs/main.go
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dittofs-${{ matrix.go-version }}
-          path: dittofs
+          name: dfs-${{ matrix.go-version }}
+          path: dfs
           retention-days: 7

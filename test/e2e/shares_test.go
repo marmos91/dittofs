@@ -2,7 +2,7 @@
 
 // Package e2e contains end-to-end tests for DittoFS share management.
 //
-// This file tests Share CRUD operations via the dittofsctl CLI.
+// This file tests Share CRUD operations via the dfsctl CLI.
 // Covers requirements SHR-01 through SHR-04 from the E2E test plan.
 //
 // NOTE: SHR-05/SHR-06 (soft delete with deferred cleanup) are NOT testable

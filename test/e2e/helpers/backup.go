@@ -13,7 +13,7 @@ import (
 // =============================================================================
 
 // ControlPlaneBackup represents the structure of a JSON backup file.
-// This matches the structure from cmd/dittofs/commands/backup/controlplane.go.
+// This matches the structure from cmd/dfs/commands/backup/controlplane.go.
 type ControlPlaneBackup struct {
 	Timestamp      string            `json:"timestamp"`
 	Version        string            `json:"version"`
@@ -49,11 +49,11 @@ type BackupGroup struct {
 	Description string  `json:"description,omitempty"`
 }
 
-// RunDittofsBackup runs the dittofs backup controlplane command.
+// RunDfsBackup runs the dfs backup controlplane command.
 // outputPath: where to write the backup file
 // configPath: path to server config (needed to locate the database)
 // format: backup format - "native", "native-cli", or "json" (empty = default "native")
-func RunDittofsBackup(t *testing.T, outputPath, configPath, format string) error {
+func RunDfsBackup(t *testing.T, outputPath, configPath, format string) error {
 	t.Helper()
 
 	args := []string{"backup", "controlplane",
@@ -63,7 +63,7 @@ func RunDittofsBackup(t *testing.T, outputPath, configPath, format string) error
 	if format != "" {
 		args = append(args, "--format", format)
 	}
-	_, err := RunDittofs(t, args...)
+	_, err := RunDfs(t, args...)
 	return err
 }
 

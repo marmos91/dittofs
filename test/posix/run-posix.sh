@@ -25,7 +25,7 @@ if ! mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
     echo "Error: $MOUNT_POINT is not mounted"
     echo ""
     echo "Start DittoFS and mount with:"
-    echo "  ./dittofs start"
+    echo "  ./dfs start"
     echo "  sudo mkdir -p $MOUNT_POINT"
     echo "  sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,nolock localhost:/export $MOUNT_POINT"
     exit 1

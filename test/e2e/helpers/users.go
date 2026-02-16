@@ -97,7 +97,7 @@ func WithEnabled(enabled bool) UserOption {
 // User CRUD Methods
 // =============================================================================
 
-// CreateUser creates a new user via dittofsctl.
+// CreateUser creates a new user via dfsctl.
 // Returns the created user or an error with CLI output on failure.
 func (r *CLIRunner) CreateUser(username, password string, opts ...UserOption) (*User, error) {
 	o := &userOptions{}
@@ -314,7 +314,7 @@ func ExtractTokenFromCredentialsFile(serverURL string) (string, error) {
 		configHome = filepath.Join(home, ".config")
 	}
 
-	credFile := filepath.Join(configHome, "dittofsctl", "config.json")
+	credFile := filepath.Join(configHome, "dfsctl", "config.json")
 	data, err := os.ReadFile(credFile)
 	if err != nil {
 		return "", fmt.Errorf("failed to read credentials file: %w", err)

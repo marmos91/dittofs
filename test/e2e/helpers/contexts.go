@@ -11,7 +11,7 @@ import (
 // Context Management Types
 // =============================================================================
 
-// ContextInfo represents context information from dittofsctl context list.
+// ContextInfo represents context information from dfsctl context list.
 type ContextInfo struct {
 	Name      string `json:"name"`
 	Current   bool   `json:"current"`

@@ -1,4 +1,4 @@
-// Package credentials provides credential storage and context management for dittofsctl.
+// Package credentials provides credential storage and context management for dfsctl.
 package credentials
 
 import (
@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	// DefaultConfigDir is the default directory for dittofsctl configuration.
-	DefaultConfigDir = "dittofsctl"
+	// DefaultConfigDir is the default directory for dfsctl configuration.
+	DefaultConfigDir = "dfsctl"
 	// ConfigFileName is the name of the configuration file.
 	ConfigFileName = "config.json"
 	// FilePermissions for config files (read/write for owner only).
@@ -27,7 +27,7 @@ var (
 	// ErrContextNotFound indicates the requested context doesn't exist.
 	ErrContextNotFound = errors.New("context not found")
 	// ErrNotLoggedIn indicates no valid credentials exist.
-	ErrNotLoggedIn = errors.New("not logged in - run 'dittofsctl login' first")
+	ErrNotLoggedIn = errors.New("not logged in - run 'dfsctl login' first")
 )
 
 // Context represents a connection context to a DittoFS server.
@@ -60,7 +60,7 @@ type Preferences struct {
 	Editor        string `json:"editor,omitempty"`
 }
 
-// Config represents the complete dittofsctl configuration.
+// Config represents the complete dfsctl configuration.
 type Config struct {
 	CurrentContext string              `json:"current_context"`
 	Contexts       map[string]*Context `json:"contexts"`

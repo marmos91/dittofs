@@ -19,7 +19,7 @@ RUN apk add --no-cache ca-certificates tzdata && \
 WORKDIR /app
 
 # Copy the pre-built binary from GoReleaser
-COPY dittofs /app/dittofs
+COPY dfs /app/dfs
 
 # Create data directories with proper permissions
 RUN mkdir -p /data/metadata /data/content /data/cache /config && \
@@ -46,5 +46,5 @@ VOLUME ["/data/metadata", "/data/content", "/data/cache", "/config"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-ENTRYPOINT ["/app/dittofs"]
+ENTRYPOINT ["/app/dfs"]
 CMD ["start", "--foreground", "--config", "/config/config.yaml"]

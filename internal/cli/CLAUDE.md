@@ -1,6 +1,6 @@
 # internal/cli
 
-Shared CLI utilities for both `dittofs` (server) and `dittofsctl` (client) commands.
+Shared CLI utilities for both `dfs` (server) and `dfsctl` (client) commands.
 
 ## Structure
 
@@ -48,7 +48,7 @@ choice, err := prompt.Select("Choose option:", []string{"a", "b", "c"})
 
 ## Credentials Package
 
-Multi-context credential storage for dittofsctl:
+Multi-context credential storage for dfsctl:
 
 ```go
 // Store credentials

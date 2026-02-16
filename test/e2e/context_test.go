@@ -399,7 +399,7 @@ func createMultiContextCredFile(configHome string, contexts []contextSetup, curr
 		}
 	}
 
-	dir := filepath.Join(configHome, "dittofsctl")
+	dir := filepath.Join(configHome, "dfsctl")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}

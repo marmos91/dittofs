@@ -1,4 +1,4 @@
-// Package apiclient provides a REST API client for dittofsctl.
+// Package apiclient provides a REST API client for dfsctl.
 package apiclient
 
 import (

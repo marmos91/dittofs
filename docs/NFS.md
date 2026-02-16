@@ -150,7 +150,7 @@ Large I/O operations use buffer pools (`internal/protocol/nfs/bufpool.go`):
 
 ```bash
 # Start server
-./dittofs start -log-level DEBUG
+./dfs start -log-level DEBUG
 
 # Mount and test operations
 sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/test

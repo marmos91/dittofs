@@ -32,13 +32,13 @@ DittoFS uses a flexible configuration system with support for YAML/TOML files an
 
 ```bash
 # Generate default configuration file
-./dittofs init
+./dfs init
 
 # Generate with custom path
-./dittofs init --config /etc/dittofs/config.yaml
+./dfs init --config /etc/dittofs/config.yaml
 
 # Force overwrite existing config
-./dittofs init --force
+./dfs init --force
 ```
 
 ### Supported Formats
@@ -483,7 +483,7 @@ shares:
 
 DittoFS supports a unified user management system for both NFS and SMB protocols. Users, groups, and their permissions are stored in the control plane database (see [Database Configuration](#4-database-control-plane)) and can be managed via:
 
-1. **CLI commands** (`dittofs user`, `dittofs group`) - Recommended for initial setup
+1. **CLI commands** (`dfs user`, `dfs group`) - Recommended for initial setup
 2. **REST API** - For programmatic management and integrations
 3. **Config file** - For bootstrap configuration (imported on first run)
 
@@ -634,56 +634,56 @@ DittoFS provides CLI commands to manage users and groups without manually editin
 
 ```bash
 # Add a new user (prompts for password)
-dittofs user add alice
-dittofs user add alice --uid 1005 --gid 100 --groups editors,viewers
+dfs user add alice
+dfs user add alice --uid 1005 --gid 100 --groups editors,viewers
 
 # Delete a user
-dittofs user delete alice
+dfs user delete alice
 
 # List all users
-dittofs user list
+dfs user list
 
 # Change password
-dittofs user passwd alice
+dfs user passwd alice
 
 # Grant share permission
-dittofs user grant alice /export read-write
+dfs user grant alice /export read-write
 
 # Revoke share permission
-dittofs user revoke alice /export
+dfs user revoke alice /export
 
 # List user's groups
-dittofs user groups alice
+dfs user groups alice
 
 # Add user to group
-dittofs user join alice editors
+dfs user join alice editors
 
 # Remove user from group
-dittofs user leave alice editors
+dfs user leave alice editors
 ```
 
 **Group Commands:**
 
 ```bash
 # Add a new group
-dittofs group add editors
-dittofs group add editors --gid 101
+dfs group add editors
+dfs group add editors --gid 101
 
 # Delete a group
-dittofs group delete editors
-dittofs group delete editors --force  # Delete even if has members
+dfs group delete editors
+dfs group delete editors --force  # Delete even if has members
 
 # List all groups
-dittofs group list
+dfs group list
 
 # List group members
-dittofs group members editors
+dfs group members editors
 
 # Grant share permission
-dittofs group grant editors /export read-write
+dfs group grant editors /export read-write
 
 # Revoke share permission
-dittofs group revoke editors /export
+dfs group revoke editors /export
 ```
 
 **Using Custom Config File:**
@@ -691,8 +691,8 @@ dittofs group revoke editors /export
 All user and group commands support the `--config` flag:
 
 ```bash
-dittofs user list --config /etc/dittofs/config.yaml
-dittofs group add admins --config /etc/dittofs/config.yaml
+dfs user list --config /etc/dittofs/config.yaml
+dfs group add admins --config /etc/dittofs/config.yaml
 ```
 
 ### 11. Protocol Adapters
@@ -873,7 +873,7 @@ export DITTOFS_ADAPTERS_SMB_CREDITS_MAX_GRANT=8192
 export DITTOFS_ADAPTERS_SMB_CREDITS_INITIAL_GRANT=256
 
 # Start server with overrides
-DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
+DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
 ```
 
 ## Configuration Precedence
@@ -889,7 +889,7 @@ Example:
 ```bash
 # config.yaml has port: 2049
 # This overrides it to 12049
-DITTOFS_ADAPTERS_NFS_PORT=12049 ./dittofs start
+DITTOFS_ADAPTERS_NFS_PORT=12049 ./dfs start
 ```
 
 ## Configuration Examples
@@ -1185,5 +1185,5 @@ cat /path/to/config.yaml
 Start server with debug logging to see loaded configuration:
 
 ```bash
-DITTOFS_LOGGING_LEVEL=DEBUG ./dittofs start
+DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
 ```

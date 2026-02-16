@@ -86,7 +86,7 @@ jobs:
           sudo systemctl start rpc-gssd || true
 
       - name: Build DittoFS
-        run: nix develop .#ci --command go build -o dittofs cmd/dittofs/main.go
+        run: nix develop .#ci --command go build -o dfs cmd/dfs/main.go
 
       - name: Run E2E tests
         run: |
