@@ -14,5 +14,9 @@ func AllModels() []any {
 		&AdapterConfig{},
 		&Setting{},
 		&IdentityMapping{},
+		&NFSAdapterSettings{},
+		&SMBAdapterSettings{},
+		&Netgroup{},
+		&NetgroupMember{},
 	}
 }

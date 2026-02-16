@@ -86,6 +86,11 @@ func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error 
 		Updates(map[string]any{
 			"read_only":          share.ReadOnly,
 			"default_permission": share.DefaultPermission,
+			"allow_auth_sys":     share.AllowAuthSys,
+			"require_kerberos":   share.RequireKerberos,
+			"min_kerberos_level": share.MinKerberosLevel,
+			"netgroup_id":        share.NetgroupID,
+			"blocked_operations": share.BlockedOperations,
 			"updated_at":         share.UpdatedAt,
 		})
 

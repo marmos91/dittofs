@@ -6,6 +6,7 @@ package handlers
 import (
 	"bytes"
 	"io"
+	"sync"
 
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
@@ -44,6 +45,14 @@ type Handler struct {
 	// and FATTR4_OWNER_GROUP encoding. When non-nil, UIDs/GIDs are
 	// reverse-resolved to user@domain format. When nil, numeric format is used.
 	IdentityMapper identity.IdentityMapper
+
+	// blockedOpsMu protects blockedOps from concurrent read/write access.
+	blockedOpsMu sync.RWMutex
+
+	// blockedOps is a set of operation numbers blocked at the adapter level.
+	// Populated from NFSAdapterSettings.BlockedOperations.
+	// If an operation is in this set, COMPOUND returns NFS4ERR_NOTSUPP for it.
+	blockedOps map[uint32]bool
 
 	// opDispatchTable maps operation numbers to handler functions.
 	opDispatchTable map[uint32]OpHandler
@@ -168,6 +177,38 @@ func notSuppHandler(opCode uint32) *types.CompoundResult {
 		OpCode: opCode,
 		Data:   encodeStatusOnly(types.NFS4ERR_NOTSUPP),
 	}
+}
+
+// SetBlockedOps replaces the adapter-level blocked operations set.
+// Called when live settings change (via SettingsWatcher) to refresh the
+// operations that COMPOUND should reject with NFS4ERR_NOTSUPP.
+//
+// The opNames slice uses the human-readable operation names returned by
+// types.OpName (e.g., "READ", "WRITE", "DELEGPURGE"). Unrecognised names
+// are silently ignored so that stale DB entries don't crash the server.
+func (h *Handler) SetBlockedOps(opNames []string) {
+	blocked := make(map[uint32]bool, len(opNames))
+	for _, name := range opNames {
+		if opNum, ok := types.OpNameToNum(name); ok {
+			blocked[opNum] = true
+		}
+	}
+	h.blockedOpsMu.Lock()
+	h.blockedOps = blocked
+	h.blockedOpsMu.Unlock()
+}
+
+// IsOperationBlocked returns true if the given operation number is blocked
+// at the adapter level. Per-share blocked operations are checked separately
+// in the COMPOUND dispatcher using the CompoundContext after PUTFH resolves.
+func (h *Handler) IsOperationBlocked(opNum uint32) bool {
+	h.blockedOpsMu.RLock()
+	blocked := h.blockedOps
+	h.blockedOpsMu.RUnlock()
+	if blocked == nil {
+		return false
+	}
+	return blocked[opNum]
 }
 
 // encodeStatusOnly XDR-encodes a status-only response (just the nfsstat4).

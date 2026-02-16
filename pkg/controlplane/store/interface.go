@@ -374,6 +374,85 @@ type Store interface {
 	IsAdminInitialized(ctx context.Context) (bool, error)
 
 	// ============================================
+	// ADAPTER SETTINGS OPERATIONS
+	// ============================================
+
+	// GetNFSAdapterSettings returns the NFS adapter settings by adapter ID.
+	// Returns models.ErrAdapterNotFound if no settings exist for this adapter.
+	GetNFSAdapterSettings(ctx context.Context, adapterID string) (*models.NFSAdapterSettings, error)
+
+	// UpdateNFSAdapterSettings updates the NFS adapter settings.
+	// The Version field is incremented atomically for change detection.
+	// Returns models.ErrAdapterNotFound if no settings exist for this adapter.
+	UpdateNFSAdapterSettings(ctx context.Context, settings *models.NFSAdapterSettings) error
+
+	// ResetNFSAdapterSettings resets NFS adapter settings to defaults.
+	// Deletes the existing record and creates a new one with default values.
+	// Returns models.ErrAdapterNotFound if the adapter doesn't exist.
+	ResetNFSAdapterSettings(ctx context.Context, adapterID string) error
+
+	// GetSMBAdapterSettings returns the SMB adapter settings by adapter ID.
+	// Returns models.ErrAdapterNotFound if no settings exist for this adapter.
+	GetSMBAdapterSettings(ctx context.Context, adapterID string) (*models.SMBAdapterSettings, error)
+
+	// UpdateSMBAdapterSettings updates the SMB adapter settings.
+	// The Version field is incremented atomically for change detection.
+	// Returns models.ErrAdapterNotFound if no settings exist for this adapter.
+	UpdateSMBAdapterSettings(ctx context.Context, settings *models.SMBAdapterSettings) error
+
+	// ResetSMBAdapterSettings resets SMB adapter settings to defaults.
+	// Deletes the existing record and creates a new one with default values.
+	// Returns models.ErrAdapterNotFound if the adapter doesn't exist.
+	ResetSMBAdapterSettings(ctx context.Context, adapterID string) error
+
+	// EnsureAdapterSettings creates default settings records for adapters that lack them.
+	// Called during startup and migration to populate settings for existing adapters.
+	EnsureAdapterSettings(ctx context.Context) error
+
+	// ============================================
+	// NETGROUP OPERATIONS
+	// ============================================
+
+	// GetNetgroup returns a netgroup by name with members preloaded.
+	// Returns models.ErrNetgroupNotFound if the netgroup doesn't exist.
+	GetNetgroup(ctx context.Context, name string) (*models.Netgroup, error)
+
+	// GetNetgroupByID returns a netgroup by its unique ID with members preloaded.
+	// Returns models.ErrNetgroupNotFound if the netgroup doesn't exist.
+	GetNetgroupByID(ctx context.Context, id string) (*models.Netgroup, error)
+
+	// ListNetgroups returns all netgroups with members preloaded.
+	ListNetgroups(ctx context.Context) ([]*models.Netgroup, error)
+
+	// CreateNetgroup creates a new netgroup.
+	// The ID will be generated if empty.
+	// Returns the generated ID.
+	// Returns models.ErrDuplicateNetgroup if a netgroup with the same name exists.
+	CreateNetgroup(ctx context.Context, netgroup *models.Netgroup) (string, error)
+
+	// DeleteNetgroup deletes a netgroup by name.
+	// Returns models.ErrNetgroupNotFound if the netgroup doesn't exist.
+	// Returns models.ErrNetgroupInUse if the netgroup is referenced by any shares.
+	DeleteNetgroup(ctx context.Context, name string) error
+
+	// AddNetgroupMember adds a member to a netgroup.
+	// Validates the member type and value before adding.
+	// Returns models.ErrNetgroupNotFound if the netgroup doesn't exist.
+	AddNetgroupMember(ctx context.Context, netgroupName string, member *models.NetgroupMember) error
+
+	// RemoveNetgroupMember removes a member from a netgroup by member ID.
+	// Returns models.ErrNetgroupNotFound if the netgroup doesn't exist.
+	RemoveNetgroupMember(ctx context.Context, netgroupName, memberID string) error
+
+	// GetNetgroupMembers returns all members of a netgroup.
+	// Returns models.ErrNetgroupNotFound if the netgroup doesn't exist.
+	GetNetgroupMembers(ctx context.Context, netgroupName string) ([]*models.NetgroupMember, error)
+
+	// GetSharesByNetgroup returns all shares referencing a netgroup.
+	// Used to check ErrNetgroupInUse before deletion.
+	GetSharesByNetgroup(ctx context.Context, netgroupName string) ([]*models.Share, error)
+
+	// ============================================
 	// IDENTITY MAPPING OPERATIONS
 	// ============================================
 

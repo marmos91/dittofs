@@ -42,7 +42,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 12: Kerberos Authentication** ✓ - RPCSEC_GSS framework with krb5/krb5i/krb5p
 - [ ] **Phase 12.5: Manual Verification - Kerberos** USER CHECKPOINT - Test Kerberos auth manually
 - [ ] **Phase 13: NFSv4 ACLs** - Extended ACL model with Windows interoperability
-- [ ] **Phase 14: Control Plane v2.0** - NFSv4 adapter configuration and settings
+- [x] **Phase 14: Control Plane v2.0** - NFSv4 adapter configuration and settings (completed 2026-02-16)
 - [ ] **Phase 15: v2.0 Testing** - Comprehensive E2E tests for NFSv4.0
 - [ ] **Phase 15.5: Manual Verification v2.0** USER CHECKPOINT - Full NFSv4.0 validation
 
@@ -309,7 +309,7 @@ Plans:
 - [ ] 13-05-PLAN.md — SMB Security Descriptor encoding, identity mapping REST API + dittofsctl commands, ACL metrics
 
 ### Phase 14: Control Plane v2.0
-**Goal**: Add NFSv4 configuration support to control plane
+**Goal**: Add adapter settings management, per-share security policy, and netgroup IP access control to the control plane
 **Depends on**: Phase 6
 **Requirements**: CP2-01, CP2-02, CP2-03, CP2-04, CP2-05, CP2-06
 **Success Criteria** (what must be TRUE):
@@ -318,12 +318,16 @@ Plans:
   3. Per-share AUTH_SYS allowance configurable
   4. Version range (min/max) configurable
   5. Lease and grace period timeouts configurable
-**Plans**: TBD
+**Plans**: 7 plans in 4 waves
 
 Plans:
-- [ ] 14-01: NFSv4 adapter configuration
-- [ ] 14-02: Per-share security settings
-- [ ] 14-03: Lease and grace period configuration
+- [ ] 14-01-PLAN.md — GORM models (NFSAdapterSettings, SMBAdapterSettings, Netgroup, NetgroupMember) + store operations + migration
+- [ ] 14-02-PLAN.md — REST API handlers for adapter settings (CRUD, validation, PATCH/PUT) and netgroups (CRUD + members) + API client
+- [ ] 14-03-PLAN.md — Settings watcher (10s DB polling, version-based change detection, atomic swap) + netgroup access checker with DNS cache
+- [ ] 14-04-PLAN.md — NFS/SMB adapter enforcement (live settings, operation blocklist, security policy, delegation policy, netgroup IP check)
+- [ ] 14-05-PLAN.md — CLI commands: adapter settings show/update/reset + netgroup create/list/show/delete/add-member/remove-member
+- [ ] 14-06-PLAN.md — Unit/integration tests for store, handlers, settings watcher, and netgroup access
+- [ ] 14-07-PLAN.md — E2E tests: full lifecycle, hot-reload, validation, netgroup CRUD, security policy, delegation policy
 
 ### Phase 15: v2.0 Testing
 **Goal**: Comprehensive E2E testing for all NFSv4.0 functionality
@@ -610,7 +614,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 11. Delegations | v2.0 | 4/4 | Complete | 2026-02-14 |
 | 12. Kerberos Authentication | v2.0 | 5/5 | Complete | 2026-02-15 |
 | 13. NFSv4 ACLs | v2.0 | 0/5 | Planned | - |
-| 14. Control Plane v2.0 | v2.0 | 0/3 | Not started | - |
+| 14. Control Plane v2.0 | v2.0 | Complete    | 2026-02-16 | - |
 | 15. v2.0 Testing | v2.0 | 0/5 | Not started | - |
 | 16. Session Infrastructure | v3.0 | 0/4 | Not started | - |
 | 17. Exactly-Once Semantics | v3.0 | 0/4 | Not started | - |
@@ -627,7 +631,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 28. v4.0 Testing | v4.0 | 0/5 | Not started | - |
 | 28.1 Portmapper Auto-Registration | v4.0 | 0/1 | Not started | - |
 
-**Total:** 44/107 plans complete
+**Total:** 44/111 plans complete
 
 ---
 *Roadmap created: 2026-02-04*
@@ -653,3 +657,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 *Phase 12 planned: 2026-02-15 (5 plans in 5 sequential waves -- foundation types, context machine, DATA integration, integrity/privacy, keytab/metrics)*
 *Phase 12 completed: 2026-02-15*
 *Phase 13 planned: 2026-02-16 (5 plans in 3 waves -- ACL core, identity mapper, metadata+NFS integration, SMB interop+CLI)*
+*Phase 14 planned: 2026-02-16 (7 plans in 4 waves -- data models, API+CLI+runtime, adapter enforcement+tests, E2E tests)*

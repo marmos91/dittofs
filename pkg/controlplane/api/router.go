@@ -180,6 +180,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			// Adapter configuration - split read/write access
 			r.Route("/adapters", func(r chi.Router) {
 				adapterHandler := handlers.NewAdapterHandler(rt)
+				settingsHandler := handlers.NewAdapterSettingsHandler(cpStore, rt)
 
 				// Read endpoint: admin + operator (list only)
 				r.Group(func(r chi.Router) {
@@ -194,7 +195,27 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					r.Get("/{type}", adapterHandler.Get)
 					r.Put("/{type}", adapterHandler.Update)
 					r.Delete("/{type}", adapterHandler.Delete)
+
+					// Adapter settings routes
+					r.Get("/{type}/settings", settingsHandler.GetSettings)
+					r.Put("/{type}/settings", settingsHandler.PutSettings)
+					r.Patch("/{type}/settings", settingsHandler.PatchSettings)
+					r.Get("/{type}/settings/defaults", settingsHandler.GetDefaults)
+					r.Post("/{type}/settings/reset", settingsHandler.ResetSettings)
 				})
+			})
+
+			// Netgroup management (admin only)
+			r.Route("/netgroups", func(r chi.Router) {
+				r.Use(apiMiddleware.RequireAdmin())
+
+				netgroupHandler := handlers.NewNetgroupHandler(cpStore)
+				r.Post("/", netgroupHandler.Create)
+				r.Get("/", netgroupHandler.List)
+				r.Get("/{name}", netgroupHandler.Get)
+				r.Delete("/{name}", netgroupHandler.Delete)
+				r.Post("/{name}/members", netgroupHandler.AddMember)
+				r.Delete("/{name}/members/{id}", netgroupHandler.RemoveMember)
 			})
 
 			// Identity mapping management (admin only)

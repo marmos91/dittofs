@@ -438,3 +438,58 @@ func OpName(op uint32) string {
 		return "UNKNOWN"
 	}
 }
+
+// opNameToNum maps human-readable operation names to their numeric constants.
+// Populated by init() from the OpName reverse mapping.
+var opNameToNum map[string]uint32
+
+func init() {
+	opNameToNum = map[string]uint32{
+		"ACCESS":              OP_ACCESS,
+		"CLOSE":               OP_CLOSE,
+		"COMMIT":              OP_COMMIT,
+		"CREATE":              OP_CREATE,
+		"DELEGPURGE":          OP_DELEGPURGE,
+		"DELEGRETURN":         OP_DELEGRETURN,
+		"GETATTR":             OP_GETATTR,
+		"GETFH":               OP_GETFH,
+		"LINK":                OP_LINK,
+		"LOCK":                OP_LOCK,
+		"LOCKT":               OP_LOCKT,
+		"LOCKU":               OP_LOCKU,
+		"LOOKUP":              OP_LOOKUP,
+		"LOOKUPP":             OP_LOOKUPP,
+		"NVERIFY":             OP_NVERIFY,
+		"OPEN":                OP_OPEN,
+		"OPENATTR":            OP_OPENATTR,
+		"OPEN_CONFIRM":        OP_OPEN_CONFIRM,
+		"OPEN_DOWNGRADE":      OP_OPEN_DOWNGRADE,
+		"PUTFH":               OP_PUTFH,
+		"PUTPUBFH":            OP_PUTPUBFH,
+		"PUTROOTFH":           OP_PUTROOTFH,
+		"READ":                OP_READ,
+		"READDIR":             OP_READDIR,
+		"READLINK":            OP_READLINK,
+		"REMOVE":              OP_REMOVE,
+		"RENAME":              OP_RENAME,
+		"RENEW":               OP_RENEW,
+		"RESTOREFH":           OP_RESTOREFH,
+		"SAVEFH":              OP_SAVEFH,
+		"SECINFO":             OP_SECINFO,
+		"SETATTR":             OP_SETATTR,
+		"SETCLIENTID":         OP_SETCLIENTID,
+		"SETCLIENTID_CONFIRM": OP_SETCLIENTID_CONFIRM,
+		"VERIFY":              OP_VERIFY,
+		"WRITE":               OP_WRITE,
+		"RELEASE_LOCKOWNER":   OP_RELEASE_LOCKOWNER,
+	}
+}
+
+// OpNameToNum converts a human-readable operation name to its numeric constant.
+// Returns the operation number and true if found, or (0, false) if the name is
+// not recognised. Used by Handler.SetBlockedOps to translate string-based
+// blocklists from the control plane into numeric lookup tables.
+func OpNameToNum(name string) (uint32, bool) {
+	num, ok := opNameToNum[name]
+	return num, ok
+}

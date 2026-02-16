@@ -107,6 +107,11 @@ func (c *Client) put(path string, body, result any) error {
 	return c.do(http.MethodPut, path, body, result)
 }
 
+// patch performs a PATCH request.
+func (c *Client) patch(path string, body, result any) error {
+	return c.do(http.MethodPatch, path, body, result)
+}
+
 // delete performs a DELETE request.
 func (c *Client) delete(path string, result any) error {
 	return c.do(http.MethodDelete, path, nil, result)
