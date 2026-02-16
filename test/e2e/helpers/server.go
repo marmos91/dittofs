@@ -20,13 +20,14 @@ import (
 // ServerProcess manages a dittofs server subprocess for E2E testing.
 // It provides methods to start the server, check health, send signals, and stop gracefully.
 type ServerProcess struct {
-	cmd        *exec.Cmd
-	pidFile    string
-	apiPort    int
-	logFile    string
-	stateDir   string
-	configFile string
-	process    *os.Process
+	cmd           *exec.Cmd
+	pidFile       string
+	apiPort       int
+	logFile       string
+	stateDir      string
+	configFile    string
+	process       *os.Process
+	logFileHandle *os.File
 }
 
 // HealthResponse represents the /health endpoint response structure.
@@ -127,13 +128,14 @@ func StartServerProcess(t *testing.T, configPath string) *ServerProcess {
 	}
 
 	sp := &ServerProcess{
-		cmd:        cmd,
-		pidFile:    pidFile,
-		apiPort:    apiPort,
-		logFile:    logFile,
-		stateDir:   stateDir,
-		configFile: configWithPort,
-		process:    cmd.Process,
+		cmd:           cmd,
+		pidFile:       pidFile,
+		apiPort:       apiPort,
+		logFile:       logFile,
+		stateDir:      stateDir,
+		configFile:    configWithPort,
+		process:       cmd.Process,
+		logFileHandle: logFileHandle,
 	}
 
 	// Wait for server to be ready
@@ -264,11 +266,16 @@ func (sp *ServerProcess) ForceKill() {
 	select {
 	case <-done:
 		// Process exited gracefully
-		return
 	case <-time.After(2 * time.Second):
 		// Graceful shutdown timed out, force kill
 		_ = sp.process.Kill()
 		<-done
+	}
+
+	// Close log file handle to avoid descriptor leak
+	if sp.logFileHandle != nil {
+		_ = sp.logFileHandle.Close()
+		sp.logFileHandle = nil
 	}
 }
 
@@ -388,7 +395,7 @@ func findProjectRoot(t *testing.T) string {
 // StartServerProcessWithConfig starts a dittofs server using a pre-created config file.
 // Unlike StartServerProcess, this does NOT modify the config - it uses it as-is.
 // The caller is responsible for setting appropriate ports, paths, etc. in the config.
-// adminPassword is the password to set via DITTOFS_ADMIN_INITIAL_PASSWORD env var.
+// The caller should set DITTOFS_ADMIN_INITIAL_PASSWORD via t.Setenv before calling.
 func StartServerProcessWithConfig(t *testing.T, configPath string) *ServerProcess {
 	t.Helper()
 
@@ -429,13 +436,14 @@ func StartServerProcessWithConfig(t *testing.T, configPath string) *ServerProces
 	apiPort := extractAPIPortFromConfig(t, configPath)
 
 	sp := &ServerProcess{
-		cmd:        cmd,
-		pidFile:    pidFile,
-		apiPort:    apiPort,
-		logFile:    logFile,
-		stateDir:   stateDir,
-		configFile: configPath,
-		process:    cmd.Process,
+		cmd:           cmd,
+		pidFile:       pidFile,
+		apiPort:       apiPort,
+		logFile:       logFile,
+		stateDir:      stateDir,
+		configFile:    configPath,
+		process:       cmd.Process,
+		logFileHandle: logFileHandle,
 	}
 
 	// Wait for server to be ready (longer timeout for Kerberos setup)

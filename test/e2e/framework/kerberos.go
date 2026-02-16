@@ -47,8 +47,8 @@ func NewKDCHelper(t *testing.T, cfg KDCConfig) *KDCHelper {
 	// Create temp directory for keytabs
 	keytabDir := t.TempDir()
 
-	// Build the KDC container from the manual test Dockerfile
-	dockerfilePath := filepath.Join(getProjectRoot(t), "test", "manual", "kerberos")
+	// Build the KDC container from the integration test Dockerfile
+	dockerfilePath := filepath.Join(getProjectRoot(t), "test", "integration", "kerberos")
 
 	req := testcontainers.ContainerRequest{
 		FromDockerfile: testcontainers.FromDockerfile{
@@ -63,10 +63,7 @@ func NewKDCHelper(t *testing.T, cfg KDCConfig) *KDCHelper {
 		Mounts: testcontainers.Mounts(
 			testcontainers.BindMount(keytabDir, "/keytabs"),
 		),
-		WaitingFor: wait.ForAll(
-			wait.ForListeningPort("88/tcp"),
-			wait.ForFile("/keytabs/nfs.keytab").WithStartupTimeout(60*time.Second),
-		),
+		WaitingFor: wait.ForListeningPort("88/tcp").WithStartupTimeout(60 * time.Second),
 	}
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -125,14 +122,13 @@ func (k *KDCHelper) generateKrb5Conf(t *testing.T) string {
 [realms]
     %s = {
         kdc = %s:%d
-        admin_server = %s:%d
     }
 
 [domain_realm]
     .local = %s
     localhost = %s
     127.0.0.1 = %s
-`, k.realm, k.realm, k.kdcHost, k.kdcPort, k.kdcHost, k.kdcPort+661,
+`, k.realm, k.realm, k.kdcHost, k.kdcPort,
 		k.realm, k.realm, k.realm)
 
 	confPath := filepath.Join(t.TempDir(), "krb5.conf")

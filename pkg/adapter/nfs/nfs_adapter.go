@@ -95,6 +95,11 @@ type NFSAdapter struct {
 	// nil when Kerberos is not enabled.
 	gssProcessor *gss.GSSProcessor
 
+	// kerberosProvider holds the Kerberos keytab/config provider.
+	// Closed in Stop() to release the keytab hot-reload goroutine.
+	// nil when Kerberos is not enabled.
+	kerberosProvider *kerberos.Provider
+
 	// kerberosConfig holds the Kerberos configuration for GSS initialization.
 	// nil when Kerberos is not enabled.
 	kerberosConfig *config.KerberosConfig
@@ -430,6 +435,7 @@ func (s *NFSAdapter) initGSSProcessor() {
 			"error", err)
 		return
 	}
+	s.kerberosProvider = provider
 
 	// Create identity mapper from config
 	mapper := kerberos.NewStaticMapper(&s.kerberosConfig.IdentityMapping)
@@ -1104,6 +1110,11 @@ func (s *NFSAdapter) Stop(ctx context.Context) error {
 	// Stop GSS processor if running (releases background cleanup goroutine)
 	if s.gssProcessor != nil {
 		s.gssProcessor.Stop()
+	}
+
+	// Close Kerberos provider (stops keytab hot-reload goroutine)
+	if s.kerberosProvider != nil {
+		_ = s.kerberosProvider.Close()
 	}
 
 	// Always initiate shutdown first

@@ -1090,29 +1090,25 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 func (c *NFSConnection) sendGSSReply(xid uint32, data []byte, sessionInfo *gss.GSSSessionInfo) error {
 	replyData := data
 
-	// Wrap reply body based on service level
+	// Wrap reply body based on service level.
+	// If wrapping fails, return error rather than sending unwrapped data,
+	// which would be rejected by the client and could desync the session.
 	switch sessionInfo.Service {
 	case gss.RPCGSSSvcIntegrity:
 		// krb5i: wrap reply body with MIC
 		wrapped, err := gss.WrapIntegrity(sessionInfo.SessionKey, sessionInfo.SeqNum, data)
 		if err != nil {
-			logger.Debug("Failed to wrap GSS integrity reply, falling back to unwrapped",
-				"xid", fmt.Sprintf("0x%x", xid),
-				"error", err)
-		} else {
-			replyData = wrapped
+			return fmt.Errorf("wrap GSS integrity reply: %w", err)
 		}
+		replyData = wrapped
 
 	case gss.RPCGSSSvcPrivacy:
 		// krb5p: wrap reply body with encryption
 		wrapped, err := gss.WrapPrivacy(sessionInfo.SessionKey, sessionInfo.SeqNum, data)
 		if err != nil {
-			logger.Debug("Failed to wrap GSS privacy reply, falling back to unwrapped",
-				"xid", fmt.Sprintf("0x%x", xid),
-				"error", err)
-		} else {
-			replyData = wrapped
+			return fmt.Errorf("wrap GSS privacy reply: %w", err)
 		}
+		replyData = wrapped
 
 	default:
 		// krb5 (svc_none): reply body sent as-is
@@ -1121,11 +1117,7 @@ func (c *NFSConnection) sendGSSReply(xid uint32, data []byte, sessionInfo *gss.G
 	// Compute the reply verifier: MIC of the sequence number
 	mic, err := gss.ComputeReplyVerifier(sessionInfo.SessionKey, sessionInfo.SeqNum)
 	if err != nil {
-		logger.Debug("Failed to compute GSS reply verifier, falling back to AUTH_NULL",
-			"xid", fmt.Sprintf("0x%x", xid),
-			"error", err)
-		// Fall back to AUTH_NULL verifier on error
-		return c.sendReply(xid, replyData)
+		return fmt.Errorf("compute GSS reply verifier: %w", err)
 	}
 
 	// Wrap MIC into OpaqueAuth verifier

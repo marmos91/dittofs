@@ -271,7 +271,7 @@ func TestEncodeGSSInitRes_EmptyFields(t *testing.T) {
 
 	// Token should be zero-length opaque
 	var tokenLen uint32
-	binary.Read(reader, binary.BigEndian, &tokenLen)
+	_ = binary.Read(reader, binary.BigEndian, &tokenLen)
 	if tokenLen != 0 {
 		t.Errorf("token length = %d, want 0", tokenLen)
 	}

@@ -78,8 +78,8 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y nfs-common cifs-utils smbclient krb5-user
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nfs-common cifs-utils smbclient krb5-user
           # Start rpc-gssd for Kerberos NFS tests
           sudo systemctl start rpc-gssd || true
 
