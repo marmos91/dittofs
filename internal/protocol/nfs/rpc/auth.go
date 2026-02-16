@@ -33,6 +33,11 @@ const (
 	// Provides stronger security using DES encryption for authentication.
 	// Also known as AUTH_DH (Diffie-Hellman).
 	AuthDES uint32 = 3
+
+	// AuthRPCSECGSS indicates RPCSEC_GSS authentication.
+	// Provides Kerberos-based authentication with optional integrity
+	// and privacy protection. Defined in RFC 2203.
+	AuthRPCSECGSS uint32 = 6
 )
 
 // UnixAuth represents Unix-style authentication credentials (AUTH_UNIX)

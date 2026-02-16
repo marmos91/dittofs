@@ -27,6 +27,7 @@ func ApplyDefaults(cfg *Config) {
 	applyCacheDefaults(&cfg.Cache)
 	applyAdminDefaults(&cfg.Admin)
 	applyLockDefaults(&cfg.Lock)
+	applyKerberosDefaults(&cfg.Kerberos)
 }
 
 // applyLoggingDefaults sets logging defaults and normalizes values.
@@ -152,6 +153,48 @@ func applyLockDefaults(cfg *LockConfig) {
 	// For CI tests, set DITTOFS_LOCK_LEASE_BREAK_TIMEOUT=5s for faster execution.
 	if cfg.LeaseBreakTimeout == 0 {
 		cfg.LeaseBreakTimeout = 35 * time.Second
+	}
+}
+
+// applyKerberosDefaults sets Kerberos authentication defaults.
+//
+// When Kerberos is enabled, the keytab path and service principal must
+// be configured either in the config file or via environment variables:
+//   - DITTOFS_KERBEROS_KEYTAB_PATH overrides KeytabPath
+//   - DITTOFS_KERBEROS_SERVICE_PRINCIPAL overrides ServicePrincipal
+func applyKerberosDefaults(cfg *KerberosConfig) {
+	// Enabled defaults to false (opt-in for Kerberos)
+	// No need to set, zero value is false
+
+	// Default krb5.conf path
+	if cfg.Krb5Conf == "" {
+		cfg.Krb5Conf = "/etc/krb5.conf"
+	}
+
+	// Default max clock skew: 5 minutes (standard Kerberos default)
+	if cfg.MaxClockSkew == 0 {
+		cfg.MaxClockSkew = 5 * time.Minute
+	}
+
+	// Default context TTL: 8 hours (typical workday)
+	if cfg.ContextTTL == 0 {
+		cfg.ContextTTL = 8 * time.Hour
+	}
+
+	// Default max concurrent contexts
+	if cfg.MaxContexts == 0 {
+		cfg.MaxContexts = 10000
+	}
+
+	// Identity mapping defaults
+	if cfg.IdentityMapping.Strategy == "" {
+		cfg.IdentityMapping.Strategy = "static"
+	}
+	if cfg.IdentityMapping.DefaultUID == 0 {
+		cfg.IdentityMapping.DefaultUID = 65534 // nobody
+	}
+	if cfg.IdentityMapping.DefaultGID == 0 {
+		cfg.IdentityMapping.DefaultGID = 65534 // nogroup
 	}
 }
 
